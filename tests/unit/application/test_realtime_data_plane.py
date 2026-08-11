@@ -34,6 +34,8 @@ def _pack(sequence: int) -> DailyFeaturePack:
                 values={"ma20": 9.5 + sequence / 100},
                 history_sessions=61,
                 data_as_of=date(2026, 7, 27),
+                security_master_version=f"master-{sequence}",
+                history_version=f"history-{sequence}",
             ),
         ),
         source_versions={"history": f"history-{sequence}"},
@@ -260,6 +262,97 @@ def test_failure_status_preserves_last_valid_epoch_and_success_clears_channel_fa
     assert DataPlaneChannel.DAILY_FEATURES not in plane.snapshot().failures
 
 
+def test_market_rejects_incomplete_security_master_coverage_without_tearing_current_view() -> None:
+    plane = RealtimeDataPlane(retained_epochs_per_channel=3)
+    first_pack = _pack(1)
+    first_market = _market(first_pack, 1)
+    assert plane.publish_daily_features(first_pack).accepted is True
+    assert plane.publish_market(first_market).accepted is True
+
+    incomplete_pack = DailyFeaturePack(
+        trade_date=NOW.date(),
+        sequence=2,
+        observed_at=NOW + timedelta(seconds=2),
+        received_at=NOW + timedelta(seconds=2, milliseconds=100),
+        config_version="runtime-v2",
+        rows=(
+            DailyFeatureRow(
+                code="600001",
+                values={"ma20": 9.6},
+                history_sessions=61,
+                data_as_of=date(2026, 7, 27),
+                history_version="history-2",
+            ),
+        ),
+        source_versions={"history": "history-2"},
+    )
+    assert plane.publish_daily_features(incomplete_pack).accepted is True
+
+    rejected = plane.publish_market(_market(incomplete_pack, 2))
+
+    assert rejected.accepted is False
+    assert rejected.reason == "security_master_coverage_incomplete"
+    assert plane.snapshot().daily_features == first_pack
+    assert plane.snapshot().market == first_market
+
+
+def test_candidate_history_coverage_accepts_99_percent_and_reports_snapshot_quality() -> None:
+    plane = RealtimeDataPlane(retained_epochs_per_channel=3)
+    codes = tuple(f"600{index:03d}" for index in range(100))
+    pack = _coverage_pack(codes, history_covered=99)
+    market = _coverage_market(pack, codes)
+    assert plane.publish_daily_features(pack).accepted is True
+    assert plane.publish_market(market).accepted is True
+
+    accepted = plane.publish_candidate_quotes(_coverage_candidate(market, codes))
+
+    assert accepted.accepted is True
+    coverage = plane.snapshot().coverage
+    assert coverage.potential_executable_count == 100
+    assert coverage.security_master_covered_count == 100
+    assert coverage.security_master_ratio == 1.0
+    assert coverage.candidate_count == 100
+    assert coverage.candidate_core_history_covered_count == 99
+    assert coverage.candidate_core_history_ratio == 0.99
+
+
+def test_candidate_history_below_99_percent_and_invalid_empty_do_not_replace_last_valid_epoch() -> None:
+    plane = RealtimeDataPlane(retained_epochs_per_channel=3)
+    codes = tuple(f"600{index:03d}" for index in range(100))
+    pack = _coverage_pack(codes, history_covered=98)
+    market = _coverage_market(pack, codes)
+    plane.publish_daily_features(pack)
+    plane.publish_market(market)
+
+    insufficient = plane.publish_candidate_quotes(_coverage_candidate(market, codes))
+    assert insufficient.accepted is False
+    assert insufficient.reason == "candidate_history_coverage_insufficient"
+    assert plane.snapshot().candidate_quotes is None
+
+    valid_pack = _pack(101)
+    valid_market = _market(valid_pack, 101)
+    plane.publish_daily_features(valid_pack)
+    plane.publish_market(valid_market)
+    valid_candidate = _candidate(valid_market, 101)
+    assert plane.publish_candidate_quotes(valid_candidate).accepted is True
+    invalid_empty = CandidateQuoteEpoch(
+        trade_date=valid_market.trade_date,
+        sequence=102,
+        observed_at=NOW + timedelta(seconds=102),
+        received_at=NOW + timedelta(seconds=102, milliseconds=100),
+        config_version="runtime-v2",
+        market_epoch_version=valid_market.version,
+        quotes=(),
+        requested_codes=("600001",),
+        source_versions={"tencent": "candidate-102"},
+    )
+
+    rejected = plane.publish_candidate_quotes(invalid_empty)
+    assert rejected.accepted is False
+    assert rejected.reason == "invalid_empty_epoch"
+    assert plane.snapshot().candidate_quotes == valid_candidate
+
+
 def test_failure_status_rejects_unstructured_error_text() -> None:
     plane = RealtimeDataPlane(retained_epochs_per_channel=3)
 
@@ -290,3 +383,92 @@ def test_concurrent_publication_keeps_the_highest_sequence() -> None:
         tuple(executor.map(plane.publish_daily_features, reversed(packs)))
 
     assert plane.snapshot().daily_features == packs[-1]
+
+
+def _coverage_pack(codes: tuple[str, ...], *, history_covered: int) -> DailyFeaturePack:
+    return DailyFeaturePack(
+        trade_date=NOW.date(),
+        sequence=50,
+        observed_at=NOW + timedelta(seconds=50),
+        received_at=NOW + timedelta(seconds=50, milliseconds=100),
+        config_version="runtime-v2",
+        rows=tuple(
+            DailyFeatureRow(
+                code=code,
+                values={"ma20": 9.5},
+                history_sessions=61 if index < history_covered else 0,
+                data_as_of=date(2026, 7, 27),
+                security_master_version="master-50",
+                history_version="history-50" if index < history_covered else "",
+            )
+            for index, code in enumerate(codes)
+        ),
+        source_versions={"master": "master-50", "history": "history-50"},
+    )
+
+
+def _coverage_market(pack: DailyFeaturePack, codes: tuple[str, ...]) -> MarketEpoch:
+    observed_at = NOW + timedelta(seconds=50)
+    return MarketEpoch(
+        trade_date=pack.trade_date,
+        sequence=50,
+        observed_at=observed_at,
+        received_at=observed_at + timedelta(milliseconds=100),
+        config_version="runtime-v2",
+        daily_feature_pack_version=pack.version,
+        quotes=tuple(
+            MarketQuote(
+                code=code,
+                name=f"stock-{code}",
+                price=10.0,
+                previous_close=9.8,
+                open_price=9.9,
+                high=10.2,
+                low=9.7,
+                pct_change=2.0,
+                change_5m=0.1,
+                speed=0.2,
+                volume_ratio=1.2,
+                turnover_rate=2.5,
+                amount=100_000_000.0,
+                amplitude=4.0,
+                market_cap=10_000_000_000.0,
+                industry="industry",
+                source="eastmoney",
+                source_time=observed_at,
+                received_time=observed_at + timedelta(milliseconds=100),
+                data_version="market-50",
+                board=Board.MAIN,
+            )
+            for code in codes
+        ),
+        source_versions={"eastmoney": "market-50"},
+    )
+
+
+def _coverage_candidate(market: MarketEpoch, codes: tuple[str, ...]) -> CandidateQuoteEpoch:
+    observed_at = NOW + timedelta(seconds=51)
+    return CandidateQuoteEpoch(
+        trade_date=market.trade_date,
+        sequence=51,
+        observed_at=observed_at,
+        received_at=observed_at + timedelta(milliseconds=100),
+        config_version="runtime-v2",
+        market_epoch_version=market.version,
+        quotes=tuple(
+            LiveQuote(
+                code=code,
+                price=10.1,
+                pct_change=3.0,
+                source="tencent",
+                source_time=observed_at,
+                received_time=observed_at + timedelta(milliseconds=100),
+                data_version="candidate-51",
+                cross_source_deviation_pct=0.2,
+                cross_source_verified=True,
+            )
+            for code in codes
+        ),
+        requested_codes=codes,
+        source_versions={"tencent": "candidate-51"},
+    )

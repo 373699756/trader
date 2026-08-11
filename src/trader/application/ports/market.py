@@ -119,12 +119,47 @@ class DataPlaneFailure:
 
 
 @dataclass(frozen=True)
+class DataPlaneCoverage:
+    potential_executable_count: int = 0
+    security_master_covered_count: int = 0
+    candidate_count: int = 0
+    candidate_core_history_covered_count: int = 0
+
+    def __post_init__(self) -> None:
+        counts = (
+            self.potential_executable_count,
+            self.security_master_covered_count,
+            self.candidate_count,
+            self.candidate_core_history_covered_count,
+        )
+        if any(count < 0 for count in counts):
+            raise ValueError("data-plane coverage counts cannot be negative")
+        if self.security_master_covered_count > self.potential_executable_count:
+            raise ValueError("security-master coverage cannot exceed the executable population")
+        if self.candidate_core_history_covered_count > self.candidate_count:
+            raise ValueError("candidate history coverage cannot exceed the candidate population")
+
+    @property
+    def security_master_ratio(self) -> float | None:
+        if self.potential_executable_count == 0:
+            return None
+        return self.security_master_covered_count / self.potential_executable_count
+
+    @property
+    def candidate_core_history_ratio(self) -> float | None:
+        if self.candidate_count == 0:
+            return None
+        return self.candidate_core_history_covered_count / self.candidate_count
+
+
+@dataclass(frozen=True)
 class MarketDataPlaneSnapshot:
     daily_features: DailyFeaturePack | None
     market: MarketEpoch | None
     candidate_quotes: CandidateQuoteEpoch | None
     research: ResearchEpoch | None
     failures: Mapping[DataPlaneChannel, DataPlaneFailure] = field(default_factory=lambda: MappingProxyType({}))
+    coverage: DataPlaneCoverage = field(default_factory=DataPlaneCoverage)
 
     def __post_init__(self) -> None:
         if self.market is not None:
@@ -145,8 +180,12 @@ class MarketDataPlaneSnapshot:
         object.__setattr__(self, "failures", MappingProxyType(dict(self.failures)))
 
 
-class RealtimeDataPlaneReaderPort(Protocol):
+class DataPlaneReadPort(Protocol):
     def snapshot(self) -> MarketDataPlaneSnapshot: ...
+
+
+class RealtimeDataPlaneReaderPort(DataPlaneReadPort, Protocol):
+    """Compatibility name for the pre-E1 read port."""
 
 
 class MarketDataNoDataError(RuntimeError):

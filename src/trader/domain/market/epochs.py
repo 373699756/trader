@@ -16,10 +16,11 @@ from typing import Literal, Protocol, TypeAlias
 from trader.domain.market.models import LiveQuote, MarketQuote
 from trader.domain.market.research import ResearchObservation
 
-DAILY_FEATURE_PACK_SCHEMA_VERSION = "daily_feature_pack_v1"
+DAILY_FEATURE_PACK_SCHEMA_VERSION = "daily_feature_pack_v2"
 MARKET_EPOCH_SCHEMA_VERSION = "market_epoch_v1"
-CANDIDATE_QUOTE_EPOCH_SCHEMA_VERSION = "candidate_quote_epoch_v1"
+CANDIDATE_QUOTE_EPOCH_SCHEMA_VERSION = "candidate_quote_epoch_v2"
 RESEARCH_EPOCH_SCHEMA_VERSION = "research_epoch_v1"
+CORE_HISTORY_MIN_SESSIONS = 20
 
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"
 _REASON_CODE = re.compile(r"^[a-z0-9_]{1,64}$")
@@ -72,6 +73,9 @@ class DailyFeatureRow:
     values: Mapping[str, float | None]
     history_sessions: int
     data_as_of: date
+    security_master_version: str = ""
+    history_version: str = ""
+    risk_component_versions: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
     missing_fields: tuple[str, ...] = ()
     missing_reasons: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
 
@@ -79,6 +83,11 @@ class DailyFeatureRow:
         _require_code(self.code)
         if self.history_sessions < 0:
             raise ValueError("history_sessions cannot be negative")
+        if self.security_master_version:
+            _require_text(self.security_master_version, "security_master_version")
+        if self.history_version:
+            _require_text(self.history_version, "history_version")
+        risk_versions = _freeze_optional_versions(self.risk_component_versions, "risk component versions")
         normalized_values = dict(sorted(self.values.items()))
         for name, value in normalized_values.items():
             _require_text(name, "daily feature name")
@@ -88,8 +97,17 @@ class DailyFeatureRow:
         if any(not key.strip() or not value.strip() for key, value in normalized_reasons.items()):
             raise ValueError("missing reasons must contain non-empty keys and values")
         object.__setattr__(self, "values", MappingProxyType(normalized_values))
+        object.__setattr__(self, "risk_component_versions", risk_versions)
         object.__setattr__(self, "missing_fields", normalized_missing)
         object.__setattr__(self, "missing_reasons", MappingProxyType(normalized_reasons))
+
+    @property
+    def has_security_master(self) -> bool:
+        return bool(self.security_master_version)
+
+    @property
+    def has_core_history(self) -> bool:
+        return bool(self.history_version) and self.history_sessions >= CORE_HISTORY_MIN_SESSIONS
 
 
 @dataclass(frozen=True)
@@ -219,6 +237,7 @@ class CandidateQuoteEpoch:
     market_epoch_version: str
     quotes: tuple[LiveQuote, ...]
     source_versions: Mapping[str, str]
+    requested_codes: tuple[str, ...] = ()
     feature_rows: tuple[CandidateFeatureRow, ...] = ()
     degraded_reasons: tuple[str, ...] = ()
     schema_version: str = CANDIDATE_QUOTE_EPOCH_SCHEMA_VERSION
@@ -235,6 +254,12 @@ class CandidateQuoteEpoch:
         feature_rows = tuple(sorted(self.feature_rows, key=lambda row: row.code))
         _require_unique_codes(tuple(row.code for row in feature_rows), "candidate feature rows")
         quote_codes = {quote.code for quote in quotes}
+        requested_codes = tuple(sorted(self.requested_codes or quote_codes))
+        _require_unique_codes(requested_codes, "candidate requested_codes")
+        for code in requested_codes:
+            _require_code(code)
+        if not quote_codes.issubset(requested_codes):
+            raise ValueError("candidate quotes must be a subset of requested_codes")
         if any(row.code not in quote_codes for row in feature_rows):
             raise ValueError("candidate feature rows must reference candidate quote codes")
         sources = _freeze_source_versions(self.source_versions)
@@ -249,12 +274,14 @@ class CandidateQuoteEpoch:
                 "config_version": self.config_version,
                 "market_epoch_version": self.market_epoch_version,
                 "quotes": quotes,
+                "requested_codes": requested_codes,
                 "feature_rows": feature_rows,
                 "source_versions": sources,
                 "degraded_reasons": degraded,
             }
         )
         object.__setattr__(self, "quotes", quotes)
+        object.__setattr__(self, "requested_codes", requested_codes)
         object.__setattr__(self, "feature_rows", feature_rows)
         object.__setattr__(self, "source_versions", sources)
         object.__setattr__(self, "degraded_reasons", degraded)
@@ -452,6 +479,13 @@ def _freeze_source_versions(source_versions: Mapping[str, str]) -> Mapping[str, 
     return MappingProxyType(normalized)
 
 
+def _freeze_optional_versions(versions: Mapping[str, str], name: str) -> Mapping[str, str]:
+    normalized = dict(sorted(versions.items()))
+    if any(not key.strip() or not value.strip() for key, value in normalized.items()):
+        raise ValueError(f"{name} must contain non-empty keys and versions")
+    return MappingProxyType(normalized)
+
+
 def _version(prefix: str, trade_date: date, sequence: int, content_hash: str) -> str:
     return f"{prefix}:{trade_date.isoformat()}:{sequence}:{content_hash[:16]}"
 
@@ -495,6 +529,7 @@ def _canonicalize(value: object) -> _CanonicalValue:
 __all__ = [
     "CANDIDATE_QUOTE_EPOCH_SCHEMA_VERSION",
     "CANDIDATE_REALTIME_FEATURES",
+    "CORE_HISTORY_MIN_SESSIONS",
     "DAILY_FEATURE_PACK_SCHEMA_VERSION",
     "MARKET_EPOCH_SCHEMA_VERSION",
     "RESEARCH_EPOCH_SCHEMA_VERSION",

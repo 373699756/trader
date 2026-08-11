@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import sqlite3
 import threading
-from collections.abc import Mapping, Sequence
-from datetime import datetime
+from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
@@ -19,9 +16,57 @@ from trader.application.ports.data_plane import (
     RiskEvidenceRecord,
     SecurityMasterRecord,
     SourceCursorRecord,
+    TradingCalendarRecord,
 )
-from trader.application.ports.types import JsonObject
 from trader.infra.persistence import data_plane_sqlite
+from trader.infra.persistence.data_plane_codec import (
+    assert_committed_record_integrity as _assert_committed_record_integrity,
+)
+from trader.infra.persistence.data_plane_codec import (
+    canonical_json as _canonical_json,
+)
+from trader.infra.persistence.data_plane_codec import (
+    canonical_json_bytes as _canonical_json_bytes,
+)
+from trader.infra.persistence.data_plane_codec import (
+    identity_fields_for_table as _identity_fields_for_table,
+)
+from trader.infra.persistence.data_plane_codec import (
+    identity_values_from_row as _identity_values_from_row,
+)
+from trader.infra.persistence.data_plane_codec import (
+    iso_datetime as _iso_datetime,
+)
+from trader.infra.persistence.data_plane_codec import (
+    parse_datetime as _parse_datetime,
+)
+from trader.infra.persistence.data_plane_codec import (
+    parse_payload_bytes as _parse_payload_bytes,
+)
+from trader.infra.persistence.data_plane_codec import (
+    pk_fields_from_table as _pk_fields_from_table,
+)
+from trader.infra.persistence.data_plane_codec import (
+    record_payload_for_table as _record_payload_for_table,
+)
+from trader.infra.persistence.data_plane_codec import (
+    record_to_row as _record_to_row,
+)
+from trader.infra.persistence.data_plane_codec import (
+    row_to_record as _row_to_record,
+)
+from trader.infra.persistence.data_plane_codec import (
+    sha256 as _sha256,
+)
+from trader.infra.persistence.data_plane_codec import (
+    table_to_record_kind as _table_to_record_kind,
+)
+from trader.infra.persistence.data_plane_codec import (
+    text as _text,
+)
+from trader.infra.persistence.data_plane_codec import (
+    to_payload_dict as _to_payload_dict,
+)
 from trader.infra.persistence.data_plane_types import (
     _DEFAULT_SCHEMA_VERSION,
     _MAX_PAYLOAD_BYTES,
@@ -200,6 +245,52 @@ class DataPlaneRepository:
             self._load_records("source_cursor", mode="formal", freeze_id=freeze_id, cursor_names=cursor_names),
         )
 
+    def save_trading_calendar_recent(self, record: TradingCalendarRecord) -> None:
+        self._save("trading_calendar", mode="recent", record=record)
+
+    def save_trading_calendar_formal(self, freeze_id: str, record: TradingCalendarRecord) -> None:
+        self._save("trading_calendar", mode="formal", freeze_id=freeze_id, record=record)
+
+    def load_trading_calendar_recent(self, calendar_name: str) -> TradingCalendarRecord | None:
+        return cast(
+            TradingCalendarRecord | None,
+            self._load("trading_calendar", mode="recent", calendar_name=calendar_name),
+        )
+
+    def load_trading_calendar_recent_records(
+        self,
+        calendar_names: Sequence[str] | None = None,
+    ) -> tuple[TradingCalendarRecord, ...]:
+        return cast(
+            tuple[TradingCalendarRecord, ...],
+            self._load_records("trading_calendar", mode="recent", calendar_names=calendar_names),
+        )
+
+    def load_trading_calendar_formal(
+        self,
+        freeze_id: str,
+        calendar_name: str,
+    ) -> TradingCalendarRecord | None:
+        return cast(
+            TradingCalendarRecord | None,
+            self._load("trading_calendar", mode="formal", freeze_id=freeze_id, calendar_name=calendar_name),
+        )
+
+    def load_trading_calendar_formal_records(
+        self,
+        freeze_id: str,
+        calendar_names: Sequence[str] | None = None,
+    ) -> tuple[TradingCalendarRecord, ...]:
+        return cast(
+            tuple[TradingCalendarRecord, ...],
+            self._load_records(
+                "trading_calendar",
+                mode="formal",
+                freeze_id=freeze_id,
+                calendar_names=calendar_names,
+            ),
+        )
+
     def recover(self) -> DataPlaneRecoverySummary:
         self.initialize()
         recovered = 0
@@ -259,13 +350,22 @@ class DataPlaneRepository:
             try:
                 with data_plane_sqlite.connection_scope(self._database) as connection:
                     if mode == "formal":
-                        self._check_formal_idempotency(
+                        if not _formal_write_allowed(
                             connection=connection,
                             table=table,
-                            pk_fields=pk_fields,
-                            pk_values=pk_values,
+                            identity=(pk_fields, pk_values),
+                            record=record,
                             payload_hash=payload_hash,
-                        )
+                        ):
+                            return
+                    elif not _recent_write_allowed(
+                        connection=connection,
+                        table=table,
+                        identity=(pk_fields, pk_values),
+                        record=record,
+                        payload_hash=payload_hash,
+                    ):
+                        return
 
                     row.update(
                         {
@@ -355,6 +455,7 @@ class DataPlaneRepository:
         cursor_names: Sequence[str] | None = None,
         trade_dates: Sequence[str] | None = None,
         evidence_ids: Sequence[str] | None = None,
+        calendar_names: Sequence[str] | None = None,
     ) -> tuple[Record, ...]:
         self.initialize()
         if mode == "formal" and not freeze_id:
@@ -368,6 +469,7 @@ class DataPlaneRepository:
         cursor_filter = tuple(sorted(set(cursor_names))) if cursor_names else None
         trade_date_filter = tuple(sorted(set(trade_dates))) if trade_dates else None
         evidence_filter = tuple(sorted(set(evidence_ids))) if evidence_ids else None
+        calendar_filter = tuple(sorted(set(calendar_names))) if calendar_names else None
 
         query = f"SELECT * FROM {table} WHERE status = ?"
         params: tuple[object, ...] = ("committed",)
@@ -397,6 +499,10 @@ class DataPlaneRepository:
                         candidate = _text(row["evidence_id"])
                         if candidate not in evidence_filter:
                             continue
+                    if calendar_filter is not None:
+                        candidate = _text(row["calendar_name"])
+                        if candidate not in calendar_filter:
+                            continue
                     try:
                         _assert_committed_record_integrity(table, row)
                         result.append(_row_to_record(table, row))
@@ -406,29 +512,6 @@ class DataPlaneRepository:
                 raise _map_sqlite_error(exc, operation="load") from exc
 
         return tuple(result)
-
-    def _check_formal_idempotency(
-        self,
-        *,
-        connection: sqlite3.Connection,
-        table: str,
-        pk_fields: tuple[str, ...],
-        pk_values: tuple[str, ...],
-        payload_hash: str,
-    ) -> None:
-        existing = connection.execute(
-            f"SELECT payload_hash, status FROM {table} WHERE {_where_clause(pk_fields)}",
-            pk_values,
-        ).fetchone()
-        if existing is None:
-            return
-        existing_status = str(existing["status"])
-        if existing_status == "quarantined":
-            return
-        existing_hash = str(existing["payload_hash"])
-        if existing_hash == payload_hash:
-            return
-        raise DataPlaneConflictError("formal save conflicts with existing committed record")
 
     def _recover_staged_row(self, connection: sqlite3.Connection, table: str, row: sqlite3.Row) -> bool:
         try:
@@ -503,6 +586,62 @@ def _profile(family: str) -> _Profile:
     return _PROFILES[family]
 
 
+def _record_metadata_matches(row: sqlite3.Row, record: Record, payload_hash: str) -> bool:
+    return (
+        _text(row["observed_at"]) == _iso_datetime(record.observed_at)
+        and _text(row["source_time"]) == _iso_datetime(record.source_time)
+        and _text(row["source"]) == record.source
+        and _text(row["data_version"]) == record.data_version
+        and _text(row["schema_version"]) == (record.schema_version or _DEFAULT_SCHEMA_VERSION)
+        and _text(row["payload_hash"]) == payload_hash
+    )
+
+
+def _formal_write_allowed(
+    *,
+    connection: sqlite3.Connection,
+    table: str,
+    identity: tuple[tuple[str, ...], tuple[str, ...]],
+    record: Record,
+    payload_hash: str,
+) -> bool:
+    pk_fields, pk_values = identity
+    existing = connection.execute(
+        f"SELECT * FROM {table} WHERE {_where_clause(pk_fields)}",
+        pk_values,
+    ).fetchone()
+    if existing is None or _text(existing["status"]) != "committed":
+        return True
+    if _record_metadata_matches(existing, record, payload_hash):
+        return False
+    raise DataPlaneConflictError("formal save conflicts with existing committed record")
+
+
+def _recent_write_allowed(
+    *,
+    connection: sqlite3.Connection,
+    table: str,
+    identity: tuple[tuple[str, ...], tuple[str, ...]],
+    record: Record,
+    payload_hash: str,
+) -> bool:
+    pk_fields, pk_values = identity
+    existing = connection.execute(
+        f"SELECT * FROM {table} WHERE {_where_clause(pk_fields)}",
+        pk_values,
+    ).fetchone()
+    if existing is None or _text(existing["status"]) != "committed":
+        return True
+    existing_observed_at = _parse_datetime(existing["observed_at"])
+    if record.observed_at < existing_observed_at:
+        return False
+    if record.observed_at > existing_observed_at:
+        return True
+    if _record_metadata_matches(existing, record, payload_hash):
+        return False
+    raise DataPlaneConflictError("recent save conflicts at the same observation time")
+
+
 def _pk_fields(profile: _Profile, mode: Mode) -> tuple[str, ...]:
     if mode == "formal":
         return ("freeze_id", *profile.identity_fields)
@@ -540,229 +679,8 @@ def _identity_values(
 
 
 def _record_identity_from_record(profile: _Profile, record: Record) -> tuple[str, ...]:
-    if profile.family == "security_master":
-        if not isinstance(record, SecurityMasterRecord):
-            raise TypeError("security master family requires SecurityMasterRecord")
-        return (record.code,)
-    if profile.family == "historical_feature":
-        if not isinstance(record, HistoricalFeatureRecord):
-            raise TypeError("historical feature family requires HistoricalFeatureRecord")
-        return (record.code, record.trade_date)
-    if profile.family == "risk_evidence":
-        if not isinstance(record, RiskEvidenceRecord):
-            raise TypeError("risk evidence family requires RiskEvidenceRecord")
-        return (record.code, record.evidence_id)
-    if profile.family == "source_cursor":
-        if not isinstance(record, SourceCursorRecord):
-            raise TypeError("source cursor family requires SourceCursorRecord")
-        return (record.cursor_name,)
-    raise ValueError(f"unknown family: {profile.family}")
-
-
-def _record_to_row(profile: _Profile, record: Record, *, freeze_id: str | None = None) -> dict[str, object]:
-    base: dict[str, object] = {}
-    if profile.family == "security_master":
-        if not isinstance(record, SecurityMasterRecord):
-            raise TypeError("security master family requires SecurityMasterRecord")
-        base["code"] = record.code
-    elif profile.family == "historical_feature":
-        if not isinstance(record, HistoricalFeatureRecord):
-            raise TypeError("historical feature family requires HistoricalFeatureRecord")
-        base["code"] = record.code
-        base["trade_date"] = record.trade_date
-    elif profile.family == "risk_evidence":
-        if not isinstance(record, RiskEvidenceRecord):
-            raise TypeError("risk evidence family requires RiskEvidenceRecord")
-        base["code"] = record.code
-        base["evidence_id"] = record.evidence_id
-    elif profile.family == "source_cursor":
-        if not isinstance(record, SourceCursorRecord):
-            raise TypeError("source cursor family requires SourceCursorRecord")
-        base["cursor_name"] = record.cursor_name
-        base["cursor_value"] = record.cursor_value
-    else:
-        raise ValueError(f"unknown family: {profile.family}")
-    if freeze_id is not None:
-        base["freeze_id"] = freeze_id
-    return base
-
-
-def _record_payload_for_table(table: str, payload: JsonObject) -> None:
-    if not isinstance(payload, Mapping):
-        raise TypeError("payload root must be an object")
-    if table.startswith("security_master_"):
-        pass
-    elif table.startswith("historical_feature_"):
-        pass
-    elif table.startswith("risk_evidence_"):
-        pass
-    elif table.startswith("source_cursor_"):
-        pass
-    else:
-        raise ValueError(f"unsupported table: {table}")
-    if table.startswith("source_cursor_") and not payload:
-        # source cursor payload may be empty but must remain a mapping
-        return
-
-
-def _row_payload(table: str, row: sqlite3.Row) -> JsonObject:
-    payload = _parse_payload_text(_text(row["payload"]))
-    _record_payload_for_table(table, payload)
-    return payload
-
-
-def _assert_committed_record_integrity(table: str, row: sqlite3.Row) -> None:
-    payload = _parse_payload_text(_text(row["payload"]))
-    _record_payload_for_table(table, payload)
-    payload_text = _canonical_json(payload)
-    if _sha256(payload_text.encode("utf-8")) != _text(row["payload_hash"]):
-        raise ValueError("payload hash mismatch")
-    _parse_datetime(_text(row["observed_at"]))
-    _parse_datetime(_text(row["source_time"]))
-
-
-def _row_to_record(table: str, row: sqlite3.Row) -> Record:
-    payload = _row_payload(table, row)
-    if table in {"security_master_recent", "security_master_formal"}:
-        return SecurityMasterRecord(
-            code=_text(row["code"]),
-            observed_at=_parse_datetime(_text(row["observed_at"])),
-            source_time=_parse_datetime(_text(row["source_time"])),
-            source=_text(row["source"]),
-            data_version=_text(row["data_version"]),
-            payload=payload,
-            payload_hash=_text(row["payload_hash"]),
-            schema_version=_text(row["schema_version"]),
-        )
-    if table in {"historical_feature_recent", "historical_feature_formal"}:
-        return HistoricalFeatureRecord(
-            code=_text(row["code"]),
-            trade_date=_text(row["trade_date"]),
-            observed_at=_parse_datetime(_text(row["observed_at"])),
-            source_time=_parse_datetime(_text(row["source_time"])),
-            source=_text(row["source"]),
-            data_version=_text(row["data_version"]),
-            payload=payload,
-            payload_hash=_text(row["payload_hash"]),
-            schema_version=_text(row["schema_version"]),
-        )
-    if table in {"risk_evidence_recent", "risk_evidence_formal"}:
-        return RiskEvidenceRecord(
-            code=_text(row["code"]),
-            evidence_id=_text(row["evidence_id"]),
-            observed_at=_parse_datetime(_text(row["observed_at"])),
-            source_time=_parse_datetime(_text(row["source_time"])),
-            source=_text(row["source"]),
-            data_version=_text(row["data_version"]),
-            payload=payload,
-            payload_hash=_text(row["payload_hash"]),
-            schema_version=_text(row["schema_version"]),
-        )
-    if table in {"source_cursor_recent", "source_cursor_formal"}:
-        return SourceCursorRecord(
-            cursor_name=_text(row["cursor_name"]),
-            cursor_value=_text(row["cursor_value"]),
-            observed_at=_parse_datetime(_text(row["observed_at"])),
-            source_time=_parse_datetime(_text(row["source_time"])),
-            source=_text(row["source"]),
-            data_version=_text(row["data_version"]),
-            payload=payload,
-            payload_hash=_text(row["payload_hash"]),
-            schema_version=_text(row["schema_version"]),
-        )
-    raise ValueError(f"unsupported table: {table}")
-
-
-def _table_to_record_kind(table: str) -> str:
-    if table.startswith("security_master_"):
-        return "security_master"
-    if table.startswith("historical_feature_"):
-        return "historical_feature"
-    if table.startswith("risk_evidence_"):
-        return "risk_evidence"
-    if table.startswith("source_cursor_"):
-        return "source_cursor"
-    raise ValueError(f"unsupported table: {table}")
-
-
-def _pk_fields_from_table(table: str) -> tuple[str, ...]:
-    if table in {"security_master_formal", "historical_feature_formal", "risk_evidence_formal", "source_cursor_formal"}:
-        return ("freeze_id", *_identity_fields_for_table(table))
-    if table in {"security_master_recent", "historical_feature_recent", "risk_evidence_recent", "source_cursor_recent"}:
-        return _identity_fields_for_table(table)
-    raise ValueError(f"unsupported table: {table}")
-
-
-def _identity_fields_for_table(table: str) -> tuple[str, ...]:
-    if table.startswith("security_master_"):
-        return ("code",)
-    if table.startswith("historical_feature_"):
-        return ("code", "trade_date")
-    if table.startswith("risk_evidence_"):
-        return ("code", "evidence_id")
-    if table.startswith("source_cursor_"):
-        return ("cursor_name",)
-    raise ValueError(f"unsupported table: {table}")
-
-
-def _identity_values_from_row(table: str, row: sqlite3.Row) -> tuple[str, ...]:
-    return tuple(_text(row[field]) for field in _pk_fields_from_table(table))
-
-
-def _to_payload_dict(payload: object) -> dict[str, object]:
-    if not isinstance(payload, Mapping):
-        raise TypeError("payload must be a mapping")
-    return dict(payload)
-
-
-def _canonical_json(payload: Mapping[str, object]) -> str:
-    return json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-
-
-def _canonical_json_bytes(payload: Mapping[str, object]) -> bytes:
-    return _canonical_json(payload).encode("utf-8")
-
-
-def _parse_payload_text(raw: str) -> JsonObject:
-    decoded = json.loads(raw)
-    if not isinstance(decoded, dict):
-        raise TypeError("payload root must be an object")
-    return cast(JsonObject, decoded)
-
-
-def _parse_payload_bytes(raw: bytes) -> JsonObject:
-    return _parse_payload_text(raw.decode("utf-8"))
-
-
-def _sha256(payload: bytes) -> str:
-    return hashlib.sha256(payload).hexdigest()
-
-
-def _text(value: object) -> str:
-    if isinstance(value, bytes):
-        return value.decode("utf-8")
-    if value is None:
-        raise TypeError("required text field is missing")
-    return str(value)
-
-
-def _parse_datetime(value: object) -> datetime:
-    parsed = datetime.fromisoformat(_text(value))
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise ValueError("timestamp must be timezone-aware")
-    return parsed
-
-
-def _iso_datetime(value: datetime) -> str:
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError("timestamp must be timezone-aware")
-    return value.isoformat()
+    row = _record_to_row(profile, record)
+    return tuple(_text(row[field]) for field in profile.identity_fields)
 
 
 def _map_sqlite_error(exc: sqlite3.OperationalError, *, operation: str) -> Exception:

@@ -43,6 +43,10 @@ def test_initialize_database_is_idempotent_for_partial_schema(tmp_path: Path) ->
 
     with connection_scope(database) as connection:
         columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(security_master_recent)")}
+        tables = {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
         version = connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
 
     assert version is not None
@@ -51,6 +55,7 @@ def test_initialize_database_is_idempotent_for_partial_schema(tmp_path: Path) ->
     assert "error" in columns
     assert "recovery_payload" in columns
     assert "recovery_sha256" in columns
+    assert {"trading_calendar_recent", "trading_calendar_formal"} <= tables
 
 
 def test_initialize_database_recovers_from_invalid_schema_version(tmp_path: Path) -> None:

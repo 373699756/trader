@@ -7,6 +7,7 @@ for audit and deterministic projection checks in later phases.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -27,7 +28,11 @@ class FieldQualityState(str, Enum):
 
 
 def _frozen_mapping(values: Mapping[str, FieldValue]) -> Mapping[str, FieldValue]:
-    return MappingProxyType(dict(values))
+    normalized = dict(sorted(values.items()))
+    for name, value in normalized.items():
+        if not name or value.name != name:
+            raise ValueError("field mapping keys must match non-empty field names")
+    return MappingProxyType(normalized)
 
 
 @dataclass(frozen=True)
@@ -47,10 +52,26 @@ class FieldValue:
             raise ValueError("field name must not be empty")
         if not self.source:
             raise ValueError("field source must not be empty")
-        if self.source_time.tzinfo is None or self.source_time.utcoffset() is None:
-            raise ValueError("field source_time must be timezone-aware")
-        if self.received_time.tzinfo is None or self.received_time.utcoffset() is None:
-            raise ValueError("field received_time must be timezone-aware")
+        if not self.data_version:
+            raise ValueError("field data_version must not be empty")
+        if not self.payload_hash:
+            raise ValueError("field payload_hash must not be empty")
+        _validate_field_times(self.source_time, self.received_time)
+        if isinstance(self.value, float) and not math.isfinite(self.value):
+            raise ValueError("field value must be finite when present")
+        if self.quality is FieldQualityState.MISSING and self.value is not None:
+            raise ValueError("missing field quality requires a null value")
+        if self.conflict_count < 0:
+            raise ValueError("field conflict_count cannot be negative")
+
+
+def _validate_field_times(source_time: datetime, received_time: datetime) -> None:
+    if source_time.tzinfo is None or source_time.utcoffset() is None:
+        raise ValueError("field source_time must be timezone-aware")
+    if received_time.tzinfo is None or received_time.utcoffset() is None:
+        raise ValueError("field received_time must be timezone-aware")
+    if received_time < source_time:
+        raise ValueError("field received_time cannot precede source_time")
 
 
 @dataclass(frozen=True)
@@ -68,6 +89,10 @@ class SecurityMaster:
     rule_version: FieldValue | None = None
     rule_effective_date: FieldValue | None = None
     extended: Mapping[str, FieldValue] = field(default_factory=lambda: _frozen_mapping({}))
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "extended", _frozen_mapping(self.extended))
+        self.values()
 
     def values(self) -> Mapping[str, FieldValue]:
         return _frozen_mapping(
@@ -116,6 +141,10 @@ class RealtimeQuote:
     has_major_regulatory_risk: FieldValue | None = None
     extended: Mapping[str, FieldValue] = field(default_factory=lambda: _frozen_mapping({}))
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "extended", _frozen_mapping(self.extended))
+        self.values()
+
     def values(self) -> Mapping[str, FieldValue]:
         return _frozen_mapping(
             {
@@ -151,15 +180,24 @@ class RealtimeQuote:
 class HistoricalFeature:
     values: Mapping[str, FieldValue] = field(default_factory=lambda: _frozen_mapping({}))
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "values", _frozen_mapping(self.values))
+
 
 @dataclass(frozen=True)
 class IntradayFeature:
     values: Mapping[str, FieldValue] = field(default_factory=lambda: _frozen_mapping({}))
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "values", _frozen_mapping(self.values))
+
 
 @dataclass(frozen=True)
 class RiskEvidence:
     values: Mapping[str, FieldValue] = field(default_factory=lambda: _frozen_mapping({}))
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "values", _frozen_mapping(self.values))
 
 
 __all__ = [

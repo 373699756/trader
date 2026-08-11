@@ -26,8 +26,6 @@ class DataPlaneRecord:
     def __post_init__(self) -> None:
         if len(self.code) != 6 or not self.code.isdigit():
             raise ValueError("security code must be six digits")
-        if not self.code:
-            raise ValueError("security code cannot be empty")
         if not self.source:
             raise ValueError("source cannot be empty")
         if not self.data_version:
@@ -42,6 +40,8 @@ class DataPlaneRecord:
             raise ValueError("payload_hash must be a sha256 hex string when provided")
         if not isinstance(self.payload, dict):
             raise ValueError("payload must be an object")
+        if not self.payload:
+            raise ValueError("data-plane payload must not be empty")
         # Persisted payload should be immutable at write boundary.
         object.__setattr__(self, "payload", freeze_json_object(self.payload))
 
@@ -112,6 +112,36 @@ class SourceCursorRecord:
             raise ValueError("cursor_value must not be empty")
 
 
+@dataclass(frozen=True, kw_only=True)
+class TradingCalendarRecord:
+    """Versioned A-share trading-session calendar snapshot."""
+
+    calendar_name: str
+    observed_at: datetime
+    source: str
+    source_time: datetime
+    data_version: str
+    payload: JsonObject
+    payload_hash: str = ""
+    schema_version: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.calendar_name.strip():
+            raise ValueError("calendar_name must not be empty")
+        if not self.source.strip() or not self.data_version.strip():
+            raise ValueError("calendar source and data version must not be empty")
+        for name, value in (("observed_at", self.observed_at), ("source_time", self.source_time)):
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError(f"calendar {name} must be timezone-aware")
+        if self.observed_at < self.source_time:
+            raise ValueError("calendar observed_at cannot be before source_time")
+        if self.payload_hash and len(self.payload_hash) != 64:
+            raise ValueError("calendar payload_hash must be a sha256 hex string when provided")
+        if not isinstance(self.payload, dict) or not self.payload:
+            raise ValueError("calendar payload must be a non-empty object")
+        object.__setattr__(self, "payload", freeze_json_object(self.payload))
+
+
 class SecurityMasterRepositoryPort(Protocol):
     def save_recent(self, record: SecurityMasterRecord) -> None: ...
 
@@ -157,6 +187,16 @@ class SourceCursorRepositoryPort(Protocol):
     def load_formal(self, freeze_id: str, cursor_name: str) -> SourceCursorRecord | None: ...
 
 
+class TradingCalendarRepositoryPort(Protocol):
+    def save_recent(self, record: TradingCalendarRecord) -> None: ...
+
+    def load_recent(self, calendar_name: str) -> TradingCalendarRecord | None: ...
+
+    def save_formal(self, freeze_id: str, record: TradingCalendarRecord) -> None: ...
+
+    def load_formal(self, freeze_id: str, calendar_name: str) -> TradingCalendarRecord | None: ...
+
+
 class DataPlaneRepositoryError(RuntimeError):
     """Base failure for V2 data-plane persistence."""
 
@@ -194,6 +234,10 @@ class DataPlaneWriterPort(Protocol):
     def save_source_cursor_recent(self, record: SourceCursorRecord) -> None: ...
 
     def save_source_cursor_formal(self, freeze_id: str, record: SourceCursorRecord) -> None: ...
+
+    def save_trading_calendar_recent(self, record: TradingCalendarRecord) -> None: ...
+
+    def save_trading_calendar_formal(self, freeze_id: str, record: TradingCalendarRecord) -> None: ...
 
     def recover(self) -> DataPlaneRecoverySummary: ...
 
@@ -261,6 +305,25 @@ class DataPlaneReaderPort(Protocol):
         cursor_names: Sequence[str] | None = None,
     ) -> tuple[SourceCursorRecord, ...]: ...
 
+    def load_trading_calendar_recent(self, calendar_name: str) -> TradingCalendarRecord | None: ...
+
+    def load_trading_calendar_recent_records(
+        self,
+        calendar_names: Sequence[str] | None = None,
+    ) -> tuple[TradingCalendarRecord, ...]: ...
+
+    def load_trading_calendar_formal(
+        self,
+        freeze_id: str,
+        calendar_name: str,
+    ) -> TradingCalendarRecord | None: ...
+
+    def load_trading_calendar_formal_records(
+        self,
+        freeze_id: str,
+        calendar_names: Sequence[str] | None = None,
+    ) -> tuple[TradingCalendarRecord, ...]: ...
+
 
 class DataPlanePorts(DataPlaneWriterPort, DataPlaneReaderPort, Protocol):
     """Read/write port pair for the V2 data-plane repository."""
@@ -271,6 +334,7 @@ __all__ = [
     "RiskEvidenceRecord",
     "SecurityMasterRecord",
     "SourceCursorRecord",
+    "TradingCalendarRecord",
     "DataPlaneRecord",
     "DataPlanePorts",
     "DataPlaneConflictError",
@@ -279,6 +343,7 @@ __all__ = [
     "HistoricalFeatureRepositoryPort",
     "RiskEvidenceRepositoryPort",
     "SourceCursorRepositoryPort",
+    "TradingCalendarRepositoryPort",
     "DataPlaneUnavailableError",
     "DataPlaneRecoverySummary",
     "DataPlaneReaderPort",

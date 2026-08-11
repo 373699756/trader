@@ -5,7 +5,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from trader.domain.market.quality import FieldQualityState
+import pytest
+
+from trader.domain.market.quality import FieldQualityState, FieldValue, HistoricalFeature, SecurityMaster
 from trader.infra.market_data.field_quality import (
     BOARD_FIELDS,
     REALTIME_FIELDS,
@@ -36,7 +38,7 @@ def _observation(
         data_version="v1",
         fields={"price": value, "name": "测试股份"},
         missing_reasons={},
-        payload_hash=payload_hash,
+        payload_hash=_payload_hash(payload_hash),
         status="success",
         error_code=None,
     )
@@ -124,6 +126,29 @@ def test_time_rollback_is_rejected_per_source() -> None:
     assert second.values["price"] == 10.1
 
 
+def test_newer_missing_field_cannot_clear_an_older_complete_fact() -> None:
+    complete = _observation("eastmoney", payload_hash="a", value=10.1)
+    missing = SourceObservation(
+        source="eastmoney",
+        subject_key="600001",
+        observed_at=OBSERVED_AT + timedelta(seconds=1),
+        source_time=OBSERVED_AT + timedelta(seconds=1),
+        received_at=OBSERVED_AT + timedelta(seconds=1),
+        effective_at=OBSERVED_AT + timedelta(seconds=1),
+        data_version="v2",
+        fields={"price": None, "name": "测试股份"},
+        missing_reasons={"price": "source_missing"},
+        payload_hash="b" * 64,
+        status="success",
+        error_code=None,
+    )
+
+    selected = select_fields((complete, missing), targeted=False)
+
+    assert selected.values["price"] == 10.1
+    assert selected.field_values["price"].data_version == "v1"
+
+
 def test_field_selection_blocks_disallowed_source_for_realtime_field() -> None:
     blocked = _observation("invalid-source", payload_hash="a", value=8.8)
     winner = _observation("eastmoney", payload_hash="b", value=10.1)
@@ -155,3 +180,56 @@ def test_conflict_state_is_exposed_when_value_disagrees() -> None:
     assert selected.values["price"] in (10.1, 10.2)
     assert selected.quality["price"] == FieldQualityState.CONFLICTING
     assert selected.field_values["price"].quality == FieldQualityState.CONFLICTING
+    assert selected.field_values["price"].conflict_count == 1
+
+
+def test_field_values_validate_identity_time_order_and_missing_state() -> None:
+    with pytest.raises(ValueError, match="data_version"):
+        _field_value("price", 10.0, data_version="")
+    with pytest.raises(ValueError, match="payload_hash"):
+        _field_value("price", 10.0, payload_hash="")
+    with pytest.raises(ValueError, match="cannot precede"):
+        _field_value("price", 10.0, received_time=OBSERVED_AT - timedelta(seconds=1))
+    with pytest.raises(ValueError, match="missing field"):
+        _field_value("price", 10.0, quality=FieldQualityState.MISSING)
+
+
+def test_quality_value_collections_are_deeply_immutable() -> None:
+    field = _field_value("ma20", 9.5)
+    values = {"ma20": field}
+    historical = HistoricalFeature(values=values)
+    master = SecurityMaster(extended={"issuer_status": _field_value("issuer_status", "listed")})
+    values.clear()
+
+    assert historical.values["ma20"] == field
+    assert master.values()["issuer_status"].value == "listed"
+    with pytest.raises(TypeError):
+        historical.values["ma20"] = field  # type: ignore[index]
+    with pytest.raises(TypeError):
+        master.extended["issuer_status"] = field  # type: ignore[index]
+
+
+def _field_value(
+    name: str,
+    value: JsonScalar,
+    *,
+    data_version: str = "v1",
+    payload_hash: str = "a" * 64,
+    received_time: datetime = OBSERVED_AT,
+    quality: FieldQualityState = FieldQualityState.VALID,
+) -> FieldValue:
+    return FieldValue(
+        name=name,
+        value=value,
+        source="eastmoney",
+        source_time=OBSERVED_AT,
+        received_time=received_time,
+        data_version=data_version,
+        payload_hash=payload_hash,
+        quality=quality,
+    )
+
+
+def _payload_hash(token: str) -> str:
+    rank = {"older": "0", "a": "a", "b": "b", "same": "c", "z": "f"}.get(token, token)
+    return rank * 64 if len(rank) == 1 else rank

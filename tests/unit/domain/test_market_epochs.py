@@ -67,6 +67,8 @@ def _daily_pack(sequence: int = 1) -> DailyFeaturePack:
                 values={"ma20": 9.5, "atr20": 0.4},
                 history_sessions=61,
                 data_as_of=date(2026, 7, 27),
+                security_master_version="master-v1",
+                history_version="history-v1",
             ),
         ),
         source_versions={"tencent_qfq": "history-v1"},
@@ -88,12 +90,16 @@ def test_daily_feature_pack_is_deeply_immutable_and_hashes_canonical_content() -
                 values={"ma20": 8.0},
                 history_sessions=61,
                 data_as_of=date(2026, 7, 27),
+                security_master_version="master-v1",
+                history_version="history-v1",
             ),
             DailyFeatureRow(
                 code="600001",
                 values=values,
                 history_sessions=61,
                 data_as_of=date(2026, 7, 27),
+                security_master_version="master-v1",
+                history_version="history-v1",
             ),
         ),
         source_versions=sources,
@@ -118,6 +124,17 @@ def test_daily_feature_pack_is_deeply_immutable_and_hashes_canonical_content() -
     assert first.version == second.version
     with pytest.raises(TypeError):
         first.rows[0].values["ma20"] = 1.0  # type: ignore[index]
+
+    changed_provenance = DailyFeaturePack(
+        trade_date=first.trade_date,
+        sequence=first.sequence,
+        observed_at=first.observed_at,
+        received_at=first.received_at,
+        config_version=first.config_version,
+        rows=(replace(first.rows[0], history_version="history-v2"), first.rows[1]),
+        source_versions=first.source_versions,
+    )
+    assert changed_provenance.content_hash != first.content_hash
 
 
 @pytest.mark.parametrize(
@@ -215,11 +232,13 @@ def test_market_and_candidate_epochs_bind_parent_versions_and_reject_invalid_quo
             ),
         ),
         source_versions={"tencent": "candidate-v1"},
+        requested_codes=("600001",),
     )
 
     assert market.daily_feature_pack_version == pack.version
     assert market.market_regime == "neutral"
     assert candidate.market_epoch_version == market.version
+    assert candidate.requested_codes == ("600001",)
     assert candidate.feature_rows[0].values["tail_return_30m"] == 72.0
     assert len(market.content_hash) == 64
     assert len(candidate.content_hash) == 64
@@ -284,6 +303,19 @@ def test_market_and_candidate_epochs_bind_parent_versions_and_reject_invalid_quo
             config_version="runtime-v2",
             market_epoch_version=market.version,
             quotes=(replace(candidate.quotes[0], cross_source_verified=False),),
+            source_versions={"tencent": "candidate-v2"},
+        )
+
+    with pytest.raises(ValueError, match="requested_codes"):
+        CandidateQuoteEpoch(
+            trade_date=market.trade_date,
+            sequence=2,
+            observed_at=OBSERVED_AT,
+            received_at=RECEIVED_AT,
+            config_version="runtime-v2",
+            market_epoch_version=market.version,
+            quotes=candidate.quotes,
+            requested_codes=("600002",),
             source_versions={"tencent": "candidate-v2"},
         )
 

@@ -15,6 +15,7 @@ from trader.application.ports.data_plane import (
     RiskEvidenceRecord,
     SecurityMasterRecord,
     SourceCursorRecord,
+    TradingCalendarRecord,
 )
 from trader.application.ports.types import JsonObject
 from trader.infra.persistence import data_plane_sqlite
@@ -31,6 +32,8 @@ def test_recent_records_for_all_families_round_trip(tmp_path: Path) -> None:
     repository.save_historical_feature_recent(_historical_feature_record("600001", payload={"field": "hf"}))
     repository.save_risk_evidence_recent(_risk_evidence_record("600001", "r1"))
     repository.save_source_cursor_recent(_source_cursor_record("cursor-1"))
+    repository.save_trading_calendar_recent(_trading_calendar_record())
+    repository.save_trading_calendar_formal("calendar-freeze-1", _trading_calendar_record())
 
     assert repository.load_security_master_recent("600001") == _security_master_record(
         "600001", payload={"field": "sm"}
@@ -40,6 +43,50 @@ def test_recent_records_for_all_families_round_trip(tmp_path: Path) -> None:
     )
     assert repository.load_risk_evidence_recent("600001", "r1") == _risk_evidence_record("600001", "r1")
     assert repository.load_source_cursor_recent("cursor-1") == _source_cursor_record("cursor-1")
+    assert repository.load_trading_calendar_recent("sse_szse") == _trading_calendar_record()
+    assert repository.load_trading_calendar_formal("calendar-freeze-1", "sse_szse") == _trading_calendar_record()
+
+
+def test_recent_records_preserve_newer_content_and_reject_same_time_conflicts(tmp_path: Path) -> None:
+    repository = DataPlaneRepository(tmp_path)
+    current = _security_master_record(
+        "600001",
+        observed_at=_timestamp(10, 0),
+        payload={"board": "main", "exchange": "sse"},
+    )
+    repository.save_security_master_recent(current)
+
+    repository.save_security_master_recent(
+        _security_master_record(
+            "600001",
+            observed_at=_timestamp(9, 59),
+            payload={"board": "unsupported"},
+        )
+    )
+
+    assert repository.load_security_master_recent("600001") == current
+    with pytest.raises(DataPlaneConflictError, match="recent save conflicts"):
+        repository.save_security_master_recent(
+            _security_master_record(
+                "600001",
+                observed_at=_timestamp(10, 0),
+                payload={"board": "chinext", "exchange": "szse"},
+            )
+        )
+    with pytest.raises(DataPlaneConflictError, match="recent save conflicts"):
+        repository.save_security_master_recent(
+            _security_master_record(
+                "600001",
+                observed_at=_timestamp(10, 0),
+                data_version="v2",
+                payload={"board": "main", "exchange": "sse"},
+            )
+        )
+
+
+def test_persisted_data_plane_rejects_invalid_empty_facts() -> None:
+    with pytest.raises(ValueError, match="payload must not be empty"):
+        _security_master_record("600001", payload={})
 
 
 def test_formal_records_are_idempotent_for_same_payload_and_conflict_on_different_payload(tmp_path: Path) -> None:
@@ -48,11 +95,30 @@ def test_formal_records_are_idempotent_for_same_payload_and_conflict_on_differen
     record = _security_master_record("600002", payload={"field": "formal"})
 
     repository.save_security_master_formal("freeze-2026-07-30", record)
+    with data_plane_sqlite.connection_scope(_database_path(tmp_path)) as connection:
+        connection.execute(
+            "UPDATE security_master_formal SET status = 'staged' WHERE freeze_id = ? AND code = ?",
+            ("freeze-2026-07-30", "600002"),
+        )
+    repository.save_security_master_formal("freeze-2026-07-30", record)
+    with data_plane_sqlite.connection_scope(_database_path(tmp_path)) as connection:
+        retried = connection.execute(
+            "SELECT status FROM security_master_formal WHERE freeze_id = ? AND code = ?",
+            ("freeze-2026-07-30", "600002"),
+        ).fetchone()
+
+    assert retried is not None
+    assert str(retried["status"]) == "committed"
     repository.save_security_master_formal("freeze-2026-07-30", record)
 
     with pytest.raises(DataPlaneConflictError, match="formal save conflicts"):
         repository.save_security_master_formal(
             "freeze-2026-07-30", _security_master_record("600002", payload={"field": "changed"})
+        )
+    with pytest.raises(DataPlaneConflictError, match="formal save conflicts"):
+        repository.save_security_master_formal(
+            "freeze-2026-07-30",
+            _security_master_record("600002", data_version="v2", payload={"field": "formal"}),
         )
 
 
@@ -148,15 +214,17 @@ def _insert_staged_source_cursor_row(database: Path, *, cursor_name: str, payloa
 def _security_master_record(
     code: str,
     *,
+    observed_at: datetime | None = None,
+    data_version: str = "v1",
     payload: JsonObject | None = None,
 ) -> SecurityMasterRecord:
-    payload_data = payload or {"code": code}
+    payload_data = {"code": code} if payload is None else payload
     return SecurityMasterRecord(
         code=code,
-        observed_at=_timestamp(9, 30),
+        observed_at=observed_at or _timestamp(9, 30),
         source_time=_timestamp(9, 29),
         source="unit",
-        data_version="v1",
+        data_version=data_version,
         payload=payload_data,
         payload_hash=_payload_hash(payload_data),
         schema_version="v2_data_plane_v1",
@@ -209,6 +277,23 @@ def _source_cursor_record(cursor_name: str, *, payload: JsonObject | None = None
         data_version="v1",
         payload=payload_data,
         payload_hash=_payload_hash(payload_data),
+        schema_version="v2_data_plane_v1",
+    )
+
+
+def _trading_calendar_record() -> TradingCalendarRecord:
+    payload: JsonObject = {
+        "sessions": ["2026-07-30", "2026-07-31"],
+        "timezone": "Asia/Shanghai",
+    }
+    return TradingCalendarRecord(
+        calendar_name="sse_szse",
+        observed_at=_timestamp(9, 30),
+        source_time=_timestamp(9, 29),
+        source="exchange_calendar",
+        data_version="calendar-v1",
+        payload=payload,
+        payload_hash=_payload_hash(payload),
         schema_version="v2_data_plane_v1",
     )
 
