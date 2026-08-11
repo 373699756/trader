@@ -51,7 +51,7 @@ def test_domain_has_no_io_framework_imports() -> None:
 
 def test_domain_is_partitioned_by_business_capability_without_legacy_paths() -> None:
     domain = SOURCE_ROOT / "domain"
-    capability_packages = {"market", "recommendation", "review", "outcome"}
+    capability_packages = {"market", "recommendation", "research", "review", "outcome"}
     retired_modules = {
         "board_scoring.py",
         "board_scoring_calculations.py",

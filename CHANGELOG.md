@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求解释并把 `codex/v2-g1-e1`、`codex/score-g1-r2` 两个 Gate G1 worker 分支合并到
+  `feature/tomorrow-v2`。本批按冻结顺序先集成 E1 统一数据平面，再集成 R2 接口适配设计；
+  R2 的历史读取扩展显式继承 E1 唯一 `DataPlaneReadPort`，只冻结日摘要与按代码完整字段的
+  两阶段 schema，不接管生产链，也不把尚未实现的 40 日提取器提前标记完成。
+
 - 用户要求由 `implementation-plan.md` 会话 C 继续下一个未完成工程章节。本批完整收口
   V2-E1“统一 V2 数据平面”：应用层只读边界统一命名为 `DataPlaneReadPort`，四类不可变
   epoch 现在把父版本、交易日历版本、逐字段来源/源时间/接收时间/质量/内容版本/载荷哈希
@@ -37,6 +42,11 @@ All notable changes to this project are documented here.
   配对移动区块 bootstrap、派生种子、Holm 检验族、五个挑战者和全部收益/回撤/召回/集中度门禁。
 
 ### Fixed
+
+- 修正两个并行 worker 基于共同基线开发后形成两个同名但方法不同的 `DataPlaneReadPort`
+  协议风险；研究侧现使用明确命名的历史扩展并继承 E1 规范端口，保持唯一数据平面边界。
+  同时修正完整字段请求代码校验会接受乱序输入的问题，现严格拒绝非排序或重复请求，避免
+  相同代码集合因调用顺序形成不稳定身份。
 
 - 修正交易日历持久化只保存增量游标和当批计数、重启后无法恢复实际 session 集合的问题；
   当前按日期累计保存开放状态、交易所和前交易日，恢复后重新注入参考数据网关，失败/空批次
@@ -88,6 +98,13 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- Gate G1 合并后的研究领域、两阶段历史端口、唯一数据平面定义、点时截止、三板覆盖、共享
+  复权窗口、架构分区和总计划契约定向回归通过。最终 `make format-check`、`make lint`、
+  `make type-check`、`make test` 和 `make package` 全部通过；严格复杂度债务为零，mypy 检查
+  237 个源码文件，完整 pytest 仅保留 10 条既有未知 DeepSeek 测试模型告警和 2 条 Python
+  SQLite adapter 弃用告警。最终 wheel 从仓库外环境导入新增 application/domain research
+  模块，`trader-cli --help`、绝对配置 `validate-config`、9 项模板/静态资源和 `pip check` 通过。
+
 - V2-E1 契约、epoch 领域、原子数据平面、tomorrow 只读用例、字段合并、SQLite 数据平面及
   全量市场数据组件定向回归共 205 项通过；覆盖父版本一致性、字段血缘匹配、100%/99% 覆盖
   门禁、无效空拒绝、失败保留、累计日历恢复、20 根原始 bars 加 60 日紧凑摘要恢复，以及
@@ -129,6 +146,10 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- Gate G1 只完成 E1 数据平面与 Score-R2 接口适配设计；最多 40 日点时提取、Top120 乐观
+  上界保护、Polars 不可变分区和可复算 manifest 仍按 G2 的 Score-R2 整节实施。本批没有
+  生产接线、外部行情请求、DeepSeek 请求或收益提升结论。
+
 - V2-E1 仍是旁路数据平面基础，不接管当前生产 P1-P6、冻结、API 或 Web；统一决策持久化、
   调度生命周期和各策略正式接管分别属于 V2-E2 及后续章节。交易所、mootdx 和 BaoStock
   仍未准入；CNInfo 只允许离线风险登记簿。120 日/20GB 长期压缩审计仍是文档约束，尚未实现
@@ -150,6 +171,11 @@ All notable changes to this project are documented here.
   点时数据或后续回放/统计，因此没有收益提升结论。固定前向窗口尚未发生，能否取得 20 个
   连续有效日取决于届时数据与运行连续性；任一门禁不足时继续使用当前生产策略。
 ### Added
+
+- 新增 Score-R2 研究专用不可变接口值：逐字段来源与内容哈希、候选/最终组件、日摘要、
+  硬拒绝聚合、三板点时覆盖、完整候选字段、日线/分钟、共享复权因子窗口及成本结算证据；
+  边界拒绝未来输入、非上海时区、覆盖缺口、代码错配和同键异内容。架构契约同步登记
+  `domain/research` 为独立纯领域能力包，继续禁止已退役的扁平旧研究模块。
 
 - 新增 `DataPlaneCoverage`、逐字段 `FieldValue` epoch 血缘门禁和 V2-E1 反向契约测试；新增
   实际交易日历集合与紧凑历史摘要的持久化/恢复回归，使同一只读快照能够证明数据身份、覆盖

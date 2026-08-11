@@ -46,3 +46,13 @@ def test_data_plane_read_port_is_application_owned_and_infrastructure_free() -> 
 
     assert "DataPlaneReadPort" in classes
     assert all(not name.startswith(("trader.infra", "flask", "stock_analyzer")) for name in imports)
+
+
+def test_data_plane_read_port_has_one_canonical_definition() -> None:
+    definitions: list[Path] = []
+    for path in (ROOT / "src" / "trader").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        if any(isinstance(node, ast.ClassDef) and node.name == "DataPlaneReadPort" for node in tree.body):
+            definitions.append(path)
+
+    assert definitions == [MARKET_PORT]
