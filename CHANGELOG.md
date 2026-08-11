@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求由 `implementation-plan.md` 会话 C 继续下一个未完成工程章节。本批完整收口
+  V2-E1“统一 V2 数据平面”：应用层只读边界统一命名为 `DataPlaneReadPort`，四类不可变
+  epoch 现在把父版本、交易日历版本、逐字段来源/源时间/接收时间/质量/内容版本/载荷哈希
+  纳入校验与内容身份；计划状态推进到 V2-E2。权威产品和策略文档同步锁定证券主数据 100%
+  覆盖、候选核心历史不低于 99% 及无效空输入不得覆盖最近有效快照。
+
 - 用户要求把 `docs/V2_plan.md` 与 `docs/score.md` 合并为可供多个 Codex 会话同步施工的唯一
   总计划。本批把 V2 工程和评分研究统一为 `docs/implementation-plan.md` 的 V2-E/Score-R
   双 lane，固定协调集成会话 C、V2 工程会话 E、评分研究会话 R 的分支、worktree、文件
@@ -30,6 +36,14 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修正交易日历持久化只保存增量游标和当批计数、重启后无法恢复实际 session 集合的问题；
+  当前按日期累计保存开放状态、交易所和前交易日，恢复后重新注入参考数据网关，失败/空批次
+  不推进游标。修正历史缓存只落原始 bars、无法恢复紧凑长窗口摘要的问题；最新 bar 现在携带
+  经 JSON 冻结的 `HistoryContext`，恢复时先校验摘要，缺失或损坏才从可用原始窗口重算。
+- 修正嵌套不可变 JSON 载荷写入 SQLite 时仍含 `MappingProxyType` 而不可序列化的问题；持久化
+  边界现在递归 thaw 映射与序列。补充价格-only 更新不得清空名称等更丰富字段的回归，并将
+  CNInfo 能力基线从过期的“完全未接入”改为仅准入离线风险登记簿的真实现状。
+
 - 修正两份活动计划各自维护阶段状态、共享文件边界和执行顺序，导致多会话可能在组合根、
   权威文档、Changelog 与跨 lane 接口上并发冲突的问题。总计划现在规定每波统一
   `BASE_SHA`、独立 worktree/runtime、Gate 独占文件、接口哈希与临时组合树验证；文本冲突
@@ -52,6 +66,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除应用层旧协议名 `RealtimeDataPlaneReaderPort`，统一使用契约规定的
+  `DataPlaneReadPort`；未移除或接管旧生产 Pipeline、Web、冻结或评分链路，这些仍按后续
+  V2-E2 至 V2-E10 的独立章节执行。
+
 - 删除已被总计划完整吸收的 `docs/V2_plan.md` 与 `docs/score.md` 活动入口，并同步产品概览、
   权威设计、阶段报告和契约测试引用；历史 Changelog 仍保留原文件名作为当时交付证据。
 
@@ -65,6 +83,18 @@ All notable changes to this project are documented here.
   历史有效日加固定 20 日前向窗口，且失败日不得被其它盈利日期替换。
 
 ### Verification
+
+- V2-E1 契约、epoch 领域、原子数据平面、tomorrow 只读用例、字段合并、SQLite 数据平面及
+  全量市场数据组件定向回归共 205 项通过；覆盖父版本一致性、字段血缘匹配、100%/99% 覆盖
+  门禁、无效空拒绝、失败保留、累计日历恢复、20 根原始 bars 加 60 日紧凑摘要恢复，以及
+  未准入来源隔离。最终 `make format-check`、`make lint`、`make type-check`、`make test` 和
+  `make package` 全部通过；严格复杂度债务为零，mypy 检查 231 个源码文件，完整 pytest 仅
+  保留 10 条既有未知 DeepSeek 测试模型告警和 2 条 Python SQLite adapter 弃用告警。
+- 最终 wheel 从仓库外 `/tmp` 目标目录导入，新增日历状态模块来源确认在安装目录；
+  `trader-cli --help`、绝对路径 `validate-config`、9 项模板/CSS/JavaScript/SVG 资源和
+  `pip check` 通过。真实 Firefox/geckodriver 在 1280x720、1440x900、1920x1080 对旧看板、
+  long 和 tomorrow V2 均无白屏、页面级横向溢出或浏览器错误；tomorrow 三档截图有效，旧
+  看板 25 个 patch 全部应用、零 resync/外部网络调用，patch-to-paint P95 为 30ms。
 
 - 总计划合并批次运行计划/项目记录/V2-only/来源准入契约测试，检查活动文档无旧计划引用，
   并运行完整 format、Ruff、mypy、pytest、package 及仓库外 wheel 资源/CLI 验收。
@@ -95,6 +125,11 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- V2-E1 仍是旁路数据平面基础，不接管当前生产 P1-P6、冻结、API 或 Web；统一决策持久化、
+  调度生命周期和各策略正式接管分别属于 V2-E2 及后续章节。交易所、mootdx 和 BaoStock
+  仍未准入；CNInfo 只允许离线风险登记簿。120 日/20GB 长期压缩审计仍是文档约束，尚未实现
+  归档与容量驱逐，因此本批不宣称 V2-only 发布完成。
+
 - 本批只统一施工治理，不实现 V2-E1 或 Score-R2，也不改变生产运行；计划能减少文件级冲突，
   但语义冲突仍需协调会话按冻结接口、权威契约和临时组合树门禁拒绝或退回。历史报告中的
   P0/P1 名称作为已发生批次标签保留，并映射到当前 V2-E 章节。
@@ -111,6 +146,10 @@ All notable changes to this project are documented here.
   点时数据或后续回放/统计，因此没有收益提升结论。固定前向窗口尚未发生，能否取得 20 个
   连续有效日取决于届时数据与运行连续性；任一门禁不足时继续使用当前生产策略。
 ### Added
+
+- 新增 `DataPlaneCoverage`、逐字段 `FieldValue` epoch 血缘门禁和 V2-E1 反向契约测试；新增
+  实际交易日历集合与紧凑历史摘要的持久化/恢复回归，使同一只读快照能够证明数据身份、覆盖
+  和恢复来源，而不是仅依赖游标、行数或供应商对象。
 
 - 新增 `docs/implementation-plan.md`，作为唯一活动施工计划，完整定义 V2-only 迁移、评分研究、
   多 Codex 并行隔离、跨 lane 事件接口、Gate、测试矩阵和逐章提交推送协议。

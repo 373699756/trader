@@ -1,0 +1,48 @@
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+PLAN = ROOT / "docs" / "implementation-plan.md"
+DESIGN = ROOT / "docs" / "software-business-design.md"
+STRATEGY = ROOT / "docs" / "recommendation-strategy.md"
+MARKET_PORT = ROOT / "src" / "trader" / "application" / "ports" / "market.py"
+
+
+def test_v2_e1_is_complete_and_e2_is_the_next_engineering_section() -> None:
+    plan = PLAN.read_text(encoding="utf-8")
+
+    assert "V2-E0、V2-E1、Score-R0、Score-R1 已完成" in plan
+    assert "下一工程章节为 V2-E2" in plan
+    assert "### V2-E1：统一 V2 数据平面（已完成）" in plan
+
+
+def test_authoritative_contract_freezes_data_plane_port_lineage_and_coverage() -> None:
+    design = DESIGN.read_text(encoding="utf-8")
+    strategy = STRATEGY.read_text(encoding="utf-8")
+
+    for token in (
+        "DataPlaneReadPort",
+        "valid/degraded/stale/missing/conflicting",
+        "潜在可执行代码必须 100%",
+        "覆盖率不得低于 99%",
+        "游标只能作为增量位置，不能代替实际交易日历内容",
+    ):
+        assert token in design
+    assert "只通过应用层 `DataPlaneReadPort` 读取" in strategy
+    assert "证券主数据覆盖为 100%" in strategy
+
+
+def test_data_plane_read_port_is_application_owned_and_infrastructure_free() -> None:
+    tree = ast.parse(MARKET_PORT.read_text(encoding="utf-8"))
+    classes = {node.name for node in tree.body if isinstance(node, ast.ClassDef)}
+    imports: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imports.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imports.append(node.module)
+
+    assert "DataPlaneReadPort" in classes
+    assert all(not name.startswith(("trader.infra", "flask", "stock_analyzer")) for name in imports)

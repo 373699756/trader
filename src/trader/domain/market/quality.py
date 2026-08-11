@@ -7,6 +7,7 @@ for audit and deterministic projection checks in later phases.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -43,14 +44,39 @@ class FieldValue:
     conflict_count: int = 0
 
     def __post_init__(self) -> None:
-        if not self.name:
+        self._validate_identity()
+        self._validate_timestamps()
+        self._validate_content()
+
+    def _validate_identity(self) -> None:
+        if not self.name.strip():
             raise ValueError("field name must not be empty")
-        if not self.source:
+        if not self.source.strip():
             raise ValueError("field source must not be empty")
+
+    def _validate_timestamps(self) -> None:
         if self.source_time.tzinfo is None or self.source_time.utcoffset() is None:
             raise ValueError("field source_time must be timezone-aware")
         if self.received_time.tzinfo is None or self.received_time.utcoffset() is None:
             raise ValueError("field received_time must be timezone-aware")
+        if self.received_time < self.source_time:
+            raise ValueError("field received_time cannot precede source_time")
+
+    def _validate_content(self) -> None:
+        if not isinstance(self.quality, FieldQualityState):
+            raise TypeError("field quality must be a FieldQualityState")
+        if not self.data_version.strip():
+            raise ValueError("field data_version must not be empty")
+        if not self.payload_hash.strip():
+            raise ValueError("field payload_hash must not be empty")
+        if isinstance(self.value, float) and not math.isfinite(self.value):
+            raise ValueError("field value must be finite when numeric")
+        if not isinstance(self.conflict_count, int) or isinstance(self.conflict_count, bool):
+            raise TypeError("field conflict_count must be an integer")
+        if self.conflict_count < 0:
+            raise ValueError("field conflict_count cannot be negative")
+        if self.quality is FieldQualityState.MISSING and self.value is not None:
+            raise ValueError("missing field quality requires a null value")
 
 
 @dataclass(frozen=True)

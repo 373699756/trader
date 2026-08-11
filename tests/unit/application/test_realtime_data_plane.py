@@ -6,6 +6,13 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from tests.unit.v2_epoch_helpers import (
+    candidate_field_values,
+    coverage,
+    daily_field_values,
+    market_field_values,
+    research_field_values,
+)
 from trader.application.realtime_data_plane import DataPlaneChannel, RealtimeDataPlane
 from trader.domain.market.epochs import (
     CandidateQuoteEpoch,
@@ -22,21 +29,32 @@ NOW = datetime(2026, 7, 28, 10, 0, tzinfo=SHANGHAI)
 
 
 def _pack(sequence: int) -> DailyFeaturePack:
+    observed_at = NOW + timedelta(seconds=sequence)
+    received_at = observed_at + timedelta(milliseconds=100)
+    values = {"ma20": 9.5 + sequence / 100}
     return DailyFeaturePack(
         trade_date=NOW.date(),
         sequence=sequence,
-        observed_at=NOW + timedelta(seconds=sequence),
-        received_at=NOW + timedelta(seconds=sequence, milliseconds=100),
+        observed_at=observed_at,
+        received_at=received_at,
         config_version="runtime-v2",
+        calendar_version="calendar-v1",
         rows=(
             DailyFeatureRow(
                 code="600001",
-                values={"ma20": 9.5 + sequence / 100},
+                values=values,
                 history_sessions=61,
                 data_as_of=date(2026, 7, 27),
+                field_values=daily_field_values(
+                    values,
+                    source_time=NOW - timedelta(days=1),
+                    received_time=observed_at,
+                    data_version=f"history-{sequence}",
+                ),
             ),
         ),
         source_versions={"history": f"history-{sequence}"},
+        coverage=coverage(("600001",)),
     )
 
 
@@ -68,6 +86,7 @@ def _quote(sequence: int) -> MarketQuote:
 
 
 def _market(pack: DailyFeaturePack, sequence: int) -> MarketEpoch:
+    quote = _quote(sequence)
     return MarketEpoch(
         trade_date=pack.trade_date,
         sequence=sequence,
@@ -75,13 +94,25 @@ def _market(pack: DailyFeaturePack, sequence: int) -> MarketEpoch:
         received_at=NOW + timedelta(seconds=sequence, milliseconds=100),
         config_version="runtime-v2",
         daily_feature_pack_version=pack.version,
-        quotes=(_quote(sequence),),
+        quotes=(quote,),
         source_versions={"eastmoney": f"market-{sequence}"},
+        field_values={quote.code: market_field_values(quote)},
     )
 
 
 def _candidate(market: MarketEpoch, sequence: int) -> CandidateQuoteEpoch:
     observed_at = NOW + timedelta(seconds=sequence)
+    quote = LiveQuote(
+        code="600001",
+        price=10.1,
+        pct_change=3.0,
+        source="tencent",
+        source_time=observed_at,
+        received_time=observed_at + timedelta(milliseconds=100),
+        data_version=f"candidate-{sequence}",
+        cross_source_deviation_pct=0.2,
+        cross_source_verified=True,
+    )
     return CandidateQuoteEpoch(
         trade_date=market.trade_date,
         sequence=sequence,
@@ -89,32 +120,30 @@ def _candidate(market: MarketEpoch, sequence: int) -> CandidateQuoteEpoch:
         received_at=observed_at + timedelta(milliseconds=100),
         config_version="runtime-v2",
         market_epoch_version=market.version,
-        quotes=(
-            LiveQuote(
-                code="600001",
-                price=10.1,
-                pct_change=3.0,
-                source="tencent",
-                source_time=observed_at,
-                received_time=observed_at + timedelta(milliseconds=100),
-                data_version=f"candidate-{sequence}",
-                cross_source_deviation_pct=0.2,
-                cross_source_verified=True,
-            ),
-        ),
+        quotes=(quote,),
         source_versions={"tencent": f"candidate-{sequence}"},
+        field_values={quote.code: candidate_field_values(quote)},
     )
 
 
 def _research(sequence: int, *, config_version: str = "runtime-v2") -> ResearchEpoch:
+    observed_at = NOW + timedelta(seconds=sequence)
+    received_at = observed_at + timedelta(milliseconds=100)
     return ResearchEpoch(
         trade_date=NOW.date(),
         sequence=sequence,
-        observed_at=NOW + timedelta(seconds=sequence),
-        received_at=NOW + timedelta(seconds=sequence, milliseconds=100),
+        observed_at=observed_at,
+        received_at=received_at,
         config_version=config_version,
         observations={"600001": ResearchObservation(announcements_available=True)},
         source_versions={"issuer": f"research-{sequence}"},
+        field_values={
+            "600001": research_field_values(
+                source_time=observed_at,
+                received_time=received_at,
+                data_version=f"research-{sequence}",
+            )
+        },
     )
 
 
@@ -143,15 +172,22 @@ def test_data_plane_publishes_only_coherent_monotonic_epochs() -> None:
         observed_at=first_pack.observed_at,
         received_at=first_pack.received_at,
         config_version="runtime-v2",
+        calendar_version="calendar-v1",
         rows=(
             DailyFeatureRow(
                 code="600001",
                 values={"ma20": 99.0},
                 history_sessions=61,
                 data_as_of=date(2026, 7, 27),
+                field_values=daily_field_values(
+                    {"ma20": 99.0},
+                    source_time=NOW - timedelta(days=1),
+                    received_time=first_pack.observed_at,
+                ),
             ),
         ),
         source_versions=first_pack.source_versions,
+        coverage=coverage(("600001",)),
     )
     conflict = plane.publish_daily_features(conflicting_pack)
     assert conflict.accepted is False
@@ -208,6 +244,7 @@ def test_parent_and_child_epochs_must_use_the_same_config_version() -> None:
     plane = RealtimeDataPlane(retained_epochs_per_channel=3)
     pack = _pack(1)
     plane.publish_daily_features(pack)
+    quote = _quote(1)
     mismatched = MarketEpoch(
         trade_date=pack.trade_date,
         sequence=1,
@@ -215,8 +252,9 @@ def test_parent_and_child_epochs_must_use_the_same_config_version() -> None:
         received_at=NOW + timedelta(seconds=1, milliseconds=100),
         config_version="runtime-other",
         daily_feature_pack_version=pack.version,
-        quotes=(_quote(1),),
+        quotes=(quote,),
         source_versions={"eastmoney": "market-1"},
+        field_values={quote.code: market_field_values(quote)},
     )
 
     result = plane.publish_market(mismatched)

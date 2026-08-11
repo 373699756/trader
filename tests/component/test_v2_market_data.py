@@ -52,7 +52,7 @@ from trader.infra.market_data.calendar import ChinaTradingCalendar, TradingCalen
 from trader.infra.market_data.eastmoney import EastmoneyClient
 from trader.infra.market_data.features import FeatureBuilder
 from trader.infra.market_data.gateway import MarketDataGateway
-from trader.infra.market_data.history import DailyBar, HistoryAdjustmentError, PriceAdjustment
+from trader.infra.market_data.history import DailyBar, HistoryAdjustmentError, PriceAdjustment, build_history_context
 from trader.infra.market_data.history_seed import (
     FallbackHistoryClient,
 )
@@ -1136,7 +1136,24 @@ def test_reference_loader_recover_restores_security_master_and_calendar_cursor(t
             source_time=source_time,
             source="tushare",
             data_version="tushare-calendar-v1",
-            payload={"count": 2, "end_date": "2026-07-16"},
+            payload={
+                "count": 2,
+                "end_date": "2026-07-16",
+                "sessions": [
+                    {
+                        "calendar_date": "2026-07-15",
+                        "exchange": "SSE",
+                        "is_open": True,
+                        "pretrade_date": "2026-07-14",
+                    },
+                    {
+                        "calendar_date": "2026-07-16",
+                        "exchange": "SSE",
+                        "is_open": True,
+                        "pretrade_date": "2026-07-15",
+                    },
+                ],
+            },
             payload_hash="",
             schema_version="v2_data_plane_v1",
         )
@@ -1153,8 +1170,56 @@ def test_reference_loader_recover_restores_security_master_and_calendar_cursor(t
     assert service.references.recover() == DataPlaneRecoverySummary()
     assert gateway.reference_observations != []
     assert gateway.reference_observations[0][0].subject_key == "600001"
+    assert tuple(item.subject_key for item in gateway.reference_observations[1]) == ("2026-07-15", "2026-07-16")
+    assert all(item.fields["is_open"] is True for item in gateway.reference_observations[1])
     assert service.references._next_calendar_start(date(2026, 7, 10)) == date(2026, 7, 15)
     assert service.references._next_calendar_start(date(2026, 7, 20)) == date(2026, 7, 20)
+
+
+def test_reference_loader_persists_cumulative_calendar_sessions(tmp_path: Path) -> None:
+    observed_at = datetime(2026, 7, 16, 9, 30, tzinfo=_SHANGHAI)
+    data_plane = DataPlaneRepository(tmp_path)
+    service = _service(
+        StaticGateway(()),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        data_plane=data_plane,
+        wall_clock=lambda: observed_at,
+    )
+
+    def calendar_observation(calendar_date: str, *, status: str = "success") -> SourceObservation:
+        received_at = observed_at + timedelta(days=int(calendar_date[-2:]) - 15)
+        return SourceObservation(
+            source="tushare",
+            subject_key=calendar_date,
+            observed_at=received_at,
+            source_time=received_at,
+            received_at=received_at,
+            effective_at=received_at,
+            data_version=f"calendar-{calendar_date}",
+            fields={"calendar_date": calendar_date, "exchange": "SSE", "is_open": True},
+            missing_reasons={},
+            payload_hash=calendar_date,
+            status=status,
+            error_code=None if status == "success" else "fixture_failure",
+        )
+
+    first = calendar_observation("2026-07-15")
+    second = calendar_observation("2026-07-16")
+    failed = calendar_observation("2026-07-17", status="failed")
+    service.references._persist_trading_calendar(first.observed_at, (first,))
+    service.references._persist_trading_calendar(second.observed_at, (second,))
+    service.references._persist_trading_calendar(failed.observed_at, (failed,))
+
+    record = data_plane.load_source_cursor_recent_records(cursor_names=("tushare.trading_calendar",))[0]
+    assert record.cursor_value == "2026-07-16"
+    assert record.payload["count"] == 2
+    sessions = record.payload["sessions"]
+    assert isinstance(sessions, tuple)
+    assert tuple(item["calendar_date"] for item in sessions if isinstance(item, Mapping)) == (
+        "2026-07-15",
+        "2026-07-16",
+    )
 
 
 def test_reference_loader_recover_isolation_of_unavailable_data_plane() -> None:
@@ -1236,6 +1301,44 @@ def test_history_cache_recover_from_data_plane_restores_context_and_window(tmp_p
 
     restored = service.history.load(("600001",))
     assert restored["600001"] == entry.bars
+
+
+def test_history_cache_persists_latest_compact_summary_with_raw_window(tmp_path: Path) -> None:
+    data_plane = DataPlaneRepository(tmp_path)
+    bars = _history_bars()
+    context = build_history_context(bars)
+    service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        data_plane=data_plane,
+        wall_clock=lambda: datetime(2026, 7, 16, 15, 0, tzinfo=_SHANGHAI),
+    )
+
+    service.history._persist_history_bars("600001", bars, context, 0.0, "fixture")
+
+    records = data_plane.load_historical_feature_recent_records(codes=("600001",))
+    latest = next(record for record in records if record.trade_date == context.latest_trade_date)
+    summary = latest.payload["history_summary"]
+    assert isinstance(summary, Mapping)
+    assert summary["latest_trade_date"] == context.latest_trade_date
+    assert summary["sample_count"] == context.sample_count
+    assert isinstance(summary["profile"], Mapping)
+    assert summary["profile"]["median_amount_20d"] == context.profile.median_amount_20d
+
+    trimmed_plane = DataPlaneRepository(tmp_path / "trimmed")
+    for record in records[-20:]:
+        trimmed_plane.save_historical_feature_recent(record)
+    restored_service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        data_plane=trimmed_plane,
+        wall_clock=lambda: datetime(2026, 7, 16, 15, 1, tzinfo=_SHANGHAI),
+    )
+    restored_service.history.recover_from_data_plane()
+    restored_context = restored_service.history.entries()["600001"].context
+    assert restored_context == context
 
 
 def test_history_cache_persistence_unavailable_does_not_block_history_load() -> None:

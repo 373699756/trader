@@ -712,7 +712,15 @@ def _identity_values_from_row(table: str, row: sqlite3.Row) -> tuple[str, ...]:
 def _to_payload_dict(payload: object) -> dict[str, object]:
     if not isinstance(payload, Mapping):
         raise TypeError("payload must be a mapping")
-    return dict(payload)
+    return {str(key): _thaw_json(value) for key, value in payload.items()}
+
+
+def _thaw_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _thaw_json(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_thaw_json(item) for item in value]
+    return value
 
 
 def _canonical_json(payload: Mapping[str, object]) -> str:

@@ -145,7 +145,7 @@ class MarketDataPlaneSnapshot:
         object.__setattr__(self, "failures", MappingProxyType(dict(self.failures)))
 
 
-class RealtimeDataPlaneReaderPort(Protocol):
+class DataPlaneReadPort(Protocol):
     def snapshot(self) -> MarketDataPlaneSnapshot: ...
 
 

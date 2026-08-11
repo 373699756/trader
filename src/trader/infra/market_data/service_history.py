@@ -8,7 +8,7 @@ import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Future, as_completed, wait
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from datetime import date, datetime, time
 from typing import TYPE_CHECKING, ParamSpec, Protocol, TypedDict, TypeVar, cast
 from zoneinfo import ZoneInfo
@@ -19,12 +19,13 @@ if TYPE_CHECKING:
 from trader.application.cache import CacheIdentity
 from trader.application.ports.data_plane import DataPlaneUnavailableError, HistoricalFeatureRecord
 from trader.application.ports.market import MarketDataDeadlineExceededError
-from trader.application.ports.types import JsonObject
+from trader.application.ports.types import JsonInput, JsonObject, freeze_json_object
 from trader.application.workers import BorrowExecutorOptions, BoundedExecutor, borrow_executor, submit_or_run_inline
 from trader.domain.outcome.models import OutcomeBar
 from trader.infra.market_data.history import (
     DailyBar,
     HistoryContext,
+    HistoryProfile,
     PriceAdjustment,
     build_history_context,
     require_qfq_history,
@@ -499,16 +500,7 @@ class HistoryCache:
             _LOGGER.warning("history recovery read failed: %s", type(exc).__name__)
             return
 
-        grouped: dict[str, dict[str, DailyBar]] = {}
-        for record in records:
-            try:
-                bar = _deserialize_daily_bar(record.payload)
-            except Exception as exc:
-                _LOGGER.warning(
-                    "history payload invalid for %s on %s: %s", record.code, record.trade_date, type(exc).__name__
-                )
-                continue
-            grouped.setdefault(record.code, {})[bar.trade_date] = bar
+        grouped, persisted_contexts = _restore_history_records(records)
         if not grouped:
             return
         expires_at = self._monotonic() + self._history_ttl_seconds
@@ -519,11 +511,14 @@ class HistoryCache:
                     continue
                 retained = ordered[-_HISTORY_CACHE_RETENTION_DAYS:]
                 full = ordered[-_HISTORY_CACHE_LOOKBACK_DAYS:]
+                persisted_context = persisted_contexts.get(code)
+                if persisted_context is None or persisted_context.latest_trade_date != ordered[-1].trade_date:
+                    persisted_context = build_history_context(full)
                 self._history[code] = _HistoryEntry(
                     bars=retained,
                     expires_at=expires_at,
                     source=retained[-1].source if retained else "eastmoney",
-                    context=build_history_context(full),
+                    context=persisted_context,
                 )
             self.trim(set(grouped))
 
@@ -535,7 +530,6 @@ class HistoryCache:
         _expires_at: float,
         source: str,
     ) -> None:
-        del _context
         del _expires_at
         data_plane = self._history_data_plane
         if data_plane is None:
@@ -543,6 +537,10 @@ class HistoryCache:
         observed_at = self._runner.wall_clock()
         for bar in bars:
             try:
+                payload = dict(_serialize_daily_bar(bar))
+                if _context is not None and bar.trade_date == _context.latest_trade_date:
+                    context_input = cast(dict[str, JsonInput], asdict(_context))
+                    payload["history_summary"] = freeze_json_object(context_input)
                 data_plane.save_historical_feature_recent(
                     HistoricalFeatureRecord(
                         code=code,
@@ -551,7 +549,7 @@ class HistoryCache:
                         source_time=_history_source_time((bar,)),
                         source=source,
                         data_version=_history_version(bars),
-                        payload=_serialize_daily_bar(bar),
+                        payload=payload,
                     )
                 )
             except DataPlaneUnavailableError:
@@ -666,6 +664,104 @@ def _deserialize_daily_bar(payload: JsonObject) -> DailyBar:
         adjustment=PriceAdjustment(payload["adjustment"]),
         source=source,
     )
+
+
+def _restore_history_records(
+    records: Sequence[HistoricalFeatureRecord],
+) -> tuple[dict[str, dict[str, DailyBar]], dict[str, HistoryContext]]:
+    grouped: dict[str, dict[str, DailyBar]] = {}
+    persisted_contexts: dict[str, HistoryContext] = {}
+    for record in records:
+        try:
+            bar = _deserialize_daily_bar(record.payload)
+        except Exception as exc:
+            _LOGGER.warning(
+                "history payload invalid for %s on %s: %s",
+                record.code,
+                record.trade_date,
+                type(exc).__name__,
+            )
+            continue
+        grouped.setdefault(record.code, {})[bar.trade_date] = bar
+        context = _deserialize_history_context(record.payload.get("history_summary"))
+        if context is None or context.latest_trade_date != bar.trade_date:
+            continue
+        current = persisted_contexts.get(record.code)
+        if current is None or context.latest_trade_date > current.latest_trade_date:
+            persisted_contexts[record.code] = context
+    return grouped, persisted_contexts
+
+
+def _deserialize_history_context(payload: object) -> HistoryContext | None:
+    if not isinstance(payload, Mapping):
+        return None
+    profile = _deserialize_history_profile(payload.get("profile"))
+    if profile is None:
+        return None
+    raw_previous = payload.get("previous_profile")
+    previous = None if raw_previous is None else _deserialize_history_profile(raw_previous)
+    if raw_previous is not None and previous is None:
+        return None
+    latest_trade_date = payload.get("latest_trade_date")
+    sample_count = payload.get("sample_count")
+    anchors = _deserialize_return_anchors(payload.get("return_anchors"))
+    if (
+        not isinstance(latest_trade_date, str)
+        or not latest_trade_date
+        or not isinstance(sample_count, int)
+        or isinstance(sample_count, bool)
+        or sample_count < 0
+        or anchors is None
+    ):
+        return None
+    return HistoryContext(
+        profile=profile,
+        previous_profile=previous,
+        latest_trade_date=latest_trade_date,
+        sample_count=sample_count,
+        return_anchors=anchors,
+    )
+
+
+def _deserialize_history_profile(payload: object) -> HistoryProfile | None:
+    if not isinstance(payload, Mapping):
+        return None
+    values: dict[str, float | None] = {}
+    for profile_field in fields(HistoryProfile):
+        raw_value = payload.get(profile_field.name)
+        if raw_value is None:
+            values[profile_field.name] = None
+            continue
+        if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+            return None
+        numeric = float(raw_value)
+        if not math.isfinite(numeric):
+            return None
+        values[profile_field.name] = numeric
+    return HistoryProfile(**values)
+
+
+def _deserialize_return_anchors(payload: object) -> tuple[tuple[int, float], ...] | None:
+    if not isinstance(payload, (tuple, list)):
+        return None
+    anchors: list[tuple[int, float]] = []
+    for item in payload:
+        if not isinstance(item, (tuple, list)) or len(item) != 2:
+            return None
+        days, raw_price = item
+        if (
+            not isinstance(days, int)
+            or isinstance(days, bool)
+            or days <= 0
+            or isinstance(raw_price, bool)
+            or not isinstance(raw_price, (int, float))
+        ):
+            return None
+        price = float(raw_price)
+        if not math.isfinite(price) or price <= 0:
+            return None
+        anchors.append((days, price))
+    return tuple(anchors)
 
 
 def _require_string(payload: JsonObject, key: str) -> str:

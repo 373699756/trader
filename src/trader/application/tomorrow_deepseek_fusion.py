@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime
 
 from trader.application.policy import RecommendationPolicy
-from trader.application.ports.market import RealtimeDataPlaneReaderPort
+from trader.application.ports.market import DataPlaneReadPort
 from trader.application.ports.reviews import (
     DeepSeekReviewUnavailableError,
     TomorrowDeepSeekReviewPort,
@@ -69,7 +69,7 @@ class _FusionContext:
 class TomorrowDeepSeekFusionUseCase:
     def __init__(
         self,
-        reader: RealtimeDataPlaneReaderPort,
+        reader: DataPlaneReadPort,
         reviewer: TomorrowDeepSeekReviewPort,
         policy: RecommendationPolicy,
     ) -> None:

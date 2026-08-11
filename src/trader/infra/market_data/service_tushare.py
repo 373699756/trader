@@ -27,6 +27,14 @@ from trader.infra.market_data.gateway import MarketDataGateway
 from trader.infra.market_data.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.market_cache_identity import _normalize_codes, _source_batch_identity
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
+from trader.infra.market_data.service_calendar_state import (
+    calendar_observations_from_record as _calendar_observations_from_record,
+)
+from trader.infra.market_data.service_calendar_state import calendar_sessions_payload as _calendar_sessions_payload
+from trader.infra.market_data.service_calendar_state import parse_date as _parse_date
+from trader.infra.market_data.service_calendar_state import (
+    trading_calendar_cursor_from_observations as _trading_calendar_cursor_from_observations,
+)
 from trader.infra.market_data.service_execution import MarketTaskRunner
 from trader.infra.market_data.service_history import HistoryCache
 from trader.infra.market_data.tushare import TushareClient
@@ -100,6 +108,7 @@ class ReferenceLoader:
         self._reference_versions: dict[str, str] = {}
         self._reference_version_order: dict[str, tuple[datetime, datetime, str]] = {}
         self._trading_calendar_cursor: str | None = None
+        self._trading_calendar_observations: dict[str, SourceObservation] = {}
 
     def schedule_reference_data(
         self,
@@ -292,7 +301,15 @@ class ReferenceLoader:
             )
         cursors = self._data_plane.load_source_cursor_recent_records(cursor_names=(_TRADING_CALENDAR_CURSOR_NAME,))
         if cursors:
-            self._trading_calendar_cursor = cursors[-1].cursor_value
+            calendar_record = cursors[-1]
+            self._trading_calendar_cursor = calendar_record.cursor_value
+            restored_calendars = _calendar_observations_from_record(calendar_record)
+            if restored_calendars:
+                with self._lock:
+                    self._trading_calendar_observations = {
+                        observation.subject_key: observation for observation in restored_calendars
+                    }
+                self._gateway.update_reference_observations(restored_calendars)
 
     def _next_calendar_start(self, listing_min: date) -> date:
         cursor = self._trading_calendar_cursor
@@ -310,6 +327,16 @@ class ReferenceLoader:
         *,
         masters: tuple[SourceObservation, ...],
         calendars: tuple[SourceObservation, ...],
+    ) -> None:
+        if self._data_plane is None:
+            return
+        self._persist_security_masters(observed_at, masters)
+        self._persist_trading_calendar(observed_at, calendars)
+
+    def _persist_security_masters(
+        self,
+        observed_at: datetime,
+        masters: Sequence[SourceObservation],
     ) -> None:
         if self._data_plane is None:
             return
@@ -331,51 +358,53 @@ class ReferenceLoader:
                 _LOGGER.warning("security master persistence unavailable")
             except Exception:
                 _LOGGER.exception("security master persistence failed")
-        if calendars:
-            cursor_value = _trading_calendar_cursor_from_observations(calendars)
-            if cursor_value is not None:
-                try:
-                    latest_source_time = max(obs.source_time for obs in calendars)
-                    calendar_dates = sorted(
-                        {
-                            parsed
-                            for obs in calendars
-                            for parsed in (
-                                _parse_date(obs.subject_key),
-                                _parse_date(str(obs.fields["calendar_date"]))
-                                if isinstance(obs.fields.get("calendar_date"), str)
-                                else None,
-                            )
-                            if parsed is not None
-                        }
-                    )
-                    source_data_version = max(
-                        calendars,
-                        key=lambda obs: (obs.source_time, obs.received_at, obs.data_version),
-                    ).data_version
-                    start_date = calendar_dates[0] if calendar_dates else None
-                    end_date = calendar_dates[-1] if calendar_dates else None
-                    payload: dict[str, JsonValue] = {
-                        "start_date": start_date.isoformat() if start_date is not None else calendars[0].subject_key,
-                        "end_date": end_date.isoformat() if end_date is not None else calendars[-1].subject_key,
-                        "count": len(calendars),
-                    }
-                    self._data_plane.save_source_cursor_recent(
-                        SourceCursorRecord(
-                            cursor_name=_TRADING_CALENDAR_CURSOR_NAME,
-                            cursor_value=cursor_value,
-                            observed_at=observed_at,
-                            source_time=latest_source_time,
-                            source=_TUSHARE_SOURCE,
-                            data_version=source_data_version,
-                            payload=_to_json_object(payload),
-                        )
-                    )
-                    self._trading_calendar_cursor = cursor_value
-                except DataPlaneUnavailableError:
-                    _LOGGER.warning("trading calendar cursor persistence unavailable")
-                except Exception:
-                    _LOGGER.exception("trading calendar cursor persistence failed")
+
+    def _persist_trading_calendar(
+        self,
+        observed_at: datetime,
+        calendars: Sequence[SourceObservation],
+    ) -> None:
+        if self._data_plane is None:
+            return
+        if _trading_calendar_cursor_from_observations(calendars) is None:
+            return
+        try:
+            calendar_snapshot = self._merge_calendar_observations(calendars)
+            cursor_value = calendar_snapshot[-1].subject_key
+            latest = max(calendar_snapshot, key=lambda obs: (obs.source_time, obs.received_at, obs.data_version))
+            self._data_plane.save_source_cursor_recent(
+                SourceCursorRecord(
+                    cursor_name=_TRADING_CALENDAR_CURSOR_NAME,
+                    cursor_value=cursor_value,
+                    observed_at=observed_at,
+                    source_time=latest.source_time,
+                    source=_TUSHARE_SOURCE,
+                    data_version=latest.data_version,
+                    payload={
+                        "start_date": calendar_snapshot[0].subject_key,
+                        "end_date": calendar_snapshot[-1].subject_key,
+                        "count": len(calendar_snapshot),
+                        "sessions": _calendar_sessions_payload(calendar_snapshot),
+                    },
+                )
+            )
+            self._trading_calendar_cursor = cursor_value
+        except DataPlaneUnavailableError:
+            _LOGGER.warning("trading calendar cursor persistence unavailable")
+        except Exception:
+            _LOGGER.exception("trading calendar cursor persistence failed")
+
+    def _merge_calendar_observations(
+        self,
+        calendars: Sequence[SourceObservation],
+    ) -> tuple[SourceObservation, ...]:
+        with self._lock:
+            for observation in calendars:
+                if observation.status == "success" and _parse_date(observation.subject_key) is not None:
+                    self._trading_calendar_observations[observation.subject_key] = observation
+            return tuple(
+                self._trading_calendar_observations[key] for key in sorted(self._trading_calendar_observations)
+            )
 
     def _to_reference_observation(self, record: SecurityMasterRecord) -> SourceObservation:
         fields = _source_fields_for_observation(record.payload)
@@ -658,28 +687,6 @@ class ReferenceLoader:
             missing_reasons={**dict(observation.missing_reasons), "cache_refresh": reason},
             payload_hash=payload_hash,
         )
-
-
-def _parse_date(value: str) -> date | None:
-    try:
-        return date.fromisoformat(value)
-    except ValueError:
-        return None
-
-
-def _trading_calendar_cursor_from_observations(calendars: Sequence[SourceObservation]) -> str | None:
-    dates: list[date] = []
-    for observation in calendars:
-        raw = observation.subject_key
-        parsed = _parse_date(raw)
-        calendar_date = observation.fields.get("calendar_date")
-        if parsed is None and isinstance(calendar_date, str):
-            parsed = _parse_date(calendar_date)
-        if parsed is not None:
-            dates.append(parsed)
-    if not dates:
-        return None
-    return max(dates).isoformat()
 
 
 def _to_json_object(

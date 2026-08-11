@@ -23,8 +23,10 @@
 | --- | --- | --- | --- | --- |
 | 交易所官方（上交所/深交所/北交所） | `src/trader/infra/market_data/` 下无 `exchange.py` 或同名入口；运行时
   `MarketSourceCoordinator`/`MarketDataGateway` 无该 source | 未接入 | 拒绝 | 等待“字段/交易日历/停复牌/状态机”能力探测脚本 |
-| 巨潮资讯 CNInfo | `src/trader/infra/market_data/` 下无 CNInfo/巨潮抓取实现；`service_research.py`
-  仅沿用 AKShare 现有公告聚合链 | 未接入 | 拒绝 | 等待公告唯一标识/增量游标/重复页行为探测 |
+| 巨潮资讯 CNInfo | `src/trader/infra/market_data/cninfo.py` 与
+  `service_research_data_plane.py` 已实现离线增量公告、稳定公告 ID、游标和风险组件恢复 |
+  独立风险登记簿写入；不进入行情路由 | 有条件允许（研究风险数据平面） | 交易所交叉校验保持
+  `pending`；禁止进入行情 source contract、评分来源替换或 HTTP 热路径 |
 | 东方财富（Eastmoney） | `src/trader/infra/market_data/eastmoney.py`，运行路由见 `gateway.py`/`source_coordinator.py`
   | 全市场主线 + 部分板块/参考字段 | 维持现状 | 允许（既有） |
 | 新浪（Sina） | `src/trader/infra/market_data/sina.py`，运行路由见 `gateway.py`/`source_coordinator.py` | 全市场对冲源
@@ -50,7 +52,8 @@
 ## 5. 本批准入结论
 
 - 仅保留已存在的五类契约来源（东财/新浪/腾讯/AKShare/Tushare）进入既定运行，且不更改其当前职责。
-- 交易所官方、巨潮资讯 CNInfo、通达信/mootdx、BaoStock 维持 **未准入/拒绝**，
+- 交易所官方、通达信/mootdx、BaoStock 维持 **未准入/拒绝**；CNInfo 仅按上表准入独立
+  风险登记簿写入，
   直到完成：
 
   - `正常 / 空页 / 半页 / 重复页 / 字段缺失 / 时间倒退 / 超时 / 限流` 的外部探测用例；

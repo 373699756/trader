@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from tests.unit.v2_epoch_helpers import coverage, daily_field_values, market_field_values
 from trader.application.ports.reviews import DeepSeekReviewUnavailableError
 from trader.application.tomorrow_deepseek_fusion import (
     TomorrowDeepSeekFusionRequest,
@@ -204,6 +205,11 @@ def _reader(features):
             values=feature.values,
             history_sessions=60,
             data_as_of=NOW.date() - timedelta(days=1),
+            field_values=daily_field_values(
+                feature.values,
+                source_time=NOW - timedelta(days=1),
+                received_time=NOW,
+            ),
         )
         for feature in features
     )
@@ -213,8 +219,20 @@ def _reader(features):
         observed_at=NOW,
         received_at=NOW,
         config_version="runtime-v2",
+        calendar_version="calendar-v1",
         rows=rows,
         source_versions={"fixture": "daily-1"},
+        coverage=coverage(tuple(feature.quote.code for feature in features)),
+    )
+    market_quotes = tuple(
+        replace(
+            feature.quote,
+            board=feature.quote.board,
+            board_source="security_master",
+            board_reliability="verified",
+            listing_age_sessions=100,
+        )
+        for feature in features
     )
     market = MarketEpoch(
         trade_date=NOW.date(),
@@ -223,17 +241,9 @@ def _reader(features):
         received_at=NOW,
         config_version="runtime-v2",
         daily_feature_pack_version=daily.version,
-        quotes=tuple(
-            replace(
-                feature.quote,
-                board=feature.quote.board,
-                board_source="security_master",
-                board_reliability="verified",
-                listing_age_sessions=100,
-            )
-            for feature in features
-        ),
+        quotes=market_quotes,
         source_versions={"fixture": "market-1"},
+        field_values={quote.code: market_field_values(quote) for quote in market_quotes},
     )
     snapshot = MarketDataPlaneSnapshot(daily, market, None, None)
 

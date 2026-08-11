@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -132,6 +133,26 @@ def test_field_selection_blocks_disallowed_source_for_realtime_field() -> None:
 
     assert selected.values["price"] == 10.1
     assert selected.field_values["price"].source == "eastmoney"
+
+
+def test_newer_price_only_observation_cannot_clear_richer_fields() -> None:
+    rich = _observation("eastmoney", payload_hash="rich", value=10.0)
+    price_only = replace(
+        _observation(
+            "eastmoney",
+            payload_hash="price-only",
+            source_time=OBSERVED_AT + timedelta(seconds=1),
+            received_at=OBSERVED_AT + timedelta(seconds=1),
+            value=10.2,
+        ),
+        fields={"price": 10.2},
+    )
+
+    selected = select_fields((rich, price_only), targeted=False)
+
+    assert selected.values == {"name": "测试股份", "price": 10.2}
+    assert selected.field_values["name"].payload_hash == "rich"
+    assert selected.field_values["price"].payload_hash == "price-only"
 
 
 def test_board_and_realtime_field_sets_expose_contract_constants() -> None:

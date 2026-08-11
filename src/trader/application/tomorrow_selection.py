@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime
 
 from trader.application.policy import RecommendationPolicy
-from trader.application.ports.market import MarketDataPlaneSnapshot, RealtimeDataPlaneReaderPort
+from trader.application.ports.market import DataPlaneReadPort, MarketDataPlaneSnapshot
 from trader.domain.market.epochs import (
     CandidateFeatureRow,
     CandidateQuoteEpoch,
@@ -64,7 +64,7 @@ class TomorrowSelectionNotReadyError(RuntimeError):
 
 
 class TomorrowSelectionUseCase:
-    def __init__(self, reader: RealtimeDataPlaneReaderPort, policy: RecommendationPolicy) -> None:
+    def __init__(self, reader: DataPlaneReadPort, policy: RecommendationPolicy) -> None:
         self._reader = reader
         self._policy = policy
 

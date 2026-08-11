@@ -6,6 +6,13 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from tests.unit.v2_epoch_helpers import (
+    candidate_field_values,
+    coverage,
+    daily_field_values,
+    market_field_values,
+    research_field_values,
+)
 from trader.application.ports.market import MarketDataPlaneSnapshot
 from trader.application.tomorrow_selection import (
     TomorrowSelectionNotReadyError,
@@ -101,16 +108,20 @@ def _data_snapshot() -> MarketDataPlaneSnapshot:
         observed_at=NOW,
         received_at=NOW,
         config_version="runtime-v2",
+        calendar_version="calendar-v1",
         rows=(
             DailyFeatureRow(
                 code="600001",
                 values=values,
                 history_sessions=60,
                 data_as_of=date(2026, 7, 27),
+                field_values=daily_field_values(values, source_time=NOW - timedelta(days=1), received_time=NOW),
             ),
         ),
         source_versions={"history": "history-1"},
+        coverage=coverage(("600001",)),
     )
+    market_quote = _quote()
     market = MarketEpoch(
         trade_date=NOW.date(),
         sequence=1,
@@ -118,10 +129,28 @@ def _data_snapshot() -> MarketDataPlaneSnapshot:
         received_at=NOW,
         config_version="runtime-v2",
         daily_feature_pack_version=daily.version,
-        quotes=(_quote(),),
+        quotes=(market_quote,),
         source_versions={"eastmoney": "market-1"},
+        field_values={market_quote.code: market_field_values(market_quote)},
         market_regime="risk_on",
     )
+    live_quote = LiveQuote(
+        code="600001",
+        price=10.2,
+        pct_change=4.0,
+        source="tencent",
+        source_time=NOW,
+        received_time=NOW,
+        data_version="candidate-1",
+        cross_source_deviation_pct=0.2,
+        cross_source_verified=True,
+    )
+    candidate_values = {
+        "tail_return_30m": 91.0,
+        "tail_volume_ratio": 88.0,
+        "close_location": 86.0,
+        "entry_quality": 84.0,
+    }
     candidate = CandidateQuoteEpoch(
         trade_date=NOW.date(),
         sequence=1,
@@ -129,28 +158,13 @@ def _data_snapshot() -> MarketDataPlaneSnapshot:
         received_at=NOW,
         config_version="runtime-v2",
         market_epoch_version=market.version,
-        quotes=(
-            LiveQuote(
-                code="600001",
-                price=10.2,
-                pct_change=4.0,
-                source="tencent",
-                source_time=NOW,
-                received_time=NOW,
-                data_version="candidate-1",
-                cross_source_deviation_pct=0.2,
-                cross_source_verified=True,
-            ),
-        ),
+        quotes=(live_quote,),
+        field_values={live_quote.code: candidate_field_values(live_quote)},
         feature_rows=(
             CandidateFeatureRow(
                 code="600001",
-                values={
-                    "tail_return_30m": 91.0,
-                    "tail_volume_ratio": 88.0,
-                    "close_location": 86.0,
-                    "entry_quality": 84.0,
-                },
+                values=candidate_values,
+                field_values=daily_field_values(candidate_values, source_time=NOW, received_time=NOW),
             ),
         ),
         source_versions={"tencent": "candidate-1"},
@@ -243,7 +257,11 @@ def test_feature_assembly_does_not_let_late_candidate_price_replace_newer_market
         snapshot.candidate_quotes.quotes[0],
         source_time=NOW - timedelta(seconds=1),
     )
-    candidate_epoch = replace(snapshot.candidate_quotes, quotes=(late_quote,))
+    candidate_epoch = replace(
+        snapshot.candidate_quotes,
+        quotes=(late_quote,),
+        field_values={late_quote.code: candidate_field_values(late_quote)},
+    )
 
     assembled = assemble_tomorrow_features(replace(snapshot, candidate_quotes=candidate_epoch))
 
@@ -286,6 +304,13 @@ def test_feature_assembly_applies_coherent_research_evidence_and_current_corpora
             )
         },
         source_versions={"exchange": "research-1"},
+        field_values={
+            "600001": research_field_values(
+                source_time=NOW - timedelta(hours=1),
+                received_time=NOW,
+                data_version="research-1",
+            )
+        },
     )
 
     assembled = assemble_tomorrow_features(replace(snapshot, research=research))

@@ -14,6 +14,7 @@ from types import MappingProxyType
 from typing import Literal, Protocol, TypeAlias
 
 from trader.domain.market.models import LiveQuote, MarketQuote
+from trader.domain.market.quality import FieldQualityState, FieldValue
 from trader.domain.market.research import ResearchObservation
 
 DAILY_FEATURE_PACK_SCHEMA_VERSION = "daily_feature_pack_v1"
@@ -44,6 +45,26 @@ CANDIDATE_REALTIME_FEATURES = frozenset(
     }
 )
 _CanonicalValue: TypeAlias = str | int | float | bool | None | list["_CanonicalValue"] | dict[str, "_CanonicalValue"]
+_MARKET_REQUIRED_LINEAGE_FIELDS = frozenset(
+    {
+        "amount",
+        "board",
+        "exchange",
+        "high",
+        "listing_age_sessions",
+        "listing_date",
+        "low",
+        "name",
+        "open_price",
+        "pct_change",
+        "previous_close",
+        "price",
+    }
+)
+_CANDIDATE_REQUIRED_LINEAGE_FIELDS = frozenset(
+    {"cross_source_deviation_pct", "cross_source_verified", "pct_change", "price"}
+)
+_RESEARCH_REQUIRED_LINEAGE_FIELDS = frozenset({"announcements", "corporate_risk", "financial", "pledge", "unlock"})
 
 
 class _EpochCoordinates(Protocol):
@@ -67,11 +88,49 @@ class _EpochCoordinates(Protocol):
 
 
 @dataclass(frozen=True)
+class DataPlaneCoverage:
+    potential_executable_codes: tuple[str, ...]
+    security_master_codes: tuple[str, ...]
+    candidate_codes: tuple[str, ...]
+    candidate_history_codes: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        for name in (
+            "potential_executable_codes",
+            "security_master_codes",
+            "candidate_codes",
+            "candidate_history_codes",
+        ):
+            normalized = _sorted_unique_codes(getattr(self, name), name)
+            object.__setattr__(self, name, normalized)
+        if not set(self.potential_executable_codes) <= set(self.security_master_codes):
+            raise ValueError("potential executable security-master coverage must be 100%")
+        if not set(self.candidate_history_codes) <= set(self.candidate_codes):
+            raise ValueError("candidate history coverage codes must be candidates")
+        if self.candidate_history_coverage < 0.99:
+            raise ValueError("candidate core-history coverage must be at least 99%")
+
+    @property
+    def security_master_coverage(self) -> float:
+        if not self.potential_executable_codes:
+            return 1.0
+        covered = len(set(self.potential_executable_codes).intersection(self.security_master_codes))
+        return covered / len(self.potential_executable_codes)
+
+    @property
+    def candidate_history_coverage(self) -> float:
+        if not self.candidate_codes:
+            return 1.0
+        return len(self.candidate_history_codes) / len(self.candidate_codes)
+
+
+@dataclass(frozen=True)
 class DailyFeatureRow:
     code: str
     values: Mapping[str, float | None]
     history_sessions: int
     data_as_of: date
+    field_values: Mapping[str, FieldValue]
     missing_fields: tuple[str, ...] = ()
     missing_reasons: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
 
@@ -87,7 +146,10 @@ class DailyFeatureRow:
         normalized_reasons = dict(sorted(self.missing_reasons.items()))
         if any(not key.strip() or not value.strip() for key, value in normalized_reasons.items()):
             raise ValueError("missing reasons must contain non-empty keys and values")
+        field_values = _freeze_field_values(self.field_values, "daily feature")
+        _validate_projected_field_values(normalized_values, normalized_missing, normalized_reasons, field_values)
         object.__setattr__(self, "values", MappingProxyType(normalized_values))
+        object.__setattr__(self, "field_values", field_values)
         object.__setattr__(self, "missing_fields", normalized_missing)
         object.__setattr__(self, "missing_reasons", MappingProxyType(normalized_reasons))
 
@@ -99,20 +161,33 @@ class DailyFeaturePack:
     observed_at: datetime
     received_at: datetime
     config_version: str
+    calendar_version: str
     rows: tuple[DailyFeatureRow, ...]
     source_versions: Mapping[str, str]
+    coverage: DataPlaneCoverage
     schema_version: str = DAILY_FEATURE_PACK_SCHEMA_VERSION
     content_hash: str = field(init=False)
     version: str = field(init=False)
 
     def __post_init__(self) -> None:
         _validate_epoch_coordinates(self, DAILY_FEATURE_PACK_SCHEMA_VERSION)
+        _require_text(self.calendar_version, "calendar_version")
         rows = tuple(sorted(self.rows, key=lambda row: row.code))
         if not rows:
             raise ValueError("daily feature rows must not be empty")
         _require_unique_codes(tuple(row.code for row in rows), "daily feature rows")
         if any(row.data_as_of >= self.trade_date for row in rows):
             raise ValueError("daily feature data_as_of must precede trade_date")
+        row_codes = {row.code for row in rows}
+        if not set(self.coverage.potential_executable_codes) <= row_codes:
+            raise ValueError("potential executable codes must exist in daily feature rows")
+        if not set(self.coverage.candidate_codes) <= row_codes:
+            raise ValueError("candidate coverage codes must exist in daily feature rows")
+        history_by_code = {row.code: row.history_sessions for row in rows}
+        if any(history_by_code[code] < 20 for code in self.coverage.candidate_history_codes):
+            raise ValueError("candidate history coverage requires at least 20 sessions")
+        for row in rows:
+            _validate_epoch_field_times(row.field_values, self.observed_at, self.received_at)
         sources = _freeze_source_versions(self.source_versions)
         payload_hash = _content_hash(
             {
@@ -122,8 +197,10 @@ class DailyFeaturePack:
                 "observed_at": self.observed_at,
                 "received_at": self.received_at,
                 "config_version": self.config_version,
+                "calendar_version": self.calendar_version,
                 "rows": rows,
                 "source_versions": sources,
+                "coverage": self.coverage,
             }
         )
         object.__setattr__(self, "rows", rows)
@@ -142,6 +219,7 @@ class MarketEpoch:
     daily_feature_pack_version: str
     quotes: tuple[MarketQuote, ...]
     source_versions: Mapping[str, str]
+    field_values: Mapping[str, Mapping[str, FieldValue]]
     market_regime: Literal["risk_on", "neutral", "risk_off"] = "neutral"
     degraded_reasons: tuple[str, ...] = ()
     schema_version: str = MARKET_EPOCH_SCHEMA_VERSION
@@ -157,6 +235,13 @@ class MarketEpoch:
         _require_unique_codes(tuple(quote.code for quote in quotes), "market quotes")
         for quote in quotes:
             _validate_market_quote(quote, self.observed_at, self.received_at)
+        field_values = _freeze_nested_field_values(self.field_values, "market")
+        _validate_epoch_codes(field_values, tuple(quote.code for quote in quotes), "market field lineage")
+        quotes_by_code = {quote.code: quote for quote in quotes}
+        for code, values in field_values.items():
+            _require_lineage_fields(values, _MARKET_REQUIRED_LINEAGE_FIELDS, f"market field lineage for {code}")
+            _validate_object_field_values(quotes_by_code[code], values, _MARKET_REQUIRED_LINEAGE_FIELDS)
+            _validate_epoch_field_times(values, self.observed_at, self.received_at)
         if self.market_regime not in {"risk_on", "neutral", "risk_off"}:
             raise ValueError("market epoch market_regime is invalid")
         sources = _freeze_source_versions(self.source_versions)
@@ -172,12 +257,14 @@ class MarketEpoch:
                 "daily_feature_pack_version": self.daily_feature_pack_version,
                 "quotes": quotes,
                 "source_versions": sources,
+                "field_values": field_values,
                 "market_regime": self.market_regime,
                 "degraded_reasons": degraded,
             }
         )
         object.__setattr__(self, "quotes", quotes)
         object.__setattr__(self, "source_versions", sources)
+        object.__setattr__(self, "field_values", field_values)
         object.__setattr__(self, "degraded_reasons", degraded)
         object.__setattr__(self, "content_hash", payload_hash)
         object.__setattr__(self, "version", _version("market", self.trade_date, self.sequence, payload_hash))
@@ -187,6 +274,7 @@ class MarketEpoch:
 class CandidateFeatureRow:
     code: str
     values: Mapping[str, float | None]
+    field_values: Mapping[str, FieldValue]
     missing_fields: tuple[str, ...] = ()
     missing_reasons: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
 
@@ -204,7 +292,10 @@ class CandidateFeatureRow:
         normalized_reasons = dict(sorted(self.missing_reasons.items()))
         if any(not key.strip() or not value.strip() for key, value in normalized_reasons.items()):
             raise ValueError("candidate missing reasons must contain non-empty keys and values")
+        field_values = _freeze_field_values(self.field_values, "candidate feature")
+        _validate_projected_field_values(normalized_values, normalized_missing, normalized_reasons, field_values)
         object.__setattr__(self, "values", MappingProxyType(normalized_values))
+        object.__setattr__(self, "field_values", field_values)
         object.__setattr__(self, "missing_fields", normalized_missing)
         object.__setattr__(self, "missing_reasons", MappingProxyType(normalized_reasons))
 
@@ -219,6 +310,7 @@ class CandidateQuoteEpoch:
     market_epoch_version: str
     quotes: tuple[LiveQuote, ...]
     source_versions: Mapping[str, str]
+    field_values: Mapping[str, Mapping[str, FieldValue]]
     feature_rows: tuple[CandidateFeatureRow, ...] = ()
     degraded_reasons: tuple[str, ...] = ()
     schema_version: str = CANDIDATE_QUOTE_EPOCH_SCHEMA_VERSION
@@ -232,11 +324,24 @@ class CandidateQuoteEpoch:
         _require_unique_codes(tuple(quote.code for quote in quotes), "candidate quotes")
         for quote in quotes:
             _validate_live_quote(quote, self.observed_at, self.received_at)
+        field_values = _freeze_nested_field_values(self.field_values, "candidate quote")
+        _validate_epoch_codes(field_values, tuple(quote.code for quote in quotes), "candidate quote field lineage")
+        quotes_by_code = {quote.code: quote for quote in quotes}
+        for code, values in field_values.items():
+            _require_lineage_fields(
+                values,
+                _CANDIDATE_REQUIRED_LINEAGE_FIELDS,
+                f"candidate quote field lineage for {code}",
+            )
+            _validate_object_field_values(quotes_by_code[code], values, _CANDIDATE_REQUIRED_LINEAGE_FIELDS)
+            _validate_epoch_field_times(values, self.observed_at, self.received_at)
         feature_rows = tuple(sorted(self.feature_rows, key=lambda row: row.code))
         _require_unique_codes(tuple(row.code for row in feature_rows), "candidate feature rows")
         quote_codes = {quote.code for quote in quotes}
         if any(row.code not in quote_codes for row in feature_rows):
             raise ValueError("candidate feature rows must reference candidate quote codes")
+        for row in feature_rows:
+            _validate_epoch_field_times(row.field_values, self.observed_at, self.received_at)
         sources = _freeze_source_versions(self.source_versions)
         degraded = _sorted_unique_reason_codes(self.degraded_reasons, "degraded_reasons")
         payload_hash = _content_hash(
@@ -251,12 +356,14 @@ class CandidateQuoteEpoch:
                 "quotes": quotes,
                 "feature_rows": feature_rows,
                 "source_versions": sources,
+                "field_values": field_values,
                 "degraded_reasons": degraded,
             }
         )
         object.__setattr__(self, "quotes", quotes)
         object.__setattr__(self, "feature_rows", feature_rows)
         object.__setattr__(self, "source_versions", sources)
+        object.__setattr__(self, "field_values", field_values)
         object.__setattr__(self, "degraded_reasons", degraded)
         object.__setattr__(self, "content_hash", payload_hash)
         object.__setattr__(self, "version", _version("candidate", self.trade_date, self.sequence, payload_hash))
@@ -271,6 +378,7 @@ class ResearchEpoch:
     config_version: str
     observations: Mapping[str, ResearchObservation]
     source_versions: Mapping[str, str]
+    field_values: Mapping[str, Mapping[str, FieldValue]]
     degraded_reasons: tuple[str, ...] = ()
     schema_version: str = RESEARCH_EPOCH_SCHEMA_VERSION
     content_hash: str = field(init=False)
@@ -282,6 +390,11 @@ class ResearchEpoch:
         for code, observation in observations.items():
             _require_code(code)
             _validate_research_observation(observation, self.observed_at, self.received_at)
+        field_values = _freeze_nested_field_values(self.field_values, "research")
+        _validate_epoch_codes(field_values, tuple(observations), "research field lineage")
+        for code, values in field_values.items():
+            _require_lineage_fields(values, _RESEARCH_REQUIRED_LINEAGE_FIELDS, f"research field lineage for {code}")
+            _validate_epoch_field_times(values, self.observed_at, self.received_at)
         sources = _freeze_source_versions(self.source_versions)
         degraded = _sorted_unique_reason_codes(self.degraded_reasons, "degraded_reasons")
         payload_hash = _content_hash(
@@ -294,11 +407,13 @@ class ResearchEpoch:
                 "config_version": self.config_version,
                 "observations": observations,
                 "source_versions": sources,
+                "field_values": field_values,
                 "degraded_reasons": degraded,
             }
         )
         object.__setattr__(self, "observations", MappingProxyType(observations))
         object.__setattr__(self, "source_versions", sources)
+        object.__setattr__(self, "field_values", field_values)
         object.__setattr__(self, "degraded_reasons", degraded)
         object.__setattr__(self, "content_hash", payload_hash)
         object.__setattr__(self, "version", _version("research", self.trade_date, self.sequence, payload_hash))
@@ -431,6 +546,15 @@ def _require_unique_codes(codes: tuple[str, ...], name: str) -> None:
         raise ValueError(f"{name} must contain unique codes")
 
 
+def _sorted_unique_codes(codes: tuple[str, ...], name: str) -> tuple[str, ...]:
+    for code in codes:
+        _require_code(code)
+    normalized = tuple(sorted(set(codes)))
+    if len(normalized) != len(codes):
+        raise ValueError(f"{name} must contain unique codes")
+    return normalized
+
+
 def _sorted_unique_text(values: tuple[str, ...], name: str) -> tuple[str, ...]:
     if any(not value.strip() for value in values):
         raise ValueError(f"{name} must contain non-empty values")
@@ -450,6 +574,98 @@ def _freeze_source_versions(source_versions: Mapping[str, str]) -> Mapping[str, 
     if any(not source.strip() or not version.strip() for source, version in normalized.items()):
         raise ValueError("source versions must contain non-empty sources and versions")
     return MappingProxyType(normalized)
+
+
+def _freeze_field_values(values: Mapping[str, FieldValue], name: str) -> Mapping[str, FieldValue]:
+    normalized = dict(sorted(values.items()))
+    if not normalized:
+        raise ValueError(f"{name} field lineage must not be empty")
+    for field_name, value in normalized.items():
+        _require_text(field_name, f"{name} field name")
+        if field_name != value.name:
+            raise ValueError(f"{name} field lineage key must match FieldValue.name")
+    return MappingProxyType(normalized)
+
+
+def _freeze_nested_field_values(
+    values: Mapping[str, Mapping[str, FieldValue]],
+    name: str,
+) -> Mapping[str, Mapping[str, FieldValue]]:
+    normalized: dict[str, Mapping[str, FieldValue]] = {}
+    for code, fields_by_name in sorted(values.items()):
+        _require_code(code)
+        normalized[code] = _freeze_field_values(fields_by_name, name)
+    return MappingProxyType(normalized)
+
+
+def _validate_projected_field_values(
+    values: Mapping[str, float | None],
+    missing_fields: tuple[str, ...],
+    missing_reasons: Mapping[str, str],
+    field_values: Mapping[str, FieldValue],
+) -> None:
+    declared = set(values).union(missing_fields, missing_reasons)
+    if not declared <= set(field_values):
+        raise ValueError("every projected or missing field must carry field lineage")
+    for name, value in values.items():
+        if field_values[name].value != value:
+            raise ValueError("projected field value must match field lineage value")
+    for name in missing_fields:
+        field_value = field_values[name]
+        if field_value.value is not None or field_value.quality is not FieldQualityState.MISSING:
+            raise ValueError("missing projected fields require missing field lineage")
+
+
+def _validate_epoch_field_times(
+    values: Mapping[str, FieldValue],
+    observed_at: datetime,
+    received_at: datetime,
+) -> None:
+    for value in values.values():
+        _require_shanghai_time(value.source_time, f"{value.name} source_time")
+        _require_shanghai_time(value.received_time, f"{value.name} received_time")
+        if value.source_time > observed_at or value.received_time > received_at:
+            raise ValueError("field lineage cannot be from the future")
+
+
+def _validate_epoch_codes(
+    values: Mapping[str, Mapping[str, FieldValue]],
+    codes: tuple[str, ...],
+    name: str,
+) -> None:
+    if set(values) != set(codes):
+        raise ValueError(f"{name} must exactly match epoch codes")
+
+
+def _require_lineage_fields(
+    values: Mapping[str, FieldValue],
+    required: frozenset[str],
+    name: str,
+) -> None:
+    missing = sorted(required.difference(values))
+    if missing:
+        raise ValueError(f"{name} is missing required fields: {','.join(missing)}")
+
+
+def _validate_object_field_values(
+    value: object,
+    field_values: Mapping[str, FieldValue],
+    field_names: frozenset[str],
+) -> None:
+    for name in field_names:
+        projected = _field_scalar(getattr(value, name))
+        if field_values[name].value != projected:
+            raise ValueError(f"{name} must match field lineage value")
+
+
+def _field_scalar(value: object) -> str | int | float | bool | None:
+    if isinstance(value, Enum):
+        return str(value.value)
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    raise TypeError(f"unsupported field lineage scalar: {type(value).__name__}")
 
 
 def _version(prefix: str, trade_date: date, sequence: int, content_hash: str) -> str:
@@ -500,6 +716,7 @@ __all__ = [
     "RESEARCH_EPOCH_SCHEMA_VERSION",
     "CandidateFeatureRow",
     "CandidateQuoteEpoch",
+    "DataPlaneCoverage",
     "DailyFeaturePack",
     "DailyFeatureRow",
     "MarketEpoch",
