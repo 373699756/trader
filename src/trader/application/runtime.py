@@ -40,6 +40,7 @@ class RuntimeSupervisorConfig:
     shutdown_timeout_seconds: float
     monotonic: Callable[[], float] = time.monotonic
     record_error: Callable[[str], None] | None = None
+    deferred_initializers: Sequence[Callable[[], object]] = ()
 
 
 class RuntimeSupervisor:
@@ -55,10 +56,14 @@ class RuntimeSupervisor:
         self._shutdown_timeout_seconds = max(0.1, config.shutdown_timeout_seconds)
         self._monotonic = config.monotonic
         self._record_error = config.record_error or (lambda _error: None)
+        self._deferred_initializers = tuple(config.deferred_initializers)
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
+        self._deferred_stop_event = threading.Event()
         self._scheduler: threading.Thread | None = None
+        self._deferred_thread: threading.Thread | None = None
         self._initialized = False
+        self._starting = False
         self._pipeline_started = False
         self._stopped = False
         self._shutdown_report: ShutdownReport | None = None
@@ -67,26 +72,55 @@ class RuntimeSupervisor:
         with self._lock:
             if self._scheduler is not None and self._scheduler.is_alive():
                 return False
+            if self._starting:
+                return False
             if self._stopped:
                 raise RuntimeError("runtime supervisor cannot restart after stop")
+            self._starting = True
+        startup_started = self._monotonic()
+        try:
             if not self._initialized:
                 for initialize in self._initializers:
-                    initialize()
-                self._initialized = True
+                    initializer_started = self._monotonic()
+                    try:
+                        initialize()
+                    finally:
+                        _LOGGER.info(
+                            "startup initializer completed name=%s elapsed_ms=%.1f",
+                            getattr(initialize, "__qualname__", repr(initialize)),
+                            max(0.0, self._monotonic() - initializer_started) * 1000.0,
+                        )
+                with self._lock:
+                    self._initialized = True
+            with self._lock:
+                if self._stopped:
+                    return False
             if not self._pipeline.start():
                 return False
-            self._pipeline_started = True
-            self._stop_event.clear()
-            scheduler = threading.Thread(target=self._scheduler_loop, name="trader-scheduler", daemon=False)
-            self._scheduler = scheduler
-            try:
+            with self._lock:
+                self._pipeline_started = True
+                self._stop_event.clear()
+                scheduler = threading.Thread(target=self._scheduler_loop, name="trader-scheduler", daemon=False)
+                self._scheduler = scheduler
                 scheduler.start()
-            except BaseException:
-                self._stop_pipeline(ShutdownDeadline.start(self._shutdown_timeout_seconds))
+                self._start_deferred_initializers_locked()
+            _LOGGER.info(
+                "runtime startup completed elapsed_ms=%.1f deferred_initializers=%d",
+                max(0.0, self._monotonic() - startup_started) * 1000.0,
+                len(self._deferred_initializers),
+            )
+            return True
+        except BaseException:
+            with self._lock:
+                pipeline_started = self._pipeline_started
                 self._pipeline_started = False
                 self._scheduler = None
-                raise
-            return True
+            if pipeline_started:
+                self._stop_pipeline(ShutdownDeadline.start(self._shutdown_timeout_seconds))
+            raise
+        finally:
+            with self._lock:
+                self._starting = False
 
     def stop(self, deadline: ShutdownDeadline | None = None) -> ShutdownReport:
         deadline = deadline or ShutdownDeadline.start(self._shutdown_timeout_seconds)
@@ -95,7 +129,11 @@ class RuntimeSupervisor:
                 return self._shutdown_report or ShutdownReport.from_steps(deadline, ())
             self._stopped = True
             self._stop_event.set()
+            self._deferred_stop_event.set()
             scheduler = self._scheduler
+            deferred = self._deferred_thread
+        if deferred is not None and deferred is not threading.current_thread():
+            deferred.join(deadline.remaining_seconds())
         if scheduler is not None and scheduler is not threading.current_thread():
             scheduler.join(deadline.remaining_seconds())
             scheduler_timed_out = scheduler.is_alive()
@@ -117,6 +155,36 @@ class RuntimeSupervisor:
         with self._lock:
             self._shutdown_report = report
         return report
+
+    def _start_deferred_initializers_locked(self) -> None:
+        if not self._deferred_initializers or (self._deferred_thread is not None and self._deferred_thread.is_alive()):
+            return
+        self._deferred_stop_event.clear()
+        deferred = threading.Thread(
+            target=self._run_deferred_initializers,
+            name="trader-deferred-initializer",
+            daemon=True,
+        )
+        self._deferred_thread = deferred
+        deferred.start()
+
+    def _run_deferred_initializers(self) -> None:
+        for initialize in self._deferred_initializers:
+            if self._deferred_stop_event.is_set():
+                return
+            initializer_started = self._monotonic()
+            try:
+                initialize()
+            except Exception as exc:
+                name = getattr(initialize, "__qualname__", repr(initialize))
+                self._record_error(f"deferred initializer failed:{name}:{type(exc).__name__}")
+                _LOGGER.exception("deferred startup initializer failed name=%s", name)
+            finally:
+                _LOGGER.info(
+                    "deferred startup initializer completed name=%s elapsed_ms=%.1f",
+                    getattr(initialize, "__qualname__", repr(initialize)),
+                    max(0.0, self._monotonic() - initializer_started) * 1000.0,
+                )
 
     def _stop_pipeline(self, deadline: ShutdownDeadline) -> ShutdownStep:
         completed = threading.Event()

@@ -4264,7 +4264,7 @@ def test_unadjusted_tushare_history_is_not_consumed_and_warmup_uses_qfq_fallback
     assert service.health()["history_warmup_last_source"] == "tencent"
     assert service.health()["history_warmup_timeout_count"] == 0
     assert service.health()["history_warmup_inflight_age_seconds"] is None
-    assert service.health()["history_warmup_batch_timeout_seconds"] == 300.0
+    assert service.health()["history_warmup_batch_timeout_seconds"] == 20.0
     assert sorted(history.calls) == sorted(quote.code for quote in quotes)
     assert pro.calls == 0
 
@@ -5512,6 +5512,32 @@ def test_calendar_uses_cache_and_fails_closed(tmp_path) -> None:
     )
     with pytest.raises(TradingCalendarUnavailableError, match="cannot refresh"):
         stale.is_trading_day(date(2026, 7, 16))
+
+
+def test_calendar_fetch_timeout_is_bounded(tmp_path) -> None:
+    release = threading.Event()
+    started = threading.Event()
+
+    def slow_fetcher():
+        started.set()
+        release.wait(1.0)
+        return (date(2026, 7, 16),)
+
+    calendar = ChinaTradingCalendar(
+        tmp_path / "timeout-calendar.json",
+        fetcher=slow_fetcher,
+        fetch_timeout_seconds=0.02,
+        now=lambda: NOW,
+    )
+    began = time.monotonic()
+    try:
+        with pytest.raises(TradingCalendarUnavailableError, match="timed out"):
+            calendar.is_trading_day(date(2026, 7, 16))
+    finally:
+        release.set()
+
+    assert started.is_set()
+    assert time.monotonic() - began < 0.5
 
 
 class FakeResponse:

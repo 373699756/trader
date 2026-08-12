@@ -46,7 +46,7 @@ def test_build_system_is_lazy_until_start(tmp_path, monkeypatch) -> None:
     assert market_data.runner.worker_pool is system.pipeline._data_pool
     assert market_data.research._json_writer._executor is system.pipeline._persistence_pool
     assert market_data.research.client._json_writer._executor is system.pipeline._persistence_pool
-    assert market_data.warmup.status().batch_timeout_seconds == 300.0
+    assert market_data.warmup.status().batch_timeout_seconds == 20.0
     assert system.pipeline._market_data_manages_workers is True
     assert system.pipeline._data_pool.status()["workers"] == 6
     assert system.pipeline._data_pool.status()["queue_capacity"] == 5
@@ -88,7 +88,7 @@ def test_build_system_is_lazy_until_start(tmp_path, monkeypatch) -> None:
     status_response = system.app.test_client().get("/api/v2/status")
     assert status_response.status_code == 200
     assert "shadow" not in status_response.get_json()
-    assert system.app.test_client().get("/api/status").status_code == 404
+    assert system.app.test_client().get("/api/status").status_code == 200
 
 
 def test_production_tomorrow_runtime_has_no_baseline_or_cutover_dependency() -> None:

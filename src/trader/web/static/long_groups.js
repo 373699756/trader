@@ -19,7 +19,6 @@
     const liveByCode = new Map((Array.isArray(payload.items) ? payload.items : []).map((item) => [item.code, item]));
     const items = staticData.items.map((item, index) => {
       const live = liveByCode.get(item.code) || {};
-      const quote = live.quote && typeof live.quote === "object" ? live.quote : {};
       return {
         rank: index + 1,
         code: item.code,
@@ -40,14 +39,6 @@
         risks: [],
         review: null,
         ...live,
-        price: live.price ?? quote.price ?? null,
-        pct_change: live.pct_change ?? quote.pct_change ?? null,
-        turnover_rate: live.turnover_rate ?? quote.turnover_rate ?? null,
-        amount: live.amount ?? quote.amount ?? null,
-        market_cap: live.market_cap ?? quote.market_cap ?? null,
-        source: live.source ?? quote.source ?? "long_watchlist",
-        source_time: live.source_time ?? quote.source_time ?? null,
-        quote_status: live.quote_status ?? quote.status ?? "missing",
         name: live.name || item.name,
         industry: live.industry || item.industry,
       };

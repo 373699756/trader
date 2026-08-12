@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 from collections.abc import Callable, Iterable
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -23,14 +24,19 @@ class ChinaTradingCalendar:
         *,
         max_cache_age_days: int = 30,
         fetcher: CalendarFetcher | None = None,
+        fetch_timeout_seconds: float = 5.0,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
+        if fetch_timeout_seconds <= 0.0:
+            raise ValueError("calendar fetch timeout must be positive")
         self._cache_path = cache_path
         self._max_cache_age = timedelta(days=max_cache_age_days)
         self._fetcher = fetcher or _fetch_akshare_calendar
+        self._fetch_timeout_seconds = float(fetch_timeout_seconds)
         self._now = now
         self._dates: frozenset[date] = frozenset()
         self._fetched_at: datetime | None = None
+        self._load_lock = threading.Lock()
 
     def is_trading_day(self, day: date) -> bool:
         self._ensure_loaded()
@@ -56,19 +62,37 @@ class ChinaTradingCalendar:
         return sum(day > start_date and day <= end_date for day in self._dates)
 
     def _ensure_loaded(self) -> None:
-        if not self._dates:
-            self._load_cache()
-        if self._fetched_at is not None and self._now() - self._fetched_at <= self._max_cache_age:
-            return
-        try:
-            dates = frozenset(self._fetcher())
-        except Exception as exc:
-            raise TradingCalendarUnavailableError(f"cannot refresh trading calendar: {exc}") from exc
-        if not dates:
-            raise TradingCalendarUnavailableError("calendar provider returned no dates")
-        self._dates = dates
-        self._fetched_at = self._now()
-        self._save_cache()
+        with self._load_lock:
+            if not self._dates:
+                self._load_cache()
+            if self._fetched_at is not None and self._now() - self._fetched_at <= self._max_cache_age:
+                return
+            dates = self._fetch_with_timeout()
+            if not dates:
+                raise TradingCalendarUnavailableError("calendar provider returned no dates")
+            self._dates = dates
+            self._fetched_at = self._now()
+            self._save_cache()
+
+    def _fetch_with_timeout(self) -> frozenset[date]:
+        result: list[frozenset[date]] = []
+        error: list[BaseException] = []
+        completed = threading.Event()
+
+        def fetch() -> None:
+            try:
+                result.append(frozenset(self._fetcher()))
+            except BaseException as exc:
+                error.append(exc)
+            finally:
+                completed.set()
+
+        threading.Thread(target=fetch, name="trading-calendar-fetch", daemon=True).start()
+        if not completed.wait(self._fetch_timeout_seconds):
+            raise TradingCalendarUnavailableError("trading calendar fetch timed out")
+        if error:
+            raise TradingCalendarUnavailableError(f"cannot refresh trading calendar: {error[0]}") from error[0]
+        return result[0] if result else frozenset()
 
     def _load_cache(self) -> None:
         try:

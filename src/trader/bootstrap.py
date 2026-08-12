@@ -93,7 +93,7 @@ from trader.infra.settings import (
     load_strategy_settings,
 )
 from trader.web import create_app
-from trader.web.route_services import UnifiedWebServices, WebApiConfig
+from trader.web.route_services import UnifiedWebServices, WebApiConfig, WebServices
 
 
 @dataclass(frozen=True)
@@ -219,6 +219,17 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     trading_session = TradingSessionTracker(now())
     adapters = _PipelineAdapters(market_data, calendar, reviewer)
     pipeline = _build_pipeline(context, adapters, persistence, publication, trading_session)
+    legacy_services = WebServices(
+        status_provider=pipeline.status,
+        decision_queries=publication.decision_queries,
+        decision_events=publication.decision_events,
+        decision_quotes=market_data.cached_quotes,
+        config=WebApiConfig(
+            default_top_n=settings.api.default_top_n,
+            maximum_top_n=settings.api.maximum_top_n,
+            heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds,
+        ),
+    )
     supervisor = RuntimeSupervisor(
         pipeline,
         RuntimeSupervisorConfig(
@@ -229,11 +240,12 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
                 publication.tomorrow_runtime.initialize,
                 publication.d25_runtime.initialize,
                 lambda: _initialize_reference_data_plane(market_data, persistence.data_plane),
-                pipeline.initialize,
+                pipeline.initialize_local,
                 publication.published_snapshots.initialize,
                 persistence.budget.initialize,
                 lambda: persistence.budget.recover_incomplete(now()),
             ),
+            deferred_initializers=(pipeline.initialize_deferred,),
             interval_seconds=scheduler_interval_seconds,
             shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
             record_error=publication.state.record_error,
@@ -245,6 +257,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
             publication.decision_events,
             pipeline.status,
             WebApiConfig(heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds),
+            legacy=legacy_services,
         )
     )
     return ApplicationSystem(
@@ -437,8 +450,13 @@ def _build_market_data(context: _BuildContext, data_plane: DataPlaneRepository) 
         monotonic=time.monotonic,
     )
     history_warmup_batch_size = 30
-    history_warmup_batch_timeout = settings.market_data.history_timeout_seconds * (
-        4 * ((history_warmup_batch_size + settings.pipeline.market_workers - 1) // settings.pipeline.market_workers) + 1
+    history_warmup_batch_timeout = min(
+        20.0,
+        settings.market_data.history_timeout_seconds
+        * (
+            4 * ((history_warmup_batch_size + settings.pipeline.market_workers - 1) // settings.pipeline.market_workers)
+            + 1
+        ),
     )
     warmup = HistoryWarmup(
         history_cache,

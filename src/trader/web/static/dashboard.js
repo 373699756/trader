@@ -1,247 +1,794 @@
-(() => {
+(function () {
   "use strict";
 
   const state = {
     strategy: "today",
+    view: "current",
     date: "",
+    payload: null,
+    payloads: new Map(),
+    etags: new Map(),
+    inflight: new Map(),
+    stream: null,
+    streamRetry: null,
+    pollTimer: null,
+    lastEventId: 0,
+    projectionVersion: "",
+    requestSequence: 0,
+    selectionSequence: 0,
+    selectedDateAvailability: "available",
+    runtimePhase: "",
     longScope: "chokepoint",
     longGroup: "",
-    etags: new Map(),
-    payloads: new Map(),
-    errors: [],
-    longPayload: null,
   };
-  const byId = (id) => document.getElementById(id);
-  const text = (id, value) => { byId(id).textContent = value ?? "-"; };
-  const fmt = (value, digits = 2) => Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "-";
-  const age = (seconds) => Number.isFinite(seconds) ? `${Math.round(seconds)} 秒` : "-";
+  const CACHE_MAX_AGE_MS = 30000;
+  const HISTORY_REFRESH_MS = 3000;
+  const PATCH_LATENCY_SAMPLE_CAPACITY = 256;
+  const selection = window.TraderSelection;
   const longGroups = window.TraderLongGroups;
-  const longRender = window.TraderRender;
-  const longElements = {
-    longScopeTabs: byId("longScopeTabs"),
-    longSidebar: byId("long-sidebar"),
-    longTitle: byId("long-panel-title"),
-    longMeta: byId("long-panel-meta"),
-    longIndustryTabs: byId("longIndustryTabs"),
-    longStockHeader: byId("longStockHeader"),
-    longStockContext: byId("longStockContext"),
+  const formatters = window.TraderDashboardFormatters;
+  const patchDependencyMissing = !window.TraderDashboardPatches;
+  const patches = window.TraderDashboardPatches || fallbackDashboardPatches();
+  const patchToPaintSamples = [];
+  const diagnostics = {
+    recommendationRequests: 0,
+    recommendationFullResponses: 0,
+    recommendationNotModified: 0,
+    recommendationPatchesApplied: 0,
+    overlayPatchesApplied: 0,
+    resyncRequests: 0,
+    fullResponseBytes: 0,
+    incrementalSseBytes: 0,
+    patchToPaintDroppedSamples: 0,
+    resyncReasons: {},
+    browserErrors: [],
+    runtimeDiagnostics: [],
   };
-  const diagnostics = { get strategy() { return state.strategy; }, get errors() { return [...state.errors]; } };
-  window.TraderV2Diagnostics = diagnostics;
-
-  async function fetchJson(path) {
-    const headers = {};
-    const etag = state.etags.get(path);
-    if (etag) headers["If-None-Match"] = etag;
-    const response = await fetch(path, { headers, cache: "no-store" });
-    if (response.status === 304) return state.payloads.get(path);
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw new Error(payload?.error?.code || `http_${response.status}`);
-    }
-    const payload = await response.json();
-    const nextEtag = response.headers.get("ETag");
-    if (nextEtag) state.etags.set(path, nextEtag);
-    state.payloads.set(path, payload);
-    return payload;
+  if (patchDependencyMissing) {
+    diagnostics.browserErrors.push("dependency_missing:TraderDashboardPatches");
   }
-
-  function decisionPath() {
-    const base = `/api/v2/decisions/${state.strategy}`;
-    return state.date ? `${base}/history?date=${encodeURIComponent(state.date)}` : `${base}/current`;
-  }
-
-  async function loadDecision() {
-    try {
-      renderDecision(await fetchJson(decisionPath()));
-    } catch (error) {
-      recordError(error);
-      if (state.strategy === "long") {
-        renderLong({ strategy: "long", status: "ready", trade_date: "", items: [], degraded_reasons: ["long_quotes_unavailable"] });
-      } else {
-        renderEmpty("决策读取失败");
-      }
-    }
-  }
-
-  async function loadDates() {
-    const select = byId("dateSelect");
-    select.replaceChildren(new Option("当前", ""));
-    if (state.strategy === "long") {
-      state.date = "";
-      select.disabled = true;
-      return;
-    }
-    select.disabled = false;
-    try {
-      const payload = await fetchJson(`/api/v2/decisions/${state.strategy}/dates`);
-      for (const value of payload.dates || []) select.add(new Option(value, value));
-      select.value = state.date;
-    } catch (error) { recordError(error); }
-  }
-
-  async function loadStatus() {
-    try {
-      const payload = await fetchJson("/api/v2/status");
-      const ready = payload.status === "running" || payload.status === "ready";
-      text("runtimeStatus", payload.status || "unknown");
-      byId("runtimeDot").className = `status-dot ${ready ? "ready" : "degraded"}`;
-      const budget = payload.deepseek_budget || {};
-      text("budget", `${budget.used ?? "-"} / ${budget.remaining ?? "-"} / ${budget.limit ?? "-"}`);
-      text("lastError", `最近错误：${payload.last_error || "无"}`);
-    } catch (error) {
-      recordError(error);
-      text("runtimeStatus", "degraded");
-      byId("runtimeDot").className = "status-dot degraded";
-    }
-  }
-
-  function renderDecision(payload) {
-    if (state.strategy === "long") {
-      renderLong(payload);
-      return;
-    }
-    renderGeneric(payload);
-  }
-
-  function renderGeneric(payload) {
-    showGenericLayout();
-    const coverage = payload.coverage || {};
-    const reasons = payload.degraded_reasons || [];
-    text("tradeDate", payload.trade_date);
-    text("dataAge", age(payload.data_age_seconds));
-    text("observedAt", payload.observed_at ? new Date(payload.observed_at).toLocaleString("zh-CN", { hour12: false }) : "尚无数据");
-    text("coverage", `${coverage.evaluated_count ?? 0} / ${coverage.candidate_count ?? 0}`);
-    text("coverageDetail", `已评估 / 候选，过滤 ${coverage.rejected_count ?? 0}`);
-    text("funnel", `${coverage.rejected_count ?? 0} → ${coverage.selected_count ?? 0}`);
-    text("funnelDetail", `执行 ${coverage.executable_count ?? 0} / 观察 ${coverage.observation_count ?? 0}`);
-    text("freeze", payload.frozen ? "已冻结" : "滚动");
-    text("freezeDetail", payload.freeze_kind || "当前滚动结果");
-    text("degraded", reasons.length ? reasons.join("、") : "无降级");
-    byId("degraded").classList.toggle("has-warning", reasons.length > 0);
-    text("panelTitle", `${label(state.strategy)} ${state.date || "当前决策"}`);
-    text("viewLabel", state.date ? `历史 · ${state.date}` : "当前决策");
-    text("decisionStatus", payload.status);
-    text("scoreStatus", payload.score_status);
-    text("decisionStage", payload.stage || "未就绪");
-    text("decisionVersion", payload.decision_version);
-    text("inputVersions", entries(payload.input_versions));
-    text("filterReasons", entries(payload.filter_reason_counts));
-    renderRows(payload.items || [], payload.status);
-  }
-
-  function renderLong(payload) {
-    const display = longGroups.displayPayload({ ...payload, strategy: "long" });
-    state.longPayload = display;
-    byId("metricGrid").hidden = true;
-    byId("genericLayout").hidden = true;
-    byId("longLayout").hidden = false;
-    byId("longScopeTabs").hidden = false;
-    byId("dateSelect").disabled = true;
-    text("tradeDate", display.trade_date || "-");
-    text("viewLabel", "长期研究 · 仅展示当前数据");
-    longGroups.renderBar(longElements, state, display);
-    const items = longGroups.visibleRecommendations(display, display.items, state.longScope, state.longGroup);
-    const definition = longRender.longTable();
-    byId("longColumns").innerHTML = definition.columns;
-    byId("longHead").innerHTML = definition.head;
-    if (items.length > 0) {
-      byId("longRows").innerHTML = longRender.tableRows(items, display);
-    } else {
-      byId("longRows").innerHTML = `<tr><td colspan="7" class="empty-state">${longRender.escapeHtml(longGroups.emptyMessage(display, state.longScope))}</td></tr>`;
-    }
-    const reasons = display.degraded_reasons || [];
-    text("longStatus", reasons.length ? `行情降级：${reasons.join("、")}` : `固定名单 · ${display.items.length} 只`);
-  }
-
-  function showGenericLayout() {
-    byId("metricGrid").hidden = false;
-    byId("genericLayout").hidden = false;
-    byId("longLayout").hidden = true;
-    byId("longScopeTabs").hidden = true;
-  }
-
-  function renderRows(items, status) {
-    const body = byId("decisionRows");
-    body.replaceChildren();
-    text("itemCount", `${items.length} 项`);
-    if (!items.length) {
-      renderEmpty(status === "not_applicable" ? "该策略不提供历史" : "当前没有可展示决策");
-      return;
-    }
-    for (const item of items) {
-      const row = document.createElement("tr");
-      row.dataset.code = item.code;
-      const quote = item.quote || {};
-      const scores = item.scores || {};
-      append(row, item.rank || "-");
-      const stock = append(row, item.code);
-      const name = document.createElement("span"); name.className = "stock-name"; name.textContent = item.name || "-"; stock.append(name);
-      append(row, item.group || item.industry || "-");
-      const quoteCell = append(row, fmt(quote.price));
-      const change = document.createElement("span");
-      change.className = Number(quote.pct_change) >= 0 ? "positive" : "negative";
-      change.textContent = ` ${fmt(quote.pct_change)}%`;
-      quoteCell.append(change);
-      append(row, fmt(scores.local));
-      append(row, fmt(scores.deepseek));
-      append(row, fmt(scores.final));
-      const action = append(row, "");
-      const badge = document.createElement("span"); badge.className = "action"; badge.textContent = item.action || "-"; action.append(badge);
-      append(row, [...(item.risk_codes || []), item.action_reason].filter(Boolean).join(" · ") || "-");
-      body.append(row);
-    }
-  }
-
-  function append(row, value) { const cell = document.createElement("td"); cell.textContent = value; row.append(cell); return cell; }
-  function renderEmpty(message) { const body = byId("decisionRows"); body.replaceChildren(); const row = document.createElement("tr"); const cell = append(row, message); cell.colSpan = 9; cell.className = "empty-state"; body.append(row); text("itemCount", "0 项"); }
-  function entries(value) { const pairs = Object.entries(value || {}); return pairs.length ? pairs.map(([key, item]) => `${key}: ${item}`).join(" · ") : "-"; }
-  function label(strategy) { return ({ today: "Today", tomorrow: "Tomorrow", d25: "D2-5", long: "Long" })[strategy]; }
-  function recordError(error) { state.errors.push(String(error?.message || error)); state.errors = state.errors.slice(-20); }
-
-  function connectEvents() {
-    const stream = new EventSource("/api/v2/events");
-    stream.onopen = () => text("streamStatus", "在线");
-    stream.onerror = () => text("streamStatus", "重连中");
-    const refresh = (event) => {
-      try {
-        const payload = JSON.parse(event.data);
-        if (event.type === "resync_required" || payload.strategy === state.strategy) loadDecision();
-        loadStatus();
-      } catch (error) { recordError(error); }
-    };
-    stream.addEventListener("decision", refresh);
-    stream.addEventListener("overlay", refresh);
-    stream.addEventListener("resync_required", refresh);
-  }
-
-  document.addEventListener("DOMContentLoaded", async () => {
-    byId("strategyTabs").addEventListener("click", async (event) => {
-      const button = event.target.closest("button[data-strategy]");
-      if (!button) return;
-      state.strategy = button.dataset.strategy;
-      state.date = "";
-      document.querySelectorAll("button[data-strategy]").forEach((item) => item.classList.toggle("is-active", item === button));
-      await loadDates();
-      await loadDecision();
+  window.TraderDashboardDiagnostics = Object.freeze({
+    snapshot: () => ({
+      ...diagnostics,
+      resyncReasons: { ...diagnostics.resyncReasons },
+      browserErrors: [...diagnostics.browserErrors],
+      runtimeDiagnostics: [...diagnostics.runtimeDiagnostics],
+      patchToPaint: formatters.latencySummary(patchToPaintSamples),
+    }),
+  });
+  window.addEventListener("error", (event) => recordBrowserError("error", event.message));
+  window.addEventListener("unhandledrejection", (event) => recordBrowserError("unhandledrejection", event.reason));
+  const els = {};
+  document.addEventListener("DOMContentLoaded", init);
+  function init() {
+    for (const id of [
+      "marketPhase", "runtimeDot", "runtimeStatus", "quoteSource", "quoteTime", "quoteAge", "streamStatus",
+      "scoreTime", "budgetStatus", "headerFreeze", "lastError",
+      "refreshButton", "dateSelect", "strategyDescription", "recommendationCount", "observationCount", "filteredCount", "dataSource",
+      "topScore", "modelReview", "dataQuality", "notice", "noticeText", "recommendationTable", "tableColumns", "tableHead", "tableBody",
+      "observationPool", "observationPoolMeta", "observationTable", "observationColumns", "observationHead", "observationBody",
+      "longScopeTabs", "longIndustryTabs", "longStockHeader", "longStockContext",
+      "detailDrawer", "drawerBackdrop", "drawerCode", "drawerTitle", "drawerContent", "drawerClose",
+    ]) els[id] = document.getElementById(id);
+    Object.assign(els, { resultLayout: document.getElementById("recommendation-layout"), longSidebar: document.getElementById("long-sidebar"), longTitle: document.getElementById("long-panel-title"), longMeta: document.getElementById("long-panel-meta") });
+    document.querySelectorAll(".strategy-tab").forEach((button) => {
+      button.addEventListener("click", () => selectStrategy(button.dataset.strategy));
     });
-    byId("longScopeTabs").addEventListener("click", (event) => {
+    els.longScopeTabs.addEventListener("click", (event) => {
       const button = event.target.closest("button[data-scope]");
       if (!button || state.longScope === button.dataset.scope) return;
       state.longScope = button.dataset.scope;
       state.longGroup = "";
-      if (state.longPayload) renderLong(state.longPayload);
+      if (state.payload) renderPayload(state.payload);
     });
-    byId("longIndustryTabs").addEventListener("click", (event) => {
+    els.longIndustryTabs.addEventListener("click", (event) => {
       const button = event.target.closest("button[data-group]");
       if (!button || state.longGroup === button.dataset.group) return;
       state.longGroup = button.dataset.group;
-      if (state.longPayload) renderLong(state.longPayload);
+      if (state.payload) renderPayload(state.payload);
     });
-    byId("dateSelect").addEventListener("change", async (event) => { state.date = event.target.value; await loadDecision(); });
-    byId("refreshButton").addEventListener("click", async () => { state.etags.clear(); await Promise.all([loadDecision(), loadStatus()]); });
-    await Promise.all([loadDates(), loadDecision(), loadStatus()]);
-    connectEvents();
-    window.setInterval(loadStatus, 30000);
-  });
+    els.dateSelect.addEventListener("change", () => {
+      state.date = els.dateSelect.value;
+      state.selectedDateAvailability = "available";
+      loadRecommendations("date");
+    });
+    els.refreshButton.addEventListener("click", () => loadRecommendations("manual"));
+    [els.tableBody, els.observationBody].forEach((body) => {
+      body.addEventListener("click", selectRow);
+      body.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") selectRow(event);
+      });
+    });
+    els.drawerClose.addEventListener("click", closeDrawer);
+    els.drawerBackdrop.addEventListener("click", closeDrawer);
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") closeDrawer();
+    });
+
+    selectStrategy("today");
+    prefetchStrategies();
+    loadStatus();
+    connectStream();
+    window.setInterval(loadStatus, 15000);
+    window.setInterval(updateQuoteAge, 1000);
+    window.setInterval(() => {
+      if (state.date && document.visibilityState !== "hidden") loadRecommendations("history_overlay");
+    }, HISTORY_REFRESH_MS);
+  }
+
+  async function selectStrategy(strategy) {
+    const nextStrategy = strategy || "today";
+    if (!selection.descriptions[nextStrategy] || state.strategy === nextStrategy && state.payload) return;
+    const previousStrategy = state.strategy;
+    const selectedDate = state.date;
+    const selectionId = ++state.selectionSequence;
+    state.requestSequence += 1;
+    state.strategy = nextStrategy;
+    state.payload = null;
+    state.projectionVersion = "";
+    if (nextStrategy !== "long") {
+      state.longScope = "chokepoint";
+      state.longGroup = "";
+    }
+    closeDrawer();
+    els.dateSelect.disabled = true;
+    els.strategyDescription.textContent = selection.descriptions[nextStrategy];
+    setLongControls(nextStrategy === "long");
+    document.querySelectorAll(".strategy-tab").forEach((button) => {
+      const active = button.dataset.strategy === state.strategy;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    renderLoadingState();
+    const dates = await loadDates(nextStrategy, selectionId);
+    if (selectionId !== state.selectionSequence) return;
+    const resolved = selection.resolveStrategyDate(previousStrategy, nextStrategy, selectedDate, dates);
+    state.date = resolved.date;
+    state.selectedDateAvailability = resolved.availability;
+    selection.renderDateOptions(els.dateSelect, state.strategy, dates, resolved.date, resolved.availability);
+    if (resolved.availability === "missing") {
+      renderMissingHistoricalDate(nextStrategy, resolved.date);
+      return;
+    }
+    const key = recommendationKey(state.strategy, state.date, state.view);
+    state.payload = displayableCachedPayload(key, state.strategy, state.date, state.view);
+    if (state.payload) renderPayload(state.payload);
+    await loadRecommendations("strategy");
+  }
+
+  async function loadDates(strategy, selectionId) {
+    if (strategy === "long") return [];
+    try {
+      const response = await fetch(`/api/recommendation-dates?strategy=${encodeURIComponent(strategy)}`, { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error("历史日期接口请求失败");
+      if (selectionId !== state.selectionSequence || strategy !== state.strategy) return [];
+      return Array.from(new Set((payload.items || []).filter((value) => typeof value === "string")));
+    } catch (_error) {
+      if (strategy === state.strategy) setNotice("历史日期暂不可用，正在直接读取所选日期", "warn");
+      return null;
+    }
+  }
+
+  async function loadRecommendations(reason) {
+    const requestId = ++state.requestSequence;
+    const strategy = state.strategy;
+    const selectedDate = state.date;
+    const view = state.view;
+    if (
+      selectedDate
+      && state.selectedDateAvailability === "missing"
+      && reason !== "manual"
+    ) {
+      renderMissingHistoricalDate(strategy, selectedDate);
+      return;
+    }
+    const key = recommendationKey(strategy, selectedDate, view);
+    const cached = displayableCachedPayload(key, strategy, selectedDate, view);
+    els.refreshButton.classList.add("is-busy");
+    if (cached) {
+      if (state.payload !== cached) {
+        state.payload = cached;
+        renderPayload(cached);
+      }
+    } else if (!state.payload || reason === "strategy" || reason === "date") {
+      renderTableState("正在读取推荐快照");
+    }
+    try {
+      const payload = await requestRecommendations(strategy, selectedDate, view);
+      if (requestId !== state.requestSequence) return;
+      if (selectedDate) {
+        state.selectedDateAvailability = "available";
+        selection.markDateAvailability(els.dateSelect, selectedDate, "available");
+      }
+      if (state.payload !== payload) {
+        const previous = state.payload;
+        state.payload = payload;
+        state.projectionVersion = patches.projectionVersion(payload);
+        if (["overlay", "history_overlay"].includes(reason) && patchLiveRows(previous, payload)) {
+          const first = payload.items && payload.items[0];
+          els.dataSource.textContent = first && first.source ? window.TraderRender.sourceLabel(first.source) : "-";
+          updateQuoteAge();
+        } else {
+          renderPayload(payload);
+        }
+      }
+    } catch (error) {
+      if (requestId !== state.requestSequence) return;
+      if (selectedDate && selection.isSnapshotNotFound(error)) {
+        state.selectedDateAvailability = "missing";
+        selection.markDateAvailability(els.dateSelect, selectedDate, "missing");
+        renderMissingHistoricalDate(strategy, selectedDate);
+        return;
+      }
+      if (cached) {
+        state.payload = cached;
+        setNotice("后台刷新失败，显示最近已加载快照", "warn");
+      } else {
+        renderTableState("推荐快照读取失败");
+        setNotice(error instanceof Error ? error.message : "推荐快照读取失败", "error");
+      }
+    } finally {
+      if (requestId === state.requestSequence) els.refreshButton.classList.remove("is-busy");
+    }
+  }
+
+  async function requestRecommendations(strategy, selectedDate, view) {
+    const key = recommendationKey(strategy, selectedDate, view);
+    const pending = state.inflight.get(key);
+    if (pending) return pending;
+    const request = (async () => {
+      const query = new URLSearchParams(strategy === "long" ? {} : { top_n: "12" });
+      if (selectedDate) query.set("date", selectedDate);
+      else query.set("view", view);
+      const headers = {};
+      if (!selectedDate && state.etags.has(key)) headers["If-None-Match"] = state.etags.get(key);
+      diagnostics.recommendationRequests += 1;
+      const response = await fetch(`/api/recommendations/${encodeURIComponent(strategy)}?${query}`, {
+        headers,
+        cache: "no-store",
+      });
+      if (response.status === 304) {
+        diagnostics.recommendationNotModified += 1;
+        const cached = state.payloads.get(key);
+        if (cached) return cached;
+        throw new Error("推荐快照缓存不可用");
+      }
+      const payload = await response.json();
+      if (!response.ok) {
+        const error = new Error(payload.error && payload.error.message ? payload.error.message : "接口请求失败");
+        error.code = payload.error && payload.error.code ? payload.error.code : "";
+        error.httpStatus = response.status;
+        throw error;
+      }
+      diagnostics.recommendationFullResponses += 1;
+      diagnostics.fullResponseBytes += formatters.utf8Bytes(JSON.stringify(payload));
+      if (payload.strategy !== strategy) throw new Error("推荐快照策略不匹配");
+      if (!cacheIdentityValid(payload, strategy, selectedDate, view)) throw new Error("推荐快照身份不匹配");
+      const etag = response.headers.get("ETag");
+      if (etag) state.etags.set(key, etag);
+      state.payloads.set(key, payload);
+      return payload;
+    })();
+    state.inflight.set(key, request);
+    try {
+      return await request;
+    } finally {
+      if (state.inflight.get(key) === request) state.inflight.delete(key);
+    }
+  }
+
+  function recommendationKey(strategy, selectedDate, view) {
+    return `${strategy}:${selectedDate || view}`;
+  }
+
+  function displayableCachedPayload(key, strategy, selectedDate, view) {
+    const payload = state.payloads.get(key) || null;
+    if (!cacheIdentityValid(payload, strategy, selectedDate, view)) return null;
+    if (payload.frozen) return payload;
+    const publishedAt = new Date(payload.published_at).getTime();
+    if (!Number.isFinite(publishedAt) || Date.now() - publishedAt > CACHE_MAX_AGE_MS) return null;
+    return payload;
+  }
+
+  function cacheIdentityValid(payload, strategy, selectedDate, view) {
+    if (!payload || payload.strategy !== strategy) return false;
+    if (selectedDate) {
+      return payload.historical === true
+        && payload.view === "history"
+        && payload.requested_date === selectedDate
+        && payload.trade_date === selectedDate;
+    }
+    if (payload.status === "not_ready") return payload.view === view;
+    if (payload.historical === true || !payload.current_trade_date) return false;
+    const viewMatches = view === "current"
+      ? ["live", "official"].includes(payload.view)
+      : payload.view === view;
+    return payload.trade_date === payload.current_trade_date && viewMatches;
+  }
+
+  function prefetchStrategies() {
+    for (const strategy of ["today", "tomorrow", "d25"]) {
+      requestRecommendations(strategy, "", state.view).catch(() => {});
+    }
+  }
+
+  function renderPayload(payload) {
+    payload = longGroups.displayPayload(payload);
+    state.projectionVersion = patches.projectionVersion(payload);
+    const items = Array.isArray(payload.items) ? payload.items : [], historical = payload.historical === true;
+    const frozenToday = window.TraderRender.isFrozenTodayView(payload);
+    setLongControls(payload.strategy === "long" && !historical);
+    setLongLayout(payload.strategy === "long" && payload.status === "ready" && !historical);
+    longGroups.renderBar(els, state, payload.status === "ready" ? payload : null);
+    const recommendations = longGroups.visibleRecommendations(
+      payload,
+      selection.visibleRecommendations(payload),
+      state.longScope,
+      state.longGroup,
+    );
+    const observationState = selection.observationDisplayState(payload, state.runtimePhase);
+    const observations = selection.observationRecommendations(payload, state.runtimePhase);
+    const showObservationPool = observationState === "open";
+    els.observationPool.hidden = !showObservationPool;
+    els.recommendationCount.textContent = String(items.filter((item) => item.action === "executable").length);
+    els.observationCount.textContent = observationSummary(
+      payload,
+      observationState,
+      items.filter((item) => item.action === "observe").length,
+    );
+    const observationLimit = Number(payload.selection_diagnostics && payload.selection_diagnostics.observation_limit);
+    const observationFloorValue = payload.selection_diagnostics && payload.selection_diagnostics.observation_floor;
+    const executableThresholdValue = payload.selection_diagnostics && payload.selection_diagnostics.executable_threshold;
+    const observationFloor = observationFloorValue == null ? Number.NaN : Number(observationFloorValue);
+    const executableThreshold = executableThresholdValue == null ? Number.NaN : Number(executableThresholdValue);
+    const limitText = `${observations.length} / ${Number.isInteger(observationLimit) && observationLimit > 0 ? observationLimit : 6}`;
+    els.observationPoolMeta.textContent = Number.isFinite(observationFloor)
+      ? `${limitText} · 门槛 ${observationFloor.toFixed(2)}`
+      : limitText;
+    els.observationPoolMeta.title = Number.isFinite(observationFloor) && Number.isFinite(executableThreshold)
+      ? `观察门槛 = 正式门槛 ${executableThreshold.toFixed(2)} - 观察余量 ${(executableThreshold - observationFloor).toFixed(2)}`
+      : "";
+    els.filteredCount.textContent = String(payload.filtered_count || 0);
+    const firstVisible = recommendations[0] || items[0];
+    els.dataSource.textContent = firstVisible && firstVisible.source ? window.TraderRender.sourceLabel(firstVisible.source) : "-";
+    const summary = selection.recommendationSummary(payload, items);
+    els.topScore.textContent = summary.topScore;
+    els.modelReview.textContent = summary.modelReview;
+    els.dataQuality.textContent = summary.dataQuality;
+    els.dataQuality.title = summary.dataQualityTitle;
+    const definition = window.TraderRender.tableDefinition(payload);
+    els.recommendationTable.classList.toggle("is-history", historical);
+    els.recommendationTable.classList.toggle("is-anchor-table", frozenToday);
+    els.recommendationTable.classList.toggle("is-long-table", payload.strategy === "long" && !historical);
+    els.tableColumns.innerHTML = definition.columns;
+    els.tableHead.innerHTML = definition.head;
+    if (showObservationPool) {
+      const observationDefinition = window.TraderRender.observationTableDefinition(payload);
+      els.observationTable.classList.toggle("is-anchor-table", frozenToday);
+      els.observationColumns.innerHTML = observationDefinition.columns;
+      els.observationHead.innerHTML = observationDefinition.head;
+    } else {
+      els.observationTable.classList.remove("is-anchor-table");
+      els.observationColumns.innerHTML = "";
+      els.observationHead.innerHTML = "";
+      els.observationBody.innerHTML = "";
+    }
+    if (payload.status === "not_ready") {
+      const notReady = patches.notReadyMessage(payload);
+      renderTableState(notReady.message, window.TraderRender.tableColumnCount(payload));
+      setNotice(notReady.notice, "idle");
+      return;
+    }
+    if (recommendations.length === 0) {
+      const emptyMessage = historical
+        ? "当前门槛下没有历史推荐结果"
+        : payload.strategy === "long"
+          ? longGroups.emptyMessage(payload, state.longScope)
+          : payload.frozen
+            ? patches.frozenEmptyMessage(payload)
+            : patches.emptyRecommendationMessage(payload, observations.length);
+      renderTableState(emptyMessage, window.TraderRender.tableColumnCount(payload));
+    } else {
+      els.tableBody.innerHTML = window.TraderRender.tableRows(recommendations, payload);
+    }
+    if (showObservationPool) {
+      if (observations.length) {
+        els.observationBody.innerHTML = window.TraderRender.observationTableRows(observations, payload);
+      } else {
+        const message = recommendations.length
+          ? "本轮无观察项；入选股票均为正式推荐"
+          : patches.emptyRecommendationMessage(payload, 0);
+        renderTableState(message, window.TraderRender.observationTableColumnCount(payload), els.observationBody);
+      }
+    }
+    const notice = patches.snapshotNotice(payload);
+    setNotice(notice.message, notice.level);
+    stampRowIdentities(payload);
+    updateQuoteAge();
+  }
+  function renderTableState(message, columns, body) {
+    (body || els.tableBody).innerHTML = `<tr><td class="table-state" colspan="${columns || 9}">${window.TraderRender.escapeHtml(message)}</td></tr>`;
+  }
+  function setLongLayout(enabled) { if (els.resultLayout) els.resultLayout.classList.toggle("is-long", Boolean(enabled)); }
+  function observationSummary(payload, observationState, count) {
+    if (payload && payload.strategy === "long") return String(count);
+    if (observationState === "open") return String(count);
+    if (observationState === "hidden_history") return "不保存";
+    if (observationState === "unknown") return "状态未知";
+    return "已关闭";
+  }
+  function setLongControls(enabled) { if (els.longScopeTabs) els.longScopeTabs.hidden = !enabled; }
+  function renderLoadingState() {
+    els.recommendationCount.textContent = "-";
+    els.observationCount.textContent = "-";
+    els.filteredCount.textContent = "-";
+    els.dataSource.textContent = "-";
+    els.topScore.textContent = "-";
+    els.modelReview.textContent = "-";
+    els.dataQuality.textContent = "读取中";
+    els.dataQuality.title = "";
+    els.scoreTime.textContent = "-";
+    els.headerFreeze.textContent = "-";
+    els.quoteTime.textContent = "-";
+    els.quoteAge.textContent = "-";
+    els.recommendationTable.classList.remove("is-history");
+    els.recommendationTable.classList.remove("is-anchor-table");
+    els.recommendationTable.classList.remove("is-long-table");
+    els.observationPool.hidden = true;
+    setLongControls(state.strategy === "long");
+    setLongLayout(false);
+    const definition = window.TraderRender.currentTable();
+    els.tableColumns.innerHTML = definition.columns;
+    els.tableHead.innerHTML = definition.head;
+    if (els.longSidebar) els.longSidebar.hidden = true;
+    renderTableState("正在读取推荐快照");
+    setNotice("正在读取推荐快照", "idle");
+  }
+
+  function renderMissingHistoricalDate(strategy, selectedDate) {
+    state.payload = null;
+    state.projectionVersion = "";
+    els.recommendationCount.textContent = "0";
+    els.observationCount.textContent = "0";
+    els.filteredCount.textContent = "-";
+    els.dataSource.textContent = "-";
+    els.topScore.textContent = "-";
+    els.modelReview.textContent = "-";
+    els.dataQuality.textContent = "无数据";
+    els.dataQuality.title = "";
+    els.scoreTime.textContent = "-";
+    els.headerFreeze.textContent = "-";
+    els.quoteTime.textContent = "-";
+    els.quoteAge.textContent = "-";
+    els.recommendationTable.classList.add("is-history");
+    els.recommendationTable.classList.remove("is-anchor-table");
+    els.recommendationTable.classList.remove("is-long-table");
+    els.observationPool.hidden = true;
+    setLongControls(false);
+    setLongLayout(false);
+    if (els.longSidebar) els.longSidebar.hidden = true;
+    const definition = window.TraderRender.historyTable();
+    els.tableColumns.innerHTML = definition.columns;
+    els.tableHead.innerHTML = definition.head;
+    const message = `${selection.strategyLabel(strategy)}策略在 ${selectedDate} 没有荐股数据`;
+    renderTableState(message, 6);
+    setNotice("已保留所选历史日期", "idle");
+  }
+
+  function patchLiveRows(previous, payload) {
+    if (!previous || !payload || previous.snapshot_id !== payload.snapshot_id) return false;
+    if (previous.historical !== payload.historical) return false;
+    if (payload.historical !== true) return false;
+    const before = Array.isArray(previous.items) ? previous.items : [];
+    const after = Array.isArray(payload.items) ? payload.items : [];
+    if (before.length !== after.length) return false;
+    const existingRows = new Map(
+      Array.from(els.tableBody.querySelectorAll("tr[data-code]")).map((row) => [row.dataset.code, row]),
+    );
+    if (existingRows.size !== after.length) return false;
+    const beforeByCode = new Map(before.map((item) => [item.code, item]));
+    for (const item of after) {
+      const prior = beforeByCode.get(item.code);
+      const currentRow = existingRows.get(item.code);
+      if (!prior || !currentRow) return false;
+      if (
+        prior.price === item.price
+        && prior.pct_change === item.pct_change
+        && prior.source_time === item.source_time
+        && prior.quote_data_version === item.quote_data_version
+      ) continue;
+      const holder = document.createElement("tbody");
+      holder.innerHTML = window.TraderRender.row(item, payload.historical === true);
+      if (!holder.firstElementChild) return false;
+      holder.firstElementChild.dataset.rowIdentity = rowIdentity(payload, item.code);
+      currentRow.replaceWith(holder.firstElementChild);
+    }
+    return true;
+  }
+
+  function setNotice(message, level) {
+    els.noticeText.textContent = message;
+    els.notice.dataset.level = level === "warning" ? "warn" : level || "idle";
+  }
+
+  function selectRow(event) {
+    const row = event.target.closest("tr[data-code]");
+    if (!row || !state.payload) return;
+    const item = (state.payload.items || []).find((candidate) => candidate.code === row.dataset.code);
+    if (!item) return;
+    els.drawerCode.textContent = `${item.code || "-"} · ${item.industry || "未分类"}`;
+    els.drawerTitle.textContent = `${item.name || "股票"} 股票详情`;
+    els.drawerContent.innerHTML = window.TraderRender.drawer(item, state.payload);
+    els.detailDrawer.classList.add("is-open");
+    els.detailDrawer.setAttribute("aria-hidden", "false");
+    els.drawerBackdrop.hidden = false;
+    els.drawerClose.focus();
+  }
+
+  function closeDrawer() {
+    els.detailDrawer.classList.remove("is-open");
+    els.detailDrawer.setAttribute("aria-hidden", "true");
+    els.drawerBackdrop.hidden = true;
+  }
+
+  async function loadStatus() {
+    try {
+      const response = await fetch("/api/status", { cache: "no-store" });
+      const payload = await response.json();
+      const running = Boolean(payload.runtime_started);
+      const previousPhase = state.runtimePhase;
+      state.runtimePhase = typeof payload.phase === "string" ? payload.phase : "";
+      els.runtimeStatus.textContent = running ? "运行中" : payload.status === "not_ready" ? "未就绪" : "已停止";
+      els.runtimeDot.dataset.state = running ? "ok" : payload.last_error ? "error" : "warn";
+      els.marketPhase.textContent = formatters.phaseLabel(payload.phase || "closed");
+      const rawLastError = payload.last_error || "";
+      els.lastError.textContent = window.TraderRender.statusErrorLabel(rawLastError);
+      window.TraderRender.rememberDiagnostic(diagnostics.runtimeDiagnostics, rawLastError);
+      const deepseek = payload.dependencies && payload.dependencies.deepseek;
+      const budget = deepseek && deepseek.budget;
+      els.budgetStatus.textContent = budget && budget.available === false
+        ? "不可用"
+        : budget ? `${budget.used} / ${budget.remaining}` : "0 / 168";
+      const market = payload.dependencies && payload.dependencies.market_data;
+      els.quoteSource.textContent = market && market.active_source ? window.TraderRender.sourceLabel(market.active_source) : "-";
+      const score = state.payload && state.payload.published_at;
+      els.scoreTime.textContent = state.payload && state.payload.score_status === "not_applicable"
+        ? "不适用"
+        : score ? window.TraderRender.formatTime(score) : "-";
+      els.headerFreeze.textContent = state.payload
+        ? state.payload.status === "not_ready" ? "未就绪" : state.payload.frozen ? "已冻结" : "未冻结"
+        : "-";
+      reconcileRecommendationIdentity(payload);
+      if (previousPhase !== state.runtimePhase && state.payload) renderPayload(state.payload);
+      updateQuoteAge();
+    } catch (_error) {
+      els.runtimeStatus.textContent = "状态不可用";
+      els.runtimeDot.dataset.state = "error";
+    }
+  }
+
+  function reconcileRecommendationIdentity(statusPayload) {
+    if (state.date || !state.payload || !statusPayload || !statusPayload.strategies) return;
+    const current = statusPayload.strategies[state.strategy];
+    if (!current || !current.snapshot_id || current.snapshot_id === state.payload.snapshot_id) return;
+    loadRecommendations("status_identity");
+  }
+
+  function updateQuoteAge() {
+    const item = state.payload && state.payload.items && state.payload.items[0];
+    if (!item || !item.source_time) {
+      els.quoteAge.textContent = "-";
+      els.quoteTime.textContent = "-";
+      return;
+    }
+    const timestamp = new Date(item.source_time).getTime();
+    if (!Number.isFinite(timestamp)) {
+      els.quoteAge.textContent = "-";
+      els.quoteTime.textContent = "-";
+      return;
+    }
+    const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+    els.quoteAge.textContent = seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分`;
+    els.quoteTime.textContent = window.TraderRender.formatTime(item.source_time);
+  }
+
+  function connectStream() {
+    if (state.stream) state.stream.close();
+    const query = state.lastEventId > 0 ? `?cursor=${state.lastEventId}` : "";
+    const stream = new EventSource(`/api/events/stream${query}`);
+    state.stream = stream;
+    els.streamStatus.textContent = "连接中";
+    stream.onopen = () => {
+      els.streamStatus.textContent = "实时";
+      stopPolling();
+      if (state.streamRetry) window.clearTimeout(state.streamRetry);
+    };
+    stream.addEventListener("recommendation_patch", (event) => {
+      const receivedAt = performance.now();
+      rememberEvent(event);
+      diagnostics.incrementalSseBytes += formatters.utf8Bytes(event.data || "");
+      let patch = null;
+      try { patch = JSON.parse(event.data); } catch (_error) { patch = null; }
+      if (
+        !state.date
+        && (!patch || !patch.strategy || patch.strategy === state.strategy)
+        && applyRecommendationPatch(patch)
+      ) recordPatchPaint(receivedAt);
+    });
+    stream.addEventListener("overlay_patch", (event) => {
+      const receivedAt = performance.now();
+      rememberEvent(event);
+      diagnostics.incrementalSseBytes += formatters.utf8Bytes(event.data || "");
+      let patch = null;
+      try { patch = JSON.parse(event.data); } catch (_error) { patch = null; }
+      if ((!patch || !patch.strategy || patch.strategy === state.strategy) && applyOverlayPatch(patch)) {
+        recordPatchPaint(receivedAt);
+      }
+    });
+    stream.addEventListener("resync_required", (event) => {
+      rememberEvent(event);
+      if (!state.date) requestRecommendationResync("server_resync");
+    });
+    stream.onerror = () => {
+      stream.close();
+      if (state.stream === stream) state.stream = null;
+      els.streamStatus.textContent = "轮询";
+      startPolling();
+      if (state.streamRetry) window.clearTimeout(state.streamRetry);
+      state.streamRetry = window.setTimeout(connectStream, 15000);
+    };
+  }
+
+  function applyRecommendationPatch(patch) {
+    const currentVersion = state.projectionVersion || patches.projectionVersion(state.payload);
+    const decision = patches.recommendationPatchDecision(patch, state.payload, currentVersion, state.strategy, state.view);
+    if (decision === "ignore_late_draft") return false;
+    if (decision !== "apply") {
+      requestRecommendationResync(decision);
+      return false;
+    }
+    const current = state.payload || {};
+    const removed = new Set([...(patch.removed_codes || []), ...(patch.removals || [])]);
+    const merged = patch.replace === true
+      ? patch.upserts
+      : patches.mergePatchItems(current.items, patch.upserts, removed);
+    if (!patches.topKValid(merged, patch.strategy)) {
+      requestRecommendationResync("topk_mismatch");
+      return false;
+    }
+    state.payload = {
+      ...current,
+      status: "ready",
+      snapshot_id: patch.snapshot_id,
+      projection_version: patch.projection_version || patch.snapshot_id,
+      strategy: patch.strategy,
+      trade_date: patch.trade_date,
+      requested_date: null,
+      current_trade_date: patch.current_trade_date || patch.trade_date,
+      historical: false,
+      view: patch.view,
+      phase: patch.phase,
+      published_at: patch.published_at,
+      strategy_version: patch.strategy_version,
+      fusion_mode: patch.fusion_mode,
+      stale: patch.stale,
+      frozen: patch.frozen,
+      degraded_reasons: patch.degraded_reasons || [],
+      filtered_count: patch.filtered_count,
+      selection_diagnostics: patch.selection_diagnostics || {},
+      readiness_reason: null,
+      long_groups: Array.isArray(patch.long_groups) ? patch.long_groups : current.long_groups || [],
+      items: merged,
+      error: null,
+    };
+    state.projectionVersion = patches.projectionVersion(state.payload);
+    const key = recommendationKey(state.strategy, state.date, state.view);
+    state.payloads.set(key, state.payload);
+    if (typeof patch.etag === "string" && patch.etag && patch.view === state.view) {
+      state.etags.set(key, formatters.quotedEtag(patch.etag));
+    }
+    diagnostics.recommendationPatchesApplied += 1;
+    renderPayload(state.payload);
+    return true;
+  }
+
+  function applyOverlayPatch(patch) {
+    if (state.date) return false;
+    const decision = patches.overlayPatchDecision(patch, state.payload, state.projectionVersion, state.strategy);
+    if (decision !== "apply") {
+      requestRecommendationResync(decision);
+      return false;
+    }
+    const quotes = new Map((patch.quotes || []).map((quote) => [quote.code, quote]));
+    state.payload = {
+      ...state.payload,
+      items: (state.payload.items || []).map((item) => {
+        const quote = quotes.get(item.code);
+        if (!quote) return item;
+        const anchor = Number(item.anchor_price);
+        const current = Number(quote.price);
+        const anchorToNow = Number.isFinite(anchor) && anchor > 0 && Number.isFinite(current)
+          ? ((current / anchor) - 1) * 100 : null;
+        return { ...item, ...quote, anchor_to_now_pct: anchorToNow };
+      }),
+    };
+    state.payloads.set(recommendationKey(state.strategy, state.date, state.view), state.payload);
+    diagnostics.overlayPatchesApplied += 1;
+    renderPayload(state.payload);
+    return true;
+  }
+
+  function requestRecommendationResync(reason) {
+    diagnostics.resyncRequests += 1;
+    diagnostics.resyncReasons[reason] = (diagnostics.resyncReasons[reason] || 0) + 1;
+    loadRecommendations(`resync_${reason}`);
+  }
+
+  function recordPatchPaint(receivedAt) {
+    window.requestAnimationFrame(() => {
+      const elapsed = Math.max(0, performance.now() - receivedAt);
+      if (patchToPaintSamples.length >= PATCH_LATENCY_SAMPLE_CAPACITY) {
+        patchToPaintSamples.shift();
+        diagnostics.patchToPaintDroppedSamples += 1;
+      }
+      patchToPaintSamples.push(elapsed);
+    });
+  }
+
+  function recordBrowserError(kind, detail) {
+    diagnostics.browserErrors.push(`${kind}:${String(detail || "unknown").slice(0, 300)}`);
+    if (diagnostics.browserErrors.length > 20) diagnostics.browserErrors.shift();
+  }
+
+  function fallbackDashboardPatches() {
+    return Object.freeze({
+      emptyRecommendationMessage: () => "当前没有达到正式推荐条件的股票",
+      frozenEmptyMessage: () => "正式冻结结果为空；观察池已关闭且未保存",
+      mergePatchItems: (items) => items || [],
+      notReadyMessage: (payload) => payload && payload.strategy === "long"
+        ? { message: "长期策略当前尚无可用数据", notice: "长期策略只展示当前研究快照" }
+        : { message: "当前暂无可用荐股数据", notice: "等待策略数据更新" },
+      overlayPatchDecision: () => "dependency_missing",
+      patchVersionValid: () => false,
+      projectionVersion: (payload) => payload && (payload.projection_version || payload.snapshot_id) || "",
+      recommendationPatchDecision: () => "dependency_missing",
+      snapshotNotice: (payload) => ({ message: payload && payload.status === "not_ready" ? "等待策略数据更新" : "快照状态不可用", level: "idle" }),
+      topKValid: () => false,
+    });
+  }
+
+  function rowIdentity(payload, code) {
+    return [payload.strategy, payload.trade_date, payload.view, code].map((value) => String(value || "")).join(":");
+  }
+
+  function stampRowIdentities(payload) {
+    if (!payload || !Array.isArray(payload.items)) return;
+    els.tableBody.querySelectorAll("tr[data-code]").forEach((row) => {
+      row.dataset.rowIdentity = rowIdentity(payload, row.dataset.code);
+    });
+    els.observationBody.querySelectorAll("tr[data-code]").forEach((row) => {
+      row.dataset.rowIdentity = rowIdentity(payload, row.dataset.code);
+    });
+  }
+
+  function rememberEvent(event) {
+    const parsed = Number(event.lastEventId);
+    if (Number.isInteger(parsed) && parsed >= 0) state.lastEventId = parsed;
+  }
+
+  function startPolling() {
+    if (state.pollTimer) return;
+    state.pollTimer = window.setInterval(() => {
+      loadStatus();
+      if (!state.date) loadRecommendations("poll");
+    }, 15000);
+  }
+
+  function stopPolling() {
+    if (!state.pollTimer) return;
+    window.clearInterval(state.pollTimer);
+    state.pollTimer = null;
+  }
+
 })();

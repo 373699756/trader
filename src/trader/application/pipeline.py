@@ -216,6 +216,9 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineResearchMixin, Pip
         self._outcome_settlement_date = ""
         self._decision_execution_mode = self._options_decision_execution_mode
         self._overlay_lock = threading.Lock()
+        self._initialization_lock = threading.Lock()
+        self._local_initialized = False
+        self._deferred_initialized = False
 
     def _settle_outcomes(self, now: datetime) -> None:
         if self._outcome_settlement is None:
@@ -239,19 +242,39 @@ class RecommendationPipeline(PipelineSubmissionMixin, PipelineResearchMixin, Pip
             self._state.increment("outcome_settlement_completed", result.completed_count)
 
     def initialize(self) -> Mapping[str, int]:
-        self._snapshot_writer.initialize()
-        recovery = self._snapshot_writer.recover()
-        retention = getattr(self._snapshot_writer, "enforce_retention", None)
-        archived = int(retention()) if callable(retention) else 0
-        self._restore_frozen_snapshots()
-        catchup = self._catch_up_due_freezes()
-        return {
-            "recovered": recovery.recovered,
-            "quarantined": recovery.quarantined,
-            "orphaned": recovery.orphaned,
-            "archived": archived,
-            "catchup_frozen": len(catchup),
-        }
+        result = self.initialize_local()
+        deferred = self.initialize_deferred()
+        return {**result, **deferred}
+
+    def initialize_local(self) -> Mapping[str, int]:
+        """Restore local durable state without calendar or external I/O."""
+        with self._initialization_lock:
+            if self._local_initialized:
+                return {"recovered": 0, "quarantined": 0, "orphaned": 0, "archived": 0, "catchup_frozen": 0}
+            self._snapshot_writer.initialize()
+            recovery = self._snapshot_writer.recover()
+            retention = getattr(self._snapshot_writer, "enforce_retention", None)
+            archived = int(retention()) if callable(retention) else 0
+            self._restore_frozen_snapshots()
+            self._local_initialized = True
+            return {
+                "recovered": recovery.recovered,
+                "quarantined": recovery.quarantined,
+                "orphaned": recovery.orphaned,
+                "archived": archived,
+                "catchup_frozen": 0,
+            }
+
+    def initialize_deferred(self) -> Mapping[str, int]:
+        """Run calendar-dependent startup recovery after the Web server is live."""
+        with self._initialization_lock:
+            if self._deferred_initialized:
+                return {"catchup_frozen": 0}
+            if not self._local_initialized:
+                raise RuntimeError("local pipeline initialization must complete first")
+            catchup = self._catch_up_due_freezes()
+            self._deferred_initialized = True
+            return {"catchup_frozen": len(catchup)}
 
     def _restore_frozen_snapshots(self) -> None:
         for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):

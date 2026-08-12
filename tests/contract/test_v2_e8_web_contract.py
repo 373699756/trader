@@ -8,10 +8,11 @@ from trader.application.decision_core import UnifiedDecisionIndex
 from trader.application.decision_events import build_v2_decision_committed
 from trader.application.decision_queries import UnifiedDecisionQueries
 from trader.application.decision_stream import UnifiedDecisionEventStream
+from trader.domain.market.models import MarketQuote
 from trader.domain.recommendation.decision_identity import DecisionItem, ScoredDecision
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 from trader.web import create_app
-from trader.web.route_services import UnifiedWebServices
+from trader.web.route_services import UnifiedWebServices, WebServices
 
 NOW = datetime(2026, 8, 11, 10, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -100,6 +101,47 @@ def test_http_reads_do_not_invoke_external_io() -> None:
         assert client.get(path).status_code == 200
 
 
+def test_july_dashboard_routes_project_current_unified_decisions() -> None:
+    index = UnifiedDecisionIndex()
+    decision = _decision()
+    assert index.publish(decision, expected_version=None).accepted
+    queries = UnifiedDecisionQueries(index, _Repository(), _Clock())
+    stream = UnifiedDecisionEventStream()
+    runtime_status = lambda: {"status": "running", "phase": "today_main"}
+    legacy = WebServices(
+        runtime_status,
+        decision_queries=queries,
+        decision_events=stream,
+        decision_quotes=lambda _codes: {"600000": _market_quote()},
+    )
+    app = create_app(
+        services=UnifiedWebServices(
+            queries,
+            stream,
+            runtime_status,
+            legacy=legacy,
+        )
+    )
+    client = app.test_client()
+
+    current = client.get("/api/recommendations/today?top_n=12&view=current")
+    dates = client.get("/api/recommendation-dates?strategy=today")
+    stream.publish_committed(build_v2_decision_committed(decision))
+    events = client.get("/api/events/stream?cursor=0", buffered=False)
+    iterator = iter(events.response)
+
+    assert current.status_code == 200
+    assert current.get_json()["snapshot_id"] == decision.version
+    assert current.get_json()["view"] == "live"
+    assert current.get_json()["items"][0]["name"] == "浦发银行"
+    assert current.get_json()["items"][0]["price"] == 10.25
+    assert current.get_json()["items"][0]["scores"]["local_score"] == 84.0
+    assert dates.get_json()["items"] == ["2026-08-08"]
+    assert next(iterator).decode() == ": connected\n\n"
+    assert "event: resync_required" in next(iterator).decode()
+    events.close()
+
+
 def _app():
     index = UnifiedDecisionIndex()
     decision = _decision()
@@ -139,4 +181,29 @@ def _decision() -> ScoredDecision:
             ),
         ),
         (("hard_filter", 10),),
+    )
+
+
+def _market_quote() -> MarketQuote:
+    return MarketQuote(
+        code="600000",
+        name="浦发银行",
+        price=10.25,
+        previous_close=10.0,
+        open_price=10.1,
+        high=10.3,
+        low=10.0,
+        pct_change=2.5,
+        change_5m=0.2,
+        speed=0.1,
+        volume_ratio=1.2,
+        turnover_rate=0.8,
+        amount=1_000_000_000.0,
+        amplitude=3.0,
+        market_cap=300_000_000_000.0,
+        industry="银行",
+        source="test",
+        source_time=NOW,
+        received_time=NOW,
+        data_version="quote:1",
     )

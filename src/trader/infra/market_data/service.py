@@ -370,6 +370,21 @@ class MarketFeatureService:
         normalized = _normalize_codes(codes)
         return self.quotes.current_quotes(normalized)
 
+    def cached_quotes(self, codes: Sequence[str]) -> Mapping[str, MarketQuote]:
+        """Return the newest cached full quote without performing external I/O."""
+        normalized = _normalize_codes(codes)
+        market = {quote.code: quote for quote in self.quotes.market_quotes()}
+        candidates = self.quotes.candidate_entries()
+        result: dict[str, MarketQuote] = {}
+        for code in normalized:
+            available = tuple(quote for quote in (market.get(code), candidates.get(code)) if quote is not None)
+            if available:
+                result[code] = max(
+                    available,
+                    key=lambda quote: (quote.source_time, quote.received_time, quote.data_version),
+                )
+        return result
+
     def read_outcome_bars(
         self,
         codes: Sequence[str],

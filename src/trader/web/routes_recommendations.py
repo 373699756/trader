@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 from flask import Blueprint, Response, jsonify, request
 
+from trader.application.decision_queries import UnifiedDecisionQueries
 from trader.application.queries import RecommendationQueries, SnapshotLookup
 from trader.domain.recommendation.models import Strategy
+from trader.web.legacy_decision_serializers import serialize_legacy_decision
 from trader.web.request_parsing import (
     RecommendationRequest,
     RequestFailure,
     parse_recommendation_request,
     parse_strategy,
 )
-from trader.web.route_services import WebServices
+from trader.web.route_services import DecisionQuoteProvider, WebServices
 from trader.web.serializers import (
     SnapshotViewContext,
     empty_snapshot_envelope,
@@ -38,6 +42,12 @@ def create_recommendation_blueprint(services: WebServices) -> Blueprint:
         )
         if isinstance(parsed, RequestFailure):
             return _failure_response(parsed, strategy_name, request.args.get("date"))
+        if services.decision_queries is not None:
+            return _unified_recommendation_response(
+                parsed,
+                services.decision_queries,
+                services.decision_quotes,
+            )
         return _recommendation_response(parsed, services.queries)
 
     @blueprint.get("/api/recommendation-dates")
@@ -48,10 +58,41 @@ def create_recommendation_blueprint(services: WebServices) -> Blueprint:
             return _failure_response(failure)
         if strategy is None:
             raise AssertionError("validated date request lost strategy")
-        dates = services.queries.recommendation_dates(strategy) if services.queries is not None else ()
-        return jsonify(serialize_recommendation_dates(strategy, dates))
+        if services.decision_queries is not None:
+            decision_dates = tuple(value.isoformat() for value in services.decision_queries.dates(strategy))
+            return jsonify(serialize_recommendation_dates(strategy, decision_dates))
+        legacy_dates = services.queries.recommendation_dates(strategy) if services.queries is not None else ()
+        return jsonify(serialize_recommendation_dates(strategy, legacy_dates))
 
     return blueprint
+
+
+def _unified_recommendation_response(
+    parsed: RecommendationRequest,
+    queries: UnifiedDecisionQueries,
+    quote_provider: DecisionQuoteProvider | None,
+) -> RouteResponse:
+    if parsed.strategy is Strategy.LONG and parsed.trade_date is not None:
+        return _failure_response(
+            RequestFailure("long_history_unsupported", "long only supports the current trade date"),
+            parsed.strategy.value,
+            parsed.trade_date,
+        )
+    view = (
+        queries.history(parsed.strategy, date.fromisoformat(parsed.trade_date))
+        if parsed.trade_date is not None
+        else queries.current(parsed.strategy)
+    )
+    if view.etag is not None and parsed.trade_date is None and request.if_none_match.contains(view.etag):
+        cached = Response(status=304)
+        cached.set_etag(view.etag)
+        return cached
+    quotes = quote_provider(tuple(item.code for item in view.items)) if quote_provider is not None else {}
+    response = jsonify(serialize_legacy_decision(view, top_n=parsed.top_n, quotes=quotes))
+    if view.etag is not None:
+        response.set_etag(view.etag)
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 def _recommendation_response(parsed: RecommendationRequest, queries: RecommendationQueries | None) -> RouteResponse:
