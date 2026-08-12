@@ -40,6 +40,16 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户反馈 Long 页面被显示成荐股表，要求恢复之前固定的卡脖子行业、高成长赛道和低价潜力股股票界面。
+  原因已确认：V2-E7 保留了 Long 固定名单和无评分 `LongProjection`，但 V2-E8 重写统一根页面时把
+  Long 一并降成通用决策表，丢失了原有三分类、左侧行业分组和长期股票行情表；本批没有改动 Long
+  运行时、固定名单或荐股接口。现在 Long 单独恢复三分类和左右分栏，固定名单保持配置顺序和完整席位，
+  V2 current 仅覆盖价格、涨跌幅、成交额、换手率、市值、行情来源与时间，Long 页面不再显示评分、动作、
+  推荐原因或荐股漏斗。定向 Web 契约、Ruff、mypy、Node smoke 和打包通过；全量 pytest 唯一失败来自
+  本批开始前已存在的 `tests/component/test_v2_market_data.py` 超时断言改动（当前工作树期望 20 秒、
+  活动实现仍为 300 秒），未修改该用户变更。未执行三档浏览器实机验收，原因是环境没有 Chrome/Chromium。
+  剩余风险是需在有桌面 Chrome 的环境复核 Long 三分类的最终像素布局。
+
 - 用户再次发送“继续”，要求执行 `docs/implementation-plan.md` 下一个完整未完成章节，并追问
   为什么反复修改仍未完成。本批完成 V2-E9“唯一组合根与入口”：启动脚本不再把旧 `HOST`/`PORT`
   映射为 `TRADER_HOST`/`TRADER_PORT`，`trader-cli` 移除 `migrate-v17`、`recommendation-archive`

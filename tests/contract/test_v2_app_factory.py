@@ -39,8 +39,11 @@ def test_root_uses_only_unified_v2_dashboard_assets() -> None:
     page = client.get("/").get_data(as_text=True)
 
     assert "A股 V2 决策工作台" in page
-    assert page.count(f"?rev={WEB_ASSET_REVISION}") == 2
+    assert page.count(f"?rev={WEB_ASSET_REVISION}") == 5
     assert f"/static/dashboard.css?rev={WEB_ASSET_REVISION}" in page
+    assert f"/static/render.js?rev={WEB_ASSET_REVISION}" in page
+    assert f"/static/long_watchlist_data.js?rev={WEB_ASSET_REVISION}" in page
+    assert f"/static/long_groups.js?rev={WEB_ASSET_REVISION}" in page
     assert f"/static/dashboard.js?rev={WEB_ASSET_REVISION}" in page
     assert "dashboard_patches.js" not in page
     assert "tomorrow_v2.js" not in page

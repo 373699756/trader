@@ -52,6 +52,10 @@ button, select { font: inherit; }
 .date-control { display: flex; align-items: center; gap: 8px; color: var(--muted); }
 .date-control select { min-width: 144px; padding: 8px 10px; }
 .view-label { margin-left: auto; color: var(--accent); font-weight: 700; }
+.long-scope-tabs { display: flex; align-items: center; gap: 18px; margin-left: 4px; }
+.long-scope-tab { border: 0; border-bottom: 2px solid transparent; padding: 9px 2px 7px; color: var(--muted); background: transparent; cursor: pointer; }
+.long-scope-tab:hover, .long-scope-tab.is-active { color: var(--text); }
+.long-scope-tab.is-active { border-bottom-color: var(--accent); }
 
 .metric-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
 .metric-grid article { min-height: 98px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
@@ -77,6 +81,34 @@ th:nth-child(8) { width: 88px; } th:nth-child(9) { width: 180px; }
 .action { display: inline-block; padding: 3px 7px; border-radius: 10px; background: #1b3550; color: var(--accent); }
 .empty-state { height: 220px; text-align: center; vertical-align: middle; color: var(--muted); }
 
+.long-layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 12px; align-items: stretch; }
+.long-sidebar, .long-table-panel { min-width: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.long-panel-heading, .long-stock-header { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.long-panel-heading h2, .long-stock-header h2 { margin: 4px 0 0; font-size: 17px; }
+.long-panel-heading > div > span, .long-stock-header > div > span { color: var(--muted); font-size: 12px; }
+.long-panel-heading b, .long-stock-meta b { color: var(--accent); font-size: 12px; }
+.long-industry-tabs { display: grid; gap: 6px; padding: 12px; align-content: start; }
+.long-industry-tab { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 44px; padding: 9px 10px; border: 0; border-left: 3px solid transparent; border-radius: 6px; color: var(--muted); text-align: left; background: transparent; cursor: pointer; }
+.long-industry-tab:hover { color: var(--text); background: #152b43; }
+.long-industry-tab.is-active { border-left-color: var(--accent); color: var(--text); background: #173a5d; }
+.long-industry-label { min-width: 0; }
+.long-industry-name { display: block; overflow-wrap: anywhere; }
+.long-industry-average { display: inline-block; margin-left: 6px; font-size: 11px; font-style: normal; }
+.long-industry-tab > b { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
+.long-stock-meta { display: grid; justify-items: end; gap: 4px; text-align: right; }
+.long-stock-meta small { color: var(--muted); font-size: 11px; }
+#longTable { table-layout: fixed; }
+#longTable th:nth-child(1) { width: 56px; }
+#longTable th:nth-child(2) { width: 220px; }
+#longTable th:nth-child(3), #longTable th:nth-child(4) { width: 110px; }
+#longTable th:nth-child(5) { width: 170px; }
+#longTable th:nth-child(6) { width: 130px; }
+#longTable th:nth-child(7) { width: 168px; }
+#longTable tr.has-long-section-divider td { border-top: 2px solid var(--accent); }
+#longTable td:nth-child(2) { font-weight: 700; }
+#longTable .stock-code { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; font-weight: 400; }
+.long-table-panel .table-scroll { max-height: calc(100vh - 236px); }
+
 .identity-panel { padding: 16px; }
 .identity-panel dl { margin: 16px 0 0; }
 .identity-panel dl div { padding: 12px 0; border-top: 1px solid var(--line); }
@@ -87,5 +119,6 @@ footer { padding: 10px 20px; border-top: 1px solid var(--line); color: var(--mut
 @media (min-width: 1680px) {
   .workspace { padding-left: 28px; padding-right: 28px; }
   .content-grid { grid-template-columns: minmax(0, 1fr) 330px; }
+  .long-layout { grid-template-columns: 330px minmax(0, 1fr); }
   table { font-size: 13px; }
 }

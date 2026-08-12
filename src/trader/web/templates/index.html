@@ -7,6 +7,9 @@
     <title>A股 V2 决策工作台</title>
     <link rel="icon" href="{{ url_for('static', filename='trader-mark.svg') }}" type="image/svg+xml" />
     <link rel="stylesheet" href="{{ web_asset('dashboard.css') }}" />
+    <script defer src="{{ web_asset('render.js') }}"></script>
+    <script defer src="{{ web_asset('long_watchlist_data.js') }}"></script>
+    <script defer src="{{ web_asset('long_groups.js') }}"></script>
     <script defer src="{{ web_asset('dashboard.js') }}"></script>
   </head>
   <body>
@@ -33,9 +36,14 @@
         </nav>
         <label class="date-control"><span>查看</span><select id="dateSelect"><option value="">当前</option></select></label>
         <div id="viewLabel" class="view-label">当前决策</div>
+        <nav id="longScopeTabs" class="long-scope-tabs" aria-label="长期研究类别" hidden>
+          <button class="long-scope-tab is-active" type="button" aria-selected="true" data-scope="chokepoint">卡脖子行业</button>
+          <button class="long-scope-tab" type="button" aria-selected="false" data-scope="future_growth">高成长赛道</button>
+          <button class="long-scope-tab" type="button" aria-selected="false" data-scope="low_price_potential">低价潜力股</button>
+        </nav>
       </section>
 
-      <section class="metric-grid" aria-label="决策指标">
+      <section id="metricGrid" class="metric-grid" aria-label="决策指标">
         <article><span>数据年龄</span><strong id="dataAge">-</strong><small id="observedAt">尚无数据</small></article>
         <article><span>覆盖</span><strong id="coverage">-</strong><small id="coverageDetail">候选 / 已评估</small></article>
         <article><span>漏斗</span><strong id="funnel">-</strong><small id="funnelDetail">过滤 / 入选</small></article>
@@ -44,7 +52,7 @@
         <article class="degraded-card"><span>降级状态</span><strong id="degraded">读取中</strong><small id="lastError">最近错误：无</small></article>
       </section>
 
-      <section class="content-grid">
+      <section id="genericLayout" class="content-grid">
         <section class="table-panel" aria-label="逐股诊断">
           <header><div><span>逐股诊断</span><h2 id="panelTitle">Today 当前决策</h2></div><b id="itemCount">0 项</b></header>
           <div class="table-scroll">
@@ -65,6 +73,39 @@
             <div><dt>过滤诊断</dt><dd id="filterReasons">-</dd></div>
           </dl>
         </aside>
+      </section>
+
+      <section id="longLayout" class="long-layout" aria-label="长期固定研究池" hidden>
+        <aside id="long-sidebar" class="long-sidebar" aria-label="长期研究分组">
+          <header class="long-panel-heading">
+            <div>
+              <span>重点研究方向</span>
+              <h2 id="long-panel-title">卡脖子行业</h2>
+            </div>
+            <b id="long-panel-meta">-</b>
+          </header>
+          <nav id="longIndustryTabs" class="long-industry-tabs" role="tablist" aria-label="长期行业赛道"></nav>
+        </aside>
+
+        <section class="long-table-panel" aria-label="固定股票行情">
+          <header id="longStockHeader" class="long-stock-header">
+            <div>
+              <span>长期重点观察池</span>
+              <h2>重点股票行情</h2>
+            </div>
+            <div class="long-stock-meta">
+              <b id="longStockContext">请选择左侧行业</b>
+              <small id="longStatus">读取中</small>
+            </div>
+          </header>
+          <div class="table-scroll">
+            <table id="longTable">
+              <colgroup id="longColumns"></colgroup>
+              <thead id="longHead"></thead>
+              <tbody id="longRows"><tr><td colspan="7" class="empty-state">加载中</td></tr></tbody>
+            </table>
+          </div>
+        </section>
       </section>
     </main>
     <footer>仅供研究，不构成投资建议</footer>

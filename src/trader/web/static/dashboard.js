@@ -1,11 +1,31 @@
 (() => {
   "use strict";
 
-  const state = { strategy: "today", date: "", etags: new Map(), payloads: new Map(), errors: [] };
+  const state = {
+    strategy: "today",
+    date: "",
+    longScope: "chokepoint",
+    longGroup: "",
+    etags: new Map(),
+    payloads: new Map(),
+    errors: [],
+    longPayload: null,
+  };
   const byId = (id) => document.getElementById(id);
   const text = (id, value) => { byId(id).textContent = value ?? "-"; };
-  const fmt = (value, digits = 2) => Number.isFinite(value) ? Number(value).toFixed(digits) : "-";
+  const fmt = (value, digits = 2) => Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "-";
   const age = (seconds) => Number.isFinite(seconds) ? `${Math.round(seconds)} 秒` : "-";
+  const longGroups = window.TraderLongGroups;
+  const longRender = window.TraderRender;
+  const longElements = {
+    longScopeTabs: byId("longScopeTabs"),
+    longSidebar: byId("long-sidebar"),
+    longTitle: byId("long-panel-title"),
+    longMeta: byId("long-panel-meta"),
+    longIndustryTabs: byId("longIndustryTabs"),
+    longStockHeader: byId("longStockHeader"),
+    longStockContext: byId("longStockContext"),
+  };
   const diagnostics = { get strategy() { return state.strategy; }, get errors() { return [...state.errors]; } };
   window.TraderV2Diagnostics = diagnostics;
 
@@ -36,7 +56,11 @@
       renderDecision(await fetchJson(decisionPath()));
     } catch (error) {
       recordError(error);
-      renderEmpty("决策读取失败");
+      if (state.strategy === "long") {
+        renderLong({ strategy: "long", status: "ready", trade_date: "", items: [], degraded_reasons: ["long_quotes_unavailable"] });
+      } else {
+        renderEmpty("决策读取失败");
+      }
     }
   }
 
@@ -44,6 +68,7 @@
     const select = byId("dateSelect");
     select.replaceChildren(new Option("当前", ""));
     if (state.strategy === "long") {
+      state.date = "";
       select.disabled = true;
       return;
     }
@@ -72,6 +97,15 @@
   }
 
   function renderDecision(payload) {
+    if (state.strategy === "long") {
+      renderLong(payload);
+      return;
+    }
+    renderGeneric(payload);
+  }
+
+  function renderGeneric(payload) {
+    showGenericLayout();
     const coverage = payload.coverage || {};
     const reasons = payload.degraded_reasons || [];
     text("tradeDate", payload.trade_date);
@@ -82,7 +116,7 @@
     text("funnel", `${coverage.rejected_count ?? 0} → ${coverage.selected_count ?? 0}`);
     text("funnelDetail", `执行 ${coverage.executable_count ?? 0} / 观察 ${coverage.observation_count ?? 0}`);
     text("freeze", payload.frozen ? "已冻结" : "滚动");
-    text("freezeDetail", payload.freeze_kind || "当前结果不写历史");
+    text("freezeDetail", payload.freeze_kind || "当前滚动结果");
     text("degraded", reasons.length ? reasons.join("、") : "无降级");
     byId("degraded").classList.toggle("has-warning", reasons.length > 0);
     text("panelTitle", `${label(state.strategy)} ${state.date || "当前决策"}`);
@@ -94,6 +128,37 @@
     text("inputVersions", entries(payload.input_versions));
     text("filterReasons", entries(payload.filter_reason_counts));
     renderRows(payload.items || [], payload.status);
+  }
+
+  function renderLong(payload) {
+    const display = longGroups.displayPayload({ ...payload, strategy: "long" });
+    state.longPayload = display;
+    byId("metricGrid").hidden = true;
+    byId("genericLayout").hidden = true;
+    byId("longLayout").hidden = false;
+    byId("longScopeTabs").hidden = false;
+    byId("dateSelect").disabled = true;
+    text("tradeDate", display.trade_date || "-");
+    text("viewLabel", "长期研究 · 仅展示当前数据");
+    longGroups.renderBar(longElements, state, display);
+    const items = longGroups.visibleRecommendations(display, display.items, state.longScope, state.longGroup);
+    const definition = longRender.longTable();
+    byId("longColumns").innerHTML = definition.columns;
+    byId("longHead").innerHTML = definition.head;
+    if (items.length > 0) {
+      byId("longRows").innerHTML = longRender.tableRows(items, display);
+    } else {
+      byId("longRows").innerHTML = `<tr><td colspan="7" class="empty-state">${longRender.escapeHtml(longGroups.emptyMessage(display, state.longScope))}</td></tr>`;
+    }
+    const reasons = display.degraded_reasons || [];
+    text("longStatus", reasons.length ? `行情降级：${reasons.join("、")}` : `固定名单 · ${display.items.length} 只`);
+  }
+
+  function showGenericLayout() {
+    byId("metricGrid").hidden = false;
+    byId("genericLayout").hidden = false;
+    byId("longLayout").hidden = true;
+    byId("longScopeTabs").hidden = true;
   }
 
   function renderRows(items, status) {
@@ -159,6 +224,19 @@
       document.querySelectorAll("button[data-strategy]").forEach((item) => item.classList.toggle("is-active", item === button));
       await loadDates();
       await loadDecision();
+    });
+    byId("longScopeTabs").addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-scope]");
+      if (!button || state.longScope === button.dataset.scope) return;
+      state.longScope = button.dataset.scope;
+      state.longGroup = "";
+      if (state.longPayload) renderLong(state.longPayload);
+    });
+    byId("longIndustryTabs").addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-group]");
+      if (!button || state.longGroup === button.dataset.group) return;
+      state.longGroup = button.dataset.group;
+      if (state.longPayload) renderLong(state.longPayload);
     });
     byId("dateSelect").addEventListener("change", async (event) => { state.date = event.target.value; await loadDecision(); });
     byId("refreshButton").addEventListener("click", async () => { state.etags.clear(); await Promise.all([loadDecision(), loadStatus()]); });

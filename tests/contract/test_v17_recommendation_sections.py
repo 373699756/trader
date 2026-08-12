@@ -25,6 +25,13 @@ def test_root_dashboard_is_one_unified_v2_workbench() -> None:
         'id="freeze"',
         'id="degraded"',
         'id="decisionTable"',
+        'id="longScopeTabs"',
+        'data-scope="chokepoint">卡脖子行业</button>',
+        'data-scope="future_growth">高成长赛道</button>',
+        'data-scope="low_price_potential">低价潜力股</button>',
+        'id="long-panel-title">卡脖子行业<',
+        ">重点股票行情<",
+        'id="longTable"',
     ):
         assert token in template
     assert "dashboard_patches.js" not in template
@@ -32,6 +39,9 @@ def test_root_dashboard_is_one_unified_v2_workbench() -> None:
     assert "/api/v2/decisions/${state.strategy}" in dashboard
     assert 'new EventSource("/api/v2/events")' in dashboard
     assert "TraderV2Diagnostics" in dashboard
+    assert "renderLong(payload)" in dashboard
+    assert "longRender.longTable()" in dashboard
+    assert "scores.local" not in dashboard.split("function renderLong", 1)[1].split("function showGenericLayout", 1)[0]
 
 
 def test_unified_dashboard_layout_has_desktop_containment() -> None:
@@ -40,6 +50,8 @@ def test_unified_dashboard_layout_has_desktop_containment() -> None:
     assert "min-width: 1180px" in css
     assert "grid-template-columns: repeat(6, minmax(0, 1fr))" in css
     assert "grid-template-columns: minmax(0, 1fr) 280px" in css
+    assert "grid-template-columns: 280px minmax(0, 1fr)" in css
+    assert ".long-scope-tab.is-active" in css
     assert "overflow: auto" in css
     assert "max-height: calc(100vh - 360px)" in css
 
