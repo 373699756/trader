@@ -59,6 +59,7 @@ class CacheResource(Protocol):
 class SystemLifecycleResources:
     supervisor: SupervisorResource
     source_lanes: SourceLaneResource
+    data_pool: PoolResource
     history_pool: PoolResource
     research_pool: PoolResource
     auxiliary_runtimes: tuple[AuxiliaryRuntimeResource, ...]
@@ -72,15 +73,18 @@ def start_application_resources(
 ) -> bool:
     supervisor = resources.supervisor
     history_pool = resources.history_pool
+    data_pool = resources.data_pool
     research_pool = resources.research_pool
     auxiliary_runtimes = resources.auxiliary_runtimes
     auxiliary_started: list[AuxiliaryRuntimeResource] = []
     history_started = False
+    data_started = False
     research_started = False
     try:
         for runtime in auxiliary_runtimes:
             if runtime.start():
                 auxiliary_started.append(runtime)
+        data_started = data_pool.start()
         history_started = history_pool.start()
         research_started = research_pool.start()
         started = supervisor.start()
@@ -89,6 +93,7 @@ def start_application_resources(
         _stop_started_resources(
             resources,
             tuple(auxiliary_started),
+            data_started,
             history_started,
             research_started,
             deadline,
@@ -96,12 +101,13 @@ def start_application_resources(
         raise
     if started:
         return True
-    if not any((research_started, history_started, bool(auxiliary_started))):
+    if not any((research_started, history_started, data_started, bool(auxiliary_started))):
         return False
     deadline = ShutdownDeadline.start(timeout_seconds)
     _stop_started_resources(
         resources,
         tuple(auxiliary_started),
+        data_started,
         history_started,
         research_started,
         deadline,
@@ -112,12 +118,15 @@ def start_application_resources(
 def _stop_started_resources(
     resources: SystemLifecycleResources,
     auxiliary_started: tuple[AuxiliaryRuntimeResource, ...],
+    data_started: bool,
     history_started: bool,
     research_started: bool,
     deadline: ShutdownDeadline,
 ) -> None:
     if research_started:
         resources.research_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
+    if data_started:
+        resources.data_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
     if history_started:
         resources.history_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
     for runtime in reversed(auxiliary_started):
@@ -132,6 +141,7 @@ def stop_application_resources(
     supervisor = resources.supervisor
     source_lanes = resources.source_lanes
     history_pool = resources.history_pool
+    data_pool = resources.data_pool
     research_pool = resources.research_pool
     auxiliary_runtimes = resources.auxiliary_runtimes
     market_cache = resources.market_cache
@@ -143,6 +153,7 @@ def stop_application_resources(
     steps.extend(supervisor_report.steps)
     steps.extend(source_lanes.stop(wait=True, deadline=deadline))
     steps.append(history_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
+    steps.append(data_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
     steps.append(research_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
     for runtime in auxiliary_runtimes:
         steps.append(runtime.stop(wait=True, deadline=deadline))

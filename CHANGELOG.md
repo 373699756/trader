@@ -6,6 +6,15 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- V2-E10 完成旧生产链物理删除：唯一组合根现在直接装配 V2 数据适配器、调度器、统一决策记录、
+  committed event observer、冻结协调器和只读 API/SSE；旧 Pipeline、RecommendationSnapshot、
+  publisher/query/replay、snapshot 仓储/迁移器、shadow/cutover 接点及旧 Web/API/SSE 资源不再位于
+  活动树。研究侧只接收 V2 committed event，不再读取旧 snapshot/baseline。
+
+- Long 页面保留固定名单界面，不再被通用荐股表替代：三个顶层 Tab 固定为“卡脖子行业”“高成长赛道”
+  和“低价潜力股”，行业分组与股票顺序继续来自长期名单，V2 current 只覆盖行情字段，不展示评分
+  或荐股动作。
+
 - V2-E9 收敛唯一入口与运行命名空间：默认 `config/v2/runtime.json` 现在只使用
   `.runtime/v2`，server lock、初始化、恢复和关闭均以配置中的 V2 runtime 为根；新增入口契约
   覆盖配置、CLI、启动脚本和进程锁边界。
@@ -40,15 +49,37 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户连续反馈“long 界面变成荐股、需要恢复卡脖子三个 Tab”。根因是统一 Web 根页面切换期间把
+  Long payload 当成了 scored decision 展示；本批通过 V2 current payload 归一化与固定名单展示层
+  恢复三分类、行业侧栏和长期行情表，同时删除旧兼容 Web 路由，避免再次通过旧接口分流。
+
 - 用户反馈 Long 页面被显示成荐股表，要求恢复之前固定的卡脖子行业、高成长赛道和低价潜力股股票界面。
   原因已确认：V2-E7 保留了 Long 固定名单和无评分 `LongProjection`，但 V2-E8 重写统一根页面时把
   Long 一并降成通用决策表，丢失了原有三分类、左侧行业分组和长期股票行情表；本批没有改动 Long
   运行时、固定名单或荐股接口。现在 Long 单独恢复三分类和左右分栏，固定名单保持配置顺序和完整席位，
   V2 current 仅覆盖价格、涨跌幅、成交额、换手率、市值、行情来源与时间，Long 页面不再显示评分、动作、
-  推荐原因或荐股漏斗。定向 Web 契约、Ruff、mypy、Node smoke 和打包通过；全量 pytest 唯一失败来自
-  本批开始前已存在的 `tests/component/test_v2_market_data.py` 超时断言改动（当前工作树期望 20 秒、
-  活动实现仍为 300 秒），未修改该用户变更。未执行三档浏览器实机验收，原因是环境没有 Chrome/Chromium。
-  剩余风险是需在有桌面 Chrome 的环境复核 Long 三分类的最终像素布局。
+  推荐原因或荐股漏斗。
+
+### Removed
+
+- 删除旧双链测试、旧性能入口与只服务旧链的 CLI/配置接点；V2 测试改为验证旧资源不可达、V2-only
+  路由和固定 Long Tab；同时删除未被 V2 组合根引用的旧事件队列、板块评分协调器、snapshot schema/
+  migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
+
+### Verification
+
+- `PYTHONPATH=.:src .venv/bin/pytest -q`：通过。
+- `make format-check`、`make lint`、`make type-check`、`make test`、`make package`：均通过；其中
+  `make package` 首次在隔离环境因缺少构建依赖下载失败，获准网络权限后重新执行通过。
+- `.venv/bin/ruff check src/trader`、`node --check src/trader/web/static/dashboard.js`、`git diff --check`：通过。
+- 仓库外 wheel 导入、真实进程和三档桌面验收属于 V2-E11 发布门禁，本批不宣称已完成。
+- 仓库外 wheel `pip --no-deps --target` 安装后，V2 Web 模板/静态资源导入和 `trader-cli validate-config`
+  均通过；安装目录为临时目录，未进入仓库。
+
+### Residual Risks
+
+- 本批未宣称最终发布完成；E11 仍需执行完整发布门禁、仓库外 wheel 导入/CLI 检查、真实进程和三档
+  桌面浏览器验收。外部行情/DeepSeek 服务的实时降级行为仍需在真实运行环境复核。
 
 - 用户再次发送“继续”，要求执行 `docs/implementation-plan.md` 下一个完整未完成章节，并追问
   为什么反复修改仍未完成。本批完成 V2-E9“唯一组合根与入口”：启动脚本不再把旧 `HOST`/`PORT`

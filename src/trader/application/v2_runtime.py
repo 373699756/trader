@@ -213,8 +213,16 @@ class V2SchedulerRuntime:
             threading.Event().wait(min(0.01, remaining))
         return self._dependencies.observer.wait_idle(max(0.0, deadline - time.monotonic()))
 
-    def stop(self, deadline: ShutdownDeadline | None = None) -> ShutdownReport:
-        deadline = deadline or ShutdownDeadline.start(self._shutdown_timeout_seconds)
+    def stop(
+        self,
+        timeout_seconds: float | ShutdownDeadline = 15.0,
+        *,
+        deadline: ShutdownDeadline | None = None,
+    ) -> ShutdownReport:
+        if isinstance(timeout_seconds, ShutdownDeadline):
+            deadline = deadline or timeout_seconds
+        else:
+            deadline = deadline or ShutdownDeadline.start(timeout_seconds)
         with self._lock:
             if self._stopped:
                 return self._shutdown_report or ShutdownReport.from_steps(deadline, ())

@@ -8,7 +8,6 @@ PLAN = ROOT / "docs" / "implementation-plan.md"
 DESIGN = ROOT / "docs" / "software-business-design.md"
 STRATEGY = ROOT / "docs" / "recommendation-strategy.md"
 BOOTSTRAP = ROOT / "src" / "trader" / "bootstrap.py"
-PIPELINE_STAGES = ROOT / "src" / "trader" / "application" / "pipeline_stages.py"
 
 
 def test_v2_e5_remains_complete_after_e6_progression() -> None:
@@ -39,13 +38,10 @@ def test_production_composition_installs_today_v2_without_legacy_today_scoring()
     tree = ast.parse(source)
     imports = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module is not None}
 
-    assert "trader.application.today_v2_runtime" in imports
+    assert "trader.application.today_v2_freezing" in imports
 
 
-def test_all_v2_freeze_controls_run_before_and_after_scoring() -> None:
-    source = PIPELINE_STAGES.read_text(encoding="utf-8")
-
-    first_control = source.index("for control in pipeline._v2_controls:")
-    scoring = source.index("snapshots = list(_score_strategies_on_workers")
-    second_control = source.index("for control in pipeline._v2_controls:", first_control + 1)
-    assert first_control < scoring < second_control
+def test_today_freeze_control_is_part_of_the_v2_scheduler_dependencies() -> None:
+    source = BOOTSTRAP.read_text(encoding="utf-8")
+    assert "V2FreezeAdapter(" in source
+    assert "publication.today_freezer" in source

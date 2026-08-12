@@ -1,1 +1,1 @@
-"""SQLite and immutable snapshot adapters."""
+"""V2 data-plane and immutable decision-record adapters."""

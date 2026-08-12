@@ -1,11 +1,11 @@
-"""Strict v17 six-pool cache and performance policy parsing."""
+"""Strict V2 cache and performance policy parsing."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 
 from trader.application.cache import CacheDatasetPolicy, CacheGroupPolicy, CachePolicy
-from trader.application.ports.pipeline_contracts import LOGICAL_CACHE_LIMIT_BYTES, PROCESS_PEAK_RSS_LIMIT_BYTES
+from trader.application.ports.data_plane_contracts import LOGICAL_CACHE_LIMIT_BYTES, PROCESS_PEAK_RSS_LIMIT_BYTES
 from trader.infra.settings_models import (
     PerformanceBudgetSettings,
     PerformanceMemorySettings,
@@ -41,8 +41,8 @@ def parse_cache_policy(raw: Mapping[str, object]) -> CachePolicy:
     if integer(raw, "schema_version", minimum=1) != 6:
         raise ConfigurationError("cache_policy.schema_version must be 6")
     policy_version = text(raw, "policy_version")
-    if policy_version != "market_cache_p1_p6":
-        raise ConfigurationError("cache_policy.policy_version must be market_cache_p1_p6")
+    if policy_version != "market_cache_v2":
+        raise ConfigurationError("cache_policy.policy_version must be market_cache_v2")
     estimator_version = text(raw, "estimator_version")
     if estimator_version != "canonical_json_utf8_v1":
         raise ConfigurationError("cache_policy.estimator_version must be canonical_json_utf8_v1")
@@ -92,7 +92,7 @@ def _parse_cache_datasets(datasets_raw: Mapping[str, object]) -> dict[str, Cache
         "published_date_index",
     }
     if set(datasets_raw) != expected_datasets:
-        raise ConfigurationError("cache_policy.datasets must match the fixed v17 P1-P6 dataset set")
+        raise ConfigurationError("cache_policy.datasets must match the fixed V2 data-plane dataset set")
     datasets: dict[str, CacheDatasetPolicy] = {}
     for name, item in datasets_raw.items():
         if not isinstance(item, dict):
@@ -204,7 +204,7 @@ def _validate_fixed_cache_datasets(datasets: Mapping[str, CacheDatasetPolicy]) -
             policy.persisted,
         )
         if actual != expected:
-            raise ConfigurationError(f"cache_policy.datasets.{name} must match the fixed v17 policy")
+            raise ConfigurationError(f"cache_policy.datasets.{name} must match the fixed V2 policy")
 
 
 def _parse_cache_groups(groups_raw: Mapping[str, object]) -> dict[str, CacheGroupPolicy]:

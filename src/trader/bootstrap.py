@@ -11,43 +11,35 @@ from pathlib import Path
 
 from flask import Flask
 
-from trader.application.board_scoring import BoardScoringCoordinator
-from trader.application.board_scoring_cache import BoardScoringCache
 from trader.application.cadence import CadencePolicy, PipelineTask
 from trader.application.decision_core import UnifiedDecisionIndex
 from trader.application.decision_events import V2DecisionCommitted
 from trader.application.decision_observers import AsyncDecisionObserver
 from trader.application.decision_queries import UnifiedDecisionQueries
 from trader.application.decision_stream import UnifiedDecisionEventStream
-from trader.application.events import InMemoryEventLedger
 from trader.application.latency import LatencyWaterfall
 from trader.application.long_v2_runtime import LongV2Runtime, LongV2RuntimeDependencies
-from trader.application.outcome_settlement import OutcomeSettlementService
-from trader.application.pipeline import RecommendationPipeline
-from trader.application.pipeline_dependencies import PipelineDependencies, PipelineOptions, PipelineResources
-from trader.application.ports.market import MarketDataPorts
-from trader.application.ports.snapshots import SnapshotPorts
-from trader.application.published_snapshots import PublishedSnapshotIndex
-from trader.application.publisher import SnapshotPublisher
-from trader.application.recommendations import RecommendationEngine
 from trader.application.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
 from trader.application.shutdown import ShutdownDeadline, ShutdownReport
 from trader.application.source_lanes import SourceLaneRegistry
-from trader.application.status import RuntimeState
 from trader.application.system_lifecycle import (
     SystemLifecycleResources,
     start_application_resources,
     stop_application_resources,
 )
 from trader.application.today_v2_freezing import TodayV2FreezeCoordinator
-from trader.application.today_v2_runtime import TodayV2Runtime, TodayV2RuntimeDependencies
 from trader.application.tomorrow_v2_freezing import (
     TomorrowV2FreezeCoordinator,
     V2DecisionRuntimeIdentity,
 )
-from trader.application.tomorrow_v2_runtime import TomorrowV2Runtime, TomorrowV2RuntimeDependencies
-from trader.application.trading_session import TradingSessionTracker
+from trader.application.v2_input_runtime import (
+    V2DeepSeekAdapter,
+    V2FreezeAdapter,
+    V2MarketDataAdapter,
+    V2NoopSettlement,
+)
 from trader.application.v2_research_trace import InMemoryV2ResearchTraceStore
+from trader.application.v2_runtime import V2RuntimeDependencies, V2SchedulerRuntime
 from trader.application.workers import BoundedExecutor
 from trader.bootstrap_clock import utc_now as _utc_now
 from trader.bootstrap_data_plane import _initialize_reference_data_plane
@@ -82,7 +74,6 @@ from trader.infra.market_data.tushare import TushareClient
 from trader.infra.persistence.data_plane import DataPlaneRepository
 from trader.infra.persistence.decision_records import SQLiteDecisionRecordRepository
 from trader.infra.persistence.runtime_json import RuntimeJsonWriter
-from trader.infra.persistence.writer import SnapshotRepository
 from trader.infra.runtime_support import RuntimeWorkerResources, ShanghaiClock
 from trader.infra.settings import (
     LongWatchlist,
@@ -93,7 +84,7 @@ from trader.infra.settings import (
     load_strategy_settings,
 )
 from trader.web import create_app
-from trader.web.route_services import UnifiedWebServices, WebApiConfig, WebServices
+from trader.web.route_services import UnifiedWebServices, WebApiConfig
 
 
 @dataclass(frozen=True)
@@ -103,18 +94,13 @@ class ApplicationSystem:
     watchlist: LongWatchlist
     app: Flask
     supervisor: RuntimeSupervisor
-    pipeline: RecommendationPipeline
-    repository: SnapshotRepository
-    publisher: SnapshotPublisher
-    published_snapshots: PublishedSnapshotIndex
-    state: RuntimeState
+    scheduler: V2SchedulerRuntime
+    repository: SQLiteDecisionRecordRepository
     market_cache: BoundedLruCache[object]
     history_pool: BoundedExecutor
     research_pool: BoundedExecutor
     source_lanes: SourceLaneRegistry
-    today_v2_runtime: TodayV2Runtime | None = None
-    tomorrow_v2_runtime: TomorrowV2Runtime | None = None
-    d25_v2_runtime: TomorrowV2Runtime | None = None
+    data_pool: BoundedExecutor
     long_v2_runtime: LongV2Runtime | None = None
     decision_queries: UnifiedDecisionQueries | None = None
     decision_events: UnifiedDecisionEventStream | None = None
@@ -126,18 +112,10 @@ class ApplicationSystem:
         return SystemLifecycleResources(
             self.supervisor,
             self.source_lanes,
+            self.data_pool,
             self.history_pool,
             self.research_pool,
-            tuple(
-                runtime
-                for runtime in (
-                    self.today_v2_runtime,
-                    self.tomorrow_v2_runtime,
-                    self.d25_v2_runtime,
-                    self.long_v2_runtime,
-                )
-                if runtime is not None
-            ),
+            tuple(runtime for runtime in (self.long_v2_runtime,) if runtime is not None),
             self.market_cache,
         )
 
@@ -169,31 +147,27 @@ class _BuildContext:
 
 @dataclass(frozen=True)
 class _PersistenceContext:
-    repository: SnapshotRepository
+    repository: SQLiteDecisionRecordRepository
     data_plane: DataPlaneRepository
     budget: DeepSeekBudgetLedger
 
 
 @dataclass(frozen=True)
 class _PublicationContext:
-    state: RuntimeState
-    publisher: SnapshotPublisher
-    published_snapshots: PublishedSnapshotIndex
-    pipeline_snapshots: PublishedSnapshotIndex
-    recommendation_engine: RecommendationEngine
     tomorrow_repository: SQLiteDecisionRecordRepository
     tomorrow_index: UnifiedDecisionIndex
     tomorrow_trace: InMemoryV2ResearchTraceStore
-    today_runtime: TodayV2Runtime
-    tomorrow_runtime: TomorrowV2Runtime
-    d25_runtime: TomorrowV2Runtime
     long_runtime: LongV2Runtime
     decision_queries: UnifiedDecisionQueries
     decision_events: UnifiedDecisionEventStream
+    today_freezer: TodayV2FreezeCoordinator
+    tomorrow_freezer: TomorrowV2FreezeCoordinator
+    d25_freezer: TomorrowV2FreezeCoordinator
+    observer: AsyncDecisionObserver
 
 
 @dataclass(frozen=True)
-class _PipelineAdapters:
+class _V2Adapters:
     market_data: MarketFeatureService
     calendar: ChinaTradingCalendar
     reviewer: DeepSeekReviewer
@@ -216,48 +190,58 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     market_data = _build_market_data(context, persistence.data_plane)
     reviewer = _build_reviewer(context, persistence.budget)
     publication = _build_publication(context, calendar, persistence.repository, reviewer, market_data)
-    trading_session = TradingSessionTracker(now())
-    adapters = _PipelineAdapters(market_data, calendar, reviewer)
-    pipeline = _build_pipeline(context, adapters, persistence, publication, trading_session)
-    legacy_services = WebServices(
-        status_provider=pipeline.status,
-        decision_queries=publication.decision_queries,
-        decision_events=publication.decision_events,
-        decision_quotes=market_data.cached_quotes,
-        config=WebApiConfig(
-            default_top_n=settings.api.default_top_n,
-            maximum_top_n=settings.api.maximum_top_n,
-            heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds,
+    policy = _recommendation_policy(context.strategy)
+    native_data = V2MarketDataAdapter(
+        market_data,
+        config_version=effective_config_version,
+        candidate_pool_size=settings.market_data.candidate_pool_size,
+        long_runtime=publication.long_runtime,
+        policy=policy,
+    )
+    deepseek = V2DeepSeekAdapter(reviewer, policy, native_data)
+    scheduler = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=ShanghaiClock(context.now),
+            calendar=calendar,
+            data=native_data,
+            decisions=native_data,
+            reviews=deepseek,
+            index=publication.tomorrow_index,
+            observer=publication.observer,
+            freezes=V2FreezeAdapter(
+                publication.today_freezer,
+                publication.tomorrow_freezer,
+                publication.d25_freezer,
+            ),
+            settlement=V2NoopSettlement(),
         ),
+        config_version=effective_config_version,
+        shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
     )
     supervisor = RuntimeSupervisor(
-        pipeline,
+        scheduler,
         RuntimeSupervisorConfig(
             now=now,
             initializers=(
                 publication.tomorrow_repository.initialize,
-                publication.today_runtime.initialize,
-                publication.tomorrow_runtime.initialize,
-                publication.d25_runtime.initialize,
                 lambda: _initialize_reference_data_plane(market_data, persistence.data_plane),
-                pipeline.initialize_local,
-                publication.published_snapshots.initialize,
                 persistence.budget.initialize,
+                publication.today_freezer.initialize,
+                lambda: publication.tomorrow_freezer.restore(now().date()),
+                lambda: publication.d25_freezer.restore(now().date()),
                 lambda: persistence.budget.recover_incomplete(now()),
             ),
-            deferred_initializers=(pipeline.initialize_deferred,),
             interval_seconds=scheduler_interval_seconds,
             shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
-            record_error=publication.state.record_error,
+            record_error=lambda _error: None,
         ),
     )
     app = create_app(
         services=UnifiedWebServices(
             publication.decision_queries,
             publication.decision_events,
-            pipeline.status,
+            lambda: _runtime_status(scheduler, reviewer, persistence.budget),
             WebApiConfig(heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds),
-            legacy=legacy_services,
         )
     )
     return ApplicationSystem(
@@ -266,18 +250,13 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         watchlist=watchlist,
         app=app,
         supervisor=supervisor,
-        pipeline=pipeline,
+        scheduler=scheduler,
         repository=persistence.repository,
-        publisher=publication.publisher,
-        published_snapshots=publication.published_snapshots,
-        state=publication.state,
         market_cache=workers.market_cache,
         history_pool=workers.history_pool,
         research_pool=workers.research_pool,
         source_lanes=workers.source_lanes,
-        today_v2_runtime=publication.today_runtime,
-        tomorrow_v2_runtime=publication.tomorrow_runtime,
-        d25_v2_runtime=publication.d25_runtime,
+        data_pool=workers.data_pool,
         long_v2_runtime=publication.long_runtime,
         decision_queries=publication.decision_queries,
         decision_events=publication.decision_events,
@@ -524,11 +503,7 @@ def _build_market_data(context: _BuildContext, data_plane: DataPlaneRepository) 
 def _build_persistence(context: _BuildContext) -> _PersistenceContext:
     settings = context.settings
     runtime_database_lock = threading.Lock()
-    repository = SnapshotRepository(
-        settings.runtime_dir,
-        config_version=context.effective_config_version,
-        write_lock=runtime_database_lock,
-    )
+    repository = SQLiteDecisionRecordRepository(settings.runtime_dir)
     data_plane = DataPlaneRepository(settings.runtime_dir)
     budget = DeepSeekBudgetLedger(
         settings.runtime_dir / "runtime.sqlite3",
@@ -576,20 +551,11 @@ def _build_reviewer(context: _BuildContext, budget: DeepSeekBudgetLedger) -> Dee
 def _build_publication(
     context: _BuildContext,
     calendar: ChinaTradingCalendar,
-    repository: SnapshotRepository,
+    repository: SQLiteDecisionRecordRepository,
     reviewer: DeepSeekReviewer,
     market_data: MarketFeatureService,
 ) -> _PublicationContext:
     settings = context.settings
-    state = RuntimeState()
-    publisher = SnapshotPublisher(
-        history_size=settings.api.sse_history_size,
-        client_queue_size=settings.api.sse_client_queue_size,
-        maximum_subscribers=settings.api.sse_max_clients,
-    )
-    published_snapshots = PublishedSnapshotIndex(repository)
-    recommendation_engine = _build_recommendation_engine(context, calendar)
-    tomorrow_repository = SQLiteDecisionRecordRepository(settings.runtime_dir)
     tomorrow_decisions = UnifiedDecisionIndex()
     decision_events = UnifiedDecisionEventStream(
         history_size=settings.api.sse_history_size,
@@ -597,34 +563,20 @@ def _build_publication(
         subscriber_limit=settings.api.sse_max_clients,
     )
     clock = ShanghaiClock(context.now)
-    decision_queries = UnifiedDecisionQueries(tomorrow_decisions, tomorrow_repository, clock)
+    decision_queries = UnifiedDecisionQueries(tomorrow_decisions, repository, clock)
     tomorrow_trace = InMemoryV2ResearchTraceStore()
 
     def publish_decision_event(event: V2DecisionCommitted) -> None:
         decision_events.publish_committed(event)
 
-    today_observer = AsyncDecisionObserver(
+    observer = AsyncDecisionObserver(
         (tomorrow_trace.record, publish_decision_event),
         capacity=max(16, settings.pipeline.event_queue_size),
-        thread_name="trader-v2-today-observer",
-    )
-
-    tomorrow_observer = AsyncDecisionObserver(
-        (
-            tomorrow_trace.record,
-            publish_decision_event,
-        ),
-        capacity=max(16, settings.pipeline.event_queue_size),
-        thread_name="trader-v2-tomorrow-observer",
-    )
-    d25_observer = AsyncDecisionObserver(
-        (tomorrow_trace.record, publish_decision_event),
-        capacity=max(16, settings.pipeline.event_queue_size),
-        thread_name="trader-v2-d25-observer",
+        thread_name="trader-v2-decision-observer",
     )
     tomorrow_freezer = TomorrowV2FreezeCoordinator(
         tomorrow_decisions,
-        tomorrow_repository,
+        repository,
         clock,
         runtime_identity=V2DecisionRuntimeIdentity(
             context.effective_config_version,
@@ -635,7 +587,7 @@ def _build_publication(
     )
     d25_freezer = TomorrowV2FreezeCoordinator(
         tomorrow_decisions,
-        tomorrow_repository,
+        repository,
         clock,
         runtime_identity=V2DecisionRuntimeIdentity(
             context.effective_config_version,
@@ -646,46 +598,13 @@ def _build_publication(
     )
     today_freezer = TodayV2FreezeCoordinator(
         tomorrow_decisions,
-        tomorrow_repository,
+        repository,
         clock,
         runtime_identity=V2DecisionRuntimeIdentity(
             context.effective_config_version,
             context.strategy.strategy_version,
             context.strategy.fusion.version,
         ),
-    )
-    today_runtime = TodayV2Runtime(
-        _recommendation_policy(context.strategy),
-        TodayV2RuntimeDependencies(
-            reviewer,
-            tomorrow_decisions,
-            today_observer,
-            today_freezer,
-            clock,
-            decision_events.publish_overlay,
-        ),
-    )
-    tomorrow_runtime = TomorrowV2Runtime(
-        _recommendation_policy(context.strategy),
-        TomorrowV2RuntimeDependencies(
-            reviewer,
-            tomorrow_decisions,
-            tomorrow_observer,
-            tomorrow_freezer,
-            clock,
-        ),
-        strategy=Strategy.TOMORROW,
-    )
-    d25_runtime = TomorrowV2Runtime(
-        _recommendation_policy(context.strategy),
-        TomorrowV2RuntimeDependencies(
-            reviewer,
-            tomorrow_decisions,
-            d25_observer,
-            d25_freezer,
-            clock,
-        ),
-        strategy=Strategy.D25,
     )
     long_runtime = LongV2Runtime(
         LongV2RuntimeDependencies(
@@ -700,99 +619,31 @@ def _build_publication(
         groups=_long_group_definitions(context.watchlist),
     )
     return _PublicationContext(
-        state,
-        publisher,
-        published_snapshots,
-        published_snapshots,
-        recommendation_engine,
-        tomorrow_repository,
+        repository,
         tomorrow_decisions,
         tomorrow_trace,
-        today_runtime,
-        tomorrow_runtime,
-        d25_runtime,
         long_runtime,
         decision_queries,
         decision_events,
+        today_freezer,
+        tomorrow_freezer,
+        d25_freezer,
+        observer,
     )
 
 
-def _build_recommendation_engine(context: _BuildContext, calendar: ChinaTradingCalendar) -> RecommendationEngine:
-    return RecommendationEngine(
-        _recommendation_policy(context.strategy),
-        board_scoring=BoardScoringCoordinator(
-            BoardScoringCache(
-                context.workers.market_cache,
-                config_version=context.effective_config_version,
-                session_distance=calendar.session_distance,
-            )
-        ),
-    )
-
-
-def _build_pipeline(
-    context: _BuildContext,
-    adapters: _PipelineAdapters,
-    persistence: _PersistenceContext,
-    publication: _PublicationContext,
-    trading_session: TradingSessionTracker,
-) -> RecommendationPipeline:
-    settings = context.settings
-    return RecommendationPipeline(
-        PipelineDependencies(
-            market=MarketDataPorts(
-                full_market=adapters.market_data,
-                candidates=adapters.market_data,
-                quotes=adapters.market_data,
-                research=adapters.market_data,
-                references=adapters.market_data,
-                metadata=adapters.market_data,
-                outcomes=adapters.market_data,
-            ),
-            calendar=adapters.calendar,
-            reviews=adapters.reviewer,
-            snapshots=SnapshotPorts(reader=persistence.repository, writer=persistence.repository),
-            events=InMemoryEventLedger(terminal_capacity=max(1024, settings.pipeline.event_queue_size * 4)),
-            publisher=publication.publisher,
-            engine=publication.recommendation_engine,
-            state=publication.state,
-            published_snapshots=publication.pipeline_snapshots,
-            now=context.now,
-            outcome_settlement=OutcomeSettlementService(
-                adapters.market_data,
-                persistence.repository,
-                persistence.repository,
-                session_distance=adapters.calendar.session_distance,
-            ),
-            latency=context.latency,
-            today_native_inputs=publication.today_runtime,
-            tomorrow_native_inputs=publication.tomorrow_runtime,
-            d25_native_inputs=publication.d25_runtime,
-            long_runtime=publication.long_runtime,
-            v2_controls=(publication.today_runtime, publication.tomorrow_runtime, publication.d25_runtime),
-            v2_overlays=(publication.today_runtime,),
-            trading_session=trading_session,
-        ),
-        PipelineOptions(
-            config_version=context.effective_config_version,
-            candidate_pool_size=settings.market_data.candidate_pool_size,
-            event_queue_size=settings.pipeline.event_queue_size,
-            priority_queue_size=settings.pipeline.priority_queue_size,
-            market_workers=settings.pipeline.market_workers,
-            normalization_workers=settings.pipeline.normalization_workers,
-            strategy_workers=settings.pipeline.strategy_workers,
-            deepseek_workers=settings.pipeline.deepseek_workers,
-            decision_execution_mode=settings.pipeline.decision_execution_mode,
-            market_data_manages_workers=True,
-            cadence_policy=context.cadence_policy,
-            long_codes=tuple(item.code for item in context.watchlist.items),
-            long_items=_long_item_definitions(context.watchlist),
-            long_target_prices={item.code: item.target_price for item in context.watchlist.items},
-            long_groups=_long_group_definitions(context.watchlist),
-            v2_owned_strategies=tuple(Strategy),
-        ),
-        PipelineResources(data_pool=context.workers.data_pool, persistence_pool=context.workers.persistence_pool),
-    )
+def _runtime_status(
+    scheduler: V2SchedulerRuntime, reviewer: DeepSeekReviewer, budget: DeepSeekBudgetLedger
+) -> dict[str, object]:
+    status = scheduler.status()
+    return {
+        "status": "running" if status.running else "stopped",
+        "runtime_started": status.running,
+        "phase": "v2",
+        "deepseek_budget": budget.summary(_utc_now().date().isoformat()),
+        "deepseek": reviewer.status(),
+        "degraded_reasons": [status.last_error_code] if status.last_error_code else [],
+    }
 
 
 def _fixed_cache_ttl(settings: RuntimeSettings, dataset: str) -> float:

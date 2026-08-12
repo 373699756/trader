@@ -159,11 +159,11 @@
   async function loadDates(strategy, selectionId) {
     if (strategy === "long") return [];
     try {
-      const response = await fetch(`/api/recommendation-dates?strategy=${encodeURIComponent(strategy)}`, { cache: "no-store" });
+      const response = await fetch(`/api/v2/decisions/${encodeURIComponent(strategy)}/dates`, { cache: "no-store" });
       const payload = await response.json();
       if (!response.ok) throw new Error("历史日期接口请求失败");
       if (selectionId !== state.selectionSequence || strategy !== state.strategy) return [];
-      return Array.from(new Set((payload.items || []).filter((value) => typeof value === "string")));
+      return Array.from(new Set((payload.dates || []).filter((value) => typeof value === "string")));
     } catch (_error) {
       if (strategy === state.strategy) setNotice("历史日期暂不可用，正在直接读取所选日期", "warn");
       return null;
@@ -238,13 +238,13 @@
     const pending = state.inflight.get(key);
     if (pending) return pending;
     const request = (async () => {
-      const query = new URLSearchParams(strategy === "long" ? {} : { top_n: "12" });
-      if (selectedDate) query.set("date", selectedDate);
-      else query.set("view", view);
+      const endpoint = selectedDate
+        ? `/api/v2/decisions/${encodeURIComponent(strategy)}/history?date=${encodeURIComponent(selectedDate)}`
+        : `/api/v2/decisions/${encodeURIComponent(strategy)}/current`;
       const headers = {};
       if (!selectedDate && state.etags.has(key)) headers["If-None-Match"] = state.etags.get(key);
       diagnostics.recommendationRequests += 1;
-      const response = await fetch(`/api/recommendations/${encodeURIComponent(strategy)}?${query}`, {
+      const response = await fetch(endpoint, {
         headers,
         cache: "no-store",
       });
@@ -254,14 +254,15 @@
         if (cached) return cached;
         throw new Error("推荐快照缓存不可用");
       }
-      const payload = await response.json();
+      const rawPayload = await response.json();
       if (!response.ok) {
-        const error = new Error(payload.error && payload.error.message ? payload.error.message : "接口请求失败");
-        error.code = payload.error && payload.error.code ? payload.error.code : "";
+        const error = new Error(rawPayload.error && rawPayload.error.message ? rawPayload.error.message : "接口请求失败");
+        error.code = rawPayload.error && rawPayload.error.code ? rawPayload.error.code : "";
         error.httpStatus = response.status;
         throw error;
       }
       diagnostics.recommendationFullResponses += 1;
+      const payload = normalizeV2Payload(rawPayload, strategy, selectedDate, view);
       diagnostics.fullResponseBytes += formatters.utf8Bytes(JSON.stringify(payload));
       if (payload.strategy !== strategy) throw new Error("推荐快照策略不匹配");
       if (!cacheIdentityValid(payload, strategy, selectedDate, view)) throw new Error("推荐快照身份不匹配");
@@ -280,6 +281,60 @@
 
   function recommendationKey(strategy, selectedDate, view) {
     return `${strategy}:${selectedDate || view}`;
+  }
+
+  function normalizeV2Payload(raw, strategy, selectedDate, view) {
+    const historical = Boolean(selectedDate);
+    const coverage = raw.coverage || {};
+    const items = Array.isArray(raw.items) ? raw.items.map((item) => {
+      const quote = item.quote || {};
+      const scores = item.scores || {};
+      return {
+        rank: item.rank || 0,
+        code: item.code,
+        name: item.name || "",
+        industry: item.industry || "",
+        price: quote.price,
+        pct_change: quote.pct_change,
+        turnover_rate: quote.turnover_rate,
+        amount: quote.amount,
+        market_cap: quote.market_cap,
+        source: quote.source,
+        source_time: quote.source_time,
+        action: item.action,
+        action_reason: item.action_reason,
+        anchor_price: quote.price,
+        anchor_source_time: quote.source_time,
+        scores: {
+          candidate_score: scores.candidate,
+          local_score: scores.local,
+          deepseek_score: scores.deepseek,
+          deepseek_risk_penalty: scores.deepseek_risk_penalty,
+          final_score: scores.final,
+        },
+        risks: (item.risk_codes || []).map((risk_code) => ({ risk_code })),
+      };
+    }) : [];
+    return {
+      ...raw,
+      snapshot_id: raw.decision_version,
+      projection_version: raw.decision_version,
+      requested_date: historical ? raw.trade_date : null,
+      current_trade_date: historical ? null : raw.trade_date,
+      historical,
+      view: historical ? "history" : (raw.frozen ? "official" : view),
+      published_at: raw.observed_at,
+      phase: raw.stage || "current",
+      stale: raw.status !== "ready",
+      filtered_count: coverage.rejected_count || 0,
+      selection_diagnostics: {
+        observation_limit: coverage.observation_count || 0,
+        executable_limit: coverage.executable_count || 0,
+        selected_observation_count: coverage.observation_count || 0,
+        selected_executable_count: coverage.executable_count || 0,
+      },
+      items,
+    };
   }
 
   function displayableCachedPayload(key, strategy, selectedDate, view) {
@@ -534,7 +589,7 @@
 
   async function loadStatus() {
     try {
-      const response = await fetch("/api/status", { cache: "no-store" });
+    const response = await fetch("/api/v2/status", { cache: "no-store" });
       const payload = await response.json();
       const running = Boolean(payload.runtime_started);
       const previousPhase = state.runtimePhase;
@@ -545,12 +600,11 @@
       const rawLastError = payload.last_error || "";
       els.lastError.textContent = window.TraderRender.statusErrorLabel(rawLastError);
       window.TraderRender.rememberDiagnostic(diagnostics.runtimeDiagnostics, rawLastError);
-      const deepseek = payload.dependencies && payload.dependencies.deepseek;
-      const budget = deepseek && deepseek.budget;
+      const budget = payload.deepseek_budget;
       els.budgetStatus.textContent = budget && budget.available === false
         ? "不可用"
         : budget ? `${budget.used} / ${budget.remaining}` : "0 / 168";
-      const market = payload.dependencies && payload.dependencies.market_data;
+      const market = payload.market_data;
       els.quoteSource.textContent = market && market.active_source ? window.TraderRender.sourceLabel(market.active_source) : "-";
       const score = state.payload && state.payload.published_at;
       els.scoreTime.textContent = state.payload && state.payload.score_status === "not_applicable"
@@ -596,7 +650,7 @@
   function connectStream() {
     if (state.stream) state.stream.close();
     const query = state.lastEventId > 0 ? `?cursor=${state.lastEventId}` : "";
-    const stream = new EventSource(`/api/events/stream${query}`);
+    const stream = new EventSource(`/api/v2/events${query}`);
     state.stream = stream;
     els.streamStatus.textContent = "连接中";
     stream.onopen = () => {
@@ -604,28 +658,14 @@
       stopPolling();
       if (state.streamRetry) window.clearTimeout(state.streamRetry);
     };
-    stream.addEventListener("recommendation_patch", (event) => {
+    const refreshFromEvent = (event) => {
       const receivedAt = performance.now();
       rememberEvent(event);
       diagnostics.incrementalSseBytes += formatters.utf8Bytes(event.data || "");
-      let patch = null;
-      try { patch = JSON.parse(event.data); } catch (_error) { patch = null; }
-      if (
-        !state.date
-        && (!patch || !patch.strategy || patch.strategy === state.strategy)
-        && applyRecommendationPatch(patch)
-      ) recordPatchPaint(receivedAt);
-    });
-    stream.addEventListener("overlay_patch", (event) => {
-      const receivedAt = performance.now();
-      rememberEvent(event);
-      diagnostics.incrementalSseBytes += formatters.utf8Bytes(event.data || "");
-      let patch = null;
-      try { patch = JSON.parse(event.data); } catch (_error) { patch = null; }
-      if ((!patch || !patch.strategy || patch.strategy === state.strategy) && applyOverlayPatch(patch)) {
-        recordPatchPaint(receivedAt);
-      }
-    });
+      if (!state.date) loadRecommendations("v2_event").finally(() => recordPatchPaint(receivedAt));
+    };
+    stream.addEventListener("decision", refreshFromEvent);
+    stream.addEventListener("overlay", refreshFromEvent);
     stream.addEventListener("resync_required", (event) => {
       rememberEvent(event);
       if (!state.date) requestRecommendationResync("server_resync");

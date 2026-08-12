@@ -1,6 +1,6 @@
 # V2 与评分研究多 Codex 总实施计划
 
-状态：总计划已建立；V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、V2-E5、V2-E6、V2-E7、V2-E8、V2-E9、Score-R0、Score-R1 已完成，下一工程章节为 V2-E10，下一研究
+状态：总计划已建立；V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、V2-E5、V2-E6、V2-E7、V2-E8、V2-E9、V2-E10、Score-R0、Score-R1 已完成，下一工程章节为 V2-E11，下一研究
 章节为 Score-R2。
 
 本文是唯一活动施工计划，只定义执行顺序、会话协作、文件所有权、同步 Gate 和退出条件，
@@ -109,11 +109,10 @@ C 固定执行：
 - G1 两个 worker tip 已合并并推送，远端 worker 分支已退役；G2 开始时必须以本批审计记录
   推送后的最新 `feature/tomorrow-v2` tip 公布统一 `BASE_SHA`，E/R 不得复用 G1 分支或其旧
   worktree 作为新基线。
-- 当前活动实现仍包含旧 Pipeline、snapshot、shadow/cutover、旧 Web 和旧运行目录逻辑；它们
-  只可作为待替代代码，不能成为新增 V2 功能的依赖。E9 已停止从活动入口暴露旧运行目录、
-  迁移、archive 和 cutover evidence 操作；旧实现仍待 E10 物理删除。
-- 当前研究采集仍位于 tomorrow shadow 运行接缝；迁移到 V2 committed event 前不得扩展新的
-  shadow 状态、baseline 字段或双链比较能力。
+- E10 已完成旧 Pipeline、snapshot、shadow/cutover、旧 Web、旧仓储和只服务旧链的入口、测试
+  与配置物理删除；活动入口只装配 V2 调度、决策记录、统一 API/SSE 和 committed event observer。
+- 研究采集只从 V2 committed event observer 接收不可变事件；不再从生产运行时读取旧 snapshot、
+  baseline 或 tomorrow shadow 状态。
 
 ## 5. 同步 Gate 与并行波次
 
@@ -128,7 +127,7 @@ C 固定执行：
 | G7 | E7 Long 正式接管 | R5 历史统计门禁并启动前向影子 | long 不参与评分，历史通过者才可前向运行 |
 | G8 | E8 统一 API/SSE/Web | R5 持续采集 | 研究数据不进入普通 API、SSE、Web 或正式历史 |
 | G9 | E9 唯一入口与组合根 | R5 持续采集 | 本波只有 E 可修改组合根、配置和依赖 |
-| G10 | E10 删除旧生产链 | R 清理旧 shadow 研究接点 | 活动树和研究树均无旧 snapshot/shadow 依赖 |
+| G10 | E10 删除旧生产链（已完成） | R 清理旧 shadow 研究接点（已完成） | 活动树和研究树均无旧 snapshot/shadow 依赖 |
 | G11 | E11 V2-only 发布 | R5 可继续等待真实交易日 | 非生产研究不阻塞 V2 release |
 | G12 | 无生产改动 | R5 完成 40+20 最终报告 | 40 历史、20 连续前向及配对数量全部满足 |
 | G13 | 无生产改动 | R6 新窗口权重、风险和门槛研究 | 不复用已用于第一轮晋级的评价窗口试参 |
@@ -225,14 +224,20 @@ server 使用当前配置的 V2 runtime lock，初始化、关闭和恢复路径
 
 退出条件：全新启动、热重启、异常恢复、进程锁和 graceful shutdown 通过；旧目录零读写。
 
-### V2-E10：删除旧生产链
+### V2-E10：删除旧生产链（已完成）
 
 - 删除旧 Pipeline/P1-P6、RecommendationSnapshot、旧 publisher/query/replay。
 - 删除旧仓储/schema/迁移器、旧 API/SSE/Web 资源和静态名单副本。
 - 删除 shadow runtime/evidence/cutover、双链测试和只服务旧链的 CLI、依赖及配置。
 - 删除研究侧旧 shadow 采集接点，保留 committed event observer。
 
-退出条件：AST、运行覆盖、源码、测试、配置、文档和 wheel 均无可达旧链资源。
+退出证据：`src/trader` 活动树不再包含旧 Pipeline、snapshot publisher/query/replay、shadow/cutover
+或旧 Web/API/SSE 模块；测试树删除双链与旧生产链测试；根页面和 API 仅注册 V2 路由，Long
+页面继续从固定名单渲染“卡脖子 / 高成长 / 低价潜力”三个 Tab。V2 决策记录仓储、统一事件
+observer、三类冻结控制和 Long current projection 均由唯一组合根装配。
+
+退出条件：AST、运行覆盖、源码、测试、配置、文档和 wheel 均无可达旧链资源；完整发布门禁和桌面
+验收留给 V2-E11。
 
 ### V2-E11：最终验收与发布
 

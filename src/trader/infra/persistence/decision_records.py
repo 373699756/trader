@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import sqlite3
+import tempfile
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -24,14 +26,56 @@ from trader.domain.recommendation.decision_identity import (
     committed_record_from_bytes,
 )
 from trader.domain.recommendation.models import Strategy
-from trader.infra.persistence.snapshot_files import (
-    SnapshotConflictError,
-    _atomic_create_immutable,
-    _fsync_directory,
-)
 
 FaultInjector = Callable[[str], None]
 _MAX_RECOVERY_PAYLOAD_BYTES = 8 * 1024 * 1024
+
+
+class SnapshotConflictError(RuntimeError):
+    """An immutable V2 decision path already contains different bytes."""
+
+
+def _fsync_directory(directory: Path) -> None:
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _atomic_create_immutable(
+    target: Path,
+    payload: bytes,
+    *,
+    expected_sha256: str,
+    fault_injector: FaultInjector | None = None,
+) -> None:
+    if target.exists():
+        if _sha256(target.read_bytes()) == expected_sha256:
+            return
+        raise SnapshotConflictError(f"immutable V2 decision path has different content: {target}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if fault_injector is not None:
+            fault_injector("payload_fsynced")
+        try:
+            os.link(temporary_name, target)
+        except FileExistsError as exc:
+            if _sha256(target.read_bytes()) != expected_sha256:
+                raise SnapshotConflictError(f"immutable V2 decision path has different content: {target}") from exc
+        os.unlink(temporary_name)
+        _fsync_directory(target.parent)
+    except BaseException:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 class SQLiteDecisionRecordRepository:
@@ -382,6 +426,7 @@ class SQLiteDecisionRecordRepository:
                     target,
                     payload,
                     expected_sha256=str(row["payload_sha256"]),
+                    fault_injector=self._fault_injector,
                 )
         except (OSError, SnapshotConflictError) as exc:
             raise DecisionRecordUnavailableError("staged decision recovery failed") from exc

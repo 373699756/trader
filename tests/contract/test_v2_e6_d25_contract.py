@@ -42,7 +42,7 @@ def test_production_composition_installs_d25_v2_and_unified_query() -> None:
     tree = ast.parse(source)
     imports = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
 
-    assert "trader.application.tomorrow_v2_runtime" in imports
+    assert "trader.application.tomorrow_v2_freezing" in imports
     assert "decision_queries=publication.decision_queries" in source
     assert "decision_events=publication.decision_events" in source
     assert "strategy=Strategy.D25" in source

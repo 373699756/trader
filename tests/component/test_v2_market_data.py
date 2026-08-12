@@ -146,7 +146,7 @@ def _service(
         references,
         runner,
         batch_size=kwargs.pop("history_warmup_batch_size", 30),
-        batch_timeout_seconds=kwargs.pop("history_warmup_batch_timeout_seconds", 300.0),
+        batch_timeout_seconds=kwargs.pop("history_warmup_batch_timeout_seconds", 20.0),
         monotonic=monotonic,
     )
     research = ResearchLoader(

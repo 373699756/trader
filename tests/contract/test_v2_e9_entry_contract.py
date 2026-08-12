@@ -21,7 +21,7 @@ def test_cli_exposes_only_current_v2_maintenance_commands() -> None:
 
     for removed in ("migrate-v17", "recommendation-archive", "tomorrow-cutover-evidence"):
         assert removed not in help_text
-    for retained in ("validate-config", "verify-freeze", "threshold-report", "perf-check"):
+    for retained in ("validate-config",):
         assert retained in help_text
 
 

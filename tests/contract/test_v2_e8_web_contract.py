@@ -12,7 +12,7 @@ from trader.domain.market.models import MarketQuote
 from trader.domain.recommendation.decision_identity import DecisionItem, ScoredDecision
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 from trader.web import create_app
-from trader.web.route_services import UnifiedWebServices, WebServices
+from trader.web.route_services import UnifiedWebServices
 
 NOW = datetime(2026, 8, 11, 10, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -99,47 +99,6 @@ def test_http_reads_do_not_invoke_external_io() -> None:
         "/api/v2/status",
     ):
         assert client.get(path).status_code == 200
-
-
-def test_july_dashboard_routes_project_current_unified_decisions() -> None:
-    index = UnifiedDecisionIndex()
-    decision = _decision()
-    assert index.publish(decision, expected_version=None).accepted
-    queries = UnifiedDecisionQueries(index, _Repository(), _Clock())
-    stream = UnifiedDecisionEventStream()
-    runtime_status = lambda: {"status": "running", "phase": "today_main"}
-    legacy = WebServices(
-        runtime_status,
-        decision_queries=queries,
-        decision_events=stream,
-        decision_quotes=lambda _codes: {"600000": _market_quote()},
-    )
-    app = create_app(
-        services=UnifiedWebServices(
-            queries,
-            stream,
-            runtime_status,
-            legacy=legacy,
-        )
-    )
-    client = app.test_client()
-
-    current = client.get("/api/recommendations/today?top_n=12&view=current")
-    dates = client.get("/api/recommendation-dates?strategy=today")
-    stream.publish_committed(build_v2_decision_committed(decision))
-    events = client.get("/api/events/stream?cursor=0", buffered=False)
-    iterator = iter(events.response)
-
-    assert current.status_code == 200
-    assert current.get_json()["snapshot_id"] == decision.version
-    assert current.get_json()["view"] == "live"
-    assert current.get_json()["items"][0]["name"] == "浦发银行"
-    assert current.get_json()["items"][0]["price"] == 10.25
-    assert current.get_json()["items"][0]["scores"]["local_score"] == 84.0
-    assert dates.get_json()["items"] == ["2026-08-08"]
-    assert next(iterator).decode() == ": connected\n\n"
-    assert "event: resync_required" in next(iterator).decode()
-    events.close()
 
 
 def _app():

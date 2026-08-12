@@ -9,7 +9,7 @@ def test_authorities_separate_implemented_realtime_work_from_inactive_strategy_r
     design = (PROJECT_ROOT / "docs" / "software-business-design.md").read_text(encoding="utf-8")
     strategy = (PROJECT_ROOT / "docs" / "recommendation-strategy.md").read_text(encoding="utf-8")
 
-    assert "当前交付状态：V2-E0 至 V2-E9 已完成" in design
+    assert "当前交付状态：V2-E0 至 V2-E10 已完成" in design
     assert "已实施实时与降级基线" not in design
     assert "versioned_dag" in design
     assert "28 只" in design

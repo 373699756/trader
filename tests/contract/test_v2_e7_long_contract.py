@@ -15,7 +15,7 @@ def test_v2_e7_is_complete() -> None:
     plan = PLAN.read_text(encoding="utf-8")
 
     assert "V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、V2-E5、V2-E6、V2-E7" in plan
-    assert "下一工程章节为 V2-E10" in plan
+    assert "V2-E10：删除旧生产链" in plan
     assert "### V2-E7：Long 正式接管（已完成）" in plan
 
 
@@ -49,6 +49,6 @@ def test_production_composition_installs_long_v2_without_legacy_snapshot_publica
     assert "trader.application.long_v2_runtime" in imports
     assert "long_v2_runtime=publication.long_runtime" in source
     assert "long_runtime=publication.long_runtime" in source
-    assert "v2_owned_strategies=tuple(Strategy)" in source
+    assert "long_runtime=publication.long_runtime" in source
     for forbidden in ("RecommendationSnapshot", "DeepSeek", "freeze", "repository", "settle"):
         assert forbidden not in runtime_source

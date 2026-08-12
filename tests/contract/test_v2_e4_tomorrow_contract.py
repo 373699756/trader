@@ -8,7 +8,6 @@ PLAN = ROOT / "docs" / "implementation-plan.md"
 DESIGN = ROOT / "docs" / "software-business-design.md"
 STRATEGY = ROOT / "docs" / "recommendation-strategy.md"
 BOOTSTRAP = ROOT / "src" / "trader" / "bootstrap.py"
-PIPELINE_STAGES = ROOT / "src" / "trader" / "application" / "pipeline_stages.py"
 
 
 def test_v2_e4_remains_complete_after_e5_progression() -> None:
@@ -47,10 +46,7 @@ def test_production_composition_has_no_tomorrow_shadow_or_cutover_dependencies()
     assert not imports.intersection(forbidden)
 
 
-def test_tomorrow_freeze_control_seals_before_the_boundary_scoring_offer() -> None:
-    source = PIPELINE_STAGES.read_text(encoding="utf-8")
-
-    first_control = source.index("for control in pipeline._v2_controls:")
-    scoring = source.index("snapshots = list(_score_strategies_on_workers")
-    second_control = source.index("for control in pipeline._v2_controls:", first_control + 1)
-    assert first_control < scoring < second_control
+def test_tomorrow_freeze_control_is_owned_by_the_v2_scheduler() -> None:
+    source = (ROOT / "src" / "trader" / "application" / "v2_runtime.py").read_text(encoding="utf-8")
+    assert "self._dependencies.freezes.freeze" in source
+    assert "submit_due" in source
