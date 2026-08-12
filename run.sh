@@ -49,8 +49,8 @@ if [[ ! -x "$VENV_DIR/bin/trader-server" || "$ROOT_DIR/pyproject.toml" -nt "$VEN
   "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check -e "$ROOT_DIR"
 fi
 
-export TRADER_HOST="${TRADER_HOST:-${HOST:-127.0.0.1}}"
-export TRADER_PORT="${TRADER_PORT:-${PORT:-5000}}"
+export TRADER_HOST="${TRADER_HOST:-127.0.0.1}"
+export TRADER_PORT="${TRADER_PORT:-5000}"
 
 case "$MODE" in
   serve|app)

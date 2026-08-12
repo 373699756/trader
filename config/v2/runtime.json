@@ -1,7 +1,7 @@
 {
   "schema_version": 8,
   "config_version": "runtime_v35_tomorrow_input_quality_free_master_2026_07_30",
-  "runtime_dir": ".runtime/v17",
+  "runtime_dir": ".runtime/v2",
   "strategy_config": "strategy.json",
   "long_watchlist": "long_watchlist.json",
   "server": {

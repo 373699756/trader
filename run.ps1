@@ -65,10 +65,10 @@ if ($NeedsInstall -or $env:FORCE_INSTALL_DEPS -eq "1") {
 }
 
 if (-not $env:TRADER_HOST) {
-    $env:TRADER_HOST = if ($env:HOST) { $env:HOST } else { "127.0.0.1" }
+    $env:TRADER_HOST = "127.0.0.1"
 }
 if (-not $env:TRADER_PORT) {
-    $env:TRADER_PORT = if ($env:PORT) { $env:PORT } else { "5000" }
+    $env:TRADER_PORT = "5000"
 }
 
 if ($Mode -eq "serve" -or $Mode -eq "app") {

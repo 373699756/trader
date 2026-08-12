@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- V2-E9 收敛唯一入口与运行命名空间：默认 `config/v2/runtime.json` 现在只使用
+  `.runtime/v2`，server lock、初始化、恢复和关闭均以配置中的 V2 runtime 为根；新增入口契约
+  覆盖配置、CLI、启动脚本和进程锁边界。
+
 - V2-E8 新增统一 `UnifiedDecisionQueries`、`UnifiedDecisionEventStream` 和只读 Web 外壳。today、
   tomorrow、d25、long 现在共同使用 decisions current/history/dates、status 与 events；正式日期
   由 V2 仓储倒序有界读取，current/history 支持 ETag，SSE 使用跨策略单调序列、有界历史、
@@ -35,6 +39,13 @@ All notable changes to this project are documented here.
   前向封存状态、第二轮权重收缩和 `PromotionDossier` 人工晋级边界。
 
 ### Changed
+
+- 用户再次发送“继续”，要求执行 `docs/implementation-plan.md` 下一个完整未完成章节，并追问
+  为什么反复修改仍未完成。本批完成 V2-E9“唯一组合根与入口”：启动脚本不再把旧 `HOST`/`PORT`
+  映射为 `TRADER_HOST`/`TRADER_PORT`，`trader-cli` 移除 `migrate-v17`、`recommendation-archive`
+  和 `tomorrow-cutover-evidence` 命令；计划推进到 E9 已完成、E10 为下一工程章节。现状原因是此前
+  E8 只收敛统一 Web 面，E9/E10/E11 被计划明确拆开，且上批全量 pytest 超过 17 分钟未完成，留下
+  验证缺口；本批不把旧链物理删除和最终发布验收提前混入入口改动。
 
 - 用户指出每次改动都强制全量测试没有必要。协作流程现改为低/中/高风险三级门禁：文档和
   非运行元数据只做相关契约与格式检查，局部实现验证受影响包和定向测试；共享架构、评分/
@@ -238,6 +249,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除启动脚本的旧 `HOST`/`PORT` 兼容映射；删除 `trader-cli` 的 v17 迁移、推荐归档和
+  tomorrow cutover evidence 操作及其直接入口测试。旧 Pipeline、旧仓储、旧 Web 源文件和 shadow
+  运行实现仍是 V2-E10 的明确物理清理范围，本批不宣称已删除。
+
 - 取消旧 `/api/status`、`/api/recommendations/*`、`/api/recommendation-dates`、
   `/api/events/stream`、`/v2/tomorrow` 和 `/api/v2/tomorrow/*` 的路由注册；根页面不再加载
   `dashboard_patches.js`、旧拆分渲染脚本或独立 Tomorrow CSS/JavaScript。旧源文件保留为
@@ -292,6 +307,12 @@ All notable changes to this project are documented here.
   历史有效日加固定 20 日前向窗口，且失败日不得被其它盈利日期替换。
 
 ### Verification
+
+- V2-E9 定向契约覆盖默认 `.runtime/v2`、旧 CLI 命令拒绝、启动脚本环境变量边界、server lock
+  以配置 runtime 为根和权威文档计划状态；相关 contract、component、unit 和全量 pytest 全部通过。
+  `make format-check`、`make lint`、`make type-check`、`make test`、`make package` 全部通过；
+  仓库外 wheel 导入、CLI help、HTML/CSS/JavaScript/SVG 资源和根页面 smoke 通过。E9 不改变页面
+  布局，三档桌面视觉验收属于 E11，当前不适用。
 
 - 本批只修改协作流程、交付记录和对应契约测试；新增流程契约 pytest 通过，测试文件的 Ruff
   format/check 通过，`AGENTS.md` 完整 diff、章节引用、分级覆盖与 `git diff --check` 无发现。
@@ -440,6 +461,9 @@ All notable changes to this project are documented here.
   三档桌面视觉验收不适用。
 
 ### Residual Risks
+
+- E9 只关闭旧入口和旧操作命令；旧 Pipeline、旧 snapshot/仓储、旧 Web 资源及 shadow 实现仍待
+  E10 物理删除。E11 仍需完成全量测试、wheel、真实进程和桌面验收。
 
 - 风险等级依赖对实际 diff 和依赖传播的审查；若定向验证无法证明影响范围，规则要求立即升级
   门禁。该分级不会降低最终 release 或评分、冻结、预算、持久化等高风险边界的完整验收要求。

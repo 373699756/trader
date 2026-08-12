@@ -107,7 +107,7 @@ def test_docs_keep_two_authorities_and_pipeline_reports() -> None:
     assert "软件业务设计文档" in design
     assert "荐股策略文档" in strategy
     assert "V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、V2-E5、V2-E6、V2-E7、V2-E8" in implementation_plan
-    assert "下一工程章节为 V2-E9" in implementation_plan
+    assert "下一工程章节为 V2-E10" in implementation_plan
     assert "`docs/recommendation-strategy.md`" in implementation_plan
     assert "本文是唯一活动施工计划" in implementation_plan
     assert "状态：V2-only 目标已确认" in v2_plan
@@ -271,7 +271,7 @@ def test_v2_rebuild_contract_is_direct_replacement_without_legacy_runtime() -> N
     design = (PROJECT_ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
     assert "V2-only 最终 release 边界" in design
-    assert "V2-E9 至 V2-E11 尚未交付" in design
+    assert "V2-E10 至 V2-E11 尚未交付" in design
     assert "新 release 不读取旧运行目录、旧数据库、旧快照或旧 schema" in design
     assert "V2 唯一运行目录固定为 `.runtime/v2`" in design
     assert "不得提供旧 API 别名、重定向、弃用窗口、双读或双写" in design
@@ -283,7 +283,7 @@ def test_superseded_native_pipeline_migration_chronology_is_not_authoritative() 
 
     assert "tomorrow v2 原生输入驱动流水线交付边界" not in design
     assert "`RecommendationEngine.prepare_snapshot`" not in design
-    assert "V2-E0 至 V2-E8 已把统一数据平面" in design
+    assert "V2-E0 至 V2-E9 已把统一数据平面" in design
     compact = " ".join(design.split())
     assert "迁移期旧链仅可向已接管 策略提供同批不可变原生输入" in compact
 

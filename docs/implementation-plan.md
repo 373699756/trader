@@ -1,6 +1,6 @@
 # V2 与评分研究多 Codex 总实施计划
 
-状态：总计划已建立；V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、V2-E5、V2-E6、V2-E7、V2-E8、Score-R0、Score-R1 已完成，下一工程章节为 V2-E9，下一研究
+状态：总计划已建立；V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、V2-E5、V2-E6、V2-E7、V2-E8、V2-E9、Score-R0、Score-R1 已完成，下一工程章节为 V2-E10，下一研究
 章节为 Score-R2。
 
 本文是唯一活动施工计划，只定义执行顺序、会话协作、文件所有权、同步 Gate 和退出条件，
@@ -110,7 +110,8 @@ C 固定执行：
   推送后的最新 `feature/tomorrow-v2` tip 公布统一 `BASE_SHA`，E/R 不得复用 G1 分支或其旧
   worktree 作为新基线。
 - 当前活动实现仍包含旧 Pipeline、snapshot、shadow/cutover、旧 Web 和旧运行目录逻辑；它们
-  只可作为待替代代码，不能成为新增 V2 功能的依赖。
+  只可作为待替代代码，不能成为新增 V2 功能的依赖。E9 已停止从活动入口暴露旧运行目录、
+  迁移、archive 和 cutover evidence 操作；旧实现仍待 E10 物理删除。
 - 当前研究采集仍位于 tomorrow shadow 运行接缝；迁移到 V2 committed event 前不得扩展新的
   shadow 状态、baseline 字段或双链比较能力。
 
@@ -212,11 +213,15 @@ C 固定执行：
 
 退出条件：三档桌面通过；ETag、重同步、慢客户端和 HTTP 无外部 I/O 契约通过。
 
-### V2-E9：唯一组合根与入口
+### V2-E9：唯一组合根与入口（已完成）
 
 - `trader-server`、`trader-cli`、启动脚本、配置和组合根只装配 V2。
 - 运行目录切到 `.runtime/v2`；删除旧环境映射、迁移命令、archive 和 cutover evidence 命令。
 - 启动、初始化、关闭和进程锁只操作 V2 资源。
+
+退出证据：默认配置使用 `.runtime/v2`；启动脚本只接受 `TRADER_*` 环境变量，不再把旧
+`HOST`/`PORT` 映射进应用；`trader-cli` 不再注册迁移、archive 或 cutover evidence 命令；
+server 使用当前配置的 V2 runtime lock，初始化、关闭和恢复路径不访问旧 runtime 命名空间。
 
 退出条件：全新启动、热重启、异常恢复、进程锁和 graceful shutdown 通过；旧目录零读写。
 

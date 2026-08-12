@@ -29,7 +29,7 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert runtime.market_data.source_contract_versions["eastmoney"] == ("eastmoney_quote_v17_security_master")
     assert runtime.api.default_top_n == 12
     assert runtime.api.maximum_top_n == 12
-    assert runtime.runtime_dir == PROJECT_ROOT / ".runtime" / "v17"
+    assert runtime.runtime_dir == PROJECT_ROOT / ".runtime" / "v2"
     assert runtime.market_data.research_timeout_seconds == 8
     assert runtime.market_data.eastmoney_timeout_seconds == 8
     assert runtime.market_data.sina_timeout_seconds == 8

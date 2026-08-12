@@ -11,7 +11,7 @@ def test_authoritative_docs_distinguish_current_delivery_state_from_final_releas
     design = DESIGN.read_text(encoding="utf-8")
     strategy = STRATEGY.read_text(encoding="utf-8")
 
-    assert "当前交付状态：V2-E0 至 V2-E8 已完成，V2-E9 至 V2-E11 尚未交付" in design
+    assert "当前交付状态：V2-E0 至 V2-E9 已完成，V2-E10 至 V2-E11 尚未交付" in design
     assert "最终发布契约" in design
     assert "迁移期旧链只表示待删除实现" in strategy
     assert "V2 是唯一活动产品链路。" not in design

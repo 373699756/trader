@@ -10,7 +10,7 @@ def test_authoritative_design_requires_one_final_v2_product_chain_without_runtim
 
     for statement in (
         "V2-only 最终 release 边界",
-        "当前交付状态：V2-E0 至 V2-E8 已完成，V2-E9 至 V2-E11 尚未交付",
+        "当前交付状态：V2-E0 至 V2-E9 已完成，V2-E10 至 V2-E11 尚未交付",
         "新 release 不读取旧运行目录、旧数据库、旧快照或旧 schema",
         "V2 唯一运行目录固定为 `.runtime/v2`",
         "旧 release 只能与其对应旧运行目录整体回退",
@@ -44,7 +44,7 @@ def test_v2_execution_plan_has_no_compatibility_or_shadow_cutover_batch() -> Non
     assert "状态：V2-only 目标已确认" in overview
     assert "不保留旧版运行时兼容" in overview
     assert "V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、V2-E5、V2-E6、V2-E7、V2-E8" in plan
-    assert "下一工程章节为 V2-E9" in plan
+    assert "下一工程章节为 V2-E10" in plan
     assert "### V2-E0：唯一产品契约重置（已完成）" in plan
     assert "### V2-E10：删除旧生产链" in plan
     assert "### V2-E11：最终验收与发布" in plan
