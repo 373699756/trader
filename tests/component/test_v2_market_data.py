@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -37,6 +37,7 @@ from trader.application.workers import BoundedExecutor
 from trader.domain.market.models import (
     Board,
     Evidence,
+    FeatureSnapshot,
     MarketQuote,
 )
 from trader.domain.market.news import NewsSignalPolicy
@@ -4361,6 +4362,66 @@ def test_repeated_refresh_does_not_queue_multiple_history_warmup_batches() -> No
         release.set()
         lanes.stop(wait=True, timeout_seconds=1.0)
         pool.stop(wait=True, cancel_futures=True)
+
+
+def test_history_warmup_does_not_supersede_pending_candidate_history() -> None:
+    codes = ("600001", "600002")
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+
+    class BlockingFirstHistory:
+        @staticmethod
+        def fetch_history(code, *, days):
+            assert days == 61
+            calls.append(code)
+            if len(calls) == 1:
+                started.set()
+                assert release.wait(1.0)
+            return _history_bars()
+
+    pool = BoundedExecutor(worker_count=2, queue_capacity=2, thread_name_prefix="source-data")
+    lanes = SourceLaneRegistry(pool)
+    service = _service(
+        StaticGateway(tuple(_quote(code=code) for code in codes)),
+        BlockingFirstHistory(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        worker_pool=pool,
+        source_lanes=lanes,
+        history_warmup_batch_size=1,
+        wall_clock=lambda: NOW,
+    )
+    candidate_result: list[Sequence[FeatureSnapshot]] = []
+    candidate_errors: list[BaseException] = []
+
+    def load_candidates() -> None:
+        try:
+            candidate_result.append(service.fetch_candidate_features(codes, NOW + timedelta(seconds=1)))
+        except BaseException as exc:
+            candidate_errors.append(exc)
+
+    pool.start()
+    candidate_thread = threading.Thread(target=load_candidates)
+    try:
+        service.fetch_market_features(NOW)
+        assert started.wait(1.0)
+        candidate_thread.start()
+        timeout_at = time.monotonic() + 1.0
+        while not lanes.status()["history"]["pending"] and time.monotonic() < timeout_at:
+            time.sleep(0.01)
+        assert lanes.status()["history"]["pending"] is True
+        release.set()
+        candidate_thread.join(2.0)
+    finally:
+        release.set()
+        candidate_thread.join(1.0)
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+    assert candidate_errors == []
+    assert len(candidate_result) == 1
+    assert {feature.quote.code for feature in candidate_result[0]} == set(codes)
+    assert lanes.status()["history"]["superseded_count"] == 0
 
 
 def test_history_warmup_deadline_releases_blocked_batch_identity() -> None:

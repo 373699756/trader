@@ -71,6 +71,12 @@ class MarketFeatureService:
     ) -> Sequence[FeatureSnapshot]:
         cached = self.quotes.cached_market_features(force=force)
         if cached is not None:
+            if self.runner.source_lanes is not None:
+                history_codes = _history_preload_codes(
+                    tuple(feature.quote for feature in cached),
+                    self.history_preload_limit,
+                )
+                self.warmup.schedule_history_warmup(history_codes, observed_at)
             return cached
         quotes = tuple(
             self.runner.run_data_task_until(

@@ -8,7 +8,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
 from datetime import time as wall_time
-from typing import cast
+from typing import Literal, cast
 
 from trader.application.decision_core import UnifiedDecisionIndex
 from trader.application.decision_events import V2DecisionCommitted
@@ -31,6 +31,7 @@ from trader.application.ports.v2_runtime import (
 )
 from trader.application.schedule import (
     SHANGHAI,
+    MarketPhase,
     SchedulePoint,
     decision_at,
     schedule_point_at,
@@ -40,7 +41,7 @@ from trader.application.schedule import (
 from trader.application.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
 from trader.application.v2_lifecycle import LatestWinsOffer, LatestWinsStatus, LatestWinsWorker
 from trader.application.workers import BoundedExecutor
-from trader.domain.recommendation.decision_identity import DecisionIdentity, ScoredDecision
+from trader.domain.recommendation.decision_identity import DecisionIdentity, LongProjection, ScoredDecision
 from trader.domain.recommendation.models import Strategy
 
 
@@ -176,12 +177,19 @@ class V2SchedulerRuntime:
         is_trading_day = self._dependencies.calendar.is_trading_day(observed_at.date())
         decision = decision_at(observed_at, is_trading_day=is_trading_day)
         strategies: tuple[Strategy, ...] = ()
-        if decision.should_score:
+        if decision.phase is MarketPhase.AFTER_CLOSE:
+            strategies = self._after_close_recovery_strategies(observed_at)
+        elif decision.should_score:
             strategies = (Strategy.TOMORROW, Strategy.D25, Strategy.TODAY)
-        if decision.should_refresh_market:
+        if decision.phase is not MarketPhase.AFTER_CLOSE and decision.should_refresh_market:
             strategies = (*strategies, Strategy.LONG)
         for strategy in strategies:
-            self.submit_cycle(self._scheduled_request(strategy, observed_at, decision.phase.value))
+            phase = (
+                "close_fallback"
+                if strategy in {Strategy.TOMORROW, Strategy.D25} and decision.phase is MarketPhase.AFTER_CLOSE
+                else decision.phase.value
+            )
+            self.submit_cycle(self._scheduled_request(strategy, observed_at, phase))
         for raw_strategy in decision.freeze_strategies:
             self._submit_freeze(Strategy(raw_strategy), observed_at)
         if schedule_point_at(observed_at, is_trading_day=is_trading_day) is SchedulePoint.CLOSE_QUOTES:
@@ -284,9 +292,19 @@ class V2SchedulerRuntime:
         )
 
     def _process_cycle(self, request: V2CycleRequest) -> None:
+        if request.phase == "close_fallback" and request.strategy in {Strategy.TOMORROW, Strategy.D25}:
+            snapshot = self._dependencies.index.snapshot(request.strategy)
+            if snapshot.formal is not None and snapshot.formal.trade_date == request.trade_date:
+                return
+            if isinstance(snapshot.current, ScoredDecision) and snapshot.current.trade_date == request.trade_date:
+                self._freeze_close_fallback(request, snapshot.current, recovery_path="current")
+                return
         self._refresh_data(request)
         local = self._build_local(request)
         if local is None or not self._publish(local, hybrid=False):
+            return
+        if request.phase == "close_fallback" and isinstance(local, ScoredDecision):
+            self._freeze_close_fallback(request, local, recovery_path="close_rebuild")
             return
         review_now = shanghai_now(self._dependencies.clock.now())
         if request.allow_review and review_now < request.review_deadline and isinstance(local, ScoredDecision):
@@ -349,6 +367,41 @@ class V2SchedulerRuntime:
         with self._lock:
             self._publish_rejection_count += 1
             self._last_error_code = f"publish:{reason}"
+
+    def _after_close_recovery_strategies(self, observed_at: datetime) -> tuple[Strategy, ...]:
+        strategies: list[Strategy] = []
+        for strategy in (Strategy.TOMORROW, Strategy.D25):
+            formal = self._dependencies.index.snapshot(strategy).formal
+            if formal is None or formal.trade_date != observed_at.date():
+                strategies.append(strategy)
+        long_current = self._dependencies.index.snapshot(Strategy.LONG).current
+        if not isinstance(long_current, LongProjection) or long_current.trade_date != observed_at.date():
+            strategies.append(Strategy.LONG)
+        return tuple(strategies)
+
+    def _freeze_close_fallback(
+        self,
+        request: V2CycleRequest,
+        current: ScoredDecision,
+        *,
+        recovery_path: Literal["current", "close_rebuild"],
+    ) -> None:
+        native_version = dict(current.input_versions).get("native", current.content_hash)
+        try:
+            self._dependencies.freezes.freeze_close_fallback(
+                request.strategy,
+                request.observed_at,
+                current,
+                recovery_path=recovery_path,
+                official_close_version=f"official-close:{native_version}",
+            )
+        except V2FreezeUnavailableError:
+            self._record_failure("freeze", "close_fallback_unavailable")
+        except Exception as exc:
+            self._record_failure("freeze", f"close_fallback_unexpected:{type(exc).__name__}")
+        else:
+            with self._lock:
+                self._freeze_completed_count += 1
 
     def _submit_freeze(self, strategy: Strategy, at: datetime) -> None:
         key = f"freeze:{at.date().isoformat()}:{strategy.value}"

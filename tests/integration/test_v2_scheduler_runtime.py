@@ -16,7 +16,12 @@ from trader.application.ports.v2_runtime import (
 from trader.application.schedule import SHANGHAI
 from trader.application.shutdown import ShutdownDeadline
 from trader.application.v2_runtime import V2RuntimeDependencies, V2SchedulerRuntime
-from trader.domain.recommendation.decision_identity import LongProjection, LongProjectionItem, ScoredDecision
+from trader.domain.recommendation.decision_identity import (
+    CommittedDecisionRecord,
+    LongProjection,
+    LongProjectionItem,
+    ScoredDecision,
+)
 from trader.domain.recommendation.models import Strategy
 
 
@@ -80,11 +85,29 @@ class SharedReviews:
 
 
 class Freezes:
-    def __init__(self) -> None:
+    def __init__(self, index: UnifiedDecisionIndex | None = None) -> None:
+        self._index = index
         self.calls: list[tuple[Strategy, str | None]] = []
+        self.close_fallback_calls: list[tuple[Strategy, str, str]] = []
 
-    def freeze(self, strategy: Strategy, _at: datetime, current) -> None:
+    def freeze(self, strategy: Strategy, at: datetime, current) -> None:
         self.calls.append((strategy, current.version if current is not None else None))
+        if self._index is None:
+            return
+        sealed = self._index.seal_for_freeze(strategy, boundary_at=at)
+        assert sealed.accepted and sealed.decision is not None
+        assert self._index.commit_formal(CommittedDecisionRecord(sealed.decision, at, "scheduled"))
+
+    def freeze_close_fallback(
+        self,
+        strategy: Strategy,
+        _at: datetime,
+        current,
+        *,
+        recovery_path: str,
+        official_close_version: str,
+    ) -> None:
+        self.close_fallback_calls.append((strategy, recovery_path, official_close_version))
 
 
 class Settlement:
@@ -101,7 +124,6 @@ def test_v2_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> None:
     close_at = datetime(2026, 8, 11, 15, 0, tzinfo=SHANGHAI)
     data = DataRefresh()
     reviews = SharedReviews()
-    freezes = Freezes()
     settlement = Settlement()
     observed: list[str] = []
     observer = AsyncDecisionObserver(
@@ -110,6 +132,7 @@ def test_v2_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> None:
         thread_name="test-v2-fixture-observer",
     )
     index = UnifiedDecisionIndex()
+    freezes = Freezes(index)
     runtime = V2SchedulerRuntime(
         V2RuntimeDependencies(
             clock=FixedClock(morning),
@@ -149,6 +172,85 @@ def test_v2_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> None:
     assert not any(thread.name.startswith("trader-v2-") for thread in threading.enumerate())
     assert runtime.submit_tick(close_at) is False
     assert runtime.status().control_rejected_count == status.control_rejected_count
+
+
+def test_after_close_cold_start_recovers_missing_scored_strategies_and_long() -> None:
+    after_close = datetime(2026, 8, 11, 15, 5, tzinfo=SHANGHAI)
+    data = DataRefresh()
+    decisions = Decisions()
+    reviews = SharedReviews()
+    freezes = Freezes()
+    index = UnifiedDecisionIndex()
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=FixedClock(after_close),
+            calendar=TradingCalendar(),
+            data=data,
+            decisions=decisions,
+            reviews=reviews,
+            index=index,
+            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-v2-after-close-observer"),
+            freezes=freezes,
+            settlement=Settlement(),
+        ),
+        config_version="runtime-v2",
+    )
+
+    runtime.start()
+    runtime.submit_due(after_close)
+    assert runtime.wait_idle(2.0)
+    runtime.stop(ShutdownDeadline.start(2.0))
+
+    assert set(data.calls) == {Strategy.TOMORROW, Strategy.D25, Strategy.LONG}
+    assert reviews.calls == []
+    assert {(strategy, recovery_path) for strategy, recovery_path, _version in freezes.close_fallback_calls} == {
+        (Strategy.TOMORROW, "close_rebuild"),
+        (Strategy.D25, "close_rebuild"),
+    }
+    assert all(version.startswith("official-close:") for _strategy, _path, version in freezes.close_fallback_calls)
+    assert index.snapshot(Strategy.TODAY).current is None
+    assert all(index.snapshot(strategy).current is not None for strategy in (Strategy.TOMORROW, Strategy.D25))
+    assert index.snapshot(Strategy.LONG).current is not None
+
+
+def test_after_close_prefers_existing_same_day_current_without_rebuilding() -> None:
+    before_close = datetime(2026, 8, 11, 14, 49, 55, tzinfo=SHANGHAI)
+    after_close = datetime(2026, 8, 11, 15, 5, tzinfo=SHANGHAI)
+    data = DataRefresh()
+    freezes = Freezes()
+    index = UnifiedDecisionIndex()
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=FixedClock(after_close),
+            calendar=TradingCalendar(),
+            data=data,
+            decisions=Decisions(),
+            reviews=SharedReviews(),
+            index=index,
+            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-v2-after-close-current-observer"),
+            freezes=freezes,
+            settlement=Settlement(),
+        ),
+        config_version="runtime-v2",
+    )
+    for strategy in (Strategy.TOMORROW, Strategy.D25):
+        current = replace(
+            decision(strategy, sequence=1),
+            trade_date=before_close.date(),
+            observed_at=before_close,
+        )
+        assert index.publish(current, expected_version=None).accepted
+
+    runtime.start()
+    runtime.submit_due(after_close)
+    assert runtime.wait_idle(2.0)
+    runtime.stop(ShutdownDeadline.start(2.0))
+
+    assert data.calls == [Strategy.LONG]
+    assert {(strategy, recovery_path) for strategy, recovery_path, _version in freezes.close_fallback_calls} == {
+        (Strategy.TOMORROW, "current"),
+        (Strategy.D25, "current"),
+    }
 
 
 def test_tomorrow_lane_progresses_while_today_lane_is_blocked() -> None:

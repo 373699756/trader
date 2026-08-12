@@ -205,7 +205,14 @@ class HistoryWarmup:
             universe = self._universe
         self._history.update_coverage(universe)
         lanes = self._runner.source_lanes
-        if universe and lanes is not None and not lanes.is_stopped("history") and not lanes.is_stopped("tushare"):
+        history_lane_pending = bool(lanes is not None and lanes.status()[_HISTORY_SOURCE_LANE]["pending"])
+        if (
+            universe
+            and lanes is not None
+            and not history_lane_pending
+            and not lanes.is_stopped("history")
+            and not lanes.is_stopped("tushare")
+        ):
             self.schedule_history_warmup(universe, self._runner.wall_clock())
 
     def status(self) -> HistoryWarmupStatus:

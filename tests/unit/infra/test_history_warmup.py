@@ -52,6 +52,9 @@ class _Lanes:
     def is_stopped(self, _source):
         return False
 
+    def status(self):
+        return {"history": {"pending": False}}
+
 
 def test_failed_history_codes_cool_down_while_unattempted_codes_continue() -> None:
     clock = _Clock()

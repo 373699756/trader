@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增 15:00 后冷启动与已有同日 current 两条调度回归，以及历史预热不得抢占候选历史请求的并发
+  回归；测试分别锁定 Tomorrow/D25 收盘兜底、Long 当前投影、Today 禁止追补和共享 history lane
+  的 latest-wins 所有权。
+
 - V2-E11 新增可重复执行的 Firefox 桌面发布 runner，精确校准并验收 1280x720、1440x900、
   1920x1080 三档视口，检查根页面可见性、纵向顺序、页面级横向溢出、Long 侧栏/表格重叠、
   三个长期分类、股票行和浏览器异常，并输出脱敏 JSON 与截图证据。
@@ -53,6 +57,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 15:00 后的 V2 调度现在只恢复当日缺失的 Tomorrow/D25 正式记录与 Long 当前投影：已有同日
+  current 优先直接固化，否则按收盘行情本地补算并创建不可覆盖的 `close_fallback`；Today 继续按
+  11:20 冻结边界保持 `not_ready`，收盘恢复不调用 DeepSeek。命中全市场行情缓存时仍会恢复被
+  候选请求礼让的后台历史预热，但预热完成回调在 history lane 已有 pending 请求时不再自我续批。
+
 - 用户反馈“界面上没有数据”，并要求继续最后一个工程章节。现状确认包含两层原因：运行时未就绪时
   scored 策略可以合法返回 `not_ready`，而 Long 固定名单此前又被错误绑定到 current API 成功；
   因此 API 暂不可用时连卡脖子等固定股票身份也被隐藏。本批让 Long 打包名单先于实时接口显示，
@@ -70,6 +79,15 @@ All notable changes to this project are documented here.
   V2 current 仅覆盖价格、涨跌幅、成交额、换手率、市值、行情来源与时间，Long 页面不再显示评分、动作、
   推荐原因或荐股漏斗。
 
+### Fixed
+
+- 用户反馈“Web 上又没数据”。实机复现确认不是展示层问题：调度器在交易日 `AFTER_CLOSE` 阶段既不
+  评分也不刷新 Long，导致 15:00 后启动时 Today/Tomorrow/Long 均为 `not_ready`；补上收盘恢复后又
+  发现历史预热完成回调会立即续批，并在共享 latest-wins history lane 中 supersede 已排队的候选历史
+  请求，使本地补算以 `SourceRequestSupersededError` 失败。本批补齐收盘恢复端口与调度，并让后台
+  预热礼让业务请求；实机重启后 Long 恢复 224 条固定名单行情，Tomorrow 创建同日
+  `close_fallback`，已有 D25 正式记录保持不变，Today 未被违规追补。
+
 ### Removed
 
 - 删除失效且依赖已退役 fixture/旧 DOM 的 Chrome runner、runtime schema 5-8 默认补齐路径，以及
@@ -81,6 +99,13 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 本批 `make format-check`、`make lint`、`make type-check`、`make test` 最终通过；全量测试首次暴露
+  两个 history lane 测试替身缺少 `status()`，补齐真实端口边界后定向回归及全量测试均通过。
+  `make package` 首次仅因沙箱禁止隔离环境下载 `setuptools` 失败，获准联网后原命令重跑并成功构建
+  sdist 与 wheel。实机 V2 status/current 验证 Long 为 `ready` 且包含 224 条记录，Tomorrow 为
+  `ready`、`frozen=true`、`freeze_kind=close_fallback`；本批未修改 Web 静态资源或布局，因此三档
+  浏览器发布验收不适用。
 
 - `make format-check`、`make lint`（含 Long 资源一致性与零严格重构债务）、`make type-check`
   （187 个源文件）、`make test` 和 `make package`：最终均通过。全量测试首次只发现一条过期计划
@@ -107,6 +132,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 外部行情质量仍可能使 Tomorrow/D25 在状态 `ready` 时通过业务过滤后选中 0 条，这与运行时
+  `not_ready` 不同；本次实机 Tomorrow 的 28,127 个候选均被数据质量/策略规则拒绝。Today 在错过
+  11:20 冻结后当日保持 `not_ready` 是权威契约要求，不属于本修复残留缺陷。外部行情不可用时系统
+  仍按契约保留最近有效快照并显式降级。
 
 - 外部公开行情、Tushare 和 DeepSeek 的可用性及实时质量不由本地 release 控制；服务继续按契约
   失败开放并显式降级。运行目录中可能仍有旧 release 遗留的 `runtime.sqlite3`，本批不执行破坏性

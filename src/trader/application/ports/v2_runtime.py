@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Protocol
+from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
 from trader.domain.recommendation.decision_identity import DecisionIdentity, ScoredDecision
@@ -95,6 +95,16 @@ class V2FreezePort(Protocol):
         strategy: Strategy,
         at: datetime,
         current: DecisionIdentity | None,
+    ) -> None: ...
+
+    def freeze_close_fallback(
+        self,
+        strategy: Strategy,
+        at: datetime,
+        current: ScoredDecision,
+        *,
+        recovery_path: Literal["current", "close_rebuild"],
+        official_close_version: str,
     ) -> None: ...
 
 

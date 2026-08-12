@@ -6,7 +6,7 @@ import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Literal, Protocol
 
 from trader.application.long_v2_runtime import LongV2Runtime
 from trader.application.policy import RecommendationPolicy
@@ -23,6 +23,7 @@ from trader.application.ports.v2_runtime import (
     V2DecisionUnavailableError,
     V2DeepSeekUpgradePort,
     V2FreezePort,
+    V2FreezeUnavailableError,
     V2ReviewUnavailableError,
     V2SettlementPort,
 )
@@ -225,6 +226,27 @@ class V2FreezeAdapter(V2FreezePort):
         result = self._freezers[strategy].freeze_scheduled()
         if result.status in {"persistence_failed", "index_commit_conflict"}:
             raise RuntimeError(result.status)
+
+    def freeze_close_fallback(
+        self,
+        strategy: Strategy,
+        at: datetime,
+        current: ScoredDecision,
+        *,
+        recovery_path: Literal["current", "close_rebuild"],
+        official_close_version: str,
+    ) -> None:
+        del at
+        freezer = self._freezers.get(strategy)
+        if not isinstance(freezer, TomorrowV2FreezeCoordinator):
+            raise V2FreezeUnavailableError("close fallback is only available for tomorrow and d25")
+        result = freezer.freeze_close_fallback(
+            current,
+            recovery_path=recovery_path,
+            official_close_version=official_close_version,
+        )
+        if result.status not in {"frozen", "already_frozen"}:
+            raise V2FreezeUnavailableError(result.status)
 
 
 class V2NoopSettlement(V2SettlementPort):
