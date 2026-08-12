@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 import time
 from collections.abc import Callable
@@ -13,12 +14,12 @@ from flask import Flask
 
 from trader.application.cadence import CadencePolicy, PipelineTask
 from trader.application.decision_core import UnifiedDecisionIndex
-from trader.application.decision_events import V2DecisionCommitted
 from trader.application.decision_observers import AsyncDecisionObserver
 from trader.application.decision_queries import UnifiedDecisionQueries
 from trader.application.decision_stream import UnifiedDecisionEventStream
 from trader.application.latency import LatencyWaterfall
 from trader.application.long_v2_runtime import LongV2Runtime, LongV2RuntimeDependencies
+from trader.application.research_audit import V2DecisionObservation
 from trader.application.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
 from trader.application.shutdown import ShutdownDeadline, ShutdownReport
 from trader.application.source_lanes import SourceLaneRegistry
@@ -38,7 +39,6 @@ from trader.application.v2_input_runtime import (
     V2MarketDataAdapter,
     V2NoopSettlement,
 )
-from trader.application.v2_research_trace import InMemoryV2ResearchTraceStore
 from trader.application.v2_runtime import V2RuntimeDependencies, V2SchedulerRuntime
 from trader.application.workers import BoundedExecutor
 from trader.bootstrap_clock import utc_now as _utc_now
@@ -73,6 +73,7 @@ from trader.infra.market_data.tencent import TencentClient
 from trader.infra.market_data.tushare import TushareClient
 from trader.infra.persistence.data_plane import DataPlaneRepository
 from trader.infra.persistence.decision_records import SQLiteDecisionRecordRepository
+from trader.infra.persistence.research_trace import SQLiteV2ResearchTraceStore
 from trader.infra.persistence.runtime_json import RuntimeJsonWriter
 from trader.infra.runtime_support import RuntimeWorkerResources, ShanghaiClock
 from trader.infra.settings import (
@@ -106,7 +107,7 @@ class ApplicationSystem:
     decision_events: UnifiedDecisionEventStream | None = None
     tomorrow_index: UnifiedDecisionIndex | None = None
     tomorrow_records: SQLiteDecisionRecordRepository | None = None
-    tomorrow_trace: InMemoryV2ResearchTraceStore | None = None
+    research_trace: SQLiteV2ResearchTraceStore | None = None
 
     def _lifecycle_resources(self) -> SystemLifecycleResources:
         return SystemLifecycleResources(
@@ -156,7 +157,7 @@ class _PersistenceContext:
 class _PublicationContext:
     tomorrow_repository: SQLiteDecisionRecordRepository
     tomorrow_index: UnifiedDecisionIndex
-    tomorrow_trace: InMemoryV2ResearchTraceStore
+    research_trace: SQLiteV2ResearchTraceStore
     long_runtime: LongV2Runtime
     decision_queries: UnifiedDecisionQueries
     decision_events: UnifiedDecisionEventStream
@@ -224,6 +225,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
             now=now,
             initializers=(
                 publication.tomorrow_repository.initialize,
+                lambda: _initialize_research_trace(publication.research_trace),
                 lambda: _initialize_reference_data_plane(market_data, persistence.data_plane),
                 persistence.budget.initialize,
                 publication.today_freezer.initialize,
@@ -262,7 +264,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         decision_events=publication.decision_events,
         tomorrow_index=publication.tomorrow_index,
         tomorrow_records=publication.tomorrow_repository,
-        tomorrow_trace=publication.tomorrow_trace,
+        research_trace=publication.research_trace,
     )
 
 
@@ -564,14 +566,17 @@ def _build_publication(
     )
     clock = ShanghaiClock(context.now)
     decision_queries = UnifiedDecisionQueries(tomorrow_decisions, repository, clock)
-    tomorrow_trace = InMemoryV2ResearchTraceStore()
+    research_trace = SQLiteV2ResearchTraceStore(
+        settings.runtime_dir,
+        capacity=max(2048, settings.pipeline.event_queue_size * 4),
+    )
 
-    def publish_decision_event(event: V2DecisionCommitted) -> None:
-        decision_events.publish_committed(event)
+    def publish_decision_event(observation: V2DecisionObservation) -> None:
+        decision_events.publish_committed(observation.event)
 
     observer = AsyncDecisionObserver(
-        (tomorrow_trace.record, publish_decision_event),
-        capacity=max(16, settings.pipeline.event_queue_size),
+        (publish_decision_event, research_trace.record),
+        capacity=max(1, min(16, settings.pipeline.event_queue_size)),
         thread_name="trader-v2-decision-observer",
     )
     tomorrow_freezer = TomorrowV2FreezeCoordinator(
@@ -621,7 +626,7 @@ def _build_publication(
     return _PublicationContext(
         repository,
         tomorrow_decisions,
-        tomorrow_trace,
+        research_trace,
         long_runtime,
         decision_queries,
         decision_events,
@@ -644,6 +649,13 @@ def _runtime_status(
         "deepseek": reviewer.status(),
         "degraded_reasons": [status.last_error_code] if status.last_error_code else [],
     }
+
+
+def _initialize_research_trace(trace: SQLiteV2ResearchTraceStore) -> None:
+    try:
+        trace.initialize()
+    except (OSError, sqlite3.Error):
+        return
 
 
 def _fixed_cache_ttl(settings: RuntimeSettings, dataset: str) -> float:

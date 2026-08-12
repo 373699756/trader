@@ -8,6 +8,7 @@ from datetime import date, datetime
 from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
+from trader.application.research_audit import V2CommittedResearchAudit
 from trader.domain.recommendation.decision_identity import DecisionIdentity, ScoredDecision
 from trader.domain.recommendation.models import Strategy
 
@@ -80,6 +81,8 @@ class V2DataRefreshPort(Protocol):
 
 class V2DecisionBuilderPort(Protocol):
     def build_local(self, request: V2CycleRequest) -> DecisionIdentity | None: ...
+
+    def research_audit(self, version: str) -> V2CommittedResearchAudit | None: ...
 
 
 class V2DeepSeekUpgradePort(Protocol):

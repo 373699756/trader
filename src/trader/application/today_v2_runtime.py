@@ -9,12 +9,16 @@ from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
 from trader.application.decision_core import UnifiedDecisionIndex
-from trader.application.decision_events import V2DecisionCommitted, build_v2_decision_committed
+from trader.application.decision_events import (
+    V2DecisionCommitted,
+    build_v2_decision_committed,
+)
 from trader.application.decision_observers import DecisionObserverRuntime
 from trader.application.policy import RecommendationPolicy
 from trader.application.ports.clock import Clock
 from trader.application.ports.reviews import DeepSeekReviewUnavailableError, TomorrowDeepSeekReviewPort
 from trader.application.ports.tomorrow import TodayNativeInput
+from trader.application.research_audit import V2DecisionObservation, try_build_v2_committed_research_audit
 from trader.application.shutdown import ShutdownDeadline, ShutdownStep
 from trader.application.today_v2_freezing import TodayV2FreezeCoordinator
 from trader.application.today_v2_projection import (
@@ -99,7 +103,7 @@ class TodayV2Runtime:
             raise
         formal = self._index.snapshot(Strategy.TODAY).formal
         if formal is not None:
-            self._observer.offer(build_v2_decision_committed(formal.decision))
+            self._observer.offer(V2DecisionObservation(build_v2_decision_committed(formal.decision), None))
         return started
 
     def initialize(self) -> None:
@@ -240,7 +244,7 @@ class TodayV2Runtime:
         if not published.accepted:
             self._reject_publish(published.reason)
             return
-        self._record_publish(published.event, hybrid=False)
+        self._record_publish(published.event, hybrid=False, projection=projection, decision=local)
         self._try_hybrid_upgrade(native_input, projection, local)
 
     def _try_hybrid_upgrade(
@@ -291,14 +295,20 @@ class TodayV2Runtime:
             with self._lock:
                 self._review_late_count += int(any(review.completed_at >= deadline for review in reviews.values()))
             return
-        self._publish_hybrid(hybrid, expected_version=local.version)
+        self._publish_hybrid(hybrid, expected_version=local.version, projection=projection)
 
-    def _publish_hybrid(self, hybrid: ScoredDecision, *, expected_version: str) -> None:
+    def _publish_hybrid(
+        self,
+        hybrid: ScoredDecision,
+        *,
+        expected_version: str,
+        projection: TodayV2LocalProjection,
+    ) -> None:
         upgraded = self._index.publish(hybrid, expected_version=expected_version)
         if not upgraded.accepted:
             self._reject_publish(upgraded.reason)
             return
-        self._record_publish(upgraded.event, hybrid=True)
+        self._record_publish(upgraded.event, hybrid=True, projection=projection, decision=hybrid)
 
     def _freeze_if_boundary_reached(self, native_input: TodayNativeInput) -> bool:
         boundary = datetime.combine(native_input.trade_date, time(11, 20), tzinfo=native_input.evaluated_at.tzinfo)
@@ -314,11 +324,23 @@ class TodayV2Runtime:
             self._sequence += 2
             return sequence
 
-    def _record_publish(self, event: V2DecisionCommitted | None, *, hybrid: bool) -> None:
+    def _record_publish(
+        self,
+        event: V2DecisionCommitted | None,
+        *,
+        hybrid: bool,
+        projection: TodayV2LocalProjection,
+        decision: ScoredDecision,
+    ) -> None:
         with self._lock:
             self._hybrid_publish_count += int(hybrid)
             self._local_publish_count += int(not hybrid)
-        if event is not None and not self._observer.offer(event):
+        observation = (
+            V2DecisionObservation(event, try_build_v2_committed_research_audit(projection, decision))
+            if event is not None
+            else None
+        )
+        if observation is not None and not self._observer.offer(observation):
             with self._lock:
                 self._observer_rejection_count += 1
 
@@ -333,7 +355,7 @@ class TodayV2Runtime:
             self._last_error_code = f"input:{reason}"
 
     def _offer_formal_event(self, decision: ScoredDecision) -> None:
-        if not self._observer.offer(build_v2_decision_committed(decision)):
+        if not self._observer.offer(V2DecisionObservation(build_v2_decision_committed(decision), None)):
             with self._lock:
                 self._observer_rejection_count += 1
 

@@ -62,6 +62,10 @@ class Decisions:
             observed_at=request.observed_at,
         )
 
+    def research_audit(self, version: str):
+        del version
+        return None
+
 
 class SharedReviews:
     runtime_contract = SharedDeepSeekRuntimeContract(
@@ -127,7 +131,7 @@ def test_v2_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> None:
     settlement = Settlement()
     observed: list[str] = []
     observer = AsyncDecisionObserver(
-        (lambda event: observed.append(event.event_id),),
+        (lambda observation: observed.append(observation.event.event_id),),
         capacity=16,
         thread_name="test-v2-fixture-observer",
     )

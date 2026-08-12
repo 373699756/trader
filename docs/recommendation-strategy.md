@@ -940,6 +940,13 @@ observer 不得重新读取行情、重新评分或重新调用模型。研究�
 以及已进入完整评分集合股票的本地组件、风险、动作与跳过原因。研究审计使用独立哈希，不得改变
 活动 `decision_hash`；身份变化必须显式升级研究 schema。
 
+Score-R1-Migrate 固定同批审计 schema 为 `v2_committed_research_audit_v1`，外层持久化 schema 为
+`v2_research_committed_event_v1`。每次成功提交分别保存 `production_local` 与 `research_shadow`：
+local 提交使用完全相同的 control copy，hybrid 提交只投影本批已存在且通过校验的结构化 facts；
+两者都不得重新执行评分。外层规范载荷和内层审计各自计算独立 SHA-256，正式冻结重放缺少同批审计时
+只保存通用事件，不伪造候选字段，也不得覆盖同 identity 已存在审计。研究链的 DeepSeek 物理 HTTP
+请求增量必须为 0。
+
 同输入的 hybrid 只允许引用当时已经存在且通过 schema/证据校验的结构化 facts；没有可复用
 facts 时必须保存 local control 副本。研究链和所有挑战者的 DeepSeek 物理 HTTP 请求增量必须为 0。
 

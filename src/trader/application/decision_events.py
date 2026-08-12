@@ -79,4 +79,8 @@ def _event_item(item: DecisionItem) -> V2CommittedDecisionItem:
     )
 
 
-__all__ = ["V2CommittedDecisionItem", "V2DecisionCommitted", "build_v2_decision_committed"]
+__all__ = [
+    "V2CommittedDecisionItem",
+    "V2DecisionCommitted",
+    "build_v2_decision_committed",
+]

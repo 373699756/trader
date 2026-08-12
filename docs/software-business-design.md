@@ -253,6 +253,13 @@ overlay 必须匹配当前 decision/projection version、策略和交易日，�
 身份时生成应用层通用 `V2DecisionCommitted`；事件携带完整决策身份和逐项结果，不导入或
 依赖 research 类型，observer 失败也无权反向修改决策。
 
+研究 observer 只消费成功提交后的 `V2DecisionCommitted` 与评分投影同批生成的不可变研究审计，
+写入 `.runtime/v2/research/committed-events.sqlite3` 独立 SQLite 研究库。研究载荷拥有独立 schema、
+规范 SHA-256、容量上限、幂等冲突检测、启动校验和损坏隔离；不写统一决策索引、正式记录库、API、
+SSE 或活动配置。审计写入失败不回滚或阻塞正式决策，初始化失败同样 fail open；observer
+不重新读取行情、重新评分或重新调用模型。历史数据不从旧 snapshot 或 shadow 运行库回填，部署后只积累新的
+committed observation。
+
 today、tomorrow 和 d25 的正式记录仓储按策略和交易日唯一提交。仓储先把规范载荷及其
 SHA-256 写入 SQLite staged manifest，再原子创建不可变 JSON，最后提交 manifest；同键同
 内容重放幂等，不同内容冲突失败。启动恢复使用 manifest 内有界恢复载荷补齐半提交；已提交
@@ -1167,8 +1174,8 @@ fixture 不算最终发布证据。
 
 ### 14.2 评分研究状态
 
-Score-R0 与 Score-R1 已完成权威预注册和紧凑决策轨迹；Score-R1-Migrate、Score-R2 至
-Score-R7 尚未完成。研究链与活动运行库物理分离，只消费不可变 V2 committed event 和同批
+Score-R0、Score-R1 与 Score-R1-Migrate 已完成；Score-R2 至 Score-R7 尚未完成。
+研究链与活动运行库物理分离，只消费不可变 V2 committed event 和同批
 研究审计，不建立第二套行情、评分、冻结、Web 或 DeepSeek 请求链，不写活动配置或正式记录。
 
 最多 40 个历史日、20 个固定前向日、五挑战者、候选召回、配对移动区块 bootstrap、Holm

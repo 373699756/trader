@@ -42,7 +42,7 @@ def test_score_plan_p0_pre_registration_is_reflected_in_authoritative_docs() -> 
     assert "硬拒绝股票代码、简称、逐股事实、分数和未来收益均不得写入研究证据" in strategy
 
     for statement in (
-        "Score-R0 与 Score-R1 已完成权威预注册和紧凑决策轨迹",
+        "Score-R0、Score-R1 与 Score-R1-Migrate 已完成",
         "研究链与活动运行库物理分离",
         "不建立第二套行情、评分、冻结、Web 或 DeepSeek 请求链",
         "策略定义只以荐股策略文档第 15.1 节为准",
@@ -56,7 +56,7 @@ def test_score_plan_p1_compact_trace_contract_is_reflected_in_authoritative_docs
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
     assert "### Score-R1：紧凑决策轨迹（已完成）" in plan
-    assert "Score-R0 与 Score-R1 已完成权威预注册和紧凑决策轨迹" in design
+    assert "Score-R0、Score-R1 与 Score-R1-Migrate 已完成" in design
     assert "研究链与活动运行库物理分离" in design
     for statement in (
         "候选字段缺失掩码",
@@ -67,3 +67,29 @@ def test_score_plan_p1_compact_trace_contract_is_reflected_in_authoritative_docs
         "研究轨迹不参与生产排序、动作、 统一决策提交、冻结、API 或收益结算",
     ):
         assert statement in " ".join(strategy.split())
+
+
+def test_score_r1_migrate_committed_audit_contract_is_complete() -> None:
+    plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
+    strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+
+    assert "### Score-R1-Migrate：迁移到 V2 committed event（已完成）" in plan
+    assert "下一研究章节为 Score-R2" in " ".join(plan.split())
+    for statement in (
+        "只消费成功提交后的 `V2DecisionCommitted`",
+        "独立 SQLite 研究库",
+        "不重新读取行情、重新评分或重新调用模型",
+        "审计写入失败不回滚或阻塞正式决策",
+        "历史数据不从旧 snapshot 或 shadow 运行库回填",
+    ):
+        assert statement in design
+    for statement in (
+        "`v2_committed_research_audit_v1`",
+        "`v2_research_committed_event_v1`",
+        "`production_local`",
+        "`research_shadow`",
+        "独立 SHA-256",
+        "DeepSeek 物理 HTTP 请求增量必须为 0",
+    ):
+        assert statement in strategy

@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- Score-R1-Migrate 新增 V2 committed observation 研究链：Today、Tomorrow、D25 成功提交后携带
+  同批 `v2_committed_research_audit_v1`，独立 SQLite 保存硬拒绝聚合、硬过滤通过候选、板块/行业、
+  候选组件、缺失掩码、覆盖率、板块可靠度、生产 Top120 及 production_local/research_shadow 配对。
+
 - 新增生产 `V2MarketDataAdapter` 的临时无效空集/合法业务空集回归，以及 Web 首屏策略选择和
   Long `view=current` 身份回归；覆盖行情过期不得发布、ST 等业务过滤允许合法空、当日有条目
   策略优先展示和短线 `live/official` 与 Long `current` 的隔离校验。
@@ -61,6 +65,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求继续 `docs/implementation-plan.md` 未完成任务。核对后发现计划顶部误写“下一章节
+  Score-R2”，但正文和权威设计仍明确 Score-R1-Migrate 未完成；本批先闭合该依赖章节，并把下一
+  研究章节统一修正为 Score-R2，不提前实现相邻章节。
+
 - 根页面首次打开时按 Today、Tomorrow、D25、Long 顺序选择第一个当日 `ready` 且有条目的
   current；没有有条目策略时选择第一个 ready，全部未就绪时回到 Today。该自动选择只执行一次，
   用户手动切换后不被 15 秒状态刷新覆盖。静态资源版本提升为 v5，避免浏览器继续使用已经实际加载过
@@ -90,6 +98,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复原 committed event 研究 trace 仅驻留内存、重启后丢失且未保留 R1 候选审计语义的问题；现在
+  规范载荷和内层审计使用独立 SHA-256，启动逐行校验并隔离损坏记录，数据库初始化/写入失败由有界
+  observer 隔离，不回滚正式决策、冻结、API/SSE 或增加 DeepSeek 请求。
+
 - 用户再次反馈“Web 上又没数据”。实机确认 Long API 始终有 224 条，但前端 current 身份校验只
   接受短线 `live/official`，把 Long 合法的 `view=current` 拒绝后永久回退到无价格静态名单；同时
   首页固定打开 Today，而当日 Today 按 11:20 规则为 `not_ready`。现在 Long current 可进入缓存和
@@ -106,6 +118,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除 `application/v2_research_trace.py` 的进程内 trace 实现和 `tomorrow_trace` 命名；研究采集不再
+  依赖旧 snapshot baseline、tomorrow shadow runtime 或旧运行库，也不提供历史回填兼容路径。
+
 - 本批未删除 API、策略、历史记录或固定名单；保留四策略入口、冻结不可覆盖约束和 Long 全量
   224 只配置身份，不以删记录方式改写当天已经固化的正式空结果。
 
@@ -118,6 +133,12 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- Score-R1-Migrate 定向矩阵通过：覆盖研究 SQLite 重启/幂等/冲突/双哈希/损坏隔离/条数与字节
+  上限、observer 有界与消费者失败隔离、三策略投影及冻结重放、通用调度、文档与架构契约。
+  `make format-check`、`make lint`、`make type-check` 通过，零严格重构债务；`make package` 首次因
+  沙箱禁止隔离环境下载 `setuptools` 失败，获准联网后成功，仓库外 wheel 可导入新研究模块并读取
+  Web 资源。本批未重复运行此前超过 17 分钟的全量 `make test`，以受影响包和共享边界定向矩阵替代。
 
 - 本批 `make format-check`、`make lint`、`make type-check`、`make test` 最终通过；格式门禁覆盖
   279 个文件，全量 pytest 全部通过。`make package` 首次仅因沙箱禁止隔离环境下载 `setuptools` 失败，
@@ -158,6 +179,10 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 新研究库只从本版本部署后的 V2 committed observation 开始积累，不从已删除的旧 snapshot 或
+  shadow 运行库回填；因此 Score-R2 的最多 40 日历史提取仍是下一独立章节。正式冻结二次裁剪身份
+  若没有同批投影只保存通用事件，不伪造候选审计；源提交审计仍按其原 decision identity 保留。
 
 - 冻结记录不可覆盖，因此修复前已经固化的 2026-08-12 Tomorrow/D25 空结果不会被本批删除或重算，
   对应 Tab 当日仍会如实显示空；新代码只阻止后续临时无效空集再次发布。Today 错过 11:20 后保持

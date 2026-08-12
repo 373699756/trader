@@ -29,6 +29,7 @@ from trader.application.ports.v2_runtime import (
     V2SettlementUnavailableError,
     V2TradingCalendarPort,
 )
+from trader.application.research_audit import V2DecisionObservation
 from trader.application.schedule import (
     SHANGHAI,
     MarketPhase,
@@ -360,7 +361,12 @@ class V2SchedulerRuntime:
                 self._hybrid_publish_count += 1
             else:
                 self._local_publish_count += 1
-        if event is not None and not self._dependencies.observer.offer(event):
+        observation = (
+            V2DecisionObservation(event, self._dependencies.decisions.research_audit(event.decision_version))
+            if event is not None
+            else None
+        )
+        if observation is not None and not self._dependencies.observer.offer(observation):
             with self._lock:
                 self._observer_rejection_count += 1
 

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
 from pathlib import Path
 
-from trader.bootstrap import _initialize_reference_data_plane, build_system
+from trader.bootstrap import _initialize_reference_data_plane, _initialize_research_trace, build_system
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -31,6 +32,8 @@ def test_build_system_is_lazy_and_v2_only(tmp_path, monkeypatch) -> None:
     assert not (tmp_path / "runtime").exists()
     assert system.scheduler is not None
     assert system.repository is not None
+    assert system.research_trace is not None
+    assert not (tmp_path / "runtime" / "research").exists()
     assert system.long_v2_runtime is not None
     assert system.app.test_client().get("/api/status").status_code == 404
     assert system.app.test_client().get("/api/v2/status").status_code == 200
@@ -50,3 +53,14 @@ def test_reference_data_plane_recovery_is_fail_open() -> None:
     data_plane.initialize.assert_called_once_with()
     market_data.references.recover.assert_not_called()
     market_data.research.recover_from_data_plane.assert_not_called()
+
+
+def test_research_trace_initialization_is_fail_open() -> None:
+    from unittest.mock import Mock
+
+    trace = Mock()
+    trace.initialize.side_effect = sqlite3.OperationalError("research database unavailable")
+
+    _initialize_research_trace(trace)
+
+    trace.initialize.assert_called_once_with()

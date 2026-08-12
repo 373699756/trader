@@ -1,7 +1,7 @@
 # V2 与评分研究多 Codex 总实施计划
 
-状态：V2-E0 至 V2-E11、Score-R0、Score-R1 已完成；V2 工程发布章节全部闭合，下一研究章节为
-Score-R2。
+状态：V2-E0 至 V2-E11、Score-R0、Score-R1、Score-R1-Migrate 已完成；
+V2 工程发布章节全部闭合，下一研究章节为 Score-R2。
 
 本文是唯一活动施工计划，只定义执行顺序、会话协作、文件所有权、同步 Gate 和退出条件，
 不定义产品或策略行为。产品、架构、时间线、API、运维和验收以
@@ -103,6 +103,8 @@ C 固定执行：
   只维护无评分 current projection。
 - Score-R0 已完成：最多 60 个评价日、40+20 切分、五挑战者、统计身份和人工晋级已预注册。
 - Score-R1 已完成：紧凑研究轨迹、有界异步记录、幂等冲突和硬过滤后逐股审计已实现。
+- Score-R1-Migrate 已完成：研究 observer 只消费 V2 committed observation；同批 R1 审计与
+  committed event 使用独立 schema/hash 写入有界 SQLite 研究库，重启可恢复，失败不反向影响生产。
 - G1 的 Score-R2 接口适配设计已冻结：研究侧历史扩展显式继承唯一的
   `DataPlaneReadPort`，并固定日摘要与按代码完整字段的两阶段读取值；40 日提取、分区和
   manifest 仍属于 G2 的 Score-R2 整节实现，当前状态不提前标记完成。
@@ -261,11 +263,17 @@ observer、三类冻结控制和 Long current projection 均由唯一组合根�
 - 每个输入保存 production_local/research_shadow 配对；不新增 DeepSeek 请求。
 - 写入失败、队列满、超限和冲突不阻塞推荐，不改变正式 API、P6 或冻结。
 
-### Score-R1-Migrate：迁移到 V2 committed event
+### Score-R1-Migrate：迁移到 V2 committed event（已完成）
 
 - 删除对旧 snapshot baseline 和 tomorrow shadow runtime 的采集依赖。
 - 只从已提交 `V2DecisionCommitted` 转换研究轨迹，不重新执行生产评分。
 - 保留 R1 schema 语义；身份变化必须显式升级 schema/version，禁止静默重写历史。
+
+退出证据：Today、Tomorrow 与 D25 原生评分投影在决策成功提交后，把通用 committed event 与
+同批 `v2_committed_research_audit_v1` 组合成 observation；审计保留硬拒绝聚合、硬过滤通过候选、
+生产 Top120、production_local/research_shadow 配对和零 DeepSeek 增量，并以
+`v2_research_committed_event_v1` 规范载荷写入独立有界 SQLite。正式冻结重放可以只携带事件，
+不得覆盖同 decision identity 已存在的审计；损坏行隔离、容量耗尽和数据库失败均由 observer 隔离。
 
 退出条件：启用 observer 前后 DecisionView、冻结哈希、API/SSE 和 DeepSeek 计数完全一致。
 

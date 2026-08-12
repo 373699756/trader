@@ -9,10 +9,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-from trader.application.decision_events import V2DecisionCommitted
+from trader.application.research_audit import V2DecisionObservation
 from trader.application.shutdown import ShutdownDeadline, ShutdownStep
 
-DecisionEventConsumer = Callable[[V2DecisionCommitted], None]
+DecisionEventConsumer = Callable[[V2DecisionObservation], None]
 
 
 @dataclass(frozen=True)
@@ -30,7 +30,7 @@ class DecisionObserverStatus:
 
 
 class DecisionObserver(Protocol):
-    def offer(self, event: V2DecisionCommitted) -> bool: ...
+    def offer(self, observation: V2DecisionObservation) -> bool: ...
 
 
 class DecisionObserverRuntime(DecisionObserver, Protocol):
@@ -61,7 +61,7 @@ class AsyncDecisionObserver:
         self._capacity = capacity
         self._thread_name = thread_name
         self._condition = threading.Condition(threading.RLock())
-        self._queue: deque[V2DecisionCommitted] = deque()
+        self._queue: deque[V2DecisionObservation] = deque()
         self._thread: threading.Thread | None = None
         self._accepting = False
         self._running = False
@@ -88,12 +88,12 @@ class AsyncDecisionObserver:
                 raise
             return True
 
-    def offer(self, event: V2DecisionCommitted) -> bool:
+    def offer(self, observation: V2DecisionObservation) -> bool:
         with self._condition:
             if not self._accepting or len(self._queue) >= self._capacity:
                 self._rejected_count += 1
                 return False
-            self._queue.append(event)
+            self._queue.append(observation)
             self._accepted_count += 1
             self._condition.notify_all()
             return True

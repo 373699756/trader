@@ -27,6 +27,10 @@ from trader.application.ports.v2_runtime import (
     V2ReviewUnavailableError,
     V2SettlementPort,
 )
+from trader.application.research_audit import (
+    V2CommittedResearchAudit,
+    try_build_v2_committed_research_audit,
+)
 from trader.application.today_v2_freezing import TodayV2FreezeCoordinator
 from trader.application.today_v2_projection import (
     TodayV2LocalProjection,
@@ -88,6 +92,7 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         self._lock = threading.RLock()
         self._batches: dict[tuple[Strategy, str], V2InputBatch] = {}
         self._projections: dict[str, TodayV2LocalProjection | TomorrowV2LocalProjection] = {}
+        self._decisions: dict[str, ScoredDecision] = {}
         self._sequences = {strategy: 1 for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)}
 
     def refresh(self, request: V2CycleRequest) -> None:
@@ -165,11 +170,37 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
             raise V2DecisionUnavailableError(projection.input_quality.status)
         with self._lock:
             self._projections[projection.local.version] = projection
+            self._decisions[projection.local.version] = projection.local
+            self._trim_research_sources()
         return projection.local
 
     def projection(self, version: str) -> TodayV2LocalProjection | TomorrowV2LocalProjection | None:
         with self._lock:
             return self._projections.get(version)
+
+    def register_hybrid(
+        self,
+        projection: TodayV2LocalProjection | TomorrowV2LocalProjection,
+        decision: ScoredDecision,
+    ) -> None:
+        with self._lock:
+            self._projections[decision.version] = projection
+            self._decisions[decision.version] = decision
+            self._trim_research_sources()
+
+    def research_audit(self, version: str) -> V2CommittedResearchAudit | None:
+        with self._lock:
+            projection = self._projections.get(version)
+            decision = self._decisions.get(version)
+        if projection is None or decision is None:
+            return None
+        return try_build_v2_committed_research_audit(projection, decision)
+
+    def _trim_research_sources(self) -> None:
+        while len(self._decisions) > 64:
+            version = next(iter(self._decisions))
+            self._decisions.pop(version, None)
+            self._projections.pop(version, None)
 
 
 class V2DeepSeekAdapter(V2DeepSeekUpgradePort):
@@ -207,8 +238,12 @@ class V2DeepSeekAdapter(V2DeepSeekUpgradePort):
         if not validate_review_manifests(projection, reviews, expected):
             return None
         if request.strategy is Strategy.TODAY:
-            return build_today_v2_hybrid(projection, self._policy, reviews, review_deadline=deadline)
-        return build_tomorrow_v2_hybrid(projection, self._policy, reviews, review_deadline=deadline)
+            hybrid = build_today_v2_hybrid(projection, self._policy, reviews, review_deadline=deadline)
+        else:
+            hybrid = build_tomorrow_v2_hybrid(projection, self._policy, reviews, review_deadline=deadline)
+        if hybrid is not None:
+            self._data.register_hybrid(projection, hybrid)
+        return hybrid
 
 
 class V2FreezeAdapter(V2FreezePort):

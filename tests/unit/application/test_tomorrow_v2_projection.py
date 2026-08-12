@@ -9,6 +9,7 @@ from tests.unit.application.test_tomorrow_deepseek_fusion import _review
 from trader.application.decision_core import UnifiedDecisionIndex
 from trader.application.decision_observers import AsyncDecisionObserver
 from trader.application.ports.tomorrow import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
+from trader.application.research_audit import build_v2_committed_research_audit
 from trader.application.shutdown import ShutdownDeadline
 from trader.application.tomorrow_v2_freezing import (
     TomorrowV2FreezeCoordinator,
@@ -19,11 +20,11 @@ from trader.application.tomorrow_v2_projection import (
     build_tomorrow_v2_local,
 )
 from trader.application.tomorrow_v2_runtime import TomorrowV2Runtime, TomorrowV2RuntimeDependencies
-from trader.application.v2_research_trace import InMemoryV2ResearchTraceStore
 from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.models import Strategy
 from trader.infra.persistence.decision_records import SQLiteDecisionRecordRepository
+from trader.infra.persistence.research_trace import SQLiteV2ResearchTraceStore
 from trader.infra.settings import load_strategy_settings
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -42,6 +43,14 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     )
     projection = build_tomorrow_v2_local(_native_input(features), policy, sequence=1)
     assert projection.review_candidates
+    audit = build_v2_committed_research_audit(projection, projection.local)
+    assert audit.decision_hash == projection.local.content_hash
+    assert audit.deepseek_request_delta == 0
+    assert audit.shadow_mode == "control_copy"
+    assert audit.production_local == audit.research_shadow
+    assert audit.passed_candidates
+    assert all(candidate.board and candidate.industry for candidate in audit.passed_candidates)
+    assert any(candidate.production_top120 for candidate in audit.passed_candidates)
     code = projection.review_candidates[0].code
     applied = replace(_review(code, 100.0), completed_at=EVALUATED_AT + timedelta(seconds=5))
     hybrid = build_tomorrow_v2_hybrid(
@@ -150,7 +159,8 @@ def test_runtime_close_recovery_keeps_current_and_trace_on_the_formal_v2_identit
     index = UnifiedDecisionIndex()
     repository = SQLiteDecisionRecordRepository(tmp_path)
     repository.initialize()
-    trace = InMemoryV2ResearchTraceStore()
+    trace = SQLiteV2ResearchTraceStore(tmp_path / "research-trace")
+    trace.initialize()
     observer = AsyncDecisionObserver((trace.record,), capacity=16)
     freezer = TomorrowV2FreezeCoordinator(
         index,
@@ -222,7 +232,13 @@ def test_runtime_close_recovery_keeps_current_and_trace_on_the_formal_v2_identit
         current = index.snapshot(Strategy.TOMORROW)
         assert current.formal == record
         assert current.current == record.decision
-        assert trace.get(record.decision.version) is not None
+        source = trace.get(before_close.version)
+        assert source is not None and source.research_audit is not None
+        assert source.research_audit.decision_hash == before_close.content_hash
+        stored = trace.get(record.decision.version)
+        assert stored is not None
+        assert stored.event.decision_version == record.decision.version
+        assert stored.research_audit is None
     finally:
         runtime.stop(wait=True, deadline=ShutdownDeadline.start(10.0))
 
@@ -254,7 +270,8 @@ def test_d25_runtime_cold_close_fallback_is_local_only_and_skips_review(
     index = UnifiedDecisionIndex()
     repository = SQLiteDecisionRecordRepository(tmp_path)
     repository.initialize()
-    trace = InMemoryV2ResearchTraceStore()
+    trace = SQLiteV2ResearchTraceStore(tmp_path / "research-trace")
+    trace.initialize()
     observer = AsyncDecisionObserver((trace.record,), capacity=16)
     reviewer = _DynamicReviewer(clock)
     freezer = TomorrowV2FreezeCoordinator(
@@ -286,7 +303,9 @@ def test_d25_runtime_cold_close_fallback_is_local_only_and_skips_review(
         assert record.decision.stage == "local"
         assert "local_only" in record.decision.degraded_reasons
         assert reviewer.review_count == 0
-        assert trace.get(record.decision.version) is not None
+        stored = trace.get(record.decision.version)
+        assert stored is not None and stored.research_audit is None
+        assert trace.status().retained == 2
     finally:
         runtime.stop(wait=True, deadline=ShutdownDeadline.start(10.0))
 
