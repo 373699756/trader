@@ -159,10 +159,13 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
                     self._candidate_pool_size,
                 )
                 projection = build_tomorrow_v2_local(tomorrow_native, self._policy, sequence=sequence)
-            self._projections[projection.local.version] = projection
-            return projection.local
         except (RuntimeError, TypeError, ValueError) as exc:
             raise V2DecisionUnavailableError(type(exc).__name__) from exc
+        if not projection.input_quality.publishable:
+            raise V2DecisionUnavailableError(projection.input_quality.status)
+        with self._lock:
+            self._projections[projection.local.version] = projection
+        return projection.local
 
     def projection(self, version: str) -> TodayV2LocalProjection | TomorrowV2LocalProjection | None:
         with self._lock:

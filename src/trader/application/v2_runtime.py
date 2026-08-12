@@ -176,8 +176,9 @@ class V2SchedulerRuntime:
         observed_at = shanghai_now(at or self._dependencies.clock.now())
         is_trading_day = self._dependencies.calendar.is_trading_day(observed_at.date())
         decision = decision_at(observed_at, is_trading_day=is_trading_day)
+        schedule_point = schedule_point_at(observed_at, is_trading_day=is_trading_day)
         strategies: tuple[Strategy, ...] = ()
-        if decision.phase is MarketPhase.AFTER_CLOSE:
+        if decision.phase is MarketPhase.AFTER_CLOSE and schedule_point is not SchedulePoint.CLOSE_QUOTES:
             strategies = self._after_close_recovery_strategies(observed_at)
         elif decision.should_score:
             strategies = (Strategy.TOMORROW, Strategy.D25, Strategy.TODAY)
@@ -192,7 +193,7 @@ class V2SchedulerRuntime:
             self.submit_cycle(self._scheduled_request(strategy, observed_at, phase))
         for raw_strategy in decision.freeze_strategies:
             self._submit_freeze(Strategy(raw_strategy), observed_at)
-        if schedule_point_at(observed_at, is_trading_day=is_trading_day) is SchedulePoint.CLOSE_QUOTES:
+        if schedule_point is SchedulePoint.CLOSE_QUOTES:
             self._submit_settlement(observed_at)
         return seconds_until_next_schedule_boundary(observed_at, maximum_seconds=30.0)
 

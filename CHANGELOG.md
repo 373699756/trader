@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增生产 `V2MarketDataAdapter` 的临时无效空集/合法业务空集回归，以及 Web 首屏策略选择和
+  Long `view=current` 身份回归；覆盖行情过期不得发布、ST 等业务过滤允许合法空、当日有条目
+  策略优先展示和短线 `live/official` 与 Long `current` 的隔离校验。
+
 - 新增 15:00 后冷启动与已有同日 current 两条调度回归，以及历史预热不得抢占候选历史请求的并发
   回归；测试分别锁定 Tomorrow/D25 收盘兜底、Long 当前投影、Today 禁止追补和共享 history lane
   的 latest-wins 所有权。
@@ -57,6 +61,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 根页面首次打开时按 Today、Tomorrow、D25、Long 顺序选择第一个当日 `ready` 且有条目的
+  current；没有有条目策略时选择第一个 ready，全部未就绪时回到 Today。该自动选择只执行一次，
+  用户手动切换后不被 15 秒状态刷新覆盖。静态资源版本提升为 v5，避免浏览器继续使用已经实际加载过
+  的错误 v4 缓存。
+
 - 15:00 后的 V2 调度现在只恢复当日缺失的 Tomorrow/D25 正式记录与 Long 当前投影：已有同日
   current 优先直接固化，否则按收盘行情本地补算并创建不可覆盖的 `close_fallback`；Today 继续按
   11:20 冻结边界保持 `not_ready`，收盘恢复不调用 DeepSeek。命中全市场行情缓存时仍会恢复被
@@ -81,6 +90,13 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 用户再次反馈“Web 上又没数据”。实机确认 Long API 始终有 224 条，但前端 current 身份校验只
+  接受短线 `live/official`，把 Long 合法的 `view=current` 拒绝后永久回退到无价格静态名单；同时
+  首页固定打开 Today，而当日 Today 按 11:20 规则为 `not_ready`。现在 Long current 可进入缓存和
+  渲染，首屏自动落到实际有数据的策略。另修复生产调度适配器绕过 `input_quality.publishable`、把
+  stale/history 未就绪空集发布并冻结为 ready 的缺口；15:00 精确点不再让收盘恢复与尚在完成的
+  14:50 正式冻结并发竞争，下一调度 tick 才允许缺失策略执行收盘恢复。
+
 - 用户反馈“Web 上又没数据”。实机复现确认不是展示层问题：调度器在交易日 `AFTER_CLOSE` 阶段既不
   评分也不刷新 Long，导致 15:00 后启动时 Today/Tomorrow/Long 均为 `not_ready`；补上收盘恢复后又
   发现历史预热完成回调会立即续批，并在共享 latest-wins history lane 中 supersede 已排队的候选历史
@@ -89,6 +105,9 @@ All notable changes to this project are documented here.
   `close_fallback`，已有 D25 正式记录保持不变，Today 未被违规追补。
 
 ### Removed
+
+- 本批未删除 API、策略、历史记录或固定名单；保留四策略入口、冻结不可覆盖约束和 Long 全量
+  224 只配置身份，不以删记录方式改写当天已经固化的正式空结果。
 
 - 删除失效且依赖已退役 fixture/旧 DOM 的 Chrome runner、runtime schema 5-8 默认补齐路径，以及
   已无任何运行消费者的 `decision_execution_mode=versioned_dag` 配置表象；当前 release 只接受
@@ -99,6 +118,13 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 本批 `make format-check`、`make lint`、`make type-check`、`make test` 最终通过；格式门禁覆盖
+  279 个文件，全量 pytest 全部通过。`make package` 首次仅因沙箱禁止隔离环境下载 `setuptools` 失败，
+  获准联网后原命令成功构建 sdist/wheel。JS 状态契约、Python 决策/调度/冻结/文档契约定向回归均
+  通过。Firefox 三档 1280x720、1440x900、1920x1080 验收无白屏、横向溢出、Long 两栏重叠或
+  浏览器错误。真实服务重启后，无头 Firefox 首屏为 Long、当前分组 5 行，首行显示蓝特光学 66.53、
+  +2.83% 及腾讯行情时间，资源为 v5；手动切换 Tomorrow 并跨过一次 15 秒状态刷新后仍保持选择。
 
 - 本批 `make format-check`、`make lint`、`make type-check`、`make test` 最终通过；全量测试首次暴露
   两个 history lane 测试替身缺少 `status()`，补齐真实端口边界后定向回归及全量测试均通过。
@@ -132,6 +158,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 冻结记录不可覆盖，因此修复前已经固化的 2026-08-12 Tomorrow/D25 空结果不会被本批删除或重算，
+  对应 Tab 当日仍会如实显示空；新代码只阻止后续临时无效空集再次发布。Today 错过 11:20 后保持
+  `not_ready` 仍是权威冻结契约。外部行情失败时 Long 会继续展示完整固定名单，但价格字段可能为空并
+  明确提示降级。
 
 - 外部行情质量仍可能使 Tomorrow/D25 在状态 `ready` 时通过业务过滤后选中 0 条，这与运行时
   `not_ready` 不同；本次实机 Tomorrow 的 28,127 个候选均被数据质量/策略规则拒绝。Today 在错过

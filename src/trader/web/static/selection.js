@@ -8,6 +8,23 @@
     long: "长期研究 · 仅展示当前数据",
   });
 
+  function initialStrategy(statusPayload) {
+    const strategies = statusPayload && statusPayload.strategies;
+    if (!strategies || typeof strategies !== "object") return "today";
+    const ordered = ["today", "tomorrow", "d25", "long"];
+    const withItems = ordered.find((strategy) => {
+      const status = strategies[strategy];
+      const selected = Number(status && status.coverage && status.coverage.selected_count);
+      return status && status.status === "ready" && Number.isFinite(selected) && selected > 0;
+    });
+    if (withItems) return withItems;
+    return ordered.find((strategy) => strategies[strategy] && strategies[strategy].status === "ready") || "today";
+  }
+
+  function currentViewMatches(strategy, payloadView) {
+    return strategy === "long" ? payloadView === "current" : ["live", "official"].includes(payloadView);
+  }
+
   function resolveStrategyDate(previousStrategy, nextStrategy, selectedDate, availableDates) {
     if (nextStrategy === "long" || previousStrategy === "long" || !selectedDate) {
       return { date: "", availability: "available" };
@@ -115,7 +132,9 @@
   }
 
   window.TraderSelection = Object.freeze({
+    currentViewMatches,
     descriptions,
+    initialStrategy,
     isSnapshotNotFound,
     markDateAvailability,
     observationRecommendations,

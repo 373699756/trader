@@ -105,15 +105,21 @@
       if (event.key === "Escape") closeDrawer();
     });
 
-    selectStrategy("today");
+    initializeStrategy();
     prefetchStrategies();
-    loadStatus();
     connectStream();
     window.setInterval(loadStatus, 15000);
     window.setInterval(updateQuoteAge, 1000);
     window.setInterval(() => {
       if (state.date && document.visibilityState !== "hidden") loadRecommendations("history_overlay");
     }, HISTORY_REFRESH_MS);
+  }
+
+  async function initializeStrategy() {
+    const selectionId = state.selectionSequence;
+    const status = await loadStatus();
+    if (selectionId !== state.selectionSequence) return;
+    await selectStrategy(selection.initialStrategy(status));
   }
 
   async function selectStrategy(strategy) {
@@ -368,7 +374,7 @@
     if (payload.status === "not_ready") return payload.view === view;
     if (payload.historical === true || !payload.current_trade_date) return false;
     const viewMatches = view === "current"
-      ? ["live", "official"].includes(payload.view)
+      ? selection.currentViewMatches(strategy, payload.view)
       : payload.view === view;
     return payload.trade_date === payload.current_trade_date && viewMatches;
   }
@@ -627,9 +633,11 @@
       reconcileRecommendationIdentity(payload);
       if (previousPhase !== state.runtimePhase && state.payload) renderPayload(state.payload);
       updateQuoteAge();
+      return payload;
     } catch (_error) {
       els.runtimeStatus.textContent = "状态不可用";
       els.runtimeDot.dataset.state = "error";
+      return null;
     }
   }
 

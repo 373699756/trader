@@ -66,6 +66,32 @@ const state = {
   longGroupVisibleRecommendations: sandbox.window.TraderLongGroups.visibleRecommendations,
 };
 assert(state, "dashboard D4 helpers were not exported into the test sandbox");
+assert.strictEqual(
+  state.initialStrategy({
+    strategies: {
+      today: { status: "not_ready", coverage: { selected_count: 0 } },
+      tomorrow: { status: "ready", coverage: { selected_count: 0 } },
+      d25: { status: "ready", coverage: { selected_count: 0 } },
+      long: { status: "ready", coverage: { selected_count: 224 } },
+    },
+  }),
+  "long",
+);
+assert.strictEqual(
+  state.initialStrategy({
+    strategies: {
+      today: { status: "ready", coverage: { selected_count: 3 } },
+      tomorrow: { status: "ready", coverage: { selected_count: 6 } },
+      long: { status: "ready", coverage: { selected_count: 224 } },
+    },
+  }),
+  "today",
+);
+assert.strictEqual(state.initialStrategy({ strategies: {} }), "today");
+assert.strictEqual(state.currentViewMatches("long", "current"), true);
+assert.strictEqual(state.currentViewMatches("tomorrow", "current"), false);
+assert.strictEqual(state.currentViewMatches("tomorrow", "live"), true);
+assert.strictEqual(state.currentViewMatches("today", "official"), true);
 const longStaticFallback = state.longGroupStaticFallbackPayload("long_api_unavailable");
 assert.strictEqual(longStaticFallback.status, "ready");
 assert.strictEqual(longStaticFallback.strategy, "long");

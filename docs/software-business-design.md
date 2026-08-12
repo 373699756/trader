@@ -924,6 +924,9 @@ long 固定 `score_status=not_applicable`；long 的 `items` 保留配置完整�
 历史接口只按策略和日期精确读取已经提交的 V2 正式记录；日期列表按策略独立，不因同日其它
 策略缺失而隐藏记录。切换到 long 时日期固定回到当前并禁用历史；切回短线同样从当前开始。
 页面切换策略或日期必须隔离迟到响应，历史缺失显示目标身份的正常空状态，不自动跳回当前。
+页面首次打开时按 today、tomorrow、d25、long 的顺序选择第一个当日 `ready` 且
+`selected_count > 0` 的 current；均无条目时回到第一个 `ready` 策略，仍无 ready 时默认 today。
+该选择只发生一次，用户手动切换后状态刷新不得抢回其它策略。
 所有 HTTP 查询均为只读，不抓行情、不评分、不调用 DeepSeek、不触发冻结、恢复、归档或结算。
 
 SSE 事件使用 schema v2、单调 ID、有界回放和有界客户端队列。decision 事件携带完整 identity；
