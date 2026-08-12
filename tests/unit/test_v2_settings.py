@@ -23,9 +23,9 @@ def test_v2_configuration_contract_is_valid() -> None:
     strategy = load_strategy_settings(runtime.strategy_config_path)
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
 
-    assert runtime.schema_version == 8
+    assert runtime.schema_version == 9
     assert strategy.schema_version == 12
-    assert runtime.config_version == "runtime_v35_tomorrow_input_quality_free_master_2026_07_30"
+    assert runtime.config_version == "runtime_v36_v2_only_release_2026_08_12"
     assert runtime.market_data.source_contract_versions["eastmoney"] == ("eastmoney_quote_v17_security_master")
     assert runtime.api.default_top_n == 12
     assert runtime.api.maximum_top_n == 12
@@ -35,7 +35,6 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert runtime.market_data.sina_timeout_seconds == 8
     assert runtime.market_data.full_market_hedge_delay_seconds == 1
     assert runtime.pipeline.market_workers == 5
-    assert runtime.pipeline.decision_execution_mode == "versioned_dag"
     assert runtime.market_data.tushare.timeout_seconds == 8
     assert runtime.market_data.tushare.points == 120
     assert runtime.market_data.tushare.token_file == PROJECT_ROOT / ".token_key"
@@ -288,84 +287,21 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert set(grouped_codes) == {item.code for item in watchlist.items}
 
 
-def test_runtime_schema_v5_defaults_to_serialized_decision_execution(tmp_path) -> None:
+@pytest.mark.parametrize("schema_version", (5, 6, 7, 8))
+def test_runtime_rejects_every_pre_release_schema(tmp_path, schema_version: int) -> None:
     raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
-    raw["schema_version"] = 5
-    del raw["market_data"]["sina_timeout_seconds"]
-    del raw["market_data"]["full_market_hedge_delay_seconds"]
-    del raw["pipeline"]["decision_execution_mode"]
-    del raw["pipeline"]["cadence_seconds"]["long_quotes"]
-    raw["pipeline"]["cadence_seconds"]["full_market"] = {
-        "warmup": 10,
-        "today_main": 5,
-        "today_late": 5,
-        "midday": 10,
-        "afternoon": 5,
-        "final_review": 3,
-    }
-    changed_path = tmp_path / "runtime.json"
+    raw["schema_version"] = schema_version
+    changed_path = tmp_path / f"runtime-v{schema_version}.json"
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
 
-    runtime = load_runtime_settings(changed_path)
-
-    assert runtime.schema_version == 5
-    assert runtime.pipeline.decision_execution_mode == "serialized"
-    assert runtime.pipeline.cadence_seconds["long_quotes"] == (runtime.pipeline.cadence_seconds["topk_quotes"])
-    assert runtime.market_data.sina_timeout_seconds == runtime.market_data.eastmoney_timeout_seconds
-    assert runtime.market_data.full_market_hedge_delay_seconds == 1.0
+    with pytest.raises(ConfigurationError, match="runtime schema_version must be 9"):
+        load_runtime_settings(changed_path)
 
 
-def test_runtime_schema_v6_inherits_long_quote_cadence(tmp_path) -> None:
-    raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
-    raw["schema_version"] = 6
-    del raw["market_data"]["sina_timeout_seconds"]
-    del raw["market_data"]["full_market_hedge_delay_seconds"]
-    del raw["pipeline"]["cadence_seconds"]["long_quotes"]
-    raw["pipeline"]["cadence_seconds"]["full_market"] = {
-        "warmup": 10,
-        "today_main": 5,
-        "today_late": 5,
-        "midday": 10,
-        "afternoon": 5,
-        "final_review": 3,
-    }
-    changed_path = tmp_path / "runtime-v6.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
-
-    runtime = load_runtime_settings(changed_path)
-
-    assert runtime.schema_version == 6
-    assert runtime.pipeline.cadence_seconds["long_quotes"] == (runtime.pipeline.cadence_seconds["topk_quotes"])
-
-
-def test_runtime_schema_v7_preserves_legacy_full_market_route_defaults(tmp_path) -> None:
-    raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
-    raw["schema_version"] = 7
-    del raw["market_data"]["sina_timeout_seconds"]
-    del raw["market_data"]["full_market_hedge_delay_seconds"]
-    raw["pipeline"]["cadence_seconds"]["full_market"] = {
-        "warmup": 10,
-        "today_main": 5,
-        "today_late": 5,
-        "midday": 10,
-        "afternoon": 5,
-        "final_review": 3,
-    }
-    changed_path = tmp_path / "runtime-v7.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
-
-    runtime = load_runtime_settings(changed_path)
-
-    assert runtime.schema_version == 7
-    assert runtime.pipeline.cadence_seconds["full_market"]["today_main"] == 5
-    assert runtime.market_data.sina_timeout_seconds == 8
-    assert runtime.market_data.full_market_hedge_delay_seconds == 1.0
-
-
-def test_runtime_schema_v8_rejects_paid_full_market_sources(tmp_path) -> None:
+def test_runtime_schema_v9_rejects_paid_full_market_sources(tmp_path) -> None:
     raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
     raw["market_data"]["full_market_sources"] = ["eastmoney", "paid_vendor"]
-    changed_path = tmp_path / "runtime-v8-paid.json"
+    changed_path = tmp_path / "runtime-v9-paid.json"
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
 
     with pytest.raises(ConfigurationError, match="unknown keys"):
@@ -415,13 +351,13 @@ def test_long_watchlist_rejects_unknown_source_section(tmp_path) -> None:
         load_long_watchlist(changed_path)
 
 
-def test_runtime_rejects_unknown_decision_execution_mode(tmp_path) -> None:
+def test_runtime_rejects_removed_decision_execution_mode(tmp_path) -> None:
     raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
     raw["pipeline"]["decision_execution_mode"] = "unsafe_parallel"
     changed_path = tmp_path / "runtime.json"
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
 
-    with pytest.raises(ConfigurationError, match="decision_execution_mode"):
+    with pytest.raises(ConfigurationError, match="unknown keys"):
         load_runtime_settings(changed_path)
 
 

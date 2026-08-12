@@ -12,7 +12,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = PROJECT_ROOT / "src" / "trader"
 SELECTED_RULES = ("C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "N")
-EXPECTED_COUNTS: dict[str, int] = {"PLR0913": 1}
+EXPECTED_COUNTS: dict[str, int] = {}
 
 
 def main() -> int:

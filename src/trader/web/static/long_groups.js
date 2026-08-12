@@ -12,6 +12,25 @@
     return scopeLabels[scope] || scopeLabels.chokepoint;
   }
 
+  function staticFallbackPayload(reason) {
+    return displayPayload({
+      schema_version: "v2_decision_view_v1",
+      status: "not_ready",
+      strategy: "long",
+      trade_date: null,
+      current_trade_date: null,
+      historical: false,
+      view: "current",
+      score_status: "not_applicable",
+      decision_version: null,
+      published_at: null,
+      phase: "current",
+      frozen: false,
+      degraded_reasons: [reason || "long_current_unavailable"],
+      items: [],
+    });
+  }
+
   function displayPayload(payload) {
     if (!payload || payload.strategy !== "long" || !Array.isArray(staticData.items) || staticData.items.length === 0) {
       return payload;
@@ -49,7 +68,7 @@
       snapshot_id: payload.snapshot_id || `long-watchlist:${staticData.watchlist_version || "static"}`,
       trade_date: payload.trade_date || payload.current_trade_date || "",
       phase: payload.phase || "current",
-      published_at: payload.published_at || new Date().toISOString(),
+      published_at: payload.published_at || null,
       strategy_version: payload.strategy_version || staticData.watchlist_version || "long_watchlist_static",
       fusion_mode: payload.fusion_mode || "local_degraded",
       stale: payload.stale !== false,
@@ -217,6 +236,7 @@
     normalized,
     renderBar,
     scopeLabel,
+    staticFallbackPayload,
     visibleRecommendations,
   });
 })();

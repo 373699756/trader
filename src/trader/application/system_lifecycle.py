@@ -66,6 +66,14 @@ class SystemLifecycleResources:
     market_cache: CacheResource
 
 
+@dataclass(frozen=True)
+class _StartedResources:
+    auxiliary: tuple[AuxiliaryRuntimeResource, ...]
+    data_pool: bool
+    history_pool: bool
+    research_pool: bool
+
+
 def start_application_resources(
     resources: SystemLifecycleResources,
     *,
@@ -92,10 +100,7 @@ def start_application_resources(
         deadline = ShutdownDeadline.start(timeout_seconds)
         _stop_started_resources(
             resources,
-            tuple(auxiliary_started),
-            data_started,
-            history_started,
-            research_started,
+            _StartedResources(tuple(auxiliary_started), data_started, history_started, research_started),
             deadline,
         )
         raise
@@ -106,10 +111,7 @@ def start_application_resources(
     deadline = ShutdownDeadline.start(timeout_seconds)
     _stop_started_resources(
         resources,
-        tuple(auxiliary_started),
-        data_started,
-        history_started,
-        research_started,
+        _StartedResources(tuple(auxiliary_started), data_started, history_started, research_started),
         deadline,
     )
     return False
@@ -117,19 +119,16 @@ def start_application_resources(
 
 def _stop_started_resources(
     resources: SystemLifecycleResources,
-    auxiliary_started: tuple[AuxiliaryRuntimeResource, ...],
-    data_started: bool,
-    history_started: bool,
-    research_started: bool,
+    started: _StartedResources,
     deadline: ShutdownDeadline,
 ) -> None:
-    if research_started:
+    if started.research_pool:
         resources.research_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
-    if data_started:
+    if started.data_pool:
         resources.data_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
-    if history_started:
+    if started.history_pool:
         resources.history_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
-    for runtime in reversed(auxiliary_started):
+    for runtime in reversed(started.auxiliary):
         runtime.stop(wait=True, deadline=deadline)
 
 

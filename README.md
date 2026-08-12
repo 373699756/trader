@@ -54,8 +54,8 @@ Linux/macOS 的正常 `SIGTERM` 和 Windows `SIGBREAK` 使用相同规则。关�
 服务。
 
 正常重启会重新预热行情、候选、观察池和研究/review 等纯内存状态；正式推荐、合法检查点、
-预算、证据、收盘 overlay 和结算记录按持久化契约恢复。强制结束进程或断电属于异常终止，
-正式冻结会在下次启动时按 manifest、恢复载荷和 SHA-256 校验恢复或 fail closed。
+预算、V2 数据平面和收盘 overlay 按各自持久化契约恢复。强制结束进程或断电属于异常终止，
+正式冻结会在下次启动时按恢复载荷和 SHA-256 校验恢复或 fail closed。
 
 ## 手动安装
 
@@ -69,14 +69,6 @@ python3 -m venv .venv
 配置路径必须为绝对路径。`TRADER_CONFIG` 可代替 `--config`。DeepSeek 密钥优先从
 `DEEPSEEK_API_KEY` 读取，也可使用 `DEEPSEEK_API_KEY_FILE` 或项目根目录
 `.token_key` 的 `DEEPSEEK_API_KEY` 字段；密钥不写入配置、快照或日志。
-
-离线性能验收同样要求绝对路径：
-
-```bash
-.venv/bin/trader-cli --config "$PWD/config/v2/runtime.json" perf-check \
-  --fixture "$PWD/config/v2/performance_fixture" --suite all --output "/tmp/trader-perf.json"
-```
-`perf-check` 使用固定 fixture 和本地合成负载，禁止外部网络。
 
 ## Tushare 慢数据
 
@@ -107,12 +99,15 @@ Token、SDK、额度或网络不可用时，Tushare lane 会显式降级。历�
 
 ## Web API
 
-- `GET /api/status`
-- `GET /api/recommendations/<today|tomorrow|d25|long>?date=YYYY-MM-DD&top_n=10`
-- `GET /api/recommendation-dates?strategy=<today|tomorrow|d25>`
-- `GET /api/events/stream`
+- `GET /api/v2/decisions/<today|tomorrow|d25|long>/current`
+- `GET /api/v2/decisions/<today|tomorrow|d25>/history?date=YYYY-MM-DD`
+- `GET /api/v2/decisions/<today|tomorrow|d25>/dates`
+- `GET /api/v2/status`
+- `GET /api/v2/events`
 
 当前快照支持 ETag。SSE 使用单调事件 ID 和 `Last-Event-ID` 恢复；游标过旧时返回 `resync_required`。Web 请求只读取已发布快照，不抓行情、不评分、不调用 DeepSeek。
+Long 的三个固定分类和股票身份由打包资源立即显示；V2 current 只增强实时行情，服务或行情暂时
+不可用时不会把固定名单隐藏。
 
 ## 关键契约
 

@@ -36,6 +36,9 @@ def test_dashboard_uses_only_packaged_v2_assets_and_fixed_long_groups() -> None:
     assert "卡脖子行业" in groups
     assert "高成长赛道" in groups
     assert "低价潜力股" in groups
+    assert "staticFallbackPayload" in groups
+    assert "longGroups.staticFallbackPayload" in dashboard
+    assert 'setNotice("实时行情暂不可用，固定长期名单仍可查看", "warn")' in dashboard
     assert client.get("/static/long_watchlist_data.js").status_code == 200
     assert client.get("/static/render.js").status_code == 200
 

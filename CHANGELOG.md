@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- V2-E11 新增可重复执行的 Firefox 桌面发布 runner，精确校准并验收 1280x720、1440x900、
+  1920x1080 三档视口，检查根页面可见性、纵向顺序、页面级横向溢出、Long 侧栏/表格重叠、
+  三个长期分类、股票行和浏览器异常，并输出脱敏 JSON 与截图证据。
+
 - V2-E10 完成旧生产链物理删除：唯一组合根现在直接装配 V2 数据适配器、调度器、统一决策记录、
   committed event observer、冻结协调器和只读 API/SSE；旧 Pipeline、RecommendationSnapshot、
   publisher/query/replay、snapshot 仓储/迁移器、shadow/cutover 接点及旧 Web/API/SSE 资源不再位于
@@ -49,6 +53,12 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户反馈“界面上没有数据”，并要求继续最后一个工程章节。现状确认包含两层原因：运行时未就绪时
+  scored 策略可以合法返回 `not_ready`，而 Long 固定名单此前又被错误绑定到 current API 成功；
+  因此 API 暂不可用时连卡脖子等固定股票身份也被隐藏。本批让 Long 打包名单先于实时接口显示，
+  current 只覆盖真实行情；同时把 V2 配置提升到唯一 schema 9，删除无效旧执行模式字段，计划状态
+  更新为 V2-E0 至 E11 全部完成。
+
 - 用户连续反馈“long 界面变成荐股、需要恢复卡脖子三个 Tab”。根因是统一 Web 根页面切换期间把
   Long payload 当成了 scored decision 展示；本批通过 V2 current payload 归一化与固定名单展示层
   恢复三分类、行业侧栏和长期行情表，同时删除旧兼容 Web 路由，避免再次通过旧接口分流。
@@ -62,24 +72,45 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除失效且依赖已退役 fixture/旧 DOM 的 Chrome runner、runtime schema 5-8 默认补齐路径，以及
+  已无任何运行消费者的 `decision_execution_mode=versioned_dag` 配置表象；当前 release 只接受
+  schema 9，不读取或迁移旧配置。
+
 - 删除旧双链测试、旧性能入口与只服务旧链的 CLI/配置接点；V2 测试改为验证旧资源不可达、V2-only
   路由和固定 Long Tab；同时删除未被 V2 组合根引用的旧事件队列、板块评分协调器、snapshot schema/
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
 
+- `make format-check`、`make lint`（含 Long 资源一致性与零严格重构债务）、`make type-check`
+  （187 个源文件）、`make test` 和 `make package`：最终均通过。全量测试首次只发现一条过期计划
+  状态断言，修正为 E0-E11 完成后重跑通过；打包首次因沙箱阻止下载隔离构建依赖失败，获准网络后
+  原命令重跑通过。
+- 专项发布测试覆盖固定融合向量 `83.40`、DeepSeek 并发原子预算、SSE 过期/超前游标重同步与慢
+  客户端隔离、Today 边界后禁止迟到冻结、Tomorrow 检查点同身份恢复、半提交 SHA-256 恢复、
+  V2 AST 依赖和 `create_app()` 无线程/网络/数据库/写文件副作用，共 16 项通过；`pip check` 通过。
+- Firefox headless 三档桌面验收通过：三档 requested/actual 视口精确一致，均显示 3 个 Long 分类和
+  当前分组 5 行固定股票，无白屏、横向溢出、侧栏重叠或浏览器错误；API 503 场景仍显示固定名单，
+  实时字段不伪造。
+- 仓库外临时前缀安装 `trader_research_dashboard-0.2.0-py3-none-any.whl` 后，包导入、
+  `trader-cli validate-config`、根页面，以及模板、三份 CSS、Long/主 JS、名单资源和两个 SVG 均通过；
+  临时安装未进入仓库。
+- 真实 `trader-server` 验收通过：旧进程收到一次 `SIGTERM` 后在共享 30 秒期限内退出；当前代码以
+  schema 9 重启，根页面、status 和四个 current 均返回 200，Long 返回 224 项且
+  `score_status=not_applicable`。新进程创建 `deepseek-budget.sqlite3`，旧名文件时间未变化。
+
 - `PYTHONPATH=.:src .venv/bin/pytest -q`：通过。
 - `make format-check`、`make lint`、`make type-check`、`make test`、`make package`：均通过；其中
   `make package` 首次在隔离环境因缺少构建依赖下载失败，获准网络权限后重新执行通过。
 - `.venv/bin/ruff check src/trader`、`node --check src/trader/web/static/dashboard.js`、`git diff --check`：通过。
-- 仓库外 wheel 导入、真实进程和三档桌面验收属于 V2-E11 发布门禁，本批不宣称已完成。
 - 仓库外 wheel `pip --no-deps --target` 安装后，V2 Web 模板/静态资源导入和 `trader-cli validate-config`
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
 
-- 本批未宣称最终发布完成；E11 仍需执行完整发布门禁、仓库外 wheel 导入/CLI 检查、真实进程和三档
-  桌面浏览器验收。外部行情/DeepSeek 服务的实时降级行为仍需在真实运行环境复核。
+- 外部公开行情、Tushare 和 DeepSeek 的可用性及实时质量不由本地 release 控制；服务继续按契约
+  失败开放并显式降级。运行目录中可能仍有旧 release 遗留的 `runtime.sqlite3`，本批不执行破坏性
+  删除；schema 9 组合根不会探测或打开它，预算只写 `deepseek-budget.sqlite3`。
 
 - 用户再次发送“继续”，要求执行 `docs/implementation-plan.md` 下一个完整未完成章节，并追问
   为什么反复修改仍未完成。本批完成 V2-E9“唯一组合根与入口”：启动脚本不再把旧 `HOST`/`PORT`
@@ -178,6 +209,16 @@ All notable changes to this project are documented here.
   融合、冻结、DeepSeek 预算或 Web 结果。
 
 ### Fixed
+
+- 修复 Long 接口失败、尚未发布或返回 `not_ready` 时固定列表被清空的问题。`displayPayload()`
+  现在始终以打包名单补齐卡脖子、高成长和低价潜力股票身份，并仅按代码合并可用实时行情；初次
+  进入 Long 即可见名单，503/断网时显示“实时行情暂不可用，固定长期名单仍可查看”，价格等未知
+  字段保持 `--`。同时停止为静态名单伪造当前发布时间，避免把降级身份冒充实时快照。
+- 修复 V2-only 组合根仍把 DeepSeek 预算写入旧名 `runtime.sqlite3` 的发布边界漏洞。预算现独占
+  `.runtime/v2/deepseek-budget.sqlite3`，不迁移、不读取旧库；并把启动文档从历史双 Codex 实施计划
+  重写为当前 V2 启动、状态、关闭、恢复与回退说明。
+- 修复严格重构门禁最后一个 `PLR0913`：部分启动资源改为不可变 `_StartedResources` 聚合，保持原
+  逆序关闭和共享 deadline 行为，严格复杂度债务归零。
 
 - 修正权威文档内部互相冲突的冻结、发布与类型口径：Today 不再出现 11:19:50 检查点或
   `close_fallback`，Tomorrow/D25 检查点窗口统一为 14:49:20 至 14:50；local/hybrid 统一为

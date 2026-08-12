@@ -84,8 +84,8 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
         "runtime",
     )
     schema_version = _integer(raw, "schema_version", minimum=1)
-    if schema_version not in {5, 6, 7, 8}:
-        raise ConfigurationError("runtime schema_version must be 5, 6, 7, or 8")
+    if schema_version != 9:
+        raise ConfigurationError("runtime schema_version must be 9")
 
     config_dir = path.parent
     project_root = _infer_project_root(config_dir)
@@ -112,8 +112,6 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
         "cadence_seconds",
         "publish_heartbeat_seconds",
     }
-    if schema_version >= 6:
-        pipeline_keys.add("decision_execution_mode")
     _require_exact_keys(pipeline_raw, pipeline_keys, "pipeline")
     market_keys = {
         "eastmoney_timeout_seconds",
@@ -129,8 +127,7 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
         "tushare",
         "cache_policy",
     }
-    if schema_version >= 8:
-        market_keys.update({"sina_timeout_seconds", "full_market_hedge_delay_seconds"})
+    market_keys.update({"sina_timeout_seconds", "full_market_hedge_delay_seconds"})
     _require_exact_keys(market_raw, market_keys, "market_data")
     _require_exact_keys(
         deepseek_raw,
@@ -186,11 +183,6 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
         pipeline_raw,
         "cadence_seconds",
     )
-    if schema_version < 7 and "long_quotes" not in cadence_seconds:
-        topk_cadence = cadence_seconds.get("topk_quotes")
-        if topk_cadence is not None:
-            cadence_seconds["long_quotes"] = dict(topk_cadence)
-
     settings = RuntimeSettings(
         schema_version=schema_version,
         config_version=_text(raw, "config_version"),
@@ -213,27 +205,18 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
             normalization_workers=_integer(pipeline_raw, "normalization_workers", minimum=1),
             strategy_workers=_integer(pipeline_raw, "strategy_workers", minimum=1),
             deepseek_workers=_integer(pipeline_raw, "deepseek_workers", minimum=1),
-            decision_execution_mode=_decision_execution_mode(pipeline_raw.get("decision_execution_mode", "serialized")),
             shutdown_timeout_seconds=_number(pipeline_raw, "shutdown_timeout_seconds", minimum=0.1),
             cadence_seconds=cadence_seconds,
             publish_heartbeat_seconds=_integer(pipeline_raw, "publish_heartbeat_seconds", minimum=1),
         ),
         market_data=MarketDataSettings(
             eastmoney_timeout_seconds=_number(market_raw, "eastmoney_timeout_seconds", minimum=0.1),
-            sina_timeout_seconds=(
-                _number(market_raw, "sina_timeout_seconds", minimum=0.1)
-                if schema_version >= 8
-                else _number(market_raw, "eastmoney_timeout_seconds", minimum=0.1)
-            ),
-            full_market_hedge_delay_seconds=(
-                _number(
-                    market_raw,
-                    "full_market_hedge_delay_seconds",
-                    minimum=0.05,
-                    maximum=5.0,
-                )
-                if schema_version >= 8
-                else 1.0
+            sina_timeout_seconds=_number(market_raw, "sina_timeout_seconds", minimum=0.1),
+            full_market_hedge_delay_seconds=_number(
+                market_raw,
+                "full_market_hedge_delay_seconds",
+                minimum=0.05,
+                maximum=5.0,
             ),
             candidate_timeout_seconds=_number(market_raw, "candidate_timeout_seconds", minimum=0.1),
             history_timeout_seconds=_number(market_raw, "history_timeout_seconds", minimum=0.1),
@@ -301,12 +284,6 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
     )
     _validate_runtime_settings(settings)
     return settings
-
-
-def _decision_execution_mode(raw: object) -> str:
-    if not isinstance(raw, str) or raw not in {"serialized", "versioned_dag"}:
-        raise ConfigurationError("pipeline.decision_execution_mode must be serialized or versioned_dag")
-    return raw
 
 
 def _load_deepseek_api_key(project_root: Path) -> str:
@@ -380,10 +357,7 @@ def _text_mapping(raw: Mapping[str, object], key: str) -> dict[str, str]:
 def _validate_runtime_settings(settings: RuntimeSettings) -> None:
     _validate_pipeline_runtime(settings)
     _validate_deepseek_runtime(settings)
-    _validate_cadence_settings(
-        settings.pipeline.cadence_seconds,
-        schema_version=settings.schema_version,
-    )
+    _validate_cadence_settings(settings.pipeline.cadence_seconds)
 
 
 def _validate_pipeline_runtime(settings: RuntimeSettings) -> None:
@@ -509,30 +483,16 @@ def _nested_positive_number_mapping(
 
 def _validate_cadence_settings(
     cadence: Mapping[str, Mapping[str, float]],
-    *,
-    schema_version: int,
 ) -> None:
-    full_market = (
-        {
+    expected = {
+        "full_market": {
             "warmup": 10.0,
             "today_main": 10.0,
             "today_late": 10.0,
             "midday": 10.0,
             "afternoon": 10.0,
             "final_review": 10.0,
-        }
-        if schema_version >= 8
-        else {
-            "warmup": 10.0,
-            "today_main": 5.0,
-            "today_late": 5.0,
-            "midday": 10.0,
-            "afternoon": 5.0,
-            "final_review": 3.0,
-        }
-    )
-    expected = {
-        "full_market": full_market,
+        },
         "candidate_quotes": {
             "warmup": 2.0,
             "today_main": 1.0,

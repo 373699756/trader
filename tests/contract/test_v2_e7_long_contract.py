@@ -14,7 +14,7 @@ LONG_RUNTIME = ROOT / "src" / "trader" / "application" / "long_v2_runtime.py"
 def test_v2_e7_is_complete() -> None:
     plan = PLAN.read_text(encoding="utf-8")
 
-    assert "V2-E0、V2-E1、V2-E2、V2-E3、V2-E4、V2-E5、V2-E6、V2-E7" in plan
+    assert "V2-E0 至 V2-E11" in plan
     assert "V2-E10：删除旧生产链" in plan
     assert "### V2-E7：Long 正式接管（已完成）" in plan
 

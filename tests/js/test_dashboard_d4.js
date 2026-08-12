@@ -60,11 +60,23 @@ const state = {
   tableRows: sandbox.window.TraderRender.tableRows,
   longGroupAveragePct: sandbox.window.TraderLongGroups.groupAveragePct,
   longGroupDisplayPayload: sandbox.window.TraderLongGroups.displayPayload,
+  longGroupStaticFallbackPayload: sandbox.window.TraderLongGroups.staticFallbackPayload,
   longGroupNormalized: sandbox.window.TraderLongGroups.normalized,
   longGroupRenderBar: sandbox.window.TraderLongGroups.renderBar,
   longGroupVisibleRecommendations: sandbox.window.TraderLongGroups.visibleRecommendations,
 };
 assert(state, "dashboard D4 helpers were not exported into the test sandbox");
+const longStaticFallback = state.longGroupStaticFallbackPayload("long_api_unavailable");
+assert.strictEqual(longStaticFallback.status, "ready");
+assert.strictEqual(longStaticFallback.strategy, "long");
+assert.strictEqual(longStaticFallback.score_status, "not_applicable");
+assert.strictEqual(longStaticFallback.items.length, 1);
+assert.strictEqual(longStaticFallback.items[0].code, "600001");
+assert.strictEqual(longStaticFallback.items[0].price, null);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(longStaticFallback.degraded_reasons)),
+  ["long_api_unavailable"],
+);
 const liveShort = {
   status: "ready",
   strategy: "tomorrow",

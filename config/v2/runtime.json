@@ -1,6 +1,6 @@
 {
-  "schema_version": 8,
-  "config_version": "runtime_v35_tomorrow_input_quality_free_master_2026_07_30",
+  "schema_version": 9,
+  "config_version": "runtime_v36_v2_only_release_2026_08_12",
   "runtime_dir": ".runtime/v2",
   "strategy_config": "strategy.json",
   "long_watchlist": "long_watchlist.json",
@@ -18,7 +18,6 @@
     "normalization_workers": 2,
     "strategy_workers": 3,
     "deepseek_workers": 4,
-    "decision_execution_mode": "versioned_dag",
     "shutdown_timeout_seconds": 30,
     "cadence_seconds": {
       "full_market": {

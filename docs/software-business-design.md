@@ -2,7 +2,7 @@
 
 版本：v2-only 最终发布契约
 
-状态：迁移实施中；最终发布边界已冻结
+状态：V2-only 最终 release 已完成验收
 
 适用范围：本地 A 股研究看板
 
@@ -11,8 +11,8 @@
 [荐股策略文档](recommendation-strategy.md) 为唯一权威；依赖、构建和入口以根目录
 `pyproject.toml` 为唯一权威；协作流程以根目录 `AGENTS.md` 为准。
 
-当前交付状态：V2-E0 至 V2-E10 已完成，V2-E11 尚未交付。最终发布契约要求
-V2-only；旧 Pipeline、旧 Web 路由和旧运行目录已从活动树物理删除，不构成最终 release 的
+当前交付状态：V2-E0 至 V2-E11 已完成，V2-only 是唯一活动产品链。旧 Pipeline、旧 Web 路由
+和旧运行目录已从活动树物理删除，不构成最终 release 的
 兼容能力，也不得反向定义 V2。迁移过程、事故复盘和逐批实现
 记录只保存在 `CHANGELOG.md`、`docs/reports/` 与非权威 `docs/implementation-plan.md`，
 不在本文形成第二套历史时间线。
@@ -45,8 +45,8 @@ V2-only；旧 Pipeline、旧 Web 路由和旧运行目录已从活动树物理�
 提供滚动预览，14:50 固化正式结果，允许返回 0 到 6 只正式推荐和 0 到 6 只观察项，不为补满数量降低过滤、风险或
 数据质量门槛。
 
-冷启动历史预热、三策略异步评分、P1-P6、`versioned_dag` 和既有缓存分池是待删除实现，
-不是产品目标或兼容要求。V2 可以整体替换这些机制，但必须保留点时数据、过滤可审计、
+旧冷启动预热编排、P1-P6、旧执行模式开关和旧缓存分池已经删除，
+不是产品目标或兼容要求。V2 保留点时数据、过滤可审计、
 只读 Web、冻结不可覆盖、latest-wins 有界背压和失败时不伪造数据等业务不变量。
 
 只使用现有公开来源时，系统只能承诺内部处理时延和真实降级，不能虚构供应商响应 SLA。
@@ -61,6 +61,8 @@ V2-only；旧 Pipeline、旧 Web 路由和旧运行目录已从活动树物理�
 
 V2 唯一运行目录固定为 `.runtime/v2`，只接受当前 V2 配置、数据库、冻结和事件 schema。
 新 release 不读取旧运行目录、旧数据库、旧快照或旧 schema，也不提供迁移导入命令。
+V2 数据平面、正式决策与 DeepSeek 预算使用独立持久化文件；预算固定写入
+`.runtime/v2/deepseek-budget.sqlite3`，不得探测或复用旧名 `runtime.sqlite3`。
 
 唯一只读产品接口为：
 
@@ -321,23 +323,21 @@ V2-E8 已交付的读取链固定为 `UnifiedDecisionIndex -> application querie
 统一事件流使用单调序列、有界历史、有界客户端队列和最多 32 个订阅者。无游标连接从打开时的
 当前序列开始；显式 `Last-Event-ID` 或 `cursor` 才回放。游标超前、过期、不连续，schema、
 base 或 identity 不匹配，以及慢客户端统一发送 `resync_required`，浏览器随后以 ETag 重新读取
-current。publisher 不等待客户端消费；SSE 正常时页面只在对应策略事件到达时按 ETag 重读，
+current。事件发布不等待客户端消费；SSE 正常时页面只在对应策略事件到达时按 ETag 重读，
 不持续轮询完整决策。
 
 统一公开外壳已交付。`DecisionView` 对 today、tomorrow、d25 和 long 使用同一 envelope；评分策略
 公开决策身份、阶段、冻结、覆盖、过滤、分数、风险和匹配父版本的报价 overlay，long 固定
 `score_status=not_applicable` 且 history/dates 不适用。current 与 history 支持 ETag/304，dates
 只列按交易日倒序的正式记录。status 汇总四策略数据年龄、覆盖、冻结、降级、DeepSeek 预算和
-事件流健康；根页面只消费这些统一接口。旧 URL 和独立 tomorrow 页面不再注册，源文件物理删除
-仍属于 V2-E10，不构成兼容期或保留承诺。
+事件流健康；根页面只消费这些统一接口。旧 URL 和独立 tomorrow 页面不再注册，相关源文件已
+物理删除，不构成兼容期或保留承诺。
 
-### 2.7 当前迁移边界
+### 2.7 当前发布边界
 
-V2-E0 至 V2-E9 已把统一数据平面、决策核心、独立运行时、today、tomorrow、d25、long
-原生运行时及统一 `/api/v2/*` 与根页面接入活动组合根；E9 同时收敛默认运行目录和进程入口为
-V2 命名空间，并移除旧迁移/归档/cutover CLI 操作。V2-E10 至 V2-E11 尚未交付：旧生产链
-物理删除以及最终发布验收仍是未完成工程边界。迁移期旧链仅可向已接管
-策略提供同批不可变原生输入或尚未替代的 Web 外壳，不得再次成为评分、冻结或降级来源。
+V2-E0 至 V2-E11 已完成：统一数据平面、决策核心、独立运行时、today、tomorrow、d25、long、
+统一 `/api/v2/*`、根页面、V2 运行目录和进程入口共同构成唯一活动产品。旧生产链、迁移/归档/
+cutover CLI、旧 Web 外壳、旧运行读取和兼容分支均已删除；任何后续改动不得重新引入。
 
 已经闭合的 shadow、cutover、baseline 对比、版本事故修复和分阶段门禁不是活动产品契约；
 其证据只保存在 `CHANGELOG.md` 与 `docs/reports/`。后续实施状态只更新
@@ -517,9 +517,8 @@ trade_date + phase + strategy + event_type + subject_key + data_version
 交易 session generation 和交易日，跨日、系统时钟回拨、wall/monotonic 偏差或明显休眠
 跳跃会轮换 generation，迟到的旧 generation 结果不得发布、冻结或更新当前状态。
 
-最终 V2 运行只接受当前 runtime schema，不对旧 schema 补默认值，也不保留
-`serialized/versioned_dag` 双模式开关。E9/E10 完成前现有配置中的旧执行模式字段仅属于待删除
-组合根输入，不得扩展为新 V2 行为；回退只能切换完整 release、配置与运行目录。
+最终 V2 运行只接受当前 runtime schema，不对旧 schema 补默认值，也不保留旧执行模式开关；
+回退只能切换完整 release、配置与运行目录。
 
 TopK 展示报价使用独立单 worker、单 latest-wins 待处理槽，不能因合并器正在处理
 `close_quotes`、参考数据或 DeepSeek 而排队；它只提交与当前 V2 decision/projection version 匹配的报价
@@ -545,7 +544,7 @@ d25 和 today；完成一个策略后从下一个策略继续轮转，持续输�
 活动生产计划器不得在每次 scheduler tick 直接提交公司研究。研究意图只允许来自周期
 `stock_risk`、盘中本地正式/观察集合的新进入代码，以及收盘恢复的显式请求；同交易日已经
 处于正式/观察集合的代码不能因普通报价或评分发布而反复成为“新进入”。新进入代码触发时
-本地快照必须先发布，不能等待外部研究；`versioned_dag` 的首轮异步模型复核暂缓到该研究
+本地快照必须先发布，不能等待外部研究；V2 首轮异步模型复核暂缓到该研究
 批次返回并完成一次 risk 重评分，研究全失败也必须释放该屏障并以显式降级继续，禁止为同一
 初始输入重复消耗 DeepSeek 预算。
 
@@ -862,7 +861,7 @@ Polars 估算及瞬时峰值原因；不得用 Python 分配量或逻辑缓存�
 权威 SSE 发布年龄 2s、当前/驻留历史 API 200ms、ETag 304 50ms、日期和状态 API 100ms。
 同身份关键路径相对基线不得退化超过 5%，100 tick 项目分配增长不得超过 20%。
 
-`trader-cli perf-check` 必须调用活动生产函数，不得以占位 DataFrame 或纯序列化替代真实
+发布性能 runner 必须调用活动生产函数，不得以占位 DataFrame 或纯序列化替代真实
 标准化、评分、选择、发布和 Web 路径。延迟轮次关闭 tracemalloc，内存轮次单独开启；fixture
 固定数据、配置、策略、代码与环境身份并禁止外网。历史实测数字只属于验收报告，不进入本文。
 
@@ -940,8 +939,9 @@ current 轮询，断线后才以 30 秒低频恢复。
 ## 10. V2 唯一桌面界面
 
 根页面 `/` 必须直接渲染统一 V2 工作台，不保留独立 `/v2/tomorrow` 页面或旧 Dashboard。
-页面统一展示 today、tomorrow、d25 和 long，所有数据只来自第 9 节应用层查询与 SSE；浏览器
-不得抓行情、评分、调用 DeepSeek、读取静态业务名单副本或决定冻结。
+页面统一展示 today、tomorrow、d25 和 long。评分决策与行情只来自第 9 节应用层查询与 SSE；
+Long 股票身份允许读取由 `long_watchlist.json` 确定性生成并随 wheel 打包的只读资源，以便 API
+暂不可用时仍展示固定名单。浏览器不得抓行情、评分、调用 DeepSeek 或决定冻结。
 
 以下布局细节是 V2-E8 的用户可见验收要求；实现可以重写，但不得删减业务状态、桌面信息
 层级、可访问性或三档分辨率门禁。
@@ -1057,8 +1057,7 @@ sample count、P50、P95 和 max；关联 trace、阶段名、样本和浏览器
 
 状态 API 只返回组合根注入并已经聚合的内存事实，不读取网络、文件或数据库，也不承诺尚未
 实现的指标。股票代码集合、关联身份明细、完整外部载荷和 SQLite/JSON 内容不得暴露；缓存
-逻辑字节、RSS/USS、Python traced、Polars 估算和瞬时峰值原因由 `trader-cli perf-check`
-及发布验收报告提供。
+逻辑字节、RSS/USS、Python traced、Polars 估算和瞬时峰值原因由发布性能 runner 及验收报告提供。
 
 日志只记录脱敏结构化摘要，不记录密钥、Token、完整模型请求/响应、完整供应商载荷或个人
 敏感路径。所有外部 I/O 必须有 timeout、容量、熔断和明确失败策略。DeepSeek 与 Tushare
@@ -1157,7 +1156,7 @@ fixture 不算最终发布证据。
 | V2-E0 至 V2-E8 | 已完成 | 数据平面、决策核心、运行时、四策略原生接管和统一 Web 已进入活动组合 |
 | V2-E9 | 已完成 | 默认运行目录、进程入口和 CLI 已收敛到 V2 命名空间 |
 | V2-E10 | 已完成 | 旧 Pipeline、snapshot、Web、配置、测试和资源已删除；V2-only 活动树已闭合 |
-| V2-E11 | 未完成 | 全量门禁、仓库外 wheel、真实进程和桌面证据仍待最终验收 |
+| V2-E11 | 已完成 | 全量门禁、仓库外 wheel、真实进程和三档桌面证据完成最终验收 |
 
 最终 release 不执行双读、双写、旧 URL 弃用窗口、运行时开关或生产指针切换，也不读取、
 迁移或回放旧运行数据。工程迁移验收使用 V2 自身的点时输入、确定性重算、CAS、冻结哈希、

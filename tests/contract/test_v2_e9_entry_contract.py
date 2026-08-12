@@ -52,3 +52,10 @@ def test_entrypoints_and_lock_are_runtime_directory_relative() -> None:
     assert "class ProcessLock" in lock
     assert ".runtime/v17" not in server
     assert ".runtime/v17" not in lock
+
+
+def test_v2_budget_uses_its_own_database_and_never_opens_the_legacy_runtime_name() -> None:
+    bootstrap = (ROOT / "src/trader/bootstrap.py").read_text(encoding="utf-8")
+
+    assert 'settings.runtime_dir / "deepseek-budget.sqlite3"' in bootstrap
+    assert 'settings.runtime_dir / "runtime.sqlite3"' not in bootstrap

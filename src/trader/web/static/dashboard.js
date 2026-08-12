@@ -192,7 +192,13 @@
         renderPayload(cached);
       }
     } else if (!state.payload || reason === "strategy" || reason === "date") {
-      renderTableState("正在读取推荐快照");
+      if (strategy === "long" && !selectedDate) {
+        const fallback = longGroups.staticFallbackPayload("long_api_pending");
+        state.payload = fallback;
+        renderPayload(fallback);
+      } else {
+        renderTableState("正在读取推荐快照");
+      }
     }
     try {
       const payload = await requestRecommendations(strategy, selectedDate, view);
@@ -224,6 +230,11 @@
       if (cached) {
         state.payload = cached;
         setNotice("后台刷新失败，显示最近已加载快照", "warn");
+      } else if (strategy === "long" && !selectedDate) {
+        const fallback = longGroups.staticFallbackPayload("long_api_unavailable");
+        state.payload = fallback;
+        renderPayload(fallback);
+        setNotice("实时行情暂不可用，固定长期名单仍可查看", "warn");
       } else {
         renderTableState("推荐快照读取失败");
         setNotice(error instanceof Error ? error.message : "推荐快照读取失败", "error");

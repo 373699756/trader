@@ -506,7 +506,7 @@ def _build_persistence(context: _BuildContext) -> _PersistenceContext:
     repository = SQLiteDecisionRecordRepository(settings.runtime_dir)
     data_plane = DataPlaneRepository(settings.runtime_dir)
     budget = DeepSeekBudgetLedger(
-        settings.runtime_dir / "runtime.sqlite3",
+        settings.runtime_dir / "deepseek-budget.sqlite3",
         daily_hard_limit=settings.deepseek.daily_hard_limit,
         strategy_limits=settings.deepseek.strategy_limits,
         stage_targets=settings.deepseek.stage_targets,
