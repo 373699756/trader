@@ -22,7 +22,9 @@
   }
 
   function currentViewMatches(strategy, payloadView) {
-    return strategy === "long" ? payloadView === "current" : ["live", "official"].includes(payloadView);
+    return strategy === "long"
+      ? payloadView === "current"
+      : ["current", "live", "official"].includes(payloadView);
   }
 
   function resolveStrategyDate(previousStrategy, nextStrategy, selectedDate, availableDates) {

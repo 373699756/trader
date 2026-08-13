@@ -62,6 +62,7 @@ class V2RuntimeDependencies:
 @dataclass(frozen=True)
 class V2RuntimeStatus:
     running: bool
+    phase: MarketPhase
     config_version: str
     lanes: tuple[LatestWinsStatus, ...]
     observer: DecisionObserverStatus
@@ -105,6 +106,7 @@ class V2SchedulerRuntime:
         self._running = False
         self._stopped = False
         self._shutdown_report: ShutdownReport | None = None
+        self._phase = MarketPhase.CLOSED
         self._sequences = dict.fromkeys(Strategy, 0)
         self._control_pending: set[str] = set()
         self._control_completed: OrderedDict[str, None] = OrderedDict()
@@ -177,6 +179,8 @@ class V2SchedulerRuntime:
         observed_at = shanghai_now(at or self._dependencies.clock.now())
         is_trading_day = self._dependencies.calendar.is_trading_day(observed_at.date())
         decision = decision_at(observed_at, is_trading_day=is_trading_day)
+        with self._lock:
+            self._phase = decision.phase
         schedule_point = schedule_point_at(observed_at, is_trading_day=is_trading_day)
         strategies: tuple[Strategy, ...] = ()
         if decision.phase is MarketPhase.AFTER_CLOSE and schedule_point is not SchedulePoint.CLOSE_QUOTES:
@@ -254,6 +258,7 @@ class V2SchedulerRuntime:
         with self._lock:
             return V2RuntimeStatus(
                 running=self._running,
+                phase=self._phase,
                 config_version=self._config_version,
                 lanes=tuple(self._lanes[strategy].status() for strategy in Strategy),
                 observer=self._dependencies.observer.status(),

@@ -6,6 +6,15 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增短线 current/观察池与 Today 封口回归：Today、Tomorrow、D25 均接受统一 API 的
+  `view=current`，Tomorrow/D25 在 `midday` 可渲染 `observe`，Today 午间、冻结、历史和盘后继续
+  关闭观察池；Today 调度线程在 `11:20:00` 秒内带微秒延迟仍冻结不晚于边界的最新 current，
+  `11:20:01` 后仍永久禁止追补。
+
+- 桌面 Firefox 发布 runner 新增真实形态的 `ready + observe` fixture，三档布局验收前分别切换
+  Tomorrow 与 D25，强制检查观察池未隐藏、摘要计数和带股票代码的观察行，避免只验 Long 而漏掉
+  短线观察池回归。
+
 - 新增代码 `603083` 风险组件同观测时刻重复提交回归，覆盖 `penalty` 在内的八个组件均保持
   SQLite recent 首次提交结果，后续冲突不覆盖、不丢失且不误报为持久化失败。
 
@@ -71,6 +80,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- V2 调度器现在以内存状态公开最后一次调度判定的真实上海交易阶段，未启动时为 `closed`，运行后为
+  `today_observe/today_main/today_late/midday/afternoon/...`；状态 HTTP 只读该值，不查询交易日历、
+  网络、文件或数据库。Web 静态资源 revision 提升为 `snapshot-identity-2026-08-13-v6`，确保浏览器
+  不继续复用旧的快照身份脚本。
+
 - 研究风险组件持久化现在显式区分数据平面同时间冲突、数据平面不可用和未知异常：安全的
   first-wins 冲突只记 debug，未知异常的 warning 增加脱敏异常类型，不记录外部载荷。
 
@@ -110,6 +124,18 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 用户报告“推荐快照身份不匹配 / 推荐快照读取失败”，并指出今早、明日、2–5日均无荐股且页面下方
+  观察池消失。实机确认 Tomorrow 与 D25 后端 current 各有 2 条 `observe`，但前端仍只接受旧内部
+  `live/official` 身份而拒绝统一 API 的合法 `view=current`；即使绕过身份错误，status 又固定返回
+  技术标签 `phase=v2`，导致观察池时段判断继续隐藏两组数据。现在三种短线 current 均通过身份校验，
+  调度器公开真实阶段，未冻结盘中 current 的观察项恢复到独立观察池；正式推荐计数仍只统计
+  `executable`，不会把观察项冒充荐股。
+
+- 修复 Today 已有可冻结草稿却在 11:20 丢失的问题。2026-08-13 运行研究库证明 Today 在
+  09:50-11:11 已成功提交 9 个 current，但冻结协调器只接受微秒恰为零的 `11:20:00.000000`，而
+  调度器把整个 `11:20:00.xxx` 秒识别为冻结点，真实线程延迟因此被误判为 `missed_freeze` 并丢弃草稿。
+  两侧现在按同一调度秒对齐，同时封口决策仍必须满足 `observed_at <= 11:20`。
+
 - 用户报告 `research risk component persistence failed for component=penalty code=603083`。运行库确认
   该代码同一观测时刻的八个风险组件（含 penalty）最终均已健康提交；根因是同一代码、组件和
   `observed_at` 的不同研究版本重复写入时，SQLite recent 契约正确保留先提交记录并抛出
@@ -141,6 +167,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未删除或改写推荐、观察项、历史或运行数据库；未放宽评分、过滤、风险、融合、Top6 或冻结
+  门槛，也未恢复观察池的持久化。冻结、`close_fallback`、历史和盘后仍不展示观察池。
+
 - 本批未删除或改写已有风险证据、SQLite schema、风险映射、处罚规则或评分结果；不通过吞掉未知异常
   来消除日志。
 
@@ -161,6 +190,18 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 失败先行契约分别复现短线 `view=current` 返回 false、Today 在 `11:20:00.000001` 返回
+  `missed_freeze`，修复后 Today/调度/统一 runtime/Web 定向 49 项及 JS 状态契约通过。实机只读证据
+  确认 Tomorrow/D25 当日均为 `ready`、各 2 条 observe，Today 研究 trace 当日 9 次提交但正式记录
+  缺失。Firefox 发布 runner 使用无外网 `midday + ready + observe` fixture 验证 Tomorrow/D25 观察池
+  均可见、计数 1、股票行 1；1280x720、1440x900、1920x1080 均无白屏、重叠、页面级横向溢出或
+  浏览器错误，并加载 `snapshot-identity-2026-08-13-v6`。
+
+- `make format-check`、`make lint`、`make type-check`、`make test` 最终通过；全量 pytest 仅保留既有
+  DeepSeek 测试模型名 RuntimeWarning 和 Python SQLite 默认时间适配器弃用告警。`make package`
+  首次因沙箱阻止隔离环境下载 `setuptools` 失败，获准联网后成功构建 sdist/wheel；仓库外临时安装
+  wheel 后通过包导入、`trader-cli validate-config`、10 项模板/JS/CSS/SVG 资源及 v6 身份脚本核验。
 
 - 风险组件专项回归先在旧实现精确复现同时间第二次提交产生的八条失败告警（含用户报告的
   `penalty code=603083`），修复后验证八条首提交记录完整保留且不再误报；研究持久化相关 3 项组件
@@ -220,6 +261,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 2026-08-13 Today 已在 11:20 封口后丢失正式记录，按不可变冻结契约不能由本批盘中或重启追补，
+  因而当日“今早”仍如实保持 `not_ready`；调度秒修复从下一交易日防止复发。Tomorrow/D25 当前两条
+  均为 `observe` 而非 `executable`，修复后应显示在“不可执行，仅供观察”的观察池，正式荐股数仍为
+  0。外部行情质量或业务门槛仍可能产生合法空池，本批不为补数量降低门槛。
 
 - 同一观测时刻发生内容冲突时，数据平面继续按权威 recent 契约保留先提交记录；后续不同内容不会合并
   或覆盖，因此调用方应使用更精确的新 `observed_at` 表示真正的新观测。本批不改风险事实、处罚或评分

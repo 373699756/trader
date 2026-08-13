@@ -89,7 +89,9 @@ assert.strictEqual(
 );
 assert.strictEqual(state.initialStrategy({ strategies: {} }), "today");
 assert.strictEqual(state.currentViewMatches("long", "current"), true);
-assert.strictEqual(state.currentViewMatches("tomorrow", "current"), false);
+assert.strictEqual(state.currentViewMatches("today", "current"), true);
+assert.strictEqual(state.currentViewMatches("tomorrow", "current"), true);
+assert.strictEqual(state.currentViewMatches("d25", "current"), true);
 assert.strictEqual(state.currentViewMatches("tomorrow", "live"), true);
 assert.strictEqual(state.currentViewMatches("today", "official"), true);
 const longStaticFallback = state.longGroupStaticFallbackPayload("long_api_unavailable");

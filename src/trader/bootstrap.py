@@ -638,13 +638,15 @@ def _build_publication(
 
 
 def _runtime_status(
-    scheduler: V2SchedulerRuntime, reviewer: DeepSeekReviewer, budget: DeepSeekBudgetLedger
+    scheduler: V2SchedulerRuntime,
+    reviewer: DeepSeekReviewer,
+    budget: DeepSeekBudgetLedger,
 ) -> dict[str, object]:
     status = scheduler.status()
     return {
         "status": "running" if status.running else "stopped",
         "runtime_started": status.running,
-        "phase": "v2",
+        "phase": status.phase.value,
         "deepseek_budget": budget.summary(_utc_now().date().isoformat()),
         "deepseek": reviewer.status(),
         "degraded_reasons": [status.last_error_code] if status.last_error_code else [],

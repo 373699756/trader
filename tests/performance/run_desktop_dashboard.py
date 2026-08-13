@@ -11,19 +11,52 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
+from zoneinfo import ZoneInfo
 
 from werkzeug.serving import make_server
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from trader.application.decision_core import UnifiedDecisionIndex  # noqa: E402
+from trader.application.decision_queries import UnifiedDecisionQueries  # noqa: E402
+from trader.application.decision_stream import UnifiedDecisionEventStream  # noqa: E402
+from trader.application.ports.decision_records import CommittedDecisionRecord  # noqa: E402
+from trader.domain.recommendation.decision_identity import DecisionItem, ScoredDecision  # noqa: E402
+from trader.domain.recommendation.models import RecommendationAction, Strategy  # noqa: E402
 from trader.web import create_app  # noqa: E402
+from trader.web.route_services import UnifiedWebServices  # noqa: E402
 from trader.web.static_assets import WEB_ASSET_REVISION  # noqa: E402
 
 VIEWPORTS = ((1280, 720), (1440, 900), (1920, 1080))
 REPORT_SCHEMA = "v2-desktop-browser-v1"
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+_NOW = datetime(2026, 8, 13, 12, 30, tzinfo=_SHANGHAI)
+
+
+class _BrowserClock:
+    def now(self) -> datetime:
+        return _NOW
+
+
+class _BrowserHistory:
+    def load(self, strategy: Strategy, trade_date: date) -> CommittedDecisionRecord | None:
+        del strategy, trade_date
+        return None
+
+    def list_dates(self, strategy: Strategy, *, limit: int = 31) -> tuple[date, ...]:
+        del strategy, limit
+        return ()
+
+
+class _ObservationResult(TypedDict):
+    strategy: str
+    visible: bool
+    rows: int
+    count: str
 
 
 def main() -> int:
@@ -50,7 +83,7 @@ def _run(output_dir: Path) -> dict[str, object]:
         raise RuntimeError("Firefox and geckodriver are required for the desktop gate")
     app_port = _free_port()
     driver_port = _free_port()
-    server = make_server("127.0.0.1", app_port, create_app(), threaded=True)
+    server = make_server("127.0.0.1", app_port, create_app(services=_browser_services()), threaded=True)
     server_thread = threading.Thread(target=server.serve_forever, name="v2-browser-fixture", daemon=True)
     server_thread.start()
     driver = subprocess.Popen(
@@ -78,8 +111,32 @@ def _run(output_dir: Path) -> dict[str, object]:
         base = f"http://127.0.0.1:{driver_port}/session/{session_id}"
         _request_json(f"{base}/url", method="POST", payload={"url": f"http://127.0.0.1:{app_port}/"})
         _wait(lambda: bool(_execute(base, "return Boolean(window.TraderDashboardDiagnostics);")))
+        observations: list[_ObservationResult] = []
+        for strategy in ("tomorrow", "d25"):
+            _execute(base, f'document.querySelector(".strategy-tab[data-strategy={strategy}]").click(); return true;')
+            _wait(
+                lambda: (
+                    bool(_execute(base, 'return !document.querySelector("#observationPool").hidden;'))
+                    and _integer(
+                        _execute(base, 'return document.querySelectorAll("#observationBody tr[data-code]").length;')
+                    )
+                    > 0
+                )
+            )
+            observations.append(
+                {
+                    "strategy": strategy,
+                    "visible": not bool(_execute(base, 'return document.querySelector("#observationPool").hidden;')),
+                    "rows": _integer(
+                        _execute(base, 'return document.querySelectorAll("#observationBody tr[data-code]").length;')
+                    ),
+                    "count": str(_execute(base, 'return document.querySelector("#observationCount").textContent;')),
+                }
+            )
         _execute(base, 'document.querySelector(".strategy-tab[data-strategy=long]").click(); return true;')
-        _wait(lambda: int(_execute(base, 'return document.querySelectorAll("#tableBody tr[data-code]").length;')) > 0)
+        _wait(
+            lambda: _integer(_execute(base, 'return document.querySelectorAll("#tableBody tr[data-code]").length;')) > 0
+        )
         output_dir.mkdir(parents=True, exist_ok=True)
         viewports = [_viewport(base, output_dir, width, height) for width, height in VIEWPORTS]
         scripts = _execute(base, "return Array.from(document.scripts).map((item) => item.src);")
@@ -87,12 +144,14 @@ def _run(output_dir: Path) -> dict[str, object]:
         passed = (
             isinstance(scripts, list)
             and any(expected in str(script) for script in scripts)
+            and all(item["visible"] and item["rows"] > 0 and item["count"] == "1" for item in observations)
             and all(_viewport_passed(viewport) for viewport in viewports)
         )
         return {
             "schema_version": REPORT_SCHEMA,
             "passed": passed,
             "browser": "firefox-headless",
+            "observations": observations,
             "viewports": viewports,
             "scripts": scripts,
             "external_network_calls": 0,
@@ -115,6 +174,49 @@ def _run(output_dir: Path) -> dict[str, object]:
         server.shutdown()
         server.server_close()
         server_thread.join(timeout=5)
+
+
+def _browser_services() -> UnifiedWebServices:
+    index = UnifiedDecisionIndex()
+    for strategy, code in ((Strategy.TOMORROW, "600001"), (Strategy.D25, "600002")):
+        item = DecisionItem(
+            code,
+            RecommendationAction.OBSERVE,
+            True,
+            1,
+            75.0,
+            74.0,
+            74.0,
+            (("local_score", 74.0),),
+            (),
+            "observation_band",
+        )
+        decision = ScoredDecision(
+            strategy,
+            _NOW.date(),
+            1,
+            _NOW.replace(hour=11, minute=15),
+            "local",
+            None,
+            (("market", "market:browser"),),
+            "config:browser",
+            "strategy:browser",
+            "fusion:browser",
+            (item,),
+            (),
+        )
+        if not index.publish(decision, expected_version=None).accepted:
+            raise RuntimeError("browser observation fixture publication failed")
+    return UnifiedWebServices(
+        UnifiedDecisionQueries(index, _BrowserHistory(), _BrowserClock()),
+        UnifiedDecisionEventStream(),
+        lambda: {
+            "status": "running",
+            "runtime_started": True,
+            "phase": "midday",
+            "deepseek_budget": {"limit": 168, "used": 0, "remaining": 168},
+        },
+    )
 
 
 def _viewport(base: str, output_dir: Path, width: int, height: int) -> dict[str, object]:
@@ -146,7 +248,9 @@ def _viewport(base: str, output_dir: Path, width: int, height: int) -> dict[str,
     screenshot = _request_json(f"{base}/screenshot")["value"]
     screenshot_name = f"desktop-{width}x{height}.png"
     (output_dir / screenshot_name).write_bytes(base64.b64decode(str(screenshot)))
-    return {"requested": [width, height], "screenshot": screenshot_name, **dict(result)}
+    if not isinstance(result, dict):
+        raise RuntimeError("browser viewport result must be an object")
+    return {"requested": [width, height], "screenshot": screenshot_name, **result}
 
 
 def _set_viewport(base: str, width: int, height: int) -> None:
@@ -187,6 +291,12 @@ def _viewport_passed(result: dict[str, object]) -> bool:
 def _execute(base: str, script: str) -> object:
     response = _request_json(f"{base}/execute/sync", method="POST", payload={"script": script, "args": []})
     return response.get("value")
+
+
+def _integer(value: object) -> int:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise RuntimeError("browser result must be numeric")
+    return int(value)
 
 
 def _wait_driver(port: int, process: subprocess.Popen[str]) -> None:

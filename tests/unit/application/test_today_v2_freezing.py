@@ -82,13 +82,28 @@ def test_starting_at_boundary_without_a_formal_record_is_permanently_missed(tmp_
     assert index.publish(_today(_at(15, 0)), expected_version=None).reason == "freeze_closed"
 
 
-def test_first_freeze_attempt_after_exact_boundary_cannot_freeze_a_late_current(tmp_path: Path) -> None:
+def test_scheduler_delay_within_boundary_second_freezes_the_latest_eligible_current(tmp_path: Path) -> None:
     repository = SQLiteDecisionRecordRepository(tmp_path)
     repository.initialize()
     index = UnifiedDecisionIndex()
     current = _today(_at(11, 19, 59))
     assert index.publish(current, expected_version=None).accepted
     coordinator = _coordinator(index, repository, _Clock(_at(11, 20, 0).replace(microsecond=1)))
+
+    result = coordinator.freeze_scheduled()
+
+    assert result.status == "frozen"
+    assert result.record is not None and result.record.decision.observed_at == current.observed_at
+    assert repository.load(Strategy.TODAY, current.trade_date) == result.record
+
+
+def test_first_freeze_attempt_after_boundary_second_cannot_backfill_today(tmp_path: Path) -> None:
+    repository = SQLiteDecisionRecordRepository(tmp_path)
+    repository.initialize()
+    index = UnifiedDecisionIndex()
+    current = _today(_at(11, 19, 59))
+    assert index.publish(current, expected_version=None).accepted
+    coordinator = _coordinator(index, repository, _Clock(_at(11, 20, 1)))
 
     result = coordinator.freeze_scheduled()
 

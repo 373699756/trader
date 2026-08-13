@@ -13,7 +13,7 @@ from trader.application.ports.v2_runtime import (
     V2DataRefreshUnavailableError,
     V2ReviewUnavailableError,
 )
-from trader.application.schedule import SHANGHAI
+from trader.application.schedule import SHANGHAI, MarketPhase
 from trader.application.shutdown import ShutdownDeadline
 from trader.application.v2_runtime import V2RuntimeDependencies, V2SchedulerRuntime
 from trader.domain.recommendation.decision_identity import (
@@ -171,6 +171,7 @@ def test_v2_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> None:
     assert settlement.calls == [close_at]
     assert status.freeze_completed_count == 2
     assert status.settlement_completed_count == 1
+    assert status.phase is MarketPhase.AFTER_CLOSE
     assert status.config_version == "runtime-v2"
     assert all(index.snapshot(strategy).current is not None for strategy in Strategy)
     assert not any(thread.name.startswith("trader-v2-") for thread in threading.enumerate())

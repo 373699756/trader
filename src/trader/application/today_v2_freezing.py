@@ -92,7 +92,7 @@ class TodayV2FreezeCoordinator:
     ) -> V2FreezeOperationResult | None:
         if already_sealed:
             return None
-        if now == boundary and not already_closed:
+        if now.replace(microsecond=0) == boundary and not already_closed:
             return None
         self._index.discard_closed_current(Strategy.TODAY, now.date())
         status = "persistence_failed" if repository_unavailable and now > boundary else "missed_freeze"

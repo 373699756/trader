@@ -36,7 +36,9 @@ def test_build_system_is_lazy_and_v2_only(tmp_path, monkeypatch) -> None:
     assert not (tmp_path / "runtime" / "research").exists()
     assert system.long_v2_runtime is not None
     assert system.app.test_client().get("/api/status").status_code == 404
-    assert system.app.test_client().get("/api/v2/status").status_code == 200
+    status = system.app.test_client().get("/api/v2/status")
+    assert status.status_code == 200
+    assert status.get_json()["phase"] == "closed"
 
 
 def test_reference_data_plane_recovery_is_fail_open() -> None:
