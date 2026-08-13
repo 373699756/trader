@@ -4,7 +4,20 @@ from trader.domain.research.historical import (
     CostSettlementBasis,
     HistoricalCandidateSummary,
     ResearchDataLineage,
+    ResearchSelectionPool,
     ScoreComponent,
+    coverage_shrunk_score,
+    optimistic_component_upper_bound,
+    optimistic_final_upper_bound,
 )
 
-__all__ = ["CostSettlementBasis", "HistoricalCandidateSummary", "ResearchDataLineage", "ScoreComponent"]
+__all__ = [
+    "CostSettlementBasis",
+    "HistoricalCandidateSummary",
+    "ResearchDataLineage",
+    "ResearchSelectionPool",
+    "ScoreComponent",
+    "coverage_shrunk_score",
+    "optimistic_component_upper_bound",
+    "optimistic_final_upper_bound",
+]

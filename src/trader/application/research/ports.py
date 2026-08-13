@@ -8,6 +8,7 @@ from typing import Protocol
 from trader.application.ports.market import DataPlaneReadPort
 from trader.application.research.models import (
     HistoricalDaySummary,
+    HistoricalEvaluatedCandidate,
     HistoricalFullFieldBundle,
 )
 
@@ -30,4 +31,14 @@ class HistoricalDataPlaneReadPort(DataPlaneReadPort, Protocol):
     ) -> HistoricalFullFieldBundle: ...
 
 
-__all__ = ["HistoricalDataPlaneReadPort"]
+class HistoricalCandidateEvaluator(Protocol):
+    """Adapter to the same pure production evaluator used by the later replay."""
+
+    def evaluate(
+        self,
+        summary: HistoricalDaySummary,
+        bundle: HistoricalFullFieldBundle,
+    ) -> tuple[HistoricalEvaluatedCandidate, ...]: ...
+
+
+__all__ = ["HistoricalCandidateEvaluator", "HistoricalDataPlaneReadPort"]

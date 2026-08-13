@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
+import json
 import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import TypeVar
+from types import MappingProxyType
+from typing import Literal, TypeVar
 
 from trader.application.ports.types import JsonObject, freeze_json_object
 from trader.domain.research.historical import (
@@ -16,6 +20,8 @@ from trader.domain.research.historical import (
     HistoricalCandidateSummary,
     ResearchBoard,
     ResearchDataLineage,
+    ResearchSelectionPool,
+    optimistic_final_upper_bound,
 )
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -226,6 +232,191 @@ class HistoricalFullFieldBundle:
         object.__setattr__(self, "settlement_complete_boards", tuple(sorted(self.settlement_complete_boards)))
 
 
+@dataclass(frozen=True)
+class HistoricalEvaluatedCandidate:
+    code: str
+    board: ResearchBoard
+    industry: str
+    local_score: float
+    final_score: float
+    eligible_pools: tuple[ResearchSelectionPool, ...]
+
+    def __post_init__(self) -> None:
+        _require_code(self.code)
+        if self.board not in SUPPORTED_RESEARCH_BOARDS or not self.industry.strip():
+            raise ValueError("historical evaluated candidate identity is invalid")
+        _validate_finite((self.local_score, self.final_score))
+        if not 0.0 <= self.local_score <= 100.0 or not 0.0 <= self.final_score <= 100.0:
+            raise ValueError("historical evaluated scores must be in [0, 100]")
+        pools = tuple(sorted(set(self.eligible_pools)))
+        if not pools or any(pool not in {"formal", "observation"} for pool in pools):
+            raise ValueError("historical evaluated candidate pools are invalid")
+        object.__setattr__(self, "industry", self.industry.strip())
+        object.__setattr__(self, "eligible_pools", pools)
+
+
+HistoricalProofStatus = Literal["loaded", "excluded"]
+
+
+@dataclass(frozen=True)
+class HistoricalCandidateProof:
+    code: str
+    pool: ResearchSelectionPool
+    upper_bound: float
+    constrained_frontier: float
+    status: HistoricalProofStatus
+    reason: Literal["active_set_loaded", "upper_bound_below_frontier", "selection_constraint"]
+    rule_version: str
+    content_hash: str = dataclasses.field(init=False)
+
+    def __post_init__(self) -> None:
+        _require_code(self.code)
+        if (
+            self.pool not in {"formal", "observation"}
+            or self.status not in {"loaded", "excluded"}
+            or self.reason not in {"active_set_loaded", "upper_bound_below_frontier", "selection_constraint"}
+        ):
+            raise ValueError("historical candidate proof identity is invalid")
+        if self.status == "loaded" and self.reason != "active_set_loaded":
+            raise ValueError("loaded historical proof requires the loaded reason")
+        if self.status == "excluded" and self.reason == "active_set_loaded":
+            raise ValueError("excluded historical proof requires an exclusion reason")
+        _validate_finite((self.upper_bound, self.constrained_frontier))
+        if not 0.0 <= self.upper_bound <= 100.0 or not 0.0 <= self.constrained_frontier <= 100.0:
+            raise ValueError("historical candidate proof scores must be in [0, 100]")
+        if not self.rule_version:
+            raise ValueError("historical candidate proof rule version is required")
+        if self.reason == "upper_bound_below_frontier" and not self.upper_bound < self.constrained_frontier:
+            raise ValueError("upper-bound exclusion proof must be strictly below its frontier")
+        if self.reason == "selection_constraint" and self.upper_bound < self.constrained_frontier:
+            raise ValueError("selection-constraint proof requires an upper bound at or above its frontier")
+        object.__setattr__(self, "content_hash", _canonical_hash(self))
+
+
+@dataclass(frozen=True)
+class HistoricalExtractedDay:
+    summary: HistoricalDaySummary
+    full_fields: HistoricalFullFieldBundle
+    evaluated: tuple[HistoricalEvaluatedCandidate, ...]
+    proofs: tuple[HistoricalCandidateProof, ...]
+    content_hash: str = dataclasses.field(init=False)
+
+    def __post_init__(self) -> None:
+        if (
+            self.summary.trade_date != self.full_fields.trade_date
+            or self.summary.input_hash != self.full_fields.input_hash
+        ):
+            raise ValueError("historical extracted day identities must match")
+        evaluated = tuple(sorted(self.evaluated, key=lambda item: item.code))
+        if {item.code for item in evaluated} != set(self.full_fields.requested_codes):
+            raise ValueError("historical evaluations must exactly cover loaded full fields")
+        summary_by_code = {item.code: item for item in self.summary.candidates}
+        full_by_code = {item.code: item for item in self.full_fields.candidates}
+        for item in evaluated:
+            summary_candidate = summary_by_code[item.code]
+            full_candidate = full_by_code[item.code]
+            upper_bound = optimistic_final_upper_bound(
+                summary_candidate.final_components,
+                mandatory_local_risk_penalty=summary_candidate.mandatory_local_risk_penalty,
+                recorded_deepseek_score=summary_candidate.recorded_deepseek_score,
+                recorded_deepseek_risk_penalty=summary_candidate.recorded_deepseek_risk_penalty,
+            )
+            if (
+                item.board != summary_candidate.board
+                or item.board != full_candidate.board
+                or item.industry != summary_candidate.industry
+                or item.eligible_pools != summary_candidate.eligible_pools
+                or item.final_score > upper_bound
+            ):
+                raise ValueError("historical evaluation violates its point-in-time upper-bound identity")
+        proofs = tuple(sorted(self.proofs, key=lambda item: (item.code, item.pool)))
+        expected = {
+            (candidate.code, pool) for candidate in self.summary.candidates for pool in candidate.eligible_pools
+        }
+        if {(proof.code, proof.pool) for proof in proofs} != expected:
+            raise ValueError("historical proofs must cover every eligible candidate pool")
+        object.__setattr__(self, "evaluated", evaluated)
+        object.__setattr__(self, "proofs", proofs)
+        object.__setattr__(self, "content_hash", _canonical_hash(self))
+
+
+HistoricalCoverageStatus = Literal["valid", "failed"]
+
+
+@dataclass(frozen=True)
+class HistoricalCoverageRecord:
+    trade_date: date
+    status: HistoricalCoverageStatus
+    reason: str
+    day_hash: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.status not in {"valid", "failed"} or _REASON_CODE.fullmatch(self.reason) is None:
+            raise ValueError("historical coverage identity is invalid")
+        if (self.status == "valid") != (self.day_hash is not None):
+            raise ValueError("valid historical coverage must bind exactly one day hash")
+        if self.day_hash is not None and _SHA256.fullmatch(self.day_hash) is None:
+            raise ValueError("historical coverage day hash is invalid")
+
+
+HistoricalExtractionStatus = Literal["extracted", "exploratory"]
+
+
+@dataclass(frozen=True)
+class ScoreR2HistoricalExtraction:
+    status: HistoricalExtractionStatus
+    coverage: tuple[HistoricalCoverageRecord, ...]
+    days: tuple[HistoricalExtractedDay, ...]
+    schema_version: str = "score_r2_historical_v1"
+    content_hash: str = dataclasses.field(init=False)
+
+    def __post_init__(self) -> None:
+        days = tuple(sorted(self.days, key=lambda item: item.summary.trade_date))
+        coverage = tuple(self.coverage)
+        if self.schema_version != "score_r2_historical_v1":
+            raise ValueError("Score-R2 extraction schema is invalid")
+        if len(days) > 40 or len({item.summary.trade_date for item in days}) != len(days):
+            raise ValueError("Score-R2 extraction accepts at most 40 unique days")
+        if len({item.trade_date for item in coverage}) != len(coverage):
+            raise ValueError("Score-R2 coverage dates must be unique")
+        if any(not date(2026, 5, 18) <= item.trade_date <= date(2026, 8, 10) for item in coverage):
+            raise ValueError("Score-R2 coverage is outside the preregistered historical window")
+        if self.status != ("extracted" if len(days) == 40 else "exploratory"):
+            raise ValueError("Score-R2 extraction status must match valid-day coverage")
+        if {item.trade_date for item in coverage if item.status == "valid"} != {
+            item.summary.trade_date for item in days
+        }:
+            raise ValueError("Score-R2 coverage must match extracted days")
+        object.__setattr__(self, "coverage", coverage)
+        object.__setattr__(self, "days", days)
+        object.__setattr__(self, "content_hash", _canonical_hash(self))
+
+
+def _canonical_hash(value: object) -> str:
+    payload = json.dumps(
+        _canonical_value(value), ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _canonical_value(value: object) -> object:
+    if dataclasses.is_dataclass(value):
+        return {
+            field.name: _canonical_value(getattr(value, field.name))
+            for field in dataclasses.fields(value)
+            if field.init
+        }
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, MappingProxyType):
+        return {str(key): _canonical_value(item) for key, item in value.items()}
+    if isinstance(value, dict):
+        return {str(key): _canonical_value(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_canonical_value(item) for item in value]
+    return value
+
+
 def _validate_full_field_identity(input_hash: str, requested_codes: tuple[str, ...]) -> tuple[str, ...]:
     if _SHA256.fullmatch(input_hash) is None:
         raise ValueError("full-field input identity must be SHA-256")
@@ -369,8 +560,13 @@ __all__ = [
     "HardFilterAggregate",
     "HistoricalDailyBar",
     "HistoricalDaySummary",
+    "HistoricalCandidateProof",
+    "HistoricalCoverageRecord",
+    "HistoricalEvaluatedCandidate",
+    "HistoricalExtractedDay",
     "HistoricalFullCandidate",
     "HistoricalFullFieldBundle",
     "HistoricalMinuteBar",
     "HistoricalSettlementEvidence",
+    "ScoreR2HistoricalExtraction",
 ]

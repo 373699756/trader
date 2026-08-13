@@ -42,7 +42,7 @@ def test_score_plan_p0_pre_registration_is_reflected_in_authoritative_docs() -> 
     assert "硬拒绝股票代码、简称、逐股事实、分数和未来收益均不得写入研究证据" in strategy
 
     for statement in (
-        "Score-R0、Score-R1 与 Score-R1-Migrate 已完成",
+        "Score-R0、Score-R1、Score-R1-Migrate 与 Score-R2 已完成",
         "研究链与活动运行库物理分离",
         "不建立第二套行情、评分、冻结、Web 或 DeepSeek 请求链",
         "策略定义只以荐股策略文档第 15.1 节为准",
@@ -56,7 +56,7 @@ def test_score_plan_p1_compact_trace_contract_is_reflected_in_authoritative_docs
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
     assert "### Score-R1：紧凑决策轨迹（已完成）" in plan
-    assert "Score-R0、Score-R1 与 Score-R1-Migrate 已完成" in design
+    assert "Score-R0、Score-R1、Score-R1-Migrate 与 Score-R2 已完成" in design
     assert "研究链与活动运行库物理分离" in design
     for statement in (
         "候选字段缺失掩码",
@@ -75,7 +75,6 @@ def test_score_r1_migrate_committed_audit_contract_is_complete() -> None:
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
     assert "### Score-R1-Migrate：迁移到 V2 committed event（已完成）" in plan
-    assert "下一研究章节为 Score-R2" in " ".join(plan.split())
     for statement in (
         "只消费成功提交后的 `V2DecisionCommitted`",
         "独立 SQLite 研究库",
@@ -93,3 +92,28 @@ def test_score_r1_migrate_committed_audit_contract_is_complete() -> None:
         "DeepSeek 物理 HTTP 请求增量必须为 0",
     ):
         assert statement in strategy
+
+
+def test_score_r2_historical_extraction_contract_is_complete() -> None:
+    plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
+    strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+
+    assert "### Score-R2：最多 40 日历史点时数据（已完成）" in plan
+    assert "下一研究章节为 Score-R3" in " ".join(plan.split())
+    for statement in (
+        "score_r2_historical_v1",
+        "score_r2_partition_v1",
+        "每板生产 Top120 身份作为起始集",
+        "Top6、板块 60% 和每行业最多 2 只约束",
+        "相同身份同内容重放幂等，不同内容冲突",
+        "不足 40 日的顶层状态固定为 `exploratory`",
+    ):
+        assert statement in strategy
+    for statement in (
+        "Score-R0、Score-R1、Score-R1-Migrate 与 Score-R2 已完成",
+        "不接入组合根、HTTP 或生产调度",
+        "Polars 不可变 Parquet 分区",
+        "不得从当前供应商响应回填",
+    ):
+        assert statement in design

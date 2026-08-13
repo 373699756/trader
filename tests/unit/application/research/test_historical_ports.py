@@ -50,6 +50,8 @@ def _candidate(code: str, board: str) -> HistoricalCandidateSummary:
         lineage=_lineage(f"candidate-{code}"),
         candidate_components=(ScoreComponent("candidate", 1.0, 80.0),),
         final_components=(ScoreComponent("final", 1.0, None),),
+        production_candidate_score=80.0,
+        production_top120=True,
     )
 
 

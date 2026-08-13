@@ -10,6 +10,7 @@ from typing import Literal
 
 ResearchBoard = Literal["main", "chinext", "star"]
 ResearchQualityStatus = Literal["complete", "degraded"]
+ResearchSelectionPool = Literal["formal", "observation"]
 SUPPORTED_RESEARCH_BOARDS: tuple[ResearchBoard, ...] = ("main", "chinext", "star")
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"
 _WEIGHT_TOLERANCE = 1e-9
@@ -61,6 +62,14 @@ class HistoricalCandidateSummary:
     lineage: ResearchDataLineage
     candidate_components: tuple[ScoreComponent, ...]
     final_components: tuple[ScoreComponent, ...]
+    industry: str = "unknown"
+    eligible_pools: tuple[ResearchSelectionPool, ...] = ("formal", "observation")
+    mandatory_local_risk_penalty: float = 0.0
+    recorded_deepseek_score: float | None = None
+    recorded_deepseek_risk_penalty: float = 0.0
+    production_candidate_score: float = 0.0
+    production_top120: bool = False
+    candidate_core_missing_ratio: float = 0.0
 
     def __post_init__(self) -> None:
         _require_code(self.code)
@@ -71,6 +80,31 @@ class HistoricalCandidateSummary:
             raise ValueError("candidate lineage cannot be received after feature_as_of")
         _validate_components(self.candidate_components)
         _validate_components(self.final_components)
+        _validate_candidate_research_identity(self)
+        object.__setattr__(self, "industry", self.industry.strip())
+        object.__setattr__(self, "eligible_pools", tuple(sorted(set(self.eligible_pools))))
+
+
+def _validate_candidate_research_identity(candidate: HistoricalCandidateSummary) -> None:
+    if not candidate.industry.strip():
+        raise ValueError("historical candidate industry must not be empty")
+    pools = tuple(sorted(set(candidate.eligible_pools)))
+    if not pools or any(pool not in {"formal", "observation"} for pool in pools):
+        raise ValueError("historical candidate requires a supported selection pool")
+    _validate_penalty(candidate.mandatory_local_risk_penalty, "mandatory local risk penalty")
+    _validate_penalty(candidate.recorded_deepseek_risk_penalty, "recorded DeepSeek risk penalty")
+    if candidate.recorded_deepseek_score is not None:
+        _validate_score(candidate.recorded_deepseek_score, "recorded DeepSeek score")
+    _validate_score(candidate.production_candidate_score, "production candidate score")
+    if candidate.production_top120 and candidate.production_candidate_score < 50.0:
+        raise ValueError("production Top120 candidate must satisfy the production candidate score gate")
+    if (
+        not math.isfinite(candidate.candidate_core_missing_ratio)
+        or not 0.0 <= candidate.candidate_core_missing_ratio <= 1.0
+    ):
+        raise ValueError("candidate core missing ratio must be finite and in [0, 1]")
+    if candidate.production_top120 and candidate.candidate_core_missing_ratio > 0.30:
+        raise ValueError("production Top120 candidate must satisfy the core missing gate")
 
 
 @dataclass(frozen=True)
@@ -105,6 +139,60 @@ def _validate_components(components: tuple[ScoreComponent, ...]) -> None:
         raise ValueError("score component weights must sum to one")
 
 
+def coverage_shrunk_score(components: tuple[ScoreComponent, ...]) -> float:
+    """Return the preregistered missing-to-neutral Score-R2 research score."""
+
+    _validate_components(components)
+    known = tuple((component.weight, component.value) for component in components if component.value is not None)
+    coverage = sum(weight for weight, _value in known)
+    if coverage == 0.0:
+        return 50.0
+    weighted = sum(weight * value for weight, value in known if value is not None)
+    return round(50.0 + coverage * (weighted / coverage - 50.0), 12)
+
+
+def optimistic_final_upper_bound(
+    components: tuple[ScoreComponent, ...],
+    *,
+    mandatory_local_risk_penalty: float,
+    recorded_deepseek_score: float | None = None,
+    recorded_deepseek_risk_penalty: float = 0.0,
+) -> float:
+    """Compute a safe Score-R2 upper bound without manufacturing model facts."""
+
+    _validate_components(components)
+    _validate_penalty(mandatory_local_risk_penalty, "mandatory local risk penalty")
+    _validate_penalty(recorded_deepseek_risk_penalty, "recorded DeepSeek risk penalty")
+    optimistic = sum(
+        component.weight * (100.0 if component.value is None else component.value) for component in components
+    )
+    local_upper_bound = min(100.0, max(0.0, optimistic - mandatory_local_risk_penalty))
+    if recorded_deepseek_score is None:
+        if recorded_deepseek_risk_penalty != 0.0:
+            raise ValueError("recorded DeepSeek risk penalty requires a recorded score")
+        return local_upper_bound
+    _validate_score(recorded_deepseek_score, "recorded DeepSeek score")
+    hybrid = local_upper_bound * 0.68 + recorded_deepseek_score * 0.32 - recorded_deepseek_risk_penalty
+    return min(100.0, max(0.0, hybrid))
+
+
+def optimistic_component_upper_bound(components: tuple[ScoreComponent, ...]) -> float:
+    """Return the weighted upper bound for a candidate or final score family."""
+
+    _validate_components(components)
+    return sum(component.weight * (100.0 if component.value is None else component.value) for component in components)
+
+
+def _validate_score(value: float, label: str) -> None:
+    if not math.isfinite(value) or not 0.0 <= value <= 100.0:
+        raise ValueError(f"{label} must be finite and in [0, 100]")
+
+
+def _validate_penalty(value: float, label: str) -> None:
+    if not math.isfinite(value) or value < 0.0:
+        raise ValueError(f"{label} must be finite and non-negative")
+
+
 def _require_code(code: str) -> None:
     if len(code) != 6 or not code.isdigit():
         raise ValueError("research stock code must contain exactly six digits")
@@ -121,5 +209,9 @@ __all__ = [
     "HistoricalCandidateSummary",
     "ResearchDataLineage",
     "ResearchBoard",
+    "ResearchSelectionPool",
     "ScoreComponent",
+    "coverage_shrunk_score",
+    "optimistic_final_upper_bound",
+    "optimistic_component_upper_bound",
 ]

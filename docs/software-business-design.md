@@ -1174,9 +1174,16 @@ fixture 不算最终发布证据。
 
 ### 14.2 评分研究状态
 
-Score-R0、Score-R1 与 Score-R1-Migrate 已完成；Score-R2 至 Score-R7 尚未完成。
+Score-R0、Score-R1、Score-R1-Migrate 与 Score-R2 已完成；Score-R3 至 Score-R7 尚未完成。
 研究链与活动运行库物理分离，只消费不可变 V2 committed event 和同批
 研究审计，不建立第二套行情、评分、冻结、Web 或 DeepSeek 请求链，不写活动配置或正式记录。
+
+Score-R2 是离线研究库能力，不接入组合根、HTTP 或生产调度。它只通过继承唯一
+`DataPlaneReadPort` 的历史扩展读取真实点时证据，按预注册窗口最多接纳 40 个有效日；逐日覆盖
+不足、未来数据、同键冲突、三板或结算不完整均保留失败身份。有效日从每板生产 Top120 开始，
+用可复算乐观上界和生产集中度约束扩展完整字段 active-set，并以 Polars 不可变 Parquet 分区及
+SHA-256 manifest 封存。活动运行库没有预注册窗口的完整历史 epoch 时只允许输出 `exploratory`，
+不得从当前供应商响应回填或宣称历史样本已经取得。
 
 最多 40 个历史日、20 个固定前向日、五挑战者、候选召回、配对移动区块 bootstrap、Holm
 校正、第二轮研究和人工晋级的策略定义只以荐股策略文档第 15.1 节为准。研究通过不自动改变

@@ -6,6 +6,16 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求继续 `docs/implementation-plan.md` 的下一个完整未完成章节。本批完成 Score-R2：新增
+  `score_r2_historical_v1` 离线两阶段提取器、研究专用纯领域覆盖率收缩/候选与最终分乐观上界、
+  每板生产 Top120 起始集和约束感知 active-set。提取结果逐日保存真实覆盖身份、正式池/观察池
+  裁剪证明、完整字段、三板结算与规范 SHA-256，不读取供应商、不调用 DeepSeek，也不接入生产
+  组合根、HTTP、冻结或 Web。
+
+- 新增 `score_r2_partition_v1` Polars 不可变 Parquet 分区：按日拆分身份、三板覆盖、硬拒绝聚合、
+  紧凑/完整/评估候选、日线、分钟线、共享复权窗口、结算和证明；每个文件及日级/顶层 manifest
+  均可复算 SHA-256，相同内容重放幂等，不同内容、文件篡改或 manifest 篡改显式冲突。
+
 - 新增短线 current/观察池与 Today 封口回归：Today、Tomorrow、D25 均接受统一 API 的
   `view=current`，Tomorrow/D25 在 `midday` 可渲染 `observe`，Today 午间、冻结、历史和盘后继续
   关闭观察池；Today 调度线程在 `11:20:00` 秒内带微秒延迟仍冻结不晚于边界的最新 current，
@@ -80,6 +90,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 总计划与权威研究状态推进为 Score-R2 已完成、Score-R3 为下一章节。固定主窗口最多接纳 40 个
+  真实有效日；主窗口失败只从最近前序实际交易日向 `2026-05-18` 补足。当前活动运行库不含该
+  预注册历史窗口的完整点时 epoch，因此真实运行只能形成 `exploratory` 覆盖结果，不能伪造
+  40 日证据、收益结论或晋级状态。
+
 - V2 调度器现在以内存状态公开最后一次调度判定的真实上海交易阶段，未启动时为 `closed`，运行后为
   `today_observe/today_main/today_late/midday/afternoon/...`；状态 HTTP 只读该值，不查询交易日历、
   网络、文件或数据库。Web 静态资源 revision 提升为 `snapshot-identity-2026-08-13-v6`，确保浏览器
@@ -124,6 +139,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 Score-R2 实施前仅有两阶段端口 schema、没有可执行历史提取、上界保护或不可变分区的问题。
+  新边界明确校验 summary/full-field 输入哈希一致、评估分不得超过点时乐观上界、生产 Top120 必须
+  满足候选 50 分和核心缺失不超过 30%，并拒绝未来数据、日线/分钟同键异内容、复权窗口重复、三板
+  结算缺口及已确认风险被乐观上界抹除。
+
 - 用户报告“推荐快照身份不匹配 / 推荐快照读取失败”，并指出今早、明日、2–5日均无荐股且页面下方
   观察池消失。实机确认 Tomorrow 与 D25 后端 current 各有 2 条 `observe`，但前端仍只接受旧内部
   `live/official` 身份而拒绝统一 API 的合法 `view=current`；即使绕过身份错误，status 又固定返回
@@ -167,6 +187,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未抓取、回填或提交任何真实运行数据库、行情快照、研究分区或收益标签；未复制生产评分公式，
+  未新增数据框依赖、DeepSeek 请求、后台线程、运行配置、普通 API/Web 字段或自动晋级行为。
+
 - 本批未删除或改写推荐、观察项、历史或运行数据库；未放宽评分、过滤、风险、融合、Top6 或冻结
   门槛，也未恢复观察池的持久化。冻结、`close_fallback`、历史和盘后仍不展示观察池。
 
@@ -190,6 +213,16 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- Score-R2 定向契约、领域、应用、端口和组件回归通过，覆盖 40 个主窗口交易日、2026-06-19 休市、
+  最近前序补足、`2026-05-18` 下界、真实失败身份、生产 Top120、50 分/30% 门、正式/观察池 Top6、
+  板块 60%、行业最多 2、上界保护、共享输入去重、三板结算、稳定哈希、幂等/冲突及分区/manifest
+  篡改检测。`make format-check`、`make lint`、`make type-check`、`make test` 全部通过；全量 pytest
+  仅保留既有 DeepSeek fixture 模型 RuntimeWarning 与 Python SQLite adapter 弃用告警。`make package`
+  首次因沙箱阻止隔离环境下载 `setuptools` 失败，获准联网后成功构建 sdist/wheel；仓库外安装
+  wheel 后成功导入 `ScoreR2HistoricalExtractor`、`PolarsHistoricalPartitionStore` 和乐观上界函数。
+  对活动研究库只读汇总确认仅有 2026-08-13 的 committed observation，预注册历史窗口交集为 0，
+  支持本批 `exploratory` 剩余风险判断。桌面验收不适用，因为本批没有活动 Web、静态资源或组合根变化。
 
 - 失败先行契约分别复现短线 `view=current` 返回 false、Today 在 `11:20:00.000001` 返回
   `missed_freeze`，修复后 Today/调度/统一 runtime/Web 定向 49 项及 JS 状态契约通过。实机只读证据
@@ -261,6 +294,10 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- Score-R2 能力已完成但预注册窗口的真实完整点时输入不存在于活动运行库；这属于诚实的数据覆盖
+  结论，不以当前供应商响应回填。故当前没有 40 日历史收益、召回或晋级证据，Score-R3 只能在
+  `extracted` 且 40 日 manifest 全部可验证后运行；活动生产策略保持不变。
 
 - 2026-08-13 Today 已在 11:20 封口后丢失正式记录，按不可变冻结契约不能由本批盘中或重启追补，
   因而当日“今早”仍如实保持 `not_ready`；调度秒修复从下一交易日防止复发。Tomorrow/D25 当前两条

@@ -36,6 +36,8 @@ def _candidate() -> HistoricalCandidateSummary:
         lineage=_lineage(),
         candidate_components=(ScoreComponent("liquidity", 1.0, 80.0),),
         final_components=(ScoreComponent("trend", 0.7, 75.0), ScoreComponent("missing", 0.3, None)),
+        production_candidate_score=80.0,
+        production_top120=True,
     )
 
 
@@ -52,6 +54,8 @@ def test_candidate_summary_rejects_invalid_weights_and_non_shanghai_times() -> N
         replace(_candidate(), candidate_components=(ScoreComponent("partial", 0.5, 80.0),))
     with pytest.raises(ValueError, match="Asia/Shanghai"):
         replace(_candidate(), feature_as_of=datetime(2026, 8, 10, 14, 50))
+    with pytest.raises(ValueError, match="core missing gate"):
+        replace(_candidate(), candidate_core_missing_ratio=0.31)
 
 
 def test_lineage_rejects_future_receipt_order_and_invalid_hash() -> None:
