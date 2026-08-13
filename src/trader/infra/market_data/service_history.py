@@ -546,7 +546,7 @@ class HistoryCache:
                         code=code,
                         trade_date=bar.trade_date,
                         observed_at=observed_at,
-                        source_time=_history_source_time((bar,)),
+                        source_time=min(_history_source_time((bar,)), observed_at),
                         source=source,
                         data_version=_history_version(bars),
                         payload=payload,

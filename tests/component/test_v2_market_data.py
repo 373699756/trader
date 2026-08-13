@@ -1342,6 +1342,28 @@ def test_history_cache_persists_latest_compact_summary_with_raw_window(tmp_path:
     assert restored_context == context
 
 
+def test_history_cache_persists_intraday_current_day_bar_without_future_source_time(tmp_path: Path) -> None:
+    observed_at = datetime(2026, 7, 16, 14, 30, tzinfo=_SHANGHAI)
+    previous_bar = replace(_history_bars()[-2], trade_date="2026-07-15")
+    current_bar = replace(_history_bars()[-1], trade_date=observed_at.date().isoformat())
+    data_plane = DataPlaneRepository(tmp_path)
+    service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        data_plane=data_plane,
+        wall_clock=lambda: observed_at,
+    )
+
+    service.history._persist_history_bars("301717", (previous_bar, current_bar), None, 0.0, "tencent")
+
+    records = data_plane.load_historical_feature_recent_records(codes=("301717",))
+    records_by_date = {record.trade_date: record for record in records}
+    assert records_by_date["2026-07-15"].source_time == datetime(2026, 7, 15, 15, 0, tzinfo=_SHANGHAI)
+    assert records_by_date["2026-07-16"].observed_at == observed_at
+    assert records_by_date["2026-07-16"].source_time == observed_at
+
+
 def test_history_cache_persistence_unavailable_does_not_block_history_load() -> None:
     class UnavailableHistoryDataPlane:
         def __init__(self) -> None:

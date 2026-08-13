@@ -6,6 +6,9 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增盘中当日日 K 历史持久化回归，覆盖 `observed_at` 早于当日 15:00 时仍可写入代码
+  `301717`，并同时锁定上一交易日记录继续使用 15:00 来源时间。
+
 - Score-R1-Migrate 新增 V2 committed observation 研究链：Today、Tomorrow、D25 成功提交后携带
   同批 `v2_committed_research_audit_v1`，独立 SQLite 保存硬拒绝聚合、硬过滤通过候选、板块/行业、
   候选组件、缺失掩码、覆盖率、板块可靠度、生产 Top120 及 production_local/research_shadow 配对。
@@ -65,6 +68,9 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 历史特征持久化现在将按交易日推定的收盘来源时间限制在实际观测时刻以内；盘中当日日 K 使用
+  当前带时区观测时间，已收盘历史日仍保持 15:00 来源时间，不改变历史特征、候选或评分公式。
+
 - 用户要求继续 `docs/implementation-plan.md` 未完成任务。核对后发现计划顶部误写“下一章节
   Score-R2”，但正文和权威设计仍明确 Score-R1-Migrate 未完成；本批先闭合该依赖章节，并把下一
   研究章节统一修正为 Score-R2，不提前实现相邻章节。
@@ -98,6 +104,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 用户报告 `history persistence failed for 301717`。根因已确认：盘中获取当日日 K 时，持久化层
+  无条件把来源时间推定为当日 15:00，导致 `observed_at < source_time` 并被数据平面不变量拒绝。
+  现在来源时间不会晚于真实观测时间，当日历史记录可正常进入 SQLite 数据平面，失败仍按既有
+  降级策略隔离且不阻塞内存历史与本地推荐。
+
 - 修复原 committed event 研究 trace 仅驻留内存、重启后丢失且未保留 R1 候选审计语义的问题；现在
   规范载荷和内层审计使用独立 SHA-256，启动逐行校验并隔离损坏记录，数据库初始化/写入失败由有界
   observer 隔离，不回滚正式决策、冻结、API/SSE 或增加 DeepSeek 请求。
@@ -118,6 +129,8 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未删除历史数据、SQLite schema、缓存条目或旧记录；不对修复前失败的未写入记录进行伪造回填。
+
 - 删除 `application/v2_research_trace.py` 的进程内 trace 实现和 `tomorrow_trace` 命名；研究采集不再
   依赖旧 snapshot baseline、tomorrow shadow runtime 或旧运行库，也不提供历史回填兼容路径。
 
@@ -133,6 +146,12 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 历史持久化专项回归通过：新增用例先在旧实现稳定复现
+  `ValueError: observed_at cannot be before source_time`，修复后与历史恢复/持久化相关的 4 项组件
+  测试全部通过。`make format-check`、`make lint`、`make type-check`、`make test` 均通过；全量测试
+  仅保留既有 DeepSeek 测试模型提示与 Python SQLite 默认时间适配器弃用告警。`make package` 首次
+  因沙箱禁止隔离环境下载 `setuptools` 失败，获准联网后原命令成功构建 sdist 与 wheel。
 
 - Score-R1-Migrate 定向矩阵通过：覆盖研究 SQLite 重启/幂等/冲突/双哈希/损坏隔离/条数与字节
   上限、observer 有界与消费者失败隔离、三策略投影及冻结重放、通用调度、文档与架构契约。
@@ -179,6 +198,10 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 公开历史源若在盘中返回当日日 K，其来源本身可能仍是未收盘的临时值；本批只修正持久化时间不变量，
+  不把临时值解释为正式收盘值。修复前因该异常未写入的记录不会自动回填，后续正常历史刷新会按既有
+  recent upsert 语义补齐。未改动 Web、API、布局或静态资源，三档桌面浏览器验收不适用。
 
 - 新研究库只从本版本部署后的 V2 committed observation 开始积累，不从已删除的旧 snapshot 或
   shadow 运行库回填；因此 Score-R2 的最多 40 日历史提取仍是下一独立章节。正式冻结二次裁剪身份
