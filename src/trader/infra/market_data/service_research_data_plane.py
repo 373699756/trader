@@ -10,7 +10,12 @@ from datetime import datetime
 from threading import Lock
 from typing import Protocol, cast
 
-from trader.application.ports.data_plane import DataPlaneUnavailableError, RiskEvidenceRecord, SourceCursorRecord
+from trader.application.ports.data_plane import (
+    DataPlaneConflictError,
+    DataPlaneUnavailableError,
+    RiskEvidenceRecord,
+    SourceCursorRecord,
+)
 from trader.domain.market.research import (
     ResearchAnnouncement,
     ResearchObservation,
@@ -166,17 +171,24 @@ def persist_research_component_statuses(
                     payload=payload,
                 )
             )
+        except DataPlaneConflictError:
+            _LOGGER.debug(
+                "research risk component retained an existing same-time record for component=%s code=%s",
+                component,
+                code,
+            )
         except DataPlaneUnavailableError:
             _LOGGER.warning(
                 "research data plane unavailable while saving risk component status for component=%s code=%s",
                 component,
                 code,
             )
-        except Exception:
+        except Exception as exc:
             _LOGGER.warning(
-                "research risk component persistence failed for component=%s code=%s",
+                "research risk component persistence failed for component=%s code=%s error=%s",
                 component,
                 code,
+                type(exc).__name__,
             )
 
 

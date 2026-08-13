@@ -68,6 +68,7 @@ from trader.infra.market_data.service_history import HistoryCache
 from trader.infra.market_data.service_history_warmup import HistoryWarmup
 from trader.infra.market_data.service_intraday import IntradayLoader
 from trader.infra.market_data.service_research import ResearchLoader
+from trader.infra.market_data.service_research_data_plane import persist_research_component_statuses
 from trader.infra.market_data.service_research_models import RESEARCH_COMPONENT_IDS
 from trader.infra.market_data.service_tushare import (
     ReferenceLoader,
@@ -1459,6 +1460,42 @@ def test_research_loader_recover_from_data_plane_overrides_component_statuses(tm
     assert status.announcements_covered_count == 0
     assert status.pledge_covered_count == 0
     assert status.unlock_covered_count == 1
+
+
+def test_research_component_same_time_conflict_preserves_first_committed_status(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class ComponentState:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+            self._component_statuses = {}
+
+    observed_at = datetime(2026, 8, 13, 10, 16, 30, tzinfo=_SHANGHAI)
+    state = ComponentState()
+    data_plane = DataPlaneRepository(tmp_path)
+
+    persist_research_component_statuses(
+        state,
+        data_plane,
+        "603083",
+        observed_at,
+        ResearchObservation(),
+    )
+    persist_research_component_statuses(
+        state,
+        data_plane,
+        "603083",
+        observed_at,
+        ResearchObservation(pledge_ratio_pct=0.0),
+    )
+
+    records = data_plane.load_risk_evidence_recent_records(codes=("603083",))
+    records_by_id = {record.evidence_id: record for record in records}
+    assert len(records_by_id) == len(RESEARCH_COMPONENT_IDS)
+    assert records_by_id["risk-component:pledge"].payload == {"status": "unknown"}
+    assert records_by_id["risk-component:penalty"].payload == {"status": "unknown"}
+    assert "research risk component persistence failed" not in caplog.text
 
 
 def test_news_research_does_not_persist_risk_components() -> None:

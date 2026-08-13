@@ -6,6 +6,9 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增代码 `603083` 风险组件同观测时刻重复提交回归，覆盖 `penalty` 在内的八个组件均保持
+  SQLite recent 首次提交结果，后续冲突不覆盖、不丢失且不误报为持久化失败。
+
 - 新增盘中当日日 K 历史持久化回归，覆盖 `observed_at` 早于当日 15:00 时仍可写入代码
   `301717`，并同时锁定上一交易日记录继续使用 15:00 来源时间。
 
@@ -68,6 +71,9 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 研究风险组件持久化现在显式区分数据平面同时间冲突、数据平面不可用和未知异常：安全的
+  first-wins 冲突只记 debug，未知异常的 warning 增加脱敏异常类型，不记录外部载荷。
+
 - 历史特征持久化现在将按交易日推定的收盘来源时间限制在实际观测时刻以内；盘中当日日 K 使用
   当前带时区观测时间，已收盘历史日仍保持 15:00 来源时间，不改变历史特征、候选或评分公式。
 
@@ -104,6 +110,12 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 用户报告 `research risk component persistence failed for component=penalty code=603083`。运行库确认
+  该代码同一观测时刻的八个风险组件（含 penalty）最终均已健康提交；根因是同一代码、组件和
+  `observed_at` 的不同研究版本重复写入时，SQLite recent 契约正确保留先提交记录并抛出
+  `DataPlaneConflictError`，研究辅助层却把这个安全的 first-wins 结果误报为持久化失败。现在该冲突
+  被单独识别，真实不可用仍显式降级，其他异常仍保留可诊断告警。
+
 - 用户报告 `history persistence failed for 301717`。根因已确认：盘中获取当日日 K 时，持久化层
   无条件把来源时间推定为当日 15:00，导致 `observed_at < source_time` 并被数据平面不变量拒绝。
   现在来源时间不会晚于真实观测时间，当日历史记录可正常进入 SQLite 数据平面，失败仍按既有
@@ -129,6 +141,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未删除或改写已有风险证据、SQLite schema、风险映射、处罚规则或评分结果；不通过吞掉未知异常
+  来消除日志。
+
 - 本批未删除历史数据、SQLite schema、缓存条目或旧记录；不对修复前失败的未写入记录进行伪造回填。
 
 - 删除 `application/v2_research_trace.py` 的进程内 trace 实现和 `tomorrow_trace` 命名；研究采集不再
@@ -146,6 +161,13 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 风险组件专项回归先在旧实现精确复现同时间第二次提交产生的八条失败告警（含用户报告的
+  `penalty code=603083`），修复后验证八条首提交记录完整保留且不再误报；研究持久化相关 3 项组件
+  测试通过。`make format-check`、`make lint`、`make type-check`、`make test` 最终通过；lint 首轮发现
+  新增导入顺序问题，修正后重跑通过。全量测试仅保留既有 DeepSeek 测试模型提示与 Python SQLite
+  默认时间适配器弃用告警。`make package` 首次因沙箱禁止隔离环境下载 `setuptools` 失败，获准联网
+  后原命令成功构建 sdist 与 wheel。
 
 - 历史持久化专项回归通过：新增用例先在旧实现稳定复现
   `ValueError: observed_at cannot be before source_time`，修复后与历史恢复/持久化相关的 4 项组件
@@ -198,6 +220,10 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 同一观测时刻发生内容冲突时，数据平面继续按权威 recent 契约保留先提交记录；后续不同内容不会合并
+  或覆盖，因此调用方应使用更精确的新 `observed_at` 表示真正的新观测。本批不改风险事实、处罚或评分
+  语义，也未改 Web/API/静态资源，三档桌面浏览器验收不适用。
 
 - 公开历史源若在盘中返回当日日 K，其来源本身可能仍是未收盘的临时值；本批只修正持久化时间不变量，
   不把临时值解释为正式收盘值。修复前因该异常未写入的记录不会自动回填，后续正常历史刷新会按既有
