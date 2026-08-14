@@ -9,8 +9,10 @@ from trader.application.ports.market import DataPlaneReadPort
 from trader.application.research.models import (
     HistoricalDaySummary,
     HistoricalEvaluatedCandidate,
+    HistoricalExtractedDay,
     HistoricalFullFieldBundle,
 )
+from trader.application.research.replay_models import BaselineReplaySelection
 
 
 class HistoricalDataPlaneReadPort(DataPlaneReadPort, Protocol):
@@ -41,4 +43,10 @@ class HistoricalCandidateEvaluator(Protocol):
     ) -> tuple[HistoricalEvaluatedCandidate, ...]: ...
 
 
-__all__ = ["HistoricalCandidateEvaluator", "HistoricalDataPlaneReadPort"]
+class HistoricalBaselineReplayEvaluator(Protocol):
+    """Adapter that invokes the same pure production selection used by the active baseline."""
+
+    def replay(self, day: HistoricalExtractedDay) -> tuple[BaselineReplaySelection, ...]: ...
+
+
+__all__ = ["HistoricalBaselineReplayEvaluator", "HistoricalCandidateEvaluator", "HistoricalDataPlaneReadPort"]

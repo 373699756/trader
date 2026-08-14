@@ -1,7 +1,7 @@
 # V2 与评分研究多 Codex 总实施计划
 
-状态：V2-E0 至 V2-E11、Score-R0、Score-R1、Score-R1-Migrate、Score-R2 已完成；
-V2 工程发布章节全部闭合，下一研究章节为 Score-R3。
+状态：V2-E0 至 V2-E11、Score-R0、Score-R1、Score-R1-Migrate、Score-R2、Score-R3 已完成；
+V2 工程发布章节全部闭合，下一研究章节为 Score-R4。
 
 本文是唯一活动施工计划，只定义执行顺序、会话协作、文件所有权、同步 Gate 和退出条件，
 不定义产品或策略行为。产品、架构、时间线、API、运维和验收以
@@ -105,9 +105,10 @@ C 固定执行：
 - Score-R1 已完成：紧凑研究轨迹、有界异步记录、幂等冲突和硬过滤后逐股审计已实现。
 - Score-R1-Migrate 已完成：研究 observer 只消费 V2 committed observation；同批 R1 审计与
   committed event 使用独立 schema/hash 写入有界 SQLite 研究库，重启可恢复，失败不反向影响生产。
-- G1 的 Score-R2 接口适配设计已冻结：研究侧历史扩展显式继承唯一的
-  `DataPlaneReadPort`，并固定日摘要与按代码完整字段的两阶段读取值；40 日提取、分区和
-  manifest 仍属于 G2 的 Score-R2 整节实现，当前状态不提前标记完成。
+- Score-R2 与 Score-R3 已完成：最多 40 日点时提取、active-set 证明、三档成本基线回放、研究指标
+  和不可变报告能力已闭合；当前真实历史覆盖不足时只输出 `exploratory`，不形成收益或晋级结论。
+- G1 的 Score-R2 接口适配设计已经由后续 R2/R3 完整实现消费：研究侧历史扩展显式继承唯一的
+  `DataPlaneReadPort`，日摘要、按代码完整字段、40 日提取、分区、manifest 与基线报告均保持离线隔离。
 - G1 两个 worker tip 已合并并推送，远端 worker 分支已退役；G2 开始时必须以本批审计记录
   推送后的最新 `feature/tomorrow-v2` tip 公布统一 `BASE_SHA`，E/R 不得复用 G1 分支或其旧
   worktree 作为新基线。
@@ -291,13 +292,21 @@ observer、三类冻结控制和 Long current projection 均由唯一组合根�
 二阶段读取，未加载候选均保存可复算的上界/边界/规则哈希证明。研究基础设施使用既有 Polars
 按交易日写入不可变 Parquet 分区，日线/分钟同键异内容由边界拒绝，复权窗口每代码只保存一份，
 分区文件和顶层 manifest 均绑定 SHA-256。当前活动运行库没有预注册历史窗口的完整点时 epoch，
-因此真实运行只能诚实形成 `exploratory` 覆盖结果，不能伪造 40 个有效日或提前进入 Score-R3 收益回放。
+因此真实运行只能诚实形成 `exploratory` 覆盖结果，不能伪造 40 个有效日或完整收益证据。
 
-### Score-R3：基线回放与报告
+### Score-R3：基线回放与报告（已完成）
 
 - 复用 V2 纯领域过滤、评分、风险和选择函数，不复制公式。
 - 生成净超额、MAE、召回、覆盖、集中度、Rank IC 和 20/50/100bp 成本报告。
 - 报告冻结后不改指标，重复运行结果和报告哈希一致。
+
+退出证据：研究应用层通过 `HistoricalBaselineReplayEvaluator` 显式复用生产纯领域回放结果，
+要求 production 与 active-set oracle 均精确覆盖评估集合并校验连续 Top6、板块 60%、每行业最多
+2 只及 production Top120 身份。`score_r3_baseline_report_v1` 从同一
+`CostSettlementBasis` 计算 20/50/100bp 净超额、平均 MAE/ATR20、严重回撤率、候选召回率、
+字段覆盖率、板块/行业集中度、五分组 20bp 净超额和平均日内 Spearman Rank IC；JSON 报告以
+规范 SHA-256 不可变写入，相同内容重放幂等，不同内容或篡改冲突。少于 40 个有效日时状态保持
+`exploratory`，能力完成不代表已经取得 40 日真实收益证据。
 
 ### Score-R4：五个挑战者
 

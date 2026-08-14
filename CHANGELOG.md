@@ -6,6 +6,16 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求继续 `docs/implementation-plan.md` 的下一个完整未完成章节。本批完成 Score-R3：新增
+  `HistoricalBaselineReplayEvaluator` 隔离端口和 `score_r3_baseline_report_v1` 离线回放器，显式消费
+  R2 不可变日证据及生产纯领域回放结果，不复制过滤、评分、风险或选择公式，也不接入组合根、HTTP、
+  Web、冻结或 DeepSeek。
+
+- 新增 production baseline 与 active-set oracle 双排名校验，以及 20/50/100bp 日组合净超额、平均
+  MAE/ATR20、严重回撤率、候选召回率、最终组件字段覆盖率、板块/行业集中度、五分组 20bp 净超额和
+  平均日内 Spearman Rank IC。报告 JSON 使用规范 SHA-256 不可变封存，相同内容重放幂等，不同内容、
+  schema/hash 篡改或既有身份冲突均拒绝。
+
 - 用户要求继续 `docs/implementation-plan.md` 的下一个完整未完成章节。本批完成 Score-R2：新增
   `score_r2_historical_v1` 离线两阶段提取器、研究专用纯领域覆盖率收缩/候选与最终分乐观上界、
   每板生产 Top120 起始集和约束感知 active-set。提取结果逐日保存真实覆盖身份、正式池/观察池
@@ -90,6 +100,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 总计划与权威研究状态推进为 Score-R3 已完成、Score-R4 为下一章节。R3 只有在 R2 恰好提供 40 个
+  有效日时才标记 `replayed`；当前活动运行库历史点时覆盖不足时仍可生成确定性的 `exploratory`
+  报告，但不得据此宣称取得 40 日收益证据、通过历史门禁或具备晋级资格，生产策略保持不变。
+
 - 总计划与权威研究状态推进为 Score-R2 已完成、Score-R3 为下一章节。固定主窗口最多接纳 40 个
   真实有效日；主窗口失败只从最近前序实际交易日向 `2026-05-18` 补足。当前活动运行库不含该
   预注册历史窗口的完整点时 epoch，因此真实运行只能形成 `exploratory` 覆盖结果，不能伪造
@@ -139,6 +153,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 Score-R2 之后缺少可执行基线报告边界的问题：此前只有点时提取、结算依据和 active-set 证明，
+  无法以固定口径形成日级/汇总指标或验证重复运行哈希；现在通过显式生产回放端口、严格 Top6/集中度/
+  Top120 身份校验和不可变报告仓储闭合该缺口，同时继续拒绝伪造缺失历史证据。
+
 - 修复 Score-R2 实施前仅有两阶段端口 schema、没有可执行历史提取、上界保护或不可变分区的问题。
   新边界明确校验 summary/full-field 输入哈希一致、评估分不得超过点时乐观上界、生产 Top120 必须
   满足候选 50 分和核心缺失不超过 30%，并拒绝未来数据、日线/分钟同键异内容、复权窗口重复、三板
@@ -187,6 +205,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未删除或替换生产实现；R3 研究层不创建第二套行情、评分、冻结、Web、DeepSeek 请求链或活动配置，
+  也不移除 R2 失败日和覆盖身份来美化报告。
+
 - 本批未抓取、回填或提交任何真实运行数据库、行情快照、研究分区或收益标签；未复制生产评分公式，
   未新增数据框依赖、DeepSeek 请求、后台线程、运行配置、普通 API/Web 字段或自动晋级行为。
 
@@ -213,6 +234,14 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- Score-R3 定向单元、组件和契约测试通过，覆盖成本公式、平均秩 Spearman、五分组、40 日状态门、
+  `no_decision` 零暴露、production/oracle 排名与集中度校验、微平均召回、指标汇总、确定性哈希、
+  不可变写入、幂等、冲突及篡改拒绝。`make format-check`、`make lint`、`make type-check`、
+  `make test` 最终全部通过；格式门禁覆盖 294 个文件，mypy 覆盖 195 个源文件，全量 pytest 通过。
+  `make package` 首次仅因沙箱禁止隔离构建下载 `setuptools` 失败，获准联网后原命令成功构建 sdist
+  与 wheel；仓库外临时目录安装 wheel 后可导入 `ScoreR3BaselineReplayer` 和
+  `JsonBaselineReportStore`。本批不修改 Web、静态资源或桌面布局，三档浏览器验收不适用。
 
 - Score-R2 定向契约、领域、应用、端口和组件回归通过，覆盖 40 个主窗口交易日、2026-06-19 休市、
   最近前序补足、`2026-05-18` 下界、真实失败身份、生产 Top120、50 分/30% 门、正式/观察池 Top6、
@@ -295,9 +324,14 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- Score-R3 能力已经完成，但活动运行库仍没有预注册历史窗口的 40 个完整点时 epoch；因此当前只能形成
+  `exploratory` 报告，没有可据此主张的 40 日真实净超额、召回、Rank IC 或晋级证据。下一章 Score-R4
+  还必须先冻结连续入场过渡宽度和高热弱结构阈值，不能根据本批探索指标事后试参。
+
 - Score-R2 能力已完成但预注册窗口的真实完整点时输入不存在于活动运行库；这属于诚实的数据覆盖
-  结论，不以当前供应商响应回填。故当前没有 40 日历史收益、召回或晋级证据，Score-R3 只能在
-  `extracted` 且 40 日 manifest 全部可验证后运行；活动生产策略保持不变。
+  结论，不以当前供应商响应回填。故当前没有 40 日历史收益、召回或晋级证据；Score-R3 对不足
+  40 日的输入只输出 `exploratory`，只有 `extracted` 且 40 日 manifest 全部可验证后才标记
+  `replayed`，活动生产策略保持不变。
 
 - 2026-08-13 Today 已在 11:20 封口后丢失正式记录，按不可变冻结契约不能由本批盘中或重启追补，
   因而当日“今早”仍如实保持 `not_ready`；调度秒修复从下一交易日防止复发。Tomorrow/D25 当前两条

@@ -1174,16 +1174,23 @@ fixture 不算最终发布证据。
 
 ### 14.2 评分研究状态
 
-Score-R0、Score-R1、Score-R1-Migrate 与 Score-R2 已完成；Score-R3 至 Score-R7 尚未完成。
-研究链与活动运行库物理分离，只消费不可变 V2 committed event 和同批
-研究审计，不建立第二套行情、评分、冻结、Web 或 DeepSeek 请求链，不写活动配置或正式记录。
+Score-R0 至 Score-R3 已完成；Score-R4 至 Score-R7 尚未完成。
+在线研究链与活动运行库物理分离，只消费不可变 V2 committed event 和同批研究审计；
+离线 R2/R3 只读唯一数据平面的点时证据。两者均不建立第二套行情、评分、冻结、Web 或 DeepSeek
+请求链，不写活动配置或正式记录。
 
-Score-R2 是离线研究库能力，不接入组合根、HTTP 或生产调度。它只通过继承唯一
+Score-R2 与 Score-R3 是离线研究库能力，不接入组合根、HTTP 或生产调度。Score-R2 只通过继承唯一
 `DataPlaneReadPort` 的历史扩展读取真实点时证据，按预注册窗口最多接纳 40 个有效日；逐日覆盖
 不足、未来数据、同键冲突、三板或结算不完整均保留失败身份。有效日从每板生产 Top120 开始，
 用可复算乐观上界和生产集中度约束扩展完整字段 active-set，并以 Polars 不可变 Parquet 分区及
 SHA-256 manifest 封存。活动运行库没有预注册窗口的完整历史 epoch 时只允许输出 `exploratory`，
 不得从当前供应商响应回填或宣称历史样本已经取得。
+
+Score-R3 通过显式研究端口接收复用生产纯领域函数形成的 production baseline 与 active-set oracle
+排名，不复制过滤、评分、风险或选择公式；报告只从 R2 不可变日分区及其
+`CostSettlementBasis` 计算成本、MAE、召回、覆盖、集中度、五分组和 Rank IC，并以规范哈希
+不可变封存。当前真实覆盖仍不足 40 个有效日，因此只能输出 `exploratory`，不能宣称已经取得
+40 日收益证据、通过历史门禁或具备晋级资格；活动生产策略保持不变。
 
 最多 40 个历史日、20 个固定前向日、五挑战者、候选召回、配对移动区块 bootstrap、Holm
 校正、第二轮研究和人工晋级的策略定义只以荐股策略文档第 15.1 节为准。研究通过不自动改变
