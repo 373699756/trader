@@ -11,11 +11,11 @@ from trader.application.ports.v2_runtime import (
     SharedDeepSeekRuntimeContract,
     V2CycleRequest,
     V2DataRefreshUnavailableError,
-    V2ReviewUnavailableError,
 )
 from trader.application.schedule import SHANGHAI, MarketPhase
 from trader.application.shutdown import ShutdownDeadline
 from trader.application.v2_runtime import V2RuntimeDependencies, V2SchedulerRuntime
+from trader.bootstrap import _runtime_status
 from trader.domain.recommendation.decision_identity import (
     CommittedDecisionRecord,
     LongProjection,
@@ -299,24 +299,35 @@ def test_tomorrow_lane_progresses_while_today_lane_is_blocked() -> None:
         runtime.stop(ShutdownDeadline.start(2.0))
 
 
-def test_refresh_and_review_failure_retain_and_publish_the_local_decision() -> None:
+def test_refresh_failure_retains_last_valid_decision_without_cascading_build_failure() -> None:
     class FailingData(DataRefresh):
+        fail = True
+
         def refresh(self, request: V2CycleRequest) -> None:
             super().refresh(request)
-            raise V2DataRefreshUnavailableError("source unavailable")
+            if self.fail:
+                raise V2DataRefreshUnavailableError("source unavailable")
 
-    class FailingReviews(SharedReviews):
-        def build_hybrid(self, local: ScoredDecision, request: V2CycleRequest) -> ScoredDecision:
-            raise V2ReviewUnavailableError("review unavailable")
+    class TrackingDecisions(Decisions):
+        def __init__(self) -> None:
+            self.calls: list[Strategy] = []
+
+        def build_local(self, request: V2CycleRequest):
+            self.calls.append(request.strategy)
+            return super().build_local(request)
 
     index = UnifiedDecisionIndex()
+    previous = replace(decision(Strategy.TOMORROW, sequence=1), observed_at=NOW - timedelta(minutes=1))
+    assert index.publish(previous, expected_version=None).accepted
+    decisions = TrackingDecisions()
+    data = FailingData()
     runtime = V2SchedulerRuntime(
         V2RuntimeDependencies(
             clock=FixedClock(NOW),
             calendar=TradingCalendar(),
-            data=FailingData(),
-            decisions=Decisions(),
-            reviews=FailingReviews(),
+            data=data,
+            decisions=decisions,
+            reviews=SharedReviews(),
             index=index,
             observer=AsyncDecisionObserver((), capacity=1, thread_name="test-v2-failure-observer"),
             freezes=Freezes(),
@@ -329,7 +340,7 @@ def test_refresh_and_review_failure_retain_and_publish_the_local_decision() -> N
         NOW.date(),
         NOW,
         "afternoon",
-        1,
+        3,
         "input-v1",
         True,
         NOW + timedelta(minutes=1),
@@ -338,15 +349,37 @@ def test_refresh_and_review_failure_retain_and_publish_the_local_decision() -> N
     runtime.submit_cycle(request)
     assert runtime.wait_idle(1.0)
     status = runtime.status()
-    runtime.stop(ShutdownDeadline.start(1.0))
 
     current = index.snapshot(Strategy.TOMORROW).current
-    assert isinstance(current, ScoredDecision)
-    assert current.stage == "local"
+    assert current is previous
+    assert decisions.calls == []
     assert status.refresh_failure_count == 1
-    assert status.review_failure_count == 1
-    assert status.local_publish_count == 1
+    assert status.decision_failure_count == 0
+    assert status.review_failure_count == 0
+    assert status.local_publish_count == 0
     assert status.hybrid_publish_count == 0
+    assert status.strategy_error_codes == (("tomorrow", "refresh:source_unavailable"),)
+
+    class StatusReviewer:
+        def status(self):
+            return {"status": "ready"}
+
+    class StatusBudget:
+        def summary(self, _day: str):
+            return {"limit": 168, "used": 0, "remaining": 168}
+
+    payload = _runtime_status(runtime, StatusReviewer(), StatusBudget())  # type: ignore[arg-type]
+    assert payload["degraded_reasons"] == ["tomorrow:refresh:source_unavailable"]
+    assert payload["scheduler"]["decision_failure_count"] == 0  # type: ignore[index]
+
+    data.fail = False
+    runtime.submit_cycle(replace(request, sequence=5, input_version="input-v2", allow_review=False))
+    assert runtime.wait_idle(1.0)
+    recovered = runtime.status()
+    runtime.stop(ShutdownDeadline.start(1.0))
+
+    assert recovered.strategy_error_codes == ()
+    assert recovered.last_error_code == ""
 
 
 def test_review_deadline_prevents_a_late_model_upgrade() -> None:

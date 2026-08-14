@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import re
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal, Protocol
 
 from trader.application.long_v2_runtime import LongV2Runtime
@@ -44,7 +45,7 @@ from trader.application.tomorrow_v2_projection import (
     build_tomorrow_v2_hybrid,
     build_tomorrow_v2_local,
 )
-from trader.domain.market.models import FeatureSnapshot
+from trader.domain.market.models import Board, FeatureSnapshot
 from trader.domain.recommendation.decision_identity import DecisionIdentity, ScoredDecision
 from trader.domain.recommendation.models import Strategy
 from trader.domain.recommendation.ranking import candidate_score
@@ -59,10 +60,26 @@ class V2InputBatch:
     data_version: str
 
 
+@dataclass(frozen=True)
+class _SharedInputBatch:
+    market_features: tuple[FeatureSnapshot, ...]
+    requested_codes: tuple[str, ...]
+    candidate_features: tuple[FeatureSnapshot, ...]
+
+
 class V2MarketReader(Protocol):
     def fetch_market_features(self, observed_at: datetime, *, force: bool = False) -> Sequence[FeatureSnapshot]: ...
 
-    def fetch_candidate_features(
+    def refresh_candidate_quotes(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]: ...
+
+    def read_candidate_features(
         self,
         codes: Sequence[str],
         observed_at: datetime,
@@ -90,7 +107,11 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         self._long_runtime = long_runtime
         self._policy = policy
         self._lock = threading.RLock()
+        self._condition = threading.Condition(self._lock)
         self._batches: dict[tuple[Strategy, str], V2InputBatch] = {}
+        self._shared_inputs: dict[tuple[date, datetime, str], _SharedInputBatch] = {}
+        self._shared_failures: dict[tuple[date, datetime, str], str] = {}
+        self._shared_loading: set[tuple[date, datetime, str]] = set()
         self._projections: dict[str, TodayV2LocalProjection | TomorrowV2LocalProjection] = {}
         self._decisions: dict[str, ScoredDecision] = {}
         self._sequences = {strategy: 1 for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)}
@@ -100,29 +121,84 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
             self._long_runtime.offer_refresh(LongRefreshRequest(request.observed_at, request.phase, force=True))
             return
         try:
-            market_features = tuple(self._market.fetch_market_features(request.observed_at, force=False))
-            requested = _candidate_codes(market_features, self._candidate_pool_size)
-            candidate_features = tuple(
-                self._market.fetch_candidate_features(
-                    requested,
-                    request.observed_at,
-                    include_intraday_tail=request.strategy is Strategy.TOMORROW,
-                    include_structured_research=True,
+            shared = self._shared_input(request)
+            candidate_features = shared.candidate_features
+            if request.strategy is Strategy.TOMORROW:
+                candidate_features = tuple(
+                    self._market.read_candidate_features(
+                        shared.requested_codes,
+                        request.observed_at,
+                        include_intraday_tail=True,
+                        include_structured_research=True,
+                    )
                 )
-            )
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
-            raise V2DataRefreshUnavailableError(type(exc).__name__) from exc
+            raise V2DataRefreshUnavailableError(_failure_code(exc)) from exc
         batch = V2InputBatch(
             request,
-            market_features,
-            requested,
+            shared.market_features,
+            shared.requested_codes,
             candidate_features,
-            _data_version(request, market_features, candidate_features),
+            _data_version(request, shared.market_features, candidate_features),
         )
         with self._lock:
             self._batches[(request.strategy, request.input_version)] = batch
             while len(self._batches) > 32:
                 self._batches.pop(next(iter(self._batches)))
+
+    def _shared_input(self, request: V2CycleRequest) -> _SharedInputBatch:
+        key = (request.trade_date, request.observed_at, request.phase)
+        with self._condition:
+            while True:
+                cached = self._shared_inputs.get(key)
+                if cached is not None:
+                    return cached
+                failure = self._shared_failures.get(key)
+                if failure is not None:
+                    raise V2DataRefreshUnavailableError(failure)
+                if key not in self._shared_loading:
+                    self._shared_loading.add(key)
+                    break
+                if not self._condition.wait(timeout=30.0):
+                    raise V2DataRefreshUnavailableError("shared_input_timeout")
+        try:
+            market_features = tuple(self._market.fetch_market_features(request.observed_at, force=False))
+            requested = _candidate_codes(market_features, self._candidate_pool_size)
+            self._market.refresh_candidate_quotes(requested, request.observed_at, force=False)
+            candidate_features = tuple(
+                self._market.read_candidate_features(
+                    requested,
+                    request.observed_at,
+                    include_intraday_tail=False,
+                    include_structured_research=True,
+                )
+            )
+            shared = _SharedInputBatch(market_features, requested, candidate_features)
+        except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            failure = _failure_code(exc)
+            with self._condition:
+                self._shared_loading.discard(key)
+                self._shared_failures[key] = failure
+                self._trim_shared_inputs()
+                self._condition.notify_all()
+            raise V2DataRefreshUnavailableError(failure) from exc
+        except BaseException:
+            with self._condition:
+                self._shared_loading.discard(key)
+                self._condition.notify_all()
+            raise
+        with self._condition:
+            self._shared_loading.discard(key)
+            self._shared_inputs[key] = shared
+            self._trim_shared_inputs()
+            self._condition.notify_all()
+        return shared
+
+    def _trim_shared_inputs(self) -> None:
+        while len(self._shared_inputs) > 8:
+            self._shared_inputs.pop(next(iter(self._shared_inputs)))
+        while len(self._shared_failures) > 8:
+            self._shared_failures.pop(next(iter(self._shared_failures)))
 
     def build_local(self, request: V2CycleRequest) -> DecisionIdentity | None:
         if request.strategy is Strategy.LONG:
@@ -295,11 +371,14 @@ class V2NoopSettlement(V2SettlementPort):
 
 
 def _candidate_codes(features: tuple[FeatureSnapshot, ...], limit: int) -> tuple[str, ...]:
-    ordered = sorted(
-        features,
-        key=lambda feature: (-candidate_score(feature, _CANDIDATE_WEIGHTS), feature.quote.code),
-    )
-    return tuple(feature.quote.code for feature in ordered[:limit])
+    selected: list[str] = []
+    for board in (Board.MAIN, Board.CHINEXT, Board.STAR):
+        ordered = sorted(
+            (feature for feature in features if feature.quote.board is board),
+            key=lambda feature: (-candidate_score(feature, _CANDIDATE_WEIGHTS), feature.quote.code),
+        )
+        selected.extend(feature.quote.code for feature in ordered[:limit])
+    return tuple(selected)
 
 
 def _data_version(
@@ -325,6 +404,14 @@ def _stable_digest(value: object) -> str:
     import hashlib
 
     return hashlib.sha256(repr(value).encode("utf-8")).hexdigest()[:16]
+
+
+def _failure_code(exc: BaseException) -> str:
+    value = str(exc).strip().lower()
+    if re.fullmatch(r"[a-z0-9_]{1,64}", value) is not None:
+        return value
+    name = type(exc).__name__
+    return "".join((f"_{character.lower()}" if character.isupper() else character) for character in name).lstrip("_")
 
 
 __all__ = [

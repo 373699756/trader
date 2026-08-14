@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户报告的“今早/明日长期 `not_ready`、2–5 日只有空观察池且候选数异常”新增生产输入并发、
+  三板限额、刷新失败保留、状态诊断、覆盖去重和正式记录往返回归。测试锁定同一观察点三条评分策略
+  只执行一次全市场与候选报价刷新，且任一过滤原因重叠不会再放大候选/拒绝统计。
+
 - 用户要求继续 `docs/implementation-plan.md` 的下一个完整未完成章节。本批完成 Score-R5 工程能力：
   新增 `score_r5_statistical_gate_v1` 固定统计器，按五个 R4 变体分别形成 local-only、hybrid 相对
   production 及 hybrid 相对 local-only 报告；配对移动区块 bootstrap 固定主种子 `20260811`、
@@ -123,6 +127,15 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- Today、Tomorrow、D25 同一调度观察点现在 single-flight 共享全市场与候选报价批次，本地输入只读
+  已有历史、结构化研究和分钟尾部缓存，不再由三条策略 lane 分别同步抓取历史与公司研究；
+  `candidate_pool_size=120` 按每板应用，三板请求上限恢复为 360。状态 API 新增调度 lane、失败/发布
+  计数和按策略结构化活动错误；成功发布会清除对应策略活动错误。
+
+- 新生成的 `ScoredDecision` 保存去重后的 population/rejected 覆盖计数，current 与正式历史查询直接
+  使用精确计数；旧正式记录仍按缺省字段兼容读取，不改变其既有哈希。过滤原因计数继续作为可重叠
+  原因分布，不再被误当成股票数相加。
+
 - 总计划与权威研究状态推进为 Score-R5 工程能力已完成、Score-R6 为下一章节。当前真实 R2/R4 证据
   仍不足 40 个有效历史日，统计结果只能是 `exploratory`/`historical_rejected`；真实前向窗口尚未
   开始，不存在 `promotion_eligible` 版本。活动 50 分/30%/每板 Top120、风险、68/32 融合、冻结、
@@ -184,6 +197,12 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复用户当前运行中 Today/Tomorrow 长时间无快照、D25 虽 ready 但观察池为空且显示
+  `candidate_count=26125` 的问题。根因确认是三条独立策略每轮重复执行全市场、候选历史和结构化研究
+  慢 I/O，实际只有 D25 偶发完成；同时查询层把一只股票可命中的多个过滤原因直接求和，造成覆盖数
+  重复。现在共享快速行情输入、本地先发布且慢研究留在独立后台，刷新失败直接保留最近有效决策，
+  不再继续制造误导性的 `decision_unavailable`；覆盖统计按去重股票数返回。
 
 - 修复 R4 之后只有配对 manifest、尚无可执行统计晋级边界的问题：此前无法证明固定随机流、Holm
   多重检验、集中度/稳定性失败终止，也没有可恢复且冲突安全的固定前向记录。R5 现在对缺日、短区块、
@@ -281,6 +300,18 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 本批定向回归覆盖 V2 输入 single-flight、三板各自限额、合法/临时空集、非预期 owner 释放、刷新失败
+  保留与恢复清错、状态 API、去重覆盖、正式记录往返、Today/Tomorrow 投影、Web 契约及 research
+  trace，共 44 项通过；后续新增 owner 释放回归也随全量测试通过。`make format-check` 覆盖 307 个文件，
+  `make lint` 首轮发现 `ScoredDecision.__post_init__` 新增覆盖校验越过 C901 零债务门，抽取纯校验后
+  Ruff 与严格重构债务检查通过；`make type-check` 覆盖 202 个源文件，`make test` 共 878 项通过，仅保留
+  既有 DeepSeek fixture RuntimeWarning 和 Python SQLite adapter 弃用告警。
+
+- `make package` 首次因沙箱禁止隔离构建下载 `setuptools` 失败，获准联网后成功生成 sdist 与 wheel；
+  在仓库外临时目录安装 wheel 后成功导入 `V2MarketDataAdapter`、`ScoredDecision`，并读取模板和
+  JavaScript 包资源。未修改 HTML/CSS/JavaScript 或桌面布局，三档浏览器视觉验收不适用；运行中的
+  用户进程未被本批擅自停止或重启，因此部署后实盘观察列入剩余风险。
 
 - Score-R5 定向领域、应用、组件与契约回归通过，覆盖 SHA-256 派生随机种子、10,000 次配对非循环
   bootstrap、短区块拒绝、固定五变体 Holm step-down、探索性历史终止、固定二十日前向日期、collector
@@ -393,6 +424,12 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 当前 `127.0.0.1:5000` 进程仍加载修复前代码，必须由用户正常停止后重新执行 `./run.sh` 才会生效；
+  重启后历史预热、行情来源失败或真实过滤门槛仍可能产生结构化 `not_ready` 或合法空池，但状态 API
+  会按策略显示真实 refresh/decision 阶段，不再用重复慢 I/O 和错误覆盖统计掩盖原因。若 Today 已越过
+  11:20 且当日无正式记录，仍按冻结契约禁止追补；本批不降低候选、风险、动作或融合门槛，也不承诺
+  一定产生正式荐股。
 
 - Score-R5 统计、collector 与最终封存工程能力已闭合，但当前真实 R2/R4 历史点时证据仍不足 40 日；
   因此五个变体均只能诚实终止为探索性历史拒绝，不能启动真实前向 collector。固定前向日为

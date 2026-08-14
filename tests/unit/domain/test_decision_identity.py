@@ -14,6 +14,8 @@ from trader.domain.recommendation.decision_identity import (
     LongProjectionItem,
     OverlayQuote,
     ScoredDecision,
+    committed_record_bytes,
+    committed_record_from_bytes,
 )
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 
@@ -144,3 +146,14 @@ def test_overlay_and_formal_record_validate_parent_time_scope_and_hash() -> None
         replace(overlay, quotes=(replace(quote, source_time=NOW + timedelta(seconds=1)),))
     with pytest.raises(ValueError, match="trade date"):
         replace(record, committed_at=NOW + timedelta(days=1))
+
+
+def test_formal_record_round_trip_preserves_optional_distinct_coverage() -> None:
+    current = replace(decision(), population_count=82, rejected_count=81)
+    record = CommittedDecisionRecord(current, NOW + timedelta(minutes=10), "scheduled")
+
+    restored = committed_record_from_bytes(committed_record_bytes(record))
+
+    assert restored.decision.population_count == 82
+    assert restored.decision.rejected_count == 81
+    assert restored.payload_hash == record.payload_hash

@@ -167,9 +167,14 @@ def _scored_view(
     overlay_quotes = _valid_overlay_quotes(decision, overlay)
     selected = tuple(item for item in decision.items if item.selected)
     items = tuple(_scored_item(item, overlay_quotes.get(item.code), decision.observed_at) for item in selected)
-    rejected = sum(count for _reason, count in decision.filter_aggregates)
+    rejected = (
+        decision.rejected_count
+        if decision.rejected_count is not None
+        else sum(count for _reason, count in decision.filter_aggregates)
+    )
+    population = decision.population_count if decision.population_count is not None else len(decision.items) + rejected
     coverage = DecisionCoverageView(
-        candidate_count=len(decision.items) + rejected,
+        candidate_count=population,
         evaluated_count=len(decision.items),
         rejected_count=rejected,
         selected_count=len(items),

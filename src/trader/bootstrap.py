@@ -6,7 +6,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -643,13 +643,28 @@ def _runtime_status(
     budget: DeepSeekBudgetLedger,
 ) -> dict[str, object]:
     status = scheduler.status()
+    strategy_errors = dict(status.strategy_error_codes)
+    degraded_reasons = [f"{strategy}:{code}" for strategy, code in status.strategy_error_codes]
+    if status.last_error_code and status.last_error_code not in strategy_errors.values():
+        degraded_reasons.append(status.last_error_code)
     return {
         "status": "running" if status.running else "stopped",
         "runtime_started": status.running,
         "phase": status.phase.value,
         "deepseek_budget": budget.summary(_utc_now().date().isoformat()),
         "deepseek": reviewer.status(),
-        "degraded_reasons": [status.last_error_code] if status.last_error_code else [],
+        "degraded_reasons": degraded_reasons,
+        "scheduler": {
+            "config_version": status.config_version,
+            "lanes": [asdict(lane) for lane in status.lanes],
+            "strategy_errors": strategy_errors,
+            "last_error_code": status.last_error_code,
+            "refresh_failure_count": status.refresh_failure_count,
+            "decision_failure_count": status.decision_failure_count,
+            "review_failure_count": status.review_failure_count,
+            "local_publish_count": status.local_publish_count,
+            "hybrid_publish_count": status.hybrid_publish_count,
+        },
     }
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -82,6 +83,7 @@ class V2RuntimeStatus:
     settlement_completed_count: int
     settlement_failure_count: int
     last_error_code: str
+    strategy_error_codes: tuple[tuple[str, str], ...]
 
 
 class V2SchedulerRuntime:
@@ -136,6 +138,8 @@ class V2SchedulerRuntime:
         self._settlement_completed_count = 0
         self._settlement_failure_count = 0
         self._last_error_code = ""
+        self._system_error_code = ""
+        self._strategy_error_codes: dict[Strategy, str] = {}
 
     def start(self) -> bool:
         with self._lock:
@@ -278,6 +282,11 @@ class V2SchedulerRuntime:
                 settlement_completed_count=self._settlement_completed_count,
                 settlement_failure_count=self._settlement_failure_count,
                 last_error_code=self._last_error_code,
+                strategy_error_codes=tuple(
+                    (strategy.value, self._strategy_error_codes[strategy])
+                    for strategy in Strategy
+                    if strategy in self._strategy_error_codes
+                ),
             )
 
     def _scheduled_request(self, strategy: Strategy, observed_at: datetime, phase: str) -> V2CycleRequest:
@@ -306,7 +315,8 @@ class V2SchedulerRuntime:
             if isinstance(snapshot.current, ScoredDecision) and snapshot.current.trade_date == request.trade_date:
                 self._freeze_close_fallback(request, snapshot.current, recovery_path="current")
                 return
-        self._refresh_data(request)
+        if not self._refresh_data(request):
+            return
         local = self._build_local(request)
         if local is None or not self._publish(local, hybrid=False):
             return
@@ -317,19 +327,21 @@ class V2SchedulerRuntime:
         if request.allow_review and review_now < request.review_deadline and isinstance(local, ScoredDecision):
             self._upgrade_hybrid(local, request)
 
-    def _refresh_data(self, request: V2CycleRequest) -> None:
+    def _refresh_data(self, request: V2CycleRequest) -> bool:
         try:
             self._dependencies.data.refresh(request)
-        except V2DataRefreshUnavailableError:
-            self._record_failure("refresh", "refresh_unavailable")
+        except V2DataRefreshUnavailableError as exc:
+            self._record_failure("refresh", _failure_code(exc, "refresh_unavailable"), request.strategy)
+            return False
+        return True
 
     def _build_local(self, request: V2CycleRequest) -> DecisionIdentity | None:
         try:
             local = self._dependencies.decisions.build_local(request)
             if local is not None:
                 _validate_cycle_identity(request, local)
-        except V2DecisionUnavailableError:
-            self._record_failure("decision", "decision_unavailable")
+        except V2DecisionUnavailableError as exc:
+            self._record_failure("decision", _failure_code(exc, "decision_unavailable"), request.strategy)
             return None
         return local
 
@@ -342,30 +354,38 @@ class V2SchedulerRuntime:
         if not published.accepted:
             self._record_publish_rejection(published.reason)
             return False
-        self._record_publish(hybrid=hybrid, event=published.event)
+        self._record_publish(hybrid=hybrid, event=published.event, strategy=identity.strategy)
         return True
 
     def _upgrade_hybrid(self, local: ScoredDecision, request: V2CycleRequest) -> None:
         try:
             hybrid = self._dependencies.reviews.build_hybrid(local, request)
-        except V2ReviewUnavailableError:
-            self._record_failure("review", "review_unavailable")
+        except V2ReviewUnavailableError as exc:
+            self._record_failure("review", _failure_code(exc, "review_unavailable"), request.strategy)
             return
         if hybrid is None:
             return
         try:
             _validate_cycle_identity(request, hybrid)
         except V2DecisionUnavailableError:
-            self._record_failure("review", "review_identity_mismatch")
+            self._record_failure("review", "review_identity_mismatch", request.strategy)
             return
         self._publish(hybrid, hybrid=True)
 
-    def _record_publish(self, *, hybrid: bool, event: V2DecisionCommitted | None) -> None:
+    def _record_publish(
+        self,
+        *,
+        hybrid: bool,
+        event: V2DecisionCommitted | None,
+        strategy: Strategy,
+    ) -> None:
         with self._lock:
             if hybrid:
                 self._hybrid_publish_count += 1
             else:
                 self._local_publish_count += 1
+            self._strategy_error_codes.pop(strategy, None)
+            self._refresh_last_error_code()
         observation = (
             V2DecisionObservation(event, self._dependencies.decisions.research_audit(event.decision_version))
             if event is not None
@@ -480,7 +500,7 @@ class V2SchedulerRuntime:
             while len(self._control_completed) > 128:
                 self._control_completed.popitem(last=False)
 
-    def _record_failure(self, stage: str, code: str) -> None:
+    def _record_failure(self, stage: str, code: str, strategy: Strategy | None = None) -> None:
         with self._lock:
             if stage == "refresh":
                 self._refresh_failure_count += 1
@@ -492,7 +512,18 @@ class V2SchedulerRuntime:
                 self._freeze_failure_count += 1
             elif stage == "settlement":
                 self._settlement_failure_count += 1
-            self._last_error_code = code
+            qualified = f"{stage}:{code}"
+            if strategy is None:
+                self._system_error_code = qualified
+            else:
+                self._strategy_error_codes[strategy] = qualified
+            self._last_error_code = qualified
+
+    def _refresh_last_error_code(self) -> None:
+        if self._system_error_code:
+            self._last_error_code = self._system_error_code
+            return
+        self._last_error_code = next(reversed(self._strategy_error_codes.values()), "")
 
 
 def _validate_cycle_identity(request: V2CycleRequest, identity: DecisionIdentity) -> None:
@@ -504,6 +535,13 @@ def _validate_cycle_identity(request: V2CycleRequest, identity: DecisionIdentity
 
 def _cycle_order_key(request: V2CycleRequest) -> int:
     return request.trade_date.toordinal() * 1_000_000_000 + request.sequence
+
+
+def _failure_code(exc: BaseException, fallback: str) -> str:
+    value = str(exc).strip().lower().replace(" ", "_")
+    if re.fullmatch(r"[a-z0-9_]{1,64}", value) is not None:
+        return value
+    return fallback
 
 
 __all__ = ["V2RuntimeDependencies", "V2RuntimeStatus", "V2SchedulerRuntime"]

@@ -116,6 +116,10 @@ C 固定执行：
   与配置物理删除；活动入口只装配 V2 调度、决策记录、统一 API/SSE 和 committed event observer。
 - 研究采集只从 V2 committed event observer 接收不可变事件；不再从生产运行时读取旧 snapshot、
   baseline 或 tomorrow shadow 状态。
+- 2026-08-14 运行可用性修复已闭合：同一观察点的三条评分策略复用一次全市场/候选报价输入，
+  本地投影不再同步等待历史或公司研究补抓；`candidate_pool_size` 恢复为每板上限，刷新失败不再
+  级联为无批次构建失败，状态 API 暴露按策略错误与 lane 计数，决策覆盖使用去重后的精确计数。
+  该直接缺陷批次不推进 Score 章节，下一研究章节仍为 Score-R6。
 
 ## 5. 同步 Gate 与并行波次
 

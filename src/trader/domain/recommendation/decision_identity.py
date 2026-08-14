@@ -78,6 +78,8 @@ class ScoredDecision:
     items: tuple[DecisionItem, ...]
     filter_aggregates: tuple[tuple[str, int], ...]
     degraded_reasons: tuple[str, ...] = ()
+    population_count: int | None = None
+    rejected_count: int | None = None
     schema_version: str = DECISION_IDENTITY_SCHEMA_VERSION
     content_hash: str = field(init=False)
     version: str = field(init=False)
@@ -108,6 +110,7 @@ class ScoredDecision:
             raise ValueError("local decision final scores must equal local scores")
         aggregates = _normalize_counts(self.filter_aggregates)
         reasons = _normalize_reasons(self.degraded_reasons)
+        _validate_coverage_counts(self.population_count, self.rejected_count, len(items))
         payload = _scored_payload(self, items, versions, aggregates, reasons)
         content_hash = _hash(payload)
         object.__setattr__(self, "input_versions", versions)
@@ -358,6 +361,8 @@ def formal_scored_decision(
         items=official_items,
         filter_aggregates=decision.filter_aggregates,
         degraded_reasons=(*decision.degraded_reasons, *degraded_reasons),
+        population_count=decision.population_count,
+        rejected_count=decision.rejected_count,
     )
 
 
@@ -388,6 +393,8 @@ def committed_record_from_bytes(payload: bytes) -> CommittedDecisionRecord:
         items=items,
         filter_aggregates=_count_pairs(decision_raw.get("filter_aggregates")),
         degraded_reasons=tuple(_strings(decision_raw.get("degraded_reasons"), "degraded_reasons")),
+        population_count=_optional_integer(decision_raw.get("population_count"), "population_count"),
+        rejected_count=_optional_integer(decision_raw.get("rejected_count"), "rejected_count"),
         schema_version=_text(decision_raw, "schema_version"),
     )
     record = CommittedDecisionRecord(
@@ -408,7 +415,7 @@ def _scored_payload(
     aggregates: tuple[tuple[str, int], ...],
     reasons: tuple[str, ...],
 ) -> dict[str, _Json]:
-    return {
+    payload: dict[str, _Json] = {
         "schema_version": decision.schema_version,
         "strategy": decision.strategy.value,
         "trade_date": decision.trade_date.isoformat(),
@@ -424,6 +431,10 @@ def _scored_payload(
         "filter_aggregates": [[reason, count] for reason, count in aggregates],
         "degraded_reasons": list(reasons),
     }
+    if decision.population_count is not None and decision.rejected_count is not None:
+        payload["population_count"] = decision.population_count
+        payload["rejected_count"] = decision.rejected_count
+    return payload
 
 
 def _record_payload(record: CommittedDecisionRecord) -> dict[str, _Json]:
@@ -601,6 +612,23 @@ def _integer(raw: dict[str, object], key: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise ValueError(f"{key} must be an integer")
     return value
+
+
+def _optional_integer(raw: object, label: str) -> int | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, int) or isinstance(raw, bool):
+        raise ValueError(f"{label} must be an integer")
+    return raw
+
+
+def _validate_coverage_counts(population_count: int | None, rejected_count: int | None, item_count: int) -> None:
+    if (population_count is None) != (rejected_count is None):
+        raise ValueError("decision coverage counts must be provided together")
+    if population_count is None or rejected_count is None:
+        return
+    if population_count < item_count or rejected_count < 0 or rejected_count > population_count:
+        raise ValueError("decision coverage counts are invalid")
 
 
 def _boolean(raw: dict[str, object], key: str) -> bool:

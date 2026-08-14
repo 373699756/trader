@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -100,6 +101,19 @@ def test_queries_read_only_formal_history_and_long_has_no_history() -> None:
     assert long_history.status == "not_applicable"
     assert long_history.degraded_reasons == ("history_not_applicable",)
     assert queries.dates(Strategy.LONG) == ()
+
+
+def test_scored_coverage_uses_distinct_evaluation_counts_not_overlapping_reasons() -> None:
+    index = UnifiedDecisionIndex()
+    scored = replace(_decision(), population_count=82, rejected_count=81)
+    assert index.publish(scored, expected_version=None).accepted
+
+    view = UnifiedDecisionQueries(index, _Repository(), _Clock()).current(Strategy.TODAY)
+
+    assert view.coverage.candidate_count == 82
+    assert view.coverage.evaluated_count == 1
+    assert view.coverage.rejected_count == 81
+    assert dict(view.filter_reason_counts) == {"hard_filter": 10}
 
 
 def _decision(*, trade_date: date = TRADE_DATE) -> ScoredDecision:

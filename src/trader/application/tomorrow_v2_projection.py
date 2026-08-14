@@ -230,6 +230,8 @@ def _scored_decision(
         items=tuple(_decision_item(item) for item in epoch.entries),
         filter_aggregates=tuple(epoch.filter_reason_counts.items()),
         degraded_reasons=epoch.degraded_reasons,
+        population_count=epoch.evaluated_count,
+        rejected_count=epoch.rejected_count,
     )
 
 
