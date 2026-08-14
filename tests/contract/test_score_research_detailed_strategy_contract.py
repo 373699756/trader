@@ -26,6 +26,28 @@ def test_score_research_strategy_freezes_candidate_recall_and_challenger_formula
         assert token in strategy
 
 
+def test_score_r4_preregisters_entry_and_heat_thresholds_before_replay() -> None:
+    strategy = " ".join(STRATEGY.read_text(encoding="utf-8").split())
+
+    for token in (
+        "score_r4_preregistered_parameters_v1",
+        "score_r4_entry_parameters_v1",
+        "score_r4_heat_parameters_v1",
+        "`ma5_ma10_spread_pct`",
+        "-0.50% | 0.00% | 0.50%",
+        "0.60 | 0.70 | 0.80",
+        "1.80 | 2.00 | 2.20",
+        "65.00 | 70.00 | 75.00",
+        "`[6.00%, 8.00%]`",
+        "`[12.00%, 16.00%]`",
+        "`close_location <= 35.00`",
+        "`tail_return_30m_pct <= -0.50%`",
+        "`intraday_drawdown_pct >= 3.00%`",
+        "R4 只生成配对 manifest，不执行 R5 bootstrap、Holm 或晋级判断",
+    ):
+        assert token in strategy
+
+
 def test_score_research_strategy_freezes_pairing_bootstrap_and_promotion_boundary() -> None:
     strategy = " ".join(STRATEGY.read_text(encoding="utf-8").split())
 

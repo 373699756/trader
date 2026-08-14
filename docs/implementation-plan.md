@@ -1,7 +1,7 @@
 # V2 与评分研究多 Codex 总实施计划
 
-状态：V2-E0 至 V2-E11、Score-R0、Score-R1、Score-R1-Migrate、Score-R2、Score-R3 已完成；
-V2 工程发布章节全部闭合，下一研究章节为 Score-R4。
+状态：V2-E0 至 V2-E11、Score-R0、Score-R1、Score-R1-Migrate、Score-R2、Score-R3、Score-R4 已完成；
+V2 工程发布章节全部闭合，下一研究章节为 Score-R5。
 
 本文是唯一活动施工计划，只定义执行顺序、会话协作、文件所有权、同步 Gate 和退出条件，
 不定义产品或策略行为。产品、架构、时间线、API、运维和验收以
@@ -308,12 +308,22 @@ observer、三类冻结控制和 Long current projection 均由唯一组合根�
 规范 SHA-256 不可变写入，相同内容重放幂等，不同内容或篡改冲突。少于 40 个有效日时状态保持
 `exploratory`，能力完成不代表已经取得 40 日真实收益证据。
 
-### Score-R4：五个挑战者
+### Score-R4：五个挑战者（已完成）
 
 - 实现 `continuous_entry`、`coverage_shrink`、`candidate_upper_bound`、
   `heat_weak_structure` 和 `combined_v1`。
 - 每个变体独立版本、无共享可变状态；local-only/hybrid 同日同股配对。
 - hybrid 只复用已有 facts，不新增模型请求，不影响生产结果。
+
+退出证据：`score_r4_preregistered_parameters_v1` 已把连续入场 11 条分段线性端点、三板高热带与
+三项弱结构阈值固定在权威文档及不可变机器 manifest。`continuous_entry_v1`、
+`coverage_shrink_v1`、`candidate_upper_bound_v1`、`heat_weak_structure_v1`、`combined_v1`
+五个独立版本通过
+`HistoricalChallengerReplayEvaluator` 接收各自 override，candidate upper-bound 只放行满足 50 分、
+30% 缺失和 active-set loaded 证明的生产 Top120 外研究候选；每个变体按同一 R2/R3 日身份生成
+production/local-only/hybrid 同日同股行、未选中零权重和同一 `CostSettlementBasis`。没有已记录
+facts 时 hybrid 为 local control copy；研究层无模型端口，DeepSeek HTTP 增量固定为 0。少于 40 个
+有效日仍只标记 `exploratory`，本章不执行 R5 bootstrap、Holm、前向采集或生产晋级。
 
 ### Score-R5：统计门禁与 20 日前向影子
 

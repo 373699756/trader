@@ -6,6 +6,15 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求继续 `docs/implementation-plan.md` 的下一个完整未完成章节。本批完成 Score-R4：新增
+  `score_r4_preregistered_parameters_v1` 不可变机器 manifest、五个独立挑战者版本及生产纯领域
+  评估适配端口。连续入场 11 条线性端点、主板/成长板高热带和弱收盘/尾盘/回撤阈值均在收益比较前
+  固定；coverage shrink、active-set 候选扩展和四项合并只形成离线研究 override。
+
+- 新增 production/local-only/hybrid 同日同股配对 manifest。每行绑定同一 R2 active-set、R3 baseline
+  和 `CostSettlementBasis`，未选中侧权重为 0、入选侧等权；hybrid 只接受 R2 已记录的结构化 facts，
+  没有 facts 时强制为 local control copy。报告绑定参数、输入、日级和五变体规范 SHA-256。
+
 - 用户要求继续 `docs/implementation-plan.md` 的下一个完整未完成章节。本批完成 Score-R3：新增
   `HistoricalBaselineReplayEvaluator` 隔离端口和 `score_r3_baseline_report_v1` 离线回放器，显式消费
   R2 不可变日证据及生产纯领域回放结果，不复制过滤、评分、风险或选择公式，也不接入组合根、HTTP、
@@ -100,6 +109,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 总计划与权威研究状态推进为 Score-R4 已完成、Score-R5 为下一章节。R4 少于 40 个有效日时仍只
+  输出 `exploratory` 配对能力，不运行 bootstrap、Holm、前向 collector 或晋级；活动生产策略、
+  50 分/30%/每板 Top120、硬过滤、风险、冻结、Web 和固定融合行为均保持不变。
+
 - 总计划与权威研究状态推进为 Score-R3 已完成、Score-R4 为下一章节。R3 只有在 R2 恰好提供 40 个
   有效日时才标记 `replayed`；当前活动运行库历史点时覆盖不足时仍可生成确定性的 `exploratory`
   报告，但不得据此宣称取得 40 日收益证据、通过历史门禁或具备晋级资格，生产策略保持不变。
@@ -153,6 +166,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 Score-R3 后仍只有基线指标、没有可执行五挑战者隔离回放和 local/hybrid 同股配对边界的问题。
+  R4 现在拒绝未记录 facts 冒充 hybrid、生产基线身份漂移、不连续或不稳定 Top6、板块/行业超限、
+  observe-only 入选、硬热度拒绝身份泄漏，以及无 active-set loaded 证明的 Top120 外候选扩展。
+
 - 修复 Score-R2 之后缺少可执行基线报告边界的问题：此前只有点时提取、结算依据和 active-set 证明，
   无法以固定口径形成日级/汇总指标或验证重复运行哈希；现在通过显式生产回放端口、严格 Top6/集中度/
   Top120 身份校验和不可变报告仓储闭合该缺口，同时继续拒绝伪造缺失历史证据。
@@ -205,6 +222,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未删除或替换生产实现；R4 不持有模型客户端、不增加 DeepSeek HTTP、不写活动配置、统一决策
+  索引、冻结、正式历史、普通 API/Web 或运行数据库，也未提前实现 R5 统计和前向影子。
+
 - 本批未删除或替换生产实现；R3 研究层不创建第二套行情、评分、冻结、Web、DeepSeek 请求链或活动配置，
   也不移除 R2 失败日和覆盖身份来美化报告。
 
@@ -234,6 +254,16 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- Score-R4 定向契约、领域、应用、R2/R3 组件回归通过，覆盖五版本/manifest 身份、11 条连续入场端点、
+  三板热带与三项弱结构、关键缺失、硬热度拒绝、coverage shrink、Top120 外 loaded active-set、
+  production/local/hybrid 同股集合、零/等权、稳定 Top6、集中度、facts/control-copy 和确定性哈希。
+  `make format-check`（301 个文件）、`make lint`（零严格重构债务）、`make type-check`（198 个源文件）
+  与 `make test` 全部通过；全量测试只保留既有 DeepSeek fixture RuntimeWarning 和 Python SQLite
+  adapter 弃用告警。`make package` 首次仅因沙箱禁止隔离构建下载 `setuptools` 失败，获准联网后
+  原命令成功构建 sdist/wheel；仓库外临时安装 wheel 后成功导入 `ScoreR4ChallengerReplayer`，并核对
+  参数 manifest 为 5 个变体、11 条入场端点。本批不修改活动 Web、静态资源或桌面布局，三档浏览器
+  验收不适用。
 
 - Score-R3 定向单元、组件和契约测试通过，覆盖成本公式、平均秩 Spearman、五分组、40 日状态门、
   `no_decision` 零暴露、production/oracle 排名与集中度校验、微平均召回、指标汇总、确定性哈希、
@@ -323,6 +353,10 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- Score-R4 工程能力已经闭合，但活动研究证据仍不足预注册的 40 个完整历史点时日，因此当前只能形成
+  `exploratory` 配对 manifest，没有真实历史收益、Holm 通过或晋级结论。下一章 Score-R5 才执行固定
+  bootstrap/多重检验并决定是否进入 20 日连续前向；本批冻结参数不得根据后续收益回看修改。
 
 - Score-R3 能力已经完成，但活动运行库仍没有预注册历史窗口的 40 个完整点时 epoch；因此当前只能形成
   `exploratory` 报告，没有可据此主张的 40 日真实净超额、召回、Rank IC 或晋级证据。下一章 Score-R4

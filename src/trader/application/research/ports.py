@@ -6,6 +6,7 @@ from datetime import date
 from typing import Protocol
 
 from trader.application.ports.market import DataPlaneReadPort
+from trader.application.research.challenger_models import ChallengerCandidateOverride, ChallengerReplaySelection
 from trader.application.research.models import (
     HistoricalDaySummary,
     HistoricalEvaluatedCandidate,
@@ -13,6 +14,7 @@ from trader.application.research.models import (
     HistoricalFullFieldBundle,
 )
 from trader.application.research.replay_models import BaselineReplaySelection
+from trader.domain.research.challengers import ChallengerSpecification
 
 
 class HistoricalDataPlaneReadPort(DataPlaneReadPort, Protocol):
@@ -49,4 +51,20 @@ class HistoricalBaselineReplayEvaluator(Protocol):
     def replay(self, day: HistoricalExtractedDay) -> tuple[BaselineReplaySelection, ...]: ...
 
 
-__all__ = ["HistoricalBaselineReplayEvaluator", "HistoricalCandidateEvaluator", "HistoricalDataPlaneReadPort"]
+class HistoricalChallengerReplayEvaluator(Protocol):
+    """Adapter to the production pure functions with one immutable research override."""
+
+    def replay(
+        self,
+        day: HistoricalExtractedDay,
+        specification: ChallengerSpecification,
+        overrides: tuple[ChallengerCandidateOverride, ...],
+    ) -> tuple[ChallengerReplaySelection, ...]: ...
+
+
+__all__ = [
+    "HistoricalBaselineReplayEvaluator",
+    "HistoricalCandidateEvaluator",
+    "HistoricalChallengerReplayEvaluator",
+    "HistoricalDataPlaneReadPort",
+]

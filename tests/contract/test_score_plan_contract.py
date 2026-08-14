@@ -43,7 +43,7 @@ def test_score_plan_p0_pre_registration_is_reflected_in_authoritative_docs() -> 
     assert "硬拒绝股票代码、简称、逐股事实、分数和未来收益均不得写入研究证据" in strategy
 
     for statement in (
-        "Score-R0 至 Score-R3 已完成",
+        "Score-R0 至 Score-R4 已完成",
         "研究链与活动运行库物理分离",
         "不建立第二套行情、评分、冻结、Web 或 DeepSeek 请求链",
         "策略定义只以荐股策略文档第 15.1 节为准",
@@ -57,7 +57,7 @@ def test_score_plan_p1_compact_trace_contract_is_reflected_in_authoritative_docs
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
     assert "### Score-R1：紧凑决策轨迹（已完成）" in plan
-    assert "Score-R0 至 Score-R3 已完成" in design
+    assert "Score-R0 至 Score-R4 已完成" in design
     assert "研究链与活动运行库物理分离" in design
     for statement in (
         "候选字段缺失掩码",
@@ -101,7 +101,7 @@ def test_score_r2_historical_extraction_contract_is_complete() -> None:
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
     assert "### Score-R2：最多 40 日历史点时数据（已完成）" in plan
-    assert "下一研究章节为 Score-R4" in " ".join(plan.split())
+    assert "下一研究章节为 Score-R5" in " ".join(plan.split())
     for statement in (
         "score_r2_historical_v1",
         "score_r2_partition_v1",
@@ -112,7 +112,7 @@ def test_score_r2_historical_extraction_contract_is_complete() -> None:
     ):
         assert statement in strategy
     for statement in (
-        "Score-R0 至 Score-R3 已完成",
+        "Score-R0 至 Score-R4 已完成",
         "不接入组合根、HTTP 或生产调度",
         "Polars 不可变 Parquet 分区",
         "不得从当前供应商响应回填",
@@ -128,7 +128,7 @@ def test_score_r3_baseline_replay_contract_is_complete() -> None:
     design_flat = " ".join(design.split())
 
     assert "### Score-R3：基线回放与报告（已完成）" in plan
-    assert "下一研究章节为 Score-R4" in " ".join(plan.split())
+    assert "下一研究章节为 Score-R5" in " ".join(plan.split())
     for statement in (
         "score_r3_baseline_report_v1",
         "20bp、50bp、100bp",
@@ -141,8 +141,43 @@ def test_score_r3_baseline_replay_contract_is_complete() -> None:
     ):
         assert statement in strategy_flat
     for statement in (
-        "Score-R0 至 Score-R3 已完成",
+        "Score-R0 至 Score-R4 已完成",
         "不接入组合根、HTTP 或生产调度",
         "不能宣称已经取得 40 日收益证据",
+    ):
+        assert statement in design_flat
+
+
+def test_score_r4_five_challenger_contract_is_complete() -> None:
+    plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
+    strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+    strategy_flat = " ".join(strategy.split())
+    design_flat = " ".join(design.split())
+
+    assert "### Score-R4：五个挑战者（已完成）" in plan
+    assert "下一研究章节为 Score-R5" in " ".join(plan.split())
+    for statement in (
+        "score_r4_preregistered_parameters_v1",
+        "continuous_entry_v1",
+        "coverage_shrink_v1",
+        "candidate_upper_bound_v1",
+        "heat_weak_structure_v1",
+        "combined_v1",
+        "production/local-only/hybrid",
+        "DeepSeek HTTP 增量固定为 0",
+        "本章不执行 R5 bootstrap、Holm、前向采集或生产晋级",
+    ):
+        assert statement in " ".join(plan.split())
+    for statement in (
+        "R4 五个 独立研究挑战者",
+        "local-only/hybrid 同日同股配对 manifest",
+        "任何变更必须建立新的研究版本",
+    ):
+        assert statement in strategy_flat
+    for statement in (
+        "Score-R0 至 Score-R4 已完成",
+        "不增加 DeepSeek HTTP",
+        "不执行 R5 统计或晋级",
     ):
         assert statement in design_flat
