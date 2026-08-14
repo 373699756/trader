@@ -58,6 +58,7 @@ const state = {
   isFrozenTodayView: sandbox.window.TraderRender.isFrozenTodayView,
   longTable: sandbox.window.TraderRender.longTable,
   sourceLabel: sandbox.window.TraderRender.sourceLabel,
+  formatDurationHms: sandbox.window.TraderStatusView.formatDurationHms,
   healthView: sandbox.window.TraderStatusView.healthView,
   quoteCoverageSummary: sandbox.window.TraderStatusView.quoteCoverageSummary,
   renderQuoteCoverage: sandbox.window.TraderStatusView.renderQuoteCoverage,
@@ -73,6 +74,14 @@ const state = {
   longGroupVisibleRecommendations: sandbox.window.TraderLongGroups.visibleRecommendations,
 };
 assert(state, "dashboard D4 helpers were not exported into the test sandbox");
+assert.strictEqual(state.formatDurationHms(0), "0s");
+assert.strictEqual(state.formatDurationHms(-1), "0s");
+assert.strictEqual(state.formatDurationHms(Number.NaN), "0s");
+assert.strictEqual(state.formatDurationHms(59), "59s");
+assert.strictEqual(state.formatDurationHms(60), "1m 0s");
+assert.strictEqual(state.formatDurationHms(3599), "59m 59s");
+assert.strictEqual(state.formatDurationHms(3600), "1h 0m 0s");
+assert.strictEqual(state.formatDurationHms(95580), "26h 33m 0s");
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.quoteCoverageSummary([
     {

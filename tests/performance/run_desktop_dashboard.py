@@ -329,7 +329,7 @@ def _viewport(base: str, output_dir: Path, width: int, height: int) -> dict[str,
     time.sleep(0.2)
     result = _execute(
         base,
-        """
+        r"""
         const header = document.querySelector('.app-header').getBoundingClientRect();
         const messages = Array.from(document.querySelectorAll('.runtime-message')).map((item) => item.getBoundingClientRect());
         const summary = document.querySelector('.summary-band').getBoundingClientRect();
@@ -347,6 +347,8 @@ def _viewport(base: str, output_dir: Path, width: int, height: int) -> dict[str,
           messageColumns: messages.length,
           messageEqualHeight: messages.length === 2 && Math.abs(messages[0].height - messages[1].height) < 1,
           summaryItems: document.querySelectorAll('.summary-band > .summary-item').length,
+          quoteAge: document.querySelector('#quoteAge').textContent,
+          quoteAgeHms: /^\d+h \d+m \d+s$/.test(document.querySelector('#quoteAge').textContent),
           quoteCoverage: document.querySelector('#quoteCoverageStatus').textContent,
           quoteCoverageMeta: document.querySelector('#quoteCoverageMeta').textContent,
           longWatchlistSize: window.TraderLongWatchlistData.items.length,
@@ -402,6 +404,7 @@ def _viewport_passed(result: dict[str, object]) -> bool:
         and result.get("messageColumns") == 2
         and result.get("messageEqualHeight")
         and result.get("summaryItems") == 5
+        and result.get("quoteAgeHms")
         and result.get("quoteCoverage") == expected_coverage
         and result.get("quoteCoverageMeta") == expected_missing
         and result.get("snapshotDate") == _NOW.date().isoformat()

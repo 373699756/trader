@@ -369,9 +369,20 @@
       return;
     }
     const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-    els.quoteAge.textContent = seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分`;
+    els.quoteAge.textContent = formatDurationHms(seconds);
     els.quoteTime.textContent = render.formatTime(sourceTime);
     els.snapshotMeta.textContent = `${els.quoteSource.textContent} · 数据年龄 ${els.quoteAge.textContent} · ${els.quoteTime.textContent}`;
+  }
+
+  function formatDurationHms(totalSeconds) {
+    const numeric = Number(totalSeconds);
+    const duration = Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
+    const hours = Math.floor(duration / 3600);
+    const minutes = Math.floor((duration % 3600) / 60);
+    const seconds = duration % 60;
+    if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+    if (minutes > 0) return `${minutes}m ${seconds}s`;
+    return `${seconds}s`;
   }
 
   function createErrorDrawer(els, beforeOpen, onVisibilityChange) {
@@ -553,6 +564,7 @@
   window.TraderStatusView = Object.freeze({
     createDashboardStateRenderer,
     createErrorDrawer,
+    formatDurationHms,
     healthView,
     quoteCoverageSummary,
     renderBudgetSummary,

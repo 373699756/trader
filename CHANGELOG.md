@@ -6,6 +6,9 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户要求数据新鲜度使用 HMS 表示，新增单一纯时长格式器和边界回归，覆盖负数/非法值、秒、
+  分钟、小时及超过 24 小时的年龄；Firefox 三档验收同时读取实际卡片文本并要求匹配 HMS。
+
 - 针对用户要求去除“候选覆盖”与“推荐漏斗”的重复信息，新增前端行情完整性诊断：按当前策略完整
   展示名单统计具备有效价格、涨跌幅、来源和来源时间的股票，并独立给出行情缺失与名称/行业身份
   缺失数量；新增纯函数、摘要渲染、历史报价 overlay 同步刷新和三档桌面回归。
@@ -148,6 +151,9 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- “数据新鲜度”从中文整分钟/秒改为紧凑 HMS：小于一分钟显示 `59s`，小于一小时显示
+  `5m 12s`，一小时及以上显示 `27h 2m 26s`；小时不按自然日折算，秒级刷新精度得到保留。
+
 - 首页第二张摘要卡由“候选覆盖”改为“行情覆盖”；候选、已评分、正式推荐、过滤、观察与最高评分
   统一归入“推荐漏斗”，Long 明确显示“不适用”。“快照状态”标题后固定显示交易日
   `YYYY-MM-DD`，正文中的发布时间统一只显示上海时区 `HH:mm:ss`，避免同一区域重复日期。
@@ -241,6 +247,9 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 `1593 分` 容易被理解成评分且分钟显示丢弃剩余秒数的问题。数据年龄和快照元信息现在复用
+  同一个 HMS 字符串，不新增第二套计时状态，也不改变行情来源时间或陈旧判定。
+
 - 修复“候选覆盖”和“推荐漏斗”重复展示候选/已评估数据、Long 用后端局部覆盖数而不是 224 只完整
   固定名单作分母，以及历史报价 overlay 更新表格后行情覆盖卡未同步的问题。行情状态现从统一决策
   载荷保留到展示模型，固定名单无行情时显式标记 `missing`，不会把占位来源误计为可用行情。
@@ -333,6 +342,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除“数据新鲜度”数值中的中文“分/秒”单位和整分钟截断；行情时间 `HH:mm:ss`、冻结时间及其它
+  中文业务说明保持不变。
+
 - 删除首页独立“候选覆盖”摘要及快照正文中的重复年月日；没有删除候选/过滤统计、股票名单、行情
   字段或推荐业务数据，候选流水仍完整保留在唯一的“推荐漏斗”中。
 
@@ -381,6 +393,15 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 新增 JS 回归先在旧代码上因 `formatDurationHms` 缺失按预期失败，实装后通过；定向 Web 契约、
+  JavaScript 语法和 runner 严格 `SyntaxWarning` 检查通过。因共享工作树同时存在用户未提交的报价
+  锚点文档/测试，其中一个未格式化且一个有未使用导入，本批以已推送 `c77c0ed` 加仅 HMS diff 的
+  `/tmp` 隔离副本运行 `make format-check`、`make lint`、`make type-check`、`make test` 和
+  `make package`，全部通过；完整 pytest 到达 100%。最终 wheel 从仓库外 Python 3.14 环境导入，
+  `trader-cli --help`、15 项模板/CSS/JavaScript/SVG 和 `pip check` 通过。Firefox headless 在
+  1280×720、1440×900、1920×1080 三档均显示 `27h 2m 26s` 形态，无白屏、横向溢出、双栏错位、
+  Long 重叠或浏览器错误，1440×900 截图已人工复核。
 
 - 失败先行契约与实现后回归通过：`.venv/bin/pytest -q tests/contract/test_v2_app_factory.py`、
   `node tests/js/test_dashboard_d4.js src/trader/web/static/dashboard.js`。`make format-check`、
@@ -550,6 +571,10 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- HMS 使用英文单位缩写以消除“分数”歧义；它表示距行情来源时间的持续时长，不是北京时间时刻。
+  当前运行中的旧 Web 进程需正常重启后才会加载静态资源 revision v9。共享工作树中的报价锚点相关
+  未提交修改和截图不属于本批，将保持未暂存；本批不改变 API、行情采集、评分、风险或冻结行为。
 
 - 行情覆盖只判断当前名单的核心报价与证券身份是否足以展示，不代表成交额、换手率、市值等所有
   可选行情字段都完整；真实覆盖数量仍取决于运行时数据源和最近有效快照。当前运行中的旧 Web 进程
