@@ -5,6 +5,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_agent_policy_prefers_architecture_optimal_repairs() -> None:
+    policy = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+    assert "### 4.2 工程方案选择与重构原则" in policy
+    assert "不得以最小 diff、最少文件、最少改动行数或最短运行链为目标" in policy
+    assert "允许纳入有明确整体收益的跨模块或全仓工程重构" in policy
+    assert "禁止用“先跑起来”代替完整修复" in policy
+    assert "风险匹配的充分验证集" in policy
+    assert "只修改当前计划项需要的边界" not in policy
+    assert "不得顺带处理相邻章节或无关优化" not in policy
+    assert "最小充分验证集" not in policy
+    assert "运行与风险相称的最小测试或检查" not in policy
+
+
 def test_agent_policy_uses_risk_based_quality_gates() -> None:
     policy = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 
