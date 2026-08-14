@@ -90,6 +90,7 @@ class _GatewayOptionalOptions(TypedDict, total=False):
     wall_clock: Callable[[], datetime]
     latency: LatencyWaterfall
     full_market_hedge_delay_seconds: float
+    listing_open_dates: Callable[[], Sequence[date]]
 
 
 class _GatewayOptions(_GatewayRequiredOptions, _GatewayOptionalOptions):
@@ -158,6 +159,8 @@ class MarketDataGateway:
         self._reference_observations: dict[str, SourceObservation] = {}
         self._calendar_open_dates: set[date] = set()
         self._calendar_open_dates_sorted: tuple[date, ...] = ()
+        self._listing_open_dates = options.get("listing_open_dates")
+        self._listing_open_dates_retry_at = 0.0
         self._latest_snapshot: CanonicalMarketSnapshot | None = None
         self._latest_batch: ColumnarQuoteBatch | None = None
         self._latest_changes = MarketChangeSet("", (), (), ())
@@ -505,6 +508,13 @@ class MarketDataGateway:
         with self._state_lock:
             self._update_reference_observations_locked(observations)
 
+    def reference_observations(self, codes: Sequence[str]) -> tuple[SourceObservation, ...]:
+        selected = set(codes)
+        if not selected:
+            return ()
+        with self._state_lock:
+            return tuple(observation for code, observation in self._reference_observations.items() if code in selected)
+
     def _update_reference_observations_locked(
         self,
         observations: Sequence[SourceObservation],
@@ -532,14 +542,17 @@ class MarketDataGateway:
 
     def _with_listing_sessions(self, observation: SourceObservation) -> SourceObservation:
         listing_raw = observation.fields.get("listing_date")
+        self._load_listing_open_dates_locked()
         open_dates = self._calendar_open_dates_sorted
-        if not isinstance(listing_raw, str) or not open_dates:
+        if not isinstance(listing_raw, str):
             return observation
         try:
             listing_date = date.fromisoformat(listing_raw)
         except ValueError:
             return observation
         observed_date = shanghai_now(observation.observed_at).date()
+        if not open_dates:
+            return observation
         sessions = bisect_right(open_dates, observed_date) - bisect_left(open_dates, listing_date)
         if sessions <= 0:
             return observation
@@ -553,6 +566,22 @@ class MarketDataGateway:
             fields=fields,
             payload_hash=hashlib.sha256(canonical_json_bytes(fields)).hexdigest(),
         )
+
+    def _load_listing_open_dates_locked(self) -> None:
+        if self._calendar_open_dates_sorted or self._listing_open_dates is None:
+            return
+        now = self._monotonic()
+        if now < self._listing_open_dates_retry_at:
+            return
+        self._listing_open_dates_retry_at = now + 30.0
+        try:
+            open_dates = tuple(day for day in self._listing_open_dates() if isinstance(day, date))
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return
+        if not open_dates:
+            return
+        self._calendar_open_dates.update(open_dates)
+        self._calendar_open_dates_sorted = tuple(sorted(self._calendar_open_dates))
 
     def _remember_observations_locked(
         self,

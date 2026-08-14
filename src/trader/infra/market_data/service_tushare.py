@@ -107,6 +107,7 @@ class ReferenceLoader:
         self._reference_fields: dict[str, dict[str, float]] = {}
         self._reference_versions: dict[str, str] = {}
         self._reference_version_order: dict[str, tuple[datetime, datetime, str]] = {}
+        self._persisted_security_master_signatures: dict[str, str] = {}
         self._trading_calendar_cursor: str | None = None
         self._trading_calendar_observations: dict[str, SourceObservation] = {}
 
@@ -170,6 +171,8 @@ class ReferenceLoader:
         *,
         force: bool,
     ) -> None:
+        free_masters = self._gateway.reference_observations(normalized)
+        self._persist_security_masters(observed_at, free_masters)
         masters: tuple[SourceObservation, ...] = ()
         calendars: tuple[SourceObservation, ...] = ()
         tushare_history: tuple[SourceObservation, ...] = ()
@@ -296,6 +299,16 @@ class ReferenceLoader:
             return
         masters = self._data_plane.load_security_master_recent_records()
         if masters:
+            with self._lock:
+                self._persisted_security_master_signatures.update(
+                    {
+                        record.code: _security_master_signature(
+                            record.source,
+                            record.payload_hash or hashlib.sha256(canonical_json_bytes(record.payload)).hexdigest(),
+                        )
+                        for record in masters
+                    }
+                )
             self._gateway.update_reference_observations(
                 tuple(self._to_reference_observation(record) for record in masters)
             )
@@ -343,17 +356,26 @@ class ReferenceLoader:
         for master in masters:
             if master.status != "success":
                 continue
+            fields = dict(master.fields)
+            payload_hash = hashlib.sha256(canonical_json_bytes(fields)).hexdigest()
+            signature = _security_master_signature(master.source, payload_hash)
+            with self._lock:
+                if self._persisted_security_master_signatures.get(master.subject_key) == signature:
+                    continue
             try:
                 self._data_plane.save_security_master_recent(
                     SecurityMasterRecord(
                         code=master.subject_key,
-                        observed_at=observed_at,
+                        observed_at=max(observed_at, master.observed_at, master.source_time),
                         source_time=master.source_time,
-                        source=_TUSHARE_SOURCE,
+                        source=master.source,
                         data_version=master.data_version,
-                        payload=dict(master.fields),
+                        payload=fields,
+                        payload_hash=payload_hash,
                     )
                 )
+                with self._lock:
+                    self._persisted_security_master_signatures[master.subject_key] = signature
             except DataPlaneUnavailableError:
                 _LOGGER.warning("security master persistence unavailable")
             except Exception:
@@ -687,6 +709,10 @@ class ReferenceLoader:
             missing_reasons={**dict(observation.missing_reasons), "cache_refresh": reason},
             payload_hash=payload_hash,
         )
+
+
+def _security_master_signature(source: str, payload_hash: str) -> str:
+    return f"{source}:{payload_hash}"
 
 
 def _to_json_object(

@@ -188,7 +188,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     )
     calendar = ChinaTradingCalendar(settings.runtime_dir / "calendar.json")
     persistence = _build_persistence(context)
-    market_data = _build_market_data(context, persistence.data_plane)
+    market_data = _build_market_data(context, persistence.data_plane, calendar)
     reviewer = _build_reviewer(context, persistence.budget)
     publication = _build_publication(context, calendar, persistence.repository, reviewer, market_data)
     policy = _recommendation_policy(context.strategy)
@@ -309,7 +309,11 @@ def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) 
     )
 
 
-def _build_market_data(context: _BuildContext, data_plane: DataPlaneRepository) -> MarketFeatureService:
+def _build_market_data(
+    context: _BuildContext,
+    data_plane: DataPlaneRepository,
+    calendar: ChinaTradingCalendar,
+) -> MarketFeatureService:
     settings = context.settings
     strategy = context.strategy
     workers = context.workers
@@ -370,6 +374,7 @@ def _build_market_data(context: _BuildContext, data_plane: DataPlaneRepository) 
         schema_version="market_snapshot_v15",
         wall_clock=now,
         latency=context.latency,
+        listing_open_dates=calendar.open_dates,
     )
     evidence_cache_dir = settings.runtime_dir / "evidence_cache"
     feature_builder = FeatureBuilder(

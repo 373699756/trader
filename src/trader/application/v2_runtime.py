@@ -207,7 +207,9 @@ class V2SchedulerRuntime:
         if decision.phase is MarketPhase.AFTER_CLOSE and schedule_point is not SchedulePoint.CLOSE_QUOTES:
             strategies = self._after_close_recovery_strategies(observed_at)
         elif decision.should_score:
-            strategies = (Strategy.TOMORROW, Strategy.D25, Strategy.TODAY)
+            strategies = (Strategy.TOMORROW, Strategy.D25)
+            if decision.phase in {MarketPhase.TODAY_OBSERVE, MarketPhase.TODAY_MAIN, MarketPhase.TODAY_LATE}:
+                strategies = (*strategies, Strategy.TODAY)
         if decision.phase is not MarketPhase.AFTER_CLOSE and decision.should_refresh_market:
             strategies = (*strategies, Strategy.LONG)
         for strategy in strategies:
@@ -418,6 +420,8 @@ class V2SchedulerRuntime:
     def _record_publish_rejection(self, reason: str, strategy: Strategy) -> None:
         with self._lock:
             self._publish_rejection_count += 1
+        if reason in {"freeze_closed", "freeze_sealed"}:
+            return
         self._record_failure("publish", reason, strategy)
 
     def _after_close_recovery_strategies(self, observed_at: datetime) -> tuple[Strategy, ...]:

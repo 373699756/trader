@@ -1178,6 +1178,51 @@ def test_reference_loader_recover_restores_security_master_and_calendar_cursor(t
     assert service.references._next_calendar_start(date(2026, 7, 20)) == date(2026, 7, 20)
 
 
+def test_reference_loader_persists_free_security_master_once_per_payload(tmp_path: Path) -> None:
+    observed_at = datetime(2026, 7, 16, 9, 30, tzinfo=_SHANGHAI)
+    master = SourceObservation(
+        source="eastmoney_security_master",
+        subject_key="600001",
+        observed_at=observed_at,
+        source_time=observed_at,
+        received_at=observed_at,
+        effective_at=observed_at,
+        data_version="eastmoney-master-v1",
+        fields={"board": "main", "exchange": "sse", "listing_date": "2020-01-02"},
+        missing_reasons={},
+        payload_hash="a" * 64,
+        status="success",
+        error_code=None,
+    )
+
+    class ReferenceGateway(StaticGateway):
+        @staticmethod
+        def reference_observations(codes):
+            return (master,) if "600001" in codes else ()
+
+        @staticmethod
+        def update_reference_observations(_observations):
+            return None
+
+    data_plane = DataPlaneRepository(tmp_path)
+    service = _service(
+        ReferenceGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        data_plane=data_plane,
+        wall_clock=lambda: observed_at,
+    )
+
+    service.refresh_reference_data(("600001",), observed_at - timedelta(minutes=1))
+    service.refresh_reference_data(("600001",), observed_at + timedelta(minutes=1))
+
+    persisted = data_plane.load_security_master_recent("600001")
+    assert persisted is not None
+    assert persisted.source == "eastmoney_security_master"
+    assert persisted.observed_at == observed_at
+    assert dict(persisted.payload) == dict(master.fields)
+
+
 def test_reference_loader_persists_cumulative_calendar_sessions(tmp_path: Path) -> None:
     observed_at = datetime(2026, 7, 16, 9, 30, tzinfo=_SHANGHAI)
     data_plane = DataPlaneRepository(tmp_path)
@@ -2340,6 +2385,45 @@ def test_listing_session_projection_reuses_a_sorted_calendar_index() -> None:
     quote = gateway.fetch_market(observed_at=NOW)[0]
 
     assert quote.listing_age_sessions == 2
+
+
+def test_listing_session_projection_uses_injected_production_calendar() -> None:
+    requests: list[bool] = []
+
+    def listing_open_dates() -> tuple[date, ...]:
+        requests.append(True)
+        return (date(2020, 1, 2), date(2020, 1, 3), date(2026, 7, 16))
+
+    gateway = MarketDataGateway(
+        StaticMarketClient((replace(_quote(), source="eastmoney"),)),
+        StaticMarketClient((replace(_quote(), source="sina"),)),
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        listing_open_dates=listing_open_dates,
+        wall_clock=lambda: NOW,
+    )
+    master = SourceObservation(
+        source="eastmoney_security_master",
+        subject_key="600001",
+        observed_at=NOW,
+        source_time=NOW,
+        received_at=NOW,
+        effective_at=datetime.fromisoformat("2020-01-02T00:00:00+08:00"),
+        data_version="master-v1",
+        fields={"board": "main", "listing_date": "2020-01-02"},
+        missing_reasons={},
+        payload_hash="master-v1",
+        status="success",
+        error_code=None,
+    )
+
+    gateway.update_reference_observations((master,))
+    quote = gateway.fetch_market(observed_at=NOW)[0]
+
+    assert quote.listing_age_sessions == 3
+    assert requests == [True]
 
 
 def test_tushare_reference_version_uses_response_time_before_hash_order() -> None:
@@ -5611,6 +5695,7 @@ def test_calendar_uses_cache_and_fails_closed(tmp_path) -> None:
 
     assert calendar.is_trading_day(date(2026, 7, 16)) is True
     assert calendar.is_trading_day(date(2026, 7, 18)) is False
+    assert calendar.open_dates() == (date(2026, 7, 16),)
 
     unavailable = ChinaTradingCalendar(
         tmp_path / "missing.json",
@@ -5823,6 +5908,10 @@ class StaticGateway:
     def current_quotes(self, codes):
         requested = set(codes)
         return tuple(quote for quote in self._quotes if quote.code in requested)
+
+    @staticmethod
+    def reference_observations(_codes):
+        return ()
 
     @staticmethod
     def health():

@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户反馈“最近错误显示 6 项、观察池为空且股票名称和行情列大量为 `—`”新增共享参考数据
+  调度、免费证券主数据持久化、生产交易日历上市交易日投影、午后 Today 调度和预期冻结拒绝回归；
+  Firefox 桌面门禁新增 Long 股票名称、行业、价格、涨跌幅、成交额、换手率、市值、来源和时间均
+  不得为空的真实行断言。
+
 - 针对用户要求“系统健康合并到最近错误，并以高效、漂亮、便于定位的布局展示”，新增最多 20 条的
   进程内结构化错误历史：按策略/原因合并重复失败，保存严重度、阶段、首次与最近发生时间、次数、
   活动/已恢复状态和恢复时间；状态 API 只返回脱敏受控字段。页面新增“查看全部”错误抽屉，可区分
@@ -136,6 +141,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 三条短线策略现在只在一个共享输入批次内调度一次候选证券参考刷新；11:20 后只继续计算
+  Tomorrow/D25，Today 保留正式结果的报价 overlay，不再创建必然被封口索引拒绝的评分周期。
+  免费全市场行情中的板块、交易所和上市日期按候选持久化，上市交易日数统一复用生产交易日历，
+  重启恢复不再依赖 2000 积分 Tushare 权限。
+
 - 顶部状态区改为固定等高双栏：左侧“快照状态”，右侧“最近错误”，系统健康以正常/降级/错误徽标
   合并到右栏，不再单独占用摘要卡。摘要收敛为数据新鲜度、候选覆盖、推荐漏斗、模型预算和冻结状态
   五张等宽卡；Header 运行条只保留运行、市场阶段、推送和评分时刻，减少重复信息并稳定首屏纵向位置。
@@ -216,6 +226,13 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 实机数据平面确认 `security_master_recent` 为 0，当前 Tushare 仅 120 积分且无证券主数据/交易日历
+  权限；原运行链又未调度参考刷新，也未保存东方财富全市场行情已携带的身份字段，导致重启或免费
+  主源短暂失败后板块、上市日期和上市交易日数同时缺失，短线候选在 0.85 板块可靠度门槛前被过滤，
+  Web 只能显示空观察池。现在免费身份会幂等写入并在启动时恢复，生产日历补齐上市交易日数；
+  `freeze_sealed`/`freeze_closed` 仅计为预期发布拒绝，不再虚增“最近错误”。名称和 Long 行情字段
+  保持从统一决策/API 到桌面列表完整渲染，正式筛选、风险和评分门槛均未放宽。
+
 - 修复现有界面只读取 `last_error`、但运行组合根主要维护 `last_error_code`，导致系统已降级却无法在
   主界面定位原因的问题。现在成功发布只恢复刷新/构建/复核/发布阶段错误，冻结或结算成功只恢复各自
   阶段，避免一次普通发布误把冻结失败标成已恢复；当前策略快照的降级原因也会与运行错误去重合并。
@@ -293,6 +310,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未删除运行数据、正式推荐或风险规则，也未通过伪造名称/行情、降低板块可靠度、放宽过滤门槛
+  或盘后追补 Today 来制造观察项；用户当前运行进程未被擅自停止或重启。
+
 - 删除独立“系统健康/降级状态”摘要卡，以及 Header 中重复的数据年龄、模型预算和冻结信息；主界面
   不再直接展示原始技术原因码，受控代码只保留在错误详情中。
 
@@ -332,6 +352,15 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 本批先以失败回归复现参考数据未调度、午后仍计算 Today、`freeze_sealed` 被登记为运行错误、免费
+  证券主数据未持久化和生产交易日历未参与上市交易日数计算；修复后应用/调度/日程/行情组件定向
+  矩阵全部通过。Firefox headless 在 1280×720、1440×900、1920×1080 三档均无白屏、横向溢出、
+  双栏错位或 Long 侧栏重叠，Tomorrow/D25 各显示 1 条观察项；Long 样例“蓝特光学 688127”的
+  名称、行业、价格、涨跌幅、成交额、换手率、市值、来源和时间均完整显示。`make format-check`、
+  `make lint`、`make type-check`、`make test` 和 `make package` 最终全部通过。打包首次仅因沙箱禁止
+  隔离环境联网下载 `setuptools` 失败，获准联网后原命令成功构建 sdist/wheel。仓库外安装 wheel 后
+  可导入新组合根，模板、JavaScript、CSS 资源可读，`trader-cli validate-config` 返回 `status=ok`。
 
 - 本批定向验证：`.venv/bin/python -m pytest -q tests/integration/test_v2_scheduler_runtime.py
   tests/contract/test_v2_e8_web_contract.py tests/contract/test_v2_app_factory.py`（15 passed）；
@@ -478,6 +507,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 当前用户运行中的服务仍是本批修改前进程，本批遵守进程所有权约束未代为停止；提交后需要用户
+  正常重启才会加载新运行链。若东方财富全市场主源在首次启动和本地证券主数据均为空时持续失败，
+  当轮仍会诚实显示身份缺失降级；源恢复后的共享批次会自动补齐并持久化。企业风险历史、结构化
+  风险证据和跨源偏差是独立质量维度，仍可能让个股保持观察或被过滤；本批不承诺必然产生正式荐股。
 
 - 最近错误历史按设计仅保存在当前进程内，服务重启后清空；本批没有新增诊断数据库或文件 I/O。
   外部数据源未提供可信时间时界面显示“时间待确认”，不会伪造发生时间。推荐、评分、风险、融合、

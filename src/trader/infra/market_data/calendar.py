@@ -44,6 +44,12 @@ class ChinaTradingCalendar:
             raise TradingCalendarUnavailableError("trading calendar is unavailable")
         return day in self._dates
 
+    def open_dates(self) -> tuple[date, ...]:
+        self._ensure_loaded()
+        if not self._dates:
+            raise TradingCalendarUnavailableError("trading calendar is unavailable")
+        return tuple(sorted(self._dates))
+
     def session_distance(self, start: str, end: str) -> int | None:
         """Return trading sessions strictly after ``start`` through ``end``.
 

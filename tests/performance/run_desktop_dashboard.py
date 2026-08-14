@@ -25,7 +25,12 @@ from trader.application.decision_core import UnifiedDecisionIndex  # noqa: E402
 from trader.application.decision_queries import UnifiedDecisionQueries  # noqa: E402
 from trader.application.decision_stream import UnifiedDecisionEventStream  # noqa: E402
 from trader.application.ports.decision_records import CommittedDecisionRecord  # noqa: E402
-from trader.domain.recommendation.decision_identity import DecisionItem, ScoredDecision  # noqa: E402
+from trader.domain.recommendation.decision_identity import (  # noqa: E402
+    DecisionItem,
+    LongProjection,
+    LongProjectionItem,
+    ScoredDecision,
+)
 from trader.domain.recommendation.models import RecommendationAction, Strategy  # noqa: E402
 from trader.web import create_app  # noqa: E402
 from trader.web.route_services import UnifiedWebServices  # noqa: E402
@@ -137,6 +142,14 @@ def _run(output_dir: Path) -> dict[str, object]:
         _wait(
             lambda: _integer(_execute(base, 'return document.querySelectorAll("#tableBody tr[data-code]").length;')) > 0
         )
+        long_quote_fields = _execute(
+            base,
+            """
+            const row = document.querySelector('#tableBody tr[data-code="688127"]');
+            const values = row ? Array.from(row.querySelectorAll('td')).map((cell) => cell.textContent.trim()) : [];
+            return { code: row && row.dataset.code, values, complete: values.length > 0 && !values.includes('-') };
+            """,
+        )
         output_dir.mkdir(parents=True, exist_ok=True)
         _set_viewport(base, 1440, 900)
         _execute(base, 'document.querySelector("#errorDetailsButton").click(); return true;')
@@ -180,9 +193,11 @@ def _run(output_dir: Path) -> dict[str, object]:
             and any(expected in str(script) for script in scripts)
             and all(item["visible"] and item["rows"] > 0 and "观察 1" in item["count"] for item in observations)
             and error_details["visible"] is True
-            and error_details["rows"] == 3
+            and error_details["rows"] == 2
             and error_details["raw_code_hidden_from_header"] is True
             and error_details["copy_status"] in {"已复制", "已选中，请复制"}
+            and isinstance(long_quote_fields, dict)
+            and long_quote_fields.get("complete") is True
             and all(_viewport_passed(viewport) for viewport in viewports)
         )
         return {
@@ -191,6 +206,7 @@ def _run(output_dir: Path) -> dict[str, object]:
             "browser": "firefox-headless",
             "observations": observations,
             "error_details": error_details,
+            "long_quote_fields": long_quote_fields,
             "viewports": viewports,
             "scripts": scripts,
             "external_network_calls": 0,
@@ -246,6 +262,31 @@ def _browser_services() -> UnifiedWebServices:
         )
         if not index.publish(decision, expected_version=None).accepted:
             raise RuntimeError("browser observation fixture publication failed")
+    long_projection = LongProjection(
+        _NOW.date(),
+        1,
+        _NOW,
+        (("quotes", "quotes:browser"),),
+        (
+            LongProjectionItem(
+                "688127",
+                "chokepoint:optics",
+                "quote:688127",
+                name="蓝特光学",
+                industry="先进光刻/精密光学",
+                price=66.02,
+                pct_change=0.49,
+                amount=203_037_318.0,
+                turnover_rate=0.76,
+                market_cap=26_797_000_000.0,
+                source="tencent",
+                source_time=_NOW.replace(second=0),
+                quote_status="live",
+            ),
+        ),
+    )
+    if not index.publish(long_projection, expected_version=None).accepted:
+        raise RuntimeError("browser long fixture publication failed")
     return UnifiedWebServices(
         UnifiedDecisionQueries(index, _BrowserHistory(), _BrowserClock()),
         UnifiedDecisionEventStream(),

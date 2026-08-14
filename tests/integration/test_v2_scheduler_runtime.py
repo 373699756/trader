@@ -480,6 +480,80 @@ def test_successful_publish_does_not_recover_an_unrelated_freeze_failure() -> No
     assert status.strategy_error_codes == (("tomorrow", "freeze:freeze_unavailable"),)
 
 
+def test_afternoon_schedule_skips_today_after_its_freeze_boundary() -> None:
+    afternoon = datetime(2026, 8, 11, 13, 30, tzinfo=SHANGHAI)
+    data = DataRefresh()
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=FixedClock(afternoon),
+            calendar=TradingCalendar(),
+            data=data,
+            decisions=Decisions(),
+            reviews=SharedReviews(),
+            index=UnifiedDecisionIndex(),
+            observer=AsyncDecisionObserver((), capacity=1, thread_name="test-v2-afternoon-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+        ),
+        config_version="runtime-v2",
+    )
+
+    runtime.start()
+    runtime.submit_due(afternoon)
+    assert runtime.wait_idle(1.0)
+    status = runtime.status()
+    runtime.stop(ShutdownDeadline.start(1.0))
+
+    assert set(data.calls) == {Strategy.TOMORROW, Strategy.D25, Strategy.LONG}
+    assert status.publish_rejection_count == 0
+    assert status.strategy_error_codes == ()
+
+
+def test_expected_late_publish_rejection_after_freeze_is_not_a_runtime_error() -> None:
+    before_freeze = datetime(2026, 8, 11, 11, 19, 59, tzinfo=SHANGHAI)
+    after_freeze = datetime(2026, 8, 11, 11, 20, 1, tzinfo=SHANGHAI)
+    index = UnifiedDecisionIndex()
+    current = replace(decision(Strategy.TODAY, sequence=1), observed_at=before_freeze)
+    assert index.publish(current, expected_version=None).accepted
+    assert index.seal_for_freeze(
+        Strategy.TODAY, boundary_at=before_freeze.replace(second=0) + timedelta(minutes=1)
+    ).accepted
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=FixedClock(after_freeze),
+            calendar=TradingCalendar(),
+            data=DataRefresh(),
+            decisions=Decisions(),
+            reviews=SharedReviews(),
+            index=index,
+            observer=AsyncDecisionObserver((), capacity=1, thread_name="test-v2-late-today-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+        ),
+        config_version="runtime-v2",
+    )
+    request = V2CycleRequest(
+        Strategy.TODAY,
+        after_freeze.date(),
+        after_freeze,
+        "midday",
+        3,
+        "input-v2",
+        False,
+        before_freeze,
+    )
+
+    runtime.start()
+    runtime.submit_cycle(request)
+    assert runtime.wait_idle(1.0)
+    status = runtime.status()
+    runtime.stop(ShutdownDeadline.start(1.0))
+
+    assert status.publish_rejection_count == 1
+    assert status.strategy_error_codes == ()
+    assert status.recent_errors == ()
+
+
 def test_review_deadline_prevents_a_late_model_upgrade() -> None:
     reviews = SharedReviews()
     index = UnifiedDecisionIndex()
