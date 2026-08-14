@@ -30,7 +30,12 @@ from trader.application.today_v2_projection import (
 from trader.application.tomorrow_v2_freezing import V2FreezeOperationResult
 from trader.application.v2_lifecycle import LatestWinsStatus, LatestWinsWorker
 from trader.domain.market.models import MarketQuote
-from trader.domain.recommendation.decision_identity import DecisionOverlay, OverlayQuote, ScoredDecision, identity_codes
+from trader.domain.recommendation.decision_identity import (
+    DecisionOverlay,
+    DecisionQuote,
+    ScoredDecision,
+    identity_codes,
+)
 from trader.domain.recommendation.models import Strategy
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -188,10 +193,13 @@ class TodayV2Runtime:
             source_time = _shanghai(quote.source_time)
             if quote.code != code or quote.price is None or quote.price <= 0 or source_time > observed_at:
                 return False
-            existing_quotes[code] = OverlayQuote(
+            existing_quotes[code] = DecisionQuote(
                 code,
                 quote.price,
                 quote.pct_change,
+                quote.amount,
+                quote.turnover_rate,
+                quote.market_cap,
                 quote.source,
                 source_time,
                 quote.data_version,

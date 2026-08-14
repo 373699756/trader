@@ -94,6 +94,36 @@ class UnifiedDecisionIndex:
             event = build_v2_decision_committed(identity) if isinstance(identity, ScoredDecision) else None
             return UnifiedDecisionPublishResult(True, "accepted", event)
 
+    def publish_scored(
+        self,
+        decision: ScoredDecision,
+        initial_overlay: DecisionOverlay,
+        *,
+        expected_version: str | None,
+    ) -> UnifiedDecisionPublishResult:
+        """Publish a scored identity and its complete same-batch quote view atomically."""
+
+        with self._lock:
+            current = self._current.get(decision.strategy)
+            seal = self._seals.get(decision.strategy)
+            if seal is not None and seal.decision.trade_date == decision.trade_date:
+                return UnifiedDecisionPublishResult(False, "freeze_sealed")
+            closed = self._closed.get(decision.strategy)
+            if closed is not None and closed[0] == decision.trade_date:
+                return UnifiedDecisionPublishResult(False, "freeze_closed")
+            rejection = _identity_rejection(current, decision, expected_version)
+            if rejection is None:
+                rejection = _initial_overlay_rejection(decision, initial_overlay)
+            if rejection is not None:
+                return UnifiedDecisionPublishResult(False, rejection)
+            self._current[decision.strategy] = decision
+            self._overlays[decision.strategy] = initial_overlay
+            if current is not None and decision.trade_date > current.trade_date:
+                self._seals.pop(decision.strategy, None)
+                self._formal.pop(decision.strategy, None)
+                self._closed.pop(decision.strategy, None)
+            return UnifiedDecisionPublishResult(True, "accepted", build_v2_decision_committed(decision))
+
     def publish_overlay(
         self,
         overlay: DecisionOverlay,
@@ -338,6 +368,26 @@ def _overlay_rejection(
         existing is not None and candidate.observed_at == existing.observed_at and candidate.version != existing.version
     ):
         rejection = "overlay_conflict"
+    return rejection
+
+
+def _initial_overlay_rejection(decision: ScoredDecision, candidate: DecisionOverlay) -> str | None:
+    rejection: str | None = None
+    if candidate.strategy is not decision.strategy or candidate.parent_version != decision.version:
+        rejection = "parent_mismatch"
+    elif candidate.trade_date != decision.trade_date:
+        rejection = "trade_date_mismatch"
+    elif candidate.observed_at < decision.observed_at:
+        rejection = "stale_overlay"
+    else:
+        anchors = tuple(item.quote for item in decision.items if item.selected)
+        complete_anchors = tuple(anchor for anchor in anchors if anchor is not None)
+        if len(complete_anchors) != len(anchors):
+            rejection = "quote_anchor_missing"
+        elif frozenset(quote.code for quote in candidate.quotes) != identity_codes(decision):
+            rejection = "quote_scope_mismatch"
+        elif candidate.quotes != tuple(sorted(complete_anchors, key=lambda quote: quote.code)):
+            rejection = "quote_identity_mismatch"
     return rejection
 
 

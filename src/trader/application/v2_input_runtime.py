@@ -46,7 +46,7 @@ from trader.application.tomorrow_v2_projection import (
     build_tomorrow_v2_local,
 )
 from trader.domain.market.models import Board, FeatureSnapshot
-from trader.domain.recommendation.decision_identity import DecisionIdentity, ScoredDecision
+from trader.domain.recommendation.decision_identity import DecisionIdentity, DecisionOverlay, ScoredDecision
 from trader.domain.recommendation.models import Strategy
 from trader.domain.recommendation.ranking import candidate_score
 
@@ -288,6 +288,19 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         if projection is None or decision is None:
             return None
         return try_build_v2_committed_research_audit(projection, decision)
+
+    def initial_overlay(self, decision: ScoredDecision) -> DecisionOverlay:
+        quotes = tuple(item.quote for item in decision.items if item.selected and item.quote is not None)
+        selected_count = sum(item.selected for item in decision.items)
+        if len(quotes) != selected_count:
+            raise V2DecisionUnavailableError("decision_quote_unavailable")
+        return DecisionOverlay(
+            strategy=decision.strategy,
+            trade_date=decision.trade_date,
+            parent_version=decision.version,
+            observed_at=decision.observed_at,
+            quotes=quotes,
+        )
 
     def _trim_research_sources(self) -> None:
         while len(self._decisions) > 64:

@@ -45,6 +45,18 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     assert projection.review_candidates
     assert all(item.name.startswith("测试") for item in projection.local.items)
     assert all(item.industry == "工业" for item in projection.local.items)
+    assert all(item.quote is not None for item in projection.local.items)
+    quote = projection.local.items[0].quote
+    assert quote is not None
+    source_quote = next(feature.quote for feature in features if feature.quote.code == projection.local.items[0].code)
+    assert quote.price == source_quote.price
+    assert quote.pct_change == source_quote.pct_change
+    assert quote.amount == source_quote.amount
+    assert quote.turnover_rate == source_quote.turnover_rate
+    assert quote.market_cap == source_quote.market_cap
+    assert quote.source == source_quote.source
+    assert quote.source_time == source_quote.source_time
+    assert quote.data_version == source_quote.data_version
     audit = build_v2_committed_research_audit(projection, projection.local)
     assert audit.decision_hash == projection.local.content_hash
     assert audit.deepseek_request_delta == 0

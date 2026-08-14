@@ -42,7 +42,15 @@ def test_formal_record_dates_are_bounded_and_newest_first(tmp_path: Path) -> Non
     repository = SQLiteDecisionRecordRepository(tmp_path)
     repository.initialize()
     older_at = NOW - timedelta(days=1)
-    older_decision = replace(decision(), trade_date=older_at.date(), observed_at=older_at)
+    fixture = decision()
+    quote = fixture.items[0].quote
+    assert quote is not None
+    older_decision = replace(
+        fixture,
+        trade_date=older_at.date(),
+        observed_at=older_at,
+        items=(replace(fixture.items[0], quote=replace(quote, source_time=older_at)),),
+    )
     older = CommittedDecisionRecord(older_decision, older_at, "scheduled")
     newest = record()
     repository.commit(older)

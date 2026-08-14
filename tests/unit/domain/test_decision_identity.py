@@ -10,9 +10,9 @@ from trader.domain.recommendation.decision_identity import (
     CommittedDecisionRecord,
     DecisionItem,
     DecisionOverlay,
+    DecisionQuote,
     LongProjection,
     LongProjectionItem,
-    OverlayQuote,
     ScoredDecision,
     committed_record_bytes,
     committed_record_from_bytes,
@@ -54,6 +54,17 @@ def decision(
                 score_components=(("trend", 88.0),),
                 risk_codes=(),
                 reason="selected",
+                quote=DecisionQuote(
+                    "600001",
+                    10.5,
+                    1.2,
+                    120_000_000.0,
+                    2.1,
+                    12_000_000_000.0,
+                    "tencent",
+                    NOW - timedelta(minutes=5),
+                    "quote-v1",
+                ),
             ),
         ),
         filter_aggregates=(("st_or_delisting", 2),),
@@ -130,7 +141,17 @@ def test_long_projection_preserves_watchlist_order_and_allows_missing_placeholde
 
 def test_overlay_and_formal_record_validate_parent_time_scope_and_hash() -> None:
     current = decision()
-    quote = OverlayQuote("600001", 10.5, 1.2, "tencent", NOW, "quote-v2")
+    quote = DecisionQuote(
+        "600001",
+        10.6,
+        1.3,
+        130_000_000.0,
+        2.2,
+        12_500_000_000.0,
+        "tencent",
+        NOW,
+        "quote-v2",
+    )
     overlay = DecisionOverlay(
         strategy=Strategy.TOMORROW,
         trade_date=NOW.date(),
@@ -159,15 +180,31 @@ def test_formal_record_round_trip_preserves_optional_distinct_coverage() -> None
     assert restored.decision.rejected_count == 81
     assert restored.decision.items[0].name == "浦发银行"
     assert restored.decision.items[0].industry == "银行"
+    assert restored.decision.items[0].quote == item.quote
     assert restored.payload_hash == record.payload_hash
 
 
 def test_legacy_formal_record_without_display_metadata_keeps_its_identity() -> None:
-    current = decision()
+    legacy_item = replace(decision().items[0], quote=None)
+    current = replace(decision(), items=(legacy_item,))
     record = CommittedDecisionRecord(current, NOW + timedelta(minutes=10), "scheduled")
 
     restored = committed_record_from_bytes(committed_record_bytes(record))
 
     assert restored.decision.items[0].name == ""
     assert restored.decision.items[0].industry == ""
+    assert restored.decision.items[0].quote is None
     assert restored.payload_hash == record.payload_hash
+
+
+def test_decision_quote_rejects_wrong_code_future_time_and_invalid_market_values() -> None:
+    current = decision()
+    item = current.items[0]
+    assert item.quote is not None
+
+    with pytest.raises(ValueError, match="quote code"):
+        replace(item, quote=replace(item.quote, code="600002"))
+    with pytest.raises(ValueError, match="future quote"):
+        replace(current, items=(replace(item, quote=replace(item.quote, source_time=NOW + timedelta(seconds=1))),))
+    with pytest.raises(ValueError, match="quote amount"):
+        replace(item.quote, amount=-1.0)

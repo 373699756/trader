@@ -42,7 +42,14 @@ def test_formal_today_accepts_only_matching_quote_overlay_without_mutating_decis
     repository.initialize()
     clock = _Clock(_at(11, 20))
     index = UnifiedDecisionIndex()
-    current = replace(decision(Strategy.TODAY), observed_at=_at(11, 19, 59))
+    fixture = decision(Strategy.TODAY)
+    anchor = fixture.items[0].quote
+    assert anchor is not None
+    current = replace(
+        fixture,
+        observed_at=_at(11, 19, 59),
+        items=(replace(fixture.items[0], quote=replace(anchor, source_time=_at(11, 19, 59))),),
+    )
     assert index.publish(current, expected_version=None).accepted
     freezer = TodayV2FreezeCoordinator(
         index,

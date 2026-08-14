@@ -255,9 +255,12 @@ candidate/research、配置、策略、融合、阶段、待审集合、逐股�
 local/hybrid 阶段、结构化过滤聚合和逐项分数、风险、动作与排名。long 不生成正式记录，
 也不发布评分提交事件。
 
-每个 scored `DecisionItem` 还必须从形成该项的同批 `FeatureSnapshot.quote` 固化股票名称与行业；
+每个 scored `DecisionItem` 还必须从形成该项的同批 `FeatureSnapshot.quote` 固化股票名称、行业和
+不可变报价锚点；锚点至少包含价格、涨跌幅、成交额、换手率、总市值、来源、来源时间和报价版本。
 current、冻结历史和 HTTP 只读投影都复用该身份内元数据，不得在查询时现场抓取或按代码补算。
-旧正式记录缺少可选显示元数据时保持原身份并显示 `—`，新生成决策不得在投影阶段丢弃已有名称。
+旧正式记录缺少可选显示元数据或报价锚点时保持原身份并显示 `—`，新生成决策不得在投影阶段
+丢弃同批已有名称或行情事实。报价锚点参与 `ScoredDecision` 规范哈希，但只用于展示和冻结审计，
+不得反向改变候选、过滤、评分、风险、动作或排名。
 评分原生输入的 `evaluated_at` 取调度请求时刻与同批本地 `observed_at`/`received_time` 的最晚值，
 以反映网络刷新真实完成时间；供应商 `source_time` 和公告 `published_at` 仍必须不晚于该时刻，
 不得用外部声明时间推进决策时钟或绕过未来数据校验。
@@ -266,9 +269,12 @@ current、冻结历史和 HTTP 只读投影都复用该身份内元数据，不�
 实际读取的 `expected_version` 并执行内存 compare-and-set；旧交易日、旧 sequence、同
 sequence 不同内容均拒绝。hybrid 必须引用同策略、同交易日且仍为当前版本的 local 父身份。
 overlay 必须匹配当前 decision/projection version、策略和交易日，只能包含当前身份范围内
-的代码，未来报价、迟到 overlay 和错误 expected version 不得覆盖当前视图。成功提交评分
-身份时生成应用层通用 `V2DecisionCommitted`；事件携带完整决策身份和逐项结果，不导入或
-依赖 research 类型，observer 失败也无权反向修改决策。
+的代码，并完整携带价格、涨跌幅、成交额、换手率、总市值、来源、来源时间和报价版本；未来报价、
+迟到 overlay 和错误 expected version 不得覆盖当前视图。评分身份与其同批初始 overlay 必须在
+同一个索引临界区内通过一次 CAS 原子发布，禁止暴露“新决策已可见但行情尚未挂接”的中间状态；
+local 升级 hybrid 时同样必须把匹配新父版本的初始 overlay 一起换版。成功提交评分身份时生成
+应用层通用 `V2DecisionCommitted`；事件携带完整决策身份和逐项结果，不导入或依赖 research 类型，
+observer 失败也无权反向修改决策。
 
 研究 observer 只消费成功提交后的 `V2DecisionCommitted` 与评分投影同批生成的不可变研究审计，
 写入 `.runtime/v2/research/committed-events.sqlite3` 独立 SQLite 研究库。研究载荷拥有独立 schema、
@@ -411,8 +417,8 @@ Today 发布，即使当时没有可冻结稿也不得再接纳迟到 local、hy
 持续降级。Tomorrow、D25 和 Long 的午后调度不受此限制。
 
 已有 Today 正式记录只允许创建父版本、策略、交易日和入选代码均匹配的 `DecisionOverlay`。
-overlay 只替换价格、涨跌幅、来源和报价时间；不得修改正式记录中的名单、分数、风险、动作或
-排名。运行时在评分前后依次驱动全部 V2 控制端口，使 11:20:00 的关闭先于同轮评分提交；
+overlay 只替换价格、涨跌幅、成交额、换手率、总市值、来源和报价时间；不得修改正式记录中的
+名单、分数、风险、动作或排名。运行时在评分前后依次驱动全部 V2 控制端口，使 11:20:00 的关闭先于同轮评分提交；
 HTTP 始终只执行只读查询。
 
 ### 2.10 d25 v2 运行契约
@@ -928,7 +934,8 @@ Tomorrow 与 D25 在 14:49:20（含）至 14:50（不含）可保存同运行身
 Long 不冻结、不写正式记录、不进入历史或结果结算。
 
 正式记录先执行 official-only 投影，只保留 `selected=true` 且 `action=executable` 的条目；
-overlay 只能改变价格、涨跌、来源和报价时间，不能改变名单、分数、风险、动作或排名。记录按
+overlay 只能改变价格、涨跌、成交额、换手率、总市值、来源和报价时间，不能改变名单、分数、
+风险、动作或排名。记录按
 策略和交易日唯一，规范 JSON、manifest 与 SHA-256 通过临时文件、flush、fsync 和原子提交
 保证；相同内容重试幂等，不同内容冲突。损坏、半提交或旧 schema 文件不得进入 V2 查询。
 
@@ -965,7 +972,8 @@ long 固定 `score_status=not_applicable`；long 的 `items` 保留配置完整�
 所有 HTTP 查询均为只读，不抓行情、不评分、不调用 DeepSeek、不触发冻结、恢复、归档或结算。
 
 SSE 事件使用 schema v2、单调 ID、有界回放和有界客户端队列。decision 事件携带完整 identity；
-overlay 只允许更新匹配 current version 的价格、涨跌、来源、来源时间、报价版本和年龄。
+overlay 只允许更新匹配 current version 的价格、涨跌、成交额、换手率、总市值、来源、来源时间、
+报价版本和年龄。
 显式游标才回放；游标超前、过期、断裂，base/schema/identity 不匹配或慢客户端统一返回
 `resync_required`，客户端以 ETag GET current。publisher 不等待客户端；SSE 连通时停止完整
 current 轮询，断线后才以 30 秒低频恢复。

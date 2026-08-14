@@ -367,10 +367,22 @@ class V2SchedulerRuntime:
 
     def _publish(self, identity: DecisionIdentity, *, hybrid: bool) -> bool:
         expected = self._dependencies.index.snapshot(identity.strategy).current
-        published = self._dependencies.index.publish(
-            identity,
-            expected_version=expected.version if expected is not None else None,
-        )
+        if isinstance(identity, ScoredDecision):
+            try:
+                overlay = self._dependencies.decisions.initial_overlay(identity)
+            except V2DecisionUnavailableError as exc:
+                self._record_failure("decision", _failure_code(exc, "decision_quote_unavailable"), identity.strategy)
+                return False
+            published = self._dependencies.index.publish_scored(
+                identity,
+                overlay,
+                expected_version=expected.version if expected is not None else None,
+            )
+        else:
+            published = self._dependencies.index.publish(
+                identity,
+                expected_version=expected.version if expected is not None else None,
+            )
         if not published.accepted:
             self._record_publish_rejection(published.reason, identity.strategy)
             return False

@@ -9,7 +9,7 @@ from trader.application.decision_events import build_v2_decision_committed
 from trader.application.decision_queries import UnifiedDecisionQueries
 from trader.application.decision_stream import UnifiedDecisionEventStream
 from trader.domain.market.models import MarketQuote
-from trader.domain.recommendation.decision_identity import DecisionItem, ScoredDecision
+from trader.domain.recommendation.decision_identity import DecisionItem, DecisionQuote, ScoredDecision
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 from trader.web import create_app
 from trader.web.route_services import UnifiedWebServices
@@ -48,6 +48,16 @@ def test_unified_decision_routes_validate_strategy_date_and_etag() -> None:
     assert current.get_json()["strategy"] == "today"
     assert current.get_json()["items"][0]["name"] == "浦发银行"
     assert current.get_json()["items"][0]["industry"] == "银行"
+    assert current.get_json()["items"][0]["quote"] == {
+        "price": 10.25,
+        "pct_change": 2.5,
+        "amount": 1_000_000_000.0,
+        "turnover_rate": 0.8,
+        "market_cap": 300_000_000_000.0,
+        "source": "fixture",
+        "source_time": NOW.isoformat(),
+        "status": "decision_anchor",
+    }
     assert cached.status_code == 304
     assert dates.get_json()["dates"] == ["2026-08-08"]
     assert invalid_strategy.status_code == 400
@@ -179,6 +189,17 @@ def _decision() -> ScoredDecision:
                 "threshold_met",
                 "浦发银行",
                 "银行",
+                DecisionQuote(
+                    "600000",
+                    10.25,
+                    2.5,
+                    1_000_000_000.0,
+                    0.8,
+                    300_000_000_000.0,
+                    "fixture",
+                    NOW,
+                    "quote:1",
+                ),
             ),
         ),
         (("hard_filter", 10),),

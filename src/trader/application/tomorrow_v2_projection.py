@@ -19,7 +19,8 @@ from trader.application.tomorrow_selection import (
     TomorrowSelectionOptions,
     select_tomorrow_features,
 )
-from trader.domain.recommendation.decision_identity import DecisionItem, ScoredDecision
+from trader.domain.market.models import MarketQuote
+from trader.domain.recommendation.decision_identity import DecisionItem, DecisionQuote, ScoredDecision
 from trader.domain.recommendation.models import Strategy
 from trader.domain.recommendation.tomorrow_fusion import (
     DecisionEpoch,
@@ -254,6 +255,23 @@ def _decision_item(entry: TomorrowDecisionEntry) -> DecisionItem:
         reason=reason,
         name=entry.features.quote.name,
         industry=entry.features.quote.industry,
+        quote=_decision_quote(entry.features.quote),
+    )
+
+
+def _decision_quote(quote: MarketQuote) -> DecisionQuote:
+    if quote.price is None:
+        raise ValueError("selected decision quote price is unavailable")
+    return DecisionQuote(
+        code=quote.code,
+        price=quote.price,
+        pct_change=quote.pct_change,
+        amount=quote.amount,
+        turnover_rate=quote.turnover_rate,
+        market_cap=quote.market_cap,
+        source=quote.source,
+        source_time=quote.source_time,
+        data_version=quote.data_version,
     )
 
 

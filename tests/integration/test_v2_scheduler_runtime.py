@@ -18,6 +18,7 @@ from trader.application.v2_runtime import V2RuntimeDependencies, V2SchedulerRunt
 from trader.bootstrap import _runtime_status
 from trader.domain.recommendation.decision_identity import (
     CommittedDecisionRecord,
+    DecisionOverlay,
     LongProjection,
     LongProjectionItem,
     ScoredDecision,
@@ -56,10 +57,29 @@ class Decisions:
                 (("quotes", request.input_version),),
                 (LongProjectionItem("600001", "core", request.input_version),),
             )
+        current = decision(request.strategy, sequence=request.sequence)
+        items = tuple(
+            replace(
+                item,
+                quote=replace(item.quote, source_time=request.observed_at) if item.quote is not None else None,
+            )
+            for item in current.items
+        )
         return replace(
-            decision(request.strategy, sequence=request.sequence),
+            current,
             trade_date=request.trade_date,
             observed_at=request.observed_at,
+            items=items,
+        )
+
+    def initial_overlay(self, decision: ScoredDecision) -> DecisionOverlay:
+        quotes = tuple(item.quote for item in decision.items if item.selected and item.quote is not None)
+        return DecisionOverlay(
+            decision.strategy,
+            decision.trade_date,
+            decision.version,
+            decision.observed_at,
+            quotes,
         )
 
     def research_audit(self, version: str):
@@ -86,6 +106,49 @@ class SharedReviews:
             parent_version=local.version,
             items=(replace(local.items[0], final_score=89.0),),
         )
+
+
+def test_scheduler_atomically_publishes_complete_quotes_for_local_and_hybrid() -> None:
+    index = UnifiedDecisionIndex()
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=FixedClock(NOW),
+            calendar=TradingCalendar(),
+            data=DataRefresh(),
+            decisions=Decisions(),
+            reviews=SharedReviews(),
+            index=index,
+            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-v2-overlay-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+        ),
+        config_version="runtime-v2",
+    )
+    request = V2CycleRequest(
+        Strategy.TOMORROW,
+        NOW.date(),
+        NOW,
+        "afternoon",
+        1,
+        "input-v1",
+        True,
+        NOW + timedelta(minutes=1),
+    )
+
+    runtime.start()
+    runtime.submit_cycle(request)
+    assert runtime.wait_idle(2.0)
+    runtime.stop(ShutdownDeadline.start(2.0))
+
+    snapshot = index.snapshot(Strategy.TOMORROW)
+    assert isinstance(snapshot.current, ScoredDecision)
+    assert snapshot.current.stage == "hybrid"
+    assert snapshot.overlay is not None
+    assert snapshot.overlay.parent_version == snapshot.current.version
+    assert snapshot.overlay.quotes == (snapshot.current.items[0].quote,)
+    assert snapshot.overlay.quotes[0].amount == 120_000_000.0
+    assert snapshot.overlay.quotes[0].turnover_rate == 2.1
+    assert snapshot.overlay.quotes[0].market_cap == 12_000_000_000.0
 
 
 class Freezes:
@@ -513,7 +576,14 @@ def test_expected_late_publish_rejection_after_freeze_is_not_a_runtime_error() -
     before_freeze = datetime(2026, 8, 11, 11, 19, 59, tzinfo=SHANGHAI)
     after_freeze = datetime(2026, 8, 11, 11, 20, 1, tzinfo=SHANGHAI)
     index = UnifiedDecisionIndex()
-    current = replace(decision(Strategy.TODAY, sequence=1), observed_at=before_freeze)
+    fixture = decision(Strategy.TODAY, sequence=1)
+    fixture_quote = fixture.items[0].quote
+    assert fixture_quote is not None
+    current = replace(
+        fixture,
+        observed_at=before_freeze,
+        items=(replace(fixture.items[0], quote=replace(fixture_quote, source_time=before_freeze)),),
+    )
     assert index.publish(current, expected_version=None).accepted
     assert index.seal_for_freeze(
         Strategy.TODAY, boundary_at=before_freeze.replace(second=0) + timedelta(minutes=1)

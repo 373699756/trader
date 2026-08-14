@@ -27,6 +27,7 @@ from trader.application.decision_stream import UnifiedDecisionEventStream  # noq
 from trader.application.ports.decision_records import CommittedDecisionRecord  # noqa: E402
 from trader.domain.recommendation.decision_identity import (  # noqa: E402
     DecisionItem,
+    DecisionQuote,
     LongProjection,
     LongProjectionItem,
     ScoredDecision,
@@ -62,6 +63,8 @@ class _ObservationResult(TypedDict):
     visible: bool
     rows: int
     count: str
+    quote_complete: bool
+    quote_fields: list[str]
 
 
 def main() -> int:
@@ -136,6 +139,29 @@ def _run(output_dir: Path) -> dict[str, object]:
                         _execute(base, 'return document.querySelectorAll("#observationBody tr[data-code]").length;')
                     ),
                     "count": str(_execute(base, 'return document.querySelector("#funnelMeta").textContent;')),
+                    "quote_complete": bool(
+                        _execute(
+                            base,
+                            """
+                            const cells = Array.from(document.querySelector('#observationBody tr[data-code]').cells)
+                              .slice(2, 6).map((cell) => cell.textContent.trim());
+                            return cells.length === 4
+                              && cells[0] !== '-'
+                              && cells[1] !== '-'
+                              && !cells[2].includes('换手 -')
+                              && cells[3] !== '-';
+                            """,
+                        )
+                    ),
+                    "quote_fields": list(
+                        _execute(
+                            base,
+                            """
+                            return Array.from(document.querySelector('#observationBody tr[data-code]').cells)
+                              .slice(2, 6).map((cell) => cell.textContent.trim());
+                            """,
+                        )
+                    ),
                 }
             )
         _execute(base, 'document.querySelector(".strategy-tab[data-strategy=long]").click(); return true;')
@@ -191,7 +217,10 @@ def _run(output_dir: Path) -> dict[str, object]:
         passed = (
             isinstance(scripts, list)
             and any(expected in str(script) for script in scripts)
-            and all(item["visible"] and item["rows"] > 0 and "观察 1" in item["count"] for item in observations)
+            and all(
+                item["visible"] and item["rows"] > 0 and "观察 1" in item["count"] and item["quote_complete"]
+                for item in observations
+            )
             and error_details["visible"] is True
             and error_details["rows"] == 2
             and error_details["raw_code_hidden_from_header"] is True
@@ -245,6 +274,17 @@ def _browser_services() -> UnifiedWebServices:
             (("local_score", 74.0),),
             (),
             "observation_band",
+            quote=DecisionQuote(
+                code,
+                10.25,
+                2.5,
+                1_000_000_000.0,
+                0.8,
+                300_000_000_000.0,
+                "fixture",
+                _NOW.replace(hour=11, minute=15),
+                f"quote:{code}",
+            ),
         )
         decision = ScoredDecision(
             strategy,

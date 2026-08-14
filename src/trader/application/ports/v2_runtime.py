@@ -9,7 +9,7 @@ from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
 from trader.application.research_audit import V2CommittedResearchAudit
-from trader.domain.recommendation.decision_identity import DecisionIdentity, ScoredDecision
+from trader.domain.recommendation.decision_identity import DecisionIdentity, DecisionOverlay, ScoredDecision
 from trader.domain.recommendation.models import Strategy
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -81,6 +81,8 @@ class V2DataRefreshPort(Protocol):
 
 class V2DecisionBuilderPort(Protocol):
     def build_local(self, request: V2CycleRequest) -> DecisionIdentity | None: ...
+
+    def initial_overlay(self, decision: ScoredDecision) -> DecisionOverlay: ...
 
     def research_audit(self, version: str) -> V2CommittedResearchAudit | None: ...
 

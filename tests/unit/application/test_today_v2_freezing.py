@@ -29,7 +29,14 @@ def _at(hour: int, minute: int, second: int = 0) -> datetime:
 
 
 def _today(at: datetime, *, sequence: int = 1) -> ScoredDecision:
-    return replace(decision(Strategy.TODAY, sequence=sequence), observed_at=at)
+    fixture = decision(Strategy.TODAY, sequence=sequence)
+    quote = fixture.items[0].quote
+    assert quote is not None
+    return replace(
+        fixture,
+        observed_at=at,
+        items=(replace(fixture.items[0], quote=replace(quote, source_time=at)),),
+    )
 
 
 def _coordinator(

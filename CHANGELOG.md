@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户反馈 Tomorrow/D25 观察池“最新价、今日涨跌、成交/换手、总市值”全部为空，新增评分项
+  同批不可变报价锚点、完整 `DecisionQuote` 领域值及其规范哈希/正式记录兼容序列化；新增决策与
+  初始完整 overlay 的单临界区 CAS 发布，以及领域、投影、查询、HTTP、调度和桌面回归。
+
 - 针对用户要求数据新鲜度使用 HMS 表示，新增单一纯时长格式器和边界回归，覆盖负数/非法值、秒、
   分钟、小时及超过 24 小时的年龄；Firefox 三档验收同时读取实际卡片文本并要求匹配 HMS。
 
@@ -151,6 +155,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- Tomorrow、D25 和 Today 的评分投影现在从形成该项的同批 `MarketQuote` 固化价格、涨跌幅、成交额、
+  换手率、总市值、来源、来源时间和版本；local 升级 hybrid 时决策身份与匹配新父版本的完整 overlay
+  原子换版。只读查询优先展示匹配 overlay，否则回退到决策锚点，历史与冻结记录不再依赖现场行情。
+
 - “数据新鲜度”从中文整分钟/秒改为紧凑 HMS：小于一分钟显示 `59s`，小于一小时显示
   `5m 12s`，一小时及以上显示 `27h 2m 26s`；小时不按自然日折算，秒级刷新精度得到保留。
 
@@ -247,6 +255,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复评分输入已有完整腾讯行情，但 `_decision_item` 只复制名称/行业、窄 overlay 又只保存价格/涨跌、
+  查询层把成交额/换手率/总市值硬编码为 `None`，最终令观察池四列显示 `—` 的跨层丢失。新发布决策
+  不再暴露“身份已可见、行情尚未挂接”的窗口，行情刷新失败仍保留上一份有效快照。
+
 - 修复 `1593 分` 容易被理解成评分且分钟显示丢弃剩余秒数的问题。数据年龄和快照元信息现在复用
   同一个 HMS 字符串，不新增第二套计时状态，也不改变行情来源时间或陈旧判定。
 
@@ -342,6 +354,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除仅能承载价格和涨跌幅的 `OverlayQuote` 重复领域类型；评分锚点与 overlay 统一使用完整
+  `DecisionQuote`，没有新增第二套报价状态源或 Web 请求时抓行情链路。
+
 - 删除“数据新鲜度”数值中的中文“分/秒”单位和整分钟截断；行情时间 `HH:mm:ss`、冻结时间及其它
   中文业务说明保持不变。
 
@@ -393,6 +408,15 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 失败先行回归在旧实现上因缺少 `DecisionQuote` 按预期失败；实现后领域/应用/冻结/持久化/契约/调度
+  扩展集与 68 项架构、`create_app()` 无副作用、固定融合 `83.40`、预算并发、SSE 游标/慢客户端、
+  冻结恢复及哈希专项均通过。`make format-check`、`make lint`、`make type-check`、完整 894 项
+  `make test` 和 `make package` 通过；打包首次仅因沙箱禁止隔离环境下载 `setuptools` 失败，获准联网
+  后原命令成功。仓库外安装最终 wheel 后确认从安装目录导入 `DecisionQuote`/适配器、执行
+  `trader-cli --help` 并读取 15 项模板/CSS/JavaScript/SVG 资源。真实 headless Firefox 在
+  1280×720、1440×900、1920×1080 均无白屏、重叠、页面级横向溢出或浏览器错误，Tomorrow/D25
+  观察池四项报价均非 `—`，三档截图已人工复核。
 
 - 新增 JS 回归先在旧代码上因 `formatDurationHms` 缺失按预期失败，实装后通过；定向 Web 契约、
   JavaScript 语法和 runner 严格 `SyntaxWarning` 检查通过。因共享工作树同时存在用户未提交的报价
@@ -571,6 +595,10 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 旧 schema v1 正式记录没有报价锚点时继续按兼容契约显示 `—`，不会伪造历史行情；新决策若上游对
+  某个可选行情字段本身未提供值，该字段仍显式缺失且不会阻断本地评分。当前运行中的旧进程需正常
+  重启后才会生成含锚点的新决策；本批不改变候选、过滤、评分、融合、风险、动作、排名或冻结时点。
 
 - HMS 使用英文单位缩写以消除“分数”歧义；它表示距行情来源时间的持续时长，不是北京时间时刻。
   当前运行中的旧 Web 进程需正常重启后才会加载静态资源 revision v9。共享工作树中的报价锚点相关

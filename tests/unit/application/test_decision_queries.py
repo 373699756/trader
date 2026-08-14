@@ -9,6 +9,8 @@ from trader.application.decision_queries import UnifiedDecisionQueries
 from trader.domain.recommendation.decision_identity import (
     CommittedDecisionRecord,
     DecisionItem,
+    DecisionOverlay,
+    DecisionQuote,
     LongProjection,
     LongProjectionItem,
     ScoredDecision,
@@ -77,6 +79,13 @@ def test_queries_expose_one_shape_for_scored_and_long_current_views() -> None:
     assert today.items[0].name == "浦发银行"
     assert today.items[0].industry == "银行"
     assert today.items[0].final_score == 84.0
+    assert today.items[0].price == 10.25
+    assert today.items[0].pct_change == 2.5
+    assert today.items[0].amount == 1_000_000_000.0
+    assert today.items[0].turnover_rate == 0.8
+    assert today.items[0].market_cap == 300_000_000_000.0
+    assert today.items[0].quote_source == "fixture"
+    assert today.items[0].quote_status == "decision_anchor"
     assert long_view.status == "ready"
     assert long_view.strategy is Strategy.LONG
     assert long_view.score_status == "not_applicable"
@@ -99,10 +108,45 @@ def test_queries_read_only_formal_history_and_long_has_no_history() -> None:
     assert history.status == "ready"
     assert history.frozen is True
     assert history.freeze_kind == "scheduled"
+    assert history.items[0].price == 10.25
+    assert history.items[0].amount == 1_000_000_000.0
+    assert history.items[0].turnover_rate == 0.8
+    assert history.items[0].market_cap == 300_000_000_000.0
+    assert history.items[0].quote_status == "decision_anchor"
     assert queries.dates(Strategy.TODAY) == (date(2026, 8, 8),)
     assert long_history.status == "not_applicable"
     assert long_history.degraded_reasons == ("history_not_applicable",)
     assert queries.dates(Strategy.LONG) == ()
+
+
+def test_current_overlay_replaces_every_quote_field_without_changing_decision_identity() -> None:
+    index = UnifiedDecisionIndex()
+    scored = _decision()
+    assert index.publish(scored, expected_version=None).accepted
+    overlay_quote = DecisionQuote(
+        "600000",
+        10.5,
+        3.0,
+        1_100_000_000.0,
+        0.9,
+        310_000_000_000.0,
+        "tencent",
+        NOW,
+        "quote:2",
+    )
+    overlay = DecisionOverlay(scored.strategy, scored.trade_date, scored.version, NOW, (overlay_quote,))
+    assert index.publish_overlay(overlay, expected_version=None).accepted
+
+    view = UnifiedDecisionQueries(index, _Repository(), _Clock()).current(Strategy.TODAY)
+
+    assert view.decision_version == scored.version
+    assert view.items[0].price == 10.5
+    assert view.items[0].pct_change == 3.0
+    assert view.items[0].amount == 1_100_000_000.0
+    assert view.items[0].turnover_rate == 0.9
+    assert view.items[0].market_cap == 310_000_000_000.0
+    assert view.items[0].quote_source == "tencent"
+    assert view.items[0].quote_status == "live"
 
 
 def test_scored_coverage_uses_distinct_evaluation_counts_not_overlapping_reasons() -> None:
@@ -144,6 +188,17 @@ def _decision(*, trade_date: date = TRADE_DATE) -> ScoredDecision:
                 "threshold_met",
                 "浦发银行",
                 "银行",
+                DecisionQuote(
+                    "600000",
+                    10.25,
+                    2.5,
+                    1_000_000_000.0,
+                    0.8,
+                    300_000_000_000.0,
+                    "fixture",
+                    datetime.combine(trade_date, NOW.timetz()),
+                    "quote:1",
+                ),
             ),
         ),
         (("hard_filter", 10),),

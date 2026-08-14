@@ -14,9 +14,9 @@ from trader.domain.recommendation.decision_identity import (
     CommittedDecisionRecord,
     DecisionItem,
     DecisionOverlay,
+    DecisionQuote,
     LongProjection,
     LongProjectionItem,
-    OverlayQuote,
     ScoredDecision,
 )
 from trader.domain.recommendation.models import Strategy
@@ -166,7 +166,7 @@ def _scored_view(
 ) -> DecisionView:
     overlay_quotes = _valid_overlay_quotes(decision, overlay)
     selected = tuple(item for item in decision.items if item.selected)
-    items = tuple(_scored_item(item, overlay_quotes.get(item.code), decision.observed_at) for item in selected)
+    items = tuple(_scored_item(item, overlay_quotes.get(item.code)) for item in selected)
     rejected = (
         decision.rejected_count
         if decision.rejected_count is not None
@@ -205,8 +205,9 @@ def _scored_view(
     )
 
 
-def _scored_item(item: DecisionItem, quote: OverlayQuote | None, observed_at: datetime) -> DecisionItemView:
+def _scored_item(item: DecisionItem, quote: DecisionQuote | None) -> DecisionItemView:
     components = dict(item.score_components)
+    display_quote = quote or item.quote
     return DecisionItemView(
         item.code,
         item.name,
@@ -223,14 +224,14 @@ def _scored_item(item: DecisionItem, quote: OverlayQuote | None, observed_at: da
         components.get("deepseek_risk_penalty"),
         item.final_score,
         item.risk_codes,
-        quote.price if quote is not None else None,
-        quote.pct_change if quote is not None else None,
-        None,
-        None,
-        None,
-        quote.source if quote is not None else "decision",
-        quote.source_time if quote is not None else observed_at,
-        "live" if quote is not None else "decision_anchor",
+        display_quote.price if display_quote is not None else None,
+        display_quote.pct_change if display_quote is not None else None,
+        display_quote.amount if display_quote is not None else None,
+        display_quote.turnover_rate if display_quote is not None else None,
+        display_quote.market_cap if display_quote is not None else None,
+        display_quote.source if display_quote is not None else None,
+        display_quote.source_time if display_quote is not None else None,
+        "live" if quote is not None else "decision_anchor" if item.quote is not None else "missing",
     )
 
 
@@ -300,7 +301,7 @@ def _long_item(item: LongProjectionItem) -> DecisionItemView:
     )
 
 
-def _valid_overlay_quotes(decision: ScoredDecision, overlay: DecisionOverlay | None) -> dict[str, OverlayQuote]:
+def _valid_overlay_quotes(decision: ScoredDecision, overlay: DecisionOverlay | None) -> dict[str, DecisionQuote]:
     if (
         overlay is None
         or overlay.strategy is not decision.strategy

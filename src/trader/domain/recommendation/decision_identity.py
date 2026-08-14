@@ -27,6 +27,32 @@ _Json: TypeAlias = str | int | float | bool | None | list["_Json"] | dict[str, "
 
 
 @dataclass(frozen=True)
+class DecisionQuote:
+    """Complete immutable quote facts used by scored identities and overlays."""
+
+    code: str
+    price: float
+    pct_change: float | None
+    amount: float | None
+    turnover_rate: float | None
+    market_cap: float | None
+    source: str
+    source_time: datetime
+    data_version: str
+
+    def __post_init__(self) -> None:
+        _require_code(self.code)
+        _validate_optional_market_value(self.price, "decision quote price", positive=True)
+        _validate_optional_market_value(self.pct_change, "decision quote pct_change")
+        _validate_optional_market_value(self.amount, "decision quote amount", non_negative=True)
+        _validate_optional_market_value(self.turnover_rate, "decision quote turnover_rate", non_negative=True)
+        _validate_optional_market_value(self.market_cap, "decision quote market_cap", non_negative=True)
+        _require_identity(self.source, "decision quote source")
+        _require_identity(self.data_version, "decision quote data version")
+        _require_shanghai(self.source_time, "decision quote source_time")
+
+
+@dataclass(frozen=True)
 class DecisionItem:
     code: str
     action: RecommendationAction
@@ -40,6 +66,7 @@ class DecisionItem:
     reason: str
     name: str = ""
     industry: str = ""
+    quote: DecisionQuote | None = None
 
     def __post_init__(self) -> None:
         _require_code(self.code)
@@ -63,6 +90,8 @@ class DecisionItem:
             raise ValueError("unselected decisions must use rank zero")
         name = _display_text(self.name, "decision item name")
         industry = _display_text(self.industry, "decision item industry")
+        if self.quote is not None and self.quote.code != self.code:
+            raise ValueError("decision quote code must match item code")
         object.__setattr__(self, "score_components", components)
         object.__setattr__(self, "risk_codes", risks)
         object.__setattr__(self, "name", name)
@@ -114,6 +143,8 @@ class ScoredDecision:
             raise ValueError("selected decision ranks must be contiguous")
         if self.stage == "local" and any(item.final_score != item.local_score for item in items):
             raise ValueError("local decision final scores must equal local scores")
+        if any(item.quote is not None and item.quote.source_time > self.observed_at for item in items):
+            raise ValueError("decision cannot contain a future quote")
         aggregates = _normalize_counts(self.filter_aggregates)
         reasons = _normalize_reasons(self.degraded_reasons)
         _validate_coverage_counts(self.population_count, self.rejected_count, len(items))
@@ -238,32 +269,12 @@ def _long_item_payload(item: LongProjectionItem) -> list[_Json]:
 
 
 @dataclass(frozen=True)
-class OverlayQuote:
-    code: str
-    price: float
-    pct_change: float | None
-    source: str
-    source_time: datetime
-    data_version: str
-
-    def __post_init__(self) -> None:
-        _require_code(self.code)
-        if not math.isfinite(self.price) or self.price <= 0.0:
-            raise ValueError("overlay price must be finite and positive")
-        if self.pct_change is not None and not math.isfinite(self.pct_change):
-            raise ValueError("overlay pct_change must be finite")
-        _require_identity(self.source, "overlay source")
-        _require_identity(self.data_version, "overlay data version")
-        _require_shanghai(self.source_time, "overlay source_time")
-
-
-@dataclass(frozen=True)
 class DecisionOverlay:
     strategy: Strategy
     trade_date: date
     parent_version: str
     observed_at: datetime
-    quotes: tuple[OverlayQuote, ...]
+    quotes: tuple[DecisionQuote, ...]
     schema_version: str = OVERLAY_SCHEMA_VERSION
     content_hash: str = field(init=False)
     version: str = field(init=False)
@@ -288,7 +299,7 @@ class DecisionOverlay:
             "trade_date": self.trade_date.isoformat(),
             "parent_version": self.parent_version,
             "observed_at": self.observed_at.isoformat(),
-            "quotes": [_overlay_quote_payload(quote) for quote in quotes],
+            "quotes": [_decision_quote_payload(quote) for quote in quotes],
         }
         content_hash = _hash(payload)
         object.__setattr__(self, "quotes", quotes)
@@ -477,6 +488,8 @@ def _decision_item_payload(item: DecisionItem) -> dict[str, _Json]:
         payload["name"] = item.name
     if item.industry:
         payload["industry"] = item.industry
+    if item.quote is not None:
+        payload["quote"] = _decision_quote_payload(item.quote)
     return payload
 
 
@@ -495,18 +508,39 @@ def _decision_item_from_json(raw: object) -> DecisionItem:
         reason=_text(value, "reason"),
         name=_optional_display_text(value.get("name"), "decision item name"),
         industry=_optional_display_text(value.get("industry"), "decision item industry"),
+        quote=_decision_quote_from_json(value.get("quote")),
     )
 
 
-def _overlay_quote_payload(quote: OverlayQuote) -> dict[str, _Json]:
+def _decision_quote_payload(quote: DecisionQuote) -> dict[str, _Json]:
     return {
         "code": quote.code,
         "price": quote.price,
         "pct_change": quote.pct_change,
+        "amount": quote.amount,
+        "turnover_rate": quote.turnover_rate,
+        "market_cap": quote.market_cap,
         "source": quote.source,
         "source_time": quote.source_time.isoformat(),
         "data_version": quote.data_version,
     }
+
+
+def _decision_quote_from_json(raw: object) -> DecisionQuote | None:
+    if raw is None:
+        return None
+    value = _object(raw, "decision quote")
+    return DecisionQuote(
+        code=_text(value, "code"),
+        price=_number(value, "price"),
+        pct_change=_optional_number(value.get("pct_change")),
+        amount=_optional_number(value.get("amount")),
+        turnover_rate=_optional_number(value.get("turnover_rate")),
+        market_cap=_optional_number(value.get("market_cap")),
+        source=_text(value, "source"),
+        source_time=_shanghai_datetime(_text(value, "source_time")),
+        data_version=_text(value, "data_version"),
+    )
 
 
 def _normalize_versions(values: tuple[tuple[str, str], ...]) -> tuple[tuple[str, str], ...]:
@@ -742,10 +776,10 @@ __all__ = [
     "DecisionIdentity",
     "DecisionItem",
     "DecisionOverlay",
+    "DecisionQuote",
     "DecisionStage",
     "LongProjection",
     "LongProjectionItem",
-    "OverlayQuote",
     "ScoredDecision",
     "committed_record_bytes",
     "committed_record_from_bytes",
