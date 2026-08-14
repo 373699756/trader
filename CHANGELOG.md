@@ -6,8 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
-- 针对用户要求 Web 启动前显示访问地址，新增入口生命周期回归，锁定默认配置在监听端口成功绑定后、
-  Web 服务线程启动前输出一次 `127.0.0.1:5000`。
+- 针对用户要求在控制台点击地址直接打开 Web，新增浏览器 URL 格式化与 IPv4/IPv6 入口回归；IPv6
+  自动使用方括号，避免输出无法解析的地址。
+
+- 针对用户要求 Web 启动前显示访问地址，新增入口生命周期回归，锁定监听端口成功绑定后、Web 服务
+  线程启动前只输出一次浏览器访问提示。
 
 - 针对用户反馈 Tomorrow/D25 观察池“最新价、今日涨跌、成交/换手、总市值”全部为空，新增评分项
   同批不可变报价锚点、完整 `DecisionQuote` 领域值及其规范哈希/正式记录兼容序列化；新增决策与
@@ -158,8 +161,9 @@ All notable changes to this project are documented here.
 
 ### Changed
 
-- `trader-server` 现在在监听端口成功绑定后立即向标准输出刷新实际 `host:port`；默认显示
-  `127.0.0.1:5000`，自定义 `TRADER_HOST` 或 `TRADER_PORT` 时同步显示实际配置地址。
+- `trader-server` 现在在监听端口成功绑定后立即向标准输出刷新实际浏览器地址；提示保留用户已有的
+  “浏览器登录地址”中文标签，并将裸 `host:port` 改为带 `http://` scheme 的完整 URL。默认输出
+  `浏览器登录地址->http://127.0.0.1:5000`，自定义 host/port 时显示实际配置且支持终端识别为超链接。
 
 - Tomorrow、D25 和 Today 的评分投影现在从形成该项的同批 `MarketQuote` 固化价格、涨跌幅、成交额、
   换手率、总市值、来源、来源时间和版本；local 升级 hybrid 时决策身份与匹配新父版本的完整 overlay
@@ -260,6 +264,9 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复控制台仅显示 `127.0.0.1:5000` 或带中文前缀的裸地址、终端无法稳定识别为可点击 Web 链接的
+  问题；实际监听 host 和 port 仍由统一运行配置决定，不新增浏览器启动副作用。
 
 - 修复通过 `run.sh`、`run.ps1`、`run.bat` 或直接执行 `trader-server` 启动成功后，终端没有明确访问
   地址、使用者仍需从配置推断端口的问题。绑定失败或运行时未启动时不会输出不可访问的地址。
@@ -417,6 +424,11 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- IPv4 与 IPv6 回归在实现前均按预期失败，分别证明缺少 `http://` 和 IPv6 方括号；实现后入口定向
+  10 项通过。首次 `make format-check` 发现入口文件需格式化，执行 Ruff formatter 后重新 Review，
+  `make format-check`、`make lint`、`make type-check`、完整 `make test` 和 `make package` 全部通过，
+  sdist 与 wheel 均成功生成；`git diff --check` 通过。未修改页面资源或布局，三档桌面视觉验收不适用。
 
 - 入口回归在旧实现上按预期失败，显示 Web 开始服务前标准输出为空；实现后新增回归与 V2 入口契约
   9 项通过，受影响文件 Ruff 与入口源码 mypy 通过。`make format-check`、`make lint`、
@@ -610,6 +622,10 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 终端是否单击、Ctrl+单击或 Cmd+单击打开链接由具体终端模拟器决定；输出本身是标准 HTTP URL，
+  不支持超链接的终端仍可复制到浏览器。已运行的旧进程需要正常停止并重新执行 `./run.sh` 才会加载
+  新提示；本批不自动启动浏览器，也不改变 Web、API、运行时、策略或数据行为。
 
 - 已在运行的旧 `trader-server` 不会热加载本次入口变化，需正常停止后重新执行 `./run.sh` 才会看到
   地址提示。输出仅表示本机监听端口已成功绑定，不替代 `/api/v2/status` 健康检查；本批没有改变

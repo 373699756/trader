@@ -24,10 +24,10 @@ class _Controller:
 
 
 class _System:
-    def __init__(self) -> None:
+    def __init__(self, host: str, port: int) -> None:
         self.settings = cast(
             RuntimeSettings,
-            SimpleNamespace(server=SimpleNamespace(host="127.0.0.1", port=5000)),
+            SimpleNamespace(server=SimpleNamespace(host=host, port=port)),
         )
         self.app = Flask(__name__)
 
@@ -38,11 +38,21 @@ class _System:
         pass
 
 
-def test_run_system_prints_bound_address_before_web_serving(
+@pytest.mark.parametrize(
+    ("host", "port", "expected_url"),
+    (
+        ("127.0.0.1", 5000, "http://127.0.0.1:5000"),
+        ("::1", 5001, "http://[::1]:5001"),
+    ),
+)
+def test_run_system_prints_clickable_url_before_web_serving(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    host: str,
+    port: int,
+    expected_url: str,
 ) -> None:
-    system = _System()
+    system = _System(host, port)
     bound_server = object()
     observed_output: list[str] = []
 
@@ -56,4 +66,4 @@ def test_run_system_prints_bound_address_before_web_serving(
     monkeypatch.setattr(server_entrypoint, "_serve_with_controller", serve)
 
     assert server_entrypoint._run_system(system, timeout_seconds=30.0) == 0
-    assert observed_output == ["127.0.0.1:5000\n"]
+    assert observed_output == [f"浏览器登录地址->{expected_url}\n"]

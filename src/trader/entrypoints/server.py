@@ -105,7 +105,7 @@ def _run_system(
             threaded=True,
         )
         print(
-            f"{system.settings.server.host}:{system.settings.server.port}",
+            f"浏览器登录地址->{_browser_url(system.settings.server.host, system.settings.server.port)}",
             flush=True,
         )
         delegated = True
@@ -287,6 +287,15 @@ def _absolute_config_path(raw_path: str) -> Path:
     if not path.is_absolute():
         raise SystemExit("configuration path must be absolute")
     return path.resolve()
+
+
+def _browser_url(host: str, port: int) -> str:
+    try:
+        is_ipv6 = ipaddress.ip_address(host).version == 6
+    except ValueError:
+        is_ipv6 = False
+    url_host = f"[{host}]" if is_ipv6 else host
+    return f"http://{url_host}:{port}"
 
 
 def _validate_bind(settings: RuntimeSettings) -> None:

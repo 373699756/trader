@@ -1142,8 +1142,10 @@ sample count、P50、P95 和 max；关联 trace、阶段名、样本和浏览器
 一键启动使用 `run.sh`、`run.ps1` 或 `run.bat`。手动流程为创建虚拟环境、从
 `pyproject.toml` 安装、用绝对配置路径执行 `trader-cli validate-config`，再启动
 `trader-server`。任何环境都不得依赖仓库当前工作目录才能读取资源。
-`trader-server` 成功绑定监听端口后、启动 Web 服务线程前，必须向标准输出打印一次实际
-`host:port`；默认配置显示 `127.0.0.1:5000`，便于使用者直接确认浏览器访问地址。
+`trader-server` 成功绑定监听端口后、启动 Web 服务线程前，必须向标准输出打印一次带
+`http://` scheme 的实际浏览器 URL；默认配置显示
+`浏览器登录地址->http://127.0.0.1:5000`，使支持终端超链接的控制台可直接点击打开 Web。
+IPv6 地址必须使用方括号生成合法 URL。
 
 日常检查顺序：
 
