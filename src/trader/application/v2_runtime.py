@@ -6,7 +6,7 @@ import re
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from datetime import time as wall_time
 from typing import Literal, cast
@@ -46,6 +46,8 @@ from trader.application.workers import BoundedExecutor
 from trader.domain.recommendation.decision_identity import DecisionIdentity, LongProjection, ScoredDecision
 from trader.domain.recommendation.models import Strategy
 
+_ISSUE_HISTORY_CAPACITY = 20
+
 
 @dataclass(frozen=True)
 class V2RuntimeDependencies:
@@ -58,6 +60,19 @@ class V2RuntimeDependencies:
     observer: DecisionObserverRuntime
     freezes: V2FreezePort
     settlement: V2SettlementPort
+
+
+@dataclass(frozen=True)
+class V2RuntimeIssue:
+    code: str
+    severity: Literal["degraded", "error"]
+    strategy: Strategy | None
+    stage: str
+    occurred_at: datetime
+    last_occurred_at: datetime
+    count: int
+    recovery_status: Literal["active", "recovered"]
+    resolved_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -84,6 +99,7 @@ class V2RuntimeStatus:
     settlement_failure_count: int
     last_error_code: str
     strategy_error_codes: tuple[tuple[str, str], ...]
+    recent_errors: tuple[V2RuntimeIssue, ...]
 
 
 class V2SchedulerRuntime:
@@ -140,6 +156,7 @@ class V2SchedulerRuntime:
         self._last_error_code = ""
         self._system_error_code = ""
         self._strategy_error_codes: dict[Strategy, str] = {}
+        self._recent_errors: OrderedDict[tuple[str, str], V2RuntimeIssue] = OrderedDict()
 
     def start(self) -> bool:
         with self._lock:
@@ -287,6 +304,7 @@ class V2SchedulerRuntime:
                     for strategy in Strategy
                     if strategy in self._strategy_error_codes
                 ),
+                recent_errors=self._sorted_recent_errors_locked(),
             )
 
     def _scheduled_request(self, strategy: Strategy, observed_at: datetime, phase: str) -> V2CycleRequest:
@@ -352,7 +370,7 @@ class V2SchedulerRuntime:
             expected_version=expected.version if expected is not None else None,
         )
         if not published.accepted:
-            self._record_publish_rejection(published.reason)
+            self._record_publish_rejection(published.reason, identity.strategy)
             return False
         self._record_publish(hybrid=hybrid, event=published.event, strategy=identity.strategy)
         return True
@@ -384,8 +402,10 @@ class V2SchedulerRuntime:
                 self._hybrid_publish_count += 1
             else:
                 self._local_publish_count += 1
-            self._strategy_error_codes.pop(strategy, None)
-            self._refresh_last_error_code()
+            self._resolve_issues_locked(
+                strategy=strategy,
+                stages=frozenset({"refresh", "decision", "review", "publish"}),
+            )
         observation = (
             V2DecisionObservation(event, self._dependencies.decisions.research_audit(event.decision_version))
             if event is not None
@@ -395,10 +415,10 @@ class V2SchedulerRuntime:
             with self._lock:
                 self._observer_rejection_count += 1
 
-    def _record_publish_rejection(self, reason: str) -> None:
+    def _record_publish_rejection(self, reason: str, strategy: Strategy) -> None:
         with self._lock:
             self._publish_rejection_count += 1
-            self._last_error_code = f"publish:{reason}"
+        self._record_failure("publish", reason, strategy)
 
     def _after_close_recovery_strategies(self, observed_at: datetime) -> tuple[Strategy, ...]:
         strategies: list[Strategy] = []
@@ -428,12 +448,13 @@ class V2SchedulerRuntime:
                 official_close_version=f"official-close:{native_version}",
             )
         except V2FreezeUnavailableError:
-            self._record_failure("freeze", "close_fallback_unavailable")
+            self._record_failure("freeze", "close_fallback_unavailable", request.strategy)
         except Exception as exc:
-            self._record_failure("freeze", f"close_fallback_unexpected:{type(exc).__name__}")
+            self._record_failure("freeze", f"close_fallback_unexpected:{type(exc).__name__}", request.strategy)
         else:
             with self._lock:
                 self._freeze_completed_count += 1
+                self._resolve_issues_locked(strategy=request.strategy, stages=frozenset({"freeze"}))
 
     def _submit_freeze(self, strategy: Strategy, at: datetime) -> None:
         key = f"freeze:{at.date().isoformat()}:{strategy.value}"
@@ -442,7 +463,7 @@ class V2SchedulerRuntime:
         future = self._control.submit_urgent(self._run_freeze, key, strategy, at)
         if future is None:
             self._finish_control(key, success=False)
-            self._record_failure("freeze", "freeze_capacity_rejected")
+            self._record_failure("freeze", "freeze_capacity_rejected", strategy)
 
     def _run_freeze(self, key: str, strategy: Strategy, at: datetime) -> None:
         success = False
@@ -450,13 +471,14 @@ class V2SchedulerRuntime:
             current = self._dependencies.index.snapshot(strategy).current
             self._dependencies.freezes.freeze(strategy, at, current)
         except V2FreezeUnavailableError:
-            self._record_failure("freeze", "freeze_unavailable")
+            self._record_failure("freeze", "freeze_unavailable", strategy)
         except Exception as exc:
-            self._record_failure("freeze", f"freeze_unexpected:{type(exc).__name__}")
+            self._record_failure("freeze", f"freeze_unexpected:{type(exc).__name__}", strategy)
         else:
             success = True
             with self._lock:
                 self._freeze_completed_count += 1
+                self._resolve_issues_locked(strategy=strategy, stages=frozenset({"freeze"}))
         finally:
             self._finish_control(key, success=success)
 
@@ -481,6 +503,7 @@ class V2SchedulerRuntime:
             success = True
             with self._lock:
                 self._settlement_completed_count += 1
+                self._resolve_issues_locked(stages=frozenset({"settlement"}))
         finally:
             self._finish_control(key, success=success)
 
@@ -501,6 +524,7 @@ class V2SchedulerRuntime:
                 self._control_completed.popitem(last=False)
 
     def _record_failure(self, stage: str, code: str, strategy: Strategy | None = None) -> None:
+        occurred_at = shanghai_now(self._dependencies.clock.now())
         with self._lock:
             if stage == "refresh":
                 self._refresh_failure_count += 1
@@ -518,6 +542,79 @@ class V2SchedulerRuntime:
             else:
                 self._strategy_error_codes[strategy] = qualified
             self._last_error_code = qualified
+            self._record_issue_locked(qualified, stage, strategy, occurred_at)
+
+    def _record_issue_locked(
+        self,
+        code: str,
+        stage: str,
+        strategy: Strategy | None,
+        occurred_at: datetime,
+    ) -> None:
+        key = (strategy.value if strategy is not None else "system", code)
+        existing = self._recent_errors.pop(key, None)
+        self._recent_errors[key] = V2RuntimeIssue(
+            code=code,
+            severity="error" if stage in {"freeze", "settlement", "publish"} else "degraded",
+            strategy=strategy,
+            stage=stage,
+            occurred_at=existing.occurred_at if existing is not None else occurred_at,
+            last_occurred_at=occurred_at,
+            count=existing.count + 1 if existing is not None else 1,
+            recovery_status="active",
+            resolved_at=None,
+        )
+        while len(self._recent_errors) > _ISSUE_HISTORY_CAPACITY:
+            self._recent_errors.popitem(last=False)
+
+    def _resolve_issues_locked(
+        self,
+        *,
+        strategy: Strategy | None = None,
+        stages: frozenset[str] | None = None,
+    ) -> None:
+        resolved_at = shanghai_now(self._dependencies.clock.now())
+        for key, issue in tuple(self._recent_errors.items()):
+            if issue.recovery_status != "active":
+                continue
+            if strategy is not None and issue.strategy is not strategy:
+                continue
+            if stages is not None and issue.stage not in stages:
+                continue
+            self._recent_errors[key] = replace(issue, recovery_status="recovered", resolved_at=resolved_at)
+        if strategy is None and stages is not None:
+            self._system_error_code = self._latest_active_system_code_locked()
+        elif strategy is not None:
+            active_code = self._latest_active_strategy_code_locked(strategy)
+            if active_code:
+                self._strategy_error_codes[strategy] = active_code
+            else:
+                self._strategy_error_codes.pop(strategy, None)
+        self._refresh_last_error_code()
+
+    def _latest_active_strategy_code_locked(self, strategy: Strategy) -> str:
+        for issue in reversed(self._recent_errors.values()):
+            if issue.strategy is strategy and issue.recovery_status == "active":
+                return issue.code
+        return ""
+
+    def _latest_active_system_code_locked(self) -> str:
+        for issue in reversed(self._recent_errors.values()):
+            if issue.strategy is None and issue.recovery_status == "active":
+                return issue.code
+        return ""
+
+    def _sorted_recent_errors_locked(self) -> tuple[V2RuntimeIssue, ...]:
+        return tuple(
+            sorted(
+                reversed(self._recent_errors.values()),
+                key=lambda issue: (
+                    0 if issue.severity == "error" else 1,
+                    0 if issue.recovery_status == "active" else 1,
+                    -issue.last_occurred_at.timestamp(),
+                ),
+            )
+        )
 
     def _refresh_last_error_code(self) -> None:
         if self._system_error_code:
@@ -544,4 +641,4 @@ def _failure_code(exc: BaseException, fallback: str) -> str:
     return fallback
 
 
-__all__ = ["V2RuntimeDependencies", "V2RuntimeStatus", "V2SchedulerRuntime"]
+__all__ = ["V2RuntimeDependencies", "V2RuntimeIssue", "V2RuntimeStatus", "V2SchedulerRuntime"]

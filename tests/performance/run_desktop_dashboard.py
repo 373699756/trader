@@ -130,7 +130,7 @@ def _run(output_dir: Path) -> dict[str, object]:
                     "rows": _integer(
                         _execute(base, 'return document.querySelectorAll("#observationBody tr[data-code]").length;')
                     ),
-                    "count": str(_execute(base, 'return document.querySelector("#observationCount").textContent;')),
+                    "count": str(_execute(base, 'return document.querySelector("#funnelMeta").textContent;')),
                 }
             )
         _execute(base, 'document.querySelector(".strategy-tab[data-strategy=long]").click(); return true;')
@@ -138,13 +138,51 @@ def _run(output_dir: Path) -> dict[str, object]:
             lambda: _integer(_execute(base, 'return document.querySelectorAll("#tableBody tr[data-code]").length;')) > 0
         )
         output_dir.mkdir(parents=True, exist_ok=True)
+        _set_viewport(base, 1440, 900)
+        _execute(base, 'document.querySelector("#errorDetailsButton").click(); return true;')
+        _wait(
+            lambda: bool(_execute(base, 'return document.querySelector("#errorDrawer").classList.contains("is-open");'))
+        )
+        _execute(base, 'document.querySelector("#errorDrawerContent button[data-copy-code]").click(); return true;')
+        _wait(
+            lambda: (
+                _execute(
+                    base,
+                    'return document.querySelector("#errorDrawerContent button[data-copy-code]").textContent;',
+                )
+                != "复制代码"
+            )
+        )
+        error_details = {
+            "visible": bool(
+                _execute(base, 'return document.querySelector("#errorDrawer").classList.contains("is-open");')
+            ),
+            "rows": _integer(
+                _execute(base, 'return document.querySelectorAll("#errorDrawerContent .error-detail-item").length;')
+            ),
+            "raw_code_hidden_from_header": not bool(
+                _execute(base, 'return document.querySelector("#lastError").textContent.includes("refresh:");')
+            ),
+            "copy_status": str(
+                _execute(
+                    base, 'return document.querySelector("#errorDrawerContent button[data-copy-code]").textContent;'
+                )
+            ),
+        }
+        detail_screenshot = _request_json(f"{base}/screenshot")["value"]
+        (output_dir / "desktop-error-details-1440x900.png").write_bytes(base64.b64decode(str(detail_screenshot)))
+        _execute(base, 'document.querySelector("#errorDrawerClose").click(); return true;')
         viewports = [_viewport(base, output_dir, width, height) for width, height in VIEWPORTS]
         scripts = _execute(base, "return Array.from(document.scripts).map((item) => item.src);")
         expected = f"/static/dashboard.js?rev={WEB_ASSET_REVISION}"
         passed = (
             isinstance(scripts, list)
             and any(expected in str(script) for script in scripts)
-            and all(item["visible"] and item["rows"] > 0 and item["count"] == "1" for item in observations)
+            and all(item["visible"] and item["rows"] > 0 and "观察 1" in item["count"] for item in observations)
+            and error_details["visible"] is True
+            and error_details["rows"] == 3
+            and error_details["raw_code_hidden_from_header"] is True
+            and error_details["copy_status"] in {"已复制", "已选中，请复制"}
             and all(_viewport_passed(viewport) for viewport in viewports)
         )
         return {
@@ -152,6 +190,7 @@ def _run(output_dir: Path) -> dict[str, object]:
             "passed": passed,
             "browser": "firefox-headless",
             "observations": observations,
+            "error_details": error_details,
             "viewports": viewports,
             "scripts": scripts,
             "external_network_calls": 0,
@@ -215,6 +254,31 @@ def _browser_services() -> UnifiedWebServices:
             "runtime_started": True,
             "phase": "midday",
             "deepseek_budget": {"limit": 168, "used": 0, "remaining": 168},
+            "health": {"level": "degraded", "issue_count": 2},
+            "recent_errors": [
+                {
+                    "code": "refresh:source_unavailable",
+                    "severity": "degraded",
+                    "strategy": "tomorrow",
+                    "stage": "refresh",
+                    "occurred_at": _NOW.replace(hour=12, minute=20).isoformat(),
+                    "last_occurred_at": _NOW.replace(hour=12, minute=24).isoformat(),
+                    "count": 2,
+                    "recovery_status": "active",
+                    "resolved_at": None,
+                },
+                {
+                    "code": "review:review_unavailable",
+                    "severity": "degraded",
+                    "strategy": "d25",
+                    "stage": "review",
+                    "occurred_at": _NOW.replace(hour=12, minute=18).isoformat(),
+                    "last_occurred_at": _NOW.replace(hour=12, minute=18).isoformat(),
+                    "count": 1,
+                    "recovery_status": "recovered",
+                    "resolved_at": _NOW.replace(hour=12, minute=22).isoformat(),
+                },
+            ],
         },
     )
 
@@ -226,6 +290,7 @@ def _viewport(base: str, output_dir: Path, width: int, height: int) -> dict[str,
         base,
         """
         const header = document.querySelector('.app-header').getBoundingClientRect();
+        const messages = Array.from(document.querySelectorAll('.runtime-message')).map((item) => item.getBoundingClientRect());
         const summary = document.querySelector('.summary-band').getBoundingClientRect();
         const controls = document.querySelector('.control-band').getBoundingClientRect();
         const layout = document.querySelector('#recommendation-layout').getBoundingClientRect();
@@ -238,6 +303,10 @@ def _viewport(base: str, output_dir: Path, width: int, height: int) -> dict[str,
           ordered: header.bottom <= summary.top && summary.bottom <= controls.top && controls.bottom <= layout.top,
           longVisible: !document.querySelector('#long-sidebar').hidden && !document.querySelector('#longScopeTabs').hidden,
           noLongOverlap: sidebar.right <= table.left,
+          messageColumns: messages.length,
+          messageEqualHeight: messages.length === 2 && Math.abs(messages[0].height - messages[1].height) < 1,
+          summaryItems: document.querySelectorAll('.summary-band > .summary-item').length,
+          healthBadge: document.querySelector('#healthBadge').textContent,
           rows: document.querySelectorAll('#tableBody tr[data-code]').length,
           scopes: document.querySelectorAll('#longScopeTabs button[data-scope]').length,
           notice: document.querySelector('#noticeText').textContent,
@@ -282,6 +351,10 @@ def _viewport_passed(result: dict[str, object]) -> bool:
         and result.get("ordered")
         and result.get("longVisible")
         and result.get("noLongOverlap")
+        and result.get("messageColumns") == 2
+        and result.get("messageEqualHeight")
+        and result.get("summaryItems") == 5
+        and result.get("healthBadge") == "降级 · 2项"
         and result.get("rows")
         and result.get("scopes") == 3
         and result.get("browserErrors") == []

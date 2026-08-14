@@ -27,10 +27,16 @@ def test_dashboard_uses_only_packaged_v2_assets_and_fixed_long_groups() -> None:
     dashboard = client.get("/static/dashboard.js").get_data(as_text=True)
     groups = client.get("/static/long_groups.js").get_data(as_text=True)
 
-    assert page.count(f"?rev={WEB_ASSET_REVISION}") == 10
+    assert page.count(f"?rev={WEB_ASSET_REVISION}") == 11
     assert 'id="long-panel-title">卡脖子行业<' in page
     assert 'data-scope="future_growth"' in page
     assert 'data-scope="low_price_potential"' in page
+    assert page.count('class="summary-item"') == 5
+    assert 'id="healthBadge"' in page
+    assert 'id="errorDetailsButton"' in page
+    assert 'id="errorDrawer"' in page
+    assert 'id="coverageStatus"' in page
+    assert 'id="funnelStatus"' in page
     assert "/api/v2/decisions/" in dashboard
     assert "/api/recommendations/" not in dashboard
     assert "卡脖子行业" in groups

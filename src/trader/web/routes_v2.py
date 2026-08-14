@@ -102,6 +102,8 @@ def _status(services: UnifiedWebServices | None) -> RouteResponse:
             "last_error": runtime.get("last_error"),
             "deepseek_budget": _budget(runtime),
             "degraded_reasons": list(_reasons(runtime)),
+            "health": _health(runtime),
+            "recent_errors": _recent_errors(runtime),
             "strategies": strategies,
             "events": {
                 "sequence": stream.sequence,
@@ -183,6 +185,62 @@ def _reasons(runtime: Mapping[str, object]) -> tuple[str, ...]:
     if isinstance(reasons, (list, tuple)):
         return tuple(str(reason) for reason in reasons)
     return ()
+
+
+def _health(runtime: Mapping[str, object]) -> dict[str, object]:
+    direct = runtime.get("health")
+    recent = _recent_errors(runtime)
+    active_count = sum(1 for issue in recent if issue["recovery_status"] == "active")
+    level = ""
+    issue_count = active_count
+    if isinstance(direct, Mapping):
+        raw_level = direct.get("level")
+        if raw_level in {"normal", "degraded", "error"}:
+            level = str(raw_level)
+        raw_count = direct.get("issue_count")
+        if isinstance(raw_count, int) and not isinstance(raw_count, bool) and raw_count >= 0:
+            issue_count = min(raw_count, 20)
+    if not level:
+        level = "error" if runtime.get("runtime_started") is False else "degraded" if _reasons(runtime) else "normal"
+    return {"level": level, "issue_count": issue_count}
+
+
+def _recent_errors(runtime: Mapping[str, object]) -> list[dict[str, object]]:
+    raw = runtime.get("recent_errors")
+    if not isinstance(raw, (list, tuple)):
+        return []
+    result: list[dict[str, object]] = []
+    for item in raw[:20]:
+        if not isinstance(item, Mapping):
+            continue
+        code = _optional_string(item.get("code"))
+        stage = _optional_string(item.get("stage"))
+        if code is None or stage is None:
+            continue
+        severity = item.get("severity") if item.get("severity") in {"degraded", "error"} else "degraded"
+        recovery = item.get("recovery_status") if item.get("recovery_status") in {"active", "recovered"} else "active"
+        count = item.get("count")
+        result.append(
+            {
+                "code": code,
+                "severity": severity,
+                "strategy": _optional_string(item.get("strategy")),
+                "stage": stage,
+                "occurred_at": _optional_string(item.get("occurred_at")),
+                "last_occurred_at": _optional_string(item.get("last_occurred_at")),
+                "count": count if isinstance(count, int) and not isinstance(count, bool) and count > 0 else 1,
+                "recovery_status": recovery,
+                "resolved_at": _optional_string(item.get("resolved_at")),
+            }
+        )
+    return result
+
+
+def _optional_string(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped[:128] if stripped else None
 
 
 def _mapping(value: object) -> dict[str, object]:

@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户要求“系统健康合并到最近错误，并以高效、漂亮、便于定位的布局展示”，新增最多 20 条的
+  进程内结构化错误历史：按策略/原因合并重复失败，保存严重度、阶段、首次与最近发生时间、次数、
+  活动/已恢复状态和恢复时间；状态 API 只返回脱敏受控字段。页面新增“查看全部”错误抽屉，可区分
+  活动与已恢复记录，并复制诊断代码；Firefox 禁止剪贴板时自动选中代码供手工复制。
+
 - 针对用户反馈“重启后三个评分策略观察池同时消失、列表只有代码而名称显示 `—`”新增真实刷新时间
   推进、三策略共同构建、名称/行业身份往返、旧正式记录兼容、current HTTP 与运行版本状态回归。
   状态 API 现在公开脱敏 scheduler 摘要，可直接区分刷新失败、决策失败和仍在运行的旧代码。
@@ -131,6 +136,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 顶部状态区改为固定等高双栏：左侧“快照状态”，右侧“最近错误”，系统健康以正常/降级/错误徽标
+  合并到右栏，不再单独占用摘要卡。摘要收敛为数据新鲜度、候选覆盖、推荐漏斗、模型预算和冻结状态
+  五张等宽卡；Header 运行条只保留运行、市场阶段、推送和评分时刻，减少重复信息并稳定首屏纵向位置。
+
 - scored 原生输入的决策时刻现在取调度请求与同批本地观测/接收完成时间的最大值，避免网络请求期间
   新鲜候选被误判为未来数据；供应商来源时间仍不能推进本地时钟。新决策从同批 quote 固化名称和行业，
   current、冻结历史与 HTTP 只读复用，不执行现场网络补名；`/api/v2/status` 新增 `runtime_version`
@@ -207,6 +216,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复现有界面只读取 `last_error`、但运行组合根主要维护 `last_error_code`，导致系统已降级却无法在
+  主界面定位原因的问题。现在成功发布只恢复刷新/构建/复核/发布阶段错误，冻结或结算成功只恢复各自
+  阶段，避免一次普通发布误把冻结失败标成已恢复；当前策略快照的降级原因也会与运行错误去重合并。
+
 - 修复重启加载共享输入实现后 Today、Tomorrow、D25 观察池全部消失的问题。生产隔离复现确认：请求
   于刷新开始时定时，而候选报价的本地观测/接收时间在网络完成后晚数秒，旧构建仍使用请求时刻，因而
   三策略共同触发 `scored native input cannot contain future features` 并被降级成笼统 `valueerror`。
@@ -280,6 +293,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除独立“系统健康/降级状态”摘要卡，以及 Header 中重复的数据年龄、模型预算和冻结信息；主界面
+  不再直接展示原始技术原因码，受控代码只保留在错误详情中。
+
 - 本批未删除或替换生产实现；R5 不接入组合根、HTTP、Web、统一决策索引、正式冻结或活动配置，不持有
   模型客户端，也不新增 DeepSeek 物理请求、运行线程或供应商数据读取。未伪造 40 日历史或未来 20 日
   真实证据，未提前执行 Score-R6 调权、门槛研究或生产晋级。
@@ -316,6 +332,15 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 本批定向验证：`.venv/bin/python -m pytest -q tests/integration/test_v2_scheduler_runtime.py
+  tests/contract/test_v2_e8_web_contract.py tests/contract/test_v2_app_factory.py`（15 passed）；
+  `node tests/js/test_dashboard_d4.js src/trader/web/static/dashboard.js`；受影响 Python 文件 Ruff
+  check/format-check；`git diff --check`。Firefox 桌面发布 runner 在 1280×720、1440×900、
+  1920×1080 下通过，三档均无页面横向溢出、双栏等高、五卡单行、Long 重叠或浏览器错误；错误抽屉
+  三条记录、主界面隐藏原因码和复制降级路径通过。完整门禁 `make format-check`、`make lint`、
+  `make type-check`、`make test`、`make package` 全部通过；打包在受限网络内首次无法安装隔离构建依赖，
+  获得联网权限后重跑成功生成 sdist 与 wheel，不属于产品代码失败。
 
 - 本批定向回归 33 项通过，覆盖刷新完成时间晚于请求、三策略共享输入、未来供应商时间继续拒绝、
   名称/行业从投影到查询与 HTTP、正式记录新旧往返、状态版本和 scheduler 摘要。生产只读诊断确认
@@ -453,6 +478,10 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 最近错误历史按设计仅保存在当前进程内，服务重启后清空；本批没有新增诊断数据库或文件 I/O。
+  外部数据源未提供可信时间时界面显示“时间待确认”，不会伪造发生时间。推荐、评分、风险、融合、
+  DeepSeek 预算和冻结业务边界均未改变。
 
 - 当前 `127.0.0.1:5000` 进程仍加载本批修复前代码并持续报告三策略 `decision:valueerror`，必须由用户
   正常停止后重新执行 `./run.sh` 才会生效；本批未擅自停止该进程。若 Today 在新进程形成合格 current

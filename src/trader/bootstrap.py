@@ -39,7 +39,7 @@ from trader.application.v2_input_runtime import (
     V2MarketDataAdapter,
     V2NoopSettlement,
 )
-from trader.application.v2_runtime import V2RuntimeDependencies, V2SchedulerRuntime
+from trader.application.v2_runtime import V2RuntimeDependencies, V2RuntimeIssue, V2SchedulerRuntime
 from trader.application.workers import BoundedExecutor
 from trader.bootstrap_clock import utc_now as _utc_now
 from trader.bootstrap_data_plane import _initialize_reference_data_plane
@@ -644,9 +644,18 @@ def _runtime_status(
 ) -> dict[str, object]:
     status = scheduler.status()
     strategy_errors = dict(status.strategy_error_codes)
-    degraded_reasons = [f"{strategy}:{code}" for strategy, code in status.strategy_error_codes]
-    if status.last_error_code and status.last_error_code not in strategy_errors.values():
-        degraded_reasons.append(status.last_error_code)
+    recent_errors = [_runtime_issue_payload(issue) for issue in status.recent_errors]
+    active_issues = [issue for issue in status.recent_errors if issue.recovery_status == "active"]
+    degraded_reasons = [
+        f"{issue.strategy.value}:{issue.code}" if issue.strategy is not None else issue.code for issue in active_issues
+    ]
+    health_level = (
+        "error"
+        if not status.running or any(issue.severity == "error" for issue in active_issues)
+        else "degraded"
+        if active_issues
+        else "normal"
+    )
     return {
         "status": "running" if status.running else "stopped",
         "runtime_started": status.running,
@@ -655,6 +664,9 @@ def _runtime_status(
         "deepseek_budget": budget.summary(_utc_now().date().isoformat()),
         "deepseek": reviewer.status(),
         "degraded_reasons": degraded_reasons,
+        "health": {"level": health_level, "issue_count": len(active_issues)},
+        "recent_errors": recent_errors,
+        "last_error": status.last_error_code or None,
         "scheduler": {
             "config_version": status.config_version,
             "lanes": [asdict(lane) for lane in status.lanes],
@@ -666,6 +678,20 @@ def _runtime_status(
             "local_publish_count": status.local_publish_count,
             "hybrid_publish_count": status.hybrid_publish_count,
         },
+    }
+
+
+def _runtime_issue_payload(issue: V2RuntimeIssue) -> dict[str, object]:
+    return {
+        "code": issue.code,
+        "severity": issue.severity,
+        "strategy": issue.strategy.value if issue.strategy is not None else None,
+        "stage": issue.stage,
+        "occurred_at": issue.occurred_at.isoformat(),
+        "last_occurred_at": issue.last_occurred_at.isoformat(),
+        "count": issue.count,
+        "recovery_status": issue.recovery_status,
+        "resolved_at": issue.resolved_at.isoformat() if issue.resolved_at is not None else None,
     }
 
 

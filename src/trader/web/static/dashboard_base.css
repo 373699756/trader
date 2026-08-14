@@ -17,7 +17,7 @@
   --radius: 6px;
   --rank-width: 56px;
   --stock-width: 168px;
-  --runtime-message-height: 52px;
+  --runtime-message-height: 82px;
   color-scheme: dark;
 }
 
@@ -146,24 +146,55 @@ tr:focus-visible {
 .runtime-message {
   min-width: 0;
   height: var(--runtime-message-height);
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  align-items: start;
-  column-gap: 8px;
-  padding: 9px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 12px;
   background: var(--surface);
   color: var(--muted);
   font-size: 12px;
   line-height: 16px;
 }
 
-.runtime-message b {
+.runtime-message-heading {
   min-width: 0;
-  max-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.runtime-message-heading > b {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.runtime-message > strong {
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
   overflow-x: hidden;
   overflow-y: auto;
   color: var(--text);
-  font-weight: 600;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+  scrollbar-width: thin;
+  white-space: normal;
+}
+
+.runtime-message > small {
+  min-width: 0;
+  max-height: 18px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 16px;
   overflow-wrap: anywhere;
   scrollbar-width: thin;
   white-space: normal;
@@ -171,6 +202,54 @@ tr:focus-visible {
 
 .runtime-error {
   background: var(--surface);
+}
+
+.runtime-error[data-level="degraded"] {
+  box-shadow: inset 3px 0 0 var(--amber);
+}
+
+.runtime-error[data-level="error"] {
+  box-shadow: inset 3px 0 0 var(--red);
+}
+
+.health-actions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+}
+
+.health-actions b {
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.runtime-error[data-level="degraded"] .health-actions b {
+  color: var(--amber);
+}
+
+.runtime-error[data-level="error"] .health-actions b {
+  color: var(--red);
+}
+
+.text-button {
+  min-height: 24px;
+  padding: 2px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--text);
+  background: var(--surface-raised);
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.text-button:hover {
+  border-color: #5d8ad6;
+  background: var(--surface-hover);
 }
 
 .status-dot {
@@ -319,7 +398,7 @@ tr:focus-visible {
 
 .summary-band {
   display: grid;
-  grid-template-columns: repeat(7, minmax(110px, 1fr));
+  grid-template-columns: repeat(5, minmax(150px, 1fr));
   gap: 1px;
   border-bottom: 1px solid var(--line);
   background: var(--line);
@@ -327,27 +406,44 @@ tr:focus-visible {
 
 .summary-item {
   min-width: 0;
-  min-height: 64px;
-  padding: 11px 16px;
+  min-height: 78px;
+  padding: 10px 16px;
   background: var(--surface);
 }
 
-.summary-item span {
+.summary-item > span {
   display: block;
-  margin-bottom: 5px;
+  margin-bottom: 4px;
   color: var(--muted);
   font-size: 11px;
 }
 
-.summary-item strong {
+.summary-item > strong {
   display: block;
   overflow: hidden;
   color: var(--text);
-  font-size: 15px;
+  font-size: 17px;
   line-height: 20px;
-  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.summary-item > small {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.summary-item > small b {
+  color: var(--muted);
+  font-weight: 600;
 }
 
 .notice {
@@ -356,16 +452,16 @@ tr:focus-visible {
 }
 
 .notice[data-level="ok"],
-.notice[data-level="ok"] b {
+.notice[data-level="ok"] strong {
   color: var(--green);
 }
 
 .notice[data-level="warn"],
-.notice[data-level="warn"] b {
+.notice[data-level="warn"] strong {
   color: #e4b455;
 }
 
 .notice[data-level="error"],
-.notice[data-level="error"] b {
+.notice[data-level="error"] strong {
   color: #ef858a;
 }

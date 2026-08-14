@@ -321,9 +321,10 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
     assert index.publish(previous, expected_version=None).accepted
     decisions = TrackingDecisions()
     data = FailingData()
+    clock = FixedClock(NOW)
     runtime = V2SchedulerRuntime(
         V2RuntimeDependencies(
-            clock=FixedClock(NOW),
+            clock=clock,
             calendar=TradingCalendar(),
             data=data,
             decisions=decisions,
@@ -359,6 +360,17 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
     assert status.local_publish_count == 0
     assert status.hybrid_publish_count == 0
     assert status.strategy_error_codes == (("tomorrow", "refresh:source_unavailable"),)
+    assert len(status.recent_errors) == 1
+    issue = status.recent_errors[0]
+    assert issue.code == "refresh:source_unavailable"
+    assert issue.severity == "degraded"
+    assert issue.strategy is Strategy.TOMORROW
+    assert issue.stage == "refresh"
+    assert issue.occurred_at == NOW
+    assert issue.last_occurred_at == NOW
+    assert issue.count == 1
+    assert issue.recovery_status == "active"
+    assert issue.resolved_at is None
 
     class StatusReviewer:
         def status(self):
@@ -370,10 +382,25 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
 
     payload = _runtime_status(runtime, StatusReviewer(), StatusBudget())  # type: ignore[arg-type]
     assert payload["degraded_reasons"] == ["tomorrow:refresh:source_unavailable"]
+    assert payload["health"] == {"level": "degraded", "issue_count": 1}
+    assert payload["recent_errors"] == [
+        {
+            "code": "refresh:source_unavailable",
+            "severity": "degraded",
+            "strategy": "tomorrow",
+            "stage": "refresh",
+            "occurred_at": NOW.isoformat(),
+            "last_occurred_at": NOW.isoformat(),
+            "count": 1,
+            "recovery_status": "active",
+            "resolved_at": None,
+        }
+    ]
     assert payload["runtime_version"] == "runtime-v2"
     assert payload["scheduler"]["decision_failure_count"] == 0  # type: ignore[index]
 
     data.fail = False
+    clock.current = NOW + timedelta(minutes=1)
     runtime.submit_cycle(replace(request, sequence=5, input_version="input-v2", allow_review=False))
     assert runtime.wait_idle(1.0)
     recovered = runtime.status()
@@ -381,6 +408,76 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
 
     assert recovered.strategy_error_codes == ()
     assert recovered.last_error_code == ""
+    assert recovered.recent_errors[0].recovery_status == "recovered"
+    assert recovered.recent_errors[0].resolved_at == NOW + timedelta(minutes=1)
+
+
+def test_runtime_error_history_is_bounded_and_repeated_failures_are_coalesced() -> None:
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=FixedClock(NOW),
+            calendar=TradingCalendar(),
+            data=DataRefresh(),
+            decisions=Decisions(),
+            reviews=SharedReviews(),
+            index=UnifiedDecisionIndex(),
+            observer=AsyncDecisionObserver((), capacity=1, thread_name="test-v2-error-history-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+        ),
+        config_version="runtime-v2",
+    )
+
+    runtime._record_failure("refresh", "source_unavailable", Strategy.TOMORROW)
+    runtime._record_failure("refresh", "source_unavailable", Strategy.TOMORROW)
+    assert runtime.status().recent_errors[0].count == 2
+    for index in range(25):
+        runtime._record_failure("settlement", f"failure_{index}")
+
+    status = runtime.status()
+    runtime.stop(ShutdownDeadline.start(1.0))
+
+    assert len(status.recent_errors) == 20
+    assert status.recent_errors[0].code == "settlement:failure_24"
+    assert all(issue.code != "refresh:source_unavailable" for issue in status.recent_errors)
+
+
+def test_successful_publish_does_not_recover_an_unrelated_freeze_failure() -> None:
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=FixedClock(NOW),
+            calendar=TradingCalendar(),
+            data=DataRefresh(),
+            decisions=Decisions(),
+            reviews=SharedReviews(),
+            index=UnifiedDecisionIndex(),
+            observer=AsyncDecisionObserver((), capacity=1, thread_name="test-v2-freeze-issue-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+        ),
+        config_version="runtime-v2",
+    )
+    runtime._record_failure("freeze", "freeze_unavailable", Strategy.TOMORROW)
+    request = V2CycleRequest(
+        Strategy.TOMORROW,
+        NOW.date(),
+        NOW,
+        "afternoon",
+        1,
+        "input-v1",
+        False,
+        NOW + timedelta(minutes=1),
+    )
+
+    runtime.start()
+    runtime.submit_cycle(request)
+    assert runtime.wait_idle(1.0)
+    status = runtime.status()
+    runtime.stop(ShutdownDeadline.start(1.0))
+
+    freeze_issue = next(issue for issue in status.recent_errors if issue.stage == "freeze")
+    assert freeze_issue.recovery_status == "active"
+    assert status.strategy_error_codes == (("tomorrow", "freeze:freeze_unavailable"),)
 
 
 def test_review_deadline_prevents_a_late_model_upgrade() -> None:

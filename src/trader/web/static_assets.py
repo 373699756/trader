@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from flask import url_for
 
-WEB_ASSET_REVISION = "snapshot-identity-2026-08-13-v6"
+WEB_ASSET_REVISION = "status-health-2026-08-14-v7"
 
 
 def web_asset(filename: str) -> str:

@@ -11,6 +11,7 @@ const renderPath = path.join(path.dirname(dashboardPath), "render.js");
 const longGroupsPath = path.join(path.dirname(dashboardPath), "long_groups.js");
 const formattersPath = path.join(path.dirname(dashboardPath), "dashboard_formatters.js");
 const patchesPath = path.join(path.dirname(dashboardPath), "dashboard_patches.js");
+const statusViewPath = path.join(path.dirname(dashboardPath), "status_view.js");
 let source = fs.readFileSync(dashboardPath, "utf8");
 const suffix = "\n})();";
 source = source.trimEnd();
@@ -34,6 +35,7 @@ vm.runInNewContext(fs.readFileSync(selectionPath, "utf8"), sandbox, { filename: 
 vm.runInNewContext(fs.readFileSync(longGroupsPath, "utf8"), sandbox, { filename: longGroupsPath });
 vm.runInNewContext(fs.readFileSync(formattersPath, "utf8"), sandbox, { filename: formattersPath });
 vm.runInNewContext(fs.readFileSync(patchesPath, "utf8"), sandbox, { filename: patchesPath });
+vm.runInNewContext(fs.readFileSync(statusViewPath, "utf8"), sandbox, { filename: statusViewPath });
 vm.runInNewContext(source, sandbox, { filename: dashboardPath });
 const missingPatchSandbox = {
   URLSearchParams,
@@ -56,6 +58,8 @@ const state = {
   isFrozenTodayView: sandbox.window.TraderRender.isFrozenTodayView,
   longTable: sandbox.window.TraderRender.longTable,
   sourceLabel: sandbox.window.TraderRender.sourceLabel,
+  healthView: sandbox.window.TraderStatusView.healthView,
+  runtimeErrorRows: sandbox.window.TraderStatusView.runtimeErrorRows,
   tableColumnCount: sandbox.window.TraderRender.tableColumnCount,
   tableRows: sandbox.window.TraderRender.tableRows,
   longGroupAveragePct: sandbox.window.TraderLongGroups.groupAveragePct,
@@ -88,6 +92,34 @@ assert.strictEqual(
   "today",
 );
 assert.strictEqual(state.initialStrategy({ strategies: {} }), "today");
+const degradedHealth = state.healthView({
+  health: { level: "degraded", issue_count: 2 },
+  recent_errors: [
+    {
+      code: "refresh:source_unavailable",
+      severity: "degraded",
+      strategy: "tomorrow",
+      stage: "refresh",
+      last_occurred_at: "2026-08-14T10:15:42+08:00",
+      count: 2,
+      recovery_status: "active",
+    },
+  ],
+}, ["corporate_risk_history_unavailable"]);
+assert.strictEqual(degradedHealth.level, "degraded");
+assert.strictEqual(degradedHealth.issueCount, 2);
+assert.strictEqual(degradedHealth.badge, "降级 · 2项");
+assert.strictEqual(degradedHealth.primary.message, "行情刷新暂时不可用");
+assert.strictEqual(degradedHealth.primary.meta.includes("明日"), true);
+assert.strictEqual(degradedHealth.primary.meta.includes("数据刷新"), true);
+assert.strictEqual(degradedHealth.issues.length, 2);
+const runtimeRows = state.runtimeErrorRows(degradedHealth.issues);
+assert.strictEqual(runtimeRows.includes("refresh:source_unavailable"), true);
+assert.strictEqual(runtimeRows.includes("公司风险历史暂不可核验"), true);
+assert.strictEqual(runtimeRows.includes("活动中"), true);
+const normalHealth = state.healthView({ health: { level: "normal", issue_count: 0 }, recent_errors: [] }, []);
+assert.strictEqual(normalHealth.badge, "正常 · 无最近错误");
+assert.strictEqual(normalHealth.primary, null);
 assert.strictEqual(state.currentViewMatches("long", "current"), true);
 assert.strictEqual(state.currentViewMatches("today", "current"), true);
 assert.strictEqual(state.currentViewMatches("tomorrow", "current"), true);

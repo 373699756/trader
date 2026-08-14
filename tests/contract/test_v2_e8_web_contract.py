@@ -90,6 +90,20 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     assert status["strategies"]["today"]["status"] == queries.current(Strategy.TODAY).status
     assert status["runtime_version"] == "runtime:test"
     assert status["scheduler"]["strategy_errors"] == {}
+    assert status["health"] == {"level": "degraded", "issue_count": 1}
+    assert status["recent_errors"] == [
+        {
+            "code": "refresh:source_unavailable",
+            "severity": "degraded",
+            "strategy": "tomorrow",
+            "stage": "refresh",
+            "occurred_at": NOW.isoformat(),
+            "last_occurred_at": NOW.isoformat(),
+            "count": 2,
+            "recovery_status": "active",
+            "resolved_at": None,
+        }
+    ]
 
 
 def test_http_reads_do_not_invoke_external_io() -> None:
@@ -119,6 +133,21 @@ def _app():
             "runtime_version": "runtime:test",
             "scheduler": {"strategy_errors": {}},
             "deepseek_budget": {"limit": 168, "used": 12, "remaining": 156},
+            "health": {"level": "degraded", "issue_count": 1},
+            "recent_errors": [
+                {
+                    "code": "refresh:source_unavailable",
+                    "severity": "degraded",
+                    "strategy": "tomorrow",
+                    "stage": "refresh",
+                    "occurred_at": NOW.isoformat(),
+                    "last_occurred_at": NOW.isoformat(),
+                    "count": 2,
+                    "recovery_status": "active",
+                    "resolved_at": None,
+                    "external_payload": "must-not-leak",
+                }
+            ],
         },
     )
     return create_app(services=services), queries, stream
