@@ -68,8 +68,8 @@
     for (const id of [
       "marketPhase", "runtimeDot", "runtimeStatus", "quoteSource", "quoteTime", "quoteAge", "streamStatus",
       "scoreTime", "budgetStatus", "budgetMeta", "headerFreeze", "freezeMeta", "lastError", "lastErrorMeta",
-      "refreshButton", "dateSelect", "strategyDescription", "coverageStatus", "coverageMeta", "funnelStatus", "funnelMeta",
-      "notice", "noticeText", "snapshotStrategy", "snapshotMeta", "healthPanel", "healthBadge", "errorDetailsButton",
+      "refreshButton", "dateSelect", "strategyDescription", "quoteCoverageStatus", "quoteCoverageMeta", "funnelStatus", "funnelMeta",
+      "notice", "noticeText", "snapshotStrategy", "snapshotDate", "snapshotMeta", "healthPanel", "healthBadge", "errorDetailsButton",
       "recommendationTable", "tableColumns", "tableHead", "tableBody",
       "observationPool", "observationPoolMeta", "observationTable", "observationColumns", "observationHead", "observationBody",
       "longScopeTabs", "longIndustryTabs", "longStockHeader", "longStockContext",
@@ -235,6 +235,7 @@
           els.quoteSource.textContent = first && first.source
             ? window.TraderRender.sourceLabel(first.source)
             : "来源不可用";
+          statusView.renderQuoteCoverage(els, payload.items);
           updateQuoteAge();
         } else {
           renderPayload(payload);
@@ -333,6 +334,7 @@
         market_cap: quote.market_cap,
         source: quote.source,
         source_time: quote.source_time,
+        quote_status: quote.status,
         action: item.action,
         action_reason: item.action_reason,
         anchor_price: quote.price,
@@ -716,7 +718,12 @@
         const current = Number(quote.price);
         const anchorToNow = Number.isFinite(anchor) && anchor > 0 && Number.isFinite(current)
           ? ((current / anchor) - 1) * 100 : null;
-        return { ...item, ...quote, anchor_to_now_pct: anchorToNow };
+        return {
+          ...item,
+          ...quote,
+          quote_status: quote.quote_status || quote.status || item.quote_status,
+          anchor_to_now_pct: anchorToNow,
+        };
       }),
     };
     state.payloads.set(recommendationKey(state.strategy, state.date, state.view), state.payload);

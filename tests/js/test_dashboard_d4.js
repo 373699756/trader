@@ -59,6 +59,9 @@ const state = {
   longTable: sandbox.window.TraderRender.longTable,
   sourceLabel: sandbox.window.TraderRender.sourceLabel,
   healthView: sandbox.window.TraderStatusView.healthView,
+  quoteCoverageSummary: sandbox.window.TraderStatusView.quoteCoverageSummary,
+  renderQuoteCoverage: sandbox.window.TraderStatusView.renderQuoteCoverage,
+  renderSummary: sandbox.window.TraderStatusView.renderSummary,
   runtimeErrorRows: sandbox.window.TraderStatusView.runtimeErrorRows,
   tableColumnCount: sandbox.window.TraderRender.tableColumnCount,
   tableRows: sandbox.window.TraderRender.tableRows,
@@ -70,6 +73,120 @@ const state = {
   longGroupVisibleRecommendations: sandbox.window.TraderLongGroups.visibleRecommendations,
 };
 assert(state, "dashboard D4 helpers were not exported into the test sandbox");
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.quoteCoverageSummary([
+    {
+      code: "600001",
+      name: "完整股票",
+      industry: "银行",
+      price: 10.5,
+      pct_change: 0,
+      source: "tencent",
+      source_time: "2026-08-14T10:00:00+08:00",
+      quote_status: "live",
+    },
+    {
+      code: "600002",
+      name: "",
+      industry: "银行",
+      price: 11.5,
+      pct_change: 1.2,
+      source: "tencent",
+      source_time: "2026-08-14T10:00:01+08:00",
+      quote_status: "retained",
+    },
+    {
+      code: "600003",
+      name: "缺行情股票",
+      industry: "银行",
+      price: null,
+      pct_change: null,
+      source: "long_watchlist",
+      source_time: null,
+      quote_status: "missing",
+    },
+  ]))),
+  { total: 3, available: 2, quoteMissing: 1, identityMissing: 1 },
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.quoteCoverageSummary([]))),
+  { total: 0, available: 0, quoteMissing: 0, identityMissing: 0 },
+);
+const summaryElements = {
+  quoteCoverageStatus: { textContent: "" },
+  quoteCoverageMeta: { textContent: "" },
+  funnelStatus: { textContent: "" },
+  funnelMeta: { textContent: "" },
+  quoteSource: { textContent: "" },
+  budgetStatus: { textContent: "" },
+  budgetMeta: { textContent: "" },
+  headerFreeze: { textContent: "" },
+  freezeMeta: { textContent: "" },
+  snapshotStrategy: { textContent: "" },
+  snapshotDate: { textContent: "" },
+};
+state.renderSummary(
+  summaryElements,
+  {
+    status: "ready",
+    strategy: "today",
+    trade_date: "2026-08-14",
+    frozen: false,
+    score_status: "scored",
+    coverage: { candidate_count: 120, evaluated_count: 80, rejected_count: 40 },
+  },
+  [
+    {
+      code: "600001", name: "正式股票", industry: "银行", action: "executable",
+      price: 10, pct_change: 1, source: "tencent", source_time: "2026-08-14T10:00:00+08:00",
+      scores: { final_score: 82 },
+    },
+    {
+      code: "600002", name: "观察股票", industry: "证券", action: "observe",
+      price: null, pct_change: null, source: "decision", source_time: "2026-08-14T09:59:00+08:00",
+      scores: { final_score: 75 },
+    },
+  ],
+  "open",
+  { source: "tencent" },
+  sandbox.window.TraderSelection,
+  sandbox.window.TraderRender,
+  { deepseek_budget: { limit: 168, used: 2, remaining: 166 } },
+);
+assert.strictEqual(summaryElements.quoteCoverageStatus.textContent, "1 / 2");
+assert.strictEqual(summaryElements.quoteCoverageMeta.textContent, "行情缺失 1 · 身份缺失 0");
+assert.strictEqual(summaryElements.funnelStatus.textContent, "120 → 80 → 1");
+assert.strictEqual(summaryElements.funnelMeta.textContent, "过滤 40 · 观察 1 · 最高 82.00");
+assert.strictEqual(summaryElements.snapshotDate.textContent, "2026-08-14");
+state.renderSummary(
+  summaryElements,
+  {
+    status: "ready",
+    strategy: "long",
+    trade_date: "2026-08-14",
+    frozen: false,
+    score_status: "not_applicable",
+    coverage: { candidate_count: 1, evaluated_count: 1, rejected_count: 0 },
+  },
+  [{
+    code: "600001", name: "长期股票", industry: "行业", action: "observe",
+    price: 10, pct_change: 0, source: "tencent", source_time: "2026-08-14T10:00:00+08:00",
+  }],
+  "closed",
+  { source: "tencent" },
+  sandbox.window.TraderSelection,
+  sandbox.window.TraderRender,
+  { deepseek_budget: { limit: 168, used: 2, remaining: 166 } },
+);
+assert.strictEqual(summaryElements.funnelStatus.textContent, "不适用");
+assert.strictEqual(summaryElements.funnelMeta.textContent, "长期固定观察池不评分、不产生推荐");
+state.renderQuoteCoverage(summaryElements, [{
+  code: "600001", name: "长期股票", industry: "行业",
+  price: null, pct_change: null, source: "long_watchlist", source_time: null,
+  quote_status: "missing",
+}]);
+assert.strictEqual(summaryElements.quoteCoverageStatus.textContent, "0 / 1");
+assert.strictEqual(summaryElements.quoteCoverageMeta.textContent, "行情缺失 1 · 身份缺失 0");
 assert.strictEqual(
   state.initialStrategy({
     strategies: {
@@ -576,7 +693,7 @@ assert.deepStrictEqual(
   }))),
   {
     level: "ok",
-    message: "已冻结 · 收盘补算 · 仅本地评分 · 2026/7/22 15:01:00",
+    message: "已冻结 · 收盘补算 · 仅本地评分 · 15:01:00",
   },
 );
 assert.deepStrictEqual(
@@ -591,7 +708,7 @@ assert.deepStrictEqual(
   }))),
   {
     level: "ok",
-    message: "长期实时数据 · 不评分、不冻结 · 2026/7/22 15:01:00",
+    message: "长期实时数据 · 不评分、不冻结 · 15:01:00",
   },
 );
 assert.deepStrictEqual(
@@ -606,7 +723,7 @@ assert.deepStrictEqual(
   }))),
   {
     level: "ok",
-    message: "历史快照 2026-07-22 · 名单与评分为当日冻结结果 · 行情按最新可用报价展示",
+    message: "历史快照 · 名单与评分为当日冻结结果 · 行情按最新可用报价展示",
   },
 );
 const longPayload = {

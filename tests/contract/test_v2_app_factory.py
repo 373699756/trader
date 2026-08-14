@@ -35,8 +35,11 @@ def test_dashboard_uses_only_packaged_v2_assets_and_fixed_long_groups() -> None:
     assert 'id="healthBadge"' in page
     assert 'id="errorDetailsButton"' in page
     assert 'id="errorDrawer"' in page
-    assert 'id="coverageStatus"' in page
+    assert 'id="quoteCoverageStatus"' in page
+    assert 'id="quoteCoverageMeta"' in page
     assert 'id="funnelStatus"' in page
+    assert 'id="snapshotDate"' in page
+    assert "quote_status: quote.status" in dashboard
     assert "/api/v2/decisions/" in dashboard
     assert "/api/recommendations/" not in dashboard
     assert "卡脖子行业" in groups

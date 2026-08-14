@@ -347,6 +347,10 @@ def _viewport(base: str, output_dir: Path, width: int, height: int) -> dict[str,
           messageColumns: messages.length,
           messageEqualHeight: messages.length === 2 && Math.abs(messages[0].height - messages[1].height) < 1,
           summaryItems: document.querySelectorAll('.summary-band > .summary-item').length,
+          quoteCoverage: document.querySelector('#quoteCoverageStatus').textContent,
+          quoteCoverageMeta: document.querySelector('#quoteCoverageMeta').textContent,
+          longWatchlistSize: window.TraderLongWatchlistData.items.length,
+          snapshotDate: document.querySelector('#snapshotDate').textContent,
           healthBadge: document.querySelector('#healthBadge').textContent,
           rows: document.querySelectorAll('#tableBody tr[data-code]').length,
           scopes: document.querySelectorAll('#longScopeTabs button[data-scope]').length,
@@ -385,6 +389,9 @@ def _set_viewport(base: str, width: int, height: int) -> None:
 
 
 def _viewport_passed(result: dict[str, object]) -> bool:
+    watchlist_size = result.get("longWatchlistSize")
+    expected_coverage = f"1 / {watchlist_size}"
+    expected_missing = f"行情缺失 {int(watchlist_size) - 1} · 身份缺失 0" if isinstance(watchlist_size, int) else ""
     return bool(
         result.get("body")
         and result.get("actual") == result.get("requested")
@@ -395,6 +402,11 @@ def _viewport_passed(result: dict[str, object]) -> bool:
         and result.get("messageColumns") == 2
         and result.get("messageEqualHeight")
         and result.get("summaryItems") == 5
+        and result.get("quoteCoverage") == expected_coverage
+        and result.get("quoteCoverageMeta") == expected_missing
+        and result.get("snapshotDate") == _NOW.date().isoformat()
+        and "2026/" not in str(result.get("notice"))
+        and "12:30:00" in str(result.get("notice"))
         and result.get("healthBadge") == "降级 · 2项"
         and result.get("rows")
         and result.get("scopes") == 3

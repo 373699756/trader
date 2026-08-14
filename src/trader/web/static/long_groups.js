@@ -50,6 +50,7 @@
         market_cap: null,
         source: "long_watchlist",
         source_time: null,
+        quote_status: "missing",
         action: "observe",
         action_reason: "fixed_long_watchlist",
         setup_type: "none",

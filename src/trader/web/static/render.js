@@ -614,7 +614,7 @@
   function formatTime(value) {
     const parsed = new Date(value);
     if (!Number.isFinite(parsed.getTime())) return "-";
-    return parsed.toLocaleTimeString("zh-CN", { hour12: false });
+    return parsed.toLocaleTimeString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" });
   }
 
   window.TraderRender = {

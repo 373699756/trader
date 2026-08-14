@@ -156,7 +156,7 @@
         : "名单与评分为当日冻结结果";
       return {
         level: degraded ? "warning" : "ok",
-        message: `历史快照 ${payload.trade_date || "-"} · ${kind} · 行情按最新可用报价展示${degraded ? ` · 当日固化时降级：${degraded}` : ""}`,
+        message: `历史快照 · ${kind} · 行情按最新可用报价展示${degraded ? ` · 当日固化时降级：${degraded}` : ""}`,
       };
     }
     if (payload.strategy === "today" && payload.frozen === true
@@ -172,7 +172,7 @@
     if (payload.phase === "close_fallback") {
       return {
         level: degraded ? "warning" : "ok",
-        message: `已冻结 · 收盘补算 · 仅本地评分 · ${window.TraderRender.formatDateTime(payload.published_at)}${degraded ? ` · 固化时降级：${degraded}` : ""}`,
+        message: `已冻结 · 收盘补算 · 仅本地评分 · ${window.TraderRender.formatTime(payload.published_at)}${degraded ? ` · 固化时降级：${degraded}` : ""}`,
       };
     }
     if (payload.stale) {
@@ -191,18 +191,18 @@
     if (payload.strategy === "long") {
       return {
         level: degraded ? "warning" : "ok",
-        message: `长期实时数据 · 不评分、不冻结 · ${window.TraderRender.formatDateTime(payload.published_at)}${degraded ? ` · 降级：${degraded}` : ""}`,
+        message: `长期实时数据 · 不评分、不冻结 · ${window.TraderRender.formatTime(payload.published_at)}${degraded ? ` · 降级：${degraded}` : ""}`,
       };
     }
     if (payload.view === "live") {
       return {
         level: "warning",
-        message: `实时快照 · ${window.TraderRender.formatDateTime(payload.published_at)} · 未冻结，名单与评分可能变化${degraded ? ` · 降级：${degraded}` : ""}`,
+        message: `实时快照 · ${window.TraderRender.formatTime(payload.published_at)} · 未冻结，名单与评分可能变化${degraded ? ` · 降级：${degraded}` : ""}`,
       };
     }
     return {
       level: degraded ? "warning" : "ok",
-      message: `快照 ${window.TraderRender.formatDateTime(payload.published_at)} · ${window.TraderRender.fusionModeLabel(payload.fusion_mode)}${degraded ? ` · 降级：${degraded}` : ""}`,
+      message: `快照 ${window.TraderRender.formatTime(payload.published_at)} · ${window.TraderRender.fusionModeLabel(payload.fusion_mode)}${degraded ? ` · 降级：${degraded}` : ""}`,
     };
   }
 

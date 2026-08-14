@@ -37,7 +37,7 @@
       </button>
       <div class="runtime-messages" aria-label="快照状态与最近错误">
         <div id="notice" class="runtime-message notice" data-level="idle" role="status" aria-live="polite">
-          <div class="runtime-message-heading"><span>快照状态</span><b id="snapshotStrategy">今早</b></div>
+          <div class="runtime-message-heading"><span>快照状态 · <time id="snapshotDate">—</time></span><b id="snapshotStrategy">今早</b></div>
           <strong id="noticeText">正在读取推荐快照</strong>
           <small id="snapshotMeta">等待行情与策略数据</small>
         </div>
@@ -58,7 +58,7 @@
     <main class="workspace">
       <section class="summary-band" aria-label="推荐摘要">
         <div class="summary-item"><span>数据新鲜度</span><strong id="quoteAge">-</strong><small><b id="quoteSource">-</b> · <b id="quoteTime">-</b></small></div>
-        <div class="summary-item"><span>候选覆盖</span><strong id="coverageStatus">-</strong><small id="coverageMeta">已评估 / 总候选</small></div>
+        <div class="summary-item"><span>行情覆盖</span><strong id="quoteCoverageStatus">-</strong><small id="quoteCoverageMeta">可用行情 / 当前名单</small></div>
         <div class="summary-item"><span>推荐漏斗</span><strong id="funnelStatus">-</strong><small id="funnelMeta">候选 / 评分 / 正式</small></div>
         <div class="summary-item"><span>模型预算</span><strong id="budgetStatus">-</strong><small id="budgetMeta">已用 / 剩余 / 上限</small></div>
         <div class="summary-item"><span>冻结状态</span><strong id="headerFreeze">-</strong><small id="freezeMeta">等待策略快照</small></div>
