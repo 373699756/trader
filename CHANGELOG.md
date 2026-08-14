@@ -6,6 +6,9 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户要求 Web 启动前显示访问地址，新增入口生命周期回归，锁定默认配置在监听端口成功绑定后、
+  Web 服务线程启动前输出一次 `127.0.0.1:5000`。
+
 - 针对用户反馈 Tomorrow/D25 观察池“最新价、今日涨跌、成交/换手、总市值”全部为空，新增评分项
   同批不可变报价锚点、完整 `DecisionQuote` 领域值及其规范哈希/正式记录兼容序列化；新增决策与
   初始完整 overlay 的单临界区 CAS 发布，以及领域、投影、查询、HTTP、调度和桌面回归。
@@ -155,6 +158,9 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- `trader-server` 现在在监听端口成功绑定后立即向标准输出刷新实际 `host:port`；默认显示
+  `127.0.0.1:5000`，自定义 `TRADER_HOST` 或 `TRADER_PORT` 时同步显示实际配置地址。
+
 - Tomorrow、D25 和 Today 的评分投影现在从形成该项的同批 `MarketQuote` 固化价格、涨跌幅、成交额、
   换手率、总市值、来源、来源时间和版本；local 升级 hybrid 时决策身份与匹配新父版本的完整 overlay
   原子换版。只读查询优先展示匹配 overlay，否则回退到决策锚点，历史与冻结记录不再依赖现场行情。
@@ -254,6 +260,9 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复通过 `run.sh`、`run.ps1`、`run.bat` 或直接执行 `trader-server` 启动成功后，终端没有明确访问
+  地址、使用者仍需从配置推断端口的问题。绑定失败或运行时未启动时不会输出不可访问的地址。
 
 - 修复评分输入已有完整腾讯行情，但 `_decision_item` 只复制名称/行业、窄 overlay 又只保存价格/涨跌、
   查询层把成交额/换手率/总市值硬编码为 `None`，最终令观察池四列显示 `—` 的跨层丢失。新发布决策
@@ -408,6 +417,12 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 入口回归在旧实现上按预期失败，显示 Web 开始服务前标准输出为空；实现后新增回归与 V2 入口契约
+  9 项通过，受影响文件 Ruff 与入口源码 mypy 通过。`make format-check`、`make lint`、
+  `make type-check`、完整 `make test` 和 `make package` 均通过；打包首次仅因沙箱禁止隔离环境下载
+  `setuptools` 失败，获准联网后原命令成功构建 sdist 与 wheel。`git diff --check` 通过。未修改
+  HTML、CSS、JavaScript、API 或桌面布局，因此三档浏览器视觉验收不适用。
 
 - 失败先行回归在旧实现上因缺少 `DecisionQuote` 按预期失败；实现后领域/应用/冻结/持久化/契约/调度
   扩展集与 68 项架构、`create_app()` 无副作用、固定融合 `83.40`、预算并发、SSE 游标/慢客户端、
@@ -595,6 +610,10 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 已在运行的旧 `trader-server` 不会热加载本次入口变化，需正常停止后重新执行 `./run.sh` 才会看到
+  地址提示。输出仅表示本机监听端口已成功绑定，不替代 `/api/v2/status` 健康检查；本批没有改变
+  运行时、行情、策略、DeepSeek、冻结、API 或 Web 页面行为，未跟踪截图保持未暂存。
 
 - 旧 schema v1 正式记录没有报价锚点时继续按兼容契约显示 `—`，不会伪造历史行情；新决策若上游对
   某个可选行情字段本身未提供值，该字段仍显式缺失且不会阻断本地评分。当前运行中的旧进程需正常

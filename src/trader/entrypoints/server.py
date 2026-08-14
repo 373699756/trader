@@ -104,6 +104,10 @@ def _run_system(
             system.app,
             threaded=True,
         )
+        print(
+            f"{system.settings.server.host}:{system.settings.server.port}",
+            flush=True,
+        )
         delegated = True
         return _serve_with_controller(
             server,
