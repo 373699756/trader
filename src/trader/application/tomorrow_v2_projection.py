@@ -252,6 +252,8 @@ def _decision_item(entry: TomorrowDecisionEntry) -> DecisionItem:
         ),
         risk_codes=tuple(fact.risk_code for fact in (*entry.local_risk_facts, *entry.deepseek_risk_facts)),
         reason=reason,
+        name=entry.features.quote.name,
+        industry=entry.features.quote.industry,
     )
 
 

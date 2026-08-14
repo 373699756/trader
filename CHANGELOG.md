@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户反馈“重启后三个评分策略观察池同时消失、列表只有代码而名称显示 `—`”新增真实刷新时间
+  推进、三策略共同构建、名称/行业身份往返、旧正式记录兼容、current HTTP 与运行版本状态回归。
+  状态 API 现在公开脱敏 scheduler 摘要，可直接区分刷新失败、决策失败和仍在运行的旧代码。
+
 - 针对用户报告的“今早/明日长期 `not_ready`、2–5 日只有空观察池且候选数异常”新增生产输入并发、
   三板限额、刷新失败保留、状态诊断、覆盖去重和正式记录往返回归。测试锁定同一观察点三条评分策略
   只执行一次全市场与候选报价刷新，且任一过滤原因重叠不会再放大候选/拒绝统计。
@@ -127,6 +131,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- scored 原生输入的决策时刻现在取调度请求与同批本地观测/接收完成时间的最大值，避免网络请求期间
+  新鲜候选被误判为未来数据；供应商来源时间仍不能推进本地时钟。新决策从同批 quote 固化名称和行业，
+  current、冻结历史与 HTTP 只读复用，不执行现场网络补名；`/api/v2/status` 新增 `runtime_version`
+  和 scheduler 摘要，旧正式记录缺少显示字段时仍按原哈希读取并显示 `—`。
+
 - Today、Tomorrow、D25 同一调度观察点现在 single-flight 共享全市场与候选报价批次，本地输入只读
   已有历史、结构化研究和分钟尾部缓存，不再由三条策略 lane 分别同步抓取历史与公司研究；
   `candidate_pool_size=120` 按每板应用，三板请求上限恢复为 360。状态 API 新增调度 lane、失败/发布
@@ -197,6 +206,13 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复重启加载共享输入实现后 Today、Tomorrow、D25 观察池全部消失的问题。生产隔离复现确认：请求
+  于刷新开始时定时，而候选报价的本地观测/接收时间在网络完成后晚数秒，旧构建仍使用请求时刻，因而
+  三策略共同触发 `scored native input cannot contain future features` 并被降级成笼统 `valueerror`。
+  现在决策使用可信本地完成时间，保留对伪造未来供应商时间的拒绝，并把该类异常映射为结构化
+  `future_input_time`。同时修复 scored 投影丢弃 quote 名称/行业、查询层硬编码空字符串造成名称显示
+  `—`；历史缺字段记录不改写，运行服务必须正常重启才能加载修复。
 
 - 修复用户当前运行中 Today/Tomorrow 长时间无快照、D25 虽 ready 但观察池为空且显示
   `candidate_count=26125` 的问题。根因确认是三条独立策略每轮重复执行全市场、候选历史和结构化研究
@@ -300,6 +316,19 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 本批定向回归 33 项通过，覆盖刷新完成时间晚于请求、三策略共享输入、未来供应商时间继续拒绝、
+  名称/行业从投影到查询与 HTTP、正式记录新旧往返、状态版本和 scheduler 摘要。生产只读诊断确认
+  三策略同时报告 `decision:valueerror`，隔离生产构建进一步复现原始原因
+  `scored native input cannot contain future features`；另验证 5,542 条真实全市场名称/行业无非法字段，
+  排除显示文本导致构建失败。
+
+- 高风险完整门禁最终通过：`make format-check` 覆盖 307 个文件，`make lint` 保持零严格重构债务，
+  `make type-check` 覆盖 202 个源文件，`make test` 共 881 项通过，仅保留既有 DeepSeek fixture
+  RuntimeWarning 和 Python SQLite adapter 弃用告警。`make package` 首次仅因沙箱禁止隔离环境下载
+  `setuptools` 失败，获准联网后同一命令成功生成 sdist 与 wheel；仓库外安装 wheel 后确认实际从安装
+  目录导入、名称/行业身份有效、模板与 JavaScript 资源可读，且 `trader-cli validate-config` 成功。
+  本批未修改 HTML、CSS、JavaScript 或桌面布局，三档浏览器视觉验收不适用。
 
 - 本批定向回归覆盖 V2 输入 single-flight、三板各自限额、合法/临时空集、非预期 owner 释放、刷新失败
   保留与恢复清错、状态 API、去重覆盖、正式记录往返、Today/Tomorrow 投影、Web 契约及 research
@@ -425,11 +454,12 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- 当前 `127.0.0.1:5000` 进程仍加载修复前代码，必须由用户正常停止后重新执行 `./run.sh` 才会生效；
-  重启后历史预热、行情来源失败或真实过滤门槛仍可能产生结构化 `not_ready` 或合法空池，但状态 API
-  会按策略显示真实 refresh/decision 阶段，不再用重复慢 I/O 和错误覆盖统计掩盖原因。若 Today 已越过
-  11:20 且当日无正式记录，仍按冻结契约禁止追补；本批不降低候选、风险、动作或融合门槛，也不承诺
-  一定产生正式荐股。
+- 当前 `127.0.0.1:5000` 进程仍加载本批修复前代码并持续报告三策略 `decision:valueerror`，必须由用户
+  正常停止后重新执行 `./run.sh` 才会生效；本批未擅自停止该进程。若 Today 在新进程形成合格 current
+  前已越过 11:20，则按冻结契约禁止当日追补；Tomorrow/D25 仍按各自时点处理。修复后行情源失败、
+  历史预热不足、真实过滤门槛仍可能产生结构化 `not_ready` 或合法空池，本批不降低任何选股、风险、
+  动作或融合门槛，也不承诺一定产生正式荐股。修复前已经固化且缺少名称/行业的旧正式记录保持原哈希，
+  其历史列表仍显示 `—`；只有修复后新生成的 scored 决策原生携带显示元数据。
 
 - Score-R5 统计、collector 与最终封存工程能力已闭合，但当前真实 R2/R4 历史点时证据仍不足 40 日；
   因此五个变体均只能诚实终止为探索性历史拒绝，不能启动真实前向 collector。固定前向日为

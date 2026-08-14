@@ -43,6 +43,8 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     )
     projection = build_tomorrow_v2_local(_native_input(features), policy, sequence=1)
     assert projection.review_candidates
+    assert all(item.name.startswith("测试") for item in projection.local.items)
+    assert all(item.industry == "工业" for item in projection.local.items)
     audit = build_v2_committed_research_audit(projection, projection.local)
     assert audit.decision_hash == projection.local.content_hash
     assert audit.deepseek_request_delta == 0

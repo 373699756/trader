@@ -210,13 +210,14 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         if batch is None:
             raise V2DecisionUnavailableError("V2 native input is unavailable")
         try:
+            evaluated_at = _decision_observed_at(batch)
             if request.strategy is Strategy.TODAY:
                 today_native = TodayNativeInput(
                     batch.request.trade_date,
                     batch.request.phase,
                     batch.data_version,
                     self._config_version,
-                    batch.request.observed_at,
+                    evaluated_at,
                     batch.market_features,
                     batch.requested_codes,
                     batch.candidate_features,
@@ -231,7 +232,7 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
                     batch.request.phase,
                     batch.data_version,
                     self._config_version,
-                    batch.request.observed_at,
+                    evaluated_at,
                     batch.market_features,
                     batch.requested_codes,
                     batch.candidate_features,
@@ -241,7 +242,7 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
                 )
                 projection = build_tomorrow_v2_local(tomorrow_native, self._policy, sequence=sequence)
         except (RuntimeError, TypeError, ValueError) as exc:
-            raise V2DecisionUnavailableError(type(exc).__name__) from exc
+            raise V2DecisionUnavailableError(_decision_failure_code(exc)) from exc
         if not projection.input_quality.publishable:
             raise V2DecisionUnavailableError(projection.input_quality.status)
         with self._lock:
@@ -392,6 +393,22 @@ def _data_version(
     return f"{request.input_version}:{_stable_digest(versions)}"
 
 
+def _decision_observed_at(batch: V2InputBatch) -> datetime:
+    target_zone = batch.request.observed_at.tzinfo
+    if target_zone is None:
+        raise ValueError("decision request time must be timezone-aware")
+    values = [batch.request.observed_at]
+    for feature in (*batch.market_features, *batch.candidate_features):
+        values.extend((feature.observed_at, feature.quote.received_time))
+        for evidence in feature.evidence:
+            if evidence.received_at is not None:
+                values.append(evidence.received_at)
+        values.extend(fact.observed_at for fact in feature.external_risk_facts)
+    if any(value.tzinfo is None or value.utcoffset() is None for value in values):
+        raise ValueError("decision input times must be timezone-aware")
+    return max(value.astimezone(target_zone) for value in values)
+
+
 _CANDIDATE_WEIGHTS = {
     "liquidity": 0.25,
     "short_momentum": 0.25,
@@ -412,6 +429,12 @@ def _failure_code(exc: BaseException) -> str:
         return value
     name = type(exc).__name__
     return "".join((f"_{character.lower()}" if character.isupper() else character) for character in name).lstrip("_")
+
+
+def _decision_failure_code(exc: BaseException) -> str:
+    if str(exc) == "scored native input cannot contain future features":
+        return "future_input_time"
+    return _failure_code(exc)
 
 
 __all__ = [

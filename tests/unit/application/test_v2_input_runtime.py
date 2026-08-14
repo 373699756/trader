@@ -163,6 +163,83 @@ def test_three_scored_strategies_share_one_fast_market_input_cycle(
     assert all(read[2] for read in market.candidate_reads)
 
 
+def test_three_scored_strategies_use_refresh_completion_as_the_decision_time(
+    application_feature_factory,
+) -> None:
+    requested_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+    completed_at = requested_at + timedelta(seconds=5)
+    features = []
+    for code, board in (("600001", Board.MAIN), ("300001", Board.CHINEXT), ("688001", Board.STAR)):
+        feature = application_feature_factory(code, requested_at)
+        features.append(replace(feature, quote=replace(feature.quote, board=board, is_st=True)))
+
+    class AdvancingMarket(_Market):
+        def refresh_candidate_quotes(self, codes, _observed_at, *, force=False, deadline=None):
+            result = super().refresh_candidate_quotes(codes, _observed_at, force=force, deadline=deadline)
+            self._features = tuple(
+                replace(
+                    feature,
+                    observed_at=completed_at,
+                    quote=replace(
+                        feature.quote,
+                        source_time=completed_at,
+                        received_time=completed_at,
+                    ),
+                )
+                for feature in self._features
+            )
+            return result
+
+    market = AdvancingMarket(tuple(features))
+    adapter = V2MarketDataAdapter(
+        market,
+        config_version="test-config",
+        candidate_pool_size=1,
+        long_runtime=_LongRuntime(),
+        policy=_policy(),
+    )
+    requests = tuple(
+        _request(requested_at, strategy=strategy, phase="morning")
+        for strategy in (Strategy.TOMORROW, Strategy.D25, Strategy.TODAY)
+    )
+
+    for request in requests:
+        adapter.refresh(request)
+    decisions = tuple(adapter.build_local(request) for request in requests)
+
+    assert all(decision is not None for decision in decisions)
+    assert all(decision.observed_at == completed_at for decision in decisions if decision is not None)
+
+
+def test_decision_time_does_not_trust_a_future_vendor_source_time(
+    application_feature_factory,
+) -> None:
+    requested_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+    feature = application_feature_factory("600001", requested_at)
+    feature = replace(
+        feature,
+        quote=replace(
+            feature.quote,
+            board=Board.MAIN,
+            is_st=True,
+            source_time=requested_at + timedelta(minutes=1),
+        ),
+    )
+    adapter = V2MarketDataAdapter(
+        _Market((feature,)),
+        config_version="test-config",
+        candidate_pool_size=1,
+        long_runtime=_LongRuntime(),
+        policy=_policy(),
+    )
+    request = _request(requested_at, phase="morning")
+
+    adapter.refresh(request)
+
+    with pytest.raises(V2DecisionUnavailableError, match="future_input_time"):
+        adapter.build_local(request)
+
+
 def test_candidate_pool_limit_is_applied_per_supported_board(
     application_feature_factory,
 ) -> None:

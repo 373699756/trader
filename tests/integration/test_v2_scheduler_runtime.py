@@ -370,6 +370,7 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
 
     payload = _runtime_status(runtime, StatusReviewer(), StatusBudget())  # type: ignore[arg-type]
     assert payload["degraded_reasons"] == ["tomorrow:refresh:source_unavailable"]
+    assert payload["runtime_version"] == "runtime-v2"
     assert payload["scheduler"]["decision_failure_count"] == 0  # type: ignore[index]
 
     data.fail = False

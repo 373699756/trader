@@ -209,8 +209,8 @@ def _scored_item(item: DecisionItem, quote: OverlayQuote | None, observed_at: da
     components = dict(item.score_components)
     return DecisionItemView(
         item.code,
-        "",
-        "",
+        item.name,
+        item.industry,
         None,
         item.selected,
         item.rank,

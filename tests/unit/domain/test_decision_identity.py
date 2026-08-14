@@ -149,11 +149,25 @@ def test_overlay_and_formal_record_validate_parent_time_scope_and_hash() -> None
 
 
 def test_formal_record_round_trip_preserves_optional_distinct_coverage() -> None:
-    current = replace(decision(), population_count=82, rejected_count=81)
+    item = replace(decision().items[0], name="浦发银行", industry="银行")
+    current = replace(decision(), items=(item,), population_count=82, rejected_count=81)
     record = CommittedDecisionRecord(current, NOW + timedelta(minutes=10), "scheduled")
 
     restored = committed_record_from_bytes(committed_record_bytes(record))
 
     assert restored.decision.population_count == 82
     assert restored.decision.rejected_count == 81
+    assert restored.decision.items[0].name == "浦发银行"
+    assert restored.decision.items[0].industry == "银行"
+    assert restored.payload_hash == record.payload_hash
+
+
+def test_legacy_formal_record_without_display_metadata_keeps_its_identity() -> None:
+    current = decision()
+    record = CommittedDecisionRecord(current, NOW + timedelta(minutes=10), "scheduled")
+
+    restored = committed_record_from_bytes(committed_record_bytes(record))
+
+    assert restored.decision.items[0].name == ""
+    assert restored.decision.items[0].industry == ""
     assert restored.payload_hash == record.payload_hash

@@ -74,6 +74,8 @@ def test_queries_expose_one_shape_for_scored_and_long_current_views() -> None:
     assert today.strategy is Strategy.TODAY
     assert today.score_status == "scored"
     assert today.coverage.selected_count == 1
+    assert today.items[0].name == "浦发银行"
+    assert today.items[0].industry == "银行"
     assert today.items[0].final_score == 84.0
     assert long_view.status == "ready"
     assert long_view.strategy is Strategy.LONG
@@ -140,6 +142,8 @@ def _decision(*, trade_date: date = TRADE_DATE) -> ScoredDecision:
                 (("local_score", 84.0),),
                 ("risk_example",),
                 "threshold_met",
+                "浦发银行",
+                "银行",
             ),
         ),
         (("hard_filter", 10),),

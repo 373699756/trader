@@ -97,6 +97,8 @@ def _status(services: UnifiedWebServices | None) -> RouteResponse:
             "status": str(runtime.get("status", "running")),
             "phase": runtime.get("phase"),
             "runtime_started": bool(runtime.get("runtime_started", True)),
+            "runtime_version": runtime.get("runtime_version"),
+            "scheduler": _mapping(runtime.get("scheduler")),
             "last_error": runtime.get("last_error"),
             "deepseek_budget": _budget(runtime),
             "degraded_reasons": list(_reasons(runtime)),
@@ -181,6 +183,10 @@ def _reasons(runtime: Mapping[str, object]) -> tuple[str, ...]:
     if isinstance(reasons, (list, tuple)):
         return tuple(str(reason) for reason in reasons)
     return ()
+
+
+def _mapping(value: object) -> dict[str, object]:
+    return _json_mapping(value) if isinstance(value, Mapping) else {}
 
 
 def _json_mapping(value: Mapping[object, object]) -> dict[str, object]:

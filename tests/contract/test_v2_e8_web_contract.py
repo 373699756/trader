@@ -46,6 +46,8 @@ def test_unified_decision_routes_validate_strategy_date_and_etag() -> None:
     assert current.status_code == 200
     assert current.get_json()["schema_version"] == "v2_decision_view_v1"
     assert current.get_json()["strategy"] == "today"
+    assert current.get_json()["items"][0]["name"] == "浦发银行"
+    assert current.get_json()["items"][0]["industry"] == "银行"
     assert cached.status_code == 304
     assert dates.get_json()["dates"] == ["2026-08-08"]
     assert invalid_strategy.status_code == 400
@@ -86,6 +88,8 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     assert json.loads(event.split("data: ", 1)[1])["strategy"] == "today"
     assert status["events"]["sequence"] == 1
     assert status["strategies"]["today"]["status"] == queries.current(Strategy.TODAY).status
+    assert status["runtime_version"] == "runtime:test"
+    assert status["scheduler"]["strategy_errors"] == {}
 
 
 def test_http_reads_do_not_invoke_external_io() -> None:
@@ -108,7 +112,14 @@ def _app():
     queries = UnifiedDecisionQueries(index, _Repository(), _Clock())
     stream = UnifiedDecisionEventStream()
     services = UnifiedWebServices(
-        queries, stream, lambda: {"status": "running", "deepseek_budget": {"limit": 168, "used": 12, "remaining": 156}}
+        queries,
+        stream,
+        lambda: {
+            "status": "running",
+            "runtime_version": "runtime:test",
+            "scheduler": {"strategy_errors": {}},
+            "deepseek_budget": {"limit": 168, "used": 12, "remaining": 156},
+        },
     )
     return create_app(services=services), queries, stream
 
@@ -137,6 +148,8 @@ def _decision() -> ScoredDecision:
                 (("local_score", 84.0),),
                 (),
                 "threshold_met",
+                "浦发银行",
+                "银行",
             ),
         ),
         (("hard_filter", 10),),

@@ -38,6 +38,8 @@ class DecisionItem:
     score_components: tuple[tuple[str, float | None], ...]
     risk_codes: tuple[str, ...]
     reason: str
+    name: str = ""
+    industry: str = ""
 
     def __post_init__(self) -> None:
         _require_code(self.code)
@@ -59,8 +61,12 @@ class DecisionItem:
             raise ValueError("selected decisions require a positive rank and available action")
         if not self.selected and self.rank != 0:
             raise ValueError("unselected decisions must use rank zero")
+        name = _display_text(self.name, "decision item name")
+        industry = _display_text(self.industry, "decision item industry")
         object.__setattr__(self, "score_components", components)
         object.__setattr__(self, "risk_codes", risks)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "industry", industry)
 
 
 @dataclass(frozen=True)
@@ -455,7 +461,7 @@ def _record_payload(record: CommittedDecisionRecord) -> dict[str, _Json]:
 
 
 def _decision_item_payload(item: DecisionItem) -> dict[str, _Json]:
-    return {
+    payload: dict[str, _Json] = {
         "code": item.code,
         "action": item.action.value,
         "selected": item.selected,
@@ -467,6 +473,11 @@ def _decision_item_payload(item: DecisionItem) -> dict[str, _Json]:
         "risk_codes": list(item.risk_codes),
         "reason": item.reason,
     }
+    if item.name:
+        payload["name"] = item.name
+    if item.industry:
+        payload["industry"] = item.industry
+    return payload
 
 
 def _decision_item_from_json(raw: object) -> DecisionItem:
@@ -482,6 +493,8 @@ def _decision_item_from_json(raw: object) -> DecisionItem:
         score_components=_score_pairs(value.get("score_components")),
         risk_codes=tuple(_strings(value.get("risk_codes"), "risk_codes")),
         reason=_text(value, "reason"),
+        name=_optional_display_text(value.get("name"), "decision item name"),
+        industry=_optional_display_text(value.get("industry"), "decision item industry"),
     )
 
 
@@ -620,6 +633,23 @@ def _optional_integer(raw: object, label: str) -> int | None:
     if not isinstance(raw, int) or isinstance(raw, bool):
         raise ValueError(f"{label} must be an integer")
     return raw
+
+
+def _display_text(value: str, label: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be text")
+    normalized = value.strip()
+    if len(normalized) > 120 or any(ord(character) < 32 for character in normalized):
+        raise ValueError(f"{label} is invalid")
+    return normalized
+
+
+def _optional_display_text(raw: object, label: str) -> str:
+    if raw is None:
+        return ""
+    if not isinstance(raw, str):
+        raise ValueError(f"{label} must be text")
+    return _display_text(raw, label)
 
 
 def _validate_coverage_counts(population_count: int | None, rejected_count: int | None, item_count: int) -> None:

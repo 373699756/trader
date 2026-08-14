@@ -650,6 +650,7 @@ def _runtime_status(
     return {
         "status": "running" if status.running else "stopped",
         "runtime_started": status.running,
+        "runtime_version": status.config_version,
         "phase": status.phase.value,
         "deepseek_budget": budget.summary(_utc_now().date().isoformat()),
         "deepseek": reviewer.status(),

@@ -249,6 +249,13 @@ candidate/research、配置、策略、融合、阶段、待审集合、逐股�
 local/hybrid 阶段、结构化过滤聚合和逐项分数、风险、动作与排名。long 不生成正式记录，
 也不发布评分提交事件。
 
+每个 scored `DecisionItem` 还必须从形成该项的同批 `FeatureSnapshot.quote` 固化股票名称与行业；
+current、冻结历史和 HTTP 只读投影都复用该身份内元数据，不得在查询时现场抓取或按代码补算。
+旧正式记录缺少可选显示元数据时保持原身份并显示 `—`，新生成决策不得在投影阶段丢弃已有名称。
+评分原生输入的 `evaluated_at` 取调度请求时刻与同批本地 `observed_at`/`received_time` 的最晚值，
+以反映网络刷新真实完成时间；供应商 `source_time` 和公告 `published_at` 仍必须不晚于该时刻，
+不得用外部声明时间推进决策时钟或绕过未来数据校验。
+
 应用层 `UnifiedDecisionIndex` 按策略隔离当前身份和报价 overlay。每次发布必须携带调用方
 实际读取的 `expected_version` 并执行内存 compare-and-set；旧交易日、旧 sequence、同
 sequence 不同内容均拒绝。hybrid 必须引用同策略、同交易日且仍为当前版本的 local 父身份。
@@ -1082,6 +1089,8 @@ sample count、P50、P95 和 max；关联 trace、阶段名、样本和浏览器
 状态 API 只返回组合根注入并已经聚合的内存事实，不读取网络、文件或数据库，也不承诺尚未
 实现的指标。股票代码集合、关联身份明细、完整外部载荷和 SQLite/JSON 内容不得暴露；缓存
 逻辑字节、RSS/USS、Python traced、Polars 估算和瞬时峰值原因由发布性能 runner 及验收报告提供。
+状态顶层必须返回当前有效配置/策略组合的 `runtime_version`，并原样投影脱敏的 `scheduler`
+摘要，以便区分旧常驻进程、刷新失败和决策构建失败；源码文件发生变化不会热加载到既有进程。
 
 日志只记录脱敏结构化摘要，不记录密钥、Token、完整模型请求/响应、完整供应商载荷或个人
 敏感路径。所有外部 I/O 必须有 timeout、容量、熔断和明确失败策略。DeepSeek 与 Tushare
@@ -1091,6 +1100,10 @@ sample count、P50、P95 和 max；关联 trace、阶段名、样本和浏览器
 默认仅监听本机，不承担公网认证、授权和 TLS。扩大网络边界必须另立产品与安全契约。
 
 ## 12. 安装、运行与运维
+
+源码更新不会替换已经运行的常驻进程。部署新提交时必须正常停止旧 `run.sh`/`trader-server`，
+再依次执行 `./run.sh validate-config` 与 `./run.sh`；启动后应核对 `/api/v2/status` 的
+`runtime_version`、`scheduler.strategy_errors` 和各策略状态，不能只以 HTTP 200 判断更新生效。
 
 一键启动使用 `run.sh`、`run.ps1` 或 `run.bat`。手动流程为创建虚拟环境、从
 `pyproject.toml` 安装、用绝对配置路径执行 `trader-cli validate-config`，再启动
