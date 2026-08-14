@@ -825,10 +825,12 @@ T+1 的严重回撤定义为 `MAE/ATR20 <= -1.5`，d25 定义为 `MAE/ATR20 <= -
 ### 15.1 待验证收益路线
 
 待验证收益路线不改变当前生产策略、安全规则、冻结记录、DeepSeek 预算或普通 Web 推荐。
-当前代码已经实现 R2 点时 active-set/乐观上界证明、R3 production baseline 报告，以及 R4 五个
-独立研究挑战者、连续入场形态分、覆盖率收缩、候选上界扩展、热度与弱结构组合观察和
-local-only/hybrid 同日同股配对 manifest；尚未实现 R5 配对 bootstrap、Holm、历史晋级门禁或前向
-collector。运行配置名称中的版本号不表示这些策略变体已经上线。
+当前代码已经实现 R2 点时 active-set/乐观上界证明、R3 production baseline 报告、R4 五个
+独立研究挑战者与 local-only/hybrid 同日同股配对 manifest，以及 R5 固定统计门禁、历史失败终止、
+不可变前向 collector 和最终 40+20 封存器。当前真实 R2/R4 历史覆盖不足 40 日，R5 只能输出
+`exploratory`/`historical_rejected`；尚未开始 2026-11-02 的真实前向窗口，也没有任何变体取得
+`promotion_eligible`；尚未实现 Score-R6 第二轮研究或 Score-R7 人工晋级档案。运行配置名称中的
+版本号不表示这些策略变体已经上线。
 
 Score-R0（评分科学化研究，非生产）已预注册以下固定边界，先实现契约与审计再切入实现：
 
@@ -1178,6 +1180,24 @@ Spearman Rank IC 必须大于 0；若最高分组相对最低分组的严重回�
 可结算同日同股配对、前向至少 100 条。任何计划日无效、身份冲突、参数变化或样本不足都转为
 `forward_rejected`；不得向前后顺延、补抓后来数据、删除亏损日或以历史日替换。最终报告分别
 列出历史、前向和 40+20 合并结果，并重新按固定五变体家族执行全部晋级门禁。
+
+Score-R5 的实现身份固定为 `score_r5_statistical_gate_v1`，统计版本固定为
+`score_r5_paired_mbb_holm_v1`，前向记录 schema 固定为 `score_r5_forward_day_v1`，最终报告
+schema 固定为 `score_r5_final_report_v1`。历史统计器以 R3/R4 哈希和 R4 冻结参数 manifest 为
+父身份；只要历史日数不是恰好 40、同日同股总数不足 300 或任一固定门禁无有效证据，该变体就以
+结构化失败原因终止为 `historical_rejected`，不得进入 collector。
+
+统计器分别保留 local-only 相对 production、hybrid 相对 production，以及 hybrid 相对 local-only
+的日序列。五变体 local-only 的 20bp、5 日区块单侧 p 值构成固定 Holm 家族；结构变体的历史资格
+以 local-only 全部门禁为准，hybrid 只有另行证明相对 local-only 的 20bp、5 日区块未中心化区间
+下界大于 0 且单侧 p 值不高于 0.05 时才标记独立增益。50bp、100bp、3 日和 10 日结果只报告。
+
+前向记录键固定为 `variant_id + planned_trade_date`，并绑定历史门禁哈希、R4 变体/参数、数据
+schema、规则、配置、策略、融合、统计和报告版本。collector 只接受固定 20 日集合中的日期和
+`historical_passed` 变体；不可变 JSON 中同键同内容重放幂等、不同内容冲突。`failed` 记录不携带
+伪造日回放；`valid` 与 `no_decision` 必须携带完整同日同股结算，且 `no_decision` 的挑战者权重为
+零。最终封存对历史、前向及合并序列重新计算同一固定五变体家族；真实证据尚未到齐时只能返回
+`forward_collecting` 或 `forward_rejected`，不得生成伪 `promotion_eligible`。
 
 #### 15.1.7 第二轮权重、风险与门槛研究
 

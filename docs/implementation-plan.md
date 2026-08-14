@@ -1,7 +1,7 @@
 # V2 与评分研究多 Codex 总实施计划
 
-状态：V2-E0 至 V2-E11、Score-R0、Score-R1、Score-R1-Migrate、Score-R2、Score-R3、Score-R4 已完成；
-V2 工程发布章节全部闭合，下一研究章节为 Score-R5。
+状态：V2-E0 至 V2-E11、Score-R0、Score-R1、Score-R1-Migrate、Score-R2、Score-R3、Score-R4、
+Score-R5 工程能力已完成；V2 工程发布章节全部闭合，下一研究章节为 Score-R6。
 
 本文是唯一活动施工计划，只定义执行顺序、会话协作、文件所有权、同步 Gate 和退出条件，
 不定义产品或策略行为。产品、架构、时间线、API、运维和验收以
@@ -325,13 +325,21 @@ production/local-only/hybrid 同日同股行、未选中零权重和同一 `Cost
 facts 时 hybrid 为 local control copy；研究层无模型端口，DeepSeek HTTP 增量固定为 0。少于 40 个
 有效日仍只标记 `exploratory`，本章不执行 R5 bootstrap、Holm、前向采集或生产晋级。
 
-### Score-R5：统计门禁与 20 日前向影子
+### Score-R5：统计门禁与 20 日前向影子（已完成）
 
 - 对 40 日结果执行固定种子配对 bootstrap、多重检验和集中度分析。
 - 仅历史门禁通过者进入 20 个连续计划交易日前向影子，参数不得回看修改。
 - 最终至少 300 条同日同股配对，其中前向至少 100 条。
 
-退出条件：生成完整 40+20 报告；未通过版本明确终止，不进入调权或生产。
+退出证据：`score_r5_statistical_gate_v1` 以 `20260811` 主种子为五变体和 3/5/10 日非循环区块
+派生独立随机流，每项固定 10,000 次；20bp、5 日单侧 p 值保持五成员 Holm 家族，严重回撤、
+召回、删月/删板、正贡献集中度、五分组和 Rank IC 均从同一同日同股行派生。历史不足 40 日、
+配对不足 300 条或任一门禁缺证时明确终止为 `historical_rejected`。只有历史通过版本可向
+`score_r5_forward_day_v1` 固定 20 日集合追加 `valid/failed/no_decision`，同键同内容幂等、冲突
+拒绝且失败日不可替换；最终封存分别保留历史哈希、前向报告与 40+20 合并报告，并对合并序列
+重新执行固定家族。当前真实 R2/R4 覆盖不足 40 日，故真实状态仍为探索性历史终止，尚未进入
+2026-11-02 至 2026-11-27 的前向采集，也没有版本取得 `promotion_eligible`；该外部证据缺口不以
+fixture 或后补日期伪造，活动生产保持不变。
 
 ### Score-R6：第二轮权重、风险和门槛
 

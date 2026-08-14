@@ -1174,9 +1174,9 @@ fixture 不算最终发布证据。
 
 ### 14.2 评分研究状态
 
-Score-R0 至 Score-R4 已完成；Score-R5 至 Score-R7 尚未完成。
+Score-R0 至 Score-R5 的工程能力已完成；Score-R6 至 Score-R7 尚未完成。
 在线研究链与活动运行库物理分离，只消费不可变 V2 committed event 和同批研究审计；
-离线 R2/R3/R4 只读唯一数据平面的点时证据。两者均不建立第二套行情、评分、冻结、Web 或 DeepSeek
+离线 R2/R3/R4/R5 只读唯一数据平面的点时证据。两者均不建立第二套行情、评分、冻结、Web 或 DeepSeek
 请求链，不写活动配置或正式记录。
 
 Score-R2 与 Score-R3 是离线研究库能力，不接入组合根、HTTP 或生产调度。Score-R2 只通过继承唯一
@@ -1197,6 +1197,13 @@ Score-R4 以冻结参数 manifest 实现五个独立版本，连续入场、覆�
 同一 R2 active-set、R3 production baseline 和 `CostSettlementBasis`，生成 production/local-only/
 hybrid 同日同股等权配对；没有已记录结构化 facts 时 hybrid 必须是 local control copy。该能力不持有
 模型客户端、不增加 DeepSeek HTTP、不写生产索引、冻结、活动配置或 Web，也不执行 R5 统计或晋级。
+
+Score-R5 以独立离线统计器实现固定种子配对移动区块 bootstrap、固定五变体 Holm 家族、严重回撤、
+召回、删月/删板、正贡献集中度、五分组和 Rank IC 门禁；历史失败版本终止为
+`historical_rejected`。只有历史门禁通过且版本哈希完全匹配的变体可写固定 20 日不可变前向记录，
+同键重放幂等、冲突或失败日期不可替换；最终封存重新计算历史、前向与 40+20 合并报告。当前真实
+历史覆盖不足 40 日且前向窗口尚未开始，因此没有真实 `forward_collecting` 或
+`promotion_eligible` 证据，活动生产策略保持不变。
 
 最多 40 个历史日、20 个固定前向日、五挑战者、候选召回、配对移动区块 bootstrap、Holm
 校正、第二轮研究和人工晋级的策略定义只以荐股策略文档第 15.1 节为准。研究通过不自动改变

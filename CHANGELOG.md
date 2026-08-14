@@ -6,6 +6,20 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求继续 `docs/implementation-plan.md` 的下一个完整未完成章节。本批完成 Score-R5 工程能力：
+  新增 `score_r5_statistical_gate_v1` 固定统计器，按五个 R4 变体分别形成 local-only、hybrid 相对
+  production 及 hybrid 相对 local-only 报告；配对移动区块 bootstrap 固定主种子 `20260811`、
+  3/5/10 日非循环区块和每项 10,000 次，20bp、5 日单侧 p 值始终保留五成员 Holm 家族。
+
+- 新增历史与最终门禁，统一从 R4 同日同股结算行派生三档成本、严重回撤及配对区间、候选召回、
+  删除最佳月份/板块、正向贡献单股/前五集中度、五分组、Rank IC 和高低分组回撤差。历史不是恰好
+  40 日、配对不足 300 条或任一证据门禁失败时以结构化原因终止，不得进入前向。
+
+- 新增固定 2026-11-02 至 2026-11-27 二十日的前向 collector、`score_r5_forward_day_v1` 不可变
+  JSON 仓储和 `score_r5_final_report_v1` 封存器。记录绑定历史门禁、变体/参数、数据、规则、配置/
+  策略、融合、统计和报告身份；同键同内容重放幂等，不同内容或篡改冲突，失败日和 `no_decision`
+  不得被盈利日替换。最终分别保留历史身份、前向报告和 40+20 合并门禁，并重跑固定 Holm 家族。
+
 - 用户要求继续 `docs/implementation-plan.md` 的下一个完整未完成章节。本批完成 Score-R4：新增
   `score_r4_preregistered_parameters_v1` 不可变机器 manifest、五个独立挑战者版本及生产纯领域
   评估适配端口。连续入场 11 条线性端点、主板/成长板高热带和弱收盘/尾盘/回撤阈值均在收益比较前
@@ -109,6 +123,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 总计划与权威研究状态推进为 Score-R5 工程能力已完成、Score-R6 为下一章节。当前真实 R2/R4 证据
+  仍不足 40 个有效历史日，统计结果只能是 `exploratory`/`historical_rejected`；真实前向窗口尚未
+  开始，不存在 `promotion_eligible` 版本。活动 50 分/30%/每板 Top120、风险、68/32 融合、冻结、
+  Web、DeepSeek 预算和生产配置均未改变。
+
 - 总计划与权威研究状态推进为 Score-R4 已完成、Score-R5 为下一章节。R4 少于 40 个有效日时仍只
   输出 `exploratory` 配对能力，不运行 bootstrap、Holm、前向 collector 或晋级；活动生产策略、
   50 分/30%/每板 Top120、硬过滤、风险、冻结、Web 和固定融合行为均保持不变。
@@ -166,6 +185,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 R4 之后只有配对 manifest、尚无可执行统计晋级边界的问题：此前无法证明固定随机流、Holm
+  多重检验、集中度/稳定性失败终止，也没有可恢复且冲突安全的固定前向记录。R5 现在对缺日、短区块、
+  缺失 p 值、样本不足、版本漂移、计划日失败和持久化篡改全部 fail closed，并禁止缩小检验族或顺延日期。
+
 - 修复 Score-R3 后仍只有基线指标、没有可执行五挑战者隔离回放和 local/hybrid 同股配对边界的问题。
   R4 现在拒绝未记录 facts 冒充 hybrid、生产基线身份漂移、不连续或不稳定 Top6、板块/行业超限、
   observe-only 入选、硬热度拒绝身份泄漏，以及无 active-set loaded 证明的 Top120 外候选扩展。
@@ -222,6 +245,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未删除或替换生产实现；R5 不接入组合根、HTTP、Web、统一决策索引、正式冻结或活动配置，不持有
+  模型客户端，也不新增 DeepSeek 物理请求、运行线程或供应商数据读取。未伪造 40 日历史或未来 20 日
+  真实证据，未提前执行 Score-R6 调权、门槛研究或生产晋级。
+
 - 本批未删除或替换生产实现；R4 不持有模型客户端、不增加 DeepSeek HTTP、不写活动配置、统一决策
   索引、冻结、正式历史、普通 API/Web 或运行数据库，也未提前实现 R5 统计和前向影子。
 
@@ -254,6 +281,19 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- Score-R5 定向领域、应用、组件与契约回归通过，覆盖 SHA-256 派生随机种子、10,000 次配对非循环
+  bootstrap、短区块拒绝、固定五变体 Holm step-down、探索性历史终止、固定二十日前向日期、collector
+  准入拒绝、`failed/no_decision` JSON 往返、幂等、内容冲突和篡改检测。首轮 Review 修复了前向报告
+  缺失、完整绑定校验不足、正贡献先错误抵消负贡献及复杂度债务；全量测试首轮发现旧契约仍要求
+  “尚未实现”标识，明确改为尚未实现 R6/R7 后重跑通过。
+
+- `make format-check`（307 个文件）、`make lint`（零严格重构债务）、`make type-check`（202 个源文件）
+  和 `make test` 最终全部通过；全量测试仅保留既有 DeepSeek fixture 模型 RuntimeWarning 与 Python
+  SQLite adapter 弃用告警。`make package` 首次仅因沙箱阻止隔离构建下载 `setuptools` 失败，获准
+  联网后原命令成功构建 sdist/wheel；仓库外临时安装 wheel 后成功导入统计器、collector、最终封存器、
+  JSON 前向仓储，并核对主种子 `20260811` 与重复次数 `10000`。本批不修改活动 Web、静态资源、组合根
+  或生产运行行为，三档浏览器验收及真实服务验收不适用。
 
 - Score-R4 定向契约、领域、应用、R2/R3 组件回归通过，覆盖五版本/manifest 身份、11 条连续入场端点、
   三板热带与三项弱结构、关键缺失、硬热度拒绝、coverage shrink、Top120 外 loaded active-set、
@@ -353,6 +393,12 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- Score-R5 统计、collector 与最终封存工程能力已闭合，但当前真实 R2/R4 历史点时证据仍不足 40 日；
+  因此五个变体均只能诚实终止为探索性历史拒绝，不能启动真实前向 collector。固定前向日为
+  2026-11-02 至 2026-11-27，当前日期尚未到达；届时任一停机、数据失败、身份冲突或少于 100 条
+  前向同股配对都会不可逆地 `forward_rejected`。只有真实历史、前向及 40+20 合并门禁均通过后，
+  才能另立 Score-R6 批次；本批没有收益提高或晋级结论。
 
 - Score-R4 工程能力已经闭合，但活动研究证据仍不足预注册的 40 个完整历史点时日，因此当前只能形成
   `exploratory` 配对 manifest，没有真实历史收益、Holm 通过或晋级结论。下一章 Score-R5 才执行固定

@@ -11,6 +11,7 @@ from trader.application.research.challengers import ScoreR4ChallengerReplayer
 from trader.application.research.extraction import ScoreR2HistoricalExtractor
 from trader.application.research.replay import ScoreR3BaselineReplayer
 from trader.application.research.replay_models import BaselineReplaySelection
+from trader.application.research.score_r5 import ScoreR5FinalSealer, ScoreR5ForwardCollector, ScoreR5StatisticalGate
 
 
 class _ChallengerEvaluator:
@@ -115,3 +116,51 @@ def test_r4_rejects_hybrid_facts_that_were_not_recorded_in_r2() -> None:
 
     with pytest.raises(ValueError, match="existing facts"):
         ScoreR4ChallengerReplayer(_ManufacturedFactsEvaluator()).replay(extraction, baseline)
+
+
+def test_r5_exploratory_r4_evidence_terminates_every_variant_before_forward() -> None:
+    extraction, baseline = _inputs()
+    challengers = ScoreR4ChallengerReplayer(_ChallengerEvaluator()).replay(extraction, baseline)
+
+    report = ScoreR5StatisticalGate().evaluate(baseline, challengers)
+
+    assert report.status == "exploratory"
+    assert report.historical_day_count == 1
+    assert tuple(item.variant_id for item in report.variants) == (
+        "continuous_entry",
+        "coverage_shrink",
+        "candidate_upper_bound",
+        "heat_weak_structure",
+        "combined_v1",
+    )
+    assert all(item.state == "historical_rejected" for item in report.variants)
+    assert all("historical_day_count" in item.failure_reasons for item in report.variants)
+    assert all(item.local_track.cost_mean_differences[0] is not None for item in report.variants)
+    assert report.deepseek_http_request_delta == 0
+
+    collector = ScoreR5ForwardCollector(report)
+    with pytest.raises(ValueError, match="historical gate"):
+        collector.record_failed("continuous_entry", report.forward_dates[0], "source_unavailable")
+
+    final = ScoreR5FinalSealer().seal(report, baseline, challengers, ())
+    assert final.state == "forward_rejected"
+    assert final.failure_reasons == ("no_historical_variant_passed",)
+    assert len(report.forward_dates) == 20
+    assert report.forward_dates[0].isoformat() == "2026-11-02"
+    assert report.forward_dates[-1].isoformat() == "2026-11-27"
+
+
+def test_r5_forward_collector_is_append_only_after_a_frozen_pass_identity() -> None:
+    extraction, baseline = _inputs()
+    challengers = ScoreR4ChallengerReplayer(_ChallengerEvaluator()).replay(extraction, baseline)
+    exploratory = ScoreR5StatisticalGate().evaluate(baseline, challengers)
+    passed = replace(exploratory.variants[0], state="historical_passed", failure_reasons=())
+    frozen = replace(exploratory, variants=(passed, *exploratory.variants[1:]))
+    collector = ScoreR5ForwardCollector(frozen)
+    planned_date = frozen.forward_dates[0]
+
+    first = collector.record_failed("continuous_entry", planned_date, "source_unavailable")
+    assert collector.record_failed("continuous_entry", planned_date, "source_unavailable") == first
+    assert collector.records("continuous_entry") == (first,)
+    with pytest.raises(ValueError, match="identity conflict"):
+        collector.record_failed("continuous_entry", planned_date, "service_stopped")
