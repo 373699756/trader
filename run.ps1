@@ -6,7 +6,7 @@ $Mode = if ($args.Count -gt 0) { $args[0] } else { "serve" }
 
 function Show-Usage {
     @"
-用法: .\run.ps1 [serve|validate-config]
+用法: .\run.ps1 [serve|validate-config|research-status]
 
 环境变量:
   TRADER_CONFIG=C:\absolute\path\runtime.json
@@ -75,8 +75,8 @@ if ($Mode -eq "serve" -or $Mode -eq "app") {
     & $Server --config $ConfigPath
     exit $LASTEXITCODE
 }
-if ($Mode -eq "validate-config") {
-    & $Cli --config $ConfigPath validate-config
+if ($Mode -eq "validate-config" -or $Mode -eq "research-status") {
+    & $Cli --config $ConfigPath $Mode
     exit $LASTEXITCODE
 }
 

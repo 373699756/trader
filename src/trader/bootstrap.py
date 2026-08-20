@@ -19,6 +19,7 @@ from trader.application.decision_queries import UnifiedDecisionQueries
 from trader.application.decision_stream import UnifiedDecisionEventStream
 from trader.application.latency import LatencyWaterfall
 from trader.application.long_v2_runtime import LongV2Runtime, LongV2RuntimeDependencies
+from trader.application.outcome_settlement import OutcomeSettlementService, V2OutcomeSettlementAdapter
 from trader.application.research_audit import V2DecisionObservation
 from trader.application.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
 from trader.application.shutdown import ShutdownDeadline, ShutdownReport
@@ -37,7 +38,6 @@ from trader.application.v2_input_runtime import (
     V2DeepSeekAdapter,
     V2FreezeAdapter,
     V2MarketDataAdapter,
-    V2NoopSettlement,
 )
 from trader.application.v2_runtime import V2RuntimeDependencies, V2RuntimeIssue, V2SchedulerRuntime
 from trader.application.workers import BoundedExecutor
@@ -73,7 +73,8 @@ from trader.infra.market_data.tencent import TencentClient
 from trader.infra.market_data.tushare import TushareClient
 from trader.infra.persistence.data_plane import DataPlaneRepository
 from trader.infra.persistence.decision_records import SQLiteDecisionRecordRepository
-from trader.infra.persistence.research_trace import SQLiteV2ResearchTraceStore
+from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
+from trader.infra.persistence.research_trace import ResearchTraceLimits, SQLiteV2ResearchTraceStore
 from trader.infra.persistence.runtime_json import RuntimeJsonWriter
 from trader.infra.runtime_support import RuntimeWorkerResources, ShanghaiClock
 from trader.infra.settings import (
@@ -108,6 +109,7 @@ class ApplicationSystem:
     tomorrow_index: UnifiedDecisionIndex | None = None
     tomorrow_records: SQLiteDecisionRecordRepository | None = None
     research_trace: SQLiteV2ResearchTraceStore | None = None
+    outcome_evidence: SQLiteOutcomeEvidenceRepository | None = None
 
     def _lifecycle_resources(self) -> SystemLifecycleResources:
         return SystemLifecycleResources(
@@ -151,6 +153,7 @@ class _PersistenceContext:
     repository: SQLiteDecisionRecordRepository
     data_plane: DataPlaneRepository
     budget: DeepSeekBudgetLedger
+    outcomes: SQLiteOutcomeEvidenceRepository
 
 
 @dataclass(frozen=True)
@@ -214,7 +217,15 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
                 publication.tomorrow_freezer,
                 publication.d25_freezer,
             ),
-            settlement=V2NoopSettlement(),
+            settlement=V2OutcomeSettlementAdapter(
+                market_data,
+                OutcomeSettlementService(
+                    market_data,
+                    persistence.outcomes,
+                    persistence.outcomes,
+                    session_distance=calendar.session_distance,
+                ),
+            ),
         ),
         config_version=effective_config_version,
         shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
@@ -226,6 +237,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
             initializers=(
                 publication.tomorrow_repository.initialize,
                 lambda: _initialize_research_trace(publication.research_trace),
+                lambda: _initialize_outcome_evidence(persistence.outcomes),
                 lambda: _initialize_reference_data_plane(market_data, persistence.data_plane),
                 persistence.budget.initialize,
                 publication.today_freezer.initialize,
@@ -265,6 +277,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         tomorrow_index=publication.tomorrow_index,
         tomorrow_records=publication.tomorrow_repository,
         research_trace=publication.research_trace,
+        outcome_evidence=persistence.outcomes,
     )
 
 
@@ -512,6 +525,7 @@ def _build_persistence(context: _BuildContext) -> _PersistenceContext:
     runtime_database_lock = threading.Lock()
     repository = SQLiteDecisionRecordRepository(settings.runtime_dir)
     data_plane = DataPlaneRepository(settings.runtime_dir)
+    outcomes = SQLiteOutcomeEvidenceRepository(settings.runtime_dir, repository, data_plane)
     budget = DeepSeekBudgetLedger(
         settings.runtime_dir / "deepseek-budget.sqlite3",
         daily_hard_limit=settings.deepseek.daily_hard_limit,
@@ -530,7 +544,7 @@ def _build_persistence(context: _BuildContext) -> _PersistenceContext:
         ),
         write_lock=runtime_database_lock,
     )
-    return _PersistenceContext(repository, data_plane, budget)
+    return _PersistenceContext(repository, data_plane, budget, outcomes)
 
 
 def _build_reviewer(context: _BuildContext, budget: DeepSeekBudgetLedger) -> DeepSeekReviewer:
@@ -573,7 +587,7 @@ def _build_publication(
     decision_queries = UnifiedDecisionQueries(tomorrow_decisions, repository, clock)
     research_trace = SQLiteV2ResearchTraceStore(
         settings.runtime_dir,
-        capacity=max(2048, settings.pipeline.event_queue_size * 4),
+        limits=ResearchTraceLimits(events_per_trade_date=max(2048, settings.pipeline.event_queue_size * 4)),
     )
 
     def publish_decision_event(observation: V2DecisionObservation) -> None:
@@ -651,14 +665,19 @@ def _runtime_status(
     strategy_errors = dict(status.strategy_error_codes)
     recent_errors = [_runtime_issue_payload(issue) for issue in status.recent_errors]
     active_issues = [issue for issue in status.recent_errors if issue.recovery_status == "active"]
+    observer = asdict(status.observer)
+    observer_error = status.observer.last_error_code
     degraded_reasons = [
         f"{issue.strategy.value}:{issue.code}" if issue.strategy is not None else issue.code for issue in active_issues
     ]
+    if observer_error:
+        degraded_reasons.append(f"observer:{observer_error}")
+    issue_count = len(active_issues) + int(bool(observer_error))
     health_level = (
         "error"
         if not status.running or any(issue.severity == "error" for issue in active_issues)
         else "degraded"
-        if active_issues
+        if issue_count
         else "normal"
     )
     return {
@@ -669,9 +688,10 @@ def _runtime_status(
         "deepseek_budget": budget.summary(_utc_now().date().isoformat()),
         "deepseek": reviewer.status(),
         "degraded_reasons": degraded_reasons,
-        "health": {"level": health_level, "issue_count": len(active_issues)},
+        "health": {"level": health_level, "issue_count": issue_count},
         "recent_errors": recent_errors,
-        "last_error": status.last_error_code or None,
+        "last_error": status.last_error_code or (f"observer:{observer_error}" if observer_error else None),
+        "observer": observer,
         "scheduler": {
             "config_version": status.config_version,
             "lanes": [asdict(lane) for lane in status.lanes],
@@ -682,6 +702,8 @@ def _runtime_status(
             "review_failure_count": status.review_failure_count,
             "local_publish_count": status.local_publish_count,
             "hybrid_publish_count": status.hybrid_publish_count,
+            "settlement_completed_count": status.settlement_completed_count,
+            "settlement_failure_count": status.settlement_failure_count,
         },
     }
 
@@ -703,6 +725,13 @@ def _runtime_issue_payload(issue: V2RuntimeIssue) -> dict[str, object]:
 def _initialize_research_trace(trace: SQLiteV2ResearchTraceStore) -> None:
     try:
         trace.initialize()
+    except (OSError, sqlite3.Error):
+        return
+
+
+def _initialize_outcome_evidence(evidence: SQLiteOutcomeEvidenceRepository) -> None:
+    try:
+        evidence.initialize()
     except (OSError, sqlite3.Error):
         return
 

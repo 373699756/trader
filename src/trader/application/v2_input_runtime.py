@@ -26,7 +26,6 @@ from trader.application.ports.v2_runtime import (
     V2FreezePort,
     V2FreezeUnavailableError,
     V2ReviewUnavailableError,
-    V2SettlementPort,
 )
 from trader.application.research_audit import (
     V2CommittedResearchAudit,
@@ -393,13 +392,6 @@ class V2FreezeAdapter(V2FreezePort):
             raise V2FreezeUnavailableError(result.status)
 
 
-class V2NoopSettlement(V2SettlementPort):
-    """Outcome settlement is intentionally outside the V2 recommendation product."""
-
-    def settle(self, at: datetime) -> None:
-        del at
-
-
 def _candidate_codes(features: tuple[FeatureSnapshot, ...], limit: int) -> tuple[str, ...]:
     selected: list[str] = []
     for board in (Board.MAIN, Board.CHINEXT, Board.STAR):
@@ -471,5 +463,4 @@ __all__ = [
     "V2FreezeAdapter",
     "V2InputBatch",
     "V2MarketDataAdapter",
-    "V2NoopSettlement",
 ]

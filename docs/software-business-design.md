@@ -276,12 +276,20 @@ local 升级 hybrid 时同样必须把匹配新父版本的初始 overlay 一起
 应用层通用 `V2DecisionCommitted`；事件携带完整决策身份和逐项结果，不导入或依赖 research 类型，
 observer 失败也无权反向修改决策。
 
-研究 observer 只消费成功提交后的 `V2DecisionCommitted` 与评分投影同批生成的不可变研究审计，
-写入 `.runtime/v2/research/committed-events.sqlite3` 独立 SQLite 研究库。研究载荷拥有独立 schema、
-规范 SHA-256、容量上限、幂等冲突检测、启动校验和损坏隔离；不写统一决策索引、正式记录库、API、
-SSE 或活动配置。审计写入失败不回滚或阻塞正式决策，初始化失败同样 fail open；observer
-不重新读取行情、重新评分或重新调用模型。历史数据不从旧 snapshot 或 shadow 运行库回填，部署后只积累新的
-committed observation。
+研究 observer 只消费成功提交后的 `V2DecisionCommitted` 与评分投影同批生成的不可变研究审计。
+新记录按交易日写入 `.runtime/v2/research/committed-events/YYYY-MM-DD.sqlite3` 独立 SQLite 研究库分区；
+已经存在的 `.runtime/v2/research/committed-events.sqlite3` 单库保持原字节不变并作为只读 legacy
+分区参与查询、去重和容量统计，不执行破坏性迁移。每个交易日分区拥有独立 schema、规范 SHA-256、
+幂等冲突检测、按需校验和损坏隔离；单分区上限必须覆盖全天滚动决策，研究归档同时公开 120 个
+交易日和 20GB 总上限、已用字节、剩余字节、日期覆盖及 legacy 记录数。容量不足时显式拒绝新研究
+载荷，不删除不可变证据。审计写入失败不回滚或阻塞正式决策。
+
+observer 的队列、接纳、完成、拒绝、消费者失败计数和最后错误代码必须进入 `/api/v2/status`；只要
+消费者失败未在当前进程内由后续成功写入恢复，系统健康至少为 `degraded`，不得只在内存对象中保留
+而让 Web 显示正常。observer 不写统一决策索引、正式记录库、API、SSE 或活动配置；它
+不重新读取行情、重新评分或重新调用模型。初始化失败同样 fail open；
+历史数据不从旧 snapshot 或 shadow 运行库回填，
+部署后只积累新的 committed observation。
 
 today、tomorrow 和 d25 的正式记录仓储按策略和交易日唯一提交。仓储先把规范载荷及其
 SHA-256 写入 SQLite staged manifest，再原子创建不可变 JSON，最后提交 manifest；同键同
@@ -940,8 +948,12 @@ overlay 只能改变价格、涨跌、成交额、换手率、总市值、来源
 保证；相同内容重试幂等，不同内容冲突。损坏、半提交或旧 schema 文件不得进入 V2 查询。
 
 活动正式记录按策略保留最近 20 个不同交易日，每策略单日最多 6 条。结果结算以正式记录、股票
-和 horizon 唯一，后台幂等写入收益、基准、净超额、MAE 与质量状态；HTTP 不触发结算，结算
-也不得改写冻结记录。归档和结算的细节属于运维契约，不得恢复旧 Web envelope 或旧运行库读取。
+和 horizon 唯一，后台将全市场等权基准及收益、净超额、MAE 与质量状态不可变写入
+`.runtime/v2/research/outcomes.sqlite3`；业务内容相同但进程观察时间不同的重试保持幂等，不同业务
+内容冲突。调度器在交易日 15:00 后提交同日唯一结算键，成功后不重复执行；失败或盘后冷启动可在
+后续 tick 重试，当前推荐和只读 Web 继续可用，结算完成/失败计数进入状态 API。HTTP 不触发行情、
+结算或写库，结算也不得改写冻结记录。归档和结算的细节属于运维契约，不得恢复旧 Web envelope
+或旧运行库读取。
 
 ## 9. V2 唯一 Web API 与 SSE
 
@@ -1269,6 +1281,14 @@ Score-R5 以独立离线统计器实现固定种子配对移动区块 bootstrap�
 同键重放幂等、冲突或失败日期不可替换；最终封存重新计算历史、前向与 40+20 合并报告。当前真实
 历史覆盖不足 40 日且前向窗口尚未开始，因此没有真实 `forward_collecting` 或
 `promotion_eligible` 证据，活动生产策略保持不变。
+
+`run.sh serve` 只负责生产 V2 调度和上述 committed observation 采集，不在后台隐式执行 R2-R5，
+也不得把滚动行情缓存或后来补抓的日 K 冒充历史点时输入。`run.sh research-status` 是只读运维入口，
+必须报告研究分区、legacy 记录、日期覆盖、容量余量、固定 R0 历史/前向窗口及阻塞原因；正式
+outcome 库存在时同时报告基准、全部 outcome、完整 outcome 和最新基准日期计数。该入口不抓网络、
+不评分、不写报告且不改变研究状态。R2-R5 的离线提取、回放和统计只能由显式研究批次在完整端口与
+结算证据到齐后执行。当前原 R0 历史窗口缺少完整点时证据，状态不可逆地保持探索/历史拒绝；后续若
+需要重新评价，必须在看到新窗口收益前另行预注册新研究身份和完整未来窗口，不能改写 `score_p0_v1`。
 
 最多 40 个历史日、20 个固定前向日、五挑战者、候选召回、配对移动区块 bootstrap、Holm
 校正、第二轮研究和人工晋级的策略定义只以荐股策略文档第 15.1 节为准。研究通过不自动改变

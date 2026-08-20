@@ -35,6 +35,10 @@ class ResearchTraceConflictError(RuntimeError):
     pass
 
 
+class ResearchTraceCapacityError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class V2ResearchTraceStatus:
     retained: int
@@ -42,6 +46,33 @@ class V2ResearchTraceStatus:
     recorded: int
     duplicate: int
     quarantined: int
+    trade_dates: int
+    trade_date_capacity: int
+    legacy_retained: int
+    archive_capacity_bytes: int
+    remaining_bytes: int
+
+
+@dataclass(frozen=True)
+class ResearchTraceLimits:
+    events_per_trade_date: int = 4096
+    payload_bytes: int = 4 * 1024 * 1024
+    trade_date_bytes: int = 1024 * 1024 * 1024
+    archive_bytes: int = 20 * 1024 * 1024 * 1024
+    trade_dates: int = 120
+
+    def __post_init__(self) -> None:
+        values = (
+            self.events_per_trade_date,
+            self.payload_bytes,
+            self.trade_date_bytes,
+            self.archive_bytes,
+            self.trade_dates,
+        )
+        if min(values) < 1:
+            raise ValueError("V2 research trace capacities must be positive")
+        if self.payload_bytes > self.trade_date_bytes or self.trade_date_bytes > self.archive_bytes:
+            raise ValueError("V2 research payload capacity cannot exceed total capacity")
 
 
 class SQLiteV2ResearchTraceStore:
@@ -51,20 +82,21 @@ class SQLiteV2ResearchTraceStore:
         self,
         runtime_root: Path,
         *,
-        capacity: int = 2048,
-        maximum_payload_bytes: int = 4 * 1024 * 1024,
-        maximum_total_bytes: int = 64 * 1024 * 1024,
+        limits: ResearchTraceLimits | None = None,
+        use_legacy_layout: bool = False,
     ) -> None:
-        if min(capacity, maximum_payload_bytes, maximum_total_bytes) < 1:
-            raise ValueError("V2 research trace capacities must be positive")
-        if maximum_payload_bytes > maximum_total_bytes:
-            raise ValueError("V2 research payload capacity cannot exceed total capacity")
+        limits = limits or ResearchTraceLimits()
         self._root = runtime_root / "research"
-        self._database = self._root / "committed-events.sqlite3"
-        self._capacity = capacity
-        self._maximum_payload_bytes = maximum_payload_bytes
-        self._maximum_total_bytes = maximum_total_bytes
+        self._legacy_database = self._root / "committed-events.sqlite3"
+        self._partitions = self._root / "committed-events"
+        self._capacity = limits.events_per_trade_date
+        self._maximum_payload_bytes = limits.payload_bytes
+        self._maximum_total_bytes = limits.trade_date_bytes
+        self._maximum_archive_bytes = limits.archive_bytes
+        self._maximum_trade_dates = limits.trade_dates
+        self._use_legacy_layout = use_legacy_layout
         self._lock = threading.RLock()
+        self._initialized_databases: set[Path] = set()
         self._recorded = 0
         self._duplicate = 0
         self._quarantined = 0
@@ -74,10 +106,10 @@ class SQLiteV2ResearchTraceStore:
         with self._lock:
             if self._initialized:
                 return
-            self._root.mkdir(parents=True, exist_ok=True)
-            with self._connection() as connection:
-                connection.executescript(_SCHEMA)
-                self._quarantined += self._quarantine_invalid_rows(connection)
+            if self._use_legacy_layout:
+                self._initialize_database(self._legacy_database)
+            else:
+                self._partitions.mkdir(parents=True, exist_ok=True)
             self._initialized = True
 
     def record(self, observation: V2DecisionObservation) -> None:
@@ -86,12 +118,10 @@ class SQLiteV2ResearchTraceStore:
         payload = _observation_bytes(observation)
         payload_hash = _sha256(payload)
         if len(payload) > self._maximum_payload_bytes:
-            raise RuntimeError("V2 research trace payload capacity exhausted")
-        with self._lock, self._connection() as connection:
-            existing = connection.execute(
-                "SELECT payload_hash, payload FROM committed_events WHERE decision_version = ?",
-                (event.decision_version,),
-            ).fetchone()
+            raise ResearchTraceCapacityError("V2 research trace payload capacity exhausted")
+        database = self._database_for(event.trade_date)
+        with self._lock:
+            existing = self._existing_row(event.decision_version, event.trade_date, database)
             if existing is not None:
                 if str(existing["payload_hash"]) == payload_hash and bytes(existing["payload"]) == payload:
                     self._duplicate += 1
@@ -101,97 +131,126 @@ class SQLiteV2ResearchTraceStore:
                     self._duplicate += 1
                     return
                 raise ResearchTraceConflictError("V2 research trace identity conflict")
-            retained = int(connection.execute("SELECT COUNT(*) FROM committed_events").fetchone()[0])
-            retained_bytes = int(
-                connection.execute("SELECT COALESCE(SUM(LENGTH(payload)), 0) FROM committed_events").fetchone()[0]
-            )
-            if retained >= self._capacity or retained_bytes + len(payload) > self._maximum_total_bytes:
-                raise RuntimeError("V2 research trace capacity exhausted")
-            connection.execute(
-                """
-                INSERT INTO committed_events (
-                    decision_version, strategy, trade_date, observed_at,
-                    decision_hash, schema_version, payload_hash, payload
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event.decision_version,
-                    event.strategy.value,
-                    event.trade_date.isoformat(),
-                    event.observed_at.isoformat(),
-                    event.decision_hash,
-                    _SCHEMA_VERSION,
-                    payload_hash,
-                    payload,
-                ),
-            )
-            self._recorded += 1
+            archive = self._archive_summary()
+            if event.trade_date not in archive.trade_dates and len(archive.trade_dates) >= self._maximum_trade_dates:
+                raise ResearchTraceCapacityError("V2 research trace trade-date capacity exhausted")
+            if archive.retained_bytes + len(payload) > self._maximum_archive_bytes:
+                raise ResearchTraceCapacityError("V2 research trace archive capacity exhausted")
+            self._initialize_database(database)
+            with self._connection(database, write=True) as connection:
+                retained = int(connection.execute("SELECT COUNT(*) FROM committed_events").fetchone()[0])
+                retained_bytes = int(
+                    connection.execute("SELECT COALESCE(SUM(LENGTH(payload)), 0) FROM committed_events").fetchone()[0]
+                )
+                if retained >= self._capacity or retained_bytes + len(payload) > self._maximum_total_bytes:
+                    raise ResearchTraceCapacityError("V2 research trace partition capacity exhausted")
+                connection.execute(
+                    """
+                    INSERT INTO committed_events (
+                        decision_version, strategy, trade_date, observed_at,
+                        decision_hash, schema_version, payload_hash, payload
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event.decision_version,
+                        event.strategy.value,
+                        event.trade_date.isoformat(),
+                        event.observed_at.isoformat(),
+                        event.decision_hash,
+                        _SCHEMA_VERSION,
+                        payload_hash,
+                        payload,
+                    ),
+                )
+                self._recorded += 1
 
     def get(self, decision_version: str) -> V2DecisionObservation | None:
         self.initialize()
-        with self._lock, self._connection() as connection:
-            row = connection.execute(
-                "SELECT * FROM committed_events WHERE decision_version = ?",
-                (decision_version,),
-            ).fetchone()
-            if row is None:
-                return None
-            try:
-                return _verified_event(row)
-            except (TypeError, ValueError, json.JSONDecodeError):
-                self._quarantine_row(connection, decision_version, "verification_failed")
-                self._quarantined += 1
-                return None
+        with self._lock:
+            for database in self._source_databases():
+                with self._connection(database, write=False) as connection:
+                    row = connection.execute(
+                        "SELECT * FROM committed_events WHERE decision_version = ?",
+                        (decision_version,),
+                    ).fetchone()
+                if row is None:
+                    continue
+                try:
+                    return _verified_event(row)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    self._quarantine_database_row(database, decision_version, "verification_failed")
+                    return None
+        return None
 
     def list_trade_dates(self, *, limit: int = 40) -> tuple[date, ...]:
         if limit < 1:
             raise ValueError("research trace date limit must be positive")
         self.initialize()
-        with self._lock, self._connection() as connection:
-            rows = connection.execute(
-                "SELECT DISTINCT trade_date FROM committed_events ORDER BY trade_date DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-        return tuple(date.fromisoformat(str(row["trade_date"])) for row in rows)
+        return self.inspect_trade_dates(limit=limit)
+
+    def inspect_trade_dates(self, *, limit: int = 40) -> tuple[date, ...]:
+        if limit < 1:
+            raise ValueError("research trace date limit must be positive")
+        dates: set[date] = set()
+        with self._lock:
+            for database in self._source_databases():
+                with self._connection(database, write=False) as connection:
+                    rows = connection.execute("SELECT DISTINCT trade_date FROM committed_events").fetchall()
+                dates.update(date.fromisoformat(str(row["trade_date"])) for row in rows)
+        return tuple(sorted(dates, reverse=True)[:limit])
 
     def list_by_trade_date(self, trade_date: date) -> tuple[V2DecisionObservation, ...]:
         self.initialize()
-        with self._lock, self._connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT * FROM committed_events
-                WHERE trade_date = ?
-                ORDER BY observed_at, strategy, decision_version
-                """,
-                (trade_date.isoformat(),),
-            ).fetchall()
-            observations: list[V2DecisionObservation] = []
-            for row in rows:
-                try:
-                    observations.append(_verified_event(row))
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    self._quarantine_row(connection, str(row["decision_version"]), "verification_failed")
-                    self._quarantined += 1
-            return tuple(observations)
+        observations: dict[str, V2DecisionObservation] = {}
+        with self._lock:
+            for database in self._source_databases(trade_date):
+                with self._connection(database, write=False) as connection:
+                    rows = connection.execute(
+                        "SELECT * FROM committed_events WHERE trade_date = ?",
+                        (trade_date.isoformat(),),
+                    ).fetchall()
+                for row in rows:
+                    version = str(row["decision_version"])
+                    try:
+                        observation = _verified_event(row)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        self._quarantine_database_row(database, version, "verification_failed")
+                        continue
+                    current = observations.get(version)
+                    if current is not None and current != observation:
+                        raise ResearchTraceConflictError("V2 research trace cross-partition identity conflict")
+                    observations[version] = observation
+        return tuple(
+            sorted(
+                observations.values(),
+                key=lambda item: (item.event.observed_at, item.event.strategy.value, item.event.decision_version),
+            )
+        )
 
     def status(self) -> V2ResearchTraceStatus:
         self.initialize()
-        with self._lock, self._connection() as connection:
-            retained = int(connection.execute("SELECT COUNT(*) FROM committed_events").fetchone()[0])
-            retained_bytes = int(
-                connection.execute("SELECT COALESCE(SUM(LENGTH(payload)), 0) FROM committed_events").fetchone()[0]
+        return self.inspect_status()
+
+    def inspect_status(self) -> V2ResearchTraceStatus:
+        with self._lock:
+            summary = self._archive_summary()
+            return V2ResearchTraceStatus(
+                summary.retained,
+                summary.retained_bytes,
+                self._recorded,
+                self._duplicate,
+                self._quarantined,
+                len(summary.trade_dates),
+                self._maximum_trade_dates,
+                summary.legacy_retained,
+                self._maximum_archive_bytes,
+                max(0, self._maximum_archive_bytes - summary.retained_bytes),
             )
-        return V2ResearchTraceStatus(
-            retained,
-            retained_bytes,
-            self._recorded,
-            self._duplicate,
-            self._quarantined,
-        )
 
     @contextmanager
-    def _connection(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self._database, timeout=5.0)
+    def _connection(self, database: Path, *, write: bool) -> Iterator[sqlite3.Connection]:
+        target = str(database) if write else f"file:{database.resolve()}?mode=ro"
+        connection = sqlite3.connect(target, timeout=5.0, uri=not write)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout = 5000")
         try:
@@ -199,6 +258,77 @@ class SQLiteV2ResearchTraceStore:
                 yield connection
         finally:
             connection.close()
+
+    def _database_for(self, trade_date: date) -> Path:
+        if self._use_legacy_layout:
+            return self._legacy_database
+        return self._partitions / f"{trade_date.isoformat()}.sqlite3"
+
+    def _initialize_database(self, database: Path) -> None:
+        if database in self._initialized_databases:
+            return
+        database.parent.mkdir(parents=True, exist_ok=True)
+        with self._connection(database, write=True) as connection:
+            connection.executescript(_SCHEMA)
+            self._quarantined += self._quarantine_invalid_rows(connection)
+        self._initialized_databases.add(database)
+
+    def _partition_databases(self) -> tuple[Path, ...]:
+        if not self._partitions.exists():
+            return ()
+        return tuple(path for path in sorted(self._partitions.glob("*.sqlite3")) if _partition_date(path) is not None)
+
+    def _source_databases(self, trade_date: date | None = None) -> tuple[Path, ...]:
+        databases: list[Path] = []
+        if self._legacy_database.is_file():
+            databases.append(self._legacy_database)
+        if trade_date is None:
+            databases.extend(self._partition_databases())
+        else:
+            partition = self._partitions / f"{trade_date.isoformat()}.sqlite3"
+            if partition.is_file():
+                databases.append(partition)
+        return tuple(databases)
+
+    def _existing_row(self, decision_version: str, trade_date: date, database: Path) -> sqlite3.Row | None:
+        for source in dict.fromkeys((*self._source_databases(trade_date), database)):
+            if not source.is_file():
+                continue
+            with self._connection(source, write=False) as connection:
+                row = connection.execute(
+                    "SELECT payload_hash, payload FROM committed_events WHERE decision_version = ?",
+                    (decision_version,),
+                ).fetchone()
+            if row is not None:
+                return cast(sqlite3.Row, row)
+        return None
+
+    def _archive_summary(self) -> _ArchiveSummary:
+        retained = 0
+        retained_bytes = 0
+        legacy_retained = 0
+        dates: set[date] = set()
+        for database in self._source_databases():
+            with self._connection(database, write=False) as connection:
+                row = connection.execute(
+                    "SELECT COUNT(*) retained, COALESCE(SUM(LENGTH(payload)), 0) retained_bytes FROM committed_events"
+                ).fetchone()
+                day_rows = connection.execute("SELECT DISTINCT trade_date FROM committed_events").fetchall()
+            count = int(row["retained"])
+            retained += count
+            retained_bytes += int(row["retained_bytes"])
+            dates.update(date.fromisoformat(str(item["trade_date"])) for item in day_rows)
+            if database == self._legacy_database:
+                legacy_retained = count
+        return _ArchiveSummary(retained, retained_bytes, frozenset(dates), legacy_retained)
+
+    def _quarantine_database_row(self, database: Path, decision_version: str, reason: str) -> None:
+        if database == self._legacy_database:
+            self._quarantined += 1
+            return
+        with self._connection(database, write=True) as connection:
+            self._quarantine_row(connection, decision_version, reason)
+        self._quarantined += 1
 
     def _quarantine_invalid_rows(self, connection: sqlite3.Connection) -> int:
         quarantined = 0
@@ -225,6 +355,21 @@ class SQLiteV2ResearchTraceStore:
             (reason, decision_version),
         )
         connection.execute("DELETE FROM committed_events WHERE decision_version = ?", (decision_version,))
+
+
+@dataclass(frozen=True)
+class _ArchiveSummary:
+    retained: int
+    retained_bytes: int
+    trade_dates: frozenset[date]
+    legacy_retained: int
+
+
+def _partition_date(path: Path) -> date | None:
+    try:
+        return date.fromisoformat(path.stem)
+    except ValueError:
+        return None
 
 
 def _verified_event(row: sqlite3.Row) -> V2DecisionObservation:
@@ -604,4 +749,10 @@ CREATE TABLE IF NOT EXISTS committed_event_quarantine (
 """
 
 
-__all__ = ["ResearchTraceConflictError", "SQLiteV2ResearchTraceStore", "V2ResearchTraceStatus"]
+__all__ = [
+    "ResearchTraceCapacityError",
+    "ResearchTraceConflictError",
+    "ResearchTraceLimits",
+    "SQLiteV2ResearchTraceStore",
+    "V2ResearchTraceStatus",
+]

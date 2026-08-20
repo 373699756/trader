@@ -4,8 +4,10 @@ import json
 import sqlite3
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
-from trader.bootstrap import _initialize_reference_data_plane, _initialize_research_trace, build_system
+from trader.application.decision_observers import DecisionObserverStatus
+from trader.bootstrap import _initialize_reference_data_plane, _initialize_research_trace, _runtime_status, build_system
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -66,3 +68,65 @@ def test_research_trace_initialization_is_fail_open() -> None:
     _initialize_research_trace(trace)
 
     trace.initialize.assert_called_once_with()
+
+
+def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> None:
+    from unittest.mock import Mock
+
+    scheduler = Mock()
+    scheduler.status.return_value = SimpleNamespace(
+        running=True,
+        phase=SimpleNamespace(value="afternoon"),
+        config_version="runtime:test",
+        lanes=(),
+        observer=DecisionObserverStatus(
+            capacity=16,
+            accepting=True,
+            thread_alive=True,
+            running=False,
+            depth=0,
+            accepted_count=10,
+            rejected_count=0,
+            completed_count=10,
+            consumer_failure_count=3,
+            last_error_code="ResearchTraceCapacityError",
+        ),
+        strategy_error_codes=(),
+        recent_errors=(),
+        deepseek=Mock(),
+        control_running=True,
+        control_inflight=0,
+        control_rejected_count=0,
+        refresh_failure_count=0,
+        decision_failure_count=0,
+        review_failure_count=0,
+        local_publish_count=1,
+        hybrid_publish_count=0,
+        publish_rejection_count=0,
+        observer_rejection_count=0,
+        freeze_completed_count=0,
+        freeze_failure_count=0,
+        settlement_completed_count=0,
+        settlement_failure_count=0,
+        last_error_code="",
+    )
+    reviewer = Mock()
+    reviewer.status.return_value = {"status": "ready"}
+    budget = Mock()
+    budget.summary.return_value = {"limit": 168, "used": 0, "remaining": 168}
+
+    payload = _runtime_status(scheduler, reviewer, budget)
+
+    assert payload["observer"]["consumer_failure_count"] == 3
+    assert payload["health"] == {"level": "degraded", "issue_count": 1}
+    assert payload["degraded_reasons"] == ["observer:ResearchTraceCapacityError"]
+    assert payload["last_error"] == "observer:ResearchTraceCapacityError"
+    assert payload["scheduler"]["settlement_completed_count"] == 0
+    assert payload["scheduler"]["settlement_failure_count"] == 0
+
+
+def test_bootstrap_wires_real_outcome_settlement_without_eager_database_write(tmp_path) -> None:
+    system = build_system(_config(tmp_path))
+
+    assert type(system.scheduler._dependencies.settlement).__name__ == "V2OutcomeSettlementAdapter"
+    assert not (tmp_path / "runtime" / "research" / "outcomes.sqlite3").exists()

@@ -6,6 +6,14 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户已经运行 `run.sh` 一整天却仍被告知“数据采集不够”，新增只读 `research-status` 运维入口：
+  同时报告 committed observation 分区/legacy 计数、日期覆盖、20GB 载荷容量、固定研究窗口、R6
+  阻塞原因，以及 outcome 基准/完整结果计数；缺少数据库时不创建目录、文件或网络请求。
+
+- 新增正式冻结推荐的 SQLite outcome 证据仓储与盘后结算接线，按正式记录、股票和 horizon 保存
+  T+1/T+2/T+3/T+5 收益、全市场等权基准、20bp 净超额、MAE/ATR20 和结构化质量状态；相同业务
+  结果跨重启幂等，不同内容冲突，临时观察/结算时间不改变不可变业务身份。
+
 - 针对用户要求在控制台点击地址直接打开 Web，新增浏览器 URL 格式化与 IPv4/IPv6 入口回归；IPv6
   自动使用方括号，避免输出无法解析的地址。
 
@@ -161,6 +169,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- committed observation 新写入从已满的 64MiB 单库切换为按交易日 SQLite 分区；已有 legacy 单库
+  只读参与查询、去重和容量统计且不做破坏性迁移。单日分区与 20GB 归档分别限流，达到上限显式
+  拒绝研究载荷但继续保留正式推荐；盘后 settlement 由“仅 15:00 秒点”改为同日成功键去重，失败和
+  15:00 后冷启动可重试。
+
 - `trader-server` 现在在监听端口成功绑定后立即向标准输出刷新实际浏览器地址；提示保留用户已有的
   “浏览器登录地址”中文标签，并将裸 `host:port` 改为带 `http://` scheme 的完整 URL。默认输出
   `浏览器登录地址->http://127.0.0.1:5000`，自定义 host/port 时显示实际配置且支持终端识别为超链接。
@@ -264,6 +277,15 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 根因确认：旧研究库载荷已达 `67,106,829 / 67,108,864` 字节，异步 observer 捕获容量异常后只在
+  内存累加，生产推荐仍正常运行，因此“服务跑了一整天”和“完整研究证据继续增长”同时出现分歧。
+  现在 observer 队列、完成/拒绝/消费者失败计数及当前错误进入 `/api/v2/status`，未恢复的消费者
+  错误会把健康状态标为 `degraded`，后续成功写入才清除当前错误。
+
+- 修复生产组合根实际注入 `V2NoopSettlement`，导致调度器显示结算成功但没有任何 outcome/基准落库
+  的问题；改为真实服务从正式记录派生目标、读取复权历史并不可变结算，完成/失败计数进入 scheduler
+  状态。非有限锚点或 ATR20 现在落为 `insufficient_data`，不会产生 NaN 收益或回撤证据。
 
 - 修复控制台仅显示 `127.0.0.1:5000` 或带中文前缀的裸地址、终端无法稳定识别为可点击 Web 链接的
   问题；实际监听 host 和 port 仍由统一运行配置决定，不新增浏览器启动副作用。
@@ -370,6 +392,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除与权威“后台结果结算”契约冲突的 `V2NoopSettlement` 生产实现；未恢复旧生产链、旧 Web
+  envelope 或 HTTP 写入入口，也未删除或改写现有运行数据库。
+
 - 删除仅能承载价格和涨跌幅的 `OverlayQuote` 重复领域类型；评分锚点与 overlay 统一使用完整
   `DecisionQuote`，没有新增第二套报价状态源或 Web 请求时抓行情链路。
 
@@ -424,6 +449,21 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 运行库只读审计确认旧 committed observation 单库有 165 条、3 个交易日、载荷
+  `67,106,829 / 67,108,864` 字节；仓库外安装最新 wheel 后执行 `trader-cli research-status`，正确
+  返回 legacy 165 条、20GB 容量、3 个日期、outcome 尚未初始化及 R6 两项阻塞，命令未改写运行库。
+
+- 新增/恢复的研究分区、observer、CLI、真实 outcome 仓储/结算、盘后冷启动、不可变冲突和 NaN
+  质量回归全部通过。`make format-check`、`make lint`（含零 refactor debt）、`make type-check`、完整
+  915 项 `make test` 和 `make package` 均通过；全量测试首轮发现 5 项文档固定语句回归，恢复兼容
+  表述后全绿。打包首轮仅因沙箱禁止隔离环境下载 `setuptools` 失败，使用获准网络后成功生成 sdist
+  与 wheel；仓库外 wheel 可导入真实结算适配器并读取模板、CSS、JavaScript 和 SVG 资源。
+  `git diff --cached --check` 通过，暂存区仅包含本批 23 个文件，用户未跟踪截图明确排除。
+
+- 架构、`create_app()` 无线程/网络/数据库/写文件副作用、固定融合 `83.40`、DeepSeek 预算并发、SSE
+  游标/慢客户端、冻结恢复、哈希及入口契约均包含在完整测试中。未修改 HTML、CSS、JavaScript 或
+  布局，三档桌面浏览器视觉验收不适用；状态 API 只新增 observer/settlement 字段并由契约测试覆盖。
 
 - IPv4 与 IPv6 回归在实现前均按预期失败，分别证明缺少 `http://` 和 IPv6 方括号；实现后入口定向
   10 项通过。首次 `make format-check` 发现入口文件需格式化，执行 Ruff formatter 后重新 Review，
@@ -622,6 +662,14 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 原 `score_p0_v1` 的 2026-06-15 至 2026-08-10 点时窗口没有形成完整不可变分区，后来的日 K、缓存
+  或 production 运行不能反向重建当时输入；该身份继续保持 `historical_rejected`，Score-R6 仍因
+  缺少真实 `promotion_eligible` 而不可执行。修复只保证新进程启动后的后续证据，绝不回填或换日。
+
+- legacy 研究库保持原字节且已接近旧上限，新分区在声明的 120 交易日/20GB 容量耗尽时会再次显式
+  拒绝而不自动删除不可变证据；磁盘、SQLite 或行情源失败仍可能使单次研究/outcome 记录失败，但会
+  进入 observer/scheduler 状态且不阻塞本地推荐。已运行的旧进程需正常重启后才会加载本次接线。
 
 - 终端是否单击、Ctrl+单击或 Cmd+单击打开链接由具体终端模拟器决定；输出本身是标准 HTTP URL，
   不支持超链接的终端仍可复制到浏览器。已运行的旧进程需要正常停止并重新执行 `./run.sh` 才会加载

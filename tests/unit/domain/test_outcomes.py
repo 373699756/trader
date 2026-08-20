@@ -120,3 +120,32 @@ def test_discontinuity_uses_recommendation_close_instead_of_intraday_anchor() ->
 
     assert outcome.status == "complete"
     assert outcome.gross_return_pct == pytest.approx(11.1)
+
+
+@pytest.mark.parametrize("field", ("anchor_price", "atr20_pct"))
+def test_outcome_rejects_non_finite_target_values(field: str) -> None:
+    values = {"anchor_price": 10.0, "atr20_pct": 2.0}
+    values[field] = float("nan")
+    target = OutcomeTarget(
+        "snapshot",
+        Strategy.TOMORROW,
+        "2026-07-20",
+        "600001",
+        values["anchor_price"],
+        values["atr20_pct"],
+    )
+    bars = (
+        OutcomeBar("2026-07-20", 10.0, 10.1, 9.9, 10.0, 0.0),
+        OutcomeBar("2026-07-21", 10.0, 10.2, 9.8, 10.1, 1.0),
+    )
+
+    outcome = _evaluate_outcome(
+        target,
+        bars,
+        horizon=1,
+        benchmark_returns=(0.0,),
+        settled_at=datetime(2026, 7, 21, 8, tzinfo=timezone.utc),
+    )
+
+    assert outcome.status == "insufficient_data"
+    assert outcome.quality_reason == "invalid_price_window"

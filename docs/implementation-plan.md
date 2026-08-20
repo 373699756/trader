@@ -1,7 +1,8 @@
 # V2 与评分研究多 Codex 总实施计划
 
 状态：V2-E0 至 V2-E11、Score-R0、Score-R1、Score-R1-Migrate、Score-R2、Score-R3、Score-R4、
-Score-R5 工程能力已完成；V2 工程发布章节全部闭合，下一研究章节为 Score-R6。
+Score-R5 工程能力已完成；V2 工程发布章节全部闭合。Score-R5-Run 运行证据连续性修复已完成；
+下一研究章节为 Score-R6，但完成本修复后仍须等待真实 `promotion_eligible`，不得跳过门禁。
 
 本文是唯一活动施工计划，只定义执行顺序、会话协作、文件所有权、同步 Gate 和退出条件，
 不定义产品或策略行为。产品、架构、时间线、API、运维和验收以
@@ -348,6 +349,19 @@ facts 时 hybrid 为 local control copy；研究层无模型端口，DeepSeek HT
 重新执行固定家族。当前真实 R2/R4 覆盖不足 40 日，故真实状态仍为探索性历史终止，尚未进入
 2026-11-02 至 2026-11-27 的前向采集，也没有版本取得 `promotion_eligible`；该外部证据缺口不以
 fixture 或后补日期伪造，活动生产保持不变。
+
+### Score-R5-Run：运行证据连续性修复（已完成）
+
+- committed observation 从 64MiB 单库改为按交易日不可变 SQLite 分区，旧单库只读兼容。
+- 公开 120 日/20GB 归档容量、日期覆盖、legacy 计数和 observer 消费失败，生产推荐继续 fail open。
+- 新增只读 `research-status` 运维入口，明确 `serve` 不自动执行离线 R2-R5。
+- 删除生产组合根中的 no-op 结算器，恢复正式冻结推荐的盘后不可变 outcome/等权基准结算、冷启动
+  执行、失败重试和状态计数；结算证据与 committed observation 分库，HTTP 保持只读。
+- 原 `score_p0_v1` 缺失窗口保持探索/历史拒绝；修复不得回填、换日或制造 R5/R6 资格。
+
+退出条件：已有 64MiB legacy 单库无需删除或改写即可继续写新日期分区；单日容量隔离、跨分区查询、
+幂等/冲突、损坏隔离、总容量拒绝、状态 API 降级和 CLI 只读报告通过。修复只恢复后续证据连续性，
+真实 outcome 结算接线通过且不把 Score-R6 标记为可执行。
 
 ### Score-R6：第二轮权重、风险和门槛
 

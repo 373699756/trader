@@ -152,14 +152,18 @@ class AsyncDecisionObserver:
                     return
                 event = self._queue.popleft()
                 self._running = True
+            consumer_failed = False
             for consumer in self._consumers:
                 try:
                     consumer(event)
                 except Exception as exc:
+                    consumer_failed = True
                     with self._condition:
                         self._consumer_failure_count += 1
                         self._last_error_code = type(exc).__name__
             with self._condition:
+                if not consumer_failed:
+                    self._last_error_code = ""
                 self._running = False
                 self._completed_count += 1
                 self._condition.notify_all()

@@ -51,7 +51,9 @@ def evaluate_outcome(request: OutcomeEvaluationRequest) -> RecommendationOutcome
     if (
         reference is None
         or not _bars_are_valid((reference, *window))
+        or not math.isfinite(target.anchor_price)
         or target.anchor_price <= 0.0
+        or not math.isfinite(target.atr20_pct)
         or target.atr20_pct <= 0.0
     ):
         return _insufficient(target, horizon, settled_at, "invalid_price_window")

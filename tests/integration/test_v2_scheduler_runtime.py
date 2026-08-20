@@ -248,6 +248,7 @@ def test_after_close_cold_start_recovers_missing_scored_strategies_and_long() ->
     decisions = Decisions()
     reviews = SharedReviews()
     freezes = Freezes()
+    settlement = Settlement()
     index = UnifiedDecisionIndex()
     runtime = V2SchedulerRuntime(
         V2RuntimeDependencies(
@@ -259,7 +260,7 @@ def test_after_close_cold_start_recovers_missing_scored_strategies_and_long() ->
             index=index,
             observer=AsyncDecisionObserver((), capacity=4, thread_name="test-v2-after-close-observer"),
             freezes=freezes,
-            settlement=Settlement(),
+            settlement=settlement,
         ),
         config_version="runtime-v2",
     )
@@ -279,6 +280,7 @@ def test_after_close_cold_start_recovers_missing_scored_strategies_and_long() ->
     assert index.snapshot(Strategy.TODAY).current is None
     assert all(index.snapshot(strategy).current is not None for strategy in (Strategy.TOMORROW, Strategy.D25))
     assert index.snapshot(Strategy.LONG).current is not None
+    assert settlement.calls == [after_close]
 
 
 def test_after_close_prefers_existing_same_day_current_without_rebuilding() -> None:

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from trader.entrypoints.cli import build_parser
+from trader.entrypoints.cli import build_parser, main
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -21,8 +21,30 @@ def test_cli_exposes_only_current_v2_maintenance_commands() -> None:
 
     for removed in ("migrate-v17", "recommendation-archive", "tomorrow-cutover-evidence"):
         assert removed not in help_text
-    for retained in ("validate-config",):
+    for retained in ("validate-config", "research-status"):
         assert retained in help_text
+
+
+def test_run_script_exposes_read_only_research_status() -> None:
+    shell = (ROOT / "run.sh").read_text(encoding="utf-8")
+
+    assert "research-status" in shell
+
+
+def test_research_status_does_not_create_runtime_files(tmp_path: Path, capsys) -> None:
+    runtime = json.loads((ROOT / "config/v2/runtime.json").read_text(encoding="utf-8"))
+    runtime_dir = tmp_path / "runtime"
+    runtime["runtime_dir"] = str(runtime_dir)
+    config = tmp_path / "runtime.json"
+    config.write_text(json.dumps(runtime), encoding="utf-8")
+
+    assert main(["--config", str(config), "research-status"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["recorded_trade_dates"] == []
+    assert payload["outcomes"]["initialized"] is False
+    assert payload["score_r6_executable"] is False
+    assert not runtime_dir.exists()
 
 
 @pytest.mark.parametrize("command", ("migrate-v17", "recommendation-archive", "tomorrow-cutover-evidence"))
