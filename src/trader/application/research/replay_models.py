@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
+from trader.domain.research.specification import SCORE_P0_V1_SPEC, get_score_research_spec
+
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _COST_RATES = (0.002, 0.005, 0.01)
 
@@ -125,6 +127,14 @@ class ScoreR3BaselineReport:
     extraction_status: Literal["extracted", "exploratory"]
     days: tuple[BaselineDayMetrics, ...]
     aggregate: BaselineAggregateMetrics
+    research_identity: str = dataclasses.field(
+        default=SCORE_P0_V1_SPEC.research_identity,
+        metadata={"exclude_from_v1_hash": True},
+    )
+    research_spec_hash: str = dataclasses.field(
+        default=SCORE_P0_V1_SPEC.content_hash,
+        metadata={"exclude_from_v1_hash": True},
+    )
     schema_version: str = "score_r3_baseline_report_v1"
     replay_version: str = "production_local_baseline_v1"
     cost_rates: tuple[float, float, float] = _COST_RATES
@@ -132,16 +142,21 @@ class ScoreR3BaselineReport:
 
     def __post_init__(self) -> None:
         _hash(self.extraction_hash, "Score-R3 extraction")
-        if (
-            self.schema_version != "score_r3_baseline_report_v1"
-            or self.replay_version != "production_local_baseline_v1"
-        ):
+        spec = get_score_research_spec(self.research_identity)
+        if self.research_spec_hash != spec.content_hash:
+            raise ValueError("Score-R3 report research spec hash is invalid")
+        expected_schema = (
+            "score_r3_baseline_report_v2" if self.research_identity == "score_p0_v2" else "score_r3_baseline_report_v1"
+        )
+        if self.schema_version != expected_schema or self.replay_version != "production_local_baseline_v1":
             raise ValueError("Score-R3 report identity is invalid")
         if self.cost_rates != _COST_RATES:
             raise ValueError("Score-R3 costs must remain 20bp, 50bp, and 100bp")
         days = tuple(sorted(self.days, key=lambda item: item.trade_date))
         if len(days) > 40 or len({item.trade_date for item in days}) != len(days):
             raise ValueError("Score-R3 report accepts at most 40 unique historical days")
+        if any(item.trade_date not in spec.allowed_historical_dates for item in days):
+            raise ValueError("Score-R3 report contains dates outside its research spec")
         expected_extraction_status = "extracted" if len(days) == 40 else "exploratory"
         if self.extraction_status != expected_extraction_status:
             raise ValueError("Score-R3 extraction status must match its valid-day evidence")
@@ -165,8 +180,11 @@ def canonical_json(value: object) -> str:
 
 def canonical_value(value: object) -> object:
     if dataclasses.is_dataclass(value):
+        legacy_identity = getattr(value, "research_identity", None) == SCORE_P0_V1_SPEC.research_identity
         return {
-            field.name: canonical_value(getattr(value, field.name)) for field in dataclasses.fields(value) if field.init
+            field.name: canonical_value(getattr(value, field.name))
+            for field in dataclasses.fields(value)
+            if field.init and not (legacy_identity and field.metadata.get("exclude_from_v1_hash", False))
         }
     if isinstance(value, date):
         return value.isoformat()

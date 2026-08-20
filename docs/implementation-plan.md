@@ -1,8 +1,9 @@
 # V2 与评分研究多 Codex 总实施计划
 
 状态：V2-E0 至 V2-E11、Score-R0、Score-R1、Score-R1-Migrate、Score-R2、Score-R3、Score-R4、
-Score-R5 工程能力已完成；V2 工程发布章节全部闭合。Score-R5-Run 运行证据连续性修复已完成；
-下一研究章节为 Score-R6，但完成本修复后仍须等待真实 `promotion_eligible`，不得跳过门禁。
+Score-R5 工程能力已完成；V2 工程发布章节全部闭合。Score-R5-Run 运行证据连续性修复及
+Score-R0-Rerun 替代窗口预注册与身份贯通已完成；下一研究章节为 Score-R6，但仍须等待
+`score_p0_v2` 取得真实 `promotion_eligible`，不得跳过门禁。
 
 本文是唯一活动施工计划，只定义执行顺序、会话协作、文件所有权、同步 Gate 和退出条件，
 不定义产品或策略行为。产品、架构、时间线、API、运维和验收以
@@ -362,6 +363,20 @@ fixture 或后补日期伪造，活动生产保持不变。
 退出条件：已有 64MiB legacy 单库无需删除或改写即可继续写新日期分区；单日容量隔离、跨分区查询、
 幂等/冲突、损坏隔离、总容量拒绝、状态 API 降级和 CLI 只读报告通过。修复只恢复后续证据连续性，
 真实 outcome 结算接线通过且不把 Score-R6 标记为可执行。
+
+### Score-R0-Rerun：替代窗口预注册与身份贯通（已完成）
+
+- 原 `score_p0_v1` 保持不可逆 `historical_rejected`，新评价使用独立 `score_p0_v2` 与规范哈希。
+- 在首个观察日之前固定 2026-08-21 至 2026-10-23 的 40 个交易日，以及 2026-10-26 至
+  2026-11-20 的 20 个前向交易日；任一失败日保留失败，不回退、顺延或替换。
+- R2 extraction、R3 baseline、R4 challengers、R5 bootstrap/报告/forward binding 全链绑定同一
+  research identity/spec hash；bootstrap 使用独立 `20260820` 主种子。
+- 新身份的前向证据使用独立目录，`research-status` 同时报告活动窗口采集进度与旧身份终止状态；
+  `serve` 仍只采集 observation/outcome，不隐式执行 R2-R5。
+
+退出条件：新旧身份、日期、随机流、报告和前向仓储不可混用；新窗口不足 40 日时只能报告
+`historical_collecting`，完整后只进入显式离线评价，未产生真实 `promotion_eligible` 前
+`score_r6_executable` 保持 false。
 
 ### Score-R6：第二轮权重、风险和门槛
 

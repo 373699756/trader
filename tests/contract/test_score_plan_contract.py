@@ -41,6 +41,16 @@ def test_score_plan_p0_pre_registration_is_reflected_in_authoritative_docs() -> 
     ):
         assert statement in strategy
     assert "硬拒绝股票代码、简称、逐股事实、分数和未来收益均不得写入研究证据" in strategy
+    for statement in (
+        "score_p0_v2",
+        "2026-08-21（含）至 2026-10-23（含）",
+        "2026-10-26（含）至 2026-11-20（含）",
+        "bootstrap_master_seed = 20260820",
+        "不得以前序日期替换失败日",
+    ):
+        assert statement in strategy
+
+    assert "### Score-R0-Rerun：替代窗口预注册与身份贯通（已完成）" in plan
 
     for statement in (
         "Score-R0 至 Score-R5 的工程能力已完成",

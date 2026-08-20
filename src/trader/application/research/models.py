@@ -23,6 +23,7 @@ from trader.domain.research.historical import (
     ResearchSelectionPool,
     optimistic_final_upper_bound,
 )
+from trader.domain.research.specification import SCORE_P0_V1_SPEC, get_score_research_spec
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"
@@ -367,19 +368,33 @@ class ScoreR2HistoricalExtraction:
     status: HistoricalExtractionStatus
     coverage: tuple[HistoricalCoverageRecord, ...]
     days: tuple[HistoricalExtractedDay, ...]
+    research_identity: str = dataclasses.field(
+        default=SCORE_P0_V1_SPEC.research_identity,
+        metadata={"exclude_from_v1_hash": True},
+    )
+    research_spec_hash: str = dataclasses.field(
+        default=SCORE_P0_V1_SPEC.content_hash,
+        metadata={"exclude_from_v1_hash": True},
+    )
     schema_version: str = "score_r2_historical_v1"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
         days = tuple(sorted(self.days, key=lambda item: item.summary.trade_date))
         coverage = tuple(self.coverage)
-        if self.schema_version != "score_r2_historical_v1":
+        expected_schema = (
+            "score_r2_historical_v2" if self.research_identity == "score_p0_v2" else "score_r2_historical_v1"
+        )
+        if self.schema_version != expected_schema:
             raise ValueError("Score-R2 extraction schema is invalid")
         if len(days) > 40 or len({item.summary.trade_date for item in days}) != len(days):
             raise ValueError("Score-R2 extraction accepts at most 40 unique days")
         if len({item.trade_date for item in coverage}) != len(coverage):
             raise ValueError("Score-R2 coverage dates must be unique")
-        if any(not date(2026, 5, 18) <= item.trade_date <= date(2026, 8, 10) for item in coverage):
+        spec = get_score_research_spec(self.research_identity)
+        if self.research_spec_hash != spec.content_hash:
+            raise ValueError("Score-R2 extraction research spec hash is invalid")
+        if any(item.trade_date not in spec.allowed_historical_dates for item in coverage):
             raise ValueError("Score-R2 coverage is outside the preregistered historical window")
         if self.status != ("extracted" if len(days) == 40 else "exploratory"):
             raise ValueError("Score-R2 extraction status must match valid-day coverage")
@@ -401,10 +416,11 @@ def _canonical_hash(value: object) -> str:
 
 def _canonical_value(value: object) -> object:
     if dataclasses.is_dataclass(value):
+        legacy_identity = getattr(value, "research_identity", None) == SCORE_P0_V1_SPEC.research_identity
         return {
             field.name: _canonical_value(getattr(value, field.name))
             for field in dataclasses.fields(value)
-            if field.init
+            if field.init and not (legacy_identity and field.metadata.get("exclude_from_v1_hash", False))
         }
     if isinstance(value, (date, datetime)):
         return value.isoformat()

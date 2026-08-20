@@ -6,6 +6,15 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户确认修复后的 `./run.sh serve` 已运行并要求继续未完成计划。由于旧 `score_p0_v1` 缺失的是已
+  过去窗口的点时输入、运行服务不能解除该 Gate，本批在任何新窗口收益可见前预注册独立
+  `score_p0_v2`：固定 2026-08-21 至 2026-10-23 的 40 个历史计划交易日、2026-10-26 至
+  2026-11-20 的 20 个前向计划交易日、`20260820` bootstrap 主种子及规范 spec SHA-256。
+
+- 新增研究身份全链回归：R2 extraction、R3 baseline、R4 五挑战者、R5 bootstrap/统计报告/final
+  report/forward binding 必须携带同一 identity/spec hash；新身份使用显式 v2 schema 和独立前向
+  目录，旧 v1 日期、随机流和不可变证据不能混入。
+
 - 针对用户已经运行 `run.sh` 一整天却仍被告知“数据采集不够”，新增只读 `research-status` 运维入口：
   同时报告 committed observation 分区/legacy 计数、日期覆盖、20GB 载荷容量、固定研究窗口、R6
   阻塞原因，以及 outcome 基准/完整结果计数；缺少数据库时不创建目录、文件或网络请求。
@@ -169,6 +178,14 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- `research-status` 升级为 `v2_research_readiness_v2`，同时报告活动 `score_p0_v2` 的历史/前向计划
+  日期数、实际 observation 日期数、spec hash 和旧 `score_p0_v1` 的终止状态。活动窗口不足 40 日
+  时状态为 `historical_collecting`；即使分区齐全也只进入显式离线评价，不自动运行 R2-R5 或开放 R6。
+
+- Score-R2 不再由模块内日期常量决定窗口，而是消费纯领域不可变 research spec；旧 v1 保持原主窗口
+  和最近前序替换规则，新 v2 只尝试预注册的 40 个未来交易日。R3-R5 的父报告、bootstrap 随机流、
+  forward collector 和 final sealer 均拒绝跨身份或跨 spec hash 组合。
+
 - committed observation 新写入从已满的 64MiB 单库切换为按交易日 SQLite 分区；已有 legacy 单库
   只读参与查询、去重和容量统计且不做破坏性迁移。单日分区与 20GB 归档分别限流，达到上限显式
   拒绝研究载荷但继续保留正式推荐；盘后 settlement 由“仅 15:00 秒点”改为同日成功键去重，失败和
@@ -277,6 +294,14 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复运行证据连续性恢复后仍只有旧 `score_p0_v1_historical_point_in_time_missing` 永久阻塞、后续
+  observation 虽持续增长却没有可执行研究身份的问题。新窗口从首个观察日前固定，避免继续等待不可
+  恢复的旧 Gate，也避免把 8 月 20 日预注册前的部分日数据、后来补抓数据或失败日冒充完整样本。
+
+- 最终 Review 修复旧 v1 报告兼容性：新增的 identity/spec 字段只参与 v2 canonical hash 和载荷，
+  v1 继续生成原 schema/hash；R3 解码缺少新字段的已落盘报告时恢复冻结的 v1 默认身份，避免旧证据
+  因模型扩展变成不可读。
 
 - 根因确认：旧研究库载荷已达 `67,106,829 / 67,108,864` 字节，异步 observer 捕获容量异常后只在
   内存累加，生产推荐仍正常运行，因此“服务跑了一整天”和“完整研究证据继续增长”同时出现分歧。
@@ -392,6 +417,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除替代评价对前序日期回填、失败日换日和旧窗口随机种子的隐式复用能力；未删除、迁移或改写旧
+  `score_p0_v1` 研究证据，生产评分、风险、融合、冻结、DeepSeek 预算、API 和 Web 行为均未改变。
+
 - 删除与权威“后台结果结算”契约冲突的 `V2NoopSettlement` 生产实现；未恢复旧生产链、旧 Web
   envelope 或 HTTP 写入入口，也未删除或改写现有运行数据库。
 
@@ -449,6 +477,14 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 失败先行测试确认旧实现缺少 research spec 模块、活动身份和 readiness v2；实现后新旧 spec 日期/
+  哈希/随机种子、R2 无替换窗口、R2→R5 身份贯通、v2 schema、前向目录隔离、CLI 只读状态及权威
+  文档契约定向测试通过；最终 Review 发现的 v1 hash/解码兼容性由 48 项研究定向回归覆盖。
+  `make format-check`、`make lint`（严格重构债务仍为零）、`make type-check`、
+  完整 921 项 `make test` 和 `make package` 均通过；打包首次仅因沙箱禁止隔离环境下载 `setuptools`
+  失败，获准联网后原命令成功生成 sdist/wheel。仓库外安装 wheel 后成功导入 `score_p0_v2` spec、
+  校验其首日与哈希、执行 CLI parser 并读取 Web 模板；`git diff --check` 在最终 Review 再次执行。
 
 - 运行库只读审计确认旧 committed observation 单库有 165 条、3 个交易日、载荷
   `67,106,829 / 67,108,864` 字节；仓库外安装最新 wheel 后执行 `trader-cli research-status`，正确
@@ -662,6 +698,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- `score_p0_v2` 的 40+20 证据依赖未来真实交易日、服务连续运行、点时输入和后续结算完整，当前
+  `research-status` 为 `historical_collecting` 且记录进度 `0/40`，因此 Score-R6 仍不可执行。
+  `serve` 只采集 committed observation/outcome；窗口完成后仍须显式运行 R2-R5，且只有真实
+  `promotion_eligible` 才能开始 R6。任一计划日失败将诚实阻止本批晋级，不会自动换日。
 
 - 原 `score_p0_v1` 的 2026-06-15 至 2026-08-10 点时窗口没有形成完整不可变分区，后来的日 K、缓存
   或 production 运行不能反向重建当时输入；该身份继续保持 `historical_rejected`，Score-R6 仍因

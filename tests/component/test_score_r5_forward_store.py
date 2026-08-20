@@ -15,6 +15,7 @@ from trader.application.research.score_r5_models import (
     score_r5_forward_dates,
 )
 from trader.domain.research.historical import CostSettlementBasis
+from trader.domain.research.specification import SCORE_P0_V2_SPEC
 from trader.infra.research.forward_evidence import ForwardEvidenceConflictError, JsonScoreR5ForwardStore
 
 
@@ -86,3 +87,24 @@ def test_score_r5_forward_store_round_trips_valid_no_decision_evidence(tmp_path)
 
     assert store.append(record) == record
     assert store.read("continuous_entry", trade_date) == record
+
+
+def test_score_r5_forward_store_namespaces_the_new_research_identity(tmp_path) -> None:  # noqa: ANN001
+    store = JsonScoreR5ForwardStore(tmp_path, spec=SCORE_P0_V2_SPEC)
+    bindings = replace(
+        _failed_record().bindings,
+        research_identity="score_p0_v2",
+        research_spec_hash=SCORE_P0_V2_SPEC.content_hash,
+        statistics_version="score_r5_paired_mbb_holm_v2",
+        report_version="score_r5_final_report_v2",
+    )
+    record = replace(
+        _failed_record(),
+        bindings=bindings,
+        planned_trade_date=SCORE_P0_V2_SPEC.forward_dates[0],
+        schema_version="score_r5_forward_day_v2",
+    )
+
+    assert store.append(record) == record
+    assert store.read("continuous_entry", record.planned_trade_date) == record
+    assert (tmp_path / "score_p0_v2" / "continuous_entry" / "2026-10-26.json").is_file()

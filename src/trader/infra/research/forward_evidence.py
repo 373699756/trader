@@ -23,6 +23,7 @@ from trader.application.research.score_r5_models import (
 )
 from trader.domain.research.challengers import ChallengerVariantId
 from trader.domain.research.historical import CostSettlementBasis, ResearchBoard
+from trader.domain.research.specification import SCORE_P0_V1_SPEC, ScoreResearchSpec
 from trader.domain.research.statistics import VARIANT_FAMILY
 
 
@@ -33,8 +34,9 @@ class ForwardEvidenceConflictError(RuntimeError):
 class JsonScoreR5ForwardStore:
     """Persist one immutable file for each variant and planned date."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, spec: ScoreResearchSpec = SCORE_P0_V1_SPEC) -> None:
         self._root = root
+        self._spec = spec
 
     def read(self, variant_id: str, trade_date: date) -> ScoreR5ForwardDayRecord | None:
         path = self._path(variant_id, trade_date)
@@ -55,6 +57,11 @@ class JsonScoreR5ForwardStore:
         return record
 
     def append(self, record: ScoreR5ForwardDayRecord) -> ScoreR5ForwardDayRecord:
+        if (
+            record.bindings.research_identity != self._spec.research_identity
+            or record.bindings.research_spec_hash != self._spec.content_hash
+        ):
+            raise ValueError("Score-R5 forward store research identity does not match")
         path = self._path(record.bindings.variant_id, record.planned_trade_date)
         path.parent.mkdir(parents=True, exist_ok=True)
         existing = self.read(record.bindings.variant_id, record.planned_trade_date)
@@ -85,9 +92,14 @@ class JsonScoreR5ForwardStore:
     def _path(self, variant_id: str, trade_date: date) -> Path:
         if variant_id not in VARIANT_FAMILY:
             raise ValueError("Score-R5 forward store requires a preregistered variant")
-        if trade_date not in score_r5_forward_dates():
+        if trade_date not in score_r5_forward_dates(self._spec):
             raise ValueError("Score-R5 forward store date is outside the fixed window")
-        return self._root / variant_id / f"{trade_date.isoformat()}.json"
+        identity_path = (
+            self._root
+            if self._spec.research_identity == SCORE_P0_V1_SPEC.research_identity
+            else self._root / self._spec.research_identity
+        )
+        return identity_path / variant_id / f"{trade_date.isoformat()}.json"
 
 
 def _record_from_payload(raw: dict[str, object]) -> ScoreR5ForwardDayRecord:
@@ -117,10 +129,12 @@ def _bindings_from_payload(raw: dict[str, object]) -> ScoreR5ForwardBindings:
         str(raw["data_identity_hash"]),
         str(raw["rule_identity_hash"]),
         str(raw["config_strategy_identity_hash"]),
-        str(raw["strategy_version"]),
-        str(raw["fusion_version"]),
-        str(raw["statistics_version"]),
-        str(raw["report_version"]),
+        research_identity=str(raw.get("research_identity", SCORE_P0_V1_SPEC.research_identity)),
+        research_spec_hash=str(raw.get("research_spec_hash", SCORE_P0_V1_SPEC.content_hash)),
+        strategy_version=str(raw["strategy_version"]),
+        fusion_version=str(raw["fusion_version"]),
+        statistics_version=str(raw["statistics_version"]),
+        report_version=str(raw["report_version"]),
     )
 
 

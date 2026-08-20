@@ -6,12 +6,17 @@ import dataclasses
 import math
 import re
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from typing import Literal
 
 from trader.application.research.challenger_models import ChallengerDayReplay
 from trader.application.research.replay_models import canonical_hash
 from trader.domain.research.challengers import ChallengerVariantId
+from trader.domain.research.specification import (
+    SCORE_P0_V1_SPEC,
+    ScoreResearchSpec,
+    get_score_research_spec,
+)
 from trader.domain.research.statistics import VARIANT_FAMILY, HolmDecision, PairedBootstrapResult, bootstrap_seed
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -22,17 +27,8 @@ R5VariantState = Literal[
 ForwardRecordStatus = Literal["valid", "failed", "no_decision"]
 
 
-def score_r5_forward_dates() -> tuple[date, ...]:
-    current = date(2026, 11, 2)
-    end = date(2026, 11, 27)
-    values: list[date] = []
-    while current <= end:
-        if current.weekday() < 5:
-            values.append(current)
-        current += timedelta(days=1)
-    if len(values) != 20:
-        raise AssertionError("Score-R5 preregistered forward window must contain exactly 20 weekdays")
-    return tuple(values)
+def score_r5_forward_dates(spec: ScoreResearchSpec = SCORE_P0_V1_SPEC) -> tuple[date, ...]:
+    return spec.forward_dates
 
 
 @dataclass(frozen=True)
@@ -142,9 +138,6 @@ class ScoreR5VariantGate:
         }[self.variant_id]
         if self.variant_version != expected_version:
             raise ValueError("Score-R5 variant identity and version do not match")
-        for result in (*self.local_track.bootstrap, *self.hybrid_track.bootstrap, *self.hybrid_increment.bootstrap):
-            if result.seed != bootstrap_seed(self.variant_id, result.block_days):
-                raise ValueError("Score-R5 bootstrap result does not bind the preregistered seed")
         if any(
             result.sample_count != self.local_track.day_count
             for result in (*self.local_track.bootstrap, *self.hybrid_increment.bootstrap)
@@ -171,6 +164,14 @@ class ScoreR5HistoricalReport:
     variants: tuple[ScoreR5VariantGate, ...]
     scope: Literal["historical", "forward", "combined"] = "historical"
     forward_dates: tuple[date, ...] = dataclasses.field(default_factory=score_r5_forward_dates)
+    research_identity: str = dataclasses.field(
+        default=SCORE_P0_V1_SPEC.research_identity,
+        metadata={"exclude_from_v1_hash": True},
+    )
+    research_spec_hash: str = dataclasses.field(
+        default=SCORE_P0_V1_SPEC.content_hash,
+        metadata={"exclude_from_v1_hash": True},
+    )
     schema_version: str = "score_r5_statistical_gate_v1"
     statistics_version: str = "score_r5_paired_mbb_holm_v1"
     report_version: str = "score_r5_final_report_v1"
@@ -178,18 +179,8 @@ class ScoreR5HistoricalReport:
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
-        if (
-            self.schema_version != "score_r5_statistical_gate_v1"
-            or self.statistics_version != "score_r5_paired_mbb_holm_v1"
-            or self.report_version != "score_r5_final_report_v1"
-        ):
-            raise ValueError("Score-R5 report identity is invalid")
-        for value in (self.baseline_report_hash, self.challenger_report_hash, self.parameter_manifest_hash):
-            _hash(value)
-        if tuple(item.variant_id for item in self.variants) != VARIANT_FAMILY:
-            raise ValueError("Score-R5 historical report requires the fixed five-variant family")
-        if self.forward_dates != score_r5_forward_dates():
-            raise ValueError("Score-R5 forward dates cannot be shifted or replaced")
+        spec = get_score_research_spec(self.research_identity)
+        _validate_r5_report_identity(self, spec)
         maximum_days = {"historical": 40, "forward": 20, "combined": 60}[self.scope]
         expected_days = maximum_days
         if self.historical_day_count < 0 or self.historical_day_count > maximum_days:
@@ -198,6 +189,32 @@ class ScoreR5HistoricalReport:
         if self.status != expected or self.deepseek_http_request_delta != 0:
             raise ValueError("Score-R5 historical status or DeepSeek isolation is invalid")
         object.__setattr__(self, "content_hash", canonical_hash(self))
+
+
+def _validate_r5_report_identity(report: ScoreR5HistoricalReport, spec: ScoreResearchSpec) -> None:
+    generation = "v2" if report.research_identity == "score_p0_v2" else "v1"
+    if (
+        report.schema_version != f"score_r5_statistical_gate_{generation}"
+        or report.statistics_version != f"score_r5_paired_mbb_holm_{generation}"
+        or report.report_version != f"score_r5_final_report_{generation}"
+    ):
+        raise ValueError("Score-R5 report identity is invalid")
+    for value in (report.baseline_report_hash, report.challenger_report_hash, report.parameter_manifest_hash):
+        _hash(value)
+    if report.research_spec_hash != spec.content_hash:
+        raise ValueError("Score-R5 report research spec hash is invalid")
+    if tuple(item.variant_id for item in report.variants) != VARIANT_FAMILY:
+        raise ValueError("Score-R5 historical report requires the fixed five-variant family")
+    if report.forward_dates != score_r5_forward_dates(spec):
+        raise ValueError("Score-R5 forward dates cannot be shifted or replaced")
+    for gate in report.variants:
+        _validate_r5_gate_seeds(gate, spec)
+
+
+def _validate_r5_gate_seeds(gate: ScoreR5VariantGate, spec: ScoreResearchSpec) -> None:
+    results = (*gate.local_track.bootstrap, *gate.hybrid_track.bootstrap, *gate.hybrid_increment.bootstrap)
+    if any(result.seed != bootstrap_seed(gate.variant_id, result.block_days, spec=spec) for result in results):
+        raise ValueError("Score-R5 bootstrap result does not bind the preregistered seed")
 
 
 @dataclass(frozen=True)
@@ -209,6 +226,14 @@ class ScoreR5ForwardBindings:
     data_identity_hash: str
     rule_identity_hash: str
     config_strategy_identity_hash: str
+    research_identity: str = dataclasses.field(
+        default=SCORE_P0_V1_SPEC.research_identity,
+        metadata={"exclude_from_v1_hash": True},
+    )
+    research_spec_hash: str = dataclasses.field(
+        default=SCORE_P0_V1_SPEC.content_hash,
+        metadata={"exclude_from_v1_hash": True},
+    )
     strategy_version: str = "strategy_review30_top6_observe6_2026_07"
     fusion_version: str = "fusion_local68_deepseek32"
     statistics_version: str = "score_r5_paired_mbb_holm_v1"
@@ -222,8 +247,12 @@ class ScoreR5ForwardBindings:
             self.data_identity_hash,
             self.rule_identity_hash,
             self.config_strategy_identity_hash,
+            self.research_spec_hash,
         ):
             _hash(value)
+        spec = get_score_research_spec(self.research_identity)
+        if self.research_spec_hash != spec.content_hash:
+            raise ValueError("Score-R5 forward binding research spec hash is invalid")
         expected_version = {
             "continuous_entry": "continuous_entry_v1",
             "coverage_shrink": "coverage_shrink_v1",
@@ -233,6 +262,12 @@ class ScoreR5ForwardBindings:
         }[self.variant_id]
         if self.variant_version != expected_version:
             raise ValueError("Score-R5 forward binding variant version is invalid")
+        generation = "v2" if self.research_identity == "score_p0_v2" else "v1"
+        if (
+            self.statistics_version != f"score_r5_paired_mbb_holm_{generation}"
+            or self.report_version != f"score_r5_final_report_{generation}"
+        ):
+            raise ValueError("Score-R5 forward binding report versions are invalid")
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
 
@@ -248,9 +283,11 @@ class ScoreR5ForwardDayRecord:
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
-        if self.schema_version != "score_r5_forward_day_v1":
+        generation = "v2" if self.bindings.research_identity == "score_p0_v2" else "v1"
+        if self.schema_version != f"score_r5_forward_day_{generation}":
             raise ValueError("Score-R5 forward record schema is invalid")
-        if self.planned_trade_date not in score_r5_forward_dates():
+        spec = get_score_research_spec(self.bindings.research_identity)
+        if self.planned_trade_date not in score_r5_forward_dates(spec):
             raise ValueError("Score-R5 forward record date is outside the fixed window")
         if self.status == "failed":
             if (
@@ -282,11 +319,21 @@ class ScoreR5FinalReport:
     forward_gate_report: ScoreR5HistoricalReport | None
     final_gate_report: ScoreR5HistoricalReport | None
     failure_reasons: tuple[str, ...]
+    research_identity: str = dataclasses.field(
+        default=SCORE_P0_V1_SPEC.research_identity,
+        metadata={"exclude_from_v1_hash": True},
+    )
+    research_spec_hash: str = dataclasses.field(
+        default=SCORE_P0_V1_SPEC.content_hash,
+        metadata={"exclude_from_v1_hash": True},
+    )
     schema_version: str = "score_r5_final_report_v1"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
-        if self.schema_version != "score_r5_final_report_v1":
+        spec = get_score_research_spec(self.research_identity)
+        generation = "v2" if self.research_identity == "score_p0_v2" else "v1"
+        if self.research_spec_hash != spec.content_hash or self.schema_version != f"score_r5_final_report_{generation}":
             raise ValueError("Score-R5 final report schema is invalid")
         _hash(self.historical_report_hash)
         for value in self.forward_record_hashes:
@@ -304,6 +351,12 @@ class ScoreR5FinalReport:
             raise ValueError("Score-R5 final seal must bind a forward-only gate report")
         if self.final_gate_report is not None and self.final_gate_report.scope != "combined":
             raise ValueError("Score-R5 final seal must bind a combined 40+20 gate report")
+        for report in (self.forward_gate_report, self.final_gate_report):
+            if report is not None and (
+                report.research_identity != self.research_identity
+                or report.research_spec_hash != self.research_spec_hash
+            ):
+                raise ValueError("Score-R5 final seal research identity is inconsistent")
         object.__setattr__(self, "failure_reasons", reasons)
         object.__setattr__(self, "content_hash", canonical_hash(self))
 

@@ -60,6 +60,8 @@ class PolarsHistoricalPartitionStore:
             "schema_version": _SCHEMA_VERSION,
             "extraction_schema_version": extraction.schema_version,
             "extraction_hash": extraction.content_hash,
+            "research_identity": extraction.research_identity,
+            "research_spec_hash": extraction.research_spec_hash,
             "status": extraction.status,
             "coverage": [_canonical_value(item) for item in extraction.coverage],
             "days": [

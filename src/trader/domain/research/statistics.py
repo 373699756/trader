@@ -8,6 +8,7 @@ import random
 from dataclasses import dataclass
 
 from trader.domain.research.challengers import ChallengerVariantId
+from trader.domain.research.specification import SCORE_P0_V1_SPEC, ScoreResearchSpec
 
 BOOTSTRAP_MASTER_SEED = 20260811
 BOOTSTRAP_REPETITIONS = 10_000
@@ -50,12 +51,17 @@ class HolmDecision:
     rejected_null: bool
 
 
-def bootstrap_seed(variant_id: ChallengerVariantId, block_days: int) -> int:
+def bootstrap_seed(
+    variant_id: ChallengerVariantId,
+    block_days: int,
+    *,
+    spec: ScoreResearchSpec = SCORE_P0_V1_SPEC,
+) -> int:
     if variant_id not in VARIANT_FAMILY:
         raise ValueError("Score-R5 bootstrap requires a preregistered variant")
     if block_days not in BOOTSTRAP_BLOCK_DAYS:
         raise ValueError("Score-R5 bootstrap requires a preregistered block length")
-    identity = f"score_p0_v1|{BOOTSTRAP_MASTER_SEED}|{variant_id}|{block_days}"
+    identity = f"{spec.research_identity}|{spec.bootstrap_master_seed}|{variant_id}|{block_days}"
     return int.from_bytes(hashlib.sha256(identity.encode("utf-8")).digest()[:8], "big", signed=False)
 
 
@@ -64,11 +70,13 @@ def paired_moving_block_bootstrap(
     paired_metric: tuple[float, ...],
     variant_id: ChallengerVariantId,
     block_days: int,
+    *,
+    spec: ScoreResearchSpec = SCORE_P0_V1_SPEC,
 ) -> PairedBootstrapResult:
     """Bootstrap two aligned daily metrics with identical non-circular block indices."""
 
     _validate_series(values, paired_metric)
-    seed = bootstrap_seed(variant_id, block_days)
+    seed = bootstrap_seed(variant_id, block_days, spec=spec)
     if len(values) < block_days:
         return PairedBootstrapResult(
             block_days,

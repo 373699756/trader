@@ -44,6 +44,21 @@ def test_research_status_does_not_create_runtime_files(tmp_path: Path, capsys) -
     assert payload["recorded_trade_dates"] == []
     assert payload["outcomes"]["initialized"] is False
     assert payload["score_r6_executable"] is False
+    assert payload["schema_version"] == "v2_research_readiness_v2"
+    assert payload["active_research"]["research_identity"] == "score_p0_v2"
+    assert payload["active_research"]["historical_window"] == {
+        "start": "2026-08-21",
+        "end": "2026-10-23",
+        "planned_trade_dates": 40,
+        "recorded_trade_dates": 0,
+    }
+    assert payload["active_research"]["forward_window"] == {
+        "start": "2026-10-26",
+        "end": "2026-11-20",
+        "planned_trade_dates": 20,
+        "recorded_trade_dates": 0,
+    }
+    assert payload["legacy_research"]["research_identity"] == "score_p0_v1"
     assert not runtime_dir.exists()
 
 

@@ -6,8 +6,10 @@ import argparse
 import json
 import os
 from dataclasses import asdict
+from datetime import date
 from pathlib import Path
 
+from trader.domain.research.specification import ACTIVE_SCORE_RESEARCH_SPEC, SCORE_P0_V1_SPEC
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
 from trader.infra.persistence.research_trace import SQLiteV2ResearchTraceStore
 from trader.infra.settings import load_long_watchlist, load_runtime_settings, load_strategy_settings
@@ -34,19 +36,41 @@ def main(argv: list[str] | None = None) -> int:
         trace = SQLiteV2ResearchTraceStore(runtime.runtime_dir)
         status = trace.inspect_status()
         dates = trace.inspect_trade_dates(limit=120)
+        recorded_dates = frozenset(dates)
+        active = ACTIVE_SCORE_RESEARCH_SPEC
+        historical_count = len(recorded_dates.intersection(active.historical_dates))
+        forward_count = len(recorded_dates.intersection(active.forward_dates))
+        history_complete = historical_count == len(active.historical_dates)
         print(
             json.dumps(
                 {
-                    "schema_version": "v2_research_readiness_v1",
-                    "research_state": "historical_rejected",
+                    "schema_version": "v2_research_readiness_v2",
+                    "research_state": (
+                        "historical_ready_for_offline_evaluation" if history_complete else "historical_collecting"
+                    ),
                     "score_r6_executable": False,
                     "blockers": [
-                        "score_p0_v1_historical_point_in_time_missing",
+                        (
+                            "score_p0_v2_r2_r5_not_run"
+                            if history_complete
+                            else "score_p0_v2_historical_observations_incomplete"
+                        ),
                         "score_r5_promotion_eligible_missing",
                     ],
-                    "historical_window": {"start": "2026-06-15", "end": "2026-08-10"},
-                    "forward_window": {"start": "2026-11-02", "end": "2026-11-27"},
                     "recorded_trade_dates": [value.isoformat() for value in dates],
+                    "active_research": {
+                        "research_identity": active.research_identity,
+                        "research_spec_hash": active.content_hash,
+                        "preregistered_on": active.preregistered_on.isoformat(),
+                        "historical_window": _window_status(active.historical_dates, historical_count),
+                        "forward_window": _window_status(active.forward_dates, forward_count),
+                    },
+                    "legacy_research": {
+                        "research_identity": SCORE_P0_V1_SPEC.research_identity,
+                        "research_spec_hash": SCORE_P0_V1_SPEC.content_hash,
+                        "research_state": "historical_rejected",
+                        "blocker": "historical_point_in_time_missing",
+                    },
                     "archive": asdict(status),
                     "outcomes": asdict(SQLiteOutcomeEvidenceRepository.inspect_status(runtime.runtime_dir)),
                 },
@@ -82,6 +106,15 @@ def _absolute_config_path(raw_path: str) -> Path:
     if not path.is_absolute():
         raise SystemExit("configuration path must be absolute")
     return path.resolve()
+
+
+def _window_status(planned_dates: tuple[date, ...], recorded_count: int) -> dict[str, object]:
+    return {
+        "start": str(planned_dates[0]),
+        "end": str(planned_dates[-1]),
+        "planned_trade_dates": len(planned_dates),
+        "recorded_trade_dates": recorded_count,
+    }
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from trader.application.research.models import (
     HistoricalFullFieldBundle,
 )
 from trader.domain.research.historical import ResearchDataLineage, ScoreComponent
+from trader.domain.research.specification import SCORE_P0_V2_SPEC
 
 
 class _Port:
@@ -164,6 +165,20 @@ def test_invalid_main_day_is_retained_and_replaced_only_by_nearest_prior_day() -
     assert result.status == "extracted"
     assert len(result.days) == 40
     assert min(day.summary.trade_date for day in result.days) == date(2026, 6, 12)
+    assert any(item.trade_date == failed and item.status == "failed" for item in result.coverage)
+
+
+def test_new_preregistered_window_never_replaces_a_failed_planned_day() -> None:
+    failed = SCORE_P0_V2_SPEC.historical_dates[4]
+    port = _WindowPort({failed})
+
+    result = ScoreR2HistoricalExtractor(port, _Evaluator(), spec=SCORE_P0_V2_SPEC).extract()
+
+    assert result.status == "exploratory"
+    assert result.research_identity == "score_p0_v2"
+    assert result.research_spec_hash == SCORE_P0_V2_SPEC.content_hash
+    assert len(result.days) == 39
+    assert tuple(port.requested) == SCORE_P0_V2_SPEC.historical_dates
     assert any(item.trade_date == failed and item.status == "failed" for item in result.coverage)
 
 

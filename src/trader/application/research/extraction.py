@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from typing import Literal
 
 from trader.application.research.models import (
@@ -22,11 +22,8 @@ from trader.domain.research.historical import (
     optimistic_component_upper_bound,
     optimistic_final_upper_bound,
 )
+from trader.domain.research.specification import SCORE_P0_V1_SPEC, ScoreResearchSpec
 
-_MAIN_START = date(2026, 6, 15)
-_MAIN_END = date(2026, 8, 10)
-_EARLIEST_FALLBACK = date(2026, 5, 18)
-_MAXIMUM_VALID_DAYS = 40
 _PROOF_RULE_VERSION = "score_r2_active_set_v1"
 
 
@@ -52,29 +49,36 @@ class ScoreR2HistoricalExtractor:
         evaluator: HistoricalCandidateEvaluator,
         *,
         policy: ScoreR2ExtractionPolicy | None = None,
+        spec: ScoreResearchSpec = SCORE_P0_V1_SPEC,
     ) -> None:
         self._data_plane = data_plane
         self._evaluator = evaluator
         self._policy = policy or ScoreR2ExtractionPolicy()
+        self._spec = spec
         self._maximum_board_count = math.ceil(self._policy.top_k * self._policy.maximum_board_fraction)
 
     def extract(self) -> ScoreR2HistoricalExtraction:
         coverage: list[HistoricalCoverageRecord] = []
         days: list[HistoricalExtractedDay] = []
-        for trade_date in _date_range(_MAIN_START, _MAIN_END):
+        for trade_date in self._spec.historical_dates:
             self._attempt_date(trade_date, coverage, days)
-        fallback = _MAIN_START - timedelta(days=1)
-        while len(days) < _MAXIMUM_VALID_DAYS and fallback >= _EARLIEST_FALLBACK:
-            self._attempt_date(fallback, coverage, days)
-            fallback -= timedelta(days=1)
-        if len(days) > _MAXIMUM_VALID_DAYS:
-            days = sorted(days, key=lambda item: item.summary.trade_date)[-_MAXIMUM_VALID_DAYS:]
+        for trade_date in self._spec.historical_replacement_dates:
+            if len(days) >= self._spec.maximum_historical_days:
+                break
+            self._attempt_date(trade_date, coverage, days)
+        if len(days) > self._spec.maximum_historical_days:
+            days = sorted(days, key=lambda item: item.summary.trade_date)[-self._spec.maximum_historical_days :]
             retained = {item.summary.trade_date for item in days}
             coverage = [item for item in coverage if item.status == "failed" or item.trade_date in retained]
         return ScoreR2HistoricalExtraction(
-            status="extracted" if len(days) == _MAXIMUM_VALID_DAYS else "exploratory",
+            status="extracted" if len(days) == self._spec.maximum_historical_days else "exploratory",
             coverage=tuple(coverage),
             days=tuple(days),
+            research_identity=self._spec.research_identity,
+            research_spec_hash=self._spec.content_hash,
+            schema_version=(
+                "score_r2_historical_v2" if self._spec.research_identity == "score_p0_v2" else "score_r2_historical_v1"
+            ),
         )
 
     def _attempt_date(
@@ -83,7 +87,7 @@ class ScoreR2HistoricalExtractor:
         coverage: list[HistoricalCoverageRecord],
         days: list[HistoricalExtractedDay],
     ) -> None:
-        if len(days) >= _MAXIMUM_VALID_DAYS or not self._data_plane.is_trading_day(trade_date):
+        if len(days) >= self._spec.maximum_historical_days or not self._data_plane.is_trading_day(trade_date):
             return
         try:
             day = self._extract_day(trade_date)
@@ -303,10 +307,6 @@ def _coverage_reason(exc: Exception) -> str:
     if isinstance(exc, TypeError):
         return "point_in_time_schema_invalid"
     return "point_in_time_evidence_invalid"
-
-
-def _date_range(start: date, end: date) -> tuple[date, ...]:
-    return tuple(start + timedelta(days=offset) for offset in range((end - start).days + 1))
 
 
 __all__ = ["ScoreR2ExtractionPolicy", "ScoreR2HistoricalExtractor"]

@@ -25,6 +25,7 @@ from trader.application.research.score_r5_models import (
 )
 from trader.domain.research.baseline import mean_rank_ic, population_spearman, quantile_bucket
 from trader.domain.research.challengers import ChallengerVariantId
+from trader.domain.research.specification import SCORE_P0_V1_SPEC, ScoreResearchSpec, get_score_research_spec
 from trader.domain.research.statistics import (
     BOOTSTRAP_BLOCK_DAYS,
     PRIMARY_BLOCK_DAYS,
@@ -56,12 +57,15 @@ class _DailyTrack:
 class ScoreR5StatisticalGate:
     """Evaluate the fixed five challengers without changing production state."""
 
+    def __init__(self, spec: ScoreResearchSpec = SCORE_P0_V1_SPEC) -> None:
+        self._spec = spec
+
     def evaluate(
         self,
         baseline: ScoreR3BaselineReport,
         challengers: ScoreR4ChallengerReport,
     ) -> ScoreR5HistoricalReport:
-        _validate_parents(baseline, challengers)
+        _validate_parents(baseline, challengers, self._spec)
         oracle_by_date = {item.trade_date: item.oracle_codes for item in baseline.days}
         prepared = tuple(self._prepare_variant(variant, oracle_by_date) for variant in challengers.variants)
         primary_p = {variant.variant_id: variant.local_track.primary_bootstrap.p_value for variant in prepared}
@@ -74,6 +78,24 @@ class ScoreR5StatisticalGate:
             challengers.parameter_manifest_hash,
             len(baseline.days),
             variants,
+            forward_dates=self._spec.forward_dates,
+            research_identity=self._spec.research_identity,
+            research_spec_hash=self._spec.content_hash,
+            schema_version=(
+                "score_r5_statistical_gate_v2"
+                if self._spec.research_identity == "score_p0_v2"
+                else "score_r5_statistical_gate_v1"
+            ),
+            statistics_version=(
+                "score_r5_paired_mbb_holm_v2"
+                if self._spec.research_identity == "score_p0_v2"
+                else "score_r5_paired_mbb_holm_v1"
+            ),
+            report_version=(
+                "score_r5_final_report_v2"
+                if self._spec.research_identity == "score_p0_v2"
+                else "score_r5_final_report_v1"
+            ),
         )
 
     def _prepare_variant(
@@ -90,9 +112,9 @@ class ScoreR5StatisticalGate:
         days: tuple[ChallengerDayReplay, ...],
         oracle_by_date: dict[date, tuple[str, ...]],
     ) -> ScoreR5VariantGate:
-        local = _track_metrics(variant_id, days, oracle_by_date, "local_only")
-        hybrid = _track_metrics(variant_id, days, oracle_by_date, "hybrid")
-        increment = _hybrid_increment(variant_id, days)
+        local = _track_metrics(variant_id, days, oracle_by_date, "local_only", self._spec)
+        hybrid = _track_metrics(variant_id, days, oracle_by_date, "hybrid", self._spec)
+        increment = _hybrid_increment(variant_id, days, self._spec)
         placeholder = HolmDecision(variant_id, None, 1, 0.01, False)
         return ScoreR5VariantGate(
             variant_id,
@@ -149,6 +171,7 @@ class ScoreR5ForwardCollector:
             None,
             (),
             reason,
+            _forward_record_schema(self._historical.research_identity),
         )
         return self._append(record)
 
@@ -166,6 +189,7 @@ class ScoreR5ForwardCollector:
             day,
             tuple(sorted(set(oracle_codes))),
             None,
+            _forward_record_schema(self._historical.research_identity),
         )
         return self._append(record)
 
@@ -213,7 +237,8 @@ class ScoreR5FinalSealer:
         records: tuple[ScoreR5ForwardDayRecord, ...],
     ) -> ScoreR5FinalReport:
         records = tuple(sorted(records, key=lambda item: (item.bindings.variant_id, item.planned_trade_date)))
-        recalculated = ScoreR5StatisticalGate().evaluate(baseline, challengers)
+        spec = get_score_research_spec(historical.research_identity)
+        recalculated = ScoreR5StatisticalGate(spec).evaluate(baseline, challengers)
         if recalculated.content_hash != historical.content_hash:
             return _forward_rejected(historical, records, "historical_gate_changed")
         eligible = tuple(item for item in historical.variants if item.state == "historical_passed")
@@ -225,6 +250,9 @@ class ScoreR5FinalSealer:
                 None,
                 None,
                 ("no_historical_variant_passed",),
+                historical.research_identity,
+                historical.research_spec_hash,
+                historical.report_version,
             )
         preflight = _forward_preflight(historical, eligible, records)
         if preflight == "collecting":
@@ -235,6 +263,9 @@ class ScoreR5FinalSealer:
                 None,
                 None,
                 (),
+                historical.research_identity,
+                historical.research_spec_hash,
+                historical.report_version,
             )
         if preflight != "ready":
             return _forward_rejected(historical, records, preflight)
@@ -267,6 +298,9 @@ class ScoreR5FinalSealer:
                 forward_gate,
                 final_gate,
                 (),
+                historical.research_identity,
+                historical.research_spec_hash,
+                historical.report_version,
             )
         return ScoreR5FinalReport(
             "forward_rejected",
@@ -275,6 +309,9 @@ class ScoreR5FinalSealer:
             forward_gate,
             final_gate,
             ("combined_gate_not_passed",),
+            historical.research_identity,
+            historical.research_spec_hash,
+            historical.report_version,
         )
 
 
@@ -284,7 +321,8 @@ def _combined_gate(
     challengers: ScoreR4ChallengerReport,
     records: tuple[ScoreR5ForwardDayRecord, ...],
 ) -> ScoreR5HistoricalReport:
-    engine = ScoreR5StatisticalGate()
+    spec = get_score_research_spec(historical.research_identity)
+    engine = ScoreR5StatisticalGate(spec)
     historical_gate_by_id = {item.variant_id: item for item in historical.variants}
     historical_oracle_by_date = {item.trade_date: item.oracle_codes for item in baseline.days}
     prepared: list[ScoreR5VariantGate] = []
@@ -358,6 +396,12 @@ def _combined_gate(
         60,
         tuple(final_variants),
         "combined",
+        historical.forward_dates,
+        historical.research_identity,
+        historical.research_spec_hash,
+        historical.schema_version,
+        historical.statistics_version,
+        historical.report_version,
     )
 
 
@@ -366,7 +410,8 @@ def _forward_gate(
     challengers: ScoreR4ChallengerReport,
     records: tuple[ScoreR5ForwardDayRecord, ...],
 ) -> ScoreR5HistoricalReport:
-    engine = ScoreR5StatisticalGate()
+    spec = get_score_research_spec(historical.research_identity)
+    engine = ScoreR5StatisticalGate(spec)
     historical_gate_by_id = {item.variant_id: item for item in historical.variants}
     prepared: list[ScoreR5VariantGate] = []
     eligible_ids: set[ChallengerVariantId] = set()
@@ -437,6 +482,12 @@ def _forward_gate(
         20,
         tuple(final_variants),
         "forward",
+        historical.forward_dates,
+        historical.research_identity,
+        historical.research_spec_hash,
+        historical.schema_version,
+        historical.statistics_version,
+        historical.report_version,
     )
 
 
@@ -445,13 +496,18 @@ def _track_metrics(
     days: tuple[ChallengerDayReplay, ...],
     oracle_by_date: dict[date, tuple[str, ...]],
     track: Literal["local_only", "hybrid"],
+    spec: ScoreResearchSpec,
 ) -> ScoreR5TrackMetrics:
     daily = tuple(_daily_track(day, oracle_by_date[day.trade_date], track) for day in days)
     cost_means = tuple(_mean(tuple(item.cost_differences[index] for item in daily)) for index in range(3))
     severe_differences = tuple(item.challenger_severe_rate - item.baseline_severe_rate for item in daily)
     blocks = tuple(
         paired_moving_block_bootstrap(
-            tuple(item.cost_differences[0] for item in daily), severe_differences, variant_id, block_days
+            tuple(item.cost_differences[0] for item in daily),
+            severe_differences,
+            variant_id,
+            block_days,
+            spec=spec,
         )
         for block_days in BOOTSTRAP_BLOCK_DAYS
     )
@@ -470,7 +526,11 @@ def _track_metrics(
     high_low_ci = None
     if high_low:
         high_low_result = paired_moving_block_bootstrap(
-            tuple(high_low), tuple(0.0 for _item in high_low), variant_id, PRIMARY_BLOCK_DAYS
+            tuple(high_low),
+            tuple(0.0 for _item in high_low),
+            variant_id,
+            PRIMARY_BLOCK_DAYS,
+            spec=spec,
         )
         high_low_ci = high_low_result.confidence_lower
     return ScoreR5TrackMetrics(
@@ -553,6 +613,7 @@ def _score_diagnostics(
 def _hybrid_increment(
     variant_id: ChallengerVariantId,
     days: tuple[ChallengerDayReplay, ...],
+    spec: ScoreResearchSpec,
 ) -> ScoreR5HybridIncrement:
     daily_costs = tuple(
         tuple(
@@ -567,7 +628,11 @@ def _hybrid_increment(
     means = tuple(_mean(tuple(row[index] for row in daily_costs)) for index in range(3))
     blocks = tuple(
         paired_moving_block_bootstrap(
-            tuple(row[0] for row in daily_costs), tuple(0.0 for _row in daily_costs), variant_id, block_days
+            tuple(row[0] for row in daily_costs),
+            tuple(0.0 for _row in daily_costs),
+            variant_id,
+            block_days,
+            spec=spec,
         )
         for block_days in BOOTSTRAP_BLOCK_DAYS
     )
@@ -633,9 +698,20 @@ def _gate_failures(
     return tuple(reason for failed, reason in checks if failed)
 
 
-def _validate_parents(baseline: ScoreR3BaselineReport, challengers: ScoreR4ChallengerReport) -> None:
+def _validate_parents(
+    baseline: ScoreR3BaselineReport,
+    challengers: ScoreR4ChallengerReport,
+    spec: ScoreResearchSpec,
+) -> None:
     if challengers.baseline_report_hash != baseline.report_hash:
         raise ValueError("Score-R5 baseline and challenger reports must share the R3 identity")
+    if (
+        baseline.research_identity != spec.research_identity
+        or baseline.research_spec_hash != spec.content_hash
+        or challengers.research_identity != spec.research_identity
+        or challengers.research_spec_hash != spec.content_hash
+    ):
+        raise ValueError("Score-R5 parent reports must bind the selected research spec")
     baseline_dates = tuple(item.trade_date for item in baseline.days)
     if any(tuple(day.trade_date for day in variant.days) != baseline_dates for variant in challengers.variants):
         raise ValueError("Score-R5 variants must preserve the R3 historical day sequence")
@@ -770,6 +846,9 @@ def _forward_rejected(
         None,
         None,
         (reason,),
+        historical.research_identity,
+        historical.research_spec_hash,
+        historical.report_version,
     )
 
 
@@ -785,7 +864,15 @@ def _forward_bindings(
         historical.challenger_report_hash,
         historical.parameter_manifest_hash,
         historical.baseline_report_hash,
+        research_identity=historical.research_identity,
+        research_spec_hash=historical.research_spec_hash,
+        statistics_version=historical.statistics_version,
+        report_version=historical.report_version,
     )
+
+
+def _forward_record_schema(research_identity: str) -> str:
+    return "score_r5_forward_day_v2" if research_identity == "score_p0_v2" else "score_r5_forward_day_v1"
 
 
 def _mean(values: tuple[float, ...]) -> float | None:

@@ -23,6 +23,13 @@ from trader.domain.research.historical import (
     optimistic_component_upper_bound,
     optimistic_final_upper_bound,
 )
+from trader.domain.research.specification import (
+    ACTIVE_SCORE_RESEARCH_SPEC,
+    SCORE_P0_V1_SPEC,
+    SCORE_P0_V2_SPEC,
+    ScoreResearchSpec,
+    get_score_research_spec,
+)
 from trader.domain.research.statistics import (
     BOOTSTRAP_MASTER_SEED,
     BOOTSTRAP_REPETITIONS,
@@ -33,6 +40,7 @@ from trader.domain.research.statistics import (
 
 __all__ = [
     "CostSettlementBasis",
+    "ACTIVE_SCORE_RESEARCH_SPEC",
     "BOOTSTRAP_MASTER_SEED",
     "BOOTSTRAP_REPETITIONS",
     "R4_PARAMETER_SET_VERSION",
@@ -44,6 +52,9 @@ __all__ = [
     "HistoricalCandidateSummary",
     "ResearchDataLineage",
     "ResearchSelectionPool",
+    "SCORE_P0_V1_SPEC",
+    "SCORE_P0_V2_SPEC",
+    "ScoreResearchSpec",
     "ScoreComponent",
     "coverage_shrunk_score",
     "assess_continuous_entry",
@@ -52,6 +63,7 @@ __all__ = [
     "challenger_registry",
     "bootstrap_seed",
     "holm_step_down",
+    "get_score_research_spec",
     "mean_rank_ic",
     "optimistic_component_upper_bound",
     "optimistic_final_upper_bound",

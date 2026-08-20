@@ -41,6 +41,13 @@ class ScoreR3BaselineReplayer:
             extraction.status,
             days,
             aggregate,
+            extraction.research_identity,
+            extraction.research_spec_hash,
+            schema_version=(
+                "score_r3_baseline_report_v2"
+                if extraction.research_identity == "score_p0_v2"
+                else "score_r3_baseline_report_v1"
+            ),
         )
 
     def _replay_day(self, day: HistoricalExtractedDay) -> BaselineDayMetrics:

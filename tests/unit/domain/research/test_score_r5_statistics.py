@@ -4,6 +4,7 @@ import hashlib
 
 import pytest
 
+from trader.domain.research.specification import SCORE_P0_V2_SPEC
 from trader.domain.research.statistics import (
     BOOTSTRAP_REPETITIONS,
     bootstrap_seed,
@@ -33,6 +34,17 @@ def test_r5_bootstrap_uses_preregistered_seed_and_is_deterministic() -> None:
     assert first.p_value is not None
     assert first.p_value == pytest.approx((first.extreme_count + 1) / 10_001)
     assert first.paired_metric_confidence_lower is not None
+
+
+def test_r5_bootstrap_seed_is_namespaced_by_the_new_research_identity() -> None:
+    expected = int.from_bytes(
+        hashlib.sha256(b"score_p0_v2|20260820|continuous_entry|5").digest()[:8],
+        "big",
+        signed=False,
+    )
+
+    assert bootstrap_seed("continuous_entry", 5, spec=SCORE_P0_V2_SPEC) == expected
+    assert bootstrap_seed("continuous_entry", 5, spec=SCORE_P0_V2_SPEC) != bootstrap_seed("continuous_entry", 5)
 
 
 def test_r5_bootstrap_refuses_short_non_circular_blocks() -> None:

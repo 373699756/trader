@@ -17,6 +17,7 @@ from trader.application.research.replay_models import (
     canonical_json,
     canonical_value,
 )
+from trader.domain.research.specification import SCORE_P0_V1_SPEC
 
 _REPORT_NAME = "score-r3-baseline-report.json"
 
@@ -102,9 +103,11 @@ def _report_from_payload(raw: dict[str, object]) -> ScoreR3BaselineReport:
         _extraction_status(raw["extraction_status"]),
         days,
         aggregate,
-        str(raw["schema_version"]),
-        str(raw["replay_version"]),
-        _triple(raw["cost_rates"]),
+        research_identity=str(raw.get("research_identity", SCORE_P0_V1_SPEC.research_identity)),
+        research_spec_hash=str(raw.get("research_spec_hash", SCORE_P0_V1_SPEC.content_hash)),
+        schema_version=str(raw["schema_version"]),
+        replay_version=str(raw["replay_version"]),
+        cost_rates=_triple(raw["cost_rates"]),
     )
 
 

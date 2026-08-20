@@ -12,6 +12,7 @@ from typing import Literal
 from trader.application.research.replay_models import canonical_hash
 from trader.domain.research.challengers import ChallengerVariantId
 from trader.domain.research.historical import CostSettlementBasis, ResearchBoard
+from trader.domain.research.specification import SCORE_P0_V1_SPEC, get_score_research_spec
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 HybridSource = Literal["control_copy", "existing_facts"]
@@ -170,6 +171,14 @@ class ScoreR4ChallengerReport:
     baseline_report_hash: str
     parameter_manifest_hash: str
     variants: tuple[ChallengerVariantReplay, ...]
+    research_identity: str = dataclasses.field(
+        default=SCORE_P0_V1_SPEC.research_identity,
+        metadata={"exclude_from_v1_hash": True},
+    )
+    research_spec_hash: str = dataclasses.field(
+        default=SCORE_P0_V1_SPEC.content_hash,
+        metadata={"exclude_from_v1_hash": True},
+    )
     schema_version: str = "score_r4_challenger_replay_v1"
     deepseek_http_request_delta: Literal[0] = 0
     content_hash: str = dataclasses.field(init=False)
@@ -178,7 +187,15 @@ class ScoreR4ChallengerReport:
         _hash(self.extraction_hash, "Score-R4 extraction")
         _hash(self.baseline_report_hash, "Score-R4 baseline")
         _hash(self.parameter_manifest_hash, "Score-R4 parameter manifest")
-        if self.schema_version != "score_r4_challenger_replay_v1" or self.deepseek_http_request_delta != 0:
+        spec = get_score_research_spec(self.research_identity)
+        if self.research_spec_hash != spec.content_hash:
+            raise ValueError("Score-R4 report research spec hash is invalid")
+        expected_schema = (
+            "score_r4_challenger_replay_v2"
+            if self.research_identity == "score_p0_v2"
+            else "score_r4_challenger_replay_v1"
+        )
+        if self.schema_version != expected_schema or self.deepseek_http_request_delta != 0:
             raise ValueError("Score-R4 report identity or DeepSeek isolation is invalid")
         expected_ids = (
             "continuous_entry",
@@ -200,6 +217,8 @@ class ScoreR4ChallengerReport:
         }
         if len(day_identities) != 1:
             raise ValueError("Score-R4 variants must bind identical day and same-stock identities")
+        if any(day.trade_date not in spec.allowed_historical_dates for item in self.variants for day in item.days):
+            raise ValueError("Score-R4 report contains dates outside its research spec")
         expected_status = "replayed" if day_counts == {40} else "exploratory"
         if self.status != expected_status:
             raise ValueError("Score-R4 status must match its historical-day evidence")
