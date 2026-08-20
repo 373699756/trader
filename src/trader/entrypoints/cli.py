@@ -5,13 +5,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
 
+from trader.bootstrap import build_historical_research_services
+from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC
 from trader.domain.research.specification import ACTIVE_SCORE_RESEARCH_SPEC, SCORE_P0_V1_SPEC
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
 from trader.infra.persistence.research_trace import SQLiteV2ResearchTraceStore
+from trader.infra.research.history_archive import SQLiteHistoricalArchive
 from trader.infra.settings import load_long_watchlist, load_runtime_settings, load_strategy_settings
 
 
@@ -25,6 +29,12 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("validate-config", help="Validate runtime and strategy configuration.")
     subparsers.add_parser("research-status", help="Read immutable research coverage and capacity status.")
+    download = subparsers.add_parser(
+        "research-history-download",
+        help="Download the fixed retrospective qfq history archive; resumable and separate from serve.",
+    )
+    download.add_argument("--workers", type=int, choices=range(1, 6), default=5)
+    subparsers.add_parser("research-backtest", help="Run the read-only fixed train/validation bar diagnostic.")
     return parser
 
 
@@ -41,6 +51,13 @@ def main(argv: list[str] | None = None) -> int:
         historical_count = len(recorded_dates.intersection(active.historical_dates))
         forward_count = len(recorded_dates.intersection(active.forward_dates))
         history_complete = historical_count == len(active.historical_dates)
+        historical_archive = SQLiteHistoricalArchive(runtime.runtime_dir).inspect(SCORE_H0_V1_SPEC.research_identity)
+        screening_coverage = (
+            historical_archive.completed_codes / historical_archive.universe_count
+            if historical_archive.universe_count
+            else 0.0
+        )
+        screening_ready = historical_archive.spec_hash == SCORE_H0_V1_SPEC.content_hash and screening_coverage >= 0.95
         print(
             json.dumps(
                 {
@@ -48,20 +65,21 @@ def main(argv: list[str] | None = None) -> int:
                     "research_state": (
                         "historical_ready_for_offline_evaluation" if history_complete else "historical_collecting"
                     ),
-                    "score_r6_executable": False,
-                    "blockers": [
-                        (
-                            "score_p0_v2_r2_r5_not_run"
-                            if history_complete
-                            else "score_p0_v2_historical_observations_incomplete"
-                        ),
-                        "score_r5_promotion_eligible_missing",
-                    ],
+                    "score_r6_executable": screening_ready,
+                    "score_r6_screening_executable": screening_ready,
+                    "score_r6_promotion_executable": False,
+                    "blockers": [] if screening_ready else ["score_h0_archive_coverage_incomplete"],
+                    "promotion_blockers": ["score_r6_preregistered_forward_evidence_missing"],
                     "recorded_trade_dates": [value.isoformat() for value in dates],
                     "active_research": {
                         "research_identity": active.research_identity,
                         "research_spec_hash": active.content_hash,
                         "preregistered_on": active.preregistered_on.isoformat(),
+                        "evaluation_blocker": (
+                            "score_p0_v2_r2_r5_not_run"
+                            if history_complete
+                            else "score_p0_v2_historical_observations_incomplete"
+                        ),
                         "historical_window": _window_status(active.historical_dates, historical_count),
                         "forward_window": _window_status(active.forward_dates, forward_count),
                     },
@@ -72,6 +90,20 @@ def main(argv: list[str] | None = None) -> int:
                         "blocker": "historical_point_in_time_missing",
                     },
                     "archive": asdict(status),
+                    "historical_screening": {
+                        **asdict(historical_archive),
+                        "coverage_ratio": round(screening_coverage, 6),
+                        "research_spec_hash": SCORE_H0_V1_SPEC.content_hash,
+                        "training_window": {
+                            "start": SCORE_H0_V1_SPEC.training_start.isoformat(),
+                            "end": SCORE_H0_V1_SPEC.training_end.isoformat(),
+                        },
+                        "validation_window": {
+                            "start": SCORE_H0_V1_SPEC.validation_start.isoformat(),
+                            "end": SCORE_H0_V1_SPEC.validation_end.isoformat(),
+                        },
+                        "promotion_authority": False,
+                    },
                     "outcomes": asdict(SQLiteOutcomeEvidenceRepository.inspect_status(runtime.runtime_dir)),
                 },
                 ensure_ascii=False,
@@ -79,6 +111,30 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
+    if args.command == "research-history-download":
+        services = build_historical_research_services(config_path, workers=args.workers)
+
+        def progress(done: int, total: int, code: str) -> None:
+            if done == total or done % 100 == 0:
+                print(f"history {done}/{total} latest={code}", file=sys.stderr, flush=True)
+
+        result = services.download.execute(SCORE_H0_V1_SPEC, progress=progress)
+        print(
+            json.dumps(
+                {
+                    "result": asdict(result),
+                    "archive": asdict(services.archive.inspect(SCORE_H0_V1_SPEC.research_identity)),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 0 if result.failed == 0 else 1
+    if args.command == "research-backtest":
+        services = build_historical_research_services(config_path)
+        report = services.backtest.execute(SCORE_H0_V1_SPEC)
+        print(json.dumps(asdict(report), default=_json_default, ensure_ascii=False, sort_keys=True))
+        return 0 if report.status == "screened" else 1
     if args.command != "validate-config":
         return 2
     strategy = load_strategy_settings(runtime.strategy_config_path)
@@ -115,6 +171,12 @@ def _window_status(planned_dates: tuple[date, ...], recorded_count: int) -> dict
         "planned_trade_dates": len(planned_dates),
         "recorded_trade_dates": recorded_count,
     }
+
+
+def _json_default(value: object) -> str:
+    if isinstance(value, date):
+        return value.isoformat()
+    raise TypeError(f"unsupported JSON value: {type(value).__name__}")
 
 
 if __name__ == "__main__":

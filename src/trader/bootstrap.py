@@ -7,8 +7,9 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from flask import Flask
 
@@ -20,6 +21,8 @@ from trader.application.decision_stream import UnifiedDecisionEventStream
 from trader.application.latency import LatencyWaterfall
 from trader.application.long_v2_runtime import LongV2Runtime, LongV2RuntimeDependencies
 from trader.application.outcome_settlement import OutcomeSettlementService, V2OutcomeSettlementAdapter
+from trader.application.research.historical_backtest import HistoricalBarBacktestService
+from trader.application.research.historical_screening import HistoricalDownloadService
 from trader.application.research_audit import V2DecisionObservation
 from trader.application.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
 from trader.application.shutdown import ShutdownDeadline, ShutdownReport
@@ -76,6 +79,8 @@ from trader.infra.persistence.decision_records import SQLiteDecisionRecordReposi
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
 from trader.infra.persistence.research_trace import ResearchTraceLimits, SQLiteV2ResearchTraceStore
 from trader.infra.persistence.runtime_json import RuntimeJsonWriter
+from trader.infra.research.history_archive import SQLiteHistoricalArchive
+from trader.infra.research.history_sources import HistoricalPriceProviderAdapter, SinaHistoricalUniverseProvider
 from trader.infra.runtime_support import RuntimeWorkerResources, ShanghaiClock
 from trader.infra.settings import (
     LongWatchlist,
@@ -134,6 +139,13 @@ class ApplicationSystem:
             self._lifecycle_resources(),
             deadline=shared_deadline,
         )
+
+
+@dataclass(frozen=True)
+class HistoricalResearchServices:
+    download: HistoricalDownloadService
+    backtest: HistoricalBarBacktestService
+    archive: SQLiteHistoricalArchive
 
 
 @dataclass(frozen=True)
@@ -279,6 +291,51 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         research_trace=publication.research_trace,
         outcome_evidence=persistence.outcomes,
     )
+
+
+def build_historical_research_services(
+    config_path: str | Path,
+    *,
+    workers: int = 5,
+) -> HistoricalResearchServices:
+    """Compose explicit offline research without starting production resources."""
+
+    from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC
+
+    settings = load_runtime_settings(config_path)
+    fixed_source_time = datetime(
+        SCORE_H0_V1_SPEC.source_cutoff.year,
+        SCORE_H0_V1_SPEC.source_cutoff.month,
+        SCORE_H0_V1_SPEC.source_cutoff.day,
+        15,
+        0,
+        tzinfo=ZoneInfo("Asia/Shanghai"),
+    ).astimezone(timezone.utc)
+    history = FallbackHistoryClient(
+        TencentClient(
+            timeout_seconds=settings.market_data.history_timeout_seconds,
+            wall_clock=lambda: fixed_source_time,
+        ),
+        EastmoneyClient(
+            timeout_seconds=settings.market_data.history_timeout_seconds,
+            workers=workers,
+            wall_clock=lambda: fixed_source_time,
+        ),
+    )
+    archive = SQLiteHistoricalArchive(settings.runtime_dir)
+    download = HistoricalDownloadService(
+        SinaHistoricalUniverseProvider(
+            SinaClient(
+                timeout_seconds=settings.market_data.sina_timeout_seconds,
+                workers=workers,
+                wall_clock=_utc_now,
+            )
+        ),
+        HistoricalPriceProviderAdapter(history),
+        archive,
+        workers=workers,
+    )
+    return HistoricalResearchServices(download, HistoricalBarBacktestService(archive), archive)
 
 
 def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) -> RuntimeWorkerResources:
@@ -743,4 +800,4 @@ def _fixed_cache_ttl(settings: RuntimeSettings, dataset: str) -> float:
     return value
 
 
-__all__ = ["ApplicationSystem", "build_system"]
+__all__ = ["ApplicationSystem", "HistoricalResearchServices", "build_historical_research_services", "build_system"]

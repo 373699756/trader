@@ -92,7 +92,7 @@ class TencentClient:
             return ()
         data = payload.get("data") if isinstance(payload, Mapping) else None
         stock = data.get(symbol) if isinstance(data, Mapping) else None
-        rows = (stock.get("qfqday") or stock.get("day")) if isinstance(stock, Mapping) else None
+        rows = stock.get("qfqday") if isinstance(stock, Mapping) else None
         if not isinstance(rows, list):
             return ()
         return _history_bars(rows, days=days)

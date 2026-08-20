@@ -367,6 +367,14 @@ def test_tencent_history_preserves_volume_amount_and_turnover_fields() -> None:
     assert session.calls[0][1]["proxies"] == {"http": "", "https": "", "all": ""}
 
 
+def test_tencent_history_rejects_unadjusted_day_payload_when_qfq_is_missing() -> None:
+    rows = [["2026-07-15", "10", "11", "12", "9", "1000", {}, "0.3", "6000"]]
+    body = "kline_dayqfq2026=" + json.dumps({"data": {"sh600001": {"day": rows}}})
+    client = TencentClient(timeout_seconds=2, session_factory=lambda: FakeSession([body]))
+
+    assert client.fetch_history("600001", days=20) == ()
+
+
 def test_history_fallback_uses_eastmoney_only_when_tencent_is_insufficient() -> None:
     primary = CountingHistoryClient(())
     fallback = CountingHistoryClient(_history_bars())

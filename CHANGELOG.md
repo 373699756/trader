@@ -6,6 +6,14 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求继续 `docs/implementation-plan.md` 的未完成任务；启动审计发现上一批 Score-H0 已在工作树
+  标记完成但尚未 Review、提交或推送，因此本批只闭合该整节，不把下一节 Score-R6 混入同一提交。
+  新增固定 `score_h0_v1` 规范、最多 5 worker 的有界/可断点历史下载、独立 SQLite 归档、只读状态、
+  `ohlcv_cross_section_v1` 训练/验证诊断，以及 `research-history-download` / `research-backtest` 入口。
+
+- H0 报告现在绑定规范、股票池、逐股历史内容、聚合归档、固定训练/验证日期、20bp 成本、实现版本与
+  报告 SHA-256；生成诊断前逐行复算归档哈希，内容篡改、同键冲突或完成集合不一致均显式拒绝。
+
 - 用户确认修复后的 `./run.sh serve` 已运行并要求继续未完成计划。由于旧 `score_p0_v1` 缺失的是已
   过去窗口的点时输入、运行服务不能解除该 Gate，本批在任何新窗口收益可见前预注册独立
   `score_p0_v2`：固定 2026-08-21 至 2026-10-23 的 40 个历史计划交易日、2026-10-26 至
@@ -178,6 +186,14 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 总计划和两份权威契约推进到 Score-H0 已完成、Score-R6 为下一完整章节。历史参数筛选可在 H0 固定
+  归档覆盖达标后开始，不再等待 `score_p0_v2` 的未来 40 日；生产晋级仍必须冻结候选并取得新的真实
+  前向证据，回顾性结果固定 `promotion_authority=false`，活动策略、融合、风险、冻结与 Web 均不变。
+
+- 单股下载完成门槛收紧为至少 66 根有序、唯一、截止日内前复权日线，分别覆盖 61 根特征输入和 5 根
+  未来标签；下载任务只保留最多 worker 数量的在途 future，失败仅保存脱敏类别，重跑复用冻结股票池
+  并只补失败或缺失证券。
+
 - `research-status` 升级为 `v2_research_readiness_v2`，同时报告活动 `score_p0_v2` 的历史/前向计划
   日期数、实际 observation 日期数、spec hash 和旧 `score_p0_v1` 的终止状态。活动窗口不足 40 日
   时状态为 `historical_collecting`；即使分区齐全也只进入显式离线评价，不自动运行 R2-R5 或开放 R6。
@@ -294,6 +310,18 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复短历史只含一根日线也会被标记 `complete`、令 `research-status` 过早开放 Score-R6 筛选的问题；
+  现在短响应不写完成内容并保留 `invalid_history`。同时修复腾讯缺少 `qfqday` 时把原始 `day` 错标为
+  前复权的问题，严格交给同语义前复权回退源或失败，不再把未复权数据混入 H0。
+
+- 修复原 H0 报告只携带 spec hash、没有股票池/逐股内容/实现/报告哈希且 CLI 无法序列化训练与验证
+  `date` 的问题；空归档回测现在保持只读、输出 ISO 日期和可复算哈希，并以
+  `insufficient_coverage` 返回，不创建运行目录。
+
+- 修复 H0 已允许历史筛选后，`research-status` 仍同时返回 R5 晋级阻塞并与
+  `score_r6_executable=true` 自相矛盾的问题；现在筛选就绪、`score_p0_v2` 离线评价进度和生产前向
+  晋级分别报告，历史筛选达标不会被未来点时窗口错误关闭，生产晋级仍保持 false。
 
 - 修复运行证据连续性恢复后仍只有旧 `score_p0_v1_historical_point_in_time_missing` 永久阻塞、后续
   observation 虽持续增长却没有可执行研究身份的问题。新窗口从首个观察日前固定，避免继续等待不可
@@ -417,6 +445,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除腾讯历史适配器把未复权 `day` 响应伪装成 `qfq` 的隐式回退；生产统一历史链仍保留腾讯前复权
+  主源和东方财富前复权回退，不删除任何现有运行数据、快照或用户未跟踪截图。
+
 - 移除替代评价对前序日期回填、失败日换日和旧窗口随机种子的隐式复用能力；未删除、迁移或改写旧
   `score_p0_v1` 研究证据，生产评分、风险、融合、冻结、DeepSeek 预算、API 和 Web 行为均未改变。
 
@@ -477,6 +508,17 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- Score-H0 定向回归覆盖固定规范、66 根完成门槛、ST/停牌/三板股票池过滤、最大 5 worker、断点续跑、
+  脱敏失败、未来/未复权拒绝、SQLite 幂等/冲突/篡改检测、61+5 SQL 窗口、训练/验证隔离、报告哈希、
+  CLI/脚本入口和空归档只读性；腾讯组件回归确认缺少 `qfqday` 时不再接纳原始 `day`。
+
+- 高风险完整门禁执行 `make format-check`、`make lint`、`make type-check`、`make test`、`make package`；
+  首轮 Review 分别发现并修复格式/导入、mypy 返回类型、CLI 日期序列化、既有 R6 文档措辞兼容和新增
+  C901 复杂度债务。`make package` 首次仅因沙箱阻止隔离环境下载 `setuptools` 失败，获准联网后同一
+  命令成功生成 sdist/wheel；最终五项门禁全部通过，格式覆盖 324 个文件，mypy 覆盖 211 个源文件，
+  全量 pytest 到达 100%，仅保留既有 DeepSeek fixture 模型名和 Python SQLite adapter 弃用告警。
+  本批未修改 HTML/CSS/JavaScript 或桌面布局，三档浏览器验收不适用。
 
 - 失败先行测试确认旧实现缺少 research spec 模块、活动身份和 readiness v2；实现后新旧 spec 日期/
   哈希/随机种子、R2 无替换窗口、R2→R5 身份贯通、v2 schema、前向目录隔离、CLI 只读状态及权威
@@ -698,6 +740,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 本批没有实际联网下载全 A 股 640 日历史，因此真实供应商可用性、全量耗时、磁盘占用和最终覆盖率
+  仍取决于用户运行环境；命令可断点续跑，失败只影响 H0 研究归档，不阻塞 `serve` 或本地推荐。
+  当前股票池按下载时存续证券构建且缺少历史 ST/行业、盘中尾部、公司风险与 DeepSeek 点时事实，报告
+  会显式列出这些限制，任何 H0/R6 回顾性结果都不能生成 `promotion_eligible` 或自动修改生产策略。
 
 - `score_p0_v2` 的 40+20 证据依赖未来真实交易日、服务连续运行、点时输入和后续结算完整，当前
   `research-status` 为 `historical_collecting` 且记录进度 `0/40`，因此 Score-R6 仍不可执行。

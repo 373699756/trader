@@ -1252,7 +1252,7 @@ fixture 不算最终发布证据。
 ### 14.2 评分研究状态
 
 Score-R0 至 Score-R5 的工程能力已完成；替代评价 `score_p0_v2` 的预注册和 R2-R5 身份贯通已完成；
-Score-R6 至 Score-R7 尚未完成。
+Score-H0 可下载历史回测基础已完成，Score-R6 至 Score-R7 尚未完成。
 在线研究链与活动运行库物理分离，只消费不可变 V2 committed event 和同批研究审计；
 离线 R2/R3/R4/R5 只读唯一数据平面的点时证据。两者均不建立第二套行情、评分、冻结、Web 或 DeepSeek
 请求链，不写活动配置或正式记录。
@@ -1297,6 +1297,21 @@ outcome 库存在时同时报告基准、全部 outcome、完整 outcome 和最�
 命名空间，并显式使用各研究载荷的 v2 schema，旧 v1 证据不迁移、不覆盖。`research-status` 的
 `v2_research_readiness_v2` 同时报告活动窗口已记录日期数和旧身份
 `historical_rejected`，但分区出现只表示 observation 已采集，不等于 R2 有效日、R5 通过或 R6 可执行。
+
+离线历史筛选使用独立 `score_h0_v1` 数据平面，不接入生产组合根、HTTP、调度、冻结或 DeepSeek。
+显式 `research-history-download` 命令读取一次全 A 股清单，并以最多 5 个有界 worker 从生产已有的腾讯
+前复权日线主适配器下载每股最多 640 日，写入 `runtime_dir/score-history` 下的独立 SQLite 归档；
+同身份同内容幂等、冲突拒绝，失败只保存脱敏类别并可断点补齐。`research-backtest` 只读该归档，
+严格切分 2024-07-01 至 2025-12-31 训练和 2026-01-01 至 2026-07-31 验证，并把无法由日线重建的
+历史 ST/行业、盘中尾部、公司风险和模型事实标记为未重建。该层用于尽快筛掉无效参数，不具备晋级
+权限；单股不足 66 根、未来日线、非前复权响应和哈希冲突都不能进入完成覆盖，报告复算并绑定规范、
+股票池、逐股内容、训练/验证、成本、`ohlcv_cross_section_v1` 实现和报告 SHA-256。生产候选仍须进入
+另行预注册的真实前向窗口。
+
+`research-status` 分开报告 `score_r6_screening_executable` 与 `score_r6_promotion_executable`：前者只在
+H0 规范匹配且逐股完成覆盖率至少 95% 时为 true，后者在新的预注册前向证据通过前固定为 false。
+`blockers` 只解释回顾性筛选就绪缺口，`promotion_blockers` 单独解释生产晋级缺口；`score_p0_v2` 的
+40+20 采集进度及离线 R2-R5 阻塞继续位于 `active_research`，不得反向关闭已达标的 H0 筛选。
 
 最多 40 个历史日、20 个固定前向日、五挑战者、候选召回、配对移动区块 bootstrap、Holm
 校正、第二轮研究和人工晋级的策略定义只以荐股策略文档第 15.1 节为准。研究通过不自动改变

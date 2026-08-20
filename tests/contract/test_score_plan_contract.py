@@ -51,6 +51,21 @@ def test_score_plan_p0_pre_registration_is_reflected_in_authoritative_docs() -> 
         assert statement in strategy
 
     assert "### Score-R0-Rerun：替代窗口预注册与身份贯通（已完成）" in plan
+    assert "### Score-H0：可下载历史回测与参数筛选" in plan
+    for statement in (
+        "score_h0_v1",
+        "640",
+        "至少 66 根",
+        "2024-07-01",
+        "2025-12-31",
+        "2026-01-01",
+        "2026-07-31",
+        "0.50 * momentum_rank + 0.30 * stability_rank + 0.20 * liquidity_rank",
+        "ohlcv_cross_section_v1",
+        "逐股历史内容哈希",
+        "不能生成 `promotion_eligible`",
+    ):
+        assert statement in " ".join(strategy.split())
 
     for statement in (
         "Score-R0 至 Score-R5 的工程能力已完成",
