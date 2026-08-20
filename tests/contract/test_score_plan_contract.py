@@ -234,3 +234,33 @@ def test_score_r5_statistical_gate_and_forward_contract_is_complete() -> None:
         "活动生产策略保持不变",
     ):
         assert statement in design_flat
+
+
+def test_score_r6_parameter_and_forward_gate_contract_is_complete() -> None:
+    plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
+    strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
+    design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
+
+    assert "### Score-R6：第二轮权重、风险和门槛（已完成）" in plan
+    assert "下一研究章节为 Score-R7" in " ".join(plan.split())
+    for statement in (
+        "score_r6_historical_v1",
+        "momentum/stability/liquidity",
+        "76/78/80",
+        "3/4/5",
+        "lambda` 固定为 0/25%/50%",
+        "至少 5000 个股日",
+        "score_r6_historical_report_v1",
+        "score_r6_forward_*",
+        "不得与 `score_p0_v1` 或 `score_p0_v2`",
+        "生产范围固定为 `local_only`",
+    ):
+        assert statement in strategy
+    for statement in (
+        "research-r6-screen",
+        "runtime_dir/score-r6",
+        "三板小样本统一回退全局参数",
+        "score_r6_promotion_executable",
+        "Score-R7 独立批次",
+    ):
+        assert statement in design

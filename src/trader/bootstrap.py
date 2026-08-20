@@ -23,6 +23,7 @@ from trader.application.long_v2_runtime import LongV2Runtime, LongV2RuntimeDepen
 from trader.application.outcome_settlement import OutcomeSettlementService, V2OutcomeSettlementAdapter
 from trader.application.research.historical_backtest import HistoricalBarBacktestService
 from trader.application.research.historical_screening import HistoricalDownloadService
+from trader.application.research.score_r6 import ScoreR6HistoricalScreeningService
 from trader.application.research_audit import V2DecisionObservation
 from trader.application.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
 from trader.application.shutdown import ShutdownDeadline, ShutdownReport
@@ -145,6 +146,7 @@ class ApplicationSystem:
 class HistoricalResearchServices:
     download: HistoricalDownloadService
     backtest: HistoricalBarBacktestService
+    score_r6: ScoreR6HistoricalScreeningService
     archive: SQLiteHistoricalArchive
 
 
@@ -335,7 +337,12 @@ def build_historical_research_services(
         archive,
         workers=workers,
     )
-    return HistoricalResearchServices(download, HistoricalBarBacktestService(archive), archive)
+    return HistoricalResearchServices(
+        download,
+        HistoricalBarBacktestService(archive),
+        ScoreR6HistoricalScreeningService(archive),
+        archive,
+    )
 
 
 def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) -> RuntimeWorkerResources:

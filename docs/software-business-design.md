@@ -1252,7 +1252,7 @@ fixture 不算最终发布证据。
 ### 14.2 评分研究状态
 
 Score-R0 至 Score-R5 的工程能力已完成；替代评价 `score_p0_v2` 的预注册和 R2-R5 身份贯通已完成；
-Score-H0 可下载历史回测基础已完成，Score-R6 至 Score-R7 尚未完成。
+Score-H0 可下载历史回测基础和 Score-R6 第二轮参数研究工程能力已完成，Score-R7 尚未完成。
 在线研究链与活动运行库物理分离，只消费不可变 V2 committed event 和同批研究审计；
 离线 R2/R3/R4/R5 只读唯一数据平面的点时证据。两者均不建立第二套行情、评分、冻结、Web 或 DeepSeek
 请求链，不写活动配置或正式记录。
@@ -1312,6 +1312,16 @@ outcome 库存在时同时报告基准、全部 outcome、完整 outcome 和最�
 H0 规范匹配且逐股完成覆盖率至少 95% 时为 true，后者在新的预注册前向证据通过前固定为 false。
 `blockers` 只解释回顾性筛选就绪缺口，`promotion_blockers` 单独解释生产晋级缺口；`score_p0_v2` 的
 40+20 采集进度及离线 R2-R5 阻塞继续位于 `active_research`，不得反向关闭已达标的 H0 筛选。
+
+显式 `research-r6-screen` 只读 H0 归档，按冻结的 `score_r6_historical_v1` 联合网格在训练段选择一次，
+再在验证段评价一次；它不访问网络、生产数据库、冻结、Web 或 DeepSeek。筛选成功后报告写入独立
+`runtime_dir/score-r6` 不可变 JSON 工件，同身份同内容幂等、不同内容或篡改冲突。历史层仅重建
+momentum/stability/liquidity 与高波动风险，三板小样本统一回退全局参数；不能重建的风险和模型事实
+保持显式缺失。后续 `score_r6_forward_*` 规范和逐日同股配对也写入该独立目录，必须使用与两代 R0
+窗口不重叠的固定 20 日，并绑定交易日历、规则、配置/策略、数据 schema、活动策略和融合版本哈希。
+`research-status.score_r6` 只读展示历史门禁、各前向身份、已记录日数和
+最终 local/hybrid 范围；只有真实前向最终报告通过才把 `score_r6_promotion_executable` 置为 true，
+但仍不自动修改生产，最终发布只能由 Score-R7 独立批次完成。
 
 最多 40 个历史日、20 个固定前向日、五挑战者、候选召回、配对移动区块 bootstrap、Holm
 校正、第二轮研究和人工晋级的策略定义只以荐股策略文档第 15.1 节为准。研究通过不自动改变

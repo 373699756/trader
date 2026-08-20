@@ -21,7 +21,13 @@ def test_cli_exposes_current_v2_maintenance_and_explicit_offline_research_comman
 
     for removed in ("migrate-v17", "recommendation-archive", "tomorrow-cutover-evidence"):
         assert removed not in help_text
-    for retained in ("validate-config", "research-status", "research-history-download", "research-backtest"):
+    for retained in (
+        "validate-config",
+        "research-status",
+        "research-history-download",
+        "research-backtest",
+        "research-r6-screen",
+    ):
         assert retained in help_text
 
 
@@ -36,6 +42,7 @@ def test_run_script_exposes_explicit_offline_history_research_without_mapping_it
 
     assert "research-history-download" in shell
     assert "research-backtest" in shell
+    assert "research-r6-screen" in shell
     assert "serve|app" in shell
 
 
@@ -87,6 +94,22 @@ def test_research_backtest_is_read_only_when_the_archive_does_not_exist(tmp_path
     assert payload["archive"]["initialized"] is False
     assert len(payload["archive_manifest"]["content_hash"]) == 64
     assert len(payload["report_hash"]) == 64
+    assert not runtime_dir.exists()
+
+
+def test_research_r6_screen_refuses_to_freeze_without_h0_coverage(tmp_path: Path, capsys) -> None:
+    runtime = json.loads((ROOT / "config/v2/runtime.json").read_text(encoding="utf-8"))
+    runtime_dir = tmp_path / "runtime"
+    runtime["runtime_dir"] = str(runtime_dir)
+    config = tmp_path / "runtime.json"
+    config.write_text(json.dumps(runtime), encoding="utf-8")
+
+    assert main(["--config", str(config), "research-r6-screen"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "insufficient_coverage"
+    assert payload["historical_gate_passed"] is False
+    assert payload["failure_reasons"] == ["score_h0_archive_coverage_incomplete"]
     assert not runtime_dir.exists()
 
 

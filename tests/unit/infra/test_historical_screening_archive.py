@@ -117,8 +117,13 @@ def test_history_archive_screening_uses_only_rows_with_61_inputs_and_5_future_la
         archive.save_history(SCORE_H0_V1_SPEC, security.code, tuple(bars))
 
     days = archive.screening_days(SCORE_H0_V1_SPEC)
+    r6_rows = archive.score_r6_rows(SCORE_H0_V1_SPEC)
 
     assert len(days) == 1
     assert days[0].trade_date == start + timedelta(days=60)
     assert days[0].population == 30
     assert days[0].selected == 3
+    assert len(r6_rows) == 30
+    assert {row.trade_date for row in r6_rows} == {start + timedelta(days=60)}
+    assert {row.board for row in r6_rows} == {"main"}
+    assert all(row.volatility_20d_pct < 4.0 for row in r6_rows)

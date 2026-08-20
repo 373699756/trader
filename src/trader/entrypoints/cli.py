@@ -12,11 +12,13 @@ from pathlib import Path
 
 from trader.bootstrap import build_historical_research_services
 from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC
+from trader.domain.research.score_r6 import SCORE_R6_HISTORICAL_SPEC
 from trader.domain.research.specification import ACTIVE_SCORE_RESEARCH_SPEC, SCORE_P0_V1_SPEC
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
 from trader.infra.persistence.research_trace import SQLiteV2ResearchTraceStore
 from trader.infra.research.history_archive import SQLiteHistoricalArchive
-from trader.infra.settings import load_long_watchlist, load_runtime_settings, load_strategy_settings
+from trader.infra.research.score_r6_artifacts import ScoreR6ArtifactConflictError, ScoreR6ArtifactStore
+from trader.infra.settings import RuntimeSettings, load_long_watchlist, load_runtime_settings, load_strategy_settings
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -35,6 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     download.add_argument("--workers", type=int, choices=range(1, 6), default=5)
     subparsers.add_parser("research-backtest", help="Run the read-only fixed train/validation bar diagnostic.")
+    subparsers.add_parser("research-r6-screen", help="Run and immutably seal the preregistered Score-R6 screen.")
     return parser
 
 
@@ -58,6 +61,18 @@ def main(argv: list[str] | None = None) -> int:
             else 0.0
         )
         screening_ready = historical_archive.spec_hash == SCORE_H0_V1_SPEC.content_hash and screening_coverage >= 0.95
+        try:
+            score_r6 = ScoreR6ArtifactStore(runtime.runtime_dir / "score-r6").inspect()
+            score_r6_artifact_error = ""
+        except ScoreR6ArtifactConflictError:
+            score_r6 = {
+                "historical_report_hash": "",
+                "historical_gate_passed": False,
+                "forward_research": [],
+                "promotion_eligible": False,
+            }
+            score_r6_artifact_error = "score_r6_artifact_invalid"
+        promotion_ready = bool(score_r6["promotion_eligible"])
         print(
             json.dumps(
                 {
@@ -67,9 +82,14 @@ def main(argv: list[str] | None = None) -> int:
                     ),
                     "score_r6_executable": screening_ready,
                     "score_r6_screening_executable": screening_ready,
-                    "score_r6_promotion_executable": False,
+                    "score_r6_promotion_executable": promotion_ready,
                     "blockers": [] if screening_ready else ["score_h0_archive_coverage_incomplete"],
-                    "promotion_blockers": ["score_r6_preregistered_forward_evidence_missing"],
+                    "promotion_blockers": (
+                        []
+                        if promotion_ready
+                        else [score_r6_artifact_error or "score_r6_preregistered_forward_evidence_missing"]
+                    ),
+                    "score_r6": score_r6,
                     "recorded_trade_dates": [value.isoformat() for value in dates],
                     "active_research": {
                         "research_identity": active.research_identity,
@@ -130,11 +150,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0 if result.failed == 0 else 1
-    if args.command == "research-backtest":
-        services = build_historical_research_services(config_path)
-        report = services.backtest.execute(SCORE_H0_V1_SPEC)
-        print(json.dumps(asdict(report), default=_json_default, ensure_ascii=False, sort_keys=True))
-        return 0 if report.status == "screened" else 1
+    if args.command in {"research-backtest", "research-r6-screen"}:
+        return _run_offline_report(args.command, config_path, runtime)
     if args.command != "validate-config":
         return 2
     strategy = load_strategy_settings(runtime.strategy_config_path)
@@ -153,6 +170,25 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     return 0
+
+
+def _run_offline_report(command: str, config_path: Path, runtime: RuntimeSettings) -> int:
+    if command == "research-backtest":
+        services = build_historical_research_services(config_path)
+        report = services.backtest.execute(SCORE_H0_V1_SPEC)
+        print(json.dumps(asdict(report), default=_json_default, ensure_ascii=False, sort_keys=True))
+        return 0 if report.status == "screened" else 1
+    artifact_store = ScoreR6ArtifactStore(runtime.runtime_dir / "score-r6")
+    existing = artifact_store.read_historical_payload()
+    if existing is not None:
+        print(json.dumps(existing, ensure_ascii=False, sort_keys=True))
+        return 0 if bool(existing.get("historical_gate_passed", False)) else 1
+    services = build_historical_research_services(config_path)
+    r6_report = services.score_r6.execute(SCORE_R6_HISTORICAL_SPEC)
+    if r6_report.status == "historical_screened":
+        artifact_store.seal_historical(r6_report)
+    print(json.dumps(asdict(r6_report), default=_json_default, ensure_ascii=False, sort_keys=True))
+    return 0 if r6_report.historical_gate_passed else 1
 
 
 def _absolute_config_path(raw_path: str) -> Path:

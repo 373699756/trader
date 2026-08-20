@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sqlite3
 import threading
 from collections.abc import Sequence
@@ -20,6 +21,7 @@ from trader.application.research.historical_screening import (
     HistoricalSecurity,
     ResearchBoard,
 )
+from trader.application.research.score_r6_models import ScoreR6Board, ScoreR6HistoricalRow
 from trader.domain.research.historical_screening import HistoricalPriceBar, HistoricalScreeningSpec
 
 
@@ -363,6 +365,34 @@ class SQLiteHistoricalArchive:
             for row in rows
         )
 
+    def score_r6_rows(self, spec: HistoricalScreeningSpec) -> tuple[ScoreR6HistoricalRow, ...]:
+        """Return point-in-time OHLCV proxy factors and future labels for Score-R6."""
+
+        if not self._database.is_file():
+            return ()
+        with self._read_connection() as connection:
+            rows = connection.execute(
+                _SCORE_R6_QUERY,
+                {
+                    "identity": spec.research_identity,
+                    "start": spec.training_start.isoformat(),
+                    "end": spec.validation_end.isoformat(),
+                },
+            ).fetchall()
+        return tuple(
+            ScoreR6HistoricalRow(
+                trade_date=date.fromisoformat(str(row[0])),
+                code=str(row[1]),
+                board=cast(ScoreR6Board, str(row[2])),
+                momentum_score=float(row[3]),
+                stability_score=float(row[4]),
+                liquidity_score=float(row[5]),
+                volatility_20d_pct=math.sqrt(float(row[6])),
+                return_5d_pct=float(row[7]),
+            )
+            for row in rows
+        )
+
     def _initialize(self) -> None:
         with self._lock:
             self._root.mkdir(parents=True, exist_ok=True)
@@ -533,6 +563,66 @@ FROM ranked
 GROUP BY trade_date
 HAVING COUNT(*) >= 30 AND selected >= 3
 ORDER BY trade_date
+"""
+
+_SCORE_R6_QUERY = """
+WITH ordered AS (
+    SELECT
+        bars.code,
+        bars.trade_date,
+        universe.board,
+        bars.close_price,
+        LAG(bars.close_price, 20) OVER (PARTITION BY bars.code ORDER BY bars.trade_date) AS close_20,
+        LEAD(bars.close_price, 5) OVER (PARTITION BY bars.code ORDER BY bars.trade_date) AS close_f5,
+        COUNT(*) OVER (
+            PARTITION BY bars.code ORDER BY bars.trade_date ROWS BETWEEN 60 PRECEDING AND CURRENT ROW
+        ) AS history_count,
+        AVG(bars.pct_change) OVER (
+            PARTITION BY bars.code ORDER BY bars.trade_date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
+        ) AS mean_return_20,
+        AVG(bars.pct_change * bars.pct_change) OVER (
+            PARTITION BY bars.code ORDER BY bars.trade_date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
+        ) AS mean_square_return_20,
+        AVG(bars.amount) OVER (
+            PARTITION BY bars.code ORDER BY bars.trade_date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
+        ) AS mean_amount_20
+    FROM bars
+    JOIN universe
+      ON universe.research_identity = bars.research_identity AND universe.code = bars.code
+    WHERE bars.research_identity = :identity
+), metrics AS (
+    SELECT
+        code,
+        trade_date,
+        board,
+        100.0 * (close_price / close_20 - 1.0) AS momentum_20,
+        MAX(0.0, mean_square_return_20 - mean_return_20 * mean_return_20) AS variance_20,
+        mean_amount_20,
+        100.0 * (close_f5 / close_price - 1.0) AS return_5d
+    FROM ordered
+    WHERE history_count >= 61
+      AND close_20 > 0.0
+      AND close_f5 > 0.0
+      AND trade_date BETWEEN :start AND :end
+), ranked AS (
+    SELECT
+        *,
+        100.0 * PERCENT_RANK() OVER (PARTITION BY trade_date, board ORDER BY momentum_20) AS momentum_score,
+        100.0 * (1.0 - PERCENT_RANK() OVER (PARTITION BY trade_date, board ORDER BY variance_20)) AS stability_score,
+        100.0 * PERCENT_RANK() OVER (PARTITION BY trade_date, board ORDER BY mean_amount_20) AS liquidity_score
+    FROM metrics
+)
+SELECT
+    trade_date,
+    code,
+    board,
+    momentum_score,
+    stability_score,
+    liquidity_score,
+    variance_20,
+    return_5d
+FROM ranked
+ORDER BY trade_date, code
 """
 
 

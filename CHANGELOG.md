@@ -6,6 +6,14 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求继续 `docs/implementation-plan.md` 的下一完整未完成章节；本批完成 Score-R6 历史参数筛选与
+  新前向 Gate 的预注册能力。新增固定候选网格、训练期唯一择优、验证期冻结复核、全局与三板块权重
+  选择、低样本板块回退、真实生产六因子权重映射，以及不可变历史报告、20 日前向逐日证据与最终报告。
+
+- 新增 `research-r6-screen` 离线入口和 `research-status.score_r6` 真实制品状态：只有 H0 覆盖率达标才
+  能封存筛选结果；前向规范绑定 H0/R6 报告、候选、交易日历、规则、配置、策略、融合和 schema 哈希，
+  并以 100 组同股配对及固定 10,000 次五日分块 bootstrap 分别评价 local 和 hybrid 晋级资格。
+
 - 用户要求继续 `docs/implementation-plan.md` 的未完成任务；启动审计发现上一批 Score-H0 已在工作树
   标记完成但尚未 Review、提交或推送，因此本批只闭合该整节，不把下一节 Score-R6 混入同一提交。
   新增固定 `score_h0_v1` 规范、最多 5 worker 的有界/可断点历史下载、独立 SQLite 归档、只读状态、
@@ -186,6 +194,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 总计划和两份权威契约推进到 Score-R6 已完成、Score-R7 为下一完整章节。`research-status` 不再用
+  固定 false 代替 R6 事实，而是只从哈希可复算的历史/前向不可变制品推导状态；local 通过而 hybrid
+  未通过时仅产生 `local_only_eligible`，不会把 DeepSeek 路径误报为已验证或自动改动活动配置。
+
 - 总计划和两份权威契约推进到 Score-H0 已完成、Score-R6 为下一完整章节。历史参数筛选可在 H0 固定
   归档覆盖达标后开始，不再等待 `score_p0_v2` 的未来 40 日；生产晋级仍必须冻结候选并取得新的真实
   前向证据，回顾性结果固定 `promotion_authority=false`，活动策略、融合、风险、冻结与 Web 均不变。
@@ -310,6 +322,10 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复 Score-R6 只有计划描述、没有可执行且防泄漏的选择/评价链路的问题：缺失公司、DeepSeek、ST、
+  行业或盘中风险事实不再被当作零风险证据；训练与验证严格隔离，小样本板块不得独立过拟合，最终
+  前向报告必须绑定全部 20 个逐日哈希，且 hybrid Gate 失败不能借 local 结果获得 hybrid 晋级资格。
 
 - 修复短历史只含一根日线也会被标记 `complete`、令 `research-status` 过早开放 Score-R6 筛选的问题；
   现在短响应不写完成内容并保留 `invalid_history`。同时修复腾讯缺少 `qfqday` 时把原始 `day` 错标为
@@ -445,6 +461,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除 `research-status` 中无论证据如何都返回 R6 不可晋级的硬编码占位状态，以及 R6 必须隐式等待
+  `score_p0_v2` 40+20 窗口的错误耦合；没有删除或改写任何现有研究证据、生产评分、冻结记录或运行库。
+
 - 删除腾讯历史适配器把未复权 `day` 响应伪装成 `qfq` 的隐式回退；生产统一历史链仍保留腾讯前复权
   主源和东方财富前复权回退，不删除任何现有运行数据、快照或用户未跟踪截图。
 
@@ -508,6 +527,16 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- Score-R6 定向回归共 35 项，覆盖规范哈希、固定候选、训练/验证隔离、全局/板块拟合与回退、生产
+  权重映射、H0 覆盖门槛、20 日/100 对同股前向评价、local-only、hybrid bootstrap、不可变冲突、
+  逐日 manifest、篡改拒绝、CLI 无写入失败路径和文档契约。严格 Ruff 复杂度检查保持零新增债务。
+
+- 高风险完整门禁 `make format-check`、`make lint`、`make type-check`、`make test`、`make package` 均
+  通过；完整 pytest 到达 100%，仅有既存 DeepSeek fixture 模型名及 Python SQLite adapter 弃用告警。
+  `make package` 首次因沙箱阻止隔离构建环境下载 `setuptools` 失败，获准联网后原命令通过。仓库外
+  安装 wheel 后成功导入 R6 模块、执行 `trader-cli --help` 并读取模板、CSS、JavaScript 和 SVG。
+  本批未修改活动 Web 页面或布局，三档桌面浏览器视觉验收不适用。
 
 - Score-H0 定向回归覆盖固定规范、66 根完成门槛、ST/停牌/三板股票池过滤、最大 5 worker、断点续跑、
   脱敏失败、未来/未复权拒绝、SQLite 幂等/冲突/篡改检测、61+5 SQL 窗口、训练/验证隔离、报告哈希、
@@ -740,6 +769,14 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 本批建立并验证的是 Score-R6 工程能力，没有伪造真实筛选或前向结论：运行归档尚未产生满足门槛的
+  H0 报告/候选时不会写 R6 历史报告；尚未预注册并完成新的 20 个真实交易日前向窗口，因此当前不能
+  获得生产晋级资格、不会改动策略配置。Score-R7 的人工审批、配置发布和回滚演练仍待下一批执行。
+
+- H0 数据只可重建日线量价代理，历史 ST/行业、盘中尾部、公司风险和 DeepSeek 点时事实缺失并已写入
+  报告限制，不能解释为零风险；全市场归档上的离线查询耗时和资源占用尚未以用户真实完整归档压测，
+  但入口保持显式离线、只读生产状态，失败不会阻塞 `serve` 或本地推荐。
 
 - 本批没有实际联网下载全 A 股 640 日历史，因此真实供应商可用性、全量耗时、磁盘占用和最终覆盖率
   仍取决于用户运行环境；命令可断点续跑，失败只影响 H0 研究归档，不阻塞 `serve` 或本地推荐。
