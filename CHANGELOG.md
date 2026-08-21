@@ -6,6 +6,16 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求继续 `docs/implementation-plan.md` 的下一完整未完成章节；本批完成 Score-R7 人工晋级档案
+  工程能力。根因是 Score-R6 只封存历史/前向资格制品，尚无可供人工逐项审查且能从原始逐日证据
+  复算的不可变档案边界。新增 `score_r7_promotion_dossier_v1`、显式
+  `research-r7-dossier --research-identity ...`、`runtime_dir/score-r7` 追加式存储和只读状态摘要。
+
+- R7 档案固定绑定 R6 历史报告、前向 spec、20 个逐日 manifest、最终报告、交易日历、规则、配置/
+  策略、数据 schema、活动策略、融合、引擎、统计程序与冻结候选哈希；同时列出三板六组件权重、
+  动作门槛、风险扣分、十项逐门禁实际值/阈值、失败日、样本、两项消融、集中度、剩余风险，以及
+  20/50/100bp × 3/5/10 日九组确定性非循环区块敏感性。
+
 - 用户要求继续 `docs/implementation-plan.md` 的下一完整未完成章节；本批完成 Score-R6 历史参数筛选与
   新前向 Gate 的预注册能力。新增固定候选网格、训练期唯一择优、验证期冻结复核、全局与三板块权重
   选择、低样本板块回退、真实生产六因子权重映射，以及不可变历史报告、20 日前向逐日证据与最终报告。
@@ -194,6 +204,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- `research-status` 新增 R7 不可变档案摘要；Linux/Windows 启动脚本公开显式 R7 命令。计划与两份
+  权威契约更新为 Score-R7 工程能力已完成、当前无剩余工程章节，但真实前向证据、正式档案实例和
+  生产发布尚未发生。档案固定为 `manual_review_status=pending` 与
+  `production_change_authorized=false`，不改变活动评分、风险、融合、冻结、DeepSeek、Web 或配置。
+
 - 总计划和两份权威契约推进到 Score-R6 已完成、Score-R7 为下一完整章节。`research-status` 不再用
   固定 false 代替 R6 事实，而是只从哈希可复算的历史/前向不可变制品推导状态；local 通过而 hybrid
   未通过时仅产生 `local_only_eligible`，不会把 DeepSeek 路径误报为已验证或自动改动活动配置。
@@ -322,6 +337,10 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- R7 证据加载现在重构并校验完整 R6 spec、逐日同股记录、报告及冻结候选，随后重新执行 R6 门禁；
+  缺失、额外日期、内容篡改、父哈希/候选不一致、非 `promotion_eligible`、路径型 identity 或复算哈希
+  不一致均 fail-closed。local-only 档案明确把未通过的 hybrid 门禁标为非拟发布范围，不能误报模型增益。
 
 - 修复 Score-R6 只有计划描述、没有可执行且防泄漏的选择/评价链路的问题：缺失公司、DeepSeek、ST、
   行业或盘中风险事实不再被当作零风险证据；训练与验证严格隔离，小样本板块不得独立过拟合，最终
@@ -461,6 +480,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除实施计划中 Score-R7 的未完成标记和已经过时的“下一研究章节”指针；没有删除或替换任何活动
+  生产策略，也没有加入自动调权、自动晋级、自动回退或运行时双实现。
+
 - 删除 `research-status` 中无论证据如何都返回 R6 不可晋级的硬编码占位状态，以及 R6 必须隐式等待
   `score_p0_v2` 40+20 窗口的错误耦合；没有删除或改写任何现有研究证据、生产评分、冻结记录或运行库。
 
@@ -527,6 +549,21 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- Score-R7 发布级门禁通过：`make format-check`、`make lint`（严格复杂度债为零）、
+  `make type-check`、`make test`、`make package`。定向补充验证覆盖 R6 全制品加载、R7 复算、
+  local-only/hybrid 分流、固定九组敏感性、逐门禁详情、幂等封存、篡改、路径 identity、CLI 缺证据
+  拒绝及文档契约；Review 修复后再次运行完整门禁均通过。
+
+- 最终 wheel 在仓库外 `/tmp` 目标以 `--no-deps` 安装，可从 `site-packages` 导入 `trader`，读取
+  `score_r7_promotion_dossier_v1`，执行含 `research-r7-dossier` 的 CLI parser，并读取模板、CSS、
+  JavaScript 和 SVG 资源。`make package` 首次仅因沙箱禁止隔离环境联网获取 setuptools 失败，获准
+  联网重跑后成功生成 sdist 与 wheel。
+
+- Firefox headless 三档桌面验收报告 `passed=true`：1280x720、1440x900、1920x1080 均精确命中，
+  无白屏、页面横向溢出、Long 重叠或浏览器错误；Tomorrow/D25 观察行和 Long 报价字段完整，外部
+  网络请求计数为 0。`git diff --check` 通过，活动配置、`bootstrap.py`、正式推荐领域和用户已有截图
+  均未改动。
 
 - Score-R6 定向回归共 35 项，覆盖规范哈希、固定候选、训练/验证隔离、全局/板块拟合与回退、生产
   权重映射、H0 覆盖门槛、20 日/100 对同股前向评价、local-only、hybrid bootstrap、不可变冲突、
@@ -769,6 +806,13 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 当前运行目录没有 Score-R6 历史/前向制品，真实 H0 覆盖、冻结候选及不重叠的 20 日前向证据尚未
+  完成，因此本批没有也不能生成正式 PromotionDossier 实例，更未授权生产发布。证据到齐后需显式
+  运行 R7 命令并由人工审查；确认后的策略版本提升和活动配置变更仍是未来独立交付批次。
+
+- 本机实际门禁使用 Python 3.14 与 Firefox headless；Python 3.10-3.13 由 Ruff 目标、mypy 配置和
+  wheel `Requires-Python` 元数据静态覆盖。真实供应商/DeepSeek 网络未调用，符合离线 R7 边界。
 
 - 本批建立并验证的是 Score-R6 工程能力，没有伪造真实筛选或前向结论：运行归档尚未产生满足门槛的
   H0 报告/候选时不会写 R6 历史报告；尚未预注册并完成新的 20 个真实交易日前向窗口，因此当前不能

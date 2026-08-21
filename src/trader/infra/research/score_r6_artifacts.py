@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import date
 from pathlib import Path
 from typing import cast
@@ -11,10 +12,17 @@ from typing import cast
 from trader.application.research.replay_models import canonical_hash, canonical_json, canonical_value
 from trader.application.research.score_r6_models import (
     ScoreR6ForwardDay,
+    ScoreR6ForwardPair,
     ScoreR6ForwardReport,
     ScoreR6HistoricalReport,
 )
-from trader.domain.research.score_r6 import ScoreR6ForwardSpec
+from trader.domain.research.score_r6 import (
+    ScoreR6ForwardSpec,
+    ScoreR6ProductionBoardWeights,
+    ScoreR6ProductionCandidate,
+)
+
+_FORWARD_IDENTITY = re.compile(r"^score_r6_forward_[a-z0-9_]{1,48}$")
 
 
 class ScoreR6ArtifactConflictError(RuntimeError):
@@ -56,6 +64,47 @@ class ScoreR6ArtifactStore:
             raise ScoreR6ArtifactConflictError("Score-R6 forward report day manifest conflict")
         path = self._root / report.research_identity / "forward-report.json"
         return self._write(path, report, report.content_hash)
+
+    def load_dossier_evidence(
+        self,
+        research_identity: str,
+    ) -> tuple[
+        ScoreR6ForwardSpec,
+        tuple[ScoreR6ForwardDay, ...],
+        ScoreR6ForwardReport,
+        ScoreR6ProductionCandidate,
+    ]:
+        """Load and reconstruct the complete R6 evidence required by Score-R7."""
+
+        if _FORWARD_IDENTITY.fullmatch(research_identity) is None:
+            raise ValueError("Score-R6 forward identity is invalid")
+        directory = self._root / research_identity
+        spec = _forward_spec_from_payload(self._read_verified(directory / "forward-spec.json"))
+        if spec.research_identity != research_identity:
+            raise ScoreR6ArtifactConflictError("Score-R6 forward directory identity is invalid")
+        report_payload = self._read_verified(directory / "forward-report.json")
+        report = _forward_report_from_payload(report_payload)
+        _validate_stored_forward_report(spec, report, report_payload)
+        expected_paths = tuple(
+            directory / "days" / f"{trade_date.isoformat()}.json" for trade_date in spec.planned_trade_dates
+        )
+        actual_paths = tuple(sorted((directory / "days").glob("*.json")))
+        if actual_paths != expected_paths:
+            raise ScoreR6ArtifactConflictError("Score-R6 forward day manifest is incomplete or contains extras")
+        days = tuple(_forward_day_from_payload(self._read_verified(path)) for path in expected_paths)
+        if tuple(item.content_hash for item in days) != report.day_hashes:
+            raise ScoreR6ArtifactConflictError("Score-R6 forward report day manifest is invalid")
+        historical = self._read_verified(self._root / "score_r6_historical_v1" / "historical-report.json")
+        if historical["content_hash"] != spec.historical_report_hash:
+            raise ScoreR6ArtifactConflictError("Score-R6 historical report binding is invalid")
+        try:
+            candidate_payload = _dict(historical.get("forward_candidate"))
+        except TypeError as exc:
+            raise ScoreR6ArtifactConflictError("Score-R6 frozen candidate schema is invalid") from exc
+        candidate = _production_candidate_from_payload(candidate_payload)
+        if candidate.content_hash != spec.frozen_candidate_hash:
+            raise ScoreR6ArtifactConflictError("Score-R6 frozen candidate binding is invalid")
+        return spec, days, report, candidate
 
     def inspect(self) -> dict[str, object]:
         historical_path = self._root / "score_r6_historical_v1" / "historical-report.json"
@@ -237,6 +286,73 @@ def _forward_report_from_payload(raw: dict[str, object]) -> ScoreR6ForwardReport
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ScoreR6ArtifactConflictError("Score-R6 forward report schema is invalid") from exc
+
+
+def _forward_day_from_payload(raw: dict[str, object]) -> ScoreR6ForwardDay:
+    pairs = raw.get("pairs")
+    oracle_codes = raw.get("oracle_codes")
+    if not isinstance(pairs, list) or not isinstance(oracle_codes, list):
+        raise ScoreR6ArtifactConflictError("Score-R6 forward day schema is invalid")
+    try:
+        day = ScoreR6ForwardDay(
+            research_spec_hash=str(raw["research_spec_hash"]),
+            trade_date=date.fromisoformat(str(raw["trade_date"])),
+            status=cast(str, raw["status"]),  # type: ignore[arg-type]
+            pairs=tuple(_forward_pair_from_payload(_dict(item)) for item in pairs),
+            oracle_codes=tuple(str(item) for item in oracle_codes),
+            failure_reason=None if raw["failure_reason"] is None else str(raw["failure_reason"]),
+        )
+        if day.content_hash != raw["content_hash"]:
+            raise ValueError("day content hash mismatch")
+        return day
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ScoreR6ArtifactConflictError("Score-R6 forward day schema is invalid") from exc
+
+
+def _forward_pair_from_payload(raw: dict[str, object]) -> ScoreR6ForwardPair:
+    return ScoreR6ForwardPair(
+        code=str(raw["code"]),
+        board=cast(str, raw["board"]),  # type: ignore[arg-type]
+        production_weight=_float(raw["production_weight"]),
+        local_weight=_float(raw["local_weight"]),
+        hybrid_weight=_float(raw["hybrid_weight"]),
+        return_5d_pct=_float(raw["return_5d_pct"]),
+        severe_loss=_bool(raw["severe_loss"]),
+    )
+
+
+def _production_candidate_from_payload(raw: dict[str, object]) -> ScoreR6ProductionCandidate:
+    boards = raw.get("boards")
+    if not isinstance(boards, list):
+        raise ScoreR6ArtifactConflictError("Score-R6 frozen candidate schema is invalid")
+    try:
+        return ScoreR6ProductionCandidate(
+            historical_candidate_hash=str(raw["historical_candidate_hash"]),
+            boards=tuple(
+                ScoreR6ProductionBoardWeights(
+                    board=str(board["board"]),
+                    component_names=tuple(str(item) for item in _list(board["component_names"])),
+                    weight_units=tuple(_int(item) for item in _list(board["weight_units"])),
+                )
+                for board in (_dict(item) for item in boards)
+            ),
+            action_threshold=_int(raw["action_threshold"]),
+            risk_penalty=_int(raw["risk_penalty"]),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ScoreR6ArtifactConflictError("Score-R6 frozen candidate schema is invalid") from exc
+
+
+def _dict(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise TypeError("Score-R6 object field is invalid")
+    return value
+
+
+def _list(value: object) -> list[object]:
+    if not isinstance(value, list):
+        raise TypeError("Score-R6 list field is invalid")
+    return value
 
 
 def _optional_float(value: object) -> float | None:

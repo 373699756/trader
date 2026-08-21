@@ -126,7 +126,7 @@ def test_score_r2_historical_extraction_contract_is_complete() -> None:
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
     assert "### Score-R2：最多 40 日历史点时数据（已完成）" in plan
-    assert "下一研究章节为 Score-R6" in " ".join(plan.split())
+    assert "当前没有未完成工程章节" in " ".join(plan.split())
     for statement in (
         "score_r2_historical_v1",
         "score_r2_partition_v1",
@@ -153,7 +153,7 @@ def test_score_r3_baseline_replay_contract_is_complete() -> None:
     design_flat = " ".join(design.split())
 
     assert "### Score-R3：基线回放与报告（已完成）" in plan
-    assert "下一研究章节为 Score-R6" in " ".join(plan.split())
+    assert "当前没有未完成工程章节" in " ".join(plan.split())
     for statement in (
         "score_r3_baseline_report_v1",
         "20bp、50bp、100bp",
@@ -181,7 +181,7 @@ def test_score_r4_five_challenger_contract_is_complete() -> None:
     design_flat = " ".join(design.split())
 
     assert "### Score-R4：五个挑战者（已完成）" in plan
-    assert "下一研究章节为 Score-R6" in " ".join(plan.split())
+    assert "当前没有未完成工程章节" in " ".join(plan.split())
     for statement in (
         "score_r4_preregistered_parameters_v1",
         "continuous_entry_v1",
@@ -216,7 +216,7 @@ def test_score_r5_statistical_gate_and_forward_contract_is_complete() -> None:
     design_flat = " ".join(design.split())
 
     assert "### Score-R5：统计门禁与 20 日前向影子（已完成）" in plan
-    assert "下一研究章节为 Score-R6" in " ".join(plan.split())
+    assert "当前没有未完成工程章节" in " ".join(plan.split())
     for statement in (
         "score_r5_statistical_gate_v1",
         "score_r5_paired_mbb_holm_v1",
@@ -242,7 +242,7 @@ def test_score_r6_parameter_and_forward_gate_contract_is_complete() -> None:
     design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
 
     assert "### Score-R6：第二轮权重、风险和门槛（已完成）" in plan
-    assert "下一研究章节为 Score-R7" in " ".join(plan.split())
+    assert "后续 Score-R7 档案工程章节已完成" in " ".join(plan.split())
     for statement in (
         "score_r6_historical_v1",
         "momentum/stability/liquidity",
@@ -261,6 +261,29 @@ def test_score_r6_parameter_and_forward_gate_contract_is_complete() -> None:
         "runtime_dir/score-r6",
         "三板小样本统一回退全局参数",
         "score_r6_promotion_executable",
-        "Score-R7 独立批次",
+        "Score-R7 只生成待人工审查档案",
+    ):
+        assert statement in design
+
+
+def test_score_r7_dossier_contract_is_complete_without_authorizing_production() -> None:
+    plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
+    strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
+    design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
+
+    assert "### Score-R7：人工晋级（已完成）" in plan
+    for statement in (
+        "score_r7_promotion_dossier_v1",
+        "20/50/100bp × 3/5/10 日",
+        "manual_review_status=pending",
+        "production_change_authorized=false",
+        "不得写活动配置",
+    ):
+        assert statement in strategy
+    for statement in (
+        "research-r7-dossier",
+        "runtime_dir/score-r7",
+        "复算结果与已封存 R6 报告哈希一致",
+        "不启动生产发布",
     ):
         assert statement in design

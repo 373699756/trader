@@ -7,6 +7,7 @@ from trader.infra.research.historical_partitions import (
     HistoricalPartitionManifest,
     PolarsHistoricalPartitionStore,
 )
+from trader.infra.research.score_r7_artifacts import ScoreR7ArtifactConflictError, ScoreR7ArtifactStore
 
 __all__ = [
     "BaselineReportConflictError",
@@ -16,4 +17,6 @@ __all__ = [
     "JsonBaselineReportStore",
     "JsonScoreR5ForwardStore",
     "PolarsHistoricalPartitionStore",
+    "ScoreR7ArtifactConflictError",
+    "ScoreR7ArtifactStore",
 ]

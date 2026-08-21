@@ -10,6 +10,7 @@ from dataclasses import asdict
 from datetime import date
 from pathlib import Path
 
+from trader.application.research.score_r7 import build_score_r7_promotion_dossier
 from trader.bootstrap import build_historical_research_services
 from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC
 from trader.domain.research.score_r6 import SCORE_R6_HISTORICAL_SPEC
@@ -18,6 +19,7 @@ from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
 from trader.infra.persistence.research_trace import SQLiteV2ResearchTraceStore
 from trader.infra.research.history_archive import SQLiteHistoricalArchive
 from trader.infra.research.score_r6_artifacts import ScoreR6ArtifactConflictError, ScoreR6ArtifactStore
+from trader.infra.research.score_r7_artifacts import ScoreR7ArtifactConflictError, ScoreR7ArtifactStore
 from trader.infra.settings import RuntimeSettings, load_long_watchlist, load_runtime_settings, load_strategy_settings
 
 
@@ -38,6 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
     download.add_argument("--workers", type=int, choices=range(1, 6), default=5)
     subparsers.add_parser("research-backtest", help="Run the read-only fixed train/validation bar diagnostic.")
     subparsers.add_parser("research-r6-screen", help="Run and immutably seal the preregistered Score-R6 screen.")
+    dossier = subparsers.add_parser(
+        "research-r7-dossier",
+        help="Recompute eligible Score-R6 evidence and seal a pending human-review dossier.",
+    )
+    dossier.add_argument("--research-identity", required=True)
     return parser
 
 
@@ -73,6 +80,10 @@ def main(argv: list[str] | None = None) -> int:
             }
             score_r6_artifact_error = "score_r6_artifact_invalid"
         promotion_ready = bool(score_r6["promotion_eligible"])
+        try:
+            score_r7 = ScoreR7ArtifactStore(runtime.runtime_dir / "score-r7").inspect()
+        except ScoreR7ArtifactConflictError:
+            score_r7 = {"dossiers": [], "dossier_count": 0, "artifact_error": "score_r7_artifact_invalid"}
         print(
             json.dumps(
                 {
@@ -90,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
                         else [score_r6_artifact_error or "score_r6_preregistered_forward_evidence_missing"]
                     ),
                     "score_r6": score_r6,
+                    "score_r7": score_r7,
                     "recorded_trade_dates": [value.isoformat() for value in dates],
                     "active_research": {
                         "research_identity": active.research_identity,
@@ -150,8 +162,13 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0 if result.failed == 0 else 1
-    if args.command in {"research-backtest", "research-r6-screen"}:
-        return _run_offline_report(args.command, config_path, runtime)
+    if args.command in {"research-backtest", "research-r6-screen", "research-r7-dossier"}:
+        return _run_offline_report(
+            args.command,
+            config_path,
+            runtime,
+            research_identity=str(getattr(args, "research_identity", "")),
+        )
     if args.command != "validate-config":
         return 2
     strategy = load_strategy_settings(runtime.strategy_config_path)
@@ -172,12 +189,20 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _run_offline_report(command: str, config_path: Path, runtime: RuntimeSettings) -> int:
+def _run_offline_report(
+    command: str,
+    config_path: Path,
+    runtime: RuntimeSettings,
+    *,
+    research_identity: str,
+) -> int:
     if command == "research-backtest":
         services = build_historical_research_services(config_path)
         report = services.backtest.execute(SCORE_H0_V1_SPEC)
         print(json.dumps(asdict(report), default=_json_default, ensure_ascii=False, sort_keys=True))
         return 0 if report.status == "screened" else 1
+    if command == "research-r7-dossier":
+        return _run_r7_dossier(runtime, research_identity)
     artifact_store = ScoreR6ArtifactStore(runtime.runtime_dir / "score-r6")
     existing = artifact_store.read_historical_payload()
     if existing is not None:
@@ -189,6 +214,19 @@ def _run_offline_report(command: str, config_path: Path, runtime: RuntimeSetting
         artifact_store.seal_historical(r6_report)
     print(json.dumps(asdict(r6_report), default=_json_default, ensure_ascii=False, sort_keys=True))
     return 0 if r6_report.historical_gate_passed else 1
+
+
+def _run_r7_dossier(runtime: RuntimeSettings, research_identity: str) -> int:
+    r6_store = ScoreR6ArtifactStore(runtime.runtime_dir / "score-r6")
+    try:
+        spec, days, report, candidate = r6_store.load_dossier_evidence(research_identity)
+        dossier = build_score_r7_promotion_dossier(spec, days, report, candidate)
+        ScoreR7ArtifactStore(runtime.runtime_dir / "score-r7").seal(dossier)
+    except (FileNotFoundError, ScoreR6ArtifactConflictError, ScoreR7ArtifactConflictError, ValueError):
+        print(json.dumps({"reason": "score_r7_evidence_invalid", "status": "blocked"}, sort_keys=True))
+        return 1
+    print(json.dumps(asdict(dossier), default=_json_default, ensure_ascii=False, sort_keys=True))
+    return 0
 
 
 def _absolute_config_path(raw_path: str) -> Path:
