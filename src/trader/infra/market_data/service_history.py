@@ -8,7 +8,7 @@ import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Future, as_completed, wait
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from datetime import date, datetime, time
 from typing import TYPE_CHECKING, ParamSpec, Protocol, TypedDict, TypeVar, cast
 from zoneinfo import ZoneInfo
@@ -224,29 +224,33 @@ class HistoryCache:
                 future = submit_or_run_inline(pool, self._history_client.fetch_history, code, days=61)
                 self._runner.ensure_before_deadline(request.deadline)
                 futures[future] = code
-            completed = self._completed_history_futures(futures, request.deadline)
+            completed, timed_out = self._completed_history_futures(futures, request.deadline)
+            if timed_out:
+                state.request = replace(request, deadline=None)
             for future in completed:
-                self._runner.ensure_before_deadline(request.deadline)
+                self._runner.ensure_before_deadline(state.request.deadline)
                 code = futures[future]
                 self._consume_history_future(state, code, future)
         self._commit_history_entries(state)
+        if timed_out:
+            raise MarketDataDeadlineExceededError("history preload exceeded its batch deadline")
 
     def _completed_history_futures(
         self,
         futures: Mapping[Future[Sequence[DailyBar]], str],
         deadline: datetime | None,
-    ) -> Iterable[Future[Sequence[DailyBar]]]:
+    ) -> tuple[Iterable[Future[Sequence[DailyBar]]], bool]:
         if deadline is None:
-            return as_completed(futures)
+            return as_completed(futures), False
         timeout = max(0.0, (deadline - self._runner.wall_clock()).total_seconds())
         completed, pending = wait(futures, timeout=timeout)
         if not pending:
-            return completed
+            return completed, False
         for future in pending:
             future.cancel()
         with self._lock:
             self._history_error_count += len(pending)
-        raise MarketDataDeadlineExceededError("history preload exceeded its batch deadline")
+        return completed, True
 
     def _consume_history_future(
         self,

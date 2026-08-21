@@ -139,19 +139,6 @@ class ReferenceLoader:
             tushare_future.add_done_callback(_observe_reference_refresh)
         if not normalized:
             return
-        if lanes.owns_current_thread("history"):
-            self._history_cache.load(normalized, force=force)
-        else:
-            history_identity = _source_batch_identity("daily_history", normalized, observed_at, force=force)
-            history_future = lanes.submit(
-                "history",
-                history_identity,
-                observed_at,
-                self._history_cache.load,
-                normalized,
-                force=force,
-            )
-            history_future.add_done_callback(_observe_reference_refresh)
 
     def refresh_reference_data(
         self,

@@ -184,6 +184,9 @@ def test_production_adapter_rejects_candidate_security_identity_degradation(
     assert status["security_master_covered_count"] == 0
     assert status["security_master_coverage_ratio"] == 0.0
     assert "security_master_coverage_incomplete" in status["degraded_reasons"]
+    assert status["supply_funnel"]["requested_candidates"] == 1
+    assert status["supply_funnel"]["security_master"] == 0
+    assert status["primary_blocker"] == "security_master_coverage_incomplete"
 
 
 def test_production_adapter_accepts_exactly_ninety_nine_percent_history_coverage(
@@ -219,6 +222,9 @@ def test_production_adapter_accepts_exactly_ninety_nine_percent_history_coverage
     assert status["history_covered_count"] == 99
     assert status["history_coverage_ratio"] == 0.99
     assert status["publishable"] is True
+    assert status["supply_funnel"]["history"] == 99
+    assert status["supply_funnel"]["filter_reject"] == 100
+    assert status["primary_blocker"] == "no_scored_candidates"
 
 
 def test_production_adapter_rejects_partial_candidate_feature_response(
@@ -254,6 +260,10 @@ def test_production_adapter_rejects_partial_candidate_feature_response(
     assert status["candidate_count"] == 2
     assert status["candidate_feature_count"] == 1
     assert status["candidate_feature_coverage_ratio"] == 0.5
+    assert status["supply_funnel"]["requested_candidates"] == 2
+    assert status["supply_funnel"]["candidate_features"] == 1
+    assert status["primary_blocker"] == "candidate_feature_coverage_incomplete"
+    assert all("600" not in str(value) and "300" not in str(value) for value in status.values())
 
 
 def test_three_scored_strategies_share_one_fast_market_input_cycle(

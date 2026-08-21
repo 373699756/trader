@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import threading
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -47,8 +48,9 @@ from trader.application.tomorrow_v2_projection import (
 )
 from trader.domain.market.models import Board, FeatureSnapshot
 from trader.domain.recommendation.decision_identity import DecisionIdentity, DecisionOverlay, ScoredDecision
-from trader.domain.recommendation.models import Strategy
+from trader.domain.recommendation.models import RecommendationAction, Strategy
 from trader.domain.recommendation.ranking import candidate_score
+from trader.domain.recommendation.tomorrow_selection import TomorrowDisposition
 
 
 @dataclass(frozen=True)
@@ -261,7 +263,7 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         except (RuntimeError, TypeError, ValueError) as exc:
             raise V2DecisionUnavailableError(_decision_failure_code(exc)) from exc
         with self._lock:
-            self._input_quality[request.strategy] = projection.input_quality.to_status()
+            self._input_quality[request.strategy] = _supply_status(projection)
         if not projection.input_quality.publishable:
             raise V2DecisionUnavailableError(projection.input_quality.status)
         with self._lock:
@@ -328,6 +330,67 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
             version = next(iter(self._decisions))
             self._decisions.pop(version, None)
             self._projections.pop(version, None)
+
+
+def _supply_status(
+    projection: TodayV2LocalProjection | TomorrowV2LocalProjection,
+) -> dict[str, object]:
+    status = projection.input_quality.to_status()
+    requested = set(projection.native_input.requested_codes)
+    evaluations = tuple(item for item in projection.selection.evaluations if item.code in requested)
+    decision_items = projection.local.items
+    funnel = {
+        "requested_candidates": projection.input_quality.candidate_count,
+        "candidate_features": projection.input_quality.candidate_feature_count,
+        "security_master": projection.input_quality.security_master_covered_count,
+        "history": projection.input_quality.history_covered_count,
+        "filter_pass": sum(item.disposition is TomorrowDisposition.PASS for item in evaluations),
+        "filter_observe": sum(item.disposition is TomorrowDisposition.OBSERVE_ONLY for item in evaluations),
+        "filter_reject": sum(item.disposition is TomorrowDisposition.REJECT for item in evaluations),
+        "full_scored": projection.input_quality.candidate_scored_count,
+        "review_eligible": len(projection.review_candidates),
+        "action_executable": sum(item.action is RecommendationAction.EXECUTABLE for item in decision_items),
+        "action_observe": sum(item.action is RecommendationAction.OBSERVE for item in decision_items),
+        "action_unavailable": sum(item.action is RecommendationAction.UNAVAILABLE for item in decision_items),
+        "selected_executable": sum(
+            item.selected and item.action is RecommendationAction.EXECUTABLE for item in decision_items
+        ),
+        "selected_observe": sum(
+            item.selected and item.action is RecommendationAction.OBSERVE for item in decision_items
+        ),
+    }
+    reasons: Counter[str] = Counter()
+    for item in evaluations:
+        reasons.update(reason.code for reason in item.filter_reasons)
+        reasons.update(reason.code for reason in item.optional_flags)
+        if item.candidate_audit_pruning_reason:
+            reasons[item.candidate_audit_pruning_reason] += 1
+        if item.selection_skip_reason:
+            reasons[item.selection_skip_reason] += 1
+    reasons.update(item.reason for item in decision_items if item.reason)
+    reasons.update(risk for item in decision_items for risk in item.risk_codes)
+    status["supply_funnel"] = funnel
+    status["supply_reason_counts"] = dict(sorted(reasons.items()))
+    status["primary_blocker"] = _primary_supply_blocker(projection, funnel)
+    return status
+
+
+def _primary_supply_blocker(
+    projection: TodayV2LocalProjection | TomorrowV2LocalProjection,
+    funnel: dict[str, int],
+) -> str:
+    quality = projection.input_quality
+    action_blocker = "no_executable_candidates" if funnel["action_observe"] else "local_score_below_observation_floor"
+    priorities = (
+        (quality.candidate_feature_coverage_ratio < 1.0, "candidate_feature_coverage_incomplete"),
+        (quality.security_master_coverage_ratio < 1.0, "security_master_coverage_incomplete"),
+        (quality.history_coverage_ratio < 0.99, "history_coverage_incomplete"),
+        (funnel["full_scored"] == 0, "no_scored_candidates"),
+        (funnel["review_eligible"] == 0, "no_review_eligible_candidates"),
+        (funnel["action_executable"] == 0, action_blocker),
+        (funnel["selected_executable"] == 0, "selection_constraints"),
+    )
+    return next((reason for blocked, reason in priorities if blocked), "ready")
 
 
 class V2DeepSeekAdapter(V2DeepSeekUpgradePort):

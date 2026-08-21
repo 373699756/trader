@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -70,9 +71,48 @@ def _corporate_risk_projection(
 
 
 def _announcement_history_complete(payload: Mapping[str, object], valid_rows: int) -> bool:
+    total_hits = _announcement_total_hits(payload)
+    return total_hits is not None and total_hits <= valid_rows
+
+
+def _announcement_total_hits(payload: Mapping[str, object]) -> int | None:
     data = payload.get("data")
-    total_hits = data.get("total_hits") if isinstance(data, Mapping) else None
-    return isinstance(total_hits, int) and total_hits >= 0 and total_hits <= valid_rows
+    total = data.get("total_hits") if isinstance(data, Mapping) else None
+    return total if isinstance(total, int) and not isinstance(total, bool) and total >= 0 else None
+
+
+def _announcement_row_identity(row: Mapping[str, object]) -> tuple[str, str, str]:
+    return (
+        str(row.get("art_code") or ""),
+        str(row.get("display_time") or row.get("notice_date") or ""),
+        str(row.get("title") or row.get("title_ch") or ""),
+    )
+
+
+def _deduplicate_announcement_rows(
+    rows: tuple[Mapping[str, object], ...] | list[Mapping[str, object]],
+) -> tuple[Mapping[str, object], ...]:
+    result: list[Mapping[str, object]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for row in rows:
+        identity = _announcement_row_identity(row)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append(dict(row))
+    return tuple(result)
+
+
+def _announcement_payload_with_rows(
+    payload: Mapping[str, object],
+    rows: tuple[Mapping[str, object], ...],
+) -> Mapping[str, object]:
+    result = dict(payload)
+    raw_data = payload.get("data")
+    data = dict(raw_data) if isinstance(raw_data, Mapping) else {}
+    data["list"] = [dict(row) for row in rows]
+    result["data"] = data
+    return result
 
 
 class HttpResponse(Protocol):
@@ -93,6 +133,8 @@ _COMPONENT_TTLS = {
     "pledge": timedelta(hours=6),
     "unlock": timedelta(hours=6),
 }
+_ANNOUNCEMENT_PAGE_SIZE = 100
+_ANNOUNCEMENT_MAX_PAGES = 50
 
 
 class _AkshareOptions(TypedDict, total=False):
@@ -289,26 +331,7 @@ class AkshareResearchClient:
         bool,
         str,
     ]:
-        payload = self._component_payload(
-            "announcement",
-            code,
-            observed_at,
-            lambda: self._request_json(
-                "https://np-anotice-stock.eastmoney.com/api/security/ann",
-                params={
-                    "sr": "-1",
-                    "page_size": "10000",
-                    "page_index": "1",
-                    "ann_type": "A",
-                    "client_source": "web",
-                    "f_node": "0",
-                    "s_node": "0",
-                    "stock_list": code,
-                    "begin_time": "1990-01-01",
-                    "end_time": observed_at.date().isoformat(),
-                },
-            ),
-        )
+        payload = self._announcement_payload(code, observed_at)
         rows = _announcement_rows(payload)
         cutoff = observed_at - timedelta(days=policy.announcement_lookback_days)
         version = _payload_version("eastmoney-announcement", payload)
@@ -558,12 +581,72 @@ class AkshareResearchClient:
         self._cache_payload(source, code, observed_at, payload)
         return payload
 
+    def _announcement_payload(self, code: str, observed_at: datetime) -> Mapping[str, object]:
+        cached = self._read_cached_payload("announcement", code, observed_at)
+        if cached is not None:
+            return cached
+        stale_record = self._read_cached_payload_record("announcement", code)
+        first = self._announcement_page(code, observed_at, 1)
+        total = _announcement_total_hits(first)
+        first_rows = _deduplicate_announcement_rows(_announcement_rows(first))
+        if stale_record is not None and total is not None:
+            _cached_at, stale = stale_record
+            stale_rows = _deduplicate_announcement_rows(_announcement_rows(stale))
+            stale_total = _announcement_total_hits(stale)
+            if stale_total is not None and stale_total <= len(stale_rows) and total >= stale_total:
+                merged = _deduplicate_announcement_rows((*first_rows, *stale_rows))
+                if len(merged) == total:
+                    payload = _announcement_payload_with_rows(first, merged)
+                    self._cache_payload("announcement", code, observed_at, payload)
+                    return payload
+
+        rows = list(first_rows)
+        page_count = 1 if total is None else max(1, math.ceil(total / _ANNOUNCEMENT_PAGE_SIZE))
+        for page in range(2, min(page_count, _ANNOUNCEMENT_MAX_PAGES) + 1):
+            payload = self._announcement_page(code, observed_at, page)
+            rows.extend(_announcement_rows(payload))
+        combined = _deduplicate_announcement_rows(rows)
+        payload = _announcement_payload_with_rows(first, combined)
+        self._cache_payload("announcement", code, observed_at, payload)
+        return payload
+
+    def _announcement_page(self, code: str, observed_at: datetime, page: int) -> Mapping[str, object]:
+        return self._request_json(
+            "https://np-anotice-stock.eastmoney.com/api/security/ann",
+            params={
+                "sr": "-1",
+                "page_size": str(_ANNOUNCEMENT_PAGE_SIZE),
+                "page_index": str(page),
+                "ann_type": "A",
+                "client_source": "web",
+                "f_node": "0",
+                "s_node": "0",
+                "stock_list": code,
+                "begin_time": "1990-01-01",
+                "end_time": observed_at.date().isoformat(),
+            },
+        )
+
     def _read_cached_payload(
         self,
         source: str,
         code: str,
         observed_at: datetime,
     ) -> Mapping[str, object] | None:
+        record = self._read_cached_payload_record(source, code)
+        if record is None:
+            return None
+        cached_at, payload = record
+        age = observed_at - cached_at
+        if age < timedelta(0) or age > _COMPONENT_TTLS[source]:
+            return None
+        return payload
+
+    def _read_cached_payload_record(
+        self,
+        source: str,
+        code: str,
+    ) -> tuple[datetime, Mapping[str, object]] | None:
         if self._evidence_cache_dir is None:
             return None
         target = self._evidence_cache_dir / "raw" / source / f"{code}.json"
@@ -576,10 +659,9 @@ class AkshareResearchClient:
             if not isinstance(cached_at_raw, str) or not isinstance(payload, Mapping):
                 return None
             cached_at = datetime.fromisoformat(cached_at_raw)
-            age = observed_at - cached_at
-            if age < timedelta(0) or age > _COMPONENT_TTLS[source]:
+            if cached_at.tzinfo is None:
                 return None
-            return dict(payload)
+            return cached_at, dict(payload)
         except (KeyError, OSError, TypeError, ValueError):
             return None
 

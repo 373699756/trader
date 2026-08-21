@@ -335,6 +335,7 @@ class MarketFeatureService:
         force: bool = False,
     ) -> None:
         self.references.schedule_reference_data(codes, observed_at, force=force)
+        self.warmup.schedule_history_warmup(codes, observed_at)
 
     def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> None:
         self.intraday.load(_normalize_codes(codes), observed_at)

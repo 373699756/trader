@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户反馈近 20 日推荐与观察池供给稀少、DeepSeek 长期未参与，新增不泄露股票身份的
+  `scheduler.input_quality.*.supply_funnel`、`supply_reason_counts` 和 `primary_blocker`。诊断逐层
+  区分请求候选、候选特征、证券主数据、有效历史、过滤 disposition、完整评分、DeepSeek 可审集合、
+  可执行/观察动作与最终两池；DeepSeek 状态回归同时锁定启用、配置、物理调用数和零调用原因。
+
 - 针对用户反馈“近 20 日有效推荐稀少、观察池寥寥无几且观察标的亏损”，新增 Score-P1 生产输入
   覆盖门禁和只读聚合诊断。状态 API 的 `scheduler.input_quality` 按策略公开请求候选、定向特征、
   证券身份和历史摘要的数量/比例及受控降级原因，不公开股票代码，也不在 HTTP 请求内抓取、评分
@@ -232,6 +237,14 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 候选历史异步补齐改为 `HistoryWarmup` 唯一所有者：证券主数据/交易日历参考刷新不再向 history
+  lane 提交整批候选的第二条任务，候选更新仍以最多 30 只批次、三板覆盖和逐股退避推进，不与实时
+  Web 请求绑定。
+
+- 东方财富发行人公告从表面 `page_size=10000` 改为按真实 100 条单页上限最多 50 页有界遍历，使用
+  稳定公告身份去重并原子缓存聚合载荷；完整旧基线到期后只需首页即可做确定性增量合并，减少持续
+  刷新的请求量。生产候选、可靠度、风险、73/78 动作和 TopK 阈值均未改变。
+
 - Today、Tomorrow、D25 的统一 V2 local/hybrid 决策现按策略身份在融合后、动作和两个选择池之前
   执行既有活动下行保护。只有原本达到执行门槛的候选会被降为观察；`local_score`、固定 68/32
   融合、动作门槛、正式 TopK、观察池容量、DeepSeek 候选边界和冻结时间保持不变。
@@ -392,6 +405,16 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复历史批次中一个慢尾触发截止后回滚同批成功股票的问题。截止前已完成且通过 qfq/schema 校验
+  的单股结果现在先写入缓存和数据平面，批次仍以 timeout 终态释放身份，仅未覆盖代码进入退避重试。
+
+- 修复公告接口实际只返回首页 100 条却长期把绝大多数证券标为公司风险历史不可核验的问题。分页
+  失败、超过上限、未来或畸形行继续 fail-closed，不能被误判为完整历史或解除观察门。
+
+- 修复“评分线程已处理数百只但状态只能看到最终空池”的诊断盲区；现在可直接区分候选特征缺失、
+  证券身份缺失、历史不足、业务过滤、无完整评分、无可审候选、低于动作线和集中度约束，避免以
+  降低门槛来掩盖供给质量问题。
 
 - 生产审计确认近期并非“正式推荐很多但普遍亏损”：现有 V2 正式记录的可执行项为 0，页面少量股票
   来自明确不可执行的观察池；同时收益仓储没有可执行推荐结算样本，不能据此宣称评分收益已改善。
@@ -565,6 +588,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除 `ReferenceLoader.schedule_reference_data()` 中绕过 `HistoryWarmup` 的全候选历史异步提交路径，
+  不再保留两套历史调度状态源。
+
 - 移除“有任意已评分候选即可把覆盖不足批次视为 ready”的失效判定；未删除或替换现有 Web 页面、
   评分权重、阈值、冻结记录、DeepSeek 预算或用户运行数据。
 
@@ -649,6 +675,17 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- Score-P2 高风险门禁通过：`make format-check`、`make lint`（含零 strict refactor debt）、
+  `make type-check`（227 个源文件）、`make test`（全量 100%）和 `make package`（sdist 与 wheel）。
+  隔离构建首次受沙箱网络限制，授权联网获取构建依赖后成功完成。
+
+- 定向回归覆盖：历史慢尾保留同批成功并只重试未覆盖代码、参考刷新仅走有界预热、公告 250 条三页
+  补全/10 分钟完整基线首页增量/分页失败、候选特征与证券主数据及恰好 99% 历史覆盖漏斗、状态不含
+  股票代码，以及 DeepSeek 缺少密钥时物理调用为 0 且原因固定为 `api_key_missing`。
+
+- `git diff --check` 通过。桌面三档浏览器验收不适用：本批未修改模板、CSS、JavaScript、路由或页面
+  展示行为，状态 API 仅对既有 scheduler 摘要增加脱敏字段。
 
 - Score-P1 高风险门禁通过：`make format-check`、`make lint`、`make type-check`、`make test`、
   `make package`。隔离构建首次因沙箱禁止联网下载 `setuptools>=68` 失败，获准联网后同一命令成功
@@ -958,6 +995,14 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 本批不承诺立即产生更多可执行荐股或改善真实收益。证券主数据仍依赖上游真实上市日期与交易日历，
+  未覆盖时继续 `not_ready`；公告首次完整建基线最多需要 50 页且受免费来源稳定性影响，失败时继续
+  保留最近有效事实并降为观察。CNInfo 的交易所公告交叉校验仍为既有 `pending` 后续项。
+
+- 当前机器若未配置 `DEEPSEEK_API_KEY`，DeepSeek 仍按契约不发物理请求并回退本地链；本批只让原因
+  可验证，不写入或伪造密钥。评分/过滤阈值未因空池自动放宽，只有供给门禁全部通过后仍长期为空，
+  才能在独立预注册样本外收益/回撤批次评估阈值调整。
 
 - 审计时 V2 数据平面约 5,567 只全市场股票中仅 842 只具有已持久化证券主数据，公司公告全历史完成
   覆盖为 0，正式 recommendation outcome 也为 0。Score-P1 会如实显示 `not_ready`，但不会伪造

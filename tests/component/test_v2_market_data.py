@@ -1020,7 +1020,7 @@ def test_source_lane_records_bounded_queue_wait_telemetry() -> None:
     assert summary["maximum_ms"] >= 0.0
 
 
-def test_scheduled_reference_refresh_starts_tushare_and_eastmoney_history_independently() -> None:
+def test_scheduled_reference_refresh_uses_bounded_history_warmup_instead_of_full_duplicate_batch() -> None:
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
     lanes = SourceLaneRegistry(pool)
 
@@ -1040,8 +1040,12 @@ def test_scheduled_reference_refresh_starts_tushare_and_eastmoney_history_indepe
             return ()
 
         @staticmethod
-        def supports(_dataset):
-            return True
+        def supports(dataset):
+            return dataset != "forward_adjusted_daily"
+
+        @staticmethod
+        def health():
+            return {"enabled": False, "history_mode": "raw"}
 
         @staticmethod
         def fetch_forward_adjusted_daily(*_args):
@@ -1058,12 +1062,14 @@ def test_scheduled_reference_refresh_starts_tushare_and_eastmoney_history_indepe
     class RecordingHistoryClient:
         def __init__(self) -> None:
             self.started = threading.Event()
-            self.thread_name = ""
+            self.release = threading.Event()
+            self.calls: list[str] = []
 
-        def fetch_history(self, _code, *, days):
+        def fetch_history(self, code, *, days):
             assert days == 61
-            self.thread_name = threading.current_thread().name
+            self.calls.append(code)
             self.started.set()
+            assert self.release.wait(1.0)
             return ()
 
     tushare = BlockingTushareClient()
@@ -1075,16 +1081,18 @@ def test_scheduled_reference_refresh_starts_tushare_and_eastmoney_history_indepe
         tushare_client=tushare,
         worker_pool=pool,
         source_lanes=lanes,
+        history_warmup_batch_size=1,
         wall_clock=lambda: NOW,
     )
     pool.start()
 
     try:
-        service.schedule_reference_data(("600001",), NOW)
+        service.schedule_reference_data(("600001", "600002"), NOW)
         assert tushare.started.wait(1.0)
         assert history.started.wait(0.2)
-        assert history.thread_name.startswith("source-data")
+        assert history.calls == ["600001"]
     finally:
+        history.release.set()
         tushare.release.set()
         lanes.stop(wait=True, timeout_seconds=1.0)
         pool.stop(wait=True, cancel_futures=True)
@@ -4624,6 +4632,57 @@ def test_history_warmup_deadline_releases_blocked_batch_identity() -> None:
         history_pool.stop(wait=True, cancel_futures=True)
 
 
+def test_history_warmup_deadline_keeps_completed_stock_and_retries_only_slow_tail() -> None:
+    slow_started = threading.Event()
+    release = threading.Event()
+
+    class PartialHistory:
+        @staticmethod
+        def fetch_history(code, *, days):
+            assert days == 61
+            if code == "600002":
+                slow_started.set()
+                assert release.wait(1.0)
+            return _history_bars()
+
+    source_pool = BoundedExecutor(worker_count=2, queue_capacity=2, thread_name_prefix="source-data")
+    history_pool = BoundedExecutor(worker_count=2, queue_capacity=2, thread_name_prefix="history-data")
+    lanes = SourceLaneRegistry(source_pool)
+    service = _service(
+        StaticGateway((_quote(),)),
+        PartialHistory(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        worker_pool=source_pool,
+        history_worker_pool=history_pool,
+        source_lanes=lanes,
+        history_warmup_batch_size=2,
+        history_warmup_batch_timeout_seconds=0.05,
+        wall_clock=lambda: datetime.now(timezone.utc),
+    )
+    source_pool.start()
+    history_pool.start()
+
+    try:
+        service.warmup.schedule_history_warmup(("600001", "600002"), datetime.now(timezone.utc))
+        assert slow_started.wait(1.0)
+        timeout_at = time.monotonic() + 1.0
+        while service.health()["history_warmup_timeout_count"] < 1 and time.monotonic() < timeout_at:
+            time.sleep(0.01)
+
+        entries = service.history.entries()
+        status = service.warmup.status()
+        assert len(entries["600001"].bars) == 20
+        assert "600002" not in entries
+        assert status.completed_count == 1
+        assert status.failure_count == 1
+        assert status.unique_failure_count == 1
+    finally:
+        release.set()
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        source_pool.stop(wait=True, cancel_futures=True)
+        history_pool.stop(wait=True, cancel_futures=True)
+
+
 def test_market_service_reloads_expired_history_and_reports_failed_coverage() -> None:
     clock = MutableMonotonic()
     history = SelectiveHistoryClient(_history_bars(), failing_codes={"600002"})
@@ -5389,6 +5448,92 @@ def test_akshare_structured_research_is_point_in_time_and_builds_real_long_input
     assert all(call[1]["timeout"] == 8 for call in calls)
     assert all(call[1]["proxies"] == {"http": "", "https": "", "all": ""} for call in calls)
     assert all("search-api-web" not in call[0] for call in calls)
+
+
+def test_akshare_announcements_paginate_to_total_and_refresh_from_complete_baseline(tmp_path) -> None:
+    announcement_pages: list[int] = []
+
+    def announcement_payload(page: int, *, total: int = 250):
+        start = (page - 1) * 100
+        stop = min(start + 100, total)
+        return {
+            "data": {
+                "list": [
+                    {
+                        "art_code": f"ann-{index}",
+                        "display_time": "2026-07-15 10:00:00:000",
+                        "notice_date": "2026-07-15 00:00:00",
+                        "title": f"公司日常公告{index}",
+                    }
+                    for index in range(start, stop)
+                ],
+                "total_hits": total,
+            },
+            "success": 1,
+        }
+
+    def get(url, **kwargs):
+        if "securities/api/data/get" in url:
+            return FakeResponse({"result": {"data": []}, "success": True})
+        if "api/security/ann" in url:
+            page = int(kwargs["params"]["page_index"])
+            assert kwargs["params"]["page_size"] == "100"
+            announcement_pages.append(page)
+            return FakeResponse(announcement_payload(page))
+        return FakeResponse({"result": {"data": []}, "success": True})
+
+    client = AkshareResearchClient(
+        timeout_seconds=8,
+        get=get,
+        long_research_policy=LONG_POLICY,
+        evidence_cache_dir=tmp_path,
+    )
+
+    first = client.fetch_snapshot("600001", observed_at=AFTERNOON)
+    client.fetch_snapshot("600001", observed_at=AFTERNOON + timedelta(minutes=1))
+    refreshed = client.fetch_snapshot("600001", observed_at=AFTERNOON + timedelta(minutes=11))
+
+    assert first.corporate_risk_history_complete is True
+    assert refreshed.corporate_risk_history_complete is True
+    assert announcement_pages == [1, 2, 3, 1]
+
+
+def test_akshare_announcement_page_failure_does_not_claim_complete_history(tmp_path) -> None:
+    def get(url, **kwargs):
+        if "securities/api/data/get" in url:
+            return FakeResponse({"result": {"data": []}, "success": True})
+        if "api/security/ann" in url:
+            page = int(kwargs["params"]["page_index"])
+            if page == 2:
+                raise requests.Timeout("fixture timeout")
+            return FakeResponse(
+                {
+                    "data": {
+                        "list": [
+                            {
+                                "art_code": f"ann-{index}",
+                                "display_time": "2026-07-15 10:00:00:000",
+                                "title": f"公司日常公告{index}",
+                            }
+                            for index in range(100)
+                        ],
+                        "total_hits": 150,
+                    },
+                    "success": 1,
+                }
+            )
+        return FakeResponse({"result": {"data": []}, "success": True})
+
+    observation = AkshareResearchClient(
+        timeout_seconds=8,
+        get=get,
+        long_research_policy=LONG_POLICY,
+        evidence_cache_dir=tmp_path,
+    ).fetch_snapshot("600001", observed_at=AFTERNOON)
+
+    assert observation.announcements_available is False
+    assert observation.corporate_risk_history_complete is False
+    assert observation.source_errors == ("announcements:Timeout",)
 
 
 def test_structured_research_source_failure_preserves_null_and_other_sources() -> None:

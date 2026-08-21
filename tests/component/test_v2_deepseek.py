@@ -742,6 +742,11 @@ def test_reviewer_reports_missing_api_key_without_physical_call(tmp_path) -> Non
     review = result[candidate.quote.code]
     assert review.outcome is ReviewOutcome.REJECTED
     assert review.error == "api_key_missing"
+    status = reviewer.status()
+    assert status["enabled"] is True
+    assert status["configured"] is False
+    assert status["last_physical_attempts"] == 0
+    assert status["physical_call_acceptance"]["zero_call_reason"] == "api_key_missing"
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT status, physical_attempts, error FROM deepseek_review_batches"
