@@ -232,6 +232,7 @@ class TomorrowDeepSeekFusionUseCase:
 
 def tomorrow_decision_policy(policy: RecommendationPolicy) -> TomorrowDecisionPolicy:
     return TomorrowDecisionPolicy(
+        strategy=Strategy.TOMORROW,
         dimension_weights=policy.dimension_weights[Strategy.TOMORROW],
         risk_rules=policy.risk_rules,
         executable_threshold=policy.selection.thresholds["tomorrow"],
@@ -250,6 +251,7 @@ def tomorrow_decision_policy(policy: RecommendationPolicy) -> TomorrowDecisionPo
 
 def d25_decision_policy(policy: RecommendationPolicy) -> TomorrowDecisionPolicy:
     return TomorrowDecisionPolicy(
+        strategy=Strategy.D25,
         dimension_weights=policy.dimension_weights[Strategy.D25],
         risk_rules=policy.risk_rules,
         executable_threshold=policy.selection.thresholds["d25"],
@@ -284,6 +286,7 @@ def v2_decision_policy(
 def today_decision_policy(policy: RecommendationPolicy, phase: str) -> TomorrowDecisionPolicy:
     threshold_key = "today_late" if phase == "today_late" else "today_main"
     return TomorrowDecisionPolicy(
+        strategy=Strategy.TODAY,
         dimension_weights=policy.dimension_weights[Strategy.TODAY],
         risk_rules=policy.risk_rules,
         executable_threshold=policy.selection.thresholds[threshold_key],

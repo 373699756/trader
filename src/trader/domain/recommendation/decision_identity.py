@@ -23,6 +23,7 @@ _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _CODE = re.compile(r"^\d{6}$")
 _IDENTITY = re.compile(r"^[a-zA-Z0-9_.:+-]{1,160}$")
 _REASON = re.compile(r"^[a-z0-9_]{1,64}$")
+_ACTION_REASON = re.compile(r"^[a-z0-9_,:]{1,160}$")
 _Json: TypeAlias = str | int | float | bool | None | list["_Json"] | dict[str, "_Json"]
 
 
@@ -82,7 +83,7 @@ class DecisionItem:
         risks = tuple(sorted(set(self.risk_codes)))
         if any(_REASON.fullmatch(value) is None for value in risks):
             raise ValueError("decision risk codes must be structured")
-        if _REASON.fullmatch(self.reason) is None:
+        if _ACTION_REASON.fullmatch(self.reason) is None:
             raise ValueError("decision reason must be structured")
         if self.selected and (self.rank < 1 or self.action is RecommendationAction.UNAVAILABLE):
             raise ValueError("selected decisions require a positive rank and available action")

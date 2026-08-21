@@ -786,6 +786,7 @@ def _runtime_status(
             "hybrid_publish_count": status.hybrid_publish_count,
             "settlement_completed_count": status.settlement_completed_count,
             "settlement_failure_count": status.settlement_failure_count,
+            "input_quality": getattr(status, "input_quality", {}),
         },
     }
 

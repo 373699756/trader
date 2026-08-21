@@ -130,6 +130,7 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
     assert payload["last_error"] == "observer:ResearchTraceCapacityError"
     assert payload["scheduler"]["settlement_completed_count"] == 0
     assert payload["scheduler"]["settlement_failure_count"] == 0
+    assert payload["scheduler"]["input_quality"] == {}
 
 
 def test_bootstrap_wires_real_outcome_settlement_without_eager_database_write(tmp_path) -> None:

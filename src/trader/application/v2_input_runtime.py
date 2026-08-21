@@ -122,6 +122,7 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         self._shared_loading: set[tuple[date, datetime, str]] = set()
         self._projections: dict[str, TodayV2LocalProjection | TomorrowV2LocalProjection] = {}
         self._decisions: dict[str, ScoredDecision] = {}
+        self._input_quality: dict[Strategy, dict[str, object]] = {}
         self._sequences = {strategy: 1 for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)}
 
     def refresh(self, request: V2CycleRequest) -> None:
@@ -259,6 +260,8 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
                 projection = build_tomorrow_v2_local(tomorrow_native, self._policy, sequence=sequence)
         except (RuntimeError, TypeError, ValueError) as exc:
             raise V2DecisionUnavailableError(_decision_failure_code(exc)) from exc
+        with self._lock:
+            self._input_quality[request.strategy] = projection.input_quality.to_status()
         if not projection.input_quality.publishable:
             raise V2DecisionUnavailableError(projection.input_quality.status)
         with self._lock:
@@ -266,6 +269,13 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
             self._decisions[projection.local.version] = projection.local
             self._trim_research_sources()
         return projection.local
+
+    def input_quality_status(self) -> dict[str, dict[str, object]]:
+        with self._lock:
+            return {
+                strategy.value: dict(self._input_quality[strategy])
+                for strategy in sorted(self._input_quality, key=lambda item: item.value)
+            }
 
     def projection(self, version: str) -> TodayV2LocalProjection | TomorrowV2LocalProjection | None:
         with self._lock:

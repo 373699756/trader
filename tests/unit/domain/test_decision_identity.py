@@ -91,6 +91,19 @@ def test_scored_identity_rejects_long_and_invalid_hybrid_parent_or_local_score()
         replace(current, items=(replace(current.items[0], final_score=87.99999999),))
 
 
+def test_scored_identity_accepts_structured_downside_action_reason_but_rejects_free_text() -> None:
+    item = decision().items[0]
+
+    guarded = replace(item, action=RecommendationAction.OBSERVE, reason="downside_guard:trend_breakdown")
+    guarded_decision = replace(decision(), items=(guarded,))
+    record = CommittedDecisionRecord(guarded_decision, NOW + timedelta(minutes=10), "scheduled")
+    restored = committed_record_from_bytes(committed_record_bytes(record))
+
+    assert restored.decision.items[0].reason == "downside_guard:trend_breakdown"
+    with pytest.raises(ValueError, match="reason must be structured"):
+        replace(item, reason="下行保护命中")
+
+
 def test_long_projection_has_no_scoring_fields_and_stable_identity() -> None:
     projection = LongProjection(
         trade_date=NOW.date(),

@@ -125,6 +125,137 @@ def test_production_adapter_preserves_publishable_business_empty_projection(
     assert decision.items == ()
 
 
+def test_production_adapter_rejects_partial_history_coverage_even_when_one_candidate_scores(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 14, 40, tzinfo=SHANGHAI)
+    complete = replace(
+        application_feature_factory("600001", observed_at - timedelta(seconds=1)),
+        quote=replace(application_feature_factory("600001", observed_at).quote, board=Board.MAIN),
+    )
+    incomplete = replace(
+        application_feature_factory("600002", observed_at - timedelta(seconds=1)),
+        quote=replace(application_feature_factory("600002", observed_at).quote, board=Board.MAIN),
+        history_days=19,
+    )
+    adapter = V2MarketDataAdapter(
+        _Market((complete, incomplete)),
+        config_version="test-config",
+        candidate_pool_size=2,
+        long_runtime=_LongRuntime(),
+        policy=_policy(),
+    )
+    request = _request(observed_at, phase="afternoon")
+
+    adapter.refresh(request)
+
+    with pytest.raises(V2DecisionUnavailableError, match="not_ready"):
+        adapter.build_local(request)
+
+
+def test_production_adapter_rejects_candidate_security_identity_degradation(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 14, 40, tzinfo=SHANGHAI)
+    feature = application_feature_factory("600001", observed_at - timedelta(seconds=1))
+    degraded = replace(
+        feature,
+        quote=replace(
+            feature.quote,
+            board=Board.MAIN,
+            execution_restrictions=("missing_listing_date",),
+        ),
+    )
+    adapter = V2MarketDataAdapter(
+        _Market((degraded,)),
+        config_version="test-config",
+        candidate_pool_size=1,
+        long_runtime=_LongRuntime(),
+        policy=_policy(),
+    )
+    request = _request(observed_at, phase="afternoon")
+
+    adapter.refresh(request)
+
+    with pytest.raises(V2DecisionUnavailableError, match="not_ready"):
+        adapter.build_local(request)
+
+    status = adapter.input_quality_status()["tomorrow"]
+    assert status["security_master_covered_count"] == 0
+    assert status["security_master_coverage_ratio"] == 0.0
+    assert "security_master_coverage_incomplete" in status["degraded_reasons"]
+
+
+def test_production_adapter_accepts_exactly_ninety_nine_percent_history_coverage(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 14, 40, tzinfo=SHANGHAI)
+    features = tuple(
+        replace(
+            application_feature_factory(f"600{index:03d}", observed_at - timedelta(seconds=1)),
+            quote=replace(
+                application_feature_factory(f"600{index:03d}", observed_at).quote,
+                board=Board.MAIN,
+                is_st=True,
+            ),
+            history_days=19 if index == 0 else 60,
+        )
+        for index in range(100)
+    )
+    adapter = V2MarketDataAdapter(
+        _Market(features),
+        config_version="test-config",
+        candidate_pool_size=100,
+        long_runtime=_LongRuntime(),
+        policy=_policy(),
+    )
+    request = _request(observed_at, phase="afternoon")
+
+    adapter.refresh(request)
+    decision = adapter.build_local(request)
+
+    assert decision is not None
+    status = adapter.input_quality_status()["tomorrow"]
+    assert status["history_covered_count"] == 99
+    assert status["history_coverage_ratio"] == 0.99
+    assert status["publishable"] is True
+
+
+def test_production_adapter_rejects_partial_candidate_feature_response(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 14, 40, tzinfo=SHANGHAI)
+    features = tuple(
+        replace(
+            application_feature_factory(code, observed_at - timedelta(seconds=1)),
+            quote=replace(application_feature_factory(code, observed_at).quote, board=board),
+        )
+        for code, board in (("600001", Board.MAIN), ("300001", Board.CHINEXT))
+    )
+
+    class PartialCandidateMarket(_Market):
+        def read_candidate_features(self, codes, observed_at, **options):
+            return super().read_candidate_features(codes, observed_at, **options)[:1]
+
+    adapter = V2MarketDataAdapter(
+        PartialCandidateMarket(features),
+        config_version="test-config",
+        candidate_pool_size=1,
+        long_runtime=_LongRuntime(),
+        policy=_policy(),
+    )
+    request = _request(observed_at, phase="afternoon")
+
+    adapter.refresh(request)
+
+    with pytest.raises(V2DecisionUnavailableError, match="not_ready"):
+        adapter.build_local(request)
+    status = adapter.input_quality_status()["tomorrow"]
+    assert status["candidate_count"] == 2
+    assert status["candidate_feature_count"] == 1
+    assert status["candidate_feature_coverage_ratio"] == 0.5
+
+
 def test_three_scored_strategies_share_one_fast_market_input_cycle(
     application_feature_factory,
 ) -> None:

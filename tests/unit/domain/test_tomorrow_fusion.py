@@ -85,6 +85,43 @@ def test_hybrid_decision_uses_fixed_fusion_without_repeating_local_risk() -> Non
     assert decision.action is RecommendationAction.EXECUTABLE
 
 
+def test_downside_guard_downgrades_executable_without_changing_fixed_fusion() -> None:
+    evaluation = _evaluation(
+        1,
+        local_score=80.0,
+        values={"trend_breakdown": 1.0},
+        evidence=(_evidence(),),
+    )
+    review = _review("600001", 100.0)
+
+    epoch = build_tomorrow_decision_epoch(
+        _request(
+            _selection((evaluation,)),
+            reviews={"600001": review},
+            projection_stage="hybrid",
+            review_candidate_codes=("600001",),
+            parent_decision_version="decision:local",
+        )
+    )
+
+    decision = epoch.entries[0]
+    assert decision.score.final_score == 86.40
+    assert decision.action is RecommendationAction.OBSERVE
+    assert decision.action_reason == "downside_guard:trend_breakdown"
+    assert decision.selected is True
+
+
+def test_missing_downside_input_fails_closed_after_execution_threshold() -> None:
+    evaluation = _evaluation(1, local_score=80.0, values={"atr20_pct": None})
+
+    epoch = build_tomorrow_decision_epoch(_request(_selection((evaluation,))))
+
+    decision = epoch.entries[0]
+    assert decision.score.final_score == 80.0
+    assert decision.action is RecommendationAction.OBSERVE
+    assert decision.action_reason == "downside_guard:downside_inputs_missing"
+
+
 def test_late_review_cannot_change_score_or_create_model_risk() -> None:
     late_evaluation = _evaluation(1, local_score=80.0, evidence=(_evidence(),))
     current_evaluation = _evaluation(2, local_score=79.0, evidence=(_evidence(),))
@@ -363,6 +400,7 @@ def _evaluation(
     board: Board = Board.MAIN,
     industry: str | None = None,
     evidence: tuple[Evidence, ...] = (),
+    values: dict[str, float | None] | None = None,
 ) -> TomorrowStockEvaluation:
     code = f"600{index:03d}"
     feature = FeatureSnapshot(
@@ -392,7 +430,18 @@ def _evaluation(
             board_reliability="verified",
             listing_age_sessions=100,
         ),
-        values={},
+        values={
+            "atr20_pct": 2.0,
+            "volatility_20d": 2.0,
+            "max_drawdown_20d": -8.0,
+            "low_volatility_score": 70.0,
+            "low_drawdown_score": 70.0,
+            "close_location": 70.0,
+            "market_breadth": 60.0,
+            "tail_return_30m_pct": 0.5,
+            "trend_breakdown": 0.0,
+            **(values or {}),
+        },
         observed_at=NOW,
         evidence=evidence,
         board_data_reliability=0.9,

@@ -16,6 +16,7 @@ from typing import Literal, TypeAlias
 
 from trader.domain.market.factors import round_score
 from trader.domain.market.models import Board, FeatureSnapshot
+from trader.domain.recommendation.downside import assess_downside
 from trader.domain.recommendation.fusion import (
     DIMENSION_NAMES,
     FusionPolicy,
@@ -26,6 +27,7 @@ from trader.domain.recommendation.models import (
     FusionMode,
     RecommendationAction,
     ScoreBreakdown,
+    Strategy,
 )
 from trader.domain.recommendation.strategies.composition import LocalScoreResult
 from trader.domain.recommendation.tomorrow_selection import (
@@ -60,12 +62,15 @@ class TomorrowDecisionPolicy:
     maximum_board_fraction: float = 0.60
     fusion: FusionPolicy = field(default_factory=FusionPolicy)
     executable_enabled: bool = True
+    strategy: Strategy = Strategy.TOMORROW
 
     def __post_init__(self) -> None:
         weights = dict(self.dimension_weights)
         rules = dict(self.risk_rules)
         _validate_decision_weights(weights)
         _validate_decision_limits(self)
+        if self.strategy not in {Strategy.TODAY, Strategy.TOMORROW, Strategy.D25}:
+            raise ValueError("tomorrow decision policy requires a scored strategy")
         object.__setattr__(self, "dimension_weights", MappingProxyType(weights))
         object.__setattr__(self, "risk_rules", MappingProxyType(rules))
 
@@ -482,6 +487,13 @@ def _action_for(
     if not policy.executable_enabled:
         return RecommendationAction.OBSERVE, "observation_phase"
     if score.final_score >= policy.executable_threshold:
+        downside = assess_downside(
+            evaluation.features,
+            policy.strategy,
+            require_industry_breadth=False,
+        )
+        if downside.status == "observe":
+            return RecommendationAction.OBSERVE, f"downside_guard:{','.join(downside.reasons)}"
         return RecommendationAction.EXECUTABLE, "score_threshold_met"
     return RecommendationAction.OBSERVE, "near_score_threshold"
 

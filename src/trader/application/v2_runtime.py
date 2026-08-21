@@ -105,6 +105,7 @@ class V2RuntimeStatus:
     last_error_code: str
     strategy_error_codes: tuple[tuple[str, str], ...]
     recent_errors: tuple[V2RuntimeIssue, ...]
+    input_quality: dict[str, dict[str, object]]
 
 
 class V2SchedulerRuntime:
@@ -326,6 +327,7 @@ class V2SchedulerRuntime:
                     if strategy in self._strategy_error_codes
                 ),
                 recent_errors=self._sorted_recent_errors_locked(),
+                input_quality=_input_quality_status(self._dependencies.decisions),
             )
 
     def _scheduled_request(self, strategy: Strategy, observed_at: datetime, phase: str) -> V2CycleRequest:
@@ -713,6 +715,20 @@ def _failure_code(exc: BaseException, fallback: str) -> str:
     if re.fullmatch(r"[a-z0-9_]{1,64}", value) is not None:
         return value
     return fallback
+
+
+def _input_quality_status(decisions: V2DecisionBuilderPort) -> dict[str, dict[str, object]]:
+    getter = getattr(decisions, "input_quality_status", None)
+    if not callable(getter):
+        return {}
+    raw = getter()
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(strategy): dict(values)
+        for strategy, values in raw.items()
+        if isinstance(strategy, str) and isinstance(values, dict)
+    }
 
 
 def _research_input_version(result: ResearchRefreshResult) -> str:
