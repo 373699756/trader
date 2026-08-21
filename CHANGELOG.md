@@ -6,6 +6,9 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户要求“观察池高分排在上面”，新增查询层排名恢复回归和 Firefox 两行观察池桌面断言；fixture
+  特意让内部代码顺序与评分顺序相反，并要求 Tomorrow/D25 页面均显示 `74.00` 在 `72.00` 之前。
+
 - 针对用户反馈“DeepSeek 最近没有使用”并要求不影响现有 Web 和荐股实时性，新增 V2 类型化公司研究
   意图、独立生命周期运行时和 `company_research` 内存状态。状态可观察新输出/周期研究提交、批次、
   冷却、退避、短路与重评分计数，但不公开股票集合、外部载荷或密钥。
@@ -208,6 +211,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 统一短线 current 与历史只读决策投影顺序：API 按不可变决策已有连续 `rank` 输出入选项，Web 继续
+  只做正式/观察分池筛选，不复制评分公式或自行重排。正式池和观察池因此都保持最终分、本地分、代码
+  的生产稳定排序；评分、入池身份、冻结记录、overlay、SSE 和刷新节奏不变。
+
 - 三条评分策略现在先原子发布本地结果，再把新进入输出和既有候选按 `stock_risk` 的 120–300 秒
   配置节奏交给独立单协调 worker；每批最多 4 股、40 秒预算且使用独立公司研究端点池。研究变化只
   重算同交易日已有 current，首次 DeepSeek 复核等待对应研究批次，失败则释放屏障并继续保留本地结果。
@@ -345,6 +352,10 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复观察池按股票代码而非评分展示的问题。根因是领域选择已正确生成高分优先排名，但
+  `ScoredDecision` 为规范哈希按代码保存内部条目，查询层直接投影该内部顺序；现在只读查询按已有
+  `rank` 恢复展示次序，最多仅排序 12 个已入选项，不增加行情抓取、评分或 DeepSeek 调用。
 
 - 根因确认：V2-E10 删除旧 Pipeline 后，生产组合根仍构造研究读取器，却没有实例化或调用既有
   `ResearchCoordinator`；结构化风险长期缺失令候选按 fail-closed 规则保持 observe-only，因而不会
@@ -493,6 +504,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未删除推荐、观察项、历史记录、运行数据或 Web 资源，也未移除任何评分、过滤、风险、融合、
+  TopK、冻结或 DeepSeek 预算约束。
+
 - 移除“公司研究适配器已存在但生产调度无意图入口”的断链状态；未删除或改写运行数据库、正式记录、
   用户截图、Web 资源、决策 API/SSE、评分/融合规则、冻结边界或 DeepSeek 168 次原子预算。
 
@@ -565,6 +579,13 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 观察池高分优先批次通过 `make format-check`、`make lint`、`make type-check`、`make test` 和
+  `make package`；隔离构建首次因沙箱禁止联网获取 `setuptools>=68` 失败，获准联网后同一命令成功
+  生成 wheel 与 sdist。定向 `tests/unit/application/test_decision_queries.py`、V2 HTTP/Web contract、
+  Dashboard JavaScript contract 均通过。Firefox headless 在 1280x720、1440x900、1920x1080 下验证
+  Tomorrow/D25 两行观察池均为 `74.00 > 72.00`，且无白屏、重叠、页面横向溢出或浏览器错误；报告
+  与截图仅写入 `/tmp`，未纳入仓库。
 
 - 高风险完整门禁通过：`make format-check`（339 文件）、`make lint`（含零 refactor debt）、
   `make type-check`（219 个源码文件）、完整 `make test` 和 `make package` 均通过。打包首次仅因沙箱
@@ -832,6 +853,10 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 当前已经运行的 `./run.sh serve` 进程不会热加载 Python 查询实现，需要用户在方便时正常重启服务后
+  才能看到新顺序；本批没有擅自中断它。收益优化、权重、动作门槛和 DeepSeek 策略均未在本批调整，
+  应作为下一独立交付批次基于历史日线与固定样本外门禁推进。
 
 - 当前运行中的服务仍加载修复前代码，`/api/v2/status` 尚无 `company_research` 且 DeepSeek 物理调用为
   0；需在本批提交后由用户正常重启才会启用新接线。本机项目根 `.token_key` 和当前 shell 的

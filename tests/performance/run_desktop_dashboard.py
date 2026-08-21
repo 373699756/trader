@@ -65,6 +65,9 @@ class _ObservationResult(TypedDict):
     count: str
     quote_complete: bool
     quote_fields: list[str]
+    codes: list[str]
+    final_scores: list[float]
+    ranked_high_first: bool
 
 
 def main() -> int:
@@ -120,6 +123,7 @@ def _run(output_dir: Path) -> dict[str, object]:
         _request_json(f"{base}/url", method="POST", payload={"url": f"http://127.0.0.1:{app_port}/"})
         _wait(lambda: bool(_execute(base, "return Boolean(window.TraderDashboardDiagnostics);")))
         observations: list[_ObservationResult] = []
+        expected_top_codes = {"tomorrow": "600009", "d25": "600010"}
         for strategy in ("tomorrow", "d25"):
             _execute(base, f'document.querySelector(".strategy-tab[data-strategy={strategy}]").click(); return true;')
             _wait(
@@ -131,6 +135,20 @@ def _run(output_dir: Path) -> dict[str, object]:
                     > 0
                 )
             )
+            ranking = _execute(
+                base,
+                """
+                const rows = Array.from(document.querySelectorAll('#observationBody tr[data-code]'));
+                return {
+                  codes: rows.map((row) => row.dataset.code),
+                  finalScores: rows.map((row) => Number(row.querySelectorAll('.score-stack b')[3].textContent)),
+                };
+                """,
+            )
+            if not isinstance(ranking, dict):
+                raise RuntimeError("browser observation ranking must be an object")
+            codes = [str(code) for code in ranking.get("codes", [])]
+            final_scores = [float(score) for score in ranking.get("finalScores", [])]
             observations.append(
                 {
                     "strategy": strategy,
@@ -161,6 +179,13 @@ def _run(output_dir: Path) -> dict[str, object]:
                               .slice(2, 6).map((cell) => cell.textContent.trim());
                             """,
                         )
+                    ),
+                    "codes": codes,
+                    "final_scores": final_scores,
+                    "ranked_high_first": (
+                        codes[:1] == [expected_top_codes[strategy]]
+                        and len(final_scores) == 2
+                        and final_scores[0] > final_scores[1]
                     ),
                 }
             )
@@ -218,7 +243,11 @@ def _run(output_dir: Path) -> dict[str, object]:
             isinstance(scripts, list)
             and any(expected in str(script) for script in scripts)
             and all(
-                item["visible"] and item["rows"] > 0 and "观察 1" in item["count"] and item["quote_complete"]
+                item["visible"]
+                and item["rows"] == 2
+                and "观察 2" in item["count"]
+                and item["quote_complete"]
+                and item["ranked_high_first"]
                 for item in observations
             )
             and error_details["visible"] is True
@@ -262,29 +291,13 @@ def _run(output_dir: Path) -> dict[str, object]:
 
 def _browser_services() -> UnifiedWebServices:
     index = UnifiedDecisionIndex()
-    for strategy, code in ((Strategy.TOMORROW, "600001"), (Strategy.D25, "600002")):
-        item = DecisionItem(
-            code,
-            RecommendationAction.OBSERVE,
-            True,
-            1,
-            75.0,
-            74.0,
-            74.0,
-            (("local_score", 74.0),),
-            (),
-            "observation_band",
-            quote=DecisionQuote(
-                code,
-                10.25,
-                2.5,
-                1_000_000_000.0,
-                0.8,
-                300_000_000_000.0,
-                "fixture",
-                _NOW.replace(hour=11, minute=15),
-                f"quote:{code}",
-            ),
+    for strategy, codes in (
+        (Strategy.TOMORROW, ("600009", "600001")),
+        (Strategy.D25, ("600010", "600002")),
+    ):
+        items = tuple(
+            _observation_item(code, rank=rank, final_score=score)
+            for rank, (code, score) in enumerate(zip(codes, (74.0, 72.0), strict=True), start=1)
         )
         decision = ScoredDecision(
             strategy,
@@ -297,7 +310,7 @@ def _browser_services() -> UnifiedWebServices:
             "config:browser",
             "strategy:browser",
             "fusion:browser",
-            (item,),
+            items,
             (),
         )
         if not index.publish(decision, expected_version=None).accepted:
@@ -361,6 +374,32 @@ def _browser_services() -> UnifiedWebServices:
                 },
             ],
         },
+    )
+
+
+def _observation_item(code: str, *, rank: int, final_score: float) -> DecisionItem:
+    return DecisionItem(
+        code,
+        RecommendationAction.OBSERVE,
+        True,
+        rank,
+        final_score,
+        final_score,
+        final_score,
+        (("local_score", final_score),),
+        (),
+        "observation_band",
+        quote=DecisionQuote(
+            code,
+            10.25,
+            2.5,
+            1_000_000_000.0,
+            0.8,
+            300_000_000_000.0,
+            "fixture",
+            _NOW.replace(hour=11, minute=15),
+            f"quote:{code}",
+        ),
     )
 
 

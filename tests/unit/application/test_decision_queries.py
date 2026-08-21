@@ -162,6 +162,64 @@ def test_scored_coverage_uses_distinct_evaluation_counts_not_overlapping_reasons
     assert dict(view.filter_reason_counts) == {"hard_filter": 10}
 
 
+def test_scored_query_restores_rank_order_from_code_sorted_identity() -> None:
+    index = UnifiedDecisionIndex()
+    decision = replace(
+        _decision(),
+        items=(
+            _item("600003", RecommendationAction.OBSERVE, rank=4, final_score=73.0),
+            _item("600001", RecommendationAction.OBSERVE, rank=3, final_score=75.0),
+            _item("600004", RecommendationAction.EXECUTABLE, rank=2, final_score=81.0),
+            _item("600002", RecommendationAction.EXECUTABLE, rank=1, final_score=86.0),
+        ),
+    )
+    assert tuple(item.code for item in decision.items) == ("600001", "600002", "600003", "600004")
+    assert index.publish(decision, expected_version=None).accepted
+
+    view = UnifiedDecisionQueries(index, _Repository(), _Clock()).current(Strategy.TODAY)
+
+    assert [(item.code, item.rank, item.final_score) for item in view.items] == [
+        ("600002", 1, 86.0),
+        ("600004", 2, 81.0),
+        ("600001", 3, 75.0),
+        ("600003", 4, 73.0),
+    ]
+
+
+def _item(
+    code: str,
+    action: RecommendationAction,
+    *,
+    rank: int,
+    final_score: float,
+) -> DecisionItem:
+    return DecisionItem(
+        code,
+        action,
+        True,
+        rank,
+        final_score,
+        final_score,
+        final_score,
+        (("local_score", final_score),),
+        (),
+        "threshold_met" if action is RecommendationAction.EXECUTABLE else "near_score_threshold",
+        f"样例{code}",
+        "样例行业",
+        DecisionQuote(
+            code,
+            10.0,
+            1.0,
+            100_000_000.0,
+            1.0,
+            10_000_000_000.0,
+            "fixture",
+            NOW,
+            f"quote:{code}",
+        ),
+    )
+
+
 def _decision(*, trade_date: date = TRADE_DATE) -> ScoredDecision:
     return ScoredDecision(
         Strategy.TODAY,

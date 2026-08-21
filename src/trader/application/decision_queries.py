@@ -165,7 +165,7 @@ def _scored_view(
     formal: CommittedDecisionRecord | None,
 ) -> DecisionView:
     overlay_quotes = _valid_overlay_quotes(decision, overlay)
-    selected = tuple(item for item in decision.items if item.selected)
+    selected = tuple(sorted((item for item in decision.items if item.selected), key=lambda item: item.rank))
     items = tuple(_scored_item(item, overlay_quotes.get(item.code)) for item in selected)
     rejected = (
         decision.rejected_count
