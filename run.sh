@@ -8,7 +8,7 @@ MODE="${1:-serve}"
 
 usage() {
   printf '%s\n' \
-    "用法: ./run.sh [serve|validate-config|research-status|research-history-download|research-backtest|research-r6-screen|research-r7-dossier]" \
+    "用法: ./run.sh [serve|validate-config|research-status|research-history-download|research-backtest|research-r6-screen|research-r6-daily-screen|research-r7-dossier]" \
     "" \
     "环境变量:" \
     "  TRADER_CONFIG=/absolute/path/runtime.json" \
@@ -56,7 +56,7 @@ case "$MODE" in
   serve|app)
     exec "$VENV_DIR/bin/trader-server" --config "$CONFIG_PATH"
     ;;
-  validate-config|research-status|research-history-download|research-backtest|research-r6-screen|research-r7-dossier)
+  validate-config|research-status|research-history-download|research-backtest|research-r6-screen|research-r6-daily-screen|research-r7-dossier)
     exec "$VENV_DIR/bin/trader-cli" --config "$CONFIG_PATH" "$MODE" "${@:2}"
     ;;
   *)

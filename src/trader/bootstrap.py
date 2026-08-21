@@ -24,6 +24,7 @@ from trader.application.outcome_settlement import OutcomeSettlementService, V2Ou
 from trader.application.research.historical_backtest import HistoricalBarBacktestService
 from trader.application.research.historical_screening import HistoricalDownloadService
 from trader.application.research.score_r6 import ScoreR6HistoricalScreeningService
+from trader.application.research.score_r6_daily import ScoreR6DailyScreeningService
 from trader.application.research_audit import V2DecisionObservation
 from trader.application.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
 from trader.application.shutdown import ShutdownDeadline, ShutdownReport
@@ -148,6 +149,7 @@ class HistoricalResearchServices:
     download: HistoricalDownloadService
     backtest: HistoricalBarBacktestService
     score_r6: ScoreR6HistoricalScreeningService
+    score_r6_daily: ScoreR6DailyScreeningService
     archive: SQLiteHistoricalArchive
 
 
@@ -348,6 +350,7 @@ def build_historical_research_services(
         download,
         HistoricalBarBacktestService(archive),
         ScoreR6HistoricalScreeningService(archive),
+        ScoreR6DailyScreeningService(archive),
         archive,
     )
 

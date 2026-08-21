@@ -27,6 +27,7 @@ def test_cli_exposes_current_v2_maintenance_and_explicit_offline_research_comman
         "research-history-download",
         "research-backtest",
         "research-r6-screen",
+        "research-r6-daily-screen",
         "research-r7-dossier",
     ):
         assert retained in help_text
@@ -44,6 +45,7 @@ def test_run_script_exposes_explicit_offline_history_research_without_mapping_it
     assert "research-history-download" in shell
     assert "research-backtest" in shell
     assert "research-r6-screen" in shell
+    assert "research-r6-daily-screen" in shell
     assert "research-r7-dossier" in shell
     assert "serve|app" in shell
 
@@ -62,6 +64,14 @@ def test_research_status_does_not_create_runtime_files(tmp_path: Path, capsys) -
     assert payload["outcomes"]["initialized"] is False
     assert payload["score_r6_executable"] is False
     assert payload["score_r6_screening_executable"] is False
+    assert payload["score_r6_daily"] == {
+        "failure_reasons": [],
+        "historical_gate_passed": False,
+        "promotion_authority": False,
+        "report_hash": "",
+        "selected_candidate_hash": "",
+        "status": "not_run",
+    }
     assert payload["blockers"] == ["score_h0_archive_coverage_incomplete"]
     assert payload["promotion_blockers"] == ["score_r6_preregistered_forward_evidence_missing"]
     assert payload["score_r7"] == {"dossier_count": 0, "dossiers": []}
@@ -113,6 +123,23 @@ def test_research_r6_screen_refuses_to_freeze_without_h0_coverage(tmp_path: Path
     assert payload["status"] == "insufficient_coverage"
     assert payload["historical_gate_passed"] is False
     assert payload["failure_reasons"] == ["score_h0_archive_coverage_incomplete"]
+    assert not runtime_dir.exists()
+
+
+def test_research_r6_daily_screen_refuses_to_freeze_without_h0_coverage(tmp_path: Path, capsys) -> None:
+    runtime = json.loads((ROOT / "config/v2/runtime.json").read_text(encoding="utf-8"))
+    runtime_dir = tmp_path / "runtime"
+    runtime["runtime_dir"] = str(runtime_dir)
+    config = tmp_path / "runtime.json"
+    config.write_text(json.dumps(runtime), encoding="utf-8")
+
+    assert main(["--config", str(config), "research-r6-daily-screen"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "insufficient_coverage"
+    assert payload["historical_gate_passed"] is False
+    assert payload["failure_reasons"] == ["score_h0_archive_coverage_incomplete"]
+    assert payload["promotion_authority"] is False
     assert not runtime_dir.exists()
 
 

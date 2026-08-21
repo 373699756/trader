@@ -6,6 +6,14 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户要求继续基于历史日线优化趋势/收益评分，新增隔离的 `score_r6_daily_trend_v1`：从既有
+  H0 前复权归档点时重建 60→5 日残差动量、趋势效率、20 日下行稳定、60 日回撤恢复和流动性，
+  预注册 48 个候选并统一回放真实 Top6、单板最多 4 只、20bp 成本及未来 5 日标签。
+
+- 新增 `research-r6-daily-screen`、`score_r6_daily_trend_report_v1` 追加式防篡改报告和
+  `research-status.score_r6_daily` 摘要。离线命令在首次长计算前输出进度，缺少覆盖时不创建研究目录，
+  已封存报告可幂等读取；篡改或同身份不同内容 fail-closed。
+
 - 针对用户要求“观察池高分排在上面”，新增查询层排名恢复回归和 Firefox 两行观察池桌面断言；fixture
   特意让内部代码顺序与评分顺序相反，并要求 Tomorrow/D25 页面均显示 `74.00` 在 `72.00` 之前。
 
@@ -211,6 +219,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 趋势候选只允许在固定训练段择优，且训练收益不得低于 R6 v1 proxy、严重亏损不得增加；冻结候选只在
+  2026-01-01 至 2026-07-31 验证段评价一次。真实报告中候选验证净超额由基线 `-0.396%` 提升到
+  `+0.153%`，严重亏损率由 `17.39%` 降到 `13.91%`，但换手由 `39.61%` 升到 `47.34%`，超过
+  `+5` 个百分点门槛，故报告按契约为 `historical_rejected`，未改变活动评分或荐股。
+
 - 统一短线 current 与历史只读决策投影顺序：API 按不可变决策已有连续 `rank` 输出入选项，Web 继续
   只做正式/观察分池筛选，不复制评分公式或自行重排。正式池和观察池因此都保持最终分、本地分、代码
   的生产稳定排序；评分、入池身份、冻结记录、overlay、SSE 和刷新节奏不变。
@@ -352,6 +365,13 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复历史趋势研究的两项可观察性缺口：长回放开始前现在立即向 stderr 输出进度；只读状态从封存的
+  候选参数复算候选哈希，不再因 JSON 有意省略派生字段而显示空身份。报告内容及哈希未被重写。
+
+- 最终 Review 修复趋势效率路径分母多包含 `t-60` 涨跌幅的问题，使分母严格对应
+  `close(t-60)→close(t-5)` 的 `t-59…t-5` 55 个收益段；新增首日异常收益回归。修复前报告已移至
+  `/tmp` 保留备查，未作为有效证据或写入 Git；修复后使用完全相同的预注册参数重新封存。
 
 - 修复观察池按股票代码而非评分展示的问题。根因是领域选择已正确生成高分优先排名，但
   `ScoredDecision` 为规范哈希按代码保存内部条目，查询层直接投影该内部顺序；现在只读查询按已有
@@ -504,6 +524,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未删除或替换生产评分、DeepSeek、冻结、API、Web、正式推荐及运行数据库；未通过换手门槛的
+  历史候选没有接入生产，也没有保留活动双实现或隐藏 fallback。
+
 - 本批未删除推荐、观察项、历史记录、运行数据或 Web 资源，也未移除任何评分、过滤、风险、融合、
   TopK、冻结或 DeepSeek 预算约束。
 
@@ -579,6 +602,18 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- Score-R6D 定向契约、领域、应用、SQLite 点时特征、制品和 CLI 回归通过；真实 H0 归档覆盖
+  `4937/5000`、共 `3,103,160` 根日线，封存报告哈希
+  `aaa9a270aaecd0844c5786996a0318e6663812432a23f0c153fd33f256294ae2`，且只因
+  `daily_trend_validation_turnover_failed` 拒绝。`make format-check`（346 文件）、`make lint`（含零
+  refactor debt）、`make type-check`（223 个源码文件）、完整 `make test` 和 `make package` 均通过；
+  打包首次仅因沙箱禁止隔离环境下载 `setuptools` 失败，授权联网后原命令成功生成 sdist 与 wheel。
+
+- wheel 在仓库外临时目录安装后可从安装目录导入 `trader`、执行 `trader-cli --help` 并读取模板、CSS、
+  JavaScript 和图标。Firefox headless 三档桌面报告 `passed=true`：1280x720、1440x900、1920x1080
+  均无白屏、重叠、页面级横向溢出或浏览器错误，Tomorrow/D25 观察池仍为高分优先；报告、截图和
+  wheel 安装目录只位于 `/tmp`，未纳入提交。
 
 - 观察池高分优先批次通过 `make format-check`、`make lint`、`make type-check`、`make test` 和
   `make package`；隔离构建首次因沙箱禁止联网获取 `setuptools>=68` 失败，获准联网后同一命令成功
@@ -853,6 +888,10 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 当前候选虽改善历史验证收益、严重亏损和波动，但换手增幅超过预注册容忍度，且 H0 仍存在当前股票池
+  幸存者偏差、历史 ST/停牌/行业/公司风险和盘中尾部未完整重建，因此不能声称生产收益已提高。若继续，
+  必须以新研究身份预注册换手稳定机制并重新训练/样本外验证；不得修改本报告门槛或自动晋级。
 
 - 当前已经运行的 `./run.sh serve` 进程不会热加载 Python 查询实现，需要用户在方便时正常重启服务后
   才能看到新顺序；本批没有擅自中断它。收益优化、权重、动作门槛和 DeepSeek 策略均未在本批调整，

@@ -108,7 +108,7 @@ def test_history_archive_screening_uses_only_rows_with_61_inputs_and_5_future_la
                     low=close * 0.99,
                     volume=1000.0,
                     amount=float((index + 1) * 1_000_000),
-                    pct_change=growth * 100.0,
+                    pct_change=100.0 if offset == 0 and index % 2 == 0 else growth * 100.0,
                     turnover_rate=None,
                     adjustment="qfq",
                     source="fixture",
@@ -118,6 +118,7 @@ def test_history_archive_screening_uses_only_rows_with_61_inputs_and_5_future_la
 
     days = archive.screening_days(SCORE_H0_V1_SPEC)
     r6_rows = archive.score_r6_rows(SCORE_H0_V1_SPEC)
+    daily_rows = archive.score_r6_daily_rows(SCORE_H0_V1_SPEC)
 
     assert len(days) == 1
     assert days[0].trade_date == start + timedelta(days=60)
@@ -127,3 +128,12 @@ def test_history_archive_screening_uses_only_rows_with_61_inputs_and_5_future_la
     assert {row.trade_date for row in r6_rows} == {start + timedelta(days=60)}
     assert {row.board for row in r6_rows} == {"main"}
     assert all(row.volatility_20d_pct < 4.0 for row in r6_rows)
+    assert len(daily_rows) == 30
+    assert {row.trade_date for row in daily_rows} == {start + timedelta(days=60)}
+    assert all(row.residual_return_60_5_pct > 0.0 for row in daily_rows)
+    assert all(row.close_ma20_spread_pct > 0.0 for row in daily_rows)
+    assert all(row.drawdown_60d_pct < 0.0 for row in daily_rows)
+    assert all(row.downside_volatility_20d_pct == 0.0 for row in daily_rows)
+    assert [row.trend_efficiency_score for row in daily_rows] == sorted(
+        row.trend_efficiency_score for row in daily_rows
+    )

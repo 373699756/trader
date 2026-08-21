@@ -21,6 +21,7 @@ from trader.application.research.historical_screening import (
     HistoricalSecurity,
     ResearchBoard,
 )
+from trader.application.research.score_r6_daily_models import ScoreR6DailyRow
 from trader.application.research.score_r6_models import ScoreR6Board, ScoreR6HistoricalRow
 from trader.domain.research.historical_screening import HistoricalPriceBar, HistoricalScreeningSpec
 
@@ -393,6 +394,42 @@ class SQLiteHistoricalArchive:
             for row in rows
         )
 
+    def score_r6_daily_rows(self, spec: HistoricalScreeningSpec) -> tuple[ScoreR6DailyRow, ...]:
+        """Return point-in-time daily trend factors and fixed five-day labels."""
+
+        if not self._database.is_file():
+            return ()
+        with self._read_connection() as connection:
+            rows = connection.execute(
+                _SCORE_R6_DAILY_QUERY,
+                {
+                    "identity": spec.research_identity,
+                    "start": spec.training_start.isoformat(),
+                    "end": spec.validation_end.isoformat(),
+                },
+            ).fetchall()
+        return tuple(
+            ScoreR6DailyRow(
+                trade_date=date.fromisoformat(str(row[0])),
+                code=str(row[1]),
+                board=cast(ScoreR6Board, str(row[2])),
+                momentum_20_score=float(row[3]),
+                residual_momentum_score=float(row[4]),
+                trend_efficiency_score=float(row[5]),
+                downside_stability_score=float(row[6]),
+                drawdown_recovery_score=float(row[7]),
+                liquidity_score=float(row[8]),
+                residual_return_60_5_pct=float(row[9]),
+                recent_return_5d_pct=float(row[10]),
+                close_ma20_spread_pct=float(row[11]),
+                drawdown_60d_pct=float(row[12]),
+                downside_volatility_20d_pct=math.sqrt(float(row[13])),
+                volatility_20d_pct=math.sqrt(float(row[14])),
+                return_5d_pct=float(row[15]),
+            )
+            for row in rows
+        )
+
     def _initialize(self) -> None:
         with self._lock:
             self._root.mkdir(parents=True, exist_ok=True)
@@ -619,6 +656,108 @@ SELECT
     momentum_score,
     stability_score,
     liquidity_score,
+    variance_20,
+    return_5d
+FROM ranked
+ORDER BY trade_date, code
+"""
+
+_SCORE_R6_DAILY_QUERY = """
+WITH ordered AS (
+    SELECT
+        bars.code,
+        bars.trade_date,
+        universe.board,
+        bars.close_price,
+        LAG(bars.close_price, 5) OVER (PARTITION BY bars.code ORDER BY bars.trade_date) AS close_5,
+        LAG(bars.close_price, 20) OVER (PARTITION BY bars.code ORDER BY bars.trade_date) AS close_20,
+        LAG(bars.close_price, 60) OVER (PARTITION BY bars.code ORDER BY bars.trade_date) AS close_60,
+        LEAD(bars.close_price, 5) OVER (PARTITION BY bars.code ORDER BY bars.trade_date) AS close_f5,
+        COUNT(*) OVER (
+            PARTITION BY bars.code ORDER BY bars.trade_date ROWS BETWEEN 60 PRECEDING AND CURRENT ROW
+        ) AS history_count,
+        AVG(bars.close_price) OVER (
+            PARTITION BY bars.code ORDER BY bars.trade_date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
+        ) AS mean_close_20,
+        MAX(bars.high_price) OVER (
+            PARTITION BY bars.code ORDER BY bars.trade_date ROWS BETWEEN 59 PRECEDING AND CURRENT ROW
+        ) AS high_60,
+        SUM(ABS(bars.pct_change)) OVER (
+            PARTITION BY bars.code ORDER BY bars.trade_date ROWS BETWEEN 59 PRECEDING AND 5 PRECEDING
+        ) AS path_60_5,
+        AVG(bars.pct_change) OVER (
+            PARTITION BY bars.code ORDER BY bars.trade_date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
+        ) AS mean_return_20,
+        AVG(bars.pct_change * bars.pct_change) OVER (
+            PARTITION BY bars.code ORDER BY bars.trade_date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
+        ) AS mean_square_return_20,
+        AVG(CASE WHEN bars.pct_change < 0.0 THEN bars.pct_change * bars.pct_change ELSE 0.0 END) OVER (
+            PARTITION BY bars.code ORDER BY bars.trade_date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
+        ) AS downside_square_return_20,
+        AVG(bars.amount) OVER (
+            PARTITION BY bars.code ORDER BY bars.trade_date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
+        ) AS mean_amount_20
+    FROM bars
+    JOIN universe
+      ON universe.research_identity = bars.research_identity AND universe.code = bars.code
+    WHERE bars.research_identity = :identity
+), metrics AS (
+    SELECT
+        code,
+        trade_date,
+        board,
+        100.0 * (close_price / close_20 - 1.0) AS momentum_20,
+        100.0 * (close_5 / close_60 - 1.0) AS residual_return_60_5,
+        (100.0 * (close_5 / close_60 - 1.0)) / path_60_5 AS trend_efficiency,
+        MAX(0.0, downside_square_return_20) AS downside_variance_20,
+        MAX(0.0, mean_square_return_20 - mean_return_20 * mean_return_20) AS variance_20,
+        mean_amount_20,
+        100.0 * (close_price / close_5 - 1.0) AS recent_return_5,
+        100.0 * (close_price / mean_close_20 - 1.0) AS close_ma20_spread,
+        100.0 * (close_price / high_60 - 1.0) AS drawdown_60,
+        100.0 * (close_f5 / close_price - 1.0) AS return_5d
+    FROM ordered
+    WHERE history_count >= 61
+      AND close_5 > 0.0
+      AND close_20 > 0.0
+      AND close_60 > 0.0
+      AND close_f5 > 0.0
+      AND mean_close_20 > 0.0
+      AND high_60 > 0.0
+      AND path_60_5 > 0.0
+      AND trade_date BETWEEN :start AND :end
+), ranked AS (
+    SELECT
+        *,
+        100.0 * PERCENT_RANK() OVER (PARTITION BY trade_date, board ORDER BY momentum_20) AS momentum_score,
+        100.0 * PERCENT_RANK() OVER (
+            PARTITION BY trade_date, board ORDER BY residual_return_60_5
+        ) AS residual_momentum_score,
+        100.0 * PERCENT_RANK() OVER (
+            PARTITION BY trade_date, board ORDER BY trend_efficiency
+        ) AS trend_efficiency_score,
+        100.0 * (1.0 - PERCENT_RANK() OVER (
+            PARTITION BY trade_date, board ORDER BY downside_variance_20
+        )) AS downside_stability_score,
+        100.0 * PERCENT_RANK() OVER (PARTITION BY trade_date, board ORDER BY drawdown_60) AS drawdown_recovery_score,
+        100.0 * PERCENT_RANK() OVER (PARTITION BY trade_date, board ORDER BY mean_amount_20) AS liquidity_score
+    FROM metrics
+)
+SELECT
+    trade_date,
+    code,
+    board,
+    momentum_score,
+    residual_momentum_score,
+    trend_efficiency_score,
+    downside_stability_score,
+    drawdown_recovery_score,
+    liquidity_score,
+    residual_return_60_5,
+    recent_return_5,
+    close_ma20_spread,
+    drawdown_60,
+    downside_variance_20,
     variance_20,
     return_5d
 FROM ranked

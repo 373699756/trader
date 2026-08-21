@@ -14,11 +14,16 @@ from trader.application.research.score_r7 import build_score_r7_promotion_dossie
 from trader.bootstrap import build_historical_research_services
 from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC
 from trader.domain.research.score_r6 import SCORE_R6_HISTORICAL_SPEC
+from trader.domain.research.score_r6_daily import SCORE_R6_DAILY_SPEC
 from trader.domain.research.specification import ACTIVE_SCORE_RESEARCH_SPEC, SCORE_P0_V1_SPEC
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
 from trader.infra.persistence.research_trace import SQLiteV2ResearchTraceStore
 from trader.infra.research.history_archive import SQLiteHistoricalArchive
 from trader.infra.research.score_r6_artifacts import ScoreR6ArtifactConflictError, ScoreR6ArtifactStore
+from trader.infra.research.score_r6_daily_artifacts import (
+    ScoreR6DailyArtifactConflictError,
+    ScoreR6DailyArtifactStore,
+)
 from trader.infra.research.score_r7_artifacts import ScoreR7ArtifactConflictError, ScoreR7ArtifactStore
 from trader.infra.settings import RuntimeSettings, load_long_watchlist, load_runtime_settings, load_strategy_settings
 
@@ -40,6 +45,10 @@ def build_parser() -> argparse.ArgumentParser:
     download.add_argument("--workers", type=int, choices=range(1, 6), default=5)
     subparsers.add_parser("research-backtest", help="Run the read-only fixed train/validation bar diagnostic.")
     subparsers.add_parser("research-r6-screen", help="Run and immutably seal the preregistered Score-R6 screen.")
+    subparsers.add_parser(
+        "research-r6-daily-screen",
+        help="Run and seal the preregistered risk-adjusted daily trend screen.",
+    )
     dossier = subparsers.add_parser(
         "research-r7-dossier",
         help="Recompute eligible Score-R6 evidence and seal a pending human-review dossier.",
@@ -79,6 +88,17 @@ def main(argv: list[str] | None = None) -> int:
                 "promotion_eligible": False,
             }
             score_r6_artifact_error = "score_r6_artifact_invalid"
+        try:
+            score_r6_daily = ScoreR6DailyArtifactStore(runtime.runtime_dir / "score-r6-daily").inspect()
+        except ScoreR6DailyArtifactConflictError:
+            score_r6_daily = {
+                "report_hash": "",
+                "status": "artifact_invalid",
+                "historical_gate_passed": False,
+                "selected_candidate_hash": "",
+                "failure_reasons": ["score_r6_daily_artifact_invalid"],
+                "promotion_authority": False,
+            }
         promotion_ready = bool(score_r6["promotion_eligible"])
         try:
             score_r7 = ScoreR7ArtifactStore(runtime.runtime_dir / "score-r7").inspect()
@@ -101,6 +121,7 @@ def main(argv: list[str] | None = None) -> int:
                         else [score_r6_artifact_error or "score_r6_preregistered_forward_evidence_missing"]
                     ),
                     "score_r6": score_r6,
+                    "score_r6_daily": score_r6_daily,
                     "score_r7": score_r7,
                     "recorded_trade_dates": [value.isoformat() for value in dates],
                     "active_research": {
@@ -162,7 +183,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0 if result.failed == 0 else 1
-    if args.command in {"research-backtest", "research-r6-screen", "research-r7-dossier"}:
+    if args.command in {
+        "research-backtest",
+        "research-r6-screen",
+        "research-r6-daily-screen",
+        "research-r7-dossier",
+    }:
         return _run_offline_report(
             args.command,
             config_path,
@@ -203,15 +229,28 @@ def _run_offline_report(
         return 0 if report.status == "screened" else 1
     if command == "research-r7-dossier":
         return _run_r7_dossier(runtime, research_identity)
-    artifact_store = ScoreR6ArtifactStore(runtime.runtime_dir / "score-r6")
-    existing = artifact_store.read_historical_payload()
+    if command == "research-r6-daily-screen":
+        daily_store = ScoreR6DailyArtifactStore(runtime.runtime_dir / "score-r6-daily")
+        existing = daily_store.read_payload()
+        if existing is not None:
+            print(json.dumps(existing, ensure_ascii=False, sort_keys=True))
+            return 0 if bool(existing.get("historical_gate_passed", False)) else 1
+        print("daily trend screen: computing immutable H0 factors and replay", file=sys.stderr, flush=True)
+        services = build_historical_research_services(config_path)
+        daily_report = services.score_r6_daily.execute(SCORE_R6_DAILY_SPEC)
+        if daily_report.status != "insufficient_coverage":
+            daily_store.seal(daily_report)
+        print(json.dumps(asdict(daily_report), default=_json_default, ensure_ascii=False, sort_keys=True))
+        return 0 if daily_report.historical_gate_passed else 1
+    r6_store = ScoreR6ArtifactStore(runtime.runtime_dir / "score-r6")
+    existing = r6_store.read_historical_payload()
     if existing is not None:
         print(json.dumps(existing, ensure_ascii=False, sort_keys=True))
         return 0 if bool(existing.get("historical_gate_passed", False)) else 1
     services = build_historical_research_services(config_path)
     r6_report = services.score_r6.execute(SCORE_R6_HISTORICAL_SPEC)
     if r6_report.status == "historical_screened":
-        artifact_store.seal_historical(r6_report)
+        r6_store.seal_historical(r6_report)
     print(json.dumps(asdict(r6_report), default=_json_default, ensure_ascii=False, sort_keys=True))
     return 0 if r6_report.historical_gate_passed else 1
 

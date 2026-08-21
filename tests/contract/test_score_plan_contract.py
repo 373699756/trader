@@ -287,3 +287,28 @@ def test_score_r7_dossier_contract_is_complete_without_authorizing_production() 
         "不启动生产发布",
     ):
         assert statement in design
+
+
+def test_score_r6_daily_trend_contract_is_preregistered_without_production_authority() -> None:
+    plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
+    strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
+    design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
+
+    assert "### Score-R6D：风险调整日线趋势（已完成）" in plan
+    for statement in (
+        "score_r6_daily_trend_v1",
+        "30/25/20/15/10",
+        "共 48 个候选",
+        "单板最多 4 只",
+        "至少高 0.10 个百分点",
+        "score_r6_daily_trend_report_v1",
+        "没有生产晋级权限",
+    ):
+        assert statement in strategy
+    for statement in (
+        "research-r6-daily-screen",
+        "runtime_dir/score-r6-daily",
+        "不访问网络",
+        "不能写活动配置",
+    ):
+        assert statement in design
