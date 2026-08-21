@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
+from trader.application.ports.market import ResearchRefreshResult
 from trader.application.research_audit import V2CommittedResearchAudit
+from trader.application.schedule import MarketPhase
+from trader.application.shutdown import ShutdownDeadline, ShutdownStep
 from trader.domain.recommendation.decision_identity import DecisionIdentity, DecisionOverlay, ScoredDecision
 from trader.domain.recommendation.models import Strategy
 
@@ -51,6 +55,56 @@ class V2CycleRequest:
             raise ValueError("cycle phase and input version must be stable identities")
 
 
+@dataclass(frozen=True)
+class V2ResearchIntent:
+    strategy: Strategy
+    trade_date: date
+    priority_codes: tuple[str, ...]
+    candidate_codes: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.strategy not in {Strategy.TODAY, Strategy.TOMORROW, Strategy.D25}:
+            raise ValueError("research intent requires a scored strategy")
+        priority = _normalize_codes(self.priority_codes)
+        candidates = _normalize_codes(self.candidate_codes)
+        if not set(priority).issubset(candidates):
+            raise ValueError("research priority codes must belong to the candidate set")
+        object.__setattr__(self, "priority_codes", priority)
+        object.__setattr__(self, "candidate_codes", candidates)
+
+
+@dataclass(frozen=True)
+class V2ResearchRuntimeStatus:
+    state: str = "stopped"
+    running_codes: int = 0
+    pending_codes: int = 0
+    completed_batches: int = 0
+    partial_batches: int = 0
+    failed_batches: int = 0
+    deferred_codes: int = 0
+    cooldown_codes: int = 0
+    retry_wait_codes: int = 0
+    next_retry_seconds: float = 0.0
+    gated_offer_codes: int = 0
+    short_circuited_batches: int = 0
+    short_circuited_codes: int = 0
+    tracked_code_gates: int = 0
+    evicted_code_gates: int = 0
+    last_error: str = ""
+    batch_size: int = 4
+    batch_budget_seconds: float = 40.0
+    success_cooldown_seconds: float = 60.0
+    retry_delays_seconds: tuple[float, ...] = (60.0, 120.0, 240.0, 480.0, 900.0)
+    trade_date: str | None = None
+    tracked_strategies: int = 0
+    tracked_output_codes: int = 0
+    next_periodic_at: str | None = None
+    intent_offer_count: int = 0
+    periodic_offer_count: int = 0
+    result_count: int = 0
+    rescore_result_count: int = 0
+
+
 class V2DataRefreshUnavailableError(RuntimeError):
     """A refresh failed while the last valid V2 data plane remained readable."""
 
@@ -85,6 +139,34 @@ class V2DecisionBuilderPort(Protocol):
     def initial_overlay(self, decision: ScoredDecision) -> DecisionOverlay: ...
 
     def research_audit(self, version: str) -> V2CommittedResearchAudit | None: ...
+
+    def research_intent(self, decision: ScoredDecision) -> V2ResearchIntent: ...
+
+
+class V2ResearchRuntimePort(Protocol):
+    def start(self) -> bool: ...
+
+    def stop(
+        self,
+        *,
+        wait: bool,
+        deadline: ShutdownDeadline | None = None,
+    ) -> ShutdownStep: ...
+
+    def observe(self, intent: V2ResearchIntent, request: V2CycleRequest) -> bool: ...
+
+    def offer_due(self, at: datetime, phase: MarketPhase, *, is_trading_day: bool) -> bool: ...
+
+    def wait_until_idle(self, timeout_seconds: float) -> bool: ...
+
+    def status(self) -> V2ResearchRuntimeStatus: ...
+
+
+class V2ResearchRuntimeFactoryPort(Protocol):
+    def __call__(
+        self,
+        on_result: Callable[[ResearchRefreshResult, bool], None],
+    ) -> V2ResearchRuntimePort: ...
 
 
 class V2DeepSeekUpgradePort(Protocol):
@@ -122,6 +204,13 @@ def _require_shanghai(value: datetime, label: str) -> None:
         raise ValueError(f"{label} must use Asia/Shanghai")
 
 
+def _normalize_codes(values: tuple[str, ...]) -> tuple[str, ...]:
+    normalized = tuple(dict.fromkeys(values))
+    if any(len(code) != 6 or not code.isdigit() for code in normalized):
+        raise ValueError("research intent codes must be six digits")
+    return normalized
+
+
 __all__ = [
     "SharedDeepSeekRuntimeContract",
     "V2CycleRequest",
@@ -133,6 +222,10 @@ __all__ = [
     "V2FreezePort",
     "V2FreezeUnavailableError",
     "V2ReviewUnavailableError",
+    "V2ResearchIntent",
+    "V2ResearchRuntimeFactoryPort",
+    "V2ResearchRuntimePort",
+    "V2ResearchRuntimeStatus",
     "V2SettlementPort",
     "V2SettlementUnavailableError",
     "V2TradingCalendarPort",

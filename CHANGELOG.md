@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户反馈“DeepSeek 最近没有使用”并要求不影响现有 Web 和荐股实时性，新增 V2 类型化公司研究
+  意图、独立生命周期运行时和 `company_research` 内存状态。状态可观察新输出/周期研究提交、批次、
+  冷却、退避、短路与重评分计数，但不公开股票集合、外部载荷或密钥。
+
 - 用户要求继续 `docs/implementation-plan.md` 的下一完整未完成章节；本批完成 Score-R7 人工晋级档案
   工程能力。根因是 Score-R6 只封存历史/前向资格制品，尚无可供人工逐项审查且能从原始逐日证据
   复算的不可变档案边界。新增 `score_r7_promotion_dossier_v1`、显式
@@ -204,6 +208,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 三条评分策略现在先原子发布本地结果，再把新进入输出和既有候选按 `stock_risk` 的 120–300 秒
+  配置节奏交给独立单协调 worker；每批最多 4 股、40 秒预算且使用独立公司研究端点池。研究变化只
+  重算同交易日已有 current，首次 DeepSeek 复核等待对应研究批次，失败则释放屏障并继续保留本地结果。
+
 - `research-status` 新增 R7 不可变档案摘要；Linux/Windows 启动脚本公开显式 R7 命令。计划与两份
   权威契约更新为 Score-R7 工程能力已完成、当前无剩余工程章节，但真实前向证据、正式档案实例和
   生产发布尚未发生。档案固定为 `manual_review_status=pending` 与
@@ -337,6 +345,11 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 根因确认：V2-E10 删除旧 Pipeline 后，生产组合根仍构造研究读取器，却没有实例化或调用既有
+  `ResearchCoordinator`；结构化风险长期缺失令候选按 fail-closed 规则保持 observe-only，因而不会
+  进入 DeepSeek 复核。现已恢复 V2 原生异步意图、结果重评分及多策略独立首轮屏障，不放宽风险门槛，
+  也不会用 DeepSeek 自由文本替代结构化风险事实。
 
 - R7 证据加载现在重构并校验完整 R6 spec、逐日同股记录、报告及冻结候选，随后重新执行 R6 门禁；
   缺失、额外日期、内容篡改、父哈希/候选不一致、非 `promotion_eligible`、路径型 identity 或复算哈希
@@ -480,6 +493,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除“公司研究适配器已存在但生产调度无意图入口”的断链状态；未删除或改写运行数据库、正式记录、
+  用户截图、Web 资源、决策 API/SSE、评分/融合规则、冻结边界或 DeepSeek 168 次原子预算。
+
 - 移除实施计划中 Score-R7 的未完成标记和已经过时的“下一研究章节”指针；没有删除或替换任何活动
   生产策略，也没有加入自动调权、自动晋级、自动回退或运行时双实现。
 
@@ -549,6 +565,16 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 高风险完整门禁通过：`make format-check`（339 文件）、`make lint`（含零 refactor debt）、
+  `make type-check`（219 个源码文件）、完整 `make test` 和 `make package` 均通过。打包首次仅因沙箱
+  禁止隔离环境下载 `setuptools` 失败，获准网络后原命令成功生成 sdist 与 wheel；定向 36 项回归覆盖
+  意图优先级、本地先发布、研究非阻塞、周期节奏、整批失败、多策略交错屏障、风险重评分和组合根状态。
+
+- Firefox headless 三档桌面验收 `passed=true`：1280x720、1440x900、1920x1080 均无白屏、页面级
+  横向溢出、Long 重叠或浏览器错误，Tomorrow/D25 观察行和行情字段完整，外部网络请求为 0。仓库外
+  `/tmp` 安装 wheel 后可导入新增 `V2ResearchRuntime` 并读取 HTML、JavaScript、CSS 和 SVG 包资源；
+  `git diff --check` 通过，运行中的旧服务根页面仍返回 200，且本批未停止或重启该进程。
 
 - Score-R7 发布级门禁通过：`make format-check`、`make lint`（严格复杂度债为零）、
   `make type-check`、`make test`、`make package`。定向补充验证覆盖 R6 全制品加载、R7 复算、
@@ -806,6 +832,12 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 当前运行中的服务仍加载修复前代码，`/api/v2/status` 尚无 `company_research` 且 DeepSeek 物理调用为
+  0；需在本批提交后由用户正常重启才会启用新接线。本机项目根 `.token_key` 和当前 shell 的
+  `DEEPSEEK_API_KEY` 均未配置，因此即使结构化研究恢复，模型请求仍会按降级契约保持本地结果；用户
+  需自行安全配置密钥，不能提交到 Git。外部公司研究源的实际可用性仍可能触发有界退避，但不会阻塞
+  本地发布、实时行情或只读 Web；本批不承诺收益提升，日线趋势优化留作后续独立批次验证。
 
 - 当前运行目录没有 Score-R6 历史/前向制品，真实 H0 覆盖、冻结候选及不重叠的 20 日前向证据尚未
   完成，因此本批没有也不能生成正式 PromotionDossier 实例，更未授权生产发布。证据到齐后需显式

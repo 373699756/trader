@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -22,6 +22,30 @@ class ResearchCoordinatorOptions:
     retry_delays_seconds: tuple[float, ...] = (60.0, 120.0, 240.0, 480.0, 900.0)
     state_capacity: int = 2048
     monotonic: Callable[[], float] = time.monotonic
+
+
+@dataclass(frozen=True)
+class ResearchCoordinatorStatus:
+    state: str
+    running_codes: int
+    pending_codes: int
+    completed_batches: int
+    partial_batches: int
+    failed_batches: int
+    deferred_codes: int
+    cooldown_codes: int
+    retry_wait_codes: int
+    next_retry_seconds: float
+    gated_offer_codes: int
+    short_circuited_batches: int
+    short_circuited_codes: int
+    tracked_code_gates: int
+    evicted_code_gates: int
+    last_error: str
+    batch_size: int
+    batch_budget_seconds: float
+    success_cooldown_seconds: float
+    retry_delays_seconds: tuple[float, ...]
 
 
 @dataclass(frozen=True)
@@ -133,6 +157,12 @@ class ResearchCoordinator:
         with self._condition:
             return self._offer_locked(normalized, observed_at)
 
+    def active_codes(self, codes: Sequence[str]) -> tuple[str, ...]:
+        normalized = tuple(dict.fromkeys(code for code in codes if len(code) == 6 and code.isdigit()))
+        with self._condition:
+            active = set(self._running_codes) | set(self._pending)
+            return tuple(code for code in normalized if code in active)
+
     def _offer_locked(self, normalized: tuple[str, ...], observed_at: datetime) -> bool:
         if not self._started or self._stopping:
             return False
@@ -209,7 +239,7 @@ class ResearchCoordinator:
                 self._condition.wait(remaining)
             return True
 
-    def status(self) -> Mapping[str, object]:
+    def status(self) -> ResearchCoordinatorStatus:
         with self._condition:
             current_tick = self._monotonic()
             state = "stopped"
@@ -227,28 +257,28 @@ class ResearchCoordinator:
             if self._global_retry_at is not None and current_tick < self._global_retry_at:
                 retry_deadlines.append(self._global_retry_at)
             next_retry_seconds = round(max(0.0, min(retry_deadlines) - current_tick), 3) if retry_deadlines else 0.0
-            return {
-                "state": state,
-                "running_codes": len(self._running_codes),
-                "pending_codes": len(self._pending),
-                "completed_batches": self._completed_batches,
-                "partial_batches": self._partial_batches,
-                "failed_batches": self._failed_batches,
-                "deferred_codes": self._deferred_codes,
-                "cooldown_codes": cooldown_codes,
-                "retry_wait_codes": len(retry_gates),
-                "next_retry_seconds": next_retry_seconds,
-                "gated_offer_codes": self._gated_offer_codes,
-                "short_circuited_batches": self._short_circuited_batches,
-                "short_circuited_codes": self._short_circuited_codes,
-                "tracked_code_gates": len(self._code_gates),
-                "evicted_code_gates": self._evicted_code_gates,
-                "last_error": self._last_error,
-                "batch_size": self._batch_size,
-                "batch_budget_seconds": self._batch_budget_seconds,
-                "success_cooldown_seconds": self._success_cooldown_seconds,
-                "retry_delays_seconds": self._retry_delays_seconds,
-            }
+            return ResearchCoordinatorStatus(
+                state=state,
+                running_codes=len(self._running_codes),
+                pending_codes=len(self._pending),
+                completed_batches=self._completed_batches,
+                partial_batches=self._partial_batches,
+                failed_batches=self._failed_batches,
+                deferred_codes=self._deferred_codes,
+                cooldown_codes=cooldown_codes,
+                retry_wait_codes=len(retry_gates),
+                next_retry_seconds=next_retry_seconds,
+                gated_offer_codes=self._gated_offer_codes,
+                short_circuited_batches=self._short_circuited_batches,
+                short_circuited_codes=self._short_circuited_codes,
+                tracked_code_gates=len(self._code_gates),
+                evicted_code_gates=self._evicted_code_gates,
+                last_error=self._last_error,
+                batch_size=self._batch_size,
+                batch_budget_seconds=self._batch_budget_seconds,
+                success_cooldown_seconds=self._success_cooldown_seconds,
+                retry_delays_seconds=self._retry_delays_seconds,
+            )
 
     def _drain(self) -> None:
         try:
@@ -385,4 +415,4 @@ class ResearchCoordinator:
             self._evicted_code_gates += 1
 
 
-__all__ = ["ResearchCoordinator", "ResearchCoordinatorOptions"]
+__all__ = ["ResearchCoordinator", "ResearchCoordinatorOptions", "ResearchCoordinatorStatus"]

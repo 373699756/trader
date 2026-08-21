@@ -7,13 +7,16 @@ from datetime import date, datetime, timedelta
 from tests.unit.domain.test_decision_identity import NOW, decision
 from trader.application.decision_core import UnifiedDecisionIndex
 from trader.application.decision_observers import AsyncDecisionObserver
+from trader.application.ports.market import ResearchRefreshResult
 from trader.application.ports.v2_runtime import (
     SharedDeepSeekRuntimeContract,
     V2CycleRequest,
     V2DataRefreshUnavailableError,
+    V2ResearchIntent,
+    V2ResearchRuntimeStatus,
 )
 from trader.application.schedule import SHANGHAI, MarketPhase
-from trader.application.shutdown import ShutdownDeadline
+from trader.application.shutdown import ShutdownDeadline, ShutdownStep
 from trader.application.v2_runtime import V2RuntimeDependencies, V2SchedulerRuntime
 from trader.bootstrap import _runtime_status
 from trader.domain.recommendation.decision_identity import (
@@ -86,6 +89,38 @@ class Decisions:
         del version
         return None
 
+    def research_intent(self, current: ScoredDecision) -> V2ResearchIntent:
+        codes = tuple(item.code for item in current.items)
+        return V2ResearchIntent(current.strategy, current.trade_date, codes, codes)
+
+
+class NoopResearchRuntime:
+    def start(self) -> bool:
+        return True
+
+    def stop(self, *, wait: bool, deadline=None) -> ShutdownStep:
+        del wait, deadline
+        return ShutdownStep("research", completed=True, timed_out=False)
+
+    def observe(self, intent, request) -> bool:
+        del intent, request
+        return False
+
+    def offer_due(self, at, phase, *, is_trading_day) -> bool:
+        del at, phase, is_trading_day
+        return False
+
+    def wait_until_idle(self, timeout_seconds: float) -> bool:
+        del timeout_seconds
+        return True
+
+    def status(self):
+        return V2ResearchRuntimeStatus(state="idle")
+
+
+def noop_research_factory(_on_result):
+    return NoopResearchRuntime()
+
 
 class SharedReviews:
     runtime_contract = SharedDeepSeekRuntimeContract(
@@ -121,6 +156,7 @@ def test_scheduler_atomically_publishes_complete_quotes_for_local_and_hybrid() -
             observer=AsyncDecisionObserver((), capacity=4, thread_name="test-v2-overlay-observer"),
             freezes=Freezes(),
             settlement=Settlement(),
+            research_factory=noop_research_factory,
         ),
         config_version="runtime-v2",
     )
@@ -149,6 +185,84 @@ def test_scheduler_atomically_publishes_complete_quotes_for_local_and_hybrid() -
     assert snapshot.overlay.quotes[0].amount == 120_000_000.0
     assert snapshot.overlay.quotes[0].turnover_rate == 2.1
     assert snapshot.overlay.quotes[0].market_cap == 12_000_000_000.0
+
+
+def test_scheduler_publishes_local_before_research_and_defers_first_review_until_risk_rescore() -> None:
+    index = UnifiedDecisionIndex()
+    reviews = SharedReviews()
+    holder: list[object] = []
+
+    class RecordingResearchRuntime(NoopResearchRuntime):
+        def __init__(self, on_result) -> None:
+            self.on_result = on_result
+            self.observed_versions: list[str] = []
+
+        def observe(self, intent, request) -> bool:
+            del intent
+            current = index.snapshot(request.strategy).current
+            assert current is not None
+            self.observed_versions.append(current.version)
+            return len(self.observed_versions) == 1
+
+    def research_factory(on_result):
+        research = RecordingResearchRuntime(on_result)
+        holder.append(research)
+        return research
+
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=FixedClock(NOW),
+            calendar=TradingCalendar(),
+            data=DataRefresh(),
+            decisions=Decisions(),
+            reviews=reviews,
+            index=index,
+            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-v2-research-order-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+            research_factory=research_factory,
+        ),
+        config_version="runtime-v2",
+    )
+    request = V2CycleRequest(
+        Strategy.TOMORROW,
+        NOW.date(),
+        NOW,
+        "today_main",
+        1,
+        "input-v1",
+        True,
+        NOW + timedelta(minutes=1),
+    )
+
+    runtime.start()
+    runtime.submit_cycle(request)
+    assert runtime.wait_idle(2.0)
+    research = holder[0]
+    assert isinstance(research, RecordingResearchRuntime)
+    assert reviews.calls == []
+    assert len(research.observed_versions) == 1
+
+    research.on_result(
+        ResearchRefreshResult(
+            requested_codes=("600001",),
+            completed_codes=("600001",),
+            changed_codes=("600001",),
+            covered_codes=("600001",),
+            data_version="research:changed",
+            started_at=NOW,
+            completed_at=NOW + timedelta(seconds=1),
+        ),
+        True,
+    )
+    assert runtime.wait_idle(2.0)
+    runtime.stop(ShutdownDeadline.start(2.0))
+
+    assert len(research.observed_versions) == 2
+    assert reviews.calls == [Strategy.TOMORROW]
+    current = index.snapshot(Strategy.TOMORROW).current
+    assert isinstance(current, ScoredDecision)
+    assert current.stage == "hybrid"
 
 
 class Freezes:
@@ -211,6 +325,7 @@ def test_v2_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> None:
             observer=observer,
             freezes=freezes,
             settlement=settlement,
+            research_factory=noop_research_factory,
         ),
         config_version="runtime-v2",
     )
@@ -261,6 +376,7 @@ def test_after_close_cold_start_recovers_missing_scored_strategies_and_long() ->
             observer=AsyncDecisionObserver((), capacity=4, thread_name="test-v2-after-close-observer"),
             freezes=freezes,
             settlement=settlement,
+            research_factory=noop_research_factory,
         ),
         config_version="runtime-v2",
     )
@@ -300,6 +416,7 @@ def test_after_close_prefers_existing_same_day_current_without_rebuilding() -> N
             observer=AsyncDecisionObserver((), capacity=4, thread_name="test-v2-after-close-current-observer"),
             freezes=freezes,
             settlement=Settlement(),
+            research_factory=noop_research_factory,
         ),
         config_version="runtime-v2",
     )
@@ -346,6 +463,7 @@ def test_tomorrow_lane_progresses_while_today_lane_is_blocked() -> None:
             observer=AsyncDecisionObserver((), capacity=1, thread_name="test-v2-reserved-observer"),
             freezes=Freezes(),
             settlement=Settlement(),
+            research_factory=noop_research_factory,
         ),
         config_version="runtime-v2",
     )
@@ -398,6 +516,7 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
             observer=AsyncDecisionObserver((), capacity=1, thread_name="test-v2-failure-observer"),
             freezes=Freezes(),
             settlement=Settlement(),
+            research_factory=noop_research_factory,
         ),
         config_version="runtime-v2",
     )
@@ -489,6 +608,7 @@ def test_runtime_error_history_is_bounded_and_repeated_failures_are_coalesced() 
             observer=AsyncDecisionObserver((), capacity=1, thread_name="test-v2-error-history-observer"),
             freezes=Freezes(),
             settlement=Settlement(),
+            research_factory=noop_research_factory,
         ),
         config_version="runtime-v2",
     )
@@ -519,6 +639,7 @@ def test_successful_publish_does_not_recover_an_unrelated_freeze_failure() -> No
             observer=AsyncDecisionObserver((), capacity=1, thread_name="test-v2-freeze-issue-observer"),
             freezes=Freezes(),
             settlement=Settlement(),
+            research_factory=noop_research_factory,
         ),
         config_version="runtime-v2",
     )
@@ -559,6 +680,7 @@ def test_afternoon_schedule_skips_today_after_its_freeze_boundary() -> None:
             observer=AsyncDecisionObserver((), capacity=1, thread_name="test-v2-afternoon-observer"),
             freezes=Freezes(),
             settlement=Settlement(),
+            research_factory=noop_research_factory,
         ),
         config_version="runtime-v2",
     )
@@ -601,6 +723,7 @@ def test_expected_late_publish_rejection_after_freeze_is_not_a_runtime_error() -
             observer=AsyncDecisionObserver((), capacity=1, thread_name="test-v2-late-today-observer"),
             freezes=Freezes(),
             settlement=Settlement(),
+            research_factory=noop_research_factory,
         ),
         config_version="runtime-v2",
     )
@@ -640,6 +763,7 @@ def test_review_deadline_prevents_a_late_model_upgrade() -> None:
             observer=AsyncDecisionObserver((), capacity=1, thread_name="test-v2-deadline-observer"),
             freezes=Freezes(),
             settlement=Settlement(),
+            research_factory=noop_research_factory,
         ),
         config_version="runtime-v2",
     )

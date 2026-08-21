@@ -43,6 +43,7 @@ from trader.application.v2_input_runtime import (
     V2FreezeAdapter,
     V2MarketDataAdapter,
 )
+from trader.application.v2_research_runtime import V2ResearchRuntime
 from trader.application.v2_runtime import V2RuntimeDependencies, V2RuntimeIssue, V2SchedulerRuntime
 from trader.application.workers import BoundedExecutor
 from trader.bootstrap_clock import utc_now as _utc_now
@@ -239,6 +240,12 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
                     persistence.outcomes,
                     session_distance=calendar.session_distance,
                 ),
+            ),
+            research_factory=lambda on_result: V2ResearchRuntime(
+                market_data,
+                cadence=context.cadence_policy,
+                now=context.now,
+                on_result=on_result,
             ),
         ),
         config_version=effective_config_version,
@@ -751,6 +758,7 @@ def _runtime_status(
         "phase": status.phase.value,
         "deepseek_budget": budget.summary(_utc_now().date().isoformat()),
         "deepseek": reviewer.status(),
+        "company_research": asdict(status.company_research),
         "degraded_reasons": degraded_reasons,
         "health": {"level": health_level, "issue_count": issue_count},
         "recent_errors": recent_errors,

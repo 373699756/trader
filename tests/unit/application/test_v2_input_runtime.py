@@ -305,6 +305,53 @@ def test_reference_refresh_scheduling_failure_does_not_block_local_decision(
     assert decision.items == ()
 
 
+def test_research_intent_prioritizes_published_output_before_bounded_candidates(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 14, 40, tzinfo=SHANGHAI)
+    features = []
+    for code in ("600001", "600002"):
+        feature = application_feature_factory(code, observed_at - timedelta(seconds=1))
+        features.append(
+            replace(
+                feature,
+                quote=replace(
+                    feature.quote,
+                    board=Board.MAIN,
+                    board_source="exchange_rule",
+                    board_reliability="high",
+                    exchange="SSE",
+                    listing_date=observed_at.date() - timedelta(days=365),
+                    listing_age_sessions=240,
+                    is_relisted_first_session=False,
+                    is_delisting_period_first_session=False,
+                    has_price_limit=True,
+                    exchange_limit_pct=10.0,
+                    strategy_hot_cap_pct=8.0,
+                    rule_version="test-rule",
+                    rule_effective_date=observed_at.date() - timedelta(days=365),
+                ),
+            )
+        )
+    market = _Market(tuple(features))
+    adapter = V2MarketDataAdapter(
+        market,
+        config_version="test-config",
+        candidate_pool_size=2,
+        long_runtime=_LongRuntime(),
+        policy=_policy(),
+    )
+    request = _request(observed_at, phase="afternoon")
+
+    adapter.refresh(request)
+    decision = adapter.build_local(request)
+
+    assert decision is not None
+    intent = adapter.research_intent(decision)
+    assert intent.priority_codes == tuple(item.code for item in decision.items)
+    assert intent.candidate_codes == market.requested_codes
+
+
 def test_unexpected_shared_input_failure_releases_single_flight_owner(
     application_feature_factory,
 ) -> None:

@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from trader.application.decision_observers import DecisionObserverStatus
+from trader.application.ports.v2_runtime import V2ResearchRuntimeStatus
+from trader.application.v2_research_runtime import V2ResearchRuntime
 from trader.bootstrap import _initialize_reference_data_plane, _initialize_research_trace, _runtime_status, build_system
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -37,6 +39,8 @@ def test_build_system_is_lazy_and_v2_only(tmp_path, monkeypatch) -> None:
     assert system.research_trace is not None
     assert not (tmp_path / "runtime" / "research").exists()
     assert system.long_v2_runtime is not None
+    assert isinstance(system.scheduler._research, V2ResearchRuntime)
+    assert system.scheduler.status().company_research.state == "stopped"
     assert system.app.test_client().get("/api/status").status_code == 404
     status = system.app.test_client().get("/api/v2/status")
     assert status.status_code == 200
@@ -91,6 +95,7 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
             consumer_failure_count=3,
             last_error_code="ResearchTraceCapacityError",
         ),
+        company_research=V2ResearchRuntimeStatus(state="idle"),
         strategy_error_codes=(),
         recent_errors=(),
         deepseek=Mock(),
@@ -118,6 +123,8 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
     payload = _runtime_status(scheduler, reviewer, budget)
 
     assert payload["observer"]["consumer_failure_count"] == 3
+    assert payload["company_research"]["state"] == "idle"
+    assert payload["company_research"]["completed_batches"] == 0
     assert payload["health"] == {"level": "degraded", "issue_count": 1}
     assert payload["degraded_reasons"] == ["observer:ResearchTraceCapacityError"]
     assert payload["last_error"] == "observer:ResearchTraceCapacityError"

@@ -128,6 +128,11 @@ C 固定执行：
   本地最晚观测/接收时刻构建，不再共同触发 future-feature 拒绝；scored 决策从行情身份保留名称与
   行业并贯通 current、正式历史和 HTTP，旧记录哈希保持兼容。状态 API 新增 `runtime_version` 与
   scheduler 摘要用于识别未重启旧进程。该直接缺陷批次不推进 Score 章节，下一研究章节仍为 Score-R6。
+- 2026-08-21 公司研究生产接线修复已闭合：E10 删除旧 Pipeline 后保留但失去生产意图入口的
+  `ResearchCoordinator` 重新由 V2 scheduler 拥有生命周期；本地结果先发布，新进入输出和周期
+  `stock_risk` 候选再进入独立有界研究通道，结果变化触发同日 current 重评分，首次 DeepSeek 复核
+  等待对应研究批次后继续，整批失败也释放屏障并保留本地结果。该直接缺陷批次不推进 Score 章节，
+  不改 Web、决策 API/SSE、评分公式、阈值、冻结时点、scheduler tick 或实时行情资源。
 
 ## 5. 同步 Gate 与并行波次
 

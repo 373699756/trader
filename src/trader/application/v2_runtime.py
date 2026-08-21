@@ -15,6 +15,7 @@ from trader.application.decision_core import UnifiedDecisionIndex
 from trader.application.decision_events import V2DecisionCommitted
 from trader.application.decision_observers import DecisionObserverRuntime, DecisionObserverStatus
 from trader.application.ports.clock import Clock
+from trader.application.ports.market import ResearchRefreshResult
 from trader.application.ports.v2_runtime import (
     SharedDeepSeekRuntimeContract,
     V2CycleRequest,
@@ -25,6 +26,8 @@ from trader.application.ports.v2_runtime import (
     V2DeepSeekUpgradePort,
     V2FreezePort,
     V2FreezeUnavailableError,
+    V2ResearchRuntimeFactoryPort,
+    V2ResearchRuntimeStatus,
     V2ReviewUnavailableError,
     V2SettlementPort,
     V2SettlementUnavailableError,
@@ -60,6 +63,7 @@ class V2RuntimeDependencies:
     observer: DecisionObserverRuntime
     freezes: V2FreezePort
     settlement: V2SettlementPort
+    research_factory: V2ResearchRuntimeFactoryPort
 
 
 @dataclass(frozen=True)
@@ -83,6 +87,7 @@ class V2RuntimeStatus:
     lanes: tuple[LatestWinsStatus, ...]
     observer: DecisionObserverStatus
     deepseek: SharedDeepSeekRuntimeContract
+    company_research: V2ResearchRuntimeStatus
     control_running: bool
     control_inflight: int
     control_rejected_count: int
@@ -118,6 +123,7 @@ class V2SchedulerRuntime:
         if contract.daily_physical_limit != 168 or not contract.shared_cache or not contract.shared_single_flight:
             raise ValueError("V2 runtime requires the shared 168-request DeepSeek boundary")
         self._dependencies = dependencies
+        self._research = dependencies.research_factory(self._on_research_result)
         self._config_version = config_version
         self._shutdown_timeout_seconds = max(0.1, shutdown_timeout_seconds)
         self._lock = threading.RLock()
@@ -180,15 +186,19 @@ class V2SchedulerRuntime:
         for strategy in Strategy:
             if not self._lanes[strategy].start():
                 raise RuntimeError(f"V2 {strategy.value} lane did not start")
+        if not self._research.start():
+            raise RuntimeError("V2 research runtime did not start")
 
     def _abort_start(self) -> None:
         deadline = ShutdownDeadline.start(self._shutdown_timeout_seconds)
+        self._research.stop(wait=False, deadline=deadline)
         for lane in self._lanes.values():
             lane.close()
         for lane in self._lanes.values():
             lane.stop(deadline=deadline)
         self._control.stop(wait=True, cancel_futures=True, deadline=deadline)
         self._dependencies.observer.stop(deadline=deadline)
+        self._research.stop(wait=True, deadline=deadline)
         with self._lock:
             self._running = False
             self._stopped = True
@@ -223,6 +233,10 @@ class V2SchedulerRuntime:
             self._submit_freeze(Strategy(raw_strategy), observed_at)
         if decision.phase is MarketPhase.AFTER_CLOSE:
             self._submit_settlement(observed_at)
+        try:
+            self._research.offer_due(observed_at, decision.phase, is_trading_day=is_trading_day)
+        except (RuntimeError, TypeError, ValueError) as exc:
+            self._record_failure("research", _failure_code(exc, "research_offer_failed"), None)
         return seconds_until_next_schedule_boundary(observed_at, maximum_seconds=30.0)
 
     def submit_tick(self, at: datetime | None = None) -> bool:
@@ -248,6 +262,8 @@ class V2SchedulerRuntime:
             if remaining <= 0.0:
                 return False
             threading.Event().wait(min(0.01, remaining))
+        if not self._research.wait_until_idle(max(0.0, deadline - time.monotonic())):
+            return False
         return self._dependencies.observer.wait_idle(max(0.0, deadline - time.monotonic()))
 
     def stop(
@@ -265,12 +281,14 @@ class V2SchedulerRuntime:
                 return self._shutdown_report or ShutdownReport.from_steps(deadline, ())
             self._running = False
             self._stopped = True
+        self._research.stop(wait=False, deadline=deadline)
         self._dependencies.observer.close()
         for lane in self._lanes.values():
             lane.close()
         steps: list[ShutdownStep] = [self._control.stop(wait=True, cancel_futures=False, deadline=deadline)]
         steps.extend(self._lanes[strategy].stop(deadline=deadline) for strategy in Strategy)
         steps.append(self._dependencies.observer.stop(deadline=deadline))
+        steps.append(self._research.stop(wait=True, deadline=deadline))
         report = ShutdownReport.from_steps(deadline, steps, forced=deadline.expired)
         with self._lock:
             self._shutdown_report = report
@@ -286,6 +304,7 @@ class V2SchedulerRuntime:
                 lanes=tuple(self._lanes[strategy].status() for strategy in Strategy),
                 observer=self._dependencies.observer.status(),
                 deepseek=self._dependencies.reviews.runtime_contract,
+                company_research=self._research.status(),
                 control_running=bool(control["running"]),
                 control_inflight=cast(int, control["inflight"]),
                 control_rejected_count=cast(int, control["rejected_count"]),
@@ -310,9 +329,13 @@ class V2SchedulerRuntime:
             )
 
     def _scheduled_request(self, strategy: Strategy, observed_at: datetime, phase: str) -> V2CycleRequest:
+        current = self._dependencies.index.snapshot(strategy).current
+        current_sequence = current.sequence if current is not None else 0
         with self._lock:
             sequence = self._sequences[strategy] + 1
-            self._sequences[strategy] += 2
+            while sequence <= current_sequence:
+                sequence += 2
+            self._sequences[strategy] = sequence + 1
         deadline_time = wall_time(11, 18) if strategy is Strategy.TODAY else wall_time(14, 48)
         review_deadline = datetime.combine(observed_at.date(), deadline_time, tzinfo=SHANGHAI)
         allow_review = strategy is not Strategy.LONG and observed_at < review_deadline
@@ -340,12 +363,47 @@ class V2SchedulerRuntime:
         local = self._build_local(request)
         if local is None or not self._publish(local, hybrid=False):
             return
+        defer_initial_review = False
+        if isinstance(local, ScoredDecision):
+            try:
+                defer_initial_review = self._research.observe(
+                    self._dependencies.decisions.research_intent(local),
+                    request,
+                )
+            except (RuntimeError, TypeError, ValueError) as exc:
+                self._record_failure("research", _failure_code(exc, "research_intent_failed"), request.strategy)
         if request.phase == "close_fallback" and isinstance(local, ScoredDecision):
             self._freeze_close_fallback(request, local, recovery_path="close_rebuild")
             return
         review_now = shanghai_now(self._dependencies.clock.now())
-        if request.allow_review and review_now < request.review_deadline and isinstance(local, ScoredDecision):
+        if (
+            request.allow_review
+            and not defer_initial_review
+            and review_now < request.review_deadline
+            and isinstance(local, ScoredDecision)
+        ):
             self._upgrade_hybrid(local, request)
+
+    def _on_research_result(self, result: ResearchRefreshResult, initial_rescore: bool) -> None:
+        del initial_rescore
+        with self._lock:
+            if not self._running:
+                return
+        completed_at = shanghai_now(result.completed_at or self._dependencies.clock.now())
+        is_trading_day = self._dependencies.calendar.is_trading_day(completed_at.date())
+        schedule = decision_at(completed_at, is_trading_day=is_trading_day)
+        if not schedule.should_score:
+            return
+        strategies: tuple[Strategy, ...] = (Strategy.TOMORROW, Strategy.D25)
+        if schedule.phase in {MarketPhase.TODAY_OBSERVE, MarketPhase.TODAY_MAIN, MarketPhase.TODAY_LATE}:
+            strategies = (*strategies, Strategy.TODAY)
+        risk_version = _research_input_version(result)
+        for strategy in strategies:
+            current = self._dependencies.index.snapshot(strategy).current
+            if not isinstance(current, ScoredDecision) or current.trade_date != completed_at.date():
+                continue
+            request = self._scheduled_request(strategy, completed_at, schedule.phase.value)
+            self.submit_cycle(replace(request, input_version=f"risk:{strategy.value}:{risk_version}"))
 
     def _refresh_data(self, request: V2CycleRequest) -> bool:
         try:
@@ -655,6 +713,13 @@ def _failure_code(exc: BaseException, fallback: str) -> str:
     if re.fullmatch(r"[a-z0-9_]{1,64}", value) is not None:
         return value
     return fallback
+
+
+def _research_input_version(result: ResearchRefreshResult) -> str:
+    import hashlib
+
+    material = (result.data_version, result.requested_codes, result.changed_codes, result.completed_at)
+    return hashlib.sha256(repr(material).encode("utf-8")).hexdigest()[:20]
 
 
 __all__ = ["V2RuntimeDependencies", "V2RuntimeIssue", "V2RuntimeStatus", "V2SchedulerRuntime"]

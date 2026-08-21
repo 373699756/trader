@@ -71,7 +71,7 @@ def test_research_coordinator_runs_after_close_in_bounded_priority_batches() -> 
         ("600006", "600005", "600004", "600003"),
         ("600002", "600001"),
     ]
-    assert coordinator.status()["state"] == "stopped"
+    assert coordinator.status().state == "stopped"
 
 
 def test_research_coordinator_prioritizes_new_codes_without_cancelling_running_batch() -> None:
@@ -143,9 +143,9 @@ def test_research_coordinator_cools_successful_codes_between_explicit_offers() -
             assert coordinator.offer(("600001",), NOW) is False
         assert research.calls == [("600001",)]
         status = coordinator.status()
-        assert status["cooldown_codes"] == 1
-        assert status["retry_wait_codes"] == 0
-        assert status["gated_offer_codes"] == 300
+        assert status.cooldown_codes == 1
+        assert status.retry_wait_codes == 0
+        assert status.gated_offer_codes == 300
 
         monotonic.advance(60)
         assert coordinator.offer(("600001",), NOW + timedelta(minutes=1)) is True
@@ -190,10 +190,10 @@ def test_research_coordinator_full_failure_short_circuits_pending_batches() -> N
         assert coordinator.wait_until_idle(2.0)
         assert calls == [("600001", "600002")]
         status = coordinator.status()
-        assert status["short_circuited_batches"] == 1
-        assert status["short_circuited_codes"] == 4
-        assert status["retry_wait_codes"] == 6
-        assert status["next_retry_seconds"] == 60.0
+        assert status.short_circuited_batches == 1
+        assert status.short_circuited_codes == 4
+        assert status.retry_wait_codes == 6
+        assert status.next_retry_seconds == 60.0
 
         for _ in range(30):
             assert coordinator.offer(all_codes, NOW) is False
@@ -204,9 +204,9 @@ def test_research_coordinator_full_failure_short_circuits_pending_batches() -> N
         assert coordinator.wait_until_idle(2.0)
         assert calls == [("600001", "600002"), ("600001", "600002")]
         status = coordinator.status()
-        assert status["short_circuited_batches"] == 2
-        assert status["retry_wait_codes"] == 6
-        assert status["next_retry_seconds"] == 120.0
+        assert status.short_circuited_batches == 2
+        assert status.retry_wait_codes == 6
+        assert status.next_retry_seconds == 120.0
     finally:
         coordinator.stop(wait=True)
 
@@ -243,8 +243,8 @@ def test_research_coordinator_retries_partial_codes_without_blocking_covered_cod
         assert coordinator.offer(("600001", "600002"), NOW) is True
         assert coordinator.wait_until_idle(2.0)
         status = coordinator.status()
-        assert status["cooldown_codes"] == 1
-        assert status["retry_wait_codes"] == 1
-        assert status["next_retry_seconds"] == 60.0
+        assert status.cooldown_codes == 1
+        assert status.retry_wait_codes == 1
+        assert status.next_retry_seconds == 60.0
     finally:
         coordinator.stop(wait=True)

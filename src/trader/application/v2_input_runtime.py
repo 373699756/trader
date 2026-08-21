@@ -25,6 +25,7 @@ from trader.application.ports.v2_runtime import (
     V2DeepSeekUpgradePort,
     V2FreezePort,
     V2FreezeUnavailableError,
+    V2ResearchIntent,
     V2ReviewUnavailableError,
 )
 from trader.application.research_audit import (
@@ -287,6 +288,17 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         if projection is None or decision is None:
             return None
         return try_build_v2_committed_research_audit(projection, decision)
+
+    def research_intent(self, decision: ScoredDecision) -> V2ResearchIntent:
+        with self._lock:
+            projection = self._projections.get(decision.version)
+        if projection is None:
+            raise V2DecisionUnavailableError("research projection is unavailable")
+        candidates = projection.native_input.requested_codes
+        selected = sorted((item for item in decision.items if item.selected), key=lambda item: item.rank)
+        remaining = tuple(item for item in decision.items if not item.selected)
+        priority = tuple(dict.fromkeys(item.code for item in (*selected, *remaining)))
+        return V2ResearchIntent(decision.strategy, decision.trade_date, priority, candidates)
 
     def initial_overlay(self, decision: ScoredDecision) -> DecisionOverlay:
         quotes = tuple(item.quote for item in decision.items if item.selected and item.quote is not None)
