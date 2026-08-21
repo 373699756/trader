@@ -25,6 +25,7 @@ from trader.application.research.historical_backtest import HistoricalBarBacktes
 from trader.application.research.historical_screening import HistoricalDownloadService
 from trader.application.research.score_r6 import ScoreR6HistoricalScreeningService
 from trader.application.research.score_r6_daily import ScoreR6DailyScreeningService
+from trader.application.research.score_r6_stability import ScoreR6StabilityScreeningService
 from trader.application.research_audit import V2DecisionObservation
 from trader.application.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
 from trader.application.shutdown import ShutdownDeadline, ShutdownReport
@@ -84,6 +85,7 @@ from trader.infra.persistence.research_trace import ResearchTraceLimits, SQLiteV
 from trader.infra.persistence.runtime_json import RuntimeJsonWriter
 from trader.infra.research.history_archive import SQLiteHistoricalArchive
 from trader.infra.research.history_sources import HistoricalPriceProviderAdapter, SinaHistoricalUniverseProvider
+from trader.infra.research.score_r6_daily_artifacts import ScoreR6DailyArtifactStore
 from trader.infra.runtime_support import RuntimeWorkerResources, ShanghaiClock
 from trader.infra.settings import (
     LongWatchlist,
@@ -150,6 +152,7 @@ class HistoricalResearchServices:
     backtest: HistoricalBarBacktestService
     score_r6: ScoreR6HistoricalScreeningService
     score_r6_daily: ScoreR6DailyScreeningService
+    score_r6_stability: ScoreR6StabilityScreeningService
     archive: SQLiteHistoricalArchive
 
 
@@ -351,6 +354,10 @@ def build_historical_research_services(
         HistoricalBarBacktestService(archive),
         ScoreR6HistoricalScreeningService(archive),
         ScoreR6DailyScreeningService(archive),
+        ScoreR6StabilityScreeningService(
+            archive,
+            ScoreR6DailyArtifactStore(settings.runtime_dir / "score-r6-daily"),
+        ),
         archive,
     )
 

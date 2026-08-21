@@ -312,3 +312,29 @@ def test_score_r6_daily_trend_contract_is_preregistered_without_production_autho
         "不能写活动配置",
     ):
         assert statement in design
+
+
+def test_score_r6_stability_contract_freezes_turnover_mechanisms_without_production_authority() -> None:
+    plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
+    strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
+    design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
+
+    assert "### Score-R6S：日线排名稳定与换手约束" in plan
+    for statement in (
+        "score_r6_daily_stability_v1",
+        "rank_persistence_bonus",
+        "previous_score_weight",
+        "entrant_turnover_penalty",
+        "共 26 个候选",
+        "平均换手至少降低 0.03",
+        "reused_observed_validation_window",
+        "没有生产晋级权限",
+    ):
+        assert statement in strategy
+    for statement in (
+        "research-r6-stability-screen",
+        "runtime_dir/score-r6-stability",
+        "不访问网络",
+        "不能写活动配置",
+    ):
+        assert statement in design

@@ -28,6 +28,7 @@ def test_cli_exposes_current_v2_maintenance_and_explicit_offline_research_comman
         "research-backtest",
         "research-r6-screen",
         "research-r6-daily-screen",
+        "research-r6-stability-screen",
         "research-r7-dossier",
     ):
         assert retained in help_text
@@ -46,6 +47,7 @@ def test_run_script_exposes_explicit_offline_history_research_without_mapping_it
     assert "research-backtest" in shell
     assert "research-r6-screen" in shell
     assert "research-r6-daily-screen" in shell
+    assert "research-r6-stability-screen" in shell
     assert "research-r7-dossier" in shell
     assert "serve|app" in shell
 
@@ -67,6 +69,15 @@ def test_research_status_does_not_create_runtime_files(tmp_path: Path, capsys) -
     assert payload["score_r6_daily"] == {
         "failure_reasons": [],
         "historical_gate_passed": False,
+        "promotion_authority": False,
+        "report_hash": "",
+        "selected_candidate_hash": "",
+        "status": "not_run",
+    }
+    assert payload["score_r6_stability"] == {
+        "diagnostic_gate_passed": False,
+        "evidence_class": "reused_observed_validation_window",
+        "failure_reasons": [],
         "promotion_authority": False,
         "report_hash": "",
         "selected_candidate_hash": "",
@@ -141,6 +152,23 @@ def test_research_r6_daily_screen_refuses_to_freeze_without_h0_coverage(tmp_path
     assert payload["failure_reasons"] == ["score_h0_archive_coverage_incomplete"]
     assert payload["promotion_authority"] is False
     assert not runtime_dir.exists()
+
+
+def test_research_r6_stability_screen_fails_closed_without_the_bound_parent(tmp_path: Path, capsys) -> None:
+    runtime = json.loads((ROOT / "config/v2/runtime.json").read_text(encoding="utf-8"))
+    runtime_dir = tmp_path / "runtime"
+    runtime["runtime_dir"] = str(runtime_dir)
+    config = tmp_path / "runtime.json"
+    config.write_text(json.dumps(runtime), encoding="utf-8")
+
+    assert main(["--config", str(config), "research-r6-stability-screen"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "parent_mismatch"
+    assert payload["diagnostic_gate_passed"] is False
+    assert payload["failure_reasons"] == ["score_r6_daily_parent_artifact_mismatch"]
+    assert payload["promotion_authority"] is False
+    assert not (runtime_dir / "score-r6-stability").exists()
 
 
 def test_research_r7_dossier_fails_closed_without_eligible_evidence(tmp_path: Path, capsys) -> None:

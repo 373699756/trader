@@ -6,6 +6,14 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户要求预注册“排名持续性/分数平滑/换手惩罚”并保留收益与回撤改善，新增隔离的
+  `score_r6_daily_stability_v1`。固定绑定已封存 R6D 报告与候选，三类机制使用 26 个有限候选，
+  训练/复用诊断分别重置跨日状态，继续使用相同 Top6、单板 4 只、20bp 和 5 日标签口径。
+
+- 新增 `research-r6-stability-screen`、`score_r6_daily_stability_report_v1` 追加式防篡改报告和
+  `research-status.score_r6_stability` 摘要；父报告/候选缺失、篡改或身份不符时 fail-closed，长计算
+  开始前向 stderr 输出反馈，且不启动生产、网络、Web、DeepSeek、冻结或后台线程。
+
 - 针对用户要求继续基于历史日线优化趋势/收益评分，新增隔离的 `score_r6_daily_trend_v1`：从既有
   H0 前复权归档点时重建 60→5 日残差动量、趋势效率、20 日下行稳定、60 日回撤恢复和流动性，
   预注册 48 个候选并统一回放真实 Top6、单板最多 4 只、20bp 成本及未来 5 日标签。
@@ -219,6 +227,16 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- R6D 日级收益、严重亏损、换手、波动、召回、集中度及板块指标累计、基础趋势分、proxy 分和受约束
+  Top6 选择已提炼为共享纯函数，R6D 原行为与报告身份不变，R6S 不再复制第二套评价口径。R6S 训练
+  固定要求换手至少下降 3 个百分点、净超额最多回落 0.10 个百分点、严重亏损率最多增加 1 个百分点；
+  已观察验证段只标记为 `reused_observed_validation_window`，不能被描述为新盲测。
+
+- 真实 H0 诊断冻结候选为 `previous_score_weight=0.5`、`entrant_turnover_penalty=2.0`、持续性加分 0；
+  换手从父控制组 `47.34%` 降至 `31.52%`，严重亏损率从 `13.91%` 降至 `11.87%`，日净超额标准差
+  从 `4.386` 降至 `4.157`。但净超额从 `+0.153%` 降至 `+0.006%`，oracle Top6 召回也下降，故真实
+  报告为 `historical_rejected`，活动评分、Web 实时性及 DeepSeek 策略均未改变。
+
 - 趋势候选只允许在固定训练段择优，且训练收益不得低于 R6 v1 proxy、严重亏损不得增加；冻结候选只在
   2026-01-01 至 2026-07-31 验证段评价一次。真实报告中候选验证净超额由基线 `-0.396%` 提升到
   `+0.153%`，严重亏损率由 `17.39%` 降到 `13.91%`，但换手由 `39.61%` 升到 `47.34%`，超过
@@ -365,6 +383,10 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复 R6D 唯一失败项缺少可执行稳定性研究边界的问题：换手不再通过事后放宽父门槛处理，而是由
+  预注册候选显式权衡；硬过滤失败股票不能靠历史分数或持续性加分续留，首日没有伪造的新入选惩罚，
+  父制品/新制品读取异常均结构化拒绝。
 
 - 修复历史趋势研究的两项可观察性缺口：长回放开始前现在立即向 stderr 输出进度；只读状态从封存的
   候选参数复算候选哈希，不再因 JSON 有意省略派生字段而显示空身份。报告内容及哈希未被重写。
@@ -524,6 +546,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未删除或替换活动评分、推荐、冻结、Web、DeepSeek、运行数据库或 R6D 不可变报告；未增加
+  双生产策略、隐藏 fallback 或运行时自动调参路径。
+
 - 本批未删除或替换生产评分、DeepSeek、冻结、API、Web、正式推荐及运行数据库；未通过换手门槛的
   历史候选没有接入生产，也没有保留活动双实现或隐藏 fallback。
 
@@ -602,6 +627,20 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- Score-R6S 定向领域、应用、制品、父身份、CLI、文档、架构与 `create_app()` 无副作用回归通过。
+  真实 H0 覆盖 `4937/5000`、共 `3,103,160` 根日线；封存报告哈希
+  `027f979ba5a7c85a6faff39c4bf9e8c062d57639e7ae95bda71fe1a774557bd1`，失败原因严格为
+  `daily_stability_diagnostic_return_failed` 与 `daily_stability_diagnostic_recall_failed`。
+
+- 高风险完整门禁 `make format-check`（353 文件）、`make lint`（严格复杂度债为零）、
+  `make type-check`（227 个源码文件）、`make test` 和 `make package` 均通过；打包首次仅因沙箱禁止
+  隔离环境下载 `setuptools>=68` 失败，授权联网后相同命令成功生成 sdist 与 wheel。仓库外安装 wheel
+  后可导入 R6S、执行新 CLI 并读取 HTML、CSS、JavaScript 与 SVG 包资源。
+
+- Firefox headless 三档桌面报告 `passed=true`：1280x720、1440x900、1920x1080 均无白屏、重叠、
+  页面级横向溢出或浏览器错误，Tomorrow/D25 观察池继续按 `74.00 > 72.00` 排序，Long 报价字段完整，
+  外部网络请求为 0；报告、截图和 wheel 安装目录仅位于 `/tmp`，未纳入提交。
 
 - Score-R6D 定向契约、领域、应用、SQLite 点时特征、制品和 CLI 回归通过；真实 H0 归档覆盖
   `4937/5000`、共 `3,103,160` 根日线，封存报告哈希
@@ -888,6 +927,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 三类机制显著降低了复用历史诊断换手、严重亏损和波动，但未保住预注册收益/召回门槛；且该区间已被
+  R6D 观察，仍有当前股票池幸存者偏差及历史 ST/行业/公司风险/盘中尾部缺失。因此不能宣称收益提高，
+  不能启动前向资格或生产发布。若继续，应另立新研究身份探索更温和、分层或持有期感知的稳定机制，
+  并使用未观察证据验证；不得改写本报告或在当前生产中开启本候选。
 
 - 当前候选虽改善历史验证收益、严重亏损和波动，但换手增幅超过预注册容忍度，且 H0 仍存在当前股票池
   幸存者偏差、历史 ST/停牌/行业/公司风险和盘中尾部未完整重建，因此不能声称生产收益已提高。若继续，

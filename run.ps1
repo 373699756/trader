@@ -6,7 +6,7 @@ $Mode = if ($args.Count -gt 0) { $args[0] } else { "serve" }
 
 function Show-Usage {
     @"
-用法: .\run.ps1 [serve|validate-config|research-status|research-history-download|research-backtest|research-r6-screen|research-r6-daily-screen|research-r7-dossier]
+用法: .\run.ps1 [serve|validate-config|research-status|research-history-download|research-backtest|research-r6-screen|research-r6-daily-screen|research-r6-stability-screen|research-r7-dossier]
 
 环境变量:
   TRADER_CONFIG=C:\absolute\path\runtime.json
@@ -75,7 +75,7 @@ if ($Mode -eq "serve" -or $Mode -eq "app") {
     & $Server --config $ConfigPath
     exit $LASTEXITCODE
 }
-if ($Mode -in @("validate-config", "research-status", "research-history-download", "research-backtest", "research-r6-screen", "research-r6-daily-screen", "research-r7-dossier")) {
+if ($Mode -in @("validate-config", "research-status", "research-history-download", "research-backtest", "research-r6-screen", "research-r6-daily-screen", "research-r6-stability-screen", "research-r7-dossier")) {
     $RemainingArgs = if ($args.Count -gt 1) { $args[1..($args.Count - 1)] } else { @() }
     & $Cli --config $ConfigPath $Mode @RemainingArgs
     exit $LASTEXITCODE

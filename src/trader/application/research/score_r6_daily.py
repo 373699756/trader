@@ -98,52 +98,31 @@ def _evaluate_candidate(
     rows: tuple[ScoreR6DailyRow, ...],
     spec: ScoreR6DailySpec,
 ) -> ScoreR6Metrics:
-    weights = candidate.weights
-
-    def score(row: ScoreR6DailyRow) -> float | None:
-        if (
-            row.residual_return_60_5_pct <= 0.0
-            or row.close_ma20_spread_pct <= 0.0
-            or row.recent_return_5d_pct > candidate.recent_return_cap_pct
-            or row.drawdown_60d_pct < candidate.drawdown_floor_pct
-        ):
-            return None
-        value = math.fsum(
-            component * weight
-            for component, weight in zip(
-                (
-                    row.residual_momentum_score,
-                    row.trend_efficiency_score,
-                    row.downside_stability_score,
-                    row.drawdown_recovery_score,
-                    row.liquidity_score,
-                ),
-                weights,
-                strict=True,
-            )
+    def select(
+        population: tuple[ScoreR6DailyRow, ...], _prior_codes: frozenset[str] | None
+    ) -> tuple[ScoreR6DailyRow, ...]:
+        scored = tuple(
+            (value, row) for row in population if (value := score_r6_daily_candidate_row(candidate, row)) is not None
         )
-        return value if value >= candidate.action_threshold else None
+        return select_score_r6_daily_top(scored, spec.selection_limit, spec.maximum_per_board)
 
-    return _evaluate(rows, spec, score)
+    return evaluate_score_r6_daily_selections(rows, spec, select)
 
 
 def _evaluate_baseline(rows: tuple[ScoreR6DailyRow, ...], spec: ScoreR6DailySpec) -> ScoreR6Metrics:
-    def score(row: ScoreR6DailyRow) -> float | None:
-        value = (
-            row.momentum_20_score * 0.50
-            + row.downside_stability_score * 0.30
-            + row.liquidity_score * 0.20
-            - (4.0 if row.volatility_20d_pct >= 4.0 else 0.0)
-        )
-        return value if value >= 78.0 else None
+    def select(
+        population: tuple[ScoreR6DailyRow, ...], _prior_codes: frozenset[str] | None
+    ) -> tuple[ScoreR6DailyRow, ...]:
+        scored = tuple((value, row) for row in population if (value := score_r6_daily_proxy_row(row)) is not None)
+        return select_score_r6_daily_top(scored, spec.selection_limit, spec.maximum_per_board)
 
-    return _evaluate(rows, spec, score)
+    return evaluate_score_r6_daily_selections(rows, spec, select)
 
 
-def _evaluate(
+def evaluate_score_r6_daily_selections(
     rows: tuple[ScoreR6DailyRow, ...],
     spec: ScoreR6DailySpec,
-    score_row: Callable[[ScoreR6DailyRow], float | None],
+    select_day: Callable[[tuple[ScoreR6DailyRow, ...], frozenset[str] | None], tuple[ScoreR6DailyRow, ...]],
 ) -> ScoreR6Metrics:
     grouped: dict[date, list[ScoreR6DailyRow]] = defaultdict(list)
     for row in rows:
@@ -158,8 +137,7 @@ def _evaluate(
         population = tuple(sorted(grouped[trade_date], key=lambda item: item.code))
         if len(population) < 30:
             continue
-        scored = tuple((value, row) for row in population if (value := score_row(row)) is not None)
-        selected = _select_top(scored, spec.selection_limit, spec.maximum_per_board)
+        selected = select_day(population, prior_codes)
         if not selected:
             continue
         benchmark = _mean(tuple(row.return_5d_pct for row in population))
@@ -212,7 +190,46 @@ def _evaluate(
     )
 
 
-def _select_top(
+def raw_score_r6_daily_candidate_row(candidate: ScoreR6DailyCandidate, row: ScoreR6DailyRow) -> float | None:
+    if (
+        row.residual_return_60_5_pct <= 0.0
+        or row.close_ma20_spread_pct <= 0.0
+        or row.recent_return_5d_pct > candidate.recent_return_cap_pct
+        or row.drawdown_60d_pct < candidate.drawdown_floor_pct
+    ):
+        return None
+    return math.fsum(
+        component * weight
+        for component, weight in zip(
+            (
+                row.residual_momentum_score,
+                row.trend_efficiency_score,
+                row.downside_stability_score,
+                row.drawdown_recovery_score,
+                row.liquidity_score,
+            ),
+            candidate.weights,
+            strict=True,
+        )
+    )
+
+
+def score_r6_daily_candidate_row(candidate: ScoreR6DailyCandidate, row: ScoreR6DailyRow) -> float | None:
+    value = raw_score_r6_daily_candidate_row(candidate, row)
+    return value if value is not None and value >= candidate.action_threshold else None
+
+
+def score_r6_daily_proxy_row(row: ScoreR6DailyRow) -> float | None:
+    value = (
+        row.momentum_20_score * 0.50
+        + row.downside_stability_score * 0.30
+        + row.liquidity_score * 0.20
+        - (4.0 if row.volatility_20d_pct >= 4.0 else 0.0)
+    )
+    return value if value >= 78.0 else None
+
+
+def select_score_r6_daily_top(
     scored: tuple[tuple[float, ScoreR6DailyRow], ...], limit: int, maximum_per_board: int
 ) -> tuple[ScoreR6DailyRow, ...]:
     selected: list[ScoreR6DailyRow] = []
@@ -374,4 +391,12 @@ _LIMITATIONS = (
     "deepseek_facts_not_reconstructed",
 )
 
-__all__ = ["ScoreR6DailyEvidence", "ScoreR6DailyScreeningService"]
+__all__ = [
+    "ScoreR6DailyEvidence",
+    "ScoreR6DailyScreeningService",
+    "evaluate_score_r6_daily_selections",
+    "raw_score_r6_daily_candidate_row",
+    "score_r6_daily_candidate_row",
+    "score_r6_daily_proxy_row",
+    "select_score_r6_daily_top",
+]
