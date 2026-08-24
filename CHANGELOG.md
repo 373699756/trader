@@ -6,6 +6,17 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户反馈观察池长期停在“正在生成观察草稿”且修改反复引入新问题，新增进程内 release 握手：
+  `v2_status_v2.release` 同时公开已加载的 DecisionView schema 与 Web asset revision，浏览器再对每份
+  current/history 响应执行第二层 schema 校验。当前真实服务的三个 current 仍为
+  `v2_decision_view_v1`，而工作树已是 v2，现被稳定识别为旧后端与新静态资源混版。
+- 新增失败关闭的浏览器 release contract 模块和回归：缺少模块、status v1、DecisionView v1、决策
+  schema 不同或资源 revision 不同均进入受控 `release_contract_mismatch`，不再伪装成行情采集、评分
+  或观察草稿生成。
+- Web 应用现在在 `create_app()` 阶段把模板和全部打包静态资源固化为进程内只读 release 快照；旧进程
+  不再从修改中的工作树热读新 JavaScript/CSS/HTML。未知资源保持 404，已知资源保留内容 ETag、
+  `no-cache`/`nosniff`，且应用工厂仍无线程、网络、数据库和文件写入副作用。
+
 - 针对用户再次反馈观察池消失、Web 数据新鲜度/行情覆盖/推荐漏斗等卡片无状态，新增独立的
   `UnifiedDecisionDraftIndex` 和 `v2_decision_view_v2.draft` 只读边界。评分已经完成但输入质量尚未
   达到正式发布门槛时，只保存最新同日观察草稿；正式 `items`、`UnifiedDecisionIndex`、SSE、冻结、
@@ -258,6 +269,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 观察池的“正在生成”现在必须同时有活动时段和该策略调度 lane 的 `running`/`pending` 证据；lane 已
+  空闲且草稿仍为空时显示“本轮未形成观察草稿，请查看运行状态”。页面遇到 release 不一致时隐藏
+  无效观察池、阻止旧数据解释，并明确提示正常停止旧服务后重新运行 `./run.sh serve`。
+
 - 短线 `not_ready` 首次评分阶段的五张摘要卡现在优先使用同交易日 `scheduler.input_quality`，该状态
   尚未形成时回退到脱敏 `market_data` 候选缓存、年龄和最新候选来源：覆盖显示真实样本，身份明确
   “待评分”，漏斗显示“采集中/待计算”，运行中的冻结卡显示“采集中”。Web 在观察窗口内随 15 秒
@@ -448,6 +463,10 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复源码更新后 Flask 仍由 10:45 启动的旧 Python 进程提供 v1 current、却从工作树读取新 JavaScript
+  所造成的无限“正在生成”假状态。根因不是 lane 仍在计算：现场状态显示 Today/Tomorrow/D25 lane
+  各完成 58 轮、零失败且均已空闲；旧 API 从结构上不可能返回新增 `draft` 字段。
 
 - 修复上一批只覆盖“评分已结束且已有 `input_quality`”的静态状态，遗漏真实冷启动窗口的问题：此前
   首轮评分运行时 `input_quality={}`，前端既不读取已有 `market_data`，也不会在后台评分结束后重读
@@ -751,6 +770,19 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 本批失败先行证据：修复前 Web 契约测试稳定得到 `v2_status_v1`、首页仅 11 个 revision 资源且缺少
+  `release_contract.js`；当前常驻服务三个 current 均返回 `v2_decision_view_v1`，同时三条短线 lane
+  `completed_count=58`、`failed_count=0`、`running=false`、`pending=false`。修复后定向 HTTP/Web/Node
+  契约测试通过，覆盖 status/release 双身份、真实旧 v1 形状拒绝、活动 lane 才能显示“正在生成”及
+  空闲 lane 显示“未形成”。
+- `make format-check`、`make lint`、228 个源码文件 mypy、单独完整 `make test` 与 `make package` 均通过；
+  package 首次仅因沙箱禁止隔离环境下载 `setuptools>=68` 失败，获准联网后成功构建 sdist/wheel。
+  wheel 在仓库外 `/tmp` 目标安装后从安装目录导入，`trader-cli validate-config`、首页、进程内静态
+  响应及模板/JavaScript/CSS/SVG 资源通过，新增 `release_contract.js` 已包含在 wheel。
+- 最终 Firefox headless 实际加载 `v2_status_v2` 与 revision v12，Tomorrow/D25 均从有运行 lane 的
+  “正在生成”迁移为两行观察草稿，分数按 74.00、72.00 降序且行情列完整；1280x720、1440x900、
+  1920x1080 三档均无浏览器错误、页面级横向溢出或 Long 区重叠，外部网络调用为 0。
 
 - 失败先行回归在修复前以缺少 `trader.application.decision_drafts` 稳定失败；修复后的应用、评分适配、
   HTTP 契约定向集 26 项通过，JavaScript D4 状态契约与受影响 Ruff 检查通过。Firefox 真实浏览器
@@ -1118,6 +1150,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 本批不会擅自终止仍在运行的本地服务；代码提交后必须正常重启，旧进程才会从 v1 切换到
+  `v2_status_v2`/`v2_decision_view_v2` 并重新建立纯内存观察草稿。release 握手能彻底消除混版被误报
+  为“正在生成”，但不能替代上游行情、身份、历史覆盖或评分本身；新进程若 lane 空闲仍无草稿会如实
+  显示“未形成”，不补造股票也不降低既有阈值。
 
 - 草稿只代表“本地评分已完成但正式输入质量门禁未通过”，不会提高行情、证券身份、历史或公司风险
   的真实覆盖，也不会产生正式推荐、冻结或收益证据；78/76 等既有动作阈值、风险、融合和排名均未

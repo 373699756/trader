@@ -12,6 +12,7 @@ const longGroupsPath = path.join(path.dirname(dashboardPath), "long_groups.js");
 const formattersPath = path.join(path.dirname(dashboardPath), "dashboard_formatters.js");
 const patchesPath = path.join(path.dirname(dashboardPath), "dashboard_patches.js");
 const statusViewPath = path.join(path.dirname(dashboardPath), "status_view.js");
+const releaseContractPath = path.join(path.dirname(dashboardPath), "release_contract.js");
 let source = fs.readFileSync(dashboardPath, "utf8");
 const suffix = "\n})();";
 source = source.trimEnd();
@@ -36,6 +37,7 @@ vm.runInNewContext(fs.readFileSync(longGroupsPath, "utf8"), sandbox, { filename:
 vm.runInNewContext(fs.readFileSync(formattersPath, "utf8"), sandbox, { filename: formattersPath });
 vm.runInNewContext(fs.readFileSync(patchesPath, "utf8"), sandbox, { filename: patchesPath });
 vm.runInNewContext(fs.readFileSync(statusViewPath, "utf8"), sandbox, { filename: statusViewPath });
+vm.runInNewContext(fs.readFileSync(releaseContractPath, "utf8"), sandbox, { filename: releaseContractPath });
 vm.runInNewContext(source, sandbox, { filename: dashboardPath });
 const missingPatchSandbox = {
   URLSearchParams,
@@ -47,7 +49,7 @@ vm.runInNewContext(fs.readFileSync(formattersPath, "utf8"), missingPatchSandbox,
 vm.runInNewContext(source, missingPatchSandbox, { filename: dashboardPath });
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(missingPatchSandbox.window.TraderDashboardDiagnostics.snapshot().browserErrors)),
-  ["dependency_missing:TraderDashboardPatches"],
+  ["dependency_missing:TraderDashboardPatches", "dependency_missing:TraderReleaseContract"],
 );
 const state = {
   ...sandbox.window.TraderSelection,
@@ -65,6 +67,8 @@ const state = {
   renderSummary: sandbox.window.TraderStatusView.renderSummary,
   runtimeErrorRows: sandbox.window.TraderStatusView.runtimeErrorRows,
   updateQuoteAge: sandbox.window.TraderStatusView.updateQuoteAge,
+  decisionPayloadCompatibility: sandbox.window.TraderReleaseContract.decisionPayloadCompatibility,
+  statusPayloadCompatibility: sandbox.window.TraderReleaseContract.statusPayloadCompatibility,
   tableColumnCount: sandbox.window.TraderRender.tableColumnCount,
   tableRows: sandbox.window.TraderRender.tableRows,
   longGroupAveragePct: sandbox.window.TraderLongGroups.groupAveragePct,
@@ -75,6 +79,24 @@ const state = {
   longGroupVisibleRecommendations: sandbox.window.TraderLongGroups.visibleRecommendations,
 };
 assert(state, "dashboard D4 helpers were not exported into the test sandbox");
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.statusPayloadCompatibility({ schema_version: "v2_status_v1" }))),
+  { compatible: false, reason: "status_schema_mismatch" },
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.statusPayloadCompatibility({
+    schema_version: "v2_status_v2",
+    release: {
+      decision_view_schema: "v2_decision_view_v2",
+      web_asset_revision: "release-contract-2026-08-24-v12",
+    },
+  }))),
+  { compatible: true, reason: "" },
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.decisionPayloadCompatibility({ schema_version: "v2_decision_view_v1" }))),
+  { compatible: false, reason: "decision_schema_mismatch" },
+);
 assert(source.includes("draft: null,"), "formal recommendation patches must clear observation drafts");
 assert.strictEqual(state.formatDurationHms(0), "0s");
 assert.strictEqual(state.formatDurationHms(-1), "0s");
@@ -427,8 +449,20 @@ assert.deepStrictEqual(
   [{ code: "600003", action: "observe" }],
 );
 assert.strictEqual(
-  state.observationDisplayState({ ...notReadyDraft, draft: null }, "midday"),
+  state.observationDisplayState(
+    { ...notReadyDraft, draft: null },
+    "midday",
+    { scheduler: { lanes: [{ name: "trader-v2-tomorrow", running: true, pending: false }] } },
+  ),
   "warming",
+);
+assert.strictEqual(
+  state.observationDisplayState(
+    { ...notReadyDraft, draft: null },
+    "midday",
+    { scheduler: { lanes: [{ name: "trader-v2-tomorrow", running: false, pending: false, completed_count: 58 }] } },
+  ),
+  "unavailable",
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.notReadyMessage({

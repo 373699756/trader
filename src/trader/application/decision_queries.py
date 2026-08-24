@@ -24,6 +24,7 @@ from trader.domain.recommendation.models import RecommendationAction, Strategy
 
 DecisionViewStatus = Literal["ready", "not_ready", "not_applicable"]
 ScoreStatus = Literal["scored", "not_applicable"]
+DECISION_VIEW_SCHEMA_VERSION = "v2_decision_view_v2"
 
 
 class DecisionHistoryReader(Protocol):
@@ -99,7 +100,7 @@ class DecisionView:
     items: tuple[DecisionItemView, ...]
     etag: str | None
     draft: DecisionDraftView | None = None
-    schema_version: str = "v2_decision_view_v2"
+    schema_version: str = DECISION_VIEW_SCHEMA_VERSION
 
 
 class UnifiedDecisionQueries:

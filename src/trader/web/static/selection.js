@@ -67,15 +67,15 @@
     return items.filter((item) => item.action === "executable");
   }
 
-  function observationRecommendations(payload, runtimePhase) {
+  function observationRecommendations(payload, runtimePhase, statusPayload) {
     const items = payload && payload.status === "not_ready"
       ? payload.draft && Array.isArray(payload.draft.items) ? payload.draft.items : []
       : payload && Array.isArray(payload.items) ? payload.items : [];
-    if (observationDisplayState(payload, runtimePhase) !== "open") return [];
+    if (observationDisplayState(payload, runtimePhase, statusPayload) !== "open") return [];
     return items.filter((item) => item.action === "observe");
   }
 
-  function observationDisplayState(payload, runtimePhase) {
+  function observationDisplayState(payload, runtimePhase, statusPayload) {
     if (!payload) return "unavailable";
     if (payload.strategy === "long") return "not_applicable";
     if (payload.historical === true) return "hidden_history";
@@ -97,9 +97,23 @@
       ? morningPhases.has(runtimePhase)
       : morningPhases.has(runtimePhase) || afternoonPhases.has(runtimePhase);
     if (!active) return "closed_market";
-    if (payload.status === "not_ready") return payload.draft ? "open" : "warming";
+    if (payload.status === "not_ready") {
+      if (payload.draft) return "open";
+      return strategyLaneRunning(statusPayload, payload.strategy) ? "warming" : "unavailable";
+    }
     if (payload.status !== "ready") return "unavailable";
     return "open";
+  }
+
+  function strategyLaneRunning(statusPayload, strategy) {
+    const scheduler = statusPayload && statusPayload.scheduler;
+    const lanes = scheduler && Array.isArray(scheduler.lanes) ? scheduler.lanes : [];
+    const lane = lanes.find((candidate) => {
+      if (!candidate || typeof candidate !== "object") return false;
+      if (candidate.strategy === strategy) return true;
+      return typeof candidate.name === "string" && candidate.name.endsWith(`-${strategy}`);
+    });
+    return Boolean(lane && (lane.running === true || lane.pending === true));
   }
 
   function recommendationSummary(payload, recommendations) {

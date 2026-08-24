@@ -259,7 +259,7 @@
         ? `${candidate} → 采集中 → 0`
         : `${candidate} → ${evaluated} → ${executableCount}`;
       els.funnelMeta.textContent = marketWarmup
-        ? `过滤 待计算 · 观察草稿 ${payload.draft ? observedCount : "正在生成"} · 最高 —`
+        ? `过滤 待计算 · 观察草稿 ${payload.draft ? observedCount : observationState === "warming" ? "正在生成" : "未形成"} · 最高 —`
         : useRuntime
         ? `过滤 ${rejected} · 观察草稿 ${observedCount} · 最高 ${topScore}`
         : `过滤 ${rejected} · 观察 ${observed} · 最高 ${topScore}`;

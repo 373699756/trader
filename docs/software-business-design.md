@@ -1184,6 +1184,14 @@ sample count、P50、P95 和 max；关联 trace、阶段名、样本和浏览器
 逻辑字节、RSS/USS、Python traced、Polars 估算和瞬时峰值原因由发布性能 runner 及验收报告提供。
 状态顶层必须返回当前有效配置/策略组合的 `runtime_version`，并原样投影脱敏的 `scheduler`
 摘要，以便区分旧常驻进程、刷新失败和决策构建失败；源码文件发生变化不会热加载到既有进程。
+`/api/v2/status` 的公开 schema 为 `v2_status_v2`，并必须从当前进程已导入的常量加法返回
+`release.decision_view_schema` 与 `release.web_asset_revision`。浏览器必须同时校验 status release
+身份和每份 DecisionView schema；任何缺失或不一致都属于 `release_contract_mismatch`，页面必须
+停止把结果解释为行情采集或观察草稿生成，明确提示正常重启旧服务。该握手只判断进程/资源契约
+一致性，不得根据工作树、Git、文件时间或 HTTP 成功状态推断运行版本。
+Web 应用工厂创建应用时必须把模板和全部打包静态资源读入该进程的只读 release 快照，后续 HTTP
+不得再次从工作树读取这些文件；源码更新只能在正常重启后整体生效。静态资源仍使用内容 ETag、
+`no-cache` 和 `nosniff`，未知资源返回 404，且该快照过程不得写文件、启动线程、访问数据库或网络。
 
 日志只记录脱敏结构化摘要，不记录密钥、Token、完整模型请求/响应、完整供应商载荷或个人
 敏感路径。所有外部 I/O 必须有 timeout、容量、熔断和明确失败策略。DeepSeek 与 Tushare
@@ -1194,9 +1202,12 @@ sample count、P50、P95 和 max；关联 trace、阶段名、样本和浏览器
 
 ## 12. 安装、运行与运维
 
-源码更新不会替换已经运行的常驻进程。部署新提交时必须正常停止旧 `run.sh`/`trader-server`，
-再依次执行 `./run.sh validate-config` 与 `./run.sh`；启动后应核对 `/api/v2/status` 的
-`runtime_version`、`scheduler.strategy_errors` 和各策略状态，不能只以 HTTP 200 判断更新生效。
+源码更新不会替换已经运行的常驻进程；活动 Web 把模板与静态资源固定为启动时 release 快照，
+不会从工作树热加载。部署新提交时必须正常停止旧 `run.sh`/`trader-server`，再依次执行
+`./run.sh validate-config` 与 `./run.sh`；启动后应核对 `/api/v2/status` 的 `runtime_version`、
+`release`、`scheduler.strategy_errors` 和各策略状态，不能只以 HTTP 200 判断更新生效。浏览器出现
+“服务版本不一致”时不得继续等待或重复刷新，必须先完成上述正常重启；同一运行目录的进程锁会
+正确拒绝第二个 `./run.sh serve`，这不表示新代码已经替换旧进程。
 
 一键启动使用 `run.sh`、`run.ps1` 或 `run.bat`。手动流程为创建虚拟环境、从
 `pyproject.toml` 安装、用绝对配置路径执行 `trader-cli validate-config`，再启动

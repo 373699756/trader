@@ -21,13 +21,21 @@ def test_create_app_has_no_thread_or_filesystem_side_effects(tmp_path, monkeypat
     assert app.test_client().get("/api/status").status_code == 404
 
 
+def test_create_app_snapshots_template_and_static_release_before_serving_requests() -> None:
+    app = create_app()
+
+    assert app.static_folder is None
+    assert app.jinja_env.cache
+    assert app.test_client().get("/static/dashboard.js").status_code == 200
+
+
 def test_dashboard_uses_only_packaged_v2_assets_and_fixed_long_groups() -> None:
     client = create_app().test_client()
     page = client.get("/").get_data(as_text=True)
     dashboard = client.get("/static/dashboard.js").get_data(as_text=True)
     groups = client.get("/static/long_groups.js").get_data(as_text=True)
 
-    assert page.count(f"?rev={WEB_ASSET_REVISION}") == 11
+    assert page.count(f"?rev={WEB_ASSET_REVISION}") == 12
     assert 'id="long-panel-title">卡脖子行业<' in page
     assert 'data-scope="future_growth"' in page
     assert 'data-scope="low_price_potential"' in page
@@ -49,6 +57,7 @@ def test_dashboard_uses_only_packaged_v2_assets_and_fixed_long_groups() -> None:
     assert "longGroups.staticFallbackPayload" in dashboard
     assert 'setNotice("实时行情暂不可用，固定长期名单仍可查看", "warn")' in dashboard
     assert client.get("/static/long_watchlist_data.js").status_code == 200
+    assert client.get("/static/release_contract.js").status_code == 200
     assert client.get("/static/render.js").status_code == 200
 
 

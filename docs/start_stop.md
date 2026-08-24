@@ -35,6 +35,12 @@ python3 -m venv .venv
 启动后访问 `http://127.0.0.1:5000/`。同一运行目录只允许一个服务进程；重复启动会由
 `.runtime/v2/server.lock` 拒绝。
 
+源码更新后，先在原服务终端按一次 `Ctrl+C` 并等待正常退出，再运行
+`./run.sh validate-config` 和 `./run.sh serve`。直接再次执行 `./run.sh serve` 不会热替换旧进程；
+如果页面显示“服务版本不一致”，说明浏览器资源与常驻 Python 进程并非同一 release，继续等待
+观察草稿没有意义。重启后 `/api/v2/status` 必须返回 `v2_status_v2`，且
+`release.decision_view_schema=v2_decision_view_v2` 与页面资源 revision 一致。
+
 服务启动采用失败开放：外部行情、交易日历、Tushare 或 DeepSeek 暂不可用时，Web 仍可读取
 最近有效 V2 快照并显示降级。Long 页的卡脖子、高成长、低价潜力三个固定分类随 wheel 打包，
 即使实时接口暂不可用也会显示股票身份；价格等行情字段显示 `--`，不会伪造实时数据。

@@ -21,6 +21,7 @@
     statusPayload: null,
     longScope: "chokepoint",
     longGroup: "",
+    releaseMismatch: false,
   };
   const CACHE_MAX_AGE_MS = 30000;
   const HISTORY_REFRESH_MS = 3000;
@@ -29,6 +30,8 @@
   const longGroups = window.TraderLongGroups;
   const formatters = window.TraderDashboardFormatters;
   const statusView = window.TraderStatusView;
+  const releaseContractDependencyMissing = !window.TraderReleaseContract;
+  const releaseContract = window.TraderReleaseContract || failClosedReleaseContract();
   const patchDependencyMissing = !window.TraderDashboardPatches;
   const patches = window.TraderDashboardPatches || fallbackDashboardPatches();
   const patchToPaintSamples = [];
@@ -48,6 +51,9 @@
   };
   if (patchDependencyMissing) {
     diagnostics.browserErrors.push("dependency_missing:TraderDashboardPatches");
+  }
+  if (releaseContractDependencyMissing) {
+    diagnostics.browserErrors.push("dependency_missing:TraderReleaseContract");
   }
   window.TraderDashboardDiagnostics = Object.freeze({
     snapshot: () => ({
@@ -243,6 +249,10 @@
       }
     } catch (error) {
       if (requestId !== state.requestSequence) return;
+      if (releaseContract.isMismatchError(error)) {
+        renderReleaseMismatch(error.reason);
+        return;
+      }
       if (selectedDate && selection.isSnapshotNotFound(error)) {
         state.selectedDateAvailability = "missing";
         selection.markDateAvailability(els.dateSelect, selectedDate, "missing");
@@ -294,6 +304,8 @@
         error.httpStatus = response.status;
         throw error;
       }
+      const compatibility = releaseContract.decisionPayloadCompatibility(rawPayload);
+      if (!compatibility.compatible) throw releaseContract.mismatchError(compatibility.reason);
       diagnostics.recommendationFullResponses += 1;
       const payload = normalizeV2Payload(rawPayload, strategy, selectedDate, view);
       diagnostics.fullResponseBytes += formatters.utf8Bytes(JSON.stringify(payload));
@@ -424,9 +436,9 @@
       state.longScope,
       state.longGroup,
     );
-    const observationState = selection.observationDisplayState(payload, state.runtimePhase);
-    const observations = selection.observationRecommendations(payload, state.runtimePhase);
-    const showObservationPool = ["open", "warming"].includes(observationState);
+    const observationState = selection.observationDisplayState(payload, state.runtimePhase, state.statusPayload);
+    const observations = selection.observationRecommendations(payload, state.runtimePhase, state.statusPayload);
+    const showObservationPool = ["open", "warming", "unavailable"].includes(observationState);
     els.observationPool.hidden = !showObservationPool;
     const observationLimit = Number(payload.selection_diagnostics && payload.selection_diagnostics.observation_limit);
     const observationFloorValue = payload.selection_diagnostics && payload.selection_diagnostics.observation_floor;
@@ -475,7 +487,7 @@
           els.observationBody.innerHTML = window.TraderRender.observationTableRows(observations, payload);
         } else {
           stateRenderer.renderTableState(
-            "正在生成观察草稿",
+            observationState === "warming" ? "正在生成观察草稿" : "本轮未形成观察草稿，请查看运行状态",
             window.TraderRender.observationTableColumnCount(payload),
             els.observationBody,
           );
@@ -578,6 +590,11 @@
     try {
       const response = await fetch("/api/v2/status", { cache: "no-store" });
       const payload = await response.json();
+      if (!response.ok) throw new Error("运行状态接口暂不可用");
+      const compatibility = releaseContract.statusPayloadCompatibility(payload);
+      if (!compatibility.compatible) throw releaseContract.mismatchError(compatibility.reason);
+      const recoveredFromReleaseMismatch = state.releaseMismatch;
+      state.releaseMismatch = false;
       state.statusPayload = payload;
       const running = Boolean(payload.runtime_started);
       const previousPhase = state.runtimePhase;
@@ -595,7 +612,7 @@
       if (state.payload && (previousPhase !== state.runtimePhase || state.payload.status === "not_ready")) {
         renderPayload(state.payload);
       }
-      const observationState = selection.observationDisplayState(state.payload, state.runtimePhase);
+      const observationState = selection.observationDisplayState(state.payload, state.runtimePhase, state.statusPayload);
       if (
         state.payload
         && state.payload.status === "not_ready"
@@ -605,8 +622,16 @@
         loadRecommendations("status_not_ready");
       }
       updateQuoteAge();
+      if (recoveredFromReleaseMismatch) {
+        connectStream();
+        if (!state.date) loadRecommendations("release_recovered");
+      }
       return payload;
-    } catch (_error) {
+    } catch (error) {
+      if (releaseContract.isMismatchError(error)) {
+        renderReleaseMismatch(error.reason);
+        return null;
+      }
       state.statusPayload = null;
       els.runtimeStatus.textContent = "状态不可用";
       els.runtimeDot.dataset.state = "error";
@@ -623,6 +648,24 @@
       });
       return null;
     }
+  }
+
+  function renderReleaseMismatch(reason) {
+    state.releaseMismatch = true;
+    state.statusPayload = null;
+    state.runtimePhase = "";
+    window.TraderRender.rememberDiagnostic(
+      diagnostics.runtimeDiagnostics,
+      `release_contract_mismatch:${reason || "unknown"}`,
+    );
+    els.runtimeStatus.textContent = "需重启";
+    els.runtimeDot.dataset.state = "error";
+    els.streamStatus.textContent = "已阻止";
+    if (state.stream) state.stream.close();
+    state.stream = null;
+    els.observationPool.hidden = true;
+    stateRenderer.renderTableState("服务版本不一致，请重启");
+    stateRenderer.setNotice("页面资源已更新，但后台仍是旧版本；正常停止旧服务后重新执行 ./run.sh serve", "error");
   }
 
   function renderHealth(statusPayload) {
@@ -653,6 +696,11 @@
 
   function connectStream() {
     if (state.stream) state.stream.close();
+    if (state.releaseMismatch) {
+      state.stream = null;
+      els.streamStatus.textContent = "已阻止";
+      return;
+    }
     const query = state.lastEventId > 0 ? `?cursor=${state.lastEventId}` : "";
     const stream = new EventSource(`/api/v2/events${query}`);
     state.stream = stream;
@@ -808,6 +856,21 @@
     });
   }
 
+  function failClosedReleaseContract() {
+    const mismatch = () => ({ compatible: false, reason: "release_contract_dependency_missing" });
+    return Object.freeze({
+      decisionPayloadCompatibility: mismatch,
+      statusPayloadCompatibility: mismatch,
+      mismatchError: (reason) => {
+        const error = new Error("页面资源与后台服务版本不一致");
+        error.code = "release_contract_mismatch";
+        error.reason = reason;
+        return error;
+      },
+      isMismatchError: (error) => Boolean(error && error.code === "release_contract_mismatch"),
+    });
+  }
+
   function rowIdentity(payload, code) {
     return [payload.strategy, payload.trade_date, payload.view, code].map((value) => String(value || "")).join(":");
   }
@@ -830,8 +893,9 @@
   function startPolling() {
     if (state.pollTimer) return;
     state.pollTimer = window.setInterval(() => {
-      loadStatus();
-      if (!state.date) loadRecommendations("poll");
+      loadStatus().then((status) => {
+        if (status && !state.date && !state.releaseMismatch) loadRecommendations("poll");
+      });
     }, 15000);
   }
 

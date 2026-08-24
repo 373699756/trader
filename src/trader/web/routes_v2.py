@@ -15,6 +15,11 @@ from trader.domain.recommendation.models import Strategy
 from trader.web.decision_serializers import serialize_decision_view, serialize_error
 from trader.web.decision_sse import decision_event_response
 from trader.web.route_services import UnifiedWebServices
+from trader.web.static_assets import (
+    DECISION_VIEW_SCHEMA_VERSION,
+    STATUS_SCHEMA_VERSION,
+    WEB_ASSET_REVISION,
+)
 
 RouteResponse = Response | tuple[Response, int]
 _DEEPSEEK_ZERO_CALL_REASONS = frozenset(
@@ -111,7 +116,11 @@ def _status(services: UnifiedWebServices | None) -> RouteResponse:
     strategies = {strategy.value: _strategy_status(services.queries.current(strategy)) for strategy in Strategy}
     return jsonify(
         {
-            "schema_version": "v2_status_v1",
+            "schema_version": STATUS_SCHEMA_VERSION,
+            "release": {
+                "decision_view_schema": DECISION_VIEW_SCHEMA_VERSION,
+                "web_asset_revision": WEB_ASSET_REVISION,
+            },
             "status": str(runtime.get("status", "running")),
             "phase": runtime.get("phase"),
             "runtime_started": bool(runtime.get("runtime_started", True)),
