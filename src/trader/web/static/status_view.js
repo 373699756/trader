@@ -264,11 +264,16 @@
         ? `过滤 ${rejected} · 观察草稿 ${observedCount} · 最高 ${topScore}`
         : `过滤 ${rejected} · 观察 ${observed} · 最高 ${topScore}`;
     }
-    els.quoteSource.textContent = firstVisible && firstVisible.source
-      ? render.sourceLabel(firstVisible.source)
-      : visibleText(strategySummary.latest_quote_source)
-        ? render.sourceLabel(strategySummary.latest_quote_source)
-        : "来源不可用";
+    const runtimeSource = useRuntime && visibleText(strategySummary.latest_quote_source)
+      ? strategySummary.latest_quote_source
+      : null;
+    els.quoteSource.textContent = runtimeSource
+      ? render.sourceLabel(runtimeSource)
+      : firstVisible && firstVisible.source
+        ? render.sourceLabel(firstVisible.source)
+        : visibleText(strategySummary.latest_quote_source)
+          ? render.sourceLabel(strategySummary.latest_quote_source)
+          : "来源不可用";
     renderBudgetSummary(els, statusPayload && statusPayload.deepseek_budget, payload);
     renderFreezeSummary(els, payload, render, statusPayload);
     els.snapshotStrategy.textContent = selection.strategyLabel(payload.strategy);

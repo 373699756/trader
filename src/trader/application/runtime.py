@@ -27,8 +27,6 @@ class ScheduledRuntime(Protocol):
         deadline: ShutdownDeadline | None = None,
     ) -> ShutdownReport: ...
 
-    def submit_tick(self, at: datetime | None = None) -> bool: ...
-
     def submit_due(self, at: datetime | None = None) -> float: ...
 
 
@@ -232,29 +230,15 @@ class RuntimeSupervisor:
         )
 
     def _scheduler_loop(self) -> None:
-        planned_interval = max(0.05, self._interval_seconds(self._now()))
         while not self._stop_event.is_set():
             now = self._now()
             try:
-                observe_clock = getattr(self._runtime, "observe_clock", None)
-                if callable(observe_clock):
-                    observe_clock(
-                        now,
-                        monotonic_seconds=self._monotonic(),
-                        planned_interval_seconds=planned_interval,
-                    )
-                submit_due = getattr(self._runtime, "submit_due", None)
-                if callable(submit_due):
-                    interval = float(submit_due(now))
-                else:
-                    self._runtime.submit_tick(now)
-                    interval = self._interval_seconds(self._now())
+                interval = float(self._runtime.submit_due(now))
             except Exception as exc:
                 _LOGGER.exception("runtime schedule tick failed")
                 self._record_error(str(exc))
                 interval = self._interval_seconds(self._now())
-            planned_interval = max(0.05, interval)
-            self._stop_event.wait(planned_interval)
+            self._stop_event.wait(max(0.05, interval))
 
 
 def scheduler_interval_seconds(at: datetime) -> float:

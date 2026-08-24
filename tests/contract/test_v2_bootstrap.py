@@ -3,13 +3,22 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 from trader.application.decision_observers import DecisionObserverStatus
+from trader.application.ports.runtime_status import V2InputQualityStatus, V2SupplyFunnel, V2SupplySummary
 from trader.application.ports.v2_runtime import V2ResearchRuntimeStatus
 from trader.application.v2_research_runtime import V2ResearchRuntime
-from trader.bootstrap import _initialize_reference_data_plane, _initialize_research_trace, _runtime_status, build_system
+from trader.bootstrap import (
+    _initialize_reference_data_plane,
+    _initialize_research_trace,
+    build_system,
+)
+from trader.bootstrap_status import input_quality_payload, runtime_status
+from trader.domain.recommendation.models import Strategy
 from trader.infra.persistence.data_plane import DataPlaneRepository
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -124,6 +133,8 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
         refresh_failure_count=0,
         decision_failure_count=0,
         review_failure_count=0,
+        overlay_publish_count=0,
+        overlay_failure_count=0,
         local_publish_count=1,
         hybrid_publish_count=0,
         publish_rejection_count=0,
@@ -133,6 +144,7 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
         settlement_completed_count=0,
         settlement_failure_count=0,
         last_error_code="",
+        input_quality=(),
     )
     reviewer = Mock()
     reviewer.status.return_value = {"status": "ready"}
@@ -146,7 +158,7 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
         }
     )
 
-    payload = _runtime_status(scheduler, reviewer, budget, market_health)
+    payload = runtime_status(scheduler, reviewer, budget, market_health)
 
     assert payload["observer"]["consumer_failure_count"] == 3
     assert payload["company_research"]["state"] == "idle"
@@ -156,10 +168,62 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
     assert payload["last_error"] == "observer:ResearchTraceCapacityError"
     assert payload["scheduler"]["settlement_completed_count"] == 0
     assert payload["scheduler"]["settlement_failure_count"] == 0
+    assert payload["scheduler"]["overlay_publish_count"] == 0
+    assert payload["scheduler"]["overlay_failure_count"] == 0
     assert payload["scheduler"]["input_quality"] == {}
     assert payload["market_data"]["active_source"] == "sina"
     assert payload["market_data"]["market_feature_rows"] == 5567
     market_health.assert_called_once_with()
+
+
+def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
+    source_time = datetime(2026, 8, 24, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    status = V2InputQualityStatus(
+        strategy=Strategy.TOMORROW,
+        status="not_ready",
+        publishable=False,
+        summary=V2SupplySummary(
+            trade_date=date(2026, 8, 24),
+            quote_total_count=360,
+            quote_covered_count=352,
+            quote_missing_count=8,
+            security_identity_missing_count=286,
+            latest_quote_source="tencent",
+            latest_quote_source_time=source_time,
+            highest_final_score=74.25,
+        ),
+        supply_funnel=V2SupplyFunnel(
+            requested_candidates=360,
+            full_scored=65,
+            filter_reject=216,
+            selected_observe=2,
+        ),
+        candidate_count=360,
+        candidate_feature_count=352,
+        security_master_covered_count=74,
+        candidate_feature_coverage_ratio=352 / 360,
+        security_master_coverage_ratio=74 / 360,
+        candidate_optional_reason_counts=(("missing_listing_date", 221), ("missing_listing_age_sessions", 65)),
+        primary_blocker="security_master_coverage_incomplete",
+    )
+
+    payload = input_quality_payload((status,))
+
+    assert payload["tomorrow"]["summary"] == {
+        "trade_date": "2026-08-24",
+        "quote_total_count": 360,
+        "quote_covered_count": 352,
+        "quote_missing_count": 8,
+        "security_identity_missing_count": 286,
+        "latest_quote_source": "tencent",
+        "latest_quote_source_time": source_time.isoformat(),
+        "highest_final_score": 74.25,
+    }
+    assert payload["tomorrow"]["supply_funnel"]["full_scored"] == 65
+    assert payload["tomorrow"]["candidate_optional_reason_counts"] == {
+        "missing_listing_age_sessions": 65,
+        "missing_listing_date": 221,
+    }
 
 
 def test_bootstrap_wires_real_outcome_settlement_without_eager_database_write(tmp_path) -> None:

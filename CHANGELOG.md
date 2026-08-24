@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户反馈观察池再次为空、Web 数据新鲜度/行情覆盖/推荐漏斗卡片状态反复消失，新增不可变
+  `V2InputQualityStatus`、供应漏斗和行情摘要应用层状态值，以及 overlay 发布/失败计数。状态端口现在
+  是调度器装配的必需契约，HTTP 只执行显式脱敏 JSON 投影，不能因对象缺少可选方法而静默返回空状态。
+- 扩展既有 Firefox 桌面 runner，真实等待浏览器从冷启动状态迁移后断言“352 / 360”、行情与身份缺失
+  构成、“360 → 65 → 0”、过滤/观察草稿/最高分和腾讯行情来源，并继续覆盖三档桌面分辨率。
+
 - 针对用户要求按实际“采集到 Web”刷新结果留出稳定余量，运行配置 schema 10 新增
   `api.web_snapshot_retention_seconds=35`。生产组合根将该值注入根页面，浏览器诊断同时公开实际读取的
   毫秒值，配置缺失或非正数会在启动校验阶段拒绝，页面不再自行维护生产保留周期。
@@ -308,6 +314,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 报价 overlay 的观察时刻改为本轮调度请求、入选特征本地观察时刻与报价本机接收时刻的最晚值；
+  供应商 `source_time` 仍只作为受校验的数据事实，不能用未来声明时间推进本地时钟。组合根状态投影
+  拆入独立模块，`bootstrap.py` 回到架构行数门禁以内；评分公式、阈值、排序和冻结身份均未改变。
+
 - Web 未冻结 current 快照的内存保留窗口由硬编码 30 秒改为配置驱动的 35 秒；该值按本轮生产调度、
   SSE、HTTP 与真实 Firefox 链路实测约 30 秒加 5 秒余量确定。策略 cadence、行情数据年龄和
   stale/degraded 门槛保持不变，避免把 35 秒误用为采集 TTL 后将物理刷新进一步拖慢。
@@ -539,6 +549,13 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复 overlay 用调度请求发起时间而不是网络完成时间作为版本时钟，导致同批成功新报价被误判为未来
+  数据的问题；同时修复 overlay 错误只会累积、后续成功刷新无法恢复健康状态的问题。预期 CAS 竞争
+  不污染错误，交易日/代码范围/事件发布等真实失败仍保持可观察。
+- 修复 `/api/v2/status.scheduler.input_quality` 依赖 `getattr(..., {})` 的隐藏降级：接口缺失过去会让
+  行情覆盖、身份缺失构成、推荐漏斗和观察草稿卡片同时消失且不报装配错误；现在应用端口、运行状态、
+  组合根投影和浏览器卡片形成一条强类型链，并有契约、集成和真实 DOM 回归锁定。
 
 - 修复 Web 缓存保留期恰好等于实测刷新周期、没有任何抖动余量的问题：此前生产链一次 DOM 刷新可达
   30.002 秒，而浏览器在 30.000 秒即淘汰未冻结快照，策略切换或短暂请求失败时可能失去最近同日有效
@@ -778,6 +795,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除 overlay publisher 的默认 no-op、调度器的 `submit_tick` 兼容方法及可选 `observe_clock` 反射 fallback、
+  运行状态对可选 `input_quality_status` 的空字典 fallback，以及已无生产调用者的
+  `legacy_v14_hard_filter`。所有必需能力必须在组合根显式装配，不再用“能启动但无数据”的默认值隐藏缺线。
+
 - 移除 `dashboard.js` 中独立的 `CACHE_MAX_AGE_MS=30000` 生产真相源；浏览器仅消费服务端从当前
   runtime 配置渲染的窗口，无配置的无服务应用以 0 秒失败关闭，不偷偷回退到另一套 35 秒默认值。
 
@@ -893,6 +914,23 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 失败先行与定向回归通过：overlay 以网络完成时刻发布且拒绝无本机时间支撑的未来供应商时间、overlay
+  故障后续成功恢复、必需 typed `input_quality`/publisher 架构契约、状态 JSON 投影、调度接口和 Web
+  release 契约共 66 项通过；Node D4 状态契约通过，受影响源码与两个验收脚本直接 mypy 通过。
+- 真实 Firefox 首轮严格验收发现观察草稿中未知来源会覆盖可靠聚合来源，修复并升级 Web revision 至
+  v17 后重跑通过：卡片显示 `352 / 360`、行情缺失 8、身份缺失 286（上市日期 221、交易日龄 65、
+  免费行情+交易日历补齐中）、`360 → 65 → 0`、过滤 216、观察草稿 2、最高 74.25 和腾讯行情；合法
+  空草稿显示 0 条但保留真实漏斗。1280x720、1440x900、1920x1080 均无白屏、溢出、重叠或浏览器错误。
+- 复用生产调度刷新诊断完成 65 秒 scheduler→overlay→SSE→Firefox DOM 实测：3 次刷新、3 次 SSE、
+  3 次 DOM 变价；刷新最大 30.002 秒、SSE 最大 30.003 秒、DOM 最大 29.991 秒，35 秒快照保留余量
+  5.009 秒，9 个 patch-to-paint 样本 P95/最大 41ms，无浏览器错误、重同步或丢样。
+- 高风险全量门禁通过：`make format-check`、`make lint`（严格重构债为 0）、`make type-check`
+  （224 个源码文件）、`make test`（全仓 100%）及 `make package`。打包首次仅因沙箱禁止隔离构建下载
+  `setuptools>=68` 失败，获准联网后原命令成功生成 sdist 与 wheel。
+- wheel 在仓库外 Python 3.14 环境安装全部声明依赖后，`pip check`、site-packages 来源导入、
+  `create_app()`、`trader-cli --help`、`trader-server --help` 及模板、JavaScript、CSS、SVG 六类资源通过；
+  加载的 Web release 为 v17。`git diff --check` 和暂存区范围在提交前最终复核。
 
 - 本批失败先行及定向回归通过：`tests/unit/test_v2_settings.py`、
   `tests/contract/test_v2_e8_web_contract.py`、`tests/contract/test_v2_bootstrap.py`、
@@ -1363,6 +1401,10 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- Firefox 卡片和 65 秒刷新验收使用确定性内存行情以隔离休市期外部来源不变，完整覆盖真实应用查询、
+  HTTP、SSE 和 DOM，但不替代开市期间供应商网络与整日数据年龄观测；本批未改行情 provider、评分、
+  门槛、冻结或 DeepSeek 配置，也未向运行库写测试数据。线上进程必须重启后才会加载 v17 资源和新状态链。
 
 - 本批实测使用确定性变价输入隔离供应商在休市时版本不变化的干扰，完整经过活动生产调度、统一索引、
   SSE、Flask 和 Firefox，但不是开市期间真实供应商压力测试；行情源网络抖动仍应在交易时段复用同一

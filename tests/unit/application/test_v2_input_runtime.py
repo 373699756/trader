@@ -169,9 +169,8 @@ def test_production_adapter_builds_current_overlay_from_another_scored_lane_batc
     application_feature_factory,
 ) -> None:
     observed_at = datetime(2026, 8, 12, 13, 5, tzinfo=SHANGHAI)
-    features = tuple(
-        application_feature_factory(code, observed_at - timedelta(seconds=1)) for code in ("600001", "600003")
-    )
+    network_completed_at = observed_at + timedelta(seconds=3)
+    features = tuple(application_feature_factory(code, network_completed_at) for code in ("600001", "600003"))
     adapter = V2MarketDataAdapter(
         _Market(features),
         config_version="test-config",
@@ -217,12 +216,59 @@ def test_production_adapter_builds_current_overlay_from_another_scored_lane_batc
     assert overlay is not None
     assert overlay.strategy is Strategy.TODAY
     assert overlay.parent_version == frozen.version
-    assert overlay.observed_at == observed_at
+    assert overlay.observed_at == network_completed_at
     quotes = {quote.code: quote for quote in overlay.quotes}
     assert quotes["600001"].data_version == features[0].quote.data_version
     assert quotes["600003"].data_version == features[1].quote.data_version
     assert quotes["600002"].data_version == "frozen:600002"
     assert quotes["600002"].price == frozen_quote.price
+
+
+def test_production_adapter_rejects_vendor_future_time_without_local_observation_support(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 13, 5, tzinfo=SHANGHAI)
+    received_at = observed_at + timedelta(seconds=2)
+    feature = application_feature_factory("600001", received_at)
+    feature = replace(
+        feature,
+        quote=replace(
+            feature.quote,
+            source_time=received_at + timedelta(seconds=1),
+            received_time=received_at,
+            data_version="vendor-future",
+        ),
+        observed_at=received_at,
+    )
+    adapter = V2MarketDataAdapter(
+        _Market((feature,)),
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=_decision_build(),
+    )
+    request = _request(observed_at, strategy=Strategy.TOMORROW, phase="afternoon")
+    frozen_at = observed_at - timedelta(minutes=1)
+    source = decision(Strategy.TODAY)
+    frozen_quote = source.items[0].quote
+    assert frozen_quote is not None
+    frozen_quote = replace(frozen_quote, source_time=frozen_at)
+    frozen = replace(
+        source,
+        trade_date=observed_at.date(),
+        observed_at=frozen_at,
+        items=(replace(source.items[0], quote=frozen_quote),),
+    )
+    previous = DecisionOverlay(
+        frozen.strategy,
+        frozen.trade_date,
+        frozen.version,
+        frozen.observed_at,
+        (frozen_quote,),
+    )
+
+    adapter.refresh(request)
+
+    assert adapter.refreshed_overlay(frozen, request, previous) is None
 
 
 def test_production_adapter_rejects_partial_history_coverage_even_when_one_candidate_scores(
@@ -285,21 +331,23 @@ def test_production_adapter_rejects_candidate_security_identity_degradation(
     with pytest.raises(V2DecisionUnavailableError, match="not_ready"):
         adapter.build_local(request)
 
-    status = adapter.input_quality_status()["tomorrow"]
-    assert status["security_master_covered_count"] == 0
-    assert status["security_master_coverage_ratio"] == 0.0
-    assert "security_master_coverage_incomplete" in status["degraded_reasons"]
-    assert status["supply_funnel"]["requested_candidates"] == 1
-    assert status["supply_funnel"]["security_master"] == 0
-    assert status["primary_blocker"] == "security_master_coverage_incomplete"
-    assert status["summary"]["quote_total_count"] == 1
-    assert status["summary"]["trade_date"] == observed_at.date().isoformat()
-    assert status["summary"]["quote_covered_count"] == 1
-    assert status["summary"]["quote_missing_count"] == 0
-    assert status["summary"]["security_identity_missing_count"] == 1
-    assert status["summary"]["latest_quote_source"] == degraded.quote.source
-    assert status["summary"]["latest_quote_source_time"] == degraded.quote.source_time.isoformat()
-    assert 0.0 <= status["summary"]["highest_final_score"] <= 100.0
+    (status,) = adapter.input_quality_status()
+    assert status.strategy is Strategy.TOMORROW
+    assert status.security_master_covered_count == 0
+    assert status.security_master_coverage_ratio == 0.0
+    assert "security_master_coverage_incomplete" in status.degraded_reasons
+    assert status.supply_funnel.requested_candidates == 1
+    assert status.supply_funnel.security_master == 0
+    assert status.primary_blocker == "security_master_coverage_incomplete"
+    assert status.summary.quote_total_count == 1
+    assert status.summary.trade_date == observed_at.date()
+    assert status.summary.quote_covered_count == 1
+    assert status.summary.quote_missing_count == 0
+    assert status.summary.security_identity_missing_count == 1
+    assert status.summary.latest_quote_source == degraded.quote.source
+    assert status.summary.latest_quote_source_time == degraded.quote.source_time
+    assert status.summary.highest_final_score is not None
+    assert 0.0 <= status.summary.highest_final_score <= 100.0
 
 
 def test_production_adapter_accepts_exactly_ninety_nine_percent_history_coverage(
@@ -330,13 +378,13 @@ def test_production_adapter_accepts_exactly_ninety_nine_percent_history_coverage
     decision = adapter.build_local(request)
 
     assert decision is not None
-    status = adapter.input_quality_status()["tomorrow"]
-    assert status["history_covered_count"] == 99
-    assert status["history_coverage_ratio"] == 0.99
-    assert status["publishable"] is True
-    assert status["supply_funnel"]["history"] == 99
-    assert status["supply_funnel"]["filter_reject"] == 100
-    assert status["primary_blocker"] == "no_scored_candidates"
+    (status,) = adapter.input_quality_status()
+    assert status.history_covered_count == 99
+    assert status.history_coverage_ratio == 0.99
+    assert status.publishable is True
+    assert status.supply_funnel.history == 99
+    assert status.supply_funnel.filter_reject == 100
+    assert status.primary_blocker == "no_scored_candidates"
 
 
 def test_production_adapter_rejects_partial_candidate_feature_response(
@@ -367,17 +415,17 @@ def test_production_adapter_rejects_partial_candidate_feature_response(
 
     with pytest.raises(V2DecisionUnavailableError, match="not_ready"):
         adapter.build_local(request)
-    status = adapter.input_quality_status()["tomorrow"]
-    assert status["candidate_count"] == 2
-    assert status["candidate_feature_count"] == 1
-    assert status["candidate_feature_coverage_ratio"] == 0.5
-    assert status["supply_funnel"]["requested_candidates"] == 2
-    assert status["supply_funnel"]["candidate_features"] == 1
-    assert status["primary_blocker"] == "candidate_feature_coverage_incomplete"
-    assert status["summary"]["quote_total_count"] == 2
-    assert status["summary"]["quote_covered_count"] == 1
-    assert status["summary"]["quote_missing_count"] == 1
-    assert all("600" not in str(value) and "300" not in str(value) for value in status.values())
+    (status,) = adapter.input_quality_status()
+    assert status.candidate_count == 2
+    assert status.candidate_feature_count == 1
+    assert status.candidate_feature_coverage_ratio == 0.5
+    assert status.supply_funnel.requested_candidates == 2
+    assert status.supply_funnel.candidate_features == 1
+    assert status.primary_blocker == "candidate_feature_coverage_incomplete"
+    assert status.summary.quote_total_count == 2
+    assert status.summary.quote_covered_count == 1
+    assert status.summary.quote_missing_count == 1
+    assert "600" not in repr(status) and "300" not in repr(status)
 
 
 def test_three_scored_strategies_share_one_fast_market_input_cycle(

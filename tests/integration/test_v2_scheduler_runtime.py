@@ -19,7 +19,7 @@ from trader.application.ports.v2_runtime import (
 from trader.application.schedule import SHANGHAI, MarketPhase
 from trader.application.shutdown import ShutdownDeadline, ShutdownStep
 from trader.application.v2_runtime import V2RuntimeDependencies, V2SchedulerRuntime
-from trader.bootstrap import _runtime_status
+from trader.bootstrap_status import runtime_status
 from trader.domain.recommendation.decision_identity import (
     CommittedDecisionRecord,
     DecisionOverlay,
@@ -54,6 +54,9 @@ class DataRefresh:
 
 
 class Decisions:
+    def input_quality_status(self):
+        return ()
+
     def has_local_draft(self, strategy: Strategy, trade_date: date) -> bool:
         del strategy, trade_date
         return False
@@ -191,6 +194,7 @@ def test_scheduler_atomically_publishes_complete_quotes_for_local_and_hybrid() -
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
     )
@@ -283,6 +287,78 @@ def test_scheduler_refreshes_frozen_today_overlay_without_mutating_formal_decisi
     assert overlay_events == [snapshot.overlay]
 
 
+def test_scheduler_recovers_overlay_issue_after_later_success() -> None:
+    observed_at = datetime(2026, 8, 11, 13, 5, tzinfo=SHANGHAI)
+    clock = FixedClock(observed_at)
+    index = UnifiedDecisionIndex()
+    source = decision(Strategy.TODAY, sequence=1)
+    source_quote = source.items[0].quote
+    assert source_quote is not None
+    source = replace(
+        source,
+        trade_date=observed_at.date(),
+        observed_at=observed_at - timedelta(minutes=1),
+        items=(replace(source.items[0], quote=replace(source_quote, source_time=observed_at - timedelta(minutes=1))),),
+    )
+    assert index.restore_formal(CommittedDecisionRecord(source, observed_at, "scheduled"))
+
+    class FailingOnceOverlayDecisions(Decisions):
+        def __init__(self) -> None:
+            self.failed = False
+
+        def refreshed_overlay(self, current, request, previous):
+            if current.strategy is Strategy.TODAY and not self.failed:
+                self.failed = True
+                raise V2DecisionUnavailableError("overlay_source_unavailable")
+            return super().refreshed_overlay(current, request, previous)
+
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=clock,
+            calendar=TradingCalendar(),
+            data=DataRefresh(),
+            decisions=FailingOnceOverlayDecisions(),
+            reviews=SharedReviews(),
+            index=index,
+            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-v2-overlay-recovery-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+            research_factory=noop_research_factory,
+            publish_overlay=lambda _overlay: None,
+        ),
+        config_version="runtime-v2",
+    )
+    first = V2CycleRequest(
+        Strategy.TOMORROW,
+        observed_at.date(),
+        observed_at,
+        "afternoon",
+        1,
+        "quotes-v2",
+        False,
+        observed_at,
+    )
+    second_at = observed_at + timedelta(seconds=30)
+    second = replace(first, observed_at=second_at, input_version="quotes-v3")
+
+    runtime.start()
+    runtime.submit_cycle(first)
+    assert runtime.wait_idle(2.0)
+    failed = runtime.status()
+    assert failed.overlay_failure_count == 1
+    assert any(issue.stage == "overlay" and issue.recovery_status == "active" for issue in failed.recent_errors)
+
+    clock.current = second_at
+    runtime.submit_cycle(second)
+    assert runtime.wait_idle(2.0)
+    recovered = runtime.status()
+    runtime.stop(ShutdownDeadline.start(2.0))
+
+    assert recovered.overlay_publish_count >= 1
+    assert any(issue.stage == "overlay" and issue.recovery_status == "recovered" for issue in recovered.recent_errors)
+    assert dict(recovered.strategy_error_codes).get("today") is None
+
+
 def test_scheduler_publishes_local_before_research_and_defers_first_review_until_risk_rescore() -> None:
     index = UnifiedDecisionIndex()
     reviews = SharedReviews()
@@ -317,6 +393,7 @@ def test_scheduler_publishes_local_before_research_and_defers_first_review_until
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=research_factory,
+            publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
     )
@@ -422,6 +499,7 @@ def test_v2_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> None:
             freezes=freezes,
             settlement=settlement,
             research_factory=noop_research_factory,
+            publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
     )
@@ -449,7 +527,7 @@ def test_v2_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> None:
     assert status.config_version == "runtime-v2"
     assert all(index.snapshot(strategy).current is not None for strategy in Strategy)
     assert not any(thread.name.startswith("trader-v2-") for thread in threading.enumerate())
-    assert runtime.submit_tick(close_at) is False
+    assert runtime.submit_due(close_at) == 30.0
     assert runtime.status().control_rejected_count == status.control_rejected_count
 
 
@@ -473,6 +551,7 @@ def test_after_close_cold_start_recovers_missing_scored_strategies_and_long() ->
             freezes=freezes,
             settlement=settlement,
             research_factory=noop_research_factory,
+            publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
     )
@@ -512,6 +591,7 @@ def test_midday_cold_start_recovers_only_missing_non_today_outputs_once_without_
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
     )
@@ -565,6 +645,7 @@ def test_midday_empty_observation_draft_is_a_completed_recovery_not_a_retry_loop
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
     )
@@ -608,6 +689,7 @@ def test_midday_recovery_retries_when_refresh_failed_before_any_output() -> None
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
     )
@@ -649,6 +731,7 @@ def test_midday_recovery_does_not_queue_duplicate_while_lane_is_active() -> None
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
     )
@@ -685,6 +768,7 @@ def test_after_close_prefers_existing_same_day_current_without_rebuilding() -> N
             freezes=freezes,
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
     )
@@ -732,6 +816,7 @@ def test_tomorrow_lane_progresses_while_today_lane_is_blocked() -> None:
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
     )
@@ -785,6 +870,7 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
     )
@@ -832,7 +918,7 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
         def summary(self, _day: str):
             return {"limit": 168, "used": 0, "remaining": 168}
 
-    payload = _runtime_status(runtime, StatusReviewer(), StatusBudget(), lambda: {})  # type: ignore[arg-type]
+    payload = runtime_status(runtime, StatusReviewer(), StatusBudget(), lambda: {})  # type: ignore[arg-type]
     assert payload["degraded_reasons"] == ["tomorrow:refresh:source_unavailable"]
     assert payload["health"] == {"level": "degraded", "issue_count": 1}
     assert payload["recent_errors"] == [
@@ -877,6 +963,7 @@ def test_runtime_error_history_is_bounded_and_repeated_failures_are_coalesced() 
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
     )
@@ -908,6 +995,7 @@ def test_successful_publish_does_not_recover_an_unrelated_freeze_failure() -> No
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
     )
@@ -949,6 +1037,7 @@ def test_afternoon_schedule_skips_today_after_its_freeze_boundary() -> None:
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
     )
@@ -992,6 +1081,7 @@ def test_expected_late_publish_rejection_after_freeze_is_not_a_runtime_error() -
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
     )
@@ -1032,6 +1122,7 @@ def test_review_deadline_prevents_a_late_model_upgrade() -> None:
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
     )

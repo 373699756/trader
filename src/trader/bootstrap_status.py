@@ -1,0 +1,132 @@
+"""JSON projection for the observable v2 runtime status."""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from dataclasses import asdict
+
+from trader.application.ports.runtime_status import V2InputQualityStatus
+from trader.application.v2_runtime import V2RuntimeIssue, V2SchedulerRuntime
+from trader.bootstrap_clock import utc_now as _utc_now
+from trader.infra.deepseek.budget import DeepSeekBudgetLedger
+from trader.infra.deepseek.reviewer import DeepSeekReviewer
+
+
+def runtime_status(
+    scheduler: V2SchedulerRuntime,
+    reviewer: DeepSeekReviewer,
+    budget: DeepSeekBudgetLedger,
+    market_health: Callable[[], Mapping[str, object]],
+) -> dict[str, object]:
+    status = scheduler.status()
+    try:
+        market_data = dict(market_health())
+    except (OSError, RuntimeError, TypeError, ValueError):
+        market_data = {"status": "unavailable"}
+    strategy_errors = dict(status.strategy_error_codes)
+    recent_errors = [_runtime_issue_payload(issue) for issue in status.recent_errors]
+    active_issues = [issue for issue in status.recent_errors if issue.recovery_status == "active"]
+    observer = asdict(status.observer)
+    observer_error = status.observer.last_error_code
+    degraded_reasons = [
+        f"{issue.strategy.value}:{issue.code}" if issue.strategy is not None else issue.code for issue in active_issues
+    ]
+    if observer_error:
+        degraded_reasons.append(f"observer:{observer_error}")
+    issue_count = len(active_issues) + int(bool(observer_error))
+    health_level = (
+        "error"
+        if not status.running or any(issue.severity == "error" for issue in active_issues)
+        else "degraded"
+        if issue_count
+        else "normal"
+    )
+    return {
+        "status": "running" if status.running else "stopped",
+        "runtime_started": status.running,
+        "runtime_version": status.config_version,
+        "phase": status.phase.value,
+        "deepseek_budget": budget.summary(_utc_now().date().isoformat()),
+        "deepseek": reviewer.status(),
+        "market_data": market_data,
+        "company_research": asdict(status.company_research),
+        "degraded_reasons": degraded_reasons,
+        "health": {"level": health_level, "issue_count": issue_count},
+        "recent_errors": recent_errors,
+        "last_error": status.last_error_code or (f"observer:{observer_error}" if observer_error else None),
+        "observer": observer,
+        "scheduler": {
+            "config_version": status.config_version,
+            "lanes": [asdict(lane) for lane in status.lanes],
+            "strategy_errors": strategy_errors,
+            "last_error_code": status.last_error_code,
+            "refresh_failure_count": status.refresh_failure_count,
+            "decision_failure_count": status.decision_failure_count,
+            "review_failure_count": status.review_failure_count,
+            "overlay_publish_count": status.overlay_publish_count,
+            "overlay_failure_count": status.overlay_failure_count,
+            "local_publish_count": status.local_publish_count,
+            "hybrid_publish_count": status.hybrid_publish_count,
+            "settlement_completed_count": status.settlement_completed_count,
+            "settlement_failure_count": status.settlement_failure_count,
+            "input_quality": input_quality_payload(status.input_quality),
+        },
+    }
+
+
+def input_quality_payload(statuses: tuple[V2InputQualityStatus, ...]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for status in statuses:
+        summary = status.summary
+        result[status.strategy.value] = {
+            "status": status.status,
+            "publishable": status.publishable,
+            "population_count": status.population_count,
+            "candidate_count": status.candidate_count,
+            "candidate_feature_count": status.candidate_feature_count,
+            "population_rejected_count": status.population_rejected_count,
+            "candidate_rejected_count": status.candidate_rejected_count,
+            "candidate_scored_count": status.candidate_scored_count,
+            "security_master_covered_count": status.security_master_covered_count,
+            "history_covered_count": status.history_covered_count,
+            "candidate_feature_coverage_ratio": status.candidate_feature_coverage_ratio,
+            "security_master_coverage_ratio": status.security_master_coverage_ratio,
+            "history_coverage_ratio": status.history_coverage_ratio,
+            "population_filter_reason_counts": dict(status.population_filter_reason_counts),
+            "candidate_filter_reason_counts": dict(status.candidate_filter_reason_counts),
+            "candidate_transient_reason_counts": dict(status.candidate_transient_reason_counts),
+            "candidate_optional_reason_counts": dict(status.candidate_optional_reason_counts),
+            "degraded_reasons": list(status.degraded_reasons),
+            "supply_funnel": asdict(status.supply_funnel),
+            "summary": {
+                "trade_date": summary.trade_date.isoformat(),
+                "quote_total_count": summary.quote_total_count,
+                "quote_covered_count": summary.quote_covered_count,
+                "quote_missing_count": summary.quote_missing_count,
+                "security_identity_missing_count": summary.security_identity_missing_count,
+                "latest_quote_source": summary.latest_quote_source,
+                "latest_quote_source_time": (
+                    summary.latest_quote_source_time.isoformat()
+                    if summary.latest_quote_source_time is not None
+                    else None
+                ),
+                "highest_final_score": summary.highest_final_score,
+            },
+            "supply_reason_counts": dict(status.supply_reason_counts),
+            "primary_blocker": status.primary_blocker,
+        }
+    return result
+
+
+def _runtime_issue_payload(issue: V2RuntimeIssue) -> dict[str, object]:
+    return {
+        "code": issue.code,
+        "severity": issue.severity,
+        "strategy": issue.strategy.value if issue.strategy is not None else None,
+        "stage": issue.stage,
+        "occurred_at": issue.occurred_at.isoformat(),
+        "last_occurred_at": issue.last_occurred_at.isoformat(),
+        "count": issue.count,
+        "recovery_status": issue.recovery_status,
+        "resolved_at": issue.resolved_at.isoformat() if issue.resolved_at is not None else None,
+    }

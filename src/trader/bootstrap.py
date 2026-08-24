@@ -5,8 +5,8 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
-from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -48,11 +48,12 @@ from trader.application.v2_input_runtime import (
     V2MarketDataAdapter,
 )
 from trader.application.v2_research_runtime import V2ResearchRuntime
-from trader.application.v2_runtime import V2RuntimeDependencies, V2RuntimeIssue, V2SchedulerRuntime
+from trader.application.v2_runtime import V2RuntimeDependencies, V2SchedulerRuntime
 from trader.application.workers import BoundedExecutor
 from trader.bootstrap_clock import utc_now as _utc_now
 from trader.bootstrap_data_plane import _initialize_reference_data_plane
 from trader.bootstrap_policy import _long_group_definitions, _long_item_definitions, _recommendation_policy
+from trader.bootstrap_status import runtime_status as _runtime_status
 from trader.domain.recommendation.models import Strategy
 from trader.infra.cache import BoundedLruCache
 from trader.infra.deepseek.budget import DeepSeekBudgetLedger
@@ -115,13 +116,13 @@ class ApplicationSystem:
     research_pool: BoundedExecutor
     source_lanes: SourceLaneRegistry
     data_pool: BoundedExecutor
-    long_v2_runtime: LongV2Runtime | None = None
-    decision_queries: UnifiedDecisionQueries | None = None
-    decision_events: UnifiedDecisionEventStream | None = None
-    tomorrow_index: UnifiedDecisionIndex | None = None
-    tomorrow_records: SQLiteDecisionRecordRepository | None = None
-    research_trace: SQLiteV2ResearchTraceStore | None = None
-    outcome_evidence: SQLiteOutcomeEvidenceRepository | None = None
+    long_v2_runtime: LongV2Runtime
+    decision_queries: UnifiedDecisionQueries
+    decision_events: UnifiedDecisionEventStream
+    tomorrow_index: UnifiedDecisionIndex
+    tomorrow_records: SQLiteDecisionRecordRepository
+    research_trace: SQLiteV2ResearchTraceStore
+    outcome_evidence: SQLiteOutcomeEvidenceRepository
 
     def _lifecycle_resources(self) -> SystemLifecycleResources:
         return SystemLifecycleResources(
@@ -130,7 +131,7 @@ class ApplicationSystem:
             self.data_pool,
             self.history_pool,
             self.research_pool,
-            tuple(runtime for runtime in (self.long_v2_runtime,) if runtime is not None),
+            (self.long_v2_runtime,),
             self.market_cache,
         )
 
@@ -748,80 +749,6 @@ def _build_publication(
         d25_freezer,
         observer,
     )
-
-
-def _runtime_status(
-    scheduler: V2SchedulerRuntime,
-    reviewer: DeepSeekReviewer,
-    budget: DeepSeekBudgetLedger,
-    market_health: Callable[[], Mapping[str, object]],
-) -> dict[str, object]:
-    status = scheduler.status()
-    try:
-        market_data = dict(market_health())
-    except (OSError, RuntimeError, TypeError, ValueError):
-        market_data = {"status": "unavailable"}
-    strategy_errors = dict(status.strategy_error_codes)
-    recent_errors = [_runtime_issue_payload(issue) for issue in status.recent_errors]
-    active_issues = [issue for issue in status.recent_errors if issue.recovery_status == "active"]
-    observer = asdict(status.observer)
-    observer_error = status.observer.last_error_code
-    degraded_reasons = [
-        f"{issue.strategy.value}:{issue.code}" if issue.strategy is not None else issue.code for issue in active_issues
-    ]
-    if observer_error:
-        degraded_reasons.append(f"observer:{observer_error}")
-    issue_count = len(active_issues) + int(bool(observer_error))
-    health_level = (
-        "error"
-        if not status.running or any(issue.severity == "error" for issue in active_issues)
-        else "degraded"
-        if issue_count
-        else "normal"
-    )
-    return {
-        "status": "running" if status.running else "stopped",
-        "runtime_started": status.running,
-        "runtime_version": status.config_version,
-        "phase": status.phase.value,
-        "deepseek_budget": budget.summary(_utc_now().date().isoformat()),
-        "deepseek": reviewer.status(),
-        "market_data": market_data,
-        "company_research": asdict(status.company_research),
-        "degraded_reasons": degraded_reasons,
-        "health": {"level": health_level, "issue_count": issue_count},
-        "recent_errors": recent_errors,
-        "last_error": status.last_error_code or (f"observer:{observer_error}" if observer_error else None),
-        "observer": observer,
-        "scheduler": {
-            "config_version": status.config_version,
-            "lanes": [asdict(lane) for lane in status.lanes],
-            "strategy_errors": strategy_errors,
-            "last_error_code": status.last_error_code,
-            "refresh_failure_count": status.refresh_failure_count,
-            "decision_failure_count": status.decision_failure_count,
-            "review_failure_count": status.review_failure_count,
-            "local_publish_count": status.local_publish_count,
-            "hybrid_publish_count": status.hybrid_publish_count,
-            "settlement_completed_count": status.settlement_completed_count,
-            "settlement_failure_count": status.settlement_failure_count,
-            "input_quality": getattr(status, "input_quality", {}),
-        },
-    }
-
-
-def _runtime_issue_payload(issue: V2RuntimeIssue) -> dict[str, object]:
-    return {
-        "code": issue.code,
-        "severity": issue.severity,
-        "strategy": issue.strategy.value if issue.strategy is not None else None,
-        "stage": issue.stage,
-        "occurred_at": issue.occurred_at.isoformat(),
-        "last_occurred_at": issue.last_occurred_at.isoformat(),
-        "count": issue.count,
-        "recovery_status": issue.recovery_status,
-        "resolved_at": issue.resolved_at.isoformat() if issue.resolved_at is not None else None,
-    }
 
 
 def _initialize_research_trace(trace: SQLiteV2ResearchTraceStore) -> None:

@@ -18,7 +18,7 @@ import urllib.request
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from werkzeug.serving import WSGIRequestHandler, make_server
 
@@ -33,6 +33,7 @@ from trader.application.decision_stream import (  # noqa: E402
     UnifiedDecisionEventStream,
     UnifiedPublishedEvent,
 )
+from trader.application.ports.runtime_status import V2InputQualityStatus  # noqa: E402
 from trader.application.ports.v2_runtime import (  # noqa: E402
     SharedDeepSeekRuntimeContract,
     V2CycleRequest,
@@ -121,6 +122,9 @@ class _RecordingData:
 
 
 class _OverlayOnlyDecisions:
+    def input_quality_status(self) -> tuple[V2InputQualityStatus, ...]:
+        return ()
+
     def has_local_draft(self, strategy: Strategy, trade_date: date) -> bool:
         del strategy, trade_date
         return False
@@ -261,7 +265,7 @@ def _validate(args: argparse.Namespace) -> datetime:
         raise ValueError("--simulated-start must be an ISO datetime") from exc
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError("--simulated-start must include a timezone offset")
-    return cast(datetime, shanghai_now(parsed))
+    return shanghai_now(parsed)
 
 
 def _seed(index: UnifiedDecisionIndex, strategy: Strategy, at: datetime, code: str) -> None:

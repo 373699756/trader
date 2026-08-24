@@ -151,6 +151,19 @@ def _run(output_dir: Path) -> dict[str, object]:
                 == 2
             )
         )
+        _wait(lambda: _execute(base, 'return document.querySelector("#funnelStatus").textContent;') == "360 → 65 → 0")
+        quality_summary = _execute(
+            base,
+            """
+            return {
+              coverage: document.querySelector('#quoteCoverageStatus').textContent,
+              coverageMeta: document.querySelector('#quoteCoverageMeta').textContent,
+              funnel: document.querySelector('#funnelStatus').textContent,
+              funnelMeta: document.querySelector('#funnelMeta').textContent,
+              source: document.querySelector('#quoteSource').textContent,
+            };
+            """,
+        )
         observations: list[_ObservationResult] = []
         expected_top_codes = {"tomorrow": "600009", "d25": "600010"}
         for strategy in ("tomorrow", "d25"):
@@ -178,6 +191,15 @@ def _run(output_dir: Path) -> dict[str, object]:
                 raise RuntimeError("browser observation ranking must be an object")
             codes = [str(code) for code in ranking.get("codes", [])]
             final_scores = [float(score) for score in ranking.get("finalScores", [])]
+            raw_quote_fields = _execute(
+                base,
+                """
+                return Array.from(document.querySelector('#observationBody tr[data-code]').cells)
+                  .slice(2, 6).map((cell) => cell.textContent.trim());
+                """,
+            )
+            if not isinstance(raw_quote_fields, list):
+                raise RuntimeError("browser observation quote fields must be a list")
             observations.append(
                 {
                     "strategy": strategy,
@@ -200,15 +222,7 @@ def _run(output_dir: Path) -> dict[str, object]:
                             """,
                         )
                     ),
-                    "quote_fields": list(
-                        _execute(
-                            base,
-                            """
-                            return Array.from(document.querySelector('#observationBody tr[data-code]').cells)
-                              .slice(2, 6).map((cell) => cell.textContent.trim());
-                            """,
-                        )
-                    ),
+                    "quote_fields": [str(value) for value in raw_quote_fields],
                     "codes": codes,
                     "final_scores": final_scores,
                     "ranked_high_first": (
@@ -224,6 +238,12 @@ def _run(output_dir: Path) -> dict[str, object]:
             lambda: (
                 _execute(base, 'return document.querySelector("#observationBody").textContent.trim();')
                 == "本轮无股票达到观察条件"
+            )
+        )
+        _wait(
+            lambda: (
+                _execute(base, 'return document.querySelector("#funnelMeta").textContent;')
+                == "过滤 216 · 观察草稿 0 · 最高 74.25"
             )
         )
         empty_observation = {
@@ -300,7 +320,7 @@ def _run(output_dir: Path) -> dict[str, object]:
                 "visible": True,
                 "rows": 0,
                 "message": "本轮无股票达到观察条件",
-                "summary": "过滤 待计算 · 观察草稿 0 · 最高 —",
+                "summary": "过滤 216 · 观察草稿 0 · 最高 74.25",
             }
             and error_details["visible"] is True
             and error_details["rows"] == 2
@@ -317,6 +337,14 @@ def _run(output_dir: Path) -> dict[str, object]:
             and not_ready_summary.get("funnelMeta") == "过滤 待计算 · 观察草稿 正在生成 · 最高 —"
             and "上限 168" in str(not_ready_summary.get("budgetMeta"))
             and not_ready_summary.get("freeze") == "采集中"
+            and quality_summary
+            == {
+                "coverage": "352 / 360",
+                "coverageMeta": "行情缺失 8 · 身份缺失 286（上市日期 221 · 交易日龄 65；免费行情+交易日历补齐中）",
+                "funnel": "360 → 65 → 0",
+                "funnelMeta": "过滤 216 · 观察草稿 2 · 最高 74.25",
+                "source": "腾讯行情",
+            }
             and all(_viewport_passed(viewport) for viewport in viewports)
         )
         return {
@@ -326,6 +354,7 @@ def _run(output_dir: Path) -> dict[str, object]:
             "observations": observations,
             "empty_observation": empty_observation,
             "not_ready_summary": not_ready_summary,
+            "quality_summary": quality_summary,
             "error_details": error_details,
             "long_quote_fields": long_quote_fields,
             "viewports": viewports,
@@ -407,6 +436,7 @@ def _browser_services() -> tuple[UnifiedWebServices, Callable[[], None]]:
     if not index.publish(long_projection, expected_version=None).accepted:
         raise RuntimeError("browser long fixture publication failed")
     status_calls = 0
+    empty_draft_published = False
 
     def status_provider() -> dict[str, object]:
         nonlocal status_calls
@@ -415,6 +445,7 @@ def _browser_services() -> tuple[UnifiedWebServices, Callable[[], None]]:
             result = drafts.publish(decisions[Strategy.TOMORROW])
             if not result.accepted:
                 raise RuntimeError(f"browser tomorrow draft publication failed: {result.reason}")
+        input_quality = _browser_input_quality(empty=empty_draft_published) if status_calls >= 2 else {}
         return {
             "status": "running",
             "runtime_started": True,
@@ -424,13 +455,17 @@ def _browser_services() -> tuple[UnifiedWebServices, Callable[[], None]]:
                 "active_source": "eastmoney",
                 "candidate_quote_latest_source": "tencent",
                 "candidate_quote_cache_entries": 360,
+                "security_master": {
+                    "provider": "free_market+production_calendar",
+                    "tushare_required": False,
+                },
                 "candidate_quote_age": {
                     "sample_count": 360,
                     "latest_source_time": _NOW.replace(hour=10, minute=0).isoformat(),
                 },
             },
             "scheduler": {
-                "input_quality": {},
+                "input_quality": input_quality,
                 "lanes": [
                     {"strategy": "tomorrow", "running": True, "pending": True},
                     {"strategy": "d25", "running": True, "pending": True},
@@ -464,6 +499,7 @@ def _browser_services() -> tuple[UnifiedWebServices, Callable[[], None]]:
         }
 
     def publish_empty_draft() -> None:
+        nonlocal empty_draft_published
         empty = ScoredDecision(
             Strategy.TOMORROW,
             _NOW.date(),
@@ -481,6 +517,7 @@ def _browser_services() -> tuple[UnifiedWebServices, Callable[[], None]]:
         result = drafts.publish(empty)
         if not result.accepted:
             raise RuntimeError(f"browser empty draft publication failed: {result.reason}")
+        empty_draft_published = True
 
     return (
         UnifiedWebServices(
@@ -490,6 +527,34 @@ def _browser_services() -> tuple[UnifiedWebServices, Callable[[], None]]:
         ),
         publish_empty_draft,
     )
+
+
+def _browser_input_quality(*, empty: bool = False) -> dict[str, object]:
+    status = {
+        "status": "not_ready",
+        "candidate_optional_reason_counts": {
+            "missing_listing_date": 221,
+            "missing_listing_age_sessions": 65,
+        },
+        "supply_funnel": {
+            "requested_candidates": 360,
+            "full_scored": 65,
+            "filter_reject": 216,
+            "selected_executable": 0,
+            "selected_observe": 0 if empty else 2,
+        },
+        "summary": {
+            "trade_date": _NOW.date().isoformat(),
+            "quote_total_count": 360,
+            "quote_covered_count": 352,
+            "quote_missing_count": 8,
+            "security_identity_missing_count": 286,
+            "latest_quote_source": "tencent",
+            "latest_quote_source_time": _NOW.replace(hour=10, minute=0).isoformat(),
+            "highest_final_score": 74.25,
+        },
+    }
+    return {strategy: status for strategy in ("tomorrow", "d25")}
 
 
 def _observation_item(code: str, *, rank: int, final_score: float) -> DecisionItem:

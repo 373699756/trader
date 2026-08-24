@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from types import MappingProxyType
@@ -97,48 +97,6 @@ def hard_filter(
         snapshot,
         default_filter_rules(max_age_seconds=max_age_seconds, policy=policy),
         now=now,
-    )
-
-
-def legacy_v14_hard_filter(
-    snapshot: FeatureSnapshot,
-    now: datetime,
-    *,
-    max_age_seconds: float,
-    policy: HardFilterPolicy | None = None,
-) -> FilterResult:
-    """Reproduce the pre-v15 filter projection for old frozen replays."""
-
-    current = hard_filter(snapshot, now, max_age_seconds=max_age_seconds, policy=policy)
-    v15_required = {
-        "new_listing_session",
-        "relisted_first_session",
-        "delisting_period_first_session",
-    }
-    v15_optional = {
-        "board_classification_conflict",
-        "board_identity_degraded",
-        "missing_listing_date",
-        "missing_listing_age_sessions",
-    }
-    reasons = [reason for reason in current.reasons if reason.filter_code not in v15_required]
-    optional_flags: list[FilterAudit] = []
-    for audit in current.optional_flags:
-        if audit.filter_code == "cross_source_deviation":
-            reasons.append(audit)
-        elif audit.filter_code not in v15_optional:
-            optional_flags.append(audit)
-    reasons = [
-        replace(reason, filter_code="growth_board_too_hot")
-        if reason.filter_code in {"chinext_board_too_hot", "star_board_too_hot"}
-        else reason
-        for reason in reasons
-    ]
-    return FilterResult(
-        allowed=not reasons,
-        board=board_for_code(snapshot.quote.code),
-        reasons=tuple(reasons),
-        optional_flags=tuple(optional_flags),
     )
 
 
@@ -501,5 +459,4 @@ __all__ = [
     "board_for_code",
     "board_for_snapshot",
     "hard_filter",
-    "legacy_v14_hard_filter",
 ]

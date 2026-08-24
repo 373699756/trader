@@ -173,11 +173,11 @@ class FakePipeline:
     def stop(self, timeout_seconds: float = 15.0) -> None:
         self.stopped += 1
 
-    def submit_tick(self, at: datetime | None = None) -> bool:
+    def submit_due(self, at: datetime | None = None) -> float:
         if at is not None:
             self.tick_times.append(at)
         self.ticked.set()
-        return True
+        return 60.0
 
 
 class BlockingTickPipeline(FakePipeline):
@@ -186,7 +186,7 @@ class BlockingTickPipeline(FakePipeline):
         self.tick_started = threading.Event()
         self.allow_tick = threading.Event()
 
-    def submit_tick(self, at: datetime | None = None) -> bool:
+    def submit_due(self, at: datetime | None = None) -> float:
         self.tick_started.set()
         self.allow_tick.wait()
-        return super().submit_tick(at)
+        return super().submit_due(at)

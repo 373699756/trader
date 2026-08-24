@@ -10,6 +10,7 @@ from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
 from trader.application.ports.market import ResearchRefreshResult
+from trader.application.ports.runtime_status import V2InputQualityStatus
 from trader.application.research_audit import V2CommittedResearchAudit
 from trader.application.schedule import MarketPhase
 from trader.application.shutdown import ShutdownDeadline, ShutdownStep
@@ -136,6 +137,8 @@ class V2DataRefreshPort(Protocol):
 
 
 class V2DecisionBuilderPort(Protocol):
+    def input_quality_status(self) -> tuple[V2InputQualityStatus, ...]: ...
+
     def has_local_draft(self, strategy: Strategy, trade_date: date) -> bool: ...
 
     def build_local(self, request: V2CycleRequest) -> DecisionIdentity | None: ...

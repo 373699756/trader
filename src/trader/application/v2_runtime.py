@@ -17,6 +17,7 @@ from trader.application.decision_observers import DecisionObserverRuntime, Decis
 from trader.application.decision_overlay_refresh import DecisionOverlayRefresher
 from trader.application.ports.clock import Clock
 from trader.application.ports.market import ResearchRefreshResult
+from trader.application.ports.runtime_status import V2InputQualityStatus
 from trader.application.ports.v2_runtime import (
     SharedDeepSeekRuntimeContract,
     V2CycleRequest,
@@ -67,7 +68,7 @@ class V2RuntimeDependencies:
     freezes: V2FreezePort
     settlement: V2SettlementPort
     research_factory: V2ResearchRuntimeFactoryPort
-    publish_overlay: V2OverlayPublisher = lambda _overlay: None
+    publish_overlay: V2OverlayPublisher
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,8 @@ class V2RuntimeStatus:
     refresh_failure_count: int
     decision_failure_count: int
     review_failure_count: int
+    overlay_publish_count: int
+    overlay_failure_count: int
     local_publish_count: int
     hybrid_publish_count: int
     publish_rejection_count: int
@@ -109,7 +112,7 @@ class V2RuntimeStatus:
     last_error_code: str
     strategy_error_codes: tuple[tuple[str, str], ...]
     recent_errors: tuple[V2RuntimeIssue, ...]
-    input_quality: dict[str, dict[str, object]]
+    input_quality: tuple[V2InputQualityStatus, ...]
 
 
 class V2SchedulerRuntime:
@@ -132,7 +135,6 @@ class V2SchedulerRuntime:
             dependencies.index,
             dependencies.decisions,
             dependencies.publish_overlay,
-            self._record_failure,
             _failure_code,
         )
         self._research = dependencies.research_factory(self._on_research_result)
@@ -163,6 +165,8 @@ class V2SchedulerRuntime:
         self._refresh_failure_count = 0
         self._decision_failure_count = 0
         self._review_failure_count = 0
+        self._overlay_publish_count = 0
+        self._overlay_failure_count = 0
         self._local_publish_count = 0
         self._hybrid_publish_count = 0
         self._publish_rejection_count = 0
@@ -239,13 +243,6 @@ class V2SchedulerRuntime:
             self._record_failure("research", _failure_code(exc, "research_offer_failed"), None)
         return seconds_until_next_schedule_boundary(observed_at, maximum_seconds=30.0)
 
-    def submit_tick(self, at: datetime | None = None) -> bool:
-        with self._lock:
-            if not self._running:
-                return False
-        self.submit_due(at)
-        return True
-
     def submit_cycle(self, request: V2CycleRequest) -> LatestWinsOffer:
         with self._lock:
             if not self._running:
@@ -311,6 +308,8 @@ class V2SchedulerRuntime:
                 refresh_failure_count=self._refresh_failure_count,
                 decision_failure_count=self._decision_failure_count,
                 review_failure_count=self._review_failure_count,
+                overlay_publish_count=self._overlay_publish_count,
+                overlay_failure_count=self._overlay_failure_count,
                 local_publish_count=self._local_publish_count,
                 hybrid_publish_count=self._hybrid_publish_count,
                 publish_rejection_count=self._publish_rejection_count,
@@ -326,7 +325,7 @@ class V2SchedulerRuntime:
                     if strategy in self._strategy_error_codes
                 ),
                 recent_errors=self._sorted_recent_errors_locked(),
-                input_quality=_input_quality_status(self._dependencies.decisions),
+                input_quality=self._dependencies.decisions.input_quality_status(),
             )
 
     def _scheduled_request(self, strategy: Strategy, observed_at: datetime, phase: str) -> V2CycleRequest:
@@ -417,7 +416,11 @@ class V2SchedulerRuntime:
     def _prepare_cycle_data(self, request: V2CycleRequest) -> bool:
         if not self._refresh_data(request):
             return False
-        self._overlay_refresher.refresh(request)
+        for outcome in self._overlay_refresher.refresh(request):
+            if outcome.status == "failed":
+                self._record_failure("overlay", outcome.error_code, outcome.strategy)
+            elif outcome.status != "skipped":
+                self._record_overlay_success(outcome.strategy, published=outcome.status == "published")
         if request.phase == "midday_recovery" and request.strategy is Strategy.LONG:
             with self._lock:
                 self._midday_long_handoff_date = request.trade_date
@@ -659,6 +662,8 @@ class V2SchedulerRuntime:
                 self._decision_failure_count += 1
             elif stage == "review":
                 self._review_failure_count += 1
+            elif stage == "overlay":
+                self._overlay_failure_count += 1
             elif stage == "freeze":
                 self._freeze_failure_count += 1
             elif stage == "settlement":
@@ -670,6 +675,12 @@ class V2SchedulerRuntime:
                 self._strategy_error_codes[strategy] = qualified
             self._last_error_code = qualified
             self._record_issue_locked(qualified, stage, strategy, occurred_at)
+
+    def _record_overlay_success(self, strategy: Strategy, *, published: bool) -> None:
+        with self._lock:
+            if published:
+                self._overlay_publish_count += 1
+            self._resolve_issues_locked(strategy=strategy, stages=frozenset({"overlay"}))
 
     def _record_issue_locked(
         self,
@@ -774,20 +785,6 @@ def _failure_code(exc: BaseException, fallback: str) -> str:
     if re.fullmatch(r"[a-z0-9_]{1,64}", value) is not None:
         return value
     return fallback
-
-
-def _input_quality_status(decisions: V2DecisionBuilderPort) -> dict[str, dict[str, object]]:
-    getter = getattr(decisions, "input_quality_status", None)
-    if not callable(getter):
-        return {}
-    raw = getter()
-    if not isinstance(raw, dict):
-        return {}
-    return {
-        str(strategy): dict(values)
-        for strategy, values in raw.items()
-        if isinstance(strategy, str) and isinstance(values, dict)
-    }
 
 
 def _research_input_version(result: ResearchRefreshResult) -> str:

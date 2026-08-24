@@ -99,7 +99,7 @@ assert.deepStrictEqual(
     schema_version: "v2_status_v2",
     release: {
       decision_view_schema: "v2_decision_view_v2",
-      web_asset_revision: "release-contract-2026-08-24-v16",
+      web_asset_revision: "release-contract-2026-08-24-v17",
     },
   }))),
   { compatible: true, reason: "" },
@@ -215,7 +215,7 @@ state.renderSummary(
   },
   [],
   "open",
-  null,
+  { source: "fixture" },
   sandbox.window.TraderSelection,
   sandbox.window.TraderRender,
   {

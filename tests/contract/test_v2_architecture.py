@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import MISSING, fields
 from pathlib import Path
+
+from trader.application.ports.v2_runtime import V2DecisionBuilderPort
+from trader.application.v2_runtime import V2RuntimeDependencies
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "trader"
 PROJECT_ROOT = SOURCE_ROOT.parents[1]
@@ -111,3 +115,10 @@ def test_application_runtime_modules_are_reachable_from_bootstrap() -> None:
 def test_bootstrap_wires_overlay_events_into_the_unified_scheduler() -> None:
     source = (SOURCE_ROOT / "bootstrap.py").read_text(encoding="utf-8")
     assert "publish_overlay=publication.decision_events.publish_overlay" in source
+
+
+def test_overlay_publisher_and_input_quality_are_required_typed_runtime_boundaries() -> None:
+    publisher = next(field for field in fields(V2RuntimeDependencies) if field.name == "publish_overlay")
+
+    assert publisher.default is MISSING
+    assert "input_quality_status" in V2DecisionBuilderPort.__dict__

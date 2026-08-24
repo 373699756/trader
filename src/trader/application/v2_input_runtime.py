@@ -16,7 +16,8 @@ from trader.application.long_v2_runtime import LongV2Runtime
 from trader.application.policy import RecommendationPolicy
 from trader.application.ports.long import LongRefreshRequest
 from trader.application.ports.market import MarketDataUnavailableError
-from trader.application.ports.reviews import DeepSeekReviewPort, DeepSeekReviewUnavailableError
+from trader.application.ports.reviews import DeepSeekReviewUnavailableError, TomorrowDeepSeekReviewPort
+from trader.application.ports.runtime_status import V2InputQualityStatus, V2SupplyFunnel, V2SupplySummary
 from trader.application.ports.tomorrow import D25NativeInput, TodayNativeInput, TomorrowNativeInput
 from trader.application.ports.v2_runtime import (
     SharedDeepSeekRuntimeContract,
@@ -42,6 +43,7 @@ from trader.application.today_v2_projection import (
     build_today_v2_local,
     validate_review_manifests,
 )
+from trader.application.tomorrow_quality import TomorrowInputQuality
 from trader.application.tomorrow_v2_freezing import TomorrowV2FreezeCoordinator
 from trader.application.tomorrow_v2_projection import (
     TomorrowV2LocalProjection,
@@ -140,7 +142,7 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         self._shared_loading: set[tuple[date, datetime, str]] = set()
         self._projections: dict[str, TodayV2LocalProjection | TomorrowV2LocalProjection] = {}
         self._decisions: dict[str, ScoredDecision] = {}
-        self._input_quality: dict[Strategy, dict[str, object]] = {}
+        self._input_quality: dict[Strategy, V2InputQualityStatus] = {}
         self._sequences = {strategy: 1 for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)}
 
     def refresh(self, request: V2CycleRequest) -> None:
@@ -308,12 +310,11 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
             self._trim_research_sources()
         return projection.local
 
-    def input_quality_status(self) -> dict[str, dict[str, object]]:
+    def input_quality_status(self) -> tuple[V2InputQualityStatus, ...]:
         with self._lock:
-            return {
-                strategy.value: dict(self._input_quality[strategy])
-                for strategy in sorted(self._input_quality, key=lambda item: item.value)
-            }
+            return tuple(
+                self._input_quality[strategy] for strategy in sorted(self._input_quality, key=lambda item: item.value)
+            )
 
     def projection(self, version: str) -> TodayV2LocalProjection | TomorrowV2LocalProjection | None:
         with self._lock:
@@ -369,26 +370,27 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
     ) -> DecisionOverlay | None:
         if decision.trade_date != request.trade_date:
             return None
-        if previous is not None and (
-            previous.parent_version != decision.version or previous.observed_at >= request.observed_at
-        ):
+        if previous is not None and previous.parent_version != decision.version:
             return None
         with self._lock:
             batch = self._batches.get((request.strategy, request.input_version))
         if batch is None:
             return None
         features_by_code = _selected_quote_features(batch, identity_codes(decision))
+        observed_at = _overlay_observed_at(request, tuple(features_by_code.values()))
+        if previous is not None and previous.observed_at >= observed_at:
+            return None
         quotes = {quote.code: quote for quote in previous.quotes} if previous is not None else {}
         changed = False
         for feature in features_by_code.values():
-            changed = _merge_overlay_quote(quotes, feature, request.observed_at) or changed
+            changed = _merge_overlay_quote(quotes, feature, observed_at) or changed
         if not changed:
             return None
         return DecisionOverlay(
             strategy=decision.strategy,
             trade_date=decision.trade_date,
             parent_version=decision.version,
-            observed_at=request.observed_at,
+            observed_at=observed_at,
             quotes=tuple(quotes.values()),
         )
 
@@ -401,31 +403,29 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
 
 def _supply_status(
     projection: TodayV2LocalProjection | TomorrowV2LocalProjection,
-) -> dict[str, object]:
-    status = projection.input_quality.to_status()
+) -> V2InputQualityStatus:
+    quality = projection.input_quality
     requested = set(projection.native_input.requested_codes)
     evaluations = tuple(item for item in projection.selection.evaluations if item.code in requested)
     decision_items = projection.local.items
-    funnel = {
-        "requested_candidates": projection.input_quality.candidate_count,
-        "candidate_features": projection.input_quality.candidate_feature_count,
-        "security_master": projection.input_quality.security_master_covered_count,
-        "history": projection.input_quality.history_covered_count,
-        "filter_pass": sum(item.disposition is TomorrowDisposition.PASS for item in evaluations),
-        "filter_observe": sum(item.disposition is TomorrowDisposition.OBSERVE_ONLY for item in evaluations),
-        "filter_reject": sum(item.disposition is TomorrowDisposition.REJECT for item in evaluations),
-        "full_scored": projection.input_quality.candidate_scored_count,
-        "review_eligible": len(projection.review_candidates),
-        "action_executable": sum(item.action is RecommendationAction.EXECUTABLE for item in decision_items),
-        "action_observe": sum(item.action is RecommendationAction.OBSERVE for item in decision_items),
-        "action_unavailable": sum(item.action is RecommendationAction.UNAVAILABLE for item in decision_items),
-        "selected_executable": sum(
+    funnel = V2SupplyFunnel(
+        requested_candidates=quality.candidate_count,
+        candidate_features=quality.candidate_feature_count,
+        security_master=quality.security_master_covered_count,
+        history=quality.history_covered_count,
+        filter_pass=sum(item.disposition is TomorrowDisposition.PASS for item in evaluations),
+        filter_observe=sum(item.disposition is TomorrowDisposition.OBSERVE_ONLY for item in evaluations),
+        filter_reject=sum(item.disposition is TomorrowDisposition.REJECT for item in evaluations),
+        full_scored=quality.candidate_scored_count,
+        review_eligible=len(projection.review_candidates),
+        action_executable=sum(item.action is RecommendationAction.EXECUTABLE for item in decision_items),
+        action_observe=sum(item.action is RecommendationAction.OBSERVE for item in decision_items),
+        action_unavailable=sum(item.action is RecommendationAction.UNAVAILABLE for item in decision_items),
+        selected_executable=sum(
             item.selected and item.action is RecommendationAction.EXECUTABLE for item in decision_items
         ),
-        "selected_observe": sum(
-            item.selected and item.action is RecommendationAction.OBSERVE for item in decision_items
-        ),
-    }
+        selected_observe=sum(item.selected and item.action is RecommendationAction.OBSERVE for item in decision_items),
+    )
     reasons: Counter[str] = Counter()
     for item in evaluations:
         reasons.update(reason.code for reason in item.filter_reasons)
@@ -436,11 +436,31 @@ def _supply_status(
             reasons[item.selection_skip_reason] += 1
     reasons.update(item.reason for item in decision_items if item.reason)
     reasons.update(risk for item in decision_items for risk in item.risk_codes)
-    status["supply_funnel"] = funnel
-    status["summary"] = _supply_summary(projection)
-    status["supply_reason_counts"] = dict(sorted(reasons.items()))
-    status["primary_blocker"] = _primary_supply_blocker(projection, funnel)
-    return status
+    return V2InputQualityStatus(
+        strategy=projection.local.strategy,
+        status=quality.status,
+        publishable=quality.publishable,
+        summary=_supply_summary(projection),
+        supply_funnel=funnel,
+        population_count=quality.population_count,
+        candidate_count=quality.candidate_count,
+        candidate_feature_count=quality.candidate_feature_count,
+        population_rejected_count=quality.population_rejected_count,
+        candidate_rejected_count=quality.candidate_rejected_count,
+        candidate_scored_count=quality.candidate_scored_count,
+        security_master_covered_count=quality.security_master_covered_count,
+        history_covered_count=quality.history_covered_count,
+        candidate_feature_coverage_ratio=quality.candidate_feature_coverage_ratio,
+        security_master_coverage_ratio=quality.security_master_coverage_ratio,
+        history_coverage_ratio=quality.history_coverage_ratio,
+        population_filter_reason_counts=tuple(quality.population_filter_reason_counts.items()),
+        candidate_filter_reason_counts=tuple(quality.candidate_filter_reason_counts.items()),
+        candidate_transient_reason_counts=tuple(quality.candidate_transient_reason_counts.items()),
+        candidate_optional_reason_counts=tuple(quality.candidate_optional_reason_counts.items()),
+        degraded_reasons=quality.degraded_reasons,
+        supply_reason_counts=tuple(reasons.items()),
+        primary_blocker=_primary_supply_blocker(quality, funnel),
+    )
 
 
 def _quote_order(feature: FeatureSnapshot) -> tuple[datetime, datetime, str]:
@@ -460,6 +480,21 @@ def _selected_quote_features(
         if current is None or _quote_order(feature) > _quote_order(current):
             features_by_code[feature.quote.code] = feature
     return features_by_code
+
+
+def _overlay_observed_at(request: V2CycleRequest, features: tuple[FeatureSnapshot, ...]) -> datetime:
+    target_zone = request.observed_at.tzinfo
+    if target_zone is None:
+        raise V2DecisionUnavailableError("overlay_request_time_unavailable")
+    values = [request.observed_at]
+    for feature in features:
+        values.extend((feature.observed_at, feature.quote.received_time))
+    if any(value.tzinfo is None or value.utcoffset() is None for value in values):
+        raise V2DecisionUnavailableError("overlay_input_time_unavailable")
+    observed_at = max(value.astimezone(target_zone) for value in values)
+    if observed_at.date() != request.trade_date:
+        raise V2DecisionUnavailableError("overlay_observation_trade_date_mismatch")
+    return observed_at
 
 
 def _merge_overlay_quote(
@@ -493,7 +528,7 @@ def _merge_overlay_quote(
 
 def _supply_summary(
     projection: TodayV2LocalProjection | TomorrowV2LocalProjection,
-) -> dict[str, object]:
+) -> V2SupplySummary:
     requested = set(projection.native_input.requested_codes)
     features = tuple(
         feature for feature in projection.native_input.candidate_features if feature.quote.code in requested
@@ -506,19 +541,19 @@ def _supply_summary(
     )
     highest = max((item.final_score for item in projection.local.items), default=None)
     total = projection.input_quality.candidate_count
-    return {
-        "trade_date": projection.local.trade_date.isoformat(),
-        "quote_total_count": total,
-        "quote_covered_count": len(complete_quotes),
-        "quote_missing_count": max(0, total - len(complete_quotes)),
-        "security_identity_missing_count": max(
+    return V2SupplySummary(
+        trade_date=projection.local.trade_date,
+        quote_total_count=total,
+        quote_covered_count=len(complete_quotes),
+        quote_missing_count=max(0, total - len(complete_quotes)),
+        security_identity_missing_count=max(
             0,
             total - projection.input_quality.security_master_covered_count,
         ),
-        "latest_quote_source": latest.source if latest is not None else None,
-        "latest_quote_source_time": latest.source_time.isoformat() if latest is not None else None,
-        "highest_final_score": highest,
-    }
+        latest_quote_source=latest.source if latest is not None else None,
+        latest_quote_source_time=latest.source_time if latest is not None else None,
+        highest_final_score=highest,
+    )
 
 
 def _summary_quote_complete(feature: FeatureSnapshot) -> bool:
@@ -536,25 +571,29 @@ def _summary_quote_complete(feature: FeatureSnapshot) -> bool:
 
 
 def _primary_supply_blocker(
-    projection: TodayV2LocalProjection | TomorrowV2LocalProjection,
-    funnel: dict[str, int],
+    quality: TomorrowInputQuality,
+    funnel: V2SupplyFunnel,
 ) -> str:
-    quality = projection.input_quality
-    action_blocker = "no_executable_candidates" if funnel["action_observe"] else "local_score_below_observation_floor"
+    action_blocker = "no_executable_candidates" if funnel.action_observe else "local_score_below_observation_floor"
     priorities = (
         (quality.candidate_feature_coverage_ratio < 1.0, "candidate_feature_coverage_incomplete"),
         (quality.security_master_coverage_ratio < 1.0, "security_master_coverage_incomplete"),
         (quality.history_coverage_ratio < 0.99, "history_coverage_incomplete"),
-        (funnel["full_scored"] == 0, "no_scored_candidates"),
-        (funnel["review_eligible"] == 0, "no_review_eligible_candidates"),
-        (funnel["action_executable"] == 0, action_blocker),
-        (funnel["selected_executable"] == 0, "selection_constraints"),
+        (funnel.full_scored == 0, "no_scored_candidates"),
+        (funnel.review_eligible == 0, "no_review_eligible_candidates"),
+        (funnel.action_executable == 0, action_blocker),
+        (funnel.selected_executable == 0, "selection_constraints"),
     )
     return next((reason for blocked, reason in priorities if blocked), "ready")
 
 
 class V2DeepSeekAdapter(V2DeepSeekUpgradePort):
-    def __init__(self, reviewer: DeepSeekReviewPort, policy: RecommendationPolicy, data: V2MarketDataAdapter) -> None:
+    def __init__(
+        self,
+        reviewer: TomorrowDeepSeekReviewPort,
+        policy: RecommendationPolicy,
+        data: V2MarketDataAdapter,
+    ) -> None:
         self._reviewer = reviewer
         self._policy = policy
         self._data = data
@@ -581,9 +620,8 @@ class V2DeepSeekAdapter(V2DeepSeekUpgradePort):
             )
         except (DeepSeekReviewUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
             raise V2ReviewUnavailableError(type(exc).__name__) from exc
-        manifest = getattr(self._reviewer, "evidence_manifest_hash", None)
         expected = {
-            candidate.code: manifest(candidate.features) if callable(manifest) else "" for candidate in candidates
+            candidate.code: self._reviewer.evidence_manifest_hash(candidate.features) for candidate in candidates
         }
         if not validate_review_manifests(projection, reviews, expected):
             return None
