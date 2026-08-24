@@ -6,6 +6,9 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户反馈 `./run.sh` 无法启动，新增“物理损坏 SQLite 数据平面”失败先行回归：覆盖基础设施端口
+  将驱动异常转换为受控不可用，以及组合根在数据平面不可恢复时仍按既有 fail-open 契约继续启动。
+
 - 针对用户反馈近 20 日推荐与观察池供给稀少、DeepSeek 长期未参与，新增不泄露股票身份的
   `scheduler.input_quality.*.supply_funnel`、`supply_reason_counts` 和 `primary_blocker`。诊断逐层
   区分请求候选、候选特征、证券主数据、有效历史、过滤 disposition、完整评分、DeepSeek 可审集合、
@@ -237,6 +240,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- V2 数据平面仓储现在在初始化、恢复、读和写的完整连接作用域统一捕获 `sqlite3.DatabaseError`，并映射
+  为 `DataPlaneUnavailableError`；锁定仍保留专用受控原因，其它物理损坏不再把 SQLite 驱动异常泄漏到
+  进程生命周期。该变化不自动删除、覆盖或伪装修复损坏数据，也不改变正常数据库 schema/提交语义。
+
 - 候选历史异步补齐改为 `HistoryWarmup` 唯一所有者：证券主数据/交易日历参考刷新不再向 history
   lane 提交整批候选的第二条任务，候选更新仍以最多 30 只批次、三板覆盖和逐股退避推进，不与实时
   Web 请求绑定。
@@ -405,6 +412,12 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复 `.runtime/v2/v2-data/v2-data.sqlite3` 物理损坏时 `./run.sh` 在 Web 绑定前以
+  `database disk image is malformed` 退出的问题。已确认直接根因是活动 V2 数据平面整库损坏；导致
+  文件损坏的更早外部事件待验证，不能仅凭现有文件归因于断电、磁盘或某次进程退出。修复后持久化
+  适配器受控降级，现有只读 Web 和本地内存推荐链可继续启动；本机损坏库已改名保留并由 schema v3
+  新库接管活动路径。
 
 - 修复历史批次中一个慢尾触发截止后回滚同批成功股票的问题。截止前已完成且通过 qfq/schema 校验
   的单股结果现在先写入缓存和数据平面，批次仍以 timeout 终态释放身份，仅未覆盖代码进入退避重试。
@@ -588,6 +601,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未删除任何版本控制内业务链、正式推荐、研究库或用户文件；只把已由只读 `quick_check` 确认损坏的
+  活动数据平面库移出活动文件名并保留可恢复副本，避免新进程继续写入不可信整库。
+
 - 删除 `ReferenceLoader.schedule_reference_data()` 中绕过 `HistoryWarmup` 的全候选历史异步提交路径，
   不再保留两套历史调度状态源。
 
@@ -675,6 +691,17 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 启动故障定向验证通过：新增两项物理损坏回归先在旧实现稳定失败，修复后与完整数据平面单元、迁移和
+  V2 bootstrap contract 共 17 项通过；受影响文件 Ruff、format check 和 mypy 通过。
+- 真实 `./run.sh` 在原损坏库仍存在时已越过初始化并输出受控降级；隔离损坏库后再次启动，无降级告警，
+  输出 `浏览器登录地址->http://127.0.0.1:5000`，`GET /api/v2/status` 返回 HTTP 200。新数据平面
+  `PRAGMA quick_check=ok`、schema version 为 3；`./run.sh validate-config` 返回 `status=ok`，随后用
+  一次 Ctrl+C 在共享关闭期限内正常停止。
+- SQLite 恢复和进程启动高风险完整门禁通过：`make format-check`（353 文件）、`make lint`（严格
+  refactor debt 为零）、`make type-check`（227 个源文件）、完整 `make test` 和 `make package`。
+  打包首轮仅因沙箱禁止隔离环境下载 `setuptools>=68` 失败，获准联网后相同命令成功生成 sdist/wheel；
+  HTML/CSS/JavaScript 未修改，三档浏览器视觉验收不适用。
 
 - Score-P2 高风险门禁通过：`make format-check`、`make lint`（含零 strict refactor debt）、
   `make type-check`（227 个源文件）、`make test`（全量 100%）和 `make package`（sdist 与 wheel）。
@@ -995,6 +1022,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 108MiB 损坏数据平面副本仍保留在 `.runtime/v2/v2-data`，没有尝试从物理损坏页恢复其中的最近证券
+  主数据、紧凑历史、风险证据或游标；活动库会按公开来源重新预热。正式决策、DeepSeek 预算、研究
+  observation、历史筛选和 outcome 使用独立数据库，未被本批移动。损坏的上游触发事件仍待验证；若
+  需要取证或尽力恢复副本，应作为独立的只读 SQLite 恢复任务处理，不能把未校验记录写回活动库。
 
 - 本批不承诺立即产生更多可执行荐股或改善真实收益。证券主数据仍依赖上游真实上市日期与交易日历，
   未覆盖时继续 `not_ready`；公告首次完整建基线最多需要 50 页且受免费来源稳定性影响，失败时继续

@@ -10,6 +10,7 @@ from trader.application.decision_observers import DecisionObserverStatus
 from trader.application.ports.v2_runtime import V2ResearchRuntimeStatus
 from trader.application.v2_research_runtime import V2ResearchRuntime
 from trader.bootstrap import _initialize_reference_data_plane, _initialize_research_trace, _runtime_status, build_system
+from trader.infra.persistence.data_plane import DataPlaneRepository
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -60,6 +61,21 @@ def test_reference_data_plane_recovery_is_fail_open() -> None:
 
     data_plane.initialize.assert_called_once_with()
     market_data.references.recover.assert_not_called()
+    market_data.research.recover_from_data_plane.assert_not_called()
+
+
+def test_reference_data_plane_physical_corruption_is_fail_open(tmp_path: Path) -> None:
+    from unittest.mock import Mock
+
+    database = tmp_path / "v2-data" / "v2-data.sqlite3"
+    database.parent.mkdir(parents=True)
+    database.write_bytes(b"not-a-sqlite-database")
+    market_data = Mock()
+
+    _initialize_reference_data_plane(market_data, DataPlaneRepository(tmp_path))
+
+    market_data.references.recover.assert_not_called()
+    market_data.history.recover_from_data_plane.assert_not_called()
     market_data.research.recover_from_data_plane.assert_not_called()
 
 

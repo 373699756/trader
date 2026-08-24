@@ -87,8 +87,11 @@ class DataPlaneRepository:
 
     def initialize(self) -> None:
         with self._lock:
-            self._runtime_root.mkdir(parents=True, exist_ok=True)
-            data_plane_sqlite.initialize_database(self._database)
+            try:
+                self._runtime_root.mkdir(parents=True, exist_ok=True)
+                data_plane_sqlite.initialize_database(self._database)
+            except sqlite3.DatabaseError as exc:
+                raise _map_sqlite_error(exc, operation="initialize") from exc
 
     def save_security_master_recent(self, record: SecurityMasterRecord) -> None:
         self._save("security_master", mode="recent", record=record)
@@ -319,8 +322,8 @@ class DataPlaneRepository:
                                 if self._quarantine_row(connection, table, row, reason="verification_failed"):
                                     quarantined += 1
                                     orphaned += 1
-            except sqlite3.OperationalError as exc:
-                raise DataPlaneUnavailableError("data plane recovery failed") from exc
+            except sqlite3.DatabaseError as exc:
+                raise _map_sqlite_error(exc, operation="recovery") from exc
 
         return DataPlaneRecoverySummary(recovered=recovered, quarantined=quarantined, orphaned=orphaned)
 
@@ -404,7 +407,7 @@ class DataPlaneRepository:
                         """,
                         pk_values,
                     )
-            except sqlite3.OperationalError as exc:
+            except sqlite3.DatabaseError as exc:
                 raise _map_sqlite_error(exc, operation="write") from exc
 
     def _load(
@@ -426,24 +429,26 @@ class DataPlaneRepository:
         pk_fields = _pk_fields(profile, mode)
         pk_values = _identity_values(profile, mode=mode, freeze_id=freeze_id, fields=identities)
 
-        with self._lock, data_plane_sqlite.connection_scope(self._database) as connection:
-            row = connection.execute(
-                f"""
-                SELECT * FROM {table}
-                WHERE {_where_clause(pk_fields)} AND status = 'committed'
-                """,
-                pk_values,
-            ).fetchone()
-            if row is None:
-                return None
+        with self._lock:
             try:
-                _assert_committed_record_integrity(table, row)
-                return _row_to_record(table, row)
-            except (TypeError, ValueError, KeyError):
-                self._quarantine_row(connection, table, row, reason="load_verification_failed")
-                return None
-            except sqlite3.OperationalError as exc:
-                raise DataPlaneUnavailableError("data plane load failed") from exc
+                with data_plane_sqlite.connection_scope(self._database) as connection:
+                    row = connection.execute(
+                        f"""
+                        SELECT * FROM {table}
+                        WHERE {_where_clause(pk_fields)} AND status = 'committed'
+                        """,
+                        pk_values,
+                    ).fetchone()
+                    if row is None:
+                        return None
+                    try:
+                        _assert_committed_record_integrity(table, row)
+                        return _row_to_record(table, row)
+                    except (TypeError, ValueError, KeyError):
+                        self._quarantine_row(connection, table, row, reason="load_verification_failed")
+                        return None
+            except sqlite3.DatabaseError as exc:
+                raise _map_sqlite_error(exc, operation="load") from exc
 
     def _load_records(  # noqa: C901,PLR0912,PLR0913
         self,
@@ -480,35 +485,36 @@ class DataPlaneRepository:
 
         result: list[Record] = []
 
-        with self._lock, data_plane_sqlite.connection_scope(self._database) as connection:
+        with self._lock:
             try:
-                for row in connection.execute(query, params).fetchall():
-                    if code_filter is not None:
-                        candidate = _text(row["code"])
-                        if candidate not in code_filter:
-                            continue
-                    if cursor_filter is not None:
-                        candidate = _text(row["cursor_name"])
-                        if candidate not in cursor_filter:
-                            continue
-                    if trade_date_filter is not None:
-                        candidate = _text(row["trade_date"])
-                        if candidate not in trade_date_filter:
-                            continue
-                    if evidence_filter is not None:
-                        candidate = _text(row["evidence_id"])
-                        if candidate not in evidence_filter:
-                            continue
-                    if calendar_filter is not None:
-                        candidate = _text(row["calendar_name"])
-                        if candidate not in calendar_filter:
-                            continue
-                    try:
-                        _assert_committed_record_integrity(table, row)
-                        result.append(_row_to_record(table, row))
-                    except (TypeError, ValueError, KeyError):
-                        self._quarantine_row(connection, table, row, reason="load_verification_failed")
-            except sqlite3.OperationalError as exc:
+                with data_plane_sqlite.connection_scope(self._database) as connection:
+                    for row in connection.execute(query, params).fetchall():
+                        if code_filter is not None:
+                            candidate = _text(row["code"])
+                            if candidate not in code_filter:
+                                continue
+                        if cursor_filter is not None:
+                            candidate = _text(row["cursor_name"])
+                            if candidate not in cursor_filter:
+                                continue
+                        if trade_date_filter is not None:
+                            candidate = _text(row["trade_date"])
+                            if candidate not in trade_date_filter:
+                                continue
+                        if evidence_filter is not None:
+                            candidate = _text(row["evidence_id"])
+                            if candidate not in evidence_filter:
+                                continue
+                        if calendar_filter is not None:
+                            candidate = _text(row["calendar_name"])
+                            if candidate not in calendar_filter:
+                                continue
+                        try:
+                            _assert_committed_record_integrity(table, row)
+                            result.append(_row_to_record(table, row))
+                        except (TypeError, ValueError, KeyError):
+                            self._quarantine_row(connection, table, row, reason="load_verification_failed")
+            except sqlite3.DatabaseError as exc:
                 raise _map_sqlite_error(exc, operation="load") from exc
 
         return tuple(result)
@@ -683,7 +689,7 @@ def _record_identity_from_record(profile: _Profile, record: Record) -> tuple[str
     return tuple(_text(row[field]) for field in profile.identity_fields)
 
 
-def _map_sqlite_error(exc: sqlite3.OperationalError, *, operation: str) -> Exception:
+def _map_sqlite_error(exc: sqlite3.DatabaseError, *, operation: str) -> DataPlaneUnavailableError:
     if "locked" in str(exc).lower():
         return DataPlaneUnavailableError(f"data plane {operation} blocked by database lock")
     return DataPlaneUnavailableError(f"data plane {operation} failed")

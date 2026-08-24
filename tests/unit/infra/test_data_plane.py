@@ -11,6 +11,7 @@ import pytest
 from trader.application.ports.data_plane import (
     DataPlaneConflictError,
     DataPlaneRecoverySummary,
+    DataPlaneUnavailableError,
     HistoricalFeatureRecord,
     RiskEvidenceRecord,
     SecurityMasterRecord,
@@ -45,6 +46,15 @@ def test_recent_records_for_all_families_round_trip(tmp_path: Path) -> None:
     assert repository.load_source_cursor_recent("cursor-1") == _source_cursor_record("cursor-1")
     assert repository.load_trading_calendar_recent("sse_szse") == _trading_calendar_record()
     assert repository.load_trading_calendar_formal("calendar-freeze-1", "sse_szse") == _trading_calendar_record()
+
+
+def test_initialize_maps_physically_corrupt_database_to_controlled_unavailability(tmp_path: Path) -> None:
+    database = _database_path(tmp_path)
+    database.parent.mkdir(parents=True)
+    database.write_bytes(b"not-a-sqlite-database")
+
+    with pytest.raises(DataPlaneUnavailableError, match="data plane initialize failed"):
+        DataPlaneRepository(tmp_path).initialize()
 
 
 def test_recent_records_preserve_newer_content_and_reject_same_time_conflicts(tmp_path: Path) -> None:
