@@ -874,10 +874,10 @@ All notable changes to this project are documented here.
 
 ### Verification
 
-- 诊断脚本契约与静态质量通过：
-  `.venv/bin/python -m pytest -q tests/contract/test_reusable_diagnostics_contract.py`、受影响文件 Ruff、
-  `git diff --check`；完整 format/lint/type/test/package 门禁不适用，因为本批未修改活动产品、依赖、
-  构建入口、包资源或 Web 行为，脚本不进入 wheel，定向契约与真实执行直接覆盖新增行为。
+- 诊断脚本契约与静态质量通过：`make format-check`、`make lint`、两个新脚本的直接 mypy、
+  `.venv/bin/python -m pytest -q tests/contract/test_reusable_diagnostics_contract.py` 和 `git diff --check`；
+  完整 `make type-check`、`make test`、`make package` 不适用，因为本批未修改活动产品、依赖、构建入口、
+  包资源或 Web 行为，脚本不进入 wheel，定向契约与真实执行直接覆盖新增行为。
 - 固化后的 Firefox 端到端脚本默认 65 秒实跑通过：后端刷新间隔 30.000/30.002 秒，SSE overlay
   30.001/30.002 秒，DOM 价格变化 29.991/30.002 秒，浏览器 patch-to-paint 9 个样本 P95/max 30ms，
   无浏览器错误，退出后未残留 Firefox、geckodriver 或测试服务进程。

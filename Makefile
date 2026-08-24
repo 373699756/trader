@@ -1,6 +1,7 @@
 SHELL := /bin/bash
 PYTHON ?= .venv/bin/python
-SOURCE_PATHS := src/trader tests scripts/check_refactor_quality.py scripts/generate_long_watchlist_asset.py
+SOURCE_PATHS := src/trader tests scripts/check_refactor_quality.py scripts/generate_long_watchlist_asset.py \
+	scripts/measure_web_refresh_interval.py scripts/sample_tencent_quotes.py
 
 .PHONY: help install-dev format format-check lint long-watchlist-check type-check test quality package
 
