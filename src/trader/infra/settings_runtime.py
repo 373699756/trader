@@ -84,8 +84,8 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
         "runtime",
     )
     schema_version = _integer(raw, "schema_version", minimum=1)
-    if schema_version != 9:
-        raise ConfigurationError("runtime schema_version must be 9")
+    if schema_version != 10:
+        raise ConfigurationError("runtime schema_version must be 10")
 
     config_dir = path.parent
     project_root = _infer_project_root(config_dir)
@@ -169,6 +169,7 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
             "sse_history_size",
             "sse_client_queue_size",
             "sse_max_clients",
+            "web_snapshot_retention_seconds",
         },
         "api",
     )
@@ -280,6 +281,11 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
             sse_history_size=_integer(api_raw, "sse_history_size", minimum=1),
             sse_client_queue_size=_integer(api_raw, "sse_client_queue_size", minimum=1),
             sse_max_clients=_integer(api_raw, "sse_max_clients", minimum=1, maximum=256),
+            web_snapshot_retention_seconds=_number(
+                api_raw,
+                "web_snapshot_retention_seconds",
+                minimum=0.001,
+            ),
         ),
     )
     _validate_runtime_settings(settings)

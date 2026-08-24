@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户要求按实际“采集到 Web”刷新结果留出稳定余量，运行配置 schema 10 新增
+  `api.web_snapshot_retention_seconds=35`。生产组合根将该值注入根页面，浏览器诊断同时公开实际读取的
+  毫秒值，配置缺失或非正数会在启动校验阶段拒绝，页面不再自行维护生产保留周期。
+- 扩展既有 `scripts/measure_web_refresh_interval.py`，新增 `--runtime-config` 并在 v2 报告中同时输出
+  配置保留窗口、DOM 最大刷新间隔、剩余余量和覆盖结论，后续可直接复测而无需另写临时脚本。
+
 - 针对用户要求保留本轮有用实测、避免后续重新编写临时脚本，新增参数化
   `scripts/measure_web_refresh_interval.py` 和 `scripts/sample_tencent_quotes.py`：前者使用活动生产
   调度、统一索引、SSE、Flask 与 Firefox 测量刷新到 DOM 的真实墙钟间隔，后者重复采样腾讯公开
@@ -302,6 +308,13 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- Web 未冻结 current 快照的内存保留窗口由硬编码 30 秒改为配置驱动的 35 秒；该值按本轮生产调度、
+  SSE、HTTP 与真实 Firefox 链路实测约 30 秒加 5 秒余量确定。策略 cadence、行情数据年龄和
+  stale/degraded 门槛保持不变，避免把 35 秒误用为采集 TTL 后将物理刷新进一步拖慢。
+- runtime 配置身份由 `runtime_v36_v2_only_release_2026_08_12` 升级为
+  `runtime_v37_web_retention_margin_2026_08_24`，Web release 身份同步升级到 v16，确保旧常驻进程与
+  新页面不会静默混用不同保留窗口。
+
 - `AGENTS.md` 现在要求首次完成的可复用诊断、性能、数据源或浏览器实测参数化进入 `scripts/`，以后
   优先复用或扩展现有脚本，禁止在 `/tmp`、heredoc 或临时工具调用中重复重写；Makefile 的 Ruff
   源范围同步覆盖两个新 Python 脚本。
@@ -526,6 +539,10 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复 Web 缓存保留期恰好等于实测刷新周期、没有任何抖动余量的问题：此前生产链一次 DOM 刷新可达
+  30.002 秒，而浏览器在 30.000 秒即淘汰未冻结快照，策略切换或短暂请求失败时可能失去最近同日有效
+  展示；现在 35 秒窗口覆盖刷新尾部，并保留约 5 秒安全余量。
 
 - 修复旧 `TodayV2Runtime` 虽未被生产组合根装配，却独占“冻结后继续更新报价 overlay”行为，导致删除
   影子实现会让 Web 的 Today 价格停在 11:20。该行为现由生产统一调度器执行，正式名单、分数、动作、
@@ -761,6 +778,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除 `dashboard.js` 中独立的 `CACHE_MAX_AGE_MS=30000` 生产真相源；浏览器仅消费服务端从当前
+  runtime 配置渲染的窗口，无配置的无服务应用以 0 秒失败关闭，不偷偷回退到另一套 35 秒默认值。
+
 - 删除生产不可达且与统一 V2 链重复的 Today/Tomorrow 策略专属 runtime、旧 trading-session 编排、
   旧领域冻结状态机、旧冻结端口、旧候选投影器和旧 columnar provider 适配器，并删除只验证这些退休
   实现的专用测试；统一调度、当前冻结协调器、统一市场数据服务和其生产回归继续保留。
@@ -873,6 +893,23 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 本批失败先行及定向回归通过：`tests/unit/test_v2_settings.py`、
+  `tests/contract/test_v2_e8_web_contract.py`、`tests/contract/test_v2_bootstrap.py`、
+  `tests/contract/test_reusable_diagnostics_contract.py` 共 68 项通过；Node D4 Web 状态契约通过；受影响
+  Python 文件 Ruff 通过。
+- 复用 `scripts/measure_web_refresh_interval.py` 完成 65 秒真实 headless Firefox 验收：生产调度刷新
+  P95/最大 30.001 秒，SSE overlay P95/最大 30.001 秒，DOM P95/最大 30.003 秒；页面实际读取
+  35.000 秒保留窗口，剩余 4.997 秒，9 个 patch-to-paint 样本 P95/最大 31ms，浏览器错误、重同步和
+  丢样均为 0。
+- 高风险全量门禁通过：`make format-check`、`make lint`（严格重构债仍为 0）、`make type-check`
+  （222 个源码文件）、`make test`（全仓 100%）及 `make package`；格式检查首次发现实测脚本需 Ruff
+  格式化，修复后重跑通过；隔离打包首次仅因沙箱禁止下载 `setuptools>=68` 失败，获准联网后原命令
+  成功构建 sdist 与 wheel。
+- 最终 wheel 在仓库外全新 venv 安装全部依赖后，`pip check`、`trader` 的 site-packages 导入、
+  `trader-cli --help`、`trader-server --help`、schema 10 `validate-config`、应用工厂及模板、CSS、
+  JavaScript、SVG 共 8 类资源通过。Firefox 三档桌面门禁在 1280x720、1440x900、1920x1080 均无
+  白屏、页面级横向溢出、Long 区域重叠或浏览器错误，加载的 Web revision 为 v16。
 
 - 诊断脚本契约与静态质量通过：`make format-check`、`make lint`、两个新脚本的直接 mypy、
   `.venv/bin/python -m pytest -q tests/contract/test_reusable_diagnostics_contract.py` 和 `git diff --check`；
@@ -1326,6 +1363,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 本批实测使用确定性变价输入隔离供应商在休市时版本不变化的干扰，完整经过活动生产调度、统一索引、
+  SSE、Flask 和 Firefox，但不是开市期间真实供应商压力测试；行情源网络抖动仍应在交易时段复用同一
+  脚本复核。`CadencePlanner` 尚未接入生产调度、当前活动链约 30 秒才提交一次到期策略的问题不由 Web
+  保留窗口掩盖，1–10 秒配置 cadence 与实际提交间隔的架构差距仍需作为独立高风险调度改造处理。
 
 - 端到端脚本使用确定性递增报价隔离外部供应商变化，能测内部稳定间隔和浏览器渲染，但不替代真实
   交易时段的来源数据年龄与整日 P95；运行它需要本机已有 Firefox/geckodriver 和可绑定的回环端口。

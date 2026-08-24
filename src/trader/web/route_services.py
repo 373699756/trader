@@ -14,6 +14,7 @@ StatusProvider = Callable[[], dict[str, object]]
 @dataclass(frozen=True)
 class WebApiConfig:
     heartbeat_seconds: float = 15.0
+    snapshot_retention_seconds: float = 0.0
 
 
 @dataclass(frozen=True)

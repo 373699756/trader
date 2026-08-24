@@ -58,6 +58,7 @@ from trader.domain.recommendation.decision_identity import (  # noqa: E402
     ScoredDecision,
 )
 from trader.domain.recommendation.models import RecommendationAction, Strategy  # noqa: E402
+from trader.infra.settings import load_runtime_settings  # noqa: E402
 from trader.web import create_app  # noqa: E402
 from trader.web.route_services import UnifiedWebServices, WebApiConfig  # noqa: E402
 
@@ -240,6 +241,11 @@ def _parser() -> argparse.ArgumentParser:
         default="2026-08-24T13:05:00+08:00",
         help="timezone-aware Shanghai trading time used by the production scheduler",
     )
+    parser.add_argument(
+        "--runtime-config",
+        default=str(PROJECT_ROOT / "config" / "v2" / "runtime.json"),
+        help="runtime config supplying the Web snapshot retention window",
+    )
     parser.add_argument("--output", default="-", help="JSON output path, or - for stdout")
     return parser
 
@@ -405,7 +411,12 @@ def _write_report(report: dict[str, object], output: str) -> None:
     path.write_text(rendered, encoding="utf-8")
 
 
-def _run(args: argparse.Namespace, simulated_start: datetime) -> dict[str, object]:
+def _run(
+    args: argparse.Namespace,
+    simulated_start: datetime,
+    *,
+    snapshot_retention_seconds: float,
+) -> dict[str, object]:
     geckodriver = shutil.which("geckodriver")
     if geckodriver is None or shutil.which("firefox") is None:
         raise RuntimeError("Firefox and geckodriver are required")
@@ -477,7 +488,17 @@ def _run(args: argparse.Namespace, simulated_start: datetime) -> dict[str, objec
     server = make_server(
         "127.0.0.1",
         app_port,
-        create_app(services=UnifiedWebServices(queries, events, status_provider, WebApiConfig(heartbeat_seconds=1.0))),
+        create_app(
+            services=UnifiedWebServices(
+                queries,
+                events,
+                status_provider,
+                WebApiConfig(
+                    heartbeat_seconds=1.0,
+                    snapshot_retention_seconds=snapshot_retention_seconds,
+                ),
+            )
+        ),
         threaded=True,
         request_handler=_QuietRequestHandler,
     )
@@ -596,10 +617,21 @@ def _run(args: argparse.Namespace, simulated_start: datetime) -> dict[str, objec
     refresh_intervals = _intervals(target_refreshes)
     event_intervals = _intervals(target_events)
     browser_intervals = _intervals(browser_epochs, divisor=1000.0)
+    browser_summary = _interval_summary(browser_intervals)
+    observed_maximum = browser_summary["maximum_seconds"]
+    retention_margin = (
+        round(snapshot_retention_seconds - observed_maximum, 3) if isinstance(observed_maximum, (int, float)) else None
+    )
     browser_errors = diagnostics.get("browserErrors")
-    passed = len(browser_records) >= args.minimum_updates and isinstance(browser_errors, list) and not browser_errors
+    passed = (
+        len(browser_records) >= args.minimum_updates
+        and isinstance(browser_errors, list)
+        and not browser_errors
+        and retention_margin is not None
+        and retention_margin > 0
+    )
     return {
-        "schema_version": "web-refresh-interval-v1",
+        "schema_version": "web-refresh-interval-v2",
         "passed": passed,
         "strategy": target_strategy.value,
         "simulated_start": simulated_start.isoformat(),
@@ -617,7 +649,13 @@ def _run(args: argparse.Namespace, simulated_start: datetime) -> dict[str, objec
         "browser_dom": {
             "records": browser_records,
             "intervals_seconds": browser_intervals,
-            "summary": _interval_summary(browser_intervals),
+            "summary": browser_summary,
+        },
+        "web_snapshot_retention": {
+            "configured_seconds": snapshot_retention_seconds,
+            "observed_maximum_interval_seconds": observed_maximum,
+            "remaining_margin_seconds": retention_margin,
+            "covers_observed_interval": retention_margin is not None and retention_margin > 0,
         },
         "browser_diagnostics": diagnostics,
     }
@@ -629,10 +667,15 @@ def main() -> int:
     report: dict[str, object]
     try:
         simulated_start = _validate(args)
-        report = _run(args, simulated_start)
+        settings = load_runtime_settings(args.runtime_config)
+        report = _run(
+            args,
+            simulated_start,
+            snapshot_retention_seconds=settings.api.web_snapshot_retention_seconds,
+        )
     except (OSError, RuntimeError, TypeError, ValueError, urllib.error.URLError) as exc:
         report = {
-            "schema_version": "web-refresh-interval-v1",
+            "schema_version": "web-refresh-interval-v2",
             "passed": False,
             "error": type(exc).__name__,
             "message": str(exc)[:300] or "no additional detail",

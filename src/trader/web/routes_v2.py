@@ -43,7 +43,7 @@ _DEEPSEEK_ZERO_CALL_REASONS = frozenset(
 
 def create_v2_blueprint(services: UnifiedWebServices | None) -> Blueprint:
     blueprint = Blueprint("v2_product", __name__)
-    blueprint.add_url_rule("/", "root", _root)
+    blueprint.add_url_rule("/", "root", partial(_root, services))
     blueprint.add_url_rule(
         "/api/v2/decisions/<strategy_name>/current",
         "decision_current",
@@ -64,8 +64,12 @@ def create_v2_blueprint(services: UnifiedWebServices | None) -> Blueprint:
     return blueprint
 
 
-def _root() -> str:
-    return render_template("index.html")
+def _root(services: UnifiedWebServices | None) -> str:
+    retention_seconds = services.config.snapshot_retention_seconds if services is not None else 0.0
+    return render_template(
+        "index.html",
+        web_snapshot_retention_ms=round(retention_seconds * 1000),
+    )
 
 
 def _current(services: UnifiedWebServices | None, strategy_name: str) -> RouteResponse:

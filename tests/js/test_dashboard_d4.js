@@ -21,7 +21,14 @@ assert(source.endsWith(suffix), "dashboard.js must retain its IIFE boundary");
 const sandbox = {
   URLSearchParams,
   console,
-  document: { addEventListener() {}, createElement() { return {}; } },
+  document: {
+    addEventListener() {},
+    createElement() { return {}; },
+    querySelector(selector) {
+      assert.strictEqual(selector, 'meta[name="trader-web-snapshot-retention-ms"]');
+      return { content: "35000" };
+    },
+  },
   window: {
     addEventListener() {},
     TraderLongWatchlistData: {
@@ -79,6 +86,10 @@ const state = {
   longGroupVisibleRecommendations: sandbox.window.TraderLongGroups.visibleRecommendations,
 };
 assert(state, "dashboard D4 helpers were not exported into the test sandbox");
+assert.strictEqual(
+  sandbox.window.TraderDashboardDiagnostics.snapshot().webSnapshotRetentionMs,
+  35000,
+);
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.statusPayloadCompatibility({ schema_version: "v2_status_v1" }))),
   { compatible: false, reason: "status_schema_mismatch" },
@@ -88,7 +99,7 @@ assert.deepStrictEqual(
     schema_version: "v2_status_v2",
     release: {
       decision_view_schema: "v2_decision_view_v2",
-      web_asset_revision: "release-contract-2026-08-24-v15",
+      web_asset_revision: "release-contract-2026-08-24-v16",
     },
   }))),
   { compatible: true, reason: "" },

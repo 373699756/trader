@@ -14,7 +14,7 @@ from trader.domain.market.models import MarketQuote
 from trader.domain.recommendation.decision_identity import DecisionItem, DecisionQuote, ScoredDecision
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 from trader.web import create_app
-from trader.web.route_services import UnifiedWebServices
+from trader.web.route_services import UnifiedWebServices, WebApiConfig
 from trader.web.static_assets import WEB_ASSET_REVISION
 
 NOW = datetime(2026, 8, 11, 10, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -84,6 +84,21 @@ def test_only_unified_v2_product_routes_are_registered() -> None:
         "/api/v2/tomorrow/current",
     ):
         assert client.get(removed).status_code == 404
+
+
+def test_root_injects_configured_web_snapshot_retention_margin() -> None:
+    app, queries, stream = _app()
+    services = UnifiedWebServices(
+        queries,
+        stream,
+        lambda: {"status": "running", "phase": "today_main"},
+        WebApiConfig(heartbeat_seconds=15, snapshot_retention_seconds=35),
+    )
+
+    page = create_app(services=services).test_client().get("/").get_data(as_text=True)
+
+    assert 'name="trader-web-snapshot-retention-ms"' in page
+    assert 'content="35000"' in page
 
 
 def test_not_ready_current_keeps_observation_draft_separate_and_private_from_status() -> None:

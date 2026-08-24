@@ -288,7 +288,10 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
             publication.decision_queries,
             publication.decision_events,
             lambda: _runtime_status(scheduler, reviewer, persistence.budget, market_data.health),
-            WebApiConfig(heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds),
+            WebApiConfig(
+                heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds,
+                snapshot_retention_seconds=settings.api.web_snapshot_retention_seconds,
+            ),
         )
     )
     return ApplicationSystem(

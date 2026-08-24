@@ -28,6 +28,8 @@ def test_reusable_runtime_diagnostics_are_parameterized_repository_scripts() -> 
         )
         assert result.returncode == 0, result.stderr
         assert "--output" in result.stdout
+        if script.name == "measure_web_refresh_interval.py":
+            assert "--runtime-config" in result.stdout
 
 
 def test_agent_workflow_requires_reusing_diagnostic_scripts() -> None:

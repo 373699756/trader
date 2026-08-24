@@ -1,6 +1,6 @@
 {
-  "schema_version": 9,
-  "config_version": "runtime_v36_v2_only_release_2026_08_12",
+  "schema_version": 10,
+  "config_version": "runtime_v37_web_retention_margin_2026_08_24",
   "runtime_dir": ".runtime/v2",
   "strategy_config": "strategy.json",
   "long_watchlist": "long_watchlist.json",
@@ -476,6 +476,7 @@
     "maximum_top_n": 12,
     "sse_history_size": 256,
     "sse_client_queue_size": 16,
-    "sse_max_clients": 32
+    "sse_max_clients": 32,
+    "web_snapshot_retention_seconds": 35
   }
 }

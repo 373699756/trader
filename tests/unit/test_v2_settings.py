@@ -23,9 +23,9 @@ def test_v2_configuration_contract_is_valid() -> None:
     strategy = load_strategy_settings(runtime.strategy_config_path)
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
 
-    assert runtime.schema_version == 9
+    assert runtime.schema_version == 10
     assert strategy.schema_version == 12
-    assert runtime.config_version == "runtime_v36_v2_only_release_2026_08_12"
+    assert runtime.config_version == "runtime_v37_web_retention_margin_2026_08_24"
     assert runtime.market_data.source_contract_versions["eastmoney"] == ("eastmoney_quote_v17_security_master")
     assert runtime.api.default_top_n == 12
     assert runtime.api.maximum_top_n == 12
@@ -35,6 +35,7 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert runtime.market_data.sina_timeout_seconds == 8
     assert runtime.market_data.full_market_hedge_delay_seconds == 1
     assert runtime.pipeline.market_workers == 5
+    assert runtime.api.web_snapshot_retention_seconds == 35
     assert runtime.market_data.tushare.timeout_seconds == 8
     assert runtime.market_data.tushare.points == 120
     assert runtime.market_data.tushare.token_file == PROJECT_ROOT / ".token_key"
@@ -287,24 +288,34 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert set(grouped_codes) == {item.code for item in watchlist.items}
 
 
-@pytest.mark.parametrize("schema_version", (5, 6, 7, 8))
+@pytest.mark.parametrize("schema_version", (5, 6, 7, 8, 9))
 def test_runtime_rejects_every_pre_release_schema(tmp_path, schema_version: int) -> None:
     raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
     raw["schema_version"] = schema_version
     changed_path = tmp_path / f"runtime-v{schema_version}.json"
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
 
-    with pytest.raises(ConfigurationError, match="runtime schema_version must be 9"):
+    with pytest.raises(ConfigurationError, match="runtime schema_version must be 10"):
         load_runtime_settings(changed_path)
 
 
-def test_runtime_schema_v9_rejects_paid_full_market_sources(tmp_path) -> None:
+def test_runtime_schema_v10_rejects_paid_full_market_sources(tmp_path) -> None:
     raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
     raw["market_data"]["full_market_sources"] = ["eastmoney", "paid_vendor"]
-    changed_path = tmp_path / "runtime-v9-paid.json"
+    changed_path = tmp_path / "runtime-v10-paid.json"
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
 
     with pytest.raises(ConfigurationError, match="unknown keys"):
+        load_runtime_settings(changed_path)
+
+
+def test_runtime_rejects_non_positive_web_snapshot_retention(tmp_path) -> None:
+    raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    raw["api"]["web_snapshot_retention_seconds"] = 0
+    changed_path = tmp_path / "runtime.json"
+    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="web_snapshot_retention_seconds"):
         load_runtime_settings(changed_path)
 
 

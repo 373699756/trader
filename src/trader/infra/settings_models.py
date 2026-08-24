@@ -127,6 +127,7 @@ class ApiSettings:
     sse_history_size: int
     sse_client_queue_size: int
     sse_max_clients: int
+    web_snapshot_retention_seconds: float
 
 
 @dataclass(frozen=True)

@@ -23,7 +23,7 @@
     longGroup: "",
     releaseMismatch: false,
   };
-  const CACHE_MAX_AGE_MS = 30000;
+  const CACHE_MAX_AGE_MS = configuredSnapshotRetentionMs();
   const HISTORY_REFRESH_MS = 3000;
   const PATCH_LATENCY_SAMPLE_CAPACITY = 256;
   const selection = window.TraderSelection;
@@ -36,6 +36,7 @@
   const patches = window.TraderDashboardPatches || fallbackDashboardPatches();
   const patchToPaintSamples = [];
   const diagnostics = {
+    webSnapshotRetentionMs: CACHE_MAX_AGE_MS,
     recommendationRequests: 0,
     recommendationFullResponses: 0,
     recommendationNotModified: 0,
@@ -49,6 +50,13 @@
     browserErrors: [],
     runtimeDiagnostics: [],
   };
+
+  function configuredSnapshotRetentionMs() {
+    if (typeof document.querySelector !== "function") return 0;
+    const meta = document.querySelector('meta[name="trader-web-snapshot-retention-ms"]');
+    const milliseconds = Number(meta && meta.content);
+    return Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : 0;
+  }
   if (patchDependencyMissing) {
     diagnostics.browserErrors.push("dependency_missing:TraderDashboardPatches");
   }

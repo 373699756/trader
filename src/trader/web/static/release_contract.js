@@ -3,7 +3,7 @@
 
   const STATUS_SCHEMA = "v2_status_v2";
   const DECISION_VIEW_SCHEMA = "v2_decision_view_v2";
-  const WEB_ASSET_REVISION = "release-contract-2026-08-24-v15";
+  const WEB_ASSET_REVISION = "release-contract-2026-08-24-v16";
   const ERROR_CODE = "release_contract_mismatch";
 
   function statusPayloadCompatibility(payload) {
