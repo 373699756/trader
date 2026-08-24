@@ -564,7 +564,7 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
         def summary(self, _day: str):
             return {"limit": 168, "used": 0, "remaining": 168}
 
-    payload = _runtime_status(runtime, StatusReviewer(), StatusBudget())  # type: ignore[arg-type]
+    payload = _runtime_status(runtime, StatusReviewer(), StatusBudget(), lambda: {})  # type: ignore[arg-type]
     assert payload["degraded_reasons"] == ["tomorrow:refresh:source_unavailable"]
     assert payload["health"] == {"level": "degraded", "issue_count": 1}
     assert payload["recent_errors"] == [

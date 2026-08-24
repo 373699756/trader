@@ -194,6 +194,14 @@ def test_production_adapter_rejects_candidate_security_identity_degradation(
     assert status["supply_funnel"]["requested_candidates"] == 1
     assert status["supply_funnel"]["security_master"] == 0
     assert status["primary_blocker"] == "security_master_coverage_incomplete"
+    assert status["summary"]["quote_total_count"] == 1
+    assert status["summary"]["trade_date"] == observed_at.date().isoformat()
+    assert status["summary"]["quote_covered_count"] == 1
+    assert status["summary"]["quote_missing_count"] == 0
+    assert status["summary"]["security_identity_missing_count"] == 1
+    assert status["summary"]["latest_quote_source"] == degraded.quote.source
+    assert status["summary"]["latest_quote_source_time"] == degraded.quote.source_time.isoformat()
+    assert 0.0 <= status["summary"]["highest_final_score"] <= 100.0
 
 
 def test_production_adapter_accepts_exactly_ninety_nine_percent_history_coverage(
@@ -270,6 +278,9 @@ def test_production_adapter_rejects_partial_candidate_feature_response(
     assert status["supply_funnel"]["requested_candidates"] == 2
     assert status["supply_funnel"]["candidate_features"] == 1
     assert status["primary_blocker"] == "candidate_feature_coverage_incomplete"
+    assert status["summary"]["quote_total_count"] == 2
+    assert status["summary"]["quote_covered_count"] == 1
+    assert status["summary"]["quote_missing_count"] == 1
     assert all("600" not in str(value) and "300" not in str(value) for value in status.values())
 
 

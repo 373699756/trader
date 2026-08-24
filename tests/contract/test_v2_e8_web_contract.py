@@ -106,6 +106,48 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
         "physical_attempts": 0,
         "zero_call_reason": "api_key_missing",
     }
+    assert status["deepseek_budget"]["limit"] == 168
+    assert status["market_data"] == {
+        "active_source": "sina",
+        "candidate_quote_age": {
+            "latest_source_time": NOW.isoformat(),
+            "p50_seconds": 1.0,
+            "p95_seconds": 2.0,
+            "sample_count": 120,
+        },
+        "candidate_quote_cache_entries": 120,
+        "history_coverage_ratio": 0.5,
+        "history_covered_rows": 60,
+        "history_universe_rows": 120,
+        "history_warmup_completed_count": 60,
+        "history_warmup_failure_count": 3,
+        "history_warmup_inflight_count": 30,
+        "history_warmup_planned_count": 120,
+        "market_feature_rows": 5567,
+        "market_quote_age": {
+            "latest_source_time": NOW.isoformat(),
+            "maximum_seconds": 5.0,
+            "p50_seconds": 2.0,
+            "p95_seconds": 4.0,
+            "sample_count": 5567,
+        },
+        "measured_at": NOW.isoformat(),
+        "sources": {
+            "sina": {
+                "circuit_open": False,
+                "data_age_seconds": 2.0,
+                "error_count": 0,
+                "last_latency_ms": 600.0,
+                "p50_latency_ms": 550.0,
+                "p95_latency_ms": 700.0,
+                "planned_count": 4,
+                "success_count": 4,
+                "timeout_count": 0,
+            }
+        },
+    }
+    assert "canonical_snapshot" not in status["market_data"]
+    assert "last_error" not in status["market_data"]["sources"]["sina"]
     assert status["health"] == {"level": "degraded", "issue_count": 1}
     assert status["recent_errors"] == [
         {
@@ -148,7 +190,49 @@ def _app():
             "status": "running",
             "runtime_version": "runtime:test",
             "scheduler": {"strategy_errors": {}},
-            "deepseek_budget": {"limit": 168, "used": 12, "remaining": 156},
+            "deepseek_budget": {"used": 12, "remaining": 156, "planned_limit": 71},
+            "market_data": {
+                "active_source": "sina",
+                "market_feature_rows": 5567,
+                "candidate_quote_cache_entries": 120,
+                "market_quote_age": {
+                    "sample_count": 5567,
+                    "p50_seconds": 2.0,
+                    "p95_seconds": 4.0,
+                    "maximum_seconds": 5.0,
+                    "latest_source_time": NOW.isoformat(),
+                },
+                "candidate_quote_age": {
+                    "sample_count": 120,
+                    "p50_seconds": 1.0,
+                    "p95_seconds": 2.0,
+                    "maximum_seconds": float("nan"),
+                    "latest_source_time": NOW.isoformat(),
+                },
+                "history_universe_rows": 120,
+                "history_covered_rows": 60,
+                "history_coverage_ratio": 0.5,
+                "history_warmup_planned_count": 120,
+                "history_warmup_completed_count": 60,
+                "history_warmup_failure_count": 3,
+                "history_warmup_inflight_count": 30,
+                "measured_at": NOW.isoformat(),
+                "sources": {
+                    "sina": {
+                        "planned_count": 4,
+                        "success_count": 4,
+                        "error_count": 0,
+                        "timeout_count": 0,
+                        "circuit_open": False,
+                        "last_latency_ms": 600.0,
+                        "p50_latency_ms": 550.0,
+                        "p95_latency_ms": 700.0,
+                        "data_age_seconds": 2.0,
+                        "last_error": "must-not-leak",
+                    }
+                },
+                "canonical_snapshot": {"missing_reasons": {"600001.price": "must-not-leak"}},
+            },
             "deepseek": {
                 "enabled": True,
                 "configured": False,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from datetime import date
 from functools import partial
@@ -116,6 +117,7 @@ def _status(services: UnifiedWebServices | None) -> RouteResponse:
             "runtime_started": bool(runtime.get("runtime_started", True)),
             "runtime_version": runtime.get("runtime_version"),
             "scheduler": _mapping(runtime.get("scheduler")),
+            "market_data": _market_data(runtime),
             "last_error": runtime.get("last_error"),
             "deepseek_budget": _budget(runtime),
             "deepseek": _deepseek(runtime),
@@ -187,15 +189,94 @@ def _strategy_status(view: DecisionView) -> dict[str, object]:
 def _budget(runtime: Mapping[str, object]) -> Mapping[str, object]:
     direct = runtime.get("deepseek_budget")
     if isinstance(direct, Mapping):
-        return _json_mapping(direct)
+        return _budget_mapping(direct)
     dependencies = runtime.get("dependencies")
     if isinstance(dependencies, Mapping):
         deepseek = dependencies.get("deepseek")
         if isinstance(deepseek, Mapping) and isinstance(deepseek.get("budget"), Mapping):
             budget = deepseek["budget"]
             if isinstance(budget, Mapping):
-                return _json_mapping(budget)
+                return _budget_mapping(budget)
     return {"available": False, "error": "budget_status_unavailable"}
+
+
+def _budget_mapping(raw: Mapping[object, object]) -> dict[str, object]:
+    budget = _json_mapping(raw)
+    if _non_negative_number(budget.get("limit")) is None:
+        used = _non_negative_number(budget.get("used"))
+        remaining = _non_negative_number(budget.get("remaining"))
+        if used is not None and remaining is not None:
+            total = used + remaining
+            budget["limit"] = int(total) if total.is_integer() else total
+    return budget
+
+
+def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
+    raw = runtime.get("market_data")
+    if not isinstance(raw, Mapping):
+        return {}
+    scalar_fields = (
+        "status",
+        "active_source",
+        "market_feature_rows",
+        "candidate_quote_cache_entries",
+        "history_universe_rows",
+        "history_covered_rows",
+        "history_coverage_ratio",
+        "history_warmup_planned_count",
+        "history_warmup_completed_count",
+        "history_warmup_failure_count",
+        "history_warmup_inflight_count",
+        "measured_at",
+    )
+    result = {field: raw[field] for field in scalar_fields if field in raw and _json_scalar(raw[field])}
+    for field in ("market_quote_age", "candidate_quote_age"):
+        value = raw.get(field)
+        if isinstance(value, Mapping):
+            result[field] = {
+                key: value[key]
+                for key in (
+                    "sample_count",
+                    "p50_seconds",
+                    "p95_seconds",
+                    "maximum_seconds",
+                    "latest_source_time",
+                )
+                if key in value and _json_scalar(value[key])
+            }
+    sources = raw.get("sources")
+    if isinstance(sources, Mapping):
+        safe_sources: dict[str, object] = {}
+        source_fields = (
+            "planned_count",
+            "success_count",
+            "error_count",
+            "timeout_count",
+            "circuit_open",
+            "last_latency_ms",
+            "p50_latency_ms",
+            "p95_latency_ms",
+            "data_age_seconds",
+        )
+        for name, value in sorted(sources.items(), key=lambda item: str(item[0]))[:8]:
+            if not isinstance(value, Mapping):
+                continue
+            safe_sources[str(name)[:32]] = {
+                field: value[field] for field in source_fields if field in value and _json_scalar(value[field])
+            }
+        result["sources"] = safe_sources
+    return result
+
+
+def _json_scalar(value: object) -> bool:
+    return value is None or isinstance(value, (str, bool, int)) or isinstance(value, float) and math.isfinite(value)
+
+
+def _non_negative_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    numeric = float(value)
+    return numeric if math.isfinite(numeric) and numeric >= 0.0 else None
 
 
 def _deepseek(runtime: Mapping[str, object]) -> dict[str, object]:

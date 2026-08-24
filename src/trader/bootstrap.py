@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -280,7 +280,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         services=UnifiedWebServices(
             publication.decision_queries,
             publication.decision_events,
-            lambda: _runtime_status(scheduler, reviewer, persistence.budget),
+            lambda: _runtime_status(scheduler, reviewer, persistence.budget, market_data.health),
             WebApiConfig(heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds),
         )
     )
@@ -741,8 +741,13 @@ def _runtime_status(
     scheduler: V2SchedulerRuntime,
     reviewer: DeepSeekReviewer,
     budget: DeepSeekBudgetLedger,
+    market_health: Callable[[], Mapping[str, object]],
 ) -> dict[str, object]:
     status = scheduler.status()
+    try:
+        market_data = dict(market_health())
+    except (OSError, RuntimeError, TypeError, ValueError):
+        market_data = {"status": "unavailable"}
     strategy_errors = dict(status.strategy_error_codes)
     recent_errors = [_runtime_issue_payload(issue) for issue in status.recent_errors]
     active_issues = [issue for issue in status.recent_errors if issue.recovery_status == "active"]
@@ -768,6 +773,7 @@ def _runtime_status(
         "phase": status.phase.value,
         "deepseek_budget": budget.summary(_utc_now().date().isoformat()),
         "deepseek": reviewer.status(),
+        "market_data": market_data,
         "company_research": asdict(status.company_research),
         "degraded_reasons": degraded_reasons,
         "health": {"level": health_level, "issue_count": issue_count},

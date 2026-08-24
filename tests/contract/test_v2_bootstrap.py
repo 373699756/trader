@@ -135,8 +135,15 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
     reviewer.status.return_value = {"status": "ready"}
     budget = Mock()
     budget.summary.return_value = {"limit": 168, "used": 0, "remaining": 168}
+    market_health = Mock(
+        return_value={
+            "active_source": "sina",
+            "market_feature_rows": 5567,
+            "market_quote_age": {"sample_count": 5567, "latest_source_time": "2026-08-24T09:40:00+08:00"},
+        }
+    )
 
-    payload = _runtime_status(scheduler, reviewer, budget)
+    payload = _runtime_status(scheduler, reviewer, budget, market_health)
 
     assert payload["observer"]["consumer_failure_count"] == 3
     assert payload["company_research"]["state"] == "idle"
@@ -147,6 +154,9 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
     assert payload["scheduler"]["settlement_completed_count"] == 0
     assert payload["scheduler"]["settlement_failure_count"] == 0
     assert payload["scheduler"]["input_quality"] == {}
+    assert payload["market_data"]["active_source"] == "sina"
+    assert payload["market_data"]["market_feature_rows"] == 5567
+    market_health.assert_called_once_with()
 
 
 def test_bootstrap_wires_real_outcome_settlement_without_eager_database_write(tmp_path) -> None:

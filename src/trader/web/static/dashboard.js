@@ -464,6 +464,7 @@
       const notReady = patches.notReadyMessage(payload);
       stateRenderer.renderTableState(notReady.message, window.TraderRender.tableColumnCount(payload));
       stateRenderer.setNotice(notReady.notice, "idle");
+      updateQuoteAge();
       return;
     }
     if (recommendations.length === 0) {
@@ -567,7 +568,9 @@
         ? "不适用"
         : score ? window.TraderRender.formatTime(score) : "-";
       reconcileRecommendationIdentity(payload);
-      if (previousPhase !== state.runtimePhase && state.payload) renderPayload(state.payload);
+      if (state.payload && (previousPhase !== state.runtimePhase || state.payload.status === "not_ready")) {
+        renderPayload(state.payload);
+      }
       updateQuoteAge();
       return payload;
     } catch (_error) {
@@ -612,7 +615,7 @@
   }
 
   function updateQuoteAge() {
-    statusView.updateQuoteAge(els, state.payload, window.TraderRender);
+    statusView.updateQuoteAge(els, state.payload, window.TraderRender, state.statusPayload);
   }
 
   function connectStream() {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import threading
 from collections import Counter
@@ -385,9 +386,54 @@ def _supply_status(
     reasons.update(item.reason for item in decision_items if item.reason)
     reasons.update(risk for item in decision_items for risk in item.risk_codes)
     status["supply_funnel"] = funnel
+    status["summary"] = _supply_summary(projection)
     status["supply_reason_counts"] = dict(sorted(reasons.items()))
     status["primary_blocker"] = _primary_supply_blocker(projection, funnel)
     return status
+
+
+def _supply_summary(
+    projection: TodayV2LocalProjection | TomorrowV2LocalProjection,
+) -> dict[str, object]:
+    requested = set(projection.native_input.requested_codes)
+    features = tuple(
+        feature for feature in projection.native_input.candidate_features if feature.quote.code in requested
+    )
+    complete_quotes = tuple(feature.quote for feature in features if _summary_quote_complete(feature))
+    latest = max(
+        complete_quotes,
+        key=lambda quote: (quote.source_time, quote.received_time, quote.data_version),
+        default=None,
+    )
+    highest = max((item.final_score for item in projection.local.items), default=None)
+    total = projection.input_quality.candidate_count
+    return {
+        "trade_date": projection.local.trade_date.isoformat(),
+        "quote_total_count": total,
+        "quote_covered_count": len(complete_quotes),
+        "quote_missing_count": max(0, total - len(complete_quotes)),
+        "security_identity_missing_count": max(
+            0,
+            total - projection.input_quality.security_master_covered_count,
+        ),
+        "latest_quote_source": latest.source if latest is not None else None,
+        "latest_quote_source_time": latest.source_time.isoformat() if latest is not None else None,
+        "highest_final_score": highest,
+    }
+
+
+def _summary_quote_complete(feature: FeatureSnapshot) -> bool:
+    quote = feature.quote
+    return (
+        quote.price is not None
+        and math.isfinite(quote.price)
+        and quote.price > 0.0
+        and quote.pct_change is not None
+        and math.isfinite(quote.pct_change)
+        and bool(quote.source.strip())
+        and quote.source_time.tzinfo is not None
+        and quote.source_time.utcoffset() is not None
+    )
 
 
 def _primary_supply_blocker(

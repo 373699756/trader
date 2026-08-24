@@ -64,6 +64,7 @@ const state = {
   renderQuoteCoverage: sandbox.window.TraderStatusView.renderQuoteCoverage,
   renderSummary: sandbox.window.TraderStatusView.renderSummary,
   runtimeErrorRows: sandbox.window.TraderStatusView.runtimeErrorRows,
+  updateQuoteAge: sandbox.window.TraderStatusView.updateQuoteAge,
   tableColumnCount: sandbox.window.TraderRender.tableColumnCount,
   tableRows: sandbox.window.TraderRender.tableRows,
   longGroupAveragePct: sandbox.window.TraderLongGroups.groupAveragePct,
@@ -167,6 +168,88 @@ assert.strictEqual(summaryElements.quoteCoverageMeta.textContent, "行情缺失 
 assert.strictEqual(summaryElements.funnelStatus.textContent, "120 → 80 → 1");
 assert.strictEqual(summaryElements.funnelMeta.textContent, "过滤 40 · 观察 1 · 最高 82.00");
 assert.strictEqual(summaryElements.snapshotDate.textContent, "2026-08-14");
+state.renderSummary(
+  summaryElements,
+  {
+    status: "not_ready",
+    strategy: "today",
+    trade_date: "2026-08-14",
+    frozen: false,
+    score_status: "scored",
+    coverage: { candidate_count: 0, evaluated_count: 0, rejected_count: 0 },
+    items: [],
+  },
+  [],
+  "open",
+  null,
+  sandbox.window.TraderSelection,
+  sandbox.window.TraderRender,
+  {
+    deepseek_budget: { used: 0, remaining: 168, planned_limit: 71 },
+    scheduler: {
+      input_quality: {
+        today: {
+          status: "not_ready",
+          supply_funnel: {
+            requested_candidates: 360,
+            full_scored: 65,
+            filter_reject: 216,
+            selected_executable: 0,
+            selected_observe: 2,
+          },
+          summary: {
+            trade_date: "2026-08-14",
+            quote_total_count: 360,
+            quote_covered_count: 352,
+            quote_missing_count: 8,
+            security_identity_missing_count: 286,
+            latest_quote_source: "tencent",
+            latest_quote_source_time: "2026-08-14T10:00:00+08:00",
+            highest_final_score: 74.25,
+          },
+        },
+      },
+    },
+  },
+);
+assert.strictEqual(summaryElements.quoteCoverageStatus.textContent, "352 / 360");
+assert.strictEqual(summaryElements.quoteCoverageMeta.textContent, "行情缺失 8 · 身份缺失 286");
+assert.strictEqual(summaryElements.funnelStatus.textContent, "360 → 65 → 0");
+assert.strictEqual(summaryElements.funnelMeta.textContent, "过滤 216 · 观察草稿 2 · 最高 74.25");
+assert.strictEqual(summaryElements.quoteSource.textContent, "腾讯行情");
+assert.strictEqual(summaryElements.budgetStatus.textContent, "0 / 168");
+assert.strictEqual(summaryElements.budgetMeta.textContent, "已用 / 剩余 · 上限 168 · 复核 0/0");
+const notReadyAgeElements = {
+  quoteAge: { textContent: "" },
+  quoteTime: { textContent: "" },
+  quoteSource: summaryElements.quoteSource,
+  snapshotMeta: { textContent: "" },
+};
+state.updateQuoteAge(
+  notReadyAgeElements,
+  {
+    status: "not_ready",
+    strategy: "today",
+    trade_date: "2026-08-14",
+    items: [],
+    published_at: null,
+  },
+  sandbox.window.TraderRender,
+  {
+    scheduler: {
+      input_quality: {
+        today: {
+          summary: {
+            trade_date: "2026-08-14",
+            latest_quote_source_time: new Date(Date.now() - 65_000).toISOString(),
+          },
+        },
+      },
+    },
+  },
+);
+assert.strictEqual(notReadyAgeElements.quoteAge.textContent, "1m 5s");
+assert.notStrictEqual(notReadyAgeElements.quoteTime.textContent, "-");
 state.renderSummary(
   summaryElements,
   {

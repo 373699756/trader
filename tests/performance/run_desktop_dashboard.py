@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 import shutil
 import socket
 import subprocess
@@ -122,6 +123,23 @@ def _run(output_dir: Path) -> dict[str, object]:
         base = f"http://127.0.0.1:{driver_port}/session/{session_id}"
         _request_json(f"{base}/url", method="POST", payload={"url": f"http://127.0.0.1:{app_port}/"})
         _wait(lambda: bool(_execute(base, "return Boolean(window.TraderDashboardDiagnostics);")))
+        _execute(base, 'document.querySelector(".strategy-tab[data-strategy=today]").click(); return true;')
+        _wait(lambda: _execute(base, 'return document.querySelector("#funnelStatus").textContent;') == "360 → 65 → 0")
+        not_ready_summary = _execute(
+            base,
+            """
+            return {
+              age: document.querySelector('#quoteAge').textContent,
+              source: document.querySelector('#quoteSource').textContent,
+              coverage: document.querySelector('#quoteCoverageStatus').textContent,
+              coverageMeta: document.querySelector('#quoteCoverageMeta').textContent,
+              funnel: document.querySelector('#funnelStatus').textContent,
+              funnelMeta: document.querySelector('#funnelMeta').textContent,
+              budgetMeta: document.querySelector('#budgetMeta').textContent,
+              freeze: document.querySelector('#headerFreeze').textContent,
+            };
+            """,
+        )
         observations: list[_ObservationResult] = []
         expected_top_codes = {"tomorrow": "600009", "d25": "600010"}
         for strategy in ("tomorrow", "d25"):
@@ -256,6 +274,15 @@ def _run(output_dir: Path) -> dict[str, object]:
             and error_details["copy_status"] in {"已复制", "已选中，请复制"}
             and isinstance(long_quote_fields, dict)
             and long_quote_fields.get("complete") is True
+            and isinstance(not_ready_summary, dict)
+            and bool(re.fullmatch(r"(?:\d+h )?(?:\d+m )?\d+s", str(not_ready_summary.get("age"))))
+            and not_ready_summary.get("source") == "腾讯行情"
+            and not_ready_summary.get("coverage") == "352 / 360"
+            and not_ready_summary.get("coverageMeta") == "行情缺失 8 · 身份缺失 286"
+            and not_ready_summary.get("funnel") == "360 → 65 → 0"
+            and not_ready_summary.get("funnelMeta") == "过滤 216 · 观察草稿 2 · 最高 74.25"
+            and "上限 168" in str(not_ready_summary.get("budgetMeta"))
+            and not_ready_summary.get("freeze") == "未就绪"
             and all(_viewport_passed(viewport) for viewport in viewports)
         )
         return {
@@ -263,6 +290,7 @@ def _run(output_dir: Path) -> dict[str, object]:
             "passed": passed,
             "browser": "firefox-headless",
             "observations": observations,
+            "not_ready_summary": not_ready_summary,
             "error_details": error_details,
             "long_quote_fields": long_quote_fields,
             "viewports": viewports,
@@ -347,7 +375,31 @@ def _browser_services() -> UnifiedWebServices:
             "status": "running",
             "runtime_started": True,
             "phase": "midday",
-            "deepseek_budget": {"limit": 168, "used": 0, "remaining": 168},
+            "deepseek_budget": {"used": 0, "remaining": 168, "planned_limit": 71},
+            "scheduler": {
+                "input_quality": {
+                    "today": {
+                        "status": "not_ready",
+                        "supply_funnel": {
+                            "requested_candidates": 360,
+                            "full_scored": 65,
+                            "filter_reject": 216,
+                            "selected_executable": 0,
+                            "selected_observe": 2,
+                        },
+                        "summary": {
+                            "trade_date": _NOW.date().isoformat(),
+                            "quote_total_count": 360,
+                            "quote_covered_count": 352,
+                            "quote_missing_count": 8,
+                            "security_identity_missing_count": 286,
+                            "latest_quote_source": "tencent",
+                            "latest_quote_source_time": _NOW.replace(hour=10, minute=0).isoformat(),
+                            "highest_final_score": 74.25,
+                        },
+                    }
+                }
+            },
             "health": {"level": "degraded", "issue_count": 2},
             "recent_errors": [
                 {

@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户反馈 Web 的数据新鲜度、行情覆盖和推荐漏斗在短线 `not_ready` 时全部失去状态，新增失败
+  先行的应用聚合、HTTP 脱敏、JavaScript 摘要和 Firefox 真实浏览器回归；覆盖空 current 与仍在推进的
+  360 只候选、行情/身份缺口、评分/过滤/观察草稿、最高分及预算每日上限同时存在的场景。
+
 - 针对用户确认“免费全市场证券主数据实际只持久化候选子集”的剩余断点，新增失败先行回归：共享
   输入必须同时传递有界候选代码和本轮完整全市场身份代码；参考加载器需保存候选外证券身份；
   SQLite 批量接口需用单个写事务完成多股主数据，并在任一同刻冲突时整体回滚。
@@ -246,6 +250,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- `scheduler.input_quality.*` 新增不含股票身份的 `summary`，统一携带候选行情完整数、行情/证券身份
+  缺失数、最新来源/源时间和最高最终分；`/api/v2/status.market_data` 只投影内存行情年龄、来源计数、
+  熔断、延迟和历史预热聚合，主动丢弃逐股缺失键、外部错误文本与载荷。短线 current 未发布时摘要卡
+  消费这套状态，正式推荐仍为 0，观察明确显示为“观察草稿”。
+
 - 参考数据调度现在显式区分两类范围：估值、财务、研究与历史增强继续只消费固定候选池，免费
   `board/exchange/listing_date` 身份持久化消费本轮规范全市场代码集；两者合并为同一个 Tushare lane
   请求身份，避免新增来源 lane 竞争。数据平面新增类型化证券主数据批量写端口，既有单条/正式记录
@@ -423,6 +432,11 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复统一 V2 Web 把“已发布决策”误作所有摘要卡唯一状态源的问题：覆盖门禁令 current 正确返回空
+  `not_ready` 时，页面不再把实际候选/评分进度伪装成 `0 → 0 → 0`，也不再把行情年龄和覆盖显示为空。
+  同时修复 DeepSeek 账本公开 `planned_limit` 而卡片只读取 `limit` 导致每日上限为 `—`，以及同一市场
+  阶段的 15 秒状态刷新不重绘 `not_ready` 摘要的问题。
 
 - 修复此前 Score-P2 实现与权威契约不一致的问题：虽然网关已从免费全市场响应生成完整证券身份，
   应用层仍只把 120 只候选传给持久化入口，导致重启证据长期停留在逐步轮转规模。现在每轮完整
@@ -711,6 +725,17 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 本批失败先行回归先稳定复现 `not_ready` 页面只显示 `0 → 0 → 0`、预算缺少 `limit`、状态缺少安全
+  行情聚合，以及非有限指标可进入响应；修复后应用/组合根/HTTP 定向集 23 项、调度降级集成 1 项和
+  `tests/js/test_dashboard_d4.js` 均通过。Review 新发现的 `NaN/Infinity` 边界已补回归并修复为丢弃。
+- Firefox 真实浏览器三档 1280x720、1440x900、1920x1080 均通过：页面无横向溢出和脚本错误，空
+  current 下实际显示 `352 / 360`、`行情缺失 8 · 身份缺失 286`、`360 → 65 → 0`、
+  `观察草稿 2 · 最高 74.25`、腾讯行情 HMS 年龄、预算上限 168 和冻结未就绪。
+- 高风险最终门禁 `make format-check`（353 文件）、`make lint`（strict refactor debt 为零）、
+  `make type-check`（227 个源文件）、完整 `make test`（100%）和 `make package` 全部通过；隔离构建因
+  沙箱网络限制需获准获取 `setuptools>=68`。`./run.sh validate-config` 返回 `status=ok`；最终 wheel
+  在仓库外导入 `trader`、执行 CLI/配置校验、读取 9 项模板/CSS/JavaScript/SVG 资源并通过 `pip check`。
 
 - 本批失败先行测试在旧实现分别以未知 `security_master_codes` 参数和缺失批量写端口稳定失败；修复后
   受影响应用、数据平面与市场数据定向集共 80 项通过，另复验历史慢尾保留成功股、参考刷新只走
@@ -1056,6 +1081,14 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 本批恢复的是既有运行事实的安全投影和 Web 展示，不会补造正式推荐、观察项或上游数据。证券身份、
+  行情和历史覆盖不足时短线仍可合法保持 `not_ready`，但卡片会明确显示缺口、草稿和最高分；评分、
+  风险、融合、排名及 78/76 等动作门槛均未改变，故未修改 `docs/recommendation-strategy.md`。
+- 已运行的常驻进程不会热加载本批 Python 与带新 revision 的 JavaScript；部署提交后必须正常停止旧
+  `run.sh`/`trader-server`，先执行 `./run.sh validate-config` 再重启，随后核对 `/api/v2/status` 的
+  `runtime_version`、`scheduler.input_quality` 和 `market_data`。本机缺少 `DEEPSEEK_API_KEY` 时物理
+  调用仍为 0，页面只会如实显示 `configured=false`/缺钥原因，代码不会伪造凭据。
 
 - 当前正在运行的 `trader-server` 早于本批代码修改，且本轮检查处于 `closed` 阶段；需要用户正常停止
   并重启后，在活动行情阶段至少完成一次共享输入刷新，再核对 `security_master_recent` committed

@@ -218,32 +218,61 @@
 
   function renderSummary(els, payload, items, observationState, firstVisible, selection, render, statusPayload) {
     const coverage = payload && payload.coverage || {};
-    const candidate = displayCount(coverage.candidate_count);
-    const evaluated = displayCount(coverage.evaluated_count);
-    const rejected = displayCount(coverage.rejected_count);
-    const executableCount = items.filter((item) => item.action === "executable").length;
-    const observedCount = items.filter((item) => item.action === "observe").length;
+    const strategyQuality = strategyInputQuality(payload, statusPayload);
+    const inputQuality = payload && payload.status === "not_ready" ? strategyQuality : null;
+    const runtimeFunnel = inputQuality && inputQuality.supply_funnel || {};
+    const runtimeSummary = inputQuality && inputQuality.summary || {};
+    const strategySummary = strategyQuality && strategyQuality.summary || {};
+    const useRuntime = Boolean(inputQuality);
+    const candidate = displayCount(useRuntime ? runtimeFunnel.requested_candidates : coverage.candidate_count);
+    const evaluated = displayCount(useRuntime ? runtimeFunnel.full_scored : coverage.evaluated_count);
+    const rejected = displayCount(useRuntime ? runtimeFunnel.filter_reject : coverage.rejected_count);
+    const executableCount = useRuntime
+      ? "0"
+      : items.filter((item) => item.action === "executable").length;
+    const observedCount = useRuntime
+      ? finiteNonNegativeInteger(runtimeFunnel.selected_observe) || 0
+      : items.filter((item) => item.action === "observe").length;
     const observed = observationSummary(payload, observationState, observedCount);
     const scoreSummary = selection.recommendationSummary(payload, items);
-    renderQuoteCoverage(els, items);
+    const highestRuntimeScore = finiteNumber(runtimeSummary.highest_final_score);
+    const topScore = highestRuntimeScore == null
+      ? useRuntime ? "—" : scoreSummary.topScore
+      : highestRuntimeScore.toFixed(2);
+    renderQuoteCoverage(els, items, runtimeSummary);
     if (payload.strategy === "long") {
       els.funnelStatus.textContent = "不适用";
       els.funnelMeta.textContent = "长期固定观察池不评分、不产生推荐";
     } else {
       els.funnelStatus.textContent = `${candidate} → ${evaluated} → ${executableCount}`;
-      els.funnelMeta.textContent = `过滤 ${rejected} · 观察 ${observed} · 最高 ${scoreSummary.topScore}`;
+      els.funnelMeta.textContent = useRuntime
+        ? `过滤 ${rejected} · 观察草稿 ${observedCount} · 最高 ${topScore}`
+        : `过滤 ${rejected} · 观察 ${observed} · 最高 ${topScore}`;
     }
     els.quoteSource.textContent = firstVisible && firstVisible.source
       ? render.sourceLabel(firstVisible.source)
-      : "来源不可用";
+      : visibleText(strategySummary.latest_quote_source)
+        ? render.sourceLabel(strategySummary.latest_quote_source)
+        : "来源不可用";
     renderBudgetSummary(els, statusPayload && statusPayload.deepseek_budget, payload);
     renderFreezeSummary(els, payload, render);
     els.snapshotStrategy.textContent = selection.strategyLabel(payload.strategy);
     els.snapshotDate.textContent = cleanDate(payload.trade_date);
   }
 
-  function renderQuoteCoverage(els, items) {
+  function renderQuoteCoverage(els, items, runtimeSummary) {
     const quoteCoverage = quoteCoverageSummary(items);
+    const runtimeTotal = finiteNonNegativeInteger(runtimeSummary && runtimeSummary.quote_total_count);
+    const runtimeAvailable = finiteNonNegativeInteger(runtimeSummary && runtimeSummary.quote_covered_count);
+    const runtimeQuoteMissing = finiteNonNegativeInteger(runtimeSummary && runtimeSummary.quote_missing_count);
+    const runtimeIdentityMissing = finiteNonNegativeInteger(
+      runtimeSummary && runtimeSummary.security_identity_missing_count,
+    );
+    if (!quoteCoverage.total && runtimeTotal != null && runtimeAvailable != null) {
+      els.quoteCoverageStatus.textContent = `${runtimeAvailable} / ${runtimeTotal}`;
+      els.quoteCoverageMeta.textContent = `行情缺失 ${runtimeQuoteMissing == null ? "—" : runtimeQuoteMissing} · 身份缺失 ${runtimeIdentityMissing == null ? "—" : runtimeIdentityMissing}`;
+      return;
+    }
     els.quoteCoverageStatus.textContent = quoteCoverage.total
       ? `${quoteCoverage.available} / ${quoteCoverage.total}`
       : "— / —";
@@ -326,7 +355,12 @@
     const available = budget && budget.available !== false;
     const used = available ? displayCount(budget.used) : "—";
     const remaining = available ? displayCount(budget.remaining) : "—";
-    const limit = available ? displayCount(budget.limit) : "—";
+    const explicitLimit = available ? finiteNonNegativeInteger(budget.limit) : null;
+    const usedValue = available ? finiteNonNegativeInteger(budget.used) : null;
+    const remainingValue = available ? finiteNonNegativeInteger(budget.remaining) : null;
+    const limit = explicitLimit == null && usedValue != null && remainingValue != null
+      ? String(usedValue + remainingValue)
+      : explicitLimit == null ? "—" : String(explicitLimit);
     els.budgetStatus.textContent = available ? `${used} / ${remaining}` : "不可用";
     const items = payload && Array.isArray(payload.items) ? payload.items : [];
     const executable = items.filter((item) => item.action === "executable").length;
@@ -358,9 +392,12 @@
     els.freezeMeta.textContent = `${payload.strategy === "today" ? "11:20" : "14:50"} 冻结`;
   }
 
-  function updateQuoteAge(els, payload, render) {
+  function updateQuoteAge(els, payload, render, statusPayload) {
     const item = payload && payload.items && payload.items[0];
-    const sourceTime = item && item.source_time || payload && payload.published_at;
+    const inputQuality = strategyInputQuality(payload, statusPayload);
+    const sourceTime = item && item.source_time
+      || inputQuality && inputQuality.summary && inputQuality.summary.latest_quote_source_time
+      || payload && payload.published_at;
     const timestamp = new Date(sourceTime || "").getTime();
     if (!Number.isFinite(timestamp)) {
       els.quoteAge.textContent = "-";
@@ -480,6 +517,23 @@
     return Number.isFinite(parsed) && parsed >= 0 ? String(Math.trunc(parsed)) : "—";
   }
 
+  function finiteNumber(value) {
+    if (value == null || value === "" || typeof value === "boolean") return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function strategyInputQuality(payload, statusPayload) {
+    if (!payload || payload.historical === true) return null;
+    const inputQuality = statusPayload
+      && statusPayload.scheduler
+      && statusPayload.scheduler.input_quality;
+    const value = inputQuality && inputQuality[payload.strategy];
+    if (!value || typeof value !== "object") return null;
+    const summary = value.summary;
+    return summary && summary.trade_date === payload.trade_date ? value : null;
+  }
+
   function issueLabel(code, stage) {
     if (ERROR_LABELS[code]) return ERROR_LABELS[code];
     if (window.TraderRender && typeof window.TraderRender.reasonLabel === "function") {
@@ -535,6 +589,7 @@
   }
 
   function finiteNonNegativeInteger(value) {
+    if (value == null || value === "" || typeof value === "boolean") return null;
     const parsed = Number(value);
     return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
   }
