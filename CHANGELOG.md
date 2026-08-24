@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户看到 `./run.sh [serve|validate-config|research-*...]` 后无法判断“一堆参数干什么”的问题，
+  新增可执行帮助契约：`./run.sh help` 与 PowerShell 帮助按日常命令、显式离线研究和高级配置分组，
+  每个子命令说明是否启动服务、是否只读、是否下载或封存研究工件，并明确日常启动无需任何参数。
+
 - 针对用户质疑“身份缺失为何非要 Tushare”新增免费证券身份闭环回归与可观察状态：
   `/api/v2/status.market_data.security_master` 只公开内存身份总数、上市日期/交易日龄完整数、免费来源
   标识、持久化调度错误数和 `tushare_required=false`；行情覆盖卡在身份尚未补齐时明确显示
@@ -285,6 +289,9 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- Linux/macOS/WSL 与 PowerShell 启动入口现在先验证子命令，再进行虚拟环境创建、依赖安装和入口
+  调度；无参数与 `serve` 继续等价启动看板，原有研究命令及其参数透传语义保持不变。
+
 - 免费全市场行情产生的板块、交易所和上市日期现在由组合根直接接入独立 `reference` latest-wins
   lane；富身份响应即使晚于实时报价截止时间，也会在规范化和字段合并后异步批量写入 SQLite，
   无需等待下一评分周期。上市交易日龄继续仅由本地生产交易日历派生，Tushare 保留为可选估值、
@@ -496,6 +503,10 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复启动脚本把不同风险和副作用的独立子命令压成一行“用法”，导致它们看起来像必须填写的启动
+  参数；同时修复拼错命令仍先准备 Python 环境、甚至可能触发依赖安装后才报错的问题。未知命令现在
+  快速返回简短可执行指引，不倾倒研究命令和环境变量。
 
 - 修复证券主数据以整条 observation 替换导致的反复身份缺失：同源较新稀疏响应过去会删除已保存的
   上市日期，进而同时制造 `missing_listing_date` 与 `missing_listing_age_sessions`。现在按优先级选择
@@ -723,6 +734,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除启动帮助中的单行管道式命令墙和未知命令时的整页帮助输出；未删除任何 CLI、研究能力、参数
+  透传、默认启动、Windows 委托入口或环境变量。
+
 - 移除免费证券主数据持久化对 `tushare` lane 和后续评分参考刷新周期的隐式依赖；`tushare` 刷新
   不再重复负责写入免费行情身份。
 
@@ -828,6 +842,16 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 启动入口定向契约：
+  `.venv/bin/pytest -q tests/contract/test_v2_e9_entry_contract.py` 通过；覆盖无参数仍启动看板、帮助在
+  缺少虚拟环境时保持零安装副作用、日常/离线分组完整、未知命令在环境准备前快速失败、原研究命令
+  与 R7 参数透传保留及 PowerShell 分类一致；`bash -n run.sh` 通过。
+- 入口高风险全量门禁最终通过：`make format-check`、`make lint`（含零严格重构债务）、
+  `make type-check`（228 个源文件）、`make test` 和 `make package`。首次格式检查发现新增测试需要 Ruff
+  重排，格式化后从门禁起点重跑通过；首次隔离打包仅因沙箱禁止下载 `setuptools` 失败，获准联网后
+  原命令成功构建 sdist 与 wheel。仓库外 wheel 和三档浏览器验收不适用：本批未修改打包内 Python、
+  依赖、Web 行为或静态资源，启动脚本本身也不进入 wheel。
 
 - 本批身份闭环定向验证：
   `.venv/bin/pytest -q tests/component/test_v2_market_data.py tests/contract/test_v2_e8_web_contract.py tests/contract/test_v2_app_factory.py`
@@ -1246,6 +1270,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 帮助文本可以解释命令用途，但不会代替离线研究所需的覆盖、父报告、前向身份和人工授权门禁；
+  `research-*` 仍可能耗时、访问网络或写不可变研究工件，普通看盘应继续只运行无参数 `./run.sh`。
+- 当前 Linux 验证机未安装 PowerShell，`run.ps1` 本批只能由共享命令保留、帮助分组和前置校验文本
+  契约覆盖；Windows 入口保持原执行模型，`run.bat` 仍只委托 `run.ps1`。
 
 - 免费全市场富身份仍依赖公开行情端点的可用性和响应完整度；端点超时或暂时只返回稀疏字段时，
   系统保留最近有效身份、显示剩余覆盖缺口并继续本地降级，不伪造上市日期。没有 Tushare token 只会

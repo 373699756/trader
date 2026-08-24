@@ -42,7 +42,11 @@ TRADER_PORT=5050 ./run.sh
 DEEPSEEK_API_KEY=your-key ./run.sh
 TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 ./run.sh validate-config
+./run.sh help
 ```
+
+日常启动不需要参数。`help` 会把只读检查与离线研究命令分组说明；离线研究命令不会随服务启动自动
+执行。
 
 启动脚本只读取 `TRADER_HOST` 和 `TRADER_PORT`；旧 `HOST`/`PORT` 不再映射到 V2 进程。
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -8,6 +10,13 @@ import pytest
 from trader.entrypoints.cli import build_parser, main
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _write_fake_entrypoint(path: Path, body: str) -> None:
+    path.write_text(f"#!/usr/bin/env bash\n{body}\n", encoding="utf-8")
+    path.chmod(0o755)
+    newer = (ROOT / "pyproject.toml").stat().st_mtime + 10.0
+    os.utime(path, (newer, newer))
 
 
 def test_default_runtime_config_uses_the_v2_namespace() -> None:
@@ -50,6 +59,117 @@ def test_run_script_exposes_explicit_offline_history_research_without_mapping_it
     assert "research-r6-stability-screen" in shell
     assert "research-r7-dossier" in shell
     assert "serve|app" in shell
+
+
+def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path: Path) -> None:
+    missing_venv = tmp_path / "missing-venv"
+    completed = subprocess.run(
+        ("bash", str(ROOT / "run.sh"), "help"),
+        cwd=ROOT,
+        env={**os.environ, "VENV_DIR": str(missing_venv)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert "日常使用（不做离线研究）:" in completed.stdout
+    assert "./run.sh                         启动本地 A 股研究看板（推荐）" in completed.stdout
+    assert "./run.sh validate-config         校验配置后退出，不启动服务" in completed.stdout
+    assert "./run.sh research-status         只读查看研究数据准备状态" in completed.stdout
+    assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
+    assert "./run.sh research-history-download        下载并续传离线历史日线归档" in completed.stdout
+    assert "research-r7-dossier --research-identity <ID>" in completed.stdout
+    assert "日常启动不需要填写任何参数" in completed.stdout
+    assert "用法: ./run.sh [serve|" not in completed.stdout
+    assert not missing_venv.exists()
+
+
+def test_run_script_unknown_command_fails_before_environment_setup_with_concise_guidance(tmp_path: Path) -> None:
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    for name in ("python", "trader-server"):
+        _write_fake_entrypoint(venv_bin / name, "exit 99")
+
+    completed = subprocess.run(
+        ("bash", str(ROOT / "run.sh"), "serv"),
+        cwd=ROOT,
+        env={**os.environ, "VENV_DIR": str(venv_bin.parent)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert completed.stderr == ("未知命令: serv\n日常启动直接运行: ./run.sh\n查看全部命令: ./run.sh help\n")
+
+
+def test_run_script_without_arguments_still_starts_the_dashboard(tmp_path: Path) -> None:
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    python = venv_bin / "python"
+    server = venv_bin / "trader-server"
+    _write_fake_entrypoint(python, "exit 99")
+    _write_fake_entrypoint(server, "printf 'server:%s\\n' \"$*\"")
+    config = tmp_path / "runtime.json"
+
+    completed = subprocess.run(
+        ("bash", str(ROOT / "run.sh")),
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "VENV_DIR": str(venv_bin.parent),
+            "TRADER_CONFIG": str(config),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == f"server:--config {config}\n"
+
+
+def test_run_script_preserves_offline_research_argument_forwarding(tmp_path: Path) -> None:
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    _write_fake_entrypoint(venv_bin / "python", "exit 99")
+    _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
+    _write_fake_entrypoint(venv_bin / "trader-cli", "printf 'cli:%s\\n' \"$*\"")
+    config = tmp_path / "runtime.json"
+
+    completed = subprocess.run(
+        (
+            "bash",
+            str(ROOT / "run.sh"),
+            "research-r7-dossier",
+            "--research-identity",
+            "score_r6_forward_test",
+        ),
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "VENV_DIR": str(venv_bin.parent),
+            "TRADER_CONFIG": str(config),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == (
+        f"cli:--config {config} research-r7-dossier --research-identity score_r6_forward_test\n"
+    )
+
+
+def test_powershell_help_uses_the_same_command_groups() -> None:
+    powershell = (ROOT / "run.ps1").read_text(encoding="utf-8")
+
+    assert "日常使用（不做离线研究）:" in powershell
+    assert "离线研究（仅在明确执行研究任务时使用）:" in powershell
+    assert "日常启动不需要填写任何参数" in powershell
 
 
 def test_research_status_does_not_create_runtime_files(tmp_path: Path, capsys) -> None:

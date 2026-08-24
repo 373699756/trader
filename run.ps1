@@ -6,9 +6,27 @@ $Mode = if ($args.Count -gt 0) { $args[0] } else { "serve" }
 
 function Show-Usage {
     @"
-用法: .\run.ps1 [serve|validate-config|research-status|research-history-download|research-backtest|research-r6-screen|research-r6-daily-screen|research-r6-stability-screen|research-r7-dossier]
+本地 A 股研究看板
 
-环境变量:
+日常使用（不做离线研究）:
+  .\run.ps1                         启动本地 A 股研究看板（推荐）
+  .\run.ps1 serve                   显式启动，等同于无参数运行
+  .\run.ps1 validate-config         校验配置后退出，不启动服务
+  .\run.ps1 research-status         只读查看研究数据准备状态
+  .\run.ps1 help                    查看本帮助
+
+离线研究（仅在明确执行研究任务时使用）:
+  .\run.ps1 research-history-download        下载并续传离线历史日线归档
+  .\run.ps1 research-backtest                只读运行固定历史回测
+  .\run.ps1 research-r6-screen                运行并封存 R6 历史筛选
+  .\run.ps1 research-r6-daily-screen          运行并封存 R6 日线趋势筛选
+  .\run.ps1 research-r6-stability-screen      运行并封存 R6 稳定性诊断
+  .\run.ps1 research-r7-dossier --research-identity <ID>
+                                                生成待人工审查的 R7 档案
+
+日常启动不需要填写任何参数，直接运行 .\run.ps1 即可。
+
+高级配置（一般无需设置）:
   TRADER_CONFIG=C:\absolute\path\runtime.json
   TRADER_HOST=127.0.0.1
   TRADER_PORT=5000
@@ -19,9 +37,27 @@ function Show-Usage {
 "@ | Write-Host
 }
 
-if ($Mode -eq "-h" -or $Mode -eq "--help") {
+$CliModes = @(
+    "validate-config",
+    "research-status",
+    "research-history-download",
+    "research-backtest",
+    "research-r6-screen",
+    "research-r6-daily-screen",
+    "research-r6-stability-screen",
+    "research-r7-dossier"
+)
+
+if ($Mode -in @("help", "-h", "--help")) {
     Show-Usage
     exit 0
+}
+$IsServerMode = $Mode -in @("serve", "app")
+if (-not $IsServerMode -and $Mode -notin $CliModes) {
+    [Console]::Error.WriteLine("未知命令: $Mode")
+    [Console]::Error.WriteLine("日常启动直接运行: .\run.ps1")
+    [Console]::Error.WriteLine("查看全部命令: .\run.ps1 help")
+    exit 2
 }
 
 $VenvDir = if ($env:VENV_DIR) { $env:VENV_DIR } else { Join-Path $RootDir ".venv" }
@@ -71,16 +107,10 @@ if (-not $env:TRADER_PORT) {
     $env:TRADER_PORT = "5000"
 }
 
-if ($Mode -eq "serve" -or $Mode -eq "app") {
+if ($IsServerMode) {
     & $Server --config $ConfigPath
     exit $LASTEXITCODE
 }
-if ($Mode -in @("validate-config", "research-status", "research-history-download", "research-backtest", "research-r6-screen", "research-r6-daily-screen", "research-r6-stability-screen", "research-r7-dossier")) {
-    $RemainingArgs = if ($args.Count -gt 1) { $args[1..($args.Count - 1)] } else { @() }
-    & $Cli --config $ConfigPath $Mode @RemainingArgs
-    exit $LASTEXITCODE
-}
-
-Write-Error "未知模式: $Mode"
-Show-Usage
-exit 2
+$RemainingArgs = if ($args.Count -gt 1) { $args[1..($args.Count - 1)] } else { @() }
+& $Cli --config $ConfigPath $Mode @RemainingArgs
+exit $LASTEXITCODE
