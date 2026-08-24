@@ -6,6 +6,19 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户要求保留本轮有用实测、避免后续重新编写临时脚本，新增参数化
+  `scripts/measure_web_refresh_interval.py` 和 `scripts/sample_tencent_quotes.py`：前者使用活动生产
+  调度、统一索引、SSE、Flask 与 Firefox 测量刷新到 DOM 的真实墙钟间隔，后者重复采样腾讯公开
+  行情并区分请求延迟、接收时间和来源版本是否变化；两者默认只向标准输出写结构化 JSON。
+- 新增可复用诊断脚本契约，检查两个脚本均有稳定 `--help`/`--output` CLI、不得依赖测试夹具，并确保
+  协作规则持续要求把可复用诊断固化到 `scripts/`。
+
+- 针对全仓 Review 发现“生产只装配统一调度器，但活动树仍保留仅由测试引用的 Today/Tomorrow
+  策略专属运行时”这一结构漂移，新增生产可达性架构门禁：应用层运行时模块必须由唯一组合根
+  `bootstrap.py` 显式装配；退休文件恢复、权威文档重新引用旧运行时或漏接 overlay SSE 均会失败。
+- 新增统一 `V2DecisionBuilderPort.refreshed_overlay()` 边界和冻结后报价回归，覆盖 afternoon lane
+  复用同批统一行情更新 Today 正式入选股票、CAS 并发冲突、正式决策身份不可变及 overlay SSE 发布。
+
 - 针对用户看到 `./run.sh [serve|validate-config|research-*...]` 后无法判断“一堆参数干什么”的问题，
   新增可执行帮助契约：`./run.sh help` 与 PowerShell 帮助按日常命令、显式离线研究和高级配置分组，
   每个子命令说明是否启动服务、是否只读、是否下载或封存研究工件，并明确日常启动无需任何参数。
@@ -289,6 +302,16 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- `AGENTS.md` 现在要求首次完成的可复用诊断、性能、数据源或浏览器实测参数化进入 `scripts/`，以后
+  优先复用或扩展现有脚本，禁止在 `/tmp`、heredoc 或临时工具调用中重复重写；Makefile 的 Ruff
+  源范围同步覆盖两个新 Python 脚本。
+
+- Today、Tomorrow、D25 的活动调度现全部收敛到 `V2SchedulerRuntime` 与 `V2MarketDataAdapter`；
+  11:20 后不重跑 Today 评分，而由其它评分 lane 已完成的统一行情批次只更新同日 scored current/formal
+  的可变报价 overlay。缺少新报价时继续保留已有 overlay 或正式报价锚点，Web 查询不现场抓行情。
+- 权威产品/架构契约同步为当前 V2-only 组合根、统一策略 lane 和真实服务验收要求；协作约束中已失效的
+  P6 名称改为当前 V2 current/旧发布链描述，评分、融合、门槛、冻结时点及外部数据配置均未改变。
+
 - Linux/macOS/WSL 与 PowerShell 启动入口现在先验证子命令，再进行虚拟环境创建、依赖安装和入口
   调度；无参数与 `serve` 继续等价启动看板，原有研究命令及其参数透传语义保持不变。
 
@@ -503,6 +526,10 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复旧 `TodayV2Runtime` 虽未被生产组合根装配，却独占“冻结后继续更新报价 overlay”行为，导致删除
+  影子实现会让 Web 的 Today 价格停在 11:20。该行为现由生产统一调度器执行，正式名单、分数、动作、
+  排名和哈希保持冻结；预期 CAS 竞争不污染最近错误，异常发布失败仍以脱敏 overlay 阶段错误可观察。
 
 - 修复启动脚本把不同风险和副作用的独立子命令压成一行“用法”，导致它们看起来像必须填写的启动
   参数；同时修复拼错命令仍先准备 Python 环境、甚至可能触发依赖安装后才报错的问题。未知命令现在
@@ -734,6 +761,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除生产不可达且与统一 V2 链重复的 Today/Tomorrow 策略专属 runtime、旧 trading-session 编排、
+  旧领域冻结状态机、旧冻结端口、旧候选投影器和旧 columnar provider 适配器，并删除只验证这些退休
+  实现的专用测试；统一调度、当前冻结协调器、统一市场数据服务和其生产回归继续保留。
+
 - 移除启动帮助中的单行管道式命令墙和未知命令时的整页帮助输出；未删除任何 CLI、研究能力、参数
   透传、默认启动、Windows 委托入口或环境变量。
 
@@ -842,6 +873,31 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 诊断脚本契约与静态质量通过：
+  `.venv/bin/python -m pytest -q tests/contract/test_reusable_diagnostics_contract.py`、受影响文件 Ruff、
+  `git diff --check`；完整 format/lint/type/test/package 门禁不适用，因为本批未修改活动产品、依赖、
+  构建入口、包资源或 Web 行为，脚本不进入 wheel，定向契约与真实执行直接覆盖新增行为。
+- 固化后的 Firefox 端到端脚本默认 65 秒实跑通过：后端刷新间隔 30.000/30.002 秒，SSE overlay
+  30.001/30.002 秒，DOM 价格变化 29.991/30.002 秒，浏览器 patch-to-paint 9 个样本 P95/max 30ms，
+  无浏览器错误，退出后未残留 Firefox、geckodriver 或测试服务进程。
+- 固化后的腾讯脚本以 2 个代码、2 轮、0.2 秒间隔真实只读采样通过：请求延迟 P50 211.0ms、
+  P95/max 215.3ms；两轮来源版本不变并明确返回 `source_changed=false`，未把价格未变化误判为系统
+  未执行刷新。报告均写入 `/tmp`，未进入仓库。
+
+- 高风险全量门禁通过：`make format-check`、`make lint`（严格重构债仍为 0）、`make type-check`
+  （222 个源码文件）、`make test`（全仓测试 100%）及 `make package`；首次隔离构建因沙箱禁止联网
+  无法安装 `setuptools`，获准联网后同一命令成功，不把环境拒绝记录为代码通过。
+- 定向回归通过：V2 架构/Today/Tomorrow/权威文档契约、生产输入适配器、统一调度器并发/冻结 overlay
+  及 Tomorrow/D25 纯投影测试；`git diff --check` 无空白错误，活动 `V2SchedulerRuntime` 保持不超过
+  800 行，C901/PLR0913 新增诊断为 0。
+- 仓库外一次性 venv 从生成 wheel 安装成功；从 `site-packages` 导入 `trader`，执行 `trader-cli --help`，
+  并读取模板、CSS、JavaScript 与 SVG 包资源，未从工作树回退导入。
+- 隔离 `/tmp` 运行库、独立 `127.0.0.1:51237` 的真实 wheel 服务实测成功：`/api/v2/status`、根页面、
+  四策略 current、Today history/dates 和静态资源正常返回，SSE 收到 `connected`；实际外部行情进入
+  Web 状态的全市场行为 5,548 行、候选/Long 224 行，Long current 为 ready 且 224 项。
+- Firefox 三档桌面报告 `v2-desktop-browser-v1` 通过：1280x720、1440x900、1920x1080 均无白屏、
+  页面级横向溢出、重叠或浏览器错误；观察草稿、行情覆盖、漏斗、Long 固定名单和报价列正常渲染。
 
 - 启动入口定向契约：
   `.venv/bin/pytest -q tests/contract/test_v2_e9_entry_contract.py` 通过；覆盖无参数仍启动看板、帮助在
@@ -1270,6 +1326,18 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 端到端脚本使用确定性递增报价隔离外部供应商变化，能测内部稳定间隔和浏览器渲染，但不替代真实
+  交易时段的来源数据年龄与整日 P95；运行它需要本机已有 Firefox/geckodriver 和可绑定的回环端口。
+  腾讯脚本需要公开网络可达，其来源不变化只表示采样窗口内版本稳定，不证明系统漏采或供应商固定
+  更新周期；脚本不会调用 DeepSeek、修改运行库或验证荐股收益。
+
+- 隔离真实服务使用全新空运行库且测试时东方财富全市场请求失败、Sina 行情成功，因此首次状态为
+  security master 0、历史预热 30/360，Today/Tomorrow/D25 按契约 `not_ready`；状态已明确显示
+  5,548 行实时行情、224 行候选、身份/历史缺口和来源错误。该外部来源/冷启动缺口未通过猜测身份、
+  放宽门槛或复用正式运行库掩盖，本批也未改行情 provider、身份持久化、历史预热或评分策略。
+- 隔离机仍未配置 `DEEPSEEK_API_KEY`，真实状态为 `configured=false`、`physical_attempts=0`、
+  `zero_call_reason=api_key_missing`；代码不能生成外部凭据，且本批未改 DeepSeek 预算和降级行为。
 
 - 帮助文本可以解释命令用途，但不会代替离线研究所需的覆盖、父报告、前向身份和人工授权门禁；
   `research-*` 仍可能耗时、访问网络或写不可变研究工件，普通看盘应继续只运行无参数 `./run.sh`。

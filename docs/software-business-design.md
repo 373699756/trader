@@ -323,8 +323,8 @@ observer 和冻结时线，以及 long 无评分 current projection。
 应用层 `V2SchedulerRuntime` 是停用旧 Pipeline 后可独立运行的 V2 调度所有者。它只通过显式
 注入的 `Clock`、交易日历、数据刷新、local 决策、DeepSeek 升级、统一决策索引、observer、
 冻结和结算端口工作；调度点驱动数据、决策、发布、冻结与结算，HTTP 和只读 Web 不参与
-上述工作，也不得产生外部 I/O。当前四策略原生 runtime 已接管决策，V2-E9 再把进程级组合根
-和入口收敛为只装配这套 V2 生命周期；此前旧 Pipeline 只能作为同批输入和旧 Web 外壳的待删除所有者。
+上述工作，也不得产生外部 I/O。当前组合根和入口只装配这套 V2 生命周期；旧 Pipeline、策略专属
+Runtime 和旧 Web 外壳均已删除，不构成可调用或可回放实现。
 
 today、tomorrow、d25 和 long 固定为每策略一个运行中任务和一个 latest-wins 待处理槽；
 运行中的旧周期允许完成，积压只保留同策略最新交易日与 sequence。tomorrow 独占完整决策 lane，
@@ -403,8 +403,8 @@ cutover CLI、旧 Web 外壳、旧运行读取和兼容分支均已删除；任�
 
 ### 2.8 tomorrow v2 运行契约
 
-活动组合根把 `TomorrowNativeInput` 直接送入单运行、单 pending 的
-`TomorrowV2Runtime`。原生输入先生成 `local ScoredDecision` 并以调用方实际读取的版本执行
+活动组合根由 `V2SchedulerRuntime` 的 tomorrow lane 驱动 `V2MarketDataAdapter` 生成
+`TomorrowNativeInput`。原生输入先生成 `local ScoredDecision` 并以调用方实际读取的版本执行
 CAS；只有 14:48 前完成、代码与证据 manifest 一致且时间合法的结构化 DeepSeek facts 才能
 生成引用该 local 版本的 hybrid。模型失败、部分结果、迟到或父版本被更新时保留已发布 local，
 不得借用其它决策身份或第二条 DeepSeek 请求链补齐。
@@ -426,8 +426,8 @@ local 或 hybrid 都不能越过封口，报价 overlay 只允许匹配封口后
 
 ### 2.9 today v2 运行契约
 
-活动组合根把 `TodayNativeInput` 直接送入独立单运行、单 pending 的
-`TodayV2Runtime`。Today 与 Tomorrow 复用同一套纯领域过滤、板内评分、结构化风险、融合和
+活动组合根由 `V2SchedulerRuntime` 的 today lane 驱动 `V2MarketDataAdapter` 生成
+`TodayNativeInput`。Today 与 Tomorrow 复用同一套纯领域过滤、板内评分、结构化风险、融合和
 稳定排名函数，但原生输入、策略政策、sequence、worker、observer、当前指针和事件身份按策略
 隔离。`today_observe` 只允许观察动作；`today_main` 和 `today_late` 分别使用当前权威门槛。
 local 先以实际读取版本执行 `UnifiedDecisionIndex` CAS；只有 11:18 前提交且在 11:20 前完成、
@@ -448,6 +448,10 @@ Today 发布，即使当时没有可冻结稿也不得再接纳迟到 local、hy
 overlay 只替换价格、涨跌幅、成交额、换手率、总市值、来源和报价时间；不得修改正式记录中的
 名单、分数、风险、动作或排名。运行时在评分前后依次驱动全部 V2 控制端口，使 11:20:00 的关闭先于同轮评分提交；
 HTTP 始终只执行只读查询。
+
+11:20 后 Today 不再创建评分周期；tomorrow/d25 的同批全市场刷新会从统一数据平面提取 Today
+正式入选代码的最近有效报价，以 overlay CAS 更新并发布 SSE overlay 事件。缺少某只新报价时保留
+该代码最近有效 overlay 或正式锚点，不得清空 Web 当前数据，也不得为更新报价重新评分。
 
 ### 2.10 d25 v2 运行契约
 
@@ -993,8 +997,8 @@ overlay 只能改变价格、涨跌、成交额、换手率、总市值、来源
 
 V2-only 最终发布只注册第 1.2 节列出的根页面和 `/api/v2/*` 路由。`strategy` 只允许
 `today`、`tomorrow`、`d25`、`long`；long 只支持 current，history 和 dates 返回受控
-`history_not_supported`。截至 V2-E7，这一统一外壳尚未交付；旧 `/api/*` 和独立 tomorrow
-旁路只是 E8/E10 待替代实现，不构成别名、重定向、兼容期或最终验收接口。
+`history_not_supported`。旧 `/api/*` 和独立 tomorrow 旁路已删除，不构成别名、重定向、
+兼容期或最终验收接口。
 
 current 一次返回完整紧凑 `DecisionView`；公开 schema 为 `v2_decision_view_v2`，绑定决策、数据、
 配置、策略、融合、冻结、报价和 schema 身份，并包含数据年龄、覆盖、过滤统计、降级原因、
@@ -1306,9 +1310,8 @@ Python、系统、内核、架构和 CPU。runner 禁止外网，DeepSeek 用固
 不按荐股评分或冻结语义验收。
 
 所有调度、队列、缓存、评分、冻结、查询或前端 current 变更都必须覆盖上午热运行、午间
-冷启动、11:20 与 14:50 边界、15:00 后热运行及正式记录命中/收盘恢复。V2-E8 交付后还要
-启动真实 `trader-server`，核对 `/api/v2/status` 和四策略 current；未替换旧进程或只验证
-fixture 不算最终发布证据。
+冷启动、11:20 与 14:50 边界、15:00 后热运行及正式记录命中/收盘恢复。每次相关发布仍须
+启动真实 `trader-server`，核对 `/api/v2/status` 和四策略 current；只验证 fixture 不算发布证据。
 
 ## 14. 当前交付状态与剩余路线
 

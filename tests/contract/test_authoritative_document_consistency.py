@@ -35,6 +35,11 @@ def test_authoritative_docs_do_not_retain_superseded_migration_chronology() -> N
         "P3-P6 公共接缝",
         "版本身份提升为 v30",
         "正式接管边界",
+        "TodayV2Runtime",
+        "TomorrowV2Runtime",
+        "截至 V2-E7",
+        "V2-E9 再把进程级组合根",
+        "V2-E8 交付后还要",
     ):
         assert obsolete not in design
 

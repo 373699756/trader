@@ -1,4 +1,4 @@
-"""Registration facade for the current and compatibility read surfaces."""
+"""Registration facade for the V2-only read surface."""
 
 from __future__ import annotations
 

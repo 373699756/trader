@@ -6,7 +6,7 @@ import math
 import re
 import threading
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Literal, Protocol
@@ -49,7 +49,13 @@ from trader.application.tomorrow_v2_projection import (
     build_tomorrow_v2_local,
 )
 from trader.domain.market.models import Board, FeatureSnapshot
-from trader.domain.recommendation.decision_identity import DecisionIdentity, DecisionOverlay, ScoredDecision
+from trader.domain.recommendation.decision_identity import (
+    DecisionIdentity,
+    DecisionOverlay,
+    DecisionQuote,
+    ScoredDecision,
+    identity_codes,
+)
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 from trader.domain.recommendation.ranking import candidate_score
 from trader.domain.recommendation.tomorrow_selection import TomorrowDisposition
@@ -355,6 +361,37 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
             quotes=quotes,
         )
 
+    def refreshed_overlay(
+        self,
+        decision: ScoredDecision,
+        request: V2CycleRequest,
+        previous: DecisionOverlay | None,
+    ) -> DecisionOverlay | None:
+        if decision.trade_date != request.trade_date:
+            return None
+        if previous is not None and (
+            previous.parent_version != decision.version or previous.observed_at >= request.observed_at
+        ):
+            return None
+        with self._lock:
+            batch = self._batches.get((request.strategy, request.input_version))
+        if batch is None:
+            return None
+        features_by_code = _selected_quote_features(batch, identity_codes(decision))
+        quotes = {quote.code: quote for quote in previous.quotes} if previous is not None else {}
+        changed = False
+        for feature in features_by_code.values():
+            changed = _merge_overlay_quote(quotes, feature, request.observed_at) or changed
+        if not changed:
+            return None
+        return DecisionOverlay(
+            strategy=decision.strategy,
+            trade_date=decision.trade_date,
+            parent_version=decision.version,
+            observed_at=request.observed_at,
+            quotes=tuple(quotes.values()),
+        )
+
     def _trim_research_sources(self) -> None:
         while len(self._decisions) > 64:
             version = next(iter(self._decisions))
@@ -404,6 +441,54 @@ def _supply_status(
     status["supply_reason_counts"] = dict(sorted(reasons.items()))
     status["primary_blocker"] = _primary_supply_blocker(projection, funnel)
     return status
+
+
+def _quote_order(feature: FeatureSnapshot) -> tuple[datetime, datetime, str]:
+    quote = feature.quote
+    return quote.source_time, quote.received_time, quote.data_version
+
+
+def _selected_quote_features(
+    batch: V2InputBatch,
+    selected_codes: Collection[str],
+) -> dict[str, FeatureSnapshot]:
+    features_by_code: dict[str, FeatureSnapshot] = {}
+    for feature in (*batch.market_features, *batch.candidate_features):
+        if feature.quote.code not in selected_codes:
+            continue
+        current = features_by_code.get(feature.quote.code)
+        if current is None or _quote_order(feature) > _quote_order(current):
+            features_by_code[feature.quote.code] = feature
+    return features_by_code
+
+
+def _merge_overlay_quote(
+    quotes: dict[str, DecisionQuote],
+    feature: FeatureSnapshot,
+    observed_at: datetime,
+) -> bool:
+    quote = feature.quote
+    if quote.price is None or quote.price <= 0.0 or quote.source_time > observed_at:
+        return False
+    candidate = DecisionQuote(
+        code=quote.code,
+        price=quote.price,
+        pct_change=quote.pct_change,
+        amount=quote.amount,
+        turnover_rate=quote.turnover_rate,
+        market_cap=quote.market_cap,
+        source=quote.source,
+        source_time=quote.source_time,
+        data_version=quote.data_version,
+    )
+    existing = quotes.get(quote.code)
+    if existing is not None and (candidate.source_time, candidate.data_version) <= (
+        existing.source_time,
+        existing.data_version,
+    ):
+        return False
+    quotes[quote.code] = candidate
+    return True
 
 
 def _supply_summary(

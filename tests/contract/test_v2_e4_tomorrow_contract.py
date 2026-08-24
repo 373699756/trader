@@ -21,7 +21,8 @@ def test_authoritative_contract_uses_one_v2_identity_for_current_freeze_and_trac
     strategy = STRATEGY.read_text(encoding="utf-8")
 
     for token in (
-        "TomorrowV2Runtime",
+        "V2SchedulerRuntime",
+        "V2MarketDataAdapter",
         "local ScoredDecision",
         "V2DecisionCheckpoint",
         "CommittedDecisionRecord",
@@ -50,3 +51,7 @@ def test_tomorrow_freeze_control_is_owned_by_the_v2_scheduler() -> None:
     source = (ROOT / "src" / "trader" / "application" / "v2_runtime.py").read_text(encoding="utf-8")
     assert "self._dependencies.freezes.freeze" in source
     assert "submit_due" in source
+
+
+def test_retired_strategy_specific_tomorrow_runtime_is_absent() -> None:
+    assert not (ROOT / "src/trader/application/tomorrow_v2_runtime.py").exists()

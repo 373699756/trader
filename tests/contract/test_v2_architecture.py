@@ -47,16 +47,23 @@ def test_v2_dependency_direction() -> None:
 
 def test_old_production_chain_has_no_active_files() -> None:
     retired = (
+        "application/candidate_features.py",
         "application/pipeline.py",
         "application/published_snapshots.py",
         "application/publisher.py",
         "application/queries.py",
         "application/recommendation_replay.py",
+        "application/ports/decision_freezes.py",
+        "application/today_v2_runtime.py",
+        "application/tomorrow_v2_runtime.py",
         "application/tomorrow_shadow.py",
         "application/tomorrow_shadow_runtime.py",
         "application/tomorrow_shadow_projection.py",
         "application/tomorrow_shadow_types.py",
         "application/tomorrow_research_trace.py",
+        "application/trading_session.py",
+        "domain/recommendation/tomorrow_freeze.py",
+        "infra/market_data/provider_adapter.py",
         "infra/persistence/snapshots.py",
         "infra/persistence/snapshot_files.py",
         "infra/persistence/snapshot_replay.py",
@@ -94,3 +101,13 @@ def test_domain_has_no_io_framework_imports() -> None:
 
 def test_bootstrap_is_the_only_composition_root() -> None:
     assert not (SOURCE_ROOT / "infra/container.py").exists()
+
+
+def test_application_runtime_modules_are_reachable_from_bootstrap() -> None:
+    runtime_modules = {f"trader.application.{path.stem}" for path in (SOURCE_ROOT / "application").glob("*runtime.py")}
+    assert runtime_modules <= _imports(SOURCE_ROOT / "bootstrap.py")
+
+
+def test_bootstrap_wires_overlay_events_into_the_unified_scheduler() -> None:
+    source = (SOURCE_ROOT / "bootstrap.py").read_text(encoding="utf-8")
+    assert "publish_overlay=publication.decision_events.publish_overlay" in source

@@ -92,6 +92,33 @@ class Decisions:
             quotes,
         )
 
+    def refreshed_overlay(
+        self,
+        decision: ScoredDecision,
+        request: V2CycleRequest,
+        previous: DecisionOverlay | None,
+    ) -> DecisionOverlay | None:
+        del previous
+        quotes = tuple(
+            replace(
+                item.quote,
+                price=(item.quote.price or 0.0) + 1.0,
+                source_time=request.observed_at,
+                data_version=request.input_version,
+            )
+            for item in decision.items
+            if item.selected and item.quote is not None
+        )
+        if not quotes:
+            return None
+        return DecisionOverlay(
+            decision.strategy,
+            decision.trade_date,
+            decision.version,
+            request.observed_at,
+            quotes,
+        )
+
     def research_audit(self, version: str):
         del version
         return None
@@ -192,6 +219,68 @@ def test_scheduler_atomically_publishes_complete_quotes_for_local_and_hybrid() -
     assert snapshot.overlay.quotes[0].amount == 120_000_000.0
     assert snapshot.overlay.quotes[0].turnover_rate == 2.1
     assert snapshot.overlay.quotes[0].market_cap == 12_000_000_000.0
+
+
+def test_scheduler_refreshes_frozen_today_overlay_without_mutating_formal_decision() -> None:
+    observed_at = datetime(2026, 8, 11, 13, 5, tzinfo=SHANGHAI)
+    frozen_at = observed_at.replace(hour=11, minute=20)
+    index = UnifiedDecisionIndex()
+    source = decision(Strategy.TODAY, sequence=1)
+    source_quote = source.items[0].quote
+    assert source_quote is not None
+    source = replace(
+        source,
+        trade_date=observed_at.date(),
+        observed_at=frozen_at - timedelta(seconds=1),
+        items=(
+            replace(
+                source.items[0],
+                quote=replace(source_quote, source_time=frozen_at - timedelta(seconds=1)),
+            ),
+        ),
+    )
+    record = CommittedDecisionRecord(source, frozen_at, "scheduled")
+    assert index.restore_formal(record)
+    overlay_events: list[DecisionOverlay] = []
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=FixedClock(observed_at),
+            calendar=TradingCalendar(),
+            data=DataRefresh(),
+            decisions=Decisions(),
+            reviews=SharedReviews(),
+            index=index,
+            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-v2-frozen-overlay-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+            research_factory=noop_research_factory,
+            publish_overlay=overlay_events.append,
+        ),
+        config_version="runtime-v2",
+    )
+    request = V2CycleRequest(
+        Strategy.TOMORROW,
+        observed_at.date(),
+        observed_at,
+        "afternoon",
+        1,
+        "quotes-v2",
+        False,
+        observed_at,
+    )
+
+    runtime.start()
+    runtime.submit_cycle(request)
+    assert runtime.wait_idle(2.0)
+    runtime.stop(ShutdownDeadline.start(2.0))
+
+    snapshot = index.snapshot(Strategy.TODAY)
+    assert snapshot.formal == record
+    assert snapshot.current == record.decision
+    assert snapshot.overlay is not None
+    assert snapshot.overlay.parent_version == record.decision.version
+    assert snapshot.overlay.quotes[0].price == (source_quote.price or 0.0) + 1.0
+    assert overlay_events == [snapshot.overlay]
 
 
 def test_scheduler_publishes_local_before_research_and_defers_first_review_until_risk_rescore() -> None:

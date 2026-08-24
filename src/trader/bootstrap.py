@@ -258,6 +258,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
                 now=context.now,
                 on_result=on_result,
             ),
+            publish_overlay=publication.decision_events.publish_overlay,
         ),
         config_version=effective_config_version,
         shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,

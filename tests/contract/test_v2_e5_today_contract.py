@@ -21,7 +21,8 @@ def test_authoritative_contract_defines_today_missed_freeze_and_overlay_only_beh
     strategy = STRATEGY.read_text(encoding="utf-8")
 
     for token in (
-        "TodayV2Runtime",
+        "V2SchedulerRuntime",
+        "V2MarketDataAdapter",
         "11:19:59",
         "11:20:00",
         "missed_freeze",
@@ -45,3 +46,7 @@ def test_today_freeze_control_is_part_of_the_v2_scheduler_dependencies() -> None
     source = BOOTSTRAP.read_text(encoding="utf-8")
     assert "V2FreezeAdapter(" in source
     assert "publication.today_freezer" in source
+
+
+def test_retired_strategy_specific_today_runtime_is_absent() -> None:
+    assert not (ROOT / "src/trader/application/today_v2_runtime.py").exists()

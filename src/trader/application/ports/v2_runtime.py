@@ -19,6 +19,8 @@ from trader.domain.recommendation.models import Strategy
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _IDENTITY = re.compile(r"^[a-zA-Z0-9_.:-]{1,200}$")
 
+V2OverlayPublisher = Callable[[DecisionOverlay], object]
+
 
 @dataclass(frozen=True)
 class SharedDeepSeekRuntimeContract:
@@ -140,6 +142,13 @@ class V2DecisionBuilderPort(Protocol):
 
     def initial_overlay(self, decision: ScoredDecision) -> DecisionOverlay: ...
 
+    def refreshed_overlay(
+        self,
+        decision: ScoredDecision,
+        request: V2CycleRequest,
+        previous: DecisionOverlay | None,
+    ) -> DecisionOverlay | None: ...
+
     def research_audit(self, version: str) -> V2CommittedResearchAudit | None: ...
 
     def research_intent(self, decision: ScoredDecision) -> V2ResearchIntent: ...
@@ -223,6 +232,7 @@ __all__ = [
     "V2DeepSeekUpgradePort",
     "V2FreezePort",
     "V2FreezeUnavailableError",
+    "V2OverlayPublisher",
     "V2ReviewUnavailableError",
     "V2ResearchIntent",
     "V2ResearchRuntimeFactoryPort",

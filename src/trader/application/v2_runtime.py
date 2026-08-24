@@ -14,6 +14,7 @@ from typing import Literal, cast
 from trader.application.decision_core import UnifiedDecisionIndex
 from trader.application.decision_events import V2DecisionCommitted
 from trader.application.decision_observers import DecisionObserverRuntime, DecisionObserverStatus
+from trader.application.decision_overlay_refresh import DecisionOverlayRefresher
 from trader.application.ports.clock import Clock
 from trader.application.ports.market import ResearchRefreshResult
 from trader.application.ports.v2_runtime import (
@@ -26,6 +27,7 @@ from trader.application.ports.v2_runtime import (
     V2DeepSeekUpgradePort,
     V2FreezePort,
     V2FreezeUnavailableError,
+    V2OverlayPublisher,
     V2ResearchRuntimeFactoryPort,
     V2ResearchRuntimeStatus,
     V2ReviewUnavailableError,
@@ -65,6 +67,7 @@ class V2RuntimeDependencies:
     freezes: V2FreezePort
     settlement: V2SettlementPort
     research_factory: V2ResearchRuntimeFactoryPort
+    publish_overlay: V2OverlayPublisher = lambda _overlay: None
 
 
 @dataclass(frozen=True)
@@ -125,6 +128,13 @@ class V2SchedulerRuntime:
         if contract.daily_physical_limit != 168 or not contract.shared_cache or not contract.shared_single_flight:
             raise ValueError("V2 runtime requires the shared 168-request DeepSeek boundary")
         self._dependencies = dependencies
+        self._overlay_refresher = DecisionOverlayRefresher(
+            dependencies.index,
+            dependencies.decisions,
+            dependencies.publish_overlay,
+            self._record_failure,
+            _failure_code,
+        )
         self._research = dependencies.research_factory(self._on_research_result)
         self._config_version = config_version
         self._shutdown_timeout_seconds = max(0.1, shutdown_timeout_seconds)
@@ -407,6 +417,7 @@ class V2SchedulerRuntime:
     def _prepare_cycle_data(self, request: V2CycleRequest) -> bool:
         if not self._refresh_data(request):
             return False
+        self._overlay_refresher.refresh(request)
         if request.phase == "midday_recovery" and request.strategy is Strategy.LONG:
             with self._lock:
                 self._midday_long_handoff_date = request.trade_date

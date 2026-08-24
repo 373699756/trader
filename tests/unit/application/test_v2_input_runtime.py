@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit.domain.test_decision_identity import decision
 from trader.application.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.ports.v2_runtime import (
     V2CycleRequest,
@@ -18,6 +19,7 @@ from trader.application.schedule import SHANGHAI
 from trader.application.v2_input_runtime import V2DecisionBuildDependencies, V2MarketDataAdapter
 from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import Board
+from trader.domain.recommendation.decision_identity import DecisionOverlay
 from trader.domain.recommendation.models import Strategy
 from trader.infra.settings import load_strategy_settings
 
@@ -161,6 +163,66 @@ def test_production_adapter_preserves_publishable_business_empty_projection(
 
     assert decision is not None
     assert decision.items == ()
+
+
+def test_production_adapter_builds_current_overlay_from_another_scored_lane_batch(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 13, 5, tzinfo=SHANGHAI)
+    features = tuple(
+        application_feature_factory(code, observed_at - timedelta(seconds=1)) for code in ("600001", "600003")
+    )
+    adapter = V2MarketDataAdapter(
+        _Market(features),
+        config_version="test-config",
+        candidate_pool_size=2,
+        decision_build=_decision_build(),
+    )
+    request = _request(observed_at, strategy=Strategy.TOMORROW, phase="afternoon")
+    frozen = decision(Strategy.TODAY)
+    frozen_quote = frozen.items[0].quote
+    assert frozen_quote is not None
+    frozen_at = observed_at.replace(hour=11, minute=19, second=59)
+    items = tuple(
+        replace(
+            frozen.items[0],
+            code=code,
+            rank=rank,
+            quote=replace(
+                frozen_quote,
+                code=code,
+                source_time=frozen_at,
+                data_version=f"frozen:{code}",
+            ),
+        )
+        for rank, code in enumerate(("600001", "600002", "600003"), start=1)
+    )
+    frozen = replace(
+        frozen,
+        trade_date=observed_at.date(),
+        observed_at=frozen_at,
+        items=items,
+    )
+    previous = DecisionOverlay(
+        frozen.strategy,
+        frozen.trade_date,
+        frozen.version,
+        frozen_at,
+        tuple(item.quote for item in items if item.quote is not None),
+    )
+
+    adapter.refresh(request)
+    overlay = adapter.refreshed_overlay(frozen, request, previous)
+
+    assert overlay is not None
+    assert overlay.strategy is Strategy.TODAY
+    assert overlay.parent_version == frozen.version
+    assert overlay.observed_at == observed_at
+    quotes = {quote.code: quote for quote in overlay.quotes}
+    assert quotes["600001"].data_version == features[0].quote.data_version
+    assert quotes["600003"].data_version == features[1].quote.data_version
+    assert quotes["600002"].data_version == "frozen:600002"
+    assert quotes["600002"].price == frozen_quote.price
 
 
 def test_production_adapter_rejects_partial_history_coverage_even_when_one_candidate_scores(
