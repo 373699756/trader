@@ -438,7 +438,7 @@
     );
     const observationState = selection.observationDisplayState(payload, state.runtimePhase, state.statusPayload);
     const observations = selection.observationRecommendations(payload, state.runtimePhase, state.statusPayload);
-    const showObservationPool = ["open", "warming", "unavailable"].includes(observationState);
+    const showObservationPool = ["open", "empty", "warming", "unavailable"].includes(observationState);
     els.observationPool.hidden = !showObservationPool;
     const observationLimit = Number(payload.selection_diagnostics && payload.selection_diagnostics.observation_limit);
     const observationFloorValue = payload.selection_diagnostics && payload.selection_diagnostics.observation_floor;
@@ -487,7 +487,7 @@
           els.observationBody.innerHTML = window.TraderRender.observationTableRows(observations, payload);
         } else {
           stateRenderer.renderTableState(
-            observationState === "warming" ? "正在生成观察草稿" : "本轮未形成观察草稿，请查看运行状态",
+            selection.observationEmptyMessage(observationState),
             window.TraderRender.observationTableColumnCount(payload),
             els.observationBody,
           );

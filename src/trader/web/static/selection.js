@@ -98,11 +98,21 @@
       : morningPhases.has(runtimePhase) || afternoonPhases.has(runtimePhase);
     if (!active) return "closed_market";
     if (payload.status === "not_ready") {
-      if (payload.draft) return "open";
+      if (payload.draft) {
+        const draftItems = Array.isArray(payload.draft.items) ? payload.draft.items : [];
+        return draftItems.some((item) => item.action === "observe") ? "open" : "empty";
+      }
       return strategyLaneRunning(statusPayload, payload.strategy) ? "warming" : "unavailable";
     }
     if (payload.status !== "ready") return "unavailable";
-    return "open";
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    return items.some((item) => item.action === "observe") ? "open" : "empty";
+  }
+
+  function observationEmptyMessage(displayState) {
+    if (displayState === "empty") return "本轮无股票达到观察条件";
+    if (displayState === "warming") return "正在生成观察草稿";
+    return "本轮尚无可用观察草稿，请查看运行状态";
   }
 
   function strategyLaneRunning(statusPayload, strategy) {
@@ -161,6 +171,7 @@
     markDateAvailability,
     observationRecommendations,
     observationDisplayState,
+    observationEmptyMessage,
     recommendationSummary,
     renderDateOptions,
     resolveStrategyDate,

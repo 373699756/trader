@@ -12,6 +12,7 @@ from trader.application.ports.v2_runtime import (
     SharedDeepSeekRuntimeContract,
     V2CycleRequest,
     V2DataRefreshUnavailableError,
+    V2DecisionUnavailableError,
     V2ResearchIntent,
     V2ResearchRuntimeStatus,
 )
@@ -45,12 +46,18 @@ class FixedClock:
 class DataRefresh:
     def __init__(self) -> None:
         self.calls: list[Strategy] = []
+        self.requests: list[V2CycleRequest] = []
 
     def refresh(self, request: V2CycleRequest) -> None:
         self.calls.append(request.strategy)
+        self.requests.append(request)
 
 
 class Decisions:
+    def has_local_draft(self, strategy: Strategy, trade_date: date) -> bool:
+        del strategy, trade_date
+        return False
+
     def build_local(self, request: V2CycleRequest):
         if request.strategy is Strategy.LONG:
             return LongProjection(
@@ -397,6 +404,178 @@ def test_after_close_cold_start_recovers_missing_scored_strategies_and_long() ->
     assert all(index.snapshot(strategy).current is not None for strategy in (Strategy.TOMORROW, Strategy.D25))
     assert index.snapshot(Strategy.LONG).current is not None
     assert settlement.calls == [after_close]
+
+
+def test_midday_cold_start_recovers_only_missing_non_today_outputs_once_without_review() -> None:
+    midday = datetime(2026, 8, 11, 12, 15, tzinfo=SHANGHAI)
+    data = DataRefresh()
+    reviews = SharedReviews()
+    index = UnifiedDecisionIndex()
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=FixedClock(midday),
+            calendar=TradingCalendar(),
+            data=data,
+            decisions=Decisions(),
+            reviews=reviews,
+            index=index,
+            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-v2-midday-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+            research_factory=noop_research_factory,
+        ),
+        config_version="runtime-v2",
+    )
+
+    runtime.start()
+    runtime.submit_due(midday)
+    assert runtime.wait_idle(2.0)
+    runtime.submit_due(midday + timedelta(seconds=30))
+    assert runtime.wait_idle(2.0)
+    runtime.stop(ShutdownDeadline.start(2.0))
+
+    assert data.calls.count(Strategy.TODAY) == 0
+    assert {strategy: data.calls.count(strategy) for strategy in (Strategy.TOMORROW, Strategy.D25, Strategy.LONG)} == {
+        Strategy.TOMORROW: 1,
+        Strategy.D25: 1,
+        Strategy.LONG: 1,
+    }
+    assert {request.phase for request in data.requests} == {"midday_recovery"}
+    assert not any(request.allow_review for request in data.requests)
+    assert reviews.calls == []
+    assert index.snapshot(Strategy.TODAY).current is None
+
+
+def test_midday_empty_observation_draft_is_a_completed_recovery_not_a_retry_loop() -> None:
+    midday = datetime(2026, 8, 11, 12, 15, tzinfo=SHANGHAI)
+
+    class DraftOnlyDecisions(Decisions):
+        def __init__(self) -> None:
+            self.drafts: set[tuple[Strategy, date]] = set()
+
+        def has_local_draft(self, strategy: Strategy, trade_date: date) -> bool:
+            return (strategy, trade_date) in self.drafts
+
+        def build_local(self, request: V2CycleRequest):
+            if request.strategy is Strategy.TOMORROW:
+                self.drafts.add((request.strategy, request.trade_date))
+                raise V2DecisionUnavailableError("security_master_coverage_incomplete")
+            return super().build_local(request)
+
+    data = DataRefresh()
+    decisions = DraftOnlyDecisions()
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=FixedClock(midday),
+            calendar=TradingCalendar(),
+            data=data,
+            decisions=decisions,
+            reviews=SharedReviews(),
+            index=UnifiedDecisionIndex(),
+            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-v2-midday-draft-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+            research_factory=noop_research_factory,
+        ),
+        config_version="runtime-v2",
+    )
+
+    runtime.start()
+    runtime.submit_due(midday)
+    assert runtime.wait_idle(2.0)
+    runtime.submit_due(midday + timedelta(seconds=30))
+    assert runtime.wait_idle(2.0)
+    runtime.stop(ShutdownDeadline.start(2.0))
+
+    assert data.calls.count(Strategy.TOMORROW) == 1
+    assert decisions.has_local_draft(Strategy.TOMORROW, midday.date())
+
+
+def test_midday_recovery_retries_when_refresh_failed_before_any_output() -> None:
+    midday = datetime(2026, 8, 11, 12, 15, tzinfo=SHANGHAI)
+
+    class FailingOnceData(DataRefresh):
+        def __init__(self) -> None:
+            super().__init__()
+            self.failed = False
+
+        def refresh(self, request: V2CycleRequest) -> None:
+            super().refresh(request)
+            if request.strategy is Strategy.TOMORROW and not self.failed:
+                self.failed = True
+                raise V2DataRefreshUnavailableError("source_unavailable")
+
+    data = FailingOnceData()
+    index = UnifiedDecisionIndex()
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=FixedClock(midday),
+            calendar=TradingCalendar(),
+            data=data,
+            decisions=Decisions(),
+            reviews=SharedReviews(),
+            index=index,
+            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-v2-midday-retry-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+            research_factory=noop_research_factory,
+        ),
+        config_version="runtime-v2",
+    )
+
+    runtime.start()
+    runtime.submit_due(midday)
+    assert runtime.wait_idle(2.0)
+    runtime.submit_due(midday + timedelta(seconds=30))
+    assert runtime.wait_idle(2.0)
+    runtime.stop(ShutdownDeadline.start(2.0))
+
+    assert data.calls.count(Strategy.TOMORROW) == 2
+    assert data.calls.count(Strategy.D25) == 1
+    assert data.calls.count(Strategy.LONG) == 1
+    assert index.snapshot(Strategy.TOMORROW).current is not None
+
+
+def test_midday_recovery_does_not_queue_duplicate_while_lane_is_active() -> None:
+    midday = datetime(2026, 8, 11, 12, 15, tzinfo=SHANGHAI)
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingData(DataRefresh):
+        def refresh(self, request: V2CycleRequest) -> None:
+            super().refresh(request)
+            if request.strategy is Strategy.TOMORROW:
+                entered.set()
+                release.wait(timeout=1.0)
+
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=FixedClock(midday),
+            calendar=TradingCalendar(),
+            data=BlockingData(),
+            decisions=Decisions(),
+            reviews=SharedReviews(),
+            index=UnifiedDecisionIndex(),
+            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-v2-midday-active-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+            research_factory=noop_research_factory,
+        ),
+        config_version="runtime-v2",
+    )
+
+    runtime.start()
+    runtime.submit_due(midday)
+    assert entered.wait(timeout=1.0)
+    runtime.submit_due(midday + timedelta(seconds=30))
+    tomorrow_lane = next(lane for lane in runtime.status().lanes if lane.name == "trader-v2-tomorrow")
+    release.set()
+    assert runtime.wait_idle(2.0)
+    runtime.stop(ShutdownDeadline.start(2.0))
+
+    assert tomorrow_lane.running
+    assert tomorrow_lane.offered_count == 1
+    assert tomorrow_lane.pending is False
 
 
 def test_after_close_prefers_existing_same_day_current_without_rebuilding() -> None:

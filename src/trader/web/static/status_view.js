@@ -528,7 +528,7 @@
 
   function observationSummary(payload, observationState, count) {
     if (payload && payload.strategy === "long") return String(count);
-    if (observationState === "open") return String(count);
+    if (observationState === "open" || observationState === "empty") return String(count);
     if (observationState === "hidden_history") return "不保存";
     if (observationState === "unknown") return "状态未知";
     return "已关闭";

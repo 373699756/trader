@@ -139,7 +139,8 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
 
     def refresh(self, request: V2CycleRequest) -> None:
         if request.strategy is Strategy.LONG:
-            self._long_runtime.offer_refresh(LongRefreshRequest(request.observed_at, request.phase, force=True))
+            if not self._long_runtime.offer_refresh(LongRefreshRequest(request.observed_at, request.phase, force=True)):
+                raise V2DataRefreshUnavailableError("long_refresh_rejected")
             return
         try:
             shared = self._shared_input(request)
@@ -242,6 +243,10 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
             self._shared_inputs.pop(next(iter(self._shared_inputs)))
         while len(self._shared_failures) > 8:
             self._shared_failures.pop(next(iter(self._shared_failures)))
+
+    def has_local_draft(self, strategy: Strategy, trade_date: date) -> bool:
+        draft = self._draft_index.snapshot(strategy)
+        return draft is not None and draft.trade_date == trade_date
 
     def build_local(self, request: V2CycleRequest) -> DecisionIdentity | None:
         if request.strategy is Strategy.LONG:

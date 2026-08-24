@@ -9,7 +9,11 @@ from pathlib import Path
 import pytest
 
 from trader.application.decision_drafts import UnifiedDecisionDraftIndex
-from trader.application.ports.v2_runtime import V2CycleRequest, V2DecisionUnavailableError
+from trader.application.ports.v2_runtime import (
+    V2CycleRequest,
+    V2DataRefreshUnavailableError,
+    V2DecisionUnavailableError,
+)
 from trader.application.schedule import SHANGHAI
 from trader.application.v2_input_runtime import V2DecisionBuildDependencies, V2MarketDataAdapter
 from trader.bootstrap import _recommendation_policy
@@ -72,6 +76,11 @@ class _LongRuntime:
         return True
 
 
+class _RejectingLongRuntime:
+    def offer_refresh(self, _request):
+        return False
+
+
 def _decision_build(
     drafts: UnifiedDecisionDraftIndex | None = None,
 ) -> V2DecisionBuildDependencies:
@@ -94,6 +103,23 @@ def _request(
         False,
         observed_at.replace(hour=14, minute=48),
     )
+
+
+def test_long_refresh_rejection_is_visible_to_scheduler_recovery() -> None:
+    observed_at = datetime(2026, 8, 12, 12, 15, tzinfo=SHANGHAI)
+    adapter = V2MarketDataAdapter(
+        _Market(()),
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=V2DecisionBuildDependencies(
+            _RejectingLongRuntime(),
+            _policy(),
+            UnifiedDecisionDraftIndex(),
+        ),
+    )
+
+    with pytest.raises(V2DataRefreshUnavailableError, match="long_refresh_rejected"):
+        adapter.refresh(_request(observed_at, strategy=Strategy.LONG, phase="midday_recovery"))
 
 
 def test_production_adapter_rejects_transient_invalid_empty_projection(
@@ -168,6 +194,7 @@ def test_production_adapter_rejects_partial_history_coverage_even_when_one_candi
     assert draft is not None
     assert draft.trade_date == observed_at.date()
     assert {item.code for item in draft.items} == {"600001", "600002"}
+    assert adapter.has_local_draft(Strategy.TOMORROW, observed_at.date())
 
 
 def test_production_adapter_rejects_candidate_security_identity_degradation(

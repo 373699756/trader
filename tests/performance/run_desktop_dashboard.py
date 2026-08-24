@@ -12,6 +12,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, TypedDict
@@ -96,7 +97,8 @@ def _run(output_dir: Path) -> dict[str, object]:
         raise RuntimeError("Firefox and geckodriver are required for the desktop gate")
     app_port = _free_port()
     driver_port = _free_port()
-    server = make_server("127.0.0.1", app_port, create_app(services=_browser_services()), threaded=True)
+    services, publish_empty_draft = _browser_services()
+    server = make_server("127.0.0.1", app_port, create_app(services=services), threaded=True)
     server_thread = threading.Thread(target=server.serve_forever, name="v2-browser-fixture", daemon=True)
     server_thread.start()
     driver = subprocess.Popen(
@@ -216,6 +218,22 @@ def _run(output_dir: Path) -> dict[str, object]:
                     ),
                 }
             )
+        publish_empty_draft()
+        _execute(base, 'document.querySelector(".strategy-tab[data-strategy=tomorrow]").click(); return true;')
+        _wait(
+            lambda: (
+                _execute(base, 'return document.querySelector("#observationBody").textContent.trim();')
+                == "本轮无股票达到观察条件"
+            )
+        )
+        empty_observation = {
+            "visible": not bool(_execute(base, 'return document.querySelector("#observationPool").hidden;')),
+            "rows": _integer(
+                _execute(base, 'return document.querySelectorAll("#observationBody tr[data-code]").length;')
+            ),
+            "message": str(_execute(base, 'return document.querySelector("#observationBody").textContent.trim();')),
+            "summary": str(_execute(base, 'return document.querySelector("#funnelMeta").textContent;')),
+        }
         _execute(base, 'document.querySelector(".strategy-tab[data-strategy=long]").click(); return true;')
         _wait(
             lambda: _integer(_execute(base, 'return document.querySelectorAll("#tableBody tr[data-code]").length;')) > 0
@@ -277,6 +295,13 @@ def _run(output_dir: Path) -> dict[str, object]:
                 and item["ranked_high_first"]
                 for item in observations
             )
+            and empty_observation
+            == {
+                "visible": True,
+                "rows": 0,
+                "message": "本轮无股票达到观察条件",
+                "summary": "过滤 待计算 · 观察草稿 0 · 最高 —",
+            }
             and error_details["visible"] is True
             and error_details["rows"] == 2
             and error_details["raw_code_hidden_from_header"] is True
@@ -299,6 +324,7 @@ def _run(output_dir: Path) -> dict[str, object]:
             "passed": passed,
             "browser": "firefox-headless",
             "observations": observations,
+            "empty_observation": empty_observation,
             "not_ready_summary": not_ready_summary,
             "error_details": error_details,
             "long_quote_fields": long_quote_fields,
@@ -326,7 +352,7 @@ def _run(output_dir: Path) -> dict[str, object]:
         server_thread.join(timeout=5)
 
 
-def _browser_services() -> UnifiedWebServices:
+def _browser_services() -> tuple[UnifiedWebServices, Callable[[], None]]:
     index = UnifiedDecisionIndex()
     drafts = UnifiedDecisionDraftIndex()
     decisions: dict[Strategy, ScoredDecision] = {}
@@ -437,10 +463,32 @@ def _browser_services() -> UnifiedWebServices:
             ],
         }
 
-    return UnifiedWebServices(
-        UnifiedDecisionQueries(index, drafts, _BrowserHistory(), _BrowserClock()),
-        UnifiedDecisionEventStream(),
-        status_provider,
+    def publish_empty_draft() -> None:
+        empty = ScoredDecision(
+            Strategy.TOMORROW,
+            _NOW.date(),
+            3,
+            _NOW.replace(hour=12, minute=31),
+            "local",
+            None,
+            (("market", "market:browser-empty"),),
+            "config:browser",
+            "strategy:browser",
+            "fusion:browser",
+            (),
+            (),
+        )
+        result = drafts.publish(empty)
+        if not result.accepted:
+            raise RuntimeError(f"browser empty draft publication failed: {result.reason}")
+
+    return (
+        UnifiedWebServices(
+            UnifiedDecisionQueries(index, drafts, _BrowserHistory(), _BrowserClock()),
+            UnifiedDecisionEventStream(),
+            status_provider,
+        ),
+        publish_empty_draft,
     )
 
 

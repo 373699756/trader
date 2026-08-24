@@ -88,7 +88,7 @@ assert.deepStrictEqual(
     schema_version: "v2_status_v2",
     release: {
       decision_view_schema: "v2_decision_view_v2",
-      web_asset_revision: "release-contract-2026-08-24-v12",
+      web_asset_revision: "release-contract-2026-08-24-v13",
     },
   }))),
   { compatible: true, reason: "" },
@@ -448,6 +448,15 @@ assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.observationRecommendations(notReadyDraft, "midday"))),
   [{ code: "600003", action: "observe" }],
 );
+const emptyObservationDraft = { ...notReadyDraft, draft: { items: [] } };
+assert.strictEqual(state.observationDisplayState(emptyObservationDraft, "midday"), "empty");
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.observationRecommendations(emptyObservationDraft, "midday"))),
+  [],
+);
+assert.strictEqual(state.observationEmptyMessage("empty"), "本轮无股票达到观察条件");
+assert.strictEqual(state.observationEmptyMessage("warming"), "正在生成观察草稿");
+assert.strictEqual(state.observationEmptyMessage("unavailable"), "本轮尚无可用观察草稿，请查看运行状态");
 assert.strictEqual(
   state.observationDisplayState(
     { ...notReadyDraft, draft: null },

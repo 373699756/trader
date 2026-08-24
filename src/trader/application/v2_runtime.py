@@ -7,7 +7,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import date, datetime
 from datetime import time as wall_time
 from typing import Literal, cast
 
@@ -37,6 +37,7 @@ from trader.application.research_audit import V2DecisionObservation
 from trader.application.schedule import (
     SHANGHAI,
     MarketPhase,
+    ScheduleDecision,
     SchedulePoint,
     decision_at,
     schedule_point_at,
@@ -164,6 +165,7 @@ class V2SchedulerRuntime:
         self._system_error_code = ""
         self._strategy_error_codes: dict[Strategy, str] = {}
         self._recent_errors: OrderedDict[tuple[str, str], V2RuntimeIssue] = OrderedDict()
+        self._midday_long_handoff_date: date | None = None
 
     def start(self) -> bool:
         with self._lock:
@@ -214,21 +216,8 @@ class V2SchedulerRuntime:
         with self._lock:
             self._phase = decision.phase
         schedule_point = schedule_point_at(observed_at, is_trading_day=is_trading_day)
-        strategies: tuple[Strategy, ...] = ()
-        if decision.phase is MarketPhase.AFTER_CLOSE and schedule_point is not SchedulePoint.CLOSE_QUOTES:
-            strategies = self._after_close_recovery_strategies(observed_at)
-        elif decision.should_score:
-            strategies = (Strategy.TOMORROW, Strategy.D25)
-            if decision.phase in {MarketPhase.TODAY_OBSERVE, MarketPhase.TODAY_MAIN, MarketPhase.TODAY_LATE}:
-                strategies = (*strategies, Strategy.TODAY)
-        if decision.phase is not MarketPhase.AFTER_CLOSE and decision.should_refresh_market:
-            strategies = (*strategies, Strategy.LONG)
-        for strategy in strategies:
-            phase = (
-                "close_fallback"
-                if strategy in {Strategy.TOMORROW, Strategy.D25} and decision.phase is MarketPhase.AFTER_CLOSE
-                else decision.phase.value
-            )
+        for strategy in self._due_strategies(decision, schedule_point, observed_at):
+            phase = _cycle_phase(strategy, decision.phase)
             self.submit_cycle(self._scheduled_request(strategy, observed_at, phase))
         for raw_strategy in decision.freeze_strategies:
             self._submit_freeze(Strategy(raw_strategy), observed_at)
@@ -340,7 +329,7 @@ class V2SchedulerRuntime:
             self._sequences[strategy] = sequence + 1
         deadline_time = wall_time(11, 18) if strategy is Strategy.TODAY else wall_time(14, 48)
         review_deadline = datetime.combine(observed_at.date(), deadline_time, tzinfo=SHANGHAI)
-        allow_review = strategy is not Strategy.LONG and observed_at < review_deadline
+        allow_review = strategy is not Strategy.LONG and phase != "midday_recovery" and observed_at < review_deadline
         return V2CycleRequest(
             strategy=strategy,
             trade_date=observed_at.date(),
@@ -360,7 +349,7 @@ class V2SchedulerRuntime:
             if isinstance(snapshot.current, ScoredDecision) and snapshot.current.trade_date == request.trade_date:
                 self._freeze_close_fallback(request, snapshot.current, recovery_path="current")
                 return
-        if not self._refresh_data(request):
+        if not self._prepare_cycle_data(request):
             return
         local = self._build_local(request)
         if local is None or not self._publish(local, hybrid=False):
@@ -413,6 +402,14 @@ class V2SchedulerRuntime:
         except V2DataRefreshUnavailableError as exc:
             self._record_failure("refresh", _failure_code(exc, "refresh_unavailable"), request.strategy)
             return False
+        return True
+
+    def _prepare_cycle_data(self, request: V2CycleRequest) -> bool:
+        if not self._refresh_data(request):
+            return False
+        if request.phase == "midday_recovery" and request.strategy is Strategy.LONG:
+            with self._lock:
+                self._midday_long_handoff_date = request.trade_date
         return True
 
     def _build_local(self, request: V2CycleRequest) -> DecisionIdentity | None:
@@ -504,6 +501,49 @@ class V2SchedulerRuntime:
                 strategies.append(strategy)
         long_current = self._dependencies.index.snapshot(Strategy.LONG).current
         if not isinstance(long_current, LongProjection) or long_current.trade_date != observed_at.date():
+            strategies.append(Strategy.LONG)
+        return tuple(strategies)
+
+    def _due_strategies(
+        self,
+        decision: ScheduleDecision,
+        schedule_point: SchedulePoint | None,
+        observed_at: datetime,
+    ) -> tuple[Strategy, ...]:
+        if decision.phase is MarketPhase.AFTER_CLOSE and schedule_point is not SchedulePoint.CLOSE_QUOTES:
+            return self._after_close_recovery_strategies(observed_at)
+        if decision.phase is MarketPhase.MIDDAY:
+            return self._midday_recovery_strategies(observed_at)
+        strategies: tuple[Strategy, ...] = ()
+        if decision.should_score:
+            strategies = (Strategy.TOMORROW, Strategy.D25)
+            if decision.phase in {MarketPhase.TODAY_OBSERVE, MarketPhase.TODAY_MAIN, MarketPhase.TODAY_LATE}:
+                strategies = (*strategies, Strategy.TODAY)
+        if decision.phase is not MarketPhase.AFTER_CLOSE and decision.should_refresh_market:
+            strategies = (*strategies, Strategy.LONG)
+        return strategies
+
+    def _midday_recovery_strategies(self, observed_at: datetime) -> tuple[Strategy, ...]:
+        strategies: list[Strategy] = []
+        for strategy in (Strategy.TOMORROW, Strategy.D25):
+            current = self._dependencies.index.snapshot(strategy).current
+            if current is not None and current.trade_date == observed_at.date():
+                continue
+            if self._dependencies.decisions.has_local_draft(strategy, observed_at.date()):
+                continue
+            lane = self._lanes[strategy].status()
+            if not lane.running and not lane.pending:
+                strategies.append(strategy)
+        long_current = self._dependencies.index.snapshot(Strategy.LONG).current
+        with self._lock:
+            long_handed_off = self._midday_long_handoff_date == observed_at.date()
+        long_lane = self._lanes[Strategy.LONG].status()
+        if (
+            (long_current is None or long_current.trade_date != observed_at.date())
+            and not long_handed_off
+            and not long_lane.running
+            and not long_lane.pending
+        ):
             strategies.append(Strategy.LONG)
         return tuple(strategies)
 
@@ -697,6 +737,14 @@ class V2SchedulerRuntime:
             self._last_error_code = self._system_error_code
             return
         self._last_error_code = next(reversed(self._strategy_error_codes.values()), "")
+
+
+def _cycle_phase(strategy: Strategy, phase: MarketPhase) -> str:
+    if strategy in {Strategy.TOMORROW, Strategy.D25} and phase is MarketPhase.AFTER_CLOSE:
+        return "close_fallback"
+    if phase is MarketPhase.MIDDAY:
+        return "midday_recovery"
+    return cast(str, phase.value)
 
 
 def _validate_cycle_identity(request: V2CycleRequest, identity: DecisionIdentity) -> None:

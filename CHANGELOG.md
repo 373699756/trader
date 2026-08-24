@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户现场看到“明天观察池：本轮未形成观察草稿，请查看运行状态”，新增午间冷启动恢复回归和
+  观察池四态契约。测试覆盖只恢复缺失的 tomorrow/d25/long、Today 永不午间追补、DeepSeek 调用为 0、
+  同日 current/空草稿成功后不重复、活动 lane 不追加重复请求，以及刷新未形成输出时可在下一 tick 重试。
+- 新增 `V2DecisionBuilderPort.has_local_draft()` 类型化只读边界，使调度器能区分“没有产物”和“正式
+  发布门禁未过但本地草稿已经形成”，不再把草稿状态藏在输入适配器内部。
+
 - 针对用户反馈观察池长期停在“正在生成观察草稿”且修改反复引入新问题，新增进程内 release 握手：
   `v2_status_v2.release` 同时公开已加载的 DecisionView schema 与 Web asset revision，浏览器再对每份
   current/history 响应执行第二层 schema 校验。当前真实服务的三个 current 仍为
@@ -269,6 +275,13 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- MIDDAY 调度现在使用独立 `midday_recovery` 周期：只在同日产物缺失且策略 lane 空闲时提交
+  tomorrow、d25 和 long；所有午间恢复强制 `allow_review=false`。Long 刷新只有被其 latest-wins
+  worker 接纳后才记作 handoff，提交拒绝会进入既有受控刷新失败与重试链。
+- 观察池展示由 open/生成中/不可用扩展为显式空草稿状态：已有草稿但 0 只达到 `observe` 条件时显示
+  “本轮无股票达到观察条件”，计数为 0；只有 lane 活动时显示“正在生成”，lane 空闲且无草稿时显示
+  “本轮尚无可用观察草稿”。Web asset revision 升为 v13，阻止旧进程与新资源混版。
+
 - 观察池的“正在生成”现在必须同时有活动时段和该策略调度 lane 的 `running`/`pending` 证据；lane 已
   空闲且草稿仍为空时显示“本轮未形成观察草稿，请查看运行状态”。页面遇到 release 不一致时隐藏
   无效观察池、阻止旧数据解释，并明确提示正常停止旧服务后重新运行 `./run.sh serve`。
@@ -463,6 +476,11 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复两项共同造成“明天观察池没有数据”的已验证问题：`decision_at()` 在 11:20-13:00 正确暂停常规
+  评分，但 V2 scheduler 没有实现权威契约要求的缺失快照一次性本地恢复；现场进入午后后 Tomorrow
+  实际已形成草稿但 `draft.items=[]`，前端仍把它误报为“未形成观察草稿”。现在午间缺失会恢复一次，
+  合法空草稿也按真实筛选结果展示，不降低门槛或补造股票。
 
 - 修复源码更新后 Flask 仍由 10:45 启动的旧 Python 进程提供 v1 current、却从工作树读取新 JavaScript
   所造成的无限“正在生成”假状态。根因不是 lane 仍在计算：现场状态显示 Today/Tomorrow/D25 lane
@@ -674,6 +692,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除把“草稿存在但观察条目为 0”和“lane 空闲且从未形成草稿”合并为同一文案的前端隐式状态；
+  未移除或放宽评分、过滤、风险、融合、排名、观察余量、正式动作阈值、冻结边界或 DeepSeek 预算。
+
 - 移除浏览器验收中预先注入完成态 `input_quality` 和正式观察 current 的捷径；本批没有删除正式推荐、
   历史、阈值、策略入口或 Long 固定名单。
 
@@ -770,6 +791,19 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 失败先行证据：新增回归在旧实现下稳定得到 MIDDAY 对四策略提交数均为 0，JavaScript 将空
+  `draft.items` 判为 `open` 并缺少空草稿文案。实现后 V2 scheduler/input adapter/Web contract
+  定向测试 35 项、JavaScript D4 状态契约和受影响 Ruff 均通过；覆盖成功一次、空草稿一次、lane
+  活动不重复、刷新失败重试、Long handoff 拒绝及 Web 四态。
+- `make format-check`、`make lint`（含零严格重构债务）、228 个源码文件 mypy、完整 `make test` 和
+  `make package` 均通过；package 首次仅因沙箱禁止隔离环境下载 `setuptools>=68` 失败，授权联网后
+  原命令成功构建 sdist/wheel。仓库外 `/tmp` 安装 wheel 后可导入包、执行 `trader-cli
+  validate-config`，并读取模板、三份受影响 JavaScript、release contract、三份 CSS 与 SVG 资源，
+  安装包和服务端资源身份均为 v13。
+- Firefox headless 真实加载 v13 后，先从候选采集迁移到 Tomorrow/D25 各两行观察草稿，再把 Tomorrow
+  替换为空草稿；DOM 明确显示“本轮无股票达到观察条件”、0 行及“观察草稿 0”，无外部网络调用。
+  1280x720、1440x900、1920x1080 三档均无白屏、页面级横向溢出、Long 重叠或浏览器错误。
 
 - 本批失败先行证据：修复前 Web 契约测试稳定得到 `v2_status_v1`、首页仅 11 个 revision 资源且缺少
   `release_contract.js`；当前常驻服务三个 current 均返回 `v2_decision_view_v1`，同时三条短线 lane
@@ -1150,6 +1184,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 本批不改变 Tomorrow 固定 78 分正式阈值、观察门槛、风险门或候选供给；现场 Tomorrow 最高分
+  72.35 且 `selected_observe=0` 时仍会真实显示空观察池，D25 可独立保留其已达到观察条件的条目。
+  当前时刻已越过午间，因此 `midday_recovery` 只能由可注入上海时钟回归验证，不能伪造生产时段；
+  部署后新 revision 仍需正常重启进程才生效。本机缺少 `DEEPSEEK_API_KEY` 的外部凭据缺口保持不变。
 
 - 本批不会擅自终止仍在运行的本地服务；代码提交后必须正常重启，旧进程才会从 v1 切换到
   `v2_status_v2`/`v2_decision_view_v2` 并重新建立纯内存观察草稿。release 握手能彻底消除混版被误报
