@@ -1745,6 +1745,84 @@ def test_gateway_starts_sina_after_hedge_delay_and_returns_without_waiting_for_s
     assert "eastmoney:source_failed" not in gateway.canonical_snapshot().degraded_reasons
 
 
+def test_late_eastmoney_hedge_preserves_security_identity_without_overwriting_sina_quote(
+    tmp_path: Path,
+) -> None:
+    completed = threading.Event()
+
+    class LateIdentityClient(BlockingMarketClient):
+        def fetch_market(self):
+            result = super().fetch_market()
+            completed.set()
+            return result
+
+    eastmoney_quote = replace(
+        _quote(),
+        source="eastmoney",
+        board=Board.MAIN,
+        board_source="eastmoney",
+        board_reliability="reported",
+        exchange="SSE",
+        listing_date=date(1999, 11, 10),
+    )
+    eastmoney = LateIdentityClient((eastmoney_quote,))
+    sina = CountingMarketClient((replace(_quote(), source="sina", price=12.01),))
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    pool.start()
+    lanes = SourceLaneRegistry(pool)
+    gateway = MarketDataGateway(
+        eastmoney,
+        sina,
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=30,
+        worker_pool=pool,
+        source_lanes=lanes,
+        full_market_hedge_delay_seconds=0.01,
+    )
+    observed_at = datetime.now(timezone.utc)
+    deadline = observed_at + timedelta(seconds=0.08)
+
+    try:
+        result = tuple(gateway.fetch_market(observed_at=observed_at, deadline=deadline))
+        time.sleep(0.1)
+        eastmoney.release.set()
+        assert completed.wait(1.0)
+        timeout_at = time.monotonic() + 1.0
+        while not gateway.reference_observations((eastmoney_quote.code,)) and time.monotonic() < timeout_at:
+            time.sleep(0.01)
+        references = gateway.reference_observations((eastmoney_quote.code,))
+    finally:
+        eastmoney.release.set()
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+    assert result[0].source == "sina"
+    assert gateway.current_quotes((eastmoney_quote.code,))[0].source == "sina"
+    assert len(references) == 1
+    assert references[0].source == "eastmoney_security_master"
+    assert references[0].fields["listing_date"] == "1999-11-10"
+    assert eastmoney.calls == 1
+    data_plane = DataPlaneRepository(tmp_path)
+    service = _service(
+        gateway,
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        data_plane=data_plane,
+        wall_clock=lambda: observed_at,
+    )
+    service.schedule_reference_data(
+        (),
+        observed_at,
+        security_master_codes=(eastmoney_quote.code,),
+    )
+    persisted = data_plane.load_security_master_recent(eastmoney_quote.code)
+    assert persisted is not None
+    assert persisted.source == "eastmoney_security_master"
+    assert persisted.payload["listing_date"] == "1999-11-10"
+
+
 def test_full_market_source_lane_deadline_returns_before_blocked_source_io() -> None:
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
     lanes = SourceLaneRegistry(pool)

@@ -182,9 +182,18 @@ class MarketDataGateway:
                 monotonic=self._monotonic,
                 wall_clock=self._wall_clock,
                 full_market_hedge_delay_seconds=options.get("full_market_hedge_delay_seconds", 1.0),
+                full_market_observation_sink=self._promote_full_market_security_references,
             ),
             self,
         )
+
+    def _promote_full_market_security_references(
+        self,
+        observations: Sequence[SourceObservation],
+    ) -> None:
+        references = security_reference_observations(observations)
+        if references:
+            self.update_reference_observations(references)
 
     def fetch_market(
         self,

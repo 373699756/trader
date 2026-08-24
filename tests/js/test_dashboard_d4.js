@@ -88,7 +88,7 @@ assert.deepStrictEqual(
     schema_version: "v2_status_v2",
     release: {
       decision_view_schema: "v2_decision_view_v2",
-      web_asset_revision: "release-contract-2026-08-24-v13",
+      web_asset_revision: "release-contract-2026-08-24-v14",
     },
   }))),
   { compatible: true, reason: "" },
@@ -213,6 +213,11 @@ state.renderSummary(
       input_quality: {
         today: {
           status: "not_ready",
+          candidate_optional_reason_counts: {
+            missing_listing_date: 221,
+            missing_listing_age_sessions: 65,
+            board_identity_degraded: 221,
+          },
           supply_funnel: {
             requested_candidates: 360,
             full_scored: 65,
@@ -236,7 +241,10 @@ state.renderSummary(
   },
 );
 assert.strictEqual(summaryElements.quoteCoverageStatus.textContent, "352 / 360");
-assert.strictEqual(summaryElements.quoteCoverageMeta.textContent, "行情缺失 8 · 身份缺失 286");
+assert.strictEqual(
+  summaryElements.quoteCoverageMeta.textContent,
+  "行情缺失 8 · 身份缺失 286（上市日期 221 · 交易日龄 65）",
+);
 assert.strictEqual(summaryElements.funnelStatus.textContent, "360 → 65 → 0");
 assert.strictEqual(summaryElements.funnelMeta.textContent, "过滤 216 · 观察草稿 2 · 最高 74.25");
 assert.strictEqual(summaryElements.quoteSource.textContent, "腾讯行情");

@@ -250,7 +250,7 @@
     const topScore = highestRuntimeScore == null
       ? useRuntime ? "—" : scoreSummary.topScore
       : highestRuntimeScore.toFixed(2);
-    renderQuoteCoverage(els, items, runtimeSummary);
+    renderQuoteCoverage(els, items, runtimeSummary, strategyQuality);
     if (payload.strategy === "long") {
       els.funnelStatus.textContent = "不适用";
       els.funnelMeta.textContent = "长期固定观察池不评分、不产生推荐";
@@ -275,7 +275,7 @@
     els.snapshotDate.textContent = cleanDate(payload.trade_date);
   }
 
-  function renderQuoteCoverage(els, items, runtimeSummary) {
+  function renderQuoteCoverage(els, items, runtimeSummary, inputQuality) {
     const quoteCoverage = quoteCoverageSummary(items);
     const runtimeTotal = finiteNonNegativeInteger(runtimeSummary && runtimeSummary.quote_total_count);
     const runtimeAvailable = finiteNonNegativeInteger(runtimeSummary && runtimeSummary.quote_covered_count);
@@ -288,7 +288,8 @@
       const identityMissing = runtimeIdentityMissing == null
         ? runtimeSummary && runtimeSummary.security_identity_pending === true ? "待评分" : "—"
         : runtimeIdentityMissing;
-      els.quoteCoverageMeta.textContent = `行情缺失 ${runtimeQuoteMissing == null ? "—" : runtimeQuoteMissing} · 身份缺失 ${identityMissing}`;
+      const identityDetail = identityMissingBreakdown(inputQuality, runtimeIdentityMissing);
+      els.quoteCoverageMeta.textContent = `行情缺失 ${runtimeQuoteMissing == null ? "—" : runtimeQuoteMissing} · 身份缺失 ${identityMissing}${identityDetail}`;
       return;
     }
     els.quoteCoverageStatus.textContent = quoteCoverage.total
@@ -297,6 +298,18 @@
     els.quoteCoverageMeta.textContent = quoteCoverage.total
       ? `行情缺失 ${quoteCoverage.quoteMissing} · 身份缺失 ${quoteCoverage.identityMissing}`
       : "当前无股票可检查";
+  }
+
+  function identityMissingBreakdown(inputQuality, identityMissing) {
+    if (identityMissing == null || identityMissing <= 0 || !inputQuality) return "";
+    const reasons = inputQuality.candidate_optional_reason_counts;
+    if (!reasons || typeof reasons !== "object") return "";
+    const listingDate = finiteNonNegativeInteger(reasons.missing_listing_date);
+    const listingAge = finiteNonNegativeInteger(reasons.missing_listing_age_sessions);
+    const details = [];
+    if (listingDate) details.push(`上市日期 ${listingDate}`);
+    if (listingAge) details.push(`交易日龄 ${listingAge}`);
+    return details.length ? `（${details.join(" · ")}）` : "";
   }
 
   function quoteCoverageSummary(items) {

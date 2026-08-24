@@ -55,6 +55,7 @@ class MarketSourceDependencies:
     monotonic: Callable[[], float]
     wall_clock: Callable[[], datetime]
     full_market_hedge_delay_seconds: float
+    full_market_observation_sink: Callable[[Sequence[SourceObservation]], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -135,6 +136,7 @@ class MarketSourceCoordinator:
         self._monotonic = dependencies.monotonic
         self._wall_clock = dependencies.wall_clock
         self._full_market_hedge_delay_seconds = dependencies.full_market_hedge_delay_seconds
+        self._full_market_observation_sink = dependencies.full_market_observation_sink
         self._telemetry = telemetry
 
     def fetch_market_sources(
@@ -404,9 +406,6 @@ class MarketSourceCoordinator:
         def load() -> tuple[SourceObservation, ...]:
             quotes, started = self._telemetry.fetch_physical(source, request.fetcher, request.minimum_rows)
             completed_at = max(observed_at, self._wall_clock())
-            if request.deadline is not None and completed_at >= request.deadline:
-                self._telemetry.record_fetch_result(source, False, started, "deadline")
-                raise MarketDataFailedError(source, "late")
             normalization_started = self._monotonic()
             observations = tuple(
                 observation_from_quote(quote, source=source, observed_at=completed_at) for quote in quotes
@@ -415,6 +414,11 @@ class MarketSourceCoordinator:
                 "normalization",
                 _elapsed(normalization_started, self._monotonic()),
             )
+            if request.dataset == "full_market_quotes" and self._full_market_observation_sink is not None:
+                self._full_market_observation_sink(observations)
+            if request.deadline is not None and completed_at >= request.deadline:
+                self._telemetry.record_fetch_result(source, False, started, "deadline")
+                raise MarketDataFailedError(source, "late")
             if self._cache is not None and not request.bypass_cache:
                 source_time = max(observation.source_time for observation in observations)
                 data_version = max(observation.data_version for observation in observations)

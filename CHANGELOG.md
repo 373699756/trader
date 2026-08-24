@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户现场看到“行情缺失 0 · 身份缺失 302”却无法判断含义的问题，新增报价抢跑迟到回归和
+  身份缺失构成展示契约。回归覆盖新浪先返回、东方财富晚于报价截止时间完成、当前报价不被迟到
+  结果覆盖、完整证券身份进入独立身份仓并在下一轮参考刷新写入 SQLite，且不新增第二次物理请求。
+
 - 针对用户现场看到“明天观察池：本轮未形成观察草稿，请查看运行状态”，新增午间冷启动恢复回归和
   观察池四态契约。测试覆盖只恢复缺失的 tomorrow/d25/long、Today 永不午间追补、DeepSeek 调用为 0、
   同日 current/空草稿成功后不重复、活动 lane 不追加重复请求，以及刷新未形成输出时可在下一 tick 重试。
@@ -275,6 +279,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 全市场来源协调器现在把“低延迟实时报价”和“稳定证券身份”分成两个接纳结果：完整物理响应先
+  规范化并把板块、交易所、上市日期晋升到网关身份仓，再单独执行报价截止门；迟到结果仍不能进入
+  当前报价、评分或冻结。行情覆盖卡在身份缺失非零时同时显示“上市日期/交易日龄”构成，Web 资源
+  revision 提升到 v14，防止旧页面与新脚本混用。
+
 - MIDDAY 调度现在使用独立 `midday_recovery` 周期：只在同日产物缺失且策略 lane 空闲时提交
   tomorrow、d25 和 long；所有午间恢复强制 `allow_review=false`。Long 刷新只有被其 latest-wins
   worker 接纳后才记作 handoff，提交拒绝会进入既有受控刷新失败与重试链。
@@ -476,6 +485,12 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复上一批虽然把全市场代码传给证券主数据持久化，却仍只保存报价抢跑胜出来源的问题：现场
+  360 只 Tomorrow 候选行情覆盖完整，但证券身份仅覆盖 58 只；302 只中 237 只缺上市日期、65 只
+  缺上市交易日龄。东方财富富身份响应此前作为 `hedge_inflight` 输家或报价迟到结果被丢弃，导致
+  持久化长期停留在 851 只。现在任何已完整返回的富身份全市场响应都会供后续批次持久化，同时
+  保持身份 100% 门禁，不用代码前缀猜上市日期或放宽推荐阈值。
 
 - 修复两项共同造成“明天观察池没有数据”的已验证问题：`decision_at()` 在 11:20-13:00 正确暂停常规
   评分，但 V2 scheduler 没有实现权威契约要求的缺失快照一次性本地恢复；现场进入午后后 Tomorrow
@@ -692,6 +707,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除“实时报价抢跑输家等同于证券身份无效”的隐含耦合；未移除来源超时、行情截止、证券身份
+  100% 覆盖门、Tomorrow 固定 78 分门槛或冻结不可覆盖约束。
+
 - 移除把“草稿存在但观察条目为 0”和“lane 空闲且从未形成草稿”合并为同一文案的前端隐式状态；
   未移除或放宽评分、过滤、风险、融合、排名、观察余量、正式动作阈值、冻结边界或 DeepSeek 预算。
 
@@ -791,6 +809,15 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 本批失败先行回归在旧实现稳定得到空身份仓，前端也只能显示身份缺失总数；修复后市场数据、输入
+  质量、Web 应用/HTTP 契约定向共 184 项通过，JavaScript D4 状态契约通过。`make format-check`
+  （354 个文件）、`make lint`（含零严格重构债务）、228 个源文件 mypy、完整 `make test` 和
+  `make package` 全部通过；打包首次仅因沙箱禁止隔离环境下载 `setuptools>=68` 失败，授权联网后
+  原命令成功构建 sdist/wheel。
+- 仓库外 `/tmp` 安装 wheel 后可导入包、执行 `trader-cli validate-config`，并读取 v14 模板、
+  `status_view.js` 与 release contract。Firefox headless 加载的 12 个资源均携带 v14 revision，
+  1280x720、1440x900、1920x1080 三档无白屏、页面级横向溢出、Long 重叠或浏览器错误，外部请求为 0。
 
 - 失败先行证据：新增回归在旧实现下稳定得到 MIDDAY 对四策略提交数均为 0，JavaScript 将空
   `draft.items` 判为 `open` 并缺少空草稿文案。实现后 V2 scheduler/input adapter/Web contract
@@ -1184,6 +1211,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 代码只能保存供应商已经完整返回的真实证券身份，不能伪造上市日期。当前真实东方财富端点存在
+  间歇断连且本机没有可用 Tushare 主数据凭据；部署 v14 后身份覆盖会在下一次东方财富完整全市场
+  响应及随后参考刷新中收敛，若外部来源持续失败，状态卡会继续如实显示剩余上市日期/交易日龄缺口，
+  推荐保持 `not_ready`，不会用猜测绕过安全门。
 
 - 本批不改变 Tomorrow 固定 78 分正式阈值、观察门槛、风险门或候选供给；现场 Tomorrow 最高分
   72.35 且 `selected_observe=0` 时仍会真实显示空观察池，D25 可独立保留其已达到观察条件的条目。
