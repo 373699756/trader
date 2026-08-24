@@ -15,6 +15,7 @@ from flask import Flask
 
 from trader.application.cadence import CadencePolicy, PipelineTask
 from trader.application.decision_core import UnifiedDecisionIndex
+from trader.application.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.decision_observers import AsyncDecisionObserver
 from trader.application.decision_queries import UnifiedDecisionQueries
 from trader.application.decision_stream import UnifiedDecisionEventStream
@@ -41,6 +42,7 @@ from trader.application.tomorrow_v2_freezing import (
     V2DecisionRuntimeIdentity,
 )
 from trader.application.v2_input_runtime import (
+    V2DecisionBuildDependencies,
     V2DeepSeekAdapter,
     V2FreezeAdapter,
     V2MarketDataAdapter,
@@ -180,6 +182,7 @@ class _PersistenceContext:
 class _PublicationContext:
     tomorrow_repository: SQLiteDecisionRecordRepository
     tomorrow_index: UnifiedDecisionIndex
+    decision_drafts: UnifiedDecisionDraftIndex
     research_trace: SQLiteV2ResearchTraceStore
     long_runtime: LongV2Runtime
     decision_queries: UnifiedDecisionQueries
@@ -219,8 +222,11 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         market_data,
         config_version=effective_config_version,
         candidate_pool_size=settings.market_data.candidate_pool_size,
-        long_runtime=publication.long_runtime,
-        policy=policy,
+        decision_build=V2DecisionBuildDependencies(
+            publication.long_runtime,
+            policy,
+            publication.decision_drafts,
+        ),
     )
     deepseek = V2DeepSeekAdapter(reviewer, policy, native_data)
     scheduler = V2SchedulerRuntime(
@@ -659,13 +665,14 @@ def _build_publication(
 ) -> _PublicationContext:
     settings = context.settings
     tomorrow_decisions = UnifiedDecisionIndex()
+    decision_drafts = UnifiedDecisionDraftIndex()
     decision_events = UnifiedDecisionEventStream(
         history_size=settings.api.sse_history_size,
         client_queue_size=settings.api.sse_client_queue_size,
         subscriber_limit=settings.api.sse_max_clients,
     )
     clock = ShanghaiClock(context.now)
-    decision_queries = UnifiedDecisionQueries(tomorrow_decisions, repository, clock)
+    decision_queries = UnifiedDecisionQueries(tomorrow_decisions, decision_drafts, repository, clock)
     research_trace = SQLiteV2ResearchTraceStore(
         settings.runtime_dir,
         limits=ResearchTraceLimits(events_per_trade_date=max(2048, settings.pipeline.event_queue_size * 4)),
@@ -726,6 +733,7 @@ def _build_publication(
     return _PublicationContext(
         repository,
         tomorrow_decisions,
+        decision_drafts,
         research_trace,
         long_runtime,
         decision_queries,

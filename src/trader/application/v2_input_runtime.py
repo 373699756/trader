@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Literal, Protocol
 
+from trader.application.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.long_v2_runtime import LongV2Runtime
 from trader.application.policy import RecommendationPolicy
 from trader.application.ports.long import LongRefreshRequest
@@ -70,6 +71,13 @@ class _SharedInputBatch:
     candidate_features: tuple[FeatureSnapshot, ...]
 
 
+@dataclass(frozen=True)
+class V2DecisionBuildDependencies:
+    long_runtime: LongV2Runtime
+    policy: RecommendationPolicy
+    draft_index: UnifiedDecisionDraftIndex
+
+
 class V2MarketReader(Protocol):
     def fetch_market_features(self, observed_at: datetime, *, force: bool = False) -> Sequence[FeatureSnapshot]: ...
 
@@ -110,14 +118,14 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         *,
         config_version: str,
         candidate_pool_size: int,
-        long_runtime: LongV2Runtime,
-        policy: RecommendationPolicy,
+        decision_build: V2DecisionBuildDependencies,
     ) -> None:
         self._market = market
         self._config_version = config_version
         self._candidate_pool_size = max(1, candidate_pool_size)
-        self._long_runtime = long_runtime
-        self._policy = policy
+        self._long_runtime = decision_build.long_runtime
+        self._policy = decision_build.policy
+        self._draft_index = decision_build.draft_index
         self._lock = threading.RLock()
         self._condition = threading.Condition(self._lock)
         self._batches: dict[tuple[Strategy, str], V2InputBatch] = {}
@@ -281,6 +289,7 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         with self._lock:
             self._input_quality[request.strategy] = _supply_status(projection)
         if not projection.input_quality.publishable:
+            self._draft_index.publish(projection.local)
             raise V2DecisionUnavailableError(projection.input_quality.status)
         with self._lock:
             self._projections[projection.local.version] = projection
@@ -605,6 +614,7 @@ def _decision_failure_code(exc: BaseException) -> str:
 
 
 __all__ = [
+    "V2DecisionBuildDependencies",
     "V2DeepSeekAdapter",
     "V2FreezeAdapter",
     "V2InputBatch",

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from trader.application.decision_core import UnifiedDecisionIndex
+from trader.application.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.decision_events import build_v2_decision_committed
 from trader.application.decision_queries import UnifiedDecisionQueries
 from trader.application.decision_stream import UnifiedDecisionEventStream
@@ -44,7 +46,8 @@ def test_unified_decision_routes_validate_strategy_date_and_etag() -> None:
     invalid_date = client.get("/api/v2/decisions/today/history?date=2026-8-8")
 
     assert current.status_code == 200
-    assert current.get_json()["schema_version"] == "v2_decision_view_v1"
+    assert current.get_json()["schema_version"] == "v2_decision_view_v2"
+    assert current.get_json()["draft"] is None
     assert current.get_json()["strategy"] == "today"
     assert current.get_json()["items"][0]["name"] == "浦发银行"
     assert current.get_json()["items"][0]["industry"] == "银行"
@@ -82,6 +85,40 @@ def test_only_unified_v2_product_routes_are_registered() -> None:
         assert client.get(removed).status_code == 404
 
 
+def test_not_ready_current_keeps_observation_draft_separate_and_private_from_status() -> None:
+    drafts = UnifiedDecisionDraftIndex()
+    draft = replace(
+        _decision(),
+        items=(
+            replace(
+                _decision().items[0],
+                action=RecommendationAction.OBSERVE,
+                reason="near_score_threshold",
+            ),
+        ),
+    )
+    assert drafts.publish(draft).accepted
+    queries = UnifiedDecisionQueries(UnifiedDecisionIndex(), drafts, _Repository(), _Clock())
+    app = create_app(
+        services=UnifiedWebServices(
+            queries,
+            UnifiedDecisionEventStream(),
+            lambda: {"status": "running", "phase": "today_main"},
+        )
+    )
+    client = app.test_client()
+
+    current = client.get("/api/v2/decisions/today/current")
+    status = client.get("/api/v2/status")
+
+    assert current.status_code == 200
+    assert current.get_json()["status"] == "not_ready"
+    assert current.get_json()["items"] == []
+    assert [item["code"] for item in current.get_json()["draft"]["items"]] == ["600000"]
+    assert current.headers["ETag"] == f'"{draft.content_hash}"'
+    assert draft.version not in status.get_data(as_text=True)
+
+
 def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     app, queries, stream = _app()
     stream.publish_committed(build_v2_decision_committed(_decision()))
@@ -116,6 +153,7 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
             "sample_count": 120,
         },
         "candidate_quote_cache_entries": 120,
+        "candidate_quote_latest_source": "tencent",
         "history_coverage_ratio": 0.5,
         "history_covered_rows": 60,
         "history_universe_rows": 120,
@@ -181,7 +219,7 @@ def _app():
     index = UnifiedDecisionIndex()
     decision = _decision()
     assert index.publish(decision, expected_version=None).accepted
-    queries = UnifiedDecisionQueries(index, _Repository(), _Clock())
+    queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), _Clock())
     stream = UnifiedDecisionEventStream()
     services = UnifiedWebServices(
         queries,
@@ -195,6 +233,7 @@ def _app():
                 "active_source": "sina",
                 "market_feature_rows": 5567,
                 "candidate_quote_cache_entries": 120,
+                "candidate_quote_latest_source": "tencent",
                 "market_quote_age": {
                     "sample_count": 5567,
                     "p50_seconds": 2.0,

@@ -41,6 +41,16 @@ def serialize_decision_view(view: DecisionView) -> dict[str, object]:
         "filter_reason_counts": dict(view.filter_reason_counts),
         "degraded_reasons": list(view.degraded_reasons),
         "items": [serialize_decision_item(item) for item in view.items],
+        "draft": (
+            {
+                "decision_version": view.draft.decision_version,
+                "content_hash": view.draft.content_hash,
+                "observed_at": _time(view.draft.observed_at),
+                "items": [serialize_decision_item(item) for item in view.draft.items],
+            }
+            if view.draft is not None
+            else None
+        ),
     }
 
 

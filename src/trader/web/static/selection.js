@@ -68,7 +68,9 @@
   }
 
   function observationRecommendations(payload, runtimePhase) {
-    const items = payload && Array.isArray(payload.items) ? payload.items : [];
+    const items = payload && payload.status === "not_ready"
+      ? payload.draft && Array.isArray(payload.draft.items) ? payload.draft.items : []
+      : payload && Array.isArray(payload.items) ? payload.items : [];
     if (observationDisplayState(payload, runtimePhase) !== "open") return [];
     return items.filter((item) => item.action === "observe");
   }
@@ -77,7 +79,6 @@
     if (!payload) return "unavailable";
     if (payload.strategy === "long") return "not_applicable";
     if (payload.historical === true) return "hidden_history";
-    if (payload.status !== "ready") return "unavailable";
     if (payload.frozen === true) return "closed_frozen";
     if (typeof runtimePhase !== "string" || !runtimePhase) return "unknown";
     const morningPhases = new Set([
@@ -85,7 +86,6 @@
       "today_main",
       "today_late",
     ]);
-    if (payload.strategy === "today") return morningPhases.has(runtimePhase) ? "open" : "closed_market";
     const afternoonPhases = new Set([
       "midday",
       "afternoon",
@@ -93,7 +93,13 @@
       "deepseek_cutoff",
       "final_quote",
     ]);
-    return morningPhases.has(runtimePhase) || afternoonPhases.has(runtimePhase) ? "open" : "closed_market";
+    const active = payload.strategy === "today"
+      ? morningPhases.has(runtimePhase)
+      : morningPhases.has(runtimePhase) || afternoonPhases.has(runtimePhase);
+    if (!active) return "closed_market";
+    if (payload.status === "not_ready") return payload.draft ? "open" : "warming";
+    if (payload.status !== "ready") return "unavailable";
+    return "open";
   }
 
   function recommendationSummary(payload, recommendations) {

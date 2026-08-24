@@ -80,6 +80,11 @@ class MarketDataHealth:
         gateway_health["sources"] = sources
         market_quotes = quote_status.market_features
         candidate_quotes = quote_status.candidate_quotes
+        latest_candidate_quote = (
+            max(candidate_quotes, key=lambda quote: (quote.source_time, quote.received_time, quote.data_version))
+            if candidate_quotes
+            else None
+        )
         history_rows = history.universe_rows
         history_covered = history.covered_rows
         intraday_rows = intraday.requested_rows
@@ -94,6 +99,9 @@ class MarketDataHealth:
                     "history_profile_entries": history.profile_entries,
                     "market_feature_rows": quote_status.market_feature_rows,
                     "candidate_quote_cache_entries": quote_status.candidate_quote_entries,
+                    "candidate_quote_latest_source": (
+                        latest_candidate_quote.source if latest_candidate_quote is not None else None
+                    ),
                     "research_cache_entries": research.entries,
                     "research_success_count": research.success_count,
                     "research_error_count": research.error_count,

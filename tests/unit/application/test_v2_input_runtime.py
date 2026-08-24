@@ -8,9 +8,10 @@ from pathlib import Path
 
 import pytest
 
+from trader.application.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.ports.v2_runtime import V2CycleRequest, V2DecisionUnavailableError
 from trader.application.schedule import SHANGHAI
-from trader.application.v2_input_runtime import V2MarketDataAdapter
+from trader.application.v2_input_runtime import V2DecisionBuildDependencies, V2MarketDataAdapter
 from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import Board
 from trader.domain.recommendation.models import Strategy
@@ -71,6 +72,12 @@ class _LongRuntime:
         return True
 
 
+def _decision_build(
+    drafts: UnifiedDecisionDraftIndex | None = None,
+) -> V2DecisionBuildDependencies:
+    return V2DecisionBuildDependencies(_LongRuntime(), _policy(), drafts or UnifiedDecisionDraftIndex())
+
+
 def _request(
     observed_at: datetime,
     *,
@@ -99,8 +106,7 @@ def test_production_adapter_rejects_transient_invalid_empty_projection(
         _Market((stale,)),
         config_version="test-config",
         candidate_pool_size=1,
-        long_runtime=_LongRuntime(),
-        policy=_policy(),
+        decision_build=_decision_build(),
     )
     request = _request(observed_at)
 
@@ -120,8 +126,7 @@ def test_production_adapter_preserves_publishable_business_empty_projection(
         _Market((blocked,)),
         config_version="test-config",
         candidate_pool_size=1,
-        long_runtime=_LongRuntime(),
-        policy=_policy(),
+        decision_build=_decision_build(),
     )
     request = _request(observed_at, phase="afternoon")
 
@@ -145,12 +150,12 @@ def test_production_adapter_rejects_partial_history_coverage_even_when_one_candi
         quote=replace(application_feature_factory("600002", observed_at).quote, board=Board.MAIN),
         history_days=19,
     )
+    drafts = UnifiedDecisionDraftIndex()
     adapter = V2MarketDataAdapter(
         _Market((complete, incomplete)),
         config_version="test-config",
         candidate_pool_size=2,
-        long_runtime=_LongRuntime(),
-        policy=_policy(),
+        decision_build=_decision_build(drafts),
     )
     request = _request(observed_at, phase="afternoon")
 
@@ -158,6 +163,11 @@ def test_production_adapter_rejects_partial_history_coverage_even_when_one_candi
 
     with pytest.raises(V2DecisionUnavailableError, match="not_ready"):
         adapter.build_local(request)
+
+    draft = drafts.snapshot(Strategy.TOMORROW)
+    assert draft is not None
+    assert draft.trade_date == observed_at.date()
+    assert {item.code for item in draft.items} == {"600001", "600002"}
 
 
 def test_production_adapter_rejects_candidate_security_identity_degradation(
@@ -177,8 +187,7 @@ def test_production_adapter_rejects_candidate_security_identity_degradation(
         _Market((degraded,)),
         config_version="test-config",
         candidate_pool_size=1,
-        long_runtime=_LongRuntime(),
-        policy=_policy(),
+        decision_build=_decision_build(),
     )
     request = _request(observed_at, phase="afternoon")
 
@@ -224,8 +233,7 @@ def test_production_adapter_accepts_exactly_ninety_nine_percent_history_coverage
         _Market(features),
         config_version="test-config",
         candidate_pool_size=100,
-        long_runtime=_LongRuntime(),
-        policy=_policy(),
+        decision_build=_decision_build(),
     )
     request = _request(observed_at, phase="afternoon")
 
@@ -262,8 +270,7 @@ def test_production_adapter_rejects_partial_candidate_feature_response(
         PartialCandidateMarket(features),
         config_version="test-config",
         candidate_pool_size=1,
-        long_runtime=_LongRuntime(),
-        policy=_policy(),
+        decision_build=_decision_build(),
     )
     request = _request(observed_at, phase="afternoon")
 
@@ -299,8 +306,7 @@ def test_three_scored_strategies_share_one_fast_market_input_cycle(
         market,
         config_version="test-config",
         candidate_pool_size=1,
-        long_runtime=_LongRuntime(),
-        policy=_policy(),
+        decision_build=_decision_build(),
     )
     requests = tuple(
         _request(observed_at, strategy=strategy, phase="morning")
@@ -366,8 +372,7 @@ def test_three_scored_strategies_use_refresh_completion_as_the_decision_time(
         market,
         config_version="test-config",
         candidate_pool_size=1,
-        long_runtime=_LongRuntime(),
-        policy=_policy(),
+        decision_build=_decision_build(),
     )
     requests = tuple(
         _request(requested_at, strategy=strategy, phase="morning")
@@ -400,8 +405,7 @@ def test_decision_time_does_not_trust_a_future_vendor_source_time(
         _Market((feature,)),
         config_version="test-config",
         candidate_pool_size=1,
-        long_runtime=_LongRuntime(),
-        policy=_policy(),
+        decision_build=_decision_build(),
     )
     request = _request(requested_at, phase="morning")
 
@@ -433,8 +437,7 @@ def test_candidate_pool_limit_is_applied_per_supported_board(
         market,
         config_version="test-config",
         candidate_pool_size=1,
-        long_runtime=_LongRuntime(),
-        policy=_policy(),
+        decision_build=_decision_build(),
     )
 
     adapter.refresh(_request(observed_at, phase="morning"))
@@ -466,8 +469,7 @@ def test_reference_refresh_scheduling_failure_does_not_block_local_decision(
         ReferenceFailureMarket((blocked,)),
         config_version="test-config",
         candidate_pool_size=1,
-        long_runtime=_LongRuntime(),
-        policy=_policy(),
+        decision_build=_decision_build(),
     )
     request = _request(observed_at, phase="afternoon")
 
@@ -511,8 +513,7 @@ def test_research_intent_prioritizes_published_output_before_bounded_candidates(
         market,
         config_version="test-config",
         candidate_pool_size=2,
-        long_runtime=_LongRuntime(),
-        policy=_policy(),
+        decision_build=_decision_build(),
     )
     request = _request(observed_at, phase="afternoon")
 
@@ -544,8 +545,7 @@ def test_unexpected_shared_input_failure_releases_single_flight_owner(
         market,
         config_version="test-config",
         candidate_pool_size=1,
-        long_runtime=_LongRuntime(),
-        policy=_policy(),
+        decision_build=_decision_build(),
     )
     request = _request(observed_at, phase="morning")
 

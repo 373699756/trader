@@ -319,36 +319,13 @@
   function normalizeV2Payload(raw, strategy, selectedDate, view) {
     const historical = Boolean(selectedDate);
     const coverage = raw.coverage || {};
-    const items = Array.isArray(raw.items) ? raw.items.map((item) => {
-      const quote = item.quote || {};
-      const scores = item.scores || {};
-      return {
-        rank: item.rank || 0,
-        code: item.code,
-        name: item.name || "",
-        industry: item.industry || "",
-        price: quote.price,
-        pct_change: quote.pct_change,
-        turnover_rate: quote.turnover_rate,
-        amount: quote.amount,
-        market_cap: quote.market_cap,
-        source: quote.source,
-        source_time: quote.source_time,
-        quote_status: quote.status,
-        action: item.action,
-        action_reason: item.action_reason,
-        anchor_price: quote.price,
-        anchor_source_time: quote.source_time,
-        scores: {
-          candidate_score: scores.candidate,
-          local_score: scores.local,
-          deepseek_score: scores.deepseek,
-          deepseek_risk_penalty: scores.deepseek_risk_penalty,
-          final_score: scores.final,
-        },
-        risks: (item.risk_codes || []).map((risk_code) => ({ risk_code })),
-      };
-    }) : [];
+    const items = Array.isArray(raw.items) ? raw.items.map(normalizeV2Item) : [];
+    const draft = raw.draft && typeof raw.draft === "object"
+      ? {
+        ...raw.draft,
+        items: Array.isArray(raw.draft.items) ? raw.draft.items.map(normalizeV2Item) : [],
+      }
+      : null;
     return {
       ...raw,
       snapshot_id: raw.decision_version,
@@ -368,6 +345,38 @@
         selected_executable_count: coverage.executable_count || 0,
       },
       items,
+      draft,
+    };
+  }
+
+  function normalizeV2Item(item) {
+    const quote = item.quote || {};
+    const scores = item.scores || {};
+    return {
+      rank: item.rank || 0,
+      code: item.code,
+      name: item.name || "",
+      industry: item.industry || "",
+      price: quote.price,
+      pct_change: quote.pct_change,
+      turnover_rate: quote.turnover_rate,
+      amount: quote.amount,
+      market_cap: quote.market_cap,
+      source: quote.source,
+      source_time: quote.source_time,
+      quote_status: quote.status,
+      action: item.action,
+      action_reason: item.action_reason,
+      anchor_price: quote.price,
+      anchor_source_time: quote.source_time,
+      scores: {
+        candidate_score: scores.candidate,
+        local_score: scores.local,
+        deepseek_score: scores.deepseek,
+        deepseek_risk_penalty: scores.deepseek_risk_penalty,
+        final_score: scores.final,
+      },
+      risks: (item.risk_codes || []).map((risk_code) => ({ risk_code })),
     };
   }
   function displayableCachedPayload(key, strategy, selectedDate, view) {
@@ -417,7 +426,7 @@
     );
     const observationState = selection.observationDisplayState(payload, state.runtimePhase);
     const observations = selection.observationRecommendations(payload, state.runtimePhase);
-    const showObservationPool = observationState === "open";
+    const showObservationPool = ["open", "warming"].includes(observationState);
     els.observationPool.hidden = !showObservationPool;
     const observationLimit = Number(payload.selection_diagnostics && payload.selection_diagnostics.observation_limit);
     const observationFloorValue = payload.selection_diagnostics && payload.selection_diagnostics.observation_floor;
@@ -431,7 +440,7 @@
     els.observationPoolMeta.title = Number.isFinite(observationFloor) && Number.isFinite(executableThreshold)
       ? `观察门槛 = 正式门槛 ${executableThreshold.toFixed(2)} - 观察余量 ${(executableThreshold - observationFloor).toFixed(2)}`
       : "";
-    const firstVisible = recommendations[0] || items[0];
+    const firstVisible = recommendations[0] || observations[0] || items[0];
     statusView.renderSummary(
       els,
       payload,
@@ -461,6 +470,17 @@
       els.observationBody.innerHTML = "";
     }
     if (payload.status === "not_ready") {
+      if (showObservationPool) {
+        if (observations.length) {
+          els.observationBody.innerHTML = window.TraderRender.observationTableRows(observations, payload);
+        } else {
+          stateRenderer.renderTableState(
+            "正在生成观察草稿",
+            window.TraderRender.observationTableColumnCount(payload),
+            els.observationBody,
+          );
+        }
+      }
       const notReady = patches.notReadyMessage(payload);
       stateRenderer.renderTableState(notReady.message, window.TraderRender.tableColumnCount(payload));
       stateRenderer.setNotice(notReady.notice, "idle");
@@ -527,7 +547,11 @@
   function selectRow(event) {
     const row = event.target.closest("tr[data-code]");
     if (!row || !state.payload) return;
-    const item = (state.payload.items || []).find((candidate) => candidate.code === row.dataset.code);
+    const draftItems = state.payload.draft && Array.isArray(state.payload.draft.items)
+      ? state.payload.draft.items
+      : [];
+    const item = [...(state.payload.items || []), ...draftItems]
+      .find((candidate) => candidate.code === row.dataset.code);
     if (!item) return;
     errorDrawer.close(false);
     els.drawerCode.textContent = `${item.code || "-"} · ${item.industry || "未分类"}`;
@@ -570,6 +594,15 @@
       reconcileRecommendationIdentity(payload);
       if (state.payload && (previousPhase !== state.runtimePhase || state.payload.status === "not_ready")) {
         renderPayload(state.payload);
+      }
+      const observationState = selection.observationDisplayState(state.payload, state.runtimePhase);
+      if (
+        state.payload
+        && state.payload.status === "not_ready"
+        && !state.date
+        && ["open", "warming"].includes(observationState)
+      ) {
+        loadRecommendations("status_not_ready");
       }
       updateQuoteAge();
       return payload;
@@ -689,6 +722,7 @@
       filtered_count: patch.filtered_count,
       selection_diagnostics: patch.selection_diagnostics || {},
       readiness_reason: null,
+      draft: null,
       long_groups: Array.isArray(patch.long_groups) ? patch.long_groups : current.long_groups || [],
       items: merged,
       error: null,

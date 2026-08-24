@@ -48,7 +48,7 @@ def test_production_composition_installs_long_v2_without_legacy_snapshot_publica
 
     assert "trader.application.long_v2_runtime" in imports
     assert "long_v2_runtime=publication.long_runtime" in source
-    assert "long_runtime=publication.long_runtime" in source
-    assert "long_runtime=publication.long_runtime" in source
+    assert "V2DecisionBuildDependencies(" in source
+    assert "publication.long_runtime," in source
     for forbidden in ("RecommendationSnapshot", "DeepSeek", "freeze", "repository", "settle"):
         assert forbidden not in runtime_source

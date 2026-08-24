@@ -4063,6 +4063,7 @@ def test_feature_service_health_reports_bounded_quote_age_summaries() -> None:
         "latest_source_time": NOW.isoformat(),
     }
     assert health["candidate_quote_age"]["maximum_seconds"] == 31.0
+    assert health["candidate_quote_latest_source"] == "fixture"
 
 
 def test_feature_service_current_quote_index_prefers_latest_targeted_quote() -> None:

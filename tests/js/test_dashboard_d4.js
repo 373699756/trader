@@ -75,6 +75,7 @@ const state = {
   longGroupVisibleRecommendations: sandbox.window.TraderLongGroups.visibleRecommendations,
 };
 assert(state, "dashboard D4 helpers were not exported into the test sandbox");
+assert(source.includes("draft: null,"), "formal recommendation patches must clear observation drafts");
 assert.strictEqual(state.formatDurationHms(0), "0s");
 assert.strictEqual(state.formatDurationHms(-1), "0s");
 assert.strictEqual(state.formatDurationHms(Number.NaN), "0s");
@@ -219,6 +220,44 @@ assert.strictEqual(summaryElements.funnelMeta.textContent, "过滤 216 · 观察
 assert.strictEqual(summaryElements.quoteSource.textContent, "腾讯行情");
 assert.strictEqual(summaryElements.budgetStatus.textContent, "0 / 168");
 assert.strictEqual(summaryElements.budgetMeta.textContent, "已用 / 剩余 · 上限 168 · 复核 0/0");
+state.renderSummary(
+  summaryElements,
+  {
+    status: "not_ready",
+    strategy: "tomorrow",
+    trade_date: "2026-08-14",
+    frozen: false,
+    score_status: "scored",
+    coverage: {},
+    items: [],
+    draft: null,
+  },
+  [],
+  "warming",
+  null,
+  sandbox.window.TraderSelection,
+  sandbox.window.TraderRender,
+  {
+    deepseek_budget: { used: 0, remaining: 168, limit: 168 },
+    market_data: {
+      active_source: "eastmoney",
+      candidate_quote_latest_source: "tencent",
+      candidate_quote_cache_entries: 360,
+      candidate_quote_age: {
+        sample_count: 360,
+        latest_source_time: "2026-08-14T10:01:00+08:00",
+      },
+    },
+    scheduler: { input_quality: {}, lanes: [{ strategy: "tomorrow", running: true, pending: true }] },
+  },
+);
+assert.strictEqual(summaryElements.quoteCoverageStatus.textContent, "360 / 360");
+assert.strictEqual(summaryElements.quoteCoverageMeta.textContent, "行情缺失 0 · 身份缺失 待评分");
+assert.strictEqual(summaryElements.funnelStatus.textContent, "360 → 采集中 → 0");
+assert.strictEqual(summaryElements.funnelMeta.textContent, "过滤 待计算 · 观察草稿 正在生成 · 最高 —");
+assert.strictEqual(summaryElements.quoteSource.textContent, "腾讯行情");
+assert.strictEqual(summaryElements.headerFreeze.textContent, "采集中");
+assert.strictEqual(summaryElements.freezeMeta.textContent, "首次评分正在运行");
 const notReadyAgeElements = {
   quoteAge: { textContent: "" },
   quoteTime: { textContent: "" },
@@ -236,14 +275,9 @@ state.updateQuoteAge(
   },
   sandbox.window.TraderRender,
   {
-    scheduler: {
-      input_quality: {
-        today: {
-          summary: {
-            trade_date: "2026-08-14",
-            latest_quote_source_time: new Date(Date.now() - 65_000).toISOString(),
-          },
-        },
+    market_data: {
+      candidate_quote_age: {
+        latest_source_time: new Date(Date.now() - 65_000).toISOString(),
       },
     },
   },
@@ -378,6 +412,23 @@ assert.deepStrictEqual(
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.observationRecommendations(liveShort, "after_close"))),
   [],
+);
+const notReadyDraft = {
+  status: "not_ready",
+  strategy: "tomorrow",
+  historical: false,
+  frozen: false,
+  items: [],
+  draft: { items: [{ code: "600003", action: "observe" }] },
+};
+assert.strictEqual(state.observationDisplayState(notReadyDraft, "midday"), "open");
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.observationRecommendations(notReadyDraft, "midday"))),
+  [{ code: "600003", action: "observe" }],
+);
+assert.strictEqual(
+  state.observationDisplayState({ ...notReadyDraft, draft: null }, "midday"),
+  "warming",
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.notReadyMessage({

@@ -11,6 +11,7 @@ import pytest
 import requests
 
 from trader.application.decision_core import UnifiedDecisionIndex
+from trader.application.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.decision_queries import UnifiedDecisionQueries
 from trader.application.decision_stream import UnifiedDecisionEventStream
 from trader.application.ports.reviews import DeepSeekReviewUnavailableError
@@ -471,7 +472,7 @@ def test_status_remains_read_only_when_budget_database_is_unavailable(tmp_path, 
     clock.now.return_value = NOW
     app = create_app(
         services=UnifiedWebServices(
-            UnifiedDecisionQueries(UnifiedDecisionIndex(), history, clock),
+            UnifiedDecisionQueries(UnifiedDecisionIndex(), UnifiedDecisionDraftIndex(), history, clock),
             UnifiedDecisionEventStream(),
             lambda: {
                 "runtime_started": True,

@@ -5,6 +5,7 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from trader.application.decision_core import UnifiedDecisionIndex
+from trader.application.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.decision_queries import UnifiedDecisionQueries
 from trader.domain.recommendation.decision_identity import (
     CommittedDecisionRecord,
@@ -67,7 +68,7 @@ def test_queries_expose_one_shape_for_scored_and_long_current_views() -> None:
     )
     assert index.publish(scored, expected_version=None).accepted
     assert index.publish(long, expected_version=None).accepted
-    queries = UnifiedDecisionQueries(index, _Repository(), _Clock())
+    queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), _Clock())
 
     today = queries.current(Strategy.TODAY)
     long_view = queries.current(Strategy.LONG)
@@ -100,7 +101,7 @@ def test_queries_read_only_formal_history_and_long_has_no_history() -> None:
         datetime(2026, 8, 8, 11, 20, tzinfo=SHANGHAI),
         "scheduled",
     )
-    queries = UnifiedDecisionQueries(UnifiedDecisionIndex(), _Repository(record), _Clock())
+    queries = UnifiedDecisionQueries(UnifiedDecisionIndex(), UnifiedDecisionDraftIndex(), _Repository(record), _Clock())
 
     history = queries.history(Strategy.TODAY, date(2026, 8, 8))
     long_history = queries.history(Strategy.LONG, date(2026, 8, 8))
@@ -137,7 +138,7 @@ def test_current_overlay_replaces_every_quote_field_without_changing_decision_id
     overlay = DecisionOverlay(scored.strategy, scored.trade_date, scored.version, NOW, (overlay_quote,))
     assert index.publish_overlay(overlay, expected_version=None).accepted
 
-    view = UnifiedDecisionQueries(index, _Repository(), _Clock()).current(Strategy.TODAY)
+    view = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), _Clock()).current(Strategy.TODAY)
 
     assert view.decision_version == scored.version
     assert view.items[0].price == 10.5
@@ -154,7 +155,7 @@ def test_scored_coverage_uses_distinct_evaluation_counts_not_overlapping_reasons
     scored = replace(_decision(), population_count=82, rejected_count=81)
     assert index.publish(scored, expected_version=None).accepted
 
-    view = UnifiedDecisionQueries(index, _Repository(), _Clock()).current(Strategy.TODAY)
+    view = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), _Clock()).current(Strategy.TODAY)
 
     assert view.coverage.candidate_count == 82
     assert view.coverage.evaluated_count == 1
@@ -176,7 +177,7 @@ def test_scored_query_restores_rank_order_from_code_sorted_identity() -> None:
     assert tuple(item.code for item in decision.items) == ("600001", "600002", "600003", "600004")
     assert index.publish(decision, expected_version=None).accepted
 
-    view = UnifiedDecisionQueries(index, _Repository(), _Clock()).current(Strategy.TODAY)
+    view = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), _Clock()).current(Strategy.TODAY)
 
     assert [(item.code, item.rank, item.final_score) for item in view.items] == [
         ("600002", 1, 86.0),
@@ -184,6 +185,60 @@ def test_scored_query_restores_rank_order_from_code_sorted_identity() -> None:
         ("600001", 3, 75.0),
         ("600003", 4, 73.0),
     ]
+
+
+def test_not_ready_current_exposes_observation_draft_without_formal_items() -> None:
+    drafts = UnifiedDecisionDraftIndex()
+    draft = replace(
+        _decision(),
+        items=(
+            _item("600002", RecommendationAction.EXECUTABLE, rank=1, final_score=84.0),
+            _item("600001", RecommendationAction.OBSERVE, rank=2, final_score=74.0),
+        ),
+    )
+    assert drafts.publish(draft).accepted
+
+    view = UnifiedDecisionQueries(UnifiedDecisionIndex(), drafts, _Repository(), _Clock()).current(Strategy.TODAY)
+
+    assert view.status == "not_ready"
+    assert view.items == ()
+    assert view.decision_version is None
+    assert view.draft is not None
+    assert view.draft.decision_version == draft.version
+    assert [item.code for item in view.draft.items] == ["600001"]
+    assert view.draft.items[0].action == "observe"
+    assert view.etag == draft.content_hash
+
+
+def test_current_never_exposes_observation_draft_after_freeze_boundary() -> None:
+    drafts = UnifiedDecisionDraftIndex()
+    draft = replace(
+        _decision(),
+        items=(_item("600001", RecommendationAction.OBSERVE, rank=1, final_score=74.0),),
+    )
+    assert drafts.publish(draft).accepted
+
+    class _FrozenClock:
+        def now(self) -> datetime:
+            return NOW.replace(hour=11, minute=20)
+
+    view = UnifiedDecisionQueries(UnifiedDecisionIndex(), drafts, _Repository(), _FrozenClock()).current(Strategy.TODAY)
+
+    assert view.status == "not_ready"
+    assert view.draft is None
+    assert view.etag is None
+
+
+def test_draft_index_rejects_older_and_conflicting_decisions() -> None:
+    drafts = UnifiedDecisionDraftIndex()
+    current = replace(_decision(), sequence=3)
+    stale = replace(_decision(), sequence=1)
+    conflict = replace(_decision(), sequence=3, degraded_reasons=("different",))
+
+    assert drafts.publish(current).accepted
+    assert drafts.publish(stale).reason == "stale_sequence"
+    assert drafts.publish(conflict).reason == "conflicting_sequence"
+    assert drafts.snapshot(Strategy.TODAY) == current
 
 
 def _item(

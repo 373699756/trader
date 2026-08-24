@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from typing import Literal, Protocol
 
 from trader.application.decision_core import UnifiedDecisionIndex, UnifiedDecisionSnapshot
+from trader.application.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.ports.clock import Clock
 from trader.application.ports.decision_records import DecisionRecordError
 from trader.domain.recommendation.decision_identity import (
@@ -19,7 +20,7 @@ from trader.domain.recommendation.decision_identity import (
     LongProjectionItem,
     ScoredDecision,
 )
-from trader.domain.recommendation.models import Strategy
+from trader.domain.recommendation.models import RecommendationAction, Strategy
 
 DecisionViewStatus = Literal["ready", "not_ready", "not_applicable"]
 ScoreStatus = Literal["scored", "not_applicable"]
@@ -69,6 +70,14 @@ class DecisionItemView:
 
 
 @dataclass(frozen=True)
+class DecisionDraftView:
+    decision_version: str
+    content_hash: str
+    observed_at: datetime
+    items: tuple[DecisionItemView, ...]
+
+
+@dataclass(frozen=True)
 class DecisionView:
     status: DecisionViewStatus
     strategy: Strategy
@@ -89,7 +98,8 @@ class DecisionView:
     degraded_reasons: tuple[str, ...]
     items: tuple[DecisionItemView, ...]
     etag: str | None
-    schema_version: str = "v2_decision_view_v1"
+    draft: DecisionDraftView | None = None
+    schema_version: str = "v2_decision_view_v2"
 
 
 class UnifiedDecisionQueries:
@@ -98,10 +108,12 @@ class UnifiedDecisionQueries:
     def __init__(
         self,
         index: UnifiedDecisionIndex,
+        drafts: UnifiedDecisionDraftIndex,
         history: DecisionHistoryReader,
         clock: Clock,
     ) -> None:
         self._index = index
+        self._drafts = drafts
         self._history = history
         self._clock = clock
 
@@ -112,7 +124,12 @@ class UnifiedDecisionQueries:
             return _long_current(snapshot, now)
         decision, formal = _current_scored(snapshot, strategy, now)
         if decision is None:
-            return _empty_view(strategy, now.date(), "current", "scored", "current_decision_unavailable")
+            empty = _empty_view(strategy, now.date(), "current", "scored", "current_decision_unavailable")
+            draft = _current_draft(self._drafts.snapshot(strategy), strategy, now)
+            if draft is None:
+                return empty
+            draft_view = _observation_draft(draft)
+            return replace(empty, draft=draft_view, etag=draft.content_hash)
         return _scored_view(decision, snapshot.overlay, now, "current", formal)
 
     def history(self, strategy: Strategy, trade_date: date) -> DecisionView:
@@ -155,6 +172,30 @@ def _current_scored(
     if not isinstance(current, ScoredDecision) or current.trade_date != now.date():
         return None, None
     return current, None
+
+
+def _current_draft(decision: ScoredDecision | None, strategy: Strategy, now: datetime) -> ScoredDecision | None:
+    if decision is None or decision.strategy is not strategy or decision.trade_date != now.date():
+        return None
+    boundary = datetime.combine(
+        now.date(),
+        time(11, 20) if strategy is Strategy.TODAY else time(14, 50),
+        tzinfo=now.tzinfo,
+    )
+    return decision if now < boundary else None
+
+
+def _observation_draft(decision: ScoredDecision) -> DecisionDraftView:
+    selected = sorted(
+        (item for item in decision.items if item.selected and item.action is RecommendationAction.OBSERVE),
+        key=lambda item: item.rank,
+    )
+    return DecisionDraftView(
+        decision.version,
+        decision.content_hash,
+        decision.observed_at,
+        tuple(_scored_item(item, None) for item in selected),
+    )
 
 
 def _scored_view(
@@ -350,6 +391,7 @@ def _etag(content_hash: str, overlay_hash: str | None) -> str:
 
 __all__ = [
     "DecisionCoverageView",
+    "DecisionDraftView",
     "DecisionHistoryReader",
     "DecisionItemView",
     "DecisionView",

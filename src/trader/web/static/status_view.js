@@ -220,18 +220,29 @@
     const coverage = payload && payload.coverage || {};
     const strategyQuality = strategyInputQuality(payload, statusPayload);
     const inputQuality = payload && payload.status === "not_ready" ? strategyQuality : null;
-    const runtimeFunnel = inputQuality && inputQuality.supply_funnel || {};
-    const runtimeSummary = inputQuality && inputQuality.summary || {};
-    const strategySummary = strategyQuality && strategyQuality.summary || {};
-    const useRuntime = Boolean(inputQuality);
+    const marketWarmup = payload && payload.status === "not_ready" && !inputQuality
+      ? marketWarmupStatus(statusPayload)
+      : null;
+    const runtimeFunnel = inputQuality && inputQuality.supply_funnel
+      || marketWarmup && marketWarmup.supply_funnel
+      || {};
+    const runtimeSummary = inputQuality && inputQuality.summary
+      || marketWarmup && marketWarmup.summary
+      || {};
+    const strategySummary = strategyQuality && strategyQuality.summary
+      || marketWarmup && marketWarmup.summary
+      || {};
+    const useRuntime = Boolean(inputQuality || marketWarmup);
     const candidate = displayCount(useRuntime ? runtimeFunnel.requested_candidates : coverage.candidate_count);
     const evaluated = displayCount(useRuntime ? runtimeFunnel.full_scored : coverage.evaluated_count);
     const rejected = displayCount(useRuntime ? runtimeFunnel.filter_reject : coverage.rejected_count);
     const executableCount = useRuntime
       ? "0"
       : items.filter((item) => item.action === "executable").length;
-    const observedCount = useRuntime
+    const observedCount = inputQuality
       ? finiteNonNegativeInteger(runtimeFunnel.selected_observe) || 0
+      : marketWarmup
+        ? payload.draft && Array.isArray(payload.draft.items) ? payload.draft.items.length : 0
       : items.filter((item) => item.action === "observe").length;
     const observed = observationSummary(payload, observationState, observedCount);
     const scoreSummary = selection.recommendationSummary(payload, items);
@@ -244,8 +255,12 @@
       els.funnelStatus.textContent = "不适用";
       els.funnelMeta.textContent = "长期固定观察池不评分、不产生推荐";
     } else {
-      els.funnelStatus.textContent = `${candidate} → ${evaluated} → ${executableCount}`;
-      els.funnelMeta.textContent = useRuntime
+      els.funnelStatus.textContent = marketWarmup
+        ? `${candidate} → 采集中 → 0`
+        : `${candidate} → ${evaluated} → ${executableCount}`;
+      els.funnelMeta.textContent = marketWarmup
+        ? `过滤 待计算 · 观察草稿 ${payload.draft ? observedCount : "正在生成"} · 最高 —`
+        : useRuntime
         ? `过滤 ${rejected} · 观察草稿 ${observedCount} · 最高 ${topScore}`
         : `过滤 ${rejected} · 观察 ${observed} · 最高 ${topScore}`;
     }
@@ -255,7 +270,7 @@
         ? render.sourceLabel(strategySummary.latest_quote_source)
         : "来源不可用";
     renderBudgetSummary(els, statusPayload && statusPayload.deepseek_budget, payload);
-    renderFreezeSummary(els, payload, render);
+    renderFreezeSummary(els, payload, render, statusPayload);
     els.snapshotStrategy.textContent = selection.strategyLabel(payload.strategy);
     els.snapshotDate.textContent = cleanDate(payload.trade_date);
   }
@@ -270,7 +285,10 @@
     );
     if (!quoteCoverage.total && runtimeTotal != null && runtimeAvailable != null) {
       els.quoteCoverageStatus.textContent = `${runtimeAvailable} / ${runtimeTotal}`;
-      els.quoteCoverageMeta.textContent = `行情缺失 ${runtimeQuoteMissing == null ? "—" : runtimeQuoteMissing} · 身份缺失 ${runtimeIdentityMissing == null ? "—" : runtimeIdentityMissing}`;
+      const identityMissing = runtimeIdentityMissing == null
+        ? runtimeSummary && runtimeSummary.security_identity_pending === true ? "待评分" : "—"
+        : runtimeIdentityMissing;
+      els.quoteCoverageMeta.textContent = `行情缺失 ${runtimeQuoteMissing == null ? "—" : runtimeQuoteMissing} · 身份缺失 ${identityMissing}`;
       return;
     }
     els.quoteCoverageStatus.textContent = quoteCoverage.total
@@ -370,10 +388,11 @@
       : `已用 / 剩余 · 上限 ${limit} · 复核 ${reviewed}/${executable}`;
   }
 
-  function renderFreezeSummary(els, payload, render) {
+  function renderFreezeSummary(els, payload, render, statusPayload) {
     if (!payload || payload.status === "not_ready") {
-      els.headerFreeze.textContent = "未就绪";
-      els.freezeMeta.textContent = "等待当前策略快照";
+      const collecting = strategyLaneCollecting(payload, statusPayload);
+      els.headerFreeze.textContent = collecting ? "采集中" : "未就绪";
+      els.freezeMeta.textContent = collecting ? "首次评分正在运行" : "等待当前策略快照";
       return;
     }
     if (payload.strategy === "long") {
@@ -397,6 +416,9 @@
     const inputQuality = strategyInputQuality(payload, statusPayload);
     const sourceTime = item && item.source_time
       || inputQuality && inputQuality.summary && inputQuality.summary.latest_quote_source_time
+      || statusPayload && statusPayload.market_data
+        && statusPayload.market_data.candidate_quote_age
+        && statusPayload.market_data.candidate_quote_age.latest_source_time
       || payload && payload.published_at;
     const timestamp = new Date(sourceTime || "").getTime();
     if (!Number.isFinite(timestamp)) {
@@ -532,6 +554,39 @@
     if (!value || typeof value !== "object") return null;
     const summary = value.summary;
     return summary && summary.trade_date === payload.trade_date ? value : null;
+  }
+
+  function marketWarmupStatus(statusPayload) {
+    const market = statusPayload && statusPayload.market_data;
+    if (!market || typeof market !== "object") return null;
+    const total = finiteNonNegativeInteger(market.candidate_quote_cache_entries);
+    const covered = finiteNonNegativeInteger(
+      market.candidate_quote_age && market.candidate_quote_age.sample_count,
+    );
+    if (total == null && covered == null) return null;
+    const normalizedTotal = total == null ? covered : total;
+    const normalizedCovered = covered == null ? 0 : Math.min(covered, normalizedTotal);
+    return {
+      supply_funnel: { requested_candidates: normalizedTotal },
+      summary: {
+        quote_total_count: normalizedTotal,
+        quote_covered_count: normalizedCovered,
+        quote_missing_count: Math.max(0, normalizedTotal - normalizedCovered),
+        security_identity_missing_count: null,
+        security_identity_pending: true,
+        latest_quote_source: visibleText(market.candidate_quote_latest_source)
+          || visibleText(market.active_source),
+        latest_quote_source_time: market.candidate_quote_age
+          && market.candidate_quote_age.latest_source_time,
+      },
+    };
+  }
+
+  function strategyLaneCollecting(payload, statusPayload) {
+    const lanes = statusPayload && statusPayload.scheduler && statusPayload.scheduler.lanes;
+    if (!payload || !Array.isArray(lanes)) return false;
+    const lane = lanes.find((candidate) => candidate && candidate.strategy === payload.strategy);
+    return Boolean(lane && (lane.running === true || lane.pending === true));
   }
 
   function issueLabel(code, stage) {

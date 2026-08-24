@@ -220,6 +220,7 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
         "active_source",
         "market_feature_rows",
         "candidate_quote_cache_entries",
+        "candidate_quote_latest_source",
         "history_universe_rows",
         "history_covered_rows",
         "history_coverage_ratio",

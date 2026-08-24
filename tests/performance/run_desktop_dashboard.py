@@ -23,6 +23,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from trader.application.decision_core import UnifiedDecisionIndex  # noqa: E402
+from trader.application.decision_drafts import UnifiedDecisionDraftIndex  # noqa: E402
 from trader.application.decision_queries import UnifiedDecisionQueries  # noqa: E402
 from trader.application.decision_stream import UnifiedDecisionEventStream  # noqa: E402
 from trader.application.ports.decision_records import CommittedDecisionRecord  # noqa: E402
@@ -123,8 +124,10 @@ def _run(output_dir: Path) -> dict[str, object]:
         base = f"http://127.0.0.1:{driver_port}/session/{session_id}"
         _request_json(f"{base}/url", method="POST", payload={"url": f"http://127.0.0.1:{app_port}/"})
         _wait(lambda: bool(_execute(base, "return Boolean(window.TraderDashboardDiagnostics);")))
-        _execute(base, 'document.querySelector(".strategy-tab[data-strategy=today]").click(); return true;')
-        _wait(lambda: _execute(base, 'return document.querySelector("#funnelStatus").textContent;') == "360 → 65 → 0")
+        _execute(base, 'document.querySelector(".strategy-tab[data-strategy=tomorrow]").click(); return true;')
+        _wait(
+            lambda: _execute(base, 'return document.querySelector("#funnelStatus").textContent;') == "360 → 采集中 → 0"
+        )
         not_ready_summary = _execute(
             base,
             """
@@ -139,6 +142,12 @@ def _run(output_dir: Path) -> dict[str, object]:
               freeze: document.querySelector('#headerFreeze').textContent,
             };
             """,
+        )
+        _wait(
+            lambda: (
+                _integer(_execute(base, 'return document.querySelectorAll("#observationBody tr[data-code]").length;'))
+                == 2
+            )
         )
         observations: list[_ObservationResult] = []
         expected_top_codes = {"tomorrow": "600009", "d25": "600010"}
@@ -263,7 +272,7 @@ def _run(output_dir: Path) -> dict[str, object]:
             and all(
                 item["visible"]
                 and item["rows"] == 2
-                and "观察 2" in item["count"]
+                and "观察草稿 2" in item["count"]
                 and item["quote_complete"]
                 and item["ranked_high_first"]
                 for item in observations
@@ -277,12 +286,12 @@ def _run(output_dir: Path) -> dict[str, object]:
             and isinstance(not_ready_summary, dict)
             and bool(re.fullmatch(r"(?:\d+h )?(?:\d+m )?\d+s", str(not_ready_summary.get("age"))))
             and not_ready_summary.get("source") == "腾讯行情"
-            and not_ready_summary.get("coverage") == "352 / 360"
-            and not_ready_summary.get("coverageMeta") == "行情缺失 8 · 身份缺失 286"
-            and not_ready_summary.get("funnel") == "360 → 65 → 0"
-            and not_ready_summary.get("funnelMeta") == "过滤 216 · 观察草稿 2 · 最高 74.25"
+            and not_ready_summary.get("coverage") == "360 / 360"
+            and not_ready_summary.get("coverageMeta") == "行情缺失 0 · 身份缺失 待评分"
+            and not_ready_summary.get("funnel") == "360 → 采集中 → 0"
+            and not_ready_summary.get("funnelMeta") == "过滤 待计算 · 观察草稿 正在生成 · 最高 —"
             and "上限 168" in str(not_ready_summary.get("budgetMeta"))
-            and not_ready_summary.get("freeze") == "未就绪"
+            and not_ready_summary.get("freeze") == "采集中"
             and all(_viewport_passed(viewport) for viewport in viewports)
         )
         return {
@@ -319,6 +328,8 @@ def _run(output_dir: Path) -> dict[str, object]:
 
 def _browser_services() -> UnifiedWebServices:
     index = UnifiedDecisionIndex()
+    drafts = UnifiedDecisionDraftIndex()
+    decisions: dict[Strategy, ScoredDecision] = {}
     for strategy, codes in (
         (Strategy.TOMORROW, ("600009", "600001")),
         (Strategy.D25, ("600010", "600002")),
@@ -341,8 +352,9 @@ def _browser_services() -> UnifiedWebServices:
             items,
             (),
         )
-        if not index.publish(decision, expected_version=None).accepted:
-            raise RuntimeError("browser observation fixture publication failed")
+        decisions[strategy] = decision
+    if not drafts.publish(decisions[Strategy.D25]).accepted:
+        raise RuntimeError("browser d25 draft publication failed")
     long_projection = LongProjection(
         _NOW.date(),
         1,
@@ -368,37 +380,35 @@ def _browser_services() -> UnifiedWebServices:
     )
     if not index.publish(long_projection, expected_version=None).accepted:
         raise RuntimeError("browser long fixture publication failed")
-    return UnifiedWebServices(
-        UnifiedDecisionQueries(index, _BrowserHistory(), _BrowserClock()),
-        UnifiedDecisionEventStream(),
-        lambda: {
+    status_calls = 0
+
+    def status_provider() -> dict[str, object]:
+        nonlocal status_calls
+        status_calls += 1
+        if status_calls == 2:
+            result = drafts.publish(decisions[Strategy.TOMORROW])
+            if not result.accepted:
+                raise RuntimeError(f"browser tomorrow draft publication failed: {result.reason}")
+        return {
             "status": "running",
             "runtime_started": True,
             "phase": "midday",
             "deepseek_budget": {"used": 0, "remaining": 168, "planned_limit": 71},
+            "market_data": {
+                "active_source": "eastmoney",
+                "candidate_quote_latest_source": "tencent",
+                "candidate_quote_cache_entries": 360,
+                "candidate_quote_age": {
+                    "sample_count": 360,
+                    "latest_source_time": _NOW.replace(hour=10, minute=0).isoformat(),
+                },
+            },
             "scheduler": {
-                "input_quality": {
-                    "today": {
-                        "status": "not_ready",
-                        "supply_funnel": {
-                            "requested_candidates": 360,
-                            "full_scored": 65,
-                            "filter_reject": 216,
-                            "selected_executable": 0,
-                            "selected_observe": 2,
-                        },
-                        "summary": {
-                            "trade_date": _NOW.date().isoformat(),
-                            "quote_total_count": 360,
-                            "quote_covered_count": 352,
-                            "quote_missing_count": 8,
-                            "security_identity_missing_count": 286,
-                            "latest_quote_source": "tencent",
-                            "latest_quote_source_time": _NOW.replace(hour=10, minute=0).isoformat(),
-                            "highest_final_score": 74.25,
-                        },
-                    }
-                }
+                "input_quality": {},
+                "lanes": [
+                    {"strategy": "tomorrow", "running": True, "pending": True},
+                    {"strategy": "d25", "running": True, "pending": True},
+                ],
             },
             "health": {"level": "degraded", "issue_count": 2},
             "recent_errors": [
@@ -425,7 +435,12 @@ def _browser_services() -> UnifiedWebServices:
                     "resolved_at": _NOW.replace(hour=12, minute=22).isoformat(),
                 },
             ],
-        },
+        }
+
+    return UnifiedWebServices(
+        UnifiedDecisionQueries(index, drafts, _BrowserHistory(), _BrowserClock()),
+        UnifiedDecisionEventStream(),
+        status_provider,
     )
 
 

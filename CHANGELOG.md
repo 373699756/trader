@@ -6,6 +6,14 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户再次反馈观察池消失、Web 数据新鲜度/行情覆盖/推荐漏斗等卡片无状态，新增独立的
+  `UnifiedDecisionDraftIndex` 和 `v2_decision_view_v2.draft` 只读边界。评分已经完成但输入质量尚未
+  达到正式发布门槛时，只保存最新同日观察草稿；正式 `items`、`UnifiedDecisionIndex`、SSE、冻结、
+  历史、归档和收益结算均不接纳该草稿。
+- 新增真实冷启动迁移浏览器回归：初始服务只有 360 条候选行情且没有 `input_quality`/草稿，第二次
+  15 秒状态轮询发布草稿并自动重读 current；Firefox 必须从“采集中”迁移到两行按分数排序的观察池，
+  不再用预先填满的静态夹具跳过故障窗口。
+
 - 针对用户反馈 Web 的数据新鲜度、行情覆盖和推荐漏斗在短线 `not_ready` 时全部失去状态，新增失败
   先行的应用聚合、HTTP 脱敏、JavaScript 摘要和 Firefox 真实浏览器回归；覆盖空 current 与仍在推进的
   360 只候选、行情/身份缺口、评分/过滤/观察草稿、最高分及预算每日上限同时存在的场景。
@@ -250,6 +258,14 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 短线 `not_ready` 首次评分阶段的五张摘要卡现在优先使用同交易日 `scheduler.input_quality`，该状态
+  尚未形成时回退到脱敏 `market_data` 候选缓存、年龄和最新候选来源：覆盖显示真实样本，身份明确
+  “待评分”，漏斗显示“采集中/待计算”，运行中的冻结卡显示“采集中”。Web 在观察窗口内随 15 秒
+  状态轮询自动重读 current，草稿出现后原位渲染观察表，正式推荐仍保持未就绪。
+- `/api/v2/status.market_data` 加法公开聚合字段 `candidate_quote_latest_source`；只返回最新候选报价的
+  来源名称，不公开股票代码或逐股事实。`DecisionView` schema 从 v1 升为 v2，并以独立 `draft` 对象
+  表达未正式发布的观察项。
+
 - `scheduler.input_quality.*` 新增不含股票身份的 `summary`，统一携带候选行情完整数、行情/证券身份
   缺失数、最新来源/源时间和最高最终分；`/api/v2/status.market_data` 只投影内存行情年龄、来源计数、
   熔断、延迟和历史预热聚合，主动丢弃逐股缺失键、外部错误文本与载荷。短线 current 未发布时摘要卡
@@ -432,6 +448,13 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复上一批只覆盖“评分已结束且已有 `input_quality`”的静态状态，遗漏真实冷启动窗口的问题：此前
+  首轮评分运行时 `input_quality={}`，前端既不读取已有 `market_data`，也不会在后台评分结束后重读
+  current，因此数据新鲜度、行情覆盖和推荐漏斗为空，观察池继续消失。现在两个阶段都有明确状态，
+  且质量门禁拒绝正式发布时不再丢弃同批已计算出的观察股票。
+- 修复 `not_ready` 渲染在正式空表后提前返回、导致独立观察区永远不写行，以及详情抽屉只在正式
+  `items` 查找股票的问题；草稿行现可排序、点击并查看相同的行情/评分/风险字段。
 
 - 修复统一 V2 Web 把“已发布决策”误作所有摘要卡唯一状态源的问题：覆盖门禁令 current 正确返回空
   `not_ready` 时，页面不再把实际候选/评分进度伪装成 `0 → 0 → 0`，也不再把行情年龄和覆盖显示为空。
@@ -632,6 +655,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除浏览器验收中预先注入完成态 `input_quality` 和正式观察 current 的捷径；本批没有删除正式推荐、
+  历史、阈值、策略入口或 Long 固定名单。
+
 - 移除免费证券身份“仅按候选代码持久化”的隐含范围和逐股独立 SQLite 连接/事务路径；未移除
   候选池上限、历史 30 只批次、公告完整性门、DeepSeek 证据门或 Tomorrow 固定 78 分动作阈值。
 
@@ -725,6 +751,17 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 失败先行回归在修复前以缺少 `trader.application.decision_drafts` 稳定失败；修复后的应用、评分适配、
+  HTTP 契约定向集 26 项通过，JavaScript D4 状态契约与受影响 Ruff 检查通过。Firefox 真实浏览器
+  1280x720、1440x900、1920x1080 已验证首屏 `360 / 360`、`身份缺失 待评分`、
+  `360 → 采集中 → 0`、腾讯来源/HMS 年龄及“采集中”，并在下一次真实 15 秒状态轮询后自动显示
+  Tomorrow 两行观察草稿；D25 草稿、Long 布局、错误抽屉和三档无横向溢出同时通过。
+- 高风险门禁 `make format-check`（354 文件）、`make lint`（严格重构债务为零）、`make type-check`
+  （228 个源文件）、完整 `make test`（100%）和 `make package` 全部通过；打包首次仅因沙箱禁止下载
+  `setuptools>=68` 失败，授权联网后成功生成 sdist/wheel。仓库外 wheel 从临时目标导入，CLI help 与
+  `validate-config`、10 项模板/CSS/JavaScript/SVG 资源和 `pip check` 均通过；仓库 `./run.sh
+  validate-config` 同样返回 `status=ok`。
 
 - 本批失败先行回归先稳定复现 `not_ready` 页面只显示 `0 → 0 → 0`、预算缺少 `limit`、状态缺少安全
   行情聚合，以及非有限指标可进入响应；修复后应用/组合根/HTTP 定向集 23 项、调度降级集成 1 项和
@@ -1081,6 +1118,14 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 草稿只代表“本地评分已完成但正式输入质量门禁未通过”，不会提高行情、证券身份、历史或公司风险
+  的真实覆盖，也不会产生正式推荐、冻结或收益证据；78/76 等既有动作阈值、风险、融合和排名均未
+  改变，因此本批不修改 `docs/recommendation-strategy.md`。若草稿中没有达到观察动作的股票，观察池
+  会正确显示空草稿而不会补数。
+- 已运行的常驻进程不会热加载 `v2_decision_view_v2` 或新 revision 的静态资源；提交部署后仍需正常
+  停止旧服务、执行 `./run.sh validate-config` 并重启。本机缺少 `DEEPSEEK_API_KEY` 的外部凭据缺口
+  仍然存在，代码只会继续如实报告零物理调用原因。
 
 - 本批恢复的是既有运行事实的安全投影和 Web 展示，不会补造正式推荐、观察项或上游数据。证券身份、
   行情和历史覆盖不足时短线仍可合法保持 `not_ready`，但卡片会明确显示缺口、草稿和最高分；评分、
