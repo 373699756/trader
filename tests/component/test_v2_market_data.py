@@ -2216,6 +2216,133 @@ def test_gateway_retains_free_security_master_when_realtime_source_falls_back() 
     assert second[0].listing_date == date(1999, 11, 10)
 
 
+def test_newer_sparse_free_identity_cannot_delete_existing_listing_fields() -> None:
+    gateway = MarketDataGateway(
+        StaticMarketClient((replace(_quote(), source="eastmoney"),)),
+        StaticMarketClient((replace(_quote(), source="sina"),)),
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=30,
+        listing_open_dates=lambda: (date(2020, 1, 2), date(2020, 1, 3), date(2026, 7, 16)),
+        wall_clock=lambda: NOW,
+    )
+    rich = SourceObservation(
+        source="eastmoney_security_master",
+        subject_key="600001",
+        observed_at=NOW - timedelta(seconds=1),
+        source_time=NOW - timedelta(seconds=1),
+        received_at=NOW - timedelta(seconds=1),
+        effective_at=NOW - timedelta(seconds=1),
+        data_version="eastmoney-master-rich",
+        fields={"board": "main", "exchange": "SSE", "listing_date": "2020-01-02"},
+        missing_reasons={},
+        payload_hash="rich-master",
+        status="success",
+        error_code=None,
+    )
+    sparse = replace(
+        rich,
+        observed_at=NOW,
+        source_time=NOW,
+        received_at=NOW,
+        effective_at=NOW,
+        data_version="eastmoney-master-sparse",
+        fields={"board": "main", "exchange": "SSE"},
+        payload_hash="sparse-master",
+    )
+
+    gateway.update_reference_observations((rich,))
+    gateway.update_reference_observations((sparse,))
+    reference = gateway.reference_observations(("600001",))[0]
+    quote = gateway.fetch_market(observed_at=NOW)[0]
+    security_master = gateway.health()["security_master"]
+
+    assert reference.data_version == "eastmoney-master-sparse"
+    assert reference.fields["listing_date"] == "2020-01-02"
+    assert reference.fields["listing_age_sessions"] == 3.0
+    assert quote.listing_date == date(2020, 1, 2)
+    assert quote.listing_age_sessions == 3
+    assert security_master == {
+        "total_rows": 1,
+        "listing_date_rows": 1,
+        "listing_age_rows": 1,
+        "complete_rows": 1,
+        "provider": "free_market+production_calendar",
+        "tushare_required": False,
+        "persistence_schedule_error_count": 0,
+    }
+
+
+def test_late_free_identity_is_persisted_without_waiting_for_next_score_cycle(tmp_path: Path) -> None:
+    completed = threading.Event()
+    observed_at = datetime.now(timezone.utc)
+
+    class LateIdentityClient(BlockingMarketClient):
+        def fetch_market(self):
+            result = super().fetch_market()
+            completed.set()
+            return result
+
+    eastmoney_quote = replace(
+        _quote(),
+        source="eastmoney",
+        board=Board.MAIN,
+        board_source="eastmoney",
+        board_reliability="reported",
+        exchange="SSE",
+        listing_date=date(1999, 11, 10),
+    )
+    eastmoney = LateIdentityClient((eastmoney_quote,))
+    sina = CountingMarketClient((replace(_quote(), source="sina", price=12.01),))
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
+    lanes = SourceLaneRegistry(pool)
+    gateway = MarketDataGateway(
+        eastmoney,
+        sina,
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=30,
+        worker_pool=pool,
+        source_lanes=lanes,
+        full_market_hedge_delay_seconds=0.01,
+    )
+    data_plane = DataPlaneRepository(tmp_path)
+    service = _service(
+        gateway,
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        data_plane=data_plane,
+        worker_pool=pool,
+        source_lanes=lanes,
+    )
+    gateway.set_security_reference_persistence_sink(service.references.schedule_security_master_persistence)
+    pool.start()
+    deadline = observed_at + timedelta(milliseconds=80)
+
+    try:
+        result = tuple(gateway.fetch_market(observed_at=observed_at, deadline=deadline))
+        time.sleep(0.1)
+        eastmoney.release.set()
+        assert completed.wait(1.0)
+        timeout_at = time.monotonic() + 2.0
+        persisted = None
+        while persisted is None and time.monotonic() < timeout_at:
+            persisted = data_plane.load_security_master_recent(eastmoney_quote.code)
+            time.sleep(0.01)
+    finally:
+        eastmoney.release.set()
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+    assert result[0].source == "sina"
+    assert persisted is not None
+    assert persisted.source == "eastmoney_security_master"
+    assert persisted.payload["listing_date"] == "1999-11-10"
+    assert lanes.status()["reference"]["completed_count"] >= 1
+
+
 def test_gateway_background_refresh_failure_uses_negative_cache_to_suppress_retries() -> None:
     runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
     monotonic = MutableMonotonic()

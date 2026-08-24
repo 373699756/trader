@@ -254,6 +254,21 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
                 )
                 if key in value and _json_scalar(value[key])
             }
+    security_master = raw.get("security_master")
+    if isinstance(security_master, Mapping):
+        result["security_master"] = {
+            key: security_master[key]
+            for key in (
+                "total_rows",
+                "listing_date_rows",
+                "listing_age_rows",
+                "complete_rows",
+                "provider",
+                "tushare_required",
+                "persistence_schedule_error_count",
+            )
+            if key in security_master and _json_scalar(security_master[key])
+        }
     sources = raw.get("sources")
     if isinstance(sources, Mapping):
         safe_sources: dict[str, object] = {}

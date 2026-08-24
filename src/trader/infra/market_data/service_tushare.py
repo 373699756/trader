@@ -43,6 +43,7 @@ _LOGGER = logging.getLogger(__name__)
 _T = TypeVar("_T")
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DAY_END = time(23, 59, 59)
+_REFERENCE_SOURCE = "reference"
 _TUSHARE_SOURCE = "tushare"
 _TRADING_CALENDAR_CURSOR_NAME = "tushare.trading_calendar"
 
@@ -123,13 +124,13 @@ class ReferenceLoader:
         normalized_master_codes = _normalize_codes(
             normalized if security_master_codes is None else security_master_codes
         )
+        self.schedule_security_master_persistence(self._gateway.reference_observations(normalized_master_codes))
         lanes = self._runner.source_lanes
         if lanes is None:
             self._refresh_tushare_reference_data(
                 normalized,
                 observed_at,
                 force=force,
-                security_master_codes=normalized_master_codes,
             )
             self._history_cache.load(normalized, force=force)
             return
@@ -138,7 +139,6 @@ class ReferenceLoader:
                 normalized,
                 observed_at,
                 force=force,
-                security_master_codes=normalized_master_codes,
             )
         else:
             tushare_identity = _source_batch_identity(
@@ -156,11 +156,44 @@ class ReferenceLoader:
                 normalized,
                 observed_at,
                 force=force,
-                security_master_codes=normalized_master_codes,
             )
             tushare_future.add_done_callback(_observe_reference_refresh)
         if not normalized:
             return
+
+    def schedule_security_master_persistence(
+        self,
+        masters: Sequence[SourceObservation],
+    ) -> None:
+        if self._data_plane is None:
+            return
+        selected = tuple(
+            master
+            for master in masters
+            if master.status == "success" and len(master.subject_key) == 6 and master.subject_key.isdigit()
+        )
+        if not selected:
+            return
+        observed_at = max(max(master.observed_at, master.source_time, master.received_at) for master in selected)
+        lanes = self._runner.source_lanes
+        if lanes is None or lanes.owns_current_thread(_REFERENCE_SOURCE):
+            self._persist_security_masters(observed_at, selected)
+            return
+        identity = _source_batch_identity(
+            "security_master_persistence",
+            tuple(master.subject_key for master in selected),
+            observed_at,
+            payload_hashes=tuple(sorted(master.payload_hash for master in selected)),
+        )
+        future = lanes.submit(
+            _REFERENCE_SOURCE,
+            identity,
+            observed_at,
+            self._persist_security_masters,
+            observed_at,
+            selected,
+        )
+        future.add_done_callback(_observe_reference_refresh)
 
     def refresh_reference_data(
         self,
@@ -170,11 +203,11 @@ class ReferenceLoader:
         force: bool = False,
     ) -> None:
         normalized = _normalize_codes(codes)
+        self.schedule_security_master_persistence(self._gateway.reference_observations(normalized))
         self._refresh_tushare_reference_data(
             normalized,
             observed_at,
             force=force,
-            security_master_codes=normalized,
         )
         self._history_cache.load(normalized, force=force)
 
@@ -184,10 +217,7 @@ class ReferenceLoader:
         observed_at: datetime,
         *,
         force: bool,
-        security_master_codes: Sequence[str],
     ) -> None:
-        free_masters = self._gateway.reference_observations(security_master_codes)
-        self._persist_security_masters(observed_at, free_masters)
         masters: tuple[SourceObservation, ...] = ()
         calendars: tuple[SourceObservation, ...] = ()
         tushare_history: tuple[SourceObservation, ...] = ()

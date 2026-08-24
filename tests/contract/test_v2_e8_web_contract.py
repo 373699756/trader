@@ -176,6 +176,15 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
             "sample_count": 5567,
         },
         "measured_at": NOW.isoformat(),
+        "security_master": {
+            "complete_rows": 850,
+            "listing_age_rows": 850,
+            "listing_date_rows": 850,
+            "persistence_schedule_error_count": 0,
+            "provider": "free_market+production_calendar",
+            "total_rows": 851,
+            "tushare_required": False,
+        },
         "sources": {
             "sina": {
                 "circuit_open": False,
@@ -261,6 +270,16 @@ def _app():
                 "history_warmup_completed_count": 60,
                 "history_warmup_failure_count": 3,
                 "history_warmup_inflight_count": 30,
+                "security_master": {
+                    "total_rows": 851,
+                    "listing_date_rows": 850,
+                    "listing_age_rows": 850,
+                    "complete_rows": 850,
+                    "provider": "free_market+production_calendar",
+                    "tushare_required": False,
+                    "persistence_schedule_error_count": 0,
+                    "internal_payload": "must-not-leak",
+                },
                 "measured_at": NOW.isoformat(),
                 "sources": {
                     "sina": {

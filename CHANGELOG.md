@@ -6,9 +6,15 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户质疑“身份缺失为何非要 Tushare”新增免费证券身份闭环回归与可观察状态：
+  `/api/v2/status.market_data.security_master` 只公开内存身份总数、上市日期/交易日龄完整数、免费来源
+  标识、持久化调度错误数和 `tushare_required=false`；行情覆盖卡在身份尚未补齐时明确显示
+  “免费行情+交易日历补齐中”，不再把缺少外部 token 当作身份缺口原因。
+
 - 针对用户现场看到“行情缺失 0 · 身份缺失 302”却无法判断含义的问题，新增报价抢跑迟到回归和
   身份缺失构成展示契约。回归覆盖新浪先返回、东方财富晚于报价截止时间完成、当前报价不被迟到
-  结果覆盖、完整证券身份进入独立身份仓并在下一轮参考刷新写入 SQLite，且不新增第二次物理请求。
+  结果覆盖、完整证券身份进入独立身份仓并由独立 `reference` lane 写入 SQLite，且不新增第二次
+  物理请求。
 
 - 针对用户现场看到“明天观察池：本轮未形成观察草稿，请查看运行状态”，新增午间冷启动恢复回归和
   观察池四态契约。测试覆盖只恢复缺失的 tomorrow/d25/long、Today 永不午间追补、DeepSeek 调用为 0、
@@ -279,6 +285,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 免费全市场行情产生的板块、交易所和上市日期现在由组合根直接接入独立 `reference` latest-wins
+  lane；富身份响应即使晚于实时报价截止时间，也会在规范化和字段合并后异步批量写入 SQLite，
+  无需等待下一评分周期。上市交易日龄继续仅由本地生产交易日历派生，Tushare 保留为可选估值、
+  财务、日历和历史增强，不再是证券身份覆盖或系统就绪条件。
+
 - 全市场来源协调器现在把“低延迟实时报价”和“稳定证券身份”分成两个接纳结果：完整物理响应先
   规范化并把板块、交易所、上市日期晋升到网关身份仓，再单独执行报价截止门；迟到结果仍不能进入
   当前报价、评分或冻结。行情覆盖卡在身份缺失非零时同时显示“上市日期/交易日龄”构成，Web 资源
@@ -485,6 +496,11 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复证券主数据以整条 observation 替换导致的反复身份缺失：同源较新稀疏响应过去会删除已保存的
+  上市日期，进而同时制造 `missing_listing_date` 与 `missing_listing_age_sessions`。现在按优先级选择
+  规范版本并按字段无损合并，较新非空值仍可纠正旧值，字段缺席不能删除旧的板块、交易所或上市
+  日期；交易日历变化后会统一重算已有身份的交易日龄与涨跌停规则。
 
 - 修复上一批虽然把全市场代码传给证券主数据持久化，却仍只保存报价抢跑胜出来源的问题：现场
   360 只 Tomorrow 候选行情覆盖完整，但证券身份仅覆盖 58 只；302 只中 237 只缺上市日期、65 只
@@ -707,6 +723,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除免费证券主数据持久化对 `tushare` lane 和后续评分参考刷新周期的隐式依赖；`tushare` 刷新
+  不再重复负责写入免费行情身份。
+
 - 移除“实时报价抢跑输家等同于证券身份无效”的隐含耦合；未移除来源超时、行情截止、证券身份
   100% 覆盖门、Tomorrow 固定 78 分门槛或冻结不可覆盖约束。
 
@@ -809,6 +828,22 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 本批身份闭环定向验证：
+  `.venv/bin/pytest -q tests/component/test_v2_market_data.py tests/contract/test_v2_e8_web_contract.py tests/contract/test_v2_app_factory.py`
+  通过；覆盖稀疏刷新不删上市日期、交易日龄派生、晚到富身份无需下一评分周期即可经独立 lane
+  落库、状态 API 脱敏投影和 Web release 契约。
+- 浏览器摘要 JavaScript 契约：
+  `node tests/js/test_dashboard_d4.js src/trader/web/static/dashboard.js` 通过，确认身份缺失构成与免费
+  补齐来源同时显示。
+- 高风险全量门禁最终通过：`make format-check`、`make lint`（含零严格重构债务）、
+  `make type-check`（228 个源文件）、`make test` 和 `make package`。首轮 lint 发现身份合并函数新增
+  一个复杂度诊断，拆分单股合并步骤后重跑归零；首次隔离打包仅因沙箱禁止下载 `setuptools` 失败，
+  获准联网后原命令成功构建 sdist 与 wheel。
+- 从仓库外 `/tmp` 前缀安装最终 wheel 后，确认 `trader` 从 `site-packages` 导入、`trader-cli --help`、
+  `validate-config`，以及模板、4 份 CSS、3 份关键 JavaScript 和 2 个 SVG 资源均可读取。Firefox
+  headless 三档桌面门禁在 1280x720、1440x900、1920x1080 精确视口全部通过：无白屏、页面级
+  横向溢出、关键区重叠或浏览器错误，加载的 Web revision 为 v15。
 
 - 本批失败先行回归在旧实现稳定得到空身份仓，前端也只能显示身份缺失总数；修复后市场数据、输入
   质量、Web 应用/HTTP 契约定向共 184 项通过，JavaScript D4 状态契约通过。`make format-check`
@@ -1212,10 +1247,14 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 免费全市场富身份仍依赖公开行情端点的可用性和响应完整度；端点超时或暂时只返回稀疏字段时，
+  系统保留最近有效身份、显示剩余覆盖缺口并继续本地降级，不伪造上市日期。没有 Tushare token 只会
+  缺少其可选增强，不再妨碍免费身份闭环。
+
 - 代码只能保存供应商已经完整返回的真实证券身份，不能伪造上市日期。当前真实东方财富端点存在
-  间歇断连且本机没有可用 Tushare 主数据凭据；部署 v14 后身份覆盖会在下一次东方财富完整全市场
-  响应及随后参考刷新中收敛，若外部来源持续失败，状态卡会继续如实显示剩余上市日期/交易日龄缺口，
-  推荐保持 `not_ready`，不会用猜测绕过安全门。
+  间歇断连；部署 v15 后身份覆盖会在下一次东方财富完整全市场响应完成并经独立 `reference` lane
+  落库时收敛。若外部来源持续失败，状态卡会继续如实显示剩余上市日期/交易日龄缺口，推荐保持
+  `not_ready`，不会用猜测绕过安全门；Tushare token 不属于该闭环的恢复条件。
 
 - 本批不改变 Tomorrow 固定 78 分正式阈值、观察门槛、风险门或候选供给；现场 Tomorrow 最高分
   72.35 且 `selected_observe=0` 时仍会真实显示空观察池，D25 可独立保留其已达到观察条件的条目。

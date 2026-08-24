@@ -157,6 +157,8 @@ class MarketDataGateway:
         self._latest_by_code: dict[str, MarketQuote] = {}
         self._latest_observations: dict[str, dict[str, SourceObservation]] = {}
         self._reference_observations: dict[str, SourceObservation] = {}
+        self._security_reference_persistence_sink: Callable[[Sequence[SourceObservation]], None] | None = None
+        self._reference_persistence_schedule_error_count = 0
         self._calendar_open_dates: set[date] = set()
         self._calendar_open_dates_sorted: tuple[date, ...] = ()
         self._listing_open_dates = options.get("listing_open_dates")
@@ -192,8 +194,28 @@ class MarketDataGateway:
         observations: Sequence[SourceObservation],
     ) -> None:
         references = security_reference_observations(observations)
-        if references:
-            self.update_reference_observations(references)
+        if not references:
+            return
+        self.update_reference_observations(references)
+        promoted = self.reference_observations(tuple(reference.subject_key for reference in references))
+        with self._state_lock:
+            persistence_sink = self._security_reference_persistence_sink
+        if persistence_sink is None:
+            return
+        try:
+            persistence_sink(promoted)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            with self._state_lock:
+                self._reference_persistence_schedule_error_count += 1
+
+    def set_security_reference_persistence_sink(
+        self,
+        sink: Callable[[Sequence[SourceObservation]], None],
+    ) -> None:
+        if not callable(sink):
+            raise TypeError("security reference persistence sink must be callable")
+        with self._state_lock:
+            self._security_reference_persistence_sink = sink
 
     def fetch_market(
         self,
@@ -544,10 +566,34 @@ class MarketDataGateway:
         for observation in observations:
             if observation.status != "success" or len(observation.subject_key) != 6:
                 continue
-            observation = self._with_listing_sessions(observation)
-            current = self._reference_observations.get(observation.subject_key)
-            if current is None or _reference_replaces(current, observation):
-                self._reference_observations[observation.subject_key] = observation
+            self._merge_reference_observation_locked(observation)
+        if calendar_changed:
+            self._reference_observations = {
+                code: self._with_listing_sessions(observation)
+                for code, observation in self._reference_observations.items()
+            }
+
+    def _merge_reference_observation_locked(self, incoming: SourceObservation) -> None:
+        current = self._reference_observations.get(incoming.subject_key)
+        if current is None:
+            merged = incoming
+        else:
+            incoming_wins = _reference_replaces(current, incoming)
+            winner, supplement = (incoming, current) if incoming_wins else (current, incoming)
+            fields = dict(supplement.fields)
+            fields.update(winner.fields)
+            missing_reasons = dict(supplement.missing_reasons)
+            missing_reasons.update(winner.missing_reasons)
+            for field, value in fields.items():
+                if value is not None:
+                    missing_reasons.pop(field, None)
+            merged = replace(
+                winner,
+                fields=fields,
+                missing_reasons=missing_reasons,
+                payload_hash=hashlib.sha256(canonical_json_bytes(fields)).hexdigest(),
+            )
+        self._reference_observations[incoming.subject_key] = self._with_listing_sessions(merged)
 
     def _with_listing_sessions(self, observation: SourceObservation) -> SourceObservation:
         listing_raw = observation.fields.get("listing_date")
@@ -627,6 +673,21 @@ class MarketDataGateway:
         now = self._monotonic()
         measured_at = self._wall_clock()
         with self._state_lock:
+            reference_rows = tuple(self._reference_observations.values())
+            listing_date_rows = sum(
+                isinstance(observation.fields.get("listing_date"), str) for observation in reference_rows
+            )
+            listing_age_rows = sum(
+                isinstance(observation.fields.get("listing_age_sessions"), (int, float))
+                and not isinstance(observation.fields.get("listing_age_sessions"), bool)
+                for observation in reference_rows
+            )
+            complete_rows = sum(
+                isinstance(observation.fields.get("listing_date"), str)
+                and isinstance(observation.fields.get("listing_age_sessions"), (int, float))
+                and not isinstance(observation.fields.get("listing_age_sessions"), bool)
+                for observation in reference_rows
+            )
             return {
                 "active_source": self._latest_source,
                 "cached_rows": len(self._latest_by_code),
@@ -643,6 +704,15 @@ class MarketDataGateway:
                 "canonical_snapshot": _canonical_health(self._latest_snapshot),
                 "route": _route_health(self._last_route_outcome),
                 "source_lanes": self._source_lanes.status() if self._source_lanes is not None else {},
+                "security_master": {
+                    "total_rows": len(reference_rows),
+                    "listing_date_rows": listing_date_rows,
+                    "listing_age_rows": listing_age_rows,
+                    "complete_rows": complete_rows,
+                    "provider": "free_market+production_calendar",
+                    "tushare_required": False,
+                    "persistence_schedule_error_count": self._reference_persistence_schedule_error_count,
+                },
                 "sources": {
                     name: {
                         "planned_count": state.planned_count,

@@ -535,6 +535,7 @@ def _build_market_data(
         data_plane=data_plane,
         monotonic=time.monotonic,
     )
+    gateway.set_security_reference_persistence_sink(references.schedule_security_master_persistence)
     history_warmup_batch_size = 30
     history_warmup_batch_timeout = min(
         20.0,

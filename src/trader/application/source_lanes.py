@@ -16,7 +16,7 @@ from trader.application.workers import BoundedExecutor
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
-_SOURCE_NAMES = ("eastmoney", "history", "sina", "tencent", "tushare", "akshare")
+_SOURCE_NAMES = ("eastmoney", "history", "reference", "sina", "tencent", "tushare", "akshare")
 
 
 class SourceRequestSupersededError(RuntimeError):
@@ -309,7 +309,7 @@ class LatestRequestLane:
 
 
 class SourceLaneRegistry:
-    """Fixed five-source registry with an isolated daily-history activity lane."""
+    """Fixed source registry with isolated history and reference activity lanes."""
 
     def __init__(self, executor: BoundedExecutor, *, latency: LatencyWaterfall | None = None) -> None:
         self._lanes = {source: LatestRequestLane(source, executor, latency=latency) for source in _SOURCE_NAMES}

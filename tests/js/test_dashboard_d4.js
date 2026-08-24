@@ -88,7 +88,7 @@ assert.deepStrictEqual(
     schema_version: "v2_status_v2",
     release: {
       decision_view_schema: "v2_decision_view_v2",
-      web_asset_revision: "release-contract-2026-08-24-v14",
+      web_asset_revision: "release-contract-2026-08-24-v15",
     },
   }))),
   { compatible: true, reason: "" },
@@ -209,6 +209,12 @@ state.renderSummary(
   sandbox.window.TraderRender,
   {
     deepseek_budget: { used: 0, remaining: 168, planned_limit: 71 },
+    market_data: {
+      security_master: {
+        provider: "free_market+production_calendar",
+        tushare_required: false,
+      },
+    },
     scheduler: {
       input_quality: {
         today: {
@@ -243,7 +249,7 @@ state.renderSummary(
 assert.strictEqual(summaryElements.quoteCoverageStatus.textContent, "352 / 360");
 assert.strictEqual(
   summaryElements.quoteCoverageMeta.textContent,
-  "行情缺失 8 · 身份缺失 286（上市日期 221 · 交易日龄 65）",
+  "行情缺失 8 · 身份缺失 286（上市日期 221 · 交易日龄 65；免费行情+交易日历补齐中）",
 );
 assert.strictEqual(summaryElements.funnelStatus.textContent, "360 → 65 → 0");
 assert.strictEqual(summaryElements.funnelMeta.textContent, "过滤 216 · 观察草稿 2 · 最高 74.25");
