@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户确认“免费全市场证券主数据实际只持久化候选子集”的剩余断点，新增失败先行回归：共享
+  输入必须同时传递有界候选代码和本轮完整全市场身份代码；参考加载器需保存候选外证券身份；
+  SQLite 批量接口需用单个写事务完成多股主数据，并在任一同刻冲突时整体回滚。
+- 新增 `/api/v2/status.deepseek` 安全投影契约，只允许公开启用、已配置、最近物理调用数和受控零调用
+  原因；测试注入的密钥和外部载荷必须被丢弃。
+
 - 针对用户反馈 `./run.sh` 无法启动，新增“物理损坏 SQLite 数据平面”失败先行回归：覆盖基础设施端口
   将驱动异常转换为受控不可用，以及组合根在数据平面不可恢复时仍按既有 fail-open 契约继续启动。
 
@@ -240,6 +246,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 参考数据调度现在显式区分两类范围：估值、财务、研究与历史增强继续只消费固定候选池，免费
+  `board/exchange/listing_date` 身份持久化消费本轮规范全市场代码集；两者合并为同一个 Tushare lane
+  请求身份，避免新增来源 lane 竞争。数据平面新增类型化证券主数据批量写端口，既有单条/正式记录
+  写入复用同一准备、冲突与提交实现。
+
 - V2 数据平面仓储现在在初始化、恢复、读和写的完整连接作用域统一捕获 `sqlite3.DatabaseError`，并映射
   为 `DataPlaneUnavailableError`；锁定仍保留专用受控原因，其它物理损坏不再把 SQLite 驱动异常泄漏到
   进程生命周期。该变化不自动删除、覆盖或伪装修复损坏数据，也不改变正常数据库 schema/提交语义。
@@ -412,6 +423,12 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复此前 Score-P2 实现与权威契约不一致的问题：虽然网关已从免费全市场响应生成完整证券身份，
+  应用层仍只把 120 只候选传给持久化入口，导致重启证据长期停留在逐步轮转规模。现在每轮完整
+  全市场身份在单个 SQLite 事务中幂等写入，候选外股票不再因未进入当轮评分池而永久缺少主数据。
+- 修复组合根已有 DeepSeek 缺钥诊断、但 V2 HTTP 状态投影丢弃整个 `deepseek` 字段的问题；现在
+  物理调用为 0 时可直接区分 `api_key_missing`、无合格候选、缓存命中、预算/截止和禁用等受控原因。
 
 - 修复 `.runtime/v2/v2-data/v2-data.sqlite3` 物理损坏时 `./run.sh` 在 Web 绑定前以
   `database disk image is malformed` 退出的问题。已确认直接根因是活动 V2 数据平面整库损坏；导致
@@ -601,6 +618,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除免费证券身份“仅按候选代码持久化”的隐含范围和逐股独立 SQLite 连接/事务路径；未移除
+  候选池上限、历史 30 只批次、公告完整性门、DeepSeek 证据门或 Tomorrow 固定 78 分动作阈值。
+
 - 本批未删除任何版本控制内业务链、正式推荐、研究库或用户文件；只把已由只读 `quick_check` 确认损坏的
   活动数据平面库移出活动文件名并保留可恢复副本，避免新进程继续写入不可信整库。
 
@@ -691,6 +711,20 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 本批失败先行测试在旧实现分别以未知 `security_master_codes` 参数和缺失批量写端口稳定失败；修复后
+  受影响应用、数据平面与市场数据定向集共 80 项通过，另复验历史慢尾保留成功股、参考刷新只走
+  `HistoryWarmup`、公告 250 条三页补全/分页失败、DeepSeek 缺钥零物理调用和固定策略配置。
+- Review 新发现的 DeepSeek HTTP 投影遗漏先以 `KeyError: deepseek` 复现，修复后完整 V2 Web 契约及
+  DeepSeek 缺钥/预算不可用只读回归共 6 项通过，并验证测试注入的 `api_key`/外部载荷不进入响应。
+- 高风险门禁 `make format-check`（353 文件）、`make lint`（strict refactor debt 为零）、
+  `make type-check`（227 个源文件）、完整 `make test`（100%）和 `make package` 全部通过；打包首次仅因
+  沙箱禁止下载 `setuptools>=68` 失败，授权联网后同一命令成功生成 sdist/wheel。`git diff --check`
+  通过；本批未修改 Web 资源或页面行为，三档浏览器验收不适用。
+- 真实只读检查确认 `./run.sh validate-config` 为 `status=ok`、本机环境无 `DEEPSEEK_API_KEY`，现有
+  `/api/v2/status` 的 DeepSeek 物理预算使用量为 0。08:59 启动的既有服务仍是本批改动前进程，检查时
+  市场阶段为 `closed`、调度提交为 0、活动数据平面证券主数据行为 0，因此未把该旧进程记为新实现的
+  全市场覆盖通过证据。
 
 - 启动故障定向验证通过：新增两项物理损坏回归先在旧实现稳定失败，修复后与完整数据平面单元、迁移和
   V2 bootstrap contract 共 17 项通过；受影响文件 Ruff、format check 和 mypy 通过。
@@ -1022,6 +1056,13 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 当前正在运行的 `trader-server` 早于本批代码修改，且本轮检查处于 `closed` 阶段；需要用户正常停止
+  并重启后，在活动行情阶段至少完成一次共享输入刷新，再核对 `security_master_recent` committed
+  行数接近本轮规范全市场股票数。固定回归证明代码范围与事务行为，不替代真实供应商完整交易日证据。
+- 本机仍未配置 `DEEPSEEK_API_KEY`，因此物理调用按安全契约保持 0；代码没有伪造凭据。Tomorrow 固定
+  78 分门槛未调整，用户提供的当日最高本地分 75.72 也未被当作放宽依据；本批修复数据供给与诊断，
+  不承诺立即产生可执行推荐或改善收益。
 
 - 108MiB 损坏数据平面副本仍保留在 `.runtime/v2/v2-data`，没有尝试从物理损坏页恢复其中的最近证券
   主数据、紧凑历史、风险证据或游标；活动库会按公开来源重新预热。正式决策、DeepSeek 预算、研究

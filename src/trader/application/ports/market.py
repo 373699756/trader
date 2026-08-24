@@ -284,7 +284,14 @@ class ResearchReaderPort(Protocol):
 class ReferenceDataPort(Protocol):
     def refresh_reference_data(self, codes: Sequence[str], observed_at: datetime, *, force: bool = False) -> None: ...
 
-    def schedule_reference_data(self, codes: Sequence[str], observed_at: datetime, *, force: bool = False) -> None: ...
+    def schedule_reference_data(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        security_master_codes: Sequence[str] | None = None,
+    ) -> None: ...
 
     def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> None: ...
 

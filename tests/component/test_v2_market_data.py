@@ -1194,27 +1194,31 @@ def test_reference_loader_recover_restores_security_master_and_calendar_cursor(t
     assert service.references._next_calendar_start(date(2026, 7, 20)) == date(2026, 7, 20)
 
 
-def test_reference_loader_persists_free_security_master_once_per_payload(tmp_path: Path) -> None:
+def test_reference_loader_persists_full_market_free_security_master_once_per_payload(tmp_path: Path) -> None:
     observed_at = datetime(2026, 7, 16, 9, 30, tzinfo=_SHANGHAI)
-    master = SourceObservation(
-        source="eastmoney_security_master",
-        subject_key="600001",
-        observed_at=observed_at,
-        source_time=observed_at,
-        received_at=observed_at,
-        effective_at=observed_at,
-        data_version="eastmoney-master-v1",
-        fields={"board": "main", "exchange": "sse", "listing_date": "2020-01-02"},
-        missing_reasons={},
-        payload_hash="a" * 64,
-        status="success",
-        error_code=None,
+    masters = tuple(
+        SourceObservation(
+            source="eastmoney_security_master",
+            subject_key=code,
+            observed_at=observed_at,
+            source_time=observed_at,
+            received_at=observed_at,
+            effective_at=observed_at,
+            data_version=f"eastmoney-master-{code}",
+            fields={"board": "main", "exchange": "sse", "listing_date": "2020-01-02"},
+            missing_reasons={},
+            payload_hash=code * 10 + "0000",
+            status="success",
+            error_code=None,
+        )
+        for code in ("600001", "600002")
     )
 
     class ReferenceGateway(StaticGateway):
         @staticmethod
         def reference_observations(codes):
-            return (master,) if "600001" in codes else ()
+            selected = set(codes)
+            return tuple(master for master in masters if master.subject_key in selected)
 
         @staticmethod
         def update_reference_observations(_observations):
@@ -1229,14 +1233,22 @@ def test_reference_loader_persists_free_security_master_once_per_payload(tmp_pat
         wall_clock=lambda: observed_at,
     )
 
-    service.refresh_reference_data(("600001",), observed_at - timedelta(minutes=1))
-    service.refresh_reference_data(("600001",), observed_at + timedelta(minutes=1))
+    service.references.schedule_reference_data(
+        ("600001",),
+        observed_at - timedelta(minutes=1),
+        security_master_codes=("600001", "600002"),
+    )
+    service.references.schedule_reference_data(
+        ("600001",),
+        observed_at + timedelta(minutes=1),
+        security_master_codes=("600001", "600002"),
+    )
 
-    persisted = data_plane.load_security_master_recent("600001")
-    assert persisted is not None
-    assert persisted.source == "eastmoney_security_master"
-    assert persisted.observed_at == observed_at
-    assert dict(persisted.payload) == dict(master.fields)
+    persisted = data_plane.load_security_master_recent_records()
+    assert tuple(record.code for record in persisted) == ("600001", "600002")
+    assert all(record.source == "eastmoney_security_master" for record in persisted)
+    assert all(record.observed_at == observed_at for record in persisted)
+    assert all(dict(record.payload) == dict(masters[0].fields) for record in persisted)
 
 
 def test_reference_loader_persists_cumulative_calendar_sessions(tmp_path: Path) -> None:

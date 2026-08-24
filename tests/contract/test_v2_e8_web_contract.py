@@ -100,6 +100,12 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     assert status["strategies"]["today"]["status"] == queries.current(Strategy.TODAY).status
     assert status["runtime_version"] == "runtime:test"
     assert status["scheduler"]["strategy_errors"] == {}
+    assert status["deepseek"] == {
+        "enabled": True,
+        "configured": False,
+        "physical_attempts": 0,
+        "zero_call_reason": "api_key_missing",
+    }
     assert status["health"] == {"level": "degraded", "issue_count": 1}
     assert status["recent_errors"] == [
         {
@@ -143,6 +149,16 @@ def _app():
             "runtime_version": "runtime:test",
             "scheduler": {"strategy_errors": {}},
             "deepseek_budget": {"limit": 168, "used": 12, "remaining": 156},
+            "deepseek": {
+                "enabled": True,
+                "configured": False,
+                "last_physical_attempts": 0,
+                "api_key": "must-not-leak",
+                "physical_call_acceptance": {
+                    "zero_call_reason": "api_key_missing",
+                    "external_payload": "must-not-leak",
+                },
+            },
             "health": {"level": "degraded", "issue_count": 1},
             "recent_errors": [
                 {

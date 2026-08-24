@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -77,6 +78,15 @@ from trader.infra.persistence.data_plane_types import (
 )
 
 
+@dataclass(frozen=True)
+class _PreparedWrite:
+    record: Record
+    row: dict[str, object]
+    pk_fields: tuple[str, ...]
+    pk_values: tuple[str, ...]
+    payload_hash: str
+
+
 class DataPlaneRepository:
     """Persist and recover V2 data-plane records."""
 
@@ -95,6 +105,9 @@ class DataPlaneRepository:
 
     def save_security_master_recent(self, record: SecurityMasterRecord) -> None:
         self._save("security_master", mode="recent", record=record)
+
+    def save_security_master_recent_records(self, records: Sequence[SecurityMasterRecord]) -> None:
+        self._save_many("security_master", mode="recent", records=records)
 
     def save_security_master_formal(self, freeze_id: str, record: SecurityMasterRecord) -> None:
         self._save("security_master", mode="formal", freeze_id=freeze_id, record=record)
@@ -328,6 +341,19 @@ class DataPlaneRepository:
         return DataPlaneRecoverySummary(recovered=recovered, quarantined=quarantined, orphaned=orphaned)
 
     def _save(self, family: str, *, mode: Mode, record: Record, freeze_id: str | None = None) -> None:
+        self._save_many(family, mode=mode, records=(record,), freeze_id=freeze_id)
+
+    def _save_many(
+        self,
+        family: str,
+        *,
+        mode: Mode,
+        records: Sequence[Record],
+        freeze_id: str | None = None,
+    ) -> None:
+        pending = tuple(records)
+        if not pending:
+            return
         self.initialize()
         profile = _profile(family)
         table = profile.formal_table if mode == "formal" else profile.recent_table
@@ -336,77 +362,13 @@ class DataPlaneRepository:
         if mode != "formal" and freeze_id is not None:
             raise ValueError("recent save must not provide freeze_id")
 
-        payload_text = _canonical_json(_to_payload_dict(record.payload))
-        payload_bytes = payload_text.encode("utf-8")
-        if len(payload_bytes) > _MAX_PAYLOAD_BYTES:
-            raise DataPlaneUnavailableError("data plane payload exceeds maximum bytes")
-
-        payload_hash = _sha256(payload_bytes)
-        if record.payload_hash and record.payload_hash != payload_hash:
-            raise ValueError("payload_hash must match canonical payload")
-
-        row = _record_to_row(profile, record, freeze_id=freeze_id)
-        pk_fields = _pk_fields(profile, mode)
-        pk_values = _identity_values(profile, mode=mode, freeze_id=freeze_id, record=record)
+        writes = tuple(_prepare_write(profile, mode=mode, record=record, freeze_id=freeze_id) for record in pending)
 
         with self._lock:
             try:
                 with data_plane_sqlite.connection_scope(self._database) as connection:
-                    if mode == "formal":
-                        if not _formal_write_allowed(
-                            connection=connection,
-                            table=table,
-                            identity=(pk_fields, pk_values),
-                            record=record,
-                            payload_hash=payload_hash,
-                        ):
-                            return
-                    elif not _recent_write_allowed(
-                        connection=connection,
-                        table=table,
-                        identity=(pk_fields, pk_values),
-                        record=record,
-                        payload_hash=payload_hash,
-                    ):
-                        return
-
-                    row.update(
-                        {
-                            "observed_at": _iso_datetime(record.observed_at),
-                            "source_time": _iso_datetime(record.source_time),
-                            "source": record.source,
-                            "data_version": record.data_version,
-                            "schema_version": record.schema_version or _DEFAULT_SCHEMA_VERSION,
-                            "payload_hash": payload_hash,
-                            "payload": payload_text,
-                            "status": "staged",
-                            "error": "",
-                            "recovery_payload": payload_bytes,
-                            "recovery_sha256": payload_hash,
-                        },
-                    )
-
-                    columns = tuple(row.keys())
-                    placeholders = ", ".join("?" for _ in columns)
-                    update_fields = [field for field in columns if field not in pk_fields]
-                    upsert = ", ".join(f"{field}=excluded.{field}" for field in update_fields)
-                    connection.execute(
-                        f"""
-                        INSERT INTO {table} ({", ".join(columns)})
-                        VALUES ({placeholders})
-                        ON CONFLICT({", ".join(pk_fields)}) DO UPDATE SET
-                            {upsert}
-                        """,
-                        tuple(row[field] for field in columns),
-                    )
-                    connection.execute(
-                        f"""
-                        UPDATE {table}
-                        SET status = 'committed', error = '', recovery_payload = NULL, recovery_sha256 = ''
-                        WHERE {_where_clause(pk_fields)}
-                        """,
-                        pk_values,
-                    )
+                    for write in writes:
+                        _execute_write(connection, table=table, mode=mode, write=write)
             except sqlite3.DatabaseError as exc:
                 raise _map_sqlite_error(exc, operation="write") from exc
 
@@ -600,6 +562,95 @@ def _record_metadata_matches(row: sqlite3.Row, record: Record, payload_hash: str
         and _text(row["data_version"]) == record.data_version
         and _text(row["schema_version"]) == (record.schema_version or _DEFAULT_SCHEMA_VERSION)
         and _text(row["payload_hash"]) == payload_hash
+    )
+
+
+def _prepare_write(
+    profile: _Profile,
+    *,
+    mode: Mode,
+    record: Record,
+    freeze_id: str | None,
+) -> _PreparedWrite:
+    payload_text = _canonical_json(_to_payload_dict(record.payload))
+    payload_bytes = payload_text.encode("utf-8")
+    if len(payload_bytes) > _MAX_PAYLOAD_BYTES:
+        raise DataPlaneUnavailableError("data plane payload exceeds maximum bytes")
+    payload_hash = _sha256(payload_bytes)
+    if record.payload_hash and record.payload_hash != payload_hash:
+        raise ValueError("payload_hash must match canonical payload")
+    row = _record_to_row(profile, record, freeze_id=freeze_id)
+    row.update(
+        {
+            "observed_at": _iso_datetime(record.observed_at),
+            "source_time": _iso_datetime(record.source_time),
+            "source": record.source,
+            "data_version": record.data_version,
+            "schema_version": record.schema_version or _DEFAULT_SCHEMA_VERSION,
+            "payload_hash": payload_hash,
+            "payload": payload_text,
+            "status": "staged",
+            "error": "",
+            "recovery_payload": payload_bytes,
+            "recovery_sha256": payload_hash,
+        }
+    )
+    return _PreparedWrite(
+        record=record,
+        row=row,
+        pk_fields=_pk_fields(profile, mode),
+        pk_values=_identity_values(profile, mode=mode, freeze_id=freeze_id, record=record),
+        payload_hash=payload_hash,
+    )
+
+
+def _execute_write(
+    connection: sqlite3.Connection,
+    *,
+    table: str,
+    mode: Mode,
+    write: _PreparedWrite,
+) -> None:
+    identity = (write.pk_fields, write.pk_values)
+    allowed = (
+        _formal_write_allowed(
+            connection=connection,
+            table=table,
+            identity=identity,
+            record=write.record,
+            payload_hash=write.payload_hash,
+        )
+        if mode == "formal"
+        else _recent_write_allowed(
+            connection=connection,
+            table=table,
+            identity=identity,
+            record=write.record,
+            payload_hash=write.payload_hash,
+        )
+    )
+    if not allowed:
+        return
+    columns = tuple(write.row)
+    placeholders = ", ".join("?" for _ in columns)
+    update_fields = tuple(field for field in columns if field not in write.pk_fields)
+    upsert = ", ".join(f"{field}=excluded.{field}" for field in update_fields)
+    connection.execute(
+        f"""
+        INSERT INTO {table} ({", ".join(columns)})
+        VALUES ({placeholders})
+        ON CONFLICT({", ".join(write.pk_fields)}) DO UPDATE SET
+            {upsert}
+        """,
+        tuple(write.row[field] for field in columns),
+    )
+    connection.execute(
+        f"""
+        UPDATE {table}
+        SET status = 'committed', error = '', recovery_payload = NULL, recovery_sha256 = ''
+        WHERE {_where_clause(write.pk_fields)}
+        """,
+        write.pk_values,
     )
 
 

@@ -25,7 +25,7 @@ class _Market:
         self.market_fetch_count = 0
         self.candidate_quote_refresh_count = 0
         self.candidate_reads: list[tuple[tuple[str, ...], bool, bool]] = []
-        self.reference_requests: list[tuple[tuple[str, ...], datetime, bool]] = []
+        self.reference_requests: list[tuple[tuple[str, ...], tuple[str, ...], datetime, bool]] = []
         self.requested_codes: tuple[str, ...] = ()
 
     def fetch_market_features(self, _observed_at, *, force=False):
@@ -39,8 +39,15 @@ class _Market:
         self.requested_codes = tuple(codes)
         return ()
 
-    def schedule_reference_data(self, codes, observed_at, *, force=False):
-        self.reference_requests.append((tuple(codes), observed_at, force))
+    def schedule_reference_data(
+        self,
+        codes,
+        observed_at,
+        *,
+        force=False,
+        security_master_codes=None,
+    ):
+        self.reference_requests.append((tuple(codes), tuple(security_master_codes or ()), observed_at, force))
 
     def read_candidate_features(
         self,
@@ -302,7 +309,14 @@ def test_three_scored_strategies_share_one_fast_market_input_cycle(
     assert market.market_fetch_count == 1
     assert market.candidate_quote_refresh_count == 1
     assert set(market.requested_codes) == {"600001", "300001", "688001"}
-    assert market.reference_requests == [(market.requested_codes, observed_at, False)]
+    assert market.reference_requests == [
+        (
+            market.requested_codes,
+            tuple(feature.quote.code for feature in features),
+            observed_at,
+            False,
+        )
+    ]
     assert all(decision is not None for decision in decisions)
     assert all(decision.items == () for decision in decisions if decision is not None)
     assert any(read[1] for read in market.candidate_reads)
@@ -426,8 +440,15 @@ def test_reference_refresh_scheduling_failure_does_not_block_local_decision(
     blocked = replace(feature, quote=replace(feature.quote, board=Board.MAIN, is_st=True))
 
     class ReferenceFailureMarket(_Market):
-        def schedule_reference_data(self, codes, observed_at, *, force=False):
-            del codes, observed_at, force
+        def schedule_reference_data(
+            self,
+            codes,
+            observed_at,
+            *,
+            force=False,
+            security_master_codes=None,
+        ):
+            del codes, observed_at, force, security_master_codes
             raise RuntimeError("reference lane unavailable")
 
     adapter = V2MarketDataAdapter(

@@ -87,6 +87,7 @@ class V2MarketReader(Protocol):
         observed_at: datetime,
         *,
         force: bool = False,
+        security_master_codes: Sequence[str] | None = None,
     ) -> None: ...
 
     def read_candidate_features(
@@ -175,7 +176,11 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         try:
             market_features = tuple(self._market.fetch_market_features(request.observed_at, force=False))
             requested = _candidate_codes(market_features, self._candidate_pool_size)
-            self._schedule_reference_data(requested, request.observed_at)
+            self._schedule_reference_data(
+                requested,
+                tuple(feature.quote.code for feature in market_features),
+                request.observed_at,
+            )
             self._market.refresh_candidate_quotes(requested, request.observed_at, force=False)
             candidate_features = tuple(
                 self._market.read_candidate_features(
@@ -206,9 +211,19 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
             self._condition.notify_all()
         return shared
 
-    def _schedule_reference_data(self, codes: tuple[str, ...], observed_at: datetime) -> None:
+    def _schedule_reference_data(
+        self,
+        codes: tuple[str, ...],
+        security_master_codes: tuple[str, ...],
+        observed_at: datetime,
+    ) -> None:
         try:
-            self._market.schedule_reference_data(codes, observed_at, force=False)
+            self._market.schedule_reference_data(
+                codes,
+                observed_at,
+                force=False,
+                security_master_codes=security_master_codes,
+            )
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError):
             # Reference enrichment is best-effort; missing fields remain visible as controlled degradation.
             return

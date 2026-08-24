@@ -333,8 +333,14 @@ class MarketFeatureService:
         observed_at: datetime,
         *,
         force: bool = False,
+        security_master_codes: Sequence[str] | None = None,
     ) -> None:
-        self.references.schedule_reference_data(codes, observed_at, force=force)
+        self.references.schedule_reference_data(
+            codes,
+            observed_at,
+            force=force,
+            security_master_codes=security_master_codes,
+        )
         self.warmup.schedule_history_warmup(codes, observed_at)
 
     def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> None:

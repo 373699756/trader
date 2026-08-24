@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -46,6 +48,63 @@ def test_recent_records_for_all_families_round_trip(tmp_path: Path) -> None:
     assert repository.load_source_cursor_recent("cursor-1") == _source_cursor_record("cursor-1")
     assert repository.load_trading_calendar_recent("sse_szse") == _trading_calendar_record()
     assert repository.load_trading_calendar_formal("calendar-freeze-1", "sse_szse") == _trading_calendar_record()
+
+
+def test_security_master_batch_uses_one_write_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = DataPlaneRepository(tmp_path)
+    original_connection_scope = data_plane_sqlite.connection_scope
+    connection_count = 0
+
+    @contextmanager
+    def counting_connection_scope(database_path: Path) -> Iterator[object]:
+        nonlocal connection_count
+        connection_count += 1
+        with original_connection_scope(database_path) as connection:
+            yield connection
+
+    monkeypatch.setattr(data_plane_sqlite, "connection_scope", counting_connection_scope)
+    records = tuple(
+        _security_master_record(code, payload={"board": "main", "exchange": "sse"})
+        for code in ("600001", "600002", "600003")
+    )
+
+    repository.save_security_master_recent_records(records)
+
+    assert connection_count == 2
+    assert repository.load_security_master_recent_records() == records
+    assert connection_count == 4
+
+
+def test_security_master_batch_rolls_back_when_one_record_conflicts(tmp_path: Path) -> None:
+    repository = DataPlaneRepository(tmp_path)
+    existing = _security_master_record(
+        "600002",
+        observed_at=_timestamp(10, 0),
+        payload={"board": "main", "exchange": "sse"},
+    )
+    repository.save_security_master_recent(existing)
+
+    with pytest.raises(DataPlaneConflictError, match="recent save conflicts"):
+        repository.save_security_master_recent_records(
+            (
+                _security_master_record(
+                    "600001",
+                    observed_at=_timestamp(10, 0),
+                    payload={"board": "main", "exchange": "sse"},
+                ),
+                _security_master_record(
+                    "600002",
+                    observed_at=_timestamp(10, 0),
+                    payload={"board": "chinext", "exchange": "szse"},
+                ),
+            )
+        )
+
+    assert repository.load_security_master_recent("600001") is None
+    assert repository.load_security_master_recent("600002") == existing
 
 
 def test_initialize_maps_physically_corrupt_database_to_controlled_unavailability(tmp_path: Path) -> None:

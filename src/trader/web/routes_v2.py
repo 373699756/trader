@@ -16,6 +16,23 @@ from trader.web.decision_sse import decision_event_response
 from trader.web.route_services import UnifiedWebServices
 
 RouteResponse = Response | tuple[Response, int]
+_DEEPSEEK_ZERO_CALL_REASONS = frozenset(
+    {
+        "disabled",
+        "api_key_missing",
+        "no_eligible_candidates",
+        "all_candidates_cached",
+        "budget_exhausted",
+        "bucket_limit",
+        "stage_limit",
+        "daily_hard_limit",
+        "challenger_daily_limit",
+        "circuit_open",
+        "deadline_reached",
+        "batch_skipped",
+        "no_physical_attempt_recorded",
+    }
+)
 
 
 def create_v2_blueprint(services: UnifiedWebServices | None) -> Blueprint:
@@ -101,6 +118,7 @@ def _status(services: UnifiedWebServices | None) -> RouteResponse:
             "scheduler": _mapping(runtime.get("scheduler")),
             "last_error": runtime.get("last_error"),
             "deepseek_budget": _budget(runtime),
+            "deepseek": _deepseek(runtime),
             "degraded_reasons": list(_reasons(runtime)),
             "health": _health(runtime),
             "recent_errors": _recent_errors(runtime),
@@ -178,6 +196,31 @@ def _budget(runtime: Mapping[str, object]) -> Mapping[str, object]:
             if isinstance(budget, Mapping):
                 return _json_mapping(budget)
     return {"available": False, "error": "budget_status_unavailable"}
+
+
+def _deepseek(runtime: Mapping[str, object]) -> dict[str, object]:
+    raw = runtime.get("deepseek")
+    if not isinstance(raw, Mapping):
+        dependencies = runtime.get("dependencies")
+        raw = dependencies.get("deepseek") if isinstance(dependencies, Mapping) else None
+    status = raw if isinstance(raw, Mapping) else {}
+    enabled = status.get("enabled") is True
+    configured = status.get("configured") is True
+    attempts = status.get("last_physical_attempts")
+    physical_attempts = (
+        attempts if isinstance(attempts, int) and not isinstance(attempts, bool) and attempts >= 0 else 0
+    )
+    acceptance = status.get("physical_call_acceptance")
+    raw_reason = acceptance.get("zero_call_reason") if isinstance(acceptance, Mapping) else None
+    reason = raw_reason if raw_reason in _DEEPSEEK_ZERO_CALL_REASONS else ""
+    if physical_attempts == 0 and not reason:
+        reason = "disabled" if not enabled else "api_key_missing" if not configured else "no_physical_attempt_recorded"
+    return {
+        "enabled": enabled,
+        "configured": configured,
+        "physical_attempts": physical_attempts,
+        "zero_call_reason": reason,
+    }
 
 
 def _reasons(runtime: Mapping[str, object]) -> tuple[str, ...]:

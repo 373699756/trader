@@ -50,7 +50,7 @@ _TRADING_CALENDAR_CURSOR_NAME = "tushare.trading_calendar"
 class _ReferenceDataPlane(Protocol):
     def recover(self) -> DataPlaneRecoverySummary: ...
 
-    def save_security_master_recent(self, record: SecurityMasterRecord) -> None: ...
+    def save_security_master_recent_records(self, records: Sequence[SecurityMasterRecord]) -> None: ...
 
     def save_source_cursor_recent(self, record: SourceCursorRecord) -> None: ...
 
@@ -117,16 +117,37 @@ class ReferenceLoader:
         observed_at: datetime,
         *,
         force: bool = False,
+        security_master_codes: Sequence[str] | None = None,
     ) -> None:
         normalized = _normalize_codes(codes)
+        normalized_master_codes = _normalize_codes(
+            normalized if security_master_codes is None else security_master_codes
+        )
         lanes = self._runner.source_lanes
         if lanes is None:
-            self.refresh_reference_data(normalized, observed_at, force=force)
+            self._refresh_tushare_reference_data(
+                normalized,
+                observed_at,
+                force=force,
+                security_master_codes=normalized_master_codes,
+            )
+            self._history_cache.load(normalized, force=force)
             return
         if lanes.owns_current_thread("tushare"):
-            self._refresh_tushare_reference_data(normalized, observed_at, force=force)
+            self._refresh_tushare_reference_data(
+                normalized,
+                observed_at,
+                force=force,
+                security_master_codes=normalized_master_codes,
+            )
         else:
-            tushare_identity = _source_batch_identity("reference_data", normalized, observed_at, force=force)
+            tushare_identity = _source_batch_identity(
+                "reference_data",
+                normalized,
+                observed_at,
+                force=force,
+                security_master_codes=normalized_master_codes,
+            )
             tushare_future = lanes.submit(
                 "tushare",
                 tushare_identity,
@@ -135,6 +156,7 @@ class ReferenceLoader:
                 normalized,
                 observed_at,
                 force=force,
+                security_master_codes=normalized_master_codes,
             )
             tushare_future.add_done_callback(_observe_reference_refresh)
         if not normalized:
@@ -148,7 +170,12 @@ class ReferenceLoader:
         force: bool = False,
     ) -> None:
         normalized = _normalize_codes(codes)
-        self._refresh_tushare_reference_data(normalized, observed_at, force=force)
+        self._refresh_tushare_reference_data(
+            normalized,
+            observed_at,
+            force=force,
+            security_master_codes=normalized,
+        )
         self._history_cache.load(normalized, force=force)
 
     def _refresh_tushare_reference_data(
@@ -157,8 +184,9 @@ class ReferenceLoader:
         observed_at: datetime,
         *,
         force: bool,
+        security_master_codes: Sequence[str],
     ) -> None:
-        free_masters = self._gateway.reference_observations(normalized)
+        free_masters = self._gateway.reference_observations(security_master_codes)
         self._persist_security_masters(observed_at, free_masters)
         masters: tuple[SourceObservation, ...] = ()
         calendars: tuple[SourceObservation, ...] = ()
@@ -340,6 +368,8 @@ class ReferenceLoader:
     ) -> None:
         if self._data_plane is None:
             return
+        records: list[SecurityMasterRecord] = []
+        signatures: dict[str, str] = {}
         for master in masters:
             if master.status != "success":
                 continue
@@ -349,24 +379,28 @@ class ReferenceLoader:
             with self._lock:
                 if self._persisted_security_master_signatures.get(master.subject_key) == signature:
                     continue
-            try:
-                self._data_plane.save_security_master_recent(
-                    SecurityMasterRecord(
-                        code=master.subject_key,
-                        observed_at=max(observed_at, master.observed_at, master.source_time),
-                        source_time=master.source_time,
-                        source=master.source,
-                        data_version=master.data_version,
-                        payload=fields,
-                        payload_hash=payload_hash,
-                    )
+            records.append(
+                SecurityMasterRecord(
+                    code=master.subject_key,
+                    observed_at=max(observed_at, master.observed_at, master.source_time),
+                    source_time=master.source_time,
+                    source=master.source,
+                    data_version=master.data_version,
+                    payload=fields,
+                    payload_hash=payload_hash,
                 )
-                with self._lock:
-                    self._persisted_security_master_signatures[master.subject_key] = signature
-            except DataPlaneUnavailableError:
-                _LOGGER.warning("security master persistence unavailable")
-            except Exception:
-                _LOGGER.exception("security master persistence failed")
+            )
+            signatures[master.subject_key] = signature
+        if not records:
+            return
+        try:
+            self._data_plane.save_security_master_recent_records(records)
+            with self._lock:
+                self._persisted_security_master_signatures.update(signatures)
+        except DataPlaneUnavailableError:
+            _LOGGER.warning("security master persistence unavailable")
+        except Exception:
+            _LOGGER.exception("security master persistence failed")
 
     def _persist_trading_calendar(
         self,
