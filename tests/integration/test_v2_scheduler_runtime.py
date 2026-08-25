@@ -324,6 +324,75 @@ def test_scheduler_atomically_publishes_complete_quotes_for_local_and_hybrid() -
     assert snapshot.overlay.quotes[0].market_cap == 12_000_000_000.0
 
 
+def test_slow_hybrid_review_does_not_block_a_newer_local_score() -> None:
+    review_started = threading.Event()
+    release_review = threading.Event()
+
+    class BlockingReviews(SharedReviews):
+        def build_hybrid(self, local: ScoredDecision, request: V2CycleRequest) -> ScoredDecision:
+            review_started.set()
+            assert release_review.wait(2.0)
+            return super().build_hybrid(local, request)
+
+    index = UnifiedDecisionIndex()
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=FixedClock(NOW),
+            calendar=TradingCalendar(),
+            cadence=_cadence(NOW),
+            data=DataRefresh(),
+            decisions=Decisions(),
+            reviews=BlockingReviews(),
+            index=index,
+            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-v2-async-review-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+            research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
+            publish_overlay=lambda _overlay: None,
+        ),
+        config_version="runtime-v2",
+    )
+    first = V2CycleRequest(
+        Strategy.TOMORROW,
+        NOW.date(),
+        NOW,
+        "afternoon",
+        1,
+        "input-v1",
+        True,
+        NOW + timedelta(minutes=1),
+    )
+    second = replace(
+        first,
+        observed_at=NOW + timedelta(seconds=1),
+        sequence=3,
+        input_version="input-v2",
+        allow_review=False,
+    )
+
+    runtime.start()
+    try:
+        runtime.submit_cycle(first)
+        assert review_started.wait(1.0)
+        runtime.submit_cycle(second)
+        assert _wait_for(
+            lambda: (
+                isinstance(index.snapshot(Strategy.TOMORROW).current, ScoredDecision)
+                and index.snapshot(Strategy.TOMORROW).current.sequence == 3
+            )
+        )
+    finally:
+        release_review.set()
+        assert runtime.wait_idle(2.0)
+        runtime.stop(ShutdownDeadline.start(2.0))
+
+    current = index.snapshot(Strategy.TOMORROW).current
+    assert isinstance(current, ScoredDecision)
+    assert current.sequence == 3
+    assert current.stage == "local"
+
+
 def test_scheduler_refreshes_frozen_today_overlay_without_mutating_formal_decision() -> None:
     observed_at = datetime(2026, 8, 11, 13, 5, tzinfo=SHANGHAI)
     frozen_at = observed_at.replace(hour=11, minute=20)

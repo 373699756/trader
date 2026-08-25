@@ -239,7 +239,7 @@ state.renderSummary(
             requested_candidates: 360,
             full_scored: 65,
             filter_reject: 216,
-            selected_executable: 0,
+            selected_executable: 2,
             selected_observe: 2,
           },
           summary: {
@@ -262,7 +262,7 @@ assert.strictEqual(
   summaryElements.quoteCoverageMeta.textContent,
   "行情缺失 8 · 身份缺失 286（上市日期 221 · 交易日龄 65；免费行情+交易日历补齐中）",
 );
-assert.strictEqual(summaryElements.funnelStatus.textContent, "360 → 65 → 0");
+assert.strictEqual(summaryElements.funnelStatus.textContent, "360 → 65 → 2");
 assert.strictEqual(summaryElements.funnelMeta.textContent, "过滤 216 · 观察草稿 2 · 最高 74.25");
 assert.strictEqual(summaryElements.quoteSource.textContent, "腾讯行情");
 assert.strictEqual(summaryElements.budgetStatus.textContent, "0 / 168");
@@ -1161,5 +1161,10 @@ sandbox.window.TraderRender.rememberDiagnostic(runtimeDiagnostics, "raw_runtime_
 assert.deepStrictEqual(JSON.parse(JSON.stringify(runtimeDiagnostics)), ["raw_runtime_code"]);
 assert.strictEqual(state.isSnapshotNotFound({ code: "snapshot_not_found" }), true);
 assert.strictEqual(state.isSnapshotNotFound({ code: "other" }), false);
+assert(source.includes("const STREAM_RETRY_INITIAL_MS = 1000;"), "SSE reconnect must retry after one second");
+assert(source.includes("const FALLBACK_POLL_MS = 3000;"), "disconnect polling must reconcile within three seconds");
+const overlayPatchBody = source.match(/function applyOverlayPatch\(patch\) \{([\s\S]*?)\n  \}\n\n  function requestRecommendationResync/);
+assert(overlayPatchBody, "overlay patch function must remain inspectable");
+assert(!overlayPatchBody[1].includes("renderPayload(state.payload)"), "overlay patches must not rebuild the full table");
 
 console.log("dashboard D4 state contract passed");

@@ -200,6 +200,44 @@ class MarketFeatureService:
             action_restrictions=action_restrictions,
         )
 
+    def refresh_topk_quotes(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]:
+        normalized = _normalize_codes(codes)
+        if not normalized:
+            return ()
+        fetched = tuple(
+            self.runner.run_data_task_until(
+                deadline,
+                True,
+                self.quotes.gateway.fetch_topk_quotes,
+                normalized,
+                observed_at=observed_at,
+                force=force,
+                deadline=deadline,
+            )
+        )
+        self.quotes.update_candidate_quotes(fetched)
+        resolved = self.quotes.candidate_snapshot(normalized)
+        action_restrictions: dict[str, set[str]] = {}
+        return self.quotes.build_candidate_features(
+            resolved,
+            self.history.cached(normalized, action_restrictions=action_restrictions),
+            observed_at,
+            research_observations=self.research.cached(
+                normalized,
+                include_structured=False,
+                action_restrictions=action_restrictions,
+            ),
+            intraday_minutes=None,
+            action_restrictions=action_restrictions,
+        )
+
     def refresh_long_quotes(
         self,
         codes: Sequence[str],

@@ -11,6 +11,7 @@
     inflight: new Map(),
     stream: null,
     streamRetry: null,
+    streamRetryDelayMs: 1000,
     pollTimer: null,
     lastEventId: 0,
     projectionVersion: "",
@@ -25,6 +26,9 @@
   };
   const CACHE_MAX_AGE_MS = configuredSnapshotRetentionMs();
   const HISTORY_REFRESH_MS = 3000;
+  const FALLBACK_POLL_MS = 3000;
+  const STREAM_RETRY_INITIAL_MS = 1000;
+  const STREAM_RETRY_MAX_MS = 15000;
   const PATCH_LATENCY_SAMPLE_CAPACITY = 256;
   const selection = window.TraderSelection;
   const longGroups = window.TraderLongGroups;
@@ -722,6 +726,8 @@
       els.streamStatus.textContent = "实时";
       stopPolling();
       if (state.streamRetry) window.clearTimeout(state.streamRetry);
+      state.streamRetry = null;
+      state.streamRetryDelayMs = STREAM_RETRY_INITIAL_MS;
     };
     const eventPayload = (event) => {
       try {
@@ -765,8 +771,18 @@
       if (state.stream === stream) state.stream = null;
       els.streamStatus.textContent = "轮询";
       startPolling();
+      if (!state.date && !state.releaseMismatch) {
+        loadStatus().finally(() => {
+          if (!state.date && !state.releaseMismatch) loadRecommendations("stream_disconnect");
+        });
+      }
       if (state.streamRetry) window.clearTimeout(state.streamRetry);
-      state.streamRetry = window.setTimeout(connectStream, 15000);
+      const retryDelay = state.streamRetryDelayMs;
+      state.streamRetryDelayMs = Math.min(STREAM_RETRY_MAX_MS, retryDelay * 2);
+      state.streamRetry = window.setTimeout(() => {
+        state.streamRetry = null;
+        connectStream();
+      }, retryDelay);
     };
   }
 
@@ -831,8 +847,9 @@
       requestRecommendationResync(decision);
       return false;
     }
+    const previous = state.payload;
     const quotes = new Map((patch.quotes || []).map((quote) => [quote.code, quote]));
-    state.payload = {
+    const nextPayload = {
       ...state.payload,
       projection_version: patch.projection_version,
       items: (state.payload.items || []).map((item) => {
@@ -850,11 +867,62 @@
         };
       }),
     };
+    if (!patchOverlayRows(previous, nextPayload, new Set(quotes.keys()))) {
+      requestRecommendationResync("overlay_dom_mismatch");
+      return false;
+    }
+    state.payload = nextPayload;
     state.projectionVersion = patch.projection_version;
     state.payloads.set(recommendationKey(state.strategy, state.date, state.view), state.payload);
     diagnostics.overlayPatchesApplied += 1;
-    renderPayload(state.payload);
+    refreshOverlaySummary(state.payload);
     return true;
+  }
+
+  function patchOverlayRows(previous, payload, changedCodes) {
+    const before = Array.isArray(previous && previous.items) ? previous.items : [];
+    const after = Array.isArray(payload && payload.items) ? payload.items : [];
+    if (before.length !== after.length) return false;
+    const beforeByCode = new Map(before.map((item) => [item.code, item]));
+    const recommendationRows = new Map(
+      Array.from(els.tableBody.querySelectorAll("tr[data-code]")).map((row) => [row.dataset.code, row]),
+    );
+    const observationRows = new Map(
+      Array.from(els.observationBody.querySelectorAll("tr[data-code]")).map((row) => [row.dataset.code, row]),
+    );
+    for (const item of after) {
+      const prior = beforeByCode.get(item.code);
+      if (!prior || prior.action !== item.action || prior.selected !== item.selected || prior.rank !== item.rank) return false;
+      if (!changedCodes.has(item.code)) continue;
+      const currentRow = recommendationRows.get(item.code) || observationRows.get(item.code);
+      if (!currentRow) continue;
+      const holder = document.createElement("tbody");
+      holder.innerHTML = recommendationRows.has(item.code)
+        ? window.TraderRender.tableRows([item], payload)
+        : window.TraderRender.observationTableRows([item], payload);
+      if (!holder.firstElementChild) return false;
+      holder.firstElementChild.dataset.rowIdentity = rowIdentity(payload, item.code);
+      currentRow.replaceWith(holder.firstElementChild);
+    }
+    return true;
+  }
+
+  function refreshOverlaySummary(payload) {
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    const recommendations = selection.visibleRecommendations(payload);
+    const observationState = selection.observationDisplayState(payload, state.runtimePhase, state.statusPayload);
+    const observations = selection.observationRecommendations(payload, state.runtimePhase, state.statusPayload);
+    statusView.renderSummary(
+      els,
+      payload,
+      items,
+      observationState,
+      recommendations[0] || observations[0] || items[0],
+      selection,
+      window.TraderRender,
+      state.statusPayload,
+    );
+    updateQuoteAge();
   }
 
   function requestRecommendationResync(reason) {
@@ -937,7 +1005,7 @@
       loadStatus().then((status) => {
         if (status && !state.date && !state.releaseMismatch) loadRecommendations("poll");
       });
-    }, 15000);
+    }, FALLBACK_POLL_MS);
   }
 
   function stopPolling() {

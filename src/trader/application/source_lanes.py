@@ -17,7 +17,17 @@ from trader.application.workers import BoundedExecutor
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
-_SOURCE_NAMES = ("eastmoney", "history", "reference", "sina", "tencent", "tushare", "akshare")
+_SOURCE_NAMES = (
+    "eastmoney",
+    "eastmoney_intraday",
+    "history",
+    "reference",
+    "sina",
+    "tencent",
+    "tencent_topk",
+    "tushare",
+    "akshare",
+)
 
 
 class SourceRequestSupersededError(RuntimeError):

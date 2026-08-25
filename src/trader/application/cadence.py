@@ -102,7 +102,7 @@ def task_execution_budget_seconds(task: PipelineTask) -> float | None:
     return {
         PipelineTask.FULL_MARKET: 20.0,
         PipelineTask.CANDIDATE_QUOTES: 3.0,
-        PipelineTask.TOPK_QUOTES: 3.0,
+        PipelineTask.TOPK_QUOTES: 2.0,
         PipelineTask.INTRADAY_TAIL: 3.0,
         PipelineTask.LONG_QUOTES: 3.0,
         PipelineTask.SCORE: 15.0,
@@ -203,6 +203,7 @@ class CadencePlanner:
         self._policy = policy
         self._lock = threading.Lock()
         self._next_due: dict[tuple[str, CadenceBand, PipelineTask], datetime] = {}
+        self._pending_scores: set[tuple[str, CadenceBand, PipelineTask]] = set()
         self._started_at = shanghai_now(started_at) if started_at is not None else None
         self._point_states: dict[SchedulePointKey, SchedulePointState] = {}
         self._reference_dates: set[str] = set()
@@ -230,7 +231,9 @@ class CadencePlanner:
         with self._lock:
             due = self._next_due.get(key)
             if due is not None and local < due:
+                self._pending_scores.add(key)
                 return None
+            self._pending_scores.discard(key)
             self._next_due[key] = local + timedelta(seconds=interval)
         return ScheduledPipelineTask(PipelineTask.SCORE, local, phase)
 
@@ -386,6 +389,7 @@ class CadencePlanner:
                     next_retry_at=None,
                 )
             self._next_due.clear()
+            self._pending_scores.clear()
 
     def interval_for(self, task: PipelineTask, at: datetime, *, is_trading_day: bool) -> float | None:
         if not is_trading_day:
@@ -421,11 +425,15 @@ class CadencePlanner:
         if self._afternoon_freeze_active(trade_date):
             tasks = [task for task in tasks if task.task is not PipelineTask.CLOSE_QUOTES]
         self._append_periodic_tasks(tasks, local, phase, tuple(point for point, _strategies in due_points))
+        self._append_pending_score(tasks, local, phase)
 
         next_delays = tuple(
             max(0.05, (due - local).total_seconds())
-            for (date_key, band_key, _task), due in self._next_due.items()
-            if date_key == trade_date and band_key is band and due > local
+            for key, due in self._next_due.items()
+            if key[0] == trade_date
+            and key[1] is band
+            and due > local
+            and (key[2] is not PipelineTask.SCORE or key in self._pending_scores)
         )
         retry_delays = tuple(
             max(0.05, (state.next_retry_at - local).total_seconds())
@@ -535,6 +543,24 @@ class CadencePlanner:
                 tasks.append(ScheduledPipelineTask(task, local, phase))
             self._next_due[key] = local + timedelta(seconds=interval)
 
+    def _append_pending_score(
+        self,
+        tasks: list[ScheduledPipelineTask],
+        local: datetime,
+        phase: MarketPhase,
+    ) -> None:
+        key = (local.date().isoformat(), cadence_band(phase), PipelineTask.SCORE)
+        due = self._next_due.get(key)
+        if key not in self._pending_scores or due is None or local < due:
+            return
+        self._pending_scores.discard(key)
+        if not decision_at(local, is_trading_day=True).should_score:
+            return
+        tasks.append(ScheduledPipelineTask(PipelineTask.SCORE, local, phase))
+        interval = self._policy.interval(PipelineTask.SCORE, key[1])
+        if interval is not None:
+            self._next_due[key] = local + timedelta(seconds=interval)
+
     def _quote_checkpoint_active(self, trade_date: str, local: datetime) -> bool:
         return any(
             key.trade_date == trade_date
@@ -551,6 +577,7 @@ class CadencePlanner:
 
     def _discard_old_state(self, trade_date: str, band: CadenceBand) -> None:
         self._next_due = {key: due for key, due in self._next_due.items() if key[0] == trade_date and key[1] is band}
+        self._pending_scores = {key for key in self._pending_scores if key[0] == trade_date and key[1] is band}
         self._reference_dates = {value for value in self._reference_dates if value == trade_date}
 
 

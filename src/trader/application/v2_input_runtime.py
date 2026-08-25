@@ -103,6 +103,15 @@ class V2MarketReader(Protocol):
         deadline: datetime | None = None,
     ) -> Sequence[FeatureSnapshot]: ...
 
+    def refresh_topk_quotes(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[FeatureSnapshot]: ...
+
     def refresh_candidate_quotes(
         self,
         codes: Sequence[str],
@@ -173,6 +182,10 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         self._latest_market_features: tuple[FeatureSnapshot, ...] = ()
         self._latest_requested_codes: tuple[str, ...] = ()
         self._latest_topk_quotes: _TopKQuoteBatch | None = None
+        self._score_feature_batches: dict[
+            tuple[datetime, bool, tuple[str, ...]],
+            tuple[FeatureSnapshot, ...],
+        ] = {}
         self._projections: dict[str, TodayV2LocalProjection | TomorrowV2LocalProjection] = {}
         self._decisions: dict[str, ScoredDecision] = {}
         self._input_quality: dict[Strategy, V2InputQualityStatus] = {}
@@ -215,16 +228,82 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         with self._lock:
             self._latest_market_features = features
             self._latest_requested_codes = requested
+            self._record_pending_quality_locked(
+                request.observed_at,
+                population_count=len(features),
+                requested_count=len(requested),
+                candidate_feature_count=0,
+                primary_blocker="candidate_quotes_pending",
+            )
 
     def _refresh_candidates(self, request: V2PipelineTaskRequest, deadline: datetime | None) -> None:
         requested = self._requested_codes()
         _require_codes(requested, "candidate_universe_unavailable")
-        self._market.refresh_candidate_quotes(requested, request.observed_at, force=True, deadline=deadline)
+        features = tuple(
+            self._market.refresh_candidate_quotes(
+                requested,
+                request.observed_at,
+                force=True,
+                deadline=deadline,
+            )
+        )
+        with self._lock:
+            self._record_pending_quality_locked(
+                request.observed_at,
+                population_count=len(self._latest_market_features),
+                requested_count=len(requested),
+                candidate_feature_count=len(features),
+                primary_blocker="scoring_pending",
+            )
+
+    def _record_pending_quality_locked(
+        self,
+        observed_at: datetime,
+        *,
+        population_count: int,
+        requested_count: int,
+        candidate_feature_count: int,
+        primary_blocker: str,
+    ) -> None:
+        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
+            existing = self._input_quality.get(strategy)
+            if (
+                existing is not None
+                and existing.summary.trade_date == observed_at.date()
+                and existing.primary_blocker not in {"candidate_quotes_pending", "scoring_pending"}
+            ):
+                continue
+            covered = min(requested_count, candidate_feature_count)
+            self._input_quality[strategy] = V2InputQualityStatus(
+                strategy=strategy,
+                status="not_ready",
+                publishable=False,
+                summary=V2SupplySummary(
+                    trade_date=observed_at.date(),
+                    quote_total_count=requested_count,
+                    quote_covered_count=covered,
+                    quote_missing_count=requested_count - covered,
+                    security_identity_missing_count=0,
+                ),
+                supply_funnel=V2SupplyFunnel(
+                    requested_candidates=requested_count,
+                    candidate_features=candidate_feature_count,
+                ),
+                population_count=population_count,
+                candidate_count=requested_count,
+                candidate_feature_count=candidate_feature_count,
+                population_rejected_count=max(0, population_count - requested_count),
+                candidate_rejected_count=max(0, requested_count - candidate_feature_count),
+                candidate_feature_coverage_ratio=(
+                    candidate_feature_count / requested_count if requested_count else 0.0
+                ),
+                primary_blocker=primary_blocker,
+            )
 
     def _refresh_topk(self, request: V2PipelineTaskRequest, deadline: datetime | None) -> None:
         if not request.selected_codes:
             return
-        self._market.refresh_candidate_quotes(
+        self._market.refresh_topk_quotes(
             request.selected_codes,
             request.observed_at,
             force=True,
@@ -277,13 +356,10 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
             shared = self._cached_input(request)
             candidate_features = shared.candidate_features
             if request.strategy is Strategy.TOMORROW:
-                candidate_features = tuple(
-                    self._market.read_candidate_features(
-                        shared.requested_codes,
-                        request.observed_at,
-                        include_intraday_tail=True,
-                        include_structured_research=True,
-                    )
+                candidate_features = self._score_features(
+                    shared.requested_codes,
+                    request.observed_at,
+                    include_intraday_tail=True,
                 )
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
             raise V2DataRefreshUnavailableError(_failure_code(exc)) from exc
@@ -305,15 +381,37 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
             requested = self._latest_requested_codes
         if not market_features or not requested:
             raise V2DataRefreshUnavailableError("market_snapshot_unavailable")
-        candidate_features = tuple(
-            self._market.read_candidate_features(
-                requested,
-                request.observed_at,
-                include_intraday_tail=False,
-                include_structured_research=True,
-            )
+        candidate_features = self._score_features(
+            requested,
+            request.observed_at,
+            include_intraday_tail=False,
         )
         return _SharedInputBatch(market_features, requested, candidate_features)
+
+    def _score_features(
+        self,
+        requested: tuple[str, ...],
+        observed_at: datetime,
+        *,
+        include_intraday_tail: bool,
+    ) -> tuple[FeatureSnapshot, ...]:
+        key = (observed_at, include_intraday_tail, requested)
+        with self._lock:
+            cached = self._score_feature_batches.get(key)
+            if cached is not None:
+                return cached
+            features = tuple(
+                self._market.read_candidate_features(
+                    requested,
+                    observed_at,
+                    include_intraday_tail=include_intraday_tail,
+                    include_structured_research=True,
+                )
+            )
+            self._score_feature_batches[key] = features
+            while len(self._score_feature_batches) > 8:
+                self._score_feature_batches.pop(next(iter(self._score_feature_batches)))
+            return features
 
     def _schedule_reference_data(
         self,

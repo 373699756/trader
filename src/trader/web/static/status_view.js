@@ -236,8 +236,9 @@
     const candidate = displayCount(useRuntime ? runtimeFunnel.requested_candidates : coverage.candidate_count);
     const evaluated = displayCount(useRuntime ? runtimeFunnel.full_scored : coverage.evaluated_count);
     const rejected = displayCount(useRuntime ? runtimeFunnel.filter_reject : coverage.rejected_count);
+    const runtimeExecutable = finiteNonNegativeInteger(runtimeFunnel.selected_executable);
     const executableCount = useRuntime
-      ? "0"
+      ? displayCount(runtimeExecutable == null ? runtimeFunnel.action_executable : runtimeExecutable)
       : items.filter((item) => item.action === "executable").length;
     const observedCount = inputQuality
       ? finiteNonNegativeInteger(runtimeFunnel.selected_observe) || 0
@@ -255,10 +256,12 @@
       els.funnelStatus.textContent = "不适用";
       els.funnelMeta.textContent = "长期固定观察池不评分、不产生推荐";
     } else {
-      els.funnelStatus.textContent = marketWarmup
+      const acquisitionPending = inputQuality
+        && ["candidate_quotes_pending", "scoring_pending"].includes(inputQuality.primary_blocker);
+      els.funnelStatus.textContent = marketWarmup || acquisitionPending
         ? `${candidate} → 采集中 → 0`
         : `${candidate} → ${evaluated} → ${executableCount}`;
-      els.funnelMeta.textContent = marketWarmup
+      els.funnelMeta.textContent = marketWarmup || acquisitionPending
         ? `过滤 待计算 · 观察草稿 ${payload.draft ? observedCount : observationState === "warming" ? "正在生成" : "未形成"} · 最高 —`
         : useRuntime
         ? `过滤 ${rejected} · 观察草稿 ${observedCount} · 最高 ${topScore}`
@@ -290,7 +293,11 @@
     );
     if (!quoteCoverage.total && runtimeTotal != null && runtimeAvailable != null) {
       els.quoteCoverageStatus.textContent = `${runtimeAvailable} / ${runtimeTotal}`;
-      const identityMissing = runtimeIdentityMissing == null
+      const acquisitionPending = inputQuality
+        && ["candidate_quotes_pending", "scoring_pending"].includes(inputQuality.primary_blocker);
+      const identityMissing = acquisitionPending
+        ? "待评分"
+        : runtimeIdentityMissing == null
         ? runtimeSummary && runtimeSummary.security_identity_pending === true ? "待评分" : "—"
         : runtimeIdentityMissing;
       const identityDetail = identityMissingBreakdown(inputQuality, runtimeIdentityMissing, marketData);

@@ -321,12 +321,13 @@ def test_tencent_normalizes_targeted_quote() -> None:
     session = FakeSession([body])
     client = TencentClient(timeout_seconds=2, session_factory=lambda: session)
 
-    quotes = client.fetch_quotes(["600001"], NOW)
+    quotes = client.fetch_quotes(["600001"], NOW, timeout_seconds=0.75)
 
     assert quotes[0].price == 12.0
     assert quotes[0].amount == 300000000.0
     assert quotes[0].market_cap == 12_050_000_000.0
     assert quotes[0].source_time.isoformat() == "2026-07-16T10:00:00+08:00"
+    assert session.calls[0][1]["timeout"] == 0.75
     assert session.calls[0][1]["proxies"] == {"http": "", "https": "", "all": ""}
 
 
@@ -1118,6 +1119,65 @@ def test_history_activity_does_not_block_realtime_eastmoney_lane() -> None:
         history.result(timeout=1.0)
     finally:
         release_history.set()
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+
+def test_topk_quote_lane_uses_reserved_urgent_worker_while_candidate_quotes_are_blocked() -> None:
+    pool = BoundedExecutor(
+        worker_count=2,
+        urgent_worker_count=1,
+        queue_capacity=2,
+        thread_name_prefix="test-source-priority",
+    )
+    lanes = SourceLaneRegistry(pool)
+    candidate_started = threading.Event()
+    release_candidate = threading.Event()
+
+    def blocked_candidate() -> str:
+        candidate_started.set()
+        assert release_candidate.wait(2.0)
+        return "candidate"
+
+    pool.start()
+    try:
+        candidate = lanes.submit("tencent", "candidate", NOW, blocked_candidate)
+        assert candidate_started.wait(1.0)
+        topk = lanes.submit_urgent("tencent_topk", "topk", NOW, lambda: "topk")
+
+        assert topk.result(timeout=0.5) == "topk"
+        assert not candidate.done()
+        release_candidate.set()
+        assert candidate.result(timeout=1.0) == "candidate"
+    finally:
+        release_candidate.set()
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+
+def test_intraday_tail_has_a_lane_independent_from_full_market_refresh() -> None:
+    pool = BoundedExecutor(worker_count=2, queue_capacity=2, thread_name_prefix="test-source-tail")
+    lanes = SourceLaneRegistry(pool)
+    full_started = threading.Event()
+    release_full = threading.Event()
+
+    def blocked_full_market() -> str:
+        full_started.set()
+        assert release_full.wait(2.0)
+        return "market"
+
+    pool.start()
+    try:
+        full = lanes.submit("eastmoney", "market", NOW, blocked_full_market)
+        assert full_started.wait(1.0)
+        tail = lanes.submit("eastmoney_intraday", "tail", NOW, lambda: "tail")
+
+        assert tail.result(timeout=0.5) == "tail"
+        assert not full.done()
+        release_full.set()
+        assert full.result(timeout=1.0) == "market"
+    finally:
+        release_full.set()
         lanes.stop(wait=True, timeout_seconds=1.0)
         pool.stop(wait=True, cancel_futures=True)
 
@@ -4507,7 +4567,7 @@ def test_market_service_uses_injected_lifecycle_data_pool() -> None:
     assert not any(thread.name.startswith("shared-data") for thread in threading.enumerate())
 
 
-def test_candidate_quote_refresh_uses_reserved_urgent_worker() -> None:
+def test_topk_quote_refresh_uses_reserved_urgent_worker() -> None:
     pool = BoundedExecutor(
         worker_count=2,
         urgent_worker_count=1,
@@ -4546,7 +4606,7 @@ def test_candidate_quote_refresh_uses_reserved_urgent_worker() -> None:
         normal = pool.submit(blocking_task)
         assert normal is not None
         assert entered.wait(timeout=1.0)
-        refreshed = service.refresh_candidate_quotes(
+        refreshed = service.refresh_topk_quotes(
             ("600001",),
             NOW,
             deadline=NOW + timedelta(seconds=1),
@@ -5339,16 +5399,16 @@ def test_source_lane_cancels_queued_intraday_io_after_batch_timeout() -> None:
     occupied = threading.Event()
     release = threading.Event()
 
-    def occupy_eastmoney_lane() -> None:
+    def occupy_intraday_lane() -> None:
         occupied.set()
         assert release.wait(1.0)
 
     pool.start()
     running = lanes.submit(
-        "eastmoney",
+        "eastmoney_intraday",
         "occupied",
         AFTERNOON - timedelta(seconds=1),
-        occupy_eastmoney_lane,
+        occupy_intraday_lane,
     )
     assert occupied.wait(1.0)
 
@@ -6240,7 +6300,8 @@ class StaticTencentClient:
     def __init__(self, quotes) -> None:
         self._quotes = quotes
 
-    def fetch_quotes(self, _codes):
+    def fetch_quotes(self, _codes, *, timeout_seconds=None):
+        del timeout_seconds
         return self._quotes
 
 
@@ -6249,9 +6310,9 @@ class BlockingTencentClient(StaticTencentClient):
         super().__init__(quotes)
         self.release = threading.Event()
 
-    def fetch_quotes(self, codes):
+    def fetch_quotes(self, codes, *, timeout_seconds=None):
         self.release.wait(1.0)
-        return super().fetch_quotes(codes)
+        return super().fetch_quotes(codes, timeout_seconds=timeout_seconds)
 
 
 class FailFirstTencentClient(StaticTencentClient):
@@ -6259,11 +6320,11 @@ class FailFirstTencentClient(StaticTencentClient):
         super().__init__(quotes)
         self.calls = 0
 
-    def fetch_quotes(self, codes):
+    def fetch_quotes(self, codes, *, timeout_seconds=None):
         self.calls += 1
         if self.calls == 1:
             raise RuntimeError("long quote failure")
-        return super().fetch_quotes(codes)
+        return super().fetch_quotes(codes, timeout_seconds=timeout_seconds)
 
 
 class StaticGateway:

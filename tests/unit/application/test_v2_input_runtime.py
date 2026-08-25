@@ -33,6 +33,7 @@ class _Market:
         self._features = tuple(features)
         self.market_fetch_count = 0
         self.candidate_quote_refresh_count = 0
+        self.topk_quote_refresh_count = 0
         self.candidate_reads: list[tuple[tuple[str, ...], bool, bool]] = []
         self.reference_requests: list[tuple[tuple[str, ...], tuple[str, ...], datetime, bool]] = []
         self.requested_codes: tuple[str, ...] = ()
@@ -45,6 +46,12 @@ class _Market:
     def refresh_candidate_quotes(self, codes, _observed_at, *, force=False, deadline=None):
         del force, deadline
         self.candidate_quote_refresh_count += 1
+        self.requested_codes = tuple(codes)
+        return ()
+
+    def refresh_topk_quotes(self, codes, _observed_at, *, force=False, deadline=None):
+        del force, deadline
+        self.topk_quote_refresh_count += 1
         self.requested_codes = tuple(codes)
         return ()
 
@@ -290,8 +297,37 @@ def test_topk_overlay_batch_is_independent_from_full_market_and_scoring_cache(
 
     assert overlay is not None
     assert market.market_fetch_count == 0
+    assert market.topk_quote_refresh_count == 1
+    assert market.candidate_quote_refresh_count == 0
     assert market.candidate_reads == [(("600001",), False, False)]
     assert overlay.quotes[0].data_version == feature.quote.data_version
+
+
+def test_full_market_acquisition_exposes_pending_funnel_without_treating_unknown_stages_as_business_zero(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+    source = application_feature_factory("600001", observed_at)
+    feature = replace(source, quote=replace(source.quote, board=Board.MAIN))
+    adapter = V2MarketDataAdapter(
+        _Market((feature,)),
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=_decision_build(),
+    )
+
+    adapter.refresh_task(V2PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
+
+    statuses = adapter.input_quality_status()
+    assert {status.strategy for status in statuses} == {Strategy.TODAY, Strategy.TOMORROW, Strategy.D25}
+    assert all(status.status == "not_ready" for status in statuses)
+    assert all(status.primary_blocker == "candidate_quotes_pending" for status in statuses)
+    assert all(status.supply_funnel.requested_candidates == 1 for status in statuses)
+    assert all(status.supply_funnel.candidate_features == 0 for status in statuses)
+
+    adapter.refresh_task(V2PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
+
+    assert all(status.primary_blocker == "scoring_pending" for status in adapter.input_quality_status())
 
 
 def test_production_adapter_rejects_vendor_future_time_without_local_observation_support(
@@ -405,7 +441,7 @@ def test_production_adapter_rejects_candidate_security_identity_degradation(
     with pytest.raises(V2DecisionUnavailableError, match="not_ready"):
         adapter.build_local(request)
 
-    (status,) = adapter.input_quality_status()
+    status = next(item for item in adapter.input_quality_status() if item.strategy is Strategy.TOMORROW)
     assert status.strategy is Strategy.TOMORROW
     assert status.security_master_covered_count == 0
     assert status.security_master_coverage_ratio == 0.0
@@ -453,7 +489,7 @@ def test_production_adapter_accepts_exactly_ninety_nine_percent_history_coverage
     decision = adapter.build_local(request)
 
     assert decision is not None
-    (status,) = adapter.input_quality_status()
+    status = next(item for item in adapter.input_quality_status() if item.strategy is Strategy.TOMORROW)
     assert status.history_covered_count == 99
     assert status.history_coverage_ratio == 0.99
     assert status.publishable is True
@@ -491,7 +527,7 @@ def test_production_adapter_rejects_partial_candidate_feature_response(
 
     with pytest.raises(V2DecisionUnavailableError, match="not_ready"):
         adapter.build_local(request)
-    (status,) = adapter.input_quality_status()
+    status = next(item for item in adapter.input_quality_status() if item.strategy is Strategy.TOMORROW)
     assert status.candidate_count == 2
     assert status.candidate_feature_count == 1
     assert status.candidate_feature_coverage_ratio == 0.5
@@ -550,6 +586,7 @@ def test_three_scored_strategies_share_one_fast_market_input_cycle(
     ]
     assert all(decision is not None for decision in decisions)
     assert all(decision.items == () for decision in decisions if decision is not None)
+    assert len(market.candidate_reads) == 2
     assert any(read[1] for read in market.candidate_reads)
     assert all(read[2] for read in market.candidate_reads)
 

@@ -101,7 +101,7 @@ class IntradayLoader:
     ) -> Mapping[str, tuple[MinuteBar, ...]]:
         request = _IntradayLoadRequest(tuple(codes), observed_at, action_restrictions)
         source_lanes = self._runner.source_lanes
-        if source_lanes is not None and not source_lanes.owns_current_thread("eastmoney"):
+        if source_lanes is not None and not source_lanes.owns_current_thread("eastmoney_intraday"):
             return self._load_via_source_lane(request)
         return self._load_local(request)
 
@@ -114,7 +114,7 @@ class IntradayLoader:
         identity = _source_batch_identity("intraday_minutes", request.codes, request.observed_at)
         lane_restrictions: dict[str, set[str]] = {}
         lane_future = source_lanes.submit(
-            "eastmoney",
+            "eastmoney_intraday",
             identity,
             request.observed_at,
             self.load,
@@ -207,7 +207,7 @@ class IntradayLoader:
     ) -> None:
         source_lanes = self._runner.source_lanes
         batch_deadline = self._monotonic() + self._batch_timeout_seconds
-        nested_inline = source_lanes is not None and source_lanes.owns_current_thread("eastmoney")
+        nested_inline = source_lanes is not None and source_lanes.owns_current_thread("eastmoney_intraday")
         with borrow_executor(
             self._runner.worker_pool,
             BorrowExecutorOptions(

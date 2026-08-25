@@ -108,6 +108,8 @@ class _TargetQuoteRequest:
     deadline: datetime | None
     isolated: bool = False
     dataset: str = "candidate_quotes"
+    lane: str = "tencent"
+    urgent: bool = False
 
 
 class MarketDataGateway:
@@ -365,6 +367,38 @@ class MarketDataGateway:
         self._latency.finish(trace_id, outcome="success")
         return result
 
+    def fetch_topk_quotes(
+        self,
+        codes: Sequence[str],
+        *,
+        observed_at: datetime | None = None,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> Sequence[MarketQuote]:
+        if not codes:
+            return ()
+        requested_at = observed_at or self._wall_clock()
+        trace_id = _cycle_trace_id("topk_quotes", requested_at, codes)
+        self._latency.plan(trace_id, "topk_quotes")
+        self._latency.enter(trace_id)
+        try:
+            result = self._fetch_candidates_once(
+                _TargetQuoteRequest(
+                    codes,
+                    requested_at,
+                    force,
+                    deadline,
+                    dataset="topk_quotes",
+                    lane="tencent_topk",
+                    urgent=True,
+                )
+            )
+        except BaseException:
+            self._latency.finish(trace_id, outcome="failed")
+            raise
+        self._latency.finish(trace_id, outcome="success")
+        return result
+
     def fetch_long_quotes(
         self,
         codes: Sequence[str],
@@ -400,67 +434,16 @@ class MarketDataGateway:
     ) -> Sequence[MarketQuote]:
         codes = request.codes
         requested_at = request.requested_at
-        force = request.force
         deadline = request.deadline
         isolated = request.isolated
-        dataset = request.dataset
         physical_source = "tencent_long" if isolated else "tencent"
         normalized_codes = tuple(sorted(set(codes)))
         try:
-            if self._source_lanes is None or isolated:
-                observations = self._sources.fetch_source_observations(
-                    SourceObservationRequest(
-                        physical_source,
-                        dataset,
-                        ",".join(normalized_codes),
-                        {"codes": normalized_codes, "fields": ["realtime_quote"]},
-                        lambda: self._tencent.fetch_quotes(normalized_codes),
-                        requested_at,
-                        force,
-                        deadline,
-                        1,
-                        isolated,
-                    )
-                )
-            else:
-                quote_request = {"codes": normalized_codes, "fields": ["realtime_quote"]}
-                identity = self._sources.lane_identity(
-                    SourceLaneIdentityRequest(
-                        dataset,
-                        "tencent",
-                        ",".join(normalized_codes),
-                        quote_request,
-                        requested_at,
-                        force,
-                        deadline,
-                    )
-                )
-                lane_future = self._source_lanes.submit_urgent(
-                    "tencent",
-                    identity,
-                    requested_at,
-                    self._sources.fetch_source_observations,
-                    SourceObservationRequest(
-                        "tencent",
-                        dataset,
-                        ",".join(normalized_codes),
-                        quote_request,
-                        lambda: self._tencent.fetch_quotes(normalized_codes),
-                        requested_at,
-                        force,
-                        deadline,
-                        1,
-                    ),
-                )
-                if deadline is None:
-                    observations = lane_future.result()
-                else:
-                    remaining = max(0.0, (deadline - self._wall_clock()).total_seconds())
-                    try:
-                        observations = lane_future.result(timeout=remaining)
-                    except FutureTimeoutError:
-                        lane_future.cancel()
-                        raise
+            observations = self._target_quote_observations(
+                request,
+                normalized_codes,
+                physical_source=physical_source,
+            )
         except FutureTimeoutError:
             self._mark_snapshot_degraded("tencent:late", max(requested_at, self._wall_clock()))
             with self._state_lock:
@@ -509,6 +492,59 @@ class MarketDataGateway:
         self.record_local_latency("merge", _elapsed(merge_started, self._monotonic()))
         with self._state_lock:
             return self._commit_candidate_snapshot_locked(observations, snapshot, completed_at, codes)
+
+    def _target_quote_observations(
+        self,
+        request: _TargetQuoteRequest,
+        normalized_codes: tuple[str, ...],
+        *,
+        physical_source: str,
+    ) -> Sequence[SourceObservation]:
+        quote_request = {"codes": normalized_codes, "fields": ["realtime_quote"]}
+        observation_request = SourceObservationRequest(
+            physical_source,
+            request.dataset,
+            ",".join(normalized_codes),
+            quote_request,
+            lambda: self._tencent.fetch_quotes(
+                normalized_codes,
+                timeout_seconds=_remaining_seconds(request.deadline, self._wall_clock),
+            ),
+            request.requested_at,
+            request.force,
+            request.deadline,
+            1,
+            request.isolated,
+        )
+        if self._source_lanes is None or request.isolated:
+            return self._sources.fetch_source_observations(observation_request)
+        identity = self._sources.lane_identity(
+            SourceLaneIdentityRequest(
+                request.dataset,
+                "tencent",
+                ",".join(normalized_codes),
+                quote_request,
+                request.requested_at,
+                request.force,
+                request.deadline,
+            )
+        )
+        submit = self._source_lanes.submit_urgent if request.urgent else self._source_lanes.submit
+        lane_future = submit(
+            request.lane,
+            identity,
+            request.requested_at,
+            self._sources.fetch_source_observations,
+            observation_request,
+        )
+        if request.deadline is None:
+            return lane_future.result()
+        remaining = max(0.0, (request.deadline - self._wall_clock()).total_seconds())
+        try:
+            return lane_future.result(timeout=remaining)
+        except FutureTimeoutError:
+            lane_future.cancel()
+            raise
 
     def _commit_candidate_snapshot_locked(
         self,
@@ -858,6 +894,15 @@ class MarketDataGateway:
             state = self._states[source]
             state.circuit_skipped_count += 1
             state.last_error = "circuit_open"
+
+
+def _remaining_seconds(
+    deadline: datetime | None,
+    wall_clock: Callable[[], datetime],
+) -> float | None:
+    if deadline is None:
+        return None
+    return max(0.05, (deadline - wall_clock()).total_seconds())
 
 
 def _try_columnar_snapshot(

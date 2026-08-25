@@ -33,7 +33,13 @@ class TencentClient:
         self._cancel_requested = cancel_requested
         self._wall_clock = wall_clock
 
-    def fetch_quotes(self, codes: Sequence[str], now: datetime | None = None) -> tuple[MarketQuote, ...]:
+    def fetch_quotes(
+        self,
+        codes: Sequence[str],
+        now: datetime | None = None,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> tuple[MarketQuote, ...]:
         normalized = tuple(sorted({code for code in codes if len(code) == 6 and code.isdigit()}))
         if not normalized:
             return ()
@@ -42,7 +48,11 @@ class TencentClient:
             response = session.get(
                 "https://qt.gtimg.cn/q=" + ",".join(_symbol(code) for code in normalized),
                 headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
-                timeout=self._timeout_seconds,
+                timeout=(
+                    self._timeout_seconds
+                    if timeout_seconds is None
+                    else min(self._timeout_seconds, max(0.05, timeout_seconds))
+                ),
                 proxies=_DIRECT_PROXIES,
             )
             response.raise_for_status()

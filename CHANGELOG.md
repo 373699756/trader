@@ -6,6 +6,13 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户要求继续优化“行情采集 → 过滤/评分 → 推荐发布 → Web 展示”实时链路，新增
+  `tencent_topk` 紧急来源 lane、`eastmoney_intraday` 分钟尾巴 lane 和三个短线策略独立
+  DeepSeek hybrid latest-wins lane；`/api/v2/status.scheduler.hybrid_lanes` 加法公开其有界运行状态。
+- 冷启动全市场与候选采集完成时立即形成不含股票身份的
+  `candidate_quotes_pending`/`scoring_pending` 输入质量快照，使推荐漏斗能区分“采集中、待评分”与
+  已确认的业务零值。
+
 - 针对用户将活动源码单文件上限调整为 1200 行，根 `AGENTS.md`、权威架构文档和 AST 机器契约统一采用
   1200 行硬上限；接近上限仍按职责、耦合和可测试性 Review，不再以 500/800 行机械拆分制造聚合模块。
 - 新增 tomorrow/d25 的 14:49:20 策略级检查点调度、窗口内失败重试，以及 `/api/v2/status.scheduler`
@@ -344,6 +351,15 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- TopK 腾讯报价不再与 360 只普通候选共享一个 running/pending 槽，且 2 秒任务 deadline 会截断实际
+  HTTP timeout；全市场与 Tomorrow 分钟尾巴也不再共享东方财富 pending 槽。物理任务预算从 worker
+  实际开始时刻计算，排队时间不再提前消费采集预算。
+- 输入驱动评分在最小间隔内保留一个 latest-pending 请求，到期只提交最新一轮；三策略普通评分输入
+  复用一份不可变候选特征 batch，Tomorrow 只额外构造一份分钟尾巴变体。local 发布后模型复核异步
+  升级，慢 DeepSeek 不再占住下一轮本地评分，迟到 hybrid 继续由统一索引 CAS/序列规则拒绝。
+- SSE 断线恢复从固定 15 秒等待改为立即 status/current 对账、3 秒临时轮询和 1/2/4/8/15 秒指数重连；
+  overlay 事件只替换匹配代码的推荐/观察行并更新摘要，不再重建表头和整张表。
+
 - 本地评分改为只在候选报价、市场新闻或个股风险成功完成后触发；`score` cadence 仅作为合并重复触发的
   最短间隔，不再由调度 tick 独立排队。14:48 后 DeepSeek 保持关闭，但 tomorrow/d25 纯本地评分以
   1 秒最短间隔持续到 14:50，运行配置身份升级为 `runtime_v38_input_driven_realtime_2026_08_25`。
@@ -604,6 +620,13 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复 Web 推荐漏斗把运行时 `selected_executable` 无条件显示为 0、首次输入质量尚未完成时把未知阶段
+  展示成 `0 → 0 → 0` 的问题；已有同日完整质量快照仍优先保留，下一轮临时 pending 不会覆盖它。
+- 修复普通候选请求可覆盖 TopK pending、全市场可阻塞分钟尾巴、节流窗口内输入评分永久丢失，以及
+  同步 DeepSeek 等待造成更新行情无法及时形成新 local 推荐的实时链路缺口。
+- 修复 SSE 短断线最长约 15 秒才重新对账，以及每个 overlay 报价事件触发完整 DOM 重绘造成的额外
+  patch-to-paint 和布局抖动风险。
 
 - 修复权威文档要求输入完成后评分、14:49:20 检查点和 14:50 前最新本地稿，但生产仍周期评分、检查点
   协调器无调用者且最终窗口没有 `score` cadence 的三处断链；现在输入未完成不会提前构建，检查点在新
@@ -1017,6 +1040,19 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 高风险全量门禁：`make format-check`、`make lint`、`make type-check`、`make test` 全部通过；
+  `make package` 首次因沙箱禁止构建隔离环境联网失败，授权后成功生成 sdist/wheel。仓库外新虚拟环境
+  安装 wheel 及全部运行依赖后，包导入、`trader-cli --help`、HTML/CSS/JavaScript/SVG 资源读取通过。
+- 活动生产函数离线性能门禁通过：5500 行全市场、360 候选、三策略、100 tick 且零网络调用；
+  `quote_to_draft` P95 1706.754ms、Tomorrow 原生投影 P95 1999.520ms、targeted overlay commit
+  P95 43.269ms、status API P95 1.516ms、SSE publish P95 0.017ms，RSS 增长 0%。
+- Firefox 实时专项通过：overlay SSE P95 1.037s、浏览器 DOM P95 1.045s、patch-to-paint P95 57ms，
+  10 次 overlay patch、0 次 resync、0 浏览器错误；35 秒快照保留窗口仍有 33.955 秒实测余量。
+  1280×720、1440×900、1920×1080 三档桌面验收均无白屏、重叠或页面级横向溢出。
+- 定向回归覆盖 TopK 紧急 worker、候选/TopK 与全市场/tail 隔离、latest-pending 评分、慢 hybrid 不阻塞
+  新 local、共享评分输入 batch、首次漏斗 pending 语义、SSE 重连参数和 overlay 禁止整表重绘；
+  `git diff --check` 通过。
 
 - 输入驱动评分、最终窗口、双策略检查点重试、SSE envelope/patch、DeepSeek 内存预算和 status 投影的
   定向 Python/Node 回归通过；固定融合向量 `83.40`、DeepSeek 并发原子预算、SSE 游标/慢客户端、检查点
@@ -1554,6 +1590,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 本批离线生产函数、确定性 SSE/Firefox 和三档桌面证据均通过，但 5000 端口原常驻服务在盘中只读检查后
+  已停止，未能用新提交重启并覆盖真实供应商的早盘、午后及 14:50 后三个窗口。推送后必须正常重启服务，
+  再复用 `scripts/check_web_recommendation_health.py`、`scripts/sample_tencent_quotes.py` 和
+  `scripts/measure_web_refresh_interval.py` 执行盘中复测；当前不能把离线结果表述为真实供应商 SLA。
 
 - 确定性回归已覆盖 14:49:20 检查点缺稿、输入完成后重评分、策略级重试和 14:50 CAS；本批执行时尚无
   对应真实交易日午后窗口，实际供应商延迟下的检查点年龄和正式冻结仍需在下一次 14:49:20-14:50

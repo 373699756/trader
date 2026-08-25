@@ -125,11 +125,18 @@ class V2RuntimeIssue:
 
 
 @dataclass(frozen=True)
+class _HybridUpgradeRequest:
+    local: ScoredDecision
+    cycle: V2CycleRequest
+
+
+@dataclass(frozen=True)
 class V2RuntimeStatus:
     running: bool
     phase: MarketPhase
     config_version: str
     lanes: tuple[LatestWinsStatus, ...]
+    hybrid_lanes: tuple[LatestWinsStatus, ...]
     task_lanes: tuple[LatestWinsStatus, ...]
     cadence: CadencePlannerStatus
     observer: DecisionObserverStatus
@@ -204,6 +211,14 @@ class V2SchedulerRuntime:
             )
             for strategy in Strategy
         }
+        self._hybrid_lanes = {
+            strategy: LatestWinsWorker(
+                f"trader-v2-hybrid-{strategy.value}",
+                self._process_hybrid,
+                order_key=_hybrid_order_key,
+            )
+            for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+        }
         self._task_lanes: dict[PipelineTask, LatestWinsWorker[ScheduledPipelineTask]] = {
             task: LatestWinsWorker(
                 f"trader-v2-task-{task.value}",
@@ -256,6 +271,9 @@ class V2SchedulerRuntime:
         for strategy in Strategy:
             if not self._lanes[strategy].start():
                 raise RuntimeError(f"V2 {strategy.value} lane did not start")
+        for strategy, lane in self._hybrid_lanes.items():
+            if not lane.start():
+                raise RuntimeError(f"V2 {strategy.value} hybrid lane did not start")
         if not self._research.start():
             raise RuntimeError("V2 research runtime did not start")
 
@@ -266,10 +284,14 @@ class V2SchedulerRuntime:
             task_lane.close()
         for strategy_lane in self._lanes.values():
             strategy_lane.close()
+        for hybrid_lane in self._hybrid_lanes.values():
+            hybrid_lane.close()
         for task_lane in self._task_lanes.values():
             task_lane.stop(deadline=deadline)
         for strategy_lane in self._lanes.values():
             strategy_lane.stop(deadline=deadline)
+        for hybrid_lane in self._hybrid_lanes.values():
+            hybrid_lane.stop(deadline=deadline)
         self._control.stop(wait=True, cancel_futures=True, deadline=deadline)
         self._dependencies.observer.stop(deadline=deadline)
         self._research.stop(wait=True, deadline=deadline)
@@ -385,7 +407,11 @@ class V2SchedulerRuntime:
             self._record_pipeline_result(scheduled, SchedulePointResult.COMPLETED)
             return
         selected_codes = self._selected_overlay_codes() if scheduled.task is PipelineTask.TOPK_QUOTES else ()
-        request = V2PipelineTaskRequest(scheduled.task, scheduled.scheduled_at, selected_codes)
+        request = V2PipelineTaskRequest(
+            scheduled.task,
+            shanghai_now(self._dependencies.clock.now()),
+            selected_codes,
+        )
         try:
             self._dependencies.data.refresh_task(request)
         except V2DataRefreshUnavailableError as exc:
@@ -468,6 +494,9 @@ class V2SchedulerRuntime:
         for strategy in Strategy:
             if not self._lanes[strategy].wait_idle(max(0.0, deadline - time.monotonic())):
                 return False
+        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
+            if not self._hybrid_lanes[strategy].wait_idle(max(0.0, deadline - time.monotonic())):
+                return False
         while self._control.status().inflight > 0:
             remaining = deadline - time.monotonic()
             if remaining <= 0.0:
@@ -498,9 +527,15 @@ class V2SchedulerRuntime:
             task_lane.close()
         for strategy_lane in self._lanes.values():
             strategy_lane.close()
+        for hybrid_lane in self._hybrid_lanes.values():
+            hybrid_lane.close()
         steps: list[ShutdownStep] = [self._control.stop(wait=True, cancel_futures=False, deadline=deadline)]
         steps.extend(self._task_lanes[task].stop(deadline=deadline) for task in _DATA_LANES)
         steps.extend(self._lanes[strategy].stop(deadline=deadline) for strategy in Strategy)
+        steps.extend(
+            self._hybrid_lanes[strategy].stop(deadline=deadline)
+            for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+        )
         steps.append(self._dependencies.observer.stop(deadline=deadline))
         steps.append(self._research.stop(wait=True, deadline=deadline))
         report = ShutdownReport.from_steps(deadline, steps, forced=deadline.expired)
@@ -516,6 +551,10 @@ class V2SchedulerRuntime:
                 phase=self._phase,
                 config_version=self._config_version,
                 lanes=tuple(self._lanes[strategy].status() for strategy in Strategy),
+                hybrid_lanes=tuple(
+                    self._hybrid_lanes[strategy].status()
+                    for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+                ),
                 task_lanes=tuple(self._task_lanes[task].status() for task in _DATA_LANES),
                 cadence=self._dependencies.cadence.status(),
                 observer=self._dependencies.observer.status(),
@@ -601,7 +640,12 @@ class V2SchedulerRuntime:
             and review_now < request.review_deadline
             and isinstance(local, ScoredDecision)
         ):
-            self._upgrade_hybrid(local, request)
+            self._hybrid_lanes[request.strategy].offer(_HybridUpgradeRequest(local, request))
+
+    def _process_hybrid(self, request: _HybridUpgradeRequest) -> None:
+        if shanghai_now(self._dependencies.clock.now()) >= request.cycle.review_deadline:
+            return
+        self._upgrade_hybrid(request.local, request.cycle)
 
     def _on_research_result(self, result: ResearchRefreshResult, initial_rescore: bool) -> None:
         del initial_rescore
@@ -1075,6 +1119,10 @@ def _validate_cycle_identity(request: V2CycleRequest, identity: DecisionIdentity
 
 def _cycle_order_key(request: V2CycleRequest) -> int:
     return request.trade_date.toordinal() * 1_000_000_000 + request.sequence
+
+
+def _hybrid_order_key(request: _HybridUpgradeRequest) -> int:
+    return _cycle_order_key(request.cycle)
 
 
 def _pipeline_task_order_key(request: ScheduledPipelineTask) -> int:

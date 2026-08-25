@@ -246,6 +246,25 @@ def test_scoring_is_triggered_by_completed_inputs_and_uses_the_configured_minimu
     assert next_score is not None and next_score.task is PipelineTask.SCORE
 
 
+def test_input_arriving_inside_score_throttle_is_retained_as_one_latest_pending_score() -> None:
+    first_input = datetime(2026, 7, 16, 9, 30, tzinfo=SHANGHAI)
+    planner = CadencePlanner(_policy(), started_at=first_input)
+
+    assert planner.plan_score_after_input(first_input, is_trading_day=True) is not None
+    assert planner.plan_score_after_input(first_input + timedelta(seconds=4), is_trading_day=True) is None
+    assert planner.plan_score_after_input(first_input + timedelta(seconds=9), is_trading_day=True) is None
+
+    before_due = planner.plan(first_input + timedelta(seconds=9, milliseconds=999), is_trading_day=True)
+    at_due = planner.plan(first_input + timedelta(seconds=10), is_trading_day=True)
+    repeated = planner.plan(first_input + timedelta(seconds=10, milliseconds=1), is_trading_day=True)
+
+    assert PipelineTask.SCORE not in {task.task for task in before_due.tasks}
+    scores = tuple(task for task in at_due.tasks if task.task is PipelineTask.SCORE)
+    assert len(scores) == 1
+    assert scores[0].scheduled_at == first_input + timedelta(seconds=10)
+    assert PipelineTask.SCORE not in {task.task for task in repeated.tasks}
+
+
 def test_final_window_keeps_local_input_driven_scoring_until_the_freeze_boundary() -> None:
     final_input = datetime(2026, 7, 16, 14, 49, 20, tzinfo=SHANGHAI)
     planner = CadencePlanner(_policy(), started_at=final_input.replace(hour=9, minute=15))
