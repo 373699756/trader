@@ -21,13 +21,13 @@ from trader.domain.market.models import (
 )
 from trader.domain.market.news import NewsSignalPolicy, derive_news_signals
 from trader.domain.market.research import (
-    D25SignalPolicy,
     LongResearchInputs,
     LongResearchPolicy,
+    MarketRegimePolicy,
     ResearchObservation,
     derive_corporate_risk_features,
-    derive_d25_signals,
     derive_long_research_features,
+    derive_market_regime,
 )
 from trader.domain.market.tail import (
     MinuteBar,
@@ -155,9 +155,6 @@ DERIVED_FEATURE_SCHEMA: tuple[FeatureSchema, ...] = (
     FeatureSchema("low_drawdown_score", "float", description="低回撤分"),
     FeatureSchema("news_sentiment", "float", description="新闻情绪"),
     FeatureSchema("evidence_freshness", "float", description="证据新鲜度"),
-    FeatureSchema("return_20d_not_overheated", "float", description="20日涨幅不过热"),
-    FeatureSchema("d25_overheat_factor", "float", description="D25过热系数"),
-    FeatureSchema("market_regime_factor", "float", description="市场状态系数"),
     FeatureSchema("value_score", "float", description="价值分"),
     FeatureSchema("growth_score", "float", description="成长分"),
     FeatureSchema("quality_score", "float", description="质量分"),
@@ -205,12 +202,12 @@ class FeatureBuilder:
         self,
         news_signal_policy: NewsSignalPolicy,
         tail_signal_policy: TailSignalPolicy,
-        d25_signal_policy: D25SignalPolicy,
+        market_regime_policy: MarketRegimePolicy,
         long_research_policy: LongResearchPolicy,
     ) -> None:
         self._news_signal_policy = news_signal_policy
         self._tail_signal_policy = tail_signal_policy
-        self._d25_signal_policy = d25_signal_policy
+        self._market_regime_policy = market_regime_policy
         self._long_research_policy = long_research_policy
 
     def build(
@@ -371,18 +368,7 @@ class FeatureBuilder:
             for name in _CROSS_SECTION_FIELDS:
                 if name in reference:
                     values[name] = reference[name]
-            d25_signals = derive_d25_signals(
-                values.get("return_20d"),
-                values.get("market_breadth"),
-                self._d25_signal_policy,
-            )
-            values.update(
-                {
-                    "return_20d_not_overheated": d25_signals.not_overheated_score,
-                    "d25_overheat_factor": d25_signals.overheat_factor,
-                    "market_regime_factor": d25_signals.market_regime_factor,
-                }
-            )
+            market_regime = derive_market_regime(values.get("market_breadth"), self._market_regime_policy)
             values.update(
                 derive_long_research_features(
                     research_observation or ResearchObservation(),
@@ -431,7 +417,7 @@ class FeatureBuilder:
                         if history_summaries is not None and quote.code in history_summaries
                         else len(histories.get(quote.code, ()))
                     ),
-                    market_regime=d25_signals.market_regime,
+                    market_regime=market_regime,
                     missing_fields=missing,
                     evidence=(
                         _structured_evidence(quote, values, observed_at),
@@ -542,9 +528,6 @@ class FeatureBuilder:
             "close_location": close_location,
             "price_executability": _optional_band_score(quote.price, 1.0, 5.0, 100.0, 300.0),
             "ma20_deviation_inverse": _ma_deviation_inverse(quote.price, ma20),
-            "return_20d_not_overheated": None,
-            "d25_overheat_factor": None,
-            "market_regime_factor": None,
             "trend_score": trend_score,
             "ma20_deviation_pct": ma20_deviation,
             "low_crowding_score": None if limit_proximity is None else 100.0 * (1.0 - limit_proximity),

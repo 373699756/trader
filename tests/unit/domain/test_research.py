@@ -7,53 +7,28 @@ import pytest
 from trader.domain.market.research import (
     CorporateRiskCategory,
     CorporateRiskFact,
-    D25SignalPolicy,
     FinancialReport,
     LongResearchInputs,
     LongResearchPolicy,
+    MarketRegimePolicy,
     ResearchAnnouncement,
     ResearchObservation,
     corporate_risk_facts_from_announcements,
     derive_corporate_risk_features,
-    derive_d25_signals,
     derive_long_research_features,
+    derive_market_regime,
 )
 
 NOW = datetime.fromisoformat("2026-07-16T14:50:00+08:00")
 
 
-def test_d25_signals_apply_exact_configured_boundaries() -> None:
-    policy = _d25_policy()
+def test_market_regime_uses_exact_configured_boundaries() -> None:
+    policy = MarketRegimePolicy(risk_on_breadth_min=60.0, risk_off_breadth_max=40.0)
 
-    at_full = derive_d25_signals(15.0, 60.0, policy)
-    at_linear_end = derive_d25_signals(30.0, 40.0, policy)
-    above_linear_end = derive_d25_signals(30.01, None, policy)
-
-    assert at_full.market_regime == "risk_on"
-    assert at_full.market_regime_factor == pytest.approx(1.03)
-    assert at_full.overheat_factor == pytest.approx(1.0)
-    assert at_full.not_overheated_score == pytest.approx(100.0)
-    assert at_linear_end.market_regime == "risk_off"
-    assert at_linear_end.market_regime_factor == pytest.approx(0.92)
-    assert at_linear_end.overheat_factor == pytest.approx(0.85)
-    assert at_linear_end.not_overheated_score == pytest.approx(0.0)
-    assert above_linear_end.market_regime == "neutral"
-    assert above_linear_end.market_regime_factor == pytest.approx(1.0)
-    assert above_linear_end.overheat_factor == pytest.approx(0.75)
-
-
-def test_d25_signals_interpolate_between_boundaries_and_preserve_missing() -> None:
-    policy = _d25_policy()
-
-    midpoint = derive_d25_signals(22.5, 50.0, policy)
-    missing = derive_d25_signals(None, None, policy)
-
-    assert midpoint.market_regime == "neutral"
-    assert midpoint.overheat_factor == pytest.approx(0.925)
-    assert midpoint.not_overheated_score == pytest.approx(50.0)
-    assert missing.market_regime_factor == pytest.approx(1.0)
-    assert missing.overheat_factor == pytest.approx(1.0)
-    assert missing.not_overheated_score is None
+    assert derive_market_regime(60.0, policy) == "risk_on"
+    assert derive_market_regime(40.0, policy) == "risk_off"
+    assert derive_market_regime(50.0, policy) == "neutral"
+    assert derive_market_regime(None, policy) == "neutral"
 
 
 def test_long_research_features_use_point_in_time_financial_and_event_inputs() -> None:
@@ -332,20 +307,6 @@ def _derive_long_research_features(
             low_drawdown_score=low_drawdown_score,
         ),
         policy,
-    )
-
-
-def _d25_policy() -> D25SignalPolicy:
-    return D25SignalPolicy(
-        overheat_full_return_max=15.0,
-        overheat_linear_return_max=30.0,
-        overheat_linear_end_factor=0.85,
-        overheat_above_factor=0.75,
-        risk_on_breadth_min=60.0,
-        risk_off_breadth_max=40.0,
-        risk_on_factor=1.03,
-        neutral_factor=1.0,
-        risk_off_factor=0.92,
     )
 
 

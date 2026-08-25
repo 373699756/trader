@@ -8,16 +8,16 @@ import pytest
 
 from trader.domain.market.models import Board, Evidence, FeatureSnapshot, MarketQuote
 from trader.domain.recommendation.models import RecommendationAction
-from trader.domain.recommendation.tomorrow_fusion import (
-    TomorrowDecisionPolicy,
-    TomorrowDecisionRequest,
-    build_tomorrow_decision_epoch,
-    select_tomorrow_review_candidates,
+from trader.domain.recommendation.scored_fusion import (
+    ScoredDecisionPolicy,
+    ScoredDecisionRequest,
+    build_scored_decision_epoch,
+    select_scored_review_candidates,
 )
-from trader.domain.recommendation.tomorrow_selection import (
-    TomorrowDisposition,
-    TomorrowSelectionResult,
-    TomorrowStockEvaluation,
+from trader.domain.recommendation.scored_selection import (
+    ScoredDisposition,
+    ScoredSelectionResult,
+    ScoredStockEvaluation,
 )
 from trader.domain.review.models import DeepSeekReview, DimensionAssessment, ReviewOutcome, RiskFact, RiskRule
 
@@ -30,14 +30,14 @@ def test_review_candidates_are_deterministic_bounded_and_exclude_non_pass() -> N
         _evaluation(
             index,
             local_score=95.0 - index / 2,
-            disposition=TomorrowDisposition.OBSERVE_ONLY if index in {0, 1} else TomorrowDisposition.PASS,
+            disposition=ScoredDisposition.OBSERVE_ONLY if index in {0, 1} else ScoredDisposition.PASS,
         )
         for index in range(40)
     )
     selection = _selection(tuple(reversed(evaluations)))
 
-    forward = select_tomorrow_review_candidates(selection, _policy())
-    reverse = select_tomorrow_review_candidates(
+    forward = select_scored_review_candidates(selection, _policy())
+    reverse = select_scored_review_candidates(
         replace(selection, evaluations=tuple(reversed(selection.evaluations))),
         _policy(),
     )
@@ -66,7 +66,7 @@ def test_hybrid_decision_uses_fixed_fusion_without_repeating_local_risk() -> Non
     )
     review = _review("600001", 100.0, risk_facts=(deepseek_fact,))
 
-    epoch = build_tomorrow_decision_epoch(
+    epoch = build_scored_decision_epoch(
         _request(
             _selection((evaluation,)),
             reviews={"600001": review},
@@ -94,7 +94,7 @@ def test_downside_guard_downgrades_executable_without_changing_fixed_fusion() ->
     )
     review = _review("600001", 100.0)
 
-    epoch = build_tomorrow_decision_epoch(
+    epoch = build_scored_decision_epoch(
         _request(
             _selection((evaluation,)),
             reviews={"600001": review},
@@ -114,7 +114,7 @@ def test_downside_guard_downgrades_executable_without_changing_fixed_fusion() ->
 def test_missing_downside_input_fails_closed_after_execution_threshold() -> None:
     evaluation = _evaluation(1, local_score=80.0, values={"atr20_pct": None})
 
-    epoch = build_tomorrow_decision_epoch(_request(_selection((evaluation,))))
+    epoch = build_scored_decision_epoch(_request(_selection((evaluation,))))
 
     decision = epoch.entries[0]
     assert decision.score.final_score == 80.0
@@ -141,7 +141,7 @@ def test_late_review_cannot_change_score_or_create_model_risk() -> None:
         completed_at=NOW + timedelta(seconds=1),
     )
 
-    epoch = build_tomorrow_decision_epoch(
+    epoch = build_scored_decision_epoch(
         _request(
             _selection((late_evaluation, current_evaluation)),
             reviews={"600001": review, "600002": _review("600002", 90.0)},
@@ -176,7 +176,7 @@ def test_abstain_review_cannot_apply_model_risk_or_veto() -> None:
         outcome=ReviewOutcome.ABSTAIN,
     )
 
-    epoch = build_tomorrow_decision_epoch(
+    epoch = build_scored_decision_epoch(
         _request(
             _selection((evaluation,)),
             reviews={"600001": abstain},
@@ -198,7 +198,7 @@ def test_hybrid_requires_a_current_applied_or_abstain_review() -> None:
     rejected = replace(_review("600001", 100.0), outcome=ReviewOutcome.REJECTED)
 
     with pytest.raises(ValueError, match="usable DeepSeek review"):
-        build_tomorrow_decision_epoch(
+        build_scored_decision_epoch(
             _request(
                 _selection((evaluation,)),
                 reviews={"600001": rejected},
@@ -223,7 +223,7 @@ def test_decision_rejects_risk_fact_from_after_its_observation_time() -> None:
     )
 
     with pytest.raises(ValueError, match="future risk"):
-        build_tomorrow_decision_epoch(_request(_selection((evaluation,))))
+        build_scored_decision_epoch(_request(_selection((evaluation,))))
 
 
 def test_final_action_pools_apply_stable_board_and_industry_limits() -> None:
@@ -237,7 +237,7 @@ def test_final_action_pools_apply_stable_board_and_industry_limits() -> None:
         for index in range(16)
     )
 
-    epoch = build_tomorrow_decision_epoch(_request(_selection(tuple(reversed(evaluations)))))
+    epoch = build_scored_decision_epoch(_request(_selection(tuple(reversed(evaluations)))))
     selected = tuple(item for item in epoch.entries if item.selected)
     executable = tuple(item for item in selected if item.action is RecommendationAction.EXECUTABLE)
 
@@ -258,15 +258,15 @@ def test_observe_only_candidate_still_requires_the_observation_score_floor() -> 
     below = _evaluation(
         1,
         local_score=72.99,
-        disposition=TomorrowDisposition.OBSERVE_ONLY,
+        disposition=ScoredDisposition.OBSERVE_ONLY,
     )
     eligible = _evaluation(
         2,
         local_score=73.0,
-        disposition=TomorrowDisposition.OBSERVE_ONLY,
+        disposition=ScoredDisposition.OBSERVE_ONLY,
     )
 
-    epoch = build_tomorrow_decision_epoch(_request(_selection((below, eligible))))
+    epoch = build_scored_decision_epoch(_request(_selection((below, eligible))))
     by_code = {item.code: item for item in epoch.entries}
 
     assert by_code["600001"].action is RecommendationAction.UNAVAILABLE
@@ -279,8 +279,8 @@ def test_observe_only_candidate_still_requires_the_observation_score_floor() -> 
 def test_decision_epoch_hash_is_stable_and_rejects_review_outside_protection_set() -> None:
     evaluations = tuple(_evaluation(index, local_score=90.0 - index) for index in range(3))
     selection = _selection(evaluations)
-    first = build_tomorrow_decision_epoch(_request(selection))
-    second = build_tomorrow_decision_epoch(
+    first = build_scored_decision_epoch(_request(selection))
+    second = build_scored_decision_epoch(
         _request(replace(selection, evaluations=tuple(reversed(selection.evaluations))))
     )
 
@@ -291,11 +291,11 @@ def test_decision_epoch_hash_is_stable_and_rejects_review_outside_protection_set
         evaluations[0],
         features=replace(evaluations[0].features, merge_epoch="market:2"),
     )
-    changed_epoch = build_tomorrow_decision_epoch(_request(_selection((changed, *evaluations[1:]))))
+    changed_epoch = build_scored_decision_epoch(_request(_selection((changed, *evaluations[1:]))))
     assert changed_epoch.content_hash != first.content_hash
 
     with pytest.raises(ValueError, match="outside the review candidate set"):
-        build_tomorrow_decision_epoch(
+        build_scored_decision_epoch(
             _request(
                 selection,
                 reviews={"600001": _review("600001", 80.0)},
@@ -321,8 +321,8 @@ def test_decision_policy_cannot_relax_fixed_concentration_limits(
         replace(_policy(), **changes)
 
 
-def _policy() -> TomorrowDecisionPolicy:
-    return TomorrowDecisionPolicy(
+def _policy() -> ScoredDecisionPolicy:
+    return ScoredDecisionPolicy(
         dimension_weights={
             "value_quality": 0.1875,
             "financial_health": 0.25,
@@ -352,14 +352,14 @@ def _policy() -> TomorrowDecisionPolicy:
 
 
 def _request(
-    selection: TomorrowSelectionResult,
+    selection: ScoredSelectionResult,
     *,
     reviews: dict[str, DeepSeekReview] | None = None,
     projection_stage: str = "local",
     review_candidate_codes: tuple[str, ...] = (),
     parent_decision_version: str | None = None,
-) -> TomorrowDecisionRequest:
-    return TomorrowDecisionRequest(
+) -> ScoredDecisionRequest:
+    return ScoredDecisionRequest(
         selection=selection,
         reviews=reviews or {},
         observed_at=NOW,
@@ -379,11 +379,11 @@ def _request(
     )
 
 
-def _selection(evaluations: tuple[TomorrowStockEvaluation, ...]) -> TomorrowSelectionResult:
-    return TomorrowSelectionResult(
+def _selection(evaluations: tuple[ScoredStockEvaluation, ...]) -> ScoredSelectionResult:
+    return ScoredSelectionResult(
         evaluations=evaluations,
         scored_candidates=evaluations,
-        observations=tuple(item for item in evaluations if item.disposition is TomorrowDisposition.OBSERVE_ONLY),
+        observations=tuple(item for item in evaluations if item.disposition is ScoredDisposition.OBSERVE_ONLY),
         selected=(),
         population_versions={},
     )
@@ -396,12 +396,12 @@ def _evaluation(
     local_base_score: float | None = None,
     local_risk_penalty: float = 0.0,
     local_risk_facts: tuple[RiskFact, ...] = (),
-    disposition: TomorrowDisposition = TomorrowDisposition.PASS,
+    disposition: ScoredDisposition = ScoredDisposition.PASS,
     board: Board = Board.MAIN,
     industry: str | None = None,
     evidence: tuple[Evidence, ...] = (),
     values: dict[str, float | None] | None = None,
-) -> TomorrowStockEvaluation:
+) -> ScoredStockEvaluation:
     code = f"600{index:03d}"
     feature = FeatureSnapshot(
         quote=MarketQuote(
@@ -447,7 +447,7 @@ def _evaluation(
         board_data_reliability=0.9,
         merge_epoch="market:1",
     )
-    return TomorrowStockEvaluation(
+    return ScoredStockEvaluation(
         features=feature,
         disposition=disposition,
         candidate_score=local_score,

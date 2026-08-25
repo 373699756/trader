@@ -53,6 +53,5 @@ def _recommendation_policy() -> RecommendationPolicy:
         selection=_selection_policy(),
         candidate_weights={},
         dimension_weights={},
-        local_strategy_weights={},
         risk_rules={},
     )

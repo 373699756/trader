@@ -24,7 +24,7 @@ def test_v2_configuration_contract_is_valid() -> None:
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
 
     assert runtime.schema_version == 10
-    assert strategy.schema_version == 12
+    assert strategy.schema_version == 13
     assert runtime.config_version == "runtime_v38_input_driven_realtime_2026_08_25"
     assert runtime.market_data.source_contract_versions["eastmoney"] == ("eastmoney_quote_v17_security_master")
     assert runtime.api.default_top_n == 12
@@ -104,7 +104,7 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert runtime.performance_budgets.latency_p95_ms["market_merge"] == 600
     assert runtime.performance_budgets.latency_p95_ms["canonical_snapshot"] == 900
     assert runtime.performance_budgets.latency_p95_ms["targeted_overlay_commit"] == 100
-    assert runtime.performance_budgets.latency_p95_ms["tomorrow_native_projection"] == 5000
+    assert runtime.performance_budgets.latency_p95_ms["quote_to_draft"] == 5000
     assert runtime.performance_budgets.latency_p95_ms["browser_patch_to_paint"] == 100
     assert runtime.performance_budgets.memory.cache_logical_bytes == 260046848
     assert runtime.performance_budgets.memory.process_peak_rss_bytes == 402653184
@@ -164,13 +164,11 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert strategy.tomorrow_tail_signal.minimum_baseline_minutes == 30
     assert strategy.tomorrow_tail_signal.return_score_points_per_pct == 25.0
     assert strategy.tomorrow_tail_signal.volume_score_points_per_ratio == 50.0
-    assert strategy.d25_signal.risk_on_breadth_min == 60.0
-    assert strategy.d25_signal.risk_off_factor == 0.92
-    assert strategy.d25_signal.overheat_linear_end_factor == 0.85
+    assert strategy.market_regime.risk_on_breadth_min == 60.0
+    assert strategy.market_regime.risk_off_breadth_max == 40.0
     assert strategy.selection.review_candidate_limit == 28
     assert strategy.selection.default_top_k == 6
     assert strategy.selection.maximum_top_k == 12
-    assert set(strategy.local_strategy_weights) == {"today", "tomorrow", "d25"}
     assert set(strategy.dimension_weights) == {"today", "tomorrow", "d25"}
     assert strategy.long_research.financial_max_age_days == 550
     assert strategy.long_research.pledge_thresholds == (10.0, 20.0, 35.0)
@@ -725,7 +723,7 @@ def test_tomorrow_tail_factor_registry_cannot_contradict_executable_formula(tmp_
 def test_d25_market_regime_policy_is_required_and_cannot_drift(tmp_path) -> None:
     source = PROJECT_ROOT / "config" / "v2" / "strategy.json"
     raw = json.loads(source.read_text(encoding="utf-8"))
-    del raw["d25_signal"]["market_regime"]["risk_on_breadth_min"]
+    del raw["market_regime"]["risk_on_breadth_min"]
     changed_path = tmp_path / "strategy.json"
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
 
@@ -733,21 +731,10 @@ def test_d25_market_regime_policy_is_required_and_cannot_drift(tmp_path) -> None
         load_strategy_settings(changed_path)
 
     raw = json.loads(source.read_text(encoding="utf-8"))
-    raw["d25_signal"]["market_regime"]["risk_on_factor"] = 1.05
+    raw["market_regime"]["risk_on_breadth_min"] = 61
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
 
-    with pytest.raises(ConfigurationError, match="d25 signal formula is fixed"):
-        load_strategy_settings(changed_path)
-
-
-def test_d25_factor_registry_cannot_contradict_executable_formula(tmp_path) -> None:
-    source = PROJECT_ROOT / "config" / "v2" / "strategy.json"
-    raw = json.loads(source.read_text(encoding="utf-8"))
-    raw["factor_registry"]["market_regime_factor"]["formula"] = "manual switch"
-    changed_path = tmp_path / "strategy.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
-
-    with pytest.raises(ConfigurationError, match="market_regime_factor.formula"):
+    with pytest.raises(ConfigurationError, match="market regime boundaries are fixed"):
         load_strategy_settings(changed_path)
 
 

@@ -20,12 +20,9 @@ from trader.application.ports.decision_records import (
     DecisionRecordUnavailableError,
     V2DecisionCheckpoint,
 )
-from trader.domain.recommendation.decision_identity import (
-    CommittedDecisionRecord,
-    committed_record_bytes,
-    committed_record_from_bytes,
-)
+from trader.domain.recommendation.decision_identity import CommittedDecisionRecord
 from trader.domain.recommendation.models import Strategy
+from trader.infra.persistence.decision_record_codec import committed_record_bytes, committed_record_from_bytes
 
 FaultInjector = Callable[[str], None]
 _MAX_RECOVERY_PAYLOAD_BYTES = 8 * 1024 * 1024

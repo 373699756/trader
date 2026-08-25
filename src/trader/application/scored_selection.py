@@ -1,4 +1,4 @@
-"""Read-only tomorrow v2 feature assembly and deterministic local selection."""
+"""Read-only scored-strategy feature assembly and deterministic local selection."""
 
 from __future__ import annotations
 
@@ -19,19 +19,19 @@ from trader.domain.market.models import Board, Evidence, FeatureSnapshot, LiveQu
 from trader.domain.market.research import ResearchObservation, derive_corporate_risk_features
 from trader.domain.recommendation.models import Strategy
 from trader.domain.recommendation.ranking import minimum_selection_score
-from trader.domain.recommendation.tomorrow_selection import (
+from trader.domain.recommendation.scored_selection import (
     BoardCrossSectionFallback,
-    TomorrowSelectionPolicy,
-    TomorrowSelectionRequest,
-    TomorrowSelectionResult,
-    select_tomorrow,
+    ScoredSelectionPolicy,
+    ScoredSelectionRequest,
+    ScoredSelectionResult,
+    select_scored,
 )
 
 _SUPPORTED_BOARDS = (Board.MAIN, Board.CHINEXT, Board.STAR)
 
 
 @dataclass(frozen=True)
-class TomorrowSelectionOptions:
+class ScoredSelectionOptions:
     evaluated_at: datetime
     max_age_seconds: float
     phase: str = "tomorrow"
@@ -42,7 +42,7 @@ class TomorrowSelectionOptions:
 
 
 @dataclass(frozen=True)
-class TomorrowSelectionIdentity:
+class ScoredSelectionIdentity:
     trade_date: date
     data_version: str
     merge_epoch: str
@@ -61,11 +61,11 @@ class _AssemblyContext:
     merge_epoch: str
 
 
-class TomorrowSelectionNotReadyError(RuntimeError):
+class ScoredSelectionNotReadyError(RuntimeError):
     """A coherent current market epoch is not available for local selection."""
 
 
-class TomorrowSelectionUseCase:
+class ScoredSelectionUseCase:
     def __init__(self, reader: DataPlaneReadPort, policy: RecommendationPolicy) -> None:
         self._reader = reader
         self._policy = policy
@@ -77,12 +77,12 @@ class TomorrowSelectionUseCase:
         max_age_seconds: float,
         phase: str = "tomorrow",
         fallbacks: Mapping[Board, BoardCrossSectionFallback] | None = None,
-    ) -> TomorrowSelectionResult:
+    ) -> ScoredSelectionResult:
         snapshot = self._reader.snapshot()
-        return select_tomorrow_snapshot(
+        return select_scored_snapshot(
             snapshot,
             self._policy,
-            TomorrowSelectionOptions(
+            ScoredSelectionOptions(
                 evaluated_at=evaluated_at,
                 max_age_seconds=max_age_seconds,
                 phase=phase,
@@ -91,16 +91,16 @@ class TomorrowSelectionUseCase:
         )
 
 
-def select_tomorrow_snapshot(
+def select_scored_snapshot(
     snapshot: MarketDataPlaneSnapshot,
     policy: RecommendationPolicy,
-    options: TomorrowSelectionOptions,
-) -> TomorrowSelectionResult:
+    options: ScoredSelectionOptions,
+) -> ScoredSelectionResult:
     evaluated_at = options.evaluated_at
     if snapshot.daily_features is None or snapshot.market is None:
-        raise TomorrowSelectionNotReadyError("coherent_market_epoch_unavailable")
+        raise ScoredSelectionNotReadyError("coherent_market_epoch_unavailable")
     if evaluated_at.date() != snapshot.market.trade_date:
-        raise TomorrowSelectionNotReadyError("market_epoch_trade_date_mismatch")
+        raise ScoredSelectionNotReadyError("market_epoch_trade_date_mismatch")
     epoch_times = [
         snapshot.daily_features.observed_at,
         snapshot.daily_features.received_at,
@@ -117,16 +117,16 @@ def select_tomorrow_snapshot(
     if snapshot.research is not None:
         epoch_times.extend((snapshot.research.observed_at, snapshot.research.received_at))
     if max(epoch_times) > evaluated_at:
-        raise TomorrowSelectionNotReadyError("market_epoch_from_future")
-    features = assemble_tomorrow_features(snapshot)
+        raise ScoredSelectionNotReadyError("market_epoch_from_future")
+    features = assemble_scored_features(snapshot)
     merge_epochs = {feature.merge_epoch for feature in features}
     if len(merge_epochs) != 1:
-        raise TomorrowSelectionNotReadyError("feature_merge_epoch_mismatch")
-    return select_tomorrow_features(
+        raise ScoredSelectionNotReadyError("feature_merge_epoch_mismatch")
+    return select_scored_features(
         features,
         policy,
         options,
-        TomorrowSelectionIdentity(
+        ScoredSelectionIdentity(
             trade_date=snapshot.market.trade_date,
             data_version=snapshot.market.content_hash,
             merge_epoch=next(iter(merge_epochs)),
@@ -134,20 +134,20 @@ def select_tomorrow_snapshot(
     )
 
 
-def select_tomorrow_features(
+def select_scored_features(
     features: Sequence[FeatureSnapshot],
     policy: RecommendationPolicy,
-    options: TomorrowSelectionOptions,
-    identity: TomorrowSelectionIdentity,
-) -> TomorrowSelectionResult:
-    """Select tomorrow candidates from an already coherent point-in-time population."""
+    options: ScoredSelectionOptions,
+    identity: ScoredSelectionIdentity,
+) -> ScoredSelectionResult:
+    """Select scored candidates from an already coherent point-in-time population."""
 
     evaluated_at = options.evaluated_at
     population = tuple(features)
     if evaluated_at.date() != identity.trade_date:
-        raise TomorrowSelectionNotReadyError("market_epoch_trade_date_mismatch")
+        raise ScoredSelectionNotReadyError("market_epoch_trade_date_mismatch")
     if not population:
-        raise TomorrowSelectionNotReadyError("coherent_market_epoch_unavailable")
+        raise ScoredSelectionNotReadyError("coherent_market_epoch_unavailable")
     if options.normalize_discovery_source_time:
         population = tuple(
             replace(
@@ -159,8 +159,8 @@ def select_tomorrow_features(
             )
             for feature in population
         )
-    return select_tomorrow(
-        TomorrowSelectionRequest(
+    return select_scored(
+        ScoredSelectionRequest(
             features=population,
             evaluated_at=evaluated_at,
             trade_date=identity.trade_date.isoformat(),
@@ -176,8 +176,8 @@ def select_tomorrow_features(
 
 def _selection_policy(
     policy: RecommendationPolicy,
-    options: TomorrowSelectionOptions,
-) -> TomorrowSelectionPolicy:
+    options: ScoredSelectionOptions,
+) -> ScoredSelectionPolicy:
     board_policies = {
         board: board_policy
         for board in _SUPPORTED_BOARDS
@@ -189,7 +189,7 @@ def _selection_policy(
         phase=options.phase,
         observation_margin=policy.selection.observation_margin,
     )
-    return TomorrowSelectionPolicy(
+    return ScoredSelectionPolicy(
         board_policies=board_policies,
         risk_rules=policy.risk_rules,
         max_age_seconds=options.max_age_seconds,
@@ -203,7 +203,7 @@ def _selection_policy(
     )
 
 
-def assemble_tomorrow_features(snapshot: MarketDataPlaneSnapshot) -> tuple[FeatureSnapshot, ...]:
+def assemble_scored_features(snapshot: MarketDataPlaneSnapshot) -> tuple[FeatureSnapshot, ...]:
     context = _assembly_context(snapshot)
     return tuple(_assemble_feature(context, code) for code in sorted(context.quotes))
 
@@ -212,7 +212,7 @@ def _assembly_context(snapshot: MarketDataPlaneSnapshot) -> _AssemblyContext:
     daily = snapshot.daily_features
     market = snapshot.market
     if daily is None or market is None:
-        raise TomorrowSelectionNotReadyError("coherent_market_epoch_unavailable")
+        raise ScoredSelectionNotReadyError("coherent_market_epoch_unavailable")
     rows = {row.code: row for row in daily.rows}
     quotes = {quote.code: quote for quote in market.quotes}
     candidate_epoch = snapshot.candidate_quotes
@@ -222,7 +222,7 @@ def _assembly_context(snapshot: MarketDataPlaneSnapshot) -> _AssemblyContext:
     research_observations = research_epoch.observations if research_epoch is not None else {}
     unknown_candidates = sorted(set(candidate_quotes).difference(quotes))
     if unknown_candidates:
-        raise TomorrowSelectionNotReadyError("candidate_quote_not_in_market_epoch")
+        raise ScoredSelectionNotReadyError("candidate_quote_not_in_market_epoch")
     candidate_epoch_is_effective = any(
         quote.source_time >= quotes[code].source_time for code, quote in candidate_quotes.items()
     )
@@ -385,9 +385,10 @@ def _apply_candidate_quote(market: MarketQuote, candidate: LiveQuote | None) -> 
 
 
 __all__ = [
-    "TomorrowSelectionNotReadyError",
-    "TomorrowSelectionOptions",
-    "TomorrowSelectionUseCase",
-    "assemble_tomorrow_features",
-    "select_tomorrow_snapshot",
+    "ScoredSelectionNotReadyError",
+    "ScoredSelectionOptions",
+    "ScoredSelectionUseCase",
+    "assemble_scored_features",
+    "select_scored_features",
+    "select_scored_snapshot",
 ]

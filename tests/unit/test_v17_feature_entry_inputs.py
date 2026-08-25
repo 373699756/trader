@@ -23,7 +23,7 @@ def test_entry_inputs_exclude_same_day_history_bar() -> None:
     builder = FeatureBuilder(
         settings.today_news_signal,
         settings.tomorrow_tail_signal,
-        settings.d25_signal,
+        settings.market_regime,
         settings.long_research,
     )
     prior = tuple(
@@ -95,7 +95,7 @@ def test_entry_quality_uses_amount_intensity_when_volume_ratio_is_missing() -> N
     builder = FeatureBuilder(
         settings.today_news_signal,
         settings.tomorrow_tail_signal,
-        settings.d25_signal,
+        settings.market_regime,
         settings.long_research,
     )
     bars = tuple(

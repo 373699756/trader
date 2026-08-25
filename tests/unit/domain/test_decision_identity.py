@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import fields, replace
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -7,8 +8,6 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.domain.recommendation.decision_identity import (
-    LEGACY_COMMITTED_RECORD_SCHEMA_VERSION,
-    LEGACY_DECISION_IDENTITY_SCHEMA_VERSION,
     CommittedDecisionRecord,
     DecisionDownside,
     DecisionItem,
@@ -19,10 +18,9 @@ from trader.domain.recommendation.decision_identity import (
     LongProjectionItem,
     ScoredDecision,
     SelectionDiagnostics,
-    committed_record_bytes,
-    committed_record_from_bytes,
 )
 from trader.domain.recommendation.models import RecommendationAction, Strategy
+from trader.infra.persistence.decision_record_codec import committed_record_bytes, committed_record_from_bytes
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 8, 11, 14, 40, tzinfo=SHANGHAI)
@@ -202,29 +200,6 @@ def test_formal_record_round_trip_preserves_optional_distinct_coverage() -> None
     assert restored.payload_hash == record.payload_hash
 
 
-def test_legacy_v1_formal_record_without_v2_display_metadata_keeps_its_identity() -> None:
-    current = replace(
-        decision(),
-        schema_version=LEGACY_DECISION_IDENTITY_SCHEMA_VERSION,
-    )
-    record = CommittedDecisionRecord(
-        current,
-        NOW + timedelta(minutes=10),
-        "scheduled",
-        schema_version=LEGACY_COMMITTED_RECORD_SCHEMA_VERSION,
-    )
-
-    restored = committed_record_from_bytes(committed_record_bytes(record))
-
-    assert restored.decision.schema_version == LEGACY_DECISION_IDENTITY_SCHEMA_VERSION
-    assert restored.decision.items[0].setup_type is None
-    assert restored.decision.items[0].downside is None
-    assert restored.decision.items[0].review_outcome is None
-    assert restored.decision.items[0].research_coverage is None
-    assert restored.decision.selection_diagnostics is None
-    assert restored.payload_hash == record.payload_hash
-
-
 def test_v2_formal_record_round_trip_preserves_display_metadata_and_selection_diagnostics() -> None:
     item = replace(
         decision().items[0],
@@ -245,6 +220,21 @@ def test_v2_formal_record_round_trip_preserves_display_metadata_and_selection_di
     assert restored == record
     assert restored.decision.items[0].downside == item.downside
     assert restored.decision.selection_diagnostics == current.selection_diagnostics
+
+
+@pytest.mark.parametrize("location", ["record", "decision", "item"])
+def test_formal_record_codec_rejects_unknown_fields(location: str) -> None:
+    record = CommittedDecisionRecord(decision(), NOW + timedelta(minutes=10), "scheduled")
+    payload = json.loads(committed_record_bytes(record))
+    target = {
+        "record": payload,
+        "decision": payload["decision"],
+        "item": payload["decision"]["items"][0],
+    }[location]
+    target["legacy_field"] = "must-not-be-ignored"
+
+    with pytest.raises(ValueError, match="unknown fields"):
+        committed_record_from_bytes(json.dumps(payload).encode())
 
 
 def test_decision_quote_rejects_wrong_code_future_time_and_invalid_market_values() -> None:

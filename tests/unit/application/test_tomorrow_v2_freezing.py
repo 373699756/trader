@@ -7,8 +7,8 @@ from zoneinfo import ZoneInfo
 
 from tests.unit.domain.test_decision_identity import decision
 from trader.application.decision_core import UnifiedDecisionIndex
-from trader.application.tomorrow_v2_freezing import (
-    TomorrowV2FreezeCoordinator,
+from trader.application.scored_v2_freezing import (
+    ScoredV2FreezeCoordinator,
     V2DecisionRuntimeIdentity,
 )
 from trader.domain.recommendation.decision_identity import ScoredDecision
@@ -31,8 +31,8 @@ def _coordinator(
     repository: SQLiteDecisionRecordRepository,
     clock: _Clock,
     strategy: Strategy = Strategy.TOMORROW,
-) -> TomorrowV2FreezeCoordinator:
-    return TomorrowV2FreezeCoordinator(
+) -> ScoredV2FreezeCoordinator:
+    return ScoredV2FreezeCoordinator(
         index,
         repository,
         clock,

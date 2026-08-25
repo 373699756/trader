@@ -8,18 +8,16 @@ import math
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Literal, TypeAlias, cast
+from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo
 
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 
 DecisionStage = Literal["local", "hybrid"]
 CommitKind = Literal["scheduled", "checkpoint_recovery", "close_fallback"]
-LEGACY_DECISION_IDENTITY_SCHEMA_VERSION = "v2_decision_identity_v1"
 DECISION_IDENTITY_SCHEMA_VERSION = "v2_decision_identity_v2"
 LONG_PROJECTION_SCHEMA_VERSION = "v2_long_projection_v2"
 OVERLAY_SCHEMA_VERSION = "v2_decision_overlay_v1"
-LEGACY_COMMITTED_RECORD_SCHEMA_VERSION = "v2_committed_decision_v1"
 COMMITTED_RECORD_SCHEMA_VERSION = "v2_committed_decision_v2"
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _CODE = re.compile(r"^\d{6}$")
@@ -393,15 +391,8 @@ class CommittedDecisionRecord:
     version: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.schema_version not in {
-            LEGACY_COMMITTED_RECORD_SCHEMA_VERSION,
-            COMMITTED_RECORD_SCHEMA_VERSION,
-        }:
-            raise ValueError("record schema_version is unsupported")
-        if (self.schema_version == LEGACY_COMMITTED_RECORD_SCHEMA_VERSION) != (
-            self.decision.schema_version == LEGACY_DECISION_IDENTITY_SCHEMA_VERSION
-        ):
-            raise ValueError("record and decision schema generations must match")
+        if self.schema_version != COMMITTED_RECORD_SCHEMA_VERSION:
+            raise ValueError(f"record schema_version must be {COMMITTED_RECORD_SCHEMA_VERSION}")
         _require_shanghai(self.committed_at, "decision committed_at")
         if self.committed_at.date() != self.decision.trade_date:
             raise ValueError("formal record and decision must share a trade date")
@@ -464,57 +455,6 @@ def formal_scored_decision(
     )
 
 
-def committed_record_bytes(record: CommittedDecisionRecord) -> bytes:
-    payload = _record_payload(record)
-    payload["payload_hash"] = record.payload_hash
-    payload["version"] = record.version
-    return _json_bytes(payload)
-
-
-def committed_record_from_bytes(payload: bytes) -> CommittedDecisionRecord:
-    raw = json.loads(payload.decode("utf-8"))
-    if not isinstance(raw, dict):
-        raise ValueError("formal decision payload must be an object")
-    decision_raw = _object(raw.get("decision"), "decision")
-    decision_schema = _text(decision_raw, "schema_version")
-    items = tuple(
-        _decision_item_from_json(item, schema_version=decision_schema)
-        for item in _list(decision_raw.get("items"), "items")
-    )
-    decision = ScoredDecision(
-        strategy=Strategy(_text(decision_raw, "strategy")),
-        trade_date=date.fromisoformat(_text(decision_raw, "trade_date")),
-        sequence=_integer(decision_raw, "sequence"),
-        observed_at=_shanghai_datetime(_text(decision_raw, "observed_at")),
-        stage=cast(DecisionStage, _text(decision_raw, "stage")),
-        parent_version=_optional_text(decision_raw.get("parent_version")),
-        input_versions=_pairs(decision_raw.get("input_versions"), "input_versions"),
-        config_version=_text(decision_raw, "config_version"),
-        strategy_version=_text(decision_raw, "strategy_version"),
-        fusion_version=_text(decision_raw, "fusion_version"),
-        items=items,
-        filter_aggregates=_count_pairs(decision_raw.get("filter_aggregates")),
-        degraded_reasons=tuple(_strings(decision_raw.get("degraded_reasons"), "degraded_reasons")),
-        population_count=_optional_integer(decision_raw.get("population_count"), "population_count"),
-        rejected_count=_optional_integer(decision_raw.get("rejected_count"), "rejected_count"),
-        selection_diagnostics=(
-            _selection_diagnostics_from_json(decision_raw.get("selection_diagnostics"))
-            if decision_schema == DECISION_IDENTITY_SCHEMA_VERSION
-            else None
-        ),
-        schema_version=decision_schema,
-    )
-    record = CommittedDecisionRecord(
-        decision=decision,
-        committed_at=_shanghai_datetime(_text(raw, "committed_at")),
-        commit_kind=cast(CommitKind, _text(raw, "commit_kind")),
-        schema_version=_text(raw, "schema_version"),
-    )
-    if raw.get("payload_hash") != record.payload_hash or raw.get("version") != record.version:
-        raise ValueError("formal decision payload identity mismatch")
-    return record
-
-
 def _scored_payload(
     decision: ScoredDecision,
     items: tuple[DecisionItem, ...],
@@ -534,21 +474,14 @@ def _scored_payload(
         "config_version": decision.config_version,
         "strategy_version": decision.strategy_version,
         "fusion_version": decision.fusion_version,
-        "items": [
-            _decision_item_payload(
-                item,
-                include_metadata=decision.schema_version == DECISION_IDENTITY_SCHEMA_VERSION,
-            )
-            for item in items
-        ],
+        "items": [_decision_item_payload(item) for item in items],
         "filter_aggregates": [[reason, count] for reason, count in aggregates],
         "degraded_reasons": list(reasons),
     }
     if decision.population_count is not None and decision.rejected_count is not None:
         payload["population_count"] = decision.population_count
         payload["rejected_count"] = decision.rejected_count
-    if decision.schema_version == DECISION_IDENTITY_SCHEMA_VERSION:
-        payload["selection_diagnostics"] = _selection_diagnostics_payload(decision.selection_diagnostics)
+    payload["selection_diagnostics"] = _selection_diagnostics_payload(decision.selection_diagnostics)
     return payload
 
 
@@ -569,7 +502,7 @@ def _record_payload(record: CommittedDecisionRecord) -> dict[str, _Json]:
     }
 
 
-def _decision_item_payload(item: DecisionItem, *, include_metadata: bool) -> dict[str, _Json]:
+def _decision_item_payload(item: DecisionItem) -> dict[str, _Json]:
     payload: dict[str, _Json] = {
         "code": item.code,
         "action": item.action.value,
@@ -588,36 +521,11 @@ def _decision_item_payload(item: DecisionItem, *, include_metadata: bool) -> dic
         payload["industry"] = item.industry
     if item.quote is not None:
         payload["quote"] = _decision_quote_payload(item.quote)
-    if include_metadata:
-        payload["setup_type"] = item.setup_type
-        payload["downside"] = _downside_payload(item.downside)
-        payload["review_outcome"] = item.review_outcome
-        payload["research_coverage"] = _research_coverage_payload(item.research_coverage)
+    payload["setup_type"] = item.setup_type
+    payload["downside"] = _downside_payload(item.downside)
+    payload["review_outcome"] = item.review_outcome
+    payload["research_coverage"] = _research_coverage_payload(item.research_coverage)
     return payload
-
-
-def _decision_item_from_json(raw: object, *, schema_version: str) -> DecisionItem:
-    value = _object(raw, "decision item")
-    has_metadata = schema_version == DECISION_IDENTITY_SCHEMA_VERSION
-    return DecisionItem(
-        code=_text(value, "code"),
-        action=RecommendationAction(_text(value, "action")),
-        selected=_boolean(value, "selected"),
-        rank=_integer(value, "rank"),
-        candidate_score=_optional_number(value.get("candidate_score")),
-        local_score=_number(value, "local_score"),
-        final_score=_number(value, "final_score"),
-        score_components=_score_pairs(value.get("score_components")),
-        risk_codes=tuple(_strings(value.get("risk_codes"), "risk_codes")),
-        reason=_text(value, "reason"),
-        name=_optional_display_text(value.get("name"), "decision item name"),
-        industry=_optional_display_text(value.get("industry"), "decision item industry"),
-        quote=_decision_quote_from_json(value.get("quote")),
-        setup_type=_optional_text(value.get("setup_type")) if has_metadata else None,
-        downside=_downside_from_json(value.get("downside")) if has_metadata else None,
-        review_outcome=_optional_text(value.get("review_outcome")) if has_metadata else None,
-        research_coverage=_research_coverage_from_json(value.get("research_coverage")) if has_metadata else None,
-    )
 
 
 def _downside_payload(value: DecisionDownside | None) -> dict[str, _Json] | None:
@@ -632,22 +540,6 @@ def _downside_payload(value: DecisionDownside | None) -> dict[str, _Json] | None
     }
 
 
-def _downside_from_json(raw: object) -> DecisionDownside | None:
-    if raw is None:
-        return None
-    value = _object(raw, "decision downside")
-    status = _text(value, "status")
-    if status not in {"pass", "observe"}:
-        raise ValueError("decision downside status is invalid")
-    return DecisionDownside(
-        cast(Literal["pass", "observe"], status),
-        tuple(_strings(value.get("reasons"), "downside reasons")),
-        _optional_number(value.get("atr20_pct")),
-        _optional_number(value.get("intraday_reversal_atr")),
-        _optional_number(value.get("historical_drawdown_pct")),
-    )
-
-
 def _research_coverage_payload(value: DecisionResearchCoverage | None) -> dict[str, _Json] | None:
     if value is None:
         return None
@@ -656,17 +548,6 @@ def _research_coverage_payload(value: DecisionResearchCoverage | None) -> dict[s
         "structured_risk_fact_count": value.structured_risk_fact_count,
         "review_eligible": value.review_eligible,
     }
-
-
-def _research_coverage_from_json(raw: object) -> DecisionResearchCoverage | None:
-    if raw is None:
-        return None
-    value = _object(raw, "decision research coverage")
-    return DecisionResearchCoverage(
-        _integer(value, "evidence_count"),
-        _integer(value, "structured_risk_fact_count"),
-        _boolean(value, "review_eligible"),
-    )
 
 
 def _selection_diagnostics_payload(value: SelectionDiagnostics | None) -> dict[str, _Json] | None:
@@ -685,23 +566,6 @@ def _selection_diagnostics_payload(value: SelectionDiagnostics | None) -> dict[s
     }
 
 
-def _selection_diagnostics_from_json(raw: object) -> SelectionDiagnostics | None:
-    if raw is None:
-        return None
-    value = _object(raw, "selection diagnostics")
-    return SelectionDiagnostics(
-        _optional_number(value.get("maximum_final_score")),
-        _number(value, "executable_threshold"),
-        _number(value, "observation_floor"),
-        _integer(value, "executable_limit"),
-        _integer(value, "observation_limit"),
-        _integer(value, "selected_executable_count"),
-        _integer(value, "selected_observation_count"),
-        _integer(value, "review_candidate_count"),
-        _optional_text(value.get("empty_reason")),
-    )
-
-
 def _decision_quote_payload(quote: DecisionQuote) -> dict[str, _Json]:
     return {
         "code": quote.code,
@@ -714,23 +578,6 @@ def _decision_quote_payload(quote: DecisionQuote) -> dict[str, _Json]:
         "source_time": quote.source_time.isoformat(),
         "data_version": quote.data_version,
     }
-
-
-def _decision_quote_from_json(raw: object) -> DecisionQuote | None:
-    if raw is None:
-        return None
-    value = _object(raw, "decision quote")
-    return DecisionQuote(
-        code=_text(value, "code"),
-        price=_number(value, "price"),
-        pct_change=_optional_number(value.get("pct_change")),
-        amount=_optional_number(value.get("amount")),
-        turnover_rate=_optional_number(value.get("turnover_rate")),
-        market_cap=_optional_number(value.get("market_cap")),
-        source=_text(value, "source"),
-        source_time=_shanghai_datetime(_text(value, "source_time")),
-        data_version=_text(value, "data_version"),
-    )
 
 
 def _normalize_versions(values: tuple[tuple[str, str], ...]) -> tuple[tuple[str, str], ...]:
@@ -772,20 +619,9 @@ def _validate_scored_schema(
     diagnostics: SelectionDiagnostics | None,
     items: tuple[DecisionItem, ...],
 ) -> None:
-    if schema_version not in {
-        LEGACY_DECISION_IDENTITY_SCHEMA_VERSION,
-        DECISION_IDENTITY_SCHEMA_VERSION,
-    }:
-        raise ValueError("decision schema_version is unsupported")
-    has_v2_metadata = diagnostics is not None or any(
-        item.setup_type is not None
-        or item.downside is not None
-        or item.review_outcome is not None
-        or item.research_coverage is not None
-        for item in items
-    )
-    if schema_version == LEGACY_DECISION_IDENTITY_SCHEMA_VERSION and has_v2_metadata:
-        raise ValueError("legacy decision schema cannot contain v2 display metadata")
+    del diagnostics, items
+    if schema_version != DECISION_IDENTITY_SCHEMA_VERSION:
+        raise ValueError(f"decision schema_version must be {DECISION_IDENTITY_SCHEMA_VERSION}")
 
 
 def _validate_score(value: float, label: str) -> None:
@@ -838,48 +674,6 @@ def _json_bytes(payload: dict[str, _Json]) -> bytes:
     return json.dumps(payload, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":")).encode()
 
 
-def _object(raw: object, label: str) -> dict[str, object]:
-    if not isinstance(raw, dict) or any(not isinstance(key, str) for key in raw):
-        raise ValueError(f"{label} must be an object")
-    return cast(dict[str, object], raw)
-
-
-def _list(raw: object, label: str) -> list[object]:
-    if not isinstance(raw, list):
-        raise ValueError(f"{label} must be a list")
-    return raw
-
-
-def _text(raw: dict[str, object], key: str) -> str:
-    value = raw.get(key)
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{key} must be non-empty text")
-    return value
-
-
-def _optional_text(raw: object) -> str | None:
-    if raw is None:
-        return None
-    if not isinstance(raw, str) or not raw:
-        raise ValueError("optional text is invalid")
-    return raw
-
-
-def _integer(raw: dict[str, object], key: str) -> int:
-    value = raw.get(key)
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise ValueError(f"{key} must be an integer")
-    return value
-
-
-def _optional_integer(raw: object, label: str) -> int | None:
-    if raw is None:
-        return None
-    if not isinstance(raw, int) or isinstance(raw, bool):
-        raise ValueError(f"{label} must be an integer")
-    return raw
-
-
 def _display_text(value: str, label: str) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{label} must be text")
@@ -887,14 +681,6 @@ def _display_text(value: str, label: str) -> str:
     if len(normalized) > 120 or any(ord(character) < 32 for character in normalized):
         raise ValueError(f"{label} is invalid")
     return normalized
-
-
-def _optional_display_text(raw: object, label: str) -> str:
-    if raw is None:
-        return ""
-    if not isinstance(raw, str):
-        raise ValueError(f"{label} must be text")
-    return _display_text(raw, label)
 
 
 def _validate_coverage_counts(population_count: int | None, rejected_count: int | None, item_count: int) -> None:
@@ -906,82 +692,9 @@ def _validate_coverage_counts(population_count: int | None, rejected_count: int 
         raise ValueError("decision coverage counts are invalid")
 
 
-def _boolean(raw: dict[str, object], key: str) -> bool:
-    value = raw.get(key)
-    if not isinstance(value, bool):
-        raise ValueError(f"{key} must be a boolean")
-    return value
-
-
-def _number(raw: dict[str, object], key: str) -> float:
-    value = raw.get(key)
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        raise ValueError(f"{key} must be a number")
-    return float(value)
-
-
-def _optional_number(raw: object) -> float | None:
-    if raw is None:
-        return None
-    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
-        raise ValueError("optional number is invalid")
-    return float(raw)
-
-
-def _strings(raw: object, label: str) -> list[str]:
-    values = _list(raw, label)
-    if any(not isinstance(value, str) for value in values):
-        raise ValueError(f"{label} must contain text")
-    return cast(list[str], values)
-
-
-def _pairs(raw: object, label: str) -> tuple[tuple[str, str], ...]:
-    pairs: list[tuple[str, str]] = []
-    for item in _list(raw, label):
-        values = _list(item, label)
-        if len(values) != 2 or any(not isinstance(value, str) for value in values):
-            raise ValueError(f"{label} entries are invalid")
-        pairs.append((cast(str, values[0]), cast(str, values[1])))
-    return tuple(pairs)
-
-
-def _count_pairs(raw: object) -> tuple[tuple[str, int], ...]:
-    pairs: list[tuple[str, int]] = []
-    for item in _list(raw, "filter_aggregates"):
-        values = _list(item, "filter aggregate")
-        if (
-            len(values) != 2
-            or not isinstance(values[0], str)
-            or not isinstance(values[1], int)
-            or isinstance(values[1], bool)
-        ):
-            raise ValueError("filter aggregate entries are invalid")
-        pairs.append((values[0], values[1]))
-    return tuple(pairs)
-
-
-def _score_pairs(raw: object) -> tuple[tuple[str, float | None], ...]:
-    pairs: list[tuple[str, float | None]] = []
-    for item in _list(raw, "score_components"):
-        values = _list(item, "score component")
-        if len(values) != 2 or not isinstance(values[0], str):
-            raise ValueError("score component entries are invalid")
-        pairs.append((values[0], _optional_number(values[1])))
-    return tuple(pairs)
-
-
-def _shanghai_datetime(value: str) -> datetime:
-    parsed = datetime.fromisoformat(value)
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise ValueError("persisted datetime must be timezone-aware")
-    return parsed.astimezone(_SHANGHAI)
-
-
 __all__ = [
     "COMMITTED_RECORD_SCHEMA_VERSION",
     "DECISION_IDENTITY_SCHEMA_VERSION",
-    "LEGACY_COMMITTED_RECORD_SCHEMA_VERSION",
-    "LEGACY_DECISION_IDENTITY_SCHEMA_VERSION",
     "LONG_PROJECTION_SCHEMA_VERSION",
     "OVERLAY_SCHEMA_VERSION",
     "CommitKind",
@@ -997,8 +710,6 @@ __all__ = [
     "LongProjectionItem",
     "ScoredDecision",
     "SelectionDiagnostics",
-    "committed_record_bytes",
-    "committed_record_from_bytes",
     "formal_scored_decision",
     "identity_codes",
 ]

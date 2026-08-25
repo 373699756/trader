@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from trader.application.decision_core import UnifiedDecisionIndex
 from trader.application.ports.clock import Clock
 from trader.application.ports.decision_records import DecisionRecordError, DecisionRecordRepositoryPort
-from trader.application.tomorrow_v2_freezing import V2DecisionRuntimeIdentity, V2FreezeOperationResult
+from trader.application.scored_v2_freezing import V2DecisionRuntimeIdentity, V2FreezeOperationResult
 from trader.domain.recommendation.decision_identity import CommittedDecisionRecord, ScoredDecision
 from trader.domain.recommendation.models import Strategy
 

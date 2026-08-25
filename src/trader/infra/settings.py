@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from trader.domain.market.news import NewsSignalPolicy
-from trader.domain.market.research import D25SignalPolicy, LongResearchPolicy
+from trader.domain.market.research import LongResearchPolicy, MarketRegimePolicy
 from trader.domain.market.tail import TailSignalPolicy
 from trader.infra.settings_factor_validation import _parse_factor_definition, _strategy_contract_version
 from trader.infra.settings_models import (
@@ -64,8 +64,8 @@ from trader.infra.settings_strategy_validation import _validate_strategy_setting
 def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySettings:
     path = Path(config_path).expanduser().resolve()
     raw = _read_json_object(path)
-    if _integer(raw, "schema_version", minimum=1) != 12:
-        raise ConfigurationError("strategy schema_version must be 12")
+    if _integer(raw, "schema_version", minimum=1) != 13:
+        raise ConfigurationError("strategy schema_version must be 13")
     fusion_raw = _mapping(raw, "fusion")
     selection_raw = _mapping(raw, "selection")
     hard_filters_raw = _mapping(raw, "hard_filters")
@@ -81,12 +81,11 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
         raise ConfigurationError("risk_rules must be a list")
     risk_rules = tuple(_parse_risk_rule(item, index) for index, item in enumerate(rules_raw))
     dimension_weights = _nested_number_mapping(raw, "dimension_weights")
-    local_strategy_weights = _nested_number_mapping(raw, "local_strategy_weights")
     board_candidate_weights = _triple_nested_number_mapping(raw, "board_candidate_weights")
     board_local_strategy_weights = _triple_nested_number_mapping(raw, "board_local_strategy_weights")
     today_news_signal = _parse_news_signal_policy(_mapping(raw, "today_news_signal"))
     tomorrow_tail_signal = _parse_tail_signal_policy(_mapping(raw, "tomorrow_tail_signal"))
-    d25_signal = _parse_d25_signal_policy(_mapping(raw, "d25_signal"))
+    market_regime = _parse_market_regime_policy(_mapping(raw, "market_regime"))
     long_research = _parse_long_research_policy(_mapping(raw, "long_research"))
     factor_registry_raw = _mapping(raw, "factor_registry")
     factor_registry = {
@@ -94,7 +93,7 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
         for factor_id, definition in factor_registry_raw.items()
     }
     settings = StrategySettings(
-        schema_version=12,
+        schema_version=13,
         strategy_version=_strategy_contract_version(raw),
         fusion=FusionSettings(
             version=_text(fusion_raw, "version"),
@@ -133,10 +132,9 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
         ),
         today_news_signal=today_news_signal,
         tomorrow_tail_signal=tomorrow_tail_signal,
-        d25_signal=d25_signal,
+        market_regime=market_regime,
         long_research=long_research,
         dimension_weights=dimension_weights,
-        local_strategy_weights=local_strategy_weights,
         board_policy_version=_text(raw, "board_policy_version"),
         board_candidate_weights=board_candidate_weights,
         board_local_strategy_weights=board_local_strategy_weights,
@@ -402,23 +400,14 @@ def _parse_tail_signal_policy(raw: Mapping[str, object]) -> TailSignalPolicy:
         raise ConfigurationError(f"tomorrow_tail_signal {exc}") from exc
 
 
-def _parse_d25_signal_policy(raw: Mapping[str, object]) -> D25SignalPolicy:
-    overheat = _mapping(raw, "overheat")
-    regime = _mapping(raw, "market_regime")
+def _parse_market_regime_policy(raw: Mapping[str, object]) -> MarketRegimePolicy:
     try:
-        return D25SignalPolicy(
-            overheat_full_return_max=_number(overheat, "full_return_max"),
-            overheat_linear_return_max=_number(overheat, "linear_return_max"),
-            overheat_linear_end_factor=_number(overheat, "linear_end_factor", minimum=0.0, maximum=1.0),
-            overheat_above_factor=_number(overheat, "above_factor", minimum=0.0, maximum=1.0),
-            risk_on_breadth_min=_number(regime, "risk_on_breadth_min", minimum=0.0, maximum=100.0),
-            risk_off_breadth_max=_number(regime, "risk_off_breadth_max", minimum=0.0, maximum=100.0),
-            risk_on_factor=_number(regime, "risk_on_factor", minimum=0.01, maximum=2.0),
-            neutral_factor=_number(regime, "neutral_factor", minimum=0.01, maximum=2.0),
-            risk_off_factor=_number(regime, "risk_off_factor", minimum=0.01, maximum=2.0),
+        return MarketRegimePolicy(
+            risk_on_breadth_min=_number(raw, "risk_on_breadth_min", minimum=0.0, maximum=100.0),
+            risk_off_breadth_max=_number(raw, "risk_off_breadth_max", minimum=0.0, maximum=100.0),
         )
     except ValueError as exc:
-        raise ConfigurationError(f"d25_signal {exc}") from exc
+        raise ConfigurationError(f"market_regime {exc}") from exc
 
 
 def _parse_long_research_policy(raw: Mapping[str, object]) -> LongResearchPolicy:

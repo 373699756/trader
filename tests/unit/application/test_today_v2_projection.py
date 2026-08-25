@@ -5,10 +5,10 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from tests.unit.application.test_tomorrow_deepseek_fusion import _review
+from tests.unit.application.v2_review_helpers import review
 from trader.application.decision_core import UnifiedDecisionIndex
-from trader.application.ports.tomorrow import TodayNativeInput
-from trader.application.today_v2_projection import build_today_v2_hybrid, build_today_v2_local
+from trader.application.ports.scored import TodayNativeInput
+from trader.application.scored_v2_projection import build_scored_v2_hybrid, build_scored_v2_local
 from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.models import RecommendationAction, Strategy
@@ -23,11 +23,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 def test_today_native_input_directly_builds_local_and_parented_hybrid(application_feature_factory) -> None:
     policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
     features = _features(application_feature_factory)
-    projection = build_today_v2_local(_native_input(features), policy, sequence=1)
+    projection = build_scored_v2_local(_native_input(features), policy, sequence=1)
     assert projection.review_candidates
     code = projection.review_candidates[0].code
-    applied = replace(_review(code, 100.0), completed_at=EVALUATED_AT + timedelta(seconds=5))
-    hybrid = build_today_v2_hybrid(
+    applied = replace(review(code, 100.0), completed_at=EVALUATED_AT + timedelta(seconds=5))
+    hybrid = build_scored_v2_hybrid(
         projection,
         policy,
         {code: applied},
@@ -45,7 +45,7 @@ def test_today_native_input_directly_builds_local_and_parented_hybrid(applicatio
 def test_today_observe_phase_never_emits_executable_action(application_feature_factory) -> None:
     policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
     features = _features(application_feature_factory)
-    projection = build_today_v2_local(_native_input(features, phase="today_observe"), policy, sequence=1)
+    projection = build_scored_v2_local(_native_input(features, phase="today_observe"), policy, sequence=1)
 
     assert all(item.action is not RecommendationAction.EXECUTABLE for item in projection.local.items)
 
@@ -53,11 +53,19 @@ def test_today_observe_phase_never_emits_executable_action(application_feature_f
 def test_review_completed_at_112000_cannot_create_hybrid(application_feature_factory) -> None:
     policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
     features = _features(application_feature_factory)
-    projection = build_today_v2_local(_native_input(features), policy, sequence=1)
+    projection = build_scored_v2_local(_native_input(features), policy, sequence=1)
     deadline = EVALUATED_AT.replace(hour=11, minute=20, second=0)
-    review = replace(_review(projection.review_candidates[0].code, 100.0), completed_at=deadline)
+    deepseek_review = replace(review(projection.review_candidates[0].code, 100.0), completed_at=deadline)
 
-    assert build_today_v2_hybrid(projection, policy, {review.code: review}, review_deadline=deadline) is None
+    assert (
+        build_scored_v2_hybrid(
+            projection,
+            policy,
+            {deepseek_review.code: deepseek_review},
+            review_deadline=deadline,
+        )
+        is None
+    )
 
 
 def _native_input(features: tuple[FeatureSnapshot, ...], *, phase: str = "today_main") -> TodayNativeInput:

@@ -23,12 +23,12 @@ from trader.application.decision_events import build_v2_decision_committed
 from trader.application.decision_queries import UnifiedDecisionQueries
 from trader.application.decision_stream import UnifiedDecisionEventStream
 from trader.application.policy import RecommendationPolicy
-from trader.application.ports.tomorrow import TomorrowNativeInput
+from trader.application.ports.scored import TomorrowNativeInput
 from trader.application.schedule import SHANGHAI
-from trader.application.tomorrow_v2_projection import (
-    TomorrowV2LocalProjection,
-    build_tomorrow_v2_hybrid,
-    build_tomorrow_v2_local,
+from trader.application.scored_v2_projection import (
+    ScoredV2LocalProjection,
+    build_scored_v2_hybrid,
+    build_scored_v2_local,
 )
 from trader.bootstrap_policy import _recommendation_policy
 from trader.domain.market.models import Board, FeatureSnapshot, MarketQuote
@@ -41,9 +41,8 @@ from trader.domain.recommendation.decision_identity import (
 )
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 from trader.domain.recommendation.ranking import candidate_score
-from trader.domain.recommendation.strategies.d25 import score_d25
-from trader.domain.recommendation.strategies.today import score_today
-from trader.domain.recommendation.strategies.tomorrow import score_tomorrow
+from trader.domain.recommendation.scoring import score_board_strategy
+from trader.domain.recommendation.strategies.composition import LocalScoreResult
 from trader.domain.review.models import DeepSeekReview, ReviewOutcome
 from trader.infra.market_data.columnar import ColumnarQuoteBatch, targeted_market_changes
 from trader.infra.market_data.merge import (
@@ -204,16 +203,22 @@ def _operations(
         data_version="performance-candidate-data-v2",
         market_features=candidates,
     )
-    local_projection = build_tomorrow_v2_local(tomorrow_input, policy, sequence=1)
+    local_projection = build_scored_v2_local(tomorrow_input, policy, sequence=1)
     reviews = _abstaining_reviews(local_projection, observed_at)
     api_operations = _api_operations(candidates, observed_at)
     overlay_commit = _overlay_cas_operation(candidates, observed_at)
 
     def tomorrow_projection() -> object:
-        return build_tomorrow_v2_local(tomorrow_input, policy, sequence=1)
+        return build_scored_v2_local(tomorrow_input, policy, sequence=1)
 
     def candidate_projection() -> object:
-        return build_tomorrow_v2_local(candidate_input, policy, sequence=1)
+        return build_scored_v2_local(candidate_input, policy, sequence=1)
+
+    def active_score(strategy: Strategy, item: FeatureSnapshot) -> LocalScoreResult:
+        board_policy = policy.board_policy(strategy, item.quote.board)
+        if board_policy is None:
+            raise ValueError(f"missing board policy for {strategy.value}/{item.quote.board.value}")
+        return score_board_strategy(item, board_policy)
 
     operations: dict[str, Callable[[], object]] = {
         "market_normalization": lambda: tuple(build_market_quote(item) for item in market_inputs),
@@ -233,27 +238,27 @@ def _operations(
             key=lambda item: candidate_score(item, _CANDIDATE_WEIGHTS),
             reverse=True,
         ),
-        "board_local_scoring": lambda: tuple(score_tomorrow(item) for item in candidates),
+        "board_local_scoring": lambda: tuple(active_score(Strategy.TOMORROW, item) for item in candidates),
         "three_strategy_board_scoring": lambda: tuple(
-            (score_today(item), score_tomorrow(item), score_d25(item)) for item in candidates
+            tuple(active_score(strategy, item) for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25))
+            for item in candidates
         ),
         "three_board_wall_clock": lambda: tuple(
-            tuple(score_tomorrow(item) for item in candidates if item.quote.board is board)
+            tuple(active_score(Strategy.TOMORROW, item) for item in candidates if item.quote.board is board)
             for board in (Board.MAIN, Board.CHINEXT, Board.STAR)
         ),
         "global_selection": lambda: sorted(
-            (score_tomorrow(item).base_score for item in candidates),
+            (active_score(Strategy.TOMORROW, item).base_score for item in candidates),
             reverse=True,
         )[:6],
         "board_ready_to_draft": candidate_projection,
         "quote_to_draft": tomorrow_projection,
-        "deepseek_to_hybrid": lambda: build_tomorrow_v2_hybrid(
+        "deepseek_to_hybrid": lambda: build_scored_v2_hybrid(
             local_projection,
             policy,
             reviews,
             review_deadline=observed_at + timedelta(minutes=18),
         ),
-        "tomorrow_native_projection": tomorrow_projection,
         **api_operations,
     }
     provenance = {
@@ -262,14 +267,13 @@ def _operations(
         "canonical_snapshot": "trader.infra.market_data.columnar.ColumnarQuoteBatch.from_snapshot",
         "targeted_overlay_commit": "trader.infra.market_data.merge.overlay_canonical_snapshot + trader.application.decision_core.UnifiedDecisionIndex.publish_overlay",
         "board_preselection": "trader.domain.recommendation.ranking.candidate_score",
-        "board_local_scoring": "trader.domain.recommendation.strategies.tomorrow.score_tomorrow",
-        "three_strategy_board_scoring": "trader.domain.recommendation.strategies.today/tomorrow/d25",
-        "three_board_wall_clock": "trader.domain.recommendation.strategies.tomorrow.score_tomorrow",
-        "global_selection": "trader.domain.recommendation.strategies.tomorrow.score_tomorrow",
-        "board_ready_to_draft": "trader.application.tomorrow_v2_projection.build_tomorrow_v2_local",
-        "quote_to_draft": "trader.application.tomorrow_v2_projection.build_tomorrow_v2_local",
-        "deepseek_to_hybrid": "trader.application.tomorrow_v2_projection.build_tomorrow_v2_hybrid",
-        "tomorrow_native_projection": "trader.application.tomorrow_v2_projection.build_tomorrow_v2_local",
+        "board_local_scoring": "trader.domain.recommendation.scoring.score_board_strategy",
+        "three_strategy_board_scoring": "trader.domain.recommendation.scoring.score_board_strategy",
+        "three_board_wall_clock": "trader.domain.recommendation.scoring.score_board_strategy",
+        "global_selection": "trader.domain.recommendation.scoring.score_board_strategy",
+        "board_ready_to_draft": "trader.application.scored_v2_projection.build_scored_v2_local",
+        "quote_to_draft": "trader.application.scored_v2_projection.build_scored_v2_local",
+        "deepseek_to_hybrid": "trader.application.scored_v2_projection.build_scored_v2_hybrid",
         "sse_publish": "trader.application.decision_stream.UnifiedDecisionEventStream.publish_committed",
         "snapshot_api": "trader.web.routes_v2._current",
         "etag_api": "trader.web.routes_v2._current",
@@ -414,7 +418,7 @@ def _performance_decision(
 
 
 def _abstaining_reviews(
-    projection: TomorrowV2LocalProjection,
+    projection: ScoredV2LocalProjection,
     observed_at: datetime,
 ) -> dict[str, DeepSeekReview]:
     return {
@@ -700,7 +704,6 @@ _FEATURE_VALUES = {
     "quality_score": 70.0,
     "value_score": 70.0,
     "growth_score": 70.0,
-    "return_20d_not_overheated": 70.0,
     "atr20_pct": 2.0,
     "low_volatility_score": 70.0,
     "low_drawdown_score": 70.0,

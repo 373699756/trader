@@ -89,9 +89,6 @@ class V2OverlayPort(Protocol):
     ) -> bool: ...
 
 
-TomorrowV2ControlPort = V2ControlPort
-
-
 def _validate_identity_and_limits(
     native_input: ScoredNativeInput,
     evaluated_at: datetime,
@@ -234,7 +231,6 @@ __all__ = [
     "TomorrowNativeInputPort",
     "D25NativeInput",
     "D25NativeInputPort",
-    "TomorrowV2ControlPort",
     "V2ControlPort",
     "V2OverlayPort",
 ]

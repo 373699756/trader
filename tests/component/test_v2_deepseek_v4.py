@@ -22,6 +22,7 @@ from trader.infra.deepseek.cache import ReviewCache
 from trader.infra.deepseek.challenger import parse_challenger_reviews
 from trader.infra.deepseek.client import DeepSeekHttpClient
 from trader.infra.deepseek.reviewer import DeepSeekReviewer
+from trader.infra.deepseek.schema import SCHEMA_VERSION
 from trader.infra.settings import DeepSeekSettings
 
 NOW = datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)
@@ -388,19 +389,44 @@ def _candidate() -> FeatureSnapshot:
 
 
 def _primary_payload() -> dict[str, object]:
-    dimensions = {
-        name: {
-            "score": 80,
-            "confidence": 0.8,
-            "raw_confidence": 0.8,
-            "assessment": "positive",
-            "flags": [],
-            "evidence_ids": ["e-1"],
-            "unknown": False,
-        }
-        for name in DIMENSION_NAMES
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "results": [
+            {
+                "code": "600001",
+                "abstain": False,
+                "catalyst": {
+                    "direction": "positive",
+                    "importance": "high",
+                    "confirmation": "confirmed",
+                    "cycle": "short",
+                    "evidence_ids": ["e-1"],
+                },
+                "price_reaction": {"bucket": "not_reflected", "evidence_ids": ["e-1"]},
+                "fundamental": {"direction": "improving", "evidence_ids": ["e-1"]},
+                "industry_policy": {"direction": "positive", "evidence_ids": ["e-1"]},
+                "risks": {
+                    name: {
+                        "present": False,
+                        "severity": "low",
+                        "confidence": 0.0,
+                        "evidence_ids": [],
+                        "assessment": "not present",
+                    }
+                    for name in (
+                        "regulatory",
+                        "shareholder_reduction",
+                        "unlock",
+                        "pledge",
+                        "litigation",
+                        "earnings",
+                    )
+                },
+                "conflicts": [],
+                "coverage": 0.8,
+            }
+        ],
     }
-    return {"results": [{"code": "600001", "abstain": False, "dimensions": dimensions, "risk_facts": []}]}
 
 
 def _challenger_payload() -> dict[str, object]:

@@ -13,12 +13,9 @@ from datetime import datetime
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.fusion import DIMENSION_NAMES
 from trader.domain.review.models import DeepSeekReview, DimensionAssessment, ReviewOutcome, RiskFact
-from trader.domain.review.rules import parse_rating
 from trader.infra.deepseek.evidence_router import evidence_quality as _evidence_quality
 from trader.infra.deepseek.evidence_router import route_prompt_evidence
 from trader.infra.deepseek.schema_constants import (
-    LEGACY_PROMPT_VERSION,
-    LEGACY_SCHEMA_VERSION,
     MAX_ASSESSMENT_CHARACTERS,
     MAX_PROMPT_EVIDENCE_PER_CANDIDATE,
     MAX_RESPONSE_CHARACTERS,
@@ -36,8 +33,6 @@ from trader.infra.deepseek.schema_prompts import (
 
 __all__ = [
     "DeepSeekSchemaError",
-    "LEGACY_PROMPT_VERSION",
-    "LEGACY_SCHEMA_VERSION",
     "MAX_ASSESSMENT_CHARACTERS",
     "MAX_PROMPT_EVIDENCE_PER_CANDIDATE",
     "MAX_RESPONSE_CHARACTERS",
@@ -91,7 +86,7 @@ def parse_reviews(
     payload = _parse_json_content(content)
     _reject_unknown_fields(payload, {"schema_version", "results"}, "response")
     schema_version = payload.get("schema_version")
-    if schema_version is not None and schema_version not in {SCHEMA_VERSION, LEGACY_SCHEMA_VERSION}:
+    if schema_version != SCHEMA_VERSION:
         raise DeepSeekSchemaError(f"unsupported schema_version: {schema_version}")
     results = payload.get("results")
     if not isinstance(results, list):
@@ -109,10 +104,7 @@ def parse_reviews(
             raise DeepSeekSchemaError(f"result contains code outside candidate batch: {code}")
         if code in reviews:
             raise DeepSeekSchemaError(f"duplicate result code: {code}")
-        if schema_version == SCHEMA_VERSION or (schema_version is None and "dimensions" not in raw):
-            reviews[code] = _parse_v4_review(raw, candidates_by_code[code], completed_at)
-        else:
-            reviews[code] = _parse_review(raw, candidates_by_code[code], completed_at)
+        reviews[code] = _parse_v4_review(raw, candidates_by_code[code], completed_at)
     return reviews
 
 
@@ -138,41 +130,6 @@ def classify_review(
     if known >= minimum_known_dimensions and coverage >= confidence_coverage_min:
         return review
     return replace(review, outcome=ReviewOutcome.ABSTAIN, error="insufficient_confidence_coverage")
-
-
-def _parse_review(
-    raw: Mapping[str, object],
-    candidate: FeatureSnapshot,
-    completed_at: datetime,
-) -> DeepSeekReview:
-    allowed_evidence = {item.evidence_id for item in route_prompt_evidence(candidate).evidence}
-    dimensions_raw = raw.get("dimensions")
-    if not isinstance(dimensions_raw, dict):
-        raise DeepSeekSchemaError(f"dimensions must be an object for {candidate.quote.code}")
-    dimensions: dict[str, DimensionAssessment] = {}
-    for name in DIMENSION_NAMES:
-        dimension_raw = dimensions_raw.get(name)
-        if not isinstance(dimension_raw, dict):
-            raise DeepSeekSchemaError(f"missing dimension {name} for {candidate.quote.code}")
-        dimensions[name] = _parse_dimension(name, dimension_raw, allowed_evidence)
-
-    abstain = raw.get("abstain")
-    if not isinstance(abstain, bool):
-        raise DeepSeekSchemaError(f"abstain must be boolean for {candidate.quote.code}")
-    all_unknown = all(dimension.is_unknown for dimension in dimensions.values())
-    outcome = ReviewOutcome.ABSTAIN if abstain or all_unknown else ReviewOutcome.APPLIED
-    risk_facts = _parse_risk_facts(raw.get("risk_facts"), candidate.quote.code, allowed_evidence, completed_at)
-    rating = parse_rating(str(raw.get("rating") or ""))
-    return DeepSeekReview(
-        code=candidate.quote.code,
-        outcome=outcome,
-        dimensions=dimensions,
-        risk_facts=risk_facts,
-        completed_at=completed_at,
-        rating=rating.value,
-        raw_confidence=_optional_bounded_number(raw.get("raw_confidence"), 0.0, 1.0, "raw_confidence"),
-        evidence_manifest_hash=build_review_manifest_hash(candidate),
-    )
 
 
 def _parse_v4_review(
@@ -300,42 +257,6 @@ def _parse_v4_review(
         rating="neutral",
         raw_confidence=round(effective_coverage, 4),
         evidence_manifest_hash=build_review_manifest_hash(candidate),
-    )
-
-
-def _parse_dimension(
-    name: str,
-    raw: Mapping[str, object],
-    allowed_evidence: set[str],
-) -> DimensionAssessment:
-    unknown = raw.get("unknown")
-    if not isinstance(unknown, bool):
-        raise DeepSeekSchemaError(f"dimension {name}.unknown must be boolean")
-    score = _bounded_number(raw.get("score"), 0.0, 100.0, f"dimension {name}.score")
-    confidence = _bounded_number(raw.get("confidence"), 0.0, 1.0, f"dimension {name}.confidence")
-    raw_confidence = _bounded_number(
-        raw.get("raw_confidence"),
-        0.0,
-        1.0,
-        f"dimension {name}.raw_confidence",
-    )
-    if raw_confidence != confidence:
-        raise DeepSeekSchemaError(f"dimension {name}.raw_confidence must equal confidence")
-    evidence_ids = _evidence_ids(raw.get("evidence_ids"), allowed_evidence)
-    if unknown:
-        score = 50.0
-        confidence = 0.0
-        evidence_ids = ()
-    elif not evidence_ids:
-        raise DeepSeekSchemaError(f"known dimension {name} requires evidence")
-    return DimensionAssessment(
-        name=name,
-        score=score,
-        confidence=confidence,
-        assessment=_bounded_text(raw.get("assessment"), f"dimension {name}.assessment"),
-        flags=_strings(raw.get("flags"), maximum=8, length=80),
-        evidence_ids=evidence_ids,
-        is_unknown=unknown,
     )
 
 
@@ -483,49 +404,6 @@ def _reject_forbidden_model_decisions(raw: object) -> None:
             _reject_forbidden_model_decisions(value)
 
 
-def _parse_risk_facts(
-    raw: object,
-    code: str,
-    allowed_evidence: set[str],
-    completed_at: datetime,
-) -> tuple[RiskFact, ...]:
-    if raw is None:
-        return ()
-    if not isinstance(raw, list) or len(raw) > 16:
-        raise DeepSeekSchemaError("risk_facts must be a list with at most 16 items")
-    facts: list[RiskFact] = []
-    for index, item in enumerate(raw):
-        if not isinstance(item, dict):
-            raise DeepSeekSchemaError(f"risk fact {index} must be an object")
-        risk_code = str(item.get("risk_code") or "").strip()
-        severity = str(item.get("severity") or "").strip().lower()
-        if not re.fullmatch(r"[a-z0-9_]{2,64}", risk_code):
-            raise DeepSeekSchemaError(f"invalid risk_code: {risk_code}")
-        if severity not in {"low", "medium", "high"}:
-            raise DeepSeekSchemaError(f"invalid risk severity: {severity}")
-        confidence = _bounded_number(item.get("confidence"), 0.0, 1.0, f"risk fact {risk_code}.confidence")
-        evidence_ids = _evidence_ids(item.get("evidence_ids"), allowed_evidence)
-        assessment = _bounded_text(item.get("assessment"), f"risk fact {risk_code}.assessment")
-        if not evidence_ids:
-            continue
-        stable_material = f"{code}|{risk_code}|{'|'.join(sorted(evidence_ids))}"
-        facts.append(
-            RiskFact(
-                risk_fact_id=hashlib.sha256(stable_material.encode("utf-8")).hexdigest()[:32],
-                risk_code=risk_code,
-                severity=severity,
-                penalty=0.0,
-                source="deepseek",
-                observed_at=completed_at,
-                confidence=confidence,
-                evidence_ids=evidence_ids,
-                veto=False,
-                assessment=assessment,
-            )
-        )
-    return tuple(facts)
-
-
 def _parse_json_content(content: str) -> Mapping[str, object]:
     normalized = content.strip()
     if normalized.startswith("```"):
@@ -571,15 +449,6 @@ def _bounded_number(raw: object, lower: float, upper: float, field: str) -> floa
     value = float(raw)
     if not lower <= value <= upper:
         raise DeepSeekSchemaError(f"{field} must be between {lower} and {upper}")
-    return value
-
-
-def _bounded_text(raw: object, field: str) -> str:
-    if not isinstance(raw, str):
-        raise DeepSeekSchemaError(f"{field} must be a string")
-    value = raw.strip()
-    if not value or len(value) > MAX_ASSESSMENT_CHARACTERS:
-        raise DeepSeekSchemaError(f"{field} must contain 1 to {MAX_ASSESSMENT_CHARACTERS} characters")
     return value
 
 

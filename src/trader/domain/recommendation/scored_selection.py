@@ -1,4 +1,4 @@
-"""Pure deterministic filtering, local scoring, and stable selection for tomorrow v2."""
+"""Pure deterministic filtering, local scoring, and stable selection for scored strategies."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ _SUPPORTED_BOARDS = (Board.MAIN, Board.CHINEXT, Board.STAR)
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"
 
 
-class TomorrowDisposition(str, Enum):
+class ScoredDisposition(str, Enum):
     PASS = "pass"
     OBSERVE_ONLY = "observe_only"
     REJECT = "reject"
@@ -49,7 +49,7 @@ class BoardCrossSectionFallback:
 
 
 @dataclass(frozen=True)
-class TomorrowSelectionPolicy:
+class ScoredSelectionPolicy:
     board_policies: Mapping[Board, BoardStrategyPolicy]
     risk_rules: Mapping[str, RiskRule]
     max_age_seconds: float
@@ -65,9 +65,9 @@ class TomorrowSelectionPolicy:
         policies = dict(self.board_policies)
         rules = dict(self.risk_rules)
         if set(policies) != set(_SUPPORTED_BOARDS):
-            raise ValueError("tomorrow selection requires one policy for each supported board")
+            raise ValueError("scored selection requires one policy for each supported board")
         if any(policy.board is not board or policy.strategy is not self.strategy for board, policy in policies.items()):
-            raise ValueError("tomorrow selection board policies must match their board")
+            raise ValueError("scored selection board policies must match their board")
         if not math.isfinite(self.max_age_seconds) or self.max_age_seconds < 0.0:
             raise ValueError("maximum quote age must be finite and non-negative")
         if not math.isfinite(self.local_risk_cap) or self.local_risk_cap < 0.0:
@@ -75,7 +75,7 @@ class TomorrowSelectionPolicy:
         if not 1 <= self.candidate_limit_per_board <= 120:
             raise ValueError("candidate limit per board must be between 1 and 120")
         if not 0 <= self.top_k <= 10:
-            raise ValueError("tomorrow TopK must be between 0 and 10")
+            raise ValueError("scored TopK must be between 0 and 10")
         if self.maximum_per_industry < 1:
             raise ValueError("maximum per industry must be positive")
         if not math.isfinite(self.minimum_local_score) or not 0.0 <= self.minimum_local_score <= 100.0:
@@ -85,14 +85,14 @@ class TomorrowSelectionPolicy:
 
 
 @dataclass(frozen=True)
-class TomorrowSelectionRequest:
+class ScoredSelectionRequest:
     features: Sequence[FeatureSnapshot]
     evaluated_at: datetime
     trade_date: str
     phase: str
     data_version: str
     merge_epoch: str
-    policy: TomorrowSelectionPolicy
+    policy: ScoredSelectionPolicy
     candidate_features: Sequence[FeatureSnapshot] | None = None
     fallbacks: Mapping[Board, BoardCrossSectionFallback] = field(default_factory=lambda: MappingProxyType({}))
 
@@ -103,12 +103,12 @@ class TomorrowSelectionRequest:
         if getattr(self.evaluated_at.tzinfo, "key", None) != _SHANGHAI_TIMEZONE:
             raise ValueError("evaluation time must use Asia/Shanghai")
         if not all((self.trade_date, self.phase, self.data_version, self.merge_epoch)):
-            raise ValueError("tomorrow selection identity must not be empty")
+            raise ValueError("scored selection identity must not be empty")
         codes = tuple(item.quote.code for item in features)
         if len(codes) != len(set(codes)):
-            raise ValueError("tomorrow selection features must contain unique codes")
+            raise ValueError("scored selection features must contain unique codes")
         if any(item.observed_at > self.evaluated_at for item in features):
-            raise ValueError("tomorrow selection cannot use future features")
+            raise ValueError("scored selection cannot use future features")
         candidate_features = _validated_candidate_features(
             self.candidate_features,
             population_codes=set(codes),
@@ -118,7 +118,7 @@ class TomorrowSelectionRequest:
         if any(
             board not in _SUPPORTED_BOARDS or item.cross_section.board is not board for board, item in fallbacks.items()
         ):
-            raise ValueError("tomorrow fallbacks must match a supported board")
+            raise ValueError("scored fallbacks must match a supported board")
         object.__setattr__(self, "features", features)
         object.__setattr__(self, "candidate_features", candidate_features)
         object.__setattr__(self, "fallbacks", MappingProxyType(fallbacks))
@@ -135,18 +135,18 @@ def _validated_candidate_features(
     candidates = tuple(values)
     codes = tuple(item.quote.code for item in candidates)
     if len(codes) != len(set(codes)):
-        raise ValueError("tomorrow selection candidates must contain unique codes")
+        raise ValueError("scored selection candidates must contain unique codes")
     if not set(codes).issubset(population_codes):
-        raise ValueError("tomorrow selection candidates must belong to the population")
+        raise ValueError("scored selection candidates must belong to the population")
     if any(item.observed_at > evaluated_at for item in candidates):
-        raise ValueError("tomorrow selection cannot use future candidates")
+        raise ValueError("scored selection cannot use future candidates")
     return candidates
 
 
 @dataclass(frozen=True)
-class TomorrowStockEvaluation:
+class ScoredStockEvaluation:
     features: FeatureSnapshot
-    disposition: TomorrowDisposition
+    disposition: ScoredDisposition
     filter_reasons: tuple[FilterAudit, ...] = ()
     optional_flags: tuple[FilterAudit, ...] = ()
     candidate_missing_ratio: float | None = None
@@ -174,11 +174,11 @@ class TomorrowStockEvaluation:
 
 
 @dataclass(frozen=True)
-class TomorrowSelectionResult:
-    evaluations: tuple[TomorrowStockEvaluation, ...]
-    scored_candidates: tuple[TomorrowStockEvaluation, ...]
-    observations: tuple[TomorrowStockEvaluation, ...]
-    selected: tuple[TomorrowStockEvaluation, ...]
+class ScoredSelectionResult:
+    evaluations: tuple[ScoredStockEvaluation, ...]
+    scored_candidates: tuple[ScoredStockEvaluation, ...]
+    observations: tuple[ScoredStockEvaluation, ...]
+    selected: tuple[ScoredStockEvaluation, ...]
     population_versions: Mapping[Board, str]
     hard_filter_reason_counts: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
     population_rejected_count: int = 0
@@ -186,7 +186,7 @@ class TomorrowSelectionResult:
 
     def __post_init__(self) -> None:
         if self.population_rejected_count < 0:
-            raise ValueError("tomorrow population rejected count cannot be negative")
+            raise ValueError("scored population rejected count cannot be negative")
         object.__setattr__(self, "population_versions", MappingProxyType(dict(self.population_versions)))
         for name in (
             "hard_filter_reason_counts",
@@ -195,7 +195,7 @@ class TomorrowSelectionResult:
             object.__setattr__(self, name, MappingProxyType(dict(getattr(self, name))))
 
 
-def select_tomorrow(request: TomorrowSelectionRequest) -> TomorrowSelectionResult:
+def select_scored(request: ScoredSelectionRequest) -> ScoredSelectionResult:
     population_evaluations = _filter_features(request.features, request)
     evaluations = dict(population_evaluations)
     candidate_evaluations = (
@@ -210,12 +210,12 @@ def select_tomorrow(request: TomorrowSelectionRequest) -> TomorrowSelectionResul
         population = tuple(
             item.features
             for item in population_evaluations.values()
-            if item.disposition is not TomorrowDisposition.REJECT and item.features.quote.board is board
+            if item.disposition is not ScoredDisposition.REJECT and item.features.quote.board is board
         )
         candidates = tuple(
             item.features
             for item in candidate_evaluations.values()
-            if item.disposition is not TomorrowDisposition.REJECT and item.features.quote.board is board
+            if item.disposition is not ScoredDisposition.REJECT and item.features.quote.board is board
         )
         if not population:
             continue
@@ -255,7 +255,7 @@ def select_tomorrow(request: TomorrowSelectionRequest) -> TomorrowSelectionResul
             key=_local_order,
         )
     )
-    observations = tuple(item for item in scored if item.disposition is TomorrowDisposition.OBSERVE_ONLY)
+    observations = tuple(item for item in scored if item.disposition is ScoredDisposition.OBSERVE_ONLY)
     selected = tuple(evaluations[code] for code in selected_codes)
     population_filter_reason_counts: Counter[str] = Counter(
         reason.code for item in population_evaluations.values() for reason in item.filter_reasons
@@ -265,14 +265,14 @@ def select_tomorrow(request: TomorrowSelectionRequest) -> TomorrowSelectionResul
         hard_filter_reason_counts.update(
             reason.code for item in candidate_evaluations.values() for reason in item.filter_reasons
         )
-    return TomorrowSelectionResult(
+    return ScoredSelectionResult(
         ordered_evaluations,
         scored,
         observations,
         selected,
         population_versions,
         dict(sorted(hard_filter_reason_counts.items())),
-        sum(item.disposition is TomorrowDisposition.REJECT for item in population_evaluations.values()),
+        sum(item.disposition is ScoredDisposition.REJECT for item in population_evaluations.values()),
         dict(sorted(population_filter_reason_counts.items())),
     )
 
@@ -280,7 +280,7 @@ def select_tomorrow(request: TomorrowSelectionRequest) -> TomorrowSelectionResul
 def _audit_board_population(
     features: Sequence[FeatureSnapshot],
     policy: BoardStrategyPolicy,
-    evaluations: dict[str, TomorrowStockEvaluation],
+    evaluations: dict[str, ScoredStockEvaluation],
 ) -> None:
     ranked: list[tuple[bool, float, str]] = []
     required_fields = candidate_fields(policy.strategy)
@@ -312,9 +312,9 @@ def _audit_board_population(
 
 def _filter_features(
     features: Sequence[FeatureSnapshot],
-    request: TomorrowSelectionRequest,
-) -> dict[str, TomorrowStockEvaluation]:
-    result: dict[str, TomorrowStockEvaluation] = {}
+    request: ScoredSelectionRequest,
+) -> dict[str, ScoredStockEvaluation]:
+    result: dict[str, ScoredStockEvaluation] = {}
     for feature in sorted(features, key=lambda item: item.quote.code):
         filtered = hard_filter(
             feature,
@@ -324,12 +324,12 @@ def _filter_features(
         )
         normalized = replace(feature, quote=replace(feature.quote, board=filtered.board))
         if not filtered.allowed:
-            disposition = TomorrowDisposition.REJECT
+            disposition = ScoredDisposition.REJECT
         elif filtered.optional_flags or feature.quote.execution_restrictions:
-            disposition = TomorrowDisposition.OBSERVE_ONLY
+            disposition = ScoredDisposition.OBSERVE_ONLY
         else:
-            disposition = TomorrowDisposition.PASS
-        result[feature.quote.code] = TomorrowStockEvaluation(
+            disposition = ScoredDisposition.PASS
+        result[feature.quote.code] = ScoredStockEvaluation(
             features=normalized,
             disposition=disposition,
             filter_reasons=filtered.reasons,
@@ -341,8 +341,8 @@ def _filter_features(
 def _score_board_candidates(
     features: Sequence[FeatureSnapshot],
     policy: BoardStrategyPolicy,
-    request: TomorrowSelectionRequest,
-    evaluations: dict[str, TomorrowStockEvaluation],
+    request: ScoredSelectionRequest,
+    evaluations: dict[str, ScoredStockEvaluation],
 ) -> tuple[str, ...]:
     candidates: list[tuple[bool, float, FeatureSnapshot, float]] = []
     required_fields = candidate_fields(request.policy.strategy)
@@ -353,7 +353,7 @@ def _score_board_candidates(
         disposition = current.disposition
         optional_flags = current.optional_flags
         if feature.board_data_reliability < policy.minimum_reliability:
-            disposition = TomorrowDisposition.OBSERVE_ONLY
+            disposition = ScoredDisposition.OBSERVE_ONLY
             optional_flags = (*optional_flags, _reliability_audit(feature, policy.minimum_reliability))
         current = replace(
             current,
@@ -404,7 +404,7 @@ def _score_board_candidates(
         if any(fact.veto for fact in local_facts):
             current = replace(
                 current,
-                disposition=TomorrowDisposition.OBSERVE_ONLY,
+                disposition=ScoredDisposition.OBSERVE_ONLY,
                 selection_skip_reason="local_risk_veto",
             )
         evaluations[code] = replace(
@@ -422,9 +422,9 @@ def _score_board_candidates(
 
 def _rank_local_candidates(
     scored_codes: Sequence[str],
-    evaluations: dict[str, TomorrowStockEvaluation],
+    evaluations: dict[str, ScoredStockEvaluation],
 ) -> None:
-    by_board: dict[Board, list[TomorrowStockEvaluation]] = {board: [] for board in _SUPPORTED_BOARDS}
+    by_board: dict[Board, list[ScoredStockEvaluation]] = {board: [] for board in _SUPPORTED_BOARDS}
     for code in scored_codes:
         item = evaluations[code]
         by_board[item.features.quote.board].append(item)
@@ -436,13 +436,13 @@ def _rank_local_candidates(
 
 def _select_global(
     scored_codes: Sequence[str],
-    evaluations: dict[str, TomorrowStockEvaluation],
-    policy: TomorrowSelectionPolicy,
+    evaluations: dict[str, ScoredStockEvaluation],
+    policy: ScoredSelectionPolicy,
 ) -> tuple[str, ...]:
     for code in scored_codes:
         item = evaluations[code]
         if (
-            item.disposition is TomorrowDisposition.PASS
+            item.disposition is ScoredDisposition.PASS
             and item.local_score is not None
             and item.local_score < policy.minimum_local_score
         ):
@@ -451,7 +451,7 @@ def _select_global(
         (
             evaluations[code]
             for code in scored_codes
-            if evaluations[code].disposition is TomorrowDisposition.PASS
+            if evaluations[code].disposition is ScoredDisposition.PASS
             and (evaluations[code].local_score or 0.0) >= policy.minimum_local_score
         ),
         key=_local_order,
@@ -472,7 +472,7 @@ def _select_global(
     return tuple(selected)
 
 
-def _local_order(item: TomorrowStockEvaluation) -> tuple[float, float, str]:
+def _local_order(item: ScoredStockEvaluation) -> tuple[float, float, str]:
     return (-(item.local_score or 0.0), -(item.candidate_score or 0.0), item.code)
 
 
@@ -489,10 +489,10 @@ def _reliability_audit(feature: FeatureSnapshot, threshold: float) -> FilterAudi
 
 __all__ = [
     "BoardCrossSectionFallback",
-    "TomorrowDisposition",
-    "TomorrowSelectionPolicy",
-    "TomorrowSelectionRequest",
-    "TomorrowSelectionResult",
-    "TomorrowStockEvaluation",
-    "select_tomorrow",
+    "ScoredDisposition",
+    "ScoredSelectionPolicy",
+    "ScoredSelectionRequest",
+    "ScoredSelectionResult",
+    "ScoredStockEvaluation",
+    "select_scored",
 ]

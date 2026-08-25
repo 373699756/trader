@@ -105,58 +105,6 @@ def _validate_tomorrow_tail_factor_contract(settings: StrategySettings) -> None:
     )
 
 
-def _validate_d25_factor_contract(settings: StrategySettings) -> None:
-    _validate_factor_definition(
-        settings.factor_registry["d25_overheat_factor"],
-        {
-            "strategies": ("d25",),
-            "raw_inputs": ("return_20d",),
-            "formula": "1 if return_20d<=15; 1-(return_20d-15)*0.15/15 if return_20d<=30; 0.75 if return_20d>30; missing=>1",
-            "unit": "multiplier",
-            "direction": "higher_better",
-            "observation_time": "point_in_time",
-            "adjustment": "forward",
-            "lookback_window": 20,
-            "minimum_samples": 21,
-            "winsor_enabled": False,
-            "normalization": "configured_piecewise",
-            "missing_policy": "neutral_1_and_record",
-            "output_range": (0.75, 1.0),
-        },
-    )
-    _validate_factor_definition(
-        settings.factor_registry["market_regime_factor"],
-        {
-            "strategies": ("d25",),
-            "raw_inputs": ("market_breadth",),
-            "formula": "1.03 if market_breadth>=60; 0.92 if market_breadth<=40; else 1.0",
-            "unit": "multiplier",
-            "direction": "higher_better",
-            "observation_time": "same_data_version_cross_section",
-            "adjustment": "none",
-            "lookback_window": 0,
-            "minimum_samples": 1,
-            "winsor_enabled": False,
-            "normalization": "configured_regime",
-            "missing_policy": "neutral_1_and_record",
-            "output_range": (0.92, 1.03),
-        },
-    )
-    _validate_factor_definition(
-        settings.factor_registry["return_20d_not_overheated"],
-        {
-            "raw_inputs": ("return_20d",),
-            "formula": "100 if return<=15; 0 if return>=30; linear between",
-            "lookback_window": 20,
-            "minimum_samples": 21,
-            "winsor_enabled": False,
-            "normalization": "formula_0_100",
-            "missing_policy": "neutral_50_and_record",
-            "output_range": (0.0, 100.0),
-        },
-    )
-
-
 def _validate_long_research_factor_contract(settings: StrategySettings) -> None:
     score_common = {
         "strategies": ("long",),

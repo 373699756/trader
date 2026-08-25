@@ -19,11 +19,7 @@ from trader.infra.deepseek.base_client import (
 )
 from trader.infra.deepseek.client import DeepSeekHttpClient
 from trader.infra.deepseek.factory import create_deepseek_client
-from trader.infra.deepseek.model_capabilities import (
-    MODELS,
-    capabilities,
-    is_decommissioned,
-)
+from trader.infra.deepseek.model_capabilities import MODELS, capabilities
 from trader.infra.deepseek.model_catalog import validate_model
 from trader.infra.market_data.ground_truth import (
     render_batch_ground_truth,
@@ -68,20 +64,10 @@ class TestModelCapabilitiesRegistry:
         assert capabilities("deepseek-v4-pro").requires_reasoning_roundtrip is True
         assert capabilities("deepseek-v4-pro").reasoning_effort == "high"
 
-    def test_legacy_models(self) -> None:
-        assert capabilities("deepseek-chat").requires_reasoning_roundtrip is False
-        assert capabilities("deepseek-reasoner").requires_reasoning_roundtrip is True
-
     def test_unknown_uses_conservative_defaults(self) -> None:
         caps = capabilities("nonexistent-model")
         assert caps.preferred_structured_method == "json_object"
         assert caps.requires_reasoning_roundtrip is False
-
-    def test_decommissioned_models(self) -> None:
-        assert is_decommissioned("deepseek-chat") is True
-        assert is_decommissioned("deepseek-reasoner") is True
-        assert is_decommissioned("deepseek-v4-flash") is False
-        assert is_decommissioned("deepseek-v4-pro") is False
 
     def test_structured_method_uniform(self) -> None:
         for model in MODELS:
@@ -110,20 +96,9 @@ class TestModelCatalog:
         assert issubclass(caught[0].category, RuntimeWarning)
         assert "unknown-model-xyz" in str(caught[0].message)
 
-    def test_decommissioned_model_warns(self) -> None:
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            validate_model("deepseek-chat")
-        assert len(caught) == 1
-        assert issubclass(caught[0].category, FutureWarning)
-
     def test_strict_unknown_raises(self) -> None:
         with pytest.raises(ValueError, match="Unknown DeepSeek model"):
             validate_model("unknown-model-xyz", strict=True)
-
-    def test_strict_decommissioned_raises(self) -> None:
-        with pytest.raises(ValueError, match="decommission"):
-            validate_model("deepseek-chat", strict=True)
 
 
 class TestDeepSeekClientFactory:
@@ -132,13 +107,13 @@ class TestDeepSeekClientFactory:
         assert isinstance(client, DeepSeekClientBase)
         assert isinstance(client, DeepSeekHttpClient)
 
-    def test_backward_compatible_provider_alias(self) -> None:
-        client = create_deepseek_client(provider="deepseek_http")
-        assert isinstance(client, DeepSeekHttpClient)
-
     def test_unknown_provider_rejected(self) -> None:
         with pytest.raises(ValueError, match="Unknown DeepSeek provider"):
             create_deepseek_client(provider="unknown")
+
+    def test_removed_provider_alias_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Unknown DeepSeek provider"):
+            create_deepseek_client(provider="deepseek_http")
 
 
 # ---------------------------------------------------------------------------

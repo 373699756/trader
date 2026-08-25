@@ -46,35 +46,6 @@ def recommendation_policy() -> RecommendationPolicy:
             }
             for strategy in Strategy
         },
-        local_strategy_weights={
-            Strategy.TODAY: {
-                "momentum": 7 / 18,
-                "liquidity": 5 / 18,
-                "sentiment": 2 / 9,
-                "protection": 1 / 9,
-            },
-            Strategy.TOMORROW: {
-                "liquidity": 0.25,
-                "momentum": 0.15,
-                "trend": 0.20,
-                "historical_edge": 0.15,
-                "execution": 0.10,
-                "tail_structure": 0.15,
-            },
-            Strategy.D25: {
-                "momentum": 0.30,
-                "trend": 0.25,
-                "liquidity": 0.20,
-                "execution": 0.15,
-                "not_overheated": 0.10,
-            },
-            Strategy.LONG: {
-                "value": 6 / 17,
-                "growth": 5 / 17,
-                "quality": 4 / 17,
-                "protection": 2 / 17,
-            },
-        },
         risk_rules=risk_rules,
     )
 
@@ -150,7 +121,6 @@ def application_feature_factory():
             "close_location": 75.0,
             "price_executability": 75.0,
             "ma20_deviation_inverse": 70.0,
-            "return_20d_not_overheated": 70.0,
             "return_20d": 10.0,
             "trend_score": 70.0,
             "value_score": 70.0,

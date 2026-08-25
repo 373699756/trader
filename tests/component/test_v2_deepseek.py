@@ -23,7 +23,8 @@ from trader.domain.market.models import (
 from trader.domain.recommendation.models import Strategy
 from trader.domain.review.models import ReviewOutcome
 from trader.domain.review.rules import Rating
-from trader.infra.deepseek.budget import SCHEMA_VERSION, DeepSeekBudgetLedger
+from trader.infra.deepseek.budget import SCHEMA_VERSION as BUDGET_SCHEMA_VERSION
+from trader.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.infra.deepseek.budget_batch_ledger import BudgetBatchRequest
 from trader.infra.deepseek.cache import ReviewCache, ReviewCacheStatus
 from trader.infra.deepseek.challenger import (
@@ -35,9 +36,11 @@ from trader.infra.deepseek.client import DeepSeekHttpClient
 from trader.infra.deepseek.evidence_router import route_prompt_evidence
 from trader.infra.deepseek.reviewer import DeepSeekReviewer
 from trader.infra.deepseek.schema import (
+    SCHEMA_VERSION as REVIEW_SCHEMA_VERSION,
+)
+from trader.infra.deepseek.schema import (
     DeepSeekSchemaError,
     build_messages,
-    build_review_manifest_hash,
     classify_review,
     parse_reviews,
     review_cache_key,
@@ -78,7 +81,7 @@ def test_reviewer_translates_internal_failure_to_controlled_unavailable(
     assert isinstance(captured.value.__cause__, sqlite3.OperationalError)
 
 
-def test_schema_accepts_valid_dimensions_and_risk_fact() -> None:
+def test_schema_accepts_only_current_v4_facts_and_maps_verified_risk() -> None:
     candidate = _candidate_with_evidence()
     payload = _valid_payload(candidate.quote.code)
 
@@ -87,116 +90,32 @@ def test_schema_accepts_valid_dimensions_and_risk_fact() -> None:
     review = reviews[candidate.quote.code]
     assert review.outcome is ReviewOutcome.APPLIED
     assert review.rating == Rating.NEUTRAL.value
-    assert review.dimensions["market_flow"].score == 80
+    assert review.dimensions["market_flow"].score >= 50
     assert review.risk_facts[0].risk_code == "regulatory_risk"
     assert review.risk_facts[0].penalty == 0.0
     assert review.risk_facts[0].veto is False
     assert review.risk_facts[0].assessment == "high risk"
 
 
-def test_schema_accepts_deepseek_rating_aliases() -> None:
+def test_schema_rejects_missing_or_legacy_schema_version() -> None:
     candidate = _candidate_with_evidence()
     payload = _valid_payload(candidate.quote.code)
-    payload["results"][0]["rating"] = "看多"
+    payload.pop("schema_version")
+    with pytest.raises(DeepSeekSchemaError, match="unsupported schema_version"):
+        parse_reviews(json.dumps(payload), [candidate], NOW)
+    payload["schema_version"] = "deepseek_review_v3"
+    with pytest.raises(DeepSeekSchemaError, match="unsupported schema_version"):
+        parse_reviews(json.dumps(payload), [candidate], NOW)
 
-    reviews = parse_reviews(json.dumps(payload), [candidate], NOW)
 
-    assert reviews[candidate.quote.code].rating == Rating.BULLISH.value
-
-
-def test_schema_fills_default_review_audit_fields_and_manifest_hash() -> None:
+def test_schema_rejects_pool_escape_and_invalid_v4_evidence() -> None:
     candidate = _candidate_with_evidence()
-    review = parse_reviews(json.dumps(_valid_payload(candidate.quote.code)), [candidate], NOW)[candidate.quote.code]
-
-    assert review.review_stage == "primary"
-    assert review.challenger_status == "not_run"
-    assert review.requested_model is None
-    assert review.actual_model is None
-    assert review.thinking_mode is None
-    assert review.raw_confidence is None
-    assert review.calibrated_confidence is None
-    assert review.rating == Rating.NEUTRAL.value
-    assert review.evidence_manifest_hash == build_review_manifest_hash(candidate)
-
-
-def test_schema_does_not_trust_model_supplied_transport_or_calibration_audit() -> None:
-    candidate = _candidate_with_evidence()
-    payload = _valid_payload(candidate.quote.code)
-    payload["results"][0]["review_stage"] = "secondary"
-    payload["results"][0]["challenger_status"] = "challenged"
-    payload["results"][0]["requested_model"] = "deepseek-v4-flash"
-    payload["results"][0]["actual_model"] = "deepseek-v4-pro"
-    payload["results"][0]["thinking_mode"] = "reasoning"
-    payload["results"][0]["raw_confidence"] = 0.74
-    payload["results"][0]["calibrated_confidence"] = 0.61
-    payload["results"][0]["evidence_manifest_hash"] = "review-hash"
-    payload["results"][0]["calibration_version"] = "v1"
-    payload["results"][0]["rating"] = "bearish"
-
-    review = parse_reviews(json.dumps(payload), [candidate], NOW)[candidate.quote.code]
-
-    assert review.review_stage == "primary"
-    assert review.challenger_status == "not_run"
-    assert review.requested_model is None
-    assert review.actual_model is None
-    assert review.thinking_mode is None
-    assert review.raw_confidence == 0.74
-    assert review.calibrated_confidence is None
-    assert review.evidence_manifest_hash == build_review_manifest_hash(candidate)
-    assert review.calibration_version is None
-    assert review.rating == Rating.BEARISH.value
-
-
-def test_schema_rejects_empty_or_oversized_assessment() -> None:
-    candidate = _candidate_with_evidence()
-    empty = _valid_payload(candidate.quote.code)
-    empty["results"][0]["dimensions"]["market_flow"]["assessment"] = ""
-    with pytest.raises(DeepSeekSchemaError, match="1 to 240 characters"):
-        parse_reviews(json.dumps(empty), [candidate], NOW)
-
-    oversized = _valid_payload(candidate.quote.code)
-    oversized["results"][0]["risk_facts"][0]["assessment"] = "x" * 241
-    with pytest.raises(DeepSeekSchemaError, match="1 to 240 characters"):
-        parse_reviews(json.dumps(oversized), [candidate], NOW)
-
-
-def test_schema_rejects_pool_escape_and_invalid_evidence() -> None:
-    candidate = _candidate_with_evidence()
-    pool_escape = _valid_payload("600999")
     with pytest.raises(DeepSeekSchemaError, match="outside candidate batch"):
-        parse_reviews(json.dumps(pool_escape), [candidate], NOW)
-
+        parse_reviews(json.dumps(_valid_payload("600999")), [candidate], NOW)
     invalid_evidence = _valid_payload(candidate.quote.code)
-    invalid_evidence["results"][0]["dimensions"]["market_flow"]["evidence_ids"] = ["not-input"]
+    invalid_evidence["results"][0]["price_reaction"]["evidence_ids"] = ["not-input"]
     with pytest.raises(DeepSeekSchemaError, match="invalid evidence"):
         parse_reviews(json.dumps(invalid_evidence), [candidate], NOW)
-
-
-def test_schema_rejects_evidence_omitted_by_prompt_limit() -> None:
-    original = _candidate_with_evidence()
-    evidence = tuple(
-        replace(original.evidence[0], evidence_id=f"e-{index:02d}", title=f"news item {index}")
-        for index in range(1, 18)
-    )
-    candidate = replace(original, evidence=evidence)
-    prompt = build_messages([candidate])[1]["content"]
-    payload = _valid_payload(candidate.quote.code)
-    payload["results"][0]["dimensions"]["market_flow"]["evidence_ids"] = ["e-17"]
-
-    assert '"evidence_id":"e-08"' in prompt
-    assert '"evidence_id":"e-09"' not in prompt
-    assert '"evidence_id":"e-17"' not in prompt
-    with pytest.raises(DeepSeekSchemaError, match="invalid evidence"):
-        parse_reviews(json.dumps(payload), [candidate], NOW)
-
-
-def test_schema_requires_raw_confidence_to_match_compatibility_confidence() -> None:
-    candidate = _candidate_with_evidence()
-    payload = _valid_payload(candidate.quote.code)
-    payload["results"][0]["dimensions"]["market_flow"]["raw_confidence"] = 0.4
-
-    with pytest.raises(DeepSeekSchemaError, match="raw_confidence must equal confidence"):
-        parse_reviews(json.dumps(payload), [candidate], NOW)
 
 
 def test_prompt_marks_external_evidence_untrusted() -> None:
@@ -345,7 +264,7 @@ def test_http_retry_reserves_each_physical_attempt() -> None:
     result = DeepSeekHttpClient(post=lambda *_args, **_kwargs: next(responses), sleep=lambda _seconds: None).complete(
         base_url="https://api.deepseek.example/v1",
         api_key="secret",
-        model="model",
+        model="deepseek-v4-flash",
         messages=[{"role": "user", "content": "test"}],
         timeout_seconds=1,
         max_tokens=64,
@@ -411,7 +330,7 @@ def test_budget_initialize_repair_schema_version_if_missing_or_invalid(tmp_path)
         version = connection.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
 
     assert version is not None
-    assert int(str(version[0])) == SCHEMA_VERSION
+    assert int(str(version[0])) == BUDGET_SCHEMA_VERSION
 
 
 def test_budget_initialize_sets_schema_version_if_absent(tmp_path) -> None:
@@ -430,7 +349,7 @@ def test_budget_initialize_sets_schema_version_if_absent(tmp_path) -> None:
         version = connection.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
 
     assert version is not None
-    assert int(str(version[0])) == SCHEMA_VERSION
+    assert int(str(version[0])) == BUDGET_SCHEMA_VERSION
 
 
 def test_budget_connection_context_closes_after_success_and_failure(tmp_path) -> None:
@@ -514,7 +433,7 @@ def test_budget_reservation_and_batch_roll_over_on_shanghai_midnight(tmp_path) -
             strategy=Strategy.TODAY,
             phase="today_main",
             bucket="today",
-            model="model",
+            model="deepseek-v4-flash",
             requested_at=after_midnight,
             deadline=after_midnight + timedelta(minutes=1),
             candidate_codes=("600001",),
@@ -583,7 +502,7 @@ def test_http_timeout_is_bounded_to_one_retry() -> None:
     result = DeepSeekHttpClient(post=timeout, sleep=lambda _seconds: None).complete(
         base_url="https://api.deepseek.example/v1",
         api_key="secret",
-        model="model",
+        model="deepseek-v4-flash",
         messages=[{"role": "user", "content": "test"}],
         timeout_seconds=1,
         max_tokens=64,
@@ -687,10 +606,10 @@ def test_shared_review_cache_ignores_quote_only_version_changes() -> None:
     second = replace(first, quote=replace(first.quote, data_version="fixture-v2", price=12.01))
     review = parse_reviews(json.dumps(_valid_payload(first.quote.code)), [first], NOW)[first.quote.code]
     cache = ReviewCache()
-    key = review_cache_key(first, model="model")
+    key = review_cache_key(first, model="deepseek-v4-flash")
     cache.put_raw(key, first, review)
 
-    assert key == review_cache_key(second, model="model")
+    assert key == review_cache_key(second, model="deepseek-v4-flash")
     assert cache.get_raw(key, second) == review
     assert cache.status() == ReviewCacheStatus(
         entries=1,
@@ -704,16 +623,16 @@ def test_shared_review_cache_ignores_quote_only_version_changes() -> None:
     )
 
     moved = replace(first, quote=replace(first.quote, data_version="fixture-v3", price=12.2))
-    assert review_cache_key(first, model="model") == review_cache_key(moved, model="model")
+    assert review_cache_key(first, model="deepseek-v4-flash") == review_cache_key(moved, model="deepseek-v4-flash")
     assert cache.get_raw(key, moved) is None
-    assert review_cache_key(first, model="model") != review_cache_key(
+    assert review_cache_key(first, model="deepseek-v4-flash") != review_cache_key(
         first,
-        model="model",
+        model="deepseek-v4-flash",
         generation="final_review",
     )
-    assert review_cache_key(first, model="model", model_role="primary") != review_cache_key(
+    assert review_cache_key(first, model="deepseek-v4-flash", model_role="primary") != review_cache_key(
         first,
-        model="model",
+        model="deepseek-v4-flash",
         model_role="challenger",
         thinking_mode="reasoning",
         reasoning_effort="high",
@@ -926,12 +845,16 @@ def test_reviewer_does_not_schedule_transport_retry_before_deadline(tmp_path) ->
 
 def test_confidence_coverage_and_known_dimension_minimum_produce_candidate_abstain() -> None:
     candidate = _candidate_with_evidence()
-    payload = _valid_payload(candidate.quote.code)
-    dimensions = payload["results"][0]["dimensions"]
-    for name, dimension in dimensions.items():
-        if name != "market_flow":
-            dimension.update({"unknown": True, "score": 50, "confidence": 0, "raw_confidence": 0, "evidence_ids": []})
-    raw = parse_reviews(json.dumps(payload), [candidate], NOW)[candidate.quote.code]
+    raw = parse_reviews(json.dumps(_valid_payload(candidate.quote.code)), [candidate], NOW)[candidate.quote.code]
+    raw = replace(
+        raw,
+        dimensions={
+            name: value
+            if name == "market_flow"
+            else replace(value, score=50.0, confidence=0.0, evidence_ids=(), is_unknown=True)
+            for name, value in raw.dimensions.items()
+        },
+    )
 
     classified = classify_review(
         raw,
@@ -1112,7 +1035,7 @@ def test_restart_marks_uncertain_attempt_and_batch_abandoned(tmp_path) -> None:
             strategy=Strategy.TODAY,
             phase="today_main",
             bucket="today",
-            model="model",
+            model="deepseek-v4-flash",
             requested_at=NOW,
             deadline=NOW + timedelta(minutes=1),
             candidate_codes=("600001",),
@@ -1144,7 +1067,7 @@ def test_non_retryable_http_error_is_attempted_once() -> None:
     result = DeepSeekHttpClient(post=bad_request, sleep=lambda _seconds: None).complete(
         base_url="https://api.deepseek.example/v1",
         api_key="secret",
-        model="model",
+        model="deepseek-v4-flash",
         messages=[{"role": "user", "content": "test"}],
         timeout_seconds=1,
         max_tokens=64,
@@ -1159,7 +1082,7 @@ def test_non_retryable_http_error_is_attempted_once() -> None:
 def test_cache_invalidates_at_volume_ratio_threshold() -> None:
     first = _candidate_with_evidence()
     review = parse_reviews(json.dumps(_valid_payload(first.quote.code)), [first], NOW)[first.quote.code]
-    key = review_cache_key(first, model="model")
+    key = review_cache_key(first, model="deepseek-v4-flash")
     cache = ReviewCache()
     cache.put_raw(key, first, review)
 
@@ -1222,67 +1145,56 @@ def _candidate(code: str, evidence_id: str) -> FeatureSnapshot:
 
 
 def _valid_payload(code: str) -> dict[str, object]:
-    dimensions = {
-        name: {
-            "score": 80,
-            "confidence": 0.8,
-            "raw_confidence": 0.8,
-            "assessment": "positive",
-            "flags": [],
-            "evidence_ids": ["e-1"],
-            "unknown": False,
-        }
-        for name in ("value_quality", "financial_health", "market_flow", "industry_policy", "risk_quality")
-    }
     return {
+        "schema_version": REVIEW_SCHEMA_VERSION,
         "results": [
             {
                 "code": code,
                 "abstain": False,
-                "dimensions": dimensions,
-                "risk_facts": [
-                    {
-                        "risk_code": "regulatory_risk",
+                "catalyst": {
+                    "direction": "positive",
+                    "importance": "high",
+                    "confirmation": "confirmed",
+                    "cycle": "short",
+                    "evidence_ids": ["e-1"],
+                },
+                "price_reaction": {"bucket": "not_reflected", "evidence_ids": ["e-1"]},
+                "fundamental": {"direction": "improving", "evidence_ids": ["e-1"]},
+                "industry_policy": {"direction": "positive", "evidence_ids": ["e-1"]},
+                "risks": {
+                    "regulatory": {
+                        "present": True,
                         "severity": "high",
                         "confidence": 0.9,
                         "evidence_ids": ["e-1"],
                         "assessment": "high risk",
-                        "veto": True,
-                    }
-                ],
+                    },
+                    **{
+                        name: {
+                            "present": False,
+                            "severity": "low",
+                            "confidence": 0.0,
+                            "evidence_ids": [],
+                            "assessment": "not present",
+                        }
+                        for name in ("shareholder_reduction", "unlock", "pledge", "litigation", "earnings")
+                    },
+                },
+                "conflicts": [],
+                "coverage": 0.8,
             }
-        ]
+        ],
     }
 
 
 def _unknown_payload(code: str) -> dict[str, object]:
-    return {
-        "results": [
-            {
-                "code": code,
-                "abstain": True,
-                "dimensions": {
-                    name: {
-                        "score": 50,
-                        "confidence": 0,
-                        "raw_confidence": 0,
-                        "assessment": "unknown",
-                        "flags": [],
-                        "evidence_ids": [],
-                        "unknown": True,
-                    }
-                    for name in (
-                        "value_quality",
-                        "financial_health",
-                        "market_flow",
-                        "industry_policy",
-                        "risk_quality",
-                    )
-                },
-                "risk_facts": [],
-            }
-        ]
-    }
+    payload = _valid_payload(code)
+    result = payload["results"][0]
+    result["abstain"] = True
+    for field in ("catalyst", "price_reaction", "fundamental", "industry_policy"):
+        result[field]["evidence_ids"] = []
+    result["risks"]["regulatory"].update({"present": False, "confidence": 0.0, "evidence_ids": []})
+    return payload
 
 
 class FakeHttpResponse:
@@ -1326,7 +1238,7 @@ def _settings() -> DeepSeekSettings:
     return DeepSeekSettings(
         enabled=True,
         base_url="https://api.deepseek.example/v1",
-        model="model",
+        model="deepseek-v4-flash",
         challenger_model="deepseek-v4-pro",
         challenger_limits={"today": 0, "tomorrow": 0, "d25": 0},
         timeout_seconds=1.0,

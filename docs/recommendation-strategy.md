@@ -312,9 +312,9 @@ d25 子组件：趋势为均线结构 7/17、斜率 6/17 和突破 4/17；质量
 成交额 25%；不过热不再是活动正向组件。
 
 d25 禁止再用 `base_score * overheat_factor * market_regime_factor` 双乘。市场状态只进入
-结构化风险上下文和审计，不直接缩放活动 d25 总分。代码中保留的旧通用 d25 评分函数及其
-`not_overheated`/双乘逻辑只服务旧策略身份回放；活动三板路径始终传入
-`BoardStrategyPolicy` 并调用上述板内评分。
+结构化风险上下文和审计，不直接缩放活动 d25 总分。旧通用 d25 评分函数、
+`local_strategy_weights`、`not_overheated` 和两类 multiplier 因子已经删除；活动三板路径始终传入
+`BoardStrategyPolicy` 并调用唯一的板内评分入口。
 
 ### 7.1 确定性入场质量
 
@@ -714,8 +714,8 @@ tomorrow v2 本地选择完成后先生成 local `ScoredDecision`，其 `final_s
 每个新 `ScoredDecision` 必须同时固化同批不可变 anchor quote、setup 类型、结构化 downside、
 研究证据/风险事实覆盖和 review 终态，并保存本轮最高最终分、78/73 门槛、两池容量、入选计数、
 复核候选数与结构化空结果原因组成的 `selection_diagnostics`。这些字段只用于解释和审计，必须参与
-统一决策与正式记录哈希，但不得反向改变过滤、分数、风险、动作或排名。旧 v1 正式记录缺失这些字段时
-保持 `null`，不得以当前规则重算历史展示。
+统一决策与正式记录哈希，但不得反向改变过滤、分数、风险、动作或排名。活动 codec 只接受包含这些
+字段的当前正式记录 schema；旧 v1 记录只能随完整旧 release 离线保留，不得由新 release 兼容读取。
 
 融合后动作固定为：`pass` 且无 veto、最终分不低于 78 为 `executable`；不低于 73 为
 `observe`；`observe_only` 且无 veto、同时达到观察线时保持观察；`reject`、未评分、

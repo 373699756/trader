@@ -58,7 +58,6 @@ class RecommendationPolicy:
     selection: SelectionPolicy
     candidate_weights: Mapping[str, float]
     dimension_weights: Mapping[Strategy, Mapping[str, float]]
-    local_strategy_weights: Mapping[Strategy, Mapping[str, float]]
     risk_rules: Mapping[str, RiskRule]
     board_policy_version: str = ""
     board_candidate_weights: Mapping[Strategy, Mapping[Board, Mapping[str, float]]] = field(
@@ -76,13 +75,6 @@ class RecommendationPolicy:
             "dimension_weights",
             MappingProxyType(
                 {strategy: MappingProxyType(dict(weights)) for strategy, weights in self.dimension_weights.items()}
-            ),
-        )
-        object.__setattr__(
-            self,
-            "local_strategy_weights",
-            MappingProxyType(
-                {strategy: MappingProxyType(dict(weights)) for strategy, weights in self.local_strategy_weights.items()}
             ),
         )
         object.__setattr__(self, "risk_rules", MappingProxyType(dict(self.risk_rules)))

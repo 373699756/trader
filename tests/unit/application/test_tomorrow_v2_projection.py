@@ -5,13 +5,13 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from tests.unit.application.test_tomorrow_deepseek_fusion import _review
+from tests.unit.application.v2_review_helpers import review
 from trader.application.decision_core import UnifiedDecisionIndex
-from trader.application.ports.tomorrow import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
+from trader.application.ports.scored import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
 from trader.application.research_audit import build_v2_committed_research_audit
-from trader.application.tomorrow_v2_projection import (
-    build_tomorrow_v2_hybrid,
-    build_tomorrow_v2_local,
+from trader.application.scored_v2_projection import (
+    build_scored_v2_hybrid,
+    build_scored_v2_local,
 )
 from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import FeatureSnapshot
@@ -32,7 +32,7 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
         _verified_feature(application_feature_factory(f"600{index:03d}", EVALUATED_AT - timedelta(seconds=10)))
         for index in range(100)
     )
-    projection = build_tomorrow_v2_local(_native_input(features), policy, sequence=1)
+    projection = build_scored_v2_local(_native_input(features), policy, sequence=1)
     assert projection.review_candidates
     assert all(item.name.startswith("测试") for item in projection.local.items)
     assert all(item.industry == "工业" for item in projection.local.items)
@@ -63,8 +63,8 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     assert all(candidate.board and candidate.industry for candidate in audit.passed_candidates)
     assert any(candidate.production_top120 for candidate in audit.passed_candidates)
     code = projection.review_candidates[0].code
-    applied = replace(_review(code, 100.0), completed_at=EVALUATED_AT + timedelta(seconds=5))
-    hybrid = build_tomorrow_v2_hybrid(
+    applied = replace(review(code, 100.0), completed_at=EVALUATED_AT + timedelta(seconds=5))
+    hybrid = build_scored_v2_hybrid(
         projection,
         policy,
         {code: applied},
@@ -92,11 +92,11 @@ def test_d25_native_local_and_valid_facts_publish_one_parented_hybrid(
         _verified_feature(application_feature_factory(f"600{index:03d}", EVALUATED_AT - timedelta(seconds=10)))
         for index in range(100)
     )
-    projection = build_tomorrow_v2_local(_native_input(features, D25NativeInput), policy, sequence=1)
+    projection = build_scored_v2_local(_native_input(features, D25NativeInput), policy, sequence=1)
     assert projection.review_candidates
     code = projection.review_candidates[0].code
-    applied = replace(_review(code, 100.0), completed_at=EVALUATED_AT + timedelta(seconds=5))
-    hybrid = build_tomorrow_v2_hybrid(
+    applied = replace(review(code, 100.0), completed_at=EVALUATED_AT + timedelta(seconds=5))
+    hybrid = build_scored_v2_hybrid(
         projection,
         policy,
         {code: applied},
@@ -120,13 +120,13 @@ def test_review_completed_after_1448_cannot_create_hybrid(application_feature_fa
         _verified_feature(application_feature_factory(f"600{index:03d}", EVALUATED_AT - timedelta(seconds=10)))
         for index in range(100)
     )
-    projection = build_tomorrow_v2_local(_native_input(features), policy, sequence=1)
+    projection = build_scored_v2_local(_native_input(features), policy, sequence=1)
     code = projection.review_candidates[0].code
     deadline = EVALUATED_AT.replace(hour=14, minute=48)
-    late = replace(_review(code, 100.0), completed_at=deadline + timedelta(microseconds=1))
+    late = replace(review(code, 100.0), completed_at=deadline + timedelta(microseconds=1))
 
     assert (
-        build_tomorrow_v2_hybrid(
+        build_scored_v2_hybrid(
             projection,
             policy,
             {code: late},
@@ -142,13 +142,13 @@ def test_review_completed_at_1448_cannot_create_hybrid(application_feature_facto
         _verified_feature(application_feature_factory(f"600{index:03d}", EVALUATED_AT - timedelta(seconds=10)))
         for index in range(100)
     )
-    projection = build_tomorrow_v2_local(_native_input(features), policy, sequence=1)
+    projection = build_scored_v2_local(_native_input(features), policy, sequence=1)
     code = projection.review_candidates[0].code
     deadline = EVALUATED_AT.replace(hour=14, minute=48)
-    boundary_result = replace(_review(code, 100.0), completed_at=deadline)
+    boundary_result = replace(review(code, 100.0), completed_at=deadline)
 
     assert (
-        build_tomorrow_v2_hybrid(
+        build_scored_v2_hybrid(
             projection,
             policy,
             {code: boundary_result},

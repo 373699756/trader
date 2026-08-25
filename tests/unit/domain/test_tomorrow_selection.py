@@ -6,11 +6,11 @@ from zoneinfo import ZoneInfo
 
 from trader.domain.market.models import Board
 from trader.domain.recommendation.models import BoardStrategyPolicy, Strategy
-from trader.domain.recommendation.tomorrow_selection import (
-    TomorrowDisposition,
-    TomorrowSelectionPolicy,
-    TomorrowSelectionRequest,
-    select_tomorrow,
+from trader.domain.recommendation.scored_selection import (
+    ScoredDisposition,
+    ScoredSelectionPolicy,
+    ScoredSelectionRequest,
+    select_scored,
 )
 from trader.domain.review.models import RiskRule
 
@@ -43,8 +43,8 @@ def _board_policy(board: Board) -> BoardStrategyPolicy:
     )
 
 
-def _selection_policy(*, candidate_limit: int = 120, top_k: int = 10) -> TomorrowSelectionPolicy:
-    return TomorrowSelectionPolicy(
+def _selection_policy(*, candidate_limit: int = 120, top_k: int = 10) -> ScoredSelectionPolicy:
+    return ScoredSelectionPolicy(
         board_policies={
             Board.MAIN: _board_policy(Board.MAIN),
             Board.CHINEXT: _board_policy(Board.CHINEXT),
@@ -102,8 +102,8 @@ def _features(application_feature_factory, count: int = 125):
     return tuple(result)
 
 
-def _request(features, policy: TomorrowSelectionPolicy) -> TomorrowSelectionRequest:
-    return TomorrowSelectionRequest(
+def _request(features, policy: ScoredSelectionPolicy) -> ScoredSelectionRequest:
+    return ScoredSelectionRequest(
         features=features,
         evaluated_at=NOW,
         trade_date=NOW.date().isoformat(),
@@ -143,15 +143,15 @@ def test_tomorrow_selection_keeps_filter_tristate_and_bounds_each_board(
         ),
     )
 
-    result = select_tomorrow(_request(tuple(reversed(features)), _selection_policy()))
+    result = select_scored(_request(tuple(reversed(features)), _selection_policy()))
     by_code = {item.code: item for item in result.evaluations}
 
-    assert by_code["600000"].disposition is TomorrowDisposition.REJECT
+    assert by_code["600000"].disposition is ScoredDisposition.REJECT
     assert tuple(reason.code for reason in by_code["600000"].filter_reasons) == ("st_or_delisting",)
-    assert by_code["600001"].disposition is TomorrowDisposition.OBSERVE_ONLY
+    assert by_code["600001"].disposition is ScoredDisposition.OBSERVE_ONLY
     assert tuple(flag.code for flag in by_code["600001"].optional_flags) == ("cross_source_deviation",)
     assert by_code["600002"].selection_skip_reason == "candidate_core_missing"
-    assert by_code["600003"].disposition is TomorrowDisposition.OBSERVE_ONLY
+    assert by_code["600003"].disposition is ScoredDisposition.OBSERVE_ONLY
     assert len(result.scored_candidates) == 120
     assert tuple(item.code for item in result.evaluations) == tuple(sorted(item.code for item in result.evaluations))
 
@@ -169,13 +169,13 @@ def test_tomorrow_selection_deducts_local_risk_once_and_is_stable(
     features[-3] = replace(features[-3], quote=replace(features[-3].quote, industry="concentrated"))
     policy = _selection_policy()
 
-    forward = select_tomorrow(_request(tuple(features), policy))
-    reverse = select_tomorrow(_request(tuple(reversed(features)), policy))
+    forward = select_scored(_request(tuple(features), policy))
+    reverse = select_scored(_request(tuple(reversed(features)), policy))
     risky = next(item for item in forward.scored_candidates if item.code == "600104")
 
     assert risky.local_risk_penalty == 5.0
     assert risky.local_score == round(risky.local_base_score - 5.0, 2)
-    assert risky.disposition is TomorrowDisposition.OBSERVE_ONLY
+    assert risky.disposition is ScoredDisposition.OBSERVE_ONLY
     assert risky.selection_skip_reason == "local_risk_veto"
     assert tuple(item.code for item in forward.selected) == tuple(item.code for item in reverse.selected)
     assert len(forward.selected) == 10
@@ -186,11 +186,11 @@ def test_tomorrow_selection_deducts_local_risk_once_and_is_stable(
 def test_tomorrow_selection_records_local_threshold_exclusion(application_feature_factory) -> None:
     policy = replace(_selection_policy(top_k=1), minimum_local_score=100.0)
 
-    result = select_tomorrow(_request(_features(application_feature_factory, count=100), policy))
+    result = select_scored(_request(_features(application_feature_factory, count=100), policy))
 
     assert result.selected == ()
     assert {
-        item.selection_skip_reason for item in result.scored_candidates if item.disposition is TomorrowDisposition.PASS
+        item.selection_skip_reason for item in result.scored_candidates if item.disposition is ScoredDisposition.PASS
     } == {"local_score_below_minimum"}
 
 
@@ -208,7 +208,7 @@ def test_tomorrow_selection_uses_full_population_but_scores_only_explicit_candid
         candidate_features=(candidate,),
     )
 
-    result = select_tomorrow(request)
+    result = select_scored(request)
 
     assert len(result.evaluations) == 100
     assert tuple(item.code for item in result.scored_candidates) == (candidate.quote.code,)
@@ -224,8 +224,8 @@ def test_tomorrow_selection_rejects_feature_observed_after_evaluation(applicatio
     )
 
     try:
-        select_tomorrow(_request((feature,), _selection_policy()))
+        select_scored(_request((feature,), _selection_policy()))
     except ValueError as exc:
-        assert str(exc) == "tomorrow selection cannot use future features"
+        assert str(exc) == "scored selection cannot use future features"
     else:
         raise AssertionError("future feature batch must be rejected")

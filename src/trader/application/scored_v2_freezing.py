@@ -1,4 +1,4 @@
-"""Tomorrow formal checkpoint, freeze seal, retry, and close recovery on V2 identities."""
+"""Formal checkpoint, freeze seal, retry, and close recovery for scored V2 strategies."""
 
 from __future__ import annotations
 
@@ -51,8 +51,8 @@ class V2DecisionRuntimeIdentity:
         )
 
 
-class TomorrowV2FreezeCoordinator:
-    """Owns the only formal Tomorrow V2 record transition for a trade date."""
+class ScoredV2FreezeCoordinator:
+    """Owns the only formal scored V2 record transition for a trade date."""
 
     def __init__(
         self,
@@ -235,7 +235,7 @@ def _at(trade_date: date, value: time) -> datetime:
 
 __all__ = [
     "CloseRecoveryPath",
-    "TomorrowV2FreezeCoordinator",
+    "ScoredV2FreezeCoordinator",
     "V2DecisionRuntimeIdentity",
     "V2FreezeOperationResult",
 ]

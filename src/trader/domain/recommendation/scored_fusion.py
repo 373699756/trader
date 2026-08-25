@@ -1,4 +1,4 @@
-"""Pure tomorrow review selection, controlled fusion, and decision epochs."""
+"""Pure scored review selection, controlled fusion, and decision epochs."""
 
 from __future__ import annotations
 
@@ -29,12 +29,12 @@ from trader.domain.recommendation.models import (
     ScoreBreakdown,
     Strategy,
 )
-from trader.domain.recommendation.strategies.composition import LocalScoreResult
-from trader.domain.recommendation.tomorrow_selection import (
-    TomorrowDisposition,
-    TomorrowSelectionResult,
-    TomorrowStockEvaluation,
+from trader.domain.recommendation.scored_selection import (
+    ScoredDisposition,
+    ScoredSelectionResult,
+    ScoredStockEvaluation,
 )
+from trader.domain.recommendation.strategies.composition import LocalScoreResult
 from trader.domain.review.models import (
     DeepSeekReview,
     ReviewCandidateContext,
@@ -50,7 +50,7 @@ _CanonicalValue: TypeAlias = str | int | float | bool | None | list["_CanonicalV
 
 
 @dataclass(frozen=True)
-class TomorrowDecisionPolicy:
+class ScoredDecisionPolicy:
     dimension_weights: Mapping[str, float]
     risk_rules: Mapping[str, RiskRule]
     executable_threshold: float
@@ -70,14 +70,14 @@ class TomorrowDecisionPolicy:
         _validate_decision_weights(weights)
         _validate_decision_limits(self)
         if self.strategy not in {Strategy.TODAY, Strategy.TOMORROW, Strategy.D25}:
-            raise ValueError("tomorrow decision policy requires a scored strategy")
+            raise ValueError("scored decision policy requires a scored strategy")
         object.__setattr__(self, "dimension_weights", MappingProxyType(weights))
         object.__setattr__(self, "risk_rules", MappingProxyType(rules))
 
 
 @dataclass(frozen=True)
-class TomorrowReviewCandidate:
-    evaluation: TomorrowStockEvaluation
+class ScoredReviewCandidate:
+    evaluation: ScoredStockEvaluation
     context: ReviewCandidateContext
 
     @property
@@ -90,9 +90,9 @@ class TomorrowReviewCandidate:
 
 
 @dataclass(frozen=True)
-class TomorrowDecisionEntry:
+class ScoredDecisionEntry:
     features: FeatureSnapshot
-    disposition: TomorrowDisposition
+    disposition: ScoredDisposition
     score: ScoreBreakdown
     action: RecommendationAction
     action_reason: str
@@ -116,11 +116,11 @@ class TomorrowDecisionEntry:
 
 @dataclass(frozen=True)
 class _NormalizedDecisionPayload:
-    entries: tuple[TomorrowDecisionEntry, ...]
+    entries: tuple[ScoredDecisionEntry, ...]
     codes: frozenset[str]
     review_codes: tuple[str, ...]
     reasons: tuple[str, ...]
-    selected: tuple[TomorrowDecisionEntry, ...]
+    selected: tuple[ScoredDecisionEntry, ...]
     reason_counts: dict[str, int]
     populations: dict[str, str]
 
@@ -138,7 +138,7 @@ class DecisionEpoch:
     research_epoch_version: str | None
     projection_stage: Literal["local", "hybrid"]
     parent_decision_version: str | None
-    entries: tuple[TomorrowDecisionEntry, ...]
+    entries: tuple[ScoredDecisionEntry, ...]
     review_candidate_codes: tuple[str, ...]
     evaluated_count: int
     rejected_count: int
@@ -170,8 +170,8 @@ class DecisionEpoch:
 
 
 @dataclass(frozen=True)
-class TomorrowDecisionRequest:
-    selection: TomorrowSelectionResult
+class ScoredDecisionRequest:
+    selection: ScoredSelectionResult
     reviews: Mapping[str, DeepSeekReview]
     observed_at: datetime
     trade_date: date
@@ -186,7 +186,7 @@ class TomorrowDecisionRequest:
     parent_decision_version: str | None
     review_candidate_codes: tuple[str, ...]
     degraded_reasons: tuple[str, ...]
-    policy: TomorrowDecisionPolicy
+    policy: ScoredDecisionPolicy
 
     def __post_init__(self) -> None:
         _require_shanghai_time(self.observed_at, "decision request observed_at")
@@ -195,7 +195,7 @@ class TomorrowDecisionRequest:
         evaluations = {item.code: item for item in self.selection.scored_candidates}
         if any(
             code not in evaluations
-            or evaluations[code].disposition is not TomorrowDisposition.PASS
+            or evaluations[code].disposition is not ScoredDisposition.PASS
             or evaluations[code].local_score is None
             or any(fact.veto for fact in evaluations[code].local_risk_facts)
             for code in review_codes
@@ -222,28 +222,28 @@ class TomorrowDecisionRequest:
 
 def _validate_decision_weights(weights: Mapping[str, float]) -> None:
     if set(weights) != set(DIMENSION_NAMES) or abs(sum(weights.values()) - 1.0) > 1e-9:
-        raise ValueError("tomorrow DeepSeek weights must contain five dimensions and sum to 1.0")
+        raise ValueError("scored DeepSeek weights must contain five dimensions and sum to 1.0")
     if any(not math.isfinite(value) or value < 0.0 for value in weights.values()):
-        raise ValueError("tomorrow DeepSeek weights must be finite and non-negative")
+        raise ValueError("scored DeepSeek weights must be finite and non-negative")
     if weights["industry_policy"] != 0.0:
-        raise ValueError("tomorrow industry_policy DeepSeek weight must remain zero")
+        raise ValueError("scored industry_policy DeepSeek weight must remain zero")
 
 
-def _validate_decision_limits(policy: TomorrowDecisionPolicy) -> None:
+def _validate_decision_limits(policy: ScoredDecisionPolicy) -> None:
     if not math.isfinite(policy.executable_threshold) or not 0.0 <= policy.executable_threshold <= 100.0:
-        raise ValueError("tomorrow executable threshold must be in [0, 100]")
+        raise ValueError("scored executable threshold must be in [0, 100]")
     if not math.isfinite(policy.observation_margin) or policy.observation_margin < 0.0:
-        raise ValueError("tomorrow observation margin must be finite and non-negative")
+        raise ValueError("scored observation margin must be finite and non-negative")
     if not 0 <= policy.review_candidate_limit <= 28:
-        raise ValueError("tomorrow review candidate limit must be in [0, 28]")
+        raise ValueError("scored review candidate limit must be in [0, 28]")
     if not 0 <= policy.top_k <= 10:
-        raise ValueError("tomorrow TopK must be in [0, 10]")
+        raise ValueError("scored TopK must be in [0, 10]")
     if not 0 <= policy.observation_limit <= 8:
-        raise ValueError("tomorrow observation limit must be in [0, 8]")
+        raise ValueError("scored observation limit must be in [0, 8]")
     if not 1 <= policy.maximum_per_industry <= 2:
-        raise ValueError("tomorrow industry limit must be in [1, 2]")
+        raise ValueError("scored industry limit must be in [1, 2]")
     if not 0.0 < policy.maximum_board_fraction <= 0.60:
-        raise ValueError("tomorrow board fraction must be in (0, 0.60]")
+        raise ValueError("scored board fraction must be in (0, 0.60]")
 
 
 def _validate_decision_coordinates(epoch: DecisionEpoch) -> None:
@@ -308,7 +308,7 @@ def _validate_decision_entries(
 
 
 def _validate_decision_risk_times(
-    entries: tuple[TomorrowDecisionEntry, ...],
+    entries: tuple[ScoredDecisionEntry, ...],
     observed_at: datetime,
 ) -> None:
     for item in entries:
@@ -366,14 +366,14 @@ def _decision_epoch_hash(
     )
 
 
-def select_tomorrow_review_candidates(
-    selection: TomorrowSelectionResult,
-    policy: TomorrowDecisionPolicy,
-) -> tuple[TomorrowReviewCandidate, ...]:
+def select_scored_review_candidates(
+    selection: ScoredSelectionResult,
+    policy: ScoredDecisionPolicy,
+) -> tuple[ScoredReviewCandidate, ...]:
     eligible = tuple(
         item
         for item in selection.scored_candidates
-        if item.disposition is TomorrowDisposition.PASS
+        if item.disposition is ScoredDisposition.PASS
         and item.local_score is not None
         and not any(fact.veto for fact in item.local_risk_facts)
     )
@@ -391,12 +391,12 @@ def select_tomorrow_review_candidates(
         ),
     )
     return tuple(
-        TomorrowReviewCandidate(item, replace(contexts[item.code], in_protection_set=True))
+        ScoredReviewCandidate(item, replace(contexts[item.code], in_protection_set=True))
         for item in prioritized[: policy.review_candidate_limit]
     )
 
 
-def build_tomorrow_decision_epoch(request: TomorrowDecisionRequest) -> DecisionEpoch:
+def build_scored_decision_epoch(request: ScoredDecisionRequest) -> DecisionEpoch:
     entries = tuple(_fuse_evaluation(item, request) for item in request.selection.scored_candidates)
     entries = _select_action_pools(entries, request.policy)
     reason_counts = _filter_reason_counts(request.selection)
@@ -415,7 +415,7 @@ def build_tomorrow_decision_epoch(request: TomorrowDecisionRequest) -> DecisionE
         entries=entries,
         review_candidate_codes=request.review_candidate_codes,
         evaluated_count=len(request.selection.evaluations),
-        rejected_count=sum(item.disposition is TomorrowDisposition.REJECT for item in request.selection.evaluations),
+        rejected_count=sum(item.disposition is ScoredDisposition.REJECT for item in request.selection.evaluations),
         unscored_count=sum(item.local_score is None for item in request.selection.evaluations),
         filter_reason_counts=reason_counts,
         population_versions={board.value: version for board, version in request.selection.population_versions.items()},
@@ -424,9 +424,9 @@ def build_tomorrow_decision_epoch(request: TomorrowDecisionRequest) -> DecisionE
 
 
 def _fuse_evaluation(
-    evaluation: TomorrowStockEvaluation,
-    request: TomorrowDecisionRequest,
-) -> TomorrowDecisionEntry:
+    evaluation: ScoredStockEvaluation,
+    request: ScoredDecisionRequest,
+) -> ScoredDecisionEntry:
     local_base = evaluation.local_base_score or 0.0
     local_components = evaluation.local_components
     review = request.reviews.get(evaluation.code)
@@ -449,10 +449,10 @@ def _fuse_evaluation(
         )
     )
     if evaluation.local_score is not None and fused.score.local_score != round_score(evaluation.local_score):
-        raise ValueError("tomorrow local score changed before fusion")
+        raise ValueError("scored local score changed before fusion")
     veto = fused.veto or any(fact.veto for fact in evaluation.local_risk_facts)
     action, action_reason = _action_for(evaluation, fused.score, veto, request.policy)
-    return TomorrowDecisionEntry(
+    return ScoredDecisionEntry(
         features=evaluation.features,
         disposition=evaluation.disposition,
         score=fused.score,
@@ -474,15 +474,15 @@ def _fuse_evaluation(
 
 
 def _action_for(
-    evaluation: TomorrowStockEvaluation,
+    evaluation: ScoredStockEvaluation,
     score: ScoreBreakdown,
     veto: bool,
-    policy: TomorrowDecisionPolicy,
+    policy: ScoredDecisionPolicy,
 ) -> tuple[RecommendationAction, str]:
     unavailable_reason = _unavailable_reason(evaluation, score, veto, policy)
     if unavailable_reason is not None:
         return RecommendationAction.UNAVAILABLE, unavailable_reason
-    if evaluation.disposition is TomorrowDisposition.OBSERVE_ONLY:
+    if evaluation.disposition is ScoredDisposition.OBSERVE_ONLY:
         return RecommendationAction.OBSERVE, "filter_observe_only"
     if not policy.executable_enabled:
         return RecommendationAction.OBSERVE, "observation_phase"
@@ -499,12 +499,12 @@ def _action_for(
 
 
 def _unavailable_reason(
-    evaluation: TomorrowStockEvaluation,
+    evaluation: ScoredStockEvaluation,
     score: ScoreBreakdown,
     veto: bool,
-    policy: TomorrowDecisionPolicy,
+    policy: ScoredDecisionPolicy,
 ) -> str | None:
-    if evaluation.local_score is None or evaluation.disposition is TomorrowDisposition.REJECT:
+    if evaluation.local_score is None or evaluation.disposition is ScoredDisposition.REJECT:
         return evaluation.selection_skip_reason or "not_scored"
     if veto:
         return "risk_veto"
@@ -514,9 +514,9 @@ def _unavailable_reason(
 
 
 def _select_action_pools(
-    entries: tuple[TomorrowDecisionEntry, ...],
-    policy: TomorrowDecisionPolicy,
-) -> tuple[TomorrowDecisionEntry, ...]:
+    entries: tuple[ScoredDecisionEntry, ...],
+    policy: ScoredDecisionPolicy,
+) -> tuple[ScoredDecisionEntry, ...]:
     by_code = {item.code: item for item in entries}
     executable = _select_pool(
         tuple(item for item in entries if item.action is RecommendationAction.EXECUTABLE),
@@ -539,17 +539,17 @@ def _select_action_pools(
 
 
 def _select_pool(
-    entries: tuple[TomorrowDecisionEntry, ...],
+    entries: tuple[ScoredDecisionEntry, ...],
     *,
     limit: int,
-    policy: TomorrowDecisionPolicy,
-) -> tuple[tuple[TomorrowDecisionEntry, str], ...]:
+    policy: ScoredDecisionPolicy,
+) -> tuple[tuple[ScoredDecisionEntry, str], ...]:
     ordered = sorted(entries, key=_decision_order)
     selected_count = 0
     board_counts: Counter[Board] = Counter()
     industry_counts: Counter[str] = Counter()
     maximum_per_board = math.ceil(limit * policy.maximum_board_fraction) if limit else 0
-    result: list[tuple[TomorrowDecisionEntry, str]] = []
+    result: list[tuple[ScoredDecisionEntry, str]] = []
     for item in ordered:
         board = item.features.quote.board
         industry = item.features.quote.industry.strip() or "unknown"
@@ -572,9 +572,9 @@ def _select_pool(
 
 
 def _review_context(
-    item: TomorrowStockEvaluation,
+    item: ScoredStockEvaluation,
     rank: int,
-    policy: TomorrowDecisionPolicy,
+    policy: ScoredDecisionPolicy,
 ) -> ReviewCandidateContext:
     assert item.local_score is not None
     return ReviewCandidateContext(
@@ -595,7 +595,7 @@ def _review_context(
     )
 
 
-def _filter_reason_counts(selection: TomorrowSelectionResult) -> dict[str, int]:
+def _filter_reason_counts(selection: ScoredSelectionResult) -> dict[str, int]:
     counts: Counter[str] = Counter()
     for item in selection.evaluations:
         counts.update(reason.code for reason in item.filter_reasons)
@@ -607,7 +607,7 @@ def _filter_reason_counts(selection: TomorrowSelectionResult) -> dict[str, int]:
 
 def _validate_stage_entries(
     projection_stage: Literal["local", "hybrid"],
-    entries: tuple[TomorrowDecisionEntry, ...],
+    entries: tuple[ScoredDecisionEntry, ...],
     review_codes: set[str],
 ) -> None:
     if projection_stage == "local" and any(
@@ -627,7 +627,7 @@ def _validate_stage_entries(
         raise ValueError("fusion can only apply to an applied review in a hybrid decision")
 
 
-def _validate_selected_pools(selected: list[TomorrowDecisionEntry]) -> None:
+def _validate_selected_pools(selected: list[ScoredDecisionEntry]) -> None:
     executable = tuple(item for item in selected if item.action is RecommendationAction.EXECUTABLE)
     observations = tuple(item for item in selected if item.action is RecommendationAction.OBSERVE)
     if len(executable) > 10 or len(observations) > 8:
@@ -645,15 +645,15 @@ def _validate_selected_pools(selected: list[TomorrowDecisionEntry]) -> None:
             raise ValueError("selected decision pool exceeds its industry limit")
 
 
-def _local_order(item: TomorrowStockEvaluation) -> tuple[float, float, str]:
+def _local_order(item: ScoredStockEvaluation) -> tuple[float, float, str]:
     return (-(item.local_score or 0.0), -(item.candidate_score or 0.0), item.code)
 
 
-def _decision_order(item: TomorrowDecisionEntry) -> tuple[float, float, str]:
+def _decision_order(item: ScoredDecisionEntry) -> tuple[float, float, str]:
     return (-item.score.final_score, -item.score.local_score, item.code)
 
 
-def _decision_entry_identity(item: TomorrowDecisionEntry) -> dict[str, object]:
+def _decision_entry_identity(item: ScoredDecisionEntry) -> dict[str, object]:
     population = item.features.board_population
     feature_identity = {
         "code": item.code,
@@ -749,10 +749,10 @@ def _require_text(value: str, name: str) -> None:
 __all__ = [
     "DECISION_EPOCH_SCHEMA_VERSION",
     "DecisionEpoch",
-    "TomorrowDecisionEntry",
-    "TomorrowDecisionPolicy",
-    "TomorrowDecisionRequest",
-    "TomorrowReviewCandidate",
-    "build_tomorrow_decision_epoch",
-    "select_tomorrow_review_candidates",
+    "ScoredDecisionEntry",
+    "ScoredDecisionPolicy",
+    "ScoredDecisionRequest",
+    "ScoredReviewCandidate",
+    "build_scored_decision_epoch",
+    "select_scored_review_candidates",
 ]

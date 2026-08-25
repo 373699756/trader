@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户要求重新 Review 全工程并按计划修复，新增正式记录基础设施 codec 与架构 AST 契约：领域、
+  应用层只持有当前 schema 的 `CommittedDecisionRecord` 类型对象，JSON 编解码、字段白名单、版本和哈希
+  校验统一归属 `infra/persistence/decision_record_codec.py`；契约禁止领域/应用重新引入持久化 decoder。
+
 - 针对用户要求继续优化“行情采集 → 过滤/评分 → 推荐发布 → Web 展示”实时链路，新增
   `tencent_topk` 紧急来源 lane、`eastmoney_intraday` 分钟尾巴 lane 和三个短线策略独立
   DeepSeek hybrid latest-wins lane；`/api/v2/status.scheduler.hybrid_lanes` 加法公开其有界运行状态。
@@ -28,7 +32,7 @@ All notable changes to this project are documented here.
   `CadencePlanner`、按物理任务隔离的 latest-wins lane 和 Tomorrow 午后分钟 tail 任务；全市场、
   候选、TopK、tail、评分、long、冻结与收盘恢复分别按真实最近到期时间推进，任务状态进入 status。
 - 新增统一决策/正式记录 schema v2，固化不可变 anchor quote、setup、downside、研究覆盖、复核终态和
-  `selection_diagnostics`；旧 v1 正式记录保持原哈希并以 `null`/`—` 显示缺失元数据，不现场重算。
+  `selection_diagnostics`；活动 codec 只接受当前 schema，旧 v1 数据只能随完整旧 release 离线保留。
 - 新增禁止外网且直接调用活动生产函数的 `performance-check` CLI、Linux/Windows 启动脚本入口、
   `scripts/run_production_performance.py` 与 Makefile 门禁，固定覆盖 5500 行双源全市场、360 候选、
   三策略评分、overlay CAS、API/ETag/status、SSE、100 tick RSS、环境身份和 5% 相对回归。
@@ -227,7 +231,7 @@ All notable changes to this project are documented here.
   活动与已恢复记录，并复制诊断代码；Firefox 禁止剪贴板时自动选中代码供手工复制。
 
 - 针对用户反馈“重启后三个评分策略观察池同时消失、列表只有代码而名称显示 `—`”新增真实刷新时间
-  推进、三策略共同构建、名称/行业身份往返、旧正式记录兼容、current HTTP 与运行版本状态回归。
+  推进、三策略共同构建、名称/行业身份往返、正式记录 current-schema 往返、current HTTP 与运行版本状态回归。
   状态 API 现在公开脱敏 scheduler 摘要，可直接区分刷新失败、决策失败和仍在运行的旧代码。
 
 - 针对用户报告的“今早/明日长期 `not_ready`、2–5 日只有空观察池且候选数异常”新增生产输入并发、
@@ -350,6 +354,13 @@ All notable changes to this project are documented here.
   前向封存状态、第二轮权重收缩和 `PromotionDossier` 人工晋级边界。
 
 ### Changed
+
+- 用户可观察诉求是避免同一业务在 JSON 字段和对象字段、Tomorrow 专属名和三策略公共实现之间反复迁移。
+  根因是正式记录 codec 位于领域层，且 Today/Tomorrow/D25 公共选择、质量、融合、投影、冻结仍以
+  `tomorrow_*` 命名并保留 Today 包装入口。现在三策略统一复用 `scored_*` 类型模块和单一投影入口，
+  配置 schema 升至 13；公开 JSON 仍只由持久化/Web/状态 adapter 显式投影。
+- D25 市场状态配置缩减为仍参与审计的 60/40 breadth 边界；性能门禁改为调用活动
+  `score_board_strategy()`，不再通过退休评分器测量一条生产不会执行的路径。
 
 - TopK 腾讯报价不再与 360 只普通候选共享一个 running/pending 槽，且 2 秒任务 deadline 会截断实际
   HTTP timeout；全市场与 Tomorrow 分钟尾巴也不再共享东方财富 pending 槽。物理任务预算从 worker
@@ -548,7 +559,7 @@ All notable changes to this project are documented here.
 - scored 原生输入的决策时刻现在取调度请求与同批本地观测/接收完成时间的最大值，避免网络请求期间
   新鲜候选被误判为未来数据；供应商来源时间仍不能推进本地时钟。新决策从同批 quote 固化名称和行业，
   current、冻结历史与 HTTP 只读复用，不执行现场网络补名；`/api/v2/status` 新增 `runtime_version`
-  和 scheduler 摘要，旧正式记录缺少显示字段时仍按原哈希读取并显示 `—`。
+  和 scheduler 摘要；本批 current-only codec 收口后，新 release 不再读取缺少显示字段的旧正式记录。
 
 - Today、Tomorrow、D25 同一调度观察点现在 single-flight 共享全市场与候选报价批次，本地输入只读
   已有历史、结构化研究和分钟尾部缓存，不再由三条策略 lane 分别同步抓取历史与公司研究；
@@ -556,7 +567,7 @@ All notable changes to this project are documented here.
   计数和按策略结构化活动错误；成功发布会清除对应策略活动错误。
 
 - 新生成的 `ScoredDecision` 保存去重后的 population/rejected 覆盖计数，current 与正式历史查询直接
-  使用精确计数；旧正式记录仍按缺省字段兼容读取，不改变其既有哈希。过滤原因计数继续作为可重叠
+  使用精确计数；当前 schema 缺少字段时 fail-closed，不再兼容推导。过滤原因计数继续作为可重叠
   原因分布，不再被误当成股票数相加。
 
 - 总计划与权威研究状态推进为 Score-R5 工程能力已完成、Score-R6 为下一章节。当前真实 R2/R4 证据
@@ -620,6 +631,12 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修正文档与程序不一致：架构文档补齐第五个 `research` 领域包、当前正式记录 schema-only 策略和
+  `scored_*` 公共模块边界；README 不再把只做能力审计的 120 积分 Tushare `daily` 描述成历史主源；
+  策略文档不再声称旧 D25 双乘评分仍用于回放。
+- 修正 DeepSeek parser 同时接受旧 schema、模型目录仍保留已退役模型以及 provider 仍接受
+  `deepseek_http` 别名的问题；活动复核只接受 V4 schema、`deepseek-v4-flash/pro` 和 `http` provider。
 
 - 修复 Web 推荐漏斗把运行时 `selected_executable` 无条件显示为 0、首次输入质量尚未完成时把未知阶段
   展示成 `0 → 0 → 0` 的问题；已有同日完整质量快照仍优先保留，下一轮临时 pending 不会覆盖它。
@@ -904,6 +921,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除未被生产组合根调用的 Tomorrow 读一次并融合旧用例及其测试、Today V2 投影别名层、三套旧通用
+  today/tomorrow/d25 评分器与权重配置、D25 `not_overheated`/双 multiplier 因子、正式记录 legacy
+  decoder、DeepSeek 旧 schema/模型兼容分支，以及引用仓库外 `/tmp` 截图的过时 `design-qa.md`。
+
 - 移除无生产调用者的 `PipelineTask.HYBRID_READY`，并从周期任务集合移除 `SCORE`；评分配置仍保留为
   输入驱动节流策略，不新增兼容事件、双调度链或隐藏 fallback。
 
@@ -1040,6 +1061,20 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 本批定向验证覆盖正式记录 codec/查询/持久化/架构契约，DeepSeek V4 schema、模型、provider 与失败
+  降级，配置 schema 13、市场状态/行情特征，以及三策略 scored 选择、融合、投影、冻结、调度和组合根，
+  全部通过。高风险门禁 `make format-check`、`make lint`、`make type-check`（222 个源码文件）、
+  `make test`、`make package` 最终均通过；全量测试只保留两条既有 Python 3.14 SQLite datetime adapter
+  弃用警告。打包首次受沙箱构建隔离网络限制，授权后成功生成 sdist/wheel。
+- 离线活动生产性能门禁通过且零网络调用、100 tick RSS 增长为 0：5500 行 `quote_to_draft` P95
+  2039.877ms/5000ms、`board_ready_to_draft` P95 239.742ms/500ms、三策略活动评分 P95
+  30.303ms/750ms、双源市场合并 P95 428.698ms/600ms。Review 同时删除了对同一
+  `quote_to_draft` 的重复 Tomorrow 性能操作与重复预算，避免一项行为被双重计时并产生冲突结论。
+- 仓库外虚拟环境强制重装最终 wheel 后，从 wheel 路径导入包和 `scored_v2_projection`，读取
+  HTML/CSS/JavaScript/SVG 包资源，并执行 `trader-cli --help` 与 schema 13 配置校验，全部通过。
+  本批未修改 Web 静态资源、HTTP schema 或布局，三档桌面浏览器验收不适用；相关只读投影行为由定向
+  契约和全量测试覆盖。最终完整 diff、`git diff --check` 与仅暂存本批文件检查在提交前复核。
 
 - 高风险全量门禁：`make format-check`、`make lint`、`make type-check`、`make test` 全部通过；
   `make package` 首次因沙箱禁止构建隔离环境联网失败，授权后成功生成 sdist/wheel。仓库外新虚拟环境
@@ -1591,6 +1626,10 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 当前无已知未解决代码或契约问题。旧 schema v1 正式记录必须随完整旧 release 离线保留，当前 release
+  有意只接受当前 schema；这是一项明确迁移边界，不是隐藏兼容。两条 Python 3.14 SQLite datetime
+  adapter 弃用警告早于本批且不位于改动边界，后续应在独立持久化批次迁移显式 adapter/converter。
+
 - 本批离线生产函数、确定性 SSE/Firefox 和三档桌面证据均通过，但 5000 端口原常驻服务在盘中只读检查后
   已停止，未能用新提交重启并覆盖真实供应商的早盘、午后及 14:50 后三个窗口。推送后必须正常重启服务，
   再复用 `scripts/check_web_recommendation_health.py`、`scripts/sample_tencent_quotes.py` 和
@@ -1768,8 +1807,8 @@ All notable changes to this project are documented here.
   地址提示。输出仅表示本机监听端口已成功绑定，不替代 `/api/v2/status` 健康检查；本批没有改变
   运行时、行情、策略、DeepSeek、冻结、API 或 Web 页面行为，未跟踪截图保持未暂存。
 
-- 旧 schema v1 正式记录没有报价锚点时继续按兼容契约显示 `—`，不会伪造历史行情；新决策若上游对
-  某个可选行情字段本身未提供值，该字段仍显式缺失且不会阻断本地评分。当前运行中的旧进程需正常
+- 旧 schema v1 正式记录只能随完整旧 release 离线保留；新决策若上游对某个可选行情字段本身未提供值，
+  该字段仍显式缺失且不会阻断本地评分。当前运行中的旧进程需正常
   重启后才会生成含锚点的新决策；本批不改变候选、过滤、评分、融合、风险、动作、排名或冻结时点。
 
 - HMS 使用英文单位缩写以消除“分数”歧义；它表示距行情来源时间的持续时长，不是北京时间时刻。
@@ -1798,8 +1837,8 @@ All notable changes to this project are documented here.
   正常停止后重新执行 `./run.sh` 才会生效；本批未擅自停止该进程。若 Today 在新进程形成合格 current
   前已越过 11:20，则按冻结契约禁止当日追补；Tomorrow/D25 仍按各自时点处理。修复后行情源失败、
   历史预热不足、真实过滤门槛仍可能产生结构化 `not_ready` 或合法空池，本批不降低任何选股、风险、
-  动作或融合门槛，也不承诺一定产生正式荐股。修复前已经固化且缺少名称/行业的旧正式记录保持原哈希，
-  其历史列表仍显示 `—`；只有修复后新生成的 scored 决策原生携带显示元数据。
+  动作或融合门槛，也不承诺一定产生正式荐股。缺少名称/行业的旧正式记录不进入当前 release 的历史
+  查询；只有当前 schema 的 scored 决策和正式记录可由活动 codec 恢复。
 
 - Score-R5 统计、collector 与最终封存工程能力已闭合，但当前真实 R2/R4 历史点时证据仍不足 40 日；
   因此五个变体均只能诚实终止为探索性历史拒绝，不能启动真实前向 collector。固定前向日为

@@ -1,4 +1,4 @@
-"""Native Tomorrow input projection to the unified V2 scored-decision identity."""
+"""Native scored input projection to the unified V2 decision identity."""
 
 from __future__ import annotations
 
@@ -7,17 +7,17 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from trader.application.policy import RecommendationPolicy
-from trader.application.ports.tomorrow import ScoredNativeInput
+from trader.application.ports.scored import ScoredNativeInput
 from trader.application.recommendation_policy_codec import preselection_replay_feature
-from trader.application.tomorrow_deepseek_fusion import (
-    normalize_tomorrow_review_times,
+from trader.application.scored_deepseek_fusion import (
+    normalize_scored_review_times,
     v2_decision_policy,
 )
-from trader.application.tomorrow_quality import TomorrowInputQuality, assess_tomorrow_input_quality
-from trader.application.tomorrow_selection import (
-    TomorrowSelectionIdentity,
-    TomorrowSelectionOptions,
-    select_tomorrow_features,
+from trader.application.scored_quality import ScoredInputQuality, assess_scored_input_quality
+from trader.application.scored_selection import (
+    ScoredSelectionIdentity,
+    ScoredSelectionOptions,
+    select_scored_features,
 )
 from trader.domain.market.models import MarketQuote
 from trader.domain.recommendation.decision_identity import (
@@ -30,60 +30,43 @@ from trader.domain.recommendation.decision_identity import (
 )
 from trader.domain.recommendation.downside import assess_downside
 from trader.domain.recommendation.models import RecommendationAction, Strategy
-from trader.domain.recommendation.tomorrow_fusion import (
+from trader.domain.recommendation.scored_fusion import (
     DecisionEpoch,
-    TomorrowDecisionEntry,
-    TomorrowDecisionPolicy,
-    TomorrowDecisionRequest,
-    TomorrowReviewCandidate,
-    build_tomorrow_decision_epoch,
-    select_tomorrow_review_candidates,
+    ScoredDecisionEntry,
+    ScoredDecisionPolicy,
+    ScoredDecisionRequest,
+    ScoredReviewCandidate,
+    build_scored_decision_epoch,
+    select_scored_review_candidates,
 )
-from trader.domain.recommendation.tomorrow_selection import TomorrowSelectionResult
+from trader.domain.recommendation.scored_selection import ScoredSelectionResult
 from trader.domain.review.models import DeepSeekReview, ReviewOutcome
 
 
 @dataclass(frozen=True)
-class TomorrowV2LocalProjection:
+class ScoredV2LocalProjection:
     native_input: ScoredNativeInput
-    selection: TomorrowSelectionResult
-    input_quality: TomorrowInputQuality
-    review_candidates: tuple[TomorrowReviewCandidate, ...]
+    selection: ScoredSelectionResult
+    input_quality: ScoredInputQuality
+    review_candidates: tuple[ScoredReviewCandidate, ...]
     local_epoch: DecisionEpoch
     local: ScoredDecision
-
-
-def build_tomorrow_v2_local(
-    native_input: ScoredNativeInput,
-    policy: RecommendationPolicy,
-    *,
-    sequence: int,
-) -> TomorrowV2LocalProjection:
-    return build_scored_v2_local(
-        native_input,
-        policy,
-        decision_policy=v2_decision_policy(policy, native_input.strategy),
-        strategy=native_input.strategy,
-        sequence=sequence,
-    )
 
 
 def build_scored_v2_local(
     native_input: ScoredNativeInput,
     policy: RecommendationPolicy,
     *,
-    decision_policy: TomorrowDecisionPolicy,
-    strategy: Strategy,
     sequence: int,
-) -> TomorrowV2LocalProjection:
+) -> ScoredV2LocalProjection:
     if sequence < 1:
-        raise ValueError("Tomorrow V2 decision sequence must be positive")
-    if native_input.strategy is not strategy:
-        raise ValueError("native input strategy does not match projection strategy")
-    selection = select_tomorrow_features(
+        raise ValueError("scored V2 decision sequence must be positive")
+    strategy = native_input.strategy
+    decision_policy = v2_decision_policy(policy, strategy, phase=native_input.phase)
+    selection = select_scored_features(
         tuple(preselection_replay_feature(feature) for feature in native_input.market_features),
         policy,
-        TomorrowSelectionOptions(
+        ScoredSelectionOptions(
             evaluated_at=native_input.evaluated_at,
             max_age_seconds=native_input.score_max_age_seconds,
             phase=native_input.phase,
@@ -91,17 +74,17 @@ def build_scored_v2_local(
             normalize_discovery_source_time=True,
             strategy=strategy,
         ),
-        TomorrowSelectionIdentity(
+        ScoredSelectionIdentity(
             trade_date=native_input.trade_date,
             data_version=native_input.data_version,
             merge_epoch=native_input.input_version,
         ),
     )
-    quality = assess_tomorrow_input_quality(native_input, selection)
-    candidates = select_tomorrow_review_candidates(selection, decision_policy)
+    quality = assess_scored_input_quality(native_input, selection)
+    candidates = select_scored_review_candidates(selection, decision_policy)
     input_hash = native_input.input_version.removeprefix("native-input:")
-    epoch = build_tomorrow_decision_epoch(
-        TomorrowDecisionRequest(
+    epoch = build_scored_decision_epoch(
+        ScoredDecisionRequest(
             selection=selection,
             reviews={},
             observed_at=native_input.evaluated_at,
@@ -120,7 +103,7 @@ def build_scored_v2_local(
             policy=decision_policy,
         )
     )
-    return TomorrowV2LocalProjection(
+    return ScoredV2LocalProjection(
         native_input,
         selection,
         quality,
@@ -135,37 +118,21 @@ def build_scored_v2_local(
     )
 
 
-def build_tomorrow_v2_hybrid(
-    projection: TomorrowV2LocalProjection,
-    policy: RecommendationPolicy,
-    reviews: Mapping[str, DeepSeekReview],
-    *,
-    review_deadline: datetime,
-) -> ScoredDecision | None:
-    return build_scored_v2_hybrid(
-        projection,
-        policy,
-        reviews,
-        decision_policy=v2_decision_policy(policy, projection.local.strategy),
-        review_deadline=review_deadline,
-    )
-
-
 def build_scored_v2_hybrid(
-    projection: TomorrowV2LocalProjection,
+    projection: ScoredV2LocalProjection,
     policy: RecommendationPolicy,
     reviews: Mapping[str, DeepSeekReview],
     *,
-    decision_policy: TomorrowDecisionPolicy,
     review_deadline: datetime,
 ) -> ScoredDecision | None:
     strategy = projection.local.strategy
     if projection.native_input.strategy is not strategy:
         return None
+    decision_policy = v2_decision_policy(policy, strategy, phase=projection.native_input.phase)
     candidates = {item.code for item in projection.review_candidates}
     if any(code not in candidates or review.code != code for code, review in reviews.items()):
         return None
-    normalized = normalize_tomorrow_review_times(reviews, review_deadline)
+    normalized = normalize_scored_review_times(reviews, review_deadline)
     if normalized is None:
         return None
     usable = {
@@ -179,8 +146,8 @@ def build_scored_v2_hybrid(
         projection.native_input.evaluated_at,
         *(review.completed_at for review in usable.values()),
     )
-    epoch = build_tomorrow_decision_epoch(
-        TomorrowDecisionRequest(
+    epoch = build_scored_decision_epoch(
+        ScoredDecisionRequest(
             selection=projection.selection,
             reviews=normalized,
             observed_at=observed_at,
@@ -220,7 +187,7 @@ def _scored_decision(
     *,
     input_version: str,
     strategy: Strategy,
-    decision_policy: TomorrowDecisionPolicy,
+    decision_policy: ScoredDecisionPolicy,
     parent_version: str | None = None,
 ) -> ScoredDecision:
     return ScoredDecision(
@@ -260,7 +227,7 @@ def _scored_decision(
 
 
 def _decision_item(
-    entry: TomorrowDecisionEntry,
+    entry: ScoredDecisionEntry,
     *,
     strategy: Strategy,
     review_eligible: bool,
@@ -304,7 +271,7 @@ def _decision_item(
 
 def _selection_diagnostics(
     epoch: DecisionEpoch,
-    policy: TomorrowDecisionPolicy,
+    policy: ScoredDecisionPolicy,
 ) -> SelectionDiagnostics:
     selected = tuple(item for item in epoch.entries if item.selected)
     maximum_final_score = max((item.score.final_score for item in epoch.entries), default=None)
@@ -348,7 +315,7 @@ def _decision_quote(quote: MarketQuote) -> DecisionQuote:
 
 
 def validate_review_manifests(
-    projection: TomorrowV2LocalProjection,
+    projection: ScoredV2LocalProjection,
     reviews: Mapping[str, DeepSeekReview],
     expected: Mapping[str, str],
 ) -> bool:
@@ -365,10 +332,8 @@ def validate_review_manifests(
 
 
 __all__ = [
-    "TomorrowV2LocalProjection",
+    "ScoredV2LocalProjection",
     "build_scored_v2_hybrid",
     "build_scored_v2_local",
-    "build_tomorrow_v2_hybrid",
-    "build_tomorrow_v2_local",
     "validate_review_manifests",
 ]

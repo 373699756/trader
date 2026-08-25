@@ -34,10 +34,13 @@ def test_v2_does_not_import_legacy_package() -> None:
 
 
 def test_active_source_files_do_not_exceed_1200_lines() -> None:
+    source_suffixes = {".py", ".js", ".css", ".html"}
     violations = {
         str(path.relative_to(SOURCE_ROOT)): len(path.read_text(encoding="utf-8").splitlines())
-        for path in SOURCE_ROOT.rglob("*.py")
-        if len(path.read_text(encoding="utf-8").splitlines()) > 1200
+        for path in SOURCE_ROOT.rglob("*")
+        if path.is_file()
+        and path.suffix in source_suffixes
+        and len(path.read_text(encoding="utf-8").splitlines()) > 1200
     }
 
     assert violations == {}
@@ -170,6 +173,34 @@ def test_internal_state_is_typed_until_an_explicit_observability_boundary() -> N
             if forbidden_status_types & annotation_names:
                 rendered = ast.unparse(annotation)
                 violations.append(f"{relative}:{node.lineno}: untyped status return {rendered}")
+    assert violations == []
+
+
+def test_domain_and_application_do_not_own_persistence_or_json_decoders() -> None:
+    violations: list[str] = []
+    forbidden_public_codecs = {
+        "committed_record_bytes",
+        "committed_record_from_bytes",
+    }
+    for boundary in ("domain", "application"):
+        for path in (SOURCE_ROOT / boundary).rglob("*.py"):
+            relative = path.relative_to(SOURCE_ROOT)
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in forbidden_public_codecs:
+                    violations.append(f"{relative}:{node.lineno}: persistence codec belongs in infra")
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                    continue
+                if (
+                    isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "json"
+                    and node.func.attr
+                    in {
+                        "load",
+                        "loads",
+                    }
+                ):
+                    violations.append(f"{relative}:{node.lineno}: JSON decoding belongs at an explicit adapter")
     assert violations == []
 
 

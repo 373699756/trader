@@ -14,10 +14,10 @@ from tests.unit.v2_epoch_helpers import (
     research_field_values,
 )
 from trader.application.ports.market import MarketDataPlaneSnapshot
-from trader.application.tomorrow_selection import (
-    TomorrowSelectionNotReadyError,
-    TomorrowSelectionUseCase,
-    assemble_tomorrow_features,
+from trader.application.scored_selection import (
+    ScoredSelectionNotReadyError,
+    ScoredSelectionUseCase,
+    assemble_scored_features,
 )
 from trader.domain.market.epochs import (
     CandidateFeatureRow,
@@ -208,8 +208,8 @@ def test_use_case_assembles_one_coherent_epoch_and_applies_candidate_quote(
     recommendation_policy,
 ) -> None:
     snapshot = _data_snapshot()
-    use_case = TomorrowSelectionUseCase(_Reader(snapshot), _policy(recommendation_policy))
-    assembled = assemble_tomorrow_features(snapshot)
+    use_case = ScoredSelectionUseCase(_Reader(snapshot), _policy(recommendation_policy))
+    assembled = assemble_scored_features(snapshot)
 
     result = use_case.execute(evaluated_at=NOW, max_age_seconds=60.0)
     evaluation = result.evaluations[0]
@@ -233,20 +233,20 @@ def test_use_case_assembles_one_coherent_epoch_and_applies_candidate_quote(
 def test_use_case_refuses_to_score_without_a_coherent_market_epoch(recommendation_policy) -> None:
     snapshot = _data_snapshot()
     reader = _Reader(MarketDataPlaneSnapshot(snapshot.daily_features, None, None, None))
-    use_case = TomorrowSelectionUseCase(reader, _policy(recommendation_policy))
+    use_case = ScoredSelectionUseCase(reader, _policy(recommendation_policy))
 
-    with pytest.raises(TomorrowSelectionNotReadyError, match="coherent_market_epoch_unavailable"):
+    with pytest.raises(ScoredSelectionNotReadyError, match="coherent_market_epoch_unavailable"):
         use_case.execute(evaluated_at=NOW, max_age_seconds=60.0)
 
-    current_use_case = TomorrowSelectionUseCase(_Reader(snapshot), _policy(recommendation_policy))
-    with pytest.raises(TomorrowSelectionNotReadyError, match="market_epoch_from_future"):
+    current_use_case = ScoredSelectionUseCase(_Reader(snapshot), _policy(recommendation_policy))
+    with pytest.raises(ScoredSelectionNotReadyError, match="market_epoch_from_future"):
         current_use_case.execute(evaluated_at=NOW - timedelta(seconds=1), max_age_seconds=60.0)
 
     assert snapshot.market is not None
     future_received_market = replace(snapshot.market, received_at=NOW + timedelta(seconds=1))
     future_received = replace(snapshot, market=future_received_market, candidate_quotes=None)
-    with pytest.raises(TomorrowSelectionNotReadyError, match="market_epoch_from_future"):
-        TomorrowSelectionUseCase(_Reader(future_received), _policy(recommendation_policy)).execute(
+    with pytest.raises(ScoredSelectionNotReadyError, match="market_epoch_from_future"):
+        ScoredSelectionUseCase(_Reader(future_received), _policy(recommendation_policy)).execute(
             evaluated_at=NOW,
             max_age_seconds=60.0,
         )
@@ -265,7 +265,7 @@ def test_feature_assembly_does_not_let_late_candidate_price_replace_newer_market
         field_values={late_quote.code: candidate_field_values(late_quote)},
     )
 
-    assembled = assemble_tomorrow_features(replace(snapshot, candidate_quotes=candidate_epoch))
+    assembled = assemble_scored_features(replace(snapshot, candidate_quotes=candidate_epoch))
 
     assert assembled[0].quote.price == 10.0
     assert assembled[0].values["tail_return_30m"] == 70.0
@@ -315,7 +315,7 @@ def test_feature_assembly_applies_coherent_research_evidence_and_current_corpora
         },
     )
 
-    assembled = assemble_tomorrow_features(replace(snapshot, research=research))
+    assembled = assemble_scored_features(replace(snapshot, research=research))
 
     assert assembled[0].values["official_investigation_history"] == 1.0
     assert assembled[0].values["corporate_risk_history_unavailable"] == 0.0

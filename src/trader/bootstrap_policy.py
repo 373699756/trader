@@ -40,7 +40,6 @@ def _recommendation_policy(settings: StrategySettings) -> RecommendationPolicy:
         ),
         candidate_weights=settings.candidate_weights,
         dimension_weights={Strategy(name): weights for name, weights in settings.dimension_weights.items()},
-        local_strategy_weights={Strategy(name): weights for name, weights in settings.local_strategy_weights.items()},
         board_policy_version=settings.board_policy_version,
         board_candidate_weights={
             Strategy(strategy): {Board(board): weights for board, weights in boards.items()}

@@ -8,8 +8,6 @@ from trader.application.decision_core import UnifiedDecisionIndex
 from trader.application.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.decision_queries import UnifiedDecisionQueries
 from trader.domain.recommendation.decision_identity import (
-    LEGACY_COMMITTED_RECORD_SCHEMA_VERSION,
-    LEGACY_DECISION_IDENTITY_SCHEMA_VERSION,
     CommittedDecisionRecord,
     DecisionItem,
     DecisionOverlay,
@@ -153,29 +151,6 @@ def test_current_overlay_replaces_every_quote_field_without_changing_decision_id
     assert view.items[0].anchor_price == 10.25
     assert view.items[0].anchor_source == "fixture"
     assert view.projection_version == view.etag
-
-
-def test_legacy_history_returns_null_v2_display_metadata_without_recomputation() -> None:
-    legacy = replace(_decision(trade_date=date(2026, 8, 8)), schema_version=LEGACY_DECISION_IDENTITY_SCHEMA_VERSION)
-    record = CommittedDecisionRecord(
-        legacy,
-        datetime(2026, 8, 8, 11, 20, tzinfo=SHANGHAI),
-        "scheduled",
-        schema_version=LEGACY_COMMITTED_RECORD_SCHEMA_VERSION,
-    )
-    view = UnifiedDecisionQueries(
-        UnifiedDecisionIndex(),
-        UnifiedDecisionDraftIndex(),
-        _Repository(record),
-        _Clock(),
-    ).history(Strategy.TODAY, record.trade_date)
-
-    assert view.status == "ready"
-    assert view.selection_diagnostics is None
-    assert view.items[0].setup_type is None
-    assert view.items[0].downside_status is None
-    assert view.items[0].review_outcome is None
-    assert view.items[0].research_evidence_count is None
 
 
 def test_scored_coverage_uses_distinct_evaluation_counts_not_overlapping_reasons() -> None:

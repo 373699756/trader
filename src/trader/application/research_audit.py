@@ -10,11 +10,11 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from trader.application.decision_events import V2DecisionCommitted
-from trader.application.tomorrow_v2_projection import TomorrowV2LocalProjection
+from trader.application.scored_v2_projection import ScoredV2LocalProjection
 from trader.domain.recommendation.decision_identity import ScoredDecision
+from trader.domain.recommendation.scored_fusion import ScoredDecisionEntry
+from trader.domain.recommendation.scored_selection import ScoredDisposition
 from trader.domain.recommendation.scoring import candidate_fields
-from trader.domain.recommendation.tomorrow_fusion import TomorrowDecisionEntry
-from trader.domain.recommendation.tomorrow_selection import TomorrowDisposition
 
 RESEARCH_AUDIT_SCHEMA_VERSION = "v2_committed_research_audit_v1"
 ShadowMode = Literal["control_copy", "reused_facts"]
@@ -201,7 +201,7 @@ def _validate_audit_pairing(
 
 
 def build_v2_committed_research_audit(
-    projection: TomorrowV2LocalProjection,
+    projection: ScoredV2LocalProjection,
     committed: ScoredDecision,
 ) -> V2CommittedResearchAudit:
     if committed.strategy is not projection.local.strategy:
@@ -226,7 +226,7 @@ def build_v2_committed_research_audit(
 
 
 def try_build_v2_committed_research_audit(
-    projection: TomorrowV2LocalProjection,
+    projection: ScoredV2LocalProjection,
     committed: ScoredDecision,
 ) -> V2CommittedResearchAudit | None:
     try:
@@ -235,21 +235,21 @@ def try_build_v2_committed_research_audit(
         return None
 
 
-def _hard_filter_aggregates(projection: TomorrowV2LocalProjection) -> tuple[tuple[str, int], ...]:
+def _hard_filter_aggregates(projection: ScoredV2LocalProjection) -> tuple[tuple[str, int], ...]:
     counts: Counter[str] = Counter()
     for evaluation in projection.selection.evaluations:
-        if evaluation.disposition is TomorrowDisposition.REJECT:
+        if evaluation.disposition is ScoredDisposition.REJECT:
             counts.update(
                 f"{evaluation.features.quote.board.value}:{reason.code}" for reason in evaluation.filter_reasons
             )
     return tuple(sorted(counts.items()))
 
 
-def _candidate_audits(projection: TomorrowV2LocalProjection) -> tuple[V2ResearchCandidateAudit, ...]:
+def _candidate_audits(projection: ScoredV2LocalProjection) -> tuple[V2ResearchCandidateAudit, ...]:
     required = candidate_fields(projection.local.strategy)
     result: list[V2ResearchCandidateAudit] = []
     for evaluation in projection.selection.evaluations:
-        if evaluation.disposition is TomorrowDisposition.REJECT:
+        if evaluation.disposition is ScoredDisposition.REJECT:
             continue
         feature = evaluation.features
         production_top120 = evaluation.candidate_rank > 0
@@ -279,7 +279,7 @@ def _candidate_audits(projection: TomorrowV2LocalProjection) -> tuple[V2Research
 
 def _decision_set(
     decision: ScoredDecision,
-    local_entries: dict[str, TomorrowDecisionEntry],
+    local_entries: dict[str, ScoredDecisionEntry],
     *,
     reused_facts: bool,
 ) -> V2ResearchDecisionSetAudit:

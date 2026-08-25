@@ -19,7 +19,7 @@ from trader.application.ports.long import LongRefreshRequest
 from trader.application.ports.market import MarketDataUnavailableError
 from trader.application.ports.reviews import DeepSeekReviewUnavailableError, TomorrowDeepSeekReviewPort
 from trader.application.ports.runtime_status import V2InputQualityStatus, V2SupplyFunnel, V2SupplySummary
-from trader.application.ports.tomorrow import D25NativeInput, TodayNativeInput, TomorrowNativeInput
+from trader.application.ports.scored import D25NativeInput, TodayNativeInput, TomorrowNativeInput
 from trader.application.ports.v2_runtime import (
     SharedDeepSeekRuntimeContract,
     V2CycleRequest,
@@ -38,20 +38,15 @@ from trader.application.research_audit import (
     V2CommittedResearchAudit,
     try_build_v2_committed_research_audit,
 )
-from trader.application.today_v2_freezing import TodayV2FreezeCoordinator
-from trader.application.today_v2_projection import (
-    TodayV2LocalProjection,
-    build_today_v2_hybrid,
-    build_today_v2_local,
+from trader.application.scored_quality import ScoredInputQuality
+from trader.application.scored_v2_freezing import ScoredV2FreezeCoordinator
+from trader.application.scored_v2_projection import (
+    ScoredV2LocalProjection,
+    build_scored_v2_hybrid,
+    build_scored_v2_local,
     validate_review_manifests,
 )
-from trader.application.tomorrow_quality import TomorrowInputQuality
-from trader.application.tomorrow_v2_freezing import TomorrowV2FreezeCoordinator
-from trader.application.tomorrow_v2_projection import (
-    TomorrowV2LocalProjection,
-    build_tomorrow_v2_hybrid,
-    build_tomorrow_v2_local,
-)
+from trader.application.today_v2_freezing import TodayV2FreezeCoordinator
 from trader.domain.market.models import Board, FeatureSnapshot
 from trader.domain.recommendation.decision_identity import (
     DecisionIdentity,
@@ -62,7 +57,7 @@ from trader.domain.recommendation.decision_identity import (
 )
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 from trader.domain.recommendation.ranking import candidate_score
-from trader.domain.recommendation.tomorrow_selection import TomorrowDisposition
+from trader.domain.recommendation.scored_selection import ScoredDisposition
 
 
 @dataclass(frozen=True)
@@ -186,7 +181,7 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
             tuple[datetime, bool, tuple[str, ...]],
             tuple[FeatureSnapshot, ...],
         ] = {}
-        self._projections: dict[str, TodayV2LocalProjection | TomorrowV2LocalProjection] = {}
+        self._projections: dict[str, ScoredV2LocalProjection] = {}
         self._decisions: dict[str, ScoredDecision] = {}
         self._input_quality: dict[Strategy, V2InputQualityStatus] = {}
         self._sequences = {strategy: 1 for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)}
@@ -459,7 +454,7 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
                     20.0,
                     self._candidate_pool_size,
                 )
-                projection = build_today_v2_local(today_native, self._policy, sequence=sequence)
+                projection = build_scored_v2_local(today_native, self._policy, sequence=sequence)
             else:
                 tomorrow_native = (TomorrowNativeInput if request.strategy is Strategy.TOMORROW else D25NativeInput)(
                     batch.request.trade_date,
@@ -474,7 +469,7 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
                     30.0,
                     self._candidate_pool_size,
                 )
-                projection = build_tomorrow_v2_local(tomorrow_native, self._policy, sequence=sequence)
+                projection = build_scored_v2_local(tomorrow_native, self._policy, sequence=sequence)
         except (RuntimeError, TypeError, ValueError) as exc:
             raise V2DecisionUnavailableError(_decision_failure_code(exc)) from exc
         with self._lock:
@@ -494,13 +489,13 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
                 self._input_quality[strategy] for strategy in sorted(self._input_quality, key=lambda item: item.value)
             )
 
-    def projection(self, version: str) -> TodayV2LocalProjection | TomorrowV2LocalProjection | None:
+    def projection(self, version: str) -> ScoredV2LocalProjection | None:
         with self._lock:
             return self._projections.get(version)
 
     def register_hybrid(
         self,
-        projection: TodayV2LocalProjection | TomorrowV2LocalProjection,
+        projection: ScoredV2LocalProjection,
         decision: ScoredDecision,
     ) -> None:
         with self._lock:
@@ -589,7 +584,7 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
 
 
 def _supply_status(
-    projection: TodayV2LocalProjection | TomorrowV2LocalProjection,
+    projection: ScoredV2LocalProjection,
 ) -> V2InputQualityStatus:
     quality = projection.input_quality
     requested = set(projection.native_input.requested_codes)
@@ -600,9 +595,9 @@ def _supply_status(
         candidate_features=quality.candidate_feature_count,
         security_master=quality.security_master_covered_count,
         history=quality.history_covered_count,
-        filter_pass=sum(item.disposition is TomorrowDisposition.PASS for item in evaluations),
-        filter_observe=sum(item.disposition is TomorrowDisposition.OBSERVE_ONLY for item in evaluations),
-        filter_reject=sum(item.disposition is TomorrowDisposition.REJECT for item in evaluations),
+        filter_pass=sum(item.disposition is ScoredDisposition.PASS for item in evaluations),
+        filter_observe=sum(item.disposition is ScoredDisposition.OBSERVE_ONLY for item in evaluations),
+        filter_reject=sum(item.disposition is ScoredDisposition.REJECT for item in evaluations),
         full_scored=quality.candidate_scored_count,
         review_eligible=len(projection.review_candidates),
         action_executable=sum(item.action is RecommendationAction.EXECUTABLE for item in decision_items),
@@ -714,7 +709,7 @@ def _merge_overlay_quote(
 
 
 def _supply_summary(
-    projection: TodayV2LocalProjection | TomorrowV2LocalProjection,
+    projection: ScoredV2LocalProjection,
 ) -> V2SupplySummary:
     requested = set(projection.native_input.requested_codes)
     features = tuple(
@@ -758,7 +753,7 @@ def _summary_quote_complete(feature: FeatureSnapshot) -> bool:
 
 
 def _primary_supply_blocker(
-    quality: TomorrowInputQuality,
+    quality: ScoredInputQuality,
     funnel: V2SupplyFunnel,
 ) -> str:
     action_blocker = "no_executable_candidates" if funnel.action_observe else "local_score_below_observation_floor"
@@ -812,10 +807,7 @@ class V2DeepSeekAdapter(V2DeepSeekUpgradePort):
         }
         if not validate_review_manifests(projection, reviews, expected):
             return None
-        if request.strategy is Strategy.TODAY:
-            hybrid = build_today_v2_hybrid(projection, self._policy, reviews, review_deadline=deadline)
-        else:
-            hybrid = build_tomorrow_v2_hybrid(projection, self._policy, reviews, review_deadline=deadline)
+        hybrid = build_scored_v2_hybrid(projection, self._policy, reviews, review_deadline=deadline)
         if hybrid is not None:
             self._data.register_hybrid(projection, hybrid)
         return hybrid
@@ -825,10 +817,10 @@ class V2FreezeAdapter(V2FreezePort):
     def __init__(
         self,
         today: TodayV2FreezeCoordinator,
-        tomorrow: TomorrowV2FreezeCoordinator,
-        d25: TomorrowV2FreezeCoordinator,
+        tomorrow: ScoredV2FreezeCoordinator,
+        d25: ScoredV2FreezeCoordinator,
     ) -> None:
-        self._freezers: dict[Strategy, TodayV2FreezeCoordinator | TomorrowV2FreezeCoordinator] = {
+        self._freezers: dict[Strategy, TodayV2FreezeCoordinator | ScoredV2FreezeCoordinator] = {
             Strategy.TODAY: today,
             Strategy.TOMORROW: tomorrow,
             Strategy.D25: d25,
@@ -837,7 +829,7 @@ class V2FreezeAdapter(V2FreezePort):
     def capture_checkpoint(self, strategy: Strategy, at: datetime) -> None:
         del at
         freezer = self._freezers.get(strategy)
-        if not isinstance(freezer, TomorrowV2FreezeCoordinator):
+        if not isinstance(freezer, ScoredV2FreezeCoordinator):
             raise V2FreezeUnavailableError("checkpoint is only available for tomorrow and d25")
         result = freezer.capture_checkpoint()
         if result.status != "checkpoint_saved":
@@ -860,7 +852,7 @@ class V2FreezeAdapter(V2FreezePort):
     ) -> None:
         del at
         freezer = self._freezers.get(strategy)
-        if not isinstance(freezer, TomorrowV2FreezeCoordinator):
+        if not isinstance(freezer, ScoredV2FreezeCoordinator):
             raise V2FreezeUnavailableError("close fallback is only available for tomorrow and d25")
         result = freezer.freeze_close_fallback(
             current,

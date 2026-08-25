@@ -28,6 +28,10 @@ from trader.application.research.score_r6 import ScoreR6HistoricalScreeningServi
 from trader.application.research.score_r6_daily import ScoreR6DailyScreeningService
 from trader.application.research.score_r6_stability import ScoreR6StabilityScreeningService
 from trader.application.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
+from trader.application.scored_v2_freezing import (
+    ScoredV2FreezeCoordinator,
+    V2DecisionRuntimeIdentity,
+)
 from trader.application.shutdown import ShutdownDeadline, ShutdownReport
 from trader.application.source_lanes import SourceLaneRegistry
 from trader.application.system_lifecycle import (
@@ -36,10 +40,6 @@ from trader.application.system_lifecycle import (
     stop_application_resources,
 )
 from trader.application.today_v2_freezing import TodayV2FreezeCoordinator
-from trader.application.tomorrow_v2_freezing import (
-    TomorrowV2FreezeCoordinator,
-    V2DecisionRuntimeIdentity,
-)
 from trader.application.v2_input_runtime import (
     V2DecisionBuildDependencies,
     V2DeepSeekAdapter,
@@ -189,8 +189,8 @@ class _PublicationContext:
     decision_queries: UnifiedDecisionQueries
     decision_events: UnifiedDecisionEventStream
     today_freezer: TodayV2FreezeCoordinator
-    tomorrow_freezer: TomorrowV2FreezeCoordinator
-    d25_freezer: TomorrowV2FreezeCoordinator
+    tomorrow_freezer: ScoredV2FreezeCoordinator
+    d25_freezer: ScoredV2FreezeCoordinator
     observer: AsyncDecisionObserver
 
 
@@ -498,7 +498,7 @@ def _build_market_data(
     feature_builder = FeatureBuilder(
         strategy.today_news_signal,
         strategy.tomorrow_tail_signal,
-        strategy.d25_signal,
+        strategy.market_regime,
         strategy.long_research,
     )
     research_client = AkshareResearchClient(
@@ -702,7 +702,7 @@ def _build_publication(
         capacity=max(1, min(16, settings.pipeline.event_queue_size)),
         thread_name="trader-v2-decision-observer",
     )
-    tomorrow_freezer = TomorrowV2FreezeCoordinator(
+    tomorrow_freezer = ScoredV2FreezeCoordinator(
         tomorrow_decisions,
         repository,
         clock,
@@ -713,7 +713,7 @@ def _build_publication(
         ),
         strategy=Strategy.TOMORROW,
     )
-    d25_freezer = TomorrowV2FreezeCoordinator(
+    d25_freezer = ScoredV2FreezeCoordinator(
         tomorrow_decisions,
         repository,
         clock,

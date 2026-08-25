@@ -43,8 +43,6 @@ from trader.domain.market.models import (
 from trader.domain.market.news import NewsSignalPolicy
 from trader.domain.market.research import FinancialReport, ResearchObservation
 from trader.domain.market.tail import MinuteBar, TailSignalPolicy
-from trader.domain.recommendation.models import Strategy
-from trader.domain.recommendation.strategies import score_strategy
 from trader.infra.cache import BoundedLruCache
 from trader.infra.market_data import gateway as gateway_module
 from trader.infra.market_data import tushare_records as tushare_records_module
@@ -100,7 +98,7 @@ TAIL_POLICY = TailSignalPolicy(
     volume_score_points_per_ratio=50.0,
 )
 _STRATEGY_SETTINGS = load_strategy_settings(Path(__file__).parents[2] / "config" / "v2" / "strategy.json")
-D25_POLICY = _STRATEGY_SETTINGS.d25_signal
+MARKET_REGIME_POLICY = _STRATEGY_SETTINGS.market_regime
 LONG_POLICY = _STRATEGY_SETTINGS.long_research
 
 
@@ -196,7 +194,7 @@ def test_market_service_components_own_distinct_locks_and_facade_has_no_shared_l
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
     )
 
     component_locks = (
@@ -415,7 +413,7 @@ def test_history_cache_fetches_sixty_one_bars_but_retains_only_twenty_raw_rows()
     service = _service(
         StaticGateway((_quote(),)),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         wall_clock=lambda: NOW,
     )
 
@@ -982,7 +980,7 @@ def test_scheduled_tushare_reference_refresh_does_not_block_fast_source_lane() -
     service = _service(
         ReferenceGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         tushare_client=tushare,
         worker_pool=pool,
         source_lanes=lanes,
@@ -1078,7 +1076,7 @@ def test_scheduled_reference_refresh_uses_bounded_history_warmup_instead_of_full
     service = _service(
         ReferenceGateway((_quote(),)),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         tushare_client=tushare,
         worker_pool=pool,
         source_lanes=lanes,
@@ -1240,7 +1238,7 @@ def test_reference_loader_recover_restores_security_master_and_calendar_cursor(t
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         data_plane=data_plane,
         wall_clock=lambda: NOW,
     )
@@ -1288,7 +1286,7 @@ def test_reference_loader_persists_full_market_free_security_master_once_per_pay
     service = _service(
         ReferenceGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         data_plane=data_plane,
         wall_clock=lambda: observed_at,
     )
@@ -1317,7 +1315,7 @@ def test_reference_loader_persists_cumulative_calendar_sessions(tmp_path: Path) 
     service = _service(
         StaticGateway(()),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         data_plane=data_plane,
         wall_clock=lambda: observed_at,
     )
@@ -1377,7 +1375,7 @@ def test_reference_loader_recover_isolation_of_unavailable_data_plane() -> None:
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         data_plane=UnavailableDataPlane(),
         wall_clock=lambda: NOW,
     )
@@ -1421,7 +1419,7 @@ def test_history_cache_recover_from_data_plane_restores_context_and_window(tmp_p
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         data_plane=data_plane,
         wall_clock=lambda: NOW,
     )
@@ -1445,7 +1443,7 @@ def test_history_cache_persists_latest_compact_summary_with_raw_window(tmp_path:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         data_plane=data_plane,
         wall_clock=lambda: datetime(2026, 7, 16, 15, 0, tzinfo=_SHANGHAI),
     )
@@ -1467,7 +1465,7 @@ def test_history_cache_persists_latest_compact_summary_with_raw_window(tmp_path:
     restored_service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         data_plane=trimmed_plane,
         wall_clock=lambda: datetime(2026, 7, 16, 15, 1, tzinfo=_SHANGHAI),
     )
@@ -1484,7 +1482,7 @@ def test_history_cache_persists_intraday_current_day_bar_without_future_source_t
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         data_plane=data_plane,
         wall_clock=lambda: observed_at,
     )
@@ -1512,7 +1510,7 @@ def test_history_cache_persistence_unavailable_does_not_block_history_load() -> 
     service = _service(
         StaticGateway((_quote(),)),
         CountingHistoryClient(bars),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         data_plane=data_plane,
         wall_clock=lambda: NOW,
     )
@@ -1576,7 +1574,7 @@ def test_research_loader_recover_from_data_plane_overrides_component_statuses(tm
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         data_plane=data_plane,
         research_client=StaticStructuredResearchClient((), observation),
         research_workers=1,
@@ -1646,7 +1644,7 @@ def test_news_research_does_not_persist_risk_components() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         data_plane=data_plane,
         research_client=StaticResearchClient(()),
         research_workers=1,
@@ -1672,7 +1670,7 @@ def test_research_data_plane_persistence_unavailable_does_not_block_research_loa
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         data_plane=FailingRiskSaveDataPlane(),
         research_client=StaticStructuredResearchClient(
             (),
@@ -1710,7 +1708,7 @@ def test_dedicated_history_workers_do_not_consume_realtime_source_workers() -> N
     service = _service(
         StaticGateway((_quote(),)),
         BlockingRemoteHistory(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         worker_pool=source_pool,
         history_worker_pool=history_pool,
         source_lanes=lanes,
@@ -1868,7 +1866,7 @@ def test_late_eastmoney_hedge_preserves_security_identity_without_overwriting_si
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         data_plane=data_plane,
         wall_clock=lambda: observed_at,
     )
@@ -2372,7 +2370,7 @@ def test_late_free_identity_is_persisted_without_waiting_for_next_score_cycle(tm
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         data_plane=data_plane,
         worker_pool=pool,
         source_lanes=lanes,
@@ -2509,7 +2507,7 @@ def test_candidate_feature_service_keeps_tencent_priority_before_cross_vendor_ve
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         wall_clock=lambda: NOW,
     )
     service.fetch_market_features(NOW)
@@ -2723,7 +2721,7 @@ def test_tushare_reference_version_uses_response_time_before_hash_order() -> Non
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
     )
     newer = SourceObservation(
         source="tushare",
@@ -2770,7 +2768,7 @@ def test_snapshot_metadata_copies_tushare_versions_under_service_lock() -> None:
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         wall_clock=lambda: NOW,
     )
 
@@ -3294,7 +3292,7 @@ def test_reference_refresh_reuses_cache_and_refreshes_due_entries_inside_tushare
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         tushare_client=TushareClient(
             token="secret-token",
             timeout_seconds=8,
@@ -3346,7 +3344,7 @@ def test_akshare_circuit_skips_excess_requests_and_recovers_with_one_probe() -> 
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         research_client=research,
         research_workers=1,
         worker_pool=pool,
@@ -3440,7 +3438,7 @@ def test_tushare_negative_refresh_marks_preserved_reference_data_degraded() -> N
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         tushare_client=client,
         cache=cache,
         source_contract_versions=runtime.market_data.source_contract_versions,
@@ -3532,7 +3530,7 @@ def test_auxiliary_cache_action_age_marks_new_features_observe_only() -> None:
     service = _service(
         StaticGateway((quote,)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         cache=cache,
         source_contract_versions=runtime.market_data.source_contract_versions,
         config_version=runtime.config_version,
@@ -3698,7 +3696,7 @@ def test_history_intraday_and_research_share_the_bounded_market_cache() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         intraday_client=intraday,
         research_client=research,
         cache=cache,
@@ -3739,7 +3737,7 @@ def test_expired_unified_intraday_cache_triggers_a_new_physical_load() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         intraday_client=intraday,
         cache=cache,
         source_contract_versions=runtime.market_data.source_contract_versions,
@@ -3832,7 +3830,7 @@ def test_reference_refresh_structures_tushare_history_valuation_and_financial_da
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         tushare_client=TushareClient(
             token="secret-token",
             timeout_seconds=8,
@@ -3903,7 +3901,7 @@ def test_eastmoney_history_completion_cannot_overwrite_newer_tushare_history() -
     service = _service(
         StaticGateway((_quote(),)),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         wall_clock=lambda: NOW,
     )
     result: dict[str, tuple[DailyBar, ...]] = {}
@@ -4174,7 +4172,7 @@ def test_feature_service_rejects_targeted_quote_older_than_full_market_snapshot(
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         wall_clock=lambda: NOW + timedelta(seconds=5),
     )
     service.refresh_candidate_quotes(("600001",), NOW)
@@ -4194,7 +4192,7 @@ def test_feature_service_does_not_commit_full_market_result_after_deadline() -> 
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         wall_clock=lambda: next(wall_times),
     )
 
@@ -4210,7 +4208,7 @@ def test_feature_service_does_not_commit_history_cache_after_deadline() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         wall_clock=lambda: next(wall_times, deadline),
     )
 
@@ -4233,7 +4231,7 @@ def test_full_market_deadline_does_not_wait_for_blocked_history_warmup() -> None
     service = _service(
         StaticGateway((_quote(),)),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         worker_pool=pool,
         source_lanes=lanes,
         cache=cache,
@@ -4274,7 +4272,7 @@ def test_source_lane_research_deadline_discards_late_memory_and_disk_cache(tmp_p
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         research_client=research,
         research_cache_dir=tmp_path,
         worker_pool=pool,
@@ -4312,7 +4310,7 @@ def test_feature_service_health_reports_bounded_quote_age_summaries() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         wall_clock=lambda: measured_at,
     )
     service.fetch_market_features(NOW)
@@ -4345,7 +4343,7 @@ def test_feature_service_current_quote_index_prefers_latest_targeted_quote() -> 
     service = _service(
         StaticGatewayWithSeparateQuotes((market_quote,), (targeted_quote,)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
     )
     service.fetch_market_features(NOW)
     service.refresh_candidate_quotes(("600001",), NOW + timedelta(seconds=5))
@@ -4369,7 +4367,7 @@ def test_feature_service_current_quote_index_reads_canonical_quote_before_featur
     service = _service(
         StaticGateway((canonical_quote,)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
     )
 
     quotes = service.current_quotes(("600001",))
@@ -4387,7 +4385,7 @@ def test_feature_builder_does_not_compute_limit_proximity_when_limit_is_inapplic
         listing_age_sessions=1,
     )
 
-    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY).build((quote,), {}, NOW)[0]
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY).build((quote,), {}, NOW)[0]
 
     assert feature.values["limit_proximity"] is None
     assert feature.values["limit_distance_safety"] is None
@@ -4408,7 +4406,7 @@ def test_out_of_order_intraday_refresh_keeps_last_valid_tail_input() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         intraday_client=SequenceIntradayClient((current, older)),
         intraday_ttl_seconds=1,
         monotonic=monotonic,
@@ -4441,7 +4439,7 @@ def test_feature_builder_marks_history_missing_and_builds_cross_section() -> Non
         for index in range(1, 61)
     )
 
-    with_history, without_history = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY).build(
+    with_history, without_history = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY).build(
         (quote, _quote(code="600002", industry="银行")),
         {"600001": bars},
         NOW,
@@ -4455,7 +4453,7 @@ def test_feature_builder_marks_history_missing_and_builds_cross_section() -> Non
 
 
 def test_targeted_feature_build_preserves_full_market_cross_section() -> None:
-    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY)
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY)
     low = replace(_quote(code="600001"), speed=0.1)
     middle = replace(_quote(code="600002"), speed=0.2)
     high = replace(_quote(code="600003"), speed=0.3)
@@ -4469,7 +4467,7 @@ def test_targeted_feature_build_preserves_full_market_cross_section() -> None:
 
 
 def test_feature_builder_partitions_cross_sections_and_excludes_missing_breadth() -> None:
-    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY)
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY)
     quotes = (
         replace(_quote(code="600001"), speed=0.1, pct_change=1.0, data_version="v1"),
         replace(_quote(code="600002"), speed=0.2, pct_change=-1.0, data_version="v1"),
@@ -4483,9 +4481,7 @@ def test_feature_builder_partitions_cross_sections_and_excludes_missing_breadth(
     assert features[0].values["market_breadth"] == 50.0
     assert features[2].values["market_breadth"] == 100.0
     assert features[0].market_regime == "neutral"
-    assert features[0].values["market_regime_factor"] == pytest.approx(1.0)
     assert features[2].market_regime == "risk_on"
-    assert features[2].values["market_regime_factor"] == pytest.approx(1.03)
     assert features[0].normalization["speed_percentile"].sample_size == 2
     assert features[2].normalization["market_breadth"].missing_count == 1
     assert features[2].values["limit_proximity"] is None
@@ -4499,7 +4495,7 @@ def test_market_service_bounds_history_preload_to_stratified_candidate_universe(
     service = _service(
         StaticGateway(quotes),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         history_workers=2,
         history_preload_limit=2,
     )
@@ -4550,7 +4546,7 @@ def test_market_service_uses_injected_lifecycle_data_pool() -> None:
     service = _service(
         gateway,
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         worker_pool=pool,
         history_workers=2,
     )
@@ -4596,7 +4592,7 @@ def test_topk_quote_refresh_uses_reserved_urgent_worker() -> None:
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         worker_pool=pool,
         source_lanes=lanes,
         wall_clock=lambda: NOW,
@@ -4624,7 +4620,7 @@ def test_market_service_loads_history_before_cold_start_candidate_cross_section(
     service = _service(
         StaticGateway((_quote(), _quote(code="600002"))),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         history_workers=2,
     )
 
@@ -4669,7 +4665,7 @@ def test_unadjusted_tushare_history_is_not_consumed_and_warmup_uses_qfq_fallback
     service = _service(
         StaticGateway(quotes),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         tushare_client=TushareClient(
             token="secret-token",
             timeout_seconds=8,
@@ -4711,7 +4707,7 @@ def test_feature_builder_rejects_unadjusted_history_for_qfq_features() -> None:
     raw_bars = tuple(replace(bar, adjustment=PriceAdjustment.RAW, source="tushare") for bar in _history_bars())
 
     with pytest.raises(HistoryAdjustmentError, match="requires qfq"):
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY).build(
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY).build(
             (_quote(),),
             {"600001": raw_bars},
             NOW,
@@ -4737,7 +4733,7 @@ def test_permission_denied_tushare_falls_back_to_batched_history_lane() -> None:
     service = _service(
         StaticGateway(quotes),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         tushare_client=PermissionDeniedTushare(),
         worker_pool=pool,
         source_lanes=lanes,
@@ -4779,7 +4775,7 @@ def test_repeated_refresh_does_not_queue_multiple_history_warmup_batches() -> No
     service = _service(
         StaticGateway(tuple(_quote(code=code) for code in codes)),
         BlockingHistory(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         worker_pool=pool,
         source_lanes=lanes,
         history_warmup_batch_size=3,
@@ -4822,7 +4818,7 @@ def test_history_warmup_does_not_supersede_pending_candidate_history() -> None:
     service = _service(
         StaticGateway(tuple(_quote(code=code) for code in codes)),
         BlockingFirstHistory(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         worker_pool=pool,
         source_lanes=lanes,
         history_warmup_batch_size=1,
@@ -4879,7 +4875,7 @@ def test_history_warmup_deadline_releases_blocked_batch_identity() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         BlockingHistory(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         worker_pool=source_pool,
         history_worker_pool=history_pool,
         source_lanes=lanes,
@@ -4929,7 +4925,7 @@ def test_history_warmup_deadline_keeps_completed_stock_and_retries_only_slow_tai
     service = _service(
         StaticGateway((_quote(),)),
         PartialHistory(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         worker_pool=source_pool,
         history_worker_pool=history_pool,
         source_lanes=lanes,
@@ -4967,7 +4963,7 @@ def test_market_service_reloads_expired_history_and_reports_failed_coverage() ->
     service = _service(
         StaticGateway((_quote(), _quote(code="600002"))),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         history_workers=2,
         history_ttl_seconds=60,
         market_ttl_seconds=1,
@@ -5006,7 +5002,7 @@ def test_strategy_loader_rejects_missing_factor_registration(tmp_path) -> None:
 
 
 def test_feature_builder_derives_auditable_tail_inputs_without_fabricating_missing_values() -> None:
-    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY)
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY)
     available, missing = builder.build(
         (_quote(), _quote(code="600002")),
         {},
@@ -5033,7 +5029,7 @@ def test_feature_builder_derives_auditable_tail_inputs_without_fabricating_missi
 
 
 def test_feature_builder_populates_every_tomorrow_component_from_point_in_time_inputs() -> None:
-    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY).build(
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY).build(
         (_quote(),),
         {"600001": _history_bars()},
         AFTERNOON,
@@ -5082,7 +5078,7 @@ def test_close_location_has_exact_boundaries_and_preserves_missing(
 ) -> None:
     quote = replace(_quote(), price=price, high=high, low=low)
 
-    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY).build((quote,), {}, NOW)[0]
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY).build((quote,), {}, NOW)[0]
 
     if expected is None:
         assert feature.optional_value("close_location") is None
@@ -5108,7 +5104,7 @@ def test_zero_historical_return_has_neutral_price_volume_confirmation() -> None:
     )
     quote = replace(_quote(), price=10.0, amount=100_000_000.0)
 
-    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY).build(
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY).build(
         (quote,), {quote.code: bars}, NOW
     )[0]
 
@@ -5121,7 +5117,7 @@ def test_market_service_fetches_intraday_minutes_only_for_requested_candidate_mo
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         intraday_client=intraday,
         intraday_workers=1,
     )
@@ -5156,7 +5152,7 @@ def test_market_service_schedules_intraday_io_round_robin_across_boards() -> Non
     service = _service(
         StaticGateway(quotes),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         intraday_client=intraday,
         intraday_workers=1,
     )
@@ -5175,7 +5171,7 @@ def test_intraday_cache_has_a_hard_entry_limit() -> None:
     service = _service(
         StaticGateway((_quote(), _quote(code="600002"))),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         intraday_client=intraday,
         intraday_workers=1,
         intraday_cache_limit=1,
@@ -5192,7 +5188,7 @@ def test_intraday_failure_keeps_tomorrow_features_available_and_marks_missing() 
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         intraday_client=FailingIntradayClient(),
         intraday_workers=1,
     )
@@ -5216,7 +5212,7 @@ def test_intraday_health_requires_complete_tail_signals_for_coverage() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         intraday_client=intraday,
         intraday_workers=1,
     )
@@ -5239,7 +5235,7 @@ def test_intraday_batch_deadline_does_not_wait_for_every_candidate_request() -> 
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         intraday_client=intraday,
         intraday_workers=1,
         intraday_batch_timeout_seconds=0.01,
@@ -5265,7 +5261,7 @@ def test_cancelled_before_start_intraday_request_is_retried_on_next_refresh() ->
     service = _service(
         StaticGateway((_quote(), _quote(code="600002"))),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         intraday_client=intraday,
         intraday_workers=1,
         intraday_batch_timeout_seconds=0.1,
@@ -5296,7 +5292,7 @@ def test_source_lane_intraday_batch_timeout_returns_without_waiting_for_blocked_
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         intraday_client=intraday,
         intraday_workers=1,
         intraday_batch_timeout_seconds=0.01,
@@ -5336,7 +5332,7 @@ def test_timed_out_intraday_lane_cannot_mutate_caller_restrictions_after_return(
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         intraday_client=StaticIntradayClient(_tail_minute_bars()),
         intraday_workers=1,
         intraday_batch_timeout_seconds=0.01,
@@ -5389,7 +5385,7 @@ def test_source_lane_cancels_queued_intraday_io_after_batch_timeout() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         intraday_client=intraday,
         intraday_workers=1,
         intraday_batch_timeout_seconds=0.01,
@@ -5523,7 +5519,7 @@ def test_research_cache_is_used_after_restart_before_source_request(tmp_path) ->
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         research_client=FailingResearchClient(),
         research_cache_dir=cache_dir,
         research_workers=1,
@@ -5574,7 +5570,7 @@ def test_research_cache_expired_calls_research_client(tmp_path) -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         research_client=research,
         research_cache_dir=cache_dir,
         research_workers=1,
@@ -5691,7 +5687,7 @@ def test_akshare_structured_research_is_point_in_time_and_builds_real_long_input
     observation = client.fetch_snapshot("600001", observed_at=AFTERNOON)
     repeated = client.fetch_snapshot("600001", observed_at=AFTERNOON + timedelta(minutes=1))
     client.fetch_snapshot("600001", observed_at=AFTERNOON + timedelta(minutes=11))
-    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY).build(
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY).build(
         (replace(_quote(), price=20.0),),
         {"600001": _history_bars()},
         AFTERNOON,
@@ -5822,7 +5818,7 @@ def test_structured_research_source_failure_preserves_null_and_other_sources() -
         source_errors=("pledge:timeout",),
     )
 
-    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY).build(
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY).build(
         (_quote(),),
         {"600001": _history_bars()},
         AFTERNOON,
@@ -5883,7 +5879,7 @@ def test_candidate_news_is_cached_and_failure_does_not_block() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         research_client=research,
         research_workers=1,
     )
@@ -5897,12 +5893,11 @@ def test_candidate_news_is_cached_and_failure_does_not_block() -> None:
     assert first[0].values["news_sentiment"] == 75.0
     assert first[0].values["evidence_freshness"] == 100.0
     assert "news_sentiment" not in first[0].missing_fields
-    assert score_strategy(Strategy.TODAY, first[0]).components["sentiment"] == 87.5
 
     degraded = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         research_client=FailingResearchClient(),
         research_workers=1,
     )
@@ -5912,7 +5907,6 @@ def test_candidate_news_is_cached_and_failure_does_not_block() -> None:
     assert result[0].values["news_sentiment"] is None
     assert result[0].values["evidence_freshness"] is None
     assert "news_sentiment" in result[0].missing_fields
-    assert score_strategy(Strategy.TODAY, result[0]).components["sentiment"] == 60.0
     assert degraded.health()["research_error_count"] == 1
     assert degraded.health()["research_last_error"] == "offline"
 
@@ -5931,7 +5925,7 @@ def test_structured_research_upgrades_news_only_cache_and_is_reused() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         research_client=research,
         research_workers=1,
     )
@@ -5975,7 +5969,7 @@ def test_read_candidate_features_reuses_structured_research_disk_cache_after_res
     writer = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         research_client=StaticStructuredResearchClient((), observation),
         research_cache_dir=cache_dir,
         research_workers=1,
@@ -5988,7 +5982,7 @@ def test_read_candidate_features_reuses_structured_research_disk_cache_after_res
     reader = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         research_client=None,
         research_cache_dir=cache_dir,
         research_workers=1,
@@ -6013,7 +6007,7 @@ def test_stock_risk_refresh_reuses_successful_ten_minute_cache() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         research_client=research,
         research_workers=1,
     )
@@ -6036,7 +6030,7 @@ def test_stock_risk_refresh_reports_only_real_research_version_changes() -> None
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         research_client=StaticStructuredResearchClient((), observation),
         research_workers=1,
         research_ttl_seconds=60,
@@ -6060,7 +6054,7 @@ def test_stock_risk_batch_deadline_keeps_completed_codes_and_defers_late_codes()
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         research_client=research,
         research_workers=2,
         wall_clock=lambda: datetime.now(timezone.utc),
@@ -6091,7 +6085,7 @@ def test_stock_risk_batch_deadline_discards_only_late_result() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, D25_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         research_client=research,
         research_workers=1,
         wall_clock=lambda: datetime.now(timezone.utc),

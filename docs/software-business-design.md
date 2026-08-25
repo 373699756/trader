@@ -262,7 +262,8 @@ candidate/research、配置、策略、融合、阶段、待审集合、逐股�
 
 `ScoredDecision` 同时保存去重后的 `population_count` 与 `rejected_count`；结构化过滤原因允许
 同一股票命中多项，只用于原因分布，API 不得相加这些非互斥计数来推导候选数或拒绝数。
-旧正式记录缺少这两个可选计数时才使用原有兼容推导，新记录和冻结投影必须原样保留精确计数。
+活动正式记录 codec 只接受当前 schema；`population_count` 与 `rejected_count` 必须存在并原样保留，
+不得通过旧字段兼容推导。旧 release 的正式记录只能随完整旧 release 和旧运行目录离线保留。
 
 `DeepSeekReviewPort` 的预算、缓存、schema、证据和双模型适配器必须通过组合根显式注入。
 融合结果只提交 `UnifiedDecisionIndex`；事件、冻结和 Web 不得直接调用模型或重新计算。
@@ -278,8 +279,8 @@ local/hybrid 阶段、结构化过滤聚合和逐项分数、风险、动作与�
 每个 scored `DecisionItem` 还必须从形成该项的同批 `FeatureSnapshot.quote` 固化股票名称、行业和
 不可变报价锚点；锚点至少包含价格、涨跌幅、成交额、换手率、总市值、来源、来源时间和报价版本。
 current、冻结历史和 HTTP 只读投影都复用该身份内元数据，不得在查询时现场抓取或按代码补算。
-旧正式记录缺少可选显示元数据或报价锚点时保持原身份并显示 `—`，新生成决策不得在投影阶段
-丢弃同批已有名称或行情事实。报价锚点参与 `ScoredDecision` 规范哈希，但只用于展示和冻结审计，
+活动正式记录必须包含显示元数据和报价锚点，投影阶段不得丢弃同批已有名称或行情事实。
+报价锚点参与 `ScoredDecision` 规范哈希，但只用于展示和冻结审计，
 不得反向改变候选、过滤、评分、风险、动作或排名。
 评分原生输入的 `evaluated_at` 取调度请求时刻与同批本地 `observed_at`/`received_time` 的最晚值，
 以反映网络刷新真实完成时间；供应商 `source_time` 和公告 `published_at` 仍必须不晚于该时刻，
@@ -511,10 +512,11 @@ today、tomorrow、d25 的评分、DeepSeek、冻结、overlay 或结算资源�
 entrypoints / web / infra -> application -> domain
 ```
 
-- `domain`：按 `market`、`recommendation`、`review`、`outcome` 四个业务能力包组织不可变
+- `domain`：按 `market`、`recommendation`、`research`、`review`、`outcome` 五个业务能力包组织不可变
   值对象和纯函数。`market` 负责点时行情、因子、研究、新闻与尾盘信号；
   `recommendation` 负责过滤、板内评分、策略组合、融合、下行保护和稳定排名；`review`
-  负责结构化复核值与本地风险映射；`outcome` 负责冻结推荐结果结算。领域包不得读取配置、
+  负责结构化复核值与本地风险映射；`research` 负责离线研究身份、报告与晋级值对象；
+  `outcome` 负责冻结推荐结果结算。领域包不得读取配置、
   时钟、网络、文件或数据库，不保留旧根级模块或动态兼容导出。
 - `application`：端口按行情、候选特征、报价、研究、参考/历史、快照、事件、复核和结果
   读写能力拆分；流水线只接收不可变的依赖、选项和资源集合。跨线程事件使用有类型内存
@@ -548,6 +550,12 @@ schema、预算批次、预算汇总、缓存、请求执行、状态和复核�
 行情、评分、调用 DeepSeek 或写盘。新代码不得导入 `stock_analyzer`。活动源码单文件
 最多 1200 行；接近上限仍须按职责、耦合和可测试性独立 Review，禁止为满足行数机械拆分
 或新增含义模糊的聚合模块。
+
+today、tomorrow 和 d25 共用 `ports/scored.py`、`scored_selection.py`、`scored_quality.py`、
+`scored_fusion.py`、`scored_v2_projection.py` 与 `scored_v2_freezing.py`。模块名表达复用边界，
+策略差异只能由有类型 `Strategy`、板块策略和冻结参数注入，不得再建立以 tomorrow 命名却被三策略
+共同调用的别名模块或 Today 包装层。活动评分唯一入口是板块策略 `score_board_strategy()`；旧通用
+today/tomorrow/d25 评分器、权重配置和双乘因子不得保留为回放或性能兼容链。
 
 公开入口固定为 `trader-server` 和 `trader-cli`。配置通过 `--config` 或
 `TRADER_CONFIG` 传入绝对路径，不得按当前工作目录猜测。HTML、CSS、JavaScript 和
@@ -1055,9 +1063,10 @@ current 一次返回完整紧凑 `DecisionView`；公开 schema 为 `v2_decision
 未通过的 local 决策，可在独立可空的 `draft` 对象中返回版本、哈希、观测时间和最多 6 项
 `observe`，其哈希参与 ETag。`draft` 不改变 `status=not_ready`、正式 coverage、冻结或历史语义。
 核心数值不可用时返回 `null`，不得伪造 0。
-新写入的统一决策身份与正式记录使用各自 schema v2，并把不可变 anchor quote、setup、downside、
-研究覆盖、复核终态和 selection diagnostics 纳入规范哈希。仍可校验读取的 schema v1 正式记录保持
-原字节和冻结身份；缺失的新展示元数据投影为 `null`/`—`，不得现场重算、升级或覆盖旧冻结结果。
+统一决策身份与正式记录使用各自当前 schema v2，并把不可变 anchor quote、setup、downside、
+研究覆盖、复核终态和 selection diagnostics 纳入规范哈希。领域和应用层只操作有类型对象；正式记录
+的 JSON 编解码唯一归属 `infra/persistence/decision_record_codec.py`，只接受当前 schema 和哈希一致载荷。
+旧 schema v1 不进入新 release 的启动、恢复、查询或测试路径，也不得以双读、现场升级或默认字段恢复。
 
 逐股对象只公开页面需要的代码、名称、板块/行业、核心行情、锚点行情、本地/模型/模型风险/
 最终分、动作、结构化理由、精简风险、复核终态、`setup_type` 与 `downside`。原始特征、权重、

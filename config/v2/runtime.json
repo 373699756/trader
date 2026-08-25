@@ -399,7 +399,6 @@
       "board_ready_to_draft": 500,
       "quote_to_draft": 5000,
       "deepseek_to_hybrid": 1000,
-      "tomorrow_native_projection": 5000,
       "sse_publish": 100,
       "browser_patch_to_paint": 100,
       "snapshot_api": 200,

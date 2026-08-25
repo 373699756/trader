@@ -12,55 +12,16 @@ from trader.domain.market.models import Evidence
 
 
 @dataclass(frozen=True)
-class D25SignalPolicy:
-    overheat_full_return_max: float
-    overheat_linear_return_max: float
-    overheat_linear_end_factor: float
-    overheat_above_factor: float
+class MarketRegimePolicy:
     risk_on_breadth_min: float
     risk_off_breadth_max: float
-    risk_on_factor: float
-    neutral_factor: float
-    risk_off_factor: float
 
     def __post_init__(self) -> None:
-        values = (
-            self.overheat_full_return_max,
-            self.overheat_linear_return_max,
-            self.overheat_linear_end_factor,
-            self.overheat_above_factor,
-            self.risk_on_breadth_min,
-            self.risk_off_breadth_max,
-            self.risk_on_factor,
-            self.neutral_factor,
-            self.risk_off_factor,
-        )
+        values = (self.risk_on_breadth_min, self.risk_off_breadth_max)
         if not all(math.isfinite(value) for value in values):
-            raise ValueError("d25 signal policy values must be finite")
-        if self.overheat_full_return_max >= self.overheat_linear_return_max:
-            raise ValueError("d25 overheat return boundaries must increase")
-        if not 0.0 < self.overheat_above_factor <= self.overheat_linear_end_factor <= 1.0:
-            raise ValueError("d25 overheat factors must satisfy 0 < above <= linear_end <= 1")
+            raise ValueError("market regime policy values must be finite")
         if not 0.0 <= self.risk_off_breadth_max < self.risk_on_breadth_min <= 100.0:
-            raise ValueError("d25 market breadth boundaries are invalid")
-        if not all(0.0 < value <= 2.0 for value in self.regime_factors.values()):
-            raise ValueError("d25 market regime factors must be in (0, 2]")
-
-    @property
-    def regime_factors(self) -> dict[str, float]:
-        return {
-            "risk_on": self.risk_on_factor,
-            "neutral": self.neutral_factor,
-            "risk_off": self.risk_off_factor,
-        }
-
-
-@dataclass(frozen=True)
-class D25Signals:
-    market_regime: str
-    market_regime_factor: float
-    overheat_factor: float
-    not_overheated_score: float | None
+            raise ValueError("market breadth boundaries are invalid")
 
 
 @dataclass(frozen=True)
@@ -283,41 +244,17 @@ class ResearchObservation:
             raise ValueError("announcement rows require an available announcement source")
 
 
-def derive_d25_signals(
-    return_20d: float | None,
+def derive_market_regime(
     market_breadth: float | None,
-    policy: D25SignalPolicy,
-) -> D25Signals:
+    policy: MarketRegimePolicy,
+) -> str:
     if market_breadth is None or not math.isfinite(market_breadth):
-        regime = "neutral"
-    elif market_breadth >= policy.risk_on_breadth_min:
-        regime = "risk_on"
-    elif market_breadth <= policy.risk_off_breadth_max:
-        regime = "risk_off"
-    else:
-        regime = "neutral"
-
-    if return_20d is None or not math.isfinite(return_20d):
-        overheat_factor = 1.0
-        not_overheated_score = None
-    elif return_20d <= policy.overheat_full_return_max:
-        overheat_factor = 1.0
-        not_overheated_score = 100.0
-    elif return_20d <= policy.overheat_linear_return_max:
-        progress = (return_20d - policy.overheat_full_return_max) / (
-            policy.overheat_linear_return_max - policy.overheat_full_return_max
-        )
-        overheat_factor = 1.0 - progress * (1.0 - policy.overheat_linear_end_factor)
-        not_overheated_score = 100.0 * (1.0 - progress)
-    else:
-        overheat_factor = policy.overheat_above_factor
-        not_overheated_score = 0.0
-    return D25Signals(
-        market_regime=regime,
-        market_regime_factor=policy.regime_factors[regime],
-        overheat_factor=overheat_factor,
-        not_overheated_score=not_overheated_score,
-    )
+        return "neutral"
+    if market_breadth >= policy.risk_on_breadth_min:
+        return "risk_on"
+    if market_breadth <= policy.risk_off_breadth_max:
+        return "risk_off"
+    return "neutral"
 
 
 def derive_long_research_features(
@@ -671,8 +608,7 @@ def _groups_overlap(groups: tuple[set[str], set[str], set[str]]) -> bool:
 __all__ = [
     "CorporateRiskCategory",
     "CorporateRiskFact",
-    "D25SignalPolicy",
-    "D25Signals",
+    "MarketRegimePolicy",
     "FinancialReport",
     "LongResearchPolicy",
     "LongResearchInputs",
@@ -681,7 +617,7 @@ __all__ = [
     "announcement_level",
     "corporate_risk_facts_from_announcements",
     "derive_corporate_risk_features",
-    "derive_d25_signals",
+    "derive_market_regime",
     "derive_long_research_features",
     "reduction_level",
 ]

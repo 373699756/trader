@@ -5,9 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from trader.domain.market.factors import PRODUCTION_FACTOR_IDS
-from trader.domain.market.research import D25SignalPolicy
+from trader.domain.market.research import MarketRegimePolicy
 from trader.infra.settings_factor_validation import (
-    _validate_d25_factor_contract,
     _validate_feature_schema_contract,
     _validate_long_research_factor_contract,
     _validate_tomorrow_tail_factor_contract,
@@ -104,19 +103,12 @@ def _validate_signal_policies(settings: StrategySettings) -> None:
         or tail.volume_score_points_per_ratio != 50.0
     ):
         raise ConfigurationError("tomorrow tail signal formula is fixed at 30/30/25/50")
-    d25 = settings.d25_signal
-    if d25 != D25SignalPolicy(
-        overheat_full_return_max=15.0,
-        overheat_linear_return_max=30.0,
-        overheat_linear_end_factor=0.85,
-        overheat_above_factor=0.75,
+    market_regime = settings.market_regime
+    if market_regime != MarketRegimePolicy(
         risk_on_breadth_min=60.0,
         risk_off_breadth_max=40.0,
-        risk_on_factor=1.03,
-        neutral_factor=1.0,
-        risk_off_factor=0.92,
     ):
-        raise ConfigurationError("d25 signal formula is fixed at 15/30/0.85/0.75 and 60/40/1.03/1/0.92")
+        raise ConfigurationError("market regime boundaries are fixed at 60/40")
     long = settings.long_research
     if (
         long.financial_max_age_days != 550
@@ -162,17 +154,6 @@ def _validate_strategy_weights(settings: StrategySettings) -> None:
         raise ConfigurationError("v16 selection thresholds must be 70/76/78/76")
     required_strategies = {"today", "tomorrow", "d25"}
     _validate_dimension_weights(settings, required_strategies)
-    if set(settings.local_strategy_weights) != required_strategies:
-        raise ConfigurationError("local_strategy_weights must define today, tomorrow and d25")
-    required_local_components: dict[str, set[str]] = {
-        "today": {"momentum", "liquidity", "sentiment", "protection"},
-        "tomorrow": {"liquidity", "momentum", "trend", "historical_edge", "execution", "tail_structure"},
-        "d25": {"momentum", "trend", "liquidity", "execution", "not_overheated"},
-    }
-    for strategy, weights in settings.local_strategy_weights.items():
-        _validate_weight_sum(f"local_strategy_weights.{strategy}", weights)
-        if set(weights) != required_local_components[strategy]:
-            raise ConfigurationError(f"local_strategy_weights.{strategy} components are invalid")
     _validate_board_weights(settings)
 
 
@@ -211,7 +192,6 @@ def _validate_risk_registry_contract(settings: StrategySettings) -> None:
         extra = sorted(registered - PRODUCTION_FACTOR_IDS)
         raise ConfigurationError(f"factor_registry mismatch: missing={missing}, extra={extra}")
     _validate_tomorrow_tail_factor_contract(settings)
-    _validate_d25_factor_contract(settings)
     _validate_long_research_factor_contract(settings)
     _validate_feature_schema_contract(settings)
     required_risk_codes = {

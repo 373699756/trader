@@ -1,4 +1,4 @@
-"""Classify native tomorrow input before an empty decision can be published."""
+"""Classify native scored input before an empty decision can be published."""
 
 from __future__ import annotations
 
@@ -9,14 +9,14 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal
 
-from trader.application.ports.tomorrow import ScoredNativeInput
+from trader.application.ports.scored import ScoredNativeInput
 from trader.domain.market.models import Board, FeatureSnapshot
-from trader.domain.recommendation.tomorrow_selection import (
-    TomorrowDisposition,
-    TomorrowSelectionResult,
+from trader.domain.recommendation.scored_selection import (
+    ScoredDisposition,
+    ScoredSelectionResult,
 )
 
-TomorrowInputQualityStatus = Literal[
+ScoredInputQualityStatus = Literal[
     "ready",
     "business_empty",
     "transient_invalid_empty",
@@ -41,8 +41,8 @@ _SECURITY_IDENTITY_RESTRICTIONS = frozenset(
 
 
 @dataclass(frozen=True)
-class TomorrowInputQuality:
-    status: TomorrowInputQualityStatus
+class ScoredInputQuality:
+    status: ScoredInputQualityStatus
     population_count: int
     candidate_count: int
     candidate_feature_count: int
@@ -72,11 +72,11 @@ class TomorrowInputQuality:
             "history_covered_count",
         ):
             if getattr(self, name) < 0:
-                raise ValueError("tomorrow input quality counts cannot be negative")
+                raise ValueError("scored input quality counts cannot be negative")
         if self.population_rejected_count > self.population_count:
-            raise ValueError("tomorrow rejected population cannot exceed population")
+            raise ValueError("scored rejected population cannot exceed population")
         if max(self.candidate_rejected_count, self.candidate_scored_count) > self.candidate_count:
-            raise ValueError("tomorrow candidate quality counts cannot exceed candidates")
+            raise ValueError("scored candidate quality counts cannot exceed candidates")
         if (
             max(
                 self.candidate_feature_count,
@@ -85,7 +85,7 @@ class TomorrowInputQuality:
             )
             > self.candidate_count
         ):
-            raise ValueError("tomorrow candidate coverage counts cannot exceed candidates")
+            raise ValueError("scored candidate coverage counts cannot exceed candidates")
         for name in (
             "candidate_feature_coverage_ratio",
             "security_master_coverage_ratio",
@@ -93,7 +93,7 @@ class TomorrowInputQuality:
         ):
             value = getattr(self, name)
             if not math.isfinite(value) or not 0.0 <= value <= 1.0:
-                raise ValueError("tomorrow candidate coverage ratios must be in [0, 1]")
+                raise ValueError("scored candidate coverage ratios must be in [0, 1]")
         for name in (
             "population_filter_reason_counts",
             "candidate_filter_reason_counts",
@@ -102,7 +102,7 @@ class TomorrowInputQuality:
         ):
             values = dict(getattr(self, name))
             if any(not key or value < 0 for key, value in values.items()):
-                raise ValueError("tomorrow input quality reason counts must be non-negative")
+                raise ValueError("scored input quality reason counts must be non-negative")
             object.__setattr__(self, name, MappingProxyType(dict(sorted(values.items()))))
         object.__setattr__(self, "degraded_reasons", tuple(sorted(set(self.degraded_reasons))))
 
@@ -111,16 +111,16 @@ class TomorrowInputQuality:
         return self.status in {"ready", "business_empty"}
 
 
-def assess_tomorrow_input_quality(
+def assess_scored_input_quality(
     native_input: ScoredNativeInput,
-    selection: TomorrowSelectionResult,
-) -> TomorrowInputQuality:
+    selection: ScoredSelectionResult,
+) -> ScoredInputQuality:
     requested_codes = set(native_input.requested_codes)
     candidate_codes = {feature.quote.code for feature in native_input.candidate_features}
     evaluations = {item.code: item for item in selection.evaluations}
     candidate_evaluations = tuple(evaluations[code] for code in sorted(candidate_codes) if code in evaluations)
     if len(candidate_evaluations) != len(candidate_codes):
-        raise ValueError("tomorrow input quality requires every explicit candidate evaluation")
+        raise ValueError("scored input quality requires every explicit candidate evaluation")
     candidate_filter_counts: Counter[str] = Counter(
         reason.code for item in candidate_evaluations for reason in item.filter_reasons
     )
@@ -161,7 +161,7 @@ def assess_tomorrow_input_quality(
         if failed
     )
     if not requested_codes or coverage_reasons:
-        status: TomorrowInputQualityStatus = "not_ready"
+        status: ScoredInputQualityStatus = "not_ready"
     elif candidate_scored_count:
         status = "ready"
     elif transient_counts:
@@ -169,13 +169,13 @@ def assess_tomorrow_input_quality(
     else:
         status = "business_empty"
     population_filter_counts = dict(selection.population_filter_reason_counts)
-    return TomorrowInputQuality(
+    return ScoredInputQuality(
         status=status,
         population_count=len(native_input.market_features),
         candidate_count=requested_count,
         candidate_feature_count=len(candidate_codes),
         population_rejected_count=selection.population_rejected_count,
-        candidate_rejected_count=sum(item.disposition is TomorrowDisposition.REJECT for item in candidate_evaluations),
+        candidate_rejected_count=sum(item.disposition is ScoredDisposition.REJECT for item in candidate_evaluations),
         candidate_scored_count=candidate_scored_count,
         security_master_covered_count=security_master_covered_count,
         history_covered_count=history_covered_count,
@@ -211,7 +211,7 @@ def _history_complete(feature: FeatureSnapshot | None) -> bool:
 
 
 __all__ = [
-    "TomorrowInputQuality",
-    "TomorrowInputQualityStatus",
-    "assess_tomorrow_input_quality",
+    "ScoredInputQuality",
+    "ScoredInputQualityStatus",
+    "assess_scored_input_quality",
 ]
