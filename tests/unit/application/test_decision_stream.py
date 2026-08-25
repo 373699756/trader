@@ -5,8 +5,14 @@ from zoneinfo import ZoneInfo
 
 from trader.application.decision_events import build_v2_decision_committed
 from trader.application.decision_stream import UnifiedDecisionEventStream
-from trader.domain.recommendation.decision_identity import DecisionItem, ScoredDecision
+from trader.domain.recommendation.decision_identity import (
+    DecisionItem,
+    DecisionOverlay,
+    DecisionQuote,
+    ScoredDecision,
+)
 from trader.domain.recommendation.models import RecommendationAction, Strategy
+from trader.web.decision_serializers import serialize_event
 
 NOW = datetime(2026, 8, 11, 10, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -58,6 +64,35 @@ def test_unified_stream_publishes_explicit_identity_resync() -> None:
 
     assert event.event_type == "resync_required"
     assert event.payload.reason == "identity_mismatch"
+
+
+def test_overlay_event_serializes_row_patch_with_parent_and_projection_identities() -> None:
+    decision = _decision(Strategy.TODAY, 1)
+    quote = DecisionQuote("600000", 10.2, 1.2, 100.0, 2.0, 1_000.0, "fixture", NOW, "quote:2")
+    overlay = DecisionOverlay(Strategy.TODAY, NOW.date(), decision.version, NOW, (quote,))
+
+    event = UnifiedDecisionEventStream().publish_overlay(
+        overlay,
+        parent_content_hash=decision.content_hash,
+    )
+    payload = serialize_event(event)
+
+    assert payload["snapshot_id"] == decision.version
+    assert payload["projection_version"] != decision.version
+    assert payload["patch_schema_version"] == 2
+    assert payload["quotes"] == [
+        {
+            "code": "600000",
+            "price": 10.2,
+            "pct_change": 1.2,
+            "amount": 100.0,
+            "turnover_rate": 2.0,
+            "market_cap": 1_000.0,
+            "source": "fixture",
+            "source_time": NOW.isoformat(),
+            "quote_status": "live",
+        }
+    ]
 
 
 def _decision(strategy: Strategy, sequence: int) -> ScoredDecision:

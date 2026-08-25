@@ -11,6 +11,7 @@ from trader.application.decision_stream import (
     ResyncEventPayload,
     UnifiedPublishedEvent,
 )
+from trader.domain.recommendation.decision_identity import DecisionQuote
 
 
 def serialize_decision_view(view: DecisionView) -> dict[str, object]:
@@ -22,6 +23,7 @@ def serialize_decision_view(view: DecisionView) -> dict[str, object]:
         "view": view.view,
         "score_status": view.score_status,
         "decision_version": view.decision_version,
+        "projection_version": view.projection_version,
         "content_hash": view.content_hash,
         "observed_at": _time(view.observed_at),
         "data_age_seconds": view.data_age_seconds,
@@ -39,6 +41,21 @@ def serialize_decision_view(view: DecisionView) -> dict[str, object]:
             "observation_count": view.coverage.observation_count,
         },
         "filter_reason_counts": dict(view.filter_reason_counts),
+        "selection_diagnostics": (
+            {
+                "maximum_final_score": view.selection_diagnostics.maximum_final_score,
+                "executable_threshold": view.selection_diagnostics.executable_threshold,
+                "observation_floor": view.selection_diagnostics.observation_floor,
+                "executable_limit": view.selection_diagnostics.executable_limit,
+                "observation_limit": view.selection_diagnostics.observation_limit,
+                "selected_executable_count": view.selection_diagnostics.selected_executable_count,
+                "selected_observation_count": view.selection_diagnostics.selected_observation_count,
+                "review_candidate_count": view.selection_diagnostics.review_candidate_count,
+                "empty_reason": view.selection_diagnostics.empty_reason,
+            }
+            if view.selection_diagnostics is not None
+            else None
+        ),
         "degraded_reasons": list(view.degraded_reasons),
         "items": [serialize_decision_item(item) for item in view.items],
         "draft": (
@@ -73,6 +90,33 @@ def serialize_decision_item(item: DecisionItemView) -> dict[str, object]:
             "final": item.final_score,
         },
         "risk_codes": list(item.risk_codes),
+        "setup": {"type": item.setup_type} if item.setup_type is not None else None,
+        "downside": (
+            {
+                "status": item.downside_status,
+                "reasons": list(item.downside_reasons),
+                "atr20_pct": item.downside_atr20_pct,
+                "intraday_reversal_atr": item.downside_intraday_reversal_atr,
+                "historical_drawdown_pct": item.downside_historical_drawdown_pct,
+            }
+            if item.downside_status is not None
+            else None
+        ),
+        "review_outcome": item.review_outcome,
+        "research_coverage": (
+            {
+                "evidence_count": item.research_evidence_count,
+                "structured_risk_fact_count": item.research_risk_fact_count,
+                "review_eligible": item.review_eligible,
+            }
+            if item.research_evidence_count is not None
+            else None
+        ),
+        "anchor_quote": {
+            "price": item.anchor_price,
+            "source": item.anchor_source,
+            "source_time": _time(item.anchor_time),
+        },
         "quote": {
             "price": item.price,
             "pct_change": item.pct_change,
@@ -104,6 +148,11 @@ def serialize_event(event: UnifiedPublishedEvent) -> dict[str, object]:
             version=payload.version,
             parent_version=payload.parent_version,
             content_hash=payload.content_hash,
+            snapshot_id=payload.parent_version,
+            projection_version=payload.projection_version,
+            patch_schema_version=2,
+            schema_version=2,
+            quotes=[_serialize_overlay_quote(quote) for quote in payload.quotes],
         )
     elif isinstance(payload, ResyncEventPayload):
         common["reason"] = payload.reason
@@ -119,6 +168,20 @@ def serialize_error(code: str, message: str) -> dict[str, object]:
 
 def _time(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+def _serialize_overlay_quote(quote: DecisionQuote) -> dict[str, object]:
+    return {
+        "code": quote.code,
+        "price": quote.price,
+        "pct_change": quote.pct_change,
+        "amount": quote.amount,
+        "turnover_rate": quote.turnover_rate,
+        "market_cap": quote.market_cap,
+        "source": quote.source,
+        "source_time": _time(quote.source_time),
+        "quote_status": "live",
+    }
 
 
 __all__ = ["serialize_decision_item", "serialize_decision_view", "serialize_error", "serialize_event"]

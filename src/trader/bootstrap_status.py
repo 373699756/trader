@@ -7,18 +7,25 @@ from dataclasses import asdict
 
 from trader.application.ports.runtime_status import V2InputQualityStatus
 from trader.application.v2_runtime import V2RuntimeIssue, V2SchedulerRuntime
-from trader.bootstrap_clock import utc_now as _utc_now
-from trader.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.infra.deepseek.reviewer import DeepSeekReviewer
 
 
 def runtime_status(
     scheduler: V2SchedulerRuntime,
     reviewer: DeepSeekReviewer,
-    budget: DeepSeekBudgetLedger,
     market_health: Callable[[], Mapping[str, object]],
 ) -> dict[str, object]:
     status = scheduler.status()
+    deepseek = reviewer.status()
+    raw_budget = deepseek.get("budget")
+    deepseek_budget = (
+        dict(raw_budget)
+        if isinstance(raw_budget, Mapping)
+        else {
+            "available": False,
+            "error": "budget_status_unavailable",
+        }
+    )
     try:
         market_data = dict(market_health())
     except (OSError, RuntimeError, TypeError, ValueError):
@@ -46,8 +53,8 @@ def runtime_status(
         "runtime_started": status.running,
         "runtime_version": status.config_version,
         "phase": status.phase.value,
-        "deepseek_budget": budget.summary(_utc_now().date().isoformat()),
-        "deepseek": reviewer.status(),
+        "deepseek_budget": deepseek_budget,
+        "deepseek": deepseek,
         "market_data": market_data,
         "company_research": asdict(status.company_research),
         "degraded_reasons": degraded_reasons,
@@ -58,6 +65,7 @@ def runtime_status(
         "scheduler": {
             "config_version": status.config_version,
             "lanes": [asdict(lane) for lane in status.lanes],
+            "task_lanes": [asdict(lane) for lane in status.task_lanes],
             "strategy_errors": strategy_errors,
             "last_error_code": status.last_error_code,
             "refresh_failure_count": status.refresh_failure_count,

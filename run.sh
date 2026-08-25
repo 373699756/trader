@@ -15,6 +15,7 @@ usage() {
     "  ./run.sh serve                   显式启动，等同于无参数运行" \
     "  ./run.sh validate-config         校验配置后退出，不启动服务" \
     "  ./run.sh research-status         只读查看研究数据准备状态" \
+    "  ./run.sh performance-check       离线运行活动生产函数性能门禁" \
     "  ./run.sh help                    查看本帮助" \
     "" \
     "离线研究（仅在明确执行研究任务时使用）:" \
@@ -46,7 +47,7 @@ case "$MODE" in
   serve|app)
     COMMAND_KIND="server"
     ;;
-  validate-config|research-status|research-history-download|research-backtest|research-r6-screen|research-r6-daily-screen|research-r6-stability-screen|research-r7-dossier)
+  validate-config|performance-check|research-status|research-history-download|research-backtest|research-r6-screen|research-r6-daily-screen|research-r6-stability-screen|research-r7-dossier)
     COMMAND_KIND="cli"
     ;;
   *)

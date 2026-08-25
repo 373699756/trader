@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import queue
 import threading
 from collections import deque
@@ -9,7 +10,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from trader.application.decision_events import V2DecisionCommitted
-from trader.domain.recommendation.decision_identity import DecisionOverlay, LongProjection
+from trader.domain.recommendation.decision_identity import DecisionOverlay, DecisionQuote, LongProjection
 from trader.domain.recommendation.models import Strategy
 
 ResyncReason = Literal[
@@ -40,6 +41,8 @@ class OverlayEventPayload:
     version: str
     parent_version: str
     content_hash: str
+    projection_version: str
+    quotes: tuple[DecisionQuote, ...]
 
 
 @dataclass(frozen=True)
@@ -117,13 +120,21 @@ class UnifiedDecisionEventStream:
         with self._lock:
             return self._publish_locked("decision", payload)
 
-    def publish_overlay(self, overlay: DecisionOverlay) -> UnifiedPublishedEvent:
+    def publish_overlay(
+        self,
+        overlay: DecisionOverlay,
+        *,
+        parent_content_hash: str,
+    ) -> UnifiedPublishedEvent:
+        projection_version = hashlib.sha256(f"{parent_content_hash}|{overlay.content_hash}".encode()).hexdigest()
         payload = OverlayEventPayload(
             overlay.strategy,
             overlay.trade_date.isoformat(),
             overlay.version,
             overlay.parent_version,
             overlay.content_hash,
+            projection_version,
+            overlay.quotes,
         )
         with self._lock:
             return self._publish_locked("overlay", payload)

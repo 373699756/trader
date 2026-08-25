@@ -185,6 +185,7 @@ def _strategy_status(view: DecisionView) -> dict[str, object]:
         "status": view.status,
         "trade_date": view.trade_date.isoformat() if view.trade_date is not None else None,
         "decision_version": view.decision_version,
+        "projection_version": view.projection_version,
         "data_age_seconds": view.data_age_seconds,
         "stage": view.stage,
         "score_status": view.score_status,

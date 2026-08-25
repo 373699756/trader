@@ -450,6 +450,77 @@ def test_budget_connection_context_closes_after_success_and_failure(tmp_path) ->
         failed_connection.execute("SELECT 1")
 
 
+def test_budget_summary_remains_memory_only_while_sqlite_is_exclusively_locked(tmp_path) -> None:
+    database_path = tmp_path / "runtime.sqlite3"
+    ledger = _budget(database_path)
+    expected = ledger.summary("2026-08-25")
+
+    with sqlite3.connect(database_path, timeout=0.0) as blocker:
+        blocker.execute("BEGIN EXCLUSIVE")
+        assert ledger.summary("2026-08-25") == expected
+
+
+def test_http_status_remains_available_while_budget_sqlite_is_exclusively_locked(tmp_path) -> None:
+    database_path = tmp_path / "runtime.sqlite3"
+    budget = _budget(database_path)
+    reviewer = DeepSeekReviewer(
+        _settings(),
+        budget,
+        DeepSeekHttpClient(post=lambda *_args, **_kwargs: None, sleep=lambda _seconds: None),
+        ReviewCache(),
+        **_reviewer_policy(),
+        now=lambda: NOW,
+    )
+    history = Mock()
+    history.load.return_value = None
+    history.list_dates.return_value = ()
+    clock = Mock()
+    clock.now.return_value = NOW
+    app = create_app(
+        services=UnifiedWebServices(
+            UnifiedDecisionQueries(UnifiedDecisionIndex(), UnifiedDecisionDraftIndex(), history, clock),
+            UnifiedDecisionEventStream(),
+            lambda: {
+                "runtime_started": True,
+                "deepseek_budget": dict(reviewer.status())["budget"],
+            },
+        )
+    )
+
+    with sqlite3.connect(database_path, timeout=0.0) as blocker:
+        blocker.execute("BEGIN EXCLUSIVE")
+        response = app.test_client().get("/api/v2/status")
+
+    assert response.status_code == 200
+    assert response.get_json()["deepseek_budget"]["remaining"] == 2
+
+
+def test_budget_reservation_and_batch_roll_over_on_shanghai_midnight(tmp_path) -> None:
+    ledger = _budget(tmp_path / "runtime.sqlite3")
+    after_midnight = datetime(2026, 8, 25, 16, 30, tzinfo=timezone.utc)
+    reservation = ledger.reserve(Strategy.TODAY, phase="today_main", requested_at=after_midnight)
+    batch_id = ledger.begin_batch(
+        BudgetBatchRequest(
+            strategy=Strategy.TODAY,
+            phase="today_main",
+            bucket="today",
+            model="model",
+            requested_at=after_midnight,
+            deadline=after_midnight + timedelta(minutes=1),
+            candidate_codes=("600001",),
+        )
+    )
+
+    assert reservation.allowed is True
+    assert ledger.summary("2026-08-25")["used"] == 0
+    assert ledger.summary("2026-08-26")["used"] == 1
+    with sqlite3.connect(tmp_path / "runtime.sqlite3") as connection:
+        assert connection.execute(
+            "SELECT trade_date FROM deepseek_review_batches WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchone() == ("2026-08-26",)
+
+
 def test_status_remains_read_only_when_budget_database_is_unavailable(tmp_path, monkeypatch) -> None:
     budget = _budget(tmp_path / "runtime.sqlite3")
     reviewer = DeepSeekReviewer(

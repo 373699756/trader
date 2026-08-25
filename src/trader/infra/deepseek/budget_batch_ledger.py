@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from trader.domain.recommendation.models import Strategy
 from trader.domain.review.models import DeepSeekReview
@@ -63,7 +64,7 @@ class BudgetBatchLedger:
                 """,
                 (
                     batch_id,
-                    request.requested_at.date().isoformat(),
+                    request.requested_at.astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat(),
                     request.strategy.value,
                     request.phase,
                     request.bucket,

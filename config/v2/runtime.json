@@ -44,7 +44,12 @@
         "midday": 10,
         "afternoon": 1,
         "final_review": 1,
-        "final_window": 1
+        "final_window": 1,
+        "after_close": 10
+      },
+      "intraday_tail": {
+        "afternoon": 5,
+        "final_review": 3
       },
       "long_quotes": {
         "warmup": 1,

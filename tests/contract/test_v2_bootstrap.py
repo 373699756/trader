@@ -111,6 +111,7 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
         phase=SimpleNamespace(value="afternoon"),
         config_version="runtime:test",
         lanes=(),
+        task_lanes=(),
         observer=DecisionObserverStatus(
             capacity=16,
             accepting=True,
@@ -147,9 +148,10 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
         input_quality=(),
     )
     reviewer = Mock()
-    reviewer.status.return_value = {"status": "ready"}
-    budget = Mock()
-    budget.summary.return_value = {"limit": 168, "used": 0, "remaining": 168}
+    reviewer.status.return_value = {
+        "status": "ready",
+        "budget": {"limit": 168, "used": 0, "remaining": 168},
+    }
     market_health = Mock(
         return_value={
             "active_source": "sina",
@@ -158,7 +160,7 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
         }
     )
 
-    payload = runtime_status(scheduler, reviewer, budget, market_health)
+    payload = runtime_status(scheduler, reviewer, market_health)
 
     assert payload["observer"]["consumer_failure_count"] == 3
     assert payload["company_research"]["state"] == "idle"

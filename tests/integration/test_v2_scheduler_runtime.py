@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 
 from tests.unit.domain.test_decision_identity import NOW, decision
+from trader.application.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.application.decision_core import UnifiedDecisionIndex
 from trader.application.decision_observers import AsyncDecisionObserver
 from trader.application.ports.market import ResearchRefreshResult
@@ -47,10 +48,77 @@ class DataRefresh:
     def __init__(self) -> None:
         self.calls: list[Strategy] = []
         self.requests: list[V2CycleRequest] = []
+        self.task_requests: list[object] = []
 
     def refresh(self, request: V2CycleRequest) -> None:
         self.calls.append(request.strategy)
         self.requests.append(request)
+
+    def refresh_task(self, request) -> None:
+        self.task_requests.append(request)
+
+
+def _cadence(at: datetime) -> CadencePlanner:
+    return CadencePlanner(
+        CadencePolicy.from_seconds(
+            {
+                "full_market": {
+                    "warmup": 10,
+                    "today_main": 10,
+                    "today_late": 10,
+                    "midday": 10,
+                    "afternoon": 10,
+                    "final_review": 10,
+                },
+                "candidate_quotes": {
+                    "warmup": 2,
+                    "today_main": 1,
+                    "today_late": 2,
+                    "midday": 10,
+                    "afternoon": 2,
+                    "final_review": 1,
+                    "final_window": 1,
+                },
+                "topk_quotes": {
+                    "warmup": 1,
+                    "today_main": 1,
+                    "today_late": 1,
+                    "midday": 10,
+                    "afternoon": 1,
+                    "final_review": 1,
+                    "final_window": 1,
+                    "after_close": 10,
+                },
+                "intraday_tail": {"afternoon": 5, "final_review": 3},
+                "long_quotes": {
+                    "warmup": 1,
+                    "today_main": 1,
+                    "today_late": 1,
+                    "midday": 10,
+                    "afternoon": 1,
+                    "final_review": 1,
+                    "final_window": 1,
+                },
+                "score": {"warmup": 10, "today_main": 3, "today_late": 5, "afternoon": 5, "final_review": 3},
+                "industry_heat": {
+                    "warmup": 120,
+                    "today_main": 60,
+                    "today_late": 60,
+                    "afternoon": 60,
+                    "final_review": 60,
+                },
+                "market_news": {"warmup": 120, "today_main": 60, "today_late": 60, "afternoon": 60, "final_review": 60},
+                "stock_risk": {
+                    "warmup": 300,
+                    "today_main": 180,
+                    "today_late": 180,
+                    "afternoon": 180,
+                    "final_review": 120,
+                },
+            }
+        ),
+        started_at=at,
+    )
 
 
 class Decisions:
@@ -186,6 +254,7 @@ def test_scheduler_atomically_publishes_complete_quotes_for_local_and_hybrid() -
         V2RuntimeDependencies(
             clock=FixedClock(NOW),
             calendar=TradingCalendar(),
+            cadence=_cadence(NOW),
             data=DataRefresh(),
             decisions=Decisions(),
             reviews=SharedReviews(),
@@ -194,6 +263,7 @@ def test_scheduler_atomically_publishes_complete_quotes_for_local_and_hybrid() -
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
@@ -250,6 +320,7 @@ def test_scheduler_refreshes_frozen_today_overlay_without_mutating_formal_decisi
         V2RuntimeDependencies(
             clock=FixedClock(observed_at),
             calendar=TradingCalendar(),
+            cadence=_cadence(observed_at),
             data=DataRefresh(),
             decisions=Decisions(),
             reviews=SharedReviews(),
@@ -258,6 +329,7 @@ def test_scheduler_refreshes_frozen_today_overlay_without_mutating_formal_decisi
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
             publish_overlay=overlay_events.append,
         ),
         config_version="runtime-v2",
@@ -285,6 +357,58 @@ def test_scheduler_refreshes_frozen_today_overlay_without_mutating_formal_decisi
     assert snapshot.overlay.parent_version == record.decision.version
     assert snapshot.overlay.quotes[0].price == (source_quote.price or 0.0) + 1.0
     assert overlay_events == [snapshot.overlay]
+
+
+def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_rescoring() -> None:
+    frozen_at = datetime(2026, 8, 11, 14, 55, tzinfo=SHANGHAI)
+    index = UnifiedDecisionIndex()
+    source = decision(Strategy.TODAY, sequence=1)
+    anchor = source.items[0].quote
+    assert anchor is not None
+    source = replace(
+        source,
+        trade_date=frozen_at.date(),
+        observed_at=frozen_at.replace(hour=11, minute=19),
+        items=(replace(source.items[0], quote=replace(anchor, source_time=frozen_at.replace(hour=11, minute=19))),),
+    )
+    record = CommittedDecisionRecord(source, frozen_at.replace(hour=11, minute=20), "scheduled")
+    assert index.restore_formal(record)
+    data = DataRefresh()
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=FixedClock(frozen_at),
+            calendar=TradingCalendar(),
+            cadence=_cadence(frozen_at),
+            data=data,
+            decisions=Decisions(),
+            reviews=SharedReviews(),
+            index=index,
+            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-v2-frozen-cadence-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+            research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
+            publish_overlay=lambda _overlay: None,
+        ),
+        config_version="runtime-v2",
+    )
+
+    runtime.start()
+    runtime.submit_due(frozen_at)
+    assert runtime.wait_idle(2.0)
+    runtime.stop(ShutdownDeadline.start(2.0))
+
+    topk = next(request for request in data.task_requests if request.task is PipelineTask.TOPK_QUOTES)
+    assert topk.selected_codes == ("600001",)
+    assert not [
+        request
+        for request in data.requests
+        if request.strategy is not Strategy.LONG and request.phase != "quote_overlay"
+    ]
+    snapshot = index.snapshot(Strategy.TODAY)
+    assert snapshot.formal == record
+    assert snapshot.overlay is not None
+    assert snapshot.overlay.quotes[0].price == (anchor.price or 0.0) + 1.0
 
 
 def test_scheduler_recovers_overlay_issue_after_later_success() -> None:
@@ -316,6 +440,7 @@ def test_scheduler_recovers_overlay_issue_after_later_success() -> None:
         V2RuntimeDependencies(
             clock=clock,
             calendar=TradingCalendar(),
+            cadence=_cadence(observed_at),
             data=DataRefresh(),
             decisions=FailingOnceOverlayDecisions(),
             reviews=SharedReviews(),
@@ -324,6 +449,7 @@ def test_scheduler_recovers_overlay_issue_after_later_success() -> None:
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
@@ -385,6 +511,7 @@ def test_scheduler_publishes_local_before_research_and_defers_first_review_until
         V2RuntimeDependencies(
             clock=FixedClock(NOW),
             calendar=TradingCalendar(),
+            cadence=_cadence(NOW),
             data=DataRefresh(),
             decisions=Decisions(),
             reviews=reviews,
@@ -393,6 +520,7 @@ def test_scheduler_publishes_local_before_research_and_defers_first_review_until
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=research_factory,
+            publish_decision=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
@@ -491,6 +619,7 @@ def test_v2_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> None:
         V2RuntimeDependencies(
             clock=FixedClock(morning),
             calendar=TradingCalendar(),
+            cadence=_cadence(morning),
             data=data,
             decisions=Decisions(),
             reviews=reviews,
@@ -499,6 +628,7 @@ def test_v2_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> None:
             freezes=freezes,
             settlement=settlement,
             research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
@@ -509,6 +639,7 @@ def test_v2_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> None:
     assert runtime.wait_idle(2.0)
     runtime.submit_due(freeze_at)
     runtime.submit_due(freeze_at)
+    assert runtime.wait_idle(2.0)
     runtime.submit_due(close_at)
     runtime.submit_due(close_at)
     assert runtime.wait_idle(2.0)
@@ -543,6 +674,7 @@ def test_after_close_cold_start_recovers_missing_scored_strategies_and_long() ->
         V2RuntimeDependencies(
             clock=FixedClock(after_close),
             calendar=TradingCalendar(),
+            cadence=_cadence(after_close),
             data=data,
             decisions=decisions,
             reviews=reviews,
@@ -551,6 +683,7 @@ def test_after_close_cold_start_recovers_missing_scored_strategies_and_long() ->
             freezes=freezes,
             settlement=settlement,
             research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
@@ -583,6 +716,7 @@ def test_midday_cold_start_recovers_only_missing_non_today_outputs_once_without_
         V2RuntimeDependencies(
             clock=FixedClock(midday),
             calendar=TradingCalendar(),
+            cadence=_cadence(midday),
             data=data,
             decisions=Decisions(),
             reviews=reviews,
@@ -591,6 +725,7 @@ def test_midday_cold_start_recovers_only_missing_non_today_outputs_once_without_
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
@@ -603,14 +738,17 @@ def test_midday_cold_start_recovers_only_missing_non_today_outputs_once_without_
     assert runtime.wait_idle(2.0)
     runtime.stop(ShutdownDeadline.start(2.0))
 
-    assert data.calls.count(Strategy.TODAY) == 0
-    assert {strategy: data.calls.count(strategy) for strategy in (Strategy.TOMORROW, Strategy.D25, Strategy.LONG)} == {
+    scoring_calls = [request.strategy for request in data.requests if request.phase != "quote_overlay"]
+    assert scoring_calls.count(Strategy.TODAY) == 0
+    assert {
+        strategy: scoring_calls.count(strategy) for strategy in (Strategy.TOMORROW, Strategy.D25, Strategy.LONG)
+    } == {
         Strategy.TOMORROW: 1,
         Strategy.D25: 1,
-        Strategy.LONG: 1,
+        Strategy.LONG: 2,
     }
-    assert {request.phase for request in data.requests} == {"midday_recovery"}
-    assert not any(request.allow_review for request in data.requests)
+    assert {request.phase for request in data.requests} <= {"midday", "midday_recovery", "quote_overlay"}
+    assert not any(request.allow_review for request in data.requests if request.phase != "quote_overlay")
     assert reviews.calls == []
     assert index.snapshot(Strategy.TODAY).current is None
 
@@ -637,6 +775,7 @@ def test_midday_empty_observation_draft_is_a_completed_recovery_not_a_retry_loop
         V2RuntimeDependencies(
             clock=FixedClock(midday),
             calendar=TradingCalendar(),
+            cadence=_cadence(midday),
             data=data,
             decisions=decisions,
             reviews=SharedReviews(),
@@ -645,6 +784,7 @@ def test_midday_empty_observation_draft_is_a_completed_recovery_not_a_retry_loop
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
@@ -681,6 +821,7 @@ def test_midday_recovery_retries_when_refresh_failed_before_any_output() -> None
         V2RuntimeDependencies(
             clock=FixedClock(midday),
             calendar=TradingCalendar(),
+            cadence=_cadence(midday),
             data=data,
             decisions=Decisions(),
             reviews=SharedReviews(),
@@ -689,6 +830,7 @@ def test_midday_recovery_retries_when_refresh_failed_before_any_output() -> None
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
@@ -701,9 +843,10 @@ def test_midday_recovery_retries_when_refresh_failed_before_any_output() -> None
     assert runtime.wait_idle(2.0)
     runtime.stop(ShutdownDeadline.start(2.0))
 
-    assert data.calls.count(Strategy.TOMORROW) == 2
-    assert data.calls.count(Strategy.D25) == 1
-    assert data.calls.count(Strategy.LONG) == 1
+    scoring_calls = [request.strategy for request in data.requests if request.phase != "quote_overlay"]
+    assert scoring_calls.count(Strategy.TOMORROW) == 2
+    assert scoring_calls.count(Strategy.D25) == 1
+    assert scoring_calls.count(Strategy.LONG) == 2
     assert index.snapshot(Strategy.TOMORROW).current is not None
 
 
@@ -723,6 +866,7 @@ def test_midday_recovery_does_not_queue_duplicate_while_lane_is_active() -> None
         V2RuntimeDependencies(
             clock=FixedClock(midday),
             calendar=TradingCalendar(),
+            cadence=_cadence(midday),
             data=BlockingData(),
             decisions=Decisions(),
             reviews=SharedReviews(),
@@ -731,6 +875,7 @@ def test_midday_recovery_does_not_queue_duplicate_while_lane_is_active() -> None
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
@@ -760,6 +905,7 @@ def test_after_close_prefers_existing_same_day_current_without_rebuilding() -> N
         V2RuntimeDependencies(
             clock=FixedClock(after_close),
             calendar=TradingCalendar(),
+            cadence=_cadence(after_close),
             data=data,
             decisions=Decisions(),
             reviews=SharedReviews(),
@@ -768,6 +914,7 @@ def test_after_close_prefers_existing_same_day_current_without_rebuilding() -> N
             freezes=freezes,
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
@@ -785,11 +932,49 @@ def test_after_close_prefers_existing_same_day_current_without_rebuilding() -> N
     assert runtime.wait_idle(2.0)
     runtime.stop(ShutdownDeadline.start(2.0))
 
-    assert data.calls == [Strategy.LONG]
+    assert [request.strategy for request in data.requests if request.phase != "quote_overlay"] == [Strategy.LONG]
     assert {(strategy, recovery_path) for strategy, recovery_path, _version in freezes.close_fallback_calls} == {
         (Strategy.TOMORROW, "current"),
         (Strategy.D25, "current"),
     }
+
+
+def test_after_close_formal_records_only_refresh_selected_overlays_without_full_market_recovery() -> None:
+    after_close = datetime(2026, 8, 11, 15, 5, tzinfo=SHANGHAI)
+    data = DataRefresh()
+    index = UnifiedDecisionIndex()
+    settlement = Settlement()
+    for strategy in (Strategy.TOMORROW, Strategy.D25):
+        formal = replace(decision(strategy, sequence=1), trade_date=after_close.date())
+        assert index.restore_formal(CommittedDecisionRecord(formal, after_close, "scheduled"))
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=FixedClock(after_close),
+            calendar=TradingCalendar(),
+            cadence=_cadence(after_close),
+            data=data,
+            decisions=Decisions(),
+            reviews=SharedReviews(),
+            index=index,
+            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-v2-after-close-formal-observer"),
+            freezes=Freezes(),
+            settlement=settlement,
+            research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
+            publish_overlay=lambda _overlay: None,
+        ),
+        config_version="runtime-v2",
+    )
+
+    runtime.start()
+    runtime.submit_due(after_close)
+    assert runtime.wait_idle(2.0)
+    runtime.stop(ShutdownDeadline.start(2.0))
+
+    assert PipelineTask.CLOSE_QUOTES not in {request.task for request in data.task_requests}
+    topk = next(request for request in data.task_requests if request.task is PipelineTask.TOPK_QUOTES)
+    assert set(topk.selected_codes) == {"600001"}
+    assert settlement.calls == [after_close]
 
 
 def test_tomorrow_lane_progresses_while_today_lane_is_blocked() -> None:
@@ -808,6 +993,7 @@ def test_tomorrow_lane_progresses_while_today_lane_is_blocked() -> None:
         V2RuntimeDependencies(
             clock=FixedClock(NOW),
             calendar=TradingCalendar(),
+            cadence=_cadence(NOW),
             data=DataRefresh(),
             decisions=BlockingDecisions(),
             reviews=SharedReviews(),
@@ -816,6 +1002,7 @@ def test_tomorrow_lane_progresses_while_today_lane_is_blocked() -> None:
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
@@ -832,6 +1019,67 @@ def test_tomorrow_lane_progresses_while_today_lane_is_blocked() -> None:
         assert index.snapshot(Strategy.TODAY).current is None
     finally:
         today_release.set()
+        runtime.stop(ShutdownDeadline.start(2.0))
+
+
+def test_direct_decision_stream_delivery_survives_a_full_audit_observer_queue() -> None:
+    audit_entered = threading.Event()
+    audit_release = threading.Event()
+
+    def blocked_audit(_observation) -> None:
+        audit_entered.set()
+        audit_release.wait(timeout=2.0)
+
+    events = []
+    index = UnifiedDecisionIndex()
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=FixedClock(NOW),
+            calendar=TradingCalendar(),
+            cadence=_cadence(NOW),
+            data=DataRefresh(),
+            decisions=Decisions(),
+            reviews=SharedReviews(),
+            index=index,
+            observer=AsyncDecisionObserver(
+                (blocked_audit,),
+                capacity=1,
+                thread_name="test-v2-full-audit-observer",
+            ),
+            freezes=Freezes(),
+            settlement=Settlement(),
+            research_factory=noop_research_factory,
+            publish_decision=events.append,
+            publish_overlay=lambda _overlay: None,
+        ),
+        config_version="runtime-v2",
+    )
+    runtime.start()
+    try:
+        for sequence in (1, 3, 5):
+            runtime.submit_cycle(
+                V2CycleRequest(
+                    Strategy.TOMORROW,
+                    NOW.date(),
+                    NOW + timedelta(milliseconds=sequence),
+                    "afternoon",
+                    sequence,
+                    f"input:{sequence}",
+                    False,
+                    NOW,
+                )
+            )
+            assert _wait_for(
+                lambda expected=sequence: (
+                    isinstance(index.snapshot(Strategy.TOMORROW).current, ScoredDecision)
+                    and index.snapshot(Strategy.TOMORROW).current.sequence == expected
+                )
+            )
+        assert audit_entered.wait(timeout=1.0)
+        assert len(events) == 3
+        assert runtime.status().observer_rejection_count >= 1
+    finally:
+        audit_release.set()
         runtime.stop(ShutdownDeadline.start(2.0))
 
 
@@ -862,6 +1110,7 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
         V2RuntimeDependencies(
             clock=clock,
             calendar=TradingCalendar(),
+            cadence=_cadence(NOW),
             data=data,
             decisions=decisions,
             reviews=SharedReviews(),
@@ -870,6 +1119,7 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
@@ -912,13 +1162,9 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
 
     class StatusReviewer:
         def status(self):
-            return {"status": "ready"}
+            return {"status": "ready", "budget": {"limit": 168, "used": 0, "remaining": 168}}
 
-    class StatusBudget:
-        def summary(self, _day: str):
-            return {"limit": 168, "used": 0, "remaining": 168}
-
-    payload = runtime_status(runtime, StatusReviewer(), StatusBudget(), lambda: {})  # type: ignore[arg-type]
+    payload = runtime_status(runtime, StatusReviewer(), lambda: {})  # type: ignore[arg-type]
     assert payload["degraded_reasons"] == ["tomorrow:refresh:source_unavailable"]
     assert payload["health"] == {"level": "degraded", "issue_count": 1}
     assert payload["recent_errors"] == [
@@ -955,6 +1201,7 @@ def test_runtime_error_history_is_bounded_and_repeated_failures_are_coalesced() 
         V2RuntimeDependencies(
             clock=FixedClock(NOW),
             calendar=TradingCalendar(),
+            cadence=_cadence(NOW),
             data=DataRefresh(),
             decisions=Decisions(),
             reviews=SharedReviews(),
@@ -963,6 +1210,7 @@ def test_runtime_error_history_is_bounded_and_repeated_failures_are_coalesced() 
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
@@ -987,6 +1235,7 @@ def test_successful_publish_does_not_recover_an_unrelated_freeze_failure() -> No
         V2RuntimeDependencies(
             clock=FixedClock(NOW),
             calendar=TradingCalendar(),
+            cadence=_cadence(NOW),
             data=DataRefresh(),
             decisions=Decisions(),
             reviews=SharedReviews(),
@@ -995,6 +1244,7 @@ def test_successful_publish_does_not_recover_an_unrelated_freeze_failure() -> No
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
@@ -1029,6 +1279,7 @@ def test_afternoon_schedule_skips_today_after_its_freeze_boundary() -> None:
         V2RuntimeDependencies(
             clock=FixedClock(afternoon),
             calendar=TradingCalendar(),
+            cadence=_cadence(afternoon),
             data=data,
             decisions=Decisions(),
             reviews=SharedReviews(),
@@ -1037,6 +1288,7 @@ def test_afternoon_schedule_skips_today_after_its_freeze_boundary() -> None:
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
@@ -1073,6 +1325,7 @@ def test_expected_late_publish_rejection_after_freeze_is_not_a_runtime_error() -
         V2RuntimeDependencies(
             clock=FixedClock(after_freeze),
             calendar=TradingCalendar(),
+            cadence=_cadence(after_freeze),
             data=DataRefresh(),
             decisions=Decisions(),
             reviews=SharedReviews(),
@@ -1081,6 +1334,7 @@ def test_expected_late_publish_rejection_after_freeze_is_not_a_runtime_error() -
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",
@@ -1114,6 +1368,7 @@ def test_review_deadline_prevents_a_late_model_upgrade() -> None:
         V2RuntimeDependencies(
             clock=FixedClock(NOW),
             calendar=TradingCalendar(),
+            cadence=_cadence(NOW),
             data=DataRefresh(),
             decisions=Decisions(),
             reviews=reviews,
@@ -1122,6 +1377,7 @@ def test_review_deadline_prevents_a_late_model_upgrade() -> None:
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-v2",

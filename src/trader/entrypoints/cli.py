@@ -17,6 +17,7 @@ from trader.domain.research.score_r6 import SCORE_R6_HISTORICAL_SPEC
 from trader.domain.research.score_r6_daily import SCORE_R6_DAILY_SPEC
 from trader.domain.research.score_r6_stability import SCORE_R6_STABILITY_SPEC
 from trader.domain.research.specification import ACTIVE_SCORE_RESEARCH_SPEC, SCORE_P0_V1_SPEC
+from trader.entrypoints.performance import run as run_performance
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
 from trader.infra.persistence.research_trace import SQLiteV2ResearchTraceStore
 from trader.infra.research.history_archive import SQLiteHistoricalArchive
@@ -42,6 +43,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("validate-config", help="Validate runtime and strategy configuration.")
+    performance = subparsers.add_parser(
+        "performance-check",
+        help="Run the offline active-production performance gate without supplier network access.",
+    )
+    performance.add_argument("--output", type=Path)
+    performance.add_argument("--baseline", type=Path)
     subparsers.add_parser("research-status", help="Read immutable research coverage and capacity status.")
     download = subparsers.add_parser(
         "research-history-download",
@@ -195,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0 if result.failed == 0 else 1
     if args.command in {
+        "performance-check",
         "research-backtest",
         "research-r6-screen",
         "research-r6-daily-screen",
@@ -206,6 +214,7 @@ def main(argv: list[str] | None = None) -> int:
             config_path,
             runtime,
             research_identity=str(getattr(args, "research_identity", "")),
+            performance_options=(getattr(args, "output", None), getattr(args, "baseline", None)),
         )
     if args.command != "validate-config":
         return 2
@@ -233,7 +242,11 @@ def _run_offline_report(
     runtime: RuntimeSettings,
     *,
     research_identity: str,
+    performance_options: tuple[Path | None, Path | None],
 ) -> int:
+    if command == "performance-check":
+        output, baseline = performance_options
+        return _run_performance_report(config_path, output=output, baseline=baseline)
     if command == "research-backtest":
         services = build_historical_research_services(config_path)
         report = services.backtest.execute(SCORE_H0_V1_SPEC)
@@ -246,6 +259,20 @@ def _run_offline_report(
     if command == "research-r6-stability-screen":
         return _run_r6_stability_screen(config_path, runtime)
     return _run_r6_screen(config_path, runtime)
+
+
+def _run_performance_report(
+    config_path: Path,
+    *,
+    output: Path | None,
+    baseline: Path | None,
+) -> int:
+    report = run_performance(config_path, baseline_path=baseline)
+    payload = json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2)
+    if output is not None:
+        output.write_text(f"{payload}\n", encoding="utf-8")
+    print(payload)
+    return 0 if report["status"] == "passed" else 1
 
 
 def _run_r6_daily_screen(config_path: Path, runtime: RuntimeSettings) -> int:

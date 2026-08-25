@@ -310,6 +310,9 @@ observer 的队列、接纳、完成、拒绝、消费者失败计数和最后�
 不重新读取行情、重新评分或重新调用模型。初始化失败同样 fail open；
 历史数据不从旧 snapshot 或 shadow 运行库回填，
 部署后只积累新的 committed observation。
+决策 CAS 成功后必须由提交线程直接写入内存事件流，再异步组装并投递研究审计；研究审计构造失败、
+observer 队列满或消费者失败都不得吞掉已经提交的 Web decision 事件。事件流写入失败必须显式降级，
+但同样不得回滚已接纳决策。
 
 today、tomorrow 和 d25 的正式记录仓储按策略和交易日唯一提交。仓储先把规范载荷及其
 SHA-256 写入 SQLite staged manifest，再原子创建不可变 JSON，最后提交 manifest；同键同
@@ -381,8 +384,10 @@ V2-E8 已交付的读取链固定为 `UnifiedDecisionIndex -> application querie
 统一事件流使用单调序列、有界历史、有界客户端队列和最多 32 个订阅者。无游标连接从打开时的
 当前序列开始；显式 `Last-Event-ID` 或 `cursor` 才回放。游标超前、过期、不连续，schema、
 base 或 identity 不匹配，以及慢客户端统一发送 `resync_required`，浏览器随后以 ETag 重新读取
-current。事件发布不等待客户端消费；SSE 正常时页面只在对应策略事件到达时按 ETag 重读，
-不持续轮询完整决策。
+current。事件发布不等待客户端消费；客户端按策略、交易日和事件类型过滤，decision 事件才按 ETag
+重读完整 current，overlay 事件携带行级报价 patch 并只修改匹配父决策的展示报价。无关策略或日期事件
+不得触发 GET。status 与 current 共同公开由决策内容哈希和有效 overlay 哈希形成的
+`projection_version`；事件丢失时客户端按该身份对账恢复。SSE 正常时不持续轮询完整决策。
 
 统一公开外壳已交付。`DecisionView` 对 today、tomorrow、d25 和 long 使用同一 envelope；评分策略
 公开决策身份、阶段、冻结、覆盖、过滤、分数、风险和匹配父版本的报价 overlay，long 固定
@@ -742,6 +747,7 @@ DeepSeek 和 Tushare 各自仍以同名环境变量优先，其次读取对应 `
 | 全市场行情 | 10秒 | 10秒 | 10秒 | 10秒 | 10秒 | 14:49:50一次 |
 | 每板最多120只候选报价 | 2秒 | 1秒 | 2秒 | 2秒 | 1秒 | 1秒 |
 | TopK展示报价 | 1秒 | 1秒 | 1秒 | 1秒 | 1秒 | 1秒 |
+| tomorrow 分钟 tail | 停止 | 停止 | 停止 | 5秒 | 3秒 | 停止 |
 | long固定池定向报价 | 1秒 | 1秒 | 1秒 | 1秒 | 1秒 | 1秒；15:00最后一次 |
 | 输入驱动本地评分最短间隔 | 10秒 | 3秒 | 5秒 | 5秒 | 3秒 | 14:50冻结 |
 | 行业热度 | 120秒 | 60秒 | 60秒 | 60秒 | 60秒 | 停止 |
@@ -763,6 +769,11 @@ DeepSeek 和 Tushare 各自仍以同名环境变量优先，其次读取对应 `
 不排队补跑；每个来源 lane
 和 versioned 待执行评分只保留最新观察点。因此实际刷新周期自动取“不小于配置下限且接口
 能够持续完成”的最快速度，接口变慢或熔断时不得堆积请求，恢复后自动回到下限。
+组合根必须实例化同一个 `CadencePlanner` 并注入活动调度器；全市场、候选、TopK、分钟 tail、
+long、评分、固定时点冻结和收盘恢复分别进入可停止、可观察的 latest-wins lane。
+`submit_due()` 返回计划器计算的真实最近到期时间，supervisor 不得再以固定 30 秒 tick 限制物理采集。
+13:00 后 tail lane 实际刷新 Tomorrow 候选的分钟尾部缓存，失败保留最近有效 tail；14:50 冻结至
+15:00 以及 15:00 后已有正式记录只允许 TopK 入选代码 overlay 继续刷新，不再提交全市场、候选或评分。
 
 全市场每轮固定采用有界延迟对冲：先提交东方财富；若 1 秒内已取得覆盖达标且截止前完成
 的结果，则不启动新浪；若东方财富失败或 1 秒仍未完成，立即提交新浪。任一来源先返回
@@ -965,6 +976,11 @@ Polars 估算及瞬时峰值原因；不得用 Python 分配量或逻辑缓存�
 发布性能 runner 必须调用活动生产函数，不得以占位 DataFrame 或纯序列化替代真实
 标准化、评分、选择、发布和 Web 路径。延迟轮次关闭 tracemalloc，内存轮次单独开启；fixture
 固定数据、配置、策略、代码与环境身份并禁止外网。历史实测数字只属于验收报告，不进入本文。
+仓库固定提供 `trader-cli performance-check`、`./run.sh performance-check`、
+`scripts/run_production_performance.py` 和 `make performance-check`；报告必须记录代码、配置、fixture、
+Python、CPU 与系统身份，并可读取显式 baseline 执行 5% 相对回归。Firefox 的 SSE
+patch-to-paint 使用 `scripts/measure_web_refresh_interval.py` 和 `make browser-performance-check`，
+供应商真实交易时段采样继续由独立脚本执行，不得混入禁止外网的离线门禁。
 
 ## 8. 发布、冻结与持久化
 
@@ -1026,6 +1042,9 @@ current 一次返回完整紧凑 `DecisionView`；公开 schema 为 `v2_decision
 未通过的 local 决策，可在独立可空的 `draft` 对象中返回版本、哈希、观测时间和最多 6 项
 `observe`，其哈希参与 ETag。`draft` 不改变 `status=not_ready`、正式 coverage、冻结或历史语义。
 核心数值不可用时返回 `null`，不得伪造 0。
+新写入的统一决策身份与正式记录使用各自 schema v2，并把不可变 anchor quote、setup、downside、
+研究覆盖、复核终态和 selection diagnostics 纳入规范哈希。仍可校验读取的 schema v1 正式记录保持
+原字节和冻结身份；缺失的新展示元数据投影为 `null`/`—`，不得现场重算、升级或覆盖旧冻结结果。
 
 逐股对象只公开页面需要的代码、名称、板块/行业、核心行情、锚点行情、本地/模型/模型风险/
 最终分、动作、结构化理由、精简风险、复核终态、`setup_type` 与 `downside`。原始特征、权重、
@@ -1043,7 +1062,7 @@ long 固定 `score_status=not_applicable`；long 的 `items` 保留配置完整�
 
 SSE 事件使用 schema v2、单调 ID、有界回放和有界客户端队列。decision 事件携带完整 identity；
 overlay 只允许更新匹配 current version 的价格、涨跌、成交额、换手率、总市值、来源、来源时间、
-报价版本和年龄。
+报价版本和年龄，并携带与 current ETag 一致的 `projection_version` 及行级 `quotes` patch。
 显式游标才回放；游标超前、过期、断裂，base/schema/identity 不匹配或慢客户端统一返回
 `resync_required`，客户端以 ETag GET current。publisher 不等待客户端；SSE 连通时停止完整
 current 轮询，断线后才以 30 秒低频恢复。
@@ -1051,6 +1070,9 @@ current 轮询，断线后才以 30 秒低频恢复。
 `GET /api/v2/status` 只聚合注入的内存遥测：来源接收/源时间年龄、内部时延、当前 V2 identity、
 队列与 latest-wins、DeepSeek 物理预算、冻结/持久化状态和最近受控失败。状态接口不读取数据库、
 文件或网络，不暴露股票集合、关联载荷、密钥或完整外部响应。
+DeepSeek 账本只在启动恢复及 reserve、完成、失败、批次状态变更时访问 SQLite，并在同一写锁内换入
+不可变预算快照；Reviewer 和顶层 status 共享这一个快照。预算交易日统一由可注入时钟换算为
+`Asia/Shanghai`，SQLite 锁定或暂时不可用不得使 status 失败。
 
 ## 10. V2 唯一桌面界面
 

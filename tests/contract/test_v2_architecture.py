@@ -114,7 +114,9 @@ def test_application_runtime_modules_are_reachable_from_bootstrap() -> None:
 
 def test_bootstrap_wires_overlay_events_into_the_unified_scheduler() -> None:
     source = (SOURCE_ROOT / "bootstrap.py").read_text(encoding="utf-8")
-    assert "publish_overlay=publication.decision_events.publish_overlay" in source
+    assert "def publish_overlay_event(overlay: DecisionOverlay)" in source
+    assert "parent_content_hash=current.content_hash" in source
+    assert "publish_overlay=publish_overlay_event" in source
 
 
 def test_overlay_publisher_and_input_quality_are_required_typed_runtime_boundaries() -> None:
@@ -159,3 +161,10 @@ def test_internal_state_is_typed_until_an_explicit_observability_boundary() -> N
                 rendered = ast.unparse(annotation)
                 violations.append(f"{relative}:{node.lineno}: untyped status return {rendered}")
     assert violations == []
+
+
+def test_production_composition_injects_the_single_cadence_planner() -> None:
+    source = (SOURCE_ROOT / "bootstrap.py").read_text(encoding="utf-8")
+
+    assert "CadencePlanner(" in source
+    assert "cadence=cadence_planner" in source

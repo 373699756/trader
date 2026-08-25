@@ -516,6 +516,11 @@ def _validate_cadence_settings(
             "afternoon": 1.0,
             "final_review": 1.0,
             "final_window": 1.0,
+            "after_close": 10.0,
+        },
+        "intraday_tail": {
+            "afternoon": 5.0,
+            "final_review": 3.0,
         },
         "long_quotes": {
             "warmup": 1.0,

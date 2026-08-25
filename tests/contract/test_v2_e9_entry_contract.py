@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import subprocess
@@ -32,6 +33,7 @@ def test_cli_exposes_current_v2_maintenance_and_explicit_offline_research_comman
         assert removed not in help_text
     for retained in (
         "validate-config",
+        "performance-check",
         "research-status",
         "research-history-download",
         "research-backtest",
@@ -43,10 +45,21 @@ def test_cli_exposes_current_v2_maintenance_and_explicit_offline_research_comman
         assert retained in help_text
 
 
+def test_performance_entrypoint_does_not_import_posix_resource_at_module_load() -> None:
+    source = (ROOT / "src/trader/entrypoints/performance.py").read_text(encoding="utf-8")
+    module = ast.parse(source)
+
+    assert all(
+        not (isinstance(statement, ast.Import) and any(alias.name == "resource" for alias in statement.names))
+        for statement in module.body
+    )
+
+
 def test_run_script_exposes_read_only_research_status() -> None:
     shell = (ROOT / "run.sh").read_text(encoding="utf-8")
 
     assert "research-status" in shell
+    assert "performance-check" in shell
 
 
 def test_run_script_exposes_explicit_offline_history_research_without_mapping_it_to_serve() -> None:
@@ -77,6 +90,7 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert "./run.sh                         启动本地 A 股研究看板（推荐）" in completed.stdout
     assert "./run.sh validate-config         校验配置后退出，不启动服务" in completed.stdout
     assert "./run.sh research-status         只读查看研究数据准备状态" in completed.stdout
+    assert "./run.sh performance-check       离线运行活动生产函数性能门禁" in completed.stdout
     assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
     assert "./run.sh research-history-download        下载并续传离线历史日线归档" in completed.stdout
     assert "research-r7-dossier --research-identity <ID>" in completed.stdout

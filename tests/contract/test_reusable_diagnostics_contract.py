@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DIAGNOSTICS = (
     ROOT / "scripts" / "measure_web_refresh_interval.py",
     ROOT / "scripts" / "sample_tencent_quotes.py",
+    ROOT / "scripts" / "run_production_performance.py",
 )
 
 

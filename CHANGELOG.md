@@ -6,6 +6,15 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对 Review 指出的 35 秒 Web 保留窗口不能替代实时采集 cadence，新增活动组合根装配的
+  `CadencePlanner`、按物理任务隔离的 latest-wins lane 和 Tomorrow 午后分钟 tail 任务；全市场、
+  候选、TopK、tail、评分、long、冻结与收盘恢复分别按真实最近到期时间推进，任务状态进入 status。
+- 新增统一决策/正式记录 schema v2，固化不可变 anchor quote、setup、downside、研究覆盖、复核终态和
+  `selection_diagnostics`；旧 v1 正式记录保持原哈希并以 `null`/`—` 显示缺失元数据，不现场重算。
+- 新增禁止外网且直接调用活动生产函数的 `performance-check` CLI、Linux/Windows 启动脚本入口、
+  `scripts/run_production_performance.py` 与 Makefile 门禁，固定覆盖 5500 行双源全市场、360 候选、
+  三策略评分、overlay CAS、API/ETag/status、SSE、100 tick RSS、环境身份和 5% 相对回归。
+
 - 针对用户要求把“内部用对象、JSON 只在边界使用”的统一规则写入代理指令，根 `AGENTS.md` 新增
   “JSON 与类型对象边界”强制章节，明确类型状态根、动态键 `Mapping`、输入解析、输出白名单投影、
   禁止对象自序列化方法、公开 schema 演进和 AST 门禁豁免条件。
@@ -324,6 +333,14 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 决策 CAS 成功后现在直接写入内存 SSE，研究 observer 只消费审计副本；overlay 事件携带行级报价和
+  与 current ETag 一致的 `projection_version`。浏览器按策略、交易日和事件类型过滤，decision 才整表
+  GET，overlay 原地 patch；status 对账可在事件丢失后恢复当前投影。
+- DeepSeek 预算账本在 reserve、完成、失败、批次终态及启动恢复时原子换入不可变内存快照；Reviewer
+  和顶层 status 共享同一上海交易日快照，HTTP status 不再执行预算 SQLite 汇总。
+- 冻结后的行情更新改为独立 TopK 定向批次：Today 11:20 后、Tomorrow/D25 14:50 后和已有正式记录的
+  15:00 后运行期只更新入选代码报价，不重新评分；冷启动缺正式记录时才执行一次收盘全市场恢复。
+
 - 后续自动化代理修改状态接口时，必须先按根 `AGENTS.md` 选择类型对象或显式 JSON 边界，并同步契约测试；
   不能再把局部字典/对象互换当作独立重构，也不能以兼容名义保留双表示或扩大隐式 fallback。
 
@@ -566,6 +583,19 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复生产 `submit_due()` 仍按整策略周期运行并最多等待 30 秒、导致 TopK/候选/全市场物理数据年龄预算
+  无法满足的问题；现在返回计划器真实下一到期时间，周期在途只保留最新请求并按各自 deadline 降级。
+- 修复 Tomorrow 评分读取分钟 tail、但生产没有调用 `refresh_intraday_tail()` 的断链；13:00 后按 5 秒、
+  14:20-14:48 按 3 秒刷新，失败继续使用最近有效 tail。
+- 修复冻结/恢复后的正式决策无法独立进行 TopK overlay、15:00 后已有正式记录仍可能依赖全市场批次的
+  问题；定向报价现在形成独立不可变特征批次并直接执行 overlay CAS，名单、排名、分数和哈希不变。
+- 修复所有策略 SSE 都触发当前策略 GET、status 的 `decision_version` 与前端 `snapshot_id` 对账失配，
+  以及研究 observer 满队列可吞掉 Web decision 事件的问题。
+- 修复一次 status 最多重复两次预算聚合、UTC/上海日期不一致及 SQLite 锁定可能令 status 失败的问题。
+- 修复 Web 把可变 live quote 当成 anchor，并丢失 setup、downside、复核终态、研究覆盖和正式选择诊断的问题。
+- 最终 Review 修复性能入口顶层导入 POSIX `resource` 导致 Windows 连普通 CLI 都无法加载的问题；RSS
+  采样现在按平台延迟加载，Linux/macOS 统一为 KiB，Windows 使用进程峰值 Working Set。
 
 - 修复统一 JSON/对象规则虽然已存在于软件架构文档和机器契约、但根代理指令没有直接写明，导致后续
   协作者可能只看到局部调用方式而再次选择相反表示的问题；现在代理开始任务即可读到唯一选择标准。
@@ -819,6 +849,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除固定 30 秒 supervisor tick 对实时采集周期的事实限制、研究 observer 对 Web SSE 发布的所有权、
+  status 请求时的 SQLite 预算读取，以及正式记录已存在时 15:00 后不必要的全市场恢复；未移除或放宽
+  评分、过滤、融合、风险、TopK、冻结边界、DeepSeek 168 次预算或 35 秒 Web 展示保留窗口。
+
 - 从代理实施规则中消除“内部状态可按局部方便选择 JSON 字典或对象”的解释空间；本批只修改文档，
   没有删除运行代码、公开 JSON 字段或兼容能力。
 
@@ -945,6 +979,21 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 本批定向回归已通过：cadence/input/runtime/decision identity/query/stream、Tomorrow 投影、DeepSeek
+  预算、bootstrap/app factory/架构/诊断/入口契约共 171 项；受影响文件 Ruff 与 mypy 通过，Node D4
+  overlay patch/无关事件过滤/status 对账测试通过。
+- `performance-check` 的最终活动函数报告通过全部固定预算：5500 标的双源合并 P95 349.559ms（600ms
+  上限）、status P95 1.077ms（100ms 上限）、TopK overlay CAS P95 28.974ms（100ms 上限），且
+  360 候选、三策略评分、API/ETag/SSE、Tomorrow 原生投影和 100 tick RSS 均通过、网络调用为 0。
+- Firefox SSE 专项门禁通过：overlay 发布最大间隔 1.043 秒、DOM 最大间隔 1.063 秒、
+  patch-to-paint P95 6ms（100ms 上限），9 次更新全部走行级 patch，零 resync 和浏览器错误；三档桌面
+  1280x720、1440x900、1920x1080 均无白屏、重叠或页面级横向溢出。
+- 2026-08-25 早盘复用 `scripts/sample_tencent_quotes.py` 以 2 秒间隔采样 5 次；两只固定样本均出现
+  4 个不同供应商版本，请求 P95/最大值 585.7ms，证明当前供应商响应为 2 秒 TopK 周期保留实际余量。
+- 高风险完整门禁 `make format-check`、`make lint`（严格重构债为 0）、`make type-check`（225 个源码
+  文件）、`make test` 和 `make package` 全部通过；最终 wheel 在仓库外临时目录以 `--no-deps` 安装，
+  导入路径确认位于安装目录，`trader-cli --help` 及模板、CSS、JavaScript、SVG 资源读取通过。
 
 - 对照 `docs/software-business-design.md` 的进程内类型状态与显式 JSON adapter 契约，以及
   `tests/contract/test_v2_architecture.py` 的现有 AST 门禁，逐项 Review 新增 `AGENTS.md` 六条规则；运行
@@ -1447,6 +1496,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 离线生产性能、确定性 Firefox fixture 和浏览器 patch-to-paint 可在任意时刻复验；腾讯供应商真实
+  早盘窗口已留证，但午后及 14:50 后两个窗口尚未发生，仍受交易日、交易时段、网络与供应商可用性
+  约束，必须复用已固化脚本分窗口补证，不能用早盘或确定性 fixture 替代其权威数据年龄验收。当前
+  35 秒仅保留为 Web 展示余量，未被用来放宽 cadence 或数据年龄门槛。
 
 - `AGENTS.md` 约束代理和协作者，但不能单独阻止绕过流程的人工提交；活动源码仍以现有 AST 契约作为
   机器门禁。新增真正的外部 JSON 边界可能需要精确豁免，必须按本批新增规则提供证据，不得泛化豁免。

@@ -25,6 +25,7 @@ from werkzeug.serving import WSGIRequestHandler, make_server
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from trader.application.cadence import CadencePlanner, CadencePolicy  # noqa: E402
 from trader.application.decision_core import UnifiedDecisionIndex  # noqa: E402
 from trader.application.decision_drafts import UnifiedDecisionDraftIndex  # noqa: E402
 from trader.application.decision_observers import AsyncDecisionObserver  # noqa: E402
@@ -115,6 +116,9 @@ class _RecordingData:
                     "observed_at": observed_at.isoformat(),
                 }
             )
+
+    def refresh_task(self, _request) -> None:
+        return
 
     def snapshot(self) -> list[dict[str, object]]:
         with self._lock:
@@ -420,6 +424,7 @@ def _run(
     simulated_start: datetime,
     *,
     snapshot_retention_seconds: float,
+    patch_to_paint_budget_ms: float,
 ) -> dict[str, object]:
     geckodriver = shutil.which("geckodriver")
     if geckodriver is None or shutil.which("firefox") is None:
@@ -446,12 +451,22 @@ def _run(
                     "price": overlay.quotes[0].price if overlay.quotes else None,
                 }
             )
-        return events.publish_overlay(overlay)
+        current = index.snapshot(overlay.strategy).current
+        if not isinstance(current, ScoredDecision):
+            raise RuntimeError("measurement overlay parent is unavailable")
+        return events.publish_overlay(overlay, parent_content_hash=current.content_hash)
+
+    runtime_settings = load_runtime_settings(args.runtime_config)
+    cadence = CadencePlanner(
+        CadencePolicy.from_seconds(runtime_settings.pipeline.cadence_seconds),
+        started_at=simulated_start,
+    )
 
     runtime = V2SchedulerRuntime(
         V2RuntimeDependencies(
             clock=clock,
             calendar=_TradingCalendar(),
+            cadence=cadence,
             data=data,
             decisions=_OverlayOnlyDecisions(),
             reviews=_Reviews(),
@@ -460,6 +475,7 @@ def _run(
             freezes=_Freezes(),
             settlement=_Settlement(),
             research_factory=_research_factory,
+            publish_decision=lambda _event: None,
             publish_overlay=publish_overlay,
         ),
         config_version="measurement",
@@ -627,12 +643,21 @@ def _run(
         round(snapshot_retention_seconds - observed_maximum, 3) if isinstance(observed_maximum, (int, float)) else None
     )
     browser_errors = diagnostics.get("browserErrors")
+    raw_patch_latency = diagnostics.get("patchToPaint")
+    patch_latency = raw_patch_latency if isinstance(raw_patch_latency, dict) else {}
+    patch_p95 = patch_latency.get("p95_ms")
+    patch_latency_passed = (
+        isinstance(patch_p95, (int, float))
+        and not isinstance(patch_p95, bool)
+        and float(patch_p95) <= patch_to_paint_budget_ms
+    )
     passed = (
         len(browser_records) >= args.minimum_updates
         and isinstance(browser_errors, list)
         and not browser_errors
         and retention_margin is not None
         and retention_margin > 0
+        and patch_latency_passed
     )
     return {
         "schema_version": "web-refresh-interval-v2",
@@ -655,6 +680,11 @@ def _run(
             "intervals_seconds": browser_intervals,
             "summary": browser_summary,
         },
+        "browser_patch_to_paint": {
+            "summary": patch_latency,
+            "budget_ms": patch_to_paint_budget_ms,
+            "passed": patch_latency_passed,
+        },
         "web_snapshot_retention": {
             "configured_seconds": snapshot_retention_seconds,
             "observed_maximum_interval_seconds": observed_maximum,
@@ -676,6 +706,7 @@ def main() -> int:
             args,
             simulated_start,
             snapshot_retention_seconds=settings.api.web_snapshot_retention_seconds,
+            patch_to_paint_budget_ms=settings.performance_budgets.latency_p95_ms["browser_patch_to_paint"],
         )
     except (OSError, RuntimeError, TypeError, ValueError, urllib.error.URLError) as exc:
         report = {

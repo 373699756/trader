@@ -20,8 +20,16 @@ from trader.application.tomorrow_selection import (
     select_tomorrow_features,
 )
 from trader.domain.market.models import MarketQuote
-from trader.domain.recommendation.decision_identity import DecisionItem, DecisionQuote, ScoredDecision
-from trader.domain.recommendation.models import Strategy
+from trader.domain.recommendation.decision_identity import (
+    DecisionDownside,
+    DecisionItem,
+    DecisionQuote,
+    DecisionResearchCoverage,
+    ScoredDecision,
+    SelectionDiagnostics,
+)
+from trader.domain.recommendation.downside import assess_downside
+from trader.domain.recommendation.models import RecommendationAction, Strategy
 from trader.domain.recommendation.tomorrow_fusion import (
     DecisionEpoch,
     TomorrowDecisionEntry,
@@ -118,7 +126,12 @@ def build_scored_v2_local(
         quality,
         candidates,
         epoch,
-        _scored_decision(epoch, input_version=native_input.input_version, strategy=strategy),
+        _scored_decision(
+            epoch,
+            input_version=native_input.input_version,
+            strategy=strategy,
+            decision_policy=decision_policy,
+        ),
     )
 
 
@@ -198,6 +211,7 @@ def build_scored_v2_hybrid(
         input_version=projection.native_input.input_version,
         parent_version=projection.local.version,
         strategy=strategy,
+        decision_policy=decision_policy,
     )
 
 
@@ -206,6 +220,7 @@ def _scored_decision(
     *,
     input_version: str,
     strategy: Strategy,
+    decision_policy: TomorrowDecisionPolicy,
     parent_version: str | None = None,
 ) -> ScoredDecision:
     return ScoredDecision(
@@ -228,16 +243,30 @@ def _scored_decision(
         config_version=epoch.config_version,
         strategy_version=epoch.strategy_version,
         fusion_version=epoch.fusion_version,
-        items=tuple(_decision_item(item) for item in epoch.entries),
+        items=tuple(
+            _decision_item(
+                item,
+                strategy=strategy,
+                review_eligible=item.code in epoch.review_candidate_codes,
+            )
+            for item in epoch.entries
+        ),
         filter_aggregates=tuple(epoch.filter_reason_counts.items()),
         degraded_reasons=epoch.degraded_reasons,
         population_count=epoch.evaluated_count,
         rejected_count=epoch.rejected_count,
+        selection_diagnostics=_selection_diagnostics(epoch, decision_policy),
     )
 
 
-def _decision_item(entry: TomorrowDecisionEntry) -> DecisionItem:
+def _decision_item(
+    entry: TomorrowDecisionEntry,
+    *,
+    strategy: Strategy,
+    review_eligible: bool,
+) -> DecisionItem:
     reason = entry.decision_skip_reason or entry.action_reason or "not_selected"
+    downside = assess_downside(entry.features, strategy)
     return DecisionItem(
         code=entry.code,
         action=entry.action,
@@ -256,6 +285,49 @@ def _decision_item(entry: TomorrowDecisionEntry) -> DecisionItem:
         name=entry.features.quote.name,
         industry=entry.features.quote.industry,
         quote=_decision_quote(entry.features.quote),
+        setup_type=downside.setup_type,
+        downside=DecisionDownside(
+            downside.status,
+            downside.reasons,
+            downside.atr20_pct,
+            downside.intraday_reversal_atr,
+            downside.historical_drawdown_pct,
+        ),
+        review_outcome=entry.review_outcome.value if entry.review_outcome is not None else None,
+        research_coverage=DecisionResearchCoverage(
+            len(entry.features.evidence),
+            len(entry.features.external_risk_facts),
+            review_eligible,
+        ),
+    )
+
+
+def _selection_diagnostics(
+    epoch: DecisionEpoch,
+    policy: TomorrowDecisionPolicy,
+) -> SelectionDiagnostics:
+    selected = tuple(item for item in epoch.entries if item.selected)
+    maximum_final_score = max((item.score.final_score for item in epoch.entries), default=None)
+    observation_floor = max(0.0, policy.executable_threshold - policy.observation_margin)
+    empty_reason = None
+    if not epoch.entries:
+        empty_reason = "no_scored_candidates"
+    elif not selected:
+        empty_reason = (
+            "score_below_observation_floor"
+            if maximum_final_score is not None and maximum_final_score < observation_floor
+            else "risk_or_execution_blocked"
+        )
+    return SelectionDiagnostics(
+        maximum_final_score,
+        policy.executable_threshold,
+        observation_floor,
+        policy.top_k,
+        policy.observation_limit,
+        sum(item.action is RecommendationAction.EXECUTABLE for item in selected),
+        sum(item.action is RecommendationAction.OBSERVE for item in selected),
+        len(epoch.review_candidate_codes),
+        empty_reason,
     )
 
 

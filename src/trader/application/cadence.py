@@ -34,6 +34,7 @@ class PipelineTask(str, Enum):
     FULL_MARKET = "full_market"
     CANDIDATE_QUOTES = "candidate_quotes"
     TOPK_QUOTES = "topk_quotes"
+    INTRADAY_TAIL = "intraday_tail"
     LONG_QUOTES = "long_quotes"
     SCORE = "score"
     INDUSTRY_HEAT = "industry_heat"
@@ -101,6 +102,7 @@ def task_execution_budget_seconds(task: PipelineTask) -> float | None:
         PipelineTask.FULL_MARKET: 20.0,
         PipelineTask.CANDIDATE_QUOTES: 3.0,
         PipelineTask.TOPK_QUOTES: 3.0,
+        PipelineTask.INTRADAY_TAIL: 3.0,
         PipelineTask.LONG_QUOTES: 3.0,
         PipelineTask.SCORE: 15.0,
         PipelineTask.INDUSTRY_HEAT: 20.0,
@@ -120,6 +122,7 @@ PERIODIC_TASKS = (
     PipelineTask.FULL_MARKET,
     PipelineTask.CANDIDATE_QUOTES,
     PipelineTask.TOPK_QUOTES,
+    PipelineTask.INTRADAY_TAIL,
     PipelineTask.LONG_QUOTES,
     PipelineTask.SCORE,
     PipelineTask.INDUSTRY_HEAT,
@@ -139,8 +142,10 @@ class CadencePolicy:
         for task, values in self.intervals.items():
             if not values or any(interval <= 0.0 for interval in values.values()):
                 raise ValueError(f"cadence intervals for {task.value} must be positive")
-            if CadenceBand.CLOSED in values or CadenceBand.AFTER_CLOSE in values:
-                raise ValueError(f"cadence intervals for {task.value} cannot run outside the trading timeline")
+            if CadenceBand.CLOSED in values:
+                raise ValueError(f"cadence intervals for {task.value} cannot run while the market is closed")
+            if CadenceBand.AFTER_CLOSE in values and task is not PipelineTask.TOPK_QUOTES:
+                raise ValueError("only selected-code quote overlays may run after close")
             normalized[task] = MappingProxyType(dict(values))
         object.__setattr__(self, "intervals", MappingProxyType(normalized))
 
@@ -383,7 +388,7 @@ class CadencePlanner:
         if trade_date not in self._reference_dates:
             self._reference_dates.add(trade_date)
             tasks.append(ScheduledPipelineTask(PipelineTask.REFERENCE_DATA, local, phase))
-            if band in {CadenceBand.FINAL_WINDOW, CadenceBand.AFTER_CLOSE}:
+            if band is CadenceBand.FINAL_WINDOW:
                 tasks.append(ScheduledPipelineTask(PipelineTask.CURRENT_QUOTES, local, phase))
         due_points = self._due_schedule_points(local)
         for point, strategies in due_points:
@@ -487,8 +492,14 @@ class CadencePlanner:
         trade_date = local.date().isoformat()
         band = cadence_band(phase)
         point_task_names = {item.task for item in tasks}
-        final_quotes_due = SchedulePoint.FINAL_CANDIDATE_QUOTES in due_points or phase is MarketPhase.FINAL_QUOTE
+        final_quotes_due = (
+            SchedulePoint.FINAL_CANDIDATE_QUOTES in due_points
+            or phase is MarketPhase.FINAL_QUOTE
+            or self._quote_checkpoint_active(trade_date, local)
+        )
         for task in PERIODIC_TASKS:
+            if phase is MarketPhase.FROZEN and task not in {PipelineTask.TOPK_QUOTES, PipelineTask.LONG_QUOTES}:
+                continue
             interval = self._policy.interval(task, band)
             if interval is None or (final_quotes_due and task is PipelineTask.CANDIDATE_QUOTES):
                 continue
@@ -499,6 +510,20 @@ class CadencePlanner:
             if task not in point_task_names:
                 tasks.append(ScheduledPipelineTask(task, local, phase))
             self._next_due[key] = local + timedelta(seconds=interval)
+
+    def _quote_checkpoint_active(self, trade_date: str, local: datetime) -> bool:
+        return any(
+            key.trade_date == trade_date
+            and key.schedule_point in {SchedulePoint.TODAY_CHECKPOINT, SchedulePoint.FINAL_CANDIDATE_QUOTES}
+            and local >= _point_boundary(local, key.schedule_point)
+            and state.lifecycle
+            in {
+                SchedulePointLifecycle.PENDING,
+                SchedulePointLifecycle.INFLIGHT,
+                SchedulePointLifecycle.RETRY_WAIT,
+            }
+            for key, state in self._point_states.items()
+        )
 
     def _discard_old_state(self, trade_date: str, band: CadenceBand) -> None:
         self._next_due = {key: due for key, due in self._next_due.items() if key[0] == trade_date and key[1] is band}
@@ -573,7 +598,7 @@ def _initial_point_lifecycle(
         if point is SchedulePoint.TODAY_CHECKPOINT:
             eligible = current < time(11, 20) and started_at <= boundary
         elif point is SchedulePoint.TODAY_FREEZE:
-            eligible = started_before_boundary
+            eligible = started_before_boundary and current < time(11, 21)
         elif point in {SchedulePoint.DEEPSEEK_CUTOFF, SchedulePoint.FINAL_CANDIDATE_QUOTES}:
             eligible = current < time(14, 50) and started_at <= boundary
         elif point is SchedulePoint.AFTERNOON_FREEZE:
@@ -589,6 +614,8 @@ def _point_window_expired(point: SchedulePoint, local: datetime) -> bool:
     current = local.time().replace(tzinfo=None)
     if point is SchedulePoint.TODAY_CHECKPOINT:
         return current >= time(11, 20)
+    if point is SchedulePoint.TODAY_FREEZE:
+        return current >= time(11, 21)
     if point in {
         SchedulePoint.DEEPSEEK_CUTOFF,
         SchedulePoint.FINAL_CANDIDATE_QUOTES,

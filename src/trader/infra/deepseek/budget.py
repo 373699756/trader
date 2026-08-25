@@ -11,7 +11,10 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, TypedDict, cast
+from zoneinfo import ZoneInfo
+
+from trader.application.ports.types import JsonInput, JsonObject, freeze_json_object
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
@@ -176,30 +179,41 @@ class DeepSeekBudgetLedger:
                 stage_limits=self._stage_limits,
             ),
         )
+        self._summary_lock = threading.Lock()
+        self._summaries: dict[str, JsonObject] = {}
+        self._empty_summary = freeze_json_object(cast(dict[str, JsonInput], self._reporting.summary("1970-01-01")))
 
     def begin_batch(self, request: BudgetBatchRequest) -> str:
         with self._write_lock:
-            return self._batches.begin_batch(request)
+            batch_id = self._batches.begin_batch(request)
+            day = request.requested_at.astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat()
+            self._refresh_summary(day)
+            return batch_id
 
     def finish_batch(self, completion: BudgetBatchCompletion) -> None:
         with self._write_lock:
+            day = self._batch_day(completion.batch_id)
             self._batches.finish_batch(completion)
             if self._health is not None:
                 self._health.record_completion(completion)
+            self._refresh_summary(day)
 
     def set_batch_cache_hits(self, batch_id: str, count: int) -> None:
         with self._write_lock:
+            day = self._batch_day(batch_id)
             self._batches.set_batch_cache_hits(batch_id, count)
+            self._refresh_summary(day)
 
     def fail_running_batch(self, batch_id: str, *, completed_at: datetime, error: str) -> bool:
         with self._write_lock:
-            return self._batches.fail_running_batch(batch_id, completed_at=completed_at, error=error)
+            changed = self._batches.fail_running_batch(batch_id, completed_at=completed_at, error=error)
+            if changed:
+                self._refresh_summary(self._batch_day(batch_id))
+            return changed
 
-    def summary(self, day: str) -> dict[str, object]:
-        summary = self._reporting.summary(day)
-        if self._health is not None and self._initialized:
-            summary["health"] = self._health.summary(day)
-        return summary
+    def summary(self, day: str) -> JsonObject:
+        with self._summary_lock:
+            return self._summaries.get(day, self._empty_summary)
 
     def initialize(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -327,6 +341,18 @@ class DeepSeekBudgetLedger:
                 self._health.initialize(connection)
             self._ensure_schema_version(connection)
         self._initialized = True
+        with self._connect() as connection:
+            days = {
+                str(row[0])
+                for row in connection.execute(
+                    """
+                    SELECT trade_date FROM deepseek_call_reservations
+                    UNION SELECT trade_date FROM deepseek_review_batches
+                    """
+                ).fetchall()
+            }
+        for day in days:
+            self._refresh_summary(day)
 
     def _ensure_schema_version(self, connection: sqlite3.Connection) -> None:
         if _current_schema_version(connection) < SCHEMA_VERSION:
@@ -354,6 +380,7 @@ class DeepSeekBudgetLedger:
                     return BudgetReservation(False, "", context.bucket, rejection, context.stage)
                 self._insert_reservation(connection, reservation_id, context)
                 connection.commit()
+            self._refresh_summary(context.trade_date)
         return BudgetReservation(True, reservation_id, context.bucket, "reserved", context.stage)
 
     def _reservation_context(
@@ -363,6 +390,7 @@ class DeepSeekBudgetLedger:
     ) -> tuple[_ReservationContext | None, BudgetReservation | None]:
         requested_at = options["requested_at"]
         _require_aware(requested_at, "budget requested_at")
+        requested_at = requested_at.astimezone(ZoneInfo("Asia/Shanghai"))
         bucket = "emergency" if options.get("emergency", False) else (options.get("bucket") or strategy.value)
         model_role = options.get("model_role", "primary")
         emergency_reason = options.get("emergency_reason", "")
@@ -494,6 +522,13 @@ class DeepSeekBudgetLedger:
             raise ValueError(f"invalid physical call terminal status: {status}")
         with self._write_lock:
             with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT trade_date FROM deepseek_call_reservations WHERE reservation_id = ?",
+                    (reservation_id,),
+                ).fetchone()
+                if row is None:
+                    raise KeyError(f"unknown or completed reservation: {reservation_id}")
+                day = str(row[0])
                 completed = options.get("completed_at") or datetime.now().astimezone()
                 _require_aware(completed, "physical call completion time")
                 _begin_immediate(connection)
@@ -528,6 +563,7 @@ class DeepSeekBudgetLedger:
                     raise KeyError(f"unknown or completed reservation: {reservation_id}")
                 _sync_call_audit(connection, reservation_id)
                 connection.commit()
+            self._refresh_summary(day)
 
     def recover_incomplete(self, recovered_at: datetime) -> int:
         _require_aware(recovered_at, "recovery time")
@@ -540,6 +576,15 @@ class DeepSeekBudgetLedger:
                         "SELECT reservation_id FROM deepseek_call_reservations WHERE status = 'reserved'"
                     ).fetchall()
                 )
+                days = {
+                    str(row[0])
+                    for row in connection.execute(
+                        """
+                        SELECT trade_date FROM deepseek_call_reservations WHERE status = 'reserved'
+                        UNION SELECT trade_date FROM deepseek_review_batches WHERE status = 'running'
+                        """
+                    ).fetchall()
+                }
                 calls = connection.execute(
                     """
                     UPDATE deepseek_call_reservations
@@ -568,6 +613,8 @@ class DeepSeekBudgetLedger:
                     (recovered_at.isoformat(),),
                 )
                 connection.commit()
+            for day in days:
+                self._refresh_summary(day)
         return int(calls) + int(batches)
 
     def abandon_reserved(self) -> int:
@@ -580,6 +627,12 @@ class DeepSeekBudgetLedger:
                         "SELECT reservation_id FROM deepseek_call_reservations WHERE status = 'reserved'"
                     ).fetchall()
                 )
+                days = {
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT DISTINCT trade_date FROM deepseek_call_reservations WHERE status = 'reserved'"
+                    ).fetchall()
+                }
                 changed = connection.execute(
                     """
                     UPDATE deepseek_call_reservations
@@ -590,7 +643,27 @@ class DeepSeekBudgetLedger:
                 ).rowcount
                 for reservation_id in reservation_ids:
                     _sync_call_audit(connection, reservation_id)
+            for day in days:
+                self._refresh_summary(day)
         return int(changed)
+
+    def _batch_day(self, batch_id: str) -> str:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT trade_date FROM deepseek_review_batches WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown DeepSeek batch: {batch_id}")
+        return str(row[0])
+
+    def _refresh_summary(self, day: str) -> None:
+        summary = self._reporting.summary(day)
+        if self._health is not None and self._initialized:
+            summary["health"] = self._health.summary(day)
+        snapshot = freeze_json_object(cast(dict[str, JsonInput], summary))
+        with self._summary_lock:
+            self._summaries[day] = snapshot
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:

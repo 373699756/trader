@@ -15,10 +15,12 @@ from trader.domain.recommendation.models import RecommendationAction, Strategy
 
 DecisionStage = Literal["local", "hybrid"]
 CommitKind = Literal["scheduled", "checkpoint_recovery", "close_fallback"]
-DECISION_IDENTITY_SCHEMA_VERSION = "v2_decision_identity_v1"
+LEGACY_DECISION_IDENTITY_SCHEMA_VERSION = "v2_decision_identity_v1"
+DECISION_IDENTITY_SCHEMA_VERSION = "v2_decision_identity_v2"
 LONG_PROJECTION_SCHEMA_VERSION = "v2_long_projection_v2"
 OVERLAY_SCHEMA_VERSION = "v2_decision_overlay_v1"
-COMMITTED_RECORD_SCHEMA_VERSION = "v2_committed_decision_v1"
+LEGACY_COMMITTED_RECORD_SCHEMA_VERSION = "v2_committed_decision_v1"
+COMMITTED_RECORD_SCHEMA_VERSION = "v2_committed_decision_v2"
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _CODE = re.compile(r"^\d{6}$")
 _IDENTITY = re.compile(r"^[a-zA-Z0-9_.:+-]{1,160}$")
@@ -54,6 +56,67 @@ class DecisionQuote:
 
 
 @dataclass(frozen=True)
+class DecisionDownside:
+    status: Literal["pass", "observe"]
+    reasons: tuple[str, ...]
+    atr20_pct: float | None
+    intraday_reversal_atr: float | None
+    historical_drawdown_pct: float | None
+
+    def __post_init__(self) -> None:
+        if self.status not in {"pass", "observe"}:
+            raise ValueError("decision downside status is invalid")
+        object.__setattr__(self, "reasons", _normalize_reasons(self.reasons))
+        for value in (self.atr20_pct, self.intraday_reversal_atr, self.historical_drawdown_pct):
+            if value is not None and not math.isfinite(value):
+                raise ValueError("decision downside metrics must be finite")
+
+
+@dataclass(frozen=True)
+class DecisionResearchCoverage:
+    evidence_count: int
+    structured_risk_fact_count: int
+    review_eligible: bool
+
+    def __post_init__(self) -> None:
+        if self.evidence_count < 0 or self.structured_risk_fact_count < 0:
+            raise ValueError("decision research coverage counts cannot be negative")
+
+
+@dataclass(frozen=True)
+class SelectionDiagnostics:
+    maximum_final_score: float | None
+    executable_threshold: float
+    observation_floor: float
+    executable_limit: int
+    observation_limit: int
+    selected_executable_count: int
+    selected_observation_count: int
+    review_candidate_count: int
+    empty_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        _validate_optional_score(self.maximum_final_score, "maximum final score")
+        _validate_score(self.executable_threshold, "selection executable threshold")
+        _validate_score(self.observation_floor, "selection observation floor")
+        if self.observation_floor > self.executable_threshold:
+            raise ValueError("selection observation floor cannot exceed executable threshold")
+        if (
+            min(
+                self.executable_limit,
+                self.observation_limit,
+                self.selected_executable_count,
+                self.selected_observation_count,
+                self.review_candidate_count,
+            )
+            < 0
+        ):
+            raise ValueError("selection diagnostic counts cannot be negative")
+        if self.empty_reason is not None and _REASON.fullmatch(self.empty_reason) is None:
+            raise ValueError("selection empty reason must be structured")
+
+
+@dataclass(frozen=True)
 class DecisionItem:
     code: str
     action: RecommendationAction
@@ -68,6 +131,10 @@ class DecisionItem:
     name: str = ""
     industry: str = ""
     quote: DecisionQuote | None = None
+    setup_type: str | None = None
+    downside: DecisionDownside | None = None
+    review_outcome: str | None = None
+    research_coverage: DecisionResearchCoverage | None = None
 
     def __post_init__(self) -> None:
         _require_code(self.code)
@@ -93,6 +160,10 @@ class DecisionItem:
         industry = _display_text(self.industry, "decision item industry")
         if self.quote is not None and self.quote.code != self.code:
             raise ValueError("decision quote code must match item code")
+        if self.setup_type is not None:
+            _require_identity(self.setup_type, "decision setup type")
+        if self.review_outcome is not None:
+            _require_identity(self.review_outcome, "decision review outcome")
         object.__setattr__(self, "score_components", components)
         object.__setattr__(self, "risk_codes", risks)
         object.__setattr__(self, "name", name)
@@ -116,6 +187,7 @@ class ScoredDecision:
     degraded_reasons: tuple[str, ...] = ()
     population_count: int | None = None
     rejected_count: int | None = None
+    selection_diagnostics: SelectionDiagnostics | None = None
     schema_version: str = DECISION_IDENTITY_SCHEMA_VERSION
     content_hash: str = field(init=False)
     version: str = field(init=False)
@@ -124,8 +196,7 @@ class ScoredDecision:
         if self.strategy not in {Strategy.TODAY, Strategy.TOMORROW, Strategy.D25}:
             raise ValueError("scored strategy must be today, tomorrow, or d25")
         _validate_coordinates(self.trade_date, self.sequence, self.observed_at)
-        if self.schema_version != DECISION_IDENTITY_SCHEMA_VERSION:
-            raise ValueError(f"decision schema_version must be {DECISION_IDENTITY_SCHEMA_VERSION}")
+        _validate_scored_schema(self.schema_version, self.selection_diagnostics, self.items)
         if self.stage == "local" and self.parent_version is not None:
             raise ValueError("local decision cannot reference a parent")
         if self.stage == "hybrid" and not self.parent_version:
@@ -322,8 +393,15 @@ class CommittedDecisionRecord:
     version: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.schema_version != COMMITTED_RECORD_SCHEMA_VERSION:
-            raise ValueError(f"record schema_version must be {COMMITTED_RECORD_SCHEMA_VERSION}")
+        if self.schema_version not in {
+            LEGACY_COMMITTED_RECORD_SCHEMA_VERSION,
+            COMMITTED_RECORD_SCHEMA_VERSION,
+        }:
+            raise ValueError("record schema_version is unsupported")
+        if (self.schema_version == LEGACY_COMMITTED_RECORD_SCHEMA_VERSION) != (
+            self.decision.schema_version == LEGACY_DECISION_IDENTITY_SCHEMA_VERSION
+        ):
+            raise ValueError("record and decision schema generations must match")
         _require_shanghai(self.committed_at, "decision committed_at")
         if self.committed_at.date() != self.decision.trade_date:
             raise ValueError("formal record and decision must share a trade date")
@@ -381,6 +459,8 @@ def formal_scored_decision(
         degraded_reasons=(*decision.degraded_reasons, *degraded_reasons),
         population_count=decision.population_count,
         rejected_count=decision.rejected_count,
+        selection_diagnostics=decision.selection_diagnostics,
+        schema_version=decision.schema_version,
     )
 
 
@@ -396,7 +476,11 @@ def committed_record_from_bytes(payload: bytes) -> CommittedDecisionRecord:
     if not isinstance(raw, dict):
         raise ValueError("formal decision payload must be an object")
     decision_raw = _object(raw.get("decision"), "decision")
-    items = tuple(_decision_item_from_json(item) for item in _list(decision_raw.get("items"), "items"))
+    decision_schema = _text(decision_raw, "schema_version")
+    items = tuple(
+        _decision_item_from_json(item, schema_version=decision_schema)
+        for item in _list(decision_raw.get("items"), "items")
+    )
     decision = ScoredDecision(
         strategy=Strategy(_text(decision_raw, "strategy")),
         trade_date=date.fromisoformat(_text(decision_raw, "trade_date")),
@@ -413,7 +497,12 @@ def committed_record_from_bytes(payload: bytes) -> CommittedDecisionRecord:
         degraded_reasons=tuple(_strings(decision_raw.get("degraded_reasons"), "degraded_reasons")),
         population_count=_optional_integer(decision_raw.get("population_count"), "population_count"),
         rejected_count=_optional_integer(decision_raw.get("rejected_count"), "rejected_count"),
-        schema_version=_text(decision_raw, "schema_version"),
+        selection_diagnostics=(
+            _selection_diagnostics_from_json(decision_raw.get("selection_diagnostics"))
+            if decision_schema == DECISION_IDENTITY_SCHEMA_VERSION
+            else None
+        ),
+        schema_version=decision_schema,
     )
     record = CommittedDecisionRecord(
         decision=decision,
@@ -445,13 +534,21 @@ def _scored_payload(
         "config_version": decision.config_version,
         "strategy_version": decision.strategy_version,
         "fusion_version": decision.fusion_version,
-        "items": [_decision_item_payload(item) for item in items],
+        "items": [
+            _decision_item_payload(
+                item,
+                include_metadata=decision.schema_version == DECISION_IDENTITY_SCHEMA_VERSION,
+            )
+            for item in items
+        ],
         "filter_aggregates": [[reason, count] for reason, count in aggregates],
         "degraded_reasons": list(reasons),
     }
     if decision.population_count is not None and decision.rejected_count is not None:
         payload["population_count"] = decision.population_count
         payload["rejected_count"] = decision.rejected_count
+    if decision.schema_version == DECISION_IDENTITY_SCHEMA_VERSION:
+        payload["selection_diagnostics"] = _selection_diagnostics_payload(decision.selection_diagnostics)
     return payload
 
 
@@ -472,7 +569,7 @@ def _record_payload(record: CommittedDecisionRecord) -> dict[str, _Json]:
     }
 
 
-def _decision_item_payload(item: DecisionItem) -> dict[str, _Json]:
+def _decision_item_payload(item: DecisionItem, *, include_metadata: bool) -> dict[str, _Json]:
     payload: dict[str, _Json] = {
         "code": item.code,
         "action": item.action.value,
@@ -491,11 +588,17 @@ def _decision_item_payload(item: DecisionItem) -> dict[str, _Json]:
         payload["industry"] = item.industry
     if item.quote is not None:
         payload["quote"] = _decision_quote_payload(item.quote)
+    if include_metadata:
+        payload["setup_type"] = item.setup_type
+        payload["downside"] = _downside_payload(item.downside)
+        payload["review_outcome"] = item.review_outcome
+        payload["research_coverage"] = _research_coverage_payload(item.research_coverage)
     return payload
 
 
-def _decision_item_from_json(raw: object) -> DecisionItem:
+def _decision_item_from_json(raw: object, *, schema_version: str) -> DecisionItem:
     value = _object(raw, "decision item")
+    has_metadata = schema_version == DECISION_IDENTITY_SCHEMA_VERSION
     return DecisionItem(
         code=_text(value, "code"),
         action=RecommendationAction(_text(value, "action")),
@@ -510,6 +613,92 @@ def _decision_item_from_json(raw: object) -> DecisionItem:
         name=_optional_display_text(value.get("name"), "decision item name"),
         industry=_optional_display_text(value.get("industry"), "decision item industry"),
         quote=_decision_quote_from_json(value.get("quote")),
+        setup_type=_optional_text(value.get("setup_type")) if has_metadata else None,
+        downside=_downside_from_json(value.get("downside")) if has_metadata else None,
+        review_outcome=_optional_text(value.get("review_outcome")) if has_metadata else None,
+        research_coverage=_research_coverage_from_json(value.get("research_coverage")) if has_metadata else None,
+    )
+
+
+def _downside_payload(value: DecisionDownside | None) -> dict[str, _Json] | None:
+    if value is None:
+        return None
+    return {
+        "status": value.status,
+        "reasons": list(value.reasons),
+        "atr20_pct": value.atr20_pct,
+        "intraday_reversal_atr": value.intraday_reversal_atr,
+        "historical_drawdown_pct": value.historical_drawdown_pct,
+    }
+
+
+def _downside_from_json(raw: object) -> DecisionDownside | None:
+    if raw is None:
+        return None
+    value = _object(raw, "decision downside")
+    status = _text(value, "status")
+    if status not in {"pass", "observe"}:
+        raise ValueError("decision downside status is invalid")
+    return DecisionDownside(
+        cast(Literal["pass", "observe"], status),
+        tuple(_strings(value.get("reasons"), "downside reasons")),
+        _optional_number(value.get("atr20_pct")),
+        _optional_number(value.get("intraday_reversal_atr")),
+        _optional_number(value.get("historical_drawdown_pct")),
+    )
+
+
+def _research_coverage_payload(value: DecisionResearchCoverage | None) -> dict[str, _Json] | None:
+    if value is None:
+        return None
+    return {
+        "evidence_count": value.evidence_count,
+        "structured_risk_fact_count": value.structured_risk_fact_count,
+        "review_eligible": value.review_eligible,
+    }
+
+
+def _research_coverage_from_json(raw: object) -> DecisionResearchCoverage | None:
+    if raw is None:
+        return None
+    value = _object(raw, "decision research coverage")
+    return DecisionResearchCoverage(
+        _integer(value, "evidence_count"),
+        _integer(value, "structured_risk_fact_count"),
+        _boolean(value, "review_eligible"),
+    )
+
+
+def _selection_diagnostics_payload(value: SelectionDiagnostics | None) -> dict[str, _Json] | None:
+    if value is None:
+        return None
+    return {
+        "maximum_final_score": value.maximum_final_score,
+        "executable_threshold": value.executable_threshold,
+        "observation_floor": value.observation_floor,
+        "executable_limit": value.executable_limit,
+        "observation_limit": value.observation_limit,
+        "selected_executable_count": value.selected_executable_count,
+        "selected_observation_count": value.selected_observation_count,
+        "review_candidate_count": value.review_candidate_count,
+        "empty_reason": value.empty_reason,
+    }
+
+
+def _selection_diagnostics_from_json(raw: object) -> SelectionDiagnostics | None:
+    if raw is None:
+        return None
+    value = _object(raw, "selection diagnostics")
+    return SelectionDiagnostics(
+        _optional_number(value.get("maximum_final_score")),
+        _number(value, "executable_threshold"),
+        _number(value, "observation_floor"),
+        _integer(value, "executable_limit"),
+        _integer(value, "observation_limit"),
+        _integer(value, "selected_executable_count"),
+        _integer(value, "selected_observation_count"),
+        _integer(value, "review_candidate_count"),
+        _optional_text(value.get("empty_reason")),
     )
 
 
@@ -576,6 +765,27 @@ def _validate_coordinates(trade_date: date, sequence: int, observed_at: datetime
     _require_shanghai(observed_at, "identity observed_at")
     if observed_at.date() != trade_date:
         raise ValueError("identity observation must match its trade date")
+
+
+def _validate_scored_schema(
+    schema_version: str,
+    diagnostics: SelectionDiagnostics | None,
+    items: tuple[DecisionItem, ...],
+) -> None:
+    if schema_version not in {
+        LEGACY_DECISION_IDENTITY_SCHEMA_VERSION,
+        DECISION_IDENTITY_SCHEMA_VERSION,
+    }:
+        raise ValueError("decision schema_version is unsupported")
+    has_v2_metadata = diagnostics is not None or any(
+        item.setup_type is not None
+        or item.downside is not None
+        or item.review_outcome is not None
+        or item.research_coverage is not None
+        for item in items
+    )
+    if schema_version == LEGACY_DECISION_IDENTITY_SCHEMA_VERSION and has_v2_metadata:
+        raise ValueError("legacy decision schema cannot contain v2 display metadata")
 
 
 def _validate_score(value: float, label: str) -> None:
@@ -770,18 +980,23 @@ def _shanghai_datetime(value: str) -> datetime:
 __all__ = [
     "COMMITTED_RECORD_SCHEMA_VERSION",
     "DECISION_IDENTITY_SCHEMA_VERSION",
+    "LEGACY_COMMITTED_RECORD_SCHEMA_VERSION",
+    "LEGACY_DECISION_IDENTITY_SCHEMA_VERSION",
     "LONG_PROJECTION_SCHEMA_VERSION",
     "OVERLAY_SCHEMA_VERSION",
     "CommitKind",
     "CommittedDecisionRecord",
     "DecisionIdentity",
     "DecisionItem",
+    "DecisionDownside",
     "DecisionOverlay",
     "DecisionQuote",
+    "DecisionResearchCoverage",
     "DecisionStage",
     "LongProjection",
     "LongProjectionItem",
     "ScoredDecision",
+    "SelectionDiagnostics",
     "committed_record_bytes",
     "committed_record_from_bytes",
     "formal_scored_decision",

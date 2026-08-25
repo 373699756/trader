@@ -707,6 +707,12 @@ tomorrow v2 本地选择完成后先生成 local `ScoredDecision`，其 `final_s
 仍必须为 `83.40`，本地风险只扣一次。epoch 完整条目固定只覆盖每板最多 120 只、全局最多
 360 只已评分候选；其余全市场过滤结果以总数和原因计数保存。
 
+每个新 `ScoredDecision` 必须同时固化同批不可变 anchor quote、setup 类型、结构化 downside、
+研究证据/风险事实覆盖和 review 终态，并保存本轮最高最终分、78/73 门槛、两池容量、入选计数、
+复核候选数与结构化空结果原因组成的 `selection_diagnostics`。这些字段只用于解释和审计，必须参与
+统一决策与正式记录哈希，但不得反向改变过滤、分数、风险、动作或排名。旧 v1 正式记录缺失这些字段时
+保持 `null`，不得以当前规则重算历史展示。
+
 融合后动作固定为：`pass` 且无 veto、最终分不低于 78 为 `executable`；不低于 73 为
 `observe`；`observe_only` 且无 veto、同时达到观察线时保持观察；`reject`、未评分、
 低于观察线或任一 veto 为 `unavailable`。活动正式池最多 6 只、观察池最多 6 只，两池分别按最终分、本地分、代码稳定

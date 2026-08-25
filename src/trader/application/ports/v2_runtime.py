@@ -9,6 +9,7 @@ from datetime import date, datetime
 from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
+from trader.application.cadence import PipelineTask
 from trader.application.ports.market import ResearchRefreshResult
 from trader.application.ports.runtime_status import V2InputQualityStatus
 from trader.application.research_audit import V2CommittedResearchAudit
@@ -56,6 +57,17 @@ class V2CycleRequest:
             raise ValueError("cycle sequence must be positive")
         if _IDENTITY.fullmatch(self.phase) is None or _IDENTITY.fullmatch(self.input_version) is None:
             raise ValueError("cycle phase and input version must be stable identities")
+
+
+@dataclass(frozen=True)
+class V2PipelineTaskRequest:
+    task: PipelineTask
+    observed_at: datetime
+    selected_codes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_shanghai(self.observed_at, "pipeline task observed_at")
+        object.__setattr__(self, "selected_codes", _normalize_codes(self.selected_codes))
 
 
 @dataclass(frozen=True)
@@ -133,6 +145,8 @@ class V2TradingCalendarPort(Protocol):
 
 
 class V2DataRefreshPort(Protocol):
+    def refresh_task(self, request: V2PipelineTaskRequest) -> None: ...
+
     def refresh(self, request: V2CycleRequest) -> None: ...
 
 
@@ -236,6 +250,7 @@ __all__ = [
     "V2FreezePort",
     "V2FreezeUnavailableError",
     "V2OverlayPublisher",
+    "V2PipelineTaskRequest",
     "V2ReviewUnavailableError",
     "V2ResearchIntent",
     "V2ResearchRuntimeFactoryPort",

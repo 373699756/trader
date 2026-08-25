@@ -349,7 +349,7 @@
     return {
       ...raw,
       snapshot_id: raw.decision_version,
-      projection_version: raw.decision_version,
+      projection_version: raw.projection_version || raw.decision_version,
       requested_date: historical ? raw.trade_date : null,
       current_trade_date: historical ? null : raw.trade_date,
       historical,
@@ -358,7 +358,7 @@
       phase: raw.stage || "current",
       stale: raw.status !== "ready",
       filtered_count: coverage.rejected_count || 0,
-      selection_diagnostics: {
+      selection_diagnostics: raw.selection_diagnostics || {
         observation_limit: coverage.observation_count || 0,
         executable_limit: coverage.executable_count || 0,
         selected_observation_count: coverage.observation_count || 0,
@@ -387,8 +387,12 @@
       quote_status: quote.status,
       action: item.action,
       action_reason: item.action_reason,
-      anchor_price: quote.price,
-      anchor_source_time: quote.source_time,
+      anchor_price: item.anchor_quote && item.anchor_quote.price,
+      anchor_source_time: item.anchor_quote && item.anchor_quote.source_time,
+      setup: item.setup || null,
+      downside: item.downside || null,
+      review_outcome: item.review_outcome || null,
+      research_coverage: item.research_coverage || null,
       scores: {
         candidate_score: scores.candidate,
         local_score: scores.local,
@@ -694,7 +698,8 @@
   function reconcileRecommendationIdentity(statusPayload) {
     if (state.date || !state.payload || !statusPayload || !statusPayload.strategies) return;
     const current = statusPayload.strategies[state.strategy];
-    if (!current || !current.snapshot_id || current.snapshot_id === state.payload.snapshot_id) return;
+    if (!current || !current.projection_version
+      || current.projection_version === state.payload.projection_version) return;
     loadRecommendations("status_identity");
   }
 
@@ -718,14 +723,39 @@
       stopPolling();
       if (state.streamRetry) window.clearTimeout(state.streamRetry);
     };
-    const refreshFromEvent = (event) => {
+    const eventPayload = (event) => {
+      try {
+        return JSON.parse(event.data || "{}");
+      } catch (error) {
+        recordBrowserError("event_json", error && error.message);
+        requestRecommendationResync("event_schema_mismatch");
+        return null;
+      }
+    };
+    const eventMatchesCurrent = (payload) => {
+      const currentDate = state.payload && (state.payload.current_trade_date || state.payload.trade_date);
+      return patches.eventMatchesCurrent(payload, state.strategy, currentDate);
+    };
+    const refreshDecision = (event) => {
       const receivedAt = performance.now();
       rememberEvent(event);
       diagnostics.incrementalSseBytes += formatters.utf8Bytes(event.data || "");
-      if (!state.date) loadRecommendations("v2_event").finally(() => recordPatchPaint(receivedAt));
+      const payload = eventPayload(event);
+      if (!state.date && eventMatchesCurrent(payload)) {
+        loadRecommendations("v2_decision").finally(() => recordPatchPaint(receivedAt));
+      }
     };
-    stream.addEventListener("decision", refreshFromEvent);
-    stream.addEventListener("overlay", refreshFromEvent);
+    const refreshOverlay = (event) => {
+      const receivedAt = performance.now();
+      rememberEvent(event);
+      diagnostics.incrementalSseBytes += formatters.utf8Bytes(event.data || "");
+      const payload = eventPayload(event);
+      if (!state.date && eventMatchesCurrent(payload) && applyOverlayPatch(payload)) {
+        recordPatchPaint(receivedAt);
+      }
+    };
+    stream.addEventListener("decision", refreshDecision);
+    stream.addEventListener("overlay", refreshOverlay);
     stream.addEventListener("resync_required", (event) => {
       rememberEvent(event);
       if (!state.date) requestRecommendationResync("server_resync");
@@ -804,6 +834,7 @@
     const quotes = new Map((patch.quotes || []).map((quote) => [quote.code, quote]));
     state.payload = {
       ...state.payload,
+      projection_version: patch.projection_version,
       items: (state.payload.items || []).map((item) => {
         const quote = quotes.get(item.code);
         if (!quote) return item;
@@ -819,6 +850,7 @@
         };
       }),
     };
+    state.projectionVersion = patch.projection_version;
     state.payloads.set(recommendationKey(state.strategy, state.date, state.view), state.payload);
     diagnostics.overlayPatchesApplied += 1;
     renderPayload(state.payload);
@@ -856,6 +888,7 @@
         ? { message: "长期策略当前尚无可用数据", notice: "长期策略只展示当前研究快照" }
         : { message: "当前暂无可用荐股数据", notice: "等待策略数据更新" },
       overlayPatchDecision: () => "dependency_missing",
+      eventMatchesCurrent: () => false,
       patchVersionValid: () => false,
       projectionVersion: (payload) => payload && (payload.projection_version || payload.snapshot_id) || "",
       recommendationPatchDecision: () => "dependency_missing",

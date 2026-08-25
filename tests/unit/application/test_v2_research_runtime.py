@@ -55,6 +55,7 @@ def _cadence() -> CadencePolicy:
             "full_market": {"today_main": 10},
             "candidate_quotes": {"today_main": 1},
             "topk_quotes": {"today_main": 1},
+            "intraday_tail": {"afternoon": 5},
             "long_quotes": {"today_main": 1},
             "score": {"today_main": 3},
             "industry_heat": {"today_main": 60},

@@ -13,6 +13,7 @@ function Show-Usage {
   .\run.ps1 serve                   显式启动，等同于无参数运行
   .\run.ps1 validate-config         校验配置后退出，不启动服务
   .\run.ps1 research-status         只读查看研究数据准备状态
+  .\run.ps1 performance-check       离线运行活动生产函数性能门禁
   .\run.ps1 help                    查看本帮助
 
 离线研究（仅在明确执行研究任务时使用）:
@@ -39,6 +40,7 @@ function Show-Usage {
 
 $CliModes = @(
     "validate-config",
+    "performance-check",
     "research-status",
     "research-history-download",
     "research-backtest",

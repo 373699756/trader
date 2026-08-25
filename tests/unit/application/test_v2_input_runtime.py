@@ -9,11 +9,13 @@ from pathlib import Path
 import pytest
 
 from tests.unit.domain.test_decision_identity import decision
+from trader.application.cadence import PipelineTask
 from trader.application.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.ports.v2_runtime import (
     V2CycleRequest,
     V2DataRefreshUnavailableError,
     V2DecisionUnavailableError,
+    V2PipelineTaskRequest,
 )
 from trader.application.schedule import SHANGHAI
 from trader.application.v2_input_runtime import V2DecisionBuildDependencies, V2MarketDataAdapter
@@ -35,8 +37,8 @@ class _Market:
         self.reference_requests: list[tuple[tuple[str, ...], tuple[str, ...], datetime, bool]] = []
         self.requested_codes: tuple[str, ...] = ()
 
-    def fetch_market_features(self, _observed_at, *, force=False):
-        del force
+    def fetch_market_features(self, _observed_at, *, force=False, deadline=None):
+        del force, deadline
         self.market_fetch_count += 1
         return self._features
 
@@ -107,6 +109,11 @@ def _request(
     )
 
 
+def _prime_scoring_cache(adapter: V2MarketDataAdapter, observed_at: datetime) -> None:
+    adapter.refresh_task(V2PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
+    adapter.refresh_task(V2PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
+
+
 def test_long_refresh_rejection_is_visible_to_scheduler_recovery() -> None:
     observed_at = datetime(2026, 8, 12, 12, 15, tzinfo=SHANGHAI)
     adapter = V2MarketDataAdapter(
@@ -124,6 +131,18 @@ def test_long_refresh_rejection_is_visible_to_scheduler_recovery() -> None:
         adapter.refresh(_request(observed_at, strategy=Strategy.LONG, phase="midday_recovery"))
 
 
+def test_reference_lane_can_start_before_the_full_market_universe_without_false_degradation() -> None:
+    observed_at = datetime(2026, 8, 12, 9, 15, tzinfo=SHANGHAI)
+    adapter = V2MarketDataAdapter(
+        _Market(()),
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=_decision_build(),
+    )
+
+    adapter.refresh_task(V2PipelineTaskRequest(PipelineTask.REFERENCE_DATA, observed_at))
+
+
 def test_production_adapter_rejects_transient_invalid_empty_projection(
     application_feature_factory,
 ) -> None:
@@ -138,6 +157,7 @@ def test_production_adapter_rejects_transient_invalid_empty_projection(
     )
     request = _request(observed_at)
 
+    _prime_scoring_cache(adapter, observed_at)
     adapter.refresh(request)
 
     with pytest.raises(V2DecisionUnavailableError, match="transient_invalid_empty"):
@@ -158,6 +178,7 @@ def test_production_adapter_preserves_publishable_business_empty_projection(
     )
     request = _request(observed_at, phase="afternoon")
 
+    _prime_scoring_cache(adapter, observed_at)
     adapter.refresh(request)
     decision = adapter.build_local(request)
 
@@ -170,7 +191,13 @@ def test_production_adapter_builds_current_overlay_from_another_scored_lane_batc
 ) -> None:
     observed_at = datetime(2026, 8, 12, 13, 5, tzinfo=SHANGHAI)
     network_completed_at = observed_at + timedelta(seconds=3)
-    features = tuple(application_feature_factory(code, network_completed_at) for code in ("600001", "600003"))
+    features = tuple(
+        replace(
+            application_feature_factory(code, network_completed_at),
+            quote=replace(application_feature_factory(code, network_completed_at).quote, board=Board.MAIN),
+        )
+        for code in ("600001", "600003")
+    )
     adapter = V2MarketDataAdapter(
         _Market(features),
         config_version="test-config",
@@ -210,6 +237,7 @@ def test_production_adapter_builds_current_overlay_from_another_scored_lane_batc
         tuple(item.quote for item in items if item.quote is not None),
     )
 
+    _prime_scoring_cache(adapter, observed_at)
     adapter.refresh(request)
     overlay = adapter.refreshed_overlay(frozen, request, previous)
 
@@ -224,6 +252,48 @@ def test_production_adapter_builds_current_overlay_from_another_scored_lane_batc
     assert quotes["600002"].price == frozen_quote.price
 
 
+def test_topk_overlay_batch_is_independent_from_full_market_and_scoring_cache(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 15, 5, tzinfo=SHANGHAI)
+    feature = application_feature_factory("600001", observed_at)
+    market = _Market((feature,))
+    adapter = V2MarketDataAdapter(
+        market,
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=_decision_build(),
+    )
+    source = decision(Strategy.TOMORROW)
+    anchor = source.items[0].quote
+    assert anchor is not None
+    frozen_at = observed_at.replace(hour=14, minute=50)
+    frozen = replace(
+        source,
+        trade_date=observed_at.date(),
+        observed_at=frozen_at,
+        items=(replace(source.items[0], quote=replace(anchor, source_time=frozen_at)),),
+    )
+    frozen_quote = frozen.items[0].quote
+    assert frozen_quote is not None
+    previous = DecisionOverlay(
+        frozen.strategy,
+        frozen.trade_date,
+        frozen.version,
+        frozen_at,
+        (frozen_quote,),
+    )
+    request = _request(observed_at, strategy=Strategy.TOMORROW, phase="quote_overlay")
+
+    adapter.refresh_task(V2PipelineTaskRequest(PipelineTask.TOPK_QUOTES, observed_at, ("600001",)))
+    overlay = adapter.refreshed_overlay(frozen, request, previous)
+
+    assert overlay is not None
+    assert market.market_fetch_count == 0
+    assert market.candidate_reads == [(("600001",), False, False)]
+    assert overlay.quotes[0].data_version == feature.quote.data_version
+
+
 def test_production_adapter_rejects_vendor_future_time_without_local_observation_support(
     application_feature_factory,
 ) -> None:
@@ -234,6 +304,7 @@ def test_production_adapter_rejects_vendor_future_time_without_local_observation
         feature,
         quote=replace(
             feature.quote,
+            board=Board.MAIN,
             source_time=received_at + timedelta(seconds=1),
             received_time=received_at,
             data_version="vendor-future",
@@ -266,6 +337,7 @@ def test_production_adapter_rejects_vendor_future_time_without_local_observation
         (frozen_quote,),
     )
 
+    _prime_scoring_cache(adapter, observed_at)
     adapter.refresh(request)
 
     assert adapter.refreshed_overlay(frozen, request, previous) is None
@@ -293,6 +365,7 @@ def test_production_adapter_rejects_partial_history_coverage_even_when_one_candi
     )
     request = _request(observed_at, phase="afternoon")
 
+    _prime_scoring_cache(adapter, observed_at)
     adapter.refresh(request)
 
     with pytest.raises(V2DecisionUnavailableError, match="not_ready"):
@@ -326,6 +399,7 @@ def test_production_adapter_rejects_candidate_security_identity_degradation(
     )
     request = _request(observed_at, phase="afternoon")
 
+    _prime_scoring_cache(adapter, observed_at)
     adapter.refresh(request)
 
     with pytest.raises(V2DecisionUnavailableError, match="not_ready"):
@@ -374,6 +448,7 @@ def test_production_adapter_accepts_exactly_ninety_nine_percent_history_coverage
     )
     request = _request(observed_at, phase="afternoon")
 
+    _prime_scoring_cache(adapter, observed_at)
     adapter.refresh(request)
     decision = adapter.build_local(request)
 
@@ -411,6 +486,7 @@ def test_production_adapter_rejects_partial_candidate_feature_response(
     )
     request = _request(observed_at, phase="afternoon")
 
+    _prime_scoring_cache(adapter, observed_at)
     adapter.refresh(request)
 
     with pytest.raises(V2DecisionUnavailableError, match="not_ready"):
@@ -449,6 +525,7 @@ def test_three_scored_strategies_share_one_fast_market_input_cycle(
         _request(observed_at, strategy=strategy, phase="morning")
         for strategy in (Strategy.TOMORROW, Strategy.D25, Strategy.TODAY)
     )
+    _prime_scoring_cache(adapter, observed_at)
     entered = threading.Barrier(len(requests))
 
     def refresh(request: V2CycleRequest) -> None:
@@ -516,6 +593,7 @@ def test_three_scored_strategies_use_refresh_completion_as_the_decision_time(
         for strategy in (Strategy.TOMORROW, Strategy.D25, Strategy.TODAY)
     )
 
+    _prime_scoring_cache(adapter, requested_at)
     for request in requests:
         adapter.refresh(request)
     decisions = tuple(adapter.build_local(request) for request in requests)
@@ -546,6 +624,7 @@ def test_decision_time_does_not_trust_a_future_vendor_source_time(
     )
     request = _request(requested_at, phase="morning")
 
+    _prime_scoring_cache(adapter, requested_at)
     adapter.refresh(request)
 
     with pytest.raises(V2DecisionUnavailableError, match="future_input_time"):
@@ -577,7 +656,7 @@ def test_candidate_pool_limit_is_applied_per_supported_board(
         decision_build=_decision_build(),
     )
 
-    adapter.refresh(_request(observed_at, phase="morning"))
+    _prime_scoring_cache(adapter, observed_at)
 
     assert len(market.requested_codes) == 3
     assert {code[:3] for code in market.requested_codes} == {"600", "300", "688"}
@@ -610,6 +689,7 @@ def test_reference_refresh_scheduling_failure_does_not_block_local_decision(
     )
     request = _request(observed_at, phase="afternoon")
 
+    _prime_scoring_cache(adapter, observed_at)
     adapter.refresh(request)
 
     decision = adapter.build_local(request)
@@ -654,6 +734,7 @@ def test_research_intent_prioritizes_published_output_before_bounded_candidates(
     )
     request = _request(observed_at, phase="afternoon")
 
+    _prime_scoring_cache(adapter, observed_at)
     adapter.refresh(request)
     decision = adapter.build_local(request)
 
@@ -671,11 +752,11 @@ def test_unexpected_shared_input_failure_releases_single_flight_owner(
     feature = replace(feature, quote=replace(feature.quote, board=Board.MAIN, is_st=True))
 
     class RetryMarket(_Market):
-        def fetch_market_features(self, _observed_at, *, force=False):
+        def fetch_market_features(self, _observed_at, *, force=False, deadline=None):
             if self.market_fetch_count == 0:
                 self.market_fetch_count += 1
                 raise KeyError("unexpected implementation failure")
-            return super().fetch_market_features(_observed_at, force=force)
+            return super().fetch_market_features(_observed_at, force=force, deadline=deadline)
 
     market = RetryMarket((feature,))
     adapter = V2MarketDataAdapter(
@@ -687,7 +768,8 @@ def test_unexpected_shared_input_failure_releases_single_flight_owner(
     request = _request(observed_at, phase="morning")
 
     with pytest.raises(KeyError, match="unexpected implementation failure"):
-        adapter.refresh(request)
+        adapter.refresh_task(V2PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
+    _prime_scoring_cache(adapter, observed_at)
     adapter.refresh(request)
 
     assert market.market_fetch_count == 2

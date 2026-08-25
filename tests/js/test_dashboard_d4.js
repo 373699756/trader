@@ -745,16 +745,24 @@ const overlay = {
   patch_schema_version: 2,
   schema_version: 2,
   projection_version: "today-next",
-  snapshot_id: "today-next",
+  snapshot_id: "today-decision",
   strategy: "today",
   trade_date: "2026-07-23",
   quotes: [],
 };
-const current = { ...payload, snapshot_id: "today-next", projection_version: "today-next" };
-assert.strictEqual(state.overlayPatchDecision(overlay, current, "today-next", "today"), "apply");
+const current = { ...payload, snapshot_id: "today-decision", projection_version: "today-current" };
+assert.strictEqual(state.overlayPatchDecision(overlay, current, "today-current", "today"), "apply");
 assert.strictEqual(
   state.overlayPatchDecision({ ...overlay, projection_version: "wrong", snapshot_id: "wrong" }, current, "today-next", "today"),
   "overlay_projection_mismatch",
+);
+assert.strictEqual(state.eventMatchesCurrent({ strategy: "today", trade_date: "2026-07-23" }, "today", "2026-07-23"), true);
+assert.strictEqual(state.eventMatchesCurrent({ strategy: "d25", trade_date: "2026-07-23" }, "today", "2026-07-23"), false);
+assert.strictEqual(state.eventMatchesCurrent({ strategy: "today", trade_date: "2026-07-22" }, "today", "2026-07-23"), false);
+assert(source.includes("if (!state.date && eventMatchesCurrent(payload))"), "unrelated strategy events must not issue decision GETs");
+assert(
+  source.includes("current.projection_version === state.payload.projection_version"),
+  "status reconciliation must compare the API projection identity after a lost event",
 );
 
 const merged = state.mergePatchItems(payload.items, patch.upserts, new Set(patch.removed_codes));

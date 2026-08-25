@@ -26,8 +26,9 @@
   function overlayPatchDecision(patch, payload, currentVersion, strategy) {
     if (!patchVersionValid(patch) || !Array.isArray(patch.quotes)) return "schema_mismatch";
     if (!payload || patch.strategy !== strategy || patch.trade_date !== payload.trade_date) return "identity_mismatch";
-    const incomingProjection = patch.projection_version || patch.snapshot_id || "";
-    if (!incomingProjection || incomingProjection !== currentVersion || patch.snapshot_id !== payload.snapshot_id) {
+    const incomingProjection = patch.projection_version || "";
+    if (!incomingProjection || patch.snapshot_id !== payload.snapshot_id
+      || incomingProjection === currentVersion) {
       return "overlay_projection_mismatch";
     }
     if (!patch.quotes.every((quote) => quote && typeof quote.code === "string" && quote.code)) {
@@ -39,6 +40,11 @@
   function projectionVersion(payload) {
     if (!payload) return "";
     return payload.projection_version || payload.snapshot_id || "";
+  }
+
+  function eventMatchesCurrent(payload, strategy, tradeDate) {
+    if (!payload || payload.strategy !== strategy) return false;
+    return !tradeDate || payload.trade_date === tradeDate;
   }
 
   function emptyRecommendationMessage(payload, observationCount) {
@@ -279,6 +285,7 @@
     mergePatchItems,
     notReadyMessage,
     overlayPatchDecision,
+    eventMatchesCurrent,
     patchVersionValid,
     projectionVersion,
     recommendationPatchDecision,

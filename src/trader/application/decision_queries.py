@@ -19,6 +19,7 @@ from trader.domain.recommendation.decision_identity import (
     LongProjection,
     LongProjectionItem,
     ScoredDecision,
+    SelectionDiagnostics,
 )
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 
@@ -68,6 +69,19 @@ class DecisionItemView:
     quote_source: str | None
     quote_time: datetime | None
     quote_status: str
+    anchor_price: float | None = None
+    anchor_source: str | None = None
+    anchor_time: datetime | None = None
+    setup_type: str | None = None
+    downside_status: str | None = None
+    downside_reasons: tuple[str, ...] = ()
+    downside_atr20_pct: float | None = None
+    downside_intraday_reversal_atr: float | None = None
+    downside_historical_drawdown_pct: float | None = None
+    review_outcome: str | None = None
+    research_evidence_count: int | None = None
+    research_risk_fact_count: int | None = None
+    review_eligible: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -100,7 +114,12 @@ class DecisionView:
     items: tuple[DecisionItemView, ...]
     etag: str | None
     draft: DecisionDraftView | None = None
+    selection_diagnostics: SelectionDiagnostics | None = None
     schema_version: str = DECISION_VIEW_SCHEMA_VERSION
+
+    @property
+    def projection_version(self) -> str | None:
+        return self.etag
 
 
 class UnifiedDecisionQueries:
@@ -244,6 +263,7 @@ def _scored_view(
         decision.degraded_reasons,
         items,
         etag,
+        selection_diagnostics=decision.selection_diagnostics,
     )
 
 
@@ -274,6 +294,21 @@ def _scored_item(item: DecisionItem, quote: DecisionQuote | None) -> DecisionIte
         display_quote.source if display_quote is not None else None,
         display_quote.source_time if display_quote is not None else None,
         "live" if quote is not None else "decision_anchor" if item.quote is not None else "missing",
+        anchor_price=item.quote.price if item.quote is not None else None,
+        anchor_source=item.quote.source if item.quote is not None else None,
+        anchor_time=item.quote.source_time if item.quote is not None else None,
+        setup_type=item.setup_type,
+        downside_status=item.downside.status if item.downside is not None else None,
+        downside_reasons=item.downside.reasons if item.downside is not None else (),
+        downside_atr20_pct=item.downside.atr20_pct if item.downside is not None else None,
+        downside_intraday_reversal_atr=(item.downside.intraday_reversal_atr if item.downside is not None else None),
+        downside_historical_drawdown_pct=(item.downside.historical_drawdown_pct if item.downside is not None else None),
+        review_outcome=item.review_outcome,
+        research_evidence_count=(item.research_coverage.evidence_count if item.research_coverage is not None else None),
+        research_risk_fact_count=(
+            item.research_coverage.structured_risk_fact_count if item.research_coverage is not None else None
+        ),
+        review_eligible=(item.research_coverage.review_eligible if item.research_coverage is not None else None),
     )
 
 

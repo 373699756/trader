@@ -502,6 +502,24 @@ fixture 或后补日期伪造，活动生产保持不变。
 主数据与历史覆盖漏斗、评分与动作漏斗、DeepSeek 零调用原因均有回归；状态不含股票代码和密钥，
 固定融合向量与生产阈值不变，完整高风险门禁通过。
 
+### Realtime-R1：活动实时链闭环（实现完成，外部时段验收待补）
+
+- 以 `CadencePlanner` 作为唯一生产 cadence 真相源，把全市场、候选、TopK、分钟 tail、评分、
+  long、冻结与收盘恢复拆为独立 latest-wins 任务；`submit_due()` 返回真实下一到期时间。
+- 13:00 后物理刷新 Tomorrow 分钟 tail；Today 11:20 后、Tomorrow/D25 14:50 后及 15:00 后
+  只刷新正式入选代码 overlay，禁止重新评分或改变冻结身份。
+- 决策 CAS 成功后直接写内存 SSE，研究 observer 仅审计；status 只读统一内存预算快照并使用
+  上海交易日；DecisionView 同时公开不可变 anchor、可变 live、setup/downside、研究覆盖、
+  复核终态和 selection diagnostics。
+- 恢复调用活动生产函数的性能 CLI 与 `scripts/` runner，固定 5500/360、API/ETag/status/SSE、
+  patch-to-paint、100 tick RSS、环境身份和 5% 相对回归；禁止外网。
+
+退出条件：配置数据年龄预算、冻结不变式、SSE 丢事件自愈、SQLite 锁定 status、旧正式记录兼容、
+全部生产性能预算和真实早盘/午后/冻结后复测均有可复用证据；完整高风险门禁通过。
+
+当前证据：仓库实现、固定性能、SSE/桌面浏览器、完整高风险门禁、wheel 外部安装和真实早盘采样已
+通过；真实午后与 14:50 后复测必须等待对应交易窗口，未留证前不得把本节表述为生产实时验收通过。
+
 ## 8. 跨 lane 不可破坏约束
 
 - 融合公式固定为 `clamp(local_score * 0.68 + deepseek_score * 0.32 - deepseek_risk_penalty, 0, 100)`，

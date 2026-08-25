@@ -48,6 +48,12 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     assert quote.source == source_quote.source
     assert quote.source_time == source_quote.source_time
     assert quote.data_version == source_quote.data_version
+    assert projection.local.selection_diagnostics is not None
+    assert projection.local.selection_diagnostics.executable_threshold == 78.0
+    assert projection.local.selection_diagnostics.observation_floor == 73.0
+    assert all(item.setup_type is not None for item in projection.local.items)
+    assert all(item.downside is not None for item in projection.local.items)
+    assert all(item.research_coverage is not None for item in projection.local.items)
     audit = build_v2_committed_research_audit(projection, projection.local)
     assert audit.decision_hash == projection.local.content_hash
     assert audit.deepseek_request_delta == 0
@@ -67,6 +73,8 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
 
     assert hybrid is not None
     assert hybrid.parent_version == projection.local.version
+    reviewed = next(item for item in hybrid.items if item.code == code)
+    assert reviewed.review_outcome == "applied"
     index = UnifiedDecisionIndex()
     local_result = index.publish(projection.local, expected_version=None)
     hybrid_result = index.publish(hybrid, expected_version=projection.local.version)

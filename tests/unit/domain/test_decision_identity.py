@@ -7,13 +7,18 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.domain.recommendation.decision_identity import (
+    LEGACY_COMMITTED_RECORD_SCHEMA_VERSION,
+    LEGACY_DECISION_IDENTITY_SCHEMA_VERSION,
     CommittedDecisionRecord,
+    DecisionDownside,
     DecisionItem,
     DecisionOverlay,
     DecisionQuote,
+    DecisionResearchCoverage,
     LongProjection,
     LongProjectionItem,
     ScoredDecision,
+    SelectionDiagnostics,
     committed_record_bytes,
     committed_record_from_bytes,
 )
@@ -197,17 +202,49 @@ def test_formal_record_round_trip_preserves_optional_distinct_coverage() -> None
     assert restored.payload_hash == record.payload_hash
 
 
-def test_legacy_formal_record_without_display_metadata_keeps_its_identity() -> None:
-    legacy_item = replace(decision().items[0], quote=None)
-    current = replace(decision(), items=(legacy_item,))
+def test_legacy_v1_formal_record_without_v2_display_metadata_keeps_its_identity() -> None:
+    current = replace(
+        decision(),
+        schema_version=LEGACY_DECISION_IDENTITY_SCHEMA_VERSION,
+    )
+    record = CommittedDecisionRecord(
+        current,
+        NOW + timedelta(minutes=10),
+        "scheduled",
+        schema_version=LEGACY_COMMITTED_RECORD_SCHEMA_VERSION,
+    )
+
+    restored = committed_record_from_bytes(committed_record_bytes(record))
+
+    assert restored.decision.schema_version == LEGACY_DECISION_IDENTITY_SCHEMA_VERSION
+    assert restored.decision.items[0].setup_type is None
+    assert restored.decision.items[0].downside is None
+    assert restored.decision.items[0].review_outcome is None
+    assert restored.decision.items[0].research_coverage is None
+    assert restored.decision.selection_diagnostics is None
+    assert restored.payload_hash == record.payload_hash
+
+
+def test_v2_formal_record_round_trip_preserves_display_metadata_and_selection_diagnostics() -> None:
+    item = replace(
+        decision().items[0],
+        setup_type="breakout",
+        downside=DecisionDownside("observe", ("trend_breakdown",), 2.0, 1.5, -8.0),
+        review_outcome="applied",
+        research_coverage=DecisionResearchCoverage(3, 2, True),
+    )
+    current = replace(
+        decision(),
+        items=(item,),
+        selection_diagnostics=SelectionDiagnostics(88.0, 78.0, 70.0, 6, 6, 1, 0, 1),
+    )
     record = CommittedDecisionRecord(current, NOW + timedelta(minutes=10), "scheduled")
 
     restored = committed_record_from_bytes(committed_record_bytes(record))
 
-    assert restored.decision.items[0].name == ""
-    assert restored.decision.items[0].industry == ""
-    assert restored.decision.items[0].quote is None
-    assert restored.payload_hash == record.payload_hash
+    assert restored == record
+    assert restored.decision.items[0].downside == item.downside
+    assert restored.decision.selection_diagnostics == current.selection_diagnostics
 
 
 def test_decision_quote_rejects_wrong_code_future_time_and_invalid_market_values() -> None:

@@ -6,11 +6,18 @@ import re
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from datetime import time as wall_time
 from typing import Literal, cast
 
+from trader.application.cadence import (
+    CadencePlanner,
+    PipelineTask,
+    ScheduledPipelineTask,
+    SchedulePointResult,
+)
 from trader.application.decision_core import UnifiedDecisionIndex
 from trader.application.decision_events import V2DecisionCommitted
 from trader.application.decision_observers import DecisionObserverRuntime, DecisionObserverStatus
@@ -29,6 +36,7 @@ from trader.application.ports.v2_runtime import (
     V2FreezePort,
     V2FreezeUnavailableError,
     V2OverlayPublisher,
+    V2PipelineTaskRequest,
     V2ResearchRuntimeFactoryPort,
     V2ResearchRuntimeStatus,
     V2ReviewUnavailableError,
@@ -43,23 +51,45 @@ from trader.application.schedule import (
     ScheduleDecision,
     SchedulePoint,
     decision_at,
-    schedule_point_at,
-    seconds_until_next_schedule_boundary,
     shanghai_now,
 )
 from trader.application.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
 from trader.application.v2_lifecycle import LatestWinsOffer, LatestWinsStatus, LatestWinsWorker
 from trader.application.workers import BoundedExecutor
-from trader.domain.recommendation.decision_identity import DecisionIdentity, LongProjection, ScoredDecision
+from trader.domain.recommendation.decision_identity import (
+    DecisionIdentity,
+    LongProjection,
+    ScoredDecision,
+    identity_codes,
+)
 from trader.domain.recommendation.models import Strategy
 
 _ISSUE_HISTORY_CAPACITY = 20
+_DATA_TASKS = (
+    PipelineTask.FULL_MARKET,
+    PipelineTask.CANDIDATE_QUOTES,
+    PipelineTask.TOPK_QUOTES,
+    PipelineTask.INTRADAY_TAIL,
+    PipelineTask.INDUSTRY_HEAT,
+    PipelineTask.MARKET_NEWS,
+    PipelineTask.STOCK_RISK,
+    PipelineTask.REFERENCE_DATA,
+    PipelineTask.FINAL_CANDIDATE_QUOTES,
+    PipelineTask.CLOSE_QUOTES,
+    PipelineTask.CURRENT_QUOTES,
+)
+_DATA_LANES = tuple(
+    task
+    for task in _DATA_TASKS
+    if task not in {PipelineTask.FINAL_CANDIDATE_QUOTES, PipelineTask.CLOSE_QUOTES, PipelineTask.CURRENT_QUOTES}
+)
 
 
 @dataclass(frozen=True)
 class V2RuntimeDependencies:
     clock: Clock
     calendar: V2TradingCalendarPort
+    cadence: CadencePlanner
     data: V2DataRefreshPort
     decisions: V2DecisionBuilderPort
     reviews: V2DeepSeekUpgradePort
@@ -68,6 +98,7 @@ class V2RuntimeDependencies:
     freezes: V2FreezePort
     settlement: V2SettlementPort
     research_factory: V2ResearchRuntimeFactoryPort
+    publish_decision: Callable[[V2DecisionCommitted], object]
     publish_overlay: V2OverlayPublisher
 
 
@@ -90,6 +121,7 @@ class V2RuntimeStatus:
     phase: MarketPhase
     config_version: str
     lanes: tuple[LatestWinsStatus, ...]
+    task_lanes: tuple[LatestWinsStatus, ...]
     observer: DecisionObserverStatus
     deepseek: SharedDeepSeekRuntimeContract
     company_research: V2ResearchRuntimeStatus
@@ -162,6 +194,14 @@ class V2SchedulerRuntime:
             )
             for strategy in Strategy
         }
+        self._task_lanes: dict[PipelineTask, LatestWinsWorker[ScheduledPipelineTask]] = {
+            task: LatestWinsWorker(
+                f"trader-v2-task-{task.value}",
+                self._process_pipeline_task,
+                order_key=_pipeline_task_order_key,
+            )
+            for task in _DATA_LANES
+        }
         self._refresh_failure_count = 0
         self._decision_failure_count = 0
         self._review_failure_count = 0
@@ -200,6 +240,9 @@ class V2SchedulerRuntime:
             raise RuntimeError("V2 observer did not start")
         if not self._control.start():
             raise RuntimeError("V2 control executor did not start")
+        for task in _DATA_LANES:
+            if not self._task_lanes[task].start():
+                raise RuntimeError(f"V2 {task.value} task lane did not start")
         for strategy in Strategy:
             if not self._lanes[strategy].start():
                 raise RuntimeError(f"V2 {strategy.value} lane did not start")
@@ -209,10 +252,14 @@ class V2SchedulerRuntime:
     def _abort_start(self) -> None:
         deadline = ShutdownDeadline.start(self._shutdown_timeout_seconds)
         self._research.stop(wait=False, deadline=deadline)
-        for lane in self._lanes.values():
-            lane.close()
-        for lane in self._lanes.values():
-            lane.stop(deadline=deadline)
+        for task_lane in self._task_lanes.values():
+            task_lane.close()
+        for strategy_lane in self._lanes.values():
+            strategy_lane.close()
+        for task_lane in self._task_lanes.values():
+            task_lane.stop(deadline=deadline)
+        for strategy_lane in self._lanes.values():
+            strategy_lane.stop(deadline=deadline)
         self._control.stop(wait=True, cancel_futures=True, deadline=deadline)
         self._dependencies.observer.stop(deadline=deadline)
         self._research.stop(wait=True, deadline=deadline)
@@ -226,22 +273,82 @@ class V2SchedulerRuntime:
                 return 30.0
         observed_at = shanghai_now(at or self._dependencies.clock.now())
         is_trading_day = self._dependencies.calendar.is_trading_day(observed_at.date())
-        decision = decision_at(observed_at, is_trading_day=is_trading_day)
+        batch = self._dependencies.cadence.plan(observed_at, is_trading_day=is_trading_day)
         with self._lock:
-            self._phase = decision.phase
-        schedule_point = schedule_point_at(observed_at, is_trading_day=is_trading_day)
-        for strategy in self._due_strategies(decision, schedule_point, observed_at):
-            phase = _cycle_phase(strategy, decision.phase)
-            self.submit_cycle(self._scheduled_request(strategy, observed_at, phase))
-        for raw_strategy in decision.freeze_strategies:
-            self._submit_freeze(Strategy(raw_strategy), observed_at)
-        if decision.phase is MarketPhase.AFTER_CLOSE:
-            self._submit_settlement(observed_at)
+            self._phase = (
+                batch.tasks[0].phase
+                if batch.tasks
+                else decision_at(
+                    observed_at,
+                    is_trading_day=is_trading_day,
+                ).phase
+            )
+        for scheduled in batch.tasks:
+            self._dispatch_pipeline_task(scheduled)
+        phase = decision_at(observed_at, is_trading_day=is_trading_day).phase
         try:
-            self._research.offer_due(observed_at, decision.phase, is_trading_day=is_trading_day)
+            self._research.offer_due(observed_at, phase, is_trading_day=is_trading_day)
         except (RuntimeError, TypeError, ValueError) as exc:
             self._record_failure("research", _failure_code(exc, "research_offer_failed"), None)
-        return seconds_until_next_schedule_boundary(observed_at, maximum_seconds=30.0)
+        return batch.next_delay_seconds
+
+    def _dispatch_pipeline_task(self, scheduled: ScheduledPipelineTask) -> None:
+        completed_immediately = False
+        rejected_freezes: tuple[str, ...] = ()
+        if scheduled.task is PipelineTask.SCORE:
+            accepted = self._submit_scoring(scheduled)
+        elif scheduled.task is PipelineTask.LONG_QUOTES:
+            offer = self.submit_cycle(
+                self._scheduled_request(Strategy.LONG, scheduled.scheduled_at, scheduled.phase.value)
+            )
+            accepted = offer is not LatestWinsOffer.REJECTED
+        elif scheduled.task is PipelineTask.FREEZE:
+            submissions = {
+                strategy: self._submit_freeze(
+                    Strategy(strategy),
+                    scheduled.scheduled_at,
+                    scheduled=scheduled,
+                )
+                for strategy in scheduled.freeze_strategies
+            }
+            accepted = any(submissions.values())
+            rejected_freezes = tuple(strategy for strategy, submitted in submissions.items() if not submitted)
+        elif scheduled.task is PipelineTask.DEEPSEEK_CUTOFF:
+            accepted = True
+            completed_immediately = True
+        else:
+            offer = self._task_lanes[_pipeline_lane(scheduled.task)].offer(scheduled)
+            accepted = offer is not LatestWinsOffer.REJECTED
+        self._dependencies.cadence.record_submission(
+            scheduled,
+            accepted=accepted,
+            at=scheduled.scheduled_at,
+        )
+        for strategy in rejected_freezes:
+            self._dependencies.cadence.record_point_result(
+                scheduled.scheduled_at.date().isoformat(),
+                scheduled.schedule_point or SchedulePoint.AFTERNOON_FREEZE,
+                strategy,
+                SchedulePointResult.RETRY,
+                at=scheduled.scheduled_at,
+            )
+        if completed_immediately:
+            self._dependencies.cadence.record_results(
+                scheduled,
+                {"-": SchedulePointResult.COMPLETED},
+                at=scheduled.scheduled_at,
+            )
+
+    def _submit_scoring(self, scheduled: ScheduledPipelineTask) -> bool:
+        decision = decision_at(scheduled.scheduled_at, is_trading_day=True)
+        accepted = False
+        for strategy in self._due_strategies(decision, None, scheduled.scheduled_at):
+            if strategy is Strategy.LONG:
+                continue
+            phase = _cycle_phase(strategy, decision.phase)
+            offer = self.submit_cycle(self._scheduled_request(strategy, scheduled.scheduled_at, phase))
+            accepted = accepted or offer is not LatestWinsOffer.REJECTED
+        return accepted
 
     def submit_cycle(self, request: V2CycleRequest) -> LatestWinsOffer:
         with self._lock:
@@ -249,8 +356,79 @@ class V2SchedulerRuntime:
                 return LatestWinsOffer.REJECTED
         return self._lanes[request.strategy].offer(request)
 
+    def _process_pipeline_task(self, scheduled: ScheduledPipelineTask) -> None:
+        if scheduled.task is PipelineTask.CLOSE_QUOTES and not self._missing_after_close_scored_strategies(
+            scheduled.scheduled_at
+        ):
+            self._submit_settlement(scheduled.scheduled_at)
+            self._record_pipeline_result(scheduled, SchedulePointResult.COMPLETED)
+            return
+        selected_codes = self._selected_overlay_codes() if scheduled.task is PipelineTask.TOPK_QUOTES else ()
+        request = V2PipelineTaskRequest(scheduled.task, scheduled.scheduled_at, selected_codes)
+        try:
+            self._dependencies.data.refresh_task(request)
+        except V2DataRefreshUnavailableError as exc:
+            self._record_failure("refresh", _failure_code(exc, "refresh_unavailable"))
+            self._record_pipeline_result(scheduled, SchedulePointResult.RETRY)
+            return
+        if scheduled.task is PipelineTask.TOPK_QUOTES:
+            self._refresh_selected_overlays(scheduled)
+        elif scheduled.task is PipelineTask.FULL_MARKET and scheduled.phase is MarketPhase.MIDDAY:
+            for strategy in self._midday_recovery_strategies(scheduled.scheduled_at):
+                if strategy is Strategy.LONG:
+                    continue
+                self.submit_cycle(self._scheduled_request(strategy, scheduled.scheduled_at, "midday_recovery"))
+        elif scheduled.task is PipelineTask.CLOSE_QUOTES:
+            for strategy in self._after_close_recovery_strategies(scheduled.scheduled_at):
+                if strategy is Strategy.LONG:
+                    continue
+                self.submit_cycle(self._scheduled_request(strategy, scheduled.scheduled_at, "close_fallback"))
+            self._submit_settlement(scheduled.scheduled_at)
+        self._record_pipeline_result(scheduled, SchedulePointResult.COMPLETED)
+
+    def _record_pipeline_result(
+        self,
+        scheduled: ScheduledPipelineTask,
+        result: SchedulePointResult,
+    ) -> None:
+        if scheduled.schedule_point is None:
+            return
+        self._dependencies.cadence.record_results(
+            scheduled,
+            {"-": result},
+            at=shanghai_now(self._dependencies.clock.now()),
+        )
+
+    def _selected_overlay_codes(self) -> tuple[str, ...]:
+        codes: list[str] = []
+        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
+            snapshot = self._dependencies.index.snapshot(strategy)
+            identity = snapshot.formal.decision if snapshot.formal is not None else snapshot.current
+            if isinstance(identity, ScoredDecision):
+                codes.extend(identity_codes(identity))
+        return tuple(dict.fromkeys(codes))
+
+    def _refresh_selected_overlays(self, scheduled: ScheduledPipelineTask) -> None:
+        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
+            snapshot = self._dependencies.index.snapshot(strategy)
+            if (
+                not isinstance(snapshot.current, ScoredDecision)
+                or snapshot.current.trade_date != scheduled.scheduled_at.date()
+            ):
+                continue
+            request = self._scheduled_request(strategy, scheduled.scheduled_at, "quote_overlay")
+            for outcome in self._overlay_refresher.refresh(request):
+                if outcome.status == "failed":
+                    self._record_failure("overlay", outcome.error_code, outcome.strategy)
+                elif outcome.status != "skipped":
+                    self._record_overlay_success(outcome.strategy, published=outcome.status == "published")
+            break
+
     def wait_idle(self, timeout_seconds: float) -> bool:
         deadline = time.monotonic() + max(0.0, timeout_seconds)
+        for task in _DATA_LANES:
+            if not self._task_lanes[task].wait_idle(max(0.0, deadline - time.monotonic())):
+                return False
         for strategy in Strategy:
             if not self._lanes[strategy].wait_idle(max(0.0, deadline - time.monotonic())):
                 return False
@@ -280,9 +458,12 @@ class V2SchedulerRuntime:
             self._stopped = True
         self._research.stop(wait=False, deadline=deadline)
         self._dependencies.observer.close()
-        for lane in self._lanes.values():
-            lane.close()
+        for task_lane in self._task_lanes.values():
+            task_lane.close()
+        for strategy_lane in self._lanes.values():
+            strategy_lane.close()
         steps: list[ShutdownStep] = [self._control.stop(wait=True, cancel_futures=False, deadline=deadline)]
+        steps.extend(self._task_lanes[task].stop(deadline=deadline) for task in _DATA_LANES)
         steps.extend(self._lanes[strategy].stop(deadline=deadline) for strategy in Strategy)
         steps.append(self._dependencies.observer.stop(deadline=deadline))
         steps.append(self._research.stop(wait=True, deadline=deadline))
@@ -299,6 +480,7 @@ class V2SchedulerRuntime:
                 phase=self._phase,
                 config_version=self._config_version,
                 lanes=tuple(self._lanes[strategy].status() for strategy in Strategy),
+                task_lanes=tuple(self._task_lanes[task].status() for task in _DATA_LANES),
                 observer=self._dependencies.observer.status(),
                 deepseek=self._dependencies.reviews.runtime_contract,
                 company_research=self._research.status(),
@@ -491,11 +673,19 @@ class V2SchedulerRuntime:
                 strategy=strategy,
                 stages=frozenset({"refresh", "decision", "review", "publish"}),
             )
-        observation = (
-            V2DecisionObservation(event, self._dependencies.decisions.research_audit(event.decision_version))
-            if event is not None
-            else None
-        )
+        if event is not None:
+            try:
+                self._dependencies.publish_decision(event)
+            except (RuntimeError, TypeError, ValueError) as exc:
+                self._record_failure("publish", f"decision_event:{type(exc).__name__}", strategy)
+        observation = None
+        if event is not None:
+            try:
+                audit = self._dependencies.decisions.research_audit(event.decision_version)
+            except (RuntimeError, TypeError, ValueError) as exc:
+                self._record_failure("observer", f"research_audit:{type(exc).__name__}", strategy)
+                audit = None
+            observation = V2DecisionObservation(event, audit)
         if observation is not None and not self._dependencies.observer.offer(observation):
             with self._lock:
                 self._observer_rejection_count += 1
@@ -508,15 +698,19 @@ class V2SchedulerRuntime:
         self._record_failure("publish", reason, strategy)
 
     def _after_close_recovery_strategies(self, observed_at: datetime) -> tuple[Strategy, ...]:
-        strategies: list[Strategy] = []
-        for strategy in (Strategy.TOMORROW, Strategy.D25):
-            formal = self._dependencies.index.snapshot(strategy).formal
-            if formal is None or formal.trade_date != observed_at.date():
-                strategies.append(strategy)
+        strategies = list(self._missing_after_close_scored_strategies(observed_at))
         long_current = self._dependencies.index.snapshot(Strategy.LONG).current
         if not isinstance(long_current, LongProjection) or long_current.trade_date != observed_at.date():
             strategies.append(Strategy.LONG)
         return tuple(strategies)
+
+    def _missing_after_close_scored_strategies(self, observed_at: datetime) -> tuple[Strategy, ...]:
+        return tuple(
+            strategy
+            for strategy in (Strategy.TOMORROW, Strategy.D25)
+            if (formal := self._dependencies.index.snapshot(strategy).formal) is None
+            or formal.trade_date != observed_at.date()
+        )
 
     def _due_strategies(
         self,
@@ -586,16 +780,30 @@ class V2SchedulerRuntime:
                 self._freeze_completed_count += 1
                 self._resolve_issues_locked(strategy=request.strategy, stages=frozenset({"freeze"}))
 
-    def _submit_freeze(self, strategy: Strategy, at: datetime) -> None:
+    def _submit_freeze(
+        self,
+        strategy: Strategy,
+        at: datetime,
+        *,
+        scheduled: ScheduledPipelineTask,
+    ) -> bool:
         key = f"freeze:{at.date().isoformat()}:{strategy.value}"
         if not self._reserve_control(key):
-            return
-        future = self._control.submit_urgent(self._run_freeze, key, strategy, at)
+            return False
+        future = self._control.submit_urgent(self._run_freeze, key, strategy, at, scheduled)
         if future is None:
             self._finish_control(key, success=False)
             self._record_failure("freeze", "freeze_capacity_rejected", strategy)
+            return False
+        return True
 
-    def _run_freeze(self, key: str, strategy: Strategy, at: datetime) -> None:
+    def _run_freeze(
+        self,
+        key: str,
+        strategy: Strategy,
+        at: datetime,
+        scheduled: ScheduledPipelineTask,
+    ) -> None:
         success = False
         try:
             current = self._dependencies.index.snapshot(strategy).current
@@ -611,6 +819,13 @@ class V2SchedulerRuntime:
                 self._resolve_issues_locked(strategy=strategy, stages=frozenset({"freeze"}))
         finally:
             self._finish_control(key, success=success)
+            self._dependencies.cadence.record_point_result(
+                at.date().isoformat(),
+                scheduled.schedule_point or SchedulePoint.AFTERNOON_FREEZE,
+                strategy.value,
+                SchedulePointResult.COMPLETED if success else SchedulePointResult.RETRY,
+                at=shanghai_now(self._dependencies.clock.now()),
+            )
 
     def _submit_settlement(self, at: datetime) -> None:
         key = f"settlement:{at.date().isoformat()}"
@@ -778,6 +993,18 @@ def _validate_cycle_identity(request: V2CycleRequest, identity: DecisionIdentity
 
 def _cycle_order_key(request: V2CycleRequest) -> int:
     return request.trade_date.toordinal() * 1_000_000_000 + request.sequence
+
+
+def _pipeline_task_order_key(request: ScheduledPipelineTask) -> int:
+    return int(request.scheduled_at.timestamp() * 1_000_000)
+
+
+def _pipeline_lane(task: PipelineTask) -> PipelineTask:
+    if task in {PipelineTask.CURRENT_QUOTES, PipelineTask.CLOSE_QUOTES}:
+        return PipelineTask.FULL_MARKET
+    if task is PipelineTask.FINAL_CANDIDATE_QUOTES:
+        return PipelineTask.CANDIDATE_QUOTES
+    return task
 
 
 def _failure_code(exc: BaseException, fallback: str) -> str:

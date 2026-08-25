@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 from flask import Flask
 
-from trader.application.cadence import CadencePolicy, PipelineTask
+from trader.application.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.application.decision_core import UnifiedDecisionIndex
 from trader.application.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.decision_observers import AsyncDecisionObserver
@@ -27,7 +27,6 @@ from trader.application.research.historical_screening import HistoricalDownloadS
 from trader.application.research.score_r6 import ScoreR6HistoricalScreeningService
 from trader.application.research.score_r6_daily import ScoreR6DailyScreeningService
 from trader.application.research.score_r6_stability import ScoreR6StabilityScreeningService
-from trader.application.research_audit import V2DecisionObservation
 from trader.application.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
 from trader.application.shutdown import ShutdownDeadline, ShutdownReport
 from trader.application.source_lanes import SourceLaneRegistry
@@ -54,6 +53,7 @@ from trader.bootstrap_clock import utc_now as _utc_now
 from trader.bootstrap_data_plane import _initialize_reference_data_plane
 from trader.bootstrap_policy import _long_group_definitions, _long_item_definitions, _recommendation_policy
 from trader.bootstrap_status import runtime_status as _runtime_status
+from trader.domain.recommendation.decision_identity import DecisionOverlay, ScoredDecision
 from trader.domain.recommendation.models import Strategy
 from trader.infra.cache import BoundedLruCache
 from trader.infra.deepseek.budget import DeepSeekBudgetLedger
@@ -209,6 +209,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     now = _utc_now
     latency = LatencyWaterfall()
     cadence_policy = CadencePolicy.from_seconds(settings.pipeline.cadence_seconds)
+    cadence_planner = CadencePlanner(cadence_policy, started_at=ShanghaiClock(now).now())
     workers = _build_worker_context(settings, latency)
     context = _BuildContext(
         settings, strategy, watchlist, effective_config_version, now, latency, cadence_policy, workers
@@ -230,10 +231,21 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         ),
     )
     deepseek = V2DeepSeekAdapter(reviewer, policy, native_data)
+
+    def publish_overlay_event(overlay: DecisionOverlay) -> object:
+        current = publication.tomorrow_index.snapshot(overlay.strategy).current
+        if not isinstance(current, ScoredDecision) or current.version != overlay.parent_version:
+            raise ValueError("overlay event parent decision is unavailable")
+        return publication.decision_events.publish_overlay(
+            overlay,
+            parent_content_hash=current.content_hash,
+        )
+
     scheduler = V2SchedulerRuntime(
         V2RuntimeDependencies(
             clock=ShanghaiClock(context.now),
             calendar=calendar,
+            cadence=cadence_planner,
             data=native_data,
             decisions=native_data,
             reviews=deepseek,
@@ -259,7 +271,8 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
                 now=context.now,
                 on_result=on_result,
             ),
-            publish_overlay=publication.decision_events.publish_overlay,
+            publish_decision=publication.decision_events.publish_committed,
+            publish_overlay=publish_overlay_event,
         ),
         config_version=effective_config_version,
         shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
@@ -288,7 +301,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         services=UnifiedWebServices(
             publication.decision_queries,
             publication.decision_events,
-            lambda: _runtime_status(scheduler, reviewer, persistence.budget, market_data.health),
+            lambda: _runtime_status(scheduler, reviewer, market_data.health),
             WebApiConfig(
                 heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds,
                 snapshot_retention_seconds=settings.api.web_snapshot_retention_seconds,
@@ -684,11 +697,8 @@ def _build_publication(
         limits=ResearchTraceLimits(events_per_trade_date=max(2048, settings.pipeline.event_queue_size * 4)),
     )
 
-    def publish_decision_event(observation: V2DecisionObservation) -> None:
-        decision_events.publish_committed(observation.event)
-
     observer = AsyncDecisionObserver(
-        (publish_decision_event, research_trace.record),
+        (research_trace.record,),
         capacity=max(1, min(16, settings.pipeline.event_queue_size)),
         thread_name="trader-v2-decision-observer",
     )
