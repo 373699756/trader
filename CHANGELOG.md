@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户要求把“内部用对象、JSON 只在边界使用”的统一规则写入代理指令，根 `AGENTS.md` 新增
+  “JSON 与类型对象边界”强制章节，明确类型状态根、动态键 `Mapping`、输入解析、输出白名单投影、
+  禁止对象自序列化方法、公开 schema 演进和 AST 门禁豁免条件。
+
 - 针对用户指出内部状态在 JSON 字段与对象字段之间反复转换，新增活动源码序列化边界 AST 契约：除显式
   DeepSeek 可观测性端口/投影外，内部 `status()` 必须返回真实类型，且应用层不得再定义 `as_dict()`、
   `to_status()` 或 `to_json()`。线程池、来源 lane/registry、cadence、延迟瀑布和缓存现在都有不可变
@@ -320,6 +324,9 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 后续自动化代理修改状态接口时，必须先按根 `AGENTS.md` 选择类型对象或显式 JSON 边界，并同步契约测试；
+  不能再把局部字典/对象互换当作独立重构，也不能以兼容名义保留双表示或扩大隐式 fallback。
+
 - 进程内控制与诊断统一读取对象字段；市场健康适配器在最终可观测性边界显式投影来源 lane、缓存和
   延迟 JSON，保持现有 `/api/v2/status` 字段、枚举和值格式不变。缓存身份直接由规范 dataclass 编码器
   生成相同 canonical JSON，不再先复制为临时字典；配置/供应商/持久化/schema 载荷仍按 JSON 边界处理。
@@ -559,6 +566,9 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复统一 JSON/对象规则虽然已存在于软件架构文档和机器契约、但根代理指令没有直接写明，导致后续
+  协作者可能只看到局部调用方式而再次选择相反表示的问题；现在代理开始任务即可读到唯一选择标准。
 
 - 修复状态表示没有全仓边界规则、导致同类字段在字典下标和对象属性之间反复迁移的问题。根因是应用
   对象自行承担线格式转换且部分运行控制直接读取 JSON 形状；现在进程内状态、动态键集合和外部 JSON
@@ -809,6 +819,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 从代理实施规则中消除“内部状态可按局部方便选择 JSON 字典或对象”的解释空间；本批只修改文档，
+  没有删除运行代码、公开 JSON 字段或兼容能力。
+
 - 移除 `CacheIdentity.as_dict()`、`SchedulePointState.to_json()`、`TomorrowInputQuality.to_status()`，
   以及线程池、来源 lane、cadence、缓存和延迟状态的内部字典下标读取；没有增加兼容字典、双实现或
   反射 fallback。
@@ -932,6 +945,12 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 对照 `docs/software-business-design.md` 的进程内类型状态与显式 JSON adapter 契约，以及
+  `tests/contract/test_v2_architecture.py` 的现有 AST 门禁，逐项 Review 新增 `AGENTS.md` 六条规则；运行
+  文档关键词契约检查、架构契约 10 项和 `git diff --check` 均通过。`make format-check`、`make lint`、
+  `make type-check`、全量 `make test`、`make package`、wheel 和浏览器验收不适用：本批只修改 Markdown，
+  不改变运行、构建、测试收集、API 或策略行为。
 
 - 失败先行架构契约确认旧实现会因应用序列化方法和非类型化 `status()` 返回而失败；统一后，架构、
   worker、cache、latency、来源 lane/健康 JSON、DeepSeek 共享缓存和 V2 runtime 共 121 项定向回归通过，
@@ -1428,6 +1447,9 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- `AGENTS.md` 约束代理和协作者，但不能单独阻止绕过流程的人工提交；活动源码仍以现有 AST 契约作为
+  机器门禁。新增真正的外部 JSON 边界可能需要精确豁免，必须按本批新增规则提供证据，不得泛化豁免。
 
 - 本批不改变 `/api/v2/status`、行情健康、评分、过滤、冻结或 DeepSeek 行为；显式 JSON 投影仍需在
   新增公开字段时同步维护 schema 测试。工作树中的 Realtime-R1 未提交改动由其独立批次负责，本批只

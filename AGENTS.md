@@ -20,6 +20,26 @@
 - `create_app()` 必须保持无线程、无网络、无数据库和无文件写入副作用。
 - 新代码不得导入 `stock_analyzer`。v2 切换完成后，活动树中不得保留旧业务实现、旧测试或旧 Web 资源。
 
+### 2.1 JSON 与类型对象边界
+
+1. 进程内业务状态、控制状态和诊断状态统一使用不可变且字段有真实类型的值对象；`status()` 的根返回值
+   和集合值不得使用 `dict`、`Mapping`、`JsonObject`、`Any` 或 `object` 代替状态类型。
+2. 来源、数据集、策略等运行期动态键允许使用 `Mapping[Key, TypedStatus]`，但 `Mapping` 只是有类型对象
+   内部的键控集合，不是外部 JSON schema；进程内调用者必须读取对象字段，不得依赖 JSON 字段下标、
+   `.get()`、反射或空字典 fallback。
+3. JSON 只允许存在于明确的序列化边界：配置和供应商载荷解析、持久化 codec、schema 约束的不可变
+   事件载荷，以及 Web/API/可观测性响应投影。输入边界必须先解析为类型对象再进入应用流程；输出边界
+   必须由对应 adapter 按公开字段白名单显式投影，不能把内部对象直接透传为 JSON。
+4. 领域、应用和内部基础设施状态对象不得定义 `as_dict()`、`to_json()` 或 `to_status()` 自行决定线格式；
+   需要转换时使用边界 adapter 的模块级投影函数，并显式处理枚举、日期时间、动态键及脱敏。只有本身
+   就是外部可观测性契约的端口或 adapter 可以返回 JSON 形状。
+5. 内部类型增加字段不得自动改变公开 JSON schema；公开字段变化必须同步修改 adapter、schema/API
+   契约测试、`docs/software-business-design.md` 和 `CHANGELOG.md`。禁止为兼容旧字典调用保留双表示、
+   临时转换层或隐藏 fallback。
+6. `tests/contract/test_v2_architecture.py` 的序列化边界 AST 契约是强制门禁。修改状态接口或新增序列化
+   边界时必须先更新契约测试，再更新实现；不得通过扩大豁免路径绕过本节，新增豁免必须证明该模块是
+   最终外部边界且在 Review 和 Changelog 中说明理由。
+
 ## 3. 不可破坏的业务约束
 
 - 融合公式固定为 `clamp(local_score * 0.68 + deepseek_score * 0.32 - deepseek_risk_penalty, 0, 100)`，最终使用 `ROUND_HALF_UP` 保留两位小数。
