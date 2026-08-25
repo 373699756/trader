@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 DIAGNOSTICS = (
+    ROOT / "scripts" / "check_web_recommendation_health.py",
     ROOT / "scripts" / "measure_web_refresh_interval.py",
     ROOT / "scripts" / "sample_tencent_quotes.py",
     ROOT / "scripts" / "run_production_performance.py",
@@ -29,6 +30,9 @@ def test_reusable_runtime_diagnostics_are_parameterized_repository_scripts() -> 
         )
         assert result.returncode == 0, result.stderr
         assert "--output" in result.stdout
+        if script.name == "check_web_recommendation_health.py":
+            for option in ("--base-url", "--samples", "--interval-seconds", "--strategy"):
+                assert option in result.stdout
         if script.name == "measure_web_refresh_interval.py":
             assert "--runtime-config" in result.stdout
 

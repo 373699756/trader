@@ -52,6 +52,24 @@ API/ETag/status、SSE 和 100 tick RSS；可用 `--output` 保存报告，或用
 
 启动脚本只读取 `TRADER_HOST` 和 `TRADER_PORT`；旧 `HOST`/`PORT` 不再映射到 V2 进程。
 
+## 荐股漏斗诊断
+
+服务运行期间，可连续采样只读 Web API，检查荐股漏斗是否真的在上游阶段停滞：
+
+```bash
+.venv/bin/python scripts/check_web_recommendation_health.py \
+  --base-url http://127.0.0.1:5000 \
+  --samples 6 \
+  --interval-seconds 5 \
+  --output -
+```
+
+脚本同时读取 status 与 today/tomorrow/d25 current，检测候选、特征、证券身份、历史和完整评分
+持续为 0、已形成阶段回退为 0、input quality 消失、release/schema 及 status/current 身份不一致。
+正式推荐或观察数量单独为 0 可以是合法业务空集，不会据此报警；合法空 current 缺少
+`selection_diagnostics.empty_reason` 才会报错。报告只包含聚合计数和版本身份，不输出股票代码。
+存在错误时进程退出码为 1；连接失败同样生成结构化 JSON，便于定时任务留证。
+
 ## 关闭与重启
 
 在运行服务的终端按一次 Ctrl+C 会开始安全关闭，Web、冻结任务和后台资源共享一个最长

@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户反馈 Web 荐股数据异常、推荐漏斗经常显示 0，新增只读、参数化的
+  `scripts/check_web_recommendation_health.py`。脚本连续采样 status 与三个短线 current，输出不含股票
+  身份的 `web_recommendation_health_v1` JSON，定位候选、特征、证券身份、历史、评分持续归零或回退，
+  input quality 消失、release/schema 和 status/current 身份不一致；实际生产归零根因仍待真实交易窗口
+  采样确认，本批不把尚未复现的原因写成事实。
+
 - 针对 Review 指出的 35 秒 Web 保留窗口不能替代实时采集 cadence，新增活动组合根装配的
   `CadencePlanner`、按物理任务隔离的 latest-wins lane 和 Tomorrow 午后分钟 tail 任务；全市场、
   候选、TopK、tail、评分、long、冻结与收盘恢复分别按真实最近到期时间推进，任务状态进入 status。
@@ -333,6 +339,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 荐股健康采样在 HTTP JSON 边界立即解析为不可变类型快照，分析与报告投影不保留逐股 `items`；持续
+  异常窗口按可评分阶段和事件序列切分，进程重启、冻结/非评分阶段及带合法空诊断的零推荐不再误报；
+  单次 status/current projection 差异按并发读取竞态记为 warning，其余身份冲突仍为 error。
+
 - 决策 CAS 成功后现在直接写入内存 SSE，研究 observer 只消费审计副本；overlay 事件携带行级报价和
   与 current ETag 一致的 `projection_version`。浏览器按策略、交易日和事件类型过滤，decision 才整表
   GET，overlay 原地 patch；status 对账可在事件丢失后恢复当前投影。
@@ -583,6 +593,9 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复此前只能人工查看单次 Web 卡片、无法区分“合法零推荐”和“上游漏斗异常”的运维检测缺口；连接
+  失败、字段缺失、计数越界、上游阶段连续为零及非零回退现在均给出稳定原因码并以退出码 1 阻断。
 
 - 修复生产 `submit_due()` 仍按整策略周期运行并最多等待 30 秒、导致 TopK/候选/全市场物理数据年龄预算
   无法满足的问题；现在返回计划器真实下一到期时间，周期在途只保留最新请求并按各自 deadline 降级。
@@ -849,6 +862,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批未删除或放宽候选、过滤、评分、风险、TopK、冻结和行情链；诊断报告明确不输出股票代码、逐股
+  行情或供应商载荷，也不会因正式推荐/观察数单独为 0 而判错。
+
 - 移除固定 30 秒 supervisor tick 对实时采集周期的事实限制、研究 observer 对 Web SSE 发布的所有权、
   status 请求时的 SQLite 预算读取，以及正式记录已存在时 15:00 后不必要的全市场恢复；未移除或放宽
   评分、过滤、融合、风险、TopK、冻结边界、DeepSeek 168 次预算或 35 秒 Web 展示保留窗口。
@@ -979,6 +995,14 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 荐股健康脚本的 14 项定向 unit/contract 回归通过，覆盖合法空集、持续上游零值、业务空评分、非零
+  回退、input quality 消失/形状错误、冻结阶段、运行重启、status/current projection 失配、缺少合法空
+  诊断、status/current 覆盖计数失配、报告脱敏和 CLI 参数；
+  受影响文件 Ruff 与脚本直接 mypy 通过；以当前 HEAD 加仅暂存 diff 的隔离副本重跑结果一致。不可达
+  回环端口实测生成脱敏失败 JSON 并返回 1。
+- `make test`、`make package`、仓库外 wheel 和三档浏览器验收不适用：本批仅新增仓库辅助诊断脚本、
+  契约测试和运维文档，不改 `src/trader`、依赖、打包资源、活动 Web/API 或策略行为。
 
 - 本批定向回归已通过：cadence/input/runtime/decision identity/query/stream、Tomorrow 投影、DeepSeek
   预算、bootstrap/app factory/架构/诊断/入口契约共 171 项；受影响文件 Ruff 与 mypy 通过，Node D4
@@ -1496,6 +1520,10 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 脚本能检测并留证 Web 投影与推荐漏斗异常，但不会自动修复数据链。当前没有本批真实交易时段的异常
+  样本，导致用户所见持续归零的生产根因仍待确认；应在下次出现时保留完整聚合报告，并结合其中阶段、
+  blocker、runtime/release/projection 身份继续定位。短于采样间隔的瞬时闪断可能不形成持续异常。
 
 - 离线生产性能、确定性 Firefox fixture 和浏览器 patch-to-paint 可在任意时刻复验；腾讯供应商真实
   早盘窗口已留证，但午后及 14:50 后两个窗口尚未发生，仍受交易日、交易时段、网络与供应商可用性

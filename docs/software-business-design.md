@@ -1286,12 +1286,22 @@ IPv6 地址必须使用方括号生成合法 URL。
 
 1. 校验配置并确认交易日历、时区和运行目录可写。
 2. 查看 `/api/v2/status` 的来源、队列、缓存、预算、冻结和最近错误。
-3. 对行情 stale/degraded，先区分供应商延迟、熔断与内部 lane 排队。
-4. 对 DeepSeek 失败，区分密钥缺失、禁用、预算、deadline、HTTP 和 schema；本地推荐
+3. Web 推荐漏斗反复为 0 时，运行 `scripts/check_web_recommendation_health.py` 连续读取
+   `/api/v2/status` 与 today/tomorrow/d25 current。脚本必须只读、每次请求有超时和响应大小上限，
+   默认向标准输出写 `web_recommendation_health_v1` 聚合报告，不输出股票代码、逐股行情或外部载荷。
+4. 对行情 stale/degraded，先区分供应商延迟、熔断与内部 lane 排队。
+5. 对 DeepSeek 失败，区分密钥缺失、禁用、预算、deadline、HTTP 和 schema；本地推荐
    应继续可用。
-5. 对冻结异常，核对检查点时间、manifest、SHA-256、配置和策略版本；不得手工改写
+6. 对冻结异常，核对检查点时间、manifest、SHA-256、配置和策略版本；不得手工改写
    冻结文件。
-6. 对 Web 历史异常，验证正式记录身份、manifest 与归档哈希，不允许 HTTP 请求现场重建推荐。
+7. 对 Web 历史异常，验证正式记录身份、manifest 与归档哈希，不允许 HTTP 请求现场重建推荐。
+
+荐股漏斗诊断只在对应策略允许评分的盘中阶段判断持续归零，默认 6 次采样、5 秒间隔、连续 3 次
+才认定为持续异常；事件序列回退表示运行重启，必须切断跨重启的连续窗口。候选、候选特征、证券
+身份、历史或完整评分由非零回退到零，input quality 消失，release/schema 不一致，以及 status/current
+策略、交易日或 projection 身份不一致均需留证。正式/观察入选数为 0 本身不是异常；`ready` 的合法空
+current 必须携带 `selection_diagnostics.empty_reason`。脚本只负责检测和归因，不抓行情、不触发评分、
+不修改运行状态、阈值或冻结结果，错误发现或 API 不可达时退出码为 1。
 
 正常停止时在服务终端按一次 Ctrl+C，并等待最多 30 秒；第二次 Ctrl+C 是立即强制退出，
 只用于确认不再等待。浏览器关闭不会停止后台服务。正常重启后，观察池、候选、历史预热、
