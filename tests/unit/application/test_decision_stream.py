@@ -79,6 +79,7 @@ def test_overlay_event_serializes_row_patch_with_parent_and_projection_identitie
 
     assert payload["snapshot_id"] == decision.version
     assert payload["projection_version"] != decision.version
+    assert payload["schema_version"] == "v2_event_v1"
     assert payload["patch_schema_version"] == 2
     assert payload["quotes"] == [
         {

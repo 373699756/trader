@@ -5,7 +5,13 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 
 from tests.unit.domain.test_decision_identity import NOW, decision
-from trader.application.cadence import CadencePlanner, CadencePolicy, PipelineTask
+from trader.application.cadence import (
+    CadencePlanner,
+    CadencePolicy,
+    PipelineTask,
+    SchedulePointKey,
+    SchedulePointLifecycle,
+)
 from trader.application.decision_core import UnifiedDecisionIndex
 from trader.application.decision_observers import AsyncDecisionObserver
 from trader.application.ports.market import ResearchRefreshResult
@@ -14,10 +20,11 @@ from trader.application.ports.v2_runtime import (
     V2CycleRequest,
     V2DataRefreshUnavailableError,
     V2DecisionUnavailableError,
+    V2FreezeUnavailableError,
     V2ResearchIntent,
     V2ResearchRuntimeStatus,
 )
-from trader.application.schedule import SHANGHAI, MarketPhase
+from trader.application.schedule import SHANGHAI, MarketPhase, SchedulePoint
 from trader.application.shutdown import ShutdownDeadline, ShutdownStep
 from trader.application.v2_runtime import V2RuntimeDependencies, V2SchedulerRuntime
 from trader.bootstrap_status import runtime_status
@@ -56,6 +63,21 @@ class DataRefresh:
 
     def refresh_task(self, request) -> None:
         self.task_requests.append(request)
+
+
+class BlockingScoringInputs(DataRefresh):
+    def __init__(self) -> None:
+        super().__init__()
+        self.candidate_started = threading.Event()
+        self.release_candidate = threading.Event()
+
+    def refresh_task(self, request) -> None:
+        super().refresh_task(request)
+        if request.task is PipelineTask.CANDIDATE_QUOTES:
+            self.candidate_started.set()
+            assert self.release_candidate.wait(2.0)
+        elif request.task in {PipelineTask.MARKET_NEWS, PipelineTask.STOCK_RISK}:
+            raise V2DataRefreshUnavailableError("controlled_input_failure")
 
 
 def _cadence(at: datetime) -> CadencePlanner:
@@ -99,7 +121,14 @@ def _cadence(at: datetime) -> CadencePlanner:
                     "final_review": 1,
                     "final_window": 1,
                 },
-                "score": {"warmup": 10, "today_main": 3, "today_late": 5, "afternoon": 5, "final_review": 3},
+                "score": {
+                    "warmup": 10,
+                    "today_main": 3,
+                    "today_late": 5,
+                    "afternoon": 5,
+                    "final_review": 3,
+                    "final_window": 1,
+                },
                 "industry_heat": {
                     "warmup": 120,
                     "today_main": 60,
@@ -570,7 +599,11 @@ class Freezes:
     def __init__(self, index: UnifiedDecisionIndex | None = None) -> None:
         self._index = index
         self.calls: list[tuple[Strategy, str | None]] = []
+        self.checkpoint_calls: list[Strategy] = []
         self.close_fallback_calls: list[tuple[Strategy, str, str]] = []
+
+    def capture_checkpoint(self, strategy: Strategy, _at: datetime) -> None:
+        self.checkpoint_calls.append(strategy)
 
     def freeze(self, strategy: Strategy, at: datetime, current) -> None:
         self.calls.append((strategy, current.version if current is not None else None))
@@ -598,6 +631,133 @@ class Settlement:
 
     def settle(self, at: datetime) -> None:
         self.calls.append(at)
+
+
+def test_periodic_tick_does_not_score_until_a_scoring_input_finishes() -> None:
+    observed_at = datetime(2026, 8, 11, 10, 0, tzinfo=SHANGHAI)
+    data = BlockingScoringInputs()
+    index = UnifiedDecisionIndex()
+
+    class TrackingDecisions(Decisions):
+        def __init__(self) -> None:
+            self.build_started = threading.Event()
+
+        def build_local(self, request: V2CycleRequest):
+            if request.strategy is not Strategy.LONG:
+                self.build_started.set()
+            return super().build_local(request)
+
+    decisions = TrackingDecisions()
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=FixedClock(observed_at),
+            calendar=TradingCalendar(),
+            cadence=_cadence(observed_at),
+            data=data,
+            decisions=decisions,
+            reviews=SharedReviews(),
+            index=index,
+            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-v2-input-trigger-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+            research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
+            publish_overlay=lambda _overlay: None,
+        ),
+        config_version="runtime-v2",
+    )
+
+    runtime.start()
+    try:
+        runtime.submit_due(observed_at)
+        assert data.candidate_started.wait(1.0)
+        assert not decisions.build_started.wait(0.2)
+        assert index.snapshot(Strategy.TOMORROW).current is None
+
+        data.release_candidate.set()
+        assert runtime.wait_idle(2.0)
+    finally:
+        data.release_candidate.set()
+        runtime.stop(ShutdownDeadline.start(2.0))
+
+    assert isinstance(index.snapshot(Strategy.TOMORROW).current, ScoredDecision)
+
+
+def test_afternoon_checkpoint_is_dispatched_for_both_scored_strategies() -> None:
+    checkpoint_at = datetime(2026, 8, 11, 14, 49, 20, tzinfo=SHANGHAI)
+    clock = FixedClock(checkpoint_at)
+    index = UnifiedDecisionIndex()
+    data = BlockingScoringInputs()
+
+    class CurrentRequiredFreezes(Freezes):
+        def __init__(self) -> None:
+            super().__init__()
+            self.attempts: list[Strategy] = []
+            self.initial_attempts_finished = threading.Event()
+
+        def capture_checkpoint(self, strategy: Strategy, at: datetime) -> None:
+            self.attempts.append(strategy)
+            if len(self.attempts) >= 2:
+                self.initial_attempts_finished.set()
+            if index.snapshot(strategy).current is None:
+                raise V2FreezeUnavailableError("no_eligible_decision")
+            super().capture_checkpoint(strategy, at)
+
+    freezes = CurrentRequiredFreezes()
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=clock,
+            calendar=TradingCalendar(),
+            cadence=_cadence(checkpoint_at.replace(hour=9, minute=15)),
+            data=data,
+            decisions=Decisions(),
+            reviews=SharedReviews(),
+            index=index,
+            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-v2-checkpoint-observer"),
+            freezes=freezes,
+            settlement=Settlement(),
+            research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
+            publish_overlay=lambda _overlay: None,
+        ),
+        config_version="runtime-v2",
+    )
+
+    runtime.start()
+    try:
+        runtime.submit_due(checkpoint_at)
+        assert data.candidate_started.wait(1.0)
+        assert freezes.initial_attempts_finished.wait(1.0)
+        retrying = runtime.status()
+        assert all(
+            retrying.cadence.schedule_points[
+                SchedulePointKey(checkpoint_at.date().isoformat(), SchedulePoint.AFTERNOON_CHECKPOINT, strategy.value)
+            ].lifecycle
+            is SchedulePointLifecycle.RETRY_WAIT
+            for strategy in (Strategy.TOMORROW, Strategy.D25)
+        )
+
+        data.release_candidate.set()
+        assert runtime.wait_idle(2.0)
+        assert isinstance(index.snapshot(Strategy.TOMORROW).current, ScoredDecision)
+        assert isinstance(index.snapshot(Strategy.D25).current, ScoredDecision)
+        clock.current = checkpoint_at + timedelta(seconds=1)
+        runtime.submit_due(clock.current)
+        assert runtime.wait_idle(2.0)
+        status = runtime.status()
+    finally:
+        data.release_candidate.set()
+        runtime.stop(ShutdownDeadline.start(2.0))
+
+    assert freezes.checkpoint_calls == [Strategy.TOMORROW, Strategy.D25]
+    assert freezes.attempts == [Strategy.TOMORROW, Strategy.D25, Strategy.TOMORROW, Strategy.D25]
+    assert all(
+        status.cadence.schedule_points[
+            SchedulePointKey(checkpoint_at.date().isoformat(), SchedulePoint.AFTERNOON_CHECKPOINT, strategy.value)
+        ].lifecycle
+        is SchedulePointLifecycle.COMPLETED
+        for strategy in (Strategy.TOMORROW, Strategy.D25)
+    )
 
 
 def test_v2_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> None:
@@ -1182,6 +1342,14 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
     ]
     assert payload["runtime_version"] == "runtime-v2"
     assert payload["scheduler"]["decision_failure_count"] == 0  # type: ignore[index]
+    assert payload["scheduler"]["cadence"]["started_at"] == NOW.isoformat()  # type: ignore[index]
+    assert payload["scheduler"]["control"] == {  # type: ignore[index]
+        "running": True,
+        "inflight": 0,
+        "rejected_count": 0,
+    }
+    assert payload["scheduler"]["freeze_completed_count"] == 0  # type: ignore[index]
+    assert payload["scheduler"]["freeze_failure_count"] == 0  # type: ignore[index]
 
     data.fail = False
     clock.current = NOW + timedelta(minutes=1)

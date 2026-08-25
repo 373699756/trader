@@ -40,28 +40,7 @@ class BudgetSummaryReader:
 
     def summary(self, day: str) -> dict[str, object]:
         if not self._initialized():
-            return {
-                "used": 0,
-                "remaining": self._daily_hard_limit,
-                "target": self._daily_target,
-                "target_met": False,
-                "normal_limit": self._normal_limit,
-                "normal_used": 0,
-                "normal_remaining": self._normal_limit,
-                "planned_limit": self._planned_limit,
-                "planned_remaining": self._planned_limit,
-                "by_bucket": {},
-                "by_strategy": {},
-                "by_stage": {},
-                "by_status": {},
-                "call_status": {name: 0 for name in ("reserved", *sorted(_CALL_TERMINALS))},
-                "batch_status": {name: 0 for name in sorted(_BATCH_TERMINALS)},
-                "candidate_outcomes": {name: 0 for name in sorted(_CANDIDATE_TERMINALS)},
-                "by_model_role": {"primary": 0, "challenger": 0},
-                "http_429_count": 0,
-                "timeout_count": 0,
-                "token_count": 0,
-            }
+            return self.empty_summary()
         with self._connect() as connection:
             rows = connection.execute(
                 """
@@ -160,4 +139,37 @@ class BudgetSummaryReader:
             "http_429_count": int(acceptance_row[0] or 0),
             "timeout_count": int(acceptance_row[1] or 0),
             "token_count": int(acceptance_row[2] or 0),
+        }
+
+    def empty_summary(self) -> dict[str, object]:
+        return {
+            "used": 0,
+            "remaining": self._daily_hard_limit,
+            "target": self._daily_target,
+            "target_met": all(target <= 0 for stage, target in self._stage_targets.items() if stage != "emergency"),
+            "normal_limit": self._normal_limit,
+            "normal_used": 0,
+            "normal_remaining": self._normal_limit,
+            "planned_limit": self._planned_limit,
+            "planned_remaining": self._planned_limit,
+            "by_bucket": {},
+            "by_strategy": {},
+            "by_stage": {
+                stage: {
+                    "used": 0,
+                    "target": self._stage_targets[stage],
+                    "limit": self._stage_limits[stage],
+                    "remaining": self._stage_limits[stage],
+                    "target_met": self._stage_targets[stage] <= 0,
+                }
+                for stage in self._stage_limits
+            },
+            "by_status": {},
+            "call_status": {name: 0 for name in ("reserved", *sorted(_CALL_TERMINALS))},
+            "batch_status": {name: 0 for name in sorted(_BATCH_TERMINALS)},
+            "candidate_outcomes": {name: 0 for name in sorted(_CANDIDATE_TERMINALS)},
+            "by_model_role": {"primary": 0, "challenger": 0},
+            "http_429_count": 0,
+            "timeout_count": 0,
+            "token_count": 0,
         }

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
 
+from trader.application.cadence import CadencePlannerStatus
 from trader.application.ports.runtime_status import V2InputQualityStatus
 from trader.application.v2_runtime import V2RuntimeIssue, V2SchedulerRuntime
 from trader.infra.deepseek.reviewer import DeepSeekReviewer
@@ -66,6 +67,12 @@ def runtime_status(
             "config_version": status.config_version,
             "lanes": [asdict(lane) for lane in status.lanes],
             "task_lanes": [asdict(lane) for lane in status.task_lanes],
+            "cadence": _cadence_payload(status.cadence),
+            "control": {
+                "running": status.control_running,
+                "inflight": status.control_inflight,
+                "rejected_count": status.control_rejected_count,
+            },
             "strategy_errors": strategy_errors,
             "last_error_code": status.last_error_code,
             "refresh_failure_count": status.refresh_failure_count,
@@ -75,10 +82,49 @@ def runtime_status(
             "overlay_failure_count": status.overlay_failure_count,
             "local_publish_count": status.local_publish_count,
             "hybrid_publish_count": status.hybrid_publish_count,
+            "freeze_completed_count": status.freeze_completed_count,
+            "freeze_failure_count": status.freeze_failure_count,
             "settlement_completed_count": status.settlement_completed_count,
             "settlement_failure_count": status.settlement_failure_count,
             "input_quality": input_quality_payload(status.input_quality),
         },
+    }
+
+
+def _cadence_payload(status: CadencePlannerStatus) -> dict[str, object]:
+    return {
+        "started_at": status.started_at.isoformat() if status.started_at is not None else None,
+        "intervals": {
+            task.value: {band.value: seconds for band, seconds in values.items()}
+            for task, values in status.intervals.items()
+        },
+        "next_due": [
+            {
+                "trade_date": trade_date,
+                "band": band.value,
+                "task": task.value,
+                "due_at": due.isoformat(),
+            }
+            for (trade_date, band, task), due in sorted(
+                status.next_due.items(),
+                key=lambda item: (item[0][0], item[0][1].value, item[0][2].value),
+            )
+        ],
+        "schedule_points": [
+            {
+                "trade_date": key.trade_date,
+                "schedule_point": key.schedule_point.value,
+                "strategy": key.strategy,
+                "lifecycle": state.lifecycle.value,
+                "attempt_count": state.attempt_count,
+                "updated_at": state.updated_at.isoformat(),
+                "next_retry_at": state.next_retry_at.isoformat() if state.next_retry_at is not None else None,
+            }
+            for key, state in sorted(
+                status.schedule_points.items(),
+                key=lambda item: (item[0].trade_date, item[0].schedule_point.value, item[0].strategy),
+            )
+        ],
     }
 
 

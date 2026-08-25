@@ -421,7 +421,7 @@ def _funnel_consistency_findings(
 
 def _regression_findings(samples: Sequence[WebSample], strategies: tuple[str, ...]) -> list[Finding]:
     findings: list[Finding] = []
-    for previous, current in zip(samples, samples[1:]):
+    for previous, current in zip(samples, samples[1:], strict=False):
         if _runtime_restarted(previous, current):
             findings.append(
                 _finding(

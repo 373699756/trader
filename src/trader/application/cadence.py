@@ -12,6 +12,7 @@ from types import MappingProxyType
 from trader.application.schedule import (
     MarketPhase,
     SchedulePoint,
+    decision_at,
     phase_at,
     seconds_until_next_schedule_boundary,
     shanghai_now,
@@ -42,11 +43,11 @@ class PipelineTask(str, Enum):
     STOCK_RISK = "stock_risk"
     REFERENCE_DATA = "reference_data"
     DEEPSEEK_CUTOFF = "deepseek_cutoff"
+    CHECKPOINT = "checkpoint"
     FINAL_CANDIDATE_QUOTES = "final_candidate_quotes"
     FREEZE = "freeze"
     CLOSE_QUOTES = "close_quotes"
     CURRENT_QUOTES = "current_quotes"
-    HYBRID_READY = "hybrid_ready"
 
 
 class SchedulePointLifecycle(str, Enum):
@@ -110,10 +111,10 @@ def task_execution_budget_seconds(task: PipelineTask) -> float | None:
         PipelineTask.STOCK_RISK: 8.0,
         PipelineTask.REFERENCE_DATA: 20.0,
         PipelineTask.DEEPSEEK_CUTOFF: 1.0,
+        PipelineTask.CHECKPOINT: None,
         PipelineTask.FINAL_CANDIDATE_QUOTES: 10.0,
         PipelineTask.CLOSE_QUOTES: 180.0,
         PipelineTask.CURRENT_QUOTES: 20.0,
-        PipelineTask.HYBRID_READY: 2.0,
         PipelineTask.FREEZE: None,
     }[task]
 
@@ -124,11 +125,11 @@ PERIODIC_TASKS = (
     PipelineTask.TOPK_QUOTES,
     PipelineTask.INTRADAY_TAIL,
     PipelineTask.LONG_QUOTES,
-    PipelineTask.SCORE,
     PipelineTask.INDUSTRY_HEAT,
     PipelineTask.MARKET_NEWS,
     PipelineTask.STOCK_RISK,
 )
+_CADENCE_TASKS = (*PERIODIC_TASKS, PipelineTask.SCORE)
 
 
 @dataclass(frozen=True)
@@ -136,8 +137,8 @@ class CadencePolicy:
     intervals: Mapping[PipelineTask, Mapping[CadenceBand, float]]
 
     def __post_init__(self) -> None:
-        if set(self.intervals) != set(PERIODIC_TASKS):
-            raise ValueError("cadence policy must define every periodic pipeline task")
+        if set(self.intervals) != set(_CADENCE_TASKS):
+            raise ValueError("cadence policy must define every periodic or input-driven pipeline task")
         normalized: dict[PipelineTask, Mapping[CadenceBand, float]] = {}
         for task, values in self.intervals.items():
             if not values or any(interval <= 0.0 for interval in values.values()):
@@ -209,6 +210,29 @@ class CadencePlanner:
     def plan(self, at: datetime, *, is_trading_day: bool) -> CadenceBatch:
         with self._lock:
             return self._plan_locked(at, is_trading_day=is_trading_day)
+
+    def plan_score_after_input(
+        self,
+        at: datetime,
+        *,
+        is_trading_day: bool,
+    ) -> ScheduledPipelineTask | None:
+        local = shanghai_now(at)
+        decision = decision_at(local, is_trading_day=is_trading_day)
+        if not decision.should_score:
+            return None
+        phase = decision.phase
+        band = cadence_band(phase)
+        interval = self._policy.interval(PipelineTask.SCORE, band)
+        if interval is None:
+            return None
+        key = (local.date().isoformat(), band, PipelineTask.SCORE)
+        with self._lock:
+            due = self._next_due.get(key)
+            if due is not None and local < due:
+                return None
+            self._next_due[key] = local + timedelta(seconds=interval)
+        return ScheduledPipelineTask(PipelineTask.SCORE, local, phase)
 
     def status(self) -> CadencePlannerStatus:
         with self._lock:
@@ -564,6 +588,7 @@ def _schedule_point_strategies() -> tuple[tuple[SchedulePoint, tuple[str, ...]],
         (SchedulePoint.TODAY_CHECKPOINT, ("today",)),
         (SchedulePoint.TODAY_FREEZE, ("today",)),
         (SchedulePoint.DEEPSEEK_CUTOFF, ("-",)),
+        (SchedulePoint.AFTERNOON_CHECKPOINT, ("tomorrow", "d25")),
         (SchedulePoint.FINAL_CANDIDATE_QUOTES, ("-",)),
         (SchedulePoint.AFTERNOON_FREEZE, ("tomorrow", "d25")),
         (SchedulePoint.CLOSE_QUOTES, ("-",)),
@@ -575,6 +600,7 @@ def _point_boundary(local: datetime, point: SchedulePoint) -> datetime:
         SchedulePoint.TODAY_CHECKPOINT: time(11, 19, 50),
         SchedulePoint.TODAY_FREEZE: time(11, 20),
         SchedulePoint.DEEPSEEK_CUTOFF: time(14, 48),
+        SchedulePoint.AFTERNOON_CHECKPOINT: time(14, 49, 20),
         SchedulePoint.FINAL_CANDIDATE_QUOTES: time(14, 49, 50),
         SchedulePoint.AFTERNOON_FREEZE: time(14, 50),
         SchedulePoint.CLOSE_QUOTES: time(15, 0),
@@ -601,6 +627,8 @@ def _initial_point_lifecycle(
             eligible = started_before_boundary and current < time(11, 21)
         elif point in {SchedulePoint.DEEPSEEK_CUTOFF, SchedulePoint.FINAL_CANDIDATE_QUOTES}:
             eligible = current < time(14, 50) and started_at <= boundary
+        elif point is SchedulePoint.AFTERNOON_CHECKPOINT:
+            eligible = current < time(14, 50)
         elif point is SchedulePoint.AFTERNOON_FREEZE:
             eligible = current < time(15, 0) or started_before_boundary
         else:
@@ -618,6 +646,7 @@ def _point_window_expired(point: SchedulePoint, local: datetime) -> bool:
         return current >= time(11, 21)
     if point in {
         SchedulePoint.DEEPSEEK_CUTOFF,
+        SchedulePoint.AFTERNOON_CHECKPOINT,
         SchedulePoint.FINAL_CANDIDATE_QUOTES,
     }:
         return current >= time(14, 50)
@@ -654,21 +683,26 @@ def _point_tasks(
     *,
     strategies: tuple[str, ...],
 ) -> tuple[ScheduledPipelineTask, ...]:
+    tasks: tuple[ScheduledPipelineTask, ...]
     if point is SchedulePoint.TODAY_CHECKPOINT:
-        return (ScheduledPipelineTask(PipelineTask.FINAL_CANDIDATE_QUOTES, at, phase, (), point),)
-    if point is SchedulePoint.TODAY_FREEZE:
-        return (ScheduledPipelineTask(PipelineTask.FREEZE, at, phase, strategies, point),)
-    if point is SchedulePoint.DEEPSEEK_CUTOFF:
-        return (ScheduledPipelineTask(PipelineTask.DEEPSEEK_CUTOFF, at, phase, (), point),)
-    if point is SchedulePoint.FINAL_CANDIDATE_QUOTES:
-        return (ScheduledPipelineTask(PipelineTask.FINAL_CANDIDATE_QUOTES, at, phase, (), point),)
-    if point is SchedulePoint.AFTERNOON_FREEZE:
-        return (ScheduledPipelineTask(PipelineTask.FREEZE, at, phase, strategies, point),)
-    return (
-        ScheduledPipelineTask(PipelineTask.CLOSE_QUOTES, at, phase, (), point),
-        ScheduledPipelineTask(PipelineTask.LONG_QUOTES, at, phase),
-        ScheduledPipelineTask(PipelineTask.REFERENCE_DATA, at, phase),
-    )
+        tasks = (ScheduledPipelineTask(PipelineTask.FINAL_CANDIDATE_QUOTES, at, phase, (), point),)
+    elif point in {SchedulePoint.TODAY_FREEZE, SchedulePoint.AFTERNOON_FREEZE}:
+        tasks = (ScheduledPipelineTask(PipelineTask.FREEZE, at, phase, strategies, point),)
+    elif point is SchedulePoint.DEEPSEEK_CUTOFF:
+        tasks = (ScheduledPipelineTask(PipelineTask.DEEPSEEK_CUTOFF, at, phase, (), point),)
+    elif point is SchedulePoint.AFTERNOON_CHECKPOINT:
+        tasks = (ScheduledPipelineTask(PipelineTask.CHECKPOINT, at, phase, strategies, point),)
+    elif point is SchedulePoint.FINAL_CANDIDATE_QUOTES:
+        tasks = (ScheduledPipelineTask(PipelineTask.FINAL_CANDIDATE_QUOTES, at, phase, (), point),)
+    elif point is SchedulePoint.CLOSE_QUOTES:
+        tasks = (
+            ScheduledPipelineTask(PipelineTask.CLOSE_QUOTES, at, phase, (), point),
+            ScheduledPipelineTask(PipelineTask.LONG_QUOTES, at, phase),
+            ScheduledPipelineTask(PipelineTask.REFERENCE_DATA, at, phase),
+        )
+    else:
+        raise ValueError(f"unsupported schedule point: {point.value}")
+    return tasks
 
 
 def _scheduled_point_keys(scheduled: ScheduledPipelineTask) -> tuple[SchedulePointKey, ...]:
@@ -679,7 +713,7 @@ def _scheduled_point_keys(scheduled: ScheduledPipelineTask) -> tuple[SchedulePoi
     strategies: tuple[str, ...]
     if point is SchedulePoint.TODAY_CHECKPOINT:
         strategies = ("today",)
-    elif point is SchedulePoint.AFTERNOON_FREEZE:
+    elif point in {SchedulePoint.AFTERNOON_CHECKPOINT, SchedulePoint.AFTERNOON_FREEZE}:
         strategies = scheduled.freeze_strategies
     elif point is SchedulePoint.TODAY_FREEZE:
         strategies = scheduled.freeze_strategies or ("today",)

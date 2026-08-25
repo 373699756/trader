@@ -1,6 +1,6 @@
 {
   "schema_version": 10,
-  "config_version": "runtime_v37_web_retention_margin_2026_08_24",
+  "config_version": "runtime_v38_input_driven_realtime_2026_08_25",
   "runtime_dir": ".runtime/v2",
   "strategy_config": "strategy.json",
   "long_watchlist": "long_watchlist.json",
@@ -65,7 +65,8 @@
         "today_main": 3,
         "today_late": 5,
         "afternoon": 5,
-        "final_review": 3
+        "final_review": 3,
+        "final_window": 1
       },
       "industry_heat": {
         "warmup": 120,

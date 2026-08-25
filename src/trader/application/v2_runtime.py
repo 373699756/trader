@@ -14,6 +14,7 @@ from typing import Literal, cast
 
 from trader.application.cadence import (
     CadencePlanner,
+    CadencePlannerStatus,
     PipelineTask,
     ScheduledPipelineTask,
     SchedulePointResult,
@@ -83,6 +84,14 @@ _DATA_LANES = tuple(
     for task in _DATA_TASKS
     if task not in {PipelineTask.FINAL_CANDIDATE_QUOTES, PipelineTask.CLOSE_QUOTES, PipelineTask.CURRENT_QUOTES}
 )
+_SCORING_INPUT_TASKS = frozenset(
+    {
+        PipelineTask.CANDIDATE_QUOTES,
+        PipelineTask.FINAL_CANDIDATE_QUOTES,
+        PipelineTask.MARKET_NEWS,
+        PipelineTask.STOCK_RISK,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -122,6 +131,7 @@ class V2RuntimeStatus:
     config_version: str
     lanes: tuple[LatestWinsStatus, ...]
     task_lanes: tuple[LatestWinsStatus, ...]
+    cadence: CadencePlannerStatus
     observer: DecisionObserverStatus
     deepseek: SharedDeepSeekRuntimeContract
     company_research: V2ResearchRuntimeStatus
@@ -313,6 +323,17 @@ class V2SchedulerRuntime:
             }
             accepted = any(submissions.values())
             rejected_freezes = tuple(strategy for strategy, submitted in submissions.items() if not submitted)
+        elif scheduled.task is PipelineTask.CHECKPOINT:
+            submissions = {
+                strategy: self._submit_checkpoint(
+                    Strategy(strategy),
+                    scheduled.scheduled_at,
+                    scheduled=scheduled,
+                )
+                for strategy in scheduled.freeze_strategies
+            }
+            accepted = any(submissions.values())
+            rejected_freezes = tuple(strategy for strategy, submitted in submissions.items() if not submitted)
         elif scheduled.task is PipelineTask.DEEPSEEK_CUTOFF:
             accepted = True
             completed_immediately = True
@@ -371,6 +392,10 @@ class V2SchedulerRuntime:
             self._record_failure("refresh", _failure_code(exc, "refresh_unavailable"))
             self._record_pipeline_result(scheduled, SchedulePointResult.RETRY)
             return
+        self._after_successful_data_refresh(scheduled)
+        self._record_pipeline_result(scheduled, SchedulePointResult.COMPLETED)
+
+    def _after_successful_data_refresh(self, scheduled: ScheduledPipelineTask) -> None:
         if scheduled.task is PipelineTask.TOPK_QUOTES:
             self._refresh_selected_overlays(scheduled)
         elif scheduled.task is PipelineTask.FULL_MARKET and scheduled.phase is MarketPhase.MIDDAY:
@@ -384,7 +409,18 @@ class V2SchedulerRuntime:
                     continue
                 self.submit_cycle(self._scheduled_request(strategy, scheduled.scheduled_at, "close_fallback"))
             self._submit_settlement(scheduled.scheduled_at)
-        self._record_pipeline_result(scheduled, SchedulePointResult.COMPLETED)
+        if scheduled.task in _SCORING_INPUT_TASKS:
+            self._trigger_scoring_after_input()
+
+    def _trigger_scoring_after_input(self) -> None:
+        completed_at = shanghai_now(self._dependencies.clock.now())
+        is_trading_day = self._dependencies.calendar.is_trading_day(completed_at.date())
+        scheduled = self._dependencies.cadence.plan_score_after_input(
+            completed_at,
+            is_trading_day=is_trading_day,
+        )
+        if scheduled is not None:
+            self._dispatch_pipeline_task(scheduled)
 
     def _record_pipeline_result(
         self,
@@ -481,6 +517,7 @@ class V2SchedulerRuntime:
                 config_version=self._config_version,
                 lanes=tuple(self._lanes[strategy].status() for strategy in Strategy),
                 task_lanes=tuple(self._task_lanes[task].status() for task in _DATA_LANES),
+                cadence=self._dependencies.cadence.status(),
                 observer=self._dependencies.observer.status(),
                 deepseek=self._dependencies.reviews.runtime_contract,
                 company_research=self._research.status(),
@@ -796,6 +833,51 @@ class V2SchedulerRuntime:
             self._record_failure("freeze", "freeze_capacity_rejected", strategy)
             return False
         return True
+
+    def _submit_checkpoint(
+        self,
+        strategy: Strategy,
+        at: datetime,
+        *,
+        scheduled: ScheduledPipelineTask,
+    ) -> bool:
+        key = f"checkpoint:{at.date().isoformat()}:{strategy.value}"
+        if not self._reserve_control(key):
+            return False
+        future = self._control.submit_urgent(self._run_checkpoint, key, strategy, at, scheduled)
+        if future is None:
+            self._finish_control(key, success=False)
+            self._record_failure("checkpoint", "checkpoint_capacity_rejected", strategy)
+            return False
+        return True
+
+    def _run_checkpoint(
+        self,
+        key: str,
+        strategy: Strategy,
+        at: datetime,
+        scheduled: ScheduledPipelineTask,
+    ) -> None:
+        success = False
+        try:
+            self._dependencies.freezes.capture_checkpoint(strategy, at)
+        except V2FreezeUnavailableError as exc:
+            self._record_failure("checkpoint", _failure_code(exc, "checkpoint_unavailable"), strategy)
+        except Exception as exc:
+            self._record_failure("checkpoint", f"checkpoint_unexpected:{type(exc).__name__}", strategy)
+        else:
+            success = True
+            with self._lock:
+                self._resolve_issues_locked(strategy=strategy, stages=frozenset({"checkpoint"}))
+        finally:
+            self._finish_control(key, success=success)
+            self._dependencies.cadence.record_point_result(
+                at.date().isoformat(),
+                scheduled.schedule_point or SchedulePoint.AFTERNOON_CHECKPOINT,
+                strategy.value,
+                SchedulePointResult.COMPLETED if success else SchedulePointResult.RETRY,
+                at=shanghai_now(self._dependencies.clock.now()),
+            )
 
     def _run_freeze(
         self,

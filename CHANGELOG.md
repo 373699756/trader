@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户将活动源码单文件上限调整为 1200 行，根 `AGENTS.md`、权威架构文档和 AST 机器契约统一采用
+  1200 行硬上限；接近上限仍按职责、耦合和可测试性 Review，不再以 500/800 行机械拆分制造聚合模块。
+- 新增 tomorrow/d25 的 14:49:20 策略级检查点调度、窗口内失败重试，以及 `/api/v2/status.scheduler`
+  的 cadence、控制执行器和冻结计数投影，固定时点是否 pending/inflight/retry/completed/missed 可直接观察。
+
 - 针对用户反馈 Web 荐股数据异常、推荐漏斗经常显示 0，新增只读、参数化的
   `scripts/check_web_recommendation_health.py`。脚本连续采样 status 与三个短线 current，输出不含股票
   身份的 `web_recommendation_health_v1` JSON，定位候选、特征、证券身份、历史、评分持续归零或回退，
@@ -339,6 +344,12 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 本地评分改为只在候选报价、市场新闻或个股风险成功完成后触发；`score` cadence 仅作为合并重复触发的
+  最短间隔，不再由调度 tick 独立排队。14:48 后 DeepSeek 保持关闭，但 tomorrow/d25 纯本地评分以
+  1 秒最短间隔持续到 14:50，运行配置身份升级为 `runtime_v38_input_driven_realtime_2026_08_25`。
+- SSE 的 `schema_version` 统一保持字符串事件 envelope `v2_event_v1`，行级报价 patch 独立使用
+  `patch_schema_version=2`；内部类型对象与外部 JSON 不再复用一个字段表达两种类型或两层版本。
+
 - 荐股健康采样在 HTTP JSON 边界立即解析为不可变类型快照，分析与报告投影不保留逐股 `items`；持续
   异常窗口按可评分阶段和事件序列切分，进程重启、冻结/非评分阶段及带合法空诊断的零推荐不再误报；
   单次 status/current projection 差异按并发读取竞态记为 warning，其余身份冲突仍为 error。
@@ -593,6 +604,14 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复权威文档要求输入完成后评分、14:49:20 检查点和 14:50 前最新本地稿，但生产仍周期评分、检查点
+  协调器无调用者且最终窗口没有 `score` cadence 的三处断链；现在输入未完成不会提前构建，检查点在新
+  current 形成后按 tomorrow/d25 独立重试，14:50 冻结仍以 CAS 拒绝迟到决策。
+- 修复 DeepSeek SQLite 尚未初始化或被独占锁定时，内存空预算快照丢失按阶段零值结构的问题；初始
+  `by_stage`、target/limit/remaining/target_met 现在与初始化后的同日零用量摘要一致。
+- 修复 overlay SSE 用数字 `schema_version=2` 覆盖字符串事件版本、前端被迫依赖冲突类型的问题；同时
+  补齐调度 status 夹具，并修复刚完成的荐股健康脚本遗漏 `zip(strict=...)` 和格式导致全仓 lint 失败。
 
 - 修复此前只能人工查看单次 Web 卡片、无法区分“合法零推荐”和“上游漏斗异常”的运维检测缺口；连接
   失败、字段缺失、计数越界、上游阶段连续为零及非零回退现在均给出稳定原因码并以退出码 1 阻断。
@@ -862,6 +881,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除无生产调用者的 `PipelineTask.HYBRID_READY`，并从周期任务集合移除 `SCORE`；评分配置仍保留为
+  输入驱动节流策略，不新增兼容事件、双调度链或隐藏 fallback。
+
 - 本批未删除或放宽候选、过滤、评分、风险、TopK、冻结和行情链；诊断报告明确不输出股票代码、逐股
   行情或供应商载荷，也不会因正式推荐/观察数单独为 0 而判错。
 
@@ -995,6 +1017,18 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 输入驱动评分、最终窗口、双策略检查点重试、SSE envelope/patch、DeepSeek 内存预算和 status 投影的
+  定向 Python/Node 回归通过；固定融合向量 `83.40`、DeepSeek 并发原子预算、SSE 游标/慢客户端、检查点
+  哈希往返与重启恢复专项通过。高风险门禁 `make format-check`、`make lint`（严格债务为 0）、
+  `make type-check`（225 个源码文件）、`make test` 和 `make package` 通过；打包与浏览器首次仅因沙箱
+  禁止联网/启动 Firefox 失败，获准后原命令通过。
+- 禁止外网的 production performance gate 通过：5500 行两源合并 P95 373.586ms、Tomorrow 原生投影
+  P95 1272.714ms、status P95 0.637ms、overlay CAS P95 27.341ms，100 tick RSS 约 220.1MiB，零网络调用。
+  Firefox SSE overlay 最大间隔 1.051 秒、DOM 最大间隔 1.059 秒、patch-to-paint P95 7ms、零 resync/
+  浏览器错误；1280x720、1440x900、1920x1080 三档均无白屏、重叠或页面级横向溢出。
+- 仓库外 wheel 以 `--no-deps --target` 安装后从外部目录导入，`trader-cli --help` 及模板、CSS、
+  JavaScript、SVG 包资源读取通过；`git diff --check` 和仅暂存本批文件检查在提交前复核。
 
 - 荐股健康脚本的 14 项定向 unit/contract 回归通过，覆盖合法空集、持续上游零值、业务空评分、非零
   回退、input quality 消失/形状错误、冻结阶段、运行重启、status/current projection 失配、缺少合法空
@@ -1520,6 +1554,10 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 确定性回归已覆盖 14:49:20 检查点缺稿、输入完成后重评分、策略级重试和 14:50 CAS；本批执行时尚无
+  对应真实交易日午后窗口，实际供应商延迟下的检查点年龄和正式冻结仍需在下一次 14:49:20-14:50
+  复用现有状态/诊断工具留证。该外部证据缺口不改变固定公式、门槛、预算或冻结规则。
 
 - 脚本能检测并留证 Web 投影与推荐漏斗异常，但不会自动修复数据链。当前没有本批真实交易时段的异常
   样本，导致用户所见持续归零的生产根因仍待确认；应在下次出现时保留完整聚合报告，并结合其中阶段、

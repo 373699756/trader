@@ -29,6 +29,7 @@ class SchedulePoint(str, Enum):
     TODAY_CHECKPOINT = "today_checkpoint"
     TODAY_FREEZE = "today_freeze"
     DEEPSEEK_CUTOFF = "deepseek_cutoff"
+    AFTERNOON_CHECKPOINT = "afternoon_checkpoint"
     FINAL_CANDIDATE_QUOTES = "final_candidate_quotes"
     AFTERNOON_FREEZE = "afternoon_freeze"
     CLOSE_QUOTES = "close_quotes"
@@ -46,6 +47,7 @@ _PHASE_BOUNDARIES = (
     time(14, 20),
     time(14, 46),
     time(14, 48),
+    time(14, 49, 20),
     time(14, 49, 50),
     time(14, 50),
     time(15, 0),
@@ -112,6 +114,7 @@ def decision_at(value: datetime, *, is_trading_day: bool) -> ScheduleDecision:
             MarketPhase.TODAY_LATE,
             MarketPhase.AFTERNOON,
             MarketPhase.FINAL_REVIEW,
+            MarketPhase.DEEPSEEK_CUTOFF,
             MarketPhase.FINAL_QUOTE,
         },
         should_review=phase
@@ -165,6 +168,7 @@ def schedule_point_at(value: datetime, *, is_trading_day: bool) -> SchedulePoint
     points = {
         time(11, 20): SchedulePoint.TODAY_FREEZE,
         time(14, 48): SchedulePoint.DEEPSEEK_CUTOFF,
+        time(14, 49, 20): SchedulePoint.AFTERNOON_CHECKPOINT,
         time(14, 49, 50): SchedulePoint.FINAL_CANDIDATE_QUOTES,
         time(14, 50): SchedulePoint.AFTERNOON_FREEZE,
         time(15, 0): SchedulePoint.CLOSE_QUOTES,

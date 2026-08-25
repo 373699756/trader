@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from trader.application.cadence import (
+    PERIODIC_TASKS,
     CadencePlanner,
     CadencePolicy,
     PipelineTask,
@@ -227,6 +228,55 @@ def test_periodic_tasks_skip_missed_cycles_instead_of_bursting_catchup_work() ->
     assert counts[PipelineTask.LONG_QUOTES] == 1
 
 
+def test_scoring_is_triggered_by_completed_inputs_and_uses_the_configured_minimum_interval() -> None:
+    first_input = datetime(2026, 7, 16, 9, 30, tzinfo=SHANGHAI)
+    planner = CadencePlanner(_policy(), started_at=first_input)
+
+    warmup = planner.plan_score_after_input(first_input.replace(hour=9, minute=29), is_trading_day=True)
+    periodic = planner.plan(first_input, is_trading_day=True)
+    first_score = planner.plan_score_after_input(first_input, is_trading_day=True)
+    throttled = planner.plan_score_after_input(first_input + timedelta(seconds=9), is_trading_day=True)
+    next_score = planner.plan_score_after_input(first_input + timedelta(seconds=10), is_trading_day=True)
+
+    assert warmup is None
+    assert PipelineTask.SCORE not in PERIODIC_TASKS
+    assert PipelineTask.SCORE not in {task.task for task in periodic.tasks}
+    assert first_score is not None and first_score.task is PipelineTask.SCORE
+    assert throttled is None
+    assert next_score is not None and next_score.task is PipelineTask.SCORE
+
+
+def test_final_window_keeps_local_input_driven_scoring_until_the_freeze_boundary() -> None:
+    final_input = datetime(2026, 7, 16, 14, 49, 20, tzinfo=SHANGHAI)
+    planner = CadencePlanner(_policy(), started_at=final_input.replace(hour=9, minute=15))
+
+    before_freeze = planner.plan_score_after_input(final_input, is_trading_day=True)
+    at_freeze = planner.plan_score_after_input(final_input.replace(minute=50, second=0), is_trading_day=True)
+
+    assert before_freeze is not None and before_freeze.phase.value == "deepseek_cutoff"
+    assert at_freeze is None
+
+
+def test_afternoon_checkpoint_is_a_retryable_strategy_scoped_schedule_point() -> None:
+    checkpoint_at = datetime(2026, 7, 16, 14, 49, 20, tzinfo=SHANGHAI)
+    planner = CadencePlanner(_policy(), started_at=checkpoint_at.replace(hour=9, minute=15))
+
+    first = planner.plan(checkpoint_at, is_trading_day=True)
+    checkpoint = next(task for task in first.tasks if task.task is PipelineTask.CHECKPOINT)
+    planner.record_submission(checkpoint, accepted=True, at=checkpoint_at)
+    planner.record_results(
+        checkpoint,
+        {"tomorrow": SchedulePointResult.RETRY, "d25": SchedulePointResult.COMPLETED},
+        at=checkpoint_at,
+    )
+    retry = planner.plan(checkpoint_at + timedelta(seconds=1), is_trading_day=True)
+
+    assert checkpoint.schedule_point is SchedulePoint.AFTERNOON_CHECKPOINT
+    assert checkpoint.freeze_strategies == ("tomorrow", "d25")
+    retried = next(task for task in retry.tasks if task.task is PipelineTask.CHECKPOINT)
+    assert retried.freeze_strategies == ("tomorrow",)
+
+
 def test_first_tick_after_warmup_still_initializes_reference_data_once() -> None:
     late_start = datetime(2026, 7, 16, 9, 45, tzinfo=SHANGHAI)
     planner = CadencePlanner(_policy(), started_at=late_start)
@@ -272,12 +322,12 @@ def test_production_policy_plans_exact_full_trading_day_task_counts() -> None:
             PipelineTask.TOPK_QUOTES: 15301,
             PipelineTask.INTRADAY_TAIL: 1520,
             PipelineTask.LONG_QUOTES: 15301,
-            PipelineTask.SCORE: 3410,
             PipelineTask.INDUSTRY_HEAT: 226,
             PipelineTask.MARKET_NEWS: 226,
             PipelineTask.STOCK_RISK: 81,
             PipelineTask.REFERENCE_DATA: 2,
             PipelineTask.DEEPSEEK_CUTOFF: 1,
+            PipelineTask.CHECKPOINT: 1,
             PipelineTask.FINAL_CANDIDATE_QUOTES: 2,
             PipelineTask.FREEZE: 2,
             PipelineTask.CLOSE_QUOTES: 1,
@@ -293,7 +343,7 @@ def _policy() -> CadencePolicy:
             "topk_quotes": {"today_main": 3, "midday": 60, "final_window": 3, "after_close": 10},
             "intraday_tail": {"afternoon": 5, "final_review": 3},
             "long_quotes": {"today_main": 3, "midday": 60, "final_window": 3},
-            "score": {"today_main": 10},
+            "score": {"today_main": 10, "final_window": 1},
             "industry_heat": {"today_main": 60},
             "market_news": {"today_main": 60},
             "stock_risk": {"today_main": 180},

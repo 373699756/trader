@@ -205,6 +205,8 @@ class V2DeepSeekUpgradePort(Protocol):
 
 
 class V2FreezePort(Protocol):
+    def capture_checkpoint(self, strategy: Strategy, at: datetime) -> None: ...
+
     def freeze(
         self,
         strategy: Strategy,

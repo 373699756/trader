@@ -181,7 +181,7 @@ class DeepSeekBudgetLedger:
         )
         self._summary_lock = threading.Lock()
         self._summaries: dict[str, JsonObject] = {}
-        self._empty_summary = freeze_json_object(cast(dict[str, JsonInput], self._reporting.summary("1970-01-01")))
+        self._empty_summary = freeze_json_object(cast(dict[str, JsonInput], self._reporting.empty_summary()))
 
     def begin_batch(self, request: BudgetBatchRequest) -> str:
         with self._write_lock:

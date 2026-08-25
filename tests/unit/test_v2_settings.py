@@ -25,7 +25,7 @@ def test_v2_configuration_contract_is_valid() -> None:
 
     assert runtime.schema_version == 10
     assert strategy.schema_version == 12
-    assert runtime.config_version == "runtime_v37_web_retention_margin_2026_08_24"
+    assert runtime.config_version == "runtime_v38_input_driven_realtime_2026_08_25"
     assert runtime.market_data.source_contract_versions["eastmoney"] == ("eastmoney_quote_v17_security_master")
     assert runtime.api.default_top_n == 12
     assert runtime.api.maximum_top_n == 12

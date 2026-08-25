@@ -65,6 +65,16 @@ def test_scheduler_wakes_at_deepseek_submission_cutoffs() -> None:
     assert seconds_until_next_schedule_boundary(before_afternoon_cutoff, maximum_seconds=60) == 1
 
 
+def test_deepseek_cutoff_keeps_local_scoring_open_without_model_review() -> None:
+    cutoff = datetime(2026, 7, 16, 14, 49, 20, tzinfo=SHANGHAI)
+
+    decision = decision_at(cutoff, is_trading_day=True)
+
+    assert decision.should_score is True
+    assert decision.should_review is False
+    assert seconds_until_next_schedule_boundary(cutoff.replace(second=19), maximum_seconds=60) == 1
+
+
 @pytest.mark.parametrize(
     ("clock", "expected"),
     (

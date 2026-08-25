@@ -5,7 +5,6 @@ from dataclasses import replace
 
 from scripts.check_web_recommendation_health import WebSample, analyze_samples, build_report, parse_web_sample
 
-
 _STRATEGY = "tomorrow"
 _TRADE_DATE = "2026-08-25"
 

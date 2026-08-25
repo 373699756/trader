@@ -672,7 +672,7 @@ const payload = {
 };
 const patch = {
   patch_schema_version: 2,
-  schema_version: 2,
+  schema_version: "v2_event_v1",
   base_projection_version: "today-base",
   projection_version: "today-next",
   snapshot_id: "today-next",
@@ -704,7 +704,7 @@ assert.strictEqual(
   "apply",
 );
 assert.strictEqual(
-  state.recommendationPatchDecision({ ...patch, schema_version: 1 }, payload, "today-base", "today", "live"),
+  state.recommendationPatchDecision({ ...patch, schema_version: "v2_event_v0" }, payload, "today-base", "today", "live"),
   "schema_mismatch",
 );
 assert.strictEqual(
@@ -743,7 +743,7 @@ assert.strictEqual(
 );
 const overlay = {
   patch_schema_version: 2,
-  schema_version: 2,
+  schema_version: "v2_event_v1",
   projection_version: "today-next",
   snapshot_id: "today-decision",
   strategy: "today",

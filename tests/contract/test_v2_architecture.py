@@ -33,6 +33,16 @@ def test_v2_does_not_import_legacy_package() -> None:
     assert violations == []
 
 
+def test_active_source_files_do_not_exceed_1200_lines() -> None:
+    violations = {
+        str(path.relative_to(SOURCE_ROOT)): len(path.read_text(encoding="utf-8").splitlines())
+        for path in SOURCE_ROOT.rglob("*.py")
+        if len(path.read_text(encoding="utf-8").splitlines()) > 1200
+    }
+
+    assert violations == {}
+
+
 def test_v2_dependency_direction() -> None:
     forbidden = {
         "domain": ("trader.application", "trader.infra", "trader.web", "trader.entrypoints"),

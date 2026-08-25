@@ -2,7 +2,9 @@
   "use strict";
 
   function patchVersionValid(patch) {
-    return Boolean(patch && patch.patch_schema_version === 2 && patch.schema_version === 2);
+    return Boolean(
+      patch && patch.schema_version === "v2_event_v1" && patch.patch_schema_version === 2
+    );
   }
 
   function recommendationPatchDecision(patch, payload, currentVersion, strategy, view) {

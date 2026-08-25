@@ -459,6 +459,16 @@ def test_budget_summary_remains_memory_only_while_sqlite_is_exclusively_locked(t
         blocker.execute("BEGIN EXCLUSIVE")
         assert ledger.summary("2026-08-25") == expected
 
+    assert expected["by_stage"] == {
+        "today_main": {
+            "used": 0,
+            "target": 0,
+            "limit": 2,
+            "remaining": 2,
+            "target_met": True,
+        }
+    }
+
 
 def test_http_status_remains_available_while_budget_sqlite_is_exclusively_locked(tmp_path) -> None:
     database_path = tmp_path / "runtime.sqlite3"

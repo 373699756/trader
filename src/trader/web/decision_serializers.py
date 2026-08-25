@@ -151,7 +151,6 @@ def serialize_event(event: UnifiedPublishedEvent) -> dict[str, object]:
             snapshot_id=payload.parent_version,
             projection_version=payload.projection_version,
             patch_schema_version=2,
-            schema_version=2,
             quotes=[_serialize_overlay_quote(quote) for quote in payload.quotes],
         )
     elif isinstance(payload, ResyncEventPayload):

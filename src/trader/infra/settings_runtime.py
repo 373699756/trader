@@ -537,6 +537,7 @@ def _validate_cadence_settings(
             "today_late": 5.0,
             "afternoon": 5.0,
             "final_review": 3.0,
+            "final_window": 1.0,
         },
         "industry_heat": {
             "warmup": 120.0,

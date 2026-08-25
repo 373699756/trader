@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+from trader.application.cadence import CadencePlannerStatus
 from trader.application.decision_observers import DecisionObserverStatus
 from trader.application.ports.runtime_status import V2InputQualityStatus, V2SupplyFunnel, V2SupplySummary
 from trader.application.ports.v2_runtime import V2ResearchRuntimeStatus
@@ -112,6 +113,7 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
         config_version="runtime:test",
         lanes=(),
         task_lanes=(),
+        cadence=CadencePlannerStatus(None, {}, {}, {}, ()),
         observer=DecisionObserverStatus(
             capacity=16,
             accepting=True,
@@ -172,6 +174,7 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
     assert payload["scheduler"]["settlement_failure_count"] == 0
     assert payload["scheduler"]["overlay_publish_count"] == 0
     assert payload["scheduler"]["overlay_failure_count"] == 0
+    assert payload["scheduler"]["cadence"]["started_at"] is None
     assert payload["scheduler"]["input_quality"] == {}
     assert payload["market_data"]["active_source"] == "sina"
     assert payload["market_data"]["market_feature_rows"] == 5567
