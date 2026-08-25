@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from trader.application.ports.market import MarketDataDeadlineExceededError
+from trader.application.source_lanes import SourceLaneRegistryStatus, SourceLaneStatus
 from trader.infra.market_data.service_history_warmup import HistoryWarmup
 
 NOW = datetime(2026, 7, 24, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -53,7 +54,20 @@ class _Lanes:
         return False
 
     def status(self):
-        return {"history": {"pending": False}}
+        return SourceLaneRegistryStatus(
+            {
+                "history": SourceLaneStatus(
+                    source="history",
+                    running=False,
+                    pending=False,
+                    completed_count=0,
+                    coalesced_count=0,
+                    superseded_count=0,
+                    rejected_count=0,
+                    stopped=False,
+                )
+            }
+        )
 
 
 def test_failed_history_codes_cool_down_while_unattempted_codes_continue() -> None:

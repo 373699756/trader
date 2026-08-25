@@ -254,7 +254,7 @@ class V2SchedulerRuntime:
         for strategy in Strategy:
             if not self._lanes[strategy].wait_idle(max(0.0, deadline - time.monotonic())):
                 return False
-        while cast(int, self._control.status()["inflight"]) > 0:
+        while self._control.status().inflight > 0:
             remaining = deadline - time.monotonic()
             if remaining <= 0.0:
                 return False
@@ -302,9 +302,9 @@ class V2SchedulerRuntime:
                 observer=self._dependencies.observer.status(),
                 deepseek=self._dependencies.reviews.runtime_contract,
                 company_research=self._research.status(),
-                control_running=bool(control["running"]),
-                control_inflight=cast(int, control["inflight"]),
-                control_rejected_count=cast(int, control["rejected_count"]),
+                control_running=control.running,
+                control_inflight=control.inflight,
+                control_rejected_count=control.rejected_count,
                 refresh_failure_count=self._refresh_failure_count,
                 decision_failure_count=self._decision_failure_count,
                 review_failure_count=self._review_failure_count,

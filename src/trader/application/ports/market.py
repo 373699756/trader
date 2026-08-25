@@ -10,7 +10,7 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Protocol
 
-from trader.application.ports.types import JsonObject, JsonValue
+from trader.application.ports.types import JsonObject
 from trader.domain.market.epochs import CandidateQuoteEpoch, DailyFeaturePack, MarketEpoch, ResearchEpoch
 from trader.domain.market.models import FeatureSnapshot, LiveQuote
 from trader.domain.outcome.models import OutcomeBar
@@ -217,18 +217,6 @@ class MarketSnapshotMetadata:
         )
         object.__setattr__(self, "missing_reasons", MappingProxyType(dict(self.missing_reasons)))
         object.__setattr__(self, "reference_versions", MappingProxyType(dict(self.reference_versions)))
-
-    def to_json(self) -> dict[str, JsonValue]:
-        return {
-            "merge_epoch": self.merge_epoch,
-            "source_versions": self.source_versions,
-            "field_sources": self.field_sources,
-            "market_conflicts": self.conflicts,
-            "market_missing_reasons": self.missing_reasons,
-            "market_degraded_reasons": self.degraded_reasons,
-            "market_observed_at": self.observed_at.isoformat() if self.observed_at is not None else "",
-            "tushare_reference_versions": self.reference_versions,
-        }
 
 
 class FullMarketReaderPort(Protocol):

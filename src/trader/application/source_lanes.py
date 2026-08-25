@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import Future
 from dataclasses import dataclass
 from datetime import datetime
+from types import MappingProxyType
 from typing import ParamSpec, TypeVar, cast
 
 from trader.application.latency import LatencyWaterfall
@@ -21,6 +22,29 @@ _SOURCE_NAMES = ("eastmoney", "history", "reference", "sina", "tencent", "tushar
 
 class SourceRequestSupersededError(RuntimeError):
     """A queued source request was replaced by a newer observation point."""
+
+
+@dataclass(frozen=True)
+class SourceLaneStatus:
+    source: str
+    running: bool
+    pending: bool
+    completed_count: int
+    coalesced_count: int
+    superseded_count: int
+    rejected_count: int
+    stopped: bool
+
+
+@dataclass(frozen=True)
+class SourceLaneRegistryStatus:
+    lanes: Mapping[str, SourceLaneStatus]
+
+    def __post_init__(self) -> None:
+        normalized = dict(self.lanes)
+        if any(source != status.source for source, status in normalized.items()):
+            raise ValueError("source lane registry keys must match lane status sources")
+        object.__setattr__(self, "lanes", MappingProxyType(normalized))
 
 
 @dataclass
@@ -233,18 +257,18 @@ class LatestRequestLane:
         with self._condition:
             return self._stopped
 
-    def status(self) -> dict[str, object]:
+    def status(self) -> SourceLaneStatus:
         with self._condition:
-            return {
-                "source": self._source,
-                "running": self._running is not None,
-                "pending": self._pending is not None,
-                "completed_count": self._completed_count,
-                "coalesced_count": self._coalesced_count,
-                "superseded_count": self._superseded_count,
-                "rejected_count": self._rejected_count,
-                "stopped": self._stopped,
-            }
+            return SourceLaneStatus(
+                source=self._source,
+                running=self._running is not None,
+                pending=self._pending is not None,
+                completed_count=self._completed_count,
+                coalesced_count=self._coalesced_count,
+                superseded_count=self._superseded_count,
+                rejected_count=self._rejected_count,
+                stopped=self._stopped,
+            )
 
     def _drain(self) -> None:
         while True:
@@ -364,8 +388,8 @@ class SourceLaneRegistry:
             )
         return tuple(steps)
 
-    def status(self) -> dict[str, dict[str, object]]:
-        return {source: lane.status() for source, lane in self._lanes.items()}
+    def status(self) -> SourceLaneRegistryStatus:
+        return SourceLaneRegistryStatus({source: lane.status() for source, lane in self._lanes.items()})
 
     def _lane(self, source: str) -> LatestRequestLane:
         try:
@@ -374,7 +398,13 @@ class SourceLaneRegistry:
             raise ValueError(f"unknown source lane: {source}") from exc
 
 
-__all__ = ["LatestRequestLane", "SourceLaneRegistry", "SourceRequestSupersededError"]
+__all__ = [
+    "LatestRequestLane",
+    "SourceLaneRegistry",
+    "SourceLaneRegistryStatus",
+    "SourceLaneStatus",
+    "SourceRequestSupersededError",
+]
 
 
 def _validate_request(identity: str, observed_at: datetime) -> None:

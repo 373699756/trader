@@ -36,6 +36,23 @@ class BorrowExecutorOptions:
     nested_inline: bool = False
 
 
+@dataclass(frozen=True)
+class BoundedExecutorStatus:
+    workers: int
+    urgent_workers: int
+    queue_capacity: int
+    urgent_queue_capacity: int
+    inflight: int
+    urgent_inflight: int
+    submitted_count: int
+    urgent_submitted_count: int
+    completed_count: int
+    urgent_completed_count: int
+    rejected_count: int
+    urgent_rejected_count: int
+    running: bool
+
+
 class BoundedExecutor:
     def __init__(
         self,
@@ -232,23 +249,23 @@ class BoundedExecutor:
             detail="inflight workers remain at shutdown deadline" if not completed else "",
         )
 
-    def status(self) -> dict[str, object]:
+    def status(self) -> BoundedExecutorStatus:
         with self._lock:
-            return {
-                "workers": self._worker_count,
-                "urgent_workers": self._urgent_worker_count,
-                "queue_capacity": self._queue_capacity,
-                "urgent_queue_capacity": self._urgent_queue_capacity,
-                "inflight": self._inflight,
-                "urgent_inflight": self._urgent_inflight,
-                "submitted_count": self._submitted_count,
-                "urgent_submitted_count": self._urgent_submitted_count,
-                "completed_count": self._completed_count,
-                "urgent_completed_count": self._urgent_completed_count,
-                "rejected_count": self._rejected_count,
-                "urgent_rejected_count": self._urgent_rejected_count,
-                "running": self._running,
-            }
+            return BoundedExecutorStatus(
+                workers=self._worker_count,
+                urgent_workers=self._urgent_worker_count,
+                queue_capacity=self._queue_capacity,
+                urgent_queue_capacity=self._urgent_queue_capacity,
+                inflight=self._inflight,
+                urgent_inflight=self._urgent_inflight,
+                submitted_count=self._submitted_count,
+                urgent_submitted_count=self._urgent_submitted_count,
+                completed_count=self._completed_count,
+                urgent_completed_count=self._urgent_completed_count,
+                rejected_count=self._rejected_count,
+                urgent_rejected_count=self._urgent_rejected_count,
+                running=self._running,
+            )
 
     def is_running(self) -> bool:
         with self._lock:
@@ -350,6 +367,7 @@ class _InlineExecutor:
 
 __all__ = [
     "BoundedExecutor",
+    "BoundedExecutorStatus",
     "BorrowExecutorOptions",
     "WorkerExecutor",
     "borrow_executor",

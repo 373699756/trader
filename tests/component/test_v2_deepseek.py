@@ -25,7 +25,7 @@ from trader.domain.review.models import ReviewOutcome
 from trader.domain.review.rules import Rating
 from trader.infra.deepseek.budget import SCHEMA_VERSION, DeepSeekBudgetLedger
 from trader.infra.deepseek.budget_batch_ledger import BudgetBatchRequest
-from trader.infra.deepseek.cache import ReviewCache
+from trader.infra.deepseek.cache import ReviewCache, ReviewCacheStatus
 from trader.infra.deepseek.challenger import (
     ChallengerDimensionVerdict,
     ChallengerReview,
@@ -611,6 +611,16 @@ def test_shared_review_cache_ignores_quote_only_version_changes() -> None:
 
     assert key == review_cache_key(second, model="model")
     assert cache.get_raw(key, second) == review
+    assert cache.status() == ReviewCacheStatus(
+        entries=1,
+        raw_entries=1,
+        fusion_entries=0,
+        seen_codes=1,
+        hits=1,
+        raw_hits=1,
+        fusion_hits=0,
+        misses=0,
+    )
 
     moved = replace(first, quote=replace(first.quote, data_version="fixture-v3", price=12.2))
     assert review_cache_key(first, model="model") == review_cache_key(moved, model="model")

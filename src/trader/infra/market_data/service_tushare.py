@@ -625,7 +625,7 @@ class ReferenceLoader:
         lanes = self._runner.source_lanes
         if lanes is None:
             return
-        refresh_identity = "tushare-refresh:" + hashlib.sha256(canonical_json_bytes(identity.as_dict())).hexdigest()
+        refresh_identity = "tushare-refresh:" + hashlib.sha256(canonical_json_bytes(identity)).hexdigest()
 
         def refresh() -> tuple[SourceObservation, ...]:
             return self.load(

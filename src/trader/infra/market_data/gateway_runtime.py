@@ -12,8 +12,10 @@ from hashlib import sha256
 from typing import Generic, TypeVar, cast
 from uuid import uuid4
 
-from trader.application.cache import canonical_json_bytes
+from trader.application.cache import CacheStatus, canonical_json_bytes
+from trader.application.latency import LatencyWaterfall
 from trader.application.ports.market import MarketDataNoDataError
+from trader.application.source_lanes import SourceLaneRegistry
 from trader.domain.market.models import (
     CanonicalMarketSnapshot,
     MarketQuote,
@@ -240,6 +242,75 @@ def _canonical_health(snapshot: CanonicalMarketSnapshot | None) -> Mapping[str, 
     }
 
 
+def _source_lane_status(registry: SourceLaneRegistry | None) -> dict[str, object]:
+    if registry is None:
+        return {}
+    status = registry.status()
+    return {
+        source: {
+            "source": lane.source,
+            "running": lane.running,
+            "pending": lane.pending,
+            "completed_count": lane.completed_count,
+            "coalesced_count": lane.coalesced_count,
+            "superseded_count": lane.superseded_count,
+            "rejected_count": lane.rejected_count,
+            "stopped": lane.stopped,
+        }
+        for source, lane in status.lanes.items()
+    }
+
+
+def _latency_status(waterfall: LatencyWaterfall) -> dict[str, object]:
+    status = waterfall.status()
+    return {
+        "sample_capacity": status.sample_capacity,
+        "trace_capacity": status.trace_capacity,
+        "stage_capacity": status.stage_capacity,
+        "active_trace_count": status.active_trace_count,
+        "planned_count": status.planned_count,
+        "completed_count": status.completed_count,
+        "failed_count": status.failed_count,
+        "timeout_count": status.timeout_count,
+        "superseded_count": status.superseded_count,
+        "dropped_count": status.dropped_count,
+        "dropped_stage_count": status.dropped_stage_count,
+        "stages": {
+            name: {
+                "sample_count": stage.sample_count,
+                "p50_ms": stage.p50_ms,
+                "p95_ms": stage.p95_ms,
+                "maximum_ms": stage.maximum_ms,
+            }
+            for name, stage in status.stages.items()
+        },
+    }
+
+
+def _cache_status(status: CacheStatus) -> dict[str, object]:
+    return {
+        dataset: {
+            source: {
+                "entries": item.entries,
+                "capacity": item.capacity,
+                "hit": item.hit,
+                "miss": item.miss,
+                "refresh_due_hit": item.refresh_due_hit,
+                "stale_hit": item.stale_hit,
+                "degraded_hit": item.degraded_hit,
+                "negative_hit": item.negative_hit,
+                "refresh": item.refresh,
+                "eviction": item.eviction,
+                "load_error": item.load_error,
+                "hit_rate": round(item.hit_rate, 6),
+                "estimated_bytes": item.estimated_bytes,
+            }
+            for source, item in sources.items()
+        }
+        for dataset, sources in status.datasets.items()
+    }
+
+
 def _strip_source(source: str, message: str) -> str:
     prefix = f"{source}:"
     return message[len(prefix) :].strip() if message.startswith(prefix) else message
@@ -341,8 +412,10 @@ __all__ = [
     "_SourceFetch",
     "_before_deadline",
     "_cache_error_code",
+    "_cache_status",
     "_canonical_health",
     "_elapsed",
+    "_latency_status",
     "_observation_version",
     "_parallel_error_message",
     "_parallel_route_outcome",
@@ -351,5 +424,6 @@ __all__ = [
     "_reference_replaces",
     "_route_health",
     "_source_degraded_reasons",
+    "_source_lane_status",
     "_strip_source",
 ]

@@ -11,6 +11,7 @@ from trader.application.cadence import (
     CadencePlanner,
     CadencePolicy,
     PipelineTask,
+    SchedulePointKey,
     SchedulePointLifecycle,
     SchedulePointResult,
     freshness_level,
@@ -54,8 +55,12 @@ def test_restart_after_afternoon_cutoff_only_attempts_checkpoint_eligible_strate
     assert PipelineTask.DEEPSEEK_CUTOFF not in {task.task for task in batch.tasks}
     assert PipelineTask.FINAL_CANDIDATE_QUOTES not in {task.task for task in batch.tasks}
     status = planner.status()
-    assert status["schedule_points"]["2026-07-16:today_freeze:today"]["lifecycle"] == "missed"
-    assert status["schedule_points"]["2026-07-16:deepseek_cutoff:-"]["lifecycle"] == "missed"
+    assert status.schedule_points[SchedulePointKey("2026-07-16", SchedulePoint.TODAY_FREEZE, "today")].lifecycle is (
+        SchedulePointLifecycle.MISSED
+    )
+    assert status.schedule_points[SchedulePointKey("2026-07-16", SchedulePoint.DEEPSEEK_CUTOFF, "-")].lifecycle is (
+        SchedulePointLifecycle.MISSED
+    )
 
 
 def test_cold_start_at_today_boundary_marks_today_missed() -> None:

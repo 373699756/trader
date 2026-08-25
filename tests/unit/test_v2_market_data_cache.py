@@ -220,9 +220,9 @@ def test_pure_negative_cache_byte_estimate_contains_only_the_error_category() ->
 
     cache.put_negative(identity, error_code="timeout")
 
-    status = cache.status()["daily_history"]["eastmoney"]
-    expected = len(canonical_json_bytes(identity.as_dict())) + len(canonical_json_bytes({"error_code": "timeout"}))
-    assert status["estimated_bytes"] == expected
+    status = cache.status().datasets["daily_history"]["eastmoney"]
+    expected = len(canonical_json_bytes(identity)) + len(canonical_json_bytes({"error_code": "timeout"}))
+    assert status.estimated_bytes == expected
 
 
 def test_negative_refresh_cache_preserves_value_without_reestimating_on_recovery(monkeypatch) -> None:
@@ -264,11 +264,11 @@ def test_cache_lru_capacity_is_deterministic_and_observable() -> None:
     cache.put(third, {"close": 3.0}, data_version="v3", source_time=NOW)
 
     assert cache.get(second) is None
-    status = cache.status()["daily_history"]["eastmoney"]
-    assert status["entries"] == 2
-    assert status["capacity"] == 2
-    assert status["eviction"] == 1
-    assert 0 < status["estimated_bytes"] <= 100_000
+    status = cache.status().datasets["daily_history"]["eastmoney"]
+    assert status.entries == 2
+    assert status.capacity == 2
+    assert status.eviction == 1
+    assert 0 < status.estimated_bytes <= 100_000
 
 
 def test_cache_evicts_business_degraded_value_before_healthy_lru_value() -> None:
@@ -332,9 +332,9 @@ def test_cache_rejects_one_entry_larger_than_its_group_byte_limit() -> None:
     )
 
     assert cached is False
-    status = cache.status()["daily_history"]["eastmoney"]
-    assert status["entries"] == 0
-    assert status["load_error"] == 1
+    status = cache.status().datasets["daily_history"]["eastmoney"]
+    assert status.entries == 0
+    assert status.load_error == 1
 
 
 def test_cache_status_uses_insert_time_scope_counters_without_scanning_entries() -> None:
@@ -347,10 +347,10 @@ def test_cache_status_uses_insert_time_scope_counters_without_scanning_entries()
     cache.put(identity, {"close": 1.0}, data_version="v1", source_time=NOW)
     cache._entries = NoStatusScanEntries(cache._entries)
 
-    status = cache.status()["daily_history"]["eastmoney"]
+    status = cache.status().datasets["daily_history"]["eastmoney"]
 
-    assert status["entries"] == 1
-    assert status["estimated_bytes"] > 0
+    assert status.entries == 1
+    assert status.estimated_bytes > 0
 
 
 def test_cache_insert_below_capacity_does_not_scan_existing_entries() -> None:

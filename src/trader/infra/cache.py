@@ -18,6 +18,7 @@ from trader.application.cache import (
     CacheLookup,
     CachePolicy,
     CacheStats,
+    CacheStatus,
     canonical_json_bytes,
     freeze_cache_value,
 )
@@ -230,11 +231,11 @@ class BoundedLruCache(Generic[_T]):
             business_age = self._business_age(source_time)
             return business_age is not None and business_age <= action_age
 
-    def status(self) -> dict[str, dict[str, dict[str, object]]]:
+    def status(self) -> CacheStatus:
         with self._lock:
             scopes = set(self._stats)
             scopes.update(self._scope_entries)
-            result: dict[str, dict[str, dict[str, object]]] = {}
+            result: dict[str, dict[str, CacheStats]] = {}
             for dataset, source in sorted(scopes):
                 stats = self._stats.get((dataset, source), _MutableStats())
                 scope = (dataset, source)
@@ -252,22 +253,8 @@ class BoundedLruCache(Generic[_T]):
                     load_error=stats.load_error,
                     estimated_bytes=self._scope_bytes.get(scope, 0),
                 )
-                result.setdefault(dataset, {})[source] = {
-                    "entries": snapshot.entries,
-                    "capacity": snapshot.capacity,
-                    "hit": snapshot.hit,
-                    "miss": snapshot.miss,
-                    "refresh_due_hit": snapshot.refresh_due_hit,
-                    "stale_hit": snapshot.stale_hit,
-                    "degraded_hit": snapshot.degraded_hit,
-                    "negative_hit": snapshot.negative_hit,
-                    "refresh": snapshot.refresh,
-                    "eviction": snapshot.eviction,
-                    "load_error": snapshot.load_error,
-                    "hit_rate": round(snapshot.hit_rate, 6),
-                    "estimated_bytes": snapshot.estimated_bytes,
-                }
-            return result
+                result.setdefault(dataset, {})[source] = snapshot
+            return CacheStatus(result)
 
     def stop(
         self,
@@ -498,7 +485,7 @@ class BoundedLruCache(Generic[_T]):
                 "error_code": error_code,
             }
         )
-        return len(canonical_json_bytes(identity.as_dict())) + len(canonical_json_bytes(payload))
+        return len(canonical_json_bytes(identity)) + len(canonical_json_bytes(payload))
 
     def _dataset_policy(self, identity: CacheIdentity) -> CacheDatasetPolicy:
         try:

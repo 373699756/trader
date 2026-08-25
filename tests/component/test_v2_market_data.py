@@ -757,7 +757,7 @@ def test_long_quotes_bypass_shared_cache_for_each_realtime_refresh() -> None:
 
     assert first[0].code == "600001"
     assert second[0].code == "600001"
-    assert "long_quotes" not in cache.status()
+    assert "long_quotes" not in cache.status().datasets
 
 
 def test_gateway_columnar_projection_failure_preserves_scalar_market_and_marks_degraded(monkeypatch) -> None:
@@ -823,8 +823,8 @@ def test_source_lane_coalesces_running_identity_and_keeps_only_latest_pending_re
         lane.stop(wait=True, timeout_seconds=1.0)
         pool.stop(wait=True, cancel_futures=True)
 
-    assert lane.status()["running"] is False
-    assert lane.status()["pending"] is False
+    assert lane.status().running is False
+    assert lane.status().pending is False
 
 
 def test_source_lane_stop_cancels_pending_request_and_waits_for_running_cleanup() -> None:
@@ -851,8 +851,8 @@ def test_source_lane_stop_cancels_pending_request_and_waits_for_running_cleanup(
     lane.stop(wait=True, timeout_seconds=1.0)
     pool.stop(wait=True, cancel_futures=True)
 
-    assert lane.status()["running"] is False
-    assert lane.status()["pending"] is False
+    assert lane.status().running is False
+    assert lane.status().pending is False
 
 
 def test_source_lane_stop_cancels_runner_that_has_not_started() -> None:
@@ -882,8 +882,8 @@ def test_source_lane_stop_cancels_runner_that_has_not_started() -> None:
         pool.stop(wait=True, cancel_futures=True)
 
     assert calls == []
-    assert lane.status()["running"] is False
-    assert lane.status()["pending"] is False
+    assert lane.status().running is False
+    assert lane.status().pending is False
 
 
 def test_source_lane_marks_running_future_and_skips_cancelled_pending_io() -> None:
@@ -917,8 +917,8 @@ def test_source_lane_marks_running_future_and_skips_cancelled_pending_io() -> No
         pool.stop(wait=True, cancel_futures=True)
 
     assert calls == ["running"]
-    assert lane.status()["running"] is False
-    assert lane.status()["pending"] is False
+    assert lane.status().running is False
+    assert lane.status().pending is False
 
 
 def test_source_lane_replaces_cancelled_pending_identity_with_newest_request() -> None:
@@ -1015,9 +1015,9 @@ def test_source_lane_records_bounded_queue_wait_telemetry() -> None:
         lanes.stop(wait=True, timeout_seconds=1.0)
         pool.stop(wait=True, cancel_futures=True)
 
-    summary = latency.status()["stages"]["source_queue_wait"]
-    assert summary["sample_count"] == 1
-    assert summary["maximum_ms"] >= 0.0
+    summary = latency.status().stages["source_queue_wait"]
+    assert summary.sample_count == 1
+    assert summary.maximum_ms is not None and summary.maximum_ms >= 0.0
 
 
 def test_scheduled_reference_refresh_uses_bounded_history_warmup_instead_of_full_duplicate_batch() -> None:
@@ -1928,9 +1928,9 @@ def test_gateway_full_market_cache_avoids_duplicate_physical_requests_and_report
     assert first == second
     assert eastmoney.calls == 1
     assert sina.calls == 0
-    status = cache.status()["full_market_quotes"]
-    assert status["eastmoney"]["hit"] == 1
-    assert status["eastmoney"]["entries"] == 1
+    status = cache.status().datasets["full_market_quotes"]
+    assert status["eastmoney"].hit == 1
+    assert status["eastmoney"].entries == 1
 
 
 def test_source_lane_waits_for_hedged_physical_refresh_when_market_cache_is_due() -> None:
@@ -2012,8 +2012,8 @@ def test_source_lane_waits_for_hedged_physical_refresh_when_market_cache_is_due(
     assert results[0][0].price == 12.0
     assert eastmoney.calls == 2
     assert sina.calls == 1
-    assert lanes.status()["eastmoney"]["superseded_count"] == 0
-    assert lanes.status()["sina"]["superseded_count"] == 0
+    assert lanes.status().lanes["eastmoney"].superseded_count == 0
+    assert lanes.status().lanes["sina"].superseded_count == 0
 
 
 def test_equal_quote_version_can_gain_new_tushare_board_metadata_from_cache_hit() -> None:
@@ -2340,7 +2340,7 @@ def test_late_free_identity_is_persisted_without_waiting_for_next_score_cycle(tm
     assert persisted is not None
     assert persisted.source == "eastmoney_security_master"
     assert persisted.payload["listing_date"] == "1999-11-10"
-    assert lanes.status()["reference"]["completed_count"] >= 1
+    assert lanes.status().lanes["reference"].completed_count >= 1
 
 
 def test_gateway_background_refresh_failure_uses_negative_cache_to_suppress_retries() -> None:
@@ -3010,7 +3010,7 @@ def test_tushare_per_code_batch_stops_before_next_sdk_call_during_lane_shutdown(
     assert pro.calls == ["600001.SH"]
     assert observations[0].status == "failed"
     assert observations[0].error_code == "stopped"
-    assert lanes.status()["tushare"]["running"] is False
+    assert lanes.status().lanes["tushare"].running is False
 
 
 def test_tushare_per_code_batch_keeps_successes_when_one_code_fails() -> None:
@@ -3261,10 +3261,10 @@ def test_reference_refresh_reuses_cache_and_refreshes_due_entries_inside_tushare
         cache.stop()
 
     assert [name for name, _arguments in pro.calls] == ["stock_basic", "trade_cal", "stock_basic", "trade_cal"]
-    status = cache.status()["security_master_calendar"]["tushare"]
-    assert status["entries"] == 2
-    assert status["hit"] == 4
-    assert lanes.status()["tushare"]["superseded_count"] == 0
+    status = cache.status().datasets["security_master_calendar"]["tushare"]
+    assert status.entries == 2
+    assert status.hit == 4
+    assert lanes.status().lanes["tushare"].superseded_count == 0
 
 
 def test_akshare_circuit_skips_excess_requests_and_recovers_with_one_probe() -> None:
@@ -3654,13 +3654,13 @@ def test_history_intraday_and_research_share_the_bounded_market_cache() -> None:
     service.intraday.load(("600001",), NOW)
     service.research.load(("600001",), NOW, include_structured=False)
 
-    status = cache.status()
-    assert status["daily_history"]["eastmoney"]["entries"] == 1
-    assert status["daily_history"]["eastmoney"]["hit"] == 1
-    assert status["intraday_minutes"]["eastmoney"]["entries"] == 1
-    assert status["intraday_minutes"]["eastmoney"]["hit"] == 1
-    assert status["research_success"]["akshare"]["entries"] == 1
-    assert status["research_success"]["akshare"]["hit"] == 1
+    status = cache.status().datasets
+    assert status["daily_history"]["eastmoney"].entries == 1
+    assert status["daily_history"]["eastmoney"].hit == 1
+    assert status["intraday_minutes"]["eastmoney"].entries == 1
+    assert status["intraday_minutes"]["eastmoney"].hit == 1
+    assert status["research_success"]["akshare"].entries == 1
+    assert status["research_success"]["akshare"].hit == 1
     assert history.calls == ["600001"]
     assert intraday.calls == ["600001"]
     assert research.calls == 1
@@ -4199,7 +4199,7 @@ def test_full_market_deadline_does_not_wait_for_blocked_history_warmup() -> None
     assert elapsed < 0.2
     assert [feature.quote.code for feature in features] == ["600001"]
     assert features[0].history_days == 0
-    assert cache.status()["daily_history"]["eastmoney"]["entries"] == 0
+    assert cache.status().datasets["daily_history"]["eastmoney"].entries == 0
 
 
 def test_source_lane_research_deadline_discards_late_memory_and_disk_cache(tmp_path) -> None:
@@ -4242,8 +4242,8 @@ def test_source_lane_research_deadline_discards_late_memory_and_disk_cache(tmp_p
 
     assert elapsed < 0.5
     assert service.research.entries() == {}
-    research_cache_status = cache.status().get("research_success", {}).get("akshare", {})
-    assert research_cache_status.get("entries", 0) == 0
+    research_cache_status = cache.status().datasets.get("research_success", {}).get("akshare")
+    assert research_cache_status is None or research_cache_status.entries == 0
     assert not (tmp_path / "observations").exists()
 
 
@@ -4784,9 +4784,9 @@ def test_history_warmup_does_not_supersede_pending_candidate_history() -> None:
         assert started.wait(1.0)
         candidate_thread.start()
         timeout_at = time.monotonic() + 1.0
-        while not lanes.status()["history"]["pending"] and time.monotonic() < timeout_at:
+        while not lanes.status().lanes["history"].pending and time.monotonic() < timeout_at:
             time.sleep(0.01)
-        assert lanes.status()["history"]["pending"] is True
+        assert lanes.status().lanes["history"].pending is True
         release.set()
         candidate_thread.join(2.0)
     finally:
@@ -4798,7 +4798,7 @@ def test_history_warmup_does_not_supersede_pending_candidate_history() -> None:
     assert candidate_errors == []
     assert len(candidate_result) == 1
     assert {feature.quote.code for feature in candidate_result[0]} == set(codes)
-    assert lanes.status()["history"]["superseded_count"] == 0
+    assert lanes.status().lanes["history"].superseded_count == 0
 
 
 def test_history_warmup_deadline_releases_blocked_batch_identity() -> None:
@@ -5363,7 +5363,7 @@ def test_source_lane_cancels_queued_intraday_io_after_batch_timeout() -> None:
 
     assert result == {}
     assert intraday.calls == []
-    assert lanes.status()["eastmoney"]["pending"] is False
+    assert lanes.status().lanes["eastmoney"].pending is False
 
 
 def test_akshare_news_is_bounded_and_normalized() -> None:

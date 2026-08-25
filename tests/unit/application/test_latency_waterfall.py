@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from trader.application.latency import LatencyWaterfall
+from trader.application.latency import LatencyStageStatus, LatencyWaterfall
 
 
 class _Monotonic:
@@ -32,37 +32,17 @@ def test_latency_waterfall_is_bounded_and_exposes_only_aggregates() -> None:
 
     status = waterfall.status()
 
-    assert status["trace_capacity"] == 2
-    assert status["sample_capacity"] == 2
-    assert status["planned_count"] == 3
-    assert status["completed_count"] == 1
-    assert status["timeout_count"] == 1
-    assert status["superseded_count"] == 1
-    assert status["dropped_count"] == 0
-    assert status["stages"]["queue_wait"] == {
-        "sample_count": 1,
-        "p50_ms": 10.0,
-        "p95_ms": 10.0,
-        "maximum_ms": 10.0,
-    }
-    assert status["stages"]["external_source"] == {
-        "sample_count": 2,
-        "p50_ms": 20.0,
-        "p95_ms": 40.0,
-        "maximum_ms": 40.0,
-    }
-    assert status["stages"]["cycle_total:full_market"] == {
-        "sample_count": 1,
-        "p50_ms": 10.0,
-        "p95_ms": 10.0,
-        "maximum_ms": 10.0,
-    }
-    assert status["stages"]["execution_total:full_market"] == {
-        "sample_count": 1,
-        "p50_ms": 0.0,
-        "p95_ms": 0.0,
-        "maximum_ms": 0.0,
-    }
+    assert status.trace_capacity == 2
+    assert status.sample_capacity == 2
+    assert status.planned_count == 3
+    assert status.completed_count == 1
+    assert status.timeout_count == 1
+    assert status.superseded_count == 1
+    assert status.dropped_count == 0
+    assert status.stages["queue_wait"] == LatencyStageStatus(1, 10.0, 10.0, 10.0)
+    assert status.stages["external_source"] == LatencyStageStatus(2, 20.0, 40.0, 40.0)
+    assert status.stages["cycle_total:full_market"] == LatencyStageStatus(1, 10.0, 10.0, 10.0)
+    assert status.stages["execution_total:full_market"] == LatencyStageStatus(1, 0.0, 0.0, 0.0)
     assert "secret-cycle-1" not in repr(status)
 
 
@@ -73,8 +53,8 @@ def test_latency_waterfall_drops_oldest_unfinished_trace_at_capacity() -> None:
     waterfall.plan("new", "score")
 
     status = waterfall.status()
-    assert status["active_trace_count"] == 1
-    assert status["dropped_count"] == 1
+    assert status.active_trace_count == 1
+    assert status.dropped_count == 1
 
 
 def test_latency_waterfall_bounds_distinct_stage_names() -> None:
@@ -85,9 +65,9 @@ def test_latency_waterfall_bounds_distinct_stage_names() -> None:
     waterfall.record_duration("stage-c", 3.0)
 
     status = waterfall.status()
-    assert status["stage_capacity"] == 2
-    assert status["dropped_stage_count"] == 1
-    assert set(status["stages"]) == {"stage-b", "stage-c"}
+    assert status.stage_capacity == 2
+    assert status.dropped_stage_count == 1
+    assert set(status.stages) == {"stage-b", "stage-c"}
 
 
 def test_latency_waterfall_counts_each_trace_outcome_only_once() -> None:
@@ -99,6 +79,6 @@ def test_latency_waterfall_counts_each_trace_outcome_only_once() -> None:
     waterfall.finish("unknown", outcome="success")
 
     status = waterfall.status()
-    assert status["timeout_count"] == 1
-    assert status["failed_count"] == 0
-    assert status["completed_count"] == 0
+    assert status.timeout_count == 1
+    assert status.failed_count == 0
+    assert status.completed_count == 0

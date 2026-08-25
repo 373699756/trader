@@ -8,6 +8,7 @@ import time
 from collections import OrderedDict, deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 
 
 @dataclass(frozen=True)
@@ -15,6 +16,33 @@ class _Trace:
     cycle_kind: str
     planned_at: float
     entered_at: float | None = None
+
+
+@dataclass(frozen=True)
+class LatencyStageStatus:
+    sample_count: int
+    p50_ms: float | None
+    p95_ms: float | None
+    maximum_ms: float | None
+
+
+@dataclass(frozen=True)
+class LatencyWaterfallStatus:
+    sample_capacity: int
+    trace_capacity: int
+    stage_capacity: int
+    active_trace_count: int
+    planned_count: int
+    completed_count: int
+    failed_count: int
+    timeout_count: int
+    superseded_count: int
+    dropped_count: int
+    dropped_stage_count: int
+    stages: Mapping[str, LatencyStageStatus]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "stages", MappingProxyType(dict(self.stages)))
 
 
 class LatencyWaterfall:
@@ -108,22 +136,22 @@ class LatencyWaterfall:
             else:
                 self._failed_count += 1
 
-    def status(self) -> Mapping[str, object]:
+    def status(self) -> LatencyWaterfallStatus:
         with self._lock:
-            return {
-                "sample_capacity": self._sample_capacity,
-                "trace_capacity": self._trace_capacity,
-                "stage_capacity": self._stage_capacity,
-                "active_trace_count": len(self._traces),
-                "planned_count": self._planned_count,
-                "completed_count": self._completed_count,
-                "failed_count": self._failed_count,
-                "timeout_count": self._timeout_count,
-                "superseded_count": self._superseded_count,
-                "dropped_count": self._dropped_count,
-                "dropped_stage_count": self._dropped_stage_count,
-                "stages": {name: _summary(tuple(values)) for name, values in sorted(self._stages.items())},
-            }
+            return LatencyWaterfallStatus(
+                sample_capacity=self._sample_capacity,
+                trace_capacity=self._trace_capacity,
+                stage_capacity=self._stage_capacity,
+                active_trace_count=len(self._traces),
+                planned_count=self._planned_count,
+                completed_count=self._completed_count,
+                failed_count=self._failed_count,
+                timeout_count=self._timeout_count,
+                superseded_count=self._superseded_count,
+                dropped_count=self._dropped_count,
+                dropped_stage_count=self._dropped_stage_count,
+                stages={name: _summary(tuple(values)) for name, values in sorted(self._stages.items())},
+            )
 
     def _append_locked(self, stage: str, duration_ms: float) -> None:
         samples = self._stages.get(stage)
@@ -137,21 +165,16 @@ class LatencyWaterfall:
         samples.append(duration_ms)
 
 
-def _summary(values: tuple[float, ...]) -> dict[str, int | float | None]:
+def _summary(values: tuple[float, ...]) -> LatencyStageStatus:
     if not values:
-        return {
-            "sample_count": 0,
-            "p50_ms": None,
-            "p95_ms": None,
-            "maximum_ms": None,
-        }
+        return LatencyStageStatus(0, None, None, None)
     ordered = sorted(values)
-    return {
-        "sample_count": len(ordered),
-        "p50_ms": round(ordered[max(0, math.ceil(len(ordered) * 0.50) - 1)], 3),
-        "p95_ms": round(ordered[max(0, math.ceil(len(ordered) * 0.95) - 1)], 3),
-        "maximum_ms": round(ordered[-1], 3),
-    }
+    return LatencyStageStatus(
+        sample_count=len(ordered),
+        p50_ms=round(ordered[max(0, math.ceil(len(ordered) * 0.50) - 1)], 3),
+        p95_ms=round(ordered[max(0, math.ceil(len(ordered) * 0.95) - 1)], 3),
+        maximum_ms=round(ordered[-1], 3),
+    )
 
 
-__all__ = ["LatencyWaterfall"]
+__all__ = ["LatencyStageStatus", "LatencyWaterfall", "LatencyWaterfallStatus"]

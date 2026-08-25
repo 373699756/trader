@@ -122,3 +122,40 @@ def test_overlay_publisher_and_input_quality_are_required_typed_runtime_boundari
 
     assert publisher.default is MISSING
     assert "input_quality_status" in V2DecisionBuilderPort.__dict__
+
+
+def test_internal_state_is_typed_until_an_explicit_observability_boundary() -> None:
+    violations: list[str] = []
+    conversion_names = {"as_dict", "to_json", "to_status"}
+    exempt_status_paths = {
+        Path("application/ports/reviews.py"),
+        Path("infra/deepseek/reviewer.py"),
+        Path("infra/deepseek/reviewer_status.py"),
+    }
+    trader_root = SOURCE_ROOT
+    forbidden_status_types = {"Any", "JsonObject", "JsonValue", "Mapping", "MutableMapping", "dict", "object"}
+    for path in trader_root.rglob("*.py"):
+        relative = path.relative_to(trader_root)
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for class_node in (node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)):
+            for member in class_node.body:
+                if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)) and member.name in conversion_names:
+                    violations.append(f"{relative}:{member.lineno}: state object owns {member.name} serialization")
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name != "status" or relative in exempt_status_paths:
+                continue
+            annotation = node.returns
+            if annotation is None:
+                violations.append(f"{relative}:{node.lineno}: status return is not annotated")
+                continue
+            annotation_names = {
+                child.id if isinstance(child, ast.Name) else child.attr
+                for child in ast.walk(annotation)
+                if isinstance(child, (ast.Name, ast.Attribute))
+            }
+            if forbidden_status_types & annotation_names:
+                rendered = ast.unparse(annotation)
+                violations.append(f"{relative}:{node.lineno}: untyped status return {rendered}")
+    assert violations == []

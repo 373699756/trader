@@ -205,7 +205,7 @@ class HistoryWarmup:
             universe = self._universe
         self._history.update_coverage(universe)
         lanes = self._runner.source_lanes
-        history_lane_pending = bool(lanes is not None and lanes.status()[_HISTORY_SOURCE_LANE]["pending"])
+        history_lane_pending = bool(lanes is not None and lanes.status().lanes[_HISTORY_SOURCE_LANE].pending)
         if (
             universe
             and lanes is not None

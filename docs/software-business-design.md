@@ -522,6 +522,13 @@ entrypoints / web / infra -> application -> domain
 - `entrypoints`：参数、进程生命周期和退出码。
 - `bootstrap.py`：唯一组合根，显式创建客户端并注入依赖；禁止全局服务定位器。
 
+进程内状态统一使用不可变、有真实字段类型的值对象；来源、数据集或策略等运行期键控集合可以使用
+`Mapping[Key, StatusValue]`，但集合根和集合值都不能用 JSON 字典代替状态类型。应用层不得提供
+`as_dict()`、`to_status()` 或 `to_json()` 自行决定线格式，也不得用字典下标读取工作线程、队列、
+cadence、缓存、延迟或数据质量状态。JSON 只存在于显式边界：配置和供应商载荷解析、持久化 codec、
+schema 约束的不可变事件载荷，以及 Web/可观测性响应投影；转换函数归属对应 adapter，并在该处统一
+处理枚举、日期时间、动态键和公开字段白名单。领域或应用对象增加字段不自动改变任何外部 JSON schema。
+
 行情适配器固定采用组合：`MarketSourceCoordinator`、`QuoteCache`、
 `HistoryCache`/`HistoryWarmup`、
 `ResearchLoader`、`IntradayLoader` 和 `ReferenceLoader` 分别拥有自己的有类型状态、锁和
@@ -1206,8 +1213,9 @@ sample count、P50、P95 和 max；关联 trace、阶段名、样本和浏览器
 确定性的受控 `primary_blocker` 和聚合原因计数。DeepSeek 状态必须始终公开
 `enabled`、`configured`、物理调用数和零调用原因，使“没有合格候选”与“缺少密钥/禁用”可区分；
 不得暴露代码、密钥或请求载荷。该诊断只能解释既有门禁，不能自动降低评分、可靠度、风险或动作阈值。
-应用层运行端口必须以不可变、带类型的状态值提供 `input_quality`，组合根只做显式 JSON 投影；
-缺少该能力属于装配错误，不得通过 `getattr`、空字典或默认 no-op 发布器静默隐藏。调度器还必须
+应用层运行端口必须以不可变、带类型的状态值提供 `input_quality`；线程池、来源 lane、cadence、
+缓存和延迟状态遵循相同规则。组合根或显式基础设施可观测性 adapter 只在最终响应处执行 JSON 投影；
+缺少必需能力属于装配错误，不得通过 `getattr`、空字典或默认 no-op 发布器静默隐藏。调度器还必须
 公开 overlay 成功发布与失败累计数，保证 Web 可以区分“尚未生成”“已成功更新”和“刷新故障”。
 
 状态 API 只返回组合根注入并已经聚合的内存事实，不读取网络、文件或数据库，也不承诺尚未

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.application.cache import BoundedCache, CacheIdentity, CacheIdentitySpec, build_cache_identity
+from trader.application.cache import BoundedCache, CacheIdentity, CacheIdentitySpec, CacheStatus, build_cache_identity
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.review.models import DeepSeekReview
 
@@ -38,6 +38,18 @@ class _SharedRawCacheValue:
     review: DeepSeekReview
     price: float | None
     volume_ratio: float | None
+
+
+@dataclass(frozen=True)
+class ReviewCacheStatus:
+    entries: int
+    raw_entries: int
+    fusion_entries: int
+    seen_codes: int
+    hits: int
+    raw_hits: int
+    fusion_hits: int
+    misses: int
 
 
 class _ReviewCacheOptions(TypedDict, total=False):
@@ -199,19 +211,19 @@ class ReviewCache:
             while len(self._fusion_entries) > self._maximum_entries:
                 self._fusion_entries.popitem(last=False)
 
-    def status(self) -> dict[str, int]:
+    def status(self) -> ReviewCacheStatus:
         with self._lock:
             shared_raw, shared_fusion = self._shared_entry_counts()
-            return {
-                "entries": shared_raw + shared_fusion,
-                "raw_entries": shared_raw,
-                "fusion_entries": shared_fusion,
-                "seen_codes": len(self._seen_codes),
-                "hits": self._raw_hits + self._fusion_hits,
-                "raw_hits": self._raw_hits,
-                "fusion_hits": self._fusion_hits,
-                "misses": self._misses,
-            }
+            return ReviewCacheStatus(
+                entries=shared_raw + shared_fusion,
+                raw_entries=shared_raw,
+                fusion_entries=shared_fusion,
+                seen_codes=len(self._seen_codes),
+                hits=self._raw_hits + self._fusion_hits,
+                raw_hits=self._raw_hits,
+                fusion_hits=self._fusion_hits,
+                misses=self._misses,
+            )
 
     def has_seen(self, code: str, trade_date: str | None = None) -> bool:
         if self._shared_cache is not None and trade_date is not None:
@@ -311,19 +323,8 @@ def _candidate_trade_date(candidate: FeatureSnapshot) -> str:
     return candidate.quote.source_time.date().isoformat()
 
 
-def _dataset_entries(status: object, dataset: str) -> int:
-    if not isinstance(status, dict):
-        return 0
-    sources = status.get(dataset)
-    if not isinstance(sources, dict):
-        return 0
-    total = 0
-    for values in sources.values():
-        if isinstance(values, dict):
-            count = values.get("entries")
-            if isinstance(count, int) and not isinstance(count, bool):
-                total += count
-    return total
+def _dataset_entries(status: CacheStatus, dataset: str) -> int:
+    return sum(item.entries for item in status.datasets.get(dataset, {}).values())
 
 
 def _finite(value: float | None) -> float | None:
@@ -333,4 +334,4 @@ def _finite(value: float | None) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
-__all__ = ["ReviewCache"]
+__all__ = ["ReviewCache", "ReviewCacheStatus"]

@@ -94,6 +94,7 @@ class ReviewerStatusTracker:
             physical_attempts = self._last_physical_attempts
             successful_attempts = self._last_successful_attempts
             failed_attempts = self._last_failed_attempts
+        cache = self._cache.status()
         return freeze_json_object(
             cast(
                 Mapping[str, JsonInput],
@@ -110,7 +111,16 @@ class ReviewerStatusTracker:
                     "last_successful_attempts": successful_attempts,
                     "last_failed_attempts": failed_attempts,
                     "last_error": last_error,
-                    "cache": self._cache.status(),
+                    "cache": {
+                        "entries": cache.entries,
+                        "raw_entries": cache.raw_entries,
+                        "fusion_entries": cache.fusion_entries,
+                        "seen_codes": cache.seen_codes,
+                        "hits": cache.hits,
+                        "raw_hits": cache.raw_hits,
+                        "fusion_hits": cache.fusion_hits,
+                        "misses": cache.misses,
+                    },
                     "budget": budget,
                     "physical_call_acceptance": _physical_call_acceptance(
                         enabled=self._settings.enabled,

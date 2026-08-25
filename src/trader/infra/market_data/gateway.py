@@ -39,10 +39,12 @@ from trader.infra.market_data.columnar import (
 from trader.infra.market_data.eastmoney import EastmoneyClient
 from trader.infra.market_data.gateway_runtime import (
     _cache_error_code,
+    _cache_status,
     _canonical_health,
     _CircuitState,
     _cycle_trace_id,
     _elapsed,
+    _latency_status,
     _observation_version,
     _parallel_error_message,
     _parallel_route_outcome,
@@ -52,6 +54,7 @@ from trader.infra.market_data.gateway_runtime import (
     _route_health,
     _SingleFlight,
     _source_degraded_reasons,
+    _source_lane_status,
 )
 from trader.infra.market_data.merge import (
     merge_market_observations,
@@ -703,7 +706,7 @@ class MarketDataGateway:
                 },
                 "canonical_snapshot": _canonical_health(self._latest_snapshot),
                 "route": _route_health(self._last_route_outcome),
-                "source_lanes": self._source_lanes.status() if self._source_lanes is not None else {},
+                "source_lanes": _source_lane_status(self._source_lanes),
                 "security_master": {
                     "total_rows": len(reference_rows),
                     "listing_date_rows": listing_date_rows,
@@ -736,8 +739,8 @@ class MarketDataGateway:
                     }
                     for name, state in self._states.items()
                 },
-                "cache": self._cache.status() if self._cache is not None else {},
-                "latency_waterfall": dict(self._latency.status()),
+                "cache": _cache_status(self._cache.status()) if self._cache is not None else {},
+                "latency_waterfall": _latency_status(self._latency),
             }
 
     def record_planned(self, source: str) -> None:

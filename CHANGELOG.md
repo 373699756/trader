@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户指出内部状态在 JSON 字段与对象字段之间反复转换，新增活动源码序列化边界 AST 契约：除显式
+  DeepSeek 可观测性端口/投影外，内部 `status()` 必须返回真实类型，且应用层不得再定义 `as_dict()`、
+  `to_status()` 或 `to_json()`。线程池、来源 lane/registry、cadence、延迟瀑布和缓存现在都有不可变
+  状态根对象；DeepSeek 缓存也返回类型状态。来源、数据集等动态键仍以
+  `Mapping[Key, StatusValue]` 表达，不伪装成固定 JSON schema。
+
 - 针对用户反馈观察池再次为空、Web 数据新鲜度/行情覆盖/推荐漏斗卡片状态反复消失，新增不可变
   `V2InputQualityStatus`、供应漏斗和行情摘要应用层状态值，以及 overlay 发布/失败计数。状态端口现在
   是调度器装配的必需契约，HTTP 只执行显式脱敏 JSON 投影，不能因对象缺少可选方法而静默返回空状态。
@@ -314,6 +320,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 进程内控制与诊断统一读取对象字段；市场健康适配器在最终可观测性边界显式投影来源 lane、缓存和
+  延迟 JSON，保持现有 `/api/v2/status` 字段、枚举和值格式不变。缓存身份直接由规范 dataclass 编码器
+  生成相同 canonical JSON，不再先复制为临时字典；配置/供应商/持久化/schema 载荷仍按 JSON 边界处理。
+
 - 报价 overlay 的观察时刻改为本轮调度请求、入选特征本地观察时刻与报价本机接收时刻的最晚值；
   供应商 `source_time` 仍只作为受校验的数据事实，不能用未来声明时间推进本地时钟。组合根状态投影
   拆入独立模块，`bootstrap.py` 回到架构行数门禁以内；评分公式、阈值、排序和冻结身份均未改变。
@@ -549,6 +559,10 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复状态表示没有全仓边界规则、导致同类字段在字典下标和对象属性之间反复迁移的问题。根因是应用
+  对象自行承担线格式转换且部分运行控制直接读取 JSON 形状；现在进程内状态、动态键集合和外部 JSON
+  三类职责有唯一规则及机器门禁，后续新增状态字段不会自动改变公开 JSON schema。
 
 - 修复 overlay 用调度请求发起时间而不是网络完成时间作为版本时钟，导致同批成功新报价被误判为未来
   数据的问题；同时修复 overlay 错误只会累积、后续成功刷新无法恢复健康状态的问题。预期 CAS 竞争
@@ -795,6 +809,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除 `CacheIdentity.as_dict()`、`SchedulePointState.to_json()`、`TomorrowInputQuality.to_status()`，
+  以及线程池、来源 lane、cadence、缓存和延迟状态的内部字典下标读取；没有增加兼容字典、双实现或
+  反射 fallback。
+
 - 移除 overlay publisher 的默认 no-op、调度器的 `submit_tick` 兼容方法及可选 `observe_clock` 反射 fallback、
   运行状态对可选 `input_quality_status` 的空字典 fallback，以及已无生产调用者的
   `legacy_v14_hard_filter`。所有必需能力必须在组合根显式装配，不再用“能启动但无数据”的默认值隐藏缺线。
@@ -914,6 +932,15 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 失败先行架构契约确认旧实现会因应用序列化方法和非类型化 `status()` 返回而失败；统一后，架构、
+  worker、cache、latency、来源 lane/健康 JSON、DeepSeek 共享缓存和 V2 runtime 共 121 项定向回归通过，
+  公开行情健康投影的既有 component 断言保持通过。以 `HEAD + 本批 diff` 的隔离副本执行高风险全量
+  门禁：`make format-check`、`make lint`（严格重构债为 0）、`make type-check`（224 个源码文件）、
+  `make test`（全仓 100%）和 `make package` 全部通过；打包首次仅因沙箱禁止隔离构建下载
+  `setuptools>=68` 失败，获准联网后原命令成功生成 sdist 与 wheel。`git diff --check` 通过。
+  当前工作树另有未纳入本批的 Realtime-R1 cadence/配置修改，其固定配置契约尚未闭合，不能把该
+  外部失败或改动记入本批门禁与提交。
 
 - 失败先行与定向回归通过：overlay 以网络完成时刻发布且拒绝无本机时间支撑的未来供应商时间、overlay
   故障后续成功恢复、必需 typed `input_quality`/publisher 架构契约、状态 JSON 投影、调度接口和 Web
@@ -1401,6 +1428,10 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 本批不改变 `/api/v2/status`、行情健康、评分、过滤、冻结或 DeepSeek 行为；显式 JSON 投影仍需在
+  新增公开字段时同步维护 schema 测试。工作树中的 Realtime-R1 未提交改动由其独立批次负责，本批只
+  分块暂存状态边界相关 hunk，不得混入或替其宣告验证通过。
 
 - Firefox 卡片和 65 秒刷新验收使用确定性内存行情以隔离休市期外部来源不变，完整覆盖真实应用查询、
   HTTP、SSE 和 DOM，但不替代开市期间供应商网络与整日数据年龄观测；本批未改行情 provider、评分、

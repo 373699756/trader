@@ -110,28 +110,6 @@ class TomorrowInputQuality:
     def publishable(self) -> bool:
         return self.status in {"ready", "business_empty"}
 
-    def to_status(self) -> dict[str, object]:
-        return {
-            "status": self.status,
-            "publishable": self.publishable,
-            "population_count": self.population_count,
-            "candidate_count": self.candidate_count,
-            "candidate_feature_count": self.candidate_feature_count,
-            "population_rejected_count": self.population_rejected_count,
-            "candidate_rejected_count": self.candidate_rejected_count,
-            "candidate_scored_count": self.candidate_scored_count,
-            "security_master_covered_count": self.security_master_covered_count,
-            "history_covered_count": self.history_covered_count,
-            "candidate_feature_coverage_ratio": self.candidate_feature_coverage_ratio,
-            "security_master_coverage_ratio": self.security_master_coverage_ratio,
-            "history_coverage_ratio": self.history_coverage_ratio,
-            "population_filter_reason_counts": dict(self.population_filter_reason_counts),
-            "candidate_filter_reason_counts": dict(self.candidate_filter_reason_counts),
-            "candidate_transient_reason_counts": dict(self.candidate_transient_reason_counts),
-            "candidate_optional_reason_counts": dict(self.candidate_optional_reason_counts),
-            "degraded_reasons": self.degraded_reasons,
-        }
-
 
 def assess_tomorrow_input_quality(
     native_input: ScoredNativeInput,

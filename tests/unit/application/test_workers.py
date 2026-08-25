@@ -5,7 +5,7 @@ import threading
 import pytest
 
 from trader.application.shutdown import ShutdownDeadline
-from trader.application.workers import BorrowExecutorOptions, BoundedExecutor, borrow_executor
+from trader.application.workers import BorrowExecutorOptions, BoundedExecutor, BoundedExecutorStatus, borrow_executor
 
 
 def test_bounded_executor_rejects_over_capacity_and_stops_all_workers() -> None:
@@ -33,7 +33,7 @@ def test_bounded_executor_rejects_over_capacity_and_stops_all_workers() -> None:
     queued = executor.submit(lambda: threading.current_thread().name)
     assert queued is not None
     assert executor.submit(lambda: None) is None
-    assert executor.status()["rejected_count"] == 1
+    assert executor.status().rejected_count == 1
 
     release.set()
     assert first.result(timeout=1.0).startswith("test-bounded")
@@ -42,21 +42,21 @@ def test_bounded_executor_rejects_over_capacity_and_stops_all_workers() -> None:
     executor.stop()
 
     assert executor.submit(lambda: None) is None
-    assert executor.status() == {
-        "workers": 2,
-        "urgent_workers": 0,
-        "queue_capacity": 1,
-        "urgent_queue_capacity": 0,
-        "inflight": 0,
-        "urgent_inflight": 0,
-        "submitted_count": 3,
-        "urgent_submitted_count": 0,
-        "completed_count": 3,
-        "urgent_completed_count": 0,
-        "rejected_count": 2,
-        "urgent_rejected_count": 0,
-        "running": False,
-    }
+    assert executor.status() == BoundedExecutorStatus(
+        workers=2,
+        urgent_workers=0,
+        queue_capacity=1,
+        urgent_queue_capacity=0,
+        inflight=0,
+        urgent_inflight=0,
+        submitted_count=3,
+        urgent_submitted_count=0,
+        completed_count=3,
+        urgent_completed_count=0,
+        rejected_count=2,
+        urgent_rejected_count=0,
+        running=False,
+    )
     assert not any(thread.name.startswith("test-bounded") for thread in threading.enumerate())
 
 
@@ -82,7 +82,7 @@ def test_urgent_lane_runs_while_normal_lane_is_saturated() -> None:
         urgent = executor.submit_urgent(lambda: threading.current_thread().name)
         assert urgent is not None
         assert urgent.result(timeout=0.2).startswith("test-urgent-urgent")
-        assert executor.status()["urgent_completed_count"] == 1
+        assert executor.status().urgent_completed_count == 1
     finally:
         release.set()
         executor.stop()
@@ -112,7 +112,7 @@ def test_urgent_lane_has_one_bounded_waiting_slot() -> None:
         queued = executor.submit_urgent(lambda: 42)
         assert queued is not None
         assert executor.submit_urgent(lambda: None) is None
-        assert executor.status()["urgent_rejected_count"] == 1
+        assert executor.status().urgent_rejected_count == 1
         release.set()
         assert queued.result(timeout=1.0) == 42
     finally:

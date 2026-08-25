@@ -148,19 +148,6 @@ class CacheIdentity:
         ):
             raise ValueError("cache request fingerprint must be a lowercase SHA-256")
 
-    def as_dict(self) -> dict[str, str]:
-        return {
-            "dataset": self.dataset,
-            "source": self.source,
-            "subject_key": self.subject_key,
-            "request_fingerprint": self.request_fingerprint,
-            "trade_date": self.trade_date,
-            "phase": self.phase,
-            "source_contract_version": self.source_contract_version,
-            "config_version": self.config_version,
-            "schema_version": self.schema_version,
-        }
-
 
 @dataclass(frozen=True)
 class CacheIdentitySpec:
@@ -197,6 +184,18 @@ class CacheStats:
 
 
 @dataclass(frozen=True)
+class CacheStatus:
+    datasets: Mapping[str, Mapping[str, CacheStats]]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "datasets",
+            MappingProxyType({dataset: MappingProxyType(dict(sources)) for dataset, sources in self.datasets.items()}),
+        )
+
+
+@dataclass(frozen=True)
 class CacheLookup(Generic[_T]):
     value: _T | None
     state: str
@@ -224,7 +223,7 @@ class BoundedCache(Protocol, Generic[_T]):
 
     def is_actionable(self, identity: CacheIdentity, source_time: datetime) -> bool: ...
 
-    def status(self) -> Mapping[str, Mapping[str, Mapping[str, object]]]: ...
+    def status(self) -> CacheStatus: ...
 
     def stop(self, *, wait: bool = True, timeout_seconds: float | None = None) -> object: ...
 
@@ -335,6 +334,7 @@ __all__ = [
     "CacheLookup",
     "CachePolicy",
     "CacheStats",
+    "CacheStatus",
     "SLOW_DATASETS",
     "build_cache_identity",
     "canonical_json_bytes",

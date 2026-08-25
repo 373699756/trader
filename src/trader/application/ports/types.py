@@ -1,4 +1,4 @@
-"""Immutable JSON-shaped values used only at observability boundaries."""
+"""Immutable JSON-shaped values for explicit serialization and schema payload boundaries."""
 
 from __future__ import annotations
 

@@ -95,14 +95,6 @@ class SchedulePointState:
         ):
             raise ValueError("schedule point retry time must be timezone-aware")
 
-    def to_json(self) -> Mapping[str, object]:
-        return {
-            "lifecycle": self.lifecycle.value,
-            "attempt_count": self.attempt_count,
-            "updated_at": self.updated_at.isoformat(),
-            "next_retry_at": self.next_retry_at.isoformat() if self.next_retry_at is not None else None,
-        }
-
 
 def task_execution_budget_seconds(task: PipelineTask) -> float | None:
     return {
@@ -182,6 +174,24 @@ class CadenceBatch:
     next_delay_seconds: float
 
 
+@dataclass(frozen=True)
+class CadencePlannerStatus:
+    started_at: datetime | None
+    intervals: Mapping[PipelineTask, Mapping[CadenceBand, float]]
+    next_due: Mapping[tuple[str, CadenceBand, PipelineTask], datetime]
+    schedule_points: Mapping[SchedulePointKey, SchedulePointState]
+    fired_points: tuple[tuple[str, SchedulePoint], ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "intervals",
+            MappingProxyType({task: MappingProxyType(dict(values)) for task, values in self.intervals.items()}),
+        )
+        object.__setattr__(self, "next_due", MappingProxyType(dict(self.next_due)))
+        object.__setattr__(self, "schedule_points", MappingProxyType(dict(self.schedule_points)))
+
+
 class CadencePlanner:
     def __init__(self, policy: CadencePolicy, *, started_at: datetime | None = None) -> None:
         self._policy = policy
@@ -195,27 +205,23 @@ class CadencePlanner:
         with self._lock:
             return self._plan_locked(at, is_trading_day=is_trading_day)
 
-    def status(self) -> Mapping[str, object]:
+    def status(self) -> CadencePlannerStatus:
         with self._lock:
-            return {
-                "started_at": self._started_at.isoformat() if self._started_at is not None else None,
-                "intervals": {
-                    task.value: {band.value: seconds for band, seconds in values.items()}
-                    for task, values in self._policy.intervals.items()
-                },
-                "next_due": {
-                    f"{trade_date}:{band.value}:{task.value}": due.isoformat()
-                    for (trade_date, band, task), due in self._next_due.items()
-                },
-                "schedule_points": {key.label: state.to_json() for key, state in sorted(self._point_states.items())},
-                "fired_points": sorted(
-                    {
-                        f"{key.trade_date}:{key.schedule_point.value}"
-                        for key, state in self._point_states.items()
-                        if state.lifecycle is SchedulePointLifecycle.COMPLETED
-                    }
+            return CadencePlannerStatus(
+                started_at=self._started_at,
+                intervals=self._policy.intervals,
+                next_due=self._next_due,
+                schedule_points=self._point_states,
+                fired_points=tuple(
+                    sorted(
+                        {
+                            (key.trade_date, key.schedule_point)
+                            for key, state in self._point_states.items()
+                            if state.lifecycle is SchedulePointLifecycle.COMPLETED
+                        }
+                    )
                 ),
-            }
+            )
 
     def schedule_point_lifecycle(
         self,
@@ -668,6 +674,7 @@ __all__ = [
     "CadenceBand",
     "CadenceBatch",
     "CadencePlanner",
+    "CadencePlannerStatus",
     "CadencePolicy",
     "PERIODIC_TASKS",
     "PipelineTask",

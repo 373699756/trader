@@ -534,7 +534,7 @@ class MarketSourceCoordinator:
                 return
 
         if self._source_lanes is not None:
-            refresh_identity = "refresh:" + hashlib.sha256(canonical_json_bytes(identity.as_dict())).hexdigest()
+            refresh_identity = "refresh:" + hashlib.sha256(canonical_json_bytes(identity)).hexdigest()
             self._source_lanes.submit(request.source, refresh_identity, request.observed_at, refresh)
             return
         worker_pool.submit(refresh)
@@ -553,7 +553,7 @@ class MarketSourceCoordinator:
         digest = hashlib.sha256(
             canonical_json_bytes(
                 {
-                    "cache_identity": cache_identity.as_dict(),
+                    "cache_identity": cache_identity,
                     "force": request.force,
                     "deadline": request.deadline,
                 }
