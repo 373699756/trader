@@ -508,7 +508,9 @@ def test_runtime_settings_rejects_insecure_tushare_token_file(tmp_path, monkeypa
         ),
     ],
 )
-def test_v17_cache_and_performance_configuration_rejects_missing_unknown_or_drift(tmp_path, mutate, message) -> None:
+def test_current_cache_and_performance_configuration_rejects_missing_unknown_or_drift(
+    tmp_path, mutate, message
+) -> None:
     raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
     mutate(raw)
     changed_path = tmp_path / "runtime.json"

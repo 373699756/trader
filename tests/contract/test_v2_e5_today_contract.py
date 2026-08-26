@@ -4,16 +4,9 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-PLAN = ROOT / "docs" / "implementation-plan.md"
 DESIGN = ROOT / "docs" / "software-business-design.md"
 STRATEGY = ROOT / "docs" / "recommendation-strategy.md"
 BOOTSTRAP = ROOT / "src" / "trader" / "bootstrap.py"
-
-
-def test_v2_e5_remains_complete_after_e6_progression() -> None:
-    plan = PLAN.read_text(encoding="utf-8")
-
-    assert "### V2-E5：Today 正式接管（已完成）" in plan
 
 
 def test_authoritative_contract_defines_today_missed_freeze_and_overlay_only_behavior() -> None:

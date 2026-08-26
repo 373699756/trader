@@ -35,8 +35,8 @@ class _History:
 
 
 class _References:
-    def health(self):
-        return {}
+    def health(self) -> None:
+        return None
 
 
 class _Lanes:

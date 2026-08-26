@@ -4,16 +4,9 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-PLAN = ROOT / "docs" / "implementation-plan.md"
 DESIGN = ROOT / "docs" / "software-business-design.md"
 STRATEGY = ROOT / "docs" / "recommendation-strategy.md"
 MARKET_PORT = ROOT / "src" / "trader" / "application" / "ports" / "market.py"
-
-
-def test_v2_e1_remains_complete_after_e3_progression() -> None:
-    plan = PLAN.read_text(encoding="utf-8")
-
-    assert "### V2-E1：统一 V2 数据平面（已完成）" in plan
 
 
 def test_authoritative_contract_freezes_data_plane_port_lineage_and_coverage() -> None:

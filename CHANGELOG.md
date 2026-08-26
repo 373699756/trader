@@ -6,6 +6,15 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对全工程 Review 发现行情 health 在内部字典、状态对象和公开 JSON 之间反复转换，新增不可变
+  `MarketGatewayHealthStatus`、`MarketSourceHealthStatus`、`SecurityMasterHealthStatus` 与
+  `TushareHealthStatus`。网关、预热和来源协调只读取类型字段，只有最终 `MarketDataHealth` adapter
+  按公开字段白名单投影 JSON；架构 AST 同时约束 `health()` 与 `status()`，防止内部状态退回
+  `dict`/`Mapping` 根值。
+- 新增 `V2RuntimeIssueRegistry`、独立 DeepSeek/冻结 adapter 模块和浏览器
+  `dashboard_stream.js`。运行时问题去重/恢复、模型/冻结资源、SSE 游标/退避/断线轮询分别拥有清晰
+  生命周期，结构契约禁止这些职责重新并回调度器、行情输入 adapter 或页面控制器。
+
 - 针对用户要求重新 Review 全工程并按计划修复，新增正式记录基础设施 codec 与架构 AST 契约：领域、
   应用层只持有当前 schema 的 `CommittedDecisionRecord` 类型对象，JSON 编解码、字段白名单、版本和哈希
   校验统一归属 `infra/persistence/decision_record_codec.py`；契约禁止领域/应用重新引入持久化 decoder。
@@ -355,6 +364,21 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求把扫描出的六类问题全部优化。根因复核确认：类型化状态仍在行情 health 链泄漏为 JSON 字典；
+  正式记录哈希与持久化各维护一套字段投影且研究审计依赖 `__dict__`；运行时、SSE 和 6586 行行情组件
+  测试按历史增长聚合；实施计划仍混入已完成波次；测试树保留无人引用的旧流水线证据；少量测试、资源
+  握手和校验文本仍使用旧版本名。本批采用统一目标架构整改，不保留双表示或兼容别名。
+- 正式记录身份哈希和持久化 codec 统一复用领域层
+  `committed_record_identity_payload()` 的单一显式字段材料；研究审计改为逐字段投影候选与决策，不再
+  通过对象反射决定审计线格式；列式批次身份哈希也改为显式列举字段。内部字段增加不会自动改变
+  持久化、审计、批次身份或 Web schema。
+- 将原 6586 行行情组件测试按 vendor、gateway、lane、history、reference、Tushare、feature、intraday、
+  research、service 十个真实行为域拆分，共享工厂进入非测试 support 模块；156 条测试断言保持不变，
+  每个行为文件均低于 1200 行，并增加结构契约限制重新形成单文件聚合套件。
+- 权威产品/策略文档统一表述为“V2-only 工程与发布门禁已验收、当前仍属 Unreleased”；实施计划只保留
+  正式 0.2.0 发布与 `score_p0_v2`/Score-R6-R7 外部证据两个未闭合 Gate，不再复制已完成施工波次、
+  会话分工和迁移时间线。正式 release 仍须用户另行发起独立批次。
+
 - 用户可观察诉求是避免同一业务在 JSON 字段和对象字段、Tomorrow 专属名和三策略公共实现之间反复迁移。
   根因是正式记录 codec 位于领域层，且 Today/Tomorrow/D25 公共选择、质量、融合、投影、冻结仍以
   `tomorrow_*` 命名并保留 Today 包装入口。现在三策略统一复用 `scored_*` 类型模块和单一投影入口，
@@ -631,6 +655,13 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复测试 SQLite 直接绑定 `datetime` 在 Python 3.14 触发弃用警告，测试数据现在显式写入 ISO-8601；
+  同步把活动设置校验文案、Web 包说明、测试文件名、性能 fixture 身份和静态资源握手身份改为当前 V2
+  语义，避免程序、测试和文档继续把历史 v15/v16/v17 波次误作活动 release。
+- 修复权威文档仍把版本号 `0.2.0` 当成已正式发布、而全部变更实际仍位于 `Unreleased` 的状态矛盾；
+  `pyproject.toml` 的包版本保持不变，只有完成独立发布批次、版本归档、提交推送和同提交 tag 后才可
+  声称正式发布。
 
 - 修正文档与程序不一致：架构文档补齐第五个 `research` 领域包、当前正式记录 schema-only 策略和
   `scored_*` 公共模块边界；README 不再把只做能力审计的 120 积分 Tushare `daily` 描述成历史主源；
@@ -921,6 +952,13 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除测试树中已经无人引用且只记录旧 Pipeline B/C 交接、v15-v17 性能波次的 19 份报告、baseline
+  与 manifest fixture；删除四个带旧波次名的测试路径并以当前职责名替换。`docs/reports/` 与
+  `CHANGELOG.md` 中的历史引用作为审计记录保留，不参与活动测试、打包或运行。
+- 没有删除 R2-R5 离线研究能力：权威策略仍把它们定义为 `score_p0_v2` 与未来 Score-R6/R7 外部证据
+  的前置能力，且生产组合根、HTTP、冻结和 DeepSeek 请求链均不可达。当前保留是经可达性与契约复核
+  后的明确边界，不是遗留生产实现。
+
 - 删除未被生产组合根调用的 Tomorrow 读一次并融合旧用例及其测试、Today V2 投影别名层、三套旧通用
   today/tomorrow/d25 评分器与权重配置、D25 `not_overheated`/双 multiplier 因子、正式记录 legacy
   decoder、DeepSeek 旧 schema/模型兼容分支，以及引用仓库外 `/tmp` 截图的过时 `design-qa.md`。
@@ -1061,6 +1099,23 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 六类整改的定向回归通过：架构/文档/发布状态契约、正式记录 codec 与研究审计、运行时问题恢复、
+  类型化行情 health、拆分后的 156 个行情组件测试、SQLite 数据平面和 Node Web 状态契约全部通过；
+  Review 额外发现并修复 hybrid 成功发布未恢复旧问题状态，以及列式批次身份仍用 `__dict__` 哈希，
+  两者均补契约或行为回归。
+- 高风险全量门禁 `make format-check`、`make lint`、`make type-check`（225 个源码文件）、`make test`、
+  `make package` 全部通过。打包首次因沙箱禁止隔离环境联网获取 `setuptools` 失败，获准后成功生成
+  0.2.0 sdist/wheel；这不改变本批仍归属 `Unreleased` 的发布状态。
+- 仓库外 `/tmp` 虚拟环境以 `--no-deps` 强制安装最终 wheel，并从该 wheel 路径导入 `trader`，执行
+  `trader-cli --help`、当前 V2 配置校验，读取模板、主 CSS、主 JS、新增 `dashboard_stream.js` 和 SVG，
+  全部通过；临时安装和输出未进入仓库。
+- 离线活动生产性能门禁通过且物理网络调用为 0、100 tick RSS 增长为 0：5500 行行情合并 P95
+  571.881ms/600ms、quote-to-draft P95 2300.795ms/5000ms、三策略评分 P95 51.817ms/750ms、status API
+  P95 0.978ms、SSE publish P95 0.007ms。
+- Firefox headless 1280x720、1440x900、1920x1080 三档桌面验收通过：实际视口与请求一致，无白屏、
+  页面级横向溢出、区域重叠或浏览器错误；新增 SSE 资源从打包快照加载，完整决策、观察池、Long、
+  错误抽屉和断线相关契约保持有效，外部网络调用为 0。报告和截图只写入 `/tmp`，未提交。
 
 - 本批定向验证覆盖正式记录 codec/查询/持久化/架构契约，DeepSeek V4 schema、模型、provider 与失败
   降级，配置 schema 13、市场状态/行情特征，以及三策略 scored 选择、融合、投影、冻结、调度和组合根，
@@ -1625,6 +1680,13 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 当前没有已知未解决代码、测试、类型、打包或桌面问题。正式 0.2.0 release 尚未由用户发起，版本归档
+  和 tag 仍是 `docs/implementation-plan.md` 中独立未闭合 Gate；本批只提交并推送 `Unreleased` 改进。
+- R2-R5 离线研究模块仍因 `score_p0_v2` 和 Score-R6/R7 的权威预注册边界而保留，但生产组合根、HTTP、
+  冻结和 DeepSeek 请求链均不可达。未来真实交易日前向证据与人工晋级仍受日期约束，本批不能提前生成。
+- 本批验证使用确定性离线行情和浏览器 fixture，没有访问真实供应商，也没有改变候选、评分、风险、融合、
+  168 次预算或冻结规则；真实交易窗口的供应商时延与可用性继续属于既有外部风险，不能从离线门禁推断 SLA。
 
 - 当前无已知未解决代码或契约问题。旧 schema v1 正式记录必须随完整旧 release 离线保留，当前 release
   有意只接受当前 schema；这是一项明确迁移边界，不是隐藏兼容。两条 Python 3.14 SQLite datetime

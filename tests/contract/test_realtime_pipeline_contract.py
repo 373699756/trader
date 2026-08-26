@@ -9,7 +9,7 @@ def test_authorities_separate_implemented_realtime_work_from_inactive_strategy_r
     design = (PROJECT_ROOT / "docs" / "software-business-design.md").read_text(encoding="utf-8")
     strategy = (PROJECT_ROOT / "docs" / "recommendation-strategy.md").read_text(encoding="utf-8")
 
-    assert "当前交付状态：V2-E0 至 V2-E11 已完成" in design
+    assert "当前交付状态：V2-only 工程与发布门禁验收已闭合" in design
     assert "已实施实时与降级基线" not in design
     assert "旧执行模式开关" in design
     assert "versioned_dag" not in design
@@ -20,7 +20,7 @@ def test_authorities_separate_implemented_realtime_work_from_inactive_strategy_r
     assert "尚未实现" in strategy
 
 
-def test_t1_authority_fixes_real_production_and_browser_budgets() -> None:
+def test_authority_fixes_real_production_and_browser_budgets() -> None:
     authority = (PROJECT_ROOT / "docs" / "software-business-design.md").read_text(encoding="utf-8")
 
     assert "5500 行标准化 250ms、两源合并 600ms、统一快照可读 900ms" in authority

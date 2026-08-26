@@ -6,7 +6,7 @@
 
 融合：`fusion_local68_deepseek32`
 
-状态：活动策略契约；V2-only 最终发布边界
+状态：活动策略契约；V2-only 工程与发布门禁已验收，正式 0.2.0 release 尚未声明
 
 本文是候选、过滤、因子、评分、风险、DeepSeek、融合、动作、排名和策略验收的唯一
 权威。产品、架构、时间线、发布、API、运维和工程路线以
@@ -15,7 +15,8 @@
 
 最终 V2 评分口径只产生 `ScoredDecision`，Long 只产生无评分 `LongProjection`；新 release
 不得构造或读取旧 `RecommendationSnapshot`，也不回放旧策略、旧引擎或旧 schema。当前
-交付已完成 V2-E0 至 V2-E11，V2-only 已完成最终发布验收；旧链已从活动树物理删除，不定义候选、公式、
+V2-only 工程与发布门禁验收已闭合；当前版本仍在 `Unreleased`，尚未声明正式
+`0.2.0` release。旧链已从活动树物理删除，不定义候选、公式、
 风险、融合、动作或排名。历史问题与实施过程只进入 `CHANGELOG.md` 和报告。
 
 ## 1. 策略目标与共同纪律

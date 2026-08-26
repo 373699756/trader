@@ -51,7 +51,17 @@ class ColumnarBatchIdentity:
 
     @property
     def digest(self) -> str:
-        return hashlib.sha256(canonical_json_bytes(self.__dict__)).hexdigest()
+        payload = {
+            "dataset": self.dataset,
+            "merge_epoch": self.merge_epoch,
+            "board_policy_version": self.board_policy_version,
+            "strategy_version": self.strategy_version,
+            "config_version": self.config_version,
+            "schema_version": self.schema_version,
+            "manifest_hash": self.manifest_hash,
+            "content_hash": self.content_hash,
+        }
+        return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
 @dataclass(frozen=True)

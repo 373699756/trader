@@ -56,6 +56,7 @@ from trader.application.schedule import (
 )
 from trader.application.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
 from trader.application.v2_lifecycle import LatestWinsOffer, LatestWinsStatus, LatestWinsWorker
+from trader.application.v2_runtime_issues import V2RuntimeIssue, V2RuntimeIssueRegistry
 from trader.application.workers import BoundedExecutor
 from trader.domain.recommendation.decision_identity import (
     DecisionIdentity,
@@ -65,7 +66,6 @@ from trader.domain.recommendation.decision_identity import (
 )
 from trader.domain.recommendation.models import Strategy
 
-_ISSUE_HISTORY_CAPACITY = 20
 _DATA_TASKS = (
     PipelineTask.FULL_MARKET,
     PipelineTask.CANDIDATE_QUOTES,
@@ -109,19 +109,6 @@ class V2RuntimeDependencies:
     research_factory: V2ResearchRuntimeFactoryPort
     publish_decision: Callable[[V2DecisionCommitted], object]
     publish_overlay: V2OverlayPublisher
-
-
-@dataclass(frozen=True)
-class V2RuntimeIssue:
-    code: str
-    severity: Literal["degraded", "error"]
-    strategy: Strategy | None
-    stage: str
-    occurred_at: datetime
-    last_occurred_at: datetime
-    count: int
-    recovery_status: Literal["active", "recovered"]
-    resolved_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -240,10 +227,7 @@ class V2SchedulerRuntime:
         self._freeze_failure_count = 0
         self._settlement_completed_count = 0
         self._settlement_failure_count = 0
-        self._last_error_code = ""
-        self._system_error_code = ""
-        self._strategy_error_codes: dict[Strategy, str] = {}
-        self._recent_errors: OrderedDict[tuple[str, str], V2RuntimeIssue] = OrderedDict()
+        self._issues = V2RuntimeIssueRegistry()
         self._midday_long_handoff_date: date | None = None
 
     def start(self) -> bool:
@@ -546,6 +530,7 @@ class V2SchedulerRuntime:
     def status(self) -> V2RuntimeStatus:
         control = self._control.status()
         with self._lock:
+            issues = self._issues.snapshot()
             return V2RuntimeStatus(
                 running=self._running,
                 phase=self._phase,
@@ -576,13 +561,9 @@ class V2SchedulerRuntime:
                 freeze_failure_count=self._freeze_failure_count,
                 settlement_completed_count=self._settlement_completed_count,
                 settlement_failure_count=self._settlement_failure_count,
-                last_error_code=self._last_error_code,
-                strategy_error_codes=tuple(
-                    (strategy.value, self._strategy_error_codes[strategy])
-                    for strategy in Strategy
-                    if strategy in self._strategy_error_codes
-                ),
-                recent_errors=self._sorted_recent_errors_locked(),
+                last_error_code=issues.last_error_code,
+                strategy_error_codes=issues.strategy_error_codes,
+                recent_errors=issues.recent_errors,
                 input_quality=self._dependencies.decisions.input_quality_status(),
             )
 
@@ -1010,12 +991,7 @@ class V2SchedulerRuntime:
             elif stage == "settlement":
                 self._settlement_failure_count += 1
             qualified = f"{stage}:{code}"
-            if strategy is None:
-                self._system_error_code = qualified
-            else:
-                self._strategy_error_codes[strategy] = qualified
-            self._last_error_code = qualified
-            self._record_issue_locked(qualified, stage, strategy, occurred_at)
+            self._issues.record(qualified, stage, strategy, occurred_at)
 
     def _record_overlay_success(self, strategy: Strategy, *, published: bool) -> None:
         with self._lock:
@@ -1023,83 +999,17 @@ class V2SchedulerRuntime:
                 self._overlay_publish_count += 1
             self._resolve_issues_locked(strategy=strategy, stages=frozenset({"overlay"}))
 
-    def _record_issue_locked(
-        self,
-        code: str,
-        stage: str,
-        strategy: Strategy | None,
-        occurred_at: datetime,
-    ) -> None:
-        key = (strategy.value if strategy is not None else "system", code)
-        existing = self._recent_errors.pop(key, None)
-        self._recent_errors[key] = V2RuntimeIssue(
-            code=code,
-            severity="error" if stage in {"freeze", "settlement", "publish"} else "degraded",
-            strategy=strategy,
-            stage=stage,
-            occurred_at=existing.occurred_at if existing is not None else occurred_at,
-            last_occurred_at=occurred_at,
-            count=existing.count + 1 if existing is not None else 1,
-            recovery_status="active",
-            resolved_at=None,
-        )
-        while len(self._recent_errors) > _ISSUE_HISTORY_CAPACITY:
-            self._recent_errors.popitem(last=False)
-
     def _resolve_issues_locked(
         self,
         *,
         strategy: Strategy | None = None,
         stages: frozenset[str] | None = None,
     ) -> None:
-        resolved_at = shanghai_now(self._dependencies.clock.now())
-        for key, issue in tuple(self._recent_errors.items()):
-            if issue.recovery_status != "active":
-                continue
-            if strategy is not None and issue.strategy is not strategy:
-                continue
-            if stages is not None and issue.stage not in stages:
-                continue
-            self._recent_errors[key] = replace(issue, recovery_status="recovered", resolved_at=resolved_at)
-        if strategy is None and stages is not None:
-            self._system_error_code = self._latest_active_system_code_locked()
-        elif strategy is not None:
-            active_code = self._latest_active_strategy_code_locked(strategy)
-            if active_code:
-                self._strategy_error_codes[strategy] = active_code
-            else:
-                self._strategy_error_codes.pop(strategy, None)
-        self._refresh_last_error_code()
-
-    def _latest_active_strategy_code_locked(self, strategy: Strategy) -> str:
-        for issue in reversed(self._recent_errors.values()):
-            if issue.strategy is strategy and issue.recovery_status == "active":
-                return issue.code
-        return ""
-
-    def _latest_active_system_code_locked(self) -> str:
-        for issue in reversed(self._recent_errors.values()):
-            if issue.strategy is None and issue.recovery_status == "active":
-                return issue.code
-        return ""
-
-    def _sorted_recent_errors_locked(self) -> tuple[V2RuntimeIssue, ...]:
-        return tuple(
-            sorted(
-                reversed(self._recent_errors.values()),
-                key=lambda issue: (
-                    0 if issue.severity == "error" else 1,
-                    0 if issue.recovery_status == "active" else 1,
-                    -issue.last_occurred_at.timestamp(),
-                ),
-            )
+        self._issues.resolve(
+            shanghai_now(self._dependencies.clock.now()),
+            strategy=strategy,
+            stages=stages,
         )
-
-    def _refresh_last_error_code(self) -> None:
-        if self._system_error_code:
-            self._last_error_code = self._system_error_code
-            return
-        self._last_error_code = next(reversed(self._strategy_error_codes.values()), "")
 
 
 def _cycle_phase(strategy: Strategy, phase: MarketPhase) -> str:

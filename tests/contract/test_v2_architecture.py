@@ -144,8 +144,11 @@ def test_internal_state_is_typed_until_an_explicit_observability_boundary() -> N
     conversion_names = {"as_dict", "to_json", "to_status"}
     exempt_status_paths = {
         Path("application/ports/reviews.py"),
+        Path("application/ports/market.py"),
         Path("infra/deepseek/reviewer.py"),
         Path("infra/deepseek/reviewer_status.py"),
+        Path("infra/market_data/service.py"),
+        Path("infra/market_data/service_health.py"),
     }
     trader_root = SOURCE_ROOT
     forbidden_status_types = {"Any", "JsonObject", "JsonValue", "Mapping", "MutableMapping", "dict", "object"}
@@ -159,7 +162,7 @@ def test_internal_state_is_typed_until_an_explicit_observability_boundary() -> N
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            if node.name != "status" or relative in exempt_status_paths:
+            if node.name not in {"health", "status"} or relative in exempt_status_paths:
                 continue
             annotation = node.returns
             if annotation is None:
@@ -174,6 +177,72 @@ def test_internal_state_is_typed_until_an_explicit_observability_boundary() -> N
                 rendered = ast.unparse(annotation)
                 violations.append(f"{relative}:{node.lineno}: untyped status return {rendered}")
     assert violations == []
+
+
+def test_identity_and_audit_payloads_have_one_explicit_field_projection() -> None:
+    identity = (SOURCE_ROOT / "domain/recommendation/decision_identity.py").read_text(encoding="utf-8")
+    codec = (SOURCE_ROOT / "infra/persistence/decision_record_codec.py").read_text(encoding="utf-8")
+    audit = (SOURCE_ROOT / "application/research_audit.py").read_text(encoding="utf-8")
+    columnar = (SOURCE_ROOT / "infra/market_data/columnar.py").read_text(encoding="utf-8")
+
+    assert "def committed_record_identity_payload(" in identity
+    assert "committed_record_identity_payload(record)" in codec
+    for duplicate in (
+        "def _record_payload(",
+        "def _decision_payload(",
+        "def _decision_item_payload(",
+        "def _downside_payload(",
+        "def _research_coverage_payload(",
+        "def _selection_diagnostics_payload(",
+        "def _decision_quote_payload(",
+    ):
+        assert duplicate not in codec
+    assert ".__dict__" not in audit
+    assert ".__dict__" not in columnar
+
+
+def test_runtime_responsibilities_remain_split_by_resource_boundary() -> None:
+    input_runtime = (SOURCE_ROOT / "application/v2_input_runtime.py").read_text(encoding="utf-8")
+    decision_adapters = (SOURCE_ROOT / "application/v2_decision_adapters.py").read_text(encoding="utf-8")
+    runtime = (SOURCE_ROOT / "application/v2_runtime.py").read_text(encoding="utf-8")
+    issues = (SOURCE_ROOT / "application/v2_runtime_issues.py").read_text(encoding="utf-8")
+
+    assert "class V2DeepSeekAdapter" not in input_runtime
+    assert "class V2FreezeAdapter" not in input_runtime
+    assert "class V2DeepSeekAdapter" in decision_adapters
+    assert "class V2FreezeAdapter" in decision_adapters
+    assert "class V2RuntimeIssueRegistry" not in runtime
+    assert "class V2RuntimeIssueRegistry" in issues
+
+
+def test_market_component_suite_remains_partitioned_by_behavior() -> None:
+    component_root = PROJECT_ROOT / "tests/component"
+    assert not (component_root / "test_v2_market_data.py").exists()
+    expected = {
+        "test_market_features.py",
+        "test_market_gateway.py",
+        "test_market_history.py",
+        "test_market_intraday.py",
+        "test_market_lanes.py",
+        "test_market_references.py",
+        "test_market_research.py",
+        "test_market_service.py",
+        "test_market_tushare.py",
+        "test_market_vendors.py",
+    }
+    assert expected <= {path.name for path in component_root.glob("test_market_*.py")}
+    assert all(len((component_root / name).read_text(encoding="utf-8").splitlines()) < 1200 for name in expected)
+
+
+def test_dashboard_stream_lifecycle_is_a_separate_packaged_dependency() -> None:
+    dashboard = (SOURCE_ROOT / "web/static/dashboard.js").read_text(encoding="utf-8")
+    stream = (SOURCE_ROOT / "web/static/dashboard_stream.js").read_text(encoding="utf-8")
+    template = (SOURCE_ROOT / "web/templates/index.html").read_text(encoding="utf-8")
+
+    assert "new EventSource" not in dashboard
+    assert "new EventSource" in stream
+    assert "dashboard_stream.js" in template
+    assert template.index("dashboard_stream.js") < template.index("dashboard.js")
 
 
 def test_domain_and_application_do_not_own_persistence_or_json_decoders() -> None:

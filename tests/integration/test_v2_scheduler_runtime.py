@@ -1433,6 +1433,38 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
     assert recovered.recent_errors[0].resolved_at == NOW + timedelta(minutes=1)
 
 
+def test_successful_hybrid_publish_recovers_decision_path_issues() -> None:
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=FixedClock(NOW),
+            calendar=TradingCalendar(),
+            cadence=_cadence(NOW),
+            data=DataRefresh(),
+            decisions=Decisions(),
+            reviews=SharedReviews(),
+            index=UnifiedDecisionIndex(),
+            observer=AsyncDecisionObserver((), capacity=1, thread_name="test-v2-hybrid-recovery-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+            research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
+            publish_overlay=lambda _overlay: None,
+        ),
+        config_version="runtime-v2",
+    )
+    runtime._record_failure("review", "review_unavailable", Strategy.TOMORROW)
+
+    runtime._record_publish(hybrid=True, event=None, strategy=Strategy.TOMORROW)
+    status = runtime.status()
+    runtime.stop(ShutdownDeadline.start(1.0))
+
+    assert status.hybrid_publish_count == 1
+    assert status.strategy_error_codes == ()
+    assert status.last_error_code == ""
+    assert status.recent_errors[0].recovery_status == "recovered"
+    assert status.recent_errors[0].resolved_at == NOW
+
+
 def test_runtime_error_history_is_bounded_and_repeated_failures_are_coalesced() -> None:
     runtime = V2SchedulerRuntime(
         V2RuntimeDependencies(

@@ -35,7 +35,7 @@ def test_dashboard_uses_only_packaged_v2_assets_and_fixed_long_groups() -> None:
     dashboard = client.get("/static/dashboard.js").get_data(as_text=True)
     groups = client.get("/static/long_groups.js").get_data(as_text=True)
 
-    assert page.count(f"?rev={WEB_ASSET_REVISION}") == 12
+    assert page.count(f"?rev={WEB_ASSET_REVISION}") == 13
     assert 'id="long-panel-title">卡脖子行业<' in page
     assert 'data-scope="future_growth"' in page
     assert 'data-scope="low_price_potential"' in page
@@ -58,13 +58,14 @@ def test_dashboard_uses_only_packaged_v2_assets_and_fixed_long_groups() -> None:
     assert 'setNotice("实时行情暂不可用，固定长期名单仍可查看", "warn")' in dashboard
     assert client.get("/static/long_watchlist_data.js").status_code == 200
     assert client.get("/static/release_contract.js").status_code == 200
+    assert client.get("/static/dashboard_stream.js").status_code == 200
     assert client.get("/static/render.js").status_code == 200
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required")
 def test_dashboard_state_contract() -> None:
     result = subprocess.run(
-        ["node", str(ROOT / "tests/js/test_dashboard_d4.js"), str(ROOT / "src/trader/web/static/dashboard.js")],
+        ["node", str(ROOT / "tests/js/test_dashboard_state.js"), str(ROOT / "src/trader/web/static/dashboard.js")],
         check=False,
         capture_output=True,
         text=True,

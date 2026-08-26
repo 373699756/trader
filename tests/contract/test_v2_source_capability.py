@@ -5,7 +5,6 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-PLAN = ROOT / "docs" / "implementation-plan.md"
 REPORT = ROOT / "docs" / "reports" / "v2-p1-source-capability-baseline.md"
 BOOTSTRAP = ROOT / "src" / "trader" / "bootstrap.py"
 GATEWAY = ROOT / "src" / "trader" / "infra" / "market_data" / "gateway.py"
@@ -14,16 +13,6 @@ SETTINGS_RUNTIME = ROOT / "src" / "trader" / "infra" / "settings_runtime.py"
 MARKET_DIR = ROOT / "src" / "trader" / "infra" / "market_data"
 MARKET_PORTS = ROOT / "src" / "trader" / "application" / "ports" / "market.py"
 DATA_PLANE_PORTS = ROOT / "src" / "trader" / "application" / "ports" / "data_plane.py"
-
-
-def test_v2_plan_keeps_source_admission_in_data_plane_scope() -> None:
-    plan = PLAN.read_text(encoding="utf-8")
-    report_token = "v2-p1-source-capability-baseline.md"
-    assert "### V2-E1：统一 V2 数据平面" in plan
-    assert "`SourceCapability` 清单" in plan
-    assert "未验证来源不进入评分、冻结、组合根或生产配置" in plan
-    assert report_token in plan
-    assert REPORT.exists()
 
 
 def test_v2_p1_source_capability_report_covers_required_sources() -> None:

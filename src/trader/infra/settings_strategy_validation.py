@@ -151,7 +151,7 @@ def _validate_strategy_weights(settings: StrategySettings) -> None:
         "tomorrow": 78.0,
         "d25": 76.0,
     }:
-        raise ConfigurationError("v16 selection thresholds must be 70/76/78/76")
+        raise ConfigurationError("current selection thresholds must be 70/76/78/76")
     required_strategies = {"today", "tomorrow", "d25"}
     _validate_dimension_weights(settings, required_strategies)
     _validate_board_weights(settings)
@@ -240,7 +240,9 @@ def _validate_short_risk_contract(settings: StrategySettings) -> None:
         or rule.combination_mode != "additive"
         for code, rule in short_rules.items()
     ):
-        raise ConfigurationError("v16 short risk rules must use fixed strategies, additive groups and 5/4/3/3/4/3/3")
+        raise ConfigurationError(
+            "current short risk rules must use fixed strategies, additive groups and 5/4/3/3/4/3/3"
+        )
     _validate_short_risk_rules(short_rules)
     _validate_short_risk_factors(settings.factor_registry)
     group_modes: dict[str, str] = {}
@@ -310,7 +312,7 @@ def _validate_short_risk_rules(rules: Mapping[str, RiskRuleSettings]) -> None:
         ),
     }
     if set(rules) != set(expected):
-        raise ConfigurationError("v16 short risk rule set is incomplete")
+        raise ConfigurationError("current short risk rule set is incomplete")
     for code, contract in expected.items():
         rule = rules[code]
         actual = (
@@ -323,7 +325,7 @@ def _validate_short_risk_rules(rules: Mapping[str, RiskRuleSettings]) -> None:
             rule.group,
         )
         if actual != contract:
-            raise ConfigurationError(f"risk rule {code} does not match the fixed v16 trigger contract")
+            raise ConfigurationError(f"risk rule {code} does not match the current fixed trigger contract")
         if (
             rule.minimum_confidence != 0.7
             or rule.veto
@@ -333,7 +335,7 @@ def _validate_short_risk_rules(rules: Mapping[str, RiskRuleSettings]) -> None:
             or rule.risk_fact_id_fields != identity_fields
             or not rule.local_trigger_enabled
         ):
-            raise ConfigurationError(f"risk rule {code} has invalid v16 audit or evidence settings")
+            raise ConfigurationError(f"risk rule {code} has invalid current audit or evidence settings")
 
 
 def _validate_short_risk_factors(factors: Mapping[str, FactorDefinition]) -> None:
@@ -383,7 +385,7 @@ def _validate_short_risk_factors(factors: Mapping[str, FactorDefinition]) -> Non
     for name, contract in expected.items():
         factor = factors.get(name)
         if factor is None:
-            raise ConfigurationError(f"missing v16 risk factor definition: {name}")
+            raise ConfigurationError(f"missing current risk factor definition: {name}")
         actual = (
             factor.raw_inputs,
             factor.formula,
@@ -393,7 +395,7 @@ def _validate_short_risk_factors(factors: Mapping[str, FactorDefinition]) -> Non
             factor.version,
         )
         if actual != contract:
-            raise ConfigurationError(f"risk factor {name} does not match the fixed v16 formula")
+            raise ConfigurationError(f"risk factor {name} does not match the current fixed formula")
 
 
 def _validate_board_weights(settings: StrategySettings) -> None:

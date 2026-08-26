@@ -64,6 +64,25 @@ class _PerCodeRecords:
     failure_codes: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class TushareHealthStatus:
+    enabled: bool
+    access_points: int
+    history_mode: str
+    planned_count: int
+    success_count: int
+    error_count: int
+    consecutive_failures: int
+    circuit_open: bool
+    timeout_count: int
+    last_latency_ms: float
+    p50_latency_ms: float | None
+    p95_latency_ms: float | None
+    degraded_reason: str | None
+    timeout_seconds: float
+    data_age_seconds: float | None
+
+
 class _TushareRequiredOptions(TypedDict):
     token: str
     timeout_seconds: float
@@ -282,28 +301,30 @@ class TushareClient:
     def history_mode(self) -> str:
         return "forward_adjusted" if self.supports("forward_adjusted_daily") else "unadjusted_daily"
 
-    def health(self) -> Mapping[str, object]:
+    def health(self) -> TushareHealthStatus:
         measured_at = self._wall_clock()
         with self._lock:
-            return {
-                "enabled": bool(self._token),
-                "access_points": self._points,
-                "history_mode": self.history_mode(),
-                "planned_count": self._planned_count,
-                "success_count": self._success_count,
-                "error_count": self._error_count,
-                "consecutive_failures": self._consecutive_failures,
-                "circuit_open": self._open_until > self._monotonic(),
-                "timeout_count": self._timeout_count,
-                "last_latency_ms": round(self._last_latency_ms, 2),
-                "p50_latency_ms": _percentile(self._latencies_ms, 0.50),
-                "p95_latency_ms": _percentile(self._latencies_ms, 0.95),
-                "degraded_reason": self._degraded_reason or None,
-                "timeout_seconds": self._timeout_seconds,
-                "data_age_seconds": max(0.0, (measured_at - self._last_source_time).total_seconds())
-                if self._last_source_time is not None
-                else None,
-            }
+            return TushareHealthStatus(
+                enabled=bool(self._token),
+                access_points=self._points,
+                history_mode=self.history_mode(),
+                planned_count=self._planned_count,
+                success_count=self._success_count,
+                error_count=self._error_count,
+                consecutive_failures=self._consecutive_failures,
+                circuit_open=self._open_until > self._monotonic(),
+                timeout_count=self._timeout_count,
+                last_latency_ms=round(self._last_latency_ms, 2),
+                p50_latency_ms=_percentile(self._latencies_ms, 0.50),
+                p95_latency_ms=_percentile(self._latencies_ms, 0.95),
+                degraded_reason=self._degraded_reason or None,
+                timeout_seconds=self._timeout_seconds,
+                data_age_seconds=(
+                    max(0.0, (measured_at - self._last_source_time).total_seconds())
+                    if self._last_source_time is not None
+                    else None
+                ),
+            )
 
     def _fetch_records(
         self,

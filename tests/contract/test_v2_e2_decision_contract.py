@@ -4,15 +4,8 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-PLAN = ROOT / "docs" / "implementation-plan.md"
 DESIGN = ROOT / "docs" / "software-business-design.md"
 DECISION_EVENTS = ROOT / "src" / "trader" / "application" / "decision_events.py"
-
-
-def test_v2_e2_remains_complete_after_e3_progression() -> None:
-    plan = PLAN.read_text(encoding="utf-8")
-
-    assert "### V2-E2：统一决策核心与持久化（已完成）" in plan
 
 
 def test_authoritative_contract_freezes_unified_decision_identity_and_commit_event() -> None:

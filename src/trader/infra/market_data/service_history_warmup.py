@@ -110,13 +110,14 @@ class HistoryWarmup:
         except Exception as exc:
             local_seed_codes = ()
             _LOGGER.warning("local history seed discovery degraded: %s", type(exc).__name__)
-        tushare_health = dict(self._references.health())
+        tushare_health = self._references.health()
         use_tushare = (
             not local_seed_codes
-            and bool(tushare_health.get("enabled"))
-            and not bool(tushare_health.get("circuit_open"))
-            and tushare_health.get("degraded_reason") not in _PERMANENT_TUSHARE_DEGRADATIONS
-            and tushare_health.get("history_mode") == "forward_adjusted"
+            and tushare_health is not None
+            and tushare_health.enabled
+            and not tushare_health.circuit_open
+            and tushare_health.degraded_reason not in _PERMANENT_TUSHARE_DEGRADATIONS
+            and tushare_health.history_mode == "forward_adjusted"
         )
         source = "local_seed" if local_seed_codes else ("tushare" if use_tushare else "tencent")
         batch = (local_seed_codes or missing)[: self._batch_size]

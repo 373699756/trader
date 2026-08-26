@@ -37,7 +37,7 @@ from trader.infra.market_data.service_calendar_state import (
 )
 from trader.infra.market_data.service_execution import MarketTaskRunner
 from trader.infra.market_data.service_history import HistoryCache
-from trader.infra.market_data.tushare import TushareClient
+from trader.infra.market_data.tushare import TushareClient, TushareHealthStatus
 
 _LOGGER = logging.getLogger(__name__)
 _T = TypeVar("_T")
@@ -744,8 +744,8 @@ class ReferenceLoader:
         with self._lock:
             return dict(self._reference_versions)
 
-    def health(self) -> Mapping[str, object]:
-        return dict(self._client.health()) if self._client is not None else {}
+    def health(self) -> TushareHealthStatus | None:
+        return self._client.health() if self._client is not None else None
 
     @staticmethod
     def _mark_reference_degraded(observation: SourceObservation, reason: str) -> SourceObservation:

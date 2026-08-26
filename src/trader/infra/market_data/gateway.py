@@ -37,24 +37,24 @@ from trader.infra.market_data.columnar import (
     targeted_market_changes,
 )
 from trader.infra.market_data.eastmoney import EastmoneyClient
+from trader.infra.market_data.gateway_health import (
+    MarketGatewayHealthStatus,
+    MarketSourceHealthStatus,
+    SecurityMasterHealthStatus,
+)
 from trader.infra.market_data.gateway_runtime import (
     _cache_error_code,
-    _cache_status,
-    _canonical_health,
     _CircuitState,
     _cycle_trace_id,
     _elapsed,
-    _latency_status,
     _observation_version,
     _parallel_error_message,
     _parallel_route_outcome,
     _percentile,
     _preserve_newer_quotes,
     _reference_replaces,
-    _route_health,
     _SingleFlight,
     _source_degraded_reasons,
-    _source_lane_status,
 )
 from trader.infra.market_data.merge import (
     merge_market_observations,
@@ -708,7 +708,7 @@ class MarketDataGateway:
         with self._state_lock:
             return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
 
-    def health(self) -> Mapping[str, object]:
+    def health(self) -> MarketGatewayHealthStatus:
         now = self._monotonic()
         measured_at = self._wall_clock()
         with self._state_lock:
@@ -727,57 +727,52 @@ class MarketDataGateway:
                 and not isinstance(observation.fields.get("listing_age_sessions"), bool)
                 for observation in reference_rows
             )
-            return {
-                "active_source": self._latest_source,
-                "cached_rows": len(self._latest_by_code),
-                "merge_count": self._merge_count,
-                "conflict_count": self._conflict_count,
-                "merge_epoch": self._latest_snapshot.merge_epoch if self._latest_snapshot is not None else None,
-                "market_changes": {
-                    "merge_epoch": self._latest_changes.merge_epoch,
-                    "inserted": len(self._latest_changes.inserted_codes),
-                    "updated": len(self._latest_changes.updated_codes),
-                    "removed": len(self._latest_changes.removed_codes),
-                    "dirty": len(self._latest_changes.dirty_codes),
-                },
-                "canonical_snapshot": _canonical_health(self._latest_snapshot),
-                "route": _route_health(self._last_route_outcome),
-                "source_lanes": _source_lane_status(self._source_lanes),
-                "security_master": {
-                    "total_rows": len(reference_rows),
-                    "listing_date_rows": listing_date_rows,
-                    "listing_age_rows": listing_age_rows,
-                    "complete_rows": complete_rows,
-                    "provider": "free_market+production_calendar",
-                    "tushare_required": False,
-                    "persistence_schedule_error_count": self._reference_persistence_schedule_error_count,
-                },
-                "sources": {
-                    name: {
-                        "planned_count": state.planned_count,
-                        "success_count": state.success_count,
-                        "error_count": state.error_count,
-                        "timeout_count": state.timeout_count,
-                        "physical_failure_count": state.physical_failure_count,
-                        "circuit_skipped_count": state.circuit_skipped_count,
-                        "superseded_count": state.superseded_count,
-                        "recovery_probe_count": state.recovery_probe_count,
-                        "recovery_probe_success_count": state.recovery_probe_success_count,
-                        "consecutive_failures": state.failures,
-                        "circuit_open": state.open_until > now,
-                        "last_latency_ms": round(state.last_latency_ms, 2),
-                        "p50_latency_ms": _percentile(state.latencies_ms, 0.50),
-                        "p95_latency_ms": _percentile(state.latencies_ms, 0.95),
-                        "last_error": state.last_error,
-                        "data_age_seconds": max(0.0, (measured_at - state.last_source_time).total_seconds())
-                        if state.last_source_time is not None
-                        else None,
-                    }
+            return MarketGatewayHealthStatus(
+                active_source=self._latest_source,
+                cached_rows=len(self._latest_by_code),
+                merge_count=self._merge_count,
+                conflict_count=self._conflict_count,
+                snapshot=self._latest_snapshot,
+                changes=self._latest_changes,
+                route=self._last_route_outcome,
+                source_lanes=self._source_lanes.status() if self._source_lanes is not None else None,
+                security_master=SecurityMasterHealthStatus(
+                    total_rows=len(reference_rows),
+                    listing_date_rows=listing_date_rows,
+                    listing_age_rows=listing_age_rows,
+                    complete_rows=complete_rows,
+                    provider="free_market+production_calendar",
+                    tushare_required=False,
+                    persistence_schedule_error_count=self._reference_persistence_schedule_error_count,
+                ),
+                sources={
+                    name: MarketSourceHealthStatus(
+                        planned_count=state.planned_count,
+                        success_count=state.success_count,
+                        error_count=state.error_count,
+                        timeout_count=state.timeout_count,
+                        physical_failure_count=state.physical_failure_count,
+                        circuit_skipped_count=state.circuit_skipped_count,
+                        superseded_count=state.superseded_count,
+                        recovery_probe_count=state.recovery_probe_count,
+                        recovery_probe_success_count=state.recovery_probe_success_count,
+                        consecutive_failures=state.failures,
+                        circuit_open=state.open_until > now,
+                        last_latency_ms=round(state.last_latency_ms, 2),
+                        p50_latency_ms=_percentile(state.latencies_ms, 0.50),
+                        p95_latency_ms=_percentile(state.latencies_ms, 0.95),
+                        last_error=state.last_error,
+                        data_age_seconds=(
+                            max(0.0, (measured_at - state.last_source_time).total_seconds())
+                            if state.last_source_time is not None
+                            else None
+                        ),
+                    )
                     for name, state in self._states.items()
                 },
-                "cache": _cache_status(self._cache.status()) if self._cache is not None else {},
-                "latency_waterfall": _latency_status(self._latency),
-            }
+                cache=self._cache.status() if self._cache is not None else None,
+                latency_waterfall=self._latency.status(),
+            )
 
     def record_planned(self, source: str) -> None:
         with self._state_lock:

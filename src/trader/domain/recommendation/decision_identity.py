@@ -400,7 +400,7 @@ class CommittedDecisionRecord:
             raise ValueError("formal record cannot predate its decision")
         if self.commit_kind not in {"scheduled", "checkpoint_recovery", "close_fallback"}:
             raise ValueError("formal decision commit kind is invalid")
-        payload_hash = _hash(_record_payload(self))
+        payload_hash = _hash(committed_record_identity_payload(self))
         object.__setattr__(self, "payload_hash", payload_hash)
         object.__setattr__(
             self,
@@ -485,7 +485,9 @@ def _scored_payload(
     return payload
 
 
-def _record_payload(record: CommittedDecisionRecord) -> dict[str, _Json]:
+def committed_record_identity_payload(record: CommittedDecisionRecord) -> dict[str, _Json]:
+    """Return the explicit current-schema material shared by identity hashing and persistence."""
+
     return {
         "schema_version": record.schema_version,
         "decision": _scored_payload(
@@ -710,6 +712,7 @@ __all__ = [
     "LongProjectionItem",
     "ScoredDecision",
     "SelectionDiagnostics",
+    "committed_record_identity_payload",
     "formal_scored_decision",
     "identity_codes",
 ]

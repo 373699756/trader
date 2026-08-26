@@ -264,8 +264,8 @@ def _insert_staged_source_cursor_row(database: Path, *, cursor_name: str, payloa
             """,
             (
                 cursor_name,
-                _timestamp(9, 30),
-                _timestamp(9, 29),
+                _timestamp(9, 30).isoformat(),
+                _timestamp(9, 29).isoformat(),
                 "unit",
                 "v1",
                 "v2_data_plane_v1",

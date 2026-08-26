@@ -7,7 +7,8 @@ from dataclasses import asdict
 
 from trader.application.cadence import CadencePlannerStatus
 from trader.application.ports.runtime_status import V2InputQualityStatus
-from trader.application.v2_runtime import V2RuntimeIssue, V2SchedulerRuntime
+from trader.application.v2_runtime import V2SchedulerRuntime
+from trader.application.v2_runtime_issues import V2RuntimeIssue
 from trader.infra.deepseek.reviewer import DeepSeekReviewer
 
 

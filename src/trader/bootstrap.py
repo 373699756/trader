@@ -40,12 +40,8 @@ from trader.application.system_lifecycle import (
     stop_application_resources,
 )
 from trader.application.today_v2_freezing import TodayV2FreezeCoordinator
-from trader.application.v2_input_runtime import (
-    V2DecisionBuildDependencies,
-    V2DeepSeekAdapter,
-    V2FreezeAdapter,
-    V2MarketDataAdapter,
-)
+from trader.application.v2_decision_adapters import V2DeepSeekAdapter, V2FreezeAdapter
+from trader.application.v2_input_runtime import V2DecisionBuildDependencies, V2MarketDataAdapter
 from trader.application.v2_research_runtime import V2ResearchRuntime
 from trader.application.v2_runtime import V2RuntimeDependencies, V2SchedulerRuntime
 from trader.application.workers import BoundedExecutor

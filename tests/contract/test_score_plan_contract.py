@@ -11,11 +11,8 @@ def test_score_plan_p0_pre_registration_is_reflected_in_authoritative_docs() -> 
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
     design_flat = " ".join(design.split())
 
-    assert "### Score-R0：权威契约与预注册（已完成）" in plan
-    assert "V2 工程发布章节全部闭合" in plan
-    assert "本文是唯一活动施工计划" in plan
-    assert "评价最多 60 个不同交易日" in plan
-    assert "固定最多 40 日历史和 20 日连续前向" in plan
+    assert "本文只记录尚未闭合的外部 Gate" in plan
+    assert "（已完成）" not in plan
 
     assert "Score-R0（评分科学化研究，非生产）已预注册以下固定边界" in strategy
     for statement in (
@@ -50,8 +47,8 @@ def test_score_plan_p0_pre_registration_is_reflected_in_authoritative_docs() -> 
     ):
         assert statement in strategy
 
-    assert "### Score-R0-Rerun：替代窗口预注册与身份贯通（已完成）" in plan
-    assert "### Score-H0：可下载历史回测与参数筛选" in plan
+    assert "score_p0_v2" in plan
+    assert "Score-R6/Score-R7" in plan
     for statement in (
         "score_h0_v1",
         "640",
@@ -81,7 +78,7 @@ def test_score_plan_p1_compact_trace_contract_is_reflected_in_authoritative_docs
     strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
-    assert "### Score-R1：紧凑决策轨迹（已完成）" in plan
+    assert "本文只记录尚未闭合的外部 Gate" in plan
     assert "Score-R0 至 Score-R5 的工程能力已完成" in design
     assert "研究链与活动运行库物理分离" in design
     for statement in (
@@ -100,7 +97,7 @@ def test_score_r1_migrate_committed_audit_contract_is_complete() -> None:
     strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
-    assert "### Score-R1-Migrate：迁移到 V2 committed event（已完成）" in plan
+    assert "本文只记录尚未闭合的外部 Gate" in plan
     for statement in (
         "只消费成功提交后的 `V2DecisionCommitted`",
         "独立 SQLite 研究库",
@@ -125,8 +122,7 @@ def test_score_r2_historical_extraction_contract_is_complete() -> None:
     strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
-    assert "### Score-R2：最多 40 日历史点时数据（已完成）" in plan
-    assert "当前没有未完成工程章节" in " ".join(plan.split())
+    assert "本文只记录尚未闭合的外部 Gate" in plan
     for statement in (
         "score_r2_historical_v1",
         "score_r2_partition_v1",
@@ -152,8 +148,7 @@ def test_score_r3_baseline_replay_contract_is_complete() -> None:
     strategy_flat = " ".join(strategy.split())
     design_flat = " ".join(design.split())
 
-    assert "### Score-R3：基线回放与报告（已完成）" in plan
-    assert "当前没有未完成工程章节" in " ".join(plan.split())
+    assert "本文只记录尚未闭合的外部 Gate" in plan
     for statement in (
         "score_r3_baseline_report_v1",
         "20bp、50bp、100bp",
@@ -180,8 +175,7 @@ def test_score_r4_five_challenger_contract_is_complete() -> None:
     strategy_flat = " ".join(strategy.split())
     design_flat = " ".join(design.split())
 
-    assert "### Score-R4：五个挑战者（已完成）" in plan
-    assert "当前没有未完成工程章节" in " ".join(plan.split())
+    assert "本文只记录尚未闭合的外部 Gate" in plan
     for statement in (
         "score_r4_preregistered_parameters_v1",
         "continuous_entry_v1",
@@ -189,11 +183,10 @@ def test_score_r4_five_challenger_contract_is_complete() -> None:
         "candidate_upper_bound_v1",
         "heat_weak_structure_v1",
         "combined_v1",
-        "production/local-only/hybrid",
-        "DeepSeek HTTP 增量固定为 0",
-        "本章不执行 R5 bootstrap、Holm、前向采集或生产晋级",
+        "production、local-only、hybrid",
+        "DeepSeek 物理 HTTP 请求增量必须为 0",
     ):
-        assert statement in " ".join(plan.split())
+        assert statement in strategy_flat
     for statement in (
         "R4 五个 独立研究挑战者",
         "local-only/hybrid 同日同股配对 manifest",
@@ -215,8 +208,7 @@ def test_score_r5_statistical_gate_and_forward_contract_is_complete() -> None:
     strategy_flat = " ".join(strategy.split())
     design_flat = " ".join(design.split())
 
-    assert "### Score-R5：统计门禁与 20 日前向影子（已完成）" in plan
-    assert "当前没有未完成工程章节" in " ".join(plan.split())
+    assert "本文只记录尚未闭合的外部 Gate" in plan
     for statement in (
         "score_r5_statistical_gate_v1",
         "score_r5_paired_mbb_holm_v1",
@@ -241,8 +233,7 @@ def test_score_r6_parameter_and_forward_gate_contract_is_complete() -> None:
     strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
     design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
 
-    assert "### Score-R6：第二轮权重、风险和门槛（已完成）" in plan
-    assert "后续 Score-R7 档案工程章节已完成" in " ".join(plan.split())
+    assert "Score-R6/Score-R7" in plan
     for statement in (
         "score_r6_historical_v1",
         "momentum/stability/liquidity",
@@ -271,7 +262,7 @@ def test_score_r7_dossier_contract_is_complete_without_authorizing_production() 
     strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
     design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
 
-    assert "### Score-R7：人工晋级（已完成）" in plan
+    assert "Score-R6/Score-R7" in plan
     for statement in (
         "score_r7_promotion_dossier_v1",
         "20/50/100bp × 3/5/10 日",
@@ -294,7 +285,7 @@ def test_score_r6_daily_trend_contract_is_preregistered_without_production_autho
     strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
     design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
 
-    assert "### Score-R6D：风险调整日线趋势（已完成）" in plan
+    assert "本文只记录尚未闭合的外部 Gate" in plan
     for statement in (
         "score_r6_daily_trend_v1",
         "30/25/20/15/10",
@@ -319,7 +310,7 @@ def test_score_r6_stability_contract_freezes_turnover_mechanisms_without_product
     strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
     design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
 
-    assert "### Score-R6S：日线排名稳定与换手约束" in plan
+    assert "本文只记录尚未闭合的外部 Gate" in plan
     for statement in (
         "score_r6_daily_stability_v1",
         "rank_persistence_bonus",

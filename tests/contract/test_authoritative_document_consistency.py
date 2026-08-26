@@ -7,15 +7,16 @@ DESIGN = ROOT / "docs" / "software-business-design.md"
 STRATEGY = ROOT / "docs" / "recommendation-strategy.md"
 
 
-def test_authoritative_docs_record_the_completed_v2_only_release() -> None:
+def test_authoritative_docs_record_completed_gates_without_claiming_a_formal_release() -> None:
     design = DESIGN.read_text(encoding="utf-8")
     strategy = STRATEGY.read_text(encoding="utf-8")
 
-    assert "当前交付状态：V2-E0 至 V2-E11 已完成" in design
-    assert "最终发布契约" in design
+    assert "当前交付状态：V2-only 工程与发布门禁验收已闭合" in design
+    assert "发布候选契约" in design
     assert "旧链已从活动树物理删除" in strategy
     assert "V2-only 是唯一活动产品链" in design
-    assert "V2-only 已完成最终发布验收" in strategy
+    assert "正式 0.2.0 release 尚未声明" in strategy
+    assert "当前版本仍为 Unreleased" in design
 
 
 def test_authoritative_docs_do_not_retain_superseded_migration_chronology() -> None:

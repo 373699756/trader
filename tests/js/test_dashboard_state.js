@@ -13,6 +13,8 @@ const formattersPath = path.join(path.dirname(dashboardPath), "dashboard_formatt
 const patchesPath = path.join(path.dirname(dashboardPath), "dashboard_patches.js");
 const statusViewPath = path.join(path.dirname(dashboardPath), "status_view.js");
 const releaseContractPath = path.join(path.dirname(dashboardPath), "release_contract.js");
+const streamPath = path.join(path.dirname(dashboardPath), "dashboard_stream.js");
+const streamSource = fs.readFileSync(streamPath, "utf8");
 let source = fs.readFileSync(dashboardPath, "utf8");
 const suffix = "\n})();";
 source = source.trimEnd();
@@ -45,6 +47,7 @@ vm.runInNewContext(fs.readFileSync(formattersPath, "utf8"), sandbox, { filename:
 vm.runInNewContext(fs.readFileSync(patchesPath, "utf8"), sandbox, { filename: patchesPath });
 vm.runInNewContext(fs.readFileSync(statusViewPath, "utf8"), sandbox, { filename: statusViewPath });
 vm.runInNewContext(fs.readFileSync(releaseContractPath, "utf8"), sandbox, { filename: releaseContractPath });
+vm.runInNewContext(streamSource, sandbox, { filename: streamPath });
 vm.runInNewContext(source, sandbox, { filename: dashboardPath });
 const missingPatchSandbox = {
   URLSearchParams,
@@ -56,7 +59,11 @@ vm.runInNewContext(fs.readFileSync(formattersPath, "utf8"), missingPatchSandbox,
 vm.runInNewContext(source, missingPatchSandbox, { filename: dashboardPath });
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(missingPatchSandbox.window.TraderDashboardDiagnostics.snapshot().browserErrors)),
-  ["dependency_missing:TraderDashboardPatches", "dependency_missing:TraderReleaseContract"],
+  [
+    "dependency_missing:TraderDashboardPatches",
+    "dependency_missing:TraderReleaseContract",
+    "dependency_missing:TraderDashboardStream",
+  ],
 );
 const state = {
   ...sandbox.window.TraderSelection,
@@ -85,7 +92,7 @@ const state = {
   longGroupRenderBar: sandbox.window.TraderLongGroups.renderBar,
   longGroupVisibleRecommendations: sandbox.window.TraderLongGroups.visibleRecommendations,
 };
-assert(state, "dashboard D4 helpers were not exported into the test sandbox");
+assert(state, "dashboard state helpers were not exported into the test sandbox");
 assert.strictEqual(
   sandbox.window.TraderDashboardDiagnostics.snapshot().webSnapshotRetentionMs,
   35000,
@@ -99,7 +106,7 @@ assert.deepStrictEqual(
     schema_version: "v2_status_v2",
     release: {
       decision_view_schema: "v2_decision_view_v2",
-      web_asset_revision: "release-contract-2026-08-24-v17",
+      web_asset_revision: "release-contract-2026-08-26-v2",
     },
   }))),
   { compatible: true, reason: "" },
@@ -759,7 +766,10 @@ assert.strictEqual(
 assert.strictEqual(state.eventMatchesCurrent({ strategy: "today", trade_date: "2026-07-23" }, "today", "2026-07-23"), true);
 assert.strictEqual(state.eventMatchesCurrent({ strategy: "d25", trade_date: "2026-07-23" }, "today", "2026-07-23"), false);
 assert.strictEqual(state.eventMatchesCurrent({ strategy: "today", trade_date: "2026-07-22" }, "today", "2026-07-23"), false);
-assert(source.includes("if (!state.date && eventMatchesCurrent(payload))"), "unrelated strategy events must not issue decision GETs");
+assert(
+  streamSource.includes("if (!state.date && eventMatchesCurrent(payload))"),
+  "unrelated strategy events must not issue decision GETs",
+);
 assert(
   source.includes("current.projection_version === state.payload.projection_version"),
   "status reconciliation must compare the API projection identity after a lost event",
@@ -1161,10 +1171,10 @@ sandbox.window.TraderRender.rememberDiagnostic(runtimeDiagnostics, "raw_runtime_
 assert.deepStrictEqual(JSON.parse(JSON.stringify(runtimeDiagnostics)), ["raw_runtime_code"]);
 assert.strictEqual(state.isSnapshotNotFound({ code: "snapshot_not_found" }), true);
 assert.strictEqual(state.isSnapshotNotFound({ code: "other" }), false);
-assert(source.includes("const STREAM_RETRY_INITIAL_MS = 1000;"), "SSE reconnect must retry after one second");
-assert(source.includes("const FALLBACK_POLL_MS = 3000;"), "disconnect polling must reconcile within three seconds");
+assert(streamSource.includes("const STREAM_RETRY_INITIAL_MS = 1000;"), "SSE reconnect must retry after one second");
+assert(streamSource.includes("const FALLBACK_POLL_MS = 3000;"), "disconnect polling must reconcile within three seconds");
 const overlayPatchBody = source.match(/function applyOverlayPatch\(patch\) \{([\s\S]*?)\n  \}\n\n  function requestRecommendationResync/);
 assert(overlayPatchBody, "overlay patch function must remain inspectable");
 assert(!overlayPatchBody[1].includes("renderPayload(state.payload)"), "overlay patches must not rebuild the full table");
 
-console.log("dashboard D4 state contract passed");
+console.log("dashboard state contract passed");

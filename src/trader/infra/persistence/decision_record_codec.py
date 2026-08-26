@@ -19,6 +19,7 @@ from trader.domain.recommendation.decision_identity import (
     DecisionStage,
     ScoredDecision,
     SelectionDiagnostics,
+    committed_record_identity_payload,
 )
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 
@@ -110,7 +111,7 @@ def committed_record_bytes(record: CommittedDecisionRecord) -> bytes:
 
     if record.schema_version != COMMITTED_RECORD_SCHEMA_VERSION:
         raise ValueError("formal decision record does not use the current schema")
-    payload = _record_payload(record)
+    payload = committed_record_identity_payload(record)
     payload["payload_hash"] = record.payload_hash
     payload["version"] = record.version
     return json.dumps(payload, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":")).encode()
@@ -161,67 +162,6 @@ def committed_record_from_bytes(payload: bytes) -> CommittedDecisionRecord:
     return record
 
 
-def _record_payload(record: CommittedDecisionRecord) -> dict[str, _Json]:
-    return {
-        "schema_version": record.schema_version,
-        "decision": _decision_payload(record.decision),
-        "decision_version": record.decision.version,
-        "decision_hash": record.decision.content_hash,
-        "committed_at": record.committed_at.isoformat(),
-        "commit_kind": record.commit_kind,
-    }
-
-
-def _decision_payload(decision: ScoredDecision) -> dict[str, _Json]:
-    payload: dict[str, _Json] = {
-        "schema_version": decision.schema_version,
-        "strategy": decision.strategy.value,
-        "trade_date": decision.trade_date.isoformat(),
-        "sequence": decision.sequence,
-        "observed_at": decision.observed_at.isoformat(),
-        "stage": decision.stage,
-        "parent_version": decision.parent_version,
-        "input_versions": [[name, version] for name, version in decision.input_versions],
-        "config_version": decision.config_version,
-        "strategy_version": decision.strategy_version,
-        "fusion_version": decision.fusion_version,
-        "items": [_decision_item_payload(item) for item in decision.items],
-        "filter_aggregates": [[reason, count] for reason, count in decision.filter_aggregates],
-        "degraded_reasons": list(decision.degraded_reasons),
-        "selection_diagnostics": _selection_diagnostics_payload(decision.selection_diagnostics),
-    }
-    if decision.population_count is not None and decision.rejected_count is not None:
-        payload["population_count"] = decision.population_count
-        payload["rejected_count"] = decision.rejected_count
-    return payload
-
-
-def _decision_item_payload(item: DecisionItem) -> dict[str, _Json]:
-    payload: dict[str, _Json] = {
-        "code": item.code,
-        "action": item.action.value,
-        "selected": item.selected,
-        "rank": item.rank,
-        "candidate_score": item.candidate_score,
-        "local_score": item.local_score,
-        "final_score": item.final_score,
-        "score_components": [[name, value] for name, value in item.score_components],
-        "risk_codes": list(item.risk_codes),
-        "reason": item.reason,
-        "setup_type": item.setup_type,
-        "downside": _downside_payload(item.downside),
-        "review_outcome": item.review_outcome,
-        "research_coverage": _research_coverage_payload(item.research_coverage),
-    }
-    if item.name:
-        payload["name"] = item.name
-    if item.industry:
-        payload["industry"] = item.industry
-    if item.quote is not None:
-        payload["quote"] = _decision_quote_payload(item.quote)
-    return payload
-
-
 def _decision_item_from_json(raw: object) -> DecisionItem:
     value = _object(raw, "decision item", required=_ITEM_FIELDS, optional=_ITEM_OPTIONAL_FIELDS)
     return DecisionItem(
@@ -245,18 +185,6 @@ def _decision_item_from_json(raw: object) -> DecisionItem:
     )
 
 
-def _downside_payload(value: DecisionDownside | None) -> dict[str, _Json] | None:
-    if value is None:
-        return None
-    return {
-        "status": value.status,
-        "reasons": list(value.reasons),
-        "atr20_pct": value.atr20_pct,
-        "intraday_reversal_atr": value.intraday_reversal_atr,
-        "historical_drawdown_pct": value.historical_drawdown_pct,
-    }
-
-
 def _downside_from_json(raw: object) -> DecisionDownside | None:
     if raw is None:
         return None
@@ -273,16 +201,6 @@ def _downside_from_json(raw: object) -> DecisionDownside | None:
     )
 
 
-def _research_coverage_payload(value: DecisionResearchCoverage | None) -> dict[str, _Json] | None:
-    if value is None:
-        return None
-    return {
-        "evidence_count": value.evidence_count,
-        "structured_risk_fact_count": value.structured_risk_fact_count,
-        "review_eligible": value.review_eligible,
-    }
-
-
 def _research_coverage_from_json(raw: object) -> DecisionResearchCoverage | None:
     if raw is None:
         return None
@@ -292,22 +210,6 @@ def _research_coverage_from_json(raw: object) -> DecisionResearchCoverage | None
         _integer(value, "structured_risk_fact_count"),
         _boolean(value, "review_eligible"),
     )
-
-
-def _selection_diagnostics_payload(value: SelectionDiagnostics | None) -> dict[str, _Json] | None:
-    if value is None:
-        return None
-    return {
-        "maximum_final_score": value.maximum_final_score,
-        "executable_threshold": value.executable_threshold,
-        "observation_floor": value.observation_floor,
-        "executable_limit": value.executable_limit,
-        "observation_limit": value.observation_limit,
-        "selected_executable_count": value.selected_executable_count,
-        "selected_observation_count": value.selected_observation_count,
-        "review_candidate_count": value.review_candidate_count,
-        "empty_reason": value.empty_reason,
-    }
 
 
 def _selection_diagnostics_from_json(raw: object) -> SelectionDiagnostics | None:
@@ -325,20 +227,6 @@ def _selection_diagnostics_from_json(raw: object) -> SelectionDiagnostics | None
         _integer(value, "review_candidate_count"),
         _optional_text(value.get("empty_reason")),
     )
-
-
-def _decision_quote_payload(quote: DecisionQuote) -> dict[str, _Json]:
-    return {
-        "code": quote.code,
-        "price": quote.price,
-        "pct_change": quote.pct_change,
-        "amount": quote.amount,
-        "turnover_rate": quote.turnover_rate,
-        "market_cap": quote.market_cap,
-        "source": quote.source,
-        "source_time": quote.source_time.isoformat(),
-        "data_version": quote.data_version,
-    }
 
 
 def _decision_quote_from_json(raw: object) -> DecisionQuote | None:

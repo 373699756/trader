@@ -1,8 +1,8 @@
 # 软件业务设计文档
 
-版本：v2-only 最终发布契约
+版本：v2-only 发布候选契约
 
-状态：V2-only 最终 release 已完成验收
+状态：V2-only 工程与发布门禁验收已完成；当前版本仍为 Unreleased，尚未声明正式 0.2.0 release
 
 适用范围：本地 A 股研究看板
 
@@ -11,10 +11,10 @@
 [荐股策略文档](recommendation-strategy.md) 为唯一权威；依赖、构建和入口以根目录
 `pyproject.toml` 为唯一权威；协作流程以根目录 `AGENTS.md` 为准。
 
-当前交付状态：V2-E0 至 V2-E11 已完成，V2-only 是唯一活动产品链。旧 Pipeline、旧 Web 路由
-和旧运行目录已从活动树物理删除，不构成最终 release 的
+当前交付状态：V2-only 工程与发布门禁验收已闭合；V2-only 是唯一活动产品链。旧 Pipeline、旧 Web 路由
+和旧运行目录已从活动树物理删除，不构成发布候选的
 兼容能力，也不得反向定义 V2。迁移过程、事故复盘和逐批实现
-记录只保存在 `CHANGELOG.md`、`docs/reports/` 与非权威 `docs/implementation-plan.md`，
+记录只保存在 `CHANGELOG.md` 与 `docs/reports/`；非权威 `docs/implementation-plan.md` 只记录未闭合 Gate，
 不在本文形成第二套历史时间线。
 
 ## 1. 产品定位与范围
@@ -330,6 +330,11 @@ observer 和冻结时线，以及 long 无评分 current projection。
 上述工作，也不得产生外部 I/O。当前组合根和入口只装配这套 V2 生命周期；旧 Pipeline、策略专属
 Runtime 和旧 Web 外壳均已删除，不构成可调用或可回放实现。
 
+运行时故障身份、合并计数、有界历史、恢复状态和排序由独立 `V2RuntimeIssueRegistry` 负责；
+`V2SchedulerRuntime` 只在持有自身锁时记录或恢复问题并读取不可变快照。行情输入与本地决策构建保留在
+`V2MarketDataAdapter`，DeepSeek 升级与冻结分别由 `V2DeepSeekAdapter`、`V2FreezeAdapter` 适配端口，
+不得重新聚合为同时持有行情、模型和冻结资源的输入运行时模块。
+
 today、tomorrow、d25 和 long 固定为每策略一个运行中任务和一个 latest-wins 待处理槽；
 运行中的旧周期允许完成，积压只保留同策略最新交易日与 sequence。tomorrow 独占完整决策 lane，
 从数据刷新、local 计算、可选模型升级到 CAS 发布都不等待其它策略；冻结使用独立紧急
@@ -378,7 +383,7 @@ tomorrow 使用同日、同配置、哈希有效、尚未消费且边界年龄�
 
 ### 2.6 V2 查询与发布
 
-V2-E8 已交付的读取链固定为 `UnifiedDecisionIndex -> application queries -> /api/v2 -> SSE -> Web`。
+活动读取链固定为 `UnifiedDecisionIndex -> application queries -> /api/v2 -> SSE -> Web`。
 应用层查询一次读取完整不可变决策，并只叠加父版本、策略和交易日匹配的报价 overlay；历史查询
 只精确读取请求日期的正式记录。HTTP 不得抓行情、评分、调用 DeepSeek、触发冻结或现场重放旧规则。
 
@@ -399,7 +404,7 @@ current。事件发布不等待客户端消费；客户端按策略、交易日�
 
 ### 2.7 当前发布边界
 
-V2-E0 至 V2-E11 已完成：统一数据平面、决策核心、独立运行时、today、tomorrow、d25、long、
+当前 V2-only 工程与发布门禁验收已闭合：统一数据平面、决策核心、独立运行时、today、tomorrow、d25、long、
 统一 `/api/v2/*`、根页面、V2 运行目录和进程入口共同构成唯一活动产品。旧生产链、迁移/归档/
 cutover CLI、旧 Web 外壳、旧运行读取和兼容分支均已删除；任何后续改动不得重新引入。
 
@@ -543,6 +548,9 @@ schema 约束的不可变事件载荷，以及 Web/可观测性响应投影；�
 `bootstrap.py` 显式装配这些组件，最外层 `MarketFeatureService` 只协调与转发行情、
 候选、报价、研究、参考、元数据和结果端口，不保存组件业务状态。DeepSeek 固定按 HTTP、
 schema、预算批次、预算汇总、缓存、请求执行、状态和复核编排拆分；
+行情网关、来源和 Tushare 的 health 根值必须分别使用 `MarketGatewayHealthStatus`、
+`MarketSourceHealthStatus` 与 `TushareHealthStatus`；最终 `MarketDataHealth` adapter 才按公开字段白名单
+投影 JSON，预热和其它内部调用者只能读取类型字段。
 `DeepSeekReviewer`、`DeepSeekBudgetLedger` 只组合这些组件。快照仓库只负责冻结、检查点、
 收盘 overlay 和结果结算，不持久化流水线事件或实时来源健康。
 
@@ -1065,7 +1073,9 @@ current 一次返回完整紧凑 `DecisionView`；公开 schema 为 `v2_decision
 核心数值不可用时返回 `null`，不得伪造 0。
 统一决策身份与正式记录使用各自当前 schema v2，并把不可变 anchor quote、setup、downside、
 研究覆盖、复核终态和 selection diagnostics 纳入规范哈希。领域和应用层只操作有类型对象；正式记录
-的 JSON 编解码唯一归属 `infra/persistence/decision_record_codec.py`，只接受当前 schema 和哈希一致载荷。
+的字段身份材料由唯一显式白名单生成，`infra/persistence/decision_record_codec.py` 只复用该材料执行
+JSON 编解码、输入字段校验和身份复算，不得维护第二套逐字段 encoder；研究审计哈希同样必须显式投影
+每个字段，禁止通过 `__dict__`、反射或 dataclass 自动展开改变 schema。codec 只接受当前 schema 和哈希一致载荷。
 旧 schema v1 不进入新 release 的启动、恢复、查询或测试路径，也不得以双读、现场升级或默认字段恢复。
 
 逐股对象只公开页面需要的代码、名称、板块/行业、核心行情、锚点行情、本地/模型/模型风险/
@@ -1107,7 +1117,7 @@ DeepSeek 账本只在启动恢复及 reserve、完成、失败、批次状态变
 Long 股票身份允许读取由 `long_watchlist.json` 确定性生成并随 wheel 打包的只读资源，以便 API
 暂不可用时仍展示固定名单。浏览器不得抓行情、评分、调用 DeepSeek 或决定冻结。
 
-以下布局细节是 V2-E8 的用户可见验收要求；实现可以重写，但不得删减业务状态、桌面信息
+以下布局细节是当前用户可见验收要求；实现可以重写，但不得删减业务状态、桌面信息
 层级、可访问性或三档分辨率门禁。
 
 首页固定包含：Header 状态、结果摘要卡、日期和策略切换、当前策略说明、正式荐股表、
@@ -1284,6 +1294,9 @@ cadence 最短间隔/下一到期时间/固定时点生命周期、冻结完成/
 Web 应用工厂创建应用时必须把模板和全部打包静态资源读入该进程的只读 release 快照，后续 HTTP
 不得再次从工作树读取这些文件；源码更新只能在正常重启后整体生效。静态资源仍使用内容 ETag、
 `no-cache` 和 `nosniff`，未知资源返回 404，且该快照过程不得写文件、启动线程、访问数据库或网络。
+页面控制器与 SSE 生命周期必须分离：`dashboard.js` 负责页面状态和交互，`dashboard_stream.js` 负责
+EventSource 游标、重连退避、断线轮询和 patch-to-paint 采样；两者通过显式依赖对象协作，缺少模块时
+fail closed 并进入浏览器诊断。当前静态资源握手身份为 `release-contract-2026-08-26-v2`。
 
 日志只记录脱敏结构化摘要，不记录密钥、Token、完整模型请求/响应、完整供应商载荷或个人
 敏感路径。所有外部 I/O 必须有 timeout、容量、熔断和明确失败策略。DeepSeek 与 Tushare
@@ -1401,12 +1414,11 @@ Python、系统、内核、架构和 CPU。runner 禁止外网，DeepSeek 用固
 
 ### 14.1 V2 工程状态
 
-| 范围 | 当前状态 | 本文中的有效含义 |
-| --- | --- | --- |
-| V2-E0 至 V2-E8 | 已完成 | 数据平面、决策核心、运行时、四策略原生接管和统一 Web 已进入活动组合 |
-| V2-E9 | 已完成 | 默认运行目录、进程入口和 CLI 已收敛到 V2 命名空间 |
-| V2-E10 | 已完成 | 旧 Pipeline、snapshot、Web、配置、测试和资源已删除；V2-only 活动树已闭合 |
-| V2-E11 | 已完成 | 全量门禁、仓库外 wheel、真实进程和三档桌面证据完成最终验收 |
+V2-only 工程能力与发布门禁验收已经闭合：活动组合只包含统一数据平面、统一决策核心、独立运行时、
+四策略原生链、V2 API/SSE/Web、V2 入口和 V2 运行目录；旧 Pipeline、snapshot、旧 Web、旧配置、旧测试
+和旧资源不属于活动树。完成批次、施工顺序和逐次验证记录只保存在 `CHANGELOG.md` 与
+`docs/reports/`，不在本文或实施计划维护第二份完成清单。当前代码仍属于 `Unreleased`；只有独立发布
+批次完成版本归档并创建 tag 后，才能称为正式 `0.2.0` release。
 
 最终 release 不执行双读、双写、旧 URL 弃用窗口、运行时开关或生产指针切换，也不读取、
 迁移或回放旧运行数据。工程迁移验收使用 V2 自身的点时输入、确定性重算、CAS、冻结哈希、
@@ -1517,7 +1529,8 @@ Web、正式记录或活动配置，也不启动生产发布。档案固定为�
 
 ### 14.3 状态与历史记录边界
 
-`docs/implementation-plan.md` 只记录未完成章节顺序与 Gate，不定义产品或策略行为。
+`docs/implementation-plan.md` 只记录未完成章节顺序与 Gate，不定义产品或策略行为，也不得保留已完成
+施工波次、会话分工或发布历史。
 `CHANGELOG.md` 归档用户诉求、原因、修改、验证与剩余风险；`docs/reports/` 保存阶段性基线
 和验收证据。本文不得重复事故时间线、逐版本修复、分支交接、影子/cutover 样本或完成批次
 清单。实际状态变化时先核对代码、测试和计划，再只更新上表对应状态。
@@ -1551,6 +1564,6 @@ Web、正式记录或活动配置，也不启动生产发布。档案固定为�
 需求、计划、问题单、运行手册或归档文件。
 
 `docs/V2.md` 是用户明确保留的 V2 唯一产品目标概览；`docs/implementation-plan.md` 是唯一
-活动施工计划，统一记录 V2 工程和评分研究的章节顺序、会话所有权、同步 Gate 与退出条件。
+活动施工计划，只记录尚未闭合的工程或外部 Gate 及退出条件。
 二者均为非生产契约，不得覆盖本文、荐股策略文档或 `pyproject.toml`；计划任务落地前必须
 先把行为变化同步到对应权威文档和契约测试，全部迁移与研究闭合后退役总计划。

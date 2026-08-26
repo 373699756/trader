@@ -4,19 +4,10 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-PLAN = ROOT / "docs" / "implementation-plan.md"
 DESIGN = ROOT / "docs" / "software-business-design.md"
 STRATEGY = ROOT / "docs" / "recommendation-strategy.md"
 BOOTSTRAP = ROOT / "src" / "trader" / "bootstrap.py"
 LONG_RUNTIME = ROOT / "src" / "trader" / "application" / "long_v2_runtime.py"
-
-
-def test_v2_e7_is_complete() -> None:
-    plan = PLAN.read_text(encoding="utf-8")
-
-    assert "V2-E0 至 V2-E11" in plan
-    assert "V2-E10：删除旧生产链" in plan
-    assert "### V2-E7：Long 正式接管（已完成）" in plan
 
 
 def test_authoritative_contract_defines_long_v2_current_only_boundary() -> None:

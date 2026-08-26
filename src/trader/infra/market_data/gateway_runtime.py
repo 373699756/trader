@@ -5,17 +5,15 @@ from __future__ import annotations
 import math
 import threading
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from hashlib import sha256
 from typing import Generic, TypeVar, cast
 from uuid import uuid4
 
-from trader.application.cache import CacheStatus, canonical_json_bytes
-from trader.application.latency import LatencyWaterfall
+from trader.application.cache import canonical_json_bytes
 from trader.application.ports.market import MarketDataNoDataError
-from trader.application.source_lanes import SourceLaneRegistry
 from trader.domain.market.models import (
     CanonicalMarketSnapshot,
     MarketQuote,
@@ -93,45 +91,6 @@ class _SingleFlight(Generic[_T]):
             self._generation += 1
             self._condition.notify_all()
         return result
-
-
-def _route_health(last_route: RouteOutcome | None) -> Mapping[str, object]:
-    if not isinstance(last_route, RouteOutcome):
-        return {
-            "status": "idle",
-            "used_vendor": None,
-            "degraded": False,
-            "fallback_reason": None,
-            "attempted_count": 0,
-            "success_count": 0,
-            "failure_count": 0,
-            "no_data_count": 0,
-            "skipped_count": 0,
-            "attempted_vendors": (),
-        }
-    attempted_vendors = [
-        {
-            "name": vendor.name,
-            "status": vendor.status,
-            "severity": vendor.severity.value,
-            "error": vendor.error,
-            "skipped": vendor.skipped,
-            "duration_ms": round(vendor.duration_ms, 2) if vendor.duration_ms is not None else None,
-        }
-        for vendor in last_route.results
-    ]
-    return {
-        "status": last_route.status,
-        "used_vendor": last_route.vendor or None,
-        "degraded": last_route.degraded,
-        "fallback_reason": last_route.fallback_reason,
-        "attempted_count": len(last_route.results),
-        "success_count": sum(1 for vendor in last_route.results if vendor.status == "success"),
-        "failure_count": sum(1 for vendor in last_route.results if vendor.status == "failed"),
-        "no_data_count": sum(1 for vendor in last_route.results if vendor.status == "no_data"),
-        "skipped_count": sum(1 for vendor in last_route.results if vendor.skipped),
-        "attempted_vendors": attempted_vendors,
-    }
 
 
 def _parallel_route_outcome(results: Sequence[_SourceFetch]) -> RouteOutcome:
@@ -220,95 +179,6 @@ def _percentile(values: Sequence[float], quantile: float) -> float | None:
     ordered = sorted(values)
     index = min(len(ordered) - 1, max(0, math.ceil(len(ordered) * quantile) - 1))
     return round(float(ordered[index]), 2)
-
-
-def _canonical_health(snapshot: CanonicalMarketSnapshot | None) -> Mapping[str, object]:
-    if snapshot is None:
-        return {
-            "observed_at": None,
-            "merge_epoch": None,
-            "source_versions": {},
-            "conflicts": (),
-            "missing_reasons": {},
-            "degraded_reasons": (),
-        }
-    return {
-        "observed_at": snapshot.observed_at.isoformat(),
-        "merge_epoch": snapshot.merge_epoch,
-        "source_versions": dict(snapshot.source_versions),
-        "conflicts": snapshot.conflicts,
-        "missing_reasons": dict(snapshot.missing_reasons),
-        "degraded_reasons": snapshot.degraded_reasons,
-    }
-
-
-def _source_lane_status(registry: SourceLaneRegistry | None) -> dict[str, object]:
-    if registry is None:
-        return {}
-    status = registry.status()
-    return {
-        source: {
-            "source": lane.source,
-            "running": lane.running,
-            "pending": lane.pending,
-            "completed_count": lane.completed_count,
-            "coalesced_count": lane.coalesced_count,
-            "superseded_count": lane.superseded_count,
-            "rejected_count": lane.rejected_count,
-            "stopped": lane.stopped,
-        }
-        for source, lane in status.lanes.items()
-    }
-
-
-def _latency_status(waterfall: LatencyWaterfall) -> dict[str, object]:
-    status = waterfall.status()
-    return {
-        "sample_capacity": status.sample_capacity,
-        "trace_capacity": status.trace_capacity,
-        "stage_capacity": status.stage_capacity,
-        "active_trace_count": status.active_trace_count,
-        "planned_count": status.planned_count,
-        "completed_count": status.completed_count,
-        "failed_count": status.failed_count,
-        "timeout_count": status.timeout_count,
-        "superseded_count": status.superseded_count,
-        "dropped_count": status.dropped_count,
-        "dropped_stage_count": status.dropped_stage_count,
-        "stages": {
-            name: {
-                "sample_count": stage.sample_count,
-                "p50_ms": stage.p50_ms,
-                "p95_ms": stage.p95_ms,
-                "maximum_ms": stage.maximum_ms,
-            }
-            for name, stage in status.stages.items()
-        },
-    }
-
-
-def _cache_status(status: CacheStatus) -> dict[str, object]:
-    return {
-        dataset: {
-            source: {
-                "entries": item.entries,
-                "capacity": item.capacity,
-                "hit": item.hit,
-                "miss": item.miss,
-                "refresh_due_hit": item.refresh_due_hit,
-                "stale_hit": item.stale_hit,
-                "degraded_hit": item.degraded_hit,
-                "negative_hit": item.negative_hit,
-                "refresh": item.refresh,
-                "eviction": item.eviction,
-                "load_error": item.load_error,
-                "hit_rate": round(item.hit_rate, 6),
-                "estimated_bytes": item.estimated_bytes,
-            }
-            for source, item in sources.items()
-        }
-        for dataset, sources in status.datasets.items()
-    }
 
 
 def _strip_source(source: str, message: str) -> str:
@@ -412,18 +282,13 @@ __all__ = [
     "_SourceFetch",
     "_before_deadline",
     "_cache_error_code",
-    "_cache_status",
-    "_canonical_health",
     "_elapsed",
-    "_latency_status",
     "_observation_version",
     "_parallel_error_message",
     "_parallel_route_outcome",
     "_percentile",
     "_preserve_newer_quotes",
     "_reference_replaces",
-    "_route_health",
     "_source_degraded_reasons",
-    "_source_lane_status",
     "_strip_source",
 ]

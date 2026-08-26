@@ -10,7 +10,7 @@ def test_authoritative_design_requires_one_final_v2_product_chain_without_runtim
 
     for statement in (
         "V2-only 最终 release 边界",
-        "当前交付状态：V2-E0 至 V2-E11 已完成",
+        "当前交付状态：V2-only 工程与发布门禁验收已闭合",
         "新 release 不读取旧运行目录、旧数据库、旧快照或旧 schema",
         "V2 唯一运行目录固定为 `.runtime/v2`",
         "旧 release 只能与其对应旧运行目录整体回退",
@@ -41,13 +41,12 @@ def test_v2_execution_plan_has_no_compatibility_or_shadow_cutover_batch() -> Non
     overview = (ROOT / "docs/V2.md").read_text(encoding="utf-8")
     plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
 
-    assert "状态：V2-only 最终 release 已完成验收" in overview
+    assert "V2-only 工程与发布门禁验收已完成" in overview
+    assert "当前版本仍为 Unreleased" in overview
     assert "不保留旧版运行时兼容" in overview
-    assert "V2-E0 至 V2-E11" in plan
-    assert "V2 工程发布章节全部闭合" in plan
-    assert "### V2-E0：唯一产品契约重置（已完成）" in plan
-    assert "### V2-E10：删除旧生产链（已完成）" in plan
-    assert "### V2-E11：最终验收与发布（已完成）" in plan
+    assert "V2-only 工程能力和发布验收门禁均已闭合" in plan
+    assert "本文只记录尚未闭合的外部 Gate" in plan
+    assert "（已完成）" not in plan
     assert "旧 API 的弃用窗口" not in plan
     assert "并行影子后原子切换" not in plan
     assert "历史兼容解码器" not in plan

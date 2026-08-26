@@ -325,13 +325,61 @@ def _audit_payload(
         "decision_hash": audit.decision_hash,
         "input_version": audit.input_version,
         "hard_filter_aggregates": aggregates,
-        "passed_candidates": candidates,
-        "production_local": audit.production_local,
-        "research_shadow": audit.research_shadow,
+        "passed_candidates": [_candidate_audit_payload(candidate) for candidate in candidates],
+        "production_local": _decision_set_audit_payload(audit.production_local),
+        "research_shadow": _decision_set_audit_payload(audit.research_shadow),
         "shadow_mode": audit.shadow_mode,
         "deepseek_request_delta": audit.deepseek_request_delta,
     }
-    return json.dumps(payload, default=lambda value: value.__dict__, sort_keys=True, separators=(",", ":")).encode()
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _candidate_audit_payload(candidate: V2ResearchCandidateAudit) -> dict[str, object]:
+    return {
+        "code": candidate.code,
+        "board": candidate.board,
+        "industry": candidate.industry,
+        "candidate_components": candidate.candidate_components,
+        "missing_mask": candidate.missing_mask,
+        "coverage_ratio": candidate.coverage_ratio,
+        "board_reliability": candidate.board_reliability,
+        "candidate_score": candidate.candidate_score,
+        "candidate_rank": candidate.candidate_rank,
+        "production_top120": candidate.production_top120,
+        "preselection_status": candidate.preselection_status,
+        "optimistic_upper_bound": candidate.optimistic_upper_bound,
+        "upper_bound_status": candidate.upper_bound_status,
+        "upper_bound_protected": candidate.upper_bound_protected,
+    }
+
+
+def _decision_set_audit_payload(decision_set: V2ResearchDecisionSetAudit) -> dict[str, object]:
+    return {
+        "decision_version": decision_set.decision_version,
+        "candidates": [_decision_candidate_audit_payload(candidate) for candidate in decision_set.candidates],
+    }
+
+
+def _decision_candidate_audit_payload(candidate: V2ResearchDecisionCandidateAudit) -> dict[str, object]:
+    return {
+        "code": candidate.code,
+        "components": candidate.components,
+        "component_coverage_ratio": candidate.component_coverage_ratio,
+        "base_score": candidate.base_score,
+        "local_risk_codes": candidate.local_risk_codes,
+        "local_risk_penalty": candidate.local_risk_penalty,
+        "local_score": candidate.local_score,
+        "reused_deepseek_facts": candidate.reused_deepseek_facts,
+        "fusion_applied": candidate.fusion_applied,
+        "deepseek_risk_codes": candidate.deepseek_risk_codes,
+        "deepseek_risk_penalty": candidate.deepseek_risk_penalty,
+        "final_score": candidate.final_score,
+        "action": candidate.action,
+        "selected": candidate.selected,
+        "rank": candidate.rank,
+        "board_rank": candidate.board_rank,
+        "skip_reason": candidate.skip_reason,
+    }
 
 
 def _score_pairs(values: tuple[tuple[str, float], ...], label: str) -> tuple[tuple[str, float], ...]:
