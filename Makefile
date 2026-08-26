@@ -2,11 +2,12 @@ SHELL := /bin/bash
 PYTHON ?= .venv/bin/python
 SOURCE_PATHS := src/trader tests scripts/check_refactor_quality.py scripts/generate_long_watchlist_asset.py \
 	scripts/check_web_recommendation_health.py scripts/measure_web_refresh_interval.py \
-	scripts/sample_history_sources.py scripts/sample_tencent_quotes.py scripts/sample_tushare_daily.py
+	scripts/sample_history_sources.py scripts/sample_tencent_quotes.py scripts/sample_tushare_daily.py \
+	scripts/diagnose_runtime.py
 
 SOURCE_PATHS += scripts/run_production_performance.py
 
-.PHONY: help install-dev format format-check lint long-watchlist-check type-check test quality package performance-check browser-performance-check
+.PHONY: help install-dev format format-check lint long-watchlist-check type-check test quality package performance-check browser-performance-check diagnose-live diagnose-full
 
 help:
 	@echo "make install-dev   - install editable package and development tools"
@@ -16,6 +17,8 @@ help:
 	@echo "make package       - build wheel and source distribution"
 	@echo "make performance-check - run the offline active-production performance gate"
 	@echo "make browser-performance-check - run Firefox SSE patch-to-paint and refresh gate"
+	@echo "make diagnose-live - run bounded Web and real-provider runtime diagnostics"
+	@echo "make diagnose-full - add Firefox and offline performance diagnostics"
 
 install-dev:
 	$(PYTHON) -m pip install -e ".[dev]"
@@ -50,3 +53,9 @@ performance-check:
 
 browser-performance-check:
 	$(PYTHON) scripts/measure_web_refresh_interval.py --duration-seconds 8 --minimum-updates 3 --output -
+
+diagnose-live:
+	$(PYTHON) scripts/diagnose_runtime.py --profile live --output -
+
+diagnose-full:
+	$(PYTHON) scripts/diagnose_runtime.py --profile full --output -

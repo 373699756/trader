@@ -54,7 +54,24 @@ API/ETag/status、SSE 和 100 tick RSS；可用 `--output` 保存报告，或用
 
 ## 荐股漏斗诊断
 
-服务运行期间，可连续采样只读 Web API，检查荐股漏斗是否真的在上游阶段停滞：
+优先使用统一入口一次执行 Web 漏斗、历史源、腾讯实时报价和 Tushare 能力检查；各专项脚本仍是唯一
+诊断实现，统一入口只负责编排、隔离失败和生成脱敏汇总：
+
+```bash
+.venv/bin/python scripts/diagnose_runtime.py \
+  --profile live \
+  --base-url http://127.0.0.1:5000 \
+  --output -
+```
+
+`runtime` 只检查运行中的 Web，`sources` 只实测数据源，默认 `live` 合并两者；`full` 额外执行 Firefox
+刷新链与离线生产性能门禁。命令会在单项失败后继续扫描，最终报告使用
+`trader-runtime-diagnostics-v1`，只保留聚合计数、延迟、状态和定位结论，不转发股票代码、价格、Token、
+供应商原始载荷或子进程 stderr。需要留档时，`--output` 和 `--persistence-runtime-dir` 只能指向仓库外
+绝对路径。
+也可执行 `make diagnose-live`；耗时更长的浏览器与性能组合必须显式执行 `make diagnose-full`。
+
+只需要复测荐股漏斗时，可直接运行底层专项脚本：
 
 ```bash
 .venv/bin/python scripts/check_web_recommendation_health.py \

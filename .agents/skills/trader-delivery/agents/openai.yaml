@@ -1,0 +1,6 @@
+interface:
+  display_name: "Trader Delivery"
+  short_description: "Safely plan and verify Trader repository changes"
+  default_prompt: "Use $trader-delivery to plan, implement, and verify this Trader change without cross-module regressions."
+policy:
+  allow_implicit_invocation: true

@@ -1405,11 +1405,12 @@ curl -fsS http://127.0.0.1:5000/api/v2/decisions/long/current
 
 1. 校验配置并确认交易日历、时区和运行目录可写。
 2. 查看 `/api/v2/status` 的来源、队列、缓存、预算、冻结和最近错误。
-3. Web 推荐漏斗反复为 0 时，运行 `scripts/check_web_recommendation_health.py` 连续读取
-   `/api/v2/status` 与 today/tomorrow/d25 current。脚本必须只读、每次请求有超时和响应大小上限，
-   默认向标准输出写 `web_recommendation_health_v1` 聚合报告，并保留历史预热计数轨迹，不输出股票代码、
-   逐股行情或外部载荷。供应商或历史持久化现场复测使用 `scripts/sample_history_sources.py`；默认只读，
-   只有显式提供仓库外 `--persistence-runtime-dir` 时才在隔离 SQLite 目录对比逐条与批量事务。
+3. Web 推荐漏斗反复为 0、历史预热超时或供应商状态不明时，优先运行
+   `scripts/diagnose_runtime.py --profile live --output -`。统一入口必须只做薄编排，继续复用 Web、历史、
+   腾讯和 Tushare 专项脚本作为唯一诊断实现；单项失败不得中止后续扫描。默认报告契约为
+   `trader-runtime-diagnostics-v1`，只保留有界聚合状态、计数、延迟和定位结论，不转发股票代码、价格、
+   Token、外部载荷或子进程 stderr。只有显式 `full` profile 才追加隔离 Firefox 刷新和离线生产性能门禁。
+   报告文件与历史持久化复测目录必须是仓库外绝对路径；底层专项脚本仍可用于缩小后的单边界复测。
 4. 对行情 stale/degraded，先区分供应商延迟、熔断与内部 lane 排队。
 5. 对 DeepSeek 失败，区分密钥缺失、禁用、预算、deadline、HTTP 和 schema；本地推荐
    应继续可用。
@@ -1421,8 +1422,13 @@ curl -fsS http://127.0.0.1:5000/api/v2/decisions/long/current
 才认定为持续异常；事件序列回退表示运行重启，必须切断跨重启的连续窗口。候选、候选特征、证券
 身份、历史或完整评分由非零回退到零，input quality 消失，release/schema 不一致，以及 status/current
 策略、交易日或 projection 身份不一致均需留证。正式/观察入选数为 0 本身不是异常；`ready` 的合法空
-current 必须携带 `selection_diagnostics.empty_reason`。脚本只负责检测和归因，不抓行情、不触发评分、
-不修改运行状态、阈值或冻结结果，错误发现或 API 不可达时退出码为 1。
+current 必须携带 `selection_diagnostics.empty_reason`。Web 专项脚本只负责检测和归因，不抓行情、不触发
+评分、不修改运行状态、阈值或冻结结果，错误发现或 API 不可达时退出码为 1。
+
+统一诊断的 `runtime` profile 只读取运行中 Web，`sources` profile 才执行真实供应商请求并消耗适用配额，
+默认 `live` 合并两者，`full` 再追加浏览器与性能。总体 `failed` 表示至少一个检查未能执行或门禁失败；
+`degraded` 表示全部检查完成但存在受控降级；两者都必须保留各子检查状态和发现，不能用首个错误掩盖
+其他边界。统一入口不得复制供应商解析、健康判定或性能测量实现，也不得成为生产调度依赖。
 
 正常停止时在服务终端按一次 Ctrl+C，并等待最多 30 秒；第二次 Ctrl+C 是立即强制退出，
 只用于确认不再等待。浏览器关闭不会停止后台服务。正常重启后，观察池、候选、历史预热、

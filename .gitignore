@@ -5,7 +5,10 @@
 .token_key
 .runtime/
 *.sqlite3
-.agents/
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/trader-delivery/
 .codex/
 __pycache__/
 *.py[cod]
