@@ -6,6 +6,9 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户现场出现 `history warmup batch exceeded its deadline`，新增不可变
+  `HistoryWarmupPolicy` 及其纯构建函数，统一约束预热批大小、实际历史 worker 数、单来源 timeout 与
+  batch deadline；组合根不再自行拼接含队列波次数的魔法公式。
 - 针对用户要求重新扫描并优化“数据采集 → 评分推荐 → Web 展示”全链路实时性，新增类型化
   `V2RefreshOutcome` 与跨策略共享的不可变评分输入 epoch：每次行情、候选、研究和分钟尾巴刷新
   都携带数据版本、变化代码、完成时间和降级事实，调度器只对真实变化触发评分；状态 API 新增有界
@@ -371,6 +374,9 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 生产历史预热单批由固定 30 只改为 `min(30, history_workers)`；当前 5 个历史 worker 因而每批 5 只，
+  预热自身不再预先堆积第二个 worker 波次。20 秒 deadline、逐股即时提交、稳定轮转和真实慢尾退避
+  保持不变，没有通过盲目延长 deadline 掩盖供应商故障。
 - 全市场、候选与 TopK 刷新直接复用供应商返回的同批 `FeatureSnapshot`，评分输入按完整特征身份缓存并
   在构建前后复核 epoch；候选特征包含已缓存结构化研究，行情缓存预计算代码索引和横截面映射，消除
   候选/TopK 二次读取、三策略重复构建及每轮重复字典构造。数值标准化增加常见数字/字符串快速路径。
@@ -673,6 +679,9 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复历史预热把 30 只股票提交给仅 5 个 worker、却把六波队列等待压进 20 秒 batch deadline，导致
+  尚未获得执行槽的股票也被记为超时失败并进入 60-900 秒退避的问题。修复前现场只读状态曾显示候选
+  universe 360、已计划 270、完成 143、失败 97；新策略消除了预热自身产生的第二至第六波排队误判。
 - 修复未变化的候选/研究数据仍重复触发三策略评分、同策略旧周期可在新输入到达后迟到发布、TopK
   刷新后再次读取候选特征，以及推荐 SSE 总是触发完整 current GET 的端到端延迟浪费。浏览器实测中
   发现并修复决策 patch 错把 projection ETag 当作 snapshot identity、导致后续 overlay 请求 resync
@@ -1124,6 +1133,10 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批失败先行回归先因缺少生产 warmup policy 无法收集；实现后 history warmup unit 与 component
+  定向 18 项通过。`make format-check`、`make lint`（严格重构债务为零）、`make type-check`
+  （225 个源码文件）、`make test` 与 `make package` 全部通过，`git diff --check` 无错误。
+  本批不改变 Web、评分、冻结、依赖或包资源，仓库外 wheel 安装和三档浏览器验收不适用。
 - 本批高风险完整门禁 `make format-check`、`make lint`、`make type-check`、`make test` 与
   `make package` 全部通过；覆盖架构 AST、`create_app()` 无副作用、固定融合 `83.40`、DeepSeek
   原子预算、latest-wins、冻结恢复、哈希一致性、SSE 游标/慢客户端和新增回归。最终 Review 清理一处
@@ -1719,6 +1732,9 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 真正已经获得执行槽、但腾讯主源与东方财富回退合计仍超过 20 秒的单股历史请求会继续产生同名告警并
+  按契约退避；这是失败开放而非误报。当前常驻服务在本批修改前启动，必须正常重启后才会采用 5 只
+  单波次策略；本批没有中断用户正在运行的服务，也未用额外真实行情请求制造供应商负载。
 - 当前没有已知未解决的代码侧实时性缺陷。确定性性能与 Firefox fixture 不消耗真实 DeepSeek 额度，
   也不能替代交易时段供应商网络、限流和整日 P95；应在开市窗口继续复用已有参数化脚本采样真实腾讯
   延迟和端到端 waterfall。本机实际运行 Python 3.14 与 Firefox，Python 3.10-3.13 由 Ruff、mypy

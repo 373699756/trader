@@ -70,7 +70,7 @@ from trader.infra.market_data.service_candidates import QuoteCache, QuoteCacheDe
 from trader.infra.market_data.service_execution import MarketTaskRunner
 from trader.infra.market_data.service_health import MarketDataHealth, MarketDataHealthDependencies
 from trader.infra.market_data.service_history import HistoryCache
-from trader.infra.market_data.service_history_warmup import HistoryWarmup
+from trader.infra.market_data.service_history_warmup import HistoryWarmup, build_history_warmup_policy
 from trader.infra.market_data.service_intraday import IntradayLoader
 from trader.infra.market_data.service_research import ResearchLoader
 from trader.infra.market_data.service_tushare import ReferenceLoader
@@ -552,21 +552,18 @@ def _build_market_data(
         monotonic=time.monotonic,
     )
     gateway.set_security_reference_persistence_sink(references.schedule_security_master_persistence)
-    history_warmup_batch_size = 30
-    history_warmup_batch_timeout = min(
-        20.0,
-        settings.market_data.history_timeout_seconds
-        * (
-            4 * ((history_warmup_batch_size + settings.pipeline.market_workers - 1) // settings.pipeline.market_workers)
-            + 1
-        ),
+    history_warmup_policy = build_history_warmup_policy(
+        worker_count=settings.pipeline.market_workers,
+        source_timeout_seconds=settings.market_data.history_timeout_seconds,
+        maximum_batch_size=30,
+        maximum_batch_timeout_seconds=20.0,
     )
     warmup = HistoryWarmup(
         history_cache,
         references,
         runner,
-        batch_size=history_warmup_batch_size,
-        batch_timeout_seconds=history_warmup_batch_timeout,
+        batch_size=history_warmup_policy.batch_size,
+        batch_timeout_seconds=history_warmup_policy.batch_timeout_seconds,
         monotonic=time.monotonic,
     )
     research = ResearchLoader(

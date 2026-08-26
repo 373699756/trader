@@ -219,8 +219,10 @@ Tushare SDK `daily` 批量数据必须标记 `raw`/`unadjusted_daily`，不得�
 历史特征缓存。默认以腾讯完整日 K 前复权响应作为历史主来源（成交量手转股、成交额万元
 转元），东方财富前复权作为第二回退。每轮共享市场输入选出三板候选后，必须同时在独立
 来源 lane 幂等调度证券主数据和交易日历参考刷新，Today、Tomorrow、D25 共用一次请求身份。
-历史异步调度只由 `HistoryWarmup` 持有：按最多 30 只的批次轮转，截止前完成的单股结果立即保留，
-慢尾只使未覆盖代码进入逐股退避；参考刷新不得把全部候选作为第二个 history lane 批次与预热竞争。
+历史异步调度只由 `HistoryWarmup` 持有：批次上限为 30 且不得超过历史执行池的可并发 worker 数，
+预热自身不得预先堆积第二个 worker 波次，禁止仅因固定大批次产生的内部排队耗尽供应商 deadline；
+截止前完成的单股结果立即保留，真正超时的慢尾只使未覆盖代码进入逐股退避。参考刷新不得把全部候选
+作为第二个 history lane 批次与预热竞争。
 冷启动首轮可以显示 `missing_listing_date`、`missing_listing_age_sessions` 或
 `board_identity_degraded`，但参考数据完成后后续轮次必须使用并持久化新身份；参考源失败
 不得阻断本地计算，也不得放宽 `board_data_reliability >= 0.85` 或观察/执行门槛。Tushare 权限

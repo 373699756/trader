@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from trader.application.ports.market import MarketDataDeadlineExceededError
 from trader.application.source_lanes import SourceLaneRegistryStatus, SourceLaneStatus
-from trader.infra.market_data.service_history_warmup import HistoryWarmup
+from trader.infra.market_data.service_history_warmup import HistoryWarmup, build_history_warmup_policy
 
 NOW = datetime(2026, 7, 24, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -68,6 +68,18 @@ class _Lanes:
                 )
             }
         )
+
+
+def test_production_warmup_policy_never_queues_more_than_one_worker_wave() -> None:
+    policy = build_history_warmup_policy(
+        worker_count=5,
+        source_timeout_seconds=12.0,
+        maximum_batch_size=30,
+        maximum_batch_timeout_seconds=20.0,
+    )
+
+    assert policy.batch_size == 5
+    assert policy.batch_timeout_seconds == 20.0
 
 
 def test_failed_history_codes_cool_down_while_unattempted_codes_continue() -> None:

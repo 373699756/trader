@@ -24,6 +24,7 @@ _LOGGER = logging.getLogger(__name__)
 _HISTORY_SOURCE_LANE = "history"
 _PERMANENT_TUSHARE_DEGRADATIONS = frozenset({"missing_token", "insufficient_points", "permission_denied"})
 _RETRY_DELAYS_SECONDS = (60.0, 120.0, 240.0, 480.0, 900.0)
+_MAX_SOURCE_ATTEMPTS_PER_CODE = 4
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,31 @@ class HistoryWarmupStatus:
     timeout_count: int
     inflight_age_seconds: float | None
     batch_timeout_seconds: float
+
+
+@dataclass(frozen=True)
+class HistoryWarmupPolicy:
+    batch_size: int
+    batch_timeout_seconds: float
+
+
+def build_history_warmup_policy(
+    *,
+    worker_count: int,
+    source_timeout_seconds: float,
+    maximum_batch_size: int,
+    maximum_batch_timeout_seconds: float,
+) -> HistoryWarmupPolicy:
+    if min(worker_count, maximum_batch_size) < 1:
+        raise ValueError("history warmup worker and batch limits must be positive")
+    if min(source_timeout_seconds, maximum_batch_timeout_seconds) <= 0.0:
+        raise ValueError("history warmup timeout limits must be positive")
+    batch_size = min(worker_count, maximum_batch_size)
+    attempt_budget = source_timeout_seconds * (_MAX_SOURCE_ATTEMPTS_PER_CODE + 1)
+    return HistoryWarmupPolicy(
+        batch_size=batch_size,
+        batch_timeout_seconds=min(maximum_batch_timeout_seconds, attempt_budget),
+    )
 
 
 class HistoryWarmupOptions(TypedDict):
@@ -250,4 +276,9 @@ def _stable_slot_order(previous: Sequence[str], current: Sequence[str]) -> tuple
     return tuple(retained)
 
 
-__all__ = ["HistoryWarmup", "HistoryWarmupStatus"]
+__all__ = [
+    "HistoryWarmup",
+    "HistoryWarmupPolicy",
+    "HistoryWarmupStatus",
+    "build_history_warmup_policy",
+]
