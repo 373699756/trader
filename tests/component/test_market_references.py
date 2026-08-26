@@ -778,6 +778,7 @@ def test_unadjusted_tushare_history_is_not_consumed_and_warmup_uses_qfq_fallback
 
         def daily(self, **kwargs):
             self.calls += 1
+            assert kwargs["ts_code"] == "000001.SZ"
             rows = [
                 {
                     "ts_code": code,
@@ -821,8 +822,11 @@ def test_unadjusted_tushare_history_is_not_consumed_and_warmup_uses_qfq_fallback
     try:
         first = service.fetch_market_features(NOW, deadline=NOW + timedelta(seconds=1))
         assert all(feature.history_days == 0 for feature in first)
+        service.schedule_reference_data(tuple(quote.code for quote in quotes), NOW)
         timeout_at = time.monotonic() + 1.0
         while service.health()["history_warmup_completed_count"] < len(quotes) and time.monotonic() < timeout_at:
+            time.sleep(0.01)
+        while pro.calls == 0 and time.monotonic() < timeout_at:
             time.sleep(0.01)
         second = service.fetch_market_features(NOW + timedelta(seconds=2), force=True)
     finally:
@@ -837,7 +841,9 @@ def test_unadjusted_tushare_history_is_not_consumed_and_warmup_uses_qfq_fallback
     assert service.health()["history_warmup_inflight_age_seconds"] is None
     assert service.health()["history_warmup_batch_timeout_seconds"] == 20.0
     assert sorted(history.calls) == sorted(quote.code for quote in quotes)
-    assert pro.calls == 0
+    assert pro.calls == 1
+    assert service.references.health().history_mode == "unadjusted_daily"
+    assert service.references.health().process_api_attempts_today == 1
 
 
 def test_permission_denied_tushare_falls_back_to_batched_history_lane() -> None:

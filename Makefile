@@ -2,7 +2,7 @@ SHELL := /bin/bash
 PYTHON ?= .venv/bin/python
 SOURCE_PATHS := src/trader tests scripts/check_refactor_quality.py scripts/generate_long_watchlist_asset.py \
 	scripts/check_web_recommendation_health.py scripts/measure_web_refresh_interval.py \
-	scripts/sample_history_sources.py scripts/sample_tencent_quotes.py
+	scripts/sample_history_sources.py scripts/sample_tencent_quotes.py scripts/sample_tushare_daily.py
 
 SOURCE_PATHS += scripts/run_production_performance.py
 

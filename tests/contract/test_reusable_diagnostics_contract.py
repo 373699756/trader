@@ -9,6 +9,7 @@ DIAGNOSTICS = (
     ROOT / "scripts" / "check_web_recommendation_health.py",
     ROOT / "scripts" / "measure_web_refresh_interval.py",
     ROOT / "scripts" / "sample_history_sources.py",
+    ROOT / "scripts" / "sample_tushare_daily.py",
     ROOT / "scripts" / "sample_tencent_quotes.py",
     ROOT / "scripts" / "run_production_performance.py",
 )
@@ -46,6 +47,9 @@ def test_reusable_runtime_diagnostics_are_parameterized_repository_scripts() -> 
                 "--timeout-seconds",
                 "--persistence-runtime-dir",
             ):
+                assert option in result.stdout
+        if script.name == "sample_tushare_daily.py":
+            for option in ("--runtime-config", "--codes", "--days"):
                 assert option in result.stdout
 
 

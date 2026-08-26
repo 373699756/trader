@@ -25,7 +25,7 @@ def test_v2_configuration_contract_is_valid() -> None:
 
     assert runtime.schema_version == 10
     assert strategy.schema_version == 13
-    assert runtime.config_version == "runtime_v38_input_driven_realtime_2026_08_25"
+    assert runtime.config_version == "runtime_v39_tushare_120_daily_audit_2026_08_26"
     assert runtime.market_data.source_contract_versions["eastmoney"] == ("eastmoney_quote_v17_security_master")
     assert runtime.api.default_top_n == 12
     assert runtime.api.maximum_top_n == 12
@@ -38,6 +38,7 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert runtime.api.web_snapshot_retention_seconds == 35
     assert runtime.market_data.tushare.timeout_seconds == 8
     assert runtime.market_data.tushare.points == 120
+    assert runtime.market_data.source_contract_versions["tushare"] == "tushare_sdk_v18_120_point_daily_audit"
     assert runtime.market_data.tushare.token_file == PROJECT_ROOT / ".token_key"
     assert set(runtime.market_data.cache_policy.datasets) == {
         "full_market_quotes",

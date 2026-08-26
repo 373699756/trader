@@ -318,7 +318,7 @@ def test_tushare_per_code_batch_keeps_successes_when_one_code_fails() -> None:
     )
 
 
-def test_tushare_120_point_profile_batches_free_daily_and_disables_paid_references() -> None:
+def test_tushare_120_point_profile_uses_bounded_free_daily_and_disables_paid_references() -> None:
     class FreeDailyPro:
         def __init__(self) -> None:
             self.calls: list[dict[str, object]] = []
@@ -360,15 +360,90 @@ def test_tushare_120_point_profile_batches_free_daily_and_disables_paid_referenc
 
     assert {item.subject_key for item in observations} == {"600001", "300001", "688001"}
     assert all(item.fields.get("price_adjustment") == "raw" for item in observations)
-    assert len(pro.calls) == 1
-    assert pro.calls[0]["ts_code"] == "600001.SH,300001.SZ,688001.SH"
+    assert [call["ts_code"] for call in pro.calls] == ["600001.SH", "300001.SZ", "688001.SH"]
     assert client.supports("daily_history") is True
     assert client.supports("security_master") is False
     assert client.supports("trading_calendar") is False
     assert client.supports("daily_valuation") is False
     assert client.supports("financial_indicators") is False
-    assert client.health().access_points == 120
-    assert client.health().history_mode == "unadjusted_daily"
+    health = client.health()
+    assert health.access_points == 120
+    assert health.history_mode == "unadjusted_daily"
+    assert health.minute_call_limit == 50
+    assert health.daily_call_limit == 8000
+    assert health.process_api_attempts_last_minute == 3
+    assert health.process_api_attempts_today == 3
+    assert health.process_remaining_calls_today == 7997
+    assert health.local_rate_limit_count == 0
+
+
+def test_tushare_120_point_profile_stops_before_exceeding_minute_quota() -> None:
+    class FreeDailyPro:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def daily(self, **kwargs):
+            code = str(kwargs["ts_code"])
+            self.calls.append(code)
+            return FakeTushareFrame(
+                [
+                    {
+                        "ts_code": code,
+                        "trade_date": "20260715",
+                        "open": 10.0,
+                        "close": 10.5,
+                        "high": 10.8,
+                        "low": 9.9,
+                        "vol": 1000.0,
+                        "amount": 10500.0,
+                        "pct_chg": 5.0,
+                    }
+                ]
+            )
+
+    pro = FreeDailyPro()
+    client = TushareClient(
+        token="secret-token",
+        timeout_seconds=8,
+        points=120,
+        sdk_factory=lambda _token, _timeout: pro,
+        wall_clock=lambda: NOW,
+        monotonic=lambda: 10.0,
+    )
+    codes = tuple(f"{index:06d}" for index in range(1, 52))
+
+    observations = client.fetch_daily_history(codes, date(2026, 7, 1), date(2026, 7, 16), NOW)
+
+    assert len(pro.calls) == 50
+    assert len([item for item in observations if item.status == "success"]) == 50
+    assert observations[-1].status == "failed"
+    assert observations[-1].error_code == "local_rate_limit"
+    health = client.health()
+    assert health.process_api_attempts_last_minute == 50
+    assert health.process_api_attempts_today == 50
+    assert health.process_remaining_calls_today == 7950
+    assert health.local_rate_limit_count == 1
+
+
+def test_tushare_daily_empty_code_result_is_an_explicit_failure() -> None:
+    class EmptyDailyPro:
+        @staticmethod
+        def daily(**_kwargs):
+            return FakeTushareFrame([])
+
+    client = TushareClient(
+        token="secret-token",
+        timeout_seconds=8,
+        points=120,
+        sdk_factory=lambda _token, _timeout: EmptyDailyPro(),
+        wall_clock=lambda: NOW,
+    )
+
+    observations = client.fetch_daily_history(("600001",), date(2026, 7, 1), date(2026, 7, 16), NOW)
+
+    assert observations[0].subject_key == "600001"
+    assert observations[0].status == "failed"
+    assert observations[0].error_code == "no_data"
 
 
 def test_tushare_default_daily_transport_uses_direct_https_without_environment_proxy(monkeypatch) -> None:
@@ -414,6 +489,34 @@ def test_tushare_default_daily_transport_uses_direct_https_without_environment_p
     assert session.calls[0][0] == "https://api.tushare.pro"
     assert session.calls[0][1]["json"]["api_name"] == "daily"
     assert session.calls[0][1]["timeout"] == 8
+
+
+def test_tushare_daily_transport_preserves_only_numeric_provider_error_code(monkeypatch) -> None:
+    class ErrorResponse:
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+        @staticmethod
+        def json():
+            return {"code": "-2002", "msg": "sensitive vendor response must not escape"}
+
+    class DirectSession:
+        trust_env = False
+
+        @staticmethod
+        def post(_url, **_kwargs):
+            return ErrorResponse()
+
+    module = type("FakeTushareModule", (), {"pro_api": staticmethod(lambda _token, timeout: object())})()
+    monkeypatch.setattr(tushare_records_module.requests, "Session", lambda: DirectSession())
+    monkeypatch.setattr(tushare_records_module.importlib, "import_module", lambda _name: module)
+    client = TushareClient(token="secret-token", points=120, timeout_seconds=8, wall_clock=lambda: NOW)
+
+    observations = client.fetch_daily_history(("600001",), date(2026, 7, 1), date(2026, 7, 16), NOW)
+
+    assert observations[0].error_code == "provider_error_-2002"
+    assert "sensitive" not in str(observations[0])
 
 
 def test_tushare_date_only_financial_records_become_effective_at_shanghai_day_end() -> None:

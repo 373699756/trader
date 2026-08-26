@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING, Protocol, TypedDict
+from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
@@ -69,6 +70,12 @@ class TushareHealthStatus:
     enabled: bool
     access_points: int
     history_mode: str
+    minute_call_limit: int
+    daily_call_limit: int | None
+    process_api_attempts_last_minute: int
+    process_api_attempts_today: int
+    process_remaining_calls_today: int | None
+    local_rate_limit_count: int
     planned_count: int
     success_count: int
     error_count: int
@@ -134,6 +141,11 @@ class TushareClient:
         self._degraded_reason = "missing_token" if not self._token else ""
         self._open_until = 0.0
         self._half_open_probe = False
+        self._minute_call_limit, self._daily_call_limit = _quota_limits(self._points)
+        self._api_attempt_times: deque[float] = deque()
+        self._api_attempt_day = self._wall_clock().astimezone(ZoneInfo("Asia/Shanghai")).date()
+        self._api_attempts_today = 0
+        self._local_rate_limit_count = 0
 
     def fetch_security_master(self, observed_at: datetime) -> tuple[SourceObservation, ...]:
         if not self.supports("security_master"):
@@ -207,6 +219,7 @@ class TushareClient:
                     adj="qfq",
                     freq="D",
                 ),
+                empty_is_error=True,
             ),
             "qfq",
         )
@@ -222,26 +235,19 @@ class TushareClient:
         if not normalized:
             return ()
         return _with_price_adjustment(
-            self._fetch_records(
-                _RecordFetchRequest(
-                    "daily_history",
-                    observed_at,
+            self._fetch_per_code(
+                "daily_history",
+                normalized,
+                observed_at,
+                lambda client, code: _invoke(
+                    client,
                     "daily",
-                    {
-                        "ts_code": ",".join(_ts_code(code) for code in normalized),
-                        "start_date": start_date.strftime("%Y%m%d"),
-                        "end_date": end_date.strftime("%Y%m%d"),
-                        "fields": "ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount",
-                    },
-                    lambda row, observed, received, version: _generic_observation(
-                        "daily_history",
-                        row,
-                        observed,
-                        received,
-                        version,
-                    ),
-                    empty_is_error=True,
+                    ts_code=_ts_code(code),
+                    start_date=start_date.strftime("%Y%m%d"),
+                    end_date=end_date.strftime("%Y%m%d"),
+                    fields="ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount",
                 ),
+                empty_is_error=True,
             ),
             "raw",
         )
@@ -304,10 +310,22 @@ class TushareClient:
     def health(self) -> TushareHealthStatus:
         measured_at = self._wall_clock()
         with self._lock:
+            self._refresh_quota_window_locked(measured_at)
+            remaining_calls_today = (
+                max(0, self._daily_call_limit - self._api_attempts_today)
+                if self._daily_call_limit is not None
+                else None
+            )
             return TushareHealthStatus(
                 enabled=bool(self._token),
                 access_points=self._points,
                 history_mode=self.history_mode(),
+                minute_call_limit=self._minute_call_limit,
+                daily_call_limit=self._daily_call_limit,
+                process_api_attempts_last_minute=len(self._api_attempt_times),
+                process_api_attempts_today=self._api_attempts_today,
+                process_remaining_calls_today=remaining_calls_today,
+                local_rate_limit_count=self._local_rate_limit_count,
                 planned_count=self._planned_count,
                 success_count=self._success_count,
                 error_count=self._error_count,
@@ -340,6 +358,16 @@ class TushareClient:
             client = self._client_instance()
             if self._cancel_requested():
                 raise _SourceStoppedError
+            if not self._reserve_api_attempt():
+                self._record_local_rate_limit(started)
+                return (
+                    _failed_observation(
+                        dataset,
+                        observed_at,
+                        max(observed_at, self._wall_clock()),
+                        "local_rate_limit",
+                    ),
+                )
             records = _records(_invoke(client, request.method, **dict(request.arguments)))
             if self._cancel_requested():
                 raise _SourceStoppedError
@@ -419,6 +447,8 @@ class TushareClient:
         codes: Sequence[str],
         observed_at: datetime,
         fetcher: Callable[[object, str], object],
+        *,
+        empty_is_error: bool = False,
     ) -> tuple[SourceObservation, ...]:
         _require_aware(observed_at)
         normalized = tuple(dict.fromkeys(code for code in codes if len(code) == 6 and code.isdigit()))
@@ -429,7 +459,13 @@ class TushareClient:
             return failure
         assert started is not None
         try:
-            records = self._collect_per_code(dataset, normalized, observed_at, fetcher)
+            records = self._collect_per_code(
+                dataset,
+                normalized,
+                observed_at,
+                fetcher,
+                empty_is_error=empty_is_error,
+            )
             received_at = max(observed_at, self._wall_clock())
             version = _data_version(dataset, records.rows)
             observations = tuple(
@@ -443,7 +479,10 @@ class TushareClient:
             self._record_error(started, error_code)
             return (_failed_observation(dataset, observed_at, max(observed_at, self._wall_clock()), error_code),)
         if records.failure_codes and not observations:
-            self._record_error(started, records.failure_codes[0])
+            if records.failure_codes[0] == "local_rate_limit":
+                self._record_local_rate_limit(started)
+            else:
+                self._record_error(started, records.failure_codes[0])
             return records.failures
         if records.failure_codes:
             self._record_partial_success(started, received_at, records.failure_codes)
@@ -457,16 +496,44 @@ class TushareClient:
         codes: Sequence[str],
         observed_at: datetime,
         fetcher: Callable[[object, str], object],
+        *,
+        empty_is_error: bool,
     ) -> _PerCodeRecords:
         client = self._client_instance()
         rows: list[Mapping[str, object]] = []
         failures: list[SourceObservation] = []
         failure_codes: list[str] = []
-        for code in codes:
+        for index, code in enumerate(codes):
             if self._cancel_requested():
                 raise _SourceStoppedError
+            if not self._reserve_api_attempt():
+                failure_codes.append("local_rate_limit")
+                failures.extend(
+                    _failed_observation(
+                        dataset,
+                        observed_at,
+                        max(observed_at, self._wall_clock()),
+                        "local_rate_limit",
+                        subject_key=remaining_code,
+                    )
+                    for remaining_code in codes[index:]
+                )
+                break
             try:
-                rows.extend(_records(fetcher(client, code)))
+                fetched = _records(fetcher(client, code))
+                if not fetched and empty_is_error:
+                    failure_codes.append("no_data")
+                    failures.append(
+                        _failed_observation(
+                            dataset,
+                            observed_at,
+                            max(observed_at, self._wall_clock()),
+                            "no_data",
+                            subject_key=code,
+                        )
+                    )
+                else:
+                    rows.extend(fetched)
             except Exception as exc:
                 error_code = _error_code(exc)
                 failure_codes.append(error_code)
@@ -524,6 +591,38 @@ class TushareClient:
             if error_code == "timeout":
                 self._timeout_count += 1
 
+    def _reserve_api_attempt(self) -> bool:
+        measured_at = self._wall_clock()
+        with self._lock:
+            self._refresh_quota_window_locked(measured_at)
+            if len(self._api_attempt_times) >= self._minute_call_limit or (
+                self._daily_call_limit is not None and self._api_attempts_today >= self._daily_call_limit
+            ):
+                self._local_rate_limit_count += 1
+                self._degraded_reason = "local_rate_limit"
+                return False
+            self._api_attempt_times.append(self._monotonic())
+            self._api_attempts_today += 1
+            return True
+
+    def _refresh_quota_window_locked(self, measured_at: datetime) -> None:
+        _require_aware(measured_at)
+        current_day = measured_at.astimezone(ZoneInfo("Asia/Shanghai")).date()
+        if current_day != self._api_attempt_day:
+            self._api_attempt_day = current_day
+            self._api_attempts_today = 0
+        cutoff = self._monotonic() - 60.0
+        while self._api_attempt_times and self._api_attempt_times[0] <= cutoff:
+            self._api_attempt_times.popleft()
+
+    def _record_local_rate_limit(self, started: float) -> None:
+        with self._lock:
+            self._error_count += 1
+            self._half_open_probe = False
+            self._last_latency_ms = (self._monotonic() - started) * 1000.0
+            self._latencies_ms.append(self._last_latency_ms)
+            self._degraded_reason = "local_rate_limit"
+
     def _record_partial_success(
         self,
         started: float,
@@ -569,6 +668,14 @@ def _with_price_adjustment(
             )
         )
     return tuple(tagged)
+
+
+def _quota_limits(points: int) -> tuple[int, int | None]:
+    if points >= 5000:
+        return 500, None
+    if points >= 2000:
+        return 200, 100_000
+    return 50, 8000
 
 
 __all__ = ["TushareClient"]

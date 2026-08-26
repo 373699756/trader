@@ -46,6 +46,7 @@ _DAY_END = time(23, 59, 59)
 _REFERENCE_SOURCE = "reference"
 _TUSHARE_SOURCE = "tushare"
 _TRADING_CALENDAR_CURSOR_NAME = "tushare.trading_calendar"
+_DAILY_CAPABILITY_AUDIT_CODE = "000001"
 
 
 class _ReferenceDataPlane(Protocol):
@@ -226,6 +227,8 @@ class ReferenceLoader:
             if not self._client.supports("security_master"):
                 if normalized and self._client.supports("forward_adjusted_daily"):
                     tushare_history = self.load_history_batch(normalized, observed_at, force=force)
+                elif normalized and self._client.supports("daily_history"):
+                    self.load_history_batch((_DAILY_CAPABILITY_AUDIT_CODE,), observed_at, force=force)
                 self.apply_history(tushare_history)
                 return
             masters = self.load(

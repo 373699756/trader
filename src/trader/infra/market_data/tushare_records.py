@@ -36,6 +36,12 @@ class _ObservationRequest:
     missing_reasons: Mapping[str, str] | None = None
 
 
+class _TushareApiError(RuntimeError):
+    def __init__(self, provider_code: int) -> None:
+        super().__init__("Tushare API returned a non-success status")
+        self.provider_code = provider_code
+
+
 class _SdkFacade:
     def __init__(self, module: ModuleType, pro: object, token: str, timeout_seconds: float) -> None:
         self._module = module
@@ -72,8 +78,11 @@ class _SdkFacade:
         if not isinstance(payload, Mapping):
             raise ValueError("Tushare API response must be an object")
         if payload.get("code") != 0:
-            if payload.get("code") == 40203:
+            provider_code = _numeric_provider_code(payload.get("code"))
+            if provider_code == 40203:
                 raise PermissionError("Tushare API permission denied")
+            if provider_code is not None:
+                raise _TushareApiError(provider_code)
             raise RuntimeError("Tushare API returned an error")
         data = payload.get("data")
         if not isinstance(data, Mapping):
@@ -251,8 +260,8 @@ def _data_version(dataset: str, rows: Sequence[Mapping[str, object]]) -> str:
 
 
 def _error_code(exc: Exception) -> str:
-    if isinstance(exc, ModuleNotFoundError):
-        return "sdk_not_installed"
+    if isinstance(exc, (_TushareApiError, ModuleNotFoundError)):
+        return f"provider_error_{exc.provider_code}" if isinstance(exc, _TushareApiError) else "sdk_not_installed"
     if isinstance(exc, PermissionError):
         return "permission_denied"
     if isinstance(exc, (TimeoutError, ConnectionError)):
@@ -263,6 +272,14 @@ def _error_code(exc: Exception) -> str:
     if "timeout" in message or "timed out" in message:
         return "timeout"
     return "sdk_error"
+
+
+def _numeric_provider_code(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.lstrip("-").isdigit() and len(value.lstrip("-")) <= 9:
+        return int(value)
+    return None
 
 
 def _code_from_row(row: Mapping[str, object]) -> str | None:

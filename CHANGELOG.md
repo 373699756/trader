@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户确认 Tushare 已达到 120 积分、每日可调用 8000 次，新增只读
+  `scripts/sample_tushare_daily.py`。脚本复用生产配置和 Token 边界，逐证券实测行数、延迟、raw 标签、
+  120 分权限及进程内调用计数，不输出 Token、价格或完整外部响应。
+- Tushare 类型健康状态及 `/api/v2/status.market_data.sources.tushare` 加法公开 120 积分、
+  `unadjusted_daily`、50 次/分钟、8000 次/日、进程内当分钟/当日尝试、进程内估算余量和本地限流次数；
+  `process_*` 命名明确区分供应商跨进程总账。
 - 针对用户再次反馈 `history warmup batch exceeded its deadline` 并要求直接运行脚本抓现场数据，新增
   `scripts/sample_history_sources.py`：按生产 worker 波次实测腾讯主源/东方财富回退、可用行数与请求延迟，
   可在显式仓库外目录对同一批真实 K 线比较逐条和批量 SQLite 事务；既有 Web 健康脚本同时记录 warmup
@@ -380,6 +386,9 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 120 分 Tushare 从“代码声明支持但生产提前返回”改为参考 lane 中真实执行固定 `000001` 的低频
+  raw 日线能力审计并复用 6 小时缓存；`daily` 改为符合官方参数的逐证券请求，滚动 60 秒与上海自然日
+  进程门禁在 50/8000 次前失败关闭。raw 观测仍不进入历史特征、评分、冻结或推荐。
 - 历史预热生产策略现在把 20 秒批次预算显式拆为 18 秒供应商路由和 2 秒校验/提交余量；腾讯一次加
   东方财富三个 host 的最坏四次串行尝试使单次 HTTP timeout 从配置上限 12 秒截断到 4.5 秒，避免合法
   回退路径自身超过批次 deadline。每股最多 61 条最近历史记录改为一次原子批量事务，不再逐日重复连接、
@@ -689,6 +698,9 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 120 分 Tushare 分支虽声明支持 `daily_history`，但参考刷新只检查 qfq 后直接返回、真实 Token
+  始终零调用的问题；同时修复把多个代码以逗号拼入单个 `ts_code` 的无效请求形状、空结果被记为成功，
+  以及非成功供应商数字码全部退化为不可诊断 `sdk_error` 的问题。数字码仅保留类别，不泄露消息或载荷。
 - 修复真实历史源在 1 秒左右已经返回后，预热批次仍因逐条历史写盘反复争用 SQLite、跨过 20 秒 deadline
   并输出同名告警的问题；同时修复配置允许腾讯加三个东方财富 host 依次各等待 12 秒、与 20 秒批次上限
   自相矛盾的问题。已完成股票继续立即进入内存和持久化缓存，空响应/真正慢尾只影响对应股票并按原退避。
@@ -1146,6 +1158,13 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 官方权限页核实 120 积分为 50 次/分钟、8000 次/日且仅可访问非复权日线，`adj_factor` 从 2000
+  积分起；随后用 `scripts/sample_tushare_daily.py --codes 000001 600519 300750 --days 61` 在真实网络
+  和现有受保护 Token 上实测 3 次请求全部成功，每只返回 83 行 raw 日线，总耗时 1159.5ms，未触发
+  本地限流。Tushare adapter/reference/API/脚本/config 定向回归 105 项及新增错误码回归通过；
+  `make format-check`、`make lint`（严格重构债务为零）、`make type-check`（225 个源码文件）、
+  `make test`、`make package` 全部通过。打包首次因沙箱禁止联网安装 setuptools 失败，获准网络后同一
+  命令通过；本批仅为状态 API 加法字段，未改变桌面布局，三档浏览器验收不适用。
 - 现场先用 `scripts/check_web_recommendation_health.py` 复现 5 股批次在途超过 15 秒并在 20 秒后使失败
   计数增长；再用新增历史脚本确认真实供应商 5 股最大约 1.21 秒。修复后按生产 4.5 秒尝试上限运行
   两轮：10 个观测中 8 个取得 61 行，最大 1.173 秒，2 个空响应受控降级；488 条成功 K 线逐条
@@ -1752,6 +1771,9 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 120 积分官方权限仍只有非复权日线，复权因子和 `pro_bar(qfq)` 明确要求 2000 积分，因此本批不能让
+  Tushare 替代评分历史主源；评分继续使用腾讯 qfq 与东方财富 qfq 回退。状态中的 `process_*` 调用计数
+  随进程启动，不能表示其他诊断进程或供应商账户的跨进程实际余量；供应商最终限额仍是权威门禁。
 - 当前常驻服务仍是本批修改前启动的进程，必须正常重启后才会采用批量历史事务、4.5 秒来源尝试上限和
   新增状态字段；本批没有跨进程强制终止用户服务。真实供应商仍可能返回空历史或发生操作系统级长尾；
   实测两轮 10 个观测中 8 个取得 61 行、2 个受控空响应，空响应会逐股退避而不应制造 batch deadline。

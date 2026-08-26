@@ -1,6 +1,6 @@
 {
   "schema_version": 10,
-  "config_version": "runtime_v38_input_driven_realtime_2026_08_25",
+  "config_version": "runtime_v39_tushare_120_daily_audit_2026_08_26",
   "runtime_dir": ".runtime/v2",
   "strategy_config": "strategy.json",
   "long_watchlist": "long_watchlist.json",
@@ -108,7 +108,7 @@
       "eastmoney": "eastmoney_quote_v17_security_master",
       "sina": "sina_quote_v16_hedged",
       "tencent": "tencent_quote_v15",
-      "tushare": "tushare_sdk_v17_120_point_daily",
+      "tushare": "tushare_sdk_v18_120_point_daily_audit",
       "akshare": "akshare_research_v16_component_cache"
     },
     "tushare": {
