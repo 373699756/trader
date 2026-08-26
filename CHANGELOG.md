@@ -12,6 +12,14 @@ All notable changes to this project are documented here.
 - Tushare 类型健康状态及 `/api/v2/status.market_data.sources.tushare` 加法公开 120 积分、
   `unadjusted_daily`、50 次/分钟、8000 次/日、进程内当分钟/当日尝试、进程内估算余量和本地限流次数；
   `process_*` 命名明确区分供应商跨进程总账。
+- 针对用户要求按评分收益优化计划执行证据链批次，新增不可变 `ScoreResearchCoverage` 与窗口覆盖值对象；
+  纯领域评估按固定计划日、带时区上海时钟和 14:50 截止计算已记录、已错过、最大可达天数、下一计划日、
+  完成和可恢复状态，不把截止前的当天或未来日期提前判为失败。
+- committed trace 新增只读、类型化的逐交易日首个观测时间探针；活动研究覆盖只接纳 14:50 或更早的
+  committed observation，迟到事件仍保留在不可变档案，但不能让已经失败的固定日期恢复资格。
+- `research-status` 公开契约升级为 `v2_research_readiness_v3`，活动历史/前向窗口加法公开
+  `missed_trade_dates`、`maximum_attainable_trade_dates`、`next_planned_trade_date`、`complete` 和
+  `recoverable`，继续保持只读、无网络、无评分和不创建运行文件。
 - 针对用户再次反馈 `history warmup batch exceeded its deadline` 并要求直接运行脚本抓现场数据，新增
   `scripts/sample_history_sources.py`：按生产 worker 波次实测腾讯主源/东方财富回退、可用行数与请求延迟，
   可在显式仓库外目录对同一批真实 K 线比较逐条和批量 SQLite 事务；既有 Web 健康脚本同时记录 warmup
@@ -389,6 +397,9 @@ All notable changes to this project are documented here.
 - 120 分 Tushare 从“代码声明支持但生产提前返回”改为参考 lane 中真实执行固定 `000001` 的低频
   raw 日线能力审计并复用 6 小时缓存；`daily` 改为符合官方参数的逐证券请求，滚动 60 秒与上海自然日
   进程门禁在 50/8000 次前失败关闭。raw 观测仍不进入历史特征、评分、冻结或推荐。
+- `score_p0_v2` 不再因窗口尚未结束而笼统显示 `historical_collecting`：已经过去且缺少 committed
+  evidence 的固定日期会使根状态进入 `historical_collection_failed`，R2-R5 继续 fail-closed。新研究
+  身份推迟到因子、标签、模型、成本和挑战者规范冻结后再预注册，不创建含义未定的占位身份。
 - 历史预热生产策略现在把 20 秒批次预算显式拆为 18 秒供应商路由和 2 秒校验/提交余量；腾讯一次加
   东方财富三个 host 的最坏四次串行尝试使单次 HTTP timeout 从配置上限 12 秒截断到 4.5 秒，避免合法
   回退路径自身超过批次 deadline。每股最多 61 条最近历史记录改为一次原子批量事务，不再逐日重复连接、
@@ -701,6 +712,11 @@ All notable changes to this project are documented here.
 - 修复 120 分 Tushare 分支虽声明支持 `daily_history`，但参考刷新只检查 qfq 后直接返回、真实 Token
   始终零调用的问题；同时修复把多个代码以逗号拼入单个 `ts_code` 的无效请求形状、空结果被记为成功，
   以及非成功供应商数字码全部退化为不可诊断 `sdk_error` 的问题。数字码仅保留类别，不泄露消息或载荷。
+- 修复 `research-status` 只比较记录数、无法识别不可替换计划日已经错过的问题。实际不可变证据确认
+  2026-08-24、2026-08-25、2026-08-26 没有 committed event 或 V2 正式决策，P0v2 最大只能达到 37/40；状态现在
+  明确给出 `score_p0_v2_historical_planned_dates_missed`，禁止把失败身份误读为仍可完成。缺失日为何
+  未形成正式决策因没有对应运行日志仍待验证，本批没有把数据平面隔离记录误写为确定因果；同时修复
+  14:50 后迟到事件仅凭日期就能把失败窗口重新变成可恢复的问题。
 - 修复真实历史源在 1 秒左右已经返回后，预热批次仍因逐条历史写盘反复争用 SQLite、跨过 20 秒 deadline
   并输出同名告警的问题；同时修复配置允许腾讯加三个东方财富 host 依次各等待 12 秒、与 20 秒批次上限
   自相矛盾的问题。已完成股票继续立即进入内存和持久化缓存，空响应/真正慢尾只影响对应股票并按原退避。
@@ -1010,6 +1026,8 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除 `v2_research_readiness_v2` 及其“窗口结束前一律 collecting”的模糊投影；没有删除、补写或迁移
+  任何 P0v1/P0v2 研究分区、正式决策、冻结记录、活动评分或历史运行数据。
 - 删除测试树中已经无人引用且只记录旧 Pipeline B/C 交接、v15-v17 性能波次的 19 份报告、baseline
   与 manifest fixture；删除四个带旧波次名的测试路径并以当前职责名替换。`docs/reports/` 与
   `CHANGELOG.md` 中的历史引用作为审计记录保留，不参与活动测试、打包或运行。
@@ -1158,6 +1176,12 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 研究证据链定向领域、持久化、CLI 与文档契约共 53 项通过；真实 `./run.sh research-status` 只读核验
+  返回 `v2_research_readiness_v3`、`historical_collection_failed`、缺失 2026-08-24 至 2026-08-26、
+  最大 37/40 和下一计划日 2026-08-27。`make format-check`（365 个文件）、`make lint`（严格重构债为零）、
+  `make type-check`（225 个源码文件）、`make test`、`make package` 与 `git diff --check` 全部通过；打包
+  首次仅因沙箱禁止联网安装 setuptools 失败，获准网络后原命令通过。本批不改变活动 Web 和布局，
+  三档浏览器验收不适用。
 - 官方权限页核实 120 积分为 50 次/分钟、8000 次/日且仅可访问非复权日线，`adj_factor` 从 2000
   积分起；随后用 `scripts/sample_tushare_daily.py --codes 000001 600519 300750 --days 61` 在真实网络
   和现有受保护 Token 上实测 3 次请求全部成功，每只返回 83 行 raw 日线，总耗时 1159.5ms，未触发
@@ -1771,6 +1795,10 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- `score_p0_v2` 已不可逆地无法达到 40/40；已有证据继续保留且不补写。三日缺少 committed event 和
+  正式决策是已确认的直接证据缺口，但缺失产生的运行级原因因没有对应日志仍待验证，数据库隔离记录
+  不能单独证明因果。本批只修复研究资格与状态真相，不改变生产评分或直接提高收益；下一批应按计划先
+  实现原生因子 IC、分组单调性、成本、换手、严重亏损和分层诊断，完整冻结新规范后再预注册新身份。
 - 120 积分官方权限仍只有非复权日线，复权因子和 `pro_bar(qfq)` 明确要求 2000 积分，因此本批不能让
   Tushare 替代评分历史主源；评分继续使用腾讯 qfq 与东方财富 qfq 回退。状态中的 `process_*` 调用计数
   随进程启动，不能表示其他诊断进程或供应商账户的跨进程实际余量；供应商最终限额仍是权威门禁。

@@ -54,6 +54,18 @@ class V2ResearchTraceStatus:
 
 
 @dataclass(frozen=True)
+class V2ResearchTradeDateObservation:
+    trade_date: date
+    observed_at: datetime
+
+    def __post_init__(self) -> None:
+        if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
+            raise ValueError("research trace observation must be timezone-aware")
+        if self.observed_at.date() != self.trade_date:
+            raise ValueError("research trace observation must match its trade date")
+
+
+@dataclass(frozen=True)
 class ResearchTraceLimits:
     events_per_trade_date: int = 4096
     payload_bytes: int = 4 * 1024 * 1024
@@ -198,6 +210,34 @@ class SQLiteV2ResearchTraceStore:
                     rows = connection.execute("SELECT DISTINCT trade_date FROM committed_events").fetchall()
                 dates.update(date.fromisoformat(str(row["trade_date"])) for row in rows)
         return tuple(sorted(dates, reverse=True)[:limit])
+
+    def inspect_first_observations(self, *, limit: int = 40) -> tuple[V2ResearchTradeDateObservation, ...]:
+        """Read the earliest committed observation for each retained trade date."""
+
+        if limit < 1:
+            raise ValueError("research trace date limit must be positive")
+        earliest: dict[date, datetime] = {}
+        with self._lock:
+            for database in self._source_databases():
+                with self._connection(database, write=False) as connection:
+                    rows = connection.execute(
+                        """
+                        SELECT trade_date, MIN(observed_at) AS observed_at
+                        FROM committed_events
+                        GROUP BY trade_date
+                        """
+                    ).fetchall()
+                for row in rows:
+                    trade_date = date.fromisoformat(str(row["trade_date"]))
+                    observed_at = datetime.fromisoformat(str(row["observed_at"]))
+                    observation = V2ResearchTradeDateObservation(trade_date, observed_at)
+                    current = earliest.get(trade_date)
+                    if current is None or observation.observed_at < current:
+                        earliest[trade_date] = observation.observed_at
+        return tuple(
+            V2ResearchTradeDateObservation(trade_date, earliest[trade_date])
+            for trade_date in sorted(earliest, reverse=True)[:limit]
+        )
 
     def list_by_trade_date(self, trade_date: date) -> tuple[V2DecisionObservation, ...]:
         self.initialize()
@@ -754,5 +794,6 @@ __all__ = [
     "ResearchTraceConflictError",
     "ResearchTraceLimits",
     "SQLiteV2ResearchTraceStore",
+    "V2ResearchTradeDateObservation",
     "V2ResearchTraceStatus",
 ]

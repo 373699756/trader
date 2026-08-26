@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -40,6 +41,27 @@ def test_committed_event_trace_survives_restart_and_replays_idempotently(tmp_pat
     assert reopened.list_by_trade_date(event.trade_date) == (observation,)
     assert reopened.status().retained == 1
     assert first.status().duplicate == 1
+
+
+def test_committed_event_trace_reports_first_observation_per_trade_date(tmp_path) -> None:
+    store = SQLiteV2ResearchTraceStore(tmp_path)
+    base = decision()
+    late = replace(base, sequence=2, observed_at=datetime(2026, 8, 11, 15, 1, tzinfo=ZoneInfo("Asia/Shanghai")))
+    following = replace(
+        base,
+        sequence=3,
+        trade_date=base.trade_date + timedelta(days=1),
+        observed_at=datetime(2026, 8, 12, 14, 45, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+    for item in (late, base, following):
+        event = build_v2_decision_committed(item)
+        store.record(V2DecisionObservation(event, None))
+
+    observations = store.inspect_first_observations(limit=4)
+
+    assert tuple(item.trade_date for item in observations) == (following.trade_date, base.trade_date)
+    assert observations[0].observed_at == following.observed_at
+    assert observations[1].observed_at == base.observed_at
 
 
 def test_committed_event_trace_rejects_same_identity_with_different_payload(tmp_path) -> None:

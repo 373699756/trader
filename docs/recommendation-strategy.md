@@ -958,6 +958,16 @@ R4 challengers、R5 报告和前向 binding 必须逐级携带相同 research id
 `score_r5_paired_mbb_holm_v2`、`score_r5_forward_day_v2` 和 `score_r5_final_report_v2`；旧
 `score_p0_v1` 的状态、日期、schema、哈希和随机流不得改写或混入。
 
+2026-08-26 对不可变运行证据的只读核验确认：`score_p0_v2` 仅记录 2026-08-21，已经过去的
+2026-08-24、2026-08-25、2026-08-26 没有 committed observation，也没有对应 V2 正式决策记录。由于该身份没有
+replacement date 且禁止换日、补日或使用后来行情重建，历史窗口理论最大可达数已降为 37/40，状态固定
+判为 `historical_collection_failed`，不得继续显示为 `historical_collecting` 或进入 R2-R5。直接原因是
+三日没有可验证 committed event；当日服务为何没有持续形成正式决策因缺少运行日志仍为待验证，数据平面
+曾被隔离不能单独证明因果。覆盖只接纳计划日 14:50 或更早的首个 committed observation；截止后迟到
+事件继续保留为不可变档案，但不能恢复已经失败的固定日期。后续评分研究必须等新的因子、标签、模型、
+成本和固定挑战者规范全部冻结后，再于任何标签可见前预注册独立身份和不重叠未来窗口；不得现在用未定
+规范提前占用日期，也不得改写 `score_p0_v2`。
+
 Score-R0（评分科学化研究，非生产）已预注册以下固定边界，先实现契约与审计再切入实现：
 
 - 研究评价固定最多 60 个不同交易日，不允许“挑日”与“后验参数重估”；

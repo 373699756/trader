@@ -6,11 +6,13 @@ import dataclasses
 import hashlib
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, time
 from typing import Literal
 
 _IDENTITY = re.compile(r"^[a-z0-9_]{1,64}$")
+SCORE_RESEARCH_OBSERVATION_CUTOFF = time(14, 50)
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,83 @@ class ScoreResearchSpec:
     @property
     def allowed_historical_dates(self) -> frozenset[date]:
         return frozenset((*self.historical_dates, *self.historical_replacement_dates))
+
+
+@dataclass(frozen=True)
+class ScoreResearchWindowCoverage:
+    """Typed coverage of one immutable planned-date window."""
+
+    recorded_dates: tuple[date, ...]
+    missed_dates: tuple[date, ...]
+    maximum_attainable_days: int
+    next_planned_date: date | None
+    state: Literal["collecting", "complete", "failed"]
+
+    @property
+    def complete(self) -> bool:
+        return self.state == "complete"
+
+    @property
+    def recoverable(self) -> bool:
+        return self.state != "failed"
+
+
+@dataclass(frozen=True)
+class ScoreResearchCoverage:
+    historical: ScoreResearchWindowCoverage
+    forward: ScoreResearchWindowCoverage
+
+
+def assess_score_research_coverage(
+    spec: ScoreResearchSpec,
+    recorded_dates: Iterable[date],
+    *,
+    as_of: datetime,
+    observation_cutoff: time = SCORE_RESEARCH_OBSERVATION_CUTOFF,
+) -> ScoreResearchCoverage:
+    """Assess fixed dates against the timezone-aware observation cutoff."""
+
+    if as_of.tzinfo is None or as_of.utcoffset() is None:
+        raise ValueError("research coverage clock must be timezone-aware")
+    recorded = frozenset(recorded_dates)
+    return ScoreResearchCoverage(
+        historical=_assess_window(spec.historical_dates, recorded, as_of, observation_cutoff),
+        forward=_assess_window(spec.forward_dates, recorded, as_of, observation_cutoff),
+    )
+
+
+def _assess_window(
+    planned_dates: tuple[date, ...],
+    recorded_dates: frozenset[date],
+    as_of: datetime,
+    observation_cutoff: time,
+) -> ScoreResearchWindowCoverage:
+    current_date = as_of.date()
+    current_time = as_of.timetz().replace(tzinfo=None)
+
+    def closed(value: date) -> bool:
+        return value < current_date or (value == current_date and current_time >= observation_cutoff)
+
+    recorded = tuple(value for value in planned_dates if value in recorded_dates)
+    missed = tuple(value for value in planned_dates if closed(value) and value not in recorded_dates)
+    next_planned = next(
+        (value for value in planned_dates if not closed(value) and value not in recorded_dates),
+        None,
+    )
+    state: Literal["collecting", "complete", "failed"]
+    if len(recorded) == len(planned_dates):
+        state = "complete"
+    elif missed:
+        state = "failed"
+    else:
+        state = "collecting"
+    return ScoreResearchWindowCoverage(
+        recorded_dates=recorded,
+        missed_dates=missed,
+        maximum_attainable_days=len(planned_dates) - len(missed),
+        next_planned_date=next_planned,
+        state=state,
+    )
 
 
 def _validate_spec_identity(spec: ScoreResearchSpec) -> None:
@@ -252,6 +331,10 @@ __all__ = [
     "ACTIVE_SCORE_RESEARCH_SPEC",
     "SCORE_P0_V1_SPEC",
     "SCORE_P0_V2_SPEC",
+    "SCORE_RESEARCH_OBSERVATION_CUTOFF",
+    "ScoreResearchCoverage",
     "ScoreResearchSpec",
+    "ScoreResearchWindowCoverage",
+    "assess_score_research_coverage",
     "get_score_research_spec",
 ]

@@ -1505,8 +1505,19 @@ outcome 库存在时同时报告基准、全部 outcome、完整 outcome 和最�
 计划交易日固定为 2026-10-26 至 2026-11-20，失败日不得回退、顺延或替换。纯领域 research spec
 生成规范 SHA-256；R2、R3、R4、R5 及前向证据逐级绑定 identity/spec hash，新身份前向文件使用独立
 命名空间，并显式使用各研究载荷的 v2 schema，旧 v1 证据不迁移、不覆盖。`research-status` 的
-`v2_research_readiness_v2` 同时报告活动窗口已记录日期数和旧身份
-`historical_rejected`，但分区出现只表示 observation 已采集，不等于 R2 有效日、R5 通过或 R6 可执行。
+`v2_research_readiness_v3` 除活动窗口已记录日期数和旧身份 `historical_rejected` 外，还必须按
+`Asia/Shanghai` 带时区时钟和 14:50 观察截止显式报告已经过去且没有证据的固定计划日、窗口最大可达
+日期数、下一计划日、`complete` 和 `recoverable`。当天在 14:50 前、未来日期不得提前计为缺失；覆盖
+只接纳计划日 14:50 或更早的首个 committed observation，截止后迟到记录仍保留在档案列表但不能恢复
+失败日期。历史窗口存在已错过计划日时根状态固定为 `historical_collection_failed`，阻塞原因为
+`score_p0_v2_historical_planned_dates_missed`。分区出现只表示 observation 已采集，不等于 R2 有效日、
+R5 通过或 R6 可执行。
+
+2026-08-26 15:05 的只读核验确认 `score_p0_v2` 已错过 2026-08-24、2026-08-25、2026-08-26，当前
+最大只能达到 37/40，因此该身份不再具备完成历史窗口的资格；已有 2026-08-21 分区继续作为不可变失败
+证据保留。上述三日都没有 committed event 或 V2 正式决策，运行级唯一原因因没有对应日志仍为待验证，
+不得把 2026-08-24 的数据平面隔离记录单独写成确定因果。新研究身份只能在后续评分规范完整冻结后、
+任何新窗口标签可见前另行预注册；本批不创建含义未定的占位身份，不改变生产评分、冻结、DeepSeek 或 Web。
 
 离线历史筛选使用独立 `score_h0_v1` 数据平面，不接入生产组合根、HTTP、调度、冻结或 DeepSeek。
 显式 `research-history-download` 命令读取一次全 A 股清单，并以最多 5 个有界 worker 从生产已有的腾讯

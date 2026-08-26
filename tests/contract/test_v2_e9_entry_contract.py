@@ -4,11 +4,18 @@ import ast
 import json
 import os
 import subprocess
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
+import trader.entrypoints.cli as cli_module
 from trader.entrypoints.cli import build_parser, main
+from trader.infra.persistence.research_trace import (
+    SQLiteV2ResearchTraceStore,
+    V2ResearchTradeDateObservation,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -186,7 +193,12 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert "日常启动不需要填写任何参数" in powershell
 
 
-def test_research_status_does_not_create_runtime_files(tmp_path: Path, capsys) -> None:
+def test_research_status_does_not_create_runtime_files(tmp_path: Path, capsys, monkeypatch) -> None:
+    monkeypatch.setattr(
+        cli_module,
+        "_shanghai_now",
+        lambda: datetime(2026, 8, 20, 15, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
     runtime = json.loads((ROOT / "config/v2/runtime.json").read_text(encoding="utf-8"))
     runtime_dir = tmp_path / "runtime"
     runtime["runtime_dir"] = str(runtime_dir)
@@ -220,21 +232,78 @@ def test_research_status_does_not_create_runtime_files(tmp_path: Path, capsys) -
     assert payload["blockers"] == ["score_h0_archive_coverage_incomplete"]
     assert payload["promotion_blockers"] == ["score_r6_preregistered_forward_evidence_missing"]
     assert payload["score_r7"] == {"dossier_count": 0, "dossiers": []}
-    assert payload["schema_version"] == "v2_research_readiness_v2"
+    assert payload["schema_version"] == "v2_research_readiness_v3"
+    assert payload["research_state"] == "historical_collecting"
     assert payload["active_research"]["research_identity"] == "score_p0_v2"
     assert payload["active_research"]["historical_window"] == {
         "start": "2026-08-21",
         "end": "2026-10-23",
         "planned_trade_dates": 40,
         "recorded_trade_dates": 0,
+        "missed_trade_dates": [],
+        "maximum_attainable_trade_dates": 40,
+        "next_planned_trade_date": "2026-08-21",
+        "complete": False,
+        "recoverable": True,
     }
     assert payload["active_research"]["forward_window"] == {
         "start": "2026-10-26",
         "end": "2026-11-20",
         "planned_trade_dates": 20,
         "recorded_trade_dates": 0,
+        "missed_trade_dates": [],
+        "maximum_attainable_trade_dates": 20,
+        "next_planned_trade_date": "2026-10-26",
+        "complete": False,
+        "recoverable": True,
     }
     assert payload["legacy_research"]["research_identity"] == "score_p0_v1"
+    assert not runtime_dir.exists()
+
+
+def test_research_status_reports_irrecoverable_missed_fixed_dates(tmp_path: Path, capsys, monkeypatch) -> None:
+    runtime = json.loads((ROOT / "config/v2/runtime.json").read_text(encoding="utf-8"))
+    runtime_dir = tmp_path / "runtime"
+    runtime["runtime_dir"] = str(runtime_dir)
+    config = tmp_path / "runtime.json"
+    config.write_text(json.dumps(runtime), encoding="utf-8")
+    monkeypatch.setattr(
+        cli_module,
+        "_shanghai_now",
+        lambda: datetime(2026, 8, 26, 15, 5, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+    monkeypatch.setattr(
+        SQLiteV2ResearchTraceStore,
+        "inspect_first_observations",
+        lambda self, *, limit=40: (
+            V2ResearchTradeDateObservation(
+                date(2026, 8, 26),
+                datetime(2026, 8, 26, 14, 51, tzinfo=ZoneInfo("Asia/Shanghai")),
+            ),
+            V2ResearchTradeDateObservation(
+                date(2026, 8, 21),
+                datetime(2026, 8, 21, 14, 40, tzinfo=ZoneInfo("Asia/Shanghai")),
+            ),
+        ),
+    )
+
+    assert main(["--config", str(config), "research-status"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema_version"] == "v2_research_readiness_v3"
+    assert payload["research_state"] == "historical_collection_failed"
+    assert payload["active_research"]["evaluation_blocker"] == "score_p0_v2_historical_planned_dates_missed"
+    assert payload["active_research"]["historical_window"] == {
+        "start": "2026-08-21",
+        "end": "2026-10-23",
+        "planned_trade_dates": 40,
+        "recorded_trade_dates": 1,
+        "missed_trade_dates": ["2026-08-24", "2026-08-25", "2026-08-26"],
+        "maximum_attainable_trade_dates": 37,
+        "next_planned_trade_date": "2026-08-27",
+        "complete": False,
+        "recoverable": False,
+    }
     assert not runtime_dir.exists()
 
 

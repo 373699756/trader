@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -9,8 +10,15 @@ from trader.domain.research.specification import (
     SCORE_P0_V1_SPEC,
     SCORE_P0_V2_SPEC,
     ScoreResearchSpec,
+    assess_score_research_coverage,
     get_score_research_spec,
 )
+
+SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def _at(value: str) -> datetime:
+    return datetime.fromisoformat(value).replace(tzinfo=SHANGHAI)
 
 
 def test_score_p0_v2_is_preregistered_before_its_complete_future_window() -> None:
@@ -43,3 +51,75 @@ def test_research_spec_rejects_registration_after_window_start() -> None:
             bootstrap_master_seed=1,
             maximum_historical_days=1,
         )
+
+
+def test_future_research_coverage_fails_when_fixed_planned_dates_are_missed() -> None:
+    coverage = assess_score_research_coverage(
+        SCORE_P0_V2_SPEC,
+        recorded_dates=(date(2026, 8, 21),),
+        as_of=_at("2026-08-26T14:49:59"),
+    )
+
+    assert coverage.historical.state == "failed"
+    assert coverage.historical.recorded_dates == (date(2026, 8, 21),)
+    assert coverage.historical.missed_dates == (date(2026, 8, 24), date(2026, 8, 25))
+    assert coverage.historical.maximum_attainable_days == 38
+    assert coverage.historical.next_planned_date == date(2026, 8, 26)
+    assert coverage.historical.complete is False
+    assert coverage.historical.recoverable is False
+    assert coverage.forward.state == "collecting"
+    assert coverage.forward.missed_dates == ()
+    assert coverage.forward.maximum_attainable_days == 20
+
+
+def test_future_research_coverage_does_not_mark_today_or_future_dates_missed() -> None:
+    coverage = assess_score_research_coverage(
+        SCORE_P0_V2_SPEC,
+        recorded_dates=(),
+        as_of=_at("2026-08-21T14:49:59"),
+    )
+
+    assert coverage.historical.state == "collecting"
+    assert coverage.historical.missed_dates == ()
+    assert coverage.historical.next_planned_date == date(2026, 8, 21)
+    assert coverage.historical.maximum_attainable_days == 40
+    assert coverage.historical.recoverable is True
+
+
+def test_future_research_coverage_marks_today_missed_at_the_fixed_cutoff() -> None:
+    coverage = assess_score_research_coverage(
+        SCORE_P0_V2_SPEC,
+        recorded_dates=(date(2026, 8, 21),),
+        as_of=_at("2026-08-26T14:50:00"),
+    )
+
+    assert coverage.historical.missed_dates == (
+        date(2026, 8, 24),
+        date(2026, 8, 25),
+        date(2026, 8, 26),
+    )
+    assert coverage.historical.maximum_attainable_days == 37
+    assert coverage.historical.next_planned_date == date(2026, 8, 27)
+
+
+def test_research_coverage_rejects_naive_clock() -> None:
+    with pytest.raises(ValueError, match="timezone-aware"):
+        assess_score_research_coverage(
+            SCORE_P0_V2_SPEC,
+            recorded_dates=(),
+            as_of=datetime(2026, 8, 21, 14, 50),
+        )
+
+
+def test_research_coverage_is_complete_only_with_every_fixed_date() -> None:
+    coverage = assess_score_research_coverage(
+        SCORE_P0_V2_SPEC,
+        recorded_dates=(*SCORE_P0_V2_SPEC.historical_dates, *SCORE_P0_V2_SPEC.forward_dates),
+        as_of=_at("2026-11-21T00:00:00"),
+    )
+
+    assert coverage.historical.state == "complete"
+    assert coverage.historical.complete is True
+    assert coverage.historical.recoverable is True
+    assert coverage.forward.state == "complete"
+    assert coverage.forward.complete is True
