@@ -146,3 +146,25 @@ def test_timed_out_history_batch_releases_inflight_and_reports_age() -> None:
     assert status.inflight_count == 2
     assert status.inflight_age_seconds == 0.0
     assert lanes.submissions[1][0] == ("300001", "300002")
+
+
+def test_history_warmup_keeps_slot_order_stable_when_market_ranking_reorders() -> None:
+    clock = _Clock()
+    lanes = _Lanes()
+    runner = SimpleNamespace(source_lanes=lanes, wall_clock=lambda: NOW)
+    warmup = HistoryWarmup(
+        _History(),
+        _References(),
+        runner,
+        batch_size=2,
+        batch_timeout_seconds=5.0,
+        monotonic=clock,
+    )
+    original = ("600001", "300001", "600002", "300002")
+
+    warmup.schedule_history_warmup(original, NOW)
+    warmup.schedule_history_warmup(tuple(reversed(original)), NOW + timedelta(seconds=1))
+    lanes.submissions[0][1].set_result({})
+
+    assert lanes.submissions[0][0] == original[:2]
+    assert lanes.submissions[1][0] == original[2:]

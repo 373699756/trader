@@ -70,7 +70,8 @@
   }
   const streamController = (window.TraderDashboardStream || fallbackDashboardStream()).create({
     state, els, patches, formatters, diagnostics, patchToPaintSamples,
-    loadRecommendations, loadStatus, applyOverlayPatch, requestRecommendationResync, recordBrowserError,
+    loadRecommendations, loadStatus, applyRecommendationPatch, applyOverlayPatch,
+    requestRecommendationResync, recordBrowserError,
   });
   window.TraderDashboardDiagnostics = Object.freeze({
     snapshot: () => ({

@@ -103,10 +103,10 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.statusPayloadCompatibility({
-    schema_version: "v2_status_v2",
+    schema_version: "v2_status_v3",
     release: {
       decision_view_schema: "v2_decision_view_v2",
-      web_asset_revision: "release-contract-2026-08-26-v2",
+      web_asset_revision: "release-contract-2026-08-26-v3",
     },
   }))),
   { compatible: true, reason: "" },
@@ -116,6 +116,14 @@ assert.deepStrictEqual(
   { compatible: false, reason: "decision_schema_mismatch" },
 );
 assert(source.includes("draft: null,"), "formal recommendation patches must clear observation drafts");
+assert(
+  source.includes("loadRecommendations, loadStatus, applyRecommendationPatch, applyOverlayPatch"),
+  "dashboard must inject the direct recommendation patch handler into the SSE controller",
+);
+assert(
+  streamSource.includes("applyRecommendationPatch(payload)"),
+  "decision SSE must render its replacement patch without an unconditional snapshot GET",
+);
 assert.strictEqual(state.formatDurationHms(0), "0s");
 assert.strictEqual(state.formatDurationHms(-1), "0s");
 assert.strictEqual(state.formatDurationHms(Number.NaN), "0s");
@@ -767,8 +775,8 @@ assert.strictEqual(state.eventMatchesCurrent({ strategy: "today", trade_date: "2
 assert.strictEqual(state.eventMatchesCurrent({ strategy: "d25", trade_date: "2026-07-23" }, "today", "2026-07-23"), false);
 assert.strictEqual(state.eventMatchesCurrent({ strategy: "today", trade_date: "2026-07-22" }, "today", "2026-07-23"), false);
 assert(
-  streamSource.includes("if (!state.date && eventMatchesCurrent(payload))"),
-  "unrelated strategy events must not issue decision GETs",
+  streamSource.includes("if (!state.date && eventMatchesCurrent(payload) && applyRecommendationPatch(payload))"),
+  "unrelated strategy events must not apply decision patches",
 );
 assert(
   source.includes("current.projection_version === state.payload.projection_version"),

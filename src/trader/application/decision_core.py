@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -122,7 +123,14 @@ class UnifiedDecisionIndex:
                 self._seals.pop(decision.strategy, None)
                 self._formal.pop(decision.strategy, None)
                 self._closed.pop(decision.strategy, None)
-            return UnifiedDecisionPublishResult(True, "accepted", build_v2_decision_committed(decision))
+            projection_version = hashlib.sha256(
+                f"{decision.content_hash}|{initial_overlay.content_hash}".encode()
+            ).hexdigest()
+            return UnifiedDecisionPublishResult(
+                True,
+                "accepted",
+                build_v2_decision_committed(decision, projection_version=projection_version),
+            )
 
     def publish_overlay(
         self,

@@ -147,13 +147,17 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     response.close()
     status = client.get("/api/v2/status").get_json()
 
-    assert status["schema_version"] == "v2_status_v2"
+    assert status["schema_version"] == "v2_status_v3"
     assert status["release"] == {
         "decision_view_schema": "v2_decision_view_v2",
         "web_asset_revision": WEB_ASSET_REVISION,
     }
     assert "event: decision" in event
-    assert json.loads(event.split("data: ", 1)[1])["strategy"] == "today"
+    decision_patch = json.loads(event.split("data: ", 1)[1])
+    assert decision_patch["strategy"] == "today"
+    assert decision_patch["patch_schema_version"] == 2
+    assert decision_patch["replace"] is True
+    assert [item["code"] for item in decision_patch["upserts"]] == ["600000"]
     assert status["events"]["sequence"] == 1
     assert status["strategies"]["today"]["status"] == queries.current(Strategy.TODAY).status
     assert status["runtime_version"] == "runtime:test"
@@ -183,6 +187,13 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
         "history_warmup_inflight_count": 30,
         "history_warmup_planned_count": 120,
         "market_feature_rows": 5567,
+        "market_changes": {
+            "dirty": 12,
+            "inserted": 1,
+            "merge_epoch": "merge-22",
+            "removed": 2,
+            "updated": 9,
+        },
         "market_quote_age": {
             "latest_source_time": NOW.isoformat(),
             "maximum_seconds": 5.0,
@@ -191,6 +202,27 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
             "sample_count": 5567,
         },
         "measured_at": NOW.isoformat(),
+        "latency_waterfall": {
+            "active_trace_count": 1,
+            "completed_count": 40,
+            "dropped_count": 0,
+            "dropped_stage_count": 0,
+            "failed_count": 2,
+            "planned_count": 44,
+            "sample_capacity": 512,
+            "stage_capacity": 64,
+            "stages": {
+                "decision_publish": {
+                    "maximum_ms": 4.0,
+                    "p50_ms": 1.0,
+                    "p95_ms": 3.0,
+                    "sample_count": 40,
+                }
+            },
+            "superseded_count": 1,
+            "timeout_count": 0,
+            "trace_capacity": 512,
+        },
         "security_master": {
             "complete_rows": 850,
             "listing_age_rows": 850,
@@ -285,6 +317,37 @@ def _app():
                 "history_warmup_completed_count": 60,
                 "history_warmup_failure_count": 3,
                 "history_warmup_inflight_count": 30,
+                "market_changes": {
+                    "merge_epoch": "merge-22",
+                    "inserted": 1,
+                    "updated": 9,
+                    "removed": 2,
+                    "dirty": 12,
+                    "internal_codes": ["must-not-leak"],
+                },
+                "latency_waterfall": {
+                    "sample_capacity": 512,
+                    "trace_capacity": 512,
+                    "stage_capacity": 64,
+                    "active_trace_count": 1,
+                    "planned_count": 44,
+                    "completed_count": 40,
+                    "failed_count": 2,
+                    "timeout_count": 0,
+                    "superseded_count": 1,
+                    "dropped_count": 0,
+                    "dropped_stage_count": 0,
+                    "stages": {
+                        "decision_publish": {
+                            "sample_count": 40,
+                            "p50_ms": 1.0,
+                            "p95_ms": 3.0,
+                            "maximum_ms": 4.0,
+                            "samples": ["must-not-leak"],
+                        }
+                    },
+                    "traces": {"must-not-leak": {}},
+                },
                 "security_master": {
                     "total_rows": 851,
                     "listing_date_rows": 850,

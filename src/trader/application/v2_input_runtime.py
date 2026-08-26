@@ -16,7 +16,7 @@ from trader.application.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.long_v2_runtime import LongV2Runtime
 from trader.application.policy import RecommendationPolicy
 from trader.application.ports.long import LongRefreshRequest
-from trader.application.ports.market import MarketDataUnavailableError
+from trader.application.ports.market import MarketDataUnavailableError, ResearchRefreshResult
 from trader.application.ports.runtime_status import V2InputQualityStatus, V2SupplyFunnel, V2SupplySummary
 from trader.application.ports.scored import D25NativeInput, TodayNativeInput, TomorrowNativeInput
 from trader.application.ports.v2_runtime import (
@@ -26,6 +26,7 @@ from trader.application.ports.v2_runtime import (
     V2DecisionBuilderPort,
     V2DecisionUnavailableError,
     V2PipelineTaskRequest,
+    V2RefreshOutcome,
     V2ResearchIntent,
 )
 from trader.application.research_audit import (
@@ -57,6 +58,7 @@ class V2InputBatch:
     requested_codes: tuple[str, ...]
     candidate_features: tuple[FeatureSnapshot, ...]
     data_version: str
+    input_epoch_version: str
 
 
 @dataclass(frozen=True)
@@ -64,6 +66,13 @@ class _SharedInputBatch:
     market_features: tuple[FeatureSnapshot, ...]
     requested_codes: tuple[str, ...]
     candidate_features: tuple[FeatureSnapshot, ...]
+    input_epoch_version: str
+
+
+@dataclass(frozen=True)
+class _ScoringFeatureBatch:
+    features: tuple[FeatureSnapshot, ...]
+    input_epoch_version: str
 
 
 @dataclass(frozen=True)
@@ -123,7 +132,7 @@ class V2MarketReader(Protocol):
         observed_at: datetime,
         *,
         deadline: datetime | None = None,
-    ) -> None: ...
+    ) -> ResearchRefreshResult: ...
 
     def refresh_stock_risk(
         self,
@@ -131,7 +140,7 @@ class V2MarketReader(Protocol):
         observed_at: datetime,
         *,
         deadline: datetime | None = None,
-    ) -> object: ...
+    ) -> ResearchRefreshResult: ...
 
     def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> None: ...
 
@@ -167,26 +176,34 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         self._latest_market_features: tuple[FeatureSnapshot, ...] = ()
         self._latest_requested_codes: tuple[str, ...] = ()
         self._latest_topk_quotes: _TopKQuoteBatch | None = None
-        self._score_feature_batches: dict[
-            tuple[datetime, bool, tuple[str, ...]],
-            tuple[FeatureSnapshot, ...],
-        ] = {}
+        self._market_version = "market:unavailable"
+        self._candidate_version = "candidate:unavailable"
+        self._research_version = "research:initial"
+        self._intraday_version = "intraday:initial"
+        self._market_quote_versions: dict[str, str] = {}
+        self._candidate_quote_versions: dict[str, str] = {}
+        self._topk_version = "topk:unavailable"
+        self._score_feature_batches: dict[tuple[str, bool, tuple[str, ...]], tuple[FeatureSnapshot, ...]] = {}
         self._projections: dict[str, ScoredV2LocalProjection] = {}
         self._decisions: dict[str, ScoredDecision] = {}
         self._input_quality: dict[Strategy, V2InputQualityStatus] = {}
         self._sequences = {strategy: 1 for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)}
 
-    def refresh_task(self, request: V2PipelineTaskRequest) -> None:
+    def refresh_task(self, request: V2PipelineTaskRequest) -> V2RefreshOutcome:
         deadline = _task_deadline(request)
         try:
-            self._run_refresh_task(request, deadline)
+            return self._run_refresh_task(request, deadline)
         except V2DataRefreshUnavailableError:
             raise
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
             raise V2DataRefreshUnavailableError(_failure_code(exc)) from exc
 
-    def _run_refresh_task(self, request: V2PipelineTaskRequest, deadline: datetime | None) -> None:
-        handler: Callable[[V2PipelineTaskRequest, datetime | None], None] | None = {
+    def _run_refresh_task(
+        self,
+        request: V2PipelineTaskRequest,
+        deadline: datetime | None,
+    ) -> V2RefreshOutcome:
+        handler: Callable[[V2PipelineTaskRequest, datetime | None], V2RefreshOutcome] | None = {
             PipelineTask.FULL_MARKET: self._refresh_full_market,
             PipelineTask.CURRENT_QUOTES: self._refresh_full_market,
             PipelineTask.CLOSE_QUOTES: self._refresh_full_market,
@@ -199,20 +216,41 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
             PipelineTask.STOCK_RISK: self._refresh_stock_risk,
             PipelineTask.REFERENCE_DATA: self._refresh_reference_data,
         }.get(request.task)
-        if handler is not None:
-            handler(request, deadline)
+        if handler is None:
+            return V2RefreshOutcome(
+                request.task,
+                False,
+                f"unchanged:{request.task.value}",
+                (),
+                request.observed_at,
+                False,
+            )
+        return handler(request, deadline)
 
-    def _refresh_full_market(self, request: V2PipelineTaskRequest, deadline: datetime | None) -> None:
+    def _refresh_full_market(
+        self,
+        request: V2PipelineTaskRequest,
+        deadline: datetime | None,
+    ) -> V2RefreshOutcome:
         features = tuple(self._market.fetch_market_features(request.observed_at, force=True, deadline=deadline))
         requested = _candidate_codes(features, self._candidate_pool_size)
+        data_version = _feature_batch_version("market", features)
+        quote_versions = _quote_versions(features)
         self._schedule_reference_data(
             requested,
             tuple(feature.quote.code for feature in features),
             request.observed_at,
         )
         with self._lock:
+            changed = data_version != self._market_version
+            changed_codes = _changed_version_codes(self._market_quote_versions, quote_versions)
+            requested_changed = requested != self._latest_requested_codes
+            if changed or requested_changed:
+                self._invalidate_scoring_locked()
             self._latest_market_features = features
             self._latest_requested_codes = requested
+            self._market_version = data_version
+            self._market_quote_versions = quote_versions
             self._record_pending_quality_locked(
                 request.observed_at,
                 population_count=len(features),
@@ -220,8 +258,20 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
                 candidate_feature_count=0,
                 primary_blocker="candidate_quotes_pending",
             )
+        return V2RefreshOutcome(
+            request.task,
+            changed,
+            data_version,
+            changed_codes if changed else (),
+            _refresh_completed_at(request, features),
+            _uses_fallback(features, expected_source=None),
+        )
 
-    def _refresh_candidates(self, request: V2PipelineTaskRequest, deadline: datetime | None) -> None:
+    def _refresh_candidates(
+        self,
+        request: V2PipelineTaskRequest,
+        deadline: datetime | None,
+    ) -> V2RefreshOutcome:
         requested = self._requested_codes()
         _require_codes(requested, "candidate_universe_unavailable")
         features = tuple(
@@ -232,7 +282,17 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
                 deadline=deadline,
             )
         )
+        data_version = _feature_batch_version("candidate", features)
+        quote_versions = _quote_versions(features)
         with self._lock:
+            changed = data_version != self._candidate_version
+            changed_codes = _changed_version_codes(self._candidate_quote_versions, quote_versions)
+            self._candidate_version = data_version
+            self._candidate_quote_versions = quote_versions
+            if changed:
+                self._invalidate_scoring_locked()
+            epoch = self._scoring_epoch_locked(include_intraday_tail=False)
+            self._score_feature_batches[(epoch, False, requested)] = features
             self._record_pending_quality_locked(
                 request.observed_at,
                 population_count=len(self._latest_market_features),
@@ -240,6 +300,14 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
                 candidate_feature_count=len(features),
                 primary_blocker="scoring_pending",
             )
+        return V2RefreshOutcome(
+            request.task,
+            changed,
+            data_version,
+            changed_codes if changed else (),
+            _refresh_completed_at(request, features),
+            _uses_fallback(features, expected_source="tencent"),
+        )
 
     def _record_pending_quality_locked(
         self,
@@ -285,48 +353,114 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
                 primary_blocker=primary_blocker,
             )
 
-    def _refresh_topk(self, request: V2PipelineTaskRequest, deadline: datetime | None) -> None:
+    def _refresh_topk(
+        self,
+        request: V2PipelineTaskRequest,
+        deadline: datetime | None,
+    ) -> V2RefreshOutcome:
         if not request.selected_codes:
-            return
-        self._market.refresh_topk_quotes(
-            request.selected_codes,
-            request.observed_at,
-            force=True,
-            deadline=deadline,
-        )
+            return V2RefreshOutcome(request.task, False, "topk:empty", (), request.observed_at, False)
         features = tuple(
-            self._market.read_candidate_features(
+            self._market.refresh_topk_quotes(
                 request.selected_codes,
                 request.observed_at,
-                include_intraday_tail=False,
-                include_structured_research=False,
+                force=True,
+                deadline=deadline,
             )
         )
+        data_version = _feature_batch_version("topk", features)
         with self._lock:
+            changed = data_version != self._topk_version
+            self._topk_version = data_version
             self._latest_topk_quotes = _TopKQuoteBatch(request.observed_at, features)
+        return V2RefreshOutcome(
+            request.task,
+            changed,
+            data_version,
+            tuple(feature.quote.code for feature in features) if changed else (),
+            _refresh_completed_at(request, features),
+            _uses_fallback(features, expected_source="tencent"),
+        )
 
-    def _refresh_intraday_tail(self, request: V2PipelineTaskRequest, _deadline: datetime | None) -> None:
+    def _refresh_intraday_tail(
+        self,
+        request: V2PipelineTaskRequest,
+        _deadline: datetime | None,
+    ) -> V2RefreshOutcome:
         requested = self._requested_codes()
         _require_codes(requested, "intraday_universe_unavailable")
         self._market.refresh_intraday_tail(requested, request.observed_at)
+        data_version = f"intraday:{request.observed_at:%Y%m%dT%H%M%S%f}"
+        with self._lock:
+            self._intraday_version = data_version
+            self._invalidate_scoring_locked()
+        return V2RefreshOutcome(request.task, True, data_version, requested, request.observed_at, False)
 
-    def _refresh_industry_heat(self, request: V2PipelineTaskRequest, _deadline: datetime | None) -> None:
-        self._market.refresh_industry_heat(request.observed_at)
+    def _refresh_industry_heat(
+        self,
+        request: V2PipelineTaskRequest,
+        _deadline: datetime | None,
+    ) -> V2RefreshOutcome:
+        features = tuple(self._market.refresh_industry_heat(request.observed_at))
+        version = _feature_batch_version("industry", features)
+        return V2RefreshOutcome(
+            request.task,
+            bool(features),
+            version,
+            tuple(feature.quote.code for feature in features),
+            _refresh_completed_at(request, features),
+            False,
+        )
 
-    def _refresh_market_news(self, request: V2PipelineTaskRequest, deadline: datetime | None) -> None:
+    def _refresh_market_news(
+        self,
+        request: V2PipelineTaskRequest,
+        deadline: datetime | None,
+    ) -> V2RefreshOutcome:
         requested = self._requested_codes()
         _require_codes(requested, "news_universe_unavailable")
-        self._market.refresh_market_news(requested, request.observed_at, deadline=deadline)
+        result = self._market.refresh_market_news(requested, request.observed_at, deadline=deadline)
+        return self._research_outcome(request, result)
 
-    def _refresh_stock_risk(self, request: V2PipelineTaskRequest, deadline: datetime | None) -> None:
+    def _refresh_stock_risk(
+        self,
+        request: V2PipelineTaskRequest,
+        deadline: datetime | None,
+    ) -> V2RefreshOutcome:
         requested = self._requested_codes()
         _require_codes(requested, "risk_universe_unavailable")
-        self._market.refresh_stock_risk(requested, request.observed_at, deadline=deadline)
+        result = self._market.refresh_stock_risk(requested, request.observed_at, deadline=deadline)
+        return self._research_outcome(request, result)
 
-    def _refresh_reference_data(self, request: V2PipelineTaskRequest, _deadline: datetime | None) -> None:
+    def _refresh_reference_data(
+        self,
+        request: V2PipelineTaskRequest,
+        _deadline: datetime | None,
+    ) -> V2RefreshOutcome:
         requested = self._requested_codes()
         if requested:
             self._schedule_reference_data(requested, requested, request.observed_at)
+        return V2RefreshOutcome(request.task, False, "reference:scheduled", (), request.observed_at, False)
+
+    def _research_outcome(
+        self,
+        request: V2PipelineTaskRequest,
+        result: ResearchRefreshResult,
+    ) -> V2RefreshOutcome:
+        version = result.data_version or f"research:{request.task.value}:empty"
+        changed = bool(result.changed_codes)
+        with self._lock:
+            if changed:
+                self._research_version = version
+                self._invalidate_scoring_locked()
+        return V2RefreshOutcome(
+            request.task,
+            changed,
+            version,
+            result.changed_codes if changed else (),
+            result.completed_at or request.observed_at,
+            bool(result.failed_codes or result.deferred_codes or result.deadline_reached),
+        )
 
     def _requested_codes(self) -> tuple[str, ...]:
         with self._lock:
@@ -340,12 +474,15 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         try:
             shared = self._cached_input(request)
             candidate_features = shared.candidate_features
+            input_epoch_version = shared.input_epoch_version
             if request.strategy is Strategy.TOMORROW:
-                candidate_features = self._score_features(
+                scoring_batch = self._score_features(
                     shared.requested_codes,
                     request.observed_at,
                     include_intraday_tail=True,
                 )
+                candidate_features = scoring_batch.features
+                input_epoch_version = scoring_batch.input_epoch_version
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
             raise V2DataRefreshUnavailableError(_failure_code(exc)) from exc
         batch = V2InputBatch(
@@ -354,6 +491,7 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
             shared.requested_codes,
             candidate_features,
             _data_version(request, shared.market_features, candidate_features),
+            input_epoch_version,
         )
         with self._lock:
             self._batches[(request.strategy, request.input_version)] = batch
@@ -364,14 +502,22 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         with self._lock:
             market_features = self._latest_market_features
             requested = self._latest_requested_codes
+            input_epoch_version = self._scoring_epoch_locked(include_intraday_tail=False)
         if not market_features or not requested:
             raise V2DataRefreshUnavailableError("market_snapshot_unavailable")
-        candidate_features = self._score_features(
+        scoring_batch = self._score_features(
             requested,
             request.observed_at,
             include_intraday_tail=False,
         )
-        return _SharedInputBatch(market_features, requested, candidate_features)
+        if input_epoch_version != scoring_batch.input_epoch_version:
+            raise V2DataRefreshUnavailableError("input_superseded")
+        return _SharedInputBatch(
+            market_features,
+            requested,
+            scoring_batch.features,
+            scoring_batch.input_epoch_version,
+        )
 
     def _score_features(
         self,
@@ -379,24 +525,41 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         observed_at: datetime,
         *,
         include_intraday_tail: bool,
-    ) -> tuple[FeatureSnapshot, ...]:
-        key = (observed_at, include_intraday_tail, requested)
+    ) -> _ScoringFeatureBatch:
         with self._lock:
+            epoch = self._scoring_epoch_locked(include_intraday_tail=include_intraday_tail)
+            key = (epoch, include_intraday_tail, requested)
             cached = self._score_feature_batches.get(key)
             if cached is not None:
-                return cached
-            features = tuple(
-                self._market.read_candidate_features(
-                    requested,
-                    observed_at,
-                    include_intraday_tail=include_intraday_tail,
-                    include_structured_research=True,
-                )
+                return _ScoringFeatureBatch(cached, epoch)
+        features = tuple(
+            self._market.read_candidate_features(
+                requested,
+                observed_at,
+                include_intraday_tail=include_intraday_tail,
+                include_structured_research=True,
             )
+        )
+        with self._lock:
+            if epoch != self._scoring_epoch_locked(include_intraday_tail=include_intraday_tail):
+                raise V2DataRefreshUnavailableError("input_superseded")
             self._score_feature_batches[key] = features
             while len(self._score_feature_batches) > 8:
                 self._score_feature_batches.pop(next(iter(self._score_feature_batches)))
-            return features
+            return _ScoringFeatureBatch(features, epoch)
+
+    def _scoring_epoch_locked(self, *, include_intraday_tail: bool) -> str:
+        versions = (
+            self._market_version,
+            self._candidate_version,
+            self._research_version,
+            self._intraday_version if include_intraday_tail else "intraday:not_used",
+            self._latest_requested_codes,
+        )
+        return f"input:{_stable_digest(versions)}"
+
+    def _invalidate_scoring_locked(self) -> None:
+        self._score_feature_batches.clear()
 
     def _schedule_reference_data(
         self,
@@ -424,10 +587,13 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
             return None
         with self._lock:
             batch = self._batches.get((request.strategy, request.input_version))
+            current_epoch = self._scoring_epoch_locked(include_intraday_tail=request.strategy is Strategy.TOMORROW)
             sequence = self._sequences[request.strategy]
             self._sequences[request.strategy] += 2
         if batch is None:
             raise V2DecisionUnavailableError("V2 native input is unavailable")
+        if batch.input_epoch_version != current_epoch:
+            raise V2DecisionUnavailableError("input_superseded")
         try:
             evaluated_at = _decision_observed_at(batch)
             if request.strategy is Strategy.TODAY:
@@ -463,6 +629,10 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         except (RuntimeError, TypeError, ValueError) as exc:
             raise V2DecisionUnavailableError(_decision_failure_code(exc)) from exc
         with self._lock:
+            if batch.input_epoch_version != self._scoring_epoch_locked(
+                include_intraday_tail=request.strategy is Strategy.TOMORROW
+            ):
+                raise V2DecisionUnavailableError("input_superseded")
             self._input_quality[request.strategy] = _supply_status(projection)
         if not projection.input_quality.publishable:
             self._draft_index.publish(projection.local)
@@ -785,10 +955,75 @@ def _data_version(
     market_features: tuple[FeatureSnapshot, ...],
     candidate_features: tuple[FeatureSnapshot, ...],
 ) -> str:
-    versions = tuple(
-        sorted((feature.quote.code, feature.quote.data_version) for feature in (*market_features, *candidate_features))
+    versions = (
+        _feature_batch_version("market", market_features),
+        _feature_batch_version("candidate", candidate_features),
     )
     return f"{request.input_version}:{_stable_digest(versions)}"
+
+
+def _feature_batch_version(kind: str, features: tuple[FeatureSnapshot, ...]) -> str:
+    material = tuple(sorted(_feature_identity(feature) for feature in features))
+    return f"{kind}:{_stable_digest(material)}"
+
+
+def _feature_identity(feature: FeatureSnapshot) -> tuple[object, ...]:
+    quote = feature.quote
+    return (
+        quote.code,
+        quote.data_version,
+        quote.source_time.isoformat(),
+        quote.name,
+        quote.industry,
+        quote.board.value,
+        quote.listing_date.isoformat() if quote.listing_date is not None else None,
+        quote.listing_age_sessions,
+        quote.execution_restrictions,
+        tuple(sorted(feature.values.items())),
+        feature.history_days,
+        feature.market_regime,
+        feature.missing_fields,
+        tuple(sorted(feature.missing_reasons.items())),
+        tuple((item.evidence_id, item.data_version, item.published_at.isoformat()) for item in feature.evidence),
+        tuple(repr(item) for item in feature.external_risk_facts),
+        feature.board_policy_version,
+        feature.competition_group_version,
+        feature.parameter_status,
+        feature.selection_skip_reason,
+        feature.merge_epoch,
+    )
+
+
+def _quote_versions(features: tuple[FeatureSnapshot, ...]) -> dict[str, str]:
+    return {
+        feature.quote.code: f"{feature.quote.data_version}:{feature.quote.source_time.isoformat()}"
+        for feature in features
+    }
+
+
+def _changed_version_codes(previous: dict[str, str], current: dict[str, str]) -> tuple[str, ...]:
+    return tuple(sorted(code for code in {*previous, *current} if previous.get(code) != current.get(code)))
+
+
+def _refresh_completed_at(
+    request: V2PipelineTaskRequest,
+    features: tuple[FeatureSnapshot, ...],
+) -> datetime:
+    return max(
+        (
+            request.observed_at,
+            *(feature.observed_at for feature in features),
+            *(feature.quote.received_time for feature in features),
+        )
+    )
+
+
+def _uses_fallback(features: tuple[FeatureSnapshot, ...], *, expected_source: str | None) -> bool:
+    return any(
+        (expected_source is not None and feature.quote.source != expected_source)
+        or "market_data_degraded" in feature.quote.execution_restrictions
+        for feature in features
+    )
 
 
 def _decision_observed_at(batch: V2InputBatch) -> datetime:

@@ -39,6 +39,7 @@ from trader.application.ports.v2_runtime import (  # noqa: E402
     SharedDeepSeekRuntimeContract,
     V2CycleRequest,
     V2DecisionUnavailableError,
+    V2RefreshOutcome,
     V2ResearchIntent,
     V2ResearchRuntimeStatus,
 )
@@ -117,8 +118,15 @@ class _RecordingData:
                 }
             )
 
-    def refresh_task(self, _request) -> None:
-        return
+    def refresh_task(self, request) -> V2RefreshOutcome:
+        return V2RefreshOutcome(
+            request.task,
+            True,
+            f"measurement:{request.task.value}:{request.observed_at:%H%M%S%f}",
+            request.selected_codes,
+            request.observed_at,
+            False,
+        )
 
     def snapshot(self) -> list[dict[str, object]]:
         with self._lock:
@@ -317,6 +325,51 @@ def _seed(index: UnifiedDecisionIndex, strategy: Strategy, at: datetime, code: s
     result = index.publish_scored(decision, overlay, expected_version=None)
     if not result.accepted:
         raise RuntimeError(f"cannot seed {strategy.value}: {result.reason}")
+
+
+def _publish_decision_replacement(
+    index: UnifiedDecisionIndex,
+    events: UnifiedDecisionEventStream,
+    strategy: Strategy,
+    observed_at: datetime,
+) -> None:
+    current = index.snapshot(strategy).current
+    if not isinstance(current, ScoredDecision):
+        raise RuntimeError("measurement decision parent is unavailable")
+    items = tuple(
+        replace(
+            item,
+            quote=(
+                replace(
+                    item.quote,
+                    price=round((item.quote.price or 0.0) + 0.01, 2),
+                    source_time=observed_at,
+                    data_version=f"decision-patch:{observed_at.isoformat()}",
+                )
+                if item.quote is not None
+                else None
+            ),
+        )
+        for item in current.items
+    )
+    replacement = replace(
+        current,
+        sequence=current.sequence + 2,
+        observed_at=observed_at,
+        input_versions=(("market", f"decision-patch:{observed_at.isoformat()}"),),
+        items=items,
+    )
+    overlay = DecisionOverlay(
+        strategy,
+        replacement.trade_date,
+        replacement.version,
+        observed_at,
+        tuple(item.quote for item in replacement.items if item.quote is not None),
+    )
+    published = index.publish_scored(replacement, overlay, expected_version=current.version)
+    if not published.accepted or published.event is None:
+        raise RuntimeError(f"cannot publish measurement decision patch: {published.reason}")
+    events.publish_committed(published.event)
 
 
 def _free_port() -> int:
@@ -587,6 +640,7 @@ def _run(
         )
         clock.start()
         measurement_started = time.monotonic()
+        _publish_decision_replacement(index, events, target_strategy, clock.now())
         if not supervisor.start():
             raise RuntimeError("runtime supervisor did not start")
         supervisor_started = True
@@ -651,6 +705,13 @@ def _run(
         and not isinstance(patch_p95, bool)
         and float(patch_p95) <= patch_to_paint_budget_ms
     )
+    recommendation_patches = diagnostics.get("recommendationPatchesApplied")
+    direct_decision_patch_passed = (
+        isinstance(recommendation_patches, int)
+        and not isinstance(recommendation_patches, bool)
+        and recommendation_patches >= 1
+        and diagnostics.get("resyncRequests") == 0
+    )
     passed = (
         len(browser_records) >= args.minimum_updates
         and isinstance(browser_errors, list)
@@ -658,6 +719,7 @@ def _run(
         and retention_margin is not None
         and retention_margin > 0
         and patch_latency_passed
+        and direct_decision_patch_passed
     )
     return {
         "schema_version": "web-refresh-interval-v2",
@@ -684,6 +746,10 @@ def _run(
             "summary": patch_latency,
             "budget_ms": patch_to_paint_budget_ms,
             "passed": patch_latency_passed,
+        },
+        "browser_decision_patch": {
+            "applied_count": recommendation_patches,
+            "passed": direct_decision_patch_passed,
         },
         "web_snapshot_retention": {
             "configured_seconds": snapshot_retention_seconds,

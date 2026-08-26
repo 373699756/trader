@@ -71,6 +71,28 @@ class V2PipelineTaskRequest:
 
 
 @dataclass(frozen=True)
+class V2RefreshOutcome:
+    task: PipelineTask
+    changed: bool
+    data_version: str
+    changed_codes: tuple[str, ...]
+    completed_at: datetime
+    used_fallback: bool
+
+    def __post_init__(self) -> None:
+        normalized_version = self.data_version.strip()
+        if _IDENTITY.fullmatch(normalized_version) is None:
+            raise ValueError("refresh data version must be a stable identity")
+        _require_shanghai(self.completed_at, "refresh completed_at")
+        normalized_codes = _normalize_codes(self.changed_codes)
+        if normalized_codes != self.changed_codes:
+            raise ValueError("refresh changed codes must be unique normalized codes")
+        if not self.changed and normalized_codes:
+            raise ValueError("unchanged refresh cannot declare changed codes")
+        object.__setattr__(self, "data_version", normalized_version)
+
+
+@dataclass(frozen=True)
 class V2ResearchIntent:
     strategy: Strategy
     trade_date: date
@@ -145,7 +167,7 @@ class V2TradingCalendarPort(Protocol):
 
 
 class V2DataRefreshPort(Protocol):
-    def refresh_task(self, request: V2PipelineTaskRequest) -> None: ...
+    def refresh_task(self, request: V2PipelineTaskRequest) -> V2RefreshOutcome: ...
 
     def refresh(self, request: V2CycleRequest) -> None: ...
 
@@ -253,6 +275,7 @@ __all__ = [
     "V2FreezeUnavailableError",
     "V2OverlayPublisher",
     "V2PipelineTaskRequest",
+    "V2RefreshOutcome",
     "V2ReviewUnavailableError",
     "V2ResearchIntent",
     "V2ResearchRuntimeFactoryPort",

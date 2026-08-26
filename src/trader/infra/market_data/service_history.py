@@ -6,7 +6,7 @@ import logging
 import math
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from concurrent.futures import Future, as_completed, wait
+from concurrent.futures import Future, as_completed
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import asdict, dataclass, fields, replace
 from datetime import date, datetime, time
@@ -224,33 +224,29 @@ class HistoryCache:
                 future = submit_or_run_inline(pool, self._history_client.fetch_history, code, days=61)
                 self._runner.ensure_before_deadline(request.deadline)
                 futures[future] = code
-            completed, timed_out = self._completed_history_futures(futures, request.deadline)
-            if timed_out:
+            timed_out = False
+            timeout = (
+                None
+                if request.deadline is None
+                else max(0.0, (request.deadline - self._runner.wall_clock()).total_seconds())
+            )
+            try:
+                for future in as_completed(futures, timeout=timeout):
+                    self._runner.ensure_before_deadline(state.request.deadline)
+                    code = futures[future]
+                    self._consume_history_future(state, code, future)
+                    self._commit_history_entries(state)
+            except FutureTimeoutError:
+                timed_out = True
+                pending = tuple(future for future in futures if not future.done())
+                for future in pending:
+                    future.cancel()
+                with self._lock:
+                    self._history_error_count += len(pending)
                 state.request = replace(request, deadline=None)
-            for future in completed:
-                self._runner.ensure_before_deadline(state.request.deadline)
-                code = futures[future]
-                self._consume_history_future(state, code, future)
         self._commit_history_entries(state)
         if timed_out:
             raise MarketDataDeadlineExceededError("history preload exceeded its batch deadline")
-
-    def _completed_history_futures(
-        self,
-        futures: Mapping[Future[Sequence[DailyBar]], str],
-        deadline: datetime | None,
-    ) -> tuple[Iterable[Future[Sequence[DailyBar]]], bool]:
-        if deadline is None:
-            return as_completed(futures), False
-        timeout = max(0.0, (deadline - self._runner.wall_clock()).total_seconds())
-        completed, pending = wait(futures, timeout=timeout)
-        if not pending:
-            return completed, False
-        for future in pending:
-            future.cancel()
-        with self._lock:
-            self._history_error_count += len(pending)
-        return completed, True
 
     def _consume_history_future(
         self,
@@ -339,6 +335,7 @@ class HistoryCache:
                 full_bars = state.pending_full_entries.get(code)
                 if full_bars:
                     persist_candidates.append((code, full_bars, incoming))
+            state.pending_entries.clear()
             state.pending_full_entries.clear()
         for code, bars, entry in persist_candidates:
             self._persist_history_bars(code, bars, entry.context, entry.expires_at, entry.source)

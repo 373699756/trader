@@ -20,13 +20,18 @@ class QuoteNormalizer(Protocol):
 def to_float(raw: object) -> float | None:
     """Parse an arbitrary object as finite float, returning None on invalid input."""
 
+    if raw is None or isinstance(raw, bool):
+        return None
     try:
-        value = float(str(raw).strip())
-    except (TypeError, ValueError):
+        if isinstance(raw, (int, float)):
+            value = float(raw)
+        elif isinstance(raw, str):
+            value = float(raw.strip())
+        else:
+            value = float(str(raw).strip())
+    except (TypeError, ValueError, OverflowError):
         return None
-    if math.isnan(value) or math.isinf(value):
-        return None
-    return value
+    return value if math.isfinite(value) else None
 
 
 def normalize_quotes(

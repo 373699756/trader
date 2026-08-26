@@ -266,7 +266,7 @@ class ResearchReaderPort(Protocol):
 
     def refresh_market_news(
         self, codes: Sequence[str], observed_at: datetime, *, deadline: datetime | None = None
-    ) -> None: ...
+    ) -> ResearchRefreshResult: ...
 
     def refresh_stock_risk(
         self, codes: Sequence[str], observed_at: datetime, *, deadline: datetime | None = None

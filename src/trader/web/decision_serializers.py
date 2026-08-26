@@ -7,11 +7,12 @@ from datetime import datetime
 from trader.application.decision_queries import DecisionItemView, DecisionView
 from trader.application.decision_stream import (
     DecisionEventPayload,
+    DecisionReplacementPatch,
     OverlayEventPayload,
     ResyncEventPayload,
     UnifiedPublishedEvent,
 )
-from trader.domain.recommendation.decision_identity import DecisionQuote
+from trader.domain.recommendation.decision_identity import DecisionItem, DecisionQuote
 
 
 def serialize_decision_view(view: DecisionView) -> dict[str, object]:
@@ -141,6 +142,8 @@ def serialize_event(event: UnifiedPublishedEvent) -> dict[str, object]:
             content_hash=payload.content_hash,
             stage=payload.stage,
         )
+        if payload.replacement is not None:
+            common.update(_serialize_decision_replacement(payload, payload.replacement))
     elif isinstance(payload, OverlayEventPayload):
         common.update(
             strategy=payload.strategy.value,
@@ -180,6 +183,104 @@ def _serialize_overlay_quote(quote: DecisionQuote) -> dict[str, object]:
         "source": quote.source,
         "source_time": _time(quote.source_time),
         "quote_status": "live",
+    }
+
+
+def _serialize_decision_replacement(
+    payload: DecisionEventPayload,
+    replacement: DecisionReplacementPatch,
+) -> dict[str, object]:
+    diagnostics = replacement.selection_diagnostics
+    return {
+        "patch_schema_version": 2,
+        "snapshot_id": payload.version,
+        "projection_version": replacement.projection_version,
+        "etag": replacement.projection_version,
+        "replace": True,
+        "base_projection_version": "",
+        "removed_codes": [],
+        "removals": [],
+        "upserts": [_serialize_decision_patch_item(item) for item in replacement.items],
+        "view": "live",
+        "current_trade_date": payload.trade_date,
+        "phase": payload.stage,
+        "published_at": _time(replacement.observed_at),
+        "strategy_version": replacement.strategy_version,
+        "fusion_mode": replacement.fusion_mode,
+        "stale": False,
+        "frozen": False,
+        "degraded_reasons": list(replacement.degraded_reasons),
+        "filtered_count": replacement.filtered_count,
+        "selection_diagnostics": (
+            {
+                "maximum_final_score": diagnostics.maximum_final_score,
+                "executable_threshold": diagnostics.executable_threshold,
+                "observation_floor": diagnostics.observation_floor,
+                "executable_limit": diagnostics.executable_limit,
+                "observation_limit": diagnostics.observation_limit,
+                "selected_executable_count": diagnostics.selected_executable_count,
+                "selected_observation_count": diagnostics.selected_observation_count,
+                "review_candidate_count": diagnostics.review_candidate_count,
+                "empty_reason": diagnostics.empty_reason,
+            }
+            if diagnostics is not None
+            else {}
+        ),
+    }
+
+
+def _serialize_decision_patch_item(item: DecisionItem) -> dict[str, object]:
+    quote = item.quote
+    components = dict(item.score_components)
+    downside = item.downside
+    coverage = item.research_coverage
+    return {
+        "rank": item.rank,
+        "code": item.code,
+        "name": item.name,
+        "industry": item.industry,
+        "price": quote.price if quote is not None else None,
+        "pct_change": quote.pct_change if quote is not None else None,
+        "turnover_rate": quote.turnover_rate if quote is not None else None,
+        "amount": quote.amount if quote is not None else None,
+        "market_cap": quote.market_cap if quote is not None else None,
+        "source": quote.source if quote is not None else None,
+        "source_time": _time(quote.source_time) if quote is not None else None,
+        "quote_status": "decision_anchor" if quote is not None else "missing",
+        "action": item.action.value,
+        "action_reason": item.reason,
+        "anchor_price": quote.price if quote is not None else None,
+        "anchor_source_time": _time(quote.source_time) if quote is not None else None,
+        "setup": {"type": item.setup_type} if item.setup_type is not None else None,
+        "downside": (
+            {
+                "status": downside.status,
+                "reasons": list(downside.reasons),
+                "atr20_pct": downside.atr20_pct,
+                "intraday_reversal_atr": downside.intraday_reversal_atr,
+                "historical_drawdown_pct": downside.historical_drawdown_pct,
+            }
+            if downside is not None
+            else None
+        ),
+        "review_outcome": item.review_outcome,
+        "research_coverage": (
+            {
+                "evidence_count": coverage.evidence_count,
+                "structured_risk_fact_count": coverage.structured_risk_fact_count,
+                "review_eligible": coverage.review_eligible,
+            }
+            if coverage is not None
+            else None
+        ),
+        "scores": {
+            "candidate_score": item.candidate_score,
+            "local_score": item.local_score,
+            "deepseek_score": components.get("deepseek_score"),
+            "deepseek_risk_penalty": components.get("deepseek_risk_penalty"),
+            "final_score": item.final_score,
+        },
+        "risks": [{"risk_code": code} for code in item.risk_codes],
     }
 
 

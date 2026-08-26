@@ -7,10 +7,17 @@ import queue
 import threading
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal
 
 from trader.application.decision_events import V2DecisionCommitted
-from trader.domain.recommendation.decision_identity import DecisionOverlay, DecisionQuote, LongProjection
+from trader.domain.recommendation.decision_identity import (
+    DecisionItem,
+    DecisionOverlay,
+    DecisionQuote,
+    LongProjection,
+    SelectionDiagnostics,
+)
 from trader.domain.recommendation.models import Strategy
 
 ResyncReason = Literal[
@@ -26,12 +33,25 @@ EventType = Literal["decision", "overlay", "resync_required"]
 
 
 @dataclass(frozen=True)
+class DecisionReplacementPatch:
+    projection_version: str
+    observed_at: datetime
+    strategy_version: str
+    fusion_mode: str
+    filtered_count: int
+    selection_diagnostics: SelectionDiagnostics | None
+    degraded_reasons: tuple[str, ...]
+    items: tuple[DecisionItem, ...]
+
+
+@dataclass(frozen=True)
 class DecisionEventPayload:
     strategy: Strategy
     trade_date: str
     version: str
     content_hash: str
     stage: str
+    replacement: DecisionReplacementPatch | None
 
 
 @dataclass(frozen=True)
@@ -99,12 +119,31 @@ class UnifiedDecisionEventStream:
         self._slow_subscriber_drops = 0
 
     def publish_committed(self, event: V2DecisionCommitted) -> UnifiedPublishedEvent:
+        decision = event.projection
+        replacement = None
+        if decision is not None:
+            rejected = (
+                decision.rejected_count
+                if decision.rejected_count is not None
+                else sum(count for _reason, count in decision.filter_aggregates)
+            )
+            replacement = DecisionReplacementPatch(
+                event.projection_version or event.decision_hash,
+                decision.observed_at,
+                decision.strategy_version,
+                decision.stage,
+                rejected,
+                decision.selection_diagnostics,
+                decision.degraded_reasons,
+                tuple(sorted((item for item in decision.items if item.selected), key=lambda item: item.rank)),
+            )
         payload = DecisionEventPayload(
             event.strategy,
             event.trade_date.isoformat(),
             event.decision_version,
             event.decision_hash,
             event.stage,
+            replacement,
         )
         with self._lock:
             return self._publish_locked("decision", payload)
@@ -116,6 +155,7 @@ class UnifiedDecisionEventStream:
             projection.version,
             projection.content_hash,
             "current",
+            None,
         )
         with self._lock:
             return self._publish_locked("decision", payload)
@@ -210,6 +250,7 @@ class UnifiedDecisionEventStream:
 
 __all__ = [
     "DecisionEventPayload",
+    "DecisionReplacementPatch",
     "OverlayEventPayload",
     "ResyncEventPayload",
     "ResyncReason",

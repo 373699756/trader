@@ -31,6 +31,52 @@ def test_unified_stream_replays_monotonic_cross_strategy_events() -> None:
     stream.unsubscribe(subscription.queue)
 
 
+def test_scored_decision_event_serializes_complete_replace_patch_without_snapshot_get() -> None:
+    decision = _decision(Strategy.TOMORROW, 1)
+
+    payload = serialize_event(UnifiedDecisionEventStream().publish_committed(build_v2_decision_committed(decision)))
+
+    assert payload["patch_schema_version"] == 2
+    assert payload["replace"] is True
+    assert payload["snapshot_id"] == decision.version
+    assert payload["projection_version"] == decision.content_hash
+    assert payload["removed_codes"] == []
+    assert payload["removals"] == []
+    assert payload["view"] == "live"
+    assert payload["upserts"] == [
+        {
+            "action": "executable",
+            "action_reason": "threshold_met",
+            "anchor_price": None,
+            "anchor_source_time": None,
+            "code": "600000",
+            "downside": None,
+            "industry": "",
+            "market_cap": None,
+            "name": "",
+            "price": None,
+            "pct_change": None,
+            "quote_status": "missing",
+            "rank": 1,
+            "research_coverage": None,
+            "review_outcome": None,
+            "risks": [],
+            "scores": {
+                "candidate_score": 88.0,
+                "deepseek_risk_penalty": None,
+                "deepseek_score": None,
+                "final_score": 84.0,
+                "local_score": 84.0,
+            },
+            "setup": None,
+            "source": None,
+            "source_time": None,
+            "turnover_rate": None,
+            "amount": None,
+        }
+    ]
+
+
 def test_unified_stream_requires_resync_for_expired_and_ahead_cursors() -> None:
     stream = UnifiedDecisionEventStream(history_size=2)
     for sequence in range(1, 4):

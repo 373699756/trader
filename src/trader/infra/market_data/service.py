@@ -8,7 +8,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.application.ports.market import MarketSnapshotMetadata, ResearchRefreshResult
+from trader.application.ports.market import (
+    MarketDataDeadlineExceededError,
+    MarketSnapshotMetadata,
+    ResearchRefreshResult,
+)
 from trader.application.ports.types import JsonObject
 from trader.domain.market.models import (
     Board,
@@ -29,7 +33,7 @@ from trader.infra.market_data.service_history import HistoryCache
 from trader.infra.market_data.service_history_warmup import HistoryWarmup
 from trader.infra.market_data.service_intraday import IntradayLoader
 from trader.infra.market_data.service_research import ResearchLoader
-from trader.infra.market_data.service_research_models import research_component_coverage
+from trader.infra.market_data.service_research_models import ResearchLoadReport, research_component_coverage
 from trader.infra.market_data.service_tushare import ReferenceLoader
 
 
@@ -193,7 +197,7 @@ class MarketFeatureService:
             observed_at,
             research_observations=self.research.cached(
                 normalized,
-                include_structured=False,
+                include_structured=True,
                 action_restrictions=action_restrictions,
             ),
             intraday_minutes=None,
@@ -294,13 +298,24 @@ class MarketFeatureService:
         observed_at: datetime,
         *,
         deadline: datetime | None = None,
-    ) -> None:
-        self.research.load(
-            _normalize_codes(codes),
+    ) -> ResearchRefreshResult:
+        requested = _normalize_codes(codes)
+        started_at = self.runner.wall_clock()
+        report = self.research.load_report(
+            requested,
             observed_at,
             include_structured=False,
             force=True,
             deadline=deadline,
+        )
+        if report.deadline_reached and report.deferred_codes:
+            raise MarketDataDeadlineExceededError("research preload exceeded its batch deadline")
+        return _research_refresh_result(
+            requested,
+            report,
+            started_at,
+            self.runner.wall_clock(),
+            require_structured=False,
         )
 
     def refresh_stock_risk(
@@ -318,42 +333,12 @@ class MarketFeatureService:
             include_structured=True,
             deadline=deadline,
         )
-        completed_at = self.runner.wall_clock()
-        observations = report.observations
-        deferred = set(report.deferred_codes)
-        failed = tuple(
-            code
-            for code in requested
-            if code not in deferred
-            and (code not in observations or not any(research_component_coverage(observations[code])))
-        )
-        failed_set = set(failed)
-        completed = tuple(
-            code for code in requested if code in observations and code not in deferred and code not in failed_set
-        )
-        completed_set = set(completed)
-        covered = tuple(code for code in completed if all(research_component_coverage(observations[code])))
-        partial = tuple(code for code in completed if code not in covered and code not in failed)
-        version_material = "|".join(
-            f"{code}:{_research_data_version(observations[code])}" for code in sorted(observations)
-        )
-        data_version = (
-            f"research-batch:{hashlib.sha256(version_material.encode('utf-8')).hexdigest()[:20]}"
-            if version_material
-            else "research-batch:empty"
-        )
-        return ResearchRefreshResult(
-            requested_codes=requested,
-            completed_codes=completed,
-            changed_codes=tuple(code for code in report.changed_codes if code in completed_set),
-            partial_codes=partial,
-            failed_codes=failed,
-            deferred_codes=report.deferred_codes,
-            covered_codes=covered,
-            data_version=data_version,
-            started_at=started_at,
-            completed_at=completed_at,
-            deadline_reached=report.deadline_reached,
+        return _research_refresh_result(
+            requested,
+            report,
+            started_at,
+            self.runner.wall_clock(),
+            require_structured=True,
         )
 
     def refresh_reference_data(
@@ -448,6 +433,56 @@ class MarketFeatureService:
 
     def snapshot_metadata(self, codes: Sequence[str] | None = None) -> MarketSnapshotMetadata:
         return self.health_reporter.snapshot_metadata(codes)
+
+
+def _research_refresh_result(
+    requested: tuple[str, ...],
+    report: ResearchLoadReport,
+    started_at: datetime,
+    completed_at: datetime,
+    *,
+    require_structured: bool,
+) -> ResearchRefreshResult:
+    observations = report.observations
+    deferred = set(report.deferred_codes)
+    failed = tuple(
+        code
+        for code in requested
+        if code not in deferred
+        and (
+            code not in observations or require_structured and not any(research_component_coverage(observations[code]))
+        )
+    )
+    failed_set = set(failed)
+    completed = tuple(
+        code for code in requested if code in observations and code not in deferred and code not in failed_set
+    )
+    completed_set = set(completed)
+    if require_structured:
+        covered = tuple(code for code in completed if all(research_component_coverage(observations[code])))
+        partial = tuple(code for code in completed if code not in covered)
+    else:
+        covered = completed
+        partial = ()
+    version_material = "|".join(f"{code}:{_research_data_version(observations[code])}" for code in sorted(observations))
+    data_version = (
+        f"research-batch:{hashlib.sha256(version_material.encode('utf-8')).hexdigest()[:20]}"
+        if version_material
+        else "research-batch:empty"
+    )
+    return ResearchRefreshResult(
+        requested_codes=requested,
+        completed_codes=completed,
+        changed_codes=tuple(code for code in report.changed_codes if code in completed_set),
+        partial_codes=partial,
+        failed_codes=failed,
+        deferred_codes=report.deferred_codes,
+        covered_codes=covered,
+        data_version=data_version,
+        started_at=started_at,
+        completed_at=completed_at,
+        deadline_reached=report.deadline_reached,
+    )
 
 
 def _board_fair_codes(codes: Sequence[str], quotes: Sequence[MarketQuote]) -> tuple[str, ...]:

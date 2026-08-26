@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Generic, TypeVar
 
+from trader.application.latency import LatencyWaterfall
 from trader.application.shutdown import ShutdownDeadline, ShutdownStep
 
 _T = TypeVar("_T")
@@ -40,6 +41,13 @@ class LatestWinsStatus:
     last_error_code: str
 
 
+@dataclass(frozen=True)
+class LatestWinsTelemetry(Generic[_T]):
+    latency: LatencyWaterfall
+    correlation_id: Callable[[_T], str]
+    cycle_kind: Callable[[_T], str]
+
+
 class LatestWinsWorker(Generic[_T]):
     """Allows one running item to finish while retaining only the newest pending item."""
 
@@ -49,12 +57,14 @@ class LatestWinsWorker(Generic[_T]):
         processor: Callable[[_T], None],
         *,
         order_key: Callable[[_T], int],
+        telemetry: LatestWinsTelemetry[_T] | None = None,
     ) -> None:
         if not name:
             raise ValueError("latest-wins worker name must not be empty")
         self._name = name
         self._processor = processor
         self._order_key = order_key
+        self._telemetry = telemetry
         self._condition = threading.Condition(threading.RLock())
         self._thread: threading.Thread | None = None
         self._accepting = False
@@ -103,16 +113,34 @@ class LatestWinsWorker(Generic[_T]):
                 self._coalesced_count += 1
                 return LatestWinsOffer.COALESCED
             replaced = self._pending is not None
+            if replaced:
+                self._finish_latency(self._pending, "superseded")
             self._pending = item
             if replaced:
                 self._replaced_count += 1
+            self._plan_latency(item)
             self._condition.notify_all()
             return LatestWinsOffer.REPLACED if replaced else LatestWinsOffer.ACCEPTED
+
+    def is_superseded(self, item: _T) -> bool:
+        key = self._order_key(item)
+        with self._condition:
+            return self._pending is not None and self._order_key(self._pending) > key
+
+    def execute_if_current(self, item: _T, action: Callable[[], bool]) -> bool:
+        """Linearize a short publication action before a newer offer can be accepted."""
+
+        key = self._order_key(item)
+        with self._condition:
+            if self._pending is not None and self._order_key(self._pending) > key:
+                return False
+            return action()
 
     def close(self) -> int:
         with self._condition:
             self._accepting = False
             cancelled = int(self._pending is not None)
+            self._finish_latency(self._pending, "dropped")
             self._pending = None
             self._cancelled_count += cancelled
             self._condition.notify_all()
@@ -174,6 +202,7 @@ class LatestWinsWorker(Generic[_T]):
                 self._pending = None
                 self._running = True
                 self._running_key = self._order_key(item)
+                self._enter_latency(item)
             failed = False
             try:
                 self._processor(item)
@@ -183,11 +212,29 @@ class LatestWinsWorker(Generic[_T]):
                     self._last_error_code = type(exc).__name__
             finally:
                 with self._condition:
+                    superseded = self._pending is not None and self._order_key(self._pending) > self._order_key(item)
                     self._running = False
                     self._running_key = None
                     self._completed_count += int(not failed)
                     self._failed_count += int(failed)
+                    outcome = "failed" if failed else "superseded" if superseded else "success"
+                    self._finish_latency(item, outcome)
                     self._condition.notify_all()
 
+    def _plan_latency(self, item: _T) -> None:
+        if self._telemetry is not None:
+            self._telemetry.latency.plan(
+                self._telemetry.correlation_id(item),
+                self._telemetry.cycle_kind(item),
+            )
 
-__all__ = ["LatestWinsOffer", "LatestWinsStatus", "LatestWinsWorker"]
+    def _enter_latency(self, item: _T) -> None:
+        if self._telemetry is not None:
+            self._telemetry.latency.enter(self._telemetry.correlation_id(item))
+
+    def _finish_latency(self, item: _T | None, outcome: str) -> None:
+        if item is not None and self._telemetry is not None:
+            self._telemetry.latency.finish(self._telemetry.correlation_id(item), outcome=outcome)
+
+
+__all__ = ["LatestWinsOffer", "LatestWinsStatus", "LatestWinsTelemetry", "LatestWinsWorker"]

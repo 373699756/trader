@@ -9,7 +9,8 @@
   function create(dependencies) {
     const {
       state, els, patches, formatters, diagnostics, patchToPaintSamples,
-      loadRecommendations, loadStatus, applyOverlayPatch, requestRecommendationResync, recordBrowserError,
+      loadRecommendations, loadStatus, applyRecommendationPatch, applyOverlayPatch,
+      requestRecommendationResync, recordBrowserError,
     } = dependencies;
 
     function rememberEvent(event) {
@@ -55,8 +56,8 @@
         rememberEvent(event);
         diagnostics.incrementalSseBytes += formatters.utf8Bytes(event.data || "");
         const payload = eventPayload(event);
-        if (!state.date && eventMatchesCurrent(payload)) {
-          loadRecommendations("v2_decision").finally(() => recordPatchPaint(receivedAt));
+        if (!state.date && eventMatchesCurrent(payload) && applyRecommendationPatch(payload)) {
+          recordPatchPaint(receivedAt);
         }
       };
       const refreshOverlay = (event) => {

@@ -10,7 +10,7 @@
   function recommendationPatchDecision(patch, payload, currentVersion, strategy, view) {
     if (!patchVersionValid(patch) || !Array.isArray(patch.upserts)
       || !Array.isArray(patch.removed_codes) || !Array.isArray(patch.removals || [])) return "schema_mismatch";
-    if (!patch.projection_version || patch.snapshot_id !== patch.projection_version
+    if (!patch.projection_version || !patch.snapshot_id
       || patch.strategy !== strategy || !["live", "official"].includes(patch.view)
       || patch.view !== (patch.frozen ? "official" : "live")) return "identity_mismatch";
     const expectedDate = payload && (payload.current_trade_date || payload.trade_date);

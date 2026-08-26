@@ -9,6 +9,7 @@ from trader.application.cadence import (
     CadencePlanner,
     CadencePolicy,
     PipelineTask,
+    ScheduledPipelineTask,
     SchedulePointKey,
     SchedulePointLifecycle,
 )
@@ -21,6 +22,7 @@ from trader.application.ports.v2_runtime import (
     V2DataRefreshUnavailableError,
     V2DecisionUnavailableError,
     V2FreezeUnavailableError,
+    V2RefreshOutcome,
     V2ResearchIntent,
     V2ResearchRuntimeStatus,
 )
@@ -61,8 +63,16 @@ class DataRefresh:
         self.calls.append(request.strategy)
         self.requests.append(request)
 
-    def refresh_task(self, request) -> None:
+    def refresh_task(self, request) -> V2RefreshOutcome:
         self.task_requests.append(request)
+        return V2RefreshOutcome(
+            request.task,
+            True,
+            f"test:{request.task.value}:{request.observed_at:%H%M%S%f}",
+            (),
+            request.observed_at,
+            False,
+        )
 
 
 class BlockingScoringInputs(DataRefresh):
@@ -71,13 +81,14 @@ class BlockingScoringInputs(DataRefresh):
         self.candidate_started = threading.Event()
         self.release_candidate = threading.Event()
 
-    def refresh_task(self, request) -> None:
-        super().refresh_task(request)
+    def refresh_task(self, request) -> V2RefreshOutcome:
+        outcome = super().refresh_task(request)
         if request.task is PipelineTask.CANDIDATE_QUOTES:
             self.candidate_started.set()
             assert self.release_candidate.wait(2.0)
         elif request.task in {PipelineTask.MARKET_NEWS, PipelineTask.STOCK_RISK}:
             raise V2DataRefreshUnavailableError("controlled_input_failure")
+        return outcome
 
 
 def _cadence(at: datetime) -> CadencePlanner:
@@ -752,6 +763,48 @@ def test_periodic_tick_does_not_score_until_a_scoring_input_finishes() -> None:
     assert isinstance(index.snapshot(Strategy.TOMORROW).current, ScoredDecision)
 
 
+def test_unchanged_candidate_refresh_does_not_trigger_another_score() -> None:
+    observed_at = datetime(2026, 8, 11, 10, 0, tzinfo=SHANGHAI)
+
+    class UnchangedCandidates(DataRefresh):
+        def refresh_task(self, request) -> V2RefreshOutcome:
+            outcome = super().refresh_task(request)
+            if request.task is PipelineTask.CANDIDATE_QUOTES:
+                return replace(outcome, changed=False, data_version="candidate:stable")
+            return outcome
+
+    data = UnchangedCandidates()
+    decisions = Decisions()
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=FixedClock(observed_at),
+            calendar=TradingCalendar(),
+            cadence=_cadence(observed_at),
+            data=data,
+            decisions=decisions,
+            reviews=SharedReviews(),
+            index=UnifiedDecisionIndex(),
+            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-v2-unchanged-input-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+            research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
+            publish_overlay=lambda _overlay: None,
+        ),
+        config_version="runtime-v2",
+    )
+
+    runtime.start()
+    runtime._process_pipeline_task(  # noqa: SLF001 - verifies the refresh-to-score handoff boundary
+        ScheduledPipelineTask(PipelineTask.CANDIDATE_QUOTES, observed_at, MarketPhase.TODAY_MAIN)
+    )
+    assert runtime.wait_idle(2.0)
+    runtime.stop(ShutdownDeadline.start(2.0))
+
+    assert decisions.input_quality_status() == ()
+    assert data.calls == []
+
+
 def test_afternoon_checkpoint_is_dispatched_for_both_scored_strategies() -> None:
     checkpoint_at = datetime(2026, 8, 11, 14, 49, 20, tzinfo=SHANGHAI)
     clock = FixedClock(checkpoint_at)
@@ -1248,6 +1301,62 @@ def test_tomorrow_lane_progresses_while_today_lane_is_blocked() -> None:
         assert index.snapshot(Strategy.TODAY).current is None
     finally:
         today_release.set()
+        runtime.stop(ShutdownDeadline.start(2.0))
+
+
+def test_newer_same_strategy_cycle_supersedes_running_score_before_publish() -> None:
+    first_entered = threading.Event()
+    release_first = threading.Event()
+
+    class BlockingFirstDecision(Decisions):
+        def build_local(self, request: V2CycleRequest):
+            if request.sequence == 1:
+                first_entered.set()
+                release_first.wait(timeout=1.0)
+            return super().build_local(request)
+
+    index = UnifiedDecisionIndex()
+    published = []
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=FixedClock(NOW),
+            calendar=TradingCalendar(),
+            cadence=_cadence(NOW),
+            data=DataRefresh(),
+            decisions=BlockingFirstDecision(),
+            reviews=SharedReviews(),
+            index=index,
+            observer=AsyncDecisionObserver((), capacity=2, thread_name="test-v2-superseded-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+            research_factory=noop_research_factory,
+            publish_decision=published.append,
+            publish_overlay=lambda _overlay: None,
+        ),
+        config_version="runtime-v2",
+    )
+    first = V2CycleRequest(Strategy.TOMORROW, NOW.date(), NOW, "afternoon", 1, "input-v1", False, NOW)
+    second = replace(
+        first,
+        observed_at=NOW + timedelta(seconds=1),
+        sequence=3,
+        input_version="input-v2",
+    )
+    runtime.start()
+    runtime.submit_cycle(first)
+    assert first_entered.wait(timeout=1.0)
+    runtime.submit_cycle(second)
+    release_first.set()
+
+    try:
+        assert runtime.wait_idle(2.0)
+        current = index.snapshot(Strategy.TOMORROW).current
+        assert isinstance(current, ScoredDecision)
+        assert current.sequence == 3
+        assert len(published) == 1
+        assert runtime.status().local_publish_count == 1
+    finally:
+        release_first.set()
         runtime.stop(ShutdownDeadline.start(2.0))
 
 

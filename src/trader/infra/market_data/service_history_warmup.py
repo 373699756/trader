@@ -88,6 +88,7 @@ class HistoryWarmup:
         now = self._monotonic()
         entries = self._history.entries()
         with self._lock:
+            normalized = _stable_slot_order(self._universe, normalized)
             self._universe = normalized
             active_codes = set(normalized)
             self._retry_attempts = {
@@ -239,6 +240,14 @@ class HistoryWarmup:
                 ),
                 batch_timeout_seconds=self._batch_timeout_seconds,
             )
+
+
+def _stable_slot_order(previous: Sequence[str], current: Sequence[str]) -> tuple[str, ...]:
+    current_codes = set(current)
+    retained = [code for code in previous if code in current_codes]
+    retained_codes = set(retained)
+    retained.extend(code for code in current if code not in retained_codes)
+    return tuple(retained)
 
 
 __all__ = ["HistoryWarmup", "HistoryWarmupStatus"]

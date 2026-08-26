@@ -143,6 +143,56 @@ def test_tencent_normalizes_targeted_quote() -> None:
     assert session.calls[0][1]["proxies"] == {"http": "", "https": "", "all": ""}
 
 
+def test_tencent_targeted_quotes_use_three_bounded_shards() -> None:
+    state = {"active": 0, "maximum": 0, "urls": []}
+    lock = threading.Lock()
+
+    class ConcurrentSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def get(self, url, **_kwargs):
+            with lock:
+                state["active"] += 1
+                state["maximum"] = max(state["maximum"], state["active"])
+                state["urls"].append(url)
+            try:
+                time.sleep(0.02)
+                records = []
+                for symbol in url.split("q=", 1)[1].split(","):
+                    fields = [""] * 50
+                    fields[1] = symbol
+                    fields[2] = symbol[2:]
+                    fields[3] = "12.00"
+                    fields[4] = "11.65"
+                    fields[30] = "20260716100000"
+                    records.append(f'v_{symbol}="{"~".join(fields)}";')
+                return FakeResponse("".join(records).encode("gb18030"))
+            finally:
+                with lock:
+                    state["active"] -= 1
+
+    pool = BoundedExecutor(worker_count=3, queue_capacity=3, thread_name_prefix="tencent-test")
+    pool.start()
+    try:
+        codes = tuple(f"{600000 + index:06d}" for index in range(241))
+        quotes = TencentClient(
+            timeout_seconds=2,
+            session_factory=ConcurrentSession,
+            worker_pool=pool,
+        ).fetch_quotes(codes, NOW)
+    finally:
+        pool.stop()
+
+    assert len(quotes) == 241
+    assert len(state["urls"]) == 3
+    assert state["maximum"] == 3
+    assert all(url.count(",") <= 119 for url in state["urls"])
+
+
 def test_tencent_history_preserves_volume_amount_and_turnover_fields() -> None:
     rows = [
         [

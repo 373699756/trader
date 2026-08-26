@@ -7,7 +7,7 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from datetime import time as wall_time
 from typing import Literal, cast
@@ -23,6 +23,7 @@ from trader.application.decision_core import UnifiedDecisionIndex
 from trader.application.decision_events import V2DecisionCommitted
 from trader.application.decision_observers import DecisionObserverRuntime, DecisionObserverStatus
 from trader.application.decision_overlay_refresh import DecisionOverlayRefresher
+from trader.application.latency import LatencyWaterfall
 from trader.application.ports.clock import Clock
 from trader.application.ports.market import ResearchRefreshResult
 from trader.application.ports.runtime_status import V2InputQualityStatus
@@ -38,6 +39,7 @@ from trader.application.ports.v2_runtime import (
     V2FreezeUnavailableError,
     V2OverlayPublisher,
     V2PipelineTaskRequest,
+    V2RefreshOutcome,
     V2ResearchRuntimeFactoryPort,
     V2ResearchRuntimeStatus,
     V2ReviewUnavailableError,
@@ -55,7 +57,12 @@ from trader.application.schedule import (
     shanghai_now,
 )
 from trader.application.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
-from trader.application.v2_lifecycle import LatestWinsOffer, LatestWinsStatus, LatestWinsWorker
+from trader.application.v2_lifecycle import (
+    LatestWinsOffer,
+    LatestWinsStatus,
+    LatestWinsTelemetry,
+    LatestWinsWorker,
+)
 from trader.application.v2_runtime_issues import V2RuntimeIssue, V2RuntimeIssueRegistry
 from trader.application.workers import BoundedExecutor
 from trader.domain.recommendation.decision_identity import (
@@ -109,6 +116,7 @@ class V2RuntimeDependencies:
     research_factory: V2ResearchRuntimeFactoryPort
     publish_decision: Callable[[V2DecisionCommitted], object]
     publish_overlay: V2OverlayPublisher
+    latency: LatencyWaterfall = field(default_factory=LatencyWaterfall)
 
 
 @dataclass(frozen=True)
@@ -195,14 +203,24 @@ class V2SchedulerRuntime:
                 f"trader-v2-{strategy.value}",
                 self._process_cycle,
                 order_key=_cycle_order_key,
+                telemetry=LatestWinsTelemetry(
+                    dependencies.latency,
+                    _cycle_correlation_id,
+                    lambda request: f"score:{request.strategy.value}",
+                ),
             )
             for strategy in Strategy
         }
-        self._hybrid_lanes = {
+        self._hybrid_lanes: dict[Strategy, LatestWinsWorker[_HybridUpgradeRequest]] = {
             strategy: LatestWinsWorker(
                 f"trader-v2-hybrid-{strategy.value}",
                 self._process_hybrid,
                 order_key=_hybrid_order_key,
+                telemetry=LatestWinsTelemetry(
+                    dependencies.latency,
+                    lambda request: f"hybrid:{_cycle_correlation_id(request.cycle)}",
+                    lambda request: f"hybrid:{request.cycle.strategy.value}",
+                ),
             )
             for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
         }
@@ -211,6 +229,11 @@ class V2SchedulerRuntime:
                 f"trader-v2-task-{task.value}",
                 self._process_pipeline_task,
                 order_key=_pipeline_task_order_key,
+                telemetry=LatestWinsTelemetry(
+                    dependencies.latency,
+                    _pipeline_task_correlation_id,
+                    lambda request: f"data:{request.task.value}",
+                ),
             )
             for task in _DATA_LANES
         }
@@ -397,16 +420,20 @@ class V2SchedulerRuntime:
             selected_codes,
         )
         try:
-            self._dependencies.data.refresh_task(request)
+            outcome = self._dependencies.data.refresh_task(request)
         except V2DataRefreshUnavailableError as exc:
             self._record_failure("refresh", _failure_code(exc, "refresh_unavailable"))
             self._record_pipeline_result(scheduled, SchedulePointResult.RETRY)
             return
-        self._after_successful_data_refresh(scheduled)
+        self._after_successful_data_refresh(scheduled, outcome)
         self._record_pipeline_result(scheduled, SchedulePointResult.COMPLETED)
 
-    def _after_successful_data_refresh(self, scheduled: ScheduledPipelineTask) -> None:
-        if scheduled.task is PipelineTask.TOPK_QUOTES:
+    def _after_successful_data_refresh(
+        self,
+        scheduled: ScheduledPipelineTask,
+        outcome: V2RefreshOutcome,
+    ) -> None:
+        if scheduled.task is PipelineTask.TOPK_QUOTES and outcome.changed:
             self._refresh_selected_overlays(scheduled)
         elif scheduled.task is PipelineTask.FULL_MARKET and scheduled.phase is MarketPhase.MIDDAY:
             for strategy in self._midday_recovery_strategies(scheduled.scheduled_at):
@@ -419,7 +446,7 @@ class V2SchedulerRuntime:
                     continue
                 self.submit_cycle(self._scheduled_request(strategy, scheduled.scheduled_at, "close_fallback"))
             self._submit_settlement(scheduled.scheduled_at)
-        if scheduled.task in _SCORING_INPUT_TASKS:
+        if scheduled.task in _SCORING_INPUT_TASKS and outcome.changed:
             self._trigger_scoring_after_input()
 
     def _trigger_scoring_after_input(self) -> None:
@@ -590,46 +617,96 @@ class V2SchedulerRuntime:
         )
 
     def _process_cycle(self, request: V2CycleRequest) -> None:
+        lane = self._lanes[request.strategy]
+        if lane.is_superseded(request) or self._complete_existing_close_fallback(request):
+            return
+        local = self._build_fresh_local(request, lane)
+        if local is None or not self._publish_fresh_local(request, local, lane):
+            return
+        self._continue_after_local_publish(request, local, lane)
+
+    def _complete_existing_close_fallback(self, request: V2CycleRequest) -> bool:
         if request.phase == "close_fallback" and request.strategy in {Strategy.TOMORROW, Strategy.D25}:
             snapshot = self._dependencies.index.snapshot(request.strategy)
             if snapshot.formal is not None and snapshot.formal.trade_date == request.trade_date:
-                return
+                return True
             if isinstance(snapshot.current, ScoredDecision) and snapshot.current.trade_date == request.trade_date:
                 self._freeze_close_fallback(request, snapshot.current, recovery_path="current")
-                return
+                return True
+        return False
+
+    def _build_fresh_local(
+        self,
+        request: V2CycleRequest,
+        lane: LatestWinsWorker[V2CycleRequest],
+    ) -> DecisionIdentity | None:
+        started_at = time.perf_counter()
         if not self._prepare_cycle_data(request):
-            return
+            return None
+        self._record_latency("scoring_data_prepare", started_at)
+        if lane.is_superseded(request):
+            return None
+        started_at = time.perf_counter()
         local = self._build_local(request)
-        if local is None or not self._publish(local, hybrid=False):
+        self._record_latency("local_scoring", started_at)
+        if local is None or lane.is_superseded(request):
+            return None
+        return local
+
+    def _publish_fresh_local(
+        self,
+        request: V2CycleRequest,
+        local: DecisionIdentity,
+        lane: LatestWinsWorker[V2CycleRequest],
+    ) -> bool:
+        if lane.is_superseded(request):
+            return False
+        started_at = time.perf_counter()
+        if not lane.execute_if_current(request, lambda: self._publish(local, hybrid=False)):
+            return False
+        self._record_latency("decision_publish", started_at)
+        return True
+
+    def _continue_after_local_publish(
+        self,
+        request: V2CycleRequest,
+        local: DecisionIdentity,
+        lane: LatestWinsWorker[V2CycleRequest],
+    ) -> None:
+        if lane.is_superseded(request) or not isinstance(local, ScoredDecision):
             return
-        defer_initial_review = False
-        if isinstance(local, ScoredDecision):
-            try:
-                defer_initial_review = self._research.observe(
-                    self._dependencies.decisions.research_intent(local),
-                    request,
-                )
-            except (RuntimeError, TypeError, ValueError) as exc:
-                self._record_failure("research", _failure_code(exc, "research_intent_failed"), request.strategy)
-        if request.phase == "close_fallback" and isinstance(local, ScoredDecision):
+        defer_initial_review = self._observe_research(local, request)
+        if request.phase == "close_fallback":
             self._freeze_close_fallback(request, local, recovery_path="close_rebuild")
             return
         review_now = shanghai_now(self._dependencies.clock.now())
-        if (
-            request.allow_review
-            and not defer_initial_review
-            and review_now < request.review_deadline
-            and isinstance(local, ScoredDecision)
-        ):
+        if request.allow_review and not defer_initial_review and review_now < request.review_deadline:
             self._hybrid_lanes[request.strategy].offer(_HybridUpgradeRequest(local, request))
 
+    def _observe_research(self, local: ScoredDecision, request: V2CycleRequest) -> bool:
+        try:
+            return self._research.observe(
+                self._dependencies.decisions.research_intent(local),
+                request,
+            )
+        except (RuntimeError, TypeError, ValueError) as exc:
+            self._record_failure("research", _failure_code(exc, "research_intent_failed"), request.strategy)
+            return False
+
     def _process_hybrid(self, request: _HybridUpgradeRequest) -> None:
+        if self._hybrid_lanes[request.cycle.strategy].is_superseded(request):
+            return
         if shanghai_now(self._dependencies.clock.now()) >= request.cycle.review_deadline:
             return
         self._upgrade_hybrid(request.local, request.cycle)
 
+    def _record_latency(self, stage: str, started_at: float) -> None:
+        self._dependencies.latency.record_duration(stage, (time.perf_counter() - started_at) * 1000.0)
+
     def _on_research_result(self, result: ResearchRefreshResult, initial_rescore: bool) -> None:
         del initial_rescore
+        if not result.changed_codes:
+            return
         with self._lock:
             if not self._running:
                 return
@@ -717,7 +794,11 @@ class V2SchedulerRuntime:
         except V2DecisionUnavailableError:
             self._record_failure("review", "review_identity_mismatch", request.strategy)
             return
-        self._publish(hybrid, hybrid=True)
+        upgrade = _HybridUpgradeRequest(local, request)
+        self._hybrid_lanes[request.strategy].execute_if_current(
+            upgrade,
+            lambda: self._publish(hybrid, hybrid=True),
+        )
 
     def _record_publish(
         self,
@@ -1031,12 +1112,20 @@ def _cycle_order_key(request: V2CycleRequest) -> int:
     return request.trade_date.toordinal() * 1_000_000_000 + request.sequence
 
 
+def _cycle_correlation_id(request: V2CycleRequest) -> str:
+    return f"score:{request.strategy.value}:{request.trade_date.isoformat()}:{request.sequence}"
+
+
 def _hybrid_order_key(request: _HybridUpgradeRequest) -> int:
     return _cycle_order_key(request.cycle)
 
 
 def _pipeline_task_order_key(request: ScheduledPipelineTask) -> int:
     return int(request.scheduled_at.timestamp() * 1_000_000)
+
+
+def _pipeline_task_correlation_id(request: ScheduledPipelineTask) -> str:
+    return f"data:{request.task.value}:{request.scheduled_at.isoformat()}"
 
 
 def _pipeline_lane(task: PipelineTask) -> PipelineTask:

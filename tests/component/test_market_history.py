@@ -435,7 +435,7 @@ def test_history_warmup_deadline_keeps_completed_stock_and_retries_only_slow_tai
         history_worker_pool=history_pool,
         source_lanes=lanes,
         history_warmup_batch_size=2,
-        history_warmup_batch_timeout_seconds=0.05,
+        history_warmup_batch_timeout_seconds=0.5,
         wall_clock=lambda: datetime.now(timezone.utc),
     )
     source_pool.start()
@@ -444,6 +444,10 @@ def test_history_warmup_deadline_keeps_completed_stock_and_retries_only_slow_tai
     try:
         service.warmup.schedule_history_warmup(("600001", "600002"), datetime.now(timezone.utc))
         assert slow_started.wait(1.0)
+        visible_at = time.monotonic() + 0.2
+        while "600001" not in service.history.entries() and time.monotonic() < visible_at:
+            time.sleep(0.005)
+        assert len(service.history.entries()["600001"].bars) == 20
         timeout_at = time.monotonic() + 1.0
         while service.health()["history_warmup_timeout_count"] < 1 and time.monotonic() < timeout_at:
             time.sleep(0.01)

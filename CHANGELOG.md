@@ -6,6 +6,13 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户要求重新扫描并优化“数据采集 → 评分推荐 → Web 展示”全链路实时性，新增类型化
+  `V2RefreshOutcome` 与跨策略共享的不可变评分输入 epoch：每次行情、候选、研究和分钟尾巴刷新
+  都携带数据版本、变化代码、完成时间和降级事实，调度器只对真实变化触发评分；状态 API 新增有界
+  `market_changes` 与端到端 `latency_waterfall` 聚合，不公开股票代码、关联 ID 或原始样本。
+- 决策 SSE 新增 `patch_schema_version=2` 的有界完整替换投影。统一索引在决策和初始报价 overlay 原子
+  提交时生成与 GET 一致的 projection ETag，事件只复制入选 TopK 的渲染字段；浏览器可直接应用推荐
+  patch，只有游标、schema 或身份不一致时才回退完整 GET。
 - 针对全工程 Review 发现行情 health 在内部字典、状态对象和公开 JSON 之间反复转换，新增不可变
   `MarketGatewayHealthStatus`、`MarketSourceHealthStatus`、`SecurityMasterHealthStatus` 与
   `TushareHealthStatus`。网关、预热和来源协调只读取类型字段，只有最终 `MarketDataHealth` adapter
@@ -364,6 +371,16 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 全市场、候选与 TopK 刷新直接复用供应商返回的同批 `FeatureSnapshot`，评分输入按完整特征身份缓存并
+  在构建前后复核 epoch；候选特征包含已缓存结构化研究，行情缓存预计算代码索引和横截面映射，消除
+  候选/TopK 二次读取、三策略重复构建及每轮重复字典构造。数值标准化增加常见数字/字符串快速路径。
+- 腾讯定向行情按每片最多 120 只、最多 3 片并发复用统一有界执行器；任一分片失败仍整体显式降级，
+  不发布静默残缺快照。历史预热保持首次入队顺序避免排名重排饥饿，并在单股票完成时立即提交内存与
+  持久化结果，不再等待整批最慢请求。
+- 同策略评分和 DeepSeek hybrid 在数据准备、本地评分及发布前执行 latest-wins 检查，短发布动作与新
+  offer 线性化；被更新输入取代的旧周期不再继续发布、研究或融合。Web status schema 升级为
+  `v2_status_v3`，静态资源 revision 升级为 `release-contract-2026-08-26-v3`，权威架构、策略与运维
+  文档同步固化输入驱动评分、失败降级、直推 SSE 和延迟瀑布契约。
 - 用户要求把扫描出的六类问题全部优化。根因复核确认：类型化状态仍在行情 health 链泄漏为 JSON 字典；
   正式记录哈希与持久化各维护一套字段投影且研究审计依赖 `__dict__`；运行时、SSE 和 6586 行行情组件
   测试按历史增长聚合；实施计划仍混入已完成波次；测试树保留无人引用的旧流水线证据；少量测试、资源
@@ -656,6 +673,13 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复未变化的候选/研究数据仍重复触发三策略评分、同策略旧周期可在新输入到达后迟到发布、TopK
+  刷新后再次读取候选特征，以及推荐 SSE 总是触发完整 current GET 的端到端延迟浪费。浏览器实测中
+  发现并修复决策 patch 错把 projection ETag 当作 snapshot identity、导致后续 overlay 请求 resync
+  的身份错误；现在 decision version 与 projection version 各自承担稳定职责。
+- 修复历史并发加载必须等待整批尾部才让快速结果可见，以及候选排名反复变化会让队尾股票长期无法
+  预热的问题；研究新闻的类型化结果继续保留原 deadline 异常语义。Review 同时将本机 `.token_key`
+  权限从过宽模式收紧为 `0600`，未读取或改写凭据内容。
 - 修复测试 SQLite 直接绑定 `datetime` 在 Python 3.14 触发弃用警告，测试数据现在显式写入 ISO-8601；
   同步把活动设置校验文案、Web 包说明、测试文件名、性能 fixture 身份和静态资源握手身份改为当前 V2
   语义，避免程序、测试和文档继续把历史 v15/v16/v17 波次误作活动 release。
@@ -1100,6 +1124,20 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批高风险完整门禁 `make format-check`、`make lint`、`make type-check`、`make test` 与
+  `make package` 全部通过；覆盖架构 AST、`create_app()` 无副作用、固定融合 `83.40`、DeepSeek
+  原子预算、latest-wins、冻结恢复、哈希一致性、SSE 游标/慢客户端和新增回归。最终 Review 清理一处
+  冗余类型判断后，生命周期与调度集成定向 30 项、Ruff、format-check 和 mypy 再次通过；
+  `git diff --check` 无错误。
+- 最终离线生产性能门禁使用 5500 行、360 候选、三策略和 100 tick 通过且零网络、RSS 增长 0%；
+  P95 为行情标准化 132.689ms、合并 435.927ms、quote-to-draft 1958.520ms、board-to-draft
+  268.578ms、TopK overlay 提交 46.560ms、snapshot/status API 2.689/1.696ms、SSE 发布 0.016ms。
+- 最终 Firefox SSE 验收直接应用 1 次推荐 patch 与 10 次 overlay patch，零 resync/浏览器错误，
+  patch-to-paint P95 10ms、DOM 最大刷新 1.050s，35 秒保留窗余量 33.950s。三档实际视口
+  1280x720、1440x900、1920x1080 均无白屏、横向溢出、关键重叠或外网请求，加载 v3 资源。
+- 最终 wheel 在仓库外全新虚拟环境安装全部声明依赖，从独立 `site-packages` 导入 `trader`，
+  `trader-cli --help`、`validate-config`、模板/4 CSS/2 JavaScript/2 SVG 共 9 项资源及 `pip check`
+  全部通过。
 - 六类整改的定向回归通过：架构/文档/发布状态契约、正式记录 codec 与研究审计、运行时问题恢复、
   类型化行情 health、拆分后的 156 个行情组件测试、SQLite 数据平面和 Node Web 状态契约全部通过；
   Review 额外发现并修复 hybrid 成功发布未恢复旧问题状态，以及列式批次身份仍用 `__dict__` 哈希，
@@ -1681,6 +1719,10 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 当前没有已知未解决的代码侧实时性缺陷。确定性性能与 Firefox fixture 不消耗真实 DeepSeek 额度，
+  也不能替代交易时段供应商网络、限流和整日 P95；应在开市窗口继续复用已有参数化脚本采样真实腾讯
+  延迟和端到端 waterfall。本机实际运行 Python 3.14 与 Firefox，Python 3.10-3.13 由 Ruff、mypy
+  与 wheel metadata 静态覆盖。
 - 当前没有已知未解决代码、测试、类型、打包或桌面问题。正式 0.2.0 release 尚未由用户发起，版本归档
   和 tag 仍是 `docs/implementation-plan.md` 中独立未闭合 Gate；本批只提交并推送 `Unreleased` 改进。
 - R2-R5 离线研究模块仍因 `score_p0_v2` 和 Score-R6/R7 的权威预注册边界而保留，但生产组合根、HTTP、

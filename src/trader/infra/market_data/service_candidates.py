@@ -6,12 +6,14 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
+from types import MappingProxyType
 from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.domain.market.models import (
+    CrossSectionStats,
     FeatureSnapshot,
     LiveQuote,
     MarketQuote,
@@ -78,17 +80,21 @@ class QuoteCache:
         self._monotonic = monotonic
         self._lock = threading.Lock()
         self._market_features: tuple[FeatureSnapshot, ...] = ()
+        self._market_quotes_by_code: Mapping[str, MarketQuote] = MappingProxyType({})
+        self._cross_section_reference: Mapping[str, Mapping[str, float | None]] = MappingProxyType({})
+        self._cross_section_normalization_reference: Mapping[str, Mapping[str, CrossSectionStats]] = MappingProxyType(
+            {}
+        )
         self._market_expires_at = 0.0
         self._candidate_quotes: dict[str, MarketQuote] = {}
         self._out_of_order_count = 0
 
     def candidate_snapshot(self, codes: Sequence[str]) -> tuple[MarketQuote, ...]:
         with self._lock:
-            market = {feature.quote.code: feature.quote for feature in self._market_features}
             result: list[MarketQuote] = []
             for code in codes:
                 targeted = self._candidate_quotes.get(code)
-                full_market = market.get(code)
+                full_market = self._market_quotes_by_code.get(code)
                 available = tuple(quote for quote in (targeted, full_market) if quote is not None)
                 if available:
                     result.append(max(available, key=_quote_version))
@@ -105,10 +111,8 @@ class QuoteCache:
         intraday_minutes = options["intraday_minutes"]
         action_restrictions = options.get("action_restrictions")
         with self._lock:
-            cross_section_reference = {feature.quote.code: feature.values for feature in self._market_features}
-            cross_section_normalization_reference = {
-                feature.quote.code: feature.normalization for feature in self._market_features
-            }
+            cross_section_reference = self._cross_section_reference
+            cross_section_normalization_reference = self._cross_section_normalization_reference
         history_summaries = self._history.summaries(histories, observed_at)
         features = self._feature_builder.build(
             quotes,
@@ -156,6 +160,13 @@ class QuoteCache:
         published = tuple(features)
         with self._lock:
             self._market_features = published
+            self._market_quotes_by_code = MappingProxyType({feature.quote.code: feature.quote for feature in published})
+            self._cross_section_reference = MappingProxyType(
+                {feature.quote.code: feature.values for feature in published}
+            )
+            self._cross_section_normalization_reference = MappingProxyType(
+                {feature.quote.code: feature.normalization for feature in published}
+            )
             self._market_expires_at = self._monotonic() + self._market_ttl_seconds
         return published
 
@@ -165,11 +176,10 @@ class QuoteCache:
 
     def update_candidate_quotes(self, quotes: Sequence[MarketQuote]) -> None:
         with self._lock:
-            market_quotes = {feature.quote.code: feature.quote for feature in self._market_features}
             for quote in quotes:
                 available = tuple(
                     item
-                    for item in (self._candidate_quotes.get(quote.code), market_quotes.get(quote.code))
+                    for item in (self._candidate_quotes.get(quote.code), self._market_quotes_by_code.get(quote.code))
                     if item is not None
                 )
                 current = max(available, key=_quote_version) if available else None

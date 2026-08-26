@@ -295,6 +295,51 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
                 field: value[field] for field in source_fields if field in value and _json_scalar(value[field])
             }
         result["sources"] = safe_sources
+    if changes := _market_changes(raw.get("market_changes")):
+        result["market_changes"] = changes
+    if waterfall := _latency_waterfall(raw.get("latency_waterfall")):
+        result["latency_waterfall"] = waterfall
+    return result
+
+
+def _market_changes(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        field: value[field]
+        for field in ("merge_epoch", "inserted", "updated", "removed", "dirty")
+        if field in value and _json_scalar(value[field])
+    }
+
+
+def _latency_waterfall(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        return {}
+    fields = (
+        "sample_capacity",
+        "trace_capacity",
+        "stage_capacity",
+        "active_trace_count",
+        "planned_count",
+        "completed_count",
+        "failed_count",
+        "timeout_count",
+        "superseded_count",
+        "dropped_count",
+        "dropped_stage_count",
+    )
+    result = {field: value[field] for field in fields if field in value and _json_scalar(value[field])}
+    stages = value.get("stages")
+    if isinstance(stages, Mapping):
+        result["stages"] = {
+            str(name)[:64]: {
+                field: stage[field]
+                for field in ("sample_count", "p50_ms", "p95_ms", "maximum_ms")
+                if field in stage and _json_scalar(stage[field])
+            }
+            for name, stage in sorted(stages.items(), key=lambda item: str(item[0]))[:64]
+            if isinstance(stage, Mapping)
+        }
     return result
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 
 from trader.domain.recommendation.decision_identity import DecisionItem, DecisionStage, ScoredDecision
@@ -41,9 +41,15 @@ class V2DecisionCommitted:
     filter_aggregates: tuple[tuple[str, int], ...]
     degraded_reasons: tuple[str, ...]
     items: tuple[V2CommittedDecisionItem, ...]
+    projection_version: str = field(default="", compare=False, repr=False)
+    projection: ScoredDecision | None = field(default=None, compare=False, repr=False)
 
 
-def build_v2_decision_committed(decision: ScoredDecision) -> V2DecisionCommitted:
+def build_v2_decision_committed(
+    decision: ScoredDecision,
+    *,
+    projection_version: str | None = None,
+) -> V2DecisionCommitted:
     return V2DecisionCommitted(
         event_id=f"v2-decision-committed:{decision.version}",
         strategy=decision.strategy,
@@ -61,6 +67,8 @@ def build_v2_decision_committed(decision: ScoredDecision) -> V2DecisionCommitted
         filter_aggregates=decision.filter_aggregates,
         degraded_reasons=decision.degraded_reasons,
         items=tuple(_event_item(item) for item in decision.items),
+        projection_version=projection_version or decision.content_hash,
+        projection=decision,
     )
 
 

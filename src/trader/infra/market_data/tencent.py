@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import as_completed
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import requests
 
+from trader.application.workers import BorrowExecutorOptions, BoundedExecutor, borrow_executor, submit_or_run_inline
 from trader.domain.market.models import MarketQuote
 from trader.infra.market_data.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.normalize import MarketQuoteInput, build_market_quote, normalize_quotes, to_float
@@ -17,6 +19,8 @@ from trader.infra.market_data.normalize import MarketQuoteInput, build_market_qu
 SessionFactory = Callable[[], requests.Session]
 _DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
+_QUOTE_SHARD_SIZE = 120
+_QUOTE_MAX_CONCURRENCY = 3
 
 
 class TencentClient:
@@ -27,11 +31,13 @@ class TencentClient:
         session_factory: SessionFactory = requests.Session,
         cancel_requested: Callable[[], bool] = lambda: False,
         wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        worker_pool: BoundedExecutor | None = None,
     ) -> None:
         self._timeout_seconds = timeout_seconds
         self._session_factory = session_factory
         self._cancel_requested = cancel_requested
         self._wall_clock = wall_clock
+        self._worker_pool = worker_pool
 
     def fetch_quotes(
         self,
@@ -44,9 +50,54 @@ class TencentClient:
         if not normalized:
             return ()
         self._ensure_running()
+        received_at = now or self._wall_clock()
+        shards = tuple(
+            normalized[offset : offset + _QUOTE_SHARD_SIZE] for offset in range(0, len(normalized), _QUOTE_SHARD_SIZE)
+        )
+        quotes: list[MarketQuote] = []
+        failures: list[BaseException] = []
+        with borrow_executor(
+            self._worker_pool,
+            BorrowExecutorOptions(
+                worker_count=min(_QUOTE_MAX_CONCURRENCY, len(shards)),
+                queue_capacity=min(_QUOTE_MAX_CONCURRENCY, len(shards)),
+                thread_name_prefix="tencent-quotes",
+            ),
+        ) as pool:
+            for offset in range(0, len(shards), _QUOTE_MAX_CONCURRENCY):
+                wave = shards[offset : offset + _QUOTE_MAX_CONCURRENCY]
+                futures = {
+                    submit_or_run_inline(
+                        pool,
+                        self._fetch_quote_shard,
+                        shard,
+                        received_at,
+                        timeout_seconds,
+                    ): shard
+                    for shard in wave
+                }
+                for future in as_completed(futures):
+                    try:
+                        quotes.extend(future.result())
+                    except (OSError, RuntimeError, requests.RequestException) as exc:
+                        failures.append(exc)
+        self._ensure_running()
+        if failures:
+            raise RuntimeError("one or more Tencent quote shards failed") from failures[0]
+        if not quotes:
+            raise RuntimeError("tencent returned no usable candidate quotes")
+        return tuple(sorted(quotes, key=lambda quote: quote.code))
+
+    def _fetch_quote_shard(
+        self,
+        codes: tuple[str, ...],
+        received_at: datetime,
+        timeout_seconds: float | None,
+    ) -> tuple[MarketQuote, ...]:
+        self._ensure_running()
         with self._session_factory() as session:
             response = session.get(
-                "https://qt.gtimg.cn/q=" + ",".join(_symbol(code) for code in normalized),
+                "https://qt.gtimg.cn/q=" + ",".join(_symbol(code) for code in codes),
                 headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
                 timeout=(
                     self._timeout_seconds
@@ -58,18 +109,14 @@ class TencentClient:
             response.raise_for_status()
             text = response.content.decode("gb18030", errors="replace")
         self._ensure_running()
-        received_at = now or self._wall_clock()
-        quotes = normalize_quotes(
+        return normalize_quotes(
             (
                 {str(index): value for index, value in enumerate(payload.split("~"))}
                 for payload in re.findall(r'v_[^=]+="([^"]*)";', text)
             ),
             received_at,
-            normalizer=lambda row, now: _parse_payload(row, now, set(normalized)),
+            normalizer=lambda row, now: _parse_payload(row, now, set(codes)),
         )
-        if not quotes:
-            raise RuntimeError("tencent returned no usable candidate quotes")
-        return quotes
 
     def fetch_history(self, code: str, *, days: int = 90) -> tuple[DailyBar, ...]:
         if len(code) != 6 or not code.isdigit() or not code.startswith(("0", "3", "6")):

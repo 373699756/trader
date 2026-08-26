@@ -16,6 +16,7 @@ from trader.application.ports.v2_runtime import (
     V2DataRefreshUnavailableError,
     V2DecisionUnavailableError,
     V2PipelineTaskRequest,
+    V2RefreshOutcome,
 )
 from trader.application.schedule import SHANGHAI
 from trader.application.v2_input_runtime import V2DecisionBuildDependencies, V2MarketDataAdapter
@@ -47,13 +48,15 @@ class _Market:
         del force, deadline
         self.candidate_quote_refresh_count += 1
         self.requested_codes = tuple(codes)
-        return ()
+        requested = set(codes)
+        return tuple(feature for feature in self._features if feature.quote.code in requested)
 
     def refresh_topk_quotes(self, codes, _observed_at, *, force=False, deadline=None):
         del force, deadline
         self.topk_quote_refresh_count += 1
         self.requested_codes = tuple(codes)
-        return ()
+        requested = set(codes)
+        return tuple(feature for feature in self._features if feature.quote.code in requested)
 
     def schedule_reference_data(
         self,
@@ -119,6 +122,34 @@ def _request(
 def _prime_scoring_cache(adapter: V2MarketDataAdapter, observed_at: datetime) -> None:
     adapter.refresh_task(V2PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
     adapter.refresh_task(V2PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
+
+
+def test_refresh_outcome_is_versioned_and_identical_candidate_data_does_not_change(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+    feature = application_feature_factory("600001", observed_at)
+    feature = replace(feature, quote=replace(feature.quote, board=Board.MAIN))
+    adapter = V2MarketDataAdapter(
+        _Market((feature,)),
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=_decision_build(),
+    )
+
+    market = adapter.refresh_task(V2PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
+    first = adapter.refresh_task(V2PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
+    second = adapter.refresh_task(
+        V2PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at + timedelta(seconds=1))
+    )
+
+    assert isinstance(market, V2RefreshOutcome)
+    assert market.changed is True
+    assert first.changed is True
+    assert first.data_version
+    assert first.changed_codes == ("600001",)
+    assert second.changed is False
+    assert second.data_version == first.data_version
 
 
 def test_long_refresh_rejection_is_visible_to_scheduler_recovery() -> None:
@@ -299,7 +330,7 @@ def test_topk_overlay_batch_is_independent_from_full_market_and_scoring_cache(
     assert market.market_fetch_count == 0
     assert market.topk_quote_refresh_count == 1
     assert market.candidate_quote_refresh_count == 0
-    assert market.candidate_reads == [(("600001",), False, False)]
+    assert market.candidate_reads == []
     assert overlay.quotes[0].data_version == feature.quote.data_version
 
 
@@ -586,9 +617,31 @@ def test_three_scored_strategies_share_one_fast_market_input_cycle(
     ]
     assert all(decision is not None for decision in decisions)
     assert all(decision.items == () for decision in decisions if decision is not None)
-    assert len(market.candidate_reads) == 2
-    assert any(read[1] for read in market.candidate_reads)
+    assert len(market.candidate_reads) == 1
+    assert market.candidate_reads[0][1] is True
     assert all(read[2] for read in market.candidate_reads)
+
+
+def test_topk_refresh_reuses_returned_features_without_a_second_feature_read(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+    feature = application_feature_factory("600001", observed_at)
+    market = _Market((replace(feature, quote=replace(feature.quote, board=Board.MAIN)),))
+    adapter = V2MarketDataAdapter(
+        market,
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=_decision_build(),
+    )
+
+    outcome = adapter.refresh_task(
+        V2PipelineTaskRequest(PipelineTask.TOPK_QUOTES, observed_at, selected_codes=("600001",))
+    )
+
+    assert outcome.changed is True
+    assert market.topk_quote_refresh_count == 1
+    assert market.candidate_reads == []
 
 
 def test_three_scored_strategies_use_refresh_completion_as_the_decision_time(
@@ -604,7 +657,7 @@ def test_three_scored_strategies_use_refresh_completion_as_the_decision_time(
     class AdvancingMarket(_Market):
         def refresh_candidate_quotes(self, codes, _observed_at, *, force=False, deadline=None):
             result = super().refresh_candidate_quotes(codes, _observed_at, force=force, deadline=deadline)
-            self._features = tuple(
+            completed = tuple(
                 replace(
                     feature,
                     observed_at=completed_at,
@@ -614,9 +667,10 @@ def test_three_scored_strategies_use_refresh_completion_as_the_decision_time(
                         received_time=completed_at,
                     ),
                 )
-                for feature in self._features
+                for feature in result
             )
-            return result
+            self._features = completed
+            return completed
 
     market = AdvancingMarket(tuple(features))
     adapter = V2MarketDataAdapter(
