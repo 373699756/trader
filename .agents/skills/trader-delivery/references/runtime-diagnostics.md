@@ -8,6 +8,7 @@ Use the unified read-only entrypoint when one run should scan multiple boundarie
 
 Profiles:
 
+- `web`, `history`, `tencent`, `tushare`, `browser`, `performance`: run exactly one owning diagnostic module through the unified CLI. Use these after a combined scan has isolated one boundary or when executing its dedicated gate.
 - `runtime`: samples the running `/api/v2/status` and Today/Tomorrow/D25 current projections. Use for no-data, funnel, release/schema, projection identity, warmup-state, and restart symptoms.
 - `sources`: samples bounded history, Tencent quotes, and configured Tushare daily capability. It performs real supplier requests and consumes applicable quotas.
 - `live`: recommended incident profile; runs `runtime` plus all source probes and continues after an individual failure so one report can separate internal pipeline faults from supplier faults.
@@ -28,7 +29,7 @@ Useful options:
   --output -
 ```
 
-Only add `--persistence-runtime-dir /absolute/outside/repository/path` when comparing history transaction behavior. Combined report files must likewise use an explicit repository-external absolute path. Do not create an ad hoc `/tmp` script; extend the orchestrator or the owning probe and its tests.
+Only add `--persistence-runtime-dir /absolute/outside/repository/path` when comparing history transaction behavior. Combined report files must likewise use an explicit repository-external absolute path. Do not create an ad hoc `/tmp` or top-level wrapper script; extend the unified CLI or the owning `scripts/runtime_diagnostics/` module and its tests.
 
 Interpretation order:
 

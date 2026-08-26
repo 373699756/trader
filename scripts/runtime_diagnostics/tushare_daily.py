@@ -4,14 +4,15 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+from .common import emit_report
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from trader.infra.market_data.tushare import TushareClient  # noqa: E402
@@ -26,7 +27,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--runtime-config", default=str(_DEFAULT_RUNTIME_CONFIG), help="runtime JSON configuration")
     parser.add_argument("--codes", nargs="+", default=("000001",), help="one to 50 six-digit A-share codes")
     parser.add_argument("--days", type=int, default=61, help="minimum calendar lookback days (default: 61)")
-    parser.add_argument("--output", default="-", help="JSON output path, or - for stdout")
     return parser
 
 
@@ -92,16 +92,6 @@ def _report(args: argparse.Namespace, codes: tuple[str, ...]) -> dict[str, objec
     }
 
 
-def _write_report(report: dict[str, object], output: str) -> None:
-    rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
-    if output == "-":
-        sys.stdout.write(rendered)
-        return
-    path = Path(output).expanduser().resolve()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(rendered, encoding="utf-8")
-
-
 def main() -> int:
     args = _parser().parse_args()
     try:
@@ -112,7 +102,7 @@ def main() -> int:
             "status": "failed",
             "error": type(exc).__name__,
         }
-    _write_report(report, args.output)
+    emit_report(report)
     return 0 if report.get("status") in {"passed", "degraded"} else 1
 
 

@@ -16,14 +16,30 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS_ROOT = PROJECT_ROOT / "scripts"
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DEFAULT_CONFIG = PROJECT_ROOT / "config" / "v2" / "runtime.json"
 
-Profile = Literal["runtime", "sources", "live", "full"]
+Profile = Literal[
+    "web",
+    "history",
+    "tencent",
+    "tushare",
+    "browser",
+    "performance",
+    "runtime",
+    "sources",
+    "live",
+    "full",
+]
 CheckStatus = Literal["passed", "degraded", "failed"]
 
 _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
+    "web": ("web_health",),
+    "history": ("history_sources",),
+    "tencent": ("tencent_quotes",),
+    "tushare": ("tushare_daily",),
+    "browser": ("browser_refresh",),
+    "performance": ("production_performance",),
     "runtime": ("web_health",),
     "sources": ("history_sources", "tencent_quotes", "tushare_daily"),
     "live": ("web_health", "history_sources", "tencent_quotes", "tushare_daily"),
@@ -83,7 +99,7 @@ def _parser() -> argparse.ArgumentParser:
         "--profile",
         choices=tuple(_PROFILE_CHECKS),
         default="live",
-        help="runtime=Web APIs, sources=vendors, live=both, full=live plus browser and offline performance",
+        help="single-check or combined runtime, sources, live, and full diagnostic profile",
     )
     parser.add_argument("--base-url", default="http://127.0.0.1:5000", help="running trader-server base URL")
     parser.add_argument("--runtime-config", default=str(_DEFAULT_CONFIG), help="runtime JSON configuration")
@@ -186,7 +202,8 @@ def build_commands(
             "web_health",
             (
                 python_executable,
-                str(SCRIPTS_ROOT / "check_web_recommendation_health.py"),
+                "-m",
+                "scripts.runtime_diagnostics.web_health",
                 "--base-url",
                 options.base_url,
                 "--samples",
@@ -197,8 +214,6 @@ def build_commands(
                 str(options.web_timeout_seconds),
                 "--consecutive-zero-threshold",
                 str(min(3, options.web_samples)),
-                "--output",
-                "-",
             ),
             common_timeout,
         ),
@@ -211,7 +226,8 @@ def build_commands(
             "tencent_quotes",
             (
                 python_executable,
-                str(SCRIPTS_ROOT / "sample_tencent_quotes.py"),
+                "-m",
+                "scripts.runtime_diagnostics.tencent_quotes",
                 *options.codes,
                 "--samples",
                 str(options.source_samples),
@@ -219,8 +235,6 @@ def build_commands(
                 str(options.source_interval_seconds),
                 "--timeout-seconds",
                 str(options.source_timeout_seconds),
-                "--output",
-                "-",
             ),
             common_timeout,
         ),
@@ -228,15 +242,14 @@ def build_commands(
             "tushare_daily",
             (
                 python_executable,
-                str(SCRIPTS_ROOT / "sample_tushare_daily.py"),
+                "-m",
+                "scripts.runtime_diagnostics.tushare_daily",
                 "--runtime-config",
                 str(options.runtime_config),
                 "--codes",
                 *options.codes,
                 "--days",
                 str(options.history_days),
-                "--output",
-                "-",
             ),
             common_timeout,
         ),
@@ -244,15 +257,14 @@ def build_commands(
             "browser_refresh",
             (
                 python_executable,
-                str(SCRIPTS_ROOT / "measure_web_refresh_interval.py"),
+                "-m",
+                "scripts.runtime_diagnostics.browser_refresh",
                 "--duration-seconds",
                 str(options.browser_duration_seconds),
                 "--minimum-updates",
                 str(options.browser_minimum_updates),
                 "--runtime-config",
                 str(options.runtime_config),
-                "--output",
-                "-",
             ),
             common_timeout,
         ),
@@ -260,7 +272,8 @@ def build_commands(
             "production_performance",
             (
                 python_executable,
-                str(SCRIPTS_ROOT / "run_production_performance.py"),
+                "-m",
+                "trader.entrypoints.performance",
                 "--config",
                 str(options.runtime_config),
             ),
@@ -273,7 +286,8 @@ def build_commands(
 def _history_command(options: DiagnosticOptions, python_executable: str) -> tuple[str, ...]:
     command = [
         python_executable,
-        str(SCRIPTS_ROOT / "sample_history_sources.py"),
+        "-m",
+        "scripts.runtime_diagnostics.history_sources",
         "--codes",
         *options.codes,
         "--samples",
@@ -287,7 +301,6 @@ def _history_command(options: DiagnosticOptions, python_executable: str) -> tupl
     ]
     if options.persistence_runtime_dir is not None:
         command.extend(("--persistence-runtime-dir", str(options.persistence_runtime_dir)))
-    command.extend(("--output", "-"))
     return tuple(command)
 
 

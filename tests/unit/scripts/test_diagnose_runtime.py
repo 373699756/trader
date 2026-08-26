@@ -48,7 +48,7 @@ def test_live_profile_combines_runtime_and_all_source_probes() -> None:
         "tushare_daily",
     )
     assert all(command.argv[0] == "/python" for command in commands)
-    assert all("--output" in command.argv and command.argv[-1] == "-" for command in commands)
+    assert all("--output" not in command.argv for command in commands)
 
 
 def test_full_profile_adds_browser_and_offline_performance_without_duplicate_probes() -> None:
@@ -62,6 +62,24 @@ def test_full_profile_adds_browser_and_offline_performance_without_duplicate_pro
         "browser_refresh",
         "production_performance",
     )
+
+
+@pytest.mark.parametrize(
+    ("profile", "expected"),
+    [
+        ("web", "web_health"),
+        ("history", "history_sources"),
+        ("tencent", "tencent_quotes"),
+        ("tushare", "tushare_daily"),
+        ("browser", "browser_refresh"),
+        ("performance", "production_performance"),
+    ],
+)
+def test_single_check_profiles_preserve_targeted_gate_execution(profile: str, expected: str) -> None:
+    commands = build_commands(_options(profile=profile), python_executable="/python")
+
+    assert tuple(command.name for command in commands) == (expected,)
+    assert commands[0].argv[:2] == ("/python", "-m")
 
 
 def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloads() -> None:

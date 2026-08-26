@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户要求把 `scripts/` 中能合并的诊断一次执行并删除合并后的无用脚本，新增内部
+  `scripts.runtime_diagnostics` 包。Web、历史、腾讯、Tushare 和 Firefox 探针按职责保留独立实现，统一
+  复用标准输出 JSON 边界；历史与腾讯探针进一步共用 nearest-rank 延迟统计。统一 CLI 新增
+  `web/history/tencent/tushare/browser/performance` 精确 profile，既可一次 `live/full` 扫描多边界，也可
+  在定位后只复测一个边界。`Regression-Key: diagnostic-wrapper-consolidation-v1`。
 - 针对用户要求继续 `fenshu.md`“批次 1：建立原生因子诊断层”，新增离线
   `score_native_factor_diagnostics_v1` 与不可变 `score_factor_diagnostic_report_v1`。报告绑定 R2/R3 父哈希、
   研究规范和类型化市值/流动性维度，原生输出每日 IC/Rank IC、ICIR、五分组 20/50/100bp 净超额与
@@ -407,6 +412,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 根因确认：上一批虽增加统一编排器，但六个顶层专项脚本仍各自拥有 CLI 与落盘逻辑，导致入口、参数和
+  维护边界重复，后续代理仍可能绕过统一报告。本批把 `scripts/diagnose_runtime.py` 收口为唯一公开诊断
+  CLI，内部探针只向父进程输出一个 JSON；`make performance-check` 直接复用正式
+  `trader.entrypoints.performance`，浏览器和供应商专项门禁均经统一 profile 路由。该重构不改变行情、
+  评分、DeepSeek、冻结、API 或 Web 业务行为，荐股策略文档无需变化。
 - 原生因子诊断复用 R2 的点时组件和 `CostSettlementBasis`、R3 的 active-set oracle，不扩写已冻结 R3
   schema，也不建立第二套行情、评分或结算链。20bp 主标签、Pearson/Spearman 最小 5 对、非年化 ICIR、
   Q1-Q5、三档成本、1/3/5 日滞后、`MAE/ATR20 <= -1.5` 和集中度分母现由荐股策略文档冻结为唯一口径；
@@ -736,6 +746,9 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复诊断脚本“已有统一入口但仍需记忆并维护多个顶层命令”的重复交付问题：同一 `full` 命令现在按
+  子进程隔离连续定位运行 Web、三类供应商、浏览器和离线性能，单项失败仍不会掩盖后续检查；输出文件
+  只由统一入口校验为仓库外绝对路径并一次写入，内部模块不再各自创建报告文件。
 - 修复评分研究只有 R3 最终分 Rank IC 和组合汇总、无法逐原生组件回答“相关性是否稳定、成本后是否单调、
   是否集中于少数股票/分层、候选剪枝损失多少 oracle”的证据缺口。根因是此前 R2/R3 已封存所需点时证据，
   但没有绑定两级父身份的独立因子诊断模型和持久化边界；本批新增父哈希、逐日身份和逐股维度全集校验，
@@ -1064,6 +1077,11 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除已由统一入口覆盖且不再承担独立职责的六个顶层包装脚本：
+  `check_web_recommendation_health.py`、`measure_web_refresh_interval.py`、`sample_history_sources.py`、
+  `sample_tencent_quotes.py`、`sample_tushare_daily.py` 和 `run_production_performance.py`。保留
+  `check_refactor_quality.py`、`generate_long_watchlist_asset.py` 与 `test.sh`，因为它们分别承担架构门禁、
+  资产生成和测试启动职责，不能与运行诊断合并。历史 Changelog 中的旧文件名仍作为交付审计记录保留。
 - 本批没有删除或替换 R2/R3、生产评分、固定 68/32 融合、78/73 门槛、冻结、DeepSeek、API 或 Web；
   新诊断服务和报告存储未接入组合根、HTTP、调度或活动运行目录，避免离线证据取得隐式生产权限。
 - 本批未删除或合并掉任何专项脚本，也未新增诊断到生产请求、调度、评分或冻结链；统一报告不转发逐股
@@ -1220,6 +1238,19 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 统一诊断 unit/contract 共 39 项通过，覆盖六档精确 profile、组合顺序、失败后继续、脱敏聚合、共享
+  JSON 输出、共享 p50/p95、旧包装脚本不存在，以及五个内部模块均可通过 `python -m ... --help` 启动且
+  不再公开 `--output`。受影响 Python Ruff 检查通过；`skill-creator` 的 `quick_validate.py` 返回
+  `Skill is valid!`。
+- 获准真实网络与 Firefox 后执行短时 `--profile full`，同一命令的 Web、历史、腾讯、Tushare、浏览器、
+  离线生产性能 6/6 全部通过：历史 3/3 样本可用，Tushare 3/3 成功并识别 120 积分、50 次/分钟和
+  8000 次/日，浏览器 patch-to-paint p95 为 9ms，生产性能 `failures=[]`。仓库外聚合报告扫描未发现三个
+  样本代码、Token、stderr 或供应商原始载荷。
+- 入口与门禁路由变更按高风险执行 `make format-check`（376 个文件）、`make lint`（严格重构债为零）、
+  `make type-check`（229 个源码文件）、`make test` 和 `make package`，全部通过；打包前两次分别受沙箱
+  禁网和 PyPI TLS EOF 影响，获准联网重试后成功生成 sdist 与 wheel。桌面页面布局、业务 Web 资源和
+  产品运行依赖未变化，三档分辨率重复验收及仓库外 wheel 安装不适用；本批已用真实 Firefox profile
+  验证被迁移的浏览器诊断入口。
 - 原生因子诊断定向 unit/component/contract 测试覆盖 Pearson/ICIR、单调性、换手、集中度、完整/全缺失
   因子、三档成本、严重亏损、四类分层、剪枝前后召回、R2/R3/维度错配、幂等、冲突、防篡改和组合根隔离；
   受影响 Python 模块 Ruff 与 mypy 检查通过。评分/研究协议按高风险执行 `make format-check`、`make lint`、
@@ -1858,6 +1889,10 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 本次真实 `full` 是当前网络、供应商、本机浏览器和运行服务的单次有界样本，不代表后续交易时段永不
+  抖动；`sources/live/full` 仍会实际消耗供应商调用配额。上一批记录的历史空响应和
+  `market_merge:absolute_budget` 本轮均未复现且性能门禁通过，说明它们至少不是本次脚本合并造成的稳定
+  回归，但若再次出现仍应保留完整统一报告并按首个失败边界另开业务批次诊断。
 - 当前真实 R2 点时覆盖仍不足 40 个有效交易日，因子报告只能标记 `exploratory`；本批完成的是诊断工程
   能力，不证明任何因子可提高未来荐股收益，也不创建生产晋级资格。市值和流动性值必须由后续显式离线
   研究执行从同一 R2 point-in-time bundle 投影后传入，缺失只进入 `unknown`，禁止用后来数据回填。

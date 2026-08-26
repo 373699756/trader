@@ -22,7 +22,9 @@ from typing import Any
 
 from werkzeug.serving import WSGIRequestHandler, make_server
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+from .common import emit_report
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from trader.application.cadence import CadencePlanner, CadencePolicy  # noqa: E402
@@ -262,7 +264,6 @@ def _parser() -> argparse.ArgumentParser:
         default=str(PROJECT_ROOT / "config" / "v2" / "runtime.json"),
         help="runtime config supplying the Web snapshot retention window",
     )
-    parser.add_argument("--output", default="-", help="JSON output path, or - for stdout")
     return parser
 
 
@@ -460,16 +461,6 @@ def _numeric_field(record: dict[str, object], field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise RuntimeError(f"measurement record field {field} must be numeric")
     return float(value)
-
-
-def _write_report(report: dict[str, object], output: str) -> None:
-    rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
-    if output == "-":
-        sys.stdout.write(rendered)
-        return
-    path = Path(output).expanduser().resolve()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(rendered, encoding="utf-8")
 
 
 def _run(
@@ -781,7 +772,7 @@ def main() -> int:
             "error": type(exc).__name__,
             "message": str(exc)[:300] or "no additional detail",
         }
-    _write_report(report, args.output)
+    emit_report(report)
     return 0 if report.get("passed") is True else 1
 
 

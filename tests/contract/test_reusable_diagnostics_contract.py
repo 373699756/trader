@@ -5,8 +5,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DIAGNOSTICS = (
-    ROOT / "scripts" / "diagnose_runtime.py",
+UNIFIED_DIAGNOSTIC = ROOT / "scripts" / "diagnose_runtime.py"
+REMOVED_DIAGNOSTIC_WRAPPERS = (
     ROOT / "scripts" / "check_web_recommendation_health.py",
     ROOT / "scripts" / "measure_web_refresh_interval.py",
     ROOT / "scripts" / "sample_history_sources.py",
@@ -14,18 +14,62 @@ DIAGNOSTICS = (
     ROOT / "scripts" / "sample_tencent_quotes.py",
     ROOT / "scripts" / "run_production_performance.py",
 )
+INTERNAL_DIAGNOSTIC_MODULES = (
+    ROOT / "scripts" / "runtime_diagnostics" / "web_health.py",
+    ROOT / "scripts" / "runtime_diagnostics" / "browser_refresh.py",
+    ROOT / "scripts" / "runtime_diagnostics" / "history_sources.py",
+    ROOT / "scripts" / "runtime_diagnostics" / "tencent_quotes.py",
+    ROOT / "scripts" / "runtime_diagnostics" / "tushare_daily.py",
+)
+INTERNAL_COMMON = ROOT / "scripts" / "runtime_diagnostics" / "common.py"
 
 
-def test_reusable_runtime_diagnostics_are_parameterized_repository_scripts() -> None:
+def test_unified_runtime_diagnostic_is_the_only_public_parameterized_script() -> None:
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-    for script in DIAGNOSTICS:
-        source = script.read_text(encoding="utf-8")
+    source = UNIFIED_DIAGNOSTIC.read_text(encoding="utf-8")
 
+    assert "def main() -> int:" in source
+    assert "argparse.ArgumentParser" in source
+    assert "tests." not in source
+    result = subprocess.run(
+        (sys.executable, str(UNIFIED_DIAGNOSTIC), "--help"),
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    for option in ("--profile", "--base-url", "--runtime-config", "--codes", "--output"):
+        assert option in result.stdout
+    for profile in ("web", "history", "tencent", "tushare", "browser", "performance", "live", "full"):
+        assert profile in result.stdout
+    assert UNIFIED_DIAGNOSTIC.name in makefile
+
+
+def test_legacy_diagnostic_wrappers_are_deleted_after_unified_cli_migration() -> None:
+    active_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            ROOT / "Makefile",
+            ROOT / "README.md",
+            ROOT / "docs" / "software-business-design.md",
+            ROOT / "src" / "trader" / "entrypoints" / "performance.py",
+            ROOT / ".agents" / "skills" / "trader-delivery" / "SKILL.md",
+            ROOT / ".agents" / "skills" / "trader-delivery" / "references" / "runtime-diagnostics.md",
+        )
+    )
+    for wrapper in REMOVED_DIAGNOSTIC_WRAPPERS:
+        assert not wrapper.exists()
+        assert wrapper.name not in active_text
+
+    for module in INTERNAL_DIAGNOSTIC_MODULES:
+        source = module.read_text(encoding="utf-8")
         assert "def main() -> int:" in source
         assert "argparse.ArgumentParser" in source
-        assert "tests." not in source
+        assert "from .common import emit_report" in source
         result = subprocess.run(
-            (sys.executable, str(script), "--help"),
+            (sys.executable, "-m", f"scripts.runtime_diagnostics.{module.stem}", "--help"),
             cwd=ROOT,
             check=False,
             capture_output=True,
@@ -33,28 +77,10 @@ def test_reusable_runtime_diagnostics_are_parameterized_repository_scripts() -> 
             timeout=10,
         )
         assert result.returncode == 0, result.stderr
-        assert "--output" in result.stdout
-        assert script.name in makefile
-        if script.name == "diagnose_runtime.py":
-            for option in ("--profile", "--base-url", "--runtime-config", "--codes"):
-                assert option in result.stdout
-        if script.name == "check_web_recommendation_health.py":
-            for option in ("--base-url", "--samples", "--interval-seconds", "--strategy"):
-                assert option in result.stdout
-        if script.name == "measure_web_refresh_interval.py":
-            assert "--runtime-config" in result.stdout
-        if script.name == "sample_history_sources.py":
-            for option in (
-                "--codes",
-                "--workers",
-                "--source",
-                "--timeout-seconds",
-                "--persistence-runtime-dir",
-            ):
-                assert option in result.stdout
-        if script.name == "sample_tushare_daily.py":
-            for option in ("--runtime-config", "--codes", "--days"):
-                assert option in result.stdout
+        assert "--output" not in result.stdout
+
+    common = INTERNAL_COMMON.read_text(encoding="utf-8")
+    assert "def emit_report(" in common
 
 
 def test_agent_workflow_requires_reusing_diagnostic_scripts() -> None:

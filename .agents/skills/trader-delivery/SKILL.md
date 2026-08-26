@@ -26,7 +26,7 @@ Deliver one repository change without reopening a known failure or regressing an
 
 ## Diagnose and verify
 
-Read [the runtime diagnostics guide](references/runtime-diagnostics.md) whenever the task touches running behavior, suppliers, history, Web, performance, or browser delivery. Prefer the combined `scripts/diagnose_runtime.py` profiles over manually invoking several probes. Keep the individual scripts as the canonical single-purpose probes.
+Read [the runtime diagnostics guide](references/runtime-diagnostics.md) whenever the task touches running behavior, suppliers, history, Web, performance, or browser delivery. Use `scripts/diagnose_runtime.py` as the only public diagnostic CLI. Keep each implementation in its owning `scripts/runtime_diagnostics/` module; do not recreate standalone wrapper scripts or duplicate probe logic in the orchestrator.
 
 Read [the delivery evidence guide](references/delivery-evidence.md) before marking implementation or Review complete. It defines the minimum root-cause, regression, live-process, diff, and handoff evidence.
 

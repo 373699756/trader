@@ -1,11 +1,10 @@
 SHELL := /bin/bash
 PYTHON ?= .venv/bin/python
 SOURCE_PATHS := src/trader tests scripts/check_refactor_quality.py scripts/generate_long_watchlist_asset.py \
-	scripts/check_web_recommendation_health.py scripts/measure_web_refresh_interval.py \
-	scripts/sample_history_sources.py scripts/sample_tencent_quotes.py scripts/sample_tushare_daily.py \
-	scripts/diagnose_runtime.py
-
-SOURCE_PATHS += scripts/run_production_performance.py
+	scripts/diagnose_runtime.py scripts/runtime_diagnostics/__init__.py scripts/runtime_diagnostics/common.py \
+	scripts/runtime_diagnostics/web_health.py scripts/runtime_diagnostics/browser_refresh.py \
+	scripts/runtime_diagnostics/history_sources.py scripts/runtime_diagnostics/tencent_quotes.py \
+	scripts/runtime_diagnostics/tushare_daily.py
 
 .PHONY: help install-dev format format-check lint long-watchlist-check type-check test quality package performance-check browser-performance-check diagnose-live diagnose-full
 
@@ -49,10 +48,10 @@ package:
 	$(PYTHON) -m build
 
 performance-check:
-	$(PYTHON) scripts/run_production_performance.py --config config/v2/runtime.json
+	$(PYTHON) -m trader.entrypoints.performance --config config/v2/runtime.json
 
 browser-performance-check:
-	$(PYTHON) scripts/measure_web_refresh_interval.py --duration-seconds 8 --minimum-updates 3 --output -
+	$(PYTHON) scripts/diagnose_runtime.py --profile browser --browser-duration-seconds 8 --browser-minimum-updates 3 --output -
 
 diagnose-live:
 	$(PYTHON) scripts/diagnose_runtime.py --profile live --output -

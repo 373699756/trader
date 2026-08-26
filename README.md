@@ -54,8 +54,8 @@ API/ETag/status、SSE 和 100 tick RSS；可用 `--output` 保存报告，或用
 
 ## 荐股漏斗诊断
 
-优先使用统一入口一次执行 Web 漏斗、历史源、腾讯实时报价和 Tushare 能力检查；各专项脚本仍是唯一
-诊断实现，统一入口只负责编排、隔离失败和生成脱敏汇总：
+优先使用统一入口一次执行 Web 漏斗、历史源、腾讯实时报价和 Tushare 能力检查；各专项能力由
+`scripts/runtime_diagnostics/` 内部职责模块维护，不再保留多个顶层包装脚本：
 
 ```bash
 .venv/bin/python scripts/diagnose_runtime.py \
@@ -71,13 +71,15 @@ API/ETag/status、SSE 和 100 tick RSS；可用 `--output` 保存报告，或用
 绝对路径。
 也可执行 `make diagnose-live`；耗时更长的浏览器与性能组合必须显式执行 `make diagnose-full`。
 
-只需要复测荐股漏斗时，可直接运行底层专项脚本：
+只复测单一边界时仍使用同一个入口，profile 可选 `web`、`history`、`tencent`、`tushare`、`browser`
+和 `performance`。例如只检查荐股漏斗：
 
 ```bash
-.venv/bin/python scripts/check_web_recommendation_health.py \
+.venv/bin/python scripts/diagnose_runtime.py \
+  --profile web \
   --base-url http://127.0.0.1:5000 \
-  --samples 6 \
-  --interval-seconds 5 \
+  --web-samples 6 \
+  --web-interval-seconds 5 \
   --output -
 ```
 
@@ -117,8 +119,8 @@ python3 -m venv .venv
 低频能力审计和来源健康观测。生产参考 lane 以固定审计代码复用 6 小时缓存，评分历史仍直接使用
 腾讯/东方财富前复权日线；证券主数据、交易日历、复权因子、日度估值和财务指标等 2000 积分能力
 不调用。SDK 已由 `pyproject.toml` 作为默认运行依赖安装；Token 缺失时显式降级。
-`scripts/sample_tushare_daily.py` 可只读实测当前 Token，输出行数、延迟、复权标签和进程内配额计数，
-不会输出 Token、价格或完整供应商载荷。
+`scripts/diagnose_runtime.py --profile tushare --output -` 可只读实测当前 Token，统一报告输出延迟、
+能力和进程内配额计数，不会输出 Token、价格、逐股载荷或完整供应商响应。
 项目根目录 `.token_key` 同时保存两个独立字段：
 
 ```bash

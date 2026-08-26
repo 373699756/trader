@@ -133,8 +133,8 @@ def run(config_path: Path, *, baseline_path: Path | None = None) -> dict[str, ob
         "relative_regression_percent": budgets.relative_regression_percent,
         "network_calls": 0,
         "external_checks": {
-            "browser_patch_to_paint": "scripts/measure_web_refresh_interval.py",
-            "supplier_realtime": "scripts/sample_tencent_quotes.py",
+            "browser_patch_to_paint": "scripts/diagnose_runtime.py --profile browser",
+            "supplier_realtime": "scripts/diagnose_runtime.py --profile tencent",
         },
         "failures": failures,
     }

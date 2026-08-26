@@ -4,7 +4,7 @@ from argparse import Namespace
 
 import pytest
 
-from scripts.sample_history_sources import _validate
+from scripts.runtime_diagnostics.history_sources import _validate
 
 
 def _args(**overrides: object) -> Namespace:

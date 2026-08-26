@@ -4,9 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import json
-import math
-import statistics
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -17,7 +14,9 @@ from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+from .common import emit_report, summarize_latency_ms
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from trader.application.ports.data_plane import HistoricalFeatureRecord  # noqa: E402
@@ -61,7 +60,6 @@ def _parser() -> argparse.ArgumentParser:
         "--persistence-runtime-dir",
         help="optional absolute directory outside the repository for an isolated batch-persistence measurement",
     )
-    parser.add_argument("--output", default="-", help="JSON output path, or - for stdout")
     return parser
 
 
@@ -137,15 +135,7 @@ def collect_history_samples(
 
 
 def _latency_summary(observations: tuple[HistoryObservation, ...]) -> dict[str, float | int | None]:
-    values = sorted(item.latency_ms for item in observations)
-    if not values:
-        return {"sample_count": 0, "p50_ms": None, "p95_ms": None, "maximum_ms": None}
-    return {
-        "sample_count": len(values),
-        "p50_ms": round(statistics.median(values), 1),
-        "p95_ms": values[max(0, math.ceil(len(values) * 0.95) - 1)],
-        "maximum_ms": values[-1],
-    }
+    return summarize_latency_ms([item.latency_ms for item in observations])
 
 
 def _measure_persistence(observations: tuple[HistoryObservation, ...], runtime_dir: str) -> dict[str, object]:
@@ -260,16 +250,6 @@ def build_report(
     }
 
 
-def _write_report(report: dict[str, object], output: str) -> None:
-    rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
-    if output == "-":
-        sys.stdout.write(rendered)
-        return
-    path = Path(output).expanduser().resolve()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(rendered, encoding="utf-8")
-
-
 def main() -> int:
     parser = _parser()
     args = parser.parse_args()
@@ -293,7 +273,7 @@ def main() -> int:
             "status": "failed",
             "error": type(exc).__name__,
         }
-    _write_report(report, args.output)
+    emit_report(report)
     return 0 if report.get("status") in {"passed", "degraded"} else 1
 
 

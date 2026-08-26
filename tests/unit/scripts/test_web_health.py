@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import replace
 
-from scripts.check_web_recommendation_health import WebSample, analyze_samples, build_report, parse_web_sample
+from scripts.runtime_diagnostics.web_health import WebSample, analyze_samples, build_report, parse_web_sample
 
 _STRATEGY = "tomorrow"
 _TRADE_DATE = "2026-08-25"

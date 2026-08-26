@@ -4,16 +4,15 @@
 from __future__ import annotations
 
 import argparse
-import json
-import math
-import statistics
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+from .common import emit_report, summarize_latency_ms
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from trader.infra.market_data.tencent import TencentClient  # noqa: E402
@@ -27,21 +26,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--samples", type=int, default=5, help="number of samples (default: 5)")
     parser.add_argument("--interval-seconds", type=float, default=2.0, help="wall-clock delay between samples")
     parser.add_argument("--timeout-seconds", type=float, default=3.0, help="timeout for each Tencent HTTP request")
-    parser.add_argument("--output", default="-", help="JSON output path, or - for stdout")
     return parser
 
 
 def _latency_summary(values: list[float]) -> dict[str, float | int | None]:
-    if not values:
-        return {"sample_count": 0, "p50_ms": None, "p95_ms": None, "maximum_ms": None}
-    ordered = sorted(values)
-    p95_index = max(0, math.ceil(len(ordered) * 0.95) - 1)
-    return {
-        "sample_count": len(ordered),
-        "p50_ms": round(statistics.median(ordered), 1),
-        "p95_ms": round(ordered[p95_index], 1),
-        "maximum_ms": round(ordered[-1], 1),
-    }
+    return summarize_latency_ms(values)
 
 
 def _validate(args: argparse.Namespace) -> tuple[str, ...]:
@@ -101,16 +90,6 @@ def _collect(codes: tuple[str, ...], args: argparse.Namespace) -> dict[str, obje
     }
 
 
-def _write_report(report: dict[str, object], output: str) -> None:
-    rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
-    if output == "-":
-        sys.stdout.write(rendered)
-        return
-    path = Path(output).expanduser().resolve()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(rendered, encoding="utf-8")
-
-
 def main() -> int:
     parser = _parser()
     args = parser.parse_args()
@@ -124,9 +103,9 @@ def main() -> int:
             "status": "failed",
             "error": type(exc).__name__,
         }
-        _write_report(report, args.output)
+        emit_report(report)
         return 1
-    _write_report(report, args.output)
+    emit_report(report)
     return 0
 
 

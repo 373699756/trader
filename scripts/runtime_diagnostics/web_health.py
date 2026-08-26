@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import sys
 import time
 import urllib.error
 import urllib.parse
@@ -14,10 +13,11 @@ import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from types import MappingProxyType
 from typing import Literal
 from zoneinfo import ZoneInfo
+
+from .common import emit_report
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _STRATEGIES = ("today", "tomorrow", "d25")
@@ -197,7 +197,6 @@ def _parser() -> argparse.ArgumentParser:
         dest="strategies",
         help="short strategy to inspect; repeat to select multiple (default: all)",
     )
-    parser.add_argument("--output", default="-", help="JSON output path, or - for stdout")
     return parser
 
 
@@ -1046,16 +1045,6 @@ def _validate_args(args: argparse.Namespace) -> tuple[str, tuple[str, ...]]:
     return _normalize_base_url(args.base_url), strategies
 
 
-def _write_report(report: Mapping[str, object], output: str) -> None:
-    rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
-    if output == "-":
-        sys.stdout.write(rendered)
-        return
-    path = Path(output).expanduser().resolve()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(rendered, encoding="utf-8")
-
-
 def _mapping(value: object) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
         return {}
@@ -1110,7 +1099,7 @@ def main() -> int:
             "status": "failed",
             "error": type(exc).__name__,
         }
-    _write_report(report, args.output)
+    emit_report(report)
     return 0 if report.get("status") in {"passed", "degraded"} else 1
 
 
