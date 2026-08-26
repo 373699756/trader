@@ -11,15 +11,29 @@ def test_next_score_diagnostic_gate_is_owned_by_authoritative_docs() -> None:
 
     assert "原生评分因子诊断层" in design
     for statement in (
+        "score_native_factor_diagnostics_v1",
+        "score_factor_diagnostic_report_v1",
         "14:50 至下一交易日收盘净超额",
-        "每日 IC/Rank IC",
-        "五分组单调性",
-        "20/50/100bp 成本",
+        "总体 Pearson",
+        "总体 Spearman",
+        "ICIR",
+        "Q5-Q1",
+        "相隔 1/3/5 个已观察交易日",
+        "small/mid/large",
+        "20/50/100bp 平均净超额",
+        "MAE/ATR20 <= -1.5",
+        "最大单股占比",
+        "前五只合计占比",
         "MAE/ATR20",
-        "候选 oracle recall",
-        "不改活动评分",
+        "剪枝前 oracle recall",
+        "production_authority=false",
+        "不产生生产晋级权限",
     ):
         assert statement in strategy
+
+    bootstrap = (ROOT / "src/trader/bootstrap.py").read_text(encoding="utf-8")
+    assert "factor_diagnostics" not in bootstrap
+    assert "ScoreNativeFactorDiagnostics" not in bootstrap
 
 
 def test_score_plan_p0_pre_registration_is_reflected_in_authoritative_docs() -> None:

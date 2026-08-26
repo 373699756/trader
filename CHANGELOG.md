@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户要求继续 `fenshu.md`“批次 1：建立原生因子诊断层”，新增离线
+  `score_native_factor_diagnostics_v1` 与不可变 `score_factor_diagnostic_report_v1`。报告绑定 R2/R3 父哈希、
+  研究规范和类型化市值/流动性维度，原生输出每日 IC/Rank IC、ICIR、五分组 20/50/100bp 净超额与
+  单调性、覆盖/缺失、1/3/5 日衰减与换手、板块/行业/市值/流动性分层、严重亏损、MAE/ATR20、Q5 正贡献
+  集中度，以及生产 Top120 剪枝前后的 oracle recall。`Regression-Key: score-native-factor-diagnostics-v1`。
 - 新增文档单一真相源契约：直接验证 `docs/V2.md`、`docs/implementation-plan.md` 和
   `docs/start_stop.md` 不再存在，并要求 V2-only 边界、日常运维命令、正式发布状态、失败的
   `score_p0_v2` 证据及下一项原生评分因子诊断 Gate 由两份权威文档承接。
@@ -397,6 +402,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 原生因子诊断复用 R2 的点时组件和 `CostSettlementBasis`、R3 的 active-set oracle，不扩写已冻结 R3
+  schema，也不建立第二套行情、评分或结算链。20bp 主标签、Pearson/Spearman 最小 5 对、非年化 ICIR、
+  Q1-Q5、三档成本、1/3/5 日滞后、`MAE/ATR20 <= -1.5` 和集中度分母现由荐股策略文档冻结为唯一口径；
+  缺失继续为 `null`，报告固定 `production_authority=false`。
 - 用户要求把三份并行文档中已经完成但尚未进入权威文档的内容完成合并后删除来源文件。核对确认
   V2-only 产品边界、无兼容原则、唯一 API、冻结规则和大部分评分研究状态已经归入权威文档；实际缺口是
   日常安装/启动/只读检查命令仍只在独立运行手册中，文档治理和机器契约仍把三份文件当活动输入，且删除
@@ -718,6 +727,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复评分研究只有 R3 最终分 Rank IC 和组合汇总、无法逐原生组件回答“相关性是否稳定、成本后是否单调、
+  是否集中于少数股票/分层、候选剪枝损失多少 oracle”的证据缺口。根因是此前 R2/R3 已封存所需点时证据，
+  但没有绑定两级父身份的独立因子诊断模型和持久化边界；本批新增父哈希、逐日身份和逐股维度全集校验，
+  错配、缺行、文件篡改及同身份不同内容均失败关闭。
 - 修复权威文档仍反向引用非权威概览、实施计划和启动停止手册，导致“唯一权威”与实际活动输入不一致；
   后续未完成的产品/发布/工程 Gate 直接维护在软件业务设计第 14 节，评分研究 Gate 直接维护在荐股策略
   第 15.1 节，已完成施工证据只保留在 Changelog 和报告。
@@ -1038,6 +1051,8 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 本批没有删除或替换 R2/R3、生产评分、固定 68/32 融合、78/73 门槛、冻结、DeepSeek、API 或 Web；
+  新诊断服务和报告存储未接入组合根、HTTP、调度或活动运行目录，避免离线证据取得隐式生产权限。
 - 删除已经完成归并的 `docs/V2.md`、`docs/implementation-plan.md` 和 `docs/start_stop.md`；不保留重定向、
   摘要副本或兼容读取，避免再次形成与两份权威文档竞争的产品、计划和运维定义。
 - 移除 `v2_research_readiness_v2` 及其“窗口结束前一律 collecting”的模糊投影；没有删除、补写或迁移
@@ -1190,6 +1205,11 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 原生因子诊断定向 unit/component/contract 测试覆盖 Pearson/ICIR、单调性、换手、集中度、完整/全缺失
+  因子、三档成本、严重亏损、四类分层、剪枝前后召回、R2/R3/维度错配、幂等、冲突、防篡改和组合根隔离；
+  受影响 Python 模块 Ruff 与 mypy 检查通过。评分/研究协议按高风险执行 `make format-check`、`make lint`、
+  `make type-check`、`make test` 和 `make package`，全部通过；wheel 已包含新增领域、应用和基础设施模块。
+  本批没有生产装配、HTTP、Web、供应商或 DeepSeek 改动，现场运行/浏览器/外部请求实测不适用。
 - 文档归并及权威一致性定向验证共 24 项通过，覆盖 `test_v2_only_product_contract.py`、
   `test_score_plan_contract.py`、`test_authoritative_document_consistency.py`、`test_recommendation_sections.py`
   和 `test_agent_quality_gate_policy.py`；Python 契约测试文件执行 Ruff 检查和格式检查；完整 diff
@@ -1816,8 +1836,11 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- 当前代码仍为 `Unreleased`，正式 0.2.0 发布批次尚未发起；原生评分因子诊断层也仍为“未开始”。本批只把
-  两项 Gate 迁入权威文档，没有声明正式发布、生成新研究身份或改变生产评分。历史 Changelog/报告仍可
+- 当前真实 R2 点时覆盖仍不足 40 个有效交易日，因子报告只能标记 `exploratory`；本批完成的是诊断工程
+  能力，不证明任何因子可提高未来荐股收益，也不创建生产晋级资格。市值和流动性值必须由后续显式离线
+  研究执行从同一 R2 point-in-time bundle 投影后传入，缺失只进入 `unknown`，禁止用后来数据回填。
+- 当前代码仍为 `Unreleased`，正式 0.2.0 发布批次尚未发起；原生评分因子诊断层只完成离线工程能力，
+  没有声明正式发布、生成新研究身份或改变生产评分。历史 Changelog/报告仍可
   以过去时引用已删除文件名，这是审计证据而非活动文档依赖。
 - `score_p0_v2` 已不可逆地无法达到 40/40；已有证据继续保留且不补写。三日缺少 committed event 和
   正式决策是已确认的直接证据缺口，但缺失产生的运行级原因因没有对应日志仍待验证，数据库隔离记录

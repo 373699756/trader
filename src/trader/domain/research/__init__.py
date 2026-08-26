@@ -13,6 +13,13 @@ from trader.domain.research.challengers import (
     challenger_parameter_manifest,
     challenger_registry,
 )
+from trader.domain.research.factor_diagnostics import (
+    factor_concentration,
+    information_coefficient_ratio,
+    monotonicity,
+    population_pearson,
+    top_bucket_turnover,
+)
 from trader.domain.research.historical import (
     CostSettlementBasis,
     HistoricalCandidateSummary,
@@ -62,13 +69,18 @@ __all__ = [
     "challenger_parameter_manifest",
     "challenger_registry",
     "bootstrap_seed",
+    "factor_concentration",
     "holm_step_down",
+    "information_coefficient_ratio",
     "get_score_research_spec",
     "mean_rank_ic",
+    "monotonicity",
     "optimistic_component_upper_bound",
     "optimistic_final_upper_bound",
     "population_spearman",
+    "population_pearson",
     "paired_moving_block_bootstrap",
     "quantile_bucket",
     "stock_net_contribution",
+    "top_bucket_turnover",
 ]
