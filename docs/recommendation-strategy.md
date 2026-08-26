@@ -221,6 +221,9 @@ Tushare SDK `daily` 批量数据必须标记 `raw`/`unadjusted_daily`，不得�
 来源 lane 幂等调度证券主数据和交易日历参考刷新，Today、Tomorrow、D25 共用一次请求身份。
 历史异步调度只由 `HistoryWarmup` 持有：批次上限为 30 且不得超过历史执行池的可并发 worker 数，
 预热自身不得预先堆积第二个 worker 波次，禁止仅因固定大批次产生的内部排队耗尽供应商 deadline；
+生产 20 秒批次将 90% 分配给腾讯一次与东方财富三个 host 的最坏串行路由，单次 HTTP timeout
+据此截断为 4.5 秒，剩余 10% 保留给校验和持久化；每只股票最多 61 条历史记录必须以一次原子
+批量事务持久化，禁止逐条重新初始化 SQLite 和提交事务；
 截止前完成的单股结果立即保留，真正超时的慢尾只使未覆盖代码进入逐股退避。参考刷新不得把全部候选
 作为第二个 history lane 批次与预热竞争。
 冷启动首轮可以显示 `missing_listing_date`、`missing_listing_age_sessions` 或

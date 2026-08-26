@@ -586,8 +586,9 @@ def test_history_cache_persistence_unavailable_does_not_block_history_load() -> 
         def __init__(self) -> None:
             self.calls = 0
 
-        def save_historical_feature_recent(self, _record) -> None:
+        def save_historical_feature_recent_records(self, records) -> None:
             self.calls += 1
+            assert len(records) == 20
             raise DataPlaneUnavailableError("unavailable")
 
     data_plane = UnavailableHistoryDataPlane()
@@ -603,4 +604,4 @@ def test_history_cache_persistence_unavailable_does_not_block_history_load() -> 
 
     assert list(loaded["600001"])[-1].trade_date == bars[-1].trade_date
     assert len(loaded["600001"]) == 20
-    assert data_plane.calls > 0
+    assert data_plane.calls == 1

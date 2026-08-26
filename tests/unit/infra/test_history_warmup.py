@@ -80,6 +80,18 @@ def test_production_warmup_policy_never_queues_more_than_one_worker_wave() -> No
 
     assert policy.batch_size == 5
     assert policy.batch_timeout_seconds == 20.0
+    assert policy.source_attempt_timeout_seconds == 4.5
+
+
+def test_warmup_policy_keeps_shorter_configured_source_timeout() -> None:
+    policy = build_history_warmup_policy(
+        worker_count=5,
+        source_timeout_seconds=2.0,
+        maximum_batch_size=30,
+        maximum_batch_timeout_seconds=20.0,
+    )
+
+    assert policy.source_attempt_timeout_seconds == 2.0
 
 
 def test_failed_history_codes_cool_down_while_unattempted_codes_continue() -> None:

@@ -436,6 +436,12 @@ def _build_market_data(
     data_pool = workers.data_pool
     source_lanes = workers.source_lanes
     market_cache = workers.market_cache
+    history_warmup_policy = build_history_warmup_policy(
+        worker_count=settings.pipeline.market_workers,
+        source_timeout_seconds=settings.market_data.history_timeout_seconds,
+        maximum_batch_size=30,
+        maximum_batch_timeout_seconds=20.0,
+    )
     eastmoney = EastmoneyClient(
         timeout_seconds=settings.market_data.eastmoney_timeout_seconds,
         workers=settings.pipeline.market_workers,
@@ -444,7 +450,7 @@ def _build_market_data(
         wall_clock=now,
     )
     remote_history = EastmoneyClient(
-        timeout_seconds=settings.market_data.history_timeout_seconds,
+        timeout_seconds=history_warmup_policy.source_attempt_timeout_seconds,
         workers=settings.pipeline.market_workers,
         worker_pool=data_pool,
         cancel_requested=lambda: source_lanes.is_stopped("history"),
@@ -452,7 +458,7 @@ def _build_market_data(
     )
     history_client = FallbackHistoryClient(
         TencentClient(
-            timeout_seconds=settings.market_data.history_timeout_seconds,
+            timeout_seconds=history_warmup_policy.source_attempt_timeout_seconds,
             cancel_requested=lambda: source_lanes.is_stopped("history"),
             wall_clock=now,
         ),
@@ -552,12 +558,6 @@ def _build_market_data(
         monotonic=time.monotonic,
     )
     gateway.set_security_reference_persistence_sink(references.schedule_security_master_persistence)
-    history_warmup_policy = build_history_warmup_policy(
-        worker_count=settings.pipeline.market_workers,
-        source_timeout_seconds=settings.market_data.history_timeout_seconds,
-        maximum_batch_size=30,
-        maximum_batch_timeout_seconds=20.0,
-    )
     warmup = HistoryWarmup(
         history_cache,
         references,

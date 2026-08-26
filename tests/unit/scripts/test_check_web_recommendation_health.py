@@ -42,6 +42,8 @@ def _sample(
     phase: str = "today_main",
     items: list[dict[str, str]] | None = None,
     include_quality_trade_date: bool = True,
+    warmup: tuple[int, int, int, int] = (20, 15, 0, 5),
+    warmup_timeout_count: int = 0,
 ) -> WebSample:
     quality = (
         {
@@ -71,6 +73,19 @@ def _sample(
         "market_data": {
             "market_feature_rows": 5500,
             "candidate_quote_cache_entries": 360,
+            "history_universe_rows": 360,
+            "history_covered_rows": warmup[1],
+            "history_coverage_ratio": warmup[1] / 360,
+            "history_warmup_planned_count": warmup[0],
+            "history_warmup_completed_count": warmup[1],
+            "history_warmup_failure_count": warmup[2],
+            "history_warmup_inflight_count": warmup[3],
+            "history_warmup_retry_deferred_count": warmup[2],
+            "history_warmup_unique_failure_count": warmup[2],
+            "history_warmup_timeout_count": warmup_timeout_count,
+            "history_warmup_inflight_age_seconds": 1.5 if warmup[3] else None,
+            "history_warmup_batch_timeout_seconds": 20.0,
+            "history_warmup_last_source": "tencent",
         },
         "scheduler": {"input_quality": {_STRATEGY: quality} if quality is not None else {}},
         "strategies": {
@@ -258,6 +273,39 @@ def test_runtime_restart_splits_persistent_zero_window() -> None:
     assert not any(finding.code.endswith("persistently_zero") for finding in findings)
 
 
+def test_history_warmup_failure_growth_is_reported_with_counter_delta() -> None:
+    samples = (
+        _sample(1, warmup=(100, 75, 20, 5), event_sequence=10),
+        _sample(2, warmup=(105, 75, 25, 5), event_sequence=11),
+    )
+
+    findings = analyze_samples(samples, strategies=(_STRATEGY,), consecutive_zero_threshold=2)
+
+    assert any(
+        finding.code == "history_warmup_failures_increased"
+        and finding.severity == "warning"
+        and finding.evidence.get("previous") == 20
+        and finding.evidence.get("current") == 25
+        for finding in findings
+    )
+
+
+def test_history_warmup_timeout_growth_is_reported_as_error() -> None:
+    samples = (
+        _sample(1, warmup_timeout_count=2, event_sequence=10),
+        _sample(2, warmup_timeout_count=3, event_sequence=11),
+    )
+
+    findings = analyze_samples(samples, strategies=(_STRATEGY,), consecutive_zero_threshold=2)
+
+    assert any(
+        finding.code == "history_warmup_timeouts_increased"
+        and finding.severity == "error"
+        and finding.evidence.get("delta") == 1
+        for finding in findings
+    )
+
+
 def test_json_report_contains_only_aggregated_projection_data() -> None:
     sample = _sample(1, items=[{"code": "600000", "name": "sensitive"}])
     report = build_report(
@@ -272,3 +320,5 @@ def test_json_report_contains_only_aggregated_projection_data() -> None:
     assert "600000" not in rendered
     assert "items" not in rendered
     assert report["status"] == "passed"
+    assert report["samples"][0]["market"]["history_warmup"]["planned_count"] == 20
+    assert report["samples"][0]["market"]["history_warmup"]["batch_timeout_seconds"] == 20.0

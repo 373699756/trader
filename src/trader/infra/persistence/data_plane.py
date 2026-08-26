@@ -140,6 +140,9 @@ class DataPlaneRepository:
     def save_historical_feature_recent(self, record: HistoricalFeatureRecord) -> None:
         self._save("historical_feature", mode="recent", record=record)
 
+    def save_historical_feature_recent_records(self, records: Sequence[HistoricalFeatureRecord]) -> None:
+        self._save_many("historical_feature", mode="recent", records=records)
+
     def save_historical_feature_formal(self, freeze_id: str, record: HistoricalFeatureRecord) -> None:
         self._save("historical_feature", mode="formal", freeze_id=freeze_id, record=record)
 

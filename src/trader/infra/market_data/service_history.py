@@ -50,7 +50,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class _HistoryDataPlane(Protocol):
-    def save_historical_feature_recent(self, record: HistoricalFeatureRecord) -> None: ...
+    def save_historical_feature_recent_records(self, records: Sequence[HistoricalFeatureRecord]) -> None: ...
 
     def load_historical_feature_recent_records(
         self, codes: Sequence[str] | None = None
@@ -536,27 +536,29 @@ class HistoryCache:
         if data_plane is None:
             return
         observed_at = self._runner.wall_clock()
+        records: list[HistoricalFeatureRecord] = []
         for bar in bars:
-            try:
-                payload = dict(_serialize_daily_bar(bar))
-                if _context is not None and bar.trade_date == _context.latest_trade_date:
-                    context_input = cast(dict[str, JsonInput], asdict(_context))
-                    payload["history_summary"] = freeze_json_object(context_input)
-                data_plane.save_historical_feature_recent(
-                    HistoricalFeatureRecord(
-                        code=code,
-                        trade_date=bar.trade_date,
-                        observed_at=observed_at,
-                        source_time=min(_history_source_time((bar,)), observed_at),
-                        source=source,
-                        data_version=_history_version(bars),
-                        payload=payload,
-                    )
+            payload = dict(_serialize_daily_bar(bar))
+            if _context is not None and bar.trade_date == _context.latest_trade_date:
+                context_input = cast(dict[str, JsonInput], asdict(_context))
+                payload["history_summary"] = freeze_json_object(context_input)
+            records.append(
+                HistoricalFeatureRecord(
+                    code=code,
+                    trade_date=bar.trade_date,
+                    observed_at=observed_at,
+                    source_time=min(_history_source_time((bar,)), observed_at),
+                    source=source,
+                    data_version=_history_version(bars),
+                    payload=payload,
                 )
-            except DataPlaneUnavailableError:
-                _LOGGER.warning("history persistence unavailable for %s", code)
-            except Exception:
-                _LOGGER.exception("history persistence failed for %s", code)
+            )
+        try:
+            data_plane.save_historical_feature_recent_records(records)
+        except DataPlaneUnavailableError:
+            _LOGGER.warning("history persistence unavailable for %s", code)
+        except Exception:
+            _LOGGER.exception("history persistence failed for %s", code)
 
     def summaries(
         self,

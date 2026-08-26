@@ -242,6 +242,12 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
         "history_warmup_completed_count",
         "history_warmup_failure_count",
         "history_warmup_inflight_count",
+        "history_warmup_retry_deferred_count",
+        "history_warmup_unique_failure_count",
+        "history_warmup_timeout_count",
+        "history_warmup_inflight_age_seconds",
+        "history_warmup_batch_timeout_seconds",
+        "history_warmup_last_source",
         "measured_at",
     )
     result = {field: raw[field] for field in scalar_fields if field in raw and _json_scalar(raw[field])}

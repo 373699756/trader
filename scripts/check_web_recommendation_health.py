@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 import urllib.error
@@ -105,6 +106,23 @@ class InputQualitySnapshot:
 
 
 @dataclass(frozen=True)
+class HistoryWarmupSnapshot:
+    universe_rows: int | None
+    covered_rows: int | None
+    coverage_ratio: float | None
+    planned_count: int | None
+    completed_count: int | None
+    failure_count: int | None
+    inflight_count: int | None
+    retry_deferred_count: int | None
+    unique_failure_count: int | None
+    timeout_count: int | None
+    inflight_age_seconds: float | None
+    batch_timeout_seconds: float | None
+    last_source: str | None
+
+
+@dataclass(frozen=True)
 class StatusSnapshot:
     schema_version: str | None
     release_decision_schema: str | None
@@ -117,6 +135,7 @@ class StatusSnapshot:
     market_feature_rows: int | None
     candidate_quote_entries: int | None
     candidate_quote_source: str | None
+    history_warmup: HistoryWarmupSnapshot
     strategies: Mapping[str, ProjectionSnapshot]
     input_quality: Mapping[str, InputQualitySnapshot]
 
@@ -433,6 +452,39 @@ def _regression_findings(samples: Sequence[WebSample], strategies: tuple[str, ..
                 )
             )
             continue
+        previous_status = previous.status
+        current_status = current.status
+        if previous_status is not None and current_status is not None:
+            before = previous_status.history_warmup.failure_count
+            after = current_status.history_warmup.failure_count
+            if before is not None and after is not None and after > before:
+                findings.append(
+                    _finding(
+                        "warning",
+                        "history_warmup_failures_increased",
+                        current,
+                        None,
+                        "history warmup failure counter increased while sampling",
+                        {"previous": before, "current": after, "delta": after - before},
+                    )
+                )
+            before_timeout = previous_status.history_warmup.timeout_count
+            after_timeout = current_status.history_warmup.timeout_count
+            if before_timeout is not None and after_timeout is not None and after_timeout > before_timeout:
+                findings.append(
+                    _finding(
+                        "error",
+                        "history_warmup_timeouts_increased",
+                        current,
+                        None,
+                        "history warmup timeout counter increased while sampling",
+                        {
+                            "previous": before_timeout,
+                            "current": after_timeout,
+                            "delta": after_timeout - before_timeout,
+                        },
+                    )
+                )
         for strategy in strategies:
             previous_quality = _strategy_quality(previous, strategy)
             current_quality = _strategy_quality(current, strategy)
@@ -735,6 +787,21 @@ def _parse_status(payload: Mapping[str, object]) -> StatusSnapshot:
         market_feature_rows=_nonnegative_int(market.get("market_feature_rows")),
         candidate_quote_entries=_nonnegative_int(market.get("candidate_quote_cache_entries")),
         candidate_quote_source=_text(market.get("candidate_quote_latest_source")),
+        history_warmup=HistoryWarmupSnapshot(
+            universe_rows=_nonnegative_int(market.get("history_universe_rows")),
+            covered_rows=_nonnegative_int(market.get("history_covered_rows")),
+            coverage_ratio=_nonnegative_number(market.get("history_coverage_ratio")),
+            planned_count=_nonnegative_int(market.get("history_warmup_planned_count")),
+            completed_count=_nonnegative_int(market.get("history_warmup_completed_count")),
+            failure_count=_nonnegative_int(market.get("history_warmup_failure_count")),
+            inflight_count=_nonnegative_int(market.get("history_warmup_inflight_count")),
+            retry_deferred_count=_nonnegative_int(market.get("history_warmup_retry_deferred_count")),
+            unique_failure_count=_nonnegative_int(market.get("history_warmup_unique_failure_count")),
+            timeout_count=_nonnegative_int(market.get("history_warmup_timeout_count")),
+            inflight_age_seconds=_nonnegative_number(market.get("history_warmup_inflight_age_seconds")),
+            batch_timeout_seconds=_nonnegative_number(market.get("history_warmup_batch_timeout_seconds")),
+            last_source=_text(market.get("history_warmup_last_source")),
+        ),
         strategies=strategies,
         input_quality=input_quality,
     )
@@ -908,6 +975,25 @@ def _sample_payload(sample: WebSample, strategies: tuple[str, ...]) -> dict[str,
             "market_feature_rows": status.market_feature_rows if status is not None else None,
             "candidate_quote_cache_entries": status.candidate_quote_entries if status is not None else None,
             "candidate_quote_latest_source": status.candidate_quote_source if status is not None else None,
+            "history_warmup": (
+                {
+                    "universe_rows": status.history_warmup.universe_rows,
+                    "covered_rows": status.history_warmup.covered_rows,
+                    "coverage_ratio": status.history_warmup.coverage_ratio,
+                    "planned_count": status.history_warmup.planned_count,
+                    "completed_count": status.history_warmup.completed_count,
+                    "failure_count": status.history_warmup.failure_count,
+                    "inflight_count": status.history_warmup.inflight_count,
+                    "retry_deferred_count": status.history_warmup.retry_deferred_count,
+                    "unique_failure_count": status.history_warmup.unique_failure_count,
+                    "timeout_count": status.history_warmup.timeout_count,
+                    "inflight_age_seconds": status.history_warmup.inflight_age_seconds,
+                    "batch_timeout_seconds": status.history_warmup.batch_timeout_seconds,
+                    "last_source": status.history_warmup.last_source,
+                }
+                if status is not None
+                else None
+            ),
         },
         "strategies": result,
         "fetch_issues": [{"endpoint": issue.endpoint, "error_code": issue.error_code} for issue in sample.fetch_issues],
@@ -986,6 +1072,12 @@ def _text(value: object) -> str | None:
 
 def _nonnegative_int(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _nonnegative_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value < 0:
+        return None
+    return float(value)
 
 
 def main() -> int:

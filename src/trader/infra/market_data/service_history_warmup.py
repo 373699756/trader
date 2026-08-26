@@ -24,7 +24,8 @@ _LOGGER = logging.getLogger(__name__)
 _HISTORY_SOURCE_LANE = "history"
 _PERMANENT_TUSHARE_DEGRADATIONS = frozenset({"missing_token", "insufficient_points", "permission_denied"})
 _RETRY_DELAYS_SECONDS = (60.0, 120.0, 240.0, 480.0, 900.0)
-_MAX_SOURCE_ATTEMPTS_PER_CODE = 4
+_SOURCE_ATTEMPTS_PER_CODE = 4
+_PERSISTENCE_RESERVE_RATIO = 0.1
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,7 @@ class HistoryWarmupStatus:
 class HistoryWarmupPolicy:
     batch_size: int
     batch_timeout_seconds: float
+    source_attempt_timeout_seconds: float
 
 
 def build_history_warmup_policy(
@@ -60,10 +62,20 @@ def build_history_warmup_policy(
     if min(source_timeout_seconds, maximum_batch_timeout_seconds) <= 0.0:
         raise ValueError("history warmup timeout limits must be positive")
     batch_size = min(worker_count, maximum_batch_size)
-    attempt_budget = source_timeout_seconds * (_MAX_SOURCE_ATTEMPTS_PER_CODE + 1)
+    route_budget = source_timeout_seconds * _SOURCE_ATTEMPTS_PER_CODE
+    batch_timeout_seconds = min(
+        maximum_batch_timeout_seconds,
+        route_budget / (1.0 - _PERSISTENCE_RESERVE_RATIO),
+    )
+    persistence_reserve = batch_timeout_seconds * _PERSISTENCE_RESERVE_RATIO
+    source_attempt_timeout_seconds = min(
+        source_timeout_seconds,
+        (batch_timeout_seconds - persistence_reserve) / _SOURCE_ATTEMPTS_PER_CODE,
+    )
     return HistoryWarmupPolicy(
         batch_size=batch_size,
-        batch_timeout_seconds=min(maximum_batch_timeout_seconds, attempt_budget),
+        batch_timeout_seconds=batch_timeout_seconds,
+        source_attempt_timeout_seconds=source_attempt_timeout_seconds,
     )
 
 

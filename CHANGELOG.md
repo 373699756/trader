@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户再次反馈 `history warmup batch exceeded its deadline` 并要求直接运行脚本抓现场数据，新增
+  `scripts/sample_history_sources.py`：按生产 worker 波次实测腾讯主源/东方财富回退、可用行数与请求延迟，
+  可在显式仓库外目录对同一批真实 K 线比较逐条和批量 SQLite 事务；既有 Web 健康脚本同时记录 warmup
+  覆盖、计划、完成、失败与在途轨迹，并在失败计数增长时给出确定性发现。
+- `/api/v2/status.market_data` 加法公开历史预热退避数、唯一失败数、timeout 累计、在途年龄、批次 deadline
+  和最后来源；Web adapter 继续只投影有界聚合，不泄露股票代码、供应商错误文本或原始载荷。
 - 针对用户现场出现 `history warmup batch exceeded its deadline`，新增不可变
   `HistoryWarmupPolicy` 及其纯构建函数，统一约束预热批大小、实际历史 worker 数、单来源 timeout 与
   batch deadline；组合根不再自行拼接含队列波次数的魔法公式。
@@ -374,6 +380,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 历史预热生产策略现在把 20 秒批次预算显式拆为 18 秒供应商路由和 2 秒校验/提交余量；腾讯一次加
+  东方财富三个 host 的最坏四次串行尝试使单次 HTTP timeout 从配置上限 12 秒截断到 4.5 秒，避免合法
+  回退路径自身超过批次 deadline。每股最多 61 条最近历史记录改为一次原子批量事务，不再逐日重复连接、
+  初始化 schema 和提交 SQLite。
 - 生产历史预热单批由固定 30 只改为 `min(30, history_workers)`；当前 5 个历史 worker 因而每批 5 只，
   预热自身不再预先堆积第二个 worker 波次。20 秒 deadline、逐股即时提交、稳定轮转和真实慢尾退避
   保持不变，没有通过盲目延长 deadline 掩盖供应商故障。
@@ -679,6 +689,9 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复真实历史源在 1 秒左右已经返回后，预热批次仍因逐条历史写盘反复争用 SQLite、跨过 20 秒 deadline
+  并输出同名告警的问题；同时修复配置允许腾讯加三个东方财富 host 依次各等待 12 秒、与 20 秒批次上限
+  自相矛盾的问题。已完成股票继续立即进入内存和持久化缓存，空响应/真正慢尾只影响对应股票并按原退避。
 - 修复历史预热把 30 只股票提交给仅 5 个 worker、却把六波队列等待压进 20 秒 batch deadline，导致
   尚未获得执行槽的股票也被记为超时失败并进入 60-900 秒退避的问题。修复前现场只读状态曾显示候选
   universe 360、已计划 270、完成 143、失败 97；新策略消除了预热自身产生的第二至第六波排队误判。
@@ -1133,6 +1146,13 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 现场先用 `scripts/check_web_recommendation_health.py` 复现 5 股批次在途超过 15 秒并在 20 秒后使失败
+  计数增长；再用新增历史脚本确认真实供应商 5 股最大约 1.21 秒。修复后按生产 4.5 秒尝试上限运行
+  两轮：10 个观测中 8 个取得 61 行，最大 1.173 秒，2 个空响应受控降级；488 条成功 K 线逐条
+  488 事务耗时 1754.2ms，按股 8 个批量事务耗时 98.7ms，缩短 17.77 倍。定向 warmup、历史缓存、
+  数据平面、Web API 和脚本契约全部通过；`make format-check`、`make lint`、`make type-check`
+  （225 个源码文件）、`make test`、`make package` 与 `git diff --check` 全部通过。首次隔离打包因沙箱
+  禁止下载 setuptools 失败，获准网络后原命令通过；本批不改页面布局，三档浏览器验收不适用。
 - 本批失败先行回归先因缺少生产 warmup policy 无法收集；实现后 history warmup unit 与 component
   定向 18 项通过。`make format-check`、`make lint`（严格重构债务为零）、`make type-check`
   （225 个源码文件）、`make test` 与 `make package` 全部通过，`git diff --check` 无错误。
@@ -1732,9 +1752,11 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- 真正已经获得执行槽、但腾讯主源与东方财富回退合计仍超过 20 秒的单股历史请求会继续产生同名告警并
-  按契约退避；这是失败开放而非误报。当前常驻服务在本批修改前启动，必须正常重启后才会采用 5 只
-  单波次策略；本批没有中断用户正在运行的服务，也未用额外真实行情请求制造供应商负载。
+- 当前常驻服务仍是本批修改前启动的进程，必须正常重启后才会采用批量历史事务、4.5 秒来源尝试上限和
+  新增状态字段；本批没有跨进程强制终止用户服务。真实供应商仍可能返回空历史或发生操作系统级长尾；
+  实测两轮 10 个观测中 8 个取得 61 行、2 个受控空响应，空响应会逐股退避而不应制造 batch deadline。
+  若四段外部 I/O 或 SQLite 在预留预算后仍真正超过 20 秒，系统仍会保留同名告警和 timeout 计数，不能
+  以静默吞掉真实 deadline 的方式追求日志绝对为零。
 - 当前没有已知未解决的代码侧实时性缺陷。确定性性能与 Firefox fixture 不消耗真实 DeepSeek 额度，
   也不能替代交易时段供应商网络、限流和整日 P95；应在开市窗口继续复用已有参数化脚本采样真实腾讯
   延迟和端到端 waterfall。本机实际运行 Python 3.14 与 Firefox，Python 3.10-3.13 由 Ruff、mypy
