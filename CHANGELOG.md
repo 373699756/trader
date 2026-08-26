@@ -6,6 +6,9 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 新增文档单一真相源契约：直接验证 `docs/V2.md`、`docs/implementation-plan.md` 和
+  `docs/start_stop.md` 不再存在，并要求 V2-only 边界、日常运维命令、正式发布状态、失败的
+  `score_p0_v2` 证据及下一项原生评分因子诊断 Gate 由两份权威文档承接。
 - 针对用户确认 Tushare 已达到 120 积分、每日可调用 8000 次，新增只读
   `scripts/sample_tushare_daily.py`。脚本复用生产配置和 Token 边界，逐证券实测行数、延迟、raw 标签、
   120 分权限及进程内调用计数，不输出 Token、价格或完整外部响应。
@@ -394,6 +397,12 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求把三份并行文档中已经完成但尚未进入权威文档的内容完成合并后删除来源文件。核对确认
+  V2-only 产品边界、无兼容原则、唯一 API、冻结规则和大部分评分研究状态已经归入权威文档；实际缺口是
+  日常安装/启动/只读检查命令仍只在独立运行手册中，文档治理和机器契约仍把三份文件当活动输入，且删除
+  实施计划会遗失尚未完成的正式发布与原生因子诊断 Gate。本批将运维命令和剩余工程状态统一归入
+  `software-business-design.md`，把诊断标签、指标和生产隔离边界归入 `recommendation-strategy.md`，
+  不改变任何运行时、配置或生产策略行为。
 - 120 分 Tushare 从“代码声明支持但生产提前返回”改为参考 lane 中真实执行固定 `000001` 的低频
   raw 日线能力审计并复用 6 小时缓存；`daily` 改为符合官方参数的逐证券请求，滚动 60 秒与上海自然日
   进程门禁在 50/8000 次前失败关闭。raw 观测仍不进入历史特征、评分、冻结或推荐。
@@ -709,6 +718,9 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复权威文档仍反向引用非权威概览、实施计划和启动停止手册，导致“唯一权威”与实际活动输入不一致；
+  后续未完成的产品/发布/工程 Gate 直接维护在软件业务设计第 14 节，评分研究 Gate 直接维护在荐股策略
+  第 15.1 节，已完成施工证据只保留在 Changelog 和报告。
 - 修复 120 分 Tushare 分支虽声明支持 `daily_history`，但参考刷新只检查 qfq 后直接返回、真实 Token
   始终零调用的问题；同时修复把多个代码以逗号拼入单个 `ts_code` 的无效请求形状、空结果被记为成功，
   以及非成功供应商数字码全部退化为不可诊断 `sdk_error` 的问题。数字码仅保留类别，不泄露消息或载荷。
@@ -1026,6 +1038,8 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除已经完成归并的 `docs/V2.md`、`docs/implementation-plan.md` 和 `docs/start_stop.md`；不保留重定向、
+  摘要副本或兼容读取，避免再次形成与两份权威文档竞争的产品、计划和运维定义。
 - 移除 `v2_research_readiness_v2` 及其“窗口结束前一律 collecting”的模糊投影；没有删除、补写或迁移
   任何 P0v1/P0v2 研究分区、正式决策、冻结记录、活动评分或历史运行数据。
 - 删除测试树中已经无人引用且只记录旧 Pipeline B/C 交接、v15-v17 性能波次的 19 份报告、baseline
@@ -1176,6 +1190,13 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 文档归并及权威一致性定向验证共 24 项通过，覆盖 `test_v2_only_product_contract.py`、
+  `test_score_plan_contract.py`、`test_authoritative_document_consistency.py`、`test_recommendation_sections.py`
+  和 `test_agent_quality_gate_policy.py`；Python 契约测试文件执行 Ruff 检查和格式检查；完整 diff
+  执行 `git diff --check` 并核对三份退役文档不存在；除契约中的“不存在”断言外，文件名引用只保留在
+  历史 Changelog/报告语境。
+- `make test`、`make package`、仓库外 wheel 和三档浏览器验收不适用：本批只修改 Markdown 与文档契约
+  断言，不改变运行代码、配置、依赖、入口、包资源或 Web 行为。
 - 研究证据链定向领域、持久化、CLI 与文档契约共 53 项通过；真实 `./run.sh research-status` 只读核验
   返回 `v2_research_readiness_v3`、`historical_collection_failed`、缺失 2026-08-24 至 2026-08-26、
   最大 37/40 和下一计划日 2026-08-27。`make format-check`（365 个文件）、`make lint`（严格重构债为零）、
@@ -1795,6 +1816,9 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 当前代码仍为 `Unreleased`，正式 0.2.0 发布批次尚未发起；原生评分因子诊断层也仍为“未开始”。本批只把
+  两项 Gate 迁入权威文档，没有声明正式发布、生成新研究身份或改变生产评分。历史 Changelog/报告仍可
+  以过去时引用已删除文件名，这是审计证据而非活动文档依赖。
 - `score_p0_v2` 已不可逆地无法达到 40/40；已有证据继续保留且不补写。三日缺少 committed event 和
   正式决策是已确认的直接证据缺口，但缺失产生的运行级原因因没有对应日志仍待验证，数据库隔离记录
   不能单独证明因果。本批只修复研究资格与状态真相，不改变生产评分或直接提高收益；下一批应按计划先

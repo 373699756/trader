@@ -5,14 +5,27 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_next_score_diagnostic_gate_is_owned_by_authoritative_docs() -> None:
+    strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
+    design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
+
+    assert "原生评分因子诊断层" in design
+    for statement in (
+        "14:50 至下一交易日收盘净超额",
+        "每日 IC/Rank IC",
+        "五分组单调性",
+        "20/50/100bp 成本",
+        "MAE/ATR20",
+        "候选 oracle recall",
+        "不改活动评分",
+    ):
+        assert statement in strategy
+
+
 def test_score_plan_p0_pre_registration_is_reflected_in_authoritative_docs() -> None:
-    plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
     strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
     design_flat = " ".join(design.split())
-
-    assert "本文只记录尚未闭合的外部 Gate" in plan
-    assert "（已完成）" not in plan
 
     assert "Score-R0（评分科学化研究，非生产）已预注册以下固定边界" in strategy
     for statement in (
@@ -47,8 +60,6 @@ def test_score_plan_p0_pre_registration_is_reflected_in_authoritative_docs() -> 
     ):
         assert statement in strategy
 
-    assert "score_p0_v2" in plan
-    assert "Score-R6/Score-R7" in plan
     for statement in (
         "score_h0_v1",
         "640",
@@ -68,17 +79,18 @@ def test_score_plan_p0_pre_registration_is_reflected_in_authoritative_docs() -> 
         "Score-R0 至 Score-R5 的工程能力已完成",
         "研究链与活动运行库物理分离",
         "不建立第二套行情、评分、冻结、Web 或 DeepSeek 请求链",
+        "`historical_collection_failed`",
+        "最大只能达到 37/40",
+        "2026-08-24、2026-08-25、2026-08-26",
         "策略定义只以荐股策略文档第 15.1 节为准",
     ):
         assert statement in design_flat
 
 
 def test_score_plan_p1_compact_trace_contract_is_reflected_in_authoritative_docs() -> None:
-    plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
     strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
-    assert "本文只记录尚未闭合的外部 Gate" in plan
     assert "Score-R0 至 Score-R5 的工程能力已完成" in design
     assert "研究链与活动运行库物理分离" in design
     for statement in (
@@ -93,11 +105,9 @@ def test_score_plan_p1_compact_trace_contract_is_reflected_in_authoritative_docs
 
 
 def test_score_r1_migrate_committed_audit_contract_is_complete() -> None:
-    plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
     strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
-    assert "本文只记录尚未闭合的外部 Gate" in plan
     for statement in (
         "只消费成功提交后的 `V2DecisionCommitted`",
         "独立 SQLite 研究库",
@@ -118,11 +128,9 @@ def test_score_r1_migrate_committed_audit_contract_is_complete() -> None:
 
 
 def test_score_r2_historical_extraction_contract_is_complete() -> None:
-    plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
     strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
-    assert "本文只记录尚未闭合的外部 Gate" in plan
     for statement in (
         "score_r2_historical_v1",
         "score_r2_partition_v1",
@@ -142,13 +150,11 @@ def test_score_r2_historical_extraction_contract_is_complete() -> None:
 
 
 def test_score_r3_baseline_replay_contract_is_complete() -> None:
-    plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
     strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
     strategy_flat = " ".join(strategy.split())
     design_flat = " ".join(design.split())
 
-    assert "本文只记录尚未闭合的外部 Gate" in plan
     for statement in (
         "score_r3_baseline_report_v1",
         "20bp、50bp、100bp",
@@ -169,13 +175,11 @@ def test_score_r3_baseline_replay_contract_is_complete() -> None:
 
 
 def test_score_r4_five_challenger_contract_is_complete() -> None:
-    plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
     strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
     strategy_flat = " ".join(strategy.split())
     design_flat = " ".join(design.split())
 
-    assert "本文只记录尚未闭合的外部 Gate" in plan
     for statement in (
         "score_r4_preregistered_parameters_v1",
         "continuous_entry_v1",
@@ -202,13 +206,11 @@ def test_score_r4_five_challenger_contract_is_complete() -> None:
 
 
 def test_score_r5_statistical_gate_and_forward_contract_is_complete() -> None:
-    plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
     strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
     strategy_flat = " ".join(strategy.split())
     design_flat = " ".join(design.split())
 
-    assert "本文只记录尚未闭合的外部 Gate" in plan
     for statement in (
         "score_r5_statistical_gate_v1",
         "score_r5_paired_mbb_holm_v1",
@@ -229,11 +231,9 @@ def test_score_r5_statistical_gate_and_forward_contract_is_complete() -> None:
 
 
 def test_score_r6_parameter_and_forward_gate_contract_is_complete() -> None:
-    plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
     strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
     design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
 
-    assert "Score-R6/Score-R7" in plan
     for statement in (
         "score_r6_historical_v1",
         "momentum/stability/liquidity",
@@ -258,11 +258,9 @@ def test_score_r6_parameter_and_forward_gate_contract_is_complete() -> None:
 
 
 def test_score_r7_dossier_contract_is_complete_without_authorizing_production() -> None:
-    plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
     strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
     design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
 
-    assert "Score-R6/Score-R7" in plan
     for statement in (
         "score_r7_promotion_dossier_v1",
         "20/50/100bp × 3/5/10 日",
@@ -281,11 +279,9 @@ def test_score_r7_dossier_contract_is_complete_without_authorizing_production() 
 
 
 def test_score_r6_daily_trend_contract_is_preregistered_without_production_authority() -> None:
-    plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
     strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
     design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
 
-    assert "本文只记录尚未闭合的外部 Gate" in plan
     for statement in (
         "score_r6_daily_trend_v1",
         "30/25/20/15/10",
@@ -306,11 +302,9 @@ def test_score_r6_daily_trend_contract_is_preregistered_without_production_autho
 
 
 def test_score_r6_stability_contract_freezes_turnover_mechanisms_without_production_authority() -> None:
-    plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
     strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
     design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
 
-    assert "本文只记录尚未闭合的外部 Gate" in plan
     for statement in (
         "score_r6_daily_stability_v1",
         "rank_persistence_bonus",

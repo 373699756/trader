@@ -37,26 +37,23 @@ def test_strategy_contract_requires_v2_native_decisions_and_no_legacy_replay() -
         assert statement in compact
 
 
-def test_v2_execution_plan_has_no_compatibility_or_shadow_cutover_batch() -> None:
-    overview = (ROOT / "docs/V2.md").read_text(encoding="utf-8")
-    plan = (ROOT / "docs/implementation-plan.md").read_text(encoding="utf-8")
+def test_parallel_v2_overview_plan_and_operations_docs_are_retired() -> None:
+    design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
-    assert "V2-only 工程与发布门禁验收已完成" in overview
-    assert "当前版本仍为 Unreleased" in overview
-    assert "不保留旧版运行时兼容" in overview
-    assert "V2-only 工程能力和发布验收门禁均已闭合" in plan
-    assert "本文只记录尚未闭合的外部 Gate" in plan
-    assert "（已完成）" not in plan
-    assert "旧 API 的弃用窗口" not in plan
-    assert "并行影子后原子切换" not in plan
-    assert "历史兼容解码器" not in plan
+    assert "V2-only 工程与发布门禁验收已闭合" in design
+    assert "当前代码仍属于 `Unreleased`" in design
+    assert "只有用户显式发起独立发布批次" in design
+    assert "新 release 不读取旧运行目录、旧数据库、旧快照或旧 schema" in design
+    assert "原生评分因子诊断层" in design
+    for retired in ("V2.md", "implementation-plan.md", "start_stop.md"):
+        assert not (ROOT / "docs" / retired).exists()
     assert not (ROOT / "docs/V2_plan.md").exists()
     assert not (ROOT / "docs/score.md").exists()
 
 
 def test_release_guides_expose_only_v2_runtime_and_desktop_gate() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    operations = (ROOT / "docs/start_stop.md").read_text(encoding="utf-8")
+    operations = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
     for content in (readme, operations):
         assert "/api/v2/status" in content
@@ -64,5 +61,7 @@ def test_release_guides_expose_only_v2_runtime_and_desktop_gate() -> None:
         assert "trader-cli perf-check" not in content
     assert "deepseek-budget.sqlite3" in operations
     assert "卡脖子、高成长、低价潜力" in operations
+    assert "./run.sh research-status" in operations
+    assert "curl -fsS http://127.0.0.1:5000/api/v2/status" in operations
     assert (ROOT / "tests/performance/run_desktop_dashboard.py").is_file()
     assert not (ROOT / "tests/performance/run_chrome_dashboard.py").exists()
