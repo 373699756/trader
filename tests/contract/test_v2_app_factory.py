@@ -33,6 +33,7 @@ def test_dashboard_uses_only_packaged_v2_assets_and_fixed_long_groups() -> None:
     client = create_app().test_client()
     page = client.get("/").get_data(as_text=True)
     dashboard = client.get("/static/dashboard.js").get_data(as_text=True)
+    release_contract = client.get("/static/release_contract.js").get_data(as_text=True)
     groups = client.get("/static/long_groups.js").get_data(as_text=True)
 
     assert page.count(f"?rev={WEB_ASSET_REVISION}") == 13
@@ -43,13 +44,17 @@ def test_dashboard_uses_only_packaged_v2_assets_and_fixed_long_groups() -> None:
     assert 'id="healthBadge"' in page
     assert 'id="errorDetailsButton"' in page
     assert 'id="errorDrawer"' in page
-    assert 'id="quoteCoverageStatus"' in page
-    assert 'id="quoteCoverageMeta"' in page
+    assert "数据可用性" in page
+    assert 'id="dataReadinessStatus"' in page
+    assert 'id="dataReadinessMeta"' in page
+    assert 'id="quoteCoverageStatus"' not in page
+    assert 'id="quoteCoverageMeta"' not in page
     assert 'id="funnelStatus"' in page
     assert 'id="snapshotDate"' in page
     assert "quote_status: quote.status" in dashboard
     assert "/api/v2/decisions/" in dashboard
     assert "/api/recommendations/" not in dashboard
+    assert f'const WEB_ASSET_REVISION = "{WEB_ASSET_REVISION}";' in release_contract
     assert "卡脖子行业" in groups
     assert "高成长赛道" in groups
     assert "低价潜力股" in groups

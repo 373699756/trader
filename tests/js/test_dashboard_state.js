@@ -76,8 +76,8 @@ const state = {
   sourceLabel: sandbox.window.TraderRender.sourceLabel,
   formatDurationHms: sandbox.window.TraderStatusView.formatDurationHms,
   healthView: sandbox.window.TraderStatusView.healthView,
-  quoteCoverageSummary: sandbox.window.TraderStatusView.quoteCoverageSummary,
-  renderQuoteCoverage: sandbox.window.TraderStatusView.renderQuoteCoverage,
+  quoteAvailabilitySummary: sandbox.window.TraderStatusView.quoteAvailabilitySummary,
+  renderDataReadiness: sandbox.window.TraderStatusView.renderDataReadiness,
   renderSummary: sandbox.window.TraderStatusView.renderSummary,
   runtimeErrorRows: sandbox.window.TraderStatusView.runtimeErrorRows,
   updateQuoteAge: sandbox.window.TraderStatusView.updateQuoteAge,
@@ -106,7 +106,7 @@ assert.deepStrictEqual(
     schema_version: "v2_status_v3",
     release: {
       decision_view_schema: "v2_decision_view_v2",
-      web_asset_revision: "release-contract-2026-08-26-v3",
+      web_asset_revision: "release-contract-2026-08-28-v4",
     },
   }))),
   { compatible: true, reason: "" },
@@ -133,7 +133,7 @@ assert.strictEqual(state.formatDurationHms(3599), "59m 59s");
 assert.strictEqual(state.formatDurationHms(3600), "1h 0m 0s");
 assert.strictEqual(state.formatDurationHms(95580), "26h 33m 0s");
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.quoteCoverageSummary([
+  JSON.parse(JSON.stringify(state.quoteAvailabilitySummary([
     {
       code: "600001",
       name: "完整股票",
@@ -165,15 +165,15 @@ assert.deepStrictEqual(
       quote_status: "missing",
     },
   ]))),
-  { total: 3, available: 2, quoteMissing: 1, identityMissing: 1 },
+  { total: 3, available: 2, quoteMissing: 1 },
 );
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.quoteCoverageSummary([]))),
-  { total: 0, available: 0, quoteMissing: 0, identityMissing: 0 },
+  JSON.parse(JSON.stringify(state.quoteAvailabilitySummary([]))),
+  { total: 0, available: 0, quoteMissing: 0 },
 );
 const summaryElements = {
-  quoteCoverageStatus: { textContent: "" },
-  quoteCoverageMeta: { textContent: "" },
+  dataReadinessStatus: { textContent: "" },
+  dataReadinessMeta: { textContent: "" },
   funnelStatus: { textContent: "" },
   funnelMeta: { textContent: "" },
   quoteSource: { textContent: "" },
@@ -212,8 +212,8 @@ state.renderSummary(
   sandbox.window.TraderRender,
   { deepseek_budget: { limit: 168, used: 2, remaining: 166 } },
 );
-assert.strictEqual(summaryElements.quoteCoverageStatus.textContent, "1 / 2");
-assert.strictEqual(summaryElements.quoteCoverageMeta.textContent, "行情缺失 1 · 身份缺失 0");
+assert.strictEqual(summaryElements.dataReadinessStatus.textContent, "行情 1 / 2");
+assert.strictEqual(summaryElements.dataReadinessMeta.textContent, "当前名单缺行情 1");
 assert.strictEqual(summaryElements.funnelStatus.textContent, "120 → 80 → 1");
 assert.strictEqual(summaryElements.funnelMeta.textContent, "过滤 40 · 观察 1 · 最高 82.00");
 assert.strictEqual(summaryElements.snapshotDate.textContent, "2026-08-14");
@@ -246,13 +246,14 @@ state.renderSummary(
         today: {
           status: "not_ready",
           candidate_optional_reason_counts: {
-            missing_listing_date: 221,
-            missing_listing_age_sessions: 65,
-            board_identity_degraded: 221,
+            missing_listing_date: 240,
+            board_identity_degraded: 240,
           },
           supply_funnel: {
             requested_candidates: 360,
-            full_scored: 65,
+            security_master: 120,
+            history: 78,
+            full_scored: 56,
             filter_reject: 216,
             selected_executable: 2,
             selected_observe: 2,
@@ -260,9 +261,9 @@ state.renderSummary(
           summary: {
             trade_date: "2026-08-14",
             quote_total_count: 360,
-            quote_covered_count: 352,
-            quote_missing_count: 8,
-            security_identity_missing_count: 286,
+            quote_covered_count: 360,
+            quote_missing_count: 0,
+            security_identity_missing_count: 240,
             latest_quote_source: "tencent",
             latest_quote_source_time: "2026-08-14T10:00:00+08:00",
             highest_final_score: 74.25,
@@ -272,12 +273,13 @@ state.renderSummary(
     },
   },
 );
-assert.strictEqual(summaryElements.quoteCoverageStatus.textContent, "352 / 360");
+assert.strictEqual(summaryElements.dataReadinessStatus.textContent, "基础资料 120 / 360");
 assert.strictEqual(
-  summaryElements.quoteCoverageMeta.textContent,
-  "行情缺失 8 · 身份缺失 286（上市日期 221 · 交易日龄 65；免费行情+交易日历补齐中）",
+  summaryElements.dataReadinessMeta.textContent,
+  "行情 360 / 360 · 历史有效 78",
 );
-assert.strictEqual(summaryElements.funnelStatus.textContent, "360 → 65 → 2");
+assert.ok(!summaryElements.dataReadinessMeta.textContent.includes("上市日期"));
+assert.strictEqual(summaryElements.funnelStatus.textContent, "360 → 56 → 2");
 assert.strictEqual(summaryElements.funnelMeta.textContent, "过滤 216 · 观察草稿 2 · 最高 74.25");
 assert.strictEqual(summaryElements.quoteSource.textContent, "腾讯行情");
 assert.strictEqual(summaryElements.budgetStatus.textContent, "0 / 168");
@@ -313,8 +315,11 @@ state.renderSummary(
     scheduler: { input_quality: {}, lanes: [{ strategy: "tomorrow", running: true, pending: true }] },
   },
 );
-assert.strictEqual(summaryElements.quoteCoverageStatus.textContent, "360 / 360");
-assert.strictEqual(summaryElements.quoteCoverageMeta.textContent, "行情缺失 0 · 身份缺失 待评分");
+assert.strictEqual(summaryElements.dataReadinessStatus.textContent, "准备中");
+assert.strictEqual(
+  summaryElements.dataReadinessMeta.textContent,
+  "行情 360 / 360 · 基础资料待评分 · 历史待计算",
+);
 assert.strictEqual(summaryElements.funnelStatus.textContent, "360 → 采集中 → 0");
 assert.strictEqual(summaryElements.funnelMeta.textContent, "过滤 待计算 · 观察草稿 正在生成 · 最高 —");
 assert.strictEqual(summaryElements.quoteSource.textContent, "腾讯行情");
@@ -368,13 +373,13 @@ state.renderSummary(
 );
 assert.strictEqual(summaryElements.funnelStatus.textContent, "不适用");
 assert.strictEqual(summaryElements.funnelMeta.textContent, "长期固定观察池不评分、不产生推荐");
-state.renderQuoteCoverage(summaryElements, [{
+state.renderDataReadiness(summaryElements, [{
   code: "600001", name: "长期股票", industry: "行业",
   price: null, pct_change: null, source: "long_watchlist", source_time: null,
   quote_status: "missing",
 }]);
-assert.strictEqual(summaryElements.quoteCoverageStatus.textContent, "0 / 1");
-assert.strictEqual(summaryElements.quoteCoverageMeta.textContent, "行情缺失 1 · 身份缺失 0");
+assert.strictEqual(summaryElements.dataReadinessStatus.textContent, "行情 0 / 1");
+assert.strictEqual(summaryElements.dataReadinessMeta.textContent, "当前名单缺行情 1");
 assert.strictEqual(
   state.initialStrategy({
     strategies: {

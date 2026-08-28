@@ -91,7 +91,7 @@
     for (const id of [
       "marketPhase", "runtimeDot", "runtimeStatus", "quoteSource", "quoteTime", "quoteAge", "streamStatus",
       "scoreTime", "budgetStatus", "budgetMeta", "headerFreeze", "freezeMeta", "lastError", "lastErrorMeta",
-      "refreshButton", "dateSelect", "strategyDescription", "quoteCoverageStatus", "quoteCoverageMeta", "funnelStatus", "funnelMeta",
+      "refreshButton", "dateSelect", "strategyDescription", "dataReadinessStatus", "dataReadinessMeta", "funnelStatus", "funnelMeta",
       "notice", "noticeText", "snapshotStrategy", "snapshotDate", "snapshotMeta", "healthPanel", "healthBadge", "errorDetailsButton",
       "recommendationTable", "tableColumns", "tableHead", "tableBody",
       "observationPool", "observationPoolMeta", "observationTable", "observationColumns", "observationHead", "observationBody",
@@ -258,7 +258,7 @@
           els.quoteSource.textContent = first && first.source
             ? window.TraderRender.sourceLabel(first.source)
             : "来源不可用";
-          statusView.renderQuoteCoverage(els, payload.items);
+          statusView.renderDataReadiness(els, payload.items);
           updateQuoteAge();
         } else {
           renderPayload(payload);

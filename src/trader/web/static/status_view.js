@@ -161,8 +161,8 @@
       els.notice.dataset.level = level === "warning" ? "warn" : level || "idle";
     };
     const renderLoadingState = () => {
-      els.quoteCoverageStatus.textContent = "-";
-      els.quoteCoverageMeta.textContent = "正在读取行情覆盖";
+      els.dataReadinessStatus.textContent = "-";
+      els.dataReadinessMeta.textContent = "正在读取数据可用性";
       els.funnelStatus.textContent = "-";
       els.funnelMeta.textContent = "正在读取推荐漏斗";
       els.scoreTime.textContent = "-";
@@ -188,8 +188,8 @@
     const renderMissingHistoricalDate = (strategy, selectedDate) => {
       state.payload = null;
       state.projectionVersion = "";
-      els.quoteCoverageStatus.textContent = "— / —";
-      els.quoteCoverageMeta.textContent = "当前无股票可检查";
+      els.dataReadinessStatus.textContent = "—";
+      els.dataReadinessMeta.textContent = "当前无数据可检查";
       els.funnelStatus.textContent = "— → — → 0";
       els.funnelMeta.textContent = "正式 0 · 观察 不保存";
       els.scoreTime.textContent = "-";
@@ -251,7 +251,7 @@
     const topScore = highestRuntimeScore == null
       ? useRuntime ? "—" : scoreSummary.topScore
       : highestRuntimeScore.toFixed(2);
-    renderQuoteCoverage(els, items, runtimeSummary, strategyQuality, statusPayload && statusPayload.market_data);
+    renderDataReadiness(els, items, runtimeSummary, inputQuality || marketWarmup);
     if (payload.strategy === "long") {
       els.funnelStatus.textContent = "不适用";
       els.funnelMeta.textContent = "长期固定观察池不评分、不产生推荐";
@@ -283,74 +283,44 @@
     els.snapshotDate.textContent = cleanDate(payload.trade_date);
   }
 
-  function renderQuoteCoverage(els, items, runtimeSummary, inputQuality, marketData) {
-    const quoteCoverage = quoteCoverageSummary(items);
+  function renderDataReadiness(els, items, runtimeSummary, inputQuality) {
+    const quoteAvailability = quoteAvailabilitySummary(items);
     const runtimeTotal = finiteNonNegativeInteger(runtimeSummary && runtimeSummary.quote_total_count);
     const runtimeAvailable = finiteNonNegativeInteger(runtimeSummary && runtimeSummary.quote_covered_count);
-    const runtimeQuoteMissing = finiteNonNegativeInteger(runtimeSummary && runtimeSummary.quote_missing_count);
-    const runtimeIdentityMissing = finiteNonNegativeInteger(
-      runtimeSummary && runtimeSummary.security_identity_missing_count,
-    );
-    if (!quoteCoverage.total && runtimeTotal != null && runtimeAvailable != null) {
-      els.quoteCoverageStatus.textContent = `${runtimeAvailable} / ${runtimeTotal}`;
+    if (!quoteAvailability.total && runtimeTotal != null && runtimeAvailable != null) {
       const acquisitionPending = inputQuality
         && ["candidate_quotes_pending", "scoring_pending"].includes(inputQuality.primary_blocker);
-      const identityMissing = acquisitionPending
-        ? "待评分"
-        : runtimeIdentityMissing == null
-        ? runtimeSummary && runtimeSummary.security_identity_pending === true ? "待评分" : "—"
-        : runtimeIdentityMissing;
-      const identityDetail = identityMissingBreakdown(inputQuality, runtimeIdentityMissing, marketData);
-      els.quoteCoverageMeta.textContent = `行情缺失 ${runtimeQuoteMissing == null ? "—" : runtimeQuoteMissing} · 身份缺失 ${identityMissing}${identityDetail}`;
+      const funnel = inputQuality && inputQuality.supply_funnel;
+      const securityMaster = finiteNonNegativeInteger(funnel && funnel.security_master);
+      const history = finiteNonNegativeInteger(funnel && funnel.history);
+      if (acquisitionPending || securityMaster == null || history == null) {
+        els.dataReadinessStatus.textContent = "准备中";
+        els.dataReadinessMeta.textContent = `行情 ${runtimeAvailable} / ${runtimeTotal} · 基础资料待评分 · 历史待计算`;
+        return;
+      }
+      els.dataReadinessStatus.textContent = `基础资料 ${securityMaster} / ${runtimeTotal}`;
+      els.dataReadinessMeta.textContent = `行情 ${runtimeAvailable} / ${runtimeTotal} · 历史有效 ${history}`;
       return;
     }
-    els.quoteCoverageStatus.textContent = quoteCoverage.total
-      ? `${quoteCoverage.available} / ${quoteCoverage.total}`
-      : "— / —";
-    els.quoteCoverageMeta.textContent = quoteCoverage.total
-      ? `行情缺失 ${quoteCoverage.quoteMissing} · 身份缺失 ${quoteCoverage.identityMissing}`
-      : "当前无股票可检查";
+    els.dataReadinessStatus.textContent = quoteAvailability.total
+      ? `行情 ${quoteAvailability.available} / ${quoteAvailability.total}`
+      : "—";
+    els.dataReadinessMeta.textContent = quoteAvailability.total
+      ? `当前名单缺行情 ${quoteAvailability.quoteMissing}`
+      : "当前无数据可检查";
   }
 
-  function identityMissingBreakdown(inputQuality, identityMissing, marketData) {
-    if (identityMissing == null || identityMissing <= 0) return "";
-    const reasons = inputQuality && inputQuality.candidate_optional_reason_counts;
-    const listingDate = finiteNonNegativeInteger(reasons && reasons.missing_listing_date);
-    const listingAge = finiteNonNegativeInteger(reasons && reasons.missing_listing_age_sessions);
-    const details = [];
-    if (listingDate) details.push(`上市日期 ${listingDate}`);
-    if (listingAge) details.push(`交易日龄 ${listingAge}`);
-    const securityMaster = marketData && marketData.security_master;
-    const sourceDetail = securityMaster && securityMaster.tushare_required === false
-      ? "免费行情+交易日历补齐中"
-      : "";
-    if (!details.length && !sourceDetail) return "";
-    return `（${details.join(" · ")}${details.length && sourceDetail ? "；" : ""}${sourceDetail}）`;
-  }
-
-  function quoteCoverageSummary(items) {
+  function quoteAvailabilitySummary(items) {
     const values = Array.isArray(items) ? items : [];
     let available = 0;
-    let identityMissing = 0;
     values.forEach((item) => {
-      if (!identityAvailable(item)) identityMissing += 1;
       if (quoteAvailable(item)) available += 1;
     });
     return {
       total: values.length,
       available,
       quoteMissing: values.length - available,
-      identityMissing,
     };
-  }
-
-  function identityAvailable(item) {
-    return Boolean(
-      item
-      && visibleText(item.code)
-      && visibleText(item.name)
-      && visibleText(item.industry)
-    );
   }
 
   function quoteAvailable(item) {
@@ -705,10 +675,10 @@
     createErrorDrawer,
     formatDurationHms,
     healthView,
-    quoteCoverageSummary,
+    quoteAvailabilitySummary,
     renderBudgetSummary,
     renderHealth,
-    renderQuoteCoverage,
+    renderDataReadiness,
     renderSummary,
     runtimeErrorRows,
     updateQuoteAge,

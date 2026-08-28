@@ -170,8 +170,7 @@ class PreregisteredShadowGate:
         if any(item.calendar_attestation_hash != self._attestation.content_hash for item in records):
             raise ValueError("preregistered shadow gate calendar attestation is inconsistent")
         if historical_report is not None and any(
-            item.phase == "forward" and item.historical_gate_hash != historical_report.content_hash
-            for item in records
+            item.phase == "forward" and item.historical_gate_hash != historical_report.content_hash for item in records
         ):
             raise ValueError("preregistered shadow gate historical binding is inconsistent")
         expected = set(expected_dates)

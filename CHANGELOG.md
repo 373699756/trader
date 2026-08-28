@@ -431,6 +431,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 首页第二张摘要卡从容易被误解为推荐就绪度的“行情覆盖”改为“数据可用性”。短线 current 未就绪时
+  直接读取同交易日 `supply_funnel.security_master`、`history` 与行情 summary，主行显示基础资料
+  完整数/候选数，副行只显示行情覆盖与有效历史数；采集阶段显示“准备中”，已发布短线、历史和 Long
+  仍按当前页面完整名单显示行情可用数。状态 API、供应漏斗和证券主数据门禁没有改 schema 或双写状态。
 - 用户要求继续 `docs/fenshu.md` 下一个完整未完成章节。批次 6“人工晋级”经只读资格审计从含糊的
   “未开始”改为 `[等待前置条件]`：当前日期早于 2027-06-14 首个历史计划日，上交所官方休市安排页
   尚未发布 2027 年年度文件，本地与 Git 没有对应日历证明、40+20 逐日证据或三类终态报告，因此不存在
@@ -788,6 +792,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复用户看到“行情覆盖 360 / 360”同时又看到“身份缺失 240（上市日期 240）”却无法获得有效决策
+  信息的问题。根因确认在 Web 信息分组而非行情或漏斗计数：`360 / 360` 只证明报价完整，旧副行却混入
+  技术身份缺口及上市日期/交易日龄构成。新卡使用直接阶段计数展示“基础资料 120 / 360”和
+  “行情 360 / 360 · 历史有效 78”，首页不再展示上市日期缺失数量，旁边推荐漏斗继续独立显示候选、
+  完整评分和正式推荐。`Regression-Key: web-data-readiness-semantics-v1`。
 - 针对用户反馈 Web 展示数据和推荐漏斗异常，修复全市场/候选刷新完成时间在 UTC 报价接收时刻较晚时
   未投影回 `Asia/Shanghai` 的根因。此前行情与特征已经成功发布，但 `V2RefreshOutcome` 在构造阶段抛出
   `refresh:value_error`，使 `close_quotes` 持续重试、Tomorrow/D25 收盘补算从未提交，页面只能忠实显示
@@ -1135,6 +1144,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除首页的上市日期/交易日龄缺失构成、免费补齐过程文案及旧 `quoteCoverage*` DOM/渲染 helper；
+  后端 `security_identity_missing_count`、原因计数、证券主数据补齐与 100% 业务门禁继续保留，诊断和
+  API 可观察性不因首页简化而丢失。
 - 删除已由统一入口覆盖且不再承担独立职责的六个顶层包装脚本：
   `check_web_recommendation_health.py`、`measure_web_refresh_interval.py`、`sample_history_sources.py`、
   `sample_tencent_quotes.py`、`sample_tushare_daily.py` 和 `run_production_performance.py`。保留
@@ -1296,6 +1308,25 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- `web-data-readiness-semantics-v1` 失败先行契约在旧模板/脚本上稳定失败 2 项；实现后 dashboard state、
+  app factory 与 V2 Web 契约全部通过。回归固定行情 360、基础资料 120、历史 78、完整评分 56，断言
+  首页显示“基础资料 120 / 360”“行情 360 / 360 · 历史有效 78”且不包含上市日期，同时覆盖首次评分
+  “准备中”、已发布短线、历史空日期和 Long 当前名单行情路径。
+- Firefox `browser` 诊断通过：10 个 DOM 更新样本最大 1.049 秒，11 个 patch-to-paint 样本最大 11ms，
+  决策 patch 已应用且 35 秒保留窗口仍有 33.951 秒余量。`v2-desktop-browser-v1` 在 1280x720、
+  1440x900、1920x1080 三档全部通过，无白屏、重叠、页面级横向溢出或浏览器错误；短线质量快照、
+  采集中状态、空观察草稿与 Long 224 只完整名单路径均通过。
+- 高风险完整门禁 `make format-check`（411 个文件）、`make lint`（严格债为零）、`make type-check`
+  （248 个源码文件）、`make test` 和 `make package` 全部通过。format 首轮发现基线研究文件仅有一处
+  Ruff 换行格式债，机械修正后全量重跑通过；package 首轮仅因沙箱禁止隔离构建下载失败，获准网络后
+  相同命令成功生成 sdist/wheel。
+- 真实 `trader-server` 以原配置正常 SIGTERM 后从当前工作树重启；`runtime` 三次采样通过且无 finding，
+  对外 release 为 `v2_status_v3` / `v2_decision_view_v2` / `release-contract-2026-08-28-v4`。稳定后 Tomorrow
+  直接阶段计数为行情 360、基础资料 120、历史 77、完整评分 56、正式 0，主要阻塞仍为
+  `security_master_coverage_incomplete`，证明本批只改变展示而未绕过真实门禁。
+- 最终 `full` 诊断 6 个子检查为 5 通过、1 受控降级、0 失败：真实 Web、Tencent、120 分 Tushare、
+  Firefox 刷新和生产性能均通过；历史源 3 个有界样本中 2 个可用、1 个空响应，因此只报告
+  `history_sources_degraded`。该外部来源抖动没有改变最近有效快照或本批 Web 验收结论。
 - 批次 6 资格审计确认系统日期为 2026-08-28，P1 规范仍固定 2027-06-14 至 2027-08-06 的历史窗口与
   2027-08-09 至 2027-09-03 的前向窗口；仓库运行目录和 Git 跟踪文件扫描均未发现日历证明、P1 逐日
   证据或 historical/forward/combined 报告。预注册规范、collector/gate、工件防篡改和权威计划定向
@@ -2000,6 +2031,10 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 首页按用户偏好不再解释“基础资料”缺口的上市日期/交易日龄构成；真实缺口仍会影响正式发布，并可从
+  类型化 status、推荐漏斗和诊断工具查看。行情、历史与基础资料计数随实时来源和预热进度变化，示例
+  `120/360`、`77/360` 不是固定产品常量；已打开的旧浏览器标签需要刷新后才会加载 v4 静态资源。最终
+  有界抽样仍出现 1 次历史源空响应，运行链按最近有效值和显式降级处理，后续交易日仍需持续观察。
 - 批次 6 仍受真实时间和不可替代证据阻塞：2027 年官方日历证明、40 个历史日、20 个前向日、至少
   300/100 条配对及全部晋级门禁尚未发生。该状态不能通过代码、mock、回补、顺延或降低门槛解除；若
   官方日历与预注册 60 日期不一致，当前 P1 身份必须终止，并只能在任何新标签可见前另立研究身份。

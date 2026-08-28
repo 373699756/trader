@@ -136,8 +136,8 @@ def _run(output_dir: Path) -> dict[str, object]:
             return {
               age: document.querySelector('#quoteAge').textContent,
               source: document.querySelector('#quoteSource').textContent,
-              coverage: document.querySelector('#quoteCoverageStatus').textContent,
-              coverageMeta: document.querySelector('#quoteCoverageMeta').textContent,
+              readiness: document.querySelector('#dataReadinessStatus').textContent,
+              readinessMeta: document.querySelector('#dataReadinessMeta').textContent,
               funnel: document.querySelector('#funnelStatus').textContent,
               funnelMeta: document.querySelector('#funnelMeta').textContent,
               budgetMeta: document.querySelector('#budgetMeta').textContent,
@@ -151,13 +151,13 @@ def _run(output_dir: Path) -> dict[str, object]:
                 == 2
             )
         )
-        _wait(lambda: _execute(base, 'return document.querySelector("#funnelStatus").textContent;') == "360 → 65 → 0")
+        _wait(lambda: _execute(base, 'return document.querySelector("#funnelStatus").textContent;') == "360 → 56 → 0")
         quality_summary = _execute(
             base,
             """
             return {
-              coverage: document.querySelector('#quoteCoverageStatus').textContent,
-              coverageMeta: document.querySelector('#quoteCoverageMeta').textContent,
+              readiness: document.querySelector('#dataReadinessStatus').textContent,
+              readinessMeta: document.querySelector('#dataReadinessMeta').textContent,
               funnel: document.querySelector('#funnelStatus').textContent,
               funnelMeta: document.querySelector('#funnelMeta').textContent,
               source: document.querySelector('#quoteSource').textContent,
@@ -331,17 +331,17 @@ def _run(output_dir: Path) -> dict[str, object]:
             and isinstance(not_ready_summary, dict)
             and bool(re.fullmatch(r"(?:\d+h )?(?:\d+m )?\d+s", str(not_ready_summary.get("age"))))
             and not_ready_summary.get("source") == "腾讯行情"
-            and not_ready_summary.get("coverage") == "360 / 360"
-            and not_ready_summary.get("coverageMeta") == "行情缺失 0 · 身份缺失 待评分"
+            and not_ready_summary.get("readiness") == "准备中"
+            and not_ready_summary.get("readinessMeta") == "行情 360 / 360 · 基础资料待评分 · 历史待计算"
             and not_ready_summary.get("funnel") == "360 → 采集中 → 0"
             and not_ready_summary.get("funnelMeta") == "过滤 待计算 · 观察草稿 正在生成 · 最高 —"
             and "上限 168" in str(not_ready_summary.get("budgetMeta"))
             and not_ready_summary.get("freeze") == "采集中"
             and quality_summary
             == {
-                "coverage": "352 / 360",
-                "coverageMeta": "行情缺失 8 · 身份缺失 286（上市日期 221 · 交易日龄 65；免费行情+交易日历补齐中）",
-                "funnel": "360 → 65 → 0",
+                "readiness": "基础资料 120 / 360",
+                "readinessMeta": "行情 360 / 360 · 历史有效 78",
+                "funnel": "360 → 56 → 0",
                 "funnelMeta": "过滤 216 · 观察草稿 2 · 最高 74.25",
                 "source": "腾讯行情",
             }
@@ -538,7 +538,9 @@ def _browser_input_quality(*, empty: bool = False) -> dict[str, object]:
         },
         "supply_funnel": {
             "requested_candidates": 360,
-            "full_scored": 65,
+            "security_master": 120,
+            "history": 78,
+            "full_scored": 56,
             "filter_reject": 216,
             "selected_executable": 0,
             "selected_observe": 0 if empty else 2,
@@ -546,9 +548,9 @@ def _browser_input_quality(*, empty: bool = False) -> dict[str, object]:
         "summary": {
             "trade_date": _NOW.date().isoformat(),
             "quote_total_count": 360,
-            "quote_covered_count": 352,
-            "quote_missing_count": 8,
-            "security_identity_missing_count": 286,
+            "quote_covered_count": 360,
+            "quote_missing_count": 0,
+            "security_identity_missing_count": 240,
             "latest_quote_source": "tencent",
             "latest_quote_source_time": _NOW.replace(hour=10, minute=0).isoformat(),
             "highest_final_score": 74.25,
@@ -608,8 +610,8 @@ def _viewport(base: str, output_dir: Path, width: int, height: int) -> dict[str,
           summaryItems: document.querySelectorAll('.summary-band > .summary-item').length,
           quoteAge: document.querySelector('#quoteAge').textContent,
           quoteAgeHms: /^\d+h \d+m \d+s$/.test(document.querySelector('#quoteAge').textContent),
-          quoteCoverage: document.querySelector('#quoteCoverageStatus').textContent,
-          quoteCoverageMeta: document.querySelector('#quoteCoverageMeta').textContent,
+          dataReadiness: document.querySelector('#dataReadinessStatus').textContent,
+          dataReadinessMeta: document.querySelector('#dataReadinessMeta').textContent,
           longWatchlistSize: window.TraderLongWatchlistData.items.length,
           snapshotDate: document.querySelector('#snapshotDate').textContent,
           healthBadge: document.querySelector('#healthBadge').textContent,
@@ -651,8 +653,8 @@ def _set_viewport(base: str, width: int, height: int) -> None:
 
 def _viewport_passed(result: dict[str, object]) -> bool:
     watchlist_size = result.get("longWatchlistSize")
-    expected_coverage = f"1 / {watchlist_size}"
-    expected_missing = f"行情缺失 {int(watchlist_size) - 1} · 身份缺失 0" if isinstance(watchlist_size, int) else ""
+    expected_readiness = f"行情 1 / {watchlist_size}"
+    expected_missing = f"当前名单缺行情 {int(watchlist_size) - 1}" if isinstance(watchlist_size, int) else ""
     return bool(
         result.get("body")
         and result.get("actual") == result.get("requested")
@@ -664,8 +666,8 @@ def _viewport_passed(result: dict[str, object]) -> bool:
         and result.get("messageEqualHeight")
         and result.get("summaryItems") == 5
         and result.get("quoteAgeHms")
-        and result.get("quoteCoverage") == expected_coverage
-        and result.get("quoteCoverageMeta") == expected_missing
+        and result.get("dataReadiness") == expected_readiness
+        and result.get("dataReadinessMeta") == expected_missing
         and result.get("snapshotDate") == _NOW.date().isoformat()
         and "2026/" not in str(result.get("notice"))
         and "12:30:00" in str(result.get("notice"))
