@@ -345,3 +345,24 @@ def test_score_r6_stability_contract_freezes_turnover_mechanisms_without_product
         "不能写活动配置",
     ):
         assert statement in design
+
+
+def test_tomorrow_shadow_p1_preregistration_is_owned_by_the_authoritative_contracts() -> None:
+    strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
+    design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
+
+    for expected in (
+        "#### 15.1.15 Tomorrow 新模型预注册与前向影子",
+        "score_tomorrow_shadow_p1_v1",
+        "2027-06-14 至 2027-08-06",
+        "2027-08-09 至 2027-09-03",
+        "score_tomorrow_shadow_calendar_attestation_v1",
+        "score_tomorrow_shadow_gate_report_v1",
+        "唯一 Holm 检验族",
+        "至少 300 条可结算同日同股配对",
+        "前向至少 100 条配对",
+        "production_authority=false",
+    ):
+        assert expected in strategy
+    assert "Tomorrow 新模型预注册与前向影子" in design
+    assert "不注入 `bootstrap.py`" in design

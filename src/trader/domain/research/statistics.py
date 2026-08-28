@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-import hashlib
 import math
-import random
 from dataclasses import dataclass
+from typing import cast
 
 from trader.domain.research.challengers import ChallengerVariantId
+from trader.domain.research.paired_statistics import (
+    PreregisteredBootstrapPlan,
+    fixed_family_holm,
+    paired_moving_block_statistics,
+    preregistered_seed,
+)
 from trader.domain.research.specification import SCORE_P0_V1_SPEC, ScoreResearchSpec
 
 BOOTSTRAP_MASTER_SEED = 20260811
@@ -61,8 +66,7 @@ def bootstrap_seed(
         raise ValueError("Score-R5 bootstrap requires a preregistered variant")
     if block_days not in BOOTSTRAP_BLOCK_DAYS:
         raise ValueError("Score-R5 bootstrap requires a preregistered block length")
-    identity = f"{spec.research_identity}|{spec.bootstrap_master_seed}|{variant_id}|{block_days}"
-    return int.from_bytes(hashlib.sha256(identity.encode("utf-8")).digest()[:8], "big", signed=False)
+    return preregistered_seed(spec.research_identity, spec.bootstrap_master_seed, variant_id, block_days)
 
 
 def paired_moving_block_bootstrap(
@@ -76,59 +80,32 @@ def paired_moving_block_bootstrap(
     """Bootstrap two aligned daily metrics with identical non-circular block indices."""
 
     _validate_series(values, paired_metric)
-    seed = bootstrap_seed(variant_id, block_days, spec=spec)
-    if len(values) < block_days:
-        return PairedBootstrapResult(
-            block_days,
-            seed,
-            BOOTSTRAP_REPETITIONS,
-            len(values),
-            _mean(values),
-            None,
-            None,
-            None,
-            None,
-            _mean(paired_metric),
-            None,
-            None,
-            False,
-            "sample_shorter_than_block",
-        )
-    observed = _mean(values)
-    paired_observed = _mean(paired_metric)
-    if observed is None or paired_observed is None:
-        raise AssertionError("validated Score-R5 series cannot be empty")
-    centered = tuple(value - observed for value in values)
-    rng = random.Random(seed)
-    sample_means: list[float] = []
-    null_means: list[float] = []
-    paired_means: list[float] = []
-    block_starts = len(values) - block_days + 1
-    for _index in range(BOOTSTRAP_REPETITIONS):
-        sampled_indices: list[int] = []
-        while len(sampled_indices) < len(values):
-            start = rng.randrange(block_starts)
-            sampled_indices.extend(range(start, start + block_days))
-        sampled_indices = sampled_indices[: len(values)]
-        sample_means.append(math.fsum(values[index] for index in sampled_indices) / len(values))
-        null_means.append(math.fsum(centered[index] for index in sampled_indices) / len(values))
-        paired_means.append(math.fsum(paired_metric[index] for index in sampled_indices) / len(values))
-    extreme_count = sum(value >= observed for value in null_means)
+    result = paired_moving_block_statistics(
+        values,
+        paired_metric=paired_metric,
+        plan=PreregisteredBootstrapPlan(
+            identity=spec.research_identity,
+            master_seed=spec.bootstrap_master_seed,
+            challenger_id=variant_id,
+            block_days=block_days,
+            repetitions=BOOTSTRAP_REPETITIONS,
+        ),
+    )
     return PairedBootstrapResult(
-        block_days,
-        seed,
-        BOOTSTRAP_REPETITIONS,
-        len(values),
-        observed,
-        _nearest_rank(sample_means, 0.025),
-        _nearest_rank(sample_means, 0.975),
-        (extreme_count + 1) / (BOOTSTRAP_REPETITIONS + 1),
-        extreme_count,
-        paired_observed,
-        _nearest_rank(paired_means, 0.025),
-        _nearest_rank(paired_means, 0.975),
-        True,
-        None,
+        result.block_days,
+        result.seed,
+        result.repetitions,
+        result.sample_count,
+        result.observed_mean,
+        result.confidence_lower,
+        result.confidence_upper,
+        result.p_value,
+        result.extreme_count,
+        result.paired_metric_observed_mean,
+        result.paired_metric_confidence_lower,
+        result.paired_metric_confidence_upper,
+        result.valid,
+        result.invalid_reason,
     )
 
 
@@ -142,22 +119,18 @@ def holm_step_down(
     for value in p_values.values():
         if value is not None and (not math.isfinite(value) or not 0.0 <= value <= 1.0):
             raise ValueError("Score-R5 Holm p-values must be finite and in [0, 1]")
-    ordered = sorted(VARIANT_FAMILY, key=lambda variant: (_p_order(p_values[variant]), variant))
-    accepting = True
-    decisions: list[HolmDecision] = []
-    family_size = len(VARIANT_FAMILY)
-    for family_rank, variant_id in enumerate(ordered, start=1):
-        threshold = HOLM_ALPHA / (family_size - family_rank + 1)
-        p_value = p_values[variant_id]
-        rejected = accepting and p_value is not None and p_value <= threshold
-        if not rejected:
-            accepting = False
-        decisions.append(HolmDecision(variant_id, p_value, family_rank, threshold, rejected))
-    return tuple(decisions)
-
-
-def _p_order(value: float | None) -> float:
-    return math.inf if value is None else value
+    generic_p_values: dict[str, float | None] = {str(key): value for key, value in p_values.items()}
+    decisions = fixed_family_holm(generic_p_values, family=VARIANT_FAMILY, alpha=HOLM_ALPHA)
+    return tuple(
+        HolmDecision(
+            variant_id=cast(ChallengerVariantId, decision.challenger_id),
+            p_value=decision.p_value,
+            family_rank=decision.family_rank,
+            threshold=decision.threshold,
+            rejected_null=decision.rejected_null,
+        )
+        for decision in decisions
+    )
 
 
 def _validate_series(values: tuple[float, ...], paired_metric: tuple[float, ...]) -> None:
@@ -165,16 +138,6 @@ def _validate_series(values: tuple[float, ...], paired_metric: tuple[float, ...]
         raise ValueError("Score-R5 paired bootstrap series must have identical lengths")
     if any(not math.isfinite(value) for value in (*values, *paired_metric)):
         raise ValueError("Score-R5 paired bootstrap inputs must be finite")
-
-
-def _mean(values: tuple[float, ...]) -> float | None:
-    return math.fsum(values) / len(values) if values else None
-
-
-def _nearest_rank(values: list[float], probability: float) -> float:
-    ordered = sorted(values)
-    rank = max(1, math.ceil(probability * len(ordered)))
-    return ordered[rank - 1]
 
 
 __all__ = [

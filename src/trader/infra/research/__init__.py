@@ -11,6 +11,10 @@ from trader.infra.research.historical_partitions import (
     HistoricalPartitionManifest,
     PolarsHistoricalPartitionStore,
 )
+from trader.infra.research.preregistered_shadow_artifacts import (
+    PreregisteredShadowArtifactConflictError,
+    PreregisteredShadowArtifactStore,
+)
 from trader.infra.research.score_r7_artifacts import ScoreR7ArtifactConflictError, ScoreR7ArtifactStore
 
 __all__ = [
@@ -23,6 +27,8 @@ __all__ = [
     "JsonFactorDiagnosticReportStore",
     "JsonScoreR5ForwardStore",
     "PolarsHistoricalPartitionStore",
+    "PreregisteredShadowArtifactConflictError",
+    "PreregisteredShadowArtifactStore",
     "ScoreR7ArtifactConflictError",
     "ScoreR7ArtifactStore",
 ]

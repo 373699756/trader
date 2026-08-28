@@ -44,6 +44,12 @@ from trader.domain.research.statistics import (
     holm_step_down,
     paired_moving_block_bootstrap,
 )
+from trader.domain.research.tomorrow_shadow_preregistration import (
+    TOMORROW_SHADOW_CHALLENGER_FAMILY,
+    TOMORROW_SHADOW_P1_SPEC,
+    TomorrowShadowCalendarAttestation,
+    TomorrowShadowPreregistration,
+)
 
 __all__ = [
     "CostSettlementBasis",
@@ -61,7 +67,11 @@ __all__ = [
     "ResearchSelectionPool",
     "SCORE_P0_V1_SPEC",
     "SCORE_P0_V2_SPEC",
+    "TOMORROW_SHADOW_CHALLENGER_FAMILY",
+    "TOMORROW_SHADOW_P1_SPEC",
     "ScoreResearchSpec",
+    "TomorrowShadowCalendarAttestation",
+    "TomorrowShadowPreregistration",
     "ScoreComponent",
     "coverage_shrunk_score",
     "assess_continuous_entry",

@@ -6,6 +6,13 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对 `docs/fenshu.md` 批次 5，新增隔离的 `score_tomorrow_shadow_p1_v1` 预注册与前向证据链：冻结
+  residual reversal、residual momentum、session decomposition、cost/risk adjusted 与 constrained
+  ensemble 五挑战者、40+20 精确窗口、线性/LightGBM 50%/50% 集合、300/100 同日同股配对下限、
+  20/50/100bp、3/5/10 日区块、10,000 次 bootstrap 与固定五成员 Holm 家族。日历确认、逐日证据和
+  历史/前向/合并报告均原子防篡改封存；终态报告绑定日历确认、精确逐日证据 manifest，并分别保存
+  三档成本的全部区块结果，前向证据和报告必须绑定已通过并已封存的历史门禁哈希。
+  `Regression-Key: score-tomorrow-shadow-preregistration-v1`。
 - 针对 `docs/fenshu.md` 批次 4，新增研究专用 `score_tomorrow_cost_aware_selection_v1`：完整消费批次 3 影子预测，对 Tomorrow/D25、expanding/rolling_252、linear/LightGBM 每折逐股形成成本后净效用、门槛、入选排名和跳过原因，并由独立工件库按选择规范/父报告原子防篡改封存。`Regression-Key: score-tomorrow-cost-aware-selection-v1`。
 - 针对 `docs/fenshu.md` 批次 3，新增研究专用 `score_tomorrow_shadow_models_v1`：在同一 Tomorrow/D25 点时特征、结算标签和 20bp 成本上运行正则化线性控制组与真实浅层 LightGBM，按 expanding/rolling_252、1/25 日 embargo 生成 `score_tomorrow_shadow_report_v1` 完整逐日逐股预测，并由独立工件库原子防篡改封存。`Regression-Key: score-tomorrow-shadow-models-v1`。
 - 针对 `docs/fenshu.md` 批次 2，新增研究专用 `score_tomorrow_point_in_time_features_v1`：固定计算短期残差反转、中期残差动量、隔夜、日内和尾盘五类特征，以 R2 input hash 与类型化上下文 hash 双重绑定结果，并保留逐字段 missing mask。`Regression-Key: score-tomorrow-point-in-time-features-v1`。
@@ -416,6 +423,13 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 批次 5 没有把新五挑战者名称塞入旧 `Score-R5`：旧链绑定的是另一组不可变挑战者，复用其身份会污染
+  既有档案。新链独立拥有规范与证据命名空间，只把无家族含义的配对移动区块 bootstrap、确定性种子和
+  Holm step-down 收敛为通用纯领域统计实现；旧 R5 继续得到相同随机流和结果。生产候选、评分、风险、
+  68/32 融合、DeepSeek 预算、冻结、API 和 Web 均未改变。
+- 本轮已按 `AGENTS.md` 显式加载并执行仓库级 `trader-delivery` skill；此前未触发属于交付流程遗漏，
+  不是 Web、行情或运行时故障，也不需要修改产品触发逻辑。用户同时反馈的 Web 推荐漏斗异常保持独立
+  待诊断批次，本提交不把尚无运行实证的原因写成事实。
 - `docs/fenshu.md` 批次 4 标记为工程能力完成；Tomorrow 固定不继承跨日 incumbent，D25 固定新进入 `20bp`、维持 `0bp`，选择保持 Top6、单行业最多 2、按最终池计算的单板最多 60% 及合法空池。报告仍固定 `status=exploratory`、`production_authority=false`，未接入生产组合根或 Web。
 - `pyproject.toml` 增加 LightGBM 4.7 与 NumPy 2 的正式运行依赖；LightGBM 只存在于研究 infra 训练适配器，未接入生产组合根。`docs/fenshu.md` 批次 3 标记为工程能力完成，报告仍固定 `status=exploratory`、`production_authority=false`。
 - `docs/fenshu.md` 批次 2 标记为工程能力完成；特征工程只供后续预注册影子模型消费，固定 `production_authority=false`，不修改活动生产候选、评分、融合、风险、冻结、DeepSeek 或 Web。
@@ -760,6 +774,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 批次 5 最终 Review 修复三项未被首轮测试覆盖的证据缺口：门禁报告不再只保存可能碰巧相同的聚合值，
+  而是绑定日历确认和精确逐日证据 manifest；50/100bp 不再只有文档声明而缺少报告统计；全期合法空组合
+  不再因零暴露抛异常，而是形成包含固定五成员 Holm 家族的结构化拒绝报告。采集中报告不能提前占用
+  终态工件键，前向 collector、门禁与工件库共同拒绝日历或历史资格错配。
 - 消除影子选择继续叠加趋势、稳定性等重复 Alpha、忽略个股成本或用单一进出门槛制造 D25 抖动的研究风险：候选效用字段固定为毛预期超额与同股估计成本，严重亏损概率和分歧只作同效用排序/审计；D25 状态按模型和窗口隔离，Tomorrow 拒绝跨期状态；约束不足时不放宽门槛补满 Top6。
 - 消除 Tomorrow/D25 影子模型随机拆分、相邻标签泄漏、跨 horizon 特征漂移、训练外统计量污染和两模型数据口径漂移风险：结算显式绑定 horizon/固定观察 lag，同交易日两 horizon 必须绑定同一特征 hash，按时间顺序执行固定 embargo，标签必须在预测日前可见，标准化仅拟合核心训练段，线性与 LightGBM 共用完全相同的矩阵、标签、成本、验证和校准行；单类严重亏损校准使用 Laplace 平滑，不制造 0/1 概率。报告拒绝非固定 spec、重复折叠/预测和非法板块；工件冲突域包含训练窗口，不同窗口不互相覆盖，写入前先核对投影哈希；JSON 白名单投影只属于最终 infra 边界。
 - 消除 Tomorrow 研究特征从任意 JSON payload 猜行业、财务或公告字段的未来数据风险：行业必须绑定不晚于截止的生效/接收时间，财务和公告只按 `published_at/received_at` 接纳，历史报告期不能替代披露日期；14:20 精确锚点、其他时段锚点、历史或残差控制不足时保持 `null`，不退用更早分钟或伪造 0。
@@ -1256,6 +1274,16 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 批次 5 定向回归：`.venv/bin/python -m pytest -q tests/unit/domain/research
+  tests/unit/application/research tests/component/test_market_research.py tests/component/test_score_r5_forward_store.py
+  tests/component/test_preregistered_shadow_store.py tests/component/test_v2_research_trace_store.py
+  tests/contract/test_score_plan_contract.py tests/contract/test_score_research_detailed_strategy_contract.py
+  tests/contract/test_v2_architecture.py` 通过，覆盖新预注册、日历失败关闭、精确证据 manifest、三档成本
+  全区块统计、合法空组合、固定家族/门禁、前向资格、工件冲突/篡改及旧 R5 统计兼容。
+- 批次 5 静态门禁：受影响文件 `ruff format --check`、`ruff check` 与 mypy 定向检查通过；最终
+  `git diff --check` 通过。该批只影响离线 research 与文档，不接入生产运行、Web 或浏览器，统一运行诊断、
+  供应商实测、完整仓库 pytest、wheel 安装和三档桌面验收不适用；定向测试已经覆盖全部直接依赖的
+  research domain/application、研究工件、架构与权威策略契约。
 - 新增领域、应用、工件和架构契约回归，覆盖个股成本改变排序、D25 双门槛、Tomorrow 无 incumbent、两模型/两窗口/两 horizon 完整映射、Top6/行业/板块约束、行业空白归一化、合法空池、生产隔离及工件幂等/篡改拒绝。本批按评分研究与持久化边界运行 `make format-check`、`make lint`、`make type-check`、`make test`、`make package`，全部通过；package 首次仅因沙箱禁止隔离构建访问 PyPI 失败，获准网络重跑后成功生成包含新增 research 模块的 sdist/wheel。
 - 针对用户报告的 Web 推荐漏斗异常，复用 `scripts/diagnose_runtime.py --profile runtime` 对本机服务采样 3 次；status 与 Today/Tomorrow/D25 四个端点均为 `connection_failed`，没有取得可用于判断漏斗值的运行样本。`trader-delivery` skill 已在批次开始时加载并按影响矩阵执行。
 - 从仓库外新建隔离虚拟环境完整安装构建出的 wheel，验证 `trader` 与 LightGBM 影子训练适配器可导入、模板/CSS/JavaScript/图标包资源可读取，并确认 `trader-cli --help` 可执行。
@@ -1920,6 +1948,10 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 批次 5 预注册日尚无 2027 年上交所官方年度休市文件。规范已冻结 60 个精确日期，但 collector 会在首日
+  前缺少 `score_tomorrow_shadow_calendar_attestation_v1` 时失败关闭；若官方日历与日期不一致，该身份必须
+  终止且不得换日。真实 40+20 观察、至少 300/100 配对和收益/风险门禁尚未发生，因此没有
+  `promotion_eligible` 或任何生产授权。Web 推荐漏斗异常仍需独立批次在真实运行服务上复现和定位。
 - 当前真实点时窗口不足，新增模型和成本感知选择尚无可信样本外净超额、真实概率校准、换手或尾部风险改善证据；固定阈值仅完成工程预注册，不代表最优，批次 5 仍须在标签可见前冻结身份并取得历史样本外与连续前向证据。
 - Web 推荐漏斗的用户可见异常根因仍待验证：本批统一运行诊断时没有服务监听本机 `5000` 端口，源码、mock 或 HTTP 不可达均不能证明实际运行时是哪一漏斗阶段异常；必须在目标 release 服务启动后重新执行 `runtime`，如涉及浏览器展示再升级 `full`。
 - `score_p0_v2` 已错过的正式计划日不可回填；对应运行日志缺失，运行级直接原因仍待验证。新研究身份须等待后续评分规范与完整未来窗口冻结，本批不创建占位身份。
