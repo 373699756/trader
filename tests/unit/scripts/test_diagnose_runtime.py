@@ -71,6 +71,7 @@ def test_full_profile_adds_browser_and_offline_performance_without_duplicate_pro
         ("history", "history_sources"),
         ("tencent", "tencent_quotes"),
         ("tushare", "tushare_daily"),
+        ("research", "score_p0_readiness"),
         ("browser", "browser_refresh"),
         ("performance", "production_performance"),
     ],
@@ -80,6 +81,91 @@ def test_single_check_profiles_preserve_targeted_gate_execution(profile: str, ex
 
     assert tuple(command.name for command in commands) == (expected,)
     assert commands[0].argv[:2] == ("/python", "-m")
+
+
+def test_research_profile_runs_only_score_p0_readiness_probe() -> None:
+    commands = build_commands(_options(profile="research"), python_executable="/python")
+
+    assert tuple(command.name for command in commands) == ("score_p0_readiness",)
+    assert commands[0].argv == (
+        "/python",
+        "-m",
+        "trader.entrypoints.cli",
+        "--config",
+        "config/v2/runtime.json",
+        "research-status",
+    )
+
+
+def test_research_status_projection_uses_authoritative_active_window_and_reports_failure() -> None:
+    report = build_report(
+        "research",
+        (
+            DiagnosticResult(
+                "score_p0_readiness",
+                0,
+                4.0,
+                {
+                    "schema_version": "v2_research_readiness_v3",
+                    "research_state": "historical_collection_failed",
+                    "recorded_trade_dates": ["2026-08-21", "2026-08-20"],
+                    "active_research": {
+                        "research_identity": "score_p0_v2",
+                        "evaluation_blocker": "score_p0_v2_historical_planned_dates_missed",
+                        "historical_window": {
+                            "recorded_trade_dates": 1,
+                            "maximum_attainable_trade_dates": 36,
+                            "recoverable": False,
+                        },
+                        "forward_window": {
+                            "recorded_trade_dates": 0,
+                            "maximum_attainable_trade_dates": 20,
+                            "recoverable": True,
+                        },
+                    },
+                },
+                None,
+            ),
+        ),
+    )
+
+    assert report["status"] == "failed"
+    assert report["checks"][0]["summary"] == {
+        "research_identity": "score_p0_v2",
+        "historical_window": {
+            "recorded_trade_dates": 1,
+            "maximum_attainable_trade_dates": 36,
+            "recoverable": False,
+        },
+        "forward_window": {
+            "recorded_trade_dates": 0,
+            "maximum_attainable_trade_dates": 20,
+            "recoverable": True,
+        },
+        "recorded_count": 1,
+        "status": "historical_collection_failed",
+        "evaluation_blocker": "score_p0_v2_historical_planned_dates_missed",
+    }
+    assert report["findings"][0]["code"] == "score_p0_v2_historical_planned_dates_missed"
+    assert "2026-08-20" not in str(report["checks"][0])
+
+
+def test_research_status_projection_rejects_unsupported_schema() -> None:
+    report = build_report(
+        "research",
+        (
+            DiagnosticResult(
+                "score_p0_readiness",
+                0,
+                1.0,
+                {"schema_version": "v2_research_readiness_v2", "research_state": "historical_collecting"},
+                None,
+            ),
+        ),
+    )
+
+    assert report["status"] == "failed"
+    assert report["findings"][0]["code"] == "research_status_shape_invalid"
 
 
 def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloads() -> None:

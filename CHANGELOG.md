@@ -412,6 +412,12 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- `scripts/diagnose_runtime.py --profile research` 复用现有 `trader-cli research-status` 的
+  `v2_research_readiness_v3` 权威投影，只汇总活动研究身份、历史/前向窗口、最大可达日期和 blocker；
+  不再由独立脚本重复读取 SQLite 和计算覆盖状态，避免计划外旧日期被误投影为 `score_p0_v2` 活动记录。
+  2026-08-28 只读状态确认该身份已错过 4 个计划日、最大只能达到 36/40，固定为
+  `historical_collection_failed`；缺失日的运行级直接原因因历史日志不存在仍待验证。
+  `Regression-Key: score-p0-readiness-v1`。
 - 根因确认：上一批虽增加统一编排器，但六个顶层专项脚本仍各自拥有 CLI 与落盘逻辑，导致入口、参数和
   维护边界重复，后续代理仍可能绕过统一报告。本批把 `scripts/diagnose_runtime.py` 收口为唯一公开诊断
   CLI，内部探针只向父进程输出一个 JSON；`make performance-check` 直接复用正式
@@ -1238,6 +1244,13 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- `tests/unit/scripts/test_diagnose_runtime.py` 及既有研究/权威文档 contract 共 55 项通过，覆盖
+  `research` 精确 profile、权威 CLI 路由、schema 失败关闭、不可恢复状态、活动窗口摘要和计划外日期不泄漏；受影响
+  Python 文件 Ruff format/check 与 mypy 通过，统一 CLI `--help` 正确公开 `research`，Skill
+  `quick_validate.py` 返回 `Skill is valid!`，`git diff --check` 通过。真实只读 profile 按预期以退出码 1
+  报告 `score_p0_v2_historical_planned_dates_missed`、36/40 和 `recoverable=false`。本批不改生产评分、
+  Web/API、供应商、数据库 schema、配置、DeepSeek、冻结或包资源，因此全量 test/package、wheel 和三档
+  浏览器门禁不适用。
 - 统一诊断 unit/contract 共 39 项通过，覆盖六档精确 profile、组合顺序、失败后继续、脱敏聚合、共享
   JSON 输出、共享 p50/p95、旧包装脚本不存在，以及五个内部模块均可通过 `python -m ... --help` 启动且
   不再公开 `--output`。受影响 Python Ruff 检查通过；`skill-creator` 的 `quick_validate.py` 返回
@@ -1904,10 +1917,14 @@ All notable changes to this project are documented here.
 - 当前代码仍为 `Unreleased`，正式 0.2.0 发布批次尚未发起；原生评分因子诊断层只完成离线工程能力，
   没有声明正式发布、生成新研究身份或改变生产评分。历史 Changelog/报告仍可
   以过去时引用已删除文件名，这是审计证据而非活动文档依赖。
-- `score_p0_v2` 已不可逆地无法达到 40/40；已有证据继续保留且不补写。三日缺少 committed event 和
+- `score_p0_v2` 已不可逆地无法达到 40/40；已有证据继续保留且不补写。四日缺少 committed event 和
   正式决策是已确认的直接证据缺口，但缺失产生的运行级原因因没有对应日志仍待验证，数据库隔离记录
   不能单独证明因果。本批只修复研究资格与状态真相，不改变生产评分或直接提高收益；下一批应按计划先
-  实现原生因子 IC、分组单调性、成本、换手、严重亏损和分层诊断，完整冻结新规范后再预注册新身份。
+  补齐点时股票池、历史 ST、行业、退市、公司风险和精确 14:50 输入，完整冻结新规范后再预注册新身份。
+- Web 推荐漏斗的真实异常根因仍待运行实证：2026-08-28 的 `runtime` profile 因本机 5000 端口没有服务
+  而返回 `connection_failed`，无法采样 `/api/v2/status.scheduler.input_quality` 和三策略 current。源码
+  只证明页面在策略或交易日不匹配时会降级显示市场预热摘要，不能据此断言现场一定是日期错配；需正常
+  启动当前服务并复用 `runtime` profile 后另立 Web 批次处理。
 - 120 积分官方权限仍只有非复权日线，复权因子和 `pro_bar(qfq)` 明确要求 2000 积分，因此本批不能让
   Tushare 替代评分历史主源；评分继续使用腾讯 qfq 与东方财富 qfq 回退。状态中的 `process_*` 调用计数
   随进程启动，不能表示其他诊断进程或供应商账户的跨进程实际余量；供应商最终限额仍是权威门禁。

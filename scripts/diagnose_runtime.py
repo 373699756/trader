@@ -24,6 +24,7 @@ Profile = Literal[
     "history",
     "tencent",
     "tushare",
+    "research",
     "browser",
     "performance",
     "runtime",
@@ -38,6 +39,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "history": ("history_sources",),
     "tencent": ("tencent_quotes",),
     "tushare": ("tushare_daily",),
+    "research": ("score_p0_readiness",),
     "browser": ("browser_refresh",),
     "performance": ("production_performance",),
     "runtime": ("web_health",),
@@ -99,7 +101,7 @@ def _parser() -> argparse.ArgumentParser:
         "--profile",
         choices=tuple(_PROFILE_CHECKS),
         default="live",
-        help="single-check or combined runtime, sources, live, and full diagnostic profile",
+        help="single-check or combined runtime, research, sources, live, and full diagnostic profile",
     )
     parser.add_argument("--base-url", default="http://127.0.0.1:5000", help="running trader-server base URL")
     parser.add_argument("--runtime-config", default=str(_DEFAULT_CONFIG), help="runtime JSON configuration")
@@ -250,6 +252,18 @@ def build_commands(
                 *options.codes,
                 "--days",
                 str(options.history_days),
+            ),
+            common_timeout,
+        ),
+        "score_p0_readiness": DiagnosticCommand(
+            "score_p0_readiness",
+            (
+                python_executable,
+                "-m",
+                "trader.entrypoints.cli",
+                "--config",
+                str(options.runtime_config),
+                "research-status",
             ),
             common_timeout,
         ),
@@ -407,6 +421,42 @@ def _check_payload(result: DiagnosticResult) -> dict[str, object]:
             "capability": _mapping(source.get("capability")),
             "usage": _mapping(source.get("usage")),
         }
+    elif result.name == "score_p0_readiness":
+        active = _mapping(source.get("active_research"))
+        historical = _mapping(active.get("historical_window"))
+        blocker = active.get("evaluation_blocker")
+        if result.payload is not None and not _valid_research_status(source):
+            payload["findings"] = [
+                {
+                    "severity": "error",
+                    "code": "research_status_shape_invalid",
+                    "message": "The research status schema or active window projection is invalid.",
+                }
+            ]
+        elif source.get("research_state") == "historical_collection_failed":
+            payload["findings"] = [
+                {
+                    "severity": "error",
+                    "code": (
+                        blocker
+                        if isinstance(blocker, str) and blocker
+                        else "score_p0_readiness_historical_collection_failed"
+                    ),
+                    "message": "The active score research historical window is irrecoverable.",
+                    "evidence": {
+                        "maximum_attainable_trade_dates": historical.get("maximum_attainable_trade_dates"),
+                        "recoverable": historical.get("recoverable"),
+                    },
+                }
+            ]
+        payload["summary"] = {
+            "research_identity": active.get("research_identity"),
+            "historical_window": historical,
+            "forward_window": _mapping(active.get("forward_window")),
+            "recorded_count": historical.get("recorded_trade_dates"),
+            "status": source.get("research_state"),
+            "evaluation_blocker": blocker,
+        }
     elif result.name == "browser_refresh":
         payload["summary"] = {
             "passed": source.get("passed"),
@@ -428,6 +478,10 @@ def _check_payload(result: DiagnosticResult) -> dict[str, object]:
 def _status(result: DiagnosticResult) -> CheckStatus:
     if result.error_code is not None or result.payload is None or result.return_code != 0:
         return "failed"
+    if result.name == "score_p0_readiness" and not _valid_research_status(result.payload):
+        return "failed"
+    if result.name == "score_p0_readiness" and result.payload.get("research_state") == "historical_collection_failed":
+        return "failed"
     status = result.payload.get("status")
     if status == "passed":
         return "passed"
@@ -439,6 +493,18 @@ def _status(result: DiagnosticResult) -> CheckStatus:
     if isinstance(passed, bool):
         return "passed" if passed else "failed"
     return "passed"
+
+
+def _valid_research_status(payload: Mapping[str, object]) -> bool:
+    active = payload.get("active_research")
+    return (
+        payload.get("schema_version") == "v2_research_readiness_v3"
+        and isinstance(payload.get("research_state"), str)
+        and isinstance(active, dict)
+        and isinstance(active.get("research_identity"), str)
+        and isinstance(active.get("historical_window"), dict)
+        and isinstance(active.get("forward_window"), dict)
+    )
 
 
 def _findings(check: Mapping[str, object]) -> list[dict[str, object]]:

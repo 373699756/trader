@@ -1427,10 +1427,11 @@ curl -fsS http://127.0.0.1:5000/api/v2/decisions/long/current
 current 必须携带 `selection_diagnostics.empty_reason`。Web 诊断模块只负责检测和归因，不抓行情、不触发
 评分、不修改运行状态、阈值或冻结结果，错误发现或 API 不可达时退出码为 1。
 
-统一诊断的 `runtime/web` profile 只读取运行中 Web，`sources` profile 才执行真实供应商请求并消耗适用配额，
-默认 `live` 合并两者，`full` 再追加浏览器与性能。总体 `failed` 表示至少一个检查未能执行或门禁失败；
+统一诊断的 `runtime/web` profile 只读取运行中 Web，`research` profile 复用只读
+`trader-cli research-status` 权威投影并只保留活动研究窗口摘要，`sources` profile 才执行真实供应商请求并消耗适用配额，
+默认 `live` 合并运行 Web 与来源探针，`full` 再追加浏览器与性能。总体 `failed` 表示至少一个检查未能执行或门禁失败；
 `degraded` 表示全部检查完成但存在受控降级；两者都必须保留各子检查状态和发现，不能用首个错误掩盖
-其他边界。`web/history/tencent/tushare/browser/performance` 精确 profile 复用相同内部实现；统一入口不得
+其他边界。`web/history/tencent/tushare/research/browser/performance` 精确 profile 复用相同权威实现；统一入口不得
 复制供应商解析、健康判定或性能测量实现，也不得成为生产调度依赖。
 
 正常停止时在服务终端按一次 Ctrl+C，并等待最多 30 秒；第二次 Ctrl+C 是立即强制退出，
