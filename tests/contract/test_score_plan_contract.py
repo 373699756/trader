@@ -64,7 +64,14 @@ def test_score_plan_p0_pre_registration_is_reflected_in_authoritative_docs() -> 
         "不得新增 DeepSeek 物理 HTTP 请求",
     ):
         assert statement in strategy
-    assert "硬拒绝股票代码、简称、逐股事实、分数和未来收益均不得写入研究证据" in strategy
+    for statement in (
+        "完整点时股票池只允许保存代码、板块、行业、历史 ST",
+        "不保存简称、硬拒绝分数、未来收益",
+        "每个 `input_version`",
+        "只在 local 观察保存一次完整人口",
+        "hybrid 只引用同一人口哈希",
+    ):
+        assert statement in strategy
     for statement in (
         "score_p0_v2",
         "2026-08-21（含）至 2026-10-23（含）",
@@ -131,8 +138,9 @@ def test_score_r1_migrate_committed_audit_contract_is_complete() -> None:
     ):
         assert statement in design
     for statement in (
-        "`v2_committed_research_audit_v1`",
-        "`v2_research_committed_event_v1`",
+        "`v2_committed_research_audit_v2`",
+        "`v2_research_committed_event_v2`",
+        "既有两个 v1 schema 只允许按原始载荷形状验证哈希并只读解析",
         "`production_local`",
         "`research_shadow`",
         "独立 SHA-256",

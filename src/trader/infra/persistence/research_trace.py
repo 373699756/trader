@@ -9,26 +9,34 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Literal, cast
+from zoneinfo import ZoneInfo
 
 from trader.application.decision_events import (
     V2CommittedDecisionItem,
     V2DecisionCommitted,
 )
 from trader.application.research_audit import (
+    LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
+    RESEARCH_AUDIT_SCHEMA_VERSION,
     ShadowMode,
     V2CommittedResearchAudit,
     V2DecisionObservation,
     V2ResearchCandidateAudit,
     V2ResearchDecisionCandidateAudit,
     V2ResearchDecisionSetAudit,
+    V2ResearchPopulationAudit,
+    V2ResearchRiskFactAudit,
 )
 from trader.domain.recommendation.decision_identity import DecisionStage
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 
-_SCHEMA_VERSION = "v2_research_committed_event_v1"
+LEGACY_RESEARCH_EVENT_SCHEMA_VERSION = "v2_research_committed_event_v1"
+RESEARCH_EVENT_SCHEMA_VERSION = "v2_research_committed_event_v2"
+_SCHEMA_VERSION = RESEARCH_EVENT_SCHEMA_VERSION
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 class ResearchTraceConflictError(RuntimeError):
@@ -127,6 +135,11 @@ class SQLiteV2ResearchTraceStore:
     def record(self, observation: V2DecisionObservation) -> None:
         self.initialize()
         event = observation.event
+        if (
+            observation.research_audit is not None
+            and observation.research_audit.schema_version != RESEARCH_AUDIT_SCHEMA_VERSION
+        ):
+            raise ValueError("legacy research audit is read-only")
         payload = _observation_bytes(observation)
         payload_hash = _sha256(payload)
         if len(payload) > self._maximum_payload_bytes:
@@ -265,6 +278,49 @@ class SQLiteV2ResearchTraceStore:
                 observations.values(),
                 key=lambda item: (item.event.observed_at, item.event.strategy.value, item.event.decision_version),
             )
+        )
+
+    def latest_point_in_time_observation(
+        self,
+        trade_date: date,
+        strategy: Strategy,
+        *,
+        cutoff: time = time(hour=14, minute=50),
+    ) -> V2DecisionObservation | None:
+        """Return the latest complete local input that existed by the research cutoff."""
+
+        if cutoff.tzinfo is not None:
+            raise ValueError("research cutoff must be a Shanghai wall-clock time")
+        cutoff_at = datetime.combine(trade_date, cutoff, tzinfo=_SHANGHAI)
+        eligible: list[V2DecisionObservation] = []
+        for observation in self.list_by_trade_date(trade_date):
+            audit = observation.research_audit
+            if (
+                observation.event.strategy is not strategy
+                or observation.event.observed_at.astimezone(_SHANGHAI) > cutoff_at
+                or audit is None
+                or audit.schema_version != RESEARCH_AUDIT_SCHEMA_VERSION
+                or audit.shadow_mode != "control_copy"
+                or audit.input_observed_at is None
+                or audit.input_observed_at.astimezone(_SHANGHAI) > cutoff_at
+                or not audit.point_in_time_population
+            ):
+                continue
+            if (
+                observation.event.observed_at.astimezone(_SHANGHAI).date() != trade_date
+                or audit.input_observed_at.astimezone(_SHANGHAI).date() != trade_date
+            ):
+                continue
+            eligible.append(observation)
+        if not eligible:
+            return None
+        return max(
+            eligible,
+            key=lambda item: (
+                cast(V2CommittedResearchAudit, item.research_audit).input_observed_at,
+                item.event.observed_at,
+                item.event.decision_version,
+            ),
         )
 
     def status(self) -> V2ResearchTraceStatus:
@@ -414,6 +470,12 @@ def _partition_date(path: Path) -> date | None:
 
 def _verified_event(row: sqlite3.Row) -> V2DecisionObservation:
     payload = bytes(row["payload"])
+    row_schema = str(row["schema_version"])
+    if row_schema not in {LEGACY_RESEARCH_EVENT_SCHEMA_VERSION, RESEARCH_EVENT_SCHEMA_VERSION}:
+        raise ValueError("research event row schema is invalid")
+    raw = json.loads(payload)
+    if not isinstance(raw, dict) or raw.get("schema_version") != row_schema:
+        raise ValueError("research event row and payload schema mismatch")
     observation = _observation_from_bytes(payload, str(row["payload_hash"]))
     event = observation.event
     if (
@@ -422,7 +484,6 @@ def _verified_event(row: sqlite3.Row) -> V2DecisionObservation:
         or event.trade_date.isoformat() != str(row["trade_date"])
         or event.observed_at.isoformat() != str(row["observed_at"])
         or event.decision_hash != str(row["decision_hash"])
-        or str(row["schema_version"]) != _SCHEMA_VERSION
     ):
         raise ValueError("research event row identity mismatch")
     return observation
@@ -437,10 +498,24 @@ def _observation_from_bytes(payload: bytes, payload_hash: str) -> V2DecisionObse
     return _observation_from_dict(cast(dict[str, object], raw))
 
 
-def _observation_bytes(observation: V2DecisionObservation) -> bytes:
+def _observation_bytes(
+    observation: V2DecisionObservation,
+    *,
+    schema_version: str = RESEARCH_EVENT_SCHEMA_VERSION,
+) -> bytes:
+    if schema_version not in {LEGACY_RESEARCH_EVENT_SCHEMA_VERSION, RESEARCH_EVENT_SCHEMA_VERSION}:
+        raise ValueError("research event schema is invalid")
+    audit = observation.research_audit
+    expected_audit_schema = (
+        LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION
+        if schema_version == LEGACY_RESEARCH_EVENT_SCHEMA_VERSION
+        else RESEARCH_AUDIT_SCHEMA_VERSION
+    )
+    if audit is not None and audit.schema_version != expected_audit_schema:
+        raise ValueError("research event and audit schemas must advance together")
     event = observation.event
     payload = {
-        "schema_version": _SCHEMA_VERSION,
+        "schema_version": schema_version,
         "event_id": event.event_id,
         "strategy": event.strategy.value,
         "trade_date": event.trade_date.isoformat(),
@@ -480,7 +555,7 @@ def _item_dict(item: V2CommittedDecisionItem) -> dict[str, object]:
 def _audit_dict(audit: V2CommittedResearchAudit | None) -> dict[str, object] | None:
     if audit is None:
         return None
-    return {
+    payload: dict[str, object] = {
         "schema_version": audit.schema_version,
         "decision_version": audit.decision_version,
         "decision_hash": audit.decision_hash,
@@ -492,6 +567,51 @@ def _audit_dict(audit: V2CommittedResearchAudit | None) -> dict[str, object] | N
         "shadow_mode": audit.shadow_mode,
         "deepseek_request_delta": audit.deepseek_request_delta,
         "content_hash": audit.content_hash,
+    }
+    if audit.schema_version == RESEARCH_AUDIT_SCHEMA_VERSION:
+        payload.update(
+            {
+                "input_observed_at": (
+                    audit.input_observed_at.isoformat() if audit.input_observed_at is not None else None
+                ),
+                "point_in_time_population": tuple(
+                    _population_audit_dict(item) for item in audit.point_in_time_population
+                ),
+                "point_in_time_population_hash": audit.point_in_time_population_hash,
+            }
+        )
+    return payload
+
+
+def _population_audit_dict(item: V2ResearchPopulationAudit) -> dict[str, object]:
+    return {
+        "code": item.code,
+        "board": item.board,
+        "industry": item.industry,
+        "feature_observed_at": item.feature_observed_at.isoformat(),
+        "quote_source_time": item.quote_source_time.isoformat(),
+        "quote_source": item.quote_source,
+        "data_version": item.data_version,
+        "is_st": item.is_st,
+        "listing_date": item.listing_date.isoformat() if item.listing_date is not None else None,
+        "is_relisted_first_session": item.is_relisted_first_session,
+        "is_delisting_period_first_session": item.is_delisting_period_first_session,
+        "has_delisting_name": item.has_delisting_name,
+        "structured_risk_values": item.structured_risk_values,
+        "external_risk_facts": tuple(_risk_fact_audit_dict(fact) for fact in item.external_risk_facts),
+        "filter_reasons": item.filter_reasons,
+        "disposition": item.disposition,
+        "requested_for_refresh": item.requested_for_refresh,
+    }
+
+
+def _risk_fact_audit_dict(item: V2ResearchRiskFactAudit) -> dict[str, object]:
+    return {
+        "risk_code": item.risk_code,
+        "source": item.source,
+        "observed_at": item.observed_at.isoformat(),
+        "confidence": item.confidence,
+        "veto": item.veto,
     }
 
 
@@ -544,7 +664,11 @@ def _decision_candidate_audit_dict(item: V2ResearchDecisionCandidateAudit) -> di
 
 
 def _observation_from_dict(raw: dict[str, object]) -> V2DecisionObservation:
-    if raw.get("schema_version") != _SCHEMA_VERSION:
+    schema_version = raw.get("schema_version")
+    if schema_version not in {
+        LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
+        RESEARCH_EVENT_SCHEMA_VERSION,
+    }:
         raise ValueError("research event schema is invalid")
     stage = _text(raw, "stage")
     if stage not in {"local", "hybrid"}:
@@ -569,6 +693,13 @@ def _observation_from_dict(raw: dict[str, object]) -> V2DecisionObservation:
     )
     audit_raw = raw.get("research_audit")
     audit = None if audit_raw is None else _audit(_object(audit_raw, "research_audit"))
+    expected_audit_schema = (
+        LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION
+        if schema_version == LEGACY_RESEARCH_EVENT_SCHEMA_VERSION
+        else RESEARCH_AUDIT_SCHEMA_VERSION
+    )
+    if audit is not None and audit.schema_version != expected_audit_schema:
+        raise ValueError("research event and audit schemas must advance together")
     return V2DecisionObservation(event, audit)
 
 
@@ -588,6 +719,10 @@ def _item(raw: dict[str, object]) -> V2CommittedDecisionItem:
 
 
 def _audit(raw: dict[str, object]) -> V2CommittedResearchAudit:
+    schema_version = _text(raw, "schema_version")
+    is_v2 = schema_version == RESEARCH_AUDIT_SCHEMA_VERSION
+    if schema_version not in {LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION, RESEARCH_AUDIT_SCHEMA_VERSION}:
+        raise ValueError("research audit schema is invalid")
     audit = V2CommittedResearchAudit(
         decision_version=_text(raw, "decision_version"),
         decision_hash=_text(raw, "decision_hash"),
@@ -601,11 +736,57 @@ def _audit(raw: dict[str, object]) -> V2CommittedResearchAudit:
         research_shadow=_decision_set_audit(_object(raw.get("research_shadow"), "research_shadow")),
         shadow_mode=cast(ShadowMode, _text(raw, "shadow_mode")),
         deepseek_request_delta=_integer(raw, "deepseek_request_delta"),
-        schema_version=_text(raw, "schema_version"),
+        schema_version=schema_version,
+        input_observed_at=(datetime.fromisoformat(_text(raw, "input_observed_at")) if is_v2 else None),
+        point_in_time_population=(
+            tuple(
+                _population_audit(_object(item, "point_in_time_population"))
+                for item in _list(raw.get("point_in_time_population"), "point_in_time_population")
+            )
+            if is_v2
+            else ()
+        ),
+        point_in_time_population_hash=(_text(raw, "point_in_time_population_hash") if is_v2 else ""),
     )
     if audit.content_hash != _text(raw, "content_hash"):
         raise ValueError("research audit content hash mismatch")
     return audit
+
+
+def _population_audit(raw: dict[str, object]) -> V2ResearchPopulationAudit:
+    listing_date_raw = raw.get("listing_date")
+    return V2ResearchPopulationAudit(
+        code=_text(raw, "code"),
+        board=_text(raw, "board"),
+        industry=_text(raw, "industry"),
+        feature_observed_at=datetime.fromisoformat(_text(raw, "feature_observed_at")),
+        quote_source_time=datetime.fromisoformat(_text(raw, "quote_source_time")),
+        quote_source=_text(raw, "quote_source"),
+        data_version=_text(raw, "data_version"),
+        is_st=_boolean(raw, "is_st"),
+        listing_date=(date.fromisoformat(listing_date_raw) if isinstance(listing_date_raw, str) else None),
+        is_relisted_first_session=_optional_boolean(raw.get("is_relisted_first_session")),
+        is_delisting_period_first_session=_optional_boolean(raw.get("is_delisting_period_first_session")),
+        has_delisting_name=_boolean(raw, "has_delisting_name"),
+        structured_risk_values=_optional_number_pairs(raw.get("structured_risk_values"), "structured_risk_values"),
+        external_risk_facts=tuple(
+            _risk_fact_audit(_object(item, "external_risk_fact"))
+            for item in _list(raw.get("external_risk_facts"), "external_risk_facts")
+        ),
+        filter_reasons=tuple(_strings(raw.get("filter_reasons"), "filter_reasons")),
+        disposition=_text(raw, "disposition"),
+        requested_for_refresh=_boolean(raw, "requested_for_refresh"),
+    )
+
+
+def _risk_fact_audit(raw: dict[str, object]) -> V2ResearchRiskFactAudit:
+    return V2ResearchRiskFactAudit(
+        risk_code=_text(raw, "risk_code"),
+        source=_text(raw, "source"),
+        observed_at=datetime.fromisoformat(_text(raw, "observed_at")),
+        confidence=_number(raw, "confidence"),
+        veto=_boolean(raw, "veto"),
+    )
 
 
 def _candidate_audit(raw: dict[str, object]) -> V2ResearchCandidateAudit:
@@ -693,6 +874,14 @@ def _boolean(raw: dict[str, object], key: str) -> bool:
     return value
 
 
+def _optional_boolean(raw: object) -> bool | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, bool):
+        raise ValueError("optional boolean is invalid")
+    return raw
+
+
 def _integer(raw: dict[str, object], key: str) -> int:
     value = raw.get(key)
     if not isinstance(value, int) or isinstance(value, bool):
@@ -761,6 +950,16 @@ def _required_score_pairs(raw: object) -> tuple[tuple[str, float], ...]:
     return tuple(result)
 
 
+def _optional_number_pairs(raw: object, label: str) -> tuple[tuple[str, float | None], ...]:
+    result: list[tuple[str, float | None]] = []
+    for item in _list(raw, label):
+        values = _list(item, label)
+        if len(values) != 2 or not isinstance(values[0], str):
+            raise ValueError(f"{label} entries are invalid")
+        result.append((values[0], _optional_number(values[1])))
+    return tuple(result)
+
+
 def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
@@ -790,6 +989,8 @@ CREATE TABLE IF NOT EXISTS committed_event_quarantine (
 
 
 __all__ = [
+    "LEGACY_RESEARCH_EVENT_SCHEMA_VERSION",
+    "RESEARCH_EVENT_SCHEMA_VERSION",
     "ResearchTraceCapacityError",
     "ResearchTraceConflictError",
     "ResearchTraceLimits",

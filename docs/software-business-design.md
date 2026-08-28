@@ -298,6 +298,10 @@ local 升级 hybrid 时同样必须把匹配新父版本的初始 overlay 一起
 observer 失败也无权反向修改决策。
 
 研究 observer 只消费成功提交后的 `V2DecisionCommitted` 与评分投影同批生成的不可变研究审计。
+新 `v2_committed_research_audit_v2` 在 local 观察中一次性保存完整点时股票池的有界身份、历史 ST、
+行业、上市/重新上市/退市期身份、结构化公司风险、外部风险事实、行情来源时间和
+`input_observed_at`；hybrid 观察只引用同一人口 SHA-256，不复制候选输入。该人口仅供离线总体和资格
+证明，不进入生产评分、冻结、API 或 Web，也不保存硬拒绝股票的简称、分数、未来收益或供应商原始载荷。
 新记录按交易日写入 `.runtime/v2/research/committed-events/YYYY-MM-DD.sqlite3` 独立 SQLite 研究库分区；
 已经存在的 `.runtime/v2/research/committed-events.sqlite3` 单库保持原字节不变并作为只读 legacy
 分区参与查询、去重和容量统计，不执行破坏性迁移。每个交易日分区拥有独立 schema、规范 SHA-256、
@@ -310,7 +314,10 @@ observer 的队列、接纳、完成、拒绝、消费者失败计数和最后�
 而让 Web 显示正常。observer 不写统一决策索引、正式记录库、API、SSE 或活动配置；它
 不重新读取行情、重新评分或重新调用模型。初始化失败同样 fail open；
 历史数据不从旧 snapshot 或 shadow 运行库回填，
-部署后只积累新的 committed observation。
+部署后只积累新的 committed observation。新外层记录使用 `v2_research_committed_event_v2`；既有外层
+和审计 v1 只按原始载荷形状校验哈希并只读解析，不迁移、不补写。研究库按策略和交易日提供
+14:50 截止读取，只接受事件时间与输入时间均不晚于截止点且含完整人口的 local 观察；迟到记录保留审计
+但不能恢复计划日。
 决策 CAS 成功后必须由提交线程直接写入内存事件流，再异步组装并投递研究审计；研究审计构造失败、
 observer 队列满或消费者失败都不得吞掉已经提交的 Web decision 事件。事件流写入失败必须显式降级，
 但同样不得回滚已接纳决策。
@@ -1104,8 +1111,10 @@ current 一次返回完整紧凑 `DecisionView`；公开 schema 为 `v2_decision
 研究覆盖、复核终态和 selection diagnostics 纳入规范哈希。领域和应用层只操作有类型对象；正式记录
 的字段身份材料由唯一显式白名单生成，`infra/persistence/decision_record_codec.py` 只复用该材料执行
 JSON 编解码、输入字段校验和身份复算，不得维护第二套逐字段 encoder；研究审计哈希同样必须显式投影
-每个字段，禁止通过 `__dict__`、反射或 dataclass 自动展开改变 schema。codec 只接受当前 schema 和哈希一致载荷。
-旧 schema v1 不进入新 release 的启动、恢复、查询或测试路径，也不得以双读、现场升级或默认字段恢复。
+每个字段，禁止通过 `__dict__`、反射或 dataclass 自动展开改变 schema。活动决策和正式记录 codec 只接受
+当前 schema 和哈希一致载荷；研究轨迹是唯一例外，只为既有不可变研究事件保留显式 v1 只读 codec。
+活动决策和正式记录的旧 schema v1 不进入新 release 的启动、恢复、查询或测试路径，也不得以双读、
+现场升级或默认字段恢复；研究 v1 同样不得迁移、补字段或参与新的 14:50 人口读取。
 
 逐股对象只公开页面需要的代码、名称、板块/行业、核心行情、锚点行情、本地/模型/模型风险/
 最终分、动作、结构化理由、精简风险、复核终态、`setup_type` 与 `downside`。原始特征、权重、
@@ -1519,7 +1528,9 @@ V2-only 工程能力与发布门禁验收已经闭合：活动组合只包含统
 
 Score-R0 至 Score-R5 的工程能力已完成；替代评价 `score_p0_v2` 的预注册和 R2-R5 身份贯通已完成；
 Score-H0 可下载历史回测基础、Score-R6 第二轮参数研究及 Score-R7 人工审查档案工程能力已完成。
-在线研究链与活动运行库物理分离，只消费不可变 V2 committed event 和同批研究审计；
+在线研究链与活动运行库物理分离，只消费不可变 V2 committed event 和同批研究审计；新 local 审计已保存
+完整点时人口及资格事实，hybrid 仅绑定人口哈希，14:50 查询会排除迟到观察，因而未来窗口不再从当前
+股票池反推历史 ST、行业、退市或公司风险。既有 P0v2 缺失日仍不可回填；
 离线 R2/R3/R4/R5 只读唯一数据平面的点时证据。两者均不建立第二套行情、评分、冻结、Web 或 DeepSeek
 请求链，不写活动配置或正式记录。
 
