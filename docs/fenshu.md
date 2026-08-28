@@ -210,7 +210,7 @@
   - **批次 1：建立原生因子诊断层**：[工程能力已完成] 已实现 `score_native_factor_diagnostics_v1`；真实 R2 覆盖不足 40 日，报告仍只能是 `exploratory`，不具备生产晋级资格。
   - **批次 2：增加点时残差特征**：[工程能力已完成] 已实现 `score_tomorrow_point_in_time_features_v1`，固定输出短期残差反转、中期残差动量、隔夜、日内和尾盘五类 Tomorrow 特征；R2 input hash 与类型化上下文哈希双重绑定，行业按生效/接收时间、财务和公告按 `published_at/received_at` 失败关闭，报告期不得替代披露时间。输出固定 `production_authority=false`，当前真实点时覆盖不足，不代表收益有效或生产晋级。
   - **批次 3：影子模型与校准**：[工程能力已完成] 已实现 `score_tomorrow_shadow_models_v1` 与 `score_tomorrow_shadow_report_v1`：Tomorrow/D25 分别执行 expanding/rolling_252、1/25 日 embargo、20 日核心训练、5 日早停验证和 10 日独立校准；固定线性控制组与浅层 LightGBM 同数据、同标签、同 20bp 成本，净超额使用仿射校准、严重亏损概率使用 Platt 校准，并封存特征版本、窗口、种子、模型哈希和完整逐日逐股预测。输出固定 `production_authority=false`，当前真实点时窗口不足，不代表收益有效或生产晋级。
-  - **批次 4：成本感知选择**：未开始
+  - **批次 4：成本感知选择**：[工程能力已完成] 已实现 `score_tomorrow_cost_aware_selection_v1` 与 `score_tomorrow_cost_aware_selection_report_v1`：逐折只按校准毛预期超额减同股成本后的净效用排序，不复用趋势、稳定性等 Alpha；Tomorrow 禁止跨期 incumbent，D25 固定新进入 20bp、维持 0bp；严格保留 Top6、单行业最多 2、按最终池计算的单板最多 60% 和合法空池。输出固定 `production_authority=false`，真实证据与预注册仍由批次 5 完成。
   - **批次 5：预注册与前向影子**：未开始
   - **批次 6：人工晋级**：未开始
 

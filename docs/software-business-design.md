@@ -1623,6 +1623,17 @@ LightGBM 是 `pyproject.toml` 的正式依赖，但仅由 `infra/research/lightg
 防篡改封存。该服务和工件库不接入 `bootstrap.py`、HTTP、调度、活动运行库、正式决策、DeepSeek、API
 或 Web，报告固定 `status=exploratory`、`production_authority=false`；当前没有真实窗口收益或晋级结论。
 
+“Tomorrow 成本感知选择”的离线工程能力固定由 `ScoreTomorrowCostAwareSelection` 消费上述完整影子报告，
+为每个 horizon、窗口和模型分别输出 `score_tomorrow_cost_aware_selection_report_v1`。应用层只把校准净超额
+还原为毛预期超额并交给纯领域选择器逐股扣除同一估计成本；候选效用不复用趋势、稳定性或生产候选分。
+Tomorrow 不携带上一日状态；D25 仅对同模型、同窗口上一日已入选股票应用低于新进入门槛的维持门槛。
+选择结果保持 Top6、单行业最多 2 和按最终池计算的单板最多 60%，不足约束时允许空池，并保存所有未入选
+原因而非只保存 TopK。
+
+选择报告绑定父内容/规范与固定选择规范 hash，`CostAwareSelectionArtifactStore` 按选择规范/父报告目录执行
+原子、幂等和防篡改封存。该链仍是离线 research，固定 `production_authority=false`，不注入组合根，不进入
+HTTP、Web、调度、冻结、活动数据库或 DeepSeek；批次 5 取得预注册和前向证据前不得改变生产行为。
+
 离线历史筛选使用独立 `score_h0_v1` 数据平面，不接入生产组合根、HTTP、调度、冻结或 DeepSeek。
 显式 `research-history-download` 命令读取一次全 A 股清单，并以最多 5 个有界 worker 从生产已有的腾讯
 前复权日线主适配器下载每股最多 640 日，写入 `runtime_dir/score-history` 下的独立 SQLite 归档；

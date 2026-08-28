@@ -1584,6 +1584,31 @@ Tomorrow embargo=1，D25 embargo=25，按已排序观察日从预测日前再剔
 工程能力可执行，不表示模型已取得样本外净超额、概率已在真实样本上可靠或具备生产晋级资格；批次 4
 仍须另行实现成本感知约束选择。
 
+#### 15.1.14 Tomorrow 成本感知选择（工程能力已完成）
+
+本 Gate 只消费完整 `score_tomorrow_shadow_report_v1`，实现身份固定为
+`score_tomorrow_cost_aware_selection_v1`，报告 schema 固定为
+`score_tomorrow_cost_aware_selection_report_v1`。父报告必须保持 `status=exploratory`、
+`production_authority=false`，选择报告同时绑定父内容 hash、父模型规范 hash 和自身规范 hash；每个
+Tomorrow/D25、expanding/rolling_252、linear/LightGBM 折必须保留全部逐股评估，不能只保存入选股票。
+
+候选层只允许使用 `gross_expected_excess` 与 `estimated_cost` 两个效用字段，其中毛预期超额严格由已校准
+净超额加回同股估计成本得到，排名净效用固定为 `gross_expected_excess - estimated_cost`。趋势、稳定性、
+原生产候选分或其他 Alpha 不得再次进入候选过滤或效用，严重亏损校准概率和模型分歧只作为同净效用时的
+确定性风险排序与审计字段，不另行改变效用。净效用低于门槛时失败关闭，允许形成合法空池。
+
+Tomorrow 固定新进入门槛为 `0`，禁止从前一预测日携带 incumbent 状态，避免用稳定选择改变固定持有周期。
+D25 固定新进入门槛为 `0.002`、维持门槛为 `0`，只有同模型、同窗口上一预测日实际入选的代码可以使用
+维持门槛；未入选、跨模型、跨窗口或断开状态不得继承。所有候选先按净效用降序、严重亏损概率升序、
+分歧升序和代码排序，再从最多 6 只向下寻找满足约束的最大合法池：单行业（含 `unknown`）最多 2 只，
+任一板块数量不得超过最终入选数的 60%；无法形成合法非空组合时保存空池，不为补满 Top6 放宽门槛或约束。
+
+`CostAwareSelectionArtifactStore` 以选择规范 hash/父报告 hash 为冲突域原子封存；同内容可幂等重放，不同
+内容或篡改失败关闭。该能力不接入 `bootstrap.py`、HTTP、调度、活动运行库、正式决策、DeepSeek、API 或
+Web，不改变活动生产候选、评分、68/32 融合、风险、动作、Top6 或冻结。报告固定 `status=exploratory`、
+`production_authority=false`；当前真实点时窗口不足，完成只代表批次 5 可消费的选择工程能力已建立，
+不代表阈值、模型或选择方式已经取得收益证据或生产晋级资格。
+
 ### 15.2 活动发布门禁
 
 自动验证至少覆盖：
