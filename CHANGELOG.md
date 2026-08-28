@@ -6,6 +6,7 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对 `docs/fenshu.md` 批次 2，新增研究专用 `score_tomorrow_point_in_time_features_v1`：固定计算短期残差反转、中期残差动量、隔夜、日内和尾盘五类特征，以 R2 input hash 与类型化上下文 hash 双重绑定结果，并保留逐字段 missing mask。`Regression-Key: score-tomorrow-point-in-time-features-v1`。
 - 针对 `docs/fenshu.md` 批次 0 的点时证据缺口，新增 `v2_committed_research_audit_v2`：local 观察一次保存完整股票池的板块/行业、历史 ST、上市/退市身份、结构化公司风险、外部风险事实、来源时间和输入时间，hybrid 只引用人口哈希。新增按策略、交易日及默认 14:50 截止的类型化 SQLite 读取。`Regression-Key: score-point-in-time-population-v1`。
 - 针对用户要求把 `scripts/` 中能合并的诊断一次执行并删除合并后的无用脚本，新增内部
   `scripts.runtime_diagnostics` 包。Web、历史、腾讯、Tushare 和 Firefox 探针按职责保留独立实现，统一
@@ -413,6 +414,7 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- `docs/fenshu.md` 批次 2 标记为工程能力完成；特征工程只供后续预注册影子模型消费，固定 `production_authority=false`，不修改活动生产候选、评分、融合、风险、冻结、DeepSeek 或 Web。
 - 新研究事件写入升级为 `v2_research_committed_event_v2`；既有事件/审计 v1 保留显式只读 codec 和原始内容哈希验证，不迁移、不补写。`fenshu.md` 对应点时人口子项已完成，新研究身份仍等待后续评分规格冻结和标签可见前预注册。
 - `scripts/diagnose_runtime.py --profile research` 复用现有 `trader-cli research-status` 的
   `v2_research_readiness_v3` 权威投影，只汇总活动研究身份、历史/前向窗口、最大可达日期和 blocker；
@@ -754,6 +756,7 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 消除 Tomorrow 研究特征从任意 JSON payload 猜行业、财务或公告字段的未来数据风险：行业必须绑定不晚于截止的生效/接收时间，财务和公告只按 `published_at/received_at` 接纳，历史报告期不能替代披露日期；14:20 精确锚点、其他时段锚点、历史或残差控制不足时保持 `null`，不退用更早分钟或伪造 0。
 - 修复未来研究窗口依赖当前股票池重建历史总体造成的幸存者偏差风险；硬拒绝股票只保留总体/资格证明所需的有界事实，不进入评分或收益轨迹。迟于 14:50 的事件或输入不能被点时读取选中，不能恢复已错过计划日。
 - 修复诊断脚本“已有统一入口但仍需记忆并维护多个顶层命令”的重复交付问题：同一 `full` 命令现在按
   子进程隔离连续定位运行 Web、三类供应商、浏览器和离线性能，单项失败仍不会掩盖后续检查；输出文件
@@ -1247,6 +1250,7 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 新增领域/应用/契约回归，覆盖五类固定特征、跨截面残差化、历史不足 missing、财务/公告未来披露拒绝、行业时点、R2 identity/context hash 绑定及生产隔离；本批按评分研究高风险运行 `make format-check`、`make lint`、`make type-check`、`make test`、`make package`。
 - 定向回归覆盖完整人口值对象、未来证据拒绝、legacy v1、v2 SQLite 重启 round-trip 和 14:50 迟到排除；本批影响研究审计、持久化及运行观察边界，最终按高风险执行 `make format-check`、`make lint`、`make type-check`、`make test`、`make package`。
 - `tests/unit/scripts/test_diagnose_runtime.py` 及既有研究/权威文档 contract 共 55 项通过，覆盖
   `research` 精确 profile、权威 CLI 路由、schema 失败关闭、不可恢复状态、活动窗口摘要和计划外日期不泄漏；受影响
@@ -1906,6 +1910,7 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 当前真实 R2 点时覆盖不足，五类新特征尚无足够样本外 IC、成本后净超额或尾部风险证据；批次 3 仍须先冻结模型、窗口和参数身份，本批不产生生产晋级权限。
 - `score_p0_v2` 已错过的正式计划日不可回填；对应运行日志缺失，运行级直接原因仍待验证。新研究身份须等待后续评分规范与完整未来窗口冻结，本批不创建占位身份。
 - 本次真实 `full` 是当前网络、供应商、本机浏览器和运行服务的单次有界样本，不代表后续交易时段永不
   抖动；`sources/live/full` 仍会实际消耗供应商调用配额。上一批记录的历史空响应和

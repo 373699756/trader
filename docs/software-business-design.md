@@ -1598,6 +1598,18 @@ day/input 或逐股集合不一致时失败关闭。领域层原生计算每日 
 提高或取得生产晋级资格。详细标签和指标唯一口径以荐股策略文档第 15.1.11 节为准；任何因子、阈值、模型
 或排名改变仍须另立预注册、样本外和前向研究批次。
 
+“Tomorrow 点时残差特征”的离线工程能力已完成。纯领域模块固定计算
+`residual_reversal/residual_momentum/overnight/intraday/tail` 五类信号；应用服务
+`ScoreTomorrowPointInTimeFeatures` 只接收同日同 `input_hash` 的 R2 summary/full-field 与类型化上下文，
+并输出 `score_tomorrow_point_in_time_features_v1` 不可变批次。上下文与输出分别使用规范 SHA-256，
+行业生效/接收时间、财务/公告 `published_at/received_at`、市值、流动性、当前 OHLC、特征值和缺失掩码
+均进入身份；报告期不能替代披露时间，晚于逐股截止的事实失败关闭。
+
+该服务不读取 `HistoricalFullCandidate.payload`，不抓供应商、不读取标签、不持有模型客户端，也不接入
+`bootstrap.py`、HTTP、调度、活动运行库、正式决策或 DeepSeek。输出固定
+`production_authority=false`；批次 3 只能在新研究身份和模型规范预注册后消费，当前不改变活动生产评分、
+融合、风险、排名、冻结、API 或 Web，也不声明已经取得收益改善证据。
+
 离线历史筛选使用独立 `score_h0_v1` 数据平面，不接入生产组合根、HTTP、调度、冻结或 DeepSeek。
 显式 `research-history-download` 命令读取一次全 A 股清单，并以最多 5 个有界 worker 从生产已有的腾讯
 前复权日线主适配器下载每股最多 640 日，写入 `runtime_dir/score-history` 下的独立 SQLite 归档；
