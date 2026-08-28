@@ -27,6 +27,21 @@ _MORNING_END = time(11, 30)
 _AFTERNOON_START = time(13, 0)
 _REVERSAL_HORIZONS = (1, 3, 5)
 _MOMENTUM_HORIZONS = (20, 40, 60)
+TOMORROW_FEATURE_NAMES = (
+    "residual_reversal_1d",
+    "residual_reversal_3d",
+    "residual_reversal_5d",
+    "residual_momentum_20_5",
+    "residual_momentum_40_5",
+    "residual_momentum_60_5",
+    "overnight_gap",
+    "intraday_return",
+    "morning_return",
+    "afternoon_return",
+    "tail_return_30m",
+    "close_location",
+    "tail_amount_share",
+)
 
 
 @dataclass(frozen=True)
@@ -466,6 +481,7 @@ __all__ = [
     "PointInTimePublishedFact",
     "PublishedFeatureKind",
     "TomorrowFeatureFamily",
+    "TOMORROW_FEATURE_NAMES",
     "TomorrowFeatureStockInput",
     "TomorrowFeatureValue",
     "TomorrowStockFeatures",

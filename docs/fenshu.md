@@ -209,7 +209,7 @@
     - [已完成] 新产生的本地 `v2_committed_research_audit_v2` 一次性保存完整点时股票池、历史 ST、行业、上市/重新上市/退市期身份、结构化公司风险、外部风险事实、行情来源时间和精确输入时间；混合阶段仅引用同一人口哈希，避免重复候选输入。SQLite 对既有 v1 记录保留显式只读 codec，14:50 查询只接受截止前已有完整人口证据的本地观察并排除迟到记录，因此未来窗口不再依赖当前股票池重建。P0v2 已错过日期仍不可回填。
   - **批次 1：建立原生因子诊断层**：[工程能力已完成] 已实现 `score_native_factor_diagnostics_v1`；真实 R2 覆盖不足 40 日，报告仍只能是 `exploratory`，不具备生产晋级资格。
   - **批次 2：增加点时残差特征**：[工程能力已完成] 已实现 `score_tomorrow_point_in_time_features_v1`，固定输出短期残差反转、中期残差动量、隔夜、日内和尾盘五类 Tomorrow 特征；R2 input hash 与类型化上下文哈希双重绑定，行业按生效/接收时间、财务和公告按 `published_at/received_at` 失败关闭，报告期不得替代披露时间。输出固定 `production_authority=false`，当前真实点时覆盖不足，不代表收益有效或生产晋级。
-  - **批次 3：影子模型与校准**：未开始
+  - **批次 3：影子模型与校准**：[工程能力已完成] 已实现 `score_tomorrow_shadow_models_v1` 与 `score_tomorrow_shadow_report_v1`：Tomorrow/D25 分别执行 expanding/rolling_252、1/25 日 embargo、20 日核心训练、5 日早停验证和 10 日独立校准；固定线性控制组与浅层 LightGBM 同数据、同标签、同 20bp 成本，净超额使用仿射校准、严重亏损概率使用 Platt 校准，并封存特征版本、窗口、种子、模型哈希和完整逐日逐股预测。输出固定 `production_authority=false`，当前真实点时窗口不足，不代表收益有效或生产晋级。
   - **批次 4：成本感知选择**：未开始
   - **批次 5：预注册与前向影子**：未开始
   - **批次 6：人工晋级**：未开始

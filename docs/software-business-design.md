@@ -1607,8 +1607,21 @@ day/input 或逐股集合不一致时失败关闭。领域层原生计算每日 
 
 该服务不读取 `HistoricalFullCandidate.payload`，不抓供应商、不读取标签、不持有模型客户端，也不接入
 `bootstrap.py`、HTTP、调度、活动运行库、正式决策或 DeepSeek。输出固定
-`production_authority=false`；批次 3 只能在新研究身份和模型规范预注册后消费，当前不改变活动生产评分、
-融合、风险、排名、冻结、API 或 Web，也不声明已经取得收益改善证据。
+`production_authority=false`；现仅由批次 3 固定模型规范在隔离研究流程中消费，后续真实新窗口身份仍须在
+标签可见前另行预注册。当前不改变活动生产评分、融合、风险、排名、冻结、API 或 Web，也不声明已经取得
+收益改善证据。
+
+“Tomorrow 影子模型与校准”的离线工程能力已完成。应用服务 `ScoreTomorrowShadowModels` 只消费批次 2
+不可变特征与同代码、同 horizon、固定观察 lag 的类型化结算，通过 `ShadowModelTrainer` 协议把线性控制组和 LightGBM 适配器绑定到同一
+矩阵、标签及 20bp 成本。每个 Tomorrow/D25 预测日同时建立 expanding 与 rolling_252 折，执行各自
+embargo、标签可见性检查、核心训练、5 日早停验证和 10 日独立校准；标准化与缺失 indicator 只从核心
+训练段拟合。纯领域计算负责 ridge/logistic、净超额仿射校准和严重亏损 Platt 校准。
+
+LightGBM 是 `pyproject.toml` 的正式依赖，但仅由 `infra/research/lightgbm_shadow.py` 的 CPU 单线程确定性
+适配器使用；domain 和 application 不导入 LightGBM。完整 `score_tomorrow_shadow_report_v1` 保存规范、
+特征、窗口、种子、模型 hash 和逐日逐股预测，`ShadowModelArtifactStore` 按规范 hash/训练窗口负责独立目录的原子、幂等和
+防篡改封存。该服务和工件库不接入 `bootstrap.py`、HTTP、调度、活动运行库、正式决策、DeepSeek、API
+或 Web，报告固定 `status=exploratory`、`production_authority=false`；当前没有真实窗口收益或晋级结论。
 
 离线历史筛选使用独立 `score_h0_v1` 数据平面，不接入生产组合根、HTTP、调度、冻结或 DeepSeek。
 显式 `research-history-download` 命令读取一次全 A 股清单，并以最多 5 个有界 worker 从生产已有的腾讯

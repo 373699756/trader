@@ -11,6 +11,8 @@ requires-python = ">=3.10,<3.15"
 dependencies = [
     "akshare>=1.14.0",
     "Flask>=2.2,<3.1",
+    "lightgbm>=4.7,<5",
+    "numpy>=2,<3",
     "polars>=1.43,<2",
     "requests>=2.22.0",
     "tushare>=1.4,<2",
@@ -71,7 +73,7 @@ warn_return_any = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["polars", "polars.*"]
+module = ["lightgbm", "polars", "polars.*"]
 follow_imports = "skip"
 
 [tool.coverage.run]
