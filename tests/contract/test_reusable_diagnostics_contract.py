@@ -104,11 +104,43 @@ def test_repository_delivery_skill_is_discoverable_and_routes_diagnostics() -> N
     assert "references/change-impact-matrix.md" in skill
     assert "references/runtime-diagnostics.md" in skill
     assert "references/delivery-evidence.md" in skill
+    assert "references/recommendation-funnel-incidents.md" in skill
     assert "$trader-delivery" in metadata
     assert "allow_implicit_invocation: true" in metadata
     assert "!.agents/skills/trader-delivery/" in ignore_rules
     assert "必须加载仓库级 `$trader-delivery` skill" in instructions
     assert "--persistence-runtime-dir" in (ROOT / "README.md").read_text(encoding="utf-8")
 
-    for reference in ("change-impact-matrix.md", "runtime-diagnostics.md", "delivery-evidence.md"):
+    for reference in (
+        "change-impact-matrix.md",
+        "runtime-diagnostics.md",
+        "delivery-evidence.md",
+        "recommendation-funnel-incidents.md",
+    ):
         assert (skill_root / "references" / reference).is_file()
+
+
+def test_delivery_skill_preserves_recommendation_funnel_incident_checkpoints() -> None:
+    playbook = (
+        ROOT / ".agents" / "skills" / "trader-delivery" / "references" / "recommendation-funnel-incidents.md"
+    ).read_text(encoding="utf-8")
+
+    for checkpoint in (
+        "host-network-reachability",
+        "stage-by-stage-refresh",
+        "timezone-normalization",
+        "funnel-semantic-classification",
+        "freeze-window-control",
+        "current-release-restart",
+    ):
+        assert checkpoint in playbook
+    for incident_term in (
+        "connection_failed",
+        "refresh:value_error",
+        "V2RefreshOutcome",
+        "Asia/Shanghai",
+        "candidate_quotes_pending",
+        "security_master_coverage_incomplete",
+        "close_quotes",
+    ):
+        assert incident_term in playbook

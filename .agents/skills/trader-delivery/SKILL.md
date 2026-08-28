@@ -28,6 +28,10 @@ Deliver one repository change without reopening a known failure or regressing an
 
 Read [the runtime diagnostics guide](references/runtime-diagnostics.md) whenever the task touches running behavior, suppliers, history, Web, performance, or browser delivery. Use `scripts/diagnose_runtime.py` as the only public diagnostic CLI. Keep each implementation in its owning `scripts/runtime_diagnostics/` module; do not recreate standalone wrapper scripts or duplicate probe logic in the orchestrator.
 
+For empty recommendations, a stuck collecting state, unexpected funnel counts, or disagreement between Web and runtime status, read [the recommendation-funnel incident playbook](references/recommendation-funnel-incidents.md) before assigning a root cause. Complete all six checkpoints even when the first probe appears decisive. A sandbox `connection_failed`, a generic runtime error category, HTTP 200, or a fixture browser pass is not enough to close a funnel incident.
+
 Read [the delivery evidence guide](references/delivery-evidence.md) before marking implementation or Review complete. It defines the minimum root-cause, regression, live-process, diff, and handoff evidence.
 
 Do not claim live verification from mocks, HTTP 200 alone, an old process, or source code inspection. If real service, supplier, token, browser, or time-window evidence is unavailable, record the precise unverified gate and keep the claim bounded.
+
+This skill is a repository delivery workflow loaded by the agent under `AGENTS.md`; it is not a product runtime hook and will never be triggered by Web, market-data, or scheduler events. If it was not loaded for an eligible repository mutation, record and correct the process omission instead of adding product trigger logic.

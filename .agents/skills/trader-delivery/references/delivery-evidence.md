@@ -31,6 +31,12 @@ For timing-sensitive current/freeze/Web behavior, cover the applicable matrix fr
 
 Use `scripts/diagnose_runtime.py` according to the runtime guide. Record the profile, bounded configuration, service/release identity, overall status, check statuses, relevant finding codes, and unverified external gate. Do not paste prices, tokens, stock-level payloads, personal paths, or full vendor errors into Changelog.
 
+For a recommendation-funnel incident, also record the six checkpoint results from
+[the funnel incident playbook](recommendation-funnel-incidents.md): host-network reachability, the first failed refresh
+stage, timezone ownership, per-stage funnel counts and primary blocker, the applicable freeze/recovery cell, and proof
+that the restarted real service imported the changed release. Preserve both the pre-fix failure shape and the post-fix
+stage counts; do not summarize every zero as “no data”.
+
 ## Review and handoff
 
 - Compare the complete diff with the previously pushed baseline and with the original file allowlist.

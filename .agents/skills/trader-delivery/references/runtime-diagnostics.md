@@ -34,6 +34,11 @@ Only add `--persistence-runtime-dir /absolute/outside/repository/path` when comp
 
 Interpretation order:
 
+For empty or abnormal recommendation funnels, first apply the mandatory six-checkpoint sequence in
+[the recommendation-funnel incident playbook](recommendation-funnel-incidents.md). The sequence prevents a sandbox
+network false negative, a late typed-outcome failure, a legitimate quality-gate zero, or a freeze-window control from
+being mislabeled as a Web defect.
+
 1. `web_health` failure with healthy sources: inspect runtime version/release handshake, scheduler/current identity, publication, API/SSE, and browser consumers.
 2. Warmup timeout growth with fast `history_sources`: inspect worker waves, queue ownership, cancellation, validation, and persistence, not supplier latency alone.
 3. Slow or empty history with healthy Tencent quotes: isolate historical endpoint/adjustment/fallback behavior.

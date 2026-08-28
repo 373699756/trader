@@ -6,6 +6,14 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户要求避免 Web 推荐漏斗同类故障再次被误判，新增 `trader-delivery` Skill 专用事故手册，固定
+  宿主网络可达性、逐阶段刷新、时区归一化、漏斗语义、冻结窗口和当前 release 重启六个检查点。手册
+  归档本次已确认的多层根因与诊断陷阱：沙箱 `connection_failed` 不能证明服务未运行，行情/特征发布
+  成功不能证明 `V2RefreshOutcome` 已构造，混合 UTC/上海时间的 `max` 会保留胜出对象原时区，
+  `refresh:value_error` 只是定位线索，`candidate_quotes_pending` 与
+  `security_master_coverage_incomplete`/合法末级 0 必须分开解释，Today 冻结控制也不能误作数据丢失。
+  新契约确保 Skill 入口持续路由该手册且关键检查点不会被静默删除。
+  `Regression-Key: recommendation-funnel-incident-playbook-v1`。
 - 针对 `docs/fenshu.md` 批次 5，新增隔离的 `score_tomorrow_shadow_p1_v1` 预注册与前向证据链：冻结
   residual reversal、residual momentum、session decomposition、cost/risk adjusted 与 constrained
   ensemble 五挑战者、40+20 精确窗口、线性/LightGBM 50%/50% 集合、300/100 同日同股配对下限、
@@ -1282,6 +1290,11 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- Skill 手册失败先行契约在实现前因入口未路由且 reference 不存在稳定失败 2 项；实现后
+  `tests/contract/test_reusable_diagnostics_contract.py` 全部 5 项通过。受影响契约测试 Ruff format/check、
+  `skill-creator` 的 `quick_validate.py`、代理质量策略契约和 `git diff --check` 均通过。该批只修改
+  Skill/诊断交付说明、契约测试和 Changelog，不改变产品运行、行情、调度、冻结、API、Web 或包资源，
+  因此全量 `make test`/`make package`、真实供应商、服务重启、wheel 和三档桌面验收不适用。
 - Web 漏斗定向回归 `.venv/bin/python -m pytest -q tests/unit/application/test_v2_input_runtime.py`
   通过 22 项；UTC 较晚完成时刻测试在修复前稳定复现上海时区值对象构造失败，修复后通过。调度、组合根、
   Web 状态/API 跨边界回归共 62 项通过，dashboard state 浏览器契约通过；受影响运行和研究模块 Ruff、
@@ -1975,6 +1988,10 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 事故手册降低的是诊断误判和交付遗漏风险，不会自动修复外部来源覆盖、冻结窗口内未形成正式记录或新的
+  产品缺陷，也不能把历史根因套用到未来事件；每次仍须取得当次六检查点证据。`trader-delivery` 是代理
+  交付 workflow，不是产品运行时 hook；符合 `AGENTS.md` 的仓库修改必须显式加载，Skill 自动发现策略
+  不能替代代理遵守仓库流程。
 - 当前真实运行不再有已知的刷新结果构造缺陷，但正式推荐仍被独立数据质量门禁阻断：证券主数据只覆盖
   `120/360`，Tomorrow/D25 历史可评分分别为 78/79，完整评分为 56/58，因此正式选择仍为 0；Web 现在
   展示这些真实计数和 `security_master_coverage_incomplete`，不能把候选非零误解为门禁应被绕过。
