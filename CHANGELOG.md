@@ -431,6 +431,12 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求继续 `docs/fenshu.md` 下一个完整未完成章节。批次 6“人工晋级”经只读资格审计从含糊的
+  “未开始”改为 `[等待前置条件]`：当前日期早于 2027-06-14 首个历史计划日，上交所官方休市安排页
+  尚未发布 2027 年年度文件，本地与 Git 没有对应日历证明、40+20 逐日证据或三类终态报告，因此不存在
+  可供人工确认的 `promotion_eligible`。本批按失败关闭契约不修改活动配置、策略/引擎/融合版本、
+  78/73 门槛或固定 68/32 融合；只有未来真实证据全部通过后才能另立高风险生产晋级批次。
+  `Regression-Key: tomorrow-shadow-manual-promotion-readiness-v1`。
 - 批次 5 没有把新五挑战者名称塞入旧 `Score-R5`：旧链绑定的是另一组不可变挑战者，复用其身份会污染
   既有档案。新链独立拥有规范与证据命名空间，只把无家族含义的配对移动区块 bootstrap、确定性种子和
   Holm step-down 收敛为通用纯领域统计实现；旧 R5 继续得到相同随机流和结果。生产候选、评分、风险、
@@ -1290,6 +1296,12 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 批次 6 资格审计确认系统日期为 2026-08-28，P1 规范仍固定 2027-06-14 至 2027-08-06 的历史窗口与
+  2027-08-09 至 2027-09-03 的前向窗口；仓库运行目录和 Git 跟踪文件扫描均未发现日历证明、P1 逐日
+  证据或 historical/forward/combined 报告。预注册规范、collector/gate、工件防篡改和权威计划定向
+  回归全部通过，证明缺证据时保持 `production_authority=false` 且不能越过历史资格写前向证据。
+  本批只修正文档状态和 Changelog，不改变机器契约或运行行为；按低风险门禁运行相关文档契约和
+  `git diff --check`，全量 make、package、wheel、供应商、服务重启和桌面验收不适用。
 - Skill 手册失败先行契约在实现前因入口未路由且 reference 不存在稳定失败 2 项；实现后
   `tests/contract/test_reusable_diagnostics_contract.py` 全部 5 项通过。受影响契约测试 Ruff format/check、
   `skill-creator` 的 `quick_validate.py`、代理质量策略契约和 `git diff --check` 均通过。该批只修改
@@ -1988,6 +2000,9 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 批次 6 仍受真实时间和不可替代证据阻塞：2027 年官方日历证明、40 个历史日、20 个前向日、至少
+  300/100 条配对及全部晋级门禁尚未发生。该状态不能通过代码、mock、回补、顺延或降低门槛解除；若
+  官方日历与预注册 60 日期不一致，当前 P1 身份必须终止，并只能在任何新标签可见前另立研究身份。
 - 事故手册降低的是诊断误判和交付遗漏风险，不会自动修复外部来源覆盖、冻结窗口内未形成正式记录或新的
   产品缺陷，也不能把历史根因套用到未来事件；每次仍须取得当次六检查点证据。`trader-delivery` 是代理
   交付 workflow，不是产品运行时 hook；符合 `AGENTS.md` 的仓库修改必须显式加载，Skill 自动发现策略
