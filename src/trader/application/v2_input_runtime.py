@@ -33,6 +33,7 @@ from trader.application.research_audit import (
     V2CommittedResearchAudit,
     try_build_v2_committed_research_audit,
 )
+from trader.application.schedule import SHANGHAI
 from trader.application.scored_quality import ScoredInputQuality
 from trader.application.scored_v2_projection import (
     ScoredV2LocalProjection,
@@ -1009,13 +1010,14 @@ def _refresh_completed_at(
     request: V2PipelineTaskRequest,
     features: tuple[FeatureSnapshot, ...],
 ) -> datetime:
-    return max(
-        (
-            request.observed_at,
-            *(feature.observed_at for feature in features),
-            *(feature.quote.received_time for feature in features),
-        )
+    values = (
+        request.observed_at,
+        *(feature.observed_at for feature in features),
+        *(feature.quote.received_time for feature in features),
     )
+    if any(value.tzinfo is None or value.utcoffset() is None for value in values):
+        raise ValueError("refresh completion times must be timezone-aware")
+    return max(value.astimezone(SHANGHAI) for value in values)
 
 
 def _uses_fallback(features: tuple[FeatureSnapshot, ...], *, expected_source: str | None) -> bool:

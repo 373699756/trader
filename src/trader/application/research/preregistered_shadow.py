@@ -105,10 +105,8 @@ class PreregisteredShadowGate:
         ):
             raise ValueError("forward shadow gate requires its matching historical gate report")
         expected_dates = _scope_dates(self._spec, scope)
-        _validate_records(
+        self._validate_records(
             records,
-            self._spec,
-            self._attestation.content_hash,
             expected_dates,
             scope,
             historical_report,
@@ -157,6 +155,31 @@ class PreregisteredShadowGate:
             holm,
         )
 
+    def _validate_records(
+        self,
+        records: tuple[PreregisteredShadowDayRecord, ...],
+        expected_dates: tuple[date, ...],
+        scope: ShadowGateScope,
+        historical_report: PreregisteredShadowGateReport | None,
+    ) -> None:
+        keys = tuple((item.challenger_id, item.phase, item.planned_trade_date) for item in records)
+        if len(keys) != len(set(keys)):
+            raise ValueError("preregistered shadow gate received duplicate evidence identities")
+        if any(item.research_spec_hash != self._spec.content_hash for item in records):
+            raise ValueError("preregistered shadow gate spec identity does not match")
+        if any(item.calendar_attestation_hash != self._attestation.content_hash for item in records):
+            raise ValueError("preregistered shadow gate calendar attestation is inconsistent")
+        if historical_report is not None and any(
+            item.phase == "forward" and item.historical_gate_hash != historical_report.content_hash
+            for item in records
+        ):
+            raise ValueError("preregistered shadow gate historical binding is inconsistent")
+        expected = set(expected_dates)
+        if any(item.planned_trade_date not in expected for item in records):
+            raise ValueError("preregistered shadow gate received a date outside its scope")
+        if scope != "combined" and any(item.phase != scope for item in records):
+            raise ValueError("preregistered shadow gate evidence phase does not match")
+
 
 def _scope_dates(spec: TomorrowShadowPreregistration, scope: ShadowGateScope) -> tuple[date, ...]:
     if scope == "historical":
@@ -164,34 +187,6 @@ def _scope_dates(spec: TomorrowShadowPreregistration, scope: ShadowGateScope) ->
     if scope == "forward":
         return spec.forward_dates
     return (*spec.historical_dates, *spec.forward_dates)
-
-
-def _validate_records(
-    records: tuple[PreregisteredShadowDayRecord, ...],
-    spec: TomorrowShadowPreregistration,
-    calendar_attestation_hash: str,
-    expected_dates: tuple[date, ...],
-    scope: ShadowGateScope,
-    historical_report: PreregisteredShadowGateReport | None,
-) -> None:
-    keys = tuple((item.challenger_id, item.phase, item.planned_trade_date) for item in records)
-    if len(keys) != len(set(keys)):
-        raise ValueError("preregistered shadow gate received duplicate evidence identities")
-    if any(item.research_spec_hash != spec.content_hash for item in records):
-        raise ValueError("preregistered shadow gate spec identity does not match")
-    if any(item.calendar_attestation_hash != calendar_attestation_hash for item in records):
-        raise ValueError("preregistered shadow gate calendar attestation is inconsistent")
-    if historical_report is not None and any(
-        item.phase == "forward" and item.historical_gate_hash != historical_report.content_hash for item in records
-    ):
-        raise ValueError("preregistered shadow gate historical binding is inconsistent")
-    expected = set(expected_dates)
-    if any(item.planned_trade_date not in expected for item in records):
-        raise ValueError("preregistered shadow gate received a date outside its scope")
-    if scope != "combined":
-        expected_phase = scope
-        if any(item.phase != expected_phase for item in records):
-            raise ValueError("preregistered shadow gate evidence phase does not match")
 
 
 def _prepare_variant(

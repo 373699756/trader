@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -150,6 +150,34 @@ def test_refresh_outcome_is_versioned_and_identical_candidate_data_does_not_chan
     assert first.changed_codes == ("600001",)
     assert second.changed is False
     assert second.data_version == first.data_version
+
+
+def test_refresh_outcome_normalizes_later_utc_completion_to_shanghai(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+    completed_at = (observed_at + timedelta(seconds=3)).astimezone(timezone.utc)
+    feature = application_feature_factory("600001", observed_at)
+    feature = replace(
+        feature,
+        observed_at=completed_at,
+        quote=replace(
+            feature.quote,
+            board=Board.MAIN,
+            received_time=completed_at,
+        ),
+    )
+    adapter = V2MarketDataAdapter(
+        _Market((feature,)),
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=_decision_build(),
+    )
+
+    outcome = adapter.refresh_task(V2PipelineTaskRequest(PipelineTask.CLOSE_QUOTES, observed_at))
+
+    assert outcome.completed_at == completed_at.astimezone(SHANGHAI)
+    assert outcome.completed_at.tzinfo is SHANGHAI
 
 
 def test_long_refresh_rejection_is_visible_to_scheduler_recovery() -> None:

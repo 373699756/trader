@@ -774,6 +774,14 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 针对用户反馈 Web 展示数据和推荐漏斗异常，修复全市场/候选刷新完成时间在 UTC 报价接收时刻较晚时
+  未投影回 `Asia/Shanghai` 的根因。此前行情与特征已经成功发布，但 `V2RefreshOutcome` 在构造阶段抛出
+  `refresh:value_error`，使 `close_quotes` 持续重试、Tomorrow/D25 收盘补算从未提交，页面只能忠实显示
+  `360 → 采集中 → 0`。现在应用层先按绝对时刻选取最晚完成值，再统一转换为上海时区；不修改前端、
+  不伪造漏斗计数，也不放宽类型/冻结契约。`Regression-Key: refresh-completed-at-shanghai-v1`。
+- 本批完整严格 lint 发现批次 5 新增的影子门禁模块仍有六参数私有函数；校验逻辑已归还给持有规范与
+  日历证明的 `PreregisteredShadowGate`，消除参数债且不改变研究报告、哈希或生产数据流。
+
 - 批次 5 最终 Review 修复三项未被首轮测试覆盖的证据缺口：门禁报告不再只保存可能碰巧相同的聚合值，
   而是绑定日历确认和精确逐日证据 manifest；50/100bp 不再只有文档声明而缺少报告统计；全期合法空组合
   不再因零暴露抛异常，而是形成包含固定五成员 Holm 家族的结构化拒绝报告。采集中报告不能提前占用
@@ -1274,6 +1282,25 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- Web 漏斗定向回归 `.venv/bin/python -m pytest -q tests/unit/application/test_v2_input_runtime.py`
+  通过 22 项；UTC 较晚完成时刻测试在修复前稳定复现上海时区值对象构造失败，修复后通过。调度、组合根、
+  Web 状态/API 跨边界回归共 62 项通过，dashboard state 浏览器契约通过；受影响运行和研究模块 Ruff、
+  mypy 定向检查通过。
+- 高风险完整门禁 `make format-check`（411 个文件）、`make lint`（严格债为零）、`make type-check`
+  （248 个源码文件）、`make test`、`make package` 全部通过。`make package` 首次仅因受限沙箱无法下载
+  隔离构建依赖失败，获准网络重跑后成功生成 sdist/wheel；lint 首轮发现的批次 5 六参数债已在同一
+  Review 循环修复并重新通过。
+- 修复前真实服务连续出现 `refresh:value_error`，`close_quotes` 重试且三策略为
+  `360 → 采集中 → 0`；修复后正常重启，刷新失败计数为 0，`close_quotes` 首次完成，Tomorrow 漏斗为
+  `360/360/120/78/56/0`，D25 为 `360/360/120/79/58/0`。统一 `runtime` 采集 6/6 成功且无 finding；
+  `full` 的 Web、腾讯、Tushare、浏览器刷新和生产性能 5 项通过，历史源 3 个样本中 2 个可用、1 个空响应，
+  因而总状态为受控 `degraded`、零失败。
+- 最终文档契约 20 项通过，覆盖权威文档一致性、实时流水线和 `fenshu.md` 整节计划；`git diff --check`
+  通过，工作树只包含本批 6 个文件。
+- Firefox 无头桌面门禁在精确 `1280x720`、`1440x900`、`1920x1080` 三档全部通过：无白屏、页面级横向
+  溢出、关键重叠或浏览器错误，漏斗的 collecting/质量两种状态及详情交互均满足契约。仓库外 `/tmp`
+  安装最终 wheel 后可从安装目标导入 `trader`、执行 `trader-cli --help`，并读取模板、CSS、JavaScript
+  和两个 SVG 图标资源。
 - 批次 5 定向回归：`.venv/bin/python -m pytest -q tests/unit/domain/research
   tests/unit/application/research tests/component/test_market_research.py tests/component/test_score_r5_forward_store.py
   tests/component/test_preregistered_shadow_store.py tests/component/test_v2_research_trace_store.py
@@ -1948,12 +1975,16 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 当前真实运行不再有已知的刷新结果构造缺陷，但正式推荐仍被独立数据质量门禁阻断：证券主数据只覆盖
+  `120/360`，Tomorrow/D25 历史可评分分别为 78/79，完整评分为 56/58，因此正式选择仍为 0；Web 现在
+  展示这些真实计数和 `security_master_coverage_incomplete`，不能把候选非零误解为门禁应被绕过。
+  Today 在 11:20 后冷启动保持 `not_ready` 是冻结契约要求，不允许用收盘行情补造。完整诊断另观测到
+  历史源 3 次有界抽样中 1 次空响应；来源继续按最近有效值和显式降级处理，后续交易日仍需持续观察。
 - 批次 5 预注册日尚无 2027 年上交所官方年度休市文件。规范已冻结 60 个精确日期，但 collector 会在首日
   前缺少 `score_tomorrow_shadow_calendar_attestation_v1` 时失败关闭；若官方日历与日期不一致，该身份必须
   终止且不得换日。真实 40+20 观察、至少 300/100 配对和收益/风险门禁尚未发生，因此没有
-  `promotion_eligible` 或任何生产授权。Web 推荐漏斗异常仍需独立批次在真实运行服务上复现和定位。
+  `promotion_eligible` 或任何生产授权。
 - 当前真实点时窗口不足，新增模型和成本感知选择尚无可信样本外净超额、真实概率校准、换手或尾部风险改善证据；固定阈值仅完成工程预注册，不代表最优，批次 5 仍须在标签可见前冻结身份并取得历史样本外与连续前向证据。
-- Web 推荐漏斗的用户可见异常根因仍待验证：本批统一运行诊断时没有服务监听本机 `5000` 端口，源码、mock 或 HTTP 不可达均不能证明实际运行时是哪一漏斗阶段异常；必须在目标 release 服务启动后重新执行 `runtime`，如涉及浏览器展示再升级 `full`。
 - `score_p0_v2` 已错过的正式计划日不可回填；对应运行日志缺失，运行级直接原因仍待验证。新研究身份须等待后续评分规范与完整未来窗口冻结，本批不创建占位身份。
 - 本次真实 `full` 是当前网络、供应商、本机浏览器和运行服务的单次有界样本，不代表后续交易时段永不
   抖动；`sources/live/full` 仍会实际消耗供应商调用配额。上一批记录的历史空响应和
@@ -1974,10 +2005,6 @@ All notable changes to this project are documented here.
   正式决策是已确认的直接证据缺口，但缺失产生的运行级原因因没有对应日志仍待验证，数据库隔离记录
   不能单独证明因果。本批只修复研究资格与状态真相，不改变生产评分或直接提高收益；下一批应按计划先
   补齐点时股票池、历史 ST、行业、退市、公司风险和精确 14:50 输入，完整冻结新规范后再预注册新身份。
-- Web 推荐漏斗的真实异常根因仍待运行实证：2026-08-28 的 `runtime` profile 因本机 5000 端口没有服务
-  而返回 `connection_failed`，无法采样 `/api/v2/status.scheduler.input_quality` 和三策略 current。源码
-  只证明页面在策略或交易日不匹配时会降级显示市场预热摘要，不能据此断言现场一定是日期错配；需正常
-  启动当前服务并复用 `runtime` profile 后另立 Web 批次处理。
 - 120 积分官方权限仍只有非复权日线，复权因子和 `pro_bar(qfq)` 明确要求 2000 积分，因此本批不能让
   Tushare 替代评分历史主源；评分继续使用腾讯 qfq 与东方财富 qfq 回退。状态中的 `process_*` 调用计数
   随进程启动，不能表示其他诊断进程或供应商账户的跨进程实际余量；供应商最终限额仍是权威门禁。
