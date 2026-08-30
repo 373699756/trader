@@ -15,6 +15,7 @@ from trader.domain.review.models import (
     RiskFact,
     RiskRule,
 )
+from trader.domain.review.rules import deepseek_risk_rule_code
 
 DIMENSION_WEIGHTS = {name: 0.2 for name in DIMENSION_NAMES}
 NOW = datetime(2026, 7, 16, 14, 30, tzinfo=timezone.utc)
@@ -49,13 +50,13 @@ def _fuse_score(
 
 def test_final_score_uses_68_32_and_does_not_repeat_local_risk() -> None:
     local_fact = _risk_fact("local-risk", "local_rule", 2.0)
-    deepseek_fact = _risk_fact("deepseek-risk", "deepseek_rule", 0.0, evidence_ids=("e-1",))
+    deepseek_fact = _risk_fact("deepseek-risk", "regulatory_risk", 0.0, evidence_ids=("e-1",))
     result = _fuse_score(
         LocalScoreResult(components={"test": 82.0}, base_score=82.0),
         (local_fact,),
         _review(100.0, risk_facts=(deepseek_fact,)),
         DIMENSION_WEIGHTS,
-        {"deepseek_rule": RiskRule("deepseek_rule", "medium", 3.0, 0.7, "deepseek", 24, False, ("announcement",))},
+        {"regulatory_risk": RiskRule("regulatory_risk", "medium", 3.0, 0.7, "deepseek", 24, False, ("announcement",))},
         FusionMode.HYBRID,
         evidence=(_evidence(),),
         evaluated_at=NOW,
@@ -68,13 +69,13 @@ def test_final_score_uses_68_32_and_does_not_repeat_local_risk() -> None:
 
 
 def test_same_risk_fact_is_not_deducted_twice() -> None:
-    shared = _risk_fact("shared", "shared_rule", 2.0, evidence_ids=("e-1",))
+    shared = _risk_fact("shared", "regulatory_risk", 2.0, evidence_ids=("e-1",))
     result = _fuse_score(
         LocalScoreResult(components={"test": 82.0}, base_score=82.0),
         (shared,),
         _review(100.0, risk_facts=(shared,)),
         DIMENSION_WEIGHTS,
-        {"shared_rule": RiskRule("shared_rule", "medium", 3.0, 0.7, "shared", 24, False, ("announcement",))},
+        {"regulatory_risk": RiskRule("regulatory_risk", "medium", 3.0, 0.7, "shared", 24, False, ("announcement",))},
         FusionMode.HYBRID,
         evidence=(_evidence(),),
         evaluated_at=NOW,
@@ -97,6 +98,111 @@ def test_local_rule_veto_is_preserved_without_model_review() -> None:
     )
 
     assert result.veto is True
+
+
+def test_local_rule_veto_is_preserved_with_model_review() -> None:
+    local_fact = _risk_fact("local-veto", "regulatory_risk", 15.0, veto=True)
+
+    result = _fuse_score(
+        LocalScoreResult(components={"test": 80.0}, base_score=80.0),
+        (local_fact,),
+        _review(80.0),
+        DIMENSION_WEIGHTS,
+        {},
+        FusionMode.HYBRID,
+    )
+
+    assert result.veto is True
+
+
+@pytest.mark.parametrize(
+    ("raw_code", "severity", "expected_rule"),
+    (
+        ("regulatory_risk", "low", "regulatory_risk"),
+        ("shareholder_reduction", "low", "reduction_or_unlock_low"),
+        ("unlock_risk", "high", "reduction_or_unlock_high"),
+        ("pledge_risk", "medium", "pledge_risk_medium"),
+        ("litigation_risk", "high", "negative_announcement"),
+        ("earnings_risk", "low", "negative_announcement"),
+    ),
+)
+def test_v4_risk_facts_are_normalized_to_registered_local_rules(
+    raw_code: str,
+    severity: str,
+    expected_rule: str,
+) -> None:
+    model_fact = _risk_fact(
+        "deepseek-risk",
+        raw_code,
+        0.0,
+        severity=severity,
+        evidence_ids=("e-1",),
+    )
+    result = _fuse_score(
+        LocalScoreResult(components={"test": 80.0}, base_score=80.0),
+        (),
+        _review(80.0, risk_facts=(model_fact,)),
+        DIMENSION_WEIGHTS,
+        {
+            expected_rule: RiskRule(
+                expected_rule,
+                "medium",
+                4.0,
+                0.7,
+                "event",
+                24,
+                False,
+                ("announcement",),
+            )
+        },
+        FusionMode.HYBRID,
+        evidence=(_evidence(),),
+        evaluated_at=NOW,
+    )
+
+    assert tuple(fact.risk_code for fact in result.deepseek_risk_facts) == (expected_rule,)
+    assert result.score.deepseek_risk_penalty == 4.0
+
+
+@pytest.mark.parametrize("severity", ("low", "medium", "high"))
+@pytest.mark.parametrize(
+    ("raw_code", "expected_template"),
+    (
+        ("regulatory_risk", "regulatory_risk"),
+        ("shareholder_reduction", "reduction_or_unlock_{severity}"),
+        ("unlock_risk", "reduction_or_unlock_{severity}"),
+        ("pledge_risk", "pledge_risk_{severity}"),
+        ("litigation_risk", "negative_announcement"),
+        ("earnings_risk", "negative_announcement"),
+    ),
+)
+def test_v4_risk_mapping_is_total_for_every_schema_severity(
+    raw_code: str,
+    expected_template: str,
+    severity: str,
+) -> None:
+    assert deepseek_risk_rule_code(raw_code, severity) == expected_template.format(severity=severity)
+
+
+def test_unregistered_model_risk_code_fails_closed() -> None:
+    model_fact = _risk_fact("deepseek-risk", "unregistered_model_risk", 0.0, evidence_ids=("e-1",))
+    result = _fuse_score(
+        LocalScoreResult(components={"test": 80.0}, base_score=80.0),
+        (),
+        _review(80.0, risk_facts=(model_fact,)),
+        DIMENSION_WEIGHTS,
+        {
+            "unregistered_model_risk": RiskRule(
+                "unregistered_model_risk", "medium", 4.0, 0.7, "event", 24, False, ("announcement",)
+            )
+        },
+        FusionMode.HYBRID,
+        evidence=(_evidence(),),
+        evaluated_at=NOW,
+    )
+
+    assert result.deepseek_risk_facts == ()
+    assert result.score.deepseek_risk_penalty == 0.0
 
 
 @pytest.mark.parametrize("mode", [FusionMode.LOCAL_DEGRADED, FusionMode.HYBRID])
@@ -199,13 +305,14 @@ def _risk_fact(
     risk_code: str,
     penalty: float,
     *,
+    severity: str = "medium",
     evidence_ids: tuple[str, ...] = (),
     veto: bool = False,
 ) -> RiskFact:
     return RiskFact(
         risk_fact_id=fact_id,
         risk_code=risk_code,
-        severity="medium",
+        severity=severity,
         penalty=penalty,
         source="fixture",
         observed_at=NOW,

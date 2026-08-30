@@ -868,6 +868,37 @@ def test_confidence_coverage_and_known_dimension_minimum_produce_candidate_absta
     assert classified.error == "insufficient_confidence_coverage"
 
 
+def test_zero_weight_industry_policy_does_not_count_as_a_known_dimension() -> None:
+    candidate = _candidate_with_evidence()
+    raw = parse_reviews(json.dumps(_valid_payload(candidate.quote.code)), [candidate], NOW)[candidate.quote.code]
+    raw = replace(
+        raw,
+        dimensions={
+            name: value
+            if name in {"market_flow", "industry_policy"}
+            else replace(value, score=50.0, confidence=0.0, evidence_ids=(), is_unknown=True)
+            for name, value in raw.dimensions.items()
+        },
+    )
+
+    classified = classify_review(
+        raw,
+        dimension_weights={
+            "value_quality": 2 / 17,
+            "financial_health": 2 / 17,
+            "market_flow": 8 / 17,
+            "industry_policy": 0.0,
+            "risk_quality": 5 / 17,
+        },
+        confidence_coverage_min=0.4,
+        minimum_known_dimensions=2,
+    )
+
+    assert raw.dimensions["industry_policy"].is_unknown is False
+    assert classified.outcome is ReviewOutcome.ABSTAIN
+    assert classified.error == "insufficient_confidence_coverage"
+
+
 def test_candidate_without_news_or_announcement_remains_callable_and_abstains(tmp_path) -> None:
     candidate = replace(_candidate_with_evidence(), evidence=())
     payload = _unknown_payload(candidate.quote.code)

@@ -596,6 +596,64 @@ def test_non_finite_configuration_number_is_rejected(tmp_path) -> None:
         load_strategy_settings(strategy_path)
 
 
+@pytest.mark.parametrize(
+    ("section", "field", "value", "message"),
+    (
+        ("fusion", "confidence_coverage_min", 0.1, "coverage and known-dimension"),
+        ("fusion", "minimum_known_dimensions", 1, "coverage and known-dimension"),
+        ("selection", "observation_margin", 6, "observation margin"),
+    ),
+)
+def test_fixed_review_and_observation_gates_cannot_drift(
+    tmp_path,
+    section: str,
+    field: str,
+    value: float,
+    message: str,
+) -> None:
+    strategy_path = tmp_path / "strategy.json"
+    raw = json.loads((PROJECT_ROOT / "config" / "v2" / "strategy.json").read_text(encoding="utf-8"))
+    raw[section][field] = value
+    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match=message):
+        load_strategy_settings(strategy_path)
+
+
+@pytest.mark.parametrize("weight_family", ("candidate", "dimension", "board_candidate", "board_local"))
+def test_fixed_strategy_weight_vectors_cannot_drift(tmp_path, weight_family: str) -> None:
+    strategy_path = tmp_path / "strategy.json"
+    raw = json.loads((PROJECT_ROOT / "config" / "v2" / "strategy.json").read_text(encoding="utf-8"))
+    if weight_family == "candidate":
+        weights = raw["candidate_weights"]
+        first, second = "liquidity", "short_momentum"
+    elif weight_family == "dimension":
+        weights = raw["dimension_weights"]["tomorrow"]
+        first, second = "value_quality", "financial_health"
+    elif weight_family == "board_candidate":
+        weights = raw["board_candidate_weights"]["tomorrow"]["main"]
+        first, second = "liquidity", "trend"
+    else:
+        weights = raw["board_local_strategy_weights"]["tomorrow"]["main"]
+        first, second = "trend", "stability"
+    weights[first] += 0.01
+    weights[second] -= 0.01
+    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="fixed vector"):
+        load_strategy_settings(strategy_path)
+
+
+def test_deepseek_risk_mapping_version_is_required_and_fixed(tmp_path) -> None:
+    strategy_path = tmp_path / "strategy.json"
+    raw = json.loads((PROJECT_ROOT / "config" / "v2" / "strategy.json").read_text(encoding="utf-8"))
+    raw["deepseek_risk_mapping_version"] = "unsupported"
+    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="risk mapping version"):
+        load_strategy_settings(strategy_path)
+
+
 def test_incomplete_risk_trigger_contract_is_rejected(tmp_path) -> None:
     strategy_path = tmp_path / "strategy.json"
     raw = json.loads((PROJECT_ROOT / "config" / "v2" / "strategy.json").read_text(encoding="utf-8"))

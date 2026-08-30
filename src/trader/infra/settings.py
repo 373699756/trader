@@ -95,6 +95,7 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
     settings = StrategySettings(
         schema_version=13,
         strategy_version=_strategy_contract_version(raw),
+        deepseek_risk_mapping_version=_text(raw, "deepseek_risk_mapping_version"),
         fusion=FusionSettings(
             version=_text(fusion_raw, "version"),
             local_weight=_number(fusion_raw, "local_weight", minimum=0.0, maximum=1.0),

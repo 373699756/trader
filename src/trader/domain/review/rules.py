@@ -22,6 +22,18 @@ from trader.domain.review.models import (
     RiskRule,
 )
 
+DEEPSEEK_STRUCTURED_RISK_CODES = frozenset(
+    {
+        "regulatory_risk",
+        "shareholder_reduction",
+        "unlock_risk",
+        "pledge_risk",
+        "litigation_risk",
+        "earnings_risk",
+    }
+)
+_RISK_SEVERITIES = frozenset({"low", "medium", "high"})
+
 
 class Rating(str, Enum):
     """Explicit mapping from DeepSeek free-text assessment to local action labels.
@@ -106,7 +118,8 @@ def map_deepseek_risk_facts(request: RiskMappingRequest) -> tuple[tuple[RiskFact
     veto = False
     evidence_by_id = {item.evidence_id: item for item in request.evidence}
     for raw in request.raw_facts:
-        rule = request.rules.get(raw.risk_code)
+        rule_code = deepseek_risk_rule_code(raw.risk_code, raw.severity)
+        rule = request.rules.get(rule_code) if rule_code is not None else None
         if (
             rule is None
             or raw.confidence < rule.minimum_confidence
@@ -139,6 +152,21 @@ def map_deepseek_risk_facts(request: RiskMappingRequest) -> tuple[tuple[RiskFact
         veto = veto or mapped_fact.veto
     deduplicated = deduplicate_risk_facts(mapped, rules=request.rules)
     return deduplicated, aggregate_risk_penalty(deduplicated, cap=request.cap), veto
+
+
+def deepseek_risk_rule_code(risk_code: str, severity: str) -> str | None:
+    """Resolve a structured V4 model fact to its authoritative local rule."""
+    if risk_code not in DEEPSEEK_STRUCTURED_RISK_CODES:
+        return None
+    if severity not in _RISK_SEVERITIES:
+        return None
+    if risk_code == "regulatory_risk":
+        return "regulatory_risk"
+    if risk_code in {"shareholder_reduction", "unlock_risk"}:
+        return f"reduction_or_unlock_{severity}"
+    if risk_code == "pledge_risk":
+        return f"pledge_risk_{severity}"
+    return "negative_announcement"
 
 
 def _evidence_is_valid(
@@ -246,10 +274,12 @@ def _fact_from_rule(
 
 
 __all__ = [
+    "DEEPSEEK_STRUCTURED_RISK_CODES",
     "Rating",
     "RiskMappingRequest",
     "aggregate_risk_penalty",
     "deduplicate_risk_facts",
+    "deepseek_risk_rule_code",
     "derive_local_risk_facts",
     "map_deepseek_risk_facts",
     "parse_rating",

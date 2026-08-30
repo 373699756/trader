@@ -6,6 +6,7 @@ from collections.abc import Mapping
 
 from trader.domain.market.factors import PRODUCTION_FACTOR_IDS
 from trader.domain.market.research import MarketRegimePolicy
+from trader.domain.review.rules import DEEPSEEK_STRUCTURED_RISK_CODES, deepseek_risk_rule_code
 from trader.infra.settings_factor_validation import (
     _validate_feature_schema_contract,
     _validate_long_research_factor_contract,
@@ -17,8 +18,143 @@ from trader.infra.settings_parser import (
     ConfigurationError,
 )
 
+_FIXED_CANDIDATE_WEIGHTS = {
+    "liquidity": 7 / 18,
+    "short_momentum": 5 / 18,
+    "trend": 4 / 18,
+    "data_completeness": 2 / 18,
+}
+_FIXED_DIMENSION_WEIGHTS = {
+    "today": {
+        "value_quality": 2 / 17,
+        "financial_health": 2 / 17,
+        "market_flow": 8 / 17,
+        "industry_policy": 0.0,
+        "risk_quality": 5 / 17,
+    },
+    "tomorrow": {
+        "value_quality": 3 / 16,
+        "financial_health": 4 / 16,
+        "market_flow": 5 / 16,
+        "industry_policy": 0.0,
+        "risk_quality": 4 / 16,
+    },
+    "d25": {
+        "value_quality": 4 / 16,
+        "financial_health": 5 / 16,
+        "market_flow": 4 / 16,
+        "industry_policy": 0.0,
+        "risk_quality": 3 / 16,
+    },
+}
+_FIXED_TODAY_BOARD_CANDIDATE_WEIGHTS = {
+    "liquidity": 6 / 17,
+    "intraday_structure": 5 / 17,
+    "turnover_state": 4 / 17,
+    "data_completeness": 2 / 17,
+}
+_FIXED_BOARD_CANDIDATE_WEIGHTS: dict[str, dict[str, dict[str, float]]] = {
+    "today": {
+        "main": _FIXED_TODAY_BOARD_CANDIDATE_WEIGHTS,
+        "chinext": _FIXED_TODAY_BOARD_CANDIDATE_WEIGHTS,
+        "star": _FIXED_TODAY_BOARD_CANDIDATE_WEIGHTS,
+    },
+    "tomorrow": {
+        "main": {"liquidity": 7 / 17, "trend": 5 / 17, "stability": 3 / 17, "data_completeness": 2 / 17},
+        "chinext": {"liquidity": 4 / 14, "trend": 5 / 14, "stability": 3 / 14, "data_completeness": 2 / 14},
+        "star": {"liquidity": 5 / 17, "trend": 6 / 17, "stability": 4 / 17, "data_completeness": 2 / 17},
+    },
+    "d25": {
+        "main": {
+            "liquidity": 6 / 16,
+            "trend": 4 / 16,
+            "stability": 3 / 16,
+            "execution": 2 / 16,
+            "data_completeness": 1 / 16,
+        },
+        "chinext": {
+            "liquidity": 4 / 14,
+            "trend": 4 / 14,
+            "stability": 2 / 14,
+            "execution": 3 / 14,
+            "data_completeness": 1 / 14,
+        },
+        "star": {
+            "liquidity": 5 / 17,
+            "trend": 6 / 17,
+            "stability": 3 / 17,
+            "execution": 2 / 17,
+            "data_completeness": 1 / 17,
+        },
+    },
+}
+_FIXED_TODAY_BOARD_LOCAL_WEIGHTS = {
+    "intraday_structure": 3 / 8,
+    "turnover_state": 2 / 8,
+    "liquidity_execution": 2 / 8,
+    "stability": 1 / 8,
+}
+_FIXED_BOARD_LOCAL_WEIGHTS: dict[str, dict[str, dict[str, float]]] = {
+    "today": {
+        "main": _FIXED_TODAY_BOARD_LOCAL_WEIGHTS,
+        "chinext": _FIXED_TODAY_BOARD_LOCAL_WEIGHTS,
+        "star": _FIXED_TODAY_BOARD_LOCAL_WEIGHTS,
+    },
+    "tomorrow": {
+        "main": {
+            "tail_structure": 3 / 18,
+            "turnover_flow": 1 / 18,
+            "trend": 4 / 18,
+            "stability": 5 / 18,
+            "market_state": 2 / 18,
+            "entry_quality": 3 / 18,
+        },
+        "chinext": {
+            "tail_structure": 4 / 16,
+            "turnover_flow": 3 / 16,
+            "trend": 3 / 16,
+            "stability": 2 / 16,
+            "market_state": 1 / 16,
+            "entry_quality": 3 / 16,
+        },
+        "star": {
+            "tail_structure": 3 / 18,
+            "turnover_flow": 1 / 18,
+            "trend": 5 / 18,
+            "stability": 5 / 18,
+            "market_state": 1 / 18,
+            "entry_quality": 3 / 18,
+        },
+    },
+    "d25": {
+        "main": {
+            "trend": 5 / 17,
+            "quality_value": 5 / 17,
+            "stability": 3 / 17,
+            "flow_liquidity": 2 / 17,
+            "entry_quality": 2 / 17,
+        },
+        "chinext": {
+            "trend": 4 / 14,
+            "quality_value": 2 / 14,
+            "stability": 2 / 14,
+            "flow_liquidity": 4 / 14,
+            "entry_quality": 2 / 14,
+        },
+        "star": {
+            "trend": 6 / 17,
+            "quality_value": 5 / 17,
+            "stability": 3 / 17,
+            "flow_liquidity": 2 / 17,
+            "entry_quality": 1 / 17,
+        },
+    },
+}
+
 
 def _validate_strategy_settings(settings: StrategySettings) -> None:
+    if settings.deepseek_risk_mapping_version != "deepseek_v4_local_rules_2026_08":
+        raise ConfigurationError("unsupported DeepSeek risk mapping version")
     _validate_filter_fusion_selection(settings)
     _validate_signal_policies(settings)
     _validate_strategy_weights(settings)
@@ -64,6 +200,8 @@ def _validate_fusion(settings: StrategySettings) -> None:
         raise ConfigurationError("unsupported score rounding mode")
     if settings.fusion.local_risk_cap != 25.0 or settings.fusion.deepseek_risk_cap != 30.0:
         raise ConfigurationError("risk caps are fixed at 25 local and 30 DeepSeek")
+    if settings.fusion.confidence_coverage_min != 0.5 or settings.fusion.minimum_known_dimensions != 2:
+        raise ConfigurationError("fusion coverage and known-dimension gates are fixed at 0.5 and 2")
 
 
 def _validate_selection(settings: StrategySettings) -> None:
@@ -83,6 +221,8 @@ def _validate_selection(settings: StrategySettings) -> None:
         raise ConfigurationError("candidate score and board reliability gates are fixed at 50 and 0.85")
     if settings.selection.review_candidate_limit != 28:
         raise ConfigurationError("DeepSeek review candidate limit must be 28")
+    if settings.selection.observation_margin != 5.0:
+        raise ConfigurationError("selection observation margin is fixed at 5")
 
 
 def _validate_signal_policies(settings: StrategySettings) -> None:
@@ -142,6 +282,7 @@ def _validate_strategy_weights(settings: StrategySettings) -> None:
     }
     if set(settings.candidate_weights) != required_candidate_weights:
         raise ConfigurationError("candidate_weights contains unsupported components")
+    _validate_fixed_vector("candidate_weights", settings.candidate_weights, _FIXED_CANDIDATE_WEIGHTS)
     required_thresholds = {"today_main", "today_late", "tomorrow", "d25"}
     if set(settings.selection.thresholds) != required_thresholds:
         raise ConfigurationError("selection thresholds must define today_main, today_late, tomorrow and d25")
@@ -171,8 +312,11 @@ def _validate_dimension_weights(settings: StrategySettings, required_strategies:
         _validate_weight_sum(f"dimension_weights.{strategy}", weights)
         if set(weights) != required_dimensions:
             raise ConfigurationError(f"dimension_weights.{strategy} must define the five review dimensions")
-        if weights["industry_policy"] != 0.0:
-            raise ConfigurationError(f"dimension_weights.{strategy}.industry_policy must be a non-scoring tag")
+        _validate_fixed_vector(
+            f"dimension_weights.{strategy}",
+            weights,
+            _FIXED_DIMENSION_WEIGHTS[strategy],
+        )
 
 
 def _validate_risk_registry(settings: StrategySettings) -> None:
@@ -214,12 +358,21 @@ def _validate_risk_registry_contract(settings: StrategySettings) -> None:
     }
     if set(risk_codes) != required_risk_codes:
         raise ConfigurationError("risk_rules must define the complete local risk table")
+    _validate_deepseek_risk_mapping_targets(required_risk_codes)
     for rule in settings.risk_rules:
         definition = settings.factor_registry.get(rule.trigger_factor)
         if definition is None:
             raise ConfigurationError(f"risk rule {rule.risk_code} trigger factor is not registered")
         if not set(rule.strategies).issubset(definition.strategies):
             raise ConfigurationError(f"risk rule {rule.risk_code} uses a factor outside its registered strategies")
+
+
+def _validate_deepseek_risk_mapping_targets(registered_risk_codes: set[str]) -> None:
+    for risk_code in DEEPSEEK_STRUCTURED_RISK_CODES:
+        for severity in ("low", "medium", "high"):
+            mapped_code = deepseek_risk_rule_code(risk_code, severity)
+            if mapped_code not in registered_risk_codes:
+                raise ConfigurationError("DeepSeek structured risks must map completely to local risk rules")
 
 
 def _validate_short_risk_contract(settings: StrategySettings) -> None:
@@ -432,7 +585,22 @@ def _validate_board_weights(settings: StrategySettings) -> None:
                 raise ConfigurationError(f"board candidate components for {strategy}.{board} are invalid")
             if set(local_boards[board]) != local_components[strategy]:
                 raise ConfigurationError(f"board local components for {strategy}.{board} are invalid")
-    if len({tuple(settings.board_candidate_weights["today"][board].items()) for board in boards}) != 1:
-        raise ConfigurationError("today board candidate weights must be identical across boards")
-    if len({tuple(settings.board_local_strategy_weights["today"][board].items()) for board in boards}) != 1:
-        raise ConfigurationError("today board local weights must be identical across boards")
+            _validate_fixed_vector(
+                f"board_candidate_weights.{strategy}.{board}",
+                candidate_boards[board],
+                _FIXED_BOARD_CANDIDATE_WEIGHTS[strategy][board],
+            )
+            _validate_fixed_vector(
+                f"board_local_strategy_weights.{strategy}.{board}",
+                local_boards[board],
+                _FIXED_BOARD_LOCAL_WEIGHTS[strategy][board],
+            )
+
+
+def _validate_fixed_vector(
+    name: str,
+    actual: Mapping[str, float],
+    expected: Mapping[str, float],
+) -> None:
+    if set(actual) != set(expected) or any(abs(actual[key] - expected[key]) > 1e-12 for key in expected):
+        raise ConfigurationError(f"{name} must match its fixed vector")

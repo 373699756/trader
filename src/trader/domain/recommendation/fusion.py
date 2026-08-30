@@ -107,7 +107,7 @@ def fuse_score(request: FusionRequest) -> FusionResult:
     mapped_penalty = 0.0
     veto = any(fact.veto for fact in request.local_risk_facts)
     if request.review is not None:
-        mapped_risk_facts, mapped_penalty, veto = map_deepseek_risk_facts(
+        mapped_risk_facts, mapped_penalty, mapped_veto = map_deepseek_risk_facts(
             RiskMappingRequest(
                 raw_facts=request.review.risk_facts,
                 rules=request.risk_rules,
@@ -117,6 +117,7 @@ def fuse_score(request: FusionRequest) -> FusionResult:
                 evaluated_at=request.evaluated_at or request.review.completed_at,
             )
         )
+        veto = veto or mapped_veto
 
     fusion_applied = review_applies and request.fusion_mode is FusionMode.HYBRID and deepseek_score is not None
     if fusion_applied:

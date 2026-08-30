@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户要求把荐股评分 Review 扫描问题先写入权威文档再修复，新增 V4 六类结构化风险到本地规则的
+  领域归一化契约、`deepseek_v4_local_rules_2026_08` 有类型策略版本、决策 epoch 同批选择限制值对象，
+  以及覆盖风险映射、配置漂移、veto、零权重维度和 epoch 自校验的回归门禁。
+  `Regression-Key: scoring-policy-integrity-review-v1`。
 - 针对用户要求将 `review.md`、`fenshu.md` 归并后删除，扩展文档单一真相源契约：两份旧问题/评分计划
   文件必须不存在，证券主数据来源职责、P2 终态及未来新候选入口必须由两份权威文档直接定义。
   `Regression-Key: authoritative-doc-retirement-review-score-plan-v1`。
@@ -455,6 +459,9 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 活动策略标签提升为 `strategy_review30_top6_observe6_riskmap_2026_08`，风险映射版本进入策略内容哈希，
+  防止旧缓存或旧决策身份复用新映射语义；内部决策 epoch schema 提升到 `decision_epoch_v2`，内容哈希
+  新增正式/观察容量、单行业上限和单板比例。固定 68/32 融合公式、78/73 门槛、API、Web 与冻结不变。
 - 旧问题记录中的数据源解释、Web 指标展示前置条件和当前运行边界已按产品职责归入软件业务设计；旧评分
   计划中的六类建模问题、P2 失败终态和新候选准入规则已按策略职责归入荐股策略文档。根因确认不是
   权威契约缺少主体技术内容，而是一次性记录仍留在活动文档树且策略现状摘要未随 P2 终止更新；本批
@@ -853,6 +860,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复本次评分一致性扫描确认的五项代码/策略漂移：V4 schema 的减持、解禁、质押、诉讼和业绩风险此前
+  因原始代码与本地规则名不一致而静默丢弃；模型复核会覆盖已有本地 veto；零权重行业政策会错误增加
+  已知维度数；配置仅校验权重合计而未锁定固定向量、0.50/2 覆盖门和观察余量 5；决策 epoch 使用宽于
+  本轮策略的 10/8、6/5 常量复核选择结果。现在六类风险的全部三级严重度均失败关闭地映射到注册规则，
+  veto 只作 OR 合并，零权重维度完全排除，启动校验逐项锁定固定参数，epoch 按自身同批策略限制自校验。
 - 修正荐股策略第 15.1 节仍声称 P2 的 H0 覆盖、候选封存和前向证据“尚未完成”的过期状态；现在明确
   P2-1 已 `historical_rejected`、P2-2/P2-3 已取消且不是后续“继续”任务，避免旧计划文件把已终止路线
   误导为可恢复任务。活动评分、78/73 门槛、68/32 融合及 Web 展示行为均未改变。
@@ -1393,6 +1405,16 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- `scoring-policy-integrity-review-v1` 失败先行测试先复现本地 veto 被清除、五类 V4 风险丢失、固定门禁
+  可漂移、零权重行业维度误计和 epoch 缺少类型限制；修复后评分融合、DeepSeek、配置与 Tomorrow
+  决策四组定向测试通过，并额外覆盖六类风险的全部 18 个严重度组合和未知模型风险失败关闭。首次全量
+  测试暴露实时链契约仍要求已过期的“研究尚未实现”措辞；契约已改为验证当前真实边界——工程能力已实现，
+  但尚未生成正式晋级档案且生产发布尚未获准。最终 `make format-check`、`make lint`（严格重构债务为零）、
+  `make type-check`（254 个源码文件）、`make test` 和 `make package` 全部通过，`git diff --check` 通过，
+  暂存范围仅包含本批 16 个配置、文档、评分实现和回归测试文件；`./run.sh validate-config` 实跑返回
+  `status=ok`，有效策略身份为
+  `strategy_sha256_2d20115d2f8aca72741f`。仓库外 wheel 安装和三档浏览器验收不适用：本批未改依赖、
+  入口、包资源、API、SSE 或活动 Web 行为，构建门禁已覆盖安装包生成边界。
 - `authoritative-doc-retirement-review-score-plan-v1` 先行失败契约已证明旧权威文档缺少证券主数据职责/P2
   终态措辞；归并后 `.venv/bin/ruff check tests/contract/test_v2_only_product_contract.py` 通过，文档单一
   真相源、评分计划、权威一致性和数据平面 4 组契约共 26 项通过。活动树引用扫描只保留本契约中的退役
@@ -2176,6 +2198,10 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 本批修复活动评分实现与既有权威策略不一致的问题，没有生成或晋级新评分候选，也不调整 78/73 门槛。
+  已封存失败的 P2 路线仍保持终止；若未来提出全新候选，2027 交易日历下的外部点时证据采集、独立
+  预注册、成本后净超额/严重亏损概率门禁和人工晋级仍须另立研究批次。本批没有伪造未来样本，也没有
+  提前向 Web 展示尚无生产权限的新指标。
 - 本批只治理文档所有权，不修改运行代码、研究工件或生产状态；既有外部风险不因删除旧文件而消失。
   当前仍无获准生产的新评分候选，P2 保持终止。若未来提出不同候选，必须从两份权威文档另立完整研究
   身份和独立交付批次，不能从已删除文件恢复任务或放宽既有拒绝门禁。

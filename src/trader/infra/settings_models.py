@@ -224,6 +224,7 @@ class FactorDefinition:
 class StrategySettings:
     schema_version: int
     strategy_version: str
+    deepseek_risk_mapping_version: str
     fusion: FusionSettings
     selection: SelectionSettings
     candidate_weights: Mapping[str, float]

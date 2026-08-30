@@ -17,7 +17,8 @@ def test_authorities_separate_implemented_realtime_work_from_inactive_strategy_r
     assert "28 只" in design
     assert "待验证收益路线" in strategy
     assert "不改变当前生产策略" in strategy
-    assert "尚未实现" in strategy
+    assert "尚未生成任何正式档案" in strategy
+    assert "生产发布尚未" in strategy
 
 
 def test_authority_fixes_real_production_and_browser_budgets() -> None:

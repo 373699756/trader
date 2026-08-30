@@ -13,6 +13,7 @@ from datetime import datetime
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.fusion import DIMENSION_NAMES
 from trader.domain.review.models import DeepSeekReview, DimensionAssessment, ReviewOutcome, RiskFact
+from trader.domain.review.rules import DEEPSEEK_STRUCTURED_RISK_CODES
 from trader.infra.deepseek.evidence_router import evidence_quality as _evidence_quality
 from trader.infra.deepseek.evidence_router import route_prompt_evidence
 from trader.infra.deepseek.schema_constants import (
@@ -70,6 +71,8 @@ _RISK_FIELD_TO_CODE = {
     "litigation": "litigation_risk",
     "earnings": "earnings_risk",
 }
+if frozenset(_RISK_FIELD_TO_CODE.values()) != DEEPSEEK_STRUCTURED_RISK_CODES:
+    raise RuntimeError("DeepSeek V4 risk fields must match the domain structured-risk contract")
 
 
 class DeepSeekSchemaError(ValueError):
@@ -122,6 +125,8 @@ def classify_review(
     known = 0
     coverage = 0.0
     for name in DIMENSION_NAMES:
+        if dimension_weights[name] == 0.0:
+            continue
         dimension = review.dimensions[name]
         if dimension.is_unknown:
             continue

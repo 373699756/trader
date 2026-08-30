@@ -9,6 +9,7 @@ import pytest
 from trader.domain.market.models import Board, Evidence, FeatureSnapshot, MarketQuote
 from trader.domain.recommendation.models import RecommendationAction
 from trader.domain.recommendation.scored_fusion import (
+    DecisionSelectionLimits,
     ScoredDecisionPolicy,
     ScoredDecisionRequest,
     build_scored_decision_epoch,
@@ -52,7 +53,7 @@ def test_hybrid_decision_uses_fixed_fusion_without_repeating_local_risk() -> Non
     local_fact = _risk_fact("local-risk", "local_rule", penalty=2.0)
     deepseek_fact = _risk_fact(
         "deepseek-risk",
-        "deepseek_rule",
+        "regulatory_risk",
         penalty=0.0,
         evidence_ids=("official-risk",),
     )
@@ -132,7 +133,7 @@ def test_late_review_cannot_change_score_or_create_model_risk() -> None:
             risk_facts=(
                 _risk_fact(
                     "deepseek-risk",
-                    "deepseek_rule",
+                    "regulatory_risk",
                     penalty=0.0,
                     evidence_ids=("official-risk",),
                 ),
@@ -167,7 +168,7 @@ def test_abstain_review_cannot_apply_model_risk_or_veto() -> None:
             risk_facts=(
                 _risk_fact(
                     "deepseek-risk",
-                    "deepseek_rule",
+                    "regulatory_risk",
                     penalty=0.0,
                     evidence_ids=("official-risk",),
                 ),
@@ -306,6 +307,22 @@ def test_decision_epoch_hash_is_stable_and_rejects_review_outside_protection_set
         )
 
 
+def test_decision_epoch_carries_and_enforces_its_selection_limits() -> None:
+    evaluations = tuple(_evaluation(index, local_score=90.0 - index) for index in range(4))
+    epoch = build_scored_decision_epoch(_request(_selection(evaluations)))
+
+    assert epoch.selection_limits == DecisionSelectionLimits(
+        top_k=6,
+        observation_limit=6,
+        maximum_per_industry=2,
+        maximum_board_fraction=0.60,
+    )
+    with pytest.raises(ValueError, match="exceed their decision limits"):
+        replace(epoch, selection_limits=replace(epoch.selection_limits, top_k=0))
+    with pytest.raises(ValueError, match="board limit"):
+        replace(epoch, selection_limits=replace(epoch.selection_limits, maximum_board_fraction=0.30))
+
+
 @pytest.mark.parametrize(
     ("changes", "message"),
     (
@@ -331,8 +348,8 @@ def _policy() -> ScoredDecisionPolicy:
             "risk_quality": 0.25,
         },
         risk_rules={
-            "deepseek_rule": RiskRule(
-                risk_code="deepseek_rule",
+            "regulatory_risk": RiskRule(
+                risk_code="regulatory_risk",
                 severity="medium",
                 penalty=3.0,
                 minimum_confidence=0.7,

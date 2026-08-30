@@ -43,7 +43,7 @@ from trader.domain.review.models import (
     RiskRule,
 )
 
-DECISION_EPOCH_SCHEMA_VERSION = "decision_epoch_v1"
+DECISION_EPOCH_SCHEMA_VERSION = "decision_epoch_v2"
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"
 _REASON_CODE = re.compile(r"^[a-z0-9_]{1,64}$")
 _CanonicalValue: TypeAlias = str | int | float | bool | None | list["_CanonicalValue"] | dict[str, "_CanonicalValue"]
@@ -126,6 +126,22 @@ class _NormalizedDecisionPayload:
 
 
 @dataclass(frozen=True)
+class DecisionSelectionLimits:
+    top_k: int
+    observation_limit: int
+    maximum_per_industry: int
+    maximum_board_fraction: float
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.top_k <= 10 or not 0 <= self.observation_limit <= 8:
+            raise ValueError("decision selection pool limits are invalid")
+        if not 1 <= self.maximum_per_industry <= 2:
+            raise ValueError("decision selection industry limit is invalid")
+        if not math.isfinite(self.maximum_board_fraction) or not 0.0 < self.maximum_board_fraction <= 0.60:
+            raise ValueError("decision selection board fraction is invalid")
+
+
+@dataclass(frozen=True)
 class DecisionEpoch:
     trade_date: date
     sequence: int
@@ -145,6 +161,7 @@ class DecisionEpoch:
     unscored_count: int
     filter_reason_counts: Mapping[str, int]
     population_versions: Mapping[str, str]
+    selection_limits: DecisionSelectionLimits
     degraded_reasons: tuple[str, ...] = ()
     schema_version: str = DECISION_EPOCH_SCHEMA_VERSION
     content_hash: str = field(init=False)
@@ -304,7 +321,7 @@ def _validate_decision_entries(
     if any(item.action is RecommendationAction.UNAVAILABLE for item in payload.selected):
         raise ValueError("unavailable decisions cannot be selected")
     _validate_stage_entries(epoch.projection_stage, payload.entries, set(payload.review_codes))
-    _validate_selected_pools(list(payload.selected))
+    _validate_selected_pools(list(payload.selected), epoch.selection_limits)
 
 
 def _validate_decision_risk_times(
@@ -361,6 +378,7 @@ def _decision_epoch_hash(
             "unscored_count": epoch.unscored_count,
             "filter_reason_counts": payload.reason_counts,
             "population_versions": payload.populations,
+            "selection_limits": epoch.selection_limits,
             "degraded_reasons": payload.reasons,
         }
     )
@@ -419,6 +437,12 @@ def build_scored_decision_epoch(request: ScoredDecisionRequest) -> DecisionEpoch
         unscored_count=sum(item.local_score is None for item in request.selection.evaluations),
         filter_reason_counts=reason_counts,
         population_versions={board.value: version for board, version in request.selection.population_versions.items()},
+        selection_limits=DecisionSelectionLimits(
+            top_k=request.policy.top_k,
+            observation_limit=request.policy.observation_limit,
+            maximum_per_industry=request.policy.maximum_per_industry,
+            maximum_board_fraction=request.policy.maximum_board_fraction,
+        ),
         degraded_reasons=request.degraded_reasons,
     )
 
@@ -627,21 +651,25 @@ def _validate_stage_entries(
         raise ValueError("fusion can only apply to an applied review in a hybrid decision")
 
 
-def _validate_selected_pools(selected: list[ScoredDecisionEntry]) -> None:
+def _validate_selected_pools(
+    selected: list[ScoredDecisionEntry],
+    limits: DecisionSelectionLimits,
+) -> None:
     executable = tuple(item for item in selected if item.action is RecommendationAction.EXECUTABLE)
     observations = tuple(item for item in selected if item.action is RecommendationAction.OBSERVE)
-    if len(executable) > 10 or len(observations) > 8:
-        raise ValueError("decision selected pools exceed their fixed limits")
+    if len(executable) > limits.top_k or len(observations) > limits.observation_limit:
+        raise ValueError("decision selected pools exceed their decision limits")
     if selected != [*executable, *observations]:
         raise ValueError("selected executable decisions must precede observations")
-    for pool, board_limit in ((executable, 6), (observations, 5)):
+    for pool, pool_limit in ((executable, limits.top_k), (observations, limits.observation_limit)):
         if tuple(sorted(pool, key=_decision_order)) != pool:
             raise ValueError("selected decision pool order is unstable")
+        board_limit = math.ceil(pool_limit * limits.maximum_board_fraction) if pool_limit else 0
         board_counts = Counter(item.features.quote.board for item in pool)
         industry_counts = Counter(item.features.quote.industry.strip() or "unknown" for item in pool)
         if any(count > board_limit for count in board_counts.values()):
             raise ValueError("selected decision pool exceeds its board limit")
-        if any(count > 2 for count in industry_counts.values()):
+        if any(count > limits.maximum_per_industry for count in industry_counts.values()):
             raise ValueError("selected decision pool exceeds its industry limit")
 
 
@@ -749,6 +777,7 @@ def _require_text(value: str, name: str) -> None:
 __all__ = [
     "DECISION_EPOCH_SCHEMA_VERSION",
     "DecisionEpoch",
+    "DecisionSelectionLimits",
     "ScoredDecisionEntry",
     "ScoredDecisionPolicy",
     "ScoredDecisionRequest",

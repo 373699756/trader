@@ -1,6 +1,7 @@
 {
   "schema_version": 13,
-  "strategy_version": "strategy_review30_top6_observe6_2026_07",
+  "strategy_version": "strategy_review30_top6_observe6_riskmap_2026_08",
+  "deepseek_risk_mapping_version": "deepseek_v4_local_rules_2026_08",
   "board_policy_version": "board_policy_score_first_2026_07",
   "fusion": {
     "version": "fusion_local68_deepseek32",
