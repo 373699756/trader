@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-TomorrowScoringProfile = Literal["p1", "p2"]
+TomorrowScoringProfile = Literal["v1", "v2"]
 
 
 @dataclass(frozen=True)

@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户问题：P1/P2 的评分差异、哪套更可能挣钱及两套方案尚未完成什么此前没有一处可审计答案。两份
+  权威文档现在统一区分“生产档位 V1/V2”与不可变“历史研究身份 P1/P2”，补充因子、模型、成本、
+  分歧和证据差异表，并明确当前不能证明任何一套可重复取得未来收益：V2 的平均成本后净增量证据强于
+  V1，但其严重亏损、换手和 Q5-Q1 门禁失败；V1 则没有独立留出结果。新增 V1、V2 和共同未完成任务
+  及“同日同股同冻结输入”配对影子比较路线，前向证据不阻塞或改变当前评分，也不得自动切换档位。
+  `Regression-Key: tomorrow-v1-v2-profile-naming-and-evidence-roadmap-v1`。
 - 用户问题：权威文档只写“P1 五个候选尚未选出唯一工件”，没有解释为何工程代码已经存在却不能直接与
   P2 切换。确认原因是 `score_tomorrow_shadow_p1_v1` 只定义五候选逐日研究与门禁，固定 2027 年窗口尚未
   发生，也不产出全局推理工件；H0 缺少原 P1 所需的历史时点行业、市值、流动性和盘中输入。文档现在
@@ -478,6 +484,12 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- Tomorrow 活动评分命名从 P1/P2 迁移为 V1/V2：策略 schema 升至 15，
+  `tomorrow_scoring_profile` 只接受 `v1|v2` 且默认 `v2`；类型化端口、组合根装配、状态/API 和测试使用
+  同一枚举，旧 `p1|p2` 配置失败关闭。V1 生产模型身份改为 `v1_manual_residual_momentum_v1`，内容 hash
+  改为 `4291ea514c233a14ab6f9262e72ea541d1e9a794e73d02f10f8220509f6f502b`；V2 的不可变 P2 历史来源工件
+  及 `p2_*` 特征字段保持原名和原 hash。公开 status schema/静态资源握手同步升为
+  `v2_status_v7` / `release-contract-2026-08-30-v8`，既有冻结记录不回写。
 - 策略配置升级到 schema 14，新增唯一 `tomorrow_scoring_profile=p1|p2`，默认保持 `p2`；配置参与策略
   SHA-256，切换后必须重启。组合根和离线性能入口只装配所选包内工件，P1/P2 共用同一类型化评分服务，
   不并行打分、不热切换、不回退旧 Tomorrow 分；模型 ID/hash 继续进入决策身份，既有冻结记录不可覆盖。
@@ -894,6 +906,9 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复活动配置、公开状态和文档把生产档位与研究阶段 P1/P2 混为同一身份的问题；V1 的历史不可用原因
+  改用不冒充研究版本的稳定代码，Web 继续展示中性的“模型信号分”。文档同时纠正“活动档位单边 T+1
+  结算可直接比较两模型”的潜在误解：该数据只覆盖活动档位已入选股票，存在选择偏差。
 - 修复 Tomorrow 生产评分只能硬编码加载 P2、无法按配置选择模型的问题；模型输入由固定六维改为工件声明
   的严格特征集合，P1 只取得三项残差动量，P2 仍取得原六项特征。任一 profile、资源、schema、特征宽度
   或完整 hash 不匹配均失败关闭，避免把五候选研究族、错误宽度或被篡改资源静默送入生产评分。
@@ -1287,6 +1302,8 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除活动生产命名中的 `p1|p2` 配置别名以及 P1 命名的 V1 打包脚本、训练模块、测试和包内资源路径；
+  不删除或改名不可变 P1/P2 研究规范、封存报告、历史特征字段和既有 Changelog 证据。
 - 移除 Tomorrow 生产评分对旧人工权重本地分的隐式 fallback；模型输入不足的股票显式不评分。没有删除
   Today/D25 仍在使用的启发式实现，也没有改写 P2 历史拒绝报告或创建被禁止的 P2-2 前向身份。
 - 删除已完成语义归位的 `docs/review.md` 与 `docs/fenshu.md`；其历史用户诉求、运行实证和逐批交付结果
@@ -1462,6 +1479,22 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- `tomorrow-v1-v2-profile-naming-and-evidence-roadmap-v1`：失败先行回归证明旧 `p1|p2` 仍被接受、状态仍
+  返回旧 profile、旧 V1 工件身份及 v6/v7 发布握手；实现后配置、工件、评分、组合根、API/Web 和文档
+  定向测试全部通过。高风险命令组 `make format-check`、`make lint`、`make type-check`（260 个源码文件）、
+  `make test`（pytest 100%）和 `make package` 全部通过；全量测试首次发现一处旧文档断言仍要求 P2 活动
+  名称，修复并定向复测后第二次全量通过。
+- 构建 wheel 后在仓库外 `pip --no-deps --target` 安装，能分别加载 V1
+  `4291ea51...f502b` 与 V2 `27034e52...887da5`，读取模板/静态资源、无副作用创建 App 并执行安装包
+  `validate-config`。使用 H0 的 1,765,685 个训练行真实执行 `scripts/package_tomorrow_v1_model.py`，重建
+  文件与包内资源逐字节相同。
+- 默认 V2 与临时 V1 配置分别真实执行 `./run.sh performance-check`，均为零网络调用、零失败、零 RSS
+  增长，`quote_to_draft` p95 分别为 1100.174ms / 1107.404ms。分别真实重启 `./run.sh serve` 后，状态
+  返回 `profile_id=v2` / `profile_id=v1`、各自固定模型 ID/hash、正确历史终态及
+  `v2_status_v7` / `release-contract-2026-08-30-v8`；最终恢复默认 V2，统一 Web 诊断连续 3 轮通过。
+- 无头 Chrome 三档桌面发布验收 `passed=true`；1280x720、1440x900、1920x1080 均无浏览器错误、页面级
+  横向溢出、Long 重叠或 release 资源错配。首次在受限沙箱内访问已授权本机服务得到
+  `connection_failed`，按环境边界在宿主权限下复测通过，不作为产品失败。
 - `tomorrow-p1-p2-configurable-profile-v1`：定向配置、P1/P2 包内推理、评分/决策身份、状态/API、Web 文案、
   流式训练和权威文档契约通过；高风险完整命令组 `make format-check`、`make lint`、`make type-check`
   （260 个源码文件）、`make test`（pytest 100%）和 `make package` 全部通过。构建 wheel 后在仓库外
@@ -2309,6 +2342,10 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- V1 仍没有独立留出和真实配对前向结果；V2 虽有正平均历史净增量，但仍是
+  `historical_rejected`。两者都没有逐股亏损概率，现有 T+1 结算只覆盖活动档位正式入选项。文档规定的
+  配对影子比较器、V1 同口径留出、V2.x 风险挑战者和人工审查档案尚未实现；这些后续工作不影响当前
+  V2 运行，也没有收益保证或自动发布权限。
 - `p1_manual_residual_momentum_v1` 是用户授权的 H0 日线 proxy，不是
   `score_tomorrow_shadow_p1_v1` 五候选研究的胜者；它缺少原 P1 的行业/市值/流动性完整中性化和真实
   2027 点时证据，状态会持续公开该差异。默认仍为 P2；两种人工 profile 都未建立逐股亏损概率头，也不

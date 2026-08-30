@@ -27,7 +27,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 class _ProductionPredictor:
-    profile_id = "p2"
+    profile_id = "v2"
     model_id = "daily_reconstructible_ensemble_v1"
     model_hash = "b" * 64
     feature_ids = (

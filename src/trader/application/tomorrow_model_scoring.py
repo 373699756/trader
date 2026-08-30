@@ -79,7 +79,7 @@ class TomorrowProductionModelScoringService:
         if (
             not predictor.model_id
             or len(predictor.model_hash) != 64
-            or predictor.profile_id not in {"p1", "p2"}
+            or predictor.profile_id not in {"v1", "v2"}
             or not predictor.feature_ids
             or len(set(predictor.feature_ids)) != len(predictor.feature_ids)
             or any(feature_id not in _MODEL_FEATURE_IDS for feature_id in predictor.feature_ids)
@@ -95,11 +95,11 @@ class TomorrowProductionModelScoringService:
     def status(self) -> TomorrowModelRuntimeStatus:
         historical_status: Literal["historical_rejected", "historical_unavailable"]
         historical_failure_reasons: tuple[str, ...]
-        if self._predictor.profile_id == "p1":
+        if self._predictor.profile_id == "v1":
             historical_status = "historical_unavailable"
             historical_failure_reasons = (
-                "original_p1_unique_artifact_unavailable",
-                "manual_daily_proxy_not_original_p1_evidence",
+                "original_five_candidate_research_artifact_unavailable",
+                "manual_daily_proxy_not_original_research_evidence",
             )
         else:
             historical_status = "historical_rejected"

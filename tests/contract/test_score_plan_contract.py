@@ -368,16 +368,40 @@ def test_tomorrow_shadow_p1_preregistration_is_owned_by_the_authoritative_contra
     assert "不注入 `bootstrap.py`" in design
     for expected in (
         "P1 五候选研究族不是唯一模型工件",
-        "p1_manual_residual_momentum_v1",
+        "v1_manual_residual_momentum_v1",
         "tomorrow_scoring_profile",
         "原 P1 研究身份保持未完成",
     ):
         assert expected in strategy
     for expected in (
-        "P1/P2 生产评分配置切换",
-        "tomorrow_scoring_profile=p1|p2",
+        "V1/V2 生产评分配置切换",
+        "tomorrow_scoring_profile=v1|v2",
         "重启生效",
         "不得覆盖既有冻结记录",
+    ):
+        assert expected in design
+
+
+def test_tomorrow_v1_v2_profitability_evidence_and_remaining_work_are_explicit() -> None:
+    strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
+    design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
+
+    for expected in (
+        "不能据此断言 V2 未来更能挣钱",
+        "V2 的平均成本后净增量证据强于 V1",
+        "同日、同股、同一冻结输入",
+        "不阻塞当前评分",
+        "活动档位单边 T+1 结算存在选择偏差",
+        "V1 未完成任务",
+        "V2 未完成任务",
+        "共同未完成任务",
+    ):
+        assert expected in strategy
+    for expected in (
+        "生产档位 V1/V2",
+        "历史研究身份 P1/P2",
+        "不得自动切换活动档位",
+        "配对影子比较器",
     ):
         assert expected in design
 
@@ -405,7 +429,7 @@ def test_tomorrow_historical_p2_remains_rejected_while_manual_production_overrid
         "deepseek_facts_point_in_time",
         "production_authority=false",
         "不得创建 `score_tomorrow_shadow_p2_v1`",
-        "#### 15.1.17 P2 人工越权生产评分与上线后监控",
+        "#### 15.1.17 V2 人工越权生产评分与上线后监控",
         "manual_user_override",
         "automatic_t1_outcome_settlement",
         "automatic_model_update=false",

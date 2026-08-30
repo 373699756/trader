@@ -1,4 +1,4 @@
-"""Bounded offline fitting for the manual Tomorrow P1 daily proxy artifact."""
+"""Bounded offline fitting for the manual Tomorrow V1 daily proxy artifact."""
 
 from __future__ import annotations
 
@@ -15,18 +15,18 @@ from trader.application.research.historical_screening import HistoricalArchiveMa
 from trader.application.research.tomorrow_historical_p2_screening import TomorrowHistoricalP2Row
 from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC, HistoricalScreeningSpec
 
-P1_MODEL_ID = "p1_manual_residual_momentum_v1"
-P1_FEATURE_IDS: tuple[str, str, str] = (
+V1_MODEL_ID = "v1_manual_residual_momentum_v1"
+V1_FEATURE_IDS: tuple[str, str, str] = (
     "qfq_residual_momentum_20d_skip5",
     "qfq_residual_momentum_40d_skip5",
     "qfq_residual_momentum_60d_skip5",
 )
-P1_FEATURE_CONTRACT = "h0_board_amount_residual_momentum_proxy_v1"
+V1_FEATURE_CONTRACT = "h0_board_amount_residual_momentum_proxy_v1"
 _RIDGE = 1e-3
 
 
 @dataclass(frozen=True)
-class TomorrowManualP1ModelArtifact:
+class TomorrowManualV1ModelArtifact:
     source_spec_hash: str
     source_manifest_hash: str
     training_start: date
@@ -36,22 +36,22 @@ class TomorrowManualP1ModelArtifact:
     linear_intercept: float
     linear_coefficients: tuple[float, float, float]
     training_rows: int
-    profile_id: str = "p1"
-    model_id: str = P1_MODEL_ID
-    feature_ids: tuple[str, str, str] = P1_FEATURE_IDS
+    profile_id: str = "v1"
+    model_id: str = V1_MODEL_ID
+    feature_ids: tuple[str, str, str] = V1_FEATURE_IDS
     source_research_identity: str = "score_h0_v1"
-    feature_contract: str = P1_FEATURE_CONTRACT
+    feature_contract: str = V1_FEATURE_CONTRACT
     schema_version: str = "tomorrow_production_linear_model_v1"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         values = (*self.transformer_means, *self.transformer_scales, self.linear_intercept, *self.linear_coefficients)
         if (
-            self.profile_id != "p1"
-            or self.model_id != P1_MODEL_ID
-            or self.feature_ids != P1_FEATURE_IDS
+            self.profile_id != "v1"
+            or self.model_id != V1_MODEL_ID
+            or self.feature_ids != V1_FEATURE_IDS
             or self.source_research_identity != "score_h0_v1"
-            or self.feature_contract != P1_FEATURE_CONTRACT
+            or self.feature_contract != V1_FEATURE_CONTRACT
             or self.schema_version != "tomorrow_production_linear_model_v1"
             or len(self.source_spec_hash) != 64
             or len(self.source_manifest_hash) != 64
@@ -60,7 +60,7 @@ class TomorrowManualP1ModelArtifact:
             or any(not math.isfinite(value) for value in values)
             or any(value <= 0.0 for value in self.transformer_scales)
         ):
-            raise ValueError("manual Tomorrow P1 model artifact is invalid")
+            raise ValueError("manual Tomorrow V1 model artifact is invalid")
         object.__setattr__(self, "content_hash", _content_hash(production_artifact_payload(self)))
 
 
@@ -80,11 +80,11 @@ class _CompensatedSum:
         return self._total
 
 
-def fit_manual_p1_model(
+def fit_manual_v1_model(
     rows: Iterable[TomorrowHistoricalP2Row],
     spec: HistoricalScreeningSpec,
     manifest: HistoricalArchiveManifest,
-) -> TomorrowManualP1ModelArtifact:
+) -> TomorrowManualV1ModelArtifact:
     """Fit a deterministic ridge proxy without materializing the multi-million-row H0 archive."""
 
     if (
@@ -92,7 +92,7 @@ def fit_manual_p1_model(
         or manifest.research_identity != spec.research_identity
         or manifest.spec_hash != spec.content_hash
     ):
-        raise ValueError("manual Tomorrow P1 fitting requires the exact H0 manifest")
+        raise ValueError("manual Tomorrow V1 fitting requires the exact H0 manifest")
 
     sums = tuple(_CompensatedSum() for _ in range(3))
     cross = tuple(tuple(_CompensatedSum() for _ in range(3)) for _ in range(3))
@@ -112,7 +112,7 @@ def fit_manual_p1_model(
             for right, other in enumerate(features):
                 cross[left][right].add(value * other)
     if count < 5:
-        raise ValueError("manual Tomorrow P1 fitting requires at least five H0 rows")
+        raise ValueError("manual Tomorrow V1 fitting requires at least five H0 rows")
     means = tuple(item.value / count for item in sums)
     covariance = np.asarray(
         tuple(
@@ -133,7 +133,7 @@ def fit_manual_p1_model(
         / scale_array
     )
     coefficients = np.linalg.solve(standardized_cross + np.eye(3, dtype=np.float64) * _RIDGE, centered_target)
-    return TomorrowManualP1ModelArtifact(
+    return TomorrowManualV1ModelArtifact(
         source_spec_hash=spec.content_hash,
         source_manifest_hash=manifest.content_hash,
         training_start=spec.training_start,
@@ -146,7 +146,7 @@ def fit_manual_p1_model(
     )
 
 
-def production_artifact_payload(artifact: TomorrowManualP1ModelArtifact) -> dict[str, object]:
+def production_artifact_payload(artifact: TomorrowManualV1ModelArtifact) -> dict[str, object]:
     return {
         "feature_contract": artifact.feature_contract,
         "feature_ids": list(artifact.feature_ids),
@@ -166,7 +166,7 @@ def production_artifact_payload(artifact: TomorrowManualP1ModelArtifact) -> dict
     }
 
 
-def sealed_production_artifact_payload(artifact: TomorrowManualP1ModelArtifact) -> dict[str, object]:
+def sealed_production_artifact_payload(artifact: TomorrowManualV1ModelArtifact) -> dict[str, object]:
     payload = production_artifact_payload(artifact)
     payload["content_hash"] = artifact.content_hash
     return payload
@@ -178,11 +178,11 @@ def _content_hash(payload: dict[str, object]) -> str:
 
 
 __all__ = [
-    "P1_FEATURE_CONTRACT",
-    "P1_FEATURE_IDS",
-    "P1_MODEL_ID",
-    "TomorrowManualP1ModelArtifact",
-    "fit_manual_p1_model",
+    "V1_FEATURE_CONTRACT",
+    "V1_FEATURE_IDS",
+    "V1_MODEL_ID",
+    "TomorrowManualV1ModelArtifact",
+    "fit_manual_v1_model",
     "production_artifact_payload",
     "sealed_production_artifact_payload",
 ]

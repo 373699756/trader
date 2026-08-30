@@ -17,7 +17,7 @@ def test_authorities_separate_implemented_realtime_work_from_inactive_strategy_r
     assert "28 只" in design
     assert "待验证收益路线" in strategy
     assert "研究路线不改变安全规则、冻结记录或 DeepSeek 预算" in strategy
-    assert "P2 人工越权生产切换" in strategy
+    assert "V2 人工越权生产切换" in strategy
     assert "尚未生成任何正式档案" in strategy
     assert "生产发布尚未" in strategy
 

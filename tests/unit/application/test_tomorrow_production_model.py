@@ -14,7 +14,7 @@ NOW = datetime(2026, 8, 31, 14, 50, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
 class _Predictor:
-    profile_id = "p2"
+    profile_id = "v2"
     model_id = "daily_reconstructible_ensemble_v1"
     model_hash = "a" * 64
     feature_ids = (
@@ -77,10 +77,10 @@ def test_production_model_residualizes_the_bound_features_and_maps_net_utility_t
     assert batch.scores["600002"].components["model_net_utility_rank"] == 100.0
 
 
-def test_p1_profile_receives_only_the_residual_momentum_feature_family(application_feature_factory) -> None:
-    class _P1Predictor(_Predictor):
-        profile_id = "p1"
-        model_id = "p1_manual_residual_momentum_v1"
+def test_v1_profile_receives_only_the_residual_momentum_feature_family(application_feature_factory) -> None:
+    class _V1Predictor(_Predictor):
+        profile_id = "v1"
+        model_id = "v1_manual_residual_momentum_v1"
         feature_ids = (
             "qfq_residual_momentum_20d_skip5",
             "qfq_residual_momentum_40d_skip5",
@@ -94,7 +94,7 @@ def test_p1_profile_receives_only_the_residual_momentum_feature_family(applicati
             self.widths = tuple(len(item.alpha_features) for item in inputs)
             return super().predict(inputs)
 
-    predictor = _P1Predictor()
+    predictor = _V1Predictor()
     features = tuple(
         _model_feature(
             application_feature_factory(f"60000{index}", NOW),
@@ -107,13 +107,13 @@ def test_p1_profile_receives_only_the_residual_momentum_feature_family(applicati
     batch = TomorrowProductionModelScoringService(predictor).score(features)
 
     assert predictor.widths == (3, 3, 3)
-    assert batch.model_version == f"p1_manual_residual_momentum_v1:{'a' * 64}"
+    assert batch.model_version == f"v1_manual_residual_momentum_v1:{'a' * 64}"
 
 
-def test_p1_profile_does_not_require_the_unselected_reversal_family(application_feature_factory) -> None:
-    class _P1Predictor(_Predictor):
-        profile_id = "p1"
-        model_id = "p1_manual_residual_momentum_v1"
+def test_v1_profile_does_not_require_the_unselected_reversal_family(application_feature_factory) -> None:
+    class _V1Predictor(_Predictor):
+        profile_id = "v1"
+        model_id = "v1_manual_residual_momentum_v1"
         feature_ids = (
             "qfq_residual_momentum_20d_skip5",
             "qfq_residual_momentum_40d_skip5",
@@ -124,7 +124,7 @@ def test_p1_profile_does_not_require_the_unselected_reversal_family(application_
     values = dict(complete.values)
     values.update({"p2_return_1d": None, "p2_return_3d": None, "p2_return_5d": None})
 
-    batch = TomorrowProductionModelScoringService(_P1Predictor()).score((replace(complete, values=values),))
+    batch = TomorrowProductionModelScoringService(_V1Predictor()).score((replace(complete, values=values),))
 
     assert set(batch.scores) == {"600001"}
 

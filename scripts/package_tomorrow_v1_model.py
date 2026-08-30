@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fit and seal the manual Tomorrow P1 daily proxy into an explicit output path."""
+"""Fit and seal the manual Tomorrow V1 daily proxy into an explicit output path."""
 
 from __future__ import annotations
 
@@ -11,9 +11,9 @@ from pathlib import Path
 
 from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC
 from trader.infra.research.history_archive import SQLiteHistoricalArchive
-from trader.infra.research.tomorrow_manual_p1_model import (
-    TomorrowManualP1ModelArtifact,
-    fit_manual_p1_model,
+from trader.infra.research.tomorrow_manual_v1_model import (
+    TomorrowManualV1ModelArtifact,
+    fit_manual_v1_model,
     sealed_production_artifact_payload,
 )
 from trader.infra.settings import load_runtime_settings
@@ -37,7 +37,7 @@ def main() -> int:
     runtime = load_runtime_settings(args.runtime_config.resolve())
     archive = SQLiteHistoricalArchive(runtime.runtime_dir)
     manifest = archive.manifest(SCORE_H0_V1_SPEC)
-    artifact = fit_manual_p1_model(
+    artifact = fit_manual_v1_model(
         archive.iter_tomorrow_historical_p2_rows(SCORE_H0_V1_SPEC),
         SCORE_H0_V1_SPEC,
         manifest,
@@ -56,7 +56,7 @@ def main() -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists():
         if output.read_text(encoding="utf-8") != serialized:
-            raise RuntimeError("refusing to overwrite a different Tomorrow P1 model artifact")
+            raise RuntimeError("refusing to overwrite a different Tomorrow V1 model artifact")
         _print_summary(artifact)
         return 0
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{output.stem}-", suffix=".json", dir=output.parent)
@@ -70,14 +70,14 @@ def main() -> int:
             os.link(temporary, output)
         except FileExistsError:
             if output.read_text(encoding="utf-8") != serialized:
-                raise RuntimeError("Tomorrow P1 model artifact identity conflict") from None
+                raise RuntimeError("Tomorrow V1 model artifact identity conflict") from None
     finally:
         temporary.unlink(missing_ok=True)
     _print_summary(artifact)
     return 0
 
 
-def _print_summary(artifact: TomorrowManualP1ModelArtifact) -> None:
+def _print_summary(artifact: TomorrowManualV1ModelArtifact) -> None:
     print(
         json.dumps(
             {
