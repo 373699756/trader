@@ -39,13 +39,27 @@ def test_strategy_contract_requires_v2_native_decisions_and_no_legacy_replay() -
 
 def test_parallel_v2_overview_plan_and_operations_docs_are_retired() -> None:
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+    strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
+    design_compact = " ".join(design.split())
 
     assert "V2-only 工程与发布门禁验收已闭合" in design
     assert "当前代码仍属于 `Unreleased`" in design
     assert "只有用户显式发起独立发布批次" in design
     assert "新 release 不读取旧运行目录、旧数据库、旧快照或旧 schema" in design
     assert "原生评分因子诊断层" in design
-    for retired in ("V2.md", "implementation-plan.md", "start_stop.md"):
+    assert "多种行情来源不等于证券主数据存在同等冗余供给" in design
+    assert "主推荐区必须按确定性优先级给出单一结论" in design_compact
+    assert "达到观察线/正式线数量" in design_compact
+    assert "新评分版本只有对应评分 release 获得生产晋级权限后才允许展示" in design_compact
+    assert "P2 路线已经终止，当前没有可继续晋级的 P2 候选" in strategy
+    assert "新的候选必须另立未读取新收益的研究身份" in strategy
+    for retired in (
+        "V2.md",
+        "implementation-plan.md",
+        "start_stop.md",
+        "review.md",
+        "fenshu.md",
+    ):
         assert not (ROOT / "docs" / retired).exists()
     assert not (ROOT / "docs/V2_plan.md").exists()
     assert not (ROOT / "docs/score.md").exists()

@@ -6,6 +6,9 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户要求将 `review.md`、`fenshu.md` 归并后删除，扩展文档单一真相源契约：两份旧问题/评分计划
+  文件必须不存在，证券主数据来源职责、P2 终态及未来新候选入口必须由两份权威文档直接定义。
+  `Regression-Key: authoritative-doc-retirement-review-score-plan-v1`。
 - 针对用户要求继续完成 `docs/fenshu.md` 下一整节 P2-1，新增显式
   `research-tomorrow-p2-screen` 离线执行链：只读复用 H0 qfq 归档，按同日市场/板块/成交额暴露残差化
   六个 Alpha 字段，使用训练段内部时间留出完成固定 ridge/单线程 LightGBM 的唯一一次训练，再在正式
@@ -452,6 +455,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 旧问题记录中的数据源解释、Web 指标展示前置条件和当前运行边界已按产品职责归入软件业务设计；旧评分
+  计划中的六类建模问题、P2 失败终态和新候选准入规则已按策略职责归入荐股策略文档。根因确认不是
+  权威契约缺少主体技术内容，而是一次性记录仍留在活动文档树且策略现状摘要未随 P2 终止更新；本批
+  采用语义去重归位，不把历史流水原样拼接为第二套定义。
 - P2-1 使用真实 `.runtime/v2` H0 归档复核 4,904/5,006 只完整历史（97.9624%），形成 368 个训练日、
   139 个验证日和 678,370 条验证同日同股配对。候选的 20/50/100bp 平均净增量与 20bp bootstrap 下界
   虽为正，但严重亏损率 15.9472% 高于 H0 历史代理 8.2734%、换手增加 56.2350 个百分点、Q5-Q1 为负，
@@ -846,6 +853,9 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修正荐股策略第 15.1 节仍声称 P2 的 H0 覆盖、候选封存和前向证据“尚未完成”的过期状态；现在明确
+  P2-1 已 `historical_rejected`、P2-2/P2-3 已取消且不是后续“继续”任务，避免旧计划文件把已终止路线
+  误导为可恢复任务。活动评分、78/73 门槛、68/32 融合及 Web 展示行为均未改变。
 - 修复状态卡虽已显示基础资料 120/360，主推荐区仍只说“快照尚未发布”，以及评分完成空池无法读取生产
   聚合原因的问题。根因是页面未把 `scheduler.input_quality` 接入主结论，且旧代码读取公开响应中不存在
   的诊断字典；现在统一消费类型化漏斗与原因计数，Today 冻结错过优先于当前盘后 pending，普通页面仍
@@ -1210,6 +1220,8 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除已完成语义归位的 `docs/review.md` 与 `docs/fenshu.md`；其历史用户诉求、运行实证和逐批交付结果
+  继续由本 Changelog 追溯，不在权威文档保留版本流水，也不保留兼容副本或重定向文件。
 - 移除 `supply_funnel` 通过 `asdict()` 自动扩散公开 JSON 字段的投影方式，改为状态 adapter 显式字段
   白名单；移除 Web 对生产响应中不存在的 `blocked_reason_counts`/`selection_skip_reason_counts` 作为
   聚合解释来源的依赖，不保留双表示或隐藏 fallback。
@@ -1381,6 +1393,13 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- `authoritative-doc-retirement-review-score-plan-v1` 先行失败契约已证明旧权威文档缺少证券主数据职责/P2
+  终态措辞；归并后 `.venv/bin/ruff check tests/contract/test_v2_only_product_contract.py` 通过，文档单一
+  真相源、评分计划、权威一致性和数据平面 4 组契约共 26 项通过。活动树引用扫描只保留本契约中的退役
+  文件名，`git diff --check` 通过。
+- `make format-check`、全仓 `make lint`/`make type-check`/`make test`/`make package`、仓库外 wheel 和三档
+  浏览器验收不适用：本批只修改 Markdown 和一项只读文件存在性/文案契约，不改变 Python 运行实现、
+  类型边界、依赖/入口、API/SSE、Web 资源或桌面行为；对应权威文档定向契约已覆盖实际影响边界。
 - P2-1 定向契约通过：领域规范/报告、单次训练与正式验证隔离、合法空池、固定模型确定性、工件幂等/冲突/
   报告及模型篡改、CLI 与策略/架构文档契约共 49 项通过。真实命令
   `research-tomorrow-p2-screen` 首次按预注册门槛返回 `historical_rejected`（预期退出码 1），报告哈希
@@ -2157,6 +2176,9 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 本批只治理文档所有权，不修改运行代码、研究工件或生产状态；既有外部风险不因删除旧文件而消失。
+  当前仍无获准生产的新评分候选，P2 保持终止。若未来提出不同候选，必须从两份权威文档另立完整研究
+  身份和独立交付批次，不能从已删除文件恢复任务或放宽既有拒绝门禁。
 - P2 已因历史门禁失败终止，没有新评分版本或生产晋级权限。H0 只能重建日线、稳定板块和成本/风险代理，
   不能证明真实 14:50 生产基线、历史 ST/行业/披露/公司风险或 DeepSeek facts；这些缺口没有用当前值、
   零风险或中性值回填。若未来提出不同候选，只能使用新的预注册身份和未读取的新证据，不能修改、覆盖
