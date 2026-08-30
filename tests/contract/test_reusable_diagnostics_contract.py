@@ -41,7 +41,14 @@ def test_unified_runtime_diagnostic_is_the_only_public_parameterized_script() ->
         timeout=10,
     )
     assert result.returncode == 0, result.stderr
-    for option in ("--profile", "--base-url", "--runtime-config", "--codes", "--output"):
+    for option in (
+        "--profile",
+        "--base-url",
+        "--runtime-config",
+        "--codes",
+        "--history-source",
+        "--output",
+    ):
         assert option in result.stdout
     for profile in (
         "web",

@@ -149,7 +149,7 @@ class TencentClient:
             return ()
         data = payload.get("data") if isinstance(payload, Mapping) else None
         stock = data.get(symbol) if isinstance(data, Mapping) else None
-        rows = stock.get("qfqday") if isinstance(stock, Mapping) else None
+        rows = _qfq_rows(stock)
         if not isinstance(rows, list):
             return ()
         return _history_bars(rows, days=days)
@@ -263,6 +263,34 @@ def _history_bars(rows: Sequence[object], *, days: int) -> tuple[DailyBar, ...]:
         )
         previous_close = close
     return tuple(bars[-max(1, days) :])
+
+
+def _qfq_rows(stock: object) -> list[object] | None:
+    if not isinstance(stock, Mapping):
+        return None
+    adjusted = stock.get("qfqday")
+    if isinstance(adjusted, list):
+        return adjusted
+    raw = stock.get("day")
+    if not isinstance(raw, list) or not raw:
+        return None
+    if all(_day_row_is_qfq_equivalent(item) for item in raw):
+        return raw
+    return None
+
+
+def _day_row_is_qfq_equivalent(raw: object) -> bool:
+    if not isinstance(raw, list) or len(raw) < 11:
+        return False
+    corporate_action = raw[6]
+    first_adjustment = to_float(raw[9])
+    second_adjustment = to_float(raw[10])
+    return (
+        isinstance(corporate_action, Mapping)
+        and not corporate_action
+        and first_adjustment == 0.0
+        and second_adjustment == 0.0
+    )
 
 
 __all__ = ["TencentClient"]

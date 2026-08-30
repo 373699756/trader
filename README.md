@@ -71,6 +71,17 @@ API/ETag/status、SSE 和 100 tick RSS；可用 `--output` 保存报告，或用
 绝对路径。
 也可执行 `make diagnose-live`；耗时更长的浏览器与性能组合必须显式执行 `make diagnose-full`。
 
+历史为空时可继续通过统一入口拆分生产组合路由和单一供应商；默认值为 `composite`，该参数只影响
+只读诊断，不改变运行服务的来源优先级：
+
+```bash
+.venv/bin/python scripts/diagnose_runtime.py \
+  --profile history \
+  --history-source tencent \
+  --codes 688981 \
+  --output -
+```
+
 只复测单一边界时仍使用同一个入口，profile 可选 `web`、`security-master`、`history`、`tencent`、`tushare`、`browser`
 和 `performance`。例如只检查荐股漏斗：
 

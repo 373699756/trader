@@ -238,6 +238,65 @@ def test_tencent_history_rejects_unadjusted_day_payload_when_qfq_is_missing() ->
     assert client.fetch_history("600001", days=20) == ()
 
 
+def test_tencent_history_accepts_day_payload_proven_equivalent_to_requested_qfq() -> None:
+    rows = [
+        [
+            (date(2026, 6, 1) + timedelta(days=index)).isoformat(),
+            "10.00",
+            f"{10.0 + index / 10:.2f}",
+            "13.00",
+            "9.90",
+            "1000.00",
+            {},
+            "0.33",
+            "6000.00",
+            "0.00",
+            "0.00",
+        ]
+        for index in range(21)
+    ]
+    body = "kline_dayqfq2026=" + json.dumps({"data": {"sh600001": {"day": rows}}})
+    client = TencentClient(timeout_seconds=2, session_factory=lambda: FakeSession([body]))
+
+    bars = client.fetch_history("600001", days=20)
+
+    assert len(bars) == 20
+    assert all(bar.adjustment is PriceAdjustment.QFQ for bar in bars)
+
+
+@pytest.mark.parametrize(
+    "invalid_tail",
+    (
+        ({"djr": "2026-06-15"}, "0.00", "0.00"),
+        ({}, "1.00", "0.00"),
+        ({}, "0.00", "1.00"),
+    ),
+)
+def test_tencent_history_rejects_day_payload_without_zero_adjustment_proof(
+    invalid_tail: tuple[object, str, str],
+) -> None:
+    corporate_action, first_adjustment, second_adjustment = invalid_tail
+    rows = [
+        [
+            "2026-07-15",
+            "10",
+            "11",
+            "12",
+            "9",
+            "1000",
+            corporate_action,
+            "0.3",
+            "6000",
+            first_adjustment,
+            second_adjustment,
+        ]
+    ]
+    body = "kline_dayqfq2026=" + json.dumps({"data": {"sh600001": {"day": rows}}})
+    client = TencentClient(timeout_seconds=2, session_factory=lambda: FakeSession([body]))
+
+    assert client.fetch_history("600001", days=20) == ()
+
+
 def test_history_fallback_uses_eastmoney_only_when_tencent_is_insufficient() -> None:
     primary = CountingHistoryClient(())
     fallback = CountingHistoryClient(_history_bars())

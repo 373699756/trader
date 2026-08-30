@@ -28,6 +28,7 @@ def _options(**overrides: object) -> DiagnosticOptions:
         source_interval_seconds=1.0,
         history_workers=3,
         history_days=61,
+        history_source="composite",
         web_timeout_seconds=3.0,
         source_timeout_seconds=4.5,
         browser_duration_seconds=8.0,
@@ -64,6 +65,13 @@ def test_full_profile_adds_browser_and_offline_performance_without_duplicate_pro
         "browser_refresh",
         "production_performance",
     )
+
+
+@pytest.mark.parametrize("source", ("composite", "tencent", "eastmoney"))
+def test_history_profile_passes_explicit_source_to_the_bounded_probe(source: str) -> None:
+    commands = build_commands(_options(profile="history", history_source=source), python_executable="/python")
+
+    assert commands[0].argv[commands[0].argv.index("--source") + 1] == source
 
 
 @pytest.mark.parametrize(

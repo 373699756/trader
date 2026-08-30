@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户选择暂缓密钥配置、修复 688981 历史为空并要求继续解释未来评分晋级，统一运行诊断新增
+  `--history-source composite|tencent|eastmoney`。历史、来源、live 和 full profile 可从同一公开入口
+  拆分生产组合路由与单一供应商，仍只输出聚合行数、错误计数和延迟，不泄露股票价格或外部载荷。
+  `Regression-Key: tencent-qfq-equivalent-day-history-v1`。
 - 针对用户要求把荐股评分 Review 扫描问题先写入权威文档再修复，新增 V4 六类结构化风险到本地规则的
   领域归一化契约、`deepseek_v4_local_rules_2026_08` 有类型策略版本、决策 epoch 同批选择限制值对象，
   以及覆盖风险映射、配置漂移、veto、零权重维度和 epoch 自校验的回归门禁。
@@ -860,6 +864,12 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复腾讯对 688981 等“窗口内无需复权”股票返回 `day` 时被旧解析器直接丢弃的问题。根因是生产请求
+  已显式要求 qfq，但旧实现只接受响应键 `qfqday`；当东方财富三个历史主机同时连接失败时，组合链便
+  从腾讯 HTTP 成功错误退化为 0 行。现在只有逐行公司行动元数据为空且两个调整标志均为零时才接纳
+  `day` 为 qfq 等价序列；元数据缺失、公司行动存在或任一调整标志非零仍失败关闭，一般 raw 日线绝不
+  冒充 qfq。修复不改变历史来源优先级、候选公式、评分、78/73 门槛、68/32 融合或冻结。
+  `Regression-Key: tencent-qfq-equivalent-day-history-v1`。
 - 修复本次评分一致性扫描确认的五项代码/策略漂移：V4 schema 的减持、解禁、质押、诉讼和业绩风险此前
   因原始代码与本地规则名不一致而静默丢弃；模型复核会覆盖已有本地 veto；零权重行业政策会错误增加
   已知维度数；配置仅校验权重合计而未锁定固定向量、0.50/2 覆盖门和观察余量 5；决策 epoch 使用宽于
@@ -1405,6 +1415,17 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- `Regression-Key: tencent-qfq-equivalent-day-history-v1`：先运行新增回归并观察合法 qfq 等价 `day`
+  用例按预期失败，再实现严格归一化；定向 component/unit/contract 共 54 项通过，受影响 Python 的 Ruff、
+  mypy 与格式检查通过。真实拆源修复前，688981 的腾讯历史为 0/2 可用、东方财富为 0/2 且两次请求错误、
+  组合为 0/2；修复后腾讯与组合各 2/2 可用、0 空行、0 错误，P95 分别为 244.2ms 与 221.3ms。
+- 对精确确认的旧服务 PID 执行一次正常 SIGTERM 后，真实运行 `./run.sh` 从当前工作树重新启动服务；
+  修复后 `live` 统一诊断返回 Web 3/3 样本无错误或告警、沪深交易所基础资料 5212/5212 完整、三只代表股
+  历史 3/3 可用、腾讯报价通过。总体 4 项通过、1 项因用户明确暂缓的 Tushare Token 缺失而受控降级，
+  没有失败项。2026-08-30 为周日，实际 phase 为 `closed`，历史预热 planned/completed 均为 0，Today、
+  Tomorrow、D25 均为 `not_ready`，因此本次证据没有把非交易时段合法空状态误写为完整评分/冻结通过。
+  高风险完整门禁 `make format-check`、`make lint`、`make type-check`、`make test` 和 `make package` 全部通过；
+  其中格式门禁覆盖 426 个文件、mypy 覆盖 254 个源码文件，全量 pytest 100% 通过并成功生成 sdist/wheel。
 - `scoring-policy-integrity-review-v1` 失败先行测试先复现本地 veto 被清除、五类 V4 风险丢失、固定门禁
   可漂移、零权重行业维度误计和 epoch 缺少类型限制；修复后评分融合、DeepSeek、配置与 Tomorrow
   决策四组定向测试通过，并额外覆盖六类风险的全部 18 个严重度组合和未知模型风险失败关闭。首次全量
@@ -2198,6 +2219,15 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 用户明确选择暂不处理 `.token_key`，因此 DeepSeek 继续以 `api_key_missing` 零调用降级，Tushare 继续以
+  `missing_token` 降级；两者不是本批 688981 历史修复的失败，也未被隐藏。东方财富三个历史主机的外部
+  `ConnectionError` 仍可能发生，但腾讯严格 qfq 等价路径已使本次 688981 组合历史恢复。
+- 2026-08-30 为非交易日，无法在本批真实生成“输入资格 → 硬过滤 → 候选 → 本地评分 → 风险 →
+  DeepSeek → 融合 → 动作/TopK → 冻结”的盘中和 14:50/15:00 证据；必须在 2026-08-31 对应交易窗口
+  复用统一诊断继续验收。未来 2027 新评分不是代码故障：`score_tomorrow_shadow_p1_v1` 仍须先绑定上交所
+  2027 官方休市文件，在固定 40+20 日期采集不可回填的点时证据并通过全部门禁，再生成无生产权限的
+  人工审查档案；只有另立高风险生产发布批次并通过人工批准与发布门禁后，成本后净超额、亏损概率和
+  新评分版本才允许进入活动 API/Web。既有 `historical_rejected` P2 不得恢复、改参或借用这些未来证据。
 - 本批修复活动评分实现与既有权威策略不一致的问题，没有生成或晋级新评分候选，也不调整 78/73 门槛。
   已封存失败的 P2 路线仍保持终止；若未来提出全新候选，2027 交易日历下的外部点时证据采集、独立
   预注册、成本后净超额/严重亏损概率门禁和人工晋级仍须另立研究批次。本批没有伪造未来样本，也没有

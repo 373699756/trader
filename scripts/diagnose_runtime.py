@@ -34,6 +34,7 @@ Profile = Literal[
     "full",
 ]
 CheckStatus = Literal["passed", "degraded", "failed"]
+HistorySource = Literal["composite", "tencent", "eastmoney"]
 
 _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "web": ("web_health",),
@@ -71,6 +72,7 @@ class DiagnosticOptions:
     source_interval_seconds: float
     history_workers: int
     history_days: int
+    history_source: HistorySource
     web_timeout_seconds: float
     source_timeout_seconds: float
     browser_duration_seconds: float
@@ -120,6 +122,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-interval-seconds", type=float, default=1.0, help="delay between Tencent samples")
     parser.add_argument("--history-workers", type=int, default=5, help="history requests per bounded worker wave")
     parser.add_argument("--history-days", type=int, default=61, help="daily history rows requested per stock")
+    parser.add_argument(
+        "--history-source",
+        choices=("composite", "tencent", "eastmoney"),
+        default="composite",
+        help="history route sampled by history/sources/live/full profiles",
+    )
     parser.add_argument("--web-timeout-seconds", type=float, default=3.0, help="timeout per Web API request")
     parser.add_argument("--source-timeout-seconds", type=float, default=4.5, help="timeout per vendor HTTP attempt")
     parser.add_argument("--browser-duration-seconds", type=float, default=8.0, help="full-profile browser duration")
@@ -176,6 +184,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             source_interval_seconds=args.source_interval_seconds,
             history_workers=args.history_workers,
             history_days=args.history_days,
+            history_source=args.history_source,
             web_timeout_seconds=args.web_timeout_seconds,
             source_timeout_seconds=args.source_timeout_seconds,
             browser_duration_seconds=args.browser_duration_seconds,
@@ -324,6 +333,8 @@ def _history_command(options: DiagnosticOptions, python_executable: str) -> tupl
         str(min(options.history_workers, len(options.codes))),
         "--days",
         str(options.history_days),
+        "--source",
+        options.history_source,
         "--timeout-seconds",
         str(options.source_timeout_seconds),
     ]

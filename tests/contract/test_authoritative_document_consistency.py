@@ -93,5 +93,16 @@ def test_authoritative_docs_keep_algorithm_and_product_ownership_separate() -> N
     assert "单次网络 timeout 为 20 秒" in strategy
 
 
+def test_authoritative_docs_preserve_strict_qfq_equivalence_boundary() -> None:
+    design = DESIGN.read_text(encoding="utf-8")
+    strategy = STRATEGY.read_text(encoding="utf-8")
+    contract = "逐行公司行动元数据为空且两个调整标志均为零"
+
+    assert contract in design
+    assert contract in strategy
+    assert "不得把一般未复权 `day` 标记为 qfq" in design
+    assert "不得把一般未复权 `day` 标记为 qfq" in strategy
+
+
 def _compact(content: str) -> str:
     return " ".join(content.split())
