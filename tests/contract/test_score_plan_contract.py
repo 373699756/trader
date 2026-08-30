@@ -376,6 +376,8 @@ def test_tomorrow_shadow_p1_preregistration_is_owned_by_the_authoritative_contra
     for expected in (
         "V1/V2 生产评分配置切换",
         "tomorrow_scoring_profile=v1|v2",
+        "默认 `v1`",
+        "./run.sh --profile v2",
         "重启生效",
         "不得覆盖既有冻结记录",
     ):

@@ -6,11 +6,13 @@ import argparse
 import json
 import os
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from pathlib import Path
+from typing import cast
 from zoneinfo import ZoneInfo
 
+from trader.application.ports.tomorrow_model import TomorrowScoringProfile
 from trader.application.research.score_r7 import build_score_r7_promotion_dossier
 from trader.bootstrap import build_historical_research_services
 from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC
@@ -45,6 +47,25 @@ from trader.infra.research.tomorrow_historical_p2_artifacts import (
 )
 from trader.infra.settings import RuntimeSettings, load_long_watchlist, load_runtime_settings, load_strategy_settings
 
+_COMMAND_GROUPS = {
+    "check": ("validate-config", "research-status", "performance-check"),
+    "research-history": ("research-history-download", "research-backtest"),
+    "research-screen": (
+        "research-r6-screen",
+        "research-r6-daily-screen",
+        "research-r6-stability-screen",
+        "research-tomorrow-p2-screen",
+    ),
+}
+
+
+@dataclass(frozen=True)
+class _OfflineReportOptions:
+    research_identity: str
+    output: Path | None
+    baseline: Path | None
+    tomorrow_scoring_profile: TomorrowScoringProfile | None
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="trader-cli")
@@ -53,7 +74,25 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("TRADER_CONFIG", ""),
         help="Absolute path to config/v2/runtime.json.",
     )
+    parser.add_argument(
+        "--profile",
+        choices=("v1", "v2"),
+        help="Effective Tomorrow scoring profile for this process; config value is used when omitted.",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser(
+        "check",
+        help="Run config validation, research readiness, and the active-profile performance gate.",
+    )
+    history = subparsers.add_parser(
+        "research-history",
+        help="Resume the fixed history archive and then run its read-only backtest.",
+    )
+    history.add_argument("--workers", type=int, choices=range(1, 6), default=5)
+    subparsers.add_parser(
+        "research-screen",
+        help="Run all four immutable historical screening and stability stages in order.",
+    )
     subparsers.add_parser("validate-config", help="Validate runtime and strategy configuration.")
     performance = subparsers.add_parser(
         "performance-check",
@@ -93,6 +132,14 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config_path = _absolute_config_path(args.config)
     runtime = load_runtime_settings(config_path)
+    profile_override = cast(TomorrowScoringProfile | None, args.profile)
+    if args.command in _COMMAND_GROUPS:
+        return _run_command_group(
+            args.command,
+            config_path,
+            _effective_profile(runtime, profile_override),
+            workers=int(getattr(args, "workers", 5)),
+        )
     if args.command == "research-status":
         trace = SQLiteV2ResearchTraceStore(runtime.runtime_dir)
         status = trace.inspect_status()
@@ -238,12 +285,24 @@ def main(argv: list[str] | None = None) -> int:
             args.command,
             config_path,
             runtime,
-            research_identity=str(getattr(args, "research_identity", "")),
-            performance_options=(getattr(args, "output", None), getattr(args, "baseline", None)),
+            _OfflineReportOptions(
+                research_identity=str(getattr(args, "research_identity", "")),
+                output=getattr(args, "output", None),
+                baseline=getattr(args, "baseline", None),
+                tomorrow_scoring_profile=profile_override,
+            ),
         )
-    if args.command != "validate-config":
-        return 2
-    strategy = load_strategy_settings(runtime.strategy_config_path)
+    return _run_config_validation(runtime, profile_override)
+
+
+def _run_config_validation(
+    runtime: RuntimeSettings,
+    profile_override: TomorrowScoringProfile | None,
+) -> int:
+    strategy = load_strategy_settings(
+        runtime.strategy_config_path,
+        tomorrow_scoring_profile=profile_override,
+    )
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
     print(
         json.dumps(
@@ -251,6 +310,7 @@ def main(argv: list[str] | None = None) -> int:
                 "status": "ok",
                 "runtime_version": runtime.config_version,
                 "strategy_version": strategy.strategy_version,
+                "tomorrow_scoring_profile": strategy.tomorrow_scoring_profile,
                 "watchlist_version": watchlist.watchlist_version,
                 "runtime_dir": str(runtime.runtime_dir),
             },
@@ -261,24 +321,35 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _effective_profile(
+    runtime: RuntimeSettings,
+    profile_override: TomorrowScoringProfile | None,
+) -> TomorrowScoringProfile:
+    if profile_override is not None:
+        return profile_override
+    return load_strategy_settings(runtime.strategy_config_path).tomorrow_scoring_profile
+
+
 def _run_offline_report(
     command: str,
     config_path: Path,
     runtime: RuntimeSettings,
-    *,
-    research_identity: str,
-    performance_options: tuple[Path | None, Path | None],
+    options: _OfflineReportOptions,
 ) -> int:
     if command == "performance-check":
-        output, baseline = performance_options
-        return _run_performance_report(config_path, output=output, baseline=baseline)
+        return _run_performance_report(
+            config_path,
+            output=options.output,
+            baseline=options.baseline,
+            tomorrow_scoring_profile=options.tomorrow_scoring_profile,
+        )
     if command == "research-backtest":
         services = build_historical_research_services(config_path)
         report = services.backtest.execute(SCORE_H0_V1_SPEC)
         print(json.dumps(asdict(report), default=_json_default, ensure_ascii=False, sort_keys=True))
         return 0 if report.status == "screened" else 1
     if command == "research-r7-dossier":
-        return _run_r7_dossier(runtime, research_identity)
+        return _run_r7_dossier(runtime, options.research_identity)
     if command == "research-r6-daily-screen":
         return _run_r6_daily_screen(config_path, runtime)
     if command in {"research-r6-stability-screen", "research-tomorrow-p2-screen"}:
@@ -295,13 +366,55 @@ def _run_performance_report(
     *,
     output: Path | None,
     baseline: Path | None,
+    tomorrow_scoring_profile: TomorrowScoringProfile | None,
 ) -> int:
-    report = run_performance(config_path, baseline_path=baseline)
+    report = run_performance(
+        config_path,
+        baseline_path=baseline,
+        tomorrow_scoring_profile=tomorrow_scoring_profile,
+    )
     payload = json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2)
     if output is not None:
         output.write_text(f"{payload}\n", encoding="utf-8")
     print(payload)
     return 0 if report["status"] == "passed" else 1
+
+
+def _run_command_group(
+    command: str,
+    config_path: Path,
+    profile: TomorrowScoringProfile,
+    *,
+    workers: int,
+) -> int:
+    results: list[dict[str, str | int]] = []
+    stages = _COMMAND_GROUPS[command]
+    for index, stage in enumerate(stages, start=1):
+        print(f"[{index}/{len(stages)}] {stage}", file=sys.stderr, flush=True)
+        stage_argv = ["--config", str(config_path), "--profile", profile, stage]
+        if command == "research-history" and stage == "research-history-download":
+            stage_argv.extend(("--workers", str(workers)))
+        exit_code = _run_group_stage(stage_argv)
+        results.append({"command": stage, "exit_code": exit_code})
+    failed = any(int(item["exit_code"]) != 0 for item in results)
+    print(
+        json.dumps(
+            {
+                "schema_version": "trader_command_group_v1",
+                "command": command,
+                "profile": profile,
+                "status": "completed_with_failures" if failed else "passed",
+                "stages": results,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 1 if failed else 0
+
+
+def _run_group_stage(argv: list[str]) -> int:
+    return main(argv)
 
 
 def _run_r6_daily_screen(config_path: Path, runtime: RuntimeSettings) -> int:

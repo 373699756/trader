@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, cast
 
+from trader.application.ports.tomorrow_model import TomorrowScoringProfile
 from trader.domain.market.news import NewsSignalPolicy
 from trader.domain.market.research import LongResearchPolicy, MarketRegimePolicy
 from trader.domain.market.tail import TailSignalPolicy
@@ -62,14 +63,23 @@ from trader.infra.settings_runtime import load_runtime_settings
 from trader.infra.settings_strategy_validation import _validate_strategy_settings
 
 
-def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySettings:
+def load_strategy_settings(
+    config_path: str | os.PathLike[str],
+    *,
+    tomorrow_scoring_profile: TomorrowScoringProfile | None = None,
+) -> StrategySettings:
     path = Path(config_path).expanduser().resolve()
     raw = _read_json_object(path)
     if _integer(raw, "schema_version", minimum=1) != 15:
         raise ConfigurationError("strategy schema_version must be 15")
-    tomorrow_scoring_profile = _text(raw, "tomorrow_scoring_profile")
-    if tomorrow_scoring_profile not in {"v1", "v2"}:
+    configured_profile = _text(raw, "tomorrow_scoring_profile")
+    if configured_profile not in {"v1", "v2"}:
         raise ConfigurationError("tomorrow_scoring_profile must be v1 or v2")
+    if tomorrow_scoring_profile is not None:
+        if tomorrow_scoring_profile not in {"v1", "v2"}:
+            raise ConfigurationError("tomorrow_scoring_profile override must be v1 or v2")
+        raw = {**raw, "tomorrow_scoring_profile": tomorrow_scoring_profile}
+    effective_profile = _text(raw, "tomorrow_scoring_profile")
     fusion_raw = _mapping(raw, "fusion")
     selection_raw = _mapping(raw, "selection")
     hard_filters_raw = _mapping(raw, "hard_filters")
@@ -99,7 +109,7 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
     settings = StrategySettings(
         schema_version=15,
         strategy_version=_strategy_contract_version(raw),
-        tomorrow_scoring_profile=cast(Literal["v1", "v2"], tomorrow_scoring_profile),
+        tomorrow_scoring_profile=cast(Literal["v1", "v2"], effective_profile),
         deepseek_risk_mapping_version=_text(raw, "deepseek_risk_mapping_version"),
         fusion=FusionSettings(
             version=_text(fusion_raw, "version"),

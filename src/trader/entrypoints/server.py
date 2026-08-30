@@ -47,13 +47,14 @@ class _RuntimeSystem(_StoppableSystem, Protocol):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="trader-server")
     parser.add_argument("--config", default=os.environ.get("TRADER_CONFIG", ""))
+    parser.add_argument("--profile", choices=("v1", "v2"))
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config_path = _absolute_config_path(args.config)
-    system = build_system(config_path)
+    system = build_system(config_path, tomorrow_scoring_profile=args.profile)
     _validate_bind(system.settings)
     try:
         lock = ProcessLock(system.settings.runtime_dir / "server.lock")

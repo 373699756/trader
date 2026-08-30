@@ -35,20 +35,24 @@ run.bat
 
 脚本在需要时创建 `.venv`，从 `pyproject.toml` 安装项目，然后使用绝对配置路径启动 `trader-server`。默认地址为 <http://127.0.0.1:5000>。
 
-常用配置：
+常用命令与配置：
 
 ```bash
 TRADER_PORT=5050 ./run.sh
 DEEPSEEK_API_KEY=your-key ./run.sh
 TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
-./run.sh validate-config
-./run.sh performance-check
+./run.sh check
+./run.sh --profile v2
+./run.sh research-history --workers 5
+./run.sh research-screen
 ./run.sh help
 ```
 
-日常启动不需要参数。`help` 会把只读检查与离线研究命令分组说明；离线研究命令不会随服务启动自动
-执行。`performance-check` 禁止外网并直接测量活动生产标准化、合并、三策略评分、overlay CAS、
-API/ETag/status、SSE 和 100 tick RSS；可用 `--output` 保存报告，或用 `--baseline` 执行 5% 相对回归门禁。
+日常启动不需要参数，默认使用 Tomorrow V1；追加 `--profile v2` 才使用 V2，该覆盖不会写回配置。
+`check` 依次执行配置校验、只读研究状态和所选档位的离线性能门禁；`research-history` 合并下载/续传与
+固定回测，`research-screen` 合并四项不可变筛选/诊断。离线研究不会随服务启动自动执行。底层
+`trader-cli performance-check` 仍可用 `--output` 保存报告或用 `--baseline` 执行 5% 相对回归门禁；它
+禁止外网并直接测量活动生产标准化、合并、三策略评分、overlay CAS、API/ETag/status、SSE 和 100 tick RSS。
 
 启动脚本只读取 `TRADER_HOST` 和 `TRADER_PORT`；旧 `HOST`/`PORT` 不再映射到 V2 进程。
 

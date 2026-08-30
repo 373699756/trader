@@ -12,6 +12,7 @@ import pytest
 
 import trader.entrypoints.cli as cli_module
 from trader.entrypoints.cli import build_parser, main
+from trader.entrypoints.server import build_parser as build_server_parser
 from trader.infra.persistence.research_trace import (
     SQLiteV2ResearchTraceStore,
     V2ResearchTradeDateObservation,
@@ -39,6 +40,9 @@ def test_cli_exposes_current_v2_maintenance_and_explicit_offline_research_comman
     for removed in ("migrate-v17", "recommendation-archive", "tomorrow-cutover-evidence"):
         assert removed not in help_text
     for retained in (
+        "check",
+        "research-history",
+        "research-screen",
         "validate-config",
         "performance-check",
         "research-status",
@@ -53,6 +57,16 @@ def test_cli_exposes_current_v2_maintenance_and_explicit_offline_research_comman
         assert retained in help_text
 
 
+def test_server_entrypoint_accepts_only_the_two_typed_scoring_profiles() -> None:
+    parser = build_server_parser()
+
+    assert parser.parse_args(["--config", "/tmp/runtime.json", "--profile", "v1"]).profile == "v1"
+    assert parser.parse_args(["--config", "/tmp/runtime.json", "--profile", "v2"]).profile == "v2"
+    with pytest.raises(SystemExit) as error:
+        parser.parse_args(["--config", "/tmp/runtime.json", "--profile", "latest"])
+    assert error.value.code == 2
+
+
 def test_performance_entrypoint_does_not_import_posix_resource_at_module_load() -> None:
     source = (ROOT / "src/trader/entrypoints/performance.py").read_text(encoding="utf-8")
     module = ast.parse(source)
@@ -63,24 +77,26 @@ def test_performance_entrypoint_does_not_import_posix_resource_at_module_load() 
     )
 
 
-def test_run_script_exposes_read_only_research_status() -> None:
+def test_run_script_exposes_only_the_aggregated_public_workflows() -> None:
     shell = (ROOT / "run.sh").read_text(encoding="utf-8")
 
-    assert "research-status" in shell
-    assert "performance-check" in shell
-
-
-def test_run_script_exposes_explicit_offline_history_research_without_mapping_it_to_serve() -> None:
-    shell = (ROOT / "run.sh").read_text(encoding="utf-8")
-
-    assert "research-history-download" in shell
-    assert "research-backtest" in shell
-    assert "research-r6-screen" in shell
-    assert "research-r6-daily-screen" in shell
-    assert "research-r6-stability-screen" in shell
-    assert "research-tomorrow-p2-screen" in shell
+    assert "check" in shell
+    assert "research-history" in shell
+    assert "research-screen" in shell
     assert "research-r7-dossier" in shell
     assert "serve|app" in shell
+    for internal_stage in (
+        "validate-config",
+        "research-status",
+        "performance-check",
+        "research-history-download",
+        "research-backtest",
+        "research-r6-screen",
+        "research-r6-daily-screen",
+        "research-r6-stability-screen",
+        "research-tomorrow-p2-screen",
+    ):
+        assert internal_stage not in shell
 
 
 def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path: Path) -> None:
@@ -96,14 +112,14 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
 
     assert completed.returncode == 0
     assert "日常使用（不做离线研究）:" in completed.stdout
-    assert "./run.sh                         启动本地 A 股研究看板（推荐）" in completed.stdout
-    assert "./run.sh validate-config         校验配置后退出，不启动服务" in completed.stdout
-    assert "./run.sh research-status         只读查看研究数据准备状态" in completed.stdout
-    assert "./run.sh performance-check       离线运行活动生产函数性能门禁" in completed.stdout
+    assert "./run.sh                         以默认 V1 启动本地 A 股研究看板" in completed.stdout
+    assert "./run.sh --profile v2            显式使用 V2 启动" in completed.stdout
+    assert "./run.sh check                   依次校验配置、研究状态和性能门禁" in completed.stdout
     assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
-    assert "./run.sh research-history-download        下载并续传离线历史日线归档" in completed.stdout
+    assert "./run.sh research-history        下载/续传历史归档后运行固定回测" in completed.stdout
+    assert "./run.sh research-screen         依次运行并封存四项历史筛选/诊断" in completed.stdout
     assert "research-r7-dossier --research-identity <ID>" in completed.stdout
-    assert "日常启动不需要填写任何参数" in completed.stdout
+    assert "所有命令都可追加 --profile v1|v2；未指定时为 V1" in completed.stdout
     assert "用法: ./run.sh [serve|" not in completed.stdout
     assert not missing_venv.exists()
 
@@ -151,7 +167,73 @@ def test_run_script_without_arguments_still_starts_the_dashboard(tmp_path: Path)
     )
 
     assert completed.returncode == 0
-    assert completed.stdout == f"server:--config {config}\n"
+    assert completed.stdout == f"server:--config {config} --profile v1\n"
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (("--profile", "v2"), ("serve", "--profile", "v2"), ("serve", "--profile=v2")),
+)
+def test_run_script_accepts_an_explicit_v2_profile_before_or_after_the_serve_command(
+    tmp_path: Path,
+    arguments: tuple[str, ...],
+) -> None:
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    _write_fake_entrypoint(venv_bin / "python", "exit 99")
+    _write_fake_entrypoint(venv_bin / "trader-server", "printf 'server:%s\\n' \"$*\"")
+    config = tmp_path / "runtime.json"
+
+    completed = subprocess.run(
+        ("bash", str(ROOT / "run.sh"), *arguments),
+        cwd=ROOT,
+        env={**os.environ, "VENV_DIR": str(venv_bin.parent), "TRADER_CONFIG": str(config)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == f"server:--config {config} --profile v2\n"
+
+
+def test_run_script_forwards_history_workers_after_normalizing_the_profile(tmp_path: Path) -> None:
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    _write_fake_entrypoint(venv_bin / "python", "exit 99")
+    _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
+    _write_fake_entrypoint(venv_bin / "trader-cli", "printf 'cli:%s\\n' \"$*\"")
+    config = tmp_path / "runtime.json"
+
+    completed = subprocess.run(
+        ("bash", str(ROOT / "run.sh"), "research-history", "--workers", "3", "--profile", "v2"),
+        cwd=ROOT,
+        env={**os.environ, "VENV_DIR": str(venv_bin.parent), "TRADER_CONFIG": str(config)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == f"cli:--config {config} --profile v2 research-history --workers 3\n"
+
+
+def test_run_script_rejects_an_unknown_profile_before_environment_setup(tmp_path: Path) -> None:
+    missing_venv = tmp_path / "missing-venv"
+
+    completed = subprocess.run(
+        ("bash", str(ROOT / "run.sh"), "--profile", "latest"),
+        cwd=ROOT,
+        env={**os.environ, "VENV_DIR": str(missing_venv)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert completed.stderr == "评分档位只能是 v1 或 v2: latest\n"
+    assert not missing_venv.exists()
 
 
 def test_run_script_preserves_offline_research_argument_forwarding(tmp_path: Path) -> None:
@@ -183,8 +265,90 @@ def test_run_script_preserves_offline_research_argument_forwarding(tmp_path: Pat
 
     assert completed.returncode == 0
     assert completed.stdout == (
-        f"cli:--config {config} research-r7-dossier --research-identity score_r6_forward_test\n"
+        f"cli:--config {config} --profile v1 research-r7-dossier --research-identity score_r6_forward_test\n"
     )
+
+
+@pytest.mark.parametrize(
+    ("command", "extra", "expected_stages"),
+    (
+        ("check", (), ("validate-config", "research-status", "performance-check")),
+        (
+            "research-history",
+            ("--workers", "3"),
+            ("research-history-download", "research-backtest"),
+        ),
+        (
+            "research-screen",
+            (),
+            (
+                "research-r6-screen",
+                "research-r6-daily-screen",
+                "research-r6-stability-screen",
+                "research-tomorrow-p2-screen",
+            ),
+        ),
+    ),
+)
+def test_cli_aggregates_all_stages_and_preserves_nonzero_gate_results(
+    command: str,
+    extra: tuple[str, ...],
+    expected_stages: tuple[str, ...],
+    monkeypatch,
+    capsys,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_stage(argv: list[str]) -> int:
+        calls.append(argv)
+        return 1 if len(calls) == 1 else 0
+
+    monkeypatch.setattr(cli_module, "_run_group_stage", fake_stage)
+    config = ROOT / "config/v2/runtime.json"
+
+    assert main(["--config", str(config), "--profile", "v2", command, *extra]) == 1
+
+    assert [call[-1] if "--workers" not in call else call[-3] for call in calls] == list(expected_stages)
+    assert all(call[:4] == ["--config", str(config), "--profile", "v2"] for call in calls)
+    if command == "research-history":
+        assert calls[0][-2:] == ["--workers", "3"]
+        assert "--workers" not in calls[1]
+    summary = json.loads(capsys.readouterr().out)
+    assert summary == {
+        "command": command,
+        "profile": "v2",
+        "schema_version": "trader_command_group_v1",
+        "stages": [
+            {"command": stage, "exit_code": 1 if index == 0 else 0} for index, stage in enumerate(expected_stages)
+        ],
+        "status": "completed_with_failures",
+    }
+
+
+def test_research_screen_group_runs_every_stage_against_an_isolated_empty_archive(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    runtime = json.loads((ROOT / "config/v2/runtime.json").read_text(encoding="utf-8"))
+    runtime["runtime_dir"] = str(tmp_path / "runtime")
+    runtime["strategy_config"] = str(ROOT / "config/v2/strategy.json")
+    runtime["long_watchlist"] = str(ROOT / "config/v2/long_watchlist.json")
+    config = tmp_path / "runtime.json"
+    config.write_text(json.dumps(runtime), encoding="utf-8")
+
+    assert main(["--config", str(config), "--profile", "v1", "research-screen"]) == 1
+
+    payloads = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert len(payloads) == 5
+    assert payloads[-1]["command"] == "research-screen"
+    assert payloads[-1]["profile"] == "v1"
+    assert [item["command"] for item in payloads[-1]["stages"]] == [
+        "research-r6-screen",
+        "research-r6-daily-screen",
+        "research-r6-stability-screen",
+        "research-tomorrow-p2-screen",
+    ]
+    assert all(item["exit_code"] == 1 for item in payloads[-1]["stages"])
 
 
 def test_powershell_help_uses_the_same_command_groups() -> None:
@@ -192,7 +356,7 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
 
     assert "日常使用（不做离线研究）:" in powershell
     assert "离线研究（仅在明确执行研究任务时使用）:" in powershell
-    assert "日常启动不需要填写任何参数" in powershell
+    assert "所有命令都可追加 --profile v1|v2；未指定时为 V1" in powershell
 
 
 def test_research_status_does_not_create_runtime_files(tmp_path: Path, capsys, monkeypatch) -> None:

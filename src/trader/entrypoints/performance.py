@@ -24,6 +24,7 @@ from trader.application.decision_queries import UnifiedDecisionQueries
 from trader.application.decision_stream import UnifiedDecisionEventStream
 from trader.application.policy import RecommendationPolicy
 from trader.application.ports.scored import TomorrowNativeInput
+from trader.application.ports.tomorrow_model import TomorrowScoringProfile
 from trader.application.schedule import SHANGHAI
 from trader.application.scored_v2_projection import (
     ScoredV2LocalProjection,
@@ -75,9 +76,17 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run(config_path: Path, *, baseline_path: Path | None = None) -> dict[str, object]:
+def run(
+    config_path: Path,
+    *,
+    baseline_path: Path | None = None,
+    tomorrow_scoring_profile: TomorrowScoringProfile | None = None,
+) -> dict[str, object]:
     settings = load_runtime_settings(config_path)
-    strategy_settings = load_strategy_settings(settings.strategy_config_path)
+    strategy_settings = load_strategy_settings(
+        settings.strategy_config_path,
+        tomorrow_scoring_profile=tomorrow_scoring_profile,
+    )
     budgets = settings.performance_budgets
     market_inputs, market_quotes, candidates = _fixtures(budgets)
     context = _OperationContext(
@@ -118,6 +127,8 @@ def run(config_path: Path, *, baseline_path: Path | None = None) -> dict[str, ob
         "status": "passed" if not failures else "failed",
         "identity": {
             "config_version": settings.config_version,
+            "strategy_version": strategy_settings.strategy_version,
+            "tomorrow_scoring_profile": strategy_settings.tomorrow_scoring_profile,
             "config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
             "fixture_sha256": fixture_hash,
             "source_sha256": _source_digest(source_root),

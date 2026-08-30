@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户问题：九条 `run.sh` 运维/研究命令需要手工记忆顺序，V1/V2 又只能改 JSON，日常运行容易漏阶段或
+  留下配置写入。新增 `check`、`research-history`、`research-screen` 三个公开组合命令和统一
+  `--profile v1|v2` 进程参数；默认 V1，V2 必须显式选择。Python CLI 统一执行组合顺序并输出
+  `trader_command_group_v1` 分段退出码汇总，Linux/macOS 与 PowerShell 入口只做薄转发。
+  `Regression-Key: run-command-groups-profile-selection-v1`。
+
 - 用户问题：P1/P2 的评分差异、哪套更可能挣钱及两套方案尚未完成什么此前没有一处可审计答案。两份
   权威文档现在统一区分“生产档位 V1/V2”与不可变“历史研究身份 P1/P2”，补充因子、模型、成本、
   分歧和证据差异表，并明确当前不能证明任何一套可重复取得未来收益：V2 的平均成本后净增量证据强于
@@ -484,6 +490,13 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- Tomorrow 默认生产档位由 V2 改为用户指定的 V1；`./run.sh`、`serve`、`check` 及研究组合均接受统一
+  `--profile`。启动覆盖不写回 `strategy.json`，但参与有效策略 SHA-256、模型装配、性能身份和新决策
+  模型身份；纯 H0/R6/P2 历史阶段继续绑定不可变研究规范，不受活动档位改名或重算。
+- `run.sh`/`run.ps1` 公开表面收敛为 `serve`、`check`、`research-history`、`research-screen` 和参数化
+  R7 档案。底层九个 `trader-cli` 阶段继续保留供契约测试、自动化和故障定位；普通门禁非零不会截断
+  同组合后续阶段，操作性异常仍立即失败关闭。
+
 - Tomorrow 活动评分命名从 P1/P2 迁移为 V1/V2：策略 schema 升至 15，
   `tomorrow_scoring_profile` 只接受 `v1|v2` 且默认 `v2`；类型化端口、组合根装配、状态/API 和测试使用
   同一枚举，旧 `p1|p2` 配置失败关闭。V1 生产模型身份改为 `v1_manual_residual_momentum_v1`，内容 hash
@@ -906,6 +919,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复评分档位只能通过持久修改策略配置切换、无法针对单次启动安全覆盖的问题；配置 loader、唯一组合根、
+  服务入口和离线性能门禁现共同消费类型化档位覆盖，配置原文件保持不变。实现 Review 还阻止了纯
+  `research-status`/历史阶段被迫读取活动策略配置，保持其既有只读与最小依赖边界。
+
 - 修复活动配置、公开状态和文档把生产档位与研究阶段 P1/P2 混为同一身份的问题；V1 的历史不可用原因
   改用不冒充研究版本的稳定代码，Web 继续展示中性的“模型信号分”。文档同时纠正“活动档位单边 T+1
   结算可直接比较两模型”的潜在误解：该数据只覆盖活动档位已入选股票，存在选择偏差。
@@ -1302,6 +1319,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除 `run.sh`/`run.ps1` 对九个底层阶段的逐项公开映射，避免用户在 Shell 层自行拼接顺序；未删除
+  底层 CLI 实现、不可变研究身份或既有研究工件。
+
 - 删除活动生产命名中的 `p1|p2` 配置别名以及 P1 命名的 V1 打包脚本、训练模块、测试和包内资源路径；
   不删除或改名不可变 P1/P2 研究规范、封存报告、历史特征字段和既有 Changelog 证据。
 - 移除 Tomorrow 生产评分对旧人工权重本地分的隐式 fallback；模型输入不足的股票显式不评分。没有删除
@@ -1478,6 +1498,22 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 本批契约优先回归已覆盖默认 V1、显式 V2、配置不写回、有效策略身份变化、组合根单实例模型装配、
+  三组阶段顺序、非零结果后继续、workers 定向转发、Shell 默认/显式档位、非法档位安装前拒绝及
+  PowerShell 命令对称。`make format-check`、`make lint`（含零严格重构债）、`make type-check`（260 个
+  源码文件）、`make test`（1,231 项）和 `make package` 全部通过；首次 lint 发现新增导入排序和 CLI
+  复杂度/参数债，已通过导入归位、类型化选项对象及调度 helper 修复，复跑通过。最终重建包首次因受限
+  环境不能访问本机依赖代理而失败，在宿主网络权限下用同一命令复跑成功。
+- 默认 V1 与显式 V2 分别真实执行 `./run.sh check`，三段退出码均为 0、零网络性能门禁通过；有效策略
+  SHA 分别为 `0136b6f7...91c6` 与 `9f6f2f75...e2fb`，`quote_to_draft` P95 分别为 1085.561ms 与
+  1121.406ms。隔离临时运行目录真实执行 `research-screen`，四个空归档门禁均返回 1 但全部执行并形成
+  完整汇总，未写当前研究工件；`research-history` 的 workers 转发、两段顺序和非零延续由直接契约覆盖，
+  未为本次命令表面变更重复访问供应商或修改现有 4,904/5,006 H0 归档。
+- 真实服务先后以默认 V1 和显式 V2 启动：状态分别返回固定 V1/V2 模型 ID 与不同有效策略 SHA，V2
+  运行时磁盘配置仍为 V1，证明覆盖不写回；最终服务已恢复 V1。wheel 在仓库外临时目录强制安装后从
+  隔离路径导入，聚合 CLI/服务 `--profile`、V2 `validate-config`、两份模型资源及模板/CSS/JavaScript/SVG
+  均可读。无 Web schema、资源或布局变化，三档桌面截图门禁不适用；运行状态 API 已作专项实测。
 
 - `tomorrow-v1-v2-profile-naming-and-evidence-roadmap-v1`：失败先行回归证明旧 `p1|p2` 仍被接受、状态仍
   返回旧 profile、旧 V1 工件身份及 v6/v7 发布握手；实现后配置、工件、评分、组合根、API/Web 和文档
@@ -2342,14 +2378,18 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 命令整合和默认 V1 不构成收益结论。V1 仍缺独立留出证据，V2 仍是历史门禁拒绝工件；两档谁更能挣钱
+  必须等待已预注册的同日同股影子比较，后台不得自动切换。`research-screen` 若任一合法研究门禁拒绝，
+  会完成其余阶段并最终返回非零，这是可观察门禁结果而非组合器故障。
+
 - V1 仍没有独立留出和真实配对前向结果；V2 虽有正平均历史净增量，但仍是
   `historical_rejected`。两者都没有逐股亏损概率，现有 T+1 结算只覆盖活动档位正式入选项。文档规定的
   配对影子比较器、V1 同口径留出、V2.x 风险挑战者和人工审查档案尚未实现；这些后续工作不影响当前
-  V2 运行，也没有收益保证或自动发布权限。
+  所选档位运行，也没有收益保证或自动发布权限。
 - `p1_manual_residual_momentum_v1` 是用户授权的 H0 日线 proxy，不是
   `score_tomorrow_shadow_p1_v1` 五候选研究的胜者；它缺少原 P1 的行业/市值/流动性完整中性化和真实
-  2027 点时证据，状态会持续公开该差异。默认仍为 P2；两种人工 profile 都未建立逐股亏损概率头，也不
-  自动更新参数。切换需修改配置并重启，且只影响尚未冻结的新 Tomorrow 决策。
+  2027 点时证据，状态会持续公开该差异。当前默认已按用户要求改为 V1；两种人工 profile 都未建立逐股
+  亏损概率头，也不自动更新参数。切换通过启动参数并重启，且只影响尚未冻结的新 Tomorrow 决策。
 - P2 历史终态仍为 `historical_rejected`：严重亏损率 15.9472% 高于代理 8.2734%，换手增加 56.2350 个
   百分点且 Q5-Q1 为负。本次是用户知情授权的生产例外，不代表收益门禁通过；在线 Top120 点时横截面也
   不等同于训练时完整 H0 收盘横截面。生产会自动结算新证据，但任何模型、权重或门槛更新仍需新的人工

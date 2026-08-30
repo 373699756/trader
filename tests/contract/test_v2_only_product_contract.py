@@ -76,7 +76,12 @@ def test_release_guides_expose_only_v2_runtime_and_desktop_gate() -> None:
         assert "trader-cli perf-check" not in content
     assert "deepseek-budget.sqlite3" in operations
     assert "卡脖子、高成长、低价潜力" in operations
-    assert "./run.sh research-status" in operations
+    for public_command in ("./run.sh check", "./run.sh research-history", "./run.sh research-screen"):
+        assert public_command in readme
+        assert public_command in operations
+    for retired_command in ("./run.sh validate-config", "./run.sh performance-check"):
+        assert retired_command not in readme
+        assert retired_command not in operations
     assert "curl -fsS http://127.0.0.1:5000/api/v2/status" in operations
     assert (ROOT / "tests/performance/run_desktop_dashboard.py").is_file()
     assert not (ROOT / "tests/performance/run_chrome_dashboard.py").exists()

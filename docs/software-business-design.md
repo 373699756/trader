@@ -1073,8 +1073,9 @@ TopK 路径只复用定向刷新已经返回的报价特征，不得立即二次
 发布性能 runner 必须调用活动生产函数，不得以占位 DataFrame 或纯序列化替代真实
 标准化、评分、选择、发布和 Web 路径。延迟轮次关闭 tracemalloc，内存轮次单独开启；fixture
 固定数据、配置、策略、代码与环境身份并禁止外网。历史实测数字只属于验收报告，不进入本文。
-仓库固定提供 `trader-cli performance-check`、`./run.sh performance-check` 和 `make performance-check`；
-三者复用 `trader.entrypoints.performance`，报告必须记录代码、配置、fixture、Python、CPU 与系统身份，
+仓库固定提供底层 `trader-cli performance-check`、公开组合入口 `./run.sh check` 和
+`make performance-check`；三者复用 `trader.entrypoints.performance`，报告必须记录代码、配置、有效
+Tomorrow 评分档位、fixture、Python、CPU 与系统身份，
 并可读取显式 baseline 执行 5% 相对回归。Firefox 的 SSE patch-to-paint 使用
 `scripts/diagnose_runtime.py --profile browser` 和 `make browser-performance-check`；供应商真实交易时段
 采样使用同一诊断入口的 `sources/live/full` profile，不得混入禁止外网的离线性能实现。
@@ -1399,7 +1400,7 @@ fail closed 并进入浏览器诊断。`market_data.market_changes` 只公开变
 
 源码更新不会替换已经运行的常驻进程；活动 Web 把模板与静态资源固定为启动时 release 快照，
 不会从工作树热加载。部署新提交时必须正常停止旧 `run.sh`/`trader-server`，再依次执行
-`./run.sh validate-config` 与 `./run.sh`；启动后应核对 `/api/v2/status` 的 `runtime_version`、
+`./run.sh check` 与 `./run.sh`；启动后应核对 `/api/v2/status` 的 `runtime_version`、
 `release`、`scheduler.strategy_errors` 和各策略状态，不能只以 HTTP 200 判断更新生效。浏览器出现
 “服务版本不一致”时不得继续等待或重复刷新，必须先完成上述正常重启；同一运行目录的进程锁会
 正确拒绝第二个 `./run.sh serve`，这不表示新代码已经替换旧进程。
@@ -1410,7 +1411,9 @@ fail closed 并进入浏览器诊断。`market_data.market_changes` 只公开变
 启动看板，`serve` 只是等价显式写法；帮助必须把日常命令与显式离线 `research-*` 命令
 分组展示并逐项说明，不得再把所有名称压缩成一行伪装成必填启动参数。未知命令必须在创建虚拟环境、
 安装依赖或启动入口之前失败，并只给出日常无参数启动与帮助命令指引。Linux/macOS 与 PowerShell
-入口必须保持相同分类和默认语义；`run.bat` 继续委托 PowerShell 入口。
+入口必须保持相同分类和默认语义；`run.bat` 继续委托 PowerShell 入口。公开脚本命令固定收敛为
+`serve`、`check`、`research-history`、`research-screen` 和参数化的 `research-r7-dossier`；组合内的
+底层 `trader-cli` 阶段继续保留用于测试、自动化和故障定位，但不再逐项暴露为 `run.sh` 命令。
 `trader-server` 成功绑定监听端口后、启动 Web 服务线程前，必须向标准输出打印一次带
 `http://` scheme 的实际浏览器 URL；默认配置显示
 `浏览器登录地址->http://127.0.0.1:5000`，使支持终端超链接的控制台可直接点击打开 Web。
@@ -1430,7 +1433,9 @@ python3 -m venv .venv
 .venv/bin/trader-server --config "$PWD/config/v2/runtime.json"
 ```
 
-日常启动只需执行 `./run.sh`；`./run.sh serve` 与无参数启动完全等价。默认配置启动后访问
+日常启动只需执行 `./run.sh`；`./run.sh serve` 与无参数启动完全等价，二者默认选择 Tomorrow V1。
+`./run.sh --profile v2` 与 `./run.sh serve --profile v2` 显式选择 V2。该覆盖只影响本次进程并重新生成
+有效策略身份，不写回策略配置；改变档位必须正常重启。默认配置启动后访问
 `http://127.0.0.1:5000/`。同一 `.runtime/v2` 只允许一个服务进程，第二个进程由
 `.runtime/v2/server.lock` 拒绝。外部行情、交易日历、Tushare 或 DeepSeek 暂不可用时启动失败开放：
 只读 Web 保留最近有效 V2 快照并显式降级；Long 的卡脖子、高成长、低价潜力固定名单仍可展示身份，
@@ -1440,17 +1445,18 @@ python3 -m venv .venv
 
 | 类别 | 命令 | 运行边界 |
 | --- | --- | --- |
-| 日常 | `./run.sh` 或 `./run.sh serve` | 启动本地 Web 看板和生产 V2 调度 |
-| 日常 | `./run.sh validate-config` | 校验运行与策略配置后退出，不启动服务 |
-| 日常 | `./run.sh research-status` | 只读查看研究覆盖与阻塞，不访问网络、不评分、不写研究工件 |
-| 离线研究 | `./run.sh research-history-download` | 下载并断点续传独立历史日线归档 |
-| 离线研究 | `./run.sh research-backtest` | 只读历史归档并运行固定训练/验证回测 |
-| 离线研究 | `./run.sh research-r6-screen` | 运行并不可变封存 R6 历史参数筛选 |
-| 离线研究 | `./run.sh research-r6-daily-screen` | 运行并不可变封存 R6 日线趋势筛选 |
-| 离线研究 | `./run.sh research-r6-stability-screen` | 运行并不可变封存 R6 排名稳定性诊断 |
+| 日常 | `./run.sh` 或 `./run.sh serve` | 以默认 V1 启动本地 Web 看板和生产调度 |
+| 日常 | `./run.sh --profile v2` | 以显式 V2 启动；也可把 `--profile v1|v2` 追加到其他公开命令 |
+| 日常 | `./run.sh check` | 依次校验配置、只读投影研究状态并运行所选档位的离线性能门禁 |
+| 离线研究 | `./run.sh research-history [--workers 1..5]` | 下载/断点续传独立历史日线归档，然后只读运行固定训练/验证回测 |
+| 离线研究 | `./run.sh research-screen` | 依次运行 R6 历史、R6 日线、R6 稳定性和 Tomorrow P2 四项不可变筛选/诊断 |
 | 离线研究 | `./run.sh research-r7-dossier --research-identity <ID>` | 为具备资格的 R6 前向身份生成待人工审查档案 |
 
-普通看盘不得要求任何 `research-*` 命令。未知命令必须在创建虚拟环境或安装依赖前快速失败，
+三个组合命令由 `trader-cli` 单一编排器拥有顺序，Linux/macOS 与 PowerShell 不复制业务流程。普通阶段
+返回非零时组合器仍运行剩余阶段，最终输出 `trader_command_group_v1` 汇总并以非零结束，使一次运行能
+看到完整门禁分布；配置解析失败等操作性异常立即失败关闭。历史阶段绑定原 H0/R6/P2 规范，统一接受的
+`--profile` 不会改写、重命名或重新封存研究工件。普通看盘不得要求任何 `research-*` 命令。未知命令
+或非法档位必须在创建虚拟环境或安装依赖前快速失败，
 并提示 `./run.sh help`。服务身份的最小只读核对命令为：
 
 ```bash
@@ -1610,8 +1616,9 @@ Score-R5 以独立离线统计器实现固定种子配对移动区块 bootstrap�
 历史覆盖不足 40 日，`score_p0_v2` 已进入 `historical_collection_failed`，因此其前向窗口不得启动，
 也没有真实 `forward_collecting` 或 `promotion_eligible` 证据，活动生产策略保持不变。
 
-`run.sh serve` 只负责生产 V2 调度和上述 committed observation 采集，不在后台隐式执行 R2-R5，
-也不得把滚动行情缓存或后来补抓的日 K 冒充历史点时输入。`run.sh research-status` 是只读运维入口，
+`run.sh serve` 只负责所选 V1/V2 活动档位的生产调度和上述 committed observation 采集，不在后台隐式
+执行 R2-R5，也不得把滚动行情缓存或后来补抓的日 K 冒充历史点时输入。`run.sh check` 中的底层
+`trader-cli research-status` 阶段是只读运维投影，
 必须报告研究分区、legacy 记录、日期覆盖、容量余量、固定 R0 历史/前向窗口及阻塞原因；正式
 outcome 库存在时同时报告基准、全部 outcome、完整 outcome 和最新基准日期计数。该入口不抓网络、
 不评分、不写报告且不改变研究状态。R2-R5 的离线提取、回放和统计只能由显式研究批次在完整端口与
@@ -1711,7 +1718,8 @@ H0 manifest，冻结字段准入矩阵、唯一日线候选、确定性通过或
 哈希和生产隔离；不读取或生成 P2 历史结果，也不建立评估服务、工件仓储或运行目录。
 P1 身份与工件继续只读，P0/P1 标签、状态和日期不能进入 P2。
 
-P2-1 通过显式 `research-tomorrow-p2-screen` 进入离线组合根，只读 H0 SQLite，计算已封存版本的日线
+P2-1 通过 `research-screen` 组合中的底层 `research-tomorrow-p2-screen` 阶段进入离线组合根，只读 H0
+SQLite，计算已封存版本的日线
 特征、单次 ridge/单线程 LightGBM 训练和正式验证；训练段内部时间留出负责早停，正式验证段不参与拟合。
 终态报告与模型分别写入 `runtime_dir/score-tomorrow-p2/score_tomorrow_historical_p2_v1`，采用原子、
 幂等、防篡改封存。`research-status` 的 `v2_research_readiness_v4.tomorrow_p2` 只投影报告哈希、终态、
@@ -1727,8 +1735,9 @@ P2-1 通过显式 `research-tomorrow-p2-screen` 进入离线组合根，只读 H
 到 0–100 分映射、缺失不回退旧 Tomorrow 分、固定 68/32 融合和已知风险口径以荐股策略文档第 15.1.17
 节为准。Today、D25、Long 行为不变。
 
-“V1/V2 生产评分配置切换”由策略配置 schema 15 的 `tomorrow_scoring_profile=v1|v2` 唯一控制，默认
-`v2`，重启生效；旧值 `p1|p2` 必须拒绝，活动配置、类型对象、状态 API 与 Web 不保留双命名。
+“V1/V2 生产评分配置切换”由策略配置 schema 15 的 `tomorrow_scoring_profile=v1|v2` 与同字段的
+进程启动覆盖共同控制，默认 `v1`，`./run.sh --profile v2` 显式选择 V2，重启生效；启动覆盖不写回
+配置，但参与有效策略内容哈希。旧值 `p1|p2` 必须拒绝，活动配置、类型对象、状态 API 与 Web 不保留双命名。
 `v1` 加载独立包内 `v1_manual_residual_momentum_v1` 线性 proxy 及规范化内容身份 SHA-256
 `4291ea514c233a14ab6f9262e72ea541d1e9a794e73d02f10f8220509f6f502b`；它绑定 H0 规范/manifest、
 1,765,685 个训练行和 `h0_board_amount_residual_momentum_proxy_v1`，状态必须公开原 P1 唯一工件不存在，
@@ -1756,9 +1765,10 @@ Rank IC、分组单调性、集中度、配对统计和停止条件，输出人�
 证据与监控，不自动改变模型、权重、门槛、当前/冻结记录或回滚版本。
 
 离线历史筛选使用独立 `score_h0_v1` 数据平面，不接入生产组合根、HTTP、调度、冻结或 DeepSeek。
-显式 `research-history-download` 命令读取一次全 A 股清单，并以最多 5 个有界 worker 从生产已有的腾讯
+`research-history` 组合的底层 `trader-cli research-history-download` 阶段读取一次全 A 股清单，并以
+最多 5 个有界 worker 从生产已有的腾讯
 前复权日线主适配器下载每股最多 640 日，写入 `runtime_dir/score-history` 下的独立 SQLite 归档；
-同身份同内容幂等、冲突拒绝，失败只保存脱敏类别并可断点补齐。`research-backtest` 只读该归档，
+同身份同内容幂等、冲突拒绝，失败只保存脱敏类别并可断点补齐；随后底层 `research-backtest` 阶段只读该归档，
 严格切分 2024-07-01 至 2025-12-31 训练和 2026-01-01 至 2026-07-31 验证，并把无法由日线重建的
 历史 ST/行业、盘中尾部、公司风险和模型事实标记为未重建。该层用于尽快筛掉无效参数，不具备晋级
 权限；单股不足 66 根、未来日线、非前复权响应和哈希冲突都不能进入完成覆盖，报告复算并绑定规范、
@@ -1770,7 +1780,8 @@ H0 规范匹配且逐股完成覆盖率至少 95% 时为 true，后者在新的�
 `blockers` 只解释回顾性筛选就绪缺口，`promotion_blockers` 单独解释生产晋级缺口；`score_p0_v2` 的
 40+20 采集进度及离线 R2-R5 阻塞继续位于 `active_research`，不得反向关闭已达标的 H0 筛选。
 
-显式 `research-r6-screen` 只读 H0 归档，按冻结的 `score_r6_historical_v1` 联合网格在训练段选择一次，
+`research-screen` 组合的底层 `research-r6-screen` 阶段只读 H0 归档，按冻结的
+`score_r6_historical_v1` 联合网格在训练段选择一次，
 再在验证段评价一次；它不访问网络、生产数据库、冻结、Web 或 DeepSeek。筛选成功后报告写入独立
 `runtime_dir/score-r6` 不可变 JSON 工件，同身份同内容幂等、不同内容或篡改冲突。历史层仅重建
 momentum/stability/liquidity 与高波动风险，三板小样本统一回退全局参数；不能重建的风险和模型事实
@@ -1789,14 +1800,14 @@ momentum/stability/liquidity 与高波动风险，三板小样本统一回退全
 Web、正式记录或活动配置，也不启动生产发布。档案固定为待人工审查且没有生产写权限；人工确认后
 仍须由新的独立批次先更新机器契约和实际版本，再执行生产变更及全部发布门禁。
 
-显式 `research-r6-daily-screen` 只读 `runtime_dir/score-history` 的 H0 日线归档，通过独立
+同一组合的底层 `research-r6-daily-screen` 阶段只读 `runtime_dir/score-history` 的 H0 日线归档，通过独立
 `score_r6_daily_trend_v1` 服务形成风险调整趋势 Top6 回放，并把
 `score_r6_daily_trend_report_v1` 写入 `runtime_dir/score-r6-daily`。命令不访问网络、生产数据库、
 调度、冻结、DeepSeek、HTTP 或 Web；同身份同内容幂等，不同内容或篡改冲突。`research-status`
 只读公开报告哈希、历史门禁、候选身份和失败原因，不创建目录。该研究即使历史通过也只能进入另行
 预注册的真实前向批次，不能写活动配置或改变正在运行的页面与荐股实时性。
 
-显式 `research-r6-stability-screen` 只读同一 H0 日线归档及
+同一组合的底层 `research-r6-stability-screen` 阶段只读同一 H0 日线归档及
 `runtime_dir/score-r6-daily` 已封存 R6D 父报告，按固定 `score_r6_daily_stability_v1` 网格研究排名
 持续性、分数平滑和换手惩罚，并把 `score_r6_daily_stability_report_v1` 写入独立
 `runtime_dir/score-r6-stability`。命令不访问网络、生产数据库、调度、冻结、DeepSeek、HTTP 或 Web；

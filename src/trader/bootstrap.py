@@ -22,6 +22,7 @@ from trader.application.decision_stream import UnifiedDecisionEventStream
 from trader.application.latency import LatencyWaterfall
 from trader.application.long_v2_runtime import LongV2Runtime, LongV2RuntimeDependencies
 from trader.application.outcome_settlement import OutcomeSettlementService, V2OutcomeSettlementAdapter
+from trader.application.ports.tomorrow_model import TomorrowScoringProfile
 from trader.application.research.historical_backtest import HistoricalBarBacktestService
 from trader.application.research.historical_screening import HistoricalDownloadService
 from trader.application.research.score_r6 import ScoreR6HistoricalScreeningService
@@ -202,9 +203,16 @@ class _V2Adapters:
     reviewer: DeepSeekReviewer
 
 
-def build_system(config_path: str | Path) -> ApplicationSystem:
+def build_system(
+    config_path: str | Path,
+    *,
+    tomorrow_scoring_profile: TomorrowScoringProfile | None = None,
+) -> ApplicationSystem:
     settings = load_runtime_settings(config_path)
-    strategy = load_strategy_settings(settings.strategy_config_path)
+    strategy = load_strategy_settings(
+        settings.strategy_config_path,
+        tomorrow_scoring_profile=tomorrow_scoring_profile,
+    )
     watchlist = load_long_watchlist(settings.long_watchlist_path)
     effective_config_version = f"{settings.config_version}+{strategy.strategy_version}"
     now = _utc_now

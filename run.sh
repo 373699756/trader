@@ -4,31 +4,29 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${VENV_DIR:-$ROOT_DIR/.venv}"
 CONFIG_PATH="${TRADER_CONFIG:-$ROOT_DIR/config/v2/runtime.json}"
-MODE="${1:-serve}"
+MODE="serve"
+MODE_SET=0
+SCORING_PROFILE="v1"
+FORWARD_ARGS=()
 
 usage() {
   printf '%s\n' \
     "本地 A 股研究看板" \
     "" \
     "日常使用（不做离线研究）:" \
-    "  ./run.sh                         启动本地 A 股研究看板（推荐）" \
+    "  ./run.sh                         以默认 V1 启动本地 A 股研究看板" \
     "  ./run.sh serve                   显式启动，等同于无参数运行" \
-    "  ./run.sh validate-config         校验配置后退出，不启动服务" \
-    "  ./run.sh research-status         只读查看研究数据准备状态" \
-    "  ./run.sh performance-check       离线运行活动生产函数性能门禁" \
+    "  ./run.sh --profile v2            显式使用 V2 启动" \
+    "  ./run.sh check                   依次校验配置、研究状态和性能门禁" \
     "  ./run.sh help                    查看本帮助" \
     "" \
     "离线研究（仅在明确执行研究任务时使用）:" \
-    "  ./run.sh research-history-download        下载并续传离线历史日线归档" \
-    "  ./run.sh research-backtest                只读运行固定历史回测" \
-    "  ./run.sh research-r6-screen                运行并封存 R6 历史筛选" \
-    "  ./run.sh research-r6-daily-screen          运行并封存 R6 日线趋势筛选" \
-    "  ./run.sh research-r6-stability-screen      运行并封存 R6 稳定性诊断" \
-    "  ./run.sh research-tomorrow-p2-screen       运行并封存 Tomorrow P2 历史筛选" \
+    "  ./run.sh research-history        下载/续传历史归档后运行固定回测" \
+    "  ./run.sh research-screen         依次运行并封存四项历史筛选/诊断" \
     "  ./run.sh research-r7-dossier --research-identity <ID>" \
     "                                                生成待人工审查的 R7 档案" \
     "" \
-    "日常启动不需要填写任何参数，直接运行 ./run.sh 即可。" \
+    "所有命令都可追加 --profile v1|v2；未指定时为 V1。" \
     "" \
     "高级配置（一般无需设置）:" \
     "  TRADER_CONFIG=/absolute/path/runtime.json" \
@@ -40,6 +38,48 @@ usage() {
     "  FORCE_INSTALL_DEPS=1"
 }
 
+while (($#)); do
+  case "$1" in
+    --profile)
+      if (($# < 2)); then
+        printf '%s\n' '缺少 --profile 的值（v1 或 v2）。' >&2
+        exit 2
+      fi
+      SCORING_PROFILE="$2"
+      shift 2
+      ;;
+    --profile=*)
+      SCORING_PROFILE="${1#--profile=}"
+      shift
+      ;;
+    help|-h|--help|serve|app|check|research-history|research-screen|research-r7-dossier)
+      if ((MODE_SET)); then
+        FORWARD_ARGS+=("$1")
+      else
+        MODE="$1"
+        MODE_SET=1
+      fi
+      shift
+      ;;
+    *)
+      if ((MODE_SET)); then
+        FORWARD_ARGS+=("$1")
+        shift
+      else
+        printf '未知命令: %s\n' "$1" >&2
+        printf '日常启动直接运行: ./run.sh\n' >&2
+        printf '查看全部命令: ./run.sh help\n' >&2
+        exit 2
+      fi
+      ;;
+  esac
+done
+
+if [[ "$SCORING_PROFILE" != "v1" && "$SCORING_PROFILE" != "v2" ]]; then
+  printf '评分档位只能是 v1 或 v2: %s\n' "$SCORING_PROFILE" >&2
+  exit 2
+fi
+
 case "$MODE" in
   help|-h|--help)
     usage
@@ -48,7 +88,7 @@ case "$MODE" in
   serve|app)
     COMMAND_KIND="server"
     ;;
-  validate-config|performance-check|research-status|research-history-download|research-backtest|research-r6-screen|research-r6-daily-screen|research-r6-stability-screen|research-tomorrow-p2-screen|research-r7-dossier)
+  check|research-history|research-screen|research-r7-dossier)
     COMMAND_KIND="cli"
     ;;
   *)
@@ -87,6 +127,6 @@ export TRADER_HOST="${TRADER_HOST:-127.0.0.1}"
 export TRADER_PORT="${TRADER_PORT:-5000}"
 
 if [[ "$COMMAND_KIND" == "server" ]]; then
-  exec "$VENV_DIR/bin/trader-server" --config "$CONFIG_PATH"
+  exec "$VENV_DIR/bin/trader-server" --config "$CONFIG_PATH" --profile "$SCORING_PROFILE" "${FORWARD_ARGS[@]}"
 fi
-exec "$VENV_DIR/bin/trader-cli" --config "$CONFIG_PATH" "$MODE" "${@:2}"
+exec "$VENV_DIR/bin/trader-cli" --config "$CONFIG_PATH" --profile "$SCORING_PROFILE" "$MODE" "${FORWARD_ARGS[@]}"

@@ -2,31 +2,29 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $RootDir = Split-Path -Parent $PSCommandPath
-$Mode = if ($args.Count -gt 0) { $args[0] } else { "serve" }
+$Mode = "serve"
+$ModeSet = $false
+$ScoringProfile = "v1"
+$ForwardArgs = @()
 
 function Show-Usage {
     @"
 本地 A 股研究看板
 
 日常使用（不做离线研究）:
-  .\run.ps1                         启动本地 A 股研究看板（推荐）
+  .\run.ps1                         以默认 V1 启动本地 A 股研究看板
   .\run.ps1 serve                   显式启动，等同于无参数运行
-  .\run.ps1 validate-config         校验配置后退出，不启动服务
-  .\run.ps1 research-status         只读查看研究数据准备状态
-  .\run.ps1 performance-check       离线运行活动生产函数性能门禁
+  .\run.ps1 --profile v2            显式使用 V2 启动
+  .\run.ps1 check                   依次校验配置、研究状态和性能门禁
   .\run.ps1 help                    查看本帮助
 
 离线研究（仅在明确执行研究任务时使用）:
-  .\run.ps1 research-history-download        下载并续传离线历史日线归档
-  .\run.ps1 research-backtest                只读运行固定历史回测
-  .\run.ps1 research-r6-screen                运行并封存 R6 历史筛选
-  .\run.ps1 research-r6-daily-screen          运行并封存 R6 日线趋势筛选
-  .\run.ps1 research-r6-stability-screen      运行并封存 R6 稳定性诊断
-  .\run.ps1 research-tomorrow-p2-screen       运行并封存 Tomorrow P2 历史筛选
+  .\run.ps1 research-history        下载/续传历史归档后运行固定回测
+  .\run.ps1 research-screen         依次运行并封存四项历史筛选/诊断
   .\run.ps1 research-r7-dossier --research-identity <ID>
                                                 生成待人工审查的 R7 档案
 
-日常启动不需要填写任何参数，直接运行 .\run.ps1 即可。
+所有命令都可追加 --profile v1|v2；未指定时为 V1。
 
 高级配置（一般无需设置）:
   TRADER_CONFIG=C:\absolute\path\runtime.json
@@ -39,25 +37,47 @@ function Show-Usage {
 "@ | Write-Host
 }
 
-$CliModes = @(
-    "validate-config",
-    "performance-check",
-    "research-status",
-    "research-history-download",
-    "research-backtest",
-    "research-r6-screen",
-    "research-r6-daily-screen",
-    "research-r6-stability-screen",
-    "research-tomorrow-p2-screen",
-    "research-r7-dossier"
-)
+$PublicModes = @("help", "-h", "--help", "serve", "app", "check", "research-history", "research-screen", "research-r7-dossier")
+
+for ($Index = 0; $Index -lt $args.Count; $Index++) {
+    $Argument = [string]$args[$Index]
+    if ($Argument -eq "--profile") {
+        if ($Index + 1 -ge $args.Count) {
+            [Console]::Error.WriteLine("缺少 --profile 的值（v1 或 v2）。")
+            exit 2
+        }
+        $Index++
+        $ScoringProfile = [string]$args[$Index]
+    }
+    elseif ($Argument.StartsWith("--profile=")) {
+        $ScoringProfile = $Argument.Substring("--profile=".Length)
+    }
+    elseif ($Argument -in $PublicModes -and -not $ModeSet) {
+        $Mode = $Argument
+        $ModeSet = $true
+    }
+    elseif ($ModeSet) {
+        $ForwardArgs += $Argument
+    }
+    else {
+        [Console]::Error.WriteLine("未知命令: $Argument")
+        [Console]::Error.WriteLine("日常启动直接运行: .\run.ps1")
+        [Console]::Error.WriteLine("查看全部命令: .\run.ps1 help")
+        exit 2
+    }
+}
+
+if ($ScoringProfile -notin @("v1", "v2")) {
+    [Console]::Error.WriteLine("评分档位只能是 v1 或 v2: $ScoringProfile")
+    exit 2
+}
 
 if ($Mode -in @("help", "-h", "--help")) {
     Show-Usage
     exit 0
 }
 $IsServerMode = $Mode -in @("serve", "app")
-if (-not $IsServerMode -and $Mode -notin $CliModes) {
+if (-not $IsServerMode -and $Mode -notin @("check", "research-history", "research-screen", "research-r7-dossier")) {
     [Console]::Error.WriteLine("未知命令: $Mode")
     [Console]::Error.WriteLine("日常启动直接运行: .\run.ps1")
     [Console]::Error.WriteLine("查看全部命令: .\run.ps1 help")
@@ -112,9 +132,8 @@ if (-not $env:TRADER_PORT) {
 }
 
 if ($IsServerMode) {
-    & $Server --config $ConfigPath
+    & $Server --config $ConfigPath --profile $ScoringProfile @ForwardArgs
     exit $LASTEXITCODE
 }
-$RemainingArgs = if ($args.Count -gt 1) { $args[1..($args.Count - 1)] } else { @() }
-& $Cli --config $ConfigPath $Mode @RemainingArgs
+& $Cli --config $ConfigPath --profile $ScoringProfile $Mode @ForwardArgs
 exit $LASTEXITCODE

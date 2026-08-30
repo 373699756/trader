@@ -25,7 +25,7 @@ def test_v2_configuration_contract_is_valid() -> None:
 
     assert runtime.schema_version == 10
     assert strategy.schema_version == 15
-    assert strategy.tomorrow_scoring_profile == "v2"
+    assert strategy.tomorrow_scoring_profile == "v1"
     assert runtime.config_version == "runtime_v39_tushare_120_daily_audit_2026_08_26"
     assert runtime.market_data.source_contract_versions["eastmoney"] == ("eastmoney_quote_v17_security_master")
     assert runtime.api.default_top_n == 12
@@ -299,8 +299,21 @@ def test_tomorrow_scoring_profile_is_an_explicit_versioned_switch(tmp_path, prof
     settings = load_strategy_settings(strategy_path)
 
     assert settings.tomorrow_scoring_profile == profile
-    if profile == "v1":
+    if profile == "v2":
         assert settings.strategy_version != load_strategy_settings(source).strategy_version
+
+
+def test_tomorrow_scoring_profile_override_changes_the_effective_version_without_writing_config() -> None:
+    source = PROJECT_ROOT / "config" / "v2" / "strategy.json"
+    original = source.read_bytes()
+
+    default = load_strategy_settings(source)
+    overridden = load_strategy_settings(source, tomorrow_scoring_profile="v2")
+
+    assert default.tomorrow_scoring_profile == "v1"
+    assert overridden.tomorrow_scoring_profile == "v2"
+    assert overridden.strategy_version != default.strategy_version
+    assert source.read_bytes() == original
 
 
 def test_unknown_tomorrow_scoring_profile_is_rejected(tmp_path) -> None:
