@@ -4,7 +4,7 @@ from argparse import Namespace
 
 import pytest
 
-from scripts.runtime_diagnostics.history_sources import _validate
+from scripts.runtime_diagnostics.history_sources import PROJECT_ROOT, _validate
 
 
 def _args(**overrides: object) -> Namespace:
@@ -24,7 +24,7 @@ def test_persistence_measurement_rejects_relative_or_repository_paths() -> None:
     with pytest.raises(ValueError, match="absolute path outside"):
         _validate(_args(persistence_runtime_dir="relative-runtime"))
     with pytest.raises(ValueError, match="absolute path outside"):
-        _validate(_args(persistence_runtime_dir="/home/c/linux/tra/trader/diagnostic-runtime"))
+        _validate(_args(persistence_runtime_dir=str(PROJECT_ROOT / "diagnostic-runtime")))
 
 
 def test_persistence_measurement_accepts_explicit_external_path() -> None:

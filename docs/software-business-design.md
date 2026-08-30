@@ -1655,6 +1655,18 @@ collector 必须在首个计划日前取得绑定官方文件哈希且与全部�
 报告固定 `production_authority=false`；真实 40+20 日期尚未发生，因此工程能力、预注册身份和未来 collector
 均不构成已经取得收益证据或生产晋级资格。统计与挑战者唯一口径以荐股策略文档第 15.1.15 节为准。
 
+“Tomorrow P2 历史契约”由纯领域 `score_tomorrow_historical_p2_v1` 规范与应用层类型化
+`score_tomorrow_historical_p2_report_v1` 报告边界共同拥有。P2-0 只读绑定 `score_h0_v1` 规范和未来
+H0 manifest，冻结字段准入矩阵、唯一日线候选、确定性通过或停止规则、成本、样本、统计、风险、集中度、
+哈希和生产隔离；不读取或生成 P2 历史结果，也不建立评估服务、工件仓储或运行目录。
+P1 身份与工件继续只读，P0/P1 标签、状态和日期不能进入 P2。
+
+该契约不注入 `bootstrap.py`，不新增 CLI，不修改 `research-status`、`pyproject.toml`、配置或组合根，
+不启动线程、网络、数据库、文件写入、DeepSeek、调度、冻结、API 或 Web。报告固定
+`production_authority=false`，且没有前向身份或日期；只有后续独立 P2-1 批次真实读取 H0、封存且通过
+历史报告后，P2-2 才能在任何前向输入可见前另行绑定官方日历和精确日期。策略字段、候选、模型、门禁和
+历史代理的唯一口径以荐股策略文档第 15.1.16 节为准。
+
 离线历史筛选使用独立 `score_h0_v1` 数据平面，不接入生产组合根、HTTP、调度、冻结或 DeepSeek。
 显式 `research-history-download` 命令读取一次全 A 股清单，并以最多 5 个有界 worker 从生产已有的腾讯
 前复权日线主适配器下载每股最多 640 日，写入 `runtime_dir/score-history` 下的独立 SQLite 归档；

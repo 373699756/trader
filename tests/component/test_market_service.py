@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from tests.component.market_data_test_support import (
     AFTERNOON,
     LONG_POLICY,
@@ -479,7 +481,9 @@ def test_degraded_candidate_cache_is_observe_only_without_rewriting_source_time(
     assert "tencent:cache_degraded" in snapshot.degraded_reasons
 
 
-def test_late_free_identity_is_persisted_without_waiting_for_next_score_cycle(tmp_path: Path) -> None:
+def test_late_free_identity_is_persisted_without_waiting_for_next_score_cycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     completed = threading.Event()
     observed_at = datetime.now(timezone.utc)
 
@@ -499,7 +503,13 @@ def test_late_free_identity_is_persisted_without_waiting_for_next_score_cycle(tm
         listing_date=date(1999, 11, 10),
     )
     eastmoney = LateIdentityClient((eastmoney_quote,))
-    sina = CountingMarketClient((replace(_quote(), source="sina", price=12.01),))
+
+    class HedgeClient(CountingMarketClient):
+        def fetch_market(self):
+            assert eastmoney.started.wait(1.0)
+            return super().fetch_market()
+
+    sina = HedgeClient((replace(_quote(), source="sina", price=12.01),))
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
     lanes = SourceLaneRegistry(pool)
     gateway = MarketDataGateway(
@@ -514,6 +524,14 @@ def test_late_free_identity_is_persisted_without_waiting_for_next_score_cycle(tm
         full_market_hedge_delay_seconds=0.01,
     )
     data_plane = DataPlaneRepository(tmp_path)
+    write_completed = threading.Event()
+    save_records = data_plane.save_security_master_recent_records
+
+    def record_save(records):
+        save_records(records)
+        write_completed.set()
+
+    monkeypatch.setattr(data_plane, "save_security_master_recent_records", record_save)
     service = _service(
         gateway,
         StaticHistoryClient(),
@@ -522,7 +540,13 @@ def test_late_free_identity_is_persisted_without_waiting_for_next_score_cycle(tm
         worker_pool=pool,
         source_lanes=lanes,
     )
-    gateway.set_security_reference_persistence_sink(service.references.schedule_security_master_persistence)
+    sink_called = threading.Event()
+
+    def schedule_masters(masters):
+        service.references.schedule_security_master_persistence(masters)
+        sink_called.set()
+
+    gateway.set_security_reference_persistence_sink(schedule_masters)
     pool.start()
     deadline = observed_at + timedelta(milliseconds=80)
 
@@ -531,11 +555,9 @@ def test_late_free_identity_is_persisted_without_waiting_for_next_score_cycle(tm
         time.sleep(0.1)
         eastmoney.release.set()
         assert completed.wait(1.0)
-        timeout_at = time.monotonic() + 2.0
-        persisted = None
-        while persisted is None and time.monotonic() < timeout_at:
-            persisted = data_plane.load_security_master_recent(eastmoney_quote.code)
-            time.sleep(0.01)
+        assert sink_called.wait(1.0), gateway.health().security_master
+        assert write_completed.wait(5.0)
+        persisted = data_plane.load_security_master_recent(eastmoney_quote.code)
     finally:
         eastmoney.release.set()
         lanes.stop(wait=True, timeout_seconds=1.0)

@@ -366,3 +366,43 @@ def test_tomorrow_shadow_p1_preregistration_is_owned_by_the_authoritative_contra
         assert expected in strategy
     assert "Tomorrow 新模型预注册与前向影子" in design
     assert "不注入 `bootstrap.py`" in design
+
+
+def test_tomorrow_historical_p2_contract_is_frozen_without_production_or_forward_authority() -> None:
+    strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
+    design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
+
+    for expected in (
+        "#### 15.1.16 Tomorrow P2 历史规范与输入资格",
+        "score_tomorrow_historical_p2_v1",
+        "score_h0_v1",
+        "score_tomorrow_historical_p2_report_v1",
+        "daily_reconstructible_ensemble_v1",
+        "single_candidate_pass_or_stop_v1",
+        "score_h0_ohlcv_cross_section_v1",
+        "历史有效配对不少于 300",
+        "20/50/100bp",
+        "5 日非循环配对移动区块 bootstrap",
+        "historical_st_status",
+        "historical_industry",
+        "intraday_1450_tail",
+        "financial_disclosure_point_in_time",
+        "corporate_risk_point_in_time",
+        "deepseek_facts_point_in_time",
+        "production_authority=false",
+        "不得创建 `score_tomorrow_shadow_p2_v1`",
+    ):
+        assert expected in strategy
+    for expected in (
+        "Tomorrow P2 历史契约",
+        "只读绑定 `score_h0_v1`",
+        "不注入 `bootstrap.py`",
+        "不新增 CLI",
+        "不读取或生成 P2 历史结果",
+        "P1 身份与工件继续只读",
+    ):
+        assert expected in design
+
+    bootstrap = (ROOT / "src/trader/bootstrap.py").read_text(encoding="utf-8")
+    assert "TOMORROW_HISTORICAL_P2_SPEC" not in bootstrap
+    assert "TomorrowHistoricalP2Report" not in bootstrap

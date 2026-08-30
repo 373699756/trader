@@ -1660,6 +1660,70 @@ Rank IC 大于 0。hybrid 相对 local-only 另做同口径 5 日区块检验；
 最终报告固定 `production_authority=false`。`promotion_eligible` 只表示研究证据满足门禁；任何生产候选、
 评分、风险、68/32 融合、动作、Top6、冻结、API 或 Web 变化仍须另立批次人工晋级。
 
+#### 15.1.16 Tomorrow P2 历史规范与输入资格
+
+P2 加速路线先冻结独立回顾性身份 `score_tomorrow_historical_p2_v1`，规范 schema 固定为
+`score_tomorrow_historical_p2_spec_v1`，报告 schema 固定为
+`score_tomorrow_historical_p2_report_v1`。该身份于 2026-08-30 固定，只读绑定 `score_h0_v1` 的规范
+hash、股票池 hash、逐股 qfq 历史内容 hash 和归档 manifest；训练段固定为 2024-07-01 至
+2025-12-31，验证段固定为 2026-01-01 至 2026-07-31，来源截止日仍为 2026-08-19。归档完整股票覆盖率
+低于 95%、单股少于 66 根有序唯一 qfq 日线、父规范或任一内容 hash 不一致时必须拒绝，不能从供应商、
+活动数据库、P0/P1 工件或当前股票池补齐。
+
+字段准入矩阵是规范 hash 的一部分，状态只有 `eligible` 与 `not_reconstructed`：
+
+| 字段身份 | 状态 | P2 首次用途与限制 |
+| --- | --- | --- |
+| `qfq_return_1d`、`qfq_return_3d`、`qfq_return_5d` | eligible | 只用决策日及以前 qfq 收盘重建短期反转输入 |
+| `qfq_residual_momentum_20d_skip5`、`qfq_residual_momentum_40d_skip5`、`qfq_residual_momentum_60d_skip5` | eligible | 跳过最近 5 日，并只对同日市场、板块和成交额暴露做确定性残差化 |
+| `market_cross_section`、`board_cross_section` | eligible | 只来自同一 H0 manifest 的当日可用横截面，板块由稳定代码规则确定 |
+| `realized_volatility_20d`、`downside_semivariance_20d`、`drawdown_recovery_60d` | eligible | 只作个股波动/下行风险、严重亏损和确定性风险平局依据，不冒充 Alpha 加分 |
+| `amihud_20d`、`average_amount_20d` | eligible | 前者进入成本估计，后者只作容量门；容量不得直接增加预期收益 |
+| `historical_st_status`、`historical_industry`、`historical_market_cap` | not_reconstructed | H0 没有真实历史生效时间；不得使用当前值、代码外推行业或中性值 |
+| `intraday_1450_tail` | not_reconstructed | H0 只有日线，禁止使用当日收盘替代 14:50 输入 |
+| `financial_disclosure_point_in_time`、`announcement_disclosure_point_in_time` | not_reconstructed | 缺少真实披露/接收时间时不得按报告期或当前公告回填 |
+| `corporate_risk_point_in_time`、`deepseek_facts_point_in_time` | not_reconstructed | 不得按零风险、无风险或模型中性值参与历史拟合 |
+
+P2 首次只有一个候选家族 `daily_reconstructible_ensemble_v1`：固定使用上述可重建短期反转、残差动量、
+波动/下行风险和成本/容量字段；线性 ridge 与浅层 LightGBM 的权重固定为 50%/50%。模型随机种子固定为
+`20260830`；线性 ridge 固定为
+`1e-3`；LightGBM 固定 `max_depth=3`、`num_leaves=7`、`min_data_in_leaf=20`、
+`learning_rate=0.05`、最多 200 轮和 20 轮早停，单线程并使用规范中的固定种子。不得增加第二候选、
+特征子集、模型、权重或超参数网格。确定性选择规则固定为 `single_candidate_pass_or_stop_v1`：训练段
+只拟合这一候选，验证段只评价冻结模型一次；验证失败立即终止 P2，不得回到训练段改参、尝试另一模型
+或用验证结果重排候选。
+
+Tomorrow 标签固定为决策日收盘可重建输入到下一交易日收盘的全市场等权超额，个股净值固定为
+`gross_excess_return - turnover * cost_rate`，成本完整报告 20/50/100bp。H0 无法重建真实 14:50
+生产决策，因此历史 comparator 明确命名为 `score_h0_ohlcv_cross_section_v1`，不得写成 production
+baseline；P2-1 只能证明候选相对该历史代理值得进入真实前向影子。真实 production/local-only 的同日
+同股比较只能由 P2-2 在相同 14:50 点时输入上完成。
+
+历史选择最多 Top6，按净效用降序、严重亏损概率升序、模型分歧升序和代码升序稳定选择，单板占最终池
+最多 60%，允许合法空池。由于 `historical_industry` 明确不可重建，历史结果不得伪称验证了每行业最多
+2 只；该限制作为报告剩余风险保留，P2-2 对 production 与 P2 必须在真实点时行业上同时执行现行每行业
+最多 2 只规则。实时 ST、公告、公司风险和其它活动硬过滤同样只在前向真实输入中按现行规则执行，不能
+反向写进 H0 Alpha 或把缺失风险当成已通过历史收益验证。
+
+历史门禁全部进入同一规范 hash：历史有效配对不少于 300；20bp 后相对
+`score_h0_ohlcv_cross_section_v1` 的平均净超额增量必须严格大于 0；使用固定种子、10,000 次的
+5 日非循环配对移动区块 bootstrap，其未中心化 95% 下界必须严格大于 0；严重亏损固定为
+`MAE/ATR20 <= -1.5` 且发生率不高于 comparator；平均换手增量不高于 5 个百分点；平均 Rank IC 严格
+大于 0、Q5-Q1 20bp 净超额严格大于 0；单股及前五只正贡献占比分别不高于 10%/30%；单板最大占比
+不高于 60%。50/100bp 完整报告但不用于另建事后检验族。唯一候选不存在多重选择，历史阶段不得伪造
+Holm 家族；P2-2 的真实前向门禁仍须按其届时预注册规范处理统计校正。
+
+历史报告终态只能是 `historical_passed` 或 `historical_rejected`，必须显式绑定 P2 规范、H0 规范、H0
+股票池 hash、逐股历史集合 hash 和 manifest hash，以及训练/验证证据、模型工件及规范内容 hash；同内容
+重放幂等，不同内容或篡改冲突。通过只允许后续独立
+批次预注册前向身份，报告始终固定 `production_authority=false`，不得产生 `promotion_eligible`、写活动
+配置或改变当前候选、评分、风险、DeepSeek、68/32 融合、动作、Top6、冻结、API 或 Web。
+
+P1 的 `score_tomorrow_shadow_p1_v1`、P0v1 和 P0v2 身份、日期、失败状态、标签、随机流和工件均列入
+P2 排除证据集合，继续不可变只读，不能改名、复制或计入 P2。P2-0 不绑定任何前向日期或官方日历；
+在 P2-1 历史报告真实通过并不可变封存前，不得创建 `score_tomorrow_shadow_p2_v1`。历史失败时停止，
+不得降低门槛或预占未来日期。
+
 ### 15.2 活动发布门禁
 
 自动验证至少覆盖：
