@@ -1,6 +1,7 @@
 {
-  "schema_version": 13,
-  "strategy_version": "strategy_tomorrow_p2_manual_override_2026_08_30",
+  "schema_version": 14,
+  "strategy_version": "strategy_tomorrow_profile_switch_2026_08_30",
+  "tomorrow_scoring_profile": "p2",
   "deepseek_risk_mapping_version": "deepseek_v4_local_rules_2026_08",
   "board_policy_version": "board_policy_score_first_2026_07",
   "fusion": {

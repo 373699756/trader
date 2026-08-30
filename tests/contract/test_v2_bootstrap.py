@@ -37,6 +37,18 @@ def _config(tmp_path: Path) -> Path:
     return path
 
 
+def _config_with_strategy_profile(tmp_path: Path, profile: str) -> Path:
+    strategy = json.loads((PROJECT_ROOT / "config/v2/strategy.json").read_text(encoding="utf-8"))
+    strategy["tomorrow_scoring_profile"] = profile
+    strategy_path = tmp_path / "strategy.json"
+    strategy_path.write_text(json.dumps(strategy), encoding="utf-8")
+    path = _config(tmp_path)
+    runtime = json.loads(path.read_text(encoding="utf-8"))
+    runtime["strategy_config"] = str(strategy_path)
+    path.write_text(json.dumps(runtime), encoding="utf-8")
+    return path
+
+
 def test_build_system_is_lazy_and_v2_only(tmp_path, monkeypatch) -> None:
     started: list[str] = []
     monkeypatch.setattr(threading.Thread, "start", lambda _thread: started.append("thread"))
@@ -57,6 +69,7 @@ def test_build_system_is_lazy_and_v2_only(tmp_path, monkeypatch) -> None:
     assert status.status_code == 200
     assert status.get_json()["phase"] == "closed"
     assert status.get_json()["tomorrow_model"]["active"] is True
+    assert status.get_json()["tomorrow_model"]["profile_id"] == "p2"
     assert status.get_json()["tomorrow_model"]["model_id"] == "daily_reconstructible_ensemble_v1"
     assert status.get_json()["tomorrow_model"]["activation_basis"] == "manual_user_override"
     assert status.get_json()["tomorrow_model"]["monitoring_mode"] == "automatic_t1_outcome_settlement"
@@ -64,6 +77,19 @@ def test_build_system_is_lazy_and_v2_only(tmp_path, monkeypatch) -> None:
     page = system.app.test_client().get("/").get_data(as_text=True)
     assert 'name="trader-web-snapshot-retention-ms"' in page
     assert 'content="35000"' in page
+
+
+def test_build_system_selects_the_packaged_p1_profile_from_strategy_config(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(threading.Thread, "start", lambda _thread: None)
+
+    system = build_system(_config_with_strategy_profile(tmp_path, "p1"))
+    status = system.app.test_client().get("/api/v2/status").get_json()["tomorrow_model"]
+
+    assert status["active"] is True
+    assert status["profile_id"] == "p1"
+    assert status["model_id"] == "p1_manual_residual_momentum_v1"
+    assert status["activation_basis"] == "manual_user_override"
+    assert status["historical_status"] == "historical_unavailable"
 
 
 def test_reference_data_plane_recovery_is_fail_open() -> None:

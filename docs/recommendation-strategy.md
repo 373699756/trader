@@ -1,6 +1,6 @@
 # 荐股策略文档
 
-版本：v2（活动策略 `strategy_tomorrow_p2_manual_override_2026_08_30`，运行身份由完整配置 SHA-256 生成）
+版本：v2（活动 Tomorrow 模型由 `tomorrow_scoring_profile=p1|p2` 选择，默认 `p2`，运行身份由完整配置 SHA-256 生成）
 
 引擎：`engine_review28_2026_07`
 
@@ -1700,6 +1700,16 @@ Rank IC 大于 0。hybrid 相对 local-only 另做同口径 5 日区块检验；
 最终报告固定 `production_authority=false`。`promotion_eligible` 只表示研究证据满足门禁；任何生产候选、
 评分、风险、68/32 融合、动作、Top6、冻结、API 或 Web 变化仍须另立批次人工晋级。
 
+当前未完成问题必须与“代码是否存在”分开记录：P1 五候选研究族不是唯一模型工件。规范只冻结五个候选、
+逐日证据和门禁统计，逐折模型也只服务对应观察日；它没有定义一个可被生产组合根长期加载的全局推理工件。
+截至 2026-08-30，固定的 2027 年 40+20 日期尚未发生，日历确认、逐日证据和三份门禁报告均不存在，因而
+五个候选没有可审计的唯一胜者。原 P1 研究身份保持未完成；不得因为增加生产配置项而伪造
+`promotion_eligible`、补写未来日期或把任一代理工件登记为 `score_tomorrow_shadow_p1_v1` 的产物。
+
+H0 归档也不能补成原 P1：它没有历史时点行业、市值和流动性，无法重建批次 2 的完整行业/规模/流动性
+中性化残差动量，更没有同日盘中 session/tail 输入。因此任何立即可运行的日线版本必须使用独立身份、
+独立 feature contract 和人工授权，并显式标记为 proxy；不能用“P1 已完成”描述。
+
 #### 15.1.16 Tomorrow P2 历史规范与输入资格
 
 P2 加速路线先冻结独立回顾性身份 `score_tomorrow_historical_p2_v1`，规范 schema 固定为
@@ -1812,6 +1822,28 @@ skip-5 动量。三个动量在同一批生产 Top120 候选内依次扣除市�
 历史总体严重亏损率伪造个股“亏损概率”，状态固定 `loss_probability_status=not_modeled`；Web 可以展示
 评分版本、P2 信号分、预测超额、估算成本、预测成本后净超额和模型分歧。评分版本必须读取决策绑定的
 `input_versions.score_model`，不能用活动策略标签冒充模型身份。
+
+#### 15.1.18 P1/P2 生产评分配置切换
+
+2026-08-30 用户进一步要求把 P1 与 P2 做成可配置评分策略，并授权按已说明方案选择残差动量作为人工 P1。
+策略配置 schema 14 新增 `tomorrow_scoring_profile`，只接受 `p1` 或 `p2`，默认 `p2`。配置内容参与
+`strategy_sha256_*`，切换必须重启进程；组合根只创建一个 Tomorrow 评分服务，不保留并行评分、热切换、
+隐藏回退或双状态源。所选模型 ID/hash 写入 `input_versions.score_model`，因此另一 profile 不能覆盖既有
+冻结记录；同日已有正式记录继续遵守 first-wins 和冻结恢复规则。
+
+`p1` 明确映射到独立人工代理 `p1_manual_residual_momentum_v1`，不是原研究身份的晋级工件。它只读 H0
+`score_h0_v1` 训练段 2024-07-01 至 2025-12-31 的 1,765,685 行，用与在线链一致的日线可重建
+`h0_board_amount_residual_momentum_proxy_v1`：20/40/60 日 skip-5 动量扣除同日市场、板块及板内对数
+20 日平均成交额线性暴露，再用固定 ridge `1e-3` 拟合下一日全市场等权超额。包内线性工件的规范化内容身份 SHA-256 固定为
+`89f21552c2cd3f2addb16fa6db28f4a515991429ec287725e8c1434ee14cd1b4`，启动时必须同时校验 profile、模型、
+特征、H0 规范、manifest、schema 和完整 hash。状态固定公开 `historical_status=historical_unavailable`、
+`original_p1_unique_artifact_unavailable` 和 `manual_daily_proxy_not_original_p1_evidence`，不得误报原 P1 通过。
+
+`p2` 继续映射 `daily_reconstructible_ensemble_v1` 及第 15.1.17 节工件、历史拒绝原因和人工越权边界。
+两种 profile 共用 20bp Amihud 成本、正净效用横截面 0–100 映射、本地风险只扣一次、固定 68/32 融合、
+78/73 门槛、Top6、集中度、DeepSeek 预算、14:50 冻结和 T+1 后台结算；P1 线性模型的模型分歧固定为 0，
+两者都没有逐股亏损概率头。Web 统一显示“模型信号分”和决策绑定的真实模型版本，不用 P1/P2 标签代替
+模型 ID/hash。任一包内资源缺失、篡改、字段宽度或 hash 不一致都拒绝启动，禁止回退旧 Tomorrow 分。
 
 ### 15.2 活动发布门禁
 

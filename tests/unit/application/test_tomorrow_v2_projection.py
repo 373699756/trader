@@ -27,8 +27,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 class _ProductionPredictor:
+    profile_id = "p2"
     model_id = "daily_reconstructible_ensemble_v1"
     model_hash = "b" * 64
+    feature_ids = (
+        "qfq_return_1d",
+        "qfq_return_3d",
+        "qfq_return_5d",
+        "qfq_residual_momentum_20d_skip5",
+        "qfq_residual_momentum_40d_skip5",
+        "qfq_residual_momentum_60d_skip5",
+    )
 
     def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
         return tuple(

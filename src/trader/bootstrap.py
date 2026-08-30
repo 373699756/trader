@@ -221,7 +221,9 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     reviewer = _build_reviewer(context, persistence.budget)
     publication = _build_publication(context, calendar, persistence.repository, reviewer, market_data)
     policy = _recommendation_policy(context.strategy)
-    tomorrow_model = TomorrowProductionModelScoringService(load_packaged_tomorrow_production_model())
+    tomorrow_model = TomorrowProductionModelScoringService(
+        load_packaged_tomorrow_production_model(strategy.tomorrow_scoring_profile)
+    )
     native_data = V2MarketDataAdapter(
         market_data,
         config_version=effective_config_version,

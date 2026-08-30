@@ -330,6 +330,7 @@ def _tomorrow_model(runtime: Mapping[str, object]) -> dict[str, object]:
         for field in (
             "active",
             "status",
+            "profile_id",
             "model_id",
             "model_hash",
             "scoring_version",

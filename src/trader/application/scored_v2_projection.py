@@ -321,7 +321,7 @@ def _decision_item(
         ),
         model_diagnostics=(
             DecisionModelDiagnostics(
-                signal_score=entry.score.components["p2_net_utility_rank"],
+                signal_score=entry.score.components["model_net_utility_rank"],
                 predicted_excess_return_pct=model_diagnostics.predicted_excess_return_pct,
                 estimated_cost_pct=model_diagnostics.estimated_cost_pct,
                 predicted_net_excess_pct=model_diagnostics.predicted_net_excess_pct,

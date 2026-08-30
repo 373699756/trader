@@ -24,7 +24,8 @@ def test_v2_configuration_contract_is_valid() -> None:
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
 
     assert runtime.schema_version == 10
-    assert strategy.schema_version == 13
+    assert strategy.schema_version == 14
+    assert strategy.tomorrow_scoring_profile == "p2"
     assert runtime.config_version == "runtime_v39_tushare_120_daily_audit_2026_08_26"
     assert runtime.market_data.source_contract_versions["eastmoney"] == ("eastmoney_quote_v17_security_master")
     assert runtime.api.default_top_n == 12
@@ -285,6 +286,32 @@ def test_v2_configuration_contract_is_valid() -> None:
     grouped_codes = tuple(code for group in watchlist.groups for code in group.codes)
     assert len(grouped_codes) == len(set(grouped_codes))
     assert set(grouped_codes) == {item.code for item in watchlist.items}
+
+
+@pytest.mark.parametrize("profile", ("p1", "p2"))
+def test_tomorrow_scoring_profile_is_an_explicit_versioned_switch(tmp_path, profile: str) -> None:
+    source = PROJECT_ROOT / "config" / "v2" / "strategy.json"
+    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw["tomorrow_scoring_profile"] = profile
+    strategy_path = tmp_path / "strategy.json"
+    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    settings = load_strategy_settings(strategy_path)
+
+    assert settings.tomorrow_scoring_profile == profile
+    if profile == "p1":
+        assert settings.strategy_version != load_strategy_settings(source).strategy_version
+
+
+def test_unknown_tomorrow_scoring_profile_is_rejected(tmp_path) -> None:
+    source = PROJECT_ROOT / "config" / "v2" / "strategy.json"
+    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw["tomorrow_scoring_profile"] = "latest"
+    strategy_path = tmp_path / "strategy.json"
+    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="tomorrow_scoring_profile"):
+        load_strategy_settings(strategy_path)
 
 
 @pytest.mark.parametrize("schema_version", (5, 6, 7, 8, 9))

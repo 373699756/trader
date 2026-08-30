@@ -6,6 +6,7 @@ import math
 import os
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Literal, cast
 
 from trader.domain.market.news import NewsSignalPolicy
 from trader.domain.market.research import LongResearchPolicy, MarketRegimePolicy
@@ -64,8 +65,11 @@ from trader.infra.settings_strategy_validation import _validate_strategy_setting
 def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySettings:
     path = Path(config_path).expanduser().resolve()
     raw = _read_json_object(path)
-    if _integer(raw, "schema_version", minimum=1) != 13:
-        raise ConfigurationError("strategy schema_version must be 13")
+    if _integer(raw, "schema_version", minimum=1) != 14:
+        raise ConfigurationError("strategy schema_version must be 14")
+    tomorrow_scoring_profile = _text(raw, "tomorrow_scoring_profile")
+    if tomorrow_scoring_profile not in {"p1", "p2"}:
+        raise ConfigurationError("tomorrow_scoring_profile must be p1 or p2")
     fusion_raw = _mapping(raw, "fusion")
     selection_raw = _mapping(raw, "selection")
     hard_filters_raw = _mapping(raw, "hard_filters")
@@ -93,8 +97,9 @@ def load_strategy_settings(config_path: str | os.PathLike[str]) -> StrategySetti
         for factor_id, definition in factor_registry_raw.items()
     }
     settings = StrategySettings(
-        schema_version=13,
+        schema_version=14,
         strategy_version=_strategy_contract_version(raw),
+        tomorrow_scoring_profile=cast(Literal["p1", "p2"], tomorrow_scoring_profile),
         deepseek_risk_mapping_version=_text(raw, "deepseek_risk_mapping_version"),
         fusion=FusionSettings(
             version=_text(fusion_raw, "version"),

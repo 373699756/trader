@@ -366,6 +366,20 @@ def test_tomorrow_shadow_p1_preregistration_is_owned_by_the_authoritative_contra
         assert expected in strategy
     assert "Tomorrow 新模型预注册与前向影子" in design
     assert "不注入 `bootstrap.py`" in design
+    for expected in (
+        "P1 五候选研究族不是唯一模型工件",
+        "p1_manual_residual_momentum_v1",
+        "tomorrow_scoring_profile",
+        "原 P1 研究身份保持未完成",
+    ):
+        assert expected in strategy
+    for expected in (
+        "P1/P2 生产评分配置切换",
+        "tomorrow_scoring_profile=p1|p2",
+        "重启生效",
+        "不得覆盖既有冻结记录",
+    ):
+        assert expected in design
 
 
 def test_tomorrow_historical_p2_remains_rejected_while_manual_production_override_is_explicit() -> None:

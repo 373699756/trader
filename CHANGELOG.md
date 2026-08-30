@@ -6,6 +6,14 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户问题：权威文档只写“P1 五个候选尚未选出唯一工件”，没有解释为何工程代码已经存在却不能直接与
+  P2 切换。确认原因是 `score_tomorrow_shadow_p1_v1` 只定义五候选逐日研究与门禁，固定 2027 年窗口尚未
+  发生，也不产出全局推理工件；H0 缺少原 P1 所需的历史时点行业、市值、流动性和盘中输入。文档现在
+  明确区分未完成的原 P1 与人工日线 proxy。新增包内 `p1_manual_residual_momentum_v1` 线性工件，从 H0
+  训练段 1,765,685 行流式拟合并绑定规范、manifest、feature contract 与 SHA-256
+  `89f21552c2cd3f2addb16fa6db28f4a515991429ec287725e8c1434ee14cd1b4`；新增可重复、显式输出路径的
+  `scripts/package_tomorrow_p1_model.py`，不访问网络或输出股票明细。
+  `Regression-Key: tomorrow-p1-p2-configurable-profile-v1`。
 - 针对用户明确要求“把现在存在但没接入的最新模型直接切换为当前评分，交易日后台自行采集后续证据”，
   新增 Tomorrow 生产模型端口、类型化横截面评分服务与 wheel 内置模型资源。启动只接纳
   `daily_reconstructible_ensemble_v1` 且校验 SHA-256
@@ -470,6 +478,12 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 策略配置升级到 schema 14，新增唯一 `tomorrow_scoring_profile=p1|p2`，默认保持 `p2`；配置参与策略
+  SHA-256，切换后必须重启。组合根和离线性能入口只装配所选包内工件，P1/P2 共用同一类型化评分服务，
+  不并行打分、不热切换、不回退旧 Tomorrow 分；模型 ID/hash 继续进入决策身份，既有冻结记录不可覆盖。
+  状态/API 新增 `profile_id`，P1 显式报告 `historical_unavailable` 和 proxy 原因。评分组件改为 profile
+  中性的 `model_net_utility_rank/model_confidence`，Web 文案由“P2信号分”改为“模型信号分”。Status
+  schema 与静态资源握手同步提升为 `v2_status_v6` / `release-contract-2026-08-30-v7`。
 - Tomorrow 本地 `base_score` 现由封存 P2 ridge/LightGBM 50%/50% 集合的成本后净效用横截面分产生；
   Today、D25、Long、结构化本地风险、固定 68/32 融合、78/73 门槛、Top6/行业/板块约束和 14:50
   冻结保持不变。20 个未来交易日不再阻塞当前模型使用，只由既有 15:00 后 outcome 结算器持续积累
@@ -880,6 +894,9 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 Tomorrow 生产评分只能硬编码加载 P2、无法按配置选择模型的问题；模型输入由固定六维改为工件声明
+  的严格特征集合，P1 只取得三项残差动量，P2 仍取得原六项特征。任一 profile、资源、schema、特征宽度
+  或完整 hash 不匹配均失败关闭，避免把五候选研究族、错误宽度或被篡改资源静默送入生产评分。
 - 修复最终 Review 发现的两项运行实测缺口：Tomorrow 详情页“评分版本”此前读取 GET 中不存在的
   `strategy_version`，SSE 替换也未传递模型输入身份；现在两条读取路径都使用
   `input_versions.score_model`。无头 Chrome 退出后偶发异步残留 `Default` 目录使三档验收误报失败，现以
@@ -1445,6 +1462,27 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- `tomorrow-p1-p2-configurable-profile-v1`：定向配置、P1/P2 包内推理、评分/决策身份、状态/API、Web 文案、
+  流式训练和权威文档契约通过；高风险完整命令组 `make format-check`、`make lint`、`make type-check`
+  （260 个源码文件）、`make test`（pytest 100%）和 `make package` 全部通过。构建 wheel 后在仓库外
+  `pip --no-deps --target` 安装，已从安装目录加载 P1/P2 固定 hash、模板和静态资源，并执行
+  `trader-cli validate-config` 成功。
+- 使用 H0 归档的 1,765,685 个训练行再次执行 `scripts/package_tomorrow_p1_model.py`，得到与包内资源
+  逐字节相同的 SHA-256 `a72713cb723d3dc1f7ba8f4bdc6d68f5cd7e67504227f84939523299b7945780`，
+  内容身份仍为 `89f21552...14cd1b4`。默认 P2 与临时 P1 配置分别真实执行
+  `./run.sh performance-check`，两者均零网络调用、零失败、零 RSS 增长；P2/P1 的
+  `quote_to_draft` p95 分别为 1100.609ms / 1118.616ms，均在既有预算内。
+- 停止旧进程后分别以 P2、P1 配置真实执行 `./run.sh serve` 并重启：P2 状态返回
+  `profile_id=p2`、`daily_reconstructible_ensemble_v1` 和 hash `27034e52...887da5`；P1 状态返回
+  `profile_id=p1`、`p1_manual_residual_momentum_v1` 和 hash `89f21552...14cd1b4`，策略内容 hash 也由
+  `46166ba1...` 变为 `e7a44b59...`。P1 Web 健康诊断连续 3 轮通过；两者均为
+  `v2_status_v6` / `release-contract-2026-08-30-v7`，证明配置只在重启后生效且未回退另一工件。
+- 真实 P2 `full` 有界诊断中 Web、交易所证券主数据、qfq 历史、腾讯行情和生产性能 5 项通过；交易所
+  资料为 5212/5212，Tushare 因未配置 token 受控降级。统一 `browser_refresh` 探针因本机缺少 Firefox/
+  geckodriver 不能执行；仓库既有 Chrome 三档桌面发布门禁另行实跑 `passed=true`，1280x720、
+  1440x900、1920x1080 均无浏览器错误、页面级横向溢出或 Long 区域重叠，静态资源全部使用 v7 revision。
+  最终恢复默认 P2 并在 5000 端口保持服务运行；`live` 诊断 4 项通过、0 项失败，仅 Tushare token 缺失
+  受控降级，Web 连续 3 轮、交易所 5212/5212、三只 qfq 历史和腾讯行情均通过。
 - 失败先行回归先复现 GET/SSE 模型版本不一致和详情页不展示工件身份；修复后 Python API/SSE 12 项及
   JavaScript 页面状态契约通过，Tomorrow 详情使用
   `daily_reconstructible_ensemble_v1:<sha256>`，不再显示普通策略标签。
@@ -2271,6 +2309,10 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- `p1_manual_residual_momentum_v1` 是用户授权的 H0 日线 proxy，不是
+  `score_tomorrow_shadow_p1_v1` 五候选研究的胜者；它缺少原 P1 的行业/市值/流动性完整中性化和真实
+  2027 点时证据，状态会持续公开该差异。默认仍为 P2；两种人工 profile 都未建立逐股亏损概率头，也不
+  自动更新参数。切换需修改配置并重启，且只影响尚未冻结的新 Tomorrow 决策。
 - P2 历史终态仍为 `historical_rejected`：严重亏损率 15.9472% 高于代理 8.2734%，换手增加 56.2350 个
   百分点且 Q5-Q1 为负。本次是用户知情授权的生产例外，不代表收益门禁通过；在线 Top120 点时横截面也
   不等同于训练时完整 H0 收盘横截面。生产会自动结算新证据，但任何模型、权重或门槛更新仍需新的人工
@@ -2278,7 +2320,9 @@ All notable changes to this project are documented here.
 - 2026-08-30 为非交易日，真实 `run.sh` 只能证明启动、资源 hash、状态/Web、外部来源和生产函数性能，
   当日调度按契约处于 `closed/not_ready`，不能伪造 14:50 冻结样本；交易日整链行为由集成/契约测试覆盖，
   下一真实交易日由后台正常采集并结算。Tushare 因本机未配置 token 显式降级，但腾讯 qfq 历史、腾讯
-  行情和交易所证券主数据均通过，不阻塞本地推荐；DeepSeek 同样因缺少 API key 保持零调用降级。
+  行情和交易所证券主数据均通过，不阻塞本地推荐；DeepSeek 同样因缺少 API key 保持零调用降级。本机
+  没有 Firefox/geckodriver，因此统一诊断的 Firefox 刷新探针保持环境失败；Chrome 三档桌面发布门禁已
+  通过，但两者不是同一浏览器刷新间隔测量，后续安装 Firefox/geckodriver 后仍可补采该专项证据。
 - 用户明确选择暂不处理 `.token_key`，因此 DeepSeek 继续以 `api_key_missing` 零调用降级，Tushare 继续以
   `missing_token` 降级；两者不是本批 688981 历史修复的失败，也未被隐藏。东方财富三个历史主机的外部
   `ConnectionError` 仍可能发生，但腾讯严格 qfq 等价路径已使本次 688981 组合历史恢复。

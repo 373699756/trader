@@ -6,17 +6,19 @@ import math
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
+TomorrowScoringProfile = Literal["p1", "p2"]
+
 
 @dataclass(frozen=True)
 class TomorrowModelInput:
     code: str
-    alpha_features: tuple[float, float, float, float, float, float]
+    alpha_features: tuple[float, ...]
 
     def __post_init__(self) -> None:
         if len(self.code) != 6 or not self.code.isdigit():
             raise ValueError("Tomorrow model input code is invalid")
-        if len(self.alpha_features) != 6 or any(not math.isfinite(value) for value in self.alpha_features):
-            raise ValueError("Tomorrow model alpha features must contain six finite values")
+        if not self.alpha_features or any(not math.isfinite(value) for value in self.alpha_features):
+            raise ValueError("Tomorrow model alpha features must be non-empty and finite")
 
 
 @dataclass(frozen=True)
@@ -36,10 +38,16 @@ class TomorrowModelPrediction:
 
 class TomorrowModelPredictorPort(Protocol):
     @property
+    def profile_id(self) -> TomorrowScoringProfile: ...
+
+    @property
     def model_id(self) -> str: ...
 
     @property
     def model_hash(self) -> str: ...
+
+    @property
+    def feature_ids(self) -> tuple[str, ...]: ...
 
     def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]: ...
 
@@ -47,11 +55,12 @@ class TomorrowModelPredictorPort(Protocol):
 @dataclass(frozen=True)
 class TomorrowModelRuntimeStatus:
     active: bool
+    profile_id: TomorrowScoringProfile
     model_id: str
     model_hash: str
     scoring_version: str
     activation_basis: Literal["manual_user_override"]
-    historical_status: Literal["historical_rejected"]
+    historical_status: Literal["historical_rejected", "historical_unavailable"]
     historical_failure_reasons: tuple[str, ...]
     monitoring_mode: Literal["automatic_t1_outcome_settlement"]
     automatic_model_update: bool
@@ -63,4 +72,5 @@ __all__ = [
     "TomorrowModelPrediction",
     "TomorrowModelPredictorPort",
     "TomorrowModelRuntimeStatus",
+    "TomorrowScoringProfile",
 ]

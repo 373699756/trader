@@ -101,6 +101,7 @@ def _tomorrow_model_payload(status: TomorrowModelRuntimeStatus | None) -> dict[s
         return {"active": False, "status": "not_configured"}
     return {
         "active": status.active,
+        "profile_id": status.profile_id,
         "model_id": status.model_id,
         "model_hash": status.model_hash,
         "scoring_version": status.scoring_version,

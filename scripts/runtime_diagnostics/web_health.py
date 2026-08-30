@@ -17,6 +17,8 @@ from types import MappingProxyType
 from typing import Literal
 from zoneinfo import ZoneInfo
 
+from trader.web.static_assets import STATUS_SCHEMA_VERSION as _STATUS_SCHEMA_VERSION
+
 from .common import emit_report
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -40,7 +42,6 @@ _MONITORED_FUNNEL_FIELDS = (
     "full_scored",
 )
 _MAX_RESPONSE_BYTES = 1_048_576
-_STATUS_SCHEMA_VERSION = "v2_status_v5"
 _EvidenceValue = str | int | float | bool | None
 
 

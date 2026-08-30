@@ -431,7 +431,7 @@
     const scoreValues = [
       ["评分版本", hasValue(scoreVersion) ? scoreVersion : null],
       ["本地评分", valueNumber(scores.local_score, 2)],
-      ["P2信号分", valueNumber(scores.model_signal_score, 2)],
+      ["模型信号分", valueNumber(scores.model_signal_score, 2)],
       ["预测超额收益", valuePct(scores.predicted_excess_return_pct)],
       ["估算交易成本", valuePct(scores.estimated_cost_pct)],
       ["预测成本后净超额", valuePct(scores.predicted_net_excess_pct)],

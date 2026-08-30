@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from trader.application.cache import CachePolicy
 from trader.domain.market.news import NewsSignalPolicy
@@ -224,6 +225,7 @@ class FactorDefinition:
 class StrategySettings:
     schema_version: int
     strategy_version: str
+    tomorrow_scoring_profile: Literal["p1", "p2"]
     deepseek_risk_mapping_version: str
     fusion: FusionSettings
     selection: SelectionSettings

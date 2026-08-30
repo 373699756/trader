@@ -11,7 +11,7 @@ import statistics
 import sys
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -60,6 +60,13 @@ from trader.web import create_app
 from trader.web.route_services import UnifiedWebServices
 
 
+@dataclass(frozen=True)
+class _OperationContext:
+    config_version: str
+    policy: RecommendationPolicy
+    tomorrow_model: TomorrowProductionModelScoringService
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
@@ -73,12 +80,18 @@ def run(config_path: Path, *, baseline_path: Path | None = None) -> dict[str, ob
     strategy_settings = load_strategy_settings(settings.strategy_config_path)
     budgets = settings.performance_budgets
     market_inputs, market_quotes, candidates = _fixtures(budgets)
+    context = _OperationContext(
+        settings.config_version,
+        _recommendation_policy(strategy_settings),
+        TomorrowProductionModelScoringService(
+            load_packaged_tomorrow_production_model(strategy_settings.tomorrow_scoring_profile)
+        ),
+    )
     operations, provenance = _operations(
         market_inputs,
         market_quotes,
         candidates,
-        config_version=settings.config_version,
-        policy=_recommendation_policy(strategy_settings),
+        context,
     )
     measurements = {
         name: _measure(operation, budgets.rounds.warmup, budgets.rounds.measurement)
@@ -156,10 +169,11 @@ def _operations(
     market_inputs: tuple[MarketQuoteInput, ...],
     market_quotes: tuple[MarketQuote, ...],
     candidates: tuple[FeatureSnapshot, ...],
-    *,
-    config_version: str,
-    policy: RecommendationPolicy,
+    context: _OperationContext,
 ) -> tuple[dict[str, Callable[[], object]], dict[str, str]]:
+    config_version = context.config_version
+    policy = context.policy
+    tomorrow_model = context.tomorrow_model
     observed_at = market_quotes[0].received_time
     observations = _complete_realtime_observations(market_quotes, observed_at)
     merged = merge_market_observations(observations, observed_at=observed_at)
@@ -205,7 +219,6 @@ def _operations(
         data_version="performance-candidate-data-v2",
         market_features=candidates,
     )
-    tomorrow_model = TomorrowProductionModelScoringService(load_packaged_tomorrow_production_model())
     local_projection = build_scored_v2_local(
         tomorrow_input,
         policy,

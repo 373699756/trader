@@ -1,4 +1,4 @@
-"""Cross-sectional production scoring for the manually activated Tomorrow P2 model."""
+"""Cross-sectional production scoring for the configured packaged Tomorrow model."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
+from typing import Literal
 
 from trader.application.ports.tomorrow_model import (
     TomorrowModelInput,
@@ -30,6 +31,14 @@ _ALPHA_FIELDS = (
 _AMOUNT_FIELD = "p2_average_amount_20d"
 _AMIHUD_FIELD = "p2_amihud_20d"
 _COST_RATE = 0.002
+_MODEL_FEATURE_IDS = (
+    "qfq_return_1d",
+    "qfq_return_3d",
+    "qfq_return_5d",
+    "qfq_residual_momentum_20d_skip5",
+    "qfq_residual_momentum_40d_skip5",
+    "qfq_residual_momentum_60d_skip5",
+)
 
 
 @dataclass(frozen=True)
@@ -67,27 +76,47 @@ class _RawRow:
 
 class TomorrowProductionModelScoringService:
     def __init__(self, predictor: TomorrowModelPredictorPort) -> None:
-        if not predictor.model_id or len(predictor.model_hash) != 64:
+        if (
+            not predictor.model_id
+            or len(predictor.model_hash) != 64
+            or predictor.profile_id not in {"p1", "p2"}
+            or not predictor.feature_ids
+            or len(set(predictor.feature_ids)) != len(predictor.feature_ids)
+            or any(feature_id not in _MODEL_FEATURE_IDS for feature_id in predictor.feature_ids)
+        ):
             raise ValueError("Tomorrow production model identity is invalid")
         self._predictor = predictor
+        self._feature_positions = tuple(_MODEL_FEATURE_IDS.index(item) for item in predictor.feature_ids)
 
     @property
     def model_version(self) -> str:
         return f"{self._predictor.model_id}:{self._predictor.model_hash}"
 
     def status(self) -> TomorrowModelRuntimeStatus:
+        historical_status: Literal["historical_rejected", "historical_unavailable"]
+        historical_failure_reasons: tuple[str, ...]
+        if self._predictor.profile_id == "p1":
+            historical_status = "historical_unavailable"
+            historical_failure_reasons = (
+                "original_p1_unique_artifact_unavailable",
+                "manual_daily_proxy_not_original_p1_evidence",
+            )
+        else:
+            historical_status = "historical_rejected"
+            historical_failure_reasons = (
+                "quintile_spread_not_positive",
+                "severe_loss_rate_worse",
+                "turnover_limit",
+            )
         return TomorrowModelRuntimeStatus(
             active=True,
+            profile_id=self._predictor.profile_id,
             model_id=self._predictor.model_id,
             model_hash=self._predictor.model_hash,
             scoring_version=self.model_version,
             activation_basis="manual_user_override",
-            historical_status="historical_rejected",
-            historical_failure_reasons=(
-                "quintile_spread_not_positive",
-                "severe_loss_rate_worse",
-                "turnover_limit",
-            ),
+            historical_status=historical_status,
+            historical_failure_reasons=historical_failure_reasons,
             monitoring_mode="automatic_t1_outcome_settlement",
             automatic_model_update=False,
             loss_probability_status="not_modeled",
@@ -96,8 +125,9 @@ class TomorrowProductionModelScoringService:
     def score(self, features: Sequence[FeatureSnapshot]) -> TomorrowModelScoreBatch:
         rows: list[_RawRow] = []
         missing: list[str] = []
+        require_reversal = any(position < 3 for position in self._feature_positions)
         for feature in sorted(features, key=lambda item: item.quote.code):
-            row = _raw_row(feature)
+            row = _raw_row(feature, require_reversal=require_reversal)
             if row is None:
                 missing.append(feature.quote.code)
             else:
@@ -108,13 +138,16 @@ class TomorrowProductionModelScoringService:
         inputs = tuple(
             TomorrowModelInput(
                 row.code,
-                (
-                    row.return_1d,
-                    row.return_3d,
-                    row.return_5d,
-                    residuals[0][index],
-                    residuals[1][index],
-                    residuals[2][index],
+                tuple(
+                    (
+                        row.return_1d,
+                        row.return_3d,
+                        row.return_5d,
+                        residuals[0][index],
+                        residuals[1][index],
+                        residuals[2][index],
+                    )[position]
+                    for position in self._feature_positions
                 ),
             )
             for index, row in enumerate(rows)
@@ -142,8 +175,8 @@ class TomorrowProductionModelScoringService:
             net_pct = utility * 100.0
             disagreement_pct = prediction.model_disagreement * 100.0
             components = {
-                "p2_net_utility_rank": round_score(score),
-                "p2_model_confidence": round_score(clamp(100.0 / (1.0 + 100.0 * prediction.model_disagreement))),
+                "model_net_utility_rank": round_score(score),
+                "model_confidence": round_score(clamp(100.0 / (1.0 + 100.0 * prediction.model_disagreement))),
             }
             scores[prediction.code] = LocalScoreResult(components, round_score(score))
             diagnostics[prediction.code] = TomorrowModelDiagnostics(
@@ -161,14 +194,17 @@ class TomorrowProductionModelScoringService:
         )
 
 
-def _raw_row(feature: FeatureSnapshot) -> _RawRow | None:
+def _raw_row(feature: FeatureSnapshot, *, require_reversal: bool) -> _RawRow | None:
     board = board_for_snapshot(feature)
     if board not in {Board.MAIN, Board.CHINEXT, Board.STAR}:
         return None
     values = tuple(feature.values.get(name) for name in (*_ALPHA_FIELDS, _AMOUNT_FIELD, _AMIHUD_FIELD))
-    if any(value is None or not math.isfinite(value) for value in values):
+    required = (*values[3:6], *values[6:])
+    if require_reversal:
+        required = (*values[:3], *required)
+    if any(value is None or not math.isfinite(value) for value in required):
         return None
-    numeric = tuple(float(value) for value in values if value is not None)
+    numeric = tuple(float(value) if value is not None else 0.0 for value in values)
     amount = numeric[6]
     amihud = numeric[7]
     if feature.history_days < 61 or amount <= 0.0 or amihud < 0.0:

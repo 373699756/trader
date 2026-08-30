@@ -7,7 +7,7 @@ import json
 import math
 import sqlite3
 import threading
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
@@ -437,8 +437,16 @@ class SQLiteHistoricalArchive:
     def tomorrow_historical_p2_rows(self, spec: HistoricalScreeningSpec) -> tuple[TomorrowHistoricalP2Row, ...]:
         """Return decision-day qfq features and next-day labels bound to the H0 archive."""
 
+        return tuple(self.iter_tomorrow_historical_p2_rows(spec))
+
+    def iter_tomorrow_historical_p2_rows(
+        self,
+        spec: HistoricalScreeningSpec,
+    ) -> Iterator[TomorrowHistoricalP2Row]:
+        """Stream H0 model rows one cross-section at a time for bounded offline fitting."""
+
         if not self._database.is_file():
-            return ()
+            return
         with self._read_connection() as connection:
             rows = connection.execute(
                 _TOMORROW_HISTORICAL_P2_QUERY,
@@ -447,8 +455,19 @@ class SQLiteHistoricalArchive:
                     "start": spec.training_start.isoformat(),
                     "end": spec.validation_end.isoformat(),
                 },
-            ).fetchall()
-        return _tomorrow_historical_p2_rows(rows)
+            )
+            daily: list[tuple[object, ...]] = []
+            trade_date_value: str | None = None
+            for raw in rows:
+                row = tuple(raw)
+                current = str(row[0])
+                if trade_date_value is not None and current != trade_date_value:
+                    yield from _tomorrow_historical_p2_day_rows(daily)
+                    daily = []
+                trade_date_value = current
+                daily.append(row)
+            if daily:
+                yield from _tomorrow_historical_p2_day_rows(daily)
 
     def _initialize(self) -> None:
         with self._lock:
@@ -918,6 +937,12 @@ def _tomorrow_historical_p2_rows(rows: Sequence[tuple[object, ...]]) -> tuple[To
                 )
             )
     return tuple(result)
+
+
+def _tomorrow_historical_p2_day_rows(rows: Sequence[tuple[object, ...]]) -> tuple[TomorrowHistoricalP2Row, ...]:
+    if not rows or len({str(row[0]) for row in rows}) != 1:
+        raise ValueError("Tomorrow P2 streaming rows must contain exactly one trade date")
+    return _tomorrow_historical_p2_rows(rows)
 
 
 def _residualize(rows: Sequence[tuple[object, ...]], momentum_column: int) -> tuple[float, ...]:

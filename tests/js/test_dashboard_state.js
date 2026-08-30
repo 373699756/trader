@@ -103,10 +103,10 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.statusPayloadCompatibility({
-    schema_version: "v2_status_v5",
+    schema_version: "v2_status_v6",
     release: {
       decision_view_schema: "v2_decision_view_v3",
-      web_asset_revision: "release-contract-2026-08-30-v6",
+      web_asset_revision: "release-contract-2026-08-30-v7",
     },
   }))),
   { compatible: true, reason: "" },
@@ -746,6 +746,8 @@ const modelVersionDrawer = state.drawer(
   },
 );
 assert.match(modelVersionDrawer, /daily_reconstructible_ensemble_v1:model-hash/);
+assert.match(modelVersionDrawer, /模型信号分/);
+assert.doesNotMatch(modelVersionDrawer, /P2信号分/);
 const longDrawer = state.drawer(
   {
     ...frozenTodayItem,
