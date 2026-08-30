@@ -19,6 +19,7 @@ from tests.component.market_data_test_support import (
     _quote,
     _service,
     _tail_minute_bars,
+    build_history_context,
     json,
     load_strategy_settings,
     pytest,
@@ -182,6 +183,45 @@ def test_feature_builder_populates_every_tomorrow_component_from_point_in_time_i
         "tail_return_30m",
         "tail_volume_ratio",
         "close_location",
+    }
+    assert all(feature.optional_value(name) is not None for name in required)
+    assert required.isdisjoint(feature.missing_fields)
+
+
+def test_feature_builder_reconstructs_the_six_packaged_p2_inputs_from_61_qfq_sessions() -> None:
+    bars = tuple(
+        DailyBar(
+            trade_date=f"2026-{(index // 28) + 4:02d}-{(index % 28) + 1:02d}",
+            open_price=10.0 + index / 100.0,
+            close=10.0 + index / 100.0,
+            high=10.1 + index / 100.0,
+            low=9.9 + index / 100.0,
+            volume=1_000_000.0,
+            amount=100_000_000.0 + index,
+            pct_change=0.1,
+            adjustment=PriceAdjustment.QFQ,
+            source="fixture",
+        )
+        for index in range(61)
+    )
+    quote = replace(_quote(), price=bars[-1].close, source_time=AFTERNOON)
+
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY).build(
+        (quote,),
+        {quote.code: bars[-20:]},
+        AFTERNOON,
+        history_summaries={quote.code: build_history_context(bars)},
+    )[0]
+
+    required = {
+        "p2_return_1d",
+        "p2_return_3d",
+        "p2_return_5d",
+        "p2_momentum_20d_skip5",
+        "p2_momentum_40d_skip5",
+        "p2_momentum_60d_skip5",
+        "p2_amihud_20d",
+        "p2_average_amount_20d",
     }
     assert all(feature.optional_value(name) is not None for name in required)
     assert required.isdisjoint(feature.missing_fields)

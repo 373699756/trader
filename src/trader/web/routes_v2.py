@@ -131,6 +131,7 @@ def _status(services: UnifiedWebServices | None) -> RouteResponse:
             "runtime_version": runtime.get("runtime_version"),
             "scheduler": _mapping(runtime.get("scheduler")),
             "market_data": _market_data(runtime),
+            "tomorrow_model": _tomorrow_model(runtime),
             "last_error": runtime.get("last_error"),
             "deepseek_budget": _budget(runtime),
             "deepseek": _deepseek(runtime),
@@ -317,6 +318,32 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
         result["market_changes"] = changes
     if waterfall := _latency_waterfall(raw.get("latency_waterfall")):
         result["latency_waterfall"] = waterfall
+    return result
+
+
+def _tomorrow_model(runtime: Mapping[str, object]) -> dict[str, object]:
+    raw = runtime.get("tomorrow_model")
+    if not isinstance(raw, Mapping):
+        return {"active": False, "status": "unavailable"}
+    result = {
+        field: raw[field]
+        for field in (
+            "active",
+            "status",
+            "model_id",
+            "model_hash",
+            "scoring_version",
+            "activation_basis",
+            "historical_status",
+            "monitoring_mode",
+            "automatic_model_update",
+            "loss_probability_status",
+        )
+        if field in raw and _json_scalar(raw[field])
+    }
+    failures = raw.get("historical_failure_reasons")
+    if isinstance(failures, (tuple, list)):
+        result["historical_failure_reasons"] = [str(item) for item in failures if isinstance(item, str)]
     return result
 
 

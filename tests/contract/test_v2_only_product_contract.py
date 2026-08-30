@@ -50,7 +50,8 @@ def test_parallel_v2_overview_plan_and_operations_docs_are_retired() -> None:
     assert "多种行情来源不等于证券主数据存在同等冗余供给" in design
     assert "主推荐区必须按确定性优先级给出单一结论" in design_compact
     assert "达到观察线/正式线数量" in design_compact
-    assert "新评分版本只有对应评分 release 获得生产晋级权限后才允许展示" in design_compact
+    assert "当前 P2 人工越权 release 允许 Tomorrow 展示评分版本" in design_compact
+    assert "loss_probability_status=not_modeled" in design_compact
     assert "P2 路线已经终止，当前没有可继续晋级的 P2 候选" in strategy
     assert "新的候选必须另立未读取新收益的研究身份" in strategy
     for retired in (

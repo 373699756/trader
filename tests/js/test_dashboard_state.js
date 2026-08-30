@@ -103,10 +103,10 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.statusPayloadCompatibility({
-    schema_version: "v2_status_v4",
+    schema_version: "v2_status_v5",
     release: {
-      decision_view_schema: "v2_decision_view_v2",
-      web_asset_revision: "release-contract-2026-08-30-v5",
+      decision_view_schema: "v2_decision_view_v3",
+      web_asset_revision: "release-contract-2026-08-30-v6",
     },
   }))),
   { compatible: true, reason: "" },
@@ -725,6 +725,27 @@ assert.match(frozenTodayDrawer, /实际锚点时间/);
 assert.match(frozenTodayDrawer, /11:19:50/);
 assert.match(frozenTodayDrawer, /当前价/);
 assert.match(frozenTodayDrawer, /锚点至今/);
+const modelVersionDrawer = state.drawer(
+  {
+    ...frozenTodayItem,
+    scores: {
+      ...frozenTodayItem.scores,
+      model_signal_score: 82.5,
+      predicted_excess_return_pct: 1.45,
+      estimated_cost_pct: 0.2,
+      predicted_net_excess_pct: 1.25,
+      model_disagreement_pct: 0.1,
+    },
+  },
+  {
+    ...frozenToday,
+    strategy: "tomorrow",
+    input_versions: {
+      score_model: "daily_reconstructible_ensemble_v1:model-hash",
+    },
+  },
+);
+assert.match(modelVersionDrawer, /daily_reconstructible_ensemble_v1:model-hash/);
 const longDrawer = state.drawer(
   {
     ...frozenTodayItem,
@@ -782,7 +803,7 @@ const payload = {
   items: [{ code: "600001", rank: 1 }, { code: "600002", rank: 2 }],
 };
 const patch = {
-  patch_schema_version: 2,
+  patch_schema_version: 3,
   schema_version: "v2_event_v1",
   base_projection_version: "today-base",
   projection_version: "today-next",
@@ -853,7 +874,7 @@ assert.strictEqual(
   "ignore_late_draft",
 );
 const overlay = {
-  patch_schema_version: 2,
+  patch_schema_version: 3,
   schema_version: "v2_event_v1",
   projection_version: "today-next",
   snapshot_id: "today-decision",

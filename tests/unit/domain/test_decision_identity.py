@@ -11,6 +11,7 @@ from trader.domain.recommendation.decision_identity import (
     CommittedDecisionRecord,
     DecisionDownside,
     DecisionItem,
+    DecisionModelDiagnostics,
     DecisionOverlay,
     DecisionQuote,
     DecisionResearchCoverage,
@@ -207,6 +208,7 @@ def test_v2_formal_record_round_trip_preserves_display_metadata_and_selection_di
         downside=DecisionDownside("observe", ("trend_breakdown",), 2.0, 1.5, -8.0),
         review_outcome="applied",
         research_coverage=DecisionResearchCoverage(3, 2, True),
+        model_diagnostics=DecisionModelDiagnostics(88.0, -0.8, 0.3, -1.1, 0.2),
     )
     current = replace(
         decision(),
@@ -219,6 +221,7 @@ def test_v2_formal_record_round_trip_preserves_display_metadata_and_selection_di
 
     assert restored == record
     assert restored.decision.items[0].downside == item.downside
+    assert restored.decision.items[0].model_diagnostics == item.model_diagnostics
     assert restored.decision.selection_diagnostics == current.selection_diagnostics
 
 

@@ -761,6 +761,7 @@
       phase: patch.phase,
       published_at: patch.published_at,
       strategy_version: patch.strategy_version,
+      input_versions: patch.input_versions || {},
       fusion_mode: patch.fusion_mode,
       stale: patch.stale,
       frozen: patch.frozen,

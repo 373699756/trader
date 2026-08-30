@@ -64,8 +64,8 @@ def _sample(
         else None
     )
     status: dict[str, object] = {
-        "schema_version": "v2_status_v4",
-        "release": {"decision_view_schema": "v2_decision_view_v2", "web_asset_revision": "test"},
+        "schema_version": "v2_status_v5",
+        "release": {"decision_view_schema": "v2_decision_view_v3", "web_asset_revision": "test"},
         "status": "running",
         "runtime_started": True,
         "runtime_version": "runtime-test",
@@ -104,7 +104,7 @@ def _sample(
         "events": {"sequence": event_sequence if event_sequence is not None else number},
     }
     decision: dict[str, object] = {
-        "schema_version": "v2_decision_view_v2",
+        "schema_version": "v2_decision_view_v3",
         "status": decision_status,
         "strategy": _STRATEGY,
         "trade_date": _TRADE_DATE,

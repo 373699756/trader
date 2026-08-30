@@ -37,6 +37,7 @@ class DecisionReplacementPatch:
     projection_version: str
     observed_at: datetime
     strategy_version: str
+    input_versions: tuple[tuple[str, str], ...]
     fusion_mode: str
     filtered_count: int
     selection_diagnostics: SelectionDiagnostics | None
@@ -131,6 +132,7 @@ class UnifiedDecisionEventStream:
                 event.projection_version or event.decision_hash,
                 decision.observed_at,
                 decision.strategy_version,
+                decision.input_versions,
                 decision.stage,
                 rejected,
                 decision.selection_diagnostics,

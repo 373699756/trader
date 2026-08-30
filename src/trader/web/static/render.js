@@ -249,7 +249,7 @@
       <td class="${change.className}">${change.text}</td>
       <td>${compact(item.amount)}<span class="stock-code">换手 ${number(item.turnover_rate, 2)}%</span></td>
       <td>${compact(item.market_cap)}</td>
-      <td><div class="score-stack"><span><b>${number(scores.local_score, 2)}</b>本地</span><span><b>${deepseek}</b>模型</span><span><b>${deepseekPenalty}</b>扣分</span><span><b>${number(scores.final_score, 2)}</b>最终</span></div></td>
+      <td><div class="score-stack"><span><b>${number(scores.local_score, 2)}</b>本地</span><span><b>${deepseek}</b>DeepSeek</span><span><b>${deepseekPenalty}</b>扣分</span><span><b>${number(scores.final_score, 2)}</b>最终</span></div></td>
       <td><span class="action-tag" data-action="${escapeHtml(action)}">${escapeHtml(ACTION_LABELS[action] || "动作状态未知")}</span></td>
       <td class="reason-cell"><span class="reason-tag">${escapeHtml(actionReason(item.action_reason))}</span></td>
     </tr>`;
@@ -426,10 +426,18 @@
       ].join("");
     }
 
+    const inputVersions = snapshot.input_versions || {};
+    const scoreVersion = inputVersions.score_model || snapshot.strategy_version;
     const scoreValues = [
+      ["评分版本", hasValue(scoreVersion) ? scoreVersion : null],
       ["本地评分", valueNumber(scores.local_score, 2)],
-      ["模型评分", valueNumber(scores.deepseek_score, 2)],
-      ["模型风险扣分", Number(scores.deepseek_risk_penalty) > 0 ? number(scores.deepseek_risk_penalty, 2) : null],
+      ["P2信号分", valueNumber(scores.model_signal_score, 2)],
+      ["预测超额收益", valuePct(scores.predicted_excess_return_pct)],
+      ["估算交易成本", valuePct(scores.estimated_cost_pct)],
+      ["预测成本后净超额", valuePct(scores.predicted_net_excess_pct)],
+      ["模型分歧", valuePct(scores.model_disagreement_pct)],
+      ["DeepSeek评分", valueNumber(scores.deepseek_score, 2)],
+      ["DeepSeek风险扣分", Number(scores.deepseek_risk_penalty) > 0 ? number(scores.deepseek_risk_penalty, 2) : null],
     ];
     const scoreParts = [detailGrid(scoreValues)];
     if (!hasValue(scores.deepseek_score)) scoreParts.push(note(reviewResult(item.review), "muted"));

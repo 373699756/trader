@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from trader.application.policy import RecommendationPolicy
@@ -19,16 +19,22 @@ from trader.application.scored_selection import (
     ScoredSelectionOptions,
     select_scored_features,
 )
-from trader.domain.market.models import MarketQuote
+from trader.application.tomorrow_model_scoring import (
+    TomorrowModelDiagnostics,
+    TomorrowProductionModelScoringService,
+)
+from trader.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.domain.recommendation.decision_identity import (
     DecisionDownside,
     DecisionItem,
+    DecisionModelDiagnostics,
     DecisionQuote,
     DecisionResearchCoverage,
     ScoredDecision,
     SelectionDiagnostics,
 )
 from trader.domain.recommendation.downside import assess_downside
+from trader.domain.recommendation.filters import hard_filter
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 from trader.domain.recommendation.scored_fusion import (
     DecisionEpoch,
@@ -51,6 +57,18 @@ class ScoredV2LocalProjection:
     review_candidates: tuple[ScoredReviewCandidate, ...]
     local_epoch: DecisionEpoch
     local: ScoredDecision
+    score_model_version: str | None = None
+    model_diagnostics: tuple[tuple[str, TomorrowModelDiagnostics], ...] = ()
+
+
+@dataclass(frozen=True)
+class _DecisionProjectionContext:
+    input_version: str
+    strategy: Strategy
+    decision_policy: ScoredDecisionPolicy
+    parent_version: str | None = None
+    score_model_version: str | None = None
+    model_diagnostics: Mapping[str, TomorrowModelDiagnostics] | None = None
 
 
 def build_scored_v2_local(
@@ -58,13 +76,20 @@ def build_scored_v2_local(
     policy: RecommendationPolicy,
     *,
     sequence: int,
+    tomorrow_model: TomorrowProductionModelScoringService | None = None,
 ) -> ScoredV2LocalProjection:
     if sequence < 1:
         raise ValueError("scored V2 decision sequence must be positive")
     strategy = native_input.strategy
     decision_policy = v2_decision_policy(policy, strategy, phase=native_input.phase)
+    population = tuple(preselection_replay_feature(feature) for feature in native_input.market_features)
+    model_batch = (
+        tomorrow_model.score(_model_eligible_candidates(native_input, policy))
+        if strategy is Strategy.TOMORROW and tomorrow_model is not None
+        else None
+    )
     selection = select_scored_features(
-        tuple(preselection_replay_feature(feature) for feature in native_input.market_features),
+        population,
         policy,
         ScoredSelectionOptions(
             evaluated_at=native_input.evaluated_at,
@@ -79,6 +104,7 @@ def build_scored_v2_local(
             data_version=native_input.data_version,
             merge_epoch=native_input.input_version,
         ),
+        local_score_overrides=model_batch.scores if model_batch is not None else None,
     )
     quality = assess_scored_input_quality(native_input, selection)
     candidates = select_scored_review_candidates(selection, decision_policy)
@@ -103,6 +129,7 @@ def build_scored_v2_local(
             policy=decision_policy,
         )
     )
+    model_version = model_batch.model_version if model_batch is not None else None
     return ScoredV2LocalProjection(
         native_input,
         selection,
@@ -111,11 +138,34 @@ def build_scored_v2_local(
         epoch,
         _scored_decision(
             epoch,
-            input_version=native_input.input_version,
-            strategy=strategy,
-            decision_policy=decision_policy,
+            _DecisionProjectionContext(
+                input_version=native_input.input_version,
+                strategy=strategy,
+                decision_policy=decision_policy,
+                score_model_version=model_version,
+                model_diagnostics=model_batch.diagnostics if model_batch is not None else None,
+            ),
         ),
+        model_version,
+        tuple(sorted(model_batch.diagnostics.items())) if model_batch is not None else (),
     )
+
+
+def _model_eligible_candidates(
+    native_input: ScoredNativeInput,
+    policy: RecommendationPolicy,
+) -> tuple[FeatureSnapshot, ...]:
+    eligible: list[FeatureSnapshot] = []
+    for feature in native_input.candidate_features:
+        filtered = hard_filter(
+            feature,
+            native_input.evaluated_at,
+            max_age_seconds=native_input.score_max_age_seconds,
+            policy=policy.hard_filter,
+        )
+        if filtered.allowed:
+            eligible.append(replace(feature, quote=replace(feature.quote, board=filtered.board)))
+    return tuple(eligible)
 
 
 def build_scored_v2_hybrid(
@@ -175,35 +225,36 @@ def build_scored_v2_hybrid(
     )
     return _scored_decision(
         epoch,
-        input_version=projection.native_input.input_version,
-        parent_version=projection.local.version,
-        strategy=strategy,
-        decision_policy=decision_policy,
+        _DecisionProjectionContext(
+            input_version=projection.native_input.input_version,
+            parent_version=projection.local.version,
+            strategy=strategy,
+            decision_policy=decision_policy,
+            score_model_version=projection.score_model_version,
+            model_diagnostics=dict(projection.model_diagnostics),
+        ),
     )
 
 
 def _scored_decision(
     epoch: DecisionEpoch,
-    *,
-    input_version: str,
-    strategy: Strategy,
-    decision_policy: ScoredDecisionPolicy,
-    parent_version: str | None = None,
+    context: _DecisionProjectionContext,
 ) -> ScoredDecision:
     return ScoredDecision(
-        strategy=strategy,
+        strategy=context.strategy,
         trade_date=epoch.trade_date,
         sequence=epoch.sequence,
         observed_at=epoch.observed_at,
         stage=epoch.projection_stage,
-        parent_version=parent_version,
+        parent_version=context.parent_version,
         input_versions=tuple(
             (name, value)
             for name, value in (
-                ("native", input_version),
+                ("native", context.input_version),
                 ("market", epoch.market_epoch_version),
                 ("candidate", epoch.candidate_epoch_version),
                 ("research", epoch.research_epoch_version),
+                ("score_model", context.score_model_version),
             )
             if value is not None
         ),
@@ -213,8 +264,9 @@ def _scored_decision(
         items=tuple(
             _decision_item(
                 item,
-                strategy=strategy,
+                strategy=context.strategy,
                 review_eligible=item.code in epoch.review_candidate_codes,
+                model_diagnostics=(context.model_diagnostics or {}).get(item.code),
             )
             for item in epoch.entries
         ),
@@ -222,7 +274,7 @@ def _scored_decision(
         degraded_reasons=epoch.degraded_reasons,
         population_count=epoch.evaluated_count,
         rejected_count=epoch.rejected_count,
-        selection_diagnostics=_selection_diagnostics(epoch, decision_policy),
+        selection_diagnostics=_selection_diagnostics(epoch, context.decision_policy),
     )
 
 
@@ -231,6 +283,7 @@ def _decision_item(
     *,
     strategy: Strategy,
     review_eligible: bool,
+    model_diagnostics: TomorrowModelDiagnostics | None,
 ) -> DecisionItem:
     reason = entry.decision_skip_reason or entry.action_reason or "not_selected"
     downside = assess_downside(entry.features, strategy)
@@ -265,6 +318,17 @@ def _decision_item(
             len(entry.features.evidence),
             len(entry.features.external_risk_facts),
             review_eligible,
+        ),
+        model_diagnostics=(
+            DecisionModelDiagnostics(
+                signal_score=entry.score.components["p2_net_utility_rank"],
+                predicted_excess_return_pct=model_diagnostics.predicted_excess_return_pct,
+                estimated_cost_pct=model_diagnostics.estimated_cost_pct,
+                predicted_net_excess_pct=model_diagnostics.predicted_net_excess_pct,
+                model_disagreement_pct=model_diagnostics.model_disagreement_pct,
+            )
+            if model_diagnostics is not None
+            else None
         ),
     )
 

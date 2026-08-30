@@ -46,6 +46,7 @@ include = ["trader*"]
     "static/*.svg",
     "static/vendor/*",
 ]
+"trader.resources.models" = ["*.json"]
 
 [tool.ruff]
 line-length = 120

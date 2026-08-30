@@ -11,7 +11,12 @@ from trader.application.decision_events import build_v2_decision_committed
 from trader.application.decision_queries import UnifiedDecisionQueries
 from trader.application.decision_stream import UnifiedDecisionEventStream
 from trader.domain.market.models import MarketQuote
-from trader.domain.recommendation.decision_identity import DecisionItem, DecisionQuote, ScoredDecision
+from trader.domain.recommendation.decision_identity import (
+    DecisionItem,
+    DecisionModelDiagnostics,
+    DecisionQuote,
+    ScoredDecision,
+)
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 from trader.web import create_app
 from trader.web.route_services import UnifiedWebServices, WebApiConfig
@@ -47,11 +52,13 @@ def test_unified_decision_routes_validate_strategy_date_and_etag() -> None:
     invalid_date = client.get("/api/v2/decisions/today/history?date=2026-8-8")
 
     assert current.status_code == 200
-    assert current.get_json()["schema_version"] == "v2_decision_view_v2"
+    assert current.get_json()["schema_version"] == "v2_decision_view_v3"
     assert current.get_json()["draft"] is None
     assert current.get_json()["strategy"] == "today"
     assert current.get_json()["items"][0]["name"] == "浦发银行"
     assert current.get_json()["items"][0]["industry"] == "银行"
+    assert current.get_json()["items"][0]["scores"]["predicted_net_excess_pct"] == 1.25
+    assert current.get_json()["input_versions"]["score_model"] == ("daily_reconstructible_ensemble_v1:model-hash")
     assert current.get_json()["items"][0]["quote"] == {
         "price": 10.25,
         "pct_change": 2.5,
@@ -147,17 +154,19 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     response.close()
     status = client.get("/api/v2/status").get_json()
 
-    assert status["schema_version"] == "v2_status_v4"
+    assert status["schema_version"] == "v2_status_v5"
     assert status["release"] == {
-        "decision_view_schema": "v2_decision_view_v2",
+        "decision_view_schema": "v2_decision_view_v3",
         "web_asset_revision": WEB_ASSET_REVISION,
     }
     assert "event: decision" in event
     decision_patch = json.loads(event.split("data: ", 1)[1])
     assert decision_patch["strategy"] == "today"
-    assert decision_patch["patch_schema_version"] == 2
+    assert decision_patch["patch_schema_version"] == 3
     assert decision_patch["replace"] is True
+    assert decision_patch["input_versions"]["score_model"] == ("daily_reconstructible_ensemble_v1:model-hash")
     assert [item["code"] for item in decision_patch["upserts"]] == ["600000"]
+    assert decision_patch["upserts"][0]["scores"]["predicted_net_excess_pct"] == 1.25
     assert status["events"]["sequence"] == 1
     assert status["strategies"]["today"]["status"] == queries.current(Strategy.TODAY).status
     assert status["runtime_version"] == "runtime:test"
@@ -495,7 +504,10 @@ def _decision() -> ScoredDecision:
         NOW,
         "local",
         None,
-        (("market", "market:1"),),
+        (
+            ("market", "market:1"),
+            ("score_model", "daily_reconstructible_ensemble_v1:model-hash"),
+        ),
         "config:1",
         "strategy:1",
         "fusion:1",
@@ -508,7 +520,10 @@ def _decision() -> ScoredDecision:
                 88.0,
                 84.0,
                 84.0,
-                (("local_score", 84.0),),
+                (
+                    ("local_score", 84.0),
+                    ("p2_net_utility_rank", 84.0),
+                ),
                 (),
                 "threshold_met",
                 "浦发银行",
@@ -524,6 +539,7 @@ def _decision() -> ScoredDecision:
                     NOW,
                     "quote:1",
                 ),
+                model_diagnostics=DecisionModelDiagnostics(84.0, 1.45, 0.2, 1.25, 0.1),
             ),
         ),
         (("hard_filter", 10),),

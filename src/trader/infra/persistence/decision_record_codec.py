@@ -14,6 +14,7 @@ from trader.domain.recommendation.decision_identity import (
     CommittedDecisionRecord,
     DecisionDownside,
     DecisionItem,
+    DecisionModelDiagnostics,
     DecisionQuote,
     DecisionResearchCoverage,
     DecisionStage,
@@ -75,9 +76,18 @@ _ITEM_FIELDS = frozenset(
         "research_coverage",
     }
 )
-_ITEM_OPTIONAL_FIELDS = frozenset({"name", "industry", "quote"})
+_ITEM_OPTIONAL_FIELDS = frozenset({"name", "industry", "quote", "model_diagnostics"})
 _DOWNSIDE_FIELDS = frozenset({"status", "reasons", "atr20_pct", "intraday_reversal_atr", "historical_drawdown_pct"})
 _RESEARCH_FIELDS = frozenset({"evidence_count", "structured_risk_fact_count", "review_eligible"})
+_MODEL_DIAGNOSTIC_FIELDS = frozenset(
+    {
+        "signal_score",
+        "predicted_excess_return_pct",
+        "estimated_cost_pct",
+        "predicted_net_excess_pct",
+        "model_disagreement_pct",
+    }
+)
 _SELECTION_FIELDS = frozenset(
     {
         "maximum_final_score",
@@ -182,6 +192,7 @@ def _decision_item_from_json(raw: object) -> DecisionItem:
         downside=_downside_from_json(value.get("downside")),
         review_outcome=_optional_text(value.get("review_outcome")),
         research_coverage=_research_coverage_from_json(value.get("research_coverage")),
+        model_diagnostics=_model_diagnostics_from_json(value.get("model_diagnostics")),
     )
 
 
@@ -209,6 +220,19 @@ def _research_coverage_from_json(raw: object) -> DecisionResearchCoverage | None
         _integer(value, "evidence_count"),
         _integer(value, "structured_risk_fact_count"),
         _boolean(value, "review_eligible"),
+    )
+
+
+def _model_diagnostics_from_json(raw: object) -> DecisionModelDiagnostics | None:
+    if raw is None:
+        return None
+    value = _object(raw, "decision model diagnostics", required=_MODEL_DIAGNOSTIC_FIELDS)
+    return DecisionModelDiagnostics(
+        _number(value, "signal_score"),
+        _number(value, "predicted_excess_return_pct"),
+        _number(value, "estimated_cost_pct"),
+        _number(value, "predicted_net_excess_pct"),
+        _number(value, "model_disagreement_pct"),
     )
 
 

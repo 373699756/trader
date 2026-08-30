@@ -89,6 +89,11 @@ def serialize_decision_item(item: DecisionItemView) -> dict[str, object]:
             "deepseek": item.deepseek_score,
             "deepseek_risk_penalty": item.deepseek_risk_penalty,
             "final": item.final_score,
+            "model_signal_score": item.model_signal_score,
+            "predicted_excess_return_pct": item.predicted_excess_return_pct,
+            "estimated_cost_pct": item.estimated_cost_pct,
+            "predicted_net_excess_pct": item.predicted_net_excess_pct,
+            "model_disagreement_pct": item.model_disagreement_pct,
         },
         "risk_codes": list(item.risk_codes),
         "setup": {"type": item.setup_type} if item.setup_type is not None else None,
@@ -153,7 +158,7 @@ def serialize_event(event: UnifiedPublishedEvent) -> dict[str, object]:
             content_hash=payload.content_hash,
             snapshot_id=payload.parent_version,
             projection_version=payload.projection_version,
-            patch_schema_version=2,
+            patch_schema_version=3,
             quotes=[_serialize_overlay_quote(quote) for quote in payload.quotes],
         )
     elif isinstance(payload, ResyncEventPayload):
@@ -192,7 +197,7 @@ def _serialize_decision_replacement(
 ) -> dict[str, object]:
     diagnostics = replacement.selection_diagnostics
     return {
-        "patch_schema_version": 2,
+        "patch_schema_version": 3,
         "snapshot_id": payload.version,
         "projection_version": replacement.projection_version,
         "etag": replacement.projection_version,
@@ -206,6 +211,7 @@ def _serialize_decision_replacement(
         "phase": payload.stage,
         "published_at": _time(replacement.observed_at),
         "strategy_version": replacement.strategy_version,
+        "input_versions": dict(replacement.input_versions),
         "fusion_mode": replacement.fusion_mode,
         "stale": False,
         "frozen": False,
@@ -234,6 +240,7 @@ def _serialize_decision_patch_item(item: DecisionItem) -> dict[str, object]:
     components = dict(item.score_components)
     downside = item.downside
     coverage = item.research_coverage
+    model = item.model_diagnostics
     return {
         "rank": item.rank,
         "code": item.code,
@@ -279,6 +286,11 @@ def _serialize_decision_patch_item(item: DecisionItem) -> dict[str, object]:
             "deepseek_score": components.get("deepseek_score"),
             "deepseek_risk_penalty": components.get("deepseek_risk_penalty"),
             "final_score": item.final_score,
+            "model_signal_score": model.signal_score if model is not None else None,
+            "predicted_excess_return_pct": model.predicted_excess_return_pct if model is not None else None,
+            "estimated_cost_pct": model.estimated_cost_pct if model is not None else None,
+            "predicted_net_excess_pct": model.predicted_net_excess_pct if model is not None else None,
+            "model_disagreement_pct": model.model_disagreement_pct if model is not None else None,
         },
         "risks": [{"risk_code": code} for code in item.risk_codes],
     }

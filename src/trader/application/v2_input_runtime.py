@@ -39,6 +39,7 @@ from trader.application.scored_v2_projection import (
     ScoredV2LocalProjection,
     build_scored_v2_local,
 )
+from trader.application.tomorrow_model_scoring import TomorrowProductionModelScoringService
 from trader.domain.market.models import Board, FeatureSnapshot
 from trader.domain.recommendation.decision_identity import (
     DecisionIdentity,
@@ -81,6 +82,7 @@ class V2DecisionBuildDependencies:
     long_runtime: LongV2Runtime
     policy: RecommendationPolicy
     draft_index: UnifiedDecisionDraftIndex
+    tomorrow_model: TomorrowProductionModelScoringService | None = None
 
 
 @dataclass(frozen=True)
@@ -172,6 +174,7 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         self._long_runtime = decision_build.long_runtime
         self._policy = decision_build.policy
         self._draft_index = decision_build.draft_index
+        self._tomorrow_model = decision_build.tomorrow_model
         self._lock = threading.RLock()
         self._batches: dict[tuple[Strategy, str], V2InputBatch] = {}
         self._latest_market_features: tuple[FeatureSnapshot, ...] = ()
@@ -626,7 +629,12 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
                     30.0,
                     self._candidate_pool_size,
                 )
-                projection = build_scored_v2_local(tomorrow_native, self._policy, sequence=sequence)
+                projection = build_scored_v2_local(
+                    tomorrow_native,
+                    self._policy,
+                    sequence=sequence,
+                    tomorrow_model=self._tomorrow_model if request.strategy is Strategy.TOMORROW else None,
+                )
         except (RuntimeError, TypeError, ValueError) as exc:
             raise V2DecisionUnavailableError(_decision_failure_code(exc)) from exc
         with self._lock:

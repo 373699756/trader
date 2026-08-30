@@ -40,6 +40,7 @@ _MONITORED_FUNNEL_FIELDS = (
     "full_scored",
 )
 _MAX_RESPONSE_BYTES = 1_048_576
+_STATUS_SCHEMA_VERSION = "v2_status_v5"
 _EvidenceValue = str | int | float | bool | None
 
 
@@ -231,7 +232,7 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
     status = sample.status
     if status is None:
         return findings
-    if status.schema_version != "v2_status_v4":
+    if status.schema_version != _STATUS_SCHEMA_VERSION:
         findings.append(
             _finding("error", "status_schema_mismatch", sample, None, "status schema is missing or unsupported")
         )

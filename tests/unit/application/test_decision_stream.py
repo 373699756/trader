@@ -36,13 +36,17 @@ def test_scored_decision_event_serializes_complete_replace_patch_without_snapsho
 
     payload = serialize_event(UnifiedDecisionEventStream().publish_committed(build_v2_decision_committed(decision)))
 
-    assert payload["patch_schema_version"] == 2
+    assert payload["patch_schema_version"] == 3
     assert payload["replace"] is True
     assert payload["snapshot_id"] == decision.version
     assert payload["projection_version"] == decision.content_hash
     assert payload["removed_codes"] == []
     assert payload["removals"] == []
     assert payload["view"] == "live"
+    assert payload["input_versions"] == {
+        "market": "market:1",
+        "score_model": "daily_reconstructible_ensemble_v1:model-hash",
+    }
     assert payload["upserts"] == [
         {
             "action": "executable",
@@ -67,6 +71,11 @@ def test_scored_decision_event_serializes_complete_replace_patch_without_snapsho
                 "deepseek_score": None,
                 "final_score": 84.0,
                 "local_score": 84.0,
+                "model_signal_score": None,
+                "predicted_excess_return_pct": None,
+                "estimated_cost_pct": None,
+                "predicted_net_excess_pct": None,
+                "model_disagreement_pct": None,
             },
             "setup": None,
             "source": None,
@@ -126,7 +135,7 @@ def test_overlay_event_serializes_row_patch_with_parent_and_projection_identitie
     assert payload["snapshot_id"] == decision.version
     assert payload["projection_version"] != decision.version
     assert payload["schema_version"] == "v2_event_v1"
-    assert payload["patch_schema_version"] == 2
+    assert payload["patch_schema_version"] == 3
     assert payload["quotes"] == [
         {
             "code": "600000",
@@ -162,7 +171,10 @@ def _decision(strategy: Strategy, sequence: int) -> ScoredDecision:
         NOW,
         "local",
         None,
-        (("market", f"market:{sequence}"),),
+        (
+            ("market", f"market:{sequence}"),
+            ("score_model", "daily_reconstructible_ensemble_v1:model-hash"),
+        ),
         "config:1",
         "strategy:1",
         "fusion:1",

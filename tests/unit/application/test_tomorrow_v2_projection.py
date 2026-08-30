@@ -8,11 +8,13 @@ from zoneinfo import ZoneInfo
 from tests.unit.application.v2_review_helpers import review
 from trader.application.decision_core import UnifiedDecisionIndex
 from trader.application.ports.scored import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
+from trader.application.ports.tomorrow_model import TomorrowModelInput, TomorrowModelPrediction
 from trader.application.research_audit import build_v2_committed_research_audit
 from trader.application.scored_v2_projection import (
     build_scored_v2_hybrid,
     build_scored_v2_local,
 )
+from trader.application.tomorrow_model_scoring import TomorrowProductionModelScoringService
 from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.models import Strategy
@@ -24,6 +26,25 @@ EVALUATED_AT = datetime(2026, 7, 29, 14, 40, tzinfo=SHANGHAI)
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
+class _ProductionPredictor:
+    model_id = "daily_reconstructible_ensemble_v1"
+    model_hash = "b" * 64
+
+    def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
+        return tuple(
+            TomorrowModelPrediction(item.code, 0.01 + index / 1000.0, 0.001) for index, item in enumerate(inputs)
+        )
+
+
+class _RecordingProductionPredictor(_ProductionPredictor):
+    def __init__(self) -> None:
+        self.codes: tuple[str, ...] = ()
+
+    def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
+        self.codes = tuple(item.code for item in inputs)
+        return super().predict(inputs)
+
+
 def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     application_feature_factory,
 ) -> None:
@@ -32,14 +53,22 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
         _verified_feature(application_feature_factory(f"600{index:03d}", EVALUATED_AT - timedelta(seconds=10)))
         for index in range(100)
     )
-    projection = build_scored_v2_local(_native_input(features), policy, sequence=1)
+    model_features = tuple(_with_model_features(feature, index) for index, feature in enumerate(features))
+    projection = build_scored_v2_local(
+        _native_input(model_features),
+        policy,
+        sequence=1,
+        tomorrow_model=TomorrowProductionModelScoringService(_ProductionPredictor()),
+    )
     assert projection.review_candidates
     assert all(item.name.startswith("测试") for item in projection.local.items)
     assert all(item.industry == "工业" for item in projection.local.items)
     assert all(item.quote is not None for item in projection.local.items)
     quote = projection.local.items[0].quote
     assert quote is not None
-    source_quote = next(feature.quote for feature in features if feature.quote.code == projection.local.items[0].code)
+    source_quote = next(
+        feature.quote for feature in model_features if feature.quote.code == projection.local.items[0].code
+    )
     assert quote.price == source_quote.price
     assert quote.pct_change == source_quote.pct_change
     assert quote.amount == source_quote.amount
@@ -51,6 +80,11 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     assert projection.local.selection_diagnostics is not None
     assert projection.local.selection_diagnostics.executable_threshold == 78.0
     assert projection.local.selection_diagnostics.observation_floor == 73.0
+    assert ("score_model", f"daily_reconstructible_ensemble_v1:{'b' * 64}") in projection.local.input_versions
+    assert all(item.model_diagnostics is not None for item in projection.local.items)
+    assert all(
+        item.model_diagnostics.predicted_net_excess_pct > 0 for item in projection.local.items if item.model_diagnostics
+    )
     assert all(item.setup_type is not None for item in projection.local.items)
     assert all(item.downside is not None for item in projection.local.items)
     assert all(item.research_coverage is not None for item in projection.local.items)
@@ -82,6 +116,33 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     assert hybrid_result.event is not None
     assert hybrid_result.event.decision_version == hybrid.version
     assert index.snapshot(Strategy.TOMORROW).current == hybrid
+
+
+def test_tomorrow_model_cross_section_excludes_hard_filter_rejections(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    accepted = _with_model_features(
+        _verified_feature(application_feature_factory("600001", EVALUATED_AT - timedelta(seconds=10))),
+        1,
+    )
+    rejected = _with_model_features(
+        _verified_feature(application_feature_factory("600002", EVALUATED_AT - timedelta(seconds=10))),
+        2,
+    )
+    rejected = replace(rejected, quote=replace(rejected.quote, is_st=True))
+    predictor = _RecordingProductionPredictor()
+
+    projection = build_scored_v2_local(
+        _native_input((accepted, rejected)),
+        policy,
+        sequence=1,
+        tomorrow_model=TomorrowProductionModelScoringService(predictor),
+    )
+
+    assert predictor.codes == ("600001",)
+    rejected_evaluation = next(item for item in projection.selection.evaluations if item.code == "600002")
+    assert rejected_evaluation.disposition.value == "reject"
 
 
 def test_d25_native_local_and_valid_facts_publish_one_parented_hybrid(
@@ -186,3 +247,21 @@ def _verified_feature(feature: FeatureSnapshot) -> FeatureSnapshot:
             cross_source_deviation_pct=0.1,
         ),
     )
+
+
+def _with_model_features(feature: FeatureSnapshot, index: int) -> FeatureSnapshot:
+    values = dict(feature.values)
+    offset = index / 1000.0
+    values.update(
+        {
+            "p2_return_1d": 0.01 + offset,
+            "p2_return_3d": 0.02 + offset,
+            "p2_return_5d": 0.03 + offset,
+            "p2_momentum_20d_skip5": 0.04 + offset,
+            "p2_momentum_40d_skip5": 0.05 + offset,
+            "p2_momentum_60d_skip5": 0.06 + offset,
+            "p2_amihud_20d": 0.001 + offset,
+            "p2_average_amount_20d": 100_000_000.0 + index,
+        }
+    )
+    return replace(feature, values=values, history_days=61)

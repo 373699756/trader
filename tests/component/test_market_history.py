@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from tests.component.market_data_test_support import (
     _SHANGHAI,
     LONG_POLICY,
@@ -579,6 +581,63 @@ def test_history_cache_persists_latest_compact_summary_with_raw_window(tmp_path:
     restored_service.history.recover_from_data_plane()
     restored_context = restored_service.history.entries()["600001"].context
     assert restored_context == context
+
+
+def test_history_cache_rebuilds_a_legacy_summary_for_tomorrow_model_inputs(tmp_path: Path) -> None:
+    data_plane = DataPlaneRepository(tmp_path / "current")
+    bars = (
+        DailyBar(
+            trade_date="2026-04-30",
+            open_price=9.9,
+            close=9.9,
+            high=10.0,
+            low=9.8,
+            volume=1_000_000,
+            amount=100_000_000,
+            pct_change=0.1,
+            adjustment=PriceAdjustment.QFQ,
+            source="fixture",
+        ),
+        *_history_bars(),
+    )
+    context = build_history_context(bars)
+    service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        data_plane=data_plane,
+        wall_clock=lambda: datetime(2026, 7, 16, 15, 0, tzinfo=_SHANGHAI),
+    )
+    service.history._persist_history_bars("600001", bars, context, 0.0, "fixture")
+
+    legacy_plane = DataPlaneRepository(tmp_path / "legacy")
+    for record in data_plane.load_historical_feature_recent_records(codes=("600001",)):
+        if record.trade_date == context.latest_trade_date:
+            payload = dict(record.payload)
+            summary = asdict(context)
+            profile = dict(summary["profile"])
+            profile.pop("average_amount_20d")
+            profile.pop("amihud_20d")
+            summary["profile"] = profile
+            summary["return_anchors"] = tuple(item for item in summary["return_anchors"] if item[0] not in {3, 40})
+            payload["history_summary"] = summary
+            record = replace(record, payload=payload, payload_hash="")
+        legacy_plane.save_historical_feature_recent(record)
+
+    restored_service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        data_plane=legacy_plane,
+        wall_clock=lambda: datetime(2026, 7, 16, 15, 1, tzinfo=_SHANGHAI),
+    )
+    restored_service.history.recover_from_data_plane()
+
+    restored = restored_service.history.entries()["600001"].context
+    assert restored is not None
+    assert restored.profile.average_amount_20d is not None
+    assert restored.profile.amihud_20d is not None
+    assert {1, 3, 5, 20, 40, 60}.issubset(dict(restored.return_anchors))
 
 
 def test_history_cache_persistence_unavailable_does_not_block_history_load() -> None:

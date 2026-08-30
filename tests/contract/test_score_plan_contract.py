@@ -368,7 +368,7 @@ def test_tomorrow_shadow_p1_preregistration_is_owned_by_the_authoritative_contra
     assert "不注入 `bootstrap.py`" in design
 
 
-def test_tomorrow_historical_p2_is_terminally_screened_without_production_or_forward_authority() -> None:
+def test_tomorrow_historical_p2_remains_rejected_while_manual_production_override_is_explicit() -> None:
     strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
     design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
 
@@ -391,6 +391,13 @@ def test_tomorrow_historical_p2_is_terminally_screened_without_production_or_for
         "deepseek_facts_point_in_time",
         "production_authority=false",
         "不得创建 `score_tomorrow_shadow_p2_v1`",
+        "#### 15.1.17 P2 人工越权生产评分与上线后监控",
+        "manual_user_override",
+        "automatic_t1_outcome_settlement",
+        "automatic_model_update=false",
+        "loss_probability_status=not_modeled",
+        "27034e52813f1776e2ed218c1c397f481b244fb852b01be08ddc21249d887da5",
+        "禁止暗中回退旧 Tomorrow 启发式分",
     ):
         assert expected in strategy
     for expected in (
@@ -400,15 +407,16 @@ def test_tomorrow_historical_p2_is_terminally_screened_without_production_or_for
         "`v2_research_readiness_v4.tomorrow_p2`",
         "678,370 条验证配对",
         "`historical_rejected`",
-        "P2 因而停止",
+        "P2 研究路线因而停止",
         "P1 身份与工件继续只读",
+        "人工越权生产切换",
+        "不等待 20 个未来日才运行",
     ):
         assert expected in design
 
     bootstrap = (ROOT / "src/trader/bootstrap.py").read_text(encoding="utf-8")
     assert "TomorrowHistoricalP2ScreeningService" in bootstrap
     assert "TomorrowHistoricalP2Report" not in bootstrap
-    assert (
-        "from trader.infra.research.tomorrow_historical_p2_model import"
-        not in bootstrap.split("def build_historical_research_services", maxsplit=1)[0]
-    )
+    production_bootstrap = bootstrap.split("def build_historical_research_services", maxsplit=1)[0]
+    assert "load_packaged_tomorrow_production_model" in production_bootstrap
+    assert "TomorrowProductionModelScoringService" in production_bootstrap

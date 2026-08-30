@@ -513,7 +513,11 @@ class HistoryCache:
                 retained = ordered[-_HISTORY_CACHE_RETENTION_DAYS:]
                 full = ordered[-_HISTORY_CACHE_LOOKBACK_DAYS:]
                 persisted_context = persisted_contexts.get(code)
-                if persisted_context is None or persisted_context.latest_trade_date != ordered[-1].trade_date:
+                if (
+                    persisted_context is None
+                    or persisted_context.latest_trade_date != ordered[-1].trade_date
+                    or _requires_tomorrow_model_context_rebuild(persisted_context, full)
+                ):
                     persisted_context = build_history_context(full)
                 self._history[code] = _HistoryEntry(
                     bars=retained,
@@ -723,6 +727,20 @@ def _deserialize_history_context(payload: object) -> HistoryContext | None:
         latest_trade_date=latest_trade_date,
         sample_count=sample_count,
         return_anchors=anchors,
+    )
+
+
+def _requires_tomorrow_model_context_rebuild(
+    context: HistoryContext,
+    bars: tuple[DailyBar, ...],
+) -> bool:
+    if len(bars) < _HISTORY_CACHE_LOOKBACK_DAYS:
+        return False
+    anchors = dict(context.return_anchors)
+    return (
+        any(days not in anchors for days in (1, 3, 5, 20, 40, 60))
+        or context.profile.average_amount_20d is None
+        or context.profile.amihud_20d is None
     )
 
 

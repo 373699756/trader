@@ -41,6 +41,7 @@ from trader.application.system_lifecycle import (
     stop_application_resources,
 )
 from trader.application.today_v2_freezing import TodayV2FreezeCoordinator
+from trader.application.tomorrow_model_scoring import TomorrowProductionModelScoringService
 from trader.application.v2_decision_adapters import V2DeepSeekAdapter, V2FreezeAdapter
 from trader.application.v2_input_runtime import V2DecisionBuildDependencies, V2MarketDataAdapter
 from trader.application.v2_research_runtime import V2ResearchRuntime
@@ -96,6 +97,7 @@ from trader.infra.settings import (
     load_runtime_settings,
     load_strategy_settings,
 )
+from trader.infra.tomorrow_production_model import load_packaged_tomorrow_production_model
 from trader.web import create_app
 from trader.web.route_services import UnifiedWebServices, WebApiConfig
 
@@ -219,6 +221,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
     reviewer = _build_reviewer(context, persistence.budget)
     publication = _build_publication(context, calendar, persistence.repository, reviewer, market_data)
     policy = _recommendation_policy(context.strategy)
+    tomorrow_model = TomorrowProductionModelScoringService(load_packaged_tomorrow_production_model())
     native_data = V2MarketDataAdapter(
         market_data,
         config_version=effective_config_version,
@@ -227,6 +230,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
             publication.long_runtime,
             policy,
             publication.decision_drafts,
+            tomorrow_model,
         ),
     )
     deepseek = V2DeepSeekAdapter(reviewer, policy, native_data)
@@ -301,7 +305,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
         services=UnifiedWebServices(
             publication.decision_queries,
             publication.decision_events,
-            lambda: _runtime_status(scheduler, reviewer, market_data.health),
+            lambda: _runtime_status(scheduler, reviewer, market_data.health, tomorrow_model.status()),
             WebApiConfig(
                 heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds,
                 snapshot_retention_seconds=settings.api.web_snapshot_retention_seconds,

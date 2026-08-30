@@ -26,6 +26,7 @@ from trader.domain.recommendation.scored_selection import (
     ScoredSelectionResult,
     select_scored,
 )
+from trader.domain.recommendation.strategies.composition import LocalScoreResult
 
 _SUPPORTED_BOARDS = (Board.MAIN, Board.CHINEXT, Board.STAR)
 
@@ -139,6 +140,8 @@ def select_scored_features(
     policy: RecommendationPolicy,
     options: ScoredSelectionOptions,
     identity: ScoredSelectionIdentity,
+    *,
+    local_score_overrides: Mapping[str, LocalScoreResult] | None = None,
 ) -> ScoredSelectionResult:
     """Select scored candidates from an already coherent point-in-time population."""
 
@@ -170,6 +173,7 @@ def select_scored_features(
             policy=_selection_policy(policy, options),
             candidate_features=options.candidate_features,
             fallbacks=options.fallbacks or {},
+            local_score_overrides=local_score_overrides,
         )
     )
 

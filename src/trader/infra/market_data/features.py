@@ -98,7 +98,7 @@ class StandardizedFeatureBuilder(Protocol):
 # Feature columns produced by FeatureBuilder._raw_features().
 # All are optional float; missing is left as None and later resolved per
 # the factor registry in config/v2/strategy.json.
-FEATURE_SCHEMA_VERSION = "feature_schema_v4_corporate_risk"
+FEATURE_SCHEMA_VERSION = "feature_schema_v5_tomorrow_p2"
 
 RAW_FEATURE_SCHEMA: tuple[FeatureSchema, ...] = (
     FeatureSchema("amount_median_20d", "float", description="20日成交额中位数"),
@@ -108,6 +108,14 @@ RAW_FEATURE_SCHEMA: tuple[FeatureSchema, ...] = (
     FeatureSchema("return_10d", "float", description="10日收益率"),
     FeatureSchema("return_20d", "float", description="20日收益率"),
     FeatureSchema("return_60d", "float", description="60日收益率"),
+    FeatureSchema("p2_return_1d", "float", description="P2前复权1日收益率小数"),
+    FeatureSchema("p2_return_3d", "float", description="P2前复权3日收益率小数"),
+    FeatureSchema("p2_return_5d", "float", description="P2前复权5日收益率小数"),
+    FeatureSchema("p2_momentum_20d_skip5", "float", description="P2跳过近5日的20日动量"),
+    FeatureSchema("p2_momentum_40d_skip5", "float", description="P2跳过近5日的40日动量"),
+    FeatureSchema("p2_momentum_60d_skip5", "float", description="P2跳过近5日的60日动量"),
+    FeatureSchema("p2_amihud_20d", "float", description="P2 20日Amihud成本代理"),
+    FeatureSchema("p2_average_amount_20d", "float", description="P2 20日平均成交额"),
     FeatureSchema("volatility_20d", "float", description="20日波动率"),
     FeatureSchema("max_drawdown_20d", "float", description="20日最大回撤"),
     FeatureSchema("atr20_pct", "float", description="20日平均真实波幅百分比"),
@@ -449,7 +457,11 @@ class FeatureBuilder:
             setup_history = summarize_history_metrics(completed_bars) if len(completed_bars) != len(bars) else history
         returns = {
             days: context.return_pct(days, quote.price) if context is not None else return_pct(bars, days, quote.price)
-            for days in (3, 5, 10, 20, 60)
+            for days in (1, 3, 5, 10, 20, 40, 60)
+        }
+        p2_lag_prices = {
+            days: context.anchor_price(days) if context is not None else _lag_close(bars, days)
+            for days in (5, 20, 40, 60)
         }
         ma5 = setup_history.moving_average_5d
         ma10 = setup_history.moving_average_10d
@@ -504,6 +516,14 @@ class FeatureBuilder:
             "return_10d": returns[10],
             "return_20d": returns[20],
             "return_60d": returns[60],
+            "p2_return_1d": _percent_to_decimal(returns[1]),
+            "p2_return_3d": _percent_to_decimal(returns[3]),
+            "p2_return_5d": _percent_to_decimal(returns[5]),
+            "p2_momentum_20d_skip5": _lagged_return(p2_lag_prices[5], p2_lag_prices[20]),
+            "p2_momentum_40d_skip5": _lagged_return(p2_lag_prices[5], p2_lag_prices[40]),
+            "p2_momentum_60d_skip5": _lagged_return(p2_lag_prices[5], p2_lag_prices[60]),
+            "p2_amihud_20d": history.amihud_20d,
+            "p2_average_amount_20d": history.average_amount_20d,
             "volatility_20d": volatility,
             "max_drawdown_20d": drawdown,
             "atr20_pct": setup_history.atr20_pct,
@@ -560,6 +580,23 @@ class FeatureBuilder:
             "trend_breakdown": None,
             "entry_quality": None,
         }
+
+
+def _percent_to_decimal(value: float | None) -> float | None:
+    return value / 100.0 if value is not None and math.isfinite(value) else None
+
+
+def _lag_close(bars: tuple[DailyBar, ...], days: int) -> float | None:
+    if days < 1 or len(bars) < days + 1:
+        return None
+    value = bars[-days - 1].close
+    return value if math.isfinite(value) and value > 0.0 else None
+
+
+def _lagged_return(end: float | None, start: float | None) -> float | None:
+    if end is None or start is None or end <= 0.0 or start <= 0.0:
+        return None
+    return end / start - 1.0
 
 
 def _volume_to_5d_average(quote: MarketQuote, history: HistoryProfile) -> float | None:

@@ -115,6 +115,22 @@ class SelectionDiagnostics:
 
 
 @dataclass(frozen=True)
+class DecisionModelDiagnostics:
+    signal_score: float
+    predicted_excess_return_pct: float
+    estimated_cost_pct: float
+    predicted_net_excess_pct: float
+    model_disagreement_pct: float
+
+    def __post_init__(self) -> None:
+        _validate_score(self.signal_score, "model signal score")
+        _validate_optional_market_value(self.predicted_excess_return_pct, "predicted excess return")
+        _validate_optional_market_value(self.estimated_cost_pct, "estimated model cost", non_negative=True)
+        _validate_optional_market_value(self.predicted_net_excess_pct, "predicted net excess")
+        _validate_optional_market_value(self.model_disagreement_pct, "model disagreement", non_negative=True)
+
+
+@dataclass(frozen=True)
 class DecisionItem:
     code: str
     action: RecommendationAction
@@ -133,6 +149,7 @@ class DecisionItem:
     downside: DecisionDownside | None = None
     review_outcome: str | None = None
     research_coverage: DecisionResearchCoverage | None = None
+    model_diagnostics: DecisionModelDiagnostics | None = None
 
     def __post_init__(self) -> None:
         _require_code(self.code)
@@ -527,6 +544,8 @@ def _decision_item_payload(item: DecisionItem) -> dict[str, _Json]:
     payload["downside"] = _downside_payload(item.downside)
     payload["review_outcome"] = item.review_outcome
     payload["research_coverage"] = _research_coverage_payload(item.research_coverage)
+    if item.model_diagnostics is not None:
+        payload["model_diagnostics"] = _model_diagnostics_payload(item.model_diagnostics)
     return payload
 
 
@@ -549,6 +568,16 @@ def _research_coverage_payload(value: DecisionResearchCoverage | None) -> dict[s
         "evidence_count": value.evidence_count,
         "structured_risk_fact_count": value.structured_risk_fact_count,
         "review_eligible": value.review_eligible,
+    }
+
+
+def _model_diagnostics_payload(value: DecisionModelDiagnostics) -> dict[str, _Json]:
+    return {
+        "signal_score": value.signal_score,
+        "predicted_excess_return_pct": value.predicted_excess_return_pct,
+        "estimated_cost_pct": value.estimated_cost_pct,
+        "predicted_net_excess_pct": value.predicted_net_excess_pct,
+        "model_disagreement_pct": value.model_disagreement_pct,
     }
 
 
@@ -703,6 +732,7 @@ __all__ = [
     "CommittedDecisionRecord",
     "DecisionIdentity",
     "DecisionItem",
+    "DecisionModelDiagnostics",
     "DecisionDownside",
     "DecisionOverlay",
     "DecisionQuote",

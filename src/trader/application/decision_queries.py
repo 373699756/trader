@@ -25,7 +25,7 @@ from trader.domain.recommendation.models import RecommendationAction, Strategy
 
 DecisionViewStatus = Literal["ready", "not_ready", "not_applicable"]
 ScoreStatus = Literal["scored", "not_applicable"]
-DECISION_VIEW_SCHEMA_VERSION = "v2_decision_view_v2"
+DECISION_VIEW_SCHEMA_VERSION = "v2_decision_view_v3"
 
 
 class DecisionHistoryReader(Protocol):
@@ -82,6 +82,11 @@ class DecisionItemView:
     research_evidence_count: int | None = None
     research_risk_fact_count: int | None = None
     review_eligible: bool | None = None
+    model_signal_score: float | None = None
+    predicted_excess_return_pct: float | None = None
+    estimated_cost_pct: float | None = None
+    predicted_net_excess_pct: float | None = None
+    model_disagreement_pct: float | None = None
 
 
 @dataclass(frozen=True)
@@ -269,6 +274,7 @@ def _scored_view(
 
 def _scored_item(item: DecisionItem, quote: DecisionQuote | None) -> DecisionItemView:
     components = dict(item.score_components)
+    model = item.model_diagnostics
     display_quote = quote or item.quote
     return DecisionItemView(
         item.code,
@@ -309,6 +315,11 @@ def _scored_item(item: DecisionItem, quote: DecisionQuote | None) -> DecisionIte
             item.research_coverage.structured_risk_fact_count if item.research_coverage is not None else None
         ),
         review_eligible=(item.research_coverage.review_eligible if item.research_coverage is not None else None),
+        model_signal_score=model.signal_score if model is not None else None,
+        predicted_excess_return_pct=model.predicted_excess_return_pct if model is not None else None,
+        estimated_cost_pct=model.estimated_cost_pct if model is not None else None,
+        predicted_net_excess_pct=model.predicted_net_excess_pct if model is not None else None,
+        model_disagreement_pct=model.model_disagreement_pct if model is not None else None,
     )
 
 

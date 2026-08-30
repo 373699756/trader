@@ -7,6 +7,7 @@ from dataclasses import asdict
 
 from trader.application.cadence import CadencePlannerStatus
 from trader.application.ports.runtime_status import V2InputQualityStatus, V2SupplyFunnel
+from trader.application.ports.tomorrow_model import TomorrowModelRuntimeStatus
 from trader.application.v2_runtime import V2SchedulerRuntime
 from trader.application.v2_runtime_issues import V2RuntimeIssue
 from trader.infra.deepseek.reviewer import DeepSeekReviewer
@@ -16,6 +17,7 @@ def runtime_status(
     scheduler: V2SchedulerRuntime,
     reviewer: DeepSeekReviewer,
     market_health: Callable[[], Mapping[str, object]],
+    tomorrow_model: TomorrowModelRuntimeStatus | None = None,
 ) -> dict[str, object]:
     status = scheduler.status()
     deepseek = reviewer.status()
@@ -58,6 +60,7 @@ def runtime_status(
         "deepseek_budget": deepseek_budget,
         "deepseek": deepseek,
         "market_data": market_data,
+        "tomorrow_model": _tomorrow_model_payload(tomorrow_model),
         "company_research": asdict(status.company_research),
         "degraded_reasons": degraded_reasons,
         "health": {"level": health_level, "issue_count": issue_count},
@@ -90,6 +93,23 @@ def runtime_status(
             "settlement_failure_count": status.settlement_failure_count,
             "input_quality": input_quality_payload(status.input_quality),
         },
+    }
+
+
+def _tomorrow_model_payload(status: TomorrowModelRuntimeStatus | None) -> dict[str, object]:
+    if status is None:
+        return {"active": False, "status": "not_configured"}
+    return {
+        "active": status.active,
+        "model_id": status.model_id,
+        "model_hash": status.model_hash,
+        "scoring_version": status.scoring_version,
+        "activation_basis": status.activation_basis,
+        "historical_status": status.historical_status,
+        "historical_failure_reasons": list(status.historical_failure_reasons),
+        "monitoring_mode": status.monitoring_mode,
+        "automatic_model_update": status.automatic_model_update,
+        "loss_probability_status": status.loss_probability_status,
     }
 
 

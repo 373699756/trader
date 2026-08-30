@@ -67,6 +67,8 @@ class HistoryProfile:
     volatility_20d: float | None
     max_drawdown_20d: float | None
     median_amount_20d: float | None
+    average_amount_20d: float | None
+    amihud_20d: float | None
     median_turnover_20d: float | None
     upward_consistency_20d: float | None
 
@@ -87,12 +89,16 @@ class HistoryContext:
             return None
         return (current_price / start - 1.0) * 100.0
 
+    def anchor_price(self, days: int) -> float | None:
+        price = dict(self.return_anchors).get(days)
+        return price if price is not None and price > 0.0 else None
+
 
 def build_history_context(bars: tuple[DailyBar, ...]) -> HistoryContext:
     ordered = tuple(sorted(bars, key=lambda item: item.trade_date))[-61:]
     anchors = tuple(
         (days, ordered[-days - 1].close)
-        for days in (3, 5, 10, 20, 60)
+        for days in (1, 3, 5, 10, 20, 40, 60)
         if len(ordered) >= days + 1 and ordered[-days - 1].close > 0
     )
     return HistoryContext(
@@ -126,6 +132,8 @@ def summarize_history_metrics(bars: tuple[DailyBar, ...]) -> HistoryProfile:
         volatility = None
         max_drawdown = None
         median_amount = None
+        average_amount = None
+        amihud = None
         median_turnover = None
         upward_consistency = None
     else:
@@ -160,6 +168,8 @@ def summarize_history_metrics(bars: tuple[DailyBar, ...]) -> HistoryProfile:
         else:
             max_drawdown = None
         median_amount = statistics.median(valid_amounts) if len(valid_amounts) == 20 else None
+        average_amount = sum(valid_amounts) / 20.0 if len(valid_amounts) == 20 else None
+        amihud = _amihud_average(values)
         median_turnover = statistics.median(valid_turnover) if len(valid_turnover) == 20 else None
 
     return HistoryProfile(
@@ -175,6 +185,8 @@ def summarize_history_metrics(bars: tuple[DailyBar, ...]) -> HistoryProfile:
         volatility_20d=volatility,
         max_drawdown_20d=max_drawdown,
         median_amount_20d=median_amount,
+        average_amount_20d=average_amount,
+        amihud_20d=amihud,
         median_turnover_20d=median_turnover,
         upward_consistency_20d=upward_consistency,
     )
@@ -252,6 +264,15 @@ def average_true_range_pct(bars: tuple[DailyBar, ...], days: int = 20) -> float 
 def _positive_average(values: tuple[float, ...], required: int) -> float | None:
     finite = tuple(value for value in values if math.isfinite(value) and value > 0.0)
     return sum(finite) / required if len(finite) == required else None
+
+
+def _amihud_average(bars: list[DailyBar]) -> float | None:
+    values = tuple(
+        abs(bar.pct_change / 100.0) / max(bar.amount / 1_000_000.0, 1e-9)
+        for bar in bars
+        if math.isfinite(bar.pct_change) and math.isfinite(bar.amount) and bar.amount > 0.0
+    )
+    return sum(values) / 20.0 if len(values) == 20 else None
 
 
 def median_amount(bars: tuple[DailyBar, ...], days: int = 20) -> float | None:

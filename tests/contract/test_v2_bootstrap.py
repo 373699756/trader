@@ -56,6 +56,11 @@ def test_build_system_is_lazy_and_v2_only(tmp_path, monkeypatch) -> None:
     status = system.app.test_client().get("/api/v2/status")
     assert status.status_code == 200
     assert status.get_json()["phase"] == "closed"
+    assert status.get_json()["tomorrow_model"]["active"] is True
+    assert status.get_json()["tomorrow_model"]["model_id"] == "daily_reconstructible_ensemble_v1"
+    assert status.get_json()["tomorrow_model"]["activation_basis"] == "manual_user_override"
+    assert status.get_json()["tomorrow_model"]["monitoring_mode"] == "automatic_t1_outcome_settlement"
+    assert status.get_json()["tomorrow_model"]["automatic_model_update"] is False
     page = system.app.test_client().get("/").get_data(as_text=True)
     assert 'name="trader-web-snapshot-retention-ms"' in page
     assert 'content="35000"' in page

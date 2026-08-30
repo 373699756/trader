@@ -874,7 +874,23 @@ class _ChromeSession:
                 process.wait(timeout=5)
         profile = getattr(self, "_profile", None)
         if profile is not None:
+            _cleanup_browser_profile(profile)
+
+
+def _cleanup_browser_profile(
+    profile: tempfile.TemporaryDirectory[str],
+    *,
+    attempts: int = 20,
+    delay_seconds: float = 0.05,
+) -> None:
+    for attempt in range(attempts):
+        try:
             profile.cleanup()
+            return
+        except OSError:
+            if attempt + 1 == attempts:
+                raise
+            time.sleep(delay_seconds)
 
 
 def _integer(value: object) -> int:

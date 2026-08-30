@@ -30,6 +30,7 @@ from trader.application.scored_v2_projection import (
     build_scored_v2_hybrid,
     build_scored_v2_local,
 )
+from trader.application.tomorrow_model_scoring import TomorrowProductionModelScoringService
 from trader.bootstrap_policy import _recommendation_policy
 from trader.domain.market.models import Board, FeatureSnapshot, MarketQuote
 from trader.domain.recommendation.decision_identity import (
@@ -54,6 +55,7 @@ from trader.infra.market_data.normalize import MarketQuoteInput, build_market_qu
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.settings import load_runtime_settings, load_strategy_settings
 from trader.infra.settings_models import PerformanceBudgetSettings
+from trader.infra.tomorrow_production_model import load_packaged_tomorrow_production_model
 from trader.web import create_app
 from trader.web.route_services import UnifiedWebServices
 
@@ -182,7 +184,7 @@ def _operations(
     )
     committed_overlay = overlay_canonical_snapshot(merged, overlay_snapshot)
     market_features = tuple(
-        FeatureSnapshot(quote, candidates[index % len(candidates)].values, observed_at, 60)
+        FeatureSnapshot(quote, candidates[index % len(candidates)].values, observed_at, 61)
         for index, quote in enumerate(market_quotes)
     )
     tomorrow_input = TomorrowNativeInput(
@@ -203,16 +205,32 @@ def _operations(
         data_version="performance-candidate-data-v2",
         market_features=candidates,
     )
-    local_projection = build_scored_v2_local(tomorrow_input, policy, sequence=1)
+    tomorrow_model = TomorrowProductionModelScoringService(load_packaged_tomorrow_production_model())
+    local_projection = build_scored_v2_local(
+        tomorrow_input,
+        policy,
+        sequence=1,
+        tomorrow_model=tomorrow_model,
+    )
     reviews = _abstaining_reviews(local_projection, observed_at)
     api_operations = _api_operations(candidates, observed_at)
     overlay_commit = _overlay_cas_operation(candidates, observed_at)
 
     def tomorrow_projection() -> object:
-        return build_scored_v2_local(tomorrow_input, policy, sequence=1)
+        return build_scored_v2_local(
+            tomorrow_input,
+            policy,
+            sequence=1,
+            tomorrow_model=tomorrow_model,
+        )
 
     def candidate_projection() -> object:
-        return build_scored_v2_local(candidate_input, policy, sequence=1)
+        return build_scored_v2_local(
+            candidate_input,
+            policy,
+            sequence=1,
+            tomorrow_model=tomorrow_model,
+        )
 
     def active_score(strategy: Strategy, item: FeatureSnapshot) -> LocalScoreResult:
         board_policy = policy.board_policy(strategy, item.quote.board)
@@ -446,8 +464,31 @@ def _fixtures(
         *range(4000, 4120),
     )
     selected = tuple(candidate_indexes[: budgets.workload.candidate_rows])
-    candidates = tuple(FeatureSnapshot(quotes[index], _FEATURE_VALUES, now, history_days=60) for index in selected)
+    candidates = tuple(
+        FeatureSnapshot(
+            quotes[index],
+            _performance_feature_values(position),
+            now,
+            history_days=61,
+        )
+        for position, index in enumerate(selected)
+    )
     return market, quotes, candidates
+
+
+def _performance_feature_values(position: int) -> dict[str, float]:
+    offset = (position % 120) / 10_000.0
+    return {
+        **_FEATURE_VALUES,
+        "p2_return_1d": 0.002 + offset,
+        "p2_return_3d": 0.004 + offset,
+        "p2_return_5d": 0.006 + offset,
+        "p2_momentum_20d_skip5": 0.01 + offset,
+        "p2_momentum_40d_skip5": 0.02 + offset,
+        "p2_momentum_60d_skip5": 0.03 + offset,
+        "p2_amihud_20d": 0.0001 + position / 1_000_000.0,
+        "p2_average_amount_20d": 100_000_000.0 + position * 100_000.0,
+    }
 
 
 _COMPLETE_REALTIME_FIELDS = (

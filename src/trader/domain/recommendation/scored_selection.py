@@ -25,6 +25,7 @@ from trader.domain.recommendation.scoring import (
     project_board_policy,
     score_board_strategy,
 )
+from trader.domain.recommendation.strategies.composition import LocalScoreResult
 from trader.domain.review.models import RiskFact, RiskRule
 from trader.domain.review.rules import aggregate_risk_penalty, derive_local_risk_facts
 
@@ -95,6 +96,7 @@ class ScoredSelectionRequest:
     policy: ScoredSelectionPolicy
     candidate_features: Sequence[FeatureSnapshot] | None = None
     fallbacks: Mapping[Board, BoardCrossSectionFallback] = field(default_factory=lambda: MappingProxyType({}))
+    local_score_overrides: Mapping[str, LocalScoreResult] | None = None
 
     def __post_init__(self) -> None:
         features = tuple(self.features)
@@ -122,6 +124,11 @@ class ScoredSelectionRequest:
         object.__setattr__(self, "features", features)
         object.__setattr__(self, "candidate_features", candidate_features)
         object.__setattr__(self, "fallbacks", MappingProxyType(fallbacks))
+        if self.local_score_overrides is not None:
+            overrides = dict(self.local_score_overrides)
+            if not set(overrides).issubset(set(codes)):
+                raise ValueError("local score overrides must belong to the scored population")
+            object.__setattr__(self, "local_score_overrides", MappingProxyType(overrides))
 
 
 def _validated_candidate_features(
@@ -392,7 +399,17 @@ def _score_board_candidates(
     selected_codes: list[str] = []
     for candidate_rank, (_unreliable, _score, feature, _missing) in enumerate(selected, start=1):
         code = feature.quote.code
-        local = score_board_strategy(feature, policy)
+        local = (
+            request.local_score_overrides.get(code)
+            if request.local_score_overrides is not None
+            else score_board_strategy(feature, policy)
+        )
+        if local is None:
+            evaluations[code] = replace(
+                evaluations[code],
+                selection_skip_reason="production_model_features_missing",
+            )
+            continue
         local_facts = derive_local_risk_facts(
             feature,
             request.evaluated_at,
