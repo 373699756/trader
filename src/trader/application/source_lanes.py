@@ -22,6 +22,7 @@ _SOURCE_NAMES = (
     "eastmoney_intraday",
     "history",
     "reference",
+    "exchange",
     "sina",
     "tencent",
     "tencent_topk",

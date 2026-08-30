@@ -52,6 +52,7 @@ from trader.infra.market_data.akshare import AkshareResearchClient
 from trader.infra.market_data.calendar import ChinaTradingCalendar, TradingCalendarUnavailableError
 from trader.infra.market_data.columnar import MarketChangeSet
 from trader.infra.market_data.eastmoney import EastmoneyClient
+from trader.infra.market_data.exchange_security_master import ExchangeSecurityMasterClient
 from trader.infra.market_data.features import FeatureBuilder
 from trader.infra.market_data.gateway import MarketDataGateway
 from trader.infra.market_data.gateway_health import MarketGatewayHealthStatus, SecurityMasterHealthStatus
@@ -140,6 +141,7 @@ def _service(
         history,
         runner,
         kwargs.pop("tushare_client", None),
+        security_master_client=kwargs.pop("exchange_security_master_client", None),
         data_plane=data_plane,
         monotonic=monotonic,
     )

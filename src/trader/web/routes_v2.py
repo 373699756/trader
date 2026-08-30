@@ -302,6 +302,9 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
             "process_api_attempts_today",
             "process_remaining_calls_today",
             "local_rate_limit_count",
+            "snapshot_rows",
+            "listing_date_rows",
+            "timeout_seconds",
         )
         for name, value in sorted(sources.items(), key=lambda item: str(item[0]))[:8]:
             if not isinstance(value, Mapping):

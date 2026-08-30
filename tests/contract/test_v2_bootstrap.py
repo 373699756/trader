@@ -77,6 +77,19 @@ def test_reference_data_plane_recovery_is_fail_open() -> None:
     market_data.research.recover_from_data_plane.assert_not_called()
 
 
+def test_reference_data_plane_recovery_schedules_official_security_master_on_startup() -> None:
+    from unittest.mock import Mock
+
+    observed_at = datetime(2026, 8, 30, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    market_data = Mock()
+    data_plane = Mock()
+
+    _initialize_reference_data_plane(market_data, data_plane, observed_at)
+
+    market_data.references.recover.assert_called_once_with()
+    market_data.references.schedule_security_master_refresh.assert_called_once_with(observed_at)
+
+
 def test_reference_data_plane_physical_corruption_is_fail_open(tmp_path: Path) -> None:
     from unittest.mock import Mock
 

@@ -22,7 +22,7 @@ from trader.infra.market_data.field_quality import (
 )
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
 
-_BOARD_SOURCES = frozenset({"tushare", "akshare", "eastmoney", "sina", "tencent"})
+_BOARD_SOURCES = frozenset({"exchange", "tushare", "akshare", "eastmoney", "sina", "tencent"})
 _BOARD_FIELDS = frozenset(
     {
         "board",
@@ -38,7 +38,7 @@ _BOARD_FIELDS = frozenset(
         "rule_effective_date",
     }
 )
-_SOURCE_PRIORITY = {"sina": 1, "eastmoney": 2, "tencent": 3, "akshare": 4, "tushare": 5}
+_SOURCE_PRIORITY = {"sina": 1, "eastmoney": 2, "tencent": 3, "akshare": 4, "tushare": 5, "exchange": 6}
 
 
 @dataclass(frozen=True)
@@ -231,7 +231,7 @@ def _apply_reported_board(
             "degraded"
             if source_reliability == "degraded"
             else "verified"
-            if source in {"tushare", "akshare"}
+            if source in {"exchange", "tushare", "akshare"}
             else "reported"
         )
         sources["board"] = source

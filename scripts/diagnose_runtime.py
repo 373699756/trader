@@ -22,6 +22,7 @@ _DEFAULT_CONFIG = PROJECT_ROOT / "config" / "v2" / "runtime.json"
 Profile = Literal[
     "web",
     "history",
+    "security-master",
     "tencent",
     "tushare",
     "research",
@@ -37,16 +38,18 @@ CheckStatus = Literal["passed", "degraded", "failed"]
 _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "web": ("web_health",),
     "history": ("history_sources",),
+    "security-master": ("exchange_security_master",),
     "tencent": ("tencent_quotes",),
     "tushare": ("tushare_daily",),
     "research": ("score_p0_readiness",),
     "browser": ("browser_refresh",),
     "performance": ("production_performance",),
     "runtime": ("web_health",),
-    "sources": ("history_sources", "tencent_quotes", "tushare_daily"),
-    "live": ("web_health", "history_sources", "tencent_quotes", "tushare_daily"),
+    "sources": ("exchange_security_master", "history_sources", "tencent_quotes", "tushare_daily"),
+    "live": ("web_health", "exchange_security_master", "history_sources", "tencent_quotes", "tushare_daily"),
     "full": (
         "web_health",
+        "exchange_security_master",
         "history_sources",
         "tencent_quotes",
         "tushare_daily",
@@ -222,6 +225,17 @@ def build_commands(
         "history_sources": DiagnosticCommand(
             "history_sources",
             _history_command(options, python_executable),
+            common_timeout,
+        ),
+        "exchange_security_master": DiagnosticCommand(
+            "exchange_security_master",
+            (
+                python_executable,
+                "-m",
+                "scripts.runtime_diagnostics.exchange_security_master",
+                "--timeout-seconds",
+                str(max(15.0, options.source_timeout_seconds)),
+            ),
             common_timeout,
         ),
         "tencent_quotes": DiagnosticCommand(
@@ -403,6 +417,8 @@ def _check_payload(result: DiagnosticResult) -> dict[str, object]:
             }
     elif result.name == "history_sources":
         payload["summary"] = _mapping(source.get("summary"))
+    elif result.name == "exchange_security_master":
+        payload["summary"] = _mapping(source.get("summary")) or {"error": source.get("error")}
     elif result.name == "tencent_quotes":
         versions = _mapping(source.get("distinct_source_versions"))
         payload["summary"] = {

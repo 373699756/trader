@@ -23,6 +23,10 @@ from trader.application.ports.data_plane import (
 from trader.application.ports.types import JsonObject, JsonValue
 from trader.application.schedule import shanghai_now
 from trader.application.source_lanes import SourceRequestSupersededError
+from trader.infra.market_data.exchange_security_master import (
+    ExchangeSecurityMasterClient,
+    ExchangeSecurityMasterHealthStatus,
+)
 from trader.infra.market_data.gateway import MarketDataGateway
 from trader.infra.market_data.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.market_cache_identity import _normalize_codes, _source_batch_identity
@@ -96,6 +100,9 @@ class ReferenceLoader:
         runner: MarketTaskRunner,
         client: TushareClient | None,
         *,
+        security_master_client: ExchangeSecurityMasterClient | None = None,
+        security_master_refresh_ttl_seconds: float = 86_400.0,
+        security_master_retry_seconds: float = 300.0,
         data_plane: _ReferenceDataPlane | None = None,
         monotonic: Callable[[], float],
     ) -> None:
@@ -103,6 +110,11 @@ class ReferenceLoader:
         self._history_cache = history
         self._runner = runner
         self._client = client
+        self._security_master_client = security_master_client
+        if security_master_refresh_ttl_seconds <= 0.0 or security_master_retry_seconds <= 0.0:
+            raise ValueError("security master refresh and retry intervals must be positive")
+        self._security_master_refresh_ttl_seconds = float(security_master_refresh_ttl_seconds)
+        self._security_master_retry_seconds = float(security_master_retry_seconds)
         self._data_plane = data_plane
         self._monotonic = monotonic
         self._lock = threading.Lock()
@@ -112,6 +124,8 @@ class ReferenceLoader:
         self._persisted_security_master_signatures: dict[str, str] = {}
         self._trading_calendar_cursor: str | None = None
         self._trading_calendar_observations: dict[str, SourceObservation] = {}
+        self._exchange_refresh_inflight = False
+        self._exchange_next_refresh_at = 0.0
 
     def schedule_reference_data(
         self,
@@ -126,6 +140,11 @@ class ReferenceLoader:
             normalized if security_master_codes is None else security_master_codes
         )
         self.schedule_security_master_persistence(self._gateway.reference_observations(normalized_master_codes))
+        self._schedule_exchange_security_master(
+            normalized_master_codes,
+            observed_at,
+            force=force,
+        )
         lanes = self._runner.source_lanes
         if lanes is None:
             self._refresh_tushare_reference_data(
@@ -161,6 +180,96 @@ class ReferenceLoader:
             tushare_future.add_done_callback(_observe_reference_refresh)
         if not normalized:
             return
+
+    def _schedule_exchange_security_master(
+        self,
+        normalized_master_codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        force: bool,
+    ) -> None:
+        if self._security_master_client is None:
+            return
+        current = {item.subject_key: item for item in self._gateway.reference_observations(normalized_master_codes)}
+        missing_listing_date = not normalized_master_codes
+        for code in normalized_master_codes:
+            observation = current.get(code)
+            if observation is None or not isinstance(observation.fields.get("listing_date"), str):
+                missing_listing_date = True
+                break
+        if not force and not missing_listing_date:
+            return
+        with self._lock:
+            now = self._monotonic()
+            if self._exchange_refresh_inflight or (not force and now < self._exchange_next_refresh_at):
+                return
+            self._exchange_refresh_inflight = True
+        lanes = self._runner.source_lanes
+        if lanes is None or lanes.owns_current_thread("exchange"):
+            succeeded = False
+            try:
+                self._refresh_exchange_security_master(observed_at)
+                succeeded = True
+            finally:
+                self._complete_exchange_refresh(succeeded)
+            return
+        identity = _source_batch_identity(
+            "exchange_security_master",
+            normalized_master_codes,
+            observed_at,
+            force=force,
+        )
+        try:
+            future = lanes.submit(
+                "exchange",
+                identity,
+                observed_at,
+                self._refresh_exchange_security_master,
+                observed_at,
+            )
+        except Exception:
+            self._complete_exchange_refresh(False)
+            raise
+        future.add_done_callback(self._observe_exchange_refresh)
+
+    def schedule_security_master_refresh(self, observed_at: datetime) -> None:
+        self._schedule_exchange_security_master((), observed_at, force=False)
+
+    def _refresh_exchange_security_master(self, observed_at: datetime) -> int:
+        client = self._security_master_client
+        if client is None:
+            return 0
+        observations = client.fetch(observed_at)
+        self._gateway.update_reference_observations(observations)
+        self.schedule_security_master_persistence(observations)
+        latest = max(observations, key=lambda item: (item.source_time, item.data_version))
+        with self._lock:
+            self._reference_versions["security_master"] = latest.data_version
+            self._reference_version_order["security_master"] = (
+                latest.source_time,
+                latest.received_at,
+                latest.data_version,
+            )
+        return len(observations)
+
+    def _observe_exchange_refresh(self, future: Future[int]) -> None:
+        succeeded = False
+        try:
+            future.result()
+            succeeded = True
+        except SourceRequestSupersededError:
+            pass
+        except Exception as exc:
+            _LOGGER.warning("exchange security master refresh failed: %s", type(exc).__name__)
+        finally:
+            self._complete_exchange_refresh(succeeded)
+
+    def _complete_exchange_refresh(self, succeeded: bool) -> None:
+        with self._lock:
+            self._exchange_refresh_inflight = False
+            self._exchange_next_refresh_at = self._monotonic() + (
+                self._security_master_refresh_ttl_seconds if succeeded else self._security_master_retry_seconds
+            )
 
     def schedule_security_master_persistence(
         self,
@@ -749,6 +858,9 @@ class ReferenceLoader:
 
     def health(self) -> TushareHealthStatus | None:
         return self._client.health() if self._client is not None else None
+
+    def security_master_health(self) -> ExchangeSecurityMasterHealthStatus | None:
+        return self._security_master_client.health() if self._security_master_client is not None else None
 
     @staticmethod
     def _mark_reference_degraded(observation: SourceObservation, reason: str) -> SourceObservation:

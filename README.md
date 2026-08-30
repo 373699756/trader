@@ -54,7 +54,7 @@ API/ETag/status、SSE 和 100 tick RSS；可用 `--output` 保存报告，或用
 
 ## 荐股漏斗诊断
 
-优先使用统一入口一次执行 Web 漏斗、历史源、腾讯实时报价和 Tushare 能力检查；各专项能力由
+优先使用统一入口一次执行 Web 漏斗、沪深交易所基础资料、历史源、腾讯实时报价和 Tushare 能力检查；各专项能力由
 `scripts/runtime_diagnostics/` 内部职责模块维护，不再保留多个顶层包装脚本：
 
 ```bash
@@ -71,7 +71,7 @@ API/ETag/status、SSE 和 100 tick RSS；可用 `--output` 保存报告，或用
 绝对路径。
 也可执行 `make diagnose-live`；耗时更长的浏览器与性能组合必须显式执行 `make diagnose-full`。
 
-只复测单一边界时仍使用同一个入口，profile 可选 `web`、`history`、`tencent`、`tushare`、`browser`
+只复测单一边界时仍使用同一个入口，profile 可选 `web`、`security-master`、`history`、`tencent`、`tushare`、`browser`
 和 `performance`。例如只检查荐股漏斗：
 
 ```bash

@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户要求先解决 `docs/review.md` 中基础资料长期停在 120/360、并追问“已有四五个股票数据接口为何
+  仍缺数据”，新增沪深交易所官方证券主数据适配器：独立采集上交所主板/科创板和深交所 A 股代码、
+  板块、交易所与上市日期，只接纳代码唯一、两所齐全、受支持三板不少于 4000 条且上市日期完整的
+  原子快照。新增不可变来源健康状态以及统一诊断 `security-master` profile，报告只输出沪深/板块行数、
+  完整率和有界延迟，不泄露股票明细或外部载荷。
+  `Regression-Key: security-master-official-exchange-fallback-v1`。
 - 针对用户要求继续 `docs/fenshu.md` 下一个完整未完成章节，新增不可变
   `score_tomorrow_historical_p2_v1` 与类型化 `score_tomorrow_historical_p2_report_v1`。P2-0 只读绑定
   H0 规范，冻结字段准入矩阵、唯一日线可重建线性/LightGBM 集合、固定模型随机种子与单线程、稳定
@@ -437,6 +443,13 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 证券主数据从“等待评分批次、实际依赖东方财富富身份分页”改为“启动恢复后立即在独立 `exchange`
+  lane 刷新，候选发现缺口时幂等续刷”；有限 HTTP 重试、24 小时成功 TTL、300 秒失败退避和最近有效
+  快照共同独立于 20 秒实时报价 deadline。完整快照按字段无损合并、派生上市交易日龄并批量持久化；
+  全市场规范合并只消费本轮真实报价代码对应的参考资料，不再让全量主数据生成无价格的行情行。
+- `/api/v2/status.market_data.sources.exchange` 加法公开启用状态、计划/成功/失败/超时、延迟、快照行数、
+  上市日期行数和 timeout；`openpyxl` 作为解析深交所官方 XLSX 的直接运行依赖。活动评分、78/73 门槛、
+  68/32 融合、风险扣分、候选公式和冻结规则均未修改。
 - P2 加速路线不再把无法由 H0 日线重建的 14:50 生产决策称为历史生产基线；历史 comparator 固定为
   `score_h0_ohlcv_cross_section_v1`，只用于决定唯一候选是否值得进入真实前向影子。历史 ST/行业、
   14:50 尾部、披露时点、公司风险和 DeepSeek facts 缺少真实生效/接收时间时全部失败关闭；实际生产
@@ -816,6 +829,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 Tomorrow/D25 真实漏斗虽有 360/360 行情、证券主数据却长期固定为 120/360 的首个数据门禁断点。
+  根因不是“完全没有多源行情”，而是来源字段能力不对称：新浪/腾讯主要提供价格，120 积分 Tushare
+  无 `stock_basic` 上市日期权限，东方财富 `f26` 成为免费活动路径的单点；该分页又与报价对冲共享
+  deadline，断连或迟到时价格可由新浪发布而身份无法补齐。官方交易所通道现把报价可用性与证券身份
+  可用性拆成两个独立生命周期，失败整批拒绝且不覆盖上次有效资料。
 - 全量门禁复核修复两项测试证据问题，不改变生产实现：历史诊断路径拒绝测试改为基于真实仓库根目录，
   不再依赖另一台机器的硬编码绝对路径；迟到免费证券身份持久化测试现在先保证 hedge 来源真实在途，
   再分别等待持久化调度与写入完成，避免高负载下用密集 SQLite 读轮询争抢后台 writer 后误报失败。
@@ -1171,6 +1189,8 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除证券主数据刷新必须等到交易日评分批次、并受东方财富/新浪实时报价 20 秒 deadline 间接约束的
+  隐含单点；未删除或替换任何活动报价源，Tushare 仍仅为可选增强。
 - 本批未删除 H0、P0、P1、活动评分或生产发布链；P2-0 只新增隔离研究契约。构建生成的 `build/`、
   `dist/` 与 egg-info 仍是忽略产物，不进入本任务提交。
 - 删除首页的上市日期/交易日龄缺失构成、免费补齐过程文案及旧 `quoteCoverage*` DOM/渲染 helper；
@@ -1337,6 +1357,21 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批定向契约与回归：官方沪深快照原子校验、冲突/部分/未来上市日期拒绝、瞬时断连有限重试、
+  来源健康投影、启动主动刷新、SQLite 批量持久化与恢复、官方身份优先级、上市交易日龄、报价 deadline
+  隔离、失败保留旧资料、无参考资料“幽灵行情行”、统一诊断脱敏契约及架构分区等高风险定向
+  contract/component/unit 测试通过。
+- 真实来源与当前 release：统一 `security-master` profile 通过，官方快照 5212/5212（上交所 2315、
+  深交所 2897，主板 3193、创业板 1403、科创板 616）；当前服务正常启动与再次重启后
+  `/api/v2/status` 均为 `total_rows=listing_date_rows=listing_age_rows=complete_rows=5212`，交易所来源
+  `planned=1/success=1/error=0`，持久化调度错误为 0。统一 runtime profile 连续 3 轮通过；当前日期为
+  非交易日，phase 正确为 `closed`。
+- 高风险全量门禁 `make format-check`、`make lint`（含重构债务零基线）、`make type-check`、
+  `make test`、`make package` 全部通过；`make performance-check` 在 5500 行全市场、360 候选、三策略和
+  100 tick RSS 工作负载下无失败、无网络调用、内存增长 0%。仓库外临时 venv 成功安装 wheel，能够导入
+  新证券主数据客户端、执行 `trader-cli --help`，并读取模板、CSS、JavaScript 与 SVG 图标资源。
+- 本批未修改模板、CSS、JavaScript 或布局，三档桌面浏览器视觉验收不适用；公开状态仅加法投影有界
+  `exchange` 来源计数，并已由 Web contract 和完整测试覆盖。
 - `score-tomorrow-historical-p2-contract-v1` 按基线 `9b8a067` 完整 Review。失败先行测试先证明 P2 模块、
   固定模型种子/线程、稳定组合排序和 50/100bp 压力字段尚不存在；实现后 P2 单元、权威文档契约、迟到
   身份持久化与历史诊断路径共 22 项定向测试通过，受影响 Ruff、format 与 mypy 检查通过。
@@ -2074,6 +2109,12 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 上交所公开 HTTPS 在连续新连接时仍可能出现瞬时 `connection_failed`，免费接口没有供应商 SLA；当前以
+  单请求有限重试、调度级 300 秒退避、启动/缺口续刷和最近有效持久化快照降级，不会接受部分响应，
+  但首次安装且所有重试均失败时仍会保持基础资料未就绪，等待下一次调度。
+- 2026-08-30 为非交易日，无法形成新的 360 候选评分漏斗；本批已证明全局基础资料 5212/5212 和对应
+  门禁回归，但仍需下一个真实交易窗口确认候选作用域达到 360/360。只有取得完整评分分布后，才能另立
+  批次判断 78 分正式线是否过严；本批不提前下调门槛。
 - P2-0 只冻结了可执行研究契约，没有运行或读取 H0/P2 历史结果，因此尚无 95% 覆盖、300 条有效配对、
   样本外净超额或任何合格候选。P2-1 是下一个独立整节；若唯一候选未通过就必须终止，不能改参或降门槛。
   即使历史通过，也只能由 P2-2 在报告封存后预注册约 20 个精确官方交易日并取得真实生产同日同股证据，

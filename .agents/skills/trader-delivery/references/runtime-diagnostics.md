@@ -8,10 +8,10 @@ Use the unified read-only entrypoint when one run should scan multiple boundarie
 
 Profiles:
 
-- `web`, `history`, `tencent`, `tushare`, `browser`, `performance`: run exactly one owning diagnostic module through the unified CLI. Use these after a combined scan has isolated one boundary or when executing its dedicated gate.
+- `web`, `security-master`, `history`, `tencent`, `tushare`, `browser`, `performance`: run exactly one owning diagnostic module through the unified CLI. `security-master` checks the atomic official SSE/SZSE listing snapshot without emitting stock identities. Use these after a combined scan has isolated one boundary or when executing its dedicated gate.
 - `research`: reuse the read-only `trader-cli research-status` observability contract and emit only the active score identity, historical/forward windows, blocker, and bounded finding. Do not duplicate research coverage computation in a diagnostic module.
 - `runtime`: samples the running `/api/v2/status` and Today/Tomorrow/D25 current projections. Use for no-data, funnel, release/schema, projection identity, warmup-state, and restart symptoms.
-- `sources`: samples bounded history, Tencent quotes, and configured Tushare daily capability. It performs real supplier requests and consumes applicable quotas.
+- `sources`: samples the official SSE/SZSE security master, bounded history, Tencent quotes, and configured Tushare daily capability. It performs real supplier requests and consumes applicable quotas.
 - `live`: recommended incident profile; runs `runtime` plus all source probes and continues after an individual failure so one report can separate internal pipeline faults from supplier faults.
 - `full`: adds the isolated Firefox refresh/patch gate and offline production performance gate. Use for Web delivery, hot-path, release, or explicit full verification; it is not the default response to every defect.
 

@@ -43,6 +43,7 @@ def test_live_profile_combines_runtime_and_all_source_probes() -> None:
 
     assert tuple(command.name for command in commands) == (
         "web_health",
+        "exchange_security_master",
         "history_sources",
         "tencent_quotes",
         "tushare_daily",
@@ -56,6 +57,7 @@ def test_full_profile_adds_browser_and_offline_performance_without_duplicate_pro
 
     assert tuple(command.name for command in commands) == (
         "web_health",
+        "exchange_security_master",
         "history_sources",
         "tencent_quotes",
         "tushare_daily",
@@ -69,6 +71,7 @@ def test_full_profile_adds_browser_and_offline_performance_without_duplicate_pro
     [
         ("web", "web_health"),
         ("history", "history_sources"),
+        ("security-master", "exchange_security_master"),
         ("tencent", "tencent_quotes"),
         ("tushare", "tushare_daily"),
         ("research", "score_p0_readiness"),
@@ -238,7 +241,7 @@ def test_runner_continues_after_a_failed_check_and_preserves_check_order() -> No
 
     report = run_diagnostics("sources", commands, runner=runner)
 
-    assert called == ["history_sources", "tencent_quotes", "tushare_daily"]
+    assert called == ["exchange_security_master", "history_sources", "tencent_quotes", "tushare_daily"]
     assert report["status"] == "failed"
     assert report["summary"]["failed"] == 1
 

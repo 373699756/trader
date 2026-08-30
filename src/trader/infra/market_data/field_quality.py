@@ -53,8 +53,8 @@ BOARD_FIELDS = frozenset(
     }
 )
 REALTIME_SOURCES = frozenset({"eastmoney", "sina", "tencent"})
-BOARD_SOURCES = frozenset({"tushare", "akshare", "eastmoney", "sina", "tencent"})
-SOURCE_PRIORITY = {"sina": 1, "eastmoney": 2, "tencent": 3, "akshare": 4, "tushare": 5}
+BOARD_SOURCES = frozenset({"exchange", "tushare", "akshare", "eastmoney", "sina", "tencent"})
+SOURCE_PRIORITY = {"sina": 1, "eastmoney": 2, "tencent": 3, "akshare": 4, "tushare": 5, "exchange": 6}
 
 
 @dataclass(frozen=True)

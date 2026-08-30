@@ -220,6 +220,7 @@ def test_market_component_suite_remains_partitioned_by_behavior() -> None:
     assert not (component_root / "test_v2_market_data.py").exists()
     expected = {
         "test_market_features.py",
+        "test_market_exchange_references.py",
         "test_market_gateway.py",
         "test_market_history.py",
         "test_market_intraday.py",

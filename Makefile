@@ -3,6 +3,7 @@ PYTHON ?= .venv/bin/python
 SOURCE_PATHS := src/trader tests scripts/check_refactor_quality.py scripts/generate_long_watchlist_asset.py \
 	scripts/diagnose_runtime.py scripts/runtime_diagnostics/__init__.py scripts/runtime_diagnostics/common.py \
 	scripts/runtime_diagnostics/web_health.py scripts/runtime_diagnostics/browser_refresh.py \
+	scripts/runtime_diagnostics/exchange_security_master.py \
 	scripts/runtime_diagnostics/history_sources.py scripts/runtime_diagnostics/tencent_quotes.py \
 	scripts/runtime_diagnostics/tushare_daily.py
 

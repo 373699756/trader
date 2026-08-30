@@ -79,6 +79,28 @@ class MarketDataHealth:
         reference_health = self._references.health()
         if reference_health is not None:
             sources["tushare"] = _tushare_payload(reference_health)
+        security_master_health = self._references.security_master_health()
+        if security_master_health is not None:
+            sources["exchange"] = {
+                "enabled": security_master_health.enabled,
+                "planned_count": security_master_health.planned_count,
+                "success_count": security_master_health.success_count,
+                "error_count": security_master_health.error_count,
+                "timeout_count": security_master_health.timeout_count,
+                "consecutive_failures": security_master_health.consecutive_failures,
+                "last_latency_ms": security_master_health.last_latency_ms,
+                "p50_latency_ms": security_master_health.p50_latency_ms,
+                "p95_latency_ms": security_master_health.p95_latency_ms,
+                "last_error": security_master_health.last_error,
+                "snapshot_rows": security_master_health.snapshot_rows,
+                "listing_date_rows": security_master_health.listing_date_rows,
+                "data_age_seconds": (
+                    max(0.0, (measured_at - security_master_health.last_source_time).total_seconds())
+                    if security_master_health.last_source_time is not None
+                    else None
+                ),
+                "timeout_seconds": security_master_health.timeout_seconds,
+            }
         gateway_health["sources"] = sources
         market_quotes = quote_status.market_features
         candidate_quotes = quote_status.candidate_quotes

@@ -18,6 +18,7 @@ INTERNAL_DIAGNOSTIC_MODULES = (
     ROOT / "scripts" / "runtime_diagnostics" / "web_health.py",
     ROOT / "scripts" / "runtime_diagnostics" / "browser_refresh.py",
     ROOT / "scripts" / "runtime_diagnostics" / "history_sources.py",
+    ROOT / "scripts" / "runtime_diagnostics" / "exchange_security_master.py",
     ROOT / "scripts" / "runtime_diagnostics" / "tencent_quotes.py",
     ROOT / "scripts" / "runtime_diagnostics" / "tushare_daily.py",
 )
@@ -42,7 +43,17 @@ def test_unified_runtime_diagnostic_is_the_only_public_parameterized_script() ->
     assert result.returncode == 0, result.stderr
     for option in ("--profile", "--base-url", "--runtime-config", "--codes", "--output"):
         assert option in result.stdout
-    for profile in ("web", "history", "tencent", "tushare", "browser", "performance", "live", "full"):
+    for profile in (
+        "web",
+        "history",
+        "security-master",
+        "tencent",
+        "tushare",
+        "browser",
+        "performance",
+        "live",
+        "full",
+    ):
         assert profile in result.stdout
     assert UNIFIED_DIAGNOSTIC.name in makefile
 

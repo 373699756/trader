@@ -60,6 +60,7 @@ from trader.infra.deepseek.reviewer import DeepSeekReviewer
 from trader.infra.market_data.akshare import AkshareResearchClient
 from trader.infra.market_data.calendar import ChinaTradingCalendar
 from trader.infra.market_data.eastmoney import EastmoneyClient
+from trader.infra.market_data.exchange_security_master import ExchangeSecurityMasterClient
 from trader.infra.market_data.features import FeatureBuilder
 from trader.infra.market_data.gateway import MarketDataGateway
 from trader.infra.market_data.history_seed import (
@@ -282,7 +283,7 @@ def build_system(config_path: str | Path) -> ApplicationSystem:
                 publication.tomorrow_repository.initialize,
                 lambda: _initialize_research_trace(publication.research_trace),
                 lambda: _initialize_outcome_evidence(persistence.outcomes),
-                lambda: _initialize_reference_data_plane(market_data, persistence.data_plane),
+                lambda: _initialize_reference_data_plane(market_data, persistence.data_plane, now()),
                 persistence.budget.initialize,
                 publication.today_freezer.initialize,
                 lambda: publication.tomorrow_freezer.restore(now().date()),
@@ -554,6 +555,14 @@ def _build_market_data(
         history_cache,
         runner,
         tushare_client,
+        security_master_client=ExchangeSecurityMasterClient(
+            timeout_seconds=max(15.0, settings.market_data.eastmoney_timeout_seconds),
+            wall_clock=now,
+        ),
+        security_master_refresh_ttl_seconds=_fixed_cache_ttl(settings, "security_master_calendar"),
+        security_master_retry_seconds=(
+            settings.market_data.cache_policy.datasets["security_master_calendar"].negative_ttl_seconds
+        ),
         data_plane=data_plane,
         monotonic=time.monotonic,
     )

@@ -239,6 +239,20 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
             "tushare_required": False,
         },
         "sources": {
+            "exchange": {
+                "data_age_seconds": 30.0,
+                "enabled": True,
+                "error_count": 1,
+                "last_latency_ms": 9702.0,
+                "listing_date_rows": 5212,
+                "p50_latency_ms": 9702.0,
+                "p95_latency_ms": 9702.0,
+                "planned_count": 2,
+                "snapshot_rows": 5212,
+                "success_count": 1,
+                "timeout_count": 0,
+                "timeout_seconds": 15.0,
+            },
             "sina": {
                 "circuit_open": False,
                 "data_age_seconds": 2.0,
@@ -392,6 +406,21 @@ def _app():
                 },
                 "measured_at": NOW.isoformat(),
                 "sources": {
+                    "exchange": {
+                        "enabled": True,
+                        "planned_count": 2,
+                        "success_count": 1,
+                        "error_count": 1,
+                        "timeout_count": 0,
+                        "last_latency_ms": 9702.0,
+                        "p50_latency_ms": 9702.0,
+                        "p95_latency_ms": 9702.0,
+                        "data_age_seconds": 30.0,
+                        "snapshot_rows": 5212,
+                        "listing_date_rows": 5212,
+                        "timeout_seconds": 15.0,
+                        "last_error": "must-not-leak",
+                    },
                     "sina": {
                         "planned_count": 4,
                         "success_count": 4,

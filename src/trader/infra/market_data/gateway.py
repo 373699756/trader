@@ -288,12 +288,15 @@ class MarketDataGateway:
                 return cached
             raise MarketDataUnavailableError("market data unavailable: " + _parallel_error_message(results))
         observations = tuple(observation for result in successes for observation in result.observations)
+        observed_codes = {observation.subject_key for observation in observations}
         security_references = security_reference_observations(observations)
         with self._state_lock:
             previous = self._latest_snapshot
             self._remember_observations_locked(observations, completed_at)
             self._update_reference_observations_locked(security_references)
-            references = tuple(self._reference_observations.values())
+            references = tuple(
+                observation for code, observation in self._reference_observations.items() if code in observed_codes
+            )
         merge_started = self._monotonic()
         snapshot = merge_market_observations(
             (*observations, *references),
