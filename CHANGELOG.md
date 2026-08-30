@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户要求继续完成 `docs/fenshu.md` 下一整节 P2-1，新增显式
+  `research-tomorrow-p2-screen` 离线执行链：只读复用 H0 qfq 归档，按同日市场/板块/成交额暴露残差化
+  六个 Alpha 字段，使用训练段内部时间留出完成固定 ridge/单线程 LightGBM 的唯一一次训练，再在正式
+  验证段评价固定候选。新增类型化逐股证据、模型工件、终态报告、原子幂等防篡改仓储，以及
+  `v2_research_readiness_v4.tomorrow_p2` 只读状态投影。
+  `Regression-Key: score-tomorrow-historical-p2-screen-v1`。
 - 针对用户要求继续完成 `docs/review.md` 的 Web 解释优化，`V2SupplyFunnel` 新增达到观察线/正式线的
   精确计数；桌面验收脚本加法支持系统缺少 geckodriver 时使用无头 Chrome DevTools，继续由同一参数化
   入口捕获三档分辨率和本地零外网夹具证据。`Regression-Key: web-recommendation-state-explanation-v1`。
@@ -446,6 +452,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- P2-1 使用真实 `.runtime/v2` H0 归档复核 4,904/5,006 只完整历史（97.9624%），形成 368 个训练日、
+  139 个验证日和 678,370 条验证同日同股配对。候选的 20/50/100bp 平均净增量与 20bp bootstrap 下界
+  虽为正，但严重亏损率 15.9472% 高于 H0 历史代理 8.2734%、换手增加 56.2350 个百分点、Q5-Q1 为负，
+  因而按预注册门槛不可变封存为 `historical_rejected`。P2-2/P2-3 已取消；没有改评分、78/73 门槛、
+  DeepSeek、68/32 融合、冻结、活动配置、API 或 Web。
 - 推荐主区现在按冻结错过、采集中、数据门禁阻断、评分完成空池四种状态给出确定性结论；评分完成空池
   显示最高最终分、距正式线、两档达线数量及最多三项聚合原因。公开状态 schema 升为 `v2_status_v4`，
   静态资源握手升为 `release-contract-2026-08-30-v5`；活动评分、78/73 门槛、融合、风险和冻结均未修改。
@@ -1370,6 +1381,16 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- P2-1 定向契约通过：领域规范/报告、单次训练与正式验证隔离、合法空池、固定模型确定性、工件幂等/冲突/
+  报告及模型篡改、CLI 与策略/架构文档契约共 49 项通过。真实命令
+  `research-tomorrow-p2-screen` 首次按预注册门槛返回 `historical_rejected`（预期退出码 1），报告哈希
+  `fc6d58e0...f2dec`；再次执行读取相同哈希和相同指标，证明未重训或改参。`research-status` 实测投影
+  `v2_research_readiness_v4.tomorrow_p2.status=historical_rejected` 且前向资格为 false。
+- 高风险完整门禁通过：`make format-check`、`make lint`（含零严格重构债务）、`make type-check`
+  （254 个源码文件）、`make test` 和 `make package`。从仓库外 `/tmp/trader-wheel-p2.*` 安装构建 wheel 后，
+  已验证 `trader` 从该安装目录导入、新 P2 应用/工件模块可导入、`trader-cli --help` 暴露新命令，并能
+  读取模板、CSS、JavaScript 和 SVG 包资源。浏览器三档验收不适用：本批没有修改活动 HTTP/Web 行为，
+  P2 也未获生产接线权限；供应商网络实测不适用：执行只读既有 H0 归档。
 - `web-recommendation-state-explanation-v1` 失败先行回归先分别证明类型化漏斗缺少两档达线计数、公开状态
   仍自动投影和页面仍使用旧 release；实现后 bootstrap/input-runtime/dashboard/Web-health 定向 51 项通过，
   同时覆盖 Today 冻结错过、采集中、候选/基础资料/历史阻断、评分完成空池、最高分/门槛差、两档计数、
@@ -2136,6 +2157,10 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- P2 已因历史门禁失败终止，没有新评分版本或生产晋级权限。H0 只能重建日线、稳定板块和成本/风险代理，
+  不能证明真实 14:50 生产基线、历史 ST/行业/披露/公司风险或 DeepSeek facts；这些缺口没有用当前值、
+  零风险或中性值回填。若未来提出不同候选，只能使用新的预注册身份和未读取的新证据，不能修改、覆盖
+  或放宽本次 `historical_rejected` 报告。
 - 新评分尚未取得生产晋级权限，因此成本后预期净超额、亏损概率、数据完整度和新评分版本仍不展示；
   本批也不据此调整 78/73 门槛。当前日期为非交易日，真实服务只能验证 release、状态投影和安全降级，
   四种结论的确定性业务场景由零外网浏览器夹具覆盖；下一交易窗口仍需观察完整 360/360 评分分布。

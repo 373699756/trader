@@ -27,6 +27,7 @@ from trader.application.research.historical_screening import HistoricalDownloadS
 from trader.application.research.score_r6 import ScoreR6HistoricalScreeningService
 from trader.application.research.score_r6_daily import ScoreR6DailyScreeningService
 from trader.application.research.score_r6_stability import ScoreR6StabilityScreeningService
+from trader.application.research.tomorrow_historical_p2_screening import TomorrowHistoricalP2ScreeningService
 from trader.application.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
 from trader.application.scored_v2_freezing import (
     ScoredV2FreezeCoordinator,
@@ -153,6 +154,7 @@ class HistoricalResearchServices:
     score_r6: ScoreR6HistoricalScreeningService
     score_r6_daily: ScoreR6DailyScreeningService
     score_r6_stability: ScoreR6StabilityScreeningService
+    tomorrow_historical_p2: TomorrowHistoricalP2ScreeningService
     archive: SQLiteHistoricalArchive
 
 
@@ -337,6 +339,7 @@ def build_historical_research_services(
     """Compose explicit offline research without starting production resources."""
 
     from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC
+    from trader.infra.research.tomorrow_historical_p2_model import TomorrowHistoricalP2EnsembleTrainer
 
     settings = load_runtime_settings(config_path)
     fixed_source_time = datetime(
@@ -380,6 +383,7 @@ def build_historical_research_services(
             archive,
             ScoreR6DailyArtifactStore(settings.runtime_dir / "score-r6-daily"),
         ),
+        TomorrowHistoricalP2ScreeningService(archive, TomorrowHistoricalP2EnsembleTrainer()),
         archive,
     )
 

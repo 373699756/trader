@@ -1593,7 +1593,7 @@ outcome 库存在时同时报告基准、全部 outcome、完整 outcome 和最�
 计划交易日固定为 2026-10-26 至 2026-11-20，失败日不得回退、顺延或替换。纯领域 research spec
 生成规范 SHA-256；R2、R3、R4、R5 及前向证据逐级绑定 identity/spec hash，新身份前向文件使用独立
 命名空间，并显式使用各研究载荷的 v2 schema，旧 v1 证据不迁移、不覆盖。`research-status` 的
-`v2_research_readiness_v3` 除活动窗口已记录日期数和旧身份 `historical_rejected` 外，还必须按
+`v2_research_readiness_v4` 除活动窗口已记录日期数和旧身份 `historical_rejected` 外，还必须按
 `Asia/Shanghai` 带时区时钟和 14:50 观察截止显式报告已经过去且没有证据的固定计划日、窗口最大可达
 日期数、下一计划日、`complete` 和 `recoverable`。当天在 14:50 前、未来日期不得提前计为缺失；覆盖
 只接纳计划日 14:50 或更早的首个 committed observation，截止后迟到记录仍保留在档案列表但不能恢复
@@ -1677,11 +1677,18 @@ H0 manifest，冻结字段准入矩阵、唯一日线候选、确定性通过或
 哈希和生产隔离；不读取或生成 P2 历史结果，也不建立评估服务、工件仓储或运行目录。
 P1 身份与工件继续只读，P0/P1 标签、状态和日期不能进入 P2。
 
-该契约不注入 `bootstrap.py`，不新增 CLI，不修改 `research-status`、`pyproject.toml`、配置或组合根，
-不启动线程、网络、数据库、文件写入、DeepSeek、调度、冻结、API 或 Web。报告固定
-`production_authority=false`，且没有前向身份或日期；只有后续独立 P2-1 批次真实读取 H0、封存且通过
-历史报告后，P2-2 才能在任何前向输入可见前另行绑定官方日历和精确日期。策略字段、候选、模型、门禁和
-历史代理的唯一口径以荐股策略文档第 15.1.16 节为准。
+P2-1 通过显式 `research-tomorrow-p2-screen` 进入离线组合根，只读 H0 SQLite，计算已封存版本的日线
+特征、单次 ridge/单线程 LightGBM 训练和正式验证；训练段内部时间留出负责早停，正式验证段不参与拟合。
+终态报告与模型分别写入 `runtime_dir/score-tomorrow-p2/score_tomorrow_historical_p2_v1`，采用原子、
+幂等、防篡改封存。`research-status` 的 `v2_research_readiness_v4.tomorrow_p2` 只投影报告哈希、终态、
+固定候选、失败原因和能否另立前向预注册；读取不存在状态不得创建目录。
+
+该离线链不启动供应商网络、生产数据库、线程、DeepSeek、调度、冻结、HTTP、API 或 Web，也不写活动
+配置或正式推荐。报告固定 `production_authority=false`。2026-08-30 的真实执行复核 H0 覆盖
+4,904/5,006（97.9624%），形成 368 个训练日、139 个验证日和 678,370 条验证配对；候选虽有正的成本后
+增量和 bootstrap 下界，但严重亏损率、换手增量及 Q5-Q1 三项失败，已经不可变封存为
+`historical_rejected`。P2 因而停止，不能创建 P2-2 前向身份或日期。策略字段、候选、模型、门禁、实测
+指标和历史代理的唯一口径以荐股策略文档第 15.1.16 节为准。
 
 离线历史筛选使用独立 `score_h0_v1` 数据平面，不接入生产组合根、HTTP、调度、冻结或 DeepSeek。
 显式 `research-history-download` 命令读取一次全 A 股清单，并以最多 5 个有界 worker 从生产已有的腾讯

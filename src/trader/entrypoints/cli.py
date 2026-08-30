@@ -24,6 +24,7 @@ from trader.domain.research.specification import (
     ScoreResearchWindowCoverage,
     assess_score_research_coverage,
 )
+from trader.domain.research.tomorrow_historical_p2 import TOMORROW_HISTORICAL_P2_SPEC
 from trader.entrypoints.performance import run as run_performance
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
 from trader.infra.persistence.research_trace import SQLiteV2ResearchTraceStore
@@ -38,6 +39,10 @@ from trader.infra.research.score_r6_stability_artifacts import (
     ScoreR6StabilityArtifactStore,
 )
 from trader.infra.research.score_r7_artifacts import ScoreR7ArtifactConflictError, ScoreR7ArtifactStore
+from trader.infra.research.tomorrow_historical_p2_artifacts import (
+    TomorrowHistoricalP2ArtifactConflictError,
+    TomorrowHistoricalP2ArtifactStore,
+)
 from trader.infra.settings import RuntimeSettings, load_long_watchlist, load_runtime_settings, load_strategy_settings
 
 
@@ -71,6 +76,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "research-r6-stability-screen",
         help="Run and seal the preregistered daily ranking stability diagnostic.",
+    )
+    subparsers.add_parser(
+        "research-tomorrow-p2-screen",
+        help="Run and immutably seal the single frozen Tomorrow P2 historical candidate.",
     )
     dossier = subparsers.add_parser(
         "research-r7-dossier",
@@ -127,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
                 "promotion_authority": False,
             }
         score_r6_stability = _read_score_r6_stability_status(runtime)
+        tomorrow_p2 = _read_tomorrow_p2_status(runtime)
         promotion_ready = bool(score_r6["promotion_eligible"])
         try:
             score_r7 = ScoreR7ArtifactStore(runtime.runtime_dir / "score-r7").inspect()
@@ -135,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "schema_version": "v2_research_readiness_v3",
+                    "schema_version": "v2_research_readiness_v4",
                     "research_state": _research_state(coverage.historical),
                     "score_r6_executable": screening_ready,
                     "score_r6_screening_executable": screening_ready,
@@ -149,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
                     "score_r6": score_r6,
                     "score_r6_daily": score_r6_daily,
                     "score_r6_stability": score_r6_stability,
+                    "tomorrow_p2": tomorrow_p2,
                     "score_r7": score_r7,
                     "recorded_trade_dates": [value.isoformat() for value in dates],
                     "active_research": {
@@ -220,6 +231,7 @@ def main(argv: list[str] | None = None) -> int:
         "research-r6-screen",
         "research-r6-daily-screen",
         "research-r6-stability-screen",
+        "research-tomorrow-p2-screen",
         "research-r7-dossier",
     }:
         return _run_offline_report(
@@ -269,8 +281,12 @@ def _run_offline_report(
         return _run_r7_dossier(runtime, research_identity)
     if command == "research-r6-daily-screen":
         return _run_r6_daily_screen(config_path, runtime)
-    if command == "research-r6-stability-screen":
-        return _run_r6_stability_screen(config_path, runtime)
+    if command in {"research-r6-stability-screen", "research-tomorrow-p2-screen"}:
+        return (
+            _run_r6_stability_screen(config_path, runtime)
+            if command == "research-r6-stability-screen"
+            else _run_tomorrow_p2_screen(config_path, runtime)
+        )
     return _run_r6_screen(config_path, runtime)
 
 
@@ -346,6 +362,33 @@ def _run_r6_screen(config_path: Path, runtime: RuntimeSettings) -> int:
     return 0 if r6_report.historical_gate_passed else 1
 
 
+def _run_tomorrow_p2_screen(config_path: Path, runtime: RuntimeSettings) -> int:
+    store = TomorrowHistoricalP2ArtifactStore(runtime.runtime_dir / "score-tomorrow-p2")
+    try:
+        existing = store.read_report_payload()
+    except TomorrowHistoricalP2ArtifactConflictError:
+        print(
+            json.dumps(
+                {
+                    "status": "artifact_invalid",
+                    "failure_reasons": ["tomorrow_p2_artifact_invalid"],
+                    "production_authority": False,
+                },
+                sort_keys=True,
+            )
+        )
+        return 1
+    if existing is not None:
+        print(json.dumps(existing, ensure_ascii=False, sort_keys=True))
+        return 0 if existing.get("status") == "historical_passed" else 1
+    print("Tomorrow P2: reading immutable H0 rows and fitting the only candidate", file=sys.stderr, flush=True)
+    services = build_historical_research_services(config_path)
+    execution = services.tomorrow_historical_p2.execute(TOMORROW_HISTORICAL_P2_SPEC)
+    store.seal(execution.report, execution.model_artifact)
+    print(json.dumps(asdict(execution.report), default=_json_default, ensure_ascii=False, sort_keys=True))
+    return 0 if execution.report.status == "historical_passed" else 1
+
+
 def _read_score_r6_stability_status(runtime: RuntimeSettings) -> dict[str, object]:
     try:
         return ScoreR6StabilityArtifactStore(runtime.runtime_dir / "score-r6-stability").inspect()
@@ -358,6 +401,20 @@ def _read_score_r6_stability_status(runtime: RuntimeSettings) -> dict[str, objec
             "failure_reasons": ["score_r6_stability_artifact_invalid"],
             "evidence_class": SCORE_R6_STABILITY_SPEC.evidence_class,
             "promotion_authority": False,
+        }
+
+
+def _read_tomorrow_p2_status(runtime: RuntimeSettings) -> dict[str, object]:
+    try:
+        return TomorrowHistoricalP2ArtifactStore(runtime.runtime_dir / "score-tomorrow-p2").inspect()
+    except TomorrowHistoricalP2ArtifactConflictError:
+        return {
+            "report_hash": "",
+            "status": "artifact_invalid",
+            "candidate_id": TOMORROW_HISTORICAL_P2_SPEC.candidate.candidate_id,
+            "failure_reasons": ["tomorrow_p2_artifact_invalid"],
+            "forward_preregistration_eligible": False,
+            "production_authority": False,
         }
 
 

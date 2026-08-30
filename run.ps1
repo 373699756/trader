@@ -22,6 +22,7 @@ function Show-Usage {
   .\run.ps1 research-r6-screen                运行并封存 R6 历史筛选
   .\run.ps1 research-r6-daily-screen          运行并封存 R6 日线趋势筛选
   .\run.ps1 research-r6-stability-screen      运行并封存 R6 稳定性诊断
+  .\run.ps1 research-tomorrow-p2-screen       运行并封存 Tomorrow P2 历史筛选
   .\run.ps1 research-r7-dossier --research-identity <ID>
                                                 生成待人工审查的 R7 档案
 
@@ -47,6 +48,7 @@ $CliModes = @(
     "research-r6-screen",
     "research-r6-daily-screen",
     "research-r6-stability-screen",
+    "research-tomorrow-p2-screen",
     "research-r7-dossier"
 )
 

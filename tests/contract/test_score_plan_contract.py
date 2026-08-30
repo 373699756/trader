@@ -368,7 +368,7 @@ def test_tomorrow_shadow_p1_preregistration_is_owned_by_the_authoritative_contra
     assert "不注入 `bootstrap.py`" in design
 
 
-def test_tomorrow_historical_p2_contract_is_frozen_without_production_or_forward_authority() -> None:
+def test_tomorrow_historical_p2_is_terminally_screened_without_production_or_forward_authority() -> None:
     strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
     design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
 
@@ -396,13 +396,19 @@ def test_tomorrow_historical_p2_contract_is_frozen_without_production_or_forward
     for expected in (
         "Tomorrow P2 历史契约",
         "只读绑定 `score_h0_v1`",
-        "不注入 `bootstrap.py`",
-        "不新增 CLI",
-        "不读取或生成 P2 历史结果",
+        "`research-tomorrow-p2-screen`",
+        "`v2_research_readiness_v4.tomorrow_p2`",
+        "678,370 条验证配对",
+        "`historical_rejected`",
+        "P2 因而停止",
         "P1 身份与工件继续只读",
     ):
         assert expected in design
 
     bootstrap = (ROOT / "src/trader/bootstrap.py").read_text(encoding="utf-8")
-    assert "TOMORROW_HISTORICAL_P2_SPEC" not in bootstrap
+    assert "TomorrowHistoricalP2ScreeningService" in bootstrap
     assert "TomorrowHistoricalP2Report" not in bootstrap
+    assert (
+        "from trader.infra.research.tomorrow_historical_p2_model import"
+        not in bootstrap.split("def build_historical_research_services", maxsplit=1)[0]
+    )

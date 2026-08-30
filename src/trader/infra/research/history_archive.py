@@ -23,6 +23,10 @@ from trader.application.research.historical_screening import (
 )
 from trader.application.research.score_r6_daily_models import ScoreR6DailyRow
 from trader.application.research.score_r6_models import ScoreR6Board, ScoreR6HistoricalRow
+from trader.application.research.tomorrow_historical_p2_screening import (
+    HistoricalP2Board,
+    TomorrowHistoricalP2Row,
+)
 from trader.domain.research.historical_screening import HistoricalPriceBar, HistoricalScreeningSpec
 
 
@@ -430,6 +434,22 @@ class SQLiteHistoricalArchive:
             for row in rows
         )
 
+    def tomorrow_historical_p2_rows(self, spec: HistoricalScreeningSpec) -> tuple[TomorrowHistoricalP2Row, ...]:
+        """Return decision-day qfq features and next-day labels bound to the H0 archive."""
+
+        if not self._database.is_file():
+            return ()
+        with self._read_connection() as connection:
+            rows = connection.execute(
+                _TOMORROW_HISTORICAL_P2_QUERY,
+                {
+                    "identity": spec.research_identity,
+                    "start": spec.training_start.isoformat(),
+                    "end": spec.validation_end.isoformat(),
+                },
+            ).fetchall()
+        return _tomorrow_historical_p2_rows(rows)
+
     def _initialize(self) -> None:
         with self._lock:
             self._root.mkdir(parents=True, exist_ok=True)
@@ -763,6 +783,170 @@ SELECT
 FROM ranked
 ORDER BY trade_date, code
 """
+
+_TOMORROW_HISTORICAL_P2_QUERY = """
+WITH lagged AS (
+    SELECT
+        bars.code,
+        bars.trade_date,
+        universe.board,
+        bars.close_price,
+        bars.high_price,
+        bars.low_price,
+        bars.amount,
+        bars.pct_change / 100.0 AS daily_return,
+        LAG(bars.close_price, 1) OVER code_dates AS close_1,
+        LAG(bars.close_price, 3) OVER code_dates AS close_3,
+        LAG(bars.close_price, 5) OVER code_dates AS close_5,
+        LAG(bars.close_price, 20) OVER code_dates AS close_20,
+        LAG(bars.close_price, 40) OVER code_dates AS close_40,
+        LAG(bars.close_price, 60) OVER code_dates AS close_60,
+        LEAD(bars.close_price, 1) OVER code_dates AS next_close,
+        LEAD(bars.low_price, 1) OVER code_dates AS next_low,
+        COUNT(*) OVER (PARTITION BY bars.code ORDER BY bars.trade_date ROWS BETWEEN 60 PRECEDING AND CURRENT ROW)
+            AS history_count
+    FROM bars
+    JOIN universe
+      ON universe.research_identity = bars.research_identity AND universe.code = bars.code
+    WHERE bars.research_identity = :identity
+    WINDOW code_dates AS (PARTITION BY bars.code ORDER BY bars.trade_date)
+), rolling AS (
+    SELECT
+        *,
+        AVG(daily_return) OVER recent_20 AS mean_return_20,
+        AVG(daily_return * daily_return) OVER recent_20 AS mean_square_return_20,
+        AVG(CASE WHEN daily_return < 0.0 THEN daily_return * daily_return ELSE 0.0 END)
+            OVER recent_20 AS downside_semivariance_20,
+        AVG(amount) OVER recent_20 AS average_amount_20,
+        AVG(ABS(daily_return) / MAX(amount / 1000000.0, 0.000000001)) OVER recent_20 AS amihud_20,
+        MAX(high_price) OVER recent_60 AS maximum_high_60,
+        AVG(MAX(high_price - low_price, ABS(high_price - close_1), ABS(low_price - close_1)))
+            OVER recent_20 AS atr_20
+    FROM lagged
+    WINDOW
+        recent_20 AS (PARTITION BY code ORDER BY trade_date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW),
+        recent_60 AS (PARTITION BY code ORDER BY trade_date ROWS BETWEEN 59 PRECEDING AND CURRENT ROW)
+), metrics AS (
+    SELECT
+        trade_date,
+        code,
+        board,
+        close_price / close_1 - 1.0 AS return_1,
+        close_price / close_3 - 1.0 AS return_3,
+        close_price / close_5 - 1.0 AS return_5,
+        close_5 / close_20 - 1.0 AS momentum_20_skip5,
+        close_5 / close_40 - 1.0 AS momentum_40_skip5,
+        close_5 / close_60 - 1.0 AS momentum_60_skip5,
+        MAX(0.0, mean_square_return_20 - mean_return_20 * mean_return_20) AS variance_20,
+        downside_semivariance_20,
+        close_price / maximum_high_60 AS drawdown_recovery_60,
+        amihud_20,
+        average_amount_20,
+        close_price / close_20 - 1.0 AS baseline_momentum_20,
+        next_close / close_price - 1.0 AS next_return,
+        (next_low - close_price) / atr_20 AS mae_atr20
+    FROM rolling
+    WHERE history_count >= 61
+      AND close_1 > 0.0 AND close_3 > 0.0 AND close_5 > 0.0
+      AND close_20 > 0.0 AND close_40 > 0.0 AND close_60 > 0.0
+      AND next_close > 0.0 AND next_low > 0.0 AND maximum_high_60 > 0.0 AND atr_20 > 0.0
+      AND average_amount_20 > 0.0
+      AND board IN ('main', 'chinext', 'star')
+      AND trade_date BETWEEN :start AND :end
+), ranked AS (
+    SELECT
+        *,
+        AVG(next_return) OVER (PARTITION BY trade_date) AS market_next_return,
+        PERCENT_RANK() OVER (PARTITION BY trade_date ORDER BY baseline_momentum_20) AS momentum_rank,
+        1.0 - PERCENT_RANK() OVER (PARTITION BY trade_date ORDER BY variance_20) AS stability_rank,
+        PERCENT_RANK() OVER (PARTITION BY trade_date ORDER BY average_amount_20) AS liquidity_rank
+    FROM metrics
+)
+SELECT
+    trade_date,
+    code,
+    board,
+    return_1,
+    return_3,
+    return_5,
+    momentum_20_skip5,
+    momentum_40_skip5,
+    momentum_60_skip5,
+    variance_20,
+    downside_semivariance_20,
+    drawdown_recovery_60,
+    amihud_20,
+    average_amount_20,
+    100.0 * (0.50 * momentum_rank + 0.30 * stability_rank + 0.20 * liquidity_rank) AS baseline_score,
+    next_return - market_next_return AS gross_excess_return,
+    mae_atr20
+FROM ranked
+ORDER BY trade_date, code
+"""
+
+
+def _tomorrow_historical_p2_rows(rows: Sequence[tuple[object, ...]]) -> tuple[TomorrowHistoricalP2Row, ...]:
+    grouped: dict[date, list[tuple[object, ...]]] = {}
+    for row in rows:
+        grouped.setdefault(date.fromisoformat(str(row[0])), []).append(row)
+    result: list[TomorrowHistoricalP2Row] = []
+    for trade_date in sorted(grouped):
+        daily = grouped[trade_date]
+        residuals = tuple(_residualize(daily, column) for column in (6, 7, 8))
+        for index, row in enumerate(daily):
+            result.append(
+                TomorrowHistoricalP2Row(
+                    trade_date=trade_date,
+                    code=str(row[1]),
+                    board=cast(HistoricalP2Board, str(row[2])),
+                    alpha_features=(
+                        _number(row[3]),
+                        _number(row[4]),
+                        _number(row[5]),
+                        residuals[0][index],
+                        residuals[1][index],
+                        residuals[2][index],
+                    ),
+                    realized_volatility_20d=math.sqrt(_number(row[9])),
+                    downside_semivariance_20d=_number(row[10]),
+                    drawdown_recovery_60d=_number(row[11]),
+                    amihud_20d=_number(row[12]),
+                    average_amount_20d=_number(row[13]),
+                    baseline_score=_number(row[14]),
+                    gross_excess_return=_number(row[15]),
+                    mae_atr20=_number(row[16]),
+                )
+            )
+    return tuple(result)
+
+
+def _residualize(rows: Sequence[tuple[object, ...]], momentum_column: int) -> tuple[float, ...]:
+    market_mean = math.fsum(_number(row[momentum_column]) for row in rows) / len(rows)
+    boards: dict[str, list[int]] = {}
+    for index, row in enumerate(rows):
+        boards.setdefault(str(row[2]), []).append(index)
+    centered = [0.0] * len(rows)
+    amount_centered = [0.0] * len(rows)
+    for indices in boards.values():
+        board_mean = math.fsum(_number(rows[index][momentum_column]) - market_mean for index in indices) / len(indices)
+        amounts = tuple(math.log(_number(rows[index][13])) for index in indices)
+        amount_mean = math.fsum(amounts) / len(amounts)
+        for index, amount in zip(indices, amounts, strict=True):
+            centered[index] = _number(rows[index][momentum_column]) - market_mean - board_mean
+            amount_centered[index] = amount - amount_mean
+    denominator = math.fsum(value * value for value in amount_centered)
+    slope = (
+        math.fsum(value * amount for value, amount in zip(centered, amount_centered, strict=True)) / denominator
+        if denominator > 0.0
+        else 0.0
+    )
+    return tuple(value - slope * amount for value, amount in zip(centered, amount_centered, strict=True))
+
+
+def _number(value: object) -> float:
+    if not isinstance(value, (int, float)):
+        raise TypeError("historical archive numeric column is invalid")
+    return float(value)
 
 
 __all__ = [

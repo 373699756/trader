@@ -47,6 +47,7 @@ def test_cli_exposes_current_v2_maintenance_and_explicit_offline_research_comman
         "research-r6-screen",
         "research-r6-daily-screen",
         "research-r6-stability-screen",
+        "research-tomorrow-p2-screen",
         "research-r7-dossier",
     ):
         assert retained in help_text
@@ -77,6 +78,7 @@ def test_run_script_exposes_explicit_offline_history_research_without_mapping_it
     assert "research-r6-screen" in shell
     assert "research-r6-daily-screen" in shell
     assert "research-r6-stability-screen" in shell
+    assert "research-tomorrow-p2-screen" in shell
     assert "research-r7-dossier" in shell
     assert "serve|app" in shell
 
@@ -229,10 +231,18 @@ def test_research_status_does_not_create_runtime_files(tmp_path: Path, capsys, m
         "selected_candidate_hash": "",
         "status": "not_run",
     }
+    assert payload["tomorrow_p2"] == {
+        "candidate_id": "daily_reconstructible_ensemble_v1",
+        "failure_reasons": [],
+        "forward_preregistration_eligible": False,
+        "production_authority": False,
+        "report_hash": "",
+        "status": "not_run",
+    }
     assert payload["blockers"] == ["score_h0_archive_coverage_incomplete"]
     assert payload["promotion_blockers"] == ["score_r6_preregistered_forward_evidence_missing"]
     assert payload["score_r7"] == {"dossier_count": 0, "dossiers": []}
-    assert payload["schema_version"] == "v2_research_readiness_v3"
+    assert payload["schema_version"] == "v2_research_readiness_v4"
     assert payload["research_state"] == "historical_collecting"
     assert payload["active_research"]["research_identity"] == "score_p0_v2"
     assert payload["active_research"]["historical_window"] == {
@@ -290,7 +300,7 @@ def test_research_status_reports_irrecoverable_missed_fixed_dates(tmp_path: Path
     assert main(["--config", str(config), "research-status"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["schema_version"] == "v2_research_readiness_v3"
+    assert payload["schema_version"] == "v2_research_readiness_v4"
     assert payload["research_state"] == "historical_collection_failed"
     assert payload["active_research"]["evaluation_blocker"] == "score_p0_v2_historical_planned_dates_missed"
     assert payload["active_research"]["historical_window"] == {
