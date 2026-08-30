@@ -147,7 +147,7 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     response.close()
     status = client.get("/api/v2/status").get_json()
 
-    assert status["schema_version"] == "v2_status_v3"
+    assert status["schema_version"] == "v2_status_v4"
     assert status["release"] == {
         "decision_view_schema": "v2_decision_view_v2",
         "web_asset_revision": WEB_ASSET_REVISION,

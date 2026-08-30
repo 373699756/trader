@@ -49,8 +49,10 @@
     return !tradeDate || payload.trade_date === tradeDate;
   }
 
-  function emptyRecommendationMessage(payload, observationCount) {
+  function emptyRecommendationMessage(payload, observationCount, inputQuality) {
     const observations = Number(observationCount);
+    const scoredSummary = scoredEmptySummary(payload, inputQuality);
+    if (scoredSummary) return scoredSummary;
     if (Number.isInteger(observations) && observations > 0) {
       return `本轮无正式推荐；${observations}只进入观察池，具体原因见下表`;
     }
@@ -81,19 +83,41 @@
     return "当前没有达到正式推荐条件的股票";
   }
 
+  function scoredEmptySummary(payload, inputQuality) {
+    const diagnostics = payload && payload.selection_diagnostics || {};
+    const funnel = inputQuality && inputQuality.supply_funnel || {};
+    const maximum = finiteNumber(diagnostics.maximum_final_score);
+    const threshold = finiteNumber(diagnostics.executable_threshold);
+    const observationCount = nonNegativeInteger(funnel.observation_threshold_met_count);
+    const executableCount = nonNegativeInteger(funnel.executable_threshold_met_count);
+    if (maximum == null || threshold == null || observationCount == null || executableCount == null) return "";
+    const gap = threshold - maximum;
+    const position = gap > 0.005
+      ? `距离正式线 ${gap.toFixed(2)}`
+      : `已达到正式线 ${threshold.toFixed(2)}`;
+    const reasons = reasonCountSummary(inputQuality && inputQuality.supply_reason_counts, 3);
+    return `评分已完成｜最高分 ${maximum.toFixed(2)}，${position}；达到观察线 ${observationCount}只、正式线 ${executableCount}只${reasons ? `；主要原因：${reasons}` : ""}`;
+  }
+
   function frozenEmptyMessage(payload) {
     return payload && payload.phase === "close_fallback"
       ? "收盘补算未产生正式推荐；观察池已关闭且未保存"
       : "正式冻结结果为空；观察池已关闭且未保存";
   }
 
-  function reasonCountSummary(values) {
+  function reasonCountSummary(values, limit) {
     if (!values || typeof values !== "object") return "";
     return Object.entries(values)
       .filter(([reason, count]) => reason && Number.isInteger(count) && count > 0)
       .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-      .map(([reason, count]) => `${window.TraderRender.actionReason(reason)}（${count}只）`)
+      .slice(0, Number.isInteger(limit) && limit > 0 ? limit : 3)
+      .map(([reason, count]) => `${reasonLabel(reason)}（${count}只）`)
       .join("、");
+  }
+
+  function reasonLabel(reason) {
+    const action = window.TraderRender.actionReason(reason);
+    return action !== "推荐条件暂未满足" ? action : window.TraderRender.reasonLabel(reason);
   }
 
   function selectionLimitSummary(values) {
@@ -107,35 +131,50 @@
     return Object.entries(values)
       .filter(([reason, count]) => reason && Number.isInteger(count) && count > 0)
       .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+      .slice(0, 3)
       .map(([reason, count]) => `${labels[reason] || "其他选择限制"}（${count}只）`)
       .join("、");
   }
 
-  function notReadyMessage(payload) {
+  function notReadyMessage(payload, inputQuality) {
     const strategy = payload && payload.strategy;
     const reason = payload && payload.readiness_reason;
     if (strategy === "long" || reason === "long_snapshot_not_ready") {
       return {
         message: "长期策略当前尚无可用数据",
         notice: "长期策略只展示当前研究快照",
+        level: "idle",
       };
     }
     if (reason === "today_freeze_missed") {
       return {
-        message: "11:20 前未形成正式快照",
-        notice: "按冻结规则今日不补算，当前无推荐",
+        message: "今日未形成正式结果｜11:20 截止已过，按规则不补算",
+        notice: "今日未形成正式结果｜11:20 截止已过，按规则不补算",
+        level: "warn",
       };
     }
+    const blocker = inputQuality && inputQuality.primary_blocker;
+    const funnel = inputQuality && inputQuality.supply_funnel || {};
+    const requested = nonNegativeInteger(funnel.requested_candidates);
+    if (["candidate_quotes_pending", "scoring_pending"].includes(blocker) && requested != null) {
+      const covered = nonNegativeInteger(funnel.candidate_features) || 0;
+      const message = `采集中｜候选行情 ${covered} / ${requested}，评分尚未完成`;
+      return { message, notice: message, level: "idle" };
+    }
+    const blocked = coverageBlockerMessage(blocker, funnel, requested);
+    if (blocked) return { message: blocked, notice: blocked, level: "warn" };
     if (reason === "afternoon_freeze_pending") {
       return {
         message: "14:50 正式快照尚未形成",
         notice: "冻结流程尚未完成；不会展示上一交易日结果",
+        level: "warn",
       };
     }
     if (reason === "afternoon_close_recovery_pending") {
       return {
         message: "14:50 正式快照缺失",
         notice: "正在等待允许的收盘恢复；不会展示上一交易日结果",
+        level: "warn",
       };
     }
     if (reason === "snapshot_not_published") {
@@ -143,18 +182,41 @@
       return {
         message: `${label}策略当前快照尚未发布`,
         notice: "当前策略快照尚未形成，等待本地评分发布",
+        level: "idle",
       };
     }
     return {
       message: "当前暂无可用荐股数据",
       notice: "快照未提供未就绪原因，请检查运行状态",
+      level: "idle",
     };
   }
 
-  function snapshotNotice(payload) {
+  function coverageBlockerMessage(blocker, funnel, requested) {
+    if (requested == null || requested <= 0) return "";
+    if (blocker === "candidate_feature_coverage_incomplete") {
+      return blockedCoverage("候选行情", funnel.candidate_features, requested, requested);
+    }
+    if (blocker === "security_master_coverage_incomplete") {
+      return blockedCoverage("基础资料", funnel.security_master, requested, requested);
+    }
+    if (blocker === "history_coverage_incomplete") {
+      return blockedCoverage("历史有效", funnel.history, requested, Math.ceil(requested * 0.99));
+    }
+    return "";
+  }
+
+  function blockedCoverage(label, rawCovered, total, required) {
+    const covered = nonNegativeInteger(rawCovered);
+    if (covered == null) return "";
+    const qualifier = required === total ? "要求" : "要求至少";
+    return `暂不可发布｜${label} ${covered} / ${total}，${qualifier} ${required} / ${total}`;
+  }
+
+  function snapshotNotice(payload, inputQuality) {
     if (!payload || payload.status === "not_ready") {
-      const notReady = notReadyMessage(payload || {});
-      return { message: notReady.notice, level: "idle" };
+      const notReady = notReadyMessage(payload || {}, inputQuality);
+      return { message: notReady.notice, level: notReady.level };
     }
     const reasons = Array.isArray(payload.degraded_reasons) ? payload.degraded_reasons : [];
     const degraded = reasons.length ? reasonLabels(reasons, payload.frozen === true) : "";
@@ -253,6 +315,17 @@
 
   function actionOrder(action) {
     return ({ executable: 0, observe: 1, unavailable: 2 })[String(action || "")] ?? 0;
+  }
+
+  function finiteNumber(value) {
+    if (value == null || value === "" || typeof value === "boolean") return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function nonNegativeInteger(value) {
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
   }
 
   function patchItemsValid(upserts, removedCodes, removals) {

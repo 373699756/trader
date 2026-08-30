@@ -103,10 +103,10 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.statusPayloadCompatibility({
-    schema_version: "v2_status_v3",
+    schema_version: "v2_status_v4",
     release: {
       decision_view_schema: "v2_decision_view_v2",
-      web_asset_revision: "release-contract-2026-08-28-v4",
+      web_asset_revision: "release-contract-2026-08-30-v5",
     },
   }))),
   { compatible: true, reason: "" },
@@ -523,35 +523,100 @@ assert.deepStrictEqual(
     strategy: "tomorrow",
     readiness_reason: "snapshot_not_published",
   }))),
-  { message: "明日策略当前快照尚未发布", notice: "当前策略快照尚未形成，等待本地评分发布" },
+  {
+    message: "明日策略当前快照尚未发布",
+    notice: "当前策略快照尚未形成，等待本地评分发布",
+    level: "idle",
+  },
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.notReadyMessage({
     strategy: "d25",
     readiness_reason: "afternoon_freeze_pending",
   }))),
-  { message: "14:50 正式快照尚未形成", notice: "冻结流程尚未完成；不会展示上一交易日结果" },
+  {
+    message: "14:50 正式快照尚未形成",
+    notice: "冻结流程尚未完成；不会展示上一交易日结果",
+    level: "warn",
+  },
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.notReadyMessage({
     strategy: "d25",
     readiness_reason: "afternoon_close_recovery_pending",
   }))),
-  { message: "14:50 正式快照缺失", notice: "正在等待允许的收盘恢复；不会展示上一交易日结果" },
+  {
+    message: "14:50 正式快照缺失",
+    notice: "正在等待允许的收盘恢复；不会展示上一交易日结果",
+    level: "warn",
+  },
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.notReadyMessage({
     strategy: "long",
     readiness_reason: "long_snapshot_not_ready",
   }))),
-  { message: "长期策略当前尚无可用数据", notice: "长期策略只展示当前研究快照" },
+  {
+    message: "长期策略当前尚无可用数据",
+    notice: "长期策略只展示当前研究快照",
+    level: "idle",
+  },
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.notReadyMessage({
     strategy: "today",
     readiness_reason: "today_freeze_missed",
   }))),
-  { message: "11:20 前未形成正式快照", notice: "按冻结规则今日不补算，当前无推荐" },
+  {
+    message: "今日未形成正式结果｜11:20 截止已过，按规则不补算",
+    notice: "今日未形成正式结果｜11:20 截止已过，按规则不补算",
+    level: "warn",
+  },
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.notReadyMessage(
+    { strategy: "tomorrow", readiness_reason: "snapshot_not_published" },
+    {
+      primary_blocker: "candidate_quotes_pending",
+      supply_funnel: { requested_candidates: 360, candidate_features: 128 },
+    },
+  ))),
+  {
+    message: "采集中｜候选行情 128 / 360，评分尚未完成",
+    notice: "采集中｜候选行情 128 / 360，评分尚未完成",
+    level: "idle",
+  },
+);
+const securityMasterBlocked = state.notReadyMessage(
+  { strategy: "tomorrow", readiness_reason: "snapshot_not_published" },
+  {
+    primary_blocker: "security_master_coverage_incomplete",
+    supply_funnel: { requested_candidates: 360, candidate_features: 360, security_master: 120 },
+    candidate_optional_reason_counts: { missing_listing_date: 240 },
+  },
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(securityMasterBlocked)),
+  {
+    message: "暂不可发布｜基础资料 120 / 360，要求 360 / 360",
+    notice: "暂不可发布｜基础资料 120 / 360，要求 360 / 360",
+    level: "warn",
+  },
+);
+assert.ok(!securityMasterBlocked.message.includes("上市日期"));
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.notReadyMessage(
+    { strategy: "d25", readiness_reason: "snapshot_not_published" },
+    {
+      primary_blocker: "history_coverage_incomplete",
+      supply_funnel: { requested_candidates: 360, history: 350 },
+    },
+  ))),
+  {
+    message: "暂不可发布｜历史有效 350 / 360，要求至少 357 / 360",
+    notice: "暂不可发布｜历史有效 350 / 360，要求至少 357 / 360",
+    level: "warn",
+  },
 );
 assert.strictEqual(
   state.emptyRecommendationMessage({
@@ -563,6 +628,32 @@ assert.strictEqual(
     },
   }),
   "最高评分 64.50，低于观察门槛 65.00（正式门槛 70.00），本轮无正式推荐和观察项",
+);
+assert.strictEqual(
+  state.emptyRecommendationMessage(
+    {
+      selection_diagnostics: {
+        empty_reason: "risk_or_execution_blocked",
+        maximum_final_score: 76.4,
+        observation_floor: 73,
+        executable_threshold: 78,
+      },
+    },
+    2,
+    {
+      supply_funnel: {
+        observation_threshold_met_count: 15,
+        executable_threshold_met_count: 0,
+      },
+      supply_reason_counts: {
+        below_score_threshold: 12,
+        risk_veto: 5,
+        corporate_risk_history_unavailable: 3,
+        stale_quote: 1,
+      },
+    },
+  ),
+  "评分已完成｜最高分 76.40，距离正式线 1.60；达到观察线 15只、正式线 0只；主要原因：评分未达到执行门槛（12只）、风险事实触发限制（5只）、公司风险历史暂不可核验（3只）",
 );
 assert.strictEqual(
   state.emptyRecommendationMessage({

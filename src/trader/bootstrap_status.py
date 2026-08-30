@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict
 
 from trader.application.cadence import CadencePlannerStatus
-from trader.application.ports.runtime_status import V2InputQualityStatus
+from trader.application.ports.runtime_status import V2InputQualityStatus, V2SupplyFunnel
 from trader.application.v2_runtime import V2SchedulerRuntime
 from trader.application.v2_runtime_issues import V2RuntimeIssue
 from trader.infra.deepseek.reviewer import DeepSeekReviewer
@@ -153,7 +153,7 @@ def input_quality_payload(statuses: tuple[V2InputQualityStatus, ...]) -> dict[st
             "candidate_transient_reason_counts": dict(status.candidate_transient_reason_counts),
             "candidate_optional_reason_counts": dict(status.candidate_optional_reason_counts),
             "degraded_reasons": list(status.degraded_reasons),
-            "supply_funnel": asdict(status.supply_funnel),
+            "supply_funnel": _supply_funnel_payload(status.supply_funnel),
             "summary": {
                 "trade_date": summary.trade_date.isoformat(),
                 "quote_total_count": summary.quote_total_count,
@@ -172,6 +172,27 @@ def input_quality_payload(statuses: tuple[V2InputQualityStatus, ...]) -> dict[st
             "primary_blocker": status.primary_blocker,
         }
     return result
+
+
+def _supply_funnel_payload(funnel: V2SupplyFunnel) -> dict[str, int]:
+    return {
+        "requested_candidates": funnel.requested_candidates,
+        "candidate_features": funnel.candidate_features,
+        "security_master": funnel.security_master,
+        "history": funnel.history,
+        "filter_pass": funnel.filter_pass,
+        "filter_observe": funnel.filter_observe,
+        "filter_reject": funnel.filter_reject,
+        "full_scored": funnel.full_scored,
+        "review_eligible": funnel.review_eligible,
+        "observation_threshold_met_count": funnel.observation_threshold_met_count,
+        "executable_threshold_met_count": funnel.executable_threshold_met_count,
+        "action_executable": funnel.action_executable,
+        "action_observe": funnel.action_observe,
+        "action_unavailable": funnel.action_unavailable,
+        "selected_executable": funnel.selected_executable,
+        "selected_observe": funnel.selected_observe,
+    }
 
 
 def _runtime_issue_payload(issue: V2RuntimeIssue) -> dict[str, object]:

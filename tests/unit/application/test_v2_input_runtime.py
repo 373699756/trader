@@ -858,6 +858,15 @@ def test_research_intent_prioritizes_published_output_before_bounded_candidates(
     decision = adapter.build_local(request)
 
     assert decision is not None
+    diagnostics = decision.selection_diagnostics
+    assert diagnostics is not None
+    status = next(item for item in adapter.input_quality_status() if item.strategy is Strategy.TOMORROW)
+    assert status.supply_funnel.observation_threshold_met_count == sum(
+        item.final_score >= diagnostics.observation_floor for item in decision.items
+    )
+    assert status.supply_funnel.executable_threshold_met_count == sum(
+        item.final_score >= diagnostics.executable_threshold for item in decision.items
+    )
     intent = adapter.research_intent(decision)
     assert intent.priority_codes == tuple(item.code for item in decision.items)
     assert intent.candidate_codes == market.requested_codes

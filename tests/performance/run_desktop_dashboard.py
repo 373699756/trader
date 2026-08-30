@@ -8,16 +8,19 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, TypedDict
 from zoneinfo import ZoneInfo
 
+import websocket
 from werkzeug.serving import make_server
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -34,6 +37,7 @@ from trader.domain.recommendation.decision_identity import (  # noqa: E402
     LongProjection,
     LongProjectionItem,
     ScoredDecision,
+    SelectionDiagnostics,
 )
 from trader.domain.recommendation.models import RecommendationAction, Strategy  # noqa: E402
 from trader.web import create_app  # noqa: E402
@@ -93,42 +97,52 @@ def main() -> int:
 
 def _run(output_dir: Path) -> dict[str, object]:
     driver_binary = shutil.which("geckodriver")
-    if driver_binary is None or shutil.which("firefox") is None:
-        raise RuntimeError("Firefox and geckodriver are required for the desktop gate")
     app_port = _free_port()
-    driver_port = _free_port()
     services, publish_empty_draft = _browser_services()
     server = make_server("127.0.0.1", app_port, create_app(services=services), threaded=True)
+    driver_port = _free_port()
     server_thread = threading.Thread(target=server.serve_forever, name="v2-browser-fixture", daemon=True)
     server_thread.start()
-    driver = subprocess.Popen(
-        [driver_binary, "--host", "127.0.0.1", "--port", str(driver_port)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    driver: subprocess.Popen[str] | None = None
+    chrome: _ChromeSession | None = None
     session_id: str | None = None
     try:
-        _wait_driver(driver_port, driver)
-        created = _request_json(
-            f"http://127.0.0.1:{driver_port}/session",
-            method="POST",
-            payload={
-                "capabilities": {
-                    "alwaysMatch": {
-                        "browserName": "firefox",
-                        "moz:firefoxOptions": {"args": ["-headless"]},
+        if driver_binary is not None and shutil.which("firefox") is not None:
+            driver = subprocess.Popen(
+                [driver_binary, "--host", "127.0.0.1", "--port", str(driver_port)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            _wait_driver(driver_port, driver)
+            created = _request_json(
+                f"http://127.0.0.1:{driver_port}/session",
+                method="POST",
+                payload={
+                    "capabilities": {
+                        "alwaysMatch": {
+                            "browserName": "firefox",
+                            "moz:firefoxOptions": {"args": ["-headless"]},
+                        }
                     }
-                }
-            },
-        )
-        session_id = str(created["value"]["sessionId"])
-        base = f"http://127.0.0.1:{driver_port}/session/{session_id}"
-        _request_json(f"{base}/url", method="POST", payload={"url": f"http://127.0.0.1:{app_port}/"})
-        _wait(lambda: bool(_execute(base, "return Boolean(window.TraderDashboardDiagnostics);")))
+                },
+            )
+            session_id = str(created["value"]["sessionId"])
+            base: str | _ChromeSession = f"http://127.0.0.1:{driver_port}/session/{session_id}"
+            browser_name = "firefox-headless"
+        else:
+            chrome_binary = shutil.which("google-chrome") or shutil.which("chromium")
+            if chrome_binary is None:
+                raise RuntimeError("Firefox/geckodriver or Google Chrome is required for the desktop gate")
+            chrome = _ChromeSession(chrome_binary, driver_port)
+            base = chrome
+            browser_name = "chrome-headless"
+        _navigate(base, f"http://127.0.0.1:{app_port}/")
+        _wait(lambda: bool(_execute(base, "return Boolean(window.TraderDashboardDiagnostics);")), "dashboard readiness")
         _execute(base, 'document.querySelector(".strategy-tab[data-strategy=tomorrow]").click(); return true;')
         _wait(
-            lambda: _execute(base, 'return document.querySelector("#funnelStatus").textContent;') == "360 → 采集中 → 0"
+            lambda: _execute(base, 'return document.querySelector("#funnelStatus").textContent;') == "360 → 采集中 → 0",
+            "collecting funnel",
         )
         not_ready_summary = _execute(
             base,
@@ -142,6 +156,7 @@ def _run(output_dir: Path) -> dict[str, object]:
               funnelMeta: document.querySelector('#funnelMeta').textContent,
               budgetMeta: document.querySelector('#budgetMeta').textContent,
               freeze: document.querySelector('#headerFreeze').textContent,
+              notice: document.querySelector('#noticeText').textContent,
             };
             """,
         )
@@ -149,9 +164,13 @@ def _run(output_dir: Path) -> dict[str, object]:
             lambda: (
                 _integer(_execute(base, 'return document.querySelectorAll("#observationBody tr[data-code]").length;'))
                 == 2
-            )
+            ),
+            "tomorrow observation draft",
         )
-        _wait(lambda: _execute(base, 'return document.querySelector("#funnelStatus").textContent;') == "360 → 56 → 0")
+        _wait(
+            lambda: _execute(base, 'return document.querySelector("#funnelStatus").textContent;') == "360 → 56 → 0",
+            "quality funnel",
+        )
         quality_summary = _execute(
             base,
             """
@@ -161,6 +180,7 @@ def _run(output_dir: Path) -> dict[str, object]:
               funnel: document.querySelector('#funnelStatus').textContent,
               funnelMeta: document.querySelector('#funnelMeta').textContent,
               source: document.querySelector('#quoteSource').textContent,
+              notice: document.querySelector('#noticeText').textContent,
             };
             """,
         )
@@ -175,7 +195,8 @@ def _run(output_dir: Path) -> dict[str, object]:
                         _execute(base, 'return document.querySelectorAll("#observationBody tr[data-code]").length;')
                     )
                     > 0
-                )
+                ),
+                f"{strategy} observation rows",
             )
             ranking = _execute(
                 base,
@@ -235,16 +256,10 @@ def _run(output_dir: Path) -> dict[str, object]:
         publish_empty_draft()
         _execute(base, 'document.querySelector(".strategy-tab[data-strategy=tomorrow]").click(); return true;')
         _wait(
-            lambda: (
-                _execute(base, 'return document.querySelector("#observationBody").textContent.trim();')
-                == "本轮无股票达到观察条件"
-            )
-        )
-        _wait(
-            lambda: (
-                _execute(base, 'return document.querySelector("#funnelMeta").textContent;')
-                == "过滤 216 · 观察草稿 0 · 最高 74.25"
-            )
+            lambda: str(_execute(base, 'return document.querySelector("#tableBody").textContent.trim();')).startswith(
+                "评分已完成｜最高分 74.25"
+            ),
+            "scored-empty recommendation explanation",
         )
         empty_observation = {
             "visible": not bool(_execute(base, 'return document.querySelector("#observationPool").hidden;')),
@@ -253,10 +268,16 @@ def _run(output_dir: Path) -> dict[str, object]:
             ),
             "message": str(_execute(base, 'return document.querySelector("#observationBody").textContent.trim();')),
             "summary": str(_execute(base, 'return document.querySelector("#funnelMeta").textContent;')),
+            "recommendation_message": str(
+                _execute(base, 'return document.querySelector("#tableBody").textContent.trim();')
+            ),
         }
         _execute(base, 'document.querySelector(".strategy-tab[data-strategy=long]").click(); return true;')
         _wait(
-            lambda: _integer(_execute(base, 'return document.querySelectorAll("#tableBody tr[data-code]").length;')) > 0
+            lambda: (
+                _integer(_execute(base, 'return document.querySelectorAll("#tableBody tr[data-code]").length;')) > 0
+            ),
+            "long table rows",
         )
         long_quote_fields = _execute(
             base,
@@ -270,7 +291,10 @@ def _run(output_dir: Path) -> dict[str, object]:
         _set_viewport(base, 1440, 900)
         _execute(base, 'document.querySelector("#errorDetailsButton").click(); return true;')
         _wait(
-            lambda: bool(_execute(base, 'return document.querySelector("#errorDrawer").classList.contains("is-open");'))
+            lambda: bool(
+                _execute(base, 'return document.querySelector("#errorDrawer").classList.contains("is-open");')
+            ),
+            "error drawer open",
         )
         _execute(base, 'document.querySelector("#errorDrawerContent button[data-copy-code]").click(); return true;')
         _wait(
@@ -280,7 +304,8 @@ def _run(output_dir: Path) -> dict[str, object]:
                     'return document.querySelector("#errorDrawerContent button[data-copy-code]").textContent;',
                 )
                 != "复制代码"
-            )
+            ),
+            "error detail copy",
         )
         error_details = {
             "visible": bool(
@@ -298,7 +323,7 @@ def _run(output_dir: Path) -> dict[str, object]:
                 )
             ),
         }
-        detail_screenshot = _request_json(f"{base}/screenshot")["value"]
+        detail_screenshot = _screenshot(base)
         (output_dir / "desktop-error-details-1440x900.png").write_bytes(base64.b64decode(str(detail_screenshot)))
         _execute(base, 'document.querySelector("#errorDrawerClose").click(); return true;')
         viewports = [_viewport(base, output_dir, width, height) for width, height in VIEWPORTS]
@@ -319,8 +344,17 @@ def _run(output_dir: Path) -> dict[str, object]:
             == {
                 "visible": True,
                 "rows": 0,
-                "message": "本轮无股票达到观察条件",
-                "summary": "过滤 216 · 观察草稿 0 · 最高 74.25",
+                "message": (
+                    "评分已完成｜最高分 74.25，距离正式线 3.75；达到观察线 2只、正式线 0只；"
+                    "主要原因：评分未达到执行门槛（54只）、风险事实触发限制（2只）、"
+                    "公司风险历史暂不可核验（1只）"
+                ),
+                "summary": "过滤 216 · 观察 0 · 最高 -",
+                "recommendation_message": (
+                    "评分已完成｜最高分 74.25，距离正式线 3.75；达到观察线 2只、正式线 0只；"
+                    "主要原因：评分未达到执行门槛（54只）、风险事实触发限制（2只）、"
+                    "公司风险历史暂不可核验（1只）"
+                ),
             }
             and error_details["visible"] is True
             and error_details["rows"] == 2
@@ -337,6 +371,7 @@ def _run(output_dir: Path) -> dict[str, object]:
             and not_ready_summary.get("funnelMeta") == "过滤 待计算 · 观察草稿 正在生成 · 最高 —"
             and "上限 168" in str(not_ready_summary.get("budgetMeta"))
             and not_ready_summary.get("freeze") == "采集中"
+            and not_ready_summary.get("notice") == "采集中｜候选行情 360 / 360，评分尚未完成"
             and quality_summary
             == {
                 "readiness": "基础资料 120 / 360",
@@ -344,13 +379,14 @@ def _run(output_dir: Path) -> dict[str, object]:
                 "funnel": "360 → 56 → 0",
                 "funnelMeta": "过滤 216 · 观察草稿 2 · 最高 74.25",
                 "source": "腾讯行情",
+                "notice": "暂不可发布｜基础资料 120 / 360，要求 360 / 360",
             }
             and all(_viewport_passed(viewport) for viewport in viewports)
         )
         return {
             "schema_version": REPORT_SCHEMA,
             "passed": passed,
-            "browser": "firefox-headless",
+            "browser": browser_name,
             "observations": observations,
             "empty_observation": empty_observation,
             "not_ready_summary": not_ready_summary,
@@ -370,12 +406,15 @@ def _run(output_dir: Path) -> dict[str, object]:
                 )
             except (OSError, RuntimeError, urllib.error.URLError):
                 pass
-        driver.terminate()
-        try:
-            driver.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            driver.kill()
-            driver.wait(timeout=5)
+        if driver is not None:
+            driver.terminate()
+            try:
+                driver.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                driver.kill()
+                driver.wait(timeout=5)
+        if chrome is not None:
+            chrome.close()
         server.shutdown()
         server.server_close()
         server_thread.join(timeout=5)
@@ -511,12 +550,37 @@ def _browser_services() -> tuple[UnifiedWebServices, Callable[[], None]]:
             "config:browser",
             "strategy:browser",
             "fusion:browser",
+            tuple(
+                replace(
+                    _observation_item(code, rank=rank, final_score=score),
+                    selected=False,
+                    rank=0,
+                    action=RecommendationAction.UNAVAILABLE,
+                    reason="risk_veto",
+                )
+                for rank, (code, score) in enumerate(
+                    zip(("600009", "600001"), (74.25, 72.0), strict=True),
+                    start=1,
+                )
+            ),
             (),
-            (),
+            population_count=218,
+            rejected_count=216,
+            selection_diagnostics=SelectionDiagnostics(
+                74.25,
+                78.0,
+                70.0,
+                6,
+                6,
+                0,
+                0,
+                0,
+                "risk_or_execution_blocked",
+            ),
         )
-        result = drafts.publish(empty)
+        result = index.publish(empty, expected_version=None)
         if not result.accepted:
-            raise RuntimeError(f"browser empty draft publication failed: {result.reason}")
+            raise RuntimeError(f"browser empty decision publication failed: {result.reason}")
         empty_draft_published = True
 
     return (
@@ -542,9 +606,18 @@ def _browser_input_quality(*, empty: bool = False) -> dict[str, object]:
             "history": 78,
             "full_scored": 56,
             "filter_reject": 216,
+            "observation_threshold_met_count": 2,
+            "executable_threshold_met_count": 0,
             "selected_executable": 0,
             "selected_observe": 0 if empty else 2,
         },
+        "supply_reason_counts": {
+            "below_score_threshold": 54,
+            "risk_veto": 2,
+            "corporate_risk_history_unavailable": 1,
+            "stale_quote": 1,
+        },
+        "primary_blocker": "security_master_coverage_incomplete",
         "summary": {
             "trade_date": _NOW.date().isoformat(),
             "quote_total_count": 360,
@@ -585,7 +658,7 @@ def _observation_item(code: str, *, rank: int, final_score: float) -> DecisionIt
     )
 
 
-def _viewport(base: str, output_dir: Path, width: int, height: int) -> dict[str, object]:
+def _viewport(base: str | _ChromeSession, output_dir: Path, width: int, height: int) -> dict[str, object]:
     _set_viewport(base, width, height)
     time.sleep(0.2)
     result = _execute(
@@ -622,7 +695,7 @@ def _viewport(base: str, output_dir: Path, width: int, height: int) -> dict[str,
         };
         """,
     )
-    screenshot = _request_json(f"{base}/screenshot")["value"]
+    screenshot = _screenshot(base)
     screenshot_name = f"desktop-{width}x{height}.png"
     (output_dir / screenshot_name).write_bytes(base64.b64decode(str(screenshot)))
     if not isinstance(result, dict):
@@ -630,7 +703,10 @@ def _viewport(base: str, output_dir: Path, width: int, height: int) -> dict[str,
     return {"requested": [width, height], "screenshot": screenshot_name, **result}
 
 
-def _set_viewport(base: str, width: int, height: int) -> None:
+def _set_viewport(base: str | _ChromeSession, width: int, height: int) -> None:
+    if isinstance(base, _ChromeSession):
+        base.set_viewport(width, height)
+        return
     _request_json(
         f"{base}/window/rect",
         method="POST",
@@ -678,9 +754,127 @@ def _viewport_passed(result: dict[str, object]) -> bool:
     )
 
 
-def _execute(base: str, script: str) -> object:
+def _navigate(base: str | _ChromeSession, url: str) -> None:
+    if isinstance(base, _ChromeSession):
+        base.navigate(url)
+        return
+    _request_json(f"{base}/url", method="POST", payload={"url": url})
+
+
+def _screenshot(base: str | _ChromeSession) -> object:
+    if isinstance(base, _ChromeSession):
+        return base.screenshot()
+    return _request_json(f"{base}/screenshot")["value"]
+
+
+def _execute(base: str | _ChromeSession, script: str) -> object:
+    if isinstance(base, _ChromeSession):
+        return base.execute(script)
     response = _request_json(f"{base}/execute/sync", method="POST", payload={"script": script, "args": []})
     return response.get("value")
+
+
+class _ChromeSession:
+    def __init__(self, binary: str, port: int) -> None:
+        self._next_id = 0
+        self._profile = tempfile.TemporaryDirectory(prefix="trader-desktop-chrome-")
+        self._process = subprocess.Popen(
+            [
+                binary,
+                "--headless=new",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-background-networking",
+                "--remote-allow-origins=*",
+                f"--remote-debugging-port={port}",
+                f"--user-data-dir={self._profile.name}",
+                "about:blank",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            debugger_url = self._wait_debugger_url(port)
+            self._socket = websocket.create_connection(debugger_url, timeout=15)
+            self._command("Runtime.enable")
+            self._command("Page.enable")
+        except Exception:
+            self.close()
+            raise
+
+    def _wait_debugger_url(self, port: int) -> str:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if self._process.poll() is not None:
+                error = self._process.stderr.read() if self._process.stderr is not None else ""
+                raise RuntimeError(f"Chrome exited before readiness: {error[:300]}")
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=1) as response:
+                    targets = json.loads(response.read().decode())
+                if isinstance(targets, list):
+                    page = next((target for target in targets if target.get("type") == "page"), None)
+                    if isinstance(page, dict) and isinstance(page.get("webSocketDebuggerUrl"), str):
+                        return page["webSocketDebuggerUrl"]
+            except (OSError, json.JSONDecodeError, urllib.error.URLError):
+                pass
+            time.sleep(0.05)
+        raise RuntimeError("Chrome DevTools endpoint did not become ready")
+
+    def _command(self, method: str, params: dict[str, object] | None = None) -> dict[str, Any]:
+        self._next_id += 1
+        command_id = self._next_id
+        self._socket.send(json.dumps({"id": command_id, "method": method, "params": params or {}}))
+        while True:
+            response = json.loads(self._socket.recv())
+            if not isinstance(response, dict) or response.get("id") != command_id:
+                continue
+            if "error" in response:
+                raise RuntimeError(f"Chrome DevTools command failed: {response['error']}")
+            result = response.get("result", {})
+            return result if isinstance(result, dict) else {}
+
+    def navigate(self, url: str) -> None:
+        self._command("Page.navigate", {"url": url})
+
+    def execute(self, script: str) -> object:
+        response = self._command(
+            "Runtime.evaluate",
+            {
+                "expression": f"(function(){{{script}}})()",
+                "awaitPromise": True,
+                "returnByValue": True,
+            },
+        )
+        if response.get("exceptionDetails"):
+            raise RuntimeError(f"Chrome JavaScript evaluation failed: {response['exceptionDetails']}")
+        result = response.get("result", {})
+        return result.get("value") if isinstance(result, dict) else None
+
+    def set_viewport(self, width: int, height: int) -> None:
+        self._command(
+            "Emulation.setDeviceMetricsOverride",
+            {"width": width, "height": height, "deviceScaleFactor": 1, "mobile": False},
+        )
+
+    def screenshot(self) -> object:
+        return self._command("Page.captureScreenshot", {"format": "png", "fromSurface": True}).get("data")
+
+    def close(self) -> None:
+        socket = getattr(self, "_socket", None)
+        if socket is not None:
+            socket.close()
+        process = getattr(self, "_process", None)
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        profile = getattr(self, "_profile", None)
+        if profile is not None:
+            profile.cleanup()
 
 
 def _integer(value: object) -> int:
@@ -704,13 +898,13 @@ def _wait_driver(port: int, process: subprocess.Popen[str]) -> None:
     raise RuntimeError("geckodriver did not become ready")
 
 
-def _wait(condition: Any) -> None:
-    deadline = time.monotonic() + 15
+def _wait(condition: Any, description: str = "condition") -> None:
+    deadline = time.monotonic() + 25
     while time.monotonic() < deadline:
         if condition():
             return
         time.sleep(0.05)
-    raise RuntimeError("browser condition timed out")
+    raise RuntimeError(f"browser condition timed out: {description}")
 
 
 def _free_port() -> int:

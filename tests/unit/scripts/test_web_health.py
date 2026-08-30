@@ -64,7 +64,7 @@ def _sample(
         else None
     )
     status: dict[str, object] = {
-        "schema_version": "v2_status_v3",
+        "schema_version": "v2_status_v4",
         "release": {"decision_view_schema": "v2_decision_view_v2", "web_asset_revision": "test"},
         "status": "running",
         "runtime_started": True,

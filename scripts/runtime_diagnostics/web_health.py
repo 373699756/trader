@@ -231,7 +231,7 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
     status = sample.status
     if status is None:
         return findings
-    if status.schema_version != "v2_status_v3":
+    if status.schema_version != "v2_status_v4":
         findings.append(
             _finding("error", "status_schema_mismatch", sample, None, "status schema is missing or unsupported")
         )

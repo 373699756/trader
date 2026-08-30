@@ -748,6 +748,9 @@ def _supply_status(
     projection: ScoredV2LocalProjection,
 ) -> V2InputQualityStatus:
     quality = projection.input_quality
+    diagnostics = projection.local.selection_diagnostics
+    if diagnostics is None:
+        raise ValueError("scored input status requires selection diagnostics")
     requested = set(projection.native_input.requested_codes)
     evaluations = tuple(item for item in projection.selection.evaluations if item.code in requested)
     decision_items = projection.local.items
@@ -761,6 +764,12 @@ def _supply_status(
         filter_reject=sum(item.disposition is ScoredDisposition.REJECT for item in evaluations),
         full_scored=quality.candidate_scored_count,
         review_eligible=len(projection.review_candidates),
+        observation_threshold_met_count=sum(
+            item.final_score >= diagnostics.observation_floor for item in decision_items
+        ),
+        executable_threshold_met_count=sum(
+            item.final_score >= diagnostics.executable_threshold for item in decision_items
+        ),
         action_executable=sum(item.action is RecommendationAction.EXECUTABLE for item in decision_items),
         action_observe=sum(item.action is RecommendationAction.OBSERVE for item in decision_items),
         action_unavailable=sum(item.action is RecommendationAction.UNAVAILABLE for item in decision_items),

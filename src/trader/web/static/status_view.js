@@ -555,6 +555,12 @@
     return summary && summary.trade_date === payload.trade_date ? value : null;
   }
 
+  function recommendationReadinessStatus(payload, statusPayload) {
+    const inputQuality = strategyInputQuality(payload, statusPayload);
+    if (inputQuality) return inputQuality;
+    return payload && payload.status === "not_ready" ? marketWarmupStatus(statusPayload) : null;
+  }
+
   function marketWarmupStatus(statusPayload) {
     const market = statusPayload && statusPayload.market_data;
     if (!market || typeof market !== "object") return null;
@@ -566,7 +572,11 @@
     const normalizedTotal = total == null ? covered : total;
     const normalizedCovered = covered == null ? 0 : Math.min(covered, normalizedTotal);
     return {
-      supply_funnel: { requested_candidates: normalizedTotal },
+      primary_blocker: "candidate_quotes_pending",
+      supply_funnel: {
+        requested_candidates: normalizedTotal,
+        candidate_features: normalizedCovered,
+      },
       summary: {
         quote_total_count: normalizedTotal,
         quote_covered_count: normalizedCovered,
@@ -676,6 +686,7 @@
     formatDurationHms,
     healthView,
     quoteAvailabilitySummary,
+    recommendationReadinessStatus,
     renderBudgetSummary,
     renderHealth,
     renderDataReadiness,

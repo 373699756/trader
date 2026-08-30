@@ -514,9 +514,10 @@
           );
         }
       }
-      const notReady = patches.notReadyMessage(payload);
+      const readinessStatus = statusView.recommendationReadinessStatus(payload, state.statusPayload);
+      const notReady = patches.notReadyMessage(payload, readinessStatus);
       stateRenderer.renderTableState(notReady.message, window.TraderRender.tableColumnCount(payload));
-      stateRenderer.setNotice(notReady.notice, "idle");
+      stateRenderer.setNotice(notReady.notice, notReady.level);
       updateQuoteAge();
       return;
     }
@@ -527,7 +528,11 @@
           ? longGroups.emptyMessage(payload, state.longScope)
           : payload.frozen
             ? patches.frozenEmptyMessage(payload)
-            : patches.emptyRecommendationMessage(payload, observations.length);
+            : patches.emptyRecommendationMessage(
+              payload,
+              observations.length,
+              statusView.recommendationReadinessStatus(payload, state.statusPayload),
+            );
       stateRenderer.renderTableState(emptyMessage, window.TraderRender.tableColumnCount(payload));
     } else {
       els.tableBody.innerHTML = window.TraderRender.tableRows(recommendations, payload);
@@ -538,11 +543,18 @@
       } else {
         const message = recommendations.length
           ? "本轮无观察项；入选股票均为正式推荐"
-          : patches.emptyRecommendationMessage(payload, 0);
+          : patches.emptyRecommendationMessage(
+            payload,
+            0,
+            statusView.recommendationReadinessStatus(payload, state.statusPayload),
+          );
         stateRenderer.renderTableState(message, window.TraderRender.observationTableColumnCount(payload), els.observationBody);
       }
     }
-    const notice = patches.snapshotNotice(payload);
+    const notice = patches.snapshotNotice(
+      payload,
+      statusView.recommendationReadinessStatus(payload, state.statusPayload),
+    );
     stateRenderer.setNotice(notice.message, notice.level);
     stampRowIdentities(payload);
     updateQuoteAge();
@@ -874,8 +886,8 @@
       frozenEmptyMessage: () => "正式冻结结果为空；观察池已关闭且未保存",
       mergePatchItems: (items) => items || [],
       notReadyMessage: (payload) => payload && payload.strategy === "long"
-        ? { message: "长期策略当前尚无可用数据", notice: "长期策略只展示当前研究快照" }
-        : { message: "当前暂无可用荐股数据", notice: "等待策略数据更新" },
+        ? { message: "长期策略当前尚无可用数据", notice: "长期策略只展示当前研究快照", level: "idle" }
+        : { message: "当前暂无可用荐股数据", notice: "等待策略数据更新", level: "idle" },
       overlayPatchDecision: () => "dependency_missing",
       eventMatchesCurrent: () => false,
       patchVersionValid: () => false,

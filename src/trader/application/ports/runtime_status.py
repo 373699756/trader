@@ -23,6 +23,8 @@ class V2SupplyFunnel:
     filter_reject: int = 0
     full_scored: int = 0
     review_eligible: int = 0
+    observation_threshold_met_count: int = 0
+    executable_threshold_met_count: int = 0
     action_executable: int = 0
     action_observe: int = 0
     action_unavailable: int = 0

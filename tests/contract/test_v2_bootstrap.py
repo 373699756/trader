@@ -216,6 +216,8 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
             requested_candidates=360,
             full_scored=65,
             filter_reject=216,
+            observation_threshold_met_count=12,
+            executable_threshold_met_count=3,
             selected_observe=2,
         ),
         candidate_count=360,
@@ -240,10 +242,15 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
         "highest_final_score": 74.25,
     }
     assert payload["tomorrow"]["supply_funnel"]["full_scored"] == 65
+    assert payload["tomorrow"]["supply_funnel"]["observation_threshold_met_count"] == 12
+    assert payload["tomorrow"]["supply_funnel"]["executable_threshold_met_count"] == 3
     assert payload["tomorrow"]["candidate_optional_reason_counts"] == {
         "missing_listing_age_sessions": 65,
         "missing_listing_date": 221,
     }
+    assert "asdict(status.supply_funnel)" not in (PROJECT_ROOT / "src/trader/bootstrap_status.py").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_bootstrap_wires_real_outcome_settlement_without_eager_database_write(tmp_path) -> None:

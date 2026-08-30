@@ -6,6 +6,9 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 针对用户要求继续完成 `docs/review.md` 的 Web 解释优化，`V2SupplyFunnel` 新增达到观察线/正式线的
+  精确计数；桌面验收脚本加法支持系统缺少 geckodriver 时使用无头 Chrome DevTools，继续由同一参数化
+  入口捕获三档分辨率和本地零外网夹具证据。`Regression-Key: web-recommendation-state-explanation-v1`。
 - 针对用户要求先解决 `docs/review.md` 中基础资料长期停在 120/360、并追问“已有四五个股票数据接口为何
   仍缺数据”，新增沪深交易所官方证券主数据适配器：独立采集上交所主板/科创板和深交所 A 股代码、
   板块、交易所与上市日期，只接纳代码唯一、两所齐全、受支持三板不少于 4000 条且上市日期完整的
@@ -443,6 +446,9 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 推荐主区现在按冻结错过、采集中、数据门禁阻断、评分完成空池四种状态给出确定性结论；评分完成空池
+  显示最高最终分、距正式线、两档达线数量及最多三项聚合原因。公开状态 schema 升为 `v2_status_v4`，
+  静态资源握手升为 `release-contract-2026-08-30-v5`；活动评分、78/73 门槛、融合、风险和冻结均未修改。
 - 证券主数据从“等待评分批次、实际依赖东方财富富身份分页”改为“启动恢复后立即在独立 `exchange`
   lane 刷新，候选发现缺口时幂等续刷”；有限 HTTP 重试、24 小时成功 TTL、300 秒失败退避和最近有效
   快照共同独立于 20 秒实时报价 deadline。完整快照按字段无损合并、派生上市交易日龄并批量持久化；
@@ -829,6 +835,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复状态卡虽已显示基础资料 120/360，主推荐区仍只说“快照尚未发布”，以及评分完成空池无法读取生产
+  聚合原因的问题。根因是页面未把 `scheduler.input_quality` 接入主结论，且旧代码读取公开响应中不存在
+  的诊断字典；现在统一消费类型化漏斗与原因计数，Today 冻结错过优先于当前盘后 pending，普通页面仍
+  不展示上市日期/交易日龄缺失明细。
 - 修复 Tomorrow/D25 真实漏斗虽有 360/360 行情、证券主数据却长期固定为 120/360 的首个数据门禁断点。
   根因不是“完全没有多源行情”，而是来源字段能力不对称：新浪/腾讯主要提供价格，120 积分 Tushare
   无 `stock_basic` 上市日期权限，东方财富 `f26` 成为免费活动路径的单点；该分页又与报价对冲共享
@@ -1189,6 +1199,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除 `supply_funnel` 通过 `asdict()` 自动扩散公开 JSON 字段的投影方式，改为状态 adapter 显式字段
+  白名单；移除 Web 对生产响应中不存在的 `blocked_reason_counts`/`selection_skip_reason_counts` 作为
+  聚合解释来源的依赖，不保留双表示或隐藏 fallback。
 - 移除证券主数据刷新必须等到交易日评分批次、并受东方财富/新浪实时报价 20 秒 deadline 间接约束的
   隐含单点；未删除或替换任何活动报价源，Tushare 仍仅为可选增强。
 - 本批未删除 H0、P0、P1、活动评分或生产发布链；P2-0 只新增隔离研究契约。构建生成的 `build/`、
@@ -1357,6 +1370,20 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- `web-recommendation-state-explanation-v1` 失败先行回归先分别证明类型化漏斗缺少两档达线计数、公开状态
+  仍自动投影和页面仍使用旧 release；实现后 bootstrap/input-runtime/dashboard/Web-health 定向 51 项通过，
+  同时覆盖 Today 冻结错过、采集中、候选/基础资料/历史阻断、评分完成空池、最高分/门槛差、两档计数、
+  前三原因及上市日期细节隐藏。
+- 无头 Chrome 零外网夹具最终 `passed=true`：实际捕获“采集中｜候选行情 360 / 360”、
+  “暂不可发布｜基础资料 120 / 360，要求 360 / 360”和最高 74.25/距正式线 3.75/观察线 2只/正式线
+  0只/前三原因；1280x720、1440x900、1920x1080 均无白屏、重叠、页面级横向溢出或浏览器错误。
+- 高风险完整门禁 `make format-check`（420 个文件）、`make lint`（严格债为零）、`make type-check`
+  （251 个源码文件）、`make test`、`make package` 全部通过；`make performance-check` 在 5500 行全市场、
+  360 候选、三策略和 100 tick 工作负载下通过，无外网调用、RSS 增长 0%。仓库外安装 wheel 后能从安装
+  路径导入包、执行 `trader-cli --help`，并读取模板、CSS、JavaScript 与 SVG 资源。
+- 当前工作树 `trader-server` 实际启动后，统一 `runtime` profile 连续 3 轮通过且无 finding；原始状态
+  为 `v2_status_v4` / `v2_decision_view_v2` / `release-contract-2026-08-30-v5`，健康为 normal、phase 为
+  非交易日 `closed`，官方证券主数据仍为 5212/5212。服务随后正常停止。
 - 本批定向契约与回归：官方沪深快照原子校验、冲突/部分/未来上市日期拒绝、瞬时断连有限重试、
   来源健康投影、启动主动刷新、SQLite 批量持久化与恢复、官方身份优先级、上市交易日龄、报价 deadline
   隔离、失败保留旧资料、无参考资料“幽灵行情行”、统一诊断脱敏契约及架构分区等高风险定向
@@ -2109,6 +2136,9 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- 新评分尚未取得生产晋级权限，因此成本后预期净超额、亏损概率、数据完整度和新评分版本仍不展示；
+  本批也不据此调整 78/73 门槛。当前日期为非交易日，真实服务只能验证 release、状态投影和安全降级，
+  四种结论的确定性业务场景由零外网浏览器夹具覆盖；下一交易窗口仍需观察完整 360/360 评分分布。
 - 上交所公开 HTTPS 在连续新连接时仍可能出现瞬时 `connection_failed`，免费接口没有供应商 SLA；当前以
   单请求有限重试、调度级 300 秒退避、启动/缺口续刷和最近有效持久化快照降级，不会接受部分响应，
   但首次安装且所有重试均失败时仍会保持基础资料未就绪，等待下一次调度。
