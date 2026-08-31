@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.application.ports.tomorrow_model import TomorrowModelInput, TomorrowModelPrediction
-from trader.application.tomorrow_model_scoring import TomorrowProductionModelScoringService
+from trader.application.recommendation.tomorrow_model_scoring import TomorrowProductionModelScoringService
 from trader.domain.market.models import Board, FeatureSnapshot
 
 NOW = datetime(2026, 8, 31, 14, 50, tzinfo=ZoneInfo("Asia/Shanghai"))

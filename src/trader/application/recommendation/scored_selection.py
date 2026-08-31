@@ -6,8 +6,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 
-from trader.application.policy import RecommendationPolicy
 from trader.application.ports.market import DataPlaneReadPort, MarketDataPlaneSnapshot
+from trader.application.recommendation.policy import RecommendationPolicy
 from trader.domain.market.epochs import (
     CandidateFeatureRow,
     CandidateQuoteEpoch,

@@ -520,6 +520,20 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户继续执行功能拆包计划，要求完成应用层推荐与决策包迁移。确认根因是推荐评分/冻结用例和统一决策索引、
+  查询、事件、SSE、overlay 能力仍平铺在 `application` 根目录，导致 Web、bootstrap、runtime、persistence 和
+  测试依赖旧路径；本批将九个推荐用例迁移到 `application/recommendation`，九个决策模块迁移到
+  `application/decisions`，并新增 `DecisionIndexPort` 解耦冻结协调器与决策索引实现。旧路径物理删除，Long
+  projection 仍独立，DecisionView、ETag、projection version、正式/观察分池、冻结投影和合法空集行为保持不变。
+  `Regression-Key: functional-package-application-recommendation-decisions-v1`。
+  Verification：批次定向决策/冻结/投影测试、E2/E4/E5/E6/E7 contract、功能包边界和架构契约通过；
+  `make format-check`、`make lint`、`make type-check`、`make test`、`make package` 和 `git diff --check` 通过，
+  wheel 清单包含两个新应用子包，活动源码、测试和脚本中的旧导入路径搜索结果为 0。
+  真实 `scripts/diagnose_runtime.py --profile full --output -` 与浏览器现场诊断未执行，本批未改变供应商 I/O、
+  冻结时序或 Web schema，现场延迟和外部服务可用性仍为未验证风险。
+  Residual Risks：后续批次仍需维持新应用边界并完成 runtime、Web、研究和最终切换；既有供应商预热长尾和
+  overlay 性能长尾不属于本批范围。
+
 - 用户继续执行功能拆包计划，要求完成推荐领域的过滤、评分、风险融合与选择包迁移。确认根因是推荐域
   八个模块仍平铺在同一目录，且 `scored_fusion.py` 运行时反向依赖 `scored_selection.py`，阶段所有权和
   依赖方向难以审查；本批将过滤迁移到 `domain/recommendation/filtering`，板内评分迁移到 `scoring`，

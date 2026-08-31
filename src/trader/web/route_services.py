@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from trader.application.decision_queries import UnifiedDecisionQueries
-from trader.application.decision_stream import UnifiedDecisionEventStream
+from trader.application.decisions.decision_queries import UnifiedDecisionQueries
+from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
 
 StatusProvider = Callable[[], dict[str, object]]
 

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from trader.application.policy import RecommendationPolicy, SelectionPolicy
+from trader.application.recommendation.policy import RecommendationPolicy, SelectionPolicy
 from trader.domain.market.models import (
     FeatureSnapshot,
     MarketQuote,

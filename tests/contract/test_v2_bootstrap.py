@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from trader.application.cadence import CadencePlannerStatus
-from trader.application.decision_observers import DecisionObserverStatus
+from trader.application.decisions.decision_observers import DecisionObserverStatus
 from trader.application.ports.runtime_status import V2InputQualityStatus, V2SupplyFunnel, V2SupplySummary
 from trader.application.ports.v2_runtime import V2ResearchRuntimeStatus
 from trader.application.v2_research_runtime import V2ResearchRuntime

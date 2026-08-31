@@ -206,7 +206,7 @@ MIGRATION_LEDGER: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ),
 )
 
-COMPLETED_BATCHES = frozenset({"batch-2", "batch-3", "batch-4", "batch-5"})
+COMPLETED_BATCHES = frozenset({"batch-2", "batch-3", "batch-4", "batch-5", "batch-6"})
 
 TARGET_PACKAGES = (
     "domain/market",
@@ -456,4 +456,45 @@ def test_recommendation_stages_are_partitioned_without_reverse_dependencies() ->
                 imported_stage = next((name for name in stage_roots if imported[len(prefix) :].startswith(name)), None)
                 if imported_stage is not None and stage_order[imported_stage] > stage_order[stage]:
                     violations.append(f"{path.relative_to(SOURCE_ROOT)} -> {imported}")
+    assert violations == []
+
+
+def test_application_recommendation_and_decisions_are_partitioned() -> None:
+    application_root = SOURCE_ROOT / "application"
+    recommendation_root = application_root / "recommendation"
+    decisions_root = application_root / "decisions"
+    assert recommendation_root.is_dir()
+    assert decisions_root.is_dir()
+
+    recommendation_files = {
+        "scored_selection.py",
+        "scored_quality.py",
+        "scored_deepseek_fusion.py",
+        "scored_v2_projection.py",
+        "scored_v2_freezing.py",
+        "today_v2_freezing.py",
+        "tomorrow_model_scoring.py",
+        "recommendation_policy_codec.py",
+        "policy.py",
+    }
+    decision_files = {
+        "decision_core.py",
+        "decision_coverage.py",
+        "decision_drafts.py",
+        "decision_events.py",
+        "decision_observers.py",
+        "decision_overlay_refresh.py",
+        "decision_queries.py",
+        "decision_stream.py",
+        "v2_decision_adapters.py",
+    }
+    assert {path.name for path in recommendation_root.glob("*.py")} >= recommendation_files
+    assert {path.name for path in decisions_root.glob("*.py")} >= decision_files
+    assert not any((application_root / name).exists() for name in recommendation_files | decision_files)
+
+    violations: list[str] = []
+    for path in recommendation_root.rglob("*.py"):
+        for imported in _imports(path):
+            if imported.startswith("trader.application.decisions"):
+                violations.append(f"{path.relative_to(SOURCE_ROOT)} -> {imported}")
     assert violations == []

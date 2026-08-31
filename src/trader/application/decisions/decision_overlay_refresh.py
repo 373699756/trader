@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from trader.application.decision_core import UnifiedDecisionIndex
+from trader.application.decisions.decision_core import UnifiedDecisionIndex
 from trader.application.ports.v2_runtime import (
     V2CycleRequest,
     V2DecisionBuilderPort,

@@ -8,7 +8,7 @@ from collections.abc import Iterator
 
 from flask import Response, stream_with_context
 
-from trader.application.decision_stream import (
+from trader.application.decisions.decision_stream import (
     ResyncEventPayload,
     ResyncReason,
     UnifiedDecisionEventStream,

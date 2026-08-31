@@ -8,15 +8,15 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.unit.application.v2_review_helpers import review
-from trader.application.decision_core import UnifiedDecisionIndex
+from trader.application.decisions.decision_core import UnifiedDecisionIndex
 from trader.application.ports.scored import D25NativeInput, ScoredNativeInput, TodayNativeInput, TomorrowNativeInput
 from trader.application.ports.tomorrow_model import TomorrowModelInput, TomorrowModelPrediction
-from trader.application.research_audit import build_v2_committed_research_audit
-from trader.application.scored_v2_projection import (
+from trader.application.recommendation.scored_v2_projection import (
     build_scored_v2_hybrid,
     build_scored_v2_local,
 )
-from trader.application.tomorrow_model_scoring import TomorrowProductionModelScoringService
+from trader.application.recommendation.tomorrow_model_scoring import TomorrowProductionModelScoringService
+from trader.application.research_audit import build_v2_committed_research_audit
 from trader.application.tomorrow_profile_comparison import (
     TomorrowProfileComparator,
     TomorrowProfileResearchInput,

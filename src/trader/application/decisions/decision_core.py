@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Literal
 
-from trader.application.decision_events import V2DecisionCommitted, build_v2_decision_committed
+from trader.application.decisions.decision_events import V2DecisionCommitted, build_v2_decision_committed
 from trader.domain.recommendation.decision_identity import (
     CommittedDecisionRecord,
     DecisionIdentity,

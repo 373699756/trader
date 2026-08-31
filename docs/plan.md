@@ -1,6 +1,6 @@
 # Trader 功能拆包 Codex 执行计划
 
-> 状态：执行中（批次 1-5 已完成，等待后续批次继续指令）
+> 状态：执行中（批次 1-6 已完成，等待后续批次继续指令）
 >
 > 性质：非权威、阶段性施工计划
 >
@@ -504,7 +504,7 @@ make performance-check
 
 ## 批次 6：应用层推荐与决策包
 
-状态：`pending`
+状态：`completed`（2026-08-31）
 
 ### 目标
 
@@ -557,6 +557,10 @@ make package
 - Web、bootstrap、runtime、persistence 和测试全部切到唯一新路径；
 - GET/SSE 使用同一 coverage 和 projection identity；
 - 冻结、current、history、overlay 和合法空集行为不变。
+
+完成记录：推荐用例已迁移到 `application/recommendation`，决策索引、查询、事件、SSE 和 overlay 能力已迁移到
+`application/decisions`；新增 `DecisionIndexPort` 使冻结协调器保持应用端口依赖。所有生产、Web、持久化、诊断脚本
+和测试已切换到唯一新路径，旧根级模块物理删除。定向测试、架构契约、Ruff、mypy、全量测试和 wheel 构建通过。
 
 建议提交：`refactor(application): group recommendation and decision use cases`
 

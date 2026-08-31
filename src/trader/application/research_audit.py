@@ -10,8 +10,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Literal
 
-from trader.application.decision_events import V2DecisionCommitted
-from trader.application.scored_v2_projection import ScoredV2LocalProjection
+from trader.application.decisions.decision_events import V2DecisionCommitted
+from trader.application.recommendation.scored_v2_projection import ScoredV2LocalProjection
 from trader.domain.recommendation.decision_identity import ScoredDecision
 from trader.domain.recommendation.models import ScoredDisposition
 from trader.domain.recommendation.risk_fusion.scored_fusion import ScoredDecisionEntry

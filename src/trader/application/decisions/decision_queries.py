@@ -7,9 +7,9 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from typing import Literal, Protocol
 
-from trader.application.decision_core import UnifiedDecisionIndex, UnifiedDecisionSnapshot
-from trader.application.decision_coverage import DecisionCoverage, scored_decision_coverage
-from trader.application.decision_drafts import UnifiedDecisionDraftIndex
+from trader.application.decisions.decision_core import UnifiedDecisionIndex, UnifiedDecisionSnapshot
+from trader.application.decisions.decision_coverage import DecisionCoverage, scored_decision_coverage
+from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.ports.clock import Clock
 from trader.application.ports.decision_records import DecisionRecordError
 from trader.domain.recommendation.decision_identity import (

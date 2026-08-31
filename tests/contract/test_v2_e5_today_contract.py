@@ -32,7 +32,7 @@ def test_production_composition_installs_today_v2_without_legacy_today_scoring()
     tree = ast.parse(source)
     imports = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module is not None}
 
-    assert "trader.application.today_v2_freezing" in imports
+    assert "trader.application.recommendation.today_v2_freezing" in imports
 
 
 def test_today_freeze_control_is_part_of_the_v2_scheduler_dependencies() -> None:

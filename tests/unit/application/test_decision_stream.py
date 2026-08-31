@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from trader.application.decision_events import build_v2_decision_committed
-from trader.application.decision_stream import UnifiedDecisionEventStream
+from trader.application.decisions.decision_events import build_v2_decision_committed
+from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
 from trader.domain.recommendation.decision_identity import (
     DecisionItem,
     DecisionOverlay,

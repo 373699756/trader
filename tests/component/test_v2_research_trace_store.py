@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.unit.domain.test_decision_identity import decision
-from trader.application.decision_events import build_v2_decision_committed
+from trader.application.decisions.decision_events import build_v2_decision_committed
 from trader.application.research_audit import (
     LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
     V2CommittedResearchAudit,

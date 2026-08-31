@@ -220,7 +220,7 @@ def test_tomorrow_profile_serializers_use_explicit_public_field_whitelists() -> 
 
 def test_runtime_responsibilities_remain_split_by_resource_boundary() -> None:
     input_runtime = (SOURCE_ROOT / "application/v2_input_runtime.py").read_text(encoding="utf-8")
-    decision_adapters = (SOURCE_ROOT / "application/v2_decision_adapters.py").read_text(encoding="utf-8")
+    decision_adapters = (SOURCE_ROOT / "application/decisions/v2_decision_adapters.py").read_text(encoding="utf-8")
     runtime = (SOURCE_ROOT / "application/v2_runtime.py").read_text(encoding="utf-8")
     issues = (SOURCE_ROOT / "application/v2_runtime_issues.py").read_text(encoding="utf-8")
 

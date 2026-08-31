@@ -10,7 +10,7 @@ from datetime import date, datetime
 from typing import Literal
 
 from trader.application.cache import request_fingerprint
-from trader.application.decision_core import UnifiedDecisionIndex
+from trader.application.decisions.decision_core import UnifiedDecisionIndex
 from trader.application.long_groups import LongGroupDefinition, LongWatchItemDefinition
 from trader.application.ports.long import LongRefreshRequest
 from trader.application.ports.market import MarketDataUnavailableError, QuoteReaderPort

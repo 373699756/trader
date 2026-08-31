@@ -4,9 +4,9 @@ from dataclasses import replace
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from trader.application.decision_core import UnifiedDecisionIndex
-from trader.application.decision_drafts import UnifiedDecisionDraftIndex
-from trader.application.decision_queries import UnifiedDecisionQueries
+from trader.application.decisions.decision_core import UnifiedDecisionIndex
+from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
+from trader.application.decisions.decision_queries import UnifiedDecisionQueries
 from trader.domain.recommendation.decision_identity import (
     CommittedDecisionRecord,
     DecisionItem,

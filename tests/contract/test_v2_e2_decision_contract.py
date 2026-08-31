@@ -5,7 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 DESIGN = ROOT / "docs" / "software-business-design.md"
-DECISION_EVENTS = ROOT / "src" / "trader" / "application" / "decision_events.py"
+DECISION_EVENTS = ROOT / "src" / "trader" / "application" / "decisions" / "decision_events.py"
 
 
 def test_authoritative_contract_freezes_unified_decision_identity_and_commit_event() -> None:

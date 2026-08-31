@@ -14,7 +14,7 @@ from tests.unit.v2_epoch_helpers import (
     research_field_values,
 )
 from trader.application.ports.market import MarketDataPlaneSnapshot
-from trader.application.scored_selection import (
+from trader.application.recommendation.scored_selection import (
     ScoredSelectionNotReadyError,
     ScoredSelectionUseCase,
     assemble_scored_features,

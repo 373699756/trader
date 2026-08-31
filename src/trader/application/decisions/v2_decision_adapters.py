@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from trader.application.policy import RecommendationPolicy
 from trader.application.ports.reviews import DeepSeekReviewUnavailableError, TomorrowDeepSeekReviewPort
 from trader.application.ports.v2_runtime import (
     SharedDeepSeekRuntimeContract,
@@ -15,9 +14,10 @@ from trader.application.ports.v2_runtime import (
     V2FreezeUnavailableError,
     V2ReviewUnavailableError,
 )
-from trader.application.scored_v2_freezing import ScoredV2FreezeCoordinator
-from trader.application.scored_v2_projection import build_scored_v2_hybrid, validate_review_manifests
-from trader.application.today_v2_freezing import TodayV2FreezeCoordinator
+from trader.application.recommendation.policy import RecommendationPolicy
+from trader.application.recommendation.scored_v2_freezing import ScoredV2FreezeCoordinator
+from trader.application.recommendation.scored_v2_projection import build_scored_v2_hybrid, validate_review_manifests
+from trader.application.recommendation.today_v2_freezing import TodayV2FreezeCoordinator
 from trader.application.v2_input_runtime import V2MarketDataAdapter
 from trader.domain.recommendation.decision_identity import DecisionIdentity, ScoredDecision
 from trader.domain.recommendation.models import Strategy

@@ -5,11 +5,11 @@ from dataclasses import replace
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from trader.application.decision_core import UnifiedDecisionIndex
-from trader.application.decision_drafts import UnifiedDecisionDraftIndex
-from trader.application.decision_events import build_v2_decision_committed
-from trader.application.decision_queries import UnifiedDecisionQueries
-from trader.application.decision_stream import UnifiedDecisionEventStream
+from trader.application.decisions.decision_core import UnifiedDecisionIndex
+from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
+from trader.application.decisions.decision_events import build_v2_decision_committed
+from trader.application.decisions.decision_queries import UnifiedDecisionQueries
+from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
 from trader.domain.market.models import MarketQuote
 from trader.domain.recommendation.decision_identity import (
     DecisionItem,

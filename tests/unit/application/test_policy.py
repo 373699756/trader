@@ -4,7 +4,7 @@ from types import MappingProxyType
 
 import pytest
 
-from trader.application.policy import RecommendationPolicy, SelectionPolicy
+from trader.application.recommendation.policy import RecommendationPolicy, SelectionPolicy
 from trader.domain.market.models import Board
 from trader.domain.recommendation.models import Strategy
 from trader.domain.recommendation.risk_fusion.fusion import FusionPolicy

@@ -6,9 +6,9 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from tests.unit.domain.test_decision_identity import decision
-from trader.application.decision_core import UnifiedDecisionIndex
-from trader.application.scored_v2_freezing import V2DecisionRuntimeIdentity
-from trader.application.today_v2_freezing import TodayV2FreezeCoordinator
+from trader.application.decisions.decision_core import UnifiedDecisionIndex
+from trader.application.recommendation.scored_v2_freezing import V2DecisionRuntimeIdentity
+from trader.application.recommendation.today_v2_freezing import TodayV2FreezeCoordinator
 from trader.domain.recommendation.decision_identity import ScoredDecision
 from trader.domain.recommendation.models import Strategy
 from trader.infra.persistence.decision_records import SQLiteDecisionRecordRepository

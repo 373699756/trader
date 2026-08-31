@@ -6,14 +6,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
-from trader.application.policy import RecommendationPolicy
 from trader.application.ports.scored import TomorrowNativeInput
-from trader.application.research_audit import V2DecisionObservation
-from trader.application.scored_v2_projection import build_scored_v2_local
-from trader.application.tomorrow_model_scoring import (
+from trader.application.recommendation.policy import RecommendationPolicy
+from trader.application.recommendation.scored_v2_projection import build_scored_v2_local
+from trader.application.recommendation.tomorrow_model_scoring import (
     TomorrowModelDiagnostics,
     TomorrowProductionModelScoringService,
 )
+from trader.application.research_audit import V2DecisionObservation
 from trader.domain.recommendation.decision_identity import DecisionItem
 from trader.domain.recommendation.models import Strategy
 from trader.domain.research.tomorrow_profile_comparison import (

@@ -5,10 +5,10 @@ from __future__ import annotations
 from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
-from trader.application.decision_core import UnifiedDecisionIndex
 from trader.application.ports.clock import Clock
+from trader.application.ports.decision_index import DecisionIndexPort
 from trader.application.ports.decision_records import DecisionRecordError, DecisionRecordRepositoryPort
-from trader.application.scored_v2_freezing import V2DecisionRuntimeIdentity, V2FreezeOperationResult
+from trader.application.recommendation.scored_v2_freezing import V2DecisionRuntimeIdentity, V2FreezeOperationResult
 from trader.domain.recommendation.decision_identity import CommittedDecisionRecord, ScoredDecision
 from trader.domain.recommendation.models import Strategy
 
@@ -20,7 +20,7 @@ class TodayV2FreezeCoordinator:
 
     def __init__(
         self,
-        index: UnifiedDecisionIndex,
+        index: DecisionIndexPort,
         repository: DecisionRecordRepositoryPort,
         clock: Clock,
         *,

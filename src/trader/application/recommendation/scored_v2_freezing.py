@@ -7,8 +7,8 @@ from datetime import date, datetime, time
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from trader.application.decision_core import UnifiedDecisionIndex
 from trader.application.ports.clock import Clock
+from trader.application.ports.decision_index import DecisionIndexPort
 from trader.application.ports.decision_records import (
     DecisionRecordError,
     DecisionRecordRepositoryPort,
@@ -56,7 +56,7 @@ class ScoredV2FreezeCoordinator:
 
     def __init__(
         self,
-        index: UnifiedDecisionIndex,
+        index: DecisionIndexPort,
         repository: DecisionRecordRepositoryPort,
         clock: Clock,
         *,

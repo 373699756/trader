@@ -13,8 +13,8 @@ from trader.application.cadence import (
     SchedulePointKey,
     SchedulePointLifecycle,
 )
-from trader.application.decision_core import UnifiedDecisionIndex
-from trader.application.decision_observers import AsyncDecisionObserver
+from trader.application.decisions.decision_core import UnifiedDecisionIndex
+from trader.application.decisions.decision_observers import AsyncDecisionObserver
 from trader.application.ports.market import ResearchRefreshResult
 from trader.application.ports.v2_runtime import (
     SharedDeepSeekRuntimeContract,

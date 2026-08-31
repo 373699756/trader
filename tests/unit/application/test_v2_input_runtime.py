@@ -10,7 +10,7 @@ import pytest
 
 from tests.unit.domain.test_decision_identity import decision
 from trader.application.cadence import PipelineTask
-from trader.application.decision_drafts import UnifiedDecisionDraftIndex
+from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.ports.v2_runtime import (
     V2CycleRequest,
     V2DataRefreshUnavailableError,

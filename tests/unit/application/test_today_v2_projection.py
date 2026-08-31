@@ -6,9 +6,9 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from tests.unit.application.v2_review_helpers import review
-from trader.application.decision_core import UnifiedDecisionIndex
+from trader.application.decisions.decision_core import UnifiedDecisionIndex
 from trader.application.ports.scored import TodayNativeInput
-from trader.application.scored_v2_projection import build_scored_v2_hybrid, build_scored_v2_local
+from trader.application.recommendation.scored_v2_projection import build_scored_v2_hybrid, build_scored_v2_local
 from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.models import RecommendationAction, Strategy

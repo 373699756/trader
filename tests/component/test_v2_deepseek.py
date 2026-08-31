@@ -10,10 +10,10 @@ from unittest.mock import Mock
 import pytest
 import requests
 
-from trader.application.decision_core import UnifiedDecisionIndex
-from trader.application.decision_drafts import UnifiedDecisionDraftIndex
-from trader.application.decision_queries import UnifiedDecisionQueries
-from trader.application.decision_stream import UnifiedDecisionEventStream
+from trader.application.decisions.decision_core import UnifiedDecisionIndex
+from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
+from trader.application.decisions.decision_queries import UnifiedDecisionQueries
+from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
 from trader.application.ports.reviews import DeepSeekReviewUnavailableError
 from trader.domain.market.models import (
     Evidence,

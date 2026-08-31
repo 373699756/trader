@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from flask import url_for
 
-from trader.application.decision_queries import DECISION_VIEW_SCHEMA_VERSION
+from trader.application.decisions.decision_queries import DECISION_VIEW_SCHEMA_VERSION
 
 STATUS_SCHEMA_VERSION = "v2_status_v9"
 WEB_ASSET_REVISION = "release-contract-2026-08-31-v10"

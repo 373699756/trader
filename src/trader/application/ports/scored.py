@@ -9,7 +9,7 @@ from typing import ClassVar, Protocol
 from zoneinfo import ZoneInfo
 
 from trader.application.cache import request_fingerprint
-from trader.application.recommendation_policy_codec import preselection_replay_feature
+from trader.application.recommendation.recommendation_policy_codec import preselection_replay_feature
 from trader.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.domain.recommendation.models import Strategy
 

@@ -6,8 +6,8 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from tests.unit.domain.test_decision_identity import NOW, decision
-from trader.application.decision_core import UnifiedDecisionIndex
-from trader.application.decision_events import V2DecisionCommitted
+from trader.application.decisions.decision_core import UnifiedDecisionIndex
+from trader.application.decisions.decision_events import V2DecisionCommitted
 from trader.domain.recommendation.decision_identity import (
     DecisionOverlay,
     DecisionQuote,

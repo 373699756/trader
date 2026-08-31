@@ -6,20 +6,20 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-from trader.application.policy import RecommendationPolicy
 from trader.application.ports.scored import ScoredNativeInput
-from trader.application.recommendation_policy_codec import preselection_replay_feature
-from trader.application.scored_deepseek_fusion import (
+from trader.application.recommendation.policy import RecommendationPolicy
+from trader.application.recommendation.recommendation_policy_codec import preselection_replay_feature
+from trader.application.recommendation.scored_deepseek_fusion import (
     normalize_scored_review_times,
     v2_decision_policy,
 )
-from trader.application.scored_quality import ScoredInputQuality, assess_scored_input_quality
-from trader.application.scored_selection import (
+from trader.application.recommendation.scored_quality import ScoredInputQuality, assess_scored_input_quality
+from trader.application.recommendation.scored_selection import (
     ScoredSelectionIdentity,
     ScoredSelectionOptions,
     select_scored_features,
 )
-from trader.application.tomorrow_model_scoring import (
+from trader.application.recommendation.tomorrow_model_scoring import (
     TomorrowModelDiagnostics,
     TomorrowProductionModelScoringService,
 )

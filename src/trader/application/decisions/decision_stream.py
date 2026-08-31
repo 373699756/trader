@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-from trader.application.decision_coverage import DecisionCoverage, scored_decision_coverage
-from trader.application.decision_events import V2DecisionCommitted
+from trader.application.decisions.decision_coverage import DecisionCoverage, scored_decision_coverage
+from trader.application.decisions.decision_events import V2DecisionCommitted
 from trader.domain.recommendation.decision_identity import (
     DecisionItem,
     DecisionOverlay,
