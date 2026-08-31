@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from trader.application.cadence import (
+from trader.application.runtime.cadence import (
     PERIODIC_TASKS,
     CadencePlanner,
     CadencePolicy,
@@ -18,7 +18,7 @@ from trader.application.cadence import (
     freshness_level,
     task_execution_budget_seconds,
 )
-from trader.application.schedule import SHANGHAI, SchedulePoint
+from trader.application.runtime.schedule import SHANGHAI, SchedulePoint
 
 
 def test_delayed_scheduler_tick_catches_up_mandatory_freeze_point_once() -> None:

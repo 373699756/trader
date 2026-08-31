@@ -15,7 +15,6 @@ from zoneinfo import ZoneInfo
 import pytest
 import requests
 
-from trader.application.latency import LatencyWaterfall
 from trader.application.ports.data_plane import (
     DataPlaneRecoverySummary,
     DataPlaneUnavailableError,
@@ -30,12 +29,13 @@ from trader.application.ports.market import (
     MarketDataNoDataError,
     MarketDataUnavailableError,
 )
-from trader.application.source_lanes import (
+from trader.application.runtime.latency import LatencyWaterfall
+from trader.application.runtime.source_lanes import (
     LatestRequestLane,
     SourceLaneRegistry,
     SourceRequestSupersededError,
 )
-from trader.application.workers import BoundedExecutor
+from trader.application.runtime.workers import BoundedExecutor
 from trader.domain.market.models import (
     Board,
     Evidence,

@@ -6,9 +6,9 @@ from datetime import datetime
 
 import pytest
 
-from trader.application.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
-from trader.application.schedule import SHANGHAI
-from trader.application.shutdown import ShutdownDeadline
+from trader.application.runtime.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
+from trader.application.runtime.schedule import SHANGHAI
+from trader.application.runtime.shutdown import ShutdownDeadline
 
 
 def test_supervisor_initializes_starts_ticks_and_stops() -> None:

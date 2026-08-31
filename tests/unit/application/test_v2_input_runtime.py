@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 from tests.unit.domain.test_decision_identity import decision
-from trader.application.cadence import PipelineTask
 from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
+from trader.application.market_data.v2_input_runtime import V2DecisionBuildDependencies, V2MarketDataAdapter
 from trader.application.ports.v2_runtime import (
     V2CycleRequest,
     V2DataRefreshUnavailableError,
@@ -18,8 +18,8 @@ from trader.application.ports.v2_runtime import (
     V2PipelineTaskRequest,
     V2RefreshOutcome,
 )
-from trader.application.schedule import SHANGHAI
-from trader.application.v2_input_runtime import V2DecisionBuildDependencies, V2MarketDataAdapter
+from trader.application.runtime.cadence import PipelineTask
+from trader.application.runtime.schedule import SHANGHAI
 from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import Board
 from trader.domain.recommendation.decision_identity import DecisionOverlay

@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from trader.application.ports.market import ResearchReaderPort, ResearchRefreshResult
-from trader.application.shutdown import ShutdownDeadline, ShutdownStep
-from trader.application.workers import BoundedExecutor
+from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
+from trader.application.runtime.workers import BoundedExecutor
 
 
 @dataclass(frozen=True)

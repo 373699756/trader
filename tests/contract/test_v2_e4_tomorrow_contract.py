@@ -41,7 +41,7 @@ def test_production_composition_has_no_tomorrow_shadow_or_cutover_dependencies()
 
 
 def test_tomorrow_freeze_control_is_owned_by_the_v2_scheduler() -> None:
-    source = (ROOT / "src" / "trader" / "application" / "v2_runtime.py").read_text(encoding="utf-8")
+    source = (ROOT / "src" / "trader" / "application" / "runtime" / "v2_runtime.py").read_text(encoding="utf-8")
     assert "self._dependencies.freezes.freeze" in source
     assert "submit_due" in source
 

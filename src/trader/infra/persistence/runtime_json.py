@@ -7,7 +7,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from trader.application.workers import BoundedExecutor
+from trader.application.runtime.workers import BoundedExecutor
 
 
 class RuntimeJsonWriter:

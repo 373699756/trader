@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Protocol
 from trader.application.ports.market import OutcomePriceReaderPort
 from trader.application.ports.outcomes import OutcomeTargetReaderPort, OutcomeWriterPort
 from trader.application.ports.v2_runtime import V2SettlementPort
-from trader.application.schedule import shanghai_now
+from trader.application.runtime.schedule import shanghai_now
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.outcome.evaluation import OutcomeEvaluationRequest, evaluate_outcome
 from trader.domain.outcome.models import BenchmarkReturn

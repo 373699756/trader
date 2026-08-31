@@ -1,6 +1,6 @@
 # Trader 功能拆包 Codex 执行计划
 
-> 状态：执行中（批次 1-6 已完成，等待后续批次继续指令）
+> 状态：执行中（批次 1-7 已完成，等待后续批次继续指令）
 >
 > 性质：非权威、阶段性施工计划
 >
@@ -568,7 +568,7 @@ make package
 
 ## 批次 7：运行时、调度与生命周期包
 
-状态：`pending`
+状态：`completed`（2026-08-31）
 
 ### 目标
 
@@ -631,6 +631,11 @@ make performance-check
 - 线程、lane、deadline、停止和恢复契约全部通过；
 - status、API、SSE 和浏览器能看到一致的运行状态；
 - 没有旧模块路径或隐藏构造器。
+
+完成记录：调度、cadence、lane、生命周期、停止和运行状态模块已迁移到 `application/runtime`，市场输入
+组装已迁移到 `application/market_data`；所有生产、基础设施、入口、诊断和测试导入已切换，旧根级路径
+物理删除。定向及全量测试、架构契约、Ruff、mypy、wheel 与离线性能门禁通过；沙箱外真实来源诊断通过
+交易所主数据、历史和 Tencent，Tushare 因缺少 token 降级，本地 Web 服务未运行，五时段现场矩阵未验证。
 
 建议提交：`refactor(runtime): isolate scheduler and lifecycle packages`
 

@@ -9,7 +9,7 @@ from trader.application.long_groups import LongGroupDefinition, LongWatchItemDef
 from trader.application.long_v2_runtime import LongV2Runtime, LongV2RuntimeDependencies
 from trader.application.ports.long import LongRefreshRequest
 from trader.application.ports.market import MarketDataUnavailableError
-from trader.application.shutdown import ShutdownDeadline
+from trader.application.runtime.shutdown import ShutdownDeadline
 from trader.domain.recommendation.decision_identity import LongProjection
 from trader.domain.recommendation.models import Strategy
 

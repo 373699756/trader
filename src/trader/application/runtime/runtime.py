@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from trader.application.schedule import MarketPhase, phase_at, seconds_until_next_schedule_boundary
-from trader.application.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
+from trader.application.runtime.schedule import MarketPhase, phase_at, seconds_until_next_schedule_boundary
+from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
 
 _LOGGER = logging.getLogger(__name__)
 

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import ParamSpec, Protocol, TypeVar, cast
 
-from trader.application.shutdown import ShutdownDeadline, ShutdownStep
+from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")

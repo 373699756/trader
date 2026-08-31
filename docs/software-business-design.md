@@ -601,7 +601,8 @@ web/api
 | 5 | `domain/recommendation/ranking.py`、`scored_selection.py` | `domain/recommendation/selection` |
 | 6 | `application/scored_deepseek_fusion.py`、`scored_quality.py`、`scored_selection.py`、`scored_v2_freezing.py`、`scored_v2_projection.py`、`today_v2_freezing.py`、`tomorrow_model_scoring.py`、`recommendation_policy_codec.py`、`policy.py` | `application/recommendation` |
 | 6 | `application/decision_core.py`、`decision_coverage.py`、`decision_drafts.py`、`decision_events.py`、`decision_observers.py`、`decision_overlay_refresh.py`、`decision_queries.py`、`decision_stream.py`、`v2_decision_adapters.py` | `application/decisions` |
-| 7 | `application/cadence.py`、`latency.py`、`runtime.py`、`schedule.py`、`shutdown.py`、`source_lanes.py`、`system_lifecycle.py`、`v2_input_runtime.py`、`v2_lifecycle.py`、`v2_runtime.py`、`v2_runtime_issues.py`、`workers.py` | `application/runtime` |
+| 7 | `application/cadence.py`、`latency.py`、`runtime.py`、`schedule.py`、`shutdown.py`、`source_lanes.py`、`system_lifecycle.py`、`v2_lifecycle.py`、`v2_runtime.py`、`v2_runtime_issues.py`、`workers.py` | `application/runtime` |
+| 7 | `application/v2_input_runtime.py` | `application/market_data` |
 | 8 | `web/decision_serializers.py`、`decision_sse.py`、`route_services.py`、`routes.py`、`routes_v2.py` | `web/api` |
 | 9 | `application/outcome_settlement.py` | `application/outcomes` |
 | 9 | `application/research_audit.py`、`research_coordination.py`、`tomorrow_profile_comparison.py`、`tomorrow_profile_reporting.py`、`tomorrow_profile_settlement.py`、`v2_research_runtime.py` | `application/research` |

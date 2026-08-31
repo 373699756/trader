@@ -168,13 +168,17 @@ MIGRATION_LEDGER: tuple[tuple[str, tuple[str, ...], str], ...] = (
             "application/shutdown.py",
             "application/source_lanes.py",
             "application/system_lifecycle.py",
-            "application/v2_input_runtime.py",
             "application/v2_lifecycle.py",
             "application/v2_runtime.py",
             "application/v2_runtime_issues.py",
             "application/workers.py",
         ),
         "application/runtime",
+    ),
+    (
+        "batch-7",
+        ("application/v2_input_runtime.py",),
+        "application/market_data",
     ),
     (
         "batch-8",
@@ -206,7 +210,7 @@ MIGRATION_LEDGER: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ),
 )
 
-COMPLETED_BATCHES = frozenset({"batch-2", "batch-3", "batch-4", "batch-5", "batch-6"})
+COMPLETED_BATCHES = frozenset({"batch-2", "batch-3", "batch-4", "batch-5", "batch-6", "batch-7"})
 
 TARGET_PACKAGES = (
     "domain/market",
@@ -496,5 +500,37 @@ def test_application_recommendation_and_decisions_are_partitioned() -> None:
     for path in recommendation_root.rglob("*.py"):
         for imported in _imports(path):
             if imported.startswith("trader.application.decisions"):
+                violations.append(f"{path.relative_to(SOURCE_ROOT)} -> {imported}")
+    assert violations == []
+
+
+def test_application_runtime_and_market_data_are_partitioned() -> None:
+    application_root = SOURCE_ROOT / "application"
+    runtime_root = application_root / "runtime"
+    market_data_root = application_root / "market_data"
+    assert runtime_root.is_dir()
+    assert market_data_root.is_dir()
+
+    runtime_files = {
+        "cadence.py",
+        "latency.py",
+        "runtime.py",
+        "schedule.py",
+        "shutdown.py",
+        "source_lanes.py",
+        "system_lifecycle.py",
+        "v2_lifecycle.py",
+        "v2_runtime.py",
+        "v2_runtime_issues.py",
+        "workers.py",
+    }
+    assert {path.name for path in runtime_root.glob("*.py")} >= runtime_files
+    assert (market_data_root / "v2_input_runtime.py").is_file()
+    assert not any((application_root / name).exists() for name in runtime_files | {"v2_input_runtime.py"})
+
+    violations: list[str] = []
+    for path in runtime_root.rglob("*.py"):
+        for imported in _imports(path):
+            if imported.startswith("trader.application.market_data"):
                 violations.append(f"{path.relative_to(SOURCE_ROOT)} -> {imported}")
     assert violations == []

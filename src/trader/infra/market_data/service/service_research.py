@@ -19,7 +19,12 @@ if TYPE_CHECKING:
 
 from trader.application.cache import CacheIdentity
 from trader.application.ports.market import MarketDataDeadlineExceededError
-from trader.application.workers import BorrowExecutorOptions, WorkerExecutor, borrow_executor, submit_or_run_inline
+from trader.application.runtime.workers import (
+    BorrowExecutorOptions,
+    WorkerExecutor,
+    borrow_executor,
+    submit_or_run_inline,
+)
 from trader.domain.market.research import ResearchObservation
 from trader.infra.market_data.providers.akshare import AkshareResearchClient
 from trader.infra.market_data.service.market_cache_identity import (

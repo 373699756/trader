@@ -22,7 +22,7 @@ from trader.application.cache import (
     canonical_json_bytes,
     freeze_cache_value,
 )
-from trader.application.shutdown import ShutdownDeadline, ShutdownStep
+from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
 
 _T = TypeVar("_T")
 

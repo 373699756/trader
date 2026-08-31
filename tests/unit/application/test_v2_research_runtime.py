@@ -3,10 +3,10 @@ from __future__ import annotations
 import threading
 from datetime import datetime, timedelta
 
-from trader.application.cadence import CadencePolicy
 from trader.application.ports.market import ResearchRefreshResult
 from trader.application.ports.v2_runtime import V2CycleRequest, V2ResearchIntent
-from trader.application.schedule import SHANGHAI, MarketPhase
+from trader.application.runtime.cadence import CadencePolicy
+from trader.application.runtime.schedule import SHANGHAI, MarketPhase
 from trader.application.v2_research_runtime import V2ResearchRuntime
 from trader.domain.recommendation.models import Strategy
 

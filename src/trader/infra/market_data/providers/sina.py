@@ -16,7 +16,7 @@ import requests
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.application.workers import BorrowExecutorOptions, borrow_executor, submit_or_run_inline
+from trader.application.runtime.workers import BorrowExecutorOptions, borrow_executor, submit_or_run_inline
 from trader.domain.market.models import MarketQuote
 from trader.infra.market_data.normalization.normalize import (
     MarketQuoteInput,

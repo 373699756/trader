@@ -5,7 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 DESIGN = ROOT / "docs" / "software-business-design.md"
-RUNTIME = ROOT / "src" / "trader" / "application" / "v2_runtime.py"
+RUNTIME = ROOT / "src" / "trader" / "application" / "runtime" / "v2_runtime.py"
 
 
 def test_authoritative_contract_freezes_v2_runtime_capacity_and_shutdown() -> None:

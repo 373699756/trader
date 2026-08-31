@@ -5,7 +5,7 @@ from dataclasses import MISSING, fields
 from pathlib import Path
 
 from trader.application.ports.v2_runtime import V2DecisionBuilderPort
-from trader.application.v2_runtime import V2RuntimeDependencies
+from trader.application.runtime.v2_runtime import V2RuntimeDependencies
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "trader"
 PROJECT_ROOT = SOURCE_ROOT.parents[1]
@@ -219,10 +219,10 @@ def test_tomorrow_profile_serializers_use_explicit_public_field_whitelists() -> 
 
 
 def test_runtime_responsibilities_remain_split_by_resource_boundary() -> None:
-    input_runtime = (SOURCE_ROOT / "application/v2_input_runtime.py").read_text(encoding="utf-8")
+    input_runtime = (SOURCE_ROOT / "application/market_data/v2_input_runtime.py").read_text(encoding="utf-8")
     decision_adapters = (SOURCE_ROOT / "application/decisions/v2_decision_adapters.py").read_text(encoding="utf-8")
-    runtime = (SOURCE_ROOT / "application/v2_runtime.py").read_text(encoding="utf-8")
-    issues = (SOURCE_ROOT / "application/v2_runtime_issues.py").read_text(encoding="utf-8")
+    runtime = (SOURCE_ROOT / "application/runtime/v2_runtime.py").read_text(encoding="utf-8")
+    issues = (SOURCE_ROOT / "application/runtime/v2_runtime_issues.py").read_text(encoding="utf-8")
 
     assert "class V2DeepSeekAdapter" not in input_runtime
     assert "class V2FreezeAdapter" not in input_runtime

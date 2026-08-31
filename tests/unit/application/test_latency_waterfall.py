@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from trader.application.latency import LatencyStageStatus, LatencyWaterfall
+from trader.application.runtime.latency import LatencyStageStatus, LatencyWaterfall
 
 
 class _Monotonic:

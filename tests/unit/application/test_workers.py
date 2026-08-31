@@ -4,8 +4,13 @@ import threading
 
 import pytest
 
-from trader.application.shutdown import ShutdownDeadline
-from trader.application.workers import BorrowExecutorOptions, BoundedExecutor, BoundedExecutorStatus, borrow_executor
+from trader.application.runtime.shutdown import ShutdownDeadline
+from trader.application.runtime.workers import (
+    BorrowExecutorOptions,
+    BoundedExecutor,
+    BoundedExecutorStatus,
+    borrow_executor,
+)
 
 
 def test_bounded_executor_rejects_over_capacity_and_stops_all_workers() -> None:

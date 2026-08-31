@@ -31,7 +31,7 @@ from trader.application.recommendation.scored_v2_projection import (
     build_scored_v2_local,
 )
 from trader.application.recommendation.tomorrow_model_scoring import TomorrowProductionModelScoringService
-from trader.application.schedule import SHANGHAI
+from trader.application.runtime.schedule import SHANGHAI
 from trader.bootstrap_policy import _recommendation_policy
 from trader.domain.market.models import Board, FeatureSnapshot, MarketQuote
 from trader.domain.recommendation.decision_identity import (

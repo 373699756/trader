@@ -20,7 +20,12 @@ from trader.application.cache import CacheIdentity
 from trader.application.ports.data_plane import DataPlaneUnavailableError, HistoricalFeatureRecord
 from trader.application.ports.market import MarketDataDeadlineExceededError
 from trader.application.ports.types import JsonInput, JsonObject, freeze_json_object
-from trader.application.workers import BorrowExecutorOptions, BoundedExecutor, borrow_executor, submit_or_run_inline
+from trader.application.runtime.workers import (
+    BorrowExecutorOptions,
+    BoundedExecutor,
+    borrow_executor,
+    submit_or_run_inline,
+)
 from trader.domain.outcome.models import OutcomeBar
 from trader.infra.market_data.history.history import (
     DailyBar,

@@ -14,7 +14,12 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.application.cache import CacheIdentity
-from trader.application.workers import BorrowExecutorOptions, WorkerExecutor, borrow_executor, submit_or_run_inline
+from trader.application.runtime.workers import (
+    BorrowExecutorOptions,
+    WorkerExecutor,
+    borrow_executor,
+    submit_or_run_inline,
+)
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.market.tail import TAIL_SIGNAL_VALUE_FIELDS, MinuteBar
 from trader.infra.market_data.providers.eastmoney import EastmoneyClient

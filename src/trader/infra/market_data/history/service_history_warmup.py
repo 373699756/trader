@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.application.ports.market import MarketDataDeadlineExceededError
-from trader.application.source_lanes import SourceRequestSupersededError
+from trader.application.runtime.source_lanes import SourceRequestSupersededError
 from trader.infra.market_data.history.service_history import HistoryCache
 from trader.infra.market_data.service.market_cache_identity import _normalize_codes, _source_batch_identity
 from trader.infra.market_data.service.service_execution import MarketTaskRunner

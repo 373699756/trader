@@ -10,7 +10,7 @@ from trader.application.outcome_settlement import OutcomeSettlementMarketData
 from trader.application.ports.decision_records import DecisionRecordRepositoryPort
 from trader.application.ports.outcomes import OutcomeTargetReaderPort
 from trader.application.ports.tomorrow_profile_comparison import TomorrowProfileEvidencePort
-from trader.application.schedule import shanghai_now
+from trader.application.runtime.schedule import shanghai_now
 from trader.application.tomorrow_profile_reporting import TomorrowProfileReportingService
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.outcome.evaluation import OutcomeEvaluationRequest, evaluate_outcome

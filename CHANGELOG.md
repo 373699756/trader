@@ -520,6 +520,22 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户继续执行功能拆包计划，要求完成运行时、调度与生命周期包迁移。确认根因是 cadence、schedule、
+  worker、source lane、latest-wins、shutdown、runtime status 和市场输入组装仍平铺在 `application` 根目录，
+  生产组合根、infra 适配器、诊断与测试广泛依赖旧路径；本批将 11 个调度/生命周期模块迁移到
+  `application/runtime`，将 `v2_input_runtime.py` 迁移到 `application/market_data`，并为两包增加局部
+  所有权导航。共享 `cache.py` 保持根级应用契约，未复制或隐藏外部客户端构造。三策略 scoring/hybrid lane、
+  数据 lane、latest-wins、single-flight、冻结重试、30 秒共享停止 deadline 和状态/API/SSE schema 保持不变。
+  `Regression-Key: functional-package-runtime-market-data-v1`。
+  Verification：cadence/schedule/workers/input/lifecycle/runtime 定向测试、调度集成、E3/bootstrap/app-factory、
+  功能包和架构契约通过；`make format-check`、`make lint`、`make type-check`、`make test`、`make package`、
+  `make performance-check` 和 `git diff --check` 通过。性能门禁 `passed`、网络调用 0、内存增长 0%。沙箱外
+  `diagnose_runtime.py --profile live` 中交易所主数据 5212 条、历史 3/3、Tencent 3 条通过；Tushare 缺 token
+  降级，本地 Web 服务未运行而无法采样 status/current。
+  Residual Risks：未对当前 release 执行上午热运行、午间冷启动、11:20、14:50、15:00 后及正式记录命中/
+  收盘恢复的真实五时段矩阵，也未取得运行中 Web/API/SSE/浏览器一致性现场证据；这些门禁不能由离线测试
+  冒充，后续可用服务窗口或最终 release 批次需补齐。供应商现场实测消耗仅为诊断请求，无业务写入。
+
 - 用户继续执行功能拆包计划，要求完成应用层推荐与决策包迁移。确认根因是推荐评分/冻结用例和统一决策索引、
   查询、事件、SSE、overlay 能力仍平铺在 `application` 根目录，导致 Web、bootstrap、runtime、persistence 和
   测试依赖旧路径；本批将九个推荐用例迁移到 `application/recommendation`，九个决策模块迁移到
