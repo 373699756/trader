@@ -710,7 +710,7 @@ decision query/stream、功能包和架构契约、直接 Node 状态测试、Ru
 
 ## 批次 9：研究、结算与入口收拢
 
-状态：`pending`
+状态：`completed`
 
 ### 目标
 
@@ -759,6 +759,16 @@ make package
 - CLI、工件、研究状态和结算结果不变；
 - research/outcome 旧根级模块删除；
 - 无生产写权限、自动调权或自动 profile 切换。
+
+完成记录：确认根因是 CLI、bootstrap 和研究包初始化路径在普通生产导入时聚合了离线筛选、回放和模型训练，
+导致 CLI 导入 58 个、server 导入 49 个研究模块；仅移动文件不能解除该反向依赖。本批将研究/结算职责
+迁移到 `application/research`、`application/outcomes`，将生产共享的 Tomorrow P2 模型工件放到
+`application/ports/tomorrow_model.py` 并保持 schema、校验和内容 hash 不变；CLI 改为显式研究命令的
+函数内加载，bootstrap 的离线服务依赖也改为函数内加载，三个 research `__init__` 均移除聚合导出。旧根级
+模块、旧测试路径和旧导入全部物理删除，无兼容别名、双实现或隐藏 fallback。定向研究/结算/入口契约、Ruff、
+mypy、全量 pytest、打包、仓库外 wheel/CLI/资源和 `pip check` 均通过；统一只读 research 诊断按既有运行库
+状态报告 `score_p0_v2_historical_planned_dates_missed`，该历史身份不在本批回填或改写。批次 10 的最终清理
+和发布级验收仍待后续独立批次。
 
 建议提交：`refactor(research): consolidate research and outcome boundaries`
 

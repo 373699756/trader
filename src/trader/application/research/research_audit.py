@@ -18,7 +18,7 @@ from trader.domain.recommendation.risk_fusion.scored_fusion import ScoredDecisio
 from trader.domain.recommendation.scoring.scoring import candidate_fields
 
 if TYPE_CHECKING:
-    from trader.application.tomorrow_profile_comparison import TomorrowProfileResearchInput
+    from trader.application.research.tomorrow_profile_comparison import TomorrowProfileResearchInput
 
 LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION = "v2_committed_research_audit_v1"
 RESEARCH_AUDIT_SCHEMA_VERSION = "v2_committed_research_audit_v2"

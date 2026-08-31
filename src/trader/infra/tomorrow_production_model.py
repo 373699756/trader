@@ -11,12 +11,12 @@ import lightgbm as lgb
 import numpy as np
 
 from trader.application.ports.tomorrow_model import (
+    TomorrowHistoricalP2ModelArtifact,
     TomorrowModelInput,
     TomorrowModelPrediction,
     TomorrowModelPredictorPort,
     TomorrowScoringProfile,
 )
-from trader.application.research.tomorrow_historical_p2_screening import TomorrowHistoricalP2ModelArtifact
 
 _EXPECTED_MODEL_HASH = "27034e52813f1776e2ed218c1c397f481b244fb852b01be08ddc21249d887da5"
 _EXPECTED_V1_MODEL_HASH = "4291ea514c233a14ab6f9262e72ea541d1e9a794e73d02f10f8220509f6f502b"

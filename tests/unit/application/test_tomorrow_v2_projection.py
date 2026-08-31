@@ -16,8 +16,8 @@ from trader.application.recommendation.scored_v2_projection import (
     build_scored_v2_local,
 )
 from trader.application.recommendation.tomorrow_model_scoring import TomorrowProductionModelScoringService
-from trader.application.research_audit import build_v2_committed_research_audit
-from trader.application.tomorrow_profile_comparison import (
+from trader.application.research.research_audit import build_v2_committed_research_audit
+from trader.application.research.tomorrow_profile_comparison import (
     TomorrowProfileComparator,
     TomorrowProfileResearchInput,
 )

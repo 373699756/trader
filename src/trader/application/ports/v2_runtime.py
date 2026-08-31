@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from trader.application.ports.market import ResearchRefreshResult
 from trader.application.ports.runtime_status import V2InputQualityStatus
-from trader.application.research_audit import V2CommittedResearchAudit
+from trader.application.research.research_audit import V2CommittedResearchAudit
 from trader.application.runtime.cadence import PipelineTask
 from trader.application.runtime.schedule import MarketPhase
 from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
@@ -19,7 +19,7 @@ from trader.domain.recommendation.decision_identity import DecisionIdentity, Dec
 from trader.domain.recommendation.models import Strategy
 
 if TYPE_CHECKING:
-    from trader.application.tomorrow_profile_comparison import TomorrowProfileResearchInput
+    from trader.application.research.tomorrow_profile_comparison import TomorrowProfileResearchInput
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _IDENTITY = re.compile(r"^[a-zA-Z0-9_.:-]{1,200}$")

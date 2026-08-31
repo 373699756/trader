@@ -6,8 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
-from trader.application.tomorrow_profile_reporting import TomorrowProfileReportingService
-from trader.application.tomorrow_profile_settlement import (
+from trader.application.research.tomorrow_profile_reporting import TomorrowProfileReportingService
+from trader.application.research.tomorrow_profile_settlement import (
     TomorrowProfileSettlementDependencies,
     TomorrowProfileSettlementService,
 )

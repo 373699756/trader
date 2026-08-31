@@ -4,6 +4,7 @@ import ast
 import json
 import os
 import subprocess
+import sys
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -11,6 +12,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 import trader.entrypoints.cli as cli_module
+import trader.entrypoints.research_commands as research_commands_module
 from trader.entrypoints.cli import build_parser, main
 from trader.entrypoints.server import build_parser as build_server_parser
 from trader.infra.persistence.research_trace import (
@@ -19,6 +21,23 @@ from trader.infra.persistence.research_trace import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _research_modules_loaded_by(module_name: str) -> set[str]:
+    probe = (
+        "import importlib,json,sys;"
+        f"importlib.import_module({module_name!r});"
+        "roots=('trader.application.research','trader.domain.research','trader.infra.research');"
+        "print(json.dumps(sorted(name for name in sys.modules if name.startswith(roots))))"
+    )
+    completed = subprocess.run(
+        (sys.executable, "-c", probe),
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return set(json.loads(completed.stdout))
 
 
 def _write_fake_entrypoint(path: Path, body: str) -> None:
@@ -55,6 +74,29 @@ def test_cli_exposes_current_v2_maintenance_and_explicit_offline_research_comman
         "research-r7-dossier",
     ):
         assert retained in help_text
+
+
+def test_cli_module_does_not_eagerly_load_research_implementations() -> None:
+    assert _research_modules_loaded_by("trader.entrypoints.cli") == set()
+
+
+def test_server_module_loads_only_authorized_background_research_consumers() -> None:
+    allowed = {
+        "trader.application.research",
+        "trader.application.research.profile_evidence_ports",
+        "trader.application.research.research_audit",
+        "trader.application.research.research_coordination",
+        "trader.application.research.tomorrow_profile_comparison",
+        "trader.application.research.tomorrow_profile_reporting",
+        "trader.application.research.tomorrow_profile_settlement",
+        "trader.application.research.v2_research_runtime",
+        "trader.domain.research",
+        "trader.domain.research.baseline",
+        "trader.domain.research.paired_statistics",
+        "trader.domain.research.tomorrow_profile_comparison",
+    }
+
+    assert _research_modules_loaded_by("trader.entrypoints.server") <= allowed
 
 
 def test_server_entrypoint_accepts_only_the_two_typed_scoring_profiles() -> None:
@@ -381,7 +423,7 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
 
 def test_research_status_does_not_create_runtime_files(tmp_path: Path, capsys, monkeypatch) -> None:
     monkeypatch.setattr(
-        cli_module,
+        research_commands_module,
         "_shanghai_now",
         lambda: datetime(2026, 8, 20, 15, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
@@ -462,7 +504,7 @@ def test_research_status_reports_irrecoverable_missed_fixed_dates(tmp_path: Path
     config = tmp_path / "runtime.json"
     config.write_text(json.dumps(runtime), encoding="utf-8")
     monkeypatch.setattr(
-        cli_module,
+        research_commands_module,
         "_shanghai_now",
         lambda: datetime(2026, 8, 26, 15, 5, tzinfo=ZoneInfo("Asia/Shanghai")),
     )

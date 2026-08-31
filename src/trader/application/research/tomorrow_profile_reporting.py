@@ -7,7 +7,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import cast
 
-from trader.application.ports.tomorrow_profile_comparison import TomorrowProfileEvidencePort
+from trader.application.research.profile_evidence_ports import TomorrowProfileEvidencePort
 from trader.domain.outcome.models import RecommendationOutcome
 from trader.domain.research.baseline import mean_rank_ic, population_spearman, quantile_bucket
 from trader.domain.research.paired_statistics import (

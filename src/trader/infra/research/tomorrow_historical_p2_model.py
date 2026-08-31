@@ -8,9 +8,9 @@ from typing import Protocol, cast
 
 import lightgbm as lgb
 
+from trader.application.ports.tomorrow_model import TomorrowHistoricalP2ModelArtifact
 from trader.application.research.tomorrow_historical_p2_screening import (
     TOMORROW_HISTORICAL_P2_ALPHA_FEATURE_IDS,
-    TomorrowHistoricalP2ModelArtifact,
     TomorrowHistoricalP2ModelFit,
     TomorrowHistoricalP2Row,
 )

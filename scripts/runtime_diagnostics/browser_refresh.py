@@ -44,7 +44,7 @@ from trader.application.ports.v2_runtime import (  # noqa: E402
     V2ResearchIntent,
     V2ResearchRuntimeStatus,
 )
-from trader.application.research_audit import V2CommittedResearchAudit  # noqa: E402
+from trader.application.research.research_audit import V2CommittedResearchAudit  # noqa: E402
 from trader.application.runtime.cadence import CadencePlanner, CadencePolicy  # noqa: E402
 from trader.application.runtime.runtime import (  # noqa: E402
     RuntimeSupervisor,

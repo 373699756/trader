@@ -39,7 +39,7 @@ from trader.application.ports.v2_runtime import (
     V2SettlementUnavailableError,
     V2TradingCalendarPort,
 )
-from trader.application.research_audit import V2DecisionObservation
+from trader.application.research.research_audit import V2DecisionObservation
 from trader.application.runtime.cadence import (
     CadencePlanner,
     CadencePlannerStatus,

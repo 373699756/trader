@@ -6,9 +6,8 @@ import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Protocol
 
-from trader.application.ports.market import OutcomePriceReaderPort
+from trader.application.outcomes.ports import OutcomeSettlementMarketData, SupplementalOutcomeSettlementPort
 from trader.application.ports.outcomes import OutcomeTargetReaderPort, OutcomeWriterPort
 from trader.application.ports.v2_runtime import V2SettlementPort
 from trader.application.runtime.schedule import shanghai_now
@@ -16,18 +15,6 @@ from trader.domain.market.models import FeatureSnapshot
 from trader.domain.outcome.evaluation import OutcomeEvaluationRequest, evaluate_outcome
 from trader.domain.outcome.models import BenchmarkReturn
 from trader.domain.recommendation.models import Strategy
-
-if TYPE_CHECKING:
-    from trader.application.tomorrow_profile_settlement import TomorrowProfileSettlementService
-
-
-class OutcomeSettlementMarketData(OutcomePriceReaderPort, Protocol):
-    def fetch_market_features(
-        self,
-        observed_at: datetime,
-        *,
-        force: bool = False,
-    ) -> Sequence[FeatureSnapshot]: ...
 
 
 @dataclass(frozen=True)
@@ -126,7 +113,7 @@ class V2OutcomeSettlementAdapter(V2SettlementPort):
         self,
         market_data: OutcomeSettlementMarketData,
         service: OutcomeSettlementService,
-        tomorrow_profiles: TomorrowProfileSettlementService | None = None,
+        tomorrow_profiles: SupplementalOutcomeSettlementPort | None = None,
     ) -> None:
         self._market_data = market_data
         self._service = service

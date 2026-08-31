@@ -34,7 +34,7 @@ from trader.application.recommendation.scored_v2_projection import (
     build_scored_v2_local,
 )
 from trader.application.recommendation.tomorrow_model_scoring import TomorrowProductionModelScoringService
-from trader.application.research_audit import (
+from trader.application.research.research_audit import (
     V2CommittedResearchAudit,
     try_build_v2_committed_research_audit,
 )
@@ -52,7 +52,7 @@ from trader.domain.recommendation.models import RecommendationAction, ScoredDisp
 from trader.domain.recommendation.selection.ranking import candidate_score
 
 if TYPE_CHECKING:
-    from trader.application.tomorrow_profile_comparison import TomorrowProfileResearchInput
+    from trader.application.research.tomorrow_profile_comparison import TomorrowProfileResearchInput
 
 
 @dataclass(frozen=True)
@@ -688,7 +688,7 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         return try_build_v2_committed_research_audit(projection, decision)
 
     def tomorrow_profile_research_input(self, version: str) -> TomorrowProfileResearchInput | None:
-        from trader.application.tomorrow_profile_comparison import TomorrowProfileResearchInput
+        from trader.application.research.tomorrow_profile_comparison import TomorrowProfileResearchInput
 
         with self._lock:
             projection = self._projections.get(version)

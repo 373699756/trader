@@ -9,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from flask import Flask
@@ -21,7 +22,7 @@ from trader.application.decisions.decision_stream import UnifiedDecisionEventStr
 from trader.application.decisions.v2_decision_adapters import V2DeepSeekAdapter, V2FreezeAdapter
 from trader.application.long_v2_runtime import LongV2Runtime, LongV2RuntimeDependencies
 from trader.application.market_data.v2_input_runtime import V2DecisionBuildDependencies, V2MarketDataAdapter
-from trader.application.outcome_settlement import OutcomeSettlementService, V2OutcomeSettlementAdapter
+from trader.application.outcomes.outcome_settlement import OutcomeSettlementService, V2OutcomeSettlementAdapter
 from trader.application.ports.tomorrow_model import TomorrowScoringProfile
 from trader.application.recommendation.scored_v2_freezing import (
     ScoredV2FreezeCoordinator,
@@ -29,13 +30,13 @@ from trader.application.recommendation.scored_v2_freezing import (
 )
 from trader.application.recommendation.today_v2_freezing import TodayV2FreezeCoordinator
 from trader.application.recommendation.tomorrow_model_scoring import TomorrowProductionModelScoringService
-from trader.application.research.historical_backtest import HistoricalBarBacktestService
-from trader.application.research.historical_screening import HistoricalDownloadService
-from trader.application.research.score_r6 import ScoreR6HistoricalScreeningService
-from trader.application.research.score_r6_daily import ScoreR6DailyScreeningService
-from trader.application.research.score_r6_stability import ScoreR6StabilityScreeningService
-from trader.application.research.tomorrow_historical_p2_screening import TomorrowHistoricalP2ScreeningService
-from trader.application.research.tomorrow_profile_holdout import TomorrowProfileHoldoutService
+from trader.application.research.tomorrow_profile_comparison import TomorrowProfileComparator
+from trader.application.research.tomorrow_profile_reporting import TomorrowProfileReportingService
+from trader.application.research.tomorrow_profile_settlement import (
+    TomorrowProfileSettlementDependencies,
+    TomorrowProfileSettlementService,
+)
+from trader.application.research.v2_research_runtime import V2ResearchRuntime
 from trader.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.application.runtime.latency import LatencyWaterfall
 from trader.application.runtime.resource_orchestration import (
@@ -48,13 +49,6 @@ from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownReport
 from trader.application.runtime.source_lanes import SourceLaneRegistry
 from trader.application.runtime.v2_runtime import V2RuntimeDependencies, V2SchedulerRuntime
 from trader.application.runtime.workers import BoundedExecutor
-from trader.application.tomorrow_profile_comparison import TomorrowProfileComparator
-from trader.application.tomorrow_profile_reporting import TomorrowProfileReportingService
-from trader.application.tomorrow_profile_settlement import (
-    TomorrowProfileSettlementDependencies,
-    TomorrowProfileSettlementService,
-)
-from trader.application.v2_research_runtime import V2ResearchRuntime
 from trader.bootstrap_clock import utc_now as _utc_now
 from trader.bootstrap_data_plane import _initialize_reference_data_plane
 from trader.bootstrap_policy import _long_group_definitions, _long_item_definitions, _recommendation_policy
@@ -98,9 +92,6 @@ from trader.infra.persistence.tomorrow_profile_comparison import (
     SQLiteTomorrowProfileEvidenceStore,
     TomorrowProfileEvidenceConflictError,
 )
-from trader.infra.research.history_archive import SQLiteHistoricalArchive
-from trader.infra.research.history_sources import HistoricalPriceProviderAdapter, SinaHistoricalUniverseProvider
-from trader.infra.research.score_r6_daily_artifacts import ScoreR6DailyArtifactStore
 from trader.infra.runtime_support import RuntimeWorkerResources, ShanghaiClock
 from trader.infra.settings import (
     LongWatchlist,
@@ -113,6 +104,16 @@ from trader.infra.settings import (
 from trader.infra.tomorrow_production_model import load_packaged_tomorrow_production_model
 from trader.web import create_app
 from trader.web.api.route_services import UnifiedWebServices, WebApiConfig
+
+if TYPE_CHECKING:
+    from trader.application.research.historical_backtest import HistoricalBarBacktestService
+    from trader.application.research.historical_screening import HistoricalDownloadService
+    from trader.application.research.score_r6 import ScoreR6HistoricalScreeningService
+    from trader.application.research.score_r6_daily import ScoreR6DailyScreeningService
+    from trader.application.research.score_r6_stability import ScoreR6StabilityScreeningService
+    from trader.application.research.tomorrow_historical_p2_screening import TomorrowHistoricalP2ScreeningService
+    from trader.application.research.tomorrow_profile_holdout import TomorrowProfileHoldoutService
+    from trader.infra.research.history_archive import SQLiteHistoricalArchive
 
 
 @dataclass(frozen=True)
@@ -410,7 +411,17 @@ def build_historical_research_services(
 ) -> HistoricalResearchServices:
     """Compose explicit offline research without starting production resources."""
 
+    from trader.application.research.historical_backtest import HistoricalBarBacktestService
+    from trader.application.research.historical_screening import HistoricalDownloadService
+    from trader.application.research.score_r6 import ScoreR6HistoricalScreeningService
+    from trader.application.research.score_r6_daily import ScoreR6DailyScreeningService
+    from trader.application.research.score_r6_stability import ScoreR6StabilityScreeningService
+    from trader.application.research.tomorrow_historical_p2_screening import TomorrowHistoricalP2ScreeningService
+    from trader.application.research.tomorrow_profile_holdout import TomorrowProfileHoldoutService
     from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC
+    from trader.infra.research.history_archive import SQLiteHistoricalArchive
+    from trader.infra.research.history_sources import HistoricalPriceProviderAdapter, SinaHistoricalUniverseProvider
+    from trader.infra.research.score_r6_daily_artifacts import ScoreR6DailyArtifactStore
     from trader.infra.research.tomorrow_historical_p2_model import TomorrowHistoricalP2EnsembleTrainer
 
     settings = load_runtime_settings(config_path)

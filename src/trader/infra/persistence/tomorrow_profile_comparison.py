@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import cast
 from zoneinfo import ZoneInfo
 
-from trader.application.ports.tomorrow_profile_comparison import TomorrowFormalPairTarget
+from trader.application.research.profile_evidence_ports import TomorrowFormalPairTarget
 from trader.domain.outcome.models import RecommendationOutcome
 from trader.domain.research.tomorrow_profile_comparison import (
     PairEvidenceState,

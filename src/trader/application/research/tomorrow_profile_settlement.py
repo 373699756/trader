@@ -6,12 +6,12 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.application.outcome_settlement import OutcomeSettlementMarketData
+from trader.application.outcomes.ports import OutcomeSettlementMarketData
 from trader.application.ports.decision_records import DecisionRecordRepositoryPort
 from trader.application.ports.outcomes import OutcomeTargetReaderPort
-from trader.application.ports.tomorrow_profile_comparison import TomorrowProfileEvidencePort
+from trader.application.research.profile_evidence_ports import TomorrowProfileEvidencePort
+from trader.application.research.tomorrow_profile_reporting import TomorrowProfileReportingService
 from trader.application.runtime.schedule import shanghai_now
-from trader.application.tomorrow_profile_reporting import TomorrowProfileReportingService
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.outcome.evaluation import OutcomeEvaluationRequest, evaluate_outcome
 from trader.domain.outcome.models import OutcomeTarget

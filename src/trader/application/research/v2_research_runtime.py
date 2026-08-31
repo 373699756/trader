@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 
 from trader.application.ports.market import ResearchReaderPort, ResearchRefreshResult
 from trader.application.ports.v2_runtime import V2CycleRequest, V2ResearchIntent, V2ResearchRuntimeStatus
-from trader.application.research_coordination import ResearchCoordinator
+from trader.application.research.research_coordination import ResearchCoordinator
 from trader.application.runtime.cadence import CadencePolicy, PipelineTask, cadence_band
 from trader.application.runtime.schedule import MarketPhase
 from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep

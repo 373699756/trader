@@ -5,7 +5,7 @@ import threading
 from tests.unit.domain.test_decision_identity import decision
 from trader.application.decisions.decision_events import build_v2_decision_committed
 from trader.application.decisions.decision_observers import AsyncDecisionObserver
-from trader.application.research_audit import V2DecisionObservation
+from trader.application.research.research_audit import V2DecisionObservation
 from trader.application.runtime.shutdown import ShutdownDeadline
 
 

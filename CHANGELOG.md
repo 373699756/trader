@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户继续执行 `docs/plan.md` 批次 9，要求研究、结算和入口收拢且普通生产排障不加载离线实现。
+  新增 `application/research`、`application/outcomes` 的窄所有权包、结算端口和 profile 证据端口；生产共享
+  的 Tomorrow P2 不可变模型工件落在 `application/ports/tomorrow_model.py`，保持原 schema、验证和 SHA-256
+  identity。`Regression-Key: functional-package-research-outcomes-v1`。
+
 - 用户继续执行 `docs/plan.md` 的下一完整未完成章节，要求把 HTTP/API/SSE 与页面资源形成专业、可审查的
   包边界。新增 `web/api` 局部所有权说明、迁移清单和架构契约，固定该包唯一拥有请求校验、显式 JSON
   投影、SSE 编码与注入的只读 Web 服务协议，并禁止反向导入基础设施、入口或组合根。
@@ -529,6 +534,12 @@ All notable changes to this project are documented here.
   前向封存状态、第二轮权重收缩和 `PromotionDossier` 人工晋级边界。
 
 ### Changed
+
+- 确认根因是 CLI、bootstrap 和 research 包初始化在普通导入时聚合离线筛选、回放和模型训练；CLI 导入
+  58 个、server 导入 49 个研究模块。研究用例现在只在显式 `research-*` 命令函数内加载，bootstrap 的离线
+  服务依赖移入构建函数，server 只保留权威后台证据消费者；研究包初始化不再执行聚合导入。普通生产依赖图
+  因此不加载离线训练实现，公开 CLI 参数、命令、退出码、研究状态 JSON、结算行为和工件 hash 保持不变。
+  `Regression-Key: functional-package-research-outcomes-v1`。
 
 - 确认根因是路由、serializer、SSE 响应和 Web 服务协议仍平铺在 `web` 根目录，且 blueprint 组合另有一个
   根级 facade，API 所有权与模板/静态资源展示边界混杂。本批将四个 API 模块统一迁移到 `web/api`，
@@ -1091,6 +1102,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复生产模型适配器为了读取 Tomorrow P2 工件而导入离线筛选模块的问题。工件值对象迁移到生产中立端口，
+  消除 server 启动时连带加载历史筛选、回放模型、P2 规范等七个离线模块；离线 trainer、artifact store 和
+  研究测试改用同一类型，不保留复制类或兼容转发。生产推理仍校验原候选身份、schema、参数有限性和内容
+  hash，错误仍 fail closed。
+
 - 修复计划中直接执行 `node --test tests/js/test_dashboard_state.js` 时未提供显式资源路径便无法读取
   dashboard 脚本的问题；测试现在默认解析仓库内正式静态资源，同时保留包装器传入 wheel/临时资源路径
   的能力。生产 JavaScript、路由响应和浏览器行为未改变。
@@ -1532,6 +1548,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 物理删除 application 根级研究/结算模块、旧 profile 端口和对应根级测试路径；删除 research 包的聚合
+  `__all__`/重导出和所有旧导入路径。未保留兼容模块、弃用窗口、双读双写、动态 fallback 或旧生产实现。
+
 - 物理删除 `web` 根级 `routes.py`、`routes_v2.py`、`route_services.py`、`decision_serializers.py` 和
   `decision_sse.py` 旧路径；未保留转发模块、兼容别名、重复 blueprint 注册、双 serializer 或隐藏
   fallback。
@@ -1727,6 +1746,16 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- `tests/unit/application/research`、`tests/unit/domain/research`、`tests/unit/infra/research`、结算、trace、
+  score-plan、功能包、架构和 E9 入口契约全部通过；CLI 导入研究模块数为 0，server 仅加载允许的后台证据
+  消费者。`make format-check`、`make lint`（严格重构债务 0）、`make type-check`（288 个源码文件）、
+  `make test` 和 `make package` 全部通过，`git diff --check` 通过。
+- 仓库外 wheel 安装后实际从临时 `site-packages` 导入 `trader`，新 research/outcomes 模块可导入，旧模块
+  均不可发现；`trader-cli --help`、绝对配置路径 `validate-config`、只读 `research-status`、模板/CSS/JS/
+  两个 SVG 资源和 `pip check` 通过。统一 `scripts/diagnose_runtime.py --profile research --output -`
+  完成并只输出有界聚合报告；报告按既有 `score_p0_v2_historical_planned_dates_missed` 状态为 `failed`，
+  未将该运行库状态误报为重构通过。
 
 - Batch 8 定向 Web/架构/应用回归通过：E8、app-factory、decision query/stream、DeepSeek Web 组件、
   功能包和架构契约全部通过，`node --test tests/js/test_dashboard_state.js` 直接命令通过；
@@ -2703,6 +2732,12 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 研究诊断如实报告既有 `score_p0_v2_historical_planned_dates_missed`：历史窗口已错过 7 个固定计划日，
+  当前最大可达 33/40 且 `recoverable=false`。本批不回填、顺延或改写该研究身份；这不是包迁移回归，后续
+  新窗口必须另立预注册身份。
+- 本批未执行 Firefox 浏览器专项和真实供应商/DeepSeek 现场门禁，因为没有改变 Web、行情、评分、冻结或
+  预算边界；最终发布批次仍需按计划补齐可用环境中的发布级验收。批次 10 的迁移痕迹清理尚未开始。
 
 - 统一 `browser` profile 在运行行为断言前因本机未安装 geckodriver，以
   `Firefox and geckodriver are required` 退出；因此 Firefox 下的 SSE 重连、cursor resync 和

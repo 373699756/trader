@@ -210,7 +210,7 @@ MIGRATION_LEDGER: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ),
 )
 
-COMPLETED_BATCHES = frozenset({"batch-2", "batch-3", "batch-4", "batch-5", "batch-6", "batch-7", "batch-8"})
+COMPLETED_BATCHES = frozenset({"batch-2", "batch-3", "batch-4", "batch-5", "batch-6", "batch-7", "batch-8", "batch-9"})
 
 TARGET_PACKAGES = (
     "domain/market",
@@ -558,6 +558,36 @@ def test_web_api_and_presentation_resources_are_partitioned() -> None:
     violations = [
         f"{path.relative_to(SOURCE_ROOT)} -> {imported}"
         for path in api_root.rglob("*.py")
+        for imported in _imports(path)
+        if imported.startswith(forbidden_imports)
+    ]
+    assert violations == []
+
+
+def test_application_research_and_outcome_services_are_partitioned() -> None:
+    application_root = SOURCE_ROOT / "application"
+    research_root = application_root / "research"
+    outcomes_root = application_root / "outcomes"
+    research_files = {
+        "research_audit.py",
+        "research_coordination.py",
+        "tomorrow_profile_comparison.py",
+        "tomorrow_profile_reporting.py",
+        "tomorrow_profile_settlement.py",
+        "v2_research_runtime.py",
+    }
+
+    assert {path.name for path in research_root.glob("*.py")} >= research_files | {"profile_evidence_ports.py"}
+    assert (outcomes_root / "outcome_settlement.py").is_file()
+    assert (outcomes_root / "ports.py").is_file()
+    assert not any((application_root / name).exists() for name in research_files | {"outcome_settlement.py"})
+    assert not (application_root / "ports/tomorrow_profile_comparison.py").exists()
+
+    forbidden_imports = ("trader.infra", "trader.web", "trader.entrypoints")
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)} -> {imported}"
+        for package_root in (research_root, outcomes_root)
+        for path in package_root.rglob("*.py")
         for imported in _imports(path)
         if imported.startswith(forbidden_imports)
     ]

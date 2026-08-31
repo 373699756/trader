@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from trader.application.decisions.decision_observers import DecisionObserverStatus
 from trader.application.ports.runtime_status import V2InputQualityStatus, V2SupplyFunnel, V2SupplySummary
 from trader.application.ports.v2_runtime import V2ResearchRuntimeStatus
+from trader.application.research.v2_research_runtime import V2ResearchRuntime
 from trader.application.runtime.cadence import (
     CadencePlannerStatus,
     SchedulePointKey,
@@ -18,7 +19,6 @@ from trader.application.runtime.cadence import (
     SchedulePointStatus,
 )
 from trader.application.runtime.schedule import SchedulePoint
-from trader.application.v2_research_runtime import V2ResearchRuntime
 from trader.bootstrap import (
     _initialize_reference_data_plane,
     _initialize_research_trace,

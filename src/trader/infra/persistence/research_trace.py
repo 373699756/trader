@@ -18,7 +18,7 @@ from trader.application.decisions.decision_events import (
     V2CommittedDecisionItem,
     V2DecisionCommitted,
 )
-from trader.application.research_audit import (
+from trader.application.research.research_audit import (
     LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
     RESEARCH_AUDIT_SCHEMA_VERSION,
     ShadowMode,

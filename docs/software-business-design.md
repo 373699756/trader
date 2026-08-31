@@ -607,6 +607,14 @@ web/api
 | 9 | `application/outcome_settlement.py` | `application/outcomes` |
 | 9 | `application/research_audit.py`、`research_coordination.py`、`tomorrow_profile_comparison.py`、`tomorrow_profile_reporting.py`、`tomorrow_profile_settlement.py`、`v2_research_runtime.py` | `application/research` |
 
+批次 9 已完成：结果结算用例和结算端口位于 `application/outcomes`，离线研究用例及 profile 证据端口位于
+`application/research`；生产模型共享的不可变 Tomorrow P2 工件位于 `application/ports/tomorrow_model.py`，
+不反向依赖离线研究。`application/research/__init__.py`、`domain/research/__init__.py` 和
+`infra/research/__init__.py` 只作为标记包，不聚合导入。`trader.entrypoints.cli` 只在执行显式
+`research-*` 命令时加载研究实现，`trader.entrypoints.server` 仅加载权威后台证据消费者；普通生产入口不再
+隐式导入离线筛选、回放和模型训练模块。研究/结算仍不启动网络、DeepSeek、HTTP、冻结或活动数据库写入，
+也不具备生产配置、正式决策、自动调权或自动 profile 切换权限。
+
 迁移批次必须继续使用显式组合根 `bootstrap.py`；`application/ports` 在没有耦合证据前保持稳定。每个
 目标包都应有窄入口、直接测试和影响矩阵记录，层间只能沿上方箭头依赖；同层子包由共享不可变值对象
 连接，不得通过聚合 `__init__.py`、动态字典或隐藏服务定位器取得能力。批次完成后，架构契约必须同时

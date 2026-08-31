@@ -13,7 +13,7 @@ from trader.application.recommendation.tomorrow_model_scoring import (
     TomorrowModelDiagnostics,
     TomorrowProductionModelScoringService,
 )
-from trader.application.research_audit import V2DecisionObservation
+from trader.application.research.research_audit import V2DecisionObservation
 from trader.domain.recommendation.decision_identity import DecisionItem
 from trader.domain.recommendation.models import Strategy
 from trader.domain.research.tomorrow_profile_comparison import (

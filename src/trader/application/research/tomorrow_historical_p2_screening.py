@@ -11,8 +11,9 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal, Protocol
 
+from trader.application.ports.tomorrow_model import TomorrowHistoricalP2ModelArtifact
 from trader.application.research.historical_screening import HistoricalArchiveManifest, HistoricalArchiveStatus
-from trader.application.research.replay_models import canonical_hash, canonical_json
+from trader.application.research.replay_models import canonical_json
 from trader.application.research.tomorrow_historical_p2_models import (
     TomorrowHistoricalP2GateMetrics,
     TomorrowHistoricalP2Report,
@@ -24,7 +25,6 @@ from trader.domain.research.paired_statistics import (
     paired_moving_block_statistics,
 )
 from trader.domain.research.tomorrow_historical_p2 import (
-    TOMORROW_HISTORICAL_P2_CANDIDATE_ID,
     TOMORROW_HISTORICAL_P2_SPEC,
     TomorrowHistoricalP2Candidate,
     TomorrowHistoricalP2Spec,
@@ -82,48 +82,6 @@ class TomorrowHistoricalP2Row:
             < 0.0
         ):
             raise ValueError("Tomorrow P2 risk, cost, and capacity values cannot be negative")
-
-
-@dataclass(frozen=True)
-class TomorrowHistoricalP2ModelArtifact:
-    candidate_id: str
-    feature_ids: tuple[str, ...]
-    transformer_means: tuple[float, ...]
-    transformer_scales: tuple[float, ...]
-    linear_intercept: float
-    linear_coefficients: tuple[float, ...]
-    lightgbm_model: str
-    lightgbm_best_iteration: int
-    training_rows: int
-    internal_validation_rows: int
-    schema_version: str = "score_tomorrow_historical_p2_model_v1"
-    content_hash: str = dataclasses.field(init=False)
-
-    def __post_init__(self) -> None:
-        width = len(self.feature_ids)
-        if (
-            self.candidate_id != TOMORROW_HISTORICAL_P2_CANDIDATE_ID
-            or width < 1
-            or len(set(self.feature_ids)) != width
-            or len(self.transformer_means) != width
-            or len(self.transformer_scales) != width
-            or len(self.linear_coefficients) != width
-            or not self.lightgbm_model
-            or self.lightgbm_best_iteration < 1
-            or self.training_rows < 1
-            or not 1 <= self.internal_validation_rows < self.training_rows
-            or self.schema_version != "score_tomorrow_historical_p2_model_v1"
-        ):
-            raise ValueError("Tomorrow P2 model artifact identity is invalid")
-        numeric = (
-            *self.transformer_means,
-            *self.transformer_scales,
-            self.linear_intercept,
-            *self.linear_coefficients,
-        )
-        if any(not math.isfinite(value) for value in numeric) or any(value <= 0.0 for value in self.transformer_scales):
-            raise ValueError("Tomorrow P2 model artifact parameters are invalid")
-        object.__setattr__(self, "content_hash", canonical_hash(self))
 
 
 @dataclass(frozen=True)

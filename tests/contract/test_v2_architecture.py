@@ -216,7 +216,7 @@ def test_internal_state_is_typed_until_an_explicit_observability_boundary() -> N
 def test_identity_and_audit_payloads_have_one_explicit_field_projection() -> None:
     identity = (SOURCE_ROOT / "domain/recommendation/decision_identity.py").read_text(encoding="utf-8")
     codec = (SOURCE_ROOT / "infra/persistence/decision_record_codec.py").read_text(encoding="utf-8")
-    audit = (SOURCE_ROOT / "application/research_audit.py").read_text(encoding="utf-8")
+    audit = (SOURCE_ROOT / "application/research/research_audit.py").read_text(encoding="utf-8")
     columnar = (SOURCE_ROOT / "infra/market_data/normalization/columnar.py").read_text(encoding="utf-8")
 
     assert "def committed_record_identity_payload(" in identity

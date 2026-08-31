@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+from trader.application.ports.tomorrow_model import TomorrowHistoricalP2ModelArtifact
 from trader.application.research.historical_screening import (
     HistoricalArchiveManifest,
     HistoricalArchiveStatus,
     HistoricalHistoryIdentity,
 )
 from trader.application.research.tomorrow_historical_p2_screening import (
-    TomorrowHistoricalP2ModelArtifact,
     TomorrowHistoricalP2ModelFit,
     TomorrowHistoricalP2Row,
     TomorrowHistoricalP2ScreeningService,
