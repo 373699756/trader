@@ -5,9 +5,9 @@ from __future__ import annotations
 from trader.application.long_groups import LongGroupDefinition, LongGroupSectionDefinition, LongWatchItemDefinition
 from trader.application.policy import RecommendationPolicy, SelectionPolicy
 from trader.domain.market.models import Board
-from trader.domain.recommendation.filters import HardFilterPolicy
-from trader.domain.recommendation.fusion import FusionPolicy
+from trader.domain.recommendation.filtering.filters import HardFilterPolicy
 from trader.domain.recommendation.models import Strategy
+from trader.domain.recommendation.risk_fusion.fusion import FusionPolicy
 from trader.domain.review.models import RiskRule
 from trader.infra.settings import LongWatchlist, StrategySettings
 

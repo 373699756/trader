@@ -11,10 +11,7 @@ from typing import Literal
 
 from trader.application.ports.scored import ScoredNativeInput
 from trader.domain.market.models import Board, FeatureSnapshot
-from trader.domain.recommendation.scored_selection import (
-    ScoredDisposition,
-    ScoredSelectionResult,
-)
+from trader.domain.recommendation.models import ScoredDisposition, ScoredSelectionResult
 
 ScoredInputQualityStatus = Literal[
     "ready",

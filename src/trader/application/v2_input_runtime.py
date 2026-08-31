@@ -48,9 +48,8 @@ from trader.domain.recommendation.decision_identity import (
     ScoredDecision,
     identity_codes,
 )
-from trader.domain.recommendation.models import RecommendationAction, Strategy
-from trader.domain.recommendation.ranking import candidate_score
-from trader.domain.recommendation.scored_selection import ScoredDisposition
+from trader.domain.recommendation.models import RecommendationAction, ScoredDisposition, Strategy
+from trader.domain.recommendation.selection.ranking import candidate_score
 
 if TYPE_CHECKING:
     from trader.application.tomorrow_profile_comparison import TomorrowProfileResearchInput

@@ -7,14 +7,20 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from enum import Enum
 from types import MappingProxyType
 
 from trader.domain.market.factors import clamp, round_score
 from trader.domain.market.models import Board, FeatureSnapshot
-from trader.domain.recommendation.filters import HardFilterPolicy, hard_filter
-from trader.domain.recommendation.models import BoardStrategyPolicy, FilterAudit, Strategy
-from trader.domain.recommendation.scoring import (
+from trader.domain.recommendation.filtering.filters import HardFilterPolicy, hard_filter
+from trader.domain.recommendation.models import (
+    BoardStrategyPolicy,
+    FilterAudit,
+    ScoredDisposition,
+    ScoredSelectionResult,
+    ScoredStockEvaluation,
+    Strategy,
+)
+from trader.domain.recommendation.scoring.scoring import (
     BoardCrossSection,
     BoardCrossSectionRequest,
     apply_board_policy,
@@ -26,17 +32,11 @@ from trader.domain.recommendation.scoring import (
     score_board_strategy,
 )
 from trader.domain.recommendation.strategies.composition import LocalScoreResult
-from trader.domain.review.models import RiskFact, RiskRule
+from trader.domain.review.models import RiskRule
 from trader.domain.review.rules import aggregate_risk_penalty, derive_local_risk_facts
 
 _SUPPORTED_BOARDS = (Board.MAIN, Board.CHINEXT, Board.STAR)
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"
-
-
-class ScoredDisposition(str, Enum):
-    PASS = "pass"
-    OBSERVE_ONLY = "observe_only"
-    REJECT = "reject"
 
 
 @dataclass(frozen=True)
@@ -189,58 +189,6 @@ def _validated_population_window(
     ):
         raise ValueError("scored population cannot contain data after its evaluation time")
     return evaluated_at, max_age_seconds
-
-
-@dataclass(frozen=True)
-class ScoredStockEvaluation:
-    features: FeatureSnapshot
-    disposition: ScoredDisposition
-    filter_reasons: tuple[FilterAudit, ...] = ()
-    optional_flags: tuple[FilterAudit, ...] = ()
-    candidate_missing_ratio: float | None = None
-    candidate_components: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
-    candidate_score: float | None = None
-    candidate_rank: int = 0
-    candidate_audit_rank: int = 0
-    candidate_audit_pruning_reason: str = ""
-    local_components: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
-    local_base_score: float | None = None
-    local_risk_penalty: float | None = None
-    local_score: float | None = None
-    local_risk_facts: tuple[RiskFact, ...] = ()
-    board_rank: int = 0
-    rank: int = 0
-    selection_skip_reason: str = ""
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "candidate_components", MappingProxyType(dict(self.candidate_components)))
-        object.__setattr__(self, "local_components", MappingProxyType(dict(self.local_components)))
-
-    @property
-    def code(self) -> str:
-        return self.features.quote.code
-
-
-@dataclass(frozen=True)
-class ScoredSelectionResult:
-    evaluations: tuple[ScoredStockEvaluation, ...]
-    scored_candidates: tuple[ScoredStockEvaluation, ...]
-    observations: tuple[ScoredStockEvaluation, ...]
-    selected: tuple[ScoredStockEvaluation, ...]
-    population_versions: Mapping[Board, str]
-    hard_filter_reason_counts: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
-    population_rejected_count: int = 0
-    population_filter_reason_counts: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
-
-    def __post_init__(self) -> None:
-        if self.population_rejected_count < 0:
-            raise ValueError("scored population rejected count cannot be negative")
-        object.__setattr__(self, "population_versions", MappingProxyType(dict(self.population_versions)))
-        for name in (
-            "hard_filter_reason_counts",
-            "population_filter_reason_counts",
-        ):
-            object.__setattr__(self, name, MappingProxyType(dict(getattr(self, name))))
 
 
 def select_scored(request: ScoredSelectionRequest) -> ScoredSelectionResult:
@@ -574,10 +522,7 @@ def _reliability_audit(feature: FeatureSnapshot, threshold: float) -> FilterAudi
 
 __all__ = [
     "BoardCrossSectionFallback",
-    "ScoredDisposition",
     "ScoredSelectionPolicy",
     "ScoredSelectionRequest",
-    "ScoredSelectionResult",
-    "ScoredStockEvaluation",
     "select_scored",
 ]

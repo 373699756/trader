@@ -11,7 +11,7 @@ from dataclasses import replace
 from typing_extensions import Unpack
 
 from trader.domain.market.models import Evidence, FeatureSnapshot
-from trader.domain.recommendation.fusion import STRUCTURED_REVIEW_FEATURES
+from trader.domain.recommendation.risk_fusion.fusion import STRUCTURED_REVIEW_FEATURES
 from trader.infra.deepseek.evidence_router import event_key as _evidence_event_key
 from trader.infra.deepseek.evidence_router import route_prompt_evidence
 from trader.infra.deepseek.evidence_router import source_tier as _evidence_source_tier

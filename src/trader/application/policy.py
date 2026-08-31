@@ -7,12 +7,12 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 
 from trader.domain.market.models import Board
-from trader.domain.recommendation.filters import HardFilterPolicy
-from trader.domain.recommendation.fusion import FusionPolicy
+from trader.domain.recommendation.filtering.filters import HardFilterPolicy
 from trader.domain.recommendation.models import (
     BoardStrategyPolicy,
     Strategy,
 )
+from trader.domain.recommendation.risk_fusion.fusion import FusionPolicy
 from trader.domain.review.models import RiskRule
 
 

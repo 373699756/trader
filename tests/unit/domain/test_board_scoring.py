@@ -11,7 +11,7 @@ from trader.domain.recommendation.models import (
     BoardStrategyPolicy,
     Strategy,
 )
-from trader.domain.recommendation.scoring import (
+from trader.domain.recommendation.scoring.scoring import (
     BoardCrossSectionRequest,
     apply_board_policy,
     build_board_cross_section,

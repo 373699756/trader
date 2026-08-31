@@ -5,9 +5,8 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from trader.domain.market.models import Board
-from trader.domain.recommendation.models import BoardStrategyPolicy, Strategy
-from trader.domain.recommendation.scored_selection import (
-    ScoredDisposition,
+from trader.domain.recommendation.models import BoardStrategyPolicy, ScoredDisposition, Strategy
+from trader.domain.recommendation.selection.scored_selection import (
     ScoredSelectionPolicy,
     ScoredSelectionRequest,
     select_scored,

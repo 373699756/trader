@@ -33,10 +33,10 @@ from trader.domain.recommendation.decision_identity import (
     ScoredDecision,
     SelectionDiagnostics,
 )
-from trader.domain.recommendation.downside import assess_downside
-from trader.domain.recommendation.filters import hard_filter
-from trader.domain.recommendation.models import RecommendationAction, Strategy
-from trader.domain.recommendation.scored_fusion import (
+from trader.domain.recommendation.filtering.filters import hard_filter
+from trader.domain.recommendation.models import RecommendationAction, ScoredSelectionResult, Strategy
+from trader.domain.recommendation.risk_fusion.downside import assess_downside
+from trader.domain.recommendation.risk_fusion.scored_fusion import (
     DecisionEpoch,
     ScoredDecisionEntry,
     ScoredDecisionPolicy,
@@ -45,7 +45,6 @@ from trader.domain.recommendation.scored_fusion import (
     build_scored_decision_epoch,
     select_scored_review_candidates,
 )
-from trader.domain.recommendation.scored_selection import ScoredSelectionResult
 from trader.domain.review.models import DeepSeekReview, ReviewOutcome
 
 

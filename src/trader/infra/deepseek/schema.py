@@ -11,7 +11,7 @@ from dataclasses import replace
 from datetime import datetime
 
 from trader.domain.market.models import FeatureSnapshot
-from trader.domain.recommendation.fusion import DIMENSION_NAMES
+from trader.domain.recommendation.risk_fusion.fusion import DIMENSION_NAMES
 from trader.domain.review.models import DeepSeekReview, DimensionAssessment, ReviewOutcome, RiskFact
 from trader.domain.review.rules import DEEPSEEK_STRUCTURED_RISK_CODES
 from trader.infra.deepseek.evidence_router import evidence_quality as _evidence_quality

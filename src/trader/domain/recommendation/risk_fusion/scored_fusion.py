@@ -16,23 +16,21 @@ from typing import Literal, TypeAlias
 
 from trader.domain.market.factors import round_score
 from trader.domain.market.models import Board, FeatureSnapshot
-from trader.domain.recommendation.downside import assess_downside
-from trader.domain.recommendation.fusion import (
-    DIMENSION_NAMES,
-    FusionPolicy,
-    FusionRequest,
-    fuse_score,
-)
 from trader.domain.recommendation.models import (
     FusionMode,
     RecommendationAction,
     ScoreBreakdown,
-    Strategy,
-)
-from trader.domain.recommendation.scored_selection import (
     ScoredDisposition,
     ScoredSelectionResult,
     ScoredStockEvaluation,
+    Strategy,
+)
+from trader.domain.recommendation.risk_fusion.downside import assess_downside
+from trader.domain.recommendation.risk_fusion.fusion import (
+    DIMENSION_NAMES,
+    FusionPolicy,
+    FusionRequest,
+    fuse_score,
 )
 from trader.domain.recommendation.strategies.composition import LocalScoreResult
 from trader.domain.review.models import (

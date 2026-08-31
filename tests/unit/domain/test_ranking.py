@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 import pytest
 
 from trader.domain.market.models import Board
-from trader.domain.recommendation.downside import DownsideAssessment
 from trader.domain.recommendation.models import (
     FusionMode,
     Recommendation,
@@ -14,7 +13,8 @@ from trader.domain.recommendation.models import (
     ScoreBreakdown,
     Strategy,
 )
-from trader.domain.recommendation.ranking import (
+from trader.domain.recommendation.risk_fusion.downside import DownsideAssessment
+from trader.domain.recommendation.selection.ranking import (
     ActionPolicy,
     SelectionPolicy,
     action_for,

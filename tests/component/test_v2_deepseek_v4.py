@@ -11,8 +11,8 @@ from trader.domain.market.models import (
     FeatureSnapshot,
     MarketQuote,
 )
-from trader.domain.recommendation.fusion import DIMENSION_NAMES
 from trader.domain.recommendation.models import Strategy
+from trader.domain.recommendation.risk_fusion.fusion import DIMENSION_NAMES
 from trader.domain.review.models import (
     ReviewCandidateContext,
     ReviewOutcome,

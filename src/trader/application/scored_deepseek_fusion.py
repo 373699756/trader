@@ -8,7 +8,7 @@ from datetime import datetime
 
 from trader.application.policy import RecommendationPolicy
 from trader.domain.recommendation.models import Strategy
-from trader.domain.recommendation.scored_fusion import ScoredDecisionPolicy
+from trader.domain.recommendation.risk_fusion.scored_fusion import ScoredDecisionPolicy
 from trader.domain.review.models import DeepSeekReview, ReviewOutcome
 
 

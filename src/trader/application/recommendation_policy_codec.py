@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from trader.domain.market.models import FeatureSnapshot
-from trader.domain.recommendation.ranking import CORE_FIELDS
+from trader.domain.recommendation.selection.ranking import CORE_FIELDS
 
 _PRESELECTION_VALUE_FIELDS = (*CORE_FIELDS, "amount_median_20d", "trend_score")
 

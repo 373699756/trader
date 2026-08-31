@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING, Literal
 from trader.application.decision_events import V2DecisionCommitted
 from trader.application.scored_v2_projection import ScoredV2LocalProjection
 from trader.domain.recommendation.decision_identity import ScoredDecision
-from trader.domain.recommendation.scored_fusion import ScoredDecisionEntry
-from trader.domain.recommendation.scored_selection import ScoredDisposition
-from trader.domain.recommendation.scoring import candidate_fields
+from trader.domain.recommendation.models import ScoredDisposition
+from trader.domain.recommendation.risk_fusion.scored_fusion import ScoredDecisionEntry
+from trader.domain.recommendation.scoring.scoring import candidate_fields
 
 if TYPE_CHECKING:
     from trader.application.tomorrow_profile_comparison import TomorrowProfileResearchInput

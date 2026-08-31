@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from types import MappingProxyType
@@ -14,7 +14,7 @@ from trader.domain.market.models import Board, FeatureSnapshot
 from trader.domain.review.models import DeepSeekReview, RiskFact
 
 if TYPE_CHECKING:
-    from trader.domain.recommendation.downside import DownsideAssessment
+    from trader.domain.recommendation.risk_fusion.downside import DownsideAssessment
 
 
 class Strategy(str, Enum):
@@ -98,6 +98,64 @@ class SelectionSkip:
     observed_at: datetime
 
 
+class ScoredDisposition(str, Enum):
+    PASS = "pass"
+    OBSERVE_ONLY = "observe_only"
+    REJECT = "reject"
+
+
+@dataclass(frozen=True)
+class ScoredStockEvaluation:
+    features: FeatureSnapshot
+    disposition: ScoredDisposition
+    filter_reasons: tuple[FilterAudit, ...] = ()
+    optional_flags: tuple[FilterAudit, ...] = ()
+    candidate_missing_ratio: float | None = None
+    candidate_components: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
+    candidate_score: float | None = None
+    candidate_rank: int = 0
+    candidate_audit_rank: int = 0
+    candidate_audit_pruning_reason: str = ""
+    local_components: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
+    local_base_score: float | None = None
+    local_risk_penalty: float | None = None
+    local_score: float | None = None
+    local_risk_facts: tuple[RiskFact, ...] = ()
+    board_rank: int = 0
+    rank: int = 0
+    selection_skip_reason: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "candidate_components", MappingProxyType(dict(self.candidate_components)))
+        object.__setattr__(self, "local_components", MappingProxyType(dict(self.local_components)))
+
+    @property
+    def code(self) -> str:
+        return self.features.quote.code
+
+
+@dataclass(frozen=True)
+class ScoredSelectionResult:
+    evaluations: tuple[ScoredStockEvaluation, ...]
+    scored_candidates: tuple[ScoredStockEvaluation, ...]
+    observations: tuple[ScoredStockEvaluation, ...]
+    selected: tuple[ScoredStockEvaluation, ...]
+    population_versions: Mapping[Board, str]
+    hard_filter_reason_counts: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
+    population_rejected_count: int = 0
+    population_filter_reason_counts: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
+
+    def __post_init__(self) -> None:
+        if self.population_rejected_count < 0:
+            raise ValueError("scored population rejected count cannot be negative")
+        object.__setattr__(self, "population_versions", MappingProxyType(dict(self.population_versions)))
+        for name in (
+            "hard_filter_reason_counts",
+            "population_filter_reason_counts",
+        ):
+            object.__setattr__(self, name, MappingProxyType(dict(getattr(self, name))))
+
+
 @dataclass(frozen=True)
 class BoardStrategyPolicy:
     policy_id: str
@@ -134,6 +192,9 @@ __all__ = [
     "Recommendation",
     "RecommendationAction",
     "ScoreBreakdown",
+    "ScoredDisposition",
+    "ScoredSelectionResult",
+    "ScoredStockEvaluation",
     "SelectionSkip",
     "Strategy",
 ]

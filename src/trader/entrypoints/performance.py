@@ -42,8 +42,8 @@ from trader.domain.recommendation.decision_identity import (
     ScoredDecision,
 )
 from trader.domain.recommendation.models import RecommendationAction, Strategy
-from trader.domain.recommendation.ranking import candidate_score
-from trader.domain.recommendation.scoring import score_board_strategy
+from trader.domain.recommendation.scoring.scoring import score_board_strategy
+from trader.domain.recommendation.selection.ranking import candidate_score
 from trader.domain.recommendation.strategies.composition import LocalScoreResult
 from trader.domain.review.models import DeepSeekReview, ReviewOutcome
 from trader.infra.market_data.normalization.columnar import ColumnarQuoteBatch, targeted_market_changes
@@ -308,11 +308,11 @@ def _operations(
         "market_merge": "trader.infra.market_data.normalization.merge.merge_market_observations",
         "canonical_snapshot": "trader.infra.market_data.normalization.columnar.ColumnarQuoteBatch.from_snapshot",
         "targeted_overlay_commit": "trader.infra.market_data.normalization.merge.overlay_canonical_snapshot + trader.application.decision_core.UnifiedDecisionIndex.publish_overlay",
-        "board_preselection": "trader.domain.recommendation.ranking.candidate_score",
-        "board_local_scoring": "trader.domain.recommendation.scoring.score_board_strategy",
-        "three_strategy_board_scoring": "trader.domain.recommendation.scoring.score_board_strategy",
-        "three_board_wall_clock": "trader.domain.recommendation.scoring.score_board_strategy",
-        "global_selection": "trader.domain.recommendation.scoring.score_board_strategy",
+        "board_preselection": "trader.domain.recommendation.selection.ranking.candidate_score",
+        "board_local_scoring": "trader.domain.recommendation.scoring.scoring.score_board_strategy",
+        "three_strategy_board_scoring": "trader.domain.recommendation.scoring.scoring.score_board_strategy",
+        "three_board_wall_clock": "trader.domain.recommendation.scoring.scoring.score_board_strategy",
+        "global_selection": "trader.domain.recommendation.scoring.scoring.score_board_strategy",
         "board_ready_to_draft": "trader.application.scored_v2_projection.build_scored_v2_local",
         "quote_to_draft": "trader.application.scored_v2_projection.build_scored_v2_local",
         "deepseek_to_hybrid": "trader.application.scored_v2_projection.build_scored_v2_hybrid",

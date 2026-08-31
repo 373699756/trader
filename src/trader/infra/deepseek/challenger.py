@@ -10,7 +10,7 @@ from datetime import datetime
 from types import MappingProxyType
 
 from trader.domain.market.models import FeatureSnapshot
-from trader.domain.recommendation.fusion import DIMENSION_NAMES
+from trader.domain.recommendation.risk_fusion.fusion import DIMENSION_NAMES
 from trader.domain.review.models import (
     DeepSeekReview,
     DimensionAssessment,

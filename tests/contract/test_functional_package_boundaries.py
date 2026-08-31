@@ -206,7 +206,7 @@ MIGRATION_LEDGER: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ),
 )
 
-COMPLETED_BATCHES = frozenset({"batch-2", "batch-3", "batch-4"})
+COMPLETED_BATCHES = frozenset({"batch-2", "batch-3", "batch-4", "batch-5"})
 
 TARGET_PACKAGES = (
     "domain/market",
@@ -415,3 +415,45 @@ def test_market_history_references_and_services_are_partitioned() -> None:
         "source_coordinator.py",
     )
     assert not any((market_root / name).exists() for name in legacy_files)
+
+
+def test_recommendation_stages_are_partitioned_without_reverse_dependencies() -> None:
+    recommendation_root = SOURCE_ROOT / "domain" / "recommendation"
+    filtering_root = recommendation_root / "filtering"
+    scoring_root = recommendation_root / "scoring"
+    risk_root = recommendation_root / "risk_fusion"
+    selection_root = recommendation_root / "selection"
+    assert filtering_root.is_dir()
+    assert scoring_root.is_dir()
+    assert risk_root.is_dir()
+    assert selection_root.is_dir()
+    legacy_files = (
+        "filters.py",
+        "scoring.py",
+        "scoring_calculations.py",
+        "downside.py",
+        "fusion.py",
+        "scored_fusion.py",
+        "ranking.py",
+        "scored_selection.py",
+    )
+    assert not any((recommendation_root / name).exists() for name in legacy_files)
+
+    stage_roots = {
+        "filtering": filtering_root,
+        "scoring": scoring_root,
+        "risk_fusion": risk_root,
+        "selection": selection_root,
+    }
+    stage_order = {name: index for index, name in enumerate(stage_roots)}
+    violations: list[str] = []
+    for stage, root in stage_roots.items():
+        for path in root.rglob("*.py"):
+            for imported in _imports(path):
+                prefix = "trader.domain.recommendation."
+                if not imported.startswith(prefix):
+                    continue
+                imported_stage = next((name for name in stage_roots if imported[len(prefix) :].startswith(name)), None)
+                if imported_stage is not None and stage_order[imported_stage] > stage_order[stage]:
+                    violations.append(f"{path.relative_to(SOURCE_ROOT)} -> {imported}")
+    assert violations == []

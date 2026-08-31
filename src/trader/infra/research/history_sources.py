@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 from trader.application.research.historical_screening import HistoricalSecurity
-from trader.domain.recommendation.filters import board_for_code
+from trader.domain.recommendation.filtering.filters import board_for_code
 from trader.domain.research.historical_screening import HistoricalPriceBar
 from trader.infra.market_data.history.history_seed import DailyHistoryClient
 from trader.infra.market_data.providers.sina import SinaClient

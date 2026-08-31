@@ -520,6 +520,19 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户继续执行功能拆包计划，要求完成推荐领域的过滤、评分、风险融合与选择包迁移。确认根因是推荐域
+  八个模块仍平铺在同一目录，且 `scored_fusion.py` 运行时反向依赖 `scored_selection.py`，阶段所有权和
+  依赖方向难以审查；本批将过滤迁移到 `domain/recommendation/filtering`，板内评分迁移到 `scoring`，
+  风险与融合迁移到 `risk_fusion`，稳定排名与选择迁移到 `selection`，并把跨阶段不可变选择结果类型
+  收拢到共享 `models.py`。旧路径物理删除，评分入口、九组权重、50 分/30% 候选门槛、本地风险单次扣除、
+  固定 68/32 融合（验收向量 83.40）、78/73 动作门槛、TopK 和板块/行业集中度行为保持不变。
+  `Regression-Key: functional-package-recommendation-stages-v1`。
+  Verification：推荐领域定向测试、推荐包边界契约、`make format-check`、`make lint`、`make type-check`、
+  `make test`、`make package` 和 `make performance-check` 全部通过；性能门禁网络调用为 0，评分热路径
+  在预算内。真实 `scripts/diagnose_runtime.py --profile sources --output -` 未执行，本批未改变供应商 I/O，
+  现场供应商延迟和降级行为仍为未验证风险。
+  Residual Risks：后续应用层推荐/决策包迁移仍需保持共享模型边界，Web 与运行时下游将在后续批次切换。
+
 - 用户继续执行功能拆包计划，要求完成行情历史、参考数据与服务编排包迁移。确认根因是历史缓存/预热、
   交易日历/证券主数据和 gateway/service 协调模块仍平铺在 `infra/market_data`，导致 worker、lane、缓存
   与参考数据所有权边界不清；本批将历史能力迁移到 `infra/market_data/history`，参考数据迁移到

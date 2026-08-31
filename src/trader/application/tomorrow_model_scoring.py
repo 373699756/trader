@@ -17,7 +17,7 @@ from trader.application.ports.tomorrow_model import (
 )
 from trader.domain.market.factors import clamp, round_score
 from trader.domain.market.models import Board, FeatureSnapshot
-from trader.domain.recommendation.filters import board_for_snapshot
+from trader.domain.recommendation.filtering.filters import board_for_snapshot
 from trader.domain.recommendation.strategies.composition import LocalScoreResult
 
 _ALPHA_FIELDS = (

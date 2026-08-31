@@ -7,18 +7,18 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.domain.market.models import Board, Evidence, FeatureSnapshot, MarketQuote
-from trader.domain.recommendation.models import RecommendationAction
-from trader.domain.recommendation.scored_fusion import (
+from trader.domain.recommendation.models import (
+    RecommendationAction,
+    ScoredDisposition,
+    ScoredSelectionResult,
+    ScoredStockEvaluation,
+)
+from trader.domain.recommendation.risk_fusion.scored_fusion import (
     DecisionSelectionLimits,
     ScoredDecisionPolicy,
     ScoredDecisionRequest,
     build_scored_decision_epoch,
     select_scored_review_candidates,
-)
-from trader.domain.recommendation.scored_selection import (
-    ScoredDisposition,
-    ScoredSelectionResult,
-    ScoredStockEvaluation,
 )
 from trader.domain.review.models import DeepSeekReview, DimensionAssessment, ReviewOutcome, RiskFact, RiskRule
 

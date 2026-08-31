@@ -5,8 +5,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from trader.domain.market.models import Evidence
-from trader.domain.recommendation.fusion import DIMENSION_NAMES, FusionPolicy, FusionRequest, fuse_score
 from trader.domain.recommendation.models import FusionMode
+from trader.domain.recommendation.risk_fusion.fusion import DIMENSION_NAMES, FusionPolicy, FusionRequest, fuse_score
 from trader.domain.recommendation.strategies.composition import LocalScoreResult
 from trader.domain.review.models import (
     DeepSeekReview,

@@ -19,7 +19,7 @@ import requests
 from trader.application.workers import BorrowExecutorOptions, BoundedExecutor, borrow_executor
 from trader.domain.market.models import Board, MarketQuote
 from trader.domain.market.tail import MinuteBar
-from trader.domain.recommendation.filters import board_for_code
+from trader.domain.recommendation.filtering.filters import board_for_code
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.normalization.normalize import (
     MarketQuoteInput,

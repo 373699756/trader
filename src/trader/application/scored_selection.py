@@ -17,13 +17,12 @@ from trader.domain.market.epochs import (
 )
 from trader.domain.market.models import Board, Evidence, FeatureSnapshot, LiveQuote, MarketQuote
 from trader.domain.market.research import ResearchObservation, derive_corporate_risk_features
-from trader.domain.recommendation.models import Strategy
-from trader.domain.recommendation.ranking import minimum_selection_score
-from trader.domain.recommendation.scored_selection import (
+from trader.domain.recommendation.models import ScoredSelectionResult, Strategy
+from trader.domain.recommendation.selection.ranking import minimum_selection_score
+from trader.domain.recommendation.selection.scored_selection import (
     BoardCrossSectionFallback,
     ScoredSelectionPolicy,
     ScoredSelectionRequest,
-    ScoredSelectionResult,
     select_scored,
 )
 from trader.domain.recommendation.strategies.composition import LocalScoreResult
