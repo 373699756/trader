@@ -13,7 +13,7 @@ import requests
 
 from trader.application.workers import BorrowExecutorOptions, BoundedExecutor, borrow_executor, submit_or_run_inline
 from trader.domain.market.models import MarketQuote
-from trader.infra.market_data.history import DailyBar, PriceAdjustment
+from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.normalization.normalize import (
     MarketQuoteInput,
     build_market_quote,

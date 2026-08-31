@@ -10,16 +10,16 @@ from typing import cast
 
 from trader.application.ports.market import MarketSnapshotMetadata
 from trader.application.ports.types import JsonInput, JsonObject, freeze_json_object
-from trader.infra.market_data.gateway_health import MarketGatewayHealthStatus, MarketSourceHealthStatus
-from trader.infra.market_data.market_cache_identity import _quote_age_summary
+from trader.infra.market_data.history.service_history import HistoryCache
+from trader.infra.market_data.history.service_history_warmup import HistoryWarmup
 from trader.infra.market_data.providers.tushare import TushareHealthStatus
-from trader.infra.market_data.router import RouteOutcome
-from trader.infra.market_data.service_candidates import QuoteCache
-from trader.infra.market_data.service_history import HistoryCache
-from trader.infra.market_data.service_history_warmup import HistoryWarmup
-from trader.infra.market_data.service_intraday import IntradayLoader
-from trader.infra.market_data.service_research import ResearchLoader
-from trader.infra.market_data.service_tushare import ReferenceLoader
+from trader.infra.market_data.service.gateway_health import MarketGatewayHealthStatus, MarketSourceHealthStatus
+from trader.infra.market_data.service.market_cache_identity import _quote_age_summary
+from trader.infra.market_data.service.router import RouteOutcome
+from trader.infra.market_data.service.service_candidates import QuoteCache
+from trader.infra.market_data.service.service_intraday import IntradayLoader
+from trader.infra.market_data.service.service_research import ResearchLoader
+from trader.infra.market_data.service.service_tushare import ReferenceLoader
 
 
 @dataclass(frozen=True)

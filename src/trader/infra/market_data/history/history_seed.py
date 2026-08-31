@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol
 
-from trader.infra.market_data.history import DailyBar
+from trader.infra.market_data.history.history import DailyBar
 
 
 class DailyHistoryClient(Protocol):

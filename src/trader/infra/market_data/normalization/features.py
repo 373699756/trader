@@ -36,7 +36,7 @@ from trader.domain.market.tail import (
     tail_signal_evidence,
 )
 from trader.domain.recommendation.downside import derive_entry_setup_values
-from trader.infra.market_data.history import (
+from trader.infra.market_data.history.history import (
     DailyBar,
     HistoryContext,
     HistoryProfile,

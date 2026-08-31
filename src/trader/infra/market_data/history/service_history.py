@@ -22,7 +22,7 @@ from trader.application.ports.market import MarketDataDeadlineExceededError
 from trader.application.ports.types import JsonInput, JsonObject, freeze_json_object
 from trader.application.workers import BorrowExecutorOptions, BoundedExecutor, borrow_executor, submit_or_run_inline
 from trader.domain.outcome.models import OutcomeBar
-from trader.infra.market_data.history import (
+from trader.infra.market_data.history.history import (
     DailyBar,
     HistoryContext,
     HistoryProfile,
@@ -30,14 +30,14 @@ from trader.infra.market_data.history import (
     build_history_context,
     require_qfq_history,
 )
-from trader.infra.market_data.history_seed import DailyHistoryClient
-from trader.infra.market_data.market_cache_identity import (
+from trader.infra.market_data.history.history_seed import DailyHistoryClient
+from trader.infra.market_data.service.market_cache_identity import (
     _add_action_restriction,
     _history_version,
     _source_batch_identity,
 )
-from trader.infra.market_data.service_execution import MarketTaskRunner
-from trader.infra.market_data.service_models import _HistoryEntry
+from trader.infra.market_data.service.service_execution import MarketTaskRunner
+from trader.infra.market_data.service.service_models import _HistoryEntry
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")

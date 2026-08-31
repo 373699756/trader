@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from trader.domain.market.quality import FieldQualityState, FieldValue
-from trader.infra.market_data.observations import JsonScalar, SourceObservation
+from trader.infra.market_data.service.observations import JsonScalar, SourceObservation
 
 REALTIME_FIELDS = frozenset(
     {

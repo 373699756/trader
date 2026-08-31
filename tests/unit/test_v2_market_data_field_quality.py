@@ -15,7 +15,7 @@ from trader.infra.market_data.normalization.field_quality import (
     normalize_source,
     select_fields,
 )
-from trader.infra.market_data.observations import JsonScalar, SourceObservation
+from trader.infra.market_data.service.observations import JsonScalar, SourceObservation
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 OBSERVED_AT = datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI)

@@ -520,6 +520,18 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户继续执行功能拆包计划，要求完成行情历史、参考数据与服务编排包迁移。确认根因是历史缓存/预热、
+  交易日历/证券主数据和 gateway/service 协调模块仍平铺在 `infra/market_data`，导致 worker、lane、缓存
+  与参考数据所有权边界不清；本批将历史能力迁移到 `infra/market_data/history`，参考数据迁移到
+  `infra/market_data/references`，服务编排迁移到 `infra/market_data/service`，并将门面改为
+  `service/facade.py`。所有生产、测试和诊断导入已切换，旧路径物理删除；历史预热独占调度、reference/
+  Tushare/实时/历史/emergency lane 隔离、deadline 分段、缓存身份、持久化次数、失败保留最近有效快照和
+  状态/API 行为保持不变。`Regression-Key: functional-package-history-reference-service-boundaries-v1`。
+  Verification：定向历史/参考/服务/lane/调度与架构契约测试通过；`make format-check`、`make lint`、
+  `make type-check`、`make test` 和 `make package` 全部通过，wheel 清单确认包含三个新子包；真实
+  `scripts/diagnose_runtime.py --profile sources --output -` 未执行，供应商现场延迟和降级仍为未验证风险。
+  Residual Risks：未在真实外部供应商环境验证本批运行时诊断，后续批次仍需维持新包边界并覆盖下游应用/Web 迁移。
+
 - 用户继续执行功能拆包计划，要求隔离行情供应商 I/O 与规范化职责。确认根因是 provider、解析/合并、
   特征和字段质量模块平铺在 `infra/market_data`，供应商故障与字段问题难以按边界定位；本批将供应商适配器
   迁移到 `infra/market_data/providers`，将规范化、合并、字段质量、缓存身份和特征物化迁移到

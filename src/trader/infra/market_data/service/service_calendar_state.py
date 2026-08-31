@@ -9,7 +9,7 @@ from datetime import date
 from trader.application.cache import canonical_json_bytes
 from trader.application.ports.data_plane import SourceCursorRecord
 from trader.application.ports.types import JsonObject, JsonValue
-from trader.infra.market_data.observations import JsonScalar, SourceObservation
+from trader.infra.market_data.service.observations import JsonScalar, SourceObservation
 
 
 def parse_date(value: str) -> date | None:

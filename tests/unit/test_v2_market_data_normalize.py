@@ -13,7 +13,7 @@ from trader.infra.market_data.normalization.normalize import (
     normalize_quotes,
     to_float,
 )
-from trader.infra.market_data.observations import SourceObservation
+from trader.infra.market_data.service.observations import SourceObservation
 
 
 def test_to_float_handles_empty_and_invalid_numbers() -> None:

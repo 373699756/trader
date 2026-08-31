@@ -5,7 +5,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from trader.domain.market.models import MarketQuote
-from trader.infra.market_data.history import (
+from trader.infra.market_data.history.history import (
     DailyBar,
     PriceAdjustment,
     build_history_context,

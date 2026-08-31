@@ -16,7 +16,7 @@ from trader.application.cache import canonical_json_bytes
 from trader.domain.market.models import Board, MarketQuote
 from trader.domain.recommendation.filters import board_for_code
 from trader.infra.market_data.normalization.merge_quote import observation_order, source_name
-from trader.infra.market_data.observations import JsonScalar, SourceObservation
+from trader.infra.market_data.service.observations import JsonScalar, SourceObservation
 
 _QUOTE_FIELDS = (
     "name",

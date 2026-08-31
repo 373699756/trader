@@ -206,7 +206,7 @@ MIGRATION_LEDGER: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ),
 )
 
-COMPLETED_BATCHES = frozenset({"batch-2", "batch-3"})
+COMPLETED_BATCHES = frozenset({"batch-2", "batch-3", "batch-4"})
 
 TARGET_PACKAGES = (
     "domain/market",
@@ -377,3 +377,41 @@ def test_market_provider_and_normalization_packages_are_partitioned() -> None:
             if imported.startswith("trader.infra.market_data.providers"):
                 violations.append(f"{path.relative_to(SOURCE_ROOT)} -> {imported}")
     assert violations == []
+
+
+def test_market_history_references_and_services_are_partitioned() -> None:
+    market_root = SOURCE_ROOT / "infra" / "market_data"
+    history_root = market_root / "history"
+    references_root = market_root / "references"
+    service_root = market_root / "service"
+    assert history_root.is_dir()
+    assert references_root.is_dir()
+    assert service_root.is_dir()
+    assert (service_root / "facade.py").is_file()
+    legacy_files = (
+        "history.py",
+        "history_seed.py",
+        "service_history.py",
+        "service_history_warmup.py",
+        "calendar.py",
+        "security_references.py",
+        "gateway.py",
+        "gateway_health.py",
+        "gateway_runtime.py",
+        "market_cache_identity.py",
+        "observations.py",
+        "router.py",
+        "service.py",
+        "service_calendar_state.py",
+        "service_candidates.py",
+        "service_execution.py",
+        "service_health.py",
+        "service_intraday.py",
+        "service_models.py",
+        "service_research.py",
+        "service_research_data_plane.py",
+        "service_research_models.py",
+        "service_tushare.py",
+        "source_coordinator.py",
+    )
+    assert not any((market_root / name).exists() for name in legacy_files)

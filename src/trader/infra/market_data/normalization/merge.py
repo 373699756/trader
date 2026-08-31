@@ -29,7 +29,7 @@ from trader.infra.market_data.normalization.merge_quote import (
     source_name,
     source_priority,
 )
-from trader.infra.market_data.observations import JsonScalar, SourceObservation
+from trader.infra.market_data.service.observations import JsonScalar, SourceObservation
 
 
 @dataclass(frozen=True)

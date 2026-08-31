@@ -15,7 +15,7 @@ from trader.domain.market.models import (
     MarketQuote,
 )
 from trader.domain.recommendation.fusion import STRUCTURED_REVIEW_FEATURES
-from trader.infra.market_data.history import (
+from trader.infra.market_data.history.history import (
     DailyBar,
 )
 

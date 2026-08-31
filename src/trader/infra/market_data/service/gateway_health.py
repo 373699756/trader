@@ -11,7 +11,7 @@ from trader.application.latency import LatencyWaterfallStatus
 from trader.application.source_lanes import SourceLaneRegistryStatus
 from trader.domain.market.models import CanonicalMarketSnapshot
 from trader.infra.market_data.normalization.columnar import MarketChangeSet
-from trader.infra.market_data.router import RouteOutcome
+from trader.infra.market_data.service.router import RouteOutcome
 
 
 @dataclass(frozen=True)

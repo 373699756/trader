@@ -16,7 +16,6 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.application.cache import canonical_json_bytes
-from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.providers.tushare_records import (
     _calendar_observation,
     _calendar_ranges,
@@ -32,6 +31,7 @@ from trader.infra.market_data.providers.tushare_records import (
     _security_master_observation,
     _ts_code,
 )
+from trader.infra.market_data.service.observations import SourceObservation
 
 
 class _SdkFactory(Protocol):

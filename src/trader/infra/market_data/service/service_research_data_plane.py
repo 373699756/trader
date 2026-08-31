@@ -21,19 +21,19 @@ from trader.domain.market.research import (
     ResearchObservation,
     corporate_risk_facts_from_announcements,
 )
-from trader.infra.market_data.market_cache_identity import (
-    _merge_research_observation,
-    _research_data_version,
-    _research_source_time,
-)
 from trader.infra.market_data.providers.cninfo import (
     CNINFO_ANNOUNCEMENT_PREFIX,
     CNINFO_COMPONENT_PREFIX,
     CNINFO_CURSOR_PREFIX,
     CNINFO_SOURCE,
 )
-from trader.infra.market_data.service_models import _ResearchEntry
-from trader.infra.market_data.service_research_models import (
+from trader.infra.market_data.service.market_cache_identity import (
+    _merge_research_observation,
+    _research_data_version,
+    _research_source_time,
+)
+from trader.infra.market_data.service.service_models import _ResearchEntry
+from trader.infra.market_data.service.service_research_models import (
     RESEARCH_COMPONENT_IDS,
     ResearchComponentStatus,
     ResearchLoaderStatus,

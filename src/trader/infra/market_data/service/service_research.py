@@ -21,7 +21,8 @@ from trader.application.cache import CacheIdentity
 from trader.application.ports.market import MarketDataDeadlineExceededError
 from trader.application.workers import BorrowExecutorOptions, WorkerExecutor, borrow_executor, submit_or_run_inline
 from trader.domain.market.research import ResearchObservation
-from trader.infra.market_data.market_cache_identity import (
+from trader.infra.market_data.providers.akshare import AkshareResearchClient
+from trader.infra.market_data.service.market_cache_identity import (
     _add_action_restriction,
     _degraded_research_observation,
     _deserialize_research_observation,
@@ -32,22 +33,21 @@ from trader.infra.market_data.market_cache_identity import (
     _serialize_research_observation,
     _source_batch_identity,
 )
-from trader.infra.market_data.providers.akshare import AkshareResearchClient
-from trader.infra.market_data.service_execution import MarketTaskRunner
-from trader.infra.market_data.service_models import _ResearchEntry
-from trader.infra.market_data.service_research_data_plane import (
+from trader.infra.market_data.service.service_execution import MarketTaskRunner
+from trader.infra.market_data.service.service_models import _ResearchEntry
+from trader.infra.market_data.service.service_research_data_plane import (
     _ResearchDataPlane as _ResearchDataPlaneProtocol,
 )
-from trader.infra.market_data.service_research_data_plane import (
+from trader.infra.market_data.service.service_research_data_plane import (
     loader_status as _loader_status_from_plane,
 )
-from trader.infra.market_data.service_research_data_plane import (
+from trader.infra.market_data.service.service_research_data_plane import (
     persist_research_component_statuses as _persist_research_component_statuses_from_plane,
 )
-from trader.infra.market_data.service_research_data_plane import (
+from trader.infra.market_data.service.service_research_data_plane import (
     recover_research_component_statuses as _recover_research_component_statuses_from_plane,
 )
-from trader.infra.market_data.service_research_models import (
+from trader.infra.market_data.service.service_research_models import (
     ResearchComponentStatus,
     ResearchLoaderStatus,
     ResearchLoadReport,

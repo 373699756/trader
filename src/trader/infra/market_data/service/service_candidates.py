@@ -20,12 +20,12 @@ from trader.domain.market.models import (
 )
 from trader.domain.market.research import ResearchObservation
 from trader.domain.market.tail import MinuteBar
-from trader.infra.market_data.gateway import MarketDataGateway
-from trader.infra.market_data.history import DailyBar
-from trader.infra.market_data.market_cache_identity import _quote_version
+from trader.infra.market_data.history.history import DailyBar
+from trader.infra.market_data.history.service_history import HistoryCache
 from trader.infra.market_data.normalization.features import StandardizedFeatureBuilder
-from trader.infra.market_data.service_history import HistoryCache
-from trader.infra.market_data.service_tushare import ReferenceLoader
+from trader.infra.market_data.service.gateway import MarketDataGateway
+from trader.infra.market_data.service.market_cache_identity import _quote_version
+from trader.infra.market_data.service.service_tushare import ReferenceLoader
 
 _AUXILIARY_ACTION_RESTRICTIONS = frozenset(
     {"history_data_degraded", "intraday_data_degraded", "research_data_degraded"}

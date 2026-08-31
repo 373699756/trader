@@ -18,7 +18,7 @@ import requests
 from typing_extensions import Unpack
 
 from trader.application.cache import canonical_json_bytes
-from trader.infra.market_data.observations import SourceObservation
+from trader.infra.market_data.service.observations import SourceObservation
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _SSE_URL = "https://query.sse.com.cn/sseQuery/commonQuery.do"

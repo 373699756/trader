@@ -68,11 +68,11 @@ from trader.infra.deepseek.cache import ReviewCache
 from trader.infra.deepseek.factory import create_deepseek_client
 from trader.infra.deepseek.health_gate import DeepSeekHealthPolicy
 from trader.infra.deepseek.reviewer import DeepSeekReviewer
-from trader.infra.market_data.calendar import ChinaTradingCalendar
-from trader.infra.market_data.gateway import MarketDataGateway
-from trader.infra.market_data.history_seed import (
+from trader.infra.market_data.history.history_seed import (
     FallbackHistoryClient,
 )
+from trader.infra.market_data.history.service_history import HistoryCache
+from trader.infra.market_data.history.service_history_warmup import HistoryWarmup, build_history_warmup_policy
 from trader.infra.market_data.normalization.features import FeatureBuilder
 from trader.infra.market_data.providers.akshare import AkshareResearchClient
 from trader.infra.market_data.providers.eastmoney import EastmoneyClient
@@ -80,15 +80,15 @@ from trader.infra.market_data.providers.exchange_security_master import Exchange
 from trader.infra.market_data.providers.sina import SinaClient
 from trader.infra.market_data.providers.tencent import TencentClient
 from trader.infra.market_data.providers.tushare import TushareClient
-from trader.infra.market_data.service import MarketFeatureDependencies, MarketFeatureService
-from trader.infra.market_data.service_candidates import QuoteCache, QuoteCacheDependencies
-from trader.infra.market_data.service_execution import MarketTaskRunner
-from trader.infra.market_data.service_health import MarketDataHealth, MarketDataHealthDependencies
-from trader.infra.market_data.service_history import HistoryCache
-from trader.infra.market_data.service_history_warmup import HistoryWarmup, build_history_warmup_policy
-from trader.infra.market_data.service_intraday import IntradayLoader
-from trader.infra.market_data.service_research import ResearchLoader
-from trader.infra.market_data.service_tushare import ReferenceLoader
+from trader.infra.market_data.references.calendar import ChinaTradingCalendar
+from trader.infra.market_data.service.facade import MarketFeatureDependencies, MarketFeatureService
+from trader.infra.market_data.service.gateway import MarketDataGateway
+from trader.infra.market_data.service.service_candidates import QuoteCache, QuoteCacheDependencies
+from trader.infra.market_data.service.service_execution import MarketTaskRunner
+from trader.infra.market_data.service.service_health import MarketDataHealth, MarketDataHealthDependencies
+from trader.infra.market_data.service.service_intraday import IntradayLoader
+from trader.infra.market_data.service.service_research import ResearchLoader
+from trader.infra.market_data.service.service_tushare import ReferenceLoader
 from trader.infra.persistence.data_plane import DataPlaneRepository
 from trader.infra.persistence.decision_records import SQLiteDecisionRecordRepository
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository

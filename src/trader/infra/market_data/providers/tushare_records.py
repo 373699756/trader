@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 from trader.application.cache import canonical_json_bytes
-from trader.infra.market_data.observations import JsonScalar, SourceObservation
+from trader.infra.market_data.service.observations import JsonScalar, SourceObservation
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DAY_END = datetime_time(23, 59, 59)

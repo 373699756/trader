@@ -30,25 +30,6 @@ from trader.domain.market.models import (
     CanonicalMarketSnapshot,
     MarketQuote,
 )
-from trader.infra.market_data.gateway_health import (
-    MarketGatewayHealthStatus,
-    MarketSourceHealthStatus,
-    SecurityMasterHealthStatus,
-)
-from trader.infra.market_data.gateway_runtime import (
-    _cache_error_code,
-    _CircuitState,
-    _cycle_trace_id,
-    _elapsed,
-    _observation_version,
-    _parallel_error_message,
-    _parallel_route_outcome,
-    _percentile,
-    _preserve_newer_quotes,
-    _reference_replaces,
-    _SingleFlight,
-    _source_degraded_reasons,
-)
 from trader.infra.market_data.normalization.columnar import (
     ColumnarQuoteBatch,
     MarketChangeSet,
@@ -62,13 +43,32 @@ from trader.infra.market_data.normalization.merge import (
     snapshot_payload_hash,
 )
 from trader.infra.market_data.normalization.merge_quote import rejection_reason, source_name
-from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.infra.market_data.providers.sina import SinaClient
 from trader.infra.market_data.providers.tencent import TencentClient
-from trader.infra.market_data.router import RouteOutcome
-from trader.infra.market_data.security_references import security_reference_observations
-from trader.infra.market_data.source_coordinator import (
+from trader.infra.market_data.references.security_references import security_reference_observations
+from trader.infra.market_data.service.gateway_health import (
+    MarketGatewayHealthStatus,
+    MarketSourceHealthStatus,
+    SecurityMasterHealthStatus,
+)
+from trader.infra.market_data.service.gateway_runtime import (
+    _cache_error_code,
+    _CircuitState,
+    _cycle_trace_id,
+    _elapsed,
+    _observation_version,
+    _parallel_error_message,
+    _parallel_route_outcome,
+    _percentile,
+    _preserve_newer_quotes,
+    _reference_replaces,
+    _SingleFlight,
+    _source_degraded_reasons,
+)
+from trader.infra.market_data.service.observations import SourceObservation
+from trader.infra.market_data.service.router import RouteOutcome
+from trader.infra.market_data.service.source_coordinator import (
     MarketSourceCoordinator,
     MarketSourceDependencies,
     SourceLaneIdentityRequest,

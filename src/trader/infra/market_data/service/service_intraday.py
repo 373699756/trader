@@ -17,14 +17,14 @@ from trader.application.cache import CacheIdentity
 from trader.application.workers import BorrowExecutorOptions, WorkerExecutor, borrow_executor, submit_or_run_inline
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.market.tail import TAIL_SIGNAL_VALUE_FIELDS, MinuteBar
-from trader.infra.market_data.market_cache_identity import (
+from trader.infra.market_data.providers.eastmoney import EastmoneyClient
+from trader.infra.market_data.service.market_cache_identity import (
     _add_action_restriction,
     _minute_version,
     _source_batch_identity,
 )
-from trader.infra.market_data.providers.eastmoney import EastmoneyClient
-from trader.infra.market_data.service_execution import MarketTaskRunner
-from trader.infra.market_data.service_models import _IntradayEntry
+from trader.infra.market_data.service.service_execution import MarketTaskRunner
+from trader.infra.market_data.service.service_models import _IntradayEntry
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
