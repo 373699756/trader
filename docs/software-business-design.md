@@ -550,6 +550,67 @@ today、tomorrow、d25 的评分、DeepSeek、冻结、overlay 或结算资源�
 entrypoints / web / infra -> application -> domain
 ```
 
+### 3.1 功能包目标布局与迁移约束
+
+生产关注域按层内能力收拢为配置与组合、数据采集、过滤与评分、决策运行和展示；离线研究与结果
+结算作为隔离的第六维护域。目标包只表达所有权和依赖边界，不改变进程、发行包、公开 API、运行目录
+或任何评分/冻结行为：
+
+```text
+domain/market
+domain/recommendation/filtering
+domain/recommendation/scoring
+domain/recommendation/risk_fusion
+domain/recommendation/selection
+domain/research
+domain/review
+domain/outcome
+application/runtime
+application/market_data
+application/recommendation
+application/decisions
+application/research
+application/outcomes
+infra/settings
+infra/market_data/providers
+infra/market_data/normalization
+infra/market_data/history
+infra/market_data/references
+infra/market_data/service
+infra/deepseek
+infra/persistence
+infra/research
+web/api
+```
+
+迁移期间每个旧模块只能登记一次，并且只能由一个批次迁移到一个目标包。批次 1 只冻结以下台账和
+契约，不创建生产实现；后续批次完成移动后必须删除旧路径，不得增加重导出、别名或双实现。台账中的
+路径是显式集合，新增模块必须先更新本节、`docs/plan.md` 和契约测试：
+
+| 批次 | 旧模块集合 | 唯一目标包 |
+| --- | --- | --- |
+| 2 | `infra/settings.py`、`infra/settings_credentials.py`、`infra/settings_factor_validation.py`、`infra/settings_market_policy.py`、`infra/settings_models.py`、`infra/settings_parser.py`、`infra/settings_runtime.py`、`infra/settings_strategy_validation.py` | `infra/settings` |
+| 3 | `infra/market_data/akshare.py`、`akshare_news.py`、`akshare_parsing.py`、`cninfo.py`、`eastmoney.py`、`exchange_security_master.py`、`sina.py`、`tencent.py`、`tushare.py`、`tushare_records.py` | `infra/market_data/providers` |
+| 3 | `infra/market_data/columnar.py`、`columnar_merge.py`、`feature_math.py`、`feature_risks.py`、`features.py`、`field_quality.py`、`merge.py`、`merge_quote.py`、`normalize.py` | `infra/market_data/normalization` |
+| 4 | `infra/market_data/history.py`、`history_seed.py`、`service_history.py`、`service_history_warmup.py` | `infra/market_data/history` |
+| 4 | `infra/market_data/calendar.py`、`security_references.py` | `infra/market_data/references` |
+| 4 | `infra/market_data/gateway.py`、`gateway_health.py`、`gateway_runtime.py`、`market_cache_identity.py`、`observations.py`、`router.py`、`service.py`、`service_calendar_state.py`、`service_candidates.py`、`service_execution.py`、`service_health.py`、`service_intraday.py`、`service_models.py`、`service_research.py`、`service_research_data_plane.py`、`service_research_models.py`、`service_tushare.py`、`source_coordinator.py` | `infra/market_data/service` |
+| 5 | `domain/recommendation/filters.py` | `domain/recommendation/filtering` |
+| 5 | `domain/recommendation/scoring.py`、`scoring_calculations.py` | `domain/recommendation/scoring` |
+| 5 | `domain/recommendation/downside.py`、`fusion.py`、`scored_fusion.py` | `domain/recommendation/risk_fusion` |
+| 5 | `domain/recommendation/ranking.py`、`scored_selection.py` | `domain/recommendation/selection` |
+| 6 | `application/scored_deepseek_fusion.py`、`scored_quality.py`、`scored_selection.py`、`scored_v2_freezing.py`、`scored_v2_projection.py`、`today_v2_freezing.py`、`tomorrow_model_scoring.py`、`recommendation_policy_codec.py`、`policy.py` | `application/recommendation` |
+| 6 | `application/decision_core.py`、`decision_coverage.py`、`decision_drafts.py`、`decision_events.py`、`decision_observers.py`、`decision_overlay_refresh.py`、`decision_queries.py`、`decision_stream.py`、`v2_decision_adapters.py` | `application/decisions` |
+| 7 | `application/cadence.py`、`latency.py`、`runtime.py`、`schedule.py`、`shutdown.py`、`source_lanes.py`、`system_lifecycle.py`、`v2_input_runtime.py`、`v2_lifecycle.py`、`v2_runtime.py`、`v2_runtime_issues.py`、`workers.py` | `application/runtime` |
+| 8 | `web/decision_serializers.py`、`decision_sse.py`、`route_services.py`、`routes.py`、`routes_v2.py` | `web/api` |
+| 9 | `application/outcome_settlement.py` | `application/outcomes` |
+| 9 | `application/research_audit.py`、`research_coordination.py`、`tomorrow_profile_comparison.py`、`tomorrow_profile_reporting.py`、`tomorrow_profile_settlement.py`、`v2_research_runtime.py` | `application/research` |
+
+迁移批次必须继续使用显式组合根 `bootstrap.py`；`application/ports` 在没有耦合证据前保持稳定。每个
+目标包都应有窄入口、直接测试和影响矩阵记录，层间只能沿上方箭头依赖；同层子包由共享不可变值对象
+连接，不得通过聚合 `__init__.py`、动态字典或隐藏服务定位器取得能力。批次完成后，架构契约必须同时
+证明旧路径退役、依赖图无反向边和无循环导入。
+
 - `domain`：按 `market`、`recommendation`、`research`、`review`、`outcome` 五个业务能力包组织不可变
   值对象和纯函数。`market` 负责点时行情、因子、研究、新闻与尾盘信号；
   `recommendation` 负责过滤、板内评分、策略组合、融合、下行保护和稳定排名；`review`

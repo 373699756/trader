@@ -263,6 +263,14 @@ def test_dashboard_stream_lifecycle_is_a_separate_packaged_dependency() -> None:
     assert template.index("dashboard_stream.js") < template.index("dashboard.js")
 
 
+def test_functional_package_migration_contract_is_authoritative() -> None:
+    design = PROJECT_ROOT / "docs/software-business-design.md"
+    content = design.read_text(encoding="utf-8")
+    assert "### 3.1 功能包目标布局与迁移约束" in content
+    assert "每个旧模块只能登记一次" in content
+    assert "不得增加重导出、别名或双实现" in content
+
+
 def test_domain_and_application_do_not_own_persistence_or_json_decoders() -> None:
     violations: list[str] = []
     forbidden_public_codecs = {

@@ -1,6 +1,6 @@
 # Trader 功能拆包 Codex 执行计划
 
-> 状态：待执行
+> 状态：执行中（批次 1 已完成，等待后续批次继续指令）
 >
 > 性质：非权威、阶段性施工计划
 >
@@ -183,7 +183,12 @@ git diff --check
 
 ## 批次 1：冻结目标包契约与迁移清单
 
-状态：`pending`
+状态：`completed`（2026-08-31）
+
+完成记录：已在软件业务设计第 3 节冻结目标包布局和完整迁移台账；新增功能包边界契约，覆盖目标包
+声明、旧路径退役、显式迁移所有权、允许依赖方向和循环依赖；未移动生产模块或改变运行行为。验证通过
+`tests/contract/test_v2_architecture.py`、`tests/contract/test_authoritative_document_consistency.py` 和
+`tests/contract/test_functional_package_boundaries.py`。
 
 ### 目标
 

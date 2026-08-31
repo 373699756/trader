@@ -520,6 +520,17 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求按 `docs/plan.md` 开始功能拆包重构。确认根因是现有分层方向正确但 application、行情基础设施和
+  Web 能力仍平铺，缺少可审计的目标包所有权与迁移顺序；本批冻结 `domain`、`application`、`infra`、`web`
+  层内功能包布局，并登记批次 2-9 的显式旧模块到目标包台账。新增功能包边界契约，验证目标包声明、
+  每个迁移源的唯一批次/目标、既有旧链退役、允许依赖方向和无循环导入；未移动生产模块、未改变运行行为、
+  API、策略、冻结或发行形态。`Regression-Key: functional-package-migration-boundaries-v1`。
+  Verification：定向通过 `tests/contract/test_v2_architecture.py`、
+  `tests/contract/test_authoritative_document_consistency.py` 和
+  `tests/contract/test_functional_package_boundaries.py`；Ruff/mypy、全量测试、打包和浏览器门禁不适用，
+  因本批仅修改架构契约、计划和文档。Residual Risks：后续目录迁移尚未执行，运行包边界和 wheel 外安装
+  仍需在对应批次验证。
+
 - V1/V2 比较不再使用任意 20 日前置条件。只读 H0 同口径留出固定 139 日、687,321 条配对及报告 hash
   `47e2b9bfd4d404521f8251e2e51c491aa96c1bc0d8423dea95e63320daa6e3bf`；V1 的 20bp 平均日净增量
   `-0.250480%`、bootstrap 下界 `-0.813048%`，没有晋级收益证据。以 H0 日级 V2−V1 标准差
