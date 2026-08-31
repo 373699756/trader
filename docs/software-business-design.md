@@ -1167,8 +1167,10 @@ Tomorrow 的 GET 与 SSE 完整替换均从决策 `input_versions.score_model` �
 所有 HTTP 查询均为只读，不抓行情、不评分、不调用 DeepSeek、不触发冻结、恢复、归档或结算。
 
 SSE 事件统一使用字符串 envelope `schema_version=v2_event_v1`、单调 ID、有界回放和有界客户端队列；
-行级推荐/overlay patch 独立使用数字 `patch_schema_version=3`，不得用同名字段覆盖 envelope 版本。
-decision 事件携带完整 identity；
+行级推荐/overlay patch 独立使用数字 `patch_schema_version=4`，不得用同名字段覆盖 envelope 版本。
+decision 完整替换事件携带完整 identity、类型化 coverage 以及完整入选项；浏览器必须原子替换旧
+coverage，不能在把快照切为 `ready` 后继续沿用上一轮候选、已评分、过滤或选择计数。coverage
+缺失、无效或与完整替换项数量不一致时必须请求 current 重同步，不得由旧值或逐项相减推断；
 overlay 只允许更新匹配 current version 的价格、涨跌、成交额、换手率、总市值、来源、来源时间、
 报价版本和年龄，并携带与 current ETag 一致的 `projection_version` 及行级 `quotes` patch。
 显式游标才回放；游标超前、过期、断裂，base/schema/identity 不匹配或慢客户端统一返回
@@ -1387,7 +1389,7 @@ Web 应用工厂创建应用时必须把模板和全部打包静态资源读入�
 EventSource 游标、重连退避、断线轮询和 patch-to-paint 采样；两者通过显式依赖对象协作，缺少模块时
 fail closed 并进入浏览器诊断。`market_data.market_changes` 只公开变更计数和合并身份，
 `market_data.latency_waterfall` 只公开有界阶段聚合，不得泄露股票代码、关联 ID 或原始样本。
-当前静态资源握手身份为 `release-contract-2026-08-30-v8`。
+当前静态资源握手身份为 `release-contract-2026-08-31-v9`。
 
 日志只记录脱敏结构化摘要，不记录密钥、Token、完整模型请求/响应、完整供应商载荷或个人
 敏感路径。所有外部 I/O 必须有 timeout、容量、熔断和明确失败策略。DeepSeek 与 Tushare

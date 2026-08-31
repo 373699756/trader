@@ -3,13 +3,16 @@
 
   function patchVersionValid(patch) {
     return Boolean(
-      patch && patch.schema_version === "v2_event_v1" && patch.patch_schema_version === 3
+      patch && patch.schema_version === "v2_event_v1" && patch.patch_schema_version === 4
     );
   }
 
   function recommendationPatchDecision(patch, payload, currentVersion, strategy, view) {
     if (!patchVersionValid(patch) || !Array.isArray(patch.upserts)
       || !Array.isArray(patch.removed_codes) || !Array.isArray(patch.removals || [])) return "schema_mismatch";
+    if (!patchCoverageValid(patch.coverage) || patch.coverage.selected_count !== patch.upserts.length) {
+      return "schema_mismatch";
+    }
     if (!patch.projection_version || !patch.snapshot_id
       || patch.strategy !== strategy || !["live", "official"].includes(patch.view)
       || patch.view !== (patch.frozen ? "official" : "live")) return "identity_mismatch";
@@ -42,6 +45,37 @@
   function projectionVersion(payload) {
     if (!payload) return "";
     return payload.projection_version || payload.snapshot_id || "";
+  }
+
+  function replacementPayload(current, patch, items) {
+    const coverage = { ...patch.coverage };
+    return {
+      ...current,
+      status: "ready",
+      snapshot_id: patch.snapshot_id,
+      projection_version: patch.projection_version || patch.snapshot_id,
+      strategy: patch.strategy,
+      trade_date: patch.trade_date,
+      requested_date: null,
+      current_trade_date: patch.current_trade_date || patch.trade_date,
+      historical: false,
+      view: patch.view,
+      phase: patch.phase,
+      published_at: patch.published_at,
+      strategy_version: patch.strategy_version,
+      input_versions: patch.input_versions || {},
+      fusion_mode: patch.fusion_mode,
+      stale: patch.stale,
+      frozen: patch.frozen,
+      degraded_reasons: patch.degraded_reasons || [],
+      coverage,
+      selection_diagnostics: patch.selection_diagnostics || {},
+      readiness_reason: null,
+      draft: null,
+      long_groups: Array.isArray(patch.long_groups) ? patch.long_groups : current.long_groups || [],
+      items,
+      error: null,
+    };
   }
 
   function eventMatchesCurrent(payload, strategy, tradeDate) {
@@ -337,6 +371,21 @@
       && !codes.some((code) => removed.includes(code));
   }
 
+  function patchCoverageValid(coverage) {
+    if (!coverage || typeof coverage !== "object") return false;
+    const candidate = nonNegativeInteger(coverage.candidate_count);
+    const evaluated = nonNegativeInteger(coverage.evaluated_count);
+    const rejected = nonNegativeInteger(coverage.rejected_count);
+    const selected = nonNegativeInteger(coverage.selected_count);
+    const executable = nonNegativeInteger(coverage.executable_count);
+    const observation = nonNegativeInteger(coverage.observation_count);
+    return [candidate, evaluated, rejected, selected, executable, observation].every((value) => value != null)
+      && evaluated <= candidate
+      && rejected <= candidate
+      && selected <= candidate
+      && executable + observation === selected;
+  }
+
   function topKValid(items, strategy) {
     if (!Array.isArray(items) || (strategy !== "long" && items.length > 12)) return false;
     const codes = items.map((item) => item && item.code);
@@ -364,6 +413,7 @@
     patchVersionValid,
     projectionVersion,
     recommendationPatchDecision,
+    replacementPayload,
     snapshotNotice,
     topKValid,
   });

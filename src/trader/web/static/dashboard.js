@@ -366,7 +366,6 @@
       published_at: raw.observed_at,
       phase: raw.stage || "current",
       stale: raw.status !== "ready",
-      filtered_count: coverage.rejected_count || 0,
       selection_diagnostics: raw.selection_diagnostics || {
         observation_limit: coverage.observation_count || 0,
         executable_limit: coverage.executable_count || 0,
@@ -747,33 +746,7 @@
       requestRecommendationResync("topk_mismatch");
       return false;
     }
-    state.payload = {
-      ...current,
-      status: "ready",
-      snapshot_id: patch.snapshot_id,
-      projection_version: patch.projection_version || patch.snapshot_id,
-      strategy: patch.strategy,
-      trade_date: patch.trade_date,
-      requested_date: null,
-      current_trade_date: patch.current_trade_date || patch.trade_date,
-      historical: false,
-      view: patch.view,
-      phase: patch.phase,
-      published_at: patch.published_at,
-      strategy_version: patch.strategy_version,
-      input_versions: patch.input_versions || {},
-      fusion_mode: patch.fusion_mode,
-      stale: patch.stale,
-      frozen: patch.frozen,
-      degraded_reasons: patch.degraded_reasons || [],
-      filtered_count: patch.filtered_count,
-      selection_diagnostics: patch.selection_diagnostics || {},
-      readiness_reason: null,
-      draft: null,
-      long_groups: Array.isArray(patch.long_groups) ? patch.long_groups : current.long_groups || [],
-      items: merged,
-      error: null,
-    };
+    state.payload = patches.replacementPayload(current, patch, merged);
     state.projectionVersion = patches.projectionVersion(state.payload);
     const key = recommendationKey(state.strategy, state.date, state.view);
     state.payloads.set(key, state.payload);
@@ -894,6 +867,7 @@
       patchVersionValid: () => false,
       projectionVersion: (payload) => payload && (payload.projection_version || payload.snapshot_id) || "",
       recommendationPatchDecision: () => "dependency_missing",
+      replacementPayload: (payload) => payload || {},
       snapshotNotice: (payload) => ({ message: payload && payload.status === "not_ready" ? "等待策略数据更新" : "快照状态不可用", level: "idle" }),
       topKValid: () => false,
     });

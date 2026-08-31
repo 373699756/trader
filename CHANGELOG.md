@@ -6,6 +6,13 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户问题：推荐漏斗再次显示 `360 → 0 → 0`、过滤 89、观察草稿 0、最高分不可用，并追问交付
+  Skill 为何没有阻止复发。新增共享不可变 `DecisionCoverage`，由同一个纯函数从
+  `ScoredDecision` 生成 GET 与 SSE 的候选、已评估、过滤、正式、观察覆盖；新增浏览器失败先行
+  回归，固定复现旧 coverage `360/0/89` 被新 SSE 结果 `360/229/89` 替换后的最终漏斗。
+  `trader-delivery` 仍是仓库交付工作流，不是 Web、行情或调度器的运行时 hook。
+  `Regression-Key: sse-replacement-coverage-regression-v1`。
+
 - 用户问题：九条 `run.sh` 运维/研究命令需要手工记忆顺序，V1/V2 又只能改 JSON，日常运行容易漏阶段或
   留下配置写入。新增 `check`、`research-history`、`research-screen` 三个公开组合命令和统一
   `--profile v1|v2` 进程参数；默认 V1，V2 必须显式选择。Python CLI 统一执行组合顺序并输出
@@ -490,6 +497,13 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- decision/overlay 行级 patch schema 从 v3 升至 v4，decision 完整替换必须携带完整 coverage，静态资源
+  握手升至 `release-contract-2026-08-31-v9`。浏览器只在 coverage 六项均为非负整数、计数关系合法且
+  `selected_count` 与完整 upserts 一致时应用 patch，否则按既有协议请求 current 重同步。
+- Python 3.10 目标 mypy 对第三方 NumPy 2.5（仅支持 Python 3.12+）stub 的 `type` 语句无法解析；沿用
+  LightGBM/Polars 的第三方边界策略跳过 NumPy stub 展开，并以仓库内最小不透明 stub 隔离第三方语法；
+  项目自身的真实类型与公共边界仍完整检查，不把活动源码目标版本从 3.10 偷换为当前解释器版本。
+
 - Tomorrow 默认生产档位由 V2 改为用户指定的 V1；`./run.sh`、`serve`、`check` 及研究组合均接受统一
   `--profile`。启动覆盖不写回 `strategy.json`，但参与有效策略 SHA-256、模型装配、性能身份和新决策
   模型身份；纯 H0/R6/P2 历史阶段继续绑定不可变研究规范，不受活动档位改名或重算。
@@ -919,6 +933,14 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复 decision SSE 完整替换把 payload 强制标为 `ready`，却沿用上一轮 GET 的旧 `coverage`；摘要因而
+  停止读取同交易日 input-quality，并把已恢复到 229 个完整评分的 Tomorrow 继续画成
+  `360 → 0 → 0`。现在 GET、publisher、serializer 和浏览器 replacement 共用同一 coverage 事实，SSE
+  原子替换旧计数后显示 `360 → 229 → 0`，不需要为每个正常 patch 追加完整 GET。
+- 完整门禁首次运行发现 mypy 2.3 在 Python 3.14 环境尚未检查项目源码就因 NumPy 2.5 stub 的 Python
+  3.12 `type` 语法与目标 Python 3.10 冲突；现在第三方 NumPy 实现按显式 override 隔离，恢复 3.10
+  目标下对 `src/trader` 的全量类型检查。
+
 - 修复评分档位只能通过持久修改策略配置切换、无法针对单次启动安全覆盖的问题；配置 loader、唯一组合根、
   服务入口和离线性能门禁现共同消费类型化档位覆盖，配置原文件保持不变。实现 Review 还阻止了纯
   `research-status`/历史阶段被迫读取活动策略配置，保持其既有只读与最小依赖边界。
@@ -1319,6 +1341,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除 decision SSE 的独立 `filtered_count` 线字段及浏览器内同名双表示；过滤数只来自完整 coverage 的
+  `rejected_count`，不再让单个新字段与整组旧 coverage 混合成不可能的漏斗。
+
 - 删除 `run.sh`/`run.ps1` 对九个底层阶段的逐项公开映射，避免用户在 Shell 层自行拼接顺序；未删除
   底层 CLI 实现、不可变研究身份或既有研究工件。
 
@@ -1498,6 +1523,23 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- `sse-replacement-coverage-regression-v1` 失败先行：实现前两项 Python 事件/API 契约均因实际
+  `patch_schema_version=3` 失败，JS 端没有可原子替换 coverage 的 helper；实现后对应事件、API 和
+  浏览器状态回归通过，并断言 GET/SSE coverage 完全一致、旧 `360/0/89` 被替换为 `360/229/89`。
+- 修复前主机网络现场：统一 `runtime` 6 次样本均可达当前 V1 服务，Today/Tomorrow/D25 的
+  `full_scored` 分别为 118/229/237，而页面仍报告 0；统一 `live` 五项探针全部通过，证券主数据
+  5212/5212、历史供应商 6/6 可用、腾讯行情与 Tushare 正常。隔离历史持久化对比为批量 183 条/3 次
+  事务/37.2ms，排除了供应商、持久化和评分本身作为页面旧 0 的根因。
+- `make format-check`、`make lint`（含零严格重构债务）、`make type-check`（261 个源码文件）、
+  `make test` 和 `make package` 全部通过；架构/无副作用、固定融合 83.40、SSE 游标与慢客户端、冻结及
+  本批 GET/SSE coverage 专项共 98 项通过。仓库外 Python 3.14 环境实际从最终 wheel 路径导入包、
+  执行 `trader-cli --help` 并读取模板、CSS、JavaScript 和两项 SVG 图标资源。
+- 重启真实 V1 服务后，统一 runtime 契约可达且 release v9 资源全部返回 200；隔离 Firefox 直接应用
+  decision replacement 1 次、零 resync，patch-to-paint P95 16ms。桌面 1280x720、1440x900、
+  1920x1080 三档均无白屏、横向溢出、重叠或浏览器错误，场景漏斗由采集中正确更新为
+  `360 → 56 → 0`。统一 full 的证券主数据、历史源、腾讯、Tushare 和浏览器 5/7 项通过；运行状态与
+  离线性能两项未通过及其证据保留在 Residual Risks，未写成全量通过。
 
 - 本批契约优先回归已覆盖默认 V1、显式 V2、配置不写回、有效策略身份变化、组合根单实例模型装配、
   三组阶段顺序、非零结果后继续、workers 定向转发、Shell 默认/显式档位、非法档位安装前拒绝及
@@ -2377,6 +2419,15 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 本批不放宽 99% 历史覆盖、评分、过滤、动作、风险、融合、TopK、DeepSeek 预算或冻结规则。现场历史
+  重启后从 81 推进至 288/360，策略当轮可用历史最高为 239/360，且观察到有界 warmup timeout；达到门槛
+  前会继续合法产生 `not_ready/history_coverage_incomplete`。这与修复前已有 229 个完整评分却因旧
+  coverage 显示 0 的错误不同；该独立运行容量问题如持续，应另立批次处理。
+- 固定离线性能两次只有未被本批修改、也不经过 coverage/SSE replacement 的
+  `targeted_overlay_commit` P95 约 109-113ms，高于 100ms 绝对预算；同一未修改基线在本机复测为
+  38.8ms 并通过，显示该旧指标存在已知长尾波动。本批相关 `sse_publish` P95 为 0.029ms、真实浏览器
+  patch-to-paint P95 为 16ms，未放宽任何性能预算；旧 overlay 长尾仍作为发布残余风险保留。
 
 - 命令整合和默认 V1 不构成收益结论。V1 仍缺独立留出证据，V2 仍是历史门禁拒绝工件；两档谁更能挣钱
   必须等待已预注册的同日同股影子比较，后台不得自动切换。`research-screen` 若任一合法研究门禁拒绝，

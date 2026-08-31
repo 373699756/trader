@@ -11,6 +11,7 @@ const renderPath = path.join(path.dirname(dashboardPath), "render.js");
 const longGroupsPath = path.join(path.dirname(dashboardPath), "long_groups.js");
 const formattersPath = path.join(path.dirname(dashboardPath), "dashboard_formatters.js");
 const patchesPath = path.join(path.dirname(dashboardPath), "dashboard_patches.js");
+const patchesSource = fs.readFileSync(patchesPath, "utf8");
 const statusViewPath = path.join(path.dirname(dashboardPath), "status_view.js");
 const releaseContractPath = path.join(path.dirname(dashboardPath), "release_contract.js");
 const streamPath = path.join(path.dirname(dashboardPath), "dashboard_stream.js");
@@ -44,7 +45,7 @@ vm.runInNewContext(fs.readFileSync(renderPath, "utf8"), sandbox, { filename: ren
 vm.runInNewContext(fs.readFileSync(selectionPath, "utf8"), sandbox, { filename: selectionPath });
 vm.runInNewContext(fs.readFileSync(longGroupsPath, "utf8"), sandbox, { filename: longGroupsPath });
 vm.runInNewContext(fs.readFileSync(formattersPath, "utf8"), sandbox, { filename: formattersPath });
-vm.runInNewContext(fs.readFileSync(patchesPath, "utf8"), sandbox, { filename: patchesPath });
+vm.runInNewContext(patchesSource, sandbox, { filename: patchesPath });
 vm.runInNewContext(fs.readFileSync(statusViewPath, "utf8"), sandbox, { filename: statusViewPath });
 vm.runInNewContext(fs.readFileSync(releaseContractPath, "utf8"), sandbox, { filename: releaseContractPath });
 vm.runInNewContext(streamSource, sandbox, { filename: streamPath });
@@ -106,7 +107,7 @@ assert.deepStrictEqual(
     schema_version: "v2_status_v7",
     release: {
       decision_view_schema: "v2_decision_view_v3",
-      web_asset_revision: "release-contract-2026-08-30-v8",
+      web_asset_revision: "release-contract-2026-08-31-v9",
     },
   }))),
   { compatible: true, reason: "" },
@@ -115,7 +116,7 @@ assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.decisionPayloadCompatibility({ schema_version: "v2_decision_view_v1" }))),
   { compatible: false, reason: "decision_schema_mismatch" },
 );
-assert(source.includes("draft: null,"), "formal recommendation patches must clear observation drafts");
+assert(patchesSource.includes("draft: null,"), "formal recommendation patches must clear observation drafts");
 assert(
   source.includes("loadRecommendations, loadStatus, applyRecommendationPatch, applyOverlayPatch"),
   "dashboard must inject the direct recommendation patch handler into the SSE controller",
@@ -171,19 +172,22 @@ assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.quoteAvailabilitySummary([]))),
   { total: 0, available: 0, quoteMissing: 0 },
 );
-const summaryElements = {
-  dataReadinessStatus: { textContent: "" },
-  dataReadinessMeta: { textContent: "" },
-  funnelStatus: { textContent: "" },
-  funnelMeta: { textContent: "" },
-  quoteSource: { textContent: "" },
-  budgetStatus: { textContent: "" },
-  budgetMeta: { textContent: "" },
-  headerFreeze: { textContent: "" },
-  freezeMeta: { textContent: "" },
-  snapshotStrategy: { textContent: "" },
-  snapshotDate: { textContent: "" },
-};
+function summaryFixture() {
+  return {
+    dataReadinessStatus: { textContent: "" },
+    dataReadinessMeta: { textContent: "" },
+    funnelStatus: { textContent: "" },
+    funnelMeta: { textContent: "" },
+    quoteSource: { textContent: "" },
+    budgetStatus: { textContent: "" },
+    budgetMeta: { textContent: "" },
+    headerFreeze: { textContent: "" },
+    freezeMeta: { textContent: "" },
+    snapshotStrategy: { textContent: "" },
+    snapshotDate: { textContent: "" },
+  };
+}
+const summaryElements = summaryFixture();
 state.renderSummary(
   summaryElements,
   {
@@ -802,10 +806,18 @@ const payload = {
   current_trade_date: "2026-07-23",
   view: "live",
   frozen: false,
+  coverage: {
+    candidate_count: 360,
+    evaluated_count: 0,
+    rejected_count: 89,
+    selected_count: 0,
+    executable_count: 0,
+    observation_count: 0,
+  },
   items: [{ code: "600001", rank: 1 }, { code: "600002", rank: 2 }],
 };
 const patch = {
-  patch_schema_version: 3,
+  patch_schema_version: 4,
   schema_version: "v2_event_v1",
   base_projection_version: "today-base",
   projection_version: "today-next",
@@ -814,6 +826,14 @@ const patch = {
   trade_date: "2026-07-23",
   view: "live",
   frozen: false,
+  coverage: {
+    candidate_count: 360,
+    evaluated_count: 229,
+    rejected_count: 89,
+    selected_count: 2,
+    executable_count: 2,
+    observation_count: 0,
+  },
   upserts: [{ code: "600001", rank: 2 }, { code: "600003", rank: 1 }],
   removed_codes: ["600002"],
 };
@@ -823,9 +843,47 @@ assert.strictEqual(
   state.recommendationPatchDecision(patch, payload, "today-base", "today", "live"),
   "apply",
 );
+const coveragePatch = {
+  ...patch,
+  replace: true,
+  upserts: [],
+  removed_codes: [],
+  coverage: {
+    ...patch.coverage,
+    selected_count: 0,
+    executable_count: 0,
+  },
+};
+assert.strictEqual(
+  state.recommendationPatchDecision(coveragePatch, payload, "today-base", "today", "live"),
+  "apply",
+);
+const replacementPayload = state.replacementPayload(payload, coveragePatch, []);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(replacementPayload.coverage)),
+  coveragePatch.coverage,
+  "a complete SSE replacement must atomically replace stale snapshot coverage",
+);
+const replacementSummary = summaryFixture();
+state.renderSummary(
+  replacementSummary,
+  replacementPayload,
+  [],
+  "empty",
+  null,
+  sandbox.window.TraderSelection,
+  sandbox.window.TraderRender,
+  null,
+);
+assert.strictEqual(replacementSummary.funnelStatus.textContent, "360 → 229 → 0");
+assert.strictEqual(replacementSummary.funnelMeta.textContent, "过滤 89 · 观察 0 · 最高 -");
 assert.strictEqual(
   state.recommendationPatchDecision(patch, payload, "today-base", "today", "current"),
   "apply",
+);
+assert.strictEqual(
+  state.recommendationPatchDecision({ ...patch, coverage: null }, payload, "today-base", "today", "current"),
+  "schema_mismatch",
 );
 assert.strictEqual(
   state.recommendationPatchDecision(
@@ -876,7 +934,7 @@ assert.strictEqual(
   "ignore_late_draft",
 );
 const overlay = {
-  patch_schema_version: 3,
+  patch_schema_version: 4,
   schema_version: "v2_event_v1",
   projection_version: "today-next",
   snapshot_id: "today-decision",

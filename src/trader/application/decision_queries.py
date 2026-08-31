@@ -8,6 +8,7 @@ from datetime import date, datetime, time
 from typing import Literal, Protocol
 
 from trader.application.decision_core import UnifiedDecisionIndex, UnifiedDecisionSnapshot
+from trader.application.decision_coverage import DecisionCoverage, scored_decision_coverage
 from trader.application.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.ports.clock import Clock
 from trader.application.ports.decision_records import DecisionRecordError
@@ -32,16 +33,6 @@ class DecisionHistoryReader(Protocol):
     def load(self, strategy: Strategy, trade_date: date) -> CommittedDecisionRecord | None: ...
 
     def list_dates(self, strategy: Strategy, *, limit: int = 31) -> tuple[date, ...]: ...
-
-
-@dataclass(frozen=True)
-class DecisionCoverageView:
-    candidate_count: int
-    evaluated_count: int
-    rejected_count: int
-    selected_count: int
-    executable_count: int
-    observation_count: int
 
 
 @dataclass(frozen=True)
@@ -113,7 +104,7 @@ class DecisionView:
     frozen_at: datetime | None
     freeze_kind: str | None
     input_versions: tuple[tuple[str, str], ...]
-    coverage: DecisionCoverageView
+    coverage: DecisionCoverage
     filter_reason_counts: tuple[tuple[str, int], ...]
     degraded_reasons: tuple[str, ...]
     items: tuple[DecisionItemView, ...]
@@ -233,20 +224,7 @@ def _scored_view(
     overlay_quotes = _valid_overlay_quotes(decision, overlay)
     selected = tuple(sorted((item for item in decision.items if item.selected), key=lambda item: item.rank))
     items = tuple(_scored_item(item, overlay_quotes.get(item.code)) for item in selected)
-    rejected = (
-        decision.rejected_count
-        if decision.rejected_count is not None
-        else sum(count for _reason, count in decision.filter_aggregates)
-    )
-    population = decision.population_count if decision.population_count is not None else len(decision.items) + rejected
-    coverage = DecisionCoverageView(
-        candidate_count=population,
-        evaluated_count=len(decision.items),
-        rejected_count=rejected,
-        selected_count=len(items),
-        executable_count=sum(item.action == "executable" for item in items),
-        observation_count=sum(item.action == "observe" for item in items),
-    )
+    coverage = scored_decision_coverage(decision)
     etag = _etag(decision.content_hash, overlay.content_hash if overlay_quotes and overlay is not None else None)
     return DecisionView(
         "ready",
@@ -329,7 +307,7 @@ def _long_current(snapshot: UnifiedDecisionSnapshot, now: datetime) -> DecisionV
         return _empty_view(Strategy.LONG, now.date(), "current", "not_applicable", "current_projection_unavailable")
     items = tuple(_long_item(item) for item in projection.items)
     available = sum(item.quote_status != "missing" for item in projection.items)
-    coverage = DecisionCoverageView(
+    coverage = DecisionCoverage(
         candidate_count=len(items),
         evaluated_count=available,
         rejected_count=0,
@@ -422,7 +400,7 @@ def _empty_view(
         None,
         None,
         (),
-        DecisionCoverageView(0, 0, 0, 0, 0, 0),
+        DecisionCoverage(0, 0, 0, 0, 0, 0),
         (),
         (reason,),
         (),
@@ -437,7 +415,6 @@ def _etag(content_hash: str, overlay_hash: str | None) -> str:
 
 
 __all__ = [
-    "DecisionCoverageView",
     "DecisionDraftView",
     "DecisionHistoryReader",
     "DecisionItemView",

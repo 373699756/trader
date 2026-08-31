@@ -36,13 +36,22 @@ def test_scored_decision_event_serializes_complete_replace_patch_without_snapsho
 
     payload = serialize_event(UnifiedDecisionEventStream().publish_committed(build_v2_decision_committed(decision)))
 
-    assert payload["patch_schema_version"] == 3
+    assert payload["patch_schema_version"] == 4
     assert payload["replace"] is True
     assert payload["snapshot_id"] == decision.version
     assert payload["projection_version"] == decision.content_hash
     assert payload["removed_codes"] == []
     assert payload["removals"] == []
     assert payload["view"] == "live"
+    assert payload["coverage"] == {
+        "candidate_count": 11,
+        "evaluated_count": 1,
+        "rejected_count": 10,
+        "selected_count": 1,
+        "executable_count": 1,
+        "observation_count": 0,
+    }
+    assert "filtered_count" not in payload
     assert payload["input_versions"] == {
         "market": "market:1",
         "score_model": "daily_reconstructible_ensemble_v1:model-hash",
@@ -135,7 +144,7 @@ def test_overlay_event_serializes_row_patch_with_parent_and_projection_identitie
     assert payload["snapshot_id"] == decision.version
     assert payload["projection_version"] != decision.version
     assert payload["schema_version"] == "v2_event_v1"
-    assert payload["patch_schema_version"] == 3
+    assert payload["patch_schema_version"] == 4
     assert payload["quotes"] == [
         {
             "code": "600000",

@@ -162,8 +162,18 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     assert "event: decision" in event
     decision_patch = json.loads(event.split("data: ", 1)[1])
     assert decision_patch["strategy"] == "today"
-    assert decision_patch["patch_schema_version"] == 3
+    assert decision_patch["patch_schema_version"] == 4
     assert decision_patch["replace"] is True
+    assert decision_patch["coverage"] == {
+        "candidate_count": 11,
+        "evaluated_count": 1,
+        "rejected_count": 10,
+        "selected_count": 1,
+        "executable_count": 1,
+        "observation_count": 0,
+    }
+    assert decision_patch["coverage"] == client.get("/api/v2/decisions/today/current").get_json()["coverage"]
+    assert "filtered_count" not in decision_patch
     assert decision_patch["input_versions"]["score_model"] == ("daily_reconstructible_ensemble_v1:model-hash")
     assert [item["code"] for item in decision_patch["upserts"]] == ["600000"]
     assert decision_patch["upserts"][0]["scores"]["predicted_net_excess_pct"] == 1.25

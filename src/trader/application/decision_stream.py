@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
+from trader.application.decision_coverage import DecisionCoverage, scored_decision_coverage
 from trader.application.decision_events import V2DecisionCommitted
 from trader.domain.recommendation.decision_identity import (
     DecisionItem,
@@ -39,7 +40,7 @@ class DecisionReplacementPatch:
     strategy_version: str
     input_versions: tuple[tuple[str, str], ...]
     fusion_mode: str
-    filtered_count: int
+    coverage: DecisionCoverage
     selection_diagnostics: SelectionDiagnostics | None
     degraded_reasons: tuple[str, ...]
     items: tuple[DecisionItem, ...]
@@ -123,18 +124,13 @@ class UnifiedDecisionEventStream:
         decision = event.projection
         replacement = None
         if decision is not None:
-            rejected = (
-                decision.rejected_count
-                if decision.rejected_count is not None
-                else sum(count for _reason, count in decision.filter_aggregates)
-            )
             replacement = DecisionReplacementPatch(
                 event.projection_version or event.decision_hash,
                 decision.observed_at,
                 decision.strategy_version,
                 decision.input_versions,
                 decision.stage,
-                rejected,
+                scored_decision_coverage(decision),
                 decision.selection_diagnostics,
                 decision.degraded_reasons,
                 tuple(sorted((item for item in decision.items if item.selected), key=lambda item: item.rank)),

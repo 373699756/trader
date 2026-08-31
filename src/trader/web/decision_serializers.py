@@ -158,7 +158,7 @@ def serialize_event(event: UnifiedPublishedEvent) -> dict[str, object]:
             content_hash=payload.content_hash,
             snapshot_id=payload.parent_version,
             projection_version=payload.projection_version,
-            patch_schema_version=3,
+            patch_schema_version=4,
             quotes=[_serialize_overlay_quote(quote) for quote in payload.quotes],
         )
     elif isinstance(payload, ResyncEventPayload):
@@ -197,7 +197,7 @@ def _serialize_decision_replacement(
 ) -> dict[str, object]:
     diagnostics = replacement.selection_diagnostics
     return {
-        "patch_schema_version": 3,
+        "patch_schema_version": 4,
         "snapshot_id": payload.version,
         "projection_version": replacement.projection_version,
         "etag": replacement.projection_version,
@@ -216,7 +216,14 @@ def _serialize_decision_replacement(
         "stale": False,
         "frozen": False,
         "degraded_reasons": list(replacement.degraded_reasons),
-        "filtered_count": replacement.filtered_count,
+        "coverage": {
+            "candidate_count": replacement.coverage.candidate_count,
+            "evaluated_count": replacement.coverage.evaluated_count,
+            "rejected_count": replacement.coverage.rejected_count,
+            "selected_count": replacement.coverage.selected_count,
+            "executable_count": replacement.coverage.executable_count,
+            "observation_count": replacement.coverage.observation_count,
+        },
         "selection_diagnostics": (
             {
                 "maximum_final_score": diagnostics.maximum_final_score,
