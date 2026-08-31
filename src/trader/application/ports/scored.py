@@ -36,7 +36,7 @@ class ScoredNativeInput:
         if type(self) is ScoredNativeInput:
             raise TypeError("scored native input requires a concrete strategy")
         evaluated_at = _shanghai(self.evaluated_at)
-        market_features = tuple(self.market_features)
+        market_features = tuple(_normalize_feature_times(feature) for feature in self.market_features)
         requested_codes = tuple(self.requested_codes)
         candidate_features = tuple(_normalize_feature_times(feature) for feature in self.candidate_features)
         _validate_identity_and_limits(self, evaluated_at)

@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户再次反馈推荐漏斗仍为 `360 → 0 → 0`。可复用 Web 诊断子报告升级为
+  `web_recommendation_health_v2`，加法输出完整漏斗阶段，以及各最多 32 项的人口过滤、候选过滤、
+  候选瞬态、候选可选告警和供应原因聚合计数，不包含股票身份或逐股数据；该证据用于区分页面覆盖、
+  历史门槛、人口横截面和候选评分四类不同断点。
+  `Regression-Key: population-candidate-dual-watermark-funnel-v1`。
+
 - 用户问题：推荐漏斗再次显示 `360 → 0 → 0`、过滤 89、观察草稿 0、最高分不可用，并追问交付
   Skill 为何没有阻止复发。新增共享不可变 `DecisionCoverage`，由同一个纯函数从
   `ScoredDecision` 生成 GET 与 SSE 的候选、已评估、过滤、正式、观察覆盖；新增浏览器失败先行
@@ -497,6 +503,11 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- Today、Tomorrow、D25 的共享原生评分现在分别使用全市场发现批次水位与最终候选评分水位：
+  `preselect_max_age_seconds` 只审计人口批次，`score_max_age_seconds` 只审计候选原始行情。慢历史、
+  研究或分钟增强不再把已完整接纳的同一人口批次倒算为过期；候选过期、99% 历史覆盖、硬过滤、
+  风险、DeepSeek、动作、融合、TopK 和冻结契约均未放宽。
+
 - decision/overlay 行级 patch schema 从 v3 升至 v4，decision 完整替换必须携带完整 coverage，静态资源
   握手升至 `release-contract-2026-08-31-v9`。浏览器只在 coverage 六项均为非负整数、计数关系合法且
   `selected_count` 与完整 upserts 一致时应用 patch，否则按既有协议请求 current 重同步。
@@ -933,6 +944,14 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复全市场发现已完成、候选定向报价也有效时，选择器仍以更晚候选 `evaluated_at` 对约 5571 条人口
+  重做 20/30 秒新鲜度判断的问题。现场人口因候选增强耗时被 Today/D25 全部标成 `stale_quote`，板内
+  横截面为空，导致 342 个硬过滤允许的候选没有进入本地评分并显示 `360 → 0 → 0`；现在人口按自身
+  完整批次水位审计，候选仍按最终水位审计。此前 Skill 已正确执行交付流程，但 Skill 不是运行时 hook，
+  上一批修复的是 SSE coverage 陈旧，本批确认并修复的是独立的更上游评分断点。首次真实重启又发现
+  人口水位 `max()` 保留胜出 UTC 对象导致类型边界以 `decision:value_error` 拒绝；原生输入现同时规范
+  market/candidate 全部业务时间到 `Asia/Shanghai` 后再计算水位。
+
 - 修复 decision SSE 完整替换把 payload 强制标为 `ready`，却沿用上一轮 GET 的旧 `coverage`；摘要因而
   停止读取同交易日 input-quality，并把已恢复到 229 个完整评分的 Tomorrow 继续画成
   `360 → 0 → 0`。现在 GET、publisher、serializer 和浏览器 replacement 共用同一 coverage 事实，SSE
@@ -1341,6 +1360,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除共享选择器把单一候选评分水位隐式同时用于人口预选的行为；不删除任何行情来源、历史回退、
+  风险规则、评分公式、门槛、预算、冻结记录或旧 release 数据。
+
 - 移除 decision SSE 的独立 `filtered_count` 线字段及浏览器内同名双表示；过滤数只来自完整 coverage 的
   `rejected_count`，不再让单个新字段与整组旧 coverage 混合成不可能的漏斗。
 
@@ -1523,6 +1545,29 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- `population-candidate-dual-watermark-funnel-v1` 失败先行：同一组 100 只候选在全市场批次完成后
+  延迟 85 秒进入评分，修复前人口 100/100 因 `stale_quote` 被拒且完整评分为 0；修复后 Today、
+  Tomorrow、D25 均得到 100 个本地分。负向回归继续断言候选本身过期时 100/100 保持
+  `stale_quote`、完整评分为 0。Web 诊断字段失败先行回归也先以缺失人口原因计数失败，随后通过。
+- 首次加载双水位修复的真实进程中，候选任务已完成 360 条，但 UTC 人口水位稳定触发三次
+  `decision:value_error`；新增混合 UTC/上海时区失败先行后，三策略同一回归均恢复 100 个本地分，
+  并断言原生人口时间在边界内统一为 `Asia/Shanghai`。
+- 修复前真实 V1 服务状态：人口 5571 条，Today/D25 的 `population_rejected_count=5571` 且
+  `stale_quote=5571`，候选仍有 342 个 `observe_only`；Tomorrow 在另一轮仅 34 条人口幸存并得到
+  164 个本地分。该六阶段证据确认首个断点是人口水位，不是页面占位、DeepSeek、最终 TopK 或
+  `OBSERVE_ONLY` 本身。定向 projection、选择器、input-quality、运行 adapter、诊断和架构回归共
+  98 项通过。
+- 最终 `make format-check`、`make lint`（零严格重构债）、`make type-check`（261 个源码文件）、
+  `make test` 和 `make package` 通过；完整测试首轮仅有一个既有 scheduler 线程退出时序断言偶发失败，
+  单项复跑及之后三轮完整测试均通过。五时段调度/冻结、83.40 融合、预算/流、冻结与架构专项 145 项
+  通过。隔离构建首次因沙箱禁止下载 setuptools 失败，获准网络后最终构建通过。
+- 仓库外安装最终 wheel 后，`trader-cli --help` 可执行，模板、CSS、JavaScript 和两项 SVG 资源均可读。
+  隔离 Firefox 刷新门禁通过：DOM P95 1.049 秒、patch-to-paint P95 6ms、decision replacement 1 次；
+  1280×720、1440×900、1920×1080 三档均无白屏、横向溢出、重叠或浏览器错误。
+- 最终 V1 真实进程在午间恢复 Tomorrow `360 → 46 → 0`、D25 `360 → 48 → 0`；两者人口过滤原因不再
+  含 `stale_quote`，recent errors 不含 `decision:value_error`。Today 在 11:20 后按冻结契约保持不补算；
+  当轮候选历史仅 73/360，Tomorrow/D25 均明确保持 `history_coverage_incomplete`。
 
 - `sse-replacement-coverage-regression-v1` 失败先行：实现前两项 Python 事件/API 契约均因实际
   `patch_schema_version=3` 失败，JS 端没有可原子替换 coverage 的 helper；实现后对应事件、API 和
@@ -2419,6 +2464,16 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 固定离线性能两次仅 `targeted_overlay_commit` 未过 100ms 旧绝对预算，P95 分别为 135.504ms 和
+  112.803ms；该路径未被本批修改且不经过人口/候选评分。相关评分指标均通过：板内本地评分 P95
+  12.650ms、三策略板内评分 P95 32.891ms、三板墙钟 P95 12.950ms；浏览器 patch-to-paint P95 6ms。
+  本批不借评分修复改写无关 overlay 实现或放宽性能预算，该既有长尾继续单独留证。
+
+- 本批不把历史覆盖不足或结构化研究缺失伪装成修复完成。修复前现场候选历史为 351/360，低于 99%
+  发布门槛，且 `structured_risk_unavailable`、`corporate_risk_history_unavailable` 各为 360；因此即使
+  本地评分漏斗恢复，策略仍可合法保持 `not_ready/history_coverage_incomplete`，候选也只能观察而不能
+  进入 DeepSeek 或正式执行池。历史/研究来源恢复属于既有异步数据就绪过程，不通过降低门槛解决。
 
 - 本批不放宽 99% 历史覆盖、评分、过滤、动作、风险、融合、TopK、DeepSeek 预算或冻结规则。现场历史
   重启后从 81 推进至 288/360，策略当轮可用历史最高为 239/360，且观察到有界 warmup timeout；达到门槛

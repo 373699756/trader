@@ -161,6 +161,12 @@ trade_date + phase + board + data_version
 候选批次和逐股本地分，不得无条件失效未变化的板内总体。候选预选与正式评分必须沿用
 同一份全市场特征自带的 `merge_epoch`；缓存只保留总体参数和参考分布，命中后不得为
 每个策略重复序列化全市场，正式评分只投影有界候选并直接执行纯本地评分函数。
+全市场总体与候选定向批次必须分别使用自己的点时水位和年龄上限：总体在其完整发现批次的
+`observed_at/source_time/received_time` 最大值上执行预选新鲜度审计，候选在最终
+`evaluated_at` 上执行评分新鲜度审计。候选历史、研究或分钟增强较慢，不能把此前已完整接纳的同一
+`merge_epoch` 总体倒算为 `stale_quote` 并清空横截面；候选原始 `source_time` 过期时仍必须拒绝，
+不得借总体水位恢复候选执行资格。原生输入边界必须先把总体与候选的全部业务时间规范为
+`Asia/Shanghai`，再计算最大水位，不能让 `max()` 保留胜出 UTC 对象的时区身份。
 
 行业只用于展示、审计、DeepSeek 行业政策零权重标签和最终集中度标识，不进入候选分、
 本地分、DeepSeek 总分、动作门或活动下行保护。特征服务仍计算并保存
@@ -785,7 +791,9 @@ DeepSeek review 继续在既有 schema、证据和截止校验后独立规范化
 
 生产原生路径直接从深层不可变的 `TomorrowNativeInput.market_features` 建立全市场选择人口，
 不得先合成再拆解 daily/market/candidate epoch。全市场人口仍逐项应用
-`preselection_replay_feature`，并只把发现行情的 source time 规范到不晚于批次评估水位；
+`preselection_replay_feature`，并只把发现行情的 source time 规范到不晚于全市场批次水位；
+`preselect_max_age_seconds` 在该水位判断总体新鲜度，`score_max_age_seconds` 在最终
+`evaluated_at` 判断候选新鲜度，两者不得混用；
 显式 `candidate_features` 是唯一可评分集合。共享选择函数必须与常规数据平面路径使用同一
 `TomorrowSelectionPolicy`、硬过滤、板内横截面、风险推导、动作和稳定排名实现。
 

@@ -40,6 +40,8 @@ class ScoredSelectionOptions:
     candidate_features: tuple[FeatureSnapshot, ...] | None = None
     normalize_discovery_source_time: bool = False
     strategy: Strategy = Strategy.TOMORROW
+    population_evaluated_at: datetime | None = None
+    population_max_age_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -151,13 +153,14 @@ def select_scored_features(
         raise ScoredSelectionNotReadyError("market_epoch_trade_date_mismatch")
     if not population:
         raise ScoredSelectionNotReadyError("coherent_market_epoch_unavailable")
+    population_evaluated_at = options.population_evaluated_at or evaluated_at
     if options.normalize_discovery_source_time:
         population = tuple(
             replace(
                 feature,
                 quote=replace(
                     feature.quote,
-                    source_time=min(evaluated_at, feature.quote.received_time),
+                    source_time=min(population_evaluated_at, feature.quote.received_time),
                 ),
             )
             for feature in population
@@ -174,6 +177,8 @@ def select_scored_features(
             candidate_features=options.candidate_features,
             fallbacks=options.fallbacks or {},
             local_score_overrides=local_score_overrides,
+            population_evaluated_at=population_evaluated_at,
+            population_max_age_seconds=options.population_max_age_seconds,
         )
     )
 

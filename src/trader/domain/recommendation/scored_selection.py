@@ -97,6 +97,8 @@ class ScoredSelectionRequest:
     candidate_features: Sequence[FeatureSnapshot] | None = None
     fallbacks: Mapping[Board, BoardCrossSectionFallback] = field(default_factory=lambda: MappingProxyType({}))
     local_score_overrides: Mapping[str, LocalScoreResult] | None = None
+    population_evaluated_at: datetime | None = None
+    population_max_age_seconds: float | None = None
 
     def __post_init__(self) -> None:
         features = tuple(self.features)
@@ -111,6 +113,13 @@ class ScoredSelectionRequest:
             raise ValueError("scored selection features must contain unique codes")
         if any(item.observed_at > self.evaluated_at for item in features):
             raise ValueError("scored selection cannot use future features")
+        population_evaluated_at, population_max_age_seconds = _validated_population_window(
+            features,
+            candidate_evaluated_at=self.evaluated_at,
+            population_evaluated_at=self.population_evaluated_at,
+            population_max_age_seconds=self.population_max_age_seconds,
+            default_max_age_seconds=self.policy.max_age_seconds,
+        )
         candidate_features = _validated_candidate_features(
             self.candidate_features,
             population_codes=set(codes),
@@ -124,6 +133,8 @@ class ScoredSelectionRequest:
         object.__setattr__(self, "features", features)
         object.__setattr__(self, "candidate_features", candidate_features)
         object.__setattr__(self, "fallbacks", MappingProxyType(fallbacks))
+        object.__setattr__(self, "population_evaluated_at", population_evaluated_at)
+        object.__setattr__(self, "population_max_age_seconds", population_max_age_seconds)
         if self.local_score_overrides is not None:
             overrides = dict(self.local_score_overrides)
             if not set(overrides).issubset(set(codes)):
@@ -148,6 +159,33 @@ def _validated_candidate_features(
     if any(item.observed_at > evaluated_at for item in candidates):
         raise ValueError("scored selection cannot use future candidates")
     return candidates
+
+
+def _validated_population_window(
+    features: tuple[FeatureSnapshot, ...],
+    *,
+    candidate_evaluated_at: datetime,
+    population_evaluated_at: datetime | None,
+    population_max_age_seconds: float | None,
+    default_max_age_seconds: float,
+) -> tuple[datetime, float]:
+    evaluated_at = population_evaluated_at or candidate_evaluated_at
+    max_age_seconds = population_max_age_seconds if population_max_age_seconds is not None else default_max_age_seconds
+    if evaluated_at.tzinfo is None or evaluated_at.utcoffset() is None:
+        raise ValueError("population evaluation time must be timezone-aware")
+    if getattr(evaluated_at.tzinfo, "key", None) != _SHANGHAI_TIMEZONE:
+        raise ValueError("population evaluation time must use Asia/Shanghai")
+    if evaluated_at > candidate_evaluated_at:
+        raise ValueError("population evaluation time cannot exceed candidate evaluation time")
+    if not math.isfinite(max_age_seconds) or max_age_seconds < 0.0:
+        raise ValueError("population maximum quote age must be finite and non-negative")
+    if any(
+        value > evaluated_at
+        for item in features
+        for value in (item.observed_at, item.quote.source_time, item.quote.received_time)
+    ):
+        raise ValueError("scored population cannot contain data after its evaluation time")
+    return evaluated_at, max_age_seconds
 
 
 @dataclass(frozen=True)
@@ -203,12 +241,22 @@ class ScoredSelectionResult:
 
 
 def select_scored(request: ScoredSelectionRequest) -> ScoredSelectionResult:
-    population_evaluations = _filter_features(request.features, request)
+    population_evaluations = _filter_features(
+        request.features,
+        request,
+        evaluated_at=request.population_evaluated_at,
+        max_age_seconds=request.population_max_age_seconds,
+    )
     evaluations = dict(population_evaluations)
     candidate_evaluations = (
         population_evaluations
         if request.candidate_features is None
-        else _filter_features(request.candidate_features, request)
+        else _filter_features(
+            request.candidate_features,
+            request,
+            evaluated_at=request.evaluated_at,
+            max_age_seconds=request.policy.max_age_seconds,
+        )
     )
     evaluations.update(candidate_evaluations)
     population_versions: dict[Board, str] = {}
@@ -320,13 +368,18 @@ def _audit_board_population(
 def _filter_features(
     features: Sequence[FeatureSnapshot],
     request: ScoredSelectionRequest,
+    *,
+    evaluated_at: datetime | None = None,
+    max_age_seconds: float | None = None,
 ) -> dict[str, ScoredStockEvaluation]:
+    filter_time = evaluated_at or request.evaluated_at
+    quote_max_age = request.policy.max_age_seconds if max_age_seconds is None else max_age_seconds
     result: dict[str, ScoredStockEvaluation] = {}
     for feature in sorted(features, key=lambda item: item.quote.code):
         filtered = hard_filter(
             feature,
-            request.evaluated_at,
-            max_age_seconds=request.policy.max_age_seconds,
+            filter_time,
+            max_age_seconds=quote_max_age,
             policy=request.policy.hard_filter,
         )
         normalized = replace(feature, quote=replace(feature.quote, board=filtered.board))

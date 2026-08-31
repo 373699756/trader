@@ -42,6 +42,8 @@ _MONITORED_FUNNEL_FIELDS = (
     "full_scored",
 )
 _MAX_RESPONSE_BYTES = 1_048_576
+_MAX_REASON_COUNTS = 32
+_REPORT_SCHEMA_VERSION = "web_recommendation_health_v2"
 _EvidenceValue = str | int | float | bool | None
 
 
@@ -105,6 +107,21 @@ class InputQualitySnapshot:
     trade_date: str | None
     primary_blocker: str | None
     funnel: FunnelSnapshot
+    population_filter_reason_counts: Mapping[str, int]
+    candidate_filter_reason_counts: Mapping[str, int]
+    candidate_transient_reason_counts: Mapping[str, int]
+    candidate_optional_reason_counts: Mapping[str, int]
+    supply_reason_counts: Mapping[str, int]
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "population_filter_reason_counts",
+            "candidate_filter_reason_counts",
+            "candidate_transient_reason_counts",
+            "candidate_optional_reason_counts",
+            "supply_reason_counts",
+        ):
+            object.__setattr__(self, field_name, MappingProxyType(dict(getattr(self, field_name))))
 
 
 @dataclass(frozen=True)
@@ -836,6 +853,11 @@ def _parse_input_quality(payload: Mapping[str, object]) -> InputQualitySnapshot:
         trade_date=_text(_mapping(payload.get("summary")).get("trade_date")),
         primary_blocker=_text(payload.get("primary_blocker")),
         funnel=_parse_funnel(_mapping(payload.get("supply_funnel"))),
+        population_filter_reason_counts=_parse_reason_counts(payload.get("population_filter_reason_counts")),
+        candidate_filter_reason_counts=_parse_reason_counts(payload.get("candidate_filter_reason_counts")),
+        candidate_transient_reason_counts=_parse_reason_counts(payload.get("candidate_transient_reason_counts")),
+        candidate_optional_reason_counts=_parse_reason_counts(payload.get("candidate_optional_reason_counts")),
+        supply_reason_counts=_parse_reason_counts(payload.get("supply_reason_counts")),
     )
 
 
@@ -917,7 +939,7 @@ def build_report(
     error_count = sum(finding.severity == "error" for finding in findings)
     warning_count = sum(finding.severity == "warning" for finding in findings)
     return {
-        "schema_version": "web_recommendation_health_v1",
+        "schema_version": _REPORT_SCHEMA_VERSION,
         "status": "failed" if error_count else "degraded" if warning_count else "passed",
         "collected_at": datetime.now(_SHANGHAI).isoformat(),
         "target": base_url,
@@ -963,6 +985,19 @@ def _sample_payload(sample: WebSample, strategies: tuple[str, ...]) -> dict[str,
             "input_quality_status": quality.status if quality is not None else None,
             "primary_blocker": quality.primary_blocker if quality is not None else None,
             "supply_funnel": _funnel_payload(quality.funnel if quality is not None else None),
+            "population_filter_reason_counts": (
+                dict(quality.population_filter_reason_counts) if quality is not None else {}
+            ),
+            "candidate_filter_reason_counts": (
+                dict(quality.candidate_filter_reason_counts) if quality is not None else {}
+            ),
+            "candidate_transient_reason_counts": (
+                dict(quality.candidate_transient_reason_counts) if quality is not None else {}
+            ),
+            "candidate_optional_reason_counts": (
+                dict(quality.candidate_optional_reason_counts) if quality is not None else {}
+            ),
+            "supply_reason_counts": dict(quality.supply_reason_counts) if quality is not None else {},
         }
     return {
         "sample": sample.sample_number,
@@ -1018,7 +1053,14 @@ def _funnel_payload(payload: FunnelSnapshot | None) -> dict[str, int | None]:
         "candidate_features": payload.candidate_features if payload is not None else None,
         "security_master": payload.security_master if payload is not None else None,
         "history": payload.history if payload is not None else None,
+        "filter_pass": payload.filter_pass if payload is not None else None,
+        "filter_observe": payload.filter_observe if payload is not None else None,
+        "filter_reject": payload.filter_reject if payload is not None else None,
         "full_scored": payload.full_scored if payload is not None else None,
+        "review_eligible": payload.review_eligible if payload is not None else None,
+        "action_executable": payload.action_executable if payload is not None else None,
+        "action_observe": payload.action_observe if payload is not None else None,
+        "action_unavailable": payload.action_unavailable if payload is not None else None,
         "selected_executable": payload.selected_executable if payload is not None else None,
         "selected_observe": payload.selected_observe if payload is not None else None,
     }
@@ -1055,6 +1097,12 @@ def _mapping(value: object) -> Mapping[str, object]:
 
 def _mapping_or_none(value: object) -> Mapping[str, object] | None:
     return _mapping(value) if isinstance(value, Mapping) else None
+
+
+def _parse_reason_counts(value: object) -> Mapping[str, int]:
+    counts = {key: count for key, raw in _mapping(value).items() if (count := _nonnegative_int(raw)) is not None}
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:_MAX_REASON_COUNTS]
+    return MappingProxyType(dict(ordered))
 
 
 def _text(value: object) -> str | None:
@@ -1097,7 +1145,7 @@ def main() -> int:
         )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         report = {
-            "schema_version": "web_recommendation_health_v1",
+            "schema_version": _REPORT_SCHEMA_VERSION,
             "status": "failed",
             "error": type(exc).__name__,
         }

@@ -233,6 +233,12 @@ V2 数据平面、正式决策与 DeepSeek 预算使用独立持久化文件；�
 5. 按本地分、候选分、代码稳定排序，只从 `pass` 且达到本地选择门槛的股票中选 0-6 只，
    每行业最多 2 只；观察候选单独保留，不挤占正式选择。
 
+原生直投影必须为全市场人口预选和候选评分保留两个显式点时水位。人口水位取同一完整全市场
+批次的 `observed_at/source_time/received_time` 最大值并使用 `preselect_max_age_seconds`；候选继续
+使用最终 `evaluated_at` 与 `score_max_age_seconds`。候选增强耗时不得反向把已接纳的人口批次全部
+标记为过期，但候选自身过期仍必须产生 `stale_quote` 并禁止评分、DeepSeek 和正式动作。原生输入
+边界须先把人口与候选的观测、来源、接收、证据和风险时间统一到 `Asia/Shanghai`，再计算水位。
+
 统一决策在 local/hybrid 融合后且两个动作池选择前执行《推荐策略》第 9.1 节活动下行保护。保护命中只能把
 原本达到执行门槛的候选降为观察，不能改变分数、融合、硬过滤和门槛，也不能把不可用候选补入
 观察池；Today、Tomorrow、D25 必须使用各自策略身份计算弱收盘周期信号。
@@ -1493,6 +1499,8 @@ curl -fsS http://127.0.0.1:5000/api/v2/decisions/long/current
 策略、交易日或 projection 身份不一致均需留证。正式/观察入选数为 0 本身不是异常；`ready` 的合法空
 current 必须携带 `selection_diagnostics.empty_reason`。Web 诊断模块只负责检测和归因，不抓行情、不触发
 评分、不修改运行状态、阈值或冻结结果，错误发现或 API 不可达时退出码为 1。
+Web 子报告契约为 `web_recommendation_health_v2`：每个策略除完整漏斗阶段外，还分别保留最多 32 项
+人口过滤、候选过滤、候选瞬态、候选可选告警和供应原因聚合计数；不得输出股票身份或逐股数据。
 
 统一诊断的 `runtime/web` profile 只读取运行中 Web，`research` profile 复用只读
 `trader-cli research-status` 权威投影并只保留活动研究窗口摘要，`sources` profile 才执行真实供应商请求并消耗适用配额，

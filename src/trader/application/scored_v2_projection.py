@@ -94,6 +94,8 @@ def build_scored_v2_local(
         ScoredSelectionOptions(
             evaluated_at=native_input.evaluated_at,
             max_age_seconds=native_input.score_max_age_seconds,
+            population_evaluated_at=_market_population_watermark(native_input.market_features),
+            population_max_age_seconds=native_input.preselect_max_age_seconds,
             phase=native_input.phase,
             candidate_features=native_input.candidate_features,
             normalize_discovery_source_time=True,
@@ -166,6 +168,14 @@ def _model_eligible_candidates(
         if filtered.allowed:
             eligible.append(replace(feature, quote=replace(feature.quote, board=filtered.board)))
     return tuple(eligible)
+
+
+def _market_population_watermark(features: tuple[FeatureSnapshot, ...]) -> datetime:
+    return max(
+        value
+        for feature in features
+        for value in (feature.observed_at, feature.quote.source_time, feature.quote.received_time)
+    )
 
 
 def build_scored_v2_hybrid(

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from tests.unit.application.v2_review_helpers import review
 from trader.application.decision_core import UnifiedDecisionIndex
-from trader.application.ports.scored import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
+from trader.application.ports.scored import D25NativeInput, ScoredNativeInput, TodayNativeInput, TomorrowNativeInput
 from trader.application.ports.tomorrow_model import TomorrowModelInput, TomorrowModelPrediction
 from trader.application.research_audit import build_v2_committed_research_audit
 from trader.application.scored_v2_projection import (
@@ -182,6 +184,85 @@ def test_d25_native_local_and_valid_facts_publish_one_parented_hybrid(
     assert hybrid_result.event is not None
     assert hybrid_result.event.decision_version == hybrid.version
     assert index.snapshot(Strategy.D25).current == hybrid
+
+
+@pytest.mark.parametrize("native_type", (TodayNativeInput, TomorrowNativeInput, D25NativeInput))
+def test_native_projection_scores_fresh_candidates_against_their_coherent_older_market_batch(
+    application_feature_factory,
+    native_type: type[ScoredNativeInput],
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    market_at = EVALUATED_AT - timedelta(seconds=90)
+    candidate_at = EVALUATED_AT - timedelta(seconds=5)
+    market_features = tuple(
+        _verified_feature(application_feature_factory(f"600{index:03d}", market_at)) for index in range(100)
+    )
+    market_features = tuple(
+        replace(
+            feature,
+            quote=replace(
+                feature.quote,
+                source_time=feature.quote.source_time.astimezone(timezone.utc),
+                received_time=feature.quote.received_time.astimezone(timezone.utc),
+            ),
+            observed_at=feature.observed_at.astimezone(timezone.utc),
+        )
+        for feature in market_features
+    )
+    candidate_features = tuple(
+        _verified_feature(application_feature_factory(f"600{index:03d}", candidate_at)) for index in range(100)
+    )
+    native_input = native_type(
+        trade_date=TRADE_DATE,
+        phase="final_review",
+        data_version="candidate-data:delayed-enrichment",
+        config_version="runtime-v2+strategy-v2",
+        evaluated_at=EVALUATED_AT,
+        market_features=market_features,
+        requested_codes=tuple(feature.quote.code for feature in candidate_features),
+        candidate_features=candidate_features,
+        preselect_max_age_seconds=30.0,
+        score_max_age_seconds=30.0,
+        candidate_pool_size=120,
+    )
+
+    projection = build_scored_v2_local(native_input, policy, sequence=1)
+
+    assert all(
+        getattr(feature.observed_at.tzinfo, "key", None) == "Asia/Shanghai" for feature in native_input.market_features
+    )
+    assert projection.selection.population_rejected_count == 0
+    assert projection.input_quality.candidate_scored_count == 100
+    assert "stale_quote" not in projection.selection.population_filter_reason_counts
+    assert all(item.local_score is not None for item in projection.selection.scored_candidates)
+
+
+def test_native_projection_does_not_treat_stale_candidate_quotes_as_fresh_population_quotes(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    market_at = EVALUATED_AT - timedelta(seconds=90)
+    market_features = tuple(
+        _verified_feature(application_feature_factory(f"600{index:03d}", market_at)) for index in range(100)
+    )
+    native_input = TomorrowNativeInput(
+        trade_date=TRADE_DATE,
+        phase="final_review",
+        data_version="candidate-data:stale",
+        config_version="runtime-v2+strategy-v2",
+        evaluated_at=EVALUATED_AT,
+        market_features=market_features,
+        requested_codes=tuple(feature.quote.code for feature in market_features),
+        candidate_features=market_features,
+        preselect_max_age_seconds=30.0,
+        score_max_age_seconds=30.0,
+        candidate_pool_size=120,
+    )
+
+    projection = build_scored_v2_local(native_input, policy, sequence=1)
+
+    assert projection.input_quality.candidate_scored_count == 0
+    assert projection.input_quality.candidate_transient_reason_counts["stale_quote"] == 100
 
 
 def test_review_completed_after_1448_cannot_create_hybrid(application_feature_factory) -> None:

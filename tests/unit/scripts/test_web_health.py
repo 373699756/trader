@@ -50,6 +50,11 @@ def _sample(
             "status": quality_status or decision_status,
             "publishable": (quality_status or decision_status) in {"ready", "business_empty"},
             "primary_blocker": "ready" if decision_status == "ready" else "history_coverage_incomplete",
+            "population_filter_reason_counts": {"stale_quote": 5571},
+            "candidate_filter_reason_counts": {"history_too_short": 71},
+            "candidate_transient_reason_counts": {"history_data_degraded": 12},
+            "candidate_optional_reason_counts": {"research_data_degraded": 3},
+            "supply_reason_counts": {"local_score_unavailable": 17},
             "supply_funnel": dict(funnel or _funnel()),
             "summary": {
                 **({"trade_date": _TRADE_DATE} if include_quality_trade_date else {}),
@@ -319,6 +324,14 @@ def test_json_report_contains_only_aggregated_projection_data() -> None:
     rendered = str(report)
     assert "600000" not in rendered
     assert "items" not in rendered
+    assert report["schema_version"] == "web_recommendation_health_v2"
     assert report["status"] == "passed"
     assert report["samples"][0]["market"]["history_warmup"]["planned_count"] == 20
     assert report["samples"][0]["market"]["history_warmup"]["batch_timeout_seconds"] == 20.0
+    strategy = report["samples"][0]["strategies"][_STRATEGY]
+    assert strategy["supply_funnel"] == _funnel()
+    assert strategy["population_filter_reason_counts"] == {"stale_quote": 5571}
+    assert strategy["candidate_filter_reason_counts"] == {"history_too_short": 71}
+    assert strategy["candidate_transient_reason_counts"] == {"history_data_degraded": 12}
+    assert strategy["candidate_optional_reason_counts"] == {"research_data_degraded": 3}
+    assert strategy["supply_reason_counts"] == {"local_score_unavailable": 17}
