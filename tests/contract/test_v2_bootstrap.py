@@ -11,7 +11,13 @@ from zoneinfo import ZoneInfo
 from trader.application.decisions.decision_observers import DecisionObserverStatus
 from trader.application.ports.runtime_status import V2InputQualityStatus, V2SupplyFunnel, V2SupplySummary
 from trader.application.ports.v2_runtime import V2ResearchRuntimeStatus
-from trader.application.runtime.cadence import CadencePlannerStatus
+from trader.application.runtime.cadence import (
+    CadencePlannerStatus,
+    SchedulePointKey,
+    SchedulePointState,
+    SchedulePointStatus,
+)
+from trader.application.runtime.schedule import SchedulePoint
 from trader.application.v2_research_runtime import V2ResearchRuntime
 from trader.bootstrap import (
     _initialize_reference_data_plane,
@@ -173,6 +179,8 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
     from unittest.mock import Mock
 
     scheduler = Mock()
+    point_updated_at = datetime(2026, 8, 31, 11, 20, tzinfo=ZoneInfo("Asia/Shanghai"))
+    point_key = SchedulePointKey("2026-08-31", SchedulePoint.TODAY_FREEZE, "today")
     scheduler.status.return_value = SimpleNamespace(
         running=True,
         phase=SimpleNamespace(value="afternoon"),
@@ -180,7 +188,13 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
         lanes=(),
         hybrid_lanes=(),
         task_lanes=(),
-        cadence=CadencePlannerStatus(None, {}, {}, {}, ()),
+        cadence=CadencePlannerStatus(
+            None,
+            {},
+            {},
+            {point_key: SchedulePointState(SchedulePointStatus.COMPLETED, 1, point_updated_at)},
+            (),
+        ),
         observer=DecisionObserverStatus(
             capacity=16,
             accepting=True,
@@ -243,6 +257,17 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
     assert payload["scheduler"]["overlay_failure_count"] == 0
     assert payload["scheduler"]["hybrid_lanes"] == []
     assert payload["scheduler"]["cadence"]["started_at"] is None
+    assert payload["scheduler"]["cadence"]["schedule_points"] == [
+        {
+            "trade_date": "2026-08-31",
+            "schedule_point": "today_freeze",
+            "strategy": "today",
+            "status": "completed",
+            "attempt_count": 1,
+            "updated_at": point_updated_at.isoformat(),
+            "next_retry_at": None,
+        }
+    ]
     assert payload["scheduler"]["input_quality"] == {}
     assert payload["market_data"]["active_source"] == "sina"
     assert payload["market_data"]["market_feature_rows"] == 5567

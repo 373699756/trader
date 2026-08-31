@@ -1,4 +1,4 @@
-"""Single-running, single-pending latest-wins lifecycle worker."""
+"""Single-running, single-pending latest-wins worker."""
 
 from __future__ import annotations
 

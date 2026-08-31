@@ -1,1 +1,1 @@
-"""Application scheduling, lanes, lifecycle, and runtime state."""
+"""Application scheduling, lanes, resource orchestration, and runtime state."""

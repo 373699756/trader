@@ -1,4 +1,4 @@
-"""Lifecycle-owned bounded worker executor."""
+"""Runtime-owned bounded worker executor."""
 
 from __future__ import annotations
 

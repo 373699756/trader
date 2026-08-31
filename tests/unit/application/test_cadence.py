@@ -13,8 +13,8 @@ from trader.application.runtime.cadence import (
     CadencePolicy,
     PipelineTask,
     SchedulePointKey,
-    SchedulePointLifecycle,
     SchedulePointResult,
+    SchedulePointStatus,
     freshness_level,
     task_execution_budget_seconds,
 )
@@ -56,11 +56,11 @@ def test_restart_after_afternoon_cutoff_only_attempts_checkpoint_eligible_strate
     assert PipelineTask.DEEPSEEK_CUTOFF not in {task.task for task in batch.tasks}
     assert PipelineTask.FINAL_CANDIDATE_QUOTES not in {task.task for task in batch.tasks}
     status = planner.status()
-    assert status.schedule_points[SchedulePointKey("2026-07-16", SchedulePoint.TODAY_FREEZE, "today")].lifecycle is (
-        SchedulePointLifecycle.MISSED
+    assert status.schedule_points[SchedulePointKey("2026-07-16", SchedulePoint.TODAY_FREEZE, "today")].status is (
+        SchedulePointStatus.MISSED
     )
-    assert status.schedule_points[SchedulePointKey("2026-07-16", SchedulePoint.DEEPSEEK_CUTOFF, "-")].lifecycle is (
-        SchedulePointLifecycle.MISSED
+    assert status.schedule_points[SchedulePointKey("2026-07-16", SchedulePoint.DEEPSEEK_CUTOFF, "-")].status is (
+        SchedulePointStatus.MISSED
     )
 
 
@@ -72,8 +72,7 @@ def test_cold_start_at_today_boundary_marks_today_missed() -> None:
 
     assert not [task for task in batch.tasks if task.task is PipelineTask.FREEZE]
     assert (
-        planner.schedule_point_lifecycle("2026-07-16", SchedulePoint.TODAY_FREEZE, "today")
-        is SchedulePointLifecycle.MISSED
+        planner.schedule_point_status("2026-07-16", SchedulePoint.TODAY_FREEZE, "today") is SchedulePointStatus.MISSED
     )
 
 

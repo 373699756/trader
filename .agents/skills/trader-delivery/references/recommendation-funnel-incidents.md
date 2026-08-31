@@ -99,7 +99,7 @@ Classify the observation using the authoritative hot/cold five-period matrix bef
   an existing formal record.
 - Tomorrow/D25 freeze at 14:50. When the same-day formal record is missing, 15:00+ recovery may freeze the current V2 run
   or create the permitted local `close_fallback`; it must not call DeepSeek or overwrite an existing formal record.
-- Inspect the `close_quotes` lifecycle separately from Today. A failed close refresh can block permitted Tomorrow/D25
+- Inspect the `close_quotes` refresh state separately from Today. A failed close refresh can block permitted Tomorrow/D25
   recovery while Today's non-backfill remains correct.
 - Record which time-window cell was exercised and which cells are not applicable; one timestamp fixture is insufficient
   for a behavior change.
@@ -110,7 +110,7 @@ For a repair, final evidence must come from the real service after a normal rest
 only task must instead mark this checkpoint unavailable and must not claim the incident is fixed.
 
 - Confirm the process imported the expected release/runtime identity, not only that a source file changed on disk.
-- Run multiple bounded `runtime` samples and require the affected refresh lifecycle to settle without the historical
+- Run multiple bounded `runtime` samples and require the affected refresh process to settle without the historical
   failure shape. Capture relevant stage counts and the remaining primary blocker.
 - Use `full` when browser delivery or performance is affected, but remember that its isolated browser fixture does not
   prove the already-running desktop service loaded new code.

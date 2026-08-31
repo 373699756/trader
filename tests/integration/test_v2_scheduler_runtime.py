@@ -24,7 +24,7 @@ from trader.application.runtime.cadence import (
     PipelineTask,
     ScheduledPipelineTask,
     SchedulePointKey,
-    SchedulePointLifecycle,
+    SchedulePointStatus,
 )
 from trader.application.runtime.schedule import SHANGHAI, MarketPhase, SchedulePoint
 from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
@@ -858,8 +858,8 @@ def test_afternoon_checkpoint_is_dispatched_for_both_scored_strategies() -> None
         assert all(
             retrying.cadence.schedule_points[
                 SchedulePointKey(checkpoint_at.date().isoformat(), SchedulePoint.AFTERNOON_CHECKPOINT, strategy.value)
-            ].lifecycle
-            is SchedulePointLifecycle.RETRY_WAIT
+            ].status
+            is SchedulePointStatus.RETRY_WAIT
             for strategy in (Strategy.TOMORROW, Strategy.D25)
         )
 
@@ -880,8 +880,8 @@ def test_afternoon_checkpoint_is_dispatched_for_both_scored_strategies() -> None
     assert all(
         status.cadence.schedule_points[
             SchedulePointKey(checkpoint_at.date().isoformat(), SchedulePoint.AFTERNOON_CHECKPOINT, strategy.value)
-        ].lifecycle
-        is SchedulePointLifecycle.COMPLETED
+        ].status
+        is SchedulePointStatus.COMPLETED
         for strategy in (Strategy.TOMORROW, Strategy.D25)
     )
 

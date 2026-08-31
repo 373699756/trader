@@ -601,7 +601,7 @@ web/api
 | 5 | `domain/recommendation/ranking.py`、`scored_selection.py` | `domain/recommendation/selection` |
 | 6 | `application/scored_deepseek_fusion.py`、`scored_quality.py`、`scored_selection.py`、`scored_v2_freezing.py`、`scored_v2_projection.py`、`today_v2_freezing.py`、`tomorrow_model_scoring.py`、`recommendation_policy_codec.py`、`policy.py` | `application/recommendation` |
 | 6 | `application/decision_core.py`、`decision_coverage.py`、`decision_drafts.py`、`decision_events.py`、`decision_observers.py`、`decision_overlay_refresh.py`、`decision_queries.py`、`decision_stream.py`、`v2_decision_adapters.py` | `application/decisions` |
-| 7 | `application/cadence.py`、`latency.py`、`runtime.py`、`schedule.py`、`shutdown.py`、`source_lanes.py`、`system_lifecycle.py`、`v2_lifecycle.py`、`v2_runtime.py`、`v2_runtime_issues.py`、`workers.py` | `application/runtime` |
+| 7 | `application/cadence.py`、`latency.py`、`runtime.py`、`schedule.py`、`shutdown.py`、`source_lanes.py`、`resource_orchestration.py`、`latest_wins.py`、`v2_runtime.py`、`v2_runtime_issues.py`、`workers.py` | `application/runtime` |
 | 7 | `application/v2_input_runtime.py` | `application/market_data` |
 | 8 | `web/decision_serializers.py`、`decision_sse.py`、`route_services.py`、`routes.py`、`routes_v2.py` | `web/api` |
 | 9 | `application/outcome_settlement.py` | `application/outcomes` |
@@ -1449,22 +1449,25 @@ cadence 最短间隔/下一到期时间/固定时点生命周期、冻结完成/
 逻辑字节、RSS/USS、Python traced、Polars 估算和瞬时峰值原因由发布性能 runner 及验收报告提供。
 状态顶层必须返回当前有效配置/策略组合的 `runtime_version`，并原样投影脱敏的 `scheduler`
 摘要，以便区分旧常驻进程、刷新失败和决策构建失败；源码文件发生变化不会热加载到既有进程。
-`/api/v2/status` 的公开 schema 为 `v2_status_v9`，并必须从当前进程已导入的常量加法返回
+`/api/v2/status` 的公开 schema 为 `v2_status_v10`，并必须从当前进程已导入的常量加法返回
 `release.decision_view_schema` 与 `release.web_asset_revision`。浏览器必须同时校验 status release
 身份和每份 DecisionView schema；任何缺失或不一致都属于 `release_contract_mismatch`，页面必须
 停止把结果解释为行情采集或观察草稿生成，明确提示正常重启旧服务。该握手只判断进程/资源契约
 一致性，不得根据工作树、Git、文件时间或 HTTP 成功状态推断运行版本。
-`v2_status_v9.tomorrow_profile_comparison` 只投影后台更新的类型化内存快照：规范 hash、临时/正式 manifest、
+`v2_status_v10.scheduler.cadence.schedule_points[*]` 只使用 `status` 投影调度点状态，不提供旧字段、别名或
+fallback；进程内对应值由 `SchedulePointStatus` 与 `SchedulePointState.status` 表达。内部状态字段变化不得
+绕过显式 Web adapter 自动改变公开 JSON。
+`v2_status_v10.tomorrow_profile_comparison` 只投影后台更新的类型化内存快照：规范 hash、临时/正式 manifest、
 全候选配对与 T+1 完成数、有效日期、522 日功效门槛、最少 300 条配对、终态及无生产/自动切换权限；
 HTTP 不读取研究 SQLite。显式 `research-status` 才允许以只读方式检查持久化快照，缺库时不得创建目录。
 Web 应用工厂创建应用时必须把模板和全部打包静态资源读入该进程的只读 release 快照，后续 HTTP
 不得再次从工作树读取这些文件；源码更新只能在正常重启后整体生效。静态资源仍使用内容 ETag、
 `no-cache` 和 `nosniff`，未知资源返回 404，且该快照过程不得写文件、启动线程、访问数据库或网络。
-页面控制器与 SSE 生命周期必须分离：`dashboard.js` 负责页面状态和交互，`dashboard_stream.js` 负责
+页面控制器与 SSE 传输状态必须分离：`dashboard.js` 负责页面状态和交互，`dashboard_stream.js` 负责
 EventSource 游标、重连退避、断线轮询和 patch-to-paint 采样；两者通过显式依赖对象协作，缺少模块时
 fail closed 并进入浏览器诊断。`market_data.market_changes` 只公开变更计数和合并身份，
 `market_data.latency_waterfall` 只公开有界阶段聚合，不得泄露股票代码、关联 ID 或原始样本。
-当前静态资源握手身份为 `release-contract-2026-08-31-v10`。
+当前静态资源握手身份为 `release-contract-2026-08-31-v11`。
 
 日志只记录脱敏结构化摘要，不记录密钥、Token、完整模型请求/响应、完整供应商载荷或个人
 敏感路径。所有外部 I/O 必须有 timeout、容量、熔断和明确失败策略。DeepSeek 与 Tushare

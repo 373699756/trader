@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求整个工程移除含义模糊的旧英文术语，并为不同职责采用专业名称。新增 tracked 仓库契约，
+  大小写不敏感检查所有 Git 路径与可解码内容，防止模块、符号、测试、文档、仓库技能或历史记录再次
+  引入该词；测试自身通过分段构造检查目标，不形成自我豁免。
+  `Regression-Key: precise-runtime-resource-state-naming-v1`。
+
 - 用户追问上个详细计划及重新 Review 的问题是否全部修复，并指出“每天推荐 0 只却要求先等 20 日数据”
   不能产生有效分析证据。确认根因是既有 outcome 只结算活动档位已入选股票，未保存未入选候选或另一
   profile 的同输入预测，固定等待天数既不能补齐选择偏差，也不该阻塞当天评分。新增
@@ -520,6 +525,13 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 确认根因是同一个笼统名称同时指代 latest-wins 单运行/单等待队列、进程资源启停编排和 cadence 固定
+  调度点状态，职责边界不清。队列模块统一为 `latest_wins.py`，进程资源模块统一为
+  `resource_orchestration.py`，组合根使用 `ApplicationResources` 与 `_application_resources()`；调度点统一为
+  `SchedulePointStatus`、`SchedulePointState.status` 和 `schedule_point_status()`。公开 schedule point JSON
+  仅返回 `status`，status schema 升至 `v2_status_v10`，静态资源握手升至
+  `release-contract-2026-08-31-v11`，权威设计、迁移计划与交付技能同步更新。
+
 - 用户继续执行功能拆包计划，要求完成运行时、调度与生命周期包迁移。确认根因是 cadence、schedule、
   worker、source lane、latest-wins、shutdown、runtime status 和市场输入组装仍平铺在 `application` 根目录，
   生产组合根、infra 适配器、诊断与测试广泛依赖旧路径；本批将 11 个调度/生命周期模块迁移到
@@ -527,7 +539,7 @@ All notable changes to this project are documented here.
   所有权导航。共享 `cache.py` 保持根级应用契约，未复制或隐藏外部客户端构造。三策略 scoring/hybrid lane、
   数据 lane、latest-wins、single-flight、冻结重试、30 秒共享停止 deadline 和状态/API/SSE schema 保持不变。
   `Regression-Key: functional-package-runtime-market-data-v1`。
-  Verification：cadence/schedule/workers/input/lifecycle/runtime 定向测试、调度集成、E3/bootstrap/app-factory、
+  Verification：cadence/schedule/workers/input/resource/runtime 定向测试、调度集成、E3/bootstrap/app-factory、
   功能包和架构契约通过；`make format-check`、`make lint`、`make type-check`、`make test`、`make package`、
   `make performance-check` 和 `git diff --check` 通过。性能门禁 `passed`、网络调用 0、内存增长 0%。沙箱外
   `diagnose_runtime.py --profile live` 中交易所主数据 5212 条、历史 3/3、Tencent 3 条通过；Tushare 缺 token
@@ -1067,6 +1079,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复运行时代码、测试、功能包迁移清单、Web release handshake 与诊断 fixture 对旧模块/字段名称的耦合；
+  wheel 现在只打包职责明确的两个新运行时模块，应用工厂仍保持无线程、无网络、无数据库和无文件写入
+  副作用，调度、冻结、评分、DeepSeek、持久化及供应商行为均未改变。
+
 - 修复“正式推荐为 0 就没有可评价数据”的取样缺口：比较器以两套 profile 的共同可评分集合为总体，
   不以最终入选交集为总体；正式绑定 manifest、全部标签和报告不可变，同日其它临时输入在绑定后清理，
   避免事后挑样本和长期无界占盘。修复同一 native 输入的 local/hybrid 来源身份差异造成 manifest 冲突；
@@ -1500,6 +1516,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 物理移除两个旧运行时模块文件名、对应单元测试文件名、旧类/方法/字段符号以及 schedule point 旧 JSON
+  字段；未保留兼容模块、别名、双 JSON 字段、反射 fallback 或历史文本例外，Git 历史不改写。
+
 - 移除 `DataPlaneCoverage` 和生产输入质量中的 99% 候选历史整批否决权，以及浏览器“至少 357/360”
   固定文案；不删除 20/40/60 日因子、61 日模型输入、流动性硬过滤、风险、动作、TopK 或冻结门槛。
 
@@ -1688,6 +1707,14 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 本批定向 cadence/latest-wins/runtime/schedule/workers、调度集成、bootstrap/app-factory、架构、功能包、
+  E3/E8 Web 与诊断契约共 154 项通过；`make format-check`、`make lint`（严格重构债务 0）、
+  `make type-check`（285 个源文件）、`make test`（pytest 100%）和 `make package` 全部通过。
+- `git ls-files` 路径扫描与 `git grep -in` 内容扫描均为 0；仓库外临时 target 从最终 wheel 导入
+  `LatestWinsWorker`、`ApplicationResources` 和 `trader`，实际执行 `trader-cli --help`，并读取模板、CSS、
+  JavaScript 与 SVG。Chrome headless 三档桌面验收 `passed=true`：1280x720、1440x900、1920x1080 均无
+  白屏、页面横向溢出、Long 区域重叠或浏览器错误，v11 资源全部命中，外部网络调用为 0。
 
 - `tomorrow-v1-v2-all-candidate-profit-evidence-v1` 回归覆盖：两档都选 0 时仍保存全部共同可评分候选；同一
   native 的 local/hybrid 重放幂等；正式绑定只接受精确 `input_versions.native` 并清理同日临时输入；
@@ -2647,6 +2674,10 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- `v2_status_v10` 对 schedule point 字段是有意的破坏性 schema 更新；旧页面或外部读取方必须随 v11 资源
+  正常重启/刷新，不提供兼容字段。真实供应商、DeepSeek 配额和五时段现场行情未调用，因为本批不改变
+  行情、评分、预算、冻结或时间窗行为；这些边界由全量回归和调度集成覆盖，目前无已知未解决问题。
 
 - 本批完成 V1 同口径留出、全候选配对、正式输入精确绑定、T+1 标签和两层报告工程，但不伪称 V1/V2
   已有收益胜者。V1 留出和 V2 历史路线均未通过收益/风险门禁；前向比较仍需真实累积 522 个独立交易日，
@@ -6086,7 +6117,7 @@ All notable changes to this project are documented here.
 - 用户诉求：把本库策略所依赖或借鉴的 GitHub 高星项目链接写入 `docs/need.md`，确认使用 DeepSeek API 进行股票推荐的开源库，并恢复 `strategy_and_prediction.md` 历史中的方法来源。现状是第 2 节只有六个无链接名称，末尾另有不可渲染的重复终端表格，未区分实际运行依赖、机制参考和 DeepSeek 荐股类项目。修改后统一记录 canonical 仓库、可复核的 2026-07-19 Star 快照与借鉴边界；12 个历史策略参考可追溯到首次提交 `841355c`，并补入 DeepSeek/A 股项目和实际依赖 AKShare，后续按当前 Star 门槛筛选展示。
 - 用户诉求：连续完成第 19-25 节代码，最后统一补测试并 Review。现状是当前/历史响应身份不足、跨日冻结缓存表达含混，状态缺少可重启查询的来源/DeepSeek/冻结审计。修改后推荐 envelope 新增请求日期、当前交易日、历史/fallback 身份，历史行可叠加独立当前行情；新增持久化来源健康、逐物理 DeepSeek 调用和冻结证据汇总，以及本地 Lucide 图标资源。第 24 节已有固定输入完整日证据，需求文档没有第 26 节，均未重复或虚构实现。
 - 用户诉求：先统一完成第 14-16 节 DeepSeek 代码，再补测试和 Review。现状是候选会被定性证据门提前清空，批次/候选状态混用，只有六桶总额而没有阶段目标与上限。修改后新增持久化批次和逐股终态、十阶段 133 次目标/188 次上限、受条件约束的 emergency、原始/策略两级缓存、优先复核及重启 `abandoned` 恢复；新闻或公告不再作为调用资格。
-- 新增架构契约测试，固定快照编排模块必须使用职责明确的 `snapshot_workflow.py`，并禁止旧 `snapshot_lifecycle.py` 路径重新出现。
+- 新增架构契约测试，固定快照编排模块必须使用职责明确的 `snapshot_workflow.py`，并禁止旧快照编排路径重新出现。
 - 用户诉求：继续闭合 `docs/issues/2026-07-17.md` 中第 4-7 节未完成任务；现状是配置中的 worker 和刷新频率未形成真实消费者，关键单点可能因调度延迟错过，TopK 无独立报价链，数据年龄、乱序、单飞、熔断和发布延迟缺少统一证据。修改后新增生命周期受控的有界执行器和独立 cadence 计划器，真实启动数据、标准化、三策略、DeepSeek、合并、持久化及 long 消费者，并形成全日计划、来源恢复、实时 overlay 和时效状态回归。
 - 新增第 13 节 d25/long 点时研究输入：d25 候选和固定 long 名单按代码获取东方财富财务、精确发布时间公告、累计质押比例与未来 90 天解禁比例；纯领域公式生成价值、成长、质量、行业/政策、风险保护及四类本地风险，来源时间、接收时间、版本、脱敏原始摘要和派生摘要随输入保存。
 - 新增第 12 节 tomorrow 候选级未复权 1 分钟输入：按连续 30 个交易分钟计算原始收益和尾盘量比，再通过配置化固定公式映射到 0-100；分钟来源、源时间、接收时间、输入版本和公式中间值随证据及冻结回放保存。
@@ -6799,7 +6830,7 @@ All notable changes to this project are documented here.
 - 本批次未删除任何策略、依赖、代码、测试或既有参考项目；只移除 `docs/need.md` 末尾重复且断行损坏的终端表格，其全部 12 个方法引用已去重并入第 2 节。
 - 本批次未删除策略、公式、冻结记录或历史兼容路径；仅用本地固定 Lucide sprite 替换页面中的刷新/关闭字符图标，未引入 CDN、移动端分支或新的运行依赖。
 - 移除运行配置中重复的 DeepSeek 置信覆盖阈值；该阈值与最少已知维度继续只由版本化策略配置定义，避免运行配置和策略配置产生两个真相源。
-- 移除内部模块路径 `trader.application.snapshot_lifecycle`；该路径不是公共 API，未保留会掩盖半迁移状态的兼容转发文件。
+- 移除含义模糊的内部快照编排模块路径；该路径不是公共 API，未保留会掩盖半迁移状态的兼容转发文件。
 - 移除生产行情服务按调用临时创建 history/research/intraday/Eastmoney 分页线程池的路径，以及可绕过 CAS 的 `append_event()` 无条件事件写入口；组件脱离运行时独立调用时仍使用同一有界执行器适配层完成局部回收。本批不修改评分公式、冻结边界或 Web 视觉布局。
 - 移除 d25 市场状态与过热乘数的实现内阈值表，以及 long 五项、财务恶化、公告、质押和减持解禁在生产特征链中的固定缺失占位路径；未删除固定 long 名单、人工目标价或只读观察边界。
 - 移除生产特征构建中两个 tomorrow 尾盘因子的固定 `None` 占位路径；DeepSeek 功能未在第 12 或第 13 节中删除或扩展。

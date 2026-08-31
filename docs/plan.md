@@ -572,12 +572,12 @@ make package
 
 ### 目标
 
-把 application 根目录的调度、lane、生命周期、输入刷新和运行状态收拢到明确的 runtime/market_data 包。
+把 application 根目录的调度、lane、资源编排、输入刷新和运行状态收拢到明确的 runtime/market_data 包。
 
 ### 目标移动
 
-- `application/runtime/`：`v2_runtime.py`、`runtime.py`、`v2_lifecycle.py`、
-  `system_lifecycle.py`、`schedule.py`、`cadence.py`、`workers.py`、`source_lanes.py`、
+- `application/runtime/`：`v2_runtime.py`、`runtime.py`、`latest_wins.py`、
+  `resource_orchestration.py`、`schedule.py`、`cadence.py`、`workers.py`、`source_lanes.py`、
   `shutdown.py`、`v2_runtime_issues.py`、`latency.py`；
 - `application/market_data/`：`v2_input_runtime.py`、cache/use-case 边界及只属于输入组装的模块；
 - `bootstrap.py` 保持唯一组合根，只更新显式导入和装配，不向新包转移外部客户端构造权限。
@@ -599,7 +599,7 @@ make package
   tests/unit/application/test_schedule.py \
   tests/unit/application/test_workers.py \
   tests/unit/application/test_v2_input_runtime.py \
-  tests/unit/application/test_v2_lifecycle.py \
+  tests/unit/application/test_latest_wins.py \
   tests/unit/application/test_runtime.py \
   tests/integration/test_v2_scheduler_runtime.py \
   tests/contract/test_realtime_pipeline_contract.py \
@@ -632,12 +632,12 @@ make performance-check
 - status、API、SSE 和浏览器能看到一致的运行状态；
 - 没有旧模块路径或隐藏构造器。
 
-完成记录：调度、cadence、lane、生命周期、停止和运行状态模块已迁移到 `application/runtime`，市场输入
+完成记录：调度、cadence、lane、资源编排、停止和运行状态模块已迁移到 `application/runtime`，市场输入
 组装已迁移到 `application/market_data`；所有生产、基础设施、入口、诊断和测试导入已切换，旧根级路径
 物理删除。定向及全量测试、架构契约、Ruff、mypy、wheel 与离线性能门禁通过；沙箱外真实来源诊断通过
 交易所主数据、历史和 Tencent，Tushare 因缺少 token 降级，本地 Web 服务未运行，五时段现场矩阵未验证。
 
-建议提交：`refactor(runtime): isolate scheduler and lifecycle packages`
+建议提交：`refactor(runtime): isolate scheduler and resource packages`
 
 ---
 

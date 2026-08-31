@@ -48,6 +48,12 @@ from trader.application.runtime.cadence import (
     SchedulePointResult,
 )
 from trader.application.runtime.latency import LatencyWaterfall
+from trader.application.runtime.latest_wins import (
+    LatestWinsOffer,
+    LatestWinsStatus,
+    LatestWinsTelemetry,
+    LatestWinsWorker,
+)
 from trader.application.runtime.schedule import (
     SHANGHAI,
     MarketPhase,
@@ -57,12 +63,6 @@ from trader.application.runtime.schedule import (
     shanghai_now,
 )
 from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
-from trader.application.runtime.v2_lifecycle import (
-    LatestWinsOffer,
-    LatestWinsStatus,
-    LatestWinsTelemetry,
-    LatestWinsWorker,
-)
 from trader.application.runtime.v2_runtime_issues import V2RuntimeIssue, V2RuntimeIssueRegistry
 from trader.application.runtime.workers import BoundedExecutor
 from trader.domain.recommendation.decision_identity import (

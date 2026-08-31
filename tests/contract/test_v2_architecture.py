@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import subprocess
 from dataclasses import MISSING, fields
 from pathlib import Path
 
@@ -9,6 +10,34 @@ from trader.application.runtime.v2_runtime import V2RuntimeDependencies
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "trader"
 PROJECT_ROOT = SOURCE_ROOT.parents[1]
+
+
+def test_tracked_repository_uses_precise_resource_and_state_names() -> None:
+    prohibited = "life" + "cycle"
+    tracked = (
+        subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+        )
+        .stdout.decode("utf-8")
+        .split("\0")
+    )
+    tracked_paths = [path for path in tracked if path]
+    path_violations = [path for path in tracked_paths if prohibited in path.casefold()]
+    content_violations: list[str] = []
+    for relative in tracked_paths:
+        path = PROJECT_ROOT / relative
+        try:
+            content = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        if prohibited in content.casefold():
+            content_violations.append(relative)
+
+    assert path_violations == []
+    assert content_violations == []
 
 
 def _imports(path: Path) -> set[str]:
@@ -252,7 +281,7 @@ def test_market_component_suite_remains_partitioned_by_behavior() -> None:
     assert all(len((component_root / name).read_text(encoding="utf-8").splitlines()) < 1200 for name in expected)
 
 
-def test_dashboard_stream_lifecycle_is_a_separate_packaged_dependency() -> None:
+def test_dashboard_stream_transport_is_a_separate_packaged_dependency() -> None:
     dashboard = (SOURCE_ROOT / "web/static/dashboard.js").read_text(encoding="utf-8")
     stream = (SOURCE_ROOT / "web/static/dashboard_stream.js").read_text(encoding="utf-8")
     template = (SOURCE_ROOT / "web/templates/index.html").read_text(encoding="utf-8")

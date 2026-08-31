@@ -38,14 +38,14 @@ from trader.application.research.tomorrow_historical_p2_screening import Tomorro
 from trader.application.research.tomorrow_profile_holdout import TomorrowProfileHoldoutService
 from trader.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.application.runtime.latency import LatencyWaterfall
-from trader.application.runtime.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
-from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownReport
-from trader.application.runtime.source_lanes import SourceLaneRegistry
-from trader.application.runtime.system_lifecycle import (
-    SystemLifecycleResources,
+from trader.application.runtime.resource_orchestration import (
+    ApplicationResources,
     start_application_resources,
     stop_application_resources,
 )
+from trader.application.runtime.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
+from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownReport
+from trader.application.runtime.source_lanes import SourceLaneRegistry
 from trader.application.runtime.v2_runtime import V2RuntimeDependencies, V2SchedulerRuntime
 from trader.application.runtime.workers import BoundedExecutor
 from trader.application.tomorrow_profile_comparison import TomorrowProfileComparator
@@ -138,8 +138,8 @@ class ApplicationSystem:
     outcome_evidence: SQLiteOutcomeEvidenceRepository
     tomorrow_profile_evidence: SQLiteTomorrowProfileEvidenceStore
 
-    def _lifecycle_resources(self) -> SystemLifecycleResources:
-        return SystemLifecycleResources(
+    def _application_resources(self) -> ApplicationResources:
+        return ApplicationResources(
             self.supervisor,
             self.source_lanes,
             self.data_pool,
@@ -151,14 +151,14 @@ class ApplicationSystem:
 
     def start(self) -> bool:
         return start_application_resources(
-            self._lifecycle_resources(),
+            self._application_resources(),
             timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds,
         )
 
     def stop(self, *, deadline: ShutdownDeadline | None = None) -> ShutdownReport:
         shared_deadline = deadline or ShutdownDeadline.start(self.settings.pipeline.shutdown_timeout_seconds)
         return stop_application_resources(
-            self._lifecycle_resources(),
+            self._application_resources(),
             deadline=shared_deadline,
         )
 

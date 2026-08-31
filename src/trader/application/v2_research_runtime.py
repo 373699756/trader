@@ -1,4 +1,4 @@
-"""Lifecycle-owned, non-blocking research intents for the V2 scheduler."""
+"""Runtime-owned, non-blocking research intents for the V2 scheduler."""
 
 from __future__ import annotations
 

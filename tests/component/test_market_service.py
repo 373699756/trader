@@ -417,7 +417,7 @@ def test_feature_service_current_quote_index_reads_canonical_quote_before_featur
     assert quotes["600001"].data_version == "canonical-v2"
 
 
-def test_market_service_uses_injected_lifecycle_data_pool() -> None:
+def test_market_service_uses_injected_runtime_data_pool() -> None:
     pool = BoundedExecutor(worker_count=1, queue_capacity=8, thread_name_prefix="shared-data")
     history = ThreadRecordingHistoryClient(_history_bars())
     gateway = ThreadRecordingGateway((_quote(), _quote(code="600002")))

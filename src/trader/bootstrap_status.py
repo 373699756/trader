@@ -173,7 +173,7 @@ def _cadence_payload(status: CadencePlannerStatus) -> dict[str, object]:
                 "trade_date": key.trade_date,
                 "schedule_point": key.schedule_point.value,
                 "strategy": key.strategy,
-                "lifecycle": state.lifecycle.value,
+                "status": state.status.value,
                 "attempt_count": state.attempt_count,
                 "updated_at": state.updated_at.isoformat(),
                 "next_retry_at": state.next_retry_at.isoformat() if state.next_retry_at is not None else None,

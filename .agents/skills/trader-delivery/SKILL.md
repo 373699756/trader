@@ -18,7 +18,7 @@ Deliver one repository change without reopening a known failure or regressing an
 ## Plan and implement
 
 - State the user-visible symptom, confirmed evidence, root cause status (`confirmed` or `pending verification`), target architecture, in-scope files, excluded boundaries, and completion conditions.
-- Compare a local patch with a systemic repair when ownership, representation, lifecycle, or timing crosses modules. Choose from evidence, not diff size.
+- Compare a local patch with a systemic repair when ownership, representation, resource orchestration, or timing crosses modules. Choose from evidence, not diff size.
 - Add or change contracts and failing tests before implementation. Cover the first broken boundary and the final user-visible boundary; avoid asserting implementation wording alone.
 - For scheduling, freezing, current/history, or Web visibility changes, use the hot/cold five-period matrix in the authoritative design. A single timestamp or fixture is insufficient.
 - For state or JSON changes, trace the typed value from owner to final serializer and browser consumer. Do not add dictionary fallbacks or parallel status sources.

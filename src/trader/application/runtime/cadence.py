@@ -50,7 +50,7 @@ class PipelineTask(str, Enum):
     CURRENT_QUOTES = "current_quotes"
 
 
-class SchedulePointLifecycle(str, Enum):
+class SchedulePointStatus(str, Enum):
     PENDING = "pending"
     INFLIGHT = "inflight"
     RETRY_WAIT = "retry_wait"
@@ -82,7 +82,7 @@ class SchedulePointKey:
 
 @dataclass(frozen=True)
 class SchedulePointState:
-    lifecycle: SchedulePointLifecycle
+    status: SchedulePointStatus
     attempt_count: int
     updated_at: datetime
     next_retry_at: datetime | None = None
@@ -249,21 +249,21 @@ class CadencePlanner:
                         {
                             (key.trade_date, key.schedule_point)
                             for key, state in self._point_states.items()
-                            if state.lifecycle is SchedulePointLifecycle.COMPLETED
+                            if state.status is SchedulePointStatus.COMPLETED
                         }
                     )
                 ),
             )
 
-    def schedule_point_lifecycle(
+    def schedule_point_status(
         self,
         trade_date: str,
         schedule_point: SchedulePoint,
         strategy: str = "-",
-    ) -> SchedulePointLifecycle | None:
+    ) -> SchedulePointStatus | None:
         with self._lock:
             state = self._point_states.get(SchedulePointKey(trade_date, schedule_point, strategy))
-            return state.lifecycle if state is not None else None
+            return state.status if state is not None else None
 
     def record_submission(
         self,
@@ -276,14 +276,14 @@ class CadencePlanner:
         with self._lock:
             for key in _scheduled_point_keys(scheduled):
                 current = self._point_states.get(key)
-                if current is None or current.lifecycle not in {
-                    SchedulePointLifecycle.PENDING,
-                    SchedulePointLifecycle.RETRY_WAIT,
+                if current is None or current.status not in {
+                    SchedulePointStatus.PENDING,
+                    SchedulePointStatus.RETRY_WAIT,
                 }:
                     continue
                 self._point_states[key] = replace(
                     current,
-                    lifecycle=(SchedulePointLifecycle.INFLIGHT if accepted else SchedulePointLifecycle.PENDING),
+                    status=(SchedulePointStatus.INFLIGHT if accepted else SchedulePointStatus.PENDING),
                     updated_at=local,
                     next_retry_at=None if accepted else current.next_retry_at,
                 )
@@ -307,14 +307,14 @@ class CadencePlanner:
                 if raw_result is SchedulePointResult.COMPLETED:
                     updated = replace(
                         current,
-                        lifecycle=SchedulePointLifecycle.COMPLETED,
+                        status=SchedulePointStatus.COMPLETED,
                         updated_at=local,
                         next_retry_at=None,
                     )
                 elif raw_result is SchedulePointResult.MISSED:
                     updated = replace(
                         current,
-                        lifecycle=SchedulePointLifecycle.MISSED,
+                        status=SchedulePointStatus.MISSED,
                         updated_at=local,
                         next_retry_at=None,
                     )
@@ -323,7 +323,7 @@ class CadencePlanner:
                     delay = _schedule_retry_delay(attempt_count)
                     updated = replace(
                         current,
-                        lifecycle=SchedulePointLifecycle.RETRY_WAIT,
+                        status=SchedulePointStatus.RETRY_WAIT,
                         attempt_count=attempt_count,
                         updated_at=local,
                         next_retry_at=local + timedelta(seconds=delay),
@@ -344,22 +344,22 @@ class CadencePlanner:
         with self._lock:
             current = self._point_states.get(key)
             if current is None:
-                current = SchedulePointState(SchedulePointLifecycle.INFLIGHT, 0, local)
+                current = SchedulePointState(SchedulePointStatus.INFLIGHT, 0, local)
                 self._point_states[key] = current
             if result is SchedulePointResult.COMPLETED:
-                lifecycle = SchedulePointLifecycle.COMPLETED
+                point_status = SchedulePointStatus.COMPLETED
                 next_retry_at = None
                 attempt_count = current.attempt_count
             elif result is SchedulePointResult.MISSED:
-                lifecycle = SchedulePointLifecycle.MISSED
+                point_status = SchedulePointStatus.MISSED
                 next_retry_at = None
                 attempt_count = current.attempt_count
             else:
-                lifecycle = SchedulePointLifecycle.RETRY_WAIT
+                point_status = SchedulePointStatus.RETRY_WAIT
                 attempt_count = current.attempt_count + 1
                 next_retry_at = local + timedelta(seconds=_schedule_retry_delay(attempt_count))
             self._point_states[key] = SchedulePointState(
-                lifecycle,
+                point_status,
                 attempt_count,
                 local,
                 next_retry_at,
@@ -371,10 +371,10 @@ class CadencePlanner:
         local = shanghai_now(at)
         with self._lock:
             for key, state in tuple(self._point_states.items()):
-                if state.lifecycle not in {
-                    SchedulePointLifecycle.PENDING,
-                    SchedulePointLifecycle.INFLIGHT,
-                    SchedulePointLifecycle.RETRY_WAIT,
+                if state.status not in {
+                    SchedulePointStatus.PENDING,
+                    SchedulePointStatus.INFLIGHT,
+                    SchedulePointStatus.RETRY_WAIT,
                 }:
                     continue
                 if key.schedule_point in {
@@ -384,7 +384,7 @@ class CadencePlanner:
                     continue
                 self._point_states[key] = replace(
                     state,
-                    lifecycle=SchedulePointLifecycle.MISSED,
+                    status=SchedulePointStatus.MISSED,
                     updated_at=local,
                     next_retry_at=None,
                 )
@@ -439,7 +439,7 @@ class CadencePlanner:
             max(0.05, (state.next_retry_at - local).total_seconds())
             for key, state in self._point_states.items()
             if key.trade_date == trade_date
-            and state.lifecycle is SchedulePointLifecycle.RETRY_WAIT
+            and state.status is SchedulePointStatus.RETRY_WAIT
             and state.next_retry_at is not None
             and state.next_retry_at > local
         )
@@ -457,25 +457,25 @@ class CadencePlanner:
                 key = SchedulePointKey(trade_date, point, strategy)
                 current = self._point_states.get(key)
                 if current is not None:
-                    if current.lifecycle in {
-                        SchedulePointLifecycle.PENDING,
-                        SchedulePointLifecycle.INFLIGHT,
-                        SchedulePointLifecycle.RETRY_WAIT,
+                    if current.status in {
+                        SchedulePointStatus.PENDING,
+                        SchedulePointStatus.INFLIGHT,
+                        SchedulePointStatus.RETRY_WAIT,
                     } and _point_window_expired(point, local):
                         self._point_states[key] = replace(
                             current,
-                            lifecycle=SchedulePointLifecycle.MISSED,
+                            status=SchedulePointStatus.MISSED,
                             updated_at=local,
                             next_retry_at=None,
                         )
                     continue
-                lifecycle = _initial_point_lifecycle(
+                point_status = _initial_point_status(
                     point,
                     local=local,
                     boundary=boundary,
                     started_at=started,
                 )
-                self._point_states[key] = SchedulePointState(lifecycle, 0, local)
+                self._point_states[key] = SchedulePointState(point_status, 0, local)
 
     def _due_schedule_points(
         self,
@@ -489,10 +489,10 @@ class CadencePlanner:
             due_strategies: list[str] = []
             for strategy in strategies:
                 state = self._point_states[SchedulePointKey(trade_date, point, strategy)]
-                if state.lifecycle is SchedulePointLifecycle.PENDING:
+                if state.status is SchedulePointStatus.PENDING:
                     due_strategies.append(strategy)
                 elif (
-                    state.lifecycle is SchedulePointLifecycle.RETRY_WAIT
+                    state.status is SchedulePointStatus.RETRY_WAIT
                     and state.next_retry_at is not None
                     and local >= state.next_retry_at
                 ):
@@ -505,11 +505,11 @@ class CadencePlanner:
         return any(
             key.trade_date == trade_date
             and key.schedule_point is SchedulePoint.AFTERNOON_FREEZE
-            and state.lifecycle
+            and state.status
             in {
-                SchedulePointLifecycle.PENDING,
-                SchedulePointLifecycle.INFLIGHT,
-                SchedulePointLifecycle.RETRY_WAIT,
+                SchedulePointStatus.PENDING,
+                SchedulePointStatus.INFLIGHT,
+                SchedulePointStatus.RETRY_WAIT,
             }
             for key, state in self._point_states.items()
         )
@@ -566,11 +566,11 @@ class CadencePlanner:
             key.trade_date == trade_date
             and key.schedule_point in {SchedulePoint.TODAY_CHECKPOINT, SchedulePoint.FINAL_CANDIDATE_QUOTES}
             and local >= _point_boundary(local, key.schedule_point)
-            and state.lifecycle
+            and state.status
             in {
-                SchedulePointLifecycle.PENDING,
-                SchedulePointLifecycle.INFLIGHT,
-                SchedulePointLifecycle.RETRY_WAIT,
+                SchedulePointStatus.PENDING,
+                SchedulePointStatus.INFLIGHT,
+                SchedulePointStatus.RETRY_WAIT,
             }
             for key, state in self._point_states.items()
         )
@@ -635,16 +635,16 @@ def _point_boundary(local: datetime, point: SchedulePoint) -> datetime:
     return local.replace(hour=raw.hour, minute=raw.minute, second=raw.second, microsecond=0)
 
 
-def _initial_point_lifecycle(
+def _initial_point_status(
     point: SchedulePoint,
     *,
     local: datetime,
     boundary: datetime,
     started_at: datetime,
-) -> SchedulePointLifecycle:
-    lifecycle = SchedulePointLifecycle.MISSED
+) -> SchedulePointStatus:
+    point_status = SchedulePointStatus.MISSED
     if local < boundary:
-        lifecycle = SchedulePointLifecycle.PENDING
+        point_status = SchedulePointStatus.PENDING
     else:
         current = local.time().replace(tzinfo=None)
         started_before_boundary = started_at.date() < boundary.date() or started_at < boundary
@@ -661,8 +661,8 @@ def _initial_point_lifecycle(
         else:
             eligible = True
         if eligible:
-            lifecycle = SchedulePointLifecycle.PENDING
-    return lifecycle
+            point_status = SchedulePointStatus.PENDING
+    return point_status
 
 
 def _point_window_expired(point: SchedulePoint, local: datetime) -> bool:
@@ -767,7 +767,7 @@ __all__ = [
     "PERIODIC_TASKS",
     "PipelineTask",
     "SchedulePointKey",
-    "SchedulePointLifecycle",
+    "SchedulePointStatus",
     "SchedulePointResult",
     "SchedulePointState",
     "ScheduledPipelineTask",

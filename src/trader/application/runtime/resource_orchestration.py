@@ -56,7 +56,7 @@ class CacheResource(Protocol):
 
 
 @dataclass(frozen=True)
-class SystemLifecycleResources:
+class ApplicationResources:
     supervisor: SupervisorResource
     source_lanes: SourceLaneResource
     data_pool: PoolResource
@@ -75,7 +75,7 @@ class _StartedResources:
 
 
 def start_application_resources(
-    resources: SystemLifecycleResources,
+    resources: ApplicationResources,
     *,
     timeout_seconds: float,
 ) -> bool:
@@ -118,7 +118,7 @@ def start_application_resources(
 
 
 def _stop_started_resources(
-    resources: SystemLifecycleResources,
+    resources: ApplicationResources,
     started: _StartedResources,
     deadline: ShutdownDeadline,
 ) -> None:
@@ -133,7 +133,7 @@ def _stop_started_resources(
 
 
 def stop_application_resources(
-    resources: SystemLifecycleResources,
+    resources: ApplicationResources,
     *,
     deadline: ShutdownDeadline,
 ) -> ShutdownReport:
@@ -160,4 +160,4 @@ def stop_application_resources(
     return ShutdownReport.from_steps(deadline, steps, forced=deadline.expired)
 
 
-__all__ = ["SystemLifecycleResources", "start_application_resources", "stop_application_resources"]
+__all__ = ["ApplicationResources", "start_application_resources", "stop_application_resources"]
