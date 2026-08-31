@@ -10,7 +10,7 @@ from trader.domain.recommendation.models import Strategy
 from trader.infra.deepseek.base_client import DeepSeekClientBase
 from trader.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.infra.deepseek.cache import ReviewCache
-from trader.infra.settings_models import DeepSeekSettings
+from trader.infra.settings.models import DeepSeekSettings
 
 
 @dataclass(frozen=True)

@@ -55,7 +55,7 @@ from trader.infra.market_data.merge import (
 from trader.infra.market_data.normalize import MarketQuoteInput, build_market_quote
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.settings import load_runtime_settings, load_strategy_settings
-from trader.infra.settings_models import PerformanceBudgetSettings
+from trader.infra.settings.models import PerformanceBudgetSettings
 from trader.infra.tomorrow_production_model import load_packaged_tomorrow_production_model
 from trader.web import create_app
 from trader.web.route_services import UnifiedWebServices

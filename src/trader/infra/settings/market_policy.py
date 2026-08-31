@@ -6,13 +6,13 @@ from collections.abc import Mapping
 
 from trader.application.cache import CacheDatasetPolicy, CacheGroupPolicy, CachePolicy
 from trader.application.ports.data_plane_contracts import LOGICAL_CACHE_LIMIT_BYTES, PROCESS_PEAK_RSS_LIMIT_BYTES
-from trader.infra.settings_models import (
+from trader.infra.settings.models import (
     PerformanceBudgetSettings,
     PerformanceMemorySettings,
     PerformanceRoundSettings,
     PerformanceWorkloadSettings,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     ConfigurationError,
     boolean,
     integer,

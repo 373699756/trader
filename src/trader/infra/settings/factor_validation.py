@@ -12,23 +12,23 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.infra.market_data.features import FEATURE_SCHEMA_NAMES, FEATURE_SCHEMA_VERSION
-from trader.infra.settings_models import FactorDefinition, StrategySettings
-from trader.infra.settings_parser import (
+from trader.infra.settings.models import FactorDefinition, StrategySettings
+from trader.infra.settings.parser import (
     ConfigurationError,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     boolean as _boolean,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     integer as _integer,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     mapping as _mapping,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     number as _number,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     text as _text,
 )
 

@@ -520,6 +520,17 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户继续执行功能拆包计划，要求完成配置与组合包迁移。确认现状是配置实现平铺在
+  `infra/settings*.py`，导致组合根、入口、DeepSeek 和测试直接依赖多个内部路径；本批将八个配置模块
+  迁移到 `trader.infra.settings`（`models`、`parser`、`credentials`、`market_policy`、
+  `factor_validation`、`strategy_validation`、`runtime`、`loading`），并由包入口显式导出稳定加载函数和
+  公共类型。所有生产、脚本和测试导入已切换，旧路径物理删除；配置 schema、默认值、凭据优先级、有效
+  哈希和 `create_app()` 无副作用行为保持不变。`Regression-Key: functional-package-settings-cutover-v1`。
+  Verification：通过配置单元、bootstrap、入口、应用工厂、架构及全部 contract 测试，并通过
+  `make format-check`、Ruff、mypy、全量测试、`make package` 与仓库外 wheel/CLI 资源验收。
+  Residual Risks：后续行情、运行时和 Web 包仍依赖当前旧目录，须按计划后续批次继续迁移；本批未改变这些
+  能力的运行语义。
+
 - 用户要求按 `docs/plan.md` 开始功能拆包重构。确认根因是现有分层方向正确但 application、行情基础设施和
   Web 能力仍平铺，缺少可审计的目标包所有权与迁移顺序；本批冻结 `domain`、`application`、`infra`、`web`
   层内功能包布局，并登记批次 2-9 的显式旧模块到目标包台账。新增功能包边界契约，验证目标包声明、

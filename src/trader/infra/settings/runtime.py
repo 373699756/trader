@@ -5,14 +5,14 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
-from trader.infra.settings_credentials import CREDENTIAL_FILE_NAME, read_credential_file
-from trader.infra.settings_market_policy import (
+from trader.infra.settings.credentials import CREDENTIAL_FILE_NAME, read_credential_file
+from trader.infra.settings.market_policy import (
     parse_cache_policy as _parse_cache_policy,
 )
-from trader.infra.settings_market_policy import (
+from trader.infra.settings.market_policy import (
     parse_performance_budgets as _parse_performance_budgets,
 )
-from trader.infra.settings_models import (
+from trader.infra.settings.models import (
     ApiSettings,
     DeepSeekAdaptiveSettings,
     DeepSeekSettings,
@@ -22,43 +22,43 @@ from trader.infra.settings_models import (
     ServerSettings,
     TushareSettings,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     ConfigurationError,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     boolean as _boolean,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     environment_integer as _environment_integer,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     infer_project_root as _infer_project_root,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     integer as _integer,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     integer_mapping as _integer_mapping,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     mapping as _mapping,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     number as _number,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     read_json_object as _read_json_object,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     require_exact_keys as _require_exact_keys,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     resolve_config_path as _resolve_config_path,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     resolve_project_path as _resolve_project_path,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     text as _text,
 )
 

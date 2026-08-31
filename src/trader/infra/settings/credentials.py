@@ -6,7 +6,7 @@ import os
 import stat
 from pathlib import Path
 
-from trader.infra.settings_parser import ConfigurationError
+from trader.infra.settings.parser import ConfigurationError
 
 CREDENTIAL_FILE_NAME = ".token_key"
 _CREDENTIAL_KEYS = frozenset({"DEEPSEEK_API_KEY", "TUSHARE_TOKEN"})

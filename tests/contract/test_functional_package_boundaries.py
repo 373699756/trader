@@ -206,6 +206,8 @@ MIGRATION_LEDGER: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ),
 )
 
+COMPLETED_BATCHES = frozenset({"batch-2"})
+
 TARGET_PACKAGES = (
     "domain/market",
     "domain/recommendation/filtering",
@@ -253,8 +255,12 @@ def test_target_packages_and_migration_ledger_are_documented() -> None:
 
     ledger_paths = [path for _, paths, _ in MIGRATION_LEDGER for path in paths]
     assert len(ledger_paths) == len(set(ledger_paths))
-    missing_sources = [path for path in ledger_paths if not (SOURCE_ROOT / path).exists()]
-    assert missing_sources == []
+    for batch, paths, target in MIGRATION_LEDGER:
+        if batch in COMPLETED_BATCHES:
+            assert [path for path in paths if (SOURCE_ROOT / path).exists()] == []
+            assert (SOURCE_ROOT / target).is_dir()
+        else:
+            assert [path for path in paths if not (SOURCE_ROOT / path).exists()] == []
     documented_text = f"{design}\n{plan}"
     undocumented = [path for path in ledger_paths if Path(path).name not in documented_text]
     assert undocumented == []

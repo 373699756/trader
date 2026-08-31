@@ -7,14 +7,14 @@ from collections.abc import Mapping
 from trader.domain.market.factors import PRODUCTION_FACTOR_IDS
 from trader.domain.market.research import MarketRegimePolicy
 from trader.domain.review.rules import DEEPSEEK_STRUCTURED_RISK_CODES, deepseek_risk_rule_code
-from trader.infra.settings_factor_validation import (
+from trader.infra.settings.factor_validation import (
     _validate_feature_schema_contract,
     _validate_long_research_factor_contract,
     _validate_tomorrow_tail_factor_contract,
     _validate_weight_sum,
 )
-from trader.infra.settings_models import FactorDefinition, RiskRuleSettings, StrategySettings
-from trader.infra.settings_parser import (
+from trader.infra.settings.models import FactorDefinition, RiskRuleSettings, StrategySettings
+from trader.infra.settings.parser import (
     ConfigurationError,
 )
 

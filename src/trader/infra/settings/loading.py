@@ -12,8 +12,8 @@ from trader.application.ports.tomorrow_model import TomorrowScoringProfile
 from trader.domain.market.news import NewsSignalPolicy
 from trader.domain.market.research import LongResearchPolicy, MarketRegimePolicy
 from trader.domain.market.tail import TailSignalPolicy
-from trader.infra.settings_factor_validation import _parse_factor_definition, _strategy_contract_version
-from trader.infra.settings_models import (
+from trader.infra.settings.factor_validation import _parse_factor_definition, _strategy_contract_version
+from trader.infra.settings.models import (
     ApiSettings,
     DeepSeekSettings,
     FactorDefinition,
@@ -31,36 +31,36 @@ from trader.infra.settings_models import (
     ServerSettings,
     StrategySettings,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     ConfigurationError,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     boolean as _boolean,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     integer as _integer,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     mapping as _mapping,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     nested_number_mapping as _nested_number_mapping,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     number as _number,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     number_mapping as _number_mapping,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     read_json_object as _read_json_object,
 )
-from trader.infra.settings_parser import (
+from trader.infra.settings.parser import (
     text as _text,
 )
-from trader.infra.settings_parser import triple_nested_number_mapping as _triple_nested_number_mapping
-from trader.infra.settings_runtime import load_runtime_settings
-from trader.infra.settings_strategy_validation import _validate_strategy_settings
+from trader.infra.settings.parser import triple_nested_number_mapping as _triple_nested_number_mapping
+from trader.infra.settings.runtime import load_runtime_settings
+from trader.infra.settings.strategy_validation import _validate_strategy_settings
 
 
 def load_strategy_settings(

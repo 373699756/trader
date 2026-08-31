@@ -1,6 +1,6 @@
 # Trader 功能拆包 Codex 执行计划
 
-> 状态：执行中（批次 1 已完成，等待后续批次继续指令）
+> 状态：执行中（批次 1-2 已完成，等待后续批次继续指令）
 >
 > 性质：非权威、阶段性施工计划
 >
@@ -233,7 +233,11 @@ git diff --check
 
 ## 批次 2：配置与组合包
 
-状态：`pending`
+状态：`completed`（2026-08-31）
+
+完成记录：配置模型、解析器、凭据、市场策略、因子校验、策略校验和运行时加载器已迁移到唯一的
+`trader.infra.settings` 包；公开加载入口与类型导出保持兼容，所有调用方切换到新路径，旧
+`infra/settings*.py` 文件已删除。配置 schema、默认值、凭据优先级、有效哈希和启动副作用契约验证通过。
 
 ### 目标
 
@@ -250,7 +254,7 @@ git diff --check
 | `infra/settings_factor_validation.py` | `infra/settings/factor_validation.py` |
 | `infra/settings_strategy_validation.py` | `infra/settings/strategy_validation.py` |
 | `infra/settings_runtime.py` | `infra/settings/runtime.py` |
-| `infra/settings.py` | `infra/settings/loading.py` 或职责更准确的窄模块 |
+| `infra/settings.py` | `infra/settings/loading.py` |
 
 `infra/settings/__init__.py` 只显式导出稳定加载入口和公共类型，不复制实现，不提供旧模块别名。
 
