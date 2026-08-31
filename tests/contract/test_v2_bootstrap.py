@@ -257,6 +257,7 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
         candidate_count=360,
         candidate_feature_count=352,
         security_master_covered_count=74,
+        history_required_sessions=61,
         candidate_feature_coverage_ratio=352 / 360,
         security_master_coverage_ratio=74 / 360,
         candidate_optional_reason_counts=(("missing_listing_date", 221), ("missing_listing_age_sessions", 65)),
@@ -276,6 +277,7 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
         "highest_final_score": 74.25,
     }
     assert payload["tomorrow"]["supply_funnel"]["full_scored"] == 65
+    assert payload["tomorrow"]["history_required_sessions"] == 61
     assert payload["tomorrow"]["supply_funnel"]["observation_threshold_met_count"] == 12
     assert payload["tomorrow"]["supply_funnel"]["executable_threshold_met_count"] == 3
     assert payload["tomorrow"]["candidate_optional_reason_counts"] == {

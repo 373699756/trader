@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal
@@ -30,7 +30,13 @@ _TRANSIENT_FILTER_REASONS = frozenset(
         "invalid_liquidity_history",
     }
 )
-_TRANSIENT_SELECTION_REASONS = frozenset({"candidate_core_missing"})
+_TRANSIENT_SELECTION_REASONS = frozenset(
+    {
+        "candidate_core_missing",
+        "production_model_features_missing",
+        "strategy_history_insufficient",
+    }
+)
 _SECURITY_IDENTITY_RESTRICTIONS = frozenset(
     {
         "board_identity_degraded",
@@ -51,6 +57,7 @@ class ScoredInputQuality:
     candidate_scored_count: int
     security_master_covered_count: int
     history_covered_count: int
+    history_required_sessions: int
     candidate_feature_coverage_ratio: float
     security_master_coverage_ratio: float
     history_coverage_ratio: float
@@ -73,6 +80,7 @@ class ScoredInputQuality:
         ):
             if getattr(self, name) < 0:
                 raise ValueError("scored input quality counts cannot be negative")
+        _validate_history_requirement(self.history_required_sessions)
         if self.population_rejected_count > self.population_count:
             raise ValueError("scored rejected population cannot exceed population")
         if max(self.candidate_rejected_count, self.candidate_scored_count) > self.candidate_count:
@@ -114,9 +122,19 @@ class ScoredInputQuality:
 def assess_scored_input_quality(
     native_input: ScoredNativeInput,
     selection: ScoredSelectionResult,
+    *,
+    minimum_history_sessions: int = 20,
+    profile_history_qualified_codes: Collection[str] | None = None,
 ) -> ScoredInputQuality:
+    if minimum_history_sessions < 1:
+        raise ValueError("scored input minimum history sessions must be positive")
     requested_codes = set(native_input.requested_codes)
     candidate_codes = {feature.quote.code for feature in native_input.candidate_features}
+    history_qualified_codes = (
+        frozenset(profile_history_qualified_codes) if profile_history_qualified_codes is not None else None
+    )
+    if history_qualified_codes is not None and not history_qualified_codes <= candidate_codes:
+        raise ValueError("profile history-qualified codes must be explicit candidates")
     evaluations = {item.code: item for item in selection.evaluations}
     candidate_evaluations = tuple(evaluations[code] for code in sorted(candidate_codes) if code in evaluations)
     if len(candidate_evaluations) != len(candidate_codes):
@@ -146,21 +164,25 @@ def assess_scored_input_quality(
     security_master_covered_count = sum(
         _security_master_complete(evaluated_features.get(code)) for code in requested_codes
     )
-    history_covered_count = sum(_history_complete(candidate_by_code.get(code)) for code in requested_codes)
+    history_covered_count = sum(
+        _history_complete(candidate_by_code.get(code), minimum_history_sessions=minimum_history_sessions)
+        and (history_qualified_codes is None or code in history_qualified_codes)
+        for code in requested_codes
+    )
     requested_count = len(requested_codes)
     candidate_feature_coverage_ratio = _coverage_ratio(len(candidate_codes), requested_count)
     security_master_coverage_ratio = _coverage_ratio(security_master_covered_count, requested_count)
     history_coverage_ratio = _coverage_ratio(history_covered_count, requested_count)
-    coverage_reasons = tuple(
+    blocking_coverage_reasons = tuple(
         reason
         for failed, reason in (
             (candidate_feature_coverage_ratio < 1.0, "candidate_feature_coverage_incomplete"),
             (security_master_coverage_ratio < 1.0, "security_master_coverage_incomplete"),
-            (history_coverage_ratio < 0.99, "history_coverage_incomplete"),
         )
         if failed
     )
-    if not requested_codes or coverage_reasons:
+    history_reasons = ("strategy_history_coverage_partial",) if history_coverage_ratio < 1.0 else ()
+    if not requested_codes or blocking_coverage_reasons:
         status: ScoredInputQualityStatus = "not_ready"
     elif candidate_scored_count:
         status = "ready"
@@ -179,6 +201,7 @@ def assess_scored_input_quality(
         candidate_scored_count=candidate_scored_count,
         security_master_covered_count=security_master_covered_count,
         history_covered_count=history_covered_count,
+        history_required_sessions=minimum_history_sessions,
         candidate_feature_coverage_ratio=candidate_feature_coverage_ratio,
         security_master_coverage_ratio=security_master_coverage_ratio,
         history_coverage_ratio=history_coverage_ratio,
@@ -186,12 +209,17 @@ def assess_scored_input_quality(
         candidate_filter_reason_counts=candidate_filter_counts,
         candidate_transient_reason_counts=transient_counts,
         candidate_optional_reason_counts=optional_counts,
-        degraded_reasons=(*tuple(optional_counts), *coverage_reasons),
+        degraded_reasons=(*tuple(optional_counts), *blocking_coverage_reasons, *history_reasons),
     )
 
 
 def _coverage_ratio(covered: int, total: int) -> float:
     return round(covered / total, 6) if total else 0.0
+
+
+def _validate_history_requirement(value: int) -> None:
+    if value < 1:
+        raise ValueError("scored input quality history requirement must be positive")
 
 
 def _security_master_complete(feature: FeatureSnapshot | None) -> bool:
@@ -203,11 +231,11 @@ def _security_master_complete(feature: FeatureSnapshot | None) -> bool:
     )
 
 
-def _history_complete(feature: FeatureSnapshot | None) -> bool:
-    if feature is None or feature.history_days < 20:
+def _history_complete(feature: FeatureSnapshot | None, *, minimum_history_sessions: int) -> bool:
+    if feature is None or feature.history_days < minimum_history_sessions:
         return False
     amount_median = feature.optional_value("amount_median_20d")
-    return amount_median is not None and amount_median > 0.0
+    return amount_median is not None and math.isfinite(amount_median) and amount_median > 0.0
 
 
 __all__ = [

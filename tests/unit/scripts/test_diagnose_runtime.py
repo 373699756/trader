@@ -186,7 +186,7 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
             0,
             12.5,
             {
-                "schema_version": "web_recommendation_health_v2",
+                "schema_version": "web_recommendation_health_v3",
                 "status": "passed",
                 "summary": {"error_count": 0, "warning_count": 0},
                 "findings": [],

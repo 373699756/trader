@@ -438,7 +438,7 @@ def test_production_adapter_rejects_vendor_future_time_without_local_observation
     assert adapter.refreshed_overlay(frozen, request, previous) is None
 
 
-def test_production_adapter_rejects_partial_history_coverage_even_when_one_candidate_scores(
+def test_production_adapter_publishes_eligible_scores_with_partial_history_coverage(
     application_feature_factory,
 ) -> None:
     observed_at = datetime(2026, 8, 12, 14, 40, tzinfo=SHANGHAI)
@@ -463,14 +463,46 @@ def test_production_adapter_rejects_partial_history_coverage_even_when_one_candi
     _prime_scoring_cache(adapter, observed_at)
     adapter.refresh(request)
 
-    with pytest.raises(V2DecisionUnavailableError, match="not_ready"):
-        adapter.build_local(request)
+    decision = adapter.build_local(request)
 
-    draft = drafts.snapshot(Strategy.TOMORROW)
-    assert draft is not None
-    assert draft.trade_date == observed_at.date()
-    assert {item.code for item in draft.items} == {"600001", "600002"}
-    assert adapter.has_local_draft(Strategy.TOMORROW, observed_at.date())
+    assert decision is not None
+    assert {item.code for item in decision.items} == {"600001"}
+    assert drafts.snapshot(Strategy.TOMORROW) is None
+    status = next(item for item in adapter.input_quality_status() if item.strategy is Strategy.TOMORROW)
+    assert status.history_covered_count == 1
+    assert status.history_coverage_ratio == 0.5
+    assert status.candidate_scored_count == 1
+    assert status.publishable is True
+    assert status.primary_blocker != "history_coverage_incomplete"
+
+
+def test_production_adapter_does_not_publish_business_empty_when_all_candidate_history_is_insufficient(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 14, 40, tzinfo=SHANGHAI)
+    incomplete = replace(
+        application_feature_factory("600001", observed_at - timedelta(seconds=1)),
+        quote=replace(application_feature_factory("600001", observed_at).quote, board=Board.MAIN),
+        history_days=19,
+    )
+    adapter = V2MarketDataAdapter(
+        _Market((incomplete,)),
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=_decision_build(),
+    )
+    request = _request(observed_at, phase="afternoon")
+
+    _prime_scoring_cache(adapter, observed_at)
+    adapter.refresh(request)
+
+    with pytest.raises(V2DecisionUnavailableError, match="transient_invalid_empty"):
+        adapter.build_local(request)
+    status = next(item for item in adapter.input_quality_status() if item.strategy is Strategy.TOMORROW)
+    assert status.candidate_scored_count == 0
+    assert status.status == "transient_invalid_empty"
+    assert status.publishable is False
+    assert status.primary_blocker == "strategy_history_unavailable"
 
 
 def test_production_adapter_rejects_candidate_security_identity_degradation(

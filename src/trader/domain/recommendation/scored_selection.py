@@ -99,6 +99,7 @@ class ScoredSelectionRequest:
     local_score_overrides: Mapping[str, LocalScoreResult] | None = None
     population_evaluated_at: datetime | None = None
     population_max_age_seconds: float | None = None
+    minimum_history_sessions: int = 20
 
     def __post_init__(self) -> None:
         features = tuple(self.features)
@@ -113,6 +114,8 @@ class ScoredSelectionRequest:
             raise ValueError("scored selection features must contain unique codes")
         if any(item.observed_at > self.evaluated_at for item in features):
             raise ValueError("scored selection cannot use future features")
+        if self.minimum_history_sessions < 1:
+            raise ValueError("scored selection minimum history sessions must be positive")
         population_evaluated_at, population_max_age_seconds = _validated_population_window(
             features,
             candidate_evaluated_at=self.evaluated_at,
@@ -409,6 +412,10 @@ def _score_board_candidates(
     for feature in features:
         code = feature.quote.code
         current = evaluations[code]
+        input_skip_reason = _score_input_skip_reason(feature, request)
+        if input_skip_reason is not None:
+            evaluations[code] = replace(current, selection_skip_reason=input_skip_reason)
+            continue
         missing_ratio = feature.missing_ratio(required_fields)
         disposition = current.disposition
         optional_flags = current.optional_flags
@@ -488,6 +495,14 @@ def _score_board_candidates(
         )
         selected_codes.append(code)
     return tuple(selected_codes)
+
+
+def _score_input_skip_reason(feature: FeatureSnapshot, request: ScoredSelectionRequest) -> str | None:
+    if feature.history_days < request.minimum_history_sessions:
+        return "strategy_history_insufficient"
+    if request.local_score_overrides is not None and feature.quote.code not in request.local_score_overrides:
+        return "production_model_features_missing"
+    return None
 
 
 def _rank_local_candidates(

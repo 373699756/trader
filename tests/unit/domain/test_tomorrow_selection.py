@@ -12,6 +12,7 @@ from trader.domain.recommendation.scored_selection import (
     ScoredSelectionRequest,
     select_scored,
 )
+from trader.domain.recommendation.strategies.composition import LocalScoreResult
 from trader.domain.review.models import RiskRule
 
 NOW = datetime(2026, 7, 28, 14, 40, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -181,6 +182,24 @@ def test_tomorrow_selection_deducts_local_risk_once_and_is_stable(
     assert len(forward.selected) == 10
     assert sum(item.features.quote.industry == "concentrated" for item in forward.selected) <= 2
     assert [item.rank for item in forward.selected] == list(range(1, 11))
+
+
+def test_production_model_ineligible_candidate_does_not_consume_board_limit(
+    application_feature_factory,
+) -> None:
+    features = _features(application_feature_factory, count=2)
+    request = replace(
+        _request(features, _selection_policy(candidate_limit=1, top_k=1)),
+        local_score_overrides={
+            "600001": LocalScoreResult(components={"model": 80.0}, base_score=80.0),
+        },
+    )
+
+    result = select_scored(request)
+    by_code = {item.code: item for item in result.evaluations}
+
+    assert tuple(item.code for item in result.scored_candidates) == ("600001",)
+    assert by_code["600000"].selection_skip_reason == "production_model_features_missing"
 
 
 def test_tomorrow_selection_records_local_threshold_exclusion(application_feature_factory) -> None:

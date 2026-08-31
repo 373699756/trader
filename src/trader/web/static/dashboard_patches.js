@@ -195,7 +195,12 @@
       const message = `采集中｜候选行情 ${covered} / ${requested}，评分尚未完成`;
       return { message, notice: message, level: "idle" };
     }
-    const blocked = coverageBlockerMessage(blocker, funnel, requested);
+    const blocked = coverageBlockerMessage(
+      blocker,
+      funnel,
+      requested,
+      nonNegativeInteger(inputQuality && inputQuality.history_required_sessions),
+    );
     if (blocked) return { message: blocked, notice: blocked, level: "warn" };
     if (reason === "afternoon_freeze_pending") {
       return {
@@ -226,7 +231,7 @@
     };
   }
 
-  function coverageBlockerMessage(blocker, funnel, requested) {
+  function coverageBlockerMessage(blocker, funnel, requested, historyRequiredSessions) {
     if (requested == null || requested <= 0) return "";
     if (blocker === "candidate_feature_coverage_incomplete") {
       return blockedCoverage("候选行情", funnel.candidate_features, requested, requested);
@@ -234,8 +239,9 @@
     if (blocker === "security_master_coverage_incomplete") {
       return blockedCoverage("基础资料", funnel.security_master, requested, requested);
     }
-    if (blocker === "history_coverage_incomplete") {
-      return blockedCoverage("历史有效", funnel.history, requested, Math.ceil(requested * 0.99));
+    if (blocker === "strategy_history_unavailable") {
+      const requirement = historyRequiredSessions == null ? "当前策略历史要求" : `至少 ${historyRequiredSessions} 个交易日`;
+      return `暂不可发布｜符合${requirement} ${nonNegativeInteger(funnel.history) || 0} / ${requested}`;
     }
     return "";
   }

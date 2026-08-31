@@ -6,6 +6,14 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户质疑“统一前置 20 日历史、长期 0 只推荐却没有分析数据”的策略合理性，并明确所有评分计划都应
+  服务于提高荐股收益。权威策略新增唯一收益目标：对应持有期内可重复、成本后、相对可投资 A 股基准的
+  风险约束净超额；推荐数量、页面非空、分数或工程完成均不得冒充收益。计划复核进一步删除固定未来
+  20 日作为 V1/V2 历史留出、比较器实现或配对采集的启动条件，改由首个标签可见前冻结的统计功效规范
+  决定最终生产切换样本量。状态 API 新增活动策略/profile 的 `history_required_sessions`，Web 与
+  `web_recommendation_health_v3` 可解释逐股资格口径。
+  `Regression-Key: per-stock-history-eligibility-profit-evidence-v1`。
+
 - 用户再次反馈推荐漏斗仍为 `360 → 0 → 0`。可复用 Web 诊断子报告升级为
   `web_recommendation_health_v2`，加法输出完整漏斗阶段，以及各最多 32 项的人口过滤、候选过滤、
   候选瞬态、候选可选告警和供应原因聚合计数，不包含股票身份或逐股数据；该证据用于区分页面覆盖、
@@ -503,6 +511,13 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 历史就绪从“候选至少 99% 具备统一 20 日历史，否则整批不发布”改为逐股、逐策略/profile 资格：
+  Today 与当前启发式 D25 使用登记的 20 日摘要，Tomorrow V1/V2 明确要求 61 个 qfq session 及模型
+  字段，公开历史合格计数也必须同时满足所选 profile 字段而非只数 session。覆盖率只作为健康指标；
+  已有合法分数必须继续发布，历史不足股票显式跳过，全部不合格才保持
+  `transient_invalid_empty`。公开 status schema 升至 `v2_status_v8`，静态握手升至
+  `release-contract-2026-08-31-v10`。
+
 - Today、Tomorrow、D25 的共享原生评分现在分别使用全市场发现批次水位与最终候选评分水位：
   `preselect_max_age_seconds` 只审计人口批次，`score_max_age_seconds` 只审计候选原始行情。慢历史、
   研究或分钟增强不再把已完整接纳的同一人口批次倒算为过期；候选过期、99% 历史覆盖、硬过滤、
@@ -944,6 +959,12 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复少数候选历史不足把其余已具备评分资格的股票一起阻断、并让“0只”混淆数据未就绪与真实低收益/
+  风险空集的问题。选择器现在在本地评分前按实际 session 要求跳过单股；输入质量只让候选行情或证券
+  身份的批次完整性继续 fail closed，不再让历史比例覆盖已有分数。Tomorrow 模型的 61 日真实输入要求
+  也不再被通用 20 日指标掩盖。活动模型字段不完整的股票在板内候选限额前排除，不再占用名额并挤掉
+  模型可评分股票。
+
 - 修复全市场发现已完成、候选定向报价也有效时，选择器仍以更晚候选 `evaluated_at` 对约 5571 条人口
   重做 20/30 秒新鲜度判断的问题。现场人口因候选增强耗时被 Today/D25 全部标成 `stale_quote`，板内
   横截面为空，导致 342 个硬过滤允许的候选没有进入本地评分并显示 `360 → 0 → 0`；现在人口按自身
@@ -1360,6 +1381,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除 `DataPlaneCoverage` 和生产输入质量中的 99% 候选历史整批否决权，以及浏览器“至少 357/360”
+  固定文案；不删除 20/40/60 日因子、61 日模型输入、流动性硬过滤、风险、动作、TopK 或冻结门槛。
+
 - 移除共享选择器把单一候选评分水位隐式同时用于人口预选的行为；不删除任何行情来源、历史回退、
   风险规则、评分公式、门槛、预算、冻结记录或旧 release 数据。
 
@@ -1545,6 +1569,25 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- `per-stock-history-eligibility-profit-evidence-v1` 失败先行：旧实现对 2 只候选中 1 只具备历史、1 只仅
+  19 日的批次返回 `not_ready`，并拒绝 50% 历史覆盖的 `DailyFeaturePack`；实现后仅合格股票评分并
+  发布。负向回归证明全部候选历史不足仍为 `transient_invalid_empty`，全为 ST 的合法过滤空集仍是
+  publishable `business_empty`。Tomorrow 模型回归固定 61 日要求，60 日股票只跳过自身；另一个失败
+  先行回归证明模型字段缺失的高候选分股票不再先占用板内名额、把字段完整股票挤成 0 分。
+- 定向数据平面、原生投影、生产 adapter、选择器、Web/API、诊断、Skill 事故规则及 JS 状态契约已通过；
+  `make format-check`、`make lint`（严格重构债务为零）、`make type-check`（261 个源文件）、全量
+  `make test` 和获准联网后的 `make package` 最终全部通过；固定融合 `83.40`、预算并发、冻结恢复、
+  SSE 游标/慢客户端、架构与 `create_app()` 副作用契约均包含在全量回归中。
+- 离线生产性能门禁通过：5500 行全市场、360 候选、三策略评分 P95 24.735ms，零外网调用、RSS 增长
+  0%。最终 wheel 从仓库外目标安装并实际导入，`trader-cli --help` 及模板、CSS、JavaScript、SVG
+  资源可读。Firefox SSE 诊断 8 个 DOM 样本 P95 1.051 秒、9 个 patch-to-paint 样本 P95 8ms；
+  三档桌面报告在 1280x720、1440x900、1920x1080 均无白屏、横向溢出或浏览器错误，外网请求为 0。
+- 真实新进程在 15:03 对 `web_recommendation_health_v3` 连续 4 轮采样全部通过。Tomorrow 明确公开
+  `history_required_sessions=61`，在全局历史覆盖 342/360、活动 profile 合格 284/360 时仍完成 215 只
+  评分；正式 0 只的 `empty_reason=score_below_observation_floor`，215 只均为 `below_score_threshold`，
+  证明此时是策略/动作门槛空集而非无分析数据或全局历史覆盖阻塞。D25 同一进程也在历史 182/360 时
+  保留 140 只完整评分。测试服务随后以一次 Ctrl+C 完成有界停止。
 
 - `population-candidate-dual-watermark-funnel-v1` 失败先行：同一组 100 只候选在全市场批次完成后
   延迟 85 秒进入评分，修复前人口 100/100 因 `stale_quote` 被拒且完整评分为 0；修复后 Today、
@@ -2464,6 +2507,13 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 本批修复生产数据资格并冻结收益目标，但不伪称 V1/V2 已有收益胜者。全候选配对影子、未入选样本的
+  T+1/对应持有期标签、V1 独立留出和 V2.x 尾部风险改进仍是权威文档中的后续完整研究章节；在这些
+  证据完成前，V1 仍为 `historical_unavailable`，V2 仍为 `historical_rejected`，不得自动切换或调权。
+- 真实冷启动预热累计 10 次供应商批次超时、45 次请求失败，最终仍覆盖 342/360 并完成评分；启动日志
+  另有两次证券主数据同观测时间持久化冲突，但进程保留内存中 360/360 证券身份并受控继续。它们未阻断
+  本批逐股资格结论，但属于数据源/持久化可靠性后续问题，不能解释成收益改善证据。
 
 - 固定离线性能两次仅 `targeted_overlay_commit` 未过 100ms 旧绝对预算，P95 分别为 135.504ms 和
   112.803ms；该路径未被本批修改且不经过人口/候选评分。相关评分指标均通过：板内本地评分 P95

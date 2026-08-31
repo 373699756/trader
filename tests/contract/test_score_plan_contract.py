@@ -389,10 +389,14 @@ def test_tomorrow_v1_v2_profitability_evidence_and_remaining_work_are_explicit()
     design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
 
     for expected in (
+        "所有评分计划",
+        "风险约束净超额收益",
         "不能据此断言 V2 未来更能挣钱",
         "V2 的平均成本后净增量证据强于 V1",
         "同日、同股、同一冻结输入",
         "不阻塞当前评分",
+        "固定 20 个未来交易日不是",
+        "统计功效",
         "活动档位单边 T+1 结算存在选择偏差",
         "V1 未完成任务",
         "V2 未完成任务",
@@ -404,6 +408,7 @@ def test_tomorrow_v1_v2_profitability_evidence_and_remaining_work_are_explicit()
         "历史研究身份 P1/P2",
         "不得自动切换活动档位",
         "配对影子比较器",
+        "不等待固定 20 个未来交易日",
     ):
         assert expected in design
 

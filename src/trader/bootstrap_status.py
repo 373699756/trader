@@ -166,6 +166,7 @@ def input_quality_payload(statuses: tuple[V2InputQualityStatus, ...]) -> dict[st
             "candidate_scored_count": status.candidate_scored_count,
             "security_master_covered_count": status.security_master_covered_count,
             "history_covered_count": status.history_covered_count,
+            "history_required_sessions": status.history_required_sessions,
             "candidate_feature_coverage_ratio": status.candidate_feature_coverage_ratio,
             "security_master_coverage_ratio": status.security_master_coverage_ratio,
             "history_coverage_ratio": status.history_coverage_ratio,

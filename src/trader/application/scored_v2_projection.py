@@ -83,9 +83,16 @@ def build_scored_v2_local(
     strategy = native_input.strategy
     decision_policy = v2_decision_policy(policy, strategy, phase=native_input.phase)
     population = tuple(preselection_replay_feature(feature) for feature in native_input.market_features)
+    active_model = tomorrow_model if strategy is Strategy.TOMORROW else None
     model_batch = (
-        tomorrow_model.score(_model_eligible_candidates(native_input, policy))
-        if strategy is Strategy.TOMORROW and tomorrow_model is not None
+        active_model.score(_model_eligible_candidates(native_input, policy)) if active_model is not None else None
+    )
+    minimum_history_sessions = active_model.history_required_sessions if active_model is not None else 20
+    profile_history_qualified_codes = (
+        frozenset(
+            feature.quote.code for feature in native_input.candidate_features if active_model.is_input_eligible(feature)
+        )
+        if active_model is not None
         else None
     )
     selection = select_scored_features(
@@ -100,6 +107,7 @@ def build_scored_v2_local(
             candidate_features=native_input.candidate_features,
             normalize_discovery_source_time=True,
             strategy=strategy,
+            minimum_history_sessions=minimum_history_sessions,
         ),
         ScoredSelectionIdentity(
             trade_date=native_input.trade_date,
@@ -108,7 +116,12 @@ def build_scored_v2_local(
         ),
         local_score_overrides=model_batch.scores if model_batch is not None else None,
     )
-    quality = assess_scored_input_quality(native_input, selection)
+    quality = assess_scored_input_quality(
+        native_input,
+        selection,
+        minimum_history_sessions=minimum_history_sessions,
+        profile_history_qualified_codes=profile_history_qualified_codes,
+    )
     candidates = select_scored_review_candidates(selection, decision_policy)
     input_hash = native_input.input_version.removeprefix("native-input:")
     epoch = build_scored_decision_epoch(

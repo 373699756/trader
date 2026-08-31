@@ -74,6 +74,15 @@ requested_candidates
   legitimately prevents formal publication.
 - A nonzero `full_scored` with zero selected is not automatically data loss: the strategy may legally return 0 after
   filters, score/action thresholds, risk, TopK, board, or industry constraints.
+- Historical readiness is per stock and per strategy/profile. A coverage ratio is a health metric, not permission to
+  discard scores that already exist. If `full_scored > 0` while a legacy `history_coverage_incomplete` batch blocker
+  prevents publication, classify `global_history_gate_blocked_eligible_candidates`; do not tune the percentage.
+- Check the declared lookback against the active score implementation. Tomorrow V1/V2 use 20/40/60-session skip-5
+  features and therefore require 61 valid qfq sessions per scored stock; a generic 20-session batch flag neither proves
+  model eligibility nor justifies blocking other eligible stocks.
+- A zero formal TopK must not imply zero research evidence. Profit-oriented V1/V2 comparison needs same-day, same-stock,
+  same-input paired predictions for every mutually eligible candidate, followed by outcome labels without production
+  authority; selected-only outcomes are selection-biased.
 - Compare `primary_blocker`, filter counts, highest score, formal/observe counts, and the same-strategy/same-trade-date
   current projection before calling a zero abnormal.
 - Never fabricate a downstream count, derive one by subtracting non-exclusive reason counts, or change the Web to hide a

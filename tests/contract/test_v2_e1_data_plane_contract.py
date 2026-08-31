@@ -17,7 +17,7 @@ def test_authoritative_contract_freezes_data_plane_port_lineage_and_coverage() -
         "DataPlaneReadPort",
         "valid/degraded/stale/missing/conflicting",
         "潜在可执行代码必须 100%",
-        "覆盖率不得低于 99%",
+        "候选历史覆盖率是加法健康指标",
         "游标只能作为增量位置，不能代替实际交易日历内容",
     ):
         assert token in design

@@ -31,6 +31,7 @@ _ALPHA_FIELDS = (
 _AMOUNT_FIELD = "p2_average_amount_20d"
 _AMIHUD_FIELD = "p2_amihud_20d"
 _COST_RATE = 0.002
+_HISTORY_REQUIRED_SESSIONS = 61
 _MODEL_FEATURE_IDS = (
     "qfq_return_1d",
     "qfq_return_3d",
@@ -87,10 +88,18 @@ class TomorrowProductionModelScoringService:
             raise ValueError("Tomorrow production model identity is invalid")
         self._predictor = predictor
         self._feature_positions = tuple(_MODEL_FEATURE_IDS.index(item) for item in predictor.feature_ids)
+        self._requires_reversal = any(position < 3 for position in self._feature_positions)
 
     @property
     def model_version(self) -> str:
         return f"{self._predictor.model_id}:{self._predictor.model_hash}"
+
+    @property
+    def history_required_sessions(self) -> int:
+        return _HISTORY_REQUIRED_SESSIONS
+
+    def is_input_eligible(self, feature: FeatureSnapshot) -> bool:
+        return _raw_row(feature, require_reversal=self._requires_reversal) is not None
 
     def status(self) -> TomorrowModelRuntimeStatus:
         historical_status: Literal["historical_rejected", "historical_unavailable"]
@@ -125,9 +134,8 @@ class TomorrowProductionModelScoringService:
     def score(self, features: Sequence[FeatureSnapshot]) -> TomorrowModelScoreBatch:
         rows: list[_RawRow] = []
         missing: list[str] = []
-        require_reversal = any(position < 3 for position in self._feature_positions)
         for feature in sorted(features, key=lambda item: item.quote.code):
-            row = _raw_row(feature, require_reversal=require_reversal)
+            row = _raw_row(feature, require_reversal=self._requires_reversal)
             if row is None:
                 missing.append(feature.quote.code)
             else:
@@ -207,7 +215,7 @@ def _raw_row(feature: FeatureSnapshot, *, require_reversal: bool) -> _RawRow | N
     numeric = tuple(float(value) if value is not None else 0.0 for value in values)
     amount = numeric[6]
     amihud = numeric[7]
-    if feature.history_days < 61 or amount <= 0.0 or amihud < 0.0:
+    if feature.history_days < _HISTORY_REQUIRED_SESSIONS or amount <= 0.0 or amihud < 0.0:
         return None
     return _RawRow(
         code=feature.quote.code,

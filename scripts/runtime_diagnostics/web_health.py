@@ -43,7 +43,7 @@ _MONITORED_FUNNEL_FIELDS = (
 )
 _MAX_RESPONSE_BYTES = 1_048_576
 _MAX_REASON_COUNTS = 32
-_REPORT_SCHEMA_VERSION = "web_recommendation_health_v2"
+_REPORT_SCHEMA_VERSION = "web_recommendation_health_v3"
 _EvidenceValue = str | int | float | bool | None
 
 
@@ -106,6 +106,7 @@ class InputQualitySnapshot:
     status: str | None
     trade_date: str | None
     primary_blocker: str | None
+    history_required_sessions: int | None
     funnel: FunnelSnapshot
     population_filter_reason_counts: Mapping[str, int]
     candidate_filter_reason_counts: Mapping[str, int]
@@ -298,7 +299,31 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
                     )
                 )
             findings.extend(_funnel_consistency_findings(sample, strategy, quality.funnel))
+            findings.extend(_history_gate_findings(sample, strategy, quality))
     return findings
+
+
+def _history_gate_findings(
+    sample: WebSample,
+    strategy: str,
+    quality: InputQualitySnapshot,
+) -> list[Finding]:
+    if quality.primary_blocker != "history_coverage_incomplete" or (quality.funnel.full_scored or 0) == 0:
+        return []
+    return [
+        _finding(
+            "error",
+            "global_history_gate_blocked_eligible_candidates",
+            sample,
+            strategy,
+            "a legacy batch history gate blocked candidates that already had valid scores",
+            {
+                "full_scored": quality.funnel.full_scored,
+                "history": quality.funnel.history,
+                "requested": quality.funnel.requested_candidates,
+            },
+        )
+    ]
 
 
 def _decision_contract_findings(
@@ -852,6 +877,7 @@ def _parse_input_quality(payload: Mapping[str, object]) -> InputQualitySnapshot:
         status=_text(payload.get("status")),
         trade_date=_text(_mapping(payload.get("summary")).get("trade_date")),
         primary_blocker=_text(payload.get("primary_blocker")),
+        history_required_sessions=_nonnegative_int(payload.get("history_required_sessions")),
         funnel=_parse_funnel(_mapping(payload.get("supply_funnel"))),
         population_filter_reason_counts=_parse_reason_counts(payload.get("population_filter_reason_counts")),
         candidate_filter_reason_counts=_parse_reason_counts(payload.get("candidate_filter_reason_counts")),
@@ -984,6 +1010,7 @@ def _sample_payload(sample: WebSample, strategies: tuple[str, ...]) -> dict[str,
             "empty_reason": current.empty_reason if current is not None else None,
             "input_quality_status": quality.status if quality is not None else None,
             "primary_blocker": quality.primary_blocker if quality is not None else None,
+            "history_required_sessions": quality.history_required_sessions if quality is not None else None,
             "supply_funnel": _funnel_payload(quality.funnel if quality is not None else None),
             "population_filter_reason_counts": (
                 dict(quality.population_filter_reason_counts) if quality is not None else {}

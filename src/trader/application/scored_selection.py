@@ -42,6 +42,7 @@ class ScoredSelectionOptions:
     strategy: Strategy = Strategy.TOMORROW
     population_evaluated_at: datetime | None = None
     population_max_age_seconds: float | None = None
+    minimum_history_sessions: int = 20
 
 
 @dataclass(frozen=True)
@@ -179,6 +180,7 @@ def select_scored_features(
             local_score_overrides=local_score_overrides,
             population_evaluated_at=population_evaluated_at,
             population_max_age_seconds=options.population_max_age_seconds,
+            minimum_history_sessions=options.minimum_history_sessions,
         )
     )
 

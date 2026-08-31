@@ -108,8 +108,6 @@ class DataPlaneCoverage:
             raise ValueError("potential executable security-master coverage must be 100%")
         if not set(self.candidate_history_codes) <= set(self.candidate_codes):
             raise ValueError("candidate history coverage codes must be candidates")
-        if self.candidate_history_coverage < 0.99:
-            raise ValueError("candidate core-history coverage must be at least 99%")
 
     @property
     def security_master_coverage(self) -> float:

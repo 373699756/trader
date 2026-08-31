@@ -83,6 +83,7 @@ class V2InputQualityStatus:
     candidate_scored_count: int = 0
     security_master_covered_count: int = 0
     history_covered_count: int = 0
+    history_required_sessions: int = 20
     candidate_feature_coverage_ratio: float = 0.0
     security_master_coverage_ratio: float = 0.0
     history_coverage_ratio: float = 0.0
@@ -109,6 +110,8 @@ class V2InputQualityStatus:
         )
         if any(value < 0 for value in counts):
             raise ValueError("V2 input quality counts cannot be negative")
+        if self.history_required_sessions < 1:
+            raise ValueError("V2 input quality history requirement must be positive")
         for value in (
             self.candidate_feature_coverage_ratio,
             self.security_master_coverage_ratio,

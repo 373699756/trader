@@ -349,6 +349,11 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
                 population_count=population_count,
                 candidate_count=requested_count,
                 candidate_feature_count=candidate_feature_count,
+                history_required_sessions=(
+                    self._tomorrow_model.history_required_sessions
+                    if strategy is Strategy.TOMORROW and self._tomorrow_model is not None
+                    else 20
+                ),
                 population_rejected_count=max(0, population_count - requested_count),
                 candidate_rejected_count=max(0, requested_count - candidate_feature_count),
                 candidate_feature_coverage_ratio=(
@@ -810,6 +815,7 @@ def _supply_status(
         candidate_scored_count=quality.candidate_scored_count,
         security_master_covered_count=quality.security_master_covered_count,
         history_covered_count=quality.history_covered_count,
+        history_required_sessions=quality.history_required_sessions,
         candidate_feature_coverage_ratio=quality.candidate_feature_coverage_ratio,
         security_master_coverage_ratio=quality.security_master_coverage_ratio,
         history_coverage_ratio=quality.history_coverage_ratio,
@@ -938,7 +944,12 @@ def _primary_supply_blocker(
     priorities = (
         (quality.candidate_feature_coverage_ratio < 1.0, "candidate_feature_coverage_incomplete"),
         (quality.security_master_coverage_ratio < 1.0, "security_master_coverage_incomplete"),
-        (quality.history_coverage_ratio < 0.99, "history_coverage_incomplete"),
+        (
+            quality.status == "transient_invalid_empty"
+            and funnel.full_scored == 0
+            and quality.history_covered_count < quality.candidate_count,
+            "strategy_history_unavailable",
+        ),
         (funnel.full_scored == 0, "no_scored_candidates"),
         (funnel.review_eligible == 0, "no_review_eligible_candidates"),
         (funnel.action_executable == 0, action_blocker),

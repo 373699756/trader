@@ -129,6 +129,20 @@ def test_v1_profile_does_not_require_the_unselected_reversal_family(application_
     assert set(batch.scores) == {"600001"}
 
 
+def test_model_service_owns_its_history_and_profile_field_eligibility(application_feature_factory) -> None:
+    service = TomorrowProductionModelScoringService(_Predictor())
+    complete = _model_feature(application_feature_factory("600001", NOW), offset=0.01, amihud=1.0)
+    short = replace(complete, history_days=60)
+    values = dict(complete.values)
+    values["p2_momentum_60d_skip5"] = None
+    missing = replace(complete, values=values)
+
+    assert service.history_required_sessions == 61
+    assert service.is_input_eligible(complete) is True
+    assert service.is_input_eligible(short) is False
+    assert service.is_input_eligible(missing) is False
+
+
 def test_production_model_does_not_fall_back_to_the_legacy_score_when_bound_features_are_missing(
     application_feature_factory,
 ) -> None:

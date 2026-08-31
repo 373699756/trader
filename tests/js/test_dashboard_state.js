@@ -104,10 +104,10 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.statusPayloadCompatibility({
-    schema_version: "v2_status_v7",
+    schema_version: "v2_status_v8",
     release: {
       decision_view_schema: "v2_decision_view_v3",
-      web_asset_revision: "release-contract-2026-08-31-v9",
+      web_asset_revision: "release-contract-2026-08-31-v10",
     },
   }))),
   { compatible: true, reason: "" },
@@ -612,13 +612,14 @@ assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.notReadyMessage(
     { strategy: "d25", readiness_reason: "snapshot_not_published" },
     {
-      primary_blocker: "history_coverage_incomplete",
+      primary_blocker: "strategy_history_unavailable",
+      history_required_sessions: 61,
       supply_funnel: { requested_candidates: 360, history: 350 },
     },
   ))),
   {
-    message: "暂不可发布｜历史有效 350 / 360，要求至少 357 / 360",
-    notice: "暂不可发布｜历史有效 350 / 360，要求至少 357 / 360",
+    message: "暂不可发布｜符合至少 61 个交易日 350 / 360",
+    notice: "暂不可发布｜符合至少 61 个交易日 350 / 360",
     level: "warn",
   },
 );

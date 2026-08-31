@@ -91,6 +91,7 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     assert projection.local.selection_diagnostics is not None
     assert projection.local.selection_diagnostics.executable_threshold == 78.0
     assert projection.local.selection_diagnostics.observation_floor == 73.0
+    assert projection.input_quality.history_required_sessions == 61
     assert ("score_model", f"daily_reconstructible_ensemble_v1:{'b' * 64}") in projection.local.input_versions
     assert all(item.model_diagnostics is not None for item in projection.local.items)
     assert all(
@@ -154,6 +155,77 @@ def test_tomorrow_model_cross_section_excludes_hard_filter_rejections(
     assert predictor.codes == ("600001",)
     rejected_evaluation = next(item for item in projection.selection.evaluations if item.code == "600002")
     assert rejected_evaluation.disposition.value == "reject"
+
+
+def test_tomorrow_model_excludes_only_candidate_below_its_61_session_requirement(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    eligible = _with_model_features(
+        _verified_feature(application_feature_factory("600001", EVALUATED_AT - timedelta(seconds=10))),
+        1,
+    )
+    insufficient = replace(
+        _with_model_features(
+            _verified_feature(application_feature_factory("600002", EVALUATED_AT - timedelta(seconds=10))),
+            2,
+        ),
+        history_days=60,
+    )
+    predictor = _RecordingProductionPredictor()
+
+    projection = build_scored_v2_local(
+        _native_input((eligible, insufficient)),
+        policy,
+        sequence=1,
+        tomorrow_model=TomorrowProductionModelScoringService(predictor),
+    )
+
+    assert predictor.codes == ("600001",)
+    assert projection.input_quality.history_required_sessions == 61
+    assert projection.input_quality.history_covered_count == 1
+    assert projection.input_quality.history_coverage_ratio == 0.5
+    assert projection.input_quality.candidate_scored_count == 1
+    skipped = next(item for item in projection.selection.evaluations if item.code == "600002")
+    assert skipped.selection_skip_reason == "strategy_history_insufficient"
+
+
+def test_tomorrow_model_history_coverage_requires_the_active_profile_fields(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    eligible = _with_model_features(
+        _verified_feature(application_feature_factory("600001", EVALUATED_AT - timedelta(seconds=10))),
+        1,
+    )
+    missing_values = dict(
+        _with_model_features(
+            _verified_feature(application_feature_factory("600002", EVALUATED_AT - timedelta(seconds=10))),
+            2,
+        ).values
+    )
+    missing_values["p2_momentum_60d_skip5"] = None
+    incomplete = replace(
+        _with_model_features(
+            _verified_feature(application_feature_factory("600002", EVALUATED_AT - timedelta(seconds=10))),
+            2,
+        ),
+        values=missing_values,
+    )
+
+    projection = build_scored_v2_local(
+        _native_input((eligible, incomplete)),
+        policy,
+        sequence=1,
+        tomorrow_model=TomorrowProductionModelScoringService(_ProductionPredictor()),
+    )
+
+    assert projection.input_quality.history_required_sessions == 61
+    assert projection.input_quality.history_covered_count == 1
+    assert projection.input_quality.history_coverage_ratio == 0.5
+    assert projection.input_quality.candidate_scored_count == 1
+    skipped = next(item for item in projection.selection.evaluations if item.code == "600002")
+    assert skipped.selection_skip_reason == "production_model_features_missing"
 
 
 def test_d25_native_local_and_valid_facts_publish_one_parented_hybrid(

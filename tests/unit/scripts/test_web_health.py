@@ -50,6 +50,7 @@ def _sample(
             "status": quality_status or decision_status,
             "publishable": (quality_status or decision_status) in {"ready", "business_empty"},
             "primary_blocker": "ready" if decision_status == "ready" else "history_coverage_incomplete",
+            "history_required_sessions": 61,
             "population_filter_reason_counts": {"stale_quote": 5571},
             "candidate_filter_reason_counts": {"history_too_short": 71},
             "candidate_transient_reason_counts": {"history_data_degraded": 12},
@@ -69,7 +70,7 @@ def _sample(
         else None
     )
     status: dict[str, object] = {
-        "schema_version": "v2_status_v7",
+        "schema_version": "v2_status_v8",
         "release": {"decision_view_schema": "v2_decision_view_v3", "web_asset_revision": "test"},
         "status": "running",
         "runtime_started": True,
@@ -190,6 +191,25 @@ def test_nonzero_funnel_stage_regressing_to_zero_is_reported_immediately() -> No
         finding.code == "funnel_regressed_to_zero"
         and finding.strategy == _STRATEGY
         and finding.evidence.get("field") == "full_scored"
+        for finding in findings
+    )
+
+
+def test_legacy_global_history_gate_blocking_existing_scores_is_reported() -> None:
+    sample = _sample(
+        1,
+        funnel=_funnel(history=73, full_scored=46),
+        decision_status="not_ready",
+        quality_status="not_ready",
+        empty_reason=None,
+    )
+
+    findings = analyze_samples((sample,), strategies=(_STRATEGY,), consecutive_zero_threshold=3)
+
+    assert any(
+        finding.code == "global_history_gate_blocked_eligible_candidates"
+        and finding.evidence.get("full_scored") == 46
+        and finding.evidence.get("history") == 73
         for finding in findings
     )
 
@@ -324,11 +344,12 @@ def test_json_report_contains_only_aggregated_projection_data() -> None:
     rendered = str(report)
     assert "600000" not in rendered
     assert "items" not in rendered
-    assert report["schema_version"] == "web_recommendation_health_v2"
+    assert report["schema_version"] == "web_recommendation_health_v3"
     assert report["status"] == "passed"
     assert report["samples"][0]["market"]["history_warmup"]["planned_count"] == 20
     assert report["samples"][0]["market"]["history_warmup"]["batch_timeout_seconds"] == 20.0
     strategy = report["samples"][0]["strategies"][_STRATEGY]
+    assert strategy["history_required_sessions"] == 61
     assert strategy["supply_funnel"] == _funnel()
     assert strategy["population_filter_reason_counts"] == {"stale_quote": 5571}
     assert strategy["candidate_filter_reason_counts"] == {"history_too_short": 71}

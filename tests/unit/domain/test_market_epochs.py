@@ -508,7 +508,7 @@ def test_epoch_rejects_invalid_quote_and_research_event_time_ordering() -> None:
         )
 
 
-def test_daily_feature_pack_enforces_master_and_candidate_history_coverage() -> None:
+def test_daily_feature_pack_enforces_master_but_accepts_partial_candidate_history_coverage() -> None:
     with pytest.raises(ValueError, match="security-master coverage must be 100%"):
         DataPlaneCoverage(
             potential_executable_codes=("600001",),
@@ -517,27 +517,25 @@ def test_daily_feature_pack_enforces_master_and_candidate_history_coverage() -> 
             candidate_history_codes=(),
         )
 
-    candidates = tuple(f"600{index:03d}" for index in range(101))
-    with pytest.raises(ValueError, match="core-history coverage must be at least 99%"):
-        DataPlaneCoverage(
-            potential_executable_codes=(),
-            security_master_codes=(),
-            candidate_codes=candidates,
-            candidate_history_codes=candidates[:99],
-        )
+    partial = DataPlaneCoverage(
+        potential_executable_codes=("600001", "600002"),
+        security_master_codes=("600001", "600002"),
+        candidate_codes=("600001", "600002"),
+        candidate_history_codes=("600001",),
+    )
+    pack = DailyFeaturePack(
+        trade_date=date(2026, 7, 28),
+        sequence=1,
+        observed_at=OBSERVED_AT,
+        received_at=RECEIVED_AT,
+        config_version="runtime-v2",
+        calendar_version="calendar-v1",
+        rows=(_daily_row("600001"), _daily_row("600002", history_sessions=19)),
+        source_versions={"history": "v1"},
+        coverage=partial,
+    )
 
-    with pytest.raises(ValueError, match="at least 20 sessions"):
-        DailyFeaturePack(
-            trade_date=date(2026, 7, 28),
-            sequence=1,
-            observed_at=OBSERVED_AT,
-            received_at=RECEIVED_AT,
-            config_version="runtime-v2",
-            calendar_version="calendar-v1",
-            rows=(_daily_row(history_sessions=19),),
-            source_versions={"history": "v1"},
-            coverage=coverage(("600001",)),
-        )
+    assert pack.coverage.candidate_history_coverage == 0.5
 
 
 def test_projected_fields_require_matching_point_in_time_lineage() -> None:
