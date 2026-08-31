@@ -112,7 +112,7 @@ from trader.infra.settings import (
 )
 from trader.infra.tomorrow_production_model import load_packaged_tomorrow_production_model
 from trader.web import create_app
-from trader.web.route_services import UnifiedWebServices, WebApiConfig
+from trader.web.api.route_services import UnifiedWebServices, WebApiConfig
 
 
 @dataclass(frozen=True)

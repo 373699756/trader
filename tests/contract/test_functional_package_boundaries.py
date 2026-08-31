@@ -210,7 +210,7 @@ MIGRATION_LEDGER: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ),
 )
 
-COMPLETED_BATCHES = frozenset({"batch-2", "batch-3", "batch-4", "batch-5", "batch-6", "batch-7"})
+COMPLETED_BATCHES = frozenset({"batch-2", "batch-3", "batch-4", "batch-5", "batch-6", "batch-7", "batch-8"})
 
 TARGET_PACKAGES = (
     "domain/market",
@@ -533,4 +533,32 @@ def test_application_runtime_and_market_data_are_partitioned() -> None:
         for imported in _imports(path):
             if imported.startswith("trader.application.market_data"):
                 violations.append(f"{path.relative_to(SOURCE_ROOT)} -> {imported}")
+    assert violations == []
+
+
+def test_web_api_and_presentation_resources_are_partitioned() -> None:
+    web_root = SOURCE_ROOT / "web"
+    api_root = web_root / "api"
+    api_files = {
+        "decision_serializers.py",
+        "decision_sse.py",
+        "route_services.py",
+        "routes.py",
+    }
+
+    assert api_root.is_dir()
+    assert {path.name for path in api_root.glob("*.py")} >= api_files
+    assert not any((web_root / name).exists() for name in api_files | {"routes_v2.py"})
+    assert (web_root / "app.py").is_file()
+    assert (web_root / "static_assets.py").is_file()
+    assert (web_root / "templates").is_dir()
+    assert (web_root / "static").is_dir()
+
+    forbidden_imports = ("trader.infra", "trader.bootstrap", "trader.entrypoints")
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)} -> {imported}"
+        for path in api_root.rglob("*.py")
+        for imported in _imports(path)
+        if imported.startswith(forbidden_imports)
+    ]
     assert violations == []

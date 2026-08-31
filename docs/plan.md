@@ -643,7 +643,7 @@ make performance-check
 
 ## 批次 8：Web API 与展示包
 
-状态：`pending`
+状态：`completed`
 
 ### 目标
 
@@ -695,6 +695,14 @@ make package
 - 浏览器行为、release handshake 和四策略视图不变；
 - Web 不新增任何写路径或业务计算；
 - 所有旧导入路径删除。
+
+完成记录：请求校验、显式 JSON 投影、SSE 编码和注入的只读 Web 服务协议已统一迁移到
+`web/api`，`web/app.py` 只保留应用创建、release 资源快照和单一路由注册调用；原根级 API 模块及
+重复注册 facade 已物理删除，生产、入口、诊断和测试导入全部切换到唯一新路径。E8、app-factory、
+decision query/stream、功能包和架构契约、直接 Node 状态测试、Ruff、mypy、全量 pytest、打包及
+仓库外 wheel/CLI/资源验收通过。Chrome headless 三档桌面验收通过，无白屏、重叠、页面级横向溢出、
+浏览器错误或外网调用；Firefox SSE 重连、cursor resync 和 patch-to-paint 专项因本机缺少 geckodriver
+未执行，已作为精确未完成门禁记录，不宣称通过。
 
 建议提交：`refactor(web): isolate api and presentation adapters`
 

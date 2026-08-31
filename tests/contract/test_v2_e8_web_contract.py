@@ -19,7 +19,7 @@ from trader.domain.recommendation.decision_identity import (
 )
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 from trader.web import create_app
-from trader.web.route_services import UnifiedWebServices, WebApiConfig
+from trader.web.api.route_services import UnifiedWebServices, WebApiConfig
 from trader.web.static_assets import WEB_ASSET_REVISION
 
 NOW = datetime(2026, 8, 11, 10, 30, tzinfo=ZoneInfo("Asia/Shanghai"))

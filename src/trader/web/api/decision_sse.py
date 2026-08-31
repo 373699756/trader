@@ -15,7 +15,7 @@ from trader.application.decisions.decision_stream import (
     UnifiedPublishedEvent,
     UnifiedSubscription,
 )
-from trader.web.decision_serializers import serialize_event
+from trader.web.api.decision_serializers import serialize_event
 
 
 def decision_event_response(

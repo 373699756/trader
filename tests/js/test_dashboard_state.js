@@ -2,10 +2,10 @@
 
 const assert = require("assert");
 const fs = require("fs");
+const path = require("path");
 const vm = require("vm");
 
-const dashboardPath = process.argv[2];
-const path = require("path");
+const dashboardPath = process.argv[2] || path.join(__dirname, "../../src/trader/web/static/dashboard.js");
 const selectionPath = path.join(path.dirname(dashboardPath), "selection.js");
 const renderPath = path.join(path.dirname(dashboardPath), "render.js");
 const longGroupsPath = path.join(path.dirname(dashboardPath), "long_groups.js");

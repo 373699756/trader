@@ -7,14 +7,14 @@ from collections.abc import Mapping
 from datetime import date
 from functools import partial
 
-from flask import Blueprint, Response, jsonify, render_template, request
+from flask import Blueprint, Flask, Response, jsonify, render_template, request
 
 from trader.application.decisions.decision_queries import DecisionView
 from trader.application.decisions.decision_stream import UnifiedSubscriberLimitError
 from trader.domain.recommendation.models import Strategy
-from trader.web.decision_serializers import serialize_decision_view, serialize_error
-from trader.web.decision_sse import decision_event_response
-from trader.web.route_services import UnifiedWebServices
+from trader.web.api.decision_serializers import serialize_decision_view, serialize_error
+from trader.web.api.decision_sse import decision_event_response
+from trader.web.api.route_services import UnifiedWebServices
 from trader.web.static_assets import (
     DECISION_VIEW_SCHEMA_VERSION,
     STATUS_SCHEMA_VERSION,
@@ -41,7 +41,11 @@ _DEEPSEEK_ZERO_CALL_REASONS = frozenset(
 )
 
 
-def create_v2_blueprint(services: UnifiedWebServices | None) -> Blueprint:
+def register_routes(app: Flask, services: UnifiedWebServices | None) -> None:
+    app.register_blueprint(_create_v2_blueprint(services))
+
+
+def _create_v2_blueprint(services: UnifiedWebServices | None) -> Blueprint:
     blueprint = Blueprint("v2_product", __name__)
     blueprint.add_url_rule("/", "root", partial(_root, services))
     blueprint.add_url_rule(
@@ -567,4 +571,4 @@ def _error(code: str, message: str, status_code: int) -> tuple[Response, int]:
     return jsonify(serialize_error(code, message)), status_code
 
 
-__all__ = ["create_v2_blueprint"]
+__all__ = ["register_routes"]

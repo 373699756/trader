@@ -58,7 +58,7 @@ from trader.infra.settings import load_runtime_settings, load_strategy_settings
 from trader.infra.settings.models import PerformanceBudgetSettings
 from trader.infra.tomorrow_production_model import load_packaged_tomorrow_production_model
 from trader.web import create_app
-from trader.web.route_services import UnifiedWebServices
+from trader.web.api.route_services import UnifiedWebServices
 
 
 @dataclass(frozen=True)
@@ -317,10 +317,10 @@ def _operations(
         "quote_to_draft": "trader.application.recommendation.scored_v2_projection.build_scored_v2_local",
         "deepseek_to_hybrid": "trader.application.recommendation.scored_v2_projection.build_scored_v2_hybrid",
         "sse_publish": "trader.application.decisions.decision_stream.UnifiedDecisionEventStream.publish_committed",
-        "snapshot_api": "trader.web.routes_v2._current",
-        "etag_api": "trader.web.routes_v2._current",
-        "dates_api": "trader.web.routes_v2._dates",
-        "status_api": "trader.web.routes_v2._status",
+        "snapshot_api": "trader.web.api.routes._current",
+        "etag_api": "trader.web.api.routes._current",
+        "dates_api": "trader.web.api.routes._dates",
+        "status_api": "trader.web.api.routes._status",
     }
     return operations, provenance
 

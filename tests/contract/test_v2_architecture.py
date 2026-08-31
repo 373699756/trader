@@ -125,9 +125,14 @@ def test_old_production_chain_has_no_active_files() -> None:
 
 def test_active_web_surface_and_fixed_long_tabs_are_v2_only() -> None:
     web = SOURCE_ROOT / "web"
-    assert {"routes.py", "routes_v2.py", "decision_serializers.py", "decision_sse.py"} <= {
-        path.name for path in web.glob("*.py")
+    api = web / "api"
+    assert {"routes.py", "route_services.py", "decision_serializers.py", "decision_sse.py"} <= {
+        path.name for path in api.glob("*.py")
     }
+    assert not any(
+        (web / name).exists()
+        for name in ("routes.py", "routes_v2.py", "route_services.py", "decision_serializers.py", "decision_sse.py")
+    )
     dashboard = (web / "static/dashboard.js").read_text(encoding="utf-8")
     groups = (web / "static/long_groups.js").read_text(encoding="utf-8")
     assert "/api/v2/decisions/" in dashboard

@@ -48,7 +48,7 @@ from trader.infra.deepseek.schema import (
 from trader.infra.failures import AdapterFailureCode
 from trader.infra.settings import DeepSeekSettings
 from trader.web import create_app
-from trader.web.route_services import UnifiedWebServices
+from trader.web.api.route_services import UnifiedWebServices
 
 NOW = datetime(2026, 7, 16, 6, 30, tzinfo=timezone.utc)
 

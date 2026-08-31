@@ -41,7 +41,7 @@ from trader.domain.recommendation.decision_identity import (  # noqa: E402
 )
 from trader.domain.recommendation.models import RecommendationAction, Strategy  # noqa: E402
 from trader.web import create_app  # noqa: E402
-from trader.web.route_services import UnifiedWebServices  # noqa: E402
+from trader.web.api.route_services import UnifiedWebServices  # noqa: E402
 from trader.web.static_assets import WEB_ASSET_REVISION  # noqa: E402
 
 VIEWPORTS = ((1280, 720), (1440, 900), (1920, 1080))

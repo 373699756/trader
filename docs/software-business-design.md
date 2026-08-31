@@ -625,7 +625,9 @@ web/api
   `Mapping[str, object]` 或共享可变字典穿越新的应用公共边界。
 - `infra`：配置、行情、交易日历、DeepSeek、缓存、SQLite、文件和外部适配器；编排门面只
   持有显式有类型组件，不通过 mixin、多继承、共享状态基类或 `Any` 属性取得能力。
-- `web`：请求校验、序列化、SSE 和静态资源；只能调用应用层只读用例。
+- `web`：`web/api` 唯一拥有请求校验、显式 JSON 投影、SSE 响应和注入的只读服务协议；
+  `web/app.py` 只创建 Flask 应用、形成 release 资源快照并调用单一 blueprint 注册入口，模板、静态资源和
+  `static_assets.py` 留在展示边界。Web 只能调用应用层只读用例，不保留根级 API 转发模块或重复路由入口。
 - `entrypoints`：参数、进程生命周期和退出码。
 - `bootstrap.py`：唯一组合根，显式创建客户端并注入依赖；禁止全局服务定位器。
 

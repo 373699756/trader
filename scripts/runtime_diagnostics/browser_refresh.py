@@ -65,7 +65,7 @@ from trader.domain.recommendation.decision_identity import (  # noqa: E402
 from trader.domain.recommendation.models import RecommendationAction, Strategy  # noqa: E402
 from trader.infra.settings import load_runtime_settings  # noqa: E402
 from trader.web import create_app  # noqa: E402
-from trader.web.route_services import UnifiedWebServices, WebApiConfig  # noqa: E402
+from trader.web.api.route_services import UnifiedWebServices, WebApiConfig  # noqa: E402
 
 
 class _QuietRequestHandler(WSGIRequestHandler):

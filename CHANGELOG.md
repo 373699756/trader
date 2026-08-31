@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户继续执行 `docs/plan.md` 的下一完整未完成章节，要求把 HTTP/API/SSE 与页面资源形成专业、可审查的
+  包边界。新增 `web/api` 局部所有权说明、迁移清单和架构契约，固定该包唯一拥有请求校验、显式 JSON
+  投影、SSE 编码与注入的只读 Web 服务协议，并禁止反向导入基础设施、入口或组合根。
+  `Regression-Key: functional-package-web-api-v1`。
+
 - 用户要求整个工程移除含义模糊的旧英文术语，并为不同职责采用专业名称。新增 tracked 仓库契约，
   大小写不敏感检查所有 Git 路径与可解码内容，防止模块、符号、测试、文档、仓库技能或历史记录再次
   引入该词；测试自身通过分段构造检查目标，不形成自我豁免。
@@ -524,6 +529,13 @@ All notable changes to this project are documented here.
   前向封存状态、第二轮权重收缩和 `PromotionDossier` 人工晋级边界。
 
 ### Changed
+
+- 确认根因是路由、serializer、SSE 响应和 Web 服务协议仍平铺在 `web` 根目录，且 blueprint 组合另有一个
+  根级 facade，API 所有权与模板/静态资源展示边界混杂。本批将四个 API 模块统一迁移到 `web/api`，
+  blueprint 创建收为包内私有实现，`register_routes()` 成为唯一注册入口；`web/app.py` 继续只负责应用
+  创建、release 快照和一次注册调用。URL、schema、ETag、SSE cursor、四策略视图、release identity、
+  评分、冻结、供应商、DeepSeek 和持久化行为保持不变。
+  `Regression-Key: functional-package-web-api-v1`。
 
 - 确认根因是同一个笼统名称同时指代 latest-wins 单运行/单等待队列、进程资源启停编排和 cadence 固定
   调度点状态，职责边界不清。队列模块统一为 `latest_wins.py`，进程资源模块统一为
@@ -1079,6 +1091,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复计划中直接执行 `node --test tests/js/test_dashboard_state.js` 时未提供显式资源路径便无法读取
+  dashboard 脚本的问题；测试现在默认解析仓库内正式静态资源，同时保留包装器传入 wheel/临时资源路径
+  的能力。生产 JavaScript、路由响应和浏览器行为未改变。
+
 - 修复运行时代码、测试、功能包迁移清单、Web release handshake 与诊断 fixture 对旧模块/字段名称的耦合；
   wheel 现在只打包职责明确的两个新运行时模块，应用工厂仍保持无线程、无网络、无数据库和无文件写入
   副作用，调度、冻结、评分、DeepSeek、持久化及供应商行为均未改变。
@@ -1516,6 +1532,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 物理删除 `web` 根级 `routes.py`、`routes_v2.py`、`route_services.py`、`decision_serializers.py` 和
+  `decision_sse.py` 旧路径；未保留转发模块、兼容别名、重复 blueprint 注册、双 serializer 或隐藏
+  fallback。
+
 - 物理移除两个旧运行时模块文件名、对应单元测试文件名、旧类/方法/字段符号以及 schedule point 旧 JSON
   字段；未保留兼容模块、别名、双 JSON 字段、反射 fallback 或历史文本例外，Git 历史不改写。
 
@@ -1707,6 +1727,15 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- Batch 8 定向 Web/架构/应用回归通过：E8、app-factory、decision query/stream、DeepSeek Web 组件、
+  功能包和架构契约全部通过，`node --test tests/js/test_dashboard_state.js` 直接命令通过；
+  `make format-check`、`make lint`（严格重构债务 0）、`make type-check`（285 个源文件）、`make test`
+  （pytest 100%）和 `make package` 全部通过。
+- 最终 wheel 在仓库外临时 target 安装并从安装路径导入 `trader.web.api` 四个模块，实际执行
+  `trader-cli --help` 和绝对路径 `validate-config`，模板、CSS、JavaScript 与两个 SVG 资源均可读。
+  Chrome headless 的 1280x720、1440x900、1920x1080 三档桌面验收 `passed=true`：尺寸精确、无白屏、
+  页面级横向溢出、Long 区域重叠或浏览器错误，API/SSE、观察池、错误抽屉和四策略视图正常，外网调用 0。
 
 - 本批定向 cadence/latest-wins/runtime/schedule/workers、调度集成、bootstrap/app-factory、架构、功能包、
   E3/E8 Web 与诊断契约共 154 项通过；`make format-check`、`make lint`（严格重构债务 0）、
@@ -2674,6 +2703,12 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 统一 `browser` profile 在运行行为断言前因本机未安装 geckodriver，以
+  `Firefox and geckodriver are required` 退出；因此 Firefox 下的 SSE 重连、cursor resync 和
+  patch-to-paint 专项仍是精确未验证门禁，不宣称通过。直接 JS 状态回归、SSE/HTTP 契约和 Chrome 三档
+  端到端证据均已通过；本批未改变静态资源、SSE 算法、供应商 I/O、评分、冻结或持久化，当前无已知
+  实现缺陷。
 
 - `v2_status_v10` 对 schedule point 字段是有意的破坏性 schema 更新；旧页面或外部读取方必须随 v11 资源
   正常重启/刷新，不提供兼容字段。真实供应商、DeepSeek 配额和五时段现场行情未调用，因为本批不改变

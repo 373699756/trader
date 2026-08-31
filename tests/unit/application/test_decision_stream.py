@@ -12,7 +12,7 @@ from trader.domain.recommendation.decision_identity import (
     ScoredDecision,
 )
 from trader.domain.recommendation.models import RecommendationAction, Strategy
-from trader.web.decision_serializers import serialize_event
+from trader.web.api.decision_serializers import serialize_event
 
 NOW = datetime(2026, 8, 11, 10, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
