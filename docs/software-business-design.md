@@ -1387,11 +1387,14 @@ cadence 最短间隔/下一到期时间/固定时点生命周期、冻结完成/
 逻辑字节、RSS/USS、Python traced、Polars 估算和瞬时峰值原因由发布性能 runner 及验收报告提供。
 状态顶层必须返回当前有效配置/策略组合的 `runtime_version`，并原样投影脱敏的 `scheduler`
 摘要，以便区分旧常驻进程、刷新失败和决策构建失败；源码文件发生变化不会热加载到既有进程。
-`/api/v2/status` 的公开 schema 为 `v2_status_v8`，并必须从当前进程已导入的常量加法返回
+`/api/v2/status` 的公开 schema 为 `v2_status_v9`，并必须从当前进程已导入的常量加法返回
 `release.decision_view_schema` 与 `release.web_asset_revision`。浏览器必须同时校验 status release
 身份和每份 DecisionView schema；任何缺失或不一致都属于 `release_contract_mismatch`，页面必须
 停止把结果解释为行情采集或观察草稿生成，明确提示正常重启旧服务。该握手只判断进程/资源契约
 一致性，不得根据工作树、Git、文件时间或 HTTP 成功状态推断运行版本。
+`v2_status_v9.tomorrow_profile_comparison` 只投影后台更新的类型化内存快照：规范 hash、临时/正式 manifest、
+全候选配对与 T+1 完成数、有效日期、522 日功效门槛、最少 300 条配对、终态及无生产/自动切换权限；
+HTTP 不读取研究 SQLite。显式 `research-status` 才允许以只读方式检查持久化快照，缺库时不得创建目录。
 Web 应用工厂创建应用时必须把模板和全部打包静态资源读入该进程的只读 release 快照，后续 HTTP
 不得再次从工作树读取这些文件；源码更新只能在正常重启后整体生效。静态资源仍使用内容 ETag、
 `no-cache` 和 `nosniff`，未知资源返回 404，且该快照过程不得写文件、启动线程、访问数据库或网络。
@@ -1461,7 +1464,7 @@ python3 -m venv .venv
 | 日常 | `./run.sh --profile v2` | 以显式 V2 启动；也可把 `--profile v1|v2` 追加到其他公开命令 |
 | 日常 | `./run.sh check` | 依次校验配置、只读投影研究状态并运行所选档位的离线性能门禁 |
 | 离线研究 | `./run.sh research-history [--workers 1..5]` | 下载/断点续传独立历史日线归档，然后只读运行固定训练/验证回测 |
-| 离线研究 | `./run.sh research-screen` | 依次运行 R6 历史、R6 日线、R6 稳定性和 Tomorrow P2 四项不可变筛选/诊断 |
+| 离线研究 | `./run.sh research-screen` | 依次运行 R6 历史、R6 日线、R6 稳定性、Tomorrow P2 和 V1/V2 H0 留出五项不可变筛选/诊断 |
 | 离线研究 | `./run.sh research-r7-dossier --research-identity <ID>` | 为具备资格的 R6 前向身份生成待人工审查档案 |
 
 三个组合命令由 `trader-cli` 单一编排器拥有顺序，Linux/macOS 与 PowerShell 不复制业务流程。普通阶段
@@ -1644,7 +1647,7 @@ outcome 库存在时同时报告基准、全部 outcome、完整 outcome 和最�
 计划交易日固定为 2026-10-26 至 2026-11-20，失败日不得回退、顺延或替换。纯领域 research spec
 生成规范 SHA-256；R2、R3、R4、R5 及前向证据逐级绑定 identity/spec hash，新身份前向文件使用独立
 命名空间，并显式使用各研究载荷的 v2 schema，旧 v1 证据不迁移、不覆盖。`research-status` 的
-`v2_research_readiness_v4` 除活动窗口已记录日期数和旧身份 `historical_rejected` 外，还必须按
+`v2_research_readiness_v5` 除活动窗口已记录日期数和旧身份 `historical_rejected` 外，还必须按
 `Asia/Shanghai` 带时区时钟和 14:50 观察截止显式报告已经过去且没有证据的固定计划日、窗口最大可达
 日期数、下一计划日、`complete` 和 `recoverable`。当天在 14:50 前、未来日期不得提前计为缺失；覆盖
 只接纳计划日 14:50 或更早的首个 committed observation，截止后迟到记录仍保留在档案列表但不能恢复
@@ -1737,7 +1740,7 @@ P2-1 通过 `research-screen` 组合中的底层 `research-tomorrow-p2-screen` �
 SQLite，计算已封存版本的日线
 特征、单次 ridge/单线程 LightGBM 训练和正式验证；训练段内部时间留出负责早停，正式验证段不参与拟合。
 终态报告与模型分别写入 `runtime_dir/score-tomorrow-p2/score_tomorrow_historical_p2_v1`，采用原子、
-幂等、防篡改封存。`research-status` 的 `v2_research_readiness_v4.tomorrow_p2` 只投影报告哈希、终态、
+幂等、防篡改封存。`research-status` 的 `v2_research_readiness_v5.tomorrow_p2` 只投影报告哈希、终态、
 固定候选、失败原因和能否另立前向预注册；读取不存在状态不得创建目录。
 
 该离线链不启动供应商网络、生产数据库、线程、DeepSeek、调度、冻结、HTTP、API 或 Web，也不写活动
@@ -1756,8 +1759,10 @@ SQLite，计算已封存版本的日线
 `v1` 加载独立包内 `v1_manual_residual_momentum_v1` 线性 proxy 及规范化内容身份 SHA-256
 `4291ea514c233a14ab6f9262e72ea541d1e9a794e73d02f10f8220509f6f502b`；它绑定 H0 规范/manifest、
 1,765,685 个训练行和 `h0_board_amount_residual_momentum_proxy_v1`，状态必须公开原 P1 唯一工件不存在，
-不得登记为原 P1 研究通过。`v2` 继续加载既有 ridge/LightGBM 工件。组合根只装配所选单实例，创建 App
-仍无线程、无网络、无数据库和无文件写入；资源缺失、篡改或输入宽度不符时启动失败关闭。
+不得登记为原 P1 研究通过。`v2` 继续加载既有 ridge/LightGBM 工件。组合根只把所选单实例装配进活动
+决策链，同时把两套封存评分器隔离装配进异步研究消费者；研究评分器无 DeepSeek、动作、冻结、配置或
+活动状态写权限。创建 App 仍无线程、无网络、无数据库和无文件写入；资源缺失、篡改或输入宽度不符时
+启动失败关闭。
 
 切换改变策略内容哈希和新决策的 `input_versions.score_model`，不得覆盖既有冻结记录，也不得在进程内
 热切换。Today、D25、Long、固定融合、风险、门槛、Top6、DeepSeek、冻结和后台 T+1 结算不变。状态/API
@@ -1765,19 +1770,36 @@ SQLite，计算已封存版本的日线
 运行时仍显示 V2 标签。包内 V1 参数可由 `scripts/package_tomorrow_v1_model.py --output <path>` 从 H0
 只读、流式、确定性重建；脚本不访问网络、不修改运行配置，也不输出股票明细。
 
-收益比较不复用活动档位单边 T+1 结果直接下结论：当前只结算活动档位正式入选股票，未活动档位没有同批
-预测和未入选样本，因此存在选择偏差。后续工程必须另立无生产写权限的配对影子比较器，在同日、同股、
-同一冻结输入上同时计算 V1/V2，保存预测、入选状态、成本与随后 T+1 标签；它不得增加 DeepSeek 请求、
-修改当前分数或阻塞冻结，并且不得自动切换活动档位。比较规范必须在首个标签可见前冻结成本、换手、严重亏损、
-Rank IC、分组单调性、集中度、配对统计和停止条件，输出人工审查档案；任何默认档位变化仍是独立高风险
-发布批次。该配对影子比较器及其持久化、状态和运行验收当前尚未实现，完成顺序以荐股策略文档第
-15.1.19 节为准。当前 V1 历史留出、比较器工程和全候选配对采集不等待固定 20 个未来交易日；首个合法
-预测在下一交易日即可补 T+1 标签，正式推荐为 0 时仍保存全部共同可评分候选的预测、成本、排名和标签。
-生产切换所需独立日期数由首个标签可见前冻结的统计功效规范决定，不能把同日多股当作多个独立交易日，
-也不能让未来标签反向参与当天评分。
+收益比较不复用活动档位单边 T+1 结果直接下结论：该结果只覆盖活动档位正式入选股票，未活动档位与未入选
+样本缺失，存在选择偏差。现已实现无生产写权限的异步配对比较器，它消费已经构造的同一
+`TomorrowNativeInput`，同时计算封存 V1/V2，并以 `native input_version` 幂等保存全部共同可评分候选的
+预测、信号分、本地风险后分数、成本、排名和入选状态；正式推荐为 0 也保存整批。研究链固定
+`deepseek_request_delta=0`，失败不阻塞活动发布、DeepSeek 或冻结，也不修改当前分数。
+
+独立 SQLite `research/tomorrow-profile-comparison.sqlite3` 保存首个标签前冻结的
+`tomorrow_v1_v2_paired_forward_v1`、临时输入 manifest、正式绑定、T+1 标签和终态报告。15:00 后后台
+只接受正式 Tomorrow 记录 `input_versions.native` 的精确匹配；绑定后清理同日其它临时 manifest，正式
+manifest、标签和报告保持不可变。T+1 复用无未来数据的日线、市场等权基准、20bp 及
+`MAE/ATR20 <= -1.5`；缺 ATR 的可评分候选仍保留预测并明确结算为数据不足，不得拖垮整批。运行 status
+读取后台更新的内存快照，HTTP 不访问数据库；`research-status` 和
+`research-tomorrow-profile-report` 是显式只读诊断。
+
+同口径 H0 留出工件 `tomorrow_v1_v2_h0_holdout_report_v2` 固定 139 日、687,321 条配对，报告 hash
+`47e2b9bfd4d404521f8251e2e51c491aa96c1bc0d8423dea95e63320daa6e3bf`；V1 的 20bp 平均日净增量
+`-0.250480%`、bootstrap 下界 `-0.813048%`，未取得晋级证据。H0 日级 V2−V1 样本标准差 `3.831660%`；
+功效规范为配合 5 日区块，固定采用 Bartlett 权重、lag 4 的 Newey–West 长期标准差 `4.074760%`，再按
+50bp 最小经济差异、双侧 5% 显著性和 80% 功效预注册为 522 个有效交易日；每个有效日必须完成全部共同
+候选结算且至少含 300 条 `complete` 配对，而不是任意
+20 日。达到功效后只运行一次三档成本、严重亏损、换手、集中度、Rank IC、Q5-Q1 和 5 日/10,000 次配对
+区块 bootstrap 门禁，封存 `review_ready` 或 `rejected` 人工档案；二者均
+`production_authority=false`、`automatic_profile_switch=false`。V2 风险概率 challenger 也已冻结标签、
+60 日训练、20 日 Platt 校准、40 日独立检验和 Brier/ECE 门禁，但证据未到前不拟合，Web 继续
+`loss_probability_status=not_modeled`。后台不得自动切换活动档位；任何默认档位变化仍是另一个高风险
+发布批次。
 
 该 release 不等待 20 个未来日才运行。生产调度照常在交易日 14:50 冻结，15:00 后既有后台 outcome
-结算自动采集已冻结 Tomorrow 项的 T+1 净超额、MAE/ATR20 和严重回撤，写入独立研究库；HTTP 不触发
+结算自动采集已冻结 Tomorrow 项及正式绑定全候选配对的 T+1 净超额、MAE/ATR20 和严重回撤，写入各自
+独立研究库；HTTP 不触发
 采集或写入。状态 API 公开模型 ID/hash、`manual_user_override`、原历史失败原因、
 `automatic_t1_outcome_settlement`、`automatic_model_update=false` 和亏损概率未建模状态。后台只更新
 证据与监控，不自动改变模型、权重、门槛、当前/冻结记录或回滚版本。

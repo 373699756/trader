@@ -117,7 +117,7 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert "./run.sh check                   依次校验配置、研究状态和性能门禁" in completed.stdout
     assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
     assert "./run.sh research-history        下载/续传历史归档后运行固定回测" in completed.stdout
-    assert "./run.sh research-screen         依次运行并封存四项历史筛选/诊断" in completed.stdout
+    assert "./run.sh research-screen         依次运行并封存五项历史筛选/诊断" in completed.stdout
     assert "research-r7-dossier --research-identity <ID>" in completed.stdout
     assert "所有命令都可追加 --profile v1|v2；未指定时为 V1" in completed.stdout
     assert "用法: ./run.sh [serve|" not in completed.stdout
@@ -286,6 +286,7 @@ def test_run_script_preserves_offline_research_argument_forwarding(tmp_path: Pat
                 "research-r6-daily-screen",
                 "research-r6-stability-screen",
                 "research-tomorrow-p2-screen",
+                "research-tomorrow-v1-v2-holdout",
             ),
         ),
     ),
@@ -339,7 +340,7 @@ def test_research_screen_group_runs_every_stage_against_an_isolated_empty_archiv
     assert main(["--config", str(config), "--profile", "v1", "research-screen"]) == 1
 
     payloads = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    assert len(payloads) == 5
+    assert len(payloads) == 6
     assert payloads[-1]["command"] == "research-screen"
     assert payloads[-1]["profile"] == "v1"
     assert [item["command"] for item in payloads[-1]["stages"]] == [
@@ -347,8 +348,27 @@ def test_research_screen_group_runs_every_stage_against_an_isolated_empty_archiv
         "research-r6-daily-screen",
         "research-r6-stability-screen",
         "research-tomorrow-p2-screen",
+        "research-tomorrow-v1-v2-holdout",
     ]
     assert all(item["exit_code"] == 1 for item in payloads[-1]["stages"])
+
+
+def test_tomorrow_profile_report_is_read_only_when_evidence_is_missing(tmp_path: Path, capsys) -> None:
+    runtime = json.loads((ROOT / "config/v2/runtime.json").read_text(encoding="utf-8"))
+    runtime_dir = tmp_path / "runtime"
+    runtime["runtime_dir"] = str(runtime_dir)
+    runtime["strategy_config"] = str(ROOT / "config/v2/strategy.json")
+    runtime["long_watchlist"] = str(ROOT / "config/v2/long_watchlist.json")
+    config = tmp_path / "runtime.json"
+    config.write_text(json.dumps(runtime), encoding="utf-8")
+
+    assert main(["--config", str(config), "research-tomorrow-profile-report"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["initialized"] is False
+    assert payload["state"] == "collecting"
+    assert payload["required_independent_days"] == 522
+    assert not runtime_dir.exists()
 
 
 def test_powershell_help_uses_the_same_command_groups() -> None:
@@ -406,7 +426,7 @@ def test_research_status_does_not_create_runtime_files(tmp_path: Path, capsys, m
     assert payload["blockers"] == ["score_h0_archive_coverage_incomplete"]
     assert payload["promotion_blockers"] == ["score_r6_preregistered_forward_evidence_missing"]
     assert payload["score_r7"] == {"dossier_count": 0, "dossiers": []}
-    assert payload["schema_version"] == "v2_research_readiness_v4"
+    assert payload["schema_version"] == "v2_research_readiness_v5"
     assert payload["research_state"] == "historical_collecting"
     assert payload["active_research"]["research_identity"] == "score_p0_v2"
     assert payload["active_research"]["historical_window"] == {
@@ -464,7 +484,7 @@ def test_research_status_reports_irrecoverable_missed_fixed_dates(tmp_path: Path
     assert main(["--config", str(config), "research-status"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["schema_version"] == "v2_research_readiness_v4"
+    assert payload["schema_version"] == "v2_research_readiness_v5"
     assert payload["research_state"] == "historical_collection_failed"
     assert payload["active_research"]["evaluation_blocker"] == "score_p0_v2_historical_planned_dates_missed"
     assert payload["active_research"]["historical_window"] == {

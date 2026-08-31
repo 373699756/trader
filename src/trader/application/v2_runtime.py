@@ -828,7 +828,12 @@ class V2SchedulerRuntime:
             except (RuntimeError, TypeError, ValueError) as exc:
                 self._record_failure("observer", f"research_audit:{type(exc).__name__}", strategy)
                 audit = None
-            observation = V2DecisionObservation(event, audit)
+            try:
+                profile_input = self._dependencies.decisions.tomorrow_profile_research_input(event.decision_version)
+            except (RuntimeError, TypeError, ValueError) as exc:
+                self._record_failure("observer", f"profile_comparison_input:{type(exc).__name__}", strategy)
+                profile_input = None
+            observation = V2DecisionObservation(event, audit, profile_input)
         if observation is not None and not self._dependencies.observer.offer(observation):
             with self._lock:
                 self._observer_rejection_count += 1

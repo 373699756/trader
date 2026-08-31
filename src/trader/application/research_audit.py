@@ -8,7 +8,7 @@ import math
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from trader.application.decision_events import V2DecisionCommitted
 from trader.application.scored_v2_projection import ScoredV2LocalProjection
@@ -16,6 +16,9 @@ from trader.domain.recommendation.decision_identity import ScoredDecision
 from trader.domain.recommendation.scored_fusion import ScoredDecisionEntry
 from trader.domain.recommendation.scored_selection import ScoredDisposition
 from trader.domain.recommendation.scoring import candidate_fields
+
+if TYPE_CHECKING:
+    from trader.application.tomorrow_profile_comparison import TomorrowProfileResearchInput
 
 LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION = "v2_committed_research_audit_v1"
 RESEARCH_AUDIT_SCHEMA_VERSION = "v2_committed_research_audit_v2"
@@ -39,6 +42,7 @@ _STRUCTURED_RISK_FIELDS = (
 class V2DecisionObservation:
     event: V2DecisionCommitted
     research_audit: V2CommittedResearchAudit | None
+    tomorrow_profile_input: TomorrowProfileResearchInput | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         audit = self.research_audit
@@ -46,6 +50,13 @@ class V2DecisionObservation:
             audit.decision_version != self.event.decision_version or audit.decision_hash != self.event.decision_hash
         ):
             raise ValueError("research audit must match committed decision identity")
+        comparison = self.tomorrow_profile_input
+        if comparison is not None and (
+            self.event.strategy.value != "tomorrow"
+            or comparison.source_decision_version != self.event.decision_version
+            or comparison.source_decision_hash != self.event.decision_hash
+        ):
+            raise ValueError("Tomorrow profile input must match committed decision identity")
 
 
 @dataclass(frozen=True)

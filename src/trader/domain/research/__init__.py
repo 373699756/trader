@@ -49,6 +49,13 @@ from trader.domain.research.tomorrow_historical_p2 import (
     TOMORROW_HISTORICAL_P2_SPEC,
     TomorrowHistoricalP2Spec,
 )
+from trader.domain.research.tomorrow_profile_comparison import (
+    TOMORROW_PROFILE_COMPARISON_SPEC,
+    TOMORROW_V2_RISK_CHALLENGER_SPEC,
+    TomorrowProfileComparisonSpec,
+    TomorrowV2RiskChallengerSpec,
+    newey_west_long_run_std,
+)
 from trader.domain.research.tomorrow_shadow_preregistration import (
     TOMORROW_SHADOW_CHALLENGER_FAMILY,
     TOMORROW_SHADOW_P1_SPEC,
@@ -76,10 +83,15 @@ __all__ = [
     "TOMORROW_SHADOW_P1_SPEC",
     "TOMORROW_HISTORICAL_P2_CANDIDATE_ID",
     "TOMORROW_HISTORICAL_P2_SPEC",
+    "TOMORROW_PROFILE_COMPARISON_SPEC",
+    "TOMORROW_V2_RISK_CHALLENGER_SPEC",
     "ScoreResearchSpec",
     "TomorrowShadowCalendarAttestation",
     "TomorrowShadowPreregistration",
     "TomorrowHistoricalP2Spec",
+    "TomorrowProfileComparisonSpec",
+    "TomorrowV2RiskChallengerSpec",
+    "newey_west_long_run_std",
     "ScoreComponent",
     "coverage_shrunk_score",
     "assess_continuous_entry",

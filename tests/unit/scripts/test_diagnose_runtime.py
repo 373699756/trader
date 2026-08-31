@@ -117,7 +117,7 @@ def test_research_status_projection_uses_authoritative_active_window_and_reports
                 0,
                 4.0,
                 {
-                    "schema_version": "v2_research_readiness_v4",
+                    "schema_version": "v2_research_readiness_v5",
                     "research_state": "historical_collection_failed",
                     "recorded_trade_dates": ["2026-08-21", "2026-08-20"],
                     "active_research": {

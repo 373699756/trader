@@ -201,6 +201,23 @@ def test_identity_and_audit_payloads_have_one_explicit_field_projection() -> Non
     assert ".__dict__" not in columnar
 
 
+def test_tomorrow_profile_serializers_use_explicit_public_field_whitelists() -> None:
+    paths = (
+        SOURCE_ROOT / "infra/persistence/tomorrow_profile_comparison_codec.py",
+        SOURCE_ROOT / "infra/research/tomorrow_profile_holdout_artifacts.py",
+    )
+    violations: list[str] = []
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in {"asdict", "__dict__"}:
+                violations.append(f"{path.relative_to(SOURCE_ROOT)}:{node.lineno}: automatic field projection")
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "vars":
+                violations.append(f"{path.relative_to(SOURCE_ROOT)}:{node.lineno}: automatic field projection")
+
+    assert violations == []
+
+
 def test_runtime_responsibilities_remain_split_by_resource_boundary() -> None:
     input_runtime = (SOURCE_ROOT / "application/v2_input_runtime.py").read_text(encoding="utf-8")
     decision_adapters = (SOURCE_ROOT / "application/v2_decision_adapters.py").read_text(encoding="utf-8")

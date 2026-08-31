@@ -16,6 +16,7 @@ from trader.application.v2_research_runtime import V2ResearchRuntime
 from trader.bootstrap import (
     _initialize_reference_data_plane,
     _initialize_research_trace,
+    _initialize_tomorrow_profile_evidence,
     build_system,
 )
 from trader.bootstrap_status import input_quality_payload, runtime_status
@@ -74,6 +75,12 @@ def test_build_system_is_lazy_and_v2_only(tmp_path, monkeypatch) -> None:
     assert status.get_json()["tomorrow_model"]["activation_basis"] == "manual_user_override"
     assert status.get_json()["tomorrow_model"]["monitoring_mode"] == "automatic_t1_outcome_settlement"
     assert status.get_json()["tomorrow_model"]["automatic_model_update"] is False
+    comparison = status.get_json()["tomorrow_profile_comparison"]
+    assert comparison["initialized"] is False
+    assert comparison["required_independent_days"] == 522
+    assert comparison["state"] == "collecting"
+    assert comparison["production_authority"] is False
+    assert comparison["automatic_profile_switch"] is False
     page = system.app.test_client().get("/").get_data(as_text=True)
     assert 'name="trader-web-snapshot-retention-ms"' in page
     assert 'content="35000"' in page
@@ -148,6 +155,18 @@ def test_research_trace_initialization_is_fail_open() -> None:
     _initialize_research_trace(trace)
 
     trace.initialize.assert_called_once_with()
+
+
+def test_tomorrow_profile_evidence_initialization_is_fail_open() -> None:
+    from unittest.mock import Mock
+
+    evidence = Mock()
+    evidence.initialize.side_effect = sqlite3.OperationalError("research database unavailable")
+
+    _initialize_tomorrow_profile_evidence(evidence)
+
+    evidence.initialize.assert_called_once_with()
+    evidence.mark_unavailable.assert_called_once_with("OperationalError")
 
 
 def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> None:

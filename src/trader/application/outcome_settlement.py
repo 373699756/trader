@@ -6,7 +6,7 @@ import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from trader.application.ports.market import OutcomePriceReaderPort
 from trader.application.ports.outcomes import OutcomeTargetReaderPort, OutcomeWriterPort
@@ -16,6 +16,9 @@ from trader.domain.market.models import FeatureSnapshot
 from trader.domain.outcome.evaluation import OutcomeEvaluationRequest, evaluate_outcome
 from trader.domain.outcome.models import BenchmarkReturn
 from trader.domain.recommendation.models import Strategy
+
+if TYPE_CHECKING:
+    from trader.application.tomorrow_profile_settlement import TomorrowProfileSettlementService
 
 
 class OutcomeSettlementMarketData(OutcomePriceReaderPort, Protocol):
@@ -123,13 +126,17 @@ class V2OutcomeSettlementAdapter(V2SettlementPort):
         self,
         market_data: OutcomeSettlementMarketData,
         service: OutcomeSettlementService,
+        tomorrow_profiles: TomorrowProfileSettlementService | None = None,
     ) -> None:
         self._market_data = market_data
         self._service = service
+        self._tomorrow_profiles = tomorrow_profiles
 
     def settle(self, at: datetime) -> None:
         features = self._market_data.fetch_market_features(at, force=True)
         self._service.settle(at, features)
+        if self._tomorrow_profiles is not None:
+            self._tomorrow_profiles.settle(at, features)
 
 
 def _horizons(strategy: Strategy) -> tuple[int, ...]:

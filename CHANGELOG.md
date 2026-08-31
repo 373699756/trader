@@ -6,6 +6,15 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户追问上个详细计划及重新 Review 的问题是否全部修复，并指出“每天推荐 0 只却要求先等 20 日数据”
+  不能产生有效分析证据。确认根因是既有 outcome 只结算活动档位已入选股票，未保存未入选候选或另一
+  profile 的同输入预测，固定等待天数既不能补齐选择偏差，也不该阻塞当天评分。新增
+  `tomorrow_v1_v2_paired_forward_v1`：异步消费同一 `TomorrowNativeInput`，V1/V2 都对全部共同可评分
+  候选生成预测、成本、分数、排名和选择状态；0 只正式推荐仍保存配对。正式记录只按
+  `input_versions.native` 精确绑定，T+1 后按市场等权基准、20bp 和 MAE/ATR 结算，并在达到功效后封存
+  两层人工审查报告，全链始终无生产和自动切换权限。
+  `Regression-Key: tomorrow-v1-v2-all-candidate-profit-evidence-v1`。
+
 - 用户质疑“统一前置 20 日历史、长期 0 只推荐却没有分析数据”的策略合理性，并明确所有评分计划都应
   服务于提高荐股收益。权威策略新增唯一收益目标：对应持有期内可重复、成本后、相对可投资 A 股基准的
   风险约束净超额；推荐数量、页面非空、分数或工程完成均不得冒充收益。计划复核进一步删除固定未来
@@ -36,8 +45,8 @@ All notable changes to this project are documented here.
 - 用户问题：P1/P2 的评分差异、哪套更可能挣钱及两套方案尚未完成什么此前没有一处可审计答案。两份
   权威文档现在统一区分“生产档位 V1/V2”与不可变“历史研究身份 P1/P2”，补充因子、模型、成本、
   分歧和证据差异表，并明确当前不能证明任何一套可重复取得未来收益：V2 的平均成本后净增量证据强于
-  V1，但其严重亏损、换手和 Q5-Q1 门禁失败；V1 则没有独立留出结果。新增 V1、V2 和共同未完成任务
-  及“同日同股同冻结输入”配对影子比较路线，前向证据不阻塞或改变当前评分，也不得自动切换档位。
+  V1，但其严重亏损、换手和 Q5-Q1 门禁失败；V1 的同口径留出也未通过。原先记录的 V1/V2/共同待办
+  已由本批全候选配对链闭合，真实前向证据不阻塞或改变当前评分，也不得自动切换档位。
   `Regression-Key: tomorrow-v1-v2-profile-naming-and-evidence-roadmap-v1`。
 - 用户问题：权威文档只写“P1 五个候选尚未选出唯一工件”，没有解释为何工程代码已经存在却不能直接与
   P2 切换。确认原因是 `score_tomorrow_shadow_p1_v1` 只定义五候选逐日研究与门禁，固定 2027 年窗口尚未
@@ -511,6 +520,17 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- V1/V2 比较不再使用任意 20 日前置条件。只读 H0 同口径留出固定 139 日、687,321 条配对及报告 hash
+  `47e2b9bfd4d404521f8251e2e51c491aa96c1bc0d8423dea95e63320daa6e3bf`；V1 的 20bp 平均日净增量
+  `-0.250480%`、bootstrap 下界 `-0.813048%`，没有晋级收益证据。以 H0 日级 V2−V1 标准差
+  `3.831660%`、50bp 最小经济差异、双侧 5% 和 80% 功效预注册 522 个独立日；每个有效日须完成全部
+  共同候选结算且至少含 300 条 `complete` 配对；这只
+  约束未来生产切换，评分、全候选配对与首个 T+1 标签从当前即可运行。
+- 组合根仍只有配置选中的一个 profile 进入活动决策链；两套封存评分器只进入异步研究消费者，不调用
+  DeepSeek、不改动作/冻结/配置。`research-screen` 新增 V1/V2 H0 留出成为第五阶段，研究状态升级为
+  `v2_research_readiness_v5`；公开状态升级为 `v2_status_v9`，加法投影后台维护的配对证据内存快照。
+  显式 `research-status` 才只读检查 SQLite，HTTP 请求不访问数据库。
+
 - 历史就绪从“候选至少 99% 具备统一 20 日历史，否则整批不发布”改为逐股、逐策略/profile 资格：
   Today 与当前启发式 D25 使用登记的 20 日摘要，Tomorrow V1/V2 明确要求 61 个 qfq session 及模型
   字段，公开历史合格计数也必须同时满足所选 profile 字段而非只数 session。覆盖率只作为健康指标；
@@ -958,6 +978,17 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 修复“正式推荐为 0 就没有可评价数据”的取样缺口：比较器以两套 profile 的共同可评分集合为总体，
+  不以最终入选交集为总体；正式绑定 manifest、全部标签和报告不可变，同日其它临时输入在绑定后清理，
+  避免事后挑样本和长期无界占盘。修复同一 native 输入的 local/hybrid 来源身份差异造成 manifest 冲突；
+  缺 ATR 的候选仍保留预测，并在结算时显式标为数据不足，而不是令整批比较失败。研究 SQLite 初始化
+  失败改为状态降级和 observer 错误，不再阻断生产启动、活动评分或冻结。最终 Review 进一步禁止未正式
+  绑定或不属于正式 manifest 的标签写入，改用显式字段白名单序列化，并规定只有全 manifest 已结算且
+  至少含 300 条 `complete` 配对的横截面才计独立日，避免分批结算提前触发终态。
+- 新增 V2 严重亏损概率 challenger 的标签、特征、60/20/40 日训练/校准/独立检验、1 日 embargo、
+  Brier/ECE 和单次终止预注册；当前证据未到，不拟合、不回填，Web 继续明确
+  `loss_probability_status=not_modeled`。
 
 - 修复少数候选历史不足把其余已具备评分资格的股票一起阻断、并让“0只”混淆数据未就绪与真实低收益/
   风险空集的问题。选择器现在在本地评分前按实际 session 要求跳过单股；输入质量只让候选行情或证券
@@ -1569,6 +1600,27 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- `tomorrow-v1-v2-all-candidate-profit-evidence-v1` 回归覆盖：两档都选 0 时仍保存全部共同可评分候选；同一
+  native 的 local/hybrid 重放幂等；正式绑定只接受精确 `input_versions.native` 并清理同日临时输入；
+  缺 ATR 只让该候选 T+1 标为 `insufficient_data`；未完成全候选结算或少于 300 条完整配对的横截面不计
+  独立日；候选层与组合层报告、只读空库状态、研究库初始化
+  失败开放、`create_app()` 零数据库副作用、status v9 白名单和 research-screen 五阶段均通过。
+- 真实 `.runtime/v2` H0 留出命令完成 139 日、687,321 条同口径配对，复算报告 hash
+  `47e2b9bfd4d404521f8251e2e51c491aa96c1bc0d8423dea95e63320daa6e3bf`、验证证据 hash
+  `a38062efe934c15e38081bf095a3bc606235c62bd14fdcc613ee886c4335b793` 与日级 V2−V1 标准差
+  `3.831660%`；`research-status` 只读公开 readiness v5、holdout 终态和配对 collecting 状态。
+- 高风险完整门禁 `make format-check`、`make lint`（严格重构债为零）、`make type-check`（270 个源码
+  文件）、`make test` 和 `make package` 最终通过。首次全量测试暴露诊断脚本仍只接纳 readiness v4，
+  升级为 v5 后定向及全量复跑通过；首次隔离构建因沙箱网络限制失败，获准联网后成功生成 sdist/wheel。
+- 全新仓库外 `/tmp` 环境安装最终 wheel 及声明依赖后，包从安装目录导入，`trader-cli --help`、
+  `validate-config`、`trader-server --help` 和 `pip check` 通过，模板、CSS、JavaScript、两个 SVG 与两套
+  Tomorrow 模型资源均可读。V1/V2 离线性能门禁均通过、零网络调用、内存增长 0%；status API P95
+  分别为 1.757ms/1.026ms。Firefox 刷新门禁 DOM P95 1.051s、patch-to-paint P95 13ms；三档桌面
+  1280x720、1440x900、1920x1080 均无白屏、横向溢出、Long 重叠或浏览器错误，外网请求为 0。
+- 当前分支服务在正常权限下重启后，统一 runtime 诊断连续 3 轮 status/current 采样通过、无错误或告警；
+  status v9 明确投影配对库 `initialized=true`、`collecting`、`0/522`、最少 300 条完整横截面、
+  `production_authority=false` 和 `automatic_profile_switch=false`。服务随后以 Ctrl+C 完成有界停止。
 
 - `per-stock-history-eligibility-profit-evidence-v1` 失败先行：旧实现对 2 只候选中 1 只具备历史、1 只仅
   19 日的批次返回 `not_ready`，并拒绝 50% 历史覆盖的 `DailyFeaturePack`；实现后仅合格股票评分并
@@ -2508,9 +2560,12 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- 本批修复生产数据资格并冻结收益目标，但不伪称 V1/V2 已有收益胜者。全候选配对影子、未入选样本的
-  T+1/对应持有期标签、V1 独立留出和 V2.x 尾部风险改进仍是权威文档中的后续完整研究章节；在这些
-  证据完成前，V1 仍为 `historical_unavailable`，V2 仍为 `historical_rejected`，不得自动切换或调权。
+- 本批完成 V1 同口径留出、全候选配对、正式输入精确绑定、T+1 标签和两层报告工程，但不伪称 V1/V2
+  已有收益胜者。V1 留出和 V2 历史路线均未通过收益/风险门禁；前向比较仍需真实累积 522 个独立交易日，
+  V2 风险 challenger 仍需新的 60/20/40 日标签窗口。达到门槛前不得自动切换、调权或宣称收益改善。
+- 统一研究诊断仍报告与本批独立的 `score_p0_v2_historical_planned_dates_missed`：2026-08-24 至
+  2026-08-31 已错过 6 个历史计划交易日，当前最大可达 34/40、`recoverable=false`。本批不回填或改写
+  该既有研究身份；Tomorrow V1/V2 的 H0 工件与新前向采集链不依赖它。
 - 真实冷启动预热累计 10 次供应商批次超时、45 次请求失败，最终仍覆盖 342/360 并完成评分；启动日志
   另有两次证券主数据同观测时间持久化冲突，但进程保留内存中 360/360 证券身份并受控继续。它们未阻断
   本批逐股资格结论，但属于数据源/持久化可靠性后续问题，不能解释成收益改善证据。
@@ -2534,14 +2589,14 @@ All notable changes to this project are documented here.
   38.8ms 并通过，显示该旧指标存在已知长尾波动。本批相关 `sse_publish` P95 为 0.029ms、真实浏览器
   patch-to-paint P95 为 16ms，未放宽任何性能预算；旧 overlay 长尾仍作为发布残余风险保留。
 
-- 命令整合和默认 V1 不构成收益结论。V1 仍缺独立留出证据，V2 仍是历史门禁拒绝工件；两档谁更能挣钱
-  必须等待已预注册的同日同股影子比较，后台不得自动切换。`research-screen` 若任一合法研究门禁拒绝，
+- 命令整合和默认 V1 不构成收益结论。V1 同口径留出与 V2 历史门禁都已拒绝晋级；两档谁更能挣钱
+  必须等待已预注册的同日同股前向比较，后台不得自动切换。`research-screen` 若任一合法研究门禁拒绝，
   会完成其余阶段并最终返回非零，这是可观察门禁结果而非组合器故障。
 
-- V1 仍没有独立留出和真实配对前向结果；V2 虽有正平均历史净增量，但仍是
-  `historical_rejected`。两者都没有逐股亏损概率，现有 T+1 结算只覆盖活动档位正式入选项。文档规定的
-  配对影子比较器、V1 同口径留出、V2.x 风险挑战者和人工审查档案尚未实现；这些后续工作不影响当前
-  所选档位运行，也没有收益保证或自动发布权限。
+- V1 已有同口径独立留出但净增量为负，V2 虽有正平均历史净增量仍为 `historical_rejected`；两者都
+  没有已验证的逐股亏损概率。全候选前向链从首个合法输入开始采集，但尚无 522 个真实独立日终态报告；
+  V2.x 风险 challenger 目前只有预注册、没有拟合或校准结果。这些时间性证据不影响当前所选档位运行，
+  也没有收益保证或自动发布权限。
 - `p1_manual_residual_momentum_v1` 是用户授权的 H0 日线 proxy，不是
   `score_tomorrow_shadow_p1_v1` 五候选研究的胜者；它缺少原 P1 的行业/市值/流动性完整中性化和真实
   2027 点时证据，状态会持续公开该差异。当前默认已按用户要求改为 V1；两种人工 profile 都未建立逐股

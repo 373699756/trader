@@ -525,7 +525,7 @@ def _status(result: DiagnosticResult) -> CheckStatus:
 def _valid_research_status(payload: Mapping[str, object]) -> bool:
     active = payload.get("active_research")
     return (
-        payload.get("schema_version") == "v2_research_readiness_v4"
+        payload.get("schema_version") == "v2_research_readiness_v5"
         and isinstance(payload.get("research_state"), str)
         and isinstance(active, dict)
         and isinstance(active.get("research_identity"), str)

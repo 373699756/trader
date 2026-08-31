@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -27,9 +28,17 @@ from trader.domain.research.specification import (
     assess_score_research_coverage,
 )
 from trader.domain.research.tomorrow_historical_p2 import TOMORROW_HISTORICAL_P2_SPEC
+from trader.domain.research.tomorrow_profile_comparison import (
+    TOMORROW_PROFILE_COMPARISON_SPEC,
+    TomorrowProfileComparisonStatus,
+)
 from trader.entrypoints.performance import run as run_performance
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
 from trader.infra.persistence.research_trace import SQLiteV2ResearchTraceStore
+from trader.infra.persistence.tomorrow_profile_comparison import (
+    SQLiteTomorrowProfileEvidenceStore,
+    TomorrowProfileEvidenceConflictError,
+)
 from trader.infra.research.history_archive import SQLiteHistoricalArchive
 from trader.infra.research.score_r6_artifacts import ScoreR6ArtifactConflictError, ScoreR6ArtifactStore
 from trader.infra.research.score_r6_daily_artifacts import (
@@ -45,6 +54,11 @@ from trader.infra.research.tomorrow_historical_p2_artifacts import (
     TomorrowHistoricalP2ArtifactConflictError,
     TomorrowHistoricalP2ArtifactStore,
 )
+from trader.infra.research.tomorrow_profile_holdout_artifacts import (
+    TomorrowProfileHoldoutArtifactConflictError,
+    TomorrowProfileHoldoutArtifactStore,
+    holdout_report_payload,
+)
 from trader.infra.settings import RuntimeSettings, load_long_watchlist, load_runtime_settings, load_strategy_settings
 
 _COMMAND_GROUPS = {
@@ -55,6 +69,7 @@ _COMMAND_GROUPS = {
         "research-r6-daily-screen",
         "research-r6-stability-screen",
         "research-tomorrow-p2-screen",
+        "research-tomorrow-v1-v2-holdout",
     ),
 }
 
@@ -91,7 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
     history.add_argument("--workers", type=int, choices=range(1, 6), default=5)
     subparsers.add_parser(
         "research-screen",
-        help="Run all four immutable historical screening and stability stages in order.",
+        help="Run all immutable historical screening, stability, and profile-holdout stages in order.",
     )
     subparsers.add_parser("validate-config", help="Validate runtime and strategy configuration.")
     performance = subparsers.add_parser(
@@ -119,6 +134,14 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "research-tomorrow-p2-screen",
         help="Run and immutably seal the single frozen Tomorrow P2 historical candidate.",
+    )
+    subparsers.add_parser(
+        "research-tomorrow-v1-v2-holdout",
+        help="Evaluate and seal both packaged Tomorrow profiles on the same H0 validation rows.",
+    )
+    subparsers.add_parser(
+        "research-tomorrow-profile-report",
+        help="Read paired forward evidence and emit the preregistered manual-review report.",
     )
     dossier = subparsers.add_parser(
         "research-r7-dossier",
@@ -184,6 +207,11 @@ def main(argv: list[str] | None = None) -> int:
             }
         score_r6_stability = _read_score_r6_stability_status(runtime)
         tomorrow_p2 = _read_tomorrow_p2_status(runtime)
+        tomorrow_holdout = _read_tomorrow_profile_holdout_status(runtime)
+        tomorrow_profiles = SQLiteTomorrowProfileEvidenceStore(
+            runtime.runtime_dir,
+            TOMORROW_PROFILE_COMPARISON_SPEC,
+        ).inspect_status()
         promotion_ready = bool(score_r6["promotion_eligible"])
         try:
             score_r7 = ScoreR7ArtifactStore(runtime.runtime_dir / "score-r7").inspect()
@@ -192,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "schema_version": "v2_research_readiness_v4",
+                    "schema_version": "v2_research_readiness_v5",
                     "research_state": _research_state(coverage.historical),
                     "score_r6_executable": screening_ready,
                     "score_r6_screening_executable": screening_ready,
@@ -207,6 +235,8 @@ def main(argv: list[str] | None = None) -> int:
                     "score_r6_daily": score_r6_daily,
                     "score_r6_stability": score_r6_stability,
                     "tomorrow_p2": tomorrow_p2,
+                    "tomorrow_profile_holdout": tomorrow_holdout,
+                    "tomorrow_profile_comparison": _tomorrow_profile_status_payload(tomorrow_profiles),
                     "score_r7": score_r7,
                     "recorded_trade_dates": [value.isoformat() for value in dates],
                     "active_research": {
@@ -279,6 +309,8 @@ def main(argv: list[str] | None = None) -> int:
         "research-r6-daily-screen",
         "research-r6-stability-screen",
         "research-tomorrow-p2-screen",
+        "research-tomorrow-v1-v2-holdout",
+        "research-tomorrow-profile-report",
         "research-r7-dossier",
     }:
         return _run_offline_report(
@@ -336,29 +368,30 @@ def _run_offline_report(
     runtime: RuntimeSettings,
     options: _OfflineReportOptions,
 ) -> int:
-    if command == "performance-check":
-        return _run_performance_report(
+    runners: dict[str, Callable[[], int]] = {
+        "performance-check": lambda: _run_performance_report(
             config_path,
             output=options.output,
             baseline=options.baseline,
             tomorrow_scoring_profile=options.tomorrow_scoring_profile,
-        )
-    if command == "research-backtest":
-        services = build_historical_research_services(config_path)
-        report = services.backtest.execute(SCORE_H0_V1_SPEC)
-        print(json.dumps(asdict(report), default=_json_default, ensure_ascii=False, sort_keys=True))
-        return 0 if report.status == "screened" else 1
-    if command == "research-r7-dossier":
-        return _run_r7_dossier(runtime, options.research_identity)
-    if command == "research-r6-daily-screen":
-        return _run_r6_daily_screen(config_path, runtime)
-    if command in {"research-r6-stability-screen", "research-tomorrow-p2-screen"}:
-        return (
-            _run_r6_stability_screen(config_path, runtime)
-            if command == "research-r6-stability-screen"
-            else _run_tomorrow_p2_screen(config_path, runtime)
-        )
-    return _run_r6_screen(config_path, runtime)
+        ),
+        "research-backtest": lambda: _run_historical_backtest(config_path),
+        "research-r7-dossier": lambda: _run_r7_dossier(runtime, options.research_identity),
+        "research-tomorrow-v1-v2-holdout": lambda: _run_tomorrow_profile_holdout(config_path, runtime),
+        "research-tomorrow-profile-report": lambda: _run_tomorrow_profile_report(runtime),
+        "research-r6-daily-screen": lambda: _run_r6_daily_screen(config_path, runtime),
+        "research-r6-stability-screen": lambda: _run_r6_stability_screen(config_path, runtime),
+        "research-tomorrow-p2-screen": lambda: _run_tomorrow_p2_screen(config_path, runtime),
+        "research-r6-screen": lambda: _run_r6_screen(config_path, runtime),
+    }
+    return runners[command]()
+
+
+def _run_historical_backtest(config_path: Path) -> int:
+    services = build_historical_research_services(config_path)
+    report = services.backtest.execute(SCORE_H0_V1_SPEC)
+    print(json.dumps(asdict(report), default=_json_default, ensure_ascii=False, sort_keys=True))
+    return 0 if report.status == "screened" else 1
 
 
 def _run_performance_report(
@@ -529,6 +562,101 @@ def _read_tomorrow_p2_status(runtime: RuntimeSettings) -> dict[str, object]:
             "forward_preregistration_eligible": False,
             "production_authority": False,
         }
+
+
+def _read_tomorrow_profile_holdout_status(runtime: RuntimeSettings) -> dict[str, object]:
+    try:
+        return TomorrowProfileHoldoutArtifactStore(runtime.runtime_dir).inspect()
+    except TomorrowProfileHoldoutArtifactConflictError:
+        return {
+            "status": "artifact_invalid",
+            "report_hash": "",
+            "production_authority": False,
+        }
+
+
+def _run_tomorrow_profile_holdout(config_path: Path, runtime: RuntimeSettings) -> int:
+    store = TomorrowProfileHoldoutArtifactStore(runtime.runtime_dir)
+    try:
+        existing = store.read_payload()
+    except TomorrowProfileHoldoutArtifactConflictError:
+        print(json.dumps({"status": "artifact_invalid", "production_authority": False}, sort_keys=True))
+        return 1
+    if existing is not None:
+        print(json.dumps(existing, ensure_ascii=False, sort_keys=True))
+        return 0 if existing.get("content_hash") == TOMORROW_PROFILE_COMPARISON_SPEC.historical_evidence_hash else 1
+    archive = SQLiteHistoricalArchive(runtime.runtime_dir).inspect(SCORE_H0_V1_SPEC.research_identity)
+    if archive.spec_hash != SCORE_H0_V1_SPEC.content_hash:
+        print(
+            json.dumps(
+                {
+                    "status": "insufficient_coverage",
+                    "failure_reasons": ["score_h0_archive_coverage_incomplete"],
+                    "production_authority": False,
+                },
+                sort_keys=True,
+            )
+        )
+        return 1
+    print("Tomorrow V1/V2: evaluating sealed profiles on paired H0 validation rows", file=sys.stderr, flush=True)
+    report = build_historical_research_services(config_path).tomorrow_profile_holdout.execute()
+    if report.content_hash != TOMORROW_PROFILE_COMPARISON_SPEC.historical_evidence_hash:
+        print(
+            json.dumps(
+                {
+                    "status": "historical_evidence_mismatch",
+                    "report_hash": report.content_hash,
+                    "expected_hash": TOMORROW_PROFILE_COMPARISON_SPEC.historical_evidence_hash,
+                    "production_authority": False,
+                },
+                sort_keys=True,
+            )
+        )
+        return 1
+    store.seal(report)
+    print(json.dumps(holdout_report_payload(report), ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+def _run_tomorrow_profile_report(runtime: RuntimeSettings) -> int:
+    evidence = SQLiteTomorrowProfileEvidenceStore(runtime.runtime_dir, TOMORROW_PROFILE_COMPARISON_SPEC)
+    try:
+        payload = evidence.inspect_terminal_report_bytes()
+    except TomorrowProfileEvidenceConflictError:
+        print(json.dumps({"status": "artifact_invalid", "production_authority": False}, sort_keys=True))
+        return 1
+    if payload is not None:
+        print(payload.decode())
+        raw = json.loads(payload.decode())
+        return 0 if raw.get("manual_review_eligible") is True else 1
+    status = evidence.inspect_status()
+    print(json.dumps(_tomorrow_profile_status_payload(status), ensure_ascii=False, sort_keys=True))
+    return 1
+
+
+def _tomorrow_profile_status_payload(status: TomorrowProfileComparisonStatus) -> dict[str, object]:
+    return {
+        "initialized": status.initialized,
+        "spec_hash": status.spec_hash,
+        "prediction_manifests": status.prediction_manifests,
+        "paired_predictions": status.paired_predictions,
+        "formal_manifests": status.formal_manifests,
+        "settled_pairs": status.settled_pairs,
+        "complete_pairs": status.complete_pairs,
+        "independent_days": status.independent_days,
+        "required_independent_days": status.required_independent_days,
+        "minimum_paired_candidates": status.minimum_paired_candidates,
+        "state": status.state,
+        "latest_prediction_date": (
+            status.latest_prediction_date.isoformat() if status.latest_prediction_date is not None else None
+        ),
+        "latest_settlement_date": (
+            status.latest_settlement_date.isoformat() if status.latest_settlement_date is not None else None
+        ),
+        "production_authority": status.production_authority,
+        "automatic_profile_switch": status.automatic_profile_switch,
+        "error_code": status.error_code,
+    }
 
 
 def _run_r7_dossier(runtime: RuntimeSettings, research_identity: str) -> int:

@@ -16,7 +16,7 @@ from flask import Flask
 from trader.application.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.application.decision_core import UnifiedDecisionIndex
 from trader.application.decision_drafts import UnifiedDecisionDraftIndex
-from trader.application.decision_observers import AsyncDecisionObserver
+from trader.application.decision_observers import AsyncDecisionObserver, DecisionEventConsumer
 from trader.application.decision_queries import UnifiedDecisionQueries
 from trader.application.decision_stream import UnifiedDecisionEventStream
 from trader.application.latency import LatencyWaterfall
@@ -29,6 +29,7 @@ from trader.application.research.score_r6 import ScoreR6HistoricalScreeningServi
 from trader.application.research.score_r6_daily import ScoreR6DailyScreeningService
 from trader.application.research.score_r6_stability import ScoreR6StabilityScreeningService
 from trader.application.research.tomorrow_historical_p2_screening import TomorrowHistoricalP2ScreeningService
+from trader.application.research.tomorrow_profile_holdout import TomorrowProfileHoldoutService
 from trader.application.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
 from trader.application.scored_v2_freezing import (
     ScoredV2FreezeCoordinator,
@@ -43,6 +44,12 @@ from trader.application.system_lifecycle import (
 )
 from trader.application.today_v2_freezing import TodayV2FreezeCoordinator
 from trader.application.tomorrow_model_scoring import TomorrowProductionModelScoringService
+from trader.application.tomorrow_profile_comparison import TomorrowProfileComparator
+from trader.application.tomorrow_profile_reporting import TomorrowProfileReportingService
+from trader.application.tomorrow_profile_settlement import (
+    TomorrowProfileSettlementDependencies,
+    TomorrowProfileSettlementService,
+)
 from trader.application.v2_decision_adapters import V2DeepSeekAdapter, V2FreezeAdapter
 from trader.application.v2_input_runtime import V2DecisionBuildDependencies, V2MarketDataAdapter
 from trader.application.v2_research_runtime import V2ResearchRuntime
@@ -54,6 +61,7 @@ from trader.bootstrap_policy import _long_group_definitions, _long_item_definiti
 from trader.bootstrap_status import runtime_status as _runtime_status
 from trader.domain.recommendation.decision_identity import DecisionOverlay, ScoredDecision
 from trader.domain.recommendation.models import Strategy
+from trader.domain.research.tomorrow_profile_comparison import TOMORROW_PROFILE_COMPARISON_SPEC
 from trader.infra.cache import BoundedLruCache
 from trader.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.infra.deepseek.cache import ReviewCache
@@ -86,6 +94,10 @@ from trader.infra.persistence.decision_records import SQLiteDecisionRecordReposi
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
 from trader.infra.persistence.research_trace import ResearchTraceLimits, SQLiteV2ResearchTraceStore
 from trader.infra.persistence.runtime_json import RuntimeJsonWriter
+from trader.infra.persistence.tomorrow_profile_comparison import (
+    SQLiteTomorrowProfileEvidenceStore,
+    TomorrowProfileEvidenceConflictError,
+)
 from trader.infra.research.history_archive import SQLiteHistoricalArchive
 from trader.infra.research.history_sources import HistoricalPriceProviderAdapter, SinaHistoricalUniverseProvider
 from trader.infra.research.score_r6_daily_artifacts import ScoreR6DailyArtifactStore
@@ -124,6 +136,7 @@ class ApplicationSystem:
     tomorrow_records: SQLiteDecisionRecordRepository
     research_trace: SQLiteV2ResearchTraceStore
     outcome_evidence: SQLiteOutcomeEvidenceRepository
+    tomorrow_profile_evidence: SQLiteTomorrowProfileEvidenceStore
 
     def _lifecycle_resources(self) -> SystemLifecycleResources:
         return SystemLifecycleResources(
@@ -158,6 +171,7 @@ class HistoricalResearchServices:
     score_r6_daily: ScoreR6DailyScreeningService
     score_r6_stability: ScoreR6StabilityScreeningService
     tomorrow_historical_p2: TomorrowHistoricalP2ScreeningService
+    tomorrow_profile_holdout: TomorrowProfileHoldoutService
     archive: SQLiteHistoricalArchive
 
 
@@ -179,6 +193,7 @@ class _PersistenceContext:
     data_plane: DataPlaneRepository
     budget: DeepSeekBudgetLedger
     outcomes: SQLiteOutcomeEvidenceRepository
+    tomorrow_profiles: SQLiteTomorrowProfileEvidenceStore
 
 
 @dataclass(frozen=True)
@@ -194,6 +209,13 @@ class _PublicationContext:
     tomorrow_freezer: ScoredV2FreezeCoordinator
     d25_freezer: ScoredV2FreezeCoordinator
     observer: AsyncDecisionObserver
+
+
+@dataclass(frozen=True)
+class _PublicationDependencies:
+    repository: SQLiteDecisionRecordRepository
+    market_data: MarketFeatureService
+    additional_observers: tuple[DecisionEventConsumer, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -227,10 +249,25 @@ def build_system(
     persistence = _build_persistence(context)
     market_data = _build_market_data(context, persistence.data_plane, calendar)
     reviewer = _build_reviewer(context, persistence.budget)
-    publication = _build_publication(context, calendar, persistence.repository, reviewer, market_data)
     policy = _recommendation_policy(context.strategy)
-    tomorrow_model = TomorrowProductionModelScoringService(
-        load_packaged_tomorrow_production_model(strategy.tomorrow_scoring_profile)
+    v1_model = TomorrowProductionModelScoringService(load_packaged_tomorrow_production_model("v1"))
+    v2_model = TomorrowProductionModelScoringService(load_packaged_tomorrow_production_model("v2"))
+    tomorrow_model = v1_model if strategy.tomorrow_scoring_profile == "v1" else v2_model
+    profile_comparator = TomorrowProfileComparator(
+        TOMORROW_PROFILE_COMPARISON_SPEC,
+        policy,
+        v1_model,
+        v2_model,
+        persistence.tomorrow_profiles,
+    )
+    publication = _build_publication(
+        context,
+        calendar,
+        _PublicationDependencies(
+            persistence.repository,
+            market_data,
+            (profile_comparator.record,),
+        ),
     )
     native_data = V2MarketDataAdapter(
         market_data,
@@ -277,6 +314,19 @@ def build_system(
                     persistence.outcomes,
                     session_distance=calendar.session_distance,
                 ),
+                TomorrowProfileSettlementService(
+                    TomorrowProfileSettlementDependencies(
+                        market_data,
+                        persistence.repository,
+                        persistence.outcomes,
+                        persistence.tomorrow_profiles,
+                    ),
+                    session_distance=calendar.session_distance,
+                    reporting=TomorrowProfileReportingService(
+                        TOMORROW_PROFILE_COMPARISON_SPEC,
+                        persistence.tomorrow_profiles,
+                    ),
+                ),
             ),
             research_factory=lambda on_result: V2ResearchRuntime(
                 market_data,
@@ -299,6 +349,7 @@ def build_system(
                 publication.tomorrow_repository.initialize,
                 lambda: _initialize_research_trace(publication.research_trace),
                 lambda: _initialize_outcome_evidence(persistence.outcomes),
+                lambda: _initialize_tomorrow_profile_evidence(persistence.tomorrow_profiles),
                 lambda: _initialize_reference_data_plane(market_data, persistence.data_plane, now()),
                 persistence.budget.initialize,
                 publication.today_freezer.initialize,
@@ -315,7 +366,13 @@ def build_system(
         services=UnifiedWebServices(
             publication.decision_queries,
             publication.decision_events,
-            lambda: _runtime_status(scheduler, reviewer, market_data.health, tomorrow_model.status()),
+            lambda: _runtime_status(
+                scheduler,
+                reviewer,
+                market_data.health,
+                tomorrow_model.status(),
+                persistence.tomorrow_profiles.status(),
+            ),
             WebApiConfig(
                 heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds,
                 snapshot_retention_seconds=settings.api.web_snapshot_retention_seconds,
@@ -342,6 +399,7 @@ def build_system(
         tomorrow_records=publication.tomorrow_repository,
         research_trace=publication.research_trace,
         outcome_evidence=persistence.outcomes,
+        tomorrow_profile_evidence=persistence.tomorrow_profiles,
     )
 
 
@@ -398,6 +456,11 @@ def build_historical_research_services(
             ScoreR6DailyArtifactStore(settings.runtime_dir / "score-r6-daily"),
         ),
         TomorrowHistoricalP2ScreeningService(archive, TomorrowHistoricalP2EnsembleTrainer()),
+        TomorrowProfileHoldoutService(
+            archive,
+            load_packaged_tomorrow_production_model("v1"),
+            load_packaged_tomorrow_production_model("v2"),
+        ),
         archive,
     )
 
@@ -654,6 +717,7 @@ def _build_persistence(context: _BuildContext) -> _PersistenceContext:
     repository = SQLiteDecisionRecordRepository(settings.runtime_dir)
     data_plane = DataPlaneRepository(settings.runtime_dir)
     outcomes = SQLiteOutcomeEvidenceRepository(settings.runtime_dir, repository, data_plane)
+    tomorrow_profiles = SQLiteTomorrowProfileEvidenceStore(settings.runtime_dir, TOMORROW_PROFILE_COMPARISON_SPEC)
     budget = DeepSeekBudgetLedger(
         settings.runtime_dir / "deepseek-budget.sqlite3",
         daily_hard_limit=settings.deepseek.daily_hard_limit,
@@ -672,7 +736,7 @@ def _build_persistence(context: _BuildContext) -> _PersistenceContext:
         ),
         write_lock=runtime_database_lock,
     )
-    return _PersistenceContext(repository, data_plane, budget, outcomes)
+    return _PersistenceContext(repository, data_plane, budget, outcomes, tomorrow_profiles)
 
 
 def _build_reviewer(context: _BuildContext, budget: DeepSeekBudgetLedger) -> DeepSeekReviewer:
@@ -700,11 +764,11 @@ def _build_reviewer(context: _BuildContext, budget: DeepSeekBudgetLedger) -> Dee
 def _build_publication(
     context: _BuildContext,
     calendar: ChinaTradingCalendar,
-    repository: SQLiteDecisionRecordRepository,
-    reviewer: DeepSeekReviewer,
-    market_data: MarketFeatureService,
+    dependencies: _PublicationDependencies,
 ) -> _PublicationContext:
     settings = context.settings
+    repository = dependencies.repository
+    market_data = dependencies.market_data
     tomorrow_decisions = UnifiedDecisionIndex()
     decision_drafts = UnifiedDecisionDraftIndex()
     decision_events = UnifiedDecisionEventStream(
@@ -720,7 +784,7 @@ def _build_publication(
     )
 
     observer = AsyncDecisionObserver(
-        (research_trace.record,),
+        (research_trace.record, *dependencies.additional_observers),
         capacity=max(1, min(16, settings.pipeline.event_queue_size)),
         thread_name="trader-v2-decision-observer",
     )
@@ -795,6 +859,13 @@ def _initialize_outcome_evidence(evidence: SQLiteOutcomeEvidenceRepository) -> N
         evidence.initialize()
     except (OSError, sqlite3.Error):
         return
+
+
+def _initialize_tomorrow_profile_evidence(evidence: SQLiteTomorrowProfileEvidenceStore) -> None:
+    try:
+        evidence.initialize()
+    except (OSError, sqlite3.Error, TomorrowProfileEvidenceConflictError) as exc:
+        evidence.mark_unavailable(type(exc).__name__)
 
 
 def _fixed_cache_ttl(settings: RuntimeSettings, dataset: str) -> float:

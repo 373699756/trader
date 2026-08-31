@@ -394,21 +394,23 @@ def test_tomorrow_v1_v2_profitability_evidence_and_remaining_work_are_explicit()
         "不能据此断言 V2 未来更能挣钱",
         "V2 的平均成本后净增量证据强于 V1",
         "同日、同股、同一冻结输入",
-        "不阻塞当前评分",
-        "固定 20 个未来交易日不是",
-        "统计功效",
-        "活动档位单边 T+1 结算存在选择偏差",
-        "V1 未完成任务",
-        "V2 未完成任务",
-        "共同未完成任务",
+        "正式推荐为 0 仍保存",
+        "522 个有效交易日，而不是任意 20 日",
+        "统计功效规范",
+        "活动档位单边入选结果不再充当",
+        "tomorrow_v1_v2_h0_holdout_report_v2",
+        "47e2b9bfd4d404521f8251e2e51c491aa96c1bc0d8423dea95e63320daa6e3bf",
+        "Newey–West 长期标准差",
+        "工程已完成，前向证据采集中",
     ):
         assert expected in strategy
     for expected in (
         "生产档位 V1/V2",
         "历史研究身份 P1/P2",
         "不得自动切换活动档位",
-        "配对影子比较器",
-        "不等待固定 20 个未来交易日",
+        "异步配对比较器",
+        "不等待 20 个未来日才运行",
+        "HTTP 不读取研究 SQLite",
     ):
         assert expected in design
 
@@ -449,7 +451,7 @@ def test_tomorrow_historical_p2_remains_rejected_while_manual_production_overrid
         "Tomorrow P2 历史契约",
         "只读绑定 `score_h0_v1`",
         "`research-tomorrow-p2-screen`",
-        "`v2_research_readiness_v4.tomorrow_p2`",
+        "`v2_research_readiness_v5.tomorrow_p2`",
         "678,370 条验证配对",
         "`historical_rejected`",
         "P2 研究路线因而停止",

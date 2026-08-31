@@ -9,7 +9,7 @@ from collections import Counter
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from trader.application.cadence import PipelineTask, task_execution_budget_seconds
 from trader.application.decision_drafts import UnifiedDecisionDraftIndex
@@ -51,6 +51,9 @@ from trader.domain.recommendation.decision_identity import (
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 from trader.domain.recommendation.ranking import candidate_score
 from trader.domain.recommendation.scored_selection import ScoredDisposition
+
+if TYPE_CHECKING:
+    from trader.application.tomorrow_profile_comparison import TomorrowProfileResearchInput
 
 
 @dataclass(frozen=True)
@@ -684,6 +687,27 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         if projection is None or decision is None:
             return None
         return try_build_v2_committed_research_audit(projection, decision)
+
+    def tomorrow_profile_research_input(self, version: str) -> TomorrowProfileResearchInput | None:
+        from trader.application.tomorrow_profile_comparison import TomorrowProfileResearchInput
+
+        with self._lock:
+            projection = self._projections.get(version)
+            decision = self._decisions.get(version)
+        if projection is None or decision is None or decision.strategy is not Strategy.TOMORROW:
+            return None
+        native = projection.native_input
+        if not isinstance(native, TomorrowNativeInput):
+            raise V2DecisionUnavailableError("Tomorrow research projection has an invalid native input")
+        if self._tomorrow_model is None:
+            return None
+        active_profile = self._tomorrow_model.status().profile_id
+        return TomorrowProfileResearchInput(
+            source_decision_version=decision.version,
+            source_decision_hash=decision.content_hash,
+            active_profile_id=active_profile,
+            native_input=native,
+        )
 
     def research_intent(self, decision: ScoredDecision) -> V2ResearchIntent:
         with self._lock:

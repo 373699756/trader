@@ -234,6 +234,10 @@ class Decisions:
         del version
         return None
 
+    def tomorrow_profile_research_input(self, version: str):
+        del version
+        return None
+
     def research_intent(self, current: ScoredDecision) -> V2ResearchIntent:
         codes = tuple(item.code for item in current.items)
         return V2ResearchIntent(current.strategy, current.trade_date, codes, codes)
