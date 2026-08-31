@@ -18,11 +18,11 @@ from trader.domain.market.models import (
     CanonicalMarketSnapshot,
     MarketQuote,
 )
-from trader.infra.market_data.columnar_merge import (
+from trader.infra.market_data.normalization.columnar_merge import (
     ColumnarMergeError,
     try_merge_complete_realtime,
 )
-from trader.infra.market_data.merge_quote import (
+from trader.infra.market_data.normalization.merge_quote import (
     merge_code,
     observation_order,
     rejection_reason,

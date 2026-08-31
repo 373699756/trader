@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from trader.domain.market.models import Evidence
-from trader.infra.market_data.akshare_parsing import (
+from trader.infra.market_data.providers.akshare_parsing import (
     _clean_text,
     _content_version,
     _first_text,

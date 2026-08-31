@@ -47,19 +47,22 @@ from trader.domain.market.research import FinancialReport, ResearchObservation
 from trader.domain.market.tail import MinuteBar, TailSignalPolicy
 from trader.infra.cache import BoundedLruCache
 from trader.infra.market_data import gateway as gateway_module
-from trader.infra.market_data import tushare_records as tushare_records_module
-from trader.infra.market_data.akshare import AkshareResearchClient
 from trader.infra.market_data.calendar import ChinaTradingCalendar, TradingCalendarUnavailableError
-from trader.infra.market_data.columnar import MarketChangeSet
-from trader.infra.market_data.eastmoney import EastmoneyClient
-from trader.infra.market_data.exchange_security_master import ExchangeSecurityMasterClient
-from trader.infra.market_data.features import FeatureBuilder
 from trader.infra.market_data.gateway import MarketDataGateway
 from trader.infra.market_data.gateway_health import MarketGatewayHealthStatus, SecurityMasterHealthStatus
 from trader.infra.market_data.history import DailyBar, HistoryAdjustmentError, PriceAdjustment, build_history_context
 from trader.infra.market_data.history_seed import FallbackHistoryClient
 from trader.infra.market_data.market_cache_identity import _history_preload_codes
+from trader.infra.market_data.normalization.columnar import MarketChangeSet
+from trader.infra.market_data.normalization.features import FeatureBuilder
 from trader.infra.market_data.observations import SourceObservation
+from trader.infra.market_data.providers import tushare_records as tushare_records_module
+from trader.infra.market_data.providers.akshare import AkshareResearchClient
+from trader.infra.market_data.providers.eastmoney import EastmoneyClient
+from trader.infra.market_data.providers.exchange_security_master import ExchangeSecurityMasterClient
+from trader.infra.market_data.providers.sina import SinaClient
+from trader.infra.market_data.providers.tencent import TencentClient
+from trader.infra.market_data.providers.tushare import TushareClient, TushareHealthStatus
 from trader.infra.market_data.router import VendorRoute, VendorSeverity, route
 from trader.infra.market_data.service import MarketFeatureDependencies, MarketFeatureService
 from trader.infra.market_data.service_candidates import QuoteCache, QuoteCacheDependencies
@@ -76,9 +79,6 @@ from trader.infra.market_data.service_tushare import (
     ReferenceLoadRequest,
     _ReferenceLoadOptions,
 )
-from trader.infra.market_data.sina import SinaClient
-from trader.infra.market_data.tencent import TencentClient
-from trader.infra.market_data.tushare import TushareClient, TushareHealthStatus
 from trader.infra.persistence.data_plane import DataPlaneRepository
 from trader.infra.settings import ConfigurationError, load_runtime_settings, load_strategy_settings
 

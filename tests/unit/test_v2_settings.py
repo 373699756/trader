@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from trader.infra.market_data.features import FEATURE_SCHEMA_NAMES, FEATURE_SCHEMA_VERSION
+from trader.infra.market_data.normalization.features import FEATURE_SCHEMA_NAMES, FEATURE_SCHEMA_VERSION
 from trader.infra.settings import (
     ConfigurationError,
     load_long_watchlist,

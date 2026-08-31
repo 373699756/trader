@@ -28,7 +28,6 @@ from trader.application.workers import BoundedExecutor
 from trader.domain.market.models import (
     MarketQuote,
 )
-from trader.infra.market_data.eastmoney import EastmoneyClient
 from trader.infra.market_data.gateway_runtime import (
     _before_deadline,
     _cache_error_code,
@@ -36,9 +35,10 @@ from trader.infra.market_data.gateway_runtime import (
     _SourceFetch,
     _strip_source,
 )
-from trader.infra.market_data.merge import observation_from_quote
+from trader.infra.market_data.normalization.merge import observation_from_quote
 from trader.infra.market_data.observations import SourceObservation
-from trader.infra.market_data.sina import SinaClient
+from trader.infra.market_data.providers.eastmoney import EastmoneyClient
+from trader.infra.market_data.providers.sina import SinaClient
 
 
 @dataclass(frozen=True)

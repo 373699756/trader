@@ -5,13 +5,13 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from trader.domain.market.models import MarketQuote
-from trader.infra.market_data.features import FeatureBuilder
 from trader.infra.market_data.history import (
     DailyBar,
     PriceAdjustment,
     build_history_context,
     summarize_history_metrics,
 )
+from trader.infra.market_data.normalization.features import FeatureBuilder
 from trader.infra.settings import load_strategy_settings
 
 ROOT = Path(__file__).resolve().parents[2]

@@ -23,14 +23,15 @@ from trader.application.ports.data_plane import (
 from trader.application.ports.types import JsonObject, JsonValue
 from trader.application.schedule import shanghai_now
 from trader.application.source_lanes import SourceRequestSupersededError
-from trader.infra.market_data.exchange_security_master import (
-    ExchangeSecurityMasterClient,
-    ExchangeSecurityMasterHealthStatus,
-)
 from trader.infra.market_data.gateway import MarketDataGateway
 from trader.infra.market_data.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.market_cache_identity import _normalize_codes, _source_batch_identity
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
+from trader.infra.market_data.providers.exchange_security_master import (
+    ExchangeSecurityMasterClient,
+    ExchangeSecurityMasterHealthStatus,
+)
+from trader.infra.market_data.providers.tushare import TushareClient, TushareHealthStatus
 from trader.infra.market_data.service_calendar_state import (
     calendar_observations_from_record as _calendar_observations_from_record,
 )
@@ -41,7 +42,6 @@ from trader.infra.market_data.service_calendar_state import (
 )
 from trader.infra.market_data.service_execution import MarketTaskRunner
 from trader.infra.market_data.service_history import HistoryCache
-from trader.infra.market_data.tushare import TushareClient, TushareHealthStatus
 
 _LOGGER = logging.getLogger(__name__)
 _T = TypeVar("_T")

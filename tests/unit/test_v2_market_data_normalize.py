@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from trader.infra.market_data.normalize import (
+from trader.infra.market_data.normalization.normalize import (
     MarketQuoteInput,
     build_market_quote,
     infer_one_price_limit,

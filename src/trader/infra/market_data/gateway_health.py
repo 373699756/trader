@@ -10,7 +10,7 @@ from trader.application.cache import CacheStatus
 from trader.application.latency import LatencyWaterfallStatus
 from trader.application.source_lanes import SourceLaneRegistryStatus
 from trader.domain.market.models import CanonicalMarketSnapshot
-from trader.infra.market_data.columnar import MarketChangeSet
+from trader.infra.market_data.normalization.columnar import MarketChangeSet
 from trader.infra.market_data.router import RouteOutcome
 
 

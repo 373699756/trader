@@ -5,20 +5,20 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from trader.domain.market.models import CanonicalMarketSnapshot
-from trader.infra.market_data import columnar_merge as columnar_merge_module
-from trader.infra.market_data.columnar_merge import (
+from trader.infra.market_data.normalization import columnar_merge as columnar_merge_module
+from trader.infra.market_data.normalization.columnar_merge import (
     CompleteRealtimeNormalization,
     try_merge_complete_realtime,
     try_normalize_complete_realtime_rows,
 )
-from trader.infra.market_data.merge import (
+from trader.infra.market_data.normalization.merge import (
     merge_market_observations,
     observation_from_quote,
     overlay_canonical_snapshot,
     snapshot_payload_hash,
 )
-from trader.infra.market_data.merge_quote import merge_code
-from trader.infra.market_data.normalize import MarketQuoteInput, build_market_quote
+from trader.infra.market_data.normalization.merge_quote import merge_code
+from trader.infra.market_data.normalization.normalize import MarketQuoteInput, build_market_quote
 from trader.infra.market_data.observations import SourceObservation
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")

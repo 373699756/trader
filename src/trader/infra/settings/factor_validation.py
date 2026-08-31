@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.infra.market_data.features import FEATURE_SCHEMA_NAMES, FEATURE_SCHEMA_VERSION
+from trader.infra.market_data.normalization.features import FEATURE_SCHEMA_NAMES, FEATURE_SCHEMA_VERSION
 from trader.infra.settings.models import FactorDefinition, StrategySettings
 from trader.infra.settings.parser import (
     ConfigurationError,

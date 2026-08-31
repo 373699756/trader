@@ -6,8 +6,8 @@ from zoneinfo import ZoneInfo
 import pytest
 import requests
 
-from trader.infra.market_data import exchange_security_master as exchange_module
-from trader.infra.market_data.exchange_security_master import (
+from trader.infra.market_data.providers import exchange_security_master as exchange_module
+from trader.infra.market_data.providers.exchange_security_master import (
     ExchangeSecurityMasterClient,
     ExchangeSecurityMasterListing,
 )

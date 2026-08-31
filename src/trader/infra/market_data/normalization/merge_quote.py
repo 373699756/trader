@@ -14,10 +14,10 @@ from trader.domain.market.models import (
     MarketQuote,
 )
 from trader.domain.recommendation.filters import board_for_code
-from trader.infra.market_data.field_quality import (
+from trader.infra.market_data.normalization.field_quality import (
     REALTIME_SOURCES as _REALTIME_SOURCES,
 )
-from trader.infra.market_data.field_quality import (
+from trader.infra.market_data.normalization.field_quality import (
     select_fields as select_quote_fields,
 )
 from trader.infra.market_data.observations import JsonScalar, SourceObservation

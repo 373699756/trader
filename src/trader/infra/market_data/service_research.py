@@ -21,7 +21,6 @@ from trader.application.cache import CacheIdentity
 from trader.application.ports.market import MarketDataDeadlineExceededError
 from trader.application.workers import BorrowExecutorOptions, WorkerExecutor, borrow_executor, submit_or_run_inline
 from trader.domain.market.research import ResearchObservation
-from trader.infra.market_data.akshare import AkshareResearchClient
 from trader.infra.market_data.market_cache_identity import (
     _add_action_restriction,
     _degraded_research_observation,
@@ -33,6 +32,7 @@ from trader.infra.market_data.market_cache_identity import (
     _serialize_research_observation,
     _source_batch_identity,
 )
+from trader.infra.market_data.providers.akshare import AkshareResearchClient
 from trader.infra.market_data.service_execution import MarketTaskRunner
 from trader.infra.market_data.service_models import _ResearchEntry
 from trader.infra.market_data.service_research_data_plane import (

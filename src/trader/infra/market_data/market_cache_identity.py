@@ -23,7 +23,7 @@ from trader.domain.market.research import (
 )
 from trader.domain.market.tail import MinuteBar
 from trader.infra.market_data.history import DailyBar
-from trader.infra.market_data.merge_quote import source_name, source_priority
+from trader.infra.market_data.normalization.merge_quote import source_name, source_priority
 from trader.infra.market_data.service_models import _ResearchEntry
 
 _P = ParamSpec("_P")

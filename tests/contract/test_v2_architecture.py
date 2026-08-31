@@ -183,7 +183,7 @@ def test_identity_and_audit_payloads_have_one_explicit_field_projection() -> Non
     identity = (SOURCE_ROOT / "domain/recommendation/decision_identity.py").read_text(encoding="utf-8")
     codec = (SOURCE_ROOT / "infra/persistence/decision_record_codec.py").read_text(encoding="utf-8")
     audit = (SOURCE_ROOT / "application/research_audit.py").read_text(encoding="utf-8")
-    columnar = (SOURCE_ROOT / "infra/market_data/columnar.py").read_text(encoding="utf-8")
+    columnar = (SOURCE_ROOT / "infra/market_data/normalization/columnar.py").read_text(encoding="utf-8")
 
     assert "def committed_record_identity_payload(" in identity
     assert "committed_record_identity_payload(record)" in codec

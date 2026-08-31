@@ -4,7 +4,7 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from scripts.runtime_diagnostics.exchange_security_master import collect
-from trader.infra.market_data.exchange_security_master import (
+from trader.infra.market_data.providers.exchange_security_master import (
     ExchangeSecurityMasterClient,
     ExchangeSecurityMasterListing,
 )

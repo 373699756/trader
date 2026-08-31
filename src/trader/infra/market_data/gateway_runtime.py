@@ -19,8 +19,8 @@ from trader.domain.market.models import (
     MarketQuote,
 )
 from trader.infra.failures import classify_adapter_failure
-from trader.infra.market_data.merge import overlay_canonical_snapshot, subset_canonical_snapshot
-from trader.infra.market_data.merge_quote import source_name, source_priority
+from trader.infra.market_data.normalization.merge import overlay_canonical_snapshot, subset_canonical_snapshot
+from trader.infra.market_data.normalization.merge_quote import source_name, source_priority
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.router import RouteOutcome, VendorResult, VendorSeverity
 

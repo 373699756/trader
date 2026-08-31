@@ -27,8 +27,8 @@ from trader.domain.market.research import (
     corporate_risk_facts_from_announcements,
     reduction_level,
 )
-from trader.infra.market_data.akshare_news import fetch_news as _fetch_news
-from trader.infra.market_data.akshare_parsing import (
+from trader.infra.market_data.providers.akshare_news import fetch_news as _fetch_news
+from trader.infra.market_data.providers.akshare_parsing import (
     _announcement_rows,
     _clean_text,
     _finite_number,

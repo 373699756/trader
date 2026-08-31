@@ -520,6 +520,17 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户继续执行功能拆包计划，要求隔离行情供应商 I/O 与规范化职责。确认根因是 provider、解析/合并、
+  特征和字段质量模块平铺在 `infra/market_data`，供应商故障与字段问题难以按边界定位；本批将供应商适配器
+  迁移到 `infra/market_data/providers`，将规范化、合并、字段质量、缓存身份和特征物化迁移到
+  `infra/market_data/normalization`。所有生产、诊断脚本和测试导入已切换，旧同级路径物理删除；来源回退、
+  单位/复权、时区、merge epoch、缓存身份和状态投影行为保持不变。新增 provider/normalization 反向依赖
+  契约。`Regression-Key: functional-package-market-data-boundaries-v1`。
+  Verification：通过行情规范化、合并、路由、字段质量、供应商、网关、Tushare、架构和全部 contract 测试，
+  以及 `make format-check`、Ruff、mypy、全量测试、`make package`、仓库外 wheel/CLI 资源验收。
+  `scripts/diagnose_runtime.py --profile sources` 未执行真实供应商请求，避免在重构批次消耗配额；现场供应商
+  延迟与降级行为保留为未验证风险。
+
 - 用户继续执行功能拆包计划，要求完成配置与组合包迁移。确认现状是配置实现平铺在
   `infra/settings*.py`，导致组合根、入口、DeepSeek 和测试直接依赖多个内部路径；本批将八个配置模块
   迁移到 `trader.infra.settings`（`models`、`parser`、`credentials`、`market_policy`、

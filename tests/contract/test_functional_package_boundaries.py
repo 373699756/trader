@@ -206,7 +206,7 @@ MIGRATION_LEDGER: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ),
 )
 
-COMPLETED_BATCHES = frozenset({"batch-2"})
+COMPLETED_BATCHES = frozenset({"batch-2", "batch-3"})
 
 TARGET_PACKAGES = (
     "domain/market",
@@ -339,4 +339,41 @@ def test_layer_import_graph_has_no_cycles_or_reverse_edges() -> None:
 
     for layer in layers:
         visit(layer)
+    assert violations == []
+
+
+def test_market_provider_and_normalization_packages_are_partitioned() -> None:
+    market_root = SOURCE_ROOT / "infra" / "market_data"
+    provider_root = market_root / "providers"
+    normalization_root = market_root / "normalization"
+    assert provider_root.is_dir()
+    assert normalization_root.is_dir()
+    assert not any(
+        (market_root / name).exists()
+        for name in (
+            "akshare.py",
+            "cninfo.py",
+            "eastmoney.py",
+            "exchange_security_master.py",
+            "sina.py",
+            "tencent.py",
+            "tushare.py",
+            "tushare_records.py",
+            "columnar.py",
+            "columnar_merge.py",
+            "feature_math.py",
+            "feature_risks.py",
+            "features.py",
+            "field_quality.py",
+            "merge.py",
+            "merge_quote.py",
+            "normalize.py",
+        )
+    )
+
+    violations: list[str] = []
+    for path in normalization_root.rglob("*.py"):
+        for imported in _imports(path):
+            if imported.startswith("trader.infra.market_data.providers"):
+                violations.append(f"{path.relative_to(SOURCE_ROOT)} -> {imported}")
     assert violations == []

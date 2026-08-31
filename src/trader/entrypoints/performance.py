@@ -46,13 +46,13 @@ from trader.domain.recommendation.ranking import candidate_score
 from trader.domain.recommendation.scoring import score_board_strategy
 from trader.domain.recommendation.strategies.composition import LocalScoreResult
 from trader.domain.review.models import DeepSeekReview, ReviewOutcome
-from trader.infra.market_data.columnar import ColumnarQuoteBatch, targeted_market_changes
-from trader.infra.market_data.merge import (
+from trader.infra.market_data.normalization.columnar import ColumnarQuoteBatch, targeted_market_changes
+from trader.infra.market_data.normalization.merge import (
     merge_market_observations,
     observation_from_quote,
     overlay_canonical_snapshot,
 )
-from trader.infra.market_data.normalize import MarketQuoteInput, build_market_quote
+from trader.infra.market_data.normalization.normalize import MarketQuoteInput, build_market_quote
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.settings import load_runtime_settings, load_strategy_settings
 from trader.infra.settings.models import PerformanceBudgetSettings
@@ -304,10 +304,10 @@ def _operations(
         **api_operations,
     }
     provenance = {
-        "market_normalization": "trader.infra.market_data.normalize.build_market_quote",
-        "market_merge": "trader.infra.market_data.merge.merge_market_observations",
-        "canonical_snapshot": "trader.infra.market_data.columnar.ColumnarQuoteBatch.from_snapshot",
-        "targeted_overlay_commit": "trader.infra.market_data.merge.overlay_canonical_snapshot + trader.application.decision_core.UnifiedDecisionIndex.publish_overlay",
+        "market_normalization": "trader.infra.market_data.normalization.normalize.build_market_quote",
+        "market_merge": "trader.infra.market_data.normalization.merge.merge_market_observations",
+        "canonical_snapshot": "trader.infra.market_data.normalization.columnar.ColumnarQuoteBatch.from_snapshot",
+        "targeted_overlay_commit": "trader.infra.market_data.normalization.merge.overlay_canonical_snapshot + trader.application.decision_core.UnifiedDecisionIndex.publish_overlay",
         "board_preselection": "trader.domain.recommendation.ranking.candidate_score",
         "board_local_scoring": "trader.domain.recommendation.scoring.score_board_strategy",
         "three_strategy_board_scoring": "trader.domain.recommendation.scoring.score_board_strategy",

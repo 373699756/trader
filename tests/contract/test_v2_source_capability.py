@@ -38,7 +38,7 @@ def test_v2_p1_source_capability_report_covers_required_sources() -> None:
 def test_unimplemented_sources_are_not_wired_into_market_runtime() -> None:
     for missing in ("exchange.py", "baostock.py", "mootdx.py"):
         assert not (MARKET_DIR / missing).exists()
-    assert (MARKET_DIR / "cninfo.py").exists()
+    assert (MARKET_DIR / "providers" / "cninfo.py").exists()
 
     for path in (BOOTSTRAP, GATEWAY, COORDINATOR):
         tree = ast.parse(path.read_text(encoding="utf-8"))

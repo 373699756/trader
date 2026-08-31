@@ -15,7 +15,7 @@ from .common import emit_report
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from trader.infra.market_data.exchange_security_master import ExchangeSecurityMasterClient  # noqa: E402
+from trader.infra.market_data.providers.exchange_security_master import ExchangeSecurityMasterClient  # noqa: E402
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 

@@ -26,7 +26,7 @@ from tests.component.market_data_test_support import (
     _quote,
     _service,
 )
-from trader.infra.market_data.exchange_security_master import (
+from trader.infra.market_data.providers.exchange_security_master import (
     ExchangeSecurityMasterClient,
     ExchangeSecurityMasterListing,
 )

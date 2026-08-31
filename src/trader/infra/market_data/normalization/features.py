@@ -36,7 +36,15 @@ from trader.domain.market.tail import (
     tail_signal_evidence,
 )
 from trader.domain.recommendation.downside import derive_entry_setup_values
-from trader.infra.market_data.feature_math import (
+from trader.infra.market_data.history import (
+    DailyBar,
+    HistoryContext,
+    HistoryProfile,
+    require_qfq_history,
+    return_pct,
+    summarize_history_metrics,
+)
+from trader.infra.market_data.normalization.feature_math import (
     _CROSS_SECTION_FIELDS,
     _breakout_score,
     _close_location,
@@ -50,15 +58,7 @@ from trader.infra.market_data.feature_math import (
     _slope_score,
     _structured_evidence,
 )
-from trader.infra.market_data.feature_risks import extreme_structure_risks
-from trader.infra.market_data.history import (
-    DailyBar,
-    HistoryContext,
-    HistoryProfile,
-    require_qfq_history,
-    return_pct,
-    summarize_history_metrics,
-)
+from trader.infra.market_data.normalization.feature_risks import extreme_structure_risks
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 

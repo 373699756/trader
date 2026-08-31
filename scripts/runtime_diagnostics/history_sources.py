@@ -20,10 +20,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from trader.application.ports.data_plane import HistoricalFeatureRecord  # noqa: E402
-from trader.infra.market_data.eastmoney import EastmoneyClient  # noqa: E402
 from trader.infra.market_data.history import DailyBar  # noqa: E402
 from trader.infra.market_data.history_seed import FallbackHistoryClient  # noqa: E402
-from trader.infra.market_data.tencent import TencentClient  # noqa: E402
+from trader.infra.market_data.providers.eastmoney import EastmoneyClient  # noqa: E402
+from trader.infra.market_data.providers.tencent import TencentClient  # noqa: E402
 from trader.infra.persistence.data_plane import DataPlaneRepository  # noqa: E402
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
