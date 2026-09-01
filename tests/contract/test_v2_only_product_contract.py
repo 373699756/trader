@@ -64,6 +64,7 @@ def test_parallel_v2_overview_plan_and_operations_docs_are_retired() -> None:
         assert not (ROOT / "docs" / retired).exists()
     assert not (ROOT / "docs/V2_plan.md").exists()
     assert not (ROOT / "docs/score.md").exists()
+    assert not (ROOT / "docs/plan.md").exists()
 
 
 def test_release_guides_expose_only_v2_runtime_and_desktop_gate() -> None:

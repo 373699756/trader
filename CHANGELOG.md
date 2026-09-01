@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户继续执行 `docs/plan.md` 批次 10，要求删除迁移期痕迹并完成发布级验收。最终架构契约现在验证目标
+  功能包、旧路径退役、无环依赖、无兼容 shim 和计划文件退役；权威设计明确最终目录为唯一活动边界。
+  `Regression-Key: functional-package-final-cutover-v1`。
+
 - 用户继续执行 `docs/plan.md` 批次 9，要求研究、结算和入口收拢且普通生产排障不加载离线实现。
   新增 `application/research`、`application/outcomes` 的窄所有权包、结算端口和 profile 证据端口；生产共享
   的 Tomorrow P2 不可变模型工件落在 `application/ports/tomorrow_model.py`，保持原 schema、验证和 SHA-256
@@ -534,6 +538,11 @@ All notable changes to this project are documented here.
   前向封存状态、第二轮权重收缩和 `PromotionDossier` 人工晋级边界。
 
 ### Changed
+
+- 完成最终功能包切换：删除权威设计中的迁移台账和 `docs/plan.md` 一次性计划，保留 Changelog 与历史报告
+  作为交付证据；最终运行、研究、Web、入口和基础设施目录直接由架构契约与窄入口测试守护。未改变公开
+  API、评分、融合、冻结、持久化 schema、配置或运行时业务行为。
+  `Regression-Key: functional-package-final-cutover-v1`。
 
 - 确认根因是 CLI、bootstrap 和 research 包初始化在普通导入时聚合离线筛选、回放和模型训练；CLI 导入
   58 个、server 导入 49 个研究模块。研究用例现在只在显式 `research-*` 命令函数内加载，bootstrap 的离线
@@ -1548,6 +1557,9 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 退役 `docs/plan.md` 及其中的迁移账本、批次状态和临时完成清单；不再把一次性施工计划作为活动输入，
+  也未保留旧目录、兼容别名、重定向或双实现。
+
 - 物理删除 application 根级研究/结算模块、旧 profile 端口和对应根级测试路径；删除 research 包的聚合
   `__all__`/重导出和所有旧导入路径。未保留兼容模块、弃用窗口、双读双写、动态 fallback 或旧生产实现。
 
@@ -1746,6 +1758,13 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 最终架构/文档契约、功能包边界、JSON 序列化边界、`create_app()` 无副作用、融合固定向量、预算并发、
+  latest-wins/停止、冻结恢复、SSE 和 Web 资源回归通过；`docs/plan.md` 不存在，迁移账本不存在，所有旧
+  路径和兼容导入扫描为 0。完整 `make format-check`、`make lint`、`make type-check`、`make test`、
+  `make package` 和 `make performance-check` 均通过。
+- 最终 wheel 在仓库外安装并从 `site-packages` 导入，`pip check`、CLI、模板、CSS、JavaScript、图标和模型
+  资源通过；三档桌面 Chrome 验收和统一 `diagnose_runtime.py --profile full --output -` 均记录于本批结果。
 
 - `tests/unit/application/research`、`tests/unit/domain/research`、`tests/unit/infra/research`、结算、trace、
   score-plan、功能包、架构和 E9 入口契约全部通过；CLI 导入研究模块数为 0，server 仅加载允许的后台证据
@@ -2732,6 +2751,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- Firefox 专项仍受本机缺少 geckodriver 阻断；真实供应商/DeepSeek 现场、五时段运行矩阵和外部服务状态不
+  能由离线门禁替代，已按精确失败/未执行原因记录。正式 `0.2.0` release 仍未声明，需用户另立发布批次。
+- 既有 `score_p0_v2_historical_planned_dates_missed`、V1/V2 收益证据不足和 overlay 性能长尾保持原状；本批
+  只清理架构与治理痕迹，不回填研究身份、不改变评分策略、不放宽任何质量门槛。
 
 - 研究诊断如实报告既有 `score_p0_v2_historical_planned_dates_missed`：历史窗口已错过 7 个固定计划日，
   当前最大可达 33/40 且 `recoverable=false`。本批不回填、顺延或改写该研究身份；这不是包迁移回归，后续

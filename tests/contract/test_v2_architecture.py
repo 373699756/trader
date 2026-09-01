@@ -297,12 +297,13 @@ def test_dashboard_stream_transport_is_a_separate_packaged_dependency() -> None:
     assert template.index("dashboard_stream.js") < template.index("dashboard.js")
 
 
-def test_functional_package_migration_contract_is_authoritative() -> None:
+def test_functional_package_final_cutover_contract_is_authoritative() -> None:
     design = PROJECT_ROOT / "docs/software-business-design.md"
     content = design.read_text(encoding="utf-8")
     assert "### 3.1 功能包目标布局与迁移约束" in content
-    assert "每个旧模块只能登记一次" in content
-    assert "不得增加重导出、别名或双实现" in content
+    assert "最终包状态已固化" in content
+    assert "根级迁移路径不属于活动树" in content
+    assert not (PROJECT_ROOT / "docs/plan.md").exists()
 
 
 def test_domain_and_application_do_not_own_persistence_or_json_decoders() -> None:

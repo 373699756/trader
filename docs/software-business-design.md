@@ -2,7 +2,7 @@
 
 版本：v2-only 发布候选契约
 
-状态：V2-only 工程与发布门禁验收已完成；当前版本仍为 Unreleased，尚未声明正式 0.2.0 release
+状态：V2-only 工程与发布门禁验收已完成；功能包拆分已完成，当前版本仍为 Unreleased，尚未声明正式 0.2.0 release
 
 适用范围：本地 A 股研究看板
 
@@ -14,7 +14,7 @@
 当前交付状态：V2-only 工程与发布门禁验收已闭合；V2-only 是唯一活动产品链。旧 Pipeline、旧 Web 路由
 和旧运行目录已从活动树物理删除，不构成发布候选的
 兼容能力，也不得反向定义 V2。迁移过程、事故复盘和逐批实现
-记录只保存在 `CHANGELOG.md` 与 `docs/reports/`；尚未闭合的产品、发布和工程 Gate 直接记录在本文第 14 节，
+记录只保存在 `CHANGELOG.md` 与 `docs/reports/`；一次性拆包计划已退役，尚未闭合的产品、发布和工程 Gate 直接记录在本文第 14 节，
 策略研究 Gate 直接记录在荐股策略文档第 15.1 节，不再保留并行概览、实施计划或独立运行手册。
 
 ## 1. 产品定位与范围
@@ -583,31 +583,9 @@ infra/research
 web/api
 ```
 
-迁移期间每个旧模块只能登记一次，并且只能由一个批次迁移到一个目标包。批次 1 只冻结以下台账和
-契约，不创建生产实现；后续批次完成移动后必须删除旧路径，不得增加重导出、别名或双实现。台账中的
-路径是显式集合，新增模块必须先更新本节、`docs/plan.md` 和契约测试：
-
-| 批次 | 旧模块集合 | 唯一目标包 |
-| --- | --- | --- |
-| 2 | `infra/settings.py`、`infra/settings_credentials.py`、`infra/settings_factor_validation.py`、`infra/settings_market_policy.py`、`infra/settings_models.py`、`infra/settings_parser.py`、`infra/settings_runtime.py`、`infra/settings_strategy_validation.py` | `infra/settings` |
-| 3 | `infra/market_data/akshare.py`、`akshare_news.py`、`akshare_parsing.py`、`cninfo.py`、`eastmoney.py`、`exchange_security_master.py`、`sina.py`、`tencent.py`、`tushare.py`、`tushare_records.py` | `infra/market_data/providers` |
-| 3 | `infra/market_data/columnar.py`、`columnar_merge.py`、`feature_math.py`、`feature_risks.py`、`features.py`、`field_quality.py`、`merge.py`、`merge_quote.py`、`normalize.py` | `infra/market_data/normalization` |
-| 4 | `infra/market_data/history.py`、`history_seed.py`、`service_history.py`、`service_history_warmup.py` | `infra/market_data/history` |
-| 4 | `infra/market_data/calendar.py`、`security_references.py` | `infra/market_data/references` |
-| 4 | `infra/market_data/gateway.py`、`gateway_health.py`、`gateway_runtime.py`、`market_cache_identity.py`、`observations.py`、`router.py`、`service.py`、`service_calendar_state.py`、`service_candidates.py`、`service_execution.py`、`service_health.py`、`service_intraday.py`、`service_models.py`、`service_research.py`、`service_research_data_plane.py`、`service_research_models.py`、`service_tushare.py`、`source_coordinator.py` | `infra/market_data/service` |
-| 5 | `domain/recommendation/filters.py` | `domain/recommendation/filtering` |
-| 5 | `domain/recommendation/scoring.py`、`scoring_calculations.py` | `domain/recommendation/scoring` |
-| 5 | `domain/recommendation/downside.py`、`fusion.py`、`scored_fusion.py` | `domain/recommendation/risk_fusion` |
-| 5 | `domain/recommendation/ranking.py`、`scored_selection.py` | `domain/recommendation/selection` |
-| 6 | `application/scored_deepseek_fusion.py`、`scored_quality.py`、`scored_selection.py`、`scored_v2_freezing.py`、`scored_v2_projection.py`、`today_v2_freezing.py`、`tomorrow_model_scoring.py`、`recommendation_policy_codec.py`、`policy.py` | `application/recommendation` |
-| 6 | `application/decision_core.py`、`decision_coverage.py`、`decision_drafts.py`、`decision_events.py`、`decision_observers.py`、`decision_overlay_refresh.py`、`decision_queries.py`、`decision_stream.py`、`v2_decision_adapters.py` | `application/decisions` |
-| 7 | `application/cadence.py`、`latency.py`、`runtime.py`、`schedule.py`、`shutdown.py`、`source_lanes.py`、`resource_orchestration.py`、`latest_wins.py`、`v2_runtime.py`、`v2_runtime_issues.py`、`workers.py` | `application/runtime` |
-| 7 | `application/v2_input_runtime.py` | `application/market_data` |
-| 8 | `web/decision_serializers.py`、`decision_sse.py`、`route_services.py`、`routes.py`、`routes_v2.py` | `web/api` |
-| 9 | `application/outcome_settlement.py` | `application/outcomes` |
-| 9 | `application/research_audit.py`、`research_coordination.py`、`tomorrow_profile_comparison.py`、`tomorrow_profile_reporting.py`、`tomorrow_profile_settlement.py`、`v2_research_runtime.py` | `application/research` |
-
-批次 9 已完成：结果结算用例和结算端口位于 `application/outcomes`，离线研究用例及 profile 证据端口位于
+最终包状态已固化：研究、结算、运行时、行情、推荐、决策、基础设施和 Web 均位于上方目标目录；旧
+根级迁移路径不属于活动树，也没有兼容转发或迁移台账作为运行输入。研究、结算和 profile 证据边界为：
+结果结算用例和结算端口位于 `application/outcomes`，离线研究用例及 profile 证据端口位于
 `application/research`；生产模型共享的不可变 Tomorrow P2 工件位于 `application/ports/tomorrow_model.py`，
 不反向依赖离线研究。`application/research/__init__.py`、`domain/research/__init__.py` 和
 `infra/research/__init__.py` 只作为标记包，不聚合导入。`trader.entrypoints.cli` 只在执行显式
