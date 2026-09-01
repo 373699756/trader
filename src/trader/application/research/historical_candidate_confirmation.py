@@ -12,6 +12,7 @@ from typing import Literal
 
 from trader.domain.research.filter_recall_ablation import FilterAblationRow, run_filter_recall_ablation
 from trader.domain.research.historical_candidate_confirmation import (
+    CandidateConfirmationPlan,
     CandidateConfirmationSeries,
     HistoricalCandidateConfirmationReport,
     build_confirmation_folds,
@@ -128,8 +129,8 @@ def execute_historical_candidate_confirmation(
     return confirm_transparent_candidates(
         family,
         development_series,
-        confirmation_series=confirmation_series,
-        selected_candidate_id=selected_candidate_id,
+        confirmation_series,
+        CandidateConfirmationPlan(selected_candidate_id),
     )
 
 
@@ -165,9 +166,8 @@ def execute_historical_strategy_research(
         confirmation = confirm_transparent_candidates(
             family,
             development_series,
-            confirmation_series=confirmation_series,
-            repetitions=repetitions,
-            selected_candidate_id=selected_candidate_id,
+            confirmation_series,
+            CandidateConfirmationPlan(selected_candidate_id, repetitions=repetitions),
         )
     elif request.parent_status != "ready":
         confirmation = inherit_candidate_confirmation(
@@ -229,16 +229,11 @@ def _candidate_series(
     direction_dates: tuple[date, ...] = (),
 ) -> tuple[CandidateConfirmationSeries, ...]:
     control = candidates[0]
-    control_daily = tuple(
-        _daily_metrics(control, rows, trade_date) for trade_date in dates
-    )
+    control_daily = tuple(_daily_metrics(control, rows, trade_date) for trade_date in dates)
     folds = build_confirmation_folds(direction_dates) if direction_dates else ()
     result: list[CandidateConfirmationSeries] = []
     for candidate in candidates:
-        candidate_daily = tuple(
-            _daily_metrics(candidate, rows, trade_date)
-            for trade_date in dates
-        )
+        candidate_daily = tuple(_daily_metrics(candidate, rows, trade_date) for trade_date in dates)
         fold_directions = tuple(_fold_direction(candidate, control, direction_rows, fold) for fold in folds)
         result.append(
             CandidateConfirmationSeries(

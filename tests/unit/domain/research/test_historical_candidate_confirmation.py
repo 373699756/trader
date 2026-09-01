@@ -1,12 +1,24 @@
 from dataclasses import replace
 from datetime import date, timedelta
 
+import pytest
+
 from trader.domain.research.filter_recall_ablation import FilterAblationRow, run_filter_recall_ablation
 from trader.domain.research.historical_candidate_confirmation import (
+    CandidateConfirmationPlan,
     CandidateConfirmationSeries,
     confirm_transparent_candidates,
 )
 from trader.domain.research.transparent_candidate import preregister_transparent_candidates
+
+
+def test_confirmation_plan_rejects_invalid_statistics() -> None:
+    with pytest.raises(ValueError, match="alpha"):
+        CandidateConfirmationPlan("tomorrow_candidate", alpha=0.0)
+    with pytest.raises(ValueError, match="repetitions"):
+        CandidateConfirmationPlan("tomorrow_candidate", repetitions=0)
+    with pytest.raises(ValueError, match="block length"):
+        CandidateConfirmationPlan("tomorrow_candidate", block_days=4)
 
 
 def test_confirmation_keeps_terminal_holdout_closed_and_joint_family():
@@ -56,9 +68,8 @@ def test_confirmation_keeps_terminal_holdout_closed_and_joint_family():
     report = confirm_transparent_candidates(
         family,
         series,
-        confirmation_series=confirmation_series,
-        selected_candidate_id=selected_candidate_id,
-        repetitions=100,
+        confirmation_series,
+        CandidateConfirmationPlan(selected_candidate_id, repetitions=100),
     )
     assert report.terminal_holdout_status == "terminal_holdout_not_opened"
     assert report.production_authority is False
@@ -113,9 +124,8 @@ def test_confirmation_rejects_positive_increment_with_negative_absolute_returns(
     report = confirm_transparent_candidates(
         family,
         series,
-        confirmation_series=confirmation_series,
-        selected_candidate_id=selected_candidate_id,
-        repetitions=100,
+        confirmation_series,
+        CandidateConfirmationPlan(selected_candidate_id, repetitions=100),
     )
 
     assert report.status == "historical_rejected"
@@ -180,10 +190,9 @@ def test_confirmation_retains_additional_filter_candidates_in_the_joint_holm_fam
     report = confirm_transparent_candidates(
         family,
         family_series,
-        confirmation_series=confirmation_series,
+        confirmation_series,
+        CandidateConfirmationPlan(selected_candidate_id, repetitions=100),
         additional_series=(filter_series,),
-        selected_candidate_id=selected_candidate_id,
-        repetitions=100,
     )
 
     assert report.holm_family[-1] == filter_series.candidate_id

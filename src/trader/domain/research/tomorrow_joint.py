@@ -313,57 +313,69 @@ class TomorrowJointValidationReport:
     concentration_delta: float = 0.0
 
     def __post_init__(self) -> None:
-        if self.candidate_id not in TOMORROW_JOINT_CANDIDATES:
-            raise ValueError("Tomorrow joint validation candidate is not preregistered")
-        if self.trade_dates < 1 or self.production_authority:
-            raise ValueError("Tomorrow joint validation is historical research only")
-        if not self.evidence_identity or len({item.key for item in self.evidence_identity}) != len(
-            self.evidence_identity
-        ):
-            raise ValueError("Tomorrow joint validation requires unique aligned evidence identity")
-        if (
-            len(self.paired_daily_increments_20bp) != self.trade_dates
-            or len(self.paired_daily_increments_50bp) != self.trade_dates
-            or self.bootstrap_20bp.sample_count != self.trade_dates
-            or self.bootstrap_50bp.sample_count != self.trade_dates
-        ):
-            raise ValueError("Tomorrow joint validation evidence counts must align")
-        metrics = (
-            self.paired_increment_20bp,
-            self.paired_increment_50bp,
-            *self.paired_daily_increments_20bp,
-            *self.paired_daily_increments_50bp,
-            self.joint_mean_net_excess_20bp,
-            self.joint_mean_net_excess_50bp,
-            self.severe_loss_rate_delta,
-            self.turnover_increment_percentage_points,
-            self.paired_active_increment_20bp,
-            self.paired_active_increment_50bp,
-            self.capacity_delta,
-            self.concentration_delta,
-        )
-        optional_metrics = (self.mean_rank_ic, self.mean_q5_minus_q1_20bp)
-        if any(not math.isfinite(value) for value in metrics) or any(
-            value is not None and not math.isfinite(value) for value in optional_metrics
-        ):
-            raise ValueError("Tomorrow joint validation metrics must be finite")
-        if self.failure_reasons != tuple(sorted(set(self.failure_reasons))):
-            raise ValueError("Tomorrow joint validation failures must be canonical")
-        if (
-            not math.isclose(self.paired_increment_20bp, _mean(self.paired_daily_increments_20bp), abs_tol=1e-12)
-            or not math.isclose(self.paired_increment_50bp, _mean(self.paired_daily_increments_50bp), abs_tol=1e-12)
-            or not math.isclose(self.bootstrap_20bp.observed_mean or 0.0, self.paired_increment_20bp, abs_tol=1e-12)
-            or not math.isclose(self.bootstrap_50bp.observed_mean or 0.0, self.paired_increment_50bp, abs_tol=1e-12)
-        ):
-            raise ValueError("Tomorrow joint paired metrics must bind their daily evidence")
-        if self.passed == bool(self.failure_reasons):
-            raise ValueError("Tomorrow joint validation status and failures disagree")
-        if self.active_profile_id not in {"v1", "v2"}:
-            raise ValueError("Tomorrow joint validation active profile is invalid")
-        if self.active_profile_id == "v2" and (
-            self.active_bootstrap_20bp is None or self.active_bootstrap_50bp is None
-        ):
-            raise ValueError("Tomorrow joint V2-active validation requires paired bootstrap evidence")
+        _validate_joint_report_identity(self)
+        _validate_joint_report_metrics(self)
+        _validate_joint_report_outcome(self)
+
+
+def _validate_joint_report_identity(report: TomorrowJointValidationReport) -> None:
+    if report.candidate_id not in TOMORROW_JOINT_CANDIDATES:
+        raise ValueError("Tomorrow joint validation candidate is not preregistered")
+    if report.trade_dates < 1 or report.production_authority:
+        raise ValueError("Tomorrow joint validation is historical research only")
+    if not report.evidence_identity or len({item.key for item in report.evidence_identity}) != len(
+        report.evidence_identity
+    ):
+        raise ValueError("Tomorrow joint validation requires unique aligned evidence identity")
+    if (
+        len(report.paired_daily_increments_20bp) != report.trade_dates
+        or len(report.paired_daily_increments_50bp) != report.trade_dates
+        or report.bootstrap_20bp.sample_count != report.trade_dates
+        or report.bootstrap_50bp.sample_count != report.trade_dates
+    ):
+        raise ValueError("Tomorrow joint validation evidence counts must align")
+
+
+def _validate_joint_report_metrics(report: TomorrowJointValidationReport) -> None:
+    metrics = (
+        report.paired_increment_20bp,
+        report.paired_increment_50bp,
+        *report.paired_daily_increments_20bp,
+        *report.paired_daily_increments_50bp,
+        report.joint_mean_net_excess_20bp,
+        report.joint_mean_net_excess_50bp,
+        report.severe_loss_rate_delta,
+        report.turnover_increment_percentage_points,
+        report.paired_active_increment_20bp,
+        report.paired_active_increment_50bp,
+        report.capacity_delta,
+        report.concentration_delta,
+    )
+    optional_metrics = (report.mean_rank_ic, report.mean_q5_minus_q1_20bp)
+    if any(not math.isfinite(value) for value in metrics) or any(
+        value is not None and not math.isfinite(value) for value in optional_metrics
+    ):
+        raise ValueError("Tomorrow joint validation metrics must be finite")
+    if report.failure_reasons != tuple(sorted(set(report.failure_reasons))):
+        raise ValueError("Tomorrow joint validation failures must be canonical")
+
+
+def _validate_joint_report_outcome(report: TomorrowJointValidationReport) -> None:
+    if (
+        not math.isclose(report.paired_increment_20bp, _mean(report.paired_daily_increments_20bp), abs_tol=1e-12)
+        or not math.isclose(report.paired_increment_50bp, _mean(report.paired_daily_increments_50bp), abs_tol=1e-12)
+        or not math.isclose(report.bootstrap_20bp.observed_mean or 0.0, report.paired_increment_20bp, abs_tol=1e-12)
+        or not math.isclose(report.bootstrap_50bp.observed_mean or 0.0, report.paired_increment_50bp, abs_tol=1e-12)
+    ):
+        raise ValueError("Tomorrow joint paired metrics must bind their daily evidence")
+    if report.passed == bool(report.failure_reasons):
+        raise ValueError("Tomorrow joint validation status and failures disagree")
+    if report.active_profile_id not in {"v1", "v2"}:
+        raise ValueError("Tomorrow joint validation active profile is invalid")
+    if report.active_profile_id == "v2" and (
+        report.active_bootstrap_20bp is None or report.active_bootstrap_50bp is None
+    ):
+        raise ValueError("Tomorrow joint V2-active validation requires paired bootstrap evidence")
 
 
 @dataclass(frozen=True)
@@ -412,9 +424,7 @@ class TomorrowJointFamilyConfirmation:
         expected = "historical_candidate_ready" if self.selected_model is not None else "historical_rejected"
         if self.status != expected:
             raise ValueError("Tomorrow joint confirmation status is inconsistent")
-        if self.fallback_to_c3 != (
-            self.selected_model is not None and self.selected_model.candidate_id == "c3"
-        ):
+        if self.fallback_to_c3 != (self.selected_model is not None and self.selected_model.candidate_id == "c3"):
             raise ValueError("Tomorrow joint C3 fallback marker is inconsistent")
         if (
             self.production_authority
@@ -530,12 +540,23 @@ def predict_tomorrow_joint(
     return tuple(result)
 
 
-def evaluate_tomorrow_joint_validation(
+@dataclass(frozen=True)
+class _JointValidationInputs:
+    candidate_id: TomorrowJointCandidateId
+    weights: TomorrowJointWeights
+    evidence_dates: tuple[date, ...]
+    ordered_evidence: tuple[TomorrowJointDailyPortfolioEvidence, ...]
+    paired_20: tuple[float, ...]
+    paired_50: tuple[float, ...]
+    active_profile: Literal["v1", "v2"]
+    paired_active_20: tuple[float, ...]
+    paired_active_50: tuple[float, ...]
+
+
+def _prepare_joint_validation(
     predictions: tuple[TomorrowJointPrediction, ...],
     portfolio_evidence: tuple[TomorrowJointDailyPortfolioEvidence, ...],
-) -> TomorrowJointValidationReport:
-    """Evaluate paired profit and diagnostic gates without producing actions or Top6."""
-
+) -> _JointValidationInputs:
     if not predictions or not portfolio_evidence:
         raise ValueError("Tomorrow joint validation requires prediction and portfolio evidence")
     candidate_ids = {item.candidate_id for item in predictions}
@@ -546,34 +567,52 @@ def evaluate_tomorrow_joint_validation(
     evidence_dates = tuple(item.trade_date for item in portfolio_evidence)
     if len(set(evidence_dates)) != len(evidence_dates) or prediction_dates != set(evidence_dates):
         raise ValueError("Tomorrow joint validation dates must align exactly")
-    ordered_evidence = tuple(sorted(portfolio_evidence, key=lambda item: item.trade_date))
-    paired_20 = tuple(item.joint_net_excess_20bp - item.v1_net_excess_20bp for item in ordered_evidence)
-    paired_50 = tuple(item.joint_net_excess_50bp - item.v1_net_excess_50bp for item in ordered_evidence)
-    active_profiles = {item.active_profile_id for item in ordered_evidence}
+    ordered = tuple(sorted(portfolio_evidence, key=lambda item: item.trade_date))
+    active_profiles = {item.active_profile_id for item in ordered}
     if len(active_profiles) != 1:
         raise ValueError("Tomorrow joint active profile must remain fixed across validation dates")
-    active_profile = next(iter(active_profiles))
-    paired_active_20 = tuple(item.joint_net_excess_20bp - item.active_return_20bp for item in ordered_evidence)
-    paired_active_50 = tuple(item.joint_net_excess_50bp - item.active_return_50bp for item in ordered_evidence)
-    bootstrap_20 = paired_moving_block_statistics(
-        paired_20,
-        plan=PreregisteredBootstrapPlan("tomorrow_joint_20bp_v1", 20260901, "joint", 5, 10_000),
+    return _JointValidationInputs(
+        next(iter(candidate_ids)),
+        next(iter(weights)),
+        evidence_dates,
+        ordered,
+        tuple(item.joint_net_excess_20bp - item.v1_net_excess_20bp for item in ordered),
+        tuple(item.joint_net_excess_50bp - item.v1_net_excess_50bp for item in ordered),
+        next(iter(active_profiles)),
+        tuple(item.joint_net_excess_20bp - item.active_return_20bp for item in ordered),
+        tuple(item.joint_net_excess_50bp - item.active_return_50bp for item in ordered),
     )
-    bootstrap_50 = paired_moving_block_statistics(
-        paired_50,
-        plan=PreregisteredBootstrapPlan("tomorrow_joint_50bp_v1", 20260901, "joint", 5, 10_000),
-    )
-    active_bootstrap_20 = paired_moving_block_statistics(
-        paired_active_20,
-        plan=PreregisteredBootstrapPlan("tomorrow_joint_active_20bp_v1", 20260901, "joint", 5, 10_000),
-    )
-    active_bootstrap_50 = paired_moving_block_statistics(
-        paired_active_50,
-        plan=PreregisteredBootstrapPlan("tomorrow_joint_active_50bp_v1", 20260901, "joint", 5, 10_000),
-    )
+
+
+def _joint_bootstraps(
+    inputs: _JointValidationInputs,
+) -> tuple[
+    PreregisteredBootstrapResult,
+    PreregisteredBootstrapResult,
+    PreregisteredBootstrapResult,
+    PreregisteredBootstrapResult,
+]:
+    return tuple(
+        paired_moving_block_statistics(
+            values,
+            plan=PreregisteredBootstrapPlan(f"tomorrow_joint_{label}_v1", 20260901, "joint", 5, 10_000),
+        )
+        for label, values in (
+            ("20bp", inputs.paired_20),
+            ("50bp", inputs.paired_50),
+            ("active_20bp", inputs.paired_active_20),
+            ("active_50bp", inputs.paired_active_50),
+        )
+    )  # type: ignore[return-value]
+
+
+def _joint_rank_metrics(
+    predictions: tuple[TomorrowJointPrediction, ...],
+    evidence_dates: tuple[date, ...],
+) -> tuple[float | None, float | None]:
     rank_ics: list[float] = []
     q_spreads: list[float] = []
-    for trade_date in sorted(prediction_dates):
+    for trade_date in sorted(evidence_dates):
         daily = tuple(
             sorted((item for item in predictions if item.trade_date == trade_date), key=lambda item: item.code)
         )
@@ -586,58 +625,114 @@ def evaluate_tomorrow_joint_validation(
         spread = _q5_minus_q1(daily)
         if spread is not None:
             q_spreads.append(spread)
-    paired_mean_20 = _mean(paired_20)
-    paired_mean_50 = _mean(paired_50)
-    joint_mean_20 = _mean(tuple(item.joint_net_excess_20bp for item in ordered_evidence))
-    joint_mean_50 = _mean(tuple(item.joint_net_excess_50bp for item in ordered_evidence))
-    severe_delta = _mean(tuple(item.joint_severe_loss_rate - item.v1_severe_loss_rate for item in ordered_evidence))
-    turnover_delta_pp = 100.0 * _mean(tuple(item.joint_turnover - item.v1_turnover for item in ordered_evidence))
-    capacity_delta = _mean(tuple(item.joint_capacity - item.v1_capacity for item in ordered_evidence))
-    concentration_delta = _mean(tuple(item.joint_concentration - item.v1_concentration for item in ordered_evidence))
-    mean_rank_ic = _mean(tuple(rank_ics)) if rank_ics else None
-    mean_q_spread = _mean(tuple(q_spreads)) if q_spreads else None
+    return (_mean(tuple(rank_ics)) if rank_ics else None, _mean(tuple(q_spreads)) if q_spreads else None)
+
+
+def _joint_return_failures(
+    paired_mean_20: float,
+    paired_mean_50: float,
+    joint_mean_20: float,
+    joint_mean_50: float,
+    bootstraps: tuple[PreregisteredBootstrapResult, ...],
+) -> tuple[str, ...]:
     failures: list[str] = []
-    if joint_mean_20 <= 0.0:
-        failures.append("absolute_20bp_not_positive")
-    if joint_mean_50 <= 0.0:
-        failures.append("absolute_50bp_not_positive")
-    if paired_mean_20 <= 0.0:
-        failures.append("paired_20bp_not_positive")
-    if paired_mean_50 <= 0.0:
-        failures.append("paired_50bp_not_positive")
-    if bootstrap_20.confidence_lower is None or bootstrap_20.confidence_lower <= 0.0:
-        failures.append("bootstrap_20bp_lower_not_positive")
-    if bootstrap_50.confidence_lower is None or bootstrap_50.confidence_lower <= 0.0:
-        failures.append("bootstrap_50bp_lower_not_positive")
-    if severe_delta > 0.0:
-        failures.append("severe_loss_rate_worse_than_v1")
-    if turnover_delta_pp > 5.0:
-        failures.append("turnover_increment_above_5pp")
-    if capacity_delta < 0.0:
-        failures.append("capacity_worse_than_v1")
-    if concentration_delta > 0.0:
-        failures.append("concentration_worse_than_v1")
-    if active_profile == "v2":
-        if (
-            _mean(paired_active_20) <= 0.0
-            or active_bootstrap_20.confidence_lower is None
-            or active_bootstrap_20.confidence_lower <= 0.0
-        ):
-            failures.append("active_profile_20bp_gate_failed")
-        if (
-            _mean(paired_active_50) <= 0.0
-            or active_bootstrap_50.confidence_lower is None
-            or active_bootstrap_50.confidence_lower <= 0.0
-        ):
-            failures.append("active_profile_50bp_gate_failed")
+    for failed, reason in (
+        (joint_mean_20 <= 0.0, "absolute_20bp_not_positive"),
+        (joint_mean_50 <= 0.0, "absolute_50bp_not_positive"),
+        (paired_mean_20 <= 0.0, "paired_20bp_not_positive"),
+        (paired_mean_50 <= 0.0, "paired_50bp_not_positive"),
+        (
+            bootstraps[0].confidence_lower is None or bootstraps[0].confidence_lower <= 0.0,
+            "bootstrap_20bp_lower_not_positive",
+        ),
+        (
+            bootstraps[1].confidence_lower is None or bootstraps[1].confidence_lower <= 0.0,
+            "bootstrap_50bp_lower_not_positive",
+        ),
+    ):
+        if failed:
+            failures.append(reason)
+    return tuple(failures)
+
+
+def _joint_risk_failures(
+    severe_delta: float,
+    turnover_delta_pp: float,
+    capacity_delta: float,
+    concentration_delta: float,
+) -> tuple[str, ...]:
+    return tuple(
+        reason
+        for failed, reason in (
+            (severe_delta > 0.0, "severe_loss_rate_worse_than_v1"),
+            (turnover_delta_pp > 5.0, "turnover_increment_above_5pp"),
+            (capacity_delta < 0.0, "capacity_worse_than_v1"),
+            (concentration_delta > 0.0, "concentration_worse_than_v1"),
+        )
+        if failed
+    )
+
+
+def _joint_active_failures(
+    inputs: _JointValidationInputs,
+    bootstraps: tuple[PreregisteredBootstrapResult, ...],
+) -> tuple[str, ...]:
+    if inputs.active_profile != "v2":
+        return ()
+    return tuple(
+        reason
+        for failed, reason in (
+            (
+                _mean(inputs.paired_active_20) <= 0.0
+                or bootstraps[2].confidence_lower is None
+                or bootstraps[2].confidence_lower <= 0.0,
+                "active_profile_20bp_gate_failed",
+            ),
+            (
+                _mean(inputs.paired_active_50) <= 0.0
+                or bootstraps[3].confidence_lower is None
+                or bootstraps[3].confidence_lower <= 0.0,
+                "active_profile_50bp_gate_failed",
+            ),
+        )
+        if failed
+    )
+
+
+def evaluate_tomorrow_joint_validation(
+    predictions: tuple[TomorrowJointPrediction, ...],
+    portfolio_evidence: tuple[TomorrowJointDailyPortfolioEvidence, ...],
+) -> TomorrowJointValidationReport:
+    """Evaluate paired profit and diagnostic gates without producing actions or Top6."""
+
+    inputs = _prepare_joint_validation(predictions, portfolio_evidence)
+    bootstraps = _joint_bootstraps(inputs)
+    paired_mean_20 = _mean(inputs.paired_20)
+    paired_mean_50 = _mean(inputs.paired_50)
+    joint_mean_20 = _mean(tuple(item.joint_net_excess_20bp for item in inputs.ordered_evidence))
+    joint_mean_50 = _mean(tuple(item.joint_net_excess_50bp for item in inputs.ordered_evidence))
+    severe_delta = _mean(
+        tuple(item.joint_severe_loss_rate - item.v1_severe_loss_rate for item in inputs.ordered_evidence)
+    )
+    turnover_delta_pp = 100.0 * _mean(tuple(item.joint_turnover - item.v1_turnover for item in inputs.ordered_evidence))
+    capacity_delta = _mean(tuple(item.joint_capacity - item.v1_capacity for item in inputs.ordered_evidence))
+    concentration_delta = _mean(
+        tuple(item.joint_concentration - item.v1_concentration for item in inputs.ordered_evidence)
+    )
+    mean_rank_ic, mean_q_spread = _joint_rank_metrics(predictions, inputs.evidence_dates)
+    failures = [
+        *_joint_return_failures(paired_mean_20, paired_mean_50, joint_mean_20, joint_mean_50, bootstraps),
+        *_joint_risk_failures(severe_delta, turnover_delta_pp, capacity_delta, concentration_delta),
+        *_joint_active_failures(inputs, bootstraps),
+    ]
     if mean_rank_ic is None or mean_rank_ic <= 0.0:
         failures.append("rank_ic_not_positive")
     if mean_q_spread is None or mean_q_spread <= 0.0:
         failures.append("q5_minus_q1_not_positive")
     unique_failures = tuple(sorted(set(failures)))
     return TomorrowJointValidationReport(
-        candidate_id=next(iter(candidate_ids)),
-        weights=next(iter(weights)),
+        candidate_id=inputs.candidate_id,
+        weights=inputs.weights,
         evidence_identity=tuple(
             TomorrowJointEvidenceIdentity(
                 key=TomorrowJointRowKey(item.trade_date, item.code),
@@ -649,13 +744,13 @@ def evaluate_tomorrow_joint_validation(
             )
             for item in sorted(predictions, key=lambda item: (item.trade_date, item.candidate_order, item.code))
         ),
-        trade_dates=len(evidence_dates),
+        trade_dates=len(inputs.evidence_dates),
         paired_increment_20bp=paired_mean_20,
         paired_increment_50bp=paired_mean_50,
-        paired_daily_increments_20bp=paired_20,
-        paired_daily_increments_50bp=paired_50,
-        bootstrap_20bp=bootstrap_20,
-        bootstrap_50bp=bootstrap_50,
+        paired_daily_increments_20bp=inputs.paired_20,
+        paired_daily_increments_50bp=inputs.paired_50,
+        bootstrap_20bp=bootstraps[0],
+        bootstrap_50bp=bootstraps[1],
         joint_mean_net_excess_20bp=joint_mean_20,
         joint_mean_net_excess_50bp=joint_mean_50,
         severe_loss_rate_delta=severe_delta,
@@ -664,11 +759,11 @@ def evaluate_tomorrow_joint_validation(
         mean_q5_minus_q1_20bp=mean_q_spread,
         failure_reasons=unique_failures,
         passed=not unique_failures,
-        active_profile_id=active_profile,
-        paired_active_increment_20bp=_mean(paired_active_20),
-        paired_active_increment_50bp=_mean(paired_active_50),
-        active_bootstrap_20bp=active_bootstrap_20,
-        active_bootstrap_50bp=active_bootstrap_50,
+        active_profile_id=inputs.active_profile,
+        paired_active_increment_20bp=_mean(inputs.paired_active_20),
+        paired_active_increment_50bp=_mean(inputs.paired_active_50),
+        active_bootstrap_20bp=bootstraps[2],
+        active_bootstrap_50bp=bootstraps[3],
         capacity_delta=capacity_delta,
         concentration_delta=concentration_delta,
     )

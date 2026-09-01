@@ -267,10 +267,14 @@ class FilterRuleContribution:
             for value in (self.recall_delta_20bp, self.recall_delta_50bp)
         ):
             raise ValueError("filter ablation recall deltas must be in [-1, 1]")
-        expected_classifications = {"interaction_diagnostic"} if self.rule.startswith("interaction_") else {
-            "retain",
-            "observe_candidate",
-        }
+        expected_classifications = (
+            {"interaction_diagnostic"}
+            if self.rule.startswith("interaction_")
+            else {
+                "retain",
+                "observe_candidate",
+            }
+        )
         if self.classification not in expected_classifications:
             raise ValueError("filter ablation rule classification is inconsistent")
 
@@ -395,7 +399,7 @@ def _contribution(
         raise ValueError("filter ablation rule is not registered")
     p95 = _percentile(tuple(row.latency_ms for row in retained), 0.95)
     metrics = _variant_metrics(retained, context.population, context.dates)
-    baseline_metrics = _variant_metrics(baseline, population, dates)
+    baseline_metrics = _variant_metrics(context.baseline, context.population, context.dates)
     recall_delta_20bp = _difference(
         metrics.profitable_executable_recall_20bp,
         baseline_metrics.profitable_executable_recall_20bp,
@@ -404,13 +408,10 @@ def _contribution(
         metrics.profitable_executable_recall_50bp,
         baseline_metrics.profitable_executable_recall_50bp,
     )
-    fixed_population = tuple(row for row in population if row.permanent_eligible and not row.safety_veto)
-    severe_not_worse = (
-        baseline_metrics.severe_loss_interception is None
-        or (
-            metrics.severe_loss_interception is not None
-            and metrics.severe_loss_interception >= baseline_metrics.severe_loss_interception
-        )
+    fixed_population = tuple(row for row in context.population if row.permanent_eligible and not row.safety_veto)
+    severe_not_worse = baseline_metrics.severe_loss_interception is None or (
+        metrics.severe_loss_interception is not None
+        and metrics.severe_loss_interception >= baseline_metrics.severe_loss_interception
     )
     classification: FilterRuleClassification = (
         "interaction_diagnostic"

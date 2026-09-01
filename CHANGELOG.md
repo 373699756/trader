@@ -76,6 +76,13 @@ All notable changes to this project are documented here.
   输入、乱序、缓存冷热、部分来源失败、latest-wins 替换和冻结边界的决策 hash 等价结果，并证明脏集
   收缩；合法空推荐仍保留真实候选分母。`Regression-Key: scoring-hot-path-efficiency-baseline-v1`。
 
+### Fixed
+
+- `codex-b-historical-filter-confirmation-v1`：修复过滤消融报告生成规则贡献时引用未定义局部变量导致的
+  运行时失败；恢复以固定控制人口计算基线指标，并保留禁用规则变体相对控制组的 I/O、评分行和 DeepSeek
+  请求节省量。同步收窄确认器可空均值的类型并公开 `CandidateConfirmationPlan`，避免严格 mypy 门禁失败。
+  `Regression-Key: codex-b-historical-filter-confirmation-v1-runtime-fix`。
+
 ### Verification
 
 - `tomorrow-research-orchestration-artifact-graph-v1`：Codex D 应用/基础设施/CLI/文档定向测试 57 项通过；
@@ -107,6 +114,13 @@ All notable changes to this project are documented here.
   完整架构契约未能运行，因为工作树中用户已有的 `src/trader/domain/research/terminal_holdout.py` 含未闭合
   三引号，AST 解析在进入本批模块前失败；真实 H1/收益确认、终端留出和生产服务验收不属于本批可验证范围。
   剩余风险：需先由所属 Codex C 修复该语法错误并在父工件封存后运行真实确认；本批不会自动晋级候选。
+
+- `codex-b-historical-filter-confirmation-v1-runtime-fix`：Codex B 领域/应用定向测试 30 项通过；8 个受影响
+  Python 文件 Ruff 和 mypy 通过。回归覆盖固定人口消融、资源节省量、日期对齐、共同 Holm、V1/V2/C3
+  原始预测联合和生产隔离。策略文档契约通过；架构全局门禁被工作树中未纳入本批的
+  `historical_residual_ledger.py` 反向导入违规阻断。未运行真实 H1 下载、收益确认、终端留出或生产服务验收，
+  因父工件尚未封存；研究终态仍保持 `historical_candidate_ready`/`historical_rejected`/`historical_data_insufficient`，
+  不授予生产权限。
 
 - `four-lane-tomorrow-research-roadmap-v1`：文档契约及 C3/V3 隔离核心定向测试 31 项通过；V2 架构契约
   20 项通过；受影响 11 个 Python 文件的 Ruff lint/format 和 5 个源文件 mypy 通过；生产组合根、入口、

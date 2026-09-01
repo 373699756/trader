@@ -121,24 +121,8 @@ class HistoricalCandidateConfirmationReport:
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
-        if not self.strategy or not _SHA256.fullmatch(self.family_hash) or not self.confirmation_dates:
-            raise ValueError("confirmation report identity is invalid")
-        if tuple(sorted(set(self.confirmation_dates))) != self.confirmation_dates:
-            raise ValueError("confirmation dates must be strictly ordered")
-        if self.evidence and tuple(item.candidate_id for item in self.evidence) != self.holm_family:
-            raise ValueError("confirmation evidence must retain the preregistered Holm family")
-        if self.status == "historical_candidate_ready" and self.selected_candidate_id is None:
-            raise ValueError("ready confirmation requires one selected candidate")
-        if self.status != "historical_candidate_ready" and self.selected_candidate_id is not None:
-            raise ValueError("rejected confirmation cannot select a candidate")
-        if self.confirmation_evidence is not None and self.confirmation_evidence.candidate_id not in self.holm_family[1:]:
-            raise ValueError("confirmation evidence must belong to a preregistered challenger")
-        if self.status == "historical_candidate_ready" and (
-            self.confirmation_evidence is None
-            or not self.confirmation_evidence.passed
-            or self.confirmation_evidence.candidate_id != self.selected_candidate_id
-        ):
-            raise ValueError("ready confirmation must bind passing confirmation evidence")
+        _validate_confirmation_report_identity(self)
+        _validate_confirmation_report_outcome(self)
         reasons = tuple(sorted(set(self.failure_reasons)))
         if self.status == "historical_candidate_ready" and reasons:
             raise ValueError("ready confirmation cannot contain inherited failure reasons")
@@ -150,23 +134,129 @@ class HistoricalCandidateConfirmationReport:
         object.__setattr__(self, "content_hash", _hash(self))
 
 
+def _validate_confirmation_report_identity(report: HistoricalCandidateConfirmationReport) -> None:
+    if not report.strategy or not _SHA256.fullmatch(report.family_hash) or not report.confirmation_dates:
+        raise ValueError("confirmation report identity is invalid")
+    if tuple(sorted(set(report.confirmation_dates))) != report.confirmation_dates:
+        raise ValueError("confirmation dates must be strictly ordered")
+    if report.evidence and tuple(item.candidate_id for item in report.evidence) != report.holm_family:
+        raise ValueError("confirmation evidence must retain the preregistered Holm family")
+
+
+def _validate_confirmation_report_outcome(report: HistoricalCandidateConfirmationReport) -> None:
+    if report.status == "historical_candidate_ready" and report.selected_candidate_id is None:
+        raise ValueError("ready confirmation requires one selected candidate")
+    if report.status != "historical_candidate_ready" and report.selected_candidate_id is not None:
+        raise ValueError("rejected confirmation cannot select a candidate")
+    if (
+        report.confirmation_evidence is not None
+        and report.confirmation_evidence.candidate_id not in report.holm_family[1:]
+    ):
+        raise ValueError("confirmation evidence must belong to a preregistered challenger")
+    if report.status == "historical_candidate_ready" and (
+        report.confirmation_evidence is None
+        or not report.confirmation_evidence.passed
+        or report.confirmation_evidence.candidate_id != report.selected_candidate_id
+    ):
+        raise ValueError("ready confirmation must bind passing confirmation evidence")
+
+
+@dataclass(frozen=True)
+class CandidateConfirmationPlan:
+    selected_candidate_id: str
+    alpha: float = 0.05
+    master_seed: int = 20260901
+    repetitions: int = 10_000
+    block_days: int | None = None
+
+    def __post_init__(self) -> None:
+        if not self.selected_candidate_id:
+            raise ValueError("confirmation plan requires a selected candidate")
+        if not math.isfinite(self.alpha) or not 0.0 < self.alpha < 1.0:
+            raise ValueError("confirmation plan alpha must be between zero and one")
+        if self.repetitions < 1:
+            raise ValueError("confirmation plan repetitions must be positive")
+        if self.block_days is not None and self.block_days < 5:
+            raise ValueError("confirmation plan block length must be at least five sessions")
+
+
+@dataclass(frozen=True)
+class _ConfirmationSegment:
+    family: TransparentCandidateFamily
+    plan: CandidateConfirmationPlan
+    supplied: dict[str, CandidateConfirmationSeries]
+    ids: tuple[str, ...]
+    challenger_ids: tuple[str, ...]
+    registered_challengers: tuple[str, ...]
+    holm_family: tuple[str, ...]
+    dates: tuple[date, ...]
+    block_days: int
+
+
+@dataclass(frozen=True)
+class _ConfirmationStatistics:
+    bootstrap_20: PreregisteredBootstrapResult
+    bootstrap_50: PreregisteredBootstrapResult
+    absolute_20: PreregisteredBootstrapResult | None
+    absolute_50: PreregisteredBootstrapResult | None
+
+
 def _evaluate_candidate_family_segment(
     family: TransparentCandidateFamily,
     series: tuple[CandidateConfirmationSeries, ...],
-    *,
+    plan: CandidateConfirmationPlan,
     additional_series: tuple[CandidateConfirmationSeries, ...] = (),
-    alpha: float = 0.05,
-    master_seed: int = 20260901,
-    repetitions: int = 10_000,
-    block_days: int | None = None,
-    selected_candidate_id: str | None = None,
 ) -> HistoricalCandidateConfirmationReport:
     """Evaluate the fixed confirmation segment once with one joint Holm family."""
 
+    segment = _prepare_confirmation_segment(family, series, additional_series, plan)
+    if len(segment.dates) < 5:
+        return _insufficient(family, segment.dates, segment.holm_family)
+    plans = {candidate_id: _bootstrap(segment, candidate_id, "20bp") for candidate_id in segment.challenger_ids}
+    p_values = {candidate_id: bootstrap.p_value for candidate_id, bootstrap in plans.items()}
+    p_values[segment.ids[0]] = None
+    holm = fixed_family_holm(p_values, family=segment.holm_family, alpha=plan.alpha)
+    holm_by_id = {item.challenger_id: item for item in holm}
+    evidence = tuple(
+        _candidate_confirmation_evidence(segment, candidate_id, plans[candidate_id], holm_by_id[candidate_id])
+        for candidate_id in segment.challenger_ids
+    )
+    eligible_evidence = tuple(
+        item
+        for item in evidence
+        if item.passed
+        and item.candidate_id in segment.registered_challengers
+        and item.candidate_id == plan.selected_candidate_id
+    )
+    selected = max(
+        eligible_evidence,
+        key=lambda item: (item.mean_increment_20bp, item.mean_increment_50bp, item.candidate_id),
+        default=None,
+    )
+    status: ConfirmationStatus = "historical_candidate_ready" if selected else "historical_rejected"
+    control_evidence = _control_confirmation_evidence(segment, holm_by_id[segment.ids[0]])
+    return HistoricalCandidateConfirmationReport(
+        family.strategy,
+        family.content_hash,
+        segment.dates,
+        segment.holm_family,
+        (control_evidence, *evidence),
+        selected.candidate_id if selected else None,
+        status,
+        confirmation_evidence=selected,
+    )
+
+
+def _prepare_confirmation_segment(
+    family: TransparentCandidateFamily,
+    series: tuple[CandidateConfirmationSeries, ...],
+    additional_series: tuple[CandidateConfirmationSeries, ...],
+    plan: CandidateConfirmationPlan,
+) -> _ConfirmationSegment:
     if not series:
         raise ValueError("confirmation requires candidate series")
-    selected_block_days = block_days if block_days is not None else (10 if family.strategy == "d25" else 5)
-    if selected_block_days < 5 or selected_block_days < (10 if family.strategy == "d25" else 2):
+    block_days = plan.block_days if plan.block_days is not None else (10 if family.strategy == "d25" else 5)
+    if block_days < 5 or block_days < (10 if family.strategy == "d25" else 2):
         raise ValueError("confirmation block length does not cover the registered label horizon")
     ids = tuple(candidate.candidate_id for candidate in family.candidates)
     all_series = (*series, *additional_series)
@@ -176,201 +266,193 @@ def _evaluate_candidate_family_segment(
     dates = supplied[ids[0]].trade_dates
     if any(item.trade_dates != dates for item in all_series):
         raise ValueError("confirmation candidates must share identical dates")
-    challenger_ids = tuple(item for item in supplied if item != ids[0])
     registered_challengers = ids[1:]
-    if selected_candidate_id is not None and selected_candidate_id not in registered_challengers:
+    if plan.selected_candidate_id not in registered_challengers:
         raise ValueError("confirmation selected candidate must belong to the sealed transparent family")
-    holm_family = (ids[0], *challenger_ids)
-    if len(dates) < 5:
-        return _insufficient(family, dates, holm_family)
-    plans: dict[str, PreregisteredBootstrapResult] = {}
-    evidence: list[CandidateConfirmationEvidence] = []
-    p_values: dict[str, float | None] = {}
-    for candidate_id in challenger_ids:
-        item = supplied[candidate_id]
-        bootstrap_20 = paired_moving_block_statistics(
-            item.paired_increment_20bp,
-            plan=PreregisteredBootstrapPlan(
-                "historical_candidate_confirmation_20bp_v1", master_seed, candidate_id, selected_block_days, repetitions
-            ),
-        )
-        plans[candidate_id] = bootstrap_20
-        p_values[candidate_id] = bootstrap_20.p_value
-    # Control is retained in the family and receives a deterministic null entry.
-    p_values[ids[0]] = None
-    holm = fixed_family_holm(p_values, family=holm_family, alpha=alpha)
-    holm_by_id = {item.challenger_id: item for item in holm}
-    control = supplied[ids[0]]
-    for candidate_id in challenger_ids:
-        item = supplied[candidate_id]
-        b20 = plans[candidate_id]
-        b50 = paired_moving_block_statistics(
-            item.paired_increment_50bp,
-            plan=PreregisteredBootstrapPlan(
-                "historical_candidate_confirmation_50bp_v1", master_seed, candidate_id, selected_block_days, repetitions
-            ),
-        )
-        absolute_20 = (
-            paired_moving_block_statistics(
-                item.candidate_net_excess_20bp,
-                plan=PreregisteredBootstrapPlan(
-                    "historical_candidate_confirmation_absolute_20bp_v1",
-                    master_seed,
-                    candidate_id,
-                    selected_block_days,
-                    repetitions,
-                ),
-            )
-            if item.candidate_net_excess_20bp
-            else None
-        )
-        absolute_50 = (
-            paired_moving_block_statistics(
-                item.candidate_net_excess_50bp,
-                plan=PreregisteredBootstrapPlan(
-                    "historical_candidate_confirmation_absolute_50bp_v1",
-                    master_seed,
-                    candidate_id,
-                    selected_block_days,
-                    repetitions,
-                ),
-            )
-            if item.candidate_net_excess_50bp
-            else None
-        )
-        failures: list[str] = []
-        if not holm_by_id[candidate_id].rejected_null:
-            failures.append("holm_not_significant")
-        if b20.confidence_lower is None or b20.confidence_lower <= 0.0:
-            failures.append("bootstrap_20bp_lower_not_positive")
-        if b50.confidence_lower is None or b50.confidence_lower <= 0.0:
-            failures.append("bootstrap_50bp_lower_not_positive")
-        if _mean(item.paired_increment_20bp) <= 0.0:
-            failures.append("paired_20bp_not_positive")
-        if _mean(item.paired_increment_50bp) <= 0.0:
-            failures.append("paired_50bp_not_positive")
-        if not item.candidate_net_excess_20bp:
-            failures.append("absolute_20bp_evidence_missing")
-        elif _mean(item.candidate_net_excess_20bp) <= 0.0:
-            failures.append("absolute_20bp_not_positive")
-        if not item.candidate_net_excess_50bp:
-            failures.append("absolute_50bp_evidence_missing")
-        elif _mean(item.candidate_net_excess_50bp) <= 0.0:
-            failures.append("absolute_50bp_not_positive")
-        if absolute_20 is None or absolute_20.confidence_lower is None or absolute_20.confidence_lower <= 0.0:
-            failures.append("absolute_bootstrap_20bp_lower_not_positive")
-        if absolute_50 is None or absolute_50.confidence_lower is None or absolute_50.confidence_lower <= 0.0:
-            failures.append("absolute_bootstrap_50bp_lower_not_positive")
-        if len(item.development_fold_directions) != 5:
-            failures.append("development_fold_directions_missing")
-        elif any(value <= 0 for value in item.development_fold_directions):
-            failures.append("development_fold_direction_inconsistent")
-        if _mean(item.severe_loss_rate_delta) > 0.0:
-            failures.append("severe_loss_rate_worse_than_control")
-        if item.turnover_delta and _mean(item.turnover_delta) > 0.0:
-            failures.append("turnover_worse_than_control")
-        if item.capacity_delta and _mean(item.capacity_delta) < 0.0:
-            failures.append("capacity_worse_than_control")
-        if item.concentration_delta and _mean(item.concentration_delta) > 0.0:
-            failures.append("concentration_worse_than_control")
-        failures = sorted(set(failures))
-        evidence.append(
-            CandidateConfirmationEvidence(
-                candidate_id,
-                b20,
-                b50,
-                _mean(item.paired_increment_20bp),
-                _mean(item.paired_increment_50bp),
-                _mean(item.severe_loss_rate_delta),
-                _mean(item.turnover_delta) if item.turnover_delta else 0.0,
-                _mean(item.capacity_delta) if item.capacity_delta else 0.0,
-                _mean(item.concentration_delta) if item.concentration_delta else 0.0,
-                holm_by_id[candidate_id],
-                not failures,
-                tuple(failures),
-                mean_absolute_20bp=(_mean(item.candidate_net_excess_20bp) if item.candidate_net_excess_20bp else None),
-                mean_absolute_50bp=(_mean(item.candidate_net_excess_50bp) if item.candidate_net_excess_50bp else None),
-                absolute_bootstrap_20bp=absolute_20,
-                absolute_bootstrap_50bp=absolute_50,
-                development_fold_directions=item.development_fold_directions,
-            )
-        )
-    eligible_evidence = tuple(
-        item
-        for item in evidence
-        if item.passed
-        and item.candidate_id in registered_challengers
-        and (selected_candidate_id is None or item.candidate_id == selected_candidate_id)
+    challenger_ids = tuple(item for item in supplied if item != ids[0])
+    return _ConfirmationSegment(
+        family,
+        plan,
+        supplied,
+        ids,
+        challenger_ids,
+        registered_challengers,
+        (ids[0], *challenger_ids),
+        dates,
+        block_days,
     )
-    selected = max(
-        eligible_evidence,
-        key=lambda item: (item.mean_increment_20bp, item.mean_increment_50bp, item.candidate_id),
-        default=None,
+
+
+def _bootstrap(
+    segment: _ConfirmationSegment,
+    candidate_id: str,
+    metric: Literal["20bp", "50bp", "absolute_20bp", "absolute_50bp"],
+) -> PreregisteredBootstrapResult:
+    item = segment.supplied[candidate_id]
+    values = {
+        "20bp": item.paired_increment_20bp,
+        "50bp": item.paired_increment_50bp,
+        "absolute_20bp": item.candidate_net_excess_20bp,
+        "absolute_50bp": item.candidate_net_excess_50bp,
+    }[metric]
+    prefix = "historical_candidate_confirmation_"
+    return paired_moving_block_statistics(
+        values,
+        plan=PreregisteredBootstrapPlan(
+            f"{prefix}{metric}_v1",
+            segment.plan.master_seed,
+            candidate_id,
+            segment.block_days,
+            segment.plan.repetitions,
+        ),
     )
-    status: ConfirmationStatus = "historical_candidate_ready" if selected else "historical_rejected"
-    control_evidence = CandidateConfirmationEvidence(
-        ids[0],
-        paired_moving_block_statistics(
-            control.paired_increment_20bp,
-            plan=PreregisteredBootstrapPlan(
-                "historical_candidate_confirmation_20bp_v1", master_seed, ids[0], selected_block_days, repetitions
-            ),
-        ),
-        paired_moving_block_statistics(
-            control.paired_increment_50bp,
-            plan=PreregisteredBootstrapPlan(
-                "historical_candidate_confirmation_50bp_v1", master_seed, ids[0], selected_block_days, repetitions
-            ),
-        ),
+
+
+def _candidate_confirmation_evidence(
+    segment: _ConfirmationSegment,
+    candidate_id: str,
+    bootstrap_20: PreregisteredBootstrapResult,
+    holm: PreregisteredHolmDecision,
+) -> CandidateConfirmationEvidence:
+    item = segment.supplied[candidate_id]
+    statistics = _ConfirmationStatistics(
+        bootstrap_20,
+        _bootstrap(segment, candidate_id, "50bp"),
+        _bootstrap(segment, candidate_id, "absolute_20bp") if item.candidate_net_excess_20bp else None,
+        _bootstrap(segment, candidate_id, "absolute_50bp") if item.candidate_net_excess_50bp else None,
+    )
+    failures = _confirmation_failures(item, holm, statistics)
+    return CandidateConfirmationEvidence(
+        candidate_id,
+        statistics.bootstrap_20,
+        statistics.bootstrap_50,
+        _mean(item.paired_increment_20bp),
+        _mean(item.paired_increment_50bp),
+        _mean(item.severe_loss_rate_delta),
+        _mean(item.turnover_delta) if item.turnover_delta else 0.0,
+        _mean(item.capacity_delta) if item.capacity_delta else 0.0,
+        _mean(item.concentration_delta) if item.concentration_delta else 0.0,
+        holm,
+        not failures,
+        failures,
+        mean_absolute_20bp=_optional_mean(item.candidate_net_excess_20bp),
+        mean_absolute_50bp=_optional_mean(item.candidate_net_excess_50bp),
+        absolute_bootstrap_20bp=statistics.absolute_20,
+        absolute_bootstrap_50bp=statistics.absolute_50,
+        development_fold_directions=item.development_fold_directions,
+    )
+
+
+def _confirmation_failures(
+    item: CandidateConfirmationSeries,
+    holm: PreregisteredHolmDecision,
+    statistics: _ConfirmationStatistics,
+) -> tuple[str, ...]:
+    failures = [
+        *_confirmation_return_failures(item, holm, statistics.bootstrap_20, statistics.bootstrap_50),
+        *_confirmation_absolute_failures(item, statistics.absolute_20, statistics.absolute_50),
+        *_confirmation_risk_failures(item),
+    ]
+    return tuple(sorted(set(failures)))
+
+
+def _confirmation_return_failures(
+    item: CandidateConfirmationSeries,
+    holm: PreregisteredHolmDecision,
+    bootstrap_20: PreregisteredBootstrapResult,
+    bootstrap_50: PreregisteredBootstrapResult,
+) -> tuple[str, ...]:
+    failures: list[str] = []
+    if not holm.rejected_null:
+        failures.append("holm_not_significant")
+    if bootstrap_20.confidence_lower is None or bootstrap_20.confidence_lower <= 0.0:
+        failures.append("bootstrap_20bp_lower_not_positive")
+    if bootstrap_50.confidence_lower is None or bootstrap_50.confidence_lower <= 0.0:
+        failures.append("bootstrap_50bp_lower_not_positive")
+    if _mean(item.paired_increment_20bp) <= 0.0:
+        failures.append("paired_20bp_not_positive")
+    if _mean(item.paired_increment_50bp) <= 0.0:
+        failures.append("paired_50bp_not_positive")
+    return tuple(failures)
+
+
+def _confirmation_absolute_failures(
+    item: CandidateConfirmationSeries,
+    absolute_20: PreregisteredBootstrapResult | None,
+    absolute_50: PreregisteredBootstrapResult | None,
+) -> tuple[str, ...]:
+    failures: list[str] = []
+    for label, values, bootstrap in (
+        ("20bp", item.candidate_net_excess_20bp, absolute_20),
+        ("50bp", item.candidate_net_excess_50bp, absolute_50),
+    ):
+        if not values:
+            failures.append(f"absolute_{label}_evidence_missing")
+        elif _mean(values) <= 0.0:
+            failures.append(f"absolute_{label}_not_positive")
+        if bootstrap is None or bootstrap.confidence_lower is None or bootstrap.confidence_lower <= 0.0:
+            failures.append(f"absolute_bootstrap_{label}_lower_not_positive")
+    return tuple(failures)
+
+
+def _confirmation_risk_failures(item: CandidateConfirmationSeries) -> tuple[str, ...]:
+    failures: list[str] = []
+    if len(item.development_fold_directions) != 5:
+        failures.append("development_fold_directions_missing")
+    elif any(value <= 0 for value in item.development_fold_directions):
+        failures.append("development_fold_direction_inconsistent")
+    for failed, reason in (
+        (_mean(item.severe_loss_rate_delta) > 0.0, "severe_loss_rate_worse_than_control"),
+        (bool(item.turnover_delta) and _mean(item.turnover_delta) > 0.0, "turnover_worse_than_control"),
+        (bool(item.capacity_delta) and _mean(item.capacity_delta) < 0.0, "capacity_worse_than_control"),
+        (bool(item.concentration_delta) and _mean(item.concentration_delta) > 0.0, "concentration_worse_than_control"),
+    ):
+        if failed:
+            failures.append(reason)
+    return tuple(failures)
+
+
+def _control_confirmation_evidence(
+    segment: _ConfirmationSegment,
+    holm: PreregisteredHolmDecision,
+) -> CandidateConfirmationEvidence:
+    control_id = segment.ids[0]
+    return CandidateConfirmationEvidence(
+        control_id,
+        _bootstrap(segment, control_id, "20bp"),
+        _bootstrap(segment, control_id, "50bp"),
         0.0,
         0.0,
         0.0,
         0.0,
         0.0,
         0.0,
-        holm_by_id[ids[0]],
+        holm,
         False,
         ("control",),
     )
-    return HistoricalCandidateConfirmationReport(
-        family.strategy,
-        family.content_hash,
-        dates,
-        holm_family,
-        (control_evidence, *evidence),
-        selected.candidate_id if selected else None,
-        status,
-        confirmation_evidence=selected,
-    )
+
+
+def _optional_mean(values: tuple[float, ...], default: float | None = None) -> float | None:
+    return _mean(values) if values else default
 
 
 def confirm_transparent_candidates(
     family: TransparentCandidateFamily,
     development_series: tuple[CandidateConfirmationSeries, ...],
-    *,
     confirmation_series: tuple[CandidateConfirmationSeries, ...],
+    plan: CandidateConfirmationPlan,
     additional_series: tuple[CandidateConfirmationSeries, ...] = (),
-    alpha: float = 0.05,
-    master_seed: int = 20260901,
-    repetitions: int = 10_000,
-    block_days: int | None = None,
-    selected_candidate_id: str,
 ) -> HistoricalCandidateConfirmationReport:
     """Run family-wide development control before one sealed confirmation replay."""
 
     development = _evaluate_candidate_family_segment(
         family,
         development_series,
+        plan,
         additional_series=additional_series,
-        alpha=alpha,
-        master_seed=master_seed,
-        repetitions=repetitions,
-        block_days=block_days,
-        selected_candidate_id=selected_candidate_id,
     )
-    confirmation_dates = (
-        confirmation_series[0].trade_dates if confirmation_series else development.confirmation_dates
-    )
+    confirmation_dates = confirmation_series[0].trade_dates if confirmation_series else development.confirmation_dates
     if development.status != "historical_candidate_ready":
         return HistoricalCandidateConfirmationReport(
             strategy=family.strategy,
@@ -385,7 +467,7 @@ def confirm_transparent_candidates(
     candidates = {candidate.candidate_id: candidate for candidate in family.candidates}
     control_id = family.candidates[0].candidate_id
     confirmation_by_id = {item.candidate_id: item for item in confirmation_series}
-    expected_ids = {control_id, selected_candidate_id}
+    expected_ids = {control_id, plan.selected_candidate_id}
     if len(confirmation_series) != 2 or set(confirmation_by_id) != expected_ids:
         raise ValueError("confirmation segment must contain only control and the development-selected candidate")
     if any(item.trade_dates != confirmation_dates for item in confirmation_series):
@@ -394,24 +476,20 @@ def confirm_transparent_candidates(
         raise ValueError("confirmation dates must strictly follow development dates")
     confirmation_family = TransparentCandidateFamily(
         strategy=family.strategy,
-        candidates=(candidates[control_id], candidates[selected_candidate_id]),
+        candidates=(candidates[control_id], candidates[plan.selected_candidate_id]),
         source_ablation_hash=family.source_ablation_hash,
         development_dates=family.development_dates,
     )
     confirmation = _evaluate_candidate_family_segment(
         confirmation_family,
         confirmation_series,
-        alpha=alpha,
-        master_seed=master_seed,
-        repetitions=repetitions,
-        block_days=block_days,
-        selected_candidate_id=selected_candidate_id,
+        plan,
     )
     selected_development = next(
-        item for item in development.evidence if item.candidate_id == selected_candidate_id
+        item for item in development.evidence if item.candidate_id == plan.selected_candidate_id
     )
     selected_confirmation = next(
-        (item for item in confirmation.evidence if item.candidate_id == selected_candidate_id),
+        (item for item in confirmation.evidence if item.candidate_id == plan.selected_candidate_id),
         None,
     )
     if selected_confirmation is not None:
@@ -445,7 +523,7 @@ def confirm_transparent_candidates(
         confirmation_dates=confirmation_dates,
         holm_family=development.holm_family,
         evidence=development.evidence,
-        selected_candidate_id=selected_candidate_id if status == "historical_candidate_ready" else None,
+        selected_candidate_id=plan.selected_candidate_id if status == "historical_candidate_ready" else None,
         status=status,
         failure_reasons=confirmation.failure_reasons,
         confirmation_evidence=selected_confirmation,
@@ -514,6 +592,7 @@ def _hash(value: object) -> str:
 
 
 __all__ = [
+    "CandidateConfirmationPlan",
     "CandidateConfirmationEvidence",
     "CandidateConfirmationSeries",
     "HistoricalCandidateConfirmationReport",
