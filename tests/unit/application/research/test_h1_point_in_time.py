@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from trader.application.research.historical_screening import HistoricalSecurity
 from trader.application.research.h1_point_in_time import H1PointInTimeDownloadService
+from trader.application.research.historical_screening import HistoricalSecurity
 from trader.domain.research.h1_point_in_time import H1PointInTimeRecord, H1PointInTimeSpec
 from trader.domain.research.historical_screening import HistoricalPriceBar
 

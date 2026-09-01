@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import cast
 from zoneinfo import ZoneInfo
 
-from trader.application.research.historical_screening import HistoricalSecurity, ResearchBoard
 from trader.application.research.h1_point_in_time import H1ArchivePort
+from trader.application.research.historical_screening import HistoricalSecurity, ResearchBoard
 from trader.domain.research.h1_point_in_time import (
     H1CoverageAudit,
     H1CoverageManifest,
@@ -22,7 +22,6 @@ from trader.domain.research.h1_point_in_time import (
     H1Strategy,
     canonical_hash,
 )
-from trader.domain.research.historical_screening import HistoricalPriceBar
 
 
 class H1ArchiveConflictError(RuntimeError):

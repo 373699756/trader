@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Protocol
 
+from trader.application.research.historical_screening import HistoricalSecurity
 from trader.domain.research.h1_point_in_time import (
     H1CapabilityProbe,
     H1CoverageAudit,
@@ -15,7 +16,6 @@ from trader.domain.research.h1_point_in_time import (
     H1PointInTimeSpec,
     H1Strategy,
 )
-from trader.application.research.historical_screening import HistoricalSecurity
 
 
 class H1PointInTimeProvider(Protocol):
