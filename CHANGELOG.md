@@ -578,6 +578,15 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求按“收益大、难度低、被依赖者优先”重新 Review 第 15.1.21–15.1.40 节，并删除不可靠、难以
+  完成的荐股策略自动优化。确认旧路线把历史 DeepSeek 盈利回测、模型族搜索、组合优化、概率模型、
+  自动训练/晋级/激活集中在末段，实施和证伪成本显著高于本地个人研究看板的预期收益；仅靠点时证据也
+  无法排除当前大模型训练语料已知后续结果。权威路线现收敛为第 15.1.21–15.1.34 节：基线身份审计后
+  立即执行决策 hash 等价的热链提速，再按分策略 H1、标签、全候选账本、顺序无关过滤消融、每策略最多
+  8 个透明候选、统一 Holm 家族和三策略独立留出推进。H1 的 Today 数据不足不再阻塞 Tomorrow/D25；
+  合法空推荐的效率成本也改按评分 epoch、候选、正式决策和 DeepSeek 应用分别统计。
+  `Regression-Key: historical-score-roadmap-priority-pruning-v1`。
+
 - 评分研究权威路线由第 15.1.21–15.1.36 节重排为第 15.1.21–15.1.40 节；总序 15.1.21 明确标记为已
   封存、15.1.22 保持已完成，并保留既有 H0/R6/P2 身份及未变的 H1 计划身份，不覆盖历史报告。每次
   “继续”仍只执行下一个完整未完成同级章节，顺序固定为
@@ -1681,6 +1690,13 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 从未完成路线物理删除历史 DeepSeek 盈利增量回测、自动模型族/参数搜索、净效用自动校准、组合黑盒
+  优化、独立逐股严重亏损概率模型、自动训练、Champion/Challenger 注册表、自动晋级、启动激活和自动
+  回退章节，不保留隐藏 TODO 或未来自动接入入口。历史终端留出只产生
+  `production_authority=false` 结论；任何候选即使通过，也必须由用户另立单一策略、单一候选的高风险
+  人工生产变更批次。本批不删除或改变现有生产 DeepSeek、固定 68/32 融合、风险、阈值、冻结、配置、
+  活动代码或既有历史工件。`Regression-Key: historical-score-roadmap-priority-pruning-v1`。
+
 - 移除第 15.1.23–15.1.36 旧未完成编号与“模型完成后直接进入留出/自动化”的路线歧义；没有删除或修改
   任何生产代码、活动策略、冻结记录、历史研究工件、模型、配置、API 或 Web 行为。
   `Regression-Key: recommendation-chain-scientific-roadmap-v2`。
@@ -1898,6 +1914,13 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- `historical-score-roadmap-priority-pruning-v1`：先更新路线机器契约并确认旧文档按预期失败；完成两份权威
+  文档收敛后，`tests/contract` 全部 151 项通过，覆盖 15.1.21/22 完成状态、15.1.23–15.1.34 新顺序、
+  两层过滤先于 H1、三策略独立点时覆盖、有限候选上限、Holm、独立留出、自动优化删除和人工生产变更
+  边界。两个受影响契约测试文件的 Ruff format/check、Ruff lint 与 `git diff --check` 通过。
+  `make test`、`make package`、仓库外 wheel 和三档浏览器验收不适用：本批只修改 Markdown 和读取这些
+  文档的契约断言，不改变活动代码、配置、构建、入口、API、Web 或运行行为。
 
 - `recommendation-chain-scientific-roadmap-v2`：更新路线契约后，21 个读取两份权威文档的 contract 测试文件
   共 89 项通过，覆盖 15.1.21/22 已完成状态、15.1.23–15.1.40 顺序、两层过滤前置关系、点时/留出纪律、
@@ -2969,10 +2992,11 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- `recommendation-chain-scientific-roadmap-v2`：第 15.1.23–15.1.40 节仍是未实施路线；当前尚未执行基线
-  身份审计，不能断言运行投影不存在漂移，也没有 H1 覆盖、过滤消融、模型收益、组合收益或性能改善证据。
-  本批不改变活动 V1/V2、P2 `historical_rejected`、固定融合、阈值、预算、冻结和 Web；后续必须按同级
-  章节逐次完成，未通过历史门禁前不得声称更赚钱，未获得用户明确授权前不得生产接入。
+- `historical-score-roadmap-priority-pruning-v1`：本批只收敛权威计划和机器文档契约，没有执行
+  15.1.23–15.1.34 的任何未完成能力，也没有证明实时性、资源成本或荐股收益已经提高。H1 的 95% 股票
+  覆盖、各策略 1000 个有效交易日和 200 日终端留出能否取得仍待实际下载审计；透明有限候选可能全部
+  被拒绝，这是真实可接受终态。历史 DeepSeek 盈利增量不再尝试验证，生产 DeepSeek 和固定融合继续按
+  现行契约运行；任何未来生产策略变化仍需用户明确授权和独立完整高风险门禁。
 
 - 当前 2026-09-01 正式记录已在 14:50 冻结，业务契约禁止用迟到数据或新代码覆盖；本批只修正读取说明，
   下一交易日的新评分才会由现行分类逻辑生成新记录。实时拆源显示代表性科创板代码的腾讯 qfq 历史稳定
@@ -2985,12 +3009,6 @@ All notable changes to this project are documented here.
   `financial_history_complete` 显式标记覆盖，未知不能宣称已清查。供应商全市场接口若不支持代码裁剪，
   仍可能物理返回已排除行，但这些行不会发布或触发后续逐股请求。既有历史缓存不做破坏性删除；冻结
   TopK 报价 overlay 与原正式 outcome 仍按冻结身份更新/结算，这是不可覆盖冻结契约的有意例外。
-
-- 本批只同步自适应评分执行计划和机器文档契约，没有下载 H1、调用历史 DeepSeek、训练模型、开启终端
-  留出、创建注册表或改变生产。当前数据库仍是 H0 每股最多 640 日，H1 的 95% 股票覆盖、1000 个共同
-  有效交易日、DeepSeek 增量和三策略收益门禁全部尚未验证；因此不得声称收益已经提高，当前继续使用
-  既有冠军、固定 68/32、168 次预算、冻结与 `automatic_model_update=false`。历史 DeepSeek 全量事实构建
-  可能耗时较长且消耗额度，后续第 15.1.26 节必须先输出请求量、缓存、成本和预计天数预检。
 
 - 本批只修复 Tomorrow 合法 0 分空仓的解释和诊断归因，不把单日 0 分包装成收益改进。最终现场候选历史
   覆盖仅 72/297（约四分之一）且午间历史预热存在大量失败/重试；代表性 3 只股票的历史源诊断 3/3 成功，说明

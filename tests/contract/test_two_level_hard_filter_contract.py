@@ -43,7 +43,7 @@ def test_h1_roadmap_depends_on_completed_two_level_filter_section() -> None:
     strategy = (ROOT / "docs" / "recommendation-strategy.md").read_text(encoding="utf-8")
 
     level_one = strategy.index("一级永久资格名单与二级硬过滤")
-    h1 = strategy.index("H1 扩展历史归档与点时覆盖审计")
+    h1 = strategy.index("H1 分策略历史归档与点时覆盖审计")
 
     assert level_one < h1
     assert "状态：已完成" in strategy[level_one:h1]
