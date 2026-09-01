@@ -7,7 +7,11 @@ from datetime import date, timedelta
 import pytest
 
 from trader.application.research.cross_strategy_conclusion import CrossStrategyConclusionService
-from trader.domain.research.terminal_holdout import TerminalHoldoutEvaluation, TerminalHoldoutRow, evaluate_terminal_holdout
+from trader.domain.research.terminal_holdout import (
+    TerminalHoldoutEvaluation,
+    TerminalHoldoutRow,
+    evaluate_terminal_holdout,
+)
 from trader.infra.research.cross_strategy_conclusion_artifacts import CrossStrategyConclusionArtifactStore
 from trader.infra.research.terminal_holdout_artifacts import (
     TerminalHoldoutArtifactConflictError,

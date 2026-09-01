@@ -13,13 +13,14 @@ from trader.domain.research.terminal_holdout import (
 )
 
 TomorrowPointInTimeRow = TerminalHoldoutRow
+_DEFAULT_PARENT_STATE = TerminalHoldoutParentState()
 
 
 class TomorrowPointInTimeHoldoutService:
     def __init__(
         self,
         rows: Sequence[TomorrowPointInTimeRow],
-        parent: TerminalHoldoutParentState = TerminalHoldoutParentState(),
+        parent: TerminalHoldoutParentState = _DEFAULT_PARENT_STATE,
     ) -> None:
         self._rows = tuple(rows)
         self._parent = parent

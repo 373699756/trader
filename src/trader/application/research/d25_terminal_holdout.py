@@ -13,13 +13,14 @@ from trader.domain.research.terminal_holdout import (
 )
 
 D25TerminalRow = TerminalHoldoutRow
+_DEFAULT_PARENT_STATE = TerminalHoldoutParentState()
 
 
 class D25TerminalHoldoutService:
     def __init__(
         self,
         rows: Sequence[D25TerminalRow],
-        parent: TerminalHoldoutParentState = TerminalHoldoutParentState(),
+        parent: TerminalHoldoutParentState = _DEFAULT_PARENT_STATE,
     ) -> None:
         self._rows = tuple(rows)
         self._parent = parent

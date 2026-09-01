@@ -78,9 +78,18 @@ class TerminalHoldoutArtifactStore:
 
 def decode_terminal_holdout_report(raw: dict[str, object]) -> TerminalHoldoutReport:
     expected = {
-        "strategy", "research_identity", "parent_hash", "candidate_hash", "anchor",
-        "terminal_holdout_opened", "status", "metrics", "failure_reasons", "terminal_trade_dates",
-        "production_authority", "schema_version",
+        "strategy",
+        "research_identity",
+        "parent_hash",
+        "candidate_hash",
+        "anchor",
+        "terminal_holdout_opened",
+        "status",
+        "metrics",
+        "failure_reasons",
+        "terminal_trade_dates",
+        "production_authority",
+        "schema_version",
     }
     if set(raw) != expected:
         raise ValueError("terminal holdout report fields are invalid")
@@ -158,12 +167,28 @@ def _encode_metrics(metrics: TerminalHoldoutMetrics) -> dict[str, object]:
 
 def _decode_metrics(raw: dict[str, object]) -> TerminalHoldoutMetrics:
     expected = {
-        "evaluated_trade_dates", "evaluated_rows", "selected_rows", "baseline_selected_rows",
-        "mean_net_excess_returns", "baseline_mean_net_excess_returns", "paired_net_increments",
-        "bootstrap_lower_bounds", "severe_loss_rate", "baseline_severe_loss_rate", "turnover",
-        "baseline_turnover", "rank_ic", "top_bottom_quintile_spread", "maximum_stock_positive_fraction",
-        "top_five_positive_fraction", "maximum_board_fraction", "maximum_industry_count", "capacity",
-        "baseline_capacity", "horizon_mean_net_excess_returns", "baseline_horizon_mean_net_excess_returns",
+        "evaluated_trade_dates",
+        "evaluated_rows",
+        "selected_rows",
+        "baseline_selected_rows",
+        "mean_net_excess_returns",
+        "baseline_mean_net_excess_returns",
+        "paired_net_increments",
+        "bootstrap_lower_bounds",
+        "severe_loss_rate",
+        "baseline_severe_loss_rate",
+        "turnover",
+        "baseline_turnover",
+        "rank_ic",
+        "top_bottom_quintile_spread",
+        "maximum_stock_positive_fraction",
+        "top_five_positive_fraction",
+        "maximum_board_fraction",
+        "maximum_industry_count",
+        "capacity",
+        "baseline_capacity",
+        "horizon_mean_net_excess_returns",
+        "baseline_horizon_mean_net_excess_returns",
         "state_sample_counts",
     }
     if set(raw) != expected:
@@ -171,16 +196,35 @@ def _decode_metrics(raw: dict[str, object]) -> TerminalHoldoutMetrics:
     state = raw["state_sample_counts"]
     if not isinstance(state, list):
         raise TypeError("terminal holdout state counts are invalid")
-    state_pairs = tuple((_string(item[0]), _int(item[1])) for item in state if isinstance(item, list) and len(item) == 2)
+    state_pairs = tuple(
+        (_string(item[0]), _int(item[1])) for item in state if isinstance(item, list) and len(item) == 2
+    )
     if len(state_pairs) != len(state):
         raise TypeError("terminal holdout state count entry is invalid")
     return TerminalHoldoutMetrics(
-        _int(raw["evaluated_trade_dates"]), _int(raw["evaluated_rows"]), _int(raw["selected_rows"]), _int(raw["baseline_selected_rows"]),
-        _triple(raw["mean_net_excess_returns"]), _triple(raw["baseline_mean_net_excess_returns"]), _triple(raw["paired_net_increments"]),
-        _optional_triple(raw["bootstrap_lower_bounds"]), _optional_float(raw["severe_loss_rate"]), _optional_float(raw["baseline_severe_loss_rate"]),
-        _float(raw["turnover"]), _float(raw["baseline_turnover"]), _optional_float(raw["rank_ic"]), _optional_float(raw["top_bottom_quintile_spread"]),
-        _float(raw["maximum_stock_positive_fraction"]), _float(raw["top_five_positive_fraction"]), _float(raw["maximum_board_fraction"]), _int(raw["maximum_industry_count"]),
-        _float(raw["capacity"]), _float(raw["baseline_capacity"]), _floats(raw["horizon_mean_net_excess_returns"]), _floats(raw["baseline_horizon_mean_net_excess_returns"]), state_pairs,
+        _int(raw["evaluated_trade_dates"]),
+        _int(raw["evaluated_rows"]),
+        _int(raw["selected_rows"]),
+        _int(raw["baseline_selected_rows"]),
+        _triple(raw["mean_net_excess_returns"]),
+        _triple(raw["baseline_mean_net_excess_returns"]),
+        _triple(raw["paired_net_increments"]),
+        _optional_triple(raw["bootstrap_lower_bounds"]),
+        _optional_float(raw["severe_loss_rate"]),
+        _optional_float(raw["baseline_severe_loss_rate"]),
+        _float(raw["turnover"]),
+        _float(raw["baseline_turnover"]),
+        _optional_float(raw["rank_ic"]),
+        _optional_float(raw["top_bottom_quintile_spread"]),
+        _float(raw["maximum_stock_positive_fraction"]),
+        _float(raw["top_five_positive_fraction"]),
+        _float(raw["maximum_board_fraction"]),
+        _int(raw["maximum_industry_count"]),
+        _float(raw["capacity"]),
+        _float(raw["baseline_capacity"]),
+        _floats(raw["horizon_mean_net_excess_returns"]),
+        _floats(raw["baseline_horizon_mean_net_excess_returns"]),
+        state_pairs,
     )
 
 

@@ -2,7 +2,10 @@
 
 from pathlib import Path
 
-from trader.infra.research.terminal_holdout_artifacts import TerminalHoldoutArtifactConflictError, TerminalHoldoutArtifactStore
+from trader.infra.research.terminal_holdout_artifacts import (
+    TerminalHoldoutArtifactConflictError,
+    TerminalHoldoutArtifactStore,
+)
 
 
 class TodayTerminalHoldoutArtifactStore(TerminalHoldoutArtifactStore):
