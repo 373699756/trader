@@ -32,7 +32,7 @@ def test_strategy_roadmap_is_ordered_benefit_first_and_strategy_complete() -> No
     assert positions == tuple(sorted(positions))
     assert "状态：已完成" in strategy[positions[0] : positions[1]]
     assert "状态：已完成" in strategy[positions[1] : positions[2]]
-    assert "状态：待执行" in strategy[positions[2] : positions[3]]
+    assert "状态：已完成" in strategy[positions[2] : positions[3]]
 
     for token in (
         "每只股票最多 1600 个历史交易日",

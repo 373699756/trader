@@ -6,6 +6,15 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求继续推荐策略第 15 节未完成任务，并核对现有基线身份是否与生产结论一致。新增只读
+  \`score_current_baseline_consistency_audit_v1\`：按来源内容 SHA-256 逐项核对活动 V1/V2 模型、
+  有效策略配置、P2 历史结论、人工授权基线和两份权威文档；审计值对象固定
+  \`production_authority=false\`，冲突返回 \`baseline_identity_inconsistent\`，未启动运行时明确返回
+  \`live_identity_unverified\`，不会修改配置、模型、冻结、决策或收益数据。新增
+  \`trader-cli research-baseline-audit\` 显式只读入口。原因是此前只有分散的状态投影，缺少在 H1
+  下载和读取新收益前验证“当前活动身份”和“历史拒绝结论”是否属于同一基线的可审计 owner。
+  \`Regression-Key: score-current-baseline-consistency-audit-v1\`。
+
 - 用户要求把此前关于历史评分训练的讨论总结写入独立文档。新增 `docs/trade.md`，归纳 Tomorrow
   `daily_close_proxy` 的训练人口、硬过滤失败关闭、统一 Ridge/浅层 LightGBM 候选、60%/20%/20%
   时序切分、5 折 expanding walk-forward、成本后 local-only 收益门禁、DeepSeek 训练隔离及未来人工
@@ -1926,6 +1935,11 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 本批 15.1.23：定向契约与单元测试通过（基线审计一致、冲突、运行身份不可得、重复 hash、CLI
+  只读投影）；Ruff 和 mypy 对受影响 Python 文件通过；绝对配置运行
+  \`trader-cli research-baseline-audit\` 输出 10 项带来源 SHA-256 的声明并返回
+  \`live_identity_unverified\`。未运行全量门禁（待本批最终高风险验证阶段执行）。
+
 - `tomorrow-daily-close-training-proposal-v1`：新增契约先在 `docs/trade.md` 缺失时以 2 项失败证明边界，
   文档完成后定向 2 项通过；完整 `tests/contract` 共 153 项通过，覆盖非权威定位、收盘代理限制、硬过滤
   失败关闭、DeepSeek 训练隔离、时序切分、统一模型和人工生产授权。新增契约文件的 Ruff format/check、
@@ -3009,6 +3023,10 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 当前 CLI 不持有活动进程句柄，因此只能确认静态工件并报告
+  \`live_identity_unverified\`；在任何后续人工生产变更前仍需由真实运行身份探针补齐该项。审计本身不
+  产生收益改善或模型晋级证据，15.1.25 及后续历史章节仍保持待执行。
 
 - `tomorrow-daily-close-training-proposal-v1`：本批只归纳方案，没有实现训练命令、模型工件、收益验证或
   生产接入，也不证明荐股盈利已经提高。日线 `D` 收盘与生产 14:50 输入存在约 10 分钟分布差异，当前

@@ -143,6 +143,8 @@ def run_research_command(
             )
         )
         return 0
+    if command == "research-baseline-audit":
+        return _run_baseline_identity_audit(runtime)
     if command == "research-history-download":
         services = build_historical_research_services(config_path, workers=options.workers)
 
@@ -203,6 +205,36 @@ def _run_historical_backtest(config_path: Path) -> int:
     report = services.backtest.execute(SCORE_H0_V1_SPEC)
     print(json.dumps(asdict(report), default=_json_default, ensure_ascii=False, sort_keys=True))
     return 0 if report.status == "screened" else 1
+
+
+def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
+    from trader.application.research.baseline_identity_audit import BaselineIdentityAuditService
+    from trader.infra.research.baseline_identity_sources import load_baseline_identity_evidence
+
+    audit = BaselineIdentityAuditService(load_baseline_identity_evidence(runtime)).execute()
+    payload = {
+        "schema_version": audit.schema_version,
+        "status": audit.status,
+        "static_status": audit.static_status,
+        "production_authority": audit.production_authority,
+        "conflicts": list(audit.conflicts),
+        "unavailable": list(audit.unavailable),
+        "content_hash": audit.content_hash,
+        "claims": [
+            {
+                "name": claim.name,
+                "expected": claim.expected,
+                "actual": claim.actual,
+                "source": claim.source,
+                "source_hash": claim.source_hash,
+                "required": claim.required,
+                "status": claim.status,
+            }
+            for claim in audit.claims
+        ],
+    }
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    return 0 if audit.status == "baseline_identity_consistent" else 1
 
 
 def _run_r6_daily_screen(config_path: Path, runtime: RuntimeSettings) -> int:

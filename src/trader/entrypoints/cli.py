@@ -63,6 +63,10 @@ def build_parser() -> argparse.ArgumentParser:
     performance.add_argument("--output", type=Path)
     performance.add_argument("--baseline", type=Path)
     subparsers.add_parser("research-status", help="Read immutable research coverage and capacity status.")
+    subparsers.add_parser(
+        "research-baseline-audit",
+        help="Audit packaged models, configuration, research conclusions, and live identity without writes.",
+    )
     eligibility = subparsers.add_parser(
         "eligibility-list",
         help="Read the immutable level-one permanent issuer exclusion list without supplier requests.",
