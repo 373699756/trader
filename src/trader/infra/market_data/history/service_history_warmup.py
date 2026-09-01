@@ -41,6 +41,7 @@ class HistoryWarmupStatus:
     timeout_count: int
     inflight_age_seconds: float | None
     batch_timeout_seconds: float
+    excluded_count: int
 
 
 @dataclass(frozen=True)
@@ -83,6 +84,7 @@ class HistoryWarmupOptions(TypedDict):
     batch_size: int
     batch_timeout_seconds: float
     monotonic: Callable[[], float]
+    eligibility_filter: Callable[[Sequence[str], datetime], tuple[str, ...]]
 
 
 class HistoryWarmup:
@@ -102,6 +104,7 @@ class HistoryWarmup:
         self._batch_size = max(1, options["batch_size"])
         self._batch_timeout_seconds = float(batch_timeout_seconds)
         self._monotonic = options["monotonic"]
+        self._eligibility_filter = options["eligibility_filter"]
         self._lock = threading.Lock()
         self._universe: tuple[str, ...] = ()
         self._inflight: set[str] = set()
@@ -113,13 +116,17 @@ class HistoryWarmup:
         self._timeout_count = 0
         self._last_source = ""
         self._batch_started_at: float | None = None
+        self._excluded_count = 0
 
     def schedule_history_warmup(
         self,
         codes: Sequence[str],
         observed_at: datetime,
     ) -> None:
-        normalized = _normalize_codes(codes)
+        requested = _normalize_codes(codes)
+        normalized = _normalize_codes(self._eligibility_filter(requested, observed_at))
+        with self._lock:
+            self._excluded_count = len(requested) - len(normalized)
         lanes = self._runner.source_lanes
         if not normalized or lanes is None:
             return
@@ -277,6 +284,7 @@ class HistoryWarmup:
                     max(0.0, now - self._batch_started_at) if self._batch_started_at is not None else None
                 ),
                 batch_timeout_seconds=self._batch_timeout_seconds,
+                excluded_count=self._excluded_count,
             )
 
 

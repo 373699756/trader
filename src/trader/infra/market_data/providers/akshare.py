@@ -75,6 +75,14 @@ def _announcement_history_complete(payload: Mapping[str, object], valid_rows: in
     return total_hits is not None and total_hits <= valid_rows
 
 
+def _financial_history_complete(payload: Mapping[str, object], valid_rows: int) -> bool:
+    result = payload.get("result")
+    if not isinstance(result, Mapping):
+        return False
+    total = result.get("count")
+    return isinstance(total, int) and not isinstance(total, bool) and total >= 0 and total <= valid_rows
+
+
 def _announcement_total_hits(payload: Mapping[str, object]) -> int | None:
     data = payload.get("data")
     total = data.get("total_hits") if isinstance(data, Mapping) else None
@@ -172,6 +180,8 @@ class AkshareResearchClient:
 
         source_errors: list[str] = []
         financial: FinancialReport | None = None
+        financial_history: tuple[FinancialReport, ...] = ()
+        financial_history_complete = False
         financial_evidence: tuple[Evidence, ...] = ()
         announcements: tuple[ResearchAnnouncement, ...] = ()
         announcement_evidence: tuple[Evidence, ...] = ()
@@ -185,7 +195,9 @@ class AkshareResearchClient:
         unlock_evidence: tuple[Evidence, ...] = ()
 
         try:
-            financial, financial_evidence = self._fetch_financial(code, point_in_time, policy)
+            financial, financial_history, financial_history_complete, financial_evidence = self._fetch_financial(
+                code, point_in_time, policy
+            )
         except _SOURCE_EXCEPTIONS as exc:
             source_errors.append(_source_error("financial", exc))
 
@@ -224,6 +236,8 @@ class AkshareResearchClient:
 
         return ResearchObservation(
             financial=financial,
+            financial_history=financial_history,
+            financial_history_complete=financial_history_complete,
             announcements=announcements,
             announcements_available=announcements_available,
             pledge_ratio_pct=pledge_ratio,
@@ -246,14 +260,14 @@ class AkshareResearchClient:
         code: str,
         observed_at: datetime,
         policy: LongResearchPolicy,
-    ) -> tuple[FinancialReport | None, tuple[Evidence, ...]]:
+    ) -> tuple[FinancialReport | None, tuple[FinancialReport, ...], bool, tuple[Evidence, ...]]:
         payload = self._component_payload(
             "financial",
             code,
             observed_at,
             lambda: self._financial_payload(code),
         )
-        candidates: list[FinancialReport] = []
+        history: list[FinancialReport] = []
         for row in _result_rows(payload):
             report_date = _parse_date(row.get("REPORT_DATE"))
             published_at = _parse_date_end(row.get("NOTICE_DATE"))
@@ -262,9 +276,9 @@ class AkshareResearchClient:
             if report_date.month not in {3, 6, 9, 12}:
                 continue
             age_days = (observed_at.date() - report_date).days
-            if age_days < 0 or age_days > policy.financial_max_age_days:
+            if age_days < 0:
                 continue
-            candidates.append(
+            history.append(
                 FinancialReport(
                     report_date=report_date,
                     published_at=published_at,
@@ -278,9 +292,16 @@ class AkshareResearchClient:
                     core_net_profit=_finite_number(row.get("KCFJCXSYJLR")),
                 )
             )
-        if not candidates:
-            return None, ()
-        report = max(candidates, key=lambda item: (item.report_date, item.published_at))
+        ordered_history = tuple(sorted(history, key=lambda item: (item.report_date, item.published_at)))
+        current_candidates = tuple(
+            report
+            for report in ordered_history
+            if (observed_at.date() - report.report_date).days <= policy.financial_max_age_days
+        )
+        history_complete = _financial_history_complete(payload, len(ordered_history))
+        if not current_candidates:
+            return None, ordered_history, history_complete, ()
+        report = max(current_candidates, key=lambda item: (item.report_date, item.published_at))
         version = _payload_version("eastmoney-financial", payload)
         title = (
             f"财务点时：report={report.report_date.isoformat()};EPS={_summary_number(report.basic_eps)};"
@@ -289,15 +310,20 @@ class AkshareResearchClient:
             f"core_yoy={_summary_number(report.core_profit_growth_pct)};ROE={_summary_number(report.roe_pct)};"
             f"parent_profit={_summary_number(report.parent_net_profit)};core_profit={_summary_number(report.core_net_profit)}"
         )
-        return report, (
-            Evidence(
-                evidence_id=f"financial:{code}:{version}:{report.report_date.isoformat()}",
-                evidence_type="financial_snapshot",
-                title=title[:240],
-                source="eastmoney_financial",
-                published_at=report.published_at,
-                received_at=observed_at,
-                data_version=version,
+        return (
+            report,
+            ordered_history,
+            history_complete,
+            (
+                Evidence(
+                    evidence_id=f"financial:{code}:{version}:{report.report_date.isoformat()}",
+                    evidence_type="financial_snapshot",
+                    title=title[:240],
+                    source="eastmoney_financial",
+                    published_at=report.published_at,
+                    received_at=observed_at,
+                    data_version=version,
+                ),
             ),
         )
 
@@ -311,7 +337,7 @@ class AkshareResearchClient:
                 "quoteColumns": "",
                 "filter": f'(SECUCODE="{code}.{market}")',
                 "p": "1",
-                "ps": "12",
+                "ps": "500",
                 "sr": "-1",
                 "st": "REPORT_DATE",
                 "source": "HSF10",

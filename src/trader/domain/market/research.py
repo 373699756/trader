@@ -229,6 +229,8 @@ class CorporateRiskFact:
 @dataclass(frozen=True)
 class ResearchObservation:
     financial: FinancialReport | None = None
+    financial_history: tuple[FinancialReport, ...] = ()
+    financial_history_complete: bool = False
     announcements: tuple[ResearchAnnouncement, ...] = ()
     announcements_available: bool = False
     pledge_ratio_pct: float | None = None
@@ -242,6 +244,10 @@ class ResearchObservation:
     def __post_init__(self) -> None:
         if self.announcements and not self.announcements_available:
             raise ValueError("announcement rows require an available announcement source")
+        if self.financial is not None and self.financial_history and self.financial not in self.financial_history:
+            raise ValueError("current financial report must belong to financial history")
+        if self.financial_history_complete and not self.financial_history:
+            raise ValueError("complete financial history requires report rows")
 
 
 def derive_market_regime(

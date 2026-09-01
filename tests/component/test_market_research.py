@@ -50,6 +50,8 @@ from tests.component.market_data_test_support import (
     timedelta,
     timezone,
 )
+from trader.domain.market.eligibility import IssuerEligibilityFact, IssuerEligibilityReason
+from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
 
 
 def test_history_intraday_and_research_share_the_bounded_market_cache() -> None:
@@ -100,6 +102,120 @@ def test_history_intraday_and_research_share_the_bounded_market_cache() -> None:
     assert history.calls == ["600001"]
     assert intraday.calls == ["600001"]
     assert research.calls == 1
+
+
+def test_level_one_exclusion_prunes_every_non_frozen_per_stock_data_request(tmp_path: Path, monkeypatch) -> None:
+    class RecordingGateway(StaticGateway):
+        def __init__(self, quotes) -> None:
+            super().__init__(quotes)
+            self.candidate_requests = []
+            self.long_requests = []
+
+        def fetch_candidates(self, codes, **kwargs):
+            self.candidate_requests.append(tuple(codes))
+            return super().fetch_candidates(codes, **kwargs)
+
+        def fetch_long_quotes(self, codes, **_kwargs):
+            self.long_requests.append(tuple(codes))
+            requested = set(codes)
+            return tuple(quote for quote in self._quotes if quote.code in requested)
+
+    registry = SQLiteIssuerEligibilityRegistry(tmp_path / "issuer-eligibility.sqlite3")
+    registry.record(
+        (
+            IssuerEligibilityFact(
+                "600001",
+                IssuerEligibilityReason.HISTORICAL_ST,
+                NOW,
+                "quote:600001:st-v1",
+                "eastmoney_market",
+                "a" * 64,
+            ),
+        )
+    )
+    gateway = RecordingGateway((_quote("600001"), _quote("600002")))
+    history = CountingHistoryClient(_history_bars())
+    research = StaticStructuredResearchClient(
+        Evidence("news-1", "news", "普通研究", "fixture", NOW),
+        ResearchObservation(announcements_available=True, pledge_ratio_pct=0.0, unlock_ratio_pct=0.0),
+    )
+    intraday = StaticIntradayClient(_tail_minute_bars())
+    service = _service(
+        gateway,
+        history,
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        eligibility=registry,
+        research_client=research,
+        intraday_client=intraday,
+    )
+    reference_requests = []
+
+    def record_reference(codes, _observed_at, *, force, security_master_codes):
+        reference_requests.append((tuple(codes), force, tuple(security_master_codes)))
+
+    monkeypatch.setattr(service.references, "schedule_reference_data", record_reference)
+
+    service.refresh_candidate_quotes(("600001", "600002"), NOW)
+    service.refresh_market_news(("600001", "600002"), NOW)
+    service.refresh_stock_risk(("600001", "600002"), NOW)
+    service.refresh_intraday_tail(("600001", "600002"), NOW)
+    service.refresh_long_quotes(("600001", "600002"), NOW)
+    service.schedule_reference_data(
+        ("600001", "600002"),
+        NOW,
+        security_master_codes=("600001", "600002"),
+    )
+
+    assert gateway.candidate_requests == [("600002",)]
+    assert gateway.long_requests == [("600002",)]
+    assert research.news_calls == 1
+    assert research.snapshot_calls == 1
+    assert intraday.calls == ["600002"]
+    assert reference_requests == [(("600002",), False, ("600002",))]
+    assert "600001" not in history.calls
+
+
+def test_newly_discovered_annual_loss_stops_quote_and_history_in_same_candidate_batch(tmp_path: Path) -> None:
+    class RecordingGateway(StaticGateway):
+        def __init__(self, quotes) -> None:
+            super().__init__(quotes)
+            self.candidate_requests = []
+
+        def fetch_candidates(self, codes, **kwargs):
+            self.candidate_requests.append(tuple(codes))
+            return super().fetch_candidates(codes, **kwargs)
+
+    annual_loss = FinancialReport(
+        report_date=date(2022, 12, 31),
+        published_at=NOW - timedelta(days=1_000),
+        parent_net_profit=-1.0,
+        core_net_profit=2.0,
+    )
+    research = StaticStructuredResearchClient(
+        Evidence("news-1", "news", "普通研究", "fixture", NOW),
+        ResearchObservation(
+            financial_history=(annual_loss,),
+            financial_history_complete=True,
+            announcements_available=True,
+        ),
+    )
+    registry = SQLiteIssuerEligibilityRegistry(tmp_path / "issuer-eligibility.sqlite3")
+    gateway = RecordingGateway((_quote("600001"),))
+    history = CountingHistoryClient(_history_bars())
+    service = _service(
+        gateway,
+        history,
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        eligibility=registry,
+        research_client=research,
+    )
+
+    result = service.fetch_candidate_features(("600001",), NOW, include_structured_research=True)
+
+    assert result == ()
+    assert gateway.candidate_requests == []
+    assert history.calls == []
+    assert registry.exclusions(NOW)[0].reason is IssuerEligibilityReason.HISTORICAL_AUDITED_LOSS
 
 
 def test_source_lane_research_deadline_discards_late_memory_and_disk_cache(tmp_path) -> None:
@@ -311,6 +427,7 @@ def test_akshare_structured_research_is_point_in_time_and_builds_real_long_input
     financial_payload = {
         "version": "financial-v1",
         "result": {
+            "count": 3,
             "data": [
                 {
                     "REPORT_DATE": "2026-06-30 00:00:00",
@@ -330,7 +447,13 @@ def test_akshare_structured_research_is_point_in_time_and_builds_real_long_input
                     "PARENTNETPROFIT": 100.0,
                     "KCFJCXSYJLR": 80.0,
                 },
-            ]
+                {
+                    "REPORT_DATE": "2022-12-31 00:00:00",
+                    "NOTICE_DATE": "2023-04-20 00:00:00",
+                    "PARENTNETPROFIT": -10.0,
+                    "KCFJCXSYJLR": -12.0,
+                },
+            ],
         },
         "success": True,
     }
@@ -421,6 +544,11 @@ def test_akshare_structured_research_is_point_in_time_and_builds_real_long_input
 
     assert observation.financial is not None
     assert observation.financial.report_date == date(2026, 3, 31)
+    assert tuple(item.report_date for item in observation.financial_history) == (
+        date(2022, 12, 31),
+        date(2026, 3, 31),
+    )
+    assert observation.financial_history_complete is False
     assert len(observation.announcements) == 22
     assert observation.pledge_ratio_pct == pytest.approx(15.0)
     assert observation.unlock_ratio_pct == pytest.approx(6.0)
@@ -446,6 +574,8 @@ def test_akshare_structured_research_is_point_in_time_and_builds_real_long_input
     assert pledge_evidence.published_at.isoformat() == "2026-07-01T23:59:59+08:00"
     assert all(call[1]["timeout"] == 8 for call in calls)
     assert all(call[1]["proxies"] == {"http": "", "https": "", "all": ""} for call in calls)
+    financial_call = next(call for call in calls if "securities/api/data/get" in call[0])
+    assert financial_call[1]["params"]["ps"] == "500"
     assert all("search-api-web" not in call[0] for call in calls)
 
 

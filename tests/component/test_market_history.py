@@ -46,6 +46,7 @@ from tests.component.market_data_test_support import (
     timedelta,
     timezone,
 )
+from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
 
 
 def test_history_cache_fetches_sixty_one_bars_but_retains_only_twenty_raw_rows() -> None:
@@ -230,6 +231,32 @@ def test_market_service_bounds_history_preload_to_stratified_candidate_universe(
     assert len(history.calls) == 2
     assert sum(item.history_days >= 20 for item in features) == 2
     assert service.health()["history_universe_rows"] == 2
+
+
+def test_level_one_exclusion_is_recorded_before_history_and_removed_from_market_population(tmp_path: Path) -> None:
+    history = CountingHistoryClient(_history_bars())
+    excluded = replace(_quote("600001"), name="*ST测试", is_st=True)
+    eligible = _quote("600002")
+    registry = SQLiteIssuerEligibilityRegistry(tmp_path / "issuer-eligibility.sqlite3")
+    service = _service(
+        StaticGateway((excluded, eligible)),
+        history,
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        eligibility=registry,
+        history_preload_limit=2,
+    )
+
+    features = service.fetch_market_features(NOW)
+
+    assert tuple(feature.quote.code for feature in features) == ("600002",)
+    assert history.calls == ["600002"]
+    assert registry.exclusions(NOW)[0].code == "600001"
+    assert service.health()["issuer_eligibility"]["excluded_count"] == 1
+
+    service.fetch_market_features(NOW + timedelta(seconds=1), force=True)
+
+    assert registry.status().fact_count == 1
+    assert history.calls == ["600002"]
 
 
 def test_history_preload_reserves_120_slots_for_each_supported_board() -> None:

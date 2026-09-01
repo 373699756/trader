@@ -21,6 +21,11 @@ class FilterSeverity(str, Enum):
     OPTIONAL = "optional"
 
 
+class FilterTier(str, Enum):
+    ISSUER_PERMANENT = "issuer_permanent"
+    DYNAMIC = "dynamic"
+
+
 @dataclass(frozen=True)
 class HardFilterPolicy:
     blacklist_codes: frozenset[str] = frozenset()
@@ -57,6 +62,7 @@ class FilterRule:
     name: str
     severity: FilterSeverity
     predicate: Callable[[FeatureSnapshot, datetime], FilterAudit | None]
+    tier: FilterTier = FilterTier.DYNAMIC
 
 
 @dataclass(frozen=True)
@@ -345,7 +351,11 @@ class _DefaultFilterRules:
             return _make_audit(snapshot, "star_board_too_hot", "<= 16.00", pct_change)
         return None
 
-    def structured_negative_risk(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def _structured_negative_risk(
+        self,
+        snapshot: FeatureSnapshot,
+        field_names: frozenset[str],
+    ) -> FilterAudit | None:
         code_by_field = {
             "major_shareholder_reduction": "major_shareholder_reduction",
             "financial_fraud_history": "financial_fraud_history",
@@ -360,10 +370,27 @@ class _DefaultFilterRules:
             "financial_deterioration": "financial_deterioration",
         }
         for field_name, threshold in self.policy.structured_risk_thresholds.items():
+            if field_name not in field_names:
+                continue
             value = snapshot.values.get(field_name)
             if value is not None and math.isfinite(value) and value > threshold:
                 return _make_audit(snapshot, code_by_field.get(field_name, field_name), f"<= {threshold:g}", value)
         return None
+
+    def permanent_structured_negative_risk(
+        self,
+        snapshot: FeatureSnapshot,
+        _now: datetime,
+    ) -> FilterAudit | None:
+        return self._structured_negative_risk(snapshot, _PERMANENT_STRUCTURED_RISK_FIELDS)
+
+    def dynamic_structured_negative_risk(
+        self,
+        snapshot: FeatureSnapshot,
+        _now: datetime,
+    ) -> FilterAudit | None:
+        dynamic_fields = frozenset(self.policy.structured_risk_thresholds) - _PERMANENT_STRUCTURED_RISK_FIELDS
+        return self._structured_negative_risk(snapshot, dynamic_fields)
 
     def structured_risk_unavailable(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         missing = tuple(
@@ -396,7 +423,44 @@ class _DefaultFilterRules:
         return None
 
 
-def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | None = None) -> tuple[FilterRule, ...]:
+_PERMANENT_STRUCTURED_RISK_FIELDS = frozenset(
+    {
+        "financial_fraud_history",
+        "major_illegal_history",
+        "fund_occupation_history",
+        "illegal_guarantee_history",
+        "forced_delisting_risk",
+    }
+)
+
+
+def level_one_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | None = None) -> tuple[FilterRule, ...]:
+    if not math.isfinite(max_age_seconds) or max_age_seconds < 0:
+        raise ValueError("max_age_seconds must be finite and non-negative")
+    registry = _DefaultFilterRules(max_age_seconds, policy or HardFilterPolicy())
+    return (
+        FilterRule(
+            "st_or_delisting",
+            FilterSeverity.REQUIRED,
+            registry.st_or_delisting,
+            FilterTier.ISSUER_PERMANENT,
+        ),
+        FilterRule(
+            "blacklisted",
+            FilterSeverity.REQUIRED,
+            registry.blacklisted,
+            FilterTier.ISSUER_PERMANENT,
+        ),
+        FilterRule(
+            "permanent_structured_negative_risk",
+            FilterSeverity.REQUIRED,
+            registry.permanent_structured_negative_risk,
+            FilterTier.ISSUER_PERMANENT,
+        ),
+    )
+
+
+def level_two_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | None = None) -> tuple[FilterRule, ...]:
     """Build default filter rule registry for all strategies.
 
     Required rules are preserved from ``hard_filter`` behavior. Optional rules
@@ -409,7 +473,6 @@ def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | N
 
     return (
         FilterRule("unsupported_code", FilterSeverity.REQUIRED, registry.unsupported_code),
-        FilterRule("st_or_delisting", FilterSeverity.REQUIRED, registry.st_or_delisting),
         FilterRule("suspended", FilterSeverity.REQUIRED, registry.suspended),
         FilterRule("invalid_price", FilterSeverity.REQUIRED, registry.invalid_price),
         FilterRule("invalid_amount", FilterSeverity.REQUIRED, registry.invalid_amount),
@@ -425,9 +488,12 @@ def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | N
         FilterRule("missing_listing_age_sessions", FilterSeverity.OPTIONAL, registry.missing_listing_age_sessions),
         FilterRule("missing_liquidity_history", FilterSeverity.REQUIRED, registry.missing_liquidity),
         FilterRule("one_price_limit", FilterSeverity.REQUIRED, registry.one_price_limit),
-        FilterRule("blacklisted", FilterSeverity.REQUIRED, registry.blacklisted),
         FilterRule("major_regulatory_risk", FilterSeverity.REQUIRED, registry.major_regulatory_risk),
-        FilterRule("structured_negative_risk", FilterSeverity.REQUIRED, registry.structured_negative_risk),
+        FilterRule(
+            "dynamic_structured_negative_risk",
+            FilterSeverity.REQUIRED,
+            registry.dynamic_structured_negative_risk,
+        ),
         FilterRule("structured_risk_unavailable", FilterSeverity.OPTIONAL, registry.structured_risk_unavailable),
         FilterRule(
             "corporate_risk_history_unavailable",
@@ -436,6 +502,14 @@ def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | N
         ),
         FilterRule("invalid_quote_structure", FilterSeverity.REQUIRED, registry.invalid_quote_structure),
         FilterRule("invalid_pct_change", FilterSeverity.REQUIRED, registry.invalid_pct_change),
+    )
+
+
+def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | None = None) -> tuple[FilterRule, ...]:
+    """Return level one defense rules followed by level two point-in-time rules."""
+    return (
+        *level_one_filter_rules(max_age_seconds=max_age_seconds, policy=policy),
+        *level_two_filter_rules(max_age_seconds=max_age_seconds, policy=policy),
     )
 
 
@@ -455,8 +529,11 @@ __all__ = [
     "HardFilterPolicy",
     "FilterRule",
     "FilterSeverity",
+    "FilterTier",
     "apply_filters",
     "board_for_code",
     "board_for_snapshot",
     "hard_filter",
+    "level_one_filter_rules",
+    "level_two_filter_rules",
 ]

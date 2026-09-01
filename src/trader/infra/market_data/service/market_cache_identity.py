@@ -209,10 +209,22 @@ def _merge_research_observation(
             for item in (*previous.corporate_risk_facts, *current.corporate_risk_facts)
         }.values()
     )
+    financial_history = tuple(
+        {
+            (item.report_date, item.published_at): item
+            for item in (*previous.financial_history, *current.financial_history)
+        }.values()
+    )
     return replace(
         current,
         financial=(
             previous.financial if "financial" in failed_sources and current.financial is None else current.financial
+        ),
+        financial_history=financial_history,
+        financial_history_complete=(
+            previous.financial_history_complete
+            if "financial" in failed_sources and not current.financial_history_complete
+            else current.financial_history_complete
         ),
         announcements=(
             previous.announcements
@@ -259,6 +271,8 @@ def _history_priority(quote: MarketQuote) -> tuple[float, float, str]:
 def _serialize_research_observation(observation: ResearchObservation) -> dict[str, object]:
     return {
         "financial": _serialize_financial_report(observation.financial) if observation.financial is not None else None,
+        "financial_history": tuple(_serialize_financial_report(item) for item in observation.financial_history),
+        "financial_history_complete": observation.financial_history_complete,
         "announcements": tuple(_serialize_research_announcement(item) for item in observation.announcements),
         "announcements_available": observation.announcements_available,
         "pledge_ratio_pct": observation.pledge_ratio_pct,
@@ -275,6 +289,7 @@ def _serialize_research_observation(observation: ResearchObservation) -> dict[st
 
 def _deserialize_research_observation(raw: Mapping[str, object]) -> ResearchObservation:
     financial_raw = raw.get("financial")
+    financial_history_raw = raw.get("financial_history")
     announcements_raw = raw.get("announcements")
     evidence_raw = raw.get("evidence")
     corporate_risk_raw = raw.get("corporate_risk_facts")
@@ -283,6 +298,12 @@ def _deserialize_research_observation(raw: Mapping[str, object]) -> ResearchObse
         raise ValueError("source_errors must be a list")
     return ResearchObservation(
         financial=_deserialize_financial_report(financial_raw) if isinstance(financial_raw, dict) else None,
+        financial_history=tuple(
+            _deserialize_financial_report(item) for item in financial_history_raw if isinstance(item, dict)
+        )
+        if isinstance(financial_history_raw, list)
+        else (),
+        financial_history_complete=bool(raw.get("financial_history_complete", False)),
         announcements=tuple(
             _deserialize_research_announcement(item) for item in announcements_raw if isinstance(item, dict)
         )

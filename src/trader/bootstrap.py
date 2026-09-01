@@ -78,6 +78,7 @@ from trader.infra.market_data.service.service_research import ResearchLoader
 from trader.infra.market_data.service.service_tushare import ReferenceLoader
 from trader.infra.persistence.data_plane import DataPlaneRepository
 from trader.infra.persistence.decision_records import SQLiteDecisionRecordRepository
+from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
 from trader.infra.persistence.research_trace import ResearchTraceLimits, SQLiteV2ResearchTraceStore
 from trader.infra.persistence.runtime_json import RuntimeJsonWriter
@@ -629,10 +630,21 @@ def _build_market_data(
         monotonic=time.monotonic,
     )
     gateway.set_security_reference_persistence_sink(references.schedule_security_master_persistence)
+    eligibility = SQLiteIssuerEligibilityRegistry(settings.runtime_dir / "issuer-eligibility.sqlite3")
+    try:
+        eligibility.record_manual_blacklist(
+            strategy.hard_filters.blacklist_codes,
+            now(),
+            context.effective_config_version,
+        )
+    except RuntimeError:
+        # The typed registry retains any facts it could verify; persistence degradation stays observable.
+        pass
     warmup = HistoryWarmup(
         history_cache,
         references,
         runner,
+        eligibility_filter=eligibility.filter_codes,
         batch_size=history_warmup_policy.batch_size,
         batch_timeout_seconds=history_warmup_policy.batch_timeout_seconds,
         monotonic=time.monotonic,
@@ -673,6 +685,7 @@ def _build_market_data(
             research,
             intraday_loader,
             references,
+            eligibility,
         ),
         wall_clock=now,
     )
@@ -686,6 +699,7 @@ def _build_market_data(
             references,
             runner,
             market_health,
+            eligibility,
         ),
         history_preload_limit=settings.market_data.candidate_pool_size * 3,
     )

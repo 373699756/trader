@@ -14,20 +14,21 @@ def test_strategy_roadmap_is_ordered_historical_only_and_strategy_complete() -> 
 
     ordered_sections = (
         "15.1.21 历史自适应评分总序与批次纪律",
-        "15.1.22 H1 扩展历史归档与点时覆盖审计",
-        "15.1.23 三策略标签、基准与切分预注册",
-        "15.1.24 全候选预测—实际残差账本",
-        "15.1.25 历史 DeepSeek 点时事实与增量证据",
-        "15.1.26 自适应收益、成本与风险模型族",
-        "15.1.27 净效用评分与受控调节边界",
-        "15.1.28 嵌套时序选择与多重检验控制",
-        "15.1.29 Today 端到端历史留出",
-        "15.1.30 Tomorrow 新挑战者历史留出",
-        "15.1.31 D25 端到端历史留出",
-        "15.1.32 严重亏损概率与市场状态稳健性",
-        "15.1.33 自动训练、漂移与挑战者生成",
-        "15.1.34 受控自动晋级、启动激活与回退",
-        "15.1.35 跨策略结论、生产接入与最终授权",
+        "15.1.22 一级永久资格名单与二级硬过滤",
+        "15.1.23 H1 扩展历史归档与点时覆盖审计",
+        "15.1.24 三策略标签、基准与切分预注册",
+        "15.1.25 全候选预测—实际残差账本",
+        "15.1.26 历史 DeepSeek 点时事实与增量证据",
+        "15.1.27 自适应收益、成本与风险模型族",
+        "15.1.28 净效用评分与受控调节边界",
+        "15.1.29 嵌套时序选择与多重检验控制",
+        "15.1.30 Today 端到端历史留出",
+        "15.1.31 Tomorrow 新挑战者历史留出",
+        "15.1.32 D25 端到端历史留出",
+        "15.1.33 严重亏损概率与市场状态稳健性",
+        "15.1.34 自动训练、漂移与挑战者生成",
+        "15.1.35 受控自动晋级、启动激活与回退",
+        "15.1.36 跨策略结论、生产接入与最终授权",
     )
     positions = tuple(strategy.index(section) for section in ordered_sections)
     assert positions == tuple(sorted(positions))
@@ -66,7 +67,7 @@ def test_roadmap_cannot_restore_forward_collection_or_reuse_observed_holdout_as_
     ):
         assert token in strategy
     assert "历史评分优化路线的执行顺序、样本门槛和研究终态" in design
-    assert "第 15.1.21–15.1.35 节" in design
+    assert "第 15.1.21–15.1.36 节" in design
 
 
 def test_each_strategy_gate_requires_point_in_time_parity_and_terminal_evidence() -> None:

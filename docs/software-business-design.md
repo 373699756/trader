@@ -83,7 +83,7 @@ V2 数据平面、正式决策与 DeepSeek 预算使用独立持久化文件；�
 
 ## 2. 系统能力与业务流程
 
-系统从公开行情和研究数据构建点时快照，经标准化、硬过滤、候选预选、本地评分、
+系统从公开行情和研究数据构建点时快照，经一级发行人永久资格过滤、二级动态硬过滤、候选预选、本地评分、
 可选 DeepSeek 结构化复核、风险合并和稳定 TopK 后发布到 Web；冻结策略按时间点保存
 不可变历史锚点，当前报价只作为 overlay 展示。
 
@@ -91,7 +91,7 @@ V2 数据平面、正式决策与 DeepSeek 预算使用独立持久化文件；�
 调度与五来源采集
         |
         v
-不可变观测 -> 确定性统一行情 -> 过滤与特征
+不可变观测 -> IssuerEligibilityRegistry -> 二级过滤与特征
                                   |
                     +-------------+-------------+
                     v             v             v
@@ -123,7 +123,7 @@ V2 数据平面、正式决策与 DeepSeek 预算使用独立持久化文件；�
                                       |
                                   MarketEpoch
                                       |
-              硬过滤 -> 候选预选 -> 本地评分 -> local ScoredDecision
+         一级资格 -> 二级硬过滤 -> 候选预选 -> 本地评分 -> local ScoredDecision
                                                     |
                      ResearchEpoch -> DeepSeek 复核-+
                                                     |
@@ -141,13 +141,26 @@ V2 数据平面、正式决策与 DeepSeek 预算使用独立持久化文件；�
 时区观察点、上游版本、规范内容哈希，以及按其职责适用的配置、规则、策略和 schema
 版本，已发布对象不可原地修改。
 
-硬过滤、候选预选、本地评分和稳定选择必须是一次确定性管道。过滤结果使用
+一级资格、二级硬过滤、候选预选、本地评分和稳定选择必须是一次确定性管道。过滤结果使用
 `pass`、`observe_only`、`reject` 三态并保留逐股原因；缺失关键行情、证券身份或点时
 证据不得静默降级为通过。`UnifiedDecisionIndex` 按策略保存最后一个已提交的不可变
 决策引用，并通过单提交者 compare-and-set 保证旧行情、迟到 DeepSeek 和失败批次不能
 覆盖更新结果。Web 只读取该索引和报价 overlay，不参与采集、过滤、评分或持久化。
 
 ### 2.2 V2 数据平面契约
+
+`IssuerEligibilityRegistry` 是生产一级资格的唯一状态源。组合根以独立 SQLite 追加表显式装配该端口；
+事实包含代码、原因、事实生效时间、稳定证据 ID、来源和内容哈希，同身份同内容幂等、不同内容冲突。
+`permanently_excluded` 代码必须在历史预热、候选定向行情、逐股公司研究、参考数据、Long 定向行情和
+分钟行情提交前裁剪，不能进入评分或 DeepSeek；`eligible_unverified` 与覆盖未闭合的发行人仍可进入
+受限采集以形成后续权威事实。供应商全市场批量接口不能按代码裁剪时允许物理返回整批，但发布人口和
+全部逐股下游必须剔除一级排除代码。冻结 TopK 报价 overlay 与既有 outcome 结算按原正式身份继续，
+不得用新名单覆盖历史正式记录。历史回放按事实 `effective_at` 判断，不得以当前名单回填过去。
+
+一级事实只来自正式年度财报亏损、历史 ST/退市警示、权威结构化确认的永久严重风险和人工永久名单；
+普通新闻、亏损预告、未有正式结论的调查和 DeepSeek 自由文本不能创建一级事实。已有历史缓存不做
+破坏性删除；新请求在调度前阻断。二级动态硬过滤继续处理当前停牌、价格/流动性/上市日龄、板块热度、
+存续调查、减持、解禁、质押、财务恶化和其它点时风险，具体公式与原因码以荐股策略文档第 4 节为准。
 
 统一数据平面由 `DailyFeaturePack`、
 `MarketEpoch`、`CandidateQuoteEpoch` 和 `ResearchEpoch` 都是深层不可变对象：代码有序
@@ -634,6 +647,10 @@ schema、预算批次、预算汇总、缓存、请求执行、状态和复核�
 行情网关、来源和 Tushare 的 health 根值必须分别使用 `MarketGatewayHealthStatus`、
 `MarketSourceHealthStatus` 与 `TushareHealthStatus`；最终 `MarketDataHealth` adapter 才按公开字段白名单
 投影 JSON，预热和其它内部调用者只能读取类型字段。
+`SQLiteIssuerEligibilityRegistry` 由 `bootstrap.py` 单例装配并注入门面、`HistoryWarmup` 和健康投影；
+它不属于领域层，也不允许 Web 请求现场读取数据库。只读运维命令
+`trader-cli eligibility-list --as-of <带时区时刻>` 可审计指定时点的代码、原因和证据 manifest，
+不访问网络、不修改名单。Web 只能读取市场健康对象中已经聚合的一级资格状态。
 `DeepSeekReviewer`、`DeepSeekBudgetLedger` 只组合这些组件。快照仓库只负责冻结、检查点、
 收盘 overlay 和结果结算，不持久化流水线事件或实时来源健康。
 
@@ -1429,8 +1446,10 @@ cadence 最短间隔/下一到期时间/固定时点生命周期、冻结完成/
 确定性的受控 `primary_blocker` 和聚合原因计数。DeepSeek 状态必须始终公开
 `enabled`、`configured`、物理调用数和零调用原因，使“没有合格候选”与“缺少密钥/禁用”可区分；
 不得暴露代码、密钥或请求载荷。该诊断只能解释既有门禁，不能自动降低评分、可靠度、风险或动作阈值。
-历史预热聚合必须加法公开 planned/completed/failure/inflight、退避数、唯一失败数、timeout 累计、
+历史预热聚合必须加法公开 planned/completed/failure/inflight、一级资格排除数、退避数、唯一失败数、timeout 累计、
 在途年龄、批次 deadline 和最后来源；这些字段只描述进程内聚合状态，不得包含逐股代码或外部错误文本。
+同级 `issuer_eligibility` 只公开 schema、事实数、排除发行人数、原因聚合、manifest hash、完整性和持久化
+错误计数；不得通过 status 暴露代码、证据正文或 SQLite 内容。
 应用层运行端口必须以不可变、带类型的状态值提供 `input_quality`；线程池、来源 lane、cadence、
 缓存和延迟状态遵循相同规则。组合根或显式基础设施可观测性 adapter 只在最终响应处执行 JSON 投影；
 缺少必需能力属于装配错误，不得通过 `getattr`、空字典或默认 no-op 发布器静默隐藏。调度器还必须
@@ -1441,15 +1460,15 @@ cadence 最短间隔/下一到期时间/固定时点生命周期、冻结完成/
 逻辑字节、RSS/USS、Python traced、Polars 估算和瞬时峰值原因由发布性能 runner 及验收报告提供。
 状态顶层必须返回当前有效配置/策略组合的 `runtime_version`，并原样投影脱敏的 `scheduler`
 摘要，以便区分旧常驻进程、刷新失败和决策构建失败；源码文件发生变化不会热加载到既有进程。
-`/api/v2/status` 的公开 schema 为 `v2_status_v11`，并必须从当前进程已导入的常量加法返回
+`/api/v2/status` 的公开 schema 为 `v2_status_v12`，并必须从当前进程已导入的常量加法返回
 `release.decision_view_schema` 与 `release.web_asset_revision`。浏览器必须同时校验 status release
 身份和每份 DecisionView schema；任何缺失或不一致都属于 `release_contract_mismatch`，页面必须
 停止把结果解释为行情采集或观察草稿生成，明确提示正常重启旧服务。该握手只判断进程/资源契约
 一致性，不得根据工作树、Git、文件时间或 HTTP 成功状态推断运行版本。
-`v2_status_v11.scheduler.cadence.schedule_points[*]` 只使用 `status` 投影调度点状态，不提供旧字段、别名或
+`v2_status_v12.scheduler.cadence.schedule_points[*]` 只使用 `status` 投影调度点状态，不提供旧字段、别名或
 fallback；进程内对应值由 `SchedulePointStatus` 与 `SchedulePointState.status` 表达。内部状态字段变化不得
 绕过显式 Web adapter 自动改变公开 JSON。
-`v2_status_v11` 不公开离线研究数据库、未来采集窗口或运行期档位比较状态。显式 `research-status` 只读
+`v2_status_v12` 不公开离线研究数据库、未来采集窗口或运行期档位比较状态。显式 `research-status` 只读
 检查历史研究持久化快照，缺库时不得创建目录，也不得依据计数自动生成后续工作。
 Web 应用工厂创建应用时必须把模板和全部打包静态资源读入该进程的只读 release 快照，后续 HTTP
 不得再次从工作树读取这些文件；源码更新只能在正常重启后整体生效。静态资源仍使用内容 ETag、
@@ -1458,7 +1477,7 @@ Web 应用工厂创建应用时必须把模板和全部打包静态资源读入�
 EventSource 游标、重连退避、断线轮询和 patch-to-paint 采样；两者通过显式依赖对象协作，缺少模块时
 fail closed 并进入浏览器诊断。`market_data.market_changes` 只公开变更计数和合并身份，
 `market_data.latency_waterfall` 只公开有界阶段聚合，不得泄露股票代码、关联 ID 或原始样本。
-当前静态资源握手身份为 `release-contract-2026-09-01-v12`。
+当前静态资源握手身份为 `release-contract-2026-09-01-v13`。
 
 日志只记录脱敏结构化摘要，不记录密钥、Token、完整模型请求/响应、完整供应商载荷或个人
 敏感路径。所有外部 I/O 必须有 timeout、容量、熔断和明确失败策略。DeepSeek 与 Tushare
@@ -1714,22 +1733,22 @@ V2 严重亏损概率研究身份固定为 `tomorrow_v2_historical_risk_probabil
 `tomorrow_v2_historical_risk_validation_report_v1`，报告必须绑定模型工件 hash；同内容幂等、冲突或篡改
 失败关闭。历史日期不足时只返回不足状态且不封存伪模型。
 
-后续历史评分优化路线的执行顺序、样本门槛和研究终态以荐股策略文档第 15.1.21–15.1.35 节为唯一
-权威。路线先建立独立 H1 点时归档和只读覆盖审计，预注册 Today 11:20、Tomorrow/D25 14:50 的策略
+后续历史评分优化路线的执行顺序、样本门槛和研究终态以荐股策略文档第 15.1.21–15.1.36 节为唯一
+权威。路线先完成一级永久资格名单与二级动态硬过滤，再建立独立 H1 点时归档和只读覆盖审计，预注册 Today 11:20、Tomorrow/D25 14:50 的策略
 标签、60%/20%/20% 时序切分、5 日 embargo 和最终至少 200 个交易日；随后建立全候选预测—实际残差
 账本、历史 DeepSeek 结构化增量证据、自适应收益/成本/风险模型、嵌套 walk-forward 与多重检验，分别
 运行三策略终端留出和严重亏损概率/市场状态稳健性，最后才允许生成自动挑战者、受控晋级和下一次启动
 激活方案。每次“继续”只交付下一个完整未完成章节，不得跨章恢复未来日采集、盘中热切换或无门禁生产
 更新。
 
-第 15.1.22 至 15.1.33 节的 H1、残差、DeepSeek facts、候选、验证和统一结论均位于隔离
+第 15.1.23 至 15.1.34 节的 H1、残差、DeepSeek facts、候选、验证和统一结论均位于隔离
 `domain/application/infra/research` 与独立历史目录，只能由显式研究 CLI 装配；`bootstrap.py`、生产调度、
 HTTP、SSE、Web、活动数据库和冻结链不得持有这些服务。历史 DeepSeek 研究只允许在生产复核截止后通过
 独立低优先级原子桶运行，并与生产预算共同遵守每日 168 次全局物理请求上限。既有 H0/R6/P2 工件保持
 不可变，既有 139 日窗口只能作为已观察历史审计，不能重新标为独立盲测。线上 T+1 outcome 只保存正式
 推荐历史、运行监控和回退告警，不进入模型训练。
 
-第 15.1.34 节只建立默认不接入组合根的内容寻址 Champion/Challenger 注册表；第 15.1.35 节必须在用户
+第 15.1.35 节只建立默认不接入组合根的内容寻址 Champion/Challenger 注册表；第 15.1.36 节必须在用户
 明确生产接入指令下另立高风险批次，才能让通过全部历史门禁的 `next_start` 工件在下一次正常启动激活。
 不得盘中切换 profile 或模型，不得覆盖 current、正式/冻结记录，任一生产接入仍须执行完整发布门禁。
 在这些章节实际完成前，所有历史报告固定 `production_authority=false`，当前生产继续

@@ -252,10 +252,12 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
         "history_warmup_timeout_count",
         "history_warmup_inflight_age_seconds",
         "history_warmup_batch_timeout_seconds",
+        "history_warmup_excluded_count",
         "history_warmup_last_source",
         "measured_at",
     )
     result = {field: raw[field] for field in scalar_fields if field in raw and _json_scalar(raw[field])}
+    result.update(_issuer_eligibility(raw.get("issuer_eligibility")))
     for field in ("market_quote_age", "candidate_quote_age"):
         value = raw.get(field)
         if isinstance(value, Mapping):
@@ -323,6 +325,32 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
     if waterfall := _latency_waterfall(raw.get("latency_waterfall")):
         result["latency_waterfall"] = waterfall
     return result
+
+
+def _issuer_eligibility(raw: object) -> dict[str, object]:
+    if not isinstance(raw, Mapping):
+        return {}
+    eligibility = {
+        key: raw[key]
+        for key in (
+            "schema_version",
+            "fact_count",
+            "excluded_count",
+            "manifest_hash",
+            "integrity_ok",
+            "persistence_error_count",
+            "last_error",
+        )
+        if key in raw and _json_scalar(raw[key])
+    }
+    reason_counts = raw.get("reason_counts")
+    if isinstance(reason_counts, Mapping):
+        eligibility["reason_counts"] = {
+            str(reason)[:64]: count
+            for reason, count in sorted(reason_counts.items(), key=lambda item: str(item[0]))[:32]
+            if isinstance(count, int) and not isinstance(count, bool) and count >= 0
+        }
+    return {"issuer_eligibility": eligibility}
 
 
 def _tomorrow_model(runtime: Mapping[str, object]) -> dict[str, object]:

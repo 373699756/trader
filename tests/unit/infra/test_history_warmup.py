@@ -39,6 +39,10 @@ class _References:
         return None
 
 
+def _all_eligible(codes, _observed_at):
+    return tuple(codes)
+
+
 class _Lanes:
     def __init__(self) -> None:
         self.submissions: list[tuple[tuple[str, ...], Future[object]]] = []
@@ -102,6 +106,7 @@ def test_failed_history_codes_cool_down_while_unattempted_codes_continue() -> No
         _History(),
         _References(),
         runner,
+        eligibility_filter=_all_eligible,
         batch_size=2,
         batch_timeout_seconds=5.0,
         monotonic=clock,
@@ -150,6 +155,7 @@ def test_timed_out_history_batch_releases_inflight_and_reports_age() -> None:
         _History(),
         _References(),
         runner,
+        eligibility_filter=_all_eligible,
         batch_size=2,
         batch_timeout_seconds=5.0,
         monotonic=clock,
@@ -180,6 +186,7 @@ def test_history_warmup_keeps_slot_order_stable_when_market_ranking_reorders() -
         _History(),
         _References(),
         runner,
+        eligibility_filter=_all_eligible,
         batch_size=2,
         batch_timeout_seconds=5.0,
         monotonic=clock,
@@ -192,3 +199,23 @@ def test_history_warmup_keeps_slot_order_stable_when_market_ranking_reorders() -
 
     assert lanes.submissions[0][0] == original[:2]
     assert lanes.submissions[1][0] == original[2:]
+
+
+def test_permanently_excluded_codes_never_enter_history_lane() -> None:
+    clock = _Clock()
+    lanes = _Lanes()
+    runner = SimpleNamespace(source_lanes=lanes, wall_clock=lambda: NOW)
+    warmup = HistoryWarmup(
+        _History(),
+        _References(),
+        runner,
+        eligibility_filter=lambda codes, _observed_at: tuple(code for code in codes if code != "600001"),
+        batch_size=2,
+        batch_timeout_seconds=5.0,
+        monotonic=clock,
+    )
+
+    warmup.schedule_history_warmup(("600001", "600002"), NOW)
+
+    assert lanes.submissions[0][0] == ("600002",)
+    assert warmup.status().excluded_count == 1

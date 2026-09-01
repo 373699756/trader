@@ -6,7 +6,14 @@ from datetime import date, timedelta
 import pytest
 
 from trader.domain.market.models import Board
-from trader.domain.recommendation.filtering.filters import HardFilterPolicy, board_for_code, hard_filter
+from trader.domain.recommendation.filtering.filters import (
+    FilterTier,
+    HardFilterPolicy,
+    board_for_code,
+    hard_filter,
+    level_one_filter_rules,
+    level_two_filter_rules,
+)
 
 
 @pytest.mark.parametrize(
@@ -154,6 +161,20 @@ def test_configured_blacklist_is_a_hard_filter(feature_factory, observed_at) -> 
 
     assert result.allowed is False
     assert "blacklisted" in {item.filter_code for item in result.reasons}
+
+
+def test_filter_registry_separates_permanent_issuer_and_dynamic_runtime_rules() -> None:
+    level_one = level_one_filter_rules(max_age_seconds=20)
+    level_two = level_two_filter_rules(max_age_seconds=20)
+
+    assert {rule.tier for rule in level_one} == {FilterTier.ISSUER_PERMANENT}
+    assert {rule.tier for rule in level_two} == {FilterTier.DYNAMIC}
+    assert {rule.name for rule in level_one} == {
+        "st_or_delisting",
+        "blacklisted",
+        "permanent_structured_negative_risk",
+    }
+    assert "dynamic_structured_negative_risk" in {rule.name for rule in level_two}
 
 
 def test_non_finite_and_structurally_invalid_quotes_are_rejected(feature_factory, observed_at) -> None:

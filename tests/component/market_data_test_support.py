@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # This module intentionally re-exports shared component fixtures to the split suites.
 # ruff: noqa: F401
+import hashlib
 import json
 import threading
 import time
@@ -36,6 +37,7 @@ from trader.application.runtime.source_lanes import (
     SourceRequestSupersededError,
 )
 from trader.application.runtime.workers import BoundedExecutor
+from trader.domain.market.eligibility import IssuerEligibilityRegistryStatus
 from trader.domain.market.models import (
     Board,
     Evidence,
@@ -110,6 +112,31 @@ MARKET_REGIME_POLICY = _STRATEGY_SETTINGS.market_regime
 LONG_POLICY = _STRATEGY_SETTINGS.long_research
 
 
+class _AllowAllEligibility:
+    def record(self, _facts) -> int:
+        return 0
+
+    def filter_codes(self, codes, _observed_at):
+        return tuple(codes)
+
+    def status(self) -> IssuerEligibilityRegistryStatus:
+        return IssuerEligibilityRegistryStatus(
+            "issuer_eligibility_registry_v1",
+            0,
+            0,
+            (),
+            hashlib.sha256(b"").hexdigest(),
+            True,
+            0,
+        )
+
+    def exclusions(self, _observed_at):
+        return ()
+
+    def facts(self):
+        return ()
+
+
 def _service(
     gateway: Any,
     history_client: Any,
@@ -150,10 +177,12 @@ def _service(
         data_plane=data_plane,
         monotonic=monotonic,
     )
+    eligibility = kwargs.pop("eligibility", _AllowAllEligibility())
     warmup = HistoryWarmup(
         history,
         references,
         runner,
+        eligibility_filter=eligibility.filter_codes,
         batch_size=kwargs.pop("history_warmup_batch_size", 30),
         batch_timeout_seconds=kwargs.pop("history_warmup_batch_timeout_seconds", 20.0),
         monotonic=monotonic,
@@ -188,13 +217,13 @@ def _service(
         monotonic=monotonic,
     )
     health = MarketDataHealth(
-        MarketDataHealthDependencies(quotes, history, warmup, research, intraday, references),
+        MarketDataHealthDependencies(quotes, history, warmup, research, intraday, references, eligibility),
         wall_clock=wall_clock,
     )
     history_preload_limit = kwargs.pop("history_preload_limit", 360)
     assert kwargs == {}
     return MarketFeatureService(
-        MarketFeatureDependencies(quotes, history, warmup, research, intraday, references, runner, health),
+        MarketFeatureDependencies(quotes, history, warmup, research, intraday, references, runner, health, eligibility),
         history_preload_limit=history_preload_limit,
     )
 

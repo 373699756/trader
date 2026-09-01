@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
+from trader.application.ports.eligibility import IssuerEligibilityPort
 from trader.application.ports.market import MarketSnapshotMetadata
 from trader.application.ports.types import JsonInput, JsonObject, freeze_json_object
 from trader.infra.market_data.history.service_history import HistoryCache
@@ -30,6 +31,7 @@ class MarketDataHealthDependencies:
     research: ResearchLoader
     intraday: IntradayLoader
     references: ReferenceLoader
+    eligibility: IssuerEligibilityPort
 
 
 class MarketDataHealth:
@@ -45,6 +47,7 @@ class MarketDataHealth:
         self._research = dependencies.research
         self._intraday = dependencies.intraday
         self._references = dependencies.references
+        self._eligibility = dependencies.eligibility
         self._wall_clock = wall_clock
 
     def health(self) -> JsonObject:
@@ -52,6 +55,7 @@ class MarketDataHealth:
         quote_status = self._quotes.status()
         history = self._history.status()
         warmup = self._warmup.status()
+        eligibility = self._eligibility.status()
         research = self._research.status()
         intraday = self._intraday.status()
         gateway_status = self._quotes.gateway.health()
@@ -168,6 +172,17 @@ class MarketDataHealth:
                     "history_warmup_timeout_count": warmup.timeout_count,
                     "history_warmup_inflight_age_seconds": warmup.inflight_age_seconds,
                     "history_warmup_batch_timeout_seconds": warmup.batch_timeout_seconds,
+                    "history_warmup_excluded_count": warmup.excluded_count,
+                    "issuer_eligibility": {
+                        "schema_version": eligibility.schema_version,
+                        "fact_count": eligibility.fact_count,
+                        "excluded_count": eligibility.excluded_count,
+                        "reason_counts": {item.reason.value: item.count for item in eligibility.reason_counts},
+                        "manifest_hash": eligibility.manifest_hash,
+                        "integrity_ok": eligibility.integrity_ok,
+                        "persistence_error_count": eligibility.persistence_error_count,
+                        "last_error": eligibility.last_error,
+                    },
                     "quote_out_of_order_count": quote_status.out_of_order_count,
                     "research_out_of_order_count": research.out_of_order_count,
                     "history_out_of_order_count": history.out_of_order_count,

@@ -6,10 +6,13 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import cast
+from zoneinfo import ZoneInfo
 
 from trader.application.ports.tomorrow_model import TomorrowScoringProfile
+from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
 from trader.infra.settings import RuntimeSettings, load_long_watchlist, load_runtime_settings, load_strategy_settings
 
 _COMMAND_GROUPS = {
@@ -60,6 +63,13 @@ def build_parser() -> argparse.ArgumentParser:
     performance.add_argument("--output", type=Path)
     performance.add_argument("--baseline", type=Path)
     subparsers.add_parser("research-status", help="Read immutable research coverage and capacity status.")
+    eligibility = subparsers.add_parser(
+        "eligibility-list",
+        help="Read the immutable level-one permanent issuer exclusion list without supplier requests.",
+    )
+    eligibility.add_argument(
+        "--as-of", help="Timezone-aware ISO-8601 point-in-time; defaults to current Shanghai time."
+    )
     download = subparsers.add_parser(
         "research-history-download",
         help="Download the fixed retrospective qfq history archive; resumable and separate from serve.",
@@ -109,6 +119,8 @@ def main(argv: list[str] | None = None) -> int:
             baseline=args.baseline,
             tomorrow_scoring_profile=profile_override,
         )
+    if args.command == "eligibility-list":
+        return _run_eligibility_list(runtime, as_of=args.as_of)
     if args.command.startswith("research-"):
         from trader.entrypoints.research_commands import ResearchCommandOptions, run_research_command
 
@@ -147,6 +159,43 @@ def _run_config_validation(
         )
     )
     return 0
+
+
+def _run_eligibility_list(runtime: RuntimeSettings, *, as_of: str | None) -> int:
+    observed_at = datetime.fromisoformat(as_of) if as_of else datetime.now(ZoneInfo("Asia/Shanghai"))
+    if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+        raise SystemExit("--as-of must include a timezone offset")
+    observed_at = observed_at.astimezone(ZoneInfo("Asia/Shanghai"))
+    registry = SQLiteIssuerEligibilityRegistry(
+        runtime.runtime_dir / "issuer-eligibility.sqlite3",
+        read_only=True,
+    )
+    facts = tuple(fact for fact in registry.facts() if fact.effective_at <= observed_at)
+    status = registry.status()
+    print(
+        json.dumps(
+            {
+                "schema_version": "issuer_eligibility_list_v1",
+                "as_of": observed_at.isoformat(),
+                "manifest_hash": status.manifest_hash,
+                "integrity_ok": status.integrity_ok,
+                "items": [
+                    {
+                        "code": fact.code,
+                        "reason": fact.reason.value,
+                        "effective_at": fact.effective_at.isoformat(),
+                        "evidence_id": fact.evidence_id,
+                        "source": fact.source,
+                        "evidence_hash": fact.evidence_hash,
+                    }
+                    for fact in facts
+                ],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0 if status.integrity_ok else 1
 
 
 def _effective_profile(

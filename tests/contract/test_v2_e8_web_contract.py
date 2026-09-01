@@ -154,7 +154,7 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     response.close()
     status = client.get("/api/v2/status").get_json()
 
-    assert status["schema_version"] == "v2_status_v11"
+    assert status["schema_version"] == "v2_status_v12"
     assert status["release"] == {
         "decision_view_schema": "v2_decision_view_v3",
         "web_asset_revision": WEB_ASSET_REVISION,
@@ -209,8 +209,19 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
         "history_warmup_timeout_count": 1,
         "history_warmup_inflight_age_seconds": 4.5,
         "history_warmup_batch_timeout_seconds": 20.0,
+        "history_warmup_excluded_count": 4,
         "history_warmup_last_source": "tencent",
         "history_warmup_planned_count": 120,
+        "issuer_eligibility": {
+            "excluded_count": 3,
+            "fact_count": 4,
+            "integrity_ok": True,
+            "last_error": None,
+            "manifest_hash": "a" * 64,
+            "persistence_error_count": 0,
+            "reason_counts": {"historical_st": 3},
+            "schema_version": "issuer_eligibility_registry_v1",
+        },
         "market_feature_rows": 5567,
         "market_changes": {
             "dirty": 12,
@@ -381,7 +392,19 @@ def _app():
                 "history_warmup_timeout_count": 1,
                 "history_warmup_inflight_age_seconds": 4.5,
                 "history_warmup_batch_timeout_seconds": 20.0,
+                "history_warmup_excluded_count": 4,
                 "history_warmup_last_source": "tencent",
+                "issuer_eligibility": {
+                    "schema_version": "issuer_eligibility_registry_v1",
+                    "fact_count": 4,
+                    "excluded_count": 3,
+                    "reason_counts": {"historical_st": 3, "must-not-leak": "bad"},
+                    "manifest_hash": "a" * 64,
+                    "integrity_ok": True,
+                    "persistence_error_count": 0,
+                    "last_error": None,
+                    "codes": ["must-not-leak"],
+                },
                 "market_changes": {
                     "merge_epoch": "merge-22",
                     "inserted": 1,

@@ -8,18 +8,25 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
+from trader.application.ports.eligibility import IssuerEligibilityPort
 from trader.application.ports.market import (
     MarketDataDeadlineExceededError,
     MarketSnapshotMetadata,
     ResearchRefreshResult,
 )
 from trader.application.ports.types import JsonObject
+from trader.domain.market.eligibility import (
+    IssuerEligibilityFact,
+    eligibility_facts_from_quote,
+    eligibility_facts_from_research,
+)
 from trader.domain.market.models import (
     Board,
     FeatureSnapshot,
     LiveQuote,
     MarketQuote,
 )
+from trader.domain.market.research import ResearchObservation
 from trader.domain.outcome.models import OutcomeBar
 from trader.infra.market_data.history.service_history import HistoryCache
 from trader.infra.market_data.history.service_history_warmup import HistoryWarmup
@@ -47,6 +54,7 @@ class MarketFeatureDependencies:
     references: ReferenceLoader
     runner: MarketTaskRunner
     health: MarketDataHealth
+    eligibility: IssuerEligibilityPort
 
 
 class MarketFeatureService:
@@ -64,6 +72,7 @@ class MarketFeatureService:
         self.references = dependencies.references
         self.runner = dependencies.runner
         self.health_reporter = dependencies.health
+        self.eligibility = dependencies.eligibility
         self.history_preload_limit = max(1, history_preload_limit)
 
     def fetch_market_features(
@@ -75,6 +84,8 @@ class MarketFeatureService:
     ) -> Sequence[FeatureSnapshot]:
         cached = self.quotes.cached_market_features(force=force)
         if cached is not None:
+            self._record_quote_eligibility(tuple(feature.quote for feature in cached), observed_at)
+            cached = self._eligible_features(cached, observed_at)
             if self.runner.source_lanes is not None:
                 history_codes = _history_preload_codes(
                     tuple(feature.quote for feature in cached),
@@ -92,6 +103,8 @@ class MarketFeatureService:
                 deadline=deadline,
             )
         )
+        self._record_quote_eligibility(quotes, observed_at)
+        quotes = self._eligible_quotes(quotes, observed_at)
         history_codes = _history_preload_codes(quotes, self.history_preload_limit)
         if self.runner.source_lanes is not None:
             self.warmup.schedule_history_warmup(history_codes, observed_at)
@@ -129,22 +142,28 @@ class MarketFeatureService:
         include_intraday_tail: bool = False,
         include_structured_research: bool = False,
     ) -> Sequence[FeatureSnapshot]:
-        normalized = _normalize_codes(codes)
+        normalized = self._eligible_codes(codes, observed_at)
         if not normalized:
             return ()
-        self.refresh_candidate_quotes(normalized, observed_at)
-        quotes = self.quotes.candidate_snapshot(normalized)
-        if {quote.code for quote in quotes} != set(normalized):
-            self.fetch_market_features(observed_at)
-            quotes = self.quotes.candidate_snapshot(normalized)
         action_restrictions: dict[str, set[str]] = {}
-        histories = self.history.load(normalized, action_restrictions=action_restrictions)
         research = self.research.load(
             normalized,
             observed_at,
             include_structured=include_structured_research,
             action_restrictions=action_restrictions,
         )
+        if include_structured_research:
+            self._record_research_eligibility(research)
+            normalized = self._eligible_codes(normalized, observed_at)
+            if not normalized:
+                return ()
+            research = {code: item for code, item in research.items() if code in set(normalized)}
+        self.refresh_candidate_quotes(normalized, observed_at)
+        quotes = self.quotes.candidate_snapshot(normalized)
+        if {quote.code for quote in quotes} != set(normalized):
+            self.fetch_market_features(observed_at)
+            quotes = self.quotes.candidate_snapshot(normalized)
+        histories = self.history.load(normalized, action_restrictions=action_restrictions)
         intraday = (
             self.intraday.load(
                 _board_fair_codes(normalized, quotes),
@@ -174,7 +193,7 @@ class MarketFeatureService:
         force: bool = False,
         deadline: datetime | None = None,
     ) -> Sequence[FeatureSnapshot]:
-        normalized = _normalize_codes(codes)
+        normalized = self._eligible_codes(codes, observed_at)
         if not normalized:
             return ()
         fetched = tuple(
@@ -250,7 +269,7 @@ class MarketFeatureService:
         force: bool = False,
         deadline: datetime | None = None,
     ) -> Sequence[FeatureSnapshot]:
-        normalized = _normalize_codes(codes)
+        normalized = self._eligible_codes(codes, observed_at)
         if not normalized:
             return ()
         quotes = tuple(
@@ -277,6 +296,7 @@ class MarketFeatureService:
 
     def refresh_industry_heat(self, observed_at: datetime) -> Sequence[FeatureSnapshot]:
         quotes = self.quotes.market_quotes()
+        quotes = self._eligible_quotes(quotes, observed_at)
         if not quotes:
             return ()
         action_restrictions: dict[str, set[str]] = {}
@@ -299,7 +319,7 @@ class MarketFeatureService:
         *,
         deadline: datetime | None = None,
     ) -> ResearchRefreshResult:
-        requested = _normalize_codes(codes)
+        requested = self._eligible_codes(codes, observed_at)
         started_at = self.runner.wall_clock()
         report = self.research.load_report(
             requested,
@@ -325,7 +345,7 @@ class MarketFeatureService:
         *,
         deadline: datetime | None = None,
     ) -> ResearchRefreshResult:
-        requested = _normalize_codes(codes)
+        requested = self._eligible_codes(codes, observed_at)
         started_at = self.runner.wall_clock()
         report = self.research.load_report(
             requested,
@@ -333,6 +353,7 @@ class MarketFeatureService:
             include_structured=True,
             deadline=deadline,
         )
+        self._record_research_eligibility(report.observations)
         return _research_refresh_result(
             requested,
             report,
@@ -348,7 +369,7 @@ class MarketFeatureService:
         *,
         force: bool = False,
     ) -> None:
-        self.references.refresh_reference_data(codes, observed_at, force=force)
+        self.references.refresh_reference_data(self._eligible_codes(codes, observed_at), observed_at, force=force)
 
     def schedule_reference_data(
         self,
@@ -358,16 +379,21 @@ class MarketFeatureService:
         force: bool = False,
         security_master_codes: Sequence[str] | None = None,
     ) -> None:
+        eligible = self._eligible_codes(codes, observed_at)
+        eligible_master = self._eligible_codes(
+            codes if security_master_codes is None else security_master_codes,
+            observed_at,
+        )
         self.references.schedule_reference_data(
-            codes,
+            eligible,
             observed_at,
             force=force,
-            security_master_codes=security_master_codes,
+            security_master_codes=eligible_master,
         )
-        self.warmup.schedule_history_warmup(codes, observed_at)
+        self.warmup.schedule_history_warmup(eligible, observed_at)
 
     def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> None:
-        self.intraday.load(_normalize_codes(codes), observed_at)
+        self.intraday.load(self._eligible_codes(codes, observed_at), observed_at)
 
     def read_candidate_features(
         self,
@@ -377,7 +403,7 @@ class MarketFeatureService:
         include_intraday_tail: bool = False,
         include_structured_research: bool = False,
     ) -> Sequence[FeatureSnapshot]:
-        normalized = _normalize_codes(codes)
+        normalized = self._eligible_codes(codes, observed_at)
         if not normalized:
             return ()
         action_restrictions: dict[str, set[str]] = {}
@@ -401,6 +427,45 @@ class MarketFeatureService:
         if include_intraday_tail:
             self.intraday.record_feature_coverage(normalized, features)
         return features
+
+    def _eligible_codes(self, codes: Sequence[str], observed_at: datetime) -> tuple[str, ...]:
+        return self.eligibility.filter_codes(_normalize_codes(codes), observed_at)
+
+    def _eligible_quotes(self, quotes: Sequence[MarketQuote], observed_at: datetime) -> tuple[MarketQuote, ...]:
+        eligible = set(self._eligible_codes(tuple(quote.code for quote in quotes), observed_at))
+        return tuple(quote for quote in quotes if quote.code in eligible)
+
+    def _eligible_features(
+        self,
+        features: Sequence[FeatureSnapshot],
+        observed_at: datetime,
+    ) -> tuple[FeatureSnapshot, ...]:
+        eligible = set(self._eligible_codes(tuple(item.quote.code for item in features), observed_at))
+        return tuple(item for item in features if item.quote.code in eligible)
+
+    def _record_quote_eligibility(self, quotes: Sequence[MarketQuote], observed_at: datetime) -> None:
+        eligible = set(self._eligible_codes(tuple(quote.code for quote in quotes), observed_at))
+        facts = tuple(
+            fact
+            for quote in quotes
+            if quote.code in eligible
+            for fact in eligibility_facts_from_quote(quote, observed_at=observed_at)
+        )
+        self._record_eligibility(facts)
+
+    def _record_research_eligibility(self, observations: Mapping[str, ResearchObservation]) -> None:
+        facts = tuple(
+            fact
+            for code, observation in observations.items()
+            for fact in eligibility_facts_from_research(code, observation)
+        )
+        self._record_eligibility(facts)
+
+    def _record_eligibility(self, facts: Sequence[IssuerEligibilityFact]) -> None:
+        try:
+            self.eligibility.record(facts)
+        except RuntimeError:
+            return
 
     def current_quotes(self, codes: Sequence[str]) -> Mapping[str, LiveQuote]:
         normalized = _normalize_codes(codes)
