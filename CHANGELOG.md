@@ -6,6 +6,19 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求执行推荐策略第 15 节 Codex A 未完成任务。现状确认 H1 覆盖与标签预注册已有骨架，但
+  `historical_prediction_residual_ledger_v1` owner 完全缺失，Tomorrow C3 只有可手工构造的数据类，尚无
+  H1 日线特征/成熟标签接线、固定五候选训练、5 折 OOF 或可执行 Ridge/LightGBM adapter。本批新增两阶段
+  H1 adapter：先只读截至 D 的前复权 1/3/5 日收益与 20/40/60 日 skip-5 市场/板块/成交额残差动量并封存
+  feature hash，再独立读取 D+1 生成同人口等权基准和 20/50/100bp 标签；未来行篡改不改变既有特征，过滤
+  证据不完整和 D+1 停牌行失败关闭。三策略标签预注册新增显式白名单、原子写入和 hash 校验的不可变 JSON
+  工件，支持同内容幂等并拒绝异内容、未知字段和篡改。新增固定参数、最多 2 线程的 Ridge/浅层 LightGBM、50/50 集成、
+  强收缩板块残差和极强收缩个股残差五候选，全部修正只拟合此前折 OOF 残差，最新 200 日点时保留段不参与
+  开发或冻结。新增预测/结果物理分表、追加写 SQLite 账本，精确绑定策略/日期/锚点/代码/horizon/父 split/
+  模型 hash，保留 `label_pending` 与 `not_modeled`，按交易日及市场/板块/流动性/波动/Top6 分层汇总误差。
+  所有工件固定 `production_authority=false`、`automatic_model_update=false`，不接入生产、DeepSeek、联合器
+  或终端留出。`Regression-Key: codex-a-h1-residual-c3-v1`。
+
 - 用户要求执行推荐策略第 15 节 Codex D 未完成任务。新增 `train-tomorrow` 唯一公开入口及
   `tomorrow_research_artifact_graph_v1`：先封存 100 只/120 日资源探针，再按父 SHA-256 连续推进开发、
   确认、日线代理留出和 14:50 点时留出；输入/探针 hash 派生不可由用户指定的 `run_id`。独立 run 目录
@@ -78,6 +91,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- `codex-a-h1-residual-c3-v1`：Review 修正三项会削弱研究证据的问题：MAE/ATR20 改为有符号不利波动并按
+  T+1 `<= -1.5`、D25 `<= -2.5` 校验严重亏损标签；账本只有全部已建模预测均连接成熟 outcome 时才返回
+  `residuals_ready`；H1 D/D+1 连接由逐行扫描改为身份索引，避免全市场 1600 日规模退化为平方复杂度。
+  SQLite decoder 同时增加字段白名单、类型解析、重建 hash 和未知字段/篡改失败关闭。
+
 - `tomorrow-research-orchestration-artifact-graph-v1`：最终 Review 将 Tomorrow 工件提交中的 CAS/活动 run
   校验、终态模型验证、Parquet 证据封存和 checkpoint/终态发布拆为同一进程锁内的独立职责，并将 H1
   manifest 的 SQLite 快照读取、universe/record/history hash 审计与报告组装分离；保持工件 schema、
@@ -89,6 +107,14 @@ All notable changes to this project are documented here.
   `Regression-Key: codex-b-historical-filter-confirmation-v1-runtime-fix`。
 
 ### Verification
+
+- `codex-a-h1-residual-c3-v1`：CodexA H1/标签/账本/C3 相关 unit/component/infra 测试 46 项通过；架构、历史路线、
+  Tomorrow V3 文档和评分计划契约 33 项通过。13 个受影响文件 Ruff format/lint、7 个源文件 mypy 和
+  `git diff --check` 通过。固定 LightGBM 模型重复拟合、模型文本重载、五候选 OOF、未来行隔离、过滤证据
+  失败关闭、追加幂等/冲突/篡改、signed MAE 和部分标签不得提前 ready 均有回归断言。仓库外空 H1 目录
+  只读审计明确 Today/Tomorrow/D25 均为 `historical_data_insufficient`、0 覆盖、0 共同交易日且留出未开启；
+  `research-status` 因本机未提供 `TRADER_CONFIG` 无法核对真实运行目录。完整 `make`/wheel/浏览器门禁不适用：
+  本批只新增生产隔离离线研究模块，未修改组合根、依赖、入口、配置、Web、冻结或包资源。
 
 - `tomorrow-research-orchestration-artifact-graph-v1`：Codex D 应用/基础设施/CLI/文档定向测试 57 项通过；
   覆盖五阶段单次连续推进、缺父工件阻塞、owner/父 hash/无环校验、资源超限、同 run 恢复、不同输入新 run、
@@ -3163,6 +3189,12 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- `codex-a-h1-residual-c3-v1`：本批完成 CodexA 工程能力和失败关闭边界，但没有可核对的真实 H1 父工件，
+  因而未执行真实来源下载、全市场特征构建、C3 训练/确认或收益评价，也未生成 D 编排可消费的真实 Parquet
+  分区、handoff、`report.json` 或 `model.json`。空归档证据不能证明收益改善；真实来源达到 95% 股票覆盖、
+  至少 1000 个共同交易日和最新 200 日点时保留前，后续必须保持 `historical_data_insufficient`，不得打开
+  留出或申请生产权限。
 
 - `tomorrow-v3-single-command-two-artifact-contract-v1`：`./run.sh train-tomorrow` 的 Codex D 编排、工件、
   状态和资源门禁已实现，但真实 H1/C3/联合/留出 handoff 尚未生成，因而本批没有产生 `model.json`、终态

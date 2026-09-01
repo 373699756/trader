@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from datetime import date
+
+from trader.domain.research.h1_point_in_time import canonical_hash
 
 _EMBARGO_DAYS = 5
 _WALK_FORWARD_FOLDS = 5
@@ -21,6 +24,7 @@ class DailyCloseTemporalSplit:
     point_in_time_reserved_dates: tuple[date, ...]
     embargo_days_per_boundary: int = _EMBARGO_DAYS
     minimum_point_in_time_reserve_days: int = _MINIMUM_POINT_IN_TIME_RESERVE_DAYS
+    content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
         groups = (
@@ -43,6 +47,7 @@ class DailyCloseTemporalSplit:
         ):
             raise ValueError("daily-close split must reserve at least 200 dates for point-in-time holdout")
         _strictly_increasing(self.all_dates)
+        object.__setattr__(self, "content_hash", canonical_hash(self))
 
     @property
     def all_dates(self) -> tuple[date, ...]:
