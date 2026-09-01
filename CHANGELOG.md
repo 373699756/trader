@@ -6,6 +6,16 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求执行推荐策略第 15.1.25 节，并明确所有荐股评分/训练只能消费历史 point-in-time 数据。新增独立
+  `score_h1_point_in_time_v1` 类型化规范、Today 11:20 与 Tomorrow/D25 14:50 锚点记录、参数化来源能力探针
+  port、有界 1600 交易日下载/断点续传服务，以及独立 `score-h1-point-in-time` SQLite 归档。股票池、逐股
+  记录、交易日、字段覆盖和来源响应均绑定 SHA-256 manifest；同内容幂等、异内容/未来行/非前复权/时区和
+  点时冲突失败关闭。三策略只读覆盖审计分别返回 `coverage_ready` 或 `historical_data_insufficient`，并固定
+  `terminal_holdout_opened=false`、`production_authority=false`，不生成候选、不计算收益、不修改 H0 或生产缓存。
+  新增显式 `python -m trader.entrypoints.h1_point_in_time --runtime-dir <path>` 入口；统一 CLI 注册留给 Codex D，
+  普通 `check`、Web 和生产启动不会隐式运行。
+  `Regression-Key: h1-point-in-time-archive-coverage-v1`。
+
 - 用户要求综合此前关于历史日线训练、V1/V2/C3 联合、收益目标和主程序交互的讨论，把第 15 章全部未完成
   工作拆成 Codex A/B/C/D 四条可独立并行路线，而不是只安排 C3 与 V3。荐股权威文档新增第 15.1.37 节：
   A 独占 H1/标签/残差账本与 C3，B 独占过滤/透明候选/确认与 V3 联合器，C 独占 Today/Tomorrow/D25
@@ -33,6 +43,12 @@ All notable changes to this project are documented here.
   收缩；合法空推荐仍保留真实候选分母。`Regression-Key: scoring-hot-path-efficiency-baseline-v1`。
 
 ### Verification
+
+- 15.1.25 定向验证：H1 规范、能力探针、下载服务和独立 SQLite manifest 单元测试 8 项通过；覆盖同身份
+  幂等、断点续传、策略隔离、未来/迟到/无时区/非 qfq 拒绝和数据库列篡改检测；受影响文件 Ruff 和 mypy
+  通过，独立只读审计命令通过。空归档三策略均明确返回 `historical_data_insufficient`，终端留出未开启。
+  未运行真实供应商能力探针、批量下载或收益/标签读取，因本批只封存 H1 覆盖边界；真实来源可用性仍需在
+  有授权环境执行显式命令后确认。
 
 - `four-lane-tomorrow-research-roadmap-v1`：文档契约及 C3/V3 隔离核心定向测试 31 项通过；V2 架构契约
   20 项通过；受影响 11 个 Python 文件的 Ruff lint/format 和 5 个源文件 mypy 通过；生产组合根、入口、
