@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
 
+from trader.application.research.historical_label import HistoricalLabelPreregistrationService
 from trader.application.research.research_tomorrow_orchestrator import (
     TomorrowResearchAdvanceResult,
     TomorrowResearchOrchestrator,
@@ -22,6 +23,7 @@ from trader.application.research.tomorrow_research_artifacts import (
     next_research_stage,
     production_readiness_audit,
 )
+from trader.application.research.tomorrow_research_prerequisites import CodexATomorrowResearchPrerequisite
 from trader.bootstrap import build_historical_research_services
 from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC
 from trader.domain.research.score_r6 import SCORE_R6_HISTORICAL_SPEC
@@ -30,6 +32,7 @@ from trader.domain.research.score_r6_stability import SCORE_R6_STABILITY_SPEC
 from trader.domain.research.tomorrow_historical_p2 import TOMORROW_HISTORICAL_P2_SPEC
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
 from trader.infra.persistence.research_trace import SQLiteV2ResearchTraceStore
+from trader.infra.research.h1_point_in_time_archive import H1ArchiveConflictError, SQLiteH1PointInTimeArchive
 from trader.infra.research.history_archive import SQLiteHistoricalArchive
 from trader.infra.research.score_r6_artifacts import ScoreR6ArtifactConflictError, ScoreR6ArtifactStore
 from trader.infra.research.score_r6_daily_artifacts import (
@@ -137,7 +140,7 @@ def run_research_command(
         print(
             json.dumps(
                 {
-                    "schema_version": "v2_research_readiness_v8",
+                    "schema_version": "v2_research_readiness_v9",
                     "validation_mode": "historical_only",
                     "score_r6_executable": screening_ready,
                     "score_r6_screening_executable": screening_ready,
@@ -281,10 +284,11 @@ def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
 
 def _run_tomorrow_research_orchestrator(runtime: RuntimeSettings) -> int:
     store = TomorrowResearchArtifactStore(runtime.runtime_dir / "research" / "tomorrow-v3")
+    prerequisite = _tomorrow_research_prerequisite(runtime)
     try:
-        result = TomorrowResearchOrchestrator(store, _TomorrowResearchProgress()).advance()
+        result = TomorrowResearchOrchestrator(store, prerequisite, _TomorrowResearchProgress()).advance()
         payload = _tomorrow_research_result_payload(result, store.host_available_disk_gb())
-    except TomorrowResearchArtifactStoreError:
+    except (H1ArchiveConflictError, TomorrowResearchArtifactStoreError):
         payload = {
             "schema_version": "tomorrow_research_advance_result_v1",
             "status": "artifact_conflict",
@@ -301,27 +305,40 @@ def _run_tomorrow_research_orchestrator(runtime: RuntimeSettings) -> int:
 def _read_tomorrow_research_status(runtime: RuntimeSettings) -> dict[str, object]:
     store = TomorrowResearchArtifactStore(runtime.runtime_dir / "research" / "tomorrow-v3")
     try:
+        prerequisite = _tomorrow_research_prerequisite(runtime).inspect()
         graph = store.load_graph()
         stage = next_research_stage(graph)
         readiness = production_readiness_audit(graph, manual_authorization_hash=None)
         return {
-            "status": "not_started" if not graph.artifacts else "terminal" if stage is None else "blocked",
+            "status": (
+                "terminal"
+                if stage is None
+                else "blocked"
+                if prerequisite.status == "blocked" or graph.artifacts
+                else "not_started"
+            ),
             "run_id": derive_tomorrow_research_run_id(graph),
             "graph_hash": graph.content_hash,
             "artifact_count": len(graph.artifacts),
             "next_stage": stage,
+            "input_prerequisite_status": prerequisite.status,
+            "input_prerequisite_hash": prerequisite.content_hash,
+            "input_blockers": list(prerequisite.blockers),
             "production_readiness": readiness.status,
             "production_blockers": list(readiness.blockers),
             "production_authority": False,
             "automatic_model_update": False,
         }
-    except TomorrowResearchArtifactStoreError:
+    except (H1ArchiveConflictError, TomorrowResearchArtifactStoreError):
         return {
             "status": "artifact_conflict",
             "run_id": None,
             "graph_hash": "",
             "artifact_count": 0,
             "next_stage": None,
+            "input_prerequisite_status": "artifact_conflict",
+            "input_prerequisite_hash": "",
+            "input_blockers": ["h1_archive_invalid"],
             "production_readiness": "production_adaptation_blocked",
             "production_blockers": ["tomorrow_research_artifact_invalid"],
             "production_authority": False,
@@ -341,6 +358,7 @@ def _tomorrow_research_result_payload(
         "completed_stages": list(result.completed_stages),
         "next_stage": result.next_stage,
         "blockers": list(result.blockers),
+        "input_prerequisite_hash": result.prerequisite_hash,
         "resource_contract": {
             "pilot_stocks": 100,
             "pilot_trade_dates": 120,
@@ -359,6 +377,11 @@ def _tomorrow_research_result_payload(
         "automatic_model_update": result.automatic_model_update,
         "content_hash": result.content_hash,
     }
+
+
+def _tomorrow_research_prerequisite(runtime: RuntimeSettings) -> CodexATomorrowResearchPrerequisite:
+    archive = SQLiteH1PointInTimeArchive(runtime.runtime_dir)
+    return CodexATomorrowResearchPrerequisite(HistoricalLabelPreregistrationService(archive))
 
 
 def _run_r6_daily_screen(config_path: Path, runtime: RuntimeSettings) -> int:

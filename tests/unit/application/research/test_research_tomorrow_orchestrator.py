@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from trader.application.research.research_tomorrow_orchestrator import TomorrowResearchOrchestrator
+from trader.application.research.research_tomorrow_orchestrator import (
+    TomorrowResearchOrchestrator,
+    TomorrowResearchPrerequisite,
+)
 from trader.application.research.tomorrow_research_artifacts import (
     TomorrowResearchArtifactGraph,
     TomorrowResearchArtifactRef,
@@ -48,22 +51,56 @@ class MemoryStore:
         return self.graph
 
 
+@dataclass(frozen=True)
+class FixedPrerequisite:
+    value: TomorrowResearchPrerequisite
+
+    def inspect(self) -> TomorrowResearchPrerequisite:
+        return self.value
+
+
+def _ready_prerequisite() -> FixedPrerequisite:
+    return FixedPrerequisite(TomorrowResearchPrerequisite("ready", "f" * 64, ()))
+
+
 def test_missing_upstream_artifacts_block_without_mutating_research_state() -> None:
     store = MemoryStore()
 
-    result = TomorrowResearchOrchestrator(store).advance()
+    result = TomorrowResearchOrchestrator(store, _ready_prerequisite()).advance()
 
     assert result.status == "blocked"
     assert result.next_stage == "resource_probe"
     assert result.blockers == ("resource_probe_handoff_missing",)
+    assert result.prerequisite_hash == "f" * 64
     assert store.graph == TomorrowResearchArtifactGraph(())
+
+
+def test_a_prerequisite_blocks_before_resource_handoff_without_mutating_state() -> None:
+    store = MemoryStore(handoff=_resource_handoff())
+    prerequisite = FixedPrerequisite(
+        TomorrowResearchPrerequisite(
+            "blocked",
+            "e" * 64,
+            ("tomorrow_h1_historical_data_insufficient",),
+        )
+    )
+
+    result = TomorrowResearchOrchestrator(store, prerequisite).advance()
+
+    assert result.status == "blocked"
+    assert result.next_stage == "resource_probe"
+    assert result.blockers == ("tomorrow_h1_historical_data_insufficient",)
+    assert result.prerequisite_hash == "e" * 64
+    assert store.graph == TomorrowResearchArtifactGraph(())
+    assert store.handoff == _resource_handoff()
 
 
 def test_each_invocation_continues_until_the_next_required_handoff_is_missing() -> None:
     store = MemoryStore(handoff=_resource_handoff())
 
-    first = TomorrowResearchOrchestrator(store).advance()
-    second = TomorrowResearchOrchestrator(store).advance()
+    orchestrator = TomorrowResearchOrchestrator(store, _ready_prerequisite())
+    first = orchestrator.advance()
+    second = orchestrator.advance()
 
     assert first.status == "advanced"
     assert first.completed_stages == ("resource_probe",)
@@ -79,7 +116,7 @@ def test_mismatched_parent_graph_fails_closed_without_importing_handoff() -> Non
     store = MemoryStore(handoff=_resource_handoff())
     store.graph = store.graph.extend((_ref("existing", "codex_d", "e"),))
 
-    result = TomorrowResearchOrchestrator(store).advance()
+    result = TomorrowResearchOrchestrator(store, _ready_prerequisite()).advance()
 
     assert result.status == "artifact_conflict"
     assert result.blockers == ("resource_probe_parent_graph_mismatch",)

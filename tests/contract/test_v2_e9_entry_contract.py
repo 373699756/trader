@@ -399,7 +399,7 @@ def test_research_status_is_historical_only_and_does_not_create_runtime_files(tm
     assert main(["--config", str(config), "research-status"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["schema_version"] == "v2_research_readiness_v8"
+    assert payload["schema_version"] == "v2_research_readiness_v9"
     assert payload["validation_mode"] == "historical_only"
     assert payload["recorded_trade_dates"] == []
     assert payload["outcomes"]["initialized"] is False
@@ -412,9 +412,16 @@ def test_research_status_is_historical_only_and_does_not_create_runtime_files(tm
         "report_hash": "",
         "status": "not_run",
     }
-    assert payload["tomorrow_research"]["status"] == "not_started"
+    assert payload["tomorrow_research"]["status"] == "blocked"
     assert payload["tomorrow_research"]["run_id"] is None
     assert payload["tomorrow_research"]["next_stage"] == "resource_probe"
+    assert payload["tomorrow_research"]["input_prerequisite_status"] == "blocked"
+    assert len(payload["tomorrow_research"]["input_prerequisite_hash"]) == 64
+    assert payload["tomorrow_research"]["input_blockers"] == [
+        "tomorrow_common_trading_days_below_1000",
+        "tomorrow_h1_historical_data_insufficient",
+        "tomorrow_terminal_holdout_below_200",
+    ]
     assert payload["tomorrow_research"]["production_authority"] is False
     assert payload["retired_research"] == [
         {
@@ -433,7 +440,7 @@ def test_research_status_is_historical_only_and_does_not_create_runtime_files(tm
     assert not runtime_dir.exists()
 
 
-def test_train_tomorrow_blocks_on_missing_sealed_handoff_without_creating_v3(
+def test_train_tomorrow_runs_a_prerequisite_before_resource_handoff_without_creating_v3(
     tmp_path: Path, capsys, monkeypatch
 ) -> None:
     runtime = json.loads((ROOT / "config/v2/runtime.json").read_text(encoding="utf-8"))
@@ -449,7 +456,12 @@ def test_train_tomorrow_blocks_on_missing_sealed_handoff_without_creating_v3(
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "blocked"
     assert payload["next_stage"] == "resource_probe"
-    assert payload["blockers"] == ["resource_probe_handoff_missing"]
+    assert payload["blockers"] == [
+        "tomorrow_common_trading_days_below_1000",
+        "tomorrow_h1_historical_data_insufficient",
+        "tomorrow_terminal_holdout_below_200",
+    ]
+    assert len(payload["input_prerequisite_hash"]) == 64
     assert payload["production_readiness"]["status"] == "production_adaptation_blocked"
     assert payload["production_authority"] is False
     assert {os.environ[name] for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")} == {"2"}

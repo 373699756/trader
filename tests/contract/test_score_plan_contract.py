@@ -26,7 +26,7 @@ def test_historical_only_score_validation_is_the_authoritative_route() -> None:
         assert token in strategy
     for token in (
         "评分验证唯一使用历史 point-in-time 回放",
-        "v2_research_readiness_v8",
+        "v2_research_readiness_v9",
         "线上 T+1 outcome 只保存正式推荐历史和运行监控",
     ):
         assert token in design

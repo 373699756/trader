@@ -7,7 +7,10 @@ from datetime import date
 import pytest
 
 from trader.application.research.replay_models import canonical_hash, canonical_json
-from trader.application.research.research_tomorrow_orchestrator import TomorrowResearchOrchestrator
+from trader.application.research.research_tomorrow_orchestrator import (
+    TomorrowResearchOrchestrator,
+    TomorrowResearchPrerequisite,
+)
 from trader.application.research.tomorrow_research_artifacts import (
     TomorrowResearchArtifactGraph,
     TomorrowResearchArtifactRef,
@@ -28,6 +31,11 @@ def _handoff() -> TomorrowResearchStageHandoff:
         artifacts=(TomorrowResearchArtifactRef("resource_probe_report", "resource_probe_v1", "codex_d", "a" * 64),),
         resource_probe=TomorrowResearchResourceProbe(100, 120, 2, 1024, 40.0, 8.0),
     )
+
+
+class _ReadyPrerequisite:
+    def inspect(self) -> TomorrowResearchPrerequisite:
+        return TomorrowResearchPrerequisite("ready", "9" * 64, ())
 
 
 def _development_handoff(
@@ -156,7 +164,7 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
     store.seal_evidence_partition(evidence, evidence_source)
     store.seal_model(canonical_json(model_payload), model_hash)
 
-    result = TomorrowResearchOrchestrator(store).advance()
+    result = TomorrowResearchOrchestrator(store, _ReadyPrerequisite()).advance()
 
     assert result.status == "advanced"
     assert result.completed_stages == (
@@ -184,7 +192,7 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
         resource_probe=TomorrowResearchResourceProbe(100, 120, 2, 900, 39.0, 7.0),
     )
     store.seal_handoff(next_probe)
-    next_result = TomorrowResearchOrchestrator(store).advance()
+    next_result = TomorrowResearchOrchestrator(store, _ReadyPrerequisite()).advance()
 
     assert next_result.run_id is not None and next_result.run_id != result.run_id
     assert next_result.completed_stages == ("resource_probe",)

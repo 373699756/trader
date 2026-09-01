@@ -1730,9 +1730,12 @@ Score-R6 历史唯一验证使用新身份 `score_r6_historical_v2` 和 `score_r
 `ShadowModelArtifactStore` 管理；这些能力不接入 `bootstrap.py`、HTTP、调度、活动运行库、正式决策或 DeepSeek，
 也不因工程存在而形成活动研究任务或生产权限。
 
-`research-status` 使用 `v2_research_readiness_v8`，只读公开 H0 归档覆盖、R6/R6D/R6S、P2、V1/V2
+`research-status` 使用 `v2_research_readiness_v9`，只读公开 H0 归档覆盖、R6/R6D/R6S、P2、V1/V2
 历史留出、正式 outcome 计数和已退役研究的固定终态。它不读取网络、不评分、不创建缺失目录，也不公开
-未来窗口、自动晋级或运行期配对计数；V8 加法投影 Tomorrow 训练 run/工件图、下一阶段和生产阻塞审计。
+未来窗口、自动晋级或运行期配对计数；V9 投影 Tomorrow 训练 run/工件图、下一阶段和生产阻塞审计，并
+以 `input_prerequisite_status`、`input_prerequisite_hash` 和有界 `input_blockers` 公开 Codex A 的 H1
+元数据/标签预注册前置状态。`train-tomorrow` 与状态读取共用同一类型化前置服务；H1 不足时在资源探针和
+handoff 读取前失败关闭，不写空预注册工件，也不把 `resource_probe_handoff_missing` 冒充首个数据根因。
 H0 规范匹配且逐股完成覆盖率至少 95% 时，历史筛选才可执行；
 其余阻塞使用受控原因码。
 

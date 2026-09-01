@@ -149,7 +149,7 @@ class H1CapabilityProbe:
     def __post_init__(self) -> None:
         if not self.source or self.adjustment_semantics not in ("qfq", "unsupported"):
             raise ValueError("H1 capability source semantics are invalid")
-        if self.page_size < 1 or self.estimated_requests < 0 or self.estimated_bytes < 0:
+        if self.page_size < 0 or self.estimated_requests < 0 or self.estimated_bytes < 0:
             raise ValueError("H1 capability limits are invalid")
         if not math.isfinite(self.estimated_seconds) or self.estimated_seconds < 0:
             raise ValueError("H1 capability estimate is invalid")
@@ -158,6 +158,79 @@ class H1CapabilityProbe:
     @property
     def point_in_time_anchors_proven(self) -> bool:
         return self.supports_today_1120 and self.supports_1450 and self.security_state_effective_at
+
+
+@dataclass(frozen=True)
+class H1CapabilityStrategyStatus:
+    strategy: H1Strategy
+    state: H1CoverageState
+    failure_reasons: tuple[str, ...]
+    terminal_holdout_opened: bool = False
+    production_authority: bool = False
+
+    def __post_init__(self) -> None:
+        if self.strategy not in ("today", "tomorrow", "d25"):
+            raise ValueError("H1 capability strategy is invalid")
+        if self.state not in ("coverage_ready", "historical_data_insufficient"):
+            raise ValueError("H1 capability strategy state is invalid")
+        reasons = tuple(sorted(set(self.failure_reasons)))
+        if any(_IDENTITY.fullmatch(reason) is None for reason in reasons):
+            raise ValueError("H1 capability failure reasons are invalid")
+        if (self.state == "coverage_ready") == bool(reasons):
+            raise ValueError("H1 capability strategy state and reasons are inconsistent")
+        if self.terminal_holdout_opened or self.production_authority:
+            raise ValueError("H1 capability strategy cannot open holdout or production")
+        object.__setattr__(self, "failure_reasons", reasons)
+
+
+@dataclass(frozen=True)
+class H1CapabilityAuditReport:
+    probes: tuple[H1CapabilityProbe, ...]
+    strategies: tuple[H1CapabilityStrategyStatus, ...]
+    schema_version: str = "score_h1_source_capability_audit_v1"
+    production_authority: bool = False
+    content_hash: str = dataclasses.field(init=False)
+
+    def __post_init__(self) -> None:
+        probes = tuple(self.probes)
+        strategies = tuple(sorted(self.strategies, key=lambda item: ("today", "tomorrow", "d25").index(item.strategy)))
+        if tuple(item.strategy for item in strategies) != ("today", "tomorrow", "d25"):
+            raise ValueError("H1 capability report requires all strategies in fixed order")
+        if not probes or len({item.source for item in probes}) != len(probes):
+            raise ValueError("H1 capability report requires unique source identities")
+        if self.schema_version != "score_h1_source_capability_audit_v1" or self.production_authority:
+            raise ValueError("H1 capability report cannot authorize production")
+        object.__setattr__(self, "probes", probes)
+        object.__setattr__(self, "strategies", strategies)
+        object.__setattr__(self, "content_hash", canonical_hash(self))
+
+
+def build_h1_capability_audit(probes: tuple[H1CapabilityProbe, ...]) -> H1CapabilityAuditReport:
+    if not probes:
+        raise ValueError("H1 capability audit requires source probes")
+    statuses: list[H1CapabilityStrategyStatus] = []
+    for strategy in ("today", "tomorrow", "d25"):
+        reasons: list[str] = []
+        qfq = tuple(item for item in probes if item.adjustment_semantics == "qfq")
+        if not qfq or not any(
+            item.earliest_available is not None and (H1_SOURCE_CUTOFF - item.earliest_available).days >= 1_400
+            for item in qfq
+        ):
+            reasons.append("qfq_history_below_1000_sessions")
+        if strategy == "today" and not any(item.supports_today_1120 for item in probes):
+            reasons.append("historical_1120_anchor_unavailable")
+        if strategy != "today" and not any(item.supports_1450 for item in probes):
+            reasons.append("historical_1450_anchor_unavailable")
+        if not any(item.security_state_effective_at for item in probes):
+            reasons.append("effective_security_state_unavailable")
+        statuses.append(
+            H1CapabilityStrategyStatus(
+                strategy,
+                "coverage_ready" if not reasons else "historical_data_insufficient",
+                tuple(reasons),
+            )
+        )
+    return H1CapabilityAuditReport(probes, tuple(statuses))
 
 
 @dataclass(frozen=True)
@@ -230,7 +303,9 @@ def _sha256(value: str) -> str:
 
 
 __all__ = [
+    "H1CapabilityAuditReport",
     "H1CapabilityProbe",
+    "H1CapabilityStrategyStatus",
     "H1CoverageAudit",
     "H1CoverageManifest",
     "H1PointInTimeRecord",
@@ -242,4 +317,5 @@ __all__ = [
     "H1_REGISTERED_ON",
     "H1_SOURCE_CUTOFF",
     "canonical_hash",
+    "build_h1_capability_audit",
 ]
