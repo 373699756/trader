@@ -163,7 +163,8 @@ All notable changes to this project are documented here.
   二次幂等单元/组件测试 11 项通过；受影响 C 领域/应用/基础设施/脚本 Ruff、format、mypy 和
   `git diff --check` 通过。使用仓库外 A 工件真实执行两次均返回退出码 1，Today/Tomorrow/D25 与跨策略均为
   `historical_data_insufficient`，`terminal_holdout_opened=false`，父子 hash 一致；未运行真实收益回放和浏览器
-  验收，因为父工件不足且本批未修改 Web 或生产运行行为。
+  验收，因为父工件不足且本批未修改 Web 或生产运行行为。后续 Review 修复 C 测试 import 排序后，`make lint`
+  和同一组 9 项定向测试再次通过。
 
 - `codex-a-h1-capability-audit-v2`：领域、应用、基础设施、脚本、入口、架构和路线契约定向测试 126 项通过，
   覆盖逐来源失败、其它来源证据保留、v2 codec/hash、失败原因下游传递、代理隔离、参数类型、仓库外工件

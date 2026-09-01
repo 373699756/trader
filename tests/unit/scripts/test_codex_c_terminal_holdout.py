@@ -6,8 +6,8 @@ from datetime import date
 from scripts.codex_c_terminal_holdout import main
 from trader.application.research.h1_point_in_time_completion import complete_codex_a_research
 from trader.domain.research.h1_point_in_time import H1CapabilityProbe, H1PointInTimeSpec, build_h1_capability_audit
-from trader.infra.research.h1_point_in_time_capability import H1CapabilityArtifactStore
 from trader.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive
+from trader.infra.research.h1_point_in_time_capability import H1CapabilityArtifactStore
 from trader.infra.research.h1_point_in_time_completion import CodexACompletionArtifactStore
 from trader.infra.research.historical_label_artifacts import HistoricalLabelArtifactStore
 
