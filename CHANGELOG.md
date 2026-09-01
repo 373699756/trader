@@ -139,14 +139,14 @@ All notable changes to this project are documented here.
 
 ### Verification
 
-- `codex-a-h1-capability-audit-v2`：领域、应用、基础设施和脚本定向测试覆盖逐来源失败、其它来源证据保留、
-  v2 codec/hash、失败原因下游传递、代理隔离、参数类型、仓库外工件和无 OOF/model 终态；受影响 Python
-  文件 Ruff、format、mypy 及 `git diff --check` 通过。真实 `sources` 诊断在非沙箱网络下为
+- `codex-a-h1-capability-audit-v2`：领域、应用、基础设施、脚本、入口、架构和路线契约定向测试 126 项通过，
+  覆盖逐来源失败、其它来源证据保留、v2 codec/hash、失败原因下游传递、代理隔离、参数类型、仓库外工件
+  和无 OOF/model 终态；受影响 Python 文件 Ruff、format、mypy 及 `git diff --check` 通过。真实 `sources` 诊断在非沙箱网络下为
   `degraded`（证券主表、历史源和腾讯报价通过，Tushare 因缺 token 降级）；真实 H1 capability 命令按预期
-  退出 1 并在仓库外生成 capability、标签预注册和 Codex A 终态三个不可变 JSON；腾讯成功返回 640 行，
-  东方财富记录 `eastmoney_historical_minute_probe_failed`。`make format-check`、`make lint`（含零严格复杂度
-  债务）、`make type-check`（321 个源文件）、`make test` 和 `make package` 均通过；打包首次因沙箱无法连接
-  本机依赖代理失败，获准网络后原命令重跑通过。浏览器门禁不适用：本批没有改 Web、冻结或活动评分行为。
+  连续两次退出 1 并在仓库外生成 capability、标签预注册和 Codex A 终态三个不可变 JSON，全部父子 hash
+  二次执行一致；腾讯成功返回 640 行，东方财富记录 `eastmoney_historical_minute_probe_failed`。
+  `make format-check`（541 个文件）、`make lint`（含零严格复杂度债务）、`make type-check`（321 个源文件）、
+  `make test` 和 `make package` 均通过。浏览器门禁不适用：本批没有改 Web、冻结或活动评分行为。
 
 - `tomorrow-codex-a-prerequisite-gate-v1`：新增的 H1/Tomorrow 冲突归因回归与既有
   `research-status`/`train-tomorrow` 前置测试通过；受影响 CLI/契约文件 Ruff format/check 通过。
@@ -1924,6 +1924,9 @@ All notable changes to this project are documented here.
   `close_fallback`，已有 D25 正式记录保持不变，Today 未被违规追补。
 
 ### Removed
+
+- `codex-a-h1-capability-audit-v2`：移除“任一免费来源失败就放弃整份能力审计”的共同成功前提；未删除
+  H1 归档、既有研究工件、生产资源或活动 V1/V2 行为。
 
 - 删除已经只剩迁移索引、且与荐股权威文档形成重复入口的 `docs/trade.md`，同步删除其专属契约测试；
   V3 训练、工件和主程序交接只由 `docs/recommendation-strategy.md` 第 15.1.35–15.1.37 节定义。
