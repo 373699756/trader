@@ -12,6 +12,7 @@ from trader.domain.research.tomorrow_joint import (
     TomorrowJointCandidateFamily,
     TomorrowJointFamilyConfirmation,
     TomorrowJointFittedModel,
+    TomorrowJointInsufficientTerminal,
     TomorrowJointPrediction,
     TomorrowJointPredictionSemantics,
     TomorrowJointRowKey,
@@ -19,6 +20,7 @@ from trader.domain.research.tomorrow_joint import (
     confirm_tomorrow_joint_family,
     fit_tomorrow_joint_candidate_family,
     predict_tomorrow_joint,
+    seal_tomorrow_joint_insufficient_terminal,
 )
 
 TomorrowJointProfileId = Literal["v1", "v2", "c3"]
@@ -233,10 +235,26 @@ def confirm_tomorrow_joint_research(
     return confirm_tomorrow_joint_family(fit.candidate_family, reports)
 
 
+def seal_tomorrow_joint_data_insufficient(
+    *,
+    parent_completion_hash: str,
+    parent_profile_hashes: tuple[tuple[str, str], ...],
+    failure_reasons: tuple[str, ...],
+) -> TomorrowJointInsufficientTerminal:
+    """Close the V1/V2/C3 joint branch without fabricating raw predictions."""
+
+    return seal_tomorrow_joint_insufficient_terminal(
+        parent_completion_hash=parent_completion_hash,
+        parent_profile_hashes=parent_profile_hashes,
+        failure_reasons=failure_reasons,
+    )
+
+
 __all__ = [
     "TomorrowJointAlignedDataset",
     "TomorrowJointCoverageReport",
     "TomorrowJointInference",
+    "TomorrowJointInsufficientTerminal",
     "TomorrowJointProfileBatch",
     "TomorrowJointProfileCoverage",
     "TomorrowJointProfileId",
@@ -246,4 +264,5 @@ __all__ = [
     "confirm_tomorrow_joint_research",
     "fit_tomorrow_joint_research",
     "produce_tomorrow_joint_predictions",
+    "seal_tomorrow_joint_data_insufficient",
 ]

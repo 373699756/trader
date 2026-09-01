@@ -20,6 +20,7 @@ from trader.domain.research.historical_candidate_confirmation import (
     confirm_transparent_candidates,
     inherit_candidate_confirmation,
 )
+from trader.domain.research.tomorrow_joint import TomorrowJointInsufficientTerminal
 from trader.domain.research.transparent_candidate import (
     TransparentCandidate,
     TransparentCandidateFamily,
@@ -180,6 +181,7 @@ class HistoricalCodexBInsufficientBatch:
     parent_residual_ledger_hashes: tuple[tuple[HistoricalStrategy, str], ...]
     parent_c3_hash: str
     strategies: tuple[HistoricalCodexBStrategyTerminal, ...]
+    joint_terminal: TomorrowJointInsufficientTerminal
     status: Literal["historical_data_insufficient"] = "historical_data_insufficient"
     joint_holm_test_count: int | None = None
     joint_model_artifact_hash: str | None = None
@@ -190,36 +192,16 @@ class HistoricalCodexBInsufficientBatch:
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
-        hashes = (self.parent_completion_hash, self.parent_capability_hash, self.parent_label_hash, self.parent_c3_hash)
-        if any(_SHA256.fullmatch(value) is None for value in hashes):
-            raise ValueError("Codex B batch parent hash is invalid")
-        residuals = tuple(sorted(self.parent_residual_ledger_hashes, key=lambda item: _STRATEGIES.index(item[0])))
-        if tuple(item[0] for item in residuals) != _STRATEGIES or any(
-            _SHA256.fullmatch(item[1]) is None for item in residuals
-        ):
-            raise ValueError("Codex B batch requires all residual parent hashes")
-        if tuple(item.strategy for item in self.strategies) != _STRATEGIES:
-            raise ValueError("Codex B batch terminal strategies must be ordered")
-        if any(item.parent_completion_hash != self.parent_completion_hash for item in self.strategies):
-            raise ValueError("Codex B strategy terminal parent mismatch")
-        if any(item.status != "historical_data_insufficient" for item in self.strategies):
-            raise ValueError("Codex B insufficient batch contains a non-terminal strategy")
-        if (
-            self.status != "historical_data_insufficient"
-            or self.joint_holm_test_count is not None
-            or self.joint_model_artifact_hash is not None
-        ):
-            raise ValueError("Codex B insufficient batch cannot claim joint results")
+        _validate_codex_b_batch_parent(self)
+        _validate_codex_b_batch_strategies(self)
+        _validate_codex_b_batch_outcome(self)
         if self.terminal_holdout_status != "terminal_holdout_not_opened" or self.production_authority:
             raise ValueError("Codex B batch cannot open holdout or authorize production")
         if self.schema_version != "historical_codex_b_insufficient_batch_v1":
             raise ValueError("Codex B batch schema is invalid")
+        residuals = tuple(sorted(self.parent_residual_ledger_hashes, key=lambda item: _STRATEGIES.index(item[0])))
         object.__setattr__(self, "parent_residual_ledger_hashes", residuals)
-        object.__setattr__(
-            self,
-            "joint_report_hash",
-            _canonical_hash((self.parent_completion_hash, tuple(item.content_hash for item in self.strategies))),
-        )
+        object.__setattr__(self, "joint_report_hash", self.joint_terminal.content_hash)
         object.__setattr__(self, "content_hash", _canonical_hash(self))
 
 
@@ -245,6 +227,16 @@ def seal_codex_b_insufficient_batch(completion: CodexAResearchCompletion) -> His
                 failure_reasons=tuple(sorted(reasons)),
             )
         )
+    joint_terminal = TomorrowJointInsufficientTerminal(
+        parent_completion_hash=completion.content_hash,
+        parent_profile_hashes=(
+            ("v1", completion.content_hash),
+            ("v2", completion.content_hash),
+            ("c3", completion.c3.content_hash),
+        ),
+        status="historical_data_insufficient",
+        failure_reasons=tuple(sorted(set(completion.c3.failure_reasons))),
+    )
     return HistoricalCodexBInsufficientBatch(
         parent_completion_hash=completion.content_hash,
         parent_capability_hash=completion.capability_hash,
@@ -252,7 +244,41 @@ def seal_codex_b_insufficient_batch(completion: CodexAResearchCompletion) -> His
         parent_residual_ledger_hashes=tuple((item.strategy, item.content_hash) for item in completion.residual_ledgers),
         parent_c3_hash=completion.c3.content_hash,
         strategies=tuple(strategy_terminals),
+        joint_terminal=joint_terminal,
     )
+
+
+def _validate_codex_b_batch_parent(batch: HistoricalCodexBInsufficientBatch) -> None:
+    hashes = (batch.parent_completion_hash, batch.parent_capability_hash, batch.parent_label_hash, batch.parent_c3_hash)
+    if any(_SHA256.fullmatch(value) is None for value in hashes):
+        raise ValueError("Codex B batch parent hash is invalid")
+    residuals = tuple(sorted(batch.parent_residual_ledger_hashes, key=lambda item: _STRATEGIES.index(item[0])))
+    if tuple(item[0] for item in residuals) != _STRATEGIES or any(
+        _SHA256.fullmatch(item[1]) is None for item in residuals
+    ):
+        raise ValueError("Codex B batch requires all residual parent hashes")
+
+
+def _validate_codex_b_batch_strategies(batch: HistoricalCodexBInsufficientBatch) -> None:
+    if tuple(item.strategy for item in batch.strategies) != _STRATEGIES:
+        raise ValueError("Codex B batch terminal strategies must be ordered")
+    if any(item.parent_completion_hash != batch.parent_completion_hash for item in batch.strategies):
+        raise ValueError("Codex B strategy terminal parent mismatch")
+    if any(item.status != "historical_data_insufficient" for item in batch.strategies):
+        raise ValueError("Codex B insufficient batch contains a non-terminal strategy")
+
+
+def _validate_codex_b_batch_outcome(batch: HistoricalCodexBInsufficientBatch) -> None:
+    if batch.joint_terminal.parent_completion_hash != batch.parent_completion_hash:
+        raise ValueError("Codex B joint terminal parent mismatch")
+    if batch.joint_terminal.status != "historical_data_insufficient":
+        raise ValueError("Codex B joint terminal status is invalid")
+    if (
+        batch.status != "historical_data_insufficient"
+        or batch.joint_holm_test_count is not None
+        or batch.joint_model_artifact_hash is not None
+    ):
+        raise ValueError("Codex B insufficient batch cannot claim joint results")
 
 
 def execute_historical_candidate_confirmation(

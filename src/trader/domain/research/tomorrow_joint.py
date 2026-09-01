@@ -6,6 +6,7 @@ import dataclasses
 import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass
 from datetime import date
 from itertools import combinations
@@ -31,6 +32,64 @@ _CANDIDATE_INDICES: dict[TomorrowJointCandidateId, tuple[int, ...]] = {
     "v1_c3": (0, 2),
     "v1_v2_c3": (0, 1, 2),
 }
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_JOINT_PROFILES: tuple[str, ...] = ("v1", "v2", "c3")
+
+
+@dataclass(frozen=True)
+class TomorrowJointInsufficientTerminal:
+    """Fail-closed joint-study terminal when raw profile rows are unavailable."""
+
+    parent_completion_hash: str
+    parent_profile_hashes: tuple[tuple[str, str], ...]
+    status: Literal["historical_data_insufficient"]
+    failure_reasons: tuple[str, ...]
+    candidate_family_hash: str | None = None
+    prediction_rows: int | None = None
+    holm_test_count: int | None = None
+    model_artifact_hash: str | None = None
+    terminal_holdout_status: Literal["terminal_holdout_not_opened"] = "terminal_holdout_not_opened"
+    production_authority: bool = False
+    schema_version: str = "tomorrow_joint_insufficient_terminal_v1"
+    content_hash: str = dataclasses.field(init=False)
+
+    def __post_init__(self) -> None:
+        if _SHA256.fullmatch(self.parent_completion_hash) is None:
+            raise ValueError("Tomorrow joint parent completion hash is invalid")
+        profiles = tuple(sorted(self.parent_profile_hashes, key=lambda item: _JOINT_PROFILES.index(item[0])))
+        if tuple(item[0] for item in profiles) != _JOINT_PROFILES or any(
+            _SHA256.fullmatch(item[1]) is None for item in profiles
+        ):
+            raise ValueError("Tomorrow joint parent profile hashes are invalid")
+        if self.status != "historical_data_insufficient" or not self.failure_reasons:
+            raise ValueError("Tomorrow joint terminal requires bounded insufficient reasons")
+        if any(value is not None for value in (self.candidate_family_hash, self.model_artifact_hash)):
+            raise ValueError("Tomorrow joint insufficient terminal cannot claim candidates or a model")
+        if self.prediction_rows is not None or self.holm_test_count is not None:
+            raise ValueError("Tomorrow joint insufficient terminal cannot claim predictions or Holm tests")
+        if self.terminal_holdout_status != "terminal_holdout_not_opened" or self.production_authority:
+            raise ValueError("Tomorrow joint terminal cannot open holdout or authorize production")
+        if self.schema_version != "tomorrow_joint_insufficient_terminal_v1":
+            raise ValueError("Tomorrow joint terminal schema is invalid")
+        object.__setattr__(self, "parent_profile_hashes", profiles)
+        object.__setattr__(self, "failure_reasons", tuple(sorted(set(self.failure_reasons))))
+        object.__setattr__(self, "content_hash", _canonical_hash(self))
+
+
+def seal_tomorrow_joint_insufficient_terminal(
+    *,
+    parent_completion_hash: str,
+    parent_profile_hashes: tuple[tuple[str, str], ...],
+    failure_reasons: tuple[str, ...],
+) -> TomorrowJointInsufficientTerminal:
+    """Seal joint ownership without reading dates, rows, predictions, or outcomes."""
+
+    return TomorrowJointInsufficientTerminal(
+        parent_completion_hash=parent_completion_hash,
+        parent_profile_hashes=parent_profile_hashes,
+        status="historical_data_insufficient",
+        failure_reasons=failure_reasons,
+    )
 
 
 @dataclass(frozen=True, order=True)
@@ -1003,6 +1062,7 @@ __all__ = [
     "TomorrowJointEvidenceIdentity",
     "TomorrowJointFittedModel",
     "TomorrowJointFamilyConfirmation",
+    "TomorrowJointInsufficientTerminal",
     "TomorrowJointPrediction",
     "TomorrowJointPredictionSemantics",
     "TomorrowJointRowKey",
@@ -1014,4 +1074,5 @@ __all__ = [
     "fit_tomorrow_joint_candidate_family",
     "predict_tomorrow_joint",
     "select_tomorrow_joint_candidate",
+    "seal_tomorrow_joint_insufficient_terminal",
 ]

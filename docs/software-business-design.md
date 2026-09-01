@@ -1797,6 +1797,11 @@ Holm 或模型数据的联合报告 hash；候选家族、确认报告、Holm �
 `CodexBTerminalArtifactStore` 使用显式字段白名单、原子写入、同内容幂等、异内容冲突和哈希篡改失败关闭，
 不接入生产配置、Web、DeepSeek 或活动数据库。
 
+Codex B 的 V1/V2/C3 原始预测联合器同时提供
+`tomorrow_joint_insufficient_terminal_v1`：父 completion 或任一 profile 原始预测不可用时，封存固定
+profile 顺序、父 hash 和失败原因，`prediction_rows`、`holm_test_count`、模型 hash 与终端留出均保持未开启。
+该终态只允许由显式研究应用调用，正常联合训练/预测路径不读取或改写它。
+
 荐股策略文档第 15.1.35–15.1.36 节另立 Tomorrow 日线收盘代理与 V1/V2/C3 原始预测级联合研究路线。
 该路线只允许显式离线命令装配隔离的 `domain/application/infra/research` 服务，训练参数、样本、报告和候选
 工件不得进入生产组合根、HTTP、SSE、Web、活动数据库或冻结链。日线代理通过后，冻结工件还必须加入

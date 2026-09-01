@@ -180,6 +180,9 @@ def test_codex_b_seals_parent_insufficient_terminal_without_dates_or_research_re
     assert all(item.confirmation_report_hash is None for item in batch.strategies)
     assert batch.joint_holm_test_count is None
     assert batch.joint_model_artifact_hash is None
+    assert batch.joint_terminal.content_hash == batch.joint_report_hash
+    assert batch.joint_terminal.prediction_rows is None
+    assert batch.joint_terminal.parent_profile_hashes[-1][0] == "c3"
     assert batch.terminal_holdout_status == "terminal_holdout_not_opened"
     assert batch.parent_completion_hash == completion.content_hash
     assert len(batch.joint_report_hash) == 64

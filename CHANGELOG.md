@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户再次要求执行推荐策略第 15 节 Codex B 未完成任务。本批补齐第 15.1.35 节 V1/V2/C3 原始预测联合的
+  数据不足收口：新增 `tomorrow_joint_insufficient_terminal_v1` 与应用封存入口，并将联合终态 hash 绑定到
+  Codex B 批次。父工件不足时不读取日期或收益，不生成原始预测、联合模型、Holm 统计或终端留出；完整父
+  工件出现后才允许另立真实联合研究批次。`Regression-Key: codex-b-tomorrow-joint-insufficient-v1`。
+
 - 用户要求继续执行推荐策略第 15 节 Codex B 未完成任务。本批新增
   `seal_codex_b_insufficient_batch` 与 `CodexBTerminalArtifactStore`：读取已封存的 Codex A completion，按
   Today/Tomorrow/D25 继承 completion、capability、标签和残差账本 hash 及失败原因，封存
@@ -151,6 +156,11 @@ All notable changes to this project are documented here.
   `Regression-Key: codex-b-historical-filter-confirmation-v1-runtime-fix`。
 
 ### Verification
+
+- `codex-b-tomorrow-joint-insufficient-v1`：联合器数据不足终态、固定 V1/V2/C3 父 profile 顺序、预测/模型/
+  Holm 未建模约束、B 批次 hash 绑定定向测试通过；受影响领域/应用/测试 Ruff、mypy、format、全量 pytest、
+  `make format-check`、`make lint`、`make type-check`、`make package` 和 `git diff --check` 通过。未执行
+  真实训练或收益验证，因为 Codex A H1/C3 父工件仍为 `historical_data_insufficient`。
 
 - `codex-b-historical-data-insufficient-closure-v1`：Codex B 三策略终态、父 hash 继承、空研究结果约束、
   联合 hash、不可变 JSON 工件同内容幂等、异内容冲突和篡改失败关闭定向测试 8 项通过；受影响源文件
@@ -3271,6 +3281,10 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- `codex-b-tomorrow-joint-insufficient-v1`：联合器现在可以如实封存父工件不足，但尚无 V1/V2/C3 同日原始
+  预测、OOF、联合收益或 Holm 证据。该终态不授予 V3 或生产权限，未来必须使用新的完整 C3 父工件和预注册
+  日期窗口另立批次，不能覆盖本次 hash。
 
 - `codex-b-historical-data-insufficient-closure-v1`：B 现在具备可重复、不可变的父工件不足收口，但没有历史
   H1 点时数据，因此仍无真实过滤召回、候选收益、Holm 显著性或 V3 模型结论。未来只有新的 Codex A

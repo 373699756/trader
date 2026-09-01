@@ -12,12 +12,14 @@ from trader.domain.research.tomorrow_joint import (
     TomorrowJointCandidateFamily,
     TomorrowJointDailyPortfolioEvidence,
     TomorrowJointFittedModel,
+    TomorrowJointInsufficientTerminal,
     TomorrowJointWeights,
     confirm_tomorrow_joint_family,
     evaluate_tomorrow_joint_validation,
     fit_tomorrow_joint_candidate,
     fit_tomorrow_joint_candidate_family,
     predict_tomorrow_joint,
+    seal_tomorrow_joint_insufficient_terminal,
     select_tomorrow_joint_candidate,
 )
 
@@ -69,6 +71,31 @@ def test_joint_contract_is_fixed_and_inputs_are_immutable() -> None:
 
     with pytest.raises(FrozenInstanceError):
         row.candidate_order = 99  # type: ignore[misc]
+
+
+def test_joint_insufficient_terminal_has_no_prediction_or_model_evidence() -> None:
+    terminal = seal_tomorrow_joint_insufficient_terminal(
+        parent_completion_hash="a" * 64,
+        parent_profile_hashes=(("v1", "b" * 64), ("v2", "c" * 64), ("c3", "d" * 64)),
+        failure_reasons=("h1_historical_data_insufficient",),
+    )
+
+    assert isinstance(terminal, TomorrowJointInsufficientTerminal)
+    assert terminal.status == "historical_data_insufficient"
+    assert terminal.prediction_rows is None
+    assert terminal.holm_test_count is None
+    assert terminal.model_artifact_hash is None
+    assert terminal.terminal_holdout_status == "terminal_holdout_not_opened"
+    assert terminal.production_authority is False
+
+    with pytest.raises(ValueError, match="cannot claim predictions"):
+        TomorrowJointInsufficientTerminal(
+            parent_completion_hash="a" * 64,
+            parent_profile_hashes=(("v1", "b" * 64), ("v2", "c" * 64), ("c3", "d" * 64)),
+            status="historical_data_insufficient",
+            failure_reasons=("h1_historical_data_insufficient",),
+            prediction_rows=1,
+        )
 
 
 def test_three_way_candidate_can_shrink_v2_exactly_to_zero() -> None:

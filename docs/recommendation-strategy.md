@@ -1825,6 +1825,9 @@ MAE/ATR20、换手、容量、集中度、市场状态和失败原因；不得�
 `historical_data_insufficient` 收口，未生成 C3 OOF 或模型；B/C 的完整组合回放、Holm 和两级历史评价
 因此不得运行。缺少当前阶段 handoff 时命令以受控
 blocker 停止，不伪造候选或打开留出。
+Codex B 的 V1/V2/C3 原始预测联合器已具备独立的
+`tomorrow_joint_insufficient_terminal_v1` 数据不足终态；当前仅封存父 hash 和原因，不生成原始预测、联合
+模型或 Holm 统计，待新的完整 C3 父工件后另立真实研究批次。
 本节及第 15.1.36 节是日线训练、联合评分、工件、命令和本机
 资源方案的唯一权威，不再维护迁移索引或第二套训练说明。本分支研究身份固定另立
 `score_tomorrow_daily_close_challenger_v1`，不得使用 P1/P2 名称、覆盖 P2 的
