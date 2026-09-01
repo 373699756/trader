@@ -6,7 +6,9 @@ from datetime import date, timedelta
 
 import pytest
 
+from trader.application.research.cross_strategy_conclusion import CrossStrategyConclusionService
 from trader.domain.research.terminal_holdout import TerminalHoldoutEvaluation, TerminalHoldoutRow, evaluate_terminal_holdout
+from trader.infra.research.cross_strategy_conclusion_artifacts import CrossStrategyConclusionArtifactStore
 from trader.infra.research.terminal_holdout_artifacts import (
     TerminalHoldoutArtifactConflictError,
     TerminalHoldoutArtifactStore,
@@ -79,6 +81,46 @@ def test_terminal_holdout_artifact_store_rejects_strategy_and_schema_mismatch(tm
 
     store = TerminalHoldoutArtifactStore(tmp_path, strategy="today")
     store.write(report)
+    payload = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    payload["unexpected"] = True
+    (tmp_path / "report.json").write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(TerminalHoldoutArtifactConflictError):
+        store.verify()
+
+
+def test_cross_strategy_conclusion_artifact_store_round_trips_and_detects_conflicts(tmp_path) -> None:
+    today = _report()
+    tomorrow = evaluate_terminal_holdout(
+        TerminalHoldoutEvaluation(
+            strategy="tomorrow",
+            research_identity="score_tomorrow_historical_candidate_v1",
+            parent_hash="a" * 64,
+            candidate_hash="b" * 64,
+            rows=(),
+            parent_status="historical_rejected",
+            parent_failure_reasons=("candidate_rejected",),
+        )
+    )
+    d25 = evaluate_terminal_holdout(
+        TerminalHoldoutEvaluation(
+            strategy="d25",
+            research_identity="score_d25_historical_candidate_v1",
+            parent_hash="a" * 64,
+            candidate_hash="b" * 64,
+            rows=(),
+            parent_status="historical_data_insufficient",
+            parent_failure_reasons=("missing_parent",),
+        )
+    )
+    conclusion = CrossStrategyConclusionService().execute(today, tomorrow, d25)
+    store = CrossStrategyConclusionArtifactStore(tmp_path)
+    assert store.write(conclusion).content_hash == conclusion.content_hash
+    assert store.write(replace(conclusion)).content_hash == conclusion.content_hash
+
+    conflicting = replace(conclusion, status="historical_rejected")
+    with pytest.raises(TerminalHoldoutArtifactConflictError, match="identity conflict"):
+        store.write(conflicting)
+
     payload = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
     payload["unexpected"] = True
     (tmp_path / "report.json").write_text(json.dumps(payload), encoding="utf-8")

@@ -34,7 +34,7 @@ class TerminalHoldoutArtifactStore:
             if existing.content_hash != report.content_hash:
                 raise TerminalHoldoutArtifactConflictError("terminal holdout report identity conflict")
             return existing
-        payload = _encode_report(report)
+        payload = encode_terminal_holdout_report(report)
         payload["content_hash"] = report.content_hash
         descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=self._root)
         temporary = Path(temporary_name)
@@ -63,7 +63,7 @@ class TerminalHoldoutArtifactStore:
             stored_hash = raw.pop("content_hash")
             if not isinstance(stored_hash, str) or _canonical_hash(raw) != stored_hash:
                 raise ValueError("terminal holdout report hash mismatch")
-            report = _decode_report(raw)
+            report = decode_terminal_holdout_report(raw)
             if report.content_hash != stored_hash:
                 raise ValueError("terminal holdout report reconstructed hash mismatch")
             self._validate_strategy(report)
@@ -76,7 +76,7 @@ class TerminalHoldoutArtifactStore:
             raise TerminalHoldoutArtifactConflictError("terminal holdout report strategy mismatch")
 
 
-def _decode_report(raw: dict[str, object]) -> TerminalHoldoutReport:
+def decode_terminal_holdout_report(raw: dict[str, object]) -> TerminalHoldoutReport:
     expected = {
         "strategy", "research_identity", "parent_hash", "candidate_hash", "anchor",
         "terminal_holdout_opened", "status", "metrics", "failure_reasons", "terminal_trade_dates",
@@ -110,7 +110,7 @@ def _decode_report(raw: dict[str, object]) -> TerminalHoldoutReport:
     )
 
 
-def _encode_report(report: TerminalHoldoutReport) -> dict[str, object]:
+def encode_terminal_holdout_report(report: TerminalHoldoutReport) -> dict[str, object]:
     metrics = report.metrics
     return {
         "strategy": report.strategy,
@@ -236,4 +236,9 @@ def _floats(value: object) -> tuple[float, ...]:
     return tuple(_float(item) for item in value)
 
 
-__all__ = ["TerminalHoldoutArtifactConflictError", "TerminalHoldoutArtifactStore"]
+__all__ = [
+    "TerminalHoldoutArtifactConflictError",
+    "TerminalHoldoutArtifactStore",
+    "decode_terminal_holdout_report",
+    "encode_terminal_holdout_report",
+]
