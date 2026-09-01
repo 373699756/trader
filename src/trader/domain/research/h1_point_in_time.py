@@ -94,30 +94,42 @@ class H1PointInTimeRecord:
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
-        if self.strategy not in ("today", "tomorrow", "d25") or len(self.code) != 6 or not self.code.isdigit():
-            raise ValueError("H1 record identity is invalid")
-        if self.daily_bar.trade_date != self.trade_date or self.daily_bar.adjustment != "qfq":
-            raise ValueError("H1 record requires a matching qfq daily bar")
-        if self.trade_date > H1_SOURCE_CUTOFF:
-            raise ValueError("H1 record exceeds source cutoff")
-        if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
-            raise ValueError("H1 observation must be timezone-aware")
-        observed = self.observed_at.astimezone(SHANGHAI)
-        if observed.date() != self.trade_date:
-            raise ValueError("H1 observation date must match trade date")
-        expected = time(11, 20) if self.strategy == "today" else time(14, 50)
-        if observed.timetz().replace(tzinfo=None) != expected:
-            raise ValueError("H1 observation must match the exact strategy anchor")
-        if any(not math.isfinite(value) or value <= 0 for value in (self.anchor_price,)):
-            raise ValueError("H1 anchor price is invalid")
-        if any(not math.isfinite(value) or value < 0 for value in (self.anchor_volume, self.anchor_amount)):
-            raise ValueError("H1 anchor flow is invalid")
-        for value in (self.security_state_hash, self.sector_hash, self.risk_facts_hash):
-            if _SHA256.fullmatch(value) is None:
-                raise ValueError("H1 point-in-time fact identity is invalid")
-        if self.tail_field_hash and _SHA256.fullmatch(self.tail_field_hash) is None:
-            raise ValueError("H1 tail identity is invalid")
+        _validate_h1_record_identity(self)
+        _validate_h1_record_anchor(self)
+        _validate_h1_record_hashes(self)
         object.__setattr__(self, "content_hash", canonical_hash(self))
+
+
+def _validate_h1_record_identity(record: H1PointInTimeRecord) -> None:
+    if record.strategy not in ("today", "tomorrow", "d25") or len(record.code) != 6 or not record.code.isdigit():
+        raise ValueError("H1 record identity is invalid")
+    if record.daily_bar.trade_date != record.trade_date or record.daily_bar.adjustment != "qfq":
+        raise ValueError("H1 record requires a matching qfq daily bar")
+    if record.trade_date > H1_SOURCE_CUTOFF:
+        raise ValueError("H1 record exceeds source cutoff")
+
+
+def _validate_h1_record_anchor(record: H1PointInTimeRecord) -> None:
+    if record.observed_at.tzinfo is None or record.observed_at.utcoffset() is None:
+        raise ValueError("H1 observation must be timezone-aware")
+    observed = record.observed_at.astimezone(SHANGHAI)
+    if observed.date() != record.trade_date:
+        raise ValueError("H1 observation date must match trade date")
+    expected = time(11, 20) if record.strategy == "today" else time(14, 50)
+    if observed.timetz().replace(tzinfo=None) != expected:
+        raise ValueError("H1 observation must match the exact strategy anchor")
+    if not math.isfinite(record.anchor_price) or record.anchor_price <= 0:
+        raise ValueError("H1 anchor price is invalid")
+    if any(not math.isfinite(value) or value < 0 for value in (record.anchor_volume, record.anchor_amount)):
+        raise ValueError("H1 anchor flow is invalid")
+
+
+def _validate_h1_record_hashes(record: H1PointInTimeRecord) -> None:
+    for value in (record.security_state_hash, record.sector_hash, record.risk_facts_hash):
+        if _SHA256.fullmatch(value) is None:
+            raise ValueError("H1 point-in-time fact identity is invalid")
+    if record.tail_field_hash and _SHA256.fullmatch(record.tail_field_hash) is None:
+        raise ValueError("H1 tail identity is invalid")
 
 
 @dataclass(frozen=True)

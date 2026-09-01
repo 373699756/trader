@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
+import json
 import math
 from dataclasses import dataclass
 from datetime import date
@@ -13,6 +16,8 @@ import numpy as np
 from trader.domain.research.paired_statistics import (
     PreregisteredBootstrapPlan,
     PreregisteredBootstrapResult,
+    PreregisteredHolmDecision,
+    fixed_family_holm,
     paired_moving_block_statistics,
 )
 
@@ -213,6 +218,13 @@ class TomorrowJointDailyPortfolioEvidence:
     joint_severe_loss_rate: float
     v1_turnover: float
     joint_turnover: float
+    active_profile_id: Literal["v1", "v2"] = "v1"
+    active_net_excess_20bp: float | None = None
+    active_net_excess_50bp: float | None = None
+    v1_capacity: float = 1.0
+    joint_capacity: float = 1.0
+    v1_concentration: float = 0.0
+    joint_concentration: float = 0.0
 
     def __post_init__(self) -> None:
         returns = (
@@ -226,11 +238,39 @@ class TomorrowJointDailyPortfolioEvidence:
             self.joint_severe_loss_rate,
             self.v1_turnover,
             self.joint_turnover,
+            self.v1_concentration,
+            self.joint_concentration,
         )
         if any(not math.isfinite(value) for value in returns):
             raise ValueError("Tomorrow joint portfolio returns must be finite")
         if any(not math.isfinite(value) or not 0.0 <= value <= 1.0 for value in rates):
             raise ValueError("Tomorrow joint portfolio rates must be in [0, 1]")
+        if any(not math.isfinite(value) or value < 0.0 for value in (self.v1_capacity, self.joint_capacity)):
+            raise ValueError("Tomorrow joint capacity must be finite and non-negative")
+        if self.active_profile_id == "v2":
+            if self.active_net_excess_20bp is None or self.active_net_excess_50bp is None:
+                raise ValueError("Tomorrow joint V2-active evidence requires paired active returns")
+        elif self.active_profile_id != "v1":
+            raise ValueError("Tomorrow joint active profile must be V1 or V2")
+        active_values = (self.active_net_excess_20bp, self.active_net_excess_50bp)
+        if any(value is not None and not math.isfinite(value) for value in active_values):
+            raise ValueError("Tomorrow joint active profile returns must be finite")
+
+    @property
+    def active_return_20bp(self) -> float:
+        if self.active_profile_id == "v1":
+            return self.v1_net_excess_20bp
+        if self.active_net_excess_20bp is None:
+            raise AssertionError("validated V2 active evidence must contain 20bp return")
+        return self.active_net_excess_20bp
+
+    @property
+    def active_return_50bp(self) -> float:
+        if self.active_profile_id == "v1":
+            return self.v1_net_excess_50bp
+        if self.active_net_excess_50bp is None:
+            raise AssertionError("validated V2 active evidence must contain 50bp return")
+        return self.active_net_excess_50bp
 
 
 @dataclass(frozen=True)
@@ -264,6 +304,13 @@ class TomorrowJointValidationReport:
     failure_reasons: tuple[str, ...]
     passed: bool
     production_authority: bool = False
+    active_profile_id: Literal["v1", "v2"] = "v1"
+    paired_active_increment_20bp: float = 0.0
+    paired_active_increment_50bp: float = 0.0
+    active_bootstrap_20bp: PreregisteredBootstrapResult | None = None
+    active_bootstrap_50bp: PreregisteredBootstrapResult | None = None
+    capacity_delta: float = 0.0
+    concentration_delta: float = 0.0
 
     def __post_init__(self) -> None:
         if self.candidate_id not in TOMORROW_JOINT_CANDIDATES:
@@ -290,6 +337,10 @@ class TomorrowJointValidationReport:
             self.joint_mean_net_excess_50bp,
             self.severe_loss_rate_delta,
             self.turnover_increment_percentage_points,
+            self.paired_active_increment_20bp,
+            self.paired_active_increment_50bp,
+            self.capacity_delta,
+            self.concentration_delta,
         )
         optional_metrics = (self.mean_rank_ic, self.mean_q5_minus_q1_20bp)
         if any(not math.isfinite(value) for value in metrics) or any(
@@ -307,6 +358,12 @@ class TomorrowJointValidationReport:
             raise ValueError("Tomorrow joint paired metrics must bind their daily evidence")
         if self.passed == bool(self.failure_reasons):
             raise ValueError("Tomorrow joint validation status and failures disagree")
+        if self.active_profile_id not in {"v1", "v2"}:
+            raise ValueError("Tomorrow joint validation active profile is invalid")
+        if self.active_profile_id == "v2" and (
+            self.active_bootstrap_20bp is None or self.active_bootstrap_50bp is None
+        ):
+            raise ValueError("Tomorrow joint V2-active validation requires paired bootstrap evidence")
 
 
 @dataclass(frozen=True)
@@ -332,6 +389,40 @@ class TomorrowJointCandidateSelection:
             report.passed for report in self.reports if report.candidate_id == self.selected_model.candidate_id
         ):
             raise ValueError("Tomorrow joint selected model must pass every validation gate")
+
+
+@dataclass(frozen=True)
+class TomorrowJointFamilyConfirmation:
+    candidate_family: TomorrowJointCandidateFamily
+    reports: tuple[TomorrowJointValidationReport, ...]
+    holm: tuple[PreregisteredHolmDecision, ...]
+    selected_model: TomorrowJointFittedModel | None
+    status: Literal["historical_candidate_ready", "historical_rejected"]
+    fallback_to_c3: bool
+    terminal_holdout_status: Literal["terminal_holdout_not_opened"] = "terminal_holdout_not_opened"
+    production_authority: bool = False
+    schema_version: str = "tomorrow_joint_confirmation_report_v1"
+    content_hash: str = dataclasses.field(init=False)
+
+    def __post_init__(self) -> None:
+        report_ids = tuple(item.candidate_id for item in self.reports)
+        holm_ids = tuple(item.challenger_id for item in self.holm)
+        if report_ids != TOMORROW_JOINT_CANDIDATES or holm_ids != TOMORROW_JOINT_CANDIDATES:
+            raise ValueError("Tomorrow joint confirmation must retain the complete fixed family")
+        expected = "historical_candidate_ready" if self.selected_model is not None else "historical_rejected"
+        if self.status != expected:
+            raise ValueError("Tomorrow joint confirmation status is inconsistent")
+        if self.fallback_to_c3 != (
+            self.selected_model is not None and self.selected_model.candidate_id == "c3"
+        ):
+            raise ValueError("Tomorrow joint C3 fallback marker is inconsistent")
+        if (
+            self.production_authority
+            or self.terminal_holdout_status != "terminal_holdout_not_opened"
+            or self.schema_version != "tomorrow_joint_confirmation_report_v1"
+        ):
+            raise ValueError("Tomorrow joint confirmation cannot authorize production or open terminal holdout")
+        object.__setattr__(self, "content_hash", _canonical_hash(self))
 
 
 def fit_tomorrow_joint_candidate(
@@ -458,6 +549,12 @@ def evaluate_tomorrow_joint_validation(
     ordered_evidence = tuple(sorted(portfolio_evidence, key=lambda item: item.trade_date))
     paired_20 = tuple(item.joint_net_excess_20bp - item.v1_net_excess_20bp for item in ordered_evidence)
     paired_50 = tuple(item.joint_net_excess_50bp - item.v1_net_excess_50bp for item in ordered_evidence)
+    active_profiles = {item.active_profile_id for item in ordered_evidence}
+    if len(active_profiles) != 1:
+        raise ValueError("Tomorrow joint active profile must remain fixed across validation dates")
+    active_profile = next(iter(active_profiles))
+    paired_active_20 = tuple(item.joint_net_excess_20bp - item.active_return_20bp for item in ordered_evidence)
+    paired_active_50 = tuple(item.joint_net_excess_50bp - item.active_return_50bp for item in ordered_evidence)
     bootstrap_20 = paired_moving_block_statistics(
         paired_20,
         plan=PreregisteredBootstrapPlan("tomorrow_joint_20bp_v1", 20260901, "joint", 5, 10_000),
@@ -465,6 +562,14 @@ def evaluate_tomorrow_joint_validation(
     bootstrap_50 = paired_moving_block_statistics(
         paired_50,
         plan=PreregisteredBootstrapPlan("tomorrow_joint_50bp_v1", 20260901, "joint", 5, 10_000),
+    )
+    active_bootstrap_20 = paired_moving_block_statistics(
+        paired_active_20,
+        plan=PreregisteredBootstrapPlan("tomorrow_joint_active_20bp_v1", 20260901, "joint", 5, 10_000),
+    )
+    active_bootstrap_50 = paired_moving_block_statistics(
+        paired_active_50,
+        plan=PreregisteredBootstrapPlan("tomorrow_joint_active_50bp_v1", 20260901, "joint", 5, 10_000),
     )
     rank_ics: list[float] = []
     q_spreads: list[float] = []
@@ -487,6 +592,8 @@ def evaluate_tomorrow_joint_validation(
     joint_mean_50 = _mean(tuple(item.joint_net_excess_50bp for item in ordered_evidence))
     severe_delta = _mean(tuple(item.joint_severe_loss_rate - item.v1_severe_loss_rate for item in ordered_evidence))
     turnover_delta_pp = 100.0 * _mean(tuple(item.joint_turnover - item.v1_turnover for item in ordered_evidence))
+    capacity_delta = _mean(tuple(item.joint_capacity - item.v1_capacity for item in ordered_evidence))
+    concentration_delta = _mean(tuple(item.joint_concentration - item.v1_concentration for item in ordered_evidence))
     mean_rank_ic = _mean(tuple(rank_ics)) if rank_ics else None
     mean_q_spread = _mean(tuple(q_spreads)) if q_spreads else None
     failures: list[str] = []
@@ -506,6 +613,23 @@ def evaluate_tomorrow_joint_validation(
         failures.append("severe_loss_rate_worse_than_v1")
     if turnover_delta_pp > 5.0:
         failures.append("turnover_increment_above_5pp")
+    if capacity_delta < 0.0:
+        failures.append("capacity_worse_than_v1")
+    if concentration_delta > 0.0:
+        failures.append("concentration_worse_than_v1")
+    if active_profile == "v2":
+        if (
+            _mean(paired_active_20) <= 0.0
+            or active_bootstrap_20.confidence_lower is None
+            or active_bootstrap_20.confidence_lower <= 0.0
+        ):
+            failures.append("active_profile_20bp_gate_failed")
+        if (
+            _mean(paired_active_50) <= 0.0
+            or active_bootstrap_50.confidence_lower is None
+            or active_bootstrap_50.confidence_lower <= 0.0
+        ):
+            failures.append("active_profile_50bp_gate_failed")
     if mean_rank_ic is None or mean_rank_ic <= 0.0:
         failures.append("rank_ic_not_positive")
     if mean_q_spread is None or mean_q_spread <= 0.0:
@@ -540,6 +664,13 @@ def evaluate_tomorrow_joint_validation(
         mean_q5_minus_q1_20bp=mean_q_spread,
         failure_reasons=unique_failures,
         passed=not unique_failures,
+        active_profile_id=active_profile,
+        paired_active_increment_20bp=_mean(paired_active_20),
+        paired_active_increment_50bp=_mean(paired_active_50),
+        active_bootstrap_20bp=active_bootstrap_20,
+        active_bootstrap_50bp=active_bootstrap_50,
+        capacity_delta=capacity_delta,
+        concentration_delta=concentration_delta,
     )
 
 
@@ -572,6 +703,65 @@ def select_tomorrow_joint_candidate(
         reports=ordered_reports,
         selected_model=selected,
         status="selected_by_portfolio_evidence" if selected is not None else "no_candidate_passed",
+    )
+
+
+def confirm_tomorrow_joint_family(
+    candidate_family: TomorrowJointCandidateFamily,
+    reports: tuple[TomorrowJointValidationReport, ...],
+    *,
+    alpha: float = 0.05,
+) -> TomorrowJointFamilyConfirmation:
+    """Apply one Holm family and require any fused model to beat frozen C3 evidence."""
+
+    ordered_reports = tuple(sorted(reports, key=lambda item: TOMORROW_JOINT_CANDIDATES.index(item.candidate_id)))
+    if tuple(item.candidate_id for item in ordered_reports) != TOMORROW_JOINT_CANDIDATES:
+        raise ValueError("Tomorrow joint confirmation requires all three fixed candidates")
+    if len({item.evidence_identity for item in ordered_reports}) != 1:
+        raise ValueError("Tomorrow joint confirmation candidates must use identical evidence")
+    if len({item.active_profile_id for item in ordered_reports}) != 1:
+        raise ValueError("Tomorrow joint confirmation candidates must use one active profile")
+    models = {item.candidate_id: item for item in candidate_family.candidates}
+    if any(models[item.candidate_id].weights != item.weights for item in ordered_reports):
+        raise ValueError("Tomorrow joint confirmation reports do not bind the frozen family")
+    raw_holm = fixed_family_holm(
+        {item.candidate_id: item.bootstrap_20bp.p_value for item in ordered_reports},
+        family=TOMORROW_JOINT_CANDIDATES,
+        alpha=alpha,
+    )
+    holm_by_id = {item.challenger_id: item for item in raw_holm}
+    holm = tuple(holm_by_id[candidate_id] for candidate_id in TOMORROW_JOINT_CANDIDATES)
+    c3 = ordered_reports[0]
+    fused = tuple(
+        item
+        for item in ordered_reports[1:]
+        if item.passed
+        and holm_by_id[item.candidate_id].rejected_null
+        and item.paired_increment_20bp > c3.paired_increment_20bp
+        and item.paired_increment_50bp > c3.paired_increment_50bp
+        and (item.bootstrap_20bp.confidence_lower or -math.inf) > (c3.bootstrap_20bp.confidence_lower or -math.inf)
+        and (item.bootstrap_50bp.confidence_lower or -math.inf) > (c3.bootstrap_50bp.confidence_lower or -math.inf)
+    )
+    selected: TomorrowJointFittedModel | None = None
+    if fused:
+        best = max(
+            fused,
+            key=lambda item: (
+                item.paired_increment_20bp,
+                item.paired_increment_50bp,
+                -TOMORROW_JOINT_CANDIDATES.index(item.candidate_id),
+            ),
+        )
+        selected = models[best.candidate_id]
+    elif c3.passed and holm_by_id["c3"].rejected_null:
+        selected = models["c3"]
+    return TomorrowJointFamilyConfirmation(
+        candidate_family=candidate_family,
+        reports=ordered_reports,
+        holm=holm,
+        selected_model=selected,
+        status="historical_candidate_ready" if selected is not None else "historical_rejected",
+        fallback_to_c3=selected is not None and selected.candidate_id == "c3",
     )
 
 
@@ -690,6 +880,22 @@ def _q5_minus_q1(rows: tuple[TomorrowJointPrediction, ...]) -> float | None:
     return upper - lower
 
 
+def _canonical_hash(value: object) -> str:
+    def encode(item: object) -> object:
+        if dataclasses.is_dataclass(item):
+            return {field.name: encode(getattr(item, field.name)) for field in dataclasses.fields(item) if field.init}
+        if isinstance(item, date):
+            return item.isoformat()
+        if isinstance(item, (tuple, list)):
+            return [encode(child) for child in item]
+        if isinstance(item, dict):
+            return {str(key): encode(child) for key, child in item.items()}
+        return item
+
+    payload = json.dumps(encode(value), ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
 __all__ = [
     "TOMORROW_JOINT_CANDIDATES",
     "TOMORROW_JOINT_LAMBDAS",
@@ -701,12 +907,14 @@ __all__ = [
     "TomorrowJointDailyPortfolioEvidence",
     "TomorrowJointEvidenceIdentity",
     "TomorrowJointFittedModel",
+    "TomorrowJointFamilyConfirmation",
     "TomorrowJointPrediction",
     "TomorrowJointPredictionSemantics",
     "TomorrowJointRowKey",
     "TomorrowJointValidationReport",
     "TomorrowJointWeights",
     "evaluate_tomorrow_joint_validation",
+    "confirm_tomorrow_joint_family",
     "fit_tomorrow_joint_candidate",
     "fit_tomorrow_joint_candidate_family",
     "predict_tomorrow_joint",

@@ -6,11 +6,12 @@ from dataclasses import dataclass
 
 from trader.domain.research.filter_recall_ablation import FilterAblationRow, FilterRecallAblationReport
 from trader.domain.research.transparent_candidate import (
-    TransparentCandidate,
     TransparentCandidateFamily,
     TransparentCandidateMetrics,
-    evaluate_transparent_candidate,
     preregister_transparent_candidates,
+)
+from trader.domain.research.transparent_candidate import (
+    evaluate_transparent_candidate_family as evaluate_family,
 )
 
 
@@ -27,8 +28,12 @@ def build_transparent_candidate_family(report: FilterRecallAblationReport) -> Tr
 def evaluate_transparent_candidate_family(
     family: TransparentCandidateFamily, rows: tuple[FilterAblationRow, ...]
 ) -> TransparentCandidateEvaluation:
-    metrics = tuple(evaluate_transparent_candidate(candidate, rows) for candidate in family.candidates)
-    return TransparentCandidateEvaluation(family, metrics)
+    report = evaluate_family(family, rows)
+    return TransparentCandidateEvaluation(family, report.metrics)
 
 
-__all__ = ["TransparentCandidateEvaluation", "build_transparent_candidate_family", "evaluate_transparent_candidate_family"]
+__all__ = [
+    "TransparentCandidateEvaluation",
+    "build_transparent_candidate_family",
+    "evaluate_transparent_candidate_family",
+]

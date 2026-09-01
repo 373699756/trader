@@ -10,10 +10,13 @@ from typing import Literal
 from trader.domain.research.tomorrow_joint import (
     TomorrowJointAlignedRow,
     TomorrowJointCandidateFamily,
+    TomorrowJointFamilyConfirmation,
     TomorrowJointFittedModel,
     TomorrowJointPrediction,
     TomorrowJointPredictionSemantics,
     TomorrowJointRowKey,
+    TomorrowJointValidationReport,
+    confirm_tomorrow_joint_family,
     fit_tomorrow_joint_candidate_family,
     predict_tomorrow_joint,
 )
@@ -223,6 +226,13 @@ def produce_tomorrow_joint_predictions(
     )
 
 
+def confirm_tomorrow_joint_research(
+    fit: TomorrowJointResearchFit,
+    reports: tuple[TomorrowJointValidationReport, ...],
+) -> TomorrowJointFamilyConfirmation:
+    return confirm_tomorrow_joint_family(fit.candidate_family, reports)
+
+
 __all__ = [
     "TomorrowJointAlignedDataset",
     "TomorrowJointCoverageReport",
@@ -233,6 +243,7 @@ __all__ = [
     "TomorrowJointResearchFit",
     "TomorrowJointSourceRow",
     "align_tomorrow_joint_batches",
+    "confirm_tomorrow_joint_research",
     "fit_tomorrow_joint_research",
     "produce_tomorrow_joint_predictions",
 ]

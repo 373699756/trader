@@ -219,39 +219,48 @@ class ValidationReport:
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
-        if self.status not in {
-            "historical_data_insufficient",
-            "historical_rejected",
-            "historical_daily_close_proxy_validated",
-        }:
-            raise ValueError("daily-close validation terminal status is invalid")
-        _validate_hash(self.manifest_hash, "daily-close validation manifest")
-        if self.candidate_model_artifact_hash is not None:
-            _validate_hash(self.candidate_model_artifact_hash, "daily-close candidate model artifact")
-        reasons = tuple(sorted(set(self.failure_reasons)))
-        if any(_REASON.fullmatch(reason) is None for reason in reasons):
-            raise ValueError("daily-close validation failure reasons are invalid")
-        if self.status == "historical_daily_close_proxy_validated":
-            if reasons:
-                raise ValueError("validated daily-close report requires no failure reasons")
-            if self.candidate_model_artifact_hash is None:
-                raise ValueError("validated daily-close report requires a candidate model artifact")
-            if not _passes_validation_metrics(self.metrics):
-                raise ValueError("validated daily-close report must satisfy registered return and risk gates")
-        elif not reasons:
-            raise ValueError("rejected or insufficient daily-close report requires bounded failure reasons")
-        if self.status == "historical_data_insufficient" and self.candidate_model_artifact_hash is not None:
-            raise ValueError("insufficient daily-close evidence cannot bind a candidate model artifact")
-        if (
-            self.research_identity != _RESEARCH_IDENTITY
-            or self.proxy_anchor != _PROXY_ANCHOR
-            or self.schema_version != "tomorrow_daily_close_validation_report_v1"
-        ):
-            raise ValueError("daily-close validation report identity is invalid")
+        _validate_validation_report_identity(self)
+        reasons = _validate_validation_report_outcome(self)
         if self.production_authority or self.automatic_model_update:
             raise ValueError("daily-close validation report cannot authorize production or automatic updates")
         object.__setattr__(self, "failure_reasons", reasons)
         object.__setattr__(self, "content_hash", canonical_hash(self))
+
+
+def _validate_validation_report_identity(report: ValidationReport) -> None:
+    if report.status not in {
+        "historical_data_insufficient",
+        "historical_rejected",
+        "historical_daily_close_proxy_validated",
+    }:
+        raise ValueError("daily-close validation terminal status is invalid")
+    _validate_hash(report.manifest_hash, "daily-close validation manifest")
+    if report.candidate_model_artifact_hash is not None:
+        _validate_hash(report.candidate_model_artifact_hash, "daily-close candidate model artifact")
+    if (
+        report.research_identity != _RESEARCH_IDENTITY
+        or report.proxy_anchor != _PROXY_ANCHOR
+        or report.schema_version != "tomorrow_daily_close_validation_report_v1"
+    ):
+        raise ValueError("daily-close validation report identity is invalid")
+
+
+def _validate_validation_report_outcome(report: ValidationReport) -> tuple[str, ...]:
+    reasons = tuple(sorted(set(report.failure_reasons)))
+    if any(_REASON.fullmatch(reason) is None for reason in reasons):
+        raise ValueError("daily-close validation failure reasons are invalid")
+    if report.status == "historical_daily_close_proxy_validated":
+        if reasons:
+            raise ValueError("validated daily-close report requires no failure reasons")
+        if report.candidate_model_artifact_hash is None:
+            raise ValueError("validated daily-close report requires a candidate model artifact")
+        if not _passes_validation_metrics(report.metrics):
+            raise ValueError("validated daily-close report must satisfy registered return and risk gates")
+    elif not reasons:
+        raise ValueError("rejected or insufficient daily-close report requires bounded failure reasons")
+    if report.status == "historical_data_insufficient" and report.candidate_model_artifact_hash is not None:
+        raise ValueError("insufficient daily-close evidence cannot bind a candidate model artifact")
+    return reasons
 
 
 @dataclass(frozen=True)
@@ -338,66 +347,86 @@ class CandidateModelArtifact:
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
-        if _IDENTITY.fullmatch(self.model_id) is None or _IDENTITY.fullmatch(self.candidate_id) is None:
-            raise ValueError("daily-close candidate model identity is invalid")
-        if self.base_model_kind not in {"ridge", "lightgbm", "ridge_lightgbm_ensemble"}:
-            raise ValueError("daily-close candidate base model kind is invalid")
-        _validate_hash(self.manifest_hash, "daily-close candidate manifest")
-        _validate_hash(self.filter_spec_hash, "daily-close candidate filter spec")
-        _validate_hash(self.confirmation_report_hash, "daily-close confirmation report")
-        _validate_feature_contract(self.feature_names, self.feature_units)
-        width = len(self.feature_names)
-        if len(self.preprocessing_means) != width or len(self.preprocessing_scales) != width:
-            raise ValueError("daily-close candidate model vector widths are inconsistent")
-        if (self.ridge_intercept is None) != (self.ridge_coefficients is None):
-            raise ValueError("daily-close candidate base model payload does not match its kind")
-        if (self.lightgbm_model_text is None) != (self.lightgbm_best_iteration is None):
-            raise ValueError("daily-close candidate base model payload does not match its kind")
-        has_ridge = self.ridge_intercept is not None
-        has_lightgbm = self.lightgbm_model_text is not None
-        expected_payloads = {
-            "ridge": (True, False),
-            "lightgbm": (False, True),
-            "ridge_lightgbm_ensemble": (True, True),
-        }
-        if (has_ridge, has_lightgbm) != expected_payloads[self.base_model_kind]:
-            raise ValueError("daily-close candidate base model payload does not match its kind")
-        if has_ridge and self.ridge_coefficients is not None and len(self.ridge_coefficients) != width:
-            raise ValueError("daily-close candidate model vector widths are inconsistent")
-        ridge_numeric = (
-            ()
-            if self.ridge_intercept is None or self.ridge_coefficients is None
-            else (self.ridge_intercept, *self.ridge_coefficients)
-        )
-        numeric = (*self.preprocessing_means, *self.preprocessing_scales, *ridge_numeric)
-        if not _all_finite(numeric) or any(value <= 0.0 for value in self.preprocessing_scales):
-            raise ValueError("daily-close candidate model numeric parameters are invalid")
-        if has_lightgbm and (
-            self.lightgbm_model_text is None
-            or not self.lightgbm_model_text.strip()
-            or self.lightgbm_best_iteration is None
-            or self.lightgbm_best_iteration < 1
-        ):
-            raise ValueError("daily-close LightGBM artifact is incomplete")
-        strata = tuple(sorted(self.stratum_corrections, key=lambda item: (item.dimension, item.key)))
-        stocks = tuple(sorted(self.stock_residual_corrections, key=lambda item: item.code))
-        dependencies = tuple(sorted(self.dependencies, key=lambda item: item.name))
-        if len({(item.dimension, item.key) for item in strata}) != len(strata):
-            raise ValueError("daily-close stratum corrections must be unique")
-        if len({item.code for item in stocks}) != len(stocks):
-            raise ValueError("daily-close stock residual corrections must be unique")
-        if not dependencies or len({item.name for item in dependencies}) != len(dependencies):
-            raise ValueError("daily-close model dependencies must be present and unique")
-        if self.trained_from > self.trained_through:
-            raise ValueError("daily-close candidate model training dates are invalid")
-        if self.schema_version != "tomorrow_daily_close_candidate_model_artifact_v1":
-            raise ValueError("daily-close candidate model schema is invalid")
-        if self.production_authority or self.automatic_model_update:
-            raise ValueError("daily-close candidate model cannot authorize production or automatic updates")
+        width = _validate_candidate_model_identity(self)
+        _validate_candidate_model_payload(self, width)
+        strata, stocks, dependencies = _validate_candidate_model_collections(self)
+        _validate_candidate_model_metadata(self)
         object.__setattr__(self, "stratum_corrections", strata)
         object.__setattr__(self, "stock_residual_corrections", stocks)
         object.__setattr__(self, "dependencies", dependencies)
         object.__setattr__(self, "content_hash", canonical_hash(self))
+
+
+def _validate_candidate_model_identity(artifact: CandidateModelArtifact) -> int:
+    if _IDENTITY.fullmatch(artifact.model_id) is None or _IDENTITY.fullmatch(artifact.candidate_id) is None:
+        raise ValueError("daily-close candidate model identity is invalid")
+    if artifact.base_model_kind not in {"ridge", "lightgbm", "ridge_lightgbm_ensemble"}:
+        raise ValueError("daily-close candidate base model kind is invalid")
+    _validate_hash(artifact.manifest_hash, "daily-close candidate manifest")
+    _validate_hash(artifact.filter_spec_hash, "daily-close candidate filter spec")
+    _validate_hash(artifact.confirmation_report_hash, "daily-close confirmation report")
+    _validate_feature_contract(artifact.feature_names, artifact.feature_units)
+    width = len(artifact.feature_names)
+    if len(artifact.preprocessing_means) != width or len(artifact.preprocessing_scales) != width:
+        raise ValueError("daily-close candidate model vector widths are inconsistent")
+    return width
+
+
+def _validate_candidate_model_payload(artifact: CandidateModelArtifact, width: int) -> None:
+    if (artifact.ridge_intercept is None) != (artifact.ridge_coefficients is None):
+        raise ValueError("daily-close candidate base model payload does not match its kind")
+    if (artifact.lightgbm_model_text is None) != (artifact.lightgbm_best_iteration is None):
+        raise ValueError("daily-close candidate base model payload does not match its kind")
+    has_ridge = artifact.ridge_intercept is not None
+    has_lightgbm = artifact.lightgbm_model_text is not None
+    expected_payloads = {
+        "ridge": (True, False),
+        "lightgbm": (False, True),
+        "ridge_lightgbm_ensemble": (True, True),
+    }
+    if (has_ridge, has_lightgbm) != expected_payloads[artifact.base_model_kind]:
+        raise ValueError("daily-close candidate base model payload does not match its kind")
+    if has_ridge and artifact.ridge_coefficients is not None and len(artifact.ridge_coefficients) != width:
+        raise ValueError("daily-close candidate model vector widths are inconsistent")
+    ridge_numeric = (
+        ()
+        if artifact.ridge_intercept is None or artifact.ridge_coefficients is None
+        else (artifact.ridge_intercept, *artifact.ridge_coefficients)
+    )
+    numeric = (*artifact.preprocessing_means, *artifact.preprocessing_scales, *ridge_numeric)
+    if not _all_finite(numeric) or any(value <= 0.0 for value in artifact.preprocessing_scales):
+        raise ValueError("daily-close candidate model numeric parameters are invalid")
+    if has_lightgbm and (
+        artifact.lightgbm_model_text is None
+        or not artifact.lightgbm_model_text.strip()
+        or artifact.lightgbm_best_iteration is None
+        or artifact.lightgbm_best_iteration < 1
+    ):
+        raise ValueError("daily-close LightGBM artifact is incomplete")
+
+
+def _validate_candidate_model_collections(
+    artifact: CandidateModelArtifact,
+) -> tuple[tuple[StratumCorrection, ...], tuple[StockResidualCorrection, ...], tuple[ModelDependencyVersion, ...]]:
+    strata = tuple(sorted(artifact.stratum_corrections, key=lambda item: (item.dimension, item.key)))
+    stocks = tuple(sorted(artifact.stock_residual_corrections, key=lambda item: item.code))
+    dependencies = tuple(sorted(artifact.dependencies, key=lambda item: item.name))
+    if len({(item.dimension, item.key) for item in strata}) != len(strata):
+        raise ValueError("daily-close stratum corrections must be unique")
+    if len({item.code for item in stocks}) != len(stocks):
+        raise ValueError("daily-close stock residual corrections must be unique")
+    if not dependencies or len({item.name for item in dependencies}) != len(dependencies):
+        raise ValueError("daily-close model dependencies must be present and unique")
+    return strata, stocks, dependencies
+
+
+def _validate_candidate_model_metadata(artifact: CandidateModelArtifact) -> None:
+    if artifact.trained_from > artifact.trained_through:
+        raise ValueError("daily-close candidate model training dates are invalid")
+    if artifact.schema_version != "tomorrow_daily_close_candidate_model_artifact_v1":
+        raise ValueError("daily-close candidate model schema is invalid")
+    if artifact.production_authority or artifact.automatic_model_update:
+        raise ValueError("daily-close candidate model cannot authorize production or automatic updates")
 
 
 def build_feature_dataset(

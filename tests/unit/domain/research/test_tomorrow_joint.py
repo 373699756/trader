@@ -13,6 +13,7 @@ from trader.domain.research.tomorrow_joint import (
     TomorrowJointDailyPortfolioEvidence,
     TomorrowJointFittedModel,
     TomorrowJointWeights,
+    confirm_tomorrow_joint_family,
     evaluate_tomorrow_joint_validation,
     fit_tomorrow_joint_candidate,
     fit_tomorrow_joint_candidate_family,
@@ -209,6 +210,42 @@ def test_validation_fails_when_50bp_increment_is_not_positive() -> None:
     assert "paired_50bp_not_positive" in report.failure_reasons
 
 
+def test_validation_requires_increment_over_active_v2_when_v2_is_active() -> None:
+    rows = _fit_rows(0, 6)
+    model = TomorrowJointFittedModel(
+        candidate_id="c3",
+        regularization_lambda=None,
+        weights=TomorrowJointWeights(0.0, 0.0, 1.0),
+        training_rows=30,
+        tuning_rows=12,
+        tuning_mean_squared_error=0.001,
+    )
+    predictions = predict_tomorrow_joint(model, rows)
+    portfolios = tuple(
+        TomorrowJointDailyPortfolioEvidence(
+            trade_date=date(2025, 1, 1) + timedelta(days=day_index),
+            v1_net_excess_20bp=0.001,
+            joint_net_excess_20bp=0.010,
+            v1_net_excess_50bp=0.0005,
+            joint_net_excess_50bp=0.007,
+            v1_severe_loss_rate=0.1,
+            joint_severe_loss_rate=0.05,
+            v1_turnover=0.1,
+            joint_turnover=0.1,
+            active_profile_id="v2",
+            active_net_excess_20bp=0.012,
+            active_net_excess_50bp=0.009,
+        )
+        for day_index in range(6)
+    )
+
+    report = evaluate_tomorrow_joint_validation(predictions, portfolios)
+
+    assert report.passed is False
+    assert "active_profile_20bp_gate_failed" in report.failure_reasons
+    assert "active_profile_50bp_gate_failed" in report.failure_reasons
+
+
 def test_final_structure_selection_uses_complete_profit_evidence_not_tuning_mse() -> None:
     rows = _fit_rows(0, 6)
     models = (
@@ -240,3 +277,70 @@ def test_final_structure_selection_uses_complete_profit_evidence_not_tuning_mse(
     assert selection.status == "selected_by_portfolio_evidence"
     assert selection.selected_model is models[1]
     assert models[0].tuning_mean_squared_error < models[1].tuning_mean_squared_error
+
+
+def test_joint_confirmation_uses_one_holm_family_and_falls_back_to_c3() -> None:
+    rows = _fit_rows(0, 6)
+    models = (
+        TomorrowJointFittedModel("c3", None, TomorrowJointWeights(0.0, 0.0, 1.0), 30, 12, 0.0001),
+        TomorrowJointFittedModel("v1_c3", 1.0, TomorrowJointWeights(0.5, 0.0, 0.5), 30, 12, 0.0002),
+        TomorrowJointFittedModel("v1_v2_c3", 1.0, TomorrowJointWeights(0.5, 0.0, 0.5), 30, 12, 0.0003),
+    )
+    family = TomorrowJointCandidateFamily(models)
+    reports = []
+    for model, increment in zip(models, (0.009, 0.006, 0.005), strict=True):
+        portfolios = tuple(
+            TomorrowJointDailyPortfolioEvidence(
+                trade_date=date(2025, 1, 1) + timedelta(days=day_index),
+                v1_net_excess_20bp=0.001,
+                joint_net_excess_20bp=0.001 + increment,
+                v1_net_excess_50bp=0.0005,
+                joint_net_excess_50bp=0.0005 + increment,
+                v1_severe_loss_rate=0.1,
+                joint_severe_loss_rate=0.05,
+                v1_turnover=0.1,
+                joint_turnover=0.1,
+            )
+            for day_index in range(6)
+        )
+        reports.append(evaluate_tomorrow_joint_validation(predict_tomorrow_joint(model, rows), portfolios))
+
+    confirmation = confirm_tomorrow_joint_family(family, tuple(reports))
+
+    assert tuple(item.challenger_id for item in confirmation.holm) == TOMORROW_JOINT_CANDIDATES
+    assert confirmation.selected_model.candidate_id == "c3"
+    assert confirmation.fallback_to_c3 is True
+    assert confirmation.production_authority is False
+    assert len(confirmation.content_hash) == 64
+
+
+def test_joint_confirmation_requires_one_active_profile_across_the_family() -> None:
+    rows = _fit_rows(0, 6)
+    models = (
+        TomorrowJointFittedModel("c3", None, TomorrowJointWeights(0.0, 0.0, 1.0), 30, 12, 0.0001),
+        TomorrowJointFittedModel("v1_c3", 1.0, TomorrowJointWeights(0.5, 0.0, 0.5), 30, 12, 0.0002),
+        TomorrowJointFittedModel("v1_v2_c3", 1.0, TomorrowJointWeights(0.5, 0.0, 0.5), 30, 12, 0.0003),
+    )
+    reports = []
+    for index, model in enumerate(models):
+        portfolios = tuple(
+            TomorrowJointDailyPortfolioEvidence(
+                trade_date=date(2025, 1, 1) + timedelta(days=day_index),
+                v1_net_excess_20bp=0.001,
+                joint_net_excess_20bp=0.01,
+                v1_net_excess_50bp=0.0005,
+                joint_net_excess_50bp=0.007,
+                v1_severe_loss_rate=0.1,
+                joint_severe_loss_rate=0.05,
+                v1_turnover=0.1,
+                joint_turnover=0.1,
+                active_profile_id="v2" if index == 2 else "v1",
+                active_net_excess_20bp=0.001 if index == 2 else None,
+                active_net_excess_50bp=0.0005 if index == 2 else None,
+            )
+            for day_index in range(6)
+        )
+        reports.append(evaluate_tomorrow_joint_validation(predict_tomorrow_joint(model, rows), portfolios))
+
+    with pytest.raises(ValueError, match="active profile"):
+        confirm_tomorrow_joint_family(TomorrowJointCandidateFamily(models), tuple(reports))

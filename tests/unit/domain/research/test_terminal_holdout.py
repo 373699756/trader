@@ -6,8 +6,8 @@ from datetime import date, timedelta
 import pytest
 
 from trader.domain.research.terminal_holdout import (
+    TerminalHoldoutEvaluation,
     TerminalHoldoutRow,
-    TerminalStatus,
     evaluate_terminal_holdout,
 )
 
@@ -44,11 +44,13 @@ def _rows(count: int = 200, *, positive: bool = True) -> tuple[TerminalHoldoutRo
 
 def test_terminal_holdout_validates_positive_candidate_against_local_baseline() -> None:
     report = evaluate_terminal_holdout(
-        strategy="today",
-        research_identity="score_today_historical_candidate_v1",
-        parent_hash="a" * 64,
-        candidate_hash="b" * 64,
-        rows=_rows(),
+        TerminalHoldoutEvaluation(
+            strategy="today",
+            research_identity="score_today_historical_candidate_v1",
+            parent_hash="a" * 64,
+            candidate_hash="b" * 64,
+            rows=_rows(),
+        )
     )
 
     assert report.status == "historical_validated"
@@ -60,13 +62,15 @@ def test_terminal_holdout_validates_positive_candidate_against_local_baseline() 
 
 def test_terminal_holdout_does_not_open_when_parent_is_rejected() -> None:
     report = evaluate_terminal_holdout(
-        strategy="today",
-        research_identity="score_today_historical_candidate_v1",
-        parent_hash="a" * 64,
-        candidate_hash="b" * 64,
-        rows=_rows(),
-        parent_status="historical_rejected",
-        parent_failure_reasons=("candidate_rejected",),
+        TerminalHoldoutEvaluation(
+            strategy="today",
+            research_identity="score_today_historical_candidate_v1",
+            parent_hash="a" * 64,
+            candidate_hash="b" * 64,
+            rows=_rows(),
+            parent_status="historical_rejected",
+            parent_failure_reasons=("candidate_rejected",),
+        )
     )
 
     assert report.status == "historical_rejected"
@@ -79,22 +83,26 @@ def test_terminal_holdout_requires_point_in_time_parity() -> None:
     rows[0] = TerminalHoldoutRow(**{**rows[0].__dict__, "point_in_time_parity": False})
     with pytest.raises(ValueError, match="point-in-time"):
         evaluate_terminal_holdout(
-            strategy="today",
-            research_identity="score_today_historical_candidate_v1",
-            parent_hash="a" * 64,
-            candidate_hash="b" * 64,
-            rows=tuple(rows),
+            TerminalHoldoutEvaluation(
+                strategy="today",
+                research_identity="score_today_historical_candidate_v1",
+                parent_hash="a" * 64,
+                candidate_hash="b" * 64,
+                rows=tuple(rows),
+            )
         )
 
 
 def test_terminal_holdout_reports_data_insufficient_when_a_preregistered_state_is_missing() -> None:
     rows = tuple(replace(row, market_state="up") for row in _rows())
     report = evaluate_terminal_holdout(
-        strategy="today",
-        research_identity="score_today_historical_candidate_v1",
-        parent_hash="a" * 64,
-        candidate_hash="b" * 64,
-        rows=rows,
+        TerminalHoldoutEvaluation(
+            strategy="today",
+            research_identity="score_today_historical_candidate_v1",
+            parent_hash="a" * 64,
+            candidate_hash="b" * 64,
+            rows=rows,
+        )
     )
 
     assert report.status == "historical_data_insufficient"
@@ -103,12 +111,14 @@ def test_terminal_holdout_reports_data_insufficient_when_a_preregistered_state_i
 
 def test_terminal_holdout_rejects_a_second_terminal_open() -> None:
     report = evaluate_terminal_holdout(
-        strategy="today",
-        research_identity="score_today_historical_candidate_v1",
-        parent_hash="a" * 64,
-        candidate_hash="b" * 64,
-        rows=(),
-        terminal_holdout_already_opened=True,
+        TerminalHoldoutEvaluation(
+            strategy="today",
+            research_identity="score_today_historical_candidate_v1",
+            parent_hash="a" * 64,
+            candidate_hash="b" * 64,
+            rows=(),
+            terminal_holdout_already_opened=True,
+        )
     )
 
     assert report.terminal_holdout_opened is False

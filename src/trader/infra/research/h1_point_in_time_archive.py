@@ -6,7 +6,7 @@ import sqlite3
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import cast
 from zoneinfo import ZoneInfo
@@ -22,6 +22,7 @@ from trader.domain.research.h1_point_in_time import (
     H1Strategy,
     canonical_hash,
 )
+from trader.domain.research.historical_label import H1CoverageMetadata
 
 
 class H1ArchiveConflictError(RuntimeError):
@@ -223,6 +224,46 @@ class SQLiteH1PointInTimeArchive(H1ArchivePort):
         manifest = self.manifest(spec)
         ratio = manifest.completed_codes / manifest.universe_count if manifest.universe_count else 0.0
         return H1CoverageAudit(spec.strategy, manifest, ratio)
+
+    def label_metadata(self, spec: H1PointInTimeSpec) -> H1CoverageMetadata:
+        """Project date identities for preregistration without reading market values."""
+
+        manifest = self.manifest(spec)
+        if not self._database.is_file():
+            return H1CoverageMetadata(
+                spec.strategy,
+                manifest.state,
+                (),
+                manifest.universe_hash,
+                manifest.content_hash,
+                spec.source_cutoff,
+            )
+        with self._read_connection() as connection:
+            completed = tuple(
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT code FROM downloads WHERE strategy = ? AND status = 'complete' ORDER BY code",
+                    (spec.strategy,),
+                ).fetchall()
+            )
+            rows = connection.execute(
+                "SELECT code, trade_date FROM records WHERE strategy = ? ORDER BY code, trade_date",
+                (spec.strategy,),
+            ).fetchall()
+        per_code: dict[str, set[str]] = {code: set() for code in completed}
+        for code, trade_date in rows:
+            if str(code) in per_code:
+                per_code[str(code)].add(str(trade_date))
+        date_sets = tuple(per_code[code] for code in completed)
+        common = set.intersection(*date_sets) if date_sets else set()
+        return H1CoverageMetadata(
+            spec.strategy,
+            manifest.state,
+            tuple(date.fromisoformat(value) for value in sorted(common)),
+            manifest.universe_hash,
+            manifest.content_hash,
+            spec.source_cutoff,
+        )
 
     def manifest(self, spec: H1PointInTimeSpec) -> H1CoverageManifest:
         empty = canonical_hash(())

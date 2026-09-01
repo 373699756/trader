@@ -4,12 +4,24 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
 
+from trader.application.research.research_tomorrow_orchestrator import (
+    TomorrowResearchAdvanceResult,
+    TomorrowResearchOrchestrator,
+    TomorrowResearchProgressPort,
+)
 from trader.application.research.tomorrow_profile_holdout import TOMORROW_PROFILE_HOLDOUT_REPORT_HASH
+from trader.application.research.tomorrow_research_artifacts import (
+    TomorrowResearchStage,
+    derive_tomorrow_research_run_id,
+    next_research_stage,
+    production_readiness_audit,
+)
 from trader.bootstrap import build_historical_research_services
 from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC
 from trader.domain.research.score_r6 import SCORE_R6_HISTORICAL_SPEC
@@ -41,6 +53,10 @@ from trader.infra.research.tomorrow_profile_holdout_artifacts import (
     TomorrowProfileHoldoutArtifactStore,
     holdout_report_payload,
 )
+from trader.infra.research.tomorrow_research_artifacts import (
+    TomorrowResearchArtifactStore,
+    TomorrowResearchArtifactStoreError,
+)
 from trader.infra.settings import RuntimeSettings
 
 
@@ -49,12 +65,36 @@ class ResearchCommandOptions:
     workers: int = 5
 
 
+class _TomorrowResearchProgress(TomorrowResearchProgressPort):
+    def __init__(self) -> None:
+        self._started_at: dict[TomorrowResearchStage, float] = {}
+
+    def update(self, stage: TomorrowResearchStage, status: str) -> None:
+        now = time.monotonic()
+        started_at = self._started_at.setdefault(stage, now)
+        print(
+            json.dumps(
+                {
+                    "schema_version": "tomorrow_research_progress_v1",
+                    "stage": stage,
+                    "status": status,
+                    "elapsed_seconds": round(now - started_at, 3),
+                },
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 def run_research_command(
     command: str,
     config_path: Path,
     runtime: RuntimeSettings,
     options: ResearchCommandOptions,
 ) -> int:
+    if command == "train-tomorrow":
+        return _run_tomorrow_research_orchestrator(runtime)
     if command == "research-status":
         trace = SQLiteV2ResearchTraceStore(runtime.runtime_dir)
         status = trace.inspect_status()
@@ -93,10 +133,11 @@ def run_research_command(
         tomorrow_p2 = _read_tomorrow_p2_status(runtime)
         tomorrow_holdout = _read_tomorrow_profile_holdout_status(runtime)
         tomorrow_risk = _read_tomorrow_historical_risk_status(runtime)
+        tomorrow_research = _read_tomorrow_research_status(runtime)
         print(
             json.dumps(
                 {
-                    "schema_version": "v2_research_readiness_v7",
+                    "schema_version": "v2_research_readiness_v8",
                     "validation_mode": "historical_only",
                     "score_r6_executable": screening_ready,
                     "score_r6_screening_executable": screening_ready,
@@ -108,6 +149,7 @@ def run_research_command(
                     "tomorrow_p2": tomorrow_p2,
                     "tomorrow_profile_holdout": tomorrow_holdout,
                     "tomorrow_v2_historical_risk": tomorrow_risk,
+                    "tomorrow_research": tomorrow_research,
                     "recorded_trade_dates": [value.isoformat() for value in dates],
                     "retired_research": (
                         {
@@ -235,6 +277,88 @@ def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
     }
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     return 0 if audit.status == "baseline_identity_consistent" else 1
+
+
+def _run_tomorrow_research_orchestrator(runtime: RuntimeSettings) -> int:
+    store = TomorrowResearchArtifactStore(runtime.runtime_dir / "research" / "tomorrow-v3")
+    try:
+        result = TomorrowResearchOrchestrator(store, _TomorrowResearchProgress()).advance()
+        payload = _tomorrow_research_result_payload(result, store.host_available_disk_gb())
+    except TomorrowResearchArtifactStoreError:
+        payload = {
+            "schema_version": "tomorrow_research_advance_result_v1",
+            "status": "artifact_conflict",
+            "blockers": ["tomorrow_research_artifact_invalid"],
+            "production_authority": False,
+            "automatic_model_update": False,
+        }
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return 1
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    return 0 if result.status in {"advanced", "terminal"} else 1
+
+
+def _read_tomorrow_research_status(runtime: RuntimeSettings) -> dict[str, object]:
+    store = TomorrowResearchArtifactStore(runtime.runtime_dir / "research" / "tomorrow-v3")
+    try:
+        graph = store.load_graph()
+        stage = next_research_stage(graph)
+        readiness = production_readiness_audit(graph, manual_authorization_hash=None)
+        return {
+            "status": "not_started" if not graph.artifacts else "terminal" if stage is None else "blocked",
+            "run_id": derive_tomorrow_research_run_id(graph),
+            "graph_hash": graph.content_hash,
+            "artifact_count": len(graph.artifacts),
+            "next_stage": stage,
+            "production_readiness": readiness.status,
+            "production_blockers": list(readiness.blockers),
+            "production_authority": False,
+            "automatic_model_update": False,
+        }
+    except TomorrowResearchArtifactStoreError:
+        return {
+            "status": "artifact_conflict",
+            "run_id": None,
+            "graph_hash": "",
+            "artifact_count": 0,
+            "next_stage": None,
+            "production_readiness": "production_adaptation_blocked",
+            "production_blockers": ["tomorrow_research_artifact_invalid"],
+            "production_authority": False,
+            "automatic_model_update": False,
+        }
+
+
+def _tomorrow_research_result_payload(
+    result: TomorrowResearchAdvanceResult,
+    available_disk_gb: float,
+) -> dict[str, object]:
+    return {
+        "schema_version": result.schema_version,
+        "status": result.status,
+        "run_id": result.run_id,
+        "graph_hash": result.graph_hash,
+        "completed_stages": list(result.completed_stages),
+        "next_stage": result.next_stage,
+        "blockers": list(result.blockers),
+        "resource_contract": {
+            "pilot_stocks": 100,
+            "pilot_trade_dates": 120,
+            "max_cpu_threads": 2,
+            "max_peak_rss_mb": 4096,
+            "minimum_available_disk_gb": 30,
+            "maximum_estimated_full_run_hours": 18,
+            "host_available_disk_gb": available_disk_gb,
+        },
+        "production_readiness": {
+            "status": result.readiness.status,
+            "blockers": list(result.readiness.blockers),
+            "audit_hash": result.readiness.content_hash,
+        },
+        "production_authority": result.production_authority,
+        "automatic_model_update": result.automatic_model_update,
+        "content_hash": result.content_hash,
+    }
 
 
 def _run_r6_daily_screen(config_path: Path, runtime: RuntimeSettings) -> int:

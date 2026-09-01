@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from trader.application.research.d25_terminal_holdout import D25TerminalHoldoutService, D25TerminalRow
 from trader.application.research.cross_strategy_conclusion import CrossStrategyConclusionService
+from trader.application.research.d25_terminal_holdout import D25TerminalHoldoutService, D25TerminalRow
 from trader.application.research.today_terminal_holdout import TodayTerminalHoldoutService, TodayTerminalRow
 from trader.application.research.tomorrow_point_in_time_holdout import (
     TomorrowPointInTimeHoldoutService,
@@ -39,11 +39,9 @@ def _rows(row_type):
 
 
 def test_strategy_adapters_bind_their_fixed_anchor_and_identity() -> None:
-    today = TodayTerminalHoldoutService(_rows(TodayTerminalRow), candidate_status="historical_candidate_ready").execute()
-    tomorrow = TomorrowPointInTimeHoldoutService(
-        _rows(TomorrowPointInTimeRow), candidate_status="historical_candidate_ready"
-    ).execute()
-    d25 = D25TerminalHoldoutService(_rows(D25TerminalRow), candidate_status="historical_candidate_ready").execute()
+    today = TodayTerminalHoldoutService(_rows(TodayTerminalRow)).execute()
+    tomorrow = TomorrowPointInTimeHoldoutService(_rows(TomorrowPointInTimeRow)).execute()
+    d25 = D25TerminalHoldoutService(_rows(D25TerminalRow)).execute()
 
     assert today.anchor == "11:20_unadjusted_point_in_time"
     assert tomorrow.anchor == "14:50_unadjusted_point_in_time"

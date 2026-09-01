@@ -58,6 +58,7 @@ def test_cli_exposes_current_v2_maintenance_and_explicit_offline_research_comman
         "check",
         "research-history",
         "research-screen",
+        "train-tomorrow",
         "validate-config",
         "performance-check",
         "research-status",
@@ -114,6 +115,7 @@ def test_run_script_exposes_only_the_aggregated_public_workflows() -> None:
     assert "check" in shell
     assert "research-history" in shell
     assert "research-screen" in shell
+    assert "train-tomorrow" in shell
     assert "research-r7-dossier" not in shell
     assert "serve|app" in shell
     for internal_stage in (
@@ -151,6 +153,7 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
     assert "./run.sh research-history        下载/续传历史归档后运行固定回测" in completed.stdout
     assert "./run.sh research-screen         依次运行并封存六项历史筛选/诊断" in completed.stdout
+    assert "./run.sh train-tomorrow          从封存状态推导并连续运行可用 Tomorrow 训练阶段" in completed.stdout
     assert "research-r7-dossier" not in completed.stdout
     assert "所有命令都可追加 --profile v1|v2；未指定时为 V1" in completed.stdout
     assert "用法: ./run.sh [serve|" not in completed.stdout
@@ -249,6 +252,27 @@ def test_run_script_forwards_history_workers_after_normalizing_the_profile(tmp_p
 
     assert completed.returncode == 0
     assert completed.stdout == f"cli:--config {config} --profile v2 research-history --workers 3\n"
+
+
+def test_run_script_forwards_the_single_tomorrow_training_command_without_stage_arguments(tmp_path: Path) -> None:
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    _write_fake_entrypoint(venv_bin / "python", "exit 99")
+    _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
+    _write_fake_entrypoint(venv_bin / "trader-cli", "printf 'cli:%s\\n' \"$*\"")
+    config = tmp_path / "runtime.json"
+
+    completed = subprocess.run(
+        ("bash", str(ROOT / "run.sh"), "train-tomorrow"),
+        cwd=ROOT,
+        env={**os.environ, "VENV_DIR": str(venv_bin.parent), "TRADER_CONFIG": str(config)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == f"cli:--config {config} --profile v1 train-tomorrow\n"
 
 
 def test_run_script_rejects_an_unknown_profile_before_environment_setup(tmp_path: Path) -> None:
@@ -361,6 +385,7 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert "日常使用（不做离线研究）:" in powershell
     assert "离线研究（仅在明确执行研究任务时使用）:" in powershell
     assert ".\\run.ps1 research-screen         依次运行并封存六项历史筛选/诊断" in powershell
+    assert ".\\run.ps1 train-tomorrow          从封存状态推导并连续运行可用 Tomorrow 训练阶段" in powershell
     assert "所有命令都可追加 --profile v1|v2；未指定时为 V1" in powershell
 
 
@@ -374,7 +399,7 @@ def test_research_status_is_historical_only_and_does_not_create_runtime_files(tm
     assert main(["--config", str(config), "research-status"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["schema_version"] == "v2_research_readiness_v7"
+    assert payload["schema_version"] == "v2_research_readiness_v8"
     assert payload["validation_mode"] == "historical_only"
     assert payload["recorded_trade_dates"] == []
     assert payload["outcomes"]["initialized"] is False
@@ -387,6 +412,10 @@ def test_research_status_is_historical_only_and_does_not_create_runtime_files(tm
         "report_hash": "",
         "status": "not_run",
     }
+    assert payload["tomorrow_research"]["status"] == "not_started"
+    assert payload["tomorrow_research"]["run_id"] is None
+    assert payload["tomorrow_research"]["next_stage"] == "resource_probe"
+    assert payload["tomorrow_research"]["production_authority"] is False
     assert payload["retired_research"] == [
         {
             "blocker": "historical_point_in_time_missing",
@@ -401,6 +430,29 @@ def test_research_status_is_historical_only_and_does_not_create_runtime_files(tm
     ]
     for retired in ("active_research", "promotion_blockers", "score_r7", "tomorrow_profile_comparison"):
         assert retired not in payload
+    assert not runtime_dir.exists()
+
+
+def test_train_tomorrow_blocks_on_missing_sealed_handoff_without_creating_v3(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    runtime = json.loads((ROOT / "config/v2/runtime.json").read_text(encoding="utf-8"))
+    runtime_dir = tmp_path / "runtime"
+    runtime["runtime_dir"] = str(runtime_dir)
+    config = tmp_path / "runtime.json"
+    config.write_text(json.dumps(runtime), encoding="utf-8")
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        monkeypatch.delenv(name, raising=False)
+
+    assert main(["--config", str(config), "train-tomorrow"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "blocked"
+    assert payload["next_stage"] == "resource_probe"
+    assert payload["blockers"] == ["resource_probe_handoff_missing"]
+    assert payload["production_readiness"]["status"] == "production_adaptation_blocked"
+    assert payload["production_authority"] is False
+    assert {os.environ[name] for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")} == {"2"}
     assert not runtime_dir.exists()
 
 

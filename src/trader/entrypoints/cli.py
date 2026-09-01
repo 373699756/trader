@@ -55,6 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
         "research-screen",
         help="Run all immutable historical screening, stability, and profile-holdout stages in order.",
     )
+    subparsers.add_parser("train-tomorrow", help="Run every available immutable Tomorrow training stage.")
     subparsers.add_parser("validate-config", help="Validate runtime and strategy configuration.")
     performance = subparsers.add_parser(
         "performance-check",
@@ -110,6 +111,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "train-tomorrow":
+        _configure_tomorrow_training_resources()
     config_path = _absolute_config_path(args.config)
     runtime = load_runtime_settings(config_path)
     profile_override = cast(TomorrowScoringProfile | None, args.profile)
@@ -136,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if isinstance(baseline, dict) and baseline.get("status") == "passed" else 1
     if args.command == "eligibility-list":
         return _run_eligibility_list(runtime, as_of=args.as_of)
-    if args.command.startswith("research-"):
+    if args.command == "train-tomorrow" or args.command.startswith("research-"):
         from trader.entrypoints.research_commands import ResearchCommandOptions, run_research_command
 
         return run_research_command(
@@ -148,6 +151,11 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
     return _run_config_validation(runtime, profile_override)
+
+
+def _configure_tomorrow_training_resources() -> None:
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ[name] = "2"
 
 
 def _run_config_validation(
