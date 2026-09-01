@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -51,7 +50,7 @@ def test_all_unfinished_research_has_four_isolated_owners_and_one_public_command
         "report.json",
         "model.json",
         "evidence/",
-        "当前尚未实现",
+        "Codex D 编排工程已完成",
         "不得自动 promotion",
         "共享文件",
     )
@@ -68,11 +67,11 @@ def test_all_unfinished_research_has_four_isolated_owners_and_one_public_command
         assert f"`./run.sh {internal_stage}" not in strategy
 
 
-def test_planned_training_command_does_not_pre_authorize_v3() -> None:
+def test_implemented_training_command_does_not_pre_authorize_v3() -> None:
     strategy = (ROOT / "docs" / "recommendation-strategy.md").read_text(encoding="utf-8")
     model_port = (ROOT / "src" / "trader" / "application" / "ports" / "tomorrow_model.py").read_text(encoding="utf-8")
 
-    assert "`./run.sh train-tomorrow` 当前尚未实现" in strategy
+    assert "Codex D 编排工程已经完成" in strategy
     assert "独立高风险发布批次" in strategy
     assert 'TomorrowScoringProfile = Literal["v1", "v2"]' in model_port
     assert 'Literal["v1", "v2", "v3"]' not in model_port

@@ -6,12 +6,29 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求执行推荐策略第 15 节 Codex D 未完成任务。新增 `train-tomorrow` 唯一公开入口及
+  `tomorrow_research_artifact_graph_v1`：先封存 100 只/120 日资源探针，再按父 SHA-256 连续推进开发、
+  确认、日线代理留出和 14:50 点时留出；输入/探针 hash 派生不可由用户指定的 `run_id`。独立 run 目录
+  使用内容寻址图、进程锁、compare-and-set 和隐藏原子检查点恢复；同内容幂等、异内容/篡改/环/错误 owner
+  失败关闭，终态 `report.json` 显式绑定工件图、资源、失败原因和 Parquet 分区，存在候选时才封存经 hash
+  校验的 `model.json`。`research-status` 升级为 `v2_research_readiness_v8`，加法公开 run、下一阶段和生产
+  阻塞；V3 仍未注册，默认 V1、V2 工件、生产评分和自动更新边界不变。
+  `Regression-Key: tomorrow-research-orchestration-artifact-graph-v1`。
+
 - 用户确认进一步精简 Tomorrow V3 历史训练契约：目标命令改为语义明确且当前尚未实现的
   `./run.sh train-tomorrow`，一次调用连续执行全部可用训练/确认/两级留出并支持原子断点续跑；结果目录
   对用户只公开合并数据/运行/验证信息的 `report.json` 和唯一模型结果 `model.json`，全量特征、标签及
   OOF 证据改为内部 `evidence/` 日期分区 Parquet。主程序不读取研究目录，只有两级留出通过和再次授权后，
   独立发布批次才把 `model.json` 转换为 wheel 模型资源。
   `Regression-Key: tomorrow-v3-single-command-two-artifact-contract-v1`。
+
+- 用户要求执行推荐策略第 15 节 Codex C 未完成任务。新增研究隔离的 Today 11:20、Tomorrow 14:50 和 D25
+  14:50 终端留出回放契约，以及只读跨策略结论服务。回放按交易日聚合完整候选人口，固定比较 20/50/100bp
+  成本、local-only 基准配对增量、移动区块 bootstrap、严重亏损、换手、Rank IC、Q5-Q1、容量和集中度；
+  D25 强制成对保留 T+2 至 T+5 收益。父候选拒绝/数据不足时不打开最终留出，点时一致性或 horizon 缺失失败关闭，
+  合法空仓日保留在交易日分母；所有报告和跨策略汇总绑定 SHA-256、固定策略顺序且
+  `production_authority=false`，不创建生产资源、不修改 H0/P2/V1/V2 或 DeepSeek 行为。
+  `Regression-Key: codex-c-terminal-holdout-v1`。
 
 - 用户要求执行推荐策略第 15.1.25 节，并明确所有荐股评分/训练只能消费历史 point-in-time 数据。新增独立
   `score_h1_point_in_time_v1` 类型化规范、Today 11:20 与 Tomorrow/D25 14:50 锚点记录、参数化来源能力探针
@@ -22,6 +39,14 @@ All notable changes to this project are documented here.
   新增显式 `python -m trader.entrypoints.h1_point_in_time --runtime-dir <path>` 入口；统一 CLI 注册留给 Codex D，
   普通 `check`、Web 和生产启动不会隐式运行。
   `Regression-Key: h1-point-in-time-archive-coverage-v1`。
+
+- 用户要求执行荐股策略第 15.1 节 Codex B 未完成任务。新增研究隔离的
+  `historical_filter_recall_ablation_report_v1`、透明有限候选和
+  `historical_candidate_confirmation_report_v1` 类型化领域契约及应用编排：一级永久资格/安全 veto
+  固定为控制组，二级规则只允许预注册 leave-one-rule-out 与双规则交互；候选上限固定为每策略 8 个并
+  保留 local-only 控制组；确认段按日期对齐、5 日区块 bootstrap 和完整 Holm family 一次评价。所有
+  研究对象都绑定 SHA-256、20/50bp 指标、终端留出未开启和 `production_authority=false`，不修改生产
+  配置或 V1/V2/C3 工件 schema。`Regression-Key: codex-b-historical-filter-confirmation-v1`。
 
 - 用户要求综合此前关于历史日线训练、V1/V2/C3 联合、收益目标和主程序交互的讨论，把第 15 章全部未完成
   工作拆成 Codex A/B/C/D 四条可独立并行路线，而不是只安排 C3 与 V3。荐股权威文档新增第 15.1.37 节：
@@ -51,16 +76,34 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- `tomorrow-research-orchestration-artifact-graph-v1`：Codex D 应用/基础设施/CLI/文档定向测试 57 项通过；
+  覆盖五阶段单次连续推进、缺父工件阻塞、owner/父 hash/无环校验、资源超限、同 run 恢复、不同输入新 run、
+  模型与证据篡改、终态 `publishable`/人工授权分离、`run.sh`/PowerShell 薄转发和 V1/V2 隔离。并行 A/B/C
+  研究单元及架构契约 57 项通过；受影响 Python 文件 Ruff 和 mypy 通过，`git diff --check` 通过。完整高风险
+  命令组和仓库外 wheel 结果见本批最终验证记录。
+
 - `tomorrow-v3-single-command-two-artifact-contract-v1`：两份权威文档的相关定向契约 26 项通过，覆盖
   单一目标命令、两个对外工件、内部 Parquet 证据、V1/V2/C3 原始预测联合、独立生产授权和 V3 profile
   未激活；两个受影响契约文件的 Ruff format/check（`--no-cache`）通过，`git diff --check` 通过。
   本批是文档与契约更新，未执行真实历史下载、训练、收益验证、模型发布或主程序 V3 装配。
+
+- `codex-c-terminal-holdout-v1`：新增终端留出领域及三策略适配器/跨策略汇总测试 5 项通过；受影响文件
+  Ruff 和 mypy 通过；点时 parity、父状态失败关闭、D25 四 horizon、稳定 hash 和生产隔离均有回归断言。
+  架构与历史路线契约测试通过，`git diff --check` 通过。未运行真实 H1 下载、候选确认、终端收益回放或生产
+  服务验收，因父工件和授权尚未提供；报告代码已保持 `historical_data_insufficient`/`historical_rejected`
+  失败关闭语义，真实数据证据仍待后续波次。
 
 - 15.1.25 定向验证：H1 规范、能力探针、下载服务和独立 SQLite manifest 单元测试 8 项通过；覆盖同身份
   幂等、断点续传、策略隔离、未来/迟到/无时区/非 qfq 拒绝和数据库列篡改检测；受影响文件 Ruff 和 mypy
   通过，独立只读审计命令通过。空归档三策略均明确返回 `historical_data_insufficient`，终端留出未开启。
   未运行真实供应商能力探针、批量下载或收益/标签读取，因本批只封存 H1 覆盖边界；真实来源可用性仍需在
   有授权环境执行显式命令后确认。
+
+- `codex-b-historical-filter-confirmation-v1`：Codex B 新增领域/应用单元测试 3 项通过；受影响 6 个
+  Python 源文件 Ruff 与 mypy 通过；既有 Tomorrow 联合器定向测试通过；`git diff --check` 通过。
+  完整架构契约未能运行，因为工作树中用户已有的 `src/trader/domain/research/terminal_holdout.py` 含未闭合
+  三引号，AST 解析在进入本批模块前失败；真实 H1/收益确认、终端留出和生产服务验收不属于本批可验证范围。
+  剩余风险：需先由所属 Codex C 修复该语法错误并在父工件封存后运行真实确认；本批不会自动晋级候选。
 
 - `four-lane-tomorrow-research-roadmap-v1`：文档契约及 C3/V3 隔离核心定向测试 31 项通过；V2 架构契约
   20 项通过；受影响 11 个 Python 文件的 Ruff lint/format 和 5 个源文件 mypy 通过；生产组合根、入口、
@@ -3094,12 +3137,13 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- `tomorrow-v3-single-command-two-artifact-contract-v1`：`./run.sh train-tomorrow` 当前尚未实现，不能据此
-  启动训练或声明荐股收益提高；`model.json`、`report.json` 和 `evidence/` 也尚未由真实运行生成。命令、
-  训练器、两级留出和后续人工授权的 wheel 资源发布仍须按第 15.1.37 节后续波次完成。
+- `tomorrow-v3-single-command-two-artifact-contract-v1`：`./run.sh train-tomorrow` 的 Codex D 编排、工件、
+  状态和资源门禁已实现，但真实 H1/C3/联合/留出 handoff 尚未生成，因而本批没有产生 `model.json`、终态
+  `report.json`、真实 Parquet 证据或收益结论。两级留出和后续人工授权的 wheel 资源发布仍须按第 15.1.37
+  节后续波次完成。
 
-- `four-lane-tomorrow-research-roadmap-v1`：第 15.1.25–15.1.36 节仍未形成完整可运行链，当前不能执行文档
-  中尚未实现的 `./run.sh train-tomorrow`，也没有任何收益提高证据。H1 能否取得 95% 股票覆盖、至少
+- `four-lane-tomorrow-research-roadmap-v1`：Codex D 的 `./run.sh train-tomorrow` 已可执行并在缺少父工件时
+  受控阻塞，但第 15.1.25–15.1.36 节仍未形成真实数据完整链，也没有任何收益提高证据。H1 能否取得 95% 股票覆盖、至少
   1000 个共同有效交易日及独立 200 日 14:50 点时保留段仍待能力探针和下载审计；若免费来源不能证明
   11:20/14:50 点时字段，对应策略必须以 `historical_data_insufficient` 收口。C3/V3 即使日线代理通过，
   仍须独立 Tomorrow 点时留出和用户再次授权；V3 当前不得写配置、装入 wheel 或进入生产。

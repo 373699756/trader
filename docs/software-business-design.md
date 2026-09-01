@@ -1508,8 +1508,7 @@ fail closed 并进入浏览器诊断。`market_data.market_changes` 只公开变
 分组展示并逐项说明，不得再把所有名称压缩成一行伪装成必填启动参数。未知命令必须在创建虚拟环境、
 安装依赖或启动入口之前失败，并只给出日常无参数启动与帮助命令指引。Linux/macOS 与 PowerShell
 入口必须保持相同分类和默认语义；`run.bat` 继续委托 PowerShell 入口。当前公开脚本命令固定为
-`serve`、`check`、`research-history` 和 `research-screen`；计划新增但尚未实现的唯一 Tomorrow 训练
-命令为 `train-tomorrow`。组合内的
+`serve`、`check`、`research-history`、`research-screen` 和 `train-tomorrow`。组合内的
 底层 `trader-cli` 阶段继续保留用于测试、自动化和故障定位，但不再逐项暴露为 `run.sh` 命令。
 `trader-server` 成功绑定监听端口后、启动 Web 服务线程前，必须向标准输出打印一次带
 `http://` scheme 的实际浏览器 URL；默认配置显示
@@ -1550,9 +1549,9 @@ python3 -m venv .venv
 | 日常 | `./run.sh check` | 依次校验配置、只读投影研究状态并运行所选档位的离线性能门禁 |
 | 离线研究 | `./run.sh research-history [--workers 1..5]` | 下载/断点续传独立历史日线归档，然后只读运行固定训练/验证回测 |
 | 离线研究 | `./run.sh research-screen` | 依次运行 R6 历史、R6 日线、R6 稳定性、Tomorrow P2、V1/V2 H0 留出和 V2 严重亏损概率六项不可变筛选/诊断 |
-| 计划中的离线训练 | `./run.sh train-tomorrow`（当前尚未实现） | 不接受阶段或 `run_id` 参数；一次调用连续完成全部可用 C3/V3 阶段，支持原子断点续跑，永不自动 promotion 或激活 V3 |
+| 离线训练 | `./run.sh train-tomorrow` | 不接受阶段或 `run_id` 参数；一次调用连续完成全部可用 C3/V3 阶段，支持原子断点续跑，永不自动 promotion 或激活 V3 |
 
-当前三个组合命令由 `trader-cli` 单一编排器拥有顺序；未来 `train-tomorrow` 实现后也必须由该编排器
+当前三个组合命令及 `train-tomorrow` 均由 `trader-cli` 单一编排器
 统一拥有。Linux/macOS 与 PowerShell 不复制业务流程。普通阶段
 返回非零时组合器仍运行剩余阶段，最终输出 `trader_command_group_v1` 汇总并以非零结束，使一次运行能
 看到完整门禁分布；配置解析失败等操作性异常立即失败关闭。历史阶段绑定原 H0/R6/P2 规范，统一接受的
@@ -1731,9 +1730,10 @@ Score-R6 历史唯一验证使用新身份 `score_r6_historical_v2` 和 `score_r
 `ShadowModelArtifactStore` 管理；这些能力不接入 `bootstrap.py`、HTTP、调度、活动运行库、正式决策或 DeepSeek，
 也不因工程存在而形成活动研究任务或生产权限。
 
-`research-status` 使用 `v2_research_readiness_v7`，只读公开 H0 归档覆盖、R6/R6D/R6S、P2、V1/V2
+`research-status` 使用 `v2_research_readiness_v8`，只读公开 H0 归档覆盖、R6/R6D/R6S、P2、V1/V2
 历史留出、正式 outcome 计数和已退役研究的固定终态。它不读取网络、不评分、不创建缺失目录，也不公开
-未来窗口、自动晋级或运行期配对计数。H0 规范匹配且逐股完成覆盖率至少 95% 时，历史筛选才可执行；
+未来窗口、自动晋级或运行期配对计数；V8 加法投影 Tomorrow 训练 run/工件图、下一阶段和生产阻塞审计。
+H0 规范匹配且逐股完成覆盖率至少 95% 时，历史筛选才可执行；
 其余阻塞使用受控原因码。
 
 V2 严重亏损概率研究身份固定为 `tomorrow_v2_historical_risk_probability_v1`。类型化数据集只从 H0 独立验证段的封存 V2
@@ -1776,7 +1776,7 @@ V2 严重亏损概率研究身份固定为 `tomorrow_v2_historical_risk_probabil
 只选择已批准 profile；V3 对外仍是组合根唯一注入的一个 `TomorrowModelPredictorPort`，内部 V1/V2/C3
 只产生映射前原始预测，最终只生成一次 `base_score`。当前生产仍只接受 `v1|v2`、默认 V1。
 
-该路线计划中的唯一脚本入口为当前尚未实现的 `./run.sh train-tomorrow`。实现后用户不传内部阶段、`run_id`、模型参数或
+该路线唯一脚本入口为 `./run.sh train-tomorrow`。用户不传内部阶段、`run_id`、模型参数或
 工件路径；隔离编排器从规范和输入 hash 推导身份，一次调用连续完成所有父工件已满足的开发训练、一次
 确认、一次日线代理留出和一次 14:50 点时留出。中断后同一命令从原子检查点继续，已有终态只返回原结果。
 最终目录 `.runtime/v2/research/tomorrow-v3/<run_id>/` 只公开 `report.json` 和 `model.json`；全量特征、

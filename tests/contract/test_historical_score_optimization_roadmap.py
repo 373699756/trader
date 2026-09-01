@@ -71,7 +71,7 @@ def test_roadmap_cannot_restore_forward_collection_or_reuse_observed_holdout_as_
         "线上 outcome 仍只用于正式推荐历史、运行监控和回退告警",
         "每次“继续”只交付下一个完整未完成章节",
         "不得定时、在线或无人授权地自动训练/调参、自动晋级、自动激活或自动回退",
-        "用户显式调用第 15.1.20 节尚未实现的 `train-tomorrow`",
+        "用户显式调用第 15.1.20 节的 `train-tomorrow`",
     ):
         assert token in strategy
     assert "历史评分优化路线的执行顺序、样本门槛和研究终态" in design
