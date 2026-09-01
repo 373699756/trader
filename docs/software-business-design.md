@@ -1508,7 +1508,7 @@ fail closed 并进入浏览器诊断。`market_data.market_changes` 只公开变
 分组展示并逐项说明，不得再把所有名称压缩成一行伪装成必填启动参数。未知命令必须在创建虚拟环境、
 安装依赖或启动入口之前失败，并只给出日常无参数启动与帮助命令指引。Linux/macOS 与 PowerShell
 入口必须保持相同分类和默认语义；`run.bat` 继续委托 PowerShell 入口。公开脚本命令固定收敛为
-`serve`、`check`、`research-history` 和 `research-screen`；组合内的
+`serve`、`check`、`research-history`、`research-screen` 和 `research-tomorrow`；组合内的
 底层 `trader-cli` 阶段继续保留用于测试、自动化和故障定位，但不再逐项暴露为 `run.sh` 命令。
 `trader-server` 成功绑定监听端口后、启动 Web 服务线程前，必须向标准输出打印一次带
 `http://` scheme 的实际浏览器 URL；默认配置显示
@@ -1549,8 +1549,9 @@ python3 -m venv .venv
 | 日常 | `./run.sh check` | 依次校验配置、只读投影研究状态并运行所选档位的离线性能门禁 |
 | 离线研究 | `./run.sh research-history [--workers 1..5]` | 下载/断点续传独立历史日线归档，然后只读运行固定训练/验证回测 |
 | 离线研究 | `./run.sh research-screen` | 依次运行 R6 历史、R6 日线、R6 稳定性、Tomorrow P2、V1/V2 H0 留出和 V2 严重亏损概率六项不可变筛选/诊断 |
+| 离线研究 | `./run.sh research-tomorrow` | 不接受阶段或 `run_id` 参数；从不可变状态推导身份，每次只推进 C3/V3 一个安全封存阶段，永不自动 promotion 或激活 V3 |
 
-三个组合命令由 `trader-cli` 单一编排器拥有顺序，Linux/macOS 与 PowerShell 不复制业务流程。普通阶段
+四个组合命令由 `trader-cli` 单一编排器拥有顺序，Linux/macOS 与 PowerShell 不复制业务流程。普通阶段
 返回非零时组合器仍运行剩余阶段，最终输出 `trader_command_group_v1` 汇总并以非零结束，使一次运行能
 看到完整门禁分布；配置解析失败等操作性异常立即失败关闭。历史阶段绑定原 H0/R6/P2 规范，统一接受的
 `--profile` 不会改写、重命名或重新封存研究工件。普通看盘不得要求任何 `research-*` 命令。未知命令
@@ -1764,6 +1765,19 @@ V2 严重亏损概率研究身份固定为 `tomorrow_v2_historical_risk_probabil
 当前第 15.1.24 节以只读 `scoring_hot_path_efficiency_baseline_v1` 报告闭合；显式
 `trader-cli research-scoring-hot-path-baseline` 仅运行离线性能 workload，并在边界投影四类成本分母、
 脏集收缩、延迟和决策 hash 等价证据，不写入生产状态、推荐历史或冻结记录。
+
+荐股策略文档第 15.1.35–15.1.36 节另立 Tomorrow 日线收盘代理与 V1/V2/C3 原始预测级联合研究路线。
+该路线只允许显式离线命令装配隔离的 `domain/application/infra/research` 服务，训练参数、样本、报告和候选
+工件不得进入生产组合根、HTTP、SSE、Web、活动数据库或冻结链。日线代理通过后，冻结工件还必须加入
+第 15.1.32 节共同 Holm 家族并通过从未开启的 14:50 点时终端留出；在此之前不创建 V3 生产资源、配置值
+或启动映射。未来若再次取得人工生产授权，模型与联合权重只能作为 SHA-256 绑定 wheel 资源加载，配置
+只选择已批准 profile；V3 对外仍是组合根唯一注入的一个 `TomorrowModelPredictorPort`，内部 V1/V2/C3
+只产生映射前原始预测，最终只生成一次 `base_score`。当前生产仍只接受 `v1|v2`、默认 V1。
+
+该路线唯一公开脚本入口为 `./run.sh research-tomorrow`。用户不传内部阶段、`run_id`、模型参数或工件路径；
+隔离编排器只按父工件 hash 和封存状态推进开发训练、一次确认、一次日线代理留出或一次 14:50 点时留出
+中的下一个安全阶段。内部阶段命令只供测试和故障定位。该入口不包含 promotion，也不得修改活动配置、
+注册 V3 或装配生产 predictor；生产适配仍受两级留出和新人工授权阻塞。
 
 路线不实施历史 DeepSeek 盈利回测、自动模型搜索、自动调参、组合黑盒优化、独立逐股亏损概率模型、
 自动训练、自动晋级、启动激活或自动回退。仅证明历史证据早于决策锚点无法排除当前大模型训练语料已知

@@ -6,6 +6,22 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求综合此前关于历史日线训练、V1/V2/C3 联合、收益目标和主程序交互的讨论，把第 15 章全部未完成
+  工作拆成 Codex A/B/C/D 四条可独立并行路线，而不是只安排 C3 与 V3。荐股权威文档新增第 15.1.37 节：
+  A 独占 H1/标签/残差账本与 C3，B 独占过滤/透明候选/确认与 V3 联合器，C 独占 Today/Tomorrow/D25
+  终端留出及跨策略结论，D 独占工件状态机、共享集成、单一训练命令和条件式生产适配；四个波次允许基于
+  类型化 port/fixture 并行编码，但真实数据、确认和留出严格等待父工件 SHA-256。同步把 Tomorrow 新训练
+  的公开入口收敛为无阶段参数的 `./run.sh research-tomorrow`，每次只推进一个安全封存阶段且不包含自动
+  promotion。修正上游拒绝/数据不足导致终端章节永久阻塞、终态语义和容量/状态分层不一致；V1/V2 工程
+  继续冻结，V3 仍无生产权限，过滤证据不完整股票继续禁止进入模型推理。
+  `Regression-Key: four-lane-tomorrow-research-roadmap-v1`。
+
+- 为使四路后续能基于真实类型契约并行，新增隔离的 Tomorrow C3 日期保留/时序切分、成熟标签裁剪、
+  Ridge/LightGBM/固定集成工件、强收缩分层/个股残差约束和严格 JSON/SHA-256 codec；新增 V1/V2/C3
+  原始成本后净超额的严格共同交集、非负 simplex 权重、固定正则候选及收益/风险门禁选择核心。当前能力
+  只提供纯研究逻辑与 fixture 测试，没有 H1 下载/接线、真实训练执行、阶段编排、完整联合工件、终端留出
+  或生产装配，始终 `production_authority=false`。
+
 - 用户要求继续完成推荐策略第 15.1.24 节，并明确荐股评分/训练不得依赖未来数据。新增只读
   `scoring_hot_path_efficiency_baseline_v1` 类型化基线报告及 `trader-cli research-scoring-hot-path-baseline`，
   按 Today/Tomorrow/D25 与阶段记录 `ScoringInputEpoch`、变化码脏集收缩、实际股票/因子重算、延迟
@@ -17,6 +33,11 @@ All notable changes to this project are documented here.
   收缩；合法空推荐仍保留真实候选分母。`Regression-Key: scoring-hot-path-efficiency-baseline-v1`。
 
 ### Verification
+
+- `four-lane-tomorrow-research-roadmap-v1`：文档契约及 C3/V3 隔离核心定向测试 31 项通过；V2 架构契约
+  20 项通过；受影响 11 个 Python 文件的 Ruff lint/format 和 5 个源文件 mypy 通过；生产组合根、入口、
+  Web、配置和 `run.sh` 均无新研究模块引用，`git diff --check` 通过。pytest 仅因工作区只读无法写
+  `.pytest_cache`，测试本身全部通过；本批没有运行真实历史下载、训练、留出或生产服务验收。
 
 - 15.1.24 定向验证：基线值对象单元/契约测试、受影响 Ruff、mypy、离线 `trader.entrypoints.performance`
   workload（5500 行全市场、360 候选、100 tick、无网络）通过；报告终态 `passed`，相对回归预算 5%、
@@ -3041,6 +3062,12 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- `four-lane-tomorrow-research-roadmap-v1`：第 15.1.25–15.1.36 节仍未形成完整可运行链，当前不能执行文档
+  中尚未实现的 `./run.sh research-tomorrow`，也没有任何收益提高证据。H1 能否取得 95% 股票覆盖、至少
+  1000 个共同有效交易日及独立 200 日 14:50 点时保留段仍待能力探针和下载审计；若免费来源不能证明
+  11:20/14:50 点时字段，对应策略必须以 `historical_data_insufficient` 收口。C3/V3 即使日线代理通过，
+  仍须独立 Tomorrow 点时留出和用户再次授权；V3 当前不得写配置、装入 wheel 或进入生产。
 
 - 当前 CLI 不持有活动进程句柄，因此只能确认静态工件并报告
   \`live_identity_unverified\`；在任何后续人工生产变更前仍需由真实运行身份探针补齐该项。审计本身不
