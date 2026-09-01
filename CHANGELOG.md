@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求继续执行第 15 节 Codex B 未完成任务。本批先执行 H1 点时归档只读审计：`python -m
+  trader.entrypoints.h1_point_in_time --runtime-dir .runtime/v2`。Today、Tomorrow、D25 均明确返回
+  `historical_data_insufficient`，覆盖率和共同交易日均为 0，且 `terminal_holdout_opened=false`、
+  `production_authority=false`。由于本机没有可证明 11:20/14:50 点时字段的来源归档，15.1.28–15.1.30
+  继续保持阻塞，未生成候选、收益或生产工件。
+
 - 用户要求继续执行第 15 节 Codex B 未完成任务。本轮复核确认 Codex B 的过滤消融、透明候选、Holm 确认和
   Tomorrow 原始预测联合工程代码已经封存；但 Codex A 的 H1 真实归档尚未初始化，15.1.26 标签/切分与
   15.1.27 成熟残差账本没有可消费父工件，因此 15.1.28–15.1.30 保持未运行，避免伪造历史 point-in-time
