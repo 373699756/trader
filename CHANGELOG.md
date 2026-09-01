@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求依据荐股策略权威文档的未完成条目，合并整条荐股链更合理、更高效和更科学的计划。未完成
+  路线新增四个同级、可独立交付的所有者：现有 V1/V2、P2 报告、人工授权与状态投影的基线身份审计；
+  过滤瀑布与候选召回消融；组合净效用约束选择；评分热链决策等价与资源效率门禁。新路线还把
+  DeepSeek 的预计信息增益调用分配限定为隔离研究挑战者，不允许借性能优化直接改变生产复核顺序。
+  `Regression-Key: recommendation-chain-scientific-roadmap-v2`。
+
 - 用户要求实时捕获 Web 长期显示的板块/公司风险降级、Tomorrow 0 分空仓和“最近错误 14 项”。公开状态
   新增加法的 `company_research` 白名单投影，统一 Web 诊断升级为
   `web_recommendation_health_v4`，可同时观察公司研究批次聚合、冻结快照降级，并把“零只已评分却声称
@@ -571,6 +577,13 @@ All notable changes to this project are documented here.
   前向封存状态、第二轮权重收缩和 `PromotionDossier` 人工晋级边界。
 
 ### Changed
+
+- 评分研究权威路线由第 15.1.21–15.1.36 节重排为第 15.1.21–15.1.40 节；总序 15.1.21 明确标记为已
+  封存、15.1.22 保持已完成，并保留既有 H0/R6/P2 身份及未变的 H1 计划身份，不覆盖历史报告。每次
+  “继续”仍只执行下一个完整未完成同级章节，顺序固定为
+  基线一致性、H1、预注册、全候选残差、过滤/召回、DeepSeek、收益/成本/风险、净效用、组合选择、
+  嵌套时序、三策略终端留出、风险稳健性、等价性能、自动挑战者、受控晋级和最终生产授权。软件业务
+  设计同步明确研究隔离与第 15.1.37 节生产性能所有权。`Regression-Key: recommendation-chain-scientific-roadmap-v2`。
 
 - Web 已登记 `strategy_history_coverage_partial`、`structured_risk_unavailable`、
   `cross_source_deviation` 和 `history_data_degraded` 的精确中文说明，不再把这些已知事实合并为“部分数据
@@ -1177,6 +1190,12 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修正规划层虽已有 H1、模型和留出门禁，却没有独立章节证明“当前基线是否一致、每条动态规则是否值得
+  硬阻断、候选剪枝漏掉多少可执行正收益股票、单股排序是否形成最优受约束组合、性能优化是否保持决策
+  hash 等价”的缺口。原因已确认是这些目标散落在既有规则或指标中，没有可由一次“继续”完整闭合的
+  owner、工件身份和完成条件；本批只修正权威路线，不宣称对应能力已经实现或收益已经提高。
+  `Regression-Key: recommendation-chain-scientific-roadmap-v2`。
+
 - 实时复现确认当前冻结 Tomorrow 记录在 12:41 生成，早于 12:44 的零分解释修复；它的
   `coverage.evaluated_count=0`、复核候选 0、最高分 0，却携带 `no_positive_net_utility`，随后在 14:50
   按不可覆盖规则冻结。读取端现在对该矛盾失败关闭：不篡改正式记录、不声称“评分已完成”，明确说明未
@@ -1662,6 +1681,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除第 15.1.23–15.1.36 旧未完成编号与“模型完成后直接进入留出/自动化”的路线歧义；没有删除或修改
+  任何生产代码、活动策略、冻结记录、历史研究工件、模型、配置、API 或 Web 行为。
+  `Regression-Key: recommendation-chain-scientific-roadmap-v2`。
+
 - 已排除代码不再进入非冻结的历史预热、候选/Long 定向行情、市场新闻、公司风险、参考数据和分钟行情
   请求，也不再占用评分或 DeepSeek 复核名额；原动态规则中的配置黑名单、ST/退市和永久结构化风险仍
   作为防御性二次校验保留。未删除既有历史缓存或冻结记录，避免破坏审计与收益结算。
@@ -1875,6 +1898,13 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- `recommendation-chain-scientific-roadmap-v2`：更新路线契约后，21 个读取两份权威文档的 contract 测试文件
+  共 89 项通过，覆盖 15.1.21/22 已完成状态、15.1.23–15.1.40 顺序、两层过滤前置关系、点时/留出纪律、
+  基线一致性、过滤召回、组合净效用、等价性能和生产授权边界；目标测试在文档更新前按预期失败。
+  受影响测试文件的 Ruff format/check 与 `git diff --check` 通过。`make test`、`make package`、仓库外 wheel
+  和三档浏览器验收不适用：本批只改权威 Markdown、Changelog 和文档契约断言，不修改运行代码、构建、
+  入口、资源、API 或 Web 行为。
 
 - `web-stale-frozen-degradation-truth-v1`：宿主初始确认没有活动 `trader-server`，随后从基线
   `f00bb17147a0ab87eb89ce3a2bc43a1369e4cae6` 通过 `./run.sh` 正常启动并加载
@@ -2938,6 +2968,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- `recommendation-chain-scientific-roadmap-v2`：第 15.1.23–15.1.40 节仍是未实施路线；当前尚未执行基线
+  身份审计，不能断言运行投影不存在漂移，也没有 H1 覆盖、过滤消融、模型收益、组合收益或性能改善证据。
+  本批不改变活动 V1/V2、P2 `historical_rejected`、固定融合、阈值、预算、冻结和 Web；后续必须按同级
+  章节逐次完成，未通过历史门禁前不得声称更赚钱，未获得用户明确授权前不得生产接入。
 
 - 当前 2026-09-01 正式记录已在 14:50 冻结，业务契约禁止用迟到数据或新代码覆盖；本批只修正读取说明，
   下一交易日的新评分才会由现行分类逻辑生成新记录。实时拆源显示代表性科创板代码的腾讯 qfq 历史稳定
