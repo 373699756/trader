@@ -343,17 +343,22 @@ def test_application_research_and_outcome_services_are_partitioned() -> None:
     research_files = {
         "research_audit.py",
         "research_coordination.py",
-        "tomorrow_profile_comparison.py",
-        "tomorrow_profile_reporting.py",
-        "tomorrow_profile_settlement.py",
         "v2_research_runtime.py",
     }
 
-    assert {path.name for path in research_root.glob("*.py")} >= research_files | {"profile_evidence_ports.py"}
+    assert {path.name for path in research_root.glob("*.py")} >= research_files
     assert (outcomes_root / "outcome_settlement.py").is_file()
     assert (outcomes_root / "ports.py").is_file()
     assert not any((application_root / name).exists() for name in research_files | {"outcome_settlement.py"})
-    assert not (application_root / "ports/tomorrow_profile_comparison.py").exists()
+    assert not any(
+        (research_root / name).exists()
+        for name in (
+            "tomorrow_profile_comparison.py",
+            "tomorrow_profile_reporting.py",
+            "tomorrow_profile_settlement.py",
+            "profile_evidence_ports.py",
+        )
+    )
 
     forbidden_imports = ("trader.infra", "trader.web", "trader.entrypoints")
     violations = [

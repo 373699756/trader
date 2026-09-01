@@ -7,7 +7,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.application.outcomes.ports import OutcomeSettlementMarketData, SupplementalOutcomeSettlementPort
+from trader.application.outcomes.ports import OutcomeSettlementMarketData
 from trader.application.ports.outcomes import OutcomeTargetReaderPort, OutcomeWriterPort
 from trader.application.ports.v2_runtime import V2SettlementPort
 from trader.application.runtime.schedule import shanghai_now
@@ -113,17 +113,13 @@ class V2OutcomeSettlementAdapter(V2SettlementPort):
         self,
         market_data: OutcomeSettlementMarketData,
         service: OutcomeSettlementService,
-        tomorrow_profiles: SupplementalOutcomeSettlementPort | None = None,
     ) -> None:
         self._market_data = market_data
         self._service = service
-        self._tomorrow_profiles = tomorrow_profiles
 
     def settle(self, at: datetime) -> None:
         features = self._market_data.fetch_market_features(at, force=True)
         self._service.settle(at, features)
-        if self._tomorrow_profiles is not None:
-            self._tomorrow_profiles.settle(at, features)
 
 
 def _horizons(strategy: Strategy) -> tuple[int, ...]:

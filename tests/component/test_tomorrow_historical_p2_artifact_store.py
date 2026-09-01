@@ -83,7 +83,7 @@ def test_p2_report_and_model_are_idempotent_tamper_evident_and_inspectable(tmp_p
         "status": "historical_rejected",
         "candidate_id": TOMORROW_HISTORICAL_P2_CANDIDATE_ID,
         "failure_reasons": ["mean_increment_not_positive"],
-        "forward_preregistration_eligible": False,
+        "validation_mode": "historical_only",
         "production_authority": False,
     }
 

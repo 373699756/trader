@@ -5,14 +5,11 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
-import math
-import random
 import re
 from dataclasses import dataclass, field
 from datetime import date
 
 from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC
-from trader.domain.research.specification import SCORE_P0_V1_SPEC, SCORE_P0_V2_SPEC
 
 _IDENTITY = re.compile(r"^[a-z0-9_]{1,64}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -71,7 +68,7 @@ class ScoreR6HistoricalSpec:
 def _validate_historical_spec_identity(spec: ScoreR6HistoricalSpec) -> None:
     if _IDENTITY.fullmatch(spec.research_identity) is None:
         raise ValueError("Score-R6 historical identity is invalid")
-    if spec.research_identity != "score_r6_historical_v1" or spec.preregistered_on != date(2026, 8, 20):
+    if spec.research_identity != "score_r6_historical_v2" or spec.preregistered_on != date(2026, 9, 1):
         raise ValueError("Score-R6 historical preregistration identity is fixed")
     if (
         spec.parent_research_identity != SCORE_H0_V1_SPEC.research_identity
@@ -181,90 +178,6 @@ class ScoreR6Candidate:
 
 
 @dataclass(frozen=True)
-class ScoreR6ForwardSpec:
-    research_identity: str
-    preregistered_on: date
-    planned_trade_dates: tuple[date, ...]
-    historical_report_hash: str
-    frozen_candidate_hash: str
-    trading_calendar_hash: str
-    rule_identity_hash: str
-    config_strategy_identity_hash: str
-    required_pair_count: int = 100
-    primary_cost_bps: int = 20
-    primary_block_days: int = 5
-    minimum_local_gain_pct: float = 0.20
-    minimum_hybrid_increment_pct: float = 0.20
-    maximum_local_severe_rate_delta: float = 0.02
-    maximum_local_turnover_delta: float = 0.05
-    maximum_local_stability_delta: float = 0.25
-    minimum_local_recall: float = 0.80
-    maximum_local_stock_weight: float = 0.25
-    maximum_local_board_fraction: float = 0.60
-    bootstrap_repetitions: int = 10_000
-    bootstrap_alpha: float = 0.05
-    promotion_authority: bool = False
-    data_schema_version: str = "score_r6_forward_same_stock_v1"
-    strategy_version: str = "strategy_review30_top6_observe6_2026_07"
-    fusion_version: str = "fusion_local68_deepseek32"
-    content_hash: str = field(init=False)
-
-    def __post_init__(self) -> None:
-        expected_prefix = f"score_r6_forward_{self.preregistered_on:%Y%m%d}_"
-        if _IDENTITY.fullmatch(self.research_identity) is None or not self.research_identity.startswith(
-            expected_prefix
-        ):
-            raise ValueError("Score-R6 forward identity is invalid")
-        dates = self.planned_trade_dates
-        if len(dates) != 20 or tuple(sorted(set(dates))) != dates:
-            raise ValueError("Score-R6 forward window requires exactly 20 unique ordered dates")
-        if any(item <= self.preregistered_on for item in dates):
-            raise ValueError("Score-R6 forward dates must be after preregistration")
-        if any(item.weekday() >= 5 for item in dates):
-            raise ValueError("Score-R6 forward dates must be preregistered trading-calendar weekdays")
-        prior_dates = SCORE_P0_V1_SPEC.allowed_historical_dates | frozenset(SCORE_P0_V1_SPEC.forward_dates)
-        prior_dates |= SCORE_P0_V2_SPEC.allowed_historical_dates | frozenset(SCORE_P0_V2_SPEC.forward_dates)
-        if prior_dates.intersection(dates):
-            raise ValueError("Score-R6 forward window cannot reuse a Score-R0 date")
-        if any(
-            _SHA256.fullmatch(value) is None
-            for value in (
-                self.historical_report_hash,
-                self.frozen_candidate_hash,
-                self.trading_calendar_hash,
-                self.rule_identity_hash,
-                self.config_strategy_identity_hash,
-            )
-        ):
-            raise ValueError("Score-R6 forward bindings must be SHA-256")
-        if (
-            self.required_pair_count != 100
-            or self.primary_cost_bps != 20
-            or self.primary_block_days != 5
-            or self.minimum_local_gain_pct != 0.20
-            or self.minimum_hybrid_increment_pct != 0.20
-            or self.maximum_local_severe_rate_delta != 0.02
-            or self.maximum_local_turnover_delta != 0.05
-            or self.maximum_local_stability_delta != 0.25
-            or self.minimum_local_recall != 0.80
-            or self.maximum_local_stock_weight != 0.25
-            or self.maximum_local_board_fraction != 0.60
-            or self.bootstrap_repetitions != 10_000
-            or self.bootstrap_alpha != 0.05
-        ):
-            raise ValueError("Score-R6 forward gates are preregistered and immutable")
-        if (
-            self.data_schema_version != "score_r6_forward_same_stock_v1"
-            or self.strategy_version != "strategy_review30_top6_observe6_2026_07"
-            or self.fusion_version != "fusion_local68_deepseek32"
-        ):
-            raise ValueError("Score-R6 forward runtime identities are fixed")
-        if self.promotion_authority:
-            raise ValueError("Score-R6 forward spec alone cannot promote production")
-        object.__setattr__(self, "content_hash", _content_hash(self))
-
-
-@dataclass(frozen=True)
 class ScoreR6ProductionBoardWeights:
     board: str
     component_names: tuple[str, ...]
@@ -295,61 +208,6 @@ class ScoreR6ProductionCandidate:
         if self.action_threshold not in (76, 78, 80) or self.risk_penalty not in (3, 4, 5):
             raise ValueError("Score-R6 production threshold or penalty is outside the frozen grid")
         object.__setattr__(self, "content_hash", _content_hash(self))
-
-
-@dataclass(frozen=True)
-class ScoreR6BootstrapResult:
-    sample_count: int
-    block_days: int
-    repetitions: int
-    seed: int
-    observed_mean: float
-    confidence_lower: float
-    confidence_upper: float
-    p_value: float
-
-
-def score_r6_forward_bootstrap(
-    values: tuple[float, ...],
-    research_identity: str,
-    *,
-    block_days: int,
-    repetitions: int,
-) -> ScoreR6BootstrapResult:
-    """Fixed non-circular five-day paired bootstrap for hybrid minus local."""
-
-    if block_days != 5 or repetitions != 10_000:
-        raise ValueError("Score-R6 hybrid bootstrap parameters are fixed")
-    if len(values) < block_days or any(not math.isfinite(value) for value in values):
-        raise ValueError("Score-R6 hybrid bootstrap requires at least five finite paired days")
-    seed_identity = f"{research_identity}|score_r6_hybrid_increment|{block_days}"
-    seed = int.from_bytes(hashlib.sha256(seed_identity.encode()).digest()[:8], "big", signed=False)
-    observed = math.fsum(values) / len(values)
-    centered = tuple(value - observed for value in values)
-    rng = random.Random(seed)
-    samples: list[float] = []
-    null_samples: list[float] = []
-    block_starts = len(values) - block_days + 1
-    for _index in range(repetitions):
-        indices: list[int] = []
-        while len(indices) < len(values):
-            start = rng.randrange(block_starts)
-            indices.extend(range(start, start + block_days))
-        indices = indices[: len(values)]
-        samples.append(math.fsum(values[index] for index in indices) / len(values))
-        null_samples.append(math.fsum(centered[index] for index in indices) / len(values))
-    samples.sort()
-    extreme = sum(value >= observed for value in null_samples)
-    return ScoreR6BootstrapResult(
-        sample_count=len(values),
-        block_days=block_days,
-        repetitions=repetitions,
-        seed=seed,
-        observed_mean=observed,
-        confidence_lower=samples[math.ceil(0.025 * len(samples)) - 1],
-        confidence_upper=samples[math.ceil(0.975 * len(samples)) - 1],
-        p_value=(extreme + 1) / (repetitions + 1),
-    )
 
 
 def iter_score_r6_candidates(spec: ScoreR6HistoricalSpec) -> tuple[ScoreR6Candidate, ...]:
@@ -465,8 +323,8 @@ _CURRENT_PRODUCTION_BOARD_WEIGHT_UNITS = (
 
 
 SCORE_R6_HISTORICAL_SPEC = ScoreR6HistoricalSpec(
-    research_identity="score_r6_historical_v1",
-    preregistered_on=date(2026, 8, 20),
+    research_identity="score_r6_historical_v2",
+    preregistered_on=date(2026, 9, 1),
     parent_research_identity=SCORE_H0_V1_SPEC.research_identity,
     parent_research_spec_hash=SCORE_H0_V1_SPEC.content_hash,
     component_names=("momentum", "stability", "liquidity"),
@@ -512,12 +370,9 @@ SCORE_R6_HISTORICAL_SPEC = ScoreR6HistoricalSpec(
 __all__ = [
     "SCORE_R6_HISTORICAL_SPEC",
     "ScoreR6Candidate",
-    "ScoreR6BootstrapResult",
-    "ScoreR6ForwardSpec",
     "ScoreR6HistoricalSpec",
     "ScoreR6ProductionBoardWeights",
     "ScoreR6ProductionCandidate",
     "iter_score_r6_candidates",
     "materialize_score_r6_production_candidate",
-    "score_r6_forward_bootstrap",
 ]

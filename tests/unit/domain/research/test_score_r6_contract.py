@@ -1,19 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import date
 
 import pytest
 
 from trader.domain.research.score_r6 import (
     SCORE_R6_HISTORICAL_SPEC,
-    ScoreR6ForwardSpec,
     iter_score_r6_candidates,
     materialize_score_r6_production_candidate,
 )
 
 
 def test_r6_candidate_grid_is_finite_shrunk_and_joint() -> None:
+    assert SCORE_R6_HISTORICAL_SPEC.research_identity == "score_r6_historical_v2"
+    assert SCORE_R6_HISTORICAL_SPEC.preregistered_on == date(2026, 9, 1)
     candidates = iter_score_r6_candidates(SCORE_R6_HISTORICAL_SPEC)
 
     assert candidates
@@ -43,38 +44,3 @@ def test_r6_candidate_grid_is_finite_shrunk_and_joint() -> None:
 def test_r6_historical_spec_rejects_post_result_grid_changes() -> None:
     with pytest.raises(ValueError, match="threshold"):
         replace(SCORE_R6_HISTORICAL_SPEC, action_thresholds=(78, 79))
-
-
-def test_r6_forward_spec_requires_new_exact_disjoint_future_window() -> None:
-    registered_on = date(2026, 12, 1)
-    planned = _weekdays_after(registered_on)
-    spec = ScoreR6ForwardSpec(
-        research_identity="score_r6_forward_20261201_v1",
-        preregistered_on=registered_on,
-        planned_trade_dates=planned,
-        historical_report_hash="1" * 64,
-        frozen_candidate_hash="2" * 64,
-        trading_calendar_hash="3" * 64,
-        rule_identity_hash="4" * 64,
-        config_strategy_identity_hash="5" * 64,
-    )
-
-    assert spec.planned_trade_dates == planned
-    assert spec.promotion_authority is False
-    assert len(spec.content_hash) == 64
-
-    with pytest.raises(ValueError, match="20 unique"):
-        replace(spec, planned_trade_dates=planned[:-1])
-
-    with pytest.raises(ValueError, match="after preregistration"):
-        replace(spec, planned_trade_dates=(registered_on, *planned[1:]))
-
-
-def _weekdays_after(start: date) -> tuple[date, ...]:
-    result = []
-    current = start
-    while len(result) < 20:
-        current += timedelta(days=1)
-        if current.weekday() < 5:
-            result.append(current)
-    return tuple(result)

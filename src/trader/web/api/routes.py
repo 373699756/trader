@@ -136,7 +136,6 @@ def _status(services: UnifiedWebServices | None) -> RouteResponse:
             "scheduler": _mapping(runtime.get("scheduler")),
             "market_data": _market_data(runtime),
             "tomorrow_model": _tomorrow_model(runtime),
-            "tomorrow_profile_comparison": _tomorrow_profile_comparison(runtime),
             "last_error": runtime.get("last_error"),
             "deepseek_budget": _budget(runtime),
             "deepseek": _deepseek(runtime),
@@ -351,34 +350,6 @@ def _tomorrow_model(runtime: Mapping[str, object]) -> dict[str, object]:
     if isinstance(failures, (tuple, list)):
         result["historical_failure_reasons"] = [str(item) for item in failures if isinstance(item, str)]
     return result
-
-
-def _tomorrow_profile_comparison(runtime: Mapping[str, object]) -> dict[str, object]:
-    raw = runtime.get("tomorrow_profile_comparison")
-    if not isinstance(raw, Mapping):
-        return {"initialized": False, "state": "unavailable", "production_authority": False}
-    return {
-        field: raw[field]
-        for field in (
-            "initialized",
-            "spec_hash",
-            "prediction_manifests",
-            "paired_predictions",
-            "formal_manifests",
-            "settled_pairs",
-            "complete_pairs",
-            "independent_days",
-            "required_independent_days",
-            "minimum_paired_candidates",
-            "state",
-            "latest_prediction_date",
-            "latest_settlement_date",
-            "production_authority",
-            "automatic_profile_switch",
-            "error_code",
-        )
-        if field in raw and _json_scalar(raw[field])
-    }
 
 
 def _market_changes(value: object) -> dict[str, object]:

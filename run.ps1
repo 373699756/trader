@@ -21,8 +21,6 @@ function Show-Usage {
 离线研究（仅在明确执行研究任务时使用）:
   .\run.ps1 research-history        下载/续传历史归档后运行固定回测
   .\run.ps1 research-screen         依次运行并封存五项历史筛选/诊断
-  .\run.ps1 research-r7-dossier --research-identity <ID>
-                                                生成待人工审查的 R7 档案
 
 所有命令都可追加 --profile v1|v2；未指定时为 V1。
 
@@ -37,7 +35,7 @@ function Show-Usage {
 "@ | Write-Host
 }
 
-$PublicModes = @("help", "-h", "--help", "serve", "app", "check", "research-history", "research-screen", "research-r7-dossier")
+$PublicModes = @("help", "-h", "--help", "serve", "app", "check", "research-history", "research-screen")
 
 for ($Index = 0; $Index -lt $args.Count; $Index++) {
     $Argument = [string]$args[$Index]
@@ -77,7 +75,7 @@ if ($Mode -in @("help", "-h", "--help")) {
     exit 0
 }
 $IsServerMode = $Mode -in @("serve", "app")
-if (-not $IsServerMode -and $Mode -notin @("check", "research-history", "research-screen", "research-r7-dossier")) {
+if (-not $IsServerMode -and $Mode -notin @("check", "research-history", "research-screen")) {
     [Console]::Error.WriteLine("未知命令: $Mode")
     [Console]::Error.WriteLine("日常启动直接运行: .\run.ps1")
     [Console]::Error.WriteLine("查看全部命令: .\run.ps1 help")

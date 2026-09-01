@@ -1,4 +1,4 @@
-"""Typed protocols shared by outcome and supplemental research settlement."""
+"""Typed protocol for formal recommendation outcome settlement."""
 
 from __future__ import annotations
 
@@ -19,8 +19,4 @@ class OutcomeSettlementMarketData(OutcomePriceReaderPort, Protocol):
     ) -> Sequence[FeatureSnapshot]: ...
 
 
-class SupplementalOutcomeSettlementPort(Protocol):
-    def settle(self, now: datetime, market_features: Sequence[FeatureSnapshot]) -> object: ...
-
-
-__all__ = ["OutcomeSettlementMarketData", "SupplementalOutcomeSettlementPort"]
+__all__ = ["OutcomeSettlementMarketData"]

@@ -1,4 +1,4 @@
-"""Offline Score-R6 historical selection and independent forward gates."""
+"""Offline historical-only Score-R6 selection and validation."""
 
 from __future__ import annotations
 
@@ -16,8 +16,6 @@ from trader.application.research.historical_screening import (
 from trader.application.research.replay_models import canonical_hash
 from trader.application.research.score_r6_models import (
     ScoreR6BoardCandidate,
-    ScoreR6ForwardDay,
-    ScoreR6ForwardReport,
     ScoreR6FrozenCandidate,
     ScoreR6HistoricalReport,
     ScoreR6HistoricalRow,
@@ -26,12 +24,10 @@ from trader.application.research.score_r6_models import (
 from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC, HistoricalScreeningSpec
 from trader.domain.research.score_r6 import (
     ScoreR6Candidate,
-    ScoreR6ForwardSpec,
     ScoreR6HistoricalSpec,
     ScoreR6ProductionCandidate,
     iter_score_r6_candidates,
     materialize_score_r6_production_candidate,
-    score_r6_forward_bootstrap,
 )
 
 _BOARDS = ("main", "chinext", "star")
@@ -43,16 +39,6 @@ class ScoreR6HistoricalEvidence(Protocol):
     def manifest(self, spec: HistoricalScreeningSpec) -> HistoricalArchiveManifest: ...
 
     def score_r6_rows(self, spec: HistoricalScreeningSpec) -> Sequence[ScoreR6HistoricalRow]: ...
-
-
-@dataclass(frozen=True)
-class ScoreR6ForwardRegistration:
-    research_identity: str
-    preregistered_on: date
-    planned_trade_dates: tuple[date, ...]
-    trading_calendar_hash: str
-    rule_identity_hash: str
-    config_strategy_identity_hash: str
 
 
 @dataclass(frozen=True)
@@ -142,7 +128,7 @@ class ScoreR6HistoricalScreeningService:
             minimum_selected_days,
         )
         board_candidates = tuple(self._fit_board(board, fit_context) for board in _BOARDS)
-        forward_candidate = ScoreR6ProductionCandidate(
+        validated_candidate = ScoreR6ProductionCandidate(
             canonical_hash(tuple(item.candidate_hash for item in board_candidates)),
             tuple(item.production_weights for item in board_candidates),
             selected_candidate.action_threshold,
@@ -155,14 +141,14 @@ class ScoreR6HistoricalScreeningService:
             parent_archive=archive,
             parent_manifest=manifest,
             global_candidate=frozen,
-            forward_candidate=forward_candidate,
+            validated_candidate=validated_candidate,
             training=training_metrics,
             validation=validation_metrics,
             baseline_validation=baseline_validation,
             board_candidates=board_candidates,
             historical_gate_passed=not failures,
             failure_reasons=failures,
-            hybrid_increment_status="forward_required",
+            validation_mode="historical_only",
             promotion_authority=False,
             limitations=_LIMITATIONS,
         )
@@ -215,119 +201,6 @@ class ScoreR6HistoricalScreeningService:
             training_metrics_hash=training_metrics.content_hash,
             validation_metrics_hash=validation_metrics.content_hash,
         )
-
-
-def preregister_score_r6_forward(
-    report: ScoreR6HistoricalReport,
-    registration: ScoreR6ForwardRegistration,
-) -> ScoreR6ForwardSpec:
-    if not report.historical_gate_passed or report.global_candidate is None or report.forward_candidate is None:
-        raise ValueError("Score-R6 forward registration requires a passed frozen historical candidate")
-    return ScoreR6ForwardSpec(
-        research_identity=registration.research_identity,
-        preregistered_on=registration.preregistered_on,
-        planned_trade_dates=registration.planned_trade_dates,
-        historical_report_hash=report.content_hash,
-        frozen_candidate_hash=report.forward_candidate.content_hash,
-        trading_calendar_hash=registration.trading_calendar_hash,
-        rule_identity_hash=registration.rule_identity_hash,
-        config_strategy_identity_hash=registration.config_strategy_identity_hash,
-    )
-
-
-def evaluate_score_r6_forward(
-    spec: ScoreR6ForwardSpec,
-    days: Sequence[ScoreR6ForwardDay],
-    *,
-    minimum_pair_count: int | None = None,
-) -> ScoreR6ForwardReport:
-    ordered = tuple(sorted(days, key=lambda item: item.trade_date))
-    reasons: list[str] = []
-    if len({item.trade_date for item in ordered}) != len(ordered):
-        raise ValueError("Score-R6 forward records contain duplicate dates")
-    if any(
-        item.research_spec_hash != spec.content_hash or item.trade_date not in spec.planned_trade_dates
-        for item in ordered
-    ):
-        raise ValueError("Score-R6 forward record is outside its preregistered identity")
-    if tuple(item.trade_date for item in ordered) != spec.planned_trade_dates:
-        reasons.append("planned_forward_days_incomplete")
-        return _forward_report(spec, ordered, "forward_collecting", reasons)
-    failed = tuple(item for item in ordered if item.status == "failed")
-    if failed:
-        reasons.append("forward_day_failed")
-        return _forward_report(spec, ordered, "forward_rejected", reasons)
-    pairs = tuple(pair for day in ordered for pair in day.pairs)
-    required_pairs = minimum_pair_count or spec.required_pair_count
-    if len(pairs) < required_pairs:
-        reasons.append("forward_pair_count_incomplete")
-        return _forward_report(spec, ordered, "forward_rejected", reasons)
-
-    production_returns = tuple(_portfolio_return(day, "production") for day in ordered)
-    local_returns = tuple(_portfolio_return(day, "local") for day in ordered)
-    hybrid_returns = tuple(_portfolio_return(day, "hybrid") for day in ordered)
-    local_gains = tuple(local - production for local, production in zip(local_returns, production_returns, strict=True))
-    hybrid_increments = tuple(hybrid - local for hybrid, local in zip(hybrid_returns, local_returns, strict=True))
-    local_mean = _mean(local_gains)
-    hybrid_mean = _mean(hybrid_increments)
-    local_severe_delta = _severe_rate(ordered, "local") - _severe_rate(ordered, "production")
-    local_turnover_delta = _turnover(ordered, "local") - _turnover(ordered, "production")
-    local_stability_delta = _stddev(local_returns) - _stddev(production_returns)
-    local_recall = _forward_recall(ordered)
-    local_maximum_stock_weight, local_maximum_board_fraction = _forward_concentration(ordered)
-    hybrid_bootstrap = score_r6_forward_bootstrap(
-        hybrid_increments,
-        spec.research_identity,
-        block_days=spec.primary_block_days,
-        repetitions=spec.bootstrap_repetitions,
-    )
-    hybrid_lower = hybrid_bootstrap.confidence_lower
-    local_passed = bool(
-        local_mean >= spec.minimum_local_gain_pct
-        and local_severe_delta <= spec.maximum_local_severe_rate_delta
-        and local_turnover_delta <= spec.maximum_local_turnover_delta
-        and local_stability_delta <= spec.maximum_local_stability_delta
-        and local_recall >= spec.minimum_local_recall
-        and local_maximum_stock_weight <= spec.maximum_local_stock_weight
-        and local_maximum_board_fraction <= spec.maximum_local_board_fraction
-    )
-    hybrid_passed = bool(
-        local_passed
-        and hybrid_mean >= spec.minimum_hybrid_increment_pct
-        and hybrid_lower > 0.0
-        and hybrid_bootstrap.p_value <= spec.bootstrap_alpha
-    )
-    if not local_passed:
-        reasons.append("local_forward_gate_failed")
-    if not hybrid_passed:
-        reasons.append("hybrid_independent_gain_not_proved")
-    status: Literal["forward_rejected", "local_eligible", "hybrid_eligible"] = (
-        "hybrid_eligible" if hybrid_passed else "local_eligible" if local_passed else "forward_rejected"
-    )
-    return ScoreR6ForwardReport(
-        status=status,
-        research_identity=spec.research_identity,
-        research_spec_hash=spec.content_hash,
-        recorded_days=len(ordered),
-        pair_count=len(pairs),
-        day_hashes=tuple(item.content_hash for item in ordered),
-        local_mean_gain_pct=local_mean,
-        local_severe_rate_delta=local_severe_delta,
-        local_turnover_delta=local_turnover_delta,
-        local_stability_delta=local_stability_delta,
-        local_recall=local_recall,
-        local_maximum_stock_weight=local_maximum_stock_weight,
-        local_maximum_board_fraction=local_maximum_board_fraction,
-        hybrid_mean_increment_pct=hybrid_mean,
-        hybrid_confidence_lower_pct=hybrid_lower,
-        hybrid_p_value=hybrid_bootstrap.p_value,
-        hybrid_bootstrap_seed=hybrid_bootstrap.seed,
-        local_gate_passed=local_passed,
-        hybrid_independent_gain_passed=hybrid_passed,
-        production_scope="hybrid" if hybrid_passed else "local_only" if local_passed else "none",
-        promotion_eligible=local_passed,
-        failure_reasons=tuple(reasons),
-    )
 
 
 def _select_candidate(
@@ -547,98 +420,17 @@ def _rejected_report(
         parent_archive=archive,
         parent_manifest=manifest,
         global_candidate=None,
-        forward_candidate=None,
+        validated_candidate=None,
         training=_empty_metrics(),
         validation=_empty_metrics(),
         baseline_validation=_empty_metrics(),
         board_candidates=(),
         historical_gate_passed=False,
         failure_reasons=(reason,),
-        hybrid_increment_status="forward_required",
+        validation_mode="historical_only",
         promotion_authority=False,
         limitations=_LIMITATIONS,
     )
-
-
-def _forward_report(
-    spec: ScoreR6ForwardSpec,
-    days: tuple[ScoreR6ForwardDay, ...],
-    status: Literal["forward_collecting", "forward_rejected"],
-    reasons: list[str],
-) -> ScoreR6ForwardReport:
-    return ScoreR6ForwardReport(
-        status=status,
-        research_identity=spec.research_identity,
-        research_spec_hash=spec.content_hash,
-        recorded_days=len(days),
-        pair_count=sum(len(day.pairs) for day in days),
-        day_hashes=tuple(day.content_hash for day in days),
-        local_mean_gain_pct=None,
-        local_severe_rate_delta=None,
-        local_turnover_delta=None,
-        local_stability_delta=None,
-        local_recall=None,
-        local_maximum_stock_weight=None,
-        local_maximum_board_fraction=None,
-        hybrid_mean_increment_pct=None,
-        hybrid_confidence_lower_pct=None,
-        hybrid_p_value=None,
-        hybrid_bootstrap_seed=None,
-        local_gate_passed=False,
-        hybrid_independent_gain_passed=False,
-        production_scope="none",
-        promotion_eligible=False,
-        failure_reasons=tuple(reasons),
-    )
-
-
-def _portfolio_return(day: ScoreR6ForwardDay, track: str) -> float:
-    weights = tuple(getattr(pair, f"{track}_weight") for pair in day.pairs)
-    gross = math.fsum(weight * pair.return_5d_pct for weight, pair in zip(weights, day.pairs, strict=True))
-    return gross - 0.20 if math.fsum(weights) > 0.0 else 0.0
-
-
-def _severe_rate(days: tuple[ScoreR6ForwardDay, ...], track: str) -> float:
-    weights = tuple(getattr(pair, f"{track}_weight") for day in days for pair in day.pairs)
-    denominator = math.fsum(weights)
-    if denominator == 0.0:
-        return 0.0
-    numerator = math.fsum(getattr(pair, f"{track}_weight") for day in days for pair in day.pairs if pair.severe_loss)
-    return numerator / denominator
-
-
-def _turnover(days: tuple[ScoreR6ForwardDay, ...], track: str) -> float:
-    values: list[float] = []
-    prior: dict[str, float] | None = None
-    for day in days:
-        current = {
-            pair.code: getattr(pair, f"{track}_weight") for pair in day.pairs if getattr(pair, f"{track}_weight") > 0.0
-        }
-        if prior is not None:
-            codes = set(current) | set(prior)
-            values.append(0.5 * math.fsum(abs(current.get(code, 0.0) - prior.get(code, 0.0)) for code in codes))
-        prior = current
-    return _mean(tuple(values)) if values else 0.0
-
-
-def _forward_recall(days: tuple[ScoreR6ForwardDay, ...]) -> float:
-    recalled = total = 0
-    for day in days:
-        selected = {pair.code for pair in day.pairs if pair.local_weight > 0.0}
-        recalled += len(selected.intersection(day.oracle_codes))
-        total += len(day.oracle_codes)
-    return recalled / total if total else 0.0
-
-
-def _forward_concentration(days: tuple[ScoreR6ForwardDay, ...]) -> tuple[float, float]:
-    maximum_stock = maximum_board = 0.0
-    for day in days:
-        board_weights: dict[str, float] = defaultdict(float)
-        for pair in day.pairs:
-            maximum_stock = max(maximum_stock, pair.local_weight)
-            board_weights[pair.board] += pair.local_weight
-        maximum_board = max(maximum_board, max(board_weights.values(), default=0.0))
-    return maximum_stock, maximum_board
 
 
 def _date_count(rows: tuple[ScoreR6HistoricalRow, ...]) -> int:
@@ -674,7 +466,4 @@ _LIMITATIONS = (
 __all__ = [
     "ScoreR6HistoricalEvidence",
     "ScoreR6HistoricalScreeningService",
-    "ScoreR6ForwardRegistration",
-    "evaluate_score_r6_forward",
-    "preregister_score_r6_forward",
 ]

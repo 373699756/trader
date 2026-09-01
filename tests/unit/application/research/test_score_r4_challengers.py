@@ -5,14 +5,12 @@ from dataclasses import replace
 import pytest
 
 from tests.unit.application.research.test_historical_ports import _summary
-from tests.unit.application.research.test_score_r2_extraction import _Evaluator, _Port, _WindowPort
+from tests.unit.application.research.test_score_r2_extraction import _Evaluator, _Port
 from trader.application.research.challenger_models import ChallengerReplaySelection
 from trader.application.research.challengers import ScoreR4ChallengerReplayer
 from trader.application.research.extraction import ScoreR2HistoricalExtractor
 from trader.application.research.replay import ScoreR3BaselineReplayer
 from trader.application.research.replay_models import BaselineReplaySelection
-from trader.application.research.score_r5 import ScoreR5FinalSealer, ScoreR5ForwardCollector, ScoreR5StatisticalGate
-from trader.domain.research.specification import SCORE_P0_V2_SPEC
 
 
 class _ChallengerEvaluator:
@@ -117,74 +115,3 @@ def test_r4_rejects_hybrid_facts_that_were_not_recorded_in_r2() -> None:
 
     with pytest.raises(ValueError, match="existing facts"):
         ScoreR4ChallengerReplayer(_ManufacturedFactsEvaluator()).replay(extraction, baseline)
-
-
-def test_r5_exploratory_r4_evidence_terminates_every_variant_before_forward() -> None:
-    extraction, baseline = _inputs()
-    challengers = ScoreR4ChallengerReplayer(_ChallengerEvaluator()).replay(extraction, baseline)
-
-    report = ScoreR5StatisticalGate().evaluate(baseline, challengers)
-
-    assert report.status == "exploratory"
-    assert report.historical_day_count == 1
-    assert tuple(item.variant_id for item in report.variants) == (
-        "continuous_entry",
-        "coverage_shrink",
-        "candidate_upper_bound",
-        "heat_weak_structure",
-        "combined_v1",
-    )
-    assert all(item.state == "historical_rejected" for item in report.variants)
-    assert all("historical_day_count" in item.failure_reasons for item in report.variants)
-    assert all(item.local_track.cost_mean_differences[0] is not None for item in report.variants)
-    assert report.deepseek_http_request_delta == 0
-
-    collector = ScoreR5ForwardCollector(report)
-    with pytest.raises(ValueError, match="historical gate"):
-        collector.record_failed("continuous_entry", report.forward_dates[0], "source_unavailable")
-
-    final = ScoreR5FinalSealer().seal(report, baseline, challengers, ())
-    assert final.state == "forward_rejected"
-    assert final.failure_reasons == ("no_historical_variant_passed",)
-    assert len(report.forward_dates) == 20
-    assert report.forward_dates[0].isoformat() == "2026-11-02"
-    assert report.forward_dates[-1].isoformat() == "2026-11-27"
-
-
-def test_r5_forward_collector_is_append_only_after_a_frozen_pass_identity() -> None:
-    extraction, baseline = _inputs()
-    challengers = ScoreR4ChallengerReplayer(_ChallengerEvaluator()).replay(extraction, baseline)
-    exploratory = ScoreR5StatisticalGate().evaluate(baseline, challengers)
-    passed = replace(exploratory.variants[0], state="historical_passed", failure_reasons=())
-    frozen = replace(exploratory, variants=(passed, *exploratory.variants[1:]))
-    collector = ScoreR5ForwardCollector(frozen)
-    planned_date = frozen.forward_dates[0]
-
-    first = collector.record_failed("continuous_entry", planned_date, "source_unavailable")
-    assert collector.record_failed("continuous_entry", planned_date, "source_unavailable") == first
-    assert collector.records("continuous_entry") == (first,)
-    with pytest.raises(ValueError, match="identity conflict"):
-        collector.record_failed("continuous_entry", planned_date, "service_stopped")
-
-
-def test_r2_through_r5_bind_the_new_preregistered_research_identity() -> None:
-    extraction = ScoreR2HistoricalExtractor(_WindowPort(), _Evaluator(), spec=SCORE_P0_V2_SPEC).extract()
-    baseline = ScoreR3BaselineReplayer(_R4BaselineEvaluator()).replay(extraction)
-    challengers = ScoreR4ChallengerReplayer(_ChallengerEvaluator()).replay(extraction, baseline)
-    report = ScoreR5StatisticalGate(SCORE_P0_V2_SPEC).evaluate(baseline, challengers)
-
-    assert extraction.status == "extracted"
-    assert extraction.schema_version == "score_r2_historical_v2"
-    assert baseline.schema_version == "score_r3_baseline_report_v2"
-    assert challengers.schema_version == "score_r4_challenger_replay_v2"
-    assert report.schema_version == "score_r5_statistical_gate_v2"
-    assert report.statistics_version == "score_r5_paired_mbb_holm_v2"
-    assert report.report_version == "score_r5_final_report_v2"
-    assert baseline.research_identity == challengers.research_identity == report.research_identity == "score_p0_v2"
-    assert report.research_spec_hash == SCORE_P0_V2_SPEC.content_hash
-    assert report.forward_dates == SCORE_P0_V2_SPEC.forward_dates
-    final = ScoreR5FinalSealer().seal(report, baseline, challengers, ())
-    assert final.research_identity == "score_p0_v2"
-    assert final.schema_version == "score_r5_final_report_v2"
-    with pytest.raises(ValueError, match="selected research spec"):
-        ScoreR5StatisticalGate().evaluate(baseline, challengers)

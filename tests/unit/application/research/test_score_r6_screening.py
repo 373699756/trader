@@ -89,11 +89,11 @@ def test_r6_selects_on_training_then_only_evaluates_frozen_candidate_on_validati
     assert report.validation.selected_days == 12
     assert report.global_candidate.training_metrics_hash == report.training.content_hash
     assert report.global_candidate.validation_metrics_hash == report.validation.content_hash
-    assert report.forward_candidate is not None
-    assert tuple(item.board for item in report.forward_candidate.boards) == ("main", "chinext", "star")
+    assert report.validated_candidate is not None
+    assert tuple(item.board for item in report.validated_candidate.boards) == ("main", "chinext", "star")
     assert report.board_candidates[0].source == "global_fallback"
     assert report.board_candidates[0].candidate_hash == report.global_candidate.candidate.content_hash
-    assert report.hybrid_increment_status == "forward_required"
+    assert report.validation_mode == "historical_only"
     assert report.promotion_authority is False
     assert "deepseek_facts_not_reconstructed" in report.limitations
 

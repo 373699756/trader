@@ -27,6 +27,7 @@ from trader.application.research.tomorrow_historical_p2_screening import (
     HistoricalP2Board,
     TomorrowHistoricalP2Row,
 )
+from trader.application.research.tomorrow_historical_validation import TomorrowHistoricalRiskRow
 from trader.domain.research.historical_screening import HistoricalPriceBar, HistoricalScreeningSpec
 
 
@@ -469,6 +470,45 @@ class SQLiteHistoricalArchive:
             if daily:
                 yield from _tomorrow_historical_p2_day_rows(daily)
 
+    def tomorrow_historical_risk_rows(
+        self,
+        spec: HistoricalScreeningSpec,
+    ) -> tuple[TomorrowHistoricalRiskRow, ...]:
+        """Return a typed historical V2 risk dataset without mutating the H0/P2 row identity."""
+
+        if not self._database.is_file():
+            return ()
+        with self._read_connection() as connection:
+            rows = connection.execute(
+                _TOMORROW_HISTORICAL_P2_QUERY,
+                {
+                    "identity": spec.research_identity,
+                    "start": spec.training_start.isoformat(),
+                    "end": spec.validation_end.isoformat(),
+                },
+            ).fetchall()
+        p2_rows = _tomorrow_historical_p2_rows(rows)
+        return tuple(
+            TomorrowHistoricalRiskRow(
+                trade_date=p2.trade_date,
+                code=p2.code,
+                board=p2.board,
+                alpha_features=p2.alpha_features,
+                realized_volatility_20d=p2.realized_volatility_20d,
+                downside_semivariance_20d=p2.downside_semivariance_20d,
+                drawdown_recovery_60d=p2.drawdown_recovery_60d,
+                amihud_20d=p2.amihud_20d,
+                average_amount_20d=p2.average_amount_20d,
+                baseline_score=p2.baseline_score,
+                gross_return=_number(raw[17]),
+                benchmark_return=_number(raw[18]),
+                gross_excess_return=p2.gross_excess_return,
+                atr20_pct=_number(raw[19]),
+                mae_atr20=p2.mae_atr20,
+            )
+            for p2, raw in zip(p2_rows, rows, strict=True)
+        )
+
     def _initialize(self) -> None:
         with self._lock:
             self._root.mkdir(parents=True, exist_ok=True)
@@ -863,6 +903,7 @@ WITH lagged AS (
         average_amount_20,
         close_price / close_20 - 1.0 AS baseline_momentum_20,
         next_close / close_price - 1.0 AS next_return,
+        atr_20 / close_price AS atr20_pct,
         (next_low - close_price) / atr_20 AS mae_atr20
     FROM rolling
     WHERE history_count >= 61
@@ -898,7 +939,10 @@ SELECT
     average_amount_20,
     100.0 * (0.50 * momentum_rank + 0.30 * stability_rank + 0.20 * liquidity_rank) AS baseline_score,
     next_return - market_next_return AS gross_excess_return,
-    mae_atr20
+    mae_atr20,
+    next_return AS gross_return,
+    market_next_return AS benchmark_return,
+    atr20_pct
 FROM ranked
 ORDER BY trade_date, code
 """

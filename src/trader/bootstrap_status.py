@@ -10,7 +10,6 @@ from trader.application.ports.tomorrow_model import TomorrowModelRuntimeStatus
 from trader.application.runtime.cadence import CadencePlannerStatus
 from trader.application.runtime.v2_runtime import V2SchedulerRuntime
 from trader.application.runtime.v2_runtime_issues import V2RuntimeIssue
-from trader.domain.research.tomorrow_profile_comparison import TomorrowProfileComparisonStatus
 from trader.infra.deepseek.reviewer import DeepSeekReviewer
 
 
@@ -19,7 +18,6 @@ def runtime_status(
     reviewer: DeepSeekReviewer,
     market_health: Callable[[], Mapping[str, object]],
     tomorrow_model: TomorrowModelRuntimeStatus | None = None,
-    tomorrow_profiles: TomorrowProfileComparisonStatus | None = None,
 ) -> dict[str, object]:
     status = scheduler.status()
     deepseek = reviewer.status()
@@ -46,10 +44,7 @@ def runtime_status(
     ]
     if observer_error:
         degraded_reasons.append(f"observer:{observer_error}")
-    profile_error = tomorrow_profiles.error_code if tomorrow_profiles is not None else ""
-    if profile_error:
-        degraded_reasons.append(f"tomorrow_profile_comparison:{profile_error}")
-    issue_count = len(active_issues) + int(bool(observer_error)) + int(bool(profile_error))
+    issue_count = len(active_issues) + int(bool(observer_error))
     health_level = (
         "error"
         if not status.running or any(issue.severity == "error" for issue in active_issues)
@@ -66,14 +61,11 @@ def runtime_status(
         "deepseek": deepseek,
         "market_data": market_data,
         "tomorrow_model": _tomorrow_model_payload(tomorrow_model),
-        "tomorrow_profile_comparison": _tomorrow_profile_payload(tomorrow_profiles),
         "company_research": asdict(status.company_research),
         "degraded_reasons": degraded_reasons,
         "health": {"level": health_level, "issue_count": issue_count},
         "recent_errors": recent_errors,
-        "last_error": status.last_error_code
-        or (f"observer:{observer_error}" if observer_error else None)
-        or (f"tomorrow_profile_comparison:{profile_error}" if profile_error else None),
+        "last_error": status.last_error_code or (f"observer:{observer_error}" if observer_error else None),
         "observer": observer,
         "scheduler": {
             "config_version": status.config_version,
@@ -119,33 +111,6 @@ def _tomorrow_model_payload(status: TomorrowModelRuntimeStatus | None) -> dict[s
         "monitoring_mode": status.monitoring_mode,
         "automatic_model_update": status.automatic_model_update,
         "loss_probability_status": status.loss_probability_status,
-    }
-
-
-def _tomorrow_profile_payload(status: TomorrowProfileComparisonStatus | None) -> dict[str, object]:
-    if status is None:
-        return {"initialized": False, "state": "not_configured", "production_authority": False}
-    return {
-        "initialized": status.initialized,
-        "spec_hash": status.spec_hash,
-        "prediction_manifests": status.prediction_manifests,
-        "paired_predictions": status.paired_predictions,
-        "formal_manifests": status.formal_manifests,
-        "settled_pairs": status.settled_pairs,
-        "complete_pairs": status.complete_pairs,
-        "independent_days": status.independent_days,
-        "required_independent_days": status.required_independent_days,
-        "minimum_paired_candidates": status.minimum_paired_candidates,
-        "state": status.state,
-        "latest_prediction_date": (
-            status.latest_prediction_date.isoformat() if status.latest_prediction_date is not None else None
-        ),
-        "latest_settlement_date": (
-            status.latest_settlement_date.isoformat() if status.latest_settlement_date is not None else None
-        ),
-        "production_authority": status.production_authority,
-        "automatic_profile_switch": status.automatic_profile_switch,
-        "error_code": status.error_code,
     }
 
 

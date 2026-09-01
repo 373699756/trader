@@ -154,6 +154,23 @@ def fixed_family_holm(
     return tuple(decisions)
 
 
+def newey_west_long_run_std(values: tuple[float, ...], *, lag_days: int) -> float:
+    """Return the Bartlett-kernel long-run standard deviation for historical rows."""
+
+    if len(values) <= lag_days or lag_days < 1 or any(not math.isfinite(value) for value in values):
+        raise ValueError("Newey-West inputs are invalid")
+    mean = math.fsum(values) / len(values)
+    centered = tuple(value - mean for value in values)
+    long_run_variance = math.fsum(value * value for value in centered) / len(centered)
+    for lag in range(1, lag_days + 1):
+        covariance = math.fsum(centered[index] * centered[index - lag] for index in range(lag, len(centered)))
+        covariance /= len(centered)
+        long_run_variance += 2.0 * (1.0 - lag / (lag_days + 1.0)) * covariance
+    if not math.isfinite(long_run_variance) or long_run_variance <= 0.0:
+        raise ValueError("Newey-West long-run variance is not positive")
+    return math.sqrt(long_run_variance)
+
+
 def _p_order(value: float | None) -> float:
     return math.inf if value is None else value
 
@@ -169,6 +186,7 @@ __all__ = [
     "PreregisteredBootstrapPlan",
     "PreregisteredHolmDecision",
     "fixed_family_holm",
+    "newey_west_long_run_std",
     "paired_moving_block_statistics",
     "preregistered_seed",
 ]

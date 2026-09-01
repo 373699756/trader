@@ -67,7 +67,7 @@ class ScoreR6DailyRow:
 
 @dataclass(frozen=True)
 class ScoreR6DailyReport:
-    status: Literal["insufficient_coverage", "historical_rejected", "forward_required"]
+    status: Literal["insufficient_coverage", "historical_rejected", "historical_validated"]
     research_identity: str
     research_spec_hash: str
     archive: HistoricalArchiveStatus
@@ -87,10 +87,10 @@ class ScoreR6DailyReport:
     def __post_init__(self) -> None:
         if _SHA256.fullmatch(self.research_spec_hash) is None:
             raise ValueError("daily trend report spec hash is invalid")
-        if self.status == "forward_required" and not self.historical_gate_passed:
-            raise ValueError("daily trend forward status requires the historical gate")
-        if self.status != "forward_required" and self.historical_gate_passed:
-            raise ValueError("daily trend historical pass requires forward status")
+        if self.status == "historical_validated" and not self.historical_gate_passed:
+            raise ValueError("daily trend validated status requires the historical gate")
+        if self.status != "historical_validated" and self.historical_gate_passed:
+            raise ValueError("daily trend historical pass requires validated status")
         if self.status == "insufficient_coverage" and self.selected_candidate is not None:
             raise ValueError("daily trend coverage rejection cannot freeze a candidate")
         if self.promotion_authority:

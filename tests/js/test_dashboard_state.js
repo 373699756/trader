@@ -104,10 +104,10 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.statusPayloadCompatibility({
-    schema_version: "v2_status_v10",
+    schema_version: "v2_status_v11",
     release: {
       decision_view_schema: "v2_decision_view_v3",
-      web_asset_revision: "release-contract-2026-08-31-v11",
+      web_asset_revision: "release-contract-2026-09-01-v12",
     },
   }))),
   { compatible: true, reason: "" },

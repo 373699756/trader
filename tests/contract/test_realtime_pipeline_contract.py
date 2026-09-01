@@ -18,8 +18,8 @@ def test_authorities_separate_implemented_realtime_work_from_inactive_strategy_r
     assert "待验证收益路线" in strategy
     assert "研究路线不改变安全规则、冻结记录或 DeepSeek 预算" in strategy
     assert "V2 人工越权生产切换" in strategy
-    assert "尚未生成任何正式档案" in strategy
-    assert "生产发布尚未" in strategy
+    assert "所有评分策略验证只使用历史 point-in-time 数据" in strategy
+    assert "历史通过本身不生成晋级档案" in strategy
 
 
 def test_authority_fixes_real_production_and_browser_budgets() -> None:

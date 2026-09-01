@@ -3,467 +3,114 @@ from __future__ import annotations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+SOURCE = ROOT / "src/trader"
 
 
-def test_next_score_diagnostic_gate_is_owned_by_authoritative_docs() -> None:
-    strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
-    design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
+def _compact(path: Path) -> str:
+    return " ".join(path.read_text(encoding="utf-8").split())
 
-    assert "原生评分因子诊断层" in design
-    for statement in (
-        "score_native_factor_diagnostics_v1",
-        "score_factor_diagnostic_report_v1",
-        "14:50 至下一交易日收盘净超额",
-        "总体 Pearson",
-        "总体 Spearman",
-        "ICIR",
-        "Q5-Q1",
-        "相隔 1/3/5 个已观察交易日",
-        "small/mid/large",
-        "20/50/100bp 平均净超额",
-        "MAE/ATR20 <= -1.5",
-        "最大单股占比",
-        "前五只合计占比",
-        "MAE/ATR20",
-        "剪枝前 oracle recall",
+
+def test_historical_only_score_validation_is_the_authoritative_route() -> None:
+    strategy = _compact(ROOT / "docs/recommendation-strategy.md")
+    design = _compact(ROOT / "docs/software-business-design.md")
+
+    for token in (
+        "所有评分策略验证只使用历史 point-in-time 数据",
+        "historical_data_insufficient",
+        "historical_rejected",
+        "historical_validated",
+        "合法空仓日",
         "production_authority=false",
-        "不产生生产晋级权限",
+        "线上 T+1 结算只用于正式推荐历史与运行监控",
     ):
-        assert statement in strategy
-
-    bootstrap = (ROOT / "src/trader/bootstrap.py").read_text(encoding="utf-8")
-    assert "factor_diagnostics" not in bootstrap
-    assert "ScoreNativeFactorDiagnostics" not in bootstrap
-
-
-def test_score_plan_p0_pre_registration_is_reflected_in_authoritative_docs() -> None:
-    strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
-    design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
-    design_flat = " ".join(design.split())
-
-    assert "Score-R0（评分科学化研究，非生产）已预注册以下固定边界" in strategy
-    for statement in (
-        "2026-06-15（含）至 2026-08-10（含）",
-        "2026-11-02（含）至 2026-11-27（含）",
-        "bootstrap_master_seed = 20260811",
-        "bootstrap_repetitions = 10000",
-        "score_p0_v1|20260811|{variant}|{block_days}",
-        "5 日为主区块",
-        "3 日和 10 日",
-        "Holm",
-        "continuous_entry",
-        "coverage_shrink",
-        "candidate_upper_bound",
-        "heat_weak_structure",
-        "combined_v1",
-        "全程至少形成 300 条",
-        "前向阶段至少 100 条",
-        "TopK 候选召回率不低于 99%",
-        "单只股票不超过全部正向超额收益的 10%",
-        "前五只合计不超过 30%",
-        "不得新增 DeepSeek 物理 HTTP 请求",
+        assert token in strategy
+    for token in (
+        "评分验证唯一使用历史 point-in-time 回放",
+        "v2_research_readiness_v7",
+        "线上 T+1 outcome 只保存正式推荐历史和运行监控",
     ):
-        assert statement in strategy
-    for statement in (
-        "完整点时股票池只允许保存代码、板块、行业、历史 ST",
-        "不保存简称、硬拒绝分数、未来收益",
-        "每个 `input_version`",
-        "只在 local 观察保存一次完整人口",
-        "hybrid 只引用同一人口哈希",
-    ):
-        assert statement in strategy
-    for statement in (
-        "score_p0_v2",
-        "2026-08-21（含）至 2026-10-23（含）",
-        "2026-10-26（含）至 2026-11-20（含）",
-        "bootstrap_master_seed = 20260820",
-        "不得以前序日期替换失败日",
-    ):
-        assert statement in strategy
-
-    for statement in (
-        "score_h0_v1",
-        "640",
-        "至少 66 根",
-        "2024-07-01",
-        "2025-12-31",
-        "2026-01-01",
-        "2026-07-31",
-        "0.50 * momentum_rank + 0.30 * stability_rank + 0.20 * liquidity_rank",
-        "ohlcv_cross_section_v1",
-        "逐股历史内容哈希",
-        "不能生成 `promotion_eligible`",
-    ):
-        assert statement in " ".join(strategy.split())
-
-    for statement in (
-        "Score-R0 至 Score-R5 的工程能力已完成",
-        "研究链与活动运行库物理分离",
-        "不建立第二套行情、评分、冻结、Web 或 DeepSeek 请求链",
-        "`historical_collection_failed`",
-        "最大只能达到 37/40",
-        "2026-08-24、2026-08-25、2026-08-26",
-        "策略定义只以荐股策略文档第 15.1 节为准",
-    ):
-        assert statement in design_flat
+        assert token in design
 
 
-def test_score_plan_p1_compact_trace_contract_is_reflected_in_authoritative_docs() -> None:
-    strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
-    design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+def test_forward_score_validation_owners_and_commands_are_retired() -> None:
+    retired_paths = (
+        SOURCE / "application/research/score_r5.py",
+        SOURCE / "application/research/score_r7.py",
+        SOURCE / "application/research/preregistered_shadow.py",
+        SOURCE / "application/research/tomorrow_profile_comparison.py",
+        SOURCE / "application/research/tomorrow_profile_reporting.py",
+        SOURCE / "application/research/tomorrow_profile_settlement.py",
+        SOURCE / "domain/research/tomorrow_profile_comparison.py",
+        SOURCE / "infra/research/forward_evidence.py",
+        SOURCE / "infra/research/score_r7_artifacts.py",
+        SOURCE / "infra/persistence/tomorrow_profile_comparison.py",
+    )
+    assert not [path for path in retired_paths if path.exists()]
 
-    assert "Score-R0 至 Score-R5 的工程能力已完成" in design
-    assert "研究链与活动运行库物理分离" in design
-    for statement in (
-        "候选字段缺失掩码",
-        "生产 Top120 身份",
-        "结构化模型风险代码",
-        "每个 `input_version` 只保存一条配对轨迹",
-        "不得新增 DeepSeek 物理请求",
-        "研究轨迹不参与生产排序、动作、 统一决策提交、冻结、API 或收益结算",
-    ):
-        assert statement in " ".join(strategy.split())
-
-
-def test_score_r1_migrate_committed_audit_contract_is_complete() -> None:
-    strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
-    design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
-
-    for statement in (
-        "只消费成功提交后的 `V2DecisionCommitted`",
-        "独立 SQLite 研究库",
-        "不重新读取行情、重新评分或重新调用模型",
-        "审计写入失败不回滚或阻塞正式决策",
-        "历史数据不从旧 snapshot 或 shadow 运行库回填",
-    ):
-        assert statement in design
-    for statement in (
-        "`v2_committed_research_audit_v2`",
-        "`v2_research_committed_event_v2`",
-        "既有两个 v1 schema 只允许按原始载荷形状验证哈希并只读解析",
-        "`production_local`",
-        "`research_shadow`",
-        "独立 SHA-256",
-        "DeepSeek 物理 HTTP 请求增量必须为 0",
-    ):
-        assert statement in strategy
+    combined = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            SOURCE / "entrypoints/cli.py",
+            ROOT / "run.sh",
+            ROOT / "run.ps1",
+        )
+    )
+    assert "research-r7-dossier" not in combined
+    assert "research-tomorrow-profile-report" not in combined
 
 
-def test_score_r2_historical_extraction_contract_is_complete() -> None:
-    strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
-    design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+def test_remaining_offline_research_is_historical_and_production_isolated() -> None:
+    strategy = _compact(ROOT / "docs/recommendation-strategy.md")
+    design = _compact(ROOT / "docs/software-business-design.md")
 
-    for statement in (
-        "score_r2_historical_v1",
-        "score_r2_partition_v1",
-        "每板生产 Top120 身份作为起始集",
-        "Top6、板块 60% 和每行业最多 2 只约束",
-        "相同身份同内容重放幂等，不同内容冲突",
-        "不足 40 日的顶层状态固定为 `exploratory`",
-    ):
-        assert statement in strategy
-    for statement in (
-        "Score-R0 至 Score-R5 的工程能力已完成",
-        "不接入组合根、HTTP 或生产调度",
-        "Polars 不可变 Parquet 分区",
-        "不得从当前供应商响应回填",
-    ):
-        assert statement in design
-
-
-def test_score_r3_baseline_replay_contract_is_complete() -> None:
-    strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
-    design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
-    strategy_flat = " ".join(strategy.split())
-    design_flat = " ".join(design.split())
-
-    for statement in (
-        "score_r3_baseline_report_v1",
-        "20bp、50bp、100bp",
-        "平均 MAE/ATR20",
-        "候选召回率",
-        "字段覆盖率",
-        "平均日内 Spearman Rank IC",
-        "相同内容重放幂等，不同内容冲突",
-        "exploratory",
-    ):
-        assert statement in strategy_flat
-    for statement in (
-        "Score-R0 至 Score-R5 的工程能力已完成",
-        "不接入组合根、HTTP 或生产调度",
-        "不能宣称已经取得 40 日收益证据",
-    ):
-        assert statement in design_flat
-
-
-def test_score_r4_five_challenger_contract_is_complete() -> None:
-    strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
-    design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
-    strategy_flat = " ".join(strategy.split())
-    design_flat = " ".join(design.split())
-
-    for statement in (
-        "score_r4_preregistered_parameters_v1",
-        "continuous_entry_v1",
-        "coverage_shrink_v1",
-        "candidate_upper_bound_v1",
-        "heat_weak_structure_v1",
-        "combined_v1",
-        "production、local-only、hybrid",
-        "DeepSeek 物理 HTTP 请求增量必须为 0",
-    ):
-        assert statement in strategy_flat
-    for statement in (
-        "R4 五个 独立研究挑战者",
-        "local-only/hybrid 同日同股配对 manifest",
-        "任何变更必须建立新的研究版本",
-    ):
-        assert statement in strategy_flat
-    for statement in (
-        "Score-R0 至 Score-R5 的工程能力已完成",
-        "不增加 DeepSeek HTTP",
-        "不执行 R5 统计或晋级",
-    ):
-        assert statement in design_flat
-
-
-def test_score_r5_statistical_gate_and_forward_contract_is_complete() -> None:
-    strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
-    design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
-    strategy_flat = " ".join(strategy.split())
-    design_flat = " ".join(design.split())
-
-    for statement in (
-        "score_r5_statistical_gate_v1",
-        "score_r5_paired_mbb_holm_v1",
-        "score_r5_forward_day_v1",
-        "score_r5_final_report_v1",
-        "同键同内容重放幂等、不同内容冲突",
-        "hybrid 相对 local-only",
-        "不得生成伪 `promotion_eligible`",
-    ):
-        assert statement in strategy_flat
-    for statement in (
-        "Score-R0 至 Score-R5 的工程能力已完成",
-        "固定五变体 Holm 家族",
-        "当前真实 历史覆盖不足 40 日",
-        "活动生产策略保持不变",
-    ):
-        assert statement in design_flat
-
-
-def test_score_r6_parameter_and_forward_gate_contract_is_complete() -> None:
-    strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
-    design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
-
-    for statement in (
+    for token in (
         "score_r6_historical_v1",
-        "momentum/stability/liquidity",
-        "76/78/80",
-        "3/4/5",
-        "lambda` 固定为 0/25%/50%",
-        "至少 5000 个股日",
-        "score_r6_historical_report_v1",
-        "score_r6_forward_*",
-        "不得与 `score_p0_v1` 或 `score_p0_v2`",
-        "生产范围固定为 `local_only`",
-    ):
-        assert statement in strategy
-    for statement in (
-        "research-r6-screen",
-        "runtime_dir/score-r6",
-        "三板小样本统一回退全局参数",
-        "score_r6_promotion_executable",
-        "Score-R7 只生成待人工审查档案",
-    ):
-        assert statement in design
-
-
-def test_score_r7_dossier_contract_is_complete_without_authorizing_production() -> None:
-    strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
-    design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
-
-    for statement in (
-        "score_r7_promotion_dossier_v1",
-        "20/50/100bp × 3/5/10 日",
-        "manual_review_status=pending",
-        "production_change_authorized=false",
-        "不得写活动配置",
-    ):
-        assert statement in strategy
-    for statement in (
-        "research-r7-dossier",
-        "runtime_dir/score-r7",
-        "复算结果与已封存 R6 报告哈希一致",
-        "不启动生产发布",
-    ):
-        assert statement in design
-
-
-def test_score_r6_daily_trend_contract_is_preregistered_without_production_authority() -> None:
-    strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
-    design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
-
-    for statement in (
         "score_r6_daily_trend_v1",
-        "30/25/20/15/10",
-        "共 48 个候选",
-        "单板最多 4 只",
-        "至少高 0.10 个百分点",
-        "score_r6_daily_trend_report_v1",
-        "没有生产晋级权限",
-    ):
-        assert statement in strategy
-    for statement in (
-        "research-r6-daily-screen",
-        "runtime_dir/score-r6-daily",
-        "不访问网络",
-        "不能写活动配置",
-    ):
-        assert statement in design
-
-
-def test_score_r6_stability_contract_freezes_turnover_mechanisms_without_production_authority() -> None:
-    strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
-    design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
-
-    for statement in (
         "score_r6_daily_stability_v1",
-        "rank_persistence_bonus",
-        "previous_score_weight",
-        "entrant_turnover_penalty",
-        "共 26 个候选",
-        "平均换手至少降低 0.03",
-        "reused_observed_validation_window",
-        "没有生产晋级权限",
-    ):
-        assert statement in strategy
-    for statement in (
-        "research-r6-stability-screen",
-        "runtime_dir/score-r6-stability",
-        "不访问网络",
-        "不能写活动配置",
-    ):
-        assert statement in design
-
-
-def test_tomorrow_shadow_p1_preregistration_is_owned_by_the_authoritative_contracts() -> None:
-    strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
-    design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
-
-    for expected in (
-        "#### 15.1.15 Tomorrow 新模型预注册与前向影子",
-        "score_tomorrow_shadow_p1_v1",
-        "2027-06-14 至 2027-08-06",
-        "2027-08-09 至 2027-09-03",
-        "score_tomorrow_shadow_calendar_attestation_v1",
-        "score_tomorrow_shadow_gate_report_v1",
-        "唯一 Holm 检验族",
-        "至少 300 条可结算同日同股配对",
-        "前向至少 100 条配对",
-        "production_authority=false",
-    ):
-        assert expected in strategy
-    assert "Tomorrow 新模型预注册与前向影子" in design
-    assert "不注入 `bootstrap.py`" in design
-    for expected in (
-        "P1 五候选研究族不是唯一模型工件",
-        "v1_manual_residual_momentum_v1",
-        "tomorrow_scoring_profile",
-        "原 P1 研究身份保持未完成",
-    ):
-        assert expected in strategy
-    for expected in (
-        "V1/V2 生产评分配置切换",
-        "tomorrow_scoring_profile=v1|v2",
-        "默认 `v1`",
-        "./run.sh --profile v2",
-        "重启生效",
-        "不得覆盖既有冻结记录",
-    ):
-        assert expected in design
-
-
-def test_tomorrow_v1_v2_profitability_evidence_and_remaining_work_are_explicit() -> None:
-    strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
-    design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
-
-    for expected in (
-        "所有评分计划",
-        "风险约束净超额收益",
-        "不能据此断言 V2 未来更能挣钱",
-        "V2 的平均成本后净增量证据强于 V1",
-        "同日、同股、同一冻结输入",
-        "正式推荐为 0 仍保存",
-        "522 个有效交易日，而不是任意 20 日",
-        "统计功效规范",
-        "活动档位单边入选结果不再充当",
-        "tomorrow_v1_v2_h0_holdout_report_v2",
-        "47e2b9bfd4d404521f8251e2e51c491aa96c1bc0d8423dea95e63320daa6e3bf",
-        "Newey–West 长期标准差",
-        "工程已完成，前向证据采集中",
-    ):
-        assert expected in strategy
-    for expected in (
-        "生产档位 V1/V2",
-        "历史研究身份 P1/P2",
-        "不得自动切换活动档位",
-        "异步配对比较器",
-        "不等待 20 个未来日才运行",
-        "HTTP 不读取研究 SQLite",
-    ):
-        assert expected in design
-
-
-def test_tomorrow_historical_p2_remains_rejected_while_manual_production_override_is_explicit() -> None:
-    strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
-    design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
-
-    for expected in (
-        "#### 15.1.16 Tomorrow P2 历史规范与输入资格",
         "score_tomorrow_historical_p2_v1",
-        "score_h0_v1",
-        "score_tomorrow_historical_p2_report_v1",
+        "tomorrow_v1_v2_h0_holdout_report_v2",
+        "tomorrow_v2_historical_risk_probability_v1",
+    ):
+        assert token in strategy or token in design
+    for token in (
+        "research-r6-screen",
+        "research-r6-daily-screen",
+        "research-r6-stability-screen",
+        "research-tomorrow-p2-screen",
+        "research-tomorrow-v1-v2-holdout",
+    ):
+        assert token in design
+    assert "不接入生产组合根、HTTP、调度、冻结或 DeepSeek" in design
+
+
+def test_p2_historical_rejection_and_manual_production_override_remain_explicit() -> None:
+    strategy = _compact(ROOT / "docs/recommendation-strategy.md")
+
+    for token in (
         "daily_reconstructible_ensemble_v1",
         "single_candidate_pass_or_stop_v1",
         "score_h0_ohlcv_cross_section_v1",
-        "历史有效配对不少于 300",
-        "20/50/100bp",
-        "5 日非循环配对移动区块 bootstrap",
-        "historical_st_status",
-        "historical_industry",
-        "intraday_1450_tail",
-        "financial_disclosure_point_in_time",
-        "corporate_risk_point_in_time",
-        "deepseek_facts_point_in_time",
-        "production_authority=false",
-        "不得创建 `score_tomorrow_shadow_p2_v1`",
-        "#### 15.1.17 V2 人工越权生产评分与上线后监控",
+        "historical_rejected",
         "manual_user_override",
         "automatic_t1_outcome_settlement",
         "automatic_model_update=false",
         "loss_probability_status=not_modeled",
         "27034e52813f1776e2ed218c1c397f481b244fb852b01be08ddc21249d887da5",
-        "禁止暗中回退旧 Tomorrow 启发式分",
     ):
-        assert expected in strategy
-    for expected in (
-        "Tomorrow P2 历史契约",
-        "只读绑定 `score_h0_v1`",
-        "`research-tomorrow-p2-screen`",
-        "`v2_research_readiness_v5.tomorrow_p2`",
-        "678,370 条验证配对",
-        "`historical_rejected`",
-        "P2 研究路线因而停止",
-        "P1 身份与工件继续只读",
-        "人工越权生产切换",
-        "不等待 20 个未来日才运行",
-    ):
-        assert expected in design
+        assert token in strategy
 
-    bootstrap = (ROOT / "src/trader/bootstrap.py").read_text(encoding="utf-8")
-    assert "TomorrowHistoricalP2ScreeningService" in bootstrap
-    assert "TomorrowHistoricalP2Report" not in bootstrap
-    production_bootstrap = bootstrap.split("def build_historical_research_services", maxsplit=1)[0]
-    assert "load_packaged_tomorrow_production_model" in production_bootstrap
-    assert "TomorrowProductionModelScoringService" in production_bootstrap
+
+def test_v1_v2_historical_evidence_does_not_create_a_running_collection_gate() -> None:
+    strategy = _compact(ROOT / "docs/recommendation-strategy.md")
+    design = _compact(ROOT / "docs/software-business-design.md")
+
+    for token in (
+        "不能据此断言 V2 未来更能挣钱",
+        "V2 的平均成本后净增量证据强于 V1",
+        "tomorrow_v1_v2_h0_holdout_report_v2",
+        "不设跨年配对采集任务",
+    ):
+        assert token in strategy
+    for retired in ("522 个有效交易日", "tomorrow_v1_v2_paired_forward_v1"):
+        assert retired not in strategy
+        assert retired not in design

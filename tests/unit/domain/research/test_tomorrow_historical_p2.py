@@ -9,7 +9,6 @@ from trader.domain.research.tomorrow_historical_p2 import (
     TOMORROW_HISTORICAL_P2_CANDIDATE_ID,
     TOMORROW_HISTORICAL_P2_SPEC,
 )
-from trader.domain.research.tomorrow_shadow_preregistration import TOMORROW_SHADOW_P1_SPEC
 
 
 def test_p2_spec_binds_h0_field_eligibility_single_candidate_and_all_gates() -> None:
@@ -50,7 +49,6 @@ def test_p2_spec_binds_h0_field_eligibility_single_candidate_and_all_gates() -> 
     assert statuses["intraday_1450_tail"] == "not_reconstructed"
     assert statuses["deepseek_facts_point_in_time"] == "not_reconstructed"
     assert "score_tomorrow_shadow_p1_v1" in spec.excluded_evidence_identities
-    assert TOMORROW_SHADOW_P1_SPEC.content_hash != spec.content_hash
 
 
 def test_p2_spec_rejects_field_gate_candidate_or_forward_mutation() -> None:

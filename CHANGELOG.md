@@ -6,6 +6,13 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求继续闭合此前未完成的评分验证任务，并纠正所有评分策略都应只使用历史 point-in-time 数据。
+  新增 `tomorrow_v2_historical_risk_probability_v1` 完整离线链：独立类型化历史数据集、H0 验证段内有序
+  60 日训练/20 日 Platt 校准/40 日检验及双边各 1 日 embargo、训练期常数概率 Brier 基线、ECE 0.05
+  门禁、合法空仓日组合评价、不可变模型/报告值对象和原子防篡改仓储。数据不足只返回
+  `historical_data_insufficient` 且不封存伪模型，所有终态固定 `production_authority=false`。
+  `Regression-Key: historical-only-score-validation-v1`。
+
 - 用户继续执行 `docs/plan.md` 批次 10，要求删除迁移期痕迹并完成发布级验收。最终架构契约现在验证目标
   功能包、旧路径退役、无环依赖、无兼容 shim 和计划文件退役；权威设计明确最终目录为唯一活动边界。
   `Regression-Key: functional-package-final-cutover-v1`。
@@ -538,6 +545,16 @@ All notable changes to this project are documented here.
   前向封存状态、第二轮权重收缩和 `PromotionDossier` 人工晋级边界。
 
 ### Changed
+
+- 确认根因不只是文档仍保留跨年计划，而是 R5/R6/P1 的未来日 collector、运行期 V1/V2 全候选配对、
+  outcome 补充结算和 R7 晋级档案仍在生产组合根、调度 observer、SQLite 与状态 API 中形成第二条评分验证
+  状态源。评分验证现统一只读封存 H0 历史归档；线上 T+1 只结算正式冻结推荐并用于运行监控，不进入训练、
+  校准、门禁、自动调参或切换。Score-R6 历史唯一验证另立 `score_r6_historical_v2`/
+  `score_r6_historical_report_v2`，不把旧 v1 的 `forward_required` 工件重新解释为新报告。
+- `research-screen` 新增 V2 历史风险验证第六阶段，`research-status` 升至
+  `v2_research_readiness_v7` 并只读投影模型/报告终态。删除运行期比较字段后 `/api/v2/status` 升至
+  `v2_status_v11`，静态资源握手升至 `release-contract-2026-09-01-v12`；内部类型新增字段不会绕过显式
+  Web 投影。生产评分公式、DeepSeek 168 次预算、动作阈值、冻结记录及人工 V1/V2 授权不变。
 
 - 完成最终功能包切换：删除权威设计中的迁移台账和 `docs/plan.md` 一次性计划，保留 Changelog 与历史报告
   作为交付证据；最终运行、研究、Web、入口和基础设施目录直接由架构契约与窄入口测试守护。未改变公开
@@ -1111,6 +1128,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修复离线 V1/V2 留出命令在删除运行期比较规范后仍反向引用其历史报告 hash 的残留；固定 hash 现在由
+  holdout 所有者维护。修复初版历史风险数据直接扩展 P2 冻结行、以及新 R6 语义复用旧 v1 路径会改变或
+  误读不可变证据的问题：风险数据改用独立值对象，P2 行/报告身份不变，旧 R6 v1 目录只作审计且不会被
+  当前状态读取。
+
 - 修复生产模型适配器为了读取 Tomorrow P2 工件而导入离线筛选模块的问题。工件值对象迁移到生产中立端口，
   消除 server 启动时连带加载历史筛选、回放模型、P2 规范等七个离线模块；离线 trainer、artifact store 和
   研究测试改用同一类型，不保留复制类或兼容转发。生产推理仍校验原候选身份、schema、参数有限性和内容
@@ -1557,6 +1579,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除 R5 未来日采集、P1 预注册未来影子、R6 未来窗口、R7 晋级档案、运行期 V1/V2 全候选比较与补充
+  outcome 结算的领域、应用、仓储、CLI 和脚本入口；同步删除其旧业务测试，不保留兼容 shim、双写、隐藏
+  fallback 或活动状态字段。`score_p0_v1`、`score_p0_v2` 与 P2 既有失败事实仍按固定身份只读归档。
+
 - 退役 `docs/plan.md` 及其中的迁移账本、批次状态和临时完成清单；不再把一次性施工计划作为活动输入，
   也未保留旧目录、兼容别名、重定向或双实现。
 
@@ -1758,6 +1784,13 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 历史唯一验证、R6/P2 不可变身份、风险模型/报告封存、H0 数据集、CLI 组合、研究状态、生产组合根退役、
+  API schema/资源握手和旧路径负向契约定向通过；完整 `tests/contract` 与 `make test` 通过。
+  `make format-check`、`make lint`（严格重构债为零）、`make type-check` 和 `make package` 通过；打包首次因
+  沙箱禁止隔离环境下载 setuptools 失败，经授权联网后重跑成功。`git diff --check` 通过。三档桌面浏览器
+  不适用：本批未改页面布局或交互，Web 变化仅为删除状态字段并同步 schema/静态握手，已由 API 与 JS
+  契约覆盖；真实供应商/DeepSeek 不适用，因为新链只读本地 H0 归档且生产 I/O 行为未变。
 
 - 最终架构/文档契约、功能包边界、JSON 序列化边界、`create_app()` 无副作用、融合固定向量、预算并发、
   latest-wins/停止、冻结恢复、SSE 和 Web 资源回归通过；`docs/plan.md` 不存在，迁移账本不存在，所有旧
@@ -2753,6 +2786,12 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 本批没有用仓库运行数据执行 V2 历史风险终态，因此不宣称 Brier/ECE 已通过；H0 验证段不足 122 个合格
+  日期或存在字段缺失时会保持 `historical_data_insufficient`，Web 继续显示
+  `loss_probability_status=not_modeled`。旧未来研究和运行比较文件可能仍存在于用户运行目录，但当前代码
+  不读取、不迁移也不删除它们；旧 R6 v1、P0/P2 结论保持不可变审计。`v2_status_v11` 与
+  `v2_research_readiness_v7` 是显式 schema 更新，外部本地脚本须同步。正式 `0.2.0` 发布仍需用户另立发布批次。
 
 - Firefox 专项的 `browser_refresh` 因当前浏览器/驱动与运行服务连接条件失败；统一 full 还记录 Web endpoint
   `connection_failed`、交易所 SSE 失败、腾讯行情失败、历史 3 个样本均为空和 Tushare 缺 token。真实

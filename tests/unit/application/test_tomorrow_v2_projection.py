@@ -17,14 +17,9 @@ from trader.application.recommendation.scored_v2_projection import (
 )
 from trader.application.recommendation.tomorrow_model_scoring import TomorrowProductionModelScoringService
 from trader.application.research.research_audit import build_v2_committed_research_audit
-from trader.application.research.tomorrow_profile_comparison import (
-    TomorrowProfileComparator,
-    TomorrowProfileResearchInput,
-)
 from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.models import Strategy
-from trader.domain.research.tomorrow_profile_comparison import TOMORROW_PROFILE_COMPARISON_SPEC
 from trader.infra.settings import load_strategy_settings
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -59,33 +54,6 @@ class _RecordingProductionPredictor(_ProductionPredictor):
     def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
         self.codes = tuple(item.code for item in inputs)
         return super().predict(inputs)
-
-
-class _V1NegativePredictor(_ProductionPredictor):
-    profile_id = "v1"
-    model_id = "v1_manual_residual_momentum_v1"
-    model_hash = "a" * 64
-    feature_ids = (
-        "qfq_residual_momentum_20d_skip5",
-        "qfq_residual_momentum_40d_skip5",
-        "qfq_residual_momentum_60d_skip5",
-    )
-
-    def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
-        return tuple(TomorrowModelPrediction(item.code, -0.01, 0.0) for item in inputs)
-
-
-class _V2NegativePredictor(_ProductionPredictor):
-    def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
-        return tuple(TomorrowModelPrediction(item.code, -0.01, 0.001) for item in inputs)
-
-
-class _PairWriter:
-    def __init__(self) -> None:
-        self.manifests = []
-
-    def save_manifest(self, manifest) -> None:
-        self.manifests.append(manifest)
 
 
 def test_native_local_and_valid_facts_publish_one_parented_hybrid(
@@ -258,64 +226,6 @@ def test_tomorrow_model_history_coverage_requires_the_active_profile_fields(
     assert projection.input_quality.candidate_scored_count == 1
     skipped = next(item for item in projection.selection.evaluations if item.code == "600002")
     assert skipped.selection_skip_reason == "production_model_features_missing"
-
-
-def test_profile_comparator_records_all_common_candidates_when_both_profiles_select_zero(
-    application_feature_factory,
-) -> None:
-    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
-    features = tuple(
-        _with_model_features(
-            _verified_feature(application_feature_factory(f"600{index:03d}", EVALUATED_AT - timedelta(seconds=10))),
-            index,
-        )
-        for index in range(12)
-    )
-    native = _native_input(features)
-    assert isinstance(native, TomorrowNativeInput)
-    writer = _PairWriter()
-    comparator = TomorrowProfileComparator(
-        TOMORROW_PROFILE_COMPARISON_SPEC,
-        policy,
-        TomorrowProductionModelScoringService(_V1NegativePredictor()),
-        TomorrowProductionModelScoringService(_V2NegativePredictor()),
-        writer,
-    )
-
-    manifest = comparator.compare(TomorrowProfileResearchInput("decision:v1", "d" * 64, "v1", native))
-
-    assert manifest.common_candidate_count == 12
-    assert len(manifest.pairs) == 12
-    assert all(not pair.v1.selected and not pair.v2.selected for pair in manifest.pairs)
-    assert manifest.deepseek_request_delta == 0
-    assert manifest.production_authority is False
-    assert comparator.compare(TomorrowProfileResearchInput("decision:hybrid", "e" * 64, "v1", native)) == manifest
-
-
-def test_profile_comparator_keeps_a_scorable_candidate_with_missing_atr(
-    application_feature_factory,
-) -> None:
-    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
-    feature = _with_model_features(
-        _verified_feature(application_feature_factory("600001", EVALUATED_AT - timedelta(seconds=10))),
-        1,
-    )
-    values = dict(feature.values)
-    values.pop("atr20_pct", None)
-    native = _native_input((replace(feature, values=values),))
-    assert isinstance(native, TomorrowNativeInput)
-    comparator = TomorrowProfileComparator(
-        TOMORROW_PROFILE_COMPARISON_SPEC,
-        policy,
-        TomorrowProductionModelScoringService(_V1NegativePredictor()),
-        TomorrowProductionModelScoringService(_V2NegativePredictor()),
-        _PairWriter(),
-    )
-
-    manifest = comparator.compare(TomorrowProfileResearchInput("decision:v1", "d" * 64, "v1", native))
-
-    assert manifest.common_candidate_count == 1
-    assert manifest.pairs[0].atr20_pct is None
 
 
 def test_d25_native_local_and_valid_facts_publish_one_parented_hybrid(

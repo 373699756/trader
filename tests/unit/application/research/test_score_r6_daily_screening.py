@@ -74,7 +74,7 @@ def _rows() -> tuple[ScoreR6DailyRow, ...]:
 def test_daily_trend_selects_on_training_and_evaluates_one_frozen_candidate_on_validation() -> None:
     report = ScoreR6DailyScreeningService(_Evidence(_rows()), minimum_split_days=2).execute(SCORE_R6_DAILY_SPEC)
 
-    assert report.status == "forward_required"
+    assert report.status == "historical_validated"
     assert report.historical_gate_passed is True
     assert report.selected_candidate is not None
     assert report.training.selected_days == 4

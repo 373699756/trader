@@ -3,78 +3,53 @@ from __future__ import annotations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-STRATEGY = ROOT / "docs" / "recommendation-strategy.md"
+STRATEGY = ROOT / "docs/recommendation-strategy.md"
 
 
-def test_score_research_strategy_freezes_candidate_recall_and_challenger_formulas() -> None:
+def test_score_research_uses_ordered_historical_splits_and_bounded_terminal_states() -> None:
     strategy = " ".join(STRATEGY.read_text(encoding="utf-8").split())
 
     for token in (
-        "coverage = sum(known_weight)",
-        "coverage_shrunk_score = 50 + coverage * (known_weighted_mean - 50)",
-        "optimistic_component_score = sum(known_weight * known_score) + sum(missing_weight * 100)",
-        "hybrid_upper_bound = clamp(local_upper_bound * 0.68",
-        "active-set",
-        "candidate_upper_bound",
-        "continuous_entry",
-        "coverage_shrink",
-        "heat_weak_structure",
-        "combined_v1",
-        "不超过 30% 及所有既有资格门",
-        "未超过板块硬热度上限但落入预注册高热带",
-    ):
-        assert token in strategy
-
-
-def test_score_r4_preregisters_entry_and_heat_thresholds_before_replay() -> None:
-    strategy = " ".join(STRATEGY.read_text(encoding="utf-8").split())
-
-    for token in (
-        "score_r4_preregistered_parameters_v1",
-        "score_r4_entry_parameters_v1",
-        "score_r4_heat_parameters_v1",
-        "`ma5_ma10_spread_pct`",
-        "-0.50% | 0.00% | 0.50%",
-        "0.60 | 0.70 | 0.80",
-        "1.80 | 2.00 | 2.20",
-        "65.00 | 70.00 | 75.00",
-        "`[6.00%, 8.00%]`",
-        "`[12.00%, 16.00%]`",
-        "`close_location <= 35.00`",
-        "`tail_return_30m_pct <= -0.50%`",
-        "`intraday_drawdown_pct >= 3.00%`",
-        "R4 只生成配对 manifest，不执行 R5 bootstrap、Holm 或晋级判断",
-    ):
-        assert token in strategy
-
-
-def test_score_research_strategy_freezes_pairing_bootstrap_and_promotion_boundary() -> None:
-    strategy = " ".join(STRATEGY.read_text(encoding="utf-8").split())
-
-    for token in (
-        "同日同股贡献配对",
-        "未选中股票的组合权重为 0",
-        "非循环连续区块",
-        "(extreme_count + 1) / (10000 + 1)",
-        "Holm step-down",
-        "p_i <= 0.05 / (5 - i + 1)",
+        "按交易日排序",
+        "禁止随机拆分",
+        "embargo",
+        "historical_data_insufficient",
         "historical_rejected",
-        "forward_collecting",
-        "promotion_eligible",
-        "2026-11-02",
-        "2026-11-27",
-        "不得因实现了 collector 就宣称前向证据完成",
-        "`no_decision`",
-        "才是有效零暴露日",
+        "historical_validated",
+        "合法空仓日",
     ):
         assert token in strategy
 
 
-def test_score_research_strategy_keeps_production_unchanged_until_manual_release() -> None:
+def test_score_research_keeps_runtime_outcomes_out_of_validation() -> None:
     strategy = " ".join(STRATEGY.read_text(encoding="utf-8").split())
 
-    assert "weight(lambda) = (1 - lambda) * current_weight + lambda * candidate_weight" in strategy
-    assert "Score-R6 不得 复用 Score-R0 的 40+20 评价窗口" in strategy
-    assert "PromotionDossier" in strategy
-    assert "研究状态变化不得直接写活动策略配置" in strategy
-    assert "DeepSeek 物理 HTTP 请求增量必须为 0" in strategy
+    assert "线上 T+1 结算只用于正式推荐历史与运行监控" in strategy
+    assert "不进入评分训练、校准、历史门禁、自动调参或生产切换" in strategy
+
+
+def test_historical_reports_are_tamper_evident_and_non_production() -> None:
+    strategy = " ".join(STRATEGY.read_text(encoding="utf-8").split())
+
+    for token in (
+        "报告必须绑定规范、父归档、manifest、模型/候选和证据 hash",
+        "同内容重放幂等",
+        "不同内容冲突",
+        "production_authority=false",
+        "不授权后台自动更新",
+    ):
+        assert token in strategy
+
+
+def test_historical_risk_probability_gate_is_fixed_before_production_use() -> None:
+    strategy = " ".join(STRATEGY.read_text(encoding="utf-8").split())
+
+    for token in (
+        "tomorrow_v2_historical_risk_probability_v1",
+        "MAE / ATR20 <= -1.5",
+        "60 日训练、20 日校准、40 日独立检验",
+        "Brier 分数严格优于",
+        "ECE 不超过 0.05",
+        "loss_probability_status=not_modeled",
+    ):
+        assert token in strategy

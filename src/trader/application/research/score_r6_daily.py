@@ -75,7 +75,7 @@ class ScoreR6DailyScreeningService:
         failures = _validation_failures(validation_metrics, baseline_validation, spec, minimum_days)
         passed = not failures
         return ScoreR6DailyReport(
-            status="forward_required" if passed else "historical_rejected",
+            status="historical_validated" if passed else "historical_rejected",
             research_identity=spec.research_identity,
             research_spec_hash=spec.content_hash,
             archive=archive,

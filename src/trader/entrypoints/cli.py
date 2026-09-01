@@ -21,6 +21,7 @@ _COMMAND_GROUPS = {
         "research-r6-stability-screen",
         "research-tomorrow-p2-screen",
         "research-tomorrow-v1-v2-holdout",
+        "research-tomorrow-v2-risk-validation",
     ),
 }
 
@@ -83,14 +84,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Evaluate and seal both packaged Tomorrow profiles on the same H0 validation rows.",
     )
     subparsers.add_parser(
-        "research-tomorrow-profile-report",
-        help="Read paired forward evidence and emit the preregistered manual-review report.",
+        "research-tomorrow-v2-risk-validation",
+        help="Fit, calibrate, and seal the historical-only V2 severe-loss probability report.",
     )
-    dossier = subparsers.add_parser(
-        "research-r7-dossier",
-        help="Recompute eligible Score-R6 evidence and seal a pending human-review dossier.",
-    )
-    dossier.add_argument("--research-identity", required=True)
     return parser
 
 
@@ -122,7 +118,6 @@ def main(argv: list[str] | None = None) -> int:
             runtime,
             ResearchCommandOptions(
                 workers=int(getattr(args, "workers", 5)),
-                research_identity=str(getattr(args, "research_identity", "")),
             ),
         )
     return _run_config_validation(runtime, profile_override)

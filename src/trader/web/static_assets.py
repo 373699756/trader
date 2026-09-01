@@ -6,8 +6,8 @@ from flask import url_for
 
 from trader.application.decisions.decision_queries import DECISION_VIEW_SCHEMA_VERSION
 
-STATUS_SCHEMA_VERSION = "v2_status_v10"
-WEB_ASSET_REVISION = "release-contract-2026-08-31-v11"
+STATUS_SCHEMA_VERSION = "v2_status_v11"
+WEB_ASSET_REVISION = "release-contract-2026-09-01-v12"
 
 
 def web_asset(filename: str) -> str:

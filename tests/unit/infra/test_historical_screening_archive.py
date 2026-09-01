@@ -119,6 +119,8 @@ def test_history_archive_screening_uses_only_rows_with_61_inputs_and_5_future_la
     days = archive.screening_days(SCORE_H0_V1_SPEC)
     r6_rows = archive.score_r6_rows(SCORE_H0_V1_SPEC)
     daily_rows = archive.score_r6_daily_rows(SCORE_H0_V1_SPEC)
+    p2_rows = archive.tomorrow_historical_p2_rows(SCORE_H0_V1_SPEC)
+    risk_rows = archive.tomorrow_historical_risk_rows(SCORE_H0_V1_SPEC)
 
     assert len(days) == 1
     assert days[0].trade_date == start + timedelta(days=60)
@@ -137,3 +139,7 @@ def test_history_archive_screening_uses_only_rows_with_61_inputs_and_5_future_la
     assert [row.trend_efficiency_score for row in daily_rows] == sorted(
         row.trend_efficiency_score for row in daily_rows
     )
+    assert len(risk_rows) == len(p2_rows) == 150
+    assert all(risk.atr20_pct > 0.0 for risk in risk_rows)
+    assert all(risk.gross_return - risk.benchmark_return == risk.gross_excess_return for risk in risk_rows)
+    assert not hasattr(p2_rows[0], "atr20_pct")

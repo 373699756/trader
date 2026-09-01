@@ -23,8 +23,6 @@ usage() {
     "离线研究（仅在明确执行研究任务时使用）:" \
     "  ./run.sh research-history        下载/续传历史归档后运行固定回测" \
     "  ./run.sh research-screen         依次运行并封存五项历史筛选/诊断" \
-    "  ./run.sh research-r7-dossier --research-identity <ID>" \
-    "                                                生成待人工审查的 R7 档案" \
     "" \
     "所有命令都可追加 --profile v1|v2；未指定时为 V1。" \
     "" \
@@ -52,7 +50,7 @@ while (($#)); do
       SCORING_PROFILE="${1#--profile=}"
       shift
       ;;
-    help|-h|--help|serve|app|check|research-history|research-screen|research-r7-dossier)
+    help|-h|--help|serve|app|check|research-history|research-screen)
       if ((MODE_SET)); then
         FORWARD_ARGS+=("$1")
       else
@@ -88,7 +86,7 @@ case "$MODE" in
   serve|app)
     COMMAND_KIND="server"
     ;;
-  check|research-history|research-screen|research-r7-dossier)
+  check|research-history|research-screen)
     COMMAND_KIND="cli"
     ;;
   *)

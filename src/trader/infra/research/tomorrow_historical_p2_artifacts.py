@@ -54,7 +54,7 @@ class TomorrowHistoricalP2ArtifactStore:
                 "status": "not_run",
                 "candidate_id": TOMORROW_HISTORICAL_P2_SPEC.candidate.candidate_id,
                 "failure_reasons": [],
-                "forward_preregistration_eligible": False,
+                "validation_mode": "historical_only",
                 "production_authority": False,
             }
         return {
@@ -62,7 +62,7 @@ class TomorrowHistoricalP2ArtifactStore:
             "status": report.get("status", "historical_rejected"),
             "candidate_id": report.get("candidate_id", ""),
             "failure_reasons": report.get("failure_reasons", []),
-            "forward_preregistration_eligible": report.get("status") == "historical_passed",
+            "validation_mode": "historical_only",
             "production_authority": False,
         }
 

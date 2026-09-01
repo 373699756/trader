@@ -235,11 +235,8 @@ def test_identity_and_audit_payloads_have_one_explicit_field_projection() -> Non
     assert ".__dict__" not in columnar
 
 
-def test_tomorrow_profile_serializers_use_explicit_public_field_whitelists() -> None:
-    paths = (
-        SOURCE_ROOT / "infra/persistence/tomorrow_profile_comparison_codec.py",
-        SOURCE_ROOT / "infra/research/tomorrow_profile_holdout_artifacts.py",
-    )
+def test_tomorrow_holdout_serializer_uses_an_explicit_public_field_whitelist() -> None:
+    paths = (SOURCE_ROOT / "infra/research/tomorrow_profile_holdout_artifacts.py",)
     violations: list[str] = []
     for path in paths:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

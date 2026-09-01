@@ -5,20 +5,13 @@ import json
 import os
 import subprocess
 import sys
-from datetime import date, datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import pytest
 
 import trader.entrypoints.cli as cli_module
-import trader.entrypoints.research_commands as research_commands_module
 from trader.entrypoints.cli import build_parser, main
 from trader.entrypoints.server import build_parser as build_server_parser
-from trader.infra.persistence.research_trace import (
-    SQLiteV2ResearchTraceStore,
-    V2ResearchTradeDateObservation,
-)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -71,7 +64,8 @@ def test_cli_exposes_current_v2_maintenance_and_explicit_offline_research_comman
         "research-r6-daily-screen",
         "research-r6-stability-screen",
         "research-tomorrow-p2-screen",
-        "research-r7-dossier",
+        "research-tomorrow-v1-v2-holdout",
+        "research-tomorrow-v2-risk-validation",
     ):
         assert retained in help_text
 
@@ -83,17 +77,9 @@ def test_cli_module_does_not_eagerly_load_research_implementations() -> None:
 def test_server_module_loads_only_authorized_background_research_consumers() -> None:
     allowed = {
         "trader.application.research",
-        "trader.application.research.profile_evidence_ports",
         "trader.application.research.research_audit",
         "trader.application.research.research_coordination",
-        "trader.application.research.tomorrow_profile_comparison",
-        "trader.application.research.tomorrow_profile_reporting",
-        "trader.application.research.tomorrow_profile_settlement",
         "trader.application.research.v2_research_runtime",
-        "trader.domain.research",
-        "trader.domain.research.baseline",
-        "trader.domain.research.paired_statistics",
-        "trader.domain.research.tomorrow_profile_comparison",
     }
 
     assert _research_modules_loaded_by("trader.entrypoints.server") <= allowed
@@ -125,7 +111,7 @@ def test_run_script_exposes_only_the_aggregated_public_workflows() -> None:
     assert "check" in shell
     assert "research-history" in shell
     assert "research-screen" in shell
-    assert "research-r7-dossier" in shell
+    assert "research-r7-dossier" not in shell
     assert "serve|app" in shell
     for internal_stage in (
         "validate-config",
@@ -137,6 +123,8 @@ def test_run_script_exposes_only_the_aggregated_public_workflows() -> None:
         "research-r6-daily-screen",
         "research-r6-stability-screen",
         "research-tomorrow-p2-screen",
+        "research-tomorrow-v1-v2-holdout",
+        "research-tomorrow-v2-risk-validation",
     ):
         assert internal_stage not in shell
 
@@ -160,7 +148,7 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
     assert "./run.sh research-history        下载/续传历史归档后运行固定回测" in completed.stdout
     assert "./run.sh research-screen         依次运行并封存五项历史筛选/诊断" in completed.stdout
-    assert "research-r7-dossier --research-identity <ID>" in completed.stdout
+    assert "research-r7-dossier" not in completed.stdout
     assert "所有命令都可追加 --profile v1|v2；未指定时为 V1" in completed.stdout
     assert "用法: ./run.sh [serve|" not in completed.stdout
     assert not missing_venv.exists()
@@ -278,39 +266,6 @@ def test_run_script_rejects_an_unknown_profile_before_environment_setup(tmp_path
     assert not missing_venv.exists()
 
 
-def test_run_script_preserves_offline_research_argument_forwarding(tmp_path: Path) -> None:
-    venv_bin = tmp_path / "venv" / "bin"
-    venv_bin.mkdir(parents=True)
-    _write_fake_entrypoint(venv_bin / "python", "exit 99")
-    _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
-    _write_fake_entrypoint(venv_bin / "trader-cli", "printf 'cli:%s\\n' \"$*\"")
-    config = tmp_path / "runtime.json"
-
-    completed = subprocess.run(
-        (
-            "bash",
-            str(ROOT / "run.sh"),
-            "research-r7-dossier",
-            "--research-identity",
-            "score_r6_forward_test",
-        ),
-        cwd=ROOT,
-        env={
-            **os.environ,
-            "VENV_DIR": str(venv_bin.parent),
-            "TRADER_CONFIG": str(config),
-        },
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert completed.returncode == 0
-    assert completed.stdout == (
-        f"cli:--config {config} --profile v1 research-r7-dossier --research-identity score_r6_forward_test\n"
-    )
-
-
 @pytest.mark.parametrize(
     ("command", "extra", "expected_stages"),
     (
@@ -329,6 +284,7 @@ def test_run_script_preserves_offline_research_argument_forwarding(tmp_path: Pat
                 "research-r6-stability-screen",
                 "research-tomorrow-p2-screen",
                 "research-tomorrow-v1-v2-holdout",
+                "research-tomorrow-v2-risk-validation",
             ),
         ),
     ),
@@ -382,7 +338,7 @@ def test_research_screen_group_runs_every_stage_against_an_isolated_empty_archiv
     assert main(["--config", str(config), "--profile", "v1", "research-screen"]) == 1
 
     payloads = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    assert len(payloads) == 6
+    assert len(payloads) == 7
     assert payloads[-1]["command"] == "research-screen"
     assert payloads[-1]["profile"] == "v1"
     assert [item["command"] for item in payloads[-1]["stages"]] == [
@@ -391,26 +347,9 @@ def test_research_screen_group_runs_every_stage_against_an_isolated_empty_archiv
         "research-r6-stability-screen",
         "research-tomorrow-p2-screen",
         "research-tomorrow-v1-v2-holdout",
+        "research-tomorrow-v2-risk-validation",
     ]
     assert all(item["exit_code"] == 1 for item in payloads[-1]["stages"])
-
-
-def test_tomorrow_profile_report_is_read_only_when_evidence_is_missing(tmp_path: Path, capsys) -> None:
-    runtime = json.loads((ROOT / "config/v2/runtime.json").read_text(encoding="utf-8"))
-    runtime_dir = tmp_path / "runtime"
-    runtime["runtime_dir"] = str(runtime_dir)
-    runtime["strategy_config"] = str(ROOT / "config/v2/strategy.json")
-    runtime["long_watchlist"] = str(ROOT / "config/v2/long_watchlist.json")
-    config = tmp_path / "runtime.json"
-    config.write_text(json.dumps(runtime), encoding="utf-8")
-
-    assert main(["--config", str(config), "research-tomorrow-profile-report"]) == 1
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["initialized"] is False
-    assert payload["state"] == "collecting"
-    assert payload["required_independent_days"] == 522
-    assert not runtime_dir.exists()
 
 
 def test_powershell_help_uses_the_same_command_groups() -> None:
@@ -421,12 +360,7 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert "所有命令都可追加 --profile v1|v2；未指定时为 V1" in powershell
 
 
-def test_research_status_does_not_create_runtime_files(tmp_path: Path, capsys, monkeypatch) -> None:
-    monkeypatch.setattr(
-        research_commands_module,
-        "_shanghai_now",
-        lambda: datetime(2026, 8, 20, 15, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
-    )
+def test_research_status_is_historical_only_and_does_not_create_runtime_files(tmp_path: Path, capsys) -> None:
     runtime = json.loads((ROOT / "config/v2/runtime.json").read_text(encoding="utf-8"))
     runtime_dir = tmp_path / "runtime"
     runtime["runtime_dir"] = str(runtime_dir)
@@ -436,110 +370,33 @@ def test_research_status_does_not_create_runtime_files(tmp_path: Path, capsys, m
     assert main(["--config", str(config), "research-status"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
+    assert payload["schema_version"] == "v2_research_readiness_v7"
+    assert payload["validation_mode"] == "historical_only"
     assert payload["recorded_trade_dates"] == []
     assert payload["outcomes"]["initialized"] is False
     assert payload["score_r6_executable"] is False
-    assert payload["score_r6_screening_executable"] is False
-    assert payload["score_r6_daily"] == {
-        "failure_reasons": [],
-        "historical_gate_passed": False,
-        "promotion_authority": False,
-        "report_hash": "",
-        "selected_candidate_hash": "",
-        "status": "not_run",
-    }
-    assert payload["score_r6_stability"] == {
-        "diagnostic_gate_passed": False,
-        "evidence_class": "reused_observed_validation_window",
-        "failure_reasons": [],
-        "promotion_authority": False,
-        "report_hash": "",
-        "selected_candidate_hash": "",
-        "status": "not_run",
-    }
-    assert payload["tomorrow_p2"] == {
-        "candidate_id": "daily_reconstructible_ensemble_v1",
-        "failure_reasons": [],
-        "forward_preregistration_eligible": False,
+    assert payload["blockers"] == ["score_h0_archive_coverage_incomplete"]
+    assert payload["tomorrow_p2"]["validation_mode"] == "historical_only"
+    assert payload["tomorrow_v2_historical_risk"] == {
+        "model_artifact_hash": "",
         "production_authority": False,
         "report_hash": "",
         "status": "not_run",
     }
-    assert payload["blockers"] == ["score_h0_archive_coverage_incomplete"]
-    assert payload["promotion_blockers"] == ["score_r6_preregistered_forward_evidence_missing"]
-    assert payload["score_r7"] == {"dossier_count": 0, "dossiers": []}
-    assert payload["schema_version"] == "v2_research_readiness_v5"
-    assert payload["research_state"] == "historical_collecting"
-    assert payload["active_research"]["research_identity"] == "score_p0_v2"
-    assert payload["active_research"]["historical_window"] == {
-        "start": "2026-08-21",
-        "end": "2026-10-23",
-        "planned_trade_dates": 40,
-        "recorded_trade_dates": 0,
-        "missed_trade_dates": [],
-        "maximum_attainable_trade_dates": 40,
-        "next_planned_trade_date": "2026-08-21",
-        "complete": False,
-        "recoverable": True,
-    }
-    assert payload["active_research"]["forward_window"] == {
-        "start": "2026-10-26",
-        "end": "2026-11-20",
-        "planned_trade_dates": 20,
-        "recorded_trade_dates": 0,
-        "missed_trade_dates": [],
-        "maximum_attainable_trade_dates": 20,
-        "next_planned_trade_date": "2026-10-26",
-        "complete": False,
-        "recoverable": True,
-    }
-    assert payload["legacy_research"]["research_identity"] == "score_p0_v1"
-    assert not runtime_dir.exists()
-
-
-def test_research_status_reports_irrecoverable_missed_fixed_dates(tmp_path: Path, capsys, monkeypatch) -> None:
-    runtime = json.loads((ROOT / "config/v2/runtime.json").read_text(encoding="utf-8"))
-    runtime_dir = tmp_path / "runtime"
-    runtime["runtime_dir"] = str(runtime_dir)
-    config = tmp_path / "runtime.json"
-    config.write_text(json.dumps(runtime), encoding="utf-8")
-    monkeypatch.setattr(
-        research_commands_module,
-        "_shanghai_now",
-        lambda: datetime(2026, 8, 26, 15, 5, tzinfo=ZoneInfo("Asia/Shanghai")),
-    )
-    monkeypatch.setattr(
-        SQLiteV2ResearchTraceStore,
-        "inspect_first_observations",
-        lambda self, *, limit=40: (
-            V2ResearchTradeDateObservation(
-                date(2026, 8, 26),
-                datetime(2026, 8, 26, 14, 51, tzinfo=ZoneInfo("Asia/Shanghai")),
-            ),
-            V2ResearchTradeDateObservation(
-                date(2026, 8, 21),
-                datetime(2026, 8, 21, 14, 40, tzinfo=ZoneInfo("Asia/Shanghai")),
-            ),
-        ),
-    )
-
-    assert main(["--config", str(config), "research-status"]) == 0
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["schema_version"] == "v2_research_readiness_v5"
-    assert payload["research_state"] == "historical_collection_failed"
-    assert payload["active_research"]["evaluation_blocker"] == "score_p0_v2_historical_planned_dates_missed"
-    assert payload["active_research"]["historical_window"] == {
-        "start": "2026-08-21",
-        "end": "2026-10-23",
-        "planned_trade_dates": 40,
-        "recorded_trade_dates": 1,
-        "missed_trade_dates": ["2026-08-24", "2026-08-25", "2026-08-26"],
-        "maximum_attainable_trade_dates": 37,
-        "next_planned_trade_date": "2026-08-27",
-        "complete": False,
-        "recoverable": False,
-    }
+    assert payload["retired_research"] == [
+        {
+            "blocker": "historical_point_in_time_missing",
+            "research_identity": "score_p0_v1",
+            "status": "historical_rejected",
+        },
+        {
+            "blocker": "fixed_historical_dates_missed",
+            "research_identity": "score_p0_v2",
+            "status": "historical_collection_failed",
+        },
+    ]
+    for retired in ("active_research", "promotion_blockers", "score_r7", "tomorrow_profile_comparison"):
+        assert retired not in payload
     assert not runtime_dir.exists()
 
 
@@ -610,32 +467,16 @@ def test_research_r6_stability_screen_fails_closed_without_the_bound_parent(tmp_
     assert not (runtime_dir / "score-r6-stability").exists()
 
 
-def test_research_r7_dossier_fails_closed_without_eligible_evidence(tmp_path: Path, capsys) -> None:
-    runtime = json.loads((ROOT / "config/v2/runtime.json").read_text(encoding="utf-8"))
-    runtime_dir = tmp_path / "runtime"
-    runtime["runtime_dir"] = str(runtime_dir)
-    config = tmp_path / "runtime.json"
-    config.write_text(json.dumps(runtime), encoding="utf-8")
-
-    assert (
-        main(
-            [
-                "--config",
-                str(config),
-                "research-r7-dossier",
-                "--research-identity",
-                "score_r6_forward_20261201_v1",
-            ]
-        )
-        == 1
-    )
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload == {"reason": "score_r7_evidence_invalid", "status": "blocked"}
-    assert not runtime_dir.exists()
-
-
-@pytest.mark.parametrize("command", ("migrate-v17", "recommendation-archive", "tomorrow-cutover-evidence"))
+@pytest.mark.parametrize(
+    "command",
+    (
+        "migrate-v17",
+        "recommendation-archive",
+        "tomorrow-cutover-evidence",
+        "research-r7-dossier",
+        "research-tomorrow-profile-report",
+    ),
+)
 def test_removed_legacy_cli_commands_are_rejected(command: str) -> None:
     with pytest.raises(SystemExit) as error:
         build_parser().parse_args([command])
