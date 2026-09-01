@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求继续执行第 15 节 Codex B 未完成任务。本轮复核确认 Codex B 的过滤消融、透明候选、Holm 确认和
+  Tomorrow 原始预测联合工程代码已经封存；但 Codex A 的 H1 真实归档尚未初始化，15.1.26 标签/切分与
+  15.1.27 成熟残差账本没有可消费父工件，因此 15.1.28–15.1.30 保持未运行，避免伪造历史 point-in-time
+  收益证据。策略文档同步记录该阻塞状态；未修改生产配置、V1/V2/C3 工件或终端留出。
+
 - 用户要求执行推荐策略第 15 节 Codex A 未完成任务。现状确认 H1 覆盖与标签预注册已有骨架，但
   `historical_prediction_residual_ledger_v1` owner 完全缺失，Tomorrow C3 只有可手工构造的数据类，尚无
   H1 日线特征/成熟标签接线、固定五候选训练、5 折 OOF 或可执行 Ridge/LightGBM adapter。本批新增两阶段

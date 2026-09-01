@@ -83,6 +83,29 @@ def test_candidate_missing_and_unknown_score_are_not_conflated_with_zero():
     assert missing.matched_rules == ("candidate_missing",)
 
 
+def test_ablation_report_rejects_unknown_terminal_status():
+    rows = _rows()
+    report = run_filter_recall_ablation(
+        rows, strategy="tomorrow", development_dates=tuple(row.trade_date for row in rows)
+    )
+
+    with pytest.raises(ValueError, match="terminal status"):
+        type(report)(
+            strategy=report.strategy,
+            development_dates=report.development_dates,
+            rows=report.rows,
+            profitable_denominator=report.profitable_denominator,
+            baseline_recall=report.baseline_recall,
+            baseline_severe_loss_interception=report.baseline_severe_loss_interception,
+            contributions=report.contributions,
+            interactions=report.interactions,
+            recommendations=report.recommendations,
+            terminal_status="invalid",  # type: ignore[arg-type]
+            baseline_recall_50bp=report.baseline_recall_50bp,
+            baseline_metrics=report.baseline_metrics,
+        )
+
+
 def test_severe_loss_interception_and_resource_savings_use_fixed_population():
     rows = list(_rows())
     rows[0] = FilterAblationRow(

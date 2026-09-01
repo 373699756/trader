@@ -300,6 +300,8 @@ class FilterRecallAblationReport:
     def __post_init__(self) -> None:
         if not self.strategy or not self.development_dates or self.rows < 0:
             raise ValueError("filter ablation report requires strategy, dates, and rows")
+        if self.terminal_status not in {"complete", "historical_data_insufficient"}:
+            raise ValueError("filter ablation terminal status is invalid")
         if self.profitable_denominator < 0 or self.profitable_denominator > self.rows:
             raise ValueError("filter ablation profitable denominator is invalid")
         if self.production_authority or self.schema_version != "historical_filter_recall_ablation_report_v1":
