@@ -6,6 +6,13 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户确认进一步精简 Tomorrow V3 历史训练契约：目标命令改为语义明确且当前尚未实现的
+  `./run.sh train-tomorrow`，一次调用连续执行全部可用训练/确认/两级留出并支持原子断点续跑；结果目录
+  对用户只公开合并数据/运行/验证信息的 `report.json` 和唯一模型结果 `model.json`，全量特征、标签及
+  OOF 证据改为内部 `evidence/` 日期分区 Parquet。主程序不读取研究目录，只有两级留出通过和再次授权后，
+  独立发布批次才把 `model.json` 转换为 wheel 模型资源。
+  `Regression-Key: tomorrow-v3-single-command-two-artifact-contract-v1`。
+
 - 用户要求执行推荐策略第 15.1.25 节，并明确所有荐股评分/训练只能消费历史 point-in-time 数据。新增独立
   `score_h1_point_in_time_v1` 类型化规范、Today 11:20 与 Tomorrow/D25 14:50 锚点记录、参数化来源能力探针
   port、有界 1600 交易日下载/断点续传服务，以及独立 `score-h1-point-in-time` SQLite 归档。股票池、逐股
@@ -21,8 +28,8 @@ All notable changes to this project are documented here.
   A 独占 H1/标签/残差账本与 C3，B 独占过滤/透明候选/确认与 V3 联合器，C 独占 Today/Tomorrow/D25
   终端留出及跨策略结论，D 独占工件状态机、共享集成、单一训练命令和条件式生产适配；四个波次允许基于
   类型化 port/fixture 并行编码，但真实数据、确认和留出严格等待父工件 SHA-256。同步把 Tomorrow 新训练
-  的公开入口收敛为无阶段参数的 `./run.sh research-tomorrow`，每次只推进一个安全封存阶段且不包含自动
-  promotion。修正上游拒绝/数据不足导致终端章节永久阻塞、终态语义和容量/状态分层不一致；V1/V2 工程
+  的目标入口最终收敛为无阶段参数、当前尚未实现的 `./run.sh train-tomorrow`，一次调用连续完成完整可用
+  训练链且不包含自动 promotion。修正上游拒绝/数据不足导致终端章节永久阻塞、终态语义和容量/状态分层不一致；V1/V2 工程
   继续冻结，V3 仍无生产权限，过滤证据不完整股票继续禁止进入模型推理。
   `Regression-Key: four-lane-tomorrow-research-roadmap-v1`。
 
@@ -43,6 +50,11 @@ All notable changes to this project are documented here.
   收缩；合法空推荐仍保留真实候选分母。`Regression-Key: scoring-hot-path-efficiency-baseline-v1`。
 
 ### Verification
+
+- `tomorrow-v3-single-command-two-artifact-contract-v1`：两份权威文档的相关定向契约 26 项通过，覆盖
+  单一目标命令、两个对外工件、内部 Parquet 证据、V1/V2/C3 原始预测联合、独立生产授权和 V3 profile
+  未激活；两个受影响契约文件的 Ruff format/check（`--no-cache`）通过，`git diff --check` 通过。
+  本批是文档与契约更新，未执行真实历史下载、训练、收益验证、模型发布或主程序 V3 装配。
 
 - 15.1.25 定向验证：H1 规范、能力探针、下载服务和独立 SQLite manifest 单元测试 8 项通过；覆盖同身份
   幂等、断点续传、策略隔离、未来/迟到/无时区/非 qfq 拒绝和数据库列篡改检测；受影响文件 Ruff 和 mypy
@@ -1765,8 +1777,11 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除已经只剩迁移索引、且与荐股权威文档形成重复入口的 `docs/trade.md`，同步删除其专属契约测试；
+  V3 训练、工件和主程序交接只由 `docs/recommendation-strategy.md` 第 15.1.35–15.1.37 节定义。
+
 - 从未完成路线物理删除历史 DeepSeek 盈利增量回测、自动模型族/参数搜索、净效用自动校准、组合黑盒
-  优化、独立逐股严重亏损概率模型、自动训练、Champion/Challenger 注册表、自动晋级、启动激活和自动
+  优化、独立逐股严重亏损概率模型、定时/在线/无人授权重训、Champion/Challenger 注册表、自动晋级、启动激活和自动
   回退章节，不保留隐藏 TODO 或未来自动接入入口。历史终端留出只产生
   `production_authority=false` 结论；任何候选即使通过，也必须由用户另立单一策略、单一候选的高风险
   人工生产变更批次。本批不删除或改变现有生产 DeepSeek、固定 68/32 融合、风险、阈值、冻结、配置、
@@ -3079,8 +3094,12 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
+- `tomorrow-v3-single-command-two-artifact-contract-v1`：`./run.sh train-tomorrow` 当前尚未实现，不能据此
+  启动训练或声明荐股收益提高；`model.json`、`report.json` 和 `evidence/` 也尚未由真实运行生成。命令、
+  训练器、两级留出和后续人工授权的 wheel 资源发布仍须按第 15.1.37 节后续波次完成。
+
 - `four-lane-tomorrow-research-roadmap-v1`：第 15.1.25–15.1.36 节仍未形成完整可运行链，当前不能执行文档
-  中尚未实现的 `./run.sh research-tomorrow`，也没有任何收益提高证据。H1 能否取得 95% 股票覆盖、至少
+  中尚未实现的 `./run.sh train-tomorrow`，也没有任何收益提高证据。H1 能否取得 95% 股票覆盖、至少
   1000 个共同有效交易日及独立 200 日 14:50 点时保留段仍待能力探针和下载审计；若免费来源不能证明
   11:20/14:50 点时字段，对应策略必须以 `historical_data_insufficient` 收口。C3/V3 即使日线代理通过，
   仍须独立 Tomorrow 点时留出和用户再次授权；V3 当前不得写配置、装入 wheel 或进入生产。

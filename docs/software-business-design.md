@@ -1507,8 +1507,9 @@ fail closed 并进入浏览器诊断。`market_data.market_changes` 只公开变
 启动看板，`serve` 只是等价显式写法；帮助必须把日常命令与显式离线 `research-*` 命令
 分组展示并逐项说明，不得再把所有名称压缩成一行伪装成必填启动参数。未知命令必须在创建虚拟环境、
 安装依赖或启动入口之前失败，并只给出日常无参数启动与帮助命令指引。Linux/macOS 与 PowerShell
-入口必须保持相同分类和默认语义；`run.bat` 继续委托 PowerShell 入口。公开脚本命令固定收敛为
-`serve`、`check`、`research-history`、`research-screen` 和 `research-tomorrow`；组合内的
+入口必须保持相同分类和默认语义；`run.bat` 继续委托 PowerShell 入口。当前公开脚本命令固定为
+`serve`、`check`、`research-history` 和 `research-screen`；计划新增但尚未实现的唯一 Tomorrow 训练
+命令为 `train-tomorrow`。组合内的
 底层 `trader-cli` 阶段继续保留用于测试、自动化和故障定位，但不再逐项暴露为 `run.sh` 命令。
 `trader-server` 成功绑定监听端口后、启动 Web 服务线程前，必须向标准输出打印一次带
 `http://` scheme 的实际浏览器 URL；默认配置显示
@@ -1549,9 +1550,10 @@ python3 -m venv .venv
 | 日常 | `./run.sh check` | 依次校验配置、只读投影研究状态并运行所选档位的离线性能门禁 |
 | 离线研究 | `./run.sh research-history [--workers 1..5]` | 下载/断点续传独立历史日线归档，然后只读运行固定训练/验证回测 |
 | 离线研究 | `./run.sh research-screen` | 依次运行 R6 历史、R6 日线、R6 稳定性、Tomorrow P2、V1/V2 H0 留出和 V2 严重亏损概率六项不可变筛选/诊断 |
-| 离线研究 | `./run.sh research-tomorrow` | 不接受阶段或 `run_id` 参数；从不可变状态推导身份，每次只推进 C3/V3 一个安全封存阶段，永不自动 promotion 或激活 V3 |
+| 计划中的离线训练 | `./run.sh train-tomorrow`（当前尚未实现） | 不接受阶段或 `run_id` 参数；一次调用连续完成全部可用 C3/V3 阶段，支持原子断点续跑，永不自动 promotion 或激活 V3 |
 
-四个组合命令由 `trader-cli` 单一编排器拥有顺序，Linux/macOS 与 PowerShell 不复制业务流程。普通阶段
+当前三个组合命令由 `trader-cli` 单一编排器拥有顺序；未来 `train-tomorrow` 实现后也必须由该编排器
+统一拥有。Linux/macOS 与 PowerShell 不复制业务流程。普通阶段
 返回非零时组合器仍运行剩余阶段，最终输出 `trader_command_group_v1` 汇总并以非零结束，使一次运行能
 看到完整门禁分布；配置解析失败等操作性异常立即失败关闭。历史阶段绑定原 H0/R6/P2 规范，统一接受的
 `--profile` 不会改写、重命名或重新封存研究工件。普通看盘不得要求任何 `research-*` 命令。未知命令
@@ -1774,13 +1776,17 @@ V2 严重亏损概率研究身份固定为 `tomorrow_v2_historical_risk_probabil
 只选择已批准 profile；V3 对外仍是组合根唯一注入的一个 `TomorrowModelPredictorPort`，内部 V1/V2/C3
 只产生映射前原始预测，最终只生成一次 `base_score`。当前生产仍只接受 `v1|v2`、默认 V1。
 
-该路线唯一公开脚本入口为 `./run.sh research-tomorrow`。用户不传内部阶段、`run_id`、模型参数或工件路径；
-隔离编排器只按父工件 hash 和封存状态推进开发训练、一次确认、一次日线代理留出或一次 14:50 点时留出
-中的下一个安全阶段。内部阶段命令只供测试和故障定位。该入口不包含 promotion，也不得修改活动配置、
-注册 V3 或装配生产 predictor；生产适配仍受两级留出和新人工授权阻塞。
+该路线计划中的唯一脚本入口为当前尚未实现的 `./run.sh train-tomorrow`。实现后用户不传内部阶段、`run_id`、模型参数或
+工件路径；隔离编排器从规范和输入 hash 推导身份，一次调用连续完成所有父工件已满足的开发训练、一次
+确认、一次日线代理留出和一次 14:50 点时留出。中断后同一命令从原子检查点继续，已有终态只返回原结果。
+最终目录 `.runtime/v2/research/tomorrow-v3/<run_id>/` 只公开 `report.json` 和 `model.json`；全量特征、
+标签及 OOF 预测位于内部 `evidence/` Parquet 分区。主程序不读取研究目录，只有两级留出通过并取得新授权
+后，独立发布批次才可把 `model.json` 转换为 hash 绑定 wheel 资源。该入口不包含 promotion，也不得修改
+活动配置、注册 V3 或装配生产 predictor。
 
 路线不实施历史 DeepSeek 盈利回测、自动模型搜索、自动调参、组合黑盒优化、独立逐股亏损概率模型、
-自动训练、自动晋级、启动激活或自动回退。仅证明历史证据早于决策锚点无法排除当前大模型训练语料已知
+定时/在线/无人授权重训、自动晋级、启动激活或自动回退；用户显式启动的 `train-tomorrow` 只能按封存
+规范确定性执行预注册训练链。仅证明历史证据早于决策锚点无法排除当前大模型训练语料已知
 后续结果，因此 DeepSeek 历史盈利增量不在本路线验证；生产固定复核、68/32 融合和每日 168 次物理请求
 上限不变。既有 H0/R6/P2 工件保持不可变，既有 139 日窗口只能作为已观察历史审计，不能重新标为独立
 盲测。不得恢复未来日采集，线上 T+1 outcome 只保存正式推荐历史与运行监控，不进入训练或参数更新。
