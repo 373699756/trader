@@ -133,6 +133,7 @@ def _status(services: UnifiedWebServices | None) -> RouteResponse:
             "phase": runtime.get("phase"),
             "runtime_started": bool(runtime.get("runtime_started", True)),
             "runtime_version": runtime.get("runtime_version"),
+            "company_research": _company_research(runtime),
             "scheduler": _mapping(runtime.get("scheduler")),
             "market_data": _market_data(runtime),
             "tomorrow_model": _tomorrow_model(runtime),
@@ -324,6 +325,47 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
         result["market_changes"] = changes
     if waterfall := _latency_waterfall(raw.get("latency_waterfall")):
         result["latency_waterfall"] = waterfall
+    return result
+
+
+def _company_research(runtime: Mapping[str, object]) -> dict[str, object]:
+    raw = runtime.get("company_research")
+    if not isinstance(raw, Mapping):
+        return {}
+    scalar_fields = (
+        "state",
+        "running_codes",
+        "pending_codes",
+        "completed_batches",
+        "partial_batches",
+        "failed_batches",
+        "deferred_codes",
+        "cooldown_codes",
+        "retry_wait_codes",
+        "next_retry_seconds",
+        "gated_offer_codes",
+        "short_circuited_batches",
+        "short_circuited_codes",
+        "tracked_code_gates",
+        "evicted_code_gates",
+        "batch_size",
+        "batch_budget_seconds",
+        "success_cooldown_seconds",
+        "trade_date",
+        "tracked_strategies",
+        "tracked_output_codes",
+        "next_periodic_at",
+        "intent_offer_count",
+        "periodic_offer_count",
+        "result_count",
+        "rescore_result_count",
+    )
+    result = {field: raw[field] for field in scalar_fields if field in raw and _json_scalar(raw[field])}
+    delays = raw.get("retry_delays_seconds")
+    if isinstance(delays, (tuple, list)):
+        result["retry_delays_seconds"] = [
+            numeric for value in delays[:8] if (numeric := _non_negative_number(value)) is not None
+        ]
     return result
 
 

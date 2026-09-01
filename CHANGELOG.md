@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求实时捕获 Web 长期显示的板块/公司风险降级、Tomorrow 0 分空仓和“最近错误 14 项”。公开状态
+  新增加法的 `company_research` 白名单投影，统一 Web 诊断升级为
+  `web_recommendation_health_v4`，可同时观察公司研究批次聚合、冻结快照降级，并把“零只已评分却声称
+  `no_positive_net_utility`”按未冻结错误/冻结受控降级报告。`Regression-Key: web-stale-frozen-degradation-truth-v1`。
+
 - 用户要求把硬过滤拆成两级，并完全执行“已知历史亏损、历史 ST、假账及其它权威永久负面事实的股票
   不再查询或下载逐股数据”的计划。新增类型化 `IssuerEligibilityRegistry`、追加写
   `issuer_eligibility_registry_v1` SQLite 事实库和点时解析规则；正式年度财报亏损、历史 ST/退市警示、
@@ -566,6 +571,13 @@ All notable changes to this project are documented here.
   前向封存状态、第二轮权重收缩和 `PromotionDossier` 人工晋级边界。
 
 ### Changed
+
+- Web 已登记 `strategy_history_coverage_partial`、`structured_risk_unavailable`、
+  `cross_source_deviation` 和 `history_data_degraded` 的精确中文说明，不再把这些已知事实合并为“部分数据
+  暂不可用”。错误详情标题分别显示活动问题与已恢复记录，避免把冻结快照降级、当前运行错误和已恢复
+  历史简单相加成“当前错误 14 项”。公开状态 schema 升级为 `v2_status_v13`，静态握手升级为
+  `release-contract-2026-09-01-v14`。统一 Web 诊断把外部 JSON 解析独立为类型化契约模块，完整保留公司
+  研究协调器的运行、排队、退避、短路、预算、周期提交与重评分聚合，同时保持单文件低于 1200 行。
 
 - 两份权威文档已把硬过滤固定为“一级永久资格过滤 -> 二级动态硬过滤”，并在历史自适应路线中插入已完成
   的第 15.1.22 节；原 H1 及后续章节顺延至 15.1.23–15.1.36。全市场批量结果先登记一级事实再发布，
@@ -1164,6 +1176,13 @@ All notable changes to this project are documented here.
   推荐原因或荐股漏斗。
 
 ### Fixed
+
+- 实时复现确认当前冻结 Tomorrow 记录在 12:41 生成，早于 12:44 的零分解释修复；它的
+  `coverage.evaluated_count=0`、复核候选 0、最高分 0，却携带 `no_positive_net_utility`，随后在 14:50
+  按不可覆盖规则冻结。读取端现在对该矛盾失败关闭：不篡改正式记录、不声称“评分已完成”，明确说明未
+  形成可评分候选并保持空仓等待下一交易日。正常且至少有一只已评分候选的负净效用空仓仍使用固定成本
+  说明；同一矛盾若出现在未冻结 current，则明确等待重新评分而不误称“冻结记录”。两者均不放宽成本、
+  历史、风险、73/78、68/32 或 DeepSeek 门禁。
 
 - 修复原单级 `hard_filter()` 必须等候选行情、历史和研究特征形成后才执行，导致本应永久排除的股票仍会
   消耗历史下载、公司研究、候选行情和分钟行情请求的问题。根因确认是历史预热和各逐股适配器没有共享的
@@ -1856,6 +1875,20 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- `web-stale-frozen-degradation-truth-v1`：宿主初始确认没有活动 `trader-server`，随后从基线
+  `f00bb17147a0ab87eb89ce3a2bc43a1369e4cae6` 通过 `./run.sh` 正常启动并加载
+  `v2_status_v12`/`release-contract-2026-09-01-v13`；修复前 live 诊断连续 6 轮读取成功，官方证券名录
+  5214/5214、腾讯报价和 Tushare 日线通过，历史预热由 307/360 推进到 343/360。失败优先回归确认旧
+  Web 不接受 v13 握手，状态 API 不公开公司研究，诊断漏报零评分语义矛盾；实现后 Web/诊断/API/架构
+  定向 64 项与 Node 页面状态契约通过。`make format-check`、`make lint`、`make type-check`、`make test`
+  和 `make package` 全部通过；重启后实机确认 `v2_status_v13`、
+  `release-contract-2026-09-01-v14`、公司研究完整白名单及冻结 Tomorrow 原身份。统一 `full` 诊断中 Web
+  按预期以 4 项 warning 降级，官方证券名录 5214/5214、历史、腾讯、Tushare 和 Firefox 子项通过；与真实
+  服务并发的首次离线性能子项因 overlay p95 102.803ms 超出 100ms 门限而失败，正常停止服务后同一隔离
+  门禁通过（p95 95.825ms），未改动无关 overlay 热路径。三档 Firefox 验收均无浏览器错误、页面级横向
+  溢出或布局重叠；仓库外 wheel 安装后可导入 0.2.0、执行 `trader-cli --help` 并读取模板、JavaScript、
+  CSS 与 SVG 资源。`git diff --check` 通过。
 
 - `two-level-permanent-issuer-eligibility-v1`：先新增契约和回归并确认因缺少资格领域/持久化模块而失败；
   实现后定向运行一级点时规则、SQLite 幂等/冲突/篡改、CLI、财报历史、历史预热、候选/Long/研究/
@@ -2905,6 +2938,12 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 当前 2026-09-01 正式记录已在 14:50 冻结，业务契约禁止用迟到数据或新代码覆盖；本批只修正读取说明，
+  下一交易日的新评分才会由现行分类逻辑生成新记录。实时拆源显示代表性科创板代码的腾讯 qfq 历史稳定
+  为空、东方财富 3 只 × 3 轮均失败，运行预热仍有 14 只唯一失败；公司风险历史也尚无足以宣称完整的
+  现场覆盖证据。这些真实数据缺口继续显式降级，不通过隐藏提示、把 raw 日线冒充 qfq、降低可靠度或
+  风险门槛解决；DeepSeek 未用于本次诊断，也不保证必然产生推荐或提高收益。
 
 - 一级名单能力已接入生产，但现有外部来源不能证明一次运行已经穷尽全市场全部历史 ST 和全部年度财报；
   名单会由已验证的当前/历史行情、正式财报、权威公司风险和人工配置持续追加，财报源以

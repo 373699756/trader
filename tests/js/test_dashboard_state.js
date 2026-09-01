@@ -104,10 +104,10 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.statusPayloadCompatibility({
-    schema_version: "v2_status_v12",
+    schema_version: "v2_status_v13",
     release: {
       decision_view_schema: "v2_decision_view_v3",
-      web_asset_revision: "release-contract-2026-09-01-v13",
+      web_asset_revision: "release-contract-2026-09-01-v14",
     },
   }))),
   { compatible: true, reason: "" },
@@ -434,6 +434,23 @@ assert.strictEqual(runtimeRows.includes("活动中"), true);
 const normalHealth = state.healthView({ health: { level: "normal", issue_count: 0 }, recent_errors: [] }, []);
 assert.strictEqual(normalHealth.badge, "正常 · 无最近错误");
 assert.strictEqual(normalHealth.primary, null);
+assert.strictEqual(
+  sandbox.window.TraderStatusView.issueSummaryTitle(degradedHealth.issues),
+  "最近错误 · 活动2项",
+);
+assert.strictEqual(
+  sandbox.window.TraderStatusView.issueSummaryTitle([
+    ...degradedHealth.issues,
+    {
+      code: "review:review_unavailable",
+      severity: "degraded",
+      strategy: "tomorrow",
+      stage: "review",
+      recoveryStatus: "recovered",
+    },
+  ]),
+  "最近错误 · 活动2项 / 已恢复1项",
+);
 assert.strictEqual(state.currentViewMatches("long", "current"), true);
 assert.strictEqual(state.currentViewMatches("today", "current"), true);
 assert.strictEqual(state.currentViewMatches("tomorrow", "current"), true);
@@ -638,6 +655,7 @@ assert.strictEqual(
   state.emptyRecommendationMessage(
     {
       strategy: "tomorrow",
+      coverage: { evaluated_count: 57 },
       selection_diagnostics: {
         empty_reason: "no_positive_net_utility",
         maximum_final_score: 0,
@@ -655,6 +673,29 @@ assert.strictEqual(
     },
   ),
   "评分已完成｜模型预测成本后净超额均未转正，按固定成本规则信号分为 0；本轮保持空仓，不生成正式推荐或观察项",
+);
+assert.strictEqual(
+  state.emptyRecommendationMessage({
+    strategy: "tomorrow",
+    frozen: true,
+    coverage: { evaluated_count: 0 },
+    selection_diagnostics: {
+      empty_reason: "no_positive_net_utility",
+      maximum_final_score: 0,
+      observation_floor: 73,
+      executable_threshold: 78,
+    },
+  }),
+  "冻结记录未形成可评分候选，不能证明成本后净超额均未转正；本轮保持空仓，等待下一交易日重新评分",
+);
+assert.strictEqual(
+  state.emptyRecommendationMessage({
+    strategy: "tomorrow",
+    frozen: false,
+    coverage: { evaluated_count: 0 },
+    selection_diagnostics: { empty_reason: "no_positive_net_utility" },
+  }),
+  "当前快照未形成可评分候选，不能证明成本后净超额均未转正；本轮保持空仓并等待重新评分",
 );
 assert.strictEqual(
   state.emptyRecommendationMessage(
@@ -1362,9 +1403,19 @@ assert.deepStrictEqual(
   JSON.parse(JSON.stringify(sandbox.window.TraderRender.reasonLabels([
     "main:board_data_reliability_below_threshold",
     "corporate_risk_history_unavailable",
-    "unknown_runtime_code",
+    "strategy_history_coverage_partial",
+    "structured_risk_unavailable",
+    "cross_source_deviation",
+    "history_data_degraded",
   ]))),
-  ["主板：板块数据可靠度不足", "公司风险历史暂不可核验", "部分数据暂不可用"],
+  [
+    "主板：板块数据可靠度不足",
+    "公司风险历史暂不可核验",
+    "候选历史数据覆盖不完整",
+    "结构化风险数据尚未就绪",
+    "跨源价格校验存在偏差",
+    "历史行情数据可靠度不足",
+  ],
 );
 assert.strictEqual(
   sandbox.window.TraderRender.statusErrorLabel(

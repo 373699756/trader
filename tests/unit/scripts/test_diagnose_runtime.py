@@ -186,11 +186,22 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
             0,
             12.5,
             {
-                "schema_version": "web_recommendation_health_v3",
+                "schema_version": "web_recommendation_health_v4",
                 "status": "passed",
                 "summary": {"error_count": 0, "warning_count": 0},
                 "findings": [],
-                "samples": [{"market": {"history_warmup": {"completed_count": 20}}}],
+                "samples": [
+                    {
+                        "market": {"history_warmup": {"completed_count": 20}},
+                        "company_research": {
+                            "state": "idle",
+                            "running_codes": 0,
+                            "pending_codes": 0,
+                            "completed_batches": 2,
+                            "tracked_output_codes": 12,
+                        },
+                    }
+                ],
             },
             None,
         ),
@@ -229,6 +240,13 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
     assert "999.0" not in rendered
     assert "secret vendor payload" not in rendered
     assert report["checks"][0]["latest_runtime"]["history_warmup"]["completed_count"] == 20
+    assert report["checks"][0]["latest_runtime"]["company_research"] == {
+        "state": "idle",
+        "running_codes": 0,
+        "pending_codes": 0,
+        "completed_batches": 2,
+        "tracked_output_codes": 12,
+    }
 
 
 def test_runner_continues_after_a_failed_check_and_preserves_check_order() -> None:

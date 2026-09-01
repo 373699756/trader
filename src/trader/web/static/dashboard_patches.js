@@ -120,6 +120,12 @@
   function scoredEmptySummary(payload, inputQuality) {
     const diagnostics = payload && payload.selection_diagnostics || {};
     if (payload && payload.strategy === "tomorrow" && diagnostics.empty_reason === "no_positive_net_utility") {
+      const evaluated = nonNegativeInteger(payload.coverage && payload.coverage.evaluated_count);
+      if (evaluated === 0) {
+        return payload.frozen === true
+          ? "冻结记录未形成可评分候选，不能证明成本后净超额均未转正；本轮保持空仓，等待下一交易日重新评分"
+          : "当前快照未形成可评分候选，不能证明成本后净超额均未转正；本轮保持空仓并等待重新评分";
+      }
       return "评分已完成｜模型预测成本后净超额均未转正，按固定成本规则信号分为 0；本轮保持空仓，不生成正式推荐或观察项";
     }
     const funnel = inputQuality && inputQuality.supply_funnel || {};

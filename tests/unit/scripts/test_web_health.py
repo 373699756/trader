@@ -44,6 +44,9 @@ def _sample(
     include_quality_trade_date: bool = True,
     warmup: tuple[int, int, int, int] = (20, 15, 0, 5),
     warmup_timeout_count: int = 0,
+    evaluated_count: int = 65,
+    degraded_reasons: tuple[str, ...] = (),
+    frozen: bool | None = None,
 ) -> WebSample:
     quality = (
         {
@@ -70,12 +73,41 @@ def _sample(
         else None
     )
     status: dict[str, object] = {
-        "schema_version": "v2_status_v12",
+        "schema_version": "v2_status_v13",
         "release": {"decision_view_schema": "v2_decision_view_v3", "web_asset_revision": "test"},
         "status": "running",
         "runtime_started": True,
         "runtime_version": "runtime-test",
         "phase": phase,
+        "company_research": {
+            "state": "idle",
+            "running_codes": 0,
+            "pending_codes": 0,
+            "completed_batches": 2,
+            "partial_batches": 1,
+            "failed_batches": 0,
+            "deferred_codes": 0,
+            "cooldown_codes": 3,
+            "retry_wait_codes": 2,
+            "next_retry_seconds": 30.0,
+            "gated_offer_codes": 5,
+            "short_circuited_batches": 1,
+            "short_circuited_codes": 8,
+            "tracked_code_gates": 9,
+            "evicted_code_gates": 1,
+            "batch_size": 4,
+            "batch_budget_seconds": 40.0,
+            "success_cooldown_seconds": 60.0,
+            "retry_delays_seconds": [60.0, 120.0],
+            "trade_date": _TRADE_DATE,
+            "tracked_strategies": 1,
+            "tracked_output_codes": 12,
+            "next_periodic_at": "2026-08-31T14:45:00+08:00",
+            "intent_offer_count": 4,
+            "periodic_offer_count": 2,
+            "result_count": 3,
+            "rescore_result_count": 2,
+        },
         "market_data": {
             "market_feature_rows": 5500,
             "candidate_quote_cache_entries": 360,
@@ -101,7 +133,7 @@ def _sample(
                 "projection_version": projection_version,
                 "coverage": {
                     "candidate_count": 360 if decision_status == "ready" else 0,
-                    "evaluated_count": 65 if decision_status == "ready" else 0,
+                    "evaluated_count": evaluated_count if decision_status == "ready" else 0,
                     "rejected_count": 295 if decision_status == "ready" else 0,
                     "selected_count": 0,
                 },
@@ -115,9 +147,11 @@ def _sample(
         "strategy": _STRATEGY,
         "trade_date": _TRADE_DATE,
         "projection_version": projection_version,
+        "degraded_reasons": list(degraded_reasons),
+        **({"frozen": frozen} if frozen is not None else {}),
         "coverage": {
             "candidate_count": 360 if decision_status == "ready" else 0,
-            "evaluated_count": 65 if decision_status == "ready" else 0,
+            "evaluated_count": evaluated_count if decision_status == "ready" else 0,
             "rejected_count": 295 if decision_status == "ready" else 0,
             "selected_count": 0,
         },
@@ -262,6 +296,102 @@ def test_ready_zero_selection_without_empty_reason_is_reported() -> None:
     assert any(finding.code == "legal_empty_diagnostics_missing" for finding in findings)
 
 
+def test_no_positive_net_utility_requires_at_least_one_scored_candidate() -> None:
+    findings = analyze_samples(
+        (_sample(1, empty_reason="no_positive_net_utility", evaluated_count=0),),
+        strategies=(_STRATEGY,),
+        consecutive_zero_threshold=1,
+    )
+
+    assert any(
+        finding.code == "no_positive_net_utility_without_scored_candidates"
+        and finding.severity == "error"
+        and finding.evidence.get("evaluated_count") == 0
+        for finding in findings
+    )
+
+
+def test_frozen_no_positive_inconsistency_is_a_controlled_degradation() -> None:
+    findings = analyze_samples(
+        (_sample(1, empty_reason="no_positive_net_utility", evaluated_count=0, frozen=True),),
+        strategies=(_STRATEGY,),
+        consecutive_zero_threshold=1,
+    )
+
+    assert any(
+        finding.code == "no_positive_net_utility_without_scored_candidates"
+        and finding.severity == "warning"
+        and finding.evidence.get("frozen") is True
+        for finding in findings
+    )
+
+
+def test_snapshot_degradation_and_company_research_are_visible_in_diagnostic_report() -> None:
+    sample = _sample(
+        1,
+        degraded_reasons=("corporate_risk_history_unavailable", "strategy_history_coverage_partial"),
+    )
+
+    findings = analyze_samples((sample,), strategies=(_STRATEGY,), consecutive_zero_threshold=1)
+    report = build_report(
+        "http://127.0.0.1:5000",
+        (sample,),
+        findings,
+        strategies=(_STRATEGY,),
+        consecutive_zero_threshold=1,
+    )
+
+    assert any(
+        finding.code == "snapshot_quality_degraded" and finding.evidence.get("reason_count") == 2
+        for finding in findings
+    )
+    assert report["samples"][0]["company_research"] == {
+        "state": "idle",
+        "running_codes": 0,
+        "pending_codes": 0,
+        "completed_batches": 2,
+        "partial_batches": 1,
+        "failed_batches": 0,
+        "deferred_codes": 0,
+        "cooldown_codes": 3,
+        "retry_wait_codes": 2,
+        "next_retry_seconds": 30.0,
+        "gated_offer_codes": 5,
+        "short_circuited_batches": 1,
+        "short_circuited_codes": 8,
+        "tracked_code_gates": 9,
+        "evicted_code_gates": 1,
+        "batch_size": 4,
+        "batch_budget_seconds": 40.0,
+        "success_cooldown_seconds": 60.0,
+        "retry_delays_seconds": [60.0, 120.0],
+        "trade_date": _TRADE_DATE,
+        "tracked_strategies": 1,
+        "tracked_output_codes": 12,
+        "next_periodic_at": "2026-08-31T14:45:00+08:00",
+        "intent_offer_count": 4,
+        "periodic_offer_count": 2,
+        "result_count": 3,
+        "rescore_result_count": 2,
+    }
+
+
+def test_missing_company_research_telemetry_is_reported() -> None:
+    sample = _sample(1)
+    assert sample.status is not None
+    missing = replace(
+        sample,
+        status=replace(
+            sample.status,
+            company_research=replace(sample.status.company_research, state=None),
+        ),
+    )
+
+    findings = analyze_samples((missing,), strategies=(_STRATEGY,), consecutive_zero_threshold=1)
+
+    assert any(finding.code == "company_research_telemetry_missing" for finding in findings)
+
+
 def test_input_quality_without_trade_date_is_reported_as_invalid_shape() -> None:
     findings = analyze_samples(
         (_sample(1, funnel=_funnel(), include_quality_trade_date=False),),
@@ -344,7 +474,7 @@ def test_json_report_contains_only_aggregated_projection_data() -> None:
     rendered = str(report)
     assert "600000" not in rendered
     assert "items" not in rendered
-    assert report["schema_version"] == "web_recommendation_health_v3"
+    assert report["schema_version"] == "web_recommendation_health_v4"
     assert report["status"] == "passed"
     assert report["samples"][0]["market"]["history_warmup"]["planned_count"] == 20
     assert report["samples"][0]["market"]["history_warmup"]["batch_timeout_seconds"] == 20.0

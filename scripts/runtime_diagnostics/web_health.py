@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import time
 import urllib.error
 import urllib.parse
@@ -20,6 +19,14 @@ from zoneinfo import ZoneInfo
 from trader.web.static_assets import STATUS_SCHEMA_VERSION as _STATUS_SCHEMA_VERSION
 
 from .common import emit_report
+from .web_health_contract import (
+    FetchIssue,
+    FunnelSnapshot,
+    InputQualitySnapshot,
+    ProjectionSnapshot,
+    WebSample,
+    parse_web_sample,
+)
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _STRATEGIES = ("today", "tomorrow", "d25")
@@ -42,140 +49,8 @@ _MONITORED_FUNNEL_FIELDS = (
     "full_scored",
 )
 _MAX_RESPONSE_BYTES = 1_048_576
-_MAX_REASON_COUNTS = 32
-_REPORT_SCHEMA_VERSION = "web_recommendation_health_v3"
+_REPORT_SCHEMA_VERSION = "web_recommendation_health_v4"
 _EvidenceValue = str | int | float | bool | None
-
-
-@dataclass(frozen=True)
-class FetchIssue:
-    endpoint: str
-    error_code: str
-
-
-@dataclass(frozen=True)
-class FunnelSnapshot:
-    requested_candidates: int | None
-    candidate_features: int | None
-    security_master: int | None
-    history: int | None
-    filter_pass: int | None
-    filter_observe: int | None
-    filter_reject: int | None
-    full_scored: int | None
-    review_eligible: int | None
-    action_executable: int | None
-    action_observe: int | None
-    action_unavailable: int | None
-    selected_executable: int | None
-    selected_observe: int | None
-    invalid_fields: tuple[str, ...] = ()
-
-    def monitored_counts(self) -> tuple[tuple[str, int | None], ...]:
-        return (
-            ("requested_candidates", self.requested_candidates),
-            ("candidate_features", self.candidate_features),
-            ("security_master", self.security_master),
-            ("history", self.history),
-            ("full_scored", self.full_scored),
-        )
-
-
-@dataclass(frozen=True)
-class CoverageSnapshot:
-    candidate_count: int | None
-    evaluated_count: int | None
-    selected_count: int | None
-
-
-@dataclass(frozen=True)
-class ProjectionSnapshot:
-    schema_version: str | None
-    strategy: str | None
-    status: str | None
-    trade_date: str | None
-    projection_version: str | None
-    frozen: bool | None
-    coverage: CoverageSnapshot
-    item_count: int | None
-    empty_reason: str | None
-
-
-@dataclass(frozen=True)
-class InputQualitySnapshot:
-    status: str | None
-    trade_date: str | None
-    primary_blocker: str | None
-    history_required_sessions: int | None
-    funnel: FunnelSnapshot
-    population_filter_reason_counts: Mapping[str, int]
-    candidate_filter_reason_counts: Mapping[str, int]
-    candidate_transient_reason_counts: Mapping[str, int]
-    candidate_optional_reason_counts: Mapping[str, int]
-    supply_reason_counts: Mapping[str, int]
-
-    def __post_init__(self) -> None:
-        for field_name in (
-            "population_filter_reason_counts",
-            "candidate_filter_reason_counts",
-            "candidate_transient_reason_counts",
-            "candidate_optional_reason_counts",
-            "supply_reason_counts",
-        ):
-            object.__setattr__(self, field_name, MappingProxyType(dict(getattr(self, field_name))))
-
-
-@dataclass(frozen=True)
-class HistoryWarmupSnapshot:
-    universe_rows: int | None
-    covered_rows: int | None
-    coverage_ratio: float | None
-    planned_count: int | None
-    completed_count: int | None
-    failure_count: int | None
-    inflight_count: int | None
-    retry_deferred_count: int | None
-    unique_failure_count: int | None
-    timeout_count: int | None
-    inflight_age_seconds: float | None
-    batch_timeout_seconds: float | None
-    last_source: str | None
-
-
-@dataclass(frozen=True)
-class StatusSnapshot:
-    schema_version: str | None
-    release_decision_schema: str | None
-    web_asset_revision: str | None
-    runtime_status: str | None
-    runtime_started: bool
-    runtime_version: str | None
-    phase: str | None
-    event_sequence: int | None
-    market_feature_rows: int | None
-    candidate_quote_entries: int | None
-    candidate_quote_source: str | None
-    history_warmup: HistoryWarmupSnapshot
-    strategies: Mapping[str, ProjectionSnapshot]
-    input_quality: Mapping[str, InputQualitySnapshot]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "strategies", MappingProxyType(dict(self.strategies)))
-        object.__setattr__(self, "input_quality", MappingProxyType(dict(self.input_quality)))
-
-
-@dataclass(frozen=True)
-class WebSample:
-    sample_number: int
-    collected_at: str
-    status: StatusSnapshot | None
-    decisions: Mapping[str, ProjectionSnapshot]
-    fetch_issues: tuple[FetchIssue, ...] = ()
-
-    def __post_init__(self) -> None:
-        if self.sample_number < 1:
-            raise ValueError("sample number must be positive")
-        object.__setattr__(self, "decisions", MappingProxyType(dict(self.decisions)))
 
 
 @dataclass(frozen=True)
@@ -271,6 +146,16 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
                 sample,
                 None,
                 "status lacks recommendation market-cache telemetry during a scoring phase",
+            )
+        )
+    if status.company_research.state is None:
+        findings.append(
+            _finding(
+                "error",
+                "company_research_telemetry_missing",
+                sample,
+                None,
+                "status lacks the bounded company-research runtime projection",
             )
         )
     for strategy in strategies:
@@ -432,6 +317,32 @@ def _decision_contract_findings(
                 sample,
                 strategy,
                 "ready decision with zero selected items lacks a legal-empty explanation",
+            )
+        )
+    if decision.empty_reason == "no_positive_net_utility" and decision.coverage.evaluated_count == 0:
+        findings.append(
+            _finding(
+                "warning" if decision.frozen is True else "error",
+                "no_positive_net_utility_without_scored_candidates",
+                sample,
+                strategy,
+                (
+                    "frozen decision retains a non-positive-utility claim without any scored candidate"
+                    if decision.frozen is True
+                    else "decision claims non-positive model utility without any scored candidate"
+                ),
+                {"evaluated_count": decision.coverage.evaluated_count, "frozen": decision.frozen},
+            )
+        )
+    if decision.degraded_reasons:
+        findings.append(
+            _finding(
+                "warning",
+                "snapshot_quality_degraded",
+                sample,
+                strategy,
+                "current decision retains controlled snapshot-quality degradation",
+                {"reason_count": len(decision.degraded_reasons), "frozen": decision.frozen},
             )
         )
     return findings
@@ -784,146 +695,6 @@ def _collect_sample(
     )
 
 
-def parse_web_sample(
-    sample_number: int,
-    collected_at: str,
-    *,
-    status_payload: Mapping[str, object] | None,
-    decision_payloads: Mapping[str, Mapping[str, object]],
-    fetch_issues: tuple[FetchIssue, ...] = (),
-) -> WebSample:
-    """Parse external JSON projections into the immutable diagnostic model."""
-
-    return WebSample(
-        sample_number,
-        collected_at,
-        _parse_status(status_payload) if status_payload is not None else None,
-        {strategy: _parse_projection(payload, include_items=True) for strategy, payload in decision_payloads.items()},
-        fetch_issues,
-    )
-
-
-def _parse_status(payload: Mapping[str, object]) -> StatusSnapshot:
-    release = _mapping(payload.get("release"))
-    market = _mapping(payload.get("market_data"))
-    events = _mapping(payload.get("events"))
-    scheduler = _mapping(payload.get("scheduler"))
-    strategies = {
-        strategy: _parse_projection(value, include_items=False)
-        for strategy, raw in _mapping(payload.get("strategies")).items()
-        if (value := _mapping_or_none(raw)) is not None
-    }
-    input_quality = {
-        strategy: _parse_input_quality(value)
-        for strategy, raw in _mapping(scheduler.get("input_quality")).items()
-        if (value := _mapping_or_none(raw)) is not None
-    }
-    return StatusSnapshot(
-        schema_version=_text(payload.get("schema_version")),
-        release_decision_schema=_text(release.get("decision_view_schema")),
-        web_asset_revision=_text(release.get("web_asset_revision")),
-        runtime_status=_text(payload.get("status")),
-        runtime_started=payload.get("runtime_started") is True,
-        runtime_version=_text(payload.get("runtime_version")),
-        phase=_text(payload.get("phase")),
-        event_sequence=_nonnegative_int(events.get("sequence")),
-        market_feature_rows=_nonnegative_int(market.get("market_feature_rows")),
-        candidate_quote_entries=_nonnegative_int(market.get("candidate_quote_cache_entries")),
-        candidate_quote_source=_text(market.get("candidate_quote_latest_source")),
-        history_warmup=HistoryWarmupSnapshot(
-            universe_rows=_nonnegative_int(market.get("history_universe_rows")),
-            covered_rows=_nonnegative_int(market.get("history_covered_rows")),
-            coverage_ratio=_nonnegative_number(market.get("history_coverage_ratio")),
-            planned_count=_nonnegative_int(market.get("history_warmup_planned_count")),
-            completed_count=_nonnegative_int(market.get("history_warmup_completed_count")),
-            failure_count=_nonnegative_int(market.get("history_warmup_failure_count")),
-            inflight_count=_nonnegative_int(market.get("history_warmup_inflight_count")),
-            retry_deferred_count=_nonnegative_int(market.get("history_warmup_retry_deferred_count")),
-            unique_failure_count=_nonnegative_int(market.get("history_warmup_unique_failure_count")),
-            timeout_count=_nonnegative_int(market.get("history_warmup_timeout_count")),
-            inflight_age_seconds=_nonnegative_number(market.get("history_warmup_inflight_age_seconds")),
-            batch_timeout_seconds=_nonnegative_number(market.get("history_warmup_batch_timeout_seconds")),
-            last_source=_text(market.get("history_warmup_last_source")),
-        ),
-        strategies=strategies,
-        input_quality=input_quality,
-    )
-
-
-def _parse_projection(payload: Mapping[str, object], *, include_items: bool) -> ProjectionSnapshot:
-    coverage = _mapping(payload.get("coverage"))
-    diagnostics = _mapping(payload.get("selection_diagnostics"))
-    items = payload.get("items")
-    frozen = payload.get("frozen")
-    return ProjectionSnapshot(
-        schema_version=_text(payload.get("schema_version")),
-        strategy=_text(payload.get("strategy")),
-        status=_text(payload.get("status")),
-        trade_date=_text(payload.get("trade_date")),
-        projection_version=_text(payload.get("projection_version")),
-        frozen=frozen if isinstance(frozen, bool) else None,
-        coverage=CoverageSnapshot(
-            candidate_count=_nonnegative_int(coverage.get("candidate_count")),
-            evaluated_count=_nonnegative_int(coverage.get("evaluated_count")),
-            selected_count=_nonnegative_int(coverage.get("selected_count")),
-        ),
-        item_count=len(items) if include_items and isinstance(items, list) else None,
-        empty_reason=_text(diagnostics.get("empty_reason")),
-    )
-
-
-def _parse_input_quality(payload: Mapping[str, object]) -> InputQualitySnapshot:
-    return InputQualitySnapshot(
-        status=_text(payload.get("status")),
-        trade_date=_text(_mapping(payload.get("summary")).get("trade_date")),
-        primary_blocker=_text(payload.get("primary_blocker")),
-        history_required_sessions=_nonnegative_int(payload.get("history_required_sessions")),
-        funnel=_parse_funnel(_mapping(payload.get("supply_funnel"))),
-        population_filter_reason_counts=_parse_reason_counts(payload.get("population_filter_reason_counts")),
-        candidate_filter_reason_counts=_parse_reason_counts(payload.get("candidate_filter_reason_counts")),
-        candidate_transient_reason_counts=_parse_reason_counts(payload.get("candidate_transient_reason_counts")),
-        candidate_optional_reason_counts=_parse_reason_counts(payload.get("candidate_optional_reason_counts")),
-        supply_reason_counts=_parse_reason_counts(payload.get("supply_reason_counts")),
-    )
-
-
-def _parse_funnel(payload: Mapping[str, object]) -> FunnelSnapshot:
-    field_names = (
-        "requested_candidates",
-        "candidate_features",
-        "security_master",
-        "history",
-        "filter_pass",
-        "filter_observe",
-        "filter_reject",
-        "full_scored",
-        "review_eligible",
-        "action_executable",
-        "action_observe",
-        "action_unavailable",
-        "selected_executable",
-        "selected_observe",
-    )
-    values = {name: _nonnegative_int(payload.get(name)) for name in field_names}
-    return FunnelSnapshot(
-        requested_candidates=values["requested_candidates"],
-        candidate_features=values["candidate_features"],
-        security_master=values["security_master"],
-        history=values["history"],
-        filter_pass=values["filter_pass"],
-        filter_observe=values["filter_observe"],
-        filter_reject=values["filter_reject"],
-        full_scored=values["full_scored"],
-        review_eligible=values["review_eligible"],
-        action_executable=values["action_executable"],
-        action_observe=values["action_observe"],
-        action_unavailable=values["action_unavailable"],
-        selected_executable=values["selected_executable"],
-        selected_observe=values["selected_observe"],
-        invalid_fields=tuple(name for name in field_names if values[name] is None),
-    )
-
-
 class FetchError(RuntimeError):
     def __init__(self, error_code: str) -> None:
         super().__init__(error_code)
@@ -1058,6 +829,39 @@ def _sample_payload(sample: WebSample, strategies: tuple[str, ...]) -> dict[str,
                 else None
             ),
         },
+        "company_research": (
+            {
+                "state": status.company_research.state,
+                "running_codes": status.company_research.running_codes,
+                "pending_codes": status.company_research.pending_codes,
+                "completed_batches": status.company_research.completed_batches,
+                "partial_batches": status.company_research.partial_batches,
+                "failed_batches": status.company_research.failed_batches,
+                "deferred_codes": status.company_research.deferred_codes,
+                "cooldown_codes": status.company_research.cooldown_codes,
+                "retry_wait_codes": status.company_research.retry_wait_codes,
+                "next_retry_seconds": status.company_research.next_retry_seconds,
+                "gated_offer_codes": status.company_research.gated_offer_codes,
+                "short_circuited_batches": status.company_research.short_circuited_batches,
+                "short_circuited_codes": status.company_research.short_circuited_codes,
+                "tracked_code_gates": status.company_research.tracked_code_gates,
+                "evicted_code_gates": status.company_research.evicted_code_gates,
+                "batch_size": status.company_research.batch_size,
+                "batch_budget_seconds": status.company_research.batch_budget_seconds,
+                "success_cooldown_seconds": status.company_research.success_cooldown_seconds,
+                "retry_delays_seconds": list(status.company_research.retry_delays_seconds),
+                "trade_date": status.company_research.trade_date,
+                "tracked_strategies": status.company_research.tracked_strategies,
+                "tracked_output_codes": status.company_research.tracked_output_codes,
+                "next_periodic_at": status.company_research.next_periodic_at,
+                "intent_offer_count": status.company_research.intent_offer_count,
+                "periodic_offer_count": status.company_research.periodic_offer_count,
+                "result_count": status.company_research.result_count,
+                "rescore_result_count": status.company_research.rescore_result_count,
+            }
+            if status is not None
+            else None
+        ),
         "strategies": result,
         "fetch_issues": [{"endpoint": issue.endpoint, "error_code": issue.error_code} for issue in sample.fetch_issues],
     }
@@ -1122,28 +926,8 @@ def _mapping(value: object) -> Mapping[str, object]:
     return {str(key): item for key, item in value.items() if isinstance(key, str)}
 
 
-def _mapping_or_none(value: object) -> Mapping[str, object] | None:
-    return _mapping(value) if isinstance(value, Mapping) else None
-
-
-def _parse_reason_counts(value: object) -> Mapping[str, int]:
-    counts = {key: count for key, raw in _mapping(value).items() if (count := _nonnegative_int(raw)) is not None}
-    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:_MAX_REASON_COUNTS]
-    return MappingProxyType(dict(ordered))
-
-
 def _text(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
-
-
-def _nonnegative_int(value: object) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
-
-
-def _nonnegative_number(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value < 0:
-        return None
-    return float(value)
 
 
 def main() -> int:

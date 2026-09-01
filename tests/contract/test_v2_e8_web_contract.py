@@ -154,7 +154,7 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     response.close()
     status = client.get("/api/v2/status").get_json()
 
-    assert status["schema_version"] == "v2_status_v12"
+    assert status["schema_version"] == "v2_status_v13"
     assert status["release"] == {
         "decision_view_schema": "v2_decision_view_v3",
         "web_asset_revision": WEB_ASSET_REVISION,
@@ -180,6 +180,35 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     assert status["events"]["sequence"] == 1
     assert status["strategies"]["today"]["status"] == queries.current(Strategy.TODAY).status
     assert status["runtime_version"] == "runtime:test"
+    assert status["company_research"] == {
+        "batch_budget_seconds": 40.0,
+        "batch_size": 4,
+        "completed_batches": 2,
+        "cooldown_codes": 3,
+        "deferred_codes": 4,
+        "evicted_code_gates": 0,
+        "failed_batches": 1,
+        "gated_offer_codes": 5,
+        "intent_offer_count": 2,
+        "next_periodic_at": NOW.isoformat(),
+        "next_retry_seconds": 30.0,
+        "partial_batches": 1,
+        "pending_codes": 6,
+        "periodic_offer_count": 1,
+        "rescore_result_count": 2,
+        "result_count": 3,
+        "retry_delays_seconds": [60.0, 120.0],
+        "retry_wait_codes": 2,
+        "running_codes": 4,
+        "short_circuited_batches": 1,
+        "short_circuited_codes": 8,
+        "state": "running",
+        "success_cooldown_seconds": 60.0,
+        "tracked_code_gates": 9,
+        "tracked_output_codes": 12,
+        "tracked_strategies": 2,
+        "trade_date": NOW.date().isoformat(),
+    }
     assert status["scheduler"]["strategy_errors"] == {}
     assert status["deepseek"] == {
         "enabled": True,
@@ -360,6 +389,37 @@ def _app():
             "status": "running",
             "runtime_version": "runtime:test",
             "scheduler": {"strategy_errors": {}},
+            "company_research": {
+                "state": "running",
+                "running_codes": 4,
+                "pending_codes": 6,
+                "completed_batches": 2,
+                "partial_batches": 1,
+                "failed_batches": 1,
+                "deferred_codes": 4,
+                "cooldown_codes": 3,
+                "retry_wait_codes": 2,
+                "next_retry_seconds": 30.0,
+                "gated_offer_codes": 5,
+                "short_circuited_batches": 1,
+                "short_circuited_codes": 8,
+                "tracked_code_gates": 9,
+                "evicted_code_gates": 0,
+                "last_error": "must-not-leak",
+                "batch_size": 4,
+                "batch_budget_seconds": 40.0,
+                "success_cooldown_seconds": 60.0,
+                "retry_delays_seconds": [60.0, 120.0],
+                "trade_date": NOW.date().isoformat(),
+                "tracked_strategies": 2,
+                "tracked_output_codes": 12,
+                "next_periodic_at": NOW.isoformat(),
+                "intent_offer_count": 2,
+                "periodic_offer_count": 1,
+                "result_count": 3,
+                "rescore_result_count": 2,
+                "codes": ["must-not-leak"],
+            },
             "deepseek_budget": {"used": 12, "remaining": 156, "planned_limit": 71},
             "market_data": {
                 "active_source": "sina",

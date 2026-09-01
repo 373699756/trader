@@ -424,6 +424,7 @@ def _check_payload(result: DiagnosticResult) -> dict[str, object]:
                 "runtime_version": latest.get("runtime_version"),
                 "phase": latest.get("phase"),
                 "history_warmup": _mapping(_mapping(latest.get("market")).get("history_warmup")),
+                "company_research": _mapping(latest.get("company_research")),
                 "strategies": _mapping(latest.get("strategies")),
             }
     elif result.name == "history_sources":

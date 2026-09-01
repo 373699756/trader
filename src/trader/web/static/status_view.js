@@ -146,6 +146,16 @@
     }).join("");
   }
 
+  function issueSummaryTitle(issues) {
+    const values = Array.isArray(issues) ? issues : [];
+    const active = values.filter((issue) => issue && issue.recoveryStatus !== "recovered").length;
+    const recovered = values.length - active;
+    if (active && recovered) return `最近错误 · 活动${active}项 / 已恢复${recovered}项`;
+    if (active) return `最近错误 · 活动${active}项`;
+    if (recovered) return `最近错误 · 已恢复${recovered}项`;
+    return "最近错误";
+  }
+
   function createDashboardStateRenderer(els, state, selection, render) {
     const renderTableState = (message, columns, body) => {
       (body || els.tableBody).innerHTML = `<tr><td class="table-state" colspan="${columns || 9}">${render.escapeHtml(message)}</td></tr>`;
@@ -463,7 +473,7 @@
       if (typeof beforeOpen === "function") beforeOpen();
       returnFocus = document.activeElement;
       els.errorDrawerContent.innerHTML = runtimeErrorRows(issues);
-      els.errorDrawerTitle.textContent = `最近错误 · ${issues.length}项`;
+      els.errorDrawerTitle.textContent = issueSummaryTitle(issues);
       els.errorDrawer.classList.add("is-open");
       els.errorDrawer.setAttribute("aria-hidden", "false");
       els.errorDetailsButton.setAttribute("aria-expanded", "true");
@@ -480,7 +490,7 @@
         issues = Array.isArray(nextIssues) ? nextIssues : [];
         if (!els.errorDrawer.classList.contains("is-open")) return;
         els.errorDrawerContent.innerHTML = runtimeErrorRows(issues);
-        els.errorDrawerTitle.textContent = `最近错误 · ${issues.length}项`;
+        els.errorDrawerTitle.textContent = issueSummaryTitle(issues);
       },
     };
   }
@@ -685,6 +695,7 @@
     createErrorDrawer,
     formatDurationHms,
     healthView,
+    issueSummaryTitle,
     quoteAvailabilitySummary,
     recommendationReadinessStatus,
     renderBudgetSummary,
