@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求把此前关于历史评分训练的讨论总结写入独立文档。新增 `docs/trade.md`，归纳 Tomorrow
+  `daily_close_proxy` 的训练人口、硬过滤失败关闭、统一 Ridge/浅层 LightGBM 候选、60%/20%/20%
+  时序切分、5 折 expanding walk-forward、成本后 local-only 收益门禁、DeepSeek 训练隔离及未来人工
+  生产接入边界；文档明确自身不是权威策略，不能把收盘代理冒充第 15.1.32 节要求的 14:50 点时证据。
+  `Regression-Key: tomorrow-daily-close-training-proposal-v1`。
+
 - 用户要求依据荐股策略权威文档的未完成条目，合并整条荐股链更合理、更高效和更科学的计划。未完成
   路线新增四个同级、可独立交付的所有者：现有 V1/V2、P2 报告、人工授权与状态投影的基线身份审计；
   过滤瀑布与候选召回消融；组合净效用约束选择；评分热链决策等价与资源效率门禁。新路线还把
@@ -577,6 +583,11 @@ All notable changes to this project are documented here.
   前向封存状态、第二轮权重收缩和 `PromotionDossier` 人工晋级边界。
 
 ### Changed
+
+- `tomorrow-daily-close-training-proposal-v1` 只新增非权威研究说明，不改写第 15.1.21–15.1.34 节现行
+  路线、活动 V1/V2、硬过滤、风险、固定 68/32 融合、动作、Top6、14:50 冻结、API 或 Web。文档把
+  “历史收盘训练”和“未来生产接入”拆为两个独立授权批次，生产接入前必须先解决与 14:50 点时契约的
+  差异，禁止由研究报告自动创建 `v3` 或修改配置。
 
 - 用户要求按“收益大、难度低、被依赖者优先”重新 Review 第 15.1.21–15.1.40 节，并删除不可靠、难以
   完成的荐股策略自动优化。确认旧路线把历史 DeepSeek 盈利回测、模型族搜索、组合优化、概率模型、
@@ -1915,6 +1926,13 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- `tomorrow-daily-close-training-proposal-v1`：新增契约先在 `docs/trade.md` 缺失时以 2 项失败证明边界，
+  文档完成后定向 2 项通过；完整 `tests/contract` 共 153 项通过，覆盖非权威定位、收盘代理限制、硬过滤
+  失败关闭、DeepSeek 训练隔离、时序切分、统一模型和人工生产授权。新增契约文件的 Ruff format/check、
+  Ruff lint 与 `git diff --check` 通过。`make test`、`make package`、仓库外 wheel、真实供应商和三档浏览器
+  验收不适用：本批只新增 Markdown 总结、Changelog 和读取该文档的契约断言，不改变活动代码、配置、
+  构建、入口、行情、评分、冻结、API 或 Web。
+
 - `historical-score-roadmap-priority-pruning-v1`：先更新路线机器契约并确认旧文档按预期失败；完成两份权威
   文档收敛后，`tests/contract` 全部 151 项通过，覆盖 15.1.21/22 完成状态、15.1.23–15.1.34 新顺序、
   两层过滤先于 H1、三策略独立点时覆盖、有限候选上限、Holm、独立留出、自动优化删除和人工生产变更
@@ -2991,6 +3009,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- `tomorrow-daily-close-training-proposal-v1`：本批只归纳方案，没有实现训练命令、模型工件、收益验证或
+  生产接入，也不证明荐股盈利已经提高。日线 `D` 收盘与生产 14:50 输入存在约 10 分钟分布差异，当前
+  权威策略仍禁止用收盘代理宣称点时一致；只有用户另立高风险批次并先更新权威契约，才可评估是否接入。
+  用户未跟踪的 `docs/question.md` 保持原样且不纳入本批。
 
 - `historical-score-roadmap-priority-pruning-v1`：本批只收敛权威计划和机器文档契约，没有执行
   15.1.23–15.1.34 的任何未完成能力，也没有证明实时性、资源成本或荐股收益已经提高。H1 的 95% 股票
