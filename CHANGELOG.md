@@ -1136,6 +1136,12 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 用户反馈 `run.sh` 不能正常启动。现场复现确认服务并未启动失败：10:52 已有真实
+  `trader-server` 持有 `.runtime/v2/server.lock`，根页面与状态接口均可访问；第二实例被内核文件锁
+  正确拒绝，直接删除锁会破坏单实例边界。锁冲突现在继续返回非零，但同时输出实际浏览器 URL，并明确
+  指引在原启动终端按 Ctrl+C 正常停止后重试、禁止删除锁；Linux/macOS 与 PowerShell 帮助也同步把
+  `research-screen` 更正为实际六阶段。`Regression-Key: active-server-lock-startup-guidance-v1`。
+
 - 修复离线 V1/V2 留出命令在删除运行期比较规范后仍反向引用其历史报告 hash 的残留；固定 hash 现在由
   holdout 所有者维护。修复初版历史风险数据直接扩展 P2 冻结行、以及新 R6 语义复用旧 v1 路径会改变或
   误读不可变证据的问题：风险数据改用独立值对象，P2 行/报告身份不变，旧 R6 v1 目录只作审计且不会被
@@ -1792,6 +1798,14 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- `run.sh` 活动实例提示修复按入口/生命周期高风险门禁验证：失败优先回归先证明旧帮助仍写五阶段且
+  锁冲突只输出原始异常；修复后入口与进程锁定向测试 4 项通过。`make format-check`、`make lint`
+  （严格重构债为零）、`make type-check`、`make test` 与 `make package` 通过；仓库外安装 wheel 后包导入、
+  `trader-cli`/`trader-server --help` 及模板、CSS、JavaScript、图标资源读取通过。真实运行先确认旧 PID、
+  根页面 HTTP 200 和有效锁，再等 Today 于 11:20 正式冻结后发送 SIGTERM；修复后 `./run.sh` 输出
+  `http://127.0.0.1:5000`、根页面返回 200，第二实例返回非零并显示同一地址、安全停止方式和禁止删锁。
+  运行诊断连续 3 次 API 采样成功、无错误，但因采样期历史预热失败计数从 1 增至 2 如实标记 degraded。
 
 - 历史评分优化规划（低风险文档/机器契约）：
   `.venv/bin/pytest -q tests/contract/test_historical_score_optimization_roadmap.py
@@ -2803,6 +2817,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 活动实例提示不会自动终止或替换旧进程；这是单实例与冻结安全边界，部署新代码仍需操作者在原终端
+  正常停止后重启。现场服务已由修复后的 `run.sh` 重新启动并保持运行；证券主表刷新与历史预热仍存在
+  供应商降级，其中历史覆盖仅 116/360、采样期新增 1 次失败，这些不是入口修复造成，也未通过删除锁、
+  放宽评分或伪造数据掩盖。三档浏览器布局门禁不适用：本批未改模板、CSS、JavaScript 或页面布局。
 
 - 本批只封存历史评分优化的执行顺序、样本门槛和失败关闭条件，没有下载 H1、生成候选或开启最终留出，
   因而不宣称 Today、Tomorrow 或 D25 收益已经改善。11:20/14:50 历史锚点、证券/行业/风险生效时间若

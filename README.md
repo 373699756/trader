@@ -111,6 +111,10 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 Linux/macOS 的正常 `SIGTERM` 和 Windows `SIGBREAK` 使用相同规则。关闭浏览器不会停止
 服务。
 
+如果再次执行 `./run.sh` 时已有服务持有同一运行目录，脚本会返回非零并显示现有浏览器地址。
+这表示旧服务仍在运行，并不表示锁文件损坏或新代码已经加载；请在原启动终端按一次 Ctrl+C，
+等待正常退出后再启动，不要删除 `.runtime/v2/server.lock`。
+
 正常重启会重新预热行情、候选、观察池和研究/review 等纯内存状态；正式推荐、合法检查点、
 预算、V2 数据平面和收盘 overlay 按各自持久化契约恢复。强制结束进程或断电属于异常终止，
 正式冻结会在下次启动时按恢复载荷和 SHA-256 校验恢复或 fail closed。

@@ -6,12 +6,15 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import trader.entrypoints.cli as cli_module
+import trader.entrypoints.server as server_module
 from trader.entrypoints.cli import build_parser, main
 from trader.entrypoints.server import build_parser as build_server_parser
+from trader.infra.process_lock import ProcessLockError
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -147,7 +150,7 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert "./run.sh check                   依次校验配置、研究状态和性能门禁" in completed.stdout
     assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
     assert "./run.sh research-history        下载/续传历史归档后运行固定回测" in completed.stdout
-    assert "./run.sh research-screen         依次运行并封存五项历史筛选/诊断" in completed.stdout
+    assert "./run.sh research-screen         依次运行并封存六项历史筛选/诊断" in completed.stdout
     assert "research-r7-dossier" not in completed.stdout
     assert "所有命令都可追加 --profile v1|v2；未指定时为 V1" in completed.stdout
     assert "用法: ./run.sh [serve|" not in completed.stdout
@@ -357,6 +360,7 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
 
     assert "日常使用（不做离线研究）:" in powershell
     assert "离线研究（仅在明确执行研究任务时使用）:" in powershell
+    assert ".\\run.ps1 research-screen         依次运行并封存六项历史筛选/诊断" in powershell
     assert "所有命令都可追加 --profile v1|v2；未指定时为 V1" in powershell
 
 
@@ -503,6 +507,37 @@ def test_entrypoints_and_lock_are_runtime_directory_relative() -> None:
     assert "class ProcessLock" in lock
     assert ".runtime/v17" not in server
     assert ".runtime/v17" not in lock
+
+
+def test_server_lock_conflict_explains_the_existing_service_and_safe_restart(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class _LockedProcess:
+        def __init__(self, _path: Path) -> None:
+            pass
+
+        def acquire(self) -> None:
+            raise ProcessLockError(f"trader-server is already running for {tmp_path}")
+
+    settings = SimpleNamespace(
+        runtime_dir=tmp_path,
+        server=SimpleNamespace(host="127.0.0.1", port=5050, allow_insecure_non_loopback=False),
+    )
+    monkeypatch.setattr(
+        server_module,
+        "build_system",
+        lambda _config, *, tomorrow_scoring_profile: SimpleNamespace(settings=settings),
+    )
+    monkeypatch.setattr(server_module, "ProcessLock", _LockedProcess)
+
+    with pytest.raises(SystemExit) as error:
+        server_module.main(["--config", str(tmp_path / "runtime.json"), "--profile", "v1"])
+
+    message = str(error.value)
+    assert "trader-server is already running" in message
+    assert "现有服务地址->http://127.0.0.1:5050" in message
+    assert "请在原启动终端按 Ctrl+C 正常停止后，再运行原启动命令（./run.sh 或 .\\run.ps1）" in message
+    assert "不要删除 server.lock" in message
 
 
 def test_v2_budget_uses_its_own_database_and_never_opens_the_legacy_runtime_name() -> None:

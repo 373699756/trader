@@ -22,7 +22,7 @@ usage() {
     "" \
     "离线研究（仅在明确执行研究任务时使用）:" \
     "  ./run.sh research-history        下载/续传历史归档后运行固定回测" \
-    "  ./run.sh research-screen         依次运行并封存五项历史筛选/诊断" \
+    "  ./run.sh research-screen         依次运行并封存六项历史筛选/诊断" \
     "" \
     "所有命令都可追加 --profile v1|v2；未指定时为 V1。" \
     "" \

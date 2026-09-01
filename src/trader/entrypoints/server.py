@@ -60,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
         lock = ProcessLock(system.settings.runtime_dir / "server.lock")
         lock.acquire()
     except ProcessLockError as exc:
-        raise SystemExit(str(exc)) from None
+        raise SystemExit(_active_service_message(exc, system.settings)) from None
     with lock:
         return _run_system(
             system,
@@ -297,6 +297,16 @@ def _browser_url(host: str, port: int) -> str:
         is_ipv6 = False
     url_host = f"[{host}]" if is_ipv6 else host
     return f"http://{url_host}:{port}"
+
+
+def _active_service_message(exc: ProcessLockError, settings: RuntimeSettings) -> str:
+    return "\n".join(
+        (
+            str(exc),
+            f"现有服务地址->{_browser_url(settings.server.host, settings.server.port)}",
+            "请在原启动终端按 Ctrl+C 正常停止后，再运行原启动命令（./run.sh 或 .\\run.ps1）；不要删除 server.lock。",
+        )
+    )
 
 
 def _validate_bind(settings: RuntimeSettings) -> None:

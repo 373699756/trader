@@ -1504,7 +1504,10 @@ python3 -m venv .venv
 `./run.sh --profile v2` 与 `./run.sh serve --profile v2` 显式选择 V2。该覆盖只影响本次进程并重新生成
 有效策略身份，不写回策略配置；改变档位必须正常重启。默认配置启动后访问
 `http://127.0.0.1:5000/`。同一 `.runtime/v2` 只允许一个服务进程，第二个进程由
-`.runtime/v2/server.lock` 拒绝。外部行情、交易日历、Tushare 或 DeepSeek 暂不可用时启动失败开放：
+`.runtime/v2/server.lock` 拒绝。拒绝信息必须同时显示现有服务的实际浏览器 URL，并提示在原启动终端
+按一次 Ctrl+C 正常停止后再重试；不得提示或自动删除 `server.lock`，因为内核文件锁只表示真实活动
+进程，正常退出会自动释放。该拒绝继续返回非零，不能把“旧服务仍在运行”误报成“新代码已加载”。
+外部行情、交易日历、Tushare 或 DeepSeek 暂不可用时启动失败开放：
 只读 Web 保留最近有效 V2 快照并显式降级；Long 的卡脖子、高成长、低价潜力固定名单仍可展示身份，
 缺失行情字段显示为不可用，不得伪造实时数据。
 
@@ -1516,7 +1519,7 @@ python3 -m venv .venv
 | 日常 | `./run.sh --profile v2` | 以显式 V2 启动；也可把 `--profile v1|v2` 追加到其他公开命令 |
 | 日常 | `./run.sh check` | 依次校验配置、只读投影研究状态并运行所选档位的离线性能门禁 |
 | 离线研究 | `./run.sh research-history [--workers 1..5]` | 下载/断点续传独立历史日线归档，然后只读运行固定训练/验证回测 |
-| 离线研究 | `./run.sh research-screen` | 依次运行 R6 历史、R6 日线、R6 稳定性、Tomorrow P2 和 V1/V2 H0 留出五项不可变筛选/诊断 |
+| 离线研究 | `./run.sh research-screen` | 依次运行 R6 历史、R6 日线、R6 稳定性、Tomorrow P2、V1/V2 H0 留出和 V2 严重亏损概率六项不可变筛选/诊断 |
 
 三个组合命令由 `trader-cli` 单一编排器拥有顺序，Linux/macOS 与 PowerShell 不复制业务流程。普通阶段
 返回非零时组合器仍运行剩余阶段，最终输出 `trader_command_group_v1` 汇总并以非零结束，使一次运行能
