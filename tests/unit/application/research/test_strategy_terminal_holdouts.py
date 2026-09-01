@@ -57,3 +57,6 @@ def test_strategy_adapters_bind_their_fixed_anchor_and_identity() -> None:
         ("d25", d25.status),
     )
     assert conclusion.production_authority is False
+    assert conclusion.strategy_metrics[0][0] == "today"
+    assert conclusion.strategy_metrics[1][0] == "tomorrow"
+    assert conclusion.strategy_metrics[2][0] == "d25"

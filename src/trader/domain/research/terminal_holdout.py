@@ -19,6 +19,18 @@ TerminalStrategy = Literal["today", "tomorrow", "d25"]
 TerminalStatus = Literal["historical_data_insufficient", "historical_rejected", "historical_validated"]
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _BOARDS = {"main", "chinext", "star"}
+_REQUIRED_STATE_LABELS = (
+    "board:main",
+    "board:chinext",
+    "board:star",
+    "market:up",
+    "market:down",
+    "market:sideways",
+    "volatility:low",
+    "volatility:high",
+    "liquidity:low",
+    "liquidity:high",
+)
 _MIN_DATES = 200
 
 
@@ -170,9 +182,20 @@ def evaluate_terminal_holdout(
     parent_failure_reasons: tuple[str, ...] = (),
     anchor: str | None = None,
     bootstrap_block_days: int | None = None,
+    terminal_holdout_already_opened: bool = False,
 ) -> TerminalHoldoutReport:
     """Run exactly one deterministic terminal evaluation over an already sealed candidate."""
 
+    if terminal_holdout_already_opened:
+        return _closed_report(
+            strategy,
+            research_identity,
+            parent_hash,
+            candidate_hash,
+            anchor,
+            "historical_rejected",
+            ("terminal_holdout_already_opened",),
+        )
     if parent_status not in {"historical_candidate_ready", "historical_daily_close_proxy_validated"}:
         parent_result: TerminalStatus = (
             "historical_data_insufficient" if parent_status == "historical_data_insufficient" else "historical_rejected"
@@ -193,7 +216,10 @@ def evaluate_terminal_holdout(
         return _closed_report(strategy, research_identity, parent_hash, candidate_hash, anchor, "historical_data_insufficient", ("terminal_trade_dates_below_200",))
     metrics = _metrics(ordered, strategy=strategy, bootstrap_block_days=bootstrap_block_days or (10 if strategy == "d25" else 5))
     failures = _gate_failures(metrics, strategy)
-    insufficient_state = any(count < 40 for _label, count in metrics.state_sample_counts)
+    state_counts = dict(metrics.state_sample_counts)
+    insufficient_state = any(state_counts.get(label, 0) < 40 for label in _REQUIRED_STATE_LABELS)
+    if insufficient_state and "state_sample_below_40" not in failures:
+        failures = tuple(sorted((*failures, "state_sample_below_40")))
     if insufficient_state:
         result_status: TerminalStatus = "historical_data_insufficient"
     else:
@@ -252,6 +278,8 @@ def _metrics(rows: tuple[TerminalHoldoutRow, ...], *, strategy: TerminalStrategy
             ordered = sorted(day_rows, key=lambda row: (-row.predicted_net_excess_return, row.code))
             split = max(1, len(ordered) // 5)
             spreads.append(_mean(tuple(row.actual_net_excess_returns[0] for row in ordered[:split])) - _mean(tuple(row.actual_net_excess_returns[0] for row in ordered[-split:])))
+        for board in {row.board for row in day_rows}:
+            state_counts[f"board:{board}"] += 1
         state_counts[f"market:{day_rows[0].market_state}"] += 1
         state_counts[f"volatility:{day_rows[0].volatility_state}"] += 1
         state_counts[f"liquidity:{day_rows[0].liquidity_state}"] += 1

@@ -18,12 +18,14 @@ class D25TerminalHoldoutService:
         parent_hash: str = "0" * 64,
         candidate_hash: str = "1" * 64,
         parent_failure_reasons: tuple[str, ...] = (),
+        terminal_holdout_already_opened: bool = False,
     ) -> None:
         self._rows = tuple(rows)
         self._candidate_status = candidate_status
         self._parent_hash = parent_hash
         self._candidate_hash = candidate_hash
         self._parent_failure_reasons = parent_failure_reasons
+        self._terminal_holdout_already_opened = terminal_holdout_already_opened
 
     def execute(self) -> TerminalHoldoutReport:
         return evaluate_terminal_holdout(
@@ -36,6 +38,7 @@ class D25TerminalHoldoutService:
             parent_failure_reasons=self._parent_failure_reasons,
             anchor="14:50_unadjusted_point_in_time",
             bootstrap_block_days=10,
+            terminal_holdout_already_opened=self._terminal_holdout_already_opened,
         )
 
 

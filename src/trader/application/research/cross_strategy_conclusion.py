@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from trader.application.research.replay_models import canonical_hash
-from trader.domain.research.terminal_holdout import TerminalHoldoutReport, TerminalStatus
+from trader.domain.research.terminal_holdout import TerminalHoldoutMetrics, TerminalHoldoutReport, TerminalStatus
 
 CrossStrategyStatus = Literal["historical_data_insufficient", "historical_rejected", "historical_validated"]
 
@@ -38,6 +38,12 @@ class CrossStrategyConclusion:
     @property
     def strategy_statuses(self) -> tuple[tuple[str, TerminalStatus], ...]:
         return tuple((report.strategy, report.status) for report in (self.today, self.tomorrow, self.d25))
+
+    @property
+    def strategy_metrics(self) -> tuple[tuple[str, TerminalHoldoutMetrics], ...]:
+        """Expose each strategy's metrics without merging failures or row counts."""
+
+        return tuple((report.strategy, report.metrics) for report in (self.today, self.tomorrow, self.d25))
 
 
 class CrossStrategyConclusionService:
