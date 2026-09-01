@@ -59,3 +59,28 @@ def test_terminal_holdout_artifact_store_is_idempotent_and_detects_tampering(tmp
     (tmp_path / "report.json").write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(TerminalHoldoutArtifactConflictError):
         store.verify()
+
+
+def test_terminal_holdout_artifact_store_rejects_different_content(tmp_path) -> None:
+    report = _report()
+    store = TerminalHoldoutArtifactStore(tmp_path, strategy="today")
+    store.write(report)
+
+    conflicting = replace(report, candidate_hash="c" * 64)
+    with pytest.raises(TerminalHoldoutArtifactConflictError, match="identity conflict"):
+        store.write(conflicting)
+
+
+def test_terminal_holdout_artifact_store_rejects_strategy_and_schema_mismatch(tmp_path) -> None:
+    report = _report()
+    store = TerminalHoldoutArtifactStore(tmp_path, strategy="tomorrow")
+    with pytest.raises(TerminalHoldoutArtifactConflictError, match="strategy mismatch"):
+        store.write(report)
+
+    store = TerminalHoldoutArtifactStore(tmp_path, strategy="today")
+    store.write(report)
+    payload = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    payload["unexpected"] = True
+    (tmp_path / "report.json").write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(TerminalHoldoutArtifactConflictError):
+        store.verify()

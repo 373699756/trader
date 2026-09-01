@@ -27,7 +27,9 @@ All notable changes to this project are documented here.
   成本、local-only 基准配对增量、移动区块 bootstrap、严重亏损、换手、Rank IC、Q5-Q1、容量和集中度；
   D25 强制成对保留 T+2 至 T+5 收益。父候选拒绝/数据不足时不打开最终留出，点时一致性或 horizon 缺失失败关闭，
   合法空仓日保留在交易日分母；所有报告和跨策略汇总绑定 SHA-256、固定策略顺序且
-  `production_authority=false`，不创建生产资源、不修改 H0/P2/V1/V2 或 DeepSeek 行为。
+  `production_authority=false`，不创建生产资源、不修改 H0/P2/V1/V2 或 DeepSeek 行为。新增三策略
+  `report.json` 不可变封存适配器，采用显式字段白名单、内容哈希校验、同内容幂等、异内容冲突和策略/模式
+  篡改拒绝；修复指标聚合辅助路径缺失导致的终端回放运行时错误。
   `Regression-Key: codex-c-terminal-holdout-v1`。
 
 - 用户要求执行推荐策略第 15.1.25 节，并明确所有荐股评分/训练只能消费历史 point-in-time 数据。新增独立
@@ -87,11 +89,12 @@ All notable changes to this project are documented here.
   未激活；两个受影响契约文件的 Ruff format/check（`--no-cache`）通过，`git diff --check` 通过。
   本批是文档与契约更新，未执行真实历史下载、训练、收益验证、模型发布或主程序 V3 装配。
 
-- `codex-c-terminal-holdout-v1`：新增终端留出领域及三策略适配器/跨策略汇总测试 5 项通过；受影响文件
-  Ruff 和 mypy 通过；点时 parity、父状态失败关闭、D25 四 horizon、稳定 hash 和生产隔离均有回归断言。
-  架构与历史路线契约测试通过，`git diff --check` 通过。未运行真实 H1 下载、候选确认、终端收益回放或生产
-  服务验收，因父工件和授权尚未提供；报告代码已保持 `historical_data_insufficient`/`historical_rejected`
-  失败关闭语义，真实数据证据仍待后续波次。
+- `codex-c-terminal-holdout-v1`：终端留出领域、三策略适配器、跨策略汇总和不可变 JSON 封存测试 9 项通过；
+  受影响文件 Ruff 和 mypy 通过；点时 parity、父状态失败关闭、D25 四 horizon、稳定 hash、生产隔离、同内容
+  幂等、异内容冲突、策略不匹配、未知字段和哈希篡改均有回归断言。架构与历史路线契约测试通过，
+  `git diff --check` 通过。未运行真实 H1 下载、候选确认、终端收益回放或生产服务验收，因父工件和授权尚未
+  提供；报告代码已保持 `historical_data_insufficient`/`historical_rejected` 失败关闭语义，真实数据证据仍待
+  后续波次。
 
 - 15.1.25 定向验证：H1 规范、能力探针、下载服务和独立 SQLite manifest 单元测试 8 项通过；覆盖同身份
   幂等、断点续传、策略隔离、未来/迟到/无时区/非 qfq 拒绝和数据库列篡改检测；受影响文件 Ruff 和 mypy

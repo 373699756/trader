@@ -8,7 +8,7 @@ import tempfile
 from datetime import date
 from pathlib import Path
 
-from trader.application.research.replay_models import canonical_json, canonical_value
+from trader.application.research.replay_models import canonical_json
 from trader.domain.research.terminal_holdout import (
     TerminalHoldoutMetrics,
     TerminalHoldoutReport,
@@ -34,9 +34,7 @@ class TerminalHoldoutArtifactStore:
             if existing.content_hash != report.content_hash:
                 raise TerminalHoldoutArtifactConflictError("terminal holdout report identity conflict")
             return existing
-        payload = canonical_value(report)
-        if not isinstance(payload, dict):
-            raise TypeError("terminal holdout report must encode as an object")
+        payload = _encode_report(report)
         payload["content_hash"] = report.content_hash
         descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=self._root)
         temporary = Path(temporary_name)
@@ -110,6 +108,52 @@ def _decode_report(raw: dict[str, object]) -> TerminalHoldoutReport:
         production_authority=_bool(raw["production_authority"]),
         schema_version=_string(raw["schema_version"]),
     )
+
+
+def _encode_report(report: TerminalHoldoutReport) -> dict[str, object]:
+    metrics = report.metrics
+    return {
+        "strategy": report.strategy,
+        "research_identity": report.research_identity,
+        "parent_hash": report.parent_hash,
+        "candidate_hash": report.candidate_hash,
+        "anchor": report.anchor,
+        "terminal_holdout_opened": report.terminal_holdout_opened,
+        "status": report.status,
+        "metrics": _encode_metrics(metrics),
+        "failure_reasons": list(report.failure_reasons),
+        "terminal_trade_dates": [item.isoformat() for item in report.terminal_trade_dates],
+        "production_authority": report.production_authority,
+        "schema_version": report.schema_version,
+    }
+
+
+def _encode_metrics(metrics: TerminalHoldoutMetrics) -> dict[str, object]:
+    return {
+        "evaluated_trade_dates": metrics.evaluated_trade_dates,
+        "evaluated_rows": metrics.evaluated_rows,
+        "selected_rows": metrics.selected_rows,
+        "baseline_selected_rows": metrics.baseline_selected_rows,
+        "mean_net_excess_returns": list(metrics.mean_net_excess_returns),
+        "baseline_mean_net_excess_returns": list(metrics.baseline_mean_net_excess_returns),
+        "paired_net_increments": list(metrics.paired_net_increments),
+        "bootstrap_lower_bounds": list(metrics.bootstrap_lower_bounds),
+        "severe_loss_rate": metrics.severe_loss_rate,
+        "baseline_severe_loss_rate": metrics.baseline_severe_loss_rate,
+        "turnover": metrics.turnover,
+        "baseline_turnover": metrics.baseline_turnover,
+        "rank_ic": metrics.rank_ic,
+        "top_bottom_quintile_spread": metrics.top_bottom_quintile_spread,
+        "maximum_stock_positive_fraction": metrics.maximum_stock_positive_fraction,
+        "top_five_positive_fraction": metrics.top_five_positive_fraction,
+        "maximum_board_fraction": metrics.maximum_board_fraction,
+        "maximum_industry_count": metrics.maximum_industry_count,
+        "capacity": metrics.capacity,
+        "baseline_capacity": metrics.baseline_capacity,
+        "horizon_mean_net_excess_returns": list(metrics.horizon_mean_net_excess_returns),
+        "baseline_horizon_mean_net_excess_returns": list(metrics.baseline_horizon_mean_net_excess_returns),
+        "state_sample_counts": [[label, count] for label, count in metrics.state_sample_counts],
+    }
 
 
 def _decode_metrics(raw: dict[str, object]) -> TerminalHoldoutMetrics:

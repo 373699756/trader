@@ -304,13 +304,123 @@ def _closed_report(
     )
 
 
+@dataclass
+class _TerminalMetricAccumulator:
+    candidate_daily: list[tuple[float, float, float]] = field(default_factory=list)
+    baseline_daily: list[tuple[float, float, float]] = field(default_factory=list)
+    candidate_sets: list[frozenset[str]] = field(default_factory=list)
+    baseline_sets: list[frozenset[str]] = field(default_factory=list)
+    rank_ics: list[float] = field(default_factory=list)
+    spreads: list[float] = field(default_factory=list)
+    positive_by_code: dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    severe_values: list[float] = field(default_factory=list)
+    baseline_severe_values: list[float] = field(default_factory=list)
+    state_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    horizon: list[tuple[float, ...]] = field(default_factory=list)
+    baseline_horizon: list[tuple[float, ...]] = field(default_factory=list)
+
+
+def _accumulate_terminal_day(
+    accumulator: _TerminalMetricAccumulator,
+    day_rows: tuple[TerminalHoldoutRow, ...],
+) -> None:
+    selected = tuple(row for row in day_rows if row.selected)
+    baseline = tuple(row for row in day_rows if row.baseline_selected)
+    accumulator.candidate_sets.append(frozenset(row.code for row in selected))
+    accumulator.baseline_sets.append(frozenset(row.code for row in baseline))
+    accumulator.candidate_daily.append(_cost_means(tuple(row.actual_net_excess_returns for row in selected)))
+    accumulator.baseline_daily.append(_cost_means(tuple(row.baseline_net_excess_returns for row in baseline)))
+    _accumulate_terminal_risk(accumulator, selected, baseline)
+    _accumulate_terminal_rank(accumulator, day_rows)
+    _accumulate_terminal_states(accumulator, day_rows)
+    _accumulate_terminal_horizon(accumulator, day_rows, selected, baseline)
+
+
+def _accumulate_terminal_risk(
+    accumulator: _TerminalMetricAccumulator,
+    selected: tuple[TerminalHoldoutRow, ...],
+    baseline: tuple[TerminalHoldoutRow, ...],
+) -> None:
+    if selected:
+        accumulator.severe_values.append(sum(row.severe_loss for row in selected) / len(selected))
+        for row in selected:
+            accumulator.positive_by_code[row.code] += max(0.0, row.actual_net_excess_returns[0])
+    if baseline:
+        accumulator.baseline_severe_values.append(sum(row.baseline_severe_loss for row in baseline) / len(baseline))
+
+
+def _accumulate_terminal_rank(
+    accumulator: _TerminalMetricAccumulator,
+    day_rows: tuple[TerminalHoldoutRow, ...],
+) -> None:
+    pairs = tuple((row.predicted_net_excess_return, row.actual_net_excess_returns[0]) for row in day_rows)
+    value = population_spearman(pairs)
+    if value is None:
+        return
+    accumulator.rank_ics.append(value)
+    ordered = sorted(day_rows, key=lambda row: (-row.predicted_net_excess_return, row.code))
+    split = max(1, len(ordered) // 5)
+    accumulator.spreads.append(
+        _mean(tuple(row.actual_net_excess_returns[0] for row in ordered[:split]))
+        - _mean(tuple(row.actual_net_excess_returns[0] for row in ordered[-split:]))
+    )
+
+
+def _accumulate_terminal_states(
+    accumulator: _TerminalMetricAccumulator,
+    day_rows: tuple[TerminalHoldoutRow, ...],
+) -> None:
+    for board in {row.board for row in day_rows}:
+        accumulator.state_counts[f"board:{board}"] += 1
+    accumulator.state_counts[f"market:{day_rows[0].market_state}"] += 1
+    accumulator.state_counts[f"volatility:{day_rows[0].volatility_state}"] += 1
+    accumulator.state_counts[f"liquidity:{day_rows[0].liquidity_state}"] += 1
+
+
+def _accumulate_terminal_horizon(
+    accumulator: _TerminalMetricAccumulator,
+    day_rows: tuple[TerminalHoldoutRow, ...],
+    selected: tuple[TerminalHoldoutRow, ...],
+    baseline: tuple[TerminalHoldoutRow, ...],
+) -> None:
+    if not day_rows[0].horizon_net_excess_returns:
+        return
+    accumulator.horizon.append(
+        tuple(_mean(tuple(row.horizon_net_excess_returns[index] for row in selected)) for index in range(4))
+    )
+    accumulator.baseline_horizon.append(
+        tuple(_mean(tuple(row.baseline_horizon_net_excess_returns[index] for row in baseline)) for index in range(4))
+    )
+
+
+def _portfolio_concentration(
+    grouped: dict[date, list[TerminalHoldoutRow]],
+    selected_rows: int,
+) -> tuple[float, int]:
+    board_counts: dict[str, int] = defaultdict(int)
+    maximum_industry_count = 0
+    for day in sorted(grouped):
+        day_industries: dict[str, int] = defaultdict(int)
+        for row in grouped[day]:
+            if row.selected:
+                board_counts[row.board] += 1
+                day_industries[row.industry] += 1
+        maximum_industry_count = max(maximum_industry_count, max(day_industries.values(), default=0))
+    max_board = max(board_counts.values(), default=0) / selected_rows if selected_rows else 0.0
+    return max_board, maximum_industry_count
+
+
+def _horizon_means(values: list[tuple[float, ...]]) -> tuple[float, ...]:
+    return tuple(_mean(tuple(item[index] for item in values)) for index in range(4)) if values else ()
+
+
 def _metrics(
     rows: tuple[TerminalHoldoutRow, ...], *, strategy: TerminalStrategy, bootstrap_block_days: int
 ) -> TerminalHoldoutMetrics:
     grouped: dict[date, list[TerminalHoldoutRow]] = defaultdict(list)
     for row in rows:
         grouped[row.trade_date].append(row)
-    accumulator = _TerminalMetricAccumulator.create()
+    accumulator = _TerminalMetricAccumulator()
     for day in sorted(grouped):
         _accumulate_terminal_day(accumulator, tuple(sorted(grouped[day], key=lambda item: item.code)))
     paired: tuple[float, float, float] = tuple(
@@ -400,6 +510,21 @@ def _cost_lowers(
 
 
 def _gate_failures(metrics: TerminalHoldoutMetrics, strategy: TerminalStrategy) -> tuple[str, ...]:
+    failures = [
+        *_return_gate_failures(metrics),
+        *_risk_gate_failures(metrics),
+        *_concentration_gate_failures(metrics),
+    ]
+    if (
+        strategy == "d25"
+        and metrics.horizon_mean_net_excess_returns
+        and sum(value > 0.0 for value in metrics.horizon_mean_net_excess_returns) < 3
+    ):
+        failures.append("d25_horizon_not_positive")
+    return tuple(sorted(set(failures)))
+
+
+def _return_gate_failures(metrics: TerminalHoldoutMetrics) -> tuple[str, ...]:
     failures: list[str] = []
     if metrics.evaluated_trade_dates < _MIN_DATES:
         failures.append("terminal_trade_dates_below_200")
@@ -411,6 +536,15 @@ def _gate_failures(metrics: TerminalHoldoutMetrics, strategy: TerminalStrategy) 
         failures.append("net_excess_not_positive")
     if any(value is None or value <= 0.0 for value in metrics.bootstrap_lower_bounds[:2]):
         failures.append("bootstrap_lower_bound_not_positive")
+    if metrics.rank_ic is None or metrics.rank_ic <= 0.0:
+        failures.append("rank_ic_not_positive")
+    if metrics.top_bottom_quintile_spread is None or metrics.top_bottom_quintile_spread <= 0.0:
+        failures.append("quintile_spread_not_positive")
+    return tuple(failures)
+
+
+def _risk_gate_failures(metrics: TerminalHoldoutMetrics) -> tuple[str, ...]:
+    failures: list[str] = []
     if (
         metrics.severe_loss_rate is None
         or metrics.baseline_severe_loss_rate is None
@@ -419,23 +553,18 @@ def _gate_failures(metrics: TerminalHoldoutMetrics, strategy: TerminalStrategy) 
         failures.append("severe_loss_rate_worse")
     if metrics.turnover - metrics.baseline_turnover > 0.05:
         failures.append("turnover_increase_above_5_percent")
-    if metrics.rank_ic is None or metrics.rank_ic <= 0.0:
-        failures.append("rank_ic_not_positive")
-    if metrics.top_bottom_quintile_spread is None or metrics.top_bottom_quintile_spread <= 0.0:
-        failures.append("quintile_spread_not_positive")
+    return tuple(failures)
+
+
+def _concentration_gate_failures(metrics: TerminalHoldoutMetrics) -> tuple[str, ...]:
+    failures: list[str] = []
     if metrics.maximum_stock_positive_fraction > 0.10 or metrics.top_five_positive_fraction > 0.30:
         failures.append("stock_concentration")
     if metrics.maximum_board_fraction > 0.60:
         failures.append("board_concentration")
     if metrics.maximum_industry_count > 2:
         failures.append("industry_concentration")
-    if (
-        strategy == "d25"
-        and metrics.horizon_mean_net_excess_returns
-        and sum(value > 0.0 for value in metrics.horizon_mean_net_excess_returns) < 3
-    ):
-        failures.append("d25_horizon_not_positive")
-    return tuple(sorted(set(failures)))
+    return tuple(failures)
 
 
 def _empty_metrics() -> TerminalHoldoutMetrics:
