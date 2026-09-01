@@ -824,7 +824,7 @@ def _supply_status(
         candidate_optional_reason_counts=tuple(quality.candidate_optional_reason_counts.items()),
         degraded_reasons=quality.degraded_reasons,
         supply_reason_counts=tuple(reasons.items()),
-        primary_blocker=_primary_supply_blocker(quality, funnel),
+        primary_blocker=_primary_supply_blocker(quality, funnel, empty_reason=diagnostics.empty_reason),
     )
 
 
@@ -938,6 +938,8 @@ def _summary_quote_complete(feature: FeatureSnapshot) -> bool:
 def _primary_supply_blocker(
     quality: ScoredInputQuality,
     funnel: V2SupplyFunnel,
+    *,
+    empty_reason: str | None,
 ) -> str:
     action_blocker = "no_executable_candidates" if funnel.action_observe else "local_score_below_observation_floor"
     priorities = (
@@ -950,6 +952,7 @@ def _primary_supply_blocker(
             "strategy_history_unavailable",
         ),
         (funnel.full_scored == 0, "no_scored_candidates"),
+        (empty_reason == "no_positive_net_utility", "no_positive_net_utility"),
         (funnel.review_eligible == 0, "no_review_eligible_candidates"),
         (funnel.action_executable == 0, action_blocker),
         (funnel.selected_executable == 0, "selection_constraints"),

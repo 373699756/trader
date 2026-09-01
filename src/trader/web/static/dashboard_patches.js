@@ -119,6 +119,9 @@
 
   function scoredEmptySummary(payload, inputQuality) {
     const diagnostics = payload && payload.selection_diagnostics || {};
+    if (payload && payload.strategy === "tomorrow" && diagnostics.empty_reason === "no_positive_net_utility") {
+      return "评分已完成｜模型预测成本后净超额均未转正，按固定成本规则信号分为 0；本轮保持空仓，不生成正式推荐或观察项";
+    }
     const funnel = inputQuality && inputQuality.supply_funnel || {};
     const maximum = finiteNumber(diagnostics.maximum_final_score);
     const threshold = finiteNumber(diagnostics.executable_threshold);

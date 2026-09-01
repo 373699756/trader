@@ -296,7 +296,7 @@ def _scored_decision(
         degraded_reasons=epoch.degraded_reasons,
         population_count=epoch.evaluated_count,
         rejected_count=epoch.rejected_count,
-        selection_diagnostics=_selection_diagnostics(epoch, context.decision_policy),
+        selection_diagnostics=_selection_diagnostics(epoch, context),
     )
 
 
@@ -357,8 +357,9 @@ def _decision_item(
 
 def _selection_diagnostics(
     epoch: DecisionEpoch,
-    policy: ScoredDecisionPolicy,
+    context: _DecisionProjectionContext,
 ) -> SelectionDiagnostics:
+    policy = context.decision_policy
     selected = tuple(item for item in epoch.entries if item.selected)
     maximum_final_score = max((item.score.final_score for item in epoch.entries), default=None)
     observation_floor = max(0.0, policy.executable_threshold - policy.observation_margin)
@@ -366,11 +367,12 @@ def _selection_diagnostics(
     if not epoch.entries:
         empty_reason = "no_scored_candidates"
     elif not selected:
-        empty_reason = (
-            "score_below_observation_floor"
-            if maximum_final_score is not None and maximum_final_score < observation_floor
-            else "risk_or_execution_blocked"
-        )
+        if _has_no_positive_model_utility(epoch, context):
+            empty_reason = "no_positive_net_utility"
+        elif maximum_final_score is not None and maximum_final_score < observation_floor:
+            empty_reason = "score_below_observation_floor"
+        else:
+            empty_reason = "risk_or_execution_blocked"
     return SelectionDiagnostics(
         maximum_final_score,
         policy.executable_threshold,
@@ -381,6 +383,19 @@ def _selection_diagnostics(
         sum(item.action is RecommendationAction.OBSERVE for item in selected),
         len(epoch.review_candidate_codes),
         empty_reason,
+    )
+
+
+def _has_no_positive_model_utility(
+    epoch: DecisionEpoch,
+    context: _DecisionProjectionContext,
+) -> bool:
+    return (
+        context.strategy is Strategy.TOMORROW
+        and context.model_diagnostics is not None
+        and bool(epoch.entries)
+        and bool(context.model_diagnostics)
+        and all(item.predicted_net_excess_pct <= 0.0 for item in context.model_diagnostics.values())
     )
 
 

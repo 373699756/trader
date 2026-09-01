@@ -9,6 +9,7 @@ import pytest
 
 from tests.unit.application.v2_review_helpers import review
 from trader.application.decisions.decision_core import UnifiedDecisionIndex
+from trader.application.market_data.v2_input_runtime import _supply_status
 from trader.application.ports.scored import D25NativeInput, ScoredNativeInput, TodayNativeInput, TomorrowNativeInput
 from trader.application.ports.tomorrow_model import TomorrowModelInput, TomorrowModelPrediction
 from trader.application.recommendation.scored_v2_projection import (
@@ -54,6 +55,11 @@ class _RecordingProductionPredictor(_ProductionPredictor):
     def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
         self.codes = tuple(item.code for item in inputs)
         return super().predict(inputs)
+
+
+class _NonPositiveProductionPredictor(_ProductionPredictor):
+    def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
+        return tuple(TomorrowModelPrediction(item.code, 0.001, 0.0) for item in inputs)
 
 
 def test_native_local_and_valid_facts_publish_one_parented_hybrid(
@@ -128,6 +134,32 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     assert hybrid_result.event is not None
     assert hybrid_result.event.decision_version == hybrid.version
     assert index.snapshot(Strategy.TOMORROW).current == hybrid
+
+
+def test_tomorrow_zero_score_identifies_the_cost_aware_cash_result(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "v2" / "strategy.json"))
+    features = tuple(
+        _with_model_features(
+            _verified_feature(application_feature_factory(f"600{index:03d}", EVALUATED_AT - timedelta(seconds=10))),
+            index,
+        )
+        for index in range(1, 4)
+    )
+
+    projection = build_scored_v2_local(
+        _native_input(features),
+        policy,
+        sequence=1,
+        tomorrow_model=TomorrowProductionModelScoringService(_NonPositiveProductionPredictor()),
+    )
+
+    diagnostics = projection.local.selection_diagnostics
+    assert diagnostics is not None
+    assert diagnostics.maximum_final_score == 0.0
+    assert diagnostics.empty_reason == "no_positive_net_utility"
+    assert _supply_status(projection).primary_blocker == "no_positive_net_utility"
 
 
 def test_tomorrow_model_cross_section_excludes_hard_filter_rejections(

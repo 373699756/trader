@@ -1136,6 +1136,14 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 用户反馈“明日数据异常，最高评分 0 分”。现场先确认 Tomorrow 有 57 只完成评分而非评分链空缺，安全
+  重启后仍为 0；再只读使用截至前一交易日的本地历史重建 V1 全横截面，可重建 2,781 只，毛预测超额
+  最高约 0.3076%，扣固定 20–40bp 成本后最高净效用约 -0.0612%，正净效用为 0 只。因此 0 分是
+  “净效用不大于 0 映射为 0”的合法空仓结果，缺陷是原状态误写成普通门槛不足/无复核候选。Tomorrow
+  现在使用 `no_positive_net_utility` 类型化空结果，状态以同一原因作为首要阻断，页面明确说明成本后
+  净超额未转正和保持空仓；未调整模型、成本、73/78 门槛、评分或冻结，历史覆盖降级仍单独展示。
+  `Regression-Key: tomorrow-zero-score-cost-aware-cash-v1`。
+
 - 用户反馈 `run.sh` 不能正常启动。现场复现确认服务并未启动失败：10:52 已有真实
   `trader-server` 持有 `.runtime/v2/server.lock`，根页面与状态接口均可访问；第二实例被内核文件锁
   正确拒绝，直接删除锁会破坏单实例边界。锁冲突现在继续返回非零，但同时输出实际浏览器 URL，并明确
@@ -1798,6 +1806,16 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- Tomorrow 0 分解释修复执行失败优先回归：新增 Python 用例先证明 10bp 毛预测在固定成本后全为 0 时
+  仍被误标为 `score_below_observation_floor`，JS 用例先证明页面误报为距正式线 78 分；修复后两项定向
+  回归、评分/输入状态/决策身份/Web API 定向 59 项和权威文档契约通过。`make format-check`、
+  `make lint`（严格重构债为零）、`make type-check`、`make test`、`make package` 全部通过；仓库外安装
+  wheel 后包、入口、资源和新页面原因通过。三档 Firefox 桌面验收通过，无白屏、重叠、横向溢出或
+  浏览器错误。现场对照以同一 `run.sh` 安全重启且结果仍为 0；只读历史重建仅使用 2026-09-01 之前的
+  本地 qfq 日线，2,781 只中正净效用为 0，未请求或采集未来评价数据。修复后真实 current API 返回
+  `maximum_final_score=0.0`、`empty_reason=no_positive_net_utility`，状态 API 同步以该原因为首要阻断，
+  并继续公开 72/297 的 61 日历史覆盖。
 
 - `run.sh` 活动实例提示修复按入口/生命周期高风险门禁验证：失败优先回归先证明旧帮助仍写五阶段且
   锁冲突只输出原始异常；修复后入口与进程锁定向测试 4 项通过。`make format-check`、`make lint`
@@ -2817,6 +2835,12 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 本批只修复 Tomorrow 合法 0 分空仓的解释和诊断归因，不把单日 0 分包装成收益改进。最终现场候选历史
+  覆盖仅 72/297（约四分之一）且午间历史预热存在大量失败/重试；代表性 3 只股票的历史源诊断 3/3 成功，说明
+  不是供应商整体中断，但覆盖与预热效率仍是独立运行风险。本批不据单日现象改模型、固定成本或门槛，
+  评分优化继续按历史 H1 路线和最终留出门禁执行。一次带大量在途历史任务的正常 SIGTERM 达到 30 秒
+  关闭上限并返回 2，但进程和文件锁均已释放；该历史预热资源问题未由本批解释修复改变。
 
 - 活动实例提示不会自动终止或替换旧进程；这是单实例与冻结安全边界，部署新代码仍需操作者在原终端
   正常停止后重启。现场服务已由修复后的 `run.sh` 重新启动并保持运行；证券主表刷新与历史预热仍存在

@@ -114,3 +114,22 @@ def test_v1_v2_historical_evidence_does_not_create_a_running_collection_gate() -
     for retired in ("522 个有效交易日", "tomorrow_v1_v2_paired_forward_v1"):
         assert retired not in strategy
         assert retired not in design
+
+
+def test_tomorrow_zero_score_is_explained_as_a_cost_aware_cash_result() -> None:
+    strategy = _compact(ROOT / "docs/recommendation-strategy.md")
+    design = _compact(ROOT / "docs/software-business-design.md")
+
+    for token in (
+        "`no_positive_net_utility`",
+        "预测成本后净效用均不大于 0",
+        "合法空仓结果",
+        "不得为了显示非零分数",
+    ):
+        assert token in strategy
+    for token in (
+        "模型预测成本后净超额均未转正",
+        "按固定成本规则信号分为 0",
+        "不能误报成数据异常",
+    ):
+        assert token in design

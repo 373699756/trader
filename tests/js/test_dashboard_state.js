@@ -637,6 +637,28 @@ assert.strictEqual(
 assert.strictEqual(
   state.emptyRecommendationMessage(
     {
+      strategy: "tomorrow",
+      selection_diagnostics: {
+        empty_reason: "no_positive_net_utility",
+        maximum_final_score: 0,
+        observation_floor: 73,
+        executable_threshold: 78,
+      },
+    },
+    0,
+    {
+      supply_funnel: {
+        observation_threshold_met_count: 0,
+        executable_threshold_met_count: 0,
+      },
+      supply_reason_counts: { below_score_threshold: 57 },
+    },
+  ),
+  "评分已完成｜模型预测成本后净超额均未转正，按固定成本规则信号分为 0；本轮保持空仓，不生成正式推荐或观察项",
+);
+assert.strictEqual(
+  state.emptyRecommendationMessage(
+    {
       selection_diagnostics: {
         empty_reason: "risk_or_execution_blocked",
         maximum_final_score: 76.4,

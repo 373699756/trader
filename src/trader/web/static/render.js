@@ -102,6 +102,7 @@
     d25_structured_research_incomplete: "2至5日结构化研究数据不完整",
     corporate_risk_history_unavailable: "公司风险历史暂不可核验",
     model_unavailable: "模型服务暂不可用",
+    no_positive_net_utility: "模型预测成本后净超额均未转正",
     quote_fallback: "行情已使用备用数据",
   };
 
