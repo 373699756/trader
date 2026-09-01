@@ -1763,8 +1763,10 @@ All notable changes to this project are documented here.
   latest-wins/停止、冻结恢复、SSE 和 Web 资源回归通过；`docs/plan.md` 不存在，迁移账本不存在，所有旧
   路径和兼容导入扫描为 0。完整 `make format-check`、`make lint`、`make type-check`、`make test`、
   `make package` 和 `make performance-check` 均通过。
-- 最终 wheel 在仓库外安装并从 `site-packages` 导入，`pip check`、CLI、模板、CSS、JavaScript、图标和模型
-  资源通过；三档桌面 Chrome 验收和统一 `diagnose_runtime.py --profile full --output -` 均记录于本批结果。
+- 三档桌面 Chrome 验收通过（1280x720、1440x900、1920x1080，无白屏、页面级横向溢出、Long 区域重叠或
+  浏览器错误）。统一 `scripts/diagnose_runtime.py --profile full --output -` 如实返回 `failed`：生产性能
+  子检查通过；Web endpoint、交易所证券主数据、腾讯行情和浏览器刷新为连接/环境失败，历史源为空响应
+  降级，Tushare 因缺少 token 降级。该结果不作为真实供应商或 Firefox 发布级通过证据。
 
 - `tests/unit/application/research`、`tests/unit/domain/research`、`tests/unit/infra/research`、结算、trace、
   score-plan、功能包、架构和 E9 入口契约全部通过；CLI 导入研究模块数为 0，server 仅加载允许的后台证据
@@ -2752,8 +2754,10 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- Firefox 专项仍受本机缺少 geckodriver 阻断；真实供应商/DeepSeek 现场、五时段运行矩阵和外部服务状态不
-  能由离线门禁替代，已按精确失败/未执行原因记录。正式 `0.2.0` release 仍未声明，需用户另立发布批次。
+- Firefox 专项的 `browser_refresh` 因当前浏览器/驱动与运行服务连接条件失败；统一 full 还记录 Web endpoint
+  `connection_failed`、交易所 SSE 失败、腾讯行情失败、历史 3 个样本均为空和 Tushare 缺 token。真实
+  供应商/DeepSeek 现场、五时段运行矩阵和外部服务状态不能由离线门禁替代，需在可用环境补测；正式 `0.2.0`
+  release 仍未声明，需用户另立发布批次。
 - 既有 `score_p0_v2_historical_planned_dates_missed`、V1/V2 收益证据不足和 overlay 性能长尾保持原状；本批
   只清理架构与治理痕迹，不回填研究身份、不改变评分策略、不放宽任何质量门槛。
 
