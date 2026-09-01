@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Literal, cast
@@ -31,6 +32,17 @@ from trader.infra.process_lock import ProcessLock, ProcessLockError
 
 class TomorrowResearchArtifactStoreError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class _TomorrowCommitContext:
+    graph: TomorrowResearchArtifactGraph
+    run_id: str
+    active_run_id: str | None
+    run_root: Path
+    next_stage: TomorrowResearchStage | None
+    model_encoded: str | None
+    resource_probe: TomorrowResearchResourceProbe | None
 
 
 class TomorrowResearchArtifactStore:
@@ -107,75 +119,101 @@ class TomorrowResearchArtifactStore:
     ) -> TomorrowResearchArtifactGraph:
         try:
             with ProcessLock(self._lock_path):
-                current = self.load_graph()
-                if current.content_hash != expected_graph_hash:
-                    raise TomorrowResearchArtifactStoreError("Tomorrow research graph compare-and-set conflict")
-                sealed = self.load_handoff(handoff.stage)
-                if sealed != handoff:
-                    raise TomorrowResearchArtifactStoreError("Tomorrow research sealed handoff changed before commit")
-                if self.host_available_disk_gb() < 30.0:
-                    raise TomorrowResearchArtifactStoreError("Tomorrow research available disk is below 30GB")
-                updated = current.extend(handoff.artifacts)
-                run_id = derive_tomorrow_research_run_id(updated)
-                if run_id is None:
-                    raise TomorrowResearchArtifactStoreError("Tomorrow research run identity cannot be derived")
-                active_run_id = self.current_run_id()
-                if active_run_id is not None and active_run_id != run_id:
-                    active_graph = self._load_run_graph(active_run_id)
-                    if next_research_stage(active_graph) is not None:
-                        raise TomorrowResearchArtifactStoreError("Tomorrow research active run identity conflict")
-                run_root = self._run_root(run_id)
-                next_stage = next_research_stage(updated)
-                model_ref = next(
-                    (item for item in updated.artifacts if item.artifact_id == "joint_candidate_model_artifact"),
-                    None,
-                )
-                model_encoded: str | None = None
-                if next_stage is None and model_ref is not None:
-                    model_source = self._model_inbox_root / f"{model_ref.content_hash}.json"
-                    if not model_source.is_file():
-                        raise TomorrowResearchArtifactStoreError("Tomorrow research terminal model document is missing")
-                    model_encoded = _verified_model_document(
-                        model_source.read_text(encoding="utf-8"),
-                        model_ref.content_hash,
-                    )
-                resource_probe = handoff.resource_probe or _read_report_resource_probe(
-                    run_root / ".report-checkpoint.json"
-                )
-                evidence = _read_report_evidence(run_root / ".report-checkpoint.json")
-                evidence_by_path = {item.relative_path: item for item in evidence}
-                for reference in handoff.evidence_partitions:
-                    existing = evidence_by_path.get(reference.relative_path)
-                    if existing is not None and existing != reference:
-                        raise TomorrowResearchArtifactStoreError(
-                            "Tomorrow research evidence partition identity conflict"
-                        )
-                    source = self._evidence_inbox_root / f"{reference.content_hash}.parquet"
-                    if not source.is_file() or _file_hash(source) != reference.content_hash:
-                        raise TomorrowResearchArtifactStoreError(
-                            "Tomorrow research sealed evidence partition is missing"
-                        )
-                    _seal_file_copy(
-                        source,
-                        run_root / "evidence" / reference.relative_path,
-                        reference.content_hash,
-                    )
-                    evidence_by_path[reference.relative_path] = reference
-                evidence = tuple(sorted(evidence_by_path.values(), key=lambda item: item.relative_path))
-                _seal_immutable(run_root / ".graphs" / f"{updated.content_hash}.json", _encode(updated))
-                _replace_file(run_root / ".checkpoint.json", _encode(updated))
-                report = _report(updated, handoff, run_id, resource_probe, evidence)
-                _replace_file(run_root / ".report-checkpoint.json", report)
-                if next_stage is None:
-                    _replace_file(run_root / "report.json", report)
-                    if model_encoded is not None:
-                        _seal_immutable(run_root / "model.json", model_encoded)
-                if active_run_id != run_id:
-                    _replace_file(self._active_run_path, f"{run_id}\n")
+                context = self._prepare_commit(expected_graph_hash, handoff)
+                evidence = self._seal_commit_evidence(context.run_root, handoff.evidence_partitions)
+                self._publish_commit(context, handoff, evidence)
                 self._handoff_path(handoff.stage).unlink(missing_ok=True)
-                return updated
+                return context.graph
         except ProcessLockError as exc:
             raise TomorrowResearchArtifactStoreError("Tomorrow research orchestrator is already active") from exc
+
+    def _prepare_commit(
+        self,
+        expected_graph_hash: str,
+        handoff: TomorrowResearchStageHandoff,
+    ) -> _TomorrowCommitContext:
+        current = self.load_graph()
+        if current.content_hash != expected_graph_hash:
+            raise TomorrowResearchArtifactStoreError("Tomorrow research graph compare-and-set conflict")
+        if self.load_handoff(handoff.stage) != handoff:
+            raise TomorrowResearchArtifactStoreError("Tomorrow research sealed handoff changed before commit")
+        if self.host_available_disk_gb() < 30.0:
+            raise TomorrowResearchArtifactStoreError("Tomorrow research available disk is below 30GB")
+        updated = current.extend(handoff.artifacts)
+        run_id = derive_tomorrow_research_run_id(updated)
+        if run_id is None:
+            raise TomorrowResearchArtifactStoreError("Tomorrow research run identity cannot be derived")
+        active_run_id = self.current_run_id()
+        self._validate_active_run(active_run_id, run_id)
+        run_root = self._run_root(run_id)
+        next_stage = next_research_stage(updated)
+        return _TomorrowCommitContext(
+            updated,
+            run_id,
+            active_run_id,
+            run_root,
+            next_stage,
+            self._terminal_model(updated, next_stage),
+            handoff.resource_probe or _read_report_resource_probe(run_root / ".report-checkpoint.json"),
+        )
+
+    def _validate_active_run(self, active_run_id: str | None, run_id: str) -> None:
+        if active_run_id is None or active_run_id == run_id:
+            return
+        if next_research_stage(self._load_run_graph(active_run_id)) is not None:
+            raise TomorrowResearchArtifactStoreError("Tomorrow research active run identity conflict")
+
+    def _terminal_model(
+        self,
+        graph: TomorrowResearchArtifactGraph,
+        next_stage: TomorrowResearchStage | None,
+    ) -> str | None:
+        model_ref = next(
+            (item for item in graph.artifacts if item.artifact_id == "joint_candidate_model_artifact"),
+            None,
+        )
+        if next_stage is not None or model_ref is None:
+            return None
+        model_source = self._model_inbox_root / f"{model_ref.content_hash}.json"
+        if not model_source.is_file():
+            raise TomorrowResearchArtifactStoreError("Tomorrow research terminal model document is missing")
+        return _verified_model_document(model_source.read_text(encoding="utf-8"), model_ref.content_hash)
+
+    def _seal_commit_evidence(
+        self,
+        run_root: Path,
+        additions: tuple[TomorrowResearchEvidencePartitionRef, ...],
+    ) -> tuple[TomorrowResearchEvidencePartitionRef, ...]:
+        evidence = _read_report_evidence(run_root / ".report-checkpoint.json")
+        evidence_by_path = {item.relative_path: item for item in evidence}
+        for reference in additions:
+            existing = evidence_by_path.get(reference.relative_path)
+            if existing is not None and existing != reference:
+                raise TomorrowResearchArtifactStoreError("Tomorrow research evidence partition identity conflict")
+            source = self._evidence_inbox_root / f"{reference.content_hash}.parquet"
+            if not source.is_file() or _file_hash(source) != reference.content_hash:
+                raise TomorrowResearchArtifactStoreError("Tomorrow research sealed evidence partition is missing")
+            _seal_file_copy(source, run_root / "evidence" / reference.relative_path, reference.content_hash)
+            evidence_by_path[reference.relative_path] = reference
+        return tuple(sorted(evidence_by_path.values(), key=lambda item: item.relative_path))
+
+    def _publish_commit(
+        self,
+        context: _TomorrowCommitContext,
+        handoff: TomorrowResearchStageHandoff,
+        evidence: tuple[TomorrowResearchEvidencePartitionRef, ...],
+    ) -> None:
+        encoded_graph = _encode(context.graph)
+        _seal_immutable(context.run_root / ".graphs" / f"{context.graph.content_hash}.json", encoded_graph)
+        _replace_file(context.run_root / ".checkpoint.json", encoded_graph)
+        report = _report(context.graph, handoff, context.run_id, context.resource_probe, evidence)
+        _replace_file(context.run_root / ".report-checkpoint.json", report)
+        if context.next_stage is None:
+            _replace_file(context.run_root / "report.json", report)
+            if context.model_encoded is not None:
+                _seal_immutable(context.run_root / "model.json", context.model_encoded)
+        if context.active_run_id != context.run_id:
+            _replace_file(self._active_run_path, f"{context.run_id}\n")
 
     def host_available_disk_gb(self) -> float:
         path = self._root

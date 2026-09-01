@@ -42,6 +42,21 @@ class H1ArchiveStatus:
     spec_hash: str = ""
 
 
+@dataclass(frozen=True)
+class _H1ManifestSnapshot:
+    universe_rows: tuple[tuple[object, ...], ...]
+    completed_rows: tuple[tuple[object, ...], ...]
+    records: tuple[tuple[object, ...], ...]
+
+
+@dataclass(frozen=True)
+class _H1RecordAudit:
+    per_code: dict[str, list[str]]
+    per_code_days: dict[str, set[str]]
+    field_values: tuple[tuple[object, ...], ...]
+    source_values: tuple[tuple[str, str, str], ...]
+
+
 class SQLiteH1PointInTimeArchive(H1ArchivePort):
     def __init__(self, runtime_dir: Path) -> None:
         self._root = runtime_dir / "score-h1-point-in-time"
@@ -271,120 +286,24 @@ class SQLiteH1PointInTimeArchive(H1ArchivePort):
             return H1CoverageManifest(
                 spec.content_hash, empty, empty, empty, empty, empty, 0, 0, 0, 0, "historical_data_insufficient"
             )
-        with self._read_connection() as connection:
-            stored = connection.execute(
-                "SELECT research_identity, spec_hash FROM specs WHERE strategy = ?", (spec.strategy,)
-            ).fetchone()
-            if stored is None or str(stored[1]) != spec.content_hash or str(stored[0]) != spec.research_identity:
-                raise H1ArchiveConflictError("H1 spec manifest conflict")
-            universe_rows = connection.execute(
-                "SELECT code, board, name, is_st, is_suspended, payload_hash FROM universe WHERE strategy = ? ORDER BY code",
-                (spec.strategy,),
-            ).fetchall()
-            universe_identities: list[tuple[str, str]] = []
-            for code, board, name, is_st, is_suspended, stored_hash in universe_rows:
-                security = HistoricalSecurity(
-                    str(code), cast(ResearchBoard, str(board)), str(name), bool(is_st), bool(is_suspended)
-                )
-                payload_hash = canonical_hash(security)
-                if payload_hash != str(stored_hash):
-                    raise H1ArchiveConflictError("H1 universe payload conflict")
-                universe_identities.append((security.code, payload_hash))
-            universe_hash = canonical_hash(tuple(universe_identities))
-            completed_rows = connection.execute(
-                "SELECT code, record_count, content_hash FROM downloads WHERE strategy = ? AND status = 'complete' ORDER BY code",
-                (spec.strategy,),
-            ).fetchall()
-            history_hashes = tuple((str(row[0]), int(row[1]), str(row[2])) for row in completed_rows)
-            histories_hash = canonical_hash(history_hashes)
-            rows = connection.execute(
-                "SELECT strategy, code, trade_date, observed_at, open_price, close_price, high_price, low_price, volume, amount, pct_change, turnover_rate, adjustment, source, anchor_price, anchor_volume, anchor_amount, security_state_hash, sector_hash, risk_facts_hash, tail_field_hash, payload_hash FROM records WHERE strategy = ? ORDER BY code, trade_date",
-                (spec.strategy,),
-            ).fetchall()
-        per_code: dict[str, list[str]] = {}
-        per_code_days: dict[str, set[str]] = {}
-        field_values: list[tuple[object, ...]] = []
-        source_values: list[tuple[str, str, str]] = []
-        for (
-            strategy,
-            code,
-            trade_date,
-            observed_at,
-            open_price,
-            close_price,
-            high_price,
-            low_price,
-            volume,
-            amount,
-            pct_change,
-            turnover_rate,
-            adjustment,
-            source,
-            anchor_price,
-            anchor_volume,
-            anchor_amount,
-            state_hash,
-            sector_hash,
-            risk_hash,
-            tail_hash,
-            payload_hash,
-        ) in rows:
-            per_code.setdefault(str(code), []).append(str(payload_hash))
-            per_code_days.setdefault(str(code), set()).add(str(trade_date))
-            if str(adjustment) != "qfq":
-                raise H1ArchiveConflictError("H1 non-qfq record detected")
-            observed = datetime.fromisoformat(str(observed_at))
-            if observed.tzinfo is None:
-                raise H1ArchiveConflictError("H1 timezone evidence missing")
-            local_observed = observed.astimezone(ZoneInfo("Asia/Shanghai"))
-            expected_hour, expected_minute = (11, 20) if spec.strategy == "today" else (14, 50)
-            if str(trade_date) > spec.source_cutoff.isoformat() or local_observed.timetz().replace(tzinfo=None) != time(
-                expected_hour, expected_minute
-            ):
-                raise H1ArchiveConflictError("H1 point-in-time cutoff conflict")
-            payload = {
-                "strategy": str(strategy),
-                "code": str(code),
-                "trade_date": str(trade_date),
-                "observed_at": str(observed_at),
-                "open_price": float(open_price),
-                "close": float(close_price),
-                "high": float(high_price),
-                "low": float(low_price),
-                "volume": float(volume),
-                "amount": float(amount),
-                "pct_change": float(pct_change),
-                "turnover_rate": float(turnover_rate) if turnover_rate is not None else None,
-                "adjustment": str(adjustment),
-                "source": str(source),
-                "anchor_price": float(anchor_price),
-                "anchor_volume": float(anchor_volume),
-                "anchor_amount": float(anchor_amount),
-                "security_state_hash": str(state_hash),
-                "sector_hash": str(sector_hash),
-                "risk_facts_hash": str(risk_hash),
-                "tail_field_hash": str(tail_hash),
-            }
-            if canonical_hash(payload) != str(payload_hash):
-                raise H1ArchiveConflictError("H1 record payload conflict")
-            field_values.append((str(code), str(trade_date), str(state_hash), str(sector_hash), str(risk_hash)))
-            source_values.append((str(code), str(trade_date), str(source)))
-        for code, count, content_hash in history_hashes:
-            hashes = per_code.get(code, [])
-            if len(hashes) != count or canonical_hash({"code": code, "records": hashes}) != content_hash:
-                raise H1ArchiveConflictError("H1 record content conflict")
+        snapshot = self._manifest_snapshot(spec)
+        universe_hash = _h1_universe_hash(snapshot.universe_rows)
+        history_hashes = tuple((str(row[0]), _db_int(row[1]), str(row[2])) for row in snapshot.completed_rows)
+        histories_hash = canonical_hash(history_hashes)
+        audit = _audit_h1_records(spec, snapshot.records)
+        _validate_h1_histories(history_hashes, audit.per_code)
         completed_codes = tuple(code for code, _count, _hash in history_hashes)
-        date_sets = [per_code_days[code] for code in completed_codes if code in per_code_days]
+        date_sets = [audit.per_code_days[code] for code in completed_codes if code in audit.per_code_days]
         common_days = len(set.intersection(*date_sets)) if date_sets else 0
-        universe_count = len(universe_rows)
-        completed_count = len(completed_rows)
+        universe_count = len(snapshot.universe_rows)
+        completed_count = len(snapshot.completed_rows)
         terminal = min(spec.terminal_holdout_days, common_days)
         state: str = (
             "coverage_ready"
             if completed_count / universe_count >= spec.minimum_coverage_ratio
             and common_days >= spec.minimum_common_days
             and terminal >= spec.terminal_holdout_days
-            and rows
+            and snapshot.records
             else "historical_data_insufficient"
         )
         calendar_values = tuple(sorted(set.union(*date_sets))) if date_sets else ()
@@ -393,14 +312,41 @@ class SQLiteH1PointInTimeArchive(H1ArchivePort):
             universe_hash,
             histories_hash,
             canonical_hash(calendar_values),
-            canonical_hash(tuple(field_values)),
-            canonical_hash(tuple(source_values)),
+            canonical_hash(audit.field_values),
+            canonical_hash(audit.source_values),
             completed_count,
             universe_count,
             common_days,
             terminal,
             cast(H1CoverageState, state),
         )
+
+    def _manifest_snapshot(self, spec: H1PointInTimeSpec) -> _H1ManifestSnapshot:
+        with self._read_connection() as connection:
+            stored = connection.execute(
+                "SELECT research_identity, spec_hash FROM specs WHERE strategy = ?", (spec.strategy,)
+            ).fetchone()
+            if stored is None or str(stored[1]) != spec.content_hash or str(stored[0]) != spec.research_identity:
+                raise H1ArchiveConflictError("H1 spec manifest conflict")
+            universe_rows = tuple(
+                connection.execute(
+                    "SELECT code, board, name, is_st, is_suspended, payload_hash FROM universe WHERE strategy = ? ORDER BY code",
+                    (spec.strategy,),
+                ).fetchall()
+            )
+            completed_rows = tuple(
+                connection.execute(
+                    "SELECT code, record_count, content_hash FROM downloads WHERE strategy = ? AND status = 'complete' ORDER BY code",
+                    (spec.strategy,),
+                ).fetchall()
+            )
+            records = tuple(
+                connection.execute(
+                    "SELECT strategy, code, trade_date, observed_at, open_price, close_price, high_price, low_price, volume, amount, pct_change, turnover_rate, adjustment, source, anchor_price, anchor_volume, anchor_amount, security_state_hash, sector_hash, risk_facts_hash, tail_field_hash, payload_hash FROM records WHERE strategy = ? ORDER BY code, trade_date",
+                    (spec.strategy,),
+                ).fetchall()
+            )
+        return _H1ManifestSnapshot(universe_rows, completed_rows, records)
 
     def inspect(self, spec: H1PointInTimeSpec) -> H1ArchiveStatus:
         if not self._database.is_file():
@@ -449,6 +395,135 @@ class SQLiteH1PointInTimeArchive(H1ArchivePort):
         connection = sqlite3.connect(self._database)
         connection.execute("PRAGMA query_only = ON")
         return connection
+
+
+def _h1_universe_hash(rows: tuple[tuple[object, ...], ...]) -> str:
+    identities: list[tuple[str, str]] = []
+    for code, board, name, is_st, is_suspended, stored_hash in rows:
+        security = HistoricalSecurity(
+            str(code), cast(ResearchBoard, str(board)), str(name), bool(is_st), bool(is_suspended)
+        )
+        payload_hash = canonical_hash(security)
+        if payload_hash != str(stored_hash):
+            raise H1ArchiveConflictError("H1 universe payload conflict")
+        identities.append((security.code, payload_hash))
+    return canonical_hash(tuple(identities))
+
+
+def _audit_h1_records(
+    spec: H1PointInTimeSpec,
+    rows: tuple[tuple[object, ...], ...],
+) -> _H1RecordAudit:
+    per_code: dict[str, list[str]] = {}
+    per_code_days: dict[str, set[str]] = {}
+    field_values: list[tuple[object, ...]] = []
+    source_values: list[tuple[str, str, str]] = []
+    for row in rows:
+        code, trade_date, payload_hash, fields, source = _audit_h1_record(spec, row)
+        per_code.setdefault(code, []).append(payload_hash)
+        per_code_days.setdefault(code, set()).add(trade_date)
+        field_values.append(fields)
+        source_values.append(source)
+    return _H1RecordAudit(per_code, per_code_days, tuple(field_values), tuple(source_values))
+
+
+def _audit_h1_record(
+    spec: H1PointInTimeSpec,
+    row: tuple[object, ...],
+) -> tuple[str, str, str, tuple[object, ...], tuple[str, str, str]]:
+    (
+        strategy,
+        code,
+        trade_date,
+        observed_at,
+        open_price,
+        close_price,
+        high_price,
+        low_price,
+        volume,
+        amount,
+        pct_change,
+        turnover_rate,
+        adjustment,
+        source,
+        anchor_price,
+        anchor_volume,
+        anchor_amount,
+        state_hash,
+        sector_hash,
+        risk_hash,
+        tail_hash,
+        payload_hash,
+    ) = row
+    _validate_h1_record_timing(spec, str(trade_date), str(observed_at), str(adjustment))
+    payload = {
+        "strategy": str(strategy),
+        "code": str(code),
+        "trade_date": str(trade_date),
+        "observed_at": str(observed_at),
+        "open_price": _db_float(open_price),
+        "close": _db_float(close_price),
+        "high": _db_float(high_price),
+        "low": _db_float(low_price),
+        "volume": _db_float(volume),
+        "amount": _db_float(amount),
+        "pct_change": _db_float(pct_change),
+        "turnover_rate": _db_float(turnover_rate) if turnover_rate is not None else None,
+        "adjustment": str(adjustment),
+        "source": str(source),
+        "anchor_price": _db_float(anchor_price),
+        "anchor_volume": _db_float(anchor_volume),
+        "anchor_amount": _db_float(anchor_amount),
+        "security_state_hash": str(state_hash),
+        "sector_hash": str(sector_hash),
+        "risk_facts_hash": str(risk_hash),
+        "tail_field_hash": str(tail_hash),
+    }
+    if canonical_hash(payload) != str(payload_hash):
+        raise H1ArchiveConflictError("H1 record payload conflict")
+    fields = (str(code), str(trade_date), str(state_hash), str(sector_hash), str(risk_hash))
+    return str(code), str(trade_date), str(payload_hash), fields, (str(code), str(trade_date), str(source))
+
+
+def _validate_h1_record_timing(
+    spec: H1PointInTimeSpec,
+    trade_date: str,
+    observed_at: str,
+    adjustment: str,
+) -> None:
+    if adjustment != "qfq":
+        raise H1ArchiveConflictError("H1 non-qfq record detected")
+    observed = datetime.fromisoformat(observed_at)
+    if observed.tzinfo is None:
+        raise H1ArchiveConflictError("H1 timezone evidence missing")
+    local_observed = observed.astimezone(ZoneInfo("Asia/Shanghai"))
+    expected_hour, expected_minute = (11, 20) if spec.strategy == "today" else (14, 50)
+    if trade_date > spec.source_cutoff.isoformat() or local_observed.timetz().replace(tzinfo=None) != time(
+        expected_hour, expected_minute
+    ):
+        raise H1ArchiveConflictError("H1 point-in-time cutoff conflict")
+
+
+def _validate_h1_histories(
+    history_hashes: tuple[tuple[str, int, str], ...],
+    per_code: dict[str, list[str]],
+) -> None:
+    for code, count, content_hash in history_hashes:
+        hashes = per_code.get(code, [])
+        if len(hashes) != count or canonical_hash({"code": code, "records": hashes}) != content_hash:
+            raise H1ArchiveConflictError("H1 record content conflict")
+
+
+def _db_int(value: object) -> int:
+    if isinstance(value, (int, str)):
+        return int(value)
+    raise H1ArchiveConflictError("H1 integer storage value is invalid")
+
+
+def _db_float(value: object) -> float:
+    if isinstance(value, (int, float, str)):
+        return float(value)
+    raise H1ArchiveConflictError("H1 numeric storage value is invalid")
 
 
 def _record_payload(record: H1PointInTimeRecord) -> dict[str, object]:

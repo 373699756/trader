@@ -78,6 +78,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- `tomorrow-research-orchestration-artifact-graph-v1`：最终 Review 将 Tomorrow 工件提交中的 CAS/活动 run
+  校验、终态模型验证、Parquet 证据封存和 checkpoint/终态发布拆为同一进程锁内的独立职责，并将 H1
+  manifest 的 SQLite 快照读取、universe/record/history hash 审计与报告组装分离；保持工件 schema、
+  内容 hash、写入顺序、失败关闭和生产隔离语义不变，严格复杂度债务恢复为零。
+
 - `codex-b-historical-filter-confirmation-v1`：修复过滤消融报告生成规则贡献时引用未定义局部变量导致的
   运行时失败；恢复以固定控制人口计算基线指标，并保留禁用规则变体相对控制组的 I/O、评分行和 DeepSeek
   请求节省量。同步收窄确认器可空均值的类型并公开 `CandidateConfirmationPlan`，避免严格 mypy 门禁失败。
@@ -88,8 +93,13 @@ All notable changes to this project are documented here.
 - `tomorrow-research-orchestration-artifact-graph-v1`：Codex D 应用/基础设施/CLI/文档定向测试 57 项通过；
   覆盖五阶段单次连续推进、缺父工件阻塞、owner/父 hash/无环校验、资源超限、同 run 恢复、不同输入新 run、
   模型与证据篡改、终态 `publishable`/人工授权分离、`run.sh`/PowerShell 薄转发和 V1/V2 隔离。并行 A/B/C
-  研究单元及架构契约 57 项通过；受影响 Python 文件 Ruff 和 mypy 通过，`git diff --check` 通过。完整高风险
-  命令组和仓库外 wheel 结果见本批最终验证记录。
+  研究单元及架构契约 57 项通过。`make format-check`、`make lint`（含零严格复杂度债务）、
+  `make type-check`（316 个源文件）、`make test` 和 `make package` 均通过；`git diff --check` 通过。
+  仓库外安装 wheel 后，`trader` 导入、`trader-cli --help`、`validate-config`、模板/CSS/JavaScript/图标资源
+  和带已锁定依赖搜索路径的 `pip check` 均通过。`./run.sh help` 公开唯一 `train-tomorrow` 入口；无 handoff
+  冒烟按预期非零退出并报告 `resource_probe_handoff_missing`、`run_id=null`、
+  `production_authority=false`、`automatic_model_update=false`。三档桌面浏览器验收不适用：本批未修改 Web
+  资源或生产运行行为，也未执行真实 H1 下载、训练、确认、两级留出、收益验证或 V3 发布。
 
 - `tomorrow-v3-single-command-two-artifact-contract-v1`：两份权威文档的相关定向契约 26 项通过，覆盖
   单一目标命令、两个对外工件、内部 Parquet 证据、V1/V2/C3 原始预测联合、独立生产授权和 V3 profile
