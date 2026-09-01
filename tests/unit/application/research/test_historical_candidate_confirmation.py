@@ -1,11 +1,30 @@
 from datetime import date, timedelta
 
+from trader.application.research.h1_point_in_time_completion import complete_codex_a_research
 from trader.application.research.historical_candidate_confirmation import (
     HistoricalStrategyResearchRequest,
     execute_codex_b_batch,
     execute_historical_strategy_research,
+    seal_codex_b_insufficient_batch,
 )
 from trader.domain.research.filter_recall_ablation import FilterAblationRow
+from trader.domain.research.h1_point_in_time import H1CapabilityProbe, H1PointInTimeSpec, build_h1_capability_audit
+from trader.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive
+
+
+def _codex_a_completion(tmp_path):
+    capability = build_h1_capability_audit(
+        (
+            H1CapabilityProbe("tencent_qfq_daily", date(2023, 1, 10), False, False, "qfq", False, 640, 3, 1024, 0.5),
+            H1CapabilityProbe("eastmoney_historical_minute", None, False, False, "unsupported", False, 0, 3, 512, 0.5),
+        ),
+        probe_failures=("eastmoney_historical_minute_probe_failed",),
+    )
+    archive = SQLiteH1PointInTimeArchive(tmp_path)
+    return complete_codex_a_research(
+        capability=capability,
+        metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("today", "tomorrow", "d25")),
+    )
 
 
 def _dates(start: date) -> tuple[date, ...]:
@@ -147,3 +166,20 @@ def test_ready_parent_without_research_rows_closes_as_data_insufficient() -> Non
     assert result.status == "historical_data_insufficient"
     assert result.confirmation_report.evidence == ()
     assert result.confirmation_report.failure_reasons == ("development_data_insufficient",)
+
+
+def test_codex_b_seals_parent_insufficient_terminal_without_dates_or_research_results(tmp_path) -> None:
+    completion = _codex_a_completion(tmp_path)
+
+    batch = seal_codex_b_insufficient_batch(completion)
+
+    assert batch.status == "historical_data_insufficient"
+    assert tuple(item.strategy for item in batch.strategies) == ("today", "tomorrow", "d25")
+    assert all(item.failure_reasons for item in batch.strategies)
+    assert all(item.candidate_family_hash is None for item in batch.strategies)
+    assert all(item.confirmation_report_hash is None for item in batch.strategies)
+    assert batch.joint_holm_test_count is None
+    assert batch.joint_model_artifact_hash is None
+    assert batch.terminal_holdout_status == "terminal_holdout_not_opened"
+    assert batch.parent_completion_hash == completion.content_hash
+    assert len(batch.joint_report_hash) == 64

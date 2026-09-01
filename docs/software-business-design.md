@@ -1784,6 +1784,19 @@ H1 免费来源能力探针使用 `score_h1_source_capability_audit_v2`，优先
 OOF/model 以及生产/自动更新权限。当前真实审计已使三个策略、标签、残差账本和 C3 均以
 `historical_data_insufficient` 收口，因此不得启动全量 H1 下载、训练、确认或终端留出。
 
+Codex C 的显式 `scripts/codex_c_terminal_holdout.py` 只接受仓库外 Codex A 父工件目录，先校验 capability、
+标签预注册和 A terminal index 的父 hash，再通过 Today、Tomorrow、D25 类型化 holdout service 封存各自
+`report.json`，最后写入跨策略 `report.json`。父状态为 `historical_data_insufficient` 时只继承 hash 和原因，
+输出 `terminal_holdout_opened=false`、空交易日期和 `production_authority=false`；相同输入二次执行必须幂等。
+该入口不读取网络、收益、DeepSeek 或终端日期，不接入 CLI、Web、bootstrap、生产数据库或默认 profile。
+
+Codex B 的数据不足收口由 `seal_codex_b_insufficient_batch` 生成
+`historical_codex_b_insufficient_batch_v1`，只接受 Codex A completion 的 SHA-256 父引用。它按
+Today/Tomorrow/D25 分别封存 `historical_data_insufficient` 策略终态和失败原因，并生成不含收益、候选、
+Holm 或模型数据的联合报告 hash；候选家族、确认报告、Holm 检验和终端留出均保持未生成/未开启。对应
+`CodexBTerminalArtifactStore` 使用显式字段白名单、原子写入、同内容幂等、异内容冲突和哈希篡改失败关闭，
+不接入生产配置、Web、DeepSeek 或活动数据库。
+
 荐股策略文档第 15.1.35–15.1.36 节另立 Tomorrow 日线收盘代理与 V1/V2/C3 原始预测级联合研究路线。
 该路线只允许显式离线命令装配隔离的 `domain/application/infra/research` 服务，训练参数、样本、报告和候选
 工件不得进入生产组合根、HTTP、SSE、Web、活动数据库或冻结链。日线代理通过后，冻结工件还必须加入

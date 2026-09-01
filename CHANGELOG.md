@@ -6,6 +6,19 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求继续执行推荐策略第 15 节 Codex B 未完成任务。本批新增
+  `seal_codex_b_insufficient_batch` 与 `CodexBTerminalArtifactStore`：读取已封存的 Codex A completion，按
+  Today/Tomorrow/D25 继承 completion、capability、标签和残差账本 hash 及失败原因，封存
+  `historical_codex_b_insufficient_batch_v1`。由于父工件为 `historical_data_insufficient`，不生成过滤人口、
+  透明候选、Holm、收益、模型或终端留出；联合报告仅保存可审计的终态 hash。`Regression-Key:
+  codex-b-historical-data-insufficient-closure-v1`。
+
+- 用户要求执行推荐策略第 15 节 Codex C 未完成任务。本批新增仓库外的
+  `scripts/codex_c_terminal_holdout.py`：校验 Codex A capability、标签批次和 terminal index 的父 hash，
+  对 Today、Tomorrow、D25 分别封存继承父 hash/失败原因的 `historical_data_insufficient` 终态，再封存跨策略
+  只读结论。真实执行未读取终端日期、未生成收益或模型、未打开留出，也未修改生产资源；工件二次执行幂等。
+  `Regression-Key: codex-c-terminal-failure-closure-v1`。
+
 - 用户要求继续执行推荐策略第 15 节 Codex A 的耗时未完成任务。本批先完成真实 H1 来源能力审计，而不是
   无条件启动全市场下载：腾讯前复权日线返回 640 行、最早 2024-01-09，无法达到至少 1000 个共同交易日；
   东方财富历史分钟端点独立探测失败，免费来源仍不能证明 11:20/14:50 历史锚点和历史有效证券状态。
@@ -138,6 +151,19 @@ All notable changes to this project are documented here.
   `Regression-Key: codex-b-historical-filter-confirmation-v1-runtime-fix`。
 
 ### Verification
+
+- `codex-b-historical-data-insufficient-closure-v1`：Codex B 三策略终态、父 hash 继承、空研究结果约束、
+  联合 hash、不可变 JSON 工件同内容幂等、异内容冲突和篡改失败关闭定向测试 8 项通过；受影响源文件
+  Ruff、format、mypy 和 `git diff --check` 通过。使用真实 Codex A 数据不足 completion 的离线输入生成终态，
+  未读取历史日期或网络，`historical_data_insufficient`、`terminal_holdout_not_opened` 和
+  `production_authority=false` 保持不变。真实收益确认、Holm、终端留出和浏览器验收因父工件不足或未改 Web
+  而不适用。
+
+- `codex-c-terminal-failure-closure-v1`：C 执行脚本父工件校验、三策略失败关闭、跨策略结论、不可变报告写入和
+  二次幂等单元/组件测试 11 项通过；受影响 C 领域/应用/基础设施/脚本 Ruff、format、mypy 和
+  `git diff --check` 通过。使用仓库外 A 工件真实执行两次均返回退出码 1，Today/Tomorrow/D25 与跨策略均为
+  `historical_data_insufficient`，`terminal_holdout_opened=false`，父子 hash 一致；未运行真实收益回放和浏览器
+  验收，因为父工件不足且本批未修改 Web 或生产运行行为。
 
 - `codex-a-h1-capability-audit-v2`：领域、应用、基础设施、脚本、入口、架构和路线契约定向测试 126 项通过，
   覆盖逐来源失败、其它来源证据保留、v2 codec/hash、失败原因下游传递、代理隔离、参数类型、仓库外工件
@@ -3244,6 +3270,15 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- `codex-b-historical-data-insufficient-closure-v1`：B 现在具备可重复、不可变的父工件不足收口，但没有历史
+  H1 点时数据，因此仍无真实过滤召回、候选收益、Holm 显著性或 V3 模型结论。未来只有新的 Codex A
+  completion 以完整切分和成熟残差账本封存后，才能另立批次执行 15.1.28–15.1.30；本批终态不可覆盖或改写。
+
+- `codex-c-terminal-failure-closure-v1`：C 报告已如实封存 A 的数据不足，而不是收益否定或验证结论；当前仍无
+  可执行的 200 日终端样本、候选收益或 DeepSeek 历史证据。只有新的 H1 身份同时满足点时字段、95% 股票覆盖、
+  至少 1000 个共同交易日和 200 日保留段后，才能另立批次执行真实留出；不得覆盖本批报告、重开同一留出或
+  把 `historical_data_insufficient` 改写为 `historical_rejected`/`historical_validated`。
 
 - `codex-a-h1-capability-audit-v2`：东方财富历史分钟端点本次只能证明探测失败，不能断言供应商永久不支持；
   但腾讯已返回的日线深度、两类历史锚点和有效证券状态证据仍不足，当前 H1/C3 路线必须保持数据不足。
