@@ -92,3 +92,28 @@ def test_capability_audit_requires_independent_qfq_anchor_and_effective_state_ev
     assert all("effective_security_state_unavailable" in item.failure_reasons for item in report.strategies)
     with pytest.raises(ValueError, match="source identities"):
         build_h1_capability_audit((qfq, qfq))
+
+
+def test_capability_audit_preserves_bounded_source_probe_failures() -> None:
+    probe = _probe(
+        "qfq_archive",
+        earliest=date(2019, 1, 1),
+        today=False,
+        afternoon=False,
+        adjustment="qfq",
+        effective_state=False,
+        rows=1600,
+    )
+
+    report = build_h1_capability_audit(
+        (probe,),
+        probe_failures=("minute_source_probe_failed", "minute_source_probe_failed"),
+    )
+
+    assert report.probe_failures == ("minute_source_probe_failed",)
+    assert report.schema_version == "score_h1_source_capability_audit_v2"
+    assert {item.state for item in report.strategies} == {"historical_data_insufficient"}
+    with pytest.raises(ValueError, match="failure identities"):
+        build_h1_capability_audit((probe,), probe_failures=("invalid failure",))
+    with pytest.raises(ValueError, match="cannot authorize production"):
+        H1CapabilityAuditReport(report.probes, report.strategies, schema_version="score_h1_source_capability_audit_v1")

@@ -32,7 +32,8 @@ def _insufficient_capability():
                 512,
                 0.5,
             ),
-        )
+        ),
+        probe_failures=("eastmoney_historical_minute_probe_failed",),
     )
 
 
@@ -50,6 +51,7 @@ def test_codex_a_completion_seals_all_downstream_insufficient_states_without_fak
     assert completion.c3.status == "historical_data_insufficient"
     assert completion.c3.oof_artifact_hash is None
     assert completion.c3.candidate_model_artifact_hash is None
+    assert "eastmoney_historical_minute_probe_failed" in completion.c3.failure_reasons
     assert completion.terminal_holdout_opened is False
     assert completion.production_authority is False
 

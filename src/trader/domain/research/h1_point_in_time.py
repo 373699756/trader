@@ -187,8 +187,9 @@ class H1CapabilityStrategyStatus:
 class H1CapabilityAuditReport:
     probes: tuple[H1CapabilityProbe, ...]
     strategies: tuple[H1CapabilityStrategyStatus, ...]
-    schema_version: str = "score_h1_source_capability_audit_v1"
+    schema_version: str = "score_h1_source_capability_audit_v2"
     production_authority: bool = False
+    probe_failures: tuple[str, ...] = ()
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -198,14 +199,20 @@ class H1CapabilityAuditReport:
             raise ValueError("H1 capability report requires all strategies in fixed order")
         if not probes or len({item.source for item in probes}) != len(probes):
             raise ValueError("H1 capability report requires unique source identities")
-        if self.schema_version != "score_h1_source_capability_audit_v1" or self.production_authority:
+        failures = tuple(sorted(set(self.probe_failures)))
+        if any(_IDENTITY.fullmatch(value) is None for value in failures):
+            raise ValueError("H1 capability probe failure identities are invalid")
+        if self.schema_version != "score_h1_source_capability_audit_v2" or self.production_authority:
             raise ValueError("H1 capability report cannot authorize production")
         object.__setattr__(self, "probes", probes)
         object.__setattr__(self, "strategies", strategies)
+        object.__setattr__(self, "probe_failures", failures)
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
 
-def build_h1_capability_audit(probes: tuple[H1CapabilityProbe, ...]) -> H1CapabilityAuditReport:
+def build_h1_capability_audit(
+    probes: tuple[H1CapabilityProbe, ...], *, probe_failures: tuple[str, ...] = ()
+) -> H1CapabilityAuditReport:
     if not probes:
         raise ValueError("H1 capability audit requires source probes")
     statuses: list[H1CapabilityStrategyStatus] = []
@@ -230,7 +237,7 @@ def build_h1_capability_audit(probes: tuple[H1CapabilityProbe, ...]) -> H1Capabi
                 tuple(reasons),
             )
         )
-    return H1CapabilityAuditReport(probes, tuple(statuses))
+    return H1CapabilityAuditReport(probes, tuple(statuses), probe_failures=probe_failures)
 
 
 @dataclass(frozen=True)

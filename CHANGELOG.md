@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求继续执行推荐策略第 15 节 Codex A 的耗时未完成任务。本批先完成真实 H1 来源能力审计，而不是
+  无条件启动全市场下载：腾讯前复权日线返回 640 行、最早 2024-01-09，无法达到至少 1000 个共同交易日；
+  东方财富历史分钟端点独立探测失败，免费来源仍不能证明 11:20/14:50 历史锚点和历史有效证券状态。
+  三策略、标签预注册、残差账本和 Tomorrow C3 均已封存 `historical_data_insufficient` 终态；未生成
+  OOF/model、未开启终端留出，也未取得生产或自动更新权限。`Regression-Key: codex-a-h1-capability-audit-v2`。
+
 - 用户要求继续执行第 15 节 Codex D 未完成任务，并将 A 项目的可执行 H1 前置能力接入 Tomorrow 训练入口。
   `train-tomorrow` 与 `research-status` 现在通过同一只读类型化 port 检查 Codex A 的元数据/标签预注册；
   H1 覆盖不足时在资源探针和 handoff 读取前直接报告 `tomorrow_*` 数据 blocker，绑定预注册批次 SHA-256，
@@ -107,6 +113,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- `codex-a-h1-capability-audit-v2`：能力探针改为逐来源失败隔离，供应商 TLS/连接/载荷失败不再丢弃其它
+  来源的成功证据；`score_h1_source_capability_audit_v2` 以类型化 `probe_failures` 进入不可变 hash，
+  继续传递到三策略残差和 C3 数据不足原因。执行脚本先直连、失败时使用同一 `requests` 栈的系统代理
+  会话，统一参数、请求头、超时和异常分类，不依赖外部 `curl` 或泄露供应商载荷。
+
 - `tomorrow-codex-a-prerequisite-gate-v1`：修复研究状态入口把 Tomorrow 工件图冲突错误投影为
   `h1_archive_invalid` 的边界归因问题；H1 归档冲突和 Tomorrow 图/检查点冲突现在分别保留各自 blocker，
   且 H1 前置仍在读取 Tomorrow handoff 前失败关闭。
@@ -127,6 +138,15 @@ All notable changes to this project are documented here.
   `Regression-Key: codex-b-historical-filter-confirmation-v1-runtime-fix`。
 
 ### Verification
+
+- `codex-a-h1-capability-audit-v2`：领域、应用、基础设施和脚本定向测试覆盖逐来源失败、其它来源证据保留、
+  v2 codec/hash、失败原因下游传递、代理隔离、参数类型、仓库外工件和无 OOF/model 终态；受影响 Python
+  文件 Ruff、format、mypy 及 `git diff --check` 通过。真实 `sources` 诊断在非沙箱网络下为
+  `degraded`（证券主表、历史源和腾讯报价通过，Tushare 因缺 token 降级）；真实 H1 capability 命令按预期
+  退出 1 并在仓库外生成 capability、标签预注册和 Codex A 终态三个不可变 JSON；腾讯成功返回 640 行，
+  东方财富记录 `eastmoney_historical_minute_probe_failed`。`make format-check`、`make lint`（含零严格复杂度
+  债务）、`make type-check`（321 个源文件）、`make test` 和 `make package` 均通过；打包首次因沙箱无法连接
+  本机依赖代理失败，获准网络后原命令重跑通过。浏览器门禁不适用：本批没有改 Web、冻结或活动评分行为。
 
 - `tomorrow-codex-a-prerequisite-gate-v1`：新增的 H1/Tomorrow 冲突归因回归与既有
   `research-status`/`train-tomorrow` 前置测试通过；受影响 CLI/契约文件 Ruff format/check 通过。
@@ -782,6 +802,11 @@ All notable changes to this project are documented here.
   前向封存状态、第二轮权重收缩和 `PromotionDossier` 人工晋级边界。
 
 ### Changed
+
+- `codex-a-h1-capability-audit-v2`：能力脚本默认先使用 `trust_env=false` 的有界 HTTP session，连接失败时
+  再以相同请求语义回退到系统代理会话；请求参数只接受字符串或字符串元组，供应商原始价格载荷不进入
+  输出或工件。能力 artifact 与脚本投影 schema 均升级到 v2，以显式公开 `probe_failures`，旧 v1 工件不再
+  被新 decoder 静默接受。
 
 - `tomorrow-daily-close-training-proposal-v1` 只新增非权威研究说明，不改写第 15.1.21–15.1.34 节现行
   路线、活动 V1/V2、硬过滤、风险、固定 68/32 融合、动作、Top6、14:50 冻结、API 或 Web。文档把
@@ -3216,6 +3241,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- `codex-a-h1-capability-audit-v2`：东方财富历史分钟端点本次只能证明探测失败，不能断言供应商永久不支持；
+  但腾讯已返回的日线深度、两类历史锚点和有效证券状态证据仍不足，当前 H1/C3 路线必须保持数据不足。
+  只有未来出现能同时满足点时字段、95% 股票覆盖、至少 1000 个共同交易日和 200 日保留段的新来源或新
+  研究身份时，才能另立批次重新审计；不得覆盖本次 hash、用当前事实回填历史或绕过失败关闭终态。
 
 - `codex-a-h1-residual-c3-v1`：本批完成 CodexA 工程能力和失败关闭边界，但没有可核对的真实 H1 父工件，
   因而未执行真实来源下载、全市场特征构建、C3 训练/确认或收益评价，也未生成 D 编排可消费的真实 Parquet

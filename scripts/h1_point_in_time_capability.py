@@ -8,7 +8,7 @@ import json
 import sys
 from datetime import date
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 import requests
 
@@ -37,6 +37,49 @@ from trader.infra.research.historical_label_artifacts import HistoricalLabelArti
 
 class _SessionFactory(Protocol):
     def __call__(self) -> H1HTTPSession: ...
+
+
+class _DirectSession:
+    def __init__(self) -> None:
+        self._session = requests.Session()
+        self._session.trust_env = False
+        self._session.headers.update({"User-Agent": "Mozilla/5.0"})
+        self._fallback_session = requests.Session()
+        self._fallback_session.headers.update({"User-Agent": "Mozilla/5.0"})
+
+    def get(self, url: str, *, params: dict[str, object], timeout: float) -> requests.Response:
+        referer = "https://quote.eastmoney.com/" if "eastmoney" in url else "https://gu.qq.com/"
+        normalized = _request_params(params)
+        try:
+            return self._session.get(
+                url,
+                params=normalized,
+                timeout=timeout,
+                headers={"Referer": referer},
+            )
+        except requests.RequestException:
+            return self._fallback_session.get(
+                url,
+                params=normalized,
+                timeout=timeout,
+                headers={"Referer": referer},
+            )
+
+
+def _direct_session() -> H1HTTPSession:
+    return cast(H1HTTPSession, _DirectSession())
+
+
+def _request_params(params: dict[str, object]) -> dict[str, str | tuple[str, ...]]:
+    normalized: dict[str, str | tuple[str, ...]] = {}
+    for key, value in params.items():
+        if isinstance(value, str):
+            normalized[key] = value
+        elif isinstance(value, tuple) and all(isinstance(item, str) for item in value):
+            normalized[key] = value
+        else:
+            raise TypeError(f"unsupported H1 capability request parameter: {key}")
+    return normalized
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -79,7 +122,7 @@ def execute(
     return capability, completion, index
 
 
-def main(argv: list[str] | None = None, *, session_factory: _SessionFactory = requests.Session) -> int:
+def main(argv: list[str] | None = None, *, session_factory: _SessionFactory = _direct_session) -> int:
     args = _parser().parse_args(argv)
     try:
         artifact_dir = _external_path(args.artifact_dir, "--artifact-dir")
@@ -95,7 +138,7 @@ def main(argv: list[str] | None = None, *, session_factory: _SessionFactory = re
         payload = _projection(capability, completion, index)
     except (OSError, RuntimeError, TypeError, ValueError, requests.RequestException) as exc:
         payload = {
-            "schema_version": "codex_a_h1_capability_execution_v1",
+            "schema_version": "codex_a_h1_capability_execution_v2",
             "status": "probe_failed",
             "error_code": _error_code(exc),
             "production_authority": False,
@@ -113,11 +156,12 @@ def _projection(
     index: CodexACompletionArtifactIndex,
 ) -> dict[str, object]:
     return {
-        "schema_version": "codex_a_h1_capability_execution_v1",
+        "schema_version": "codex_a_h1_capability_execution_v2",
         "status": completion.status,
         "capability_hash": capability.content_hash,
         "completion_hash": completion.content_hash,
         "terminal_index_hash": index.content_hash,
+        "probe_failures": list(capability.probe_failures),
         "sources": [
             {
                 "source": item.source,

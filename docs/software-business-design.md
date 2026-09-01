@@ -1758,6 +1758,9 @@ V2 严重亏损概率研究身份固定为 `tomorrow_v2_historical_risk_probabil
 标签、60%/20%/20% 时序切分、5 日 embargo 和最终至少 200 个交易日。任一策略点时数据不足只终止该
 策略，不阻塞其它策略。全候选预测—实际残差账本和过滤瀑布/候选召回消融完成后，只允许每策略最多
 8 个人工预注册、可读纯函数表达的透明候选，共同进入 walk-forward、Holm 多重检验和一次确认段评价；
+H1 免费来源能力探针使用 `score_h1_source_capability_audit_v2`，禁用环境代理继承并逐来源保留
+`probe_failures`；请求失败只证明当前来源未核实，不能投影为锚点可用，成功来源的最早日期和覆盖计数仍
+独立封存。H1/标签/残差/C3 数据不足终态继承该失败原因且保持零预测、零模型、留出未开启和无生产权限。
 最终分别运行 Today、Tomorrow、D25 独立终端留出，并形成跨策略否定或验证结论。
 
 第 15.1.23 节基线审计只能由显式只读 CLI 组合类型化的生产身份与研究状态端口，不进入普通 HTTP、SSE
@@ -1770,6 +1773,15 @@ V2 严重亏损概率研究身份固定为 `tomorrow_v2_historical_risk_probabil
 当前第 15.1.24 节以只读 `scoring_hot_path_efficiency_baseline_v1` 报告闭合；显式
 `trader-cli research-scoring-hot-path-baseline` 仅运行离线性能 workload，并在边界投影四类成本分母、
 脏集收缩、延迟和决策 hash 等价证据，不写入生产状态、推荐历史或冻结记录。
+
+第 15.1.25 节的显式 `scripts/h1_point_in_time_capability.py` 只允许把工件写到仓库外目录。来源能力报告
+固定为 `score_h1_source_capability_audit_v2`：每个供应商独立执行有界探测，单个来源失败不能丢弃其它
+来源的成功证据，并以有界 `probe_failures` 原因码进入 capability hash 和下游数据不足终态。脚本先使用
+不继承环境代理的 `requests` 会话，连接失败时只回退到同一库、相同参数/请求头/超时的系统代理会话；
+不得调用第二套外部 HTTP 客户端或保存供应商原始载荷。公开执行投影为
+`codex_a_h1_capability_execution_v2`，显式列出逐来源能力、探测失败、三策略终态、父工件 hash、是否生成
+OOF/model 以及生产/自动更新权限。当前真实审计已使三个策略、标签、残差账本和 C3 均以
+`historical_data_insufficient` 收口，因此不得启动全量 H1 下载、训练、确认或终端留出。
 
 荐股策略文档第 15.1.35–15.1.36 节另立 Tomorrow 日线收盘代理与 V1/V2/C3 原始预测级联合研究路线。
 该路线只允许显式离线命令装配隔离的 `domain/application/infra/research` 服务，训练参数、样本、报告和候选

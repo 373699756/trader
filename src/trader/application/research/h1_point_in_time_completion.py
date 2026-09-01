@@ -173,7 +173,15 @@ def complete_codex_a_research(
             parent_preregistration_hash=item.content_hash,
             status="historical_data_insufficient",
             failure_reasons=tuple(
-                sorted(set((*item.failure_reasons, *capability_by_strategy[item.strategy].failure_reasons)))
+                sorted(
+                    set(
+                        (
+                            *item.failure_reasons,
+                            *capability_by_strategy[item.strategy].failure_reasons,
+                            *capability.probe_failures,
+                        )
+                    )
+                )
             ),
         )
         for item in labels.strategies

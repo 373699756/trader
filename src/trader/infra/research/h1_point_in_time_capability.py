@@ -10,6 +10,8 @@ from datetime import date
 from pathlib import Path
 from typing import Protocol, cast
 
+import requests
+
 from trader.domain.research.h1_point_in_time import (
     H1_SOURCE_CUTOFF,
     H1CapabilityAuditReport,
@@ -52,31 +54,40 @@ class FreeSourceH1CapabilityProbe:
             raise ValueError("H1 capability probe code is invalid")
         if historical_anchor_date >= H1_SOURCE_CUTOFF:
             raise ValueError("H1 capability probe date exceeds source cutoff")
-        tencent = self._request(
-            "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get",
-            {
-                "_var": f"kline_dayqfq{H1_SOURCE_CUTOFF.year}",
-                "param": (f"{_symbol(code)},day,2015-01-01,{H1_SOURCE_CUTOFF.isoformat()},1600,qfq"),
-            },
-        )
-        eastmoney = self._request(
-            "https://push2his.eastmoney.com/api/qt/stock/kline/get",
-            {
-                "secid": _secid(code),
-                "klt": "1",
-                "fqt": "0",
-                "beg": historical_anchor_date.strftime("%Y%m%d"),
-                "end": historical_anchor_date.strftime("%Y%m%d"),
-                "lmt": "1000",
-                "fields1": "f1,f2,f3,f4,f5,f6",
-                "fields2": "f51,f52,f53,f54,f55,f56",
-            },
-        )
-        return build_h1_capability_audit(
-            (
-                self._tencent_probe(tencent, H1_SOURCE_CUTOFF),
-                self._eastmoney_probe(eastmoney, historical_anchor_date),
+        failures: list[str] = []
+        try:
+            tencent = self._request(
+                "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get",
+                {
+                    "_var": f"kline_dayqfq{H1_SOURCE_CUTOFF.year}",
+                    "param": (f"{_symbol(code)},day,2015-01-01,{H1_SOURCE_CUTOFF.isoformat()},1600,qfq"),
+                },
             )
+            tencent_probe = self._tencent_probe(tencent, H1_SOURCE_CUTOFF)
+        except (OSError, TypeError, ValueError, requests.RequestException):
+            tencent_probe = _failed_probe("tencent_qfq_daily")
+            failures.append("tencent_qfq_daily_probe_failed")
+        try:
+            eastmoney = self._request(
+                "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+                {
+                    "secid": _secid(code),
+                    "klt": "1",
+                    "fqt": "0",
+                    "beg": historical_anchor_date.strftime("%Y%m%d"),
+                    "end": historical_anchor_date.strftime("%Y%m%d"),
+                    "lmt": "1000",
+                    "fields1": "f1,f2,f3,f4,f5,f6",
+                    "fields2": "f51,f52,f53,f54,f55,f56",
+                },
+            )
+            eastmoney_probe = self._eastmoney_probe(eastmoney, historical_anchor_date)
+        except (OSError, TypeError, ValueError, requests.RequestException):
+            eastmoney_probe = _failed_probe("eastmoney_historical_minute")
+            failures.append("eastmoney_historical_minute_probe_failed")
+        return build_h1_capability_audit(
+            (tencent_probe, eastmoney_probe),
+            probe_failures=tuple(failures),
         )
 
     def _request(self, url: str, params: dict[str, object]) -> _Response:
@@ -170,8 +181,13 @@ class H1CapabilityArtifactStore:
 def _json_payload(response: _Response) -> object:
     try:
         return response.json()
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise ValueError("H1 capability supplier payload is invalid") from exc
+    except (TypeError, ValueError, json.JSONDecodeError):
+        try:
+            raw = response.content.decode("utf-8")
+            marker = raw.find("=")
+            return json.loads(raw[marker + 1 :] if marker >= 0 else raw)
+        except (AttributeError, UnicodeDecodeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("H1 capability supplier payload is invalid") from exc
 
 
 def _date_rows(payload: object, parent: str, child: str, cutoff: date, *, nested: bool) -> tuple[date, ...]:
@@ -221,12 +237,17 @@ def _secid(code: str) -> str:
     return ("1." if code.startswith(("5", "6", "9")) else "0.") + code
 
 
+def _failed_probe(source: str) -> H1CapabilityProbe:
+    return H1CapabilityProbe(source, None, False, False, "unsupported", False, 0, 0, 0, 0.0)
+
+
 def _encode(report: H1CapabilityAuditReport) -> dict[str, object]:
     return {
         "probes": [_encode_probe(item) for item in report.probes],
         "strategies": [_encode_strategy(item) for item in report.strategies],
         "schema_version": report.schema_version,
         "production_authority": report.production_authority,
+        "probe_failures": list(report.probe_failures),
         "content_hash": report.content_hash,
     }
 
@@ -257,20 +278,29 @@ def _encode_strategy(item: H1CapabilityStrategyStatus) -> dict[str, object]:
 
 
 def _decode(raw: dict[str, object]) -> H1CapabilityAuditReport:
-    expected = {"probes", "strategies", "schema_version", "production_authority"}
+    expected = {"probes", "strategies", "schema_version", "production_authority", "probe_failures"}
     if set(raw) != expected:
         raise ValueError("H1 capability artifact schema is invalid")
     probes_raw = raw["probes"]
     strategies_raw = raw["strategies"]
     if not isinstance(probes_raw, list) or not isinstance(strategies_raw, list):
         raise TypeError("H1 capability artifact collections are invalid")
+    failures = raw["probe_failures"]
+    if not isinstance(failures, list) or not all(isinstance(item, str) for item in failures):
+        raise TypeError("H1 capability probe failures are invalid")
     probes = tuple(_decode_probe(item) for item in probes_raw)
     strategies = tuple(_decode_strategy(item) for item in strategies_raw)
     schema = raw["schema_version"]
     authority = raw["production_authority"]
     if not isinstance(schema, str) or not isinstance(authority, bool):
         raise TypeError("H1 capability artifact metadata is invalid")
-    return H1CapabilityAuditReport(probes, strategies, schema, authority)
+    return H1CapabilityAuditReport(
+        probes=probes,
+        strategies=strategies,
+        schema_version=schema,
+        production_authority=authority,
+        probe_failures=tuple(failures),
+    )
 
 
 def _decode_probe(raw: object) -> H1CapabilityProbe:
