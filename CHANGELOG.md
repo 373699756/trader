@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求把此前“历史评分优化”与 DeepSeek、更高收益目标、预测—实际误差反馈和自动调节合并成一份
+  Codex 可逐节执行的权威计划。荐股策略路线扩展为第 15.1.21–15.1.35 节，新增全候选残差账本、历史
+  DeepSeek 点时 facts 与增量消融、自适应收益/成本/严重亏损/不确定性净效用、三策略独立终端留出、
+  Champion/Challenger、分级自动调节、内容寻址晋级、`next_start` 激活和回退边界。
+  `Regression-Key: historical-adaptive-deepseek-scoring-roadmap-v1`。
+
 - 用户要求基于现有优化空间制定可由 Codex 逐节执行的详细历史评分计划。现状确认当前 H0 仅有
   368/139 个训练/验证交易日，同一 139 日窗口已被多项研究观察，且公开研究组合没有 Today、D25
   各自的端到端历史留出所有者。荐股权威文档新增第 15.1.21–15.1.29 节：按独立批次依次交付 H1
@@ -553,6 +559,14 @@ All notable changes to this project are documented here.
   前向封存状态、第二轮权重收缩和 `PromotionDossier` 人工晋级边界。
 
 ### Changed
+
+- 原第 15.1.21–15.1.29 节未完成路线不再只做一次性历史调权，而是由单一 15.1.21–15.1.35 顺序承接
+  H1、标签、残差、DeepSeek、模型、选择、三策略留出、风险、自动研究和最终生产授权。自动调节只允许
+  历史离线批量运行：20 个新增成熟日期只能触发挑战者，L1 至少需要 60 个新增不重叠日期，L2 每次需要
+  新的独立 200 日未开启终端留出；盘中热切换、同日在线学习、自动 profile 切换和无门禁晋级仍被禁止。
+- 软件业务设计同步把路线索引更新为第 15.1.21–15.1.35 节，并明确第 15.1.22–15.1.33 节保持研究隔离，
+  第 15.1.34 节注册表默认不接入组合根，第 15.1.35 节必须取得明确生产接入指令并执行完整高风险门禁。
+  当前运行继续 `automatic_model_update=false`，本批没有改变评分、DeepSeek 请求、配置、API 或 Web。
 
 - 确认根因不只是文档仍保留跨年计划，而是 R5/R6/P1 的未来日 collector、运行期 V1/V2 全候选配对、
   outcome 补充结算和 R7 晋级档案仍在生产组合根、调度 observer、SQLite 与状态 API 中形成第二条评分验证
@@ -1136,6 +1150,13 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 修正旧路线无法回答“如何根据预测收益与实际收益差距自动校准”且没有验证 DeepSeek 独立增量价值的
+  计划缺口，同时消除策略文档旧 15.1.21–15.1.29 索引与软件设计路线摘要之间形成第二套状态的风险。
+  新契约要求残差账本覆盖全部合格候选而非仅 Top6，未建模/未校准字段保持类型状态和 `null`，合法最高
+  0 分继续表示成本和风险后的现金选择，不得为追求页面非空放宽门槛。Review 进一步固定预测与 outcome
+  为按父 hash 连接的两类不可变记录，并禁止六类 DeepSeek 风险事实进入正向残差校准器，避免成熟标签
+  原地改写预测或同一风险重复影响模型分与 penalty/veto。
+
 - 用户反馈“明日数据异常，最高评分 0 分”。现场先确认 Tomorrow 有 57 只完成评分而非评分链空缺，安全
   重启后仍为 0；再只读使用截至前一交易日的本地历史重建 V1 全横截面，可重建 2,781 只，毛预测超额
   最高约 0.3076%，扣固定 20–40bp 成本后最高净效用约 -0.0612%，正净效用为 0 只。因此 0 分是
@@ -1601,6 +1622,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 移除未完成路线中“模型候选选择后直接进入三策略留出、缺少残差/DeepSeek 增量/自动生命周期”的旧
+  章节结构，以及把所有自动晋级一概排除而无法表达受控离线自适应的笼统措辞；不删除任何活动代码、
+  历史工件、生产档位、风险规则、冻结记录、API、Web 或运行数据。
+
 - 删除 R5 未来日采集、P1 预注册未来影子、R6 未来窗口、R7 晋级档案、运行期 V1/V2 全候选比较与补充
   outcome 结算的领域、应用、仓储、CLI 和脚本入口；同步删除其旧业务测试，不保留兼容 shim、双写、隐藏
   fallback 或活动状态字段。`score_p0_v1`、`score_p0_v2` 与 P2 既有失败事实仍按固定身份只读归档。
@@ -1806,6 +1831,13 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- 历史自适应 DeepSeek 评分路线按低风险文档/机器契约批次验证：先运行 6 个直接相关契约文件通过
+  26 项，再运行完整 `.venv/bin/pytest -q tests/contract` 通过 149 项；受影响契约测试文件的 Ruff 与
+  format check 通过，`git diff --check` 通过。未运行 `make format-check`、`make lint`、
+  `make type-check`、`make test`、`make package`、仓库外 wheel、真实 DeepSeek 和三档浏览器门禁：本批
+  只更新待执行策略路线、软件设计交叉索引和文档断言，没有修改活动 Python、配置、入口、API/SSE、
+  Web、包资源、模型或运行行为。
 
 - Tomorrow 0 分解释修复执行失败优先回归：新增 Python 用例先证明 10bp 毛预测在固定成本后全为 0 时
   仍被误标为 `score_below_observation_floor`，JS 用例先证明页面误报为距正式线 78 分；修复后两项定向
@@ -2835,6 +2867,12 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 本批只同步自适应评分执行计划和机器文档契约，没有下载 H1、调用历史 DeepSeek、训练模型、开启终端
+  留出、创建注册表或改变生产。当前数据库仍是 H0 每股最多 640 日，H1 的 95% 股票覆盖、1000 个共同
+  有效交易日、DeepSeek 增量和三策略收益门禁全部尚未验证；因此不得声称收益已经提高，当前继续使用
+  既有冠军、固定 68/32、168 次预算、冻结与 `automatic_model_update=false`。历史 DeepSeek 全量事实构建
+  可能耗时较长且消耗额度，后续第 15.1.25 节必须先输出请求量、缓存、成本和预计天数预检。
 
 - 本批只修复 Tomorrow 合法 0 分空仓的解释和诊断归因，不把单日 0 分包装成收益改进。最终现场候选历史
   覆盖仅 72/297（约四分之一）且午间历史预热存在大量失败/重试；代表性 3 只股票的历史源诊断 3/3 成功，说明
