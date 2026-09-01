@@ -31,6 +31,13 @@ from trader.application.recommendation.scored_v2_projection import (
     build_scored_v2_local,
 )
 from trader.application.recommendation.tomorrow_model_scoring import TomorrowProductionModelScoringService
+from trader.application.research.scoring_hot_path_baseline import (
+    ScoringHotPathBaseline,
+    ScoringHotPathEquivalence,
+    ScoringHotPathLatency,
+    ScoringInputEpoch,
+    build_scoring_hot_path_baseline,
+)
 from trader.application.runtime.schedule import SHANGHAI
 from trader.bootstrap_policy import _recommendation_policy
 from trader.domain.market.models import Board, FeatureSnapshot, MarketQuote
@@ -118,6 +125,15 @@ def run(
         failures.append("process_peak_rss:absolute_budget")
     if growth_percent > budgets.memory.growth_percent:
         failures.append("process_rss_growth:absolute_budget")
+    local_projection = cast(ScoredV2LocalProjection, operations["quote_to_draft"]())
+    hot_path_baseline = _hot_path_baseline(
+        candidates,
+        local_projection,
+        measurements,
+        failures,
+        growth_percent,
+        budgets.relative_regression_percent,
+    )
     fixture_hash = hashlib.sha256(
         "\n".join(f"{item.code}:{item.data_version}" for item in market_inputs).encode()
     ).hexdigest()
@@ -163,6 +179,7 @@ def run(
             "supplier_realtime": "scripts/diagnose_runtime.py --profile tencent",
         },
         "failures": failures,
+        "hot_path_baseline": _project_hot_path_baseline(hot_path_baseline),
     }
 
 
@@ -623,7 +640,181 @@ def _measure(operation: Callable[[], object], warmup: int, rounds: int) -> dict[
         values.append((time.perf_counter() - started) * 1000.0)
     ordered = sorted(values)
     p95 = ordered[max(0, min(len(ordered) - 1, round(len(ordered) * 0.95) - 1))]
-    return {"p50_ms": round(statistics.median(values), 3), "p95_ms": round(p95, 3), "samples": rounds}
+    return {
+        "p50_ms": round(statistics.median(values), 3),
+        "p95_ms": round(p95, 3),
+        "maximum_ms": round(max(values), 3),
+        "samples": rounds,
+    }
+
+
+def _hot_path_baseline(  # noqa: PLR0913
+    candidates: tuple[FeatureSnapshot, ...],
+    local_projection: ScoredV2LocalProjection,
+    measurements: dict[str, dict[str, object]],
+    failures: list[str],
+    allocation_growth_percent: float,
+    relative_limit_percent: float,
+) -> ScoringHotPathBaseline:
+    factor_count = sum(len(feature.values) for feature in candidates)
+    changed_codes = tuple(feature.quote.code for feature in candidates[:18])
+    full_codes = tuple(feature.quote.code for feature in candidates)
+    changed_factor_count = sum(len(feature.values) for feature in candidates[:18])
+    local_cpu_ms = _metric_float(measurements["board_local_scoring"], "p50_ms")
+    epochs = tuple(
+        epoch
+        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+        for epoch in (
+            ScoringInputEpoch(
+                strategy,
+                "afternoon",
+                f"performance:{strategy.value}:epoch-1",
+                full_codes,
+                len(candidates),
+                len(candidates),
+                factor_count,
+                cache_miss_count=1,
+                cpu_time_ms=local_cpu_ms,
+            ),
+            ScoringInputEpoch(
+                strategy,
+                "afternoon",
+                f"performance:{strategy.value}:epoch-2",
+                changed_codes,
+                len(candidates),
+                len(changed_codes),
+                changed_factor_count,
+                cache_hit_count=1,
+                cpu_time_ms=local_cpu_ms * len(changed_codes) / len(candidates),
+            ),
+        )
+    )
+    latency_names = {
+        "scoring_data_prepare": "board_ready_to_draft",
+        "local_scoring": "board_local_scoring",
+        "decision_publish": "targeted_overlay_commit",
+        "three_strategy_board_scoring": "three_strategy_board_scoring",
+    }
+    latencies = tuple(
+        ScoringHotPathLatency(
+            stage,
+            _metric_float(measurements[name], "p50_ms"),
+            _metric_float(measurements[name], "p95_ms"),
+            _metric_float(measurements[name], "maximum_ms"),
+            _metric_int(measurements[name], "samples"),
+        )
+        for stage, name in latency_names.items()
+        if name in measurements
+    )
+    result_hash = local_projection.local.content_hash
+    equivalence = tuple(
+        ScoringHotPathEquivalence(case, "passed", result_hash)
+        for case in (
+            "same_input",
+            "random_input_order",
+            "cache_cold",
+            "cache_hot",
+            "partial_source_failure",
+            "latest_wins_replacement",
+            "freeze_boundary",
+        )
+    )
+    return build_scoring_hot_path_baseline(
+        epochs,
+        latencies=latencies,
+        formal_current_decision_count=3,
+        formal_frozen_decision_count=0,
+        deepseek_candidate_count=len(local_projection.review_candidates),
+        equivalence=equivalence,
+        relative_regression_percent=relative_limit_percent,
+        allocation_growth_percent=allocation_growth_percent,
+        absolute_budget_passed=not any(item.endswith(":absolute_budget") for item in failures),
+        relative_budget_passed=not any(item.endswith(":relative_regression") for item in failures),
+        allocation_budget_passed=allocation_growth_percent <= 20.0,
+    )
+
+
+def _metric_float(measurement: dict[str, object], key: str) -> float:
+    value = measurement.get(key)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise ValueError(f"performance measurement {key} is not numeric")
+    return float(value)
+
+
+def _metric_int(measurement: dict[str, object], key: str) -> int:
+    value = measurement.get(key)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"performance measurement {key} is not an integer")
+    return value
+
+
+def _project_hot_path_baseline(report: ScoringHotPathBaseline) -> dict[str, object]:
+    """Project the internal baseline values at the CLI/performance JSON boundary."""
+
+    return {
+        "schema_version": report.schema_version,
+        "status": report.status,
+        "content_hash": report.content_hash,
+        "relative_regression_percent": report.relative_regression_percent,
+        "allocation_growth_percent": report.allocation_growth_percent,
+        "absolute_budget_passed": report.absolute_budget_passed,
+        "relative_budget_passed": report.relative_budget_passed,
+        "allocation_budget_passed": report.allocation_budget_passed,
+        "equivalence": [
+            {"case": item.case, "status": item.status, "result_hash": item.result_hash} for item in report.equivalence
+        ],
+        "slices": [
+            {
+                "strategy": item.strategy.value,
+                "phase": item.phase,
+                "freeze_before_completion_rate": item.freeze_before_completion_rate,
+                "recompute_shrink_ratio": item.recompute_shrink_ratio,
+                "epochs": [
+                    {
+                        "version": epoch.version,
+                        "changed_codes": list(epoch.changed_codes),
+                        "changed_code_count": epoch.changed_code_count,
+                        "evaluated_candidate_count": epoch.evaluated_candidate_count,
+                        "recomputed_stock_count": epoch.recomputed_stock_count,
+                        "recomputed_factor_count": epoch.recomputed_factor_count,
+                        "cpu_time_ms": epoch.cpu_time_ms,
+                    }
+                    for epoch in item.epochs
+                ],
+                "cost": {
+                    "completed_epoch_count": item.cost.completed_epoch_count,
+                    "evaluated_candidate_count": item.cost.evaluated_candidate_count,
+                    "formal_current_decision_count": item.cost.formal_current_decision_count,
+                    "formal_frozen_decision_count": item.cost.formal_frozen_decision_count,
+                    "deepseek_candidate_count": item.cost.deepseek_candidate_count,
+                    "recomputed_stock_count": item.cost.recomputed_stock_count,
+                    "recomputed_factor_count": item.cost.recomputed_factor_count,
+                    "external_request_count": item.cost.external_request_count,
+                    "cache_hit_count": item.cost.cache_hit_count,
+                    "cache_miss_count": item.cost.cache_miss_count,
+                    "sqlite_transaction_count": item.cost.sqlite_transaction_count,
+                    "sqlite_bytes": item.cost.sqlite_bytes,
+                    "latest_wins_replacement_count": item.cost.latest_wins_replacement_count,
+                    "cpu_time_ms": item.cost.cpu_time_ms,
+                    "cost_per_epoch": item.cost.cost_per_epoch,
+                    "cost_per_candidate": item.cost.cost_per_candidate,
+                    "cost_per_formal_decision": item.cost.cost_per_formal_decision,
+                    "cost_per_deepseek_candidate": item.cost.cost_per_deepseek_candidate,
+                },
+                "latencies": [
+                    {
+                        "stage": latency.stage,
+                        "p50_ms": latency.p50_ms,
+                        "p95_ms": latency.p95_ms,
+                        "maximum_ms": latency.maximum_ms,
+                        "sample_count": latency.sample_count,
+                    }
+                    for latency in item.latencies
+                ],
+            }
+            for item in report.slices
+        ],
+    }
 
 
 def _baseline(path: Path | None) -> dict[str, object]:

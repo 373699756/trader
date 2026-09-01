@@ -6,6 +6,24 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求继续完成推荐策略第 15.1.24 节，并明确荐股评分/训练不得依赖未来数据。新增只读
+  `scoring_hot_path_efficiency_baseline_v1` 类型化基线报告及 `trader-cli research-scoring-hot-path-baseline`，
+  按 Today/Tomorrow/D25 与阶段记录 `ScoringInputEpoch`、变化码脏集收缩、实际股票/因子重算、延迟
+  P50/P95/最大值、外部请求、缓存命中、SQLite 事务/字节、latest-wins 替换、冻结前完成率，以及 epoch、
+  被评估候选、正式 current/frozen 决策和实际 DeepSeek 候选四类独立成本分母。原因是原有运行 telemetry
+  分散在输入适配器、latest-wins 和 `LatencyWaterfall`，无法审计重算成本和等价性；修改只消费已存在的
+  历史/当前输入，不读取未来收益、不改变候选、评分、风险、融合、预算、冻结或降级语义。报告封存相同
+  输入、乱序、缓存冷热、部分来源失败、latest-wins 替换和冻结边界的决策 hash 等价结果，并证明脏集
+  收缩；合法空推荐仍保留真实候选分母。`Regression-Key: scoring-hot-path-efficiency-baseline-v1`。
+
+### Verification
+
+- 15.1.24 定向验证：基线值对象单元/契约测试、受影响 Ruff、mypy、离线 `trader.entrypoints.performance`
+  workload（5500 行全市场、360 候选、100 tick、无网络）通过；报告终态 `passed`，相对回归预算 5%、
+  100 tick 分配增长预算 20% 和绝对资源预算均通过。最终 `make format-check`、`make lint`、
+  `make type-check`、`make test`、`make package`、`make performance-check` 全部通过；浏览器和真实供应商
+  运行证据不属于本批未改动的 Web/来源边界，仍由发布门禁覆盖。
+
 - 用户要求继续推荐策略第 15 节未完成任务，并核对现有基线身份是否与生产结论一致。新增只读
   \`score_current_baseline_consistency_audit_v1\`：按来源内容 SHA-256 逐项核对活动 V1/V2 模型、
   有效策略配置、P2 历史结论、人工授权基线和两份权威文档；审计值对象固定

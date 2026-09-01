@@ -64,6 +64,10 @@ def build_parser() -> argparse.ArgumentParser:
     performance.add_argument("--baseline", type=Path)
     subparsers.add_parser("research-status", help="Read immutable research coverage and capacity status.")
     subparsers.add_parser(
+        "research-scoring-hot-path-baseline",
+        help="Run the read-only scoring hot-path equivalence and efficiency baseline.",
+    )
+    subparsers.add_parser(
         "research-baseline-audit",
         help="Audit packaged models, configuration, research conclusions, and live identity without writes.",
     )
@@ -123,6 +127,13 @@ def main(argv: list[str] | None = None) -> int:
             baseline=args.baseline,
             tomorrow_scoring_profile=profile_override,
         )
+    if args.command == "research-scoring-hot-path-baseline":
+        from trader.entrypoints.performance import run as run_performance
+
+        report = run_performance(config_path, tomorrow_scoring_profile=profile_override)
+        baseline = report["hot_path_baseline"]
+        print(json.dumps(baseline, ensure_ascii=False, sort_keys=True, indent=2))
+        return 0 if isinstance(baseline, dict) and baseline.get("status") == "passed" else 1
     if args.command == "eligibility-list":
         return _run_eligibility_list(runtime, as_of=args.as_of)
     if args.command.startswith("research-"):
