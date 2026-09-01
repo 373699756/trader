@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求继续执行第 15 节 Codex D 未完成任务，并将 A 项目的可执行 H1 前置能力接入 Tomorrow 训练入口。
+  `train-tomorrow` 与 `research-status` 现在通过同一只读类型化 port 检查 Codex A 的元数据/标签预注册；
+  H1 覆盖不足时在资源探针和 handoff 读取前直接报告 `tomorrow_*` 数据 blocker，绑定预注册批次 SHA-256，
+  不写空工件、不伪造资源测量、不创建 V3 或生产权限。`Regression-Key: tomorrow-codex-a-prerequisite-gate-v1`。
+
 - 用户要求继续执行第 15 节 Codex B 未完成任务。本批先执行 H1 点时归档只读审计：`python -m
   trader.entrypoints.h1_point_in_time --runtime-dir .runtime/v2`。Today、Tomorrow、D25 均明确返回
   `historical_data_insufficient`，覆盖率和共同交易日均为 0，且 `terminal_holdout_opened=false`、
@@ -102,6 +107,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- `tomorrow-codex-a-prerequisite-gate-v1`：修复研究状态入口把 Tomorrow 工件图冲突错误投影为
+  `h1_archive_invalid` 的边界归因问题；H1 归档冲突和 Tomorrow 图/检查点冲突现在分别保留各自 blocker，
+  且 H1 前置仍在读取 Tomorrow handoff 前失败关闭。
+
 - `codex-a-h1-residual-c3-v1`：Review 修正三项会削弱研究证据的问题：MAE/ATR20 改为有符号不利波动并按
   T+1 `<= -1.5`、D25 `<= -2.5` 校验严重亏损标签；账本只有全部已建模预测均连接成熟 outcome 时才返回
   `residuals_ready`；H1 D/D+1 连接由逐行扫描改为身份索引，避免全市场 1600 日规模退化为平方复杂度。
@@ -118,6 +127,13 @@ All notable changes to this project are documented here.
   `Regression-Key: codex-b-historical-filter-confirmation-v1-runtime-fix`。
 
 ### Verification
+
+- `tomorrow-codex-a-prerequisite-gate-v1`：新增的 H1/Tomorrow 冲突归因回归与既有
+  `research-status`/`train-tomorrow` 前置测试通过；受影响 CLI/契约文件 Ruff format/check 通过。
+  随后重新运行 `make format-check`、`make lint`、`make type-check`、`make test` 和 `make package`，全部通过；
+  安全空运行目录冒烟稳定返回 `status=blocked`、`next_stage=resource_probe` 及三个有界 Tomorrow H1 blocker，
+  `production_authority=false`。本批未修改 Web 资源，三档桌面浏览器验收不适用；未运行真实来源下载、训练、
+  两级留出或 V3 发布，H1 覆盖仍是外部未验证风险。
 
 - `codex-a-h1-residual-c3-v1`：CodexA H1/标签/账本/C3 相关 unit/component/infra 测试 46 项通过；架构、历史路线、
   Tomorrow V3 文档和评分计划契约 33 项通过。13 个受影响文件 Ruff format/lint、7 个源文件 mypy 和

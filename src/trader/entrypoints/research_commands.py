@@ -288,7 +288,19 @@ def _run_tomorrow_research_orchestrator(runtime: RuntimeSettings) -> int:
     try:
         result = TomorrowResearchOrchestrator(store, prerequisite, _TomorrowResearchProgress()).advance()
         payload = _tomorrow_research_result_payload(result, store.host_available_disk_gb())
-    except (H1ArchiveConflictError, TomorrowResearchArtifactStoreError):
+    except H1ArchiveConflictError:
+        payload = {
+            "schema_version": "tomorrow_research_advance_result_v1",
+            "status": "artifact_conflict",
+            "blockers": ["h1_archive_invalid"],
+            "input_prerequisite_status": "artifact_conflict",
+            "input_prerequisite_hash": "",
+            "production_authority": False,
+            "automatic_model_update": False,
+        }
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return 1
+    except TomorrowResearchArtifactStoreError:
         payload = {
             "schema_version": "tomorrow_research_advance_result_v1",
             "status": "artifact_conflict",
@@ -306,30 +318,7 @@ def _read_tomorrow_research_status(runtime: RuntimeSettings) -> dict[str, object
     store = TomorrowResearchArtifactStore(runtime.runtime_dir / "research" / "tomorrow-v3")
     try:
         prerequisite = _tomorrow_research_prerequisite(runtime).inspect()
-        graph = store.load_graph()
-        stage = next_research_stage(graph)
-        readiness = production_readiness_audit(graph, manual_authorization_hash=None)
-        return {
-            "status": (
-                "terminal"
-                if stage is None
-                else "blocked"
-                if prerequisite.status == "blocked" or graph.artifacts
-                else "not_started"
-            ),
-            "run_id": derive_tomorrow_research_run_id(graph),
-            "graph_hash": graph.content_hash,
-            "artifact_count": len(graph.artifacts),
-            "next_stage": stage,
-            "input_prerequisite_status": prerequisite.status,
-            "input_prerequisite_hash": prerequisite.content_hash,
-            "input_blockers": list(prerequisite.blockers),
-            "production_readiness": readiness.status,
-            "production_blockers": list(readiness.blockers),
-            "production_authority": False,
-            "automatic_model_update": False,
-        }
-    except (H1ArchiveConflictError, TomorrowResearchArtifactStoreError):
+    except H1ArchiveConflictError:
         return {
             "status": "artifact_conflict",
             "run_id": None,
@@ -344,6 +333,45 @@ def _read_tomorrow_research_status(runtime: RuntimeSettings) -> dict[str, object
             "production_authority": False,
             "automatic_model_update": False,
         }
+    try:
+        graph = store.load_graph()
+    except TomorrowResearchArtifactStoreError:
+        return {
+            "status": "artifact_conflict",
+            "run_id": None,
+            "graph_hash": "",
+            "artifact_count": 0,
+            "next_stage": None,
+            "input_prerequisite_status": prerequisite.status,
+            "input_prerequisite_hash": prerequisite.content_hash,
+            "input_blockers": list(prerequisite.blockers),
+            "production_readiness": "production_adaptation_blocked",
+            "production_blockers": ["tomorrow_research_artifact_invalid"],
+            "production_authority": False,
+            "automatic_model_update": False,
+        }
+    stage = next_research_stage(graph)
+    readiness = production_readiness_audit(graph, manual_authorization_hash=None)
+    return {
+        "status": (
+            "terminal"
+            if stage is None
+            else "blocked"
+            if prerequisite.status == "blocked" or graph.artifacts
+            else "not_started"
+        ),
+        "run_id": derive_tomorrow_research_run_id(graph),
+        "graph_hash": graph.content_hash,
+        "artifact_count": len(graph.artifacts),
+        "next_stage": stage,
+        "input_prerequisite_status": prerequisite.status,
+        "input_prerequisite_hash": prerequisite.content_hash,
+        "input_blockers": list(prerequisite.blockers),
+        "production_readiness": readiness.status,
+        "production_blockers": list(readiness.blockers),
+        "production_authority": False,
+        "automatic_model_update": False,
+    }
 
 
 def _tomorrow_research_result_payload(

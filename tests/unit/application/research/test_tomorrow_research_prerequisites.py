@@ -37,11 +37,11 @@ def test_codex_a_prerequisite_blocks_on_tomorrow_h1_metadata_without_sealing_art
 
 
 def test_codex_a_prerequisite_releases_resource_probe_only_after_preregistration_is_ready() -> None:
-    prerequisite = CodexATomorrowResearchPrerequisite(
-        HistoricalLabelPreregistrationService(_MetadataPort(ready=True))
-    ).inspect()
+    service = HistoricalLabelPreregistrationService(_MetadataPort(ready=True))
+    batch = service.execute()
+    prerequisite = CodexATomorrowResearchPrerequisite(service).inspect()
 
     assert prerequisite.status == "ready"
     assert prerequisite.blockers == ()
-    assert len(prerequisite.prerequisite_hash) == 64
-    assert len(prerequisite.content_hash) == 64
+    assert prerequisite.prerequisite_hash == batch.content_hash
+    assert prerequisite.content_hash == batch.content_hash

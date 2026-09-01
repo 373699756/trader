@@ -11,10 +11,15 @@ from types import SimpleNamespace
 import pytest
 
 import trader.entrypoints.cli as cli_module
+import trader.entrypoints.research_commands as research_commands
 import trader.entrypoints.server as server_module
+from trader.application.research.research_tomorrow_orchestrator import TomorrowResearchPrerequisite
 from trader.entrypoints.cli import build_parser, main
 from trader.entrypoints.server import build_parser as build_server_parser
 from trader.infra.process_lock import ProcessLockError
+from trader.infra.research.h1_point_in_time_archive import H1ArchiveConflictError
+from trader.infra.research.tomorrow_research_artifacts import TomorrowResearchArtifactStoreError
+from trader.infra.settings import load_runtime_settings
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -466,6 +471,53 @@ def test_train_tomorrow_runs_a_prerequisite_before_resource_handoff_without_crea
     assert payload["production_authority"] is False
     assert {os.environ[name] for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")} == {"2"}
     assert not runtime_dir.exists()
+
+
+def test_research_status_keeps_tomorrow_graph_conflict_out_of_h1_input_blockers(tmp_path: Path, monkeypatch) -> None:
+    runtime = json.loads((ROOT / "config/v2/runtime.json").read_text(encoding="utf-8"))
+    runtime["runtime_dir"] = str(tmp_path / "runtime")
+    config = tmp_path / "runtime.json"
+    config.write_text(json.dumps(runtime), encoding="utf-8")
+
+    class _ReadyPrerequisite:
+        def inspect(self) -> TomorrowResearchPrerequisite:
+            return TomorrowResearchPrerequisite("ready", "a" * 64)
+
+    monkeypatch.setattr(research_commands, "_tomorrow_research_prerequisite", lambda _runtime: _ReadyPrerequisite())
+    monkeypatch.setattr(
+        research_commands.TomorrowResearchArtifactStore,
+        "load_graph",
+        lambda _store: (_ for _ in ()).throw(TomorrowResearchArtifactStoreError("graph invalid")),
+    )
+
+    result = research_commands._read_tomorrow_research_status(load_runtime_settings(config))
+
+    assert result["status"] == "artifact_conflict"
+    assert result["input_prerequisite_status"] == "ready"
+    assert result["input_prerequisite_hash"] == "a" * 64
+    assert result["input_blockers"] == []
+    assert result["production_blockers"] == ["tomorrow_research_artifact_invalid"]
+
+
+def test_research_status_reports_h1_conflict_as_the_input_boundary(tmp_path: Path, monkeypatch) -> None:
+    runtime = json.loads((ROOT / "config/v2/runtime.json").read_text(encoding="utf-8"))
+    runtime["runtime_dir"] = str(tmp_path / "runtime")
+    config = tmp_path / "runtime.json"
+    config.write_text(json.dumps(runtime), encoding="utf-8")
+
+    class _BrokenPrerequisite:
+        def inspect(self) -> TomorrowResearchPrerequisite:
+            raise H1ArchiveConflictError("H1 archive invalid")
+
+    monkeypatch.setattr(research_commands, "_tomorrow_research_prerequisite", lambda _runtime: _BrokenPrerequisite())
+
+    result = research_commands._read_tomorrow_research_status(load_runtime_settings(config))
+
+    assert result["status"] == "artifact_conflict"
+    assert result["input_prerequisite_status"] == "artifact_conflict"
+    assert result["input_prerequisite_hash"] == ""
+    assert result["input_blockers"] == ["h1_archive_invalid"]
+    assert result["production_blockers"] == ["tomorrow_research_artifact_invalid"]
 
 
 def test_research_backtest_is_read_only_when_the_archive_does_not_exist(tmp_path: Path, capsys) -> None:
