@@ -6,6 +6,14 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求基于现有优化空间制定可由 Codex 逐节执行的详细历史评分计划。现状确认当前 H0 仅有
+  368/139 个训练/验证交易日，同一 139 日窗口已被多项研究观察，且公开研究组合没有 Today、D25
+  各自的端到端历史留出所有者。荐股权威文档新增第 15.1.21–15.1.29 节：按独立批次依次交付 H1
+  最多 1600 日点时归档、三策略标签与 60%/20%/20% 切分、嵌套 walk-forward/Holm 控制、Today、
+  Tomorrow 新挑战者、D25、严重亏损概率/市场状态和跨策略终态；既有 139 日不得冒充新盲测，所有
+  工件固定无生产权限且禁止恢复未来日 collector。软件业务设计只记录隔离装配和生产授权边界，避免
+  形成第二套策略定义。`Regression-Key: historical-score-optimization-roadmap-v1`。
+
 - 用户要求继续闭合此前未完成的评分验证任务，并纠正所有评分策略都应只使用历史 point-in-time 数据。
   新增 `tomorrow_v2_historical_risk_probability_v1` 完整离线链：独立类型化历史数据集、H0 验证段内有序
   60 日训练/20 日 Platt 校准/40 日检验及双边各 1 日 embargo、训练期常数概率 Brier 基线、ECE 0.05
@@ -1785,6 +1793,15 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- 历史评分优化规划（低风险文档/机器契约）：
+  `.venv/bin/pytest -q tests/contract/test_historical_score_optimization_roadmap.py
+  tests/contract/test_historical_only_score_validation.py tests/contract/test_score_plan_contract.py
+  tests/contract/test_score_research_detailed_strategy_contract.py tests/contract/test_v2_only_product_contract.py`
+  通过（19 项）；新增契约文件的 Ruff 与 format check 通过，`git diff --check` 通过。未运行
+  `make format-check`、`make lint`、`make type-check`、
+  `make test`、`make package`、仓库外 wheel 和浏览器门禁：本批只新增待执行研究契约与文档断言，未修改
+  Python 活动实现、入口、依赖、包资源、API/SSE 或 Web 行为。
+
 - 历史唯一验证、R6/P2 不可变身份、风险模型/报告封存、H0 数据集、CLI 组合、研究状态、生产组合根退役、
   API schema/资源握手和旧路径负向契约定向通过；完整 `tests/contract` 与 `make test` 通过。
   `make format-check`、`make lint`（严格重构债为零）、`make type-check` 和 `make package` 通过；打包首次因
@@ -2786,6 +2803,12 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- 本批只封存历史评分优化的执行顺序、样本门槛和失败关闭条件，没有下载 H1、生成候选或开启最终留出，
+  因而不宣称 Today、Tomorrow 或 D25 收益已经改善。11:20/14:50 历史锚点、证券/行业/风险生效时间若
+  无法达到 95% 股票覆盖、1000 个共同有效日和至少 200 日最终留出，后续路线必须停在
+  `historical_data_insufficient`；不得用当前字段、收盘代理或未来采集解除。当前生产权重、模型、阈值、
+  DeepSeek、冻结、API 和 Web 均未改变。
 
 - 本批没有用仓库运行数据执行 V2 历史风险终态，因此不宣称 Brier/ECE 已通过；H0 验证段不足 122 个合格
   日期或存在字段缺失时会保持 `historical_data_insufficient`，Web 继续显示
