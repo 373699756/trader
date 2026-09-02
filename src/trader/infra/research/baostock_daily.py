@@ -37,6 +37,45 @@ from trader.domain.research.baostock_daily import (
 )
 from trader.domain.research.h1_point_in_time import canonical_hash
 from trader.domain.research.tomorrow_v3_input_compatibility import DailyInputField, FrozenDailyInputDescriptor
+from trader.infra.research.baostock_daily_codec import (
+    boolean as _boolean,
+)
+from trader.infra.research.baostock_daily_codec import (
+    dates as _dates,
+)
+from trader.infra.research.baostock_daily_codec import (
+    encode_json as _json,
+)
+from trader.infra.research.baostock_daily_codec import (
+    fields as _fields,
+)
+from trader.infra.research.baostock_daily_codec import (
+    integer as _integer,
+)
+from trader.infra.research.baostock_daily_codec import (
+    json_array as _json_array,
+)
+from trader.infra.research.baostock_daily_codec import (
+    json_object as _json_object,
+)
+from trader.infra.research.baostock_daily_codec import (
+    number as _number,
+)
+from trader.infra.research.baostock_daily_codec import (
+    object_value as _object,
+)
+from trader.infra.research.baostock_daily_codec import (
+    optional_number as _optional_number,
+)
+from trader.infra.research.baostock_daily_codec import (
+    pairs as _pairs,
+)
+from trader.infra.research.baostock_daily_codec import (
+    string as _string,
+)
+from trader.infra.research.baostock_daily_codec import (
+    strings as _strings,
+)
 
 _DAILY_FIELDS = "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg"
 _BOARDS: tuple[BaoStockBoard, ...] = ("main", "chinext", "star")
@@ -1096,82 +1135,6 @@ def _decode_manifest(raw: dict[str, object]) -> BaoStockDailyManifest:
         terminal_holdout_opened=_boolean(raw["terminal_holdout_opened"]),
         schema_version=_string(raw["schema_version"]),
     )
-
-
-def _json(value: object) -> str:
-    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False)
-
-
-def _json_object(value: str) -> dict[str, object]:
-    raw = json.loads(value)
-    return _object(raw, "JSON object")
-
-
-def _json_array(value: str) -> list[object]:
-    raw = json.loads(value)
-    if not isinstance(raw, list):
-        raise TypeError("BaoStock JSON array is invalid")
-    return cast(list[object], raw)
-
-
-def _object(value: object, label: str) -> dict[str, object]:
-    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
-        raise TypeError(f"BaoStock {label} is invalid")
-    return cast(dict[str, object], value)
-
-
-def _fields(raw: dict[str, object], expected: set[str], label: str) -> None:
-    if set(raw) != expected:
-        raise ValueError(f"BaoStock {label} fields are invalid")
-
-
-def _string(value: object) -> str:
-    if not isinstance(value, str):
-        raise TypeError("BaoStock string value is invalid")
-    return value
-
-
-def _boolean(value: object) -> bool:
-    if not isinstance(value, bool):
-        raise TypeError("BaoStock boolean value is invalid")
-    return value
-
-
-def _integer(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError("BaoStock integer value is invalid")
-    return value
-
-
-def _number(value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise TypeError("BaoStock numeric value is invalid")
-    return float(value)
-
-
-def _optional_number(value: object) -> float | None:
-    return None if value is None else _number(value)
-
-
-def _strings(value: object) -> tuple[str, ...]:
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise TypeError("BaoStock string list is invalid")
-    return tuple(value)
-
-
-def _dates(value: object) -> tuple[date, ...]:
-    return tuple(date.fromisoformat(item) for item in _strings(value))
-
-
-def _pairs(value: object) -> tuple[tuple[str, str], ...]:
-    if not isinstance(value, list):
-        raise TypeError("BaoStock pair list is invalid")
-    pairs: list[tuple[str, str]] = []
-    for item in value:
-        if not isinstance(item, list) or len(item) != 2 or not all(isinstance(part, str) for part in item):
-            raise TypeError("BaoStock pair is invalid")
-        pairs.append((item[0], item[1]))
-    return tuple(pairs)
 
 
 def _decode_board_coverages(value: object) -> tuple[BaoStockBoardCoverage, ...]:

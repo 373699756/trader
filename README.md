@@ -43,15 +43,15 @@ DEEPSEEK_API_KEY=your-key ./run.sh
 TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 ./run.sh check
 ./run.sh --profile v2
-./run.sh research-history --workers 5
-./run.sh research-screen
-./run.sh research-baostock-history --runtime-dir /absolute/path/outside/repository --sessions 2000
+./run.sh download_history --runtime-dir /absolute/path/outside/repository --sessions 2000
+./run.sh train-tomorrow
 ./run.sh help
 ```
 
 日常启动不需要参数，默认使用 Tomorrow V1；追加 `--profile v2` 才使用 V2，该覆盖不会写回配置。
-`check` 依次执行配置校验、只读研究状态和所选档位的离线性能门禁；`research-history` 合并下载/续传与
-固定回测，`research-screen` 合并四项不可变筛选/诊断。离线研究不会随服务启动自动执行。底层
+`check` 依次执行配置校验、只读研究状态和所选档位的离线性能门禁；`download_history` 只负责 BaoStock
+历史日线下载/续传，`train-tomorrow` 负责统一的 Tomorrow 离线训练链。旧 H0 历史归档、回测和筛选入口已退役，
+不再通过启动流程执行。离线研究不会随服务启动自动执行。底层
 `trader-cli performance-check` 仍可用 `--output` 保存报告或用 `--baseline` 执行 5% 相对回归门禁；它
 禁止外网并直接测量活动生产标准化、合并、三策略评分、overlay CAS、API/ETag/status、SSE 和 100 tick RSS。
 BaoStock 下载是独立研究命令，必须先安装 `trader-research-dashboard[research]`，并把运行目录指定为仓库外绝对路径；

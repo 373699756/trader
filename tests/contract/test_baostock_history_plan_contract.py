@@ -28,7 +28,7 @@ def test_baostock_history_plan_freezes_2000_row_scope_and_four_owner_boundaries(
     ):
         assert required in section
     assert "score_baostock_daily_core_v2" in design
-    assert "research-baostock-history" in design
+    assert "download_history" in design
     assert "--sessions 2000" in design
     assert "计划中" in design
     assert "最近 1500" not in section

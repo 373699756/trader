@@ -7,10 +7,8 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo
 
 from flask import Flask
 
@@ -95,17 +93,6 @@ from trader.infra.tomorrow_production_model import load_packaged_tomorrow_produc
 from trader.web import create_app
 from trader.web.api.route_services import UnifiedWebServices, WebApiConfig
 
-if TYPE_CHECKING:
-    from trader.application.research.historical_backtest import HistoricalBarBacktestService
-    from trader.application.research.historical_screening import HistoricalDownloadService
-    from trader.application.research.score_r6 import ScoreR6HistoricalScreeningService
-    from trader.application.research.score_r6_daily import ScoreR6DailyScreeningService
-    from trader.application.research.score_r6_stability import ScoreR6StabilityScreeningService
-    from trader.application.research.tomorrow_historical_p2_screening import TomorrowHistoricalP2ScreeningService
-    from trader.application.research.tomorrow_historical_validation import HistoricalRiskValidationService
-    from trader.application.research.tomorrow_profile_holdout import TomorrowProfileHoldoutService
-    from trader.infra.research.history_archive import SQLiteHistoricalArchive
-
 
 @dataclass(frozen=True)
 class ApplicationSystem:
@@ -152,19 +139,6 @@ class ApplicationSystem:
             self._application_resources(),
             deadline=shared_deadline,
         )
-
-
-@dataclass(frozen=True)
-class HistoricalResearchServices:
-    download: HistoricalDownloadService
-    backtest: HistoricalBarBacktestService
-    score_r6: ScoreR6HistoricalScreeningService
-    score_r6_daily: ScoreR6DailyScreeningService
-    score_r6_stability: ScoreR6StabilityScreeningService
-    tomorrow_historical_p2: TomorrowHistoricalP2ScreeningService
-    tomorrow_profile_holdout: TomorrowProfileHoldoutService
-    tomorrow_historical_risk: HistoricalRiskValidationService
-    archive: SQLiteHistoricalArchive
 
 
 @dataclass(frozen=True)
@@ -367,83 +341,6 @@ def build_system(
         tomorrow_records=publication.tomorrow_repository,
         research_trace=publication.research_trace,
         outcome_evidence=persistence.outcomes,
-    )
-
-
-def build_historical_research_services(
-    config_path: str | Path,
-    *,
-    workers: int = 5,
-) -> HistoricalResearchServices:
-    """Compose explicit offline research without starting production resources."""
-
-    from trader.application.research.historical_backtest import HistoricalBarBacktestService
-    from trader.application.research.historical_screening import HistoricalDownloadService
-    from trader.application.research.score_r6 import ScoreR6HistoricalScreeningService
-    from trader.application.research.score_r6_daily import ScoreR6DailyScreeningService
-    from trader.application.research.score_r6_stability import ScoreR6StabilityScreeningService
-    from trader.application.research.tomorrow_historical_p2_screening import TomorrowHistoricalP2ScreeningService
-    from trader.application.research.tomorrow_historical_validation import HistoricalRiskValidationService
-    from trader.application.research.tomorrow_profile_holdout import TomorrowProfileHoldoutService
-    from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC
-    from trader.infra.research.history_archive import SQLiteHistoricalArchive
-    from trader.infra.research.history_sources import HistoricalPriceProviderAdapter, SinaHistoricalUniverseProvider
-    from trader.infra.research.score_r6_daily_artifacts import ScoreR6DailyArtifactStore
-    from trader.infra.research.tomorrow_historical_p2_model import TomorrowHistoricalP2EnsembleTrainer
-
-    settings = load_runtime_settings(config_path)
-    fixed_source_time = datetime(
-        SCORE_H0_V1_SPEC.source_cutoff.year,
-        SCORE_H0_V1_SPEC.source_cutoff.month,
-        SCORE_H0_V1_SPEC.source_cutoff.day,
-        15,
-        0,
-        tzinfo=ZoneInfo("Asia/Shanghai"),
-    ).astimezone(timezone.utc)
-    history = FallbackHistoryClient(
-        TencentClient(
-            timeout_seconds=settings.market_data.history_timeout_seconds,
-            wall_clock=lambda: fixed_source_time,
-        ),
-        EastmoneyClient(
-            timeout_seconds=settings.market_data.history_timeout_seconds,
-            workers=workers,
-            wall_clock=lambda: fixed_source_time,
-        ),
-    )
-    archive = SQLiteHistoricalArchive(settings.runtime_dir)
-    download = HistoricalDownloadService(
-        SinaHistoricalUniverseProvider(
-            SinaClient(
-                timeout_seconds=settings.market_data.sina_timeout_seconds,
-                workers=workers,
-                wall_clock=_utc_now,
-            )
-        ),
-        HistoricalPriceProviderAdapter(history),
-        archive,
-        workers=workers,
-    )
-    return HistoricalResearchServices(
-        download,
-        HistoricalBarBacktestService(archive),
-        ScoreR6HistoricalScreeningService(archive),
-        ScoreR6DailyScreeningService(archive),
-        ScoreR6StabilityScreeningService(
-            archive,
-            ScoreR6DailyArtifactStore(settings.runtime_dir / "score-r6-daily"),
-        ),
-        TomorrowHistoricalP2ScreeningService(archive, TomorrowHistoricalP2EnsembleTrainer()),
-        TomorrowProfileHoldoutService(
-            archive,
-            load_packaged_tomorrow_production_model("v1"),
-            load_packaged_tomorrow_production_model("v2"),
-        ),
-        HistoricalRiskValidationService(
-            archive,
-            load_packaged_tomorrow_production_model("v2"),
-        ),
-        archive,
     )
 
 
@@ -862,4 +759,4 @@ def _fixed_cache_ttl(settings: RuntimeSettings, dataset: str) -> float:
     return value
 
 
-__all__ = ["ApplicationSystem", "HistoricalResearchServices", "build_historical_research_services", "build_system"]
+__all__ = ["ApplicationSystem", "build_system"]

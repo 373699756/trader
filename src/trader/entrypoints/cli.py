@@ -17,15 +17,6 @@ from trader.infra.settings import RuntimeSettings, load_long_watchlist, load_run
 
 _COMMAND_GROUPS = {
     "check": ("validate-config", "research-status", "performance-check"),
-    "research-history": ("research-history-download", "research-backtest"),
-    "research-screen": (
-        "research-r6-screen",
-        "research-r6-daily-screen",
-        "research-r6-stability-screen",
-        "research-tomorrow-p2-screen",
-        "research-tomorrow-v1-v2-holdout",
-        "research-tomorrow-v2-risk-validation",
-    ),
 }
 
 
@@ -46,15 +37,6 @@ def build_parser() -> argparse.ArgumentParser:
         "check",
         help="Run config validation, research readiness, and the active-profile performance gate.",
     )
-    history = subparsers.add_parser(
-        "research-history",
-        help="Resume the fixed history archive and then run its read-only backtest.",
-    )
-    history.add_argument("--workers", type=int, choices=range(1, 6), default=5)
-    subparsers.add_parser(
-        "research-screen",
-        help="Run all immutable historical screening, stability, and profile-holdout stages in order.",
-    )
     subparsers.add_parser("train-tomorrow", help="Run every available immutable Tomorrow training stage.")
     subparsers.add_parser("validate-config", help="Validate runtime and strategy configuration.")
     performance = subparsers.add_parser(
@@ -63,10 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     performance.add_argument("--output", type=Path)
     performance.add_argument("--baseline", type=Path)
-    baostock = subparsers.add_parser(
-        "research-baostock-history",
-        help="Explicitly download and resume the BaoStock daily-history research archive.",
-    )
+    baostock = subparsers.add_parser("download_history", help="Download and resume the BaoStock daily-history archive.")
     baostock.add_argument("--runtime-dir", required=True, type=Path)
     baostock.add_argument("--sessions", type=int, choices=range(1, 2001), default=2000)
     subparsers.add_parser("research-status", help="Read immutable research coverage and capacity status.")
@@ -85,39 +64,12 @@ def build_parser() -> argparse.ArgumentParser:
     eligibility.add_argument(
         "--as-of", help="Timezone-aware ISO-8601 point-in-time; defaults to current Shanghai time."
     )
-    download = subparsers.add_parser(
-        "research-history-download",
-        help="Download the fixed retrospective qfq history archive; resumable and separate from serve.",
-    )
-    download.add_argument("--workers", type=int, choices=range(1, 6), default=5)
-    subparsers.add_parser("research-backtest", help="Run the read-only fixed train/validation bar diagnostic.")
-    subparsers.add_parser("research-r6-screen", help="Run and immutably seal the preregistered Score-R6 screen.")
-    subparsers.add_parser(
-        "research-r6-daily-screen",
-        help="Run and seal the preregistered risk-adjusted daily trend screen.",
-    )
-    subparsers.add_parser(
-        "research-r6-stability-screen",
-        help="Run and seal the preregistered daily ranking stability diagnostic.",
-    )
-    subparsers.add_parser(
-        "research-tomorrow-p2-screen",
-        help="Run and immutably seal the single frozen Tomorrow P2 historical candidate.",
-    )
-    subparsers.add_parser(
-        "research-tomorrow-v1-v2-holdout",
-        help="Evaluate and seal both packaged Tomorrow profiles on the same H0 validation rows.",
-    )
-    subparsers.add_parser(
-        "research-tomorrow-v2-risk-validation",
-        help="Fit, calibrate, and seal the historical-only V2 severe-loss probability report.",
-    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI command dispatch
     args = build_parser().parse_args(argv)
-    if args.command == "research-baostock-history":
+    if args.command == "download_history":
         return _run_baostock_history(args.runtime_dir, args.sessions)
     if args.command == "train-tomorrow":
         _configure_tomorrow_training_resources()
@@ -298,8 +250,6 @@ def _run_command_group(
     for index, stage in enumerate(stages, start=1):
         print(f"[{index}/{len(stages)}] {stage}", file=sys.stderr, flush=True)
         stage_argv = ["--config", str(config_path), "--profile", profile, stage]
-        if command == "research-history" and stage == "research-history-download":
-            stage_argv.extend(("--workers", str(workers)))
         exit_code = _run_group_stage(stage_argv)
         results.append({"command": stage, "exit_code": exit_code})
     failed = any(int(item["exit_code"]) != 0 for item in results)

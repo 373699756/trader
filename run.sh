@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${VENV_DIR:-$ROOT_DIR/.venv}"
 CONFIG_PATH="${TRADER_CONFIG:-$ROOT_DIR/config/v2/runtime.json}"
-MODE="serve"
+MODE=""
 MODE_SET=0
 SCORING_PROFILE="v1"
 FORWARD_ARGS=()
@@ -15,16 +15,13 @@ usage() {
     "" \
     "日常使用（不做离线研究）:" \
     "  ./run.sh                         以默认 V1 启动本地 A 股研究看板" \
-    "  ./run.sh serve                   显式启动，等同于无参数运行" \
     "  ./run.sh --profile v2            显式使用 V2 启动" \
     "  ./run.sh check                   依次校验配置、研究状态和性能门禁" \
     "  ./run.sh help                    查看本帮助" \
     "" \
     "离线研究（仅在明确执行研究任务时使用）:" \
-    "  ./run.sh research-history        下载/续传历史归档后运行固定回测" \
-    "  ./run.sh research-screen         依次运行并封存六项历史筛选/诊断" \
+    "  ./run.sh download_history        下载/续传 BaoStock 历史日线归档" \
     "  ./run.sh train-tomorrow          从封存状态推导并连续运行可用 Tomorrow 训练阶段" \
-    "  ./run.sh research-baostock-history --runtime-dir /absolute/outside/path [--sessions 2000]" \
     "" \
     "所有命令都可追加 --profile v1|v2；未指定时为 V1。" \
     "" \
@@ -52,7 +49,7 @@ while (($#)); do
       SCORING_PROFILE="${1#--profile=}"
       shift
       ;;
-    help|-h|--help|serve|app|check|research-history|research-screen|train-tomorrow|research-baostock-history)
+    help|-h|--help|check|download_history|train-tomorrow)
       if ((MODE_SET)); then
         FORWARD_ARGS+=("$1")
       else
@@ -85,10 +82,10 @@ case "$MODE" in
     usage
     exit 0
     ;;
-  serve|app)
+  "")
     COMMAND_KIND="server"
     ;;
-  check|research-history|research-screen|train-tomorrow|research-baostock-history)
+  check|download_history|train-tomorrow)
     COMMAND_KIND="cli"
     ;;
   *)

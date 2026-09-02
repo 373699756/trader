@@ -5,9 +5,7 @@ from __future__ import annotations
 import json
 import sys
 import time
-from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from datetime import date
 from pathlib import Path
 
 from trader.application.research.historical_label import HistoricalLabelPreregistrationService
@@ -16,7 +14,6 @@ from trader.application.research.research_tomorrow_orchestrator import (
     TomorrowResearchOrchestrator,
     TomorrowResearchProgressPort,
 )
-from trader.application.research.tomorrow_profile_holdout import TOMORROW_PROFILE_HOLDOUT_REPORT_HASH
 from trader.application.research.tomorrow_research_artifacts import (
     TomorrowResearchStage,
     derive_tomorrow_research_run_id,
@@ -24,10 +21,7 @@ from trader.application.research.tomorrow_research_artifacts import (
     production_readiness_audit,
 )
 from trader.application.research.tomorrow_research_prerequisites import CodexATomorrowResearchPrerequisite
-from trader.bootstrap import build_historical_research_services
 from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC
-from trader.domain.research.score_r6 import SCORE_R6_HISTORICAL_SPEC
-from trader.domain.research.score_r6_daily import SCORE_R6_DAILY_SPEC
 from trader.domain.research.score_r6_stability import SCORE_R6_STABILITY_SPEC
 from trader.domain.research.tomorrow_historical_p2 import TOMORROW_HISTORICAL_P2_SPEC
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
@@ -55,7 +49,6 @@ from trader.infra.research.tomorrow_historical_risk_artifacts import (
 from trader.infra.research.tomorrow_profile_holdout_artifacts import (
     TomorrowProfileHoldoutArtifactConflictError,
     TomorrowProfileHoldoutArtifactStore,
-    holdout_report_payload,
 )
 from trader.infra.research.tomorrow_research_artifacts import (
     TomorrowResearchArtifactStore,
@@ -193,66 +186,7 @@ def run_research_command(
         return 0
     if command == "research-baseline-audit":
         return _run_baseline_identity_audit(runtime)
-    if command == "research-history-download":
-        services = build_historical_research_services(config_path, workers=options.workers)
-
-        def progress(done: int, total: int, code: str) -> None:
-            if done == total or done % 100 == 0:
-                print(f"history {done}/{total} latest={code}", file=sys.stderr, flush=True)
-
-        result = services.download.execute(SCORE_H0_V1_SPEC, progress=progress)
-        print(
-            json.dumps(
-                {
-                    "result": asdict(result),
-                    "archive": asdict(services.archive.inspect(SCORE_H0_V1_SPEC.research_identity)),
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-        )
-        return 0 if result.failed == 0 else 1
-    if command in {
-        "research-backtest",
-        "research-r6-screen",
-        "research-r6-daily-screen",
-        "research-r6-stability-screen",
-        "research-tomorrow-p2-screen",
-        "research-tomorrow-v1-v2-holdout",
-        "research-tomorrow-v2-risk-validation",
-    }:
-        return _run_offline_report(
-            command,
-            config_path,
-            runtime,
-            options,
-        )
     raise ValueError(f"unsupported research command: {command}")
-
-
-def _run_offline_report(
-    command: str,
-    config_path: Path,
-    runtime: RuntimeSettings,
-    options: ResearchCommandOptions,
-) -> int:
-    runners: dict[str, Callable[[], int]] = {
-        "research-backtest": lambda: _run_historical_backtest(config_path),
-        "research-tomorrow-v1-v2-holdout": lambda: _run_tomorrow_profile_holdout(config_path, runtime),
-        "research-tomorrow-v2-risk-validation": lambda: _run_tomorrow_historical_risk(config_path, runtime),
-        "research-r6-daily-screen": lambda: _run_r6_daily_screen(config_path, runtime),
-        "research-r6-stability-screen": lambda: _run_r6_stability_screen(config_path, runtime),
-        "research-tomorrow-p2-screen": lambda: _run_tomorrow_p2_screen(config_path, runtime),
-        "research-r6-screen": lambda: _run_r6_screen(config_path, runtime),
-    }
-    return runners[command]()
-
-
-def _run_historical_backtest(config_path: Path) -> int:
-    services = build_historical_research_services(config_path)
-    report = services.backtest.execute(SCORE_H0_V1_SPEC)
-    print(json.dumps(asdict(report), default=_json_default, ensure_ascii=False, sort_keys=True))
-    return 0 if report.status == "screened" else 1
 
 
 def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
@@ -415,91 +349,6 @@ def _tomorrow_research_prerequisite(runtime: RuntimeSettings) -> CodexATomorrowR
     return CodexATomorrowResearchPrerequisite(HistoricalLabelPreregistrationService(archive))
 
 
-def _run_r6_daily_screen(config_path: Path, runtime: RuntimeSettings) -> int:
-    daily_store = ScoreR6DailyArtifactStore(runtime.runtime_dir / "score-r6-daily")
-    existing = daily_store.read_payload()
-    if existing is not None:
-        print(json.dumps(existing, ensure_ascii=False, sort_keys=True))
-        return 0 if bool(existing.get("historical_gate_passed", False)) else 1
-    print("daily trend screen: computing immutable H0 factors and replay", file=sys.stderr, flush=True)
-    services = build_historical_research_services(config_path)
-    daily_report = services.score_r6_daily.execute(SCORE_R6_DAILY_SPEC)
-    if daily_report.status != "insufficient_coverage":
-        daily_store.seal(daily_report)
-    print(json.dumps(asdict(daily_report), default=_json_default, ensure_ascii=False, sort_keys=True))
-    return 0 if daily_report.historical_gate_passed else 1
-
-
-def _run_r6_stability_screen(config_path: Path, runtime: RuntimeSettings) -> int:
-    stability_store = ScoreR6StabilityArtifactStore(runtime.runtime_dir / "score-r6-stability")
-    try:
-        existing = stability_store.read_payload()
-    except ScoreR6StabilityArtifactConflictError:
-        print(
-            json.dumps(
-                {
-                    "status": "artifact_invalid",
-                    "diagnostic_gate_passed": False,
-                    "failure_reasons": ["score_r6_stability_artifact_invalid"],
-                    "promotion_authority": False,
-                },
-                sort_keys=True,
-            )
-        )
-        return 1
-    if existing is not None:
-        print(json.dumps(existing, ensure_ascii=False, sort_keys=True))
-        return 0 if bool(existing.get("diagnostic_gate_passed", False)) else 1
-    print("daily stability screen: computing immutable H0 factors and replay", file=sys.stderr, flush=True)
-    services = build_historical_research_services(config_path)
-    stability_report = services.score_r6_stability.execute(SCORE_R6_STABILITY_SPEC)
-    if stability_report.status not in {"insufficient_coverage", "parent_mismatch"}:
-        stability_store.seal(stability_report)
-    print(json.dumps(asdict(stability_report), default=_json_default, ensure_ascii=False, sort_keys=True))
-    return 0 if stability_report.diagnostic_gate_passed else 1
-
-
-def _run_r6_screen(config_path: Path, runtime: RuntimeSettings) -> int:
-    r6_store = ScoreR6ArtifactStore(runtime.runtime_dir / "score-r6")
-    existing = r6_store.read_historical_payload()
-    if existing is not None:
-        print(json.dumps(existing, ensure_ascii=False, sort_keys=True))
-        return 0 if bool(existing.get("historical_gate_passed", False)) else 1
-    services = build_historical_research_services(config_path)
-    r6_report = services.score_r6.execute(SCORE_R6_HISTORICAL_SPEC)
-    if r6_report.status == "historical_screened":
-        r6_store.seal_historical(r6_report)
-    print(json.dumps(asdict(r6_report), default=_json_default, ensure_ascii=False, sort_keys=True))
-    return 0 if r6_report.historical_gate_passed else 1
-
-
-def _run_tomorrow_p2_screen(config_path: Path, runtime: RuntimeSettings) -> int:
-    store = TomorrowHistoricalP2ArtifactStore(runtime.runtime_dir / "score-tomorrow-p2")
-    try:
-        existing = store.read_report_payload()
-    except TomorrowHistoricalP2ArtifactConflictError:
-        print(
-            json.dumps(
-                {
-                    "status": "artifact_invalid",
-                    "failure_reasons": ["tomorrow_p2_artifact_invalid"],
-                    "production_authority": False,
-                },
-                sort_keys=True,
-            )
-        )
-        return 1
-    if existing is not None:
-        print(json.dumps(existing, ensure_ascii=False, sort_keys=True))
-        return 0 if existing.get("status") == "historical_passed" else 1
-    print("Tomorrow P2: reading immutable H0 rows and fitting the only candidate", file=sys.stderr, flush=True)
-    services = build_historical_research_services(config_path)
-    execution = services.tomorrow_historical_p2.execute(TOMORROW_HISTORICAL_P2_SPEC)
-    store.seal(execution.report, execution.model_artifact)
-    print(json.dumps(asdict(execution.report), default=_json_default, ensure_ascii=False, sort_keys=True))
-    return 0 if execution.report.status == "historical_passed" else 1
-
-
 def _read_score_r6_stability_status(runtime: RuntimeSettings) -> dict[str, object]:
     try:
         return ScoreR6StabilityArtifactStore(runtime.runtime_dir / "score-r6-stability").inspect()
@@ -550,73 +399,6 @@ def _read_tomorrow_historical_risk_status(runtime: RuntimeSettings) -> dict[str,
             "model_artifact_hash": "",
             "production_authority": False,
         }
-
-
-def _run_tomorrow_historical_risk(config_path: Path, runtime: RuntimeSettings) -> int:
-    store = TomorrowHistoricalRiskArtifactStore(runtime.runtime_dir)
-    try:
-        existing = store.read_report_payload()
-    except TomorrowHistoricalRiskArtifactConflictError:
-        print(json.dumps({"status": "artifact_invalid", "production_authority": False}, sort_keys=True))
-        return 1
-    if existing is not None:
-        print(json.dumps(existing, ensure_ascii=False, sort_keys=True))
-        return 0 if existing.get("status") == "historical_validated" else 1
-    print("Tomorrow V2 risk: fitting ordered historical calibration", file=sys.stderr, flush=True)
-    outcome = build_historical_research_services(config_path).tomorrow_historical_risk.execute()
-    if outcome.model_artifact is not None:
-        store.seal(outcome)
-    print(json.dumps(asdict(outcome.report), default=_json_default, ensure_ascii=False, sort_keys=True))
-    return 0 if outcome.report.status == "historical_validated" else 1
-
-
-def _run_tomorrow_profile_holdout(config_path: Path, runtime: RuntimeSettings) -> int:
-    store = TomorrowProfileHoldoutArtifactStore(runtime.runtime_dir)
-    try:
-        existing = store.read_payload()
-    except TomorrowProfileHoldoutArtifactConflictError:
-        print(json.dumps({"status": "artifact_invalid", "production_authority": False}, sort_keys=True))
-        return 1
-    if existing is not None:
-        print(json.dumps(existing, ensure_ascii=False, sort_keys=True))
-        return 0 if existing.get("content_hash") == TOMORROW_PROFILE_HOLDOUT_REPORT_HASH else 1
-    archive = SQLiteHistoricalArchive(runtime.runtime_dir).inspect(SCORE_H0_V1_SPEC.research_identity)
-    if archive.spec_hash != SCORE_H0_V1_SPEC.content_hash:
-        print(
-            json.dumps(
-                {
-                    "status": "insufficient_coverage",
-                    "failure_reasons": ["score_h0_archive_coverage_incomplete"],
-                    "production_authority": False,
-                },
-                sort_keys=True,
-            )
-        )
-        return 1
-    print("Tomorrow V1/V2: evaluating sealed profiles on paired H0 validation rows", file=sys.stderr, flush=True)
-    report = build_historical_research_services(config_path).tomorrow_profile_holdout.execute()
-    if report.content_hash != TOMORROW_PROFILE_HOLDOUT_REPORT_HASH:
-        print(
-            json.dumps(
-                {
-                    "status": "historical_evidence_mismatch",
-                    "report_hash": report.content_hash,
-                    "expected_hash": TOMORROW_PROFILE_HOLDOUT_REPORT_HASH,
-                    "production_authority": False,
-                },
-                sort_keys=True,
-            )
-        )
-        return 1
-    store.seal(report)
-    print(json.dumps(holdout_report_payload(report), ensure_ascii=False, sort_keys=True))
-    return 0
-
-
-def _json_default(value: object) -> str:
-    if isinstance(value, date):
-        return value.isoformat()
-    raise TypeError(f"unsupported JSON value: {type(value).__name__}")
 
 
 __all__ = ["ResearchCommandOptions", "run_research_command"]

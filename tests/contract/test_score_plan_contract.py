@@ -72,15 +72,10 @@ def test_remaining_offline_research_is_historical_and_production_isolated() -> N
         "tomorrow_v2_historical_risk_probability_v1",
     ):
         assert token in strategy or token in design
-    for token in (
-        "research-r6-screen",
-        "research-r6-daily-screen",
-        "research-r6-stability-screen",
-        "research-tomorrow-p2-screen",
-        "research-tomorrow-v1-v2-holdout",
-    ):
-        assert token in design
-    assert "不接入生产组合根、HTTP、调度、冻结或 DeepSeek" in design
+    assert "旧 H0 历史归档、回测和筛选命令已经退役" in design
+    assert "download_history" in design
+    assert "train-tomorrow" in design
+    assert "不得接入生产组合根或在线请求链" in design
 
 
 def test_p2_historical_rejection_and_manual_production_override_remain_explicit() -> None:

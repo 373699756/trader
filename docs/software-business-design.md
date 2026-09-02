@@ -1499,16 +1499,16 @@ fail closed 并进入浏览器诊断。`market_data.market_changes` 只公开变
 `./run.sh check` 与 `./run.sh`；启动后应核对 `/api/v2/status` 的 `runtime_version`、
 `release`、`scheduler.strategy_errors` 和各策略状态，不能只以 HTTP 200 判断更新生效。浏览器出现
 “服务版本不一致”时不得继续等待或重复刷新，必须先完成上述正常重启；同一运行目录的进程锁会
-正确拒绝第二个 `./run.sh serve`，这不表示新代码已经替换旧进程。
+正确拒绝第二个 `./run.sh`，这不表示新代码已经替换旧进程。
 
 一键启动使用 `run.sh`、`run.ps1` 或 `run.bat`。手动流程为创建虚拟环境、从
 `pyproject.toml` 安装、用绝对配置路径执行 `trader-cli validate-config`，再启动
 `trader-server`。任何环境都不得依赖仓库当前工作目录才能读取资源。启动脚本的无参数行为固定为
-启动看板，`serve` 只是等价显式写法；帮助必须把日常命令与显式离线 `research-*` 命令
+启动看板；帮助必须把日常命令与显式离线研究命令
 分组展示并逐项说明，不得再把所有名称压缩成一行伪装成必填启动参数。未知命令必须在创建虚拟环境、
 安装依赖或启动入口之前失败，并只给出日常无参数启动与帮助命令指引。Linux/macOS 与 PowerShell
 入口必须保持相同分类和默认语义；`run.bat` 继续委托 PowerShell 入口。当前公开脚本命令固定为
-`serve`、`check`、`research-history`、`research-screen` 和 `train-tomorrow`。组合内的
+`check`、`download_history` 和 `train-tomorrow`。旧 H0 历史归档、回测和筛选命令已经退役。组合内的
 底层 `trader-cli` 阶段继续保留用于测试、自动化和故障定位，但不再逐项暴露为 `run.sh` 命令。
 `trader-server` 成功绑定监听端口后、启动 Web 服务线程前，必须向标准输出打印一次带
 `http://` scheme 的实际浏览器 URL；默认配置显示
@@ -1529,8 +1529,8 @@ python3 -m venv .venv
 .venv/bin/trader-server --config "$PWD/config/v2/runtime.json"
 ```
 
-日常启动只需执行 `./run.sh`；`./run.sh serve` 与无参数启动完全等价，二者默认选择 Tomorrow V1。
-`./run.sh --profile v2` 与 `./run.sh serve --profile v2` 显式选择 V2。该覆盖只影响本次进程并重新生成
+日常启动只需执行 `./run.sh`，默认选择 Tomorrow V1。
+`./run.sh --profile v2` 显式选择 V2。该覆盖只影响本次进程并重新生成
 有效策略身份，不写回策略配置；改变档位必须正常重启。默认配置启动后访问
 `http://127.0.0.1:5000/`。同一 `.runtime/v2` 只允许一个服务进程，第二个进程由
 `.runtime/v2/server.lock` 拒绝。拒绝信息必须同时显示现有服务的实际浏览器 URL，并提示在原启动终端
@@ -1544,15 +1544,13 @@ python3 -m venv .venv
 
 | 类别 | 命令 | 运行边界 |
 | --- | --- | --- |
-| 日常 | `./run.sh` 或 `./run.sh serve` | 以默认 V1 启动本地 Web 看板和生产调度 |
+| 日常 | `./run.sh` | 以默认 V1 启动本地 Web 看板和生产调度 |
 | 日常 | `./run.sh --profile v2` | 以显式 V2 启动；也可把 `--profile v1|v2` 追加到其他公开命令 |
 | 日常 | `./run.sh check` | 依次校验配置、只读投影研究状态并运行所选档位的离线性能门禁 |
-| 离线研究 | `./run.sh research-history [--workers 1..5]` | 下载/断点续传独立历史日线归档，然后只读运行固定训练/验证回测 |
-| 离线研究 | `./run.sh research-screen` | 依次运行 R6 历史、R6 日线、R6 稳定性、Tomorrow P2、V1/V2 H0 留出和 V2 严重亏损概率六项不可变筛选/诊断 |
-| 离线研究 | `./run.sh research-baostock-history --runtime-dir <仓库外绝对路径> --sessions 1..2000` | 显式安装 `[research]` extra 后，按固定窗口下载/续传 BaoStock 共同日线；只写仓库外研究目录和只读 manifest |
+| 离线研究 | `./run.sh download_history --runtime-dir <仓库外绝对路径> --sessions 1..2000` | 显式安装 `[research]` extra 后，按固定窗口下载/续传 BaoStock 共同日线；只写仓库外研究目录和只读 manifest |
 | 离线训练 | `./run.sh train-tomorrow` | 不接受阶段或 `run_id` 参数；一次调用连续完成父工件已满足的单一 V3 预注册阶段，支持原子断点续跑，永不自动 promotion 或激活 V3 |
 
-当前三个组合命令及 `train-tomorrow` 均由 `trader-cli` 单一编排器
+当前 `check` 组合命令及 `train-tomorrow` 均由 `trader-cli` 单一编排器
 统一拥有。Linux/macOS 与 PowerShell 不复制业务流程。普通阶段
 返回非零时组合器仍运行剩余阶段，最终输出 `trader_command_group_v1` 汇总并以非零结束，使一次运行能
 看到完整门禁分布；配置解析失败等操作性异常立即失败关闭。历史阶段绑定原 H0/R6/P2 规范，统一接受的
@@ -1704,26 +1702,17 @@ P0v2 保持固定历史日期错失，P2 保持既有 `historical_rejected`；�
 但不再生成活动任务、运行计数或后续窗口。对应未来采集器、运行期 V1/V2 配对数据库、R7 晋级档案及其
 CLI、状态和 Web 字段已经退役。
 
-离线历史筛选使用独立 `score_h0_v1` 数据平面，不接入生产组合根、HTTP、调度、冻结或 DeepSeek。
-`research-history` 组合先通过 `trader-cli research-history-download` 以最多 5 个有界 worker 下载每股最多
-640 日腾讯前复权日线，写入 `runtime_dir/score-history` 的独立 SQLite 归档，再由
-`research-backtest` 只读执行固定训练/验证切分。归档同身份同内容幂等、冲突拒绝，失败只保存脱敏类别；
-不足 66 根、未来日线、非前复权响应和哈希冲突不能进入完成覆盖。
-
-`research-screen` 只包含六个历史阶段：R6 联合网格、R6D 风险调整趋势、R6S 排名稳定诊断、Tomorrow P2
-历史筛选、V1/V2 同口径 H0 留出和 V2 严重亏损概率验证。每个阶段只读 H0 归档和明确父工件，写各自防篡改 JSON；同身份同内容
-幂等、不同内容或篡改冲突。R6、R6D 和 P2 的训练段只选择一次候选，验证段只评价冻结候选一次；R6S 明确
-标记复用已观察验证窗口，不冒充新的盲测。历史通过只表示 `historical_validated` 或报告自身既有通过状态，
-不产生生产权限。
+旧 H0 腾讯 640 日历史归档、固定回测和六项筛选入口已退役，不再创建或更新 `score-history`。
+新的历史数据统一由 `download_history` 生成 BaoStock 共同日线 manifest，训练统一由
+`train-tomorrow` 按已封存的 V3 前置工件执行。历史数据不足、历史事实不完整或父工件冲突时，训练失败关闭，
+不生成生产模型或自动更新权限。
 
 Score-R6 历史唯一验证使用新身份 `score_r6_historical_v2` 和 `score_r6_historical_report_v2`；旧
 `score_r6_historical_v1` 目录只作不可变审计，状态读取不得把旧 `forward_required` 报告重新解释为
 `historical_only`。
 
-对应只读 CLI 分别为 `research-r6-screen`、`research-r6-daily-screen`、`research-r6-stability-screen`、
-`research-tomorrow-p2-screen`、`research-tomorrow-v1-v2-holdout` 和
-`research-tomorrow-v2-risk-validation`；它们只允许写独立历史报告，不得接入
-生产组合根或在线请求链。
+上述六项旧 H0 筛选/验证阶段及其 CLI 均已退役；历史研究只通过 `download_history` 和
+`train-tomorrow` 执行，不得接入生产组合根或在线请求链。
 
 隔离研究包继续保留原生评分因子诊断层、`ScoreTomorrowPointInTimeFeatures`、`ScoreTomorrowShadowModels`
 与成本感知选择能力，分别封存 `score_factor_diagnostic_report_v1`、点时特征、
@@ -1791,7 +1780,7 @@ BaoStock v2 日线能力只按下一段独立计划执行，不改写这个结�
 `supplier_login_failed_unboundlocalerror`；`--sessions 2000` 在外部 I/O 前因可用空间低于 30GB 返回
 `resource_blocked/disk_below_30gb`，实测 `/tmp` 所在文件系统约 8.85GiB 可用，未创建全量运行目录或研究工件。只允许安装 wheel 的
 `[research]` optional extra 后显式执行
-`trader-cli research-baostock-history --runtime-dir <仓库外绝对路径> --sessions 2000`。规范库以代码日期为
+`trader-cli download_history --runtime-dir <仓库外绝对路径> --sessions 2000`。规范库以代码日期为
 唯一行，在同一行保存未复权/前复权字段，每只股票最多 2000 个逻辑记录；新股、退市股和来源不足股票按
 真实区间少于 2000 条，不补值。`--sessions` 接受 1–2000、默认 2000，超限在任何外部 I/O 前失败；只有
 2000 日运行可以形成权威全量 manifest。Codex A 独占 gateway、分片/合并内容语义、覆盖审计、manifest/hash 和历史

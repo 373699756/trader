@@ -1423,22 +1423,18 @@ bootstrap 下界又均为负。故不能据此断言 V2 未来更能挣钱，也
 
 #### 15.1.20 运行档位与研究组合命令
 
-评分档位是单进程启动参数，不是盘中热切换。`./run.sh`、`./run.sh serve` 和未指定档位的组合命令均
-使用 V1；`./run.sh --profile v2`、`./run.sh serve --profile v2` 或任一公开组合命令追加
+评分档位是单进程启动参数，不是盘中热切换。`./run.sh` 和未指定档位的组合命令均
+使用 V1；`./run.sh --profile v2` 或任一公开组合命令追加
 `--profile v2` 才使用 V2。启动参数形成只在本进程生效的类型化配置覆盖，不写回 `strategy.json`；覆盖后
 重新计算有效策略 SHA-256，并由新决策绑定实际模型 ID/hash。进程内不得同时保留两套活动评分源，档位
 改变必须正常重启，且不能覆盖既有正式/冻结记录。
 
-公开 `run.sh` 既有研究入口保留三条固定流程：`check` 顺序执行配置校验、研究状态和所选档位性能门禁；
-`research-history` 顺序执行历史归档下载/续传和固定回测；`research-screen` 顺序执行六个历史阶段：R6
-历史筛选、R6 日线筛选、R6 稳定性诊断、Tomorrow P2 历史筛选、V1/V2 同口径 H0 留出及 V2 严重亏损
-概率验证。每个阶段仍保留独立
-`trader-cli` 命令供自动测试和故障定位，但不再作为 `run.sh` 公开入口。组合器对
-普通非零门禁结果继续执行剩余阶段，最终输出包含每段退出码的
-`trader_command_group_v1` 汇总并返回非零；配置无效、工件冲突引发的未处理异常等操作性故障仍立即失败关闭。
+公开 `run.sh` 研究入口统一为两条固定流程：`download_history` 显式下载/续传 BaoStock 共同日线，
+`train-tomorrow` 按封存父工件执行 Tomorrow 训练链；`check` 负责日常配置、状态和性能门禁。旧 H0
+历史归档、固定回测和六阶段筛选入口已退役，不再通过 `run.sh` 或 `trader-cli` 执行。
 
 Tomorrow C3/V3 的训练入口只允许一条：`./run.sh train-tomorrow`。该名称表示“训练 Tomorrow 模型”；
-`research-history` 继续只拥有通用历史归档下载/续传和既有固定回测，避免把模型训练误写成交易记录或历史
+`download_history` 只拥有 BaoStock 历史数据下载/续传，避免把模型训练误写成交易记录或历史
 查询。Codex D 的单命令、检查点和阻塞投影框架已经完成，但第 15.1.35 至 15.1.38 节定义的新 BaoStock v2、
 单一行业 V3 工件图和 owner handoff 尚未迁移；当前命令只能如实返回既有父工件不足，不能把旧联合器
 工件解释为新 V3 完成。用户
@@ -1448,8 +1444,8 @@ Tomorrow C3/V3 的训练入口只允许一条：`./run.sh train-tomorrow`。该�
 资源状态，完整终态封存前不公开可用于改参的中间收益。数据不足、门禁拒绝、hash 冲突或资源超限时立即
 停止并写明终态；命令不得自动 promotion、修改生产 profile 或启动 V3。
 
-`--profile` 对生产启动、配置校验和性能门禁生效；历史下载、回测和不可变筛选本身继续绑定各自冻结的
-H0/R6/P2 研究身份，不因 V1/V2 参数改名、重算或覆盖工件。这样统一参数表面不会把活动生产档位误作
+`--profile` 对生产启动、配置校验和性能门禁生效；BaoStock 历史下载和 Tomorrow 训练分别绑定自己的
+研究身份，不因 V1/V2 参数改名、重算或覆盖工件。这样统一参数表面不会把活动生产档位误作
 历史研究版本，也不会让离线研究结果反向改变当前分数。
 
 #### 15.1.21 历史评分验证总序与批次纪律
@@ -1987,7 +1983,7 @@ RSS 不超过 4GB。失败保留最近完整分片和 manifest，不删除可恢
 | Codex A | Codex A 独占数据内容语义：类型化 gateway/值对象、raw/qfq 同行归一化、交易日历与股票池、分片 SQLite、checkpoint、确定性合并、覆盖审计、manifest/hash 和历史事实来源能力 | `baostock_daily*`、`baostock_daily_audit*`、`historical_effective_facts*` 及测试；输出唯一最终 SQLite 和 manifest | 不改依赖/CLI/生产缓存，不构造 11:20/14:50，不读取收益 |
 | Codex B | 只校验冻结日线 port 是否满足六 Alpha 的字段、单位、键和 hash 消费契约 | fixture 契约和 `tomorrow_v3_input_compatibility` 结果 | Codex B 不实现下载、覆盖审计或切分，不训练 V3，不读取收益 |
 | Codex C | 只验证最新 200 日保持不可读取、日线来源不能声称点时一致，以及新 V3 留出身份与旧 15.1.32 隔离；工程契约已完成 | `baostock_holdout_isolation_contract` 及测试 | Codex C 不定义或重切数据集，不打开留出，不计算收益 |
-| Codex D | 集成 `[research]` 依赖、显式命令、受控独立子进程监督、锁/超时/取消/恢复、状态投影和共享文档；调用 A 的分片与合并服务并执行真实全量下载 | `trader-cli research-baostock-history --runtime-dir <仓库外绝对路径> --sessions 2000`；只读 status、最终 SQLite/manifest、全量摘要 | Codex D 不决定覆盖是否通过，不改内容 hash；普通启动、`check`、Web、bootstrap、生产调度或 `train-tomorrow` 不得隐式下载 |
+| Codex D | 集成 `[research]` 依赖、显式命令、受控独立子进程监督、锁/超时/取消/恢复、状态投影和共享文档；调用 A 的分片与合并服务并执行真实全量下载 | `trader-cli download_history --runtime-dir <仓库外绝对路径> --sessions 2000`；只读 status、最终 SQLite/manifest、全量摘要 | Codex D 不决定覆盖是否通过，不改内容 hash；普通启动、`check`、Web、bootstrap、生产调度或 `train-tomorrow` 不得隐式下载 |
 
 Codex B 波次 1 状态：已完成。`tomorrow_v3_input_compatibility_v1` 通过只读类型化 port 消费冻结输入描述，
 固定检查 `score_baostock_daily_core_v2`、截至 2026-08-31 的 2000 日身份、`(code, trade_date)` 主键、

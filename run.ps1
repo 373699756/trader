@@ -2,7 +2,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $RootDir = Split-Path -Parent $PSCommandPath
-$Mode = "serve"
+$Mode = ""
 $ModeSet = $false
 $ScoringProfile = "v1"
 $ForwardArgs = @()
@@ -13,14 +13,12 @@ function Show-Usage {
 
 日常使用（不做离线研究）:
   .\run.ps1                         以默认 V1 启动本地 A 股研究看板
-  .\run.ps1 serve                   显式启动，等同于无参数运行
   .\run.ps1 --profile v2            显式使用 V2 启动
   .\run.ps1 check                   依次校验配置、研究状态和性能门禁
   .\run.ps1 help                    查看本帮助
 
 离线研究（仅在明确执行研究任务时使用）:
-  .\run.ps1 research-history        下载/续传历史归档后运行固定回测
-  .\run.ps1 research-screen         依次运行并封存六项历史筛选/诊断
+  .\run.ps1 download_history        下载/续传 BaoStock 历史日线归档
   .\run.ps1 train-tomorrow          从封存状态推导并连续运行可用 Tomorrow 训练阶段
 
 所有命令都可追加 --profile v1|v2；未指定时为 V1。
@@ -36,7 +34,7 @@ function Show-Usage {
 "@ | Write-Host
 }
 
-$PublicModes = @("help", "-h", "--help", "serve", "app", "check", "research-history", "research-screen", "train-tomorrow")
+$PublicModes = @("help", "-h", "--help", "check", "download_history", "train-tomorrow")
 
 for ($Index = 0; $Index -lt $args.Count; $Index++) {
     $Argument = [string]$args[$Index]
@@ -75,8 +73,8 @@ if ($Mode -in @("help", "-h", "--help")) {
     Show-Usage
     exit 0
 }
-$IsServerMode = $Mode -in @("serve", "app")
-if (-not $IsServerMode -and $Mode -notin @("check", "research-history", "research-screen", "train-tomorrow")) {
+$IsServerMode = [string]::IsNullOrEmpty($Mode)
+if (-not $IsServerMode -and $Mode -notin @("check", "download_history", "train-tomorrow")) {
     [Console]::Error.WriteLine("未知命令: $Mode")
     [Console]::Error.WriteLine("日常启动直接运行: .\run.ps1")
     [Console]::Error.WriteLine("查看全部命令: .\run.ps1 help")

@@ -55,7 +55,9 @@ def test_strategy_roadmap_is_ordered_benefit_first_and_strategy_complete() -> No
         "参数不得由优化器",
         "DeepSeek 历史盈利增量不在本路线验证",
         "用户另立高风险生产变更批次",
-        "research-screen` 顺序执行六个历史阶段",
+        "旧 H0 历史归档、固定回测和六阶段筛选入口已退役",
+        "download_history",
+        "train-tomorrow",
         "production_authority=false",
     ):
         assert token in strategy
