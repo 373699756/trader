@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户依据荐股策略要求执行 Codex B 未完成任务。本批完成第 15.1.38 节 B 波次 1 的只读输入消费契约：
+  新增 `tomorrow_v3_input_compatibility_v1`，以类型化 port 核对 BaoStock v2 冻结描述的 2000 日身份、
+  `(code, trade_date)` 主键、raw/qfq 同行、必需字段及单位、逐行 SHA-256 和父 manifest hash，并固定六个
+  Alpha 名称/单位。报告只产生 `compatible|incompatible` 及有界原因，不读取价格行、覆盖率或收益，不切分、
+  不训练、不打开留出、不授予生产权限。`Regression-Key: tomorrow-v3-input-compatibility-v1`。
+
 - `baostock-2000-v3-roadmap-consistency-v1`：新增未完成章节状态表、唯一 `pending` 执行项、BaoStock/V3
   非重叠所有权契约，以及 2000 条逻辑记录、raw/qfq 同行、全体/逐板/老股覆盖、逐股失败、SDK 子进程资源
   上限和新旧终端留出隔离的机器断言。文档任务不实现 SDK、CLI、SQLite 或生产 profile。
@@ -187,6 +193,12 @@ All notable changes to this project are documented here.
   `Regression-Key: codex-b-historical-filter-confirmation-v1-runtime-fix`。
 
 ### Verification
+
+- `tomorrow-v3-input-compatibility-v1`：领域与应用定向测试覆盖完整 fixture、字段缺失、单位错误、身份/截止/
+  主键/布局/hash 不一致、非冻结输入、生产权限拒绝、额外字段向前兼容和 port 单次只读调用；文档契约确认
+  B 波次完成但 15.1.38 整节及 15.1.35 仍保持阻塞。领域、应用、BaoStock/V3 文档及架构契约通过；
+  受影响文件 Ruff、format、mypy 和 `git diff --check` 通过。真实 BaoStock port/manifest 尚不存在，因此未
+  声称真实输入兼容或运行训练；本批未改依赖、入口、生产评分或 Web，全量、wheel 和浏览器门禁不适用。
 
 - `baostock-2000-v3-roadmap-consistency-v1`：完整 `tests/contract` 168 项通过；受影响的两个文档契约测试文件
   `ruff check` 与 `ruff format --check` 通过；活动权威文档的旧 1500 日命令、3000 日目标、`rolling_1500`、
@@ -3339,6 +3351,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- `tomorrow-v3-input-compatibility-v1`：当前只证明 B 的 fixture 消费边界，A 尚未提供真实 BaoStock v2
+  manifest/port，D 尚未集成 SDK、入口和进程控制，也未执行 2000 日全量下载；历史行业、资格和风险事实
+  `effective_at` 同样未证明。因此 15.1.38 整节仍为 `pending`，15.1.35 训练仍被阻塞，本批不构成覆盖、
+  收益、点时一致或生产授权证据。
 
 - `baostock-2000-v3-roadmap-consistency-v1`：本批只修订权威计划，尚未把 BaoStock 加入 `pyproject.toml`，
   也未实现/执行 2000 日下载。SDK 逐行接口的 Python 3.10–3.14 兼容性、停牌行语义、退市证券覆盖、许可

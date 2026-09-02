@@ -1984,11 +1984,20 @@ RSS 不超过 4GB。失败保留最近完整分片和 manifest，不删除可恢
 | Codex C | 只验证最新 200 日保持不可读取、日线来源不能声称点时一致，以及新 V3 留出身份与旧 15.1.32 隔离 | `baostock_holdout_isolation_contract` 及测试 | Codex C 不定义或重切数据集，不打开留出，不计算收益 |
 | Codex D | 集成 `[research]` 依赖、显式命令、进程池/锁/超时/取消/恢复、状态投影和共享文档；调用 A 的分片与合并服务并执行真实全量下载 | `trader-cli research-baostock-history --runtime-dir <仓库外绝对路径> --sessions 2000`；只读 status、最终 SQLite/manifest、全量摘要 | Codex D 不决定覆盖是否通过，不改内容 hash；普通启动、`check`、Web、bootstrap、生产调度或 `train-tomorrow` 不得隐式下载 |
 
+Codex B 波次 1 状态：已完成。`tomorrow_v3_input_compatibility_v1` 通过只读类型化 port 消费冻结输入描述，
+固定检查 `score_baostock_daily_core_v2`、截至 2026-08-31 的 2000 日身份、`(code, trade_date)` 主键、
+raw/qfq 同行、必需日线字段与单位、逐行 SHA-256 和父 manifest hash，并封存六个 Alpha 的名称与 ratio
+单位。报告只返回 `compatible|incompatible` 和有界原因，固定 `training_started=false`、
+`terminal_holdout_opened=false`、`production_authority=false`、`automatic_model_update=false`；额外供应商字段不会破坏消费兼容性，缺失
+或错单位的必需字段失败关闭。本批未遍历价格行、裁决覆盖、切分、读取收益或训练模型。A 的真实 port 和
+manifest 尚未形成，因此当前只有 fixture 通过，不能声称真实输入兼容；15.1.38 整节仍为 `pending`，
+15.1.35 继续 `blocked_by_15_1_38`。
+
 实施波次和退出条件固定为：
 
 | 波次 | Codex A | Codex B | Codex C | Codex D | 退出条件 |
 |---|---|---|---|---|---|
-| 1：契约 | 冻结同行 schema、分片/合并、覆盖分母和事实能力 | 验证特征消费 fixture | 验证留出隔离 fixture | 冻结 optional extra、CLI、路径、进程和状态 schema | hash、上限、失败关闭和 `production_authority=false` 全部通过，尚不联网 |
+| 1：契约 | 冻结同行 schema、分片/合并、覆盖分母和事实能力 | 已完成特征消费 fixture 与 hash 绑定兼容报告 | 验证留出隔离 fixture | 冻结 optional extra、CLI、路径、进程和状态 schema | hash、上限、失败关闭和 `production_authority=false` 全部通过，尚不联网 |
 | 2：实现 | 完成 SDK adapter、下载、checkpoint、审计和 manifest codec | 保持只读消费验证 | 保持留出关闭 | 接入单一显式命令、受控进程池和取消 | 单股/小批真实下载二次幂等；断网、超时、SDK 异常、篡改、重复和中断恢复测试通过 |
 | 3：全量下载 | 只读支持 provider 缺陷定位并裁决覆盖 | 不启动模型训练 | 保持终端留出关闭 | 执行最近 2000 个交易所开市日全 A 股下载、失败重试并调用 A 的确定性合并 | 最终 manifest 给出实际股票、应有/取得单元、全体/逐板/逐股覆盖、2000 日历、最新 200 日、失败数和全部 SHA-256 |
 | 4：研究交接 | 发布只读日线与历史事实能力 port，不改旧终态 | 只在两个父 manifest 合格时确认 V3 输入可消费 | 确认新旧留出身份隔离 | 汇总 `research-status`，不自动启动训练 | 两个父能力均合格时 15.1.35 变为 `pending`；历史事实不合格时变为 `blocked_by_historical_effective_facts` |

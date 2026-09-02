@@ -70,3 +70,18 @@ def test_baostock_plan_is_the_only_next_action_before_v3_training() -> None:
     assert "唯一下一执行章节：15.1.38" in strategy
     assert "15.1.35 | `blocked_by_15_1_38`" in strategy
     assert "15.1.37 | `control_only`" in strategy
+
+
+def test_codex_b_wave_one_has_a_read_only_hash_bound_input_contract() -> None:
+    strategy = (ROOT / "docs" / "recommendation-strategy.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs" / "software-business-design.md").read_text(encoding="utf-8")
+    section = strategy[strategy.index("#### 15.1.38") : strategy.index("### 15.2")]
+    domain_contract = ROOT / "src" / "trader" / "domain" / "research" / "tomorrow_v3_input_compatibility.py"
+    application_contract = ROOT / "src" / "trader" / "application" / "research" / "tomorrow_v3_input_compatibility.py"
+
+    assert "Codex B 波次 1 状态：已完成" in section
+    assert "tomorrow_v3_input_compatibility_v1" in section
+    assert "15.1.38 整节仍为 `pending`" in section
+    assert "tomorrow_v3_input_compatibility_v1" in design
+    assert domain_contract.is_file()
+    assert application_contract.is_file()

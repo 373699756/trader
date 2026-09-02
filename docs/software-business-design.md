@@ -1801,6 +1801,14 @@ BaoStock v2 日线能力只按下一段独立计划执行，不改写这个结�
 失败、停牌证据、最近 200 日隔离及全部 hash 必须共同进入 manifest；日线合格不得自动改变三策略旧 H1
 终态、打开留出、训练或取得生产权限。V3 只有在独立历史事实能力也通过后才可消费该日线父工件。
 
+Codex B 已封存 `tomorrow_v3_input_compatibility_v1` 只读消费契约。应用层只向未来 A 日线 port 请求一次
+冻结输入描述，不读取价格行；领域校验固定核对 `score_baostock_daily_core_v2`、来源截止、2000 日身份、
+`(code, trade_date)` 键、raw/qfq 同行、逐行 SHA-256、父 manifest hash，以及六个 Alpha 所需日线字段和
+单位。兼容报告绑定输入描述 hash 与父 manifest hash，固定训练未开始、终端留出未开启、无生产权限。
+报告同时固定 `automatic_model_update=false`，不得由兼容检查触发训练或 profile 变化。
+当前验证证据仅来自类型化 fixture；A 的真实 port/manifest、D 的入口与全量下载仍未完成，因此不得把
+fixture 结果投影为真实覆盖、训练 readiness、收益或第 15.1.38 节完成。
+
 Codex C 的显式 `scripts/codex_c_terminal_holdout.py` 只接受仓库外 Codex A 父工件目录，先校验 capability、
 标签预注册和 A terminal index 的父 hash，再通过 Today、Tomorrow、D25 类型化 holdout service 封存各自
 `report.json`，最后写入跨策略 `report.json`。父状态为 `historical_data_insufficient` 时只继承 hash 和原因，
