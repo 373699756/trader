@@ -129,9 +129,9 @@ class _RateLimitedBaoStockSdk:
         self,
         code: str,
         fields: str,
-        *,
         start_date: str,
         end_date: str,
+        *,
         frequency: str,
         adjustflag: str,
     ) -> BaoStockRowResult:
@@ -139,8 +139,8 @@ class _RateLimitedBaoStockSdk:
         return self._sdk.query_history_k_data_plus(
             code,
             fields,
-            start_date=start_date,
-            end_date=end_date,
+            start_date,
+            end_date,
             frequency=frequency,
             adjustflag=adjustflag,
         )

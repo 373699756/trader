@@ -41,8 +41,9 @@ class _Sdk:
             (("sh.600001", "A", "2020-01-01", "", "1", "1"),),
         )
 
-    def query_history_k_data_plus(self, code, fields, **kwargs):
+    def query_history_k_data_plus(self, code, fields, start_date, end_date, **kwargs):
         assert code == "sh.600001"
+        assert (start_date, end_date) == ("2026-08-29", "2026-08-30")
         adjustment = "3" if kwargs["adjustflag"] == "3" else "2"
         rows = (
             (
@@ -111,8 +112,8 @@ def test_sdk_queries_are_started_at_most_once_per_second() -> None:
     limited.query_history_k_data_plus(
         "sh.600001",
         "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg",
-        start_date="2026-08-29",
-        end_date="2026-08-30",
+        "2026-08-29",
+        "2026-08-30",
         frequency="d",
         adjustflag="3",
     )

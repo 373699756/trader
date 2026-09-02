@@ -127,9 +127,9 @@ class BaoStockSdkPort(Protocol):
         self,
         code: str,
         fields: str,
-        *,
         start_date: str,
         end_date: str,
+        *,
         frequency: str,
         adjustflag: str,
     ) -> BaoStockRowResult: ...
@@ -241,8 +241,8 @@ class BaoStockRowGateway:
         result = self._sdk.query_history_k_data_plus(
             security.source_code,
             _DAILY_FIELDS,
-            start_date=expected[0].isoformat(),
-            end_date=expected[-1].isoformat(),
+            expected[0].isoformat(),
+            expected[-1].isoformat(),
             frequency="d",
             adjustflag=adjustflag,
         )

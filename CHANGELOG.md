@@ -197,6 +197,10 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- `baostock-positional-query-compat-v1`：历史查询现在按 `/tmp/baostock_download_1500.py` 的调用形状传递
+  `start_date/end_date` 位置参数，避免 SDK 兼容实现只接受旧式位置参数时在查询阶段失败；并继续保留单 worker
+  和黑名单快速失败策略。该修复不改变 2000 日、raw/qfq 同键和 manifest 资格门禁。
+
 - `baostock-anonymous-request-rate-v1`：复核 `/tmp` 分片产物发现供应商登录成功后，历史查询在并发分片下集中
   返回黑名单错误；BaoStock runtime 默认 worker 从 2 收敛为 1，匹配旧脚本单进程请求形状，并对登录黑名单
   失败停止无效重试，避免继续放大供应商封禁。显式传入 2 个 worker 仍受原有上限约束。
@@ -263,6 +267,10 @@ All notable changes to this project are documented here.
   raw/qfq 两侧明确标记时才算取得，未知缺行不再推断为停牌。
 
 ### Verification
+
+- `baostock-positional-query-compat-v1`：严格位置参数 SDK 桩及 BaoStock gateway/runtime 定向测试通过，Ruff、
+  格式检查和 mypy 通过。2026-09-03 重新运行旧 `/tmp` 脚本（单股、1 日）仍返回供应商黑名单 `10001011`，因此
+  当前无法声称真实 1800/2000 日下载或训练输入已恢复。
 
 - `baostock-anonymous-request-rate-v1`：BaoStock runtime/application 定向测试、Ruff、格式检查和 mypy 通过；
   `/tmp` 分片数据库的脱敏错误统计显示历史请求阶段曾出现 `history:10001011`，当前匿名 `sessions=1` 探针仍
