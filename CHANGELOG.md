@@ -6,11 +6,24 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求继续执行推荐策略第 15.1.38 节 Codex D 未完成任务。本批接入 `[research]` 可选 BaoStock 依赖，新增
+  `research-baostock-history --runtime-dir <仓库外绝对路径> --sessions 1..2000` 显式入口及 `research-status`
+  状态投影；实现每股独立 WAL SQLite 分片、逐行 `next()/get_row_data()` 查询、最多两个子进程、60 秒墙钟、
+  最多两次重试、锁、取消、断点恢复、确定性合并和 SHA-256 manifest。基础 Web、启动、`check`、bootstrap、
+  `train-tomorrow` 均不导入或隐式下载 BaoStock。`Regression-Key: codex-d-baostock-history-integration-v1`。
+
 - 用户依据荐股策略要求执行 Codex B 未完成任务。本批完成第 15.1.38 节 B 波次 1 的只读输入消费契约：
   新增 `tomorrow_v3_input_compatibility_v1`，以类型化 port 核对 BaoStock v2 冻结描述的 2000 日身份、
   `(code, trade_date)` 主键、raw/qfq 同行、必需字段及单位、逐行 SHA-256 和父 manifest hash，并固定六个
   Alpha 名称/单位。报告只产生 `compatible|incompatible` 及有界原因，不读取价格行、覆盖率或收益，不切分、
   不训练、不打开留出、不授予生产权限。`Regression-Key: tomorrow-v3-input-compatibility-v1`。
+
+- 用户要求执行荐股策略第 15 节 Codex C 未完成任务。本批新增纯领域
+  `baostock_holdout_isolation_contract`：只消费未来由 Codex A 封存的类型化 manifest 元数据，逐项验证最新
+  200 日未被训练、确认或日线代理消费，拒绝 BaoStock 日线声明 14:50 点时一致，并固定新
+  `tomorrow_v3_point_in_time_holdout_v1` 与已完成第 15.1.32 节旧留出的身份和父 hash 隔离。审计不读取
+  行情、收益或模型，不定义切分且始终保持留出关闭和无生产权限。
+  `Regression-Key: codex-c-baostock-holdout-isolation-v1`。
 
 - `baostock-2000-v3-roadmap-consistency-v1`：新增未完成章节状态表、唯一 `pending` 执行项、BaoStock/V3
   非重叠所有权契约，以及 2000 条逻辑记录、raw/qfq 同行、全体/逐板/老股覆盖、逐股失败、SDK 子进程资源
@@ -163,6 +176,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- `codex-c-baostock-holdout-isolation-v1`：第 15.1.38 节此前只有人工可读的 Codex C 隔离要求，无法机器证明
+  A 的最新 200 日是否泄漏给三个日线阶段，也无法拒绝复用旧留出身份/hash 或伪称 14:50 点时一致。现以
+  不可变输入、受控 blocker、严格 SHA-256 和确定性审计 hash 固化该边界；第 15.1.38 整节仍为 `pending`，
+  不把局部契约完成误报为 A/B/D 工程或真实 2000 日下载完成。
+
 - 用户把 BaoStock 下载上限更新为每股最多 2000 条，并要求按 Review 建议消除计划矛盾。确认原因是原
   1500 日计划没有同步 V3 的 3000/1600 日目标、1000 日不可满足的四段切分、15.1.37/15.1.38 重复所有权、
   已完成 15.1.32 被未来 V3 重开、越权启用与标准发布前置条件冲突，以及软件设计仍描述旧 V1/V2/C3
@@ -206,11 +224,24 @@ All notable changes to this project are documented here.
 
 ### Verification
 
+- `codex-d-baostock-history-integration-v1`：BaoStock 逐行归一化、raw/qfq 同键合并、WAL 分片、请求参数/路径/
+  上限、CLI 显式入口和普通 CLI 懒加载契约定向测试通过；受影响文件 Ruff、mypy、`bash -n run.sh` 通过。
+  使用 `.venv` 中 BaoStock 0.9.30 执行一次 `--sessions 1` 真实小批探针，供应商登录返回
+  `unboundlocalerror` 类连接失败，CLI 输出有界 `failed` 状态且未生成数据行。`make format-check`、`make lint`、
+  `make type-check`、`make test`、`make package`、`bash -n run.sh` 和 `git diff --check` 通过；仓库外以
+  `pip --no-deps --target` 安装 wheel 后运行同一命令返回有界 `dependency_unavailable`。因此全量 2000 日下载、
+  95% 覆盖和历史 `effective_at` 能力仍未通过，浏览器门禁不适用，未授予生产权限。
+
 - `tomorrow-v3-input-compatibility-v1`：领域与应用定向测试覆盖完整 fixture、字段缺失、单位错误、身份/截止/
   主键/布局/hash 不一致、非冻结输入、生产权限拒绝、额外字段向前兼容和 port 单次只读调用；文档契约确认
   B 波次完成但 15.1.38 整节及 15.1.35 仍保持阻塞。领域、应用、BaoStock/V3 文档及架构契约通过；
   受影响文件 Ruff、format、mypy 和 `git diff --check` 通过。真实 BaoStock port/manifest 尚不存在，因此未
   声称真实输入兼容或运行训练；本批未改依赖、入口、生产评分或 Web，全量、wheel 和浏览器门禁不适用。
+
+- `codex-c-baostock-holdout-isolation-v1`：领域与 BaoStock 计划契约测试 23 项通过；连同 Tomorrow V3
+  文档及 V2 架构契约共 48 项通过。受影响的领域/测试文件 Ruff、format 和领域模块 mypy 通过；完整 diff
+  Review 与 `git diff --check` 通过。本批不接供应商、运行时、Web、依赖、构建或生产入口，因此真实下载、
+  `make test`、wheel 和浏览器验收不适用。
 
 - `baostock-2000-v3-roadmap-consistency-v1`：完整 `tests/contract` 168 项通过；受影响的两个文档契约测试文件
   `ruff check` 与 `ruff format --check` 通过；活动权威文档的旧 1500 日命令、3000 日目标、`rolling_1500`、
@@ -3380,6 +3411,11 @@ All notable changes to this project are documented here.
   manifest/port，D 尚未集成 SDK、入口和进程控制，也未执行 2000 日全量下载；历史行业、资格和风险事实
   `effective_at` 同样未证明。因此 15.1.38 整节仍为 `pending`，15.1.35 训练仍被阻塞，本批不构成覆盖、
   收益、点时一致或生产授权证据。
+
+- `codex-c-baostock-holdout-isolation-v1`：Codex A 的冻结 manifest/schema 与真实 2000 日数据尚未形成，本批
+  仅使用 1250 日确定性 fixture 证明隔离契约；未读取行情、收益或模型，也未执行确认、日线代理、影子比较
+  或新的 14:50 点时留出。上述真实研究继续受 A 数据/历史事实和 B 唯一 bundle 父 hash 阻塞；本批不构成
+  点时一致、收益改善或生产授权证据。
 
 - `baostock-2000-v3-roadmap-consistency-v1`：本批只修订权威计划，尚未把 BaoStock 加入 `pyproject.toml`，
   也未实现/执行 2000 日下载。SDK 逐行接口的 Python 3.10–3.14 兼容性、停牌行语义、退市证券覆盖、许可

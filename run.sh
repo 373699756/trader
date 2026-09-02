@@ -24,6 +24,7 @@ usage() {
     "  ./run.sh research-history        下载/续传历史归档后运行固定回测" \
     "  ./run.sh research-screen         依次运行并封存六项历史筛选/诊断" \
     "  ./run.sh train-tomorrow          从封存状态推导并连续运行可用 Tomorrow 训练阶段" \
+    "  ./run.sh research-baostock-history --runtime-dir /absolute/outside/path [--sessions 2000]" \
     "" \
     "所有命令都可追加 --profile v1|v2；未指定时为 V1。" \
     "" \
@@ -51,7 +52,7 @@ while (($#)); do
       SCORING_PROFILE="${1#--profile=}"
       shift
       ;;
-    help|-h|--help|serve|app|check|research-history|research-screen|train-tomorrow)
+    help|-h|--help|serve|app|check|research-history|research-screen|train-tomorrow|research-baostock-history)
       if ((MODE_SET)); then
         FORWARD_ARGS+=("$1")
       else
@@ -87,7 +88,7 @@ case "$MODE" in
   serve|app)
     COMMAND_KIND="server"
     ;;
-  check|research-history|research-screen|train-tomorrow)
+  check|research-history|research-screen|train-tomorrow|research-baostock-history)
     COMMAND_KIND="cli"
     ;;
   *)

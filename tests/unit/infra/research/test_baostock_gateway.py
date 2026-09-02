@@ -2,6 +2,7 @@ import pytest
 
 from trader.domain.research.baostock_daily import BaoStockDailySpec
 from trader.infra.research.baostock_daily import BaoStockRowGateway
+from trader.infra.research.baostock_history_runtime import _RateLimitedBaoStockSdk
 
 
 class _Result:
@@ -91,3 +92,27 @@ def test_gateway_consumes_only_baostock_row_iteration_boundary() -> None:
     assert batch.cells[0].unadjusted is not None
     assert batch.cells[0].unadjusted.pct_change == pytest.approx(0.0303)
     assert batch.cells[0].unadjusted.turnover == pytest.approx(0.012)
+
+
+def test_sdk_queries_are_started_at_most_once_per_second() -> None:
+    sdk = _Sdk()
+    now = [0.0]
+    delays: list[float] = []
+
+    def advance(seconds: float) -> None:
+        delays.append(seconds)
+        now[0] += seconds
+
+    limited = _RateLimitedBaoStockSdk(sdk, monotonic=lambda: now[0], sleep=advance)
+    limited.query_trade_dates(start_date="2026-08-29", end_date="2026-08-30")
+    limited.query_stock_basic()
+    limited.query_history_k_data_plus(
+        "sh.600001",
+        "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg",
+        start_date="2026-08-29",
+        end_date="2026-08-30",
+        frequency="d",
+        adjustflag="3",
+    )
+
+    assert delays == [1.0, 1.0]

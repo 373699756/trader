@@ -72,6 +72,23 @@ def test_baostock_plan_is_the_only_next_action_before_v3_training() -> None:
     assert "15.1.37 | `control_only`" in strategy
 
 
+def test_codex_c_baostock_holdout_isolation_contract_is_implemented_without_opening_holdout() -> None:
+    strategy = (ROOT / "docs" / "recommendation-strategy.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs" / "software-business-design.md").read_text(encoding="utf-8")
+    source = ROOT / "src" / "trader" / "domain" / "research" / "baostock_holdout_isolation.py"
+    section = strategy[strategy.index("#### 15.1.38") : strategy.index("### 15.2")]
+
+    assert source.is_file()
+    assert "Codex C 工程契约已完成" in section
+    assert "baostock_holdout_isolation_contract" in section
+    assert "score_tomorrow_historical_candidate_v1" in section
+    assert "tomorrow_v3_point_in_time_holdout_v1" in section
+    assert "不打开留出" in section
+    assert "production_authority=false" in section
+    assert "baostock_holdout_isolation_contract" in design
+    assert "terminal_holdout_opened=false" in design
+
+
 def test_codex_b_wave_one_has_a_read_only_hash_bound_input_contract() -> None:
     strategy = (ROOT / "docs" / "recommendation-strategy.md").read_text(encoding="utf-8")
     design = (ROOT / "docs" / "software-business-design.md").read_text(encoding="utf-8")
@@ -85,3 +102,16 @@ def test_codex_b_wave_one_has_a_read_only_hash_bound_input_contract() -> None:
     assert "tomorrow_v3_input_compatibility_v1" in design
     assert domain_contract.is_file()
     assert application_contract.is_file()
+
+
+def test_baostock_runtime_keeps_retry_rate_timeout_and_cancel_caps_executable() -> None:
+    runtime = (ROOT / "src/trader/infra/research/baostock_history_runtime.py").read_text(encoding="utf-8")
+    gateway = (ROOT / "src/trader/infra/research/baostock_daily.py").read_text(encoding="utf-8")
+
+    assert "ProcessPoolExecutor" not in runtime
+    assert "BAOSTOCK_CANCEL_GRACE_SECONDS = 10.0" in runtime
+    assert "BAOSTOCK_QUERY_INTERVAL_SECONDS = 1.0" in runtime
+    assert "request.retries" in runtime
+    assert "request.timeout_seconds" in runtime
+    assert ".terminate()" in runtime
+    assert ".get_data(" not in gateway

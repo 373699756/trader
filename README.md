@@ -45,6 +45,7 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 ./run.sh --profile v2
 ./run.sh research-history --workers 5
 ./run.sh research-screen
+./run.sh research-baostock-history --runtime-dir /absolute/path/outside/repository --sessions 2000
 ./run.sh help
 ```
 
@@ -53,6 +54,8 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 固定回测，`research-screen` 合并四项不可变筛选/诊断。离线研究不会随服务启动自动执行。底层
 `trader-cli performance-check` 仍可用 `--output` 保存报告或用 `--baseline` 执行 5% 相对回归门禁；它
 禁止外网并直接测量活动生产标准化、合并、三策略评分、overlay CAS、API/ETag/status、SSE 和 100 tick RSS。
+BaoStock 下载是独立研究命令，必须先安装 `trader-research-dashboard[research]`，并把运行目录指定为仓库外绝对路径；
+它只写日线分片、SQLite 和 manifest，不会被启动、`check`、Web 或 `train-tomorrow` 隐式调用。
 
 启动脚本只读取 `TRADER_HOST` 和 `TRADER_PORT`；旧 `HOST`/`PORT` 不再映射到 V2 进程。
 

@@ -2,24 +2,24 @@ import json
 from datetime import date, timedelta
 
 import pytest
-from trader.infra.research.baostock_v3_dataset import (
-    BaoStockV3DatasetArtifactConflictError,
-    BaoStockV3DatasetArtifactStore,
-)
 
 from trader.domain.research.baostock_daily import (
     BaoStockBoardCoverage,
     BaoStockCoverageAudit,
     BaoStockDailyManifest,
     BaoStockSourceVersions,
-    BaoStockV3LabelContract,
     BaoStockV3DatasetManifest,
-    build_baostock_v3_split,
+    BaoStockV3LabelContract,
     build_baostock_v3_dataset_manifest,
+    build_baostock_v3_split,
 )
 from trader.domain.research.historical_effective_facts import (
     baostock_effective_facts_probe,
     build_historical_effective_facts_audit,
+)
+from trader.infra.research.baostock_v3_dataset import (
+    BaoStockV3DatasetArtifactConflictError,
+    BaoStockV3DatasetArtifactStore,
 )
 
 

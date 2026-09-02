@@ -63,6 +63,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     performance.add_argument("--output", type=Path)
     performance.add_argument("--baseline", type=Path)
+    baostock = subparsers.add_parser(
+        "research-baostock-history",
+        help="Explicitly download and resume the BaoStock daily-history research archive.",
+    )
+    baostock.add_argument("--runtime-dir", required=True, type=Path)
+    baostock.add_argument("--sessions", type=int, choices=range(1, 2001), default=2000)
     subparsers.add_parser("research-status", help="Read immutable research coverage and capacity status.")
     subparsers.add_parser(
         "research-scoring-hot-path-baseline",
@@ -111,6 +117,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "research-baostock-history":
+        return _run_baostock_history(args.runtime_dir, args.sessions)
     if args.command == "train-tomorrow":
         _configure_tomorrow_training_resources()
     config_path = _absolute_config_path(args.config)
@@ -151,6 +159,33 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
     return _run_config_validation(runtime, profile_override)
+
+
+def _run_baostock_history(runtime_dir: Path, sessions: int) -> int:
+    from trader.application.research.baostock_history_runtime import BaoStockRuntimeRequest
+    from trader.infra.research.baostock_history_runtime import (
+        project_baostock_runtime_status,
+        run_baostock_history,
+    )
+
+    request = BaoStockRuntimeRequest(runtime_dir=runtime_dir, sessions=sessions)
+    try:
+        status = run_baostock_history(request, _repository_root_for_validation())
+    except ValueError as exc:
+        print(
+            json.dumps(
+                {
+                    "schema_version": "baostock_runtime_status_v1",
+                    "state": "invalid_request",
+                    "error": str(exc),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 2
+    print(json.dumps(project_baostock_runtime_status(status), ensure_ascii=False, sort_keys=True))
+    return 0 if status.state == "completed" else 1
 
 
 def _configure_tomorrow_training_resources() -> None:
@@ -295,6 +330,14 @@ def _absolute_config_path(raw_path: str) -> Path:
     if not path.is_absolute():
         raise SystemExit("configuration path must be absolute")
     return path.resolve()
+
+
+def _repository_root_for_validation() -> Path:
+    current = Path.cwd().resolve()
+    for candidate in (current, *current.parents):
+        if (candidate / "pyproject.toml").is_file() and (candidate / "src" / "trader").is_dir():
+            return candidate
+    return Path("/__trader_source_not_found__")
 
 
 if __name__ == "__main__":

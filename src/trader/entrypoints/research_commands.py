@@ -32,6 +32,7 @@ from trader.domain.research.score_r6_stability import SCORE_R6_STABILITY_SPEC
 from trader.domain.research.tomorrow_historical_p2 import TOMORROW_HISTORICAL_P2_SPEC
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
 from trader.infra.persistence.research_trace import SQLiteV2ResearchTraceStore
+from trader.infra.research.baostock_history_runtime import inspect_baostock_history, project_baostock_runtime_status
 from trader.infra.research.h1_point_in_time_archive import H1ArchiveConflictError, SQLiteH1PointInTimeArchive
 from trader.infra.research.history_archive import SQLiteHistoricalArchive
 from trader.infra.research.score_r6_artifacts import ScoreR6ArtifactConflictError, ScoreR6ArtifactStore
@@ -137,6 +138,7 @@ def run_research_command(
         tomorrow_holdout = _read_tomorrow_profile_holdout_status(runtime)
         tomorrow_risk = _read_tomorrow_historical_risk_status(runtime)
         tomorrow_research = _read_tomorrow_research_status(runtime)
+        baostock_status = project_baostock_runtime_status(inspect_baostock_history(runtime.runtime_dir))
         print(
             json.dumps(
                 {
@@ -153,6 +155,7 @@ def run_research_command(
                     "tomorrow_profile_holdout": tomorrow_holdout,
                     "tomorrow_v2_historical_risk": tomorrow_risk,
                     "tomorrow_research": tomorrow_research,
+                    "baostock_history": baostock_status,
                     "recorded_trade_dates": [value.isoformat() for value in dates],
                     "retired_research": (
                         {

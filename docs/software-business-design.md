@@ -1549,6 +1549,7 @@ python3 -m venv .venv
 | 日常 | `./run.sh check` | 依次校验配置、只读投影研究状态并运行所选档位的离线性能门禁 |
 | 离线研究 | `./run.sh research-history [--workers 1..5]` | 下载/断点续传独立历史日线归档，然后只读运行固定训练/验证回测 |
 | 离线研究 | `./run.sh research-screen` | 依次运行 R6 历史、R6 日线、R6 稳定性、Tomorrow P2、V1/V2 H0 留出和 V2 严重亏损概率六项不可变筛选/诊断 |
+| 离线研究 | `./run.sh research-baostock-history --runtime-dir <仓库外绝对路径> --sessions 1..2000` | 显式安装 `[research]` extra 后，按固定窗口下载/续传 BaoStock 共同日线；只写仓库外研究目录和只读 manifest |
 | 离线训练 | `./run.sh train-tomorrow` | 不接受阶段或 `run_id` 参数；一次调用连续完成父工件已满足的单一 V3 预注册阶段，支持原子断点续跑，永不自动 promotion 或激活 V3 |
 
 当前三个组合命令及 `train-tomorrow` 均由 `trader-cli` 单一编排器
@@ -1785,8 +1786,8 @@ OOF/model 以及生产/自动更新权限。当前真实审计已使三个策略
 `historical_data_insufficient` 收口，因此不得启动该旧 H1 身份的全量下载、训练、确认或终端留出；新的
 BaoStock v2 日线能力只按下一段独立计划执行，不改写这个结论。
 
-荐股策略第 15.1.38 节规划 `score_baostock_daily_core_v2` 作为仓库外离线共同日线来源；当前仍为计划中，
-尚未加入活动依赖或入口，上一版 1500 日计划没有正式数据工件且已被替代。未来只允许安装 wheel 的
+荐股策略第 15.1.38 节原计划中，现已完成 D 的依赖、显式入口、分片生命周期、状态投影和 A 数据端口集成；真实全量下载仍受
+供应商登录能力阻塞，尚未形成合格全量 manifest。只允许安装 wheel 的
 `[research]` optional extra 后显式执行
 `trader-cli research-baostock-history --runtime-dir <仓库外绝对路径> --sessions 2000`。规范库以代码日期为
 唯一行，在同一行保存未复权/前复权字段，每只股票最多 2000 个逻辑记录；新股、退市股和来源不足股票按
@@ -1806,8 +1807,18 @@ Codex B 已封存 `tomorrow_v3_input_compatibility_v1` 只读消费契约。应�
 `(code, trade_date)` 键、raw/qfq 同行、逐行 SHA-256、父 manifest hash，以及六个 Alpha 所需日线字段和
 单位。兼容报告绑定输入描述 hash 与父 manifest hash，固定训练未开始、终端留出未开启、无生产权限。
 报告同时固定 `automatic_model_update=false`，不得由兼容检查触发训练或 profile 变化。
-当前验证证据仅来自类型化 fixture；A 的真实 port/manifest、D 的入口与全量下载仍未完成，因此不得把
-fixture 结果投影为真实覆盖、训练 readiness、收益或第 15.1.38 节完成。
+当前验证证据包含类型化 fixture 和一次真实小批探针；供应商登录返回 `unboundlocalerror` 类失败，
+因此 A 的全量 manifest、覆盖率和历史事实能力仍未合格，不得把入口成功或 fixture 结果投影为真实覆盖、训练 readiness、
+收益或第 15.1.35 节解阻塞。
+
+Codex C 已提供纯领域 `baostock_holdout_isolation_contract`，但未接入 CLI、Web、bootstrap 或生产路径。
+该审计只读取 Codex A 将来封存的类型化 manifest 元数据，验证留出日期恰为完整有效日期的最新 200 日，且
+训练、确认和日线代理三个消费集合均未读取它们；它不自行定义或重切数据集，也不读取行情、收益或模型。
+BaoStock 日线锚点只能是 `15:00_daily_close`，不得声称 14:50 point-in-time 一致。旧留出身份固定为
+`score_tomorrow_historical_candidate_v1`，新留出身份固定为 `tomorrow_v3_point_in_time_holdout_v1`；新留出
+只引用新的日线和切分 manifest hash，不能复用旧留出 hash。审计以受控 blocker 失败关闭，输出始终为
+`terminal_holdout_opened=false`、`point_in_time_parity=false`、`production_authority=false`。真实确认、收益
+留出和影子比较仍等待 A 的合格数据/历史事实 manifest 与 B 的唯一 bundle，不能由该隔离结论提前启动。
 
 Codex C 的显式 `scripts/codex_c_terminal_holdout.py` 只接受仓库外 Codex A 父工件目录，先校验 capability、
 标签预注册和 A terminal index 的父 hash，再通过 Today、Tomorrow、D25 类型化 holdout service 封存各自

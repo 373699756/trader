@@ -362,66 +362,9 @@ class BaoStockCoverageAudit:
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        for value in (self.spec_hash, self.calendar_hash, self.universe_hash):
-            if _SHA256.fullmatch(value) is None:
-                raise ValueError("BaoStock coverage parent hash is invalid")
-        counts = (
-            self.calendar_sessions,
-            self.universe_count,
-            self.expected_cells,
-            self.obtained_cells,
-            self.full_window_stock_count,
-            self.full_window_stocks_at_95_percent,
-            self.duplicate_rows,
-            self.null_rows,
-            self.out_of_window_rows,
-            self.future_rows,
-        )
-        if any(value < 0 for value in counts) or self.obtained_cells > self.expected_cells:
-            raise ValueError("BaoStock coverage counts are invalid")
-        rates = (
-            self.all_cell_coverage,
-            self.full_window_stock_success_ratio,
-            *(item.coverage_ratio for item in self.board_coverages),
-        )
-        if any(not math.isfinite(value) or not 0 <= value <= 1 for value in rates):
-            raise ValueError("BaoStock coverage ratio is invalid")
-        if tuple(item.board for item in self.board_coverages) != _BOARDS:
-            raise ValueError("BaoStock board coverage order is invalid")
-        if tuple(item.code for item in self.code_coverages) != tuple(sorted(item.code for item in self.code_coverages)):
-            raise ValueError("BaoStock code coverage order is invalid")
-        if self.universe_count != len(self.code_coverages):
-            raise ValueError("BaoStock coverage universe count is inconsistent")
-        if (
-            sum(item.expected_cells for item in self.board_coverages) != self.expected_cells
-            or sum(item.obtained_cells for item in self.board_coverages) != self.obtained_cells
-            or sum(item.expected_cells for item in self.code_coverages) != self.expected_cells
-            or sum(item.obtained_cells for item in self.code_coverages) != self.obtained_cells
-        ):
-            raise ValueError("BaoStock coverage aggregate counts are inconsistent")
-        expected_ratio = self.obtained_cells / self.expected_cells if self.expected_cells else 0.0
-        expected_full_ratio = (
-            self.full_window_stocks_at_95_percent / self.full_window_stock_count
-            if self.full_window_stock_count
-            else 0.0
-        )
-        if not math.isclose(self.all_cell_coverage, expected_ratio) or not math.isclose(
-            self.full_window_stock_success_ratio, expected_full_ratio
-        ):
-            raise ValueError("BaoStock coverage aggregate ratios are inconsistent")
-        if not 0 <= self.full_window_stocks_at_95_percent <= self.full_window_stock_count <= self.universe_count:
-            raise ValueError("BaoStock full-window coverage counts are inconsistent")
-        expected_failed = tuple(
-            item.code
-            for item in self.code_coverages
-            if item.expected_cells and item.coverage_ratio < BAOSTOCK_FAILED_CODE_COVERAGE
-        )
-        if tuple(sorted(set(self.failed_codes))) != expected_failed:
-            raise ValueError("BaoStock failed code coverage is inconsistent")
-        if self.calendar_sessions <= 0 or self.calendar_first_date > self.calendar_last_date:
-            raise ValueError("BaoStock coverage calendar range is invalid")
-        if self.status not in ("coverage_ready", "historical_data_insufficient"):
-            raise ValueError("BaoStock coverage status is invalid")
+        _validate_coverage_identity(self)
+        _validate_coverage_counts(self)
+        _validate_coverage_ratios(self)
         reasons = tuple(sorted(set(self.failure_reasons)))
         if (self.status == "coverage_ready") == bool(reasons):
             raise ValueError("BaoStock coverage status and reasons are inconsistent")
@@ -432,17 +375,99 @@ class BaoStockCoverageAudit:
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
 
-def build_baostock_coverage_audit(
-    spec: BaoStockDailySpec,
+def _validate_coverage_identity(value: BaoStockCoverageAudit) -> None:
+    if any(_SHA256.fullmatch(item) is None for item in (value.spec_hash, value.calendar_hash, value.universe_hash)):
+        raise ValueError("BaoStock coverage parent hash is invalid")
+    if tuple(item.board for item in value.board_coverages) != _BOARDS:
+        raise ValueError("BaoStock board coverage order is invalid")
+    codes = tuple(item.code for item in value.code_coverages)
+    if codes != tuple(sorted(codes)) or value.universe_count != len(codes):
+        raise ValueError("BaoStock code coverage identity is inconsistent")
+    if value.calendar_sessions <= 0 or value.calendar_first_date > value.calendar_last_date:
+        raise ValueError("BaoStock coverage calendar range is invalid")
+    if value.status not in ("coverage_ready", "historical_data_insufficient"):
+        raise ValueError("BaoStock coverage status is invalid")
+
+
+def _validate_coverage_counts(value: BaoStockCoverageAudit) -> None:
+    counts = (
+        value.calendar_sessions,
+        value.universe_count,
+        value.expected_cells,
+        value.obtained_cells,
+        value.full_window_stock_count,
+        value.full_window_stocks_at_95_percent,
+        value.duplicate_rows,
+        value.null_rows,
+        value.out_of_window_rows,
+        value.future_rows,
+    )
+    if any(item < 0 for item in counts) or value.obtained_cells > value.expected_cells:
+        raise ValueError("BaoStock coverage counts are invalid")
+    expected = sum(item.expected_cells for item in value.board_coverages)
+    obtained = sum(item.obtained_cells for item in value.board_coverages)
+    code_expected = sum(item.expected_cells for item in value.code_coverages)
+    code_obtained = sum(item.obtained_cells for item in value.code_coverages)
+    if (expected, obtained, code_expected, code_obtained) != (
+        value.expected_cells,
+        value.obtained_cells,
+        value.expected_cells,
+        value.obtained_cells,
+    ):
+        raise ValueError("BaoStock coverage aggregate counts are inconsistent")
+    if not 0 <= value.full_window_stocks_at_95_percent <= value.full_window_stock_count <= value.universe_count:
+        raise ValueError("BaoStock full-window coverage counts are inconsistent")
+
+
+def _validate_coverage_ratios(value: BaoStockCoverageAudit) -> None:
+    rates = (
+        value.all_cell_coverage,
+        value.full_window_stock_success_ratio,
+        *(item.coverage_ratio for item in value.board_coverages),
+    )
+    if any(not math.isfinite(item) or not 0 <= item <= 1 for item in rates):
+        raise ValueError("BaoStock coverage ratio is invalid")
+    expected_ratio = value.obtained_cells / value.expected_cells if value.expected_cells else 0.0
+    full_ratio = (
+        value.full_window_stocks_at_95_percent / value.full_window_stock_count
+        if value.full_window_stock_count
+        else 0.0
+    )
+    if not math.isclose(value.all_cell_coverage, expected_ratio) or not math.isclose(
+        value.full_window_stock_success_ratio, full_ratio
+    ):
+        raise ValueError("BaoStock coverage aggregate ratios are inconsistent")
+    expected_failed = tuple(
+        item.code
+        for item in value.code_coverages
+        if item.expected_cells and item.coverage_ratio < BAOSTOCK_FAILED_CODE_COVERAGE
+    )
+    if tuple(sorted(set(value.failed_codes))) != expected_failed:
+        raise ValueError("BaoStock failed code coverage is inconsistent")
+
+
+@dataclass(frozen=True)
+class _CoverageSummary:
+    board_expected: tuple[tuple[BaoStockBoard, int], ...]
+    board_obtained: tuple[tuple[BaoStockBoard, int], ...]
+    code_coverages: tuple[BaoStockCodeCoverage, ...]
+    expected_total: int
+    obtained_total: int
+    full_window: int
+    full_window_success: int
+    failed_codes: tuple[str, ...]
+
+
+def _summarize_coverage(
     calendar: BaoStockCalendar,
-    universe: tuple[BaoStockSecurity, ...],
+    securities: tuple[BaoStockSecurity, ...],
     batches: tuple[BaoStockCodeBatch, ...],
-) -> BaoStockCoverageAudit:
-    securities = tuple(sorted(universe, key=lambda item: item.code))
-    if len({item.code for item in securities}) != len(securities):
-        raise ValueError("BaoStock coverage universe contains duplicate codes")
+) -> _CoverageSummary:
+    universe_codes = {item.code for item in securities}
     by_code = {item.code: item for item in batches}
-    if len(by_code) != len(batches) or any(code not in {item.code for item in securities} for code in by_code):
+    if len(universe_codes) != len(securities):
+        raise ValueError("BaoStock coverage universe contains duplicate codes")
+    if len(by_code) != len(batches) or not set(by_code) <= universe_codes:
         raise ValueError("BaoStock coverage batches do not match the universe")
     expected_by_board: dict[BaoStockBoard, int] = {board: 0 for board in _BOARDS}
     obtained_by_board: dict[BaoStockBoard, int] = {board: 0 for board in _BOARDS}
@@ -475,21 +500,24 @@ def build_baostock_coverage_audit(
                 expected_count > 0 and ratio >= BAOSTOCK_FAILED_CODE_COVERAGE,
             )
         )
-    board_rates = tuple(
-        BaoStockBoardCoverage(
-            board,
-            expected_by_board[board],
-            obtained_by_board[board],
-            obtained_by_board[board] / expected_by_board[board] if expected_by_board[board] else 0.0,
-        )
-        for board in _BOARDS
+    return _CoverageSummary(
+        tuple((board, expected_by_board[board]) for board in _BOARDS),
+        tuple((board, obtained_by_board[board]) for board in _BOARDS),
+        tuple(code_coverages),
+        expected_total,
+        obtained_total,
+        full_window,
+        full_window_success,
+        tuple(failed_codes),
     )
-    overall = obtained_total / expected_total if expected_total else 0.0
-    old_stock_ratio = full_window_success / full_window if full_window else 0.0
-    duplicate_rows = sum(item.duplicate_rows for item in batches)
-    null_rows = sum(item.null_rows for item in batches)
-    out_of_window_rows = sum(item.out_of_window_rows for item in batches)
-    future_rows = sum(item.future_rows for item in batches)
+
+
+def _coverage_scope_reasons(
+    spec: BaoStockDailySpec,
+    calendar: BaoStockCalendar,
+    overall: float,
+    board_rates: tuple[BaoStockBoardCoverage, ...],
+) -> tuple[str, ...]:
     reasons: list[str] = []
     if not spec.authoritative or len(calendar.open_dates) != BAOSTOCK_MAX_SESSIONS:
         reasons.append("authoritative_calendar_below_2000")
@@ -499,22 +527,61 @@ def build_baostock_coverage_audit(
         reasons.append("all_expected_cell_coverage_below_95_percent")
     if any(item.expected_cells and item.coverage_ratio < BAOSTOCK_MIN_COVERAGE for item in board_rates):
         reasons.append("board_expected_cell_coverage_below_95_percent")
-    if not full_window:
+    if len(calendar.open_dates) < BAOSTOCK_POINT_IN_TIME_RESERVE:
+        reasons.append("point_in_time_reserve_below_200")
+    return tuple(reasons)
+
+
+def _coverage_integrity_reasons(
+    summary: _CoverageSummary,
+    batches: tuple[BaoStockCodeBatch, ...],
+) -> tuple[str, ...]:
+    reasons: list[str] = []
+    old_stock_ratio = summary.full_window_success / summary.full_window if summary.full_window else 0.0
+    if not summary.full_window:
         reasons.append("full_window_stock_population_missing")
     elif old_stock_ratio < BAOSTOCK_MIN_COVERAGE:
         reasons.append("full_window_stock_completeness_below_95_percent")
-    if duplicate_rows:
-        reasons.append("duplicate_rows_present")
-    if null_rows:
-        reasons.append("null_rows_present")
-    if out_of_window_rows:
-        reasons.append("out_of_window_rows_present")
-    if future_rows:
-        reasons.append("future_rows_present")
+    anomalies = (
+        (sum(item.duplicate_rows for item in batches), "duplicate_rows_present"),
+        (sum(item.null_rows for item in batches), "null_rows_present"),
+        (sum(item.out_of_window_rows for item in batches), "out_of_window_rows_present"),
+        (sum(item.future_rows for item in batches), "future_rows_present"),
+    )
+    reasons.extend(reason for count, reason in anomalies if count)
     if any(item.failure_reasons for item in batches):
         reasons.append("code_batch_failures_present")
-    if len(calendar.open_dates) < BAOSTOCK_POINT_IN_TIME_RESERVE:
-        reasons.append("point_in_time_reserve_below_200")
+    return tuple(reasons)
+
+
+def build_baostock_coverage_audit(
+    spec: BaoStockDailySpec,
+    calendar: BaoStockCalendar,
+    universe: tuple[BaoStockSecurity, ...],
+    batches: tuple[BaoStockCodeBatch, ...],
+) -> BaoStockCoverageAudit:
+    securities = tuple(sorted(universe, key=lambda item: item.code))
+    summary = _summarize_coverage(calendar, securities, batches)
+    expected_by_board = dict(summary.board_expected)
+    obtained_by_board = dict(summary.board_obtained)
+    board_rates = tuple(
+        BaoStockBoardCoverage(
+            board,
+            expected_by_board[board],
+            obtained_by_board[board],
+            obtained_by_board[board] / expected_by_board[board] if expected_by_board[board] else 0.0,
+        )
+        for board in _BOARDS
+    )
+    overall = summary.obtained_total / summary.expected_total if summary.expected_total else 0.0
+    old_stock_ratio = summary.full_window_success / summary.full_window if summary.full_window else 0.0
+    duplicate_rows = sum(item.duplicate_rows for item in batches)
+    null_rows = sum(item.null_rows for item in batches)
+    out_of_window_rows = sum(item.out_of_window_rows for item in batches)
+    future_rows = sum(item.future_rows for item in batches)
+    reasons = _coverage_scope_reasons(spec, calendar, overall, board_rates) + _coverage_integrity_reasons(
+        summary, batches
+    )
     return BaoStockCoverageAudit(
         spec_hash=spec.content_hash,
         calendar_hash=calendar.content_hash,
@@ -523,15 +590,15 @@ def build_baostock_coverage_audit(
         calendar_first_date=calendar.open_dates[0],
         calendar_last_date=calendar.open_dates[-1],
         universe_count=len(securities),
-        expected_cells=expected_total,
-        obtained_cells=obtained_total,
+        expected_cells=summary.expected_total,
+        obtained_cells=summary.obtained_total,
         all_cell_coverage=overall,
         board_coverages=board_rates,
-        code_coverages=tuple(code_coverages),
-        full_window_stock_count=full_window,
-        full_window_stocks_at_95_percent=full_window_success,
+        code_coverages=summary.code_coverages,
+        full_window_stock_count=summary.full_window,
+        full_window_stocks_at_95_percent=summary.full_window_success,
         full_window_stock_success_ratio=old_stock_ratio,
-        failed_codes=tuple(failed_codes),
+        failed_codes=summary.failed_codes,
         duplicate_rows=duplicate_rows,
         null_rows=null_rows,
         out_of_window_rows=out_of_window_rows,
@@ -604,27 +671,7 @@ class BaoStockV3Split:
     def __post_init__(self) -> None:
         if _SHA256.fullmatch(self.parent_manifest_hash) is None:
             raise ValueError("BaoStock V3 split parent hash is invalid")
-        ordered_groups = (
-            self.development_dates,
-            self.first_embargo_dates,
-            self.confirmation_dates,
-            self.second_embargo_dates,
-            self.daily_proxy_holdout_dates,
-            self.point_in_time_holdout_dates,
-        )
-        flattened = tuple(day for group in ordered_groups for day in group)
-        if flattened != tuple(sorted(set(flattened))):
-            raise ValueError("BaoStock V3 split dates must be unique and chronological")
-        if len(self.development_dates) < 600 or len(self.confirmation_dates) < 200:
-            raise ValueError("BaoStock V3 development or confirmation dates are insufficient")
-        if len(self.daily_proxy_holdout_dates) < 200 or len(self.point_in_time_holdout_dates) != 200:
-            raise ValueError("BaoStock V3 holdout dates are insufficient")
-        if len(self.first_embargo_dates) != 5 or len(self.second_embargo_dates) != 5:
-            raise ValueError("BaoStock V3 split requires two five-day embargoes")
-        if len(self.early_stopping_dates) != 20 or len(self.calibration_dates) != 20:
-            raise ValueError("BaoStock V3 split requires fixed early-stop and calibration dates")
-        if self.model_fit_dates + self.early_stopping_dates + self.calibration_dates != self.development_dates:
-            raise ValueError("BaoStock V3 development sub-splits are invalid")
+        _validate_v3_split_dates(self)
         if self.training_anchor != "15:00_daily_close" or self.point_in_time_parity:
             raise ValueError("BaoStock V3 split must remain a daily-close proxy")
         if self.terminal_holdout_opened or self.production_authority:
@@ -632,6 +679,30 @@ class BaoStockV3Split:
         if self.schema_version != "tomorrow_v3_baostock_split_v1":
             raise ValueError("BaoStock V3 split schema is invalid")
         object.__setattr__(self, "content_hash", canonical_hash(self))
+
+
+def _validate_v3_split_dates(value: BaoStockV3Split) -> None:
+        ordered_groups = (
+            value.development_dates,
+            value.first_embargo_dates,
+            value.confirmation_dates,
+            value.second_embargo_dates,
+            value.daily_proxy_holdout_dates,
+            value.point_in_time_holdout_dates,
+        )
+        flattened = tuple(day for group in ordered_groups for day in group)
+        if flattened != tuple(sorted(set(flattened))):
+            raise ValueError("BaoStock V3 split dates must be unique and chronological")
+        if len(value.development_dates) < 600 or len(value.confirmation_dates) < 200:
+            raise ValueError("BaoStock V3 development or confirmation dates are insufficient")
+        if len(value.daily_proxy_holdout_dates) < 200 or len(value.point_in_time_holdout_dates) != 200:
+            raise ValueError("BaoStock V3 holdout dates are insufficient")
+        if len(value.first_embargo_dates) != 5 or len(value.second_embargo_dates) != 5:
+            raise ValueError("BaoStock V3 split requires two five-day embargoes")
+        if len(value.early_stopping_dates) != 20 or len(value.calibration_dates) != 20:
+            raise ValueError("BaoStock V3 split requires fixed early-stop and calibration dates")
+        if value.model_fit_dates + value.early_stopping_dates + value.calibration_dates != value.development_dates:
+            raise ValueError("BaoStock V3 development sub-splits are invalid")
 
 
 def build_baostock_v3_split(

@@ -84,7 +84,7 @@ class BaoStockSdkPort(Protocol):
 
     def query_stock_basic(self) -> BaoStockRowResult: ...
 
-    def query_history_k_data_plus(
+    def query_history_k_data_plus(  # noqa: PLR0913 - exact third-party SDK signature
         self,
         code: str,
         fields: str,
@@ -332,6 +332,10 @@ class SQLiteBaoStockDailyShard:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._create_schema()
 
+    @property
+    def path(self) -> Path:
+        return self._path
+
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._path)
         connection.execute("PRAGMA journal_mode=WAL")
@@ -474,6 +478,13 @@ class SQLiteBaoStockDailyShard:
                 "ON CONFLICT(code) DO UPDATE SET state='failed', error_code=excluded.error_code, batch_hash=NULL",
                 (code, error_code),
             )
+
+    def clear_failure(self, spec: BaoStockDailySpec, code: str) -> None:
+        context = self._require_context(spec)
+        if code not in {item.code for item in context.universe}:
+            raise ValueError("BaoStock checkpoint code is outside the registered universe")
+        with self._connect() as connection:
+            connection.execute("DELETE FROM checkpoints WHERE code=? AND state='failed'", (code,))
 
     def snapshot(self, spec: BaoStockDailySpec) -> BaoStockShardSnapshot:
         try:

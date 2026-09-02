@@ -134,6 +134,29 @@ def audit_baostock_holdout_isolation(
 ) -> BaoStockHoldoutIsolationAudit:
     """Audit frozen split metadata without defining a split or opening a holdout."""
 
+    blockers = _daily_holdout_blockers(value)
+    blockers.extend(_holdout_identity_blockers(value))
+
+    return BaoStockHoldoutIsolationAudit(
+        contract_identity=BAOSTOCK_HOLDOUT_ISOLATION_CONTRACT,
+        input_content_hash=value.content_hash,
+        daily_manifest_hash=value.daily_manifest_hash,
+        split_manifest_hash=value.split_manifest_hash,
+        legacy_holdout_identity=value.legacy_holdout_identity,
+        new_holdout_identity=value.new_holdout_identity,
+        source_anchor=value.source_anchor,
+        reserved_date_count=len(value.point_in_time_reserved_dates),
+        status="blocked" if blockers else "isolated",
+        blockers=tuple(blockers),
+        point_in_time_parity=False,
+        terminal_holdout_opened=False,
+        production_authority=False,
+    )
+
+
+def _daily_holdout_blockers(
+    value: BaoStockHoldoutIsolationInput,
+) -> list[BaoStockHoldoutIsolationBlocker]:
     blockers: list[BaoStockHoldoutIsolationBlocker] = []
     if value.daily_identity != BAOSTOCK_DAILY_IDENTITY:
         blockers.append(BaoStockHoldoutIsolationBlocker.DAILY_IDENTITY_MISMATCH)
@@ -154,6 +177,13 @@ def audit_baostock_holdout_isolation(
         blockers.append(BaoStockHoldoutIsolationBlocker.DAILY_SOURCE_CLAIMS_POINT_IN_TIME)
     if value.point_in_time_holdout_opened:
         blockers.append(BaoStockHoldoutIsolationBlocker.POINT_IN_TIME_HOLDOUT_ALREADY_OPENED)
+    return blockers
+
+
+def _holdout_identity_blockers(
+    value: BaoStockHoldoutIsolationInput,
+) -> list[BaoStockHoldoutIsolationBlocker]:
+    blockers: list[BaoStockHoldoutIsolationBlocker] = []
     if value.legacy_holdout_identity != LEGACY_HOLDOUT_IDENTITY:
         blockers.append(BaoStockHoldoutIsolationBlocker.LEGACY_HOLDOUT_IDENTITY_MISMATCH)
     if value.new_holdout_identity != POINT_IN_TIME_HOLDOUT_IDENTITY:
@@ -163,22 +193,7 @@ def audit_baostock_holdout_isolation(
     required_parent_hashes = {value.daily_manifest_hash, value.split_manifest_hash}
     if not required_parent_hashes <= set(value.new_holdout_parent_hashes):
         blockers.append(BaoStockHoldoutIsolationBlocker.REQUIRED_PARENT_HASH_MISSING)
-
-    return BaoStockHoldoutIsolationAudit(
-        contract_identity=BAOSTOCK_HOLDOUT_ISOLATION_CONTRACT,
-        input_content_hash=value.content_hash,
-        daily_manifest_hash=value.daily_manifest_hash,
-        split_manifest_hash=value.split_manifest_hash,
-        legacy_holdout_identity=value.legacy_holdout_identity,
-        new_holdout_identity=value.new_holdout_identity,
-        source_anchor=value.source_anchor,
-        reserved_date_count=len(value.point_in_time_reserved_dates),
-        status="blocked" if blockers else "isolated",
-        blockers=tuple(blockers),
-        point_in_time_parity=False,
-        terminal_holdout_opened=False,
-        production_authority=False,
-    )
+    return blockers
 
 
 def _require_strictly_increasing(values: tuple[date, ...], *, required: bool) -> None:
