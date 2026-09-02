@@ -126,7 +126,7 @@ class _LoginSdk:
         self.credentials: tuple[str, str] | None = None
         self.api_key = ""
 
-    def login(self, *, user_id: str, password: str) -> SimpleNamespace:
+    def login(self, user_id: str = "anonymous", password: str = "123456") -> SimpleNamespace:
         self.credentials = (user_id, password)
         return SimpleNamespace(error_code=self.error_code)
 
@@ -146,6 +146,20 @@ def test_login_uses_explicit_credentials_and_optional_api_key(monkeypatch: pytes
     assert sdk.api_key == "research-api-key"
 
 
+def test_login_preserves_legacy_anonymous_call_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BAOSTOCK_USER_ID", raising=False)
+    monkeypatch.delenv("BAOSTOCK_PASSWORD", raising=False)
+    monkeypatch.delenv("BAOSTOCK_API_KEY", raising=False)
+
+    class _AnonymousOnlySdk:
+        def login(self) -> SimpleNamespace:
+            return SimpleNamespace(error_code="0")
+
+    sdk = _AnonymousOnlySdk()
+
+    _login(sdk)  # type: ignore[arg-type]
+
+
 def test_login_maps_blacklist_and_sdk_socket_bug_to_controlled_codes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("BAOSTOCK_USER_ID", raising=False)
     monkeypatch.delenv("BAOSTOCK_PASSWORD", raising=False)
@@ -155,7 +169,7 @@ def test_login_maps_blacklist_and_sdk_socket_bug_to_controlled_codes(monkeypatch
         _login(_LoginSdk("10001011"))  # type: ignore[arg-type]
 
     class _BrokenLoginSdk(_LoginSdk):
-        def login(self, *, user_id: str, password: str) -> SimpleNamespace:
+        def login(self, user_id: str = "anonymous", password: str = "123456") -> SimpleNamespace:
             raise UnboundLocalError("mySockect")
 
     with pytest.raises(RuntimeError, match="supplier_login_transport_failed"):

@@ -191,6 +191,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- `baostock-anonymous-login-compat-v1`：对比用户提供的旧下载脚本后，确认其无凭据路径调用的是无参数
+  `bs.login()`。研究 runtime 现仅在显式配置用户/密码时传递参数；匿名默认路径（含仅配置 API key 的路径）
+  保留 SDK 原生无参数调用形状，同时继续使用有界凭据/API key 错误映射，不记录敏感值。该兼容修复不绕过
+  BaoStock 服务端账号/IP 黑名单。
+
 - `codex-d-research-v9-baostock-gate-v1`：诊断脚本不再按已退役的 v5 `active_research` 结构解析 v9 状态；现按
   公开 v9 投影白名单输出 BaoStock 状态、V3 输入/生产 blockers，并在任一 blocker 存在时失败关闭。
   BaoStock 登录读取显式环境凭据/API key，服务端黑名单、网络拒绝、超时、SDK 传输异常和黑名单响应分别映射为
@@ -246,6 +251,11 @@ All notable changes to this project are documented here.
   raw/qfq 两侧明确标记时才算取得，未知缺行不再推断为停牌。
 
 ### Verification
+
+- `baostock-anonymous-login-compat-v1`：BaoStock gateway/runtime 及诊断定向测试通过，受影响文件 Ruff
+  check/format-check 通过。真实网络下旧 `/tmp` 下载脚本与修复后的 `download_history --sessions 1` 均返回
+  `supplier_login_failed_blacklisted`（供应商错误码 10001011 的脱敏映射），证明当前阻塞是供应商匿名账号/IP
+  状态而非登录参数或逐行查询实现；按计划未执行小批重试或 `--sessions 2000`。
 
 - `codex-d-research-v9-baostock-gate-v1`：v9 诊断/登录定向测试 23 项通过，受影响文件 Ruff format/check
   和 BaoStock runtime mypy 通过；真实网络权限下先执行 `--sessions 1`，BaoStock 返回受控
