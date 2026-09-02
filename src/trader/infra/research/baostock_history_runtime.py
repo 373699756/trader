@@ -313,7 +313,7 @@ def _fetch_context(
                 process.join(timeout=1.0)
                 return response.context, ""
             last_failure = response.failure_reason or "supplier_context_failed"
-            if last_failure == "dependency_unavailable":
+            if last_failure in {"dependency_unavailable", "supplier_login_failed_blacklisted"}:
                 break
         except (EOFError, OSError):
             last_failure = "supplier_context_process_failed"
@@ -605,7 +605,7 @@ def _start_worker(
                 last_failure = (
                     response.failure_reason if isinstance(response, _WorkerReady) else "worker_protocol_invalid"
                 )
-                if last_failure == "dependency_unavailable":
+                if last_failure in {"dependency_unavailable", "supplier_login_failed_blacklisted"}:
                     break
         except (EOFError, OSError):
             last_failure = "worker_process_failed"

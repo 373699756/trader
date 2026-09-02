@@ -25,7 +25,9 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 class BaoStockRuntimeRequest:
     runtime_dir: Path
     sessions: int = 2000
-    workers: int = 2
+    # BaoStock's anonymous service blacklists bursty/concurrent history calls.
+    # Keep the old single-process download shape as the safe default.
+    workers: int = 1
     timeout_seconds: float = 60.0
     retries: int = 2
 
