@@ -1784,6 +1784,13 @@ H1 免费来源能力探针使用 `score_h1_source_capability_audit_v2`，优先
 OOF/model 以及生产/自动更新权限。当前真实审计已使三个策略、标签、残差账本和 C3 均以
 `historical_data_insufficient` 收口，因此不得启动全量 H1 下载、训练、确认或终端留出。
 
+荐股策略第 15.1.38 节规划 `score_baostock_daily_core_v1` 作为仓库外离线共同日线来源；当前仍为计划中，
+尚未加入活动依赖或入口。未来只允许显式
+`trader-cli research-baostock-history --runtime-dir <仓库外绝对路径> --sessions 1500` 装配 BaoStock gateway、
+分片 SQLite/checkpoint、确定性合并和覆盖审计，普通启动、`check`、Web、`train-tomorrow`、bootstrap 和
+生产调度均不得隐式触发。该数据源只能提供前复权/未复权日线核心，不能构造历史 11:20/14:50 锚点或
+补齐历史 `effective_at`；日线合格不得自动改变三策略 H1 终态、打开留出、训练或取得生产权限。
+
 Codex C 的显式 `scripts/codex_c_terminal_holdout.py` 只接受仓库外 Codex A 父工件目录，先校验 capability、
 标签预注册和 A terminal index 的父 hash，再通过 Today、Tomorrow、D25 类型化 holdout service 封存各自
 `report.json`，最后写入跨策略 `report.json`。父状态为 `historical_data_insufficient` 时只继承 hash 和原因，

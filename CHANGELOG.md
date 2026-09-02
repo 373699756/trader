@@ -6,6 +6,14 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求把 BaoStock 作为历史数据下载源集成计划写入荐股权威策略，并按 Codex A/B/C/D 分工。本批新增
+  第 15.1.38 节，固定 `score_baostock_daily_core_v1`、截至 2026-08-31 的最近 1500 个交易所开市日、
+  前复权/未复权共同日线、仓库外分片 SQLite/checkpoint/合并 manifest 及逐股 SHA-256；覆盖分母改为股票
+  从上市日至退市前的应有代码-日期单元，避免要求新股伪造上市前行或通过排除失败股票制造覆盖。A 负责
+  SDK/下载/归档，B 负责数据质量与 95% 覆盖审计，C 负责切分/200 日保留/V3 readiness，D 负责依赖、显式
+  CLI、分片编排、合并和最终集成。明确 BaoStock 日线不能证明历史 11:20/14:50 或完整 `effective_at`，
+  不得据此开启三策略终端留出或获得生产权限。`Regression-Key: baostock-1500-daily-roadmap-v1`。
+
 - 用户要求合并 `recommendation-strategy.md` 与行业 LightGBM 计划。本批将 Tomorrow 新方案统一为 V3 单一
   申万一级行业 Ridge + LightGBM 50/50 离线模型：C3 仅为训练阶段，不再创建 V3 stacking 或读取 V1/V2
   运行时预测；老 V2 predictor、bundle、hash、历史和冻结记录保持封存不变。策略文档补齐 3,000 日数据门禁、
@@ -168,6 +176,12 @@ All notable changes to this project are documented here.
   `Regression-Key: codex-b-historical-filter-confirmation-v1-runtime-fix`。
 
 ### Verification
+
+- `baostock-1500-daily-roadmap-v1`：新增文档契约测试固定数据身份、1500 日、截止日、双复权口径、四路
+  所有权、新股应有交易日分母、点时否定边界和无生产权限；本批新增及相邻 V3 文档契约 6 项、测试文件
+  Ruff/format、文档 diff Review 与 `git diff --check` 通过。本批仅封存计划，未修改依赖/CLI/运行代码，
+  未启动全量下载，故全量 Python、wheel、浏览器和真实覆盖门禁不适用；真实下载与 95% 覆盖仍须在
+  第 15.1.38 节波次三留证。
 
 - `tomorrow-v3-pull-conflict-resolution-v1`：`git pull --rebase` 已将分支同步到最新上游；冲突
   文件无遗留 marker，过时的独立代理入口/实现/测试未被重新引入。Tomorrow V3 文档契约
@@ -3298,6 +3312,12 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- `baostock-1500-daily-roadmap-v1`：BaoStock SDK 使用全局 socket，且 0.9.3 的 `get_data()` 依赖 pandas
+  已删除的 `DataFrame.append()`；后续实现必须使用逐行接口、隔离进程分片并验证 Python 3.10-3.14。
+  BaoStock 服务可用性、许可/个人研究使用边界、全市场 95% 应有单元覆盖、退市证券完整性和确定性复权仍
+  待真实全量审计。即使日线覆盖通过，历史 11:20/14:50、行业/风险/证券状态 `effective_at` 缺口仍会使
+  Today/Tomorrow/D25 保持 `historical_data_insufficient`；本计划不构成收益或生产可用性证明。
 
 - `codex-b-tomorrow-joint-insufficient-v1`：联合器现在可以如实封存父工件不足，但尚无 V1/V2/C3 同日原始
   预测、OOF、联合收益或 Holm 证据。该终态不授予 V3 或生产权限，未来必须使用新的完整 C3 父工件和预注册

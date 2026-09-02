@@ -1902,6 +1902,60 @@ bootstrap、公共 port、配置、资源注册和 `CHANGELOG.md` 只能由 Code
 运行自己的 unit/contract、Ruff 和 mypy；集成后运行受影响的架构、配置、打包、冻结、SSE 和桌面验收。任何
 生产模型变化必须同时更新本文、`docs/software-business-design.md`、契约测试和 `CHANGELOG.md`。
 
+#### 15.1.38 BaoStock 1500 日共同日线下载与四路实施计划
+
+状态：计划已封存，工程与全量下载尚未开始。本节把 BaoStock 作为新的
+`score_baostock_daily_core_v1` 离线日线来源，目标是下载截至 `2026-08-31` 的最近 1500 个交易所开市日，
+为第 15.1.25 和 15.1.35 节补充共同日线核心；不得覆盖既有 H1 数据不足终态，真实新批次必须使用新
+manifest/hash。BaoStock 只拥有日线、交易日历和其明确返回的证券基础字段，不提供可证明的历史 11:20 或
+14:50 快照，也不能单独证明历史行业、风险事实和证券状态的完整 `effective_at`。因此它可以解除日线深度
+阻塞并支持 V3 的 `15:00 daily_close` 代理研究，但不得据此把 Today、Tomorrow 或 D25 改为
+`historical_point_in_time_parity`，不得打开第 15.1.31 至 15.1.33 节终端留出。
+
+数据身份固定保存同一日期窗的前复权和未复权 OHLCV、成交额、前收盘、涨跌幅、换手率、交易状态、复权
+标记、交易日历及股票代码、名称、上市日、退市日和来源版本。下载只使用 BaoStock SDK 的逐行
+`next()`/`get_row_data()` 边界，不使用其依赖已删除 `DataFrame.append()` 的 `get_data()`；SDK、Python 和
+依赖版本写入 manifest。`pyproject.toml` 是 BaoStock 依赖版本的唯一权威，临时 pip 安装、`/tmp` 脚本和
+手工 CSV 不属于工程入口或可审计工件。
+
+1500 日是固定交易所日历窗口，不是要求新上市股票伪造上市前数据。股票在某日的应有交易日从
+`max(窗口首日, 上市日)` 起算，到 `min(窗口末日, 退市日前一有效日)` 结束；停牌日由交易状态显式保留，
+不能当作下载缺失。覆盖报告必须同时给出全窗口老股的 1500 日完整率、新上市股票自上市日起的应有交易日
+完整率、全体应有代码-日期单元覆盖率、逐板覆盖、空值/重复/越界/未来行和失败原因。覆盖通过至少要求
+应有代码-日期单元达到 95%、交易日历完整 1500 日、所有成功行日期不晚于来源截止日，并永久保留最新
+200 日；不得用当前仍上市股票的逐股日期集合求交集，也不得因排除新股、退市股、停牌股或失败股票制造
+100% 覆盖。是否满足 H1 点时资格仍由三策略各自的锚点和 `effective_at` manifest 独立判定。
+
+权威存储位于用户显式指定的仓库外运行目录。每个下载分片使用独立 SQLite 和 WAL，按代码提交 checkpoint；
+中断后只续传未完成或显式失败项，相同来源行和参数幂等，不同内容冲突失败关闭。合并器按代码稳定顺序生成
+唯一 SQLite、规范 JSON manifest 和 SHA-256，不把数据库、WAL、Parquet、日志或供应商响应提交到 Git。
+BaoStock 登录、查询、分页和退出分别设置有界超时/重试、速率限制和失败码；进程级分片必须有固定上限，
+不得让多个线程共享 SDK 全局 socket。失败保留最近完整分片和 manifest，不删除可恢复数据，不回填 0、
+上一日值或其它供应商值，也不触发生产行情 fallback。
+
+四路所有权如下；共享文件仍只由 Codex D 集成：
+
+| 工作流 | 完整责任 | 独占输出与验收 | 明确禁止 |
+|---|---|---|---|
+| Codex A | 定义 BaoStock 类型化 gateway、交易日历/股票池/日线值对象、前复权与未复权归一化、逐行 SDK adapter、分片 SQLite 和可续传下载应用 | `baostock_daily*` 领域/应用/基础设施模块及同名测试；输出逐分片数据库、下载状态、逐股内容 hash 和来源版本 | 不改 `pyproject.toml`、CLI、`run.sh`、共享文档；不构造 11:20/14:50；不写生产历史缓存 |
+| Codex B | 独立实现数据质量与覆盖审计：应有交易日、IPO/退市/停牌语义、字段单位、重复/缺口、前复权/未复权一致性、跨股票交易日历和 95% 门禁 | `baostock_daily_audit*` 及测试；输出规范覆盖报告、失败原因、可消费日线 manifest hash | 不下载第二份数据、不训练模型、不把新股不足 1500 行判为供应商失败、不放宽门禁 |
+| Codex C | 使用 A/B 的封存 manifest 验证 1500 日时序切分、5 日 embargo、最新 200 日保留、V3 日线代理输入和三策略点时缺口 | `baostock_research_readiness*` 及测试；输出按 Today/Tomorrow/D25/V3 分开的 readiness 与父 hash | 不读取未封存分片、不打开终端留出、不计算或查看新收益、不把日线代理写成点时通过 |
+| Codex D | 集成 `baostock>=0.9.3,<0.10` 依赖、显式下载命令、进程分片/合并/锁/取消/恢复、状态投影、配置和最终文档；执行真实全量下载及打包验收 | `trader-cli research-baostock-history --runtime-dir <仓库外绝对路径> --sessions 1500`；只读 status、最终 SQLite/manifest、全量执行摘要 | 普通启动、`check`、Web 或 `train-tomorrow` 不得隐式下载；不接 bootstrap/生产调度；不自动训练、发布或 promotion |
+
+实施波次和退出条件固定为：
+
+| 波次 | Codex A | Codex B | Codex C | Codex D | 退出条件 |
+|---|---|---|---|---|---|
+| 1：契约 | 冻结 gateway、值对象、错误和分片 schema | 冻结覆盖分母、复权和缺口规则 | 冻结 readiness、切分和点时否定边界 | 冻结依赖、CLI、路径、锁、状态 schema | fixture 契约、hash、失败关闭和 `production_authority=false` 全部通过，尚不联网 |
+| 2：实现 | 完成 SDK adapter、下载、checkpoint 和分片 store | 完成只读审计和 manifest codec | 完成只读 readiness 投影 | 接入单一显式命令、受控进程池、合并和取消 | 单股/小批真实下载二次幂等；断网、SDK 异常、篡改、重复和中断恢复测试通过 |
+| 3：全量下载 | 只读支持 provider 缺陷定位 | 增量审计已完成分片 | 保持终端留出关闭 | 执行最近 1500 个交易所开市日全 A 股下载、失败重试和确定性合并 | 最终 manifest 给出实际股票、应有/取得单元、覆盖率、1500 日历、最新 200 日、失败数和全部 SHA-256 |
+| 4：研究接线 | 发布只读日线 port，不改既有终态 | 封存日线质量终态 | 只在父 hash 合格时封存 V3 日线代理 readiness；三策略继续独立等待锚点 | 汇总 `research-status`，不自动启动训练 | 日线合格只解除日线阻塞；缺少 11:20/14:50 或历史 `effective_at` 时三策略仍为 `historical_data_insufficient` |
+
+每路先运行定向 unit/component/contract、Ruff 和 mypy。Codex D 集成依赖、CLI、进程生命周期、SQLite 与
+包入口后属于高风险批次，必须运行 `make format-check`、`make lint`、`make type-check`、`make test`、
+`make package`，并从仓库外安装 wheel 验证命令可用；本批不改 Web，桌面浏览器门禁不适用。真实下载证据
+只能报告脱敏计数、日期范围、版本、错误类别和 hash，不记录股票价格、完整供应商载荷或个人路径。
+
 ### 15.2 活动发布门禁
 
 自动验证至少覆盖：
