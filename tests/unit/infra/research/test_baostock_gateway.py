@@ -4,7 +4,7 @@ import pytest
 
 from trader.domain.research.baostock_daily import BaoStockDailySpec
 from trader.infra.research.baostock_daily import BaoStockRowGateway
-from trader.infra.research.baostock_history_runtime import _RateLimitedBaoStockSdk, _login
+from trader.infra.research.baostock_history_runtime import _login, _RateLimitedBaoStockSdk
 
 
 class _Result:

@@ -1930,8 +1930,8 @@ API/SSE、冻结恢复和发布门禁。任一父数据不足或拒绝都必须�
 #### 15.1.38 BaoStock 2000 日共同日线下载与四路实施计划
 
 状态：`pending`，且是当前唯一下一执行章节；Codex C 工程契约已完成，D 的依赖、显式入口、分片生命周期、状态投影已完成，
-但供应商登录失败，A 的权威全量下载与合格 manifest 尚未完成。2026-09-02 的显式探针中，`--sessions 1`
-返回 `supplier_login_failed_unboundlocalerror`；`--sessions 2000` 在外部 I/O 前因本机可用空间低于 30GB
+但供应商登录失败，A 的权威全量下载与合格 manifest 尚未完成。2026-09-02 的最新显式探针中，`--sessions 1`
+返回 `supplier_login_transport_failed`；`--sessions 2000` 在外部 I/O 前因本机可用空间低于 30GB
 返回 `resource_blocked/disk_below_30gb`（实测约 8.85GiB），因此没有创建全量运行目录或研究工件。
 上一版 1500 日计划未生成正式数据工件，现由新的 `score_baostock_daily_core_v2` 取代。目标是截至
 `2026-08-31` 的最近 2000 个交易所

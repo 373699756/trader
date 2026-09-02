@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户本轮要求依据策略文档执行 Codex B 未完成任务。B 的波次 1 输入兼容契约及既有数据不足收口均已完成；
+  由于 Codex A 尚无真实 2000 日合格 manifest，本轮未启动 V3 训练、候选、收益或终端留出。同步校正文档中的
+  最新实测状态：`download_history --sessions 1` 返回 `supplier_login_transport_failed`，
+  `--sessions 2000` 在外部 I/O 前因 `disk_below_30gb` 阻塞；15.1.38 继续为 `pending`，15.1.35 继续为
+  `blocked_by_15_1_38`，生产权限和自动更新保持关闭。`Regression-Key: codex-b-blocked-by-baostock-v3-v2`。
+
 - 用户要求先修复 Codex D 运行诊断和 BaoStock 登录阻塞。本批将统一 `research` profile 适配到现有
   `v2_research_readiness_v9`，只读投影 `baostock_history`、Tomorrow V3 blockers 和
   `production_authority=false`，不新增 `research-status` 状态源或读取 V1/V2 预测。
@@ -191,6 +197,13 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- `baostock-anonymous-request-rate-v1`：复核 `/tmp` 分片产物发现供应商登录成功后，历史查询在并发分片下集中
+  返回黑名单错误；BaoStock runtime 默认 worker 从 2 收敛为 1，匹配旧脚本单进程请求形状，并对登录黑名单
+  失败停止无效重试，避免继续放大供应商封禁。显式传入 2 个 worker 仍受原有上限约束。
+
+- `codex-b-blocked-by-baostock-v3-v2`：修正 BaoStock gateway 定向测试的私有导入排序，使当前分支的 Ruff
+  门禁可重复通过；不改变测试语义或供应商调用边界。
+
 - `baostock-anonymous-login-v2`：按用户指定的 `/tmp/baostock_download_1500.py` 收敛 BaoStock 登录实现，
   runtime 统一直接调用 SDK 原生无参数 `login()`，移除用户名、密码和 API key 分支；查询继续使用逐行
   `next()/get_row_data()`。该实现不绕过 BaoStock 服务端账号/IP 黑名单。
@@ -250,6 +263,11 @@ All notable changes to this project are documented here.
   raw/qfq 两侧明确标记时才算取得，未知缺行不再推断为停牌。
 
 ### Verification
+
+- `baostock-anonymous-request-rate-v1`：BaoStock runtime/application 定向测试、Ruff、格式检查和 mypy 通过；
+  `/tmp` 分片数据库的脱敏错误统计显示历史请求阶段曾出现 `history:10001011`，当前匿名 `sessions=1` 探针仍
+  在登录阶段返回 `supplier_login_failed_blacklisted`，因此未执行小批或 `sessions=2000`，供应商封禁解除前无法
+  证明真实下载成功。
 
 - `baostock-anonymous-login-v2`：BaoStock gateway/runtime 及诊断定向测试通过，受影响文件 Ruff
   check/format-check 通过。真实网络下旧 `/tmp` 下载脚本与修复后的 `download_history --sessions 1` 均返回

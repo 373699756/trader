@@ -1776,8 +1776,8 @@ OOF/model 以及生产/自动更新权限。当前真实审计已使三个策略
 BaoStock v2 日线能力只按下一段独立计划执行，不改写这个结论。
 
 荐股策略第 15.1.38 节原计划中，现已完成 D 的依赖、显式入口、分片生命周期、状态投影和 A 数据端口集成；真实全量下载仍受
-供应商登录能力和本机资源阻塞，尚未形成合格全量 manifest。2026-09-02 显式探针中，`--sessions 1` 返回
-`supplier_login_failed_unboundlocalerror`；`--sessions 2000` 在外部 I/O 前因可用空间低于 30GB 返回
+供应商登录能力和本机资源阻塞，尚未形成合格全量 manifest。2026-09-02 最新显式探针中，`--sessions 1` 返回
+`supplier_login_transport_failed`；`--sessions 2000` 在外部 I/O 前因可用空间低于 30GB 返回
 `resource_blocked/disk_below_30gb`，实测 `/tmp` 所在文件系统约 8.85GiB 可用，未创建全量运行目录或研究工件。只允许安装 wheel 的
 `[research]` optional extra 后显式执行
 `trader-cli download_history --runtime-dir <仓库外绝对路径> --sessions 2000`。规范库以代码日期为
