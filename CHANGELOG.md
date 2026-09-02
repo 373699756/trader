@@ -138,6 +138,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 用户要求先拉取远端并解决冲突。本批将本地 `feat(research): add isolated 640-day close proxy`
+  重放到最新上游时确认，该独立 H0 Ridge 代理已被新的 Tomorrow V3 单一行业
+  Ridge/LightGBM 50/50 权威契约整体取代，因此冲突解决为保留上游唯一 `train-tomorrow`
+  入口并跳过过时提交；同步修正远端提交遗留的旧四路/发布措辞契约断言。
+
 - `codex-a-h1-capability-audit-v2`：能力探针改为逐来源失败隔离，供应商 TLS/连接/载荷失败不再丢弃其它
   来源的成功证据；`score_h1_source_capability_audit_v2` 以类型化 `probe_failures` 进入不可变 hash，
   继续传递到三策略残差和 C3 数据不足原因。执行脚本先直连、失败时使用同一 `requests` 栈的系统代理
@@ -163,6 +168,11 @@ All notable changes to this project are documented here.
   `Regression-Key: codex-b-historical-filter-confirmation-v1-runtime-fix`。
 
 ### Verification
+
+- `tomorrow-v3-pull-conflict-resolution-v1`：`git pull --rebase` 已将分支同步到最新上游；冲突
+  文件无遗留 marker，过时的独立代理入口/实现/测试未被重新引入。Tomorrow V3 文档契约
+  4 项、`./run.sh help` 和 `git diff --check` 通过；本批仅修正同步冲突及文档契约测试，
+  不改活动模型、配置、运行时评分或 Web，因此全量、wheel 和浏览器门禁不适用。
 
 - `codex-b-tomorrow-joint-insufficient-v1`：联合器数据不足终态、固定 V1/V2/C3 父 profile 顺序、预测/模型/
   Holm 未建模约束、B 批次 hash 绑定定向测试通过；受影响领域/应用/测试 Ruff、mypy、format、全量 pytest、
