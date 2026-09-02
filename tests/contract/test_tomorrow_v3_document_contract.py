@@ -8,24 +8,24 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_daily_close_training_contract_has_one_authoritative_owner() -> None:
     strategy = (ROOT / "docs" / "recommendation-strategy.md").read_text(encoding="utf-8")
 
-    assert "本节及第 15.1.36 节是日线训练、联合评分、工件、命令和本机" in strategy
+    assert "本节与第 15.1.36 节是训练、工件、命令和资源方案的唯一权威" in strategy
     assert "资源方案的唯一权威" in strategy
     assert not (ROOT / "docs" / "trade.md").exists()
     assert "`trade.md`" not in strategy
 
 
-def test_v3_fuses_raw_predictions_without_activating_a_production_profile() -> None:
+def test_v3_is_a_single_offline_industry_model_without_stacking() -> None:
     strategy = (ROOT / "docs" / "recommendation-strategy.md").read_text(encoding="utf-8")
     model_port = (ROOT / "src" / "trader" / "application" / "ports" / "tomorrow_model.py").read_text(encoding="utf-8")
 
     required_contract = (
-        "V1/V2/C3 同批原始预测",
-        "联合权重必须非负且总和为 1",
-        "允许 V2 权重精确收缩为 0",
-        "然后且只映射一次 `base_score`",
-        "最新至少 200 个共同有效交易日必须",
-        "永久保留给第 15.1.32 节的 14:50 点时终端留出",
-        "过滤证据不完整的股票仍不进入 V3 推理",
+        "V3 是新的唯一 Tomorrow 模型",
+        "C3 只表示其离线训练阶段",
+        "Ridge/LightGBM 50/50",
+        "不读取 V1/V2/C3 运行时预测",
+        "不做投票或 stacking",
+        "最新至少 200 个共同有效交易日保留",
+        "`point_in_time_parity=false`",
         "`automatic_model_update=false`",
     )
     assert all(value in strategy for value in required_contract)
@@ -50,7 +50,7 @@ def test_all_unfinished_research_has_four_isolated_owners_and_one_public_command
         "report.json",
         "model.json",
         "evidence/",
-        "Codex D 编排工程已完成",
+        "Codex D",
         "不得自动 promotion",
         "共享文件",
     )
@@ -71,7 +71,7 @@ def test_implemented_training_command_does_not_pre_authorize_v3() -> None:
     strategy = (ROOT / "docs" / "recommendation-strategy.md").read_text(encoding="utf-8")
     model_port = (ROOT / "src" / "trader" / "application" / "ports" / "tomorrow_model.py").read_text(encoding="utf-8")
 
-    assert "Codex D 编排工程已经完成" in strategy
+    assert "独立高风险批次" in strategy
     assert "独立高风险发布批次" in strategy
     assert 'TomorrowScoringProfile = Literal["v1", "v2"]' in model_port
     assert 'Literal["v1", "v2", "v3"]' not in model_port

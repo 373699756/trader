@@ -1,12 +1,12 @@
 # 荐股策略文档
 
-版本：v2（活动 Tomorrow 模型由 `tomorrow_scoring_profile=v1|v2` 选择，默认 `v1`，运行身份由有效配置 SHA-256 生成）
+版本：V3 研究候选（老 V2 作为 `legacy` 封存；活动 Tomorrow 仍由 `tomorrow_scoring_profile=v1|v2` 选择，默认 `v1`；V3 需人工授权后才可新增）
 
 引擎：`engine_review28_2026_07`
 
 融合：`fusion_local68_deepseek32`
 
-状态：活动策略契约；V2-only 工程与发布门禁已验收，正式 0.2.0 release 尚未声明
+状态：活动策略契约；V2-only 工程与发布门禁已验收；V3 行业 Ridge + LightGBM 方案仅为离线研究候选，正式 0.2.0 release 尚未声明
 
 本文是候选、过滤、因子、评分、风险、DeepSeek、融合、动作、排名和策略验收的唯一
 权威。产品、架构、时间线、发布、API、运维和工程路线以
@@ -1815,221 +1815,92 @@ MAE/ATR20、换手、容量、集中度、市场状态和失败原因；不得�
 工程失败。线上 outcome 继续只用于正式推荐历史和运行监控，不进入本路线训练或参数更新；当前始终保持
 `automatic_model_update=false`。
 
-#### 15.1.35 Tomorrow 日线收盘代理训练分支
+#### 15.1.35 Tomorrow V3 单一行业模型离线训练
 
-状态：Codex D 编排工程已完成；`train-tomorrow` 已提供资源探针、不可变工件图、输入 hash 派生 `run_id`、
-原子检查点、多 run 隔离、连续阶段推进、Parquet 证据分区、终态 `report.json`/`model.json`、研究状态和
-生产阻塞审计。命令和 `research-status` 先通过类型化 port 执行 Codex A 的只读 H1 元数据与标签预注册
-前置检查，并绑定预注册批次 SHA-256；Tomorrow 覆盖不足时在资源探针前报告具体数据原因，不封存空标签
-工件。覆盖就绪后才进入既有资源探针及 handoff 状态机。Codex A 的真实来源能力审计已以
-`historical_data_insufficient` 收口，未生成 C3 OOF 或模型；B/C 的完整组合回放、Holm 和两级历史评价
-因此不得运行。缺少当前阶段 handoff 时命令以受控
-blocker 停止，不伪造候选或打开留出。
-Codex B 的 V1/V2/C3 原始预测联合器已具备独立的
-`tomorrow_joint_insufficient_terminal_v1` 数据不足终态；当前仅封存父 hash 和原因，不生成原始预测、联合
-模型或 Holm 统计，待新的完整 C3 父工件后另立真实研究批次。
-本节及第 15.1.36 节是日线训练、联合评分、工件、命令和本机
-资源方案的唯一权威，不再维护迁移索引或第二套训练说明。本分支研究身份固定另立
-`score_tomorrow_daily_close_challenger_v1`，不得使用 P1/P2 名称、覆盖 P2 的
-`historical_rejected` 报告或把现有人工 V1/V2 改写为训练控制组之外的身份。训练只使用交易日 `D` 的
-完整前复权收盘日线，以 `D+1` 收盘相对同日合格 A 股等权基准的成本后净超额作为标签，固定标记
-`proxy_anchor=15:00_close` 和 `production_authority=false`。该分支不能产生
-`historical_point_in_time_parity`，本分支自身的通过终态只能是 `historical_daily_close_proxy_validated`。
+状态：研究方案重构中；老 V2 predictor、bundle、hash、配置语义、历史和冻结记录全部封存且不修改。
+V3 是新的唯一 Tomorrow 模型；C3 只表示其离线训练阶段，不产生独立 profile，不训练二层联合器。
+本节与第 15.1.36 节是训练、工件、命令和资源方案的唯一权威。
 
-V1/V2/V3 的关系固定为“冻结对照 + 联合挑战”，不是三个分数的叠加或投票：
+`./run.sh train-tomorrow` 是唯一公开入口。一次命令形成一个由输入 manifest 和 hash 派生的 `run_id`，允许
+在同一离线批次内执行固定 walk-forward、早停、确认和终端留出；临时模型仅供验证，最终每个合格行业只封存
+一份 V3 模型。相同输入幂等，不同内容冲突失败，任何阶段不得自动 promotion、在线训练、调参、激活或回退。
 
-| 版本 | 固定角色 | 可改变内容 | 当前生产权限 |
+V3 使用最近最多 3,000 个完整交易日的原始/前复权 OHLCV、成交额、交易日历、证券资格、硬过滤事实和历史
+申万一级行业。行业归属必须满足 `effective_at <= trade_date`，不得用当前行业回填历史。每个行业至少需要
+1,000 个有效交易日、开发 600 日、确认 200 日、终端留出 200 日、开发训练行 20,000 行和 95% 点时覆盖；
+不足行业封存 `historical_data_insufficient`，不使用全局、相邻行业或旧 V2 回退。当前 H1 能力上限仍为每股
+1,600 日；扩展至 3,000 日前必须先完成独立来源能力审计并提升 manifest/schema 版本。
+
+训练人口只包含决策当时通过一级永久资格、二级动态硬过滤、过滤证据完整且六项特征完整的股票日。基础
+Alpha 固定为前复权 1/3/5 日收益和 20/40/60 日 skip-5 残差动量；残差依次去除市场、稳定板块、历史有效
+申万行业和板内对数 20 日平均成交额暴露。波动、下行方差、ATR、回撤和 Amihud 只用于风险、成本、容量和
+诊断。标签固定为 `(close[D+1] / close[D] - 1) - eligible_universe_equal_weight_return[D+1] - round_trip_cost`；
+标签未成熟、停牌、异常或基准不完整时记录 `label_pending`，禁止用 0 或中性值填充。20bp 为主要口径、
+50bp 为必须门禁、100bp 为压力测试。
+
+每个行业训练 Ridge 和固定浅层 LightGBM，并以 50%/50% 形成唯一集成，再做行业仿射校准。LightGBM 参数
+固定为 `objective=regression_l2`、`learning_rate=0.05`、`max_depth=3`、`num_leaves=7`、
+`min_data_in_leaf=20`、`num_boost_round=200`、`early_stopping_rounds=20`、`max_bin=63`、
+`deterministic=true`、`num_threads=1`，禁止按行业自由调参。训练段采用最旧 60%/确认 20%/最新 20% 切分，
+边界各保留 5 日 embargo，开发阶段执行 5 折 expanding walk-forward；末 20 日仅用于早停，随后 20 日仅用于
+校准，均早于终端留出。若比较 `expanding` 与 `rolling_1500`，必须按全行业统一规则在开发段选择一个，最终
+只封存一个系统。
+
+日线标签锚点为 `15:00 daily_close`，运行锚点为 `14:50`，因此训练终态固定为
+`historical_daily_close_proxy_validated` 或 `historical_rejected`/`historical_data_insufficient`，不能产生
+`historical_point_in_time_parity`。最新至少 200 个共同有效交易日保留给第 15.1.32 节的 14:50 终端留出。
+
+V3 线上只做批量推理：行业 scaler -> Ridge/LightGBM 50/50 -> 行业校准 -> 成本调整 -> 全市场一次
+`base_score` 映射 -> 本地风险扣一次 -> 固定 DeepSeek 68/32 融合 -> 动作门、Top6、集中度和 14:50 冻结。
+不读取 V1/V2/C3 运行时预测、不读取旧 V2 `base_score`、不做投票或 stacking、不重复映射或扣风险。
+
+工件目录固定为 `.runtime/v2/research/tomorrow-v3/<run_id>/`，只公开 `report.json` 和最终 `model.json`。
+工件保存每行业模型映射、特征顺序/单位、均值/尺度、Ridge 参数、LightGBM 树和最佳迭代、50/50 权重、
+校准参数、训练窗口、所有 manifest hash、依赖版本和最终 SHA-256；不保存训练行、DeepSeek 内容、pickle 或
+外部模型路径。`evidence/` Parquet 只供复查和断点续跑，主程序不得读取。
+
+#### 15.1.36 V3 条件式生产适配与人工启用
+
+状态：条件阻塞。V3 通过日线代理门禁后，仍须完成独立 14:50 终端留出、冻结前影子运行和完整风险报告；
+用户已允许在看到这些证据前以人工越权方式启用，但启用时必须持续公开 `training_anchor=15:00_close`、
+`runtime_anchor=14:50`、`point_in_time_parity=false`，不得声称已完成点时收益验证。
+
+V3 工件通过研究门禁后，由独立高风险批次校验 `model.json`、`report.json`、schema、特征顺序和 SHA-256，
+再转换为 `trader.resources.models/tomorrow_v3_<model_id>.json` wheel 资源。主程序只通过
+`importlib.resources` 加载批准资源；配置只选择 profile，不承载模型参数、训练数据或研究路径。模型资源缺失、
+hash/schema/单位/字段宽度错误时 V3 失败关闭，保留最近有效 current，不得隐藏回退 V2、全局模型或中性分。
+
+V3 profile 只新增相邻 loader 和显式 profile 映射；V1 和老 V2 的代码、bundle、hash、输入输出、历史决策、
+冻结记录及 schema 不变。组合根任一时刻只装配一个活动 predictor，默认仍为 V1；V3 未经人工授权不得进入
+活动配置。决策和状态绑定 V3 model/profile ID、bundle hash、行业覆盖计数、预测毛/净超额、成本、拒绝原因、
+人工授权依据和 `automatic_model_update=false`。DeepSeek 预算、风险扣减、动作门、TopK、冻结、CAS 和结算
+语义全部沿用现有契约。
+
+14:50 影子运行必须使用一份封存输入异步执行 V3 与老 V2，只读比较覆盖率、预测/分数漂移、Top6 重合度、
+20/50bp 收益、严重亏损、换手和 Q5-Q1；影子不调用 DeepSeek、不形成正式动作或冻结记录、不占用 Top6 名额，
+也不能自动调参、重训、激活或回切。人工启用后仍须保持历史代理与运行时差异可见。
+
+#### 15.1.37 V3 四路并行实施与集成边界
+
+状态：替换旧 C3/V3 联合任务表。四路可以并行开发，但真实工件按父 hash 和波次推进；共享文档、CLI、
+bootstrap、公共 port、配置、资源注册和 `CHANGELOG.md` 只能由 Codex D 集成。
+
+| 工作流 | 责任 | 独占输出 | 明确禁止 |
 |---|---|---|---|
-| V1 | 默认稳定基线和首要收益对照 | 无；模型、工件及既有输出保持不变 | 有，仍为默认 profile |
-| V2 | 高收益倾向但高风险的冻结诊断对照 | 无；保留既有工件及 `historical_rejected` 结论 | 有，仅按现有人工 profile 选择规则启用 |
-| V3 | V1/V2/C3 原始预测级联合 challenger | 日线训练形成 C3，再由封存联合器形成一个最终预测 | 无；两级终端留出通过和再次授权后才可申请新增 |
+| Codex A | H1 来源能力、3,000/1,600 日覆盖、行业 `effective_at`、资格/过滤人口、六 Alpha、标签和切分 | `h1_point_in_time*`、`historical_label*`、行业数据 port 与测试 | 不改 loader、CLI、API、老 V2 |
+| Codex B | Ridge/LightGBM 训练、50/50 集成、校准、V3 bundle codec/hash 和确定性测试 | `tomorrow_v3_training*`、`tomorrow_v3_artifact*` 与测试 | 不做 stacking、不读 V2 分数、不改生产接缝 |
+| Codex C | 确认、日线代理留出、14:50 终端留出、影子比较、收益/风险报告 | `tomorrow_v3_holdout*`、`tomorrow_v3_report*` 与测试 | 不调参、不改训练 schema、不激活生产 |
+| Codex D | 单一 `train-tomorrow` 编排、检查点、V3 loader/bootstrap/profile、API/SSE、共享文档和集成 | `research_tomorrow_orchestrator*`、V3 生产接缝、契约更新 | 不改老 V2 行为，不在门禁前 promotion |
 
-任一正式 Tomorrow 决策只能激活 V1、V2、V3 中一个 profile，但“单一活动 profile”不等于 V3 内部只能
-运行一个子模型。V1、V2 和本节新训练模型以下称为 C3；它们在同一批实时输入上分别输出尚未映射为
-0–100 分的预测成本后净超额，由 V3 的封存联合器合成一个最终预测，然后且只映射一次 `base_score`。
-禁止把三个已经横截面映射的 `base_score` 加权、平均、投票或再次融合，也禁止对子模型分别扣本地风险或
-调用 DeepSeek；这些做法会重复计数并破坏历史校准。V3 对外仍实现一个 predictor，之后共用同一套本地
-风险、DeepSeek 68/32 融合、78/73 动作线、Top6、集中度、冻结和 T+1 结算。
+波次一：A/B 冻结数据、标签、模型和 bundle port；D 重写文档/命令/状态契约；C 用 fixture 准备留出接口。
+波次二：A 封存真实 H1 与训练人口，B 生成唯一 V3 bundle，D 接入断点续跑；C 不打开最终留出。
+波次三：C 只对同一冻结 bundle 执行确认、代理和 14:50 留出，D 汇总研究状态；任一数据不足或拒绝必须继承
+父 hash 停止，不伪造模型或收益。
+波次四：仅在用户人工授权后由 C/D 完成影子、wheel、loader、API/SSE、冻结恢复和发布门禁；不得改变老 V2。
 
-数据优先只读复用第 15.1.25 节 H1 的共同日线核心，不新建重复归档；最新至少 200 个共同有效交易日必须
-永久保留给第 15.1.32 节的 14:50 点时终端留出，V3 的开发、确认和日线代理留出只能使用其前的日期。H1
-尚未具备至少 1,000 个共同有效交易日、至少 95% 股票覆盖和该 200 日保留段时，只能由同一 H1 下载批次
-续传到每股最多 1,600 根，
-不得扩写 H0。历史人口、上市状态或必需硬过滤事实无法点时重建的股票日必须排除并记录覆盖缺口，不能用
-当前事实、0 或中性值回填。被硬过滤或硬过滤证据不完整的股票不生成训练样本，不进入开发、确认、终端
-留出或未来生产推理；该要求比一般 `observe_only` 展示更严格，专用于本模型训练和未来模型评分资格。
-
-每个合格股票日的主标签固定为
-`(close[D+1] / close[D] - 1) - eligible_universe_equal_weight_return[D+1] - round_trip_cost`。
-`D+1` 尚未成熟、停牌、价格异常或基准不完整时必须保留 `label_pending` 或稳定排除原因，禁止用 0 代替。
-20bp 是主要口径、50bp 必须通过、100bp 只作压力测试；标签 adapter 只能在当日特征批次封存后读取
-`D+1`，特征、过滤和候选代码不得访问未来列。
-
-基础 Alpha 固定为前复权 1/3/5 日收益和 20/40/60 日 skip-5 残差动量；动量依次扣除同日市场、稳定板块
-和板内对数 20 日平均成交额暴露。平均成交额、Amihud、波动、下行半方差和回撤只用于成本、容量、状态
-分层、风险诊断和平局。股票代码、当前行业、当前风险状态和 DeepSeek facts 不得成为基础模型特征。
-当前历史日线核心不能证明点时行业身份，首版禁止行业修正。
-
-预注册模型家族固定为五个共同检验候选：Ridge、固定浅层 LightGBM、两者各 50% 集成、集成加板块/
-流动性/波动的强收缩样本外残差修正，以及前一候选再加极强收缩个股残差的消融。分层边界、最小样本、
-收缩常量和截断在读取确认段前封存；个股残差至少需要 250 个成熟样本和 120 个不同交易日，收缩常量不得
-小于 1,000 个等效观测，绝对修正不得超过预测日横截面预测标准差的 10%。股票代码只作残差归属键；
-样本不足时个股修正为 0。个股层未能在确认和终端留出相对无个股层独立增益或增加严重亏损、换手、集中度
-时，最终工件必须删除个股表。
-
-C3 唯一冻结管线确定后，再用同一开发段内 V1、V2、C3 的样本外原始预测训练 V3 联合器。联合候选固定为
-C3 单模型、V1+C3、V1+V2+C3 三个，共同纳入多重检验；每个输入先使用当前训练折的同日横截面统计标准化，
-联合权重必须非负且总和为 1，允许 V2 权重精确收缩为 0。正则强度只允许从预注册的
-`0.1|1|10|100` 中由开发段 expanding walk-forward 选择，不允许读取确认段选择联合结构、权重或正则强度。
-同一联合结构内部可用开发折预测误差选择正则强度，但三个最终结构之间必须按开发段完整组合回放的
-20bp/50bp 配对净增量、区块下界和风险门禁选择，禁止用 MSE、训练误差或涨跌命中率代替收益目标。联合器
-只读原始预测和成熟标签，不读取子模型 `base_score`、股票代码、DeepSeek、动作、Top6 或未来状态。
-
-扣除为第 15.1.32 节保留的最新至少 200 日后，剩余交易日固定为最旧 60% 开发、随后 20% 一次性确认、
-最后 20% 一次性日线代理留出，两个边界各 5 日
-embargo；开发段执行 5 折 expanding walk-forward。所有预处理、模型和残差修正只从当前折训练段拟合，
-完整保存当日全部合格股票的样本外预测。五个 C3 候选与三个联合候选共同进入预注册的分层多重检验家族；
-先在开发段确定唯一 C3 管线，再在不重开 C3 选择的前提下确定唯一最终联合结构。确认段和日线终端留出
-各只开启一次，看到结果后不得改特征、参数、成本、修正或候选集合并重测同一窗口。开发段选出唯一冻结
-管线和联合规则后，只用开发段拟合确认工件；确认通过后按同一规则用开发段加确认段重新拟合一次日线终端
-候选并封存 `CandidateModelArtifact`，随后只用该内容 hash 工件评价日线终端留出。日线终端通过后禁止
-再次调参，只能把该工件送入第 15.1.32 节从未开启的 14:50 点时终端留出；该第二级留出通过前不得申请生产。
-
-V1/V2/V3 的历史比较必须重建同一日、同一硬过滤规范下的完整合格人口，并在模型残差化和评分前按生产
-顺序重放每板 Top120；三者接收相同日期、代码、候选顺序、成本和成熟标签。同日配对收益只在三者均具备
-完整资格与输入的严格共同交集上计算，不能让某个版本通过少覆盖困难股票取得虚假优势；各版本被排除的
-数量、原因、覆盖率及因此损失的 Top120/Top6 覆盖必须另表报告。V1 是 V3 的首要收益控制组：联合 V3 在
-20bp 和 50bp 下相对 V1 的逐日组合净增量及移动区块 bootstrap 95% 下界都必须严格大于 0。若评价时活动
-profile 不是 V1，还必须同时报告并通过相对活动 profile 的原有配对门禁。V2 不作为要求 V3 模仿的目标，
-而作为可被联合器降为 0 权重的风险诊断输入；V3 不得复现或恶化 V2 已知的严重亏损、换手和 Q5-Q1 失败。
-联合 V3 还必须在确认和两级终端留出中超过 C3 单模型，否则最终候选固定回到 C3，不能为“必须联合”牺牲
-样本外收益。
-
-通过门禁固定为：5 个开发折收益方向一致；确认和终端留出的 20bp/50bp 平均组合净超额及移动区块
-bootstrap 95% 下界严格大于 0；相对 V1 可重建 local-only 控制组的逐日配对增量及下界严格大于 0，
-活动 profile 非 V1 时还必须相对活动 profile 通过同一门禁；严重亏损率不高于控制组；换手增量不超过
-5 个百分点；Rank IC、Q5-Q1 严格为正；容量、
-板块和可验证集中度不劣化；收益不集中于单股、前五只股票、单板块、单状态或少数交易日。失败终态为
-`historical_rejected`，数据或证据不足为 `historical_data_insufficient`；不得降低门槛制造通过。
-日线终端通过只标记 `historical_daily_close_proxy_validated`；同一冻结工件随后在第 15.1.32 节通过独立
-14:50 点时终端留出，才可标记 `historical_validated` 且报告包含 `historical_point_in_time_parity`，
-两级证据缺一不可。
-
-一次训练的固定目录为 `.runtime/v2/research/tomorrow-v3/<run_id>/`，对用户只公开两个终态 JSON：
-`report.json` 合并运行身份、数据 manifest、阶段状态、覆盖、资源、验证指标、失败原因和全部父 SHA-256；
-`model.json` 是唯一训练结果，保存模型 ID/schema、特征顺序/单位、预处理统计、Ridge 系数、LightGBM
-文本与最佳轮数、获准的分层/个股修正、V1/V2/C3 子模型 ID/hash、联合标准化、正则强度、非负权重、
-训练日期、依赖版本及最终 SHA-256，不包含任何训练行。训练尚未形成候选时不生成 `model.json`；模型已经
-生成但门禁拒绝时仍只作审计，`report.json` 必须明确 `publishable=false`。
-
-全量特征、标签和 OOF 预测不再序列化为单个大型 JSON，只在同目录 `evidence/` 下按交易日写 Parquet
-分区，并由 `report.json` 绑定每个分区 hash、schema、行数和日期范围。该目录只供复查和断点续跑，不是
-主程序输入；运行中的隐藏检查点在终态后折叠进 `report.json`。禁止 pickle，不保存 DeepSeek 内容、生产
-配置、活动注册表或启动指针。同一 `run_id` 同内容幂等，不同内容或篡改失败关闭。
-
-本机执行最多使用 2 个 CPU 线程和 4096MB RSS，按交易日分区流式处理并复用特征缓存。全量前先以
-100 只股票、120 日探针实测吞吐、每折耗时和峰值内存；预计超过 18 小时、RSS 超过 4096MB 或可用磁盘
-低于 30GB 时停止并先优化。现有 640 日首次训练预计 2–5 小时；续传到 1,600 日预计 3–8 小时，首次
-全量训练、回放和 bootstrap 预计 4–10 小时。以上仅为当前 i5-7400/8GB 主机的容量预算，必须由探针报告
-替代估算后才能执行全量。
-
-#### 15.1.36 日线训练结果的条件式生产适配
-
-状态：条件阻塞，依赖第 15.1.35 节终态为 `historical_daily_close_proxy_validated`、第 15.1.32 节对同一
-V3 工件的终态为 `historical_validated` 且包含 `historical_point_in_time_parity`，并依赖用户在看到
-完整收益和风险报告后再次明确授权单一候选进入高风险生产发布。本节当前不创建生产 V3、不扩展活动配置、
-不改变默认 V1、不替换 V2 工件，也不修改 current/frozen 记录。
-
-训练完成后不能把历史 SQLite、Parquet、特征表、`evidence/` 或 `report.json` 直接交给主程序。唯一可申请
-发布的是同目录 `model.json`，并且其 `report.json` 必须证明日线代理和独立 14:50 点时留出均通过、父
-hash 完整且 `publishable=true`。取得新的人工授权后，独立高风险发布批次校验这两个文件，把
-`model.json` 转换为 `trader.resources.models/tomorrow_v3_<model_id>.json` 的 hash 绑定 wheel 资源；
-该转换不是 `run.sh` 命令，也不得复用、覆盖或改写 P2 工件。
-
-模型参数不写入配置文件。代码侧登记允许的 `model_id`、完整 SHA-256、schema 和特征契约，`make package`
-把模型资源打入 wheel。主程序启动时通过 `importlib.resources` 读取并重建 predictor，经现有
-`TomorrowModelPredictorPort` 注入 `TomorrowProductionModelScoringService`。配置或 `--profile` 只选择
-已经批准并随 wheel 发布的 profile，不承载系数、树文本、训练数据、研究目录或任意外部模型路径。
-
-只有未来生产批次取得授权后，才把 profile 类型扩展为 `v1|v2|v3`、提升配置 schema，并以显式
-`profile -> loader/bootstrap` 映射装配唯一 predictor；默认值继续是 V1。V3 loader 除基础日线特征外还
-接收获准的板块、流动性和波动状态上下文，并只应用工件中封存的强收缩修正和联合权重；V1/V2 的 loader、
-输入、工件和评分行为均不得随迁移改变。未授权前，代码和配置仍只接受 V1/V2，文档中的 V3 不构成兼容占位值。
-
-新 profile 的生产链固定为：一级永久资格 -> 二级动态硬过滤 -> 过滤证据完整性 -> 模型字段完整性 ->
-V1/V2/C3 同批原始预测 -> 封存非负权重联合出一个预测成本后净超额 -> 同批横截面 0–100 映射一次形成
-`base_score` -> 本地风险只扣一次 ->
-现有 DeepSeek 固定 68/32 融合 -> 78/73 动作线 -> Top6/集中度 -> 14:50 冻结。模型输出只替换 Tomorrow
-本地 `base_score`；V1/V2 仅作为 V3 内部原始预测子模型，不再把其基础分混入结果。过滤证据不完整时固定记录
-`production_model_filter_evidence_incomplete`，该股票不获得模型分、不进入正式推荐，且禁止回退旧模型、
-中性值或启发式评分。
-
-模型资源缺失、hash、schema、特征顺序、单位或字段宽度不符时拒绝启动该 profile；不得从 `.runtime`
-加载临时模型。决策和状态必须绑定 profile、联合模型及三个子模型 ID/hash、各原始预测、实际联合权重、
-预测毛超额、估算成本、预测净超额、分层/个股修正、拒绝原因、
-`activation_basis=manual_user_override` 和 `automatic_model_update=false`。
-DeepSeek 预算、风险只扣一次、动作门、TopK、集中度、冻结、first-wins/CAS 和 T+1 结算不因新模型改变。
-
-由于训练锚点为 15:00 收盘而生产锚点为 14:50，新 profile 在正式选择前还必须完成冻结前实时影子运行，
-报告输入分布、模型覆盖、分数漂移、换手和严重亏损；影子结果不得自动调参、重训、激活或回切，也不能把
-收盘代理报告改写为严格点时验证。文档、机器契约、模型加载/篡改、缺字段、同输入确定性、V1/V2 隔离、
-wheel 外安装和完整活动发布门禁全部通过后，方可声明新 profile 可选。
-
-影子比较必须在一份封存的 14:50 输入上异步、本地执行 V1/V2/V3，三者不得各自重新取数形成不同批次。
-影子 V1/V2/V3 不调用 DeepSeek、不形成正式动作或冻结记录、不占用 Top6 名额，也不能阻塞或覆盖当前
-活动 profile；报告至少保存逐版本覆盖率和拒绝原因、分数/预测相关性、Top6 重合度、20bp/50bp 收益、
-严重亏损率、换手及 Q5-Q1。影子结论只补充收盘代理与生产时点差异证据，不获得生产授权。
-
-未来生产适配的最低机器验收还包括：V1/V2 工件 hash 和固定输入输出逐位不变；历史三版本评价的日期、
-代码、候选顺序、成本和标签一致；分层及个股残差统计只能读取当时训练段、无未来泄漏；组合根任一时刻
-恰好装配一个活动 predictor；V3 资源缺失、hash/schema/特征契约错误时 V3 失败关闭且不自动回退 V1、
-V2 或启发式分；过滤证据不完整的股票仍不进入 V3 推理；所有训练、影子和生产状态均保持
-`automatic_model_update=false`。
-
-第 15.1.20 节定义唯一目标入口 `./run.sh train-tomorrow`；一次调用连续执行完整可用链，内部阶段不得暴露
-为新的 `run.sh` 参数。两级留出通过后的生产资源转换不属于训练入口，必须等待新的人工生产授权并另立
-高风险批次，不得自动 promotion。
-实现顺序固定为：契约与失败测试 -> H1 覆盖审计 -> 分区特征和防泄漏标签 -> C3 与残差修正 ->
-V1/V2/C3 样本外联合 -> 三阶段不可变工件 -> 两级收益门禁。普通服务启动、`check` 和现有
-`research-screen` 不得隐式执行这些命令；本文合并不表示训练已经运行、收益已经提高或 V3 已进入主程序。
-
-#### 15.1.37 Codex A/B/C/D 四路并行实施计划
-
-状态：Codex D 编排工程已完成；Codex A 已按真实来源审计封存 H1、标签、残差和 C3 的数据不足终态，
-Codex B/C 只能继续封存继承父 hash 的对应不足终态，不得运行收益、候选或留出。第 15.1.25–15.1.36 节的其余未完成工作不再把任务表缩减为“Codex A
-只做 C3、Codex B 只做 V3”。V1/V2 工程任务已完成并冻结：两者只作为不可变生产档位和历史对照输入，
-本计划不安排 V1/V2 重训、改权、补模型头、重开 P2 或改变默认档位。当前生产仍只接受 `v1|v2`、默认
-V1；四路所有研究产物均为 `production_authority=false`。
-
-四路采用稳定所有权，任一 Codex 只能修改自己的新模块和测试：
-
-| 工作流 | 完整责任 | 独占边界与输出 | 明确禁止 |
-|---|---|---|---|
-| Codex A | 第 15.1.25–15.1.27 节；第 15.1.35 节 H1 适配、日线特征/标签、五个 C3 候选、OOF、分层和个股残差、C3 基础工件 | `h1_point_in_time*`、`historical_label*`、`historical_residual_ledger*`、`tomorrow_daily_close*` 及同名测试；输出 H1/切分/账本 hash、C3 OOF 和唯一 C3 工件 | 不修改联合器、终端留出、生产 loader、共享 CLI/docs；不读取最新 200 日保留段 |
-| Codex B | 第 15.1.28–15.1.30 节；第 15.1.35 节过滤消融、透明候选、共同 Holm/确认及 V1/V2/C3 原始预测联合 | `filter_recall_ablation*`、`transparent_candidate*`、`historical_candidate_confirmation*`、`tomorrow_joint*` 及同名测试；输出三策略确认终态、唯一联合规则和联合报告 hash | 不改 Codex A 的 C3 工件 schema，不把 `base_score` 相加，不开启终端留出，不修改生产 |
-| Codex C | 第 15.1.31–15.1.34 节；Today、Tomorrow、D25 独立终端留出和跨策略只读结论 | 新建 `today_terminal_holdout*`、`tomorrow_point_in_time_holdout*`、`d25_terminal_holdout*`、`cross_strategy_conclusion*` 及同名测试；输出三策略终态和统一结论 hash | 不复用或改写旧 H0 `tomorrow_profile_holdout*` 身份，不调参、不重开留出、不创建生产资源 |
-| Codex D | 第 15.1.35 节不可变工件图、阶段状态机、资源探针、`train-tomorrow` 单次完整编排和研究状态；第 15.1.36 节授权前准备/阻塞审计及授权后的唯一生产适配所有权 | `research_tomorrow_orchestrator*`、`tomorrow_research_artifacts*`、研究状态/CLI 契约及测试；唯一集成共享文件、公开命令、资源登记与未来获准的 loader/bootstrap | 未满足两级留出和新授权时不得实现/登记 V3 profile，不得改默认 V1，不得自动 promotion |
-
-四路可以独立启动，但真实工件按以下波次推进；“并行”不允许越过时序和留出隔离：
-
-| 波次 | Codex A | Codex B | Codex C | Codex D | 波次退出条件 |
-|---|---|---|---|---|---|
-| 1：契约与夹具 | 封存 H1/标签/账本 port、失败测试和来源能力探针 | 用类型化 fixture 完成消融、候选、Holm/确认和联合器纯逻辑 | 用类型化 fixture 完成三套终端回放和跨策略汇总纯逻辑 | 封存工件引用、阶段状态机、失败恢复、单一命令契约和资源探针 | 四路测试各自通过；接口版本/hash 固定；尚不读取收益或留出 |
-| 2：开发数据 | 执行第 15.1.25–15.1.27 节，生成 H1、切分和全候选账本；同步完成真实 C3 OOF | 只读 A 的已封存 port/fixture 完成第 15.1.28–15.1.30 节接线和 V3 OOF/组合回放 | 接入已封存父工件读取器，但不打开任何最终日期 | `./run.sh train-tomorrow` 单次调用连续推进完整可用链并原子封存检查点 | H1 各策略确定终态；开发/确认工件 hash 完整；最新 200 日仍未开启 |
-| 3：候选冻结 | 封存唯一 C3；输出预处理、模型、残差、覆盖和父 hash | 封存三策略透明候选终态及唯一 V3 结构；V3 必须胜过 C3，否则回到 C3 | 上游 ready 的 Today 与 D25 可并行各开启一次终端留出；准备 Tomorrow 同工件评价 | 校验 A/B 工件图、同内容幂等、异内容冲突和断点续跑，不替它们选择赢家 | A/B 候选不可再调参；Today/D25 各有终态；V3 获得日线代理确定终态 |
-| 4：终端收口 | 只读支持复查，不重训 | 只读支持覆盖与联合诊断，不改权重 | 对合格 V3/透明候选只开启一次 Tomorrow 14:50 留出，再读取三策略终态生成第 15.1.34 节结论 | 汇总只读状态和审计报告；生产适配保持阻塞 | 三策略和跨策略报告均封存；所有研究状态仍无生产权限 |
-
-若任一父阶段为 `historical_rejected` 或 `historical_data_insufficient`，下游不得伪造候选或打开对应留出，
-但必须封存继承父 hash 与原因的终态，让其它策略和第 15.1.34 节继续收口。A/B/C 之间只通过规范 JSON、
-SHA-256 绑定的不可变工件和类型化 port 交互，不通过配置文件、临时路径、数据库表互写或口头约定交接。
-
-共享文件包括 `docs/*`、`CHANGELOG.md`、包 `__init__.py`、公共 port、CLI 注册、`run.sh`/PowerShell、
-`pyproject.toml`、模型资源注册和 `bootstrap.py`。共享文件只能由 Codex D 在同波 A/B/C 输出均通过后集成；
-A/B/C 不得编辑，Codex D 也不得改写 A/B/C 独占算法文件。每路先运行自己的 unit/contract、Ruff 和 mypy；
-每波集成后再运行受影响的组合/架构测试和 `git diff --check`。只有未来第 15.1.35 节为
-`historical_daily_close_proxy_validated`、第 15.1.32 节为 `historical_validated` 且包含
-`historical_point_in_time_parity`，并取得用户新的明确授权，Codex D 才能开始第 15.1.36 节生产发布；
-否则该任务保持条件阻塞，不得以配置文件或命令参数绕过。
+所有研究产物保持 `production_authority=false`，除非第 15.1.36 节的人工授权批次明确改变它。每个 worker 先
+运行自己的 unit/contract、Ruff 和 mypy；集成后运行受影响的架构、配置、打包、冻结、SSE 和桌面验收。任何
+生产模型变化必须同时更新本文、`docs/software-business-design.md`、契约测试和 `CHANGELOG.md`。
 
 ### 15.2 活动发布门禁
 

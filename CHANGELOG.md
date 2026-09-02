@@ -6,6 +6,13 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求合并 `recommendation-strategy.md` 与行业 LightGBM 计划。本批将 Tomorrow 新方案统一为 V3 单一
+  申万一级行业 Ridge + LightGBM 50/50 离线模型：C3 仅为训练阶段，不再创建 V3 stacking 或读取 V1/V2
+  运行时预测；老 V2 predictor、bundle、hash、历史和冻结记录保持封存不变。策略文档补齐 3,000 日数据门禁、
+  点时行业生效、标签/embargo、LightGBM 固定参数、单次离线批次、唯一模型工件、14:50 代理差异、人工启用、
+  失败关闭和四路无干扰任务边界。验证：`git diff --check` 通过；pytest 未执行，因本机 `.venv` Python 解释器路径失效。
+  剩余风险：V3 代码、配置、wheel 和生产接入仍需独立高风险批次，当前不改变活动 profile。
+
 - 用户再次要求执行推荐策略第 15 节 Codex B 未完成任务。本批补齐第 15.1.35 节 V1/V2/C3 原始预测联合的
   数据不足收口：新增 `tomorrow_joint_insufficient_terminal_v1` 与应用封存入口，并将联合终态 hash 绑定到
   Codex B 批次。父工件不足时不读取日期或收益，不生成原始预测、联合模型、Holm 统计或终端留出；完整父
