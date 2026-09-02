@@ -450,9 +450,6 @@ def _check_payload(result: DiagnosticResult) -> dict[str, object]:
             "usage": _mapping(source.get("usage")),
         }
     elif result.name == "score_p0_readiness":
-        active = _mapping(source.get("active_research"))
-        historical = _mapping(active.get("historical_window"))
-        blocker = active.get("evaluation_blocker")
         if result.payload is not None and not _valid_research_status(source):
             payload["findings"] = [
                 {
@@ -461,30 +458,49 @@ def _check_payload(result: DiagnosticResult) -> dict[str, object]:
                     "message": "The research status schema or active window projection is invalid.",
                 }
             ]
-        elif source.get("research_state") == "historical_collection_failed":
-            payload["findings"] = [
-                {
-                    "severity": "error",
-                    "code": (
-                        blocker
-                        if isinstance(blocker, str) and blocker
-                        else "score_p0_readiness_historical_collection_failed"
-                    ),
-                    "message": "The active score research historical window is irrecoverable.",
-                    "evidence": {
-                        "maximum_attainable_trade_dates": historical.get("maximum_attainable_trade_dates"),
-                        "recoverable": historical.get("recoverable"),
-                    },
-                }
-            ]
-        payload["summary"] = {
-            "research_identity": active.get("research_identity"),
-            "historical_window": historical,
-            "forward_window": _mapping(active.get("forward_window")),
-            "recorded_count": historical.get("recorded_trade_dates"),
-            "status": source.get("research_state"),
-            "evaluation_blocker": blocker,
-        }
+        else:
+            baostock = _mapping(source.get("baostock_history"))
+            tomorrow = _mapping(source.get("tomorrow_research"))
+            input_blockers = _safe_string_list(tomorrow.get("input_blockers"), limit=20)
+            production_blockers = _safe_string_list(tomorrow.get("production_blockers"), limit=20)
+            blockers = input_blockers + production_blockers
+            if blockers:
+                payload["findings"] = [
+                    {
+                        "severity": "error",
+                        "code": blockers[0],
+                        "message": "Tomorrow V3 research remains blocked by its sealed prerequisite gates.",
+                        "evidence": {
+                            "input_blockers": input_blockers,
+                            "production_blockers": production_blockers,
+                            "production_authority": tomorrow.get("production_authority"),
+                        },
+                    }
+                ]
+            payload["summary"] = {
+                "baostock_history": {
+                    "state": baostock.get("state"),
+                    "sessions": baostock.get("sessions"),
+                    "coverage_status": baostock.get("coverage_status"),
+                    "completed_codes": baostock.get("completed_codes"),
+                    "failed_codes": baostock.get("failed_codes"),
+                    "failure_reasons": _safe_string_list(baostock.get("failure_reasons"), limit=20),
+                    "historical_effective_facts_status": baostock.get("historical_effective_facts_status"),
+                    "v3_dataset_status": baostock.get("v3_dataset_status"),
+                    "production_authority": baostock.get("production_authority"),
+                    "point_in_time_parity": baostock.get("point_in_time_parity"),
+                },
+                "v3": {
+                    "status": tomorrow.get("status"),
+                    "next_stage": tomorrow.get("next_stage"),
+                    "input_prerequisite_status": tomorrow.get("input_prerequisite_status"),
+                    "input_blockers": input_blockers,
+                    "production_blockers": production_blockers,
+                    "production_readiness": tomorrow.get("production_readiness"),
+                    "production_authority": tomorrow.get("production_authority"),
+                },
+                "production_authority": tomorrow.get("production_authority"),
+            }
     elif result.name == "browser_refresh":
         payload["summary"] = {
             "passed": source.get("passed"),
@@ -508,8 +524,14 @@ def _status(result: DiagnosticResult) -> CheckStatus:
         return "failed"
     if result.name == "score_p0_readiness" and not _valid_research_status(result.payload):
         return "failed"
-    if result.name == "score_p0_readiness" and result.payload.get("research_state") == "historical_collection_failed":
-        return "failed"
+    if result.name == "score_p0_readiness":
+        tomorrow = _mapping(result.payload.get("tomorrow_research"))
+        if tomorrow.get("status") == "blocked":
+            return "failed"
+        if _safe_string_list(tomorrow.get("input_blockers"), limit=1) or _safe_string_list(
+            tomorrow.get("production_blockers"), limit=1
+        ):
+            return "failed"
     status = result.payload.get("status")
     if status == "passed":
         return "passed"
@@ -524,15 +546,42 @@ def _status(result: DiagnosticResult) -> CheckStatus:
 
 
 def _valid_research_status(payload: Mapping[str, object]) -> bool:
-    active = payload.get("active_research")
-    return (
-        payload.get("schema_version") == "v2_research_readiness_v5"
-        and isinstance(payload.get("research_state"), str)
-        and isinstance(active, dict)
-        and isinstance(active.get("research_identity"), str)
-        and isinstance(active.get("historical_window"), dict)
-        and isinstance(active.get("forward_window"), dict)
-    )
+    baostock = payload.get("baostock_history")
+    tomorrow = payload.get("tomorrow_research")
+    if not isinstance(baostock, dict) or not isinstance(tomorrow, dict):
+        return False
+    if payload.get("production_authority") is not False:
+        return False
+    if baostock.get("production_authority") is not False or baostock.get("point_in_time_parity") is not False:
+        return False
+    if tomorrow.get("production_authority") is not False:
+        return False
+    if not all(
+        isinstance(baostock.get(name), (str, int, float, list))
+        for name in (
+            "state",
+            "sessions",
+            "coverage_status",
+            "completed_codes",
+            "failed_codes",
+            "failure_reasons",
+            "historical_effective_facts_status",
+            "v3_dataset_status",
+        )
+    ):
+        return False
+    if not isinstance(baostock.get("failure_reasons"), list) or not all(
+        isinstance(item, str) for item in baostock["failure_reasons"]
+    ):
+        return False
+    if not isinstance(tomorrow.get("status"), str) or not isinstance(tomorrow.get("production_readiness"), str):
+        return False
+    if not all(
+        isinstance(tomorrow.get(name), list) and all(isinstance(item, str) for item in tomorrow[name])
+        for name in ("input_blockers", "production_blockers")
+    ):
+        return False
+    return payload.get("schema_version") == "v2_research_readiness_v9"
 
 
 def _findings(check: Mapping[str, object]) -> list[dict[str, object]]:

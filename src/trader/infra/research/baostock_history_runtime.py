@@ -59,7 +59,7 @@ BAOSTOCK_MAX_RSS_MB = 4096.0
 
 
 class _BaoStockSessionSdkPort(BaoStockSdkPort, Protocol):
-    def login(self) -> BaoStockRowResult: ...
+    def login(self, *, user_id: str = "anonymous", password: str = "123456") -> BaoStockRowResult: ...
 
     def logout(self) -> BaoStockRowResult: ...
 
@@ -734,12 +734,39 @@ def _silence_vendor_output() -> None:
 
 
 def _login(sdk: _BaoStockSessionSdkPort) -> None:
+    user_id = os.environ.get("BAOSTOCK_USER_ID", "anonymous").strip()
+    password = os.environ.get("BAOSTOCK_PASSWORD", "123456")
+    if not user_id or not password:
+        raise RuntimeError("supplier_login_credentials_missing")
+    api_key = os.environ.get("BAOSTOCK_API_KEY", "").strip()
+    if api_key:
+        setter = getattr(sdk, "set_API_key", None)
+        if not callable(setter):
+            raise RuntimeError("supplier_api_key_unsupported")
+        try:
+            setter(api_key)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise RuntimeError("supplier_api_key_rejected") from exc
     try:
-        result = sdk.login()
+        result = sdk.login(user_id=user_id, password=password)
+    except PermissionError as exc:
+        raise RuntimeError("supplier_login_network_denied") from exc
+    except TimeoutError as exc:
+        raise RuntimeError("supplier_login_timeout") from exc
+    except UnboundLocalError as exc:
+        # BaoStock <= 0.9.30 masks a socket-connect error with this bug.
+        raise RuntimeError("supplier_login_transport_failed") from exc
+    except OSError as exc:
+        raise RuntimeError("supplier_login_network_failed") from exc
     except Exception as exc:
-        raise RuntimeError(f"supplier_login_failed_{type(exc).__name__.lower()[:24]}") from exc
-    if str(result.error_code) != "0":
-        raise RuntimeError("supplier_login_failed")
+        raise RuntimeError("supplier_login_sdk_failed") from exc
+    error_code = str(result.error_code)
+    if error_code != "0":
+        if error_code == "10001011":
+            raise RuntimeError("supplier_login_failed_blacklisted")
+        if error_code.isascii() and error_code.isalnum():
+            raise RuntimeError(f"supplier_login_rejected_{error_code[:24]}")
+        raise RuntimeError("supplier_login_rejected")
 
 
 def _logout(sdk: _BaoStockSessionSdkPort) -> None:

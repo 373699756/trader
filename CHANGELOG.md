@@ -6,6 +6,13 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求先修复 Codex D 运行诊断和 BaoStock 登录阻塞。本批将统一 `research` profile 适配到现有
+  `v2_research_readiness_v9`，只读投影 `baostock_history`、Tomorrow V3 blockers 和
+  `production_authority=false`，不新增 `research-status` 状态源或读取 V1/V2 预测。
+  `Regression-Key: codex-d-research-v9-baostock-gate-v1`。
+
+- 用户确认旧 H0 历史研究链（`research-history`、`research-screen`/`screen-history`、固定回测和六阶段筛选）不再作为执行入口，统一使用 `download_history` 下载 BaoStock 历史日线，再由 `train-tomorrow` 执行 Tomorrow 训练；本批补齐入口、脚本、文档和负向契约测试。
+
 - 用户本轮要求继续执行推荐策略第 15 节 Codex B 未完成任务。复核确认 15.1.38 的 Codex B 波次 1 输入兼容
   契约已完成，但后续 V3 训练仍必须等待 Codex A 的真实 2000 日合格 manifest；同步修正文档，将 D 的执行模型
   明确为受控独立子进程监督。2026-09-02 显式探针：`--sessions 1` 返回
@@ -184,6 +191,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- `codex-d-research-v9-baostock-gate-v1`：诊断脚本不再按已退役的 v5 `active_research` 结构解析 v9 状态；现按
+  公开 v9 投影白名单输出 BaoStock 状态、V3 输入/生产 blockers，并在任一 blocker 存在时失败关闭。
+  BaoStock 登录读取显式环境凭据/API key，服务端黑名单、网络拒绝、超时、SDK 传输异常和黑名单响应分别映射为
+  有界错误码；不记录凭据、错误文本或供应商载荷。
+
 - `codex-d-baostock-history-integration-v1`：最终并发 Review 完成 BaoStock 快照/切分校验的缩进与格式整理，并将
   显式 CLI 分派的已审查复杂度标注纳入门禁；严格重构债务基线恢复为零，业务校验语义不变。
 
@@ -234,6 +246,13 @@ All notable changes to this project are documented here.
   raw/qfq 两侧明确标记时才算取得，未知缺行不再推断为停牌。
 
 ### Verification
+
+- `codex-d-research-v9-baostock-gate-v1`：v9 诊断/登录定向测试 23 项通过，受影响文件 Ruff format/check
+  和 BaoStock runtime mypy 通过；真实网络权限下先执行 `--sessions 1`，BaoStock 返回受控
+  `supplier_login_failed_blacklisted`。由于 1 日门槛未通过，按计划未执行小批或 `--sessions 2000`，未生成
+  全量 manifest、覆盖率、停牌证据或历史 `effective_at` 能力，不读取 V1/V2 预测、不做 stacking、不自动 promotion。
+
+- 本批完整验证通过：`make format-check`、`make lint`、`make type-check`、`make test`（全量测试 100%）和 `make package`；另通过 `bash -n run.sh`、受影响 CLI/文档契约及 `git diff --check`。未执行浏览器门禁，因本批不改变活动 Web 行为。
 
 - `codex-b-baostock-blocker-evidence-v1`：`--sessions 1` 真实 BaoStock 探针返回
   `supplier_login_failed_unboundlocalerror`；`--sessions 2000` 在任何外部 I/O 前返回
@@ -965,6 +984,9 @@ All notable changes to this project are documented here.
   前向封存状态、第二轮权重收缩和 `PromotionDossier` 人工晋级边界。
 
 ### Changed
+
+- 公开启动语义收敛为无参数启动 Web，删除 `serve`/`app` 别名；`run.sh` 与 `run.ps1` 仅公开 `check`、`download_history` 和 `train-tomorrow`。旧研究执行器从 CLI 分派和 bootstrap 组合根移除，`research-status` 继续只读展示不可变的历史审计字段。
+- 将 BaoStock 活动模块的通用 JSON 编解码辅助提取到 `baostock_daily_codec.py`，主模块降至 1200 行以内，数据 schema、hash 校验和 SQLite 行为保持不变。
 
 - BaoStock 权威计划从未产出正式工件的 1500 日 v1 方案升级为 `score_baostock_daily_core_v2`：截至
   2026-08-31 的最近 2000 个交易所开市日内，每只股票最多保存 2000 个 `(code, trade_date)` 逻辑记录，
@@ -2093,6 +2115,8 @@ All notable changes to this project are documented here.
   `close_fallback`，已有 D25 正式记录保持不变，Today 未被违规追补。
 
 ### Removed
+
+- 退役 `research-history`、`research-screen`/`screen-history`、`research-baostock-history` 及其旧下载、回测、R6/P2 筛选和 holdout 分派；不保留兼容别名，避免与 BaoStock 下载及 Tomorrow 训练形成重复流程。
 
 - 从活动权威计划移除 V3 的 3000 日扩容目标、`rolling_1500` 窗口比较、V1/V2/C3 原始预测联合/stacking
   路线，以及复用已完成 15.1.32 留出的描述；旧联合器实现及数据不足工件仅作为历史审计保留，本批不删除
@@ -3417,6 +3441,8 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- BaoStock 真实登录、可用磁盘和 2000 日全量覆盖仍是外部前置条件；当前没有合格 manifest，`train-tomorrow` 只能按既有父工件状态有界失败关闭，不代表 V3 模型或生产授权已完成。
 
 - `codex-b-baostock-blocker-evidence-v1`：本批复核未解除 A 的外部前置条件；真实登录探针仍失败，2000 日命令
   因本机可用空间约 8.85GiB 低于 30GB 在外部 I/O 前阻塞。尚无 2000 日全量 SQLite/合格覆盖 manifest，也未

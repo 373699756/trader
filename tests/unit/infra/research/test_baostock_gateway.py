@@ -1,8 +1,10 @@
+from types import SimpleNamespace
+
 import pytest
 
 from trader.domain.research.baostock_daily import BaoStockDailySpec
 from trader.infra.research.baostock_daily import BaoStockRowGateway
-from trader.infra.research.baostock_history_runtime import _RateLimitedBaoStockSdk
+from trader.infra.research.baostock_history_runtime import _RateLimitedBaoStockSdk, _login
 
 
 class _Result:
@@ -116,3 +118,45 @@ def test_sdk_queries_are_started_at_most_once_per_second() -> None:
     )
 
     assert delays == [1.0, 1.0]
+
+
+class _LoginSdk:
+    def __init__(self, error_code: str = "0") -> None:
+        self.error_code = error_code
+        self.credentials: tuple[str, str] | None = None
+        self.api_key = ""
+
+    def login(self, *, user_id: str, password: str) -> SimpleNamespace:
+        self.credentials = (user_id, password)
+        return SimpleNamespace(error_code=self.error_code)
+
+    def set_API_key(self, api_key: str) -> None:
+        self.api_key = api_key
+
+
+def test_login_uses_explicit_credentials_and_optional_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BAOSTOCK_USER_ID", "research-user")
+    monkeypatch.setenv("BAOSTOCK_PASSWORD", "research-password")
+    monkeypatch.setenv("BAOSTOCK_API_KEY", "research-api-key")
+    sdk = _LoginSdk()
+
+    _login(sdk)  # type: ignore[arg-type]
+
+    assert sdk.credentials == ("research-user", "research-password")
+    assert sdk.api_key == "research-api-key"
+
+
+def test_login_maps_blacklist_and_sdk_socket_bug_to_controlled_codes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BAOSTOCK_USER_ID", raising=False)
+    monkeypatch.delenv("BAOSTOCK_PASSWORD", raising=False)
+    monkeypatch.delenv("BAOSTOCK_API_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match="supplier_login_failed_blacklisted"):
+        _login(_LoginSdk("10001011"))  # type: ignore[arg-type]
+
+    class _BrokenLoginSdk(_LoginSdk):
+        def login(self, *, user_id: str, password: str) -> SimpleNamespace:
+            raise UnboundLocalError("mySockect")
+
+    with pytest.raises(RuntimeError, match="supplier_login_transport_failed"):
+        _login(_BrokenLoginSdk())  # type: ignore[arg-type]

@@ -108,7 +108,7 @@ def test_research_profile_runs_only_score_p0_readiness_probe() -> None:
     )
 
 
-def test_research_status_projection_uses_authoritative_active_window_and_reports_failure() -> None:
+def test_research_status_projection_uses_v9_baostock_and_v3_blockers() -> None:
     report = build_report(
         "research",
         (
@@ -117,23 +117,30 @@ def test_research_status_projection_uses_authoritative_active_window_and_reports
                 0,
                 4.0,
                 {
-                    "schema_version": "v2_research_readiness_v5",
-                    "research_state": "historical_collection_failed",
-                    "recorded_trade_dates": ["2026-08-21", "2026-08-20"],
-                    "active_research": {
-                        "research_identity": "score_p0_v2",
-                        "evaluation_blocker": "score_p0_v2_historical_planned_dates_missed",
-                        "historical_window": {
-                            "recorded_trade_dates": 1,
-                            "maximum_attainable_trade_dates": 36,
-                            "recoverable": False,
-                        },
-                        "forward_window": {
-                            "recorded_trade_dates": 0,
-                            "maximum_attainable_trade_dates": 20,
-                            "recoverable": True,
-                        },
+                    "schema_version": "v2_research_readiness_v9",
+                    "baostock_history": {
+                        "state": "completed_with_failures",
+                        "sessions": 1,
+                        "coverage_status": "historical_data_insufficient",
+                        "completed_codes": 0,
+                        "failed_codes": 1,
+                        "failure_reasons": ["supplier_login_failed_blacklisted"],
+                        "historical_effective_facts_status": "historical_data_insufficient",
+                        "v3_dataset_status": "historical_data_insufficient",
+                        "production_authority": False,
+                        "point_in_time_parity": False,
                     },
+                    "tomorrow_research": {
+                        "status": "blocked",
+                        "next_stage": "resource_probe",
+                        "input_prerequisite_status": "blocked",
+                        "input_blockers": ["tomorrow_h1_historical_data_insufficient"],
+                        "production_blockers": ["daily_close_proxy_not_validated"],
+                        "production_readiness": "production_adaptation_blocked",
+                        "production_authority": False,
+                    },
+                    "production_authority": False,
+                    "recorded_trade_dates": ["2026-08-21", "2026-08-20"],
                 },
                 None,
             ),
@@ -141,23 +148,30 @@ def test_research_status_projection_uses_authoritative_active_window_and_reports
     )
 
     assert report["status"] == "failed"
-    assert report["checks"][0]["summary"] == {
-        "research_identity": "score_p0_v2",
-        "historical_window": {
-            "recorded_trade_dates": 1,
-            "maximum_attainable_trade_dates": 36,
-            "recoverable": False,
-        },
-        "forward_window": {
-            "recorded_trade_dates": 0,
-            "maximum_attainable_trade_dates": 20,
-            "recoverable": True,
-        },
-        "recorded_count": 1,
-        "status": "historical_collection_failed",
-        "evaluation_blocker": "score_p0_v2_historical_planned_dates_missed",
+    summary = report["checks"][0]["summary"]
+    assert summary["baostock_history"] == {
+        "state": "completed_with_failures",
+        "sessions": 1,
+        "coverage_status": "historical_data_insufficient",
+        "completed_codes": 0,
+        "failed_codes": 1,
+        "failure_reasons": ["supplier_login_failed_blacklisted"],
+        "historical_effective_facts_status": "historical_data_insufficient",
+        "v3_dataset_status": "historical_data_insufficient",
+        "production_authority": False,
+        "point_in_time_parity": False,
     }
-    assert report["findings"][0]["code"] == "score_p0_v2_historical_planned_dates_missed"
+    assert summary["v3"] == {
+        "status": "blocked",
+        "next_stage": "resource_probe",
+        "input_prerequisite_status": "blocked",
+        "input_blockers": ["tomorrow_h1_historical_data_insufficient"],
+        "production_blockers": ["daily_close_proxy_not_validated"],
+        "production_readiness": "production_adaptation_blocked",
+        "production_authority": False,
+    }
+    assert summary["production_authority"] is False
+    assert report["findings"][0]["code"] == "tomorrow_h1_historical_data_insufficient"
     assert "2026-08-20" not in str(report["checks"][0])
 
 
