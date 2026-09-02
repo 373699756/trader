@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- `baostock-2000-v3-roadmap-consistency-v1`：新增未完成章节状态表、唯一 `pending` 执行项、BaoStock/V3
+  非重叠所有权契约，以及 2000 条逻辑记录、raw/qfq 同行、全体/逐板/老股覆盖、逐股失败、SDK 子进程资源
+  上限和新旧终端留出隔离的机器断言。文档任务不实现 SDK、CLI、SQLite 或生产 profile。
+
 - 用户要求把 BaoStock 作为历史数据下载源集成计划写入荐股权威策略，并按 Codex A/B/C/D 分工。本批新增
   第 15.1.38 节，固定 `score_baostock_daily_core_v1`、截至 2026-08-31 的最近 1500 个交易所开市日、
   前复权/未复权共同日线、仓库外分片 SQLite/checkpoint/合并 manifest 及逐股 SHA-256；覆盖分母改为股票
@@ -146,6 +150,13 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 用户把 BaoStock 下载上限更新为每股最多 2000 条，并要求按 Review 建议消除计划矛盾。确认原因是原
+  1500 日计划没有同步 V3 的 3000/1600 日目标、1000 日不可满足的四段切分、15.1.37/15.1.38 重复所有权、
+  已完成 15.1.32 被未来 V3 重开、越权启用与标准发布前置条件冲突，以及软件设计仍描述旧 V1/V2/C3
+  stacking。现统一为独立 BaoStock v2 身份、V3 至少 1250 个完整有效日、先隔离 200 日新点时留出、A 数据/
+  B 训练/C 验证/D 集成，并把研究验证、人工授权和生产接入拆为独立批次。
+  `Regression-Key: baostock-2000-v3-roadmap-consistency-v1`。
+
 - 用户要求先拉取远端并解决冲突。本批将本地 `feat(research): add isolated 640-day close proxy`
   重放到最新上游时确认，该独立 H0 Ridge 代理已被新的 Tomorrow V3 单一行业
   Ridge/LightGBM 50/50 权威契约整体取代，因此冲突解决为保留上游唯一 `train-tomorrow`
@@ -176,6 +187,12 @@ All notable changes to this project are documented here.
   `Regression-Key: codex-b-historical-filter-confirmation-v1-runtime-fix`。
 
 ### Verification
+
+- `baostock-2000-v3-roadmap-consistency-v1`：完整 `tests/contract` 168 项通过；受影响的两个文档契约测试文件
+  `ruff check` 与 `ruff format --check` 通过；活动权威文档的旧 1500 日命令、3000 日目标、`rolling_1500`、
+  旧联合/stacking 和过时阻塞状态扫描无残留，完整 diff Review 与 `git diff --check` 通过。本批只修改 Markdown
+  和文档契约测试，不修改依赖、入口或运行代码，因此 `make test`、`make package`、仓库外 wheel、真实下载、
+  供应商和浏览器门禁不适用；这些门禁由第 15.1.38 节实现批次执行。
 
 - `baostock-1500-daily-roadmap-v1`：新增文档契约测试固定数据身份、1500 日、截止日、双复权口径、四路
   所有权、新股应有交易日分母、点时否定边界和无生产权限；本批新增及相邻 V3 文档契约 6 项、测试文件
@@ -870,6 +887,12 @@ All notable changes to this project are documented here.
   前向封存状态、第二轮权重收缩和 `PromotionDossier` 人工晋级边界。
 
 ### Changed
+
+- BaoStock 权威计划从未产出正式工件的 1500 日 v1 方案升级为 `score_baostock_daily_core_v2`：截至
+  2026-08-31 的最近 2000 个交易所开市日内，每只股票最多保存 2000 个 `(code, trade_date)` 逻辑记录，
+  未复权和前复权字段同行保存；新股、退市股和来源不足股票只保存真实区间。旧 H1 v1 的 1600 日能力审计
+  及数据不足终态保持不可变。BaoStock 规划为 `[research]` optional extra，普通 Web wheel 和启动链不导入或
+  隐式调用 SDK。
 
 - `codex-a-h1-capability-audit-v2`：能力脚本默认先使用 `trust_env=false` 的有界 HTTP session，连接失败时
   再以相同请求语义回退到系统代理会话；请求参数只接受字符串或字符串元组，供应商原始价格载荷不进入
@@ -1992,6 +2015,10 @@ All notable changes to this project are documented here.
   `close_fallback`，已有 D25 正式记录保持不变，Today 未被违规追补。
 
 ### Removed
+
+- 从活动权威计划移除 V3 的 3000 日扩容目标、`rolling_1500` 窗口比较、V1/V2/C3 原始预测联合/stacking
+  路线，以及复用已完成 15.1.32 留出的描述；旧联合器实现及数据不足工件仅作为历史审计保留，本批不删除
+  运行代码或既有工件。
 
 - `codex-a-h1-capability-audit-v2`：移除“任一免费来源失败就放弃整份能力审计”的共同成功前提；未删除
   H1 归档、既有研究工件、生产资源或活动 V1/V2 行为。
@@ -3312,6 +3339,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- `baostock-2000-v3-roadmap-consistency-v1`：本批只修订权威计划，尚未把 BaoStock 加入 `pyproject.toml`，
+  也未实现/执行 2000 日下载。SDK 逐行接口的 Python 3.10–3.14 兼容性、停牌行语义、退市证券覆盖、许可
+  边界、磁盘/RSS 和真实全量覆盖仍待第 15.1.38 节验证；历史申万行业、资格和风险事实 `effective_at` 仍无
+  已证明来源，因此即使日线下载合格，V3 也可能继续阻塞。本批不构成收益、点时一致或生产授权证据。
 
 - `baostock-1500-daily-roadmap-v1`：BaoStock SDK 使用全局 socket，且 0.9.3 的 `get_data()` 依赖 pandas
   已删除的 `DataFrame.append()`；后续实现必须使用逐行接口、隔离进程分片并验证 Python 3.10-3.14。

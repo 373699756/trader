@@ -1549,7 +1549,7 @@ python3 -m venv .venv
 | 日常 | `./run.sh check` | 依次校验配置、只读投影研究状态并运行所选档位的离线性能门禁 |
 | 离线研究 | `./run.sh research-history [--workers 1..5]` | 下载/断点续传独立历史日线归档，然后只读运行固定训练/验证回测 |
 | 离线研究 | `./run.sh research-screen` | 依次运行 R6 历史、R6 日线、R6 稳定性、Tomorrow P2、V1/V2 H0 留出和 V2 严重亏损概率六项不可变筛选/诊断 |
-| 离线训练 | `./run.sh train-tomorrow` | 不接受阶段或 `run_id` 参数；一次调用连续完成全部可用 C3/V3 阶段，支持原子断点续跑，永不自动 promotion 或激活 V3 |
+| 离线训练 | `./run.sh train-tomorrow` | 不接受阶段或 `run_id` 参数；一次调用连续完成父工件已满足的单一 V3 预注册阶段，支持原子断点续跑，永不自动 promotion 或激活 V3 |
 
 当前三个组合命令及 `train-tomorrow` 均由 `trader-cli` 单一编排器
 统一拥有。Linux/macOS 与 PowerShell 不复制业务流程。普通阶段
@@ -1782,14 +1782,24 @@ H1 免费来源能力探针使用 `score_h1_source_capability_audit_v2`，优先
 不得调用第二套外部 HTTP 客户端或保存供应商原始载荷。公开执行投影为
 `codex_a_h1_capability_execution_v2`，显式列出逐来源能力、探测失败、三策略终态、父工件 hash、是否生成
 OOF/model 以及生产/自动更新权限。当前真实审计已使三个策略、标签、残差账本和 C3 均以
-`historical_data_insufficient` 收口，因此不得启动全量 H1 下载、训练、确认或终端留出。
+`historical_data_insufficient` 收口，因此不得启动该旧 H1 身份的全量下载、训练、确认或终端留出；新的
+BaoStock v2 日线能力只按下一段独立计划执行，不改写这个结论。
 
-荐股策略第 15.1.38 节规划 `score_baostock_daily_core_v1` 作为仓库外离线共同日线来源；当前仍为计划中，
-尚未加入活动依赖或入口。未来只允许显式
-`trader-cli research-baostock-history --runtime-dir <仓库外绝对路径> --sessions 1500` 装配 BaoStock gateway、
-分片 SQLite/checkpoint、确定性合并和覆盖审计，普通启动、`check`、Web、`train-tomorrow`、bootstrap 和
-生产调度均不得隐式触发。该数据源只能提供前复权/未复权日线核心，不能构造历史 11:20/14:50 锚点或
-补齐历史 `effective_at`；日线合格不得自动改变三策略 H1 终态、打开留出、训练或取得生产权限。
+荐股策略第 15.1.38 节规划 `score_baostock_daily_core_v2` 作为仓库外离线共同日线来源；当前仍为计划中，
+尚未加入活动依赖或入口，上一版 1500 日计划没有正式数据工件且已被替代。未来只允许安装 wheel 的
+`[research]` optional extra 后显式执行
+`trader-cli research-baostock-history --runtime-dir <仓库外绝对路径> --sessions 2000`。规范库以代码日期为
+唯一行，在同一行保存未复权/前复权字段，每只股票最多 2000 个逻辑记录；新股、退市股和来源不足股票按
+真实区间少于 2000 条，不补值。`--sessions` 接受 1–2000、默认 2000，超限在任何外部 I/O 前失败；只有
+2000 日运行可以形成权威全量 manifest。Codex A 独占 gateway、分片/合并内容语义、覆盖审计、manifest/hash 和历史
+行业/资格事实能力；Codex D 只拥有可选依赖、CLI、最多两个独立 SDK 子进程、每次调用 60 秒墙钟、最多两次
+重试、每进程每秒一次查询、锁/取消/恢复和状态投影。普通启动、`check`、Web、`train-tomorrow`、bootstrap
+和生产调度均不得隐式触发。
+
+该数据源只能提供日线、日历和供应商明确返回的基础事实，不能构造历史 11:20/14:50 锚点或单独补齐历史
+行业、证券资格和风险事实 `effective_at`。全体和逐板代码日期覆盖均达到 95%、全窗口老股完整率、逐股
+失败、停牌证据、最近 200 日隔离及全部 hash 必须共同进入 manifest；日线合格不得自动改变三策略旧 H1
+终态、打开留出、训练或取得生产权限。V3 只有在独立历史事实能力也通过后才可消费该日线父工件。
 
 Codex C 的显式 `scripts/codex_c_terminal_holdout.py` 只接受仓库外 Codex A 父工件目录，先校验 capability、
 标签预注册和 A terminal index 的父 hash，再通过 Today、Tomorrow、D25 类型化 holdout service 封存各自
@@ -1804,22 +1814,28 @@ Holm 或模型数据的联合报告 hash；候选家族、确认报告、Holm �
 `CodexBTerminalArtifactStore` 使用显式字段白名单、原子写入、同内容幂等、异内容冲突和哈希篡改失败关闭，
 不接入生产配置、Web、DeepSeek 或活动数据库。
 
-Codex B 的 V1/V2/C3 原始预测联合器同时提供
+旧 Codex B 的 V1/V2/C3 原始预测联合器只保留不可变历史数据不足工件
 `tomorrow_joint_insufficient_terminal_v1`：父 completion 或任一 profile 原始预测不可用时，封存固定
 profile 顺序、父 hash 和失败原因，`prediction_rows`、`holm_test_count`、模型 hash 与终端留出均保持未开启。
-该终态只允许由显式研究应用调用，正常联合训练/预测路径不读取或改写它。
+该终态只允许由显式历史审计读取；新 V3 训练、编排、预测和生产路径均不得读取、续写或改造它。
 
-荐股策略文档第 15.1.35–15.1.36 节另立 Tomorrow 日线收盘代理与 V1/V2/C3 原始预测级联合研究路线。
+荐股策略文档第 15.1.35–15.1.36 节另立 Tomorrow 单一行业 Ridge/LightGBM 50/50 日线收盘代理路线。
 该路线只允许显式离线命令装配隔离的 `domain/application/infra/research` 服务，训练参数、样本、报告和候选
-工件不得进入生产组合根、HTTP、SSE、Web、活动数据库或冻结链。日线代理通过后，冻结工件还必须加入
-第 15.1.32 节共同 Holm 家族并通过从未开启的 14:50 点时终端留出；在此之前不创建 V3 生产资源、配置值
-或启动映射。未来若再次取得人工生产授权，模型与联合权重只能作为 SHA-256 绑定 wheel 资源加载，配置
-只选择已批准 profile；V3 对外仍是组合根唯一注入的一个 `TomorrowModelPredictorPort`，内部 V1/V2/C3
-只产生映射前原始预测，最终只生成一次 `base_score`。当前生产仍只接受 `v1|v2`、默认 V1。
+工件不得进入生产组合根、HTTP、SSE、Web、活动数据库或冻结链。每股最多读取 2000 个代码日期记录；每个
+行业至少有 1250 个特征/标签完整日期，先隔离最新 200 日给新的
+`tomorrow_v3_point_in_time_holdout_v1`，其余日期再按 60%/20%/20% 和两个 5 日 embargo 形成开发、确认和
+日线代理终端段。该新点时留出不加入或重开已经完成的第 15.1.32 节。
+
+V3 不读取 V1/V2/C3 运行时预测，不训练二层联合器，不做 stacking，只生成一次成本调整后的预期净超额和
+一次 `base_score`。标准生产路径必须依次完成日线代理、新 14:50 留出、冻结前影子和风险报告，再由用户
+另立授权批次；若点时证据客观不可取得，保留的人工越权路径也必须由新指令绑定具体 model/report hash，
+此前对路径的允许不构成预授权。获批模型只能作为 SHA-256 绑定 wheel 资源加载，配置只选择已批准 profile；
+V3 对外仍是组合根唯一注入的一个 `TomorrowModelPredictorPort`。当前生产仍只接受 `v1|v2`、默认 V1。
 
 该路线唯一脚本入口为 `./run.sh train-tomorrow`。用户不传内部阶段、`run_id`、模型参数或
 工件路径；隔离编排器从规范和输入 hash 推导身份，一次调用连续完成所有父工件已满足的开发训练、一次
-确认、一次日线代理留出和一次 14:50 点时留出。中断后同一命令从原子检查点继续，已有终态只返回原结果。
+确认和一次日线代理留出；只有新的 14:50 父数据与隔离证明合格时才打开一次新点时留出。中断后同一命令
+从原子检查点继续，已有终态只返回原结果。
 最终目录 `.runtime/v2/research/tomorrow-v3/<run_id>/` 只公开 `report.json` 和 `model.json`；全量特征、
 标签及 OOF 预测位于内部 `evidence/` Parquet 分区。主程序不读取研究目录，只有两级留出通过并取得新授权
 后，独立发布批次才可把 `model.json` 转换为 hash 绑定 wheel 资源。该入口不包含 promotion，也不得修改
