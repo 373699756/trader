@@ -6,6 +6,14 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户本轮要求继续执行推荐策略第 15 节 Codex B 未完成任务。复核确认 15.1.38 的 Codex B 波次 1 输入兼容
+  契约已完成，但后续 V3 训练仍必须等待 Codex A 的真实 2000 日合格 manifest；同步修正文档，将 D 的执行模型
+  明确为受控独立子进程监督。2026-09-02 显式探针：`--sessions 1` 返回
+  `supplier_login_failed_unboundlocalerror`；`--sessions 2000` 在外部 I/O 前因可用空间低于 30GB 返回
+  `resource_blocked/disk_below_30gb`（约 8.85GiB 可用），未创建全量运行目录或研究工件。15.1.38 仍为
+  `pending`，15.1.35 仍为 `blocked_by_15_1_38`；本批没有训练、收益、终端留出或生产权限变化。
+  `Regression-Key: codex-b-baostock-blocker-evidence-v1`。
+
 - 用户要求继续执行推荐策略第 15.1.38 节 Codex D 未完成任务。本批接入 `[research]` 可选 BaoStock 依赖，新增
   `research-baostock-history --runtime-dir <仓库外绝对路径> --sessions 1..2000` 显式入口及 `research-status`
   状态投影；实现每股独立 WAL SQLite 分片、逐行 `next()/get_row_data()` 查询、最多两个子进程、60 秒墙钟、
@@ -226,6 +234,12 @@ All notable changes to this project are documented here.
   raw/qfq 两侧明确标记时才算取得，未知缺行不再推断为停牌。
 
 ### Verification
+
+- `codex-b-baostock-blocker-evidence-v1`：`--sessions 1` 真实 BaoStock 探针返回
+  `supplier_login_failed_unboundlocalerror`；`--sessions 2000` 在任何外部 I/O 前返回
+  `resource_blocked/disk_below_30gb`，`df` 显示 `/tmp` 文件系统约 8.85GiB 可用。14 项 B/运行时/文档契约
+  定向测试通过；`make format-check`、`make lint`、`make type-check` 和 `git diff --check` 通过。本批仅修改
+  文档与交付记录，未运行全量测试、打包或浏览器门禁（不适用）。
 
 - `codex-d-baostock-history-integration-v1`：BaoStock 逐行归一化、raw/qfq 同键合并、WAL 分片、请求参数/路径/
   上限、CLI 显式入口和普通 CLI 懒加载契约定向测试通过；受影响文件 Ruff、mypy、`bash -n run.sh` 通过。
@@ -3404,9 +3418,9 @@ All notable changes to this project are documented here.
 
 ### Residual Risks
 
-- `baostock-daily-core-v2-data-plane-v1`：本批完成 A 的工程数据面，但未把 fixture 当作真实供应商证据；当前
-  BaoStock 登录探针仍失败，尚无 2000 日全量 SQLite/合格覆盖 manifest，也未实测 30GB、峰值 RSS、全量耗时
-  或 Python 3.10–3.14 的真实 SDK 行为。BaoStock 单独不能证明历史行业、资格、硬过滤和风险事实
+- `codex-b-baostock-blocker-evidence-v1`：本批复核未解除 A 的外部前置条件；真实登录探针仍失败，2000 日命令
+  因本机可用空间约 8.85GiB 低于 30GB 在外部 I/O 前阻塞。尚无 2000 日全量 SQLite/合格覆盖 manifest，也未
+  实测峰值 RSS、全量耗时或 Python 3.10–3.14 的真实 SDK 行为。BaoStock 单独不能证明历史行业、资格、硬过滤和风险事实
   `effective_at`，能力工件因此保持 `historical_data_insufficient`，15.1.35 仍阻塞；未训练模型、未打开
   14:50 留出，`point_in_time_parity=false`、`production_authority=false`。
 

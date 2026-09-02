@@ -1787,13 +1787,15 @@ OOF/model 以及生产/自动更新权限。当前真实审计已使三个策略
 BaoStock v2 日线能力只按下一段独立计划执行，不改写这个结论。
 
 荐股策略第 15.1.38 节原计划中，现已完成 D 的依赖、显式入口、分片生命周期、状态投影和 A 数据端口集成；真实全量下载仍受
-供应商登录能力阻塞，尚未形成合格全量 manifest。只允许安装 wheel 的
+供应商登录能力和本机资源阻塞，尚未形成合格全量 manifest。2026-09-02 显式探针中，`--sessions 1` 返回
+`supplier_login_failed_unboundlocalerror`；`--sessions 2000` 在外部 I/O 前因可用空间低于 30GB 返回
+`resource_blocked/disk_below_30gb`，实测 `/tmp` 所在文件系统约 8.85GiB 可用，未创建全量运行目录或研究工件。只允许安装 wheel 的
 `[research]` optional extra 后显式执行
 `trader-cli research-baostock-history --runtime-dir <仓库外绝对路径> --sessions 2000`。规范库以代码日期为
 唯一行，在同一行保存未复权/前复权字段，每只股票最多 2000 个逻辑记录；新股、退市股和来源不足股票按
 真实区间少于 2000 条，不补值。`--sessions` 接受 1–2000、默认 2000，超限在任何外部 I/O 前失败；只有
 2000 日运行可以形成权威全量 manifest。Codex A 独占 gateway、分片/合并内容语义、覆盖审计、manifest/hash 和历史
-行业/资格事实能力；Codex D 只拥有可选依赖、CLI、最多两个独立 SDK 子进程、每次调用 60 秒墙钟、最多两次
+行业/资格事实能力；Codex D 只拥有可选依赖、CLI、最多两个受控独立 SDK 子进程、每次调用 60 秒墙钟、最多两次
 重试、每进程每秒一次查询、锁/取消/恢复和状态投影。普通启动、`check`、Web、`train-tomorrow`、bootstrap
 和生产调度均不得隐式触发。
 

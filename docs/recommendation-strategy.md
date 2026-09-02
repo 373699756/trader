@@ -1934,7 +1934,9 @@ API/SSE、冻结恢复和发布门禁。任一父数据不足或拒绝都必须�
 #### 15.1.38 BaoStock 2000 日共同日线下载与四路实施计划
 
 状态：`pending`，且是当前唯一下一执行章节；Codex C 工程契约已完成，D 的依赖、显式入口、分片生命周期、状态投影已完成，
-但供应商登录失败，A 的权威全量下载与合格 manifest 尚未完成。
+但供应商登录失败，A 的权威全量下载与合格 manifest 尚未完成。2026-09-02 的显式探针中，`--sessions 1`
+返回 `supplier_login_failed_unboundlocalerror`；`--sessions 2000` 在外部 I/O 前因本机可用空间低于 30GB
+返回 `resource_blocked/disk_below_30gb`（实测约 8.85GiB），因此没有创建全量运行目录或研究工件。
 上一版 1500 日计划未生成正式数据工件，现由新的 `score_baostock_daily_core_v2` 取代。目标是截至
 `2026-08-31` 的最近 2000 个交易所
 开市日，每只股票最多 2000 个代码-日期逻辑记录；新上市、已退市或来源实际不足的股票按真实有效区间少于
@@ -1985,7 +1987,7 @@ RSS 不超过 4GB。失败保留最近完整分片和 manifest，不删除可恢
 | Codex A | Codex A 独占数据内容语义：类型化 gateway/值对象、raw/qfq 同行归一化、交易日历与股票池、分片 SQLite、checkpoint、确定性合并、覆盖审计、manifest/hash 和历史事实来源能力 | `baostock_daily*`、`baostock_daily_audit*`、`historical_effective_facts*` 及测试；输出唯一最终 SQLite 和 manifest | 不改依赖/CLI/生产缓存，不构造 11:20/14:50，不读取收益 |
 | Codex B | 只校验冻结日线 port 是否满足六 Alpha 的字段、单位、键和 hash 消费契约 | fixture 契约和 `tomorrow_v3_input_compatibility` 结果 | Codex B 不实现下载、覆盖审计或切分，不训练 V3，不读取收益 |
 | Codex C | 只验证最新 200 日保持不可读取、日线来源不能声称点时一致，以及新 V3 留出身份与旧 15.1.32 隔离；工程契约已完成 | `baostock_holdout_isolation_contract` 及测试 | Codex C 不定义或重切数据集，不打开留出，不计算收益 |
-| Codex D | 集成 `[research]` 依赖、显式命令、进程池/锁/超时/取消/恢复、状态投影和共享文档；调用 A 的分片与合并服务并执行真实全量下载 | `trader-cli research-baostock-history --runtime-dir <仓库外绝对路径> --sessions 2000`；只读 status、最终 SQLite/manifest、全量摘要 | Codex D 不决定覆盖是否通过，不改内容 hash；普通启动、`check`、Web、bootstrap、生产调度或 `train-tomorrow` 不得隐式下载 |
+| Codex D | 集成 `[research]` 依赖、显式命令、受控独立子进程监督、锁/超时/取消/恢复、状态投影和共享文档；调用 A 的分片与合并服务并执行真实全量下载 | `trader-cli research-baostock-history --runtime-dir <仓库外绝对路径> --sessions 2000`；只读 status、最终 SQLite/manifest、全量摘要 | Codex D 不决定覆盖是否通过，不改内容 hash；普通启动、`check`、Web、bootstrap、生产调度或 `train-tomorrow` 不得隐式下载 |
 
 Codex B 波次 1 状态：已完成。`tomorrow_v3_input_compatibility_v1` 通过只读类型化 port 消费冻结输入描述，
 固定检查 `score_baostock_daily_core_v2`、截至 2026-08-31 的 2000 日身份、`(code, trade_date)` 主键、
@@ -2011,7 +2013,7 @@ Codex C 已实现纯领域 `baostock_holdout_isolation_contract`，它只消费 
 | 波次 | Codex A | Codex B | Codex C | Codex D | 退出条件 |
 |---|---|---|---|---|---|
 | 1：契约 | 冻结同行 schema、分片/合并、覆盖分母和事实能力 | 已完成特征消费 fixture 与 hash 绑定兼容报告 | 已完成留出隔离 fixture 与纯领域审计 | 冻结 optional extra、CLI、路径、进程和状态 schema | hash、上限、失败关闭和 `production_authority=false` 全部通过，尚不联网 |
-| 2：实现 | 完成 SDK adapter、下载、checkpoint、审计和 manifest codec | 保持只读消费验证 | 保持留出关闭 | 接入单一显式命令、受控进程池和取消 | 单股/小批真实下载二次幂等；断网、超时、SDK 异常、篡改、重复和中断恢复测试通过 |
+| 2：实现 | 完成 SDK adapter、下载、checkpoint、审计和 manifest codec | 保持只读消费验证 | 保持留出关闭 | 接入单一显式命令、受控独立子进程监督和取消 | 单股/小批真实下载二次幂等；断网、超时、SDK 异常、篡改、重复和中断恢复测试通过 |
 | 3：全量下载 | 只读支持 provider 缺陷定位并裁决覆盖 | 不启动模型训练 | 保持终端留出关闭 | 执行最近 2000 个交易所开市日全 A 股下载、失败重试并调用 A 的确定性合并 | 最终 manifest 给出实际股票、应有/取得单元、全体/逐板/逐股覆盖、2000 日历、最新 200 日、失败数和全部 SHA-256 |
 | 4：研究交接 | 发布只读日线与历史事实能力 port，不改旧终态 | 只在两个父 manifest 合格时确认 V3 输入可消费 | 确认新旧留出身份隔离 | 汇总 `research-status`，不自动启动训练 | 两个父能力均合格时 15.1.35 变为 `pending`；历史事实不合格时变为 `blocked_by_historical_effective_facts` |
 
