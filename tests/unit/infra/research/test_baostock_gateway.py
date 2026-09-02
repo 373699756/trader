@@ -1,0 +1,93 @@
+import pytest
+
+from trader.domain.research.baostock_daily import BaoStockDailySpec
+from trader.infra.research.baostock_daily import BaoStockRowGateway
+
+
+class _Result:
+    def __init__(self, fields, rows):
+        self.error_code = "0"
+        self.error_msg = "success"
+        self.fields = fields
+        self._rows = iter(rows)
+        self._current = None
+
+    def next(self):
+        try:
+            self._current = next(self._rows)
+        except StopIteration:
+            return False
+        return True
+
+    def get_row_data(self):
+        return self._current
+
+    def get_data(self):
+        raise AssertionError("get_data must never be used")
+
+
+class _Sdk:
+    __version__ = "0.9.3"
+
+    def query_trade_dates(self, **_kwargs):
+        return _Result(("calendar_date", "is_trading_day"), (("2026-08-29", "1"), ("2026-08-30", "1")))
+
+    def query_stock_basic(self):
+        return _Result(
+            ("code", "code_name", "ipoDate", "outDate", "type", "status"),
+            (("sh.600001", "A", "2020-01-01", "", "1", "1"),),
+        )
+
+    def query_history_k_data_plus(self, code, fields, **kwargs):
+        assert code == "sh.600001"
+        adjustment = "3" if kwargs["adjustflag"] == "3" else "2"
+        rows = (
+            (
+                "2026-08-29",
+                code,
+                "10",
+                "10.5",
+                "9.8",
+                "10.2",
+                "9.9",
+                "100",
+                "1000",
+                adjustment,
+                "1.2",
+                "1",
+                "3.03",
+            ),
+            (
+                "2026-08-30",
+                code,
+                "10",
+                "10.5",
+                "9.8",
+                "10.2",
+                "9.9",
+                "100",
+                "1000",
+                adjustment,
+                "1.2",
+                "1",
+                "3.03",
+            ),
+        )
+        return _Result(tuple(fields.split(",")), rows)
+
+
+def test_gateway_consumes_only_baostock_row_iteration_boundary() -> None:
+    gateway = BaoStockRowGateway(_Sdk(), python_version="3.14.0", dependency_versions=(("pandas", "2.3.0"),))
+    spec = BaoStockDailySpec(sessions=2)
+
+    calendar = gateway.fetch_calendar(spec)
+    universe = gateway.fetch_universe(spec)
+    batch = gateway.fetch_code_batch(spec, universe[0], calendar)
+
+    assert len(calendar.open_dates) == 2
+    assert universe[0].code == "600001"
+    assert len(batch.cells) == 2
+    assert all(cell.status == "complete" for cell in batch.cells)
+    assert batch.cells[0].unadjusted is not None
+    assert batch.cells[0].unadjusted.pct_change == pytest.approx(0.0303)
+    assert batch.cells[0].unadjusted.turnover == pytest.approx(0.012)

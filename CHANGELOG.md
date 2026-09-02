@@ -154,6 +154,13 @@ All notable changes to this project are documented here.
   输入、乱序、缓存冷热、部分来源失败、latest-wins 替换和冻结边界的决策 hash 等价结果，并证明脏集
   收缩；合法空推荐仍保留真实候选分母。`Regression-Key: scoring-hot-path-efficiency-baseline-v1`。
 
+- 用户依据 `recommendation-strategy.md` 执行第 15.1.38 节 Codex A 未完成任务。本批新增
+  `score_baostock_daily_core_v2` 类型化数据面：BaoStock 逐行 gateway、2000 日交易日历/上市退市有效股票池、
+  raw/qfq 同 `(code, trade_date)` 逻辑单元、WAL SQLite 分片/checkpoint、确定性合并、全体/逐板/逐股覆盖审计、
+  来源版本及 SHA-256 manifest、历史行业/资格/硬过滤/风险事实 `effective_at` 能力工件，以及固定标签和唯一
+  V3 切分工件。A 的冻结 store 实现 B 的只读输入描述 port；所有产物保持留出关闭、无点时一致和无生产权限。
+  `Regression-Key: baostock-daily-core-v2-data-plane-v1`。
+
 ### Fixed
 
 - 用户把 BaoStock 下载上限更新为每股最多 2000 条，并要求按 Review 建议消除计划矛盾。确认原因是原
@@ -192,6 +199,11 @@ All notable changes to this project are documented here.
   请求节省量。同步收窄确认器可空均值的类型并公开 `CandidateConfirmationPlan`，避免严格 mypy 门禁失败。
   `Regression-Key: codex-b-historical-filter-confirmation-v1-runtime-fix`。
 
+- `baostock-daily-core-v2-data-plane-v1`：修复供应商边界把 BaoStock `pctChg`/`turn` 百分数误当 ratio 的单位
+  风险，现统一除以 100 并校验返回代码和复权标记；本地 SQLite 内容冲突不再被误分类为供应商失败。
+  checkpoint/batch hash、损坏 context、孤立或冲突行、汇总计数/比例和零应有日期人口均失败关闭，停牌只有
+  raw/qfq 两侧明确标记时才算取得，未知缺行不再推断为停牌。
+
 ### Verification
 
 - `tomorrow-v3-input-compatibility-v1`：领域与应用定向测试覆盖完整 fixture、字段缺失、单位错误、身份/截止/
@@ -205,6 +217,12 @@ All notable changes to this project are documented here.
   旧联合/stacking 和过时阻塞状态扫描无残留，完整 diff Review 与 `git diff --check` 通过。本批只修改 Markdown
   和文档契约测试，不修改依赖、入口或运行代码，因此 `make test`、`make package`、仓库外 wheel、真实下载、
   供应商和浏览器门禁不适用；这些门禁由第 15.1.38 节实现批次执行。
+
+- `baostock-daily-core-v2-data-plane-v1`：19 项 Codex A 定向测试通过，覆盖 2000 上限、同行归一化、停牌空值、
+  IPO/退市分母、200 日保留、失败续传、WAL/幂等/冲突/篡改、确定性合并、manifest/hash、历史事实不足、
+  唯一切分和 B 只读描述 port；全部 research unit、相关 component、BaoStock/Tomorrow V3 文档契约及 V2 架构
+  契约扩大回归通过。13 个本批文件 Ruff format/check、6 个源文件 mypy 和本批 `git diff --check` 通过。
+  本批不改依赖、CLI、进程、生产评分或 Web，故完整构建、wheel 和浏览器门禁不适用于 A 独占提交。
 
 - `baostock-1500-daily-roadmap-v1`：新增文档契约测试固定数据身份、1500 日、截止日、双复权口径、四路
   所有权、新股应有交易日分母、点时否定边界和无生产权限；本批新增及相邻 V3 文档契约 6 项、测试文件
@@ -3351,6 +3369,12 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- `baostock-daily-core-v2-data-plane-v1`：本批完成 A 的工程数据面，但未把 fixture 当作真实供应商证据；当前
+  BaoStock 登录探针仍失败，尚无 2000 日全量 SQLite/合格覆盖 manifest，也未实测 30GB、峰值 RSS、全量耗时
+  或 Python 3.10–3.14 的真实 SDK 行为。BaoStock 单独不能证明历史行业、资格、硬过滤和风险事实
+  `effective_at`，能力工件因此保持 `historical_data_insufficient`，15.1.35 仍阻塞；未训练模型、未打开
+  14:50 留出，`point_in_time_parity=false`、`production_authority=false`。
 
 - `tomorrow-v3-input-compatibility-v1`：当前只证明 B 的 fixture 消费边界，A 尚未提供真实 BaoStock v2
   manifest/port，D 尚未集成 SDK、入口和进程控制，也未执行 2000 日全量下载；历史行业、资格和风险事实
