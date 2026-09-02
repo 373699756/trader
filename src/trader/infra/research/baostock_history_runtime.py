@@ -59,7 +59,7 @@ BAOSTOCK_MAX_RSS_MB = 4096.0
 
 
 class _BaoStockSessionSdkPort(BaoStockSdkPort, Protocol):
-    def login(self, user_id: str = "anonymous", password: str = "123456") -> BaoStockRowResult: ...
+    def login(self) -> BaoStockRowResult: ...
 
     def logout(self) -> BaoStockRowResult: ...
 
@@ -734,29 +734,9 @@ def _silence_vendor_output() -> None:
 
 
 def _login(sdk: _BaoStockSessionSdkPort) -> None:
-    configured_user_id = os.environ.get("BAOSTOCK_USER_ID")
-    configured_password = os.environ.get("BAOSTOCK_PASSWORD")
-    configured_api_key = os.environ.get("BAOSTOCK_API_KEY")
-    user_id = (configured_user_id if configured_user_id is not None else "anonymous").strip()
-    password = configured_password if configured_password is not None else "123456"
-    if not user_id or not password:
-        raise RuntimeError("supplier_login_credentials_missing")
-    api_key = (configured_api_key or "").strip()
-    if api_key:
-        setter = getattr(sdk, "set_API_key", None)
-        if not callable(setter):
-            raise RuntimeError("supplier_api_key_unsupported")
-        try:
-            setter(api_key)
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            raise RuntimeError("supplier_api_key_rejected") from exc
     try:
-        # Preserve BaoStock's proven anonymous entrypoint when no credentials
-        # were configured; some SDK-compatible ports only implement login().
-        if configured_user_id is None and configured_password is None:
-            result = sdk.login()
-        else:
-            result = sdk.login(user_id=user_id, password=password)
+        # Match the working BaoStock integration: use its anonymous defaults.
+        result = sdk.login()
     except PermissionError as exc:
         raise RuntimeError("supplier_login_network_denied") from exc
     except TimeoutError as exc:

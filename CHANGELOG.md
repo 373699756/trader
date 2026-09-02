@@ -191,10 +191,9 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
-- `baostock-anonymous-login-compat-v1`：对比用户提供的旧下载脚本后，确认其无凭据路径调用的是无参数
-  `bs.login()`。研究 runtime 现仅在显式配置用户/密码时传递参数；匿名默认路径（含仅配置 API key 的路径）
-  保留 SDK 原生无参数调用形状，同时继续使用有界凭据/API key 错误映射，不记录敏感值。该兼容修复不绕过
-  BaoStock 服务端账号/IP 黑名单。
+- `baostock-anonymous-login-v2`：按用户指定的 `/tmp/baostock_download_1500.py` 收敛 BaoStock 登录实现，
+  runtime 统一直接调用 SDK 原生无参数 `login()`，移除用户名、密码和 API key 分支；查询继续使用逐行
+  `next()/get_row_data()`。该实现不绕过 BaoStock 服务端账号/IP 黑名单。
 
 - `codex-d-research-v9-baostock-gate-v1`：诊断脚本不再按已退役的 v5 `active_research` 结构解析 v9 状态；现按
   公开 v9 投影白名单输出 BaoStock 状态、V3 输入/生产 blockers，并在任一 blocker 存在时失败关闭。
@@ -252,7 +251,7 @@ All notable changes to this project are documented here.
 
 ### Verification
 
-- `baostock-anonymous-login-compat-v1`：BaoStock gateway/runtime 及诊断定向测试通过，受影响文件 Ruff
+- `baostock-anonymous-login-v2`：BaoStock gateway/runtime 及诊断定向测试通过，受影响文件 Ruff
   check/format-check 通过。真实网络下旧 `/tmp` 下载脚本与修复后的 `download_history --sessions 1` 均返回
   `supplier_login_failed_blacklisted`（供应商错误码 10001011 的脱敏映射），证明当前阻塞是供应商匿名账号/IP
   状态而非登录参数或逐行查询实现；按计划未执行小批重试或 `--sessions 2000`。
