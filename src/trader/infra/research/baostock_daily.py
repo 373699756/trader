@@ -506,44 +506,14 @@ class SQLiteBaoStockDailyShard:
             checkpoints = connection.execute(
                 "SELECT code, state, error_code, batch_hash FROM checkpoints ORDER BY code"
             ).fetchall()
-        cells_by_code: dict[str, list[BaoStockDailyCell]] = {}
-        for code, trade_date, payload_json, stored_hash in cell_rows:
-            cell = _decode_cell(_json_object(payload_json))
-            if cell.code != code or cell.trade_date.isoformat() != trade_date or cell.content_hash != stored_hash:
-                raise BaoStockDailyArtifactConflictError("BaoStock daily cell payload or hash is invalid")
-            cells_by_code.setdefault(code, []).append(cell)
-        batches: list[BaoStockCodeBatch] = []
-        for code, metadata_json, stored_hash in batch_rows:
-            batch = _decode_batch_metadata(code, _json_object(metadata_json), tuple(cells_by_code.pop(code, ())))
-            if batch.content_hash != stored_hash:
-                raise BaoStockDailyArtifactConflictError("BaoStock code batch payload or hash is invalid")
-            batches.append(batch)
-        if cells_by_code:
-            raise BaoStockDailyArtifactConflictError("BaoStock shard contains orphan daily cells")
-        batch_hashes = {item.code: item.content_hash for item in batches}
-        failures: list[tuple[str, str]] = []
-        checkpoint_codes: set[str] = set()
-        universe_codes = {item.code for item in context.universe}
-        for code, state, error_code, batch_hash in checkpoints:
-            if not isinstance(code, str) or code in checkpoint_codes or code not in universe_codes:
-                raise BaoStockDailyArtifactConflictError("BaoStock shard checkpoint identity is invalid")
-            checkpoint_codes.add(code)
-            if state == "completed":
-                if error_code is not None or batch_hashes.get(code) != batch_hash:
-                    raise BaoStockDailyArtifactConflictError("BaoStock shard checkpoint hash is invalid")
-            elif state == "failed":
-                if not isinstance(error_code, str) or not _valid_error_code(error_code) or batch_hash is not None:
-                    raise BaoStockDailyArtifactConflictError("BaoStock shard failed checkpoint is invalid")
-                failures.append((code, error_code))
-            else:
-                raise BaoStockDailyArtifactConflictError("BaoStock shard checkpoint state is invalid")
-        if checkpoint_codes.intersection(batch_hashes) != set(batch_hashes):
-            raise BaoStockDailyArtifactConflictError("BaoStock shard completed checkpoint is missing")
+        cells_by_code = _decode_cell_rows(cell_rows)
+        batches = _decode_batch_rows(batch_rows, cells_by_code)
+        failures = _decode_checkpoint_rows(checkpoints, context, batches)
         return BaoStockShardSnapshot(
             spec,
             context,
-            tuple(batches),
-            tuple(failures),
+            batches,
+            failures,
         )
 
     def _require_context(self, spec: BaoStockDailySpec) -> BaoStockShardContext:
@@ -551,6 +521,65 @@ class SQLiteBaoStockDailyShard:
         if context is None:
             raise BaoStockDailyArtifactConflictError("BaoStock shard context is missing")
         return context
+
+
+def _decode_cell_rows(rows: Sequence[Sequence[object]]) -> dict[str, list[BaoStockDailyCell]]:
+    cells_by_code: dict[str, list[BaoStockDailyCell]] = {}
+    for code, trade_date, payload_json, stored_hash in rows:
+        cell = _decode_cell(_json_object(cast(str, payload_json)))
+        if cell.code != code or cell.trade_date.isoformat() != trade_date or cell.content_hash != stored_hash:
+            raise BaoStockDailyArtifactConflictError("BaoStock daily cell payload or hash is invalid")
+        if not isinstance(code, str):
+            raise BaoStockDailyArtifactConflictError("BaoStock daily cell code is invalid")
+        cells_by_code.setdefault(code, []).append(cell)
+    return cells_by_code
+
+
+def _decode_batch_rows(
+    rows: Sequence[Sequence[object]],
+    cells_by_code: dict[str, list[BaoStockDailyCell]],
+) -> tuple[BaoStockCodeBatch, ...]:
+    batches: list[BaoStockCodeBatch] = []
+    for code, metadata_json, stored_hash in rows:
+        batch = _decode_batch_metadata(
+            cast(str, code),
+            _json_object(cast(str, metadata_json)),
+            tuple(cells_by_code.pop(cast(str, code), ())),
+        )
+        if batch.content_hash != stored_hash:
+            raise BaoStockDailyArtifactConflictError("BaoStock code batch payload or hash is invalid")
+        batches.append(batch)
+    if cells_by_code:
+        raise BaoStockDailyArtifactConflictError("BaoStock shard contains orphan daily cells")
+    return tuple(batches)
+
+
+def _decode_checkpoint_rows(
+    rows: Sequence[Sequence[object]],
+    context: BaoStockShardContext,
+    batches: tuple[BaoStockCodeBatch, ...],
+) -> tuple[tuple[str, str], ...]:
+    batch_hashes = {item.code: item.content_hash for item in batches}
+    failures: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    universe_codes = {item.code for item in context.universe}
+    for code, state, error_code, batch_hash in rows:
+        code_value = cast(str, code)
+        if code_value in seen or code_value not in universe_codes:
+            raise BaoStockDailyArtifactConflictError("BaoStock shard checkpoint identity is invalid")
+        seen.add(code_value)
+        if state == "completed":
+            if error_code is not None or batch_hashes.get(code_value) != batch_hash:
+                raise BaoStockDailyArtifactConflictError("BaoStock shard checkpoint hash is invalid")
+        elif state == "failed":
+            if not isinstance(error_code, str) or not _valid_error_code(error_code) or batch_hash is not None:
+                raise BaoStockDailyArtifactConflictError("BaoStock shard failed checkpoint is invalid")
+            failures.append((code_value, error_code))
+        else:
+            raise BaoStockDailyArtifactConflictError("BaoStock shard checkpoint state is invalid")
+    if seen.intersection(batch_hashes) != set(batch_hashes):
+        raise BaoStockDailyArtifactConflictError("BaoStock shard completed checkpoint is missing")
+    return tuple(failures)
 
 
 class BaoStockDailyMergedArtifactStore:

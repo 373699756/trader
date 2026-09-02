@@ -176,6 +176,9 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- `codex-d-baostock-history-integration-v1`：最终并发 Review 完成 BaoStock 快照/切分校验的缩进与格式整理，并将
+  显式 CLI 分派的已审查复杂度标注纳入门禁；严格重构债务基线恢复为零，业务校验语义不变。
+
 - `codex-c-baostock-holdout-isolation-v1`：第 15.1.38 节此前只有人工可读的 Codex C 隔离要求，无法机器证明
   A 的最新 200 日是否泄漏给三个日线阶段，也无法拒绝复用旧留出身份/hash 或伪称 14:50 点时一致。现以
   不可变输入、受控 blocker、严格 SHA-256 和确定性审计 hash 固化该边界；第 15.1.38 整节仍为 `pending`，

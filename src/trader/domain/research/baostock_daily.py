@@ -429,9 +429,7 @@ def _validate_coverage_ratios(value: BaoStockCoverageAudit) -> None:
         raise ValueError("BaoStock coverage ratio is invalid")
     expected_ratio = value.obtained_cells / value.expected_cells if value.expected_cells else 0.0
     full_ratio = (
-        value.full_window_stocks_at_95_percent / value.full_window_stock_count
-        if value.full_window_stock_count
-        else 0.0
+        value.full_window_stocks_at_95_percent / value.full_window_stock_count if value.full_window_stock_count else 0.0
     )
     if not math.isclose(value.all_cell_coverage, expected_ratio) or not math.isclose(
         value.full_window_stock_success_ratio, full_ratio
@@ -682,27 +680,27 @@ class BaoStockV3Split:
 
 
 def _validate_v3_split_dates(value: BaoStockV3Split) -> None:
-        ordered_groups = (
-            value.development_dates,
-            value.first_embargo_dates,
-            value.confirmation_dates,
-            value.second_embargo_dates,
-            value.daily_proxy_holdout_dates,
-            value.point_in_time_holdout_dates,
-        )
-        flattened = tuple(day for group in ordered_groups for day in group)
-        if flattened != tuple(sorted(set(flattened))):
-            raise ValueError("BaoStock V3 split dates must be unique and chronological")
-        if len(value.development_dates) < 600 or len(value.confirmation_dates) < 200:
-            raise ValueError("BaoStock V3 development or confirmation dates are insufficient")
-        if len(value.daily_proxy_holdout_dates) < 200 or len(value.point_in_time_holdout_dates) != 200:
-            raise ValueError("BaoStock V3 holdout dates are insufficient")
-        if len(value.first_embargo_dates) != 5 or len(value.second_embargo_dates) != 5:
-            raise ValueError("BaoStock V3 split requires two five-day embargoes")
-        if len(value.early_stopping_dates) != 20 or len(value.calibration_dates) != 20:
-            raise ValueError("BaoStock V3 split requires fixed early-stop and calibration dates")
-        if value.model_fit_dates + value.early_stopping_dates + value.calibration_dates != value.development_dates:
-            raise ValueError("BaoStock V3 development sub-splits are invalid")
+    ordered_groups = (
+        value.development_dates,
+        value.first_embargo_dates,
+        value.confirmation_dates,
+        value.second_embargo_dates,
+        value.daily_proxy_holdout_dates,
+        value.point_in_time_holdout_dates,
+    )
+    flattened = tuple(day for group in ordered_groups for day in group)
+    if flattened != tuple(sorted(set(flattened))):
+        raise ValueError("BaoStock V3 split dates must be unique and chronological")
+    if len(value.development_dates) < 600 or len(value.confirmation_dates) < 200:
+        raise ValueError("BaoStock V3 development or confirmation dates are insufficient")
+    if len(value.daily_proxy_holdout_dates) < 200 or len(value.point_in_time_holdout_dates) != 200:
+        raise ValueError("BaoStock V3 holdout dates are insufficient")
+    if len(value.first_embargo_dates) != 5 or len(value.second_embargo_dates) != 5:
+        raise ValueError("BaoStock V3 split requires two five-day embargoes")
+    if len(value.early_stopping_dates) != 20 or len(value.calibration_dates) != 20:
+        raise ValueError("BaoStock V3 split requires fixed early-stop and calibration dates")
+    if value.model_fit_dates + value.early_stopping_dates + value.calibration_dates != value.development_dates:
+        raise ValueError("BaoStock V3 development sub-splits are invalid")
 
 
 def build_baostock_v3_split(

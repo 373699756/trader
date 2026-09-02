@@ -12,16 +12,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = PROJECT_ROOT / "src" / "trader"
 SELECTED_RULES = ("C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "N")
-# The BaoStock daily contract and its bounded process runner intentionally keep
-# validation/merge branches together; each count is reviewed with the 15.1.38
-# delivery rather than silently suppressing the diagnostics.
-EXPECTED_COUNTS: dict[str, int] = {
-    "C901": 5,
-    "PLR0911": 1,
-    "PLR0912": 3,
-    "PLR0913": 2,
-    "PLR0915": 1,
-}
+EXPECTED_COUNTS: dict[str, int] = {}
 
 
 def main() -> int:

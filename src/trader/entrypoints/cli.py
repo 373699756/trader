@@ -115,7 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI command dispatch
     args = build_parser().parse_args(argv)
     if args.command == "research-baostock-history":
         return _run_baostock_history(args.runtime_dir, args.sessions)
