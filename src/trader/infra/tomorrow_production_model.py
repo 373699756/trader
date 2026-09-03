@@ -22,6 +22,7 @@ _EXPECTED_MODEL_HASH = "27034e52813f1776e2ed218c1c397f481b244fb852b01be08ddc2124
 _EXPECTED_V1_MODEL_HASH = "4291ea514c233a14ab6f9262e72ea541d1e9a794e73d02f10f8220509f6f502b"
 _P2_RESOURCE_NAME = "tomorrow_p2_model.json"
 _V1_RESOURCE_NAME = "tomorrow_v1_model.json"
+_V3_RESOURCE_NAME = "tomorrow_v3_model.json"
 
 
 class PackagedTomorrowProductionModel:
@@ -46,6 +47,10 @@ class PackagedTomorrowProductionModel:
     @property
     def feature_ids(self) -> tuple[str, ...]:
         return self._artifact.feature_ids
+
+    @property
+    def industry_ids(self) -> tuple[str, ...]:
+        return ()
 
     def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
         if not inputs:
@@ -133,6 +138,10 @@ class PackagedLinearTomorrowProductionModel:
     def feature_ids(self) -> tuple[str, ...]:
         return self._feature_ids
 
+    @property
+    def industry_ids(self) -> tuple[str, ...]:
+        return ()
+
     def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
         if not inputs:
             return ()
@@ -144,6 +153,106 @@ class PackagedLinearTomorrowProductionModel:
             TomorrowModelPrediction(item.code, float(prediction), 0.0)
             for item, prediction in zip(inputs, predictions, strict=True)
         )
+
+
+class PackagedV3TomorrowProductionModel:
+    """Hash-bound per-industry Ridge/LightGBM inference for Tomorrow V3."""
+
+    def __init__(self, payload: dict[str, object], stored_hash: str) -> None:
+        if _content_hash(payload) != stored_hash:
+            raise ValueError("packaged Tomorrow V3 production model hash is invalid")
+        if (
+            _text(payload, "profile_id") != "v3"
+            or _text(payload, "schema_version") != "tomorrow_v3_production_model_v1"
+            or not _text(payload, "model_id")
+        ):
+            raise ValueError("packaged Tomorrow V3 production model identity is invalid")
+        self._model_id = _text(payload, "model_id")
+        feature_ids = tuple(_string_list(payload, "feature_ids"))
+        if feature_ids != (
+            "qfq_return_1d",
+            "qfq_return_3d",
+            "qfq_return_5d",
+            "qfq_residual_momentum_20d_skip5",
+            "qfq_residual_momentum_40d_skip5",
+            "qfq_residual_momentum_60d_skip5",
+        ):
+            raise ValueError("packaged Tomorrow V3 feature contract is invalid")
+        self._feature_ids = feature_ids
+        raw_industries = payload.get("industries")
+        if not isinstance(raw_industries, dict) or not raw_industries:
+            raise ValueError("packaged Tomorrow V3 industry models are missing")
+        self._industries: dict[
+            str, tuple[np.ndarray, np.ndarray, float, np.ndarray, lgb.Booster, int, float, float]
+        ] = {}
+        for industry, raw in raw_industries.items():
+            if not isinstance(industry, str) or not isinstance(raw, dict):
+                raise ValueError("packaged Tomorrow V3 industry model is invalid")
+            means = np.asarray(_number_list(raw, "transformer_means"), dtype=np.float64)
+            scales = np.asarray(_number_list(raw, "transformer_scales"), dtype=np.float64)
+            coefficients = np.asarray(_number_list(raw, "ridge_coefficients"), dtype=np.float64)
+            model_text = _text(raw, "lightgbm_model")
+            if (
+                len(means) != len(feature_ids)
+                or len(scales) != len(feature_ids)
+                or len(coefficients) != len(feature_ids)
+            ):
+                raise ValueError("packaged Tomorrow V3 industry feature width is invalid")
+            if np.any(scales <= 0.0):
+                raise ValueError("packaged Tomorrow V3 industry scale is invalid")
+            self._industries[industry] = (
+                means,
+                scales,
+                _number(raw, "ridge_intercept"),
+                coefficients,
+                lgb.Booster(model_str=model_text),
+                _integer(raw, "lightgbm_best_iteration"),
+                _number(raw, "calibration_intercept"),
+                _number(raw, "calibration_slope"),
+            )
+        self._model_hash = stored_hash
+
+    @property
+    def profile_id(self) -> TomorrowScoringProfile:
+        return "v3"
+
+    @property
+    def model_id(self) -> str:
+        return self._model_id
+
+    @property
+    def model_hash(self) -> str:
+        return self._model_hash
+
+    @property
+    def feature_ids(self) -> tuple[str, ...]:
+        return self._feature_ids
+
+    @property
+    def industry_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(self._industries))
+
+    def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
+        predictions: list[TomorrowModelPrediction] = []
+        for item in inputs:
+            model = self._industries.get(item.industry)
+            if model is None:
+                raise ValueError("Tomorrow V3 input industry is not covered")
+            means, scales, intercept, coefficients, booster, iteration, calibration_intercept, calibration_slope = model
+            matrix = np.asarray((item.alpha_features,), dtype=np.float64)
+            if matrix.shape[1:] != (len(self._feature_ids),):
+                raise ValueError("Tomorrow V3 input feature width does not match the packaged artifact")
+            standardized = (matrix - means) / scales
+            ridge = float(intercept + standardized[0] @ coefficients)
+            tree = float(booster.predict(standardized, num_iteration=iteration, num_threads=1)[0])
+            predictions.append(
+                TomorrowModelPrediction(
+                    item.code,
+                    calibration_intercept + calibration_slope * (0.5 * ridge + 0.5 * tree),
+                    abs(ridge - tree),
+                )
+            )
+        return tuple(predictions)
 
 
 def load_packaged_tomorrow_production_model(
@@ -158,6 +267,13 @@ def load_packaged_tomorrow_production_model(
     if profile_id == "v2":
         raw = _resource_payload(_P2_RESOURCE_NAME)
         return _load_p2(raw)
+    if profile_id == "v3":
+        raw = _resource_payload(_V3_RESOURCE_NAME)
+        payload = dict(raw)
+        stored_hash = payload.pop("content_hash", None)
+        if not isinstance(stored_hash, str):
+            raise ValueError("packaged Tomorrow V3 production model hash is missing")
+        return PackagedV3TomorrowProductionModel(payload, stored_hash)
     raise ValueError("unknown Tomorrow scoring profile")
 
 
@@ -238,5 +354,6 @@ def _number_list(payload: dict[str, object], name: str) -> list[float]:
 __all__ = [
     "PackagedLinearTomorrowProductionModel",
     "PackagedTomorrowProductionModel",
+    "PackagedV3TomorrowProductionModel",
     "load_packaged_tomorrow_production_model",
 ]

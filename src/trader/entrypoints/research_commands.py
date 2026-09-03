@@ -11,7 +11,6 @@ from pathlib import Path
 from trader.application.research.historical_label import HistoricalLabelPreregistrationService
 from trader.application.research.research_tomorrow_orchestrator import (
     TomorrowResearchAdvanceResult,
-    TomorrowResearchOrchestrator,
     TomorrowResearchProgressPort,
 )
 from trader.application.research.tomorrow_research_artifacts import (
@@ -131,7 +130,7 @@ def run_research_command(
         tomorrow_holdout = _read_tomorrow_profile_holdout_status(runtime)
         tomorrow_risk = _read_tomorrow_historical_risk_status(runtime)
         tomorrow_research = _read_tomorrow_research_status(runtime)
-        baostock_status = project_baostock_runtime_status(inspect_baostock_history(runtime.runtime_dir))
+        baostock_status = project_baostock_runtime_status(inspect_baostock_history(_history_data_root()))
         print(
             json.dumps(
                 {
@@ -220,40 +219,40 @@ def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
 
 
 def _run_tomorrow_research_orchestrator(runtime: RuntimeSettings) -> int:
-    store = TomorrowResearchArtifactStore(_train_data_root())
-    prerequisite = _tomorrow_research_prerequisite(runtime)
-    try:
-        result = TomorrowResearchOrchestrator(store, prerequisite, _TomorrowResearchProgress()).advance()
-        payload = _tomorrow_research_result_payload(result, store.host_available_disk_gb())
-    except H1ArchiveConflictError:
-        payload = {
-            "schema_version": "tomorrow_research_advance_result_v1",
-            "status": "artifact_conflict",
-            "blockers": ["h1_archive_invalid"],
-            "input_prerequisite_status": "artifact_conflict",
-            "input_prerequisite_hash": "",
-            "production_authority": False,
-            "automatic_model_update": False,
-        }
-        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-        return 1
-    except TomorrowResearchArtifactStoreError:
-        payload = {
-            "schema_version": "tomorrow_research_advance_result_v1",
-            "status": "artifact_conflict",
-            "blockers": ["tomorrow_research_artifact_invalid"],
-            "production_authority": False,
-            "automatic_model_update": False,
-        }
-        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-        return 1
+    del runtime
+    from trader.infra.research.tomorrow_v3_training import run_tomorrow_v3_training
+
+    result = run_tomorrow_v3_training(_history_data_root(), _train_data_root())
+    payload = {
+        "schema_version": "tomorrow_v3_training_result_v1",
+        "status": result.status,
+        "run_id": result.run_id,
+        "manifest_hash": result.manifest_hash,
+        "model_hash": result.model_hash,
+        "industry_count": result.industry_count,
+        "training_rows": result.training_rows,
+        "validation_rows": result.validation_rows,
+        "failure_reasons": list(result.failure_reasons),
+        "blockers": list(result.failure_reasons),
+        "next_stage": "data_manifest" if result.status == "blocked" and not result.manifest_hash else None,
+        "training_anchor": "15:00_close",
+        "runtime_anchor": "14:50",
+        "point_in_time_parity": False,
+        "production_authority": False,
+        "automatic_model_update": False,
+    }
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-    return 0 if result.status in {"advanced", "terminal"} else 1
+    return 0 if result.status == "validated" else 1
 
 
 def _train_data_root() -> Path:
     """Committed training artifacts live beside the source tree's data contract."""
-    return Path(__file__).resolve().parents[3] / "trader" / "data" / "train"
+    return Path(__file__).resolve().parents[3] / "data" / "train"
+
+
+def _history_data_root() -> Path:
+    """BaoStock history is a project-root data input, separate from service runtime state."""
+    return Path(__file__).resolve().parents[3] / "data" / "history"
 
 
 def _read_tomorrow_research_status(runtime: RuntimeSettings) -> dict[str, object]:

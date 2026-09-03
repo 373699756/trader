@@ -73,6 +73,7 @@ class _RawRow:
     momentum: tuple[float, float, float]
     amihud_20d: float
     average_amount_20d: float
+    industry: str
 
 
 class TomorrowProductionModelScoringService:
@@ -80,7 +81,7 @@ class TomorrowProductionModelScoringService:
         if (
             not predictor.model_id
             or len(predictor.model_hash) != 64
-            or predictor.profile_id not in {"v1", "v2"}
+            or predictor.profile_id not in {"v1", "v2", "v3"}
             or not predictor.feature_ids
             or len(set(predictor.feature_ids)) != len(predictor.feature_ids)
             or any(feature_id not in _MODEL_FEATURE_IDS for feature_id in predictor.feature_ids)
@@ -89,6 +90,7 @@ class TomorrowProductionModelScoringService:
         self._predictor = predictor
         self._feature_positions = tuple(_MODEL_FEATURE_IDS.index(item) for item in predictor.feature_ids)
         self._requires_reversal = any(position < 3 for position in self._feature_positions)
+        self._industry_ids = frozenset(getattr(predictor, "industry_ids", ()))
 
     @property
     def model_version(self) -> str:
@@ -102,7 +104,7 @@ class TomorrowProductionModelScoringService:
         return _raw_row(feature, require_reversal=self._requires_reversal) is not None
 
     def status(self) -> TomorrowModelRuntimeStatus:
-        historical_status: Literal["historical_rejected", "historical_unavailable"]
+        historical_status: Literal["historical_rejected", "historical_unavailable", "historical_validated"]
         historical_failure_reasons: tuple[str, ...]
         if self._predictor.profile_id == "v1":
             historical_status = "historical_unavailable"
@@ -110,13 +112,16 @@ class TomorrowProductionModelScoringService:
                 "original_five_candidate_research_artifact_unavailable",
                 "manual_daily_proxy_not_original_research_evidence",
             )
-        else:
+        elif self._predictor.profile_id == "v2":
             historical_status = "historical_rejected"
             historical_failure_reasons = (
                 "quintile_spread_not_positive",
                 "severe_loss_rate_worse",
                 "turnover_limit",
             )
+        else:
+            historical_status = "historical_validated"
+            historical_failure_reasons = ()
         return TomorrowModelRuntimeStatus(
             active=True,
             profile_id=self._predictor.profile_id,
@@ -138,6 +143,8 @@ class TomorrowProductionModelScoringService:
             row = _raw_row(feature, require_reversal=self._requires_reversal)
             if row is None:
                 missing.append(feature.quote.code)
+            elif self._predictor.profile_id == "v3" and row.industry not in self._industry_ids:
+                missing.append(feature.quote.code)
             else:
                 rows.append(row)
         if not rows:
@@ -157,6 +164,7 @@ class TomorrowProductionModelScoringService:
                     )[position]
                     for position in self._feature_positions
                 ),
+                row.industry,
             )
             for index, row in enumerate(rows)
         )
@@ -226,6 +234,7 @@ def _raw_row(feature: FeatureSnapshot, *, require_reversal: bool) -> _RawRow | N
         momentum=(numeric[3], numeric[4], numeric[5]),
         amihud_20d=amihud,
         average_amount_20d=amount,
+        industry=feature.quote.industry.strip(),
     )
 
 

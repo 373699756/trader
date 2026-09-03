@@ -51,7 +51,17 @@ def _daily_manifest() -> BaoStockDailyManifest:
         failure_reasons=("authoritative_calendar_below_2000",),
     )
     versions = BaoStockSourceVersions("fixture", "3.14.0", (("pandas", "2.3.0"),))
-    return BaoStockDailyManifest(digest, digest, digest, digest, versions.content_hash, versions, digest, audit)
+    return BaoStockDailyManifest(
+        digest,
+        digest,
+        digest,
+        digest,
+        versions.content_hash,
+        versions,
+        digest,
+        (),
+        audit,
+    )
 
 
 def test_dataset_terminal_binds_daily_and_effective_fact_failures_without_split(tmp_path) -> None:

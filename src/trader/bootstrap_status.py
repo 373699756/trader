@@ -111,6 +111,9 @@ def _tomorrow_model_payload(status: TomorrowModelRuntimeStatus | None) -> dict[s
         "monitoring_mode": status.monitoring_mode,
         "automatic_model_update": status.automatic_model_update,
         "loss_probability_status": status.loss_probability_status,
+        "training_anchor": status.training_anchor,
+        "runtime_anchor": status.runtime_anchor,
+        "point_in_time_parity": status.point_in_time_parity,
     }
 
 

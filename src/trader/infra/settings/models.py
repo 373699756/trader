@@ -225,7 +225,7 @@ class FactorDefinition:
 class StrategySettings:
     schema_version: int
     strategy_version: str
-    tomorrow_scoring_profile: Literal["v1", "v2"]
+    tomorrow_scoring_profile: Literal["v1", "v2", "v3"]
     deepseek_risk_mapping_version: str
     fusion: FusionSettings
     selection: SelectionSettings

@@ -220,6 +220,89 @@ class BaoStockCodeBatch:
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
 
+@dataclass(frozen=True)
+class BaoStockDailyFact:
+    code: str
+    trade_date: date
+    is_st: bool
+    schema_version: str = "baostock_daily_fact_v1"
+    content_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if _CODE.fullmatch(self.code) is None or self.trade_date > BAOSTOCK_SOURCE_CUTOFF:
+            raise ValueError("BaoStock daily fact identity is invalid")
+        if not isinstance(self.is_st, bool) or self.schema_version != "baostock_daily_fact_v1":
+            raise ValueError("BaoStock daily fact payload is invalid")
+        object.__setattr__(self, "content_hash", canonical_hash(self))
+
+
+@dataclass(frozen=True)
+class BaoStockIndustryInterval:
+    code: str
+    effective_from: date
+    effective_to: date | None
+    industry: str
+    classification: str
+    schema_version: str = "baostock_industry_interval_v1"
+    content_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if (
+            _CODE.fullmatch(self.code) is None
+            or self.effective_from > BAOSTOCK_SOURCE_CUTOFF
+            or (self.effective_to is not None and self.effective_to <= self.effective_from)
+            or not self.industry.strip()
+            or not self.classification.strip()
+            or self.schema_version != "baostock_industry_interval_v1"
+        ):
+            raise ValueError("BaoStock industry interval is invalid")
+        object.__setattr__(self, "industry", self.industry.strip())
+        object.__setattr__(self, "classification", self.classification.strip())
+        object.__setattr__(self, "content_hash", canonical_hash(self))
+
+
+@dataclass(frozen=True)
+class BaoStockCodeDownload:
+    batch: BaoStockCodeBatch
+    daily_facts: tuple[BaoStockDailyFact, ...]
+    schema_version: str = "baostock_code_download_v1"
+    content_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        facts = tuple(sorted(self.daily_facts, key=lambda item: item.trade_date))
+        if (
+            any(item.code != self.batch.code for item in facts)
+            or tuple(item.trade_date for item in facts) != tuple(item.trade_date for item in self.batch.cells)
+            or self.schema_version != "baostock_code_download_v1"
+        ):
+            raise ValueError("BaoStock code download facts do not match its daily batch")
+        object.__setattr__(self, "daily_facts", facts)
+        object.__setattr__(self, "content_hash", canonical_hash(self))
+
+
+@dataclass(frozen=True)
+class BaoStockTrainingRow:
+    code: str
+    trade_date: date
+    board: BaoStockBoard
+    industry: str
+    is_st: bool
+    unadjusted: BaoStockDailySide
+    qfq: BaoStockDailySide
+
+    def __post_init__(self) -> None:
+        if (
+            _CODE.fullmatch(self.code) is None
+            or self.board not in _BOARDS
+            or not self.industry.strip()
+            or self.unadjusted.code != self.code
+            or self.qfq.code != self.code
+            or self.unadjusted.trade_date != self.trade_date
+            or self.qfq.trade_date != self.trade_date
+        ):
+            raise ValueError("BaoStock training row is invalid")
+
+
 def join_baostock_daily_sides(
     code: str,
     expected_dates: tuple[date, ...],
@@ -627,6 +710,39 @@ class BaoStockSourceVersions:
 
 
 @dataclass(frozen=True)
+class BaoStockPartitionRef:
+    relative_path: str
+    board: BaoStockBoard
+    code_prefix: str
+    codes: tuple[str, ...]
+    row_count: int
+    logical_records_hash: str
+    database_sha256: str
+    schema_version: str = "baostock_partition_ref_v1"
+    content_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        codes = tuple(sorted(self.codes))
+        expected_name = f"shards/{self.board}-{self.code_prefix}.sqlite3"
+        if (
+            self.board not in _BOARDS
+            or not re.fullmatch(r"[0-9]{4}", self.code_prefix)
+            or self.relative_path != expected_name
+            or not codes
+            or len(codes) > 100
+            or any(_CODE.fullmatch(code) is None or not code.startswith(self.code_prefix) for code in codes)
+            or len(set(codes)) != len(codes)
+            or self.row_count < 0
+            or _SHA256.fullmatch(self.logical_records_hash) is None
+            or _SHA256.fullmatch(self.database_sha256) is None
+            or self.schema_version != "baostock_partition_ref_v1"
+        ):
+            raise ValueError("BaoStock partition reference is invalid")
+        object.__setattr__(self, "codes", codes)
+        object.__setattr__(self, "content_hash", canonical_hash(self))
+
+
+@dataclass(frozen=True)
 class BaoStockV3LabelContract:
     formula: str = "(close[D+1]/close[D]-1)-eligible_universe_equal_weight_return[D+1]-round_trip_cost"
     primary_cost_bps: int = 20
@@ -748,12 +864,13 @@ class BaoStockDailyManifest:
     logical_records_hash: str
     source_versions_hash: str
     source_versions: BaoStockSourceVersions
-    database_sha256: str
+    catalog_sha256: str
+    partitions: tuple[BaoStockPartitionRef, ...]
     audit: BaoStockCoverageAudit
     production_authority: bool = False
     point_in_time_parity: bool = False
     terminal_holdout_opened: bool = False
-    schema_version: str = "baostock_daily_manifest_v2"
+    schema_version: str = "baostock_daily_manifest_v3"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -763,10 +880,14 @@ class BaoStockDailyManifest:
             self.universe_hash,
             self.logical_records_hash,
             self.source_versions_hash,
-            self.database_sha256,
+            self.catalog_sha256,
         )
         if any(_SHA256.fullmatch(value) is None for value in hashes):
             raise ValueError("BaoStock manifest hash is invalid")
+        partitions = tuple(sorted(self.partitions, key=lambda item: item.relative_path))
+        codes = tuple(code for item in partitions for code in item.codes)
+        if self.audit.status == "coverage_ready" and (not partitions or len(codes) != len(set(codes))):
+            raise ValueError("BaoStock manifest partitions are empty or overlap")
         if self.source_versions.content_hash != self.source_versions_hash:
             raise ValueError("BaoStock manifest source versions hash mismatch")
         if self.audit.spec_hash != self.spec_hash or self.audit.calendar_hash != self.calendar_hash:
@@ -775,8 +896,9 @@ class BaoStockDailyManifest:
             raise ValueError("BaoStock manifest universe parent mismatch")
         if self.production_authority or self.point_in_time_parity or self.terminal_holdout_opened:
             raise ValueError("BaoStock manifest cannot authorize production, parity, or holdouts")
-        if self.schema_version != "baostock_daily_manifest_v2":
+        if self.schema_version != "baostock_daily_manifest_v3":
             raise ValueError("BaoStock manifest schema is invalid")
+        object.__setattr__(self, "partitions", partitions)
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
 
@@ -857,15 +979,20 @@ __all__ = [
     "BaoStockCalendar",
     "BaoStockCellStatus",
     "BaoStockCodeBatch",
+    "BaoStockCodeDownload",
     "BaoStockCodeCoverage",
     "BaoStockCoverageAudit",
     "BaoStockCoverageStatus",
     "BaoStockDailyCell",
     "BaoStockDailyManifest",
+    "BaoStockDailyFact",
     "BaoStockDailySide",
     "BaoStockDailySpec",
+    "BaoStockIndustryInterval",
+    "BaoStockPartitionRef",
     "BaoStockSecurity",
     "BaoStockSourceVersions",
+    "BaoStockTrainingRow",
     "BaoStockTradingStatus",
     "BaoStockV3LabelContract",
     "BaoStockV3DatasetManifest",

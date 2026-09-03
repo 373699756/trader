@@ -60,6 +60,7 @@ class _Sdk:
                 "1.2",
                 "1",
                 "3.03",
+                "0",
             ),
             (
                 "2026-08-30",
@@ -75,9 +76,17 @@ class _Sdk:
                 "1.2",
                 "1",
                 "3.03",
+                "1",
             ),
         )
         return _Result(tuple(fields.split(",")), rows)
+
+    def query_stock_industry(self, *, code="", date=""):
+        assert code == ""
+        return _Result(
+            ("updateDate", "code", "code_name", "industry", "industryClassification"),
+            ((date, "sh.600001", "A", "银行", "申万一级行业"),),
+        )
 
 
 def test_gateway_consumes_only_baostock_row_iteration_boundary() -> None:
@@ -86,7 +95,8 @@ def test_gateway_consumes_only_baostock_row_iteration_boundary() -> None:
 
     calendar = gateway.fetch_calendar(spec)
     universe = gateway.fetch_universe(spec)
-    batch = gateway.fetch_code_batch(spec, universe[0], calendar)
+    download = gateway.fetch_code_download(spec, universe[0], calendar)
+    batch = download.batch
 
     assert len(calendar.open_dates) == 2
     assert universe[0].code == "600001"
@@ -95,6 +105,23 @@ def test_gateway_consumes_only_baostock_row_iteration_boundary() -> None:
     assert batch.cells[0].unadjusted is not None
     assert batch.cells[0].unadjusted.pct_change == pytest.approx(0.0303)
     assert batch.cells[0].unadjusted.turnover == pytest.approx(0.012)
+    assert download.daily_facts[0].is_st is False
+    assert download.daily_facts[1].is_st is True
+
+
+def test_gateway_downloads_historical_industry_snapshots_and_compresses_intervals() -> None:
+    gateway = BaoStockRowGateway(_Sdk(), python_version="3.14.0", dependency_versions=(("pandas", "2.3.0"),))
+    spec = BaoStockDailySpec(sessions=2)
+    calendar = gateway.fetch_calendar(spec)
+    universe = gateway.fetch_universe(spec)
+
+    intervals = gateway.fetch_industry_intervals(spec, calendar, universe)
+
+    assert len(intervals) == 1
+    assert intervals[0].code == "600001"
+    assert intervals[0].industry == "银行"
+    assert intervals[0].classification == "申万一级行业"
+    assert intervals[0].effective_from == calendar.open_dates[0]
 
 
 def test_sdk_queries_are_started_at_most_once_every_two_seconds() -> None:
@@ -109,6 +136,7 @@ def test_sdk_queries_are_started_at_most_once_every_two_seconds() -> None:
     limited = _RateLimitedBaoStockSdk(sdk, monotonic=lambda: now[0], sleep=advance)
     limited.query_trade_dates(start_date="2026-08-29", end_date="2026-08-30")
     limited.query_stock_basic()
+    limited.query_stock_industry(code="", date="2026-08-29")
     limited.query_history_k_data_plus(
         "sh.600001",
         "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg",
@@ -118,7 +146,7 @@ def test_sdk_queries_are_started_at_most_once_every_two_seconds() -> None:
         adjustflag="3",
     )
 
-    assert delays == [2.0, 2.0]
+    assert delays == [2.0, 2.0, 2.0]
 
 
 class _LoginSdk:

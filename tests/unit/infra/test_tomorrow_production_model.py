@@ -41,3 +41,13 @@ def test_packaged_v1_model_is_independent_hash_bound_linear_inference() -> None:
     )
     assert first == second
     assert first.model_disagreement == 0.0
+
+
+def test_v1_and_v2_ignore_the_added_industry_input() -> None:
+    for profile, width in (("v1", 3), ("v2", 6)):
+        predictor = load_packaged_tomorrow_production_model(profile)
+        values = (0.01, -0.02, 0.03, 0.02, -0.01, 0.04)[:width]
+        plain = predictor.predict((TomorrowModelInput("600000", values),))[0]
+        classified = predictor.predict((TomorrowModelInput("600000", values, "银行"),))[0]
+
+        assert classified == plain

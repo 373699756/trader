@@ -18,7 +18,7 @@ def test_download_history_is_explicit_and_bounded() -> None:
 
 def test_download_history_defaults_to_ignored_repository_history_directory() -> None:
     args = build_parser().parse_args(["download_history"])
-    assert args.runtime_dir == Path("trader/data/history")
+    assert args.runtime_dir == Path("data/history")
 
 
 def test_download_history_rejects_more_than_2000_during_argument_parsing(tmp_path: Path) -> None:
@@ -30,7 +30,7 @@ def test_download_history_rejects_more_than_2000_during_argument_parsing(tmp_pat
     assert not runtime_dir.exists()
 
 
-def test_download_history_contract_exposes_typed_live_progress_and_two_database_roles() -> None:
+def test_download_history_contract_exposes_typed_live_progress_and_partition_roles() -> None:
     from trader.application.research.baostock_history_runtime import BaoStockRuntimeProgress
 
     progress = BaoStockRuntimeProgress(
@@ -42,3 +42,12 @@ def test_download_history_contract_exposes_typed_live_progress_and_two_database_
 
     assert progress.schema_version == "baostock_runtime_progress_v1"
     assert progress.universe_count == progress.expected_records
+
+
+def test_train_tomorrow_uses_the_project_data_roots() -> None:
+    from trader.entrypoints.research_commands import _history_data_root, _train_data_root
+
+    root = Path(__file__).resolve().parents[2]
+
+    assert _history_data_root() == root / "data" / "history"
+    assert _train_data_root() == root / "data" / "train"

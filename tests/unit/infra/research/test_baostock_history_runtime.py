@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import errno
 import fcntl
+import hashlib
+import json
 from datetime import timedelta
 from pathlib import Path
 
@@ -27,9 +29,25 @@ from trader.infra.research.baostock_history_runtime import (
     _DownloadRun,
     _fetch_context,
     _load_resume_context,
+    _partition_name,
+    _quarantine_corrupt_archive_parts,
     _run_locked,
     run_baostock_history,
 )
+
+
+@pytest.mark.parametrize(
+    ("board", "code", "expected"),
+    (
+        ("main", "600001", "main-6000.sqlite3"),
+        ("chinext", "300750", "chinext-3007.sqlite3"),
+        ("star", "688981", "star-6889.sqlite3"),
+    ),
+)
+def test_partition_name_is_human_readable_and_bounds_each_database_to_one_hundred_codes(
+    board: str, code: str, expected: str
+) -> None:
+    assert _partition_name(board, code) == expected
 
 
 class _ProgressRecorder:
@@ -143,8 +161,52 @@ def test_resume_loads_frozen_calendar_and_universe_without_refetching_supplier_c
     resumed = _load_resume_context(coordinator._run.root, spec)
 
     assert resumed == coordinator._run.context
-    shard = SQLiteBaoStockDailyShard(coordinator._run.root / "shard-00.sqlite3")
+    shard = SQLiteBaoStockDailyShard(coordinator._run.root / "shards" / "main-6000.sqlite3")
     assert shard.context(spec) == resumed
+
+
+def test_coordinator_creates_human_readable_partition_databases_instead_of_worker_buckets(tmp_path: Path) -> None:
+    coordinator, _, _ = _coordinator(tmp_path)
+
+    coordinator._initialize_shards()
+
+    assert (coordinator._run.root / "shards" / "main-6000.sqlite3").is_file()
+    assert not (coordinator._run.root / "shard-00.sqlite3").exists()
+
+
+def test_corrupt_partition_is_quarantined_without_removing_healthy_shards(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    shards = root / "shards"
+    shards.mkdir(parents=True)
+    healthy = shards / "main-6000.sqlite3"
+    corrupt = shards / "main-6001.sqlite3"
+    healthy.write_bytes(b"healthy")
+    corrupt.write_bytes(b"corrupt")
+    healthy_digest = hashlib.sha256(healthy.read_bytes()).hexdigest()
+    (root / "catalog.sqlite3").write_bytes(b"catalog")
+    catalog_digest = hashlib.sha256((root / "catalog.sqlite3").read_bytes()).hexdigest()
+    (root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "catalog_sha256": catalog_digest,
+                "partitions": [
+                    {"relative_path": "shards/main-6000.sqlite3", "database_sha256": healthy_digest},
+                    {"relative_path": "shards/main-6001.sqlite3", "database_sha256": "0" * 64},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _quarantine_corrupt_archive_parts(root)
+
+    assert healthy.is_file()
+    assert not corrupt.exists()
+    quarantine = tuple((root / "quarantine").glob("recovery-*"))
+    assert len(quarantine) == 1
+    assert (quarantine[0] / corrupt.name).is_file()
+    assert (quarantine[0] / "manifest.json").is_file()
+    assert (quarantine[0] / "catalog.sqlite3").is_file()
 
 
 def test_resume_reports_persisted_totals_before_starting_a_supplier_worker(

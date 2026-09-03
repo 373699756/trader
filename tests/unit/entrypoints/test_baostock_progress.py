@@ -32,14 +32,15 @@ def test_cli_progress_writer_flushes_stage_totals_and_database_locations() -> No
     payload = json.loads(stream.getvalue())
     assert payload == {
         "active_workers": 1,
-        "checkpoint_database_pattern": "/var/lib/trader/history/baostock-daily/sessions-2000/shard-*.sqlite3",
+        "checkpoint_database_pattern": "/var/lib/trader/history/baostock-daily/sessions-2000/shards/<board>-<code-prefix>.sqlite3",
         "completed_codes": 13,
         "current_code": "600001",
         "downloaded_records": 23117,
         "elapsed_seconds": 0.0,
         "expected_records": 9250000,
         "failed_codes": 2,
-        "final_database": "/var/lib/trader/history/baostock-daily/sessions-2000/score-baostock-daily-core-v2.sqlite3",
+        "catalog_database": "/var/lib/trader/history/baostock-daily/sessions-2000/catalog.sqlite3",
+        "manifest_path": "/var/lib/trader/history/baostock-daily/sessions-2000/manifest.json",
         "last_failure_reason": "supplier_query_failed_blacklisted",
         "phase": "downloading",
         "rate_limit_cooldown_seconds": 0.0,

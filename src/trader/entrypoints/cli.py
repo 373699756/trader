@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--profile",
-        choices=("v1", "v2"),
+        choices=("v1", "v2", "v3"),
         help="Effective Tomorrow scoring profile for this process; config value is used when omitted.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -48,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     performance.add_argument("--output", type=Path)
     performance.add_argument("--baseline", type=Path)
     baostock = subparsers.add_parser("download_history", help="Download and resume the BaoStock daily-history archive.")
-    baostock.add_argument("--runtime-dir", type=Path, default=Path("trader/data/history"))
+    baostock.add_argument("--runtime-dir", type=Path, default=Path("data/history"))
     baostock.add_argument("--sessions", type=int, choices=range(1, 2001), default=2000)
     subparsers.add_parser("research-status", help="Read immutable research coverage and capacity status.")
     subparsers.add_parser(
@@ -185,8 +185,9 @@ class _BaoStockProgressWriter:
             "rate_limit_cooldown_seconds": progress.rate_limit_cooldown_seconds,
             "last_failure_reason": progress.last_failure_reason,
             "elapsed_seconds": round(self._monotonic() - self._started_at, 3),
-            "checkpoint_database_pattern": str(self._root / "shard-*.sqlite3"),
-            "final_database": str(self._root / "score-baostock-daily-core-v2.sqlite3"),
+            "checkpoint_database_pattern": str(self._root / "shards" / "<board>-<code-prefix>.sqlite3"),
+            "catalog_database": str(self._root / "catalog.sqlite3"),
+            "manifest_path": str(self._root / "manifest.json"),
         }
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True), file=self._stream, flush=True)
 

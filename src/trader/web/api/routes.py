@@ -413,6 +413,9 @@ def _tomorrow_model(runtime: Mapping[str, object]) -> dict[str, object]:
             "monitoring_mode",
             "automatic_model_update",
             "loss_probability_status",
+            "training_anchor",
+            "runtime_anchor",
+            "point_in_time_parity",
         )
         if field in raw and _json_scalar(raw[field])
     }

@@ -9,7 +9,10 @@ from typing import Protocol
 from trader.domain.research.baostock_daily import (
     BaoStockCalendar,
     BaoStockCodeBatch,
+    BaoStockCodeDownload,
+    BaoStockDailyFact,
     BaoStockDailySpec,
+    BaoStockIndustryInterval,
     BaoStockSecurity,
     BaoStockSourceVersions,
 )
@@ -20,6 +23,7 @@ class BaoStockShardContext:
     calendar: BaoStockCalendar
     universe: tuple[BaoStockSecurity, ...]
     source_versions: BaoStockSourceVersions
+    industry_intervals: tuple[BaoStockIndustryInterval, ...] = ()
 
 
 class BaoStockDailyGateway(Protocol):
@@ -34,6 +38,20 @@ class BaoStockDailyGateway(Protocol):
         calendar: BaoStockCalendar,
     ) -> BaoStockCodeBatch: ...
 
+    def fetch_code_download(
+        self,
+        spec: BaoStockDailySpec,
+        security: BaoStockSecurity,
+        calendar: BaoStockCalendar,
+    ) -> BaoStockCodeDownload: ...
+
+    def fetch_industry_intervals(
+        self,
+        spec: BaoStockDailySpec,
+        calendar: BaoStockCalendar,
+        universe: tuple[BaoStockSecurity, ...],
+    ) -> tuple[BaoStockIndustryInterval, ...]: ...
+
     def source_versions(self) -> BaoStockSourceVersions: ...
 
 
@@ -46,6 +64,7 @@ class BaoStockDailyShardPort(Protocol):
         calendar: BaoStockCalendar,
         universe: tuple[BaoStockSecurity, ...],
         source_versions: BaoStockSourceVersions,
+        industry_intervals: tuple[BaoStockIndustryInterval, ...] = (),
     ) -> None: ...
 
     def completed_codes(self, spec: BaoStockDailySpec) -> frozenset[str]: ...
@@ -53,6 +72,14 @@ class BaoStockDailyShardPort(Protocol):
     def save_batch(self, spec: BaoStockDailySpec, batch: BaoStockCodeBatch) -> None: ...
 
     def record_failure(self, spec: BaoStockDailySpec, code: str, error_code: str) -> None: ...
+
+    def save_training_facts(
+        self,
+        spec: BaoStockDailySpec,
+        code: str,
+        facts: tuple[BaoStockDailyFact, ...],
+        intervals: tuple[BaoStockIndustryInterval, ...],
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -106,12 +133,24 @@ class BaoStockDailyDownloadService:
         downloaded = failed = 0
         for position, security in enumerate(pending, start=1):
             try:
-                batch = self._gateway.fetch_code_batch(spec, security, context.calendar)
+                download_method = getattr(self._gateway, "fetch_code_download", None)
+                if callable(download_method):
+                    download = download_method(spec, security, context.calendar)
+                    batch = download.batch
+                else:
+                    download = None
+                    batch = self._gateway.fetch_code_batch(spec, security, context.calendar)
             except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as exc:
                 failed += 1
                 self._archive.record_failure(spec, security.code, _failure_code(exc))
             else:
                 self._archive.save_batch(spec, batch)
+                if download is not None and hasattr(self._archive, "save_training_facts"):
+                    intervals = tuple(
+                        item for item in getattr(context, "industry_intervals", ()) if item.code == security.code
+                    )
+                    if intervals:
+                        self._archive.save_training_facts(spec, security.code, download.daily_facts, intervals)
                 downloaded += 1
             if progress is not None:
                 progress(position, len(pending), security.code)
@@ -131,8 +170,19 @@ class BaoStockDailyDownloadService:
         universe = tuple(sorted(self._gateway.fetch_universe(spec), key=lambda item: item.code))
         if not universe or len({item.code for item in universe}) != len(universe):
             raise ValueError("BaoStock universe must be non-empty and unique")
-        context = BaoStockShardContext(calendar, universe, self._gateway.source_versions())
-        self._archive.initialize(spec, context.calendar, context.universe, context.source_versions)
+        industry_method = getattr(self._gateway, "fetch_industry_intervals", None)
+        intervals = tuple(industry_method(spec, calendar, universe)) if callable(industry_method) else ()
+        context = BaoStockShardContext(calendar, universe, self._gateway.source_versions(), intervals)
+        try:
+            self._archive.initialize(
+                spec,
+                context.calendar,
+                context.universe,
+                context.source_versions,
+                context.industry_intervals,
+            )
+        except TypeError:
+            self._archive.initialize(spec, context.calendar, context.universe, context.source_versions)
         return context
 
 

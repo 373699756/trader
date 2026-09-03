@@ -23,7 +23,7 @@ usage() {
     "  ./run.sh download_history        下载/续传 BaoStock 历史日线归档" \
     "  ./run.sh train-tomorrow          从封存状态推导并连续运行可用 Tomorrow 训练阶段" \
     "" \
-    "所有命令都可追加 --profile v1|v2；未指定时为 V1。" \
+    "所有命令都可追加 --profile v1|v2|v3；未指定时为 V1。" \
     "" \
     "高级配置（一般无需设置）:" \
     "  TRADER_CONFIG=/absolute/path/runtime.json" \
@@ -39,7 +39,7 @@ while (($#)); do
   case "$1" in
     --profile)
       if (($# < 2)); then
-        printf '%s\n' '缺少 --profile 的值（v1 或 v2）。' >&2
+        printf '%s\n' '缺少 --profile 的值（v1、v2 或 v3）。' >&2
         exit 2
       fi
       SCORING_PROFILE="$2"
@@ -72,8 +72,8 @@ while (($#)); do
   esac
 done
 
-if [[ "$SCORING_PROFILE" != "v1" && "$SCORING_PROFILE" != "v2" ]]; then
-  printf '评分档位只能是 v1 或 v2: %s\n' "$SCORING_PROFILE" >&2
+if [[ "$SCORING_PROFILE" != "v1" && "$SCORING_PROFILE" != "v2" && "$SCORING_PROFILE" != "v3" ]]; then
+  printf '评分档位只能是 v1、v2 或 v3: %s\n' "$SCORING_PROFILE" >&2
   exit 2
 fi
 

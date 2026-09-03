@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import importlib.metadata
 import os
 import shutil
@@ -36,12 +37,12 @@ from trader.domain.research.baostock_daily import (
 )
 from trader.domain.research.historical_effective_facts import (
     HistoricalEffectiveFactsAudit,
-    baostock_effective_facts_probe,
+    HistoricalEffectiveFactsProbe,
     build_historical_effective_facts_audit,
 )
 from trader.infra.research.baostock_daily import (
     BaoStockDailyArtifactConflictError,
-    BaoStockDailyMergedArtifactStore,
+    BaoStockDailyPartitionedArchive,
     BaoStockRowGateway,
     BaoStockRowResult,
     BaoStockSdkPort,
@@ -136,6 +137,10 @@ class _RateLimitedBaoStockSdk:
         self._wait()
         return self._sdk.query_stock_basic()
 
+    def query_stock_industry(self, *, code: str = "", date: str = "") -> BaoStockRowResult:
+        self._wait()
+        return self._sdk.query_stock_industry(code=code, date=date)
+
     def query_history_k_data_plus(  # noqa: PLR0913 - exact third-party SDK signature
         self,
         code: str,
@@ -212,7 +217,7 @@ def inspect_baostock_history(runtime_dir: Path, *, sessions: int = 2000) -> BaoS
     if not (root / "manifest.json").is_file():
         return BaoStockRuntimeStatus()
     try:
-        store = BaoStockDailyMergedArtifactStore(root)
+        store = BaoStockDailyPartitionedArchive(root)
         value = store.verify()
         descriptor = store.describe_frozen_daily_input()
         facts = HistoricalEffectiveFactsArtifactStore(root).verify()
@@ -227,7 +232,7 @@ def inspect_baostock_history(runtime_dir: Path, *, sessions: int = 2000) -> BaoS
     return BaoStockRuntimeStatus(
         state="completed" if audit.status == "coverage_ready" else "completed_with_failures",
         sessions=descriptor.requested_sessions,
-        shard_count=len(tuple(root.glob("shard-*.sqlite3"))),
+        shard_count=len(tuple((root / "shards").glob("*.sqlite3"))),
         universe_count=audit.universe_count,
         completed_codes=len(audit.code_coverages),
         failed_codes=len(audit.failed_codes),
@@ -269,8 +274,9 @@ def _run_locked(
     cancel_requested: Callable[[], bool],
     progress: BaoStockRuntimeProgressPort | None,
 ) -> BaoStockRuntimeStatus:
+    _quarantine_corrupt_archive_parts(root)
     if (root / "manifest.json").is_file():
-        store = BaoStockDailyMergedArtifactStore(root)
+        store = BaoStockDailyPartitionedArchive(root)
         manifest = store.verify()
         descriptor = store.describe_frozen_daily_input()
         if descriptor.requested_sessions != request.sessions:
@@ -301,7 +307,10 @@ def _run_locked(
             sessions=request.sessions,
             failure_reasons=("security_window_empty",),
         )
-    bounded_context = BaoStockShardContext(context.calendar, universe, context.source_versions)
+    bounded_context = BaoStockShardContext(
+        context.calendar, universe, context.source_versions, context.industry_intervals
+    )
+    _migrate_legacy_archive(root, spec, context)
     expected_records = sum(len(context.calendar.expected_dates(item)) for item in universe)
     _emit_progress(
         progress,
@@ -317,9 +326,61 @@ def _run_locked(
     ).run()
 
 
+def _quarantine_corrupt_archive_parts(root: Path) -> None:
+    """Remove only invalid immutable metadata/shards so healthy partitions remain resumable."""
+    manifest_path = root / "manifest.json"
+    catalog_path = root / "catalog.sqlite3"
+    if not manifest_path.exists():
+        return
+    corrupt = _corrupt_partition_paths(root, manifest_path, catalog_path)
+    if not corrupt and catalog_path.exists():
+        return
+    quarantine = root / "quarantine" / f"recovery-{int(time.time())}"
+    quarantine.mkdir(parents=True, exist_ok=True)
+    for path in (*corrupt, manifest_path, catalog_path):
+        if path.exists():
+            shutil.move(str(path), quarantine / path.name)
+
+
+def _corrupt_partition_paths(root: Path, manifest_path: Path, catalog_path: Path) -> tuple[Path, ...]:
+    corrupt: list[Path] = []
+    try:
+        import json
+
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        partitions = payload.get("partitions")
+        if not isinstance(partitions, list):
+            raise ValueError("partitions missing")
+        expected_catalog = payload.get("catalog_sha256")
+        if not isinstance(expected_catalog, str) or not catalog_path.exists() or _sha256_file(catalog_path) != expected_catalog:
+            raise ValueError("catalog hash mismatch")
+        for item in partitions:
+            if not isinstance(item, dict):
+                raise ValueError("partition descriptor invalid")
+            relative = item.get("relative_path")
+            expected = item.get("database_sha256")
+            if not isinstance(relative, str) or not isinstance(expected, str):
+                raise ValueError("partition identity invalid")
+            path = root / relative
+            digest = _sha256_file(path)
+            if digest != expected:
+                corrupt.append(path)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return ()
+    return tuple(corrupt)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _load_resume_context(root: Path, spec: BaoStockDailySpec) -> BaoStockShardContext | None:
     contexts: list[BaoStockShardContext] = []
-    for path in sorted(root.glob("shard-*.sqlite3")):
+    for path in sorted((root / "shards").glob("*.sqlite3")):
         context = SQLiteBaoStockDailyShard(path).context(spec)
         if context is not None:
             contexts.append(context)
@@ -329,6 +390,40 @@ def _load_resume_context(root: Path, spec: BaoStockDailySpec) -> BaoStockShardCo
     if any(context != first for context in contexts[1:]):
         raise BaoStockDailyArtifactConflictError("BaoStock resume shard contexts do not match")
     return first
+
+
+def _migrate_legacy_archive(root: Path, spec: BaoStockDailySpec, context: BaoStockShardContext) -> None:
+    """Move the pre-partition archive only after taking its real lock and copying rows."""
+    repository_root = root.parents[3] if len(root.parents) > 3 else root.parent
+    legacy = repository_root / "trader" / "data" / "history" / "baostock-daily" / root.name
+    if legacy == root or not legacy.is_dir() or not tuple(legacy.glob("shard-*.sqlite3")):
+        return
+    recovery = root / "recovery" / f"legacy-{int(time.time())}"
+    with _DownloadLock(legacy / ".download.lock"):
+        legacy_shards = tuple(sorted(legacy.glob("shard-*.sqlite3")))
+        for path in legacy_shards:
+            snapshot = SQLiteBaoStockDailyShard(path).snapshot(spec)
+            for batch in snapshot.batches:
+                target = SQLiteBaoStockDailyShard(
+                    root
+                    / "shards"
+                    / _partition_name(
+                        next(item.board for item in context.universe if item.code == batch.code), batch.code
+                    )
+                )
+                target.initialize(
+                    spec,
+                    context.calendar,
+                    context.universe,
+                    context.source_versions,
+                    context.industry_intervals,
+                )
+                target.save_batch(spec, batch)
+        recovery.mkdir(parents=True, exist_ok=True)
+        for path in legacy.iterdir():
+            if path.name == ".download.lock":
+                continue
+            shutil.move(str(path), recovery / path.name)
 
 
 def _fetch_context(
@@ -393,12 +488,14 @@ def _context_worker_main(connection: Connection, spec: BaoStockDailySpec) -> Non
         calendar = gateway.fetch_calendar(spec)
         connection.send(_ContextStage("security_universe"))
         universe = gateway.fetch_universe(spec)
+        intervals = gateway.fetch_industry_intervals(spec, calendar, universe)
         connection.send(
             _ContextResponse(
                 BaoStockShardContext(
                     calendar,
                     universe,
                     gateway.source_versions(),
+                    intervals,
                 )
             )
         )
@@ -425,8 +522,11 @@ class _DownloadCoordinator:
     def __init__(self, run: _DownloadRun) -> None:
         self._run = run
         self._shards = tuple(
-            SQLiteBaoStockDailyShard(run.root / f"shard-{index:02d}.sqlite3") for index in range(run.request.workers)
+            SQLiteBaoStockDailyShard(run.root / "shards" / _partition_name(item.board, item.code))
+            for item in run.context.universe
+            if item.code == _partition_first_code(run.context.universe, item.board, item.code)
         )
+        self._shards_by_name = {shard.path.name: shard for shard in self._shards}
         self._pending: deque[BaoStockSecurity] = deque()
         self._attempts: dict[str, int] = {}
         self._terminal_failures: dict[str, str] = {}
@@ -437,6 +537,7 @@ class _DownloadCoordinator:
         self._resource_block_reason = ""
         self._run_failure_reason = ""
         self._completed_codes: set[str] = set()
+        self._ready_codes: set[str] = set()
         self._failed_codes: set[str] = set()
         self._downloaded_records = 0
         self._expected_records = sum(len(run.context.calendar.expected_dates(item)) for item in run.context.universe)
@@ -465,25 +566,32 @@ class _DownloadCoordinator:
     def _initialize_shards(self) -> None:
         run = self._run
         for shard in self._shards:
-            shard.initialize(run.spec, run.context.calendar, run.context.universe, run.context.source_versions)
+            shard.initialize(
+                run.spec,
+                run.context.calendar,
+                run.context.universe,
+                run.context.source_versions,
+                run.context.industry_intervals,
+            )
         self._refresh_checkpoint_progress()
-        self._pending.extend(item for item in run.context.universe if item.code not in self._completed_codes)
+        self._pending.extend(item for item in run.context.universe if item.code not in self._ready_codes)
 
     def _refresh_checkpoint_progress(self) -> tuple[BaoStockShardSnapshot, ...]:
         snapshots = tuple(shard.snapshot(self._run.spec) for shard in self._shards)
         self._completed_codes = {batch.code for snapshot in snapshots for batch in snapshot.batches}
+        self._ready_codes = {code for shard in self._shards for code in shard.training_ready_codes(self._run.spec)}
         self._failed_codes = {code for snapshot in snapshots for code, _ in snapshot.failures}
         self._downloaded_records = sum(len(batch.cells) for snapshot in snapshots for batch in snapshot.batches)
         return snapshots
 
     def _start_workers(self) -> str:
         failure = ""
-        for shard in self._shards:
+        for _ in range(self._run.request.workers):
             handle, failure = _start_worker(
                 self._run.process_context,
                 self._run.spec,
                 self._run.context,
-                shard.path,
+                self._run.root,
                 self._run.request,
             )
             if handle is not None:
@@ -552,6 +660,7 @@ class _DownloadCoordinator:
             self._terminal_failures.pop(security.code, None)
             self._failed_codes.discard(security.code)
             self._completed_codes.add(security.code)
+            self._ready_codes.add(security.code)
             self._downloaded_records += len(self._run.context.calendar.expected_dates(security))
             for shard in self._shards:
                 shard.clear_failure(self._run.spec, security.code)
@@ -618,7 +727,7 @@ class _DownloadCoordinator:
         return not self._busy() or now - self._cancelling_since >= BAOSTOCK_CANCEL_GRACE_SECONDS
 
     def _failure_shard(self, security: BaoStockSecurity) -> SQLiteBaoStockDailyShard:
-        return self._shards[_shard_index(security.code, len(self._shards))]
+        return self._shards_by_name[_partition_name(security.board, security.code)]
 
     def _finish(self) -> BaoStockRuntimeStatus:
         if self._run_failure_reason:
@@ -630,7 +739,7 @@ class _DownloadCoordinator:
         if self._terminal_failures:
             return self._partial("completed_with_failures", tuple(self._terminal_failures.values()))
         snapshots = self._refresh_checkpoint_progress()
-        completed = frozenset(item.code for snapshot in snapshots for item in snapshot.batches)
+        completed = frozenset(code for shard in self._shards for code in shard.training_ready_codes(self._run.spec))
         if completed != frozenset(item.code for item in self._run.context.universe):
             return self._partial("completed_with_failures", ("incomplete_codes",))
         return self._publish(snapshots, completed)
@@ -641,18 +750,21 @@ class _DownloadCoordinator:
         completed: frozenset[str],
     ) -> BaoStockRuntimeStatus:
         self._report("merging")
-        merged = BaoStockDailyMergedArtifactStore(self._run.root).write(self._run.spec, snapshots)
-        facts, dataset = _seal_research_handoff(self._run.root, merged)
-        audit = merged.audit
+        partitioned = BaoStockDailyPartitionedArchive(self._run.root).write(
+            self._run.spec,
+            tuple(self._shards),
+        )
+        facts, dataset = _seal_research_handoff(self._run.root, partitioned)
+        audit = partitioned.audit
         return BaoStockRuntimeStatus(
             state="completed" if audit.status == "coverage_ready" else "completed_with_failures",
             sessions=self._run.request.sessions,
-            shard_count=len(self._shards),
+            shard_count=len(partitioned.partitions),
             universe_count=len(self._run.context.universe),
             completed_codes=len(completed),
             failed_codes=len(audit.failed_codes),
             peak_rss_mb=self._peak_rss_mb,
-            manifest_hash=merged.content_hash,
+            manifest_hash=partitioned.content_hash,
             coverage_status=audit.status,
             historical_effective_facts_status=facts.status,
             historical_effective_facts_hash=facts.content_hash,
@@ -718,9 +830,26 @@ def _seal_research_handoff(
     daily: BaoStockDailyManifest,
 ) -> tuple[HistoricalEffectiveFactsAudit, BaoStockV3DatasetManifest]:
     facts = HistoricalEffectiveFactsArtifactStore(root).write(
-        build_historical_effective_facts_audit((baostock_effective_facts_probe(),))
+        build_historical_effective_facts_audit(
+            (
+                HistoricalEffectiveFactsProbe(
+                    "baostock_daily_training",
+                    daily.audit.calendar_first_date,
+                    True,
+                    True,
+                    True,
+                    True,
+                ),
+            )
+        )
     )
-    dataset = BaoStockV3DatasetArtifactStore(root).write(build_baostock_v3_dataset_manifest(daily, facts, ()))
+    dataset = BaoStockV3DatasetArtifactStore(root).write(
+        build_baostock_v3_dataset_manifest(
+            daily,
+            facts,
+            BaoStockDailyPartitionedArchive(root).complete_dates(),
+        )
+    )
     return facts, dataset
 
 
@@ -784,8 +913,7 @@ def _download_worker_main(
     _silence_vendor_output()
     sdk: _BaoStockSessionSdkPort | None = None
     try:
-        archive = SQLiteBaoStockDailyShard(Path(shard_path))
-        archive.initialize(spec, context.calendar, context.universe, context.source_versions)
+        archive_root = Path(shard_path)
         sdk = _load_sdk()
         _login(sdk)
         gateway = BaoStockRowGateway(
@@ -801,8 +929,20 @@ def _download_worker_main(
                 connection.send(_DownloadResponse("", False, "worker_protocol_invalid"))
                 continue
             try:
-                batch = gateway.fetch_code_batch(spec, command.security, context.calendar)
-                archive.save_batch(spec, batch)
+                archive = SQLiteBaoStockDailyShard(
+                    archive_root / "shards" / _partition_name(command.security.board, command.security.code)
+                )
+                archive.initialize(
+                    spec,
+                    context.calendar,
+                    context.universe,
+                    context.source_versions,
+                    context.industry_intervals,
+                )
+                download = gateway.fetch_code_download(spec, command.security, context.calendar)
+                archive.save_batch(spec, download.batch)
+                intervals = tuple(item for item in context.industry_intervals if item.code == command.security.code)
+                archive.save_training_facts(spec, command.security.code, download.daily_facts, intervals)
             except Exception as exc:
                 connection.send(_DownloadResponse(command.security.code, False, _failure_code(exc)))
             else:
@@ -817,6 +957,20 @@ def _download_worker_main(
 
 def _shard_index(code: str, shard_count: int) -> int:
     return int(code) % shard_count
+
+
+def _partition_name(board: str, code: str) -> str:
+    if board not in {"main", "chinext", "star"} or len(code) != 6 or not code.isdigit():
+        raise ValueError("BaoStock partition identity is invalid")
+    # Keep the original first bucket name, then bound every partition to 100 codes.
+    bucket = int(code[4:]) // 100
+    suffix = "" if bucket == 0 else f"-{bucket:02d}"
+    return f"{board}-{code[:4]}{suffix}.sqlite3"
+
+
+def _partition_first_code(universe: tuple[BaoStockSecurity, ...], board: str, code: str) -> str:
+    name = _partition_name(board, code)
+    return min(item.code for item in universe if _partition_name(item.board, item.code) == name)
 
 
 def _stop_worker(handle: _WorkerHandle, *, graceful: bool) -> None:

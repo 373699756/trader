@@ -147,11 +147,27 @@ def test_baostock_runtime_contract_documents_resume_progress_and_final_database_
         "last_failure_reason",
         "elapsed_seconds",
         "checkpoint_database_pattern",
-        "final_database",
+        "partition_database_pattern",
+        "catalog_database",
+        "manifest_path",
         "checkpoint_loading",
         "supplier_query_failed_blacklisted",
-        "shard-*.sqlite3",
-        "score-baostock-daily-core-v2.sqlite3",
+        "shards/<board>-<code-prefix>.sqlite3",
+        "catalog.sqlite3",
     ):
         assert required in section
         assert required in design
+
+
+def test_baostock_history_is_partitioned_by_board_and_four_digit_code_prefix() -> None:
+    strategy = (ROOT / "docs" / "recommendation-strategy.md").read_text(encoding="utf-8")
+    section = strategy[strategy.index("#### 15.1.38") : strategy.index("### 15.2")]
+
+    for required in (
+        "data/history/baostock-daily/sessions-2000/",
+        "板块与股票代码前四位",
+        "每个分库最多 100 只股票",
+        "单个分库损坏",
+        "只重新下载该分库",
+    ):
+        assert required in section

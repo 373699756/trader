@@ -6,15 +6,17 @@ import pytest
 
 from trader.domain.research.baostock_daily import (
     BaoStockCalendar,
+    BaoStockDailyFact,
     BaoStockDailySide,
     BaoStockDailySpec,
+    BaoStockIndustryInterval,
     BaoStockSecurity,
     BaoStockSourceVersions,
     join_baostock_daily_sides,
 )
 from trader.infra.research.baostock_daily import (
     BaoStockDailyArtifactConflictError,
-    BaoStockDailyMergedArtifactStore,
+    BaoStockDailyPartitionedArchive,
     SQLiteBaoStockDailyShard,
 )
 
@@ -59,6 +61,14 @@ def _batch(code: str, calendar: BaoStockCalendar, *, close: float = 10.2):
     )
 
 
+def _facts(code: str, calendar: BaoStockCalendar) -> tuple[BaoStockDailyFact, ...]:
+    return tuple(BaoStockDailyFact(code, day, False) for day in calendar.open_dates)
+
+
+def _industry(code: str, calendar: BaoStockCalendar) -> tuple[BaoStockIndustryInterval, ...]:
+    return (BaoStockIndustryInterval(code, calendar.open_dates[0], None, "银行", "申万一级行业"),)
+
+
 def test_sqlite_shard_uses_wal_is_idempotent_and_detects_tampering(tmp_path) -> None:
     spec, calendar, universe, versions = _context()
     shard = SQLiteBaoStockDailyShard(tmp_path / "shard.sqlite3")
@@ -79,21 +89,27 @@ def test_sqlite_shard_uses_wal_is_idempotent_and_detects_tampering(tmp_path) -> 
         shard.snapshot(spec)
 
 
-def test_deterministic_merge_is_order_independent_and_manifest_is_hash_bound(tmp_path) -> None:
+def test_partition_manifest_is_order_independent_hash_bound_and_has_no_merged_database(tmp_path) -> None:
     spec, calendar, universe, versions = _context()
-    first = SQLiteBaoStockDailyShard(tmp_path / "first.sqlite3")
-    second = SQLiteBaoStockDailyShard(tmp_path / "second.sqlite3")
-    for shard in (first, second):
+    left_root = tmp_path / "left"
+    right_root = tmp_path / "right"
+    first = SQLiteBaoStockDailyShard(left_root / "shards" / "main-6000.sqlite3")
+    second = SQLiteBaoStockDailyShard(left_root / "shards" / "chinext-3000.sqlite3")
+    first_right = SQLiteBaoStockDailyShard(right_root / "shards" / "main-6000.sqlite3")
+    second_right = SQLiteBaoStockDailyShard(right_root / "shards" / "chinext-3000.sqlite3")
+    for shard in (first, second, first_right, second_right):
         shard.initialize(spec, calendar, universe, versions)
     first.save_batch(spec, _batch("600001", calendar))
     second.save_batch(spec, _batch("300001", calendar))
+    first.save_training_facts(spec, "600001", _facts("600001", calendar), _industry("600001", calendar))
+    second.save_training_facts(spec, "300001", _facts("300001", calendar), _industry("300001", calendar))
+    first_right.save_batch(spec, _batch("600001", calendar))
+    second_right.save_batch(spec, _batch("300001", calendar))
+    first_right.save_training_facts(spec, "600001", _facts("600001", calendar), _industry("600001", calendar))
+    second_right.save_training_facts(spec, "300001", _facts("300001", calendar), _industry("300001", calendar))
 
-    left = BaoStockDailyMergedArtifactStore(tmp_path / "left").write(
-        spec, (first.snapshot(spec), second.snapshot(spec))
-    )
-    right = BaoStockDailyMergedArtifactStore(tmp_path / "right").write(
-        spec, (second.snapshot(spec), first.snapshot(spec))
-    )
+    left = BaoStockDailyPartitionedArchive(left_root).write(spec, (first, second))
+    right = BaoStockDailyPartitionedArchive(right_root).write(spec, (second_right, first_right))
 
     assert left.logical_records_hash == right.logical_records_hash
     assert left.audit.content_hash == right.audit.content_hash
@@ -102,23 +118,42 @@ def test_deterministic_merge_is_order_independent_and_manifest_is_hash_bound(tmp
     assert left.production_authority is False
     assert left.point_in_time_parity is False
     assert left.terminal_holdout_opened is False
-    descriptor = BaoStockDailyMergedArtifactStore(tmp_path / "left").describe_frozen_daily_input()
+    descriptor = BaoStockDailyPartitionedArchive(tmp_path / "left").describe_frozen_daily_input()
     assert descriptor.manifest_hash == left.content_hash
     assert descriptor.source_identity == "score_baostock_daily_core_v2"
     assert descriptor.requested_sessions == 3
     assert descriptor.raw_qfq_layout == "same_row"
     assert {field.name for field in descriptor.fields} >= {"raw_close", "qfq_close", "board"}
-    assert (
-        BaoStockDailyMergedArtifactStore(tmp_path / "left").write(spec, (first.snapshot(spec), second.snapshot(spec)))
-        == left
-    )
+    assert BaoStockDailyPartitionedArchive(tmp_path / "left").write(spec, (first, second)) == left
+    assert len(left.partitions) == 2
+    assert {item.relative_path for item in left.partitions} == {
+        "shards/main-6000.sqlite3",
+        "shards/chinext-3000.sqlite3",
+    }
+    assert not (tmp_path / "left" / "score-baostock-daily-core-v2.sqlite3").exists()
 
     manifest_path = tmp_path / "left" / "manifest.json"
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     payload["logical_records_hash"] = "0" * 64
     manifest_path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(BaoStockDailyArtifactConflictError, match="manifest"):
-        BaoStockDailyMergedArtifactStore(tmp_path / "left").verify()
+        BaoStockDailyPartitionedArchive(tmp_path / "left").verify()
+
+
+def test_training_facts_are_complete_per_code_and_queryable_without_scanning_other_shards(tmp_path) -> None:
+    spec, calendar, universe, versions = _context()
+    path = tmp_path / "main-6000.sqlite3"
+    shard = SQLiteBaoStockDailyShard(path)
+    shard.initialize(spec, calendar, universe, versions)
+    shard.save_batch(spec, _batch("600001", calendar))
+
+    assert shard.training_ready_codes(spec) == frozenset()
+    shard.save_training_facts(spec, "600001", _facts("600001", calendar), _industry("600001", calendar))
+
+    assert shard.training_ready_codes(spec) == frozenset({"600001"})
+    rows = shard.read_training_rows(spec, "600001", allowed_dates=frozenset(calendar.open_dates))
+    assert tuple(row.trade_date for row in rows) == calendar.open_dates
+    assert all(row.industry == "银行" and row.is_st is False for row in rows)
 
 
 def test_shard_rejects_conflicting_content_for_same_code_and_date(tmp_path) -> None:

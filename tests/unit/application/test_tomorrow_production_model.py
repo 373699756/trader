@@ -157,6 +157,32 @@ def test_production_model_does_not_fall_back_to_the_legacy_score_when_bound_feat
     assert batch.missing_codes == ("600002",)
 
 
+def test_v3_routes_each_input_to_its_current_industry_model(application_feature_factory) -> None:
+    class _V3Predictor(_Predictor):
+        profile_id = "v3"
+        model_id = "tomorrow_v3_industry_ensemble_v1"
+        industry_ids = ("银行",)
+
+        def __init__(self) -> None:
+            self.industries: tuple[str, ...] = ()
+
+        def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
+            self.industries = tuple(item.industry for item in inputs)
+            return super().predict(inputs)
+
+    predictor = _V3Predictor()
+    supported = _model_feature(application_feature_factory("600001", NOW), offset=0.01, amihud=1.0)
+    supported = replace(supported, quote=replace(supported.quote, industry="银行"))
+    unsupported = _model_feature(application_feature_factory("600002", NOW), offset=0.02, amihud=2.0)
+    unsupported = replace(unsupported, quote=replace(unsupported.quote, industry="未知行业"))
+
+    batch = TomorrowProductionModelScoringService(predictor).score((supported, unsupported))
+
+    assert predictor.industries == ("银行",)
+    assert set(batch.scores) == {"600001"}
+    assert batch.missing_codes == ("600002",)
+
+
 def test_production_model_rejects_an_unsupported_board_from_its_cross_section(
     application_feature_factory,
 ) -> None:

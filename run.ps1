@@ -21,7 +21,7 @@ function Show-Usage {
   .\run.ps1 download_history        下载/续传 BaoStock 历史日线归档
   .\run.ps1 train-tomorrow          从封存状态推导并连续运行可用 Tomorrow 训练阶段
 
-所有命令都可追加 --profile v1|v2；未指定时为 V1。
+所有命令都可追加 --profile v1|v2|v3；未指定时为 V1。
 
 高级配置（一般无需设置）:
   TRADER_CONFIG=C:\absolute\path\runtime.json

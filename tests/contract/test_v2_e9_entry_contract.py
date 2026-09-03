@@ -146,7 +146,7 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert "./run.sh download_history        下载/续传 BaoStock 历史日线归档" in completed.stdout
     assert "./run.sh train-tomorrow          从封存状态推导并连续运行可用 Tomorrow 训练阶段" in completed.stdout
     assert "research-r7-dossier" not in completed.stdout
-    assert "所有命令都可追加 --profile v1|v2；未指定时为 V1" in completed.stdout
+    assert "所有命令都可追加 --profile v1|v2|v3；未指定时为 V1" in completed.stdout
     assert "./run.sh serve" not in completed.stdout
     assert not missing_venv.exists()
 
@@ -289,7 +289,7 @@ def test_run_script_rejects_an_unknown_profile_before_environment_setup(tmp_path
 
     assert completed.returncode == 2
     assert completed.stdout == ""
-    assert completed.stderr == "评分档位只能是 v1 或 v2: latest\n"
+    assert completed.stderr == "评分档位只能是 v1、v2 或 v3: latest\n"
     assert not missing_venv.exists()
 
 
@@ -338,7 +338,7 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert "research-history" not in powershell
     assert "research-screen" not in powershell
     assert ".\\run.ps1 train-tomorrow          从封存状态推导并连续运行可用 Tomorrow 训练阶段" in powershell
-    assert "所有命令都可追加 --profile v1|v2；未指定时为 V1" in powershell
+    assert "所有命令都可追加 --profile v1|v2|v3；未指定时为 V1" in powershell
 
 
 def test_research_status_is_historical_only_and_does_not_create_runtime_files(tmp_path: Path, capsys) -> None:
@@ -407,14 +407,9 @@ def test_train_tomorrow_runs_a_prerequisite_before_resource_handoff_without_crea
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "blocked"
-    assert payload["next_stage"] == "resource_probe"
-    assert payload["blockers"] == [
-        "tomorrow_common_trading_days_below_1000",
-        "tomorrow_h1_historical_data_insufficient",
-        "tomorrow_terminal_holdout_below_200",
-    ]
-    assert len(payload["input_prerequisite_hash"]) == 64
-    assert payload["production_readiness"]["status"] == "production_adaptation_blocked"
+    assert payload["next_stage"] == "data_manifest"
+    assert payload["blockers"] == ["history_manifest_unavailable"]
+    assert payload["manifest_hash"] == ""
     assert payload["production_authority"] is False
     assert {os.environ[name] for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")} == {"2"}
     assert not runtime_dir.exists()

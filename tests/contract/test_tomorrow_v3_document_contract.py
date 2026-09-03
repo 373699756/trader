@@ -36,8 +36,7 @@ def test_v3_is_a_single_offline_industry_model_without_stacking() -> None:
     assert all(value in strategy for value in required_contract)
     assert "3,000" not in section
     assert "rolling_1500" not in section
-    assert 'TomorrowScoringProfile = Literal["v1", "v2"]' in model_port
-    assert 'Literal["v1", "v2", "v3"]' not in model_port
+    assert 'TomorrowScoringProfile = Literal["v1", "v2", "v3"]' in model_port
 
 
 def test_v3_minimum_dates_can_satisfy_every_preregistered_segment() -> None:
@@ -69,7 +68,7 @@ def test_v3_research_has_four_isolated_owners_and_one_public_command() -> None:
         "老 V2 predictor、bundle、hash、配置语义、历史和冻结记录全部封存且不修改",
         "./run.sh train-tomorrow",
         "一次命令形成一个由输入 manifest 和 hash 派生的 `run_id`",
-        ".runtime/v2/research/tomorrow-v3/<run_id>/",
+        "data/train/tomorrow-v3/<run_id>/",
         "report.json",
         "model.json",
         "evidence/",
@@ -93,11 +92,10 @@ def test_v3_research_has_four_isolated_owners_and_one_public_command() -> None:
         assert f"`./run.sh {internal_stage}" not in strategy
 
 
-def test_implemented_training_command_does_not_pre_authorize_v3() -> None:
+def test_explicit_user_authorized_v3_profile_remains_hash_bound() -> None:
     strategy = (ROOT / "docs" / "recommendation-strategy.md").read_text(encoding="utf-8")
     model_port = (ROOT / "src" / "trader" / "application" / "ports" / "tomorrow_model.py").read_text(encoding="utf-8")
 
-    assert "独立高风险批次" in strategy
-    assert "V3 未经人工授权不得进入" in strategy
-    assert 'TomorrowScoringProfile = Literal["v1", "v2"]' in model_port
-    assert 'Literal["v1", "v2", "v3"]' not in model_port
+    assert "activation_basis=manual_user_override" in strategy
+    assert "验证通过" in strategy
+    assert 'TomorrowScoringProfile = Literal["v1", "v2", "v3"]' in model_port

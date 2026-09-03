@@ -73,11 +73,11 @@ def load_strategy_settings(
     if _integer(raw, "schema_version", minimum=1) != 15:
         raise ConfigurationError("strategy schema_version must be 15")
     configured_profile = _text(raw, "tomorrow_scoring_profile")
-    if configured_profile not in {"v1", "v2"}:
-        raise ConfigurationError("tomorrow_scoring_profile must be v1 or v2")
+    if configured_profile not in {"v1", "v2", "v3"}:
+        raise ConfigurationError("tomorrow_scoring_profile must be v1, v2, or v3")
     if tomorrow_scoring_profile is not None:
-        if tomorrow_scoring_profile not in {"v1", "v2"}:
-            raise ConfigurationError("tomorrow_scoring_profile override must be v1 or v2")
+        if tomorrow_scoring_profile not in {"v1", "v2", "v3"}:
+            raise ConfigurationError("tomorrow_scoring_profile override must be v1, v2, or v3")
         raw = {**raw, "tomorrow_scoring_profile": tomorrow_scoring_profile}
     effective_profile = _text(raw, "tomorrow_scoring_profile")
     fusion_raw = _mapping(raw, "fusion")
@@ -109,7 +109,7 @@ def load_strategy_settings(
     settings = StrategySettings(
         schema_version=15,
         strategy_version=_strategy_contract_version(raw),
-        tomorrow_scoring_profile=cast(Literal["v1", "v2"], effective_profile),
+        tomorrow_scoring_profile=cast(Literal["v1", "v2", "v3"], effective_profile),
         deepseek_risk_mapping_version=_text(raw, "deepseek_risk_mapping_version"),
         fusion=FusionSettings(
             version=_text(fusion_raw, "version"),

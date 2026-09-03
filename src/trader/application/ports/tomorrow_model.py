@@ -9,7 +9,7 @@ import math
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-TomorrowScoringProfile = Literal["v1", "v2"]
+TomorrowScoringProfile = Literal["v1", "v2", "v3"]
 
 
 @dataclass(frozen=True)
@@ -66,12 +66,15 @@ class TomorrowHistoricalP2ModelArtifact:
 class TomorrowModelInput:
     code: str
     alpha_features: tuple[float, ...]
+    industry: str = ""
 
     def __post_init__(self) -> None:
         if len(self.code) != 6 or not self.code.isdigit():
             raise ValueError("Tomorrow model input code is invalid")
         if not self.alpha_features or any(not math.isfinite(value) for value in self.alpha_features):
             raise ValueError("Tomorrow model alpha features must be non-empty and finite")
+        if not isinstance(self.industry, str):
+            raise ValueError("Tomorrow model industry must be text")
 
 
 @dataclass(frozen=True)
@@ -102,6 +105,9 @@ class TomorrowModelPredictorPort(Protocol):
     @property
     def feature_ids(self) -> tuple[str, ...]: ...
 
+    @property
+    def industry_ids(self) -> tuple[str, ...]: ...
+
     def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]: ...
 
 
@@ -113,11 +119,14 @@ class TomorrowModelRuntimeStatus:
     model_hash: str
     scoring_version: str
     activation_basis: Literal["manual_user_override"]
-    historical_status: Literal["historical_rejected", "historical_unavailable"]
+    historical_status: Literal["historical_rejected", "historical_unavailable", "historical_validated"]
     historical_failure_reasons: tuple[str, ...]
     monitoring_mode: Literal["automatic_t1_outcome_settlement"]
     automatic_model_update: bool
     loss_probability_status: Literal["not_modeled"]
+    training_anchor: Literal["15:00_close"] = "15:00_close"
+    runtime_anchor: Literal["14:50"] = "14:50"
+    point_in_time_parity: bool = False
 
 
 __all__ = [

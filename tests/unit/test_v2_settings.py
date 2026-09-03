@@ -288,7 +288,7 @@ def test_v2_configuration_contract_is_valid() -> None:
     assert set(grouped_codes) == {item.code for item in watchlist.items}
 
 
-@pytest.mark.parametrize("profile", ("v1", "v2"))
+@pytest.mark.parametrize("profile", ("v1", "v2", "v3"))
 def test_tomorrow_scoring_profile_is_an_explicit_versioned_switch(tmp_path, profile: str) -> None:
     source = PROJECT_ROOT / "config" / "v2" / "strategy.json"
     raw = json.loads(source.read_text(encoding="utf-8"))

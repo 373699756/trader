@@ -215,9 +215,9 @@ def build_system(
     market_data = _build_market_data(context, persistence.data_plane, calendar)
     reviewer = _build_reviewer(context, persistence.budget)
     policy = _recommendation_policy(context.strategy)
-    v1_model = TomorrowProductionModelScoringService(load_packaged_tomorrow_production_model("v1"))
-    v2_model = TomorrowProductionModelScoringService(load_packaged_tomorrow_production_model("v2"))
-    tomorrow_model = v1_model if strategy.tomorrow_scoring_profile == "v1" else v2_model
+    tomorrow_model = TomorrowProductionModelScoringService(
+        load_packaged_tomorrow_production_model(strategy.tomorrow_scoring_profile)
+    )
     publication = _build_publication(
         context,
         calendar,
