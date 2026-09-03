@@ -672,7 +672,7 @@ assert.strictEqual(
       supply_reason_counts: { below_score_threshold: 57 },
     },
   ),
-  "评分已完成｜模型预测成本后净超额均未转正，按固定成本规则信号分为 0；本轮保持空仓，不生成正式推荐或观察项",
+  "评分已完成｜最高分 0.00，距离正式线 78.00；达到观察线 0只、正式线 0只；成本后净超额均未转正，按固定成本规则信号分为 0；主要原因：评分未达到执行门槛（57只）",
 );
 assert.strictEqual(
   state.emptyRecommendationMessage({

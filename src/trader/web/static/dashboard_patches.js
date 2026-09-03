@@ -126,7 +126,6 @@
           ? "冻结记录未形成可评分候选，不能证明成本后净超额均未转正；本轮保持空仓，等待下一交易日重新评分"
           : "当前快照未形成可评分候选，不能证明成本后净超额均未转正；本轮保持空仓并等待重新评分";
       }
-      return "评分已完成｜模型预测成本后净超额均未转正，按固定成本规则信号分为 0；本轮保持空仓，不生成正式推荐或观察项";
     }
     const funnel = inputQuality && inputQuality.supply_funnel || {};
     const maximum = finiteNumber(diagnostics.maximum_final_score);
@@ -139,7 +138,11 @@
       ? `距离正式线 ${gap.toFixed(2)}`
       : `已达到正式线 ${threshold.toFixed(2)}`;
     const reasons = reasonCountSummary(inputQuality && inputQuality.supply_reason_counts, 3);
-    return `评分已完成｜最高分 ${maximum.toFixed(2)}，${position}；达到观察线 ${observationCount}只、正式线 ${executableCount}只${reasons ? `；主要原因：${reasons}` : ""}`;
+    const noPositiveUtility = payload && payload.strategy === "tomorrow" && diagnostics.empty_reason === "no_positive_net_utility";
+    const utilityReason = noPositiveUtility
+      ? "；成本后净超额均未转正，按固定成本规则信号分为 0"
+      : "";
+    return `评分已完成｜最高分 ${maximum.toFixed(2)}，${position}；达到观察线 ${observationCount}只、正式线 ${executableCount}只${utilityReason}${reasons ? `；主要原因：${reasons}` : ""}`;
   }
 
   function frozenEmptyMessage(payload) {

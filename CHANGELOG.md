@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户反馈 Tomorrow 在 `no_positive_net_utility` 空仓时只显示固定成本说明，未像 D25 一样保留最高分与门槛透明度。
+  确认原因是 Web 的专项空状态提前返回、绕过通用评分摘要；现保留“成本后净超额均未转正”的准确结论，同时显示
+  最高最终分、距正式线、达到观察线/正式线数量及聚合阻断原因，不生成正式推荐或观察项。Verification:
+  dashboard state JavaScript 契约通过。Residual Risks: 最高最终分在该状态通常为 0，因为固定成本规则将模型
+  信号分归零；逐股模型诊断不会因空仓而暴露。`Regression-Key: tomorrow-no-positive-utility-summary-v1`。
+
 - 用户要求先以 600 日验证备用历史来源、最终仍以逐股最多 2000 日归档为目标，并要求所有实际下载进度显示来源、
   当前代码、完成/失败/剩余数、已落盘行数和限频状态。BaoStock 标准错误进度现显式投影
   `source=baostock`、`current_code` 与 `rate_limit_cooldown_seconds`，同时保留已有 checkpoint、失败原因和
