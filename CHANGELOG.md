@@ -14,7 +14,7 @@ All notable changes to this project are documented here.
   迁移到其等价的构建后端选项。
 
 - 用户要求去除无明确需求的 NumPy 跨版本兼容层。本批删除 `typing_stubs/numpy/__init__.pyi` 及
-  `pyproject.toml` 中的 `mypy_path`，恢复使用已声明运行环境中的 NumPy 类型信息；同步修正 V3 训练模块中
+  `pyproject.toml` 中的 `mypy_path`，并移除 mypy 对 NumPy 的 `follow_imports=skip` 豁免，恢复使用已声明运行环境中的 NumPy 类型信息；同步修正 V3 训练模块中
   被宽泛 `Any` 掩盖的日期键、样本字段访问类型错误。`production_authority`、运行时行为和公开 API 不变。
   `Regression-Key: remove-numpy-any-compatibility-v1`。
 

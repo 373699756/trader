@@ -78,7 +78,7 @@ warn_return_any = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["lightgbm", "numpy", "polars", "polars.*"]
+module = ["lightgbm", "polars", "polars.*"]
 follow_imports = "skip"
 
 [tool.coverage.run]
