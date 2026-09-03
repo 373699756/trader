@@ -29,6 +29,7 @@ def _options(**overrides: object) -> DiagnosticOptions:
         history_workers=3,
         history_days=61,
         history_source="composite",
+        tencent_history_host="proxy",
         web_timeout_seconds=3.0,
         source_timeout_seconds=4.5,
         browser_duration_seconds=8.0,

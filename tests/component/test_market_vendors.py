@@ -238,6 +238,17 @@ def test_tencent_history_rejects_unadjusted_day_payload_when_qfq_is_missing() ->
     assert client.fetch_history("600001", days=20) == ()
 
 
+def test_tencent_history_supports_a_separate_direct_probe_host() -> None:
+    session = FakeSession(['kline_dayqfq2026={"data": {"sh600001": {"qfqday": []}}}'])
+    client = TencentClient(timeout_seconds=2, session_factory=lambda: session)
+
+    assert client.fetch_history("600001", days=20, history_host="direct") == ()
+    assert session.calls[0][0][0].startswith("https://web.ifzq.gtimg.cn/")
+
+    with pytest.raises(ValueError, match="host"):
+        client.fetch_history("600001", days=20, history_host="unknown")
+
+
 def test_tencent_history_accepts_day_payload_proven_equivalent_to_requested_qfq() -> None:
     rows = [
         [

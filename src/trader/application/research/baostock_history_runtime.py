@@ -65,6 +65,8 @@ class BaoStockRuntimeRequest:
 @dataclass(frozen=True)
 class BaoStockRuntimeProgress:
     phase: BaoStockRuntimePhase
+    source: str = "baostock"
+    current_code: str = ""
     sessions: int = 2000
     universe_count: int = 0
     completed_codes: int = 0
@@ -72,10 +74,12 @@ class BaoStockRuntimeProgress:
     expected_records: int = 0
     downloaded_records: int = 0
     active_workers: int = 0
+    rate_limit_cooldown_seconds: float = 0.0
     last_failure_reason: str = ""
     schema_version: str = "baostock_runtime_progress_v1"
 
     def __post_init__(self) -> None:
+        _validate_progress_source(self.source, self.current_code, self.rate_limit_cooldown_seconds)
         if not 1 <= self.sessions <= 2000:
             raise ValueError("BaoStock progress sessions must be in 1..2000")
         code_counts = (self.universe_count, self.completed_codes, self.failed_codes, self.active_workers)
@@ -105,6 +109,15 @@ class BaoStockRuntimeProgress:
     def remaining_codes(self) -> int:
         """Return codes that still need a successful durable download."""
         return self.universe_count - self.completed_codes
+
+
+def _validate_progress_source(source: str, current_code: str, cooldown_seconds: float) -> None:
+    if source != "baostock":
+        raise ValueError("BaoStock progress source must be baostock")
+    if current_code and (len(current_code) != 6 or not current_code.isdigit()):
+        raise ValueError("BaoStock progress current code is invalid")
+    if not math.isfinite(cooldown_seconds) or cooldown_seconds < 0:
+        raise ValueError("BaoStock progress cooldown must be finite and non-negative")
 
 
 class BaoStockRuntimeProgressPort(Protocol):

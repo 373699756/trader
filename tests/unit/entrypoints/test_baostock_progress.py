@@ -17,6 +17,7 @@ def test_cli_progress_writer_flushes_stage_totals_and_database_locations() -> No
     writer.publish(
         BaoStockRuntimeProgress(
             phase="downloading",
+            current_code="600001",
             sessions=2000,
             universe_count=5211,
             completed_codes=13,
@@ -33,6 +34,7 @@ def test_cli_progress_writer_flushes_stage_totals_and_database_locations() -> No
         "active_workers": 1,
         "checkpoint_database_pattern": "/var/lib/trader/history/baostock-daily/sessions-2000/shard-*.sqlite3",
         "completed_codes": 13,
+        "current_code": "600001",
         "downloaded_records": 23117,
         "elapsed_seconds": 0.0,
         "expected_records": 9250000,
@@ -40,9 +42,11 @@ def test_cli_progress_writer_flushes_stage_totals_and_database_locations() -> No
         "final_database": "/var/lib/trader/history/baostock-daily/sessions-2000/score-baostock-daily-core-v2.sqlite3",
         "last_failure_reason": "supplier_query_failed_blacklisted",
         "phase": "downloading",
+        "rate_limit_cooldown_seconds": 0.0,
         "checkpointed_codes": 15,
         "remaining_codes": 5198,
         "schema_version": "baostock_runtime_progress_v1",
         "sessions": 2000,
+        "source": "baostock",
         "universe_count": 5211,
     }

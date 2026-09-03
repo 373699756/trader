@@ -1929,6 +1929,13 @@ API/SSE、冻结恢复和发布门禁。任一父数据不足或拒绝都必须�
 
 #### 15.1.38 BaoStock 2000 日共同日线下载与四路实施计划
 
+运行状态更新（2026-09-03）：全量目标仍为每只硬过滤后证券最多 2000 个交易日日线，新上市或来源不足证券按
+真实可得区间保存，不补造行。BaoStock 是唯一拥有 checkpoint/覆盖审计/正式 manifest 的归档源；磁盘启动
+下限为 25GiB，单证券串行请求至少间隔两秒。Tencent 的 proxy 和 direct K 线端点、Eastmoney 的 600 日
+单股票探针均无有效行；120 分 Tushare 当前仅允许 raw 语义且实际调用为 `sdk_error`，故三者均不是本轮的
+正式或自动补洞来源。它们只能通过 `diagnose_runtime.py` 的有界 600 日能力探针重新准入；准入后仍须使用
+来源独立的 SQLite/checkpoint/manifest，逐条标记来源与复权语义，绝不混入 BaoStock V3 父工件。
+
 状态：`pending`，且是当前唯一下一执行章节；Codex C 工程契约已完成，D 的依赖、显式入口、分片生命周期、状态投影已完成，
 但供应商登录/历史请求被拒绝，A 的权威全量下载与合格 manifest 尚未完成。2026-09-02 的最新显式探针中，`--sessions 1`
 返回 `supplier_login_failed_blacklisted`；既有分片证据还显示登录成功后历史请求返回 `history:10001011`，说明并发请求会触发同一封禁；
@@ -1979,8 +1986,8 @@ checkpoint 所有者；最终 `score-baostock-daily-core-v2.sqlite3` 只在全�
 
 显式命令在标准错误逐行输出 `baostock_runtime_progress_v1`，`phase` 依次使用 `preflight`、
 `checkpoint_loading`、`supplier_login`、`trading_calendar`、`security_universe`、`database_initializing`、
-`worker_starting`、`downloading` 和 `merging`。每条事件固定包含 `sessions/universe_count/checkpointed_codes/`
-`remaining_codes/completed_codes/failed_codes/expected_records/downloaded_records/active_workers/`
+`worker_starting`、`downloading` 和 `merging`。每条事件固定包含 `source/current_code/sessions/universe_count/checkpointed_codes/`
+`remaining_codes/completed_codes/failed_codes/expected_records/downloaded_records/active_workers/rate_limit_cooldown_seconds/`
 `last_failure_reason/elapsed_seconds/checkpoint_database_pattern/final_database`；`checkpointed_codes` 包含已经
 持久化的成功和失败检查点，`remaining_codes` 表示尚未成功完成、因此仍可续传的证券数。上下文可用后，
 股票计数显示代码进度，记录计数显示逻辑代码-日期记录总量和已经提交到 SQLite 的数量；总量按每只证券在

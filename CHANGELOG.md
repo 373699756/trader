@@ -6,6 +6,16 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求先以 600 日验证备用历史来源、最终仍以逐股最多 2000 日归档为目标，并要求所有实际下载进度显示来源、
+  当前代码、完成/失败/剩余数、已落盘行数和限频状态。BaoStock 标准错误进度现显式投影
+  `source=baostock`、`current_code` 与 `rate_limit_cooldown_seconds`，同时保留已有 checkpoint、失败原因和
+  SQLite 路径字段。腾讯日 K 客户端增加仅供受控诊断的 `direct` 主机选项；统一诊断器可在不写入归档的情况下
+  进行 600 日单股票探针。真实验证显示腾讯 proxy/direct、东方财富均无有效行，Tushare 120 分账户为 raw-only
+  且返回 `sdk_error`；这些来源未被错误地启用为批量归档或混写进 BaoStock manifest。Verification: BaoStock
+  进度、腾讯供应商、诊断参数与 CLI 契约的定向测试通过；三次真实单股票供应商探针均为 controlled degraded。
+  Residual Risks: BaoStock 登录仍是外部阻塞；备用源须在不同网络/有效授权下重复通过多代码 600 日、复权及覆盖
+  验证后，才能在独立交付批次实现其 checkpoint 下载器。`Regression-Key: history-source-600-pilot-progress-v1`。
+
 - 用户报告全量 BaoStock 下载被 30GB 固定门禁阻断，并要求单证券顺序下载以降低供应商封禁风险。确认根因是运行器
   在供应商 I/O 前硬编码检查 30GiB，且旧的一日能力验证分片与 2000 日运行共用目录。现将全量门禁改为 25GiB，固定为
   单独子进程、每次请求至少间隔两秒，并按 `sessions` 隔离 WAL checkpoint 与最终库；成功证券仍逐个事务提交和断点续传，

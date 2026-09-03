@@ -73,6 +73,9 @@ def test_progress_exposes_code_and_logical_record_totals_without_parallel_json_s
     assert progress.remaining_codes == 5198
     assert progress.expected_records == 9_250_000
     assert progress.downloaded_records == 23_117
+    assert progress.source == "baostock"
+    assert progress.current_code == ""
+    assert progress.rate_limit_cooldown_seconds == 0.0
 
     assert BaoStockRuntimeProgress(phase="checkpoint_loading", sessions=1).phase == "checkpoint_loading"
 
@@ -85,6 +88,8 @@ def test_progress_rejects_impossible_counts() -> None:
             completed_codes=2,
             failed_codes=1,
         )
+    with pytest.raises(ValueError, match="current code"):
+        BaoStockRuntimeProgress(phase="downloading", current_code="not-a-code")
     with pytest.raises(ValueError, match="record counts"):
         BaoStockRuntimeProgress(
             phase="downloading",

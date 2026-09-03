@@ -31,6 +31,10 @@ _DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _QUOTE_SHARD_SIZE = 120
 _QUOTE_MAX_CONCURRENCY = 3
+_HISTORY_ENDPOINTS = {
+    "proxy": "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get",
+    "direct": "https://web.ifzq.gtimg.cn/appstock/app/newfqkline/get",
+}
 
 
 class TencentClient:
@@ -128,16 +132,20 @@ class TencentClient:
             normalizer=lambda row, now: _parse_payload(row, now, set(codes)),
         )
 
-    def fetch_history(self, code: str, *, days: int = 90) -> tuple[DailyBar, ...]:
+    def fetch_history(self, code: str, *, days: int = 90, history_host: str = "proxy") -> tuple[DailyBar, ...]:
         if len(code) != 6 or not code.isdigit() or not code.startswith(("0", "3", "6")):
             return ()
         self._ensure_running()
+        try:
+            history_endpoint = _HISTORY_ENDPOINTS[history_host]
+        except KeyError as exc:
+            raise ValueError("Tencent history host must be proxy or direct") from exc
         end = self._wall_clock().astimezone(_SHANGHAI).date()
         start = end - timedelta(days=max(days * 2, 180))
         symbol = _symbol(code)
         with self._session_factory() as session:
             response = session.get(
-                "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get",
+                history_endpoint,
                 params={
                     "_var": f"kline_dayqfq{end.year}",
                     "param": f"{symbol},day,{start.isoformat()},{end.isoformat()},640,qfq",

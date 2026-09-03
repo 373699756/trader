@@ -683,6 +683,12 @@ class _DownloadCoordinator:
         )
 
     def _report(self, phase: BaoStockRuntimePhase, last_failure_reason: str = "") -> None:
+        current_code = ""
+        for handle in self._handles:
+            security = handle.current
+            if security is not None:
+                current_code = security.code
+                break
         _emit_progress(
             self._run.progress,
             BaoStockRuntimeProgress(
@@ -694,6 +700,10 @@ class _DownloadCoordinator:
                 expected_records=self._expected_records,
                 downloaded_records=self._downloaded_records,
                 active_workers=sum(handle.process.is_alive() for handle in self._handles),
+                current_code=current_code,
+                # The worker owns the two-second query pacing. It does not expose
+                # a pending sleep, so a zero value truthfully means no known hold.
+                rate_limit_cooldown_seconds=0.0,
                 last_failure_reason=(
                     last_failure_reason if _valid_failure_code(last_failure_reason) else "supplier_query_failed"
                 )

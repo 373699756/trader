@@ -29,6 +29,7 @@ from trader.infra.persistence.data_plane import DataPlaneRepository  # noqa: E40
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DEFAULT_CODES = ("600519", "000001", "300750", "688981", "601318")
 Source = Literal["composite", "tencent", "eastmoney"]
+TencentHistoryHost = Literal["proxy", "direct"]
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,16 @@ class HistoryObservation:
     latency_ms: float
     error: str | None
     bars: tuple[DailyBar, ...] = field(repr=False)
+
+
+@dataclass(frozen=True)
+class HistorySamplingOptions:
+    samples: int
+    workers: int
+    source: Source
+    days: int
+    timeout_seconds: float
+    tencent_history_host: TencentHistoryHost = "proxy"
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -56,6 +67,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--days", type=int, default=61, help="daily rows requested per stock (default: 61)")
     parser.add_argument("--timeout-seconds", type=float, default=12.0, help="timeout for each vendor HTTP attempt")
+    parser.add_argument(
+        "--tencent-history-host",
+        choices=("proxy", "direct"),
+        default="proxy",
+        help="Tencent K-line host; direct is a bounded fallback probe only",
+    )
     parser.add_argument(
         "--persistence-runtime-dir",
         help="optional absolute directory outside the repository for an isolated batch-persistence measurement",
@@ -79,26 +96,30 @@ def _validate(args: argparse.Namespace) -> tuple[str, ...]:
     return codes
 
 
-def _client(source: Source, timeout_seconds: float):
-    if source == "tencent":
-        return TencentClient(timeout_seconds=timeout_seconds)
-    if source == "eastmoney":
-        return EastmoneyClient(timeout_seconds=timeout_seconds)
+def _client(options: HistorySamplingOptions):
+    if options.source == "tencent":
+        return TencentClient(timeout_seconds=options.timeout_seconds)
+    if options.source == "eastmoney":
+        return EastmoneyClient(timeout_seconds=options.timeout_seconds)
     return FallbackHistoryClient(
-        TencentClient(timeout_seconds=timeout_seconds),
-        EastmoneyClient(timeout_seconds=timeout_seconds),
+        TencentClient(timeout_seconds=options.timeout_seconds),
+        EastmoneyClient(timeout_seconds=options.timeout_seconds),
     )
 
 
-def _sample_one(sample: int, code: str, source: Source, days: int, timeout_seconds: float) -> HistoryObservation:
+def _sample_one(sample: int, code: str, options: HistorySamplingOptions) -> HistoryObservation:
     started = time.monotonic()
     try:
-        bars = tuple(_client(source, timeout_seconds).fetch_history(code, days=days))
+        client = _client(options)
+        if options.source == "tencent":
+            bars = tuple(client.fetch_history(code, days=options.days, history_host=options.tencent_history_host))
+        else:
+            bars = tuple(client.fetch_history(code, days=options.days))
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         return HistoryObservation(
             sample,
             code,
-            source,
+            options.source,
             None,
             0,
             round((time.monotonic() - started) * 1000.0, 1),
@@ -108,7 +129,7 @@ def _sample_one(sample: int, code: str, source: Source, days: int, timeout_secon
     return HistoryObservation(
         sample,
         code,
-        source,
+        options.source,
         bars[-1].source if bars else None,
         len(bars),
         round((time.monotonic() - started) * 1000.0, 1),
@@ -119,17 +140,12 @@ def _sample_one(sample: int, code: str, source: Source, days: int, timeout_secon
 
 def collect_history_samples(
     codes: tuple[str, ...],
-    *,
-    samples: int,
-    workers: int,
-    source: Source,
-    days: int,
-    timeout_seconds: float,
+    options: HistorySamplingOptions,
 ) -> tuple[HistoryObservation, ...]:
     observations: list[HistoryObservation] = []
-    with ThreadPoolExecutor(max_workers=min(workers, len(codes)), thread_name_prefix="history-sample") as pool:
-        for sample in range(1, samples + 1):
-            futures = {pool.submit(_sample_one, sample, code, source, days, timeout_seconds): code for code in codes}
+    with ThreadPoolExecutor(max_workers=min(options.workers, len(codes)), thread_name_prefix="history-sample") as pool:
+        for sample in range(1, options.samples + 1):
+            futures = {pool.submit(_sample_one, sample, code, options): code for code in codes}
             observations.extend(future.result() for future in as_completed(futures))
     return tuple(sorted(observations, key=lambda item: (item.sample, item.code)))
 
@@ -227,6 +243,7 @@ def build_report(
             "source": args.source,
             "days": args.days,
             "timeout_seconds_per_attempt": args.timeout_seconds,
+            "tencent_history_host": args.tencent_history_host,
         },
         "summary": {
             "usable_observations": usable,
@@ -257,11 +274,14 @@ def main() -> int:
         codes = _validate(args)
         observations = collect_history_samples(
             codes,
-            samples=args.samples,
-            workers=args.workers,
-            source=args.source,
-            days=args.days,
-            timeout_seconds=args.timeout_seconds,
+            HistorySamplingOptions(
+                samples=args.samples,
+                workers=args.workers,
+                source=args.source,
+                days=args.days,
+                timeout_seconds=args.timeout_seconds,
+                tencent_history_host=args.tencent_history_host,
+            ),
         )
         persistence = (
             _measure_persistence(observations, args.persistence_runtime_dir) if args.persistence_runtime_dir else None

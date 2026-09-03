@@ -170,7 +170,9 @@ class _BaoStockProgressWriter:
             raise TypeError("BaoStock progress writer requires a typed progress value")
         payload = {
             "schema_version": progress.schema_version,
+            "source": progress.source,
             "phase": progress.phase,
+            "current_code": progress.current_code,
             "sessions": progress.sessions,
             "universe_count": progress.universe_count,
             "checkpointed_codes": progress.checkpointed_codes,
@@ -180,6 +182,7 @@ class _BaoStockProgressWriter:
             "expected_records": progress.expected_records,
             "downloaded_records": progress.downloaded_records,
             "active_workers": progress.active_workers,
+            "rate_limit_cooldown_seconds": progress.rate_limit_cooldown_seconds,
             "last_failure_reason": progress.last_failure_reason,
             "elapsed_seconds": round(self._monotonic() - self._started_at, 3),
             "checkpoint_database_pattern": str(self._root / "shard-*.sqlite3"),

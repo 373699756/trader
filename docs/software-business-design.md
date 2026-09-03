@@ -1792,8 +1792,8 @@ BaoStock v2 日线能力只按下一段独立计划执行，不改写这个结�
 `download_history` 的运行可观察性固定为标准错误上的逐行 JSON 契约
 `baostock_runtime_progress_v1`。`phase` 枚举固定为 `preflight`、`checkpoint_loading`、`supplier_login`、
 `trading_calendar`、`security_universe`、`database_initializing`、`worker_starting`、`downloading`、`merging`；
-每条事件显式投影 `sessions/universe_count/checkpointed_codes/remaining_codes/completed_codes/failed_codes/`
-`expected_records/downloaded_records/active_workers/last_failure_reason/elapsed_seconds/`
+每条事件显式投影 `source/current_code/sessions/universe_count/checkpointed_codes/remaining_codes/completed_codes/failed_codes/`
+`expected_records/downloaded_records/active_workers/rate_limit_cooldown_seconds/last_failure_reason/elapsed_seconds/`
 `checkpoint_database_pattern/final_database`。`checkpointed_codes` 是成功与失败检查点总数，
 `remaining_codes` 是尚未成功完成、续传时仍需处理的证券数。其中
 `expected_records` 是逐证券按上市/退市有效区间求和的应有代码-日期记录数，`downloaded_records` 是已经提交
@@ -1803,6 +1803,14 @@ BaoStock v2 日线能力只按下一段独立计划执行，不改写这个结�
 “没有下载进度”混为一谈。供应商返回 `10001011` 时统一投影
 `supplier_query_failed_blacklisted` 并立即停止整次运行，保留已提交断点；文件系统不支持进程锁时失败关闭，
 不得无锁继续。
+
+备用来源不与 BaoStock checkpoint、SQLite 或 manifest 混写。2026-09-03 的单股票 600 日真实能力探针中，
+腾讯 `proxy` 和 `direct` K 线主机均未返回有效行，东方财富同样未返回有效行；120 积分 Tushare 只声明 raw 日线，
+实际请求返回 `sdk_error`。因此本版本不开放伪装为正式归档的备用全量循环。统一诊断器支持
+`--profile history --history-source tencent --tencent-history-host direct --history-days 600` 进行单股票、单请求、
+无写入复验；只有同源多代码 600 日探针稳定通过、复权口径和覆盖审计通过后，才可由新的独立归档批次增加
+该来源自己的 checkpoint、manifest、限频冷却和进度运行器。任何成功的公网备用档案都必须是独立数据集，
+不得静默填入 `score-baostock-daily-core-v2.sqlite3`。
 
 该数据源只能提供日线、日历和供应商明确返回的基础事实，不能构造历史 11:20/14:50 锚点或单独补齐历史
 行业、证券资格和风险事实 `effective_at`。全体和逐板代码日期覆盖均达到 95%、全窗口老股完整率、逐股

@@ -35,6 +35,7 @@ Profile = Literal[
 ]
 CheckStatus = Literal["passed", "degraded", "failed"]
 HistorySource = Literal["composite", "tencent", "eastmoney"]
+TencentHistoryHost = Literal["proxy", "direct"]
 
 _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "web": ("web_health",),
@@ -73,6 +74,7 @@ class DiagnosticOptions:
     history_workers: int
     history_days: int
     history_source: HistorySource
+    tencent_history_host: TencentHistoryHost
     web_timeout_seconds: float
     source_timeout_seconds: float
     browser_duration_seconds: float
@@ -107,6 +109,12 @@ def _parser() -> argparse.ArgumentParser:
         choices=tuple(_PROFILE_CHECKS),
         default="live",
         help="single-check or combined runtime, research, sources, live, and full diagnostic profile",
+    )
+    parser.add_argument(
+        "--tencent-history-host",
+        choices=("proxy", "direct"),
+        default="proxy",
+        help="Tencent K-line host for bounded history probes",
     )
     parser.add_argument("--base-url", default="http://127.0.0.1:5000", help="running trader-server base URL")
     parser.add_argument("--runtime-config", default=str(_DEFAULT_CONFIG), help="runtime JSON configuration")
@@ -185,6 +193,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             history_workers=args.history_workers,
             history_days=args.history_days,
             history_source=args.history_source,
+            tencent_history_host=args.tencent_history_host,
             web_timeout_seconds=args.web_timeout_seconds,
             source_timeout_seconds=args.source_timeout_seconds,
             browser_duration_seconds=args.browser_duration_seconds,
@@ -335,6 +344,8 @@ def _history_command(options: DiagnosticOptions, python_executable: str) -> tupl
         str(options.history_days),
         "--source",
         options.history_source,
+        "--tencent-history-host",
+        options.tencent_history_host,
         "--timeout-seconds",
         str(options.source_timeout_seconds),
     ]
@@ -413,110 +424,143 @@ def _check_payload(result: DiagnosticResult) -> dict[str, object]:
     if result.error_code is not None:
         payload["error_code"] = result.error_code
     source = result.payload or {}
-    if result.name == "web_health":
-        payload["summary"] = _mapping(source.get("summary"))
-        payload["findings"] = _bounded_findings(source.get("findings"))
-        samples = source.get("samples")
-        if isinstance(samples, list) and samples and isinstance(samples[-1], dict):
-            latest = samples[-1]
-            payload["latest_runtime"] = {
-                "runtime_status": latest.get("runtime_status"),
-                "runtime_version": latest.get("runtime_version"),
-                "phase": latest.get("phase"),
-                "history_warmup": _mapping(_mapping(latest.get("market")).get("history_warmup")),
-                "company_research": _mapping(latest.get("company_research")),
-                "strategies": _mapping(latest.get("strategies")),
+    handler = _CHECK_DETAILS.get(result.name)
+    if handler is not None:
+        handler(result, source, payload)
+    return payload
+
+
+def _web_health_details(_result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]) -> None:
+    payload["summary"] = _mapping(source.get("summary"))
+    payload["findings"] = _bounded_findings(source.get("findings"))
+    samples = source.get("samples")
+    if isinstance(samples, list) and samples and isinstance(samples[-1], dict):
+        latest = samples[-1]
+        payload["latest_runtime"] = {
+            "runtime_status": latest.get("runtime_status"),
+            "runtime_version": latest.get("runtime_version"),
+            "phase": latest.get("phase"),
+            "history_warmup": _mapping(_mapping(latest.get("market")).get("history_warmup")),
+            "company_research": _mapping(latest.get("company_research")),
+            "strategies": _mapping(latest.get("strategies")),
+        }
+
+
+def _history_details(_result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]) -> None:
+    payload["summary"] = _mapping(source.get("summary"))
+
+
+def _security_master_details(
+    _result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]
+) -> None:
+    payload["summary"] = _mapping(source.get("summary")) or {"error": source.get("error")}
+
+
+def _tencent_quote_details(_result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]) -> None:
+    versions = _mapping(source.get("distinct_source_versions"))
+    payload["summary"] = {
+        "latency": _mapping(source.get("latency")),
+        "tracked_codes": len(versions),
+        "changing_codes": sum(isinstance(value, int) and value > 1 for value in versions.values()),
+        "source_changed": source.get("source_changed"),
+    }
+
+
+def _tushare_details(_result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]) -> None:
+    summary = _mapping(source.get("summary"))
+    payload["summary"] = {
+        "requested_codes": summary.get("requested_codes"),
+        "successful_codes": summary.get("successful_codes"),
+        "latency_ms": summary.get("latency_ms"),
+        "degraded_reason": summary.get("degraded_reason"),
+        "capability": _mapping(source.get("capability")),
+        "usage": _mapping(source.get("usage")),
+    }
+
+
+def _research_details(result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]) -> None:
+    if result.payload is not None and not _valid_research_status(source):
+        payload["findings"] = [
+            {
+                "severity": "error",
+                "code": "research_status_shape_invalid",
+                "message": "The research status schema or active window projection is invalid.",
             }
-    elif result.name == "history_sources":
-        payload["summary"] = _mapping(source.get("summary"))
-    elif result.name == "exchange_security_master":
-        payload["summary"] = _mapping(source.get("summary")) or {"error": source.get("error")}
-    elif result.name == "tencent_quotes":
-        versions = _mapping(source.get("distinct_source_versions"))
-        payload["summary"] = {
-            "latency": _mapping(source.get("latency")),
-            "tracked_codes": len(versions),
-            "changing_codes": sum(isinstance(value, int) and value > 1 for value in versions.values()),
-            "source_changed": source.get("source_changed"),
-        }
-    elif result.name == "tushare_daily":
-        summary = _mapping(source.get("summary"))
-        payload["summary"] = {
-            "requested_codes": summary.get("requested_codes"),
-            "successful_codes": summary.get("successful_codes"),
-            "latency_ms": summary.get("latency_ms"),
-            "degraded_reason": summary.get("degraded_reason"),
-            "capability": _mapping(source.get("capability")),
-            "usage": _mapping(source.get("usage")),
-        }
-    elif result.name == "score_p0_readiness":
-        if result.payload is not None and not _valid_research_status(source):
-            payload["findings"] = [
-                {
-                    "severity": "error",
-                    "code": "research_status_shape_invalid",
-                    "message": "The research status schema or active window projection is invalid.",
-                }
-            ]
-        else:
-            baostock = _mapping(source.get("baostock_history"))
-            tomorrow = _mapping(source.get("tomorrow_research"))
-            input_blockers = _safe_string_list(tomorrow.get("input_blockers"), limit=20)
-            production_blockers = _safe_string_list(tomorrow.get("production_blockers"), limit=20)
-            blockers = input_blockers + production_blockers
-            if blockers:
-                payload["findings"] = [
-                    {
-                        "severity": "error",
-                        "code": blockers[0],
-                        "message": "Tomorrow V3 research remains blocked by its sealed prerequisite gates.",
-                        "evidence": {
-                            "input_blockers": input_blockers,
-                            "production_blockers": production_blockers,
-                            "production_authority": tomorrow.get("production_authority"),
-                        },
-                    }
-                ]
-            payload["summary"] = {
-                "baostock_history": {
-                    "state": baostock.get("state"),
-                    "sessions": baostock.get("sessions"),
-                    "coverage_status": baostock.get("coverage_status"),
-                    "completed_codes": baostock.get("completed_codes"),
-                    "failed_codes": baostock.get("failed_codes"),
-                    "failure_reasons": _safe_string_list(baostock.get("failure_reasons"), limit=20),
-                    "historical_effective_facts_status": baostock.get("historical_effective_facts_status"),
-                    "v3_dataset_status": baostock.get("v3_dataset_status"),
-                    "production_authority": baostock.get("production_authority"),
-                    "point_in_time_parity": baostock.get("point_in_time_parity"),
-                },
-                "v3": {
-                    "status": tomorrow.get("status"),
-                    "next_stage": tomorrow.get("next_stage"),
-                    "input_prerequisite_status": tomorrow.get("input_prerequisite_status"),
+        ]
+        return
+    baostock = _mapping(source.get("baostock_history"))
+    tomorrow = _mapping(source.get("tomorrow_research"))
+    input_blockers = _safe_string_list(tomorrow.get("input_blockers"), limit=20)
+    production_blockers = _safe_string_list(tomorrow.get("production_blockers"), limit=20)
+    blockers = input_blockers + production_blockers
+    if blockers:
+        payload["findings"] = [
+            {
+                "severity": "error",
+                "code": blockers[0],
+                "message": "Tomorrow V3 research remains blocked by its sealed prerequisite gates.",
+                "evidence": {
                     "input_blockers": input_blockers,
                     "production_blockers": production_blockers,
-                    "production_readiness": tomorrow.get("production_readiness"),
                     "production_authority": tomorrow.get("production_authority"),
                 },
-                "production_authority": tomorrow.get("production_authority"),
             }
-    elif result.name == "browser_refresh":
-        payload["summary"] = {
-            "passed": source.get("passed"),
-            "browser_dom": _mapping(_mapping(source.get("browser_dom")).get("summary")),
-            "patch_to_paint": _mapping(source.get("browser_patch_to_paint")),
-            "decision_patch": _mapping(source.get("browser_decision_patch")),
-            "retention": _mapping(source.get("web_snapshot_retention")),
-        }
-    elif result.name == "production_performance":
-        payload["summary"] = {
-            "workload": _mapping(source.get("workload")),
-            "measurements": _mapping(source.get("measurements")),
-            "memory": _mapping(source.get("memory")),
-            "failures": _safe_string_list(source.get("failures"), limit=30),
-        }
-    return payload
+        ]
+    payload["summary"] = {
+        "baostock_history": {
+            "state": baostock.get("state"),
+            "sessions": baostock.get("sessions"),
+            "coverage_status": baostock.get("coverage_status"),
+            "completed_codes": baostock.get("completed_codes"),
+            "failed_codes": baostock.get("failed_codes"),
+            "failure_reasons": _safe_string_list(baostock.get("failure_reasons"), limit=20),
+            "historical_effective_facts_status": baostock.get("historical_effective_facts_status"),
+            "v3_dataset_status": baostock.get("v3_dataset_status"),
+            "production_authority": baostock.get("production_authority"),
+            "point_in_time_parity": baostock.get("point_in_time_parity"),
+        },
+        "v3": {
+            "status": tomorrow.get("status"),
+            "next_stage": tomorrow.get("next_stage"),
+            "input_prerequisite_status": tomorrow.get("input_prerequisite_status"),
+            "input_blockers": input_blockers,
+            "production_blockers": production_blockers,
+            "production_readiness": tomorrow.get("production_readiness"),
+            "production_authority": tomorrow.get("production_authority"),
+        },
+        "production_authority": tomorrow.get("production_authority"),
+    }
+
+
+def _browser_details(_result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]) -> None:
+    payload["summary"] = {
+        "passed": source.get("passed"),
+        "browser_dom": _mapping(_mapping(source.get("browser_dom")).get("summary")),
+        "patch_to_paint": _mapping(source.get("browser_patch_to_paint")),
+        "decision_patch": _mapping(source.get("browser_decision_patch")),
+        "retention": _mapping(source.get("web_snapshot_retention")),
+    }
+
+
+def _performance_details(_result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]) -> None:
+    payload["summary"] = {
+        "workload": _mapping(source.get("workload")),
+        "measurements": _mapping(source.get("measurements")),
+        "memory": _mapping(source.get("memory")),
+        "failures": _safe_string_list(source.get("failures"), limit=30),
+    }
+
+
+_CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], dict[str, object]], None]] = {
+    "web_health": _web_health_details,
+    "history_sources": _history_details,
+    "exchange_security_master": _security_master_details,
+    "tencent_quotes": _tencent_quote_details,
+    "tushare_daily": _tushare_details,
+    "score_p0_readiness": _research_details,
+    "browser_refresh": _browser_details,
+    "production_performance": _performance_details,
+}
 
 
 def _status(result: DiagnosticResult) -> CheckStatus:
