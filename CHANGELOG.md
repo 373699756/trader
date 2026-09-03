@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户确认 `scripts/test.sh` 仅重复分发 pytest 目录、没有独立业务价值。现将 `unit`、`component`、`contract`、
+  `integration` 和全量测试入口统一收归根目录 `Makefile`，保留原有 `make test` 语义并新增对应分类目标，删除
+  `scripts/test.sh`，避免维护第二套测试命令。Verification: 测试入口契约、Makefile dry-run、分类测试和全量测试
+  均按本批门禁执行。Residual Risks: 无；直接调用已删除脚本的仓库外个人命令需要改用 `make test-*`。
+
 - 用户要求不要把构建生成的 `src/trader_research_dashboard.egg-info/` 留在 `src/` 下，并希望生成目录隐藏。根因是 setuptools
   在 `where = ["src"]` 包发现配置下默认把 `egg_info` 父目录解析为 `src`；新增仅用于生成物位置的
   `setup.cfg`，将其固定到仓库根目录的隐藏 `.egg-info/` 目录，并继续由现有 `*.egg-info/` 规则忽略。现有生成目录已移至根目录，运行包和

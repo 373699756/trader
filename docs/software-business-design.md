@@ -1548,10 +1548,10 @@ python3 -m venv .venv
 | 类别 | 命令 | 运行边界 |
 | --- | --- | --- |
 | 日常 | `./run.sh` | 以默认 V1 启动本地 Web 看板和生产调度 |
-| 日常 | `./run.sh --profile v2` | 以显式 V2 启动；也可把 `--profile v1|v2` 追加到其他公开命令 |
+| 日常 | `./run.sh --profile v2` / `--profile v3` | 以显式 V2/V3 启动；也可把 `--profile v1|v2|v3` 追加到其他公开命令 |
 | 日常 | `./run.sh check` | 依次校验配置、只读投影研究状态并运行所选档位的离线性能门禁 |
-| 离线研究 | `./run.sh download_history [--runtime-dir <路径>] --sessions 1..2000` | 显式安装 `[research]` extra 后，按固定窗口下载/续传 BaoStock 共同日线；默认写入 Git 忽略的 `trader/data/history/`，也可显式指定其它目录 |
-| 离线训练结果 | `trader/data/train/` | 受控、可提交的训练结果资源目录；不得写入历史下载分片、WAL、缓存或供应商响应 |
+| 离线研究 | `./run.sh download_history [--runtime-dir <路径>] --sessions 1..2000` | 显式安装 `[research]` extra 后，按固定窗口下载/续传 BaoStock 日线、逐日 ST 和历史行业；默认写入 Git 忽略的 `data/history/`，也可显式指定其它目录 |
+| 离线训练结果 | `data/train/` | 受控训练结果目录；不得写入历史下载分片、WAL、缓存或供应商响应 |
 | 离线训练 | `./run.sh train-tomorrow` | 不接受阶段或 `run_id` 参数；一次调用连续完成父工件已满足的单一 V3 预注册阶段，支持原子断点续跑，永不自动 promotion 或激活 V3 |
 
 当前 `check` 组合命令及 `train-tomorrow` 均由 `trader-cli` 单一编排器
@@ -1797,13 +1797,13 @@ BaoStock v2 日线能力只按下一段独立计划执行，不改写这个结�
 `trading_calendar`、`security_universe`、`database_initializing`、`worker_starting`、`downloading`、`merging`；
 每条事件显式投影 `source/current_code/sessions/universe_count/checkpointed_codes/remaining_codes/completed_codes/failed_codes/`
 `expected_records/downloaded_records/active_workers/rate_limit_cooldown_seconds/last_failure_reason/elapsed_seconds/`
-`checkpoint_database_pattern/final_database`。`checkpointed_codes` 是成功与失败检查点总数，
+`checkpoint_database_pattern/partition_database_pattern/catalog_database/manifest_path`。`checkpointed_codes` 是成功与失败检查点总数，
 `remaining_codes` 是尚未成功完成、续传时仍需处理的证券数。其中
 `expected_records` 是逐证券按上市/退市有效区间求和的应有代码-日期记录数，`downloaded_records` 是已经提交
-到 SQLite 的逻辑记录数。checkpoint 位于 `baostock-daily/sessions-<sessions>/`，续传优先从已验证的 `shard-*.sqlite3` 恢复冻结日历、证券池和来源版本，避免在已有
-断点时再次依赖供应商证券主数据。下载期间存在的是 WAL 分片 checkpoint；最终
-`score-baostock-daily-core-v2.sqlite3` 仅在所有代码成功完成后原子合并创建，因此“最终库尚不存在”不能再与
-“没有下载进度”混为一谈。供应商返回 `10001011` 时统一投影
+到 SQLite 的逻辑记录数。`checkpoint_database_pattern` 和 `partition_database_pattern` 均指向
+`shards/<board>-<code-prefix>.sqlite3`（超过 100 只时追加百股桶后缀）；checkpoint 位于 `baostock-daily/sessions-<sessions>/`，续传优先从已验证的分片恢复冻结日历、证券池和来源版本，避免在已有
+断点时再次依赖供应商证券主数据。下载期间和完成后都只存在 WAL 分片 checkpoint、`catalog.sqlite3` 与规范
+`manifest.json`，不生成单一总库；单个分库损坏时移入 `quarantine/`，只重新下载该分库覆盖的股票，其他分片继续可读。供应商返回 `10001011` 时统一投影
 `supplier_query_failed_blacklisted` 并立即停止整次运行，保留已提交断点；文件系统不支持进程锁时失败关闭，
 不得无锁继续。
 
@@ -1813,7 +1813,7 @@ BaoStock v2 日线能力只按下一段独立计划执行，不改写这个结�
 `--profile history --history-source tencent --tencent-history-host direct --history-days 600` 进行单股票、单请求、
 无写入复验；只有同源多代码 600 日探针稳定通过、复权口径和覆盖审计通过后，才可由新的独立归档批次增加
 该来源自己的 checkpoint、manifest、限频冷却和进度运行器。任何成功的公网备用档案都必须是独立数据集，
-不得静默填入 `score-baostock-daily-core-v2.sqlite3`。
+不得静默填入 BaoStock 分片或其 manifest。
 
 该数据源只能提供日线、日历和供应商明确返回的基础事实，不能构造历史 11:20/14:50 锚点或单独补齐历史
 行业、证券资格和风险事实 `effective_at`。全体和逐板代码日期覆盖均达到 95%、全窗口老股完整率、逐股
@@ -1867,13 +1867,13 @@ V3 不读取 V1/V2/C3 运行时预测，不训练二层联合器，不做 stacki
 一次 `base_score`。标准生产路径必须依次完成日线代理、新 14:50 留出、冻结前影子和风险报告，再由用户
 另立授权批次；若点时证据客观不可取得，保留的人工越权路径也必须由新指令绑定具体 model/report hash，
 此前对路径的允许不构成预授权。获批模型只能作为 SHA-256 绑定 wheel 资源加载，配置只选择已批准 profile；
-V3 对外仍是组合根唯一注入的一个 `TomorrowModelPredictorPort`。当前生产仍只接受 `v1|v2`、默认 V1。
+V3 对外仍是组合根唯一注入的一个 `TomorrowModelPredictorPort`。当前生产接受 `v1|v2|v3`，默认 V1；V3 缺少已批准资源时失败关闭。
 
 该路线唯一脚本入口为 `./run.sh train-tomorrow`。用户不传内部阶段、`run_id`、模型参数或
 工件路径；隔离编排器从规范和输入 hash 推导身份，一次调用连续完成所有父工件已满足的开发训练、一次
 确认和一次日线代理留出；只有新的 14:50 父数据与隔离证明合格时才打开一次新点时留出。中断后同一命令
 从原子检查点继续，已有终态只返回原结果。
-最终目录 `.runtime/v2/research/tomorrow-v3/<run_id>/` 只公开 `report.json` 和 `model.json`；全量特征、
+最终目录 `data/train/tomorrow-v3/<run_id>/` 只公开 `report.json` 和 `model.json`；全量特征、
 标签及 OOF 预测位于内部 `evidence/` Parquet 分区。主程序不读取研究目录，只有两级留出通过并取得新授权
 后，独立发布批次才可把 `model.json` 转换为 hash 绑定 wheel 资源。该入口不包含 promotion，也不得修改
 活动配置、注册 V3 或装配生产 predictor。
