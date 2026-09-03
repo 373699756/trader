@@ -220,7 +220,7 @@ def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
 
 
 def _run_tomorrow_research_orchestrator(runtime: RuntimeSettings) -> int:
-    store = TomorrowResearchArtifactStore(runtime.runtime_dir / "research" / "tomorrow-v3")
+    store = TomorrowResearchArtifactStore(_train_data_root())
     prerequisite = _tomorrow_research_prerequisite(runtime)
     try:
         result = TomorrowResearchOrchestrator(store, prerequisite, _TomorrowResearchProgress()).advance()
@@ -251,8 +251,13 @@ def _run_tomorrow_research_orchestrator(runtime: RuntimeSettings) -> int:
     return 0 if result.status in {"advanced", "terminal"} else 1
 
 
+def _train_data_root() -> Path:
+    """Committed training artifacts live beside the source tree's data contract."""
+    return Path(__file__).resolve().parents[3] / "trader" / "data" / "train"
+
+
 def _read_tomorrow_research_status(runtime: RuntimeSettings) -> dict[str, object]:
-    store = TomorrowResearchArtifactStore(runtime.runtime_dir / "research" / "tomorrow-v3")
+    store = TomorrowResearchArtifactStore(_train_data_root())
     try:
         prerequisite = _tomorrow_research_prerequisite(runtime).inspect()
     except H1ArchiveConflictError:

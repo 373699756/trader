@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     performance.add_argument("--output", type=Path)
     performance.add_argument("--baseline", type=Path)
     baostock = subparsers.add_parser("download_history", help="Download and resume the BaoStock daily-history archive.")
-    baostock.add_argument("--runtime-dir", required=True, type=Path)
+    baostock.add_argument("--runtime-dir", type=Path, default=Path("trader/data/history"))
     baostock.add_argument("--sessions", type=int, choices=range(1, 2001), default=2000)
     subparsers.add_parser("research-status", help="Read immutable research coverage and capacity status.")
     subparsers.add_parser(
@@ -120,6 +120,8 @@ def _run_baostock_history(runtime_dir: Path, sessions: int) -> int:
         run_baostock_history,
     )
 
+    if not runtime_dir.is_absolute():
+        runtime_dir = _repository_root_for_validation() / runtime_dir
     request = BaoStockRuntimeRequest(runtime_dir=runtime_dir, sessions=sessions)
     try:
         status = run_baostock_history(request, _repository_root_for_validation())

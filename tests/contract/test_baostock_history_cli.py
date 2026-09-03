@@ -16,6 +16,11 @@ def test_download_history_is_explicit_and_bounded() -> None:
     assert args.sessions == 2000
 
 
+def test_download_history_defaults_to_ignored_repository_history_directory() -> None:
+    args = build_parser().parse_args(["download_history"])
+    assert args.runtime_dir == Path("trader/data/history")
+
+
 def test_download_history_rejects_more_than_2000_during_argument_parsing(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "must-not-exist"
 

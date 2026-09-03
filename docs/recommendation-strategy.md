@@ -1967,7 +1967,7 @@ wheel 不导入 SDK；外部安装 wheel 的 `[research]` extra 后必须能执�
 停牌股或失败股票制造 100% 覆盖。V3 后续仍须逐行业满足 95%，是否满足点时资格由独立 `effective_at`
 manifest 判定。
 
-权威存储位于用户显式指定的仓库外运行目录。每个下载分片使用独立 SQLite 和 WAL，按代码提交 checkpoint；
+权威存储位于 Git 忽略的 `trader/data/history/`（可由 CLI 显式覆盖）运行目录。每个下载分片使用独立 SQLite 和 WAL，按代码提交 checkpoint；
 中断后只续传未完成或显式失败项，相同来源行和参数幂等，不同内容冲突失败关闭。合并器按代码稳定顺序生成
 唯一 SQLite、规范 JSON manifest 和 SHA-256，不把数据库、WAL、Parquet、日志或供应商响应提交到 Git。
 为确保超时不依赖 BaoStock SDK 内部实现，每个 worker 必须是独立子进程且独占一个 SDK socket，由父进程
@@ -1984,7 +1984,7 @@ RSS 不超过 4GB。失败保留最近完整分片和 manifest，不删除可恢
 | Codex A | Codex A 独占数据内容语义：类型化 gateway/值对象、raw/qfq 同行归一化、交易日历与股票池、分片 SQLite、checkpoint、确定性合并、覆盖审计、manifest/hash 和历史事实来源能力 | `baostock_daily*`、`baostock_daily_audit*`、`historical_effective_facts*` 及测试；输出唯一最终 SQLite 和 manifest | 不改依赖/CLI/生产缓存，不构造 11:20/14:50，不读取收益 |
 | Codex B | 只校验冻结日线 port 是否满足六 Alpha 的字段、单位、键和 hash 消费契约 | fixture 契约和 `tomorrow_v3_input_compatibility` 结果 | Codex B 不实现下载、覆盖审计或切分，不训练 V3，不读取收益 |
 | Codex C | 只验证最新 200 日保持不可读取、日线来源不能声称点时一致，以及新 V3 留出身份与旧 15.1.32 隔离；工程契约已完成 | `baostock_holdout_isolation_contract` 及测试 | Codex C 不定义或重切数据集，不打开留出，不计算收益 |
-| Codex D | 集成 `[research]` 依赖、显式命令、受控独立子进程监督、锁/超时/取消/恢复、状态投影和共享文档；调用 A 的分片与合并服务并执行真实全量下载 | `trader-cli download_history --runtime-dir <仓库外绝对路径> --sessions 2000`；只读 status、最终 SQLite/manifest、全量摘要 | Codex D 不决定覆盖是否通过，不改内容 hash；普通启动、`check`、Web、bootstrap、生产调度或 `train-tomorrow` 不得隐式下载 |
+| Codex D | 集成 `[research]` 依赖、显式命令、受控独立子进程监督、锁/超时/取消/恢复、状态投影和共享文档；调用 A 的分片与合并服务并执行真实全量下载 | `trader-cli download_history [--runtime-dir <路径>] --sessions 2000`；默认使用 `trader/data/history/`，只读 status、最终 SQLite/manifest、全量摘要 | Codex D 不决定覆盖是否通过，不改内容 hash；普通启动、`check`、Web、bootstrap、生产调度或 `train-tomorrow` 不得隐式下载 |
 
 Codex B 波次 1 状态：已完成。`tomorrow_v3_input_compatibility_v1` 通过只读类型化 port 消费冻结输入描述，
 固定检查 `score_baostock_daily_core_v2`、截至 2026-08-31 的 2000 日身份、`(code, trade_date)` 主键、

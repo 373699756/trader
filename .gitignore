@@ -4,6 +4,8 @@
 .deepseek_key
 .token_key
 .runtime/
+# Runtime BaoStock history shards, WAL files, and manifests are never committed.
+/trader/data/history/
 *.sqlite3
 .agents/*
 !.agents/skills/

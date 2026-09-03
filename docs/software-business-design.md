@@ -1547,7 +1547,8 @@ python3 -m venv .venv
 | 日常 | `./run.sh` | 以默认 V1 启动本地 Web 看板和生产调度 |
 | 日常 | `./run.sh --profile v2` | 以显式 V2 启动；也可把 `--profile v1|v2` 追加到其他公开命令 |
 | 日常 | `./run.sh check` | 依次校验配置、只读投影研究状态并运行所选档位的离线性能门禁 |
-| 离线研究 | `./run.sh download_history --runtime-dir <仓库外绝对路径> --sessions 1..2000` | 显式安装 `[research]` extra 后，按固定窗口下载/续传 BaoStock 共同日线；只写仓库外研究目录和只读 manifest |
+| 离线研究 | `./run.sh download_history [--runtime-dir <路径>] --sessions 1..2000` | 显式安装 `[research]` extra 后，按固定窗口下载/续传 BaoStock 共同日线；默认写入 Git 忽略的 `trader/data/history/`，也可显式指定其它目录 |
+| 离线训练结果 | `trader/data/train/` | 受控、可提交的训练结果资源目录；不得写入历史下载分片、WAL、缓存或供应商响应 |
 | 离线训练 | `./run.sh train-tomorrow` | 不接受阶段或 `run_id` 参数；一次调用连续完成父工件已满足的单一 V3 预注册阶段，支持原子断点续跑，永不自动 promotion 或激活 V3 |
 
 当前 `check` 组合命令及 `train-tomorrow` 均由 `trader-cli` 单一编排器

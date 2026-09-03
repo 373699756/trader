@@ -34,12 +34,9 @@ class BaoStockRuntimeRequest:
     def validate(self, repository_root: Path) -> None:
         if not self.runtime_dir.is_absolute():
             raise ValueError("BaoStock runtime directory must be absolute")
-        try:
-            self.runtime_dir.resolve().relative_to(repository_root.resolve())
-        except ValueError:
-            pass
-        else:
-            raise ValueError("BaoStock runtime directory must be outside repository")
+        # The explicit history command is allowed to persist in the repository's
+        # ignored trader/data/history directory; callers may still provide any
+        # absolute directory for legacy/offline runs.
         if isinstance(self.sessions, bool) or not 1 <= self.sessions <= 2000:
             raise ValueError("BaoStock sessions must be in 1..2000")
         if isinstance(self.workers, bool) or self.workers not in (1, 2):

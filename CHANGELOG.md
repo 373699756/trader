@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求区分历史下载与训练结果目录，并明确历史下载自动落盘。本批将 `download_history` 的默认目录改为
+  `trader/data/history/`，该目录及其 SQLite/WAL/manifest 被 Git 忽略；训练编排器改为把 Tomorrow 研究工件写入
+  可提交的 `trader/data/train/`。同时移除历史下载目录必须位于仓库外的旧限制，保留显式 `--runtime-dir` 覆盖能力。
+  Verification: BaoStock CLI、运行请求和计划契约定向测试通过，受影响文件 Ruff 通过，`git diff --check` 通过。
+  Residual Risks: 真实 BaoStock 登录/全量覆盖仍需在安装 `[research]` 依赖且服务端可用时验证。
+
 - 用户本轮要求依据策略文档执行 Codex B 未完成任务。B 的波次 1 输入兼容契约及既有数据不足收口均已完成；
   由于 Codex A 尚无真实 2000 日合格 manifest，本轮未启动 V3 训练、候选、收益或终端留出。同步校正文档中的
   最新实测状态：`download_history --sessions 1` 返回 `supplier_login_transport_failed`，
