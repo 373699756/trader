@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from trader.domain.research.baostock_daily import BaoStockDailySpec
-from trader.infra.research.baostock_daily import BaoStockRowGateway
+from trader.infra.research.baostock_daily import BaoStockRowGateway, _result_rows
 from trader.infra.research.baostock_history_runtime import _login, _RateLimitedBaoStockSdk
 
 
@@ -157,3 +157,38 @@ def test_login_maps_blacklist_and_sdk_socket_bug_to_controlled_codes(monkeypatch
 
     with pytest.raises(RuntimeError, match="supplier_login_transport_failed"):
         _login(_BrokenLoginSdk())  # type: ignore[arg-type]
+
+
+def test_gateway_maps_baostock_blacklist_to_run_level_failure() -> None:
+    class _BlacklistedSdk(_Sdk):
+        def query_history_k_data_plus(self, code, fields, start_date, end_date, **kwargs):
+            result = _Result(tuple(fields.split(",")), ())
+            result.error_code = "10001011"
+            result.error_msg = "bounded vendor failure"
+            return result
+
+    gateway = BaoStockRowGateway(
+        _BlacklistedSdk(),
+        python_version="3.14.0",
+        dependency_versions=(("pandas", "2.3.0"),),
+    )
+    spec = BaoStockDailySpec(sessions=2)
+    calendar = gateway.fetch_calendar(spec)
+    security = gateway.fetch_universe(spec)[0]
+
+    with pytest.raises(RuntimeError, match="supplier_query_failed_blacklisted"):
+        gateway.fetch_code_batch(spec, security, calendar)
+
+
+def test_gateway_does_not_treat_a_blacklisted_followup_page_as_complete() -> None:
+    class _PagedBlacklistResult(_Result):
+        def next(self):
+            has_row = super().next()
+            if not has_row:
+                self.error_code = "10001011"
+            return has_row
+
+    result = _PagedBlacklistResult(("value",), (("first-page",),))
+
+    with pytest.raises(RuntimeError, match="supplier_query_failed_blacklisted"):
+        _result_rows(result, "unadjusted_daily_query_failed")

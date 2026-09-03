@@ -54,8 +54,10 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 不再通过启动流程执行。离线研究不会随服务启动自动执行。底层
 `trader-cli performance-check` 仍可用 `--output` 保存报告或用 `--baseline` 执行 5% 相对回归门禁；它
 禁止外网并直接测量活动生产标准化、合并、三策略评分、overlay CAS、API/ETag/status、SSE 和 100 tick RSS。
-BaoStock 下载是独立研究命令，必须先安装 `trader-research-dashboard[research]`，并把运行目录指定为仓库外绝对路径；
-它只写日线分片、SQLite 和 manifest，不会被启动、`check`、Web 或 `train-tomorrow` 隐式调用。
+BaoStock 下载是独立研究命令，必须先安装 `trader-research-dashboard[research]`；默认写入 Git 忽略的
+`trader/data/history/`，也可用绝对 `--runtime-dir` 覆盖。命令在标准错误持续输出阶段、股票完成数/总数和
+逻辑日线落盘数/总数。下载期间先写 `shard-*.sqlite3` 作为续传 checkpoint，全部完成后才原子创建最终库和
+manifest；它不会被启动、`check`、Web 或 `train-tomorrow` 隐式调用。
 
 启动脚本只读取 `TRADER_HOST` 和 `TRADER_PORT`；旧 `HOST`/`PORT` 不再映射到 V2 进程。
 

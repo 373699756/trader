@@ -267,7 +267,7 @@ class BaoStockRowGateway:
 
 def _result_rows(result: BaoStockRowResult, error_code: str) -> tuple[dict[str, str], ...]:
     if result.error_code != "0":
-        raise RuntimeError(error_code)
+        raise RuntimeError(_supplier_failure_code(result.error_code, error_code))
     fields = tuple(result.fields)
     if not fields or len(set(fields)) != len(fields):
         raise ValueError("BaoStock result fields are empty or duplicated")
@@ -277,7 +277,15 @@ def _result_rows(result: BaoStockRowResult, error_code: str) -> tuple[dict[str, 
         if len(values) != len(fields):
             raise ValueError("BaoStock result row width is invalid")
         rows.append(dict(zip(fields, values, strict=True)))
+    if result.error_code != "0":
+        raise RuntimeError(_supplier_failure_code(result.error_code, error_code))
     return tuple(rows)
+
+
+def _supplier_failure_code(vendor_code: str, fallback: str) -> str:
+    if vendor_code == "10001011":
+        return "supplier_query_failed_blacklisted"
+    return fallback
 
 
 def _daily_side(

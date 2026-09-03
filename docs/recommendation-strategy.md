@@ -1970,6 +1970,22 @@ manifest 判定。
 权威存储位于 Git 忽略的 `trader/data/history/`（可由 CLI 显式覆盖）运行目录。每个下载分片使用独立 SQLite 和 WAL，按代码提交 checkpoint；
 中断后只续传未完成或显式失败项，相同来源行和参数幂等，不同内容冲突失败关闭。合并器按代码稳定顺序生成
 唯一 SQLite、规范 JSON manifest 和 SHA-256，不把数据库、WAL、Parquet、日志或供应商响应提交到 Git。
+续传时先以已校验的 `shard-*.sqlite3` 上下文恢复固定交易日历、证券池和来源版本；仅在没有可用分片上下文时
+重新登录并查询这些元数据，禁止每次续传都在数据库前重复等待全量证券主数据。分片数据库是下载中的唯一
+checkpoint 所有者；最终 `score-baostock-daily-core-v2.sqlite3` 只在全部代码成功完成后由确定性合并器原子创建，
+不得提前创建一个看似完成的空最终库。
+
+显式命令在标准错误逐行输出 `baostock_runtime_progress_v1`，`phase` 依次使用 `preflight`、
+`checkpoint_loading`、`supplier_login`、`trading_calendar`、`security_universe`、`database_initializing`、
+`worker_starting`、`downloading` 和 `merging`。每条事件固定包含 `sessions/universe_count/checkpointed_codes/`
+`remaining_codes/completed_codes/failed_codes/expected_records/downloaded_records/active_workers/`
+`last_failure_reason/elapsed_seconds/checkpoint_database_pattern/final_database`；`checkpointed_codes` 包含已经
+持久化的成功和失败检查点，`remaining_codes` 表示尚未成功完成、因此仍可续传的证券数。上下文可用后，
+股票计数显示代码进度，记录计数显示逻辑代码-日期记录总量和已经提交到 SQLite 的数量；总量按每只证券在
+上市/退市有效区间内的应有交易日求和，
+不能用 `sessions * universe_count` 伪造。BaoStock `10001011` 必须映射为
+`supplier_query_failed_blacklisted` 并作为供应商级失败立即停止整次运行、保留断点，不能把它降成逐股错误后
+继续重试数千只股票。活动锁与文件系统不支持锁必须区分；无法建立进程级锁时失败关闭，禁止无锁并发下载。
 为确保超时不依赖 BaoStock SDK 内部实现，每个 worker 必须是独立子进程且独占一个 SDK socket，由父进程
 监督墙钟；最多 2 个进程，单次供应商调用墙钟上限 60 秒，首次失败后最多重试 2 次，
 每进程每秒最多 1 次查询，取消宽限 10 秒后只终止对应 worker 并保留已提交 checkpoint。登录、查询和退出分别记录有界失败

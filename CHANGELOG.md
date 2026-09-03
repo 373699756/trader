@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- `baostock-silent-blacklist-progress-v1`：用户反馈 BaoStock 历史下载长时间无输出、看不到卡在哪，也看不到
+  总量和已下载数量，并误以为数据库尚未创建。新增类型化 `baostock_runtime_progress_v1` 运行进度，由
+  `download_history` 在标准错误逐行刷新完整阶段、证券总数/成功/失败/剩余/检查点数、逻辑日线总量/已落盘数、
+  活动 worker、耗时、最后失败原因以及分片 checkpoint/最终数据库路径；最终状态 JSON 继续独占标准输出。
+  逻辑记录总量按每只证券上市/退市有效窗口内的交易日求和，不使用股票数乘请求日数的近似值。
+
 - 用户要求区分历史下载与训练结果目录，并明确历史下载自动落盘。本批将 `download_history` 的默认目录改为
   `trader/data/history/`，该目录及其 SQLite/WAL/manifest 被 Git 忽略；训练编排器改为把 Tomorrow 研究工件写入
   可提交的 `trader/data/train/`。同时移除历史下载目录必须位于仓库外的旧限制，保留显式 `--runtime-dir` 覆盖能力。
@@ -203,6 +209,15 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- `baostock-silent-blacklist-progress-v1`：只读检查现有运行数据确认分片 SQLite 已创建，保存了 5211 只证券
+  的上下文、13 个成功代码、352 个失败代码和 13 条逻辑日线；所有已记录失败均为未复权历史查询失败，最终
+  `score-baostock-daily-core-v2.sqlite3` 因尚未完成确定性合并而按契约不存在。根因是续跑仍先重新查询供应商
+  交易日历/全量证券主数据，CLI 又只在结束时输出状态；此外 gateway 丢失历史查询的 BaoStock `10001011`
+  封禁码，协调器把供应商级封禁当逐股失败继续重试。现从已验证分片直接恢复冻结上下文，保留 60 秒分阶段
+  墙钟；初始页和翻页后的 `10001011` 均映射为 `supplier_query_failed_blacklisted`，上下文与日线下载都立即
+  停止整次运行并保留断点。失败计数改为真实持久化失败数；活动锁与不支持文件锁的错误也分别投影为受控状态，
+  不再无锁继续或把所有未完成证券误报为失败。
+
 - `baostock-positional-query-compat-v1`：历史查询现在按 `/tmp/baostock_download_1500.py` 的调用形状传递
   `start_date/end_date` 位置参数，避免 SDK 兼容实现只接受旧式位置参数时在查询阶段失败；并继续保留单 worker
   和黑名单快速失败策略。该修复不改变 2000 日、raw/qfq 同键和 manifest 资格门禁。
@@ -273,6 +288,15 @@ All notable changes to this project are documented here.
   raw/qfq 两侧明确标记时才算取得，未知缺行不再推断为停牌。
 
 ### Verification
+
+- `baostock-silent-blacklist-progress-v1`：新增/更新的应用值对象、CLI 进度 JSON、gateway 初始页/翻页封禁、
+  coordinator 快停、SQLite 断点上下文恢复、锁错误分类和权威文档契约定向测试通过（直接相关组合 36 项，
+  后续审查专项 34 项及 13 项均通过）。`make format-check`、`make lint`、`make type-check`、`make test`
+  全量 100% 和 `make package` 均通过；打包首次因沙箱禁止隔离环境下载 setuptools 失败，获批联网后重跑成功。
+  仓库外安装 wheel 后包导入、`trader-cli --help` 以及模板、CSS、JavaScript、SVG 资源读取通过；
+  `git diff --check` 通过。修复前受控实网探针按新阶段输出定位到 `security_universe` 等待，现有分片的脱敏
+  检查点统计与上述根因一致；修复后的实网小批探针未完成，因此不作为下载成功证据。浏览器三档验收不适用，
+  因本批没有活动 Web 行为或资源改动。
 
 - `baostock-positional-query-compat-v1`：严格位置参数 SDK 桩及 BaoStock gateway/runtime 定向测试通过，Ruff、
   格式检查和 mypy 通过。2026-09-03 重新运行旧 `/tmp` 脚本（单股、1 日）仍返回供应商黑名单 `10001011`，因此
@@ -1025,6 +1049,11 @@ All notable changes to this project are documented here.
   前向封存状态、第二轮权重收缩和 `PromotionDossier` 人工晋级边界。
 
 ### Changed
+
+- `baostock-silent-blacklist-progress-v1`：下载中的权威数据库明确为 `shard-*.sqlite3` WAL checkpoint；只有
+  所有代码成功完成后才由确定性合并器原子创建最终 SQLite 与 manifest。续跑初始化改为一次读取每个
+  分片的已验证快照，同时恢复日历、证券池、来源版本、成功/失败代码和已落盘记录数，不再为了显示进度维护
+  第二份 JSON 状态或在数据库已有上下文时依赖供应商证券主数据。
 
 - 公开启动语义收敛为无参数启动 Web，删除 `serve`/`app` 别名；`run.sh` 与 `run.ps1` 仅公开 `check`、`download_history` 和 `train-tomorrow`。旧研究执行器从 CLI 分派和 bootstrap 组合根移除，`research-status` 继续只读展示不可变的历史审计字段。
 - 将 BaoStock 活动模块的通用 JSON 编解码辅助提取到 `baostock_daily_codec.py`，主模块降至 1200 行以内，数据 schema、hash 校验和 SQLite 行为保持不变。
@@ -2156,6 +2185,9 @@ All notable changes to this project are documented here.
   `close_fallback`，已有 D25 正式记录保持不变，Today 未被违规追补。
 
 ### Removed
+
+- `baostock-silent-blacklist-progress-v1`：移除续传时无条件重抓交易日历/全量证券主数据的等待路径，以及供应商
+  明确封禁后仍按数千只股票逐项重试的路径；未删除现有分片、失败检查点、最终工件 schema 或任何生产能力。
 
 - 退役 `research-history`、`research-screen`/`screen-history`、`research-baostock-history` 及其旧下载、回测、R6/P2 筛选和 holdout 分派；不保留兼容别名，避免与 BaoStock 下载及 Tomorrow 训练形成重复流程。
 
@@ -3482,6 +3514,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- `baostock-silent-blacklist-progress-v1`：本批证明断点恢复、进度契约和封禁快停，但没有证明供应商已解除
+  匿名账号/IP 的 `10001011` 限制，也没有完成修复后的真实 1 日小批或 2000 日全量下载。当前磁盘可用量仍低于
+  2000 日预检要求的 30GB，最终 SQLite、manifest、95% 覆盖、全量耗时和峰值 RSS 均尚未形成；已有分片与
+  13 个成功检查点会保留并供下次显式命令续传。本批不改变评分、冻结、DeepSeek、Web 或生产授权。
 
 - BaoStock 真实登录、可用磁盘和 2000 日全量覆盖仍是外部前置条件；当前没有合格 manifest，`train-tomorrow` 只能按既有父工件状态有界失败关闭，不代表 V3 模型或生产授权已完成。
 

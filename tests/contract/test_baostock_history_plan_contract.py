@@ -115,3 +115,40 @@ def test_baostock_runtime_keeps_retry_rate_timeout_and_cancel_caps_executable() 
     assert "request.timeout_seconds" in runtime
     assert ".terminate()" in runtime
     assert ".get_data(" not in gateway
+
+
+def test_baostock_runtime_contract_documents_resume_progress_and_final_database_boundary() -> None:
+    strategy = (ROOT / "docs" / "recommendation-strategy.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs" / "software-business-design.md").read_text(encoding="utf-8")
+    section = strategy[strategy.index("#### 15.1.38") : strategy.index("### 15.2")]
+
+    for required in (
+        "baostock_runtime_progress_v1",
+        "preflight",
+        "supplier_login",
+        "trading_calendar",
+        "security_universe",
+        "database_initializing",
+        "worker_starting",
+        "downloading",
+        "merging",
+        "sessions",
+        "universe_count",
+        "checkpointed_codes",
+        "remaining_codes",
+        "completed_codes",
+        "failed_codes",
+        "expected_records",
+        "downloaded_records",
+        "active_workers",
+        "last_failure_reason",
+        "elapsed_seconds",
+        "checkpoint_database_pattern",
+        "final_database",
+        "checkpoint_loading",
+        "supplier_query_failed_blacklisted",
+        "shard-*.sqlite3",
+        "score-baostock-daily-core-v2.sqlite3",
+    ):
+        assert required in section
+        assert required in design

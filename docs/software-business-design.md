@@ -1789,6 +1789,21 @@ BaoStock v2 日线能力只按下一段独立计划执行，不改写这个结�
 重试、每进程每秒一次查询、锁/取消/恢复和状态投影。普通启动、`check`、Web、`train-tomorrow`、bootstrap
 和生产调度均不得隐式触发。
 
+`download_history` 的运行可观察性固定为标准错误上的逐行 JSON 契约
+`baostock_runtime_progress_v1`。`phase` 枚举固定为 `preflight`、`checkpoint_loading`、`supplier_login`、
+`trading_calendar`、`security_universe`、`database_initializing`、`worker_starting`、`downloading`、`merging`；
+每条事件显式投影 `sessions/universe_count/checkpointed_codes/remaining_codes/completed_codes/failed_codes/`
+`expected_records/downloaded_records/active_workers/last_failure_reason/elapsed_seconds/`
+`checkpoint_database_pattern/final_database`。`checkpointed_codes` 是成功与失败检查点总数，
+`remaining_codes` 是尚未成功完成、续传时仍需处理的证券数。其中
+`expected_records` 是逐证券按上市/退市有效区间求和的应有代码-日期记录数，`downloaded_records` 是已经提交
+到 SQLite 的逻辑记录数。续传优先从已验证的 `shard-*.sqlite3` 恢复冻结日历、证券池和来源版本，避免在已有
+断点时再次依赖供应商证券主数据。下载期间存在的是 WAL 分片 checkpoint；最终
+`score-baostock-daily-core-v2.sqlite3` 仅在所有代码成功完成后原子合并创建，因此“最终库尚不存在”不能再与
+“没有下载进度”混为一谈。供应商返回 `10001011` 时统一投影
+`supplier_query_failed_blacklisted` 并立即停止整次运行，保留已提交断点；文件系统不支持进程锁时失败关闭，
+不得无锁继续。
+
 该数据源只能提供日线、日历和供应商明确返回的基础事实，不能构造历史 11:20/14:50 锚点或单独补齐历史
 行业、证券资格和风险事实 `effective_at`。全体和逐板代码日期覆盖均达到 95%、全窗口老股完整率、逐股
 失败、停牌证据、最近 200 日隔离及全部 hash 必须共同进入 manifest；日线合格不得自动改变三策略旧 H1

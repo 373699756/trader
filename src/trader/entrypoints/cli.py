@@ -6,9 +6,11 @@ import argparse
 import json
 import os
 import sys
+import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import cast
+from typing import IO, cast
 from zoneinfo import ZoneInfo
 
 from trader.application.ports.tomorrow_model import TomorrowScoringProfile
@@ -123,8 +125,13 @@ def _run_baostock_history(runtime_dir: Path, sessions: int) -> int:
     if not runtime_dir.is_absolute():
         runtime_dir = _repository_root_for_validation() / runtime_dir
     request = BaoStockRuntimeRequest(runtime_dir=runtime_dir, sessions=sessions)
+    progress = _BaoStockProgressWriter(runtime_dir)
     try:
-        status = run_baostock_history(request, _repository_root_for_validation())
+        status = run_baostock_history(
+            request,
+            _repository_root_for_validation(),
+            progress=progress,
+        )
     except ValueError as exc:
         print(
             json.dumps(
@@ -140,6 +147,44 @@ def _run_baostock_history(runtime_dir: Path, sessions: int) -> int:
         return 2
     print(json.dumps(project_baostock_runtime_status(status), ensure_ascii=False, sort_keys=True))
     return 0 if status.state == "completed" else 1
+
+
+class _BaoStockProgressWriter:
+    def __init__(
+        self,
+        runtime_dir: Path,
+        *,
+        stream: IO[str] = sys.stderr,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._root = runtime_dir / "baostock-daily"
+        self._stream = stream
+        self._monotonic = monotonic
+        self._started_at = monotonic()
+
+    def publish(self, progress: object) -> None:
+        from trader.application.research.baostock_history_runtime import BaoStockRuntimeProgress
+
+        if not isinstance(progress, BaoStockRuntimeProgress):
+            raise TypeError("BaoStock progress writer requires a typed progress value")
+        payload = {
+            "schema_version": progress.schema_version,
+            "phase": progress.phase,
+            "sessions": progress.sessions,
+            "universe_count": progress.universe_count,
+            "checkpointed_codes": progress.checkpointed_codes,
+            "remaining_codes": progress.remaining_codes,
+            "completed_codes": progress.completed_codes,
+            "failed_codes": progress.failed_codes,
+            "expected_records": progress.expected_records,
+            "downloaded_records": progress.downloaded_records,
+            "active_workers": progress.active_workers,
+            "last_failure_reason": progress.last_failure_reason,
+            "elapsed_seconds": round(self._monotonic() - self._started_at, 3),
+            "checkpoint_database_pattern": str(self._root / "shard-*.sqlite3"),
+            "final_database": str(self._root / "score-baostock-daily-core-v2.sqlite3"),
+        }
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True), file=self._stream, flush=True)
 
 
 def _configure_tomorrow_training_resources() -> None:
