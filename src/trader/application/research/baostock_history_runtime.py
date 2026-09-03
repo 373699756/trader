@@ -50,8 +50,8 @@ class BaoStockRuntimeRequest:
         # absolute directory for legacy/offline runs.
         if isinstance(self.sessions, bool) or not 1 <= self.sessions <= 2000:
             raise ValueError("BaoStock sessions must be in 1..2000")
-        if isinstance(self.workers, bool) or self.workers not in (1, 2):
-            raise ValueError("BaoStock workers must be 1 or 2")
+        if isinstance(self.workers, bool) or self.workers != 1:
+            raise ValueError("BaoStock history download must use exactly one worker")
         if (
             isinstance(self.timeout_seconds, bool)
             or not math.isfinite(self.timeout_seconds)

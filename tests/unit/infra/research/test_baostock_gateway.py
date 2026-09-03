@@ -97,7 +97,7 @@ def test_gateway_consumes_only_baostock_row_iteration_boundary() -> None:
     assert batch.cells[0].unadjusted.turnover == pytest.approx(0.012)
 
 
-def test_sdk_queries_are_started_at_most_once_per_second() -> None:
+def test_sdk_queries_are_started_at_most_once_every_two_seconds() -> None:
     sdk = _Sdk()
     now = [0.0]
     delays: list[float] = []
@@ -118,7 +118,7 @@ def test_sdk_queries_are_started_at_most_once_per_second() -> None:
         adjustflag="3",
     )
 
-    assert delays == [1.0, 1.0]
+    assert delays == [2.0, 2.0]
 
 
 class _LoginSdk:

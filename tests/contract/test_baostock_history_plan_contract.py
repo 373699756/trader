@@ -55,10 +55,10 @@ def test_baostock_plan_has_one_data_owner_and_fixed_operational_caps() -> None:
         "Codex B 不实现下载、覆盖审计或切分",
         "Codex C 不定义或重切数据集",
         "Codex D 不决定覆盖是否通过",
-        "最多 2 个进程",
+        "固定最多 1 个进程",
         "单次供应商调用墙钟上限 60 秒",
         "最多重试 2 次",
-        "每进程每秒最多 1 次查询",
+        "每次查询至少间隔 2 秒",
         "全体和逐板应有代码-日期单元覆盖率均不低于 95%",
     ):
         assert required in section
@@ -110,7 +110,7 @@ def test_baostock_runtime_keeps_retry_rate_timeout_and_cancel_caps_executable() 
 
     assert "ProcessPoolExecutor" not in runtime
     assert "BAOSTOCK_CANCEL_GRACE_SECONDS = 10.0" in runtime
-    assert "BAOSTOCK_QUERY_INTERVAL_SECONDS = 1.0" in runtime
+    assert "BAOSTOCK_QUERY_INTERVAL_SECONDS = 2.0" in runtime
     assert "request.retries" in runtime
     assert "request.timeout_seconds" in runtime
     assert ".terminate()" in runtime

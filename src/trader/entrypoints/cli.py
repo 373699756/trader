@@ -125,7 +125,7 @@ def _run_baostock_history(runtime_dir: Path, sessions: int) -> int:
     if not runtime_dir.is_absolute():
         runtime_dir = _repository_root_for_validation() / runtime_dir
     request = BaoStockRuntimeRequest(runtime_dir=runtime_dir, sessions=sessions)
-    progress = _BaoStockProgressWriter(runtime_dir)
+    progress = _BaoStockProgressWriter(runtime_dir, sessions=sessions)
     try:
         status = run_baostock_history(
             request,
@@ -154,10 +154,11 @@ class _BaoStockProgressWriter:
         self,
         runtime_dir: Path,
         *,
+        sessions: int = 2000,
         stream: IO[str] = sys.stderr,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
-        self._root = runtime_dir / "baostock-daily"
+        self._root = runtime_dir / "baostock-daily" / f"sessions-{sessions}"
         self._stream = stream
         self._monotonic = monotonic
         self._started_at = monotonic()

@@ -1778,8 +1778,8 @@ BaoStock v2 日线能力只按下一段独立计划执行，不改写这个结�
 
 荐股策略第 15.1.38 节原计划中，现已完成 D 的依赖、显式入口、分片生命周期、状态投影和 A 数据端口集成；真实全量下载仍受
 供应商登录能力和本机资源阻塞，尚未形成合格全量 manifest。2026-09-02 最新显式探针中，`--sessions 1` 返回
-`supplier_login_transport_failed`；`--sessions 2000` 在外部 I/O 前因可用空间低于 30GB 返回
-`resource_blocked/disk_below_30gb`，实测 `/tmp` 所在文件系统约 8.85GiB 可用，未创建全量运行目录或研究工件。只允许安装 wheel 的
+`supplier_login_transport_failed`；历史版本的 `--sessions 2000` 在外部 I/O 前因固定 30GB 门禁返回
+`resource_blocked/disk_below_30gb`。当前命令将全量启动门槛调整为 25GiB、严格单证券顺序下载，并把不同 sessions 的 checkpoint 隔离。只允许安装 wheel 的
 `[research]` optional extra 后显式执行
 `trader-cli download_history --runtime-dir <仓库外绝对路径> --sessions 2000`。规范库以代码日期为
 唯一行，在同一行保存未复权/前复权字段，每只股票最多 2000 个逻辑记录；新股、退市股和来源不足股票按
@@ -1797,7 +1797,7 @@ BaoStock v2 日线能力只按下一段独立计划执行，不改写这个结�
 `checkpoint_database_pattern/final_database`。`checkpointed_codes` 是成功与失败检查点总数，
 `remaining_codes` 是尚未成功完成、续传时仍需处理的证券数。其中
 `expected_records` 是逐证券按上市/退市有效区间求和的应有代码-日期记录数，`downloaded_records` 是已经提交
-到 SQLite 的逻辑记录数。续传优先从已验证的 `shard-*.sqlite3` 恢复冻结日历、证券池和来源版本，避免在已有
+到 SQLite 的逻辑记录数。checkpoint 位于 `baostock-daily/sessions-<sessions>/`，续传优先从已验证的 `shard-*.sqlite3` 恢复冻结日历、证券池和来源版本，避免在已有
 断点时再次依赖供应商证券主数据。下载期间存在的是 WAL 分片 checkpoint；最终
 `score-baostock-daily-core-v2.sqlite3` 仅在所有代码成功完成后原子合并创建，因此“最终库尚不存在”不能再与
 “没有下载进度”混为一谈。供应商返回 `10001011` 时统一投影

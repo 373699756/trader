@@ -1932,8 +1932,9 @@ API/SSE、冻结恢复和发布门禁。任一父数据不足或拒绝都必须�
 状态：`pending`，且是当前唯一下一执行章节；Codex C 工程契约已完成，D 的依赖、显式入口、分片生命周期、状态投影已完成，
 但供应商登录/历史请求被拒绝，A 的权威全量下载与合格 manifest 尚未完成。2026-09-02 的最新显式探针中，`--sessions 1`
 返回 `supplier_login_failed_blacklisted`；既有分片证据还显示登录成功后历史请求返回 `history:10001011`，说明并发请求会触发同一封禁；
-`--sessions 2000` 在外部 I/O 前因本机可用空间低于 30GB
-返回 `resource_blocked/disk_below_30gb`（实测约 8.85GiB），因此没有创建全量运行目录或研究工件。
+历史版本的 `--sessions 2000` 曾在外部 I/O 前因固定 30GB 门禁返回
+`resource_blocked/disk_below_30gb`。当前运行器将全量启动门禁调整为 25GiB，并在每个单证券 checkpoint 后继续
+检查 2GiB 低水位；不足时以受控状态停止并保留可恢复数据。
 上一版 1500 日计划未生成正式数据工件，现由新的 `score_baostock_daily_core_v2` 取代。目标是截至
 `2026-08-31` 的最近 2000 个交易所
 开市日，每只股票最多 2000 个代码-日期逻辑记录；新上市、已退市或来源实际不足的股票按真实有效区间少于
@@ -1967,7 +1968,8 @@ wheel 不导入 SDK；外部安装 wheel 的 `[research]` extra 后必须能执�
 停牌股或失败股票制造 100% 覆盖。V3 后续仍须逐行业满足 95%，是否满足点时资格由独立 `effective_at`
 manifest 判定。
 
-权威存储位于 Git 忽略的 `trader/data/history/`（可由 CLI 显式覆盖）运行目录。每个下载分片使用独立 SQLite 和 WAL，按代码提交 checkpoint；
+权威存储位于 Git 忽略的 `trader/data/history/`（可由 CLI 显式覆盖）运行目录。每个 `sessions` 值使用独立
+`baostock-daily/sessions-<sessions>/` 根目录，避免一日能力探针与 2000 日正式数据共享 checkpoint。每个下载分片使用独立 SQLite 和 WAL，按代码提交 checkpoint；
 中断后只续传未完成或显式失败项，相同来源行和参数幂等，不同内容冲突失败关闭。合并器按代码稳定顺序生成
 唯一 SQLite、规范 JSON manifest 和 SHA-256，不把数据库、WAL、Parquet、日志或供应商响应提交到 Git。
 续传时先以已校验的 `shard-*.sqlite3` 上下文恢复固定交易日历、证券池和来源版本；仅在没有可用分片上下文时
@@ -1986,12 +1988,12 @@ checkpoint 所有者；最终 `score-baostock-daily-core-v2.sqlite3` 只在全�
 不能用 `sessions * universe_count` 伪造。BaoStock `10001011` 必须映射为
 `supplier_query_failed_blacklisted` 并作为供应商级失败立即停止整次运行、保留断点，不能把它降成逐股错误后
 继续重试数千只股票。活动锁与文件系统不支持锁必须区分；无法建立进程级锁时失败关闭，禁止无锁并发下载。
-为确保超时不依赖 BaoStock SDK 内部实现，每个 worker 必须是独立子进程且独占一个 SDK socket，由父进程
-监督墙钟；最多 2 个进程，单次供应商调用墙钟上限 60 秒，首次失败后最多重试 2 次，
-每进程每秒最多 1 次查询，取消宽限 10 秒后只终止对应 worker 并保留已提交 checkpoint。登录、查询和退出分别记录有界失败
-码；不得让多个线程或任务共享 SDK 全局 socket。全量前必须确认仓库外目录至少有 30GB 可用空间，实测峰值
+为确保超时不依赖 BaoStock SDK 内部实现，唯一 worker 必须是独立子进程且独占一个 SDK socket，由父进程
+监督墙钟；固定最多 1 个进程，单次供应商调用墙钟上限 60 秒，首次失败后最多重试 2 次，
+每次查询至少间隔 2 秒（最多 30 次/分钟），取消宽限 10 秒后只终止该 worker 并保留已提交 checkpoint。登录、查询和退出分别记录有界失败
+码；不得让多个线程或任务共享 SDK 全局 socket。全量启动前必须确认运行目录至少有 25GiB 可用空间，并在每个证券提交后继续检查低水位；实测峰值
 RSS 不超过 4GB。失败保留最近完整分片和 manifest，不删除可恢复数据，不回填 0、上一日值或其它供应商值，
-也不触发生产行情 fallback。
+也不触发生产行情 fallback。当前 120 分 Tushare 仅具备未复权日线能力，缺少证券池、交易日历和 qfq 权限；它尚未形成独立归档工件，不能替代 BaoStock raw/qfq 正式 manifest 或解除 V3 输入阻塞。
 
 四路所有权如下；共享文件仍只由 Codex D 集成：
 

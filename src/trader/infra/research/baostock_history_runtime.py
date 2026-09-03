@@ -58,8 +58,10 @@ from trader.infra.research.historical_effective_facts import (
 )
 
 BAOSTOCK_CANCEL_GRACE_SECONDS = 10.0
-BAOSTOCK_QUERY_INTERVAL_SECONDS = 1.0
+BAOSTOCK_QUERY_INTERVAL_SECONDS = 2.0
 BAOSTOCK_MAX_RSS_MB = 4096.0
+BAOSTOCK_MIN_AVAILABLE_DISK_GIB = 25.0
+BAOSTOCK_LOW_DISK_WATERMARK_GIB = 2.0
 
 
 class _BaoStockSessionSdkPort(BaoStockSdkPort, Protocol):
@@ -173,14 +175,14 @@ def run_baostock_history(
 ) -> BaoStockRuntimeStatus:
     request.validate(repository_root)
     _emit_progress(progress, BaoStockRuntimeProgress("preflight", sessions=request.sessions))
-    if request.sessions == 2000 and _available_disk_gb(request.runtime_dir) < 30:
+    if request.sessions == 2000 and _available_disk_gb(request.runtime_dir) < BAOSTOCK_MIN_AVAILABLE_DISK_GIB:
         return BaoStockRuntimeStatus(
             state="resource_blocked",
             sessions=request.sessions,
-            failure_reasons=("disk_below_30gb",),
+            failure_reasons=("disk_below_25gb",),
         )
     cancel = cancel_requested or (lambda: False)
-    root = request.runtime_dir / "baostock-daily"
+    root = _runtime_root(request.runtime_dir, request.sessions)
     try:
         with _DownloadLock(root / ".download.lock"):
             return _run_locked(request, root, cancel, progress)
@@ -205,8 +207,8 @@ def run_baostock_history(
         )
 
 
-def inspect_baostock_history(runtime_dir: Path) -> BaoStockRuntimeStatus:
-    root = runtime_dir / "baostock-daily"
+def inspect_baostock_history(runtime_dir: Path, *, sessions: int = 2000) -> BaoStockRuntimeStatus:
+    root = _runtime_root(runtime_dir, sessions)
     if not (root / "manifest.json").is_file():
         return BaoStockRuntimeStatus()
     try:
@@ -274,7 +276,7 @@ def _run_locked(
         if descriptor.requested_sessions != request.sessions:
             raise BaoStockDailyArtifactConflictError("BaoStock completed manifest uses different sessions")
         _seal_research_handoff(root, manifest)
-        return inspect_baostock_history(request.runtime_dir)
+        return inspect_baostock_history(request.runtime_dir, sessions=request.sessions)
     root.mkdir(parents=True, exist_ok=True)
     spec = BaoStockDailySpec(sessions=request.sessions)
     process_context = get_context("spawn")
@@ -432,6 +434,7 @@ class _DownloadCoordinator:
         self._peak_rss_mb = 0.0
         self._cancelling_since: float | None = None
         self._resource_blocked = False
+        self._resource_block_reason = ""
         self._run_failure_reason = ""
         self._completed_codes: set[str] = set()
         self._failed_codes: set[str] = set()
@@ -500,6 +503,7 @@ class _DownloadCoordinator:
             self._peak_rss_mb = max(self._peak_rss_mb, _process_group_rss_mb(self._handles))
             if self._peak_rss_mb > BAOSTOCK_MAX_RSS_MB:
                 self._resource_blocked = True
+                self._resource_block_reason = "rss_above_4gb"
                 return
             if self._cancellation_finished(now):
                 return
@@ -551,6 +555,9 @@ class _DownloadCoordinator:
             self._downloaded_records += len(self._run.context.calendar.expected_dates(security))
             for shard in self._shards:
                 shard.clear_failure(self._run.spec, security.code)
+            if _available_disk_gb(self._run.request.runtime_dir) < BAOSTOCK_LOW_DISK_WATERMARK_GIB:
+                self._resource_blocked = True
+                self._resource_block_reason = "disk_low_watermark"
         self._report("downloading", failure_reason)
 
     def _retry_or_record(self, security: BaoStockSecurity, reason: str) -> None:
@@ -617,7 +624,7 @@ class _DownloadCoordinator:
         if self._run_failure_reason:
             return self._partial("failed", (self._run_failure_reason,))
         if self._resource_blocked:
-            return self._partial("resource_blocked", ("rss_above_4gb",))
+            return self._partial("resource_blocked", (self._resource_block_reason or "rss_above_4gb",))
         if self._cancelling_since is not None:
             return self._partial("cancelled", ("cancelled",))
         if self._terminal_failures:
@@ -885,6 +892,10 @@ def _available_disk_gb(path: Path) -> float:
     while not candidate.exists() and candidate != candidate.parent:
         candidate = candidate.parent
     return shutil.disk_usage(candidate).free / 1024**3
+
+
+def _runtime_root(runtime_dir: Path, sessions: int) -> Path:
+    return runtime_dir / "baostock-daily" / f"sessions-{sessions}"
 
 
 def _process_group_rss_mb(handles: Sequence[_WorkerHandle]) -> float:

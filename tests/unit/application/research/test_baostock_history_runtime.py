@@ -24,7 +24,7 @@ def test_request_requires_external_absolute_runtime_and_caps_sessions(tmp_path: 
         BaoStockRuntimeRequest(runtime_dir=tmp_path, sessions=2001).validate(Path("/home/cp/Public/trader"))
     with pytest.raises(ValueError, match="1..2000"):
         BaoStockRuntimeRequest(runtime_dir=tmp_path, sessions=True).validate(Path("/home/cp/Public/trader"))
-    with pytest.raises(ValueError, match="1 or 2"):
+    with pytest.raises(ValueError, match="exactly one worker"):
         BaoStockRuntimeRequest(runtime_dir=tmp_path, workers=True).validate(Path("/home/cp/Public/trader"))
     with pytest.raises(ValueError, match="0..2"):
         BaoStockRuntimeRequest(runtime_dir=tmp_path, retries=True).validate(Path("/home/cp/Public/trader"))

@@ -11,6 +11,7 @@ from trader.application.research.baostock_daily import BaoStockShardContext
 from trader.application.research.baostock_history_runtime import (
     BaoStockRuntimeProgress,
     BaoStockRuntimeRequest,
+    BaoStockRuntimeStatus,
 )
 from trader.domain.research.baostock_daily import (
     BaoStockCalendar,
@@ -241,3 +242,56 @@ def test_run_projects_unsupported_download_lock_as_a_controlled_failure(
 
     assert status.state == "failed"
     assert status.failure_reasons == ("download_lock_unavailable",)
+
+
+def test_full_download_allows_exactly_25_gib_before_supplier_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("trader.infra.research.baostock_history_runtime._available_disk_gb", lambda _path: 25.0)
+    monkeypatch.setattr(
+        "trader.infra.research.baostock_history_runtime._run_locked",
+        lambda request, _root, _cancel, _progress: BaoStockRuntimeStatus(
+            state="cancelled", sessions=request.sessions, failure_reasons=("cancelled",)
+        ),
+    )
+
+    status = run_baostock_history(BaoStockRuntimeRequest(tmp_path, sessions=2000), tmp_path.parent)
+
+    assert status.state == "cancelled"
+
+
+def test_full_download_blocks_below_25_gib_before_supplier_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("trader.infra.research.baostock_history_runtime._available_disk_gb", lambda _path: 24.99)
+
+    status = run_baostock_history(BaoStockRuntimeRequest(tmp_path, sessions=2000), tmp_path.parent)
+
+    assert status.state == "resource_blocked"
+    assert status.failure_reasons == ("disk_below_25gb",)
+
+
+def test_session_isolated_root_does_not_load_a_one_day_pilot_for_a_full_run(tmp_path: Path) -> None:
+    coordinator, _, _ = _coordinator(tmp_path)
+    coordinator._initialize_shards()
+
+    full_root = tmp_path / "baostock-daily" / "sessions-2000"
+
+    assert not full_root.exists()
+
+
+def test_history_download_rejects_multiple_workers(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="exactly one worker"):
+        BaoStockRuntimeRequest(tmp_path, sessions=2000, workers=2).validate(tmp_path.parent)
+
+
+def test_low_disk_watermark_stops_after_the_current_stock_checkpoint(tmp_path: Path) -> None:
+    coordinator, _, _ = _coordinator(tmp_path)
+    coordinator._initialize_shards()
+    coordinator._resource_blocked = True
+    coordinator._resource_block_reason = "disk_low_watermark"
+
+    status = coordinator._finish()
+
+    assert status.state == "resource_blocked"
+    assert status.failure_reasons == ("disk_low_watermark",)

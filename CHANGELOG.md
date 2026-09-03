@@ -6,6 +6,15 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户报告全量 BaoStock 下载被 30GB 固定门禁阻断，并要求单证券顺序下载以降低供应商封禁风险。确认根因是运行器
+  在供应商 I/O 前硬编码检查 30GiB，且旧的一日能力验证分片与 2000 日运行共用目录。现将全量门禁改为 25GiB，固定为
+  单独子进程、每次请求至少间隔两秒，并按 `sessions` 隔离 WAL checkpoint 与最终库；成功证券仍逐个事务提交和断点续传，
+  每次提交后低于 2GiB 时安全停止。
+  BaoStock `10001011` 保持供应商级快停。Tushare 凭据文件存在但当前配置为 120 分，仅具备 raw 日线能力，尚未具备
+  独立归档链路，不能替代 raw/qfq 正式归档或自动解除 V3 阻塞。Verification: BaoStock 运行器、CLI 与进度投影定向测试通过。Residual Risks:
+  尚未在真实 BaoStock/Tushare 服务上验证账户可用性、全量磁盘峰值或 95% 覆盖；25GiB 是启动门槛，不是全量合并成功保证。
+  `Regression-Key: baostock-sequential-25g-checkpoint-v1`。
+
 - `baostock-silent-blacklist-progress-v1`：用户反馈 BaoStock 历史下载长时间无输出、看不到卡在哪，也看不到
   总量和已下载数量，并误以为数据库尚未创建。新增类型化 `baostock_runtime_progress_v1` 运行进度，由
   `download_history` 在标准错误逐行刷新完整阶段、证券总数/成功/失败/剩余/检查点数、逻辑日线总量/已落盘数、
