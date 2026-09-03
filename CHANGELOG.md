@@ -6,6 +6,18 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求不要把构建生成的 `src/trader_research_dashboard.egg-info/` 留在 `src/` 下。根因是 setuptools
+  在 `where = ["src"]` 包发现配置下默认把 `egg_info` 父目录解析为 `src`；新增仅用于生成物位置的
+  `setup.cfg`，将其固定到仓库根目录，并继续由现有 `*.egg-info/` 规则忽略。现有生成目录已移至根目录，运行包和
+  依赖/入口配置不变。Verification: `tests/contract/test_packaging_layout.py` 与 `pip install -e . --no-deps`
+  回归通过，确认根目录生成且 `src/` 不再生成。Residual Risks: setuptools 未来若移除 `setup.cfg` 命令配置，需同步
+  迁移到其等价的构建后端选项。
+
+- 用户要求去除无明确需求的 NumPy 跨版本兼容层。本批删除 `typing_stubs/numpy/__init__.pyi` 及
+  `pyproject.toml` 中的 `mypy_path`，恢复使用已声明运行环境中的 NumPy 类型信息；同步修正 V3 训练模块中
+  被宽泛 `Any` 掩盖的日期键、样本字段访问类型错误。`production_authority`、运行时行为和公开 API 不变。
+  `Regression-Key: remove-numpy-any-compatibility-v1`。
+
 - 用户反馈 Tomorrow 在 `no_positive_net_utility` 空仓时只显示固定成本说明，未像 D25 一样保留最高分与门槛透明度。
   确认原因是 Web 的专项空状态提前返回、绕过通用评分摘要；现保留“成本后净超额均未转正”的准确结论，同时显示
   最高最终分、距正式线、达到观察线/正式线数量及聚合阻断原因，不生成正式推荐或观察项。Verification:
@@ -313,6 +325,10 @@ All notable changes to this project are documented here.
   raw/qfq 两侧明确标记时才算取得，未知缺行不再推断为停牌。
 
 ### Verification
+
+- `remove-numpy-any-compatibility-v1`：删除 NumPy `Any` stub 后，`make type-check` 通过（336 个源文件）；V3
+  训练、生产模型和应用层相关 12 项定向测试通过，受影响训练模块 Ruff 与格式检查通过。全局 format/lint
+  仍受工作树中其它未提交文件的既有导入排序和格式问题影响，本批未覆盖这些用户修改。
 
 - `baostock-silent-blacklist-progress-v1`：新增/更新的应用值对象、CLI 进度 JSON、gateway 初始页/翻页封禁、
   coordinator 快停、SQLite 断点上下文恢复、锁错误分类和权威文档契约定向测试通过（直接相关组合 36 项，

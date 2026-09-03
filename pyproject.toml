@@ -68,7 +68,6 @@ indent-style = "space"
 [tool.mypy]
 python_version = "3.10"
 files = ["src/trader"]
-mypy_path = "typing_stubs"
 check_untyped_defs = true
 disallow_untyped_defs = true
 ignore_missing_imports = true
