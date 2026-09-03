@@ -1523,6 +1523,9 @@ python3 -m venv .venv
 .venv/bin/trader-cli --config "$PWD/config/v2/runtime.json" validate-config
 ```
 
+开发安装或构建产生的 setuptools `trader_research_dashboard.egg-info/` 位于仓库根目录的隐藏
+`.egg-info/` 目录中，已由 `.gitignore` 忽略；`src/` 只保留运行包源码，不承载构建元数据。
+
 也可以绕过启动脚本，直接运行安装后的唯一服务入口：
 
 ```bash

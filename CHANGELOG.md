@@ -6,9 +6,9 @@ All notable changes to this project are documented here.
 
 ### Added
 
-- 用户要求不要把构建生成的 `src/trader_research_dashboard.egg-info/` 留在 `src/` 下。根因是 setuptools
+- 用户要求不要把构建生成的 `src/trader_research_dashboard.egg-info/` 留在 `src/` 下，并希望生成目录隐藏。根因是 setuptools
   在 `where = ["src"]` 包发现配置下默认把 `egg_info` 父目录解析为 `src`；新增仅用于生成物位置的
-  `setup.cfg`，将其固定到仓库根目录，并继续由现有 `*.egg-info/` 规则忽略。现有生成目录已移至根目录，运行包和
+  `setup.cfg`，将其固定到仓库根目录的隐藏 `.egg-info/` 目录，并继续由现有 `*.egg-info/` 规则忽略。现有生成目录已移至根目录，运行包和
   依赖/入口配置不变。Verification: `tests/contract/test_packaging_layout.py` 与 `pip install -e . --no-deps`
   回归通过，确认根目录生成且 `src/` 不再生成。Residual Risks: setuptools 未来若移除 `setup.cfg` 命令配置，需同步
   迁移到其等价的构建后端选项。
