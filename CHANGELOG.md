@@ -6,6 +6,25 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户反馈 `./run.sh` 无法启动，`trader-server` 报告其 `/tmp/trader-web-push-20260904/.venv/bin/python`
+  解释器不存在。确认原因是 `.venv` 随工作树移动后，已有入口 shebang、editable `.pth` 和
+  `direct_url.json` 仍固化旧绝对路径，而启动器只检查入口可执行位和 `pyproject.toml` 时间戳，因而跳过
+  重装并直接返回 126。Linux/macOS 与 PowerShell 启动器现在对本次所选入口先执行无副作用 `--help`
+  健康检查；失效时使用当前虚拟环境 Python 重新执行 editable install，一次修复包路径和入口。隐藏
+  `.build-metadata/` 构建目录现在由 `setup.py` 在构建入口创建，避免干净或移动后的工作树因 `egg_base` 父目录
+  不存在而无法安装；父目录不再以 `egg-info` 结尾，避免被 Python 3.14 元数据扫描误判为空 distribution。修复不删除环境，也不改变正常启动、公开命令、配置或业务运行语义。`Regression-Key:
+  moved-venv-entrypoint-repair-v1`。Verification: 损坏 shebang 的启动器回归、PowerShell 分类契约、打包布局契约、
+  `make format-check`、`make lint`、`make type-check`（338 个源码文件）、`make test`（全量通过）、
+  `make package`（sdist/wheel）以及仓库外 wheel 安装、两个 CLI、4 项 Web 资源和 `pip check` 均通过。
+  现场 `.venv` 已重装并核对入口 shebang、editable 路径和 `trader.__file__` 均指向当前仓库。Residual Risks:
+  PowerShell 修复路径当前仅有静态契约，仍需 Windows PC 实机验证。
+
+- 重装验证还发现 `numpy>=2,<3` 会在 Python 3.14 环境解析到 NumPy 2.5.2；该版本的类型存根使用
+  Python 3.12 `type` 语法，与项目声明的 Python 3.10-3.14 和 mypy `python_version=3.10` 不兼容，导致
+  `make type-check` 在依赖安装后失败。现将运行依赖收紧为 `numpy>=2,<2.5`，保留真实 NumPy 类型检查并
+  防止后续启动修复再次安装不可用的 stub。Verification: NumPy 2.4.6 下 `make type-check` 通过。
+  Residual Risks: 未来 NumPy 2.5+ 若下调 Python 语法要求，需另立依赖升级批次并重新验证 Python 3.10。
+
 - 用户确认 `scripts/test.sh` 仅重复分发 pytest 目录、没有独立业务价值。现将 `unit`、`component`、`contract`、
   `integration` 和全量测试入口统一收归根目录 `Makefile`，保留原有 `make test` 语义并新增对应分类目标，删除
   `scripts/test.sh`，避免维护第二套测试命令。Verification: 测试入口契约、Makefile dry-run、分类测试和全量测试

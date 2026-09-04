@@ -116,7 +116,20 @@ if [[ ! -x "$VENV_DIR/bin/python" ]]; then
   "$PYTHON_BIN" -m venv "$VENV_DIR"
 fi
 
-if [[ ! -x "$VENV_DIR/bin/trader-server" || "$ROOT_DIR/pyproject.toml" -nt "$VENV_DIR/bin/trader-server" || "${FORCE_INSTALL_DEPS:-0}" == "1" ]]; then
+if [[ "$COMMAND_KIND" == "server" ]]; then
+  ENTRYPOINT="$VENV_DIR/bin/trader-server"
+else
+  ENTRYPOINT="$VENV_DIR/bin/trader-cli"
+fi
+
+NEEDS_INSTALL=0
+if [[ ! -x "$ENTRYPOINT" || "$ROOT_DIR/pyproject.toml" -nt "$ENTRYPOINT" || "${FORCE_INSTALL_DEPS:-0}" == "1" ]]; then
+  NEEDS_INSTALL=1
+elif ! "$ENTRYPOINT" --help >/dev/null 2>&1; then
+  NEEDS_INSTALL=1
+fi
+
+if ((NEEDS_INSTALL)); then
   "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check -e "$ROOT_DIR"
 fi
 
@@ -124,6 +137,6 @@ export TRADER_HOST="${TRADER_HOST:-127.0.0.1}"
 export TRADER_PORT="${TRADER_PORT:-5000}"
 
 if [[ "$COMMAND_KIND" == "server" ]]; then
-  exec "$VENV_DIR/bin/trader-server" --config "$CONFIG_PATH" --profile "$SCORING_PROFILE" "${FORWARD_ARGS[@]}"
+  exec "$ENTRYPOINT" --config "$CONFIG_PATH" --profile "$SCORING_PROFILE" "${FORWARD_ARGS[@]}"
 fi
-exec "$VENV_DIR/bin/trader-cli" --config "$CONFIG_PATH" --profile "$SCORING_PROFILE" "$MODE" "${FORWARD_ARGS[@]}"
+exec "$ENTRYPOINT" --config "$CONFIG_PATH" --profile "$SCORING_PROFILE" "$MODE" "${FORWARD_ARGS[@]}"

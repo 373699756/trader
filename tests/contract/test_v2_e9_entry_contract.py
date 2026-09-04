@@ -197,6 +197,44 @@ def test_run_script_without_arguments_still_starts_the_dashboard(tmp_path: Path)
     assert completed.stdout == f"server:--config {config} --profile v1\n"
 
 
+def test_run_script_repairs_a_moved_virtual_environment_before_starting(tmp_path: Path) -> None:
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    python = venv_bin / "python"
+    server = venv_bin / "trader-server"
+    _write_fake_entrypoint(
+        python,
+        """if [[ "$*" == *"-m pip install"* ]]; then
+  printf '#!/usr/bin/env bash\\nprintf "server:%%s\\\\n" "$*"\\n' > "$REPAIR_ENTRYPOINT"
+  chmod +x "$REPAIR_ENTRYPOINT"
+  exit 0
+fi
+exit 99""",
+    )
+    server.write_text("#!/missing/moved-venv/python\n", encoding="utf-8")
+    server.chmod(0o755)
+    newer = (ROOT / "pyproject.toml").stat().st_mtime + 10.0
+    os.utime(server, (newer, newer))
+    config = tmp_path / "runtime.json"
+
+    completed = subprocess.run(
+        ("bash", str(ROOT / "run.sh")),
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "VENV_DIR": str(venv_bin.parent),
+            "TRADER_CONFIG": str(config),
+            "REPAIR_ENTRYPOINT": str(server),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == f"server:--config {config} --profile v1\n"
+
+
 @pytest.mark.parametrize("arguments", (("--profile", "v2"), ("--profile=v2",)))
 def test_run_script_accepts_an_explicit_v2_profile_without_a_serve_alias(
     tmp_path: Path,
@@ -339,6 +377,7 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert "research-screen" not in powershell
     assert ".\\run.ps1 train-tomorrow          从封存状态推导并连续运行可用 Tomorrow 训练阶段" in powershell
     assert "所有命令都可追加 --profile v1|v2|v3；未指定时为 V1" in powershell
+    assert "& $SelectedEntryPoint --help" in powershell
 
 
 def test_research_status_is_historical_only_and_does_not_create_runtime_files(tmp_path: Path, capsys) -> None:

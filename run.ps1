@@ -86,6 +86,7 @@ $IsWindowsHost = -not $PSVersionTable.ContainsKey("Platform") -or $PSVersionTabl
 $VenvPython = if ($IsWindowsHost) { Join-Path $VenvDir "Scripts\python.exe" } else { Join-Path $VenvDir "bin/python" }
 $Server = if ($IsWindowsHost) { Join-Path $VenvDir "Scripts\trader-server.exe" } else { Join-Path $VenvDir "bin/trader-server" }
 $Cli = if ($IsWindowsHost) { Join-Path $VenvDir "Scripts\trader-cli.exe" } else { Join-Path $VenvDir "bin/trader-cli" }
+$SelectedEntryPoint = if ($IsServerMode) { $Server } else { $Cli }
 $ConfigPath = if ($env:TRADER_CONFIG) { $env:TRADER_CONFIG } else { Join-Path $RootDir "config\v2\runtime.json" }
 
 if (-not (Test-Path $VenvPython)) {
@@ -110,9 +111,18 @@ if (-not (Test-Path $VenvPython)) {
     }
 }
 
-$NeedsInstall = -not (Test-Path $Server)
+$NeedsInstall = -not (Test-Path $SelectedEntryPoint)
 if (-not $NeedsInstall) {
-    $NeedsInstall = (Get-Item (Join-Path $RootDir "pyproject.toml")).LastWriteTimeUtc -gt (Get-Item $Server).LastWriteTimeUtc
+    $NeedsInstall = (Get-Item (Join-Path $RootDir "pyproject.toml")).LastWriteTimeUtc -gt (Get-Item $SelectedEntryPoint).LastWriteTimeUtc
+}
+if (-not $NeedsInstall) {
+    try {
+        & $SelectedEntryPoint --help *> $null
+        $NeedsInstall = $LASTEXITCODE -ne 0
+    }
+    catch {
+        $NeedsInstall = $true
+    }
 }
 if ($NeedsInstall -or $env:FORCE_INSTALL_DEPS -eq "1") {
     & $VenvPython -m pip install --disable-pip-version-check -e $RootDir
@@ -129,8 +139,8 @@ if (-not $env:TRADER_PORT) {
 }
 
 if ($IsServerMode) {
-    & $Server --config $ConfigPath --profile $ScoringProfile @ForwardArgs
+    & $SelectedEntryPoint --config $ConfigPath --profile $ScoringProfile @ForwardArgs
     exit $LASTEXITCODE
 }
-& $Cli --config $ConfigPath --profile $ScoringProfile $Mode @ForwardArgs
+& $SelectedEntryPoint --config $ConfigPath --profile $ScoringProfile $Mode @ForwardArgs
 exit $LASTEXITCODE
