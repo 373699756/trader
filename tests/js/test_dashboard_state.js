@@ -115,14 +115,37 @@ assert.deepStrictEqual(
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.topScoredStocks(
     {
+      status: "ready",
+      strategy: "d25",
+      score_status: "scored",
+      top_scores: [
+        { code: "600009", name: "未入池最高分", scores: { final_score: 99 } },
+        { code: "600010", name: "未入池第二名", scores: { final_score: 98 } },
+        { code: "600011", name: "未入池第三名", scores: { final_score: 97 } },
+      ],
+    },
+    [{ code: "600001", name: "正式推荐", scores: { final_score: 80 } }],
+  ))),
+  [
+    { score: 99, code: "600009", name: "未入池最高分", index: 0 },
+    { score: 98, code: "600010", name: "未入池第二名", index: 1 },
+    { score: 97, code: "600011", name: "未入池第三名", index: 2 },
+  ],
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.topScoredStocks(
+    {
       status: "not_ready",
       strategy: "tomorrow",
       score_status: "scored",
-      draft: { items: [{ code: "600005", name: "草稿股票", scores: { final_score: 71.5 } }] },
+      draft: {
+        items: [{ code: "600005", name: "草稿观察股票", scores: { final_score: 71.5 } }],
+        top_scores: [{ code: "600007", name: "草稿未入池最高分", scores: { final_score: 72.5 } }],
+      },
     },
     [],
   ))),
-  [{ score: 71.5, code: "600005", name: "草稿股票", index: 0 }],
+  [{ score: 72.5, code: "600007", name: "草稿未入池最高分", index: 0 }],
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.topScoredStocks(
@@ -172,8 +195,8 @@ assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.statusPayloadCompatibility({
     schema_version: "v2_status_v13",
     release: {
-      decision_view_schema: "v2_decision_view_v3",
-      web_asset_revision: "release-contract-2026-09-04-v16",
+      decision_view_schema: "v2_decision_view_v4",
+      web_asset_revision: "release-contract-2026-09-04-v17",
     },
   }))),
   { compatible: true, reason: "" },

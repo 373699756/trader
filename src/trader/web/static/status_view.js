@@ -495,11 +495,16 @@
     if (!payload || payload.strategy === "long" || payload.score_status === "not_applicable") {
       return [];
     }
-    const source = Array.isArray(items) && items.length
-      ? items
-      : payload.status === "not_ready" && payload.draft && Array.isArray(payload.draft.items)
-        ? payload.draft.items
-        : [];
+    const source = Array.isArray(payload.top_scores) && payload.top_scores.length
+      ? payload.top_scores
+      : Array.isArray(items) && items.length
+        ? items
+        : payload.status === "not_ready" && payload.draft && Array.isArray(payload.draft.top_scores)
+          && payload.draft.top_scores.length
+          ? payload.draft.top_scores
+          : payload.status === "not_ready" && payload.draft && Array.isArray(payload.draft.items)
+            ? payload.draft.items
+            : [];
     return source
       .map((item, index) => {
         const scores = item && item.scores;

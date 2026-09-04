@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -32,7 +33,24 @@ def test_unified_stream_replays_monotonic_cross_strategy_events() -> None:
 
 
 def test_scored_decision_event_serializes_complete_replace_patch_without_snapshot_get() -> None:
-    decision = _decision(Strategy.TOMORROW, 1)
+    base = _decision(Strategy.TOMORROW, 1)
+    decision = replace(
+        base,
+        items=(
+            base.items[0],
+            replace(
+                base.items[0],
+                code="600001",
+                action=RecommendationAction.UNAVAILABLE,
+                selected=False,
+                rank=0,
+                candidate_score=95.0,
+                local_score=91.0,
+                final_score=91.0,
+                reason="risk_blocked",
+            ),
+        ),
+    )
 
     payload = serialize_event(UnifiedDecisionEventStream().publish_committed(build_v2_decision_committed(decision)))
 
@@ -44,8 +62,8 @@ def test_scored_decision_event_serializes_complete_replace_patch_without_snapsho
     assert payload["removals"] == []
     assert payload["view"] == "live"
     assert payload["coverage"] == {
-        "candidate_count": 11,
-        "evaluated_count": 1,
+        "candidate_count": 12,
+        "evaluated_count": 2,
         "rejected_count": 10,
         "selected_count": 1,
         "executable_count": 1,
@@ -93,6 +111,7 @@ def test_scored_decision_event_serializes_complete_replace_patch_without_snapsho
             "amount": None,
         }
     ]
+    assert [item["code"] for item in payload["top_scores"]] == ["600001", "600000"]
 
 
 def test_unified_stream_requires_resync_for_expired_and_ahead_cursors() -> None:

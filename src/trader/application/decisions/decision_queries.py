@@ -26,7 +26,7 @@ from trader.domain.recommendation.models import RecommendationAction, Strategy
 
 DecisionViewStatus = Literal["ready", "not_ready", "not_applicable"]
 ScoreStatus = Literal["scored", "not_applicable"]
-DECISION_VIEW_SCHEMA_VERSION = "v2_decision_view_v3"
+DECISION_VIEW_SCHEMA_VERSION = "v2_decision_view_v4"
 
 
 class DecisionHistoryReader(Protocol):
@@ -86,6 +86,7 @@ class DecisionDraftView:
     content_hash: str
     observed_at: datetime
     items: tuple[DecisionItemView, ...]
+    top_scores: tuple[DecisionItemView, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -111,6 +112,7 @@ class DecisionView:
     etag: str | None
     draft: DecisionDraftView | None = None
     selection_diagnostics: SelectionDiagnostics | None = None
+    top_scores: tuple[DecisionItemView, ...] = ()
     schema_version: str = DECISION_VIEW_SCHEMA_VERSION
 
     @property
@@ -206,11 +208,14 @@ def _observation_draft(decision: ScoredDecision) -> DecisionDraftView:
         (item for item in decision.items if item.selected and item.action is RecommendationAction.OBSERVE),
         key=lambda item: item.rank,
     )
+    all_items = tuple(_scored_item(item, None) for item in decision.items)
+    top_scores = tuple(sorted(all_items, key=lambda item: (-(item.final_score or 0.0), item.code))[:3])
     return DecisionDraftView(
         decision.version,
         decision.content_hash,
         decision.observed_at,
         tuple(_scored_item(item, None) for item in selected),
+        top_scores,
     )
 
 
@@ -223,7 +228,14 @@ def _scored_view(
 ) -> DecisionView:
     overlay_quotes = _valid_overlay_quotes(decision, overlay)
     selected = tuple(sorted((item for item in decision.items if item.selected), key=lambda item: item.rank))
+    all_items = tuple(_scored_item(item, overlay_quotes.get(item.code)) for item in decision.items)
     items = tuple(_scored_item(item, overlay_quotes.get(item.code)) for item in selected)
+    top_scores = tuple(
+        sorted(
+            (item for item in all_items if item.final_score is not None),
+            key=lambda item: (-(item.final_score or 0.0), item.code),
+        )[:3]
+    )
     coverage = scored_decision_coverage(decision)
     etag = _etag(decision.content_hash, overlay.content_hash if overlay_quotes and overlay is not None else None)
     return DecisionView(
@@ -247,6 +259,7 @@ def _scored_view(
         items,
         etag,
         selection_diagnostics=decision.selection_diagnostics,
+        top_scores=top_scores,
     )
 
 

@@ -52,12 +52,13 @@ def test_unified_decision_routes_validate_strategy_date_and_etag() -> None:
     invalid_date = client.get("/api/decisions/today/history?date=2026-8-8")
 
     assert current.status_code == 200
-    assert current.get_json()["schema_version"] == "v2_decision_view_v3"
+    assert current.get_json()["schema_version"] == "v2_decision_view_v4"
     assert current.get_json()["draft"] is None
     assert current.get_json()["strategy"] == "today"
     assert current.get_json()["items"][0]["name"] == "浦发银行"
     assert current.get_json()["items"][0]["industry"] == "银行"
     assert current.get_json()["items"][0]["scores"]["predicted_net_excess_pct"] == 1.25
+    assert [item["code"] for item in current.get_json()["top_scores"]] == ["600000"]
     assert current.get_json()["input_versions"]["score_model"] == ("daily_reconstructible_ensemble_v1:model-hash")
     assert current.get_json()["items"][0]["quote"] == {
         "price": 10.25,
@@ -138,6 +139,7 @@ def test_not_ready_current_keeps_observation_draft_separate_and_private_from_sta
     assert current.get_json()["status"] == "not_ready"
     assert current.get_json()["items"] == []
     assert [item["code"] for item in current.get_json()["draft"]["items"]] == ["600000"]
+    assert [item["code"] for item in current.get_json()["draft"]["top_scores"]] == ["600000"]
     assert current.headers["ETag"] == f'"{draft.content_hash}"'
     assert draft.version not in status.get_data(as_text=True)
 
@@ -156,7 +158,7 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
 
     assert status["schema_version"] == "v2_status_v13"
     assert status["release"] == {
-        "decision_view_schema": "v2_decision_view_v3",
+        "decision_view_schema": "v2_decision_view_v4",
         "web_asset_revision": WEB_ASSET_REVISION,
     }
     assert "event: decision" in event

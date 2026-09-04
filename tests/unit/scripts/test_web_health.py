@@ -75,7 +75,7 @@ def _sample(
     )
     status: dict[str, object] = {
         "schema_version": "v2_status_v13",
-        "release": {"decision_view_schema": "v2_decision_view_v3", "web_asset_revision": "test"},
+        "release": {"decision_view_schema": "v2_decision_view_v4", "web_asset_revision": "test"},
         "status": "running",
         "runtime_started": True,
         "runtime_version": "runtime-test",
@@ -144,7 +144,7 @@ def _sample(
         "recent_errors": recent_errors or [],
     }
     decision: dict[str, object] = {
-        "schema_version": "v2_decision_view_v3",
+        "schema_version": "v2_decision_view_v4",
         "status": decision_status,
         "strategy": _STRATEGY,
         "trade_date": _TRADE_DATE,

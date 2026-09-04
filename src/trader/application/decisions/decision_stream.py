@@ -44,6 +44,7 @@ class DecisionReplacementPatch:
     selection_diagnostics: SelectionDiagnostics | None
     degraded_reasons: tuple[str, ...]
     items: tuple[DecisionItem, ...]
+    top_scores: tuple[DecisionItem, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -124,6 +125,8 @@ class UnifiedDecisionEventStream:
         decision = event.projection
         replacement = None
         if decision is not None:
+            selected = tuple(sorted((item for item in decision.items if item.selected), key=lambda item: item.rank))
+            top_scores = tuple(sorted(decision.items, key=lambda item: (-item.final_score, item.code))[:3])
             replacement = DecisionReplacementPatch(
                 event.projection_version or event.decision_hash,
                 decision.observed_at,
@@ -133,7 +136,8 @@ class UnifiedDecisionEventStream:
                 scored_decision_coverage(decision),
                 decision.selection_diagnostics,
                 decision.degraded_reasons,
-                tuple(sorted((item for item in decision.items if item.selected), key=lambda item: item.rank)),
+                selected,
+                top_scores,
             )
         payload = DecisionEventPayload(
             event.strategy,

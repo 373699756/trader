@@ -2,8 +2,8 @@
   "use strict";
 
   const STATUS_SCHEMA = "v2_status_v13";
-  const DECISION_VIEW_SCHEMA = "v2_decision_view_v3";
-  const WEB_ASSET_REVISION = "release-contract-2026-09-04-v16";
+  const DECISION_VIEW_SCHEMA = "v2_decision_view_v4";
+  const WEB_ASSET_REVISION = "release-contract-2026-09-04-v17";
   const ERROR_CODE = "release_contract_mismatch";
 
   function statusPayloadCompatibility(payload) {

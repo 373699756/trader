@@ -74,6 +74,7 @@
       draft: null,
       long_groups: Array.isArray(patch.long_groups) ? patch.long_groups : current.long_groups || [],
       items,
+      top_scores: Array.isArray(patch.top_scores) ? patch.top_scores : current.top_scores || [],
       error: null,
     };
   }

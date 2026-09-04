@@ -8,6 +8,7 @@ import math
 import os
 import tempfile
 from collections import defaultdict
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import date
 from importlib.metadata import version
@@ -18,7 +19,7 @@ import lightgbm as lgb
 import numpy as np
 
 from trader.application.research.tomorrow_v3_training import TomorrowV3TrainingWindow
-from trader.domain.research.baostock_daily import BaoStockDailyManifest, BaoStockTrainingRow, BaoStockV3Split
+from trader.domain.research.baostock_daily import BaoStockDailyManifest, BaoStockV3Split
 from trader.infra.research.baostock_daily import (
     BaoStockDailyArtifactConflictError,
     BaoStockDailyPartitionedArchive,
@@ -124,29 +125,31 @@ def _build_samples(
     window: TomorrowV3TrainingWindow,
 ) -> tuple[_Sample, ...]:
     codes = tuple(code for partition in manifest.partitions for code in partition.codes)
+    calendar = archive.complete_dates()
     by_date: dict[date, list[_Sample]] = defaultdict(list)
     for code in codes:
         rows = archive.read_training_rows(code, allowed_dates=window.readable_dates)
-        ordered = tuple(sorted(rows, key=lambda item: item.trade_date))
-        closes = {item.trade_date: item.qfq.close_price for item in ordered}
-        for index, row in enumerate(ordered):
-            if index < 60 or row.qfq.close_price is None:
-                continue
-            next_row = ordered[index + 1] if index + 1 < len(ordered) else None
+        rows_by_date = {item.trade_date: item for item in rows}
+        closes = {item.trade_date: item.qfq.close_price for item in rows}
+        for day, next_day, indices in _aligned_sample_dates(calendar, rows_by_date.keys(), window.readable_dates):
+            _index, previous_1, previous_3, previous_5, momentum_20, momentum_40, momentum_60 = indices
+            row = rows_by_date.get(day)
+            next_row = rows_by_date.get(next_day)
             if (
-                next_row is None
-                or next_row.trade_date not in window.readable_dates
+                row is None
+                or next_row is None
+                or row.qfq.close_price in (None, 0)
                 or next_row.qfq.close_price in (None, 0)
             ):
                 continue
             close = float(row.qfq.close_price)
             features = (
-                _return(close, closes.get(ordered[index - 1].trade_date)),
-                _return(close, closes.get(ordered[index - 3].trade_date)),
-                _return(close, closes.get(ordered[index - 5].trade_date)),
-                _momentum(closes, ordered, index, 20),
-                _momentum(closes, ordered, index, 40),
-                _momentum(closes, ordered, index, 60),
+                _return(close, closes.get(calendar[previous_1])),
+                _return(close, closes.get(calendar[previous_3])),
+                _return(close, closes.get(calendar[previous_5])),
+                _return(closes.get(calendar[previous_5]), closes.get(calendar[momentum_20])),
+                _return(closes.get(calendar[previous_5]), closes.get(calendar[momentum_40])),
+                _return(closes.get(calendar[previous_5]), closes.get(calendar[momentum_60])),
             )
             if not all(math.isfinite(value) for value in features):
                 continue
@@ -189,6 +192,25 @@ def _build_samples(
                 )
             )
     return tuple(sorted(result, key=lambda item: (item.trade_date, item.code)))
+
+
+def _aligned_sample_dates(
+    calendar: tuple[date, ...],
+    available_dates: Collection[date],
+    readable_dates: frozenset[date],
+) -> tuple[tuple[date, date, tuple[int, ...]], ...]:
+    available = set(available_dates)
+    result: list[tuple[date, date, tuple[int, ...]]] = []
+    for index, day in enumerate(calendar):
+        next_index = index + 1
+        indices = (index, index - 1, index - 3, index - 5, index - 25, index - 45, index - 65, next_index)
+        if next_index >= len(calendar) or any(value < 0 for value in indices):
+            continue
+        required_dates = tuple(calendar[value] for value in indices)
+        if not set(required_dates).issubset(readable_dates) or not set(required_dates).issubset(available):
+            continue
+        result.append((day, calendar[next_index], indices[:-1]))
+    return tuple(result)
 
 
 def _group_means(values: list[_Sample], dimension: int) -> dict[tuple[str, int], float]:
@@ -342,16 +364,8 @@ def _content_hash(payload: dict[str, object]) -> str:
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
-def _return(current: float, previous: float | None) -> float:
-    return current / previous - 1.0 if previous not in (None, 0.0) else float("nan")
-
-
-def _momentum(
-    closes: dict[date, float | None], rows: tuple[BaoStockTrainingRow, ...], index: int, length: int
-) -> float:
-    start = closes.get(rows[index - length - 5].trade_date)
-    end = closes.get(rows[index - 5].trade_date)
-    return end / start - 1.0 if start not in (None, 0.0) and end is not None else float("nan")
+def _return(current: float | None, previous: float | None) -> float:
+    return current / previous - 1.0 if current is not None and previous not in (None, 0.0) else float("nan")
 
 
 def _reason(exc: BaseException) -> str:

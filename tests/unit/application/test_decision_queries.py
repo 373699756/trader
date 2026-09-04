@@ -188,6 +188,11 @@ def test_scored_query_restores_rank_order_from_code_sorted_identity() -> None:
         ("600001", 3, 75.0),
         ("600003", 4, 73.0),
     ]
+    assert [(item.code, item.final_score) for item in view.top_scores] == [
+        ("600002", 86.0),
+        ("600004", 81.0),
+        ("600001", 75.0),
+    ]
 
 
 def test_not_ready_current_exposes_observation_draft_without_formal_items() -> None:
@@ -209,6 +214,7 @@ def test_not_ready_current_exposes_observation_draft_without_formal_items() -> N
     assert view.draft is not None
     assert view.draft.decision_version == draft.version
     assert [item.code for item in view.draft.items] == ["600001"]
+    assert [item.code for item in view.draft.top_scores] == ["600002", "600001"]
     assert view.draft.items[0].action == "observe"
     assert view.etag == draft.content_hash
 

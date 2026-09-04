@@ -59,12 +59,14 @@ def serialize_decision_view(view: DecisionView) -> dict[str, object]:
         ),
         "degraded_reasons": list(view.degraded_reasons),
         "items": [serialize_decision_item(item) for item in view.items],
+        "top_scores": [serialize_decision_item(item) for item in view.top_scores],
         "draft": (
             {
                 "decision_version": view.draft.decision_version,
                 "content_hash": view.draft.content_hash,
                 "observed_at": _time(view.draft.observed_at),
                 "items": [serialize_decision_item(item) for item in view.draft.items],
+                "top_scores": [serialize_decision_item(item) for item in view.draft.top_scores],
             }
             if view.draft is not None
             else None
@@ -206,6 +208,7 @@ def _serialize_decision_replacement(
         "removed_codes": [],
         "removals": [],
         "upserts": [_serialize_decision_patch_item(item) for item in replacement.items],
+        "top_scores": [_serialize_decision_patch_item(item) for item in replacement.top_scores],
         "view": "live",
         "current_trade_date": payload.trade_date,
         "phase": payload.stage,

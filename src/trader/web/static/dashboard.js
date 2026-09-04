@@ -354,10 +354,12 @@
     const historical = Boolean(selectedDate);
     const coverage = raw.coverage || {};
     const items = Array.isArray(raw.items) ? raw.items.map(normalizeV2Item) : [];
+    const topScores = Array.isArray(raw.top_scores) ? raw.top_scores.map(normalizeV2Item) : [];
     const draft = raw.draft && typeof raw.draft === "object"
       ? {
         ...raw.draft,
         items: Array.isArray(raw.draft.items) ? raw.draft.items.map(normalizeV2Item) : [],
+        top_scores: Array.isArray(raw.draft.top_scores) ? raw.draft.top_scores.map(normalizeV2Item) : [],
       }
       : null;
     return {
@@ -378,6 +380,7 @@
         selected_executable_count: coverage.executable_count || 0,
       },
       items,
+      top_scores: topScores,
       draft,
     };
   }
