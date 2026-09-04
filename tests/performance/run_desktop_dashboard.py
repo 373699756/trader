@@ -42,7 +42,6 @@ from trader.domain.recommendation.decision_identity import (  # noqa: E402
 from trader.domain.recommendation.models import RecommendationAction, Strategy  # noqa: E402
 from trader.web import create_app  # noqa: E402
 from trader.web.api.route_services import UnifiedWebServices  # noqa: E402
-from trader.web.static_assets import WEB_ASSET_REVISION  # noqa: E402
 
 VIEWPORTS = ((1280, 720), (1440, 900), (1920, 1080))
 REPORT_SCHEMA = "v2-desktop-browser-v1"
@@ -327,7 +326,7 @@ def _run(output_dir: Path) -> dict[str, object]:
         _execute(base, 'document.querySelector("#errorDrawerClose").click(); return true;')
         viewports = [_viewport(base, output_dir, width, height) for width, height in VIEWPORTS]
         scripts = _execute(base, "return Array.from(document.scripts).map((item) => item.src);")
-        expected = f"/static/dashboard.js?rev={WEB_ASSET_REVISION}"
+        expected = "/static/dashboard.js"
         passed = (
             isinstance(scripts, list)
             and any(expected in str(script) for script in scripts)

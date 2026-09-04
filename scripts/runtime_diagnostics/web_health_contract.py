@@ -148,7 +148,6 @@ class RuntimeIssueSnapshot:
 class StatusSnapshot:
     schema_version: str | None
     release_decision_schema: str | None
-    web_asset_revision: str | None
     runtime_status: str | None
     runtime_started: bool
     runtime_version: str | None
@@ -220,7 +219,6 @@ def _parse_status(payload: Mapping[str, object]) -> StatusSnapshot:
     return StatusSnapshot(
         schema_version=_text(payload.get("schema_version")),
         release_decision_schema=_text(release.get("decision_view_schema")),
-        web_asset_revision=_text(release.get("web_asset_revision")),
         runtime_status=_text(payload.get("status")),
         runtime_started=payload.get("runtime_started") is True,
         runtime_version=_text(payload.get("runtime_version")),

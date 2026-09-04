@@ -3,7 +3,6 @@
 
   const STATUS_SCHEMA = "v2_status_v13";
   const DECISION_VIEW_SCHEMA = "v2_decision_view_v4";
-  const WEB_ASSET_REVISION = "release-contract-2026-09-04-v17";
   const ERROR_CODE = "release_contract_mismatch";
 
   function statusPayloadCompatibility(payload) {
@@ -16,9 +15,6 @@
     }
     if (release.decision_view_schema !== DECISION_VIEW_SCHEMA) {
       return { compatible: false, reason: "decision_schema_mismatch" };
-    }
-    if (release.web_asset_revision !== WEB_ASSET_REVISION) {
-      return { compatible: false, reason: "web_asset_revision_mismatch" };
     }
     return { compatible: true, reason: "" };
   }

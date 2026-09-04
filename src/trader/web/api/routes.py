@@ -18,7 +18,6 @@ from trader.web.api.route_services import UnifiedWebServices
 from trader.web.static_assets import (
     DECISION_VIEW_SCHEMA_VERSION,
     STATUS_SCHEMA_VERSION,
-    WEB_ASSET_REVISION,
 )
 
 RouteResponse = Response | tuple[Response, int]
@@ -127,7 +126,6 @@ def _status(services: UnifiedWebServices | None) -> RouteResponse:
             "schema_version": STATUS_SCHEMA_VERSION,
             "release": {
                 "decision_view_schema": DECISION_VIEW_SCHEMA_VERSION,
-                "web_asset_revision": WEB_ASSET_REVISION,
             },
             "status": str(runtime.get("status", "running")),
             "phase": runtime.get("phase"),

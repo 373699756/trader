@@ -196,7 +196,6 @@ assert.deepStrictEqual(
     schema_version: "v2_status_v13",
     release: {
       decision_view_schema: "v2_decision_view_v4",
-      web_asset_revision: "release-contract-2026-09-04-v17",
     },
   }))),
   { compatible: true, reason: "" },

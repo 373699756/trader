@@ -20,7 +20,6 @@ from trader.domain.recommendation.decision_identity import (
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 from trader.web import create_app
 from trader.web.api.route_services import UnifiedWebServices, WebApiConfig
-from trader.web.static_assets import WEB_ASSET_REVISION
 
 NOW = datetime(2026, 8, 11, 10, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -159,7 +158,6 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     assert status["schema_version"] == "v2_status_v13"
     assert status["release"] == {
         "decision_view_schema": "v2_decision_view_v4",
-        "web_asset_revision": WEB_ASSET_REVISION,
     }
     assert "event: decision" in event
     decision_patch = json.loads(event.split("data: ", 1)[1])

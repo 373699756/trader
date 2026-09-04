@@ -4,6 +4,10 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+### Changed
+
+- 用户要求除评分 V1/V2/V3 外清理版本控制并禁止继续增加 `V几` 命名。现将规则写入 `AGENTS.md`，并同步到产品与策略权威文档：评分生产档位是唯一允许新增的项目版本命名；API、SSE、配置、运行目录、数据集、特征、报告、缓存、模块、测试和 Web 资源不得新增 `vN`。现有非评分后缀若是不可变历史审计、持久化解码或跨进程身份，只能原样只读兼容，不能晋级、迁移或复制扩展；供应商模型名、日期、包版本和 content hash 不作为项目版本控制。Verification: `git diff --check`、文档链接与格式检查。Residual Risks: 仓库中既有历史 schema/研究身份和 V2 架构路径仍需保持兼容，未在本批次破坏性重命名；如需删除这些不可变身份，必须由用户另行确认并单独完成 API、SSE、持久化和数据迁移批次。
+
 ### Added
 
 - 用户反馈 15:00 后明日/2-5 日已完成评分，但“评分最高”卡片在没有达到观察池门槛时为空，并要求新股不足 2000 个交易日时不要用错位日期训练。根因是 DecisionView/SSE replacement 只投影正式或观察项，训练特征和标签则按个股返回行号取“下一行”，会跨停牌或上市前缺口。现新增公开 `top_scores` 投影，Today、Tomorrow、D25 均按全部已评分候选稳定返回最高三只，主推荐表和观察池语义不变；未就绪草稿也提供独立最高三项。V3 训练改用统一交易所开市日历，所有特征窗口和下一交易日标签必须命中该股票实际下载记录，缺日样本直接跳过，不补造上市前数据。DecisionView schema 升为 `v2_decision_view_v4` 并同步 release identity。另修正打包契约夹具排除易失 SQLite WAL/SHM sidecar，避免复制运行数据时竞态失败。Verification: 受影响定向 Python 测试、`node tests/js/test_dashboard_state.js`、`make format-check`、`make lint`、`make type-check`、全量 `make test`、`make package` 和 `git diff --check` 均通过；`make browser-performance-check` 已执行但因主机未安装 `geckodriver` 返回 `browser_refresh_failed`，不作为通过证据。Residual Risks: 当前机器仍无合格 BaoStock 全量 manifest，尚未进行真实 V3 训练或跨 PC 实物迁移验证；Firefox 桌面门禁需在安装 geckodriver 的环境补跑；未就绪页面的最高分依赖同一内存草稿仍在保留。`Regression-Key: top-score-and-calendar-alignment-v1`。

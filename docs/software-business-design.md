@@ -1,8 +1,10 @@
 # 软件业务设计文档
 
-版本：v2-only 发布候选契约
+版本：当前发布候选契约
 
 状态：V2-only 工程与发布门禁验收已完成；功能包拆分已完成，当前版本仍为 Unreleased，尚未声明正式 0.2.0 release
+
+版本命名边界：除用户明确确认的评分生产档位 V1/V2/V3 外，本项目不新增或扩展任何 `vN` 版本控制。API、SSE、配置、运行目录、数据集、特征、报告和 Web 资源使用稳定名称；历史审计字符串、供应商模型名、日期及 content hash 仅用于身份或完整性，不能当作新的项目版本。
 
 适用范围：本地 A 股研究看板
 
@@ -1476,7 +1478,7 @@ cadence 最短间隔/下一到期时间/固定时点生命周期、冻结完成/
 状态顶层必须返回当前有效配置/策略组合的 `runtime_version`，并原样投影脱敏的 `scheduler`
 摘要，以便区分旧常驻进程、刷新失败和决策构建失败；源码文件发生变化不会热加载到既有进程。
 `/api/status` 的公开 schema 为 `v2_status_v13`，并必须从当前进程已导入的常量加法返回
-`release.decision_view_schema` 与 `release.web_asset_revision`。浏览器必须同时校验 status release
+`release.decision_view_schema`。浏览器必须同时校验 status release
 身份和每份 DecisionView schema；任何缺失或不一致都属于 `release_contract_mismatch`，页面必须
 停止把结果解释为行情采集或观察草稿生成，明确提示正常重启旧服务。该握手只判断进程/资源契约
 一致性，不得根据工作树、Git、文件时间或 HTTP 成功状态推断运行版本。
@@ -1494,7 +1496,7 @@ Web 应用工厂创建应用时必须把模板和全部打包静态资源读入�
 EventSource 游标、重连退避、断线轮询和 patch-to-paint 采样；两者通过显式依赖对象协作，缺少模块时
 fail closed 并进入浏览器诊断。`market_data.market_changes` 只公开变更计数和合并身份，
 `market_data.latency_waterfall` 只公开有界阶段聚合，不得泄露股票代码、关联 ID 或原始样本。
-当前静态资源握手身份为 `release-contract-2026-09-01-v14`。
+静态资源使用稳定路径，不再携带独立发布版本号；协议兼容仍由 status 与 DecisionView schema 校验。
 
 日志只记录脱敏结构化摘要，不记录密钥、Token、完整模型请求/响应、完整供应商载荷或个人
 敏感路径。所有外部 I/O 必须有 timeout、容量、熔断和明确失败策略。DeepSeek 与 Tushare

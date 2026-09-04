@@ -132,7 +132,7 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
         )
     if not status.runtime_started or status.runtime_status != "running":
         findings.append(_finding("error", "runtime_not_running", sample, None, "runtime is not reported as running"))
-    if not status.release_decision_schema or not status.web_asset_revision:
+    if not status.release_decision_schema:
         findings.append(
             _finding("error", "release_identity_missing", sample, None, "status release identity is incomplete")
         )

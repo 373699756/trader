@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from trader.web import create_app
-from trader.web.static_assets import WEB_ASSET_REVISION
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -36,7 +35,7 @@ def test_dashboard_uses_only_packaged_v2_assets_and_fixed_long_groups() -> None:
     release_contract = client.get("/static/release_contract.js").get_data(as_text=True)
     groups = client.get("/static/long_groups.js").get_data(as_text=True)
 
-    assert page.count(f"?rev={WEB_ASSET_REVISION}") == 13
+    assert "?rev=" not in page
     assert 'id="long-panel-title">卡脖子行业<' in page
     assert 'data-scope="future_growth"' in page
     assert 'data-scope="low_price_potential"' in page
@@ -74,7 +73,7 @@ def test_dashboard_uses_only_packaged_v2_assets_and_fixed_long_groups() -> None:
     assert "/api/decisions/" in dashboard
     assert "/api/v2/" not in dashboard
     assert "/api/recommendations/" not in dashboard
-    assert f'const WEB_ASSET_REVISION = "{WEB_ASSET_REVISION}";' in release_contract
+    assert "WEB_ASSET_REVISION" not in release_contract
     assert "卡脖子行业" in groups
     assert "高成长赛道" in groups
     assert "低价潜力股" in groups
