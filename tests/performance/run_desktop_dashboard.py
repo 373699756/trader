@@ -686,6 +686,7 @@ def _viewport(base: str | _ChromeSession, output_dir: Path, width: int, height: 
           longWatchlistSize: window.TraderLongWatchlistData.items.length,
           publicationStatus: document.querySelector('#publicationStatus').textContent,
           publicationMeta: document.querySelector('#publicationMeta').textContent,
+          topScoresStatus: document.querySelector('#topScoresStatus').textContent,
           healthBadge: document.querySelector('#healthBadge').textContent,
           rows: document.querySelectorAll('#tableBody tr[data-code]').length,
           scopes: document.querySelectorAll('#longScopeTabs button[data-scope]').length,
@@ -735,12 +736,13 @@ def _viewport_passed(result: dict[str, object]) -> bool:
         and result.get("noLongOverlap")
         and result.get("messageColumns") == 2
         and result.get("messageEqualHeight")
-        and result.get("summaryItems") == 3
+        and result.get("summaryItems") == 4
         and result.get("quoteAgeHms")
         and result.get("inputQuality") == "不适用"
         and result.get("inputQualityMeta") == "长期固定观察池不评分"
         and result.get("publicationStatus") == "不适用"
         and result.get("publicationMeta") == "长期固定观察池，不评分、不冻结"
+        and result.get("topScoresStatus") == "暂无评分数据"
         and result.get("healthBadge") == "降级 · 2项"
         and result.get("rows")
         and result.get("scopes") == 3

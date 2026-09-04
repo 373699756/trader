@@ -40,7 +40,7 @@ def test_dashboard_uses_only_packaged_v2_assets_and_fixed_long_groups() -> None:
     assert 'id="long-panel-title">卡脖子行业<' in page
     assert 'data-scope="future_growth"' in page
     assert 'data-scope="low_price_potential"' in page
-    assert page.count("summary-item") == 3
+    assert page.count("summary-item") == 4
     assert 'id="healthBadge"' in page
     assert 'id="errorDetailsButton"' in page
     assert 'id="errorDrawer"' in page
@@ -65,6 +65,7 @@ def test_dashboard_uses_only_packaged_v2_assets_and_fixed_long_groups() -> None:
     assert 'id="noticeText"' not in page
     assert 'id="publicationStatus"' in page
     assert 'id="publicationMeta"' in page
+    assert 'id="topScoresStatus"' in page
     assert "<title>策略</title>" in page
     assert 'aria-label="策略"' in page
     assert "<h1>策略</h1>" in page

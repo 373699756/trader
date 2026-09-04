@@ -183,6 +183,7 @@
       els.inputQualityScoreTime.textContent = "等待本轮评分完成";
       els.publicationStatus.textContent = "未就绪";
       els.publicationMeta.textContent = "等待当前策略快照";
+      renderTopScores(els, null, []);
       els.recommendationTable.classList.remove("is-history", "is-anchor-table", "is-long-table");
       els.observationPool.hidden = true;
       setLongControls(state.strategy === "long");
@@ -210,6 +211,7 @@
       els.inputQualityScoreTime.textContent = "所选历史日期不重算评分";
       els.publicationStatus.textContent = "历史只读";
       els.publicationMeta.textContent = "所选日期无正式快照";
+      renderTopScores(els, null, []);
       els.recommendationTable.classList.add("is-history");
       els.recommendationTable.classList.remove("is-anchor-table", "is-long-table");
       els.observationPool.hidden = true;
@@ -286,6 +288,7 @@
           ? render.sourceLabel(strategySummary.latest_quote_source)
           : "来源不可用";
     renderBudgetSummary(els, statusPayload && statusPayload.deepseek_budget, payload);
+    renderTopScores(els, payload, items);
     els.inputQualityStrategy.textContent = selection.strategyLabel(payload.strategy);
     els.inputQualityScoreTime.textContent = payload.observed_at
       ? `评分于 ${render.formatTime(payload.observed_at)} 完成`
@@ -465,6 +468,41 @@
     }
     els.publicationStatus.textContent = "实时滚动";
     els.publicationMeta.textContent = `${strategy} ${cutoff} 固化`;
+  }
+
+  function renderTopScores(els, payload, items) {
+    if (!els.topScoresStatus) return;
+    const scoredItems = topScoredStocks(payload, items);
+    els.topScoresStatus.textContent = scoredItems.length
+      ? scoredItems.map((item) => `${item.score.toFixed(2)} - ${item.code} - ${item.name}`).join("\n")
+      : "暂无评分数据";
+    if (els.topScoresMeta) {
+      els.topScoresMeta.textContent = scoredItems.length
+        ? `最终评分 · ${scoredItems.length} 只`
+        : "最终评分 · 当前无可用数据";
+    }
+  }
+
+  function topScoredStocks(payload, items) {
+    if (!payload || payload.strategy === "long" || payload.score_status === "not_applicable") {
+      return [];
+    }
+    const source = Array.isArray(items) && items.length
+      ? items
+      : payload.status === "not_ready" && payload.draft && Array.isArray(payload.draft.items)
+        ? payload.draft.items
+        : [];
+    return source
+      .map((item, index) => {
+        const scores = item && item.scores;
+        const score = finiteNumber(scores && (scores.final_score ?? scores.final));
+        const code = item && typeof item.code === "string" ? item.code.trim() : "";
+        const name = item && typeof item.name === "string" ? item.name.trim() : "";
+        return score == null || !code || !name ? null : { score, code, name, index };
+      })
+      .filter(Boolean)
+      .sort((left, right) => right.score - left.score || left.code.localeCompare(right.code) || left.index - right.index)
+      .slice(0, 3);
   }
 
   function updateQuoteAge(els, payload, render, statusPayload) {
@@ -770,7 +808,9 @@
     renderHealth,
     renderInputQuality,
     renderPublicationStatus,
+    renderTopScores,
     renderSummary,
+    topScoredStocks,
     runtimeErrorRows,
     updateQuoteAge,
   });

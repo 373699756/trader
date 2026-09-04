@@ -405,7 +405,7 @@ tr:focus-visible {
 
 .summary-band {
   display: grid;
-  grid-template-columns: repeat(3, minmax(180px, 1fr));
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
   gap: 1px;
   border-bottom: 1px solid var(--line);
   background: var(--line);
@@ -451,6 +451,18 @@ tr:focus-visible {
 .summary-item > small b {
   color: var(--muted);
   font-weight: 600;
+}
+
+.top-scores-item {
+  min-width: 0;
+}
+
+.summary-item > strong.top-scores-list {
+  min-height: 51px;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 17px;
+  white-space: pre-line;
 }
 
 .input-quality-live {

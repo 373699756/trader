@@ -90,7 +90,7 @@
   function init() {
     for (const id of [
       "marketPhase", "runtimeDot", "runtimeStatus", "quoteSource", "quoteTime", "quoteAge", "quoteFreshness", "streamStatus",
-      "budgetStatus", "budgetMeta", "publicationStatus", "publicationMeta", "lastError", "lastErrorMeta",
+      "budgetStatus", "budgetMeta", "publicationStatus", "publicationMeta", "topScoresStatus", "topScoresMeta", "lastError", "lastErrorMeta",
       "refreshButton", "dateSelect", "strategyDescription", "inputQualityPanel", "inputQualityStatus", "inputQualityMeta", "inputQualityBlockers", "inputQualityDegradations", "funnelStatus", "funnelMeta",
       "inputQualityStrategy", "inputQualityScoreTime", "healthPanel", "healthBadge", "errorDetailsButton",
       "recommendationTable", "tableColumns", "tableHead", "tableBody",

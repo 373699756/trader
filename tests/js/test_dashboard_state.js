@@ -81,6 +81,7 @@ const state = {
   renderInputQuality: sandbox.window.TraderStatusView.renderInputQuality,
   renderPublicationStatus: sandbox.window.TraderStatusView.renderPublicationStatus,
   renderSummary: sandbox.window.TraderStatusView.renderSummary,
+  topScoredStocks: sandbox.window.TraderStatusView.topScoredStocks,
   runtimeErrorRows: sandbox.window.TraderStatusView.runtimeErrorRows,
   updateQuoteAge: sandbox.window.TraderStatusView.updateQuoteAge,
   decisionPayloadCompatibility: sandbox.window.TraderReleaseContract.decisionPayloadCompatibility,
@@ -95,6 +96,41 @@ const state = {
   longGroupVisibleRecommendations: sandbox.window.TraderLongGroups.visibleRecommendations,
 };
 assert(state, "dashboard state helpers were not exported into the test sandbox");
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.topScoredStocks(
+    { status: "ready", strategy: "today", score_status: "scored" },
+    [
+      { code: "600004", name: "第四股票", scores: { final_score: 80 } },
+      { code: "600002", name: "第二股票", scores: { final_score: 95 } },
+      { code: "600003", name: "第三股票", scores: { final_score: 85 } },
+      { code: "600001", name: "第一股票", scores: { final_score: 90 } },
+    ],
+  ))),
+  [
+    { score: 95, code: "600002", name: "第二股票", index: 1 },
+    { score: 90, code: "600001", name: "第一股票", index: 3 },
+    { score: 85, code: "600003", name: "第三股票", index: 2 },
+  ],
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.topScoredStocks(
+    {
+      status: "not_ready",
+      strategy: "tomorrow",
+      score_status: "scored",
+      draft: { items: [{ code: "600005", name: "草稿股票", scores: { final_score: 71.5 } }] },
+    },
+    [],
+  ))),
+  [{ score: 71.5, code: "600005", name: "草稿股票", index: 0 }],
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.topScoredStocks(
+    { status: "ready", strategy: "today", historical: true, score_status: "scored" },
+    [{ code: "600006", name: "历史股票", scores: { final_score: 68 } }],
+  ))),
+  [{ score: 68, code: "600006", name: "历史股票", index: 0 }],
+);
 assert.strictEqual(
   sandbox.window.TraderDashboardDiagnostics.snapshot().webSnapshotRetentionMs,
   35000,
@@ -108,7 +144,7 @@ assert.deepStrictEqual(
     schema_version: "v2_status_v13",
     release: {
       decision_view_schema: "v2_decision_view_v3",
-      web_asset_revision: "release-contract-2026-09-01-v15",
+      web_asset_revision: "release-contract-2026-09-04-v16",
     },
   }))),
   { compatible: true, reason: "" },
@@ -191,6 +227,7 @@ function summaryFixture() {
     inputQualityScoreTime: { textContent: "" },
     publicationStatus: { textContent: "" },
     publicationMeta: { textContent: "" },
+    topScoresStatus: { textContent: "" },
   };
 }
 const summaryElements = summaryFixture();
@@ -206,14 +243,14 @@ state.renderSummary(
   },
   [
     {
-      code: "600001", name: "正式股票", industry: "银行", action: "executable",
-      price: 10, pct_change: 1, source: "tencent", source_time: "2026-08-14T10:00:00+08:00",
-      scores: { final_score: 82 },
-    },
-    {
       code: "600002", name: "观察股票", industry: "证券", action: "observe",
       price: null, pct_change: null, source: "decision", source_time: "2026-08-14T09:59:00+08:00",
       scores: { final_score: 75 },
+    },
+    {
+      code: "600001", name: "正式股票", industry: "银行", action: "executable",
+      price: 10, pct_change: 1, source: "tencent", source_time: "2026-08-14T10:00:00+08:00",
+      scores: { final_score: 82 },
     },
   ],
   "open",
@@ -230,6 +267,10 @@ assert.strictEqual(summaryElements.inputQualityStrategy.textContent, "今早");
 assert.strictEqual(summaryElements.inputQualityScoreTime.textContent, "评分时间不可用");
 assert.strictEqual(summaryElements.publicationStatus.textContent, "实时滚动");
 assert.strictEqual(summaryElements.publicationMeta.textContent, "今早 11:20 固化");
+assert.strictEqual(
+  summaryElements.topScoresStatus.textContent,
+  "82.00 - 600001 - 正式股票\n75.00 - 600002 - 观察股票",
+);
 state.renderSummary(
   summaryElements,
   {
