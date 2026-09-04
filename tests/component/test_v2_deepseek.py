@@ -418,7 +418,7 @@ def test_http_status_remains_available_while_budget_sqlite_is_exclusively_locked
 
     with sqlite3.connect(database_path, timeout=0.0) as blocker:
         blocker.execute("BEGIN EXCLUSIVE")
-        response = app.test_client().get("/api/v2/status")
+        response = app.test_client().get("/api/status")
 
     assert response.status_code == 200
     assert response.get_json()["deepseek_budget"]["remaining"] == 2
@@ -481,7 +481,7 @@ def test_status_remains_read_only_when_budget_database_is_unavailable(tmp_path, 
         )
     )
 
-    response = app.test_client().get("/api/v2/status")
+    response = app.test_client().get("/api/status")
 
     assert response.status_code == 200
     budget_status = response.get_json()["deepseek_budget"]

@@ -17,8 +17,8 @@ def test_create_app_has_no_thread_or_filesystem_side_effects(tmp_path, monkeypat
     app = create_app()
     assert list(tmp_path.iterdir()) == []
     assert app.test_client().get("/").status_code == 200
-    assert app.test_client().get("/api/v2/status").status_code == 503
-    assert app.test_client().get("/api/status").status_code == 404
+    assert app.test_client().get("/api/status").status_code == 503
+    assert app.test_client().get("/api/v2/status").status_code == 404
 
 
 def test_create_app_snapshots_template_and_static_release_before_serving_requests() -> None:
@@ -71,7 +71,8 @@ def test_dashboard_uses_only_packaged_v2_assets_and_fixed_long_groups() -> None:
     assert "<h1>策略</h1>" in page
     assert "A股策略看板" not in page
     assert "quote_status: quote.status" in dashboard
-    assert "/api/v2/decisions/" in dashboard
+    assert "/api/decisions/" in dashboard
+    assert "/api/v2/" not in dashboard
     assert "/api/recommendations/" not in dashboard
     assert f'const WEB_ASSET_REVISION = "{WEB_ASSET_REVISION}";' in release_contract
     assert "卡脖子行业" in groups

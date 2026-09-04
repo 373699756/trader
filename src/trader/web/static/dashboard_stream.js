@@ -41,7 +41,7 @@
         return;
       }
       const query = state.lastEventId > 0 ? `?cursor=${state.lastEventId}` : "";
-      const stream = new EventSource(`/api/v2/events${query}`);
+      const stream = new EventSource(`/api/events${query}`);
       state.stream = stream;
       els.streamStatus.textContent = "连接中";
       stream.onopen = () => {

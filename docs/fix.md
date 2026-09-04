@@ -140,7 +140,7 @@
 
   ./run.sh --profile v3
 
-  并检查 /api/v2/status 中：
+  并检查 /api/status 中：
 
   tomorrow_model.profile_id = v3
   tomorrow_model.active = true
@@ -149,4 +149,3 @@
   还要注意：V3 线上评分不是直接读取 data/train 中的历史行，而是读取训练生成的模型参数；运行时使用实时行情构造特征，再由该模型参与 Tomorrow 评分。
 
   所以，当前可以先执行前两步生成研究工件，但不能把第三步当成已经衔接完成。下一步应该先修复“训练工件晋级到 V3 生产资源”的接缝，再进行正式下载、训练和 V3 评分。
-

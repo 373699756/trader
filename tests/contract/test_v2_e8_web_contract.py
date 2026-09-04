@@ -42,14 +42,14 @@ def test_unified_decision_routes_validate_strategy_date_and_etag() -> None:
     app, _, _ = _app()
     client = app.test_client()
 
-    current = client.get("/api/v2/decisions/today/current")
+    current = client.get("/api/decisions/today/current")
     cached = client.get(
-        "/api/v2/decisions/today/current",
+        "/api/decisions/today/current",
         headers={"If-None-Match": current.headers["ETag"]},
     )
-    dates = client.get("/api/v2/decisions/today/dates")
-    invalid_strategy = client.get("/api/v2/decisions/weekly/current")
-    invalid_date = client.get("/api/v2/decisions/today/history?date=2026-8-8")
+    dates = client.get("/api/decisions/today/dates")
+    invalid_strategy = client.get("/api/decisions/weekly/current")
+    invalid_date = client.get("/api/decisions/today/history?date=2026-8-8")
 
     assert current.status_code == 200
     assert current.get_json()["schema_version"] == "v2_decision_view_v3"
@@ -77,17 +77,17 @@ def test_unified_decision_routes_validate_strategy_date_and_etag() -> None:
     assert invalid_date.get_json()["error"]["code"] == "invalid_date"
 
 
-def test_only_unified_v2_product_routes_are_registered() -> None:
+def test_only_unified_product_routes_are_registered() -> None:
     client = _app()[0].test_client()
 
     assert client.get("/").status_code == 200
-    assert client.get("/api/v2/status").status_code == 200
+    assert client.get("/api/status").status_code == 200
     for removed in (
-        "/api/status",
         "/api/recommendations/today",
         "/api/recommendation-dates?strategy=today",
         "/api/events/stream",
         "/v2/tomorrow",
+        "/api/v2/status",
         "/api/v2/tomorrow/current",
     ):
         assert client.get(removed).status_code == 404
@@ -131,8 +131,8 @@ def test_not_ready_current_keeps_observation_draft_separate_and_private_from_sta
     )
     client = app.test_client()
 
-    current = client.get("/api/v2/decisions/today/current")
-    status = client.get("/api/v2/status")
+    current = client.get("/api/decisions/today/current")
+    status = client.get("/api/status")
 
     assert current.status_code == 200
     assert current.get_json()["status"] == "not_ready"
@@ -147,12 +147,12 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     stream.publish_committed(build_v2_decision_committed(_decision()))
     client = app.test_client()
 
-    response = client.get("/api/v2/events", headers={"Last-Event-ID": "0"}, buffered=False)
+    response = client.get("/api/events", headers={"Last-Event-ID": "0"}, buffered=False)
     iterator = iter(response.response)
     assert next(iterator).decode() == ": connected\n\n"
     event = next(iterator).decode()
     response.close()
-    status = client.get("/api/v2/status").get_json()
+    status = client.get("/api/status").get_json()
 
     assert status["schema_version"] == "v2_status_v13"
     assert status["release"] == {
@@ -172,7 +172,7 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
         "executable_count": 1,
         "observation_count": 0,
     }
-    assert decision_patch["coverage"] == client.get("/api/v2/decisions/today/current").get_json()["coverage"]
+    assert decision_patch["coverage"] == client.get("/api/decisions/today/current").get_json()["coverage"]
     assert "filtered_count" not in decision_patch
     assert decision_patch["input_versions"]["score_model"] == ("daily_reconstructible_ensemble_v1:model-hash")
     assert [item["code"] for item in decision_patch["upserts"]] == ["600000"]
@@ -369,9 +369,9 @@ def test_http_reads_do_not_invoke_external_io() -> None:
 
     for path in (
         "/",
-        "/api/v2/decisions/today/current",
-        "/api/v2/decisions/today/dates",
-        "/api/v2/status",
+        "/api/decisions/today/current",
+        "/api/decisions/today/dates",
+        "/api/status",
     ):
         assert client.get(path).status_code == 200
 

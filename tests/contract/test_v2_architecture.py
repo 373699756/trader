@@ -135,7 +135,8 @@ def test_active_web_surface_and_fixed_long_tabs_are_v2_only() -> None:
     )
     dashboard = (web / "static/dashboard.js").read_text(encoding="utf-8")
     groups = (web / "static/long_groups.js").read_text(encoding="utf-8")
-    assert "/api/v2/decisions/" in dashboard
+    assert "/api/decisions/" in dashboard
+    assert "/api/v2/" not in dashboard
     assert "/api/recommendations/" not in dashboard
     assert '"chokepoint"' in groups
     assert '"future_growth"' in groups

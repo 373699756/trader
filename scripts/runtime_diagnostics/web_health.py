@@ -705,14 +705,14 @@ def _collect_sample(
     decision_payloads: dict[str, Mapping[str, object]] = {}
     issues: list[FetchIssue] = []
     try:
-        status_payload = _fetch_mapping(f"{base_url}/api/v2/status", timeout_seconds)
+        status_payload = _fetch_mapping(f"{base_url}/api/status", timeout_seconds)
     except FetchError as exc:
         issues.append(FetchIssue("status", exc.error_code))
     for strategy in strategies:
         endpoint = f"decision:{strategy}"
         try:
             decision_payloads[strategy] = _fetch_mapping(
-                f"{base_url}/api/v2/decisions/{strategy}/current",
+                f"{base_url}/api/decisions/{strategy}/current",
                 timeout_seconds,
             )
         except FetchError as exc:

@@ -6,6 +6,8 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户反馈 Web 交互 URL 中的 `/api/v2` 版本前缀与评分 V1/V2/V3 概念混淆，且单一前端页面没有必要展示第二套 HTTP 版本入口。现将统一只读 HTTP/SSE 路由、浏览器请求、运行诊断、性能探针和运维文档收敛为 `/api/*`；旧 `/api/v2/*` 不再注册并由契约测试确认返回 404。`v2_*` 载荷 schema、V2 运行目录和评分身份保持不变，因为它们属于内部/JSON 契约而非 URL 版本控制。Verification: 定向 Web/API 契约 51 项、全量 `make test`、`make type-check`、受影响 Python Ruff、提权后的 `make package` 和 `make browser-performance-check` 通过；`make format-check` 仍被既有 BaoStock 研究文件格式问题阻断，`make lint` 仍被既有测试导入排序问题阻断，`make performance-check` 仍被既有 `targeted_overlay_commit:absolute_budget` 阻断。Residual Risks: 已部署的旧常驻进程仍需按发布流程重启；外部书签或脚本使用旧 URL 时会收到 404，需改用 `/api/*`；上述基线门禁阻断项不由本批 URL 收敛改动引入。
+
 - 用户要求在“发布状态”后查看评分最高的股票。原摘要带仅展示漏斗、模型预算和发布状态，评分最高分没有对应的股票身份列表；现新增“评分最高”卡，按最终评分降序、代码升序稳定展示当前可见的最多三只股票，未就绪时复用同一快照观察草稿，历史快照沿用有效评分，长期策略显示无可用评分数据。Verification: dashboard state JavaScript 回归、Web 页面契约、全量 `make test`、`make type-check`、受影响 Python Ruff、`make package`、提权后的 `make browser-performance-check` 和 `git diff --check` 通过；`make format-check`、`make lint` 被基线中既有研究文件格式/测试导入排序问题阻断，`make performance-check` 被既有绝对性能预算超标阻断。Residual Risks: 真实运行中的供应商数据仍需按发布流程复核；基线格式、Lint 和性能门禁阻断项需在各自批次修复。
 
 - 用户反馈 `./run.sh` 无法启动，`trader-server` 报告其 `/tmp/trader-web-push-20260904/.venv/bin/python`

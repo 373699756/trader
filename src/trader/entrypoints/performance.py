@@ -374,15 +374,15 @@ def _api_operations(
         )
     )
     client = app.test_client()
-    path = "/api/v2/decisions/tomorrow/current"
+    path = "/api/decisions/tomorrow/current"
     etag = client.get(path).headers["ETag"]
     event = build_v2_decision_committed(decision)
     return {
         "sse_publish": lambda: stream.publish_committed(event),
         "snapshot_api": lambda: client.get(path),
         "etag_api": lambda: client.get(path, headers={"If-None-Match": etag}),
-        "dates_api": lambda: client.get("/api/v2/decisions/tomorrow/dates"),
-        "status_api": lambda: client.get("/api/v2/status"),
+        "dates_api": lambda: client.get("/api/decisions/tomorrow/dates"),
+        "status_api": lambda: client.get("/api/status"),
     }
 
 

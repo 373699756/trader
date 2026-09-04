@@ -17,5 +17,6 @@ def test_dashboard_keeps_the_fixed_long_watchlist_tabs() -> None:
     assert '"卡脖子行业"' in groups
     assert '"高成长赛道"' in groups
     assert '"低价潜力股"' in groups
-    assert "/api/v2/decisions/" in dashboard
+    assert "/api/decisions/" in dashboard
+    assert "/api/v2/" not in dashboard
     assert "/api/recommendations/" not in dashboard

@@ -85,9 +85,10 @@ def test_authoritative_docs_keep_algorithm_and_product_ownership_separate() -> N
 
     assert "mandatory_known_local_risk_penalty" not in design
     assert "mandatory_known_local_risk_penalty" in strategy
-    assert "GET /api/v2/decisions/<strategy>/current" in design
-    assert "GET /api/v2/decisions/<strategy>/current" not in strategy
-    assert "GET /api/status" not in design
+    assert "GET /api/decisions/<strategy>/current" in design
+    assert "GET /api/decisions/<strategy>/current" not in strategy
+    assert "GET /api/v2/decisions/<strategy>/current" not in design
+    assert "GET /api/status" in design
     assert "GET /api/status" not in strategy
     assert "DeepSeek 单次网络 timeout 20 秒" in _compact(design)
     assert "单次网络 timeout 为 20 秒" in strategy

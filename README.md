@@ -169,11 +169,11 @@ Token、SDK、额度或网络不可用时，Tushare lane 会显式降级。历�
 
 ## Web API
 
-- `GET /api/v2/decisions/<today|tomorrow|d25|long>/current`
-- `GET /api/v2/decisions/<today|tomorrow|d25>/history?date=YYYY-MM-DD`
-- `GET /api/v2/decisions/<today|tomorrow|d25>/dates`
-- `GET /api/v2/status`
-- `GET /api/v2/events`
+- `GET /api/decisions/<today|tomorrow|d25|long>/current`
+- `GET /api/decisions/<today|tomorrow|d25>/history?date=YYYY-MM-DD`
+- `GET /api/decisions/<today|tomorrow|d25>/dates`
+- `GET /api/status`
+- `GET /api/events`
 
 当前快照支持 ETag。SSE 使用单调事件 ID 和 `Last-Event-ID` 恢复；游标过旧时返回 `resync_required`。Web 请求只读取已发布快照，不抓行情、不评分、不调用 DeepSeek。
 Long 的三个固定分类和股票身份由打包资源立即显示；V2 current 只增强实时行情，服务或行情暂时

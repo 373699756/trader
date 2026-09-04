@@ -71,8 +71,8 @@ def test_build_system_is_lazy_and_v2_only(tmp_path, monkeypatch) -> None:
     assert system.long_v2_runtime is not None
     assert isinstance(system.scheduler._research, V2ResearchRuntime)
     assert system.scheduler.status().company_research.state == "stopped"
-    assert system.app.test_client().get("/api/status").status_code == 404
-    status = system.app.test_client().get("/api/v2/status")
+    assert system.app.test_client().get("/api/v2/status").status_code == 404
+    status = system.app.test_client().get("/api/status")
     assert status.status_code == 200
     assert status.get_json()["phase"] == "closed"
     assert status.get_json()["tomorrow_model"]["active"] is True
@@ -107,7 +107,7 @@ def test_build_system_selects_an_explicit_v2_run_profile_without_rewriting_confi
     strategy_path = Path(json.loads(config_path.read_text(encoding="utf-8"))["strategy_config"])
     original = strategy_path.read_bytes()
     system = build_system(config_path, tomorrow_scoring_profile="v2")
-    status = system.app.test_client().get("/api/v2/status").get_json()["tomorrow_model"]
+    status = system.app.test_client().get("/api/status").get_json()["tomorrow_model"]
 
     assert status["active"] is True
     assert status["profile_id"] == "v2"

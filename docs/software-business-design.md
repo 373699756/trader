@@ -71,11 +71,11 @@ V2 数据平面、正式决策与 DeepSeek 预算使用独立持久化文件；�
 唯一只读产品接口为：
 
 - `GET /`
-- `GET /api/v2/decisions/<strategy>/current`
-- `GET /api/v2/decisions/<strategy>/history?date=YYYY-MM-DD`
-- `GET /api/v2/decisions/<strategy>/dates`
-- `GET /api/v2/status`
-- `GET /api/v2/events`
+- `GET /api/decisions/<strategy>/current`
+- `GET /api/decisions/<strategy>/history?date=YYYY-MM-DD`
+- `GET /api/decisions/<strategy>/dates`
+- `GET /api/status`
+- `GET /api/events`
 
 不得提供旧 API 别名、重定向、弃用窗口、双读或双写。旧 release 只能与其对应旧运行目录整体回退，
 不得与 V2 代码、配置或 `.runtime/v2` 混用。旧运行数据可在仓库外离线保留，
@@ -348,7 +348,7 @@ observer 失败也无权反向修改决策。
 交易日和 20GB 总上限、已用字节、剩余字节、日期覆盖及 legacy 记录数。容量不足时显式拒绝新研究
 载荷，不删除不可变证据。审计写入失败不回滚或阻塞正式决策。
 
-observer 的队列、接纳、完成、拒绝、消费者失败计数和最后错误代码必须进入 `/api/v2/status`；只要
+observer 的队列、接纳、完成、拒绝、消费者失败计数和最后错误代码必须进入 `/api/status`；只要
 消费者失败未在当前进程内由后续成功写入恢复，系统健康至少为 `degraded`，不得只在内存对象中保留
 而让 Web 显示正常。observer 不写统一决策索引、正式记录库、API、SSE 或活动配置；它
 不重新读取行情、重新评分或重新调用模型。初始化失败同样 fail open；
@@ -431,7 +431,7 @@ tomorrow 使用同日、同配置、哈希有效、尚未消费且边界年龄�
 
 ### 2.6 V2 查询与发布
 
-活动读取链固定为 `UnifiedDecisionIndex -> application queries -> /api/v2 -> SSE -> Web`。
+活动读取链固定为 `UnifiedDecisionIndex -> application queries -> /api -> SSE -> Web`。
 应用层查询一次读取完整不可变决策，并只叠加父版本、策略和交易日匹配的报价 overlay；历史查询
 只精确读取请求日期的正式记录。HTTP 不得抓行情、评分、调用 DeepSeek、触发冻结或现场重放旧规则。
 
@@ -453,7 +453,7 @@ current。事件发布不等待客户端消费；客户端按策略、交易日�
 ### 2.7 当前发布边界
 
 当前 V2-only 工程与发布门禁验收已闭合：统一数据平面、决策核心、独立运行时、today、tomorrow、d25、long、
-统一 `/api/v2/*`、根页面、V2 运行目录和进程入口共同构成唯一活动产品。旧生产链、迁移/归档/
+统一 `/api/*`、根页面、V2 运行目录和进程入口共同构成唯一活动产品。旧生产链、迁移/归档/
 cutover CLI、旧 Web 外壳、旧运行读取和兼容分支均已删除；任何后续改动不得重新引入。
 
 已经闭合的 shadow、cutover、baseline 对比、版本事故修复和分阶段门禁不是活动产品契约；
@@ -1206,11 +1206,11 @@ overlay 只能改变价格、涨跌、成交额、换手率、总市值、来源
 结算或写库，结算也不得改写冻结记录。归档和结算的细节属于运维契约，不得恢复旧 Web envelope
 或旧运行库读取。
 
-## 9. V2 唯一 Web API 与 SSE
+## 9. 唯一 Web API 与 SSE
 
-V2-only 最终发布只注册第 1.2 节列出的根页面和 `/api/v2/*` 路由。`strategy` 只允许
+V2-only 最终发布只注册第 1.2 节列出的根页面和 `/api/*` 路由。`strategy` 只允许
 `today`、`tomorrow`、`d25`、`long`；long 只支持 current，history 和 dates 返回受控
-`history_not_supported`。旧 `/api/*` 和独立 tomorrow 旁路已删除，不构成别名、重定向、
+`history_not_supported`。旧带版本前缀的 API 路由和独立 tomorrow 旁路已删除，不构成别名、重定向、
 兼容期或最终验收接口。
 
 current 一次返回完整紧凑 `DecisionView`；公开 schema 为 `v2_decision_view_v3`，绑定决策、数据、
@@ -1261,7 +1261,7 @@ current 轮询。断线后立即执行一次 status/current 对账，以 3 秒�
 1/2/4/8/15 秒上限指数重连；连接恢复后停止临时轮询并重置退避。overlay 正常路径只替换命中代码的
 推荐行或观察行并更新摘要，不得重建表头和整张表；结构身份不匹配时才请求 current 重同步。
 
-`GET /api/v2/status` 只聚合注入的内存遥测：来源接收/源时间年龄、内部时延、当前 V2 identity、
+`GET /api/status` 只聚合注入的内存遥测：来源接收/源时间年龄、内部时延、当前 V2 identity、
 队列与 latest-wins、DeepSeek 物理预算、Tomorrow 生产模型身份/人工授权/历史失败/监控边界、
 冻结/持久化状态和最近受控失败。状态接口不读取数据库、
 文件或网络，不暴露股票集合、关联载荷、密钥或完整外部响应。
@@ -1362,7 +1362,7 @@ overlay 只刷新价格、涨跌幅、来源和时间，不因行情或评分自
 全市场完成但候选或评分尚未完成时，应用层必须先发布不含股票身份的
 `candidate_quotes_pending`/`scoring_pending` 输入状态，未知的评分、过滤和身份阶段在页面显示“采集中/待评分”，
 不得序列化成已经确认的业务 0；同日最近一次完整质量快照不得被下一轮临时 pending 状态覆盖。
-首次评分仍在运行、`scheduler.input_quality` 尚未形成时，摘要必须回退到 `/api/v2/status.market_data`
+首次评分仍在运行、`scheduler.input_quality` 尚未形成时，摘要必须回退到 `/api/status.market_data`
 已有的候选行情缓存数、候选行情年龄及最新候选来源；数据可用性显示“准备中”，副行展示真实行情样本，
 并把基础资料与历史标为待评分/待计算；漏斗显示“采集中/待计算”，冻结卡显示“采集中”；不得显示空白、
 `0 → 0 → 0` 或把全市场来源冒充
@@ -1431,7 +1431,7 @@ d25 合并为无法被桌面端解释的通用原因。
 
 ## 11. 可观测性与安全
 
-`GET /api/v2/status` 至少暴露线程和队列、latest-wins 替换/拒绝、来源接收与源时间年龄、
+`GET /api/status` 至少暴露线程和队列、latest-wins 替换/拒绝、来源接收与源时间年龄、
 熔断、缓存命中/淘汰/字节、历史预热覆盖、策略阶段延迟、DeepSeek 物理请求与原子预算、
 按策略 current/freeze/persistence 状态、SSE 客户端及慢客户端丢弃数。延迟统计保存有界
 sample count、P50、P95 和 max；关联 trace、阶段名、样本和浏览器 patch 诊断都必须有上限。
@@ -1470,7 +1470,7 @@ cadence 最短间隔/下一到期时间/固定时点生命周期、冻结完成/
 逻辑字节、RSS/USS、Python traced、Polars 估算和瞬时峰值原因由发布性能 runner 及验收报告提供。
 状态顶层必须返回当前有效配置/策略组合的 `runtime_version`，并原样投影脱敏的 `scheduler`
 摘要，以便区分旧常驻进程、刷新失败和决策构建失败；源码文件发生变化不会热加载到既有进程。
-`/api/v2/status` 的公开 schema 为 `v2_status_v13`，并必须从当前进程已导入的常量加法返回
+`/api/status` 的公开 schema 为 `v2_status_v13`，并必须从当前进程已导入的常量加法返回
 `release.decision_view_schema` 与 `release.web_asset_revision`。浏览器必须同时校验 status release
 身份和每份 DecisionView schema；任何缺失或不一致都属于 `release_contract_mismatch`，页面必须
 停止把结果解释为行情采集或观察草稿生成，明确提示正常重启旧服务。该握手只判断进程/资源契约
@@ -1502,7 +1502,7 @@ fail closed 并进入浏览器诊断。`market_data.market_changes` 只公开变
 
 源码更新不会替换已经运行的常驻进程；活动 Web 把模板与静态资源固定为启动时 release 快照，
 不会从工作树热加载。部署新提交时必须正常停止旧 `run.sh`/`trader-server`，再依次执行
-`./run.sh check` 与 `./run.sh`；启动后应核对 `/api/v2/status` 的 `runtime_version`、
+`./run.sh check` 与 `./run.sh`；启动后应核对 `/api/status` 的 `runtime_version`、
 `release`、`scheduler.strategy_errors` 和各策略状态，不能只以 HTTP 200 判断更新生效。浏览器出现
 “服务版本不一致”时不得继续等待或重复刷新，必须先完成上述正常重启；同一运行目录的进程锁会
 正确拒绝第二个 `./run.sh`，这不表示新代码已经替换旧进程。
@@ -1573,14 +1573,14 @@ python3 -m venv .venv
 并提示 `./run.sh help`。服务身份的最小只读核对命令为：
 
 ```bash
-curl -fsS http://127.0.0.1:5000/api/v2/status
-curl -fsS http://127.0.0.1:5000/api/v2/decisions/long/current
+curl -fsS http://127.0.0.1:5000/api/status
+curl -fsS http://127.0.0.1:5000/api/decisions/long/current
 ```
 
 日常检查顺序：
 
 1. 校验配置并确认交易日历、时区和运行目录可写。
-2. 查看 `/api/v2/status` 的来源、队列、缓存、预算、冻结和最近错误。
+2. 查看 `/api/status` 的来源、队列、缓存、预算、冻结和最近错误。
 3. Web 推荐漏斗反复为 0、历史预热超时或供应商状态不明时，优先运行
    `scripts/diagnose_runtime.py --profile live --output -`。基础资料可用性可用
    `--profile security-master` 精确复测。统一入口必须只做薄编排，Web、沪深交易所证券主数据、历史、
@@ -1680,7 +1680,7 @@ Python、系统、内核、架构和 CPU。runner 禁止外网，DeepSeek 用固
 
 所有调度、队列、缓存、评分、冻结、查询或前端 current 变更都必须覆盖上午热运行、午间
 冷启动、11:20 与 14:50 边界、15:00 后热运行及正式记录命中/收盘恢复。每次相关发布仍须
-启动真实 `trader-server`，核对 `/api/v2/status` 和四策略 current；只验证 fixture 不算发布证据。
+启动真实 `trader-server`，核对 `/api/status` 和四策略 current；只验证 fixture 不算发布证据。
 
 ## 14. 当前交付状态与剩余路线
 

@@ -1,4 +1,4 @@
-"""The complete read-only V2 HTTP product surface."""
+"""The complete read-only HTTP product surface."""
 
 from __future__ import annotations
 
@@ -42,29 +42,29 @@ _DEEPSEEK_ZERO_CALL_REASONS = frozenset(
 
 
 def register_routes(app: Flask, services: UnifiedWebServices | None) -> None:
-    app.register_blueprint(_create_v2_blueprint(services))
+    app.register_blueprint(_create_product_blueprint(services))
 
 
-def _create_v2_blueprint(services: UnifiedWebServices | None) -> Blueprint:
-    blueprint = Blueprint("v2_product", __name__)
+def _create_product_blueprint(services: UnifiedWebServices | None) -> Blueprint:
+    blueprint = Blueprint("product", __name__)
     blueprint.add_url_rule("/", "root", partial(_root, services))
     blueprint.add_url_rule(
-        "/api/v2/decisions/<strategy_name>/current",
+        "/api/decisions/<strategy_name>/current",
         "decision_current",
         partial(_current, services),
     )
     blueprint.add_url_rule(
-        "/api/v2/decisions/<strategy_name>/history",
+        "/api/decisions/<strategy_name>/history",
         "decision_history",
         partial(_history, services),
     )
     blueprint.add_url_rule(
-        "/api/v2/decisions/<strategy_name>/dates",
+        "/api/decisions/<strategy_name>/dates",
         "decision_dates",
         partial(_dates, services),
     )
-    blueprint.add_url_rule("/api/v2/status", "status", partial(_status, services))
-    blueprint.add_url_rule("/api/v2/events", "events", partial(_events, services))
+    blueprint.add_url_rule("/api/status", "status", partial(_status, services))
+    blueprint.add_url_rule("/api/events", "events", partial(_events, services))
     return blueprint
 
 

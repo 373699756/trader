@@ -201,7 +201,7 @@
   async function loadDates(strategy, selectionId) {
     if (strategy === "long") return [];
     try {
-      const response = await fetch(`/api/v2/decisions/${encodeURIComponent(strategy)}/dates`, { cache: "no-store" });
+      const response = await fetch(`/api/decisions/${encodeURIComponent(strategy)}/dates`, { cache: "no-store" });
       const payload = await response.json();
       if (!response.ok) throw new Error("历史日期接口请求失败");
       if (selectionId !== state.selectionSequence || strategy !== state.strategy) return [];
@@ -304,8 +304,8 @@
     if (pending) return pending;
     const request = (async () => {
       const endpoint = selectedDate
-        ? `/api/v2/decisions/${encodeURIComponent(strategy)}/history?date=${encodeURIComponent(selectedDate)}`
-        : `/api/v2/decisions/${encodeURIComponent(strategy)}/current`;
+        ? `/api/decisions/${encodeURIComponent(strategy)}/history?date=${encodeURIComponent(selectedDate)}`
+        : `/api/decisions/${encodeURIComponent(strategy)}/current`;
       const headers = {};
       if (!selectedDate && state.etags.has(key)) headers["If-None-Match"] = state.etags.get(key);
       diagnostics.recommendationRequests += 1;
@@ -625,7 +625,7 @@
 
   async function loadStatus() {
     try {
-      const response = await fetch("/api/v2/status", { cache: "no-store" });
+      const response = await fetch("/api/status", { cache: "no-store" });
       const payload = await response.json();
       if (!response.ok) throw new Error("运行状态接口暂不可用");
       const compatibility = releaseContract.statusPayloadCompatibility(payload);

@@ -5,7 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_authoritative_design_requires_one_final_v2_product_chain_without_runtime_compatibility() -> None:
+def test_authoritative_design_requires_one_final_product_chain_without_runtime_compatibility() -> None:
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
     for statement in (
@@ -15,11 +15,11 @@ def test_authoritative_design_requires_one_final_v2_product_chain_without_runtim
         "V2 唯一运行目录固定为 `.runtime/v2`",
         "旧 release 只能与其对应旧运行目录整体回退",
         "不得提供旧 API 别名、重定向、弃用窗口、双读或双写",
-        "GET /api/v2/decisions/<strategy>/current",
-        "GET /api/v2/decisions/<strategy>/history?date=YYYY-MM-DD",
-        "GET /api/v2/decisions/<strategy>/dates",
-        "GET /api/v2/status",
-        "GET /api/v2/events",
+        "GET /api/decisions/<strategy>/current",
+        "GET /api/decisions/<strategy>/history?date=YYYY-MM-DD",
+        "GET /api/decisions/<strategy>/dates",
+        "GET /api/status",
+        "GET /api/events",
     ):
         assert statement in design
 
@@ -67,13 +67,13 @@ def test_parallel_v2_overview_plan_and_operations_docs_are_retired() -> None:
     assert not (ROOT / "docs/plan.md").exists()
 
 
-def test_release_guides_expose_only_v2_runtime_and_desktop_gate() -> None:
+def test_release_guides_expose_only_unified_api_and_desktop_gate() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     operations = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
     for content in (readme, operations):
-        assert "/api/v2/status" in content
-        assert "/api/status" not in content
+        assert "/api/status" in content
+        assert "/api/v2/" not in content
         assert "trader-cli perf-check" not in content
     assert "deepseek-budget.sqlite3" in operations
     assert "卡脖子、高成长、低价潜力" in operations
@@ -83,6 +83,6 @@ def test_release_guides_expose_only_v2_runtime_and_desktop_gate() -> None:
     for retired_command in ("./run.sh validate-config", "./run.sh performance-check"):
         assert retired_command not in readme
         assert retired_command not in operations
-    assert "curl -fsS http://127.0.0.1:5000/api/v2/status" in operations
+    assert "curl -fsS http://127.0.0.1:5000/api/status" in operations
     assert (ROOT / "tests/performance/run_desktop_dashboard.py").is_file()
     assert not (ROOT / "tests/performance/run_chrome_dashboard.py").exists()
