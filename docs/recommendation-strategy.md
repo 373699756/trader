@@ -1343,10 +1343,10 @@ skip-5 动量。三个动量在同一批生产 Top120 候选内依次扣除市�
 评分版本、V2 信号分、预测超额、估算成本、预测成本后净超额和模型分歧。评分版本必须读取决策绑定的
 `input_versions.score_model`，不能用活动策略标签冒充模型身份。
 
-#### 15.1.18 V1/V2 生产评分配置切换
+#### 15.1.18 V1/V2/V3 生产评分配置切换
 
-2026-08-30 用户进一步要求把两个生产评分档位做成可配置策略，并授权按已说明方案选择残差动量作为
-人工 V1。策略配置 schema 15 的 `tomorrow_scoring_profile` 只接受 `v1` 或 `v2`，默认 `v1`；旧值
+2026-08-30 用户进一步要求把生产评分档位做成可配置策略，并授权按已说明方案选择残差动量作为
+人工 V1。策略配置 schema 15 的 `tomorrow_scoring_profile` 接受 `v1`、`v2` 或 `v3`，默认 `v1`；旧值
 `p1|p2` 必须失败关闭，不保留兼容别名。配置内容参与
 `strategy_sha256_*`，切换必须重启进程；组合根只把一个 Tomorrow 评分服务注入活动决策链，另加载的两套
 封存服务仅供无生产权限的异步配对研究使用，不进入 DeepSeek、动作、冻结或活动状态源。所选模型 ID/hash
@@ -1363,7 +1363,7 @@ first-wins 和冻结恢复规则。
 `manual_daily_proxy_not_original_research_evidence`，不得误报原 P1 通过。
 
 `v2` 继续映射 `daily_reconstructible_ensemble_v1` 及第 15.1.17 节工件、历史拒绝原因和人工越权边界。
-两种 profile 共用 20bp Amihud 成本、正净效用横截面 0–100 映射、本地风险只扣一次、固定 68/32 融合、
+V1/V2 profile 共用 20bp Amihud 成本、正净效用横截面 0–100 映射、本地风险只扣一次、固定 68/32 融合、
 78/73 门槛、Top6、集中度、DeepSeek 预算、14:50 冻结和 T+1 后台结算；V1 线性模型的模型分歧固定为 0，
 两者都没有逐股亏损概率头。Web 统一显示“模型信号分”和决策绑定的真实模型版本，不用 V1/V2 标签代替
 模型 ID/hash。任一包内资源缺失、篡改、字段宽度或 hash 不一致都拒绝启动，禁止回退旧 Tomorrow 分。
@@ -1830,7 +1830,7 @@ MAE/ATR20、换手、容量、集中度、市场状态和失败原因；不得�
 
 #### 15.1.35 Tomorrow V3 单一行业模型离线训练
 
-状态：`blocked_by_15_1_38`。老 V2 predictor、bundle、hash、配置语义、历史和冻结记录全部封存且不修改。
+状态：`blocked_by_15_1_38`（收益研究状态；V3 生产 loader/profile 接缝已实现）。老 V2 predictor、bundle、hash、配置语义、历史和冻结记录全部封存且不修改。
 V3 是新的唯一 Tomorrow 模型；C3 只表示其离线训练阶段，不产生独立 profile，不训练二层联合器。本节和
 第 15.1.36 节定义模型与生产边界，第 15.1.37 节定义唯一所有权，第 15.1.38 节定义日线数据契约，三者不得
 各自复制或改写其它章节的责任。
@@ -1840,11 +1840,11 @@ V3 是新的唯一 Tomorrow 模型；C3 只表示其离线训练阶段，不产�
 在同一离线批次内执行固定 walk-forward、早停、确认和终端留出；临时模型仅供验证，最终每个合格行业只封存
 一份 V3 模型。相同输入幂等，不同内容冲突失败，任何阶段不得自动 promotion、在线训练、调参、激活或回退。
 
-V3 每只股票只使用第 15.1.38 节最近最多 2,000 个完整交易日的未复权/前复权 OHLCV、成交额和交易日历，
+V3 每只股票只使用第 15.1.38 节下载数据库中实际存在、并通过 manifest 校验的未复权/前复权 OHLCV、成交额和交易日历，
 并自动保存 BaoStock 返回的逐日 ST 状态及按历史查询日期取得的行业区间；训练入口不接受人工事实 CSV、
-当前行业回填或代码规则猜测。资格仅由上市/退市区间、交易状态和逐日 ST 字段推导。每个行业至少需要 1,250 个特征与标签均完整的有效交易日、开发 600 日、
-确认 200 日、日线代理终端留出 200 日、独立 14:50 保留 200 日、开发训练行 20,000 行和 95% 点时覆盖；
-不足行业封存 `historical_data_insufficient`，不使用全局、相邻行业或旧 V2 回退。旧 H1 v1 的每股 1,600 日
+当前行业回填或代码规则猜测。资格仅由上市/退市区间、交易状态和逐日 ST 字段推导。训练切分使用下载数据库实际可用的共同完整交易日；
+若无法形成预注册的开发、确认、日线代理终端留出和独立 14:50 保留窗口，或行业没有可用训练/校准样本，
+则封存 `historical_data_insufficient`，不使用全局、相邻行业或旧 V2 回退。旧 H1 v1 的每股 1,600 日
 上限和数据不足终态保持不可变，不能把 BaoStock v2 数据写入其目录或沿用其 hash。
 
 训练人口只包含决策当时通过一级永久资格、二级动态硬过滤、过滤证据完整且六项特征完整的股票日。基础
@@ -1874,8 +1874,8 @@ V3 线上只做批量推理：行业 scaler -> Ridge/LightGBM 50/50 -> 行业校
 不读取 V1/V2/C3 运行时预测、不读取旧 V2 `base_score`、不做投票或 stacking、不重复映射或扣风险。
 
 工件目录固定为 `data/train/tomorrow-v3/<run_id>/`，只公开 `report.json` 和最终 `model.json`。
-报告和模型分别使用规范 JSON SHA-256，且模型必须绑定同批 `report_hash`；任一 hash、父 manifest/split、
-样本计数、行业计数或锚点不一致均失败关闭。
+报告和模型分别使用规范 JSON SHA-256；生产只校验 `model.json` 自身 `content_hash`、模型身份、父 hash
+格式、样本/行业计数和锚点，`report_hash` 仅用于离线审计关联，不要求生产机提供或验证 `report.json`。
 工件保存每行业模型映射、特征顺序/单位、均值/尺度、Ridge 参数、LightGBM 树和最佳迭代、50/50 权重、
 校准参数、训练窗口、所有 manifest hash、依赖版本和最终 SHA-256；不保存训练行、DeepSeek 内容、pickle 或
 外部模型路径。`evidence/` Parquet 只供复查和断点续跑，主程序只读取最终 `model.json`；`report.json` 仅供
@@ -1883,14 +1883,14 @@ V3 线上只做批量推理：行业 scaler -> Ridge/LightGBM 50/50 -> 行业校
 
 #### 15.1.36 V3 条件式生产适配与人工启用
 
-状态：`blocked_by_15_1_35`。标准路径依次为：V3 日线代理门禁 -> 独立 14:50 终端留出 ->
-冻结前影子运行和完整风险报告 -> 用户审阅 -> loader/profile/API/SSE 接入。
-研究验证、授权决策和生产接入必须是三个可独立 Review 的批次，不能在同一波次边训练边发布。
+状态：`blocked_by_15_1_35`（收益和人工启用状态）。标准研究路径依次为：V3 日线代理门禁 -> 独立 14:50 终端留出 ->
+冻结前影子运行和完整风险报告 -> 用户审阅；loader/profile/API/SSE 接缝已接入，但不会自动选择或晋级 V3。
+研究验证、授权决策和生产行为必须是可独立 Review 的批次，不能在同一波次边训练边发布。
 
 若 14:50 历史证据客观不可取得，用户此前只允许保留人工越权路径，并未预先授权任何具体模型。越权批次
 必须绑定唯一 model/report hash、列出未通过或未执行的门禁，并持续公开 `training_anchor=15:00_close`、
 `runtime_anchor=14:50`、`point_in_time_parity=false` 和 `activation_basis=trained_artifact`；不得声称已完成
-点时收益验证。没有新的明确授权指令时，本节始终阻塞。
+点时收益验证。没有新的明确授权指令时，不自动切换生产 profile 或宣称收益晋级。
 
 验证通过的 V3 工件直接保留在 `data/train/tomorrow-v3/<run_id>/`；主程序启动时读取最新 `model.json`，
 校验文件内容 hash、模型身份、schema、特征顺序、单位和字段宽度。训练
@@ -1918,16 +1918,16 @@ bootstrap、公共 port、配置和资源注册由 Codex D 在独立集成批次
 | Codex A | 独占数据面：BaoStock gateway、日历/证券池、单股最多 2,000 条日线、分片/合并内容语义、覆盖审计、历史行业/资格 `effective_at` 来源能力、标签与唯一切分 manifest | `baostock_daily*`、`historical_effective_facts*`、`historical_label*` 和只读数据 port | 不训练模型、不读取收益报告、不改生产接缝 |
 | Codex B | 只消费 A 的冻结 manifest，构建六 Alpha、Ridge/LightGBM、50/50 集成、校准、V3 bundle codec/hash 和确定性测试 | `tomorrow_v3_training*`、`tomorrow_v3_artifact*` 与测试 | 不下载或审计第二份数据、不切分留出、不做 stacking、不读 V2 分数 |
 | Codex C | 只消费冻结 manifest 和唯一 bundle，执行确认、日线代理留出、独立 14:50 留出、影子比较及收益/风险报告 | `tomorrow_v3_holdout*`、`tomorrow_v3_report*` 与测试 | 不定义或重切数据集、不调参、不改训练 schema、不激活生产 |
-| Codex D | BaoStock 可选依赖兼容性、CLI/进程生命周期、单一 `train-tomorrow` 编排、状态投影，以及授权后的 loader/bootstrap/profile/API/SSE 集成 | `research_*_orchestrator*`、共享契约和 V3 生产接缝 | 不决定数据覆盖或收益是否通过、不改老 V2 行为、不在授权前 promotion |
+| Codex D | BaoStock 可选依赖兼容性、CLI/进程生命周期、单一 `train-tomorrow` 编排、状态投影，以及 loader/bootstrap/profile/API/SSE 集成 | `research_*_orchestrator*`、共享契约和 V3 生产接缝 | 不决定数据覆盖或收益是否通过、不改老 V2 行为、不在授权前 promotion |
 
 波次一：先完整交付第 15.1.38 节；A 封存日线与历史事实能力，D 只集成依赖、命令和进程控制，B/C 只验证
 各自消费边界。Codex C 的留出隔离工程契约已完成，其余 owner 及真实数据工件仍未完成。波次二：数据与事实
 均合格后由 B 执行第 15.1.35 节训练并生成唯一 V3 bundle。波次三：C 只对
 同一冻结 bundle 执行确认、日线代理留出；有独立 14:50 来源时再打开新点时留出，否则封存明确阻塞。波次四：
-先完成影子和风险报告，再等待用户另立授权批次；授权后 D 才能在另一个高风险批次完成 wheel、loader、
-API/SSE、冻结恢复和发布门禁。任一父数据不足或拒绝都必须继承 hash 停止，不伪造模型、收益或生产权限。
+先完成影子和风险报告，再等待用户另立授权批次；loader、profile、API/SSE 和冻结恢复接缝已由集成批次完成，
+后续授权批次只处理人工启用与发布门禁。任一父数据不足或拒绝都必须继承 hash 停止，不伪造模型、收益或生产权限。
 
-所有研究产物保持 `production_authority=false`，除非第 15.1.36 节的人工授权批次明确改变它。每个 worker 先
+所有研究报告、证据和收益结论保持 `production_authority=false`，最终 `model.json` 作为显式 profile 的运行输入但不自动改变生产档位。每个 worker 先
 运行自己的 unit/contract、Ruff 和 mypy；集成后运行受影响的架构、配置、打包、冻结、SSE 和桌面验收。任何
 生产模型变化必须同时更新本文、`docs/software-business-design.md`、契约测试和 `CHANGELOG.md`。
 

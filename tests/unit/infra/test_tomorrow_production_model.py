@@ -61,7 +61,7 @@ def test_v1_and_v2_ignore_the_added_industry_input() -> None:
         assert classified == plain
 
 
-def test_trained_v3_model_is_report_bound_and_predicts_by_industry(tmp_path: Path) -> None:
+def test_trained_v3_model_is_self_hash_bound_and_report_is_optional(tmp_path: Path) -> None:
     p2 = json.loads((ROOT / "src/trader/resources/models/tomorrow_p2_model.json").read_text(encoding="utf-8"))
     payload: dict[str, object] = {
         "schema_version": "tomorrow_v3_production_model_v1",
@@ -122,6 +122,7 @@ def test_trained_v3_model_is_report_bound_and_predicts_by_industry(tmp_path: Pat
     run_root = tmp_path / "tomorrow-v3" / "run-1"
     run_root.mkdir(parents=True)
     (run_root / "model.json").write_text(json.dumps(payload), encoding="utf-8")
+    assert not (run_root / "report.json").exists()
 
     predictor = load_packaged_tomorrow_production_model("v3", training_root=tmp_path)
     row = TomorrowModelInput("600000", (0.01, 0.02, 0.03, 0.01, -0.02, 0.03), "银行")

@@ -24,8 +24,8 @@ def test_v3_is_a_single_offline_industry_model_without_stacking() -> None:
     required_contract = (
         "V3 是新的唯一 Tomorrow 模型",
         "C3 只表示其离线训练阶段",
-        "最近最多 2,000 个完整交易日",
-        "至少需要 1,250 个特征与标签均完整的有效交易日",
+        "下载数据库中实际存在",
+        "训练切分使用下载数据库实际可用的共同完整交易日",
         "先保留最新 200 日",
         "Ridge/LightGBM 50/50",
         "不读取 V1/V2/C3 运行时预测",
