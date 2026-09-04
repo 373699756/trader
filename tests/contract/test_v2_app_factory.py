@@ -40,17 +40,35 @@ def test_dashboard_uses_only_packaged_v2_assets_and_fixed_long_groups() -> None:
     assert 'id="long-panel-title">卡脖子行业<' in page
     assert 'data-scope="future_growth"' in page
     assert 'data-scope="low_price_potential"' in page
-    assert page.count('class="summary-item"') == 5
+    assert page.count("summary-item") == 3
     assert 'id="healthBadge"' in page
     assert 'id="errorDetailsButton"' in page
     assert 'id="errorDrawer"' in page
-    assert "数据可用性" in page
-    assert 'id="dataReadinessStatus"' in page
-    assert 'id="dataReadinessMeta"' in page
+    assert "评分输入质量" in page
+    assert 'id="inputQualityStatus"' in page
+    assert 'id="inputQualityMeta"' in page
+    assert 'id="inputQualityBlockers"' in page
+    assert 'id="inputQualityDegradations"' in page
+    assert 'id="inputQualityStrategy"' in page
+    assert 'id="inputQualityScoreTime"' in page
+    assert 'id="dataReadinessStatus"' not in page
+    assert 'id="headerFreeze"' not in page
+    assert 'id="snapshotState"' not in page
+    assert 'id="quoteFreshness"' in page
     assert 'id="quoteCoverageStatus"' not in page
     assert 'id="quoteCoverageMeta"' not in page
     assert 'id="funnelStatus"' in page
-    assert 'id="snapshotDate"' in page
+    assert 'id="snapshotDate"' not in page
+    assert 'id="snapshotStrategy"' not in page
+    assert 'id="snapshotMeta"' not in page
+    assert 'id="scoreTime"' not in page
+    assert 'id="noticeText"' not in page
+    assert 'id="publicationStatus"' in page
+    assert 'id="publicationMeta"' in page
+    assert "<title>策略</title>" in page
+    assert 'aria-label="策略"' in page
+    assert "<h1>策略</h1>" in page
+    assert "A股策略看板" not in page
     assert "quote_status: quote.status" in dashboard
     assert "/api/v2/decisions/" in dashboard
     assert "/api/recommendations/" not in dashboard

@@ -78,7 +78,8 @@ const state = {
   formatDurationHms: sandbox.window.TraderStatusView.formatDurationHms,
   healthView: sandbox.window.TraderStatusView.healthView,
   quoteAvailabilitySummary: sandbox.window.TraderStatusView.quoteAvailabilitySummary,
-  renderDataReadiness: sandbox.window.TraderStatusView.renderDataReadiness,
+  renderInputQuality: sandbox.window.TraderStatusView.renderInputQuality,
+  renderPublicationStatus: sandbox.window.TraderStatusView.renderPublicationStatus,
   renderSummary: sandbox.window.TraderStatusView.renderSummary,
   runtimeErrorRows: sandbox.window.TraderStatusView.runtimeErrorRows,
   updateQuoteAge: sandbox.window.TraderStatusView.updateQuoteAge,
@@ -107,7 +108,7 @@ assert.deepStrictEqual(
     schema_version: "v2_status_v13",
     release: {
       decision_view_schema: "v2_decision_view_v3",
-      web_asset_revision: "release-contract-2026-09-01-v14",
+      web_asset_revision: "release-contract-2026-09-01-v15",
     },
   }))),
   { compatible: true, reason: "" },
@@ -125,14 +126,14 @@ assert(
   streamSource.includes("applyRecommendationPatch(payload)"),
   "decision SSE must render its replacement patch without an unconditional snapshot GET",
 );
-assert.strictEqual(state.formatDurationHms(0), "0s");
-assert.strictEqual(state.formatDurationHms(-1), "0s");
-assert.strictEqual(state.formatDurationHms(Number.NaN), "0s");
-assert.strictEqual(state.formatDurationHms(59), "59s");
-assert.strictEqual(state.formatDurationHms(60), "1m 0s");
-assert.strictEqual(state.formatDurationHms(3599), "59m 59s");
-assert.strictEqual(state.formatDurationHms(3600), "1h 0m 0s");
-assert.strictEqual(state.formatDurationHms(95580), "26h 33m 0s");
+assert.strictEqual(state.formatDurationHms(0), "0秒");
+assert.strictEqual(state.formatDurationHms(-1), "0秒");
+assert.strictEqual(state.formatDurationHms(Number.NaN), "0秒");
+assert.strictEqual(state.formatDurationHms(59), "59秒");
+assert.strictEqual(state.formatDurationHms(60), "1分 0秒");
+assert.strictEqual(state.formatDurationHms(3599), "59分 59秒");
+assert.strictEqual(state.formatDurationHms(3600), "1时 0分 0秒");
+assert.strictEqual(state.formatDurationHms(95580), "26时 33分 0秒");
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.quoteAvailabilitySummary([
     {
@@ -174,17 +175,22 @@ assert.deepStrictEqual(
 );
 function summaryFixture() {
   return {
-    dataReadinessStatus: { textContent: "" },
-    dataReadinessMeta: { textContent: "" },
+    inputQualityStatus: { textContent: "" },
+    inputQualityMeta: { textContent: "" },
+    inputQualityBlockers: { textContent: "" },
+    inputQualityDegradations: { textContent: "" },
     funnelStatus: { textContent: "" },
     funnelMeta: { textContent: "" },
     quoteSource: { textContent: "" },
+    quoteAge: { textContent: "" },
+    quoteTime: { textContent: "" },
+    quoteFreshness: { dataset: {} },
     budgetStatus: { textContent: "" },
     budgetMeta: { textContent: "" },
-    headerFreeze: { textContent: "" },
-    freezeMeta: { textContent: "" },
-    snapshotStrategy: { textContent: "" },
-    snapshotDate: { textContent: "" },
+    inputQualityStrategy: { textContent: "" },
+    inputQualityScoreTime: { textContent: "" },
+    publicationStatus: { textContent: "" },
+    publicationMeta: { textContent: "" },
   };
 }
 const summaryElements = summaryFixture();
@@ -216,11 +222,51 @@ state.renderSummary(
   sandbox.window.TraderRender,
   { deepseek_budget: { limit: 168, used: 2, remaining: 166 } },
 );
-assert.strictEqual(summaryElements.dataReadinessStatus.textContent, "行情 1 / 2");
-assert.strictEqual(summaryElements.dataReadinessMeta.textContent, "当前名单缺行情 1");
+assert.strictEqual(summaryElements.inputQualityStatus.textContent, "评分输入待更新");
+assert.strictEqual(summaryElements.inputQualityMeta.textContent, "当前名单行情 1 / 2");
 assert.strictEqual(summaryElements.funnelStatus.textContent, "120 → 80 → 1");
 assert.strictEqual(summaryElements.funnelMeta.textContent, "过滤 40 · 观察 1 · 最高 82.00");
-assert.strictEqual(summaryElements.snapshotDate.textContent, "2026-08-14");
+assert.strictEqual(summaryElements.inputQualityStrategy.textContent, "今早");
+assert.strictEqual(summaryElements.inputQualityScoreTime.textContent, "评分时间不可用");
+assert.strictEqual(summaryElements.publicationStatus.textContent, "实时滚动");
+assert.strictEqual(summaryElements.publicationMeta.textContent, "今早 11:20 固化");
+state.renderSummary(
+  summaryElements,
+  {
+    status: "ready",
+    strategy: "today",
+    trade_date: "2026-08-14",
+    frozen: false,
+    score_status: "scored",
+    coverage: { candidate_count: 120, evaluated_count: 80, rejected_count: 40 },
+  },
+  [{
+    code: "600001", name: "正式股票", industry: "银行", action: "executable",
+    price: 10, pct_change: 1, source: "tencent", source_time: "2026-08-14T10:00:00+08:00",
+    scores: { final_score: 82 },
+  }],
+  "open",
+  { source: "tencent" },
+  sandbox.window.TraderSelection,
+  sandbox.window.TraderRender,
+  {
+    scheduler: {
+      input_quality: {
+        today: {
+          candidate_count: 120,
+          candidate_scored_count: 80,
+          supply_funnel: { security_master: 118, history: 96 },
+          summary: { trade_date: "2026-08-14", quote_total_count: 120, quote_covered_count: 120 },
+          candidate_optional_reason_counts: { cross_source_deviation: 3 },
+        },
+      },
+    },
+  },
+);
+assert.strictEqual(summaryElements.inputQualityStatus.textContent, "可评分 80 / 候选 120");
+assert.strictEqual(summaryElements.inputQualityMeta.textContent, "历史 96 / 120 · 80.0% · 证券资料 118 / 120");
+assert.strictEqual(summaryElements.inputQualityBlockers.textContent, "本轮阻断：历史不足 24 只 · 必要资料缺失 2 只");
+assert.strictEqual(summaryElements.inputQualityDegradations.textContent, "仅降级，不代表股票存在风险：跨源价格偏差 3 只");
 state.renderSummary(
   summaryElements,
   {
@@ -277,12 +323,13 @@ state.renderSummary(
     },
   },
 );
-assert.strictEqual(summaryElements.dataReadinessStatus.textContent, "基础资料 120 / 360");
+assert.strictEqual(summaryElements.inputQualityStatus.textContent, "可评分 56 / 候选 360");
 assert.strictEqual(
-  summaryElements.dataReadinessMeta.textContent,
-  "行情 360 / 360 · 历史有效 78",
+  summaryElements.inputQualityMeta.textContent,
+  "历史 78 / 360 · 21.7% · 证券资料 120 / 360",
 );
-assert.ok(!summaryElements.dataReadinessMeta.textContent.includes("上市日期"));
+assert.strictEqual(summaryElements.inputQualityBlockers.textContent, "本轮阻断：历史不足 282 只 · 必要资料缺失 240 只");
+assert.strictEqual(summaryElements.inputQualityDegradations.textContent, "仅降级，不代表股票存在风险：板块资料可靠度不足 240 只");
 assert.strictEqual(summaryElements.funnelStatus.textContent, "360 → 56 → 2");
 assert.strictEqual(summaryElements.funnelMeta.textContent, "过滤 216 · 观察草稿 2 · 最高 74.25");
 assert.strictEqual(summaryElements.quoteSource.textContent, "腾讯行情");
@@ -319,21 +366,21 @@ state.renderSummary(
     scheduler: { input_quality: {}, lanes: [{ strategy: "tomorrow", running: true, pending: true }] },
   },
 );
-assert.strictEqual(summaryElements.dataReadinessStatus.textContent, "准备中");
+assert.strictEqual(summaryElements.inputQualityStatus.textContent, "评分输入准备中");
 assert.strictEqual(
-  summaryElements.dataReadinessMeta.textContent,
-  "行情 360 / 360 · 基础资料待评分 · 历史待计算",
+  summaryElements.inputQualityMeta.textContent,
+  "行情 360 / 360 · 基础资料与历史待计算",
 );
 assert.strictEqual(summaryElements.funnelStatus.textContent, "360 → 采集中 → 0");
 assert.strictEqual(summaryElements.funnelMeta.textContent, "过滤 待计算 · 观察草稿 正在生成 · 最高 —");
 assert.strictEqual(summaryElements.quoteSource.textContent, "腾讯行情");
-assert.strictEqual(summaryElements.headerFreeze.textContent, "采集中");
-assert.strictEqual(summaryElements.freezeMeta.textContent, "首次评分正在运行");
+assert.strictEqual(summaryElements.publicationStatus.textContent, "采集中");
+assert.strictEqual(summaryElements.publicationMeta.textContent, "等待本轮正式结果");
 const notReadyAgeElements = {
   quoteAge: { textContent: "" },
   quoteTime: { textContent: "" },
   quoteSource: summaryElements.quoteSource,
-  snapshotMeta: { textContent: "" },
+  quoteFreshness: { dataset: {} },
 };
 state.updateQuoteAge(
   notReadyAgeElements,
@@ -353,8 +400,63 @@ state.updateQuoteAge(
     },
   },
 );
-assert.strictEqual(notReadyAgeElements.quoteAge.textContent, "1m 5s");
+assert.strictEqual(notReadyAgeElements.quoteAge.textContent, "1分 5秒");
 assert.notStrictEqual(notReadyAgeElements.quoteTime.textContent, "-");
+const emptyTomorrowElements = summaryFixture();
+const liveCandidateTime = new Date(Date.now() - 65_000).toISOString();
+state.renderSummary(
+  emptyTomorrowElements,
+  {
+    status: "ready",
+    strategy: "tomorrow",
+    trade_date: "2026-08-14",
+    observed_at: "2026-08-14T11:19:00+08:00",
+    frozen: false,
+    score_status: "scored",
+    coverage: { candidate_count: 295, evaluated_count: 85, rejected_count: 210 },
+    items: [],
+  },
+  [],
+  "empty",
+  null,
+  sandbox.window.TraderSelection,
+  sandbox.window.TraderRender,
+  {
+    market_data: {
+      candidate_quote_latest_source: "tencent",
+      candidate_quote_age: { latest_source_time: liveCandidateTime },
+    },
+    scheduler: {
+      input_quality: {
+        tomorrow: {
+          summary: {
+            trade_date: "2026-08-14",
+            latest_quote_source: "tencent",
+            latest_quote_source_time: "2026-08-14T11:19:00+08:00",
+          },
+        },
+      },
+    },
+  },
+);
+state.updateQuoteAge(
+  emptyTomorrowElements,
+  { status: "ready", strategy: "tomorrow", trade_date: "2026-08-14", items: [] },
+  sandbox.window.TraderRender,
+  { market_data: { candidate_quote_latest_source: "tencent", candidate_quote_age: { latest_source_time: liveCandidateTime } } },
+);
+assert.strictEqual(emptyTomorrowElements.quoteSource.textContent, "腾讯行情");
+assert.strictEqual(emptyTomorrowElements.quoteAge.textContent, "1分 5秒");
+assert.strictEqual(emptyTomorrowElements.inputQualityScoreTime.textContent, "评分于 11:19:00 完成");
+assert.strictEqual(emptyTomorrowElements.publicationStatus.textContent, "实时滚动");
+assert.strictEqual(emptyTomorrowElements.publicationMeta.textContent, "明日 14:50 固化");
+state.renderPublicationStatus(
+  emptyTomorrowElements,
+  { status: "ready", strategy: "d25", frozen: true },
+  {},
+);
+assert.strictEqual(emptyTomorrowElements.publicationStatus.textContent, "已冻结");
+assert.strictEqual(emptyTomorrowElements.publicationMeta.textContent, "2-5日 14:50 已固化");
 state.renderSummary(
   summaryElements,
   {
@@ -377,13 +479,18 @@ state.renderSummary(
 );
 assert.strictEqual(summaryElements.funnelStatus.textContent, "不适用");
 assert.strictEqual(summaryElements.funnelMeta.textContent, "长期固定观察池不评分、不产生推荐");
-state.renderDataReadiness(summaryElements, [{
+assert.strictEqual(summaryElements.publicationStatus.textContent, "不适用");
+assert.strictEqual(summaryElements.publicationMeta.textContent, "长期固定观察池，不评分、不冻结");
+state.renderInputQuality(summaryElements, {
+  strategy: "long",
+  status: "ready",
+}, [{
   code: "600001", name: "长期股票", industry: "行业",
   price: null, pct_change: null, source: "long_watchlist", source_time: null,
   quote_status: "missing",
-}]);
-assert.strictEqual(summaryElements.dataReadinessStatus.textContent, "行情 0 / 1");
-assert.strictEqual(summaryElements.dataReadinessMeta.textContent, "当前名单缺行情 1");
+}], null, null);
+assert.strictEqual(summaryElements.inputQualityStatus.textContent, "不适用");
+assert.strictEqual(summaryElements.inputQualityMeta.textContent, "长期固定观察池不评分");
 assert.strictEqual(
   state.initialStrategy({
     strategies: {

@@ -89,10 +89,10 @@
   document.addEventListener("DOMContentLoaded", init);
   function init() {
     for (const id of [
-      "marketPhase", "runtimeDot", "runtimeStatus", "quoteSource", "quoteTime", "quoteAge", "streamStatus",
-      "scoreTime", "budgetStatus", "budgetMeta", "headerFreeze", "freezeMeta", "lastError", "lastErrorMeta",
-      "refreshButton", "dateSelect", "strategyDescription", "dataReadinessStatus", "dataReadinessMeta", "funnelStatus", "funnelMeta",
-      "notice", "noticeText", "snapshotStrategy", "snapshotDate", "snapshotMeta", "healthPanel", "healthBadge", "errorDetailsButton",
+      "marketPhase", "runtimeDot", "runtimeStatus", "quoteSource", "quoteTime", "quoteAge", "quoteFreshness", "streamStatus",
+      "budgetStatus", "budgetMeta", "publicationStatus", "publicationMeta", "lastError", "lastErrorMeta",
+      "refreshButton", "dateSelect", "strategyDescription", "inputQualityPanel", "inputQualityStatus", "inputQualityMeta", "inputQualityBlockers", "inputQualityDegradations", "funnelStatus", "funnelMeta",
+      "inputQualityStrategy", "inputQualityScoreTime", "healthPanel", "healthBadge", "errorDetailsButton",
       "recommendationTable", "tableColumns", "tableHead", "tableBody",
       "observationPool", "observationPoolMeta", "observationTable", "observationColumns", "observationHead", "observationBody",
       "longScopeTabs", "longIndustryTabs", "longStockHeader", "longStockContext",
@@ -254,11 +254,16 @@
         state.payload = payload;
         state.projectionVersion = patches.projectionVersion(payload);
         if (["overlay", "history_overlay"].includes(reason) && patchLiveRows(previous, payload)) {
-          const first = payload.items && payload.items[0];
-          els.quoteSource.textContent = first && first.source
-            ? window.TraderRender.sourceLabel(first.source)
-            : "来源不可用";
-          statusView.renderDataReadiness(els, payload.items);
+          statusView.renderSummary(
+            els,
+            payload,
+            payload.items || [],
+            selection.observationDisplayState(payload, state.runtimePhase, state.statusPayload),
+            payload.items && payload.items[0],
+            selection,
+            window.TraderRender,
+            state.statusPayload,
+          );
           updateQuoteAge();
         } else {
           renderPayload(payload);
@@ -636,10 +641,6 @@
       const health = renderHealth(payload);
       els.runtimeDot.dataset.state = health.level === "normal" ? running ? "ok" : "warn" : health.level === "error" ? "error" : "warn";
       statusView.renderBudgetSummary(els, payload.deepseek_budget, state.payload);
-      const score = state.payload && state.payload.published_at;
-      els.scoreTime.textContent = state.payload && state.payload.score_status === "not_applicable"
-        ? "不适用"
-        : score ? window.TraderRender.formatTime(score) : "-";
       reconcileRecommendationIdentity(payload);
       if (state.payload && (previousPhase !== state.runtimePhase || state.payload.status === "not_ready")) {
         renderPayload(state.payload);

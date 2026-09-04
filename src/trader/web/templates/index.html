@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
     <meta name="trader-web-snapshot-retention-ms" content="{{ web_snapshot_retention_ms }}" />
-    <title>A股策略看板</title>
+    <title>策略</title>
     <link rel="icon" href="{{ url_for('static', filename='trader-mark.svg') }}" type="image/svg+xml" />
     <link rel="stylesheet" href="{{ web_asset('dashboard_base.css') }}" />
     <link rel="stylesheet" href="{{ web_asset('dashboard_components.css') }}" />
@@ -23,26 +23,26 @@
   </head>
   <body>
     <header class="app-header">
-      <div class="brand" aria-label="A股策略看板">
+      <div class="brand" aria-label="策略">
         <img src="{{ url_for('static', filename='trader-mark.svg') }}" alt="" width="32" height="32" />
         <div>
-          <h1>A股策略看板</h1>
+          <h1>策略</h1>
           <span id="marketPhase">等待运行时</span>
         </div>
       </div>
       <div class="runtime-strip" aria-label="运行状态">
         <span><i id="runtimeDot" class="status-dot" data-state="idle"></i><b id="runtimeStatus">未启动</b></span>
         <span>推送 <b id="streamStatus">连接中</b></span>
-        <span>评分 <b id="scoreTime">-</b></span>
       </div>
       <button id="refreshButton" class="icon-button" type="button" title="刷新当前策略" aria-label="刷新当前策略">
         <svg class="lucide-icon" aria-hidden="true"><use href="{{ url_for('static', filename='lucide.svg') }}#refresh-cw"></use></svg>
       </button>
-      <div class="runtime-messages" aria-label="快照状态与最近错误">
-        <div id="notice" class="runtime-message notice" data-level="idle" role="status" aria-live="polite">
-          <div class="runtime-message-heading"><span>快照状态 · <time id="snapshotDate">—</time></span><b id="snapshotStrategy">今早</b></div>
-          <strong id="noticeText">正在读取推荐快照</strong>
-          <small id="snapshotMeta">等待行情与策略数据</small>
+      <div class="runtime-messages" aria-label="评分输入质量与最近错误">
+        <div id="inputQualityPanel" class="runtime-message input-quality-message" role="status" aria-live="polite">
+          <div class="runtime-message-heading"><span>评分输入质量</span></div>
+          <strong class="input-quality-live"><b id="inputQualityStrategy">今早</b><i aria-hidden="true"> · </i><b id="quoteSource">来源不可用</b><i aria-hidden="true"> · </i><b id="quoteFreshness" data-age-state="unknown">● <time id="quoteAge">-</time></b><time id="quoteTime" class="visually-hidden">-</time><i aria-hidden="true"> · </i><span id="inputQualityScoreTime">等待本轮评分完成</span></strong>
+          <span id="inputQualityStatus" class="input-quality-coverage">候选 / 历史 / 证券资料</span>
+          <small><span id="inputQualityMeta">评分输入待计算</span><span id="inputQualityBlockers">本轮阻断：待计算</span><span id="inputQualityDegradations">仅降级，不代表股票存在风险：待计算</span></small>
         </div>
         <div id="healthPanel" class="runtime-error runtime-message" data-level="normal" role="status" aria-live="polite">
           <div class="runtime-message-heading">
@@ -60,11 +60,9 @@
 
     <main class="workspace">
       <section class="summary-band" aria-label="推荐摘要">
-        <div class="summary-item"><span>数据新鲜度</span><strong id="quoteAge">-</strong><small><b id="quoteSource">-</b> · <b id="quoteTime">-</b></small></div>
-        <div class="summary-item"><span>数据可用性</span><strong id="dataReadinessStatus">-</strong><small id="dataReadinessMeta">基础资料 / 行情 / 历史</small></div>
         <div class="summary-item"><span>推荐漏斗</span><strong id="funnelStatus">-</strong><small id="funnelMeta">候选 / 评分 / 正式</small></div>
         <div class="summary-item"><span>模型预算</span><strong id="budgetStatus">-</strong><small id="budgetMeta">已用 / 剩余 / 上限</small></div>
-        <div class="summary-item"><span>冻结状态</span><strong id="headerFreeze">-</strong><small id="freezeMeta">等待策略快照</small></div>
+        <div class="summary-item"><span>发布状态</span><strong id="publicationStatus">-</strong><small id="publicationMeta">等待当前策略快照</small></div>
       </section>
 
       <section class="control-band" aria-label="策略和日期">

@@ -150,13 +150,13 @@ def _run(output_dir: Path) -> dict[str, object]:
             return {
               age: document.querySelector('#quoteAge').textContent,
               source: document.querySelector('#quoteSource').textContent,
-              readiness: document.querySelector('#dataReadinessStatus').textContent,
-              readinessMeta: document.querySelector('#dataReadinessMeta').textContent,
+              inputQuality: document.querySelector('#inputQualityStatus').textContent,
+              inputQualityMeta: document.querySelector('#inputQualityMeta').textContent,
               funnel: document.querySelector('#funnelStatus').textContent,
               funnelMeta: document.querySelector('#funnelMeta').textContent,
               budgetMeta: document.querySelector('#budgetMeta').textContent,
-              freeze: document.querySelector('#headerFreeze').textContent,
-              notice: document.querySelector('#noticeText').textContent,
+              publicationStatus: document.querySelector('#publicationStatus').textContent,
+              publicationMeta: document.querySelector('#publicationMeta').textContent,
             };
             """,
         )
@@ -175,12 +175,11 @@ def _run(output_dir: Path) -> dict[str, object]:
             base,
             """
             return {
-              readiness: document.querySelector('#dataReadinessStatus').textContent,
-              readinessMeta: document.querySelector('#dataReadinessMeta').textContent,
+              inputQuality: document.querySelector('#inputQualityStatus').textContent,
+              inputQualityMeta: document.querySelector('#inputQualityMeta').textContent,
               funnel: document.querySelector('#funnelStatus').textContent,
               funnelMeta: document.querySelector('#funnelMeta').textContent,
               source: document.querySelector('#quoteSource').textContent,
-              notice: document.querySelector('#noticeText').textContent,
             };
             """,
         )
@@ -363,23 +362,22 @@ def _run(output_dir: Path) -> dict[str, object]:
             and isinstance(long_quote_fields, dict)
             and long_quote_fields.get("complete") is True
             and isinstance(not_ready_summary, dict)
-            and bool(re.fullmatch(r"(?:\d+h )?(?:\d+m )?\d+s", str(not_ready_summary.get("age"))))
+            and bool(re.fullmatch(r"(?:\d+时 )?(?:\d+分 )?\d+秒", str(not_ready_summary.get("age"))))
             and not_ready_summary.get("source") == "腾讯行情"
-            and not_ready_summary.get("readiness") == "准备中"
-            and not_ready_summary.get("readinessMeta") == "行情 360 / 360 · 基础资料待评分 · 历史待计算"
+            and not_ready_summary.get("inputQuality") == "评分输入准备中"
+            and not_ready_summary.get("inputQualityMeta") == "行情 360 / 360 · 基础资料与历史待计算"
             and not_ready_summary.get("funnel") == "360 → 采集中 → 0"
             and not_ready_summary.get("funnelMeta") == "过滤 待计算 · 观察草稿 正在生成 · 最高 —"
             and "上限 168" in str(not_ready_summary.get("budgetMeta"))
-            and not_ready_summary.get("freeze") == "采集中"
-            and not_ready_summary.get("notice") == "采集中｜候选行情 360 / 360，评分尚未完成"
+            and not_ready_summary.get("publicationStatus") == "采集中"
+            and not_ready_summary.get("publicationMeta") == "等待本轮正式结果"
             and quality_summary
             == {
-                "readiness": "基础资料 120 / 360",
-                "readinessMeta": "行情 360 / 360 · 历史有效 78",
+                "inputQuality": "可评分 56 / 候选 360",
+                "inputQualityMeta": "历史 78 / 360 · 21.7% · 证券资料 120 / 360",
                 "funnel": "360 → 56 → 0",
                 "funnelMeta": "过滤 216 · 观察草稿 2 · 最高 74.25",
                 "source": "腾讯行情",
-                "notice": "暂不可发布｜基础资料 120 / 360，要求 360 / 360",
             }
             and all(_viewport_passed(viewport) for viewport in viewports)
         )
@@ -682,15 +680,15 @@ def _viewport(base: str | _ChromeSession, output_dir: Path, width: int, height: 
           messageEqualHeight: messages.length === 2 && Math.abs(messages[0].height - messages[1].height) < 1,
           summaryItems: document.querySelectorAll('.summary-band > .summary-item').length,
           quoteAge: document.querySelector('#quoteAge').textContent,
-          quoteAgeHms: /^\d+h \d+m \d+s$/.test(document.querySelector('#quoteAge').textContent),
-          dataReadiness: document.querySelector('#dataReadinessStatus').textContent,
-          dataReadinessMeta: document.querySelector('#dataReadinessMeta').textContent,
+          quoteAgeHms: /^\d+(?:时 \d+分 )?\d+秒$/.test(document.querySelector('#quoteAge').textContent),
+          inputQuality: document.querySelector('#inputQualityStatus').textContent,
+          inputQualityMeta: document.querySelector('#inputQualityMeta').textContent,
           longWatchlistSize: window.TraderLongWatchlistData.items.length,
-          snapshotDate: document.querySelector('#snapshotDate').textContent,
+          publicationStatus: document.querySelector('#publicationStatus').textContent,
+          publicationMeta: document.querySelector('#publicationMeta').textContent,
           healthBadge: document.querySelector('#healthBadge').textContent,
           rows: document.querySelectorAll('#tableBody tr[data-code]').length,
           scopes: document.querySelectorAll('#longScopeTabs button[data-scope]').length,
-          notice: document.querySelector('#noticeText').textContent,
           browserErrors: window.TraderDashboardDiagnostics.snapshot().browserErrors,
         };
         """,
@@ -728,9 +726,6 @@ def _set_viewport(base: str | _ChromeSession, width: int, height: int) -> None:
 
 
 def _viewport_passed(result: dict[str, object]) -> bool:
-    watchlist_size = result.get("longWatchlistSize")
-    expected_readiness = f"行情 1 / {watchlist_size}"
-    expected_missing = f"当前名单缺行情 {int(watchlist_size) - 1}" if isinstance(watchlist_size, int) else ""
     return bool(
         result.get("body")
         and result.get("actual") == result.get("requested")
@@ -740,13 +735,12 @@ def _viewport_passed(result: dict[str, object]) -> bool:
         and result.get("noLongOverlap")
         and result.get("messageColumns") == 2
         and result.get("messageEqualHeight")
-        and result.get("summaryItems") == 5
+        and result.get("summaryItems") == 3
         and result.get("quoteAgeHms")
-        and result.get("dataReadiness") == expected_readiness
-        and result.get("dataReadinessMeta") == expected_missing
-        and result.get("snapshotDate") == _NOW.date().isoformat()
-        and "2026/" not in str(result.get("notice"))
-        and "12:30:00" in str(result.get("notice"))
+        and result.get("inputQuality") == "不适用"
+        and result.get("inputQualityMeta") == "长期固定观察池不评分"
+        and result.get("publicationStatus") == "不适用"
+        and result.get("publicationMeta") == "长期固定观察池，不评分、不冻结"
         and result.get("healthBadge") == "降级 · 2项"
         and result.get("rows")
         and result.get("scopes") == 3

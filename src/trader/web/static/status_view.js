@@ -167,23 +167,22 @@
       if (els.longScopeTabs) els.longScopeTabs.hidden = !enabled;
     };
     const setNotice = (message, level) => {
-      els.noticeText.textContent = message;
-      els.notice.dataset.level = level === "warning" ? "warn" : level || "idle";
+      // Recommendation conclusions are rendered with the list and funnel, not as runtime errors.
     };
     const renderLoadingState = () => {
-      els.dataReadinessStatus.textContent = "-";
-      els.dataReadinessMeta.textContent = "正在读取数据可用性";
+      els.inputQualityStatus.textContent = "-";
+      els.inputQualityMeta.textContent = "正在读取评分输入质量";
+      els.inputQualityBlockers.textContent = "本轮阻断：待计算";
+      els.inputQualityDegradations.textContent = "仅降级，不代表股票存在风险：待计算";
       els.funnelStatus.textContent = "-";
       els.funnelMeta.textContent = "正在读取推荐漏斗";
-      els.scoreTime.textContent = "-";
-      els.headerFreeze.textContent = "-";
-      els.freezeMeta.textContent = "等待当前策略快照";
       els.quoteTime.textContent = "-";
       els.quoteAge.textContent = "-";
       els.quoteSource.textContent = "来源不可用";
-      els.snapshotStrategy.textContent = selection.strategyLabel(state.strategy);
-      els.snapshotDate.textContent = "—";
-      els.snapshotMeta.textContent = "等待行情与策略数据";
+      els.inputQualityStrategy.textContent = selection.strategyLabel(state.strategy);
+      els.inputQualityScoreTime.textContent = "等待本轮评分完成";
+      els.publicationStatus.textContent = "未就绪";
+      els.publicationMeta.textContent = "等待当前策略快照";
       els.recommendationTable.classList.remove("is-history", "is-anchor-table", "is-long-table");
       els.observationPool.hidden = true;
       setLongControls(state.strategy === "long");
@@ -198,19 +197,19 @@
     const renderMissingHistoricalDate = (strategy, selectedDate) => {
       state.payload = null;
       state.projectionVersion = "";
-      els.dataReadinessStatus.textContent = "—";
-      els.dataReadinessMeta.textContent = "当前无数据可检查";
+      els.inputQualityStatus.textContent = "—";
+      els.inputQualityMeta.textContent = "所选历史快照不重算评分输入";
+      els.inputQualityBlockers.textContent = "本轮阻断：历史快照不适用";
+      els.inputQualityDegradations.textContent = "仅降级，不代表股票存在风险：历史快照不适用";
       els.funnelStatus.textContent = "— → — → 0";
       els.funnelMeta.textContent = "正式 0 · 观察 不保存";
-      els.scoreTime.textContent = "-";
-      els.headerFreeze.textContent = "-";
-      els.freezeMeta.textContent = "历史日期无正式快照";
       els.quoteTime.textContent = "-";
       els.quoteAge.textContent = "-";
       els.quoteSource.textContent = "来源不可用";
-      els.snapshotStrategy.textContent = selection.strategyLabel(strategy);
-      els.snapshotDate.textContent = selectedDate || "—";
-      els.snapshotMeta.textContent = "所选历史日期无正式快照";
+      els.inputQualityStrategy.textContent = selection.strategyLabel(strategy);
+      els.inputQualityScoreTime.textContent = "所选历史日期不重算评分";
+      els.publicationStatus.textContent = "历史只读";
+      els.publicationMeta.textContent = "所选日期无正式快照";
       els.recommendationTable.classList.add("is-history");
       els.recommendationTable.classList.remove("is-anchor-table", "is-long-table");
       els.observationPool.hidden = true;
@@ -261,7 +260,7 @@
     const topScore = highestRuntimeScore == null
       ? useRuntime ? "—" : scoreSummary.topScore
       : highestRuntimeScore.toFixed(2);
-    renderDataReadiness(els, items, runtimeSummary, inputQuality || marketWarmup);
+    renderInputQuality(els, payload, items, strategyQuality, marketWarmup);
     if (payload.strategy === "long") {
       els.funnelStatus.textContent = "不适用";
       els.funnelMeta.textContent = "长期固定观察池不评分、不产生推荐";
@@ -277,9 +276,8 @@
         ? `过滤 ${rejected} · 观察草稿 ${observedCount} · 最高 ${topScore}`
         : `过滤 ${rejected} · 观察 ${observed} · 最高 ${topScore}`;
     }
-    const runtimeSource = useRuntime && visibleText(strategySummary.latest_quote_source)
-      ? strategySummary.latest_quote_source
-      : null;
+    const marketFreshness = currentMarketFreshness(payload, statusPayload, strategySummary, firstVisible);
+    const runtimeSource = marketFreshness.source;
     els.quoteSource.textContent = runtimeSource
       ? render.sourceLabel(runtimeSource)
       : firstVisible && firstVisible.source
@@ -288,36 +286,80 @@
           ? render.sourceLabel(strategySummary.latest_quote_source)
           : "来源不可用";
     renderBudgetSummary(els, statusPayload && statusPayload.deepseek_budget, payload);
-    renderFreezeSummary(els, payload, render, statusPayload);
-    els.snapshotStrategy.textContent = selection.strategyLabel(payload.strategy);
-    els.snapshotDate.textContent = cleanDate(payload.trade_date);
+    els.inputQualityStrategy.textContent = selection.strategyLabel(payload.strategy);
+    els.inputQualityScoreTime.textContent = payload.observed_at
+      ? `评分于 ${render.formatTime(payload.observed_at)} 完成`
+      : payload.status === "not_ready" ? "等待本轮评分完成" : "评分时间不可用";
+    renderPublicationStatus(els, payload, statusPayload);
   }
 
-  function renderDataReadiness(els, items, runtimeSummary, inputQuality) {
-    const quoteAvailability = quoteAvailabilitySummary(items);
-    const runtimeTotal = finiteNonNegativeInteger(runtimeSummary && runtimeSummary.quote_total_count);
-    const runtimeAvailable = finiteNonNegativeInteger(runtimeSummary && runtimeSummary.quote_covered_count);
-    if (!quoteAvailability.total && runtimeTotal != null && runtimeAvailable != null) {
-      const acquisitionPending = inputQuality
-        && ["candidate_quotes_pending", "scoring_pending"].includes(inputQuality.primary_blocker);
-      const funnel = inputQuality && inputQuality.supply_funnel;
-      const securityMaster = finiteNonNegativeInteger(funnel && funnel.security_master);
-      const history = finiteNonNegativeInteger(funnel && funnel.history);
-      if (acquisitionPending || securityMaster == null || history == null) {
-        els.dataReadinessStatus.textContent = "准备中";
-        els.dataReadinessMeta.textContent = `行情 ${runtimeAvailable} / ${runtimeTotal} · 基础资料待评分 · 历史待计算`;
-        return;
-      }
-      els.dataReadinessStatus.textContent = `基础资料 ${securityMaster} / ${runtimeTotal}`;
-      els.dataReadinessMeta.textContent = `行情 ${runtimeAvailable} / ${runtimeTotal} · 历史有效 ${history}`;
+  function renderInputQuality(els, payload, items, inputQuality, marketWarmup) {
+    if (payload && payload.strategy === "long") {
+      els.inputQualityStatus.textContent = "不适用";
+      els.inputQualityMeta.textContent = "长期固定观察池不评分";
+      els.inputQualityBlockers.textContent = "本轮阻断：不适用";
+      els.inputQualityDegradations.textContent = "仅降级，不代表股票存在风险：不适用";
       return;
     }
-    els.dataReadinessStatus.textContent = quoteAvailability.total
-      ? `行情 ${quoteAvailability.available} / ${quoteAvailability.total}`
-      : "—";
-    els.dataReadinessMeta.textContent = quoteAvailability.total
-      ? `当前名单缺行情 ${quoteAvailability.quoteMissing}`
-      : "当前无数据可检查";
+    const quoteAvailability = quoteAvailabilitySummary(items);
+    const runtimeSummary = inputQuality && inputQuality.summary || marketWarmup && marketWarmup.summary || {};
+    const runtimeTotal = finiteNonNegativeInteger(runtimeSummary.quote_total_count);
+    const runtimeAvailable = finiteNonNegativeInteger(runtimeSummary.quote_covered_count);
+    const funnel = inputQuality && inputQuality.supply_funnel;
+    if (inputQuality || marketWarmup) {
+      const readiness = inputQuality || marketWarmup;
+      const acquisitionPending = ["candidate_quotes_pending", "scoring_pending"].includes(readiness.primary_blocker);
+      const securityMaster = finiteNonNegativeInteger(funnel && funnel.security_master);
+      const history = finiteNonNegativeInteger(funnel && funnel.history);
+      if (runtimeTotal == null || runtimeAvailable == null || acquisitionPending || securityMaster == null || history == null) {
+        els.inputQualityStatus.textContent = "评分输入准备中";
+        els.inputQualityMeta.textContent = runtimeTotal != null && runtimeAvailable != null
+          ? `行情 ${runtimeAvailable} / ${runtimeTotal} · 基础资料与历史待计算`
+          : "行情、基础资料与历史待计算";
+        els.inputQualityBlockers.textContent = "本轮阻断：评分输入尚未完成";
+        els.inputQualityDegradations.textContent = "仅降级，不代表股票存在风险：待评分后核验";
+        return;
+      }
+      const candidate = finiteNonNegativeInteger(inputQuality.candidate_count) ?? runtimeTotal;
+      const scored = finiteNonNegativeInteger(inputQuality.candidate_scored_count)
+        ?? finiteNonNegativeInteger(funnel && funnel.full_scored) ?? 0;
+      els.inputQualityStatus.textContent = `可评分 ${scored} / 候选 ${candidate}`;
+      els.inputQualityMeta.textContent = `历史 ${history} / ${candidate} · ${percent(history, candidate)} · 证券资料 ${securityMaster} / ${candidate}`;
+      renderInputQualityReasons(els, inputQuality, candidate, history, securityMaster);
+      return;
+    }
+    els.inputQualityStatus.textContent = inputQuality ? "评分输入待更新" : "评分输入待更新";
+    els.inputQualityMeta.textContent = quoteAvailability.total
+      ? `当前名单行情 ${quoteAvailability.available} / ${quoteAvailability.total}`
+      : "当前无评分输入数据";
+    els.inputQualityBlockers.textContent = "本轮阻断：等待评分输入质量";
+    els.inputQualityDegradations.textContent = "仅降级，不代表股票存在风险：待计算";
+  }
+
+  function renderInputQualityReasons(els, inputQuality, candidate, history, securityMaster) {
+    const blockers = [];
+    const historyMissing = Math.max(0, candidate - history);
+    const securityMissing = Math.max(0, candidate - securityMaster);
+    if (historyMissing) blockers.push(`历史不足 ${historyMissing} 只`);
+    if (securityMissing) blockers.push(`必要资料缺失 ${securityMissing} 只`);
+    els.inputQualityBlockers.textContent = `本轮阻断：${blockers.length ? blockers.join(" · ") : "无"}`;
+    const optional = inputQuality && inputQuality.candidate_optional_reason_counts || {};
+    const labels = [
+      ["corporate_risk_history_unavailable", "风险历史未核验"],
+      ["structured_risk_unavailable", "结构化风险未就绪"],
+      ["cross_source_deviation", "跨源价格偏差"],
+      ["board_data_reliability_below_threshold", "板块资料可靠度不足"],
+      ["board_identity_degraded", "板块资料可靠度不足"],
+    ];
+    const degradations = labels.map(([code, label]) => {
+      const count = finitePositiveInteger(optional[code]);
+      return count == null ? null : `${label} ${count} 只`;
+    }).filter(Boolean);
+    els.inputQualityDegradations.textContent = `仅降级，不代表股票存在风险：${degradations.length ? degradations.join(" · ") : "无"}`;
+  }
+
+  function percent(value, total) {
+    return total > 0 ? `${(value / total * 100).toFixed(1)}%` : "—";
   }
 
   function quoteAvailabilitySummary(items) {
@@ -397,49 +439,75 @@
       : `已用 / 剩余 · 上限 ${limit} · 复核 ${reviewed}/${executable}`;
   }
 
-  function renderFreezeSummary(els, payload, render, statusPayload) {
+  function renderPublicationStatus(els, payload, statusPayload) {
     if (!payload || payload.status === "not_ready") {
       const collecting = strategyLaneCollecting(payload, statusPayload);
-      els.headerFreeze.textContent = collecting ? "采集中" : "未就绪";
-      els.freezeMeta.textContent = collecting ? "首次评分正在运行" : "等待当前策略快照";
+      els.publicationStatus.textContent = collecting ? "采集中" : "未就绪";
+      els.publicationMeta.textContent = collecting ? "等待本轮正式结果" : "等待当前策略快照";
+      return;
+    }
+    if (payload.view === "history" || payload.historical === true) {
+      els.publicationStatus.textContent = "历史只读";
+      els.publicationMeta.textContent = "不会改变正式记录";
       return;
     }
     if (payload.strategy === "long") {
-      els.headerFreeze.textContent = "不适用";
-      els.freezeMeta.textContent = "长期观察 · 不评分、不冻结";
+      els.publicationStatus.textContent = "不适用";
+      els.publicationMeta.textContent = "长期固定观察池，不评分、不冻结";
       return;
     }
+    const cutoff = payload.strategy === "today" ? "11:20" : "14:50";
+    const strategy = STRATEGY_LABELS[payload.strategy] || "当前策略";
     if (payload.frozen) {
-      els.headerFreeze.textContent = "已冻结";
-      els.freezeMeta.textContent = payload.frozen_at
-        ? `冻结于 ${render.formatTime(payload.frozen_at)}`
-        : `${payload.strategy === "today" ? "11:20" : "14:50"} 正式冻结`;
+      els.publicationStatus.textContent = "已冻结";
+      els.publicationMeta.textContent = `${strategy} ${cutoff} 已固化`;
       return;
     }
-    els.headerFreeze.textContent = "滚动中";
-    els.freezeMeta.textContent = `${payload.strategy === "today" ? "11:20" : "14:50"} 冻结`;
+    els.publicationStatus.textContent = "实时滚动";
+    els.publicationMeta.textContent = `${strategy} ${cutoff} 固化`;
   }
 
   function updateQuoteAge(els, payload, render, statusPayload) {
-    const item = payload && payload.items && payload.items[0];
-    const inputQuality = strategyInputQuality(payload, statusPayload);
-    const sourceTime = item && item.source_time
-      || inputQuality && inputQuality.summary && inputQuality.summary.latest_quote_source_time
-      || statusPayload && statusPayload.market_data
-        && statusPayload.market_data.candidate_quote_age
-        && statusPayload.market_data.candidate_quote_age.latest_source_time
-      || payload && payload.published_at;
+    const freshness = currentMarketFreshness(payload, statusPayload, null, null);
+    const sourceTime = freshness.sourceTime;
     const timestamp = new Date(sourceTime || "").getTime();
     if (!Number.isFinite(timestamp)) {
       els.quoteAge.textContent = "-";
       els.quoteTime.textContent = "-";
-      els.snapshotMeta.textContent = "行情时间不可用";
+      if (els.quoteFreshness) els.quoteFreshness.dataset.ageState = "unknown";
       return;
     }
     const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
     els.quoteAge.textContent = formatDurationHms(seconds);
     els.quoteTime.textContent = render.formatTime(sourceTime);
-    els.snapshotMeta.textContent = `${els.quoteSource.textContent} · 数据年龄 ${els.quoteAge.textContent} · ${els.quoteTime.textContent}`;
+    if (els.quoteFreshness) els.quoteFreshness.dataset.ageState = quoteAgeState(seconds);
+  }
+
+  function currentMarketFreshness(payload, statusPayload, strategySummary, firstVisible) {
+    const market = statusPayload && statusPayload.market_data;
+    const age = market && market.candidate_quote_age;
+    if (payload && payload.view !== "history" && age && age.latest_source_time) {
+      return {
+        source: visibleText(market.candidate_quote_latest_source) || visibleText(market.active_source),
+        sourceTime: age.latest_source_time,
+      };
+    }
+    const quality = strategySummary || strategyInputQuality(payload, statusPayload) && strategyInputQuality(payload, statusPayload).summary;
+    return {
+      source: quality && visibleText(quality.latest_quote_source)
+        || firstVisible && visibleText(firstVisible.source)
+        || null,
+      sourceTime: quality && quality.latest_quote_source_time
+        || firstVisible && firstVisible.source_time
+        || payload && payload.published_at
+        || null,
+    };
+  }
+
+  function quoteAgeState(seconds) {
+    if (seconds <= 60) return "fresh";
+    if (seconds <= 180) return "aging";
+    return "stale";
   }
 
   function formatDurationHms(totalSeconds) {
@@ -448,9 +516,9 @@
     const hours = Math.floor(duration / 3600);
     const minutes = Math.floor((duration % 3600) / 60);
     const seconds = duration % 60;
-    if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
-    if (minutes > 0) return `${minutes}m ${seconds}s`;
-    return `${seconds}s`;
+    if (hours > 0) return `${hours}时 ${minutes}分 ${seconds}秒`;
+    if (minutes > 0) return `${minutes}分 ${seconds}秒`;
+    return `${seconds}秒`;
   }
 
   function createErrorDrawer(els, beforeOpen, onVisibilityChange) {
@@ -700,7 +768,8 @@
     recommendationReadinessStatus,
     renderBudgetSummary,
     renderHealth,
-    renderDataReadiness,
+    renderInputQuality,
+    renderPublicationStatus,
     renderSummary,
     runtimeErrorRows,
     updateQuoteAge,
