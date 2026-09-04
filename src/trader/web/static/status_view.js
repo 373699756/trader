@@ -290,9 +290,11 @@
     renderBudgetSummary(els, statusPayload && statusPayload.deepseek_budget, payload);
     renderTopScores(els, payload, items);
     els.inputQualityStrategy.textContent = selection.strategyLabel(payload.strategy);
-    els.inputQualityScoreTime.textContent = payload.observed_at
-      ? `评分于 ${render.formatTime(payload.observed_at)} 完成`
-      : payload.status === "not_ready" ? "等待本轮评分完成" : "评分时间不可用";
+    els.inputQualityScoreTime.textContent = payload.strategy === "long"
+      ? "长期策略不评分"
+      : payload.observed_at
+        ? `评分于 ${render.formatTime(payload.observed_at)} 完成`
+        : payload.status === "not_ready" ? "等待本轮评分完成" : "评分时间不可用";
     renderPublicationStatus(els, payload, statusPayload);
   }
 
@@ -473,13 +475,19 @@
   function renderTopScores(els, payload, items) {
     if (!els.topScoresStatus) return;
     const scoredItems = topScoredStocks(payload, items);
+    const maximum = finiteNumber(payload && payload.selection_diagnostics
+      && payload.selection_diagnostics.maximum_final_score);
     els.topScoresStatus.textContent = scoredItems.length
       ? scoredItems.map((item) => `${item.score.toFixed(2)} - ${item.code} - ${item.name}`).join("\n")
-      : "暂无评分数据";
+      : maximum == null
+        ? "暂无评分数据"
+        : `最高分 ${maximum.toFixed(2)}`;
     if (els.topScoresMeta) {
       els.topScoresMeta.textContent = scoredItems.length
         ? `最终评分 · ${scoredItems.length} 只`
-        : "最终评分 · 当前无可用数据";
+        : maximum == null
+          ? "最终评分 · 当前无可用数据"
+          : "最高最终分 · 当前无达到观察门槛的股票";
     }
   }
 

@@ -131,6 +131,35 @@ assert.deepStrictEqual(
   ))),
   [{ score: 68, code: "600006", name: "历史股票", index: 0 }],
 );
+const scoreOnlySummary = summaryFixture();
+state.renderSummary(
+  scoreOnlySummary,
+  {
+    status: "ready",
+    strategy: "tomorrow",
+    trade_date: "2026-08-14",
+    observed_at: "2026-08-14T19:53:30+08:00",
+    frozen: true,
+    score_status: "scored",
+    coverage: { candidate_count: 57, evaluated_count: 57, rejected_count: 57 },
+    items: [],
+    selection_diagnostics: {
+      maximum_final_score: 55,
+      executable_threshold: 78,
+      observation_floor: 73,
+      empty_reason: "score_below_observation_floor",
+    },
+  },
+  [],
+  "closed",
+  null,
+  sandbox.window.TraderSelection,
+  sandbox.window.TraderRender,
+  {},
+);
+assert.strictEqual(scoreOnlySummary.topScoresStatus.textContent, "最高分 55.00");
+assert.strictEqual(scoreOnlySummary.topScoresMeta.textContent, "最高最终分 · 当前无达到观察门槛的股票");
+assert.strictEqual(scoreOnlySummary.inputQualityScoreTime.textContent, "评分于 19:53:30 完成");
 assert.strictEqual(
   sandbox.window.TraderDashboardDiagnostics.snapshot().webSnapshotRetentionMs,
   35000,
@@ -228,6 +257,7 @@ function summaryFixture() {
     publicationStatus: { textContent: "" },
     publicationMeta: { textContent: "" },
     topScoresStatus: { textContent: "" },
+    topScoresMeta: { textContent: "" },
   };
 }
 const summaryElements = summaryFixture();
@@ -520,6 +550,7 @@ state.renderSummary(
 );
 assert.strictEqual(summaryElements.funnelStatus.textContent, "不适用");
 assert.strictEqual(summaryElements.funnelMeta.textContent, "长期固定观察池不评分、不产生推荐");
+assert.strictEqual(summaryElements.inputQualityScoreTime.textContent, "长期策略不评分");
 assert.strictEqual(summaryElements.publicationStatus.textContent, "不适用");
 assert.strictEqual(summaryElements.publicationMeta.textContent, "长期固定观察池，不评分、不冻结");
 state.renderInputQuality(summaryElements, {

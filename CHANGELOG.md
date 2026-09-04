@@ -6,6 +6,8 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户反馈 15:00 后明日/2-5 日评分已完成但“评分最高”卡片显示暂无数据，且切换到长期策略时仍显示评分完成时间。根因是短线 API 只向主表投影被选中的股票，最高分低于观察门槛或被限制时主表为空，而摘要诊断仍保留最高分；长期策略复用了短线完成时间渲染。现让卡片在无正式/观察项但存在最高分诊断时显示最高分并明确无达到观察门槛的股票，长期策略固定显示“不评分”。Verification: `node tests/js/test_dashboard_state.js`、全量 `make test`、`make format-check`、`make lint`、`make type-check`、`make package` 和 `git diff --check` 通过。Residual Risks: 无法从当前正式/观察投影恢复未入池股票的代码和名称，卡片在该场景仅显示最高分；如需展示股票身份，需另立 API 投影契约批次。 `Regression-Key: top-score-empty-snapshot-v1`。
+
 - 用户要求生产直接使用训练生成的 JSON，并复核策略文档与实现的一致性。本批统一文档中的 V1/V2/V3 配置说明，明确 V3 loader/profile/API/SSE 接缝已实现但不会自动切换或晋级；V3 训练按 BaoStock manifest 校验通过的实际下载数据库数据和可用共同日期运行，不新增逐行业硬门槛。生产仅信任 `model.json` 自身规范化 `content_hash`，`report.json` 保持离线审计用途，不作为加载前置条件。Verification: V3 文档契约、生产 loader 单元测试（含缺失 report.json 仍可加载及篡改 model.json 拒绝）通过；其余全量门禁见本批验证记录。Residual Risks: 当前机器仍无合格 BaoStock 全量 manifest，尚未进行真实 V3 训练和跨 PC 实物迁移验证。 `Regression-Key: tomorrow-v3-doc-runtime-alignment-v1`。
 
 - 用户反馈 Web 交互 URL 中的 `/api/v2` 版本前缀与评分 V1/V2/V3 概念混淆，且单一前端页面没有必要展示第二套 HTTP 版本入口。现将统一只读 HTTP/SSE 路由、浏览器请求、运行诊断、性能探针和运维文档收敛为 `/api/*`；旧 `/api/v2/*` 不再注册并由契约测试确认返回 404。`v2_*` 载荷 schema、V2 运行目录和评分身份保持不变，因为它们属于内部/JSON 契约而非 URL 版本控制。Verification: 定向 Web/API 契约 51 项、全量 `make test`、`make type-check`、受影响 Python Ruff、提权后的 `make package` 和 `make browser-performance-check` 通过；`make format-check` 仍被既有 BaoStock 研究文件格式问题阻断，`make lint` 仍被既有测试导入排序问题阻断，`make performance-check` 仍被既有 `targeted_overlay_commit:absolute_budget` 阻断。Residual Risks: 已部署的旧常驻进程仍需按发布流程重启；外部书签或脚本使用旧 URL 时会收到 404，需改用 `/api/*`；上述基线门禁阻断项不由本批 URL 收敛改动引入。
