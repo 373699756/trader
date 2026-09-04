@@ -3,7 +3,8 @@ from types import SimpleNamespace
 import pytest
 
 from trader.domain.research.baostock_daily import BaoStockDailySpec
-from trader.infra.research.baostock_daily import BaoStockRowGateway, _result_rows
+from trader.infra.research.baostock_daily import BaoStockRowGateway
+from trader.infra.research.baostock_gateway import _result_rows
 from trader.infra.research.baostock_history_runtime import _login, _RateLimitedBaoStockSdk
 
 
@@ -147,6 +148,16 @@ def test_sdk_queries_are_started_at_most_once_every_two_seconds() -> None:
     )
 
     assert delays == [2.0, 2.0, 2.0]
+
+
+def test_sdk_queries_report_each_supplier_call_start_and_completion() -> None:
+    activity: list[str] = []
+    limited = _RateLimitedBaoStockSdk(_Sdk(), activity=activity.append)
+
+    limited.query_trade_dates(start_date="2026-08-29", end_date="2026-08-30")
+    limited.query_stock_basic()
+
+    assert activity == ["started", "completed", "started", "completed"]
 
 
 class _LoginSdk:

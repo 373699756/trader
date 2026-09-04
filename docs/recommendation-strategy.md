@@ -1,6 +1,6 @@
 # 荐股策略文档
 
-版本：V3 研究候选（老 V2 作为 `legacy` 封存；活动 Tomorrow 仍由 `tomorrow_scoring_profile=v1|v2` 选择，默认 `v1`；V3 需人工授权后才可新增）
+版本：V3 研究候选（老 V2 作为 `legacy` 封存；生产入口接受 `tomorrow_scoring_profile=v1|v2|v3`，默认 `v1`；V3 无训练模型时失败关闭）
 
 引擎：`engine_review28_2026_07`
 
@@ -1835,7 +1835,8 @@ V3 是新的唯一 Tomorrow 模型；C3 只表示其离线训练阶段，不产�
 第 15.1.36 节定义模型与生产边界，第 15.1.37 节定义唯一所有权，第 15.1.38 节定义日线数据契约，三者不得
 各自复制或改写其它章节的责任。
 
-`./run.sh train-tomorrow` 是唯一公开入口。一次命令形成一个由输入 manifest 和 hash 派生的 `run_id`，允许
+`./run.sh train-tomorrow [--runtime-dir <路径>]` 是唯一公开入口；显式历史根必须与此前
+`download_history --runtime-dir` 的根一致，省略时两者都使用 `data/history/`。一次命令形成一个由输入 manifest 和 hash 派生的 `run_id`，允许
 在同一离线批次内执行固定 walk-forward、早停、确认和终端留出；临时模型仅供验证，最终每个合格行业只封存
 一份 V3 模型。相同输入幂等，不同内容冲突失败，任何阶段不得自动 promotion、在线训练、调参、激活或回退。
 
@@ -1873,30 +1874,32 @@ V3 线上只做批量推理：行业 scaler -> Ridge/LightGBM 50/50 -> 行业校
 不读取 V1/V2/C3 运行时预测、不读取旧 V2 `base_score`、不做投票或 stacking、不重复映射或扣风险。
 
 工件目录固定为 `data/train/tomorrow-v3/<run_id>/`，只公开 `report.json` 和最终 `model.json`。
+报告和模型分别使用规范 JSON SHA-256，且模型必须绑定同批 `report_hash`；任一 hash、父 manifest/split、
+样本计数、行业计数或锚点不一致均失败关闭。
 工件保存每行业模型映射、特征顺序/单位、均值/尺度、Ridge 参数、LightGBM 树和最佳迭代、50/50 权重、
 校准参数、训练窗口、所有 manifest hash、依赖版本和最终 SHA-256；不保存训练行、DeepSeek 内容、pickle 或
-外部模型路径。`evidence/` Parquet 只供复查和断点续跑，主程序不得读取。
+外部模型路径。`evidence/` Parquet 只供复查和断点续跑，主程序只读取最终 `model.json`；`report.json` 仅供
+离线审计，不是生产加载前置条件。
 
 #### 15.1.36 V3 条件式生产适配与人工启用
 
 状态：`blocked_by_15_1_35`。标准路径依次为：V3 日线代理门禁 -> 独立 14:50 终端留出 ->
-冻结前影子运行和完整风险报告 -> 用户审阅并另立高风险生产授权批次 -> wheel/loader/profile/API/SSE 接入。
+冻结前影子运行和完整风险报告 -> 用户审阅 -> loader/profile/API/SSE 接入。
 研究验证、授权决策和生产接入必须是三个可独立 Review 的批次，不能在同一波次边训练边发布。
 
 若 14:50 历史证据客观不可取得，用户此前只允许保留人工越权路径，并未预先授权任何具体模型。越权批次
 必须绑定唯一 model/report hash、列出未通过或未执行的门禁，并持续公开 `training_anchor=15:00_close`、
-`runtime_anchor=14:50`、`point_in_time_parity=false` 和 `activation_basis=manual_user_override`；不得声称已完成
+`runtime_anchor=14:50`、`point_in_time_parity=false` 和 `activation_basis=trained_artifact`；不得声称已完成
 点时收益验证。没有新的明确授权指令时，本节始终阻塞。
 
-只有验证通过的 V3 工件才允许进入独立高风险批次；该批次校验 `model.json`、`report.json`、schema、特征顺序和 SHA-256，
-再转换为 `trader.resources.models/tomorrow_v3_<model_id>.json` wheel 资源。主程序只通过
-`importlib.resources` 加载批准资源；配置只选择 profile，不承载模型参数、训练数据或研究路径。模型资源缺失、
-hash/schema/单位/字段宽度错误时 V3 失败关闭，保留最近有效 current，不得隐藏回退 V2、全局模型或中性分。
+验证通过的 V3 工件直接保留在 `data/train/tomorrow-v3/<run_id>/`；主程序启动时读取最新 `model.json`，
+校验文件内容 hash、模型身份、schema、特征顺序、单位和字段宽度。训练
+结果缺失、冲突或损坏时 V3 失败关闭，保留最近有效 current，不得隐藏回退 V2、全局模型或中性分。
 
 V3 profile 只新增相邻 loader 和显式 profile 映射；V1 和老 V2 的代码、bundle、hash、输入输出、历史决策、
-冻结记录及 schema 不变。组合根任一时刻只装配一个活动 predictor，默认仍为 V1；V3 未经人工授权不得进入
-活动配置。决策和状态绑定 V3 model/profile ID、bundle hash、行业覆盖计数、预测毛/净超额、成本、拒绝原因、
-人工授权依据和 `automatic_model_update=false`。DeepSeek 预算、风险扣减、动作门、TopK、冻结、CAS 和结算
+冻结记录及 schema 不变。组合根任一时刻只装配一个活动 predictor，默认仍为 V1；V3 只有在训练模型存在且配置
+选择该 profile 时进入活动配置。决策和状态绑定 V3 model/profile ID、模型 hash、行业覆盖计数、预测毛/净超额、
+成本、拒绝原因和 `automatic_model_update=false`。DeepSeek 预算、风险扣减、动作门、TopK、冻结、CAS 和结算
 语义全部沿用现有契约。
 
 14:50 影子运行必须使用一份封存输入异步执行 V3 与老 V2，只读比较覆盖率、预测/分数漂移、Top6 重合度、
@@ -1997,7 +2000,9 @@ checkpoint 所有者；最终 manifest 只登记分片和 catalog，不生成单
 继续重试数千只股票。活动锁与文件系统不支持锁必须区分；无法建立进程级锁时失败关闭，禁止无锁并发下载。
 为确保超时不依赖 BaoStock SDK 内部实现，唯一 worker 必须是独立子进程且独占一个 SDK socket，由父进程
 监督墙钟；固定最多 1 个进程，单次供应商调用墙钟上限 60 秒，首次失败后最多重试 2 次，
-每次查询至少间隔 2 秒（最多 30 次/分钟），取消宽限 10 秒后只终止该 worker 并保留已提交 checkpoint。登录、查询和退出分别记录有界失败
+每次查询至少间隔 2 秒（最多 30 次/分钟）。子进程必须在每次 SDK 调用开始和结束时向父进程发送内部活动信号；
+60 秒只约束单次供应商调用，不约束包含多次正常调用的完整阶段或单股任务，活动信号不得作为任务完成响应。
+取消宽限 10 秒后只终止该 worker 并保留已提交 checkpoint。登录、查询和退出分别记录有界失败
 码；不得让多个线程或任务共享 SDK 全局 socket。全量启动前必须确认运行目录至少有 25GiB 可用空间，并在每个证券提交后继续检查低水位；实测峰值
 RSS 不超过 4GB。失败保留最近完整分片和 manifest，不删除可恢复数据，不回填 0、上一日值或其它供应商值，
 也不触发生产行情 fallback。当前 120 分 Tushare 仅具备未复权日线能力，缺少证券池、交易日历和 qfq 权限；它尚未形成独立归档工件，不能替代 BaoStock raw/qfq 正式 manifest 或解除 V3 输入阻塞。

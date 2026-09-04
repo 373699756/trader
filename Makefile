@@ -2,6 +2,7 @@ SHELL := /bin/bash
 PYTHON ?= .venv/bin/python
 SOURCE_PATHS := src/trader tests scripts/check_refactor_quality.py scripts/generate_long_watchlist_asset.py \
 	scripts/diagnose_runtime.py scripts/package_tomorrow_v1_model.py \
+	scripts/verify_wheel_install.py \
 	scripts/runtime_diagnostics/__init__.py scripts/runtime_diagnostics/common.py \
 	scripts/runtime_diagnostics/web_health.py scripts/runtime_diagnostics/web_health_contract.py \
 	scripts/runtime_diagnostics/browser_refresh.py \
@@ -9,7 +10,7 @@ SOURCE_PATHS := src/trader tests scripts/check_refactor_quality.py scripts/gener
 	scripts/runtime_diagnostics/history_sources.py scripts/runtime_diagnostics/tencent_quotes.py \
 	scripts/runtime_diagnostics/tushare_daily.py
 
-.PHONY: help install-dev format format-check lint long-watchlist-check type-check test test-unit test-component test-contract test-integration quality package performance-check browser-performance-check diagnose-live diagnose-full
+.PHONY: help install-dev format format-check lint long-watchlist-check type-check test test-unit test-component test-contract test-integration test-release quality package performance-check browser-performance-check diagnose-live diagnose-full
 
 help:
 	@echo "make install-dev   - install editable package and development tools"
@@ -21,6 +22,7 @@ help:
 	@echo "make test-component - run component tests"
 	@echo "make test-contract  - run contract tests"
 	@echo "make test-integration - run integration tests"
+	@echo "make test-release  - build and verify the wheel outside the repository"
 	@echo "make package       - build wheel and source distribution"
 	@echo "make performance-check - run the offline active-production performance gate"
 	@echo "make browser-performance-check - run Firefox SSE patch-to-paint and refresh gate"
@@ -61,6 +63,9 @@ test-contract:
 
 test-integration:
 	$(PYTHON) -m pytest -q tests/integration
+
+test-release: package
+	$(PYTHON) scripts/verify_wheel_install.py --dist-dir dist
 
 quality: format-check lint type-check test
 

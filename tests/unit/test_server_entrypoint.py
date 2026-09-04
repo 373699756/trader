@@ -67,3 +67,8 @@ def test_run_system_prints_clickable_url_before_web_serving(
 
     assert server_entrypoint._run_system(system, timeout_seconds=30.0) == 0
     assert observed_output == [f"浏览器登录地址->{expected_url}\n"]
+
+
+def test_server_parser_accepts_every_configured_tomorrow_profile() -> None:
+    for profile in ("v1", "v2", "v3"):
+        assert server_entrypoint.build_parser().parse_args(["--profile", profile]).profile == profile

@@ -17,7 +17,7 @@ from multiprocessing.connection import Connection
 from multiprocessing.context import SpawnContext
 from multiprocessing.process import BaseProcess
 from pathlib import Path
-from typing import IO, Protocol, cast
+from typing import IO, Literal, Protocol, cast
 
 from trader.application.research.baostock_daily import BaoStockShardContext
 from trader.application.research.baostock_history_runtime import (
@@ -83,6 +83,11 @@ class _ContextStage:
 
 
 @dataclass(frozen=True)
+class _SupplierCallActivity:
+    state: Literal["started", "completed"]
+
+
+@dataclass(frozen=True)
 class _WorkerReady:
     failure_reason: str = ""
 
@@ -122,24 +127,23 @@ class _RateLimitedBaoStockSdk:
         *,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        activity: Callable[[Literal["started", "completed"]], None] | None = None,
     ) -> None:
         self.__version__ = sdk.__version__
         self._sdk = sdk
         self._monotonic = monotonic
         self._sleep = sleep
+        self._activity = activity or (lambda _state: None)
         self._last_query_started: float | None = None
 
     def query_trade_dates(self, *, start_date: str, end_date: str) -> BaoStockRowResult:
-        self._wait()
-        return self._sdk.query_trade_dates(start_date=start_date, end_date=end_date)
+        return self._query(lambda: self._sdk.query_trade_dates(start_date=start_date, end_date=end_date))
 
     def query_stock_basic(self) -> BaoStockRowResult:
-        self._wait()
-        return self._sdk.query_stock_basic()
+        return self._query(self._sdk.query_stock_basic)
 
     def query_stock_industry(self, *, code: str = "", date: str = "") -> BaoStockRowResult:
-        self._wait()
-        return self._sdk.query_stock_industry(code=code, date=date)
+        return self._query(lambda: self._sdk.query_stock_industry(code=code, date=date))
 
     def query_history_k_data_plus(  # noqa: PLR0913 - exact third-party SDK signature
         self,
@@ -151,15 +155,24 @@ class _RateLimitedBaoStockSdk:
         frequency: str,
         adjustflag: str,
     ) -> BaoStockRowResult:
-        self._wait()
-        return self._sdk.query_history_k_data_plus(
-            code,
-            fields,
-            start_date,
-            end_date,
-            frequency=frequency,
-            adjustflag=adjustflag,
+        return self._query(
+            lambda: self._sdk.query_history_k_data_plus(
+                code,
+                fields,
+                start_date,
+                end_date,
+                frequency=frequency,
+                adjustflag=adjustflag,
+            )
         )
+
+    def _query(self, call: Callable[[], BaoStockRowResult]) -> BaoStockRowResult:
+        self._wait()
+        self._activity("started")
+        try:
+            return call()
+        finally:
+            self._activity("completed")
 
     def _wait(self) -> None:
         now = self._monotonic()
@@ -352,7 +365,11 @@ def _corrupt_partition_paths(root: Path, manifest_path: Path, catalog_path: Path
         if not isinstance(partitions, list):
             raise ValueError("partitions missing")
         expected_catalog = payload.get("catalog_sha256")
-        if not isinstance(expected_catalog, str) or not catalog_path.exists() or _sha256_file(catalog_path) != expected_catalog:
+        if (
+            not isinstance(expected_catalog, str)
+            or not catalog_path.exists()
+            or _sha256_file(catalog_path) != expected_catalog
+        ):
             raise ValueError("catalog hash mismatch")
         for item in partitions:
             if not isinstance(item, dict):
@@ -447,6 +464,9 @@ def _fetch_context(
                     _terminate_process(process)
                     break
                 response = parent.recv()
+                if isinstance(response, _SupplierCallActivity):
+                    deadline = time.monotonic() + request.timeout_seconds
+                    continue
                 if isinstance(response, _ContextStage):
                     _emit_progress(progress, BaoStockRuntimeProgress(response.phase, sessions=request.sessions))
                     deadline = time.monotonic() + request.timeout_seconds
@@ -481,7 +501,10 @@ def _context_worker_main(connection: Connection, spec: BaoStockDailySpec) -> Non
         sdk = _load_sdk()
         _login(sdk)
         gateway = BaoStockRowGateway(
-            _RateLimitedBaoStockSdk(sdk),
+            _RateLimitedBaoStockSdk(
+                sdk,
+                activity=lambda state: connection.send(_SupplierCallActivity(state)),
+            ),
             dependency_versions=_dependency_versions(),
         )
         connection.send(_ContextStage("trading_calendar"))
@@ -628,7 +651,7 @@ class _DownloadCoordinator:
                 self._replace(handle)
             return
         if handle.connection.poll():
-            self._accept_response(handle)
+            self._accept_response(handle, now)
             return
         if not handle.process.is_alive():
             security = self._release(handle)
@@ -642,12 +665,17 @@ class _DownloadCoordinator:
             if not self._replace(handle):
                 self._terminal_failures[security.code] = "worker_restart_failed"
 
-    def _accept_response(self, handle: _WorkerHandle) -> None:
-        security = self._release(handle)
+    def _accept_response(self, handle: _WorkerHandle, now: float) -> None:
         failure_reason = ""
         try:
-            response = handle.connection.recv()
+            response: object | None = handle.connection.recv()
         except (EOFError, OSError):
+            response = None
+        if isinstance(response, _SupplierCallActivity):
+            handle.started_at = now
+            return
+        security = self._release(handle)
+        if response is None:
             response = _DownloadResponse(security.code, False, "worker_process_failed")
         if not isinstance(response, _DownloadResponse) or response.code != security.code:
             failure_reason = "worker_protocol_invalid"
@@ -917,7 +945,10 @@ def _download_worker_main(
         sdk = _load_sdk()
         _login(sdk)
         gateway = BaoStockRowGateway(
-            _RateLimitedBaoStockSdk(sdk),
+            _RateLimitedBaoStockSdk(
+                sdk,
+                activity=lambda state: connection.send(_SupplierCallActivity(state)),
+            ),
             dependency_versions=context.source_versions.dependency_versions,
         )
         connection.send(_WorkerReady())

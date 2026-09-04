@@ -598,6 +598,11 @@ infra/research
 web/api
 ```
 
+BaoStock 离线基础设施在 `infra/research` 内继续按真实职责拆分：`baostock_gateway.py` 只负责 SDK
+逐行载荷翻译，`baostock_daily.py` 只拥有 SQLite 分片，`baostock_daily_serialization.py` 与
+`baostock_daily_codec.py` 只拥有显式 JSON codec，`baostock_catalog.py` 负责 catalog/manifest 组装，
+`baostock_partition_archive.py` 提供分区归档门面。公开类型和调用方式保持稳定，不增加聚合 `utils` 模块。
+
 最终包状态已固化：研究、结算、运行时、行情、推荐、决策、基础设施和 Web 均位于上方目标目录；旧
 根级迁移路径不属于活动树，也没有兼容转发或迁移台账作为运行输入。研究、结算和 profile 证据边界为：
 结果结算用例和结算端口位于 `application/outcomes`，离线研究用例及 profile 证据端口位于
@@ -1534,7 +1539,8 @@ python3 -m venv .venv
 
 开发安装或构建产生的 setuptools `trader_research_dashboard.egg-info/` 位于仓库根目录的隐藏
 `.build-metadata/` 目录中；`setup.py` 在构建入口创建缺失的父目录，生成元数据继续被忽略，确保干净检出和
-源码包均可直接安装。`src/` 只保留运行包源码，不承载构建元数据。
+源码包均可直接安装。该隐藏容器已由 `.gitignore` 忽略，且容器名本身不得以 `.egg-info` 结尾，避免
+`importlib.metadata` 把无 METADATA 的父目录误识别为发行包。`src/` 只保留运行包源码，不承载构建元数据。
 
 也可以绕过启动脚本，直接运行安装后的唯一服务入口：
 
@@ -1543,7 +1549,9 @@ python3 -m venv .venv
 ```
 
 日常启动只需执行 `./run.sh`，默认选择 Tomorrow V1。
-`./run.sh --profile v2` 显式选择 V2。该覆盖只影响本次进程并重新生成
+`./run.sh --profile v2` 显式选择 V2；`./run.sh --profile v3` 启动时读取项目
+`data/train/tomorrow-v3/` 下最新训练模型。缺少或损坏训练结果时在组合根失败关闭并给出稳定原因，
+不自动回退 V1/V2。该覆盖只影响本次进程并重新生成
 有效策略身份，不写回策略配置；改变档位必须正常重启。默认配置启动后访问
 `http://127.0.0.1:5000/`。同一 `.runtime/v2` 只允许一个服务进程，第二个进程由
 `.runtime/v2/server.lock` 拒绝。拒绝信息必须同时显示现有服务的实际浏览器 URL，并提示在原启动终端
@@ -1562,7 +1570,7 @@ python3 -m venv .venv
 | 日常 | `./run.sh check` | 依次校验配置、只读投影研究状态并运行所选档位的离线性能门禁 |
 | 离线研究 | `./run.sh download_history [--runtime-dir <路径>] --sessions 1..2000` | 显式安装 `[research]` extra 后，按固定窗口下载/续传 BaoStock 日线、逐日 ST 和历史行业；默认写入 Git 忽略的 `data/history/`，也可显式指定其它目录 |
 | 离线训练结果 | `data/train/` | 受控训练结果目录；不得写入历史下载分片、WAL、缓存或供应商响应 |
-| 离线训练 | `./run.sh train-tomorrow` | 不接受阶段或 `run_id` 参数；一次调用连续完成父工件已满足的单一 V3 预注册阶段，支持原子断点续跑，永不自动 promotion 或激活 V3 |
+| 离线训练 | `./run.sh train-tomorrow [--runtime-dir <路径>]` | 不接受阶段或 `run_id` 参数；默认读取 `data/history/`，显式路径必须与 `download_history --runtime-dir` 使用的根一致；一次调用连续完成父工件已满足的单一 V3 预注册阶段，永不自动 promotion 或激活 V3 |
 
 当前 `check` 组合命令及 `train-tomorrow` 均由 `trader-cli` 单一编排器
 统一拥有。Linux/macOS 与 PowerShell 不复制业务流程。普通阶段
@@ -1646,6 +1654,9 @@ single-flight、latest-wins、来源乱序、SSE 游标恢复和慢客户端、�
 从仓库外安装 wheel 后验证 `trader` 导入、`trader-cli`、`validate-config`、模板、CSS、
 JavaScript、图标和 `pip check`。桌面三档需要实际渲染证据；若宿主图形栈阻断，必须把
 错误和未完成门禁列为剩余外部风险，不能宣称通过。
+测试目录由 pytest 自动标记为 `unit`、`component`、`contract`、`integration`、`performance` 或 `js`，
+其中性能测试同时标记 `slow`。`make test-*` 提供分层入口；`make test-release` 构建 wheel，并在仓库外
+临时环境执行安装、CLI 配置校验、`pip check` 和包资源读取。
 
 全工程重构期间，`make lint` 还必须执行严格复杂度与命名债务的单调收敛门禁：活动树中
 `C901`、`PLR0911/0912/0913/0915` 和 `N` 系列问题数量不得高于已登记基线；每个重构批次
@@ -1718,15 +1729,16 @@ CLI、状态和 Web 字段已经退役。
 
 旧 H0 腾讯 640 日历史归档、固定回测和六项筛选入口已退役，不再创建或更新 `score-history`。
 新的历史数据统一由 `download_history` 生成 BaoStock 共同日线 manifest，训练统一由
-`train-tomorrow` 按已封存的 V3 前置工件执行。历史数据不足、历史事实不完整或父工件冲突时，训练失败关闭，
-不生成生产模型或自动更新权限。
+`train-tomorrow` 按已封存的 V3 前置工件执行。历史数据不足、历史事实不完整或父工件冲突时，训练失败关闭；
+训练成功生成的最终 V3 `model.json` 由显式 `--profile v3` 的生产进程直接读取，不自动修改配置或切换 profile。
 
 Score-R6 历史唯一验证使用新身份 `score_r6_historical_v2` 和 `score_r6_historical_report_v2`；旧
 `score_r6_historical_v1` 目录只作不可变审计，状态读取不得把旧 `forward_required` 报告重新解释为
 `historical_only`。
 
 上述六项旧 H0 筛选/验证阶段及其 CLI 均已退役；历史研究只通过 `download_history` 和
-`train-tomorrow` 执行，不得接入生产组合根或在线请求链。
+`train-tomorrow` 执行，原始训练参数、证据和报告不得接入生产组合根或在线请求链，最终 V3 `model.json`
+仅由 V3 profile 的 loader 读取。
 
 隔离研究包继续保留原生评分因子诊断层、`ScoreTomorrowPointInTimeFeatures`、`ScoreTomorrowShadowModels`
 与成本感知选择能力，分别封存 `score_factor_diagnostic_report_v1`、点时特征、
@@ -1798,8 +1810,9 @@ BaoStock v2 日线能力只按下一段独立计划执行，不改写这个结�
 唯一行，在同一行保存未复权/前复权字段，每只股票最多 2000 个逻辑记录；新股、退市股和来源不足股票按
 真实区间少于 2000 条，不补值。`--sessions` 接受 1–2000、默认 2000，超限在任何外部 I/O 前失败；只有
 2000 日运行可以形成权威全量 manifest。Codex A 独占 gateway、分片/合并内容语义、覆盖审计、manifest/hash 和历史
-行业/资格事实能力；Codex D 只拥有可选依赖、CLI、最多两个受控独立 SDK 子进程、每次调用 60 秒墙钟、最多两次
-重试、每进程每秒一次查询、锁/取消/恢复和状态投影。普通启动、`check`、Web、`train-tomorrow`、bootstrap
+行业/资格事实能力；Codex D 只拥有可选依赖、CLI、固定一个受控独立 SDK 子进程、每次调用 60 秒墙钟、最多两次
+重试、每次查询至少间隔两秒、锁/取消/恢复和状态投影。子进程在每次 SDK 调用开始和结束时向父进程发送内部活动信号；
+60 秒只约束单次供应商调用，不约束包含多次正常调用的完整阶段或单股任务，活动信号不得作为任务完成响应。普通启动、`check`、Web、`train-tomorrow`、bootstrap
 和生产调度均不得隐式触发。
 
 `download_history` 的运行可观察性固定为标准错误上的逐行 JSON 契约
@@ -1876,17 +1889,21 @@ profile 顺序、父 hash 和失败原因，`prediction_rows`、`holm_test_count
 V3 不读取 V1/V2/C3 运行时预测，不训练二层联合器，不做 stacking，只生成一次成本调整后的预期净超额和
 一次 `base_score`。标准生产路径必须依次完成日线代理、新 14:50 留出、冻结前影子和风险报告，再由用户
 另立授权批次；若点时证据客观不可取得，保留的人工越权路径也必须由新指令绑定具体 model/report hash，
-此前对路径的允许不构成预授权。获批模型只能作为 SHA-256 绑定 wheel 资源加载，配置只选择已批准 profile；
-V3 对外仍是组合根唯一注入的一个 `TomorrowModelPredictorPort`。当前生产接受 `v1|v2|v3`，默认 V1；V3 缺少已批准资源时失败关闭。
+此前对路径的允许不构成预授权。训练模型直接从项目训练目录加载，配置只选择 profile；
+V3 对外仍是组合根唯一注入的一个 `TomorrowModelPredictorPort`。当前服务器、Linux/macOS 与 PowerShell
+入口均接受 `v1|v2|v3`，默认 V1；V3 缺少训练模型时以 `Tomorrow V3 training model is unavailable`
+失败关闭。
 
 该路线唯一脚本入口为 `./run.sh train-tomorrow`。用户不传内部阶段、`run_id`、模型参数或
 工件路径；隔离编排器从规范和输入 hash 推导身份，一次调用连续完成所有父工件已满足的开发训练、一次
 确认和一次日线代理留出；只有新的 14:50 父数据与隔离证明合格时才打开一次新点时留出。中断后同一命令
 从原子检查点继续，已有终态只返回原结果。
-最终目录 `data/train/tomorrow-v3/<run_id>/` 只公开 `report.json` 和 `model.json`；全量特征、
-标签及 OOF 预测位于内部 `evidence/` Parquet 分区。主程序不读取研究目录，只有两级留出通过并取得新授权
-后，独立发布批次才可把 `model.json` 转换为 hash 绑定 wheel 资源。该入口不包含 promotion，也不得修改
-活动配置、注册 V3 或装配生产 predictor。
+最终目录 `data/train/tomorrow-v3/<run_id>/` 只公开 `report.json` 和 `model.json`；两者分别保存规范
+`content_hash`，`model.json.report_hash` 必须绑定同批报告。全量特征、
+标签及 OOF 预测位于内部 `evidence/` Parquet 分区。主程序只读取最终 `model.json`；
+训练入口完成并生成有效模型后，下一次使用 `--profile v3` 的进程即可装配该 predictor，不需要额外
+promotion 或复制 wheel 资源。将 `data/train/tomorrow-v3/<run_id>/model.json` 复制到另一台 PC 的同一相对
+目录即可复用；模型 JSON 不包含本机绝对路径。
 
 路线不实施历史 DeepSeek 盈利回测、自动模型搜索、自动调参、组合黑盒优化、独立逐股亏损概率模型、
 定时/在线/无人授权重训、自动晋级、启动激活或自动回退；用户显式启动的 `train-tomorrow` 只能按封存

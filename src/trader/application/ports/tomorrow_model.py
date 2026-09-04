@@ -118,7 +118,7 @@ class TomorrowModelRuntimeStatus:
     model_id: str
     model_hash: str
     scoring_version: str
-    activation_basis: Literal["manual_user_override"]
+    activation_basis: Literal["manual_user_override", "trained_artifact"]
     historical_status: Literal["historical_rejected", "historical_unavailable", "historical_validated"]
     historical_failure_reasons: tuple[str, ...]
     monitoring_mode: Literal["automatic_t1_outcome_settlement"]

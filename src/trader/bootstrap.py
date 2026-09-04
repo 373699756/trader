@@ -216,7 +216,10 @@ def build_system(
     reviewer = _build_reviewer(context, persistence.budget)
     policy = _recommendation_policy(context.strategy)
     tomorrow_model = TomorrowProductionModelScoringService(
-        load_packaged_tomorrow_production_model(strategy.tomorrow_scoring_profile)
+        load_packaged_tomorrow_production_model(
+            strategy.tomorrow_scoring_profile,
+            training_root=settings.project_root / "data" / "train",
+        )
     )
     publication = _build_publication(
         context,

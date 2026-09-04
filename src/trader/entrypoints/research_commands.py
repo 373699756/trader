@@ -59,6 +59,7 @@ from trader.infra.settings import RuntimeSettings
 @dataclass(frozen=True)
 class ResearchCommandOptions:
     workers: int = 5
+    history_root: Path | None = None
 
 
 class _TomorrowResearchProgress(TomorrowResearchProgressPort):
@@ -90,7 +91,7 @@ def run_research_command(
     options: ResearchCommandOptions,
 ) -> int:
     if command == "train-tomorrow":
-        return _run_tomorrow_research_orchestrator(runtime)
+        return _run_tomorrow_research_orchestrator(runtime, history_root=options.history_root)
     if command == "research-status":
         trace = SQLiteV2ResearchTraceStore(runtime.runtime_dir)
         status = trace.inspect_status()
@@ -218,16 +219,17 @@ def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
     return 0 if audit.status == "baseline_identity_consistent" else 1
 
 
-def _run_tomorrow_research_orchestrator(runtime: RuntimeSettings) -> int:
+def _run_tomorrow_research_orchestrator(runtime: RuntimeSettings, *, history_root: Path | None = None) -> int:
     del runtime
     from trader.infra.research.tomorrow_v3_training import run_tomorrow_v3_training
 
-    result = run_tomorrow_v3_training(_history_data_root(), _train_data_root())
+    result = run_tomorrow_v3_training(history_root or _history_data_root(), _train_data_root())
     payload = {
         "schema_version": "tomorrow_v3_training_result_v1",
         "status": result.status,
         "run_id": result.run_id,
         "manifest_hash": result.manifest_hash,
+        "report_hash": result.report_hash,
         "model_hash": result.model_hash,
         "industry_count": result.industry_count,
         "training_rows": result.training_rows,

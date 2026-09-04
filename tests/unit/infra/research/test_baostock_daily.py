@@ -91,6 +91,7 @@ def test_sqlite_shard_uses_wal_is_idempotent_and_detects_tampering(tmp_path) -> 
 
 def test_partition_manifest_is_order_independent_hash_bound_and_has_no_merged_database(tmp_path) -> None:
     spec, calendar, universe, versions = _context()
+    industries = _industry("600001", calendar) + _industry("300001", calendar)
     left_root = tmp_path / "left"
     right_root = tmp_path / "right"
     first = SQLiteBaoStockDailyShard(left_root / "shards" / "main-6000.sqlite3")
@@ -98,7 +99,7 @@ def test_partition_manifest_is_order_independent_hash_bound_and_has_no_merged_da
     first_right = SQLiteBaoStockDailyShard(right_root / "shards" / "main-6000.sqlite3")
     second_right = SQLiteBaoStockDailyShard(right_root / "shards" / "chinext-3000.sqlite3")
     for shard in (first, second, first_right, second_right):
-        shard.initialize(spec, calendar, universe, versions)
+        shard.initialize(spec, calendar, universe, versions, industries)
     first.save_batch(spec, _batch("600001", calendar))
     second.save_batch(spec, _batch("300001", calendar))
     first.save_training_facts(spec, "600001", _facts("600001", calendar), _industry("600001", calendar))
@@ -144,16 +145,32 @@ def test_training_facts_are_complete_per_code_and_queryable_without_scanning_oth
     spec, calendar, universe, versions = _context()
     path = tmp_path / "main-6000.sqlite3"
     shard = SQLiteBaoStockDailyShard(path)
-    shard.initialize(spec, calendar, universe, versions)
+    industry = _industry("600001", calendar)
+    shard.initialize(spec, calendar, universe, versions, industry)
     shard.save_batch(spec, _batch("600001", calendar))
 
     assert shard.training_ready_codes(spec) == frozenset()
-    shard.save_training_facts(spec, "600001", _facts("600001", calendar), _industry("600001", calendar))
+    shard.save_training_facts(spec, "600001", _facts("600001", calendar), industry)
 
     assert shard.training_ready_codes(spec) == frozenset({"600001"})
     rows = shard.read_training_rows(spec, "600001", allowed_dates=frozenset(calendar.open_dates))
     assert tuple(row.trade_date for row in rows) == calendar.open_dates
     assert all(row.industry == "银行" and row.is_st is False for row in rows)
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM industry_intervals WHERE code='600001'").fetchone() == (1,)
+
+
+def test_training_facts_reject_industry_intervals_that_differ_from_the_frozen_context(tmp_path) -> None:
+    spec, calendar, universe, versions = _context()
+    shard = SQLiteBaoStockDailyShard(tmp_path / "main-6000.sqlite3")
+    shard.initialize(spec, calendar, universe, versions, _industry("600001", calendar))
+    shard.save_batch(spec, _batch("600001", calendar))
+    conflicting = (BaoStockIndustryInterval("600001", calendar.open_dates[0], None, "证券", "申万一级行业"),)
+
+    with pytest.raises(BaoStockDailyArtifactConflictError, match="frozen context"):
+        shard.save_training_facts(spec, "600001", _facts("600001", calendar), conflicting)
+
+    assert shard.training_ready_codes(spec) == frozenset()
 
 
 def test_shard_rejects_conflicting_content_for_same_code_and_date(tmp_path) -> None:

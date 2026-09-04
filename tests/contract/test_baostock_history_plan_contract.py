@@ -107,6 +107,8 @@ def test_codex_b_wave_one_has_a_read_only_hash_bound_input_contract() -> None:
 def test_baostock_runtime_keeps_retry_rate_timeout_and_cancel_caps_executable() -> None:
     runtime = (ROOT / "src/trader/infra/research/baostock_history_runtime.py").read_text(encoding="utf-8")
     gateway = (ROOT / "src/trader/infra/research/baostock_daily.py").read_text(encoding="utf-8")
+    strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
     assert "ProcessPoolExecutor" not in runtime
     assert "BAOSTOCK_CANCEL_GRACE_SECONDS = 10.0" in runtime
@@ -115,6 +117,8 @@ def test_baostock_runtime_keeps_retry_rate_timeout_and_cancel_caps_executable() 
     assert "request.timeout_seconds" in runtime
     assert ".terminate()" in runtime
     assert ".get_data(" not in gateway
+    for contract in (strategy, design):
+        assert "60 秒只约束单次供应商调用，不约束包含多次正常调用的完整阶段或单股任务" in contract
 
 
 def test_baostock_runtime_contract_documents_resume_progress_and_final_database_boundary() -> None:

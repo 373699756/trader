@@ -128,7 +128,7 @@ class TomorrowProductionModelScoringService:
             model_id=self._predictor.model_id,
             model_hash=self._predictor.model_hash,
             scoring_version=self.model_version,
-            activation_basis="manual_user_override",
+            activation_basis="trained_artifact" if self._predictor.profile_id == "v3" else "manual_user_override",
             historical_status=historical_status,
             historical_failure_reasons=historical_failure_reasons,
             monitoring_mode="automatic_t1_outcome_settlement",

@@ -100,7 +100,10 @@ def run(
         settings.config_version,
         _recommendation_policy(strategy_settings),
         TomorrowProductionModelScoringService(
-            load_packaged_tomorrow_production_model(strategy_settings.tomorrow_scoring_profile)
+            load_packaged_tomorrow_production_model(
+                strategy_settings.tomorrow_scoring_profile,
+                training_root=settings.project_root / "data" / "train",
+            )
         ),
     )
     operations, provenance = _operations(

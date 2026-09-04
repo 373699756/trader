@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from importlib import resources
+from pathlib import Path
 from typing import cast
 
 import lightgbm as lgb
@@ -22,7 +23,6 @@ _EXPECTED_MODEL_HASH = "27034e52813f1776e2ed218c1c397f481b244fb852b01be08ddc2124
 _EXPECTED_V1_MODEL_HASH = "4291ea514c233a14ab6f9262e72ea541d1e9a794e73d02f10f8220509f6f502b"
 _P2_RESOURCE_NAME = "tomorrow_p2_model.json"
 _V1_RESOURCE_NAME = "tomorrow_v1_model.json"
-_V3_RESOURCE_NAME = "tomorrow_v3_model.json"
 
 
 class PackagedTomorrowProductionModel:
@@ -165,6 +165,15 @@ class PackagedV3TomorrowProductionModel:
             _text(payload, "profile_id") != "v3"
             or _text(payload, "schema_version") != "tomorrow_v3_production_model_v1"
             or not _text(payload, "model_id")
+            or not _sha256_text(payload, "manifest_hash")
+            or not _sha256_text(payload, "split_hash")
+            or not _sha256_text(payload, "report_hash")
+            or _text(payload, "training_anchor") != "15:00_close"
+            or _text(payload, "runtime_anchor") != "14:50"
+            or _boolean(payload, "point_in_time_parity")
+            or _boolean(payload, "automatic_model_update")
+            or _integer(payload, "training_rows") < 1
+            or _integer(payload, "validation_rows") < 1
         ):
             raise ValueError("packaged Tomorrow V3 production model identity is invalid")
         self._model_id = _text(payload, "model_id")
@@ -257,6 +266,8 @@ class PackagedV3TomorrowProductionModel:
 
 def load_packaged_tomorrow_production_model(
     profile_id: TomorrowScoringProfile,
+    *,
+    training_root: Path | None = None,
 ) -> TomorrowModelPredictorPort:
     if profile_id == "v1":
         raw = _resource_payload(_V1_RESOURCE_NAME)
@@ -268,12 +279,16 @@ def load_packaged_tomorrow_production_model(
         raw = _resource_payload(_P2_RESOURCE_NAME)
         return _load_p2(raw)
     if profile_id == "v3":
-        raw = _resource_payload(_V3_RESOURCE_NAME)
-        payload = dict(raw)
-        stored_hash = payload.pop("content_hash", None)
-        if not isinstance(stored_hash, str):
-            raise ValueError("packaged Tomorrow V3 production model hash is missing")
-        return PackagedV3TomorrowProductionModel(payload, stored_hash)
+        try:
+            payload, stored_hash = _load_training_v3_model(training_root or Path("data/train"))
+        except FileNotFoundError as exc:
+            raise RuntimeError("Tomorrow V3 training model is unavailable") from exc
+        except (OSError, TypeError, ValueError) as exc:
+            raise RuntimeError("Tomorrow V3 training model is invalid") from exc
+        try:
+            return PackagedV3TomorrowProductionModel(payload, stored_hash)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("Tomorrow V3 training model is invalid") from exc
     raise ValueError("unknown Tomorrow scoring profile")
 
 
@@ -309,6 +324,26 @@ def _resource_payload(resource_name: str) -> dict[str, object]:
     return cast(dict[str, object], raw)
 
 
+def _load_training_v3_model(training_root: Path) -> tuple[dict[str, object], str]:
+    model_root = training_root / "tomorrow-v3"
+    candidates = tuple(path for path in model_root.glob("*/model.json") if path.is_file())
+    if not candidates:
+        raise FileNotFoundError(model_root / "*/model.json")
+    model_path = max(candidates, key=lambda path: (path.stat().st_mtime_ns, str(path)))
+    return _verified_json_document(model_path, "model")
+
+
+def _verified_json_document(path: Path, label: str) -> tuple[dict[str, object], str]:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise TypeError(f"Tomorrow V3 training {label} must be a JSON object")
+    payload = cast(dict[str, object], raw)
+    stored_hash = payload.pop("content_hash", None)
+    if not isinstance(stored_hash, str) or _content_hash(payload) != stored_hash:
+        raise ValueError(f"Tomorrow V3 training {label} content hash is invalid")
+    return payload, stored_hash
+
+
 def _content_hash(payload: dict[str, object]) -> str:
     encoded = json.dumps(payload, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -333,6 +368,18 @@ def _number(payload: dict[str, object], name: str) -> float:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise TypeError(f"Tomorrow model {name} must be numeric")
     return float(value)
+
+
+def _boolean(payload: dict[str, object], name: str) -> bool:
+    value = payload.get(name)
+    if not isinstance(value, bool):
+        raise TypeError(f"Tomorrow model {name} must be boolean")
+    return value
+
+
+def _sha256_text(payload: dict[str, object], name: str) -> bool:
+    value = _text(payload, name)
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
 def _string_list(payload: dict[str, object], name: str) -> list[str]:

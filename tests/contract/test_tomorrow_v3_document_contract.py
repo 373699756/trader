@@ -92,10 +92,11 @@ def test_v3_research_has_four_isolated_owners_and_one_public_command() -> None:
         assert f"`./run.sh {internal_stage}" not in strategy
 
 
-def test_explicit_user_authorized_v3_profile_remains_hash_bound() -> None:
+def test_trained_v3_profile_remains_hash_bound() -> None:
     strategy = (ROOT / "docs" / "recommendation-strategy.md").read_text(encoding="utf-8")
     model_port = (ROOT / "src" / "trader" / "application" / "ports" / "tomorrow_model.py").read_text(encoding="utf-8")
 
-    assert "activation_basis=manual_user_override" in strategy
-    assert "验证通过" in strategy
+    assert "data/train/tomorrow-v3/<run_id>/" in strategy
+    assert "主程序启动时读取最新 `model.json`" in strategy
+    assert "内容 hash" in strategy
     assert 'TomorrowScoringProfile = Literal["v1", "v2", "v3"]' in model_port

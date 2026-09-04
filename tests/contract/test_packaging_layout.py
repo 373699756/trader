@@ -51,3 +51,30 @@ def test_numpy_dependency_upper_bound_keeps_supported_mypy_stub_syntax() -> None
     project = tomllib.loads((repository / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert "numpy>=2,<2.5" in project["project"]["dependencies"]
+
+
+def test_hidden_metadata_container_is_not_discovered_as_an_empty_distribution() -> None:
+    repository = Path(__file__).parents[2]
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import importlib.metadata as m; "
+            "raise SystemExit(any(d.metadata.get('Name') is None for d in m.distributions()))",
+        ],
+        cwd=repository,
+        check=False,
+    )
+
+    assert probe.returncode == 0
+
+
+def test_repository_ignores_history_and_training_intermediates_but_allows_final_artifacts() -> None:
+    repository = Path(__file__).parents[2]
+    ignore = (repository / ".gitignore").read_text(encoding="utf-8")
+
+    assert "/data/history/" in ignore
+    assert "/data/train/**/*" in ignore
+    assert "!/data/train/**/model.json" in ignore
+    assert "!/data/train/**/report.json" in ignore
+    assert all(pattern in ignore for pattern in ("build/", "dist/", "*.egg-info/"))

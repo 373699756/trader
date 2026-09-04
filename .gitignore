@@ -4,8 +4,14 @@
 .deepseek_key
 .token_key
 .runtime/
+.build-metadata/
 # Runtime history shards, training evidence, WAL files, and manifests are never committed.
 /data/history/
+# Training may publish only the final auditable pair; evidence, checkpoints, and logs stay local.
+/data/train/**/*
+!/data/train/**/
+!/data/train/**/model.json
+!/data/train/**/report.json
 *.sqlite3
 .agents/*
 !.agents/skills/

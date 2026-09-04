@@ -116,6 +116,23 @@ def test_build_system_selects_an_explicit_v2_run_profile_without_rewriting_confi
     assert strategy_path.read_bytes() == original
 
 
+def test_build_system_passes_project_training_root_for_v3(tmp_path, monkeypatch) -> None:
+    from trader.infra.tomorrow_production_model import load_packaged_tomorrow_production_model
+
+    observed: list[Path] = []
+    v1_predictor = load_packaged_tomorrow_production_model("v1")
+
+    def load(profile: str, *, training_root: Path | None = None):
+        observed.append(training_root or Path())
+        return v1_predictor
+
+    monkeypatch.setattr("trader.bootstrap.load_packaged_tomorrow_production_model", load)
+
+    build_system(_config_with_strategy_profile(tmp_path, "v3"))
+
+    assert observed == [tmp_path / "config" / "data" / "train"]
+
+
 def test_reference_data_plane_recovery_is_fail_open() -> None:
     from unittest.mock import Mock
 

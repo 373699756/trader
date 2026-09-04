@@ -24,6 +24,7 @@ from trader.domain.research.baostock_daily import (
 from trader.infra.research.baostock_daily import SQLiteBaoStockDailyShard
 from trader.infra.research.baostock_history_runtime import (
     _ContextResponse,
+    _ContextStage,
     _DownloadCoordinator,
     _DownloadLock,
     _DownloadRun,
@@ -32,6 +33,8 @@ from trader.infra.research.baostock_history_runtime import (
     _partition_name,
     _quarantine_corrupt_archive_parts,
     _run_locked,
+    _SupplierCallActivity,
+    _WorkerHandle,
     run_baostock_history,
 )
 
@@ -290,6 +293,120 @@ def test_context_query_blacklist_stops_without_retrying(tmp_path: Path) -> None:
     assert context is None
     assert failure == "supplier_query_failed_blacklisted"
     assert process_context.process_count == 1
+
+
+def test_context_watchdog_allows_many_bounded_supplier_calls_in_one_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = _coordinator(tmp_path)[0]._run.context
+    responses = [
+        _ContextStage("supplier_login"),
+        _SupplierCallActivity("started"),
+        _SupplierCallActivity("completed"),
+        _ContextStage("trading_calendar"),
+        _SupplierCallActivity("started"),
+        _SupplierCallActivity("completed"),
+        _ContextStage("security_universe"),
+        *(_SupplierCallActivity(state) for _ in range(18) for state in ("started", "completed")),
+        _ContextResponse(context),
+    ]
+
+    class _Connection:
+        def __init__(self) -> None:
+            self._responses = iter(responses)
+
+        def poll(self, timeout: float) -> bool:
+            assert 0 < timeout <= 60.0
+            return True
+
+        def recv(self) -> object:
+            return next(self._responses)
+
+        def close(self) -> None:
+            pass
+
+    class _Process:
+        def start(self) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return False
+
+        def join(self, timeout: float | None = None) -> None:
+            pass
+
+    connection = _Connection()
+
+    class _ProcessContext:
+        def Pipe(self):
+            return connection, connection
+
+        def Process(self, *, target, args):
+            return _Process()
+
+    now = iter(float(value * 30) for value in range(len(responses) * 2 + 2))
+    monkeypatch.setattr("trader.infra.research.baostock_history_runtime.time.monotonic", lambda: next(now))
+
+    actual, failure = _fetch_context(  # type: ignore[arg-type] -- bounded multiprocessing test double
+        _ProcessContext(),
+        BaoStockDailySpec(sessions=1),
+        BaoStockRuntimeRequest(tmp_path, sessions=1, retries=0),
+        None,
+    )
+
+    assert actual == context
+    assert failure == ""
+
+
+def test_download_worker_activity_refreshes_watchdog_without_finishing_the_security(tmp_path: Path) -> None:
+    coordinator, security, _ = _coordinator(tmp_path)
+
+    class _Connection:
+        def recv(self) -> object:
+            return _SupplierCallActivity("completed")
+
+    class _Process:
+        pass
+
+    handle = _WorkerHandle(  # type: ignore[arg-type] -- focused process/connection doubles
+        process=_Process(),
+        connection=_Connection(),
+        shard_path=tmp_path,
+        current=security,
+        started_at=1.0,
+    )
+
+    coordinator._accept_response(handle, now=59.0)
+
+    assert handle.current == security
+    assert handle.started_at == 59.0
+    assert coordinator._attempts == {}
+    assert coordinator._terminal_failures == {}
+
+
+def test_download_worker_pipe_failure_is_recorded_without_releasing_the_security_twice(tmp_path: Path) -> None:
+    coordinator, security, _ = _coordinator(tmp_path)
+
+    class _Connection:
+        def recv(self) -> object:
+            raise EOFError
+
+    class _Process:
+        pass
+
+    handle = _WorkerHandle(  # type: ignore[arg-type] -- focused process/connection doubles
+        process=_Process(),
+        connection=_Connection(),
+        shard_path=tmp_path,
+        current=security,
+        started_at=1.0,
+    )
+
+    coordinator._accept_response(handle, now=2.0)
+
+    assert handle.current is None
+    assert tuple(coordinator._pending) == (security,)
+    assert coordinator._attempts == {security.code: 1}
 
 
 def test_run_projects_unsupported_download_lock_as_a_controlled_failure(

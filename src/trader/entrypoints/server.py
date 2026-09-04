@@ -47,7 +47,7 @@ class _RuntimeSystem(_StoppableSystem, Protocol):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="trader-server")
     parser.add_argument("--config", default=os.environ.get("TRADER_CONFIG", ""))
-    parser.add_argument("--profile", choices=("v1", "v2"))
+    parser.add_argument("--profile", choices=("v1", "v2", "v3"))
     return parser
 
 

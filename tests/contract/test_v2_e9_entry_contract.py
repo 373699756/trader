@@ -235,10 +235,19 @@ exit 99""",
     assert completed.stdout == f"server:--config {config} --profile v1\n"
 
 
-@pytest.mark.parametrize("arguments", (("--profile", "v2"), ("--profile=v2",)))
-def test_run_script_accepts_an_explicit_v2_profile_without_a_serve_alias(
+@pytest.mark.parametrize(
+    ("arguments", "profile"),
+    (
+        (("--profile", "v2"), "v2"),
+        (("--profile=v2",), "v2"),
+        (("--profile", "v3"), "v3"),
+        (("--profile=v3",), "v3"),
+    ),
+)
+def test_run_script_accepts_an_explicit_profile_without_a_serve_alias(
     tmp_path: Path,
     arguments: tuple[str, ...],
+    profile: str,
 ) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
@@ -256,7 +265,7 @@ def test_run_script_accepts_an_explicit_v2_profile_without_a_serve_alias(
     )
 
     assert completed.returncode == 0
-    assert completed.stdout == f"server:--config {config} --profile v2\n"
+    assert completed.stdout == f"server:--config {config} --profile {profile}\n"
 
 
 def test_run_script_forwards_baostock_download_arguments_after_normalizing_the_profile(tmp_path: Path) -> None:
@@ -311,6 +320,28 @@ def test_run_script_forwards_the_single_tomorrow_training_command_without_stage_
 
     assert completed.returncode == 0
     assert completed.stdout == f"cli:--config {config} --profile v1 train-tomorrow\n"
+
+
+def test_run_script_forwards_the_tomorrow_training_history_root(tmp_path: Path) -> None:
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    _write_fake_entrypoint(venv_bin / "python", "exit 99")
+    _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
+    _write_fake_entrypoint(venv_bin / "trader-cli", "printf 'cli:%s\\n' \"$*\"")
+    config = tmp_path / "runtime.json"
+    history = tmp_path / "history"
+
+    completed = subprocess.run(
+        ("bash", str(ROOT / "run.sh"), "train-tomorrow", "--runtime-dir", str(history)),
+        cwd=ROOT,
+        env={**os.environ, "VENV_DIR": str(venv_bin.parent), "TRADER_CONFIG": str(config)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == f"cli:--config {config} --profile v1 train-tomorrow --runtime-dir {history}\n"
 
 
 def test_run_script_rejects_an_unknown_profile_before_environment_setup(tmp_path: Path) -> None:
@@ -378,6 +409,7 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert ".\\run.ps1 train-tomorrow          从封存状态推导并连续运行可用 Tomorrow 训练阶段" in powershell
     assert "所有命令都可追加 --profile v1|v2|v3；未指定时为 V1" in powershell
     assert "& $SelectedEntryPoint --help" in powershell
+    assert '$ScoringProfile -notin @("v1", "v2", "v3")' in powershell
 
 
 def test_research_status_is_historical_only_and_does_not_create_runtime_files(tmp_path: Path, capsys) -> None:
@@ -452,6 +484,38 @@ def test_train_tomorrow_runs_a_prerequisite_before_resource_handoff_without_crea
     assert payload["production_authority"] is False
     assert {os.environ[name] for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")} == {"2"}
     assert not runtime_dir.exists()
+
+
+def test_train_tomorrow_passes_the_explicit_history_root_to_the_training_owner(
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = json.loads((ROOT / "config/v2/runtime.json").read_text(encoding="utf-8"))
+    runtime["runtime_dir"] = str(tmp_path / "runtime")
+    config = tmp_path / "runtime.json"
+    config.write_text(json.dumps(runtime), encoding="utf-8")
+    history = tmp_path / "downloaded-history"
+    observed: list[tuple[Path, Path]] = []
+
+    def train(history_root: Path, train_root: Path) -> SimpleNamespace:
+        observed.append((history_root, train_root))
+        return SimpleNamespace(
+            status="blocked",
+            run_id=None,
+            manifest_hash="",
+            report_hash="",
+            model_hash="",
+            industry_count=0,
+            training_rows=0,
+            validation_rows=0,
+            failure_reasons=("history_manifest_unavailable",),
+        )
+
+    monkeypatch.setattr("trader.infra.research.tomorrow_v3_training.run_tomorrow_v3_training", train)
+
+    assert main(["--config", str(config), "train-tomorrow", "--runtime-dir", str(history)]) == 1
+
+    assert observed == [(history, ROOT / "data" / "train")]
+    assert json.loads(capsys.readouterr().out)["report_hash"] == ""
 
 
 def test_research_status_keeps_tomorrow_graph_conflict_out_of_h1_input_blockers(tmp_path: Path, monkeypatch) -> None:

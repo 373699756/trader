@@ -39,7 +39,13 @@ def build_parser() -> argparse.ArgumentParser:
         "check",
         help="Run config validation, research readiness, and the active-profile performance gate.",
     )
-    subparsers.add_parser("train-tomorrow", help="Run every available immutable Tomorrow training stage.")
+    training = subparsers.add_parser("train-tomorrow", help="Run every available immutable Tomorrow training stage.")
+    training.add_argument(
+        "--runtime-dir",
+        type=Path,
+        default=Path("data/history"),
+        help="BaoStock history root previously used by download_history.",
+    )
     subparsers.add_parser("validate-config", help="Validate runtime and strategy configuration.")
     performance = subparsers.add_parser(
         "performance-check",
@@ -110,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
             runtime,
             ResearchCommandOptions(
                 workers=int(getattr(args, "workers", 5)),
+                history_root=_repository_data_path(args.runtime_dir) if args.command == "train-tomorrow" else None,
             ),
         )
     return _run_config_validation(runtime, profile_override)
@@ -122,8 +129,7 @@ def _run_baostock_history(runtime_dir: Path, sessions: int) -> int:
         run_baostock_history,
     )
 
-    if not runtime_dir.is_absolute():
-        runtime_dir = _repository_root_for_validation() / runtime_dir
+    runtime_dir = _repository_data_path(runtime_dir)
     request = BaoStockRuntimeRequest(runtime_dir=runtime_dir, sessions=sessions)
     progress = _BaoStockProgressWriter(runtime_dir, sessions=sessions)
     try:
@@ -147,6 +153,10 @@ def _run_baostock_history(runtime_dir: Path, sessions: int) -> int:
         return 2
     print(json.dumps(project_baostock_runtime_status(status), ensure_ascii=False, sort_keys=True))
     return 0 if status.state == "completed" else 1
+
+
+def _repository_data_path(path: Path) -> Path:
+    return path if path.is_absolute() else _repository_root_for_validation() / path
 
 
 class _BaoStockProgressWriter:

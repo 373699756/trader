@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +13,18 @@ from trader.domain.market.models import (
 from trader.domain.recommendation.models import Strategy
 from trader.domain.recommendation.risk_fusion.fusion import DIMENSION_NAMES, FusionPolicy
 from trader.domain.review.models import RiskRule
+
+_TEST_DIRECTORY_MARKERS = frozenset({"unit", "component", "integration", "contract", "performance", "js"})
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    for item in items:
+        relative = item.path.relative_to(Path(__file__).parent)
+        category = relative.parts[0]
+        if category in _TEST_DIRECTORY_MARKERS:
+            item.add_marker(category)
+        if category == "performance":
+            item.add_marker("slow")
 
 
 @pytest.fixture

@@ -40,6 +40,7 @@ class TomorrowV3TrainingResult:
     status: str
     run_id: str | None
     manifest_hash: str
+    report_hash: str
     model_hash: str
     industry_count: int
     training_rows: int
@@ -63,7 +64,7 @@ def run_tomorrow_v3_training(history_root: Path, train_root: Path) -> TomorrowV3
         archive = BaoStockDailyPartitionedArchive(history_root / "baostock-daily" / "sessions-2000")
         manifest = archive.verify()
     except (BaoStockDailyArtifactConflictError, OSError, ValueError) as exc:
-        return TomorrowV3TrainingResult("blocked", None, "", "", 0, 0, 0, (_reason(exc),))
+        return TomorrowV3TrainingResult("blocked", None, "", "", "", 0, 0, 0, (_reason(exc),))
     run_id = hashlib.sha256(f"{manifest.content_hash}:tomorrow-v3".encode()).hexdigest()
     output = train_root / "tomorrow-v3" / run_id
     try:
@@ -73,23 +74,26 @@ def run_tomorrow_v3_training(history_root: Path, train_root: Path) -> TomorrowV3
         samples = _build_samples(archive, manifest, window)
         if not samples:
             return TomorrowV3TrainingResult(
-                "blocked", run_id, manifest.content_hash, "", 0, 0, 0, ("v3_training_rows_empty",)
+                "blocked", run_id, manifest.content_hash, "", "", 0, 0, 0, ("v3_training_rows_empty",)
             )
         models, training_rows, validation_rows = _fit_models(samples, split)
         report = _build_report(manifest.content_hash, split, models, training_rows, validation_rows)
+        report_hash = _content_hash(report)
+        report["content_hash"] = report_hash
         _write_json(output / "report.json", report)
         if not report["validation_passed"]:
             return TomorrowV3TrainingResult(
                 "rejected",
                 run_id,
                 manifest.content_hash,
+                report_hash,
                 "",
                 len(models),
                 training_rows,
                 validation_rows,
                 tuple(cast(list[str], report["failure_reasons"])),
             )
-        model = _model_document(manifest.content_hash, split, models, training_rows, validation_rows)
+        model = _model_document(manifest.content_hash, split, report_hash, models, training_rows, validation_rows)
         model_hash = _content_hash(model)
         model["content_hash"] = model_hash
         _write_json(output / "model.json", model)
@@ -97,6 +101,7 @@ def run_tomorrow_v3_training(history_root: Path, train_root: Path) -> TomorrowV3
             "validated",
             run_id,
             manifest.content_hash,
+            report_hash,
             model_hash,
             len(models),
             training_rows,
@@ -104,7 +109,7 @@ def run_tomorrow_v3_training(history_root: Path, train_root: Path) -> TomorrowV3
             (),
         )
     except (BaoStockDailyArtifactConflictError, OSError, ValueError, RuntimeError) as exc:
-        return TomorrowV3TrainingResult("blocked", run_id, manifest.content_hash, "", 0, 0, 0, (_reason(exc),))
+        return TomorrowV3TrainingResult("blocked", run_id, manifest.content_hash, "", "", 0, 0, 0, (_reason(exc),))
 
 
 def _build_split(dates: tuple[date, ...], manifest_hash: str) -> BaoStockV3Split:
@@ -291,9 +296,10 @@ def _build_report(
     }
 
 
-def _model_document(
+def _model_document(  # noqa: PLR0913 - every value is part of the sealed model identity
     manifest_hash: str,
     split: BaoStockV3Split,
+    report_hash: str,
     models: dict[str, dict[str, object]],
     training_rows: int,
     validation_rows: int,
@@ -305,6 +311,7 @@ def _model_document(
         "feature_ids": list(_FEATURE_IDS),
         "manifest_hash": manifest_hash,
         "split_hash": split.content_hash,
+        "report_hash": report_hash,
         "training_anchor": "15:00_close",
         "runtime_anchor": "14:50",
         "point_in_time_parity": False,

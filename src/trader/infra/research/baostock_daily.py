@@ -1,50 +1,33 @@
-"""BaoStock row gateway and immutable SQLite artifacts for offline research."""
+"""Immutable BaoStock SQLite shard artifacts for offline research."""
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
-import platform
 import sqlite3
-import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
-from typing import Protocol, cast
+from typing import cast
 
 from trader.application.research.baostock_daily import BaoStockShardContext
 from trader.domain.research.baostock_daily import (
-    BaoStockAdjustment,
     BaoStockBoard,
     BaoStockCalendar,
     BaoStockCodeBatch,
-    BaoStockCodeDownload,
     BaoStockDailyCell,
     BaoStockDailyFact,
-    BaoStockDailyManifest,
-    BaoStockDailySide,
     BaoStockDailySpec,
     BaoStockIndustryInterval,
-    BaoStockPartitionRef,
     BaoStockSecurity,
     BaoStockSourceVersions,
-    BaoStockTradingStatus,
     BaoStockTrainingRow,
-    join_baostock_daily_sides,
 )
 from trader.domain.research.h1_point_in_time import canonical_hash
 from trader.domain.research.tomorrow_v3_input_compatibility import DailyInputField
-from trader.infra.research.baostock_daily_codec import (
-    encode_json as _json,
-)
-from trader.infra.research.baostock_daily_codec import (
-    json_array as _json_array,
-)
-from trader.infra.research.baostock_daily_codec import (
-    json_object as _json_object,
-)
+from trader.infra.research.baostock_daily_codec import encode_json as _json
+from trader.infra.research.baostock_daily_codec import json_array as _json_array
+from trader.infra.research.baostock_daily_codec import json_object as _json_object
 from trader.infra.research.baostock_daily_serialization import (
     _decode_batch_metadata,
     _decode_calendar,
@@ -60,7 +43,6 @@ from trader.infra.research.baostock_daily_serialization import (
     _encode_versions,
 )
 
-_DAILY_FIELDS = "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST"
 _BOARDS: tuple[BaoStockBoard, ...] = ("main", "chinext", "star")
 _FROZEN_DAILY_FIELDS = (
     DailyInputField("code", "security_code"),
@@ -89,321 +71,6 @@ _FROZEN_DAILY_FIELDS = (
 
 class BaoStockDailyArtifactConflictError(RuntimeError):
     """Raised when a shard, merged database, or manifest changes identity."""
-
-
-class BaoStockRowResult(Protocol):
-    error_code: str
-    error_msg: str
-    fields: Sequence[str]
-
-    def next(self) -> bool: ...
-    def get_row_data(self) -> Sequence[str]: ...
-
-
-class BaoStockSdkPort(Protocol):
-    __version__: str
-
-    def query_trade_dates(self, *, start_date: str, end_date: str) -> BaoStockRowResult: ...
-    def query_stock_basic(self) -> BaoStockRowResult: ...
-    def query_stock_industry(self, *, code: str = "", date: str = "") -> BaoStockRowResult: ...
-    def query_history_k_data_plus(  # noqa: PLR0913 - exact third-party SDK signature
-        self,
-        code: str,
-        fields: str,
-        start_date: str,
-        end_date: str,
-        *,
-        frequency: str,
-        adjustflag: str,
-    ) -> BaoStockRowResult: ...
-
-
-class BaoStockRowGateway:
-    """Translate an already-owned SDK session using only next/get_row_data."""
-
-    def __init__(
-        self,
-        sdk: BaoStockSdkPort,
-        *,
-        python_version: str | None = None,
-        dependency_versions: tuple[tuple[str, str], ...] = (),
-    ) -> None:
-        self._sdk = sdk
-        self._versions = BaoStockSourceVersions(
-            sdk.__version__,
-            python_version or platform.python_version(),
-            dependency_versions,
-        )
-
-    def source_versions(self) -> BaoStockSourceVersions:
-        return self._versions
-
-    def fetch_calendar(self, spec: BaoStockDailySpec) -> BaoStockCalendar:
-        lookback = spec.source_cutoff - timedelta(days=max(730, spec.sessions * 2))
-        result = self._sdk.query_trade_dates(
-            start_date=lookback.isoformat(),
-            end_date=spec.source_cutoff.isoformat(),
-        )
-        rows = _result_rows(result, "calendar_query_failed")
-        dates = tuple(
-            date.fromisoformat(row["calendar_date"])
-            for row in rows
-            if row.get("is_trading_day") == "1" and row.get("calendar_date")
-        )
-        if len(dates) < spec.sessions:
-            raise ValueError("BaoStock calendar returned fewer sessions than requested")
-        return BaoStockCalendar(tuple(sorted(set(dates)))[-spec.sessions :])
-
-    def fetch_universe(self, spec: BaoStockDailySpec) -> tuple[BaoStockSecurity, ...]:
-        rows = _result_rows(self._sdk.query_stock_basic(), "security_query_failed")
-        securities: list[BaoStockSecurity] = []
-        for row in rows:
-            if row.get("type") != "1":
-                continue
-            source_code = row.get("code", "")
-            board = _board(source_code)
-            if board is None:
-                continue
-            listed = _date(row.get("ipoDate"), "BaoStock listing date is missing")
-            delisted = _optional_date(row.get("outDate"))
-            if listed > spec.source_cutoff:
-                continue
-            securities.append(
-                BaoStockSecurity(
-                    source_code.split(".")[-1],
-                    row.get("code_name", ""),
-                    board,
-                    listed,
-                    delisted,
-                    self._versions.sdk_version,
-                )
-            )
-        ordered = tuple(sorted(securities, key=lambda item: item.code))
-        if not ordered or len({item.code for item in ordered}) != len(ordered):
-            raise ValueError("BaoStock security master is empty or duplicated")
-        return ordered
-
-    def fetch_code_batch(
-        self,
-        spec: BaoStockDailySpec,
-        security: BaoStockSecurity,
-        calendar: BaoStockCalendar,
-    ) -> BaoStockCodeBatch:
-        return self.fetch_code_download(spec, security, calendar).batch
-
-    def fetch_code_download(
-        self,
-        spec: BaoStockDailySpec,
-        security: BaoStockSecurity,
-        calendar: BaoStockCalendar,
-    ) -> BaoStockCodeDownload:
-        expected = calendar.expected_dates(security)
-        if not expected:
-            return BaoStockCodeDownload(BaoStockCodeBatch(security.code, ()), ())
-        raw, facts, raw_nulls, raw_future = self._daily_sides(spec, security, "unadjusted", "3", expected)
-        qfq, _, qfq_nulls, qfq_future = self._daily_sides(spec, security, "qfq", "2", expected)
-        batch = join_baostock_daily_sides(
-            security.code,
-            expected,
-            raw,
-            qfq,
-            null_rows=raw_nulls + qfq_nulls,
-        )
-        if raw_future + qfq_future == 0:
-            return BaoStockCodeDownload(batch, facts)
-        return BaoStockCodeDownload(
-            BaoStockCodeBatch(
-                batch.code,
-                batch.cells,
-                batch.duplicate_rows,
-                batch.null_rows,
-                batch.out_of_window_rows,
-                raw_future + qfq_future,
-                batch.failure_reasons,
-            ),
-            facts,
-        )
-
-    def fetch_industry_intervals(
-        self,
-        spec: BaoStockDailySpec,
-        calendar: BaoStockCalendar,
-        universe: tuple[BaoStockSecurity, ...],
-    ) -> tuple[BaoStockIndustryInterval, ...]:
-        del spec
-        snapshots = _industry_snapshot_dates(calendar.open_dates)
-        allowed = {item.source_code: item.code for item in universe}
-        observations: dict[str, list[tuple[date, str, str]]] = {item.code: [] for item in universe}
-        for snapshot_date in snapshots:
-            rows = _result_rows(
-                self._sdk.query_stock_industry(code="", date=snapshot_date.isoformat()),
-                "industry_query_failed",
-            )
-            for row in rows:
-                code = allowed.get(row.get("code", ""))
-                industry = row.get("industry", "").strip()
-                classification = row.get("industryClassification", "").strip()
-                if code is None or not industry or not classification:
-                    continue
-                observations[code].append((snapshot_date, industry, classification))
-        intervals: list[BaoStockIndustryInterval] = []
-        for code, values in observations.items():
-            compressed: list[tuple[date, str, str]] = []
-            for value in values:
-                if not compressed or value[1:] != compressed[-1][1:]:
-                    compressed.append(value)
-            for index, (effective_from, industry, classification) in enumerate(compressed):
-                effective_to = compressed[index + 1][0] if index + 1 < len(compressed) else None
-                intervals.append(BaoStockIndustryInterval(code, effective_from, effective_to, industry, classification))
-        return tuple(sorted(intervals, key=lambda item: (item.code, item.effective_from)))
-
-    def _daily_sides(
-        self,
-        spec: BaoStockDailySpec,
-        security: BaoStockSecurity,
-        adjustment: BaoStockAdjustment,
-        adjustflag: str,
-        expected: tuple[date, ...],
-    ) -> tuple[tuple[BaoStockDailySide, ...], tuple[BaoStockDailyFact, ...], int, int]:
-        result = self._sdk.query_history_k_data_plus(
-            security.source_code,
-            _DAILY_FIELDS,
-            expected[0].isoformat(),
-            expected[-1].isoformat(),
-            frequency="d",
-            adjustflag=adjustflag,
-        )
-        rows = _result_rows(result, f"{adjustment}_daily_query_failed")
-        sides: list[BaoStockDailySide] = []
-        facts: list[BaoStockDailyFact] = []
-        null_rows = future_rows = 0
-        for row in rows:
-            try:
-                trade_date = _date(row.get("date"), "BaoStock daily date is missing")
-                if trade_date > spec.source_cutoff:
-                    future_rows += 1
-                    continue
-                if row.get("code") != security.source_code or row.get("adjustflag") != adjustflag:
-                    raise ValueError("BaoStock daily row identity is invalid")
-                side = _daily_side(security.code, trade_date, adjustment, row)
-                if adjustment == "unadjusted":
-                    facts.append(BaoStockDailyFact(security.code, trade_date, _is_st(row.get("isST"))))
-            except (TypeError, ValueError):
-                null_rows += 1
-                continue
-            sides.append(side)
-        return tuple(sides), tuple(facts), null_rows, future_rows
-
-
-def _industry_snapshot_dates(open_dates: tuple[date, ...]) -> tuple[date, ...]:
-    if not open_dates:
-        return ()
-    values = [open_dates[0]]
-    for day in open_dates[1:-1]:
-        previous = values[-1]
-        if (
-            day.year != previous.year
-            and day.month >= 1
-            or day.year == previous.year
-            and day.month >= previous.month + 6
-        ):
-            values.append(day)
-    if open_dates[-1] != values[-1]:
-        values.append(open_dates[-1])
-    return tuple(values)
-
-
-def _result_rows(result: BaoStockRowResult, error_code: str) -> tuple[dict[str, str], ...]:
-    if result.error_code != "0":
-        raise RuntimeError(_supplier_failure_code(result.error_code, error_code))
-    fields = tuple(result.fields)
-    if not fields or len(set(fields)) != len(fields):
-        raise ValueError("BaoStock result fields are empty or duplicated")
-    rows: list[dict[str, str]] = []
-    while result.next():
-        values = tuple(result.get_row_data())
-        if len(values) != len(fields):
-            raise ValueError("BaoStock result row width is invalid")
-        rows.append(dict(zip(fields, values, strict=True)))
-    if result.error_code != "0":
-        raise RuntimeError(_supplier_failure_code(result.error_code, error_code))
-    return tuple(rows)
-
-
-def _supplier_failure_code(vendor_code: str, fallback: str) -> str:
-    if vendor_code == "10001011":
-        return "supplier_query_failed_blacklisted"
-    return fallback
-
-
-def _daily_side(
-    code: str,
-    trade_date: date,
-    adjustment: BaoStockAdjustment,
-    row: dict[str, str],
-) -> BaoStockDailySide:
-    status = _trading_status(row.get("tradestatus"))
-    return BaoStockDailySide(
-        code=code,
-        trade_date=trade_date,
-        adjustment=adjustment,
-        open_price=_optional_float(row.get("open")),
-        high_price=_optional_float(row.get("high")),
-        low_price=_optional_float(row.get("low")),
-        close_price=_optional_float(row.get("close")),
-        volume=_optional_float(row.get("volume")),
-        amount=_optional_float(row.get("amount")),
-        preclose=_optional_float(row.get("preclose")) if adjustment == "unadjusted" else None,
-        pct_change=_optional_ratio(row.get("pctChg")) if adjustment == "unadjusted" else None,
-        turnover=_optional_ratio(row.get("turn")) if adjustment == "unadjusted" else None,
-        trading_status=status,
-    )
-
-
-def _trading_status(value: str | None) -> BaoStockTradingStatus:
-    if value == "1":
-        return "trading"
-    if value == "0":
-        return "suspended"
-    raise ValueError("BaoStock trading status is invalid")
-
-
-def _is_st(value: str | None) -> bool:
-    if value == "1":
-        return True
-    if value == "0":
-        return False
-    raise ValueError("BaoStock ST status is invalid")
-
-
-def _optional_float(value: str | None) -> float | None:
-    if value is None or not value.strip():
-        return None
-    return float(value)
-
-
-def _optional_ratio(value: str | None) -> float | None:
-    number = _optional_float(value)
-    return None if number is None else number / 100.0
-
-
-def _date(value: str | None, message: str) -> date:
-    if value is None or not value.strip():
-        raise ValueError(message)
-    return date.fromisoformat(value)
-
-
-def _optional_date(value: str | None) -> date | None:
-    return None if value is None or not value.strip() else date.fromisoformat(value)
-
-
-def _board(source_code: str) -> BaoStockBoard | None:
-    if source_code.startswith("sh.688") or source_code.startswith("sh.689"):
-        return "star"
-    if source_code.startswith("sz.300") or source_code.startswith("sz.301"):
-        return "chinext"
-    main_prefixes = ("sh.600", "sh.601", "sh.603", "sh.605", "sz.000", "sz.001", "sz.002", "sz.003")
-    return "main" if source_code.startswith(main_prefixes) else None
 
 
 @dataclass(frozen=True)
@@ -634,6 +301,9 @@ class SQLiteBaoStockDailyShard:
             raise ValueError("BaoStock historical industry is missing")
         if any(_industry_for_date(ordered_intervals, day) is None for day in expected_dates):
             raise ValueError("BaoStock historical industry does not cover every expected date")
+        frozen_intervals = tuple(item for item in context.industry_intervals if item.code == code)
+        if ordered_intervals != frozen_intervals:
+            raise BaoStockDailyArtifactConflictError("BaoStock training industry differs from frozen context")
         content_hash = canonical_hash((ordered_facts, ordered_intervals))
         try:
             with self._connect() as connection:
@@ -649,20 +319,6 @@ class SQLiteBaoStockDailyShard:
                     (
                         (item.code, item.trade_date.isoformat(), int(item.is_st), item.content_hash)
                         for item in ordered_facts
-                    ),
-                )
-                connection.executemany(
-                    "INSERT INTO industry_intervals VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        (
-                            item.code,
-                            item.effective_from.isoformat(),
-                            item.effective_to.isoformat() if item.effective_to is not None else None,
-                            item.industry,
-                            item.classification,
-                            item.content_hash,
-                        )
-                        for item in ordered_intervals
                     ),
                 )
                 connection.execute("INSERT INTO training_fact_checkpoints VALUES (?, ?)", (code, content_hash))
@@ -915,167 +571,17 @@ def _industry_for_date(
     )
 
 
-def _partition_ref(
-    root: Path,
-    spec: BaoStockDailySpec,
-    shard: SQLiteBaoStockDailyShard,
-    snapshot: BaoStockShardSnapshot,
-) -> BaoStockPartitionRef:
-    try:
-        relative = shard.path.relative_to(root).as_posix()
-    except ValueError as exc:
-        raise ValueError("BaoStock partition must be inside the archive root") from exc
-    stem = shard.path.stem
-    if "-" not in stem:
-        raise ValueError("BaoStock partition filename is invalid")
-    board, prefix = stem.rsplit("-", 1)
-    codes = tuple(item.code for item in snapshot.batches)
-    if frozenset(codes) != shard.training_ready_codes(spec):
-        raise BaoStockDailyArtifactConflictError("BaoStock partition training facts are incomplete")
-    _checkpoint_database(shard.path)
-    return BaoStockPartitionRef(
-        relative,
-        cast(BaoStockBoard, board),
-        prefix,
-        codes,
-        sum(len(item.cells) for item in snapshot.batches),
-        canonical_hash(
-            (
-                tuple((item.code, item.content_hash) for item in snapshot.batches),
-                shard.training_facts_hash(spec),
-            )
-        ),
-        _file_sha256(shard.path),
-    )
-
-
-def _write_catalog(
-    path: Path,
-    references: tuple[BaoStockPartitionRef, ...],
-    universe: tuple[BaoStockSecurity, ...],
-    batches: tuple[BaoStockCodeBatch, ...],
-) -> None:
-    securities = {item.code: item for item in universe}
-    batch_hashes = {item.code: item.content_hash for item in batches}
-    with sqlite3.connect(path) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE partitions (
-                relative_path TEXT PRIMARY KEY,
-                database_sha256 TEXT NOT NULL,
-                logical_records_hash TEXT NOT NULL,
-                row_count INTEGER NOT NULL
-            );
-            CREATE TABLE securities (
-                code TEXT PRIMARY KEY,
-                relative_path TEXT NOT NULL,
-                security_json TEXT NOT NULL,
-                batch_hash TEXT NOT NULL,
-                FOREIGN KEY(relative_path) REFERENCES partitions(relative_path)
-            );
-            """
-        )
-        for reference in references:
-            connection.execute(
-                "INSERT INTO partitions VALUES (?, ?, ?, ?)",
-                (
-                    reference.relative_path,
-                    reference.database_sha256,
-                    reference.logical_records_hash,
-                    reference.row_count,
-                ),
-            )
-            connection.executemany(
-                "INSERT INTO securities VALUES (?, ?, ?, ?)",
-                (
-                    (
-                        code,
-                        reference.relative_path,
-                        _json(_encode_security(securities[code])),
-                        batch_hashes[code],
-                    )
-                    for code in reference.codes
-                ),
-            )
-
-
-def _manifest_spec(root: Path, manifest: BaoStockDailyManifest) -> BaoStockDailySpec:
-    with sqlite3.connect(root / manifest.partitions[0].relative_path) as connection:
-        row = connection.execute("SELECT spec_json FROM context WHERE singleton=1").fetchone()
-    if row is None:
-        raise BaoStockDailyArtifactConflictError("BaoStock partition context is missing")
-    spec = _decode_spec(_json_object(row[0]))
-    if spec.content_hash != manifest.spec_hash:
-        raise BaoStockDailyArtifactConflictError("BaoStock partition spec hash mismatch")
-    return spec
-
-
-def _common_context(spec: BaoStockDailySpec, snapshots: tuple[BaoStockShardSnapshot, ...]) -> BaoStockShardContext:
-    first = snapshots[0].context
-    for snapshot in snapshots:
-        if (
-            snapshot.spec.content_hash != spec.content_hash
-            or snapshot.context.calendar != first.calendar
-            or snapshot.context.universe != first.universe
-            or snapshot.context.source_versions != first.source_versions
-        ):
-            raise BaoStockDailyArtifactConflictError("BaoStock shard contexts do not match")
-    intervals = tuple(
-        sorted(
-            {item for snapshot in snapshots for item in snapshot.context.industry_intervals},
-            key=lambda item: (item.code, item.effective_from),
-        )
-    )
-    return BaoStockShardContext(first.calendar, first.universe, first.source_versions, intervals)
-
-
-def _merged_batches(snapshots: tuple[BaoStockShardSnapshot, ...]) -> tuple[BaoStockCodeBatch, ...]:
-    batches: dict[str, BaoStockCodeBatch] = {}
-    for snapshot in snapshots:
-        for batch in snapshot.batches:
-            previous = batches.get(batch.code)
-            if previous is not None and previous.content_hash != batch.content_hash:
-                raise BaoStockDailyArtifactConflictError("BaoStock duplicate shard code identity conflict")
-            batches[batch.code] = batch
-    return tuple(sorted(batches.values(), key=lambda item: item.code))
-
-
-def _checkpoint_database(path: Path) -> None:
-    with sqlite3.connect(path) as connection:
-        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-
-
-def _write_immutable_json(path: Path, payload: dict[str, object], content_hash: str) -> None:
-    document = dict(payload)
-    document["content_hash"] = content_hash
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(_json(document))
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.link(temporary, path)
-    except FileExistsError:
-        raise BaoStockDailyArtifactConflictError("BaoStock merged manifest identity conflict") from None
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _valid_error_code(value: str) -> bool:
     return (
         0 < len(value) <= 64 and value.isascii() and all(character.isalnum() or character == "_" for character in value)
     )
 
 
+from trader.infra.research.baostock_gateway import (  # noqa: E402
+    BaoStockRowGateway,
+    BaoStockRowResult,
+    BaoStockSdkPort,
+)
 from trader.infra.research.baostock_partition_archive import BaoStockDailyPartitionedArchive  # noqa: E402
 
 __all__ = [

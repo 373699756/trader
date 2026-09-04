@@ -28,6 +28,12 @@ All notable changes to this project are documented here.
   `make type-check` 在依赖安装后失败。现将运行依赖收紧为 `numpy>=2,<2.5`，保留真实 NumPy 类型检查并
   防止后续启动修复再次安装不可用的 stub。Verification: NumPy 2.4.6 下 `make type-check` 通过。
   Residual Risks: 未来 NumPy 2.5+ 若下调 Python 语法要求，需另立依赖升级批次并重新验证 Python 3.10。
+- 用户要求重新打通“历史下载 -> V3 训练 -> 生产评分”，并明确不需要人工 SHA-256 晋级工具。
+  生产组合根和离线性能检查现在把项目 `data/train/tomorrow-v3/<run_id>/model.json` 作为 V3 输入，读取
+  最新训练结果 `model.json`；仍保留文件内容 hash、schema、特征宽度和 LightGBM 参数校验，
+  缺失或损坏时以稳定原因失败关闭，不隐式回退 V1/V2。删除一次性 `scripts/package_tomorrow_v3_model.py`
+  及其测试，训练完成后重启并选择 `--profile v3` 即可参与评分；复制该 `model.json` 到另一台 PC 的同一
+  `data/train/tomorrow-v3/<run_id>/` 相对目录即可复用。`Regression-Key: tomorrow-v3-runtime-training-artifact-v1`。
 
 - 用户确认 `scripts/test.sh` 仅重复分发 pytest 目录、没有独立业务价值。现将 `unit`、`component`、`contract`、
   `integration` 和全量测试入口统一收归根目录 `Makefile`，保留原有 `make test` 语义并新增对应分类目标，删除
@@ -36,7 +42,7 @@ All notable changes to this project are documented here.
 
 - 用户要求不要把构建生成的 `src/trader_research_dashboard.egg-info/` 留在 `src/` 下，并希望生成目录隐藏。根因是 setuptools
   在 `where = ["src"]` 包发现配置下默认把 `egg_info` 父目录解析为 `src`；新增仅用于生成物位置的
-  `setup.cfg`，将其固定到仓库根目录的隐藏 `.egg-info/` 目录，并继续由现有 `*.egg-info/` 规则忽略。现有生成目录已移至根目录，运行包和
+  `setup.cfg`，将其固定到仓库根目录的隐藏 `.build-metadata/` 容器，并继续由忽略规则排除。现有生成目录已移至根目录，运行包和
   依赖/入口配置不变。Verification: `tests/contract/test_packaging_layout.py` 与 `pip install -e . --no-deps`
   回归通过，确认根目录生成且 `src/` 不再生成。Residual Risks: setuptools 未来若移除 `setup.cfg` 命令配置，需同步
   迁移到其等价的构建后端选项。
@@ -311,6 +317,17 @@ All notable changes to this project are documented here.
   P95 1.004 秒、decision patch 已应用）。Residual Risks: 重启时已过 14:50，无法在本批同一天重新制造真实
   14:42 活跃行情窗口；该时段行为由确定性竞争/冻结回归证明，下一交易日 13:00–14:50 仍应复跑统一 runtime
   诊断。三档桌面分辨率不适用，因为本批没有 CSS、模板或布局改动。
+- `tomorrow-v3-production-handoff-v1`：确认第一处运行断点是服务器与 PowerShell 仍只接受 V1/V2，而配置、
+  模型端口和 Linux 脚本已经声明 V3；第二处断点是 `train-tomorrow` 固定读取 `data/history/`，不能消费
+  `download_history --runtime-dir` 的自定义根；第三处断点是 V3 loader 只校验模型自 hash，训练报告没有
+  自 hash，模型也未绑定报告。现统一三套入口接受 V3，训练命令增加同名 `--runtime-dir` 并传到唯一训练 owner，
+  报告和模型分别 hash 且模型绑定 `report_hash`。包内无人工批准资源时返回稳定失败原因，不再暴露裸
+  `FileNotFoundError`，也不读取研究目录或隐藏回退 V1/V2。
+
+- `tomorrow-v3-production-handoff-v1` 全量测试进一步发现，上一批使用顶层 `.egg-info/` 作为 setuptools
+  `egg_base` 会让 `importlib.metadata` 把容器本身识别成 `Name=None` 的发行包，进而使 LightGBM/Narwhals
+  entry-point 扫描崩溃。现将隐藏容器改为 `.build-metadata/`，内部标准 `*.egg-info` 和生成位置语义不变，
+  并增加无空发行包回归；不是通过修改 LightGBM 或屏蔽插件扫描绕过根因。
 
 - `baostock-silent-blacklist-progress-v1`：只读检查现有运行数据确认分片 SQLite 已创建，保存了 5211 只证券
   的上下文、13 个成功代码、352 个失败代码和 13 条逻辑日线；所有已记录失败均为未复权历史查询失败，最终
@@ -1156,6 +1173,12 @@ All notable changes to this project are documented here.
   前向封存状态、第二轮权重收缩和 `PromotionDossier` 人工晋级边界。
 
 ### Changed
+
+- `baostock_daily.py` 原先仍同时拥有 SDK gateway、SQLite 分片和 catalog/manifest 组装，虽未超过 1200 行，
+  但职责继续增长会重新形成结构债。现按所有权拆为 `baostock_gateway.py`、606 行分片 store、既有严格
+  serialization/codec、`baostock_catalog.py` 与 `baostock_partition_archive.py`；外部公共类型和导入方式、
+  SQLite schema、hash 与调用行为不变。`data/history/` 继续全部忽略，`data/train/` 只允许最终
+  `model.json`/`report.json` 进入版本控制，中间证据、checkpoint 和日志保持本地。
 
 - `baostock-silent-blacklist-progress-v1`：下载中的权威数据库明确为 `shard-*.sqlite3` WAL checkpoint；只有
   所有代码成功完成后才由确定性合并器原子创建最终 SQLite 与 manifest。续跑初始化改为一次读取每个
@@ -2293,6 +2316,10 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- 删除一次性问题清单 `docs/fix.md`，并清理其中指出的本地空 `docs/.git`、`docs/.agents`、`docs/.codex`
+  目录；这些目录从未被 Git 跟踪且没有运行所有权。历史 `docs/reports/` 保持原位，因为权威设计与现有审计
+  链接明确将其定义为阶段证据，机械迁移到 `docs/archive/` 会破坏来源引用。
+
 - `baostock-silent-blacklist-progress-v1`：移除续传时无条件重抓交易日历/全量证券主数据的等待路径，以及供应商
   明确封禁后仍按数千只股票逐项重试的路径；未删除现有分片、失败检查点、最终工件 schema 或任何生产能力。
 
@@ -2532,6 +2559,12 @@ All notable changes to this project are documented here.
   migration、outcome settlement port、性能脚本和测试工厂，避免退役模块继续进入源码或测试树。
 
 ### Verification
+
+- `tomorrow-v3-runtime-training-artifact-v1`：入口/profile、自定义历史根、训练模型直接加载、V3 predictor
+  按行业推理和损坏模型失败关闭定向测试通过。`make format-check`、`make lint`、`make type-check`（340 个源码文件）、
+  `make test`（全量通过）和 `make package`（wheel/sdist）通过；自定义目录 `train-tomorrow` smoke 返回
+  `history_manifest_unavailable`，确认下载根与训练 owner 已衔接。`make test-release` 构建 wheel 通过，但仓库外
+  运行依赖安装因当前环境无可用包索引代理而中断，未宣称该外部 gate 通过。
 
 - 本批 15.1.23：定向契约与单元测试通过（基线审计一致、冲突、运行身份不可得、重复 hash、CLI
   只读投影）；Ruff 和 mypy 对受影响 Python 文件通过；绝对配置运行
@@ -3621,6 +3654,11 @@ All notable changes to this project are documented here.
   均通过；安装目录为临时目录，未进入仓库。
 
 ### Residual Risks
+
+- `tomorrow-v3-runtime-training-artifact-v1`：当前仓库只有空下载锁，没有合格 2000 日 manifest 和 validated
+  V3 model；因此真实训练与生产预测尚未在本机执行。真实 BaoStock 全量下载、训练收益门禁、14:50 点时证据和
+  影子比较仍是外部前置；取得模型后需将 `model.json` 复制到另一台 PC 的同一相对路径，不能把本次工程接缝
+  当作收益证明。
 
 - `baostock-silent-blacklist-progress-v1`：本批证明断点恢复、进度契约和封禁快停，但没有证明供应商已解除
   匿名账号/IP 的 `10001011` 限制，也没有完成修复后的真实 1 日小批或 2000 日全量下载。当前磁盘可用量仍低于

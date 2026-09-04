@@ -40,7 +40,7 @@ for ($Index = 0; $Index -lt $args.Count; $Index++) {
     $Argument = [string]$args[$Index]
     if ($Argument -eq "--profile") {
         if ($Index + 1 -ge $args.Count) {
-            [Console]::Error.WriteLine("缺少 --profile 的值（v1 或 v2）。")
+            [Console]::Error.WriteLine("缺少 --profile 的值（v1、v2 或 v3）。")
             exit 2
         }
         $Index++
@@ -64,8 +64,8 @@ for ($Index = 0; $Index -lt $args.Count; $Index++) {
     }
 }
 
-if ($ScoringProfile -notin @("v1", "v2")) {
-    [Console]::Error.WriteLine("评分档位只能是 v1 或 v2: $ScoringProfile")
+if ($ScoringProfile -notin @("v1", "v2", "v3")) {
+    [Console]::Error.WriteLine("评分档位只能是 v1、v2 或 v3: $ScoringProfile")
     exit 2
 }
 
