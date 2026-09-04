@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from tests.component.market_data_test_support import (
@@ -45,6 +47,8 @@ from tests.component.market_data_test_support import (
     timedelta,
     timezone,
 )
+from trader.application.ports.data_plane import DataPlaneConflictError, DataPlaneUnavailableError
+from trader.infra.market_data.service.observations import SourceObservation
 
 
 def test_market_service_components_own_distinct_locks_and_facade_has_no_shared_lock() -> None:
@@ -65,6 +69,61 @@ def test_market_service_components_own_distinct_locks_and_facade_has_no_shared_l
 
     assert len({id(lock) for lock in component_locks}) == len(component_locks)
     assert not hasattr(service, "_lock")
+
+
+def _security_master_observation() -> SourceObservation:
+    return SourceObservation(
+        source="eastmoney_security_master",
+        subject_key="600001",
+        observed_at=NOW,
+        source_time=NOW,
+        received_at=NOW,
+        effective_at=NOW,
+        data_version="fixture",
+        fields={"name": "fixture"},
+        missing_reasons={},
+        payload_hash="",
+        status="success",
+        error_code=None,
+    )
+
+
+def test_security_master_persistence_conflict_is_debug_only(caplog) -> None:
+    class ConflictingDataPlane:
+        def save_security_master_recent_records(self, records) -> None:
+            assert records
+            raise DataPlaneConflictError("recent save conflicts at the same observation time")
+
+    caplog.set_level(logging.DEBUG)
+    service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        data_plane=ConflictingDataPlane(),
+    )
+    service.references._persist_security_masters(NOW, (_security_master_observation(),))
+
+    assert "security master persistence already committed" in caplog.text
+    assert "security master persistence failed" not in caplog.text
+
+
+def test_security_master_persistence_unavailable_remains_a_warning(caplog) -> None:
+    class UnavailableDataPlane:
+        def save_security_master_recent_records(self, _records) -> None:
+            raise DataPlaneUnavailableError("controlled unavailable")
+
+    caplog.set_level(logging.WARNING)
+    service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        data_plane=UnavailableDataPlane(),
+    )
+
+    service.references._persist_security_masters(NOW, (_security_master_observation(),))
+
+    assert "security master persistence unavailable" in caplog.text
+    assert "security master persistence already committed" not in caplog.text
 
 
 def test_long_quote_circuit_does_not_open_candidate_quote_circuit() -> None:

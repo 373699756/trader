@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict
 
 from tests.component.market_data_test_support import (
@@ -46,6 +47,7 @@ from tests.component.market_data_test_support import (
     timedelta,
     timezone,
 )
+from trader.application.ports.data_plane import DataPlaneConflictError
 from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
 
 
@@ -667,7 +669,7 @@ def test_history_cache_rebuilds_a_legacy_summary_for_tomorrow_model_inputs(tmp_p
     assert {1, 3, 5, 20, 40, 60}.issubset(dict(restored.return_anchors))
 
 
-def test_history_cache_persistence_unavailable_does_not_block_history_load() -> None:
+def test_history_cache_persistence_unavailable_does_not_block_history_load(caplog) -> None:
     class UnavailableHistoryDataPlane:
         def __init__(self) -> None:
             self.calls = 0
@@ -677,6 +679,7 @@ def test_history_cache_persistence_unavailable_does_not_block_history_load() -> 
             assert len(records) == 20
             raise DataPlaneUnavailableError("unavailable")
 
+    caplog.set_level(logging.WARNING)
     data_plane = UnavailableHistoryDataPlane()
     bars = _history_bars()[-20:]
     service = _service(
@@ -691,3 +694,27 @@ def test_history_cache_persistence_unavailable_does_not_block_history_load() -> 
     assert list(loaded["600001"])[-1].trade_date == bars[-1].trade_date
     assert len(loaded["600001"]) == 20
     assert data_plane.calls == 1
+    assert "history persistence unavailable for 600001" in caplog.text
+    assert "history persistence already committed" not in caplog.text
+
+
+def test_history_cache_persistence_conflict_is_debug_only(caplog) -> None:
+    class ConflictingHistoryDataPlane:
+        def save_historical_feature_recent_records(self, records) -> None:
+            assert len(records) == 20
+            raise DataPlaneConflictError("recent save conflicts at the same observation time")
+
+    caplog.set_level(logging.DEBUG)
+    service = _service(
+        StaticGateway((_quote(),)),
+        CountingHistoryClient(_history_bars()[-20:]),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        data_plane=ConflictingHistoryDataPlane(),
+        wall_clock=lambda: NOW,
+    )
+
+    loaded = service.history.load(("600001",))
+
+    assert len(loaded["600001"]) == 20
+    assert "history persistence already committed for 600001" in caplog.text
+    assert "history persistence failed" not in caplog.text

@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from trader.application.cache import CacheIdentity, CacheIdentitySpec, build_cache_identity, canonical_json_bytes
 from trader.application.ports.data_plane import (
+    DataPlaneConflictError,
     DataPlaneRecoverySummary,
     DataPlaneUnavailableError,
     SecurityMasterRecord,
@@ -543,6 +544,8 @@ class ReferenceLoader:
                 self._persisted_security_master_signatures.update(signatures)
         except DataPlaneUnavailableError:
             _LOGGER.warning("security master persistence unavailable")
+        except DataPlaneConflictError:
+            _LOGGER.debug("security master persistence already committed")
         except Exception:
             _LOGGER.exception("security master persistence failed")
 

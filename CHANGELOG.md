@@ -270,6 +270,23 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 用户要求清理上一批遗留的全部未提交文件，并只提交有用改动。Review 确认历史 recent 特征与证券主数据
+  在相同观察时刻并发写入不同内容时，数据平面按既有 first-wins 契约抛出 `DataPlaneConflictError`；
+  `HistoryCache` 与 `ReferenceLoader` 此前把该安全冲突落入未知异常分支，分别打印
+  `history persistence failed` 和 `security master persistence failed` traceback。Fixed: 两处适配器现在
+  单独识别冲突并只记 debug，继续保留已提交记录和内存结果；真实 `DataPlaneUnavailableError` 仍记 warning，
+  未知异常仍保留 traceback。Added: 两个组件回归直接断言 debug 记录存在且 failure 文本不存在，避免旧实现
+  吞异常后形成假阳性测试。Changed/Removed: 没有改变持久化 schema、first-wins、行情、评分、冻结、API 或
+  Web；本批同时还原 BaoStock 和测试文件的纯格式噪声，并还原含已解决投诉及未实现下一需求的 `docs/fix.md`
+  草稿，使这些无行为价值的差异不进入提交。`Regression-Key: recent-first-wins-log-classification-v1`。
+  Verification: 两个受影响 component 文件共 31 项测试通过，包含冲突 debug 与 unavailable warning 的正/负
+  断言；受影响文件 Ruff/格式检查及全量源码 mypy（338 个文件）通过。修复代码已加载的当前 `run.sh` 进程执行
+  有界 `live` 诊断，无 failed 检查：交易所证券主数据 5215/5215、三个代表代码历史 3/3、腾讯行情与 Tushare
+  日线检查均通过；Web 仅保留既有冻结快照质量 warning，未出现本批 persistence failure。`make test`、
+  `make package` 和浏览器三分辨率不适用：本批是两个隔离持久化适配器的日志分类，不改变 schema、入口、评分、
+  API、Web 或包资源。Residual Risks: 日志分类不改变同观察时刻不同内容仍由 first-wins 拒绝的业务语义；若未来
+  需要合并不同内容，必须另立数据身份/所有权设计，不能把冲突静默覆盖。
+
 - 用户运行 `run.sh` 时看到 2–5 日已完成评分且有观察股，Tomorrow 却在 14:42 长时间停留于
   “等待本轮评分完成”；此前仅增加历史 warmup 通知的修复不足，不能再把它当作完整根因。现场对旧进程执行
   六段漏斗诊断确认：Tomorrow 评分耗时 P50 约 12.6 秒、P95 约 28.7 秒，而候选/尾盘输入每 2–5 秒更新；

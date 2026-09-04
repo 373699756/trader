@@ -17,7 +17,11 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.application.cache import CacheIdentity
-from trader.application.ports.data_plane import DataPlaneUnavailableError, HistoricalFeatureRecord
+from trader.application.ports.data_plane import (
+    DataPlaneConflictError,
+    DataPlaneUnavailableError,
+    HistoricalFeatureRecord,
+)
 from trader.application.ports.market import MarketDataDeadlineExceededError
 from trader.application.ports.types import JsonInput, JsonObject, freeze_json_object
 from trader.application.runtime.workers import (
@@ -566,6 +570,8 @@ class HistoryCache:
             data_plane.save_historical_feature_recent_records(records)
         except DataPlaneUnavailableError:
             _LOGGER.warning("history persistence unavailable for %s", code)
+        except DataPlaneConflictError:
+            _LOGGER.debug("history persistence already committed for %s", code)
         except Exception:
             _LOGGER.exception("history persistence failed for %s", code)
 
