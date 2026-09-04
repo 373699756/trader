@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from trader.application.decisions.decision_observers import DecisionObserverStatus
+from trader.application.market_data.v2_input_runtime import V2MarketDataAdapter
 from trader.application.ports.runtime_status import V2InputQualityStatus, V2SupplyFunnel, V2SupplySummary
 from trader.application.ports.v2_runtime import V2ResearchRuntimeStatus
 from trader.application.research.v2_research_runtime import V2ResearchRuntime
@@ -84,6 +85,19 @@ def test_build_system_is_lazy_and_v2_only(tmp_path, monkeypatch) -> None:
     page = system.app.test_client().get("/").get_data(as_text=True)
     assert 'name="trader-web-snapshot-retention-ms"' in page
     assert 'content="35000"' in page
+
+
+def test_build_system_wires_history_completion_to_scoring_refresh(tmp_path, monkeypatch) -> None:
+    system = build_system(_config(tmp_path))
+    native_data = system.scheduler._dependencies.data
+    assert isinstance(native_data, V2MarketDataAdapter)
+    calls: list[str] = []
+    monkeypatch.setattr(native_data, "invalidate_history", lambda: calls.append("invalidate"))
+    monkeypatch.setattr(system.scheduler, "notify_history_warmup", lambda: calls.append("schedule"))
+
+    native_data._market.warmup._on_batch_complete(("600001",))  # noqa: SLF001 - composition-root wiring contract
+
+    assert calls == ["invalidate", "schedule"]
 
 
 def test_build_system_selects_an_explicit_v2_run_profile_without_rewriting_config(tmp_path, monkeypatch) -> None:

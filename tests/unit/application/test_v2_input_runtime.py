@@ -682,6 +682,79 @@ def test_three_scored_strategies_share_one_fast_market_input_cycle(
     assert all(read[2] for read in market.candidate_reads)
 
 
+def test_tomorrow_scores_a_content_addressed_snapshot_when_tail_changes_during_capture(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 14, 40, tzinfo=SHANGHAI)
+    feature = application_feature_factory("600001", observed_at)
+
+    class MutatingTailMarket(_Market):
+        on_first_read = None
+
+        def read_candidate_features(self, codes, read_at, **options):
+            if self.on_first_read is not None:
+                callback = self.on_first_read
+                self.on_first_read = None
+                callback()
+            return super().read_candidate_features(codes, read_at, **options)
+
+        def refresh_intraday_tail(self, codes, _observed_at):
+            assert tuple(codes) == ("600001",)
+
+    market = MutatingTailMarket((replace(feature, quote=replace(feature.quote, board=Board.MAIN, is_st=True)),))
+    adapter = V2MarketDataAdapter(
+        market,
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=_decision_build(),
+    )
+    request = _request(observed_at, phase="afternoon")
+    _prime_scoring_cache(adapter, observed_at)
+    market.on_first_read = lambda: adapter.refresh_task(
+        V2PipelineTaskRequest(PipelineTask.INTRADAY_TAIL, observed_at + timedelta(seconds=1))
+    )
+
+    adapter.refresh(request)
+    built = adapter.build_local(request)
+
+    assert built is not None
+    assert built.trade_date == observed_at.date()
+
+
+def test_completed_immutable_input_remains_scoreable_after_a_new_quote_epoch(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 14, 40, tzinfo=SHANGHAI)
+    feature = application_feature_factory("600001", observed_at)
+    market = _Market((replace(feature, quote=replace(feature.quote, board=Board.MAIN, is_st=True)),))
+    adapter = V2MarketDataAdapter(
+        market,
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=_decision_build(),
+    )
+    request = _request(observed_at, strategy=Strategy.D25, phase="afternoon")
+    _prime_scoring_cache(adapter, observed_at)
+    adapter.refresh(request)
+    changed = replace(
+        market._features[0],
+        quote=replace(
+            market._features[0].quote,
+            data_version="newer-quote",
+            source_time=observed_at + timedelta(seconds=1),
+            received_time=observed_at + timedelta(seconds=1),
+        ),
+        observed_at=observed_at + timedelta(seconds=1),
+    )
+    market._features = (changed,)
+    adapter.refresh_task(V2PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at + timedelta(seconds=1)))
+
+    built = adapter.build_local(request)
+
+    assert built is not None
+    assert built.observed_at == observed_at
+
+
 def test_topk_refresh_reuses_returned_features_without_a_second_feature_read(
     application_feature_factory,
 ) -> None:

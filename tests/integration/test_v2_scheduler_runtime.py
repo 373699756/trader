@@ -1308,7 +1308,7 @@ def test_tomorrow_lane_progresses_while_today_lane_is_blocked() -> None:
         runtime.stop(ShutdownDeadline.start(2.0))
 
 
-def test_newer_same_strategy_cycle_supersedes_running_score_before_publish() -> None:
+def test_newer_same_strategy_cycle_does_not_starve_first_current_publication() -> None:
     first_entered = threading.Event()
     release_first = threading.Event()
 
@@ -1357,10 +1357,132 @@ def test_newer_same_strategy_cycle_supersedes_running_score_before_publish() -> 
         current = index.snapshot(Strategy.TOMORROW).current
         assert isinstance(current, ScoredDecision)
         assert current.sequence == 3
-        assert len(published) == 1
-        assert runtime.status().local_publish_count == 1
+        assert [event.projection.sequence for event in published if event.projection is not None] == [1, 3]
+        assert runtime.status().local_publish_count == 2
     finally:
         release_first.set()
+        runtime.stop(ShutdownDeadline.start(2.0))
+
+
+def test_first_completed_current_can_freeze_while_newer_cycle_is_still_scoring() -> None:
+    first_entered = threading.Event()
+    second_entered = threading.Event()
+    release_first = threading.Event()
+    release_second = threading.Event()
+    observed_at = datetime(2026, 8, 11, 14, 49, 30, tzinfo=SHANGHAI)
+    freeze_at = observed_at.replace(minute=50, second=0)
+
+    class BlockingBothDecisions(Decisions):
+        def build_local(self, request: V2CycleRequest):
+            if request.sequence == 1:
+                first_entered.set()
+                release_first.wait(timeout=2.0)
+            elif request.sequence == 2:
+                second_entered.set()
+                release_second.wait(timeout=2.0)
+            return super().build_local(request)
+
+    clock = FixedClock(observed_at)
+    index = UnifiedDecisionIndex()
+    published = []
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=clock,
+            calendar=TradingCalendar(),
+            cadence=_cadence(observed_at),
+            data=DataRefresh(),
+            decisions=BlockingBothDecisions(),
+            reviews=SharedReviews(),
+            index=index,
+            observer=AsyncDecisionObserver((), capacity=2, thread_name="test-v2-freeze-progress-observer"),
+            freezes=Freezes(index),
+            settlement=Settlement(),
+            research_factory=noop_research_factory,
+            publish_decision=published.append,
+            publish_overlay=lambda _overlay: None,
+        ),
+        config_version="runtime-v2",
+    )
+    first = V2CycleRequest(
+        Strategy.TOMORROW,
+        observed_at.date(),
+        observed_at,
+        "afternoon",
+        1,
+        "input-v1",
+        False,
+        observed_at,
+    )
+    second = replace(
+        first,
+        observed_at=observed_at + timedelta(seconds=10),
+        sequence=2,
+        input_version="input-v2",
+    )
+    runtime.start()
+    runtime.submit_cycle(first)
+    assert first_entered.wait(timeout=1.0)
+    runtime.submit_cycle(second)
+    release_first.set()
+
+    try:
+        assert second_entered.wait(timeout=1.0)
+        current = index.snapshot(Strategy.TOMORROW).current
+        assert isinstance(current, ScoredDecision)
+        assert current.sequence == 1
+        clock.current = freeze_at
+        runtime._dispatch_pipeline_task(  # noqa: SLF001 - verifies the score-to-freeze race boundary
+            ScheduledPipelineTask(
+                PipelineTask.FREEZE,
+                freeze_at,
+                MarketPhase.FINAL_REVIEW,
+                (Strategy.TOMORROW.value,),
+                SchedulePoint.AFTERNOON_FREEZE,
+            )
+        )
+        assert _wait_for(lambda: index.snapshot(Strategy.TOMORROW).formal is not None)
+        release_second.set()
+        assert runtime.wait_idle(2.0)
+    finally:
+        release_first.set()
+        release_second.set()
+        runtime.stop(ShutdownDeadline.start(2.0))
+
+    snapshot = index.snapshot(Strategy.TOMORROW)
+    assert snapshot.formal is not None
+    assert snapshot.formal.decision.sequence == 1
+    assert [event.projection.sequence for event in published if event.projection is not None] == [1]
+    assert runtime.status().publish_rejection_count == 1
+
+
+def test_history_warmup_completion_schedules_afternoon_scored_strategies() -> None:
+    data = DataRefresh()
+    runtime = V2SchedulerRuntime(
+        V2RuntimeDependencies(
+            clock=FixedClock(NOW),
+            calendar=TradingCalendar(),
+            cadence=_cadence(NOW),
+            data=data,
+            decisions=Decisions(),
+            reviews=SharedReviews(),
+            index=UnifiedDecisionIndex(),
+            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-v2-history-ready-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+            research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
+            publish_overlay=lambda _overlay: None,
+        ),
+        config_version="runtime-v2",
+    )
+    runtime.start()
+
+    runtime.notify_history_warmup()
+
+    try:
+        assert runtime.wait_idle(2.0)
+        assert sorted(data.calls, key=lambda strategy: strategy.value) == [Strategy.D25, Strategy.TOMORROW]
+    finally:
         runtime.stop(ShutdownDeadline.start(2.0))
 
 

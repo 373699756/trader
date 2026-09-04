@@ -59,7 +59,6 @@ class V2InputBatch:
     requested_codes: tuple[str, ...]
     candidate_features: tuple[FeatureSnapshot, ...]
     data_version: str
-    input_epoch_version: str
 
 
 @dataclass(frozen=True)
@@ -67,13 +66,11 @@ class _SharedInputBatch:
     market_features: tuple[FeatureSnapshot, ...]
     requested_codes: tuple[str, ...]
     candidate_features: tuple[FeatureSnapshot, ...]
-    input_epoch_version: str
 
 
 @dataclass(frozen=True)
 class _ScoringFeatureBatch:
     features: tuple[FeatureSnapshot, ...]
-    input_epoch_version: str
 
 
 @dataclass(frozen=True)
@@ -191,6 +188,10 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         self._decisions: dict[str, ScoredDecision] = {}
         self._input_quality: dict[Strategy, V2InputQualityStatus] = {}
         self._sequences = {strategy: 1 for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)}
+
+    def invalidate_history(self) -> None:
+        with self._lock:
+            self._score_feature_batches.clear()
 
     def refresh_task(self, request: V2PipelineTaskRequest) -> V2RefreshOutcome:
         deadline = _task_deadline(request)
@@ -482,7 +483,6 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         try:
             shared = self._cached_input(request)
             candidate_features = shared.candidate_features
-            input_epoch_version = shared.input_epoch_version
             if request.strategy is Strategy.TOMORROW:
                 scoring_batch = self._score_features(
                     shared.requested_codes,
@@ -490,7 +490,6 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
                     include_intraday_tail=True,
                 )
                 candidate_features = scoring_batch.features
-                input_epoch_version = scoring_batch.input_epoch_version
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
             raise V2DataRefreshUnavailableError(_failure_code(exc)) from exc
         batch = V2InputBatch(
@@ -499,7 +498,6 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
             shared.requested_codes,
             candidate_features,
             _data_version(request, shared.market_features, candidate_features),
-            input_epoch_version,
         )
         with self._lock:
             self._batches[(request.strategy, request.input_version)] = batch
@@ -510,7 +508,6 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         with self._lock:
             market_features = self._latest_market_features
             requested = self._latest_requested_codes
-            input_epoch_version = self._scoring_epoch_locked(include_intraday_tail=False)
         if not market_features or not requested:
             raise V2DataRefreshUnavailableError("market_snapshot_unavailable")
         scoring_batch = self._score_features(
@@ -518,13 +515,10 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
             request.observed_at,
             include_intraday_tail=False,
         )
-        if input_epoch_version != scoring_batch.input_epoch_version:
-            raise V2DataRefreshUnavailableError("input_superseded")
         return _SharedInputBatch(
             market_features,
             requested,
             scoring_batch.features,
-            scoring_batch.input_epoch_version,
         )
 
     def _score_features(
@@ -539,7 +533,7 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
             key = (epoch, include_intraday_tail, requested)
             cached = self._score_feature_batches.get(key)
             if cached is not None:
-                return _ScoringFeatureBatch(cached, epoch)
+                return _ScoringFeatureBatch(cached)
         features = tuple(
             self._market.read_candidate_features(
                 requested,
@@ -549,12 +543,11 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
             )
         )
         with self._lock:
-            if epoch != self._scoring_epoch_locked(include_intraday_tail=include_intraday_tail):
-                raise V2DataRefreshUnavailableError("input_superseded")
-            self._score_feature_batches[key] = features
-            while len(self._score_feature_batches) > 8:
-                self._score_feature_batches.pop(next(iter(self._score_feature_batches)))
-            return _ScoringFeatureBatch(features, epoch)
+            if epoch == self._scoring_epoch_locked(include_intraday_tail=include_intraday_tail):
+                self._score_feature_batches[key] = features
+                while len(self._score_feature_batches) > 8:
+                    self._score_feature_batches.pop(next(iter(self._score_feature_batches)))
+        return _ScoringFeatureBatch(features)
 
     def _scoring_epoch_locked(self, *, include_intraday_tail: bool) -> str:
         versions = (
@@ -595,13 +588,10 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
             return None
         with self._lock:
             batch = self._batches.get((request.strategy, request.input_version))
-            current_epoch = self._scoring_epoch_locked(include_intraday_tail=request.strategy is Strategy.TOMORROW)
             sequence = self._sequences[request.strategy]
             self._sequences[request.strategy] += 2
         if batch is None:
             raise V2DecisionUnavailableError("V2 native input is unavailable")
-        if batch.input_epoch_version != current_epoch:
-            raise V2DecisionUnavailableError("input_superseded")
         try:
             evaluated_at = _decision_observed_at(batch)
             if request.strategy is Strategy.TODAY:
@@ -642,10 +632,6 @@ class V2MarketDataAdapter(V2DataRefreshPort, V2DecisionBuilderPort):
         except (RuntimeError, TypeError, ValueError) as exc:
             raise V2DecisionUnavailableError(_decision_failure_code(exc)) from exc
         with self._lock:
-            if batch.input_epoch_version != self._scoring_epoch_locked(
-                include_intraday_tail=request.strategy is Strategy.TOMORROW
-            ):
-                raise V2DecisionUnavailableError("input_superseded")
             self._input_quality[request.strategy] = _supply_status(projection)
         if not projection.input_quality.publishable:
             self._draft_index.publish(projection.local)

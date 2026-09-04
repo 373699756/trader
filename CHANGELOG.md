@@ -270,6 +270,27 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- 用户运行 `run.sh` 时看到 2–5 日已完成评分且有观察股，Tomorrow 却在 14:42 长时间停留于
+  “等待本轮评分完成”；此前仅增加历史 warmup 通知的修复不足，不能再把它当作完整根因。现场对旧进程执行
+  六段漏斗诊断确认：Tomorrow 评分耗时 P50 约 12.6 秒、P95 约 28.7 秒，而候选/尾盘输入每 2–5 秒更新；
+  运行时在数据准备、评分及发布边界共记录 34 次 `refresh:input_superseded`，14:49 检查点又连续 5 次
+  `no_eligible_decision`，因此每轮有效计算都被更快的新行情版本作废，直到 15:00 收盘 fallback 才出现 current。
+  Changed: 市场与候选特征按实际返回内容形成不可变、内容寻址的 `ScoringInputEpoch`；读取期间出现新版本只
+  阻止旧元组进入新版本缓存，不再作废已经形成的评分输入。运行中的 local 评分允许完成并先发布，latest-wins
+  仍只保留一个最新 pending，随后以更高 sequence 替换；若已经有 pending，旧 local 跳过可选 DeepSeek 复核。
+  Fixed: warmup 新覆盖批次同时清理评分特征缓存并触发 Tomorrow/D25 评分，避免覆盖已就绪后仍等待下一次输入。
+  Removed: 删除运行中评分在可变全局 epoch 或同策略 pending 变化时自我取消的饥饿路径；14:50 冻结 CAS、
+  交易日、sequence、风险门槛、融合公式和 DeepSeek 预算均未放宽。Added: 统一运行诊断新增
+  `scoring_input_supersession_starvation`，可从有界 `recent_errors` 直接识别“重复作废 + 错过检查点”。
+  `Regression-Key: tomorrow-scoring-input-starvation-v1`。Verification: 新增内容快照竞争、完成后 epoch 更新、
+  同策略持续输入不饥饿、warmup 重评分、14:50 与在途新评分竞争及诊断正/负回归；`make format-check`、
+  `make lint`、`make type-check`（338 个源码文件）、`make test`（全量）和 `make package` 均通过。旧进程诊断
+  准确复现 34 次作废和 5 次检查点失败；正常停止旧进程并由修复后的 `./run.sh` 重启后，运行诊断不再出现
+  评分饥饿错误，Tomorrow/D25 同日 current 均为 `ready`，20 秒无头桌面浏览器诊断通过（24 次 DOM 采样、
+  P95 1.004 秒、decision patch 已应用）。Residual Risks: 重启时已过 14:50，无法在本批同一天重新制造真实
+  14:42 活跃行情窗口；该时段行为由确定性竞争/冻结回归证明，下一交易日 13:00–14:50 仍应复跑统一 runtime
+  诊断。三档桌面分辨率不适用，因为本批没有 CSS、模板或布局改动。
+
 - `baostock-silent-blacklist-progress-v1`：只读检查现有运行数据确认分片 SQLite 已创建，保存了 5211 只证券
   的上下文、13 个成功代码、352 个失败代码和 13 条逻辑日线；所有已记录失败均为未复权历史查询失败，最终
   `score-baostock-daily-core-v2.sqlite3` 因尚未完成确定性合并而按契约不存在。根因是续跑仍先重新查询供应商

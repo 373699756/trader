@@ -20,8 +20,11 @@ class _Clock:
 
 
 class _History:
+    def __init__(self, entries=None) -> None:
+        self._entries = entries or {}
+
     def entries(self):
-        return {}
+        return self._entries
 
     def available_seed_codes(self, _codes):
         return ()
@@ -219,3 +222,55 @@ def test_permanently_excluded_codes_never_enter_history_lane() -> None:
 
     assert lanes.submissions[0][0] == ("600002",)
     assert warmup.status().excluded_count == 1
+
+
+def test_completed_history_batch_notifies_only_newly_covered_codes() -> None:
+    clock = _Clock()
+    lanes = _Lanes()
+    history = _History()
+    completed: list[tuple[str, ...]] = []
+    warmup = HistoryWarmup(
+        history,
+        _References(),
+        SimpleNamespace(source_lanes=lanes, wall_clock=lambda: NOW),
+        eligibility_filter=_all_eligible,
+        batch_size=2,
+        batch_timeout_seconds=5.0,
+        monotonic=clock,
+        on_batch_complete=completed.append,
+    )
+
+    warmup.schedule_history_warmup(("600001", "600002"), NOW)
+    history._entries = {
+        "600001": SimpleNamespace(bars=(object(),) * 20, expires_at=1.0),
+        "600002": SimpleNamespace(bars=(object(),) * 19, expires_at=1.0),
+    }
+    lanes.submissions[0][1].set_result({})
+
+    assert completed == [("600001",)]
+
+
+def test_history_completion_notification_failure_keeps_warmup_progress() -> None:
+    clock = _Clock()
+    lanes = _Lanes()
+    history = _History()
+
+    def fail_notification(_codes: tuple[str, ...]) -> None:
+        raise RuntimeError("controlled callback failure")
+
+    warmup = HistoryWarmup(
+        history,
+        _References(),
+        SimpleNamespace(source_lanes=lanes, wall_clock=lambda: NOW),
+        eligibility_filter=_all_eligible,
+        batch_size=1,
+        batch_timeout_seconds=5.0,
+        monotonic=clock,
+        on_batch_complete=fail_notification,
+    )
+
+    warmup.schedule_history_warmup(("600001",), NOW)
+    history._entries = {"600001": SimpleNamespace(bars=(object(),) * 20, expires_at=1.0)}
+    lanes.submissions[0][1].set_result({})
+
+    assert warmup.status().completed_count == 1

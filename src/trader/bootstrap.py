@@ -285,6 +285,12 @@ def build_system(
         config_version=effective_config_version,
         shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
     )
+
+    def notify_scoring_after_history(_codes: tuple[str, ...]) -> None:
+        native_data.invalidate_history()
+        scheduler.notify_history_warmup()
+
+    market_data.warmup.set_completion_callback(notify_scoring_after_history)
     supervisor = RuntimeSupervisor(
         scheduler,
         RuntimeSupervisorConfig(

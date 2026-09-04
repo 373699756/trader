@@ -158,6 +158,7 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
                 "status lacks the bounded company-research runtime projection",
             )
         )
+    findings.extend(_scoring_starvation_findings(sample, strategies))
     for strategy in strategies:
         strategy_status = status.strategies.get(strategy)
         decision = sample.decisions.get(strategy)
@@ -186,6 +187,36 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
             findings.extend(_funnel_consistency_findings(sample, strategy, quality.funnel))
             findings.extend(_history_gate_findings(sample, strategy, quality))
     return findings
+
+
+def _scoring_starvation_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Finding]:
+    status = sample.status
+    if status is None:
+        return []
+    supersession_counts: dict[str, int] = {}
+    checkpoint_miss_counts: dict[str, int] = {}
+    for issue in status.recent_errors:
+        if issue.strategy not in strategies or issue.count is None:
+            continue
+        if issue.code in {"refresh:input_superseded", "decision:input_superseded"}:
+            supersession_counts[issue.strategy] = supersession_counts.get(issue.strategy, 0) + issue.count
+        elif issue.code == "checkpoint:no_eligible_decision":
+            checkpoint_miss_counts[issue.strategy] = checkpoint_miss_counts.get(issue.strategy, 0) + issue.count
+    return [
+        _finding(
+            "error",
+            "scoring_input_supersession_starvation",
+            sample,
+            strategy,
+            "repeated input supersession prevented a scored current before its checkpoint",
+            {
+                "supersession_count": supersession_count,
+                "checkpoint_miss_count": checkpoint_miss_counts[strategy],
+            },
+        )
+        for strategy, supersession_count in supersession_counts.items()
+        if supersession_count >= 3 and checkpoint_miss_counts.get(strategy, 0) > 0
+    ]
 
 
 def _history_gate_findings(

@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, TypedDict
 
+from typing_extensions import NotRequired
+
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
@@ -85,6 +87,7 @@ class HistoryWarmupOptions(TypedDict):
     batch_timeout_seconds: float
     monotonic: Callable[[], float]
     eligibility_filter: Callable[[Sequence[str], datetime], tuple[str, ...]]
+    on_batch_complete: NotRequired[Callable[[tuple[str, ...]], None]]
 
 
 class HistoryWarmup:
@@ -105,6 +108,7 @@ class HistoryWarmup:
         self._batch_timeout_seconds = float(batch_timeout_seconds)
         self._monotonic = options["monotonic"]
         self._eligibility_filter = options["eligibility_filter"]
+        self._on_batch_complete = options.get("on_batch_complete", lambda _codes: None)
         self._lock = threading.Lock()
         self._universe: tuple[str, ...] = ()
         self._inflight: set[str] = set()
@@ -251,6 +255,7 @@ class HistoryWarmup:
                     self._retry_after[code] = now + delay
             universe = self._universe
         self._history.update_coverage(universe)
+        self._notify_completion(tuple(sorted(covered_codes)))
         lanes = self._runner.source_lanes
         history_lane_pending = bool(lanes is not None and lanes.status().lanes[_HISTORY_SOURCE_LANE].pending)
         if (
@@ -261,6 +266,17 @@ class HistoryWarmup:
             and not lanes.is_stopped("tushare")
         ):
             self.schedule_history_warmup(universe, self._runner.wall_clock())
+
+    def set_completion_callback(self, callback: Callable[[tuple[str, ...]], None]) -> None:
+        self._on_batch_complete = callback
+
+    def _notify_completion(self, covered_codes: tuple[str, ...]) -> None:
+        if not covered_codes:
+            return
+        try:
+            self._on_batch_complete(covered_codes)
+        except Exception as exc:
+            _LOGGER.warning("history warmup completion callback degraded: %s", type(exc).__name__)
 
     def status(self) -> HistoryWarmupStatus:
         now = self._monotonic()

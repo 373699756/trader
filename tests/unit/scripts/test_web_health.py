@@ -47,6 +47,7 @@ def _sample(
     evaluated_count: int = 65,
     degraded_reasons: tuple[str, ...] = (),
     frozen: bool | None = None,
+    recent_errors: list[dict[str, object]] | None = None,
 ) -> WebSample:
     quality = (
         {
@@ -140,6 +141,7 @@ def _sample(
             }
         },
         "events": {"sequence": event_sequence if event_sequence is not None else number},
+        "recent_errors": recent_errors or [],
     }
     decision: dict[str, object] = {
         "schema_version": "v2_decision_view_v3",
@@ -164,6 +166,64 @@ def _sample(
         status_payload=status,
         decision_payloads={_STRATEGY: decision},
     )
+
+
+def test_repeated_input_supersession_with_missed_checkpoint_is_reported() -> None:
+    sample = _sample(
+        1,
+        funnel=_funnel(),
+        recent_errors=[
+            {
+                "code": "refresh:input_superseded",
+                "severity": "degraded",
+                "strategy": _STRATEGY,
+                "stage": "refresh",
+                "occurred_at": "2026-08-25T14:41:06+08:00",
+                "last_occurred_at": "2026-08-25T14:50:04+08:00",
+                "count": 34,
+                "recovery_status": "recovered",
+                "resolved_at": "2026-08-25T15:00:19+08:00",
+            },
+            {
+                "code": "checkpoint:no_eligible_decision",
+                "severity": "error",
+                "strategy": _STRATEGY,
+                "stage": "checkpoint",
+                "occurred_at": "2026-08-25T14:49:20+08:00",
+                "last_occurred_at": "2026-08-25T14:49:38+08:00",
+                "count": 5,
+                "recovery_status": "active",
+                "resolved_at": None,
+            },
+        ],
+    )
+
+    findings = analyze_samples((sample,), strategies=(_STRATEGY,), consecutive_zero_threshold=3)
+
+    finding = next(item for item in findings if item.code == "scoring_input_supersession_starvation")
+    assert finding.severity == "error"
+    assert finding.strategy == _STRATEGY
+    assert finding.evidence == {"supersession_count": 34, "checkpoint_miss_count": 5}
+
+
+def test_single_input_supersession_without_checkpoint_miss_is_not_reported_as_starvation() -> None:
+    sample = _sample(
+        1,
+        funnel=_funnel(),
+        recent_errors=[
+            {
+                "code": "refresh:input_superseded",
+                "strategy": _STRATEGY,
+                "stage": "refresh",
+                "count": 1,
+                "recovery_status": "recovered",
+            }
+        ],
+    )
+
+    findings = analyze_samples((sample,), strategies=(_STRATEGY,), consecutive_zero_threshold=3)
+
+    assert not any(item.code == "scoring_input_supersession_starvation" for item in findings)
 
 
 def test_legal_zero_recommendations_with_complete_funnel_are_not_reported_as_anomaly() -> None:

@@ -406,6 +406,12 @@ class V2SchedulerRuntime:
                 return LatestWinsOffer.REJECTED
         return self._lanes[request.strategy].offer(request)
 
+    def notify_history_warmup(self) -> None:
+        with self._lock:
+            if not self._running:
+                return
+        self._trigger_scoring_after_input()
+
     def _process_pipeline_task(self, scheduled: ScheduledPipelineTask) -> None:
         if scheduled.task is PipelineTask.CLOSE_QUOTES and not self._missing_after_close_scored_strategies(
             scheduled.scheduled_at
@@ -618,10 +624,10 @@ class V2SchedulerRuntime:
 
     def _process_cycle(self, request: V2CycleRequest) -> None:
         lane = self._lanes[request.strategy]
-        if lane.is_superseded(request) or self._complete_existing_close_fallback(request):
+        if self._complete_existing_close_fallback(request):
             return
-        local = self._build_fresh_local(request, lane)
-        if local is None or not self._publish_fresh_local(request, local, lane):
+        local = self._build_fresh_local(request)
+        if local is None or not self._publish_fresh_local(local):
             return
         self._continue_after_local_publish(request, local, lane)
 
@@ -638,31 +644,24 @@ class V2SchedulerRuntime:
     def _build_fresh_local(
         self,
         request: V2CycleRequest,
-        lane: LatestWinsWorker[V2CycleRequest],
     ) -> DecisionIdentity | None:
         started_at = time.perf_counter()
         if not self._prepare_cycle_data(request):
             return None
         self._record_latency("scoring_data_prepare", started_at)
-        if lane.is_superseded(request):
-            return None
         started_at = time.perf_counter()
         local = self._build_local(request)
         self._record_latency("local_scoring", started_at)
-        if local is None or lane.is_superseded(request):
+        if local is None:
             return None
         return local
 
     def _publish_fresh_local(
         self,
-        request: V2CycleRequest,
         local: DecisionIdentity,
-        lane: LatestWinsWorker[V2CycleRequest],
     ) -> bool:
-        if lane.is_superseded(request):
-            return False
         started_at = time.perf_counter()
-        if not lane.execute_if_current(request, lambda: self._publish(local, hybrid=False)):
+        if not self._publish(local, hybrid=False):
             return False
         self._record_latency("decision_publish", started_at)
         return True

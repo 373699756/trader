@@ -138,6 +138,13 @@ class CompanyResearchSnapshot:
 
 
 @dataclass(frozen=True)
+class RuntimeIssueSnapshot:
+    code: str | None
+    strategy: str | None
+    count: int | None
+
+
+@dataclass(frozen=True)
 class StatusSnapshot:
     schema_version: str | None
     release_decision_schema: str | None
@@ -152,6 +159,7 @@ class StatusSnapshot:
     candidate_quote_source: str | None
     history_warmup: HistoryWarmupSnapshot
     company_research: CompanyResearchSnapshot
+    recent_errors: tuple[RuntimeIssueSnapshot, ...]
     strategies: Mapping[str, ProjectionSnapshot]
     input_quality: Mapping[str, InputQualitySnapshot]
 
@@ -265,6 +273,7 @@ def _parse_status(payload: Mapping[str, object]) -> StatusSnapshot:
             result_count=_nonnegative_int(company_research.get("result_count")),
             rescore_result_count=_nonnegative_int(company_research.get("rescore_result_count")),
         ),
+        recent_errors=_parse_runtime_issues(payload.get("recent_errors")),
         strategies=strategies,
         input_quality=input_quality,
     )
@@ -345,6 +354,24 @@ def _parse_funnel(payload: Mapping[str, object]) -> FunnelSnapshot:
     )
 
 
+def _parse_runtime_issues(value: object) -> tuple[RuntimeIssueSnapshot, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    issues: list[RuntimeIssueSnapshot] = []
+    for raw in value[:32]:
+        payload = _mapping_or_none(raw)
+        if payload is None:
+            continue
+        issues.append(
+            RuntimeIssueSnapshot(
+                code=_text(payload.get("code")),
+                strategy=_text(payload.get("strategy")),
+                count=_nonnegative_int(payload.get("count")),
+            )
+        )
+    return tuple(issues)
+
+
 def _mapping(value: object) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
         return {}
@@ -392,6 +419,7 @@ __all__ = [
     "FunnelSnapshot",
     "InputQualitySnapshot",
     "ProjectionSnapshot",
+    "RuntimeIssueSnapshot",
     "WebSample",
     "parse_web_sample",
 ]
