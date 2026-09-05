@@ -17,7 +17,7 @@ def test_scoring_hot_path_baseline_has_explicit_cli_and_fixed_identity() -> None
 
 
 def test_strategy_contract_requires_all_hot_path_denominators_and_equivalence_cases() -> None:
-    strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
+    work = " ".join((ROOT / "docs/work.md").read_text(encoding="utf-8").split())
     for token in (
         "每个完成评分 epoch",
         "每个被评估候选",
@@ -26,4 +26,4 @@ def test_strategy_contract_requires_all_hot_path_denominators_and_equivalence_ca
         "相同输入的候选、分数、风险、动作、排名和决策 hash 完全一致",
         "100 tick 分配增长不超过 20%",
     ):
-        assert token in strategy
+        assert token in work

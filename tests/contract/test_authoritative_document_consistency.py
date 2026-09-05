@@ -44,7 +44,7 @@ def test_authoritative_docs_do_not_retain_superseded_migration_chronology() -> N
     ):
         assert obsolete not in design
 
-    assert "迁移过程、事故复盘和逐批实现 记录只保存在 `CHANGELOG.md`" in _compact(design)
+    assert "迁移过程、事故复盘和逐批实现记录只保存在 `CHANGELOG.md`" in _compact(design)
     assert "历史迁移门禁比较旧档位" not in strategy
     for obsolete_identity in ("DecisionEpoch", "CurrentDecisionIndex", ".runtime/v17"):
         assert obsolete_identity not in design

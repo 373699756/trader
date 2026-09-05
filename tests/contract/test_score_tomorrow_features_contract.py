@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_batch_two_contract_freezes_five_point_in_time_feature_families() -> None:
     strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
-    design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+    work = (ROOT / "docs/work.md").read_text(encoding="utf-8")
 
     for token in (
         "score_tomorrow_point_in_time_features",
@@ -21,8 +21,8 @@ def test_batch_two_contract_freezes_five_point_in_time_feature_families() -> Non
         "production_authority=false",
     ):
         assert token in strategy
-    assert "ScoreTomorrowPointInTimeFeatures" in design
-    assert "不接入 `bootstrap.py`、HTTP、调度、活动运行库、正式决策或 DeepSeek" in design
+    assert "ScoreTomorrowPointInTimeFeatures" in work
+    assert "不接入 `bootstrap.py`、HTTP、调度、活动运行库、正式决策或 DeepSeek" in work
 
 
 def test_tomorrow_feature_modules_do_not_import_production_or_io_boundaries() -> None:

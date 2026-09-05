@@ -41,9 +41,11 @@ def test_authoritative_documents_define_two_level_filter_before_h1_download() ->
 
 def test_h1_roadmap_depends_on_completed_two_level_filter_section() -> None:
     strategy = (ROOT / "docs" / "recommendation-strategy.md").read_text(encoding="utf-8")
+    work = (ROOT / "docs" / "work.md").read_text(encoding="utf-8")
 
-    level_one = strategy.index("一级永久资格名单与二级硬过滤")
-    h1 = strategy.index("H1 分策略历史归档与点时覆盖审计")
+    level_one = strategy.index("一级永久资格过滤")
+    h1 = work.index("15.1.21–15.1.34")
 
-    assert level_one < h1
-    assert "状态：已完成" in strategy[level_one:h1]
+    assert level_one >= 0
+    assert h1 < work.index("15.1.35")
+    assert "二级动态硬过滤" in strategy

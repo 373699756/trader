@@ -11,9 +11,9 @@ def test_baseline_audit_is_an_explicit_read_only_cli_command() -> None:
     parser = build_parser()
     args = parser.parse_args(["research-baseline-audit"])
     assert args.command == "research-baseline-audit"
-    strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
-    assert "score_current_baseline_consistency_audit" in strategy
-    assert "baseline_identity_inconsistent" in strategy
+    work = " ".join((ROOT / "docs/work.md").read_text(encoding="utf-8").split())
+    assert "score_current_baseline_consistency_audit" in work
+    assert "baseline_identity_inconsistent" in work
 
 
 def test_baseline_audit_projection_has_no_future_or_production_authority_fields() -> None:

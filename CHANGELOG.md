@@ -6,6 +6,14 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求明确三份权威文档的职责，并把评分优化计划、历史研究路线和开发任务分工集中管理。现新增
+  `docs/work.md` 作为开发任务拆分、依赖、owner、状态、验证和交付记录；`recommendation-strategy.md`
+  精简为荐股流程、过滤、评分 V1/V2/V3、风险、融合、动作、TopK、冻结和展示规则；
+  `software-business-design.md` 收敛为产品、架构、运行时、数据服务、API、Web、运维和发布契约，保留必要的
+  BaoStock 可观测性与研究隔离系统边界。同步更新文档契约测试，确保计划内容不再作为两份权威文档的重复定义。
+  Verification: `pytest -q tests/contract`（全部通过）和 `git diff --check`；未运行与本批无关的全量业务、打包或浏览器门禁。
+  Residual Risks: `docs/score.md` 仍为用户已有未跟踪文件且未纳入本批；BaoStock 供应商阻塞、V3 训练和生产授权状态不变。
+
 - 修正最终发布门禁的打包布局测试：安装元数据隔离测试不再复制 `data/` 历史与训练运行数据，避免并发测试耗尽磁盘；评分命名契约精确放行 V1/V2/V3 profile 测试路径。Verification: `make format-check`、`make lint`、`make type-check`、全量 pytest（1567 passed）和 `make package` 通过；测试临时目录已清理。Residual Risks: BaoStock 15.1.38 外部供应商阻塞及 Today/D25/V3 生产授权状态不变。
 
 - 继续执行 `docs/score.md` 计划项 9：补齐评分模块化后的权威文档边界。`software-business-design.md` 现在明确 V1/V2/V3 与 Today/Tomorrow/D25 的固定能力矩阵、D25 单一 2–5 日生产头、profile 扩展边界和生产/研究隔离；`recommendation-strategy.md` 明确 T+2 至 T+5 仅为 D25 标签、终端留出和风险观察点，不是四个生产头。新增文档契约断言，未改变评分、冻结、API、运行目录或历史下载行为。Verification: 文档与功能包契约、全量评分相关定向测试、Ruff、mypy 和 `git diff --check` 通过；本次完成评分模块化收尾后，按用户要求执行最终全量门禁。Residual Risks: `docs/score.md` 计划中的 15.1.38 BaoStock 2000 日下载仍受供应商登录/历史请求阻断，且此前明确要求暂不改动正在运行的历史下载链；Today/D25 新模型和 V3 三头生产启用仍须独立数据、研究和人工授权批次。`Regression-Key: scoring-documentation-boundary-v1`。

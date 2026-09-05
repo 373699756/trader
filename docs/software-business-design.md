@@ -8,16 +8,15 @@
 
 适用范围：本地 A 股研究看板
 
-本文是产品范围、系统架构、运行时、时间线、数据服务、发布、API、界面、运维、
-验收和交付路线的唯一权威。荐股算法、过滤、评分、DeepSeek、融合和选股规则以
-[荐股策略文档](recommendation-strategy.md) 为唯一权威；依赖、构建和入口以根目录
-`pyproject.toml` 为唯一权威；协作流程以根目录 `AGENTS.md` 为准。
+本文是产品范围、系统架构、运行时、时间线、数据服务、发布、API、界面、运维和验收的唯一权威，
+不维护开发排期、owner 分工、批次状态或任务拆分。荐股算法、过滤、评分、DeepSeek、融合和选股规则以
+[荐股策略文档](recommendation-strategy.md) 为唯一权威；开发任务、依赖顺序和交付状态以
+[开发工作计划](work.md) 为准；依赖、构建和入口以根目录 `pyproject.toml` 为唯一权威；协作流程以根目录
+`AGENTS.md` 为准。
 
 当前交付状态：current-only 工程与发布门禁验收已闭合；current-only 是唯一活动产品链。旧 Pipeline、旧 Web 路由
-和旧运行目录已从活动树物理删除，不构成发布候选的
-兼容能力，也不得反向定义当前活动链。迁移过程、事故复盘和逐批实现
-记录只保存在 `CHANGELOG.md` 与 `docs/reports/`；一次性拆包计划已退役，尚未闭合的产品、发布和工程 Gate 直接记录在本文第 14 节，
-策略研究 Gate 直接记录在荐股策略文档第 15.1 节，不再保留并行概览、实施计划或独立运行手册。
+和旧运行目录已从活动树物理删除，不构成发布候选的兼容能力，也不得反向定义当前活动链。迁移过程、事故复盘和逐批实现记录只保存在 `CHANGELOG.md` 与 `docs/reports/`；开发排期和任务分解统一见
+[开发工作计划](work.md)，不在本文复制第二份清单。
 
 ## 1. 产品定位与范围
 
@@ -1547,6 +1546,11 @@ fail closed 并进入浏览器诊断。`market_data.market_changes` 只公开变
 入口必须保持相同分类和默认语义；`run.bat` 继续委托 PowerShell 入口。当前公开脚本命令固定为
 `check`、`download_history` 和 `train-tomorrow`。旧 H0 历史归档、回测和筛选命令已经退役。组合内的
 底层 `trader-cli` 阶段继续保留用于测试、自动化和故障定位，但不再逐项暴露为 `run.sh` 命令。
+
+历史归档运行契约属于软件运行设计：`download_history` 使用固定一个受控 SDK 子进程，单次供应商调用
+墙钟上限 60 秒，最多重试 2 次，每次查询至少间隔 2 秒；取消宽限 10 秒，供应商黑名单错误立即停止并保留
+checkpoint。60 秒只约束单次供应商调用，不约束包含多次正常调用的完整阶段或单股任务。具体开发 owner、波次和
+研究交接不在本文维护，统一见 [开发工作计划](work.md)。
 启动器在运行所选入口前必须执行无副作用的帮助探测；入口缺失、项目元数据更新，或虚拟环境移动后因
 固化解释器/editable 项目路径而无法执行时，必须用该虚拟环境当前可用的 Python 重新安装本仓库，再启动
 所选入口。不得仅凭入口文件仍有可执行位就把失效环境视为健康，也不得为此删除整个虚拟环境。
@@ -1597,6 +1601,9 @@ python3 -m venv .venv
 | 离线研究 | `./run.sh download_history [--runtime-dir <路径>] --sessions 1..2000` | 显式安装 `[research]` extra 后，按固定窗口下载/续传 BaoStock 日线、逐日 ST 和历史行业；默认写入 Git 忽略的 `data/history/`，也可显式指定其它目录 |
 | 离线训练结果 | `data/train/` | 受控训练结果目录；不得写入历史下载分片、WAL、缓存或供应商响应 |
 | 离线训练 | `./run.sh train-tomorrow [--runtime-dir <路径>]` | 不接受阶段或 `run_id` 参数；默认读取 `data/history/`，显式路径必须与 `download_history --runtime-dir` 使用的根一致；一次调用连续完成父工件已满足的单一 V3 预注册阶段，永不自动 promotion 或激活 V3 |
+
+训练前的只读输入兼容检查使用 `tomorrow_v3_input_compatibility_v1`，只核对冻结 manifest 的字段、单位、键和
+父 hash；它不能启动训练、打开终端留出或改变 profile。
 
 当前 `check` 组合命令及 `train-tomorrow` 均由 `trader-cli` 单一编排器
 统一拥有。Linux/macOS 与 PowerShell 不复制业务流程。普通阶段
@@ -1737,256 +1744,33 @@ current-only 工程能力与发布门禁验收已经闭合：活动组合只包�
 迁移或回放旧运行数据。工程迁移验收使用 当前链自身的点时输入、确定性重算、CAS、冻结哈希、
 故障注入、时延、资源、SSE 和桌面证据，不以旧链一致率作为发布条件。
 
-### 14.2 评分研究状态
+### 14.2 状态与历史记录边界
 
-评分验证唯一使用历史 point-in-time 回放。研究服务只读封存历史归档，按交易日顺序完成训练、可选校准、
-embargo 和独立检验；合法空仓日按现金组合结算，是完整证据而不是缺失。
-线上 T+1 outcome 只保存正式推荐历史和运行监控，不进入模型拟合、校准、评分门禁、自动调参或生产切换。
+`CHANGELOG.md` 归档用户诉求、原因、修改、验证与剩余风险；`docs/reports/` 保存阶段性基线和验收证据。
+本文只维护产品、发布和运行契约；评分研究状态和开发任务状态分别由
+[荐股策略文档](recommendation-strategy.md) 与[开发工作计划](work.md) 引用和解释，不在本文复制。
+实际状态变化时先核对代码与测试，再更新对应文档；工作计划中的状态不改变本文件的运行契约。
 
-研究终态统一为历史不足、历史拒绝或历史验证通过；全部报告固定
-`production_authority=false`。历史通过不创建自动晋级状态，也不写活动配置、冻结记录、统一决策索引、
-API 或 Web。任何评分、模型、风险、阈值或动作变化都必须由用户另立高风险生产批次，先修改权威契约与机器
-测试，再完成完整发布门禁。
+评分验证唯一使用历史 point-in-time 回放，运行期状态以 `research_readiness` 只读投影；线上 T+1 outcome 只保存正式推荐历史和运行监控，不进入评分训练或自动调参。原生评分因子诊断层、点时特征和影子模型属于隔离研究能力，
+不得接入生产组合根或在线请求链（HTTP、SSE）或活动数据库。`baostock_holdout_isolation_contract` 负责保持
+历史留出身份隔离；它不打开留出、不读取收益，也不改变生产权限。研究输入固定 `terminal_holdout_opened=false`、
+`point_in_time_parity=false` 和 `production_authority=false`。
 
-既有 `score_p0_v1`、`score_p0_v2`、Tomorrow P1/P2 只作不可变审计。P0v1 保持历史点时证据不足，
-P0v2 保持固定历史日期错失，P2 保持既有 `historical_rejected`；旧日期、hash 和失败原因不得覆盖，
-但不再生成活动任务、运行计数或后续窗口。对应未来采集器、运行期 V1/V2 配对数据库、R7 晋级档案及其
-CLI、状态和 Web 字段已经退役。
+BaoStock 历史归档的运行时状态属于系统可观测性契约，而不是开发排期。`baostock_runtime_progress` 的阶段包括
+`preflight`、`supplier_login`、`trading_calendar`、`security_universe`、`database_initializing`、
+`worker_starting`、`downloading` 和 `merging`；进度公开 `sessions`、`universe_count`、`checkpointed_codes`、
+`remaining_codes`、`completed_codes`、`failed_codes`、`expected_records`、`downloaded_records`、`active_workers`、
+`source`、`current_code`、`rate_limit_cooldown_seconds`、`last_failure_reason`、`elapsed_seconds`、
+`checkpoint_database_pattern`、`partition_database_pattern`、`catalog_database`、`manifest_path` 和
+`checkpoint_loading`。归档身份为 `score_baostock_daily_core_v2`，分片路径为
+`data/history/baostock-daily/sessions-2000/shards/<board>-<code-prefix>.sqlite3`，最终目录登记
+`catalog.sqlite3` 和 `manifest.json`；`--sessions 2000` 是正式归档边界。供应商错误 `10001011` 映射为 `supplier_query_failed_blacklisted` 并停止运行。
+运行时固定最多 1 个进程，单次供应商调用墙钟上限 60 秒，最多重试 2 次，每次查询至少间隔 2 秒；
+60 秒只约束单次供应商调用，不约束包含多次正常调用的完整阶段或单股任务。`download_history` 仅按自身
+`data/history/baostock-daily/sessions-<sessions>/` 检查点恢复，不迁移旧业务运行库。
 
-旧 H0 腾讯 640 日历史归档、固定回测和六项筛选入口已退役，不再创建或更新 `score-history`。
-新的历史数据统一由 `download_history` 生成 BaoStock 共同日线 manifest，训练统一由
-`train-tomorrow` 按已封存的 V3 前置工件执行。历史数据不足、历史事实不完整或父工件冲突时，训练失败关闭；
-训练成功生成的最终 V3 `model.json` 由显式 `--profile v3` 的生产进程直接读取，不自动修改配置或切换 profile。
+## 15. 文档责任边界
 
-Score-R6 历史唯一验证使用新身份 `score_r6_historical` 和 `score_r6_historical_report`；旧
-`score_r6_historical_legacy` 目录只作不可变审计，状态读取不得把旧 `forward_required` 报告重新解释为
-`historical_only`。
-
-上述六项旧 H0 筛选/验证阶段及其 CLI 均已退役；历史研究只通过 `download_history` 和
-`train-tomorrow` 执行，原始训练参数、证据和报告不得接入生产组合根或在线请求链，最终 V3 `model.json`
-仅由 V3 profile 的 loader 读取。
-
-隔离研究包继续保留原生评分因子诊断层、`ScoreTomorrowPointInTimeFeatures`、`ScoreTomorrowShadowModels`
-与成本感知选择能力，分别封存 `score_factor_diagnostic_report`、点时特征、
-`score_tomorrow_shadow_report` 和 `score_tomorrow_cost_aware_selection_report`。LightGBM 工件只由
-`ShadowModelArtifactStore` 管理；这些能力不接入 `bootstrap.py`、HTTP、调度、活动运行库、正式决策或 DeepSeek，
-也不因工程存在而形成活动研究任务或生产权限。
-
-`research-status` 使用 `research_readiness`，只读公开 H0 归档覆盖、R6/R6D/R6S、P2、V1/V2
-历史留出、正式 outcome 计数和已退役研究的固定终态。它不读取网络、不评分、不创建缺失目录，也不公开
-未来窗口、自动晋级或运行期配对计数；V9 投影 Tomorrow 训练 run/工件图、下一阶段和生产阻塞审计，并
-以 `input_prerequisite_status`、`input_prerequisite_hash` 和有界 `input_blockers` 公开 Codex A 的 H1
-元数据/标签预注册前置状态。`train-tomorrow` 与状态读取共用同一类型化前置服务；H1 不足时在资源探针和
-handoff 读取前失败关闭，不写空预注册工件，也不把 `resource_probe_handoff_missing` 冒充首个数据根因。
-H0 规范匹配且逐股完成覆盖率至少 95% 时，历史筛选才可执行；
-其余阻塞使用受控原因码。
-
-V2 严重亏损概率研究身份固定为 `tomorrow_v2_historical_risk_probability_v1`。类型化数据集只从 H0 独立验证段的封存 V2
-历史证据提取成本后预测超额、模型分歧、信号分、ATR20 和估算成本，标签固定
-`MAE / ATR20 <= -1.5`。60 日训练、20 日 Platt 校准、40 日独立检验均来自历史日期，两个边界各保留
-1 个交易日 embargo；Brier 必须严格优于训练窗口基准率常数模型，ECE 不超过 0.05。日期或字段不足返回
-`historical_data_insufficient`，不能拟合或输出伪概率；通过仍是无生产权限报告，当前 Web 保持
-`loss_probability_status=not_modeled`。
-工程链分别封存 `tomorrow_v2_historical_risk_model_v1` 与
-`tomorrow_v2_historical_risk_validation_report_v1`，报告必须绑定模型工件 hash；同内容幂等、冲突或篡改
-失败关闭。历史日期不足时只返回不足状态且不封存伪模型。
-
-后续历史评分优化路线的执行顺序、样本门槛和研究终态以荐股策略文档第 15.1.21–15.1.34 节为唯一
-权威。路线先完成一级永久资格名单与二级动态硬过滤，核对当前 V1/V2、P2 报告、人工授权和状态投影的
-身份一致性；随后把不依赖收益数据、能够提高实时性和稳定性的评分热链等价工程前移，只在候选、分数、
-风险、动作、排名和决策 hash 完全一致时优化脏集、既有缓存、single-flight、取消和持久化成本。
-
-研究链再建立共同日线核心与 Today 11:20、Tomorrow/D25 14:50 三份独立覆盖 manifest，分别预注册
-标签、60%/20%/20% 时序切分、5 日 embargo 和最终至少 200 个交易日。任一策略点时数据不足只终止该
-策略，不阻塞其它策略。全候选预测—实际残差账本和过滤瀑布/候选召回消融完成后，只允许每策略最多
-8 个人工预注册、可读纯函数表达的透明候选，共同进入 walk-forward、Holm 多重检验和一次确认段评价；
-H1 免费来源能力探针使用 `score_h1_source_capability_audit`，优先禁用环境代理继承、连接失败时以
-相同请求语义有界回退，并逐来源保留 `probe_failures`；请求失败只证明当前来源未核实，不能投影为锚点
-可用，成功来源的最早日期和覆盖计数仍独立封存。H1/标签/残差/C3 数据不足终态继承该失败原因且保持零
-预测、零模型、留出未开启和无生产权限。
-最终分别运行 Today、Tomorrow、D25 独立终端留出，并形成跨策略否定或验证结论。
-
-第 15.1.23 节基线审计只能由显式只读 CLI 组合类型化的生产身份与研究状态端口，不进入普通 HTTP、SSE
-或 Web；活动服务不可用必须记录 `live_identity_unverified`，不能伪造一致或误报冲突。第 15.1.25 至
-15.1.34 节的 H1、残差、消融、候选和验证均位于隔离 `domain/application/infra/research` 和独立历史
-目录，只能由显式研究 CLI 装配；`bootstrap.py`、生产调度、HTTP、SSE、Web、活动数据库和冻结链不得
-持有这些研究服务。第 15.1.24 节若修改生产计算热链，必须遵守本文第 7、13 节运行、性能和发布门禁，
-不得以性能名义改变推荐语义或接入新的 DeepSeek 调度。
-
-当前第 15.1.24 节以只读 `scoring_hot_path_efficiency_baseline` 报告闭合；显式
-`trader-cli research-scoring-hot-path-baseline` 仅运行离线性能 workload，并在边界投影四类成本分母、
-脏集收缩、延迟和决策 hash 等价证据，不写入生产状态、推荐历史或冻结记录。
-
-第 15.1.25 节的显式 `scripts/h1_point_in_time_capability.py` 只允许把工件写到仓库外目录。来源能力报告
-固定为 `score_h1_source_capability_audit`：每个供应商独立执行有界探测，单个来源失败不能丢弃其它
-来源的成功证据，并以有界 `probe_failures` 原因码进入 capability hash 和下游数据不足终态。脚本先使用
-不继承环境代理的 `requests` 会话，连接失败时只回退到同一库、相同参数/请求头/超时的系统代理会话；
-不得调用第二套外部 HTTP 客户端或保存供应商原始载荷。公开执行投影为
-`h1_capability_execution`，显式列出逐来源能力、探测失败、三策略终态、父工件 hash、是否生成
-OOF/model 以及生产/自动更新权限。当前真实审计已使三个策略、标签、残差账本和 C3 均以
-`historical_data_insufficient` 收口，因此不得启动该旧 H1 身份的全量下载、训练、确认或终端留出；新的
-固定 2,000 日线能力只按下一段独立计划执行，不改写这个结论。
-
-荐股策略第 15.1.38 节原计划中，现已完成 D 的依赖、显式入口、分片生命周期、状态投影和 A 数据端口集成；真实全量下载仍受
-供应商登录能力和本机资源阻塞，尚未形成合格全量 manifest。2026-09-02 最新显式探针中，`--sessions 1` 返回
-`supplier_login_transport_failed`；历史版本的 `--sessions 2000` 在外部 I/O 前因固定 30GB 门禁返回
-`resource_blocked/disk_below_30gb`。当前命令将全量启动门槛调整为 25GiB、严格单证券顺序下载，并把不同 sessions 的 checkpoint 隔离。只允许安装 wheel 的
-`[research]` optional extra 后显式执行
-`trader-cli download_history --runtime-dir <仓库外绝对路径> --sessions 2000`。规范库以代码日期为
-唯一行，在同一行保存未复权/前复权字段，每只股票最多 2000 个逻辑记录；新股、退市股和来源不足股票按
-真实区间少于 2000 条，不补值。`--sessions` 接受 1–2000、默认 2000，超限在任何外部 I/O 前失败；只有
-2000 日运行可以形成权威全量 manifest。Codex A 独占 gateway、分片/合并内容语义、覆盖审计、manifest/hash 和历史
-行业/资格事实能力；Codex D 只拥有可选依赖、CLI、固定一个受控独立 SDK 子进程、每次调用 60 秒墙钟、最多两次
-重试、每次查询至少间隔两秒、锁/取消/恢复和状态投影。子进程在每次 SDK 调用开始和结束时向父进程发送内部活动信号；
-60 秒只约束单次供应商调用，不约束包含多次正常调用的完整阶段或单股任务，活动信号不得作为任务完成响应。普通启动、`check`、Web、`train-tomorrow`、bootstrap
-和生产调度均不得隐式触发。
-
-`download_history` 的内部运行可观察性固定为类型化 `baostock_runtime_progress` 契约；CLI 标准错误将其渲染为
-单行人类可读摘要，不再打印完整 JSON。`phase` 枚举固定为 `preflight`、`checkpoint_loading`、`supplier_login`、
-`trading_calendar`、`security_universe`、`database_initializing`、`worker_starting`、`downloading`、`merging`；
-每条事件显式投影 `source/current_code/sessions/universe_count/checkpointed_codes/remaining_codes/completed_codes/failed_codes/`
-`expected_records/downloaded_records/active_workers/rate_limit_cooldown_seconds/last_failure_reason/elapsed_seconds/`
-`checkpoint_database_pattern/partition_database_pattern/catalog_database/manifest_path`。`checkpointed_codes` 是成功与失败检查点总数，
-`remaining_codes` 是尚未成功完成、续传时仍需处理的证券数。其中
-`expected_records` 是逐证券按上市/退市有效区间求和的应有代码-日期记录数，`downloaded_records` 是已经提交
-到 SQLite 的逻辑记录数。`checkpoint_database_pattern` 和 `partition_database_pattern` 均指向
-`shards/<board>-<code-prefix>.sqlite3`（超过 100 只时追加百股桶后缀）；checkpoint 位于 `baostock-daily/sessions-<sessions>/`，续传优先从已验证的分片恢复冻结日历、证券池和来源版本，避免在已有
-断点时再次依赖供应商证券主数据。下载期间和完成后都只存在 WAL 分片 checkpoint、`catalog.sqlite3` 与规范
-`manifest.json`，不生成单一总库；单个分库损坏时移入 `quarantine/`，只重新下载该分库覆盖的股票，其他分片继续可读。供应商返回 `10001011` 时统一投影
-`supplier_query_failed_blacklisted` 并立即停止整次运行，保留已提交断点；文件系统不支持进程锁时失败关闭，
-不得无锁继续。续传启动只读取 `checkpoints`、`training_fact_checkpoints` 和冻结上下文哈希，不解码
-`daily_cells.payload_json`；因此已落盘日线不会因恢复扫描重复读取。日线 checkpoint 与训练事实 checkpoint
-独立：行业历史无法覆盖上市日至收盘窗口时保留已完成日线，并以 `historical_industry_incomplete`
-终止该股票，后续启动不再重复下载其日线。
-
-备用来源不与 BaoStock checkpoint、SQLite 或 manifest 混写。2026-09-03 的单股票 600 日真实能力探针中，
-腾讯 `proxy` 和 `direct` K 线主机均未返回有效行，东方财富同样未返回有效行；120 积分 Tushare 只声明 raw 日线，
-实际请求返回 `sdk_error`。因此本版本不开放伪装为正式归档的备用全量循环。统一诊断器支持
-`--profile history --history-source tencent --tencent-history-host direct --history-days 600` 进行单股票、单请求、
-无写入复验；只有同源多代码 600 日探针稳定通过、复权口径和覆盖审计通过后，才可由新的独立归档批次增加
-该来源自己的 checkpoint、manifest、限频冷却和进度运行器。任何成功的公网备用档案都必须是独立数据集，
-不得静默填入 BaoStock 分片或其 manifest。
-
-该数据源只能提供日线、日历和供应商明确返回的基础事实，不能构造历史 11:20/14:50 锚点或单独补齐历史
-行业、证券资格和风险事实 `effective_at`。全体和逐板代码日期覆盖均达到 95%、全窗口老股完整率、逐股
-失败、停牌证据、最近 200 日隔离及全部 hash 必须共同进入 manifest；日线合格不得自动改变三策略旧 H1
-终态、打开留出、训练或取得生产权限。V3 只有在独立历史事实能力也通过后才可消费该日线父工件。
-
-Codex B 已封存 `tomorrow_v3_input_compatibility_v1` 只读消费契约。应用层只向未来 A 日线 port 请求一次
-冻结输入描述，不读取价格行；领域校验固定核对 `score_baostock_daily_core_v2`、来源截止、2000 日身份、
-`(code, trade_date)` 键、raw/qfq 同行、逐行 SHA-256、父 manifest hash，以及六个 Alpha 所需日线字段和
-单位。兼容报告绑定输入描述 hash 与父 manifest hash，固定训练未开始、终端留出未开启、无生产权限。
-报告同时固定 `automatic_model_update=false`，不得由兼容检查触发训练或 profile 变化。
-当前验证证据包含类型化 fixture 和一次真实小批探针；供应商登录返回 `unboundlocalerror` 类失败，
-因此 A 的全量 manifest、覆盖率和历史事实能力仍未合格，不得把入口成功或 fixture 结果投影为真实覆盖、训练 readiness、
-收益或第 15.1.35 节解阻塞。
-
-Codex C 已提供纯领域 `baostock_holdout_isolation_contract`，但未接入 CLI、Web、bootstrap 或生产路径。
-该审计只读取 Codex A 将来封存的类型化 manifest 元数据，验证留出日期恰为完整有效日期的最新 200 日，且
-训练、确认和日线代理三个消费集合均未读取它们；它不自行定义或重切数据集，也不读取行情、收益或模型。
-BaoStock 日线锚点只能是 `15:00_daily_close`，不得声称 14:50 point-in-time 一致。旧留出身份固定为
-`score_tomorrow_historical_candidate`，新留出身份固定为 `tomorrow_v3_point_in_time_holdout`；新留出
-只引用新的日线和切分 manifest hash，不能复用旧留出 hash。审计以受控 blocker 失败关闭，输出始终为
-`terminal_holdout_opened=false`、`point_in_time_parity=false`、`production_authority=false`。真实确认、收益
-留出和影子比较仍等待 A 的合格数据/历史事实 manifest 与 B 的唯一 bundle，不能由该隔离结论提前启动。
-
-Codex C 的显式 `scripts/codex_c_terminal_holdout.py` 只接受仓库外 Codex A 父工件目录，先校验 capability、
-标签预注册和 A terminal index 的父 hash，再通过 Today、Tomorrow、D25 类型化 holdout service 封存各自
-`report.json`，最后写入跨策略 `report.json`。父状态为 `historical_data_insufficient` 时只继承 hash 和原因，
-输出 `terminal_holdout_opened=false`、空交易日期和 `production_authority=false`；相同输入二次执行必须幂等。
-该入口不读取网络、收益、DeepSeek 或终端日期，不接入 CLI、Web、bootstrap、生产数据库或默认 profile。
-
-Codex B 的数据不足收口由 `seal_codex_b_insufficient_batch` 生成
-`historical_codex_b_insufficient_batch`，只接受 Codex A completion 的 SHA-256 父引用。它按
-Today/Tomorrow/D25 分别封存 `historical_data_insufficient` 策略终态和失败原因，并生成不含收益、候选、
-Holm 或模型数据的联合报告 hash；候选家族、确认报告、Holm 检验和终端留出均保持未生成/未开启。对应
-`CodexBTerminalArtifactStore` 使用显式字段白名单、原子写入、同内容幂等、异内容冲突和哈希篡改失败关闭，
-不接入生产配置、Web、DeepSeek 或活动数据库。
-
-旧 Codex B 的 V1/V2/C3 原始预测联合器只保留不可变历史数据不足工件
-`tomorrow_joint_insufficient_terminal`：父 completion 或任一 profile 原始预测不可用时，封存固定
-profile 顺序、父 hash 和失败原因，`prediction_rows`、`holm_test_count`、模型 hash 与终端留出均保持未开启。
-该终态只允许由显式历史审计读取；新 V3 训练、编排、预测和生产路径均不得读取、续写或改造它。
-
-荐股策略文档第 15.1.35–15.1.36 节另立 Tomorrow 单一行业 Ridge/LightGBM 50/50 日线收盘代理路线。
-该路线只允许显式离线命令装配隔离的 `domain/application/infra/research` 服务，训练参数、样本、报告和候选
-工件不得进入生产组合根、HTTP、SSE、Web、活动数据库或冻结链。每股最多读取 2000 个代码日期记录；每个
-行业至少有 1250 个特征/标签完整日期，先隔离最新 200 日给新的
-`tomorrow_v3_point_in_time_holdout`，其余日期再按 60%/20%/20% 和两个 5 日 embargo 形成开发、确认和
-日线代理终端段。该新点时留出不加入或重开已经完成的第 15.1.32 节。
-
-V3 不读取 V1/V2/C3 运行时预测，不训练二层联合器，不做 stacking，只生成一次成本调整后的预期净超额和
-一次 `base_score`。标准生产路径必须依次完成日线代理、新 14:50 留出、冻结前影子和风险报告，再由用户
-另立授权批次；若点时证据客观不可取得，保留的人工越权路径也必须由新指令绑定具体 model/report hash，
-此前对路径的允许不构成预授权。训练模型直接从项目训练目录加载，配置只选择 profile；
-V3 对外仍是组合根唯一注入的一个 `TomorrowModelPredictorPort`。当前服务器、Linux/macOS 与 PowerShell
-入口均接受 `v1|v2|v3`，默认 V1；V3 缺少训练模型时以 `Tomorrow V3 training model is unavailable`
-失败关闭。
-
-该路线唯一脚本入口为 `./run.sh train-tomorrow`。用户不传内部阶段、`run_id`、模型参数或
-工件路径；隔离编排器从规范和输入 hash 推导身份，一次调用连续完成所有父工件已满足的开发训练、一次
-确认和一次日线代理留出；只有新的 14:50 父数据与隔离证明合格时才打开一次新点时留出。中断后同一命令
-从原子检查点继续，已有终态只返回原结果。
-最终目录 `data/train/tomorrow-v3/<run_id>/` 只公开 `report.json` 和 `model.json`；两者分别保存规范
-`content_hash`，`model.json.report_hash` 必须绑定同批报告。全量特征、
-标签及 OOF 预测位于内部 `evidence/` Parquet 分区。主程序只读取最终 `model.json`；
-训练入口完成并生成有效模型后，下一次使用 `--profile v3` 的进程即可装配该 predictor，不需要额外
-promotion 或复制 wheel 资源。将 `data/train/tomorrow-v3/<run_id>/model.json` 复制到另一台 PC 的同一相对
-目录即可复用；模型 JSON 不包含本机绝对路径。
-
-路线不实施历史 DeepSeek 盈利回测、自动模型搜索、自动调参、组合黑盒优化、独立逐股亏损概率模型、
-定时/在线/无人授权重训、自动晋级、启动激活或自动回退；用户显式启动的 `train-tomorrow` 只能按封存
-规范确定性执行预注册训练链。仅证明历史证据早于决策锚点无法排除当前大模型训练语料已知
-后续结果，因此 DeepSeek 历史盈利增量不在本路线验证；生产固定复核、68/32 融合和每日 168 次物理请求
-上限不变。既有 H0/R6/P2 工件保持不可变，既有 139 日窗口只能作为已观察历史审计，不能重新标为独立
-盲测。不得恢复未来日采集，线上 T+1 outcome 只保存正式推荐历史与运行监控，不进入训练或参数更新。
-
-所有研究报告固定 `production_authority=false`。历史候选即使通过，也只允许用户另立高风险生产变更
-批次，明确指定单一策略和单一候选，再更新契约、机器测试、活动实现与版本并执行完整发布门禁；不得由
-本路线创建注册表、生产模型、启动指针或自动更新状态，不得盘中切换 profile/模型或覆盖 current、正式/
-冻结记录。当前生产继续 `automatic_model_update=false`。
-
-生产调度继续在交易日 14:50 冻结 Tomorrow，15:00 后 outcome 结算器只处理正式冻结项的 T+1 收盘、
-20bp 后净超额、MAE/ATR20 和严重回撤。该后台链不计算另一评分档位、不形成全候选配对、不自动调权、
-重训、晋级、回切或覆盖冻结结果。状态 API 只公开活动模型 ID/hash、人工授权依据、
-`automatic_t1_outcome_settlement`、`automatic_model_update=false` 和亏损概率未建模状态。
-### 14.3 状态与历史记录边界
-
-`CHANGELOG.md` 归档用户诉求、原因、修改、验证与剩余风险；`docs/reports/` 保存阶段性基线
-和验收证据。本文第 14 节直接维护未闭合产品、发布和工程 Gate；荐股策略文档第 15.1 节直接维护
-未闭合评分研究 Gate。本文不得重复事故时间线、逐版本修复、分支交接、影子/cutover 样本或完成批次
-清单。实际状态变化时先核对代码与测试，再更新对应权威状态；一次性概览、计划和运行手册完成归并后
-必须删除，不能再次成为活动输入。
-
-## 15. 交付与文档治理
-
-### 15.1 独立交付批次
-
-用户每发送一次“继续”或语义等价指令，都形成新的独立交付批次，只处理计划或本文中
-下一个完整未完成章节，以同级标题为边界，并完成章节内全部明确子项。不得只完成首个
-子项后停止，不得顺带处理相邻章节。开始前记录 `HEAD`、上游、既有工作树变更和任务
-文件范围；此前批次未闭合 Review、提交或推送时先闭合此前批次。
-
-每批先更新契约与失败测试，再实现；完成后以已推送基线审查完整 diff，修复所有已知
-发现，运行适用质量、测试、构建、仓库外 wheel 和桌面门禁。必须在 `CHANGELOG.md`
-归纳用户提出的问题或诉求、原因或现状判断、修改说明和行为变化、验证证据、剩余风险
-及后续项。提交使用一个准确的 Conventional Commit，推送当前跟踪分支并确认
-`HEAD == @{upstream}`；成功后停止，等待下一条指令。
-
-### 15.2 两份权威文档与非权威执行计划的更新边界
-
-产品范围、架构、生命周期、时间线、数据服务、发布/冻结、API、UI、运维、性能和验收
-变化更新本文；候选、过滤、因子、评分、风险、DeepSeek、融合、动作和 TopK 变化更新
-荐股策略文档。跨边界变更同时更新两份。依赖和入口只更新 `pyproject.toml`；执行记录
-更新 `CHANGELOG.md`，阶段性基线和交接报告可放入 `docs/reports/` 且必须标记门禁状态。
-一次性实施计划和问题记录在内容按当前代码核验并归入两份权威文档、`CHANGELOG.md` 或
-必要的 `docs/reports/` 后必须退役，不得继续作为活动输入；尚未获准的研究方向只能写入
-对应权威文档的明确“待验证”章节，不能用单独计划文件形成第二套策略或工程状态。已经
-已闭合迁移与实时链路的施工证据只归档在 `docs/reports/` 和 `CHANGELOG.md`，不在权威
-文档保留版本流水账。除此之外不得在 `docs/` 新建并行
-需求、计划、问题单、运行手册或归档文件。
-
-当前不保留独立目标概览、实施计划或启动停止手册。产品、架构、时间线、API、运维、验收和
-剩余工程 Gate 只由本文定义；候选、过滤、公式、风险、融合、排名和评分研究 Gate 只由荐股策略文档
-定义；依赖、构建和入口只由 `pyproject.toml` 定义。历史交付事实只能从 `CHANGELOG.md` 与
-`docs/reports/` 追溯。
+本文定义系统应如何运行、如何发布以及如何验收；不定义某个开发任务由谁、何时、分几波实施。
+`recommendation-strategy.md` 定义荐股链路和评分；`docs/work.md` 记录开发任务拆分、依赖、状态、owner、
+验证和交付批次；`CHANGELOG.md` 记录已经交付的事实。三者互相引用但不复制对方的权威内容。

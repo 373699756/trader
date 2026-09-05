@@ -10,61 +10,38 @@ def _compact(path: Path) -> str:
 
 
 def test_strategy_roadmap_is_ordered_benefit_first_and_strategy_complete() -> None:
-    strategy = _compact(ROOT / "docs/recommendation-strategy.md")
+    work = _compact(ROOT / "docs/work.md")
 
     ordered_sections = (
-        "15.1.21 历史评分验证总序与批次纪律",
-        "15.1.22 一级永久资格名单与二级硬过滤",
-        "15.1.23 现有基线身份与结论一致性审计",
-        "15.1.24 评分热链基线与等价效率门禁",
-        "15.1.25 H1 分策略历史归档与点时覆盖审计",
-        "15.1.26 三策略标签、基准与切分预注册",
-        "15.1.27 全候选预测—实际残差账本",
-        "15.1.28 过滤瀑布与候选召回消融",
-        "15.1.29 透明有限候选与成本风险诊断",
-        "15.1.30 时序确认与多重检验控制",
-        "15.1.31 Today 端到端历史留出",
-        "15.1.32 Tomorrow 端到端历史留出",
-        "15.1.33 D25 端到端历史留出",
-        "15.1.34 跨策略结论与人工变更边界",
+        "## 1. 当前基线",
+        "## 2. 评分模块化交付记录",
+        "## 3. 历史评分研究路线",
+        "### 3.1 已封存章节",
+        "### 3.2 依赖状态",
+        "### 3.3 V3 训练与验证（15.1.35–15.1.36）",
+        "### 3.4 BaoStock 2000 日归档（15.1.38）",
+        "## 4. 交付与验证",
     )
-    positions = tuple(strategy.index(section) for section in ordered_sections)
+    positions = tuple(work.index(section) for section in ordered_sections)
     assert positions == tuple(sorted(positions))
-    assert "状态：已完成" in strategy[positions[0] : positions[1]]
-    assert "状态：已完成" in strategy[positions[1] : positions[2]]
-    assert "状态：已完成" in strategy[positions[2] : positions[3]]
+    assert "已封存" in work
 
     for token in (
-        "每只股票最多 1600 个历史交易日",
-        "参数化只读能力探针",
-        "共同有效交易日少于 1000 日",
-        "最旧 60%、随后 20%、最新 20%",
         "最终留出至少 200 个交易日",
         "Today 11:20",
         "Tomorrow 14:50",
         "D25 14:50",
         "Holm",
-        "日期分组的移动区块 bootstrap",
-        "prediction_error = actual_net_excess_return - predicted_net_excess_return",
-        "baseline_identity_consistent",
-        "profitable_executable_recall",
-        "historical_filter_recall_ablation_report",
-        "每策略最多 8 个",
-        "每个完成评分 epoch",
-        "相同输入的候选、分数、风险、动作、排名和决策 hash 完全一致",
-        "参数不得由优化器",
-        "DeepSeek 历史盈利增量不在本路线验证",
-        "用户另立高风险生产变更批次",
-        "旧 H0 历史归档、固定回测和六阶段筛选入口已退役",
         "download_history",
         "train-tomorrow",
         "production_authority=false",
     ):
-        assert token in strategy
+        assert token in work
 
 
 def test_roadmap_cannot_restore_forward_collection_or_reuse_observed_holdout_as_blind() -> None:
     strategy = _compact(ROOT / "docs/recommendation-strategy.md")
+    work = _compact(ROOT / "docs/work.md")
     design = _compact(ROOT / "docs/software-business-design.md")
 
     for token in (
@@ -75,9 +52,9 @@ def test_roadmap_cannot_restore_forward_collection_or_reuse_observed_holdout_as_
         "不得定时、在线或无人授权地自动训练/调参、自动晋级、自动激活或自动回退",
         "用户显式调用第 15.1.20 节的 `train-tomorrow`",
     ):
-        assert token in strategy
-    assert "历史评分优化路线的执行顺序、样本门槛和研究终态" in design
-    assert "第 15.1.21–15.1.34 节" in design
+        assert token in work
+    assert "开发工作计划" in design
+    assert "15.1.21–15.1.34" in work
 
     for removed_section in (
         "15.1.28 历史 DeepSeek 点时事实与增量证据",

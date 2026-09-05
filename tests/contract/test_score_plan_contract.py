@@ -62,6 +62,7 @@ def test_forward_score_validation_owners_and_commands_are_retired() -> None:
 def test_remaining_offline_research_is_historical_and_production_isolated() -> None:
     strategy = _compact(ROOT / "docs/recommendation-strategy.md")
     design = _compact(ROOT / "docs/software-business-design.md")
+    work = _compact(ROOT / "docs/work.md")
 
     for token in (
         "score_r6_historical_legacy",
@@ -71,7 +72,7 @@ def test_remaining_offline_research_is_historical_and_production_isolated() -> N
         "tomorrow_v1_v2_h0_holdout_report_v2",
         "tomorrow_v2_historical_risk_probability_v1",
     ):
-        assert token in strategy or token in design
+        assert token in work or token in design
     assert "旧 H0 历史归档、回测和筛选命令已经退役" in design
     assert "download_history" in design
     assert "train-tomorrow" in design
@@ -98,6 +99,7 @@ def test_p2_historical_rejection_and_manual_production_override_remain_explicit(
 def test_v1_v2_historical_evidence_does_not_create_a_running_collection_gate() -> None:
     strategy = _compact(ROOT / "docs/recommendation-strategy.md")
     design = _compact(ROOT / "docs/software-business-design.md")
+    work = _compact(ROOT / "docs/work.md")
 
     for token in (
         "不能据此断言 V2 未来更能挣钱",
@@ -105,7 +107,7 @@ def test_v1_v2_historical_evidence_does_not_create_a_running_collection_gate() -
         "tomorrow_v1_v2_h0_holdout_report_v2",
         "不设跨年配对采集任务",
     ):
-        assert token in strategy
+        assert token in strategy or token in work
     for retired in ("522 个有效交易日", "tomorrow_v1_v2_paired_forward_v1"):
         assert retired not in strategy
         assert retired not in design

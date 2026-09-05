@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_batch_three_contract_freezes_walk_forward_models_and_calibration() -> None:
     strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
-    design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
+    work = " ".join((ROOT / "docs/work.md").read_text(encoding="utf-8").split())
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
     for token in (
@@ -25,8 +25,8 @@ def test_batch_three_contract_freezes_walk_forward_models_and_calibration() -> N
         "production_authority=false",
     ):
         assert token in strategy
-    assert "ScoreTomorrowShadowModels" in design
-    assert "ShadowModelArtifactStore" in design
+    assert "ScoreTomorrowShadowModels" in work
+    assert "ShadowModelArtifactStore" in work
     assert '"lightgbm>=4.7,<5"' in pyproject
 
 
