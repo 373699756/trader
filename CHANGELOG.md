@@ -6,6 +6,15 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户反馈“大任务拆分后的每个子任务不必重复全量测试”，要求把全量验证集中到大任务结束。原流程虽有
+  风险分级，但“高风险变化必须运行完整命令组”与子任务边界没有明确优先关系，可能导致重复全量门禁。
+  现将仓库执行流程明确拆分为“大任务/子任务”：子任务仍独立 Review、提交、推送并运行直接相关的定向测试、
+  Ruff、mypy 和 diff 检查；最后一个子任务完成后，才对全部合并 diff 统一运行一次完整门禁及适用专项检查。
+  用户明确要求立即全量或子任务本身属于 release/cutover 时允许提前升级，并须记录原因。Verification:
+  `git diff --check`、Markdown 结构检查、规则文字审阅及仓库流程定向契约测试通过；未运行代码全量门禁，
+  因为本批只修改仓库流程文档及其直接契约测试。
+  Residual Risks: 后续交付仍需在计划中正确标记大任务收尾，避免把子任务误报为整体完成。
+
 - 继续执行 `docs/score.md` 计划项 6：将 V2 的生产 JSON codec、授权 hash、Ridge/LightGBM predictor 和状态证据迁入 `infra/scoring/profiles/v2`；离线 P2 研究工件值对象移回 `domain/research`，生产侧重新解析相同线格式，不再通过公共应用端口注入研究对象。模型资源、历史 schema、ID、SHA-256、预测和分歧黄金值保持不变，篡改继续失败关闭；历史下载链路未修改。Verification: V2 codec、篡改拒绝、固定预测/分歧黄金向量、P2 研究工件存储和架构隔离定向测试通过，受影响 Ruff/mypy 与 `git diff --check` 通过。Residual Risks: V3 和最终 profile factory/旧 loader 删除仍待后续计划项；最终全量门禁按用户要求在全部评分计划完成后统一执行。
 
 - 继续执行 `docs/score.md` 计划项 5：将 V1 的不可变 JSON codec、授权 hash 校验、Tomorrow 线性 predictor 和历史状态元数据迁入 `infra/scoring/profiles/v1`，统一旧 loader 仅选择并组装档位，不再保存 V1 实现。模型资源、ID、SHA-256、三项残差动量输入及固定样本预测完全不变，篡改工件继续失败关闭；历史下载链路未修改。Verification: V1 codec 篡改拒绝、固定 hash/预测黄金向量、原统一 loader 和架构隔离定向测试通过，受影响 Ruff/mypy 与 `git diff --check` 通过。Residual Risks: V2/V3 实现和统一 loader 仍待后续计划项迁移，最终全量门禁按用户要求在全部评分计划完成后统一执行。
