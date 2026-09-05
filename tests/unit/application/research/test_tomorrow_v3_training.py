@@ -5,8 +5,8 @@ from importlib import resources
 import pytest
 
 from trader.application.research.tomorrow_v3_training import TomorrowV3TrainingWindow
-from trader.domain.research.baostock_daily import build_baostock_v3_split
 from trader.domain.recommendation.model_scoring import V3_EXPOSURE_CONTRACT, residualize_exposure
+from trader.domain.research.baostock_daily import build_baostock_v3_split
 from trader.infra.research.tomorrow_v3_training import _aligned_sample_dates, _model_document, _residualize_sample_day
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
 from trader.infra.scoring.profiles.v3.bundle_codec import decode_v3_tomorrow_bundle

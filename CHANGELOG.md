@@ -6,6 +6,10 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 修正最终发布门禁的打包布局测试：安装元数据隔离测试不再复制 `data/` 历史与训练运行数据，避免并发测试耗尽磁盘；评分命名契约精确放行 V1/V2/V3 profile 测试路径。Verification: `make format-check`、`make lint`、`make type-check`、全量 pytest（1567 passed）和 `make package` 通过；测试临时目录已清理。Residual Risks: BaoStock 15.1.38 外部供应商阻塞及 Today/D25/V3 生产授权状态不变。
+
+- 继续执行 `docs/score.md` 计划项 9：补齐评分模块化后的权威文档边界。`software-business-design.md` 现在明确 V1/V2/V3 与 Today/Tomorrow/D25 的固定能力矩阵、D25 单一 2–5 日生产头、profile 扩展边界和生产/研究隔离；`recommendation-strategy.md` 明确 T+2 至 T+5 仅为 D25 标签、终端留出和风险观察点，不是四个生产头。新增文档契约断言，未改变评分、冻结、API、运行目录或历史下载行为。Verification: 文档与功能包契约、全量评分相关定向测试、Ruff、mypy 和 `git diff --check` 通过；本次完成评分模块化收尾后，按用户要求执行最终全量门禁。Residual Risks: `docs/score.md` 计划中的 15.1.38 BaoStock 2000 日下载仍受供应商登录/历史请求阻断，且此前明确要求暂不改动正在运行的历史下载链；Today/D25 新模型和 V3 三头生产启用仍须独立数据、研究和人工授权批次。`Regression-Key: scoring-documentation-boundary-v1`。
+
 - 继续执行 `docs/score.md` 计划项 8：确认旧评分链的剩余耦合集中在消费者和组合根仍直接依赖 Tomorrow 专用端口/loader，导致档位装配、运行状态和研究消费者各有一套入口。现将 bootstrap、settings、CLI、performance、状态聚合、基线身份审计、研究侧 V1/V2 消费者和 profile 测试统一迁移到 `model_scoring` 通用类型与唯一 `load_scoring_profile()` 工厂；V1/V2/V3 profile 组装不可变 `LoadedScoringProfile`，保留当前单一 Tomorrow 头和模型 ID/hash/预测结果。已删除旧 `tomorrow_model.py`、`tomorrow_production_model.py` 及其测试，不保留 facade、双实现或隐藏回退；历史下载、checkpoint、分片、manifest 和运行目录未修改。Verification: 受影响应用/研究、Tomorrow 投影、V1/V2/V3 profile、profile factory、bootstrap、架构和 V3 文档契约定向测试通过；受影响源码 Ruff、35 个源码文件 mypy、`git diff --check` 通过。按用户要求，评分计划全部完成前不运行全量测试、打包和仓库外安装。Residual Risks: 当前 V3 仍只装配 Tomorrow 头，Today/D25 生产头及多头组合属于后续独立研究/授权批次；未进行真实 V3 工件运行和发布级全量门禁。`Regression-Key: scoring-consumer-cutover-v1`。
 
 - 用户反馈“大任务拆分后的每个子任务不必重复全量测试”，要求把全量验证集中到大任务结束。原流程虽有

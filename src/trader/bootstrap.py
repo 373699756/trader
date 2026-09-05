@@ -82,6 +82,7 @@ from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
 from trader.infra.persistence.research_trace import ResearchTraceLimits, SQLiteResearchTraceStore
 from trader.infra.persistence.runtime_json import RuntimeJsonWriter
 from trader.infra.runtime_support import RuntimeWorkerResources, ShanghaiClock
+from trader.infra.scoring.profile_factory import load_scoring_profile
 from trader.infra.settings import (
     LongWatchlist,
     RuntimeSettings,
@@ -90,7 +91,6 @@ from trader.infra.settings import (
     load_runtime_settings,
     load_strategy_settings,
 )
-from trader.infra.scoring.profile_factory import load_scoring_profile
 from trader.web import create_app
 from trader.web.api.route_services import UnifiedWebServices, WebApiConfig
 

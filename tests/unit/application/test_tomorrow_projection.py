@@ -8,10 +8,11 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.unit.application.review_helpers import review
+from tests.unit.application.scoring_helpers import profile_for
 from trader.application.decisions.decision_core import UnifiedDecisionIndex
 from trader.application.market_data.input_runtime import _supply_status
-from trader.application.ports.scored import D25NativeInput, ScoredNativeInput, TodayNativeInput, TomorrowNativeInput
 from trader.application.ports.model_scoring import ModelInput, ModelPrediction
+from trader.application.ports.scored import D25NativeInput, ScoredNativeInput, TodayNativeInput, TomorrowNativeInput
 from trader.application.recommendation.model_scoring_router import ModelScoringRouter
 from trader.application.recommendation.scored_projection import (
     build_scored_hybrid,
@@ -24,7 +25,6 @@ from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.model_scoring import V1_V2_EXPOSURE_CONTRACT
 from trader.domain.recommendation.models import Strategy
 from trader.infra.settings import load_strategy_settings
-from tests.unit.application.scoring_helpers import profile_for
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 TRADE_DATE = date(2026, 7, 29)
@@ -48,9 +48,7 @@ class _ProductionPredictor:
     industry_ids: tuple[str, ...] = ()
 
     def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
-        return tuple(
-            ModelPrediction(item.code, 0.01 + index / 1000.0, 0.001) for index, item in enumerate(inputs)
-        )
+        return tuple(ModelPrediction(item.code, 0.01 + index / 1000.0, 0.001) for index, item in enumerate(inputs))
 
 
 class _RecordingProductionPredictor(_ProductionPredictor):

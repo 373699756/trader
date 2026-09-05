@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-from trader.domain.recommendation.model_scoring import ExposureContract, V3_EXPOSURE_CONTRACT
+from trader.domain.recommendation.model_scoring import V3_EXPOSURE_CONTRACT, ExposureContract
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
 
 _FEATURE_IDS = (
@@ -99,6 +99,35 @@ def decode_v3_tomorrow_bundle(document: object) -> V3TomorrowBundleArtifact:
     if not isinstance(document, dict):
         raise TypeError("Tomorrow V3 training model must be a JSON object")
     payload = cast(dict[str, object], dict(document))
+    stored_hash, feature_ids, feature_units, exposure_contract, ridge_weight, lightgbm_weight = _decode_contract(
+        payload
+    )
+    dependencies = _dependencies(payload)
+    industries = _decode_industries(payload, len(feature_ids))
+    if len(industries) != _integer(payload, "industry_count"):
+        raise ValueError("Tomorrow V3 industry model count is invalid")
+    return V3TomorrowBundleArtifact(
+        "v3",
+        _MODEL_ID,
+        feature_ids,
+        feature_units,
+        exposure_contract,
+        ridge_weight,
+        lightgbm_weight,
+        _text(payload, "manifest_hash"),
+        _text(payload, "split_hash"),
+        _text(payload, "report_hash"),
+        _integer(payload, "training_rows"),
+        _integer(payload, "validation_rows"),
+        industries,
+        dependencies,
+        stored_hash,
+    )
+
+
+def _decode_contract(
+    payload: dict[str, object],
+) -> tuple[str, tuple[str, ...], tuple[str, ...], ExposureContract, float, float]:
     stored_hash = payload.pop("content_hash", None)
     if not isinstance(stored_hash, str) or artifact_content_hash(payload) != stored_hash:
         raise ValueError("Tomorrow V3 training model content hash is invalid")
@@ -134,40 +163,23 @@ def decode_v3_tomorrow_bundle(document: object) -> V3TomorrowBundleArtifact:
         or _integer(payload, "validation_rows") < 1
     ):
         raise ValueError("Tomorrow V3 training model identity or feature contract is invalid")
-    dependencies = _dependencies(payload)
+    return stored_hash, feature_ids, feature_units, exposure_contract, ridge_weight, lightgbm_weight
+
+
+def _decode_industries(
+    payload: dict[str, object], feature_width: int
+) -> tuple[tuple[str, V3IndustryModelArtifact], ...]:
     raw_industries = payload.get("industries")
     if not isinstance(raw_industries, dict) or not raw_industries:
         raise ValueError("Tomorrow V3 industry models are missing")
     industries = tuple(
         sorted(
-            (
-                _industry_name(industry),
-                _industry_model(raw, len(feature_ids)),
-            )
-            for industry, raw in raw_industries.items()
+            (_industry_name(industry), _industry_model(raw, feature_width)) for industry, raw in raw_industries.items()
         )
     )
     if len({industry for industry, _model in industries}) != len(industries):
         raise ValueError("Tomorrow V3 industry names must be unique")
-    if len(industries) != _integer(payload, "industry_count"):
-        raise ValueError("Tomorrow V3 industry model count is invalid")
-    return V3TomorrowBundleArtifact(
-        "v3",
-        _MODEL_ID,
-        feature_ids,
-        feature_units,
-        exposure_contract,
-        ridge_weight,
-        lightgbm_weight,
-        _text(payload, "manifest_hash"),
-        _text(payload, "split_hash"),
-        _text(payload, "report_hash"),
-        _integer(payload, "training_rows"),
-        _integer(payload, "validation_rows"),
-        industries,
-        dependencies,
-        stored_hash,
-    )
+    return industries
 
 
 def _exposure_contract(payload: dict[str, object]) -> ExposureContract:

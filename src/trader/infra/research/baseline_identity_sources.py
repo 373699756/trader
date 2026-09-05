@@ -12,8 +12,8 @@ from trader.infra.research.tomorrow_historical_p2_artifacts import (
     TomorrowHistoricalP2ArtifactConflictError,
     TomorrowHistoricalP2ArtifactStore,
 )
-from trader.infra.settings import RuntimeSettings, load_strategy_settings
 from trader.infra.scoring.profile_factory import load_scoring_profile
+from trader.infra.settings import RuntimeSettings, load_strategy_settings
 
 
 def _file_hash(path: Path) -> str:

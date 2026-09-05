@@ -102,9 +102,7 @@ class TomorrowProductionModelScoringService:
 
     def is_input_eligible(self, feature: FeatureSnapshot) -> bool:
         row = _raw_row(feature, require_reversal=self._requires_reversal)
-        return row is not None and (
-            not self._exposure_contract.requires_industry or row.industry in self._industry_ids
-        )
+        return row is not None and (not self._exposure_contract.requires_industry or row.industry in self._industry_ids)
 
     def status(self) -> ScoringProfileRuntimeStatus:
         evidence = self._evidence

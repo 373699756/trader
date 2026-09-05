@@ -685,6 +685,19 @@ Tomorrow predictor 和状态证据由 `profiles/v1` 独立拥有；V2 的生产 
 和状态证据由 `profiles/v2` 独立拥有。V2 离线研究工件属于 `domain/research`，生产 codec 只按共同线格式
 重新解析，不接受研究对象注入；统一档位选择器不得复制各档实现。
 
+当前生产能力矩阵固定为：
+
+| 评分档位 | Today | Tomorrow | D25 |
+|---|---|---|---|
+| V1 | 板块规则评分 | V1 Tomorrow 头 | 板块规则评分 |
+| V2 | 板块规则评分 | V2 Tomorrow 头 | 板块规则评分 |
+| V3 | 板块规则评分 | V3 单一 Tomorrow 头 | 板块规则评分 |
+
+Today、Tomorrow、D25 是三个并列策略；D25 生产边界只输出一个面向未来 2–5 个交易日的策略信号，
+不得拆成 T+2、T+3、T+4、T+5 四个生产头。T+2 至 T+5 仅属于 D25 的训练标签、验证观察点和风险指标。
+未来 Today/D25 模型头只有在各自历史验证和人工授权批次完成后，才允许扩展对应 profile 的能力组成；
+公共风险、融合、动作、排名和冻结链不得因此复制策略分支。
+
 公开入口固定为 `trader-server` 和 `trader-cli`。配置通过 `--config` 或
 `TRADER_CONFIG` 传入绝对路径，不得按当前工作目录猜测。HTML、CSS、JavaScript 和
 图标随 wheel 作为包资源发布。

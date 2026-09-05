@@ -53,6 +53,23 @@ def test_final_target_packages_are_documented() -> None:
     assert not (PROJECT_ROOT / "docs" / "plan.md").exists()
 
 
+def test_scoring_profile_capability_matrix_and_d25_single_head_are_documented() -> None:
+    design = DESIGN.read_text(encoding="utf-8")
+    strategy = (PROJECT_ROOT / "docs" / "recommendation-strategy.md").read_text(encoding="utf-8")
+
+    for token in (
+        "| 评分档位 | Today | Tomorrow | D25 |",
+        "| V1 | 板块规则评分 | V1 Tomorrow 头 | 板块规则评分 |",
+        "| V2 | 板块规则评分 | V2 Tomorrow 头 | 板块规则评分 |",
+        "| V3 | 板块规则评分 | V3 单一 Tomorrow 头 | 板块规则评分 |",
+        "D25 生产边界只输出一个面向未来 2–5 个交易日的策略信号",
+        "不得拆成 T+2、T+3、T+4、T+5 四个生产头",
+    ):
+        assert token in design
+    assert "D25 是一个完整且唯一的 2–5 日生产策略头" in strategy
+    assert "四个观察点只用于 D25 的标签、终端留出、风险和稳定性评价" in strategy
+
+
 def test_currently_retired_paths_remain_absent() -> None:
     retired = (
         "application/candidate_features.py",

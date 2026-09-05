@@ -4,5 +4,4 @@ from __future__ import annotations
 
 from trader.infra.scoring.composition import SingleHeadCombiner
 
-
 __all__ = ["SingleHeadCombiner"]

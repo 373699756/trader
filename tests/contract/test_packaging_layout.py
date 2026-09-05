@@ -19,7 +19,8 @@ def test_install_keeps_setuptools_metadata_out_of_source_tree(tmp_path: Path) ->
         ignore=lambda _directory, names: {
             name
             for name in names
-            if name in {".git", ".venv", ".runtime"} or name.endswith((".egg-info", ".sqlite3-wal", ".sqlite3-shm"))
+            if name in {".git", ".venv", ".runtime", "data"}
+            or name.endswith((".egg-info", ".sqlite3-wal", ".sqlite3-shm"))
         },
     )
     hidden_metadata_root = isolated_repository / ".build-metadata"

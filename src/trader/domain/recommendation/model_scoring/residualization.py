@@ -30,6 +30,14 @@ class ExposureContract:
         return "industry" in self.order
 
 
+@dataclass(frozen=True)
+class _ExposureContext:
+    boards: Sequence[str]
+    average_amounts: Sequence[float]
+    industries: Sequence[str] | None
+    contract: ExposureContract
+
+
 V1_V2_EXPOSURE_CONTRACT = ExposureContract(("market", "board", "log_average_amount_20d"))
 V3_EXPOSURE_CONTRACT = ExposureContract(("market", "board", "industry", "log_average_amount_20d"))
 
@@ -43,38 +51,57 @@ def residualize_exposure(
     contract: ExposureContract = V1_V2_EXPOSURE_CONTRACT,
 ) -> tuple[float, ...]:
     size = len(values)
-    if not values or size != len(boards) or size != len(average_amounts):
-        raise ValueError("scoring exposure vectors must have the same non-empty length")
-    if any(not board for board in boards):
-        raise ValueError("scoring exposure boards must be non-empty")
-    if any(not math.isfinite(value) for value in values) or any(
-        not math.isfinite(amount) or amount <= 0.0 for amount in average_amounts
-    ):
-        raise ValueError("scoring exposure values must be finite and amounts positive")
-    if contract.requires_industry and (
-        industries is None or len(industries) != size or any(not industry for industry in industries)
-    ):
-        raise ValueError("scoring exposure industries must have the same non-empty length")
+    context = _ExposureContext(boards, average_amounts, industries, contract)
+    _validate_vectors(values, context, size)
 
     residuals = tuple(float(value) for value in values)
     for dimension in contract.order:
-        if dimension == "market":
-            residuals = _center_market(residuals)
-        elif dimension == "board":
-            residuals = _center_groups(residuals, boards)
-        elif dimension == "industry":
-            if industries is None:
-                raise ValueError("scoring exposure industries are required")
-            residuals = _center_groups(residuals, industries)
-        else:
-            amount_exposure = tuple(math.log(amount) for amount in average_amounts)
-            amount_exposure = _center_groups(amount_exposure, boards)
-            if contract.requires_industry:
-                if industries is None:
-                    raise ValueError("scoring exposure industries are required")
-                amount_exposure = _center_groups(amount_exposure, industries)
-            residuals = _remove_linear_exposure(residuals, amount_exposure)
+        residuals = _apply_dimension(residuals, dimension, context)
     return residuals
+
+
+def _validate_vectors(
+    values: Sequence[float],
+    context: _ExposureContext,
+    size: int,
+) -> None:
+    if not values or size != len(context.boards) or size != len(context.average_amounts):
+        raise ValueError("scoring exposure vectors must have the same non-empty length")
+    if any(not board for board in context.boards):
+        raise ValueError("scoring exposure boards must be non-empty")
+    if any(not math.isfinite(value) for value in values) or any(
+        not math.isfinite(amount) or amount <= 0.0 for amount in context.average_amounts
+    ):
+        raise ValueError("scoring exposure values must be finite and amounts positive")
+    if context.contract.requires_industry and (
+        context.industries is None
+        or len(context.industries) != size
+        or any(not industry for industry in context.industries)
+    ):
+        raise ValueError("scoring exposure industries must have the same non-empty length")
+
+
+def _apply_dimension(
+    values: Sequence[float],
+    dimension: ExposureDimension,
+    context: _ExposureContext,
+) -> tuple[float, ...]:
+    if dimension == "market":
+        return _center_market(values)
+    if dimension == "board":
+        return _center_groups(values, context.boards)
+    if dimension == "industry":
+        return _center_groups(values, _required_industries(context.industries))
+    amount_exposure = _center_groups(tuple(math.log(amount) for amount in context.average_amounts), context.boards)
+    if context.contract.requires_industry:
+        amount_exposure = _center_groups(amount_exposure, _required_industries(context.industries))
+    return _remove_linear_exposure(values, amount_exposure)
+
+
+def _required_industries(industries: Sequence[str] | None) -> Sequence[str]:
+    if industries is None:
+        raise ValueError("scoring exposure industries are required")
+    return industries
 
 
 def _center_market(values: Sequence[float]) -> tuple[float, ...]:

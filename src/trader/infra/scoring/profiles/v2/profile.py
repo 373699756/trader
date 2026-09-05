@@ -12,8 +12,8 @@ from trader.application.ports.model_scoring import (
     ProfileIdentity,
 )
 from trader.domain.recommendation.models import Strategy
-from trader.infra.scoring.profiles.v2.artifact_codec import V2TomorrowModelArtifact
 from trader.infra.scoring.composition import SingleHeadCombiner
+from trader.infra.scoring.profiles.v2.artifact_codec import V2TomorrowModelArtifact
 from trader.infra.scoring.profiles.v2.heads.tomorrow.predictor import V2TomorrowPredictor
 
 _EVIDENCE = ProfileEvidence(

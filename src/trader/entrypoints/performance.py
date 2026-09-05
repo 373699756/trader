@@ -49,8 +49,8 @@ from trader.domain.recommendation.decision_identity import (
     DecisionQuote,
     ScoredDecision,
 )
-from trader.domain.recommendation.models import RecommendationAction, Strategy
 from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
+from trader.domain.recommendation.models import RecommendationAction, Strategy
 from trader.domain.recommendation.scoring.scoring import score_board_strategy
 from trader.domain.recommendation.selection.ranking import candidate_score
 from trader.domain.recommendation.strategies.composition import LocalScoreResult
@@ -63,9 +63,9 @@ from trader.infra.market_data.normalization.merge import (
 )
 from trader.infra.market_data.normalization.normalize import MarketQuoteInput, build_market_quote
 from trader.infra.market_data.service.observations import SourceObservation
+from trader.infra.scoring.profile_factory import load_scoring_profile
 from trader.infra.settings import load_runtime_settings, load_strategy_settings
 from trader.infra.settings.models import PerformanceBudgetSettings
-from trader.infra.scoring.profile_factory import load_scoring_profile
 from trader.web import create_app
 from trader.web.api.route_services import UnifiedWebServices
 

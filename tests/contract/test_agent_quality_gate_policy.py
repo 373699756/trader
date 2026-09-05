@@ -24,10 +24,7 @@ def test_agent_policy_uses_risk_based_quality_gates() -> None:
 
     assert "#### 4.1.1 大任务与子任务的验证边界" in policy
     assert "子任务完成时只运行与该切片直接相关的定向测试" in policy
-    assert (
-        "不得因为子任务属于高风险大任务，就在每个子任务末尾重复执行全量测试"
-        in policy
-    )
+    assert "不得因为子任务属于高风险大任务，就在每个子任务末尾重复执行全量测试" in policy
     assert "统一运行一次完整门禁" in policy
     assert "全量结果必须覆盖大任务的完整合并 diff" in policy
     assert "### 5.2 低风险：文档、注释和非运行元数据" in policy

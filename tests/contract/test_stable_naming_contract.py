@@ -33,8 +33,9 @@ LEGACY_BAOSTOCK_PERSISTENCE_SCHEMAS = frozenset(
 # their model/training identities. External supplier names and URLs are not
 # project version controls. Everything else must use a stable semantic name.
 ALLOWED_SCORING_PATH = re.compile(
-    r"(?:tomorrow[_-]v[123](?:[_-](?:model|training|input|dataset))?|"
-    r"tomorrow_v1_model\.json|test_tomorrow_v3_|package_tomorrow_v1_model)"
+    r"(?:infra/scoring/profiles/v[123](?:/|$)|tests/unit/infra/scoring/test_v[123]_profile\.py$|"
+    r"tomorrow[_-]v[123](?:[_-](?:model|training|input|dataset))?|tomorrow_v1_model\.json|"
+    r"test_tomorrow_v3_|package_tomorrow_v1_model)"
 )
 PROHIBITED_PATH = re.compile(
     r"(?:^|/)(?:v\d+)(?:/|$)|"

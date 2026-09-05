@@ -155,9 +155,7 @@ def _predict(
     rows: tuple[TomorrowHistoricalP2Row, ...],
 ) -> tuple[float, ...]:
     positions = tuple(_FEATURE_IDS.index(item) for item in predictor.feature_ids)
-    inputs = tuple(
-        ModelInput(row.code, tuple(row.alpha_features[position] for position in positions)) for row in rows
-    )
+    inputs = tuple(ModelInput(row.code, tuple(row.alpha_features[position] for position in positions)) for row in rows)
     predictions = predictor.predict(inputs)
     if tuple(item.code for item in predictions) != tuple(item.code for item in inputs):
         raise ValueError("Tomorrow holdout predictor returned mismatched rows")

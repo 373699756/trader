@@ -6,11 +6,11 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from tests.unit.application.scoring_helpers import profile_for
 from trader.application.ports.model_scoring import ModelInput, ModelPrediction
 from trader.application.recommendation.tomorrow_model_scoring import TomorrowProductionModelScoringService
 from trader.domain.market.models import Board, FeatureSnapshot
 from trader.domain.recommendation.model_scoring import V1_V2_EXPOSURE_CONTRACT, V3_EXPOSURE_CONTRACT
-from tests.unit.application.scoring_helpers import profile_for
 
 NOW = datetime(2026, 8, 31, 14, 50, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -128,7 +128,9 @@ def test_v1_profile_does_not_require_the_unselected_reversal_family(application_
     values = dict(complete.values)
     values.update({"p2_return_1d": None, "p2_return_3d": None, "p2_return_5d": None})
 
-    batch = TomorrowProductionModelScoringService(profile_for(_V1Predictor())).score((replace(complete, values=values),))
+    batch = TomorrowProductionModelScoringService(profile_for(_V1Predictor())).score(
+        (replace(complete, values=values),)
+    )
 
     assert set(batch.scores) == {"600001"}
 
