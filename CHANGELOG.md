@@ -46,6 +46,19 @@ All notable changes to this project are documented here.
   Residual Risks: 当前没有读取或训练真实历史工件，真实 V3 训练产物仍需在最终统一门禁之外按授权单独生成和
   审核；本批未修改历史下载实现或运行数据。`Regression-Key: v3-training-runtime-exposure-parity`。
 
+- 用户要求把从数据采集、两级硬过滤、板内总体、候选预选、评分资格、本地/模型评分、风险、DeepSeek、
+  融合、动作、TopK、冻结到 Web 展示的整条荐股链单独写入策略权威文档，并要求图和文字逐层列清输入、
+  输出、过滤条件、使用原因、合理性及可能的更优方向。现状确认各项规则已分散定义在
+  `recommendation-strategy.md` 第 2–14 节，调度与展示边界定义在 `software-business-design.md`，但缺少
+  单章阅读入口和条件审查视图。现新增“端到端荐股链路总览”独立章，以带条件总图、阶段职责表、逐层
+  条件审查表、分数身份、三态处置、空结果/未就绪语义和发布展示边界串联既有契约；审查将条件区分为
+  必须保持、合理保守、资源约束和待验证参数，并把 `unlock_risk`/`pledge_risk` 等替代方向明确标为
+  仅供 point-in-time 消融的研究假设。候选剪枝、评分资格、动作门和 TopK 不属于新的硬过滤；详细阈值
+  和工程生命周期仍引用原权威章节，不新增策略或运行行为。Verification: 策略、数据平面、两级过滤、
+  Tomorrow、Today、D25、Long 与权威文档一致性定向契约测试及 `git diff --check`。Residual Risks:
+  本章是既有契约的导航与审查汇总，不替代后续详细章节；当前历史数据不足以证明任何替代参数收益更优，
+  真实运行、性能、打包和浏览器行为未变化，因此相关全量门禁不适用。`Regression-Key: recommendation-chain-overview`。
+
 - 用户反馈 15:00 后明日/2-5 日已完成评分，但“评分最高”卡片在没有达到观察池门槛时为空，并要求新股不足 2000 个交易日时不要用错位日期训练。根因是 DecisionView/SSE replacement 只投影正式或观察项，训练特征和标签则按个股返回行号取“下一行”，会跨停牌或上市前缺口。现新增公开 `top_scores` 投影，Today、Tomorrow、D25 均按全部已评分候选稳定返回最高三只，主推荐表和观察池语义不变；未就绪草稿也提供独立最高三项。V3 训练改用统一交易所开市日历，所有特征窗口和下一交易日标签必须命中该股票实际下载记录，缺日样本直接跳过，不补造上市前数据。DecisionView schema 升为 `v2_decision_view_v4` 并同步 release identity。另修正打包契约夹具排除易失 SQLite WAL/SHM sidecar，避免复制运行数据时竞态失败。Verification: 受影响定向 Python 测试、`node tests/js/test_dashboard_state.js`、`make format-check`、`make lint`、`make type-check`、全量 `make test`、`make package` 和 `git diff --check` 均通过；`make browser-performance-check` 已执行但因主机未安装 `geckodriver` 返回 `browser_refresh_failed`，不作为通过证据。Residual Risks: 当前机器仍无合格 BaoStock 全量 manifest，尚未进行真实 V3 训练或跨 PC 实物迁移验证；Firefox 桌面门禁需在安装 geckodriver 的环境补跑；未就绪页面的最高分依赖同一内存草稿仍在保留。`Regression-Key: top-score-and-calendar-alignment-v1`。
 
 - 用户反馈 15:00 后明日/2-5 日评分已完成但“评分最高”卡片显示暂无数据，且切换到长期策略时仍显示评分完成时间。根因是短线 API 只向主表投影被选中的股票，最高分低于观察门槛或被限制时主表为空，而摘要诊断仍保留最高分；长期策略复用了短线完成时间渲染。现让卡片在无正式/观察项但存在最高分诊断时显示最高分并明确无达到观察门槛的股票，长期策略固定显示“不评分”。Verification: `node tests/js/test_dashboard_state.js`、全量 `make test`、`make format-check`、`make lint`、`make type-check`、`make package` 和 `git diff --check` 通过。Residual Risks: 无法从当前正式/观察投影恢复未入池股票的代码和名称，卡片在该场景仅显示最高分；如需展示股票身份，需另立 API 投影契约批次。 `Regression-Key: top-score-empty-snapshot-v1`。
