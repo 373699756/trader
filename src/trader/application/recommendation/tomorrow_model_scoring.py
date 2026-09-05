@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -18,6 +17,11 @@ from trader.application.ports.tomorrow_model import (
 from trader.domain.market.factors import clamp, round_score
 from trader.domain.market.models import Board, FeatureSnapshot
 from trader.domain.recommendation.filtering.filters import board_for_snapshot
+from trader.domain.recommendation.model_scoring import (
+    percentile_ranks,
+    positive_utility_scores,
+    residualize_exposure,
+)
 from trader.domain.recommendation.strategies.composition import LocalScoreResult
 
 _ALPHA_FIELDS = (
@@ -149,7 +153,14 @@ class TomorrowProductionModelScoringService:
                 rows.append(row)
         if not rows:
             return TomorrowModelScoreBatch(self.model_version, {}, {}, (), tuple(missing))
-        residuals = tuple(_residualize(rows, index) for index in range(3))
+        residuals = tuple(
+            residualize_exposure(
+                tuple(row.momentum[index] for row in rows),
+                tuple(row.board for row in rows),
+                tuple(row.average_amount_20d for row in rows),
+            )
+            for index in range(3)
+        )
         inputs = tuple(
             TomorrowModelInput(
                 row.code,
@@ -171,12 +182,12 @@ class TomorrowProductionModelScoringService:
         predictions = self._predictor.predict(inputs)
         if tuple(item.code for item in predictions) != tuple(item.code for item in inputs):
             raise ValueError("Tomorrow production model returned a mismatched prediction batch")
-        amihud_ranks = _percentile_ranks(tuple(row.amihud_20d for row in rows))
+        amihud_ranks = percentile_ranks(tuple(row.amihud_20d for row in rows))
         costs = tuple(_COST_RATE * (1.0 + rank) for rank in amihud_ranks)
         utilities = tuple(
             prediction.predicted_excess_return - cost for prediction, cost in zip(predictions, costs, strict=True)
         )
-        utility_scores = _positive_utility_scores(utilities)
+        utility_scores = positive_utility_scores(utilities)
         scores: dict[str, LocalScoreResult] = {}
         diagnostics: dict[str, TomorrowModelDiagnostics] = {}
         for prediction, cost, utility, score in zip(
@@ -236,46 +247,6 @@ def _raw_row(feature: FeatureSnapshot, *, require_reversal: bool) -> _RawRow | N
         average_amount_20d=amount,
         industry=feature.quote.industry.strip(),
     )
-
-
-def _residualize(rows: Sequence[_RawRow], momentum_index: int) -> tuple[float, ...]:
-    market_mean = math.fsum(row.momentum[momentum_index] for row in rows) / len(rows)
-    boards: dict[str, list[int]] = defaultdict(list)
-    for index, row in enumerate(rows):
-        boards[row.board].append(index)
-    centered = [0.0] * len(rows)
-    amount_centered = [0.0] * len(rows)
-    for indices in boards.values():
-        board_mean = math.fsum(rows[index].momentum[momentum_index] - market_mean for index in indices) / len(indices)
-        amounts = tuple(math.log(rows[index].average_amount_20d) for index in indices)
-        amount_mean = math.fsum(amounts) / len(amounts)
-        for index, amount in zip(indices, amounts, strict=True):
-            centered[index] = rows[index].momentum[momentum_index] - market_mean - board_mean
-            amount_centered[index] = amount - amount_mean
-    denominator = math.fsum(value * value for value in amount_centered)
-    slope = (
-        math.fsum(value * amount for value, amount in zip(centered, amount_centered, strict=True)) / denominator
-        if denominator > 0.0
-        else 0.0
-    )
-    return tuple(value - slope * amount for value, amount in zip(centered, amount_centered, strict=True))
-
-
-def _percentile_ranks(values: tuple[float, ...]) -> tuple[float, ...]:
-    if len(values) <= 1:
-        return (0.0,) * len(values)
-    order = sorted(range(len(values)), key=lambda index: (values[index], index))
-    ranks = [0.0] * len(values)
-    for position, index in enumerate(order):
-        ranks[index] = position / (len(values) - 1)
-    return tuple(ranks)
-
-
-def _positive_utility_scores(values: tuple[float, ...]) -> tuple[float, ...]:
-    if len(values) == 1:
-        return (100.0 if values[0] > 0.0 else 0.0,)
-    ranks = _percentile_ranks(values)
-    return tuple(100.0 * rank if value > 0.0 else 0.0 for value, rank in zip(values, ranks, strict=True))
 
 
 __all__ = [
