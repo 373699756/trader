@@ -12,6 +12,7 @@ from trader.application.decisions.decision_core import UnifiedDecisionIndex
 from trader.application.market_data.input_runtime import _supply_status
 from trader.application.ports.scored import D25NativeInput, ScoredNativeInput, TodayNativeInput, TomorrowNativeInput
 from trader.application.ports.tomorrow_model import TomorrowModelInput, TomorrowModelPrediction
+from trader.application.recommendation.model_scoring_router import ModelScoringRouter
 from trader.application.recommendation.scored_projection import (
     build_scored_hybrid,
     build_scored_local,
@@ -75,7 +76,7 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
         _native_input(model_features),
         policy,
         sequence=1,
-        tomorrow_model=TomorrowProductionModelScoringService(_ProductionPredictor()),
+        model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(_ProductionPredictor())),
     )
     assert projection.review_candidates
     assert all(item.name.startswith("测试") for item in projection.local.items)
@@ -152,7 +153,7 @@ def test_tomorrow_zero_score_identifies_the_cost_aware_cash_result(
         _native_input(features),
         policy,
         sequence=1,
-        tomorrow_model=TomorrowProductionModelScoringService(_NonPositiveProductionPredictor()),
+        model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(_NonPositiveProductionPredictor())),
     )
 
     diagnostics = projection.local.selection_diagnostics
@@ -181,7 +182,7 @@ def test_tomorrow_model_cross_section_excludes_hard_filter_rejections(
         _native_input((accepted, rejected)),
         policy,
         sequence=1,
-        tomorrow_model=TomorrowProductionModelScoringService(predictor),
+        model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(predictor)),
     )
 
     assert predictor.codes == ("600001",)
@@ -210,7 +211,7 @@ def test_tomorrow_model_excludes_only_candidate_below_its_61_session_requirement
         _native_input((eligible, insufficient)),
         policy,
         sequence=1,
-        tomorrow_model=TomorrowProductionModelScoringService(predictor),
+        model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(predictor)),
     )
 
     assert predictor.codes == ("600001",)
@@ -249,7 +250,7 @@ def test_tomorrow_model_history_coverage_requires_the_active_profile_fields(
         _native_input((eligible, incomplete)),
         policy,
         sequence=1,
-        tomorrow_model=TomorrowProductionModelScoringService(_ProductionPredictor()),
+        model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(_ProductionPredictor())),
     )
 
     assert projection.input_quality.history_required_sessions == 61

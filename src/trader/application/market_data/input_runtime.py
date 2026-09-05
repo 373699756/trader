@@ -15,6 +15,7 @@ from trader.application.decisions.decision_drafts import UnifiedDecisionDraftInd
 from trader.application.long_runtime import LongRuntime
 from trader.application.ports.long import LongRefreshRequest
 from trader.application.ports.market import MarketDataUnavailableError, ResearchRefreshResult
+from trader.application.ports.model_scoring import ModelScoringPort
 from trader.application.ports.runtime_status import InputQualityStatus, SupplyFunnel, SupplySummary
 from trader.application.ports.scheduler import (
     CycleRequest,
@@ -33,7 +34,6 @@ from trader.application.recommendation.scored_projection import (
     build_scored_local,
 )
 from trader.application.recommendation.scored_quality import ScoredInputQuality
-from trader.application.recommendation.tomorrow_model_scoring import TomorrowProductionModelScoringService
 from trader.application.research.research_audit import (
     CommittedResearchAudit,
     try_build_committed_research_audit,
@@ -78,7 +78,7 @@ class DecisionBuildDependencies:
     long_runtime: LongRuntime
     policy: RecommendationPolicy
     draft_index: UnifiedDecisionDraftIndex
-    tomorrow_model: TomorrowProductionModelScoringService | None = None
+    model_scoring: ModelScoringPort | None = None
 
 
 @dataclass(frozen=True)
@@ -170,7 +170,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         self._long_runtime = decision_build.long_runtime
         self._policy = decision_build.policy
         self._draft_index = decision_build.draft_index
-        self._tomorrow_model = decision_build.tomorrow_model
+        self._model_scoring = decision_build.model_scoring
         self._lock = threading.RLock()
         self._batches: dict[tuple[Strategy, str], InputBatch] = {}
         self._latest_market_features: tuple[FeatureSnapshot, ...] = ()
@@ -350,9 +350,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                 candidate_count=requested_count,
                 candidate_feature_count=candidate_feature_count,
                 history_required_sessions=(
-                    self._tomorrow_model.history_required_sessions
-                    if strategy is Strategy.TOMORROW and self._tomorrow_model is not None
-                    else 20
+                    self._model_scoring.history_required_sessions(strategy) if self._model_scoring is not None else 20
                 ),
                 population_rejected_count=max(0, population_count - requested_count),
                 candidate_rejected_count=max(0, requested_count - candidate_feature_count),
@@ -608,7 +606,12 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                     20.0,
                     self._candidate_pool_size,
                 )
-                projection = build_scored_local(today_native, self._policy, sequence=sequence)
+                projection = build_scored_local(
+                    today_native,
+                    self._policy,
+                    sequence=sequence,
+                    model_scoring=self._model_scoring,
+                )
             else:
                 tomorrow_native = (TomorrowNativeInput if request.strategy is Strategy.TOMORROW else D25NativeInput)(
                     batch.request.trade_date,
@@ -627,7 +630,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                     tomorrow_native,
                     self._policy,
                     sequence=sequence,
-                    tomorrow_model=self._tomorrow_model if request.strategy is Strategy.TOMORROW else None,
+                    model_scoring=self._model_scoring,
                 )
         except (RuntimeError, TypeError, ValueError) as exc:
             raise DecisionUnavailableError(_decision_failure_code(exc)) from exc

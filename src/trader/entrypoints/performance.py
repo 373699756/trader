@@ -22,8 +22,10 @@ from trader.application.decisions.decision_drafts import UnifiedDecisionDraftInd
 from trader.application.decisions.decision_events import build_decision_committed
 from trader.application.decisions.decision_queries import UnifiedDecisionQueries
 from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
+from trader.application.ports.model_scoring import ModelScoringPort
 from trader.application.ports.scored import TomorrowNativeInput
 from trader.application.ports.tomorrow_model import TomorrowScoringProfile
+from trader.application.recommendation.model_scoring_router import ModelScoringRouter
 from trader.application.recommendation.policy import RecommendationPolicy
 from trader.application.recommendation.scored_projection import (
     ScoredLocalProjection,
@@ -72,7 +74,7 @@ from trader.web.api.route_services import UnifiedWebServices
 class _OperationContext:
     config_version: str
     policy: RecommendationPolicy
-    tomorrow_model: TomorrowProductionModelScoringService
+    model_scoring: ModelScoringPort
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -99,10 +101,12 @@ def run(
     context = _OperationContext(
         settings.config_version,
         _recommendation_policy(strategy_settings),
-        TomorrowProductionModelScoringService(
-            load_packaged_tomorrow_production_model(
-                strategy_settings.tomorrow_scoring_profile,
-                training_root=settings.project_root / "data" / "train",
+        ModelScoringRouter(
+            TomorrowProductionModelScoringService(
+                load_packaged_tomorrow_production_model(
+                    strategy_settings.tomorrow_scoring_profile,
+                    training_root=settings.project_root / "data" / "train",
+                )
             )
         ),
     )
@@ -204,7 +208,7 @@ def _operations(
 ) -> tuple[dict[str, Callable[[], object]], dict[str, str]]:
     config_version = context.config_version
     policy = context.policy
-    tomorrow_model = context.tomorrow_model
+    model_scoring = context.model_scoring
     observed_at = market_quotes[0].received_time
     observations = _complete_realtime_observations(market_quotes, observed_at)
     merged = merge_market_observations(observations, observed_at=observed_at)
@@ -254,7 +258,7 @@ def _operations(
         tomorrow_input,
         policy,
         sequence=1,
-        tomorrow_model=tomorrow_model,
+        model_scoring=model_scoring,
     )
     reviews = _abstaining_reviews(local_projection, observed_at)
     api_operations = _api_operations(candidates, observed_at)
@@ -265,7 +269,7 @@ def _operations(
             tomorrow_input,
             policy,
             sequence=1,
-            tomorrow_model=tomorrow_model,
+            model_scoring=model_scoring,
         )
 
     def candidate_projection() -> object:
@@ -273,7 +277,7 @@ def _operations(
             candidate_input,
             policy,
             sequence=1,
-            tomorrow_model=tomorrow_model,
+            model_scoring=model_scoring,
         )
 
     def active_score(strategy: Strategy, item: FeatureSnapshot) -> LocalScoreResult:

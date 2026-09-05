@@ -91,6 +91,21 @@ def test_active_dependency_direction() -> None:
     assert violations == []
 
 
+def test_model_scoring_router_is_profile_agnostic_and_replaces_tomorrow_specific_injection() -> None:
+    port = SOURCE_ROOT / "application/ports/model_scoring.py"
+    router = SOURCE_ROOT / "application/recommendation/model_scoring_router.py"
+    projection = (SOURCE_ROOT / "application/recommendation/scored_projection.py").read_text(encoding="utf-8")
+    input_runtime = (SOURCE_ROOT / "application/market_data/input_runtime.py").read_text(encoding="utf-8")
+
+    assert not any(name.startswith("trader.application.recommendation") for name in _imports(port))
+    router_source = router.read_text(encoding="utf-8")
+    assert all(profile not in router_source for profile in ('"v1"', '"v2"', '"v3"'))
+    assert "tomorrow_model:" not in projection
+    assert "tomorrow_model:" not in input_runtime
+    assert "model_scoring: ModelScoringPort" in projection
+    assert "model_scoring: ModelScoringPort" in input_runtime
+
+
 def test_old_production_chain_has_no_active_files() -> None:
     retired = (
         "application/candidate_features.py",

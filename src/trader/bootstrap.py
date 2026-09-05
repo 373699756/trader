@@ -22,6 +22,7 @@ from trader.application.long_runtime import LongRuntime, LongRuntimeDependencies
 from trader.application.market_data.input_runtime import DecisionBuildDependencies, MarketDataAdapter
 from trader.application.outcomes.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
 from trader.application.ports.tomorrow_model import TomorrowScoringProfile
+from trader.application.recommendation.model_scoring_router import ModelScoringRouter
 from trader.application.recommendation.scored_freezing import (
     DecisionRuntimeIdentity,
     ScoredFreezeCoordinator,
@@ -221,6 +222,7 @@ def build_system(
             training_root=settings.project_root / "data" / "train",
         )
     )
+    model_scoring = ModelScoringRouter(tomorrow_model)
     publication = _build_publication(
         context,
         calendar,
@@ -237,7 +239,7 @@ def build_system(
             publication.long_runtime,
             policy,
             publication.decision_drafts,
-            tomorrow_model,
+            model_scoring,
         ),
     )
     deepseek = DeepSeekAdapter(reviewer, policy, native_data)
@@ -322,7 +324,7 @@ def build_system(
                 scheduler,
                 reviewer,
                 market_data.health,
-                tomorrow_model.status(),
+                model_scoring.status(),
             ),
             WebApiConfig(
                 heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds,

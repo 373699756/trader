@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 
+from trader.application.ports.model_scoring import ModelDiagnostics, ModelScoringPort
 from trader.application.ports.scored import ScoredNativeInput
 from trader.application.recommendation.policy import RecommendationPolicy
 from trader.application.recommendation.recommendation_policy_codec import preselection_replay_feature
@@ -18,10 +19,6 @@ from trader.application.recommendation.scored_selection import (
     ScoredSelectionIdentity,
     ScoredSelectionOptions,
     select_scored_features,
-)
-from trader.application.recommendation.tomorrow_model_scoring import (
-    TomorrowModelDiagnostics,
-    TomorrowProductionModelScoringService,
 )
 from trader.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.domain.recommendation.decision_identity import (
@@ -57,7 +54,7 @@ class ScoredLocalProjection:
     local_epoch: DecisionEpoch
     local: ScoredDecision
     score_model_version: str | None = None
-    model_diagnostics: tuple[tuple[str, TomorrowModelDiagnostics], ...] = ()
+    model_diagnostics: tuple[tuple[str, ModelDiagnostics], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -67,7 +64,7 @@ class _DecisionProjectionContext:
     decision_policy: ScoredDecisionPolicy
     parent_version: str | None = None
     score_model_version: str | None = None
-    model_diagnostics: Mapping[str, TomorrowModelDiagnostics] | None = None
+    model_diagnostics: Mapping[str, ModelDiagnostics] | None = None
 
 
 def build_scored_local(
@@ -75,23 +72,27 @@ def build_scored_local(
     policy: RecommendationPolicy,
     *,
     sequence: int,
-    tomorrow_model: TomorrowProductionModelScoringService | None = None,
+    model_scoring: ModelScoringPort | None = None,
 ) -> ScoredLocalProjection:
     if sequence < 1:
         raise ValueError("scored decision sequence must be positive")
     strategy = native_input.strategy
     decision_policy = scored_decision_policy(policy, strategy, phase=native_input.phase)
     population = tuple(preselection_replay_feature(feature) for feature in native_input.market_features)
-    active_model = tomorrow_model if strategy is Strategy.TOMORROW else None
+    uses_model = model_scoring is not None and model_scoring.uses_model(strategy)
     model_batch = (
-        active_model.score(_model_eligible_candidates(native_input, policy)) if active_model is not None else None
+        model_scoring.score(strategy, _model_eligible_candidates(native_input, policy))
+        if model_scoring is not None and uses_model
+        else None
     )
-    minimum_history_sessions = active_model.history_required_sessions if active_model is not None else 20
+    minimum_history_sessions = model_scoring.history_required_sessions(strategy) if model_scoring is not None else 20
     profile_history_qualified_codes = (
         frozenset(
-            feature.quote.code for feature in native_input.candidate_features if active_model.is_input_eligible(feature)
+            feature.quote.code
+            for feature in native_input.candidate_features
+            if model_scoring is not None and model_scoring.is_input_eligible(strategy, feature)
         )
-        if active_model is not None
+        if model_scoring is not None and uses_model
         else None
     )
     selection = select_scored_features(
@@ -305,7 +306,7 @@ def _decision_item(
     *,
     strategy: Strategy,
     review_eligible: bool,
-    model_diagnostics: TomorrowModelDiagnostics | None,
+    model_diagnostics: ModelDiagnostics | None,
 ) -> DecisionItem:
     reason = entry.decision_skip_reason or entry.action_reason or "not_selected"
     downside = assess_downside(entry.features, strategy)

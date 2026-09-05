@@ -674,8 +674,11 @@ schema、预算批次、预算汇总、缓存、请求执行、状态和复核�
 today、tomorrow 和 d25 共用 `ports/scored.py`、`scored_selection.py`、`scored_quality.py`、
 `scored_fusion.py`、`scored_projection.py` 与 `scored_freezing.py`。模块名表达复用边界，
 策略差异只能由有类型 `Strategy`、板块策略和冻结参数注入，不得再建立以 tomorrow 命名却被三策略
-共同调用的别名模块或 Today 包装层。活动评分唯一入口是板块策略 `score_board_strategy()`；旧通用
-today/tomorrow/d25 评分器、权重配置和双乘因子不得保留为回放或性能兼容链。
+共同调用的别名模块或 Today 包装层。模型评分能力统一通过 `application/ports/model_scoring.py` 的有类型
+端口和 `ModelScoringRouter` 注入：当前 Today/D25 明确使用板块规则评分，Tomorrow 才委托已装配的模型
+服务；路由只识别策略能力，不判断 V1/V2/V3 算法，也不接受 long。模型不可用时未声明模型头的策略继续
+按正式规则评分，已声明模型头的损坏不得静默切回其它模型。旧通用 today/tomorrow/d25 评分器、权重配置
+和双乘因子不得保留为回放或性能兼容链。公开 `tomorrow_model` 状态 JSON 在档位目录迁移期间保持不变。
 
 公开入口固定为 `trader-server` 和 `trader-cli`。配置通过 `--config` 或
 `TRADER_CONFIG` 传入绝对路径，不得按当前工作目录猜测。HTML、CSS、JavaScript 和

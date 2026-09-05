@@ -5,12 +5,11 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import Literal
 
+from trader.application.ports.model_scoring import ModelDiagnostics, ModelScoreBatch
 from trader.application.ports.tomorrow_model import (
     TomorrowModelInput,
-    TomorrowModelPrediction,
     TomorrowModelPredictorPort,
     TomorrowModelRuntimeStatus,
 )
@@ -44,27 +43,28 @@ _MODEL_FEATURE_IDS = (
     "qfq_residual_momentum_40d_skip5",
     "qfq_residual_momentum_60d_skip5",
 )
+_HistoricalStatus = Literal["historical_rejected", "historical_unavailable", "historical_validated"]
+_ActivationBasis = Literal["manual_user_override", "trained_artifact"]
+_HISTORICAL_EVIDENCE: Mapping[str, tuple[_HistoricalStatus, tuple[str, ...], _ActivationBasis]] = {
+    "v1": (
+        "historical_unavailable",
+        (
+            "original_five_candidate_research_artifact_unavailable",
+            "manual_daily_proxy_not_original_research_evidence",
+        ),
+        "manual_user_override",
+    ),
+    "v2": (
+        "historical_rejected",
+        ("quintile_spread_not_positive", "severe_loss_rate_worse", "turnover_limit"),
+        "manual_user_override",
+    ),
+    "v3": ("historical_validated", (), "trained_artifact"),
+}
 
 
-@dataclass(frozen=True)
-class TomorrowModelDiagnostics:
-    predicted_excess_return_pct: float
-    estimated_cost_pct: float
-    predicted_net_excess_pct: float
-    model_disagreement_pct: float
-
-
-@dataclass(frozen=True)
-class TomorrowModelScoreBatch:
-    model_version: str
-    scores: Mapping[str, LocalScoreResult]
-    diagnostics: Mapping[str, TomorrowModelDiagnostics]
-    predictions: tuple[TomorrowModelPrediction, ...]
-    missing_codes: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "scores", MappingProxyType(dict(self.scores)))
-        object.__setattr__(self, "diagnostics", MappingProxyType(dict(self.diagnostics)))
+TomorrowModelDiagnostics = ModelDiagnostics
+TomorrowModelScoreBatch = ModelScoreBatch
 
 
 @dataclass(frozen=True)
@@ -108,31 +108,16 @@ class TomorrowProductionModelScoringService:
         return _raw_row(feature, require_reversal=self._requires_reversal) is not None
 
     def status(self) -> TomorrowModelRuntimeStatus:
-        historical_status: Literal["historical_rejected", "historical_unavailable", "historical_validated"]
-        historical_failure_reasons: tuple[str, ...]
-        if self._predictor.profile_id == "v1":
-            historical_status = "historical_unavailable"
-            historical_failure_reasons = (
-                "original_five_candidate_research_artifact_unavailable",
-                "manual_daily_proxy_not_original_research_evidence",
-            )
-        elif self._predictor.profile_id == "v2":
-            historical_status = "historical_rejected"
-            historical_failure_reasons = (
-                "quintile_spread_not_positive",
-                "severe_loss_rate_worse",
-                "turnover_limit",
-            )
-        else:
-            historical_status = "historical_validated"
-            historical_failure_reasons = ()
+        historical_status, historical_failure_reasons, activation_basis = _HISTORICAL_EVIDENCE[
+            self._predictor.profile_id
+        ]
         return TomorrowModelRuntimeStatus(
             active=True,
             profile_id=self._predictor.profile_id,
             model_id=self._predictor.model_id,
             model_hash=self._predictor.model_hash,
             scoring_version=self.model_version,
-            activation_basis="trained_artifact" if self._predictor.profile_id == "v3" else "manual_user_override",
+            activation_basis=activation_basis,
             historical_status=historical_status,
             historical_failure_reasons=historical_failure_reasons,
             monitoring_mode="automatic_t1_outcome_settlement",
@@ -147,7 +132,7 @@ class TomorrowProductionModelScoringService:
             row = _raw_row(feature, require_reversal=self._requires_reversal)
             if row is None:
                 missing.append(feature.quote.code)
-            elif self._predictor.profile_id == "v3" and row.industry not in self._industry_ids:
+            elif self._industry_ids and row.industry not in self._industry_ids:
                 missing.append(feature.quote.code)
             else:
                 rows.append(row)
@@ -189,7 +174,7 @@ class TomorrowProductionModelScoringService:
         )
         utility_scores = positive_utility_scores(utilities)
         scores: dict[str, LocalScoreResult] = {}
-        diagnostics: dict[str, TomorrowModelDiagnostics] = {}
+        diagnostics: dict[str, ModelDiagnostics] = {}
         for prediction, cost, utility, score in zip(
             predictions,
             costs,
@@ -206,7 +191,7 @@ class TomorrowProductionModelScoringService:
                 "model_confidence": round_score(clamp(100.0 / (1.0 + 100.0 * prediction.model_disagreement))),
             }
             scores[prediction.code] = LocalScoreResult(components, round_score(score))
-            diagnostics[prediction.code] = TomorrowModelDiagnostics(
+            diagnostics[prediction.code] = ModelDiagnostics(
                 predicted_pct,
                 cost_pct,
                 net_pct,

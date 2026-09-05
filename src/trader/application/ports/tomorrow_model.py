@@ -7,8 +7,9 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Protocol
 
+from trader.application.ports.model_scoring import ScoringProfileRuntimeStatus
 from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
 
 TomorrowScoringProfile = ScoringProfileId
@@ -116,22 +117,7 @@ class TomorrowModelPredictorPort(Protocol):
     def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]: ...
 
 
-@dataclass(frozen=True)
-class TomorrowModelRuntimeStatus:
-    active: bool
-    profile_id: TomorrowScoringProfile
-    model_id: str
-    model_hash: str
-    scoring_version: str
-    activation_basis: Literal["manual_user_override", "trained_artifact"]
-    historical_status: Literal["historical_rejected", "historical_unavailable", "historical_validated"]
-    historical_failure_reasons: tuple[str, ...]
-    monitoring_mode: Literal["automatic_t1_outcome_settlement"]
-    automatic_model_update: bool
-    loss_probability_status: Literal["not_modeled"]
-    training_anchor: Literal["15:00_close"] = "15:00_close"
-    runtime_anchor: Literal["14:50"] = "14:50"
-    point_in_time_parity: bool = False
+TomorrowModelRuntimeStatus = ScoringProfileRuntimeStatus
 
 
 __all__ = [
