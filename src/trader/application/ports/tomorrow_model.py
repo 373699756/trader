@@ -9,7 +9,7 @@ import math
 from dataclasses import dataclass
 from typing import Protocol
 
-from trader.application.ports.model_scoring import ScoringProfileRuntimeStatus
+from trader.application.ports.model_scoring import ProfileEvidence, ScoringProfileRuntimeStatus
 from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
 
 TomorrowScoringProfile = ScoringProfileId
@@ -113,6 +113,9 @@ class TomorrowModelPredictorPort(Protocol):
 
     @property
     def industry_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def profile_evidence(self) -> ProfileEvidence: ...
 
     def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]: ...
 

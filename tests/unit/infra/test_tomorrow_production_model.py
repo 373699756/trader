@@ -41,13 +41,14 @@ def test_packaged_v1_model_is_independent_hash_bound_linear_inference() -> None:
 
     assert predictor.profile_id == "v1"
     assert predictor.model_id == "v1_manual_residual_momentum_v1"
-    assert len(predictor.model_hash) == 64
+    assert predictor.model_hash == "4291ea514c233a14ab6f9262e72ea541d1e9a794e73d02f10f8220509f6f502b"
     assert predictor.feature_ids == (
         "qfq_residual_momentum_20d_skip5",
         "qfq_residual_momentum_40d_skip5",
         "qfq_residual_momentum_60d_skip5",
     )
     assert first == second
+    assert first.predicted_excess_return == pytest.approx(-2.5136160956193677e-05)
     assert first.model_disagreement == 0.0
 
 

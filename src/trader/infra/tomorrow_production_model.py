@@ -11,6 +11,7 @@ from typing import cast
 import lightgbm as lgb
 import numpy as np
 
+from trader.application.ports.model_scoring import ProfileEvidence
 from trader.application.ports.tomorrow_model import (
     TomorrowHistoricalP2ModelArtifact,
     TomorrowModelInput,
@@ -18,9 +19,10 @@ from trader.application.ports.tomorrow_model import (
     TomorrowModelPredictorPort,
     TomorrowScoringProfile,
 )
+from trader.infra.scoring.profiles.v1.artifact_codec import decode_v1_tomorrow_artifact
+from trader.infra.scoring.profiles.v1.profile import build_v1_tomorrow_predictor
 
 _EXPECTED_MODEL_HASH = "27034e52813f1776e2ed218c1c397f481b244fb852b01be08ddc21249d887da5"
-_EXPECTED_V1_MODEL_HASH = "4291ea514c233a14ab6f9262e72ea541d1e9a794e73d02f10f8220509f6f502b"
 _P2_RESOURCE_NAME = "tomorrow_p2_model.json"
 _V1_RESOURCE_NAME = "tomorrow_v1_model.json"
 
@@ -51,6 +53,14 @@ class PackagedTomorrowProductionModel:
     @property
     def industry_ids(self) -> tuple[str, ...]:
         return ()
+
+    @property
+    def profile_evidence(self) -> ProfileEvidence:
+        return ProfileEvidence(
+            "historical_rejected",
+            ("quintile_spread_not_positive", "severe_loss_rate_worse", "turnover_limit"),
+            "manual_user_override",
+        )
 
     def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
         if not inputs:
@@ -85,73 +95,6 @@ class PackagedTomorrowProductionModel:
                 tree,
                 strict=True,
             )
-        )
-
-
-class PackagedLinearTomorrowProductionModel:
-    def __init__(self, payload: dict[str, object], stored_hash: str) -> None:
-        if _content_hash(payload) != stored_hash or stored_hash != _EXPECTED_V1_MODEL_HASH:
-            raise ValueError("packaged Tomorrow V1 production model hash is not authorized")
-        self._profile_id = _text(payload, "profile_id")
-        self._model_id = _text(payload, "model_id")
-        self._feature_ids = tuple(_string_list(payload, "feature_ids"))
-        self._means = np.asarray(_number_list(payload, "transformer_means"), dtype=np.float64)
-        self._scales = np.asarray(_number_list(payload, "transformer_scales"), dtype=np.float64)
-        self._intercept = _number(payload, "linear_intercept")
-        self._coefficients = np.asarray(_number_list(payload, "linear_coefficients"), dtype=np.float64)
-        if (
-            self._profile_id != "v1"
-            or self._model_id != "v1_manual_residual_momentum_v1"
-            or self._feature_ids
-            != (
-                "qfq_residual_momentum_20d_skip5",
-                "qfq_residual_momentum_40d_skip5",
-                "qfq_residual_momentum_60d_skip5",
-            )
-            or _text(payload, "schema_version") != "tomorrow_production_linear_model_v1"
-            or _text(payload, "source_research_identity") != "score_h0_v1"
-            or _text(payload, "feature_contract") != "h0_board_amount_residual_momentum_proxy_v1"
-            or len(self._means) != len(self._feature_ids)
-            or len(self._scales) != len(self._feature_ids)
-            or len(self._coefficients) != len(self._feature_ids)
-            or np.any(self._scales <= 0.0)
-            or _integer(payload, "training_rows") < 1
-            or len(_text(payload, "source_spec_hash")) != 64
-            or len(_text(payload, "source_manifest_hash")) != 64
-        ):
-            raise ValueError("packaged Tomorrow V1 production model identity is invalid")
-        self._model_hash = stored_hash
-
-    @property
-    def profile_id(self) -> TomorrowScoringProfile:
-        return "v1"
-
-    @property
-    def model_id(self) -> str:
-        return self._model_id
-
-    @property
-    def model_hash(self) -> str:
-        return self._model_hash
-
-    @property
-    def feature_ids(self) -> tuple[str, ...]:
-        return self._feature_ids
-
-    @property
-    def industry_ids(self) -> tuple[str, ...]:
-        return ()
-
-    def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
-        if not inputs:
-            return ()
-        matrix = np.asarray(tuple(item.alpha_features for item in inputs), dtype=np.float64)
-        if matrix.shape[1:] != (len(self._feature_ids),):
-            raise ValueError("Tomorrow V1 input feature width does not match the packaged artifact")
-        predictions = (matrix - self._means) / self._scales @ self._coefficients + self._intercept
-        return tuple(
-            TomorrowModelPrediction(item.code, float(prediction), 0.0)
-            for item, prediction in zip(inputs, predictions, strict=True)
         )
 
 
@@ -241,6 +184,10 @@ class PackagedV3TomorrowProductionModel:
     def industry_ids(self) -> tuple[str, ...]:
         return tuple(sorted(self._industries))
 
+    @property
+    def profile_evidence(self) -> ProfileEvidence:
+        return ProfileEvidence("historical_validated", (), "trained_artifact")
+
     def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
         predictions: list[TomorrowModelPrediction] = []
         for item in inputs:
@@ -270,11 +217,7 @@ def load_packaged_tomorrow_production_model(
     training_root: Path | None = None,
 ) -> TomorrowModelPredictorPort:
     if profile_id == "v1":
-        raw = _resource_payload(_V1_RESOURCE_NAME)
-        stored_hash = raw.pop("content_hash", None)
-        if not isinstance(stored_hash, str):
-            raise ValueError("packaged Tomorrow V1 production model hash is missing")
-        return PackagedLinearTomorrowProductionModel(raw, stored_hash)
+        return build_v1_tomorrow_predictor(decode_v1_tomorrow_artifact(_resource_payload(_V1_RESOURCE_NAME)))
     if profile_id == "v2":
         raw = _resource_payload(_P2_RESOURCE_NAME)
         return _load_p2(raw)
@@ -399,7 +342,6 @@ def _number_list(payload: dict[str, object], name: str) -> list[float]:
 
 
 __all__ = [
-    "PackagedLinearTomorrowProductionModel",
     "PackagedTomorrowProductionModel",
     "PackagedV3TomorrowProductionModel",
     "load_packaged_tomorrow_production_model",

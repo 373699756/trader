@@ -679,6 +679,8 @@ today、tomorrow 和 d25 共用 `ports/scored.py`、`scored_selection.py`、`sco
 服务；路由只识别策略能力，不判断 V1/V2/V3 算法，也不接受 long。模型不可用时未声明模型头的策略继续
 按正式规则评分，已声明模型头的损坏不得静默切回其它模型。旧通用 today/tomorrow/d25 评分器、权重配置
 和双乘因子不得保留为回放或性能兼容链。公开 `tomorrow_model` 状态 JSON 在档位目录迁移期间保持不变。
+生产评分档位基础设施位于 `infra/scoring/profiles/<profile>/`；V1 的 JSON codec、授权 hash、线性
+Tomorrow predictor 和状态证据由 `profiles/v1` 独立拥有，统一档位选择器不得复制这些实现。
 
 公开入口固定为 `trader-server` 和 `trader-cli`。配置通过 `--config` 或
 `TRADER_CONFIG` 传入绝对路径，不得按当前工作目录猜测。HTML、CSS、JavaScript 和

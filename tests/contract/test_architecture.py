@@ -106,6 +106,17 @@ def test_model_scoring_router_is_profile_agnostic_and_replaces_tomorrow_specific
     assert "model_scoring: ModelScoringPort" in input_runtime
 
 
+def test_v1_scoring_profile_owns_its_codec_predictor_and_evidence() -> None:
+    v1_root = SOURCE_ROOT / "infra/scoring/profiles/v1"
+    legacy = (SOURCE_ROOT / "infra/tomorrow_production_model.py").read_text(encoding="utf-8")
+
+    assert (v1_root / "artifact_codec.py").is_file()
+    assert (v1_root / "profile.py").is_file()
+    assert (v1_root / "heads/tomorrow/predictor.py").is_file()
+    assert "class PackagedLinearTomorrowProductionModel" not in legacy
+    assert "_EXPECTED_V1_MODEL_HASH" not in legacy
+
+
 def test_old_production_chain_has_no_active_files() -> None:
     retired = (
         "application/candidate_features.py",

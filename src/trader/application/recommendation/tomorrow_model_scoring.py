@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal
 
 from trader.application.ports.model_scoring import ModelDiagnostics, ModelScoreBatch
 from trader.application.ports.tomorrow_model import (
@@ -43,26 +42,6 @@ _MODEL_FEATURE_IDS = (
     "qfq_residual_momentum_40d_skip5",
     "qfq_residual_momentum_60d_skip5",
 )
-_HistoricalStatus = Literal["historical_rejected", "historical_unavailable", "historical_validated"]
-_ActivationBasis = Literal["manual_user_override", "trained_artifact"]
-_HISTORICAL_EVIDENCE: Mapping[str, tuple[_HistoricalStatus, tuple[str, ...], _ActivationBasis]] = {
-    "v1": (
-        "historical_unavailable",
-        (
-            "original_five_candidate_research_artifact_unavailable",
-            "manual_daily_proxy_not_original_research_evidence",
-        ),
-        "manual_user_override",
-    ),
-    "v2": (
-        "historical_rejected",
-        ("quintile_spread_not_positive", "severe_loss_rate_worse", "turnover_limit"),
-        "manual_user_override",
-    ),
-    "v3": ("historical_validated", (), "trained_artifact"),
-}
-
-
 TomorrowModelDiagnostics = ModelDiagnostics
 TomorrowModelScoreBatch = ModelScoreBatch
 
@@ -108,21 +87,22 @@ class TomorrowProductionModelScoringService:
         return _raw_row(feature, require_reversal=self._requires_reversal) is not None
 
     def status(self) -> TomorrowModelRuntimeStatus:
-        historical_status, historical_failure_reasons, activation_basis = _HISTORICAL_EVIDENCE[
-            self._predictor.profile_id
-        ]
+        evidence = self._predictor.profile_evidence
         return TomorrowModelRuntimeStatus(
             active=True,
             profile_id=self._predictor.profile_id,
             model_id=self._predictor.model_id,
             model_hash=self._predictor.model_hash,
             scoring_version=self.model_version,
-            activation_basis=activation_basis,
-            historical_status=historical_status,
-            historical_failure_reasons=historical_failure_reasons,
-            monitoring_mode="automatic_t1_outcome_settlement",
-            automatic_model_update=False,
-            loss_probability_status="not_modeled",
+            activation_basis=evidence.activation_basis,
+            historical_status=evidence.historical_status,
+            historical_failure_reasons=evidence.historical_failure_reasons,
+            monitoring_mode=evidence.monitoring_mode,
+            automatic_model_update=evidence.automatic_model_update,
+            loss_probability_status=evidence.loss_probability_status,
+            training_anchor=evidence.training_anchor,
+            runtime_anchor=evidence.runtime_anchor,
+            point_in_time_parity=evidence.point_in_time_parity,
         )
 
     def score(self, features: Sequence[FeatureSnapshot]) -> TomorrowModelScoreBatch:
