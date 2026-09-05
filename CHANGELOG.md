@@ -6,6 +6,8 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求精简 `download_history` 的长 JSON 进度输出。CLI 现在在标准错误显示单行摘要，包含阶段、已下载股票/记录数、未下载数、失败数、分秒耗时、当前代码、最近失败原因和归档路径；最终状态 JSON 和内部类型化进度契约保持不变。Verification: BaoStock CLI 进度、入口契约测试、Ruff、格式检查和 `git diff --check` 通过；现场输出已验证。Residual Risks: 已运行中的旧进程不会热切换输出格式，需结束后重新启动命令。
+
 - 用户反馈 `./run.sh download_history` 续传阶段长时间卡住且失败原因只显示 `valueerror`。根因已确认：恢复进度原先解码所有分片的 `daily_cells.payload_json`，并且日线已成功落盘后行业历史覆盖校验失败，下一次又重复抓取整段日线。现改为只读 SQLite checkpoint 索引和上下文哈希；日线完成与训练事实就绪分离，行业覆盖不足稳定标记为 `historical_industry_incomplete`，保留日线 checkpoint 并跳过重复下载。真实 sessions-2000 运行已在约 18 秒进入 `downloading`（此前约数分钟），显示 `completed_codes=1435`、`failed_codes=4018`、`remaining_codes=4018`。Verification: 37 个 BaoStock 日线/运行时定向测试、Ruff、`git diff --check` 通过；真实网络 `timeout 30s ./run.sh download_history` 进入 worker 并持续下载。Residual Risks: BaoStock 仍固定单 worker、每次查询至少间隔 2 秒，4018 个待处理股票的完整下载仍可能需要数小时；供应商网络和行业历史事实缺口仍需外部数据改善，未伪造行业值。
 
 - 用户要求除评分 V1/V2/V3 外清理版本控制并禁止继续增加 `V几` 命名。现将规则写入 `AGENTS.md`，并同步到产品与策略权威文档：评分生产档位是唯一允许新增的项目版本命名；API、SSE、配置、运行目录、数据集、特征、报告、缓存、模块、测试和 Web 资源不得新增 `vN`。现有非评分后缀若是不可变历史审计、持久化解码或跨进程身份，只能原样只读兼容，不能晋级、迁移或复制扩展；供应商模型名、日期、包版本和 content hash 不作为项目版本控制。Verification: `git diff --check`、文档链接与格式检查。Residual Risks: 仓库中既有历史 schema/研究身份和 V2 架构路径仍需保持兼容，未在本批次破坏性重命名；如需删除这些不可变身份，必须由用户另行确认并单独完成 API、SSE、持久化和数据迁移批次。

@@ -1819,8 +1819,8 @@ OOF/model 以及生产/自动更新权限。当前真实审计已使三个策略
 60 秒只约束单次供应商调用，不约束包含多次正常调用的完整阶段或单股任务，活动信号不得作为任务完成响应。普通启动、`check`、Web、`train-tomorrow`、bootstrap
 和生产调度均不得隐式触发。
 
-`download_history` 的运行可观察性固定为标准错误上的逐行 JSON 契约
-`baostock_runtime_progress`。`phase` 枚举固定为 `preflight`、`checkpoint_loading`、`supplier_login`、
+`download_history` 的内部运行可观察性固定为类型化 `baostock_runtime_progress` 契约；CLI 标准错误将其渲染为
+单行人类可读摘要，不再打印完整 JSON。`phase` 枚举固定为 `preflight`、`checkpoint_loading`、`supplier_login`、
 `trading_calendar`、`security_universe`、`database_initializing`、`worker_starting`、`downloading`、`merging`；
 每条事件显式投影 `source/current_code/sessions/universe_count/checkpointed_codes/remaining_codes/completed_codes/failed_codes/`
 `expected_records/downloaded_records/active_workers/rate_limit_cooldown_seconds/last_failure_reason/elapsed_seconds/`

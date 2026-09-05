@@ -178,28 +178,17 @@ class _BaoStockProgressWriter:
 
         if not isinstance(progress, BaoStockRuntimeProgress):
             raise TypeError("BaoStock progress writer requires a typed progress value")
-        payload = {
-            "schema_version": progress.schema_version,
-            "source": progress.source,
-            "phase": progress.phase,
-            "current_code": progress.current_code,
-            "sessions": progress.sessions,
-            "universe_count": progress.universe_count,
-            "checkpointed_codes": progress.checkpointed_codes,
-            "remaining_codes": progress.remaining_codes,
-            "completed_codes": progress.completed_codes,
-            "failed_codes": progress.failed_codes,
-            "expected_records": progress.expected_records,
-            "downloaded_records": progress.downloaded_records,
-            "active_workers": progress.active_workers,
-            "rate_limit_cooldown_seconds": progress.rate_limit_cooldown_seconds,
-            "last_failure_reason": progress.last_failure_reason,
-            "elapsed_seconds": round(self._monotonic() - self._started_at, 3),
-            "checkpoint_database_pattern": str(self._root / "shards" / "<board>-<code-prefix>.sqlite3"),
-            "catalog_database": str(self._root / "catalog.sqlite3"),
-            "manifest_path": str(self._root / "manifest.json"),
-        }
-        print(json.dumps(payload, ensure_ascii=False, sort_keys=True), file=self._stream, flush=True)
+        elapsed = max(0, int(self._monotonic() - self._started_at))
+        minutes, seconds = divmod(elapsed, 60)
+        current = f"，当前 {progress.current_code}" if progress.current_code else ""
+        failure = f"，最近失败 {progress.last_failure_reason}" if progress.last_failure_reason else ""
+        print(
+            f"[{progress.phase}] 已下载 {progress.completed_codes:,} 只/{progress.downloaded_records:,} 条，"
+            f"未下载 {progress.remaining_codes:,} 只，失败 {progress.failed_codes:,} 只，"
+            f"耗时 {minutes}分{seconds:02d}秒{current}{failure}，路径 {self._root}",
+            file=self._stream,
+            flush=True,
+        )
 
 
 def _configure_tomorrow_training_resources() -> None:

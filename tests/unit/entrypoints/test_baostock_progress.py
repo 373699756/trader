@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import io
-import json
 from pathlib import Path
 
 from trader.application.research.baostock_history_runtime import BaoStockRuntimeProgress
 from trader.entrypoints.cli import _BaoStockProgressWriter
 
 
-def test_cli_progress_writer_flushes_stage_totals_and_database_locations() -> None:
+def test_cli_progress_writer_prints_a_compact_human_summary() -> None:
     stream = io.StringIO()
     writer = _BaoStockProgressWriter(
         Path("/var/lib/trader/history"), sessions=2000, stream=stream, monotonic=lambda: 12.5
@@ -29,25 +28,8 @@ def test_cli_progress_writer_flushes_stage_totals_and_database_locations() -> No
         )
     )
 
-    payload = json.loads(stream.getvalue())
-    assert payload == {
-        "active_workers": 1,
-        "checkpoint_database_pattern": "/var/lib/trader/history/baostock-daily/sessions-2000/shards/<board>-<code-prefix>.sqlite3",
-        "completed_codes": 13,
-        "current_code": "600001",
-        "downloaded_records": 23117,
-        "elapsed_seconds": 0.0,
-        "expected_records": 9250000,
-        "failed_codes": 2,
-        "catalog_database": "/var/lib/trader/history/baostock-daily/sessions-2000/catalog.sqlite3",
-        "manifest_path": "/var/lib/trader/history/baostock-daily/sessions-2000/manifest.json",
-        "last_failure_reason": "supplier_query_failed_blacklisted",
-        "phase": "downloading",
-        "rate_limit_cooldown_seconds": 0.0,
-        "checkpointed_codes": 15,
-        "remaining_codes": 5198,
-        "schema_version": "baostock_runtime_progress",
-        "sessions": 2000,
-        "source": "baostock",
-        "universe_count": 5211,
-    }
+    assert stream.getvalue() == (
+        "[downloading] 已下载 13 只/23,117 条，未下载 5,198 只，失败 2 只，"
+        "耗时 0分00秒，当前 600001，最近失败 supplier_query_failed_blacklisted，"
+        "路径 /var/lib/trader/history/baostock-daily/sessions-2000\n"
+    )

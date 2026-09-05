@@ -1996,7 +1996,7 @@ V3 训练不要求每只股票都拥有完整 2000 日；个股历史长度按�
 分片数据库是下载中的唯一
 checkpoint 所有者；最终 manifest 只登记分片和 catalog，不生成单一总库。单个分库损坏时移入 `quarantine/`，只重新下载该分库覆盖的股票，其他分库继续可读。
 
-显式命令在标准错误逐行输出 `baostock_runtime_progress`，`phase` 依次使用 `preflight`、
+显式命令内部生成类型化 `baostock_runtime_progress`，CLI 在标准错误逐行输出精简的人类可读摘要（最终状态仍在标准输出输出 JSON），`phase` 依次使用 `preflight`、
 `checkpoint_loading`、`supplier_login`、`trading_calendar`、`security_universe`、`database_initializing`、
 `worker_starting`、`downloading` 和 `merging`。每条事件固定包含 `source/current_code/sessions/universe_count/checkpointed_codes/`
 `remaining_codes/completed_codes/failed_codes/expected_records/downloaded_records/active_workers/rate_limit_cooldown_seconds/`
