@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from trader.application.ports.model_scoring import ProfileEvidence
-from trader.application.ports.tomorrow_model import TomorrowModelInput, TomorrowModelPrediction, TomorrowScoringProfile
+from trader.application.ports.model_scoring import ModelInput, ModelPrediction, ProfileEvidence
 from trader.domain.recommendation.model_scoring import V1_V2_EXPOSURE_CONTRACT, ExposureContract
+from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
 from trader.infra.scoring.profiles.v1.artifact_codec import V1TomorrowModelArtifact
 
 
@@ -19,7 +19,7 @@ class V1TomorrowPredictor:
         self._coefficients = np.asarray(artifact.linear_coefficients, dtype=np.float64)
 
     @property
-    def profile_id(self) -> TomorrowScoringProfile:
+    def profile_id(self) -> ScoringProfileId:
         return self._artifact.profile_id
 
     @property
@@ -46,7 +46,7 @@ class V1TomorrowPredictor:
     def profile_evidence(self) -> ProfileEvidence:
         return self._evidence
 
-    def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
+    def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
         if not inputs:
             return ()
         matrix = np.asarray(tuple(item.alpha_features for item in inputs), dtype=np.float64)
@@ -54,7 +54,7 @@ class V1TomorrowPredictor:
             raise ValueError("Tomorrow V1 input feature width does not match the packaged artifact")
         predictions = (matrix - self._means) / self._scales @ self._coefficients + self._artifact.linear_intercept
         return tuple(
-            TomorrowModelPrediction(item.code, float(prediction), 0.0)
+            ModelPrediction(item.code, float(prediction), 0.0)
             for item, prediction in zip(inputs, predictions, strict=True)
         )
 

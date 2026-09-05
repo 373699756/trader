@@ -7,11 +7,10 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
-from trader.application.ports.tomorrow_model import TomorrowScoringProfile
 from trader.domain.market.news import NewsSignalPolicy
 from trader.domain.market.research import LongResearchPolicy, MarketRegimePolicy
 from trader.domain.market.tail import TailSignalPolicy
-from trader.domain.recommendation.model_scoring.profile_identity import parse_scoring_profile
+from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId, parse_scoring_profile
 from trader.infra.settings.factor_validation import _parse_factor_definition, _strategy_contract_version
 from trader.infra.settings.models import (
     ApiSettings,
@@ -66,7 +65,7 @@ from trader.infra.settings.strategy_validation import _validate_strategy_setting
 def load_strategy_settings(
     config_path: str | os.PathLike[str],
     *,
-    tomorrow_scoring_profile: TomorrowScoringProfile | None = None,
+    tomorrow_scoring_profile: ScoringProfileId | None = None,
 ) -> StrategySettings:
     path = Path(config_path).expanduser().resolve()
     raw = _read_json_object(path)

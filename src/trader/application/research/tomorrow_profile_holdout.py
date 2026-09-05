@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Protocol
 
-from trader.application.ports.tomorrow_model import TomorrowModelInput, TomorrowModelPredictorPort
+from trader.application.ports.model_scoring import ModelInput, ModelPredictorPort
 from trader.application.research.historical_screening import HistoricalArchiveManifest, HistoricalArchiveStatus
 from trader.application.research.replay_models import canonical_hash
 from trader.application.research.tomorrow_historical_p2_models import TomorrowHistoricalP2GateMetrics
@@ -104,8 +104,8 @@ class TomorrowProfileHoldoutService:
     def __init__(
         self,
         evidence: TomorrowProfileHoldoutEvidence,
-        v1: TomorrowModelPredictorPort,
-        v2: TomorrowModelPredictorPort,
+        v1: ModelPredictorPort,
+        v2: ModelPredictorPort,
     ) -> None:
         if v1.profile_id != "v1" or v2.profile_id != "v2":
             raise ValueError("Tomorrow holdout requires sealed V1 and V2 predictors")
@@ -151,12 +151,12 @@ class TomorrowProfileHoldoutService:
 
 
 def _predict(
-    predictor: TomorrowModelPredictorPort,
+    predictor: ModelPredictorPort,
     rows: tuple[TomorrowHistoricalP2Row, ...],
 ) -> tuple[float, ...]:
     positions = tuple(_FEATURE_IDS.index(item) for item in predictor.feature_ids)
     inputs = tuple(
-        TomorrowModelInput(row.code, tuple(row.alpha_features[position] for position in positions)) for row in rows
+        ModelInput(row.code, tuple(row.alpha_features[position] for position in positions)) for row in rows
     )
     predictions = predictor.predict(inputs)
     if tuple(item.code for item in predictions) != tuple(item.code for item in inputs):
@@ -271,7 +271,7 @@ def _select(
 
 
 def _profile_metrics(
-    predictor: TomorrowModelPredictorPort,
+    predictor: ModelPredictorPort,
     profile: tuple[_ProfileDay, ...],
     baseline: tuple[_ProfileDay, ...],
     archive: HistoricalArchiveStatus,

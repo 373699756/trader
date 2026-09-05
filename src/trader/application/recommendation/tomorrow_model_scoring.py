@@ -5,12 +5,15 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import cast
 
-from trader.application.ports.model_scoring import ModelDiagnostics, ModelScoreBatch
-from trader.application.ports.tomorrow_model import (
-    TomorrowModelInput,
-    TomorrowModelPredictorPort,
-    TomorrowModelRuntimeStatus,
+from trader.application.ports.model_scoring import (
+    LoadedScoringProfile,
+    ModelDiagnostics,
+    ModelInput,
+    ModelPredictorPort,
+    ModelScoreBatch,
+    ScoringProfileRuntimeStatus,
 )
 from trader.domain.market.factors import clamp, round_score
 from trader.domain.market.models import Board, FeatureSnapshot
@@ -20,6 +23,7 @@ from trader.domain.recommendation.model_scoring import (
     positive_utility_scores,
     residualize_exposure,
 )
+from trader.domain.recommendation.models import Strategy
 from trader.domain.recommendation.strategies.composition import LocalScoreResult
 
 _ALPHA_FIELDS = (
@@ -60,7 +64,17 @@ class _RawRow:
 
 
 class TomorrowProductionModelScoringService:
-    def __init__(self, predictor: TomorrowModelPredictorPort) -> None:
+    def __init__(self, profile: LoadedScoringProfile) -> None:
+        if len(profile.heads) != 1 or profile.heads[0].strategy is not Strategy.TOMORROW:
+            raise ValueError("Tomorrow production scoring requires exactly one Tomorrow head")
+        predictor = cast(ModelPredictorPort, profile.heads[0].predictor)
+        if (
+            profile.identity.profile_id != predictor.profile_id
+            or profile.identity.model_id != predictor.model_id
+            or profile.identity.model_hash != predictor.model_hash
+        ):
+            raise ValueError("scoring profile identity does not match its head")
+        self._evidence = profile.evidence
         if (
             not predictor.model_id
             or len(predictor.model_hash) != 64
@@ -92,9 +106,9 @@ class TomorrowProductionModelScoringService:
             not self._exposure_contract.requires_industry or row.industry in self._industry_ids
         )
 
-    def status(self) -> TomorrowModelRuntimeStatus:
-        evidence = self._predictor.profile_evidence
-        return TomorrowModelRuntimeStatus(
+    def status(self) -> ScoringProfileRuntimeStatus:
+        evidence = self._evidence
+        return ScoringProfileRuntimeStatus(
             active=True,
             profile_id=self._predictor.profile_id,
             model_id=self._predictor.model_id,
@@ -137,7 +151,7 @@ class TomorrowProductionModelScoringService:
             for index in range(3)
         )
         inputs = tuple(
-            TomorrowModelInput(
+            ModelInput(
                 row.code,
                 tuple(
                     (

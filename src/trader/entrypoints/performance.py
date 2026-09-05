@@ -24,7 +24,6 @@ from trader.application.decisions.decision_queries import UnifiedDecisionQueries
 from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
 from trader.application.ports.model_scoring import ModelScoringPort
 from trader.application.ports.scored import TomorrowNativeInput
-from trader.application.ports.tomorrow_model import TomorrowScoringProfile
 from trader.application.recommendation.model_scoring_router import ModelScoringRouter
 from trader.application.recommendation.policy import RecommendationPolicy
 from trader.application.recommendation.scored_projection import (
@@ -51,6 +50,7 @@ from trader.domain.recommendation.decision_identity import (
     ScoredDecision,
 )
 from trader.domain.recommendation.models import RecommendationAction, Strategy
+from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
 from trader.domain.recommendation.scoring.scoring import score_board_strategy
 from trader.domain.recommendation.selection.ranking import candidate_score
 from trader.domain.recommendation.strategies.composition import LocalScoreResult
@@ -65,7 +65,7 @@ from trader.infra.market_data.normalization.normalize import MarketQuoteInput, b
 from trader.infra.market_data.service.observations import SourceObservation
 from trader.infra.settings import load_runtime_settings, load_strategy_settings
 from trader.infra.settings.models import PerformanceBudgetSettings
-from trader.infra.tomorrow_production_model import load_packaged_tomorrow_production_model
+from trader.infra.scoring.profile_factory import load_scoring_profile
 from trader.web import create_app
 from trader.web.api.route_services import UnifiedWebServices
 
@@ -89,7 +89,7 @@ def run(
     config_path: Path,
     *,
     baseline_path: Path | None = None,
-    tomorrow_scoring_profile: TomorrowScoringProfile | None = None,
+    tomorrow_scoring_profile: ScoringProfileId | None = None,
 ) -> dict[str, object]:
     settings = load_runtime_settings(config_path)
     strategy_settings = load_strategy_settings(
@@ -103,7 +103,7 @@ def run(
         _recommendation_policy(strategy_settings),
         ModelScoringRouter(
             TomorrowProductionModelScoringService(
-                load_packaged_tomorrow_production_model(
+                load_scoring_profile(
                     strategy_settings.tomorrow_scoring_profile,
                     training_root=settings.project_root / "data" / "train",
                 )

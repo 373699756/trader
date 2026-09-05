@@ -117,16 +117,16 @@ def test_build_system_selects_an_explicit_scoring_profile_without_rewriting_conf
 
 
 def test_build_system_passes_project_training_root_for_v3(tmp_path, monkeypatch) -> None:
-    from trader.infra.tomorrow_production_model import load_packaged_tomorrow_production_model
+    from trader.infra.scoring.profile_factory import load_scoring_profile
 
     observed: list[Path] = []
-    v1_predictor = load_packaged_tomorrow_production_model("v1")
+    v1_profile = load_scoring_profile("v1")
 
     def load(profile: str, *, training_root: Path | None = None):
         observed.append(training_root or Path())
-        return v1_predictor
+        return v1_profile
 
-    monkeypatch.setattr("trader.bootstrap.load_packaged_tomorrow_production_model", load)
+    monkeypatch.setattr("trader.bootstrap.load_scoring_profile", load)
 
     build_system(_config_with_strategy_profile(tmp_path, "v3"))
 

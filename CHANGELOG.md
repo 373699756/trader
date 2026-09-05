@@ -6,6 +6,8 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 继续执行 `docs/score.md` 计划项 8：确认旧评分链的剩余耦合集中在消费者和组合根仍直接依赖 Tomorrow 专用端口/loader，导致档位装配、运行状态和研究消费者各有一套入口。现将 bootstrap、settings、CLI、performance、状态聚合、基线身份审计、研究侧 V1/V2 消费者和 profile 测试统一迁移到 `model_scoring` 通用类型与唯一 `load_scoring_profile()` 工厂；V1/V2/V3 profile 组装不可变 `LoadedScoringProfile`，保留当前单一 Tomorrow 头和模型 ID/hash/预测结果。已删除旧 `tomorrow_model.py`、`tomorrow_production_model.py` 及其测试，不保留 facade、双实现或隐藏回退；历史下载、checkpoint、分片、manifest 和运行目录未修改。Verification: 受影响应用/研究、Tomorrow 投影、V1/V2/V3 profile、profile factory、bootstrap、架构和 V3 文档契约定向测试通过；受影响源码 Ruff、35 个源码文件 mypy、`git diff --check` 通过。按用户要求，评分计划全部完成前不运行全量测试、打包和仓库外安装。Residual Risks: 当前 V3 仍只装配 Tomorrow 头，Today/D25 生产头及多头组合属于后续独立研究/授权批次；未进行真实 V3 工件运行和发布级全量门禁。`Regression-Key: scoring-consumer-cutover-v1`。
+
 - 用户反馈“大任务拆分后的每个子任务不必重复全量测试”，要求把全量验证集中到大任务结束。原流程虽有
   风险分级，但“高风险变化必须运行完整命令组”与子任务边界没有明确优先关系，可能导致重复全量门禁。
   现将仓库执行流程明确拆分为“大任务/子任务”：子任务仍独立 Review、提交、推送并运行直接相关的定向测试、

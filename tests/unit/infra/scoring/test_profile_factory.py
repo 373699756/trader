@@ -4,16 +4,17 @@ from pathlib import Path
 
 import pytest
 
-from trader.application.ports.tomorrow_model import TomorrowModelInput
-from trader.infra.tomorrow_production_model import load_packaged_tomorrow_production_model
+from trader.application.ports.model_scoring import ModelInput
+from trader.infra.scoring.profile_factory import load_scoring_profile
 
 
-def test_packaged_production_model_is_hash_bound_and_predicts_deterministically() -> None:
-    predictor = load_packaged_tomorrow_production_model("v2")
-    row = TomorrowModelInput(
-        code="600000",
-        alpha_features=(0.01, 0.02, 0.03, 0.01, -0.02, 0.03),
-    )
+def _predictor(profile: str):
+    return load_scoring_profile(profile).heads[0].predictor
+
+
+def test_profile_factory_preserves_v2_identity_and_deterministic_prediction() -> None:
+    predictor = _predictor("v2")
+    row = ModelInput("600000", (0.01, 0.02, 0.03, 0.01, -0.02, 0.03))
 
     first = predictor.predict((row,))[0]
     second = predictor.predict((row,))[0]
@@ -26,12 +27,9 @@ def test_packaged_production_model_is_hash_bound_and_predicts_deterministically(
     assert first.model_disagreement == pytest.approx(0.00015194486578771707)
 
 
-def test_packaged_v1_model_is_independent_hash_bound_linear_inference() -> None:
-    predictor = load_packaged_tomorrow_production_model("v1")
-    row = TomorrowModelInput(
-        code="600000",
-        alpha_features=(0.01, -0.02, 0.03),
-    )
+def test_profile_factory_preserves_v1_identity_and_linear_inference() -> None:
+    predictor = _predictor("v1")
+    row = ModelInput("600000", (0.01, -0.02, 0.03))
 
     first = predictor.predict((row,))[0]
     second = predictor.predict((row,))[0]
@@ -49,16 +47,16 @@ def test_packaged_v1_model_is_independent_hash_bound_linear_inference() -> None:
     assert first.model_disagreement == 0.0
 
 
-def test_v1_and_v2_ignore_the_added_industry_input() -> None:
+def test_profile_factory_keeps_v1_and_v2_independent_of_industry_input() -> None:
     for profile, width in (("v1", 3), ("v2", 6)):
-        predictor = load_packaged_tomorrow_production_model(profile)
+        predictor = _predictor(profile)
         values = (0.01, -0.02, 0.03, 0.02, -0.01, 0.04)[:width]
-        plain = predictor.predict((TomorrowModelInput("600000", values),))[0]
-        classified = predictor.predict((TomorrowModelInput("600000", values, "银行"),))[0]
+        plain = predictor.predict((ModelInput("600000", values),))[0]
+        classified = predictor.predict((ModelInput("600000", values, "银行"),))[0]
 
         assert classified == plain
 
 
-def test_v3_profile_without_a_training_model_fails_with_a_stable_reason(tmp_path: Path) -> None:
+def test_profile_factory_fails_closed_without_a_v3_training_model(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="training model is unavailable"):
-        load_packaged_tomorrow_production_model("v3", training_root=tmp_path)
+        load_scoring_profile("v3", training_root=tmp_path)

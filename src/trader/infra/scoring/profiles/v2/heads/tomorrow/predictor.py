@@ -5,9 +5,9 @@ from __future__ import annotations
 import lightgbm as lgb
 import numpy as np
 
-from trader.application.ports.model_scoring import ProfileEvidence
-from trader.application.ports.tomorrow_model import TomorrowModelInput, TomorrowModelPrediction, TomorrowScoringProfile
+from trader.application.ports.model_scoring import ModelInput, ModelPrediction, ProfileEvidence
 from trader.domain.recommendation.model_scoring import V1_V2_EXPOSURE_CONTRACT, ExposureContract
+from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
 from trader.infra.scoring.profiles.v2.artifact_codec import V2TomorrowModelArtifact
 
 
@@ -18,7 +18,7 @@ class V2TomorrowPredictor:
         self._booster = lgb.Booster(model_str=artifact.lightgbm_model)
 
     @property
-    def profile_id(self) -> TomorrowScoringProfile:
+    def profile_id(self) -> ScoringProfileId:
         return self._artifact.profile_id
 
     @property
@@ -45,7 +45,7 @@ class V2TomorrowPredictor:
     def profile_evidence(self) -> ProfileEvidence:
         return self._evidence
 
-    def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
+    def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
         if not inputs:
             return ()
         matrix = np.asarray(tuple(item.alpha_features for item in inputs), dtype=np.float64)
@@ -66,7 +66,7 @@ class V2TomorrowPredictor:
         ).reshape(-1)
         ensemble = 0.5 * linear + 0.5 * tree
         return tuple(
-            TomorrowModelPrediction(
+            ModelPrediction(
                 item.code,
                 float(prediction),
                 abs(float(linear_value) - float(tree_value)),

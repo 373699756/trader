@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from trader.application.ports.tomorrow_model import TomorrowModelInput
+from trader.application.ports.model_scoring import ModelInput
 from trader.domain.recommendation.models import Strategy
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
 from trader.infra.scoring.profiles.v3.bundle_codec import decode_v3_tomorrow_bundle, load_v3_tomorrow_bundle
@@ -102,7 +102,7 @@ def test_v3_codec_profile_and_predictor_preserve_the_complete_contract(tmp_path:
     artifact = load_v3_tomorrow_bundle(path)
     predictor = build_v3_tomorrow_predictor(artifact)
     profile = build_v3_scoring_profile(artifact)
-    row = TomorrowModelInput("600000", (0.01, 0.02, 0.03, 0.01, -0.02, 0.03), "银行")
+    row = ModelInput("600000", (0.01, 0.02, 0.03, 0.01, -0.02, 0.03), "银行")
 
     assert artifact.content_hash == document["content_hash"]
     assert predictor.predict((row,)) == predictor.predict((row,))
@@ -162,7 +162,7 @@ def test_v3_predictor_rejects_uncovered_industry() -> None:
     predictor = build_v3_tomorrow_predictor(decode_v3_tomorrow_bundle(_document()))
 
     with pytest.raises(ValueError, match="industry is not covered"):
-        predictor.predict((TomorrowModelInput("600000", (0.0,) * 6, "软件"),))
+        predictor.predict((ModelInput("600000", (0.0,) * 6, "软件"),))
 
 
 def test_v3_profile_rejects_an_invalid_lightgbm_model() -> None:

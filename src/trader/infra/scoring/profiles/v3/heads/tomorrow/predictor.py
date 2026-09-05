@@ -5,9 +5,9 @@ from __future__ import annotations
 import lightgbm as lgb
 import numpy as np
 
-from trader.application.ports.model_scoring import ProfileEvidence
-from trader.application.ports.tomorrow_model import TomorrowModelInput, TomorrowModelPrediction, TomorrowScoringProfile
+from trader.application.ports.model_scoring import ModelInput, ModelPrediction, ProfileEvidence
 from trader.domain.recommendation.model_scoring import ExposureContract
+from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
 from trader.infra.scoring.profiles.v3.bundle_codec import V3IndustryModelArtifact, V3TomorrowBundleArtifact
 
 
@@ -20,7 +20,7 @@ class V3TomorrowPredictor:
         }
 
     @property
-    def profile_id(self) -> TomorrowScoringProfile:
+    def profile_id(self) -> ScoringProfileId:
         return self._artifact.profile_id
 
     @property
@@ -47,8 +47,8 @@ class V3TomorrowPredictor:
     def profile_evidence(self) -> ProfileEvidence:
         return self._evidence
 
-    def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
-        predictions: list[TomorrowModelPrediction] = []
+    def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
+        predictions: list[ModelPrediction] = []
         for item in inputs:
             selected = self._models.get(item.industry)
             if selected is None:
@@ -59,10 +59,10 @@ class V3TomorrowPredictor:
 
     def _predict_one(
         self,
-        item: TomorrowModelInput,
+        item: ModelInput,
         model: V3IndustryModelArtifact,
         booster: lgb.Booster,
-    ) -> TomorrowModelPrediction:
+    ) -> ModelPrediction:
         matrix = np.asarray((item.alpha_features,), dtype=np.float64)
         if matrix.shape[1:] != (len(self.feature_ids),):
             raise ValueError("Tomorrow V3 input feature width does not match the packaged artifact")
@@ -79,7 +79,7 @@ class V3TomorrowPredictor:
             )[0]
         )
         combined = self._artifact.ridge_weight * ridge + self._artifact.lightgbm_weight * tree
-        return TomorrowModelPrediction(
+        return ModelPrediction(
             item.code,
             model.calibration_intercept + model.calibration_slope * combined,
             abs(ridge - tree),

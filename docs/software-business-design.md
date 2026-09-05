@@ -610,8 +610,9 @@ BaoStock 离线基础设施在 `infra/research` 内继续按真实职责拆分�
 最终包状态已固化：研究、结算、运行时、行情、推荐、决策、基础设施和 Web 均位于上方目标目录；旧
 根级迁移路径不属于活动树，也没有兼容转发或迁移台账作为运行输入。研究、结算和 profile 证据边界为：
 结果结算用例和结算端口位于 `application/outcomes`，离线研究用例及 profile 证据端口位于
-`application/research`；生产模型共享的不可变 Tomorrow P2 工件位于 `application/ports/tomorrow_model.py`，
-不反向依赖离线研究。`application/research/__init__.py`、`domain/research/__init__.py` 和
+`application/research`；离线 P2 研究工件位于 `domain/research`，生产侧通过
+`infra/scoring/profiles/v2/artifact_codec.py` 重新解析封存的 JSON，不反向依赖离线研究。
+`application/research/__init__.py`、`domain/research/__init__.py` 和
 `infra/research/__init__.py` 只作为标记包，不聚合导入。`trader.entrypoints.cli` 只在执行显式
 `research-*` 命令时加载研究实现，`trader.entrypoints.server` 仅加载权威后台证据消费者；普通生产入口不再
 隐式导入离线筛选、回放和模型训练模块。研究/结算仍不启动网络、DeepSeek、HTTP、冻结或活动数据库写入，

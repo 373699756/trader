@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal, Protocol
 
-from trader.application.ports.tomorrow_model import TomorrowModelInput, TomorrowModelPredictorPort
+from trader.application.ports.model_scoring import ModelInput, ModelPredictorPort
 from trader.application.research.replay_models import canonical_hash
 from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC, HistoricalScreeningSpec
 from trader.domain.research.shadow_calibration import (
@@ -309,7 +309,7 @@ class HistoricalRiskEvidence(Protocol):
 
 
 class HistoricalRiskValidationService:
-    def __init__(self, evidence: HistoricalRiskEvidence, predictor: TomorrowModelPredictorPort) -> None:
+    def __init__(self, evidence: HistoricalRiskEvidence, predictor: ModelPredictorPort) -> None:
         self._evidence = evidence
         self._predictor = predictor
 
@@ -373,7 +373,7 @@ def evaluate_historical_selected_days(
 
 def evaluate_historical_risk_probability(
     rows: tuple[TomorrowHistoricalRiskRow, ...],
-    predictor: TomorrowModelPredictorPort,
+    predictor: ModelPredictorPort,
     spec: HistoricalRiskValidationSpec = HISTORICAL_RISK_VALIDATION_SPEC,
 ) -> HistoricalRiskValidationReport:
     return build_historical_risk_probability(rows, predictor, spec).report
@@ -381,7 +381,7 @@ def evaluate_historical_risk_probability(
 
 def build_historical_risk_probability(
     rows: tuple[TomorrowHistoricalRiskRow, ...],
-    predictor: TomorrowModelPredictorPort,
+    predictor: ModelPredictorPort,
     spec: HistoricalRiskValidationSpec = HISTORICAL_RISK_VALIDATION_SPEC,
 ) -> HistoricalRiskValidationOutcome:
     """Fit, calibrate, and test severe-loss probability on sealed historical dates only."""
@@ -481,12 +481,12 @@ def build_historical_risk_probability(
 
 def _risk_features(
     rows: tuple[TomorrowHistoricalRiskRow, ...],
-    predictor: TomorrowModelPredictorPort,
+    predictor: ModelPredictorPort,
     spec: HistoricalRiskValidationSpec,
 ) -> tuple[tuple[tuple[date, tuple[float, ...]], ...], tuple[float, ...]]:
     positions = tuple(_MODEL_FEATURE_IDS.index(item) for item in predictor.feature_ids)
     inputs = tuple(
-        TomorrowModelInput(row.code, tuple(row.alpha_features[position] for position in positions)) for row in rows
+        ModelInput(row.code, tuple(row.alpha_features[position] for position in positions)) for row in rows
     )
     predictions = predictor.predict(inputs)
     if tuple(item.code for item in predictions) != tuple(item.code for item in inputs):
@@ -524,7 +524,7 @@ def _risk_features(
 
 
 def _insufficient_report(
-    predictor: TomorrowModelPredictorPort,
+    predictor: ModelPredictorPort,
     rows: tuple[TomorrowHistoricalRiskRow, ...],
     spec: HistoricalRiskValidationSpec,
     reason: str | None = None,

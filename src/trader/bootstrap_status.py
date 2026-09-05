@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict
 
 from trader.application.ports.runtime_status import InputQualityStatus, SupplyFunnel
-from trader.application.ports.tomorrow_model import TomorrowModelRuntimeStatus
+from trader.application.ports.model_scoring import ScoringProfileRuntimeStatus
 from trader.application.runtime.cadence import CadencePlannerStatus
 from trader.application.runtime.runtime_issues import RuntimeIssue
 from trader.application.runtime.scheduler_runtime import SchedulerRuntime
@@ -17,7 +17,7 @@ def runtime_status(
     scheduler: SchedulerRuntime,
     reviewer: DeepSeekReviewer,
     market_health: Callable[[], Mapping[str, object]],
-    tomorrow_model: TomorrowModelRuntimeStatus | None = None,
+    tomorrow_model: ScoringProfileRuntimeStatus | None = None,
 ) -> dict[str, object]:
     status = scheduler.status()
     deepseek = reviewer.status()
@@ -96,7 +96,7 @@ def runtime_status(
     }
 
 
-def _tomorrow_model_payload(status: TomorrowModelRuntimeStatus | None) -> dict[str, object]:
+def _tomorrow_model_payload(status: ScoringProfileRuntimeStatus | None) -> dict[str, object]:
     if status is None:
         return {"active": False, "status": "not_configured"}
     return {

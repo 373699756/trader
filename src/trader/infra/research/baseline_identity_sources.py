@@ -13,7 +13,7 @@ from trader.infra.research.tomorrow_historical_p2_artifacts import (
     TomorrowHistoricalP2ArtifactStore,
 )
 from trader.infra.settings import RuntimeSettings, load_strategy_settings
-from trader.infra.tomorrow_production_model import load_packaged_tomorrow_production_model
+from trader.infra.scoring.profile_factory import load_scoring_profile
 
 
 def _file_hash(path: Path) -> str:
@@ -34,8 +34,8 @@ def load_baseline_identity_evidence(runtime: RuntimeSettings) -> PackagedBaselin
     strategy_hash = _file_hash(runtime.strategy_config_path)
     design_path = runtime.project_root / "docs/software-business-design.md"
     strategy_doc_path = runtime.project_root / "docs/recommendation-strategy.md"
-    v1 = load_packaged_tomorrow_production_model("v1")
-    v2 = load_packaged_tomorrow_production_model("v2")
+    v1 = load_scoring_profile("v1").identity
+    v2 = load_scoring_profile("v2").identity
     p2_store = TomorrowHistoricalP2ArtifactStore(runtime.runtime_dir / "score-tomorrow-p2")
     p2_source = runtime.runtime_dir / "score-tomorrow-p2"
     p2_conflict = False

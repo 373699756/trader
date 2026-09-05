@@ -21,7 +21,6 @@ from trader.application.decisions.decision_stream import UnifiedDecisionEventStr
 from trader.application.long_runtime import LongRuntime, LongRuntimeDependencies
 from trader.application.market_data.input_runtime import DecisionBuildDependencies, MarketDataAdapter
 from trader.application.outcomes.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
-from trader.application.ports.tomorrow_model import TomorrowScoringProfile
 from trader.application.recommendation.model_scoring_router import ModelScoringRouter
 from trader.application.recommendation.scored_freezing import (
     DecisionRuntimeIdentity,
@@ -47,6 +46,7 @@ from trader.bootstrap_data_plane import _initialize_reference_data_plane
 from trader.bootstrap_policy import _long_group_definitions, _long_item_definitions, _recommendation_policy
 from trader.bootstrap_status import runtime_status as _runtime_status
 from trader.domain.recommendation.decision_identity import DecisionOverlay, ScoredDecision
+from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
 from trader.domain.recommendation.models import Strategy
 from trader.infra.cache import BoundedLruCache
 from trader.infra.deepseek.budget import DeepSeekBudgetLedger
@@ -90,7 +90,7 @@ from trader.infra.settings import (
     load_runtime_settings,
     load_strategy_settings,
 )
-from trader.infra.tomorrow_production_model import load_packaged_tomorrow_production_model
+from trader.infra.scoring.profile_factory import load_scoring_profile
 from trader.web import create_app
 from trader.web.api.route_services import UnifiedWebServices, WebApiConfig
 
@@ -194,7 +194,7 @@ class _RuntimeAdapters:
 def build_system(
     config_path: str | Path,
     *,
-    tomorrow_scoring_profile: TomorrowScoringProfile | None = None,
+    tomorrow_scoring_profile: ScoringProfileId | None = None,
 ) -> ApplicationSystem:
     settings = load_runtime_settings(config_path)
     strategy = load_strategy_settings(
@@ -216,13 +216,11 @@ def build_system(
     market_data = _build_market_data(context, persistence.data_plane, calendar)
     reviewer = _build_reviewer(context, persistence.budget)
     policy = _recommendation_policy(context.strategy)
-    tomorrow_model = TomorrowProductionModelScoringService(
-        load_packaged_tomorrow_production_model(
-            strategy.tomorrow_scoring_profile,
-            training_root=settings.project_root / "data" / "train",
-        )
+    scoring_profile = load_scoring_profile(
+        strategy.tomorrow_scoring_profile,
+        training_root=settings.project_root / "data" / "train",
     )
-    model_scoring = ModelScoringRouter(tomorrow_model)
+    model_scoring = ModelScoringRouter(TomorrowProductionModelScoringService(scoring_profile))
     publication = _build_publication(
         context,
         calendar,

@@ -13,8 +13,7 @@ from pathlib import Path
 from typing import IO, cast
 from zoneinfo import ZoneInfo
 
-from trader.application.ports.tomorrow_model import TomorrowScoringProfile
-from trader.domain.recommendation.model_scoring.profile_identity import SCORING_PROFILE_IDS
+from trader.domain.recommendation.model_scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
 from trader.infra.settings import RuntimeSettings, load_long_watchlist, load_runtime_settings, load_strategy_settings
 
@@ -84,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
         _configure_tomorrow_training_resources()
     config_path = _absolute_config_path(args.config)
     runtime = load_runtime_settings(config_path)
-    profile_override = cast(TomorrowScoringProfile | None, args.profile)
+    profile_override = cast(ScoringProfileId | None, args.profile)
     if args.command in _COMMAND_GROUPS:
         return _run_command_group(
             args.command,
@@ -199,7 +198,7 @@ def _configure_tomorrow_training_resources() -> None:
 
 def _run_config_validation(
     runtime: RuntimeSettings,
-    profile_override: TomorrowScoringProfile | None,
+    profile_override: ScoringProfileId | None,
 ) -> int:
     strategy = load_strategy_settings(
         runtime.strategy_config_path,
@@ -262,8 +261,8 @@ def _run_eligibility_list(runtime: RuntimeSettings, *, as_of: str | None) -> int
 
 def _effective_profile(
     runtime: RuntimeSettings,
-    profile_override: TomorrowScoringProfile | None,
-) -> TomorrowScoringProfile:
+    profile_override: ScoringProfileId | None,
+) -> ScoringProfileId:
     if profile_override is not None:
         return profile_override
     return load_strategy_settings(runtime.strategy_config_path).tomorrow_scoring_profile
@@ -274,7 +273,7 @@ def _run_performance_report(
     *,
     output: Path | None,
     baseline: Path | None,
-    tomorrow_scoring_profile: TomorrowScoringProfile | None,
+    tomorrow_scoring_profile: ScoringProfileId | None,
 ) -> int:
     from trader.entrypoints.performance import run as run_performance
 
@@ -293,7 +292,7 @@ def _run_performance_report(
 def _run_command_group(
     command: str,
     config_path: Path,
-    profile: TomorrowScoringProfile,
+    profile: ScoringProfileId,
     *,
     workers: int,
 ) -> int:

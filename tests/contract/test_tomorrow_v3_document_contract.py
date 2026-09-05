@@ -94,9 +94,9 @@ def test_v3_research_has_four_isolated_owners_and_one_public_command() -> None:
 
 def test_trained_v3_profile_remains_hash_bound() -> None:
     strategy = (ROOT / "docs" / "recommendation-strategy.md").read_text(encoding="utf-8")
-    model_port = (ROOT / "src" / "trader" / "application" / "ports" / "tomorrow_model.py").read_text(encoding="utf-8")
+    model_port = (ROOT / "src" / "trader" / "application" / "ports" / "model_scoring.py").read_text(encoding="utf-8")
 
     assert "data/train/tomorrow-v3/<run_id>/" in strategy
     assert "主程序启动时读取最新 `model.json`" in strategy
     assert "内容 hash" in strategy
-    assert "TomorrowScoringProfile = ScoringProfileId" in model_port
+    assert "class ModelPredictorPort" in model_port

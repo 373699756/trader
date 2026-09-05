@@ -108,31 +108,31 @@ def test_model_scoring_router_is_profile_agnostic_and_replaces_tomorrow_specific
 
 def test_v1_scoring_profile_owns_its_codec_predictor_and_evidence() -> None:
     v1_root = SOURCE_ROOT / "infra/scoring/profiles/v1"
-    legacy = (SOURCE_ROOT / "infra/tomorrow_production_model.py").read_text(encoding="utf-8")
+    factory = (SOURCE_ROOT / "infra/scoring/profile_factory.py").read_text(encoding="utf-8")
 
     assert (v1_root / "artifact_codec.py").is_file()
     assert (v1_root / "profile.py").is_file()
     assert (v1_root / "heads/tomorrow/predictor.py").is_file()
-    assert "class PackagedLinearTomorrowProductionModel" not in legacy
-    assert "_EXPECTED_V1_MODEL_HASH" not in legacy
+    assert "build_v1_scoring_profile" in factory
+    assert not (SOURCE_ROOT / "infra/tomorrow_production_model.py").exists()
 
 
 def test_v2_scoring_profile_is_separate_from_research_artifacts_and_the_legacy_loader() -> None:
     v2_root = SOURCE_ROOT / "infra/scoring/profiles/v2"
-    model_port = (SOURCE_ROOT / "application/ports/tomorrow_model.py").read_text(encoding="utf-8")
-    legacy = (SOURCE_ROOT / "infra/tomorrow_production_model.py").read_text(encoding="utf-8")
+    model_port = (SOURCE_ROOT / "application/ports/model_scoring.py").read_text(encoding="utf-8")
+    factory = (SOURCE_ROOT / "infra/scoring/profile_factory.py").read_text(encoding="utf-8")
 
     assert (v2_root / "artifact_codec.py").is_file()
     assert (v2_root / "profile.py").is_file()
     assert (v2_root / "heads/tomorrow/predictor.py").is_file()
     assert "TomorrowHistoricalP2ModelArtifact" not in model_port
-    assert "class PackagedTomorrowProductionModel" not in legacy
-    assert "_load_p2" not in legacy
+    assert "ModelPredictorPort" in model_port
+    assert "build_v2_scoring_profile" in factory
+    assert not (SOURCE_ROOT / "application/ports/tomorrow_model.py").exists()
 
 
 def test_v3_scoring_profile_owns_its_locator_codec_predictor_and_combiner() -> None:
     v3_root = SOURCE_ROOT / "infra/scoring/profiles/v3"
-    legacy = (SOURCE_ROOT / "infra/tomorrow_production_model.py").read_text(encoding="utf-8")
 
     for relative in (
         "bundle_codec.py",
@@ -142,8 +142,7 @@ def test_v3_scoring_profile_owns_its_locator_codec_predictor_and_combiner() -> N
         "heads/tomorrow/predictor.py",
     ):
         assert (v3_root / relative).is_file()
-    assert "class PackagedV3TomorrowProductionModel" not in legacy
-    assert "_load_training_v3_model" not in legacy
+    assert not (SOURCE_ROOT / "infra/tomorrow_production_model.py").exists()
     assert not any("trader.infra.research" in imported for path in v3_root.rglob("*.py") for imported in _imports(path))
     profile_source = (v3_root / "profile.py").read_text(encoding="utf-8")
     assert "Strategy.TOMORROW" in profile_source

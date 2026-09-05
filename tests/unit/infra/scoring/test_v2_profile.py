@@ -5,7 +5,7 @@ from importlib import resources
 
 import pytest
 
-from trader.application.ports.tomorrow_model import TomorrowModelInput
+from trader.application.ports.model_scoring import ModelInput
 from trader.infra.scoring.profiles.v2.artifact_codec import decode_v2_tomorrow_artifact
 from trader.infra.scoring.profiles.v2.profile import build_v2_tomorrow_predictor
 
@@ -20,7 +20,7 @@ def _document() -> dict[str, object]:
 
 def test_v2_codec_and_predictor_preserve_authorized_identity_and_golden_prediction() -> None:
     predictor = build_v2_tomorrow_predictor(decode_v2_tomorrow_artifact(_document()))
-    row = TomorrowModelInput("600000", (0.01, 0.02, 0.03, 0.01, -0.02, 0.03))
+    row = ModelInput("600000", (0.01, 0.02, 0.03, 0.01, -0.02, 0.03))
 
     prediction = predictor.predict((row,))[0]
 

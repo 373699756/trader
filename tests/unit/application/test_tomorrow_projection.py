@@ -11,7 +11,7 @@ from tests.unit.application.review_helpers import review
 from trader.application.decisions.decision_core import UnifiedDecisionIndex
 from trader.application.market_data.input_runtime import _supply_status
 from trader.application.ports.scored import D25NativeInput, ScoredNativeInput, TodayNativeInput, TomorrowNativeInput
-from trader.application.ports.tomorrow_model import TomorrowModelInput, TomorrowModelPrediction
+from trader.application.ports.model_scoring import ModelInput, ModelPrediction
 from trader.application.recommendation.model_scoring_router import ModelScoringRouter
 from trader.application.recommendation.scored_projection import (
     build_scored_hybrid,
@@ -24,6 +24,7 @@ from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.model_scoring import V1_V2_EXPOSURE_CONTRACT
 from trader.domain.recommendation.models import Strategy
 from trader.infra.settings import load_strategy_settings
+from tests.unit.application.scoring_helpers import profile_for
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 TRADE_DATE = date(2026, 7, 29)
@@ -46,9 +47,9 @@ class _ProductionPredictor:
     exposure_contract = V1_V2_EXPOSURE_CONTRACT
     industry_ids: tuple[str, ...] = ()
 
-    def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
+    def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
         return tuple(
-            TomorrowModelPrediction(item.code, 0.01 + index / 1000.0, 0.001) for index, item in enumerate(inputs)
+            ModelPrediction(item.code, 0.01 + index / 1000.0, 0.001) for index, item in enumerate(inputs)
         )
 
 
@@ -56,14 +57,14 @@ class _RecordingProductionPredictor(_ProductionPredictor):
     def __init__(self) -> None:
         self.codes: tuple[str, ...] = ()
 
-    def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
+    def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
         self.codes = tuple(item.code for item in inputs)
         return super().predict(inputs)
 
 
 class _NonPositiveProductionPredictor(_ProductionPredictor):
-    def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
-        return tuple(TomorrowModelPrediction(item.code, 0.001, 0.0) for item in inputs)
+    def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
+        return tuple(ModelPrediction(item.code, 0.001, 0.0) for item in inputs)
 
 
 def test_native_local_and_valid_facts_publish_one_parented_hybrid(
@@ -79,7 +80,7 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
         _native_input(model_features),
         policy,
         sequence=1,
-        model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(_ProductionPredictor())),
+        model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(profile_for(_ProductionPredictor()))),
     )
     assert projection.review_candidates
     assert all(item.name.startswith("测试") for item in projection.local.items)
@@ -156,7 +157,9 @@ def test_tomorrow_zero_score_identifies_the_cost_aware_cash_result(
         _native_input(features),
         policy,
         sequence=1,
-        model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(_NonPositiveProductionPredictor())),
+        model_scoring=ModelScoringRouter(
+            TomorrowProductionModelScoringService(profile_for(_NonPositiveProductionPredictor()))
+        ),
     )
 
     diagnostics = projection.local.selection_diagnostics
@@ -185,7 +188,7 @@ def test_tomorrow_model_cross_section_excludes_hard_filter_rejections(
         _native_input((accepted, rejected)),
         policy,
         sequence=1,
-        model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(predictor)),
+        model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(profile_for(predictor))),
     )
 
     assert predictor.codes == ("600001",)
@@ -214,7 +217,7 @@ def test_tomorrow_model_excludes_only_candidate_below_its_61_session_requirement
         _native_input((eligible, insufficient)),
         policy,
         sequence=1,
-        model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(predictor)),
+        model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(profile_for(predictor))),
     )
 
     assert predictor.codes == ("600001",)
@@ -253,7 +256,7 @@ def test_tomorrow_model_history_coverage_requires_the_active_profile_fields(
         _native_input((eligible, incomplete)),
         policy,
         sequence=1,
-        model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(_ProductionPredictor())),
+        model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(profile_for(_ProductionPredictor()))),
     )
 
     assert projection.input_quality.history_required_sessions == 61

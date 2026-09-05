@@ -4,7 +4,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.application.ports.tomorrow_model import TomorrowModelInput, TomorrowModelPrediction
+from trader.application.ports.model_scoring import ModelInput, ModelPrediction
 from trader.application.research.tomorrow_historical_validation import (
     HISTORICAL_RISK_VALIDATION_SPEC,
     TomorrowHistoricalRiskRow,
@@ -29,9 +29,9 @@ class _Predictor:
     )
     exposure_contract = V1_V2_EXPOSURE_CONTRACT
 
-    def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
+    def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
         return tuple(
-            TomorrowModelPrediction(
+            ModelPrediction(
                 item.code,
                 0.01 + item.alpha_features[0] * 0.01,
                 abs(item.alpha_features[1]) * 0.01,
