@@ -5,7 +5,6 @@ from dataclasses import replace
 
 import pytest
 
-from trader.application.ports.tomorrow_model import TomorrowHistoricalP2ModelArtifact
 from trader.application.research.tomorrow_historical_p2_models import (
     TomorrowHistoricalP2GateMetrics,
     TomorrowHistoricalP2Report,
@@ -14,6 +13,7 @@ from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC
 from trader.domain.research.tomorrow_historical_p2 import (
     TOMORROW_HISTORICAL_P2_CANDIDATE_ID,
     TOMORROW_HISTORICAL_P2_SPEC,
+    TomorrowHistoricalP2ModelArtifact,
 )
 from trader.infra.research.tomorrow_historical_p2_artifacts import (
     TomorrowHistoricalP2ArtifactConflictError,

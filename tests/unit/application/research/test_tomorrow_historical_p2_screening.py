@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from trader.application.ports.tomorrow_model import TomorrowHistoricalP2ModelArtifact
 from trader.application.research.historical_screening import (
     HistoricalArchiveManifest,
     HistoricalArchiveStatus,
@@ -14,7 +13,10 @@ from trader.application.research.tomorrow_historical_p2_screening import (
     TomorrowHistoricalP2ScreeningService,
 )
 from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC
-from trader.domain.research.tomorrow_historical_p2 import TOMORROW_HISTORICAL_P2_SPEC
+from trader.domain.research.tomorrow_historical_p2 import (
+    TOMORROW_HISTORICAL_P2_SPEC,
+    TomorrowHistoricalP2ModelArtifact,
+)
 
 
 class _Evidence:

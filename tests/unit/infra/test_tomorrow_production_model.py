@@ -26,7 +26,8 @@ def test_packaged_production_model_is_hash_bound_and_predicts_deterministically(
     assert predictor.model_hash == "27034e52813f1776e2ed218c1c397f481b244fb852b01be08ddc21249d887da5"
     assert first == second
     assert first.code == "600000"
-    assert first.model_disagreement >= 0.0
+    assert first.predicted_excess_return == pytest.approx(-3.2489670901064623e-07)
+    assert first.model_disagreement == pytest.approx(0.00015194486578771707)
 
 
 def test_packaged_v1_model_is_independent_hash_bound_linear_inference() -> None:

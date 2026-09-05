@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal, Protocol
 
-from trader.application.ports.tomorrow_model import TomorrowHistoricalP2ModelArtifact
 from trader.application.research.historical_screening import HistoricalArchiveManifest, HistoricalArchiveStatus
 from trader.application.research.replay_models import canonical_json
 from trader.application.research.tomorrow_historical_p2_models import (
@@ -27,6 +26,7 @@ from trader.domain.research.paired_statistics import (
 from trader.domain.research.tomorrow_historical_p2 import (
     TOMORROW_HISTORICAL_P2_SPEC,
     TomorrowHistoricalP2Candidate,
+    TomorrowHistoricalP2ModelArtifact,
     TomorrowHistoricalP2Spec,
 )
 
@@ -506,7 +506,6 @@ __all__ = [
     "HistoricalP2Board",
     "TOMORROW_HISTORICAL_P2_ALPHA_FEATURE_IDS",
     "TomorrowHistoricalP2Execution",
-    "TomorrowHistoricalP2ModelArtifact",
     "TomorrowHistoricalP2ModelFit",
     "TomorrowHistoricalP2ModelTrainer",
     "TomorrowHistoricalP2Row",

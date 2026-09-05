@@ -117,6 +117,19 @@ def test_v1_scoring_profile_owns_its_codec_predictor_and_evidence() -> None:
     assert "_EXPECTED_V1_MODEL_HASH" not in legacy
 
 
+def test_v2_scoring_profile_is_separate_from_research_artifacts_and_the_legacy_loader() -> None:
+    v2_root = SOURCE_ROOT / "infra/scoring/profiles/v2"
+    model_port = (SOURCE_ROOT / "application/ports/tomorrow_model.py").read_text(encoding="utf-8")
+    legacy = (SOURCE_ROOT / "infra/tomorrow_production_model.py").read_text(encoding="utf-8")
+
+    assert (v2_root / "artifact_codec.py").is_file()
+    assert (v2_root / "profile.py").is_file()
+    assert (v2_root / "heads/tomorrow/predictor.py").is_file()
+    assert "TomorrowHistoricalP2ModelArtifact" not in model_port
+    assert "class PackagedTomorrowProductionModel" not in legacy
+    assert "_load_p2" not in legacy
+
+
 def test_old_production_chain_has_no_active_files() -> None:
     retired = (
         "application/candidate_features.py",

@@ -6,6 +6,8 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 继续执行 `docs/score.md` 计划项 6：将 V2 的生产 JSON codec、授权 hash、Ridge/LightGBM predictor 和状态证据迁入 `infra/scoring/profiles/v2`；离线 P2 研究工件值对象移回 `domain/research`，生产侧重新解析相同线格式，不再通过公共应用端口注入研究对象。模型资源、历史 schema、ID、SHA-256、预测和分歧黄金值保持不变，篡改继续失败关闭；历史下载链路未修改。Verification: V2 codec、篡改拒绝、固定预测/分歧黄金向量、P2 研究工件存储和架构隔离定向测试通过，受影响 Ruff/mypy 与 `git diff --check` 通过。Residual Risks: V3 和最终 profile factory/旧 loader 删除仍待后续计划项；最终全量门禁按用户要求在全部评分计划完成后统一执行。
+
 - 继续执行 `docs/score.md` 计划项 5：将 V1 的不可变 JSON codec、授权 hash 校验、Tomorrow 线性 predictor 和历史状态元数据迁入 `infra/scoring/profiles/v1`，统一旧 loader 仅选择并组装档位，不再保存 V1 实现。模型资源、ID、SHA-256、三项残差动量输入及固定样本预测完全不变，篡改工件继续失败关闭；历史下载链路未修改。Verification: V1 codec 篡改拒绝、固定 hash/预测黄金向量、原统一 loader 和架构隔离定向测试通过，受影响 Ruff/mypy 与 `git diff --check` 通过。Residual Risks: V2/V3 实现和统一 loader 仍待后续计划项迁移，最终全量门禁按用户要求在全部评分计划完成后统一执行。
 
 - 继续执行 `docs/score.md` 计划项 4：新增类型化通用模型评分端口和 `ModelScoringRouter`，将投影、市场输入运行时、组合根与性能入口的 Tomorrow 专用参数统一替换为策略路由。Today/D25 明确跳过模型准备并继续使用正式规则评分，Tomorrow 保持现有模型内容、ID、hash、评分结果和公开 `tomorrow_model` 状态 JSON；long 被明确排除。公共路由不包含 V1/V2/V3 算法判断，历史下载代码、checkpoint、分片和运行数据未修改。Verification: 通用路由、Tomorrow 投影/生产评分、输入运行时、bootstrap 和架构定向测试通过；`make format-check`、`make lint`、`make type-check`、`make test`、`make package`、离线 `make performance-check` 和 `git diff --check` 均通过，性能报告无失败且网络请求为 0。Residual Risks: V1/V2/V3 工件、predictor 和 profile factory 仍按后续独立计划项迁移，当前 Tomorrow 实现文件保留类型别名直到对应档位迁移。

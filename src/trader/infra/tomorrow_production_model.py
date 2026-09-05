@@ -13,7 +13,6 @@ import numpy as np
 
 from trader.application.ports.model_scoring import ProfileEvidence
 from trader.application.ports.tomorrow_model import (
-    TomorrowHistoricalP2ModelArtifact,
     TomorrowModelInput,
     TomorrowModelPrediction,
     TomorrowModelPredictorPort,
@@ -21,81 +20,11 @@ from trader.application.ports.tomorrow_model import (
 )
 from trader.infra.scoring.profiles.v1.artifact_codec import decode_v1_tomorrow_artifact
 from trader.infra.scoring.profiles.v1.profile import build_v1_tomorrow_predictor
+from trader.infra.scoring.profiles.v2.artifact_codec import decode_v2_tomorrow_artifact
+from trader.infra.scoring.profiles.v2.profile import build_v2_tomorrow_predictor
 
-_EXPECTED_MODEL_HASH = "27034e52813f1776e2ed218c1c397f481b244fb852b01be08ddc21249d887da5"
 _P2_RESOURCE_NAME = "tomorrow_p2_model.json"
 _V1_RESOURCE_NAME = "tomorrow_v1_model.json"
-
-
-class PackagedTomorrowProductionModel:
-    def __init__(self, artifact: TomorrowHistoricalP2ModelArtifact) -> None:
-        if artifact.content_hash != _EXPECTED_MODEL_HASH:
-            raise ValueError("packaged Tomorrow production model hash is not authorized")
-        self._artifact = artifact
-        self._booster = lgb.Booster(model_str=artifact.lightgbm_model)
-
-    @property
-    def profile_id(self) -> TomorrowScoringProfile:
-        return "v2"
-
-    @property
-    def model_id(self) -> str:
-        return self._artifact.candidate_id
-
-    @property
-    def model_hash(self) -> str:
-        return self._artifact.content_hash
-
-    @property
-    def feature_ids(self) -> tuple[str, ...]:
-        return self._artifact.feature_ids
-
-    @property
-    def industry_ids(self) -> tuple[str, ...]:
-        return ()
-
-    @property
-    def profile_evidence(self) -> ProfileEvidence:
-        return ProfileEvidence(
-            "historical_rejected",
-            ("quintile_spread_not_positive", "severe_loss_rate_worse", "turnover_limit"),
-            "manual_user_override",
-        )
-
-    def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
-        if not inputs:
-            return ()
-        matrix = np.asarray(tuple(item.alpha_features for item in inputs), dtype=np.float64)
-        if matrix.shape[1:] != (len(self.feature_ids),):
-            raise ValueError("Tomorrow model input feature width does not match the packaged artifact")
-        means = np.asarray(self._artifact.transformer_means, dtype=np.float64)
-        scales = np.asarray(self._artifact.transformer_scales, dtype=np.float64)
-        standardized = (matrix - means) / scales
-        coefficients = np.asarray(self._artifact.linear_coefficients, dtype=np.float64)
-        linear = standardized @ coefficients + self._artifact.linear_intercept
-        tree = np.asarray(
-            self._booster.predict(
-                standardized,
-                num_iteration=self._artifact.lightgbm_best_iteration,
-                num_threads=1,
-            ),
-            dtype=np.float64,
-        ).reshape(-1)
-        ensemble = 0.5 * linear + 0.5 * tree
-        return tuple(
-            TomorrowModelPrediction(
-                item.code,
-                float(prediction),
-                abs(float(linear_value) - float(tree_value)),
-            )
-            for item, prediction, linear_value, tree_value in zip(
-                inputs,
-                ensemble,
-                linear,
-                tree,
-                strict=True,
-            )
-        )
 
 
 class PackagedV3TomorrowProductionModel:
@@ -219,8 +148,7 @@ def load_packaged_tomorrow_production_model(
     if profile_id == "v1":
         return build_v1_tomorrow_predictor(decode_v1_tomorrow_artifact(_resource_payload(_V1_RESOURCE_NAME)))
     if profile_id == "v2":
-        raw = _resource_payload(_P2_RESOURCE_NAME)
-        return _load_p2(raw)
+        return build_v2_tomorrow_predictor(decode_v2_tomorrow_artifact(_resource_payload(_P2_RESOURCE_NAME)))
     if profile_id == "v3":
         try:
             payload, stored_hash = _load_training_v3_model(training_root or Path("data/train"))
@@ -233,31 +161,6 @@ def load_packaged_tomorrow_production_model(
         except (TypeError, ValueError) as exc:
             raise RuntimeError("Tomorrow V3 training model is invalid") from exc
     raise ValueError("unknown Tomorrow scoring profile")
-
-
-def _load_p2(raw: dict[str, object]) -> PackagedTomorrowProductionModel:
-    if not isinstance(raw, dict):
-        raise TypeError("packaged Tomorrow production model must be a JSON object")
-    payload = dict(raw)
-    stored_hash = payload.pop("content_hash", None)
-    if not isinstance(stored_hash, str):
-        raise ValueError("packaged Tomorrow production model hash is missing")
-    artifact = TomorrowHistoricalP2ModelArtifact(
-        candidate_id=_text(payload, "candidate_id"),
-        feature_ids=tuple(_string_list(payload, "feature_ids")),
-        transformer_means=tuple(_number_list(payload, "transformer_means")),
-        transformer_scales=tuple(_number_list(payload, "transformer_scales")),
-        linear_intercept=_number(payload, "linear_intercept"),
-        linear_coefficients=tuple(_number_list(payload, "linear_coefficients")),
-        lightgbm_model=_text(payload, "lightgbm_model"),
-        lightgbm_best_iteration=_integer(payload, "lightgbm_best_iteration"),
-        training_rows=_integer(payload, "training_rows"),
-        internal_validation_rows=_integer(payload, "internal_validation_rows"),
-        schema_version=_text(payload, "schema_version"),
-    )
-    if artifact.content_hash != stored_hash:
-        raise ValueError("packaged Tomorrow production model content hash is invalid")
-    return PackagedTomorrowProductionModel(artifact)
 
 
 def _resource_payload(resource_name: str) -> dict[str, object]:
@@ -342,7 +245,6 @@ def _number_list(payload: dict[str, object], name: str) -> list[float]:
 
 
 __all__ = [
-    "PackagedTomorrowProductionModel",
     "PackagedV3TomorrowProductionModel",
     "load_packaged_tomorrow_production_model",
 ]

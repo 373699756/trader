@@ -6,10 +6,12 @@ import json
 import os
 from pathlib import Path
 
-from trader.application.ports.tomorrow_model import TomorrowHistoricalP2ModelArtifact
 from trader.application.research.replay_models import canonical_hash, canonical_json, canonical_value
 from trader.application.research.tomorrow_historical_p2_models import TomorrowHistoricalP2Report
-from trader.domain.research.tomorrow_historical_p2 import TOMORROW_HISTORICAL_P2_SPEC
+from trader.domain.research.tomorrow_historical_p2 import (
+    TOMORROW_HISTORICAL_P2_SPEC,
+    TomorrowHistoricalP2ModelArtifact,
+)
 
 
 class TomorrowHistoricalP2ArtifactConflictError(RuntimeError):
