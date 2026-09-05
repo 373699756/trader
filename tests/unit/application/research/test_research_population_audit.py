@@ -7,9 +7,9 @@ import pytest
 
 from trader.application.research.research_audit import (
     LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
-    V2CommittedResearchAudit,
-    V2ResearchDecisionSetAudit,
-    V2ResearchPopulationAudit,
+    CommittedResearchAudit,
+    ResearchDecisionSetAudit,
+    ResearchPopulationAudit,
     point_in_time_population_hash,
 )
 
@@ -28,16 +28,16 @@ RISK_FIELDS = (
 )
 
 
-def _population(observed_at: datetime) -> tuple[V2ResearchPopulationAudit, ...]:
+def _population(observed_at: datetime) -> tuple[ResearchPopulationAudit, ...]:
     return (
-        V2ResearchPopulationAudit(
+        ResearchPopulationAudit(
             code="600001",
             board="main",
             industry="制造业",
             feature_observed_at=observed_at,
             quote_source_time=observed_at,
             quote_source="tencent",
-            data_version="market-v1",
+            data_version="market-initial",
             is_st=True,
             listing_date=date(2010, 1, 1),
             is_relisted_first_session=False,
@@ -52,15 +52,15 @@ def _population(observed_at: datetime) -> tuple[V2ResearchPopulationAudit, ...]:
     )
 
 
-def test_v2_local_audit_keeps_rejected_point_in_time_identity() -> None:
+def test_local_audit_keeps_rejected_point_in_time_identity() -> None:
     observed_at = datetime(2026, 8, 28, 14, 49, tzinfo=SHANGHAI)
     population = _population(observed_at)
-    decision_set = V2ResearchDecisionSetAudit("local-v1", ())
+    decision_set = ResearchDecisionSetAudit("local-decision", ())
 
-    audit = V2CommittedResearchAudit(
-        decision_version="local-v1",
+    audit = CommittedResearchAudit(
+        decision_version="local-decision",
         decision_hash="decision-hash",
-        input_version="input-v1",
+        input_version="input-initial",
         hard_filter_aggregates=(("main:st_stock", 1),),
         passed_candidates=(),
         production_local=decision_set,
@@ -76,16 +76,16 @@ def test_v2_local_audit_keeps_rejected_point_in_time_identity() -> None:
     assert audit.point_in_time_population[0].has_delisting_name is True
 
 
-def test_v2_audit_rejects_population_evidence_after_input_time() -> None:
+def test_audit_rejects_population_evidence_after_input_time() -> None:
     input_at = datetime(2026, 8, 28, 14, 49, tzinfo=SHANGHAI)
     population = _population(input_at + timedelta(seconds=1))
-    decision_set = V2ResearchDecisionSetAudit("local-v1", ())
+    decision_set = ResearchDecisionSetAudit("local-decision", ())
 
     with pytest.raises(ValueError, match="after input_observed_at"):
-        V2CommittedResearchAudit(
-            decision_version="local-v1",
+        CommittedResearchAudit(
+            decision_version="local-decision",
             decision_hash="decision-hash",
-            input_version="input-v1",
+            input_version="input-initial",
             hard_filter_aggregates=(("main:st_stock", 1),),
             passed_candidates=(),
             production_local=decision_set,
@@ -98,12 +98,12 @@ def test_v2_audit_rejects_population_evidence_after_input_time() -> None:
 
 
 def test_legacy_v1_audit_remains_read_only_constructible() -> None:
-    decision_set = V2ResearchDecisionSetAudit("local-v1", ())
+    decision_set = ResearchDecisionSetAudit("local-decision", ())
 
-    audit = V2CommittedResearchAudit(
-        decision_version="local-v1",
+    audit = CommittedResearchAudit(
+        decision_version="local-decision",
         decision_hash="decision-hash",
-        input_version="input-v1",
+        input_version="input-initial",
         hard_filter_aggregates=(("main:st_stock", 1),),
         passed_candidates=(),
         production_local=decision_set,

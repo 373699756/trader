@@ -1,4 +1,4 @@
-"""Thread-safe unified V2 current identity and quote-overlay CAS index."""
+"""Thread-safe unified 当前决策 identity and quote-overlay CAS index."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Literal
 
-from trader.application.decisions.decision_events import V2DecisionCommitted, build_v2_decision_committed
+from trader.application.decisions.decision_events import DecisionCommitted, build_decision_committed
 from trader.domain.recommendation.decision_identity import (
     CommittedDecisionRecord,
     DecisionIdentity,
@@ -24,7 +24,7 @@ from trader.domain.recommendation.models import Strategy
 class UnifiedDecisionPublishResult:
     accepted: bool
     reason: str
-    event: V2DecisionCommitted | None = None
+    event: DecisionCommitted | None = None
 
 
 @dataclass(frozen=True)
@@ -92,7 +92,7 @@ class UnifiedDecisionIndex:
             overlay = self._overlays.get(identity.strategy)
             if overlay is not None and overlay.parent_version != identity.version:
                 self._overlays.pop(identity.strategy, None)
-            event = build_v2_decision_committed(identity) if isinstance(identity, ScoredDecision) else None
+            event = build_decision_committed(identity) if isinstance(identity, ScoredDecision) else None
             return UnifiedDecisionPublishResult(True, "accepted", event)
 
     def publish_scored(
@@ -129,7 +129,7 @@ class UnifiedDecisionIndex:
             return UnifiedDecisionPublishResult(
                 True,
                 "accepted",
-                build_v2_decision_committed(decision, projection_version=projection_version),
+                build_decision_committed(decision, projection_version=projection_version),
             )
 
     def publish_overlay(

@@ -44,7 +44,7 @@ from trader.web import create_app  # noqa: E402
 from trader.web.api.route_services import UnifiedWebServices  # noqa: E402
 
 VIEWPORTS = ((1280, 720), (1440, 900), (1920, 1080))
-REPORT_SCHEMA = "v2-desktop-browser-v1"
+REPORT_SCHEMA = "desktop-browser"
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _NOW = datetime(2026, 8, 13, 12, 30, tzinfo=_SHANGHAI)
 
@@ -100,7 +100,7 @@ def _run(output_dir: Path) -> dict[str, object]:
     services, publish_empty_draft = _browser_services()
     server = make_server("127.0.0.1", app_port, create_app(services=services), threaded=True)
     driver_port = _free_port()
-    server_thread = threading.Thread(target=server.serve_forever, name="v2-browser-fixture", daemon=True)
+    server_thread = threading.Thread(target=server.serve_forever, name="browser-fixture", daemon=True)
     server_thread.start()
     driver: subprocess.Popen[str] | None = None
     chrome: _ChromeSession | None = None

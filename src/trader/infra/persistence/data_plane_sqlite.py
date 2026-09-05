@@ -1,4 +1,4 @@
-"""SQLite migration and schema helpers for V2 data-plane persistence."""
+"""SQLite migration and schema helpers for unified data-plane persistence."""
 
 from __future__ import annotations
 

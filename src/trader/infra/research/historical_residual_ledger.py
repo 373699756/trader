@@ -53,7 +53,7 @@ class SQLiteHistoricalResidualLedger:
                 self._append_row(
                     connection,
                     _LedgerRow(
-                        "historical_prediction_v1",
+                        "historical_prediction",
                         _prediction_identity(record),
                         record.key,
                         record.parent_split_hash,
@@ -69,7 +69,7 @@ class SQLiteHistoricalResidualLedger:
                 self._append_row(
                     connection,
                     _LedgerRow(
-                        "historical_outcome_v1",
+                        "historical_outcome",
                         _outcome_identity(record),
                         record.key,
                         record.parent_split_hash,
@@ -81,7 +81,7 @@ class SQLiteHistoricalResidualLedger:
     def read_joined(self, strategy: H1Strategy, parent_split_hash: str) -> tuple[JoinedHistoricalResidual, ...]:
         with self._connect() as connection:
             outcomes = connection.execute(
-                "SELECT content_hash, payload FROM historical_outcome_v1 WHERE strategy = ? AND parent_split_hash = ?",
+                "SELECT content_hash, payload FROM historical_outcome WHERE strategy = ? AND parent_split_hash = ?",
                 (strategy, parent_split_hash),
             ).fetchall()
         outcome_by_identity: dict[str, HistoricalOutcomeRecord] = {}
@@ -100,7 +100,7 @@ class SQLiteHistoricalResidualLedger:
     def read_predictions(self, strategy: H1Strategy, parent_split_hash: str) -> tuple[HistoricalPredictionRecord, ...]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT content_hash, payload FROM historical_prediction_v1 "
+                "SELECT content_hash, payload FROM historical_prediction "
                 "WHERE strategy = ? AND parent_split_hash = ? "
                 "ORDER BY trade_date, code, horizon, model_hash",
                 (strategy, parent_split_hash),
@@ -117,7 +117,7 @@ class SQLiteHistoricalResidualLedger:
         with self._connect() as connection:
             connection.executescript(
                 """
-                CREATE TABLE IF NOT EXISTS historical_prediction_v1 (
+                CREATE TABLE IF NOT EXISTS historical_prediction (
                     identity TEXT PRIMARY KEY,
                     strategy TEXT NOT NULL,
                     trade_date TEXT NOT NULL,
@@ -128,7 +128,7 @@ class SQLiteHistoricalResidualLedger:
                     content_hash TEXT NOT NULL,
                     payload TEXT NOT NULL
                 );
-                CREATE TABLE IF NOT EXISTS historical_outcome_v1 (
+                CREATE TABLE IF NOT EXISTS historical_outcome (
                     identity TEXT PRIMARY KEY,
                     strategy TEXT NOT NULL,
                     trade_date TEXT NOT NULL,
@@ -160,7 +160,7 @@ class SQLiteHistoricalResidualLedger:
             row.key.code,
             row.key.horizon,
         ]
-        if row.table == "historical_prediction_v1":
+        if row.table == "historical_prediction":
             if row.model_hash is None:
                 raise ValueError("historical prediction persistence requires a model hash")
             values.append(row.model_hash)

@@ -188,20 +188,20 @@ assert.strictEqual(
   35000,
 );
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.statusPayloadCompatibility({ schema_version: "v2_status_v1" }))),
+  JSON.parse(JSON.stringify(state.statusPayloadCompatibility({ schema_version: "runtime_status_unsupported" }))),
   { compatible: false, reason: "status_schema_mismatch" },
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.statusPayloadCompatibility({
-    schema_version: "v2_status_v13",
+    schema_version: "runtime_status",
     release: {
-      decision_view_schema: "v2_decision_view_v4",
+      decision_view_schema: "decision_view",
     },
   }))),
   { compatible: true, reason: "" },
 );
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.decisionPayloadCompatibility({ schema_version: "v2_decision_view_v1" }))),
+  JSON.parse(JSON.stringify(state.decisionPayloadCompatibility({ schema_version: "decision_view_unsupported" }))),
   { compatible: false, reason: "decision_schema_mismatch" },
 );
 assert(patchesSource.includes("draft: null,"), "formal recommendation patches must clear observation drafts");
@@ -728,7 +728,7 @@ assert.strictEqual(
   state.observationDisplayState(
     { ...notReadyDraft, draft: null },
     "midday",
-    { scheduler: { lanes: [{ name: "trader-v2-tomorrow", running: true, pending: false }] } },
+    { scheduler: { lanes: [{ name: "trader-tomorrow", running: true, pending: false }] } },
   ),
   "warming",
 );
@@ -736,7 +736,7 @@ assert.strictEqual(
   state.observationDisplayState(
     { ...notReadyDraft, draft: null },
     "midday",
-    { scheduler: { lanes: [{ name: "trader-v2-tomorrow", running: false, pending: false, completed_count: 58 }] } },
+    { scheduler: { lanes: [{ name: "trader-tomorrow", running: false, pending: false, completed_count: 58 }] } },
   ),
   "unavailable",
 );
@@ -1083,7 +1083,7 @@ const payload = {
 };
 const patch = {
   patch_schema_version: 4,
-  schema_version: "v2_event_v1",
+  schema_version: "decision_event",
   base_projection_version: "today-base",
   projection_version: "today-next",
   snapshot_id: "today-next",
@@ -1161,7 +1161,7 @@ assert.strictEqual(
   "apply",
 );
 assert.strictEqual(
-  state.recommendationPatchDecision({ ...patch, schema_version: "v2_event_v0" }, payload, "today-base", "today", "live"),
+  state.recommendationPatchDecision({ ...patch, schema_version: "decision_event_unsupported" }, payload, "today-base", "today", "live"),
   "schema_mismatch",
 );
 assert.strictEqual(
@@ -1200,7 +1200,7 @@ assert.strictEqual(
 );
 const overlay = {
   patch_schema_version: 4,
-  schema_version: "v2_event_v1",
+  schema_version: "decision_event",
   projection_version: "today-next",
   snapshot_id: "today-decision",
   strategy: "today",

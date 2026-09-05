@@ -74,8 +74,8 @@ def _sample(
         else None
     )
     status: dict[str, object] = {
-        "schema_version": "v2_status_v13",
-        "release": {"decision_view_schema": "v2_decision_view_v4"},
+        "schema_version": "runtime_status",
+        "release": {"decision_view_schema": "decision_view"},
         "status": "running",
         "runtime_started": True,
         "runtime_version": "runtime-test",
@@ -144,7 +144,7 @@ def _sample(
         "recent_errors": recent_errors or [],
     }
     decision: dict[str, object] = {
-        "schema_version": "v2_decision_view_v4",
+        "schema_version": "decision_view",
         "status": decision_status,
         "strategy": _STRATEGY,
         "trade_date": _TRADE_DATE,
@@ -534,7 +534,7 @@ def test_json_report_contains_only_aggregated_projection_data() -> None:
     rendered = str(report)
     assert "600000" not in rendered
     assert "items" not in rendered
-    assert report["schema_version"] == "web_recommendation_health_v4"
+    assert report["schema_version"] == "web_recommendation_health"
     assert report["status"] == "passed"
     assert report["samples"][0]["market"]["history_warmup"]["planned_count"] == 20
     assert report["samples"][0]["market"]["history_warmup"]["batch_timeout_seconds"] == 20.0

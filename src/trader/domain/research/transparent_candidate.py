@@ -173,7 +173,7 @@ class TransparentCandidateReport:
     selected_candidate_id: str | None
     status: Literal["candidate_family_sealed", "historical_rejected", "historical_data_insufficient"]
     production_authority: bool = False
-    schema_version: str = "transparent_candidate_report_v1"
+    schema_version: str = "transparent_candidate_report"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -184,7 +184,7 @@ class TransparentCandidateReport:
             raise ValueError("sealed transparent family requires one registered candidate")
         if self.status != "candidate_family_sealed" and self.selected_candidate_id is not None:
             raise ValueError("rejected transparent family cannot select a candidate")
-        if self.production_authority or self.schema_version != "transparent_candidate_report_v1":
+        if self.production_authority or self.schema_version != "transparent_candidate_report":
             raise ValueError("transparent candidate report cannot authorize production")
         object.__setattr__(self, "content_hash", _hash(self))
 

@@ -48,7 +48,7 @@ def test_strategy_roadmap_is_ordered_benefit_first_and_strategy_complete() -> No
         "prediction_error = actual_net_excess_return - predicted_net_excess_return",
         "baseline_identity_consistent",
         "profitable_executable_recall",
-        "historical_filter_recall_ablation_report_v1",
+        "historical_filter_recall_ablation_report",
         "每策略最多 8 个",
         "每个完成评分 epoch",
         "相同输入的候选、分数、风险、动作、排名和决策 hash 完全一致",

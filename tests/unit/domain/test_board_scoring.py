@@ -69,8 +69,8 @@ def _policy(strategy: Strategy, board: Board, weights: dict[str, float]) -> Boar
         },
     }[strategy]
     return BoardStrategyPolicy(
-        policy_id=f"v16:{strategy.value}:{board.value}",
-        version="v16",
+        policy_id=f"board-policy-fixture:{strategy.value}:{board.value}",
+        version="board-policy-fixture",
         board=board,
         strategy=strategy,
         candidate_weights=candidate,

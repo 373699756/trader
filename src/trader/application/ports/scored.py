@@ -1,4 +1,4 @@
-"""Typed native-input and control boundaries for scored V2 strategies."""
+"""Typed native-input and control boundaries for scored strategies."""
 
 from __future__ import annotations
 
@@ -73,11 +73,11 @@ class TodayNativeInputPort(Protocol):
     def offer_native(self, native_input: TodayNativeInput) -> bool: ...
 
 
-class V2ControlPort(Protocol):
+class ControlPort(Protocol):
     def on_clock(self, at: datetime) -> object | None: ...
 
 
-class V2OverlayPort(Protocol):
+class OverlayPort(Protocol):
     def overlay_codes(self, trade_date: date) -> tuple[str, ...]: ...
 
     def publish_overlay(
@@ -231,6 +231,6 @@ __all__ = [
     "TomorrowNativeInputPort",
     "D25NativeInput",
     "D25NativeInputPort",
-    "V2ControlPort",
-    "V2OverlayPort",
+    "ControlPort",
+    "OverlayPort",
 ]

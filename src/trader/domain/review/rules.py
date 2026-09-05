@@ -155,7 +155,7 @@ def map_deepseek_risk_facts(request: RiskMappingRequest) -> tuple[tuple[RiskFact
 
 
 def deepseek_risk_rule_code(risk_code: str, severity: str) -> str | None:
-    """Resolve a structured V4 model fact to its authoritative local rule."""
+    """Resolve a structured structured model fact to its authoritative local rule."""
     if risk_code not in DEEPSEEK_STRUCTURED_RISK_CODES:
         return None
     if severity not in _RISK_SEVERITIES:

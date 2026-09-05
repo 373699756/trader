@@ -33,7 +33,7 @@ _FEATURE_IDS = (
     "qfq_residual_momentum_40d_skip5",
     "qfq_residual_momentum_60d_skip5",
 )
-_MODEL_ID = "tomorrow_v3_industry_ridge_lightgbm_v1"
+_MODEL_ID = "tomorrow_v3_industry_ridge_lightgbm"
 
 
 @dataclass(frozen=True)

@@ -31,7 +31,7 @@ def _record(strategy: str = "today", observed_at: str = "2026-08-31T11:20:00+08:
 def test_h1_spec_is_fixed_and_strategy_anchor_is_explicit() -> None:
     today = H1PointInTimeSpec("today")
     tomorrow = H1PointInTimeSpec("tomorrow")
-    assert today.research_identity == "score_h1_point_in_time_v1"
+    assert today.research_identity == "score_h1_point_in_time"
     assert today.anchor_kind == "today_1120"
     assert today.anchor_time.isoformat() == "11:20:00"
     assert tomorrow.anchor_kind == "tomorrow_1450"

@@ -1,4 +1,4 @@
-"""SSE response for the bounded unified V2 event stream."""
+"""SSE response for the bounded unified event stream."""
 
 from __future__ import annotations
 

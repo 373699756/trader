@@ -50,7 +50,7 @@ class TomorrowJointInsufficientTerminal:
     model_artifact_hash: str | None = None
     terminal_holdout_status: Literal["terminal_holdout_not_opened"] = "terminal_holdout_not_opened"
     production_authority: bool = False
-    schema_version: str = "tomorrow_joint_insufficient_terminal_v1"
+    schema_version: str = "tomorrow_joint_insufficient_terminal"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -69,7 +69,7 @@ class TomorrowJointInsufficientTerminal:
             raise ValueError("Tomorrow joint insufficient terminal cannot claim predictions or Holm tests")
         if self.terminal_holdout_status != "terminal_holdout_not_opened" or self.production_authority:
             raise ValueError("Tomorrow joint terminal cannot open holdout or authorize production")
-        if self.schema_version != "tomorrow_joint_insufficient_terminal_v1":
+        if self.schema_version != "tomorrow_joint_insufficient_terminal":
             raise ValueError("Tomorrow joint terminal schema is invalid")
         object.__setattr__(self, "parent_profile_hashes", profiles)
         object.__setattr__(self, "failure_reasons", tuple(sorted(set(self.failure_reasons))))
@@ -472,7 +472,7 @@ class TomorrowJointFamilyConfirmation:
     fallback_to_c3: bool
     terminal_holdout_status: Literal["terminal_holdout_not_opened"] = "terminal_holdout_not_opened"
     production_authority: bool = False
-    schema_version: str = "tomorrow_joint_confirmation_report_v1"
+    schema_version: str = "tomorrow_joint_confirmation_report"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -488,7 +488,7 @@ class TomorrowJointFamilyConfirmation:
         if (
             self.production_authority
             or self.terminal_holdout_status != "terminal_holdout_not_opened"
-            or self.schema_version != "tomorrow_joint_confirmation_report_v1"
+            or self.schema_version != "tomorrow_joint_confirmation_report"
         ):
             raise ValueError("Tomorrow joint confirmation cannot authorize production or open terminal holdout")
         object.__setattr__(self, "content_hash", _canonical_hash(self))
@@ -654,7 +654,7 @@ def _joint_bootstraps(
     return tuple(
         paired_moving_block_statistics(
             values,
-            plan=PreregisteredBootstrapPlan(f"tomorrow_joint_{label}_v1", 20260901, "joint", 5, 10_000),
+            plan=PreregisteredBootstrapPlan(f"tomorrow_joint_{label}", 20260901, "joint", 5, 10_000),
         )
         for label, values in (
             ("20bp", inputs.paired_20),
@@ -723,10 +723,10 @@ def _joint_risk_failures(
     return tuple(
         reason
         for failed, reason in (
-            (severe_delta > 0.0, "severe_loss_rate_worse_than_v1"),
+            (severe_delta > 0.0, "severe_loss_rate_worse_than_baseline"),
             (turnover_delta_pp > 5.0, "turnover_increment_above_5pp"),
-            (capacity_delta < 0.0, "capacity_worse_than_v1"),
-            (concentration_delta > 0.0, "concentration_worse_than_v1"),
+            (capacity_delta < 0.0, "capacity_worse_than_baseline"),
+            (concentration_delta > 0.0, "concentration_worse_than_baseline"),
         )
         if failed
     )

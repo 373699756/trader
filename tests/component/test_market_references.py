@@ -147,10 +147,10 @@ def test_reference_loader_recover_restores_security_master_and_calendar_cursor(t
             observed_at=observed_at,
             source_time=source_time,
             source="tushare",
-            data_version="tushare-calendar-v1",
+            data_version="tushare-calendar-current",
             payload={"board": "main", "listing_date": "2026-01-02"},
             payload_hash="",
-            schema_version="v2_data_plane_v1",
+            schema_version="data_plane",
         )
     )
     data_plane.save_source_cursor_recent(
@@ -160,7 +160,7 @@ def test_reference_loader_recover_restores_security_master_and_calendar_cursor(t
             observed_at=observed_at,
             source_time=source_time,
             source="tushare",
-            data_version="tushare-calendar-v1",
+            data_version="tushare-calendar-current",
             payload={
                 "count": 2,
                 "end_date": "2026-07-16",
@@ -180,7 +180,7 @@ def test_reference_loader_recover_restores_security_master_and_calendar_cursor(t
                 ],
             },
             payload_hash="",
-            schema_version="v2_data_plane_v1",
+            schema_version="data_plane",
         )
     )
     gateway = CapturingGateway()
@@ -360,8 +360,8 @@ def test_newer_reference_refresh_can_correct_an_older_effective_listing_date() -
             error_code=None,
         )
 
-    gateway.update_reference_observations((master("2020-01-02", NOW - timedelta(seconds=1), "master-v1"),))
-    gateway.update_reference_observations((master("2019-01-02", NOW, "master-v2"),))
+    gateway.update_reference_observations((master("2020-01-02", NOW - timedelta(seconds=1), "master-initial"),))
+    gateway.update_reference_observations((master("2019-01-02", NOW, "master-latest"),))
     gateway.fetch_market(observed_at=NOW)
 
     snapshot = gateway.canonical_snapshot()
@@ -389,7 +389,7 @@ def test_listing_session_projection_reuses_a_sorted_calendar_index() -> None:
             source_time=NOW,
             received_at=NOW,
             effective_at=effective_at,
-            data_version="calendar-v1",
+            data_version="calendar-current",
             fields={"calendar_date": day.isoformat(), "is_open": True},
             missing_reasons={},
             payload_hash=day.isoformat(),
@@ -411,10 +411,10 @@ def test_listing_session_projection_reuses_a_sorted_calendar_index() -> None:
         source_time=NOW,
         received_at=NOW,
         effective_at=datetime.fromisoformat("2020-01-02T00:00:00+08:00"),
-        data_version="master-v1",
+        data_version="master-initial",
         fields={"board": "main", "listing_date": "2020-01-02"},
         missing_reasons={},
-        payload_hash="master-v1",
+        payload_hash="master-initial",
         status="success",
         error_code=None,
     )
@@ -449,10 +449,10 @@ def test_listing_session_projection_uses_injected_production_calendar() -> None:
         source_time=NOW,
         received_at=NOW,
         effective_at=datetime.fromisoformat("2020-01-02T00:00:00+08:00"),
-        data_version="master-v1",
+        data_version="master-initial",
         fields={"board": "main", "listing_date": "2020-01-02"},
         missing_reasons={},
-        payload_hash="master-v1",
+        payload_hash="master-initial",
         status="success",
         error_code=None,
     )
@@ -496,7 +496,7 @@ def test_snapshot_metadata_copies_tushare_versions_under_service_lock() -> None:
     class LockCheckedVersions(Mapping[str, str]):
         def __init__(self, lock: TrackingLock) -> None:
             self._lock = lock
-            self._values = {"valuation": "valuation-v1"}
+            self._values = {"valuation": "valuation-source"}
 
         def __getitem__(self, key: str) -> str:
             return self._values[key]
@@ -514,11 +514,11 @@ def test_snapshot_metadata_copies_tushare_versions_under_service_lock() -> None:
 
     metadata = service.snapshot_metadata()
 
-    assert dict(metadata.reference_versions) == {"valuation": "valuation-v1"}
+    assert dict(metadata.reference_versions) == {"valuation": "valuation-source"}
 
 
 def test_reference_refresh_reuses_cache_and_refreshes_due_entries_inside_tushare_lane() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
     monotonic = MutableMonotonic()
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
@@ -628,7 +628,7 @@ def test_reference_degradation_replaces_same_version_verified_identity_conservat
         source_time=NOW,
         received_at=NOW,
         effective_at=NOW,
-        data_version="master-v1",
+        data_version="master-initial",
         fields=fields,
         missing_reasons={},
         payload_hash="z-verified",
@@ -652,7 +652,7 @@ def test_reference_degradation_replaces_same_version_verified_identity_conservat
 
 
 def test_reference_refresh_structures_tushare_history_valuation_and_financial_data() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
         cadence_seconds=runtime.pipeline.cadence_seconds,
@@ -950,7 +950,7 @@ def test_calendar_fetch_timeout_is_bounded(tmp_path) -> None:
 
 
 def test_equal_quote_version_can_gain_new_tushare_board_metadata_from_cache_hit() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
         cadence_seconds=runtime.pipeline.cadence_seconds,
@@ -977,7 +977,7 @@ def test_equal_quote_version_can_gain_new_tushare_board_metadata_from_cache_hit(
         source_time=NOW,
         received_at=NOW,
         effective_at=NOW - timedelta(days=1),
-        data_version="master-v1",
+        data_version="master-initial",
         fields={
             "board": "main",
             "exchange": "SSE",
@@ -987,7 +987,7 @@ def test_equal_quote_version_can_gain_new_tushare_board_metadata_from_cache_hit(
             "exchange_limit_pct": 10.0,
         },
         missing_reasons={},
-        payload_hash="master-v1",
+        payload_hash="master-initial",
         status="success",
         error_code=None,
     )
@@ -1017,7 +1017,7 @@ def test_gateway_retains_free_security_master_when_realtime_source_falls_back() 
         source="sina",
         source_time=second_observed_at,
         received_time=second_observed_at,
-        data_version="sina-v2",
+        data_version="sina-history",
     )
     gateway = MarketDataGateway(
         SequenceMarketClient(((eastmoney_quote,), RuntimeError("eastmoney offline"))),

@@ -12,7 +12,7 @@ def test_baseline_audit_is_an_explicit_read_only_cli_command() -> None:
     args = parser.parse_args(["research-baseline-audit"])
     assert args.command == "research-baseline-audit"
     strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
-    assert "score_current_baseline_consistency_audit_v1" in strategy
+    assert "score_current_baseline_consistency_audit" in strategy
     assert "baseline_identity_inconsistent" in strategy
 
 

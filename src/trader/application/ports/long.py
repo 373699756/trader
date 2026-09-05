@@ -1,4 +1,4 @@
-"""Typed refresh boundary for the current-only Long V2 projection."""
+"""Typed refresh boundary for the current-only Long projection."""
 
 from __future__ import annotations
 

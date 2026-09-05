@@ -33,7 +33,7 @@ class H1DailyCloseObservation:
     hard_filter_passed: bool
     hard_filter_evidence_complete: bool
     filter_evidence_hash: str | None
-    schema_version: str = "tomorrow_h1_daily_close_observation_v1"
+    schema_version: str = "tomorrow_h1_daily_close_observation"
 
     def __post_init__(self) -> None:
         if self.record.strategy != "tomorrow" or self.board not in {"main", "chinext", "star"}:
@@ -43,7 +43,7 @@ class H1DailyCloseObservation:
                 raise ValueError("complete Tomorrow H1 filter evidence requires a SHA-256")
         elif self.filter_evidence_hash is not None:
             raise ValueError("incomplete Tomorrow H1 filter evidence cannot claim a hash")
-        if self.schema_version != "tomorrow_h1_daily_close_observation_v1":
+        if self.schema_version != "tomorrow_h1_daily_close_observation":
             raise ValueError("Tomorrow H1 daily-close observation schema is invalid")
 
 
@@ -57,7 +57,7 @@ class H1DailyCloseFeatureRow:
     hard_filter_evidence_complete: bool
     filter_evidence_hash: str | None
     source_record_hash: str
-    schema_version: str = "tomorrow_h1_daily_close_feature_row_v1"
+    schema_version: str = "tomorrow_h1_daily_close_feature_row"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -71,7 +71,7 @@ class H1DailyCloseFeatureRow:
             self.filter_evidence_hash is not None and _SHA256.fullmatch(self.filter_evidence_hash) is None
         ):
             raise ValueError("Tomorrow H1 daily-close filter evidence is inconsistent")
-        if self.schema_version != "tomorrow_h1_daily_close_feature_row_v1":
+        if self.schema_version != "tomorrow_h1_daily_close_feature_row":
             raise ValueError("Tomorrow H1 daily-close feature row schema is invalid")
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
@@ -82,7 +82,7 @@ class H1DailyCloseFeatureBatch:
     source_archive_hash: str
     feature_names: tuple[str, ...] = _FEATURE_NAMES
     feature_units: tuple[str, ...] = _FEATURE_UNITS
-    schema_version: str = "tomorrow_h1_daily_close_feature_batch_v1"
+    schema_version: str = "tomorrow_h1_daily_close_feature_batch"
     production_authority: bool = False
     content_hash: str = dataclasses.field(init=False)
 
@@ -95,7 +95,7 @@ class H1DailyCloseFeatureBatch:
             raise ValueError("Tomorrow H1 feature batch source identity is invalid")
         if self.feature_names != _FEATURE_NAMES or self.feature_units != _FEATURE_UNITS:
             raise ValueError("Tomorrow H1 feature batch contract is invalid")
-        if self.schema_version != "tomorrow_h1_daily_close_feature_batch_v1" or self.production_authority:
+        if self.schema_version != "tomorrow_h1_daily_close_feature_batch" or self.production_authority:
             raise ValueError("Tomorrow H1 feature batch cannot authorize production")
         object.__setattr__(self, "rows", ordered)
         object.__setattr__(self, "content_hash", canonical_hash(self))

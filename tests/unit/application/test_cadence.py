@@ -311,7 +311,7 @@ def test_close_quotes_budget_allows_slow_close_source_and_local_rebuild() -> Non
 
 
 def test_production_policy_plans_exact_full_trading_day_task_counts() -> None:
-    raw = json.loads((Path(__file__).parents[3] / "config" / "v2" / "runtime.json").read_text(encoding="utf-8"))
+    raw = json.loads((Path(__file__).parents[3] / "config" / "runtime.json").read_text(encoding="utf-8"))
     current = datetime(2026, 7, 16, 9, 15, tzinfo=SHANGHAI)
     planner = CadencePlanner(
         CadencePolicy.from_seconds(raw["pipeline"]["cadence_seconds"]),

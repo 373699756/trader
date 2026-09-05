@@ -12,7 +12,7 @@ def test_scoring_hot_path_baseline_has_explicit_cli_and_fixed_identity() -> None
     args = build_parser().parse_args(["research-scoring-hot-path-baseline"])
     assert args.command == "research-scoring-hot-path-baseline"
     assert ScoringHotPathBaseline.__dataclass_fields__["schema_version"].default == (
-        "scoring_hot_path_efficiency_baseline_v1"
+        "scoring_hot_path_efficiency_baseline"
     )
 
 

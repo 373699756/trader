@@ -3,9 +3,9 @@ from __future__ import annotations
 import threading
 
 from tests.unit.domain.test_decision_identity import decision
-from trader.application.decisions.decision_events import build_v2_decision_committed
+from trader.application.decisions.decision_events import build_decision_committed
 from trader.application.decisions.decision_observers import AsyncDecisionObserver
-from trader.application.research.research_audit import V2DecisionObservation
+from trader.application.research.research_audit import DecisionObservation
 from trader.application.runtime.shutdown import ShutdownDeadline
 
 
@@ -25,10 +25,10 @@ def test_observer_is_bounded_non_blocking_and_isolates_consumer_failure() -> Non
     observer = AsyncDecisionObserver(
         (blocking_consumer, failing_consumer),
         capacity=1,
-        thread_name="test-v2-observer",
+        thread_name="test-observer",
     )
-    event = build_v2_decision_committed(decision())
-    observation = V2DecisionObservation(event, None)
+    event = build_decision_committed(decision())
+    observation = DecisionObservation(event, None)
     observer.start()
     assert observer.offer(observation)
     assert entered.wait(timeout=1.0)
@@ -53,9 +53,9 @@ def test_observer_shutdown_does_not_reset_the_shared_deadline() -> None:
         entered.set()
         release.wait()
 
-    observer = AsyncDecisionObserver((blocked,), capacity=1, thread_name="test-v2-observer-deadline")
+    observer = AsyncDecisionObserver((blocked,), capacity=1, thread_name="test-observer-deadline")
     observer.start()
-    observer.offer(V2DecisionObservation(build_v2_decision_committed(decision()), None))
+    observer.offer(DecisionObservation(build_decision_committed(decision()), None))
     assert entered.wait(timeout=1.0)
 
     try:

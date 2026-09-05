@@ -95,7 +95,7 @@ class ScoreR6DailyReport:
             raise ValueError("daily trend coverage rejection cannot freeze a candidate")
         if self.promotion_authority:
             raise ValueError("daily trend historical report cannot promote production")
-        if self.schema_version != "score_r6_daily_trend_report_v1":
+        if self.schema_version != "score_r6_daily_trend_report":
             raise ValueError("daily trend report schema is invalid")
         object.__setattr__(self, "failure_reasons", tuple(sorted(set(self.failure_reasons))))
         object.__setattr__(self, "limitations", tuple(sorted(set(self.limitations))))

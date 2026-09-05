@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CONFIG_PATH = PROJECT_ROOT / "config" / "v2" / "long_watchlist.json"
+CONFIG_PATH = PROJECT_ROOT / "config" / "long_watchlist.json"
 ASSET_PATH = PROJECT_ROOT / "src" / "trader" / "web" / "static" / "long_watchlist_data.js"
 PREFIX = '(function(){"use strict";window.TraderLongWatchlistData=Object.freeze('
 SUFFIX = ");})();\n"

@@ -1,4 +1,4 @@
-"""Typed V2 runtime status values shared by scheduling and presentation adapters."""
+"""Typed scheduler runtime status values shared by scheduling and presentation adapters."""
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ from typing import Literal
 
 from trader.domain.recommendation.models import Strategy
 
-V2InputQualityState = Literal["ready", "business_empty", "transient_invalid_empty", "not_ready"]
+InputQualityState = Literal["ready", "business_empty", "transient_invalid_empty", "not_ready"]
 
 
 @dataclass(frozen=True)
-class V2SupplyFunnel:
+class SupplyFunnel:
     requested_candidates: int = 0
     candidate_features: int = 0
     security_master: int = 0
@@ -33,11 +33,11 @@ class V2SupplyFunnel:
 
     def __post_init__(self) -> None:
         if any(getattr(self, item.name) < 0 for item in fields(self)):
-            raise ValueError("V2 supply funnel counts cannot be negative")
+            raise ValueError("supply funnel counts cannot be negative")
 
 
 @dataclass(frozen=True)
-class V2SupplySummary:
+class SupplySummary:
     trade_date: date
     quote_total_count: int = 0
     quote_covered_count: int = 0
@@ -55,26 +55,26 @@ class V2SupplySummary:
             self.security_identity_missing_count,
         )
         if any(value < 0 for value in counts):
-            raise ValueError("V2 supply summary counts cannot be negative")
+            raise ValueError("supply summary counts cannot be negative")
         if self.quote_covered_count + self.quote_missing_count != self.quote_total_count:
-            raise ValueError("V2 quote coverage must partition the requested total")
+            raise ValueError("quote coverage must partition the requested total")
         if self.latest_quote_source_time is not None and (
             self.latest_quote_source_time.tzinfo is None or self.latest_quote_source_time.utcoffset() is None
         ):
-            raise ValueError("V2 latest quote source time must be timezone-aware")
+            raise ValueError("latest quote source time must be timezone-aware")
         if self.highest_final_score is not None and (
             not math.isfinite(self.highest_final_score) or not 0.0 <= self.highest_final_score <= 100.0
         ):
-            raise ValueError("V2 highest final score must be in [0, 100]")
+            raise ValueError("highest final score must be in [0, 100]")
 
 
 @dataclass(frozen=True)
-class V2InputQualityStatus:
+class InputQualityStatus:
     strategy: Strategy
-    status: V2InputQualityState
+    status: InputQualityState
     publishable: bool
-    summary: V2SupplySummary
-    supply_funnel: V2SupplyFunnel = V2SupplyFunnel()
+    summary: SupplySummary
+    supply_funnel: SupplyFunnel = SupplyFunnel()
     population_count: int = 0
     candidate_count: int = 0
     candidate_feature_count: int = 0
@@ -97,7 +97,7 @@ class V2InputQualityStatus:
 
     def __post_init__(self) -> None:
         if self.strategy not in {Strategy.TODAY, Strategy.TOMORROW, Strategy.D25}:
-            raise ValueError("V2 input quality requires a scored strategy")
+            raise ValueError("input quality requires a scored strategy")
         counts = (
             self.population_count,
             self.candidate_count,
@@ -109,16 +109,16 @@ class V2InputQualityStatus:
             self.history_covered_count,
         )
         if any(value < 0 for value in counts):
-            raise ValueError("V2 input quality counts cannot be negative")
+            raise ValueError("input quality counts cannot be negative")
         if self.history_required_sessions < 1:
-            raise ValueError("V2 input quality history requirement must be positive")
+            raise ValueError("input quality history requirement must be positive")
         for value in (
             self.candidate_feature_coverage_ratio,
             self.security_master_coverage_ratio,
             self.history_coverage_ratio,
         ):
             if not math.isfinite(value) or not 0.0 <= value <= 1.0:
-                raise ValueError("V2 input quality ratios must be in [0, 1]")
+                raise ValueError("input quality ratios must be in [0, 1]")
         for name in (
             "population_filter_reason_counts",
             "candidate_filter_reason_counts",
@@ -128,18 +128,18 @@ class V2InputQualityStatus:
         ):
             pairs = tuple(sorted(getattr(self, name)))
             if any(not key or value < 0 for key, value in pairs):
-                raise ValueError("V2 input quality reason counts must be non-negative")
+                raise ValueError("input quality reason counts must be non-negative")
             if len({key for key, _value in pairs}) != len(pairs):
-                raise ValueError("V2 input quality reason keys must be unique")
+                raise ValueError("input quality reason keys must be unique")
             object.__setattr__(self, name, pairs)
         object.__setattr__(self, "degraded_reasons", tuple(sorted(set(self.degraded_reasons))))
         if not self.primary_blocker:
-            raise ValueError("V2 primary blocker must not be empty")
+            raise ValueError("primary blocker must not be empty")
 
 
 __all__ = [
-    "V2InputQualityState",
-    "V2InputQualityStatus",
-    "V2SupplyFunnel",
-    "V2SupplySummary",
+    "InputQualityState",
+    "InputQualityStatus",
+    "SupplyFunnel",
+    "SupplySummary",
 ]

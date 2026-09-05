@@ -329,7 +329,7 @@
       const compatibility = releaseContract.decisionPayloadCompatibility(rawPayload);
       if (!compatibility.compatible) throw releaseContract.mismatchError(compatibility.reason);
       diagnostics.recommendationFullResponses += 1;
-      const payload = normalizeV2Payload(rawPayload, strategy, selectedDate, view);
+      const payload = normalizeDecisionPayload(rawPayload, strategy, selectedDate, view);
       diagnostics.fullResponseBytes += formatters.utf8Bytes(JSON.stringify(payload));
       if (payload.strategy !== strategy) throw new Error("推荐快照策略不匹配");
       if (!cacheIdentityValid(payload, strategy, selectedDate, view)) throw new Error("推荐快照身份不匹配");
@@ -350,16 +350,16 @@
     return `${strategy}:${selectedDate || view}`;
   }
 
-  function normalizeV2Payload(raw, strategy, selectedDate, view) {
+  function normalizeDecisionPayload(raw, strategy, selectedDate, view) {
     const historical = Boolean(selectedDate);
     const coverage = raw.coverage || {};
-    const items = Array.isArray(raw.items) ? raw.items.map(normalizeV2Item) : [];
-    const topScores = Array.isArray(raw.top_scores) ? raw.top_scores.map(normalizeV2Item) : [];
+    const items = Array.isArray(raw.items) ? raw.items.map(normalizeDecisionItem) : [];
+    const topScores = Array.isArray(raw.top_scores) ? raw.top_scores.map(normalizeDecisionItem) : [];
     const draft = raw.draft && typeof raw.draft === "object"
       ? {
         ...raw.draft,
-        items: Array.isArray(raw.draft.items) ? raw.draft.items.map(normalizeV2Item) : [],
-        top_scores: Array.isArray(raw.draft.top_scores) ? raw.draft.top_scores.map(normalizeV2Item) : [],
+        items: Array.isArray(raw.draft.items) ? raw.draft.items.map(normalizeDecisionItem) : [],
+        top_scores: Array.isArray(raw.draft.top_scores) ? raw.draft.top_scores.map(normalizeDecisionItem) : [],
       }
       : null;
     return {
@@ -385,7 +385,7 @@
     };
   }
 
-  function normalizeV2Item(item) {
+  function normalizeDecisionItem(item) {
     const quote = item.quote || {};
     const scores = item.scores || {};
     return {

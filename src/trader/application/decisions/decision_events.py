@@ -1,4 +1,4 @@
-"""Generic committed-decision event values for V2 observers."""
+"""Generic committed-decision event values for observers."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from trader.domain.recommendation.models import RecommendationAction, Strategy
 
 
 @dataclass(frozen=True)
-class V2CommittedDecisionItem:
+class CommittedDecisionItem:
     code: str
     action: RecommendationAction
     selected: bool
@@ -24,7 +24,7 @@ class V2CommittedDecisionItem:
 
 
 @dataclass(frozen=True)
-class V2DecisionCommitted:
+class DecisionCommitted:
     event_id: str
     strategy: Strategy
     trade_date: date
@@ -40,18 +40,18 @@ class V2DecisionCommitted:
     schema_version: str
     filter_aggregates: tuple[tuple[str, int], ...]
     degraded_reasons: tuple[str, ...]
-    items: tuple[V2CommittedDecisionItem, ...]
+    items: tuple[CommittedDecisionItem, ...]
     projection_version: str = field(default="", compare=False, repr=False)
     projection: ScoredDecision | None = field(default=None, compare=False, repr=False)
 
 
-def build_v2_decision_committed(
+def build_decision_committed(
     decision: ScoredDecision,
     *,
     projection_version: str | None = None,
-) -> V2DecisionCommitted:
-    return V2DecisionCommitted(
-        event_id=f"v2-decision-committed:{decision.version}",
+) -> DecisionCommitted:
+    return DecisionCommitted(
+        event_id=f"decision-committed:{decision.version}",
         strategy=decision.strategy,
         trade_date=decision.trade_date,
         observed_at=decision.observed_at,
@@ -72,8 +72,8 @@ def build_v2_decision_committed(
     )
 
 
-def _event_item(item: DecisionItem) -> V2CommittedDecisionItem:
-    return V2CommittedDecisionItem(
+def _event_item(item: DecisionItem) -> CommittedDecisionItem:
+    return CommittedDecisionItem(
         code=item.code,
         action=item.action,
         selected=item.selected,
@@ -88,7 +88,7 @@ def _event_item(item: DecisionItem) -> V2CommittedDecisionItem:
 
 
 __all__ = [
-    "V2CommittedDecisionItem",
-    "V2DecisionCommitted",
-    "build_v2_decision_committed",
+    "CommittedDecisionItem",
+    "DecisionCommitted",
+    "build_decision_committed",
 ]

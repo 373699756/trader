@@ -41,7 +41,7 @@ from trader.domain.review.models import (
     RiskRule,
 )
 
-DECISION_EPOCH_SCHEMA_VERSION = "decision_epoch_v2"
+DECISION_EPOCH_SCHEMA_VERSION = "decision_epoch"
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"
 _REASON_CODE = re.compile(r"^[a-z0-9_]{1,64}$")
 _CanonicalValue: TypeAlias = str | int | float | bool | None | list["_CanonicalValue"] | dict[str, "_CanonicalValue"]

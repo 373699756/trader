@@ -1,4 +1,4 @@
-"""Typed ports and immutable records for the V2 v2-data repository."""
+"""Typed ports and immutable records for the market-data repository."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from trader.application.ports.types import JsonObject, freeze_json_object
 
 @dataclass(frozen=True, kw_only=True)
 class DataPlaneRecord:
-    """Common immutable fields for all V2 data-plane records."""
+    """Common immutable fields for all unified data-plane records."""
 
     code: str
     observed_at: datetime
@@ -198,7 +198,7 @@ class TradingCalendarRepositoryPort(Protocol):
 
 
 class DataPlaneRepositoryError(RuntimeError):
-    """Base failure for V2 data-plane persistence."""
+    """Base failure for unified data-plane persistence."""
 
 
 class DataPlaneConflictError(DataPlaneRepositoryError):
@@ -330,7 +330,7 @@ class DataPlaneReaderPort(Protocol):
 
 
 class DataPlanePorts(DataPlaneWriterPort, DataPlaneReaderPort, Protocol):
-    """Read/write port pair for the V2 data-plane repository."""
+    """Read/write port pair for the unified data-plane repository."""
 
 
 __all__ = [

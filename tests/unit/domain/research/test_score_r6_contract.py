@@ -13,7 +13,7 @@ from trader.domain.research.score_r6 import (
 
 
 def test_r6_candidate_grid_is_finite_shrunk_and_joint() -> None:
-    assert SCORE_R6_HISTORICAL_SPEC.research_identity == "score_r6_historical_v2"
+    assert SCORE_R6_HISTORICAL_SPEC.research_identity == "score_r6_historical"
     assert SCORE_R6_HISTORICAL_SPEC.preregistered_on == date(2026, 9, 1)
     candidates = iter_score_r6_candidates(SCORE_R6_HISTORICAL_SPEC)
 

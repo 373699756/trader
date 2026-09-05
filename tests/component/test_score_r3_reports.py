@@ -22,7 +22,7 @@ def test_r3_report_is_immutable_verifiable_and_idempotent(tmp_path) -> None:
     assert first == second
     assert store.verify().report_hash == report.report_hash
     payload = json.loads((tmp_path / "score-r3-baseline-report.json").read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "score_r3_baseline_report_v1"
+    assert payload["schema_version"] == "score_r3_baseline_report"
     assert payload["report_hash"] == report.report_hash
     assert "research_identity" not in payload
     assert "research_spec_hash" not in payload

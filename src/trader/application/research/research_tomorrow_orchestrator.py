@@ -42,7 +42,7 @@ class TomorrowResearchPrerequisite:
     status: Literal["ready", "blocked"]
     prerequisite_hash: str
     blockers: tuple[str, ...] = ()
-    schema_version: str = "tomorrow_research_prerequisite_v1"
+    schema_version: str = "tomorrow_research_prerequisite"
     production_authority: bool = False
     content_hash: str = dataclasses.field(init=False)
 
@@ -54,7 +54,7 @@ class TomorrowResearchPrerequisite:
             raise ValueError("Tomorrow research prerequisite blockers are invalid")
         if self.status == "ready" and blockers or self.status == "blocked" and not blockers:
             raise ValueError("Tomorrow research prerequisite status is inconsistent")
-        if self.schema_version != "tomorrow_research_prerequisite_v1" or self.production_authority:
+        if self.schema_version != "tomorrow_research_prerequisite" or self.production_authority:
             raise ValueError("Tomorrow research prerequisite cannot authorize production")
         object.__setattr__(self, "blockers", blockers)
         object.__setattr__(self, "content_hash", self.prerequisite_hash)
@@ -81,13 +81,13 @@ class TomorrowResearchAdvanceResult:
     blockers: tuple[str, ...]
     readiness: TomorrowProductionReadinessAudit
     prerequisite_hash: str
-    schema_version: str = "tomorrow_research_advance_result_v1"
+    schema_version: str = "tomorrow_research_advance_result"
     production_authority: bool = False
     automatic_model_update: bool = False
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
-        if self.schema_version != "tomorrow_research_advance_result_v1":
+        if self.schema_version != "tomorrow_research_advance_result":
             raise ValueError("Tomorrow research advance result schema is invalid")
         if _SHA256.fullmatch(self.prerequisite_hash) is None:
             raise ValueError("Tomorrow research prerequisite hash is invalid")

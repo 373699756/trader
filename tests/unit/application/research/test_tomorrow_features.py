@@ -59,7 +59,7 @@ def test_feature_batch_binds_r2_identity_and_has_stable_content_hash() -> None:
     second = service.build(_summary(), _bundle(("300001", "600001", "688001")), _contexts())
 
     assert first == second
-    assert first.schema_version == "score_tomorrow_point_in_time_features_v1"
+    assert first.schema_version == "score_tomorrow_point_in_time_features"
     assert first.input_hash == _summary().input_hash
     assert first.context_hash == _contexts().content_hash
     assert len(first.content_hash) == 64

@@ -36,7 +36,7 @@ class HistoricalResidualLedgerTerminal:
     outcome_rows: int = 0
     terminal_holdout_opened: bool = False
     production_authority: bool = False
-    schema_version: str = "historical_prediction_residual_ledger_terminal_v1"
+    schema_version: str = "historical_prediction_residual_ledger_terminal"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -49,7 +49,7 @@ class HistoricalResidualLedgerTerminal:
             raise ValueError("historical residual terminal requires bounded insufficient reasons")
         if self.prediction_rows or self.outcome_rows or self.terminal_holdout_opened or self.production_authority:
             raise ValueError("historical residual terminal cannot contain rows, open holdout, or authorize production")
-        if self.schema_version != "historical_prediction_residual_ledger_terminal_v1":
+        if self.schema_version != "historical_prediction_residual_ledger_terminal":
             raise ValueError("historical residual terminal schema is invalid")
         object.__setattr__(self, "failure_reasons", reasons)
         object.__setattr__(self, "content_hash", canonical_hash(self))
@@ -67,7 +67,7 @@ class TomorrowC3Terminal:
     terminal_holdout_opened: bool = False
     production_authority: bool = False
     automatic_model_update: bool = False
-    schema_version: str = "tomorrow_daily_close_c3_terminal_v1"
+    schema_version: str = "tomorrow_daily_close_c3_terminal"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -84,7 +84,7 @@ class TomorrowC3Terminal:
             raise ValueError("insufficient C3 evidence cannot claim OOF or a model artifact")
         if self.terminal_holdout_opened or self.production_authority or self.automatic_model_update:
             raise ValueError("C3 terminal cannot open holdout, authorize production, or update models")
-        if self.schema_version != "tomorrow_daily_close_c3_terminal_v1":
+        if self.schema_version != "tomorrow_daily_close_c3_terminal":
             raise ValueError("C3 terminal schema is invalid")
         object.__setattr__(self, "failure_reasons", reasons)
         object.__setattr__(self, "content_hash", canonical_hash(self))
@@ -100,7 +100,7 @@ class CodexAResearchCompletion:
     terminal_holdout_opened: bool = False
     production_authority: bool = False
     automatic_model_update: bool = False
-    schema_version: str = "codex_a_h1_research_completion_v1"
+    schema_version: str = "h1_research_completion"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -124,7 +124,7 @@ class CodexAResearchCompletion:
             raise ValueError("CodexA insufficient completion status is invalid")
         if self.terminal_holdout_opened or self.production_authority or self.automatic_model_update:
             raise ValueError("CodexA completion cannot open holdout, authorize production, or update models")
-        if self.schema_version != "codex_a_h1_research_completion_v1":
+        if self.schema_version != "h1_research_completion":
             raise ValueError("CodexA completion schema is invalid")
         object.__setattr__(self, "residual_ledgers", ledgers)
         object.__setattr__(self, "content_hash", canonical_hash(self))
@@ -139,7 +139,7 @@ class CodexAResearchCompletion:
         _hash(resource_probe_artifact_hash, "Tomorrow resource probe")
         artifact = TomorrowResearchArtifactRef(
             artifact_id="h1_coverage_audit",
-            artifact_kind="codex_a_h1_research_completion_v1",
+            artifact_kind="h1_research_completion",
             owner="codex_a",
             content_hash=self.content_hash,
             parent_hashes=(resource_probe_artifact_hash,),

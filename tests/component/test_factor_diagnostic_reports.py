@@ -22,7 +22,7 @@ def test_factor_report_is_immutable_verifiable_and_idempotent(tmp_path) -> None:
     assert store.write(report) == report
     assert store.verify() == report
     payload = json.loads((tmp_path / "score-factor-diagnostic-report.json").read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "score_factor_diagnostic_report_v1"
+    assert payload["schema_version"] == "score_factor_diagnostic_report"
     assert payload["production_authority"] is False
     assert payload["report_hash"] == report.report_hash
 

@@ -19,7 +19,7 @@ NOW = datetime(2026, 7, 16, 14, 50, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
 def test_entry_inputs_exclude_same_day_history_bar() -> None:
-    settings = load_strategy_settings(ROOT / "config/v2/strategy.json")
+    settings = load_strategy_settings(ROOT / "config/strategy.json")
     builder = FeatureBuilder(
         settings.today_news_signal,
         settings.tomorrow_tail_signal,
@@ -76,7 +76,7 @@ def test_entry_inputs_exclude_same_day_history_bar() -> None:
         source="fixture",
         source_time=NOW,
         received_time=NOW,
-        data_version="fixture-v17",
+        data_version="fixture-current",
     )
 
     feature = builder.build(
@@ -91,7 +91,7 @@ def test_entry_inputs_exclude_same_day_history_bar() -> None:
 
 
 def test_entry_quality_uses_amount_intensity_when_volume_ratio_is_missing() -> None:
-    settings = load_strategy_settings(ROOT / "config/v2/strategy.json")
+    settings = load_strategy_settings(ROOT / "config/strategy.json")
     builder = FeatureBuilder(
         settings.today_news_signal,
         settings.tomorrow_tail_signal,
@@ -134,7 +134,7 @@ def test_entry_quality_uses_amount_intensity_when_volume_ratio_is_missing() -> N
         source="sina",
         source_time=NOW,
         received_time=NOW,
-        data_version="sina-v17",
+        data_version="sina-current",
     )
 
     feature = builder.build((quote,), {quote.code: bars}, NOW)[0]

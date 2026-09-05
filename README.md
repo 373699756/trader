@@ -10,7 +10,7 @@
 - 当前稳定版 Chrome、Edge 或 Firefox 桌面浏览器。
 - 仅支持个人 PC；手机和平板浏览器不属于产品范围，也不纳入发布验收。
 - 默认仅监听 `127.0.0.1`，不提供远程身份认证。
-- SQLite 和 JSON 运行数据写入 `.runtime/v2`，不需要 Redis、Celery、Node 或外部数据库。
+- SQLite 和 JSON 运行数据写入 `.runtime/trader`，不需要 Redis、Celery、Node 或外部数据库。
 
 ## 一键启动
 
@@ -59,7 +59,7 @@ BaoStock 下载是独立研究命令，必须先安装 `trader-research-dashboar
 逻辑日线落盘数/总数。下载期间先写 `shard-*.sqlite3` 作为续传 checkpoint，全部完成后才原子创建最终库和
 manifest；它不会被启动、`check`、Web 或 `train-tomorrow` 隐式调用。
 
-启动脚本只读取 `TRADER_HOST` 和 `TRADER_PORT`；旧 `HOST`/`PORT` 不再映射到 V2 进程。
+启动脚本只读取 `TRADER_HOST` 和 `TRADER_PORT`；旧 `HOST`/`PORT` 不再映射到 当前进程。
 
 ## 荐股漏斗诊断
 
@@ -75,7 +75,7 @@ manifest；它不会被启动、`check`、Web 或 `train-tomorrow` 隐式调用�
 
 `runtime` 只检查运行中的 Web，`sources` 只实测数据源，默认 `live` 合并两者；`full` 额外执行 Firefox
 刷新链与离线生产性能门禁。命令会在单项失败后继续扫描，最终报告使用
-`trader-runtime-diagnostics-v1`，只保留聚合计数、延迟、状态和定位结论，不转发股票代码、价格、Token、
+`trader-runtime-diagnostics`，只保留聚合计数、延迟、状态和定位结论，不转发股票代码、价格、Token、
 供应商原始载荷或子进程 stderr。需要留档时，`--output` 和 `--persistence-runtime-dir` 只能指向仓库外
 绝对路径。
 也可执行 `make diagnose-live`；耗时更长的浏览器与性能组合必须显式执行 `make diagnose-full`。
@@ -118,10 +118,10 @@ Linux/macOS 的正常 `SIGTERM` 和 Windows `SIGBREAK` 使用相同规则。关�
 
 如果再次执行 `./run.sh` 时已有服务持有同一运行目录，脚本会返回非零并显示现有浏览器地址。
 这表示旧服务仍在运行，并不表示锁文件损坏或新代码已经加载；请在原启动终端按一次 Ctrl+C，
-等待正常退出后再启动，不要删除 `.runtime/v2/server.lock`。
+等待正常退出后再启动，不要删除 `.runtime/trader/server.lock`。
 
 正常重启会重新预热行情、候选、观察池和研究/review 等纯内存状态；正式推荐、合法检查点、
-预算、V2 数据平面和收盘 overlay 按各自持久化契约恢复。强制结束进程或断电属于异常终止，
+预算、统一数据平面和收盘 overlay 按各自持久化契约恢复。强制结束进程或断电属于异常终止，
 正式冻结会在下次启动时按恢复载荷和 SHA-256 校验恢复或 fail closed。
 
 ## 手动安装
@@ -129,8 +129,8 @@ Linux/macOS 的正常 `SIGTERM` 和 Windows `SIGBREAK` 使用相同规则。关�
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[dev]"
-.venv/bin/trader-cli --config "$PWD/config/v2/runtime.json" validate-config
-.venv/bin/trader-server --config "$PWD/config/v2/runtime.json"
+.venv/bin/trader-cli --config "$PWD/config/runtime.json" validate-config
+.venv/bin/trader-server --config "$PWD/config/runtime.json"
 ```
 
 配置路径必须为绝对路径。`TRADER_CONFIG` 可代替 `--config`。DeepSeek 密钥优先从
@@ -153,7 +153,7 @@ TUSHARE_TOKEN=your-tushare-token
 ```
 
 Token 优先从 `TUSHARE_TOKEN` 读取，其次读取 `TUSHARE_TOKEN_FILE`，最后读取
-`config/v2/runtime.json` 中 `market_data.tushare.token_file` 指向的赋值文件，默认即
+`config/runtime.json` 中 `market_data.tushare.token_file` 指向的赋值文件，默认即
 `.token_key`。POSIX 系统必须限制该文件仅属主可读写，例如：
 
 ```bash
@@ -176,7 +176,7 @@ Token、SDK、额度或网络不可用时，Tushare lane 会显式降级。历�
 - `GET /api/events`
 
 当前快照支持 ETag。SSE 使用单调事件 ID 和 `Last-Event-ID` 恢复；游标过旧时返回 `resync_required`。Web 请求只读取已发布快照，不抓行情、不评分、不调用 DeepSeek。
-Long 的三个固定分类和股票身份由打包资源立即显示；V2 current 只增强实时行情，服务或行情暂时
+Long 的三个固定分类和股票身份由打包资源立即显示；当前决策 只增强实时行情，服务或行情暂时
 不可用时不会把固定名单隐藏。
 
 ## 关键契约
@@ -216,10 +216,10 @@ make package
 ## 目录
 
 ```text
-config/v2/          运行与策略配置
+config/          运行与策略配置
 docs/               软件业务设计与荐股策略两份权威文档
 scripts/            工程辅助脚本
 src/trader/         唯一活动产品包
 tests/              单元、组件、契约和集成测试
-.runtime/v2/        本地运行数据，不进入 Git
+.runtime/trader/        本地运行数据，不进入 Git
 ```

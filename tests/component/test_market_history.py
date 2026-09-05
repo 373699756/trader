@@ -98,7 +98,7 @@ def test_history_cache_fetches_sixty_one_bars_but_retains_only_twenty_raw_rows()
 
 
 def test_history_cache_reuses_actionable_refresh_due_value_with_degradation() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
     monotonic = MutableMonotonic()
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
@@ -112,7 +112,7 @@ def test_history_cache_reuses_actionable_refresh_due_value_with_degradation() ->
         cache=cache,
         source_contract_versions=runtime.market_data.source_contract_versions,
         config_version=runtime.config_version,
-        schema_version="market-v15",
+        schema_version="market_snapshot",
         wall_clock=lambda: NOW,
     )
     history = HistoryCache(
@@ -177,7 +177,7 @@ def test_feature_service_does_not_commit_history_cache_after_deadline() -> None:
 
 
 def test_full_market_deadline_does_not_wait_for_blocked_history_warmup() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
         cadence_seconds=runtime.pipeline.cadence_seconds,
@@ -535,7 +535,7 @@ def test_history_cache_recover_from_data_plane_restores_context_and_window(tmp_p
                 observed_at=observed_at,
                 source_time=source_time,
                 source="fixture",
-                data_version="fixture-v1",
+                data_version="fixture",
                 payload={
                     "trade_date": bar.trade_date,
                     "open_price": bar.open_price,
@@ -549,7 +549,7 @@ def test_history_cache_recover_from_data_plane_restores_context_and_window(tmp_p
                     "adjustment": bar.adjustment.value,
                     "source": bar.source,
                 },
-                schema_version="v2_data_plane_v1",
+                schema_version="data_plane",
                 payload_hash="",
             )
         )

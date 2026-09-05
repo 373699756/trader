@@ -66,11 +66,11 @@ def test_c3_development_builds_fixed_five_candidate_oof_without_reserved_dates()
     result = C3CandidateTrainer(_FitPort(), C3CandidateEvaluator()).develop(dataset, split)
 
     assert tuple(item.candidate_id for item in result.candidates) == (
-        "ridge_v1",
-        "lightgbm_v1",
-        "ridge_lightgbm_ensemble_v1",
-        "ensemble_stratum_residual_v1",
-        "ensemble_stratum_stock_residual_v1",
+        "ridge",
+        "lightgbm",
+        "ridge_lightgbm_ensemble",
+        "ensemble_stratum_residual",
+        "ensemble_stratum_stock_residual",
     )
     assert all(item.predictions for item in result.candidates)
     assert all(

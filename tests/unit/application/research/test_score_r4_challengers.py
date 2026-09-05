@@ -74,7 +74,7 @@ def test_r4_replays_all_five_variants_as_same_day_same_stock_pairs() -> None:
         "coverage_shrink",
         "candidate_upper_bound",
         "heat_weak_structure",
-        "combined_v1",
+        "combined",
     )
     assert report.deepseek_http_request_delta == 0
     assert len(report.parameter_manifest_hash) == 64

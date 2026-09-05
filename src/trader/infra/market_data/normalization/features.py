@@ -97,8 +97,8 @@ class StandardizedFeatureBuilder(Protocol):
 
 # Feature columns produced by FeatureBuilder._raw_features().
 # All are optional float; missing is left as None and later resolved per
-# the factor registry in config/v2/strategy.json.
-FEATURE_SCHEMA_VERSION = "feature_schema_v5_tomorrow_p2"
+# the factor registry in config/strategy.json.
+FEATURE_SCHEMA_VERSION = "tomorrow_p2_feature_schema"
 
 RAW_FEATURE_SCHEMA: tuple[FeatureSchema, ...] = (
     FeatureSchema("amount_median_20d", "float", description="20日成交额中位数"),

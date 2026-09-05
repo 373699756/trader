@@ -39,7 +39,7 @@ def _side(day: date, adjustment: str, *, trading_status: str = "trading") -> Bao
     )
 
 
-def test_baostock_v2_spec_rejects_more_than_2000_sessions() -> None:
+def test_baostock_spec_rejects_more_than_2000_sessions_and_keeps_identity() -> None:
     spec = BaoStockDailySpec()
 
     assert spec.research_identity == "score_baostock_daily_core_v2"

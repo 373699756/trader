@@ -233,7 +233,7 @@ def build_report(
 ) -> dict[str, object]:
     usable = sum(item.row_count >= 20 for item in observations)
     return {
-        "schema_version": "history-source-sampling-v1",
+        "schema_version": "history-source-sampling",
         "status": "passed" if usable == len(observations) else "degraded",
         "collected_at": datetime.now(_SHANGHAI).isoformat(),
         "configuration": {
@@ -289,7 +289,7 @@ def main() -> int:
         report = build_report(codes, observations, args, persistence)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         report = {
-            "schema_version": "history-source-sampling-v1",
+            "schema_version": "history-source-sampling",
             "status": "failed",
             "error": type(exc).__name__,
         }

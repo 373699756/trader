@@ -29,7 +29,7 @@ class TomorrowPointInTimeHoldoutService:
         return evaluate_terminal_holdout(
             TerminalHoldoutEvaluation(
                 strategy="tomorrow",
-                research_identity="score_tomorrow_historical_candidate_v1",
+                research_identity="score_tomorrow_historical_candidate",
                 parent_hash=self._parent.parent_hash,
                 candidate_hash=self._parent.candidate_hash,
                 rows=self._rows,

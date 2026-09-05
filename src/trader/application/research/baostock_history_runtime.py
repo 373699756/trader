@@ -75,7 +75,7 @@ class BaoStockRuntimeProgress:
     active_workers: int = 0
     rate_limit_cooldown_seconds: float = 0.0
     last_failure_reason: str = ""
-    schema_version: str = "baostock_runtime_progress_v1"
+    schema_version: str = "baostock_runtime_progress"
 
     def __post_init__(self) -> None:
         _validate_progress_source(self.source, self.current_code, self.rate_limit_cooldown_seconds)
@@ -141,7 +141,7 @@ class BaoStockRuntimeStatus:
     failure_reasons: tuple[str, ...] = ()
     production_authority: bool = False
     point_in_time_parity: bool = False
-    schema_version: str = "baostock_runtime_status_v1"
+    schema_version: str = "baostock_runtime_status"
 
     def __post_init__(self) -> None:
         if self.production_authority or self.point_in_time_parity:

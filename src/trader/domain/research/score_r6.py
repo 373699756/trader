@@ -68,7 +68,7 @@ class ScoreR6HistoricalSpec:
 def _validate_historical_spec_identity(spec: ScoreR6HistoricalSpec) -> None:
     if _IDENTITY.fullmatch(spec.research_identity) is None:
         raise ValueError("Score-R6 historical identity is invalid")
-    if spec.research_identity != "score_r6_historical_v2" or spec.preregistered_on != date(2026, 9, 1):
+    if spec.research_identity != "score_r6_historical" or spec.preregistered_on != date(2026, 9, 1):
         raise ValueError("Score-R6 historical preregistration identity is fixed")
     if (
         spec.parent_research_identity != SCORE_H0_V1_SPEC.research_identity
@@ -146,7 +146,7 @@ def _validate_historical_spec_objective(spec: ScoreR6HistoricalSpec) -> None:
         raise ValueError("Score-R6 historical validation tolerances are fixed")
     if spec.objective_version != "net_excess_drawdown_turnover_stability_v1":
         raise ValueError("Score-R6 objective version is invalid")
-    if spec.tie_break_version != "objective_offset_threshold_penalty_hash_v1":
+    if spec.tie_break_version != "objective_offset_threshold_penalty_hash":
         raise ValueError("Score-R6 tie-break version is invalid")
 
 
@@ -323,7 +323,7 @@ _CURRENT_PRODUCTION_BOARD_WEIGHT_UNITS = (
 
 
 SCORE_R6_HISTORICAL_SPEC = ScoreR6HistoricalSpec(
-    research_identity="score_r6_historical_v2",
+    research_identity="score_r6_historical",
     preregistered_on=date(2026, 9, 1),
     parent_research_identity=SCORE_H0_V1_SPEC.research_identity,
     parent_research_spec_hash=SCORE_H0_V1_SPEC.content_hash,
@@ -363,7 +363,7 @@ SCORE_R6_HISTORICAL_SPEC = ScoreR6HistoricalSpec(
     validation_stock_concentration_tolerance=0.05,
     validation_board_concentration_tolerance=0.05,
     objective_version="net_excess_drawdown_turnover_stability_v1",
-    tie_break_version="objective_offset_threshold_penalty_hash_v1",
+    tie_break_version="objective_offset_threshold_penalty_hash",
 )
 
 

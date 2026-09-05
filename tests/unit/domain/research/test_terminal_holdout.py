@@ -46,7 +46,7 @@ def test_terminal_holdout_validates_positive_candidate_against_local_baseline() 
     report = evaluate_terminal_holdout(
         TerminalHoldoutEvaluation(
             strategy="today",
-            research_identity="score_today_historical_candidate_v1",
+            research_identity="score_today_historical_candidate",
             parent_hash="a" * 64,
             candidate_hash="b" * 64,
             rows=_rows(),
@@ -64,7 +64,7 @@ def test_terminal_holdout_does_not_open_when_parent_is_rejected() -> None:
     report = evaluate_terminal_holdout(
         TerminalHoldoutEvaluation(
             strategy="today",
-            research_identity="score_today_historical_candidate_v1",
+            research_identity="score_today_historical_candidate",
             parent_hash="a" * 64,
             candidate_hash="b" * 64,
             rows=_rows(),
@@ -85,7 +85,7 @@ def test_terminal_holdout_requires_point_in_time_parity() -> None:
         evaluate_terminal_holdout(
             TerminalHoldoutEvaluation(
                 strategy="today",
-                research_identity="score_today_historical_candidate_v1",
+                research_identity="score_today_historical_candidate",
                 parent_hash="a" * 64,
                 candidate_hash="b" * 64,
                 rows=tuple(rows),
@@ -98,7 +98,7 @@ def test_terminal_holdout_reports_data_insufficient_when_a_preregistered_state_i
     report = evaluate_terminal_holdout(
         TerminalHoldoutEvaluation(
             strategy="today",
-            research_identity="score_today_historical_candidate_v1",
+            research_identity="score_today_historical_candidate",
             parent_hash="a" * 64,
             candidate_hash="b" * 64,
             rows=rows,
@@ -113,7 +113,7 @@ def test_terminal_holdout_rejects_a_second_terminal_open() -> None:
     report = evaluate_terminal_holdout(
         TerminalHoldoutEvaluation(
             strategy="today",
-            research_identity="score_today_historical_candidate_v1",
+            research_identity="score_today_historical_candidate",
             parent_hash="a" * 64,
             candidate_hash="b" * 64,
             rows=(),

@@ -89,10 +89,10 @@ def test_targeted_feature_build_preserves_full_market_cross_section() -> None:
 def test_feature_builder_partitions_cross_sections_and_excludes_missing_breadth() -> None:
     builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY)
     quotes = (
-        replace(_quote(code="600001"), speed=0.1, pct_change=1.0, data_version="v1"),
-        replace(_quote(code="600002"), speed=0.2, pct_change=-1.0, data_version="v1"),
-        replace(_quote(code="600003"), speed=0.1, pct_change=None, data_version="v2"),
-        replace(_quote(code="600004"), speed=0.2, pct_change=2.0, data_version="v2"),
+        replace(_quote(code="600001"), speed=0.1, pct_change=1.0, data_version="fixture-group-a"),
+        replace(_quote(code="600002"), speed=0.2, pct_change=-1.0, data_version="fixture-group-a"),
+        replace(_quote(code="600003"), speed=0.1, pct_change=None, data_version="fixture-group-b"),
+        replace(_quote(code="600004"), speed=0.2, pct_change=2.0, data_version="fixture-group-b"),
     )
 
     features = builder.build(quotes, {}, NOW)
@@ -138,7 +138,7 @@ def test_feature_builder_rejects_unadjusted_history_for_qfq_features() -> None:
 
 
 def test_strategy_factor_registry_is_complete_and_required() -> None:
-    path = Path(__file__).parents[2] / "config" / "v2" / "strategy.json"
+    path = Path(__file__).parents[2] / "config" / "strategy.json"
     settings = load_strategy_settings(path)
 
     assert settings.factor_registry["speed_percentile"].factor_id == "speed_percentile"
@@ -146,7 +146,7 @@ def test_strategy_factor_registry_is_complete_and_required() -> None:
 
 
 def test_strategy_loader_rejects_missing_factor_registration(tmp_path) -> None:
-    source = Path(__file__).parents[2] / "config" / "v2" / "strategy.json"
+    source = Path(__file__).parents[2] / "config" / "strategy.json"
     raw = json.loads(source.read_text(encoding="utf-8"))
     del raw["factor_registry"]["speed_percentile"]
     target = tmp_path / "strategy.json"

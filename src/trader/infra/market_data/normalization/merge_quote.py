@@ -263,7 +263,7 @@ def _apply_board_defaults(
     elif listing_age_sessions is None:
         restrictions.add("missing_listing_age_sessions")
     if values.get("rule_version") is None:
-        values["rule_version"] = "cn-board-rules-v1"
+        values["rule_version"] = "cn-board-rules"
         sources["rule_version"] = "local_rule"
     if values.get("rule_effective_date") is None:
         values["rule_effective_date"] = "2023-08-28"

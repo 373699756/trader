@@ -42,12 +42,12 @@ class FactorDiagnosticDimensionRecord:
 class FactorDiagnosticDimensions:
     extraction_hash: str
     records: tuple[FactorDiagnosticDimensionRecord, ...]
-    schema_version: str = "score_factor_dimensions_v1"
+    schema_version: str = "score_factor_dimensions"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
         _hash(self.extraction_hash, "factor dimension extraction")
-        if self.schema_version != "score_factor_dimensions_v1":
+        if self.schema_version != "score_factor_dimensions":
             raise ValueError("factor dimension schema is invalid")
         records = tuple(sorted(self.records, key=lambda item: (item.trade_date, item.code)))
         if len({(item.trade_date, item.code) for item in records}) != len(records):
@@ -259,8 +259,8 @@ class ScoreFactorDiagnosticReport:
     research_spec_hash: str
     factors: tuple[FactorAggregateDiagnostic, ...]
     oracle_recall: OracleRecallDiagnostic
-    schema_version: str = "score_factor_diagnostic_report_v1"
-    diagnostic_version: str = "score_native_factor_diagnostics_v1"
+    schema_version: str = "score_factor_diagnostic_report"
+    diagnostic_version: str = "score_native_factor_diagnostics"
     cost_rates: tuple[float, float, float] = _COST_RATES
     decay_lags: tuple[int, int, int] = _DECAY_LAGS
     production_authority: bool = False
@@ -276,8 +276,8 @@ class ScoreFactorDiagnosticReport:
         spec = get_score_research_spec(self.research_identity)
         if self.research_spec_hash != spec.content_hash:
             raise ValueError("factor report research spec hash is invalid")
-        if self.schema_version != "score_factor_diagnostic_report_v1" or self.diagnostic_version != (
-            "score_native_factor_diagnostics_v1"
+        if self.schema_version != "score_factor_diagnostic_report" or self.diagnostic_version != (
+            "score_native_factor_diagnostics"
         ):
             raise ValueError("factor report implementation identity is invalid")
         if self.cost_rates != _COST_RATES or self.decay_lags != _DECAY_LAGS or self.production_authority is not False:

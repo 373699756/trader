@@ -1,4 +1,4 @@
-"""Bounded non-blocking event publication for all V2 strategies."""
+"""Bounded non-blocking event publication for all strategies."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Literal
 
 from trader.application.decisions.decision_coverage import DecisionCoverage, scored_decision_coverage
-from trader.application.decisions.decision_events import V2DecisionCommitted
+from trader.application.decisions.decision_events import DecisionCommitted
 from trader.domain.recommendation.decision_identity import (
     DecisionItem,
     DecisionOverlay,
@@ -121,7 +121,7 @@ class UnifiedDecisionEventStream:
         self._sequence = 0
         self._slow_subscriber_drops = 0
 
-    def publish_committed(self, event: V2DecisionCommitted) -> UnifiedPublishedEvent:
+    def publish_committed(self, event: DecisionCommitted) -> UnifiedPublishedEvent:
         decision = event.projection
         replacement = None
         if decision is not None:

@@ -73,7 +73,7 @@ package:
 	$(PYTHON) -m build
 
 performance-check:
-	$(PYTHON) -m trader.entrypoints.performance --config config/v2/runtime.json
+	$(PYTHON) -m trader.entrypoints.performance --config config/runtime.json
 
 browser-performance-check:
 	$(PYTHON) scripts/diagnose_runtime.py --profile browser --browser-duration-seconds 8 --browser-minimum-updates 3 --output -

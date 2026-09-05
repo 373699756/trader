@@ -1,4 +1,4 @@
-"""Type and schema metadata shared by the V2 data-plane repository."""
+"""Type and schema metadata shared by the unified data-plane repository."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ Record: TypeAlias = (
 
 
 _MAX_PAYLOAD_BYTES: Final[int] = 8 * 1024 * 1024
-_DEFAULT_SCHEMA_VERSION: Final[str] = "v2_data_plane_v1"
+_DEFAULT_SCHEMA_VERSION: Final[str] = "data_plane"
 
 
 @dataclass(frozen=True)

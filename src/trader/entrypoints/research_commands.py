@@ -24,7 +24,7 @@ from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC
 from trader.domain.research.score_r6_stability import SCORE_R6_STABILITY_SPEC
 from trader.domain.research.tomorrow_historical_p2 import TOMORROW_HISTORICAL_P2_SPEC
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
-from trader.infra.persistence.research_trace import SQLiteV2ResearchTraceStore
+from trader.infra.persistence.research_trace import SQLiteResearchTraceStore
 from trader.infra.research.baostock_history_runtime import inspect_baostock_history, project_baostock_runtime_status
 from trader.infra.research.h1_point_in_time_archive import H1ArchiveConflictError, SQLiteH1PointInTimeArchive
 from trader.infra.research.history_archive import SQLiteHistoricalArchive
@@ -72,7 +72,7 @@ class _TomorrowResearchProgress(TomorrowResearchProgressPort):
         print(
             json.dumps(
                 {
-                    "schema_version": "tomorrow_research_progress_v1",
+                    "schema_version": "tomorrow_research_progress",
                     "stage": stage,
                     "status": status,
                     "elapsed_seconds": round(now - started_at, 3),
@@ -93,7 +93,7 @@ def run_research_command(
     if command == "train-tomorrow":
         return _run_tomorrow_research_orchestrator(runtime, history_root=options.history_root)
     if command == "research-status":
-        trace = SQLiteV2ResearchTraceStore(runtime.runtime_dir)
+        trace = SQLiteResearchTraceStore(runtime.runtime_dir)
         status = trace.inspect_status()
         first_observations = trace.inspect_first_observations(limit=120)
         dates = tuple(item.trade_date for item in first_observations)
@@ -135,7 +135,7 @@ def run_research_command(
         print(
             json.dumps(
                 {
-                    "schema_version": "v2_research_readiness_v9",
+                    "schema_version": "research_readiness",
                     "validation_mode": "historical_only",
                     "score_r6_executable": screening_ready,
                     "score_r6_screening_executable": screening_ready,
@@ -225,7 +225,7 @@ def _run_tomorrow_research_orchestrator(runtime: RuntimeSettings, *, history_roo
 
     result = run_tomorrow_v3_training(history_root or _history_data_root(), _train_data_root())
     payload = {
-        "schema_version": "tomorrow_v3_training_result_v1",
+        "schema_version": "tomorrow_v3_training_result",
         "status": result.status,
         "run_id": result.run_id,
         "manifest_hash": result.manifest_hash,

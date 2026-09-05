@@ -29,11 +29,11 @@ from trader.domain.research.tomorrow_daily_close import (
 )
 
 _CANDIDATE_IDS = (
-    "ridge_v1",
-    "lightgbm_v1",
-    "ridge_lightgbm_ensemble_v1",
-    "ensemble_stratum_residual_v1",
-    "ensemble_stratum_stock_residual_v1",
+    "ridge",
+    "lightgbm",
+    "ridge_lightgbm_ensemble",
+    "ensemble_stratum_residual",
+    "ensemble_stratum_stock_residual",
 )
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -85,7 +85,7 @@ class C3OOFPrediction:
     board: str
     predicted_net_excess_return: float
     actual_net_excess_returns: tuple[float, float, float]
-    schema_version: str = "tomorrow_c3_oof_prediction_v1"
+    schema_version: str = "tomorrow_c3_oof_prediction"
     production_authority: bool = False
 
     def __post_init__(self) -> None:
@@ -95,7 +95,7 @@ class C3OOFPrediction:
             math.isfinite(value) for value in self.actual_net_excess_returns
         ):
             raise ValueError("C3 OOF values must be finite")
-        if self.schema_version != "tomorrow_c3_oof_prediction_v1" or self.production_authority:
+        if self.schema_version != "tomorrow_c3_oof_prediction" or self.production_authority:
             raise ValueError("C3 OOF schema is invalid")
 
 
@@ -151,7 +151,7 @@ class C3DevelopmentResult:
     temporal_split_hash: str
     candidates: tuple[C3CandidateOOF, ...]
     selected_candidate_id: str
-    schema_version: str = "tomorrow_c3_development_result_v1"
+    schema_version: str = "tomorrow_c3_development_result"
     terminal_holdout_opened: bool = False
     production_authority: bool = False
     content_hash: str = dataclasses.field(init=False)
@@ -163,7 +163,7 @@ class C3DevelopmentResult:
             raise ValueError("C3 development requires the fixed five-candidate family")
         if self.selected_candidate_id not in _CANDIDATE_IDS:
             raise ValueError("C3 selected candidate is invalid")
-        if self.schema_version != "tomorrow_c3_development_result_v1":
+        if self.schema_version != "tomorrow_c3_development_result":
             raise ValueError("C3 development schema is invalid")
         if self.terminal_holdout_opened or self.production_authority:
             raise ValueError("C3 development cannot open holdout or production")
@@ -246,8 +246,8 @@ class C3CandidateTrainer:
             values = (ridge, lightgbm, base, stratum, stock)
             for candidate_id, candidate_values in zip(_CANDIDATE_IDS, values, strict=True):
                 predictions[candidate_id].extend(_oof_rows(candidate_id, fold, validation_rows, candidate_values))
-            base_oof.extend(_oof_rows("ridge_lightgbm_ensemble_v1", fold, validation_rows, base))
-            stratum_oof.extend(_oof_rows("ensemble_stratum_residual_v1", fold, validation_rows, stratum))
+            base_oof.extend(_oof_rows("ridge_lightgbm_ensemble", fold, validation_rows, base))
+            stratum_oof.extend(_oof_rows("ensemble_stratum_residual", fold, validation_rows, stratum))
         candidates = tuple(
             C3CandidateOOF(
                 candidate_id,
@@ -286,19 +286,15 @@ class C3CandidateTrainer:
         fitted = self._fit_port.fit(training_rows, feature_count=len(dataset.manifest.feature_names))
         selected = development.selected_candidate_id
         candidate_by_id = {item.candidate_id: item for item in development.candidates}
-        base_oof = candidate_by_id["ridge_lightgbm_ensemble_v1"].predictions
-        stratum_oof = candidate_by_id["ensemble_stratum_residual_v1"].predictions
+        base_oof = candidate_by_id["ridge_lightgbm_ensemble"].predictions
+        stratum_oof = candidate_by_id["ensemble_stratum_residual"].predictions
         strata = _fit_oof_board_corrections(base_oof) if "stratum" in selected else ()
         stocks = _fit_oof_stock_corrections(stratum_oof) if "stock" in selected else ()
         kind: BaseModelKind = (
-            "ridge"
-            if selected == "ridge_v1"
-            else "lightgbm"
-            if selected == "lightgbm_v1"
-            else "ridge_lightgbm_ensemble"
+            "ridge" if selected == "ridge" else "lightgbm" if selected == "lightgbm" else "ridge_lightgbm_ensemble"
         )
         return CandidateModelArtifact(
-            model_id="score_tomorrow_daily_close_c3_v1",
+            model_id="score_tomorrow_daily_close_c3",
             candidate_id=selected,
             base_model_kind=kind,
             manifest_hash=dataset.manifest.content_hash,

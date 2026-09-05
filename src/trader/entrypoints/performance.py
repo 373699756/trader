@@ -1,4 +1,4 @@
-"""Deterministic offline performance gate over active V2 production functions."""
+"""Deterministic offline performance gate over active production functions."""
 
 from __future__ import annotations
 
@@ -19,16 +19,16 @@ from typing import cast
 from trader.application.cache import canonical_json_bytes
 from trader.application.decisions.decision_core import UnifiedDecisionIndex
 from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
-from trader.application.decisions.decision_events import build_v2_decision_committed
+from trader.application.decisions.decision_events import build_decision_committed
 from trader.application.decisions.decision_queries import UnifiedDecisionQueries
 from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
 from trader.application.ports.scored import TomorrowNativeInput
 from trader.application.ports.tomorrow_model import TomorrowScoringProfile
 from trader.application.recommendation.policy import RecommendationPolicy
-from trader.application.recommendation.scored_v2_projection import (
-    ScoredV2LocalProjection,
-    build_scored_v2_hybrid,
-    build_scored_v2_local,
+from trader.application.recommendation.scored_projection import (
+    ScoredLocalProjection,
+    build_scored_hybrid,
+    build_scored_local,
 )
 from trader.application.recommendation.tomorrow_model_scoring import TomorrowProductionModelScoringService
 from trader.application.research.scoring_hot_path_baseline import (
@@ -128,7 +128,7 @@ def run(
         failures.append("process_peak_rss:absolute_budget")
     if growth_percent > budgets.memory.growth_percent:
         failures.append("process_rss_growth:absolute_budget")
-    local_projection = cast(ScoredV2LocalProjection, operations["quote_to_draft"]())
+    local_projection = cast(ScoredLocalProjection, operations["quote_to_draft"]())
     hot_path_baseline = _hot_path_baseline(
         candidates,
         local_projection,
@@ -142,7 +142,7 @@ def run(
     ).hexdigest()
     source_root = Path(__file__).resolve().parents[2]
     return {
-        "schema_version": "v2_production_performance_v2",
+        "schema_version": "production_performance",
         "status": "passed" if not failures else "failed",
         "identity": {
             "config_version": settings.config_version,
@@ -235,7 +235,7 @@ def _operations(
     tomorrow_input = TomorrowNativeInput(
         observed_at.date(),
         "afternoon",
-        "performance-data-v2",
+        "performance-data",
         config_version,
         observed_at,
         market_features,
@@ -247,10 +247,10 @@ def _operations(
     )
     candidate_input = replace(
         tomorrow_input,
-        data_version="performance-candidate-data-v2",
+        data_version="performance-candidate-data",
         market_features=candidates,
     )
-    local_projection = build_scored_v2_local(
+    local_projection = build_scored_local(
         tomorrow_input,
         policy,
         sequence=1,
@@ -261,7 +261,7 @@ def _operations(
     overlay_commit = _overlay_cas_operation(candidates, observed_at)
 
     def tomorrow_projection() -> object:
-        return build_scored_v2_local(
+        return build_scored_local(
             tomorrow_input,
             policy,
             sequence=1,
@@ -269,7 +269,7 @@ def _operations(
         )
 
     def candidate_projection() -> object:
-        return build_scored_v2_local(
+        return build_scored_local(
             candidate_input,
             policy,
             sequence=1,
@@ -288,7 +288,7 @@ def _operations(
         "canonical_snapshot": lambda: ColumnarQuoteBatch.from_snapshot(
             merged,
             config_version=config_version,
-            schema_version="performance-market-v2",
+            schema_version="performance-market",
         ),
         "targeted_overlay_commit": lambda: (
             overlay_canonical_snapshot(merged, overlay_snapshot),
@@ -315,7 +315,7 @@ def _operations(
         )[:6],
         "board_ready_to_draft": candidate_projection,
         "quote_to_draft": tomorrow_projection,
-        "deepseek_to_hybrid": lambda: build_scored_v2_hybrid(
+        "deepseek_to_hybrid": lambda: build_scored_hybrid(
             local_projection,
             policy,
             reviews,
@@ -333,9 +333,9 @@ def _operations(
         "three_strategy_board_scoring": "trader.domain.recommendation.scoring.scoring.score_board_strategy",
         "three_board_wall_clock": "trader.domain.recommendation.scoring.scoring.score_board_strategy",
         "global_selection": "trader.domain.recommendation.scoring.scoring.score_board_strategy",
-        "board_ready_to_draft": "trader.application.recommendation.scored_v2_projection.build_scored_v2_local",
-        "quote_to_draft": "trader.application.recommendation.scored_v2_projection.build_scored_v2_local",
-        "deepseek_to_hybrid": "trader.application.recommendation.scored_v2_projection.build_scored_v2_hybrid",
+        "board_ready_to_draft": "trader.application.recommendation.scored_projection.build_scored_local",
+        "quote_to_draft": "trader.application.recommendation.scored_projection.build_scored_local",
+        "deepseek_to_hybrid": "trader.application.recommendation.scored_projection.build_scored_hybrid",
         "sse_publish": "trader.application.decisions.decision_stream.UnifiedDecisionEventStream.publish_committed",
         "snapshot_api": "trader.web.api.routes._current",
         "etag_api": "trader.web.api.routes._current",
@@ -362,7 +362,7 @@ def _api_operations(
     )
     if not index.publish_scored(decision, overlay, expected_version=None).accepted:
         raise RuntimeError("performance decision setup failed")
-    stream.publish_committed(build_v2_decision_committed(decision))
+    stream.publish_committed(build_decision_committed(decision))
     queries = UnifiedDecisionQueries(index, drafts, _EmptyHistory(), _FixedClock(observed_at))
     app = create_app(
         services=UnifiedWebServices(
@@ -379,7 +379,7 @@ def _api_operations(
     client = app.test_client()
     path = "/api/decisions/tomorrow/current"
     etag = client.get(path).headers["ETag"]
-    event = build_v2_decision_committed(decision)
+    event = build_decision_committed(decision)
     return {
         "sse_publish": lambda: stream.publish_committed(event),
         "snapshot_api": lambda: client.get(path),
@@ -480,7 +480,7 @@ def _performance_decision(
 
 
 def _abstaining_reviews(
-    projection: ScoredV2LocalProjection,
+    projection: ScoredLocalProjection,
     observed_at: datetime,
 ) -> dict[str, DeepSeekReview]:
     return {
@@ -628,7 +628,7 @@ def _complete_quote(quote: MarketQuote, now: datetime) -> MarketQuote:
         has_price_limit=True,
         exchange_limit_pct=10.0 if quote.board is Board.MAIN else 20.0,
         strategy_hot_cap_pct=8.0 if quote.board is Board.MAIN else 16.0,
-        rule_version="performance-rule-v1",
+        rule_version="performance-rule",
         rule_effective_date=now.date(),
     )
 
@@ -653,7 +653,7 @@ def _measure(operation: Callable[[], object], warmup: int, rounds: int) -> dict[
 
 def _hot_path_baseline(  # noqa: PLR0913
     candidates: tuple[FeatureSnapshot, ...],
-    local_projection: ScoredV2LocalProjection,
+    local_projection: ScoredLocalProjection,
     measurements: dict[str, dict[str, object]],
     failures: list[str],
     allocation_growth_percent: float,

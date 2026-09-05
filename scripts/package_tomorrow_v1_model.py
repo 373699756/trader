@@ -26,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--runtime-config",
         type=Path,
-        default=PROJECT_ROOT / "config" / "v2" / "runtime.json",
+        default=PROJECT_ROOT / "config" / "runtime.json",
     )
     parser.add_argument("--output", type=Path, required=True)
     return parser

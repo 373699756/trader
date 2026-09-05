@@ -155,7 +155,7 @@ def test_delivery_skill_preserves_recommendation_funnel_incident_checkpoints() -
     for incident_term in (
         "connection_failed",
         "refresh:value_error",
-        "V2RefreshOutcome",
+        "RefreshOutcome",
         "Asia/Shanghai",
         "candidate_quotes_pending",
         "security_master_coverage_incomplete",

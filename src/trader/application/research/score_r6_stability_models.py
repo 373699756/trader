@@ -51,7 +51,7 @@ class ScoreR6StabilityReport:
             raise ValueError("daily stability report must disclose reused evidence")
         if self.promotion_authority:
             raise ValueError("daily stability diagnostic cannot promote production")
-        if self.schema_version != "score_r6_daily_stability_report_v1":
+        if self.schema_version != "score_r6_daily_stability_report":
             raise ValueError("daily stability report schema is invalid")
         object.__setattr__(self, "failure_reasons", tuple(sorted(set(self.failure_reasons))))
         object.__setattr__(self, "limitations", tuple(sorted(set(self.limitations))))

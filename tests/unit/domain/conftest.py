@@ -45,7 +45,7 @@ def feature_factory(observed_at):
             "source": "fixture",
             "source_time": observed_at,
             "received_time": observed_at,
-            "data_version": "fixture-v1",
+            "data_version": "fixture",
         }
         quote_values.update(quote_overrides)
         base_values = {

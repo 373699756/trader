@@ -57,7 +57,7 @@ class PackagedTomorrowProductionModel:
             return ()
         matrix = np.asarray(tuple(item.alpha_features for item in inputs), dtype=np.float64)
         if matrix.shape[1:] != (len(self.feature_ids),):
-            raise ValueError("Tomorrow V2 input feature width does not match the packaged artifact")
+            raise ValueError("Tomorrow model input feature width does not match the packaged artifact")
         means = np.asarray(self._artifact.transformer_means, dtype=np.float64)
         scales = np.asarray(self._artifact.transformer_scales, dtype=np.float64)
         standardized = (matrix - means) / scales

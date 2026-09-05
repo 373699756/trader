@@ -65,9 +65,9 @@ class ScoreR4ChallengerReplayer:
             extraction.research_identity,
             extraction.research_spec_hash,
             schema_version=(
-                "score_r4_challenger_replay_v2"
+                "score_r4_challenger_replay_candidate"
                 if extraction.research_identity == "score_p0_v2"
-                else "score_r4_challenger_replay_v1"
+                else "score_r4_challenger_replay_baseline"
             ),
         )
 

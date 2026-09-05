@@ -26,7 +26,7 @@ def test_historical_only_score_validation_is_the_authoritative_route() -> None:
         assert token in strategy
     for token in (
         "评分验证唯一使用历史 point-in-time 回放",
-        "v2_research_readiness_v9",
+        "research_readiness",
         "线上 T+1 outcome 只保存正式推荐历史和运行监控",
     ):
         assert token in design
@@ -64,10 +64,10 @@ def test_remaining_offline_research_is_historical_and_production_isolated() -> N
     design = _compact(ROOT / "docs/software-business-design.md")
 
     for token in (
-        "score_r6_historical_v1",
-        "score_r6_daily_trend_v1",
-        "score_r6_daily_stability_v1",
-        "score_tomorrow_historical_p2_v1",
+        "score_r6_historical_legacy",
+        "score_r6_daily_trend",
+        "score_r6_daily_stability",
+        "score_tomorrow_historical_p2",
         "tomorrow_v1_v2_h0_holdout_report_v2",
         "tomorrow_v2_historical_risk_probability_v1",
     ):
@@ -83,8 +83,8 @@ def test_p2_historical_rejection_and_manual_production_override_remain_explicit(
 
     for token in (
         "daily_reconstructible_ensemble_v1",
-        "single_candidate_pass_or_stop_v1",
-        "score_h0_ohlcv_cross_section_v1",
+        "single_candidate_pass_or_stop",
+        "score_h0_ohlcv_cross_section",
         "historical_rejected",
         "manual_user_override",
         "automatic_t1_outcome_settlement",

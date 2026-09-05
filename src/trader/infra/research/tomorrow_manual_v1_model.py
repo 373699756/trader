@@ -21,7 +21,7 @@ V1_FEATURE_IDS: tuple[str, str, str] = (
     "qfq_residual_momentum_40d_skip5",
     "qfq_residual_momentum_60d_skip5",
 )
-V1_FEATURE_CONTRACT = "h0_board_amount_residual_momentum_proxy_v1"
+V1_FEATURE_CONTRACT = "h0_board_amount_residual_momentum_proxy"
 _RIDGE = 1e-3
 
 

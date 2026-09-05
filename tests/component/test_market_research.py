@@ -55,7 +55,7 @@ from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityR
 
 
 def test_history_intraday_and_research_share_the_bounded_market_cache() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
         cadence_seconds=runtime.pipeline.cadence_seconds,
@@ -70,7 +70,7 @@ def test_history_intraday_and_research_share_the_bounded_market_cache() -> None:
         source="fixture",
         published_at=NOW - timedelta(hours=1),
         received_at=NOW - timedelta(minutes=59),
-        data_version="news-v1",
+        data_version="news-source",
     )
     research = StaticResearchClient((evidence,))
     service = _service(
@@ -127,7 +127,7 @@ def test_level_one_exclusion_prunes_every_non_frozen_per_stock_data_request(tmp_
                 "600001",
                 IssuerEligibilityReason.HISTORICAL_ST,
                 NOW,
-                "quote:600001:st-v1",
+                "quote:600001:st-source",
                 "eastmoney_market",
                 "a" * 64,
             ),
@@ -219,7 +219,7 @@ def test_newly_discovered_annual_loss_stops_quote_and_history_in_same_candidate_
 
 
 def test_source_lane_research_deadline_discards_late_memory_and_disk_cache(tmp_path) -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
         cadence_seconds=runtime.pipeline.cadence_seconds,
@@ -346,7 +346,7 @@ def test_research_cache_is_used_after_restart_before_source_request(tmp_path) ->
                             "source": "eastmoney_news",
                             "published_at": "2026-07-16T09:00:00+08:00",
                             "received_at": "2026-07-16T09:05:00+08:00",
-                            "data_version": "cached-v1",
+                            "data_version": "cached-initial",
                         }
                     ],
                     "source_errors": [],
@@ -394,7 +394,7 @@ def test_research_cache_expired_calls_research_client(tmp_path) -> None:
                             "source": "eastmoney_news",
                             "published_at": "2026-07-16T09:00:00+08:00",
                             "received_at": "2026-07-16T09:05:00+08:00",
-                            "data_version": "cached-v1",
+                            "data_version": "cached-initial",
                         }
                     ],
                     "source_errors": [],
@@ -425,7 +425,7 @@ def test_research_cache_expired_calls_research_client(tmp_path) -> None:
 
 def test_akshare_structured_research_is_point_in_time_and_builds_real_long_inputs(tmp_path) -> None:
     financial_payload = {
-        "version": "financial-v1",
+        "version": "financial-source",
         "result": {
             "count": 3,
             "data": [
@@ -497,12 +497,12 @@ def test_akshare_structured_research_is_point_in_time_and_builds_real_long_input
         "success": 1,
     }
     pledge_payload = {
-        "version": "pledge-v1",
+        "version": "pledge-source",
         "result": {"data": [{"NOTICE_DATE": "2026-07-01", "ACCUM_PLEDGE_TSR": 15.0}]},
         "success": True,
     }
     unlock_payload = {
-        "version": "unlock-v1",
+        "version": "unlock-source",
         "result": {
             "data": [
                 {"FREE_DATE": "2026-08-01", "TOTAL_RATIO": 0.06},
@@ -1008,10 +1008,10 @@ def test_research_loader_recover_from_data_plane_overrides_component_statuses(tm
                 observed_at=observed_at,
                 source_time=source_time,
                 source="akshare",
-                data_version="akshare-research:v1",
+                data_version="akshare-research",
                 payload={"status": status},
                 evidence_id=f"risk-component:{component}",
-                schema_version="v2_data_plane_v1",
+                schema_version="data_plane",
             )
         )
 

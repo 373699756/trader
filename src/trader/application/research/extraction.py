@@ -24,7 +24,7 @@ from trader.domain.research.historical import (
 )
 from trader.domain.research.specification import SCORE_P0_V1_SPEC, ScoreResearchSpec
 
-_PROOF_RULE_VERSION = "score_r2_active_set_v1"
+_PROOF_RULE_VERSION = "score_r2_active_set"
 
 
 @dataclass(frozen=True)
@@ -77,7 +77,7 @@ class ScoreR2HistoricalExtractor:
             research_identity=self._spec.research_identity,
             research_spec_hash=self._spec.content_hash,
             schema_version=(
-                "score_r2_historical_v2" if self._spec.research_identity == "score_p0_v2" else "score_r2_historical_v1"
+                "score_r2_historical" if self._spec.research_identity == "score_p0_v2" else "score_r2_historical_legacy"
             ),
         )
 

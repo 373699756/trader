@@ -7,7 +7,7 @@ from trader.infra.persistence.data_plane_sqlite import SCHEMA_VERSION, connectio
 
 
 def test_initialize_database_sets_schema_to_current_version(tmp_path: Path) -> None:
-    database = tmp_path / "v2-data.sqlite3"
+    database = tmp_path / "market-data.sqlite3"
 
     initialize_database(database)
 

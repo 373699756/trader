@@ -15,7 +15,7 @@ def test_p2_spec_binds_h0_field_eligibility_single_candidate_and_all_gates() -> 
     spec = TOMORROW_HISTORICAL_P2_SPEC
     statuses = {item.field_id: item.status for item in spec.field_eligibility}
 
-    assert spec.research_identity == "score_tomorrow_historical_p2_v1"
+    assert spec.research_identity == "score_tomorrow_historical_p2"
     assert spec.source_research_identity == SCORE_H0_V1_SPEC.research_identity
     assert spec.source_spec_hash == SCORE_H0_V1_SPEC.content_hash
     assert spec.training_window == (SCORE_H0_V1_SPEC.training_start, SCORE_H0_V1_SPEC.training_end)
@@ -25,7 +25,7 @@ def test_p2_spec_binds_h0_field_eligibility_single_candidate_and_all_gates() -> 
     assert spec.candidate.model_weights == (0.5, 0.5)
     assert spec.candidate.model_random_seed == 20260830
     assert spec.candidate.lightgbm_num_threads == 1
-    assert spec.selection_rule == "single_candidate_pass_or_stop_v1"
+    assert spec.selection_rule == "single_candidate_pass_or_stop"
     assert spec.portfolio_sort_order == (
         "net_utility_desc",
         "severe_loss_probability_asc",
@@ -33,7 +33,7 @@ def test_p2_spec_binds_h0_field_eligibility_single_candidate_and_all_gates() -> 
         "code_asc",
     )
     assert spec.allow_empty_portfolio is True
-    assert spec.comparator_id == "score_h0_ohlcv_cross_section_v1"
+    assert spec.comparator_id == "score_h0_ohlcv_cross_section"
     assert spec.cost_rates == (0.002, 0.005, 0.01)
     assert spec.minimum_archive_coverage == 0.95
     assert spec.minimum_validation_pairs == 300
@@ -48,7 +48,7 @@ def test_p2_spec_binds_h0_field_eligibility_single_candidate_and_all_gates() -> 
     assert statuses["historical_industry"] == "not_reconstructed"
     assert statuses["intraday_1450_tail"] == "not_reconstructed"
     assert statuses["deepseek_facts_point_in_time"] == "not_reconstructed"
-    assert "score_tomorrow_shadow_p1_v1" in spec.excluded_evidence_identities
+    assert "score_tomorrow_shadow_p1" in spec.excluded_evidence_identities
 
 
 def test_p2_spec_rejects_field_gate_candidate_or_forward_mutation() -> None:
@@ -65,6 +65,6 @@ def test_p2_spec_rejects_field_gate_candidate_or_forward_mutation() -> None:
     with pytest.raises(ValueError, match="historical gates"):
         replace(spec, portfolio_sort_order=("code_asc",))
     with pytest.raises(ValueError, match="cannot bind a forward identity"):
-        replace(spec, forward_research_identity="score_tomorrow_shadow_p2_v1")
+        replace(spec, forward_research_identity="score_tomorrow_shadow_p2")
     with pytest.raises(ValueError, match="cannot authorize production"):
         replace(spec, production_authority=True)

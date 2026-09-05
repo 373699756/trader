@@ -48,7 +48,7 @@ def test_r5_bootstrap_seed_is_namespaced_by_the_new_research_identity() -> None:
 
 
 def test_r5_bootstrap_refuses_short_non_circular_blocks() -> None:
-    result = paired_moving_block_bootstrap((0.1, 0.2), (0.0, 0.0), "combined_v1", 3)
+    result = paired_moving_block_bootstrap((0.1, 0.2), (0.0, 0.0), "combined", 3)
 
     assert result.valid is False
     assert result.p_value is None
@@ -63,7 +63,7 @@ def test_r5_holm_keeps_the_fixed_five_variant_family_after_first_failure() -> No
             "coverage_shrink": 0.020,
             "candidate_upper_bound": None,
             "heat_weak_structure": 0.001,
-            "combined_v1": 0.021,
+            "combined": 0.021,
         }
     )
     by_id = {item.variant_id: item for item in decisions}
@@ -72,6 +72,6 @@ def test_r5_holm_keeps_the_fixed_five_variant_family_after_first_failure() -> No
     assert by_id["heat_weak_structure"].rejected_null is True
     assert by_id["continuous_entry"].rejected_null is True
     assert by_id["coverage_shrink"].rejected_null is False
-    assert by_id["combined_v1"].rejected_null is False
+    assert by_id["combined"].rejected_null is False
     assert by_id["candidate_upper_bound"].rejected_null is False
     assert by_id["candidate_upper_bound"].p_value is None

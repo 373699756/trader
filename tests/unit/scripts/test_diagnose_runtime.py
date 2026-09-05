@@ -20,7 +20,7 @@ def _options(**overrides: object) -> DiagnosticOptions:
     defaults = DiagnosticOptions(
         profile="live",
         base_url="http://127.0.0.1:5000",
-        runtime_config=Path("config/v2/runtime.json"),
+        runtime_config=Path("config/runtime.json"),
         codes=("600519", "300750", "688981"),
         web_samples=3,
         web_interval_seconds=2.0,
@@ -104,12 +104,12 @@ def test_research_profile_runs_only_score_p0_readiness_probe() -> None:
         "-m",
         "trader.entrypoints.cli",
         "--config",
-        "config/v2/runtime.json",
+        "config/runtime.json",
         "research-status",
     )
 
 
-def test_research_status_projection_uses_v9_baostock_and_v3_blockers() -> None:
+def test_research_status_projection_uses_current_baostock_and_v3_blockers() -> None:
     report = build_report(
         "research",
         (
@@ -118,7 +118,7 @@ def test_research_status_projection_uses_v9_baostock_and_v3_blockers() -> None:
                 0,
                 4.0,
                 {
-                    "schema_version": "v2_research_readiness_v9",
+                    "schema_version": "research_readiness",
                     "baostock_history": {
                         "state": "completed_with_failures",
                         "sessions": 1,
@@ -184,7 +184,7 @@ def test_research_status_projection_rejects_unsupported_schema() -> None:
                 "score_p0_readiness",
                 0,
                 1.0,
-                {"schema_version": "v2_research_readiness_v2", "research_state": "historical_collecting"},
+                {"schema_version": "research_readiness_unsupported", "research_state": "historical_collecting"},
                 None,
             ),
         ),
@@ -201,7 +201,7 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
             0,
             12.5,
             {
-                "schema_version": "web_recommendation_health_v4",
+                "schema_version": "web_recommendation_health",
                 "status": "passed",
                 "summary": {"error_count": 0, "warning_count": 0},
                 "findings": [],
@@ -225,7 +225,7 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
             0,
             20.0,
             {
-                "schema_version": "history-source-sampling-v1",
+                "schema_version": "history-source-sampling",
                 "status": "degraded",
                 "summary": {"usable_observations": 2, "error_observations": 1},
                 "observations": [{"code": "600519", "error": "secret vendor payload"}],
@@ -237,7 +237,7 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
             0,
             4.0,
             {
-                "schema_version": "tencent-quote-sampling-v1",
+                "schema_version": "tencent-quote-sampling",
                 "latency": {"p95_ms": 4.0},
                 "source_changed": True,
                 "samples": [{"quotes": [{"code": "600519", "price": 999.0}]}],
@@ -276,7 +276,7 @@ def test_runner_continues_after_a_failed_check_and_preserves_check_order() -> No
             command.name,
             0,
             1.0,
-            {"schema_version": f"{command.name}-v1", "status": "passed"},
+            {"schema_version": f"{command.name}-diagnostic", "status": "passed"},
             None,
         )
 

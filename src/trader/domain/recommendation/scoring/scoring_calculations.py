@@ -371,7 +371,7 @@ def _positive_finite(value: float | None) -> bool:
 
 def _default_competition_group(item: FeatureSnapshot) -> tuple[str, str, str]:
     group = item.quote.industry.strip() or "unknown"
-    return group, "coarse_industry_fallback", "industry:v1"
+    return group, "coarse_industry_fallback", "industry:fallback"
 
 
 def _median(values: Sequence[float]) -> float:

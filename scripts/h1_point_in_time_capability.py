@@ -138,7 +138,7 @@ def main(argv: list[str] | None = None, *, session_factory: _SessionFactory = _d
         payload = _projection(capability, completion, index)
     except (OSError, RuntimeError, TypeError, ValueError, requests.RequestException) as exc:
         payload = {
-            "schema_version": "codex_a_h1_capability_execution_v2",
+            "schema_version": "h1_capability_execution",
             "status": "probe_failed",
             "error_code": _error_code(exc),
             "production_authority": False,
@@ -156,7 +156,7 @@ def _projection(
     index: CodexACompletionArtifactIndex,
 ) -> dict[str, object]:
     return {
-        "schema_version": "codex_a_h1_capability_execution_v2",
+        "schema_version": "h1_capability_execution",
         "status": completion.status,
         "capability_hash": capability.content_hash,
         "completion_hash": completion.content_hash,

@@ -1,4 +1,4 @@
-"""Formal V2 scored-decision persistence boundary."""
+"""Formal scored-decision persistence boundary."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from trader.domain.recommendation.models import Strategy
 
 
 class DecisionRecordError(RuntimeError):
-    """Base failure for immutable V2 decision records."""
+    """Base failure for immutable decision records."""
 
 
 class DecisionRecordConflictError(DecisionRecordError):
@@ -31,7 +31,7 @@ class DecisionRecordRecoverySummary:
 
 
 @dataclass(frozen=True)
-class V2DecisionCheckpoint:
+class DecisionCheckpoint:
     decision: ScoredDecision
     boundary_at: datetime
     version: str = field(init=False)
@@ -60,11 +60,11 @@ class DecisionRecordRepositoryPort(Protocol):
 
     def list_dates(self, strategy: Strategy, *, limit: int = 31) -> tuple[date, ...]: ...
 
-    def save_checkpoint(self, checkpoint: V2DecisionCheckpoint) -> None: ...
+    def save_checkpoint(self, checkpoint: DecisionCheckpoint) -> None: ...
 
-    def load_checkpoint(self, strategy: Strategy, trade_date: date) -> V2DecisionCheckpoint | None: ...
+    def load_checkpoint(self, strategy: Strategy, trade_date: date) -> DecisionCheckpoint | None: ...
 
-    def consume_checkpoint(self, checkpoint: V2DecisionCheckpoint, *, consumed_at: datetime) -> None: ...
+    def consume_checkpoint(self, checkpoint: DecisionCheckpoint, *, consumed_at: datetime) -> None: ...
 
     def recover(self) -> DecisionRecordRecoverySummary: ...
 
@@ -75,5 +75,5 @@ __all__ = [
     "DecisionRecordRecoverySummary",
     "DecisionRecordRepositoryPort",
     "DecisionRecordUnavailableError",
-    "V2DecisionCheckpoint",
+    "DecisionCheckpoint",
 ]

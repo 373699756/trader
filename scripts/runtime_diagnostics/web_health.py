@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sample live V2 Web APIs and detect recommendation-funnel state anomalies."""
+"""Sample live 统一 Web APIs and detect recommendation-funnel state anomalies."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ _MONITORED_FUNNEL_FIELDS = (
     "full_scored",
 )
 _MAX_RESPONSE_BYTES = 1_048_576
-_REPORT_SCHEMA_VERSION = "web_recommendation_health_v4"
+_REPORT_SCHEMA_VERSION = "web_recommendation_health"
 _EvidenceValue = str | int | float | bool | None
 
 

@@ -24,7 +24,7 @@ _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _SSE_URL = "https://query.sse.com.cn/sseQuery/commonQuery.do"
 _SZSE_URL = "https://www.szse.cn/api/report/ShowReport"
 _SOURCE = "exchange_security_master"
-_CONTRACT_VERSION = "exchange-security-master-v1"
+_CONTRACT_VERSION = "exchange-security-master"
 _SUPPORTED_BOARDS = frozenset({"main", "chinext", "star"})
 _SUPPORTED_EXCHANGES = frozenset({"SSE", "SZSE"})
 

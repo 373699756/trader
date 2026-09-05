@@ -74,10 +74,7 @@ class ScoreR6StabilitySpec:
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if (
-            self.research_identity != "score_r6_daily_stability_v1"
-            or _IDENTITY.fullmatch(self.research_identity) is None
-        ):
+        if self.research_identity != "score_r6_daily_stability" or _IDENTITY.fullmatch(self.research_identity) is None:
             raise ValueError("daily stability research identity is fixed")
         if self.preregistered_on != date(2026, 8, 21):
             raise ValueError("daily stability preregistration date is fixed")
@@ -117,7 +114,7 @@ class ScoreR6StabilitySpec:
             raise ValueError("daily stability evidence class is fixed")
         if (
             self.data_schema_version != SCORE_R6_DAILY_SPEC.data_schema_version
-            or self.report_schema_version != "score_r6_daily_stability_report_v1"
+            or self.report_schema_version != "score_r6_daily_stability_report"
         ):
             raise ValueError("daily stability schema versions are fixed")
         if self.promotion_authority:
@@ -163,7 +160,7 @@ def _canonical(value: object) -> object:
 _PARENT_CANDIDATE = ScoreR6DailyCandidate((2000, 3000, 3000, 1500, 500), 75, 8.0, -12.0)
 
 SCORE_R6_STABILITY_SPEC = ScoreR6StabilitySpec(
-    research_identity="score_r6_daily_stability_v1",
+    research_identity="score_r6_daily_stability",
     preregistered_on=date(2026, 8, 21),
     parent_research_identity=SCORE_R6_DAILY_SPEC.research_identity,
     parent_research_spec_hash=SCORE_R6_DAILY_SPEC.content_hash,
@@ -189,7 +186,7 @@ SCORE_R6_STABILITY_SPEC = ScoreR6StabilitySpec(
     objective_recall_coefficient=0.10,
     evidence_class="reused_observed_validation_window",
     data_schema_version=SCORE_R6_DAILY_SPEC.data_schema_version,
-    report_schema_version="score_r6_daily_stability_report_v1",
+    report_schema_version="score_r6_daily_stability_report",
 )
 
 __all__ = [

@@ -114,10 +114,10 @@ def test_failed_official_exchange_refresh_retains_previous_security_master() -> 
         source_time=observed_at,
         received_at=observed_at,
         effective_at=observed_at,
-        data_version="existing-v1",
+        data_version="existing-source",
         fields={"board": "main", "exchange": "SSE", "listing_date": "2020-01-02"},
         missing_reasons={},
-        payload_hash="existing-v1",
+        payload_hash="existing-source",
         status="success",
         error_code=None,
     )
@@ -156,7 +156,7 @@ def test_failed_official_exchange_refresh_retains_previous_security_master() -> 
     retained = gateway.reference_observations(("600001",))
     assert len(retained) == 1
     assert retained[0].source == "eastmoney_security_master"
-    assert retained[0].data_version == "existing-v1"
+    assert retained[0].data_version == "existing-source"
 
 
 def test_official_security_master_refresh_is_independent_from_quote_deadline() -> None:

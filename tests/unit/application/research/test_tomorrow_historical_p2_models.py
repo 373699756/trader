@@ -59,7 +59,7 @@ def test_p2_historical_report_can_only_authorize_later_forward_preregistration()
     assert report.status == "historical_passed"
     assert report.forward_preregistration_eligible is True
     assert report.production_authority is False
-    assert report.schema_version == "score_tomorrow_historical_p2_report_v1"
+    assert report.schema_version == "score_tomorrow_historical_p2_report"
     assert report.source_universe_hash == "e" * 64
     assert report.source_histories_hash == "f" * 64
     assert len(report.content_hash) == 64

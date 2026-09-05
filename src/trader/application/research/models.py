@@ -376,14 +376,14 @@ class ScoreR2HistoricalExtraction:
         default=SCORE_P0_V1_SPEC.content_hash,
         metadata={"exclude_from_v1_hash": True},
     )
-    schema_version: str = "score_r2_historical_v1"
+    schema_version: str = "score_r2_historical_legacy"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
         days = tuple(sorted(self.days, key=lambda item: item.summary.trade_date))
         coverage = tuple(self.coverage)
         expected_schema = (
-            "score_r2_historical_v2" if self.research_identity == "score_p0_v2" else "score_r2_historical_v1"
+            "score_r2_historical" if self.research_identity == "score_p0_v2" else "score_r2_historical_legacy"
         )
         if self.schema_version != expected_schema:
             raise ValueError("Score-R2 extraction schema is invalid")

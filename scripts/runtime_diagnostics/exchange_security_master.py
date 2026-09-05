@@ -40,7 +40,7 @@ def collect(client: ExchangeSecurityMasterClient, observed_at: datetime) -> dict
     total_rows = len(observations)
     health = client.health()
     return {
-        "schema_version": "exchange-security-master-probe-v1",
+        "schema_version": "exchange-security-master-probe",
         "status": "passed",
         "collected_at": observed_at.isoformat(),
         "summary": {
@@ -70,7 +70,7 @@ def main() -> int:
         report = collect(client, observed_at)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         report = {
-            "schema_version": "exchange-security-master-probe-v1",
+            "schema_version": "exchange-security-master-probe",
             "status": "failed",
             "collected_at": observed_at.isoformat(),
             "error": client.health().last_error or type(exc).__name__,

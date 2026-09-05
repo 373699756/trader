@@ -132,17 +132,17 @@ class MarketDataGateway:
         self._source_contract_versions = dict(
             options.get("source_contract_versions")
             or {
-                "eastmoney": "eastmoney-component-v1",
-                "sina": "sina-component-v1",
-                "tencent": "tencent-component-v1",
+                "eastmoney": "eastmoney-component",
+                "sina": "sina-component",
+                "tencent": "tencent-component",
             }
         )
         self._source_contract_versions.setdefault(
             "tencent_long",
-            self._source_contract_versions.get("tencent", "tencent-component-v1"),
+            self._source_contract_versions.get("tencent", "tencent-component"),
         )
         self._config_version = options.get("config_version", "component-default")
-        self._schema_version = options.get("schema_version", "market-v15")
+        self._schema_version = options.get("schema_version", "market_snapshot")
         self._monotonic = options.get("monotonic", time.monotonic)
         self._wall_clock = options.get("wall_clock", lambda: datetime.now(timezone.utc))
         self._latency = options.get("latency") or LatencyWaterfall(monotonic=self._monotonic)

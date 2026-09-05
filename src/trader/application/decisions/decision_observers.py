@@ -1,4 +1,4 @@
-"""Bounded asynchronous delivery of generic V2 decision events."""
+"""Bounded asynchronous delivery of generic decision events."""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-from trader.application.research.research_audit import V2DecisionObservation
+from trader.application.research.research_audit import DecisionObservation
 from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
 
-DecisionEventConsumer = Callable[[V2DecisionObservation], None]
+DecisionEventConsumer = Callable[[DecisionObservation], None]
 
 
 @dataclass(frozen=True)
@@ -30,7 +30,7 @@ class DecisionObserverStatus:
 
 
 class DecisionObserver(Protocol):
-    def offer(self, observation: V2DecisionObservation) -> bool: ...
+    def offer(self, observation: DecisionObservation) -> bool: ...
 
 
 class DecisionObserverRuntime(DecisionObserver, Protocol):
@@ -53,7 +53,7 @@ class AsyncDecisionObserver:
         consumers: tuple[DecisionEventConsumer, ...],
         *,
         capacity: int,
-        thread_name: str = "trader-v2-observer",
+        thread_name: str = "trader-observer",
     ) -> None:
         if capacity < 1:
             raise ValueError("decision observer capacity must be positive")
@@ -61,7 +61,7 @@ class AsyncDecisionObserver:
         self._capacity = capacity
         self._thread_name = thread_name
         self._condition = threading.Condition(threading.RLock())
-        self._queue: deque[V2DecisionObservation] = deque()
+        self._queue: deque[DecisionObservation] = deque()
         self._thread: threading.Thread | None = None
         self._accepting = False
         self._running = False
@@ -88,7 +88,7 @@ class AsyncDecisionObserver:
                 raise
             return True
 
-    def offer(self, observation: V2DecisionObservation) -> bool:
+    def offer(self, observation: DecisionObservation) -> bool:
         with self._condition:
             if not self._accepting or len(self._queue) >= self._capacity:
                 self._rejected_count += 1

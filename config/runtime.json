@@ -1,0 +1,487 @@
+{
+  "schema_version": 10,
+  "config_version": "runtime_tushare_120_daily_audit_2026_08_26",
+  "runtime_dir": ".runtime/trader",
+  "strategy_config": "strategy.json",
+  "long_watchlist": "long_watchlist.json",
+  "server": {
+    "host": "127.0.0.1",
+    "port": 5000,
+    "debug": false,
+    "use_reloader": false,
+    "allow_insecure_non_loopback": false
+  },
+  "pipeline": {
+    "event_queue_size": 512,
+    "priority_queue_size": 64,
+    "market_workers": 5,
+    "normalization_workers": 2,
+    "strategy_workers": 3,
+    "deepseek_workers": 4,
+    "shutdown_timeout_seconds": 30,
+    "cadence_seconds": {
+      "full_market": {
+        "warmup": 10,
+        "today_main": 10,
+        "today_late": 10,
+        "midday": 10,
+        "afternoon": 10,
+        "final_review": 10
+      },
+      "candidate_quotes": {
+        "warmup": 2,
+        "today_main": 1,
+        "today_late": 2,
+        "midday": 10,
+        "afternoon": 2,
+        "final_review": 1,
+        "final_window": 1
+      },
+      "topk_quotes": {
+        "warmup": 1,
+        "today_main": 1,
+        "today_late": 1,
+        "midday": 10,
+        "afternoon": 1,
+        "final_review": 1,
+        "final_window": 1,
+        "after_close": 10
+      },
+      "intraday_tail": {
+        "afternoon": 5,
+        "final_review": 3
+      },
+      "long_quotes": {
+        "warmup": 1,
+        "today_main": 1,
+        "today_late": 1,
+        "midday": 10,
+        "afternoon": 1,
+        "final_review": 1,
+        "final_window": 1
+      },
+      "score": {
+        "warmup": 10,
+        "today_main": 3,
+        "today_late": 5,
+        "afternoon": 5,
+        "final_review": 3,
+        "final_window": 1
+      },
+      "industry_heat": {
+        "warmup": 120,
+        "today_main": 60,
+        "today_late": 60,
+        "afternoon": 60,
+        "final_review": 60
+      },
+      "market_news": {
+        "warmup": 120,
+        "today_main": 60,
+        "today_late": 60,
+        "afternoon": 60,
+        "final_review": 60
+      },
+      "stock_risk": {
+        "warmup": 300,
+        "today_main": 180,
+        "today_late": 180,
+        "afternoon": 180,
+        "final_review": 120
+      }
+    },
+    "publish_heartbeat_seconds": 15
+  },
+  "market_data": {
+    "eastmoney_timeout_seconds": 8,
+    "sina_timeout_seconds": 8,
+    "full_market_hedge_delay_seconds": 1,
+    "candidate_timeout_seconds": 3,
+    "history_timeout_seconds": 12,
+    "research_timeout_seconds": 8,
+    "minimum_market_rows": 1000,
+    "candidate_pool_size": 120,
+    "single_flight": true,
+    "circuit_breaker_failures": 3,
+    "circuit_breaker_seconds": 30,
+    "source_contract_versions": {
+      "eastmoney": "eastmoney_quote_security_master",
+      "sina": "sina_quote_hedged",
+      "tencent": "tencent_quote",
+      "tushare": "tushare_sdk_120_point_daily_audit",
+      "akshare": "akshare_research_component_cache"
+    },
+    "tushare": {
+      "enabled": true,
+      "points": 120,
+      "timeout_seconds": 8,
+      "token_file": ".token_key"
+    },
+    "cache_policy": {
+      "schema_version": 6,
+      "policy_version": "market_cache",
+      "datasets": {
+        "full_market_quotes": {
+          "refresh_ttl_seconds": null,
+          "action_max_age_seconds": null,
+          "cadence_task": "full_market",
+          "action_max_age_multiplier": 3,
+          "negative_ttl_seconds": 10,
+          "capacity": 6000,
+          "group": "p1_observation",
+          "persisted": false
+        },
+        "candidate_quotes": {
+          "refresh_ttl_seconds": null,
+          "action_max_age_seconds": null,
+          "cadence_task": "candidate_quotes",
+          "action_max_age_multiplier": 3,
+          "negative_ttl_seconds": 3,
+          "capacity": 360,
+          "group": "p1_observation",
+          "persisted": false
+        },
+        "intraday_minutes": {
+          "refresh_ttl_seconds": 45,
+          "action_max_age_seconds": 90,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 45,
+          "capacity": 360,
+          "group": "p1_observation",
+          "persisted": false
+        },
+        "research_success": {
+          "refresh_ttl_seconds": 600,
+          "action_max_age_seconds": 1200,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 360,
+          "group": "p1_observation",
+          "persisted": true
+        },
+        "research_failure": {
+          "refresh_ttl_seconds": 60,
+          "action_max_age_seconds": 60,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 360,
+          "group": "p1_observation",
+          "persisted": false
+        },
+        "daily_history": {
+          "refresh_ttl_seconds": 21600,
+          "action_max_age_seconds": 86400,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 360,
+          "group": "p1_observation",
+          "persisted": false
+        },
+        "security_master_calendar": {
+          "refresh_ttl_seconds": 86400,
+          "action_max_age_seconds": 86400,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 300,
+          "capacity": 6000,
+          "group": "p1_observation",
+          "persisted": false
+        },
+        "daily_valuation_financials": {
+          "refresh_ttl_seconds": 86400,
+          "action_max_age_seconds": 86400,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 300,
+          "capacity": 360,
+          "group": "p1_observation",
+          "persisted": false
+        },
+        "history_summary": {
+          "refresh_ttl_seconds": 21600,
+          "action_max_age_seconds": 86400,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 360,
+          "group": "p3_features",
+          "persisted": false
+        },
+        "board_cross_section": {
+          "refresh_ttl_seconds": 86400,
+          "action_max_age_seconds": 86400,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 24,
+          "group": "p3_features",
+          "persisted": false
+        },
+        "candidate_preselection": {
+          "refresh_ttl_seconds": 86400,
+          "action_max_age_seconds": 86400,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 4,
+          "group": "p3_features",
+          "persisted": false
+        },
+        "competition_group_mapping": {
+          "refresh_ttl_seconds": 86400,
+          "action_max_age_seconds": 86400,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 2,
+          "group": "p3_features",
+          "persisted": false
+        },
+        "raw_deepseek_review": {
+          "refresh_ttl_seconds": 600,
+          "action_max_age_seconds": 600,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 2000,
+          "group": "p5_review",
+          "persisted": false
+        },
+        "strategy_deepseek_review": {
+          "refresh_ttl_seconds": 600,
+          "action_max_age_seconds": 600,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 2000,
+          "group": "p5_review",
+          "persisted": false
+        },
+        "canonical_market_snapshot": {
+          "refresh_ttl_seconds": 60,
+          "action_max_age_seconds": 180,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 10,
+          "capacity": 3,
+          "group": "p2_canonical",
+          "persisted": false
+        },
+        "canonical_candidate_snapshot": {
+          "refresh_ttl_seconds": 30,
+          "action_max_age_seconds": 90,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 10,
+          "capacity": 6,
+          "group": "p2_canonical",
+          "persisted": false
+        },
+        "current_quote_index": {
+          "refresh_ttl_seconds": 30,
+          "action_max_age_seconds": 90,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 10,
+          "capacity": 3,
+          "group": "p2_canonical",
+          "persisted": false
+        },
+        "candidate_feature_batch": {
+          "refresh_ttl_seconds": 86400,
+          "action_max_age_seconds": 86400,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 24,
+          "group": "p3_features",
+          "persisted": false
+        },
+        "hard_filter_batch": {
+          "refresh_ttl_seconds": 86400,
+          "action_max_age_seconds": 86400,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 24,
+          "group": "p3_features",
+          "persisted": false
+        },
+        "board_score_batch": {
+          "refresh_ttl_seconds": 86400,
+          "action_max_age_seconds": 86400,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 24,
+          "group": "p4_local_scoring",
+          "persisted": false
+        },
+        "global_local_draft": {
+          "refresh_ttl_seconds": 86400,
+          "action_max_age_seconds": 86400,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 4,
+          "group": "p4_local_scoring",
+          "persisted": false
+        },
+        "deepseek_seen_codes": {
+          "refresh_ttl_seconds": 600,
+          "action_max_age_seconds": 600,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 6000,
+          "group": "p5_review",
+          "persisted": false
+        },
+        "published_recommendation_view": {
+          "refresh_ttl_seconds": 86400,
+          "action_max_age_seconds": 86400,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 72,
+          "group": "p6_projection",
+          "persisted": false
+        },
+        "published_date_index": {
+          "refresh_ttl_seconds": 86400,
+          "action_max_age_seconds": 86400,
+          "cadence_task": null,
+          "action_max_age_multiplier": null,
+          "negative_ttl_seconds": 60,
+          "capacity": 3,
+          "group": "p6_projection",
+          "persisted": false
+        }
+      },
+      "groups": {
+        "p1_observation": 134217728,
+        "p2_canonical": 58720256,
+        "p3_features": 25165824,
+        "p4_local_scoring": 16777216,
+        "p5_review": 12582912,
+        "p6_projection": 12582912
+      },
+      "total_bytes": 260046848,
+      "runtime_reserve_bytes": 8388608,
+      "pool_total_bytes": 268435456,
+      "estimator_version": "canonical_json_utf8"
+    }
+  },
+  "performance_budgets": {
+    "schema_version": 2,
+    "workload": {
+      "market_rows": 5500,
+      "candidate_rows": 360
+    },
+    "rounds": {
+      "warmup": 1,
+      "measurement": 5
+    },
+    "latency_p95_ms": {
+      "market_normalization": 250,
+      "market_merge": 600,
+      "canonical_snapshot": 900,
+      "targeted_overlay_commit": 100,
+      "board_preselection": 250,
+      "board_local_scoring": 250,
+      "three_strategy_board_scoring": 750,
+      "three_board_wall_clock": 1000,
+      "global_selection": 100,
+      "board_ready_to_draft": 500,
+      "quote_to_draft": 5000,
+      "deepseek_to_hybrid": 1000,
+      "sse_publish": 100,
+      "browser_patch_to_paint": 100,
+      "snapshot_api": 200,
+      "etag_api": 50,
+      "dates_api": 100,
+      "status_api": 100
+    },
+    "data_age_p95_seconds": {
+      "topk_critical": 2,
+      "topk_other": 5,
+      "candidate_main": 5,
+      "candidate_other": 10,
+      "full_market_main": 10,
+      "full_market_other": 15
+    },
+    "memory": {
+      "cache_logical_bytes": 260046848,
+      "process_peak_rss_bytes": 402653184,
+      "growth_percent": 20
+    },
+    "relative_regression_percent": 5
+  },
+  "deepseek": {
+    "enabled": true,
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-v4-flash",
+    "challenger_model": "deepseek-v4-pro",
+    "challenger_limits": {
+      "today": 0,
+      "tomorrow": 2,
+      "d25": 0
+    },
+    "challenger_daily_limit": 2,
+    "timeout_seconds": 20,
+    "batch_size": 4,
+    "max_tokens": 1800,
+    "daily_hard_limit": 168,
+    "strategy_limits": {
+      "today": 8,
+      "tomorrow": 38,
+      "d25": 16,
+      "shared_preheat": 4,
+      "emergency": 5
+    },
+    "stage_targets": {
+      "shared_preheat": 2,
+      "today_main": 3,
+      "today_late": 2,
+      "tomorrow_morning": 6,
+      "tomorrow_afternoon": 10,
+      "tomorrow_final": 5,
+      "d25_morning": 2,
+      "d25_afternoon": 4,
+      "d25_final": 2,
+      "emergency": 0
+    },
+    "stage_limits": {
+      "shared_preheat": 4,
+      "today_main": 5,
+      "today_late": 3,
+      "tomorrow_morning": 10,
+      "tomorrow_afternoon": 18,
+      "tomorrow_final": 10,
+      "d25_morning": 4,
+      "d25_afternoon": 8,
+      "d25_final": 4,
+      "emergency": 5
+    },
+    "adaptive": {
+      "consecutive_failure_limit": 2,
+      "rolling_window": 5,
+      "minimum_application_ratio": 0.4,
+      "healthy_application_ratio": 0.6,
+      "healthy_batch_count": 3,
+      "cooldown_seconds": 900
+    }
+  },
+  "api": {
+    "default_top_n": 12,
+    "maximum_top_n": 12,
+    "sse_history_size": 256,
+    "sse_client_queue_size": 16,
+    "sse_max_clients": 32,
+    "web_snapshot_retention_seconds": 35
+  }
+}

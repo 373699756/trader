@@ -33,7 +33,7 @@ def test_tail_signals_use_exact_return_and_volume_formulas() -> None:
     assert signals.latest_at == bars[-1].source_time
     assert signals.received_at == bars[-1].received_time
     assert signals.source == "eastmoney_intraday"
-    assert signals.data_versions == ("intraday-v1",)
+    assert signals.data_versions == ("intraday",)
 
 
 @pytest.mark.parametrize(
@@ -80,7 +80,7 @@ def test_tail_signals_ignore_future_and_other_trade_date_bars() -> None:
             9_999.0,
             "eastmoney_intraday",
             observed_at,
-            "intraday-v1",
+            "intraday",
         ),
         MinuteBar(
             observed_at + timedelta(minutes=1),
@@ -88,7 +88,7 @@ def test_tail_signals_ignore_future_and_other_trade_date_bars() -> None:
             9_999.0,
             "eastmoney_intraday",
             observed_at,
-            "intraday-v1",
+            "intraday",
         ),
     )
 
@@ -197,7 +197,7 @@ def test_tail_signals_treat_lunch_break_as_adjacent_trading_minutes() -> None:
             volume=150.0 if index >= len(times) - 30 else 100.0,
             source="eastmoney_intraday",
             received_time=times[-1],
-            data_version="intraday-v1",
+            data_version="intraday",
         )
         for index, source_time in enumerate(times)
     )
@@ -222,7 +222,7 @@ def _minute_bars(*, latest_price: float = 10.2, tail_volume: float = 150.0) -> t
             volume=tail_volume if index >= 31 else 100.0,
             source="eastmoney_intraday",
             received_time=start + timedelta(minutes=60),
-            data_version="intraday-v1",
+            data_version="intraday",
         )
         for index in range(61)
     )

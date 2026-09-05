@@ -1,4 +1,4 @@
-"""Typed long-watchlist group metadata for the V2 Long projection."""
+"""Typed long-watchlist group metadata for the Long projection."""
 
 from __future__ import annotations
 

@@ -34,8 +34,8 @@ _LOCAL_WEIGHTS = {
 
 def _board_policy(board: Board) -> BoardStrategyPolicy:
     return BoardStrategyPolicy(
-        policy_id=f"tomorrow-v2:{board.value}",
-        version="tomorrow-v2",
+        policy_id=f"tomorrow-policy:{board.value}",
+        version="tomorrow-policy",
         board=board,
         strategy=Strategy.TOMORROW,
         candidate_weights=_CANDIDATE_WEIGHTS,

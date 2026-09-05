@@ -173,7 +173,7 @@ class TerminalHoldoutReport:
     failure_reasons: tuple[str, ...]
     terminal_trade_dates: tuple[date, ...]
     production_authority: bool = False
-    schema_version: str = "historical_terminal_holdout_v1"
+    schema_version: str = "historical_terminal_holdout"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -497,7 +497,7 @@ def _cost_lowers(
         paired_moving_block_statistics(
             values[index],
             plan=PreregisteredBootstrapPlan(
-                "historical_terminal_holdout_v1",
+                "historical_terminal_holdout",
                 20260901,
                 f"{strategy}_{index}",
                 bootstrap_block_days,

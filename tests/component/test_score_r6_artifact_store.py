@@ -63,7 +63,7 @@ def test_historical_only_r6_report_is_idempotent_and_tamper_evident(tmp_path) ->
 
 
 def test_legacy_r6_v1_report_is_not_reinterpreted_as_historical_only(tmp_path) -> None:  # noqa: ANN001
-    legacy = tmp_path / "score_r6_historical_v1" / "historical-report.json"
+    legacy = tmp_path / "score_r6_historical_legacy" / "historical-report.json"
     legacy.parent.mkdir(parents=True)
     legacy.write_text('{"historical_gate_passed": true, "content_hash": "legacy"}', encoding="utf-8")
 

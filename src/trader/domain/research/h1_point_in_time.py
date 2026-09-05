@@ -22,7 +22,7 @@ from trader.domain.research.historical_screening import HistoricalPriceBar
 _IDENTITY = re.compile(r"^[a-z0-9_]{1,64}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 SHANGHAI = ZoneInfo("Asia/Shanghai")
-H1_RESEARCH_IDENTITY = "score_h1_point_in_time_v1"
+H1_RESEARCH_IDENTITY = "score_h1_point_in_time"
 H1_REGISTERED_ON = date(2026, 9, 1)
 H1_SOURCE_CUTOFF = date(2026, 8, 31)
 H1_MAX_HISTORY_SESSIONS = 1600
@@ -187,7 +187,7 @@ class H1CapabilityStrategyStatus:
 class H1CapabilityAuditReport:
     probes: tuple[H1CapabilityProbe, ...]
     strategies: tuple[H1CapabilityStrategyStatus, ...]
-    schema_version: str = "score_h1_source_capability_audit_v2"
+    schema_version: str = "score_h1_source_capability_audit"
     production_authority: bool = False
     probe_failures: tuple[str, ...] = ()
     content_hash: str = dataclasses.field(init=False)
@@ -202,7 +202,7 @@ class H1CapabilityAuditReport:
         failures = tuple(sorted(set(self.probe_failures)))
         if any(_IDENTITY.fullmatch(value) is None for value in failures):
             raise ValueError("H1 capability probe failure identities are invalid")
-        if self.schema_version != "score_h1_source_capability_audit_v2" or self.production_authority:
+        if self.schema_version != "score_h1_source_capability_audit" or self.production_authority:
             raise ValueError("H1 capability report cannot authorize production")
         object.__setattr__(self, "probes", probes)
         object.__setattr__(self, "strategies", strategies)

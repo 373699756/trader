@@ -46,7 +46,7 @@ def _report():
     return evaluate_terminal_holdout(
         TerminalHoldoutEvaluation(
             strategy="today",
-            research_identity="score_today_historical_candidate_v1",
+            research_identity="score_today_historical_candidate",
             parent_hash="a" * 64,
             candidate_hash="b" * 64,
             rows=rows,
@@ -97,7 +97,7 @@ def test_cross_strategy_conclusion_artifact_store_round_trips_and_detects_confli
     tomorrow = evaluate_terminal_holdout(
         TerminalHoldoutEvaluation(
             strategy="tomorrow",
-            research_identity="score_tomorrow_historical_candidate_v1",
+            research_identity="score_tomorrow_historical_candidate",
             parent_hash="a" * 64,
             candidate_hash="b" * 64,
             rows=(),
@@ -108,7 +108,7 @@ def test_cross_strategy_conclusion_artifact_store_round_trips_and_detects_confli
     d25 = evaluate_terminal_holdout(
         TerminalHoldoutEvaluation(
             strategy="d25",
-            research_identity="score_d25_historical_candidate_v1",
+            research_identity="score_d25_historical_candidate",
             parent_hash="a" * 64,
             candidate_hash="b" * 64,
             rows=(),

@@ -14,8 +14,8 @@ from trader.domain.research.h1_point_in_time import canonical_hash
 BAOSTOCK_HOLDOUT_ISOLATION_CONTRACT = "baostock_holdout_isolation_contract"
 BAOSTOCK_DAILY_IDENTITY = "score_baostock_daily_core_v2"
 BAOSTOCK_SOURCE_ANCHOR = "15:00_daily_close"
-LEGACY_HOLDOUT_IDENTITY = "score_tomorrow_historical_candidate_v1"
-POINT_IN_TIME_HOLDOUT_IDENTITY = "tomorrow_v3_point_in_time_holdout_v1"
+LEGACY_HOLDOUT_IDENTITY = "score_tomorrow_historical_candidate"
+POINT_IN_TIME_HOLDOUT_IDENTITY = "tomorrow_v3_point_in_time_holdout"
 
 _POINT_IN_TIME_RESERVE_DAYS = 200
 _SHA256 = re.compile(r"[0-9a-f]{64}")

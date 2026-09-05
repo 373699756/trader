@@ -16,7 +16,7 @@ from trader.application.research.tomorrow_historical_validation import (
 
 class _Predictor:
     profile_id = "v2"
-    model_id = "test-v2"
+    model_id = "test-risk-model"
     model_hash = "a" * 64
     feature_ids = (
         "qfq_return_1d",

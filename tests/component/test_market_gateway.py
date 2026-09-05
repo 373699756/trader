@@ -106,20 +106,20 @@ def test_gateway_columnar_projection_failure_preserves_scalar_market_and_marks_d
 
 
 def test_full_market_commit_preserves_candidate_overlay_published_during_merge(monkeypatch) -> None:
-    seed = replace(_quote(), price=12.0, data_version="seed-v1")
+    seed = replace(_quote(), price=12.0, data_version="seed")
     full_refresh = replace(
         _quote(),
         price=12.1,
         source_time=NOW + timedelta(seconds=1),
         received_time=NOW + timedelta(seconds=1),
-        data_version="full-v2",
+        data_version="full-refresh",
     )
     candidate = replace(
         _quote(),
         price=12.2,
         source_time=NOW + timedelta(seconds=2),
         received_time=NOW + timedelta(seconds=2),
-        data_version="candidate-v2",
+        data_version="candidate-latest",
     )
     gateway = MarketDataGateway(
         SequenceMarketClient(((seed,), (full_refresh,))),
@@ -167,9 +167,9 @@ def test_full_market_commit_preserves_candidate_overlay_published_during_merge(m
     assert snapshot is not None
     assert snapshot.quotes[0].price == 12.2
     assert snapshot.quotes[0].source == "tencent"
-    assert snapshot.source_versions["eastmoney"] == "full-v2"
+    assert snapshot.source_versions["eastmoney"] == "full-refresh"
     assert "sina" not in snapshot.source_versions
-    assert snapshot.source_versions["tencent"] == "candidate-v2"
+    assert snapshot.source_versions["tencent"] == "candidate-latest"
 
 
 def test_gateway_marks_circuit_open_vendor_as_skipped_in_route_health() -> None:
@@ -348,9 +348,9 @@ def test_feature_service_rejects_targeted_quote_older_than_full_market_snapshot(
         price=12.5,
         source_time=NOW + timedelta(seconds=2),
         received_time=NOW + timedelta(seconds=2),
-        data_version="market-v2",
+        data_version="market-latest",
     )
-    older = replace(_quote(), price=11.5, data_version="target-v1")
+    older = replace(_quote(), price=11.5, data_version="target")
     middle = replace(
         _quote(),
         price=12.0,
@@ -372,7 +372,7 @@ def test_feature_service_rejects_targeted_quote_older_than_full_market_snapshot(
     refreshed = service.refresh_candidate_quotes(("600001",), NOW + timedelta(seconds=3))
 
     assert refreshed[0].quote.price == 12.5
-    assert refreshed[0].quote.data_version == "market-v2"
+    assert refreshed[0].quote.data_version == "market-latest"
     assert service.health()["quote_out_of_order_count"] == 1
 
 
@@ -393,7 +393,7 @@ def test_feature_service_does_not_commit_full_market_result_after_deadline() -> 
 
 
 def test_gateway_full_market_cache_avoids_duplicate_physical_requests_and_reports_hits() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
         cadence_seconds=runtime.pipeline.cadence_seconds,
@@ -426,7 +426,7 @@ def test_gateway_full_market_cache_avoids_duplicate_physical_requests_and_report
 
 
 def test_gateway_negative_refresh_keeps_failure_degradation_with_last_valid_value() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
         cadence_seconds=runtime.pipeline.cadence_seconds,
@@ -494,7 +494,7 @@ def test_gateway_keeps_last_valid_snapshot_when_both_free_full_market_sources_fa
 
 
 def test_gateway_background_refresh_failure_uses_negative_cache_to_suppress_retries() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
     monotonic = MutableMonotonic()
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
@@ -558,9 +558,9 @@ def test_gateway_background_refresh_failure_uses_negative_cache_to_suppress_retr
 
 
 def test_targeted_quote_overlay_updates_canonical_value_and_field_attribution() -> None:
-    eastmoney = replace(_quote(), source="eastmoney", price=12.0, speed=None, data_version="z-east-v1")
-    sina = replace(_quote(), source="sina", price=12.01, speed=0.7, data_version="sina-v1")
-    tencent = replace(_quote(), source="tencent", price=12.02, speed=None, data_version="a-tencent-v1")
+    eastmoney = replace(_quote(), source="eastmoney", price=12.0, speed=None, data_version="z-east")
+    sina = replace(_quote(), source="sina", price=12.01, speed=0.7, data_version="sina")
+    tencent = replace(_quote(), source="tencent", price=12.02, speed=None, data_version="a-tencent")
     gateway = MarketDataGateway(
         StaticMarketClient((eastmoney,)),
         StaticMarketClient((sina,)),
@@ -580,4 +580,4 @@ def test_targeted_quote_overlay_updates_canonical_value_and_field_attribution() 
     assert snapshot.quotes[0].speed is None
     assert snapshot.field_sources["600001"]["price"] == "tencent"
     assert "speed" not in snapshot.field_sources["600001"]
-    assert snapshot.source_versions["tencent"] == "a-tencent-v1"
+    assert snapshot.source_versions["tencent"] == "a-tencent"

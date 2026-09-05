@@ -64,7 +64,7 @@ def test_each_strategy_preregisters_its_fixed_anchor_label_horizons_and_metrics(
     assert today.label.cost_bps == (20, 50, 100)
     assert today.label.gate_cost_bps == (20, 50)
     assert today.label.stress_cost_bps == 100
-    assert today.label.benchmark_version == "point_in_time_local_only_equal_weight_v1"
+    assert today.label.benchmark_version == "point_in_time_local_only_equal_weight"
     assert today.label.cash_days_in_denominator is True
     assert today.label.deepseek_history_allowed is False
     assert today.label.parity_dimensions == (

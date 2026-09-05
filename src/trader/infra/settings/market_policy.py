@@ -1,4 +1,4 @@
-"""Strict V2 cache and performance policy parsing."""
+"""Strict cache and performance policy parsing."""
 
 from __future__ import annotations
 
@@ -41,11 +41,11 @@ def parse_cache_policy(raw: Mapping[str, object]) -> CachePolicy:
     if integer(raw, "schema_version", minimum=1) != 6:
         raise ConfigurationError("cache_policy.schema_version must be 6")
     policy_version = text(raw, "policy_version")
-    if policy_version != "market_cache_v2":
-        raise ConfigurationError("cache_policy.policy_version must be market_cache_v2")
+    if policy_version != "market_cache":
+        raise ConfigurationError("cache_policy.policy_version must be market_cache")
     estimator_version = text(raw, "estimator_version")
-    if estimator_version != "canonical_json_utf8_v1":
-        raise ConfigurationError("cache_policy.estimator_version must be canonical_json_utf8_v1")
+    if estimator_version != "canonical_json_utf8":
+        raise ConfigurationError("cache_policy.estimator_version must be canonical_json_utf8")
     datasets = _parse_cache_datasets(mapping(raw, "datasets"))
     _validate_fixed_cache_datasets(datasets)
     groups = _parse_cache_groups(mapping(raw, "groups"))
@@ -92,7 +92,7 @@ def _parse_cache_datasets(datasets_raw: Mapping[str, object]) -> dict[str, Cache
         "published_date_index",
     }
     if set(datasets_raw) != expected_datasets:
-        raise ConfigurationError("cache_policy.datasets must match the fixed V2 data-plane dataset set")
+        raise ConfigurationError("cache_policy.datasets must match the fixed unified data-plane dataset set")
     datasets: dict[str, CacheDatasetPolicy] = {}
     for name, item in datasets_raw.items():
         if not isinstance(item, dict):
@@ -204,7 +204,7 @@ def _validate_fixed_cache_datasets(datasets: Mapping[str, CacheDatasetPolicy]) -
             policy.persisted,
         )
         if actual != expected:
-            raise ConfigurationError(f"cache_policy.datasets.{name} must match the fixed V2 policy")
+            raise ConfigurationError(f"cache_policy.datasets.{name} must match the fixed policy")
 
 
 def _parse_cache_groups(groups_raw: Mapping[str, object]) -> dict[str, CacheGroupPolicy]:

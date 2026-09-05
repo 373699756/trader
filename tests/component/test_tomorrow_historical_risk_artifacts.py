@@ -21,7 +21,7 @@ def _outcome() -> HistoricalRiskValidationOutcome:
     model = HistoricalRiskModelArtifact(
         spec_hash=HISTORICAL_RISK_VALIDATION_SPEC.content_hash,
         source_spec_hash=SCORE_H0_V1_SPEC.content_hash,
-        parent_model_id="test-v2",
+        parent_model_id="test-risk-model",
         parent_model_hash="1" * 64,
         feature_ids=(
             "net_predicted_excess_20bp",
@@ -40,7 +40,7 @@ def _outcome() -> HistoricalRiskValidationOutcome:
     )
     report = HistoricalRiskValidationReport(
         spec_hash=HISTORICAL_RISK_VALIDATION_SPEC.content_hash,
-        model_id="test-v2",
+        model_id="test-risk-model",
         model_hash="1" * 64,
         evidence_hash="4" * 64,
         training_trade_dates=60,

@@ -189,12 +189,12 @@ class ScoringHotPathBaseline:
     absolute_budget_passed: bool
     relative_budget_passed: bool
     allocation_budget_passed: bool
-    schema_version: str = "scoring_hot_path_efficiency_baseline_v1"
+    schema_version: str = "scoring_hot_path_efficiency_baseline"
     status: HotPathStatus = field(init=False)
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.schema_version != "scoring_hot_path_efficiency_baseline_v1" or not self.slices or not self.equivalence:
+        if self.schema_version != "scoring_hot_path_efficiency_baseline" or not self.slices or not self.equivalence:
             raise ValueError("scoring hot path baseline contract is invalid")
         if not math.isfinite(self.relative_regression_percent) or not math.isfinite(self.allocation_growth_percent):
             raise ValueError("baseline gate values must be finite")

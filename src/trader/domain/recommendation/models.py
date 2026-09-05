@@ -1,4 +1,4 @@
-"""Immutable V2 recommendation policies, scores, and selections."""
+"""Immutable current recommendation policies, scores, and selections."""
 
 from __future__ import annotations
 

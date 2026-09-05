@@ -86,7 +86,7 @@ class CodexBTerminalArtifactIndex:
     status: str = "historical_data_insufficient"
     terminal_holdout_status: str = "terminal_holdout_not_opened"
     production_authority: bool = False
-    schema_version: str = "codex_b_terminal_index_v1"
+    schema_version: str = "historical_terminal_index"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -106,7 +106,7 @@ class CodexBTerminalArtifactIndex:
             or self.terminal_holdout_status != "terminal_holdout_not_opened"
         ):
             raise ValueError("Codex B terminal index status is invalid")
-        if self.production_authority or self.schema_version != "codex_b_terminal_index_v1":
+        if self.production_authority or self.schema_version != "historical_terminal_index":
             raise ValueError("Codex B terminal index cannot authorize production")
         object.__setattr__(self, "residual_terminal_hashes", residuals)
         object.__setattr__(self, "strategy_terminal_hashes", strategies)

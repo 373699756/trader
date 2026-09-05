@@ -534,9 +534,9 @@ def test_market_sources_retry_transient_disconnect_and_page_504() -> None:
 
 
 def test_targeted_partial_result_keeps_sina_full_market_quote_for_missing_code() -> None:
-    sina_first = replace(_quote("600001"), source="sina", data_version="sina-full-v1")
-    sina_second = replace(_quote("600002"), source="sina", data_version="sina-full-v1")
-    tencent_first = replace(_quote("600001"), source="tencent", data_version="tencent-targeted-v1")
+    sina_first = replace(_quote("600001"), source="sina", data_version="sina-full")
+    sina_second = replace(_quote("600002"), source="sina", data_version="sina-full")
+    tencent_first = replace(_quote("600001"), source="tencent", data_version="tencent-targeted")
     gateway = MarketDataGateway(
         FailingMarketClient(),
         StaticMarketClient((sina_first, sina_second)),
@@ -609,7 +609,7 @@ def test_eastmoney_history_completion_cannot_overwrite_newer_tushare_history() -
         source_time=NOW,
         received_at=NOW,
         effective_at=NOW,
-        data_version="tushare-history-v2",
+        data_version="tushare-history",
         fields={
             "trade_date": "2026-07-15",
             "open": 10.1,
@@ -622,7 +622,7 @@ def test_eastmoney_history_completion_cannot_overwrite_newer_tushare_history() -
             "price_adjustment": "qfq",
         },
         missing_reasons={},
-        payload_hash="tushare-history-v2",
+        payload_hash="tushare-history",
         status="success",
         error_code=None,
     )
@@ -826,9 +826,9 @@ def test_late_eastmoney_hedge_preserves_security_identity_without_overwriting_si
 
 
 def test_candidate_feature_service_keeps_tencent_priority_before_cross_vendor_version_text() -> None:
-    eastmoney = replace(_quote(), source="eastmoney", price=12.0, data_version="z-east-v1")
-    sina = replace(_quote(), source="sina", price=12.01, data_version="z-sina-v1")
-    tencent = replace(_quote(), source="tencent", price=12.02, data_version="a-tencent-v1")
+    eastmoney = replace(_quote(), source="eastmoney", price=12.0, data_version="z-east")
+    sina = replace(_quote(), source="sina", price=12.01, data_version="z-sina")
+    tencent = replace(_quote(), source="tencent", price=12.02, data_version="a-tencent")
     gateway = MarketDataGateway(
         StaticMarketClient((eastmoney,)),
         StaticMarketClient((sina,)),
@@ -850,4 +850,4 @@ def test_candidate_feature_service_keeps_tencent_priority_before_cross_vendor_ve
 
     assert refreshed[0].quote.source == "tencent"
     assert refreshed[0].quote.price == 12.02
-    assert refreshed[0].quote.data_version == "a-tencent-v1"
+    assert refreshed[0].quote.data_version == "a-tencent"

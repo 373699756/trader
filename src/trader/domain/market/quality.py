@@ -1,6 +1,6 @@
 """Field-level market quality domain models for deterministic merge.
 
-The v2 data plane carries field provenance and quality at per-field granularity.
+The current data plane carries field provenance and quality at per-field granularity.
 These structures intentionally stay immutable and hash-friendly so they can be used
 for audit and deterministic projection checks in later phases.
 """

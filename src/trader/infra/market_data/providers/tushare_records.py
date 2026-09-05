@@ -241,7 +241,7 @@ def _failed_observation(
         source_time=received_at,
         received_at=received_at,
         effective_at=received_at,
-        data_version="tushare-unavailable-v1",
+        data_version="tushare-unavailable",
         fields={},
         missing_reasons={dataset: error_code},
         payload_hash=payload_hash,

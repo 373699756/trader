@@ -1,4 +1,4 @@
-"""Small typed contracts shared by the V2 market data plane."""
+"""Small typed contracts shared by the market data plane."""
 
 from __future__ import annotations
 
@@ -8,12 +8,12 @@ from trader.domain.market.models import FeatureSnapshot
 
 LOGICAL_CACHE_LIMIT_BYTES = 248 * 1024 * 1024
 PROCESS_PEAK_RSS_LIMIT_BYTES = 384 * 1024 * 1024
-MARKET_CHANGE_SET_VERSION = "market_change_set_v2"
-FEATURE_ENVELOPE_VERSION = "feature_snapshot_envelope_v2"
+MARKET_CHANGE_SET_VERSION = "market_change_set"
+FEATURE_ENVELOPE_VERSION = "feature_snapshot_envelope"
 
 
 class DataPlaneContractError(ValueError):
-    """A V2 data-plane value failed validation."""
+    """A unified data-plane value failed validation."""
 
 
 @dataclass(frozen=True)

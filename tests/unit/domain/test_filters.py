@@ -226,7 +226,7 @@ def test_listing_session_boundary_is_enforced(feature_factory, observed_at, sess
         listing_age_sessions=sessions,
         has_price_limit=sessions >= 6,
         exchange_limit_pct=10.0 if sessions >= 6 else None,
-        rule_version="cn-board-rules-v1",
+        rule_version="cn-board-rules",
         rule_effective_date=date(2023, 8, 28),
     )
 

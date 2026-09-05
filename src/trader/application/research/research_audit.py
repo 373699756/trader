@@ -1,4 +1,4 @@
-"""Immutable research audit projected from an already-built V2 decision batch."""
+"""Immutable research audit projected from an already-built decision batch."""
 
 from __future__ import annotations
 
@@ -10,15 +10,15 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Literal
 
-from trader.application.decisions.decision_events import V2DecisionCommitted
-from trader.application.recommendation.scored_v2_projection import ScoredV2LocalProjection
+from trader.application.decisions.decision_events import DecisionCommitted
+from trader.application.recommendation.scored_projection import ScoredLocalProjection
 from trader.domain.recommendation.decision_identity import ScoredDecision
 from trader.domain.recommendation.models import ScoredDisposition
 from trader.domain.recommendation.risk_fusion.scored_fusion import ScoredDecisionEntry
 from trader.domain.recommendation.scoring.scoring import candidate_fields
 
-LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION = "v2_committed_research_audit_v1"
-RESEARCH_AUDIT_SCHEMA_VERSION = "v2_committed_research_audit_v2"
+LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION = "committed_research_audit_legacy"
+RESEARCH_AUDIT_SCHEMA_VERSION = "committed_research_audit"
 ShadowMode = Literal["control_copy", "reused_facts"]
 
 _STRUCTURED_RISK_FIELDS = (
@@ -36,9 +36,9 @@ _STRUCTURED_RISK_FIELDS = (
 
 
 @dataclass(frozen=True)
-class V2DecisionObservation:
-    event: V2DecisionCommitted
-    research_audit: V2CommittedResearchAudit | None
+class DecisionObservation:
+    event: DecisionCommitted
+    research_audit: CommittedResearchAudit | None
 
     def __post_init__(self) -> None:
         audit = self.research_audit
@@ -49,7 +49,7 @@ class V2DecisionObservation:
 
 
 @dataclass(frozen=True)
-class V2ResearchCandidateAudit:
+class ResearchCandidateAudit:
     code: str
     board: str
     industry: str
@@ -84,7 +84,7 @@ class V2ResearchCandidateAudit:
 
 
 @dataclass(frozen=True)
-class V2ResearchDecisionCandidateAudit:
+class ResearchDecisionCandidateAudit:
     code: str
     components: tuple[tuple[str, float | None], ...]
     component_coverage_ratio: float
@@ -127,9 +127,9 @@ class V2ResearchDecisionCandidateAudit:
 
 
 @dataclass(frozen=True)
-class V2ResearchDecisionSetAudit:
+class ResearchDecisionSetAudit:
     decision_version: str
-    candidates: tuple[V2ResearchDecisionCandidateAudit, ...]
+    candidates: tuple[ResearchDecisionCandidateAudit, ...]
 
     def __post_init__(self) -> None:
         if not self.decision_version:
@@ -141,7 +141,7 @@ class V2ResearchDecisionSetAudit:
 
 
 @dataclass(frozen=True)
-class V2ResearchRiskFactAudit:
+class ResearchRiskFactAudit:
     risk_code: str
     source: str
     observed_at: datetime
@@ -158,7 +158,7 @@ class V2ResearchRiskFactAudit:
 
 
 @dataclass(frozen=True)
-class V2ResearchPopulationAudit:
+class ResearchPopulationAudit:
     code: str
     board: str
     industry: str
@@ -172,7 +172,7 @@ class V2ResearchPopulationAudit:
     is_delisting_period_first_session: bool | None
     has_delisting_name: bool
     structured_risk_values: tuple[tuple[str, float | None], ...]
-    external_risk_facts: tuple[V2ResearchRiskFactAudit, ...]
+    external_risk_facts: tuple[ResearchRiskFactAudit, ...]
     filter_reasons: tuple[str, ...]
     disposition: str
     requested_for_refresh: bool
@@ -195,19 +195,19 @@ class V2ResearchPopulationAudit:
 
 
 @dataclass(frozen=True)
-class V2CommittedResearchAudit:
+class CommittedResearchAudit:
     decision_version: str
     decision_hash: str
     input_version: str
     hard_filter_aggregates: tuple[tuple[str, int], ...]
-    passed_candidates: tuple[V2ResearchCandidateAudit, ...]
-    production_local: V2ResearchDecisionSetAudit
-    research_shadow: V2ResearchDecisionSetAudit
+    passed_candidates: tuple[ResearchCandidateAudit, ...]
+    production_local: ResearchDecisionSetAudit
+    research_shadow: ResearchDecisionSetAudit
     shadow_mode: ShadowMode
     deepseek_request_delta: int = 0
     schema_version: str = RESEARCH_AUDIT_SCHEMA_VERSION
     input_observed_at: datetime | None = None
-    point_in_time_population: tuple[V2ResearchPopulationAudit, ...] = ()
+    point_in_time_population: tuple[ResearchPopulationAudit, ...] = ()
     point_in_time_population_hash: str = ""
     content_hash: str = field(init=False)
 
@@ -224,7 +224,7 @@ class V2CommittedResearchAudit:
         object.__setattr__(self, "content_hash", _sha256(payload))
 
 
-def _validate_audit_identity(audit: V2CommittedResearchAudit) -> None:
+def _validate_audit_identity(audit: CommittedResearchAudit) -> None:
     if not all((audit.decision_version, audit.decision_hash, audit.input_version)):
         raise ValueError("committed research audit identity must not be empty")
     if audit.schema_version not in {LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION, RESEARCH_AUDIT_SCHEMA_VERSION}:
@@ -233,7 +233,7 @@ def _validate_audit_identity(audit: V2CommittedResearchAudit) -> None:
         raise ValueError("research audit cannot add DeepSeek requests")
     if audit.schema_version == LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION:
         if audit.input_observed_at is not None or audit.point_in_time_population or audit.point_in_time_population_hash:
-            raise ValueError("legacy research audit cannot contain v2 population evidence")
+            raise ValueError("legacy research audit cannot contain current population evidence")
         return
     if audit.input_observed_at is None or audit.input_observed_at.tzinfo is None:
         raise ValueError("research audit input_observed_at must be timezone-aware")
@@ -253,8 +253,8 @@ def _normalized_aggregates(values: tuple[tuple[str, int], ...]) -> tuple[tuple[s
 
 
 def _normalized_candidates(
-    values: tuple[V2ResearchCandidateAudit, ...],
-) -> tuple[V2ResearchCandidateAudit, ...]:
+    values: tuple[ResearchCandidateAudit, ...],
+) -> tuple[ResearchCandidateAudit, ...]:
     candidates = tuple(sorted(values, key=lambda item: item.code))
     if len({item.code for item in candidates}) != len(candidates):
         raise ValueError("research passed candidates must be unique")
@@ -262,8 +262,8 @@ def _normalized_candidates(
 
 
 def _normalized_population(
-    values: tuple[V2ResearchPopulationAudit, ...],
-) -> tuple[V2ResearchPopulationAudit, ...]:
+    values: tuple[ResearchPopulationAudit, ...],
+) -> tuple[ResearchPopulationAudit, ...]:
     population = tuple(sorted(values, key=lambda item: item.code))
     if len({item.code for item in population}) != len(population):
         raise ValueError("research point-in-time population must be unique")
@@ -271,9 +271,9 @@ def _normalized_population(
 
 
 def _validate_audit_pairing(
-    audit: V2CommittedResearchAudit,
-    candidates: tuple[V2ResearchCandidateAudit, ...],
-    population: tuple[V2ResearchPopulationAudit, ...],
+    audit: CommittedResearchAudit,
+    candidates: tuple[ResearchCandidateAudit, ...],
+    population: tuple[ResearchPopulationAudit, ...],
 ) -> None:
     passed_codes = {item.code for item in candidates}
     decision_codes = {
@@ -297,9 +297,9 @@ def _validate_audit_pairing(
 
 
 def _validate_population_evidence(
-    audit: V2CommittedResearchAudit,
+    audit: CommittedResearchAudit,
     passed_codes: set[str],
-    population: tuple[V2ResearchPopulationAudit, ...],
+    population: tuple[ResearchPopulationAudit, ...],
 ) -> None:
     population_codes = {item.code for item in population}
     if not passed_codes.issubset(population_codes):
@@ -321,10 +321,10 @@ def _validate_population_evidence(
         raise ValueError("research population contains evidence after input_observed_at")
 
 
-def build_v2_committed_research_audit(
-    projection: ScoredV2LocalProjection,
+def build_committed_research_audit(
+    projection: ScoredLocalProjection,
     committed: ScoredDecision,
-) -> V2CommittedResearchAudit:
+) -> CommittedResearchAudit:
     if committed.strategy is not projection.local.strategy:
         raise ValueError("research audit strategy must match committed decision")
     if committed.stage == "local" and committed.version != projection.local.version:
@@ -335,7 +335,7 @@ def build_v2_committed_research_audit(
     production_local = _decision_set(projection.local, local_entries, reused_facts=False)
     shadow = _decision_set(committed, local_entries, reused_facts=committed.stage == "hybrid")
     population = _population_audits(projection)
-    return V2CommittedResearchAudit(
+    return CommittedResearchAudit(
         decision_version=committed.version,
         decision_hash=committed.content_hash,
         input_version=projection.native_input.input_version,
@@ -350,17 +350,17 @@ def build_v2_committed_research_audit(
     )
 
 
-def try_build_v2_committed_research_audit(
-    projection: ScoredV2LocalProjection,
+def try_build_committed_research_audit(
+    projection: ScoredLocalProjection,
     committed: ScoredDecision,
-) -> V2CommittedResearchAudit | None:
+) -> CommittedResearchAudit | None:
     try:
-        return build_v2_committed_research_audit(projection, committed)
+        return build_committed_research_audit(projection, committed)
     except (TypeError, ValueError):
         return None
 
 
-def _hard_filter_aggregates(projection: ScoredV2LocalProjection) -> tuple[tuple[str, int], ...]:
+def _hard_filter_aggregates(projection: ScoredLocalProjection) -> tuple[tuple[str, int], ...]:
     counts: Counter[str] = Counter()
     for evaluation in projection.selection.evaluations:
         if evaluation.disposition is ScoredDisposition.REJECT:
@@ -370,16 +370,16 @@ def _hard_filter_aggregates(projection: ScoredV2LocalProjection) -> tuple[tuple[
     return tuple(sorted(counts.items()))
 
 
-def _candidate_audits(projection: ScoredV2LocalProjection) -> tuple[V2ResearchCandidateAudit, ...]:
+def _candidate_audits(projection: ScoredLocalProjection) -> tuple[ResearchCandidateAudit, ...]:
     required = candidate_fields(projection.local.strategy)
-    result: list[V2ResearchCandidateAudit] = []
+    result: list[ResearchCandidateAudit] = []
     for evaluation in projection.selection.evaluations:
         if evaluation.disposition is ScoredDisposition.REJECT:
             continue
         feature = evaluation.features
         production_top120 = evaluation.candidate_rank > 0
         result.append(
-            V2ResearchCandidateAudit(
+            ResearchCandidateAudit(
                 code=evaluation.code,
                 board=feature.quote.board.value,
                 industry=feature.quote.industry.strip() or "unknown",
@@ -402,14 +402,14 @@ def _candidate_audits(projection: ScoredV2LocalProjection) -> tuple[V2ResearchCa
     return tuple(result)
 
 
-def _population_audits(projection: ScoredV2LocalProjection) -> tuple[V2ResearchPopulationAudit, ...]:
+def _population_audits(projection: ScoredLocalProjection) -> tuple[ResearchPopulationAudit, ...]:
     requested_codes = set(projection.native_input.requested_codes)
-    result: list[V2ResearchPopulationAudit] = []
+    result: list[ResearchPopulationAudit] = []
     for evaluation in projection.selection.evaluations:
         feature = evaluation.features
         quote = feature.quote
         result.append(
-            V2ResearchPopulationAudit(
+            ResearchPopulationAudit(
                 code=evaluation.code,
                 board=quote.board.value,
                 industry=quote.industry.strip() or "unknown",
@@ -424,7 +424,7 @@ def _population_audits(projection: ScoredV2LocalProjection) -> tuple[V2ResearchP
                 has_delisting_name="退" in quote.name,
                 structured_risk_values=tuple((name, feature.optional_value(name)) for name in _STRUCTURED_RISK_FIELDS),
                 external_risk_facts=tuple(
-                    V2ResearchRiskFactAudit(
+                    ResearchRiskFactAudit(
                         risk_code=fact.risk_code,
                         source=_string_value(fact.source),
                         observed_at=fact.observed_at,
@@ -451,8 +451,8 @@ def _decision_set(
     local_entries: dict[str, ScoredDecisionEntry],
     *,
     reused_facts: bool,
-) -> V2ResearchDecisionSetAudit:
-    candidates: list[V2ResearchDecisionCandidateAudit] = []
+) -> ResearchDecisionSetAudit:
+    candidates: list[ResearchDecisionCandidateAudit] = []
     for item in decision.items:
         entry = local_entries[item.code]
         local_codes = tuple(fact.risk_code for fact in entry.local_risk_facts)
@@ -460,7 +460,7 @@ def _decision_set(
         components = dict(item.score_components)
         fusion_applied = reused_facts and components.get("deepseek_score") is not None
         candidates.append(
-            V2ResearchDecisionCandidateAudit(
+            ResearchDecisionCandidateAudit(
                 code=item.code,
                 components=tuple(item.score_components),
                 component_coverage_ratio=round(entry.features.board_supported_weight, 6),
@@ -480,14 +480,14 @@ def _decision_set(
                 skip_reason=item.reason,
             )
         )
-    return V2ResearchDecisionSetAudit(decision.version, tuple(candidates))
+    return ResearchDecisionSetAudit(decision.version, tuple(candidates))
 
 
 def _audit_payload(
-    audit: V2CommittedResearchAudit,
+    audit: CommittedResearchAudit,
     aggregates: tuple[tuple[str, int], ...],
-    candidates: tuple[V2ResearchCandidateAudit, ...],
-    population: tuple[V2ResearchPopulationAudit, ...],
+    candidates: tuple[ResearchCandidateAudit, ...],
+    population: tuple[ResearchPopulationAudit, ...],
 ) -> bytes:
     payload = {
         "schema_version": audit.schema_version,
@@ -514,7 +514,7 @@ def _audit_payload(
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
 
 
-def _population_audit_payload(item: V2ResearchPopulationAudit) -> dict[str, object]:
+def _population_audit_payload(item: ResearchPopulationAudit) -> dict[str, object]:
     return {
         "code": item.code,
         "board": item.board,
@@ -545,7 +545,7 @@ def _population_audit_payload(item: V2ResearchPopulationAudit) -> dict[str, obje
     }
 
 
-def point_in_time_population_hash(population: tuple[V2ResearchPopulationAudit, ...]) -> str:
+def point_in_time_population_hash(population: tuple[ResearchPopulationAudit, ...]) -> str:
     payload = [_population_audit_payload(item) for item in population]
     return _sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
 
@@ -558,7 +558,7 @@ def _string_value(value: object) -> str:
     return result
 
 
-def _candidate_audit_payload(candidate: V2ResearchCandidateAudit) -> dict[str, object]:
+def _candidate_audit_payload(candidate: ResearchCandidateAudit) -> dict[str, object]:
     return {
         "code": candidate.code,
         "board": candidate.board,
@@ -577,14 +577,14 @@ def _candidate_audit_payload(candidate: V2ResearchCandidateAudit) -> dict[str, o
     }
 
 
-def _decision_set_audit_payload(decision_set: V2ResearchDecisionSetAudit) -> dict[str, object]:
+def _decision_set_audit_payload(decision_set: ResearchDecisionSetAudit) -> dict[str, object]:
     return {
         "decision_version": decision_set.decision_version,
         "candidates": [_decision_candidate_audit_payload(candidate) for candidate in decision_set.candidates],
     }
 
 
-def _decision_candidate_audit_payload(candidate: V2ResearchDecisionCandidateAudit) -> dict[str, object]:
+def _decision_candidate_audit_payload(candidate: ResearchDecisionCandidateAudit) -> dict[str, object]:
     return {
         "code": candidate.code,
         "components": candidate.components,
@@ -643,14 +643,14 @@ def _sha256(payload: bytes) -> str:
 __all__ = [
     "LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION",
     "RESEARCH_AUDIT_SCHEMA_VERSION",
-    "V2CommittedResearchAudit",
-    "V2DecisionObservation",
-    "V2ResearchCandidateAudit",
-    "V2ResearchDecisionCandidateAudit",
-    "V2ResearchDecisionSetAudit",
-    "V2ResearchPopulationAudit",
-    "V2ResearchRiskFactAudit",
-    "build_v2_committed_research_audit",
+    "CommittedResearchAudit",
+    "DecisionObservation",
+    "ResearchCandidateAudit",
+    "ResearchDecisionCandidateAudit",
+    "ResearchDecisionSetAudit",
+    "ResearchPopulationAudit",
+    "ResearchRiskFactAudit",
+    "build_committed_research_audit",
     "point_in_time_population_hash",
-    "try_build_v2_committed_research_audit",
+    "try_build_committed_research_audit",
 ]

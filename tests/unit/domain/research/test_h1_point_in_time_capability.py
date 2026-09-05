@@ -111,9 +111,11 @@ def test_capability_audit_preserves_bounded_source_probe_failures() -> None:
     )
 
     assert report.probe_failures == ("minute_source_probe_failed",)
-    assert report.schema_version == "score_h1_source_capability_audit_v2"
+    assert report.schema_version == "score_h1_source_capability_audit"
     assert {item.state for item in report.strategies} == {"historical_data_insufficient"}
     with pytest.raises(ValueError, match="failure identities"):
         build_h1_capability_audit((probe,), probe_failures=("invalid failure",))
     with pytest.raises(ValueError, match="cannot authorize production"):
-        H1CapabilityAuditReport(report.probes, report.strategies, schema_version="score_h1_source_capability_audit_v1")
+        H1CapabilityAuditReport(
+            report.probes, report.strategies, schema_version="score_h1_source_capability_audit_legacy"
+        )

@@ -547,7 +547,7 @@ def test_tushare_date_only_financial_records_become_effective_at_shanghai_day_en
 
 
 def test_tushare_negative_refresh_marks_preserved_reference_data_degraded() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
         cadence_seconds=runtime.pipeline.cadence_seconds,

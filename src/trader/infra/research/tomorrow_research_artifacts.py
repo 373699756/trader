@@ -400,7 +400,7 @@ def _report(
     readiness = production_readiness_audit(graph, manual_authorization_hash=None)
     publishable = readiness.blockers == ("manual_production_authorization_missing",)
     payload: dict[str, object] = {
-        "schema_version": "tomorrow_research_report_v1",
+        "schema_version": "tomorrow_research_report",
         "run_id": run_id,
         "status": "terminal" if next_stage is None else "in_progress",
         "graph_hash": graph.content_hash,

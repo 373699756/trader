@@ -25,7 +25,7 @@ from trader.infra.research.tomorrow_daily_close_artifacts import (
 def _artifact() -> CandidateModelArtifact:
     return CandidateModelArtifact(
         model_id="tomorrow_daily_close_candidate_v1",
-        candidate_id="ridge_lightgbm_ensemble_v1",
+        candidate_id="ridge_lightgbm_ensemble",
         base_model_kind="ridge_lightgbm_ensemble",
         manifest_hash="a" * 64,
         filter_spec_hash="a" * 64,

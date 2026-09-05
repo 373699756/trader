@@ -494,7 +494,7 @@ def test_candidate_source_lane_deadline_returns_baseline_and_discards_late_quote
 
 
 def test_source_lane_waits_for_hedged_physical_refresh_when_market_cache_is_due() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
     monotonic = MutableMonotonic()
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,

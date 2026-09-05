@@ -1,4 +1,4 @@
-"""Read-only H0 holdout comparison for the sealed production V1/V2 artifacts."""
+"""Read-only H0 holdout comparison for the sealed scoring-profile artifacts."""
 
 from __future__ import annotations
 

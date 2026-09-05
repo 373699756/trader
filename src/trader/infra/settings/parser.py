@@ -1,4 +1,4 @@
-"""Small typed primitives used by v2 JSON settings loaders."""
+"""Small typed primitives used by JSON settings loaders."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 class ConfigurationError(ValueError):
-    """Raised when a v2 configuration cannot satisfy its contract."""
+    """Raised when a configuration cannot satisfy its contract."""
 
 
 def read_json_object(path: Path) -> dict[str, object]:
@@ -26,8 +26,12 @@ def read_json_object(path: Path) -> dict[str, object]:
 
 
 def infer_project_root(config_dir: Path) -> Path:
-    if config_dir.name == "v2" and config_dir.parent.name == "config":
-        return config_dir.parent.parent.resolve()
+    # The canonical runtime configuration lives directly under ``config``;
+    # project-relative paths (for example ``.runtime/trader``) must therefore
+    # resolve from the repository root rather than from the configuration
+    # directory itself.
+    if config_dir.name == "config":
+        return config_dir.parent.resolve()
     return config_dir.resolve()
 
 

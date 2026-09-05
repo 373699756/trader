@@ -10,7 +10,7 @@ def test_batch_two_contract_freezes_five_point_in_time_feature_families() -> Non
     design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
 
     for token in (
-        "score_tomorrow_point_in_time_features_v1",
+        "score_tomorrow_point_in_time_features",
         "residual_reversal",
         "residual_momentum",
         "overnight",

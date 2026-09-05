@@ -32,7 +32,7 @@ class CodexACompletionArtifactIndex:
     terminal_holdout_opened: bool = False
     production_authority: bool = False
     automatic_model_update: bool = False
-    schema_version: str = "codex_a_h1_terminal_index_v1"
+    schema_version: str = "h1_terminal_index"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -54,7 +54,7 @@ class CodexACompletionArtifactIndex:
             raise ValueError("CodexA terminal index status is invalid")
         if self.terminal_holdout_opened or self.production_authority or self.automatic_model_update:
             raise ValueError("CodexA terminal index cannot open holdout or authorize runtime changes")
-        if self.schema_version != "codex_a_h1_terminal_index_v1":
+        if self.schema_version != "h1_terminal_index":
             raise ValueError("CodexA terminal index schema is invalid")
         object.__setattr__(self, "residual_terminal_hashes", residuals)
         object.__setattr__(self, "content_hash", canonical_hash(self))

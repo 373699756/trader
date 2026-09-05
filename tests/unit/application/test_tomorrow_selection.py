@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from tests.unit.v2_epoch_helpers import (
+from tests.unit.epoch_helpers import (
     candidate_field_values,
     coverage,
     daily_field_values,
@@ -107,16 +107,16 @@ def _data_snapshot() -> MarketDataPlaneSnapshot:
         sequence=1,
         observed_at=NOW,
         received_at=NOW,
-        config_version="runtime-v2",
-        calendar_version="calendar-v1",
+        config_version="runtime-current",
+        calendar_version="calendar-current",
         rows=(
             DailyFeatureRow(
                 code="600001",
                 values=values,
                 history_sessions=60,
                 data_as_of=date(2026, 7, 27),
-                security_master_version="master-v1",
-                history_version="history-v1",
+                security_master_version="master-initial",
+                history_version="history-current",
                 field_values=daily_field_values(values, source_time=NOW - timedelta(days=1), received_time=NOW),
             ),
         ),
@@ -129,7 +129,7 @@ def _data_snapshot() -> MarketDataPlaneSnapshot:
         sequence=1,
         observed_at=NOW,
         received_at=NOW,
-        config_version="runtime-v2",
+        config_version="runtime-current",
         daily_feature_pack_version=daily.version,
         quotes=(market_quote,),
         source_versions={"eastmoney": "market-1"},
@@ -158,7 +158,7 @@ def _data_snapshot() -> MarketDataPlaneSnapshot:
         sequence=1,
         observed_at=NOW,
         received_at=NOW,
-        config_version="runtime-v2",
+        config_version="runtime-current",
         market_epoch_version=market.version,
         quotes=(live_quote,),
         field_values={live_quote.code: candidate_field_values(live_quote)},
@@ -192,7 +192,7 @@ def _policy(recommendation_policy):
     boards = (Board.MAIN, Board.CHINEXT, Board.STAR)
     return replace(
         recommendation_policy,
-        board_policy_version="tomorrow-v2",
+        board_policy_version="tomorrow-policy",
         board_candidate_weights={Strategy.TOMORROW: {board: candidate for board in boards}},
         board_local_strategy_weights={Strategy.TOMORROW: {board: local for board in boards}},
         selection=replace(
@@ -289,7 +289,7 @@ def test_feature_assembly_applies_coherent_research_evidence_and_current_corpora
         sequence=1,
         observed_at=NOW,
         received_at=NOW,
-        config_version="runtime-v2",
+        config_version="runtime-current",
         observations={
             "600001": ResearchObservation(
                 corporate_risk_facts=(

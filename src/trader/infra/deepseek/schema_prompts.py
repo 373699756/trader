@@ -42,7 +42,7 @@ def build_messages(candidates: Sequence[FeatureSnapshot]) -> list[dict[str, str]
         {
             "role": "user",
             "content": (
-                "逐股输出deepseek_v4_review_facts_v1 facts：code、abstain、catalyst、price_reaction、"
+                "逐股输出deepseek_review_facts facts：code、abstain、catalyst、price_reaction、"
                 "fundamental、industry_policy、risks、conflicts和coverage。catalyst包含催化方向、"
                 "重要度、确认状态、周期和引用；price_reaction只输出价格反映桶；risks只输出监管、"
                 "减持、解禁、质押、诉讼和业绩风险事实。不得输出目标价、最终分、排名、动作或生产扣分。"

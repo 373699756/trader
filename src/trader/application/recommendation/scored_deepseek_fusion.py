@@ -20,7 +20,7 @@ def d25_decision_policy(policy: RecommendationPolicy) -> ScoredDecisionPolicy:
     return _decision_policy(policy, Strategy.D25, "d25")
 
 
-def v2_decision_policy(
+def scored_decision_policy(
     policy: RecommendationPolicy,
     strategy: Strategy,
     *,
@@ -32,7 +32,7 @@ def v2_decision_policy(
         return tomorrow_decision_policy(policy)
     if strategy is Strategy.D25:
         return d25_decision_policy(policy)
-    raise ValueError("unsupported V2 strategy for DeepSeek policy")
+    raise ValueError("unsupported scored strategy for DeepSeek policy")
 
 
 def today_decision_policy(policy: RecommendationPolicy, phase: str) -> ScoredDecisionPolicy:
@@ -100,5 +100,5 @@ __all__ = [
     "normalize_scored_review_times",
     "today_decision_policy",
     "tomorrow_decision_policy",
-    "v2_decision_policy",
+    "scored_decision_policy",
 ]

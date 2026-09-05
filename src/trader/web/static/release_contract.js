@@ -1,8 +1,8 @@
 (function () {
   "use strict";
 
-  const STATUS_SCHEMA = "v2_status_v13";
-  const DECISION_VIEW_SCHEMA = "v2_decision_view_v4";
+  const STATUS_SCHEMA = "runtime_status";
+  const DECISION_VIEW_SCHEMA = "decision_view";
   const ERROR_CODE = "release_contract_mismatch";
 
   function statusPayloadCompatibility(payload) {

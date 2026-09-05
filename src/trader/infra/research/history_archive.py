@@ -474,7 +474,7 @@ class SQLiteHistoricalArchive:
         self,
         spec: HistoricalScreeningSpec,
     ) -> tuple[TomorrowHistoricalRiskRow, ...]:
-        """Return a typed historical V2 risk dataset without mutating the H0/P2 row identity."""
+        """Return a typed historical risk dataset without mutating the H0/P2 row identity."""
 
         if not self._database.is_file():
             return ()

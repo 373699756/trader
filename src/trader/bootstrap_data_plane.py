@@ -1,4 +1,4 @@
-"""Startup recovery for the V2 data plane only."""
+"""Startup recovery for the current data plane only."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ def _initialize_reference_data_plane(
         if observed_at is not None:
             market_data.references.schedule_security_master_refresh(observed_at)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        _LOGGER.warning("V2 data plane initialization degraded: %s", type(exc).__name__)
+        _LOGGER.warning("data plane initialization degraded: %s", type(exc).__name__)
 
 
 def initialize_reference_data_plane(

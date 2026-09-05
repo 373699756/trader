@@ -150,7 +150,7 @@ class ScoreR6HistoricalReport:
     validation_mode: Literal["historical_only"]
     promotion_authority: Literal[False]
     limitations: tuple[str, ...]
-    schema_version: str = "score_r6_historical_report_v2"
+    schema_version: str = "score_r6_historical_report"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -168,7 +168,7 @@ def _validate_historical_report_identity(report: ScoreR6HistoricalReport) -> Non
     if (
         report.research_identity != SCORE_R6_HISTORICAL_SPEC.research_identity
         or report.research_spec_hash != SCORE_R6_HISTORICAL_SPEC.content_hash
-        or report.schema_version != "score_r6_historical_report_v2"
+        or report.schema_version != "score_r6_historical_report"
     ):
         raise ValueError("Score-R6 historical report identity is invalid")
     _hash(report.research_spec_hash)

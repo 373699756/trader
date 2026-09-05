@@ -36,7 +36,7 @@ class _Historical:
         return HistoricalFeatureRecord(
             code=code,
             trade_date=trade_date,
-            data_version="history:v1",
+            data_version="history-fixture",
             source="fixture",
             source_time=NOW,
             observed_at=NOW,
@@ -50,7 +50,7 @@ def _repository(tmp_path: Path, record: CommittedDecisionRecord | None = None):
 
 def _outcome(*, net_excess_return_pct: float = 1.2, settled_at=NOW) -> RecommendationOutcome:
     return RecommendationOutcome(
-        snapshot_id="snapshot:v1",
+        snapshot_id="snapshot-fixture",
         strategy=Strategy.TOMORROW,
         recommend_date="2026-07-20",
         stock_code="600001",

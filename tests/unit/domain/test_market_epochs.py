@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from tests.unit.v2_epoch_helpers import (
+from tests.unit.epoch_helpers import (
     candidate_field_values,
     coverage,
     daily_field_values,
@@ -49,8 +49,8 @@ def _daily_row(
         values=resolved_values,
         history_sessions=history_sessions,
         data_as_of=date(2026, 7, 27),
-        security_master_version="master-v1",
-        history_version="history-v1" if history_sessions >= 20 else "",
+        security_master_version="master-initial",
+        history_version="history-current" if history_sessions >= 20 else "",
         field_values=daily_field_values(
             resolved_values,
             source_time=OBSERVED_AT - timedelta(days=1),
@@ -91,24 +91,24 @@ def _daily_pack(sequence: int = 1) -> DailyFeaturePack:
         sequence=sequence,
         observed_at=OBSERVED_AT,
         received_at=RECEIVED_AT,
-        config_version="runtime-v2",
-        calendar_version="calendar-v1",
+        config_version="runtime-current",
+        calendar_version="calendar-current",
         rows=(_daily_row(),),
-        source_versions={"tencent_qfq": "history-v1"},
+        source_versions={"tencent_qfq": "history-current"},
         coverage=coverage(("600001",)),
     )
 
 
 def test_daily_feature_pack_is_deeply_immutable_and_hashes_canonical_content() -> None:
     values = {"ma20": 9.5, "atr20": 0.4}
-    sources = {"tencent_qfq": "history-v1", "reference": "reference-v1"}
+    sources = {"tencent_qfq": "history-current", "reference": "reference-current"}
     first = DailyFeaturePack(
         trade_date=date(2026, 7, 28),
         sequence=1,
         observed_at=OBSERVED_AT,
         received_at=RECEIVED_AT,
-        config_version="runtime-v2",
-        calendar_version="calendar-v1",
+        config_version="runtime-current",
+        calendar_version="calendar-current",
         rows=(
             _daily_row("600002", values={"ma20": 8.0}),
             _daily_row("600001", values=values),
@@ -121,8 +121,8 @@ def test_daily_feature_pack_is_deeply_immutable_and_hashes_canonical_content() -
         sequence=1,
         observed_at=OBSERVED_AT,
         received_at=RECEIVED_AT,
-        config_version="runtime-v2",
-        calendar_version="calendar-v1",
+        config_version="runtime-current",
+        calendar_version="calendar-current",
         rows=tuple(reversed(first.rows)),
         source_versions=dict(reversed(tuple(sources.items()))),
         coverage=coverage(("600001", "600002")),
@@ -133,7 +133,7 @@ def test_daily_feature_pack_is_deeply_immutable_and_hashes_canonical_content() -
 
     assert tuple(row.code for row in first.rows) == ("600001", "600002")
     assert first.rows[0].values["ma20"] == 9.5
-    assert first.source_versions["tencent_qfq"] == "history-v1"
+    assert first.source_versions["tencent_qfq"] == "history-current"
     assert first.content_hash == second.content_hash
     assert first.version == second.version
     with pytest.raises(TypeError):
@@ -146,7 +146,7 @@ def test_daily_feature_pack_is_deeply_immutable_and_hashes_canonical_content() -
         received_at=first.received_at,
         config_version=first.config_version,
         calendar_version=first.calendar_version,
-        rows=(replace(first.rows[0], history_version="history-v2"), first.rows[1]),
+        rows=(replace(first.rows[0], history_version="history-revision"), first.rows[1]),
         source_versions=first.source_versions,
         coverage=first.coverage,
     )
@@ -171,8 +171,8 @@ def test_epoch_identity_requires_shanghai_business_time(
         "sequence": 1,
         "observed_at": OBSERVED_AT,
         "received_at": RECEIVED_AT,
-        "config_version": "runtime-v2",
-        "calendar_version": "calendar-v1",
+        "config_version": "runtime-current",
+        "calendar_version": "calendar-current",
         "rows": (),
         "source_versions": {"history": "v1"},
         "coverage": coverage(()),
@@ -194,8 +194,8 @@ def test_daily_features_reject_non_finite_values_and_duplicate_codes() -> None:
             sequence=1,
             observed_at=OBSERVED_AT,
             received_at=RECEIVED_AT,
-            config_version="runtime-v2",
-            calendar_version="calendar-v1",
+            config_version="runtime-current",
+            calendar_version="calendar-current",
             rows=(row, row),
             source_versions={"history": "v1"},
             coverage=coverage(("600001",)),
@@ -210,10 +210,10 @@ def test_market_and_candidate_epochs_bind_parent_versions_and_reject_invalid_quo
         sequence=1,
         observed_at=OBSERVED_AT,
         received_at=RECEIVED_AT,
-        config_version="runtime-v2",
+        config_version="runtime-current",
         daily_feature_pack_version=pack.version,
         quotes=(quote,),
-        source_versions={"eastmoney": "market-v1"},
+        source_versions={"eastmoney": "market-initial"},
         field_values={quote.code: market_field_values(quote)},
         degraded_reasons=("sina_timeout",),
     )
@@ -224,7 +224,7 @@ def test_market_and_candidate_epochs_bind_parent_versions_and_reject_invalid_quo
         source="tencent",
         source_time=OBSERVED_AT,
         received_time=RECEIVED_AT,
-        data_version="candidate-v1",
+        data_version="candidate-initial",
         cross_source_deviation_pct=0.2,
         cross_source_verified=True,
     )
@@ -233,7 +233,7 @@ def test_market_and_candidate_epochs_bind_parent_versions_and_reject_invalid_quo
         sequence=1,
         observed_at=OBSERVED_AT,
         received_at=RECEIVED_AT,
-        config_version="runtime-v2",
+        config_version="runtime-current",
         market_epoch_version=market.version,
         quotes=(live_quote,),
         field_values={live_quote.code: candidate_field_values(live_quote)},
@@ -245,11 +245,11 @@ def test_market_and_candidate_epochs_bind_parent_versions_and_reject_invalid_quo
                     {"tail_return_30m": 72.0, "entry_quality": 68.0},
                     source_time=OBSERVED_AT,
                     received_time=RECEIVED_AT,
-                    data_version="candidate-v1",
+                    data_version="candidate-initial",
                 ),
             ),
         ),
-        source_versions={"tencent": "candidate-v1"},
+        source_versions={"tencent": "candidate-initial"},
         requested_codes=("600001",),
     )
 
@@ -269,10 +269,10 @@ def test_market_and_candidate_epochs_bind_parent_versions_and_reject_invalid_quo
             sequence=2,
             observed_at=OBSERVED_AT,
             received_at=RECEIVED_AT,
-            config_version="runtime-v2",
+            config_version="runtime-current",
             daily_feature_pack_version=pack.version,
             quotes=(invalid_quote,),
-            source_versions={"eastmoney": "market-v2"},
+            source_versions={"eastmoney": "market-latest"},
             field_values={invalid_quote.code: market_field_values(invalid_quote)},
         )
 
@@ -282,7 +282,7 @@ def test_market_and_candidate_epochs_bind_parent_versions_and_reject_invalid_quo
             sequence=2,
             observed_at=OBSERVED_AT,
             received_at=RECEIVED_AT,
-            config_version="runtime-v2",
+            config_version="runtime-current",
             market_epoch_version=market.version,
             quotes=candidate.quotes,
             field_values=candidate.field_values,
@@ -297,7 +297,7 @@ def test_market_and_candidate_epochs_bind_parent_versions_and_reject_invalid_quo
                     ),
                 ),
             ),
-            source_versions={"tencent": "candidate-v2"},
+            source_versions={"tencent": "candidate-latest"},
         )
 
     with pytest.raises(ValueError, match="unsupported realtime fields"):
@@ -327,11 +327,11 @@ def test_market_and_candidate_epochs_bind_parent_versions_and_reject_invalid_quo
             sequence=2,
             observed_at=OBSERVED_AT,
             received_at=RECEIVED_AT,
-            config_version="runtime-v2",
+            config_version="runtime-current",
             market_epoch_version=market.version,
             quotes=(invalid_candidate := replace(candidate.quotes[0], cross_source_deviation_pct=None),),
             field_values={invalid_candidate.code: candidate_field_values(invalid_candidate)},
-            source_versions={"tencent": "candidate-v2"},
+            source_versions={"tencent": "candidate-latest"},
         )
 
     with pytest.raises(ValueError, match="must be cross-source verified"):
@@ -340,11 +340,11 @@ def test_market_and_candidate_epochs_bind_parent_versions_and_reject_invalid_quo
             sequence=2,
             observed_at=OBSERVED_AT,
             received_at=RECEIVED_AT,
-            config_version="runtime-v2",
+            config_version="runtime-current",
             market_epoch_version=market.version,
             quotes=(unverified_candidate := replace(candidate.quotes[0], cross_source_verified=False),),
             field_values={unverified_candidate.code: candidate_field_values(unverified_candidate)},
-            source_versions={"tencent": "candidate-v2"},
+            source_versions={"tencent": "candidate-latest"},
         )
 
     with pytest.raises(ValueError, match="requested_codes"):
@@ -353,12 +353,12 @@ def test_market_and_candidate_epochs_bind_parent_versions_and_reject_invalid_quo
             sequence=2,
             observed_at=OBSERVED_AT,
             received_at=RECEIVED_AT,
-            config_version="runtime-v2",
+            config_version="runtime-current",
             market_epoch_version=market.version,
             quotes=candidate.quotes,
             field_values=candidate.field_values,
             requested_codes=("600002",),
-            source_versions={"tencent": "candidate-v2"},
+            source_versions={"tencent": "candidate-latest"},
         )
 
 
@@ -380,14 +380,14 @@ def test_research_epoch_is_immutable_and_rejects_future_evidence() -> None:
         sequence=1,
         observed_at=OBSERVED_AT,
         received_at=RECEIVED_AT,
-        config_version="runtime-v2",
+        config_version="runtime-current",
         observations=observations,
-        source_versions={"issuer": "research-v1"},
+        source_versions={"issuer": "research-initial"},
         field_values={
             "600001": research_field_values(
                 source_time=OBSERVED_AT - timedelta(hours=1),
                 received_time=RECEIVED_AT,
-                data_version="research-v1",
+                data_version="research-initial",
             )
         },
     )
@@ -403,7 +403,7 @@ def test_research_epoch_is_immutable_and_rejects_future_evidence() -> None:
             sequence=2,
             observed_at=OBSERVED_AT,
             received_at=RECEIVED_AT,
-            config_version="runtime-v2",
+            config_version="runtime-current",
             observations={
                 "600001": ResearchObservation(
                     announcements=(
@@ -416,12 +416,12 @@ def test_research_epoch_is_immutable_and_rejects_future_evidence() -> None:
                     announcements_available=True,
                 )
             },
-            source_versions={"issuer": "research-v2"},
+            source_versions={"issuer": "research-latest"},
             field_values={
                 "600001": research_field_values(
                     source_time=OBSERVED_AT,
                     received_time=RECEIVED_AT,
-                    data_version="research-v2",
+                    data_version="research-latest",
                 )
             },
         )
@@ -434,8 +434,8 @@ def test_epoch_rejects_missing_source_identity_and_empty_full_market_payloads() 
             sequence=1,
             observed_at=OBSERVED_AT,
             received_at=RECEIVED_AT,
-            config_version="runtime-v2",
-            calendar_version="calendar-v1",
+            config_version="runtime-current",
+            calendar_version="calendar-current",
             rows=(_daily_row(values={"ma20": 9.5}),),
             source_versions={},
             coverage=coverage(("600001",)),
@@ -448,10 +448,10 @@ def test_epoch_rejects_missing_source_identity_and_empty_full_market_payloads() 
             sequence=1,
             observed_at=OBSERVED_AT,
             received_at=RECEIVED_AT,
-            config_version="runtime-v2",
+            config_version="runtime-current",
             daily_feature_pack_version=pack.version,
             quotes=(),
-            source_versions={"eastmoney": "market-v1"},
+            source_versions={"eastmoney": "market-initial"},
             field_values={},
         )
 
@@ -468,10 +468,10 @@ def test_epoch_rejects_invalid_quote_and_research_event_time_ordering() -> None:
             sequence=1,
             observed_at=OBSERVED_AT,
             received_at=RECEIVED_AT,
-            config_version="runtime-v2",
+            config_version="runtime-current",
             daily_feature_pack_version=pack.version,
             quotes=(invalid_time_quote,),
-            source_versions={"eastmoney": "market-v1"},
+            source_versions={"eastmoney": "market-initial"},
             field_values={invalid_time_quote.code: market_field_values(invalid_time_quote)},
         )
 
@@ -481,7 +481,7 @@ def test_epoch_rejects_invalid_quote_and_research_event_time_ordering() -> None:
             sequence=1,
             observed_at=OBSERVED_AT,
             received_at=RECEIVED_AT,
-            config_version="runtime-v2",
+            config_version="runtime-current",
             observations={
                 "600001": ResearchObservation(
                     corporate_risk_facts=(
@@ -494,15 +494,15 @@ def test_epoch_rejects_invalid_quote_and_research_event_time_ordering() -> None:
                         ),
                     ),
                     corporate_risk_history_complete=True,
-                    corporate_risk_registry_version="risk-v1",
+                    corporate_risk_registry_version="risk-fixture",
                 )
             },
-            source_versions={"regulator": "research-v1"},
+            source_versions={"regulator": "research-initial"},
             field_values={
                 "600001": research_field_values(
                     source_time=OBSERVED_AT - timedelta(days=1),
                     received_time=RECEIVED_AT,
-                    data_version="research-v1",
+                    data_version="research-initial",
                 )
             },
         )
@@ -528,8 +528,8 @@ def test_daily_feature_pack_enforces_master_but_accepts_partial_candidate_histor
         sequence=1,
         observed_at=OBSERVED_AT,
         received_at=RECEIVED_AT,
-        config_version="runtime-v2",
-        calendar_version="calendar-v1",
+        config_version="runtime-current",
+        calendar_version="calendar-current",
         rows=(_daily_row("600001"), _daily_row("600002", history_sessions=19)),
         source_versions={"history": "v1"},
         coverage=partial,

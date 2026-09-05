@@ -11,10 +11,10 @@ def test_authoritative_docs_record_completed_gates_without_claiming_a_formal_rel
     design = DESIGN.read_text(encoding="utf-8")
     strategy = STRATEGY.read_text(encoding="utf-8")
 
-    assert "当前交付状态：V2-only 工程与发布门禁验收已闭合" in design
+    assert "当前交付状态：current-only 工程与发布门禁验收已闭合" in design
     assert "发布候选契约" in design
     assert "旧链已从活动树物理删除" in strategy
-    assert "V2-only 是唯一活动产品链" in design
+    assert "current-only 是唯一活动产品链" in design
     assert "正式 0.2.0 release 尚未声明" in strategy
     assert "当前版本仍为 Unreleased" in design
 
@@ -24,11 +24,11 @@ def test_authoritative_docs_do_not_retain_superseded_migration_chronology() -> N
     strategy = STRATEGY.read_text(encoding="utf-8")
 
     for obsolete in (
-        "tomorrow v2 影子运行与切换门禁交付边界",
-        "tomorrow v2 原生输入驱动流水线交付边界",
-        "tomorrow v2 切换证据持久化与离线复核交付边界",
-        "tomorrow v2 影子同批输入收敛交付边界",
-        "tomorrow v2 跨日启动与证据窗口隔离交付边界",
+        "tomorrow 旧影子运行与切换门禁交付边界",
+        "tomorrow 旧原生输入驱动流水线交付边界",
+        "tomorrow 旧切换证据持久化与离线复核交付边界",
+        "tomorrow 旧影子同批输入收敛交付边界",
+        "tomorrow 旧跨日启动与证据窗口隔离交付边界",
         "真实 v27",
         "真实 v28",
         "真实 v29",
@@ -38,14 +38,14 @@ def test_authoritative_docs_do_not_retain_superseded_migration_chronology() -> N
         "正式接管边界",
         "TodayV2Runtime",
         "TomorrowV2Runtime",
-        "截至 V2-E7",
-        "V2-E9 再把进程级组合根",
-        "V2-E8 交付后还要",
+        "截至旧迁移 E7",
+        "旧迁移 E9 再把进程级组合根",
+        "旧迁移 E8 交付后还要",
     ):
         assert obsolete not in design
 
     assert "迁移过程、事故复盘和逐批实现 记录只保存在 `CHANGELOG.md`" in _compact(design)
-    assert "历史迁移门禁比较 v1/v2" not in strategy
+    assert "历史迁移门禁比较旧档位" not in strategy
     for obsolete_identity in ("DecisionEpoch", "CurrentDecisionIndex", ".runtime/v17"):
         assert obsolete_identity not in design
         assert obsolete_identity not in strategy

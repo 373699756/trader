@@ -1,4 +1,4 @@
-"""Explicit serializers for unified V2 decision HTTP and SSE boundaries."""
+"""Explicit serializers for unified decision HTTP and SSE boundaries."""
 
 from __future__ import annotations
 
@@ -140,7 +140,7 @@ def serialize_decision_item(item: DecisionItemView) -> dict[str, object]:
 
 def serialize_event(event: UnifiedPublishedEvent) -> dict[str, object]:
     payload = event.payload
-    common: dict[str, object] = {"schema_version": "v2_event_v1"}
+    common: dict[str, object] = {"schema_version": "decision_event"}
     if isinstance(payload, DecisionEventPayload):
         common.update(
             strategy=payload.strategy.value,
@@ -170,7 +170,7 @@ def serialize_event(event: UnifiedPublishedEvent) -> dict[str, object]:
 
 def serialize_error(code: str, message: str) -> dict[str, object]:
     return {
-        "schema_version": "v2_error_v1",
+        "schema_version": "api_error",
         "error": {"code": code, "message": message},
     }
 

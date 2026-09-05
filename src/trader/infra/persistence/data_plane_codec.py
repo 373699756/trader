@@ -1,4 +1,4 @@
-"""Canonical row codec and integrity checks for V2 data-plane persistence."""
+"""Canonical row codec and integrity checks for unified data-plane persistence."""
 
 from __future__ import annotations
 

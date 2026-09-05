@@ -1,4 +1,4 @@
-"""V2 configuration, performance, and explicit research command entrypoint."""
+"""current configuration, performance, and explicit research command entrypoint."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         default=os.environ.get("TRADER_CONFIG", ""),
-        help="Absolute path to config/v2/runtime.json.",
+        help="Absolute path to config/runtime.json.",
     )
     parser.add_argument(
         "--profile",
@@ -142,7 +142,7 @@ def _run_baostock_history(runtime_dir: Path, sessions: int) -> int:
         print(
             json.dumps(
                 {
-                    "schema_version": "baostock_runtime_status_v1",
+                    "schema_version": "baostock_runtime_status",
                     "state": "invalid_request",
                     "error": str(exc),
                 },
@@ -247,7 +247,7 @@ def _run_eligibility_list(runtime: RuntimeSettings, *, as_of: str | None) -> int
     print(
         json.dumps(
             {
-                "schema_version": "issuer_eligibility_list_v1",
+                "schema_version": "issuer_eligibility_list",
                 "as_of": observed_at.isoformat(),
                 "manifest_hash": status.manifest_hash,
                 "integrity_ok": status.integrity_ok,
@@ -318,7 +318,7 @@ def _run_command_group(
     print(
         json.dumps(
             {
-                "schema_version": "trader_command_group_v1",
+                "schema_version": "trader_command_group",
                 "command": command,
                 "profile": profile,
                 "status": "completed_with_failures" if failed else "passed",

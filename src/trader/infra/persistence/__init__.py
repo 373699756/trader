@@ -1,1 +1,1 @@
-"""V2 data-plane and immutable decision-record adapters."""
+"""unified data-plane and immutable decision-record adapters."""

@@ -1,4 +1,4 @@
-"""Tamper-evident storage for historical Tomorrow V2 risk validation."""
+"""Tamper-evident storage for historical Tomorrow risk validation."""
 
 from __future__ import annotations
 

@@ -17,10 +17,10 @@ from trader.domain.market.models import LiveQuote, MarketQuote
 from trader.domain.market.quality import FieldQualityState, FieldValue
 from trader.domain.market.research import ResearchObservation
 
-DAILY_FEATURE_PACK_SCHEMA_VERSION = "daily_feature_pack_v2"
-MARKET_EPOCH_SCHEMA_VERSION = "market_epoch_v1"
-CANDIDATE_QUOTE_EPOCH_SCHEMA_VERSION = "candidate_quote_epoch_v2"
-RESEARCH_EPOCH_SCHEMA_VERSION = "research_epoch_v1"
+DAILY_FEATURE_PACK_SCHEMA_VERSION = "daily_feature_pack"
+MARKET_EPOCH_SCHEMA_VERSION = "market_epoch"
+CANDIDATE_QUOTE_EPOCH_SCHEMA_VERSION = "candidate_quote_epoch"
+RESEARCH_EPOCH_SCHEMA_VERSION = "research_epoch"
 CORE_HISTORY_MIN_SESSIONS = 20
 
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"

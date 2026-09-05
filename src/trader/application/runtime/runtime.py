@@ -1,4 +1,4 @@
-"""Explicit scheduler and V2 runtime supervision owner."""
+"""Explicit scheduler and scheduler runtime supervision owner."""
 
 from __future__ import annotations
 

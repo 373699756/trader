@@ -20,7 +20,7 @@ _COST_RATES = (0.002, 0.005, 0.01)
 _EXCLUDED_EVIDENCE_IDENTITIES = (
     "score_p0_v1",
     "score_p0_v2",
-    "score_tomorrow_shadow_p1_v1",
+    "score_tomorrow_shadow_p1",
 )
 
 
@@ -45,23 +45,23 @@ class HistoricalP2FieldEligibility:
 
 
 _FIELD_ELIGIBILITY = (
-    HistoricalP2FieldEligibility("qfq_return_1d", "eligible", "alpha", "lagged_qfq_close_v1"),
-    HistoricalP2FieldEligibility("qfq_return_3d", "eligible", "alpha", "lagged_qfq_close_v1"),
-    HistoricalP2FieldEligibility("qfq_return_5d", "eligible", "alpha", "lagged_qfq_close_v1"),
-    HistoricalP2FieldEligibility("qfq_residual_momentum_20d_skip5", "eligible", "alpha", "lagged_qfq_cross_section_v1"),
-    HistoricalP2FieldEligibility("qfq_residual_momentum_40d_skip5", "eligible", "alpha", "lagged_qfq_cross_section_v1"),
-    HistoricalP2FieldEligibility("qfq_residual_momentum_60d_skip5", "eligible", "alpha", "lagged_qfq_cross_section_v1"),
+    HistoricalP2FieldEligibility("qfq_return_1d", "eligible", "alpha", "lagged_qfq_close"),
+    HistoricalP2FieldEligibility("qfq_return_3d", "eligible", "alpha", "lagged_qfq_close"),
+    HistoricalP2FieldEligibility("qfq_return_5d", "eligible", "alpha", "lagged_qfq_close"),
+    HistoricalP2FieldEligibility("qfq_residual_momentum_20d_skip5", "eligible", "alpha", "lagged_qfq_cross_section"),
+    HistoricalP2FieldEligibility("qfq_residual_momentum_40d_skip5", "eligible", "alpha", "lagged_qfq_cross_section"),
+    HistoricalP2FieldEligibility("qfq_residual_momentum_60d_skip5", "eligible", "alpha", "lagged_qfq_cross_section"),
     HistoricalP2FieldEligibility(
-        "market_cross_section", "eligible", "residualization", "same_manifest_market_cross_section_v1"
+        "market_cross_section", "eligible", "residualization", "same_manifest_market_cross_section"
     ),
     HistoricalP2FieldEligibility(
-        "board_cross_section", "eligible", "residualization", "same_manifest_code_board_cross_section_v1"
+        "board_cross_section", "eligible", "residualization", "same_manifest_code_board_cross_section"
     ),
-    HistoricalP2FieldEligibility("realized_volatility_20d", "eligible", "risk", "lagged_qfq_ohlc_v1"),
-    HistoricalP2FieldEligibility("downside_semivariance_20d", "eligible", "risk", "lagged_qfq_ohlc_v1"),
-    HistoricalP2FieldEligibility("drawdown_recovery_60d", "eligible", "risk", "lagged_qfq_ohlc_v1"),
-    HistoricalP2FieldEligibility("amihud_20d", "eligible", "cost", "lagged_qfq_return_amount_v1"),
-    HistoricalP2FieldEligibility("average_amount_20d", "eligible", "capacity", "lagged_amount_v1"),
+    HistoricalP2FieldEligibility("realized_volatility_20d", "eligible", "risk", "lagged_qfq_ohlc"),
+    HistoricalP2FieldEligibility("downside_semivariance_20d", "eligible", "risk", "lagged_qfq_ohlc"),
+    HistoricalP2FieldEligibility("drawdown_recovery_60d", "eligible", "risk", "lagged_qfq_ohlc"),
+    HistoricalP2FieldEligibility("amihud_20d", "eligible", "cost", "lagged_qfq_return_amount"),
+    HistoricalP2FieldEligibility("average_amount_20d", "eligible", "capacity", "lagged_amount"),
     HistoricalP2FieldEligibility(
         "historical_st_status", "not_reconstructed", "excluded", "historical_effective_time_unavailable"
     ),
@@ -171,8 +171,8 @@ class TomorrowHistoricalP2Spec:
     validation_window: tuple[date, date]
     field_eligibility: tuple[HistoricalP2FieldEligibility, ...]
     candidate: TomorrowHistoricalP2Candidate
-    comparator_id: str = "score_h0_ohlcv_cross_section_v1"
-    selection_rule: str = "single_candidate_pass_or_stop_v1"
+    comparator_id: str = "score_h0_ohlcv_cross_section"
+    selection_rule: str = "single_candidate_pass_or_stop"
     portfolio_sort_order: tuple[str, ...] = (
         "net_utility_desc",
         "severe_loss_probability_asc",
@@ -180,7 +180,7 @@ class TomorrowHistoricalP2Spec:
         "code_asc",
     )
     allow_empty_portfolio: bool = True
-    label_version: str = "tomorrow_close_to_next_close_market_excess_v1"
+    label_version: str = "tomorrow_close_to_next_close_market_excess"
     cost_rates: tuple[float, ...] = _COST_RATES
     minimum_archive_coverage: float = 0.95
     minimum_validation_pairs: int = 300
@@ -198,14 +198,14 @@ class TomorrowHistoricalP2Spec:
     excluded_evidence_identities: tuple[str, ...] = _EXCLUDED_EVIDENCE_IDENTITIES
     forward_research_identity: None = None
     forward_trade_dates: tuple[date, ...] = ()
-    report_schema_version: str = "score_tomorrow_historical_p2_report_v1"
+    report_schema_version: str = "score_tomorrow_historical_p2_report"
     production_authority: bool = False
-    schema_version: str = "score_tomorrow_historical_p2_spec_v1"
+    schema_version: str = "score_tomorrow_historical_p2_spec"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
         if (
-            self.research_identity != "score_tomorrow_historical_p2_v1"
+            self.research_identity != "score_tomorrow_historical_p2"
             or self.registered_on != date(2026, 8, 30)
             or self.source_research_identity != SCORE_H0_V1_SPEC.research_identity
             or self.source_spec_hash != SCORE_H0_V1_SPEC.content_hash
@@ -221,8 +221,8 @@ class TomorrowHistoricalP2Spec:
         if self.forward_research_identity is not None or self.forward_trade_dates:
             raise ValueError("Tomorrow P2 historical spec cannot bind a forward identity or calendar")
         if (
-            self.comparator_id != "score_h0_ohlcv_cross_section_v1"
-            or self.selection_rule != "single_candidate_pass_or_stop_v1"
+            self.comparator_id != "score_h0_ohlcv_cross_section"
+            or self.selection_rule != "single_candidate_pass_or_stop"
             or self.portfolio_sort_order
             != (
                 "net_utility_desc",
@@ -231,7 +231,7 @@ class TomorrowHistoricalP2Spec:
                 "code_asc",
             )
             or not self.allow_empty_portfolio
-            or self.label_version != "tomorrow_close_to_next_close_market_excess_v1"
+            or self.label_version != "tomorrow_close_to_next_close_market_excess"
             or self.cost_rates != _COST_RATES
             or self.minimum_archive_coverage != 0.95
             or self.minimum_validation_pairs != 300
@@ -247,10 +247,10 @@ class TomorrowHistoricalP2Spec:
             or self.maximum_board_fraction != 0.60
             or self.historical_industry_constraint != "not_reconstructed_forward_required"
             or self.excluded_evidence_identities != _EXCLUDED_EVIDENCE_IDENTITIES
-            or self.report_schema_version != "score_tomorrow_historical_p2_report_v1"
+            or self.report_schema_version != "score_tomorrow_historical_p2_report"
         ):
             raise ValueError("Tomorrow P2 historical gates are frozen")
-        if self.production_authority or self.schema_version != "score_tomorrow_historical_p2_spec_v1":
+        if self.production_authority or self.schema_version != "score_tomorrow_historical_p2_spec":
             raise ValueError("Tomorrow P2 historical spec cannot authorize production")
         object.__setattr__(self, "content_hash", _canonical_hash(self))
 
@@ -271,7 +271,7 @@ def _canonical(value: object) -> object:
 
 
 TOMORROW_HISTORICAL_P2_SPEC = TomorrowHistoricalP2Spec(
-    research_identity="score_tomorrow_historical_p2_v1",
+    research_identity="score_tomorrow_historical_p2",
     registered_on=date(2026, 8, 30),
     source_research_identity=SCORE_H0_V1_SPEC.research_identity,
     source_spec_hash=SCORE_H0_V1_SPEC.content_hash,

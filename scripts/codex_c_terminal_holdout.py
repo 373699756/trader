@@ -121,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
         payload = _projection(conclusion)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         payload = {
-            "schema_version": "codex_c_terminal_execution_v1",
+            "schema_version": "terminal_holdout_execution",
             "status": "execution_failed",
             "error_code": _error_code(exc),
             "production_authority": False,
@@ -136,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
 def _projection(conclusion: CrossStrategyConclusion) -> dict[str, object]:
     reports = (conclusion.today, conclusion.tomorrow, conclusion.d25)
     return {
-        "schema_version": "codex_c_terminal_execution_v1",
+        "schema_version": "terminal_holdout_execution",
         "status": conclusion.status,
         "conclusion_hash": conclusion.content_hash,
         "report_hashes": [list(item) for item in conclusion.report_hashes],

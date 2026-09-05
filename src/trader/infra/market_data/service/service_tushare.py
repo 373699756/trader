@@ -627,7 +627,7 @@ class ReferenceLoader:
                 request=request.request,
                 trade_date=shanghai_now(request.options.observed_at).date().isoformat(),
                 phase="all_day",
-                source_contract_version=self._runner.source_contract_versions.get("tushare", "tushare-component-v1"),
+                source_contract_version=self._runner.source_contract_versions.get("tushare", "tushare-component"),
                 config_version=self._runner.config_version,
                 schema_version=self._runner.schema_version,
             )

@@ -19,11 +19,11 @@ OBSERVED_AT = datetime(2026, 8, 10, 14, 50, tzinfo=SHANGHAI)
 
 def _lineage() -> ResearchDataLineage:
     return ResearchDataLineage(
-        source="v2_data_plane",
+        source="unified_data_plane",
         source_time=OBSERVED_AT,
         received_at=OBSERVED_AT,
         quality_status="complete",
-        content_version="market-v1",
+        content_version="market-initial",
         content_hash="a" * 64,
     )
 

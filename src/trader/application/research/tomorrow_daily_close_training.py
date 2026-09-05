@@ -26,8 +26,8 @@ _IDENTITY = re.compile(r"^[a-z0-9_]{1,96}$")
 _REASON = re.compile(r"^[a-z0-9_]{1,96}$")
 _CODE = re.compile(r"^\d{6}$")
 _BOARDS = {"main", "chinext", "star"}
-_RESEARCH_IDENTITY = "score_tomorrow_daily_close_challenger_v1"
-_LABEL_ID = "d1_close_market_excess_after_cost_v1"
+_RESEARCH_IDENTITY = "score_tomorrow_daily_close_challenger"
+_LABEL_ID = "d1_close_market_excess_after_cost"
 _PROXY_ANCHOR = "15:00_close"
 _COST_RATES = (0.002, 0.005, 0.01)
 
@@ -108,7 +108,7 @@ class DatasetManifest:
     label_id: str = _LABEL_ID
     proxy_anchor: str = _PROXY_ANCHOR
     cost_rates: tuple[float, float, float] = _COST_RATES
-    schema_version: str = "tomorrow_daily_close_dataset_manifest_v1"
+    schema_version: str = "tomorrow_daily_close_dataset_manifest"
     production_authority: bool = False
     content_hash: str = dataclasses.field(init=False)
 
@@ -130,7 +130,7 @@ class DatasetManifest:
             or self.label_id != _LABEL_ID
             or self.proxy_anchor != _PROXY_ANCHOR
             or self.cost_rates != _COST_RATES
-            or self.schema_version != "tomorrow_daily_close_dataset_manifest_v1"
+            or self.schema_version != "tomorrow_daily_close_dataset_manifest"
         ):
             raise ValueError("daily-close manifest identity is invalid")
         if self.production_authority:
@@ -142,7 +142,7 @@ class DatasetManifest:
 class FeatureDataset:
     manifest: DatasetManifest
     rows: tuple[DailyCloseFeatureRow, ...]
-    schema_version: str = "tomorrow_daily_close_feature_dataset_v1"
+    schema_version: str = "tomorrow_daily_close_feature_dataset"
     production_authority: bool = False
     content_hash: str = dataclasses.field(init=False)
 
@@ -157,7 +157,7 @@ class FeatureDataset:
             raise ValueError("daily-close feature rows contain dates outside the manifest")
         if any(len(row.feature_values) != len(self.manifest.feature_names) for row in rows):
             raise ValueError("daily-close feature row width does not match the manifest")
-        if self.schema_version != "tomorrow_daily_close_feature_dataset_v1":
+        if self.schema_version != "tomorrow_daily_close_feature_dataset":
             raise ValueError("daily-close feature dataset schema is invalid")
         if self.production_authority:
             raise ValueError("daily-close feature dataset cannot authorize production")
@@ -213,7 +213,7 @@ class ValidationReport:
     failure_reasons: tuple[str, ...]
     research_identity: str = _RESEARCH_IDENTITY
     proxy_anchor: str = _PROXY_ANCHOR
-    schema_version: str = "tomorrow_daily_close_validation_report_v1"
+    schema_version: str = "tomorrow_daily_close_validation_report"
     production_authority: bool = False
     automatic_model_update: bool = False
     content_hash: str = dataclasses.field(init=False)
@@ -240,7 +240,7 @@ def _validate_validation_report_identity(report: ValidationReport) -> None:
     if (
         report.research_identity != _RESEARCH_IDENTITY
         or report.proxy_anchor != _PROXY_ANCHOR
-        or report.schema_version != "tomorrow_daily_close_validation_report_v1"
+        or report.schema_version != "tomorrow_daily_close_validation_report"
     ):
         raise ValueError("daily-close validation report identity is invalid")
 
@@ -341,7 +341,7 @@ class CandidateModelArtifact:
     trained_from: date
     trained_through: date
     dependencies: tuple[ModelDependencyVersion, ...]
-    schema_version: str = "tomorrow_daily_close_candidate_model_artifact_v1"
+    schema_version: str = "tomorrow_daily_close_candidate_model_artifact"
     production_authority: bool = False
     automatic_model_update: bool = False
     content_hash: str = dataclasses.field(init=False)
@@ -423,7 +423,7 @@ def _validate_candidate_model_collections(
 def _validate_candidate_model_metadata(artifact: CandidateModelArtifact) -> None:
     if artifact.trained_from > artifact.trained_through:
         raise ValueError("daily-close candidate model training dates are invalid")
-    if artifact.schema_version != "tomorrow_daily_close_candidate_model_artifact_v1":
+    if artifact.schema_version != "tomorrow_daily_close_candidate_model_artifact":
         raise ValueError("daily-close candidate model schema is invalid")
     if artifact.production_authority or artifact.automatic_model_update:
         raise ValueError("daily-close candidate model cannot authorize production or automatic updates")

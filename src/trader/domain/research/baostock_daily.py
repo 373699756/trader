@@ -1,4 +1,4 @@
-"""Immutable BaoStock v2 daily-core contracts for offline research."""
+"""Immutable BaoStock daily-core contracts for offline research."""
 
 from __future__ import annotations
 
@@ -36,6 +36,34 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CODE = re.compile(r"^[0-9]{6}$")
 _BOARDS: tuple[BaoStockBoard, ...] = ("main", "chinext", "star")
 
+# These stable names are the only identities emitted by new BaoStock artifacts.
+# The legacy values are retained solely so immutable checkpoints created before
+# the naming cleanup can be decoded without changing their content hashes.
+BAOSTOCK_CALENDAR_SCHEMA = "baostock_exchange_calendar"
+BAOSTOCK_LEGACY_CALENDAR_SCHEMA = "baostock_exchange_calendar_v2"
+BAOSTOCK_DAILY_FACT_SCHEMA = "baostock_daily_fact"
+BAOSTOCK_LEGACY_DAILY_FACT_SCHEMA = "baostock_daily_fact_v1"
+BAOSTOCK_INDUSTRY_INTERVAL_SCHEMA = "baostock_industry_interval"
+BAOSTOCK_LEGACY_INDUSTRY_INTERVAL_SCHEMA = "baostock_industry_interval_v1"
+BAOSTOCK_CODE_DOWNLOAD_SCHEMA = "baostock_code_download"
+BAOSTOCK_LEGACY_CODE_DOWNLOAD_SCHEMA = "baostock_code_download_v1"
+BAOSTOCK_COVERAGE_AUDIT_SCHEMA = "baostock_daily_coverage_audit"
+BAOSTOCK_LEGACY_COVERAGE_AUDIT_SCHEMA = "baostock_daily_coverage_audit_v2"
+BAOSTOCK_PARTITION_REF_SCHEMA = "baostock_partition_ref"
+BAOSTOCK_LEGACY_PARTITION_REF_SCHEMA = "baostock_partition_ref_v1"
+BAOSTOCK_DAILY_MANIFEST_SCHEMA = "baostock_daily_manifest"
+BAOSTOCK_LEGACY_DAILY_MANIFEST_SCHEMA = "baostock_daily_manifest_v3"
+
+BAOSTOCK_LEGACY_PERSISTENCE_SCHEMAS: tuple[str, ...] = (
+    BAOSTOCK_LEGACY_CALENDAR_SCHEMA,
+    BAOSTOCK_LEGACY_DAILY_FACT_SCHEMA,
+    BAOSTOCK_LEGACY_INDUSTRY_INTERVAL_SCHEMA,
+    BAOSTOCK_LEGACY_CODE_DOWNLOAD_SCHEMA,
+    BAOSTOCK_LEGACY_COVERAGE_AUDIT_SCHEMA,
+    BAOSTOCK_LEGACY_PARTITION_REF_SCHEMA,
+    BAOSTOCK_LEGACY_DAILY_MANIFEST_SCHEMA,
+)
+
 
 @dataclass(frozen=True)
 class BaoStockDailySpec:
@@ -51,11 +79,11 @@ class BaoStockDailySpec:
         if isinstance(self.sessions, bool) or not 1 <= self.sessions <= BAOSTOCK_MAX_SESSIONS:
             raise ValueError("BaoStock sessions must be in [1, 2000]")
         if self.research_identity != BAOSTOCK_RESEARCH_IDENTITY or self.source_cutoff != BAOSTOCK_SOURCE_CUTOFF:
-            raise ValueError("BaoStock v2 identity and source cutoff are fixed")
+            raise ValueError("BaoStock daily identity and source cutoff are fixed")
         if self.production_authority or self.point_in_time_parity:
             raise ValueError("BaoStock daily data cannot authorize production or point-in-time parity")
         if self.schema_version != "score_baostock_daily_core_v2":
-            raise ValueError("BaoStock v2 schema is invalid")
+            raise ValueError("BaoStock daily schema is invalid")
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
     @property
@@ -95,7 +123,7 @@ class BaoStockSecurity:
 @dataclass(frozen=True)
 class BaoStockCalendar:
     open_dates: tuple[date, ...]
-    schema_version: str = "baostock_exchange_calendar_v2"
+    schema_version: str = BAOSTOCK_CALENDAR_SCHEMA
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -104,7 +132,7 @@ class BaoStockCalendar:
             raise ValueError("BaoStock open calendar must be non-empty, unique, ordered, and bounded")
         if values[-1] > BAOSTOCK_SOURCE_CUTOFF:
             raise ValueError("BaoStock calendar exceeds source cutoff")
-        if self.schema_version != "baostock_exchange_calendar_v2":
+        if self.schema_version not in (BAOSTOCK_CALENDAR_SCHEMA, BAOSTOCK_LEGACY_CALENDAR_SCHEMA):
             raise ValueError("BaoStock calendar schema is invalid")
         object.__setattr__(self, "open_dates", values)
         object.__setattr__(self, "content_hash", canonical_hash(self))
@@ -225,13 +253,16 @@ class BaoStockDailyFact:
     code: str
     trade_date: date
     is_st: bool
-    schema_version: str = "baostock_daily_fact_v1"
+    schema_version: str = BAOSTOCK_DAILY_FACT_SCHEMA
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         if _CODE.fullmatch(self.code) is None or self.trade_date > BAOSTOCK_SOURCE_CUTOFF:
             raise ValueError("BaoStock daily fact identity is invalid")
-        if not isinstance(self.is_st, bool) or self.schema_version != "baostock_daily_fact_v1":
+        if not isinstance(self.is_st, bool) or self.schema_version not in (
+            BAOSTOCK_DAILY_FACT_SCHEMA,
+            BAOSTOCK_LEGACY_DAILY_FACT_SCHEMA,
+        ):
             raise ValueError("BaoStock daily fact payload is invalid")
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
@@ -243,7 +274,7 @@ class BaoStockIndustryInterval:
     effective_to: date | None
     industry: str
     classification: str
-    schema_version: str = "baostock_industry_interval_v1"
+    schema_version: str = BAOSTOCK_INDUSTRY_INTERVAL_SCHEMA
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -253,7 +284,7 @@ class BaoStockIndustryInterval:
             or (self.effective_to is not None and self.effective_to <= self.effective_from)
             or not self.industry.strip()
             or not self.classification.strip()
-            or self.schema_version != "baostock_industry_interval_v1"
+            or self.schema_version not in (BAOSTOCK_INDUSTRY_INTERVAL_SCHEMA, BAOSTOCK_LEGACY_INDUSTRY_INTERVAL_SCHEMA)
         ):
             raise ValueError("BaoStock industry interval is invalid")
         object.__setattr__(self, "industry", self.industry.strip())
@@ -265,7 +296,7 @@ class BaoStockIndustryInterval:
 class BaoStockCodeDownload:
     batch: BaoStockCodeBatch
     daily_facts: tuple[BaoStockDailyFact, ...]
-    schema_version: str = "baostock_code_download_v1"
+    schema_version: str = BAOSTOCK_CODE_DOWNLOAD_SCHEMA
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -273,7 +304,7 @@ class BaoStockCodeDownload:
         if (
             any(item.code != self.batch.code for item in facts)
             or tuple(item.trade_date for item in facts) != tuple(item.trade_date for item in self.batch.cells)
-            or self.schema_version != "baostock_code_download_v1"
+            or self.schema_version not in (BAOSTOCK_CODE_DOWNLOAD_SCHEMA, BAOSTOCK_LEGACY_CODE_DOWNLOAD_SCHEMA)
         ):
             raise ValueError("BaoStock code download facts do not match its daily batch")
         object.__setattr__(self, "daily_facts", facts)
@@ -441,7 +472,7 @@ class BaoStockCoverageAudit:
     terminal_holdout_opened: bool = False
     production_authority: bool = False
     point_in_time_parity: bool = False
-    schema_version: str = "baostock_daily_coverage_audit_v2"
+    schema_version: str = BAOSTOCK_COVERAGE_AUDIT_SCHEMA
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -470,6 +501,8 @@ def _validate_coverage_identity(value: BaoStockCoverageAudit) -> None:
         raise ValueError("BaoStock coverage calendar range is invalid")
     if value.status not in ("coverage_ready", "historical_data_insufficient"):
         raise ValueError("BaoStock coverage status is invalid")
+    if value.schema_version not in (BAOSTOCK_COVERAGE_AUDIT_SCHEMA, BAOSTOCK_LEGACY_COVERAGE_AUDIT_SCHEMA):
+        raise ValueError("BaoStock coverage audit schema is invalid")
 
 
 def _validate_coverage_counts(value: BaoStockCoverageAudit) -> None:
@@ -718,7 +751,7 @@ class BaoStockPartitionRef:
     row_count: int
     logical_records_hash: str
     database_sha256: str
-    schema_version: str = "baostock_partition_ref_v1"
+    schema_version: str = BAOSTOCK_PARTITION_REF_SCHEMA
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -735,7 +768,7 @@ class BaoStockPartitionRef:
             or self.row_count < 0
             or _SHA256.fullmatch(self.logical_records_hash) is None
             or _SHA256.fullmatch(self.database_sha256) is None
-            or self.schema_version != "baostock_partition_ref_v1"
+            or self.schema_version not in (BAOSTOCK_PARTITION_REF_SCHEMA, BAOSTOCK_LEGACY_PARTITION_REF_SCHEMA)
         ):
             raise ValueError("BaoStock partition reference is invalid")
         object.__setattr__(self, "codes", codes)
@@ -870,7 +903,7 @@ class BaoStockDailyManifest:
     production_authority: bool = False
     point_in_time_parity: bool = False
     terminal_holdout_opened: bool = False
-    schema_version: str = "baostock_daily_manifest_v3"
+    schema_version: str = BAOSTOCK_DAILY_MANIFEST_SCHEMA
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -896,7 +929,7 @@ class BaoStockDailyManifest:
             raise ValueError("BaoStock manifest universe parent mismatch")
         if self.production_authority or self.point_in_time_parity or self.terminal_holdout_opened:
             raise ValueError("BaoStock manifest cannot authorize production, parity, or holdouts")
-        if self.schema_version != "baostock_daily_manifest_v3":
+        if self.schema_version not in (BAOSTOCK_DAILY_MANIFEST_SCHEMA, BAOSTOCK_LEGACY_DAILY_MANIFEST_SCHEMA):
             raise ValueError("BaoStock manifest schema is invalid")
         object.__setattr__(self, "partitions", partitions)
         object.__setattr__(self, "content_hash", canonical_hash(self))
@@ -970,6 +1003,21 @@ def build_baostock_v3_dataset_manifest(
 
 
 __all__ = [
+    "BAOSTOCK_CALENDAR_SCHEMA",
+    "BAOSTOCK_CODE_DOWNLOAD_SCHEMA",
+    "BAOSTOCK_COVERAGE_AUDIT_SCHEMA",
+    "BAOSTOCK_DAILY_FACT_SCHEMA",
+    "BAOSTOCK_DAILY_MANIFEST_SCHEMA",
+    "BAOSTOCK_INDUSTRY_INTERVAL_SCHEMA",
+    "BAOSTOCK_LEGACY_CALENDAR_SCHEMA",
+    "BAOSTOCK_LEGACY_CODE_DOWNLOAD_SCHEMA",
+    "BAOSTOCK_LEGACY_COVERAGE_AUDIT_SCHEMA",
+    "BAOSTOCK_LEGACY_DAILY_FACT_SCHEMA",
+    "BAOSTOCK_LEGACY_DAILY_MANIFEST_SCHEMA",
+    "BAOSTOCK_LEGACY_INDUSTRY_INTERVAL_SCHEMA",
+    "BAOSTOCK_LEGACY_PARTITION_REF_SCHEMA",
+    "BAOSTOCK_PARTITION_REF_SCHEMA",
+    "BAOSTOCK_LEGACY_PERSISTENCE_SCHEMAS",
     "BAOSTOCK_MAX_SESSIONS",
     "BAOSTOCK_RESEARCH_IDENTITY",
     "BAOSTOCK_SOURCE_CUTOFF",

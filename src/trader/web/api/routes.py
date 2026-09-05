@@ -105,7 +105,7 @@ def _dates(services: UnifiedWebServices | None, strategy_name: str) -> RouteResp
         return _not_ready()
     return jsonify(
         {
-            "schema_version": "v2_decision_dates_v1",
+            "schema_version": "decision_dates",
             "strategy": strategy.value,
             "dates": [value.isoformat() for value in services.queries.dates(strategy)],
         }
@@ -606,7 +606,7 @@ def _cursor(raw: str | None) -> int | None:
 
 
 def _not_ready() -> tuple[Response, int]:
-    return _error("v2_not_ready", "V2 read services are not ready", 503)
+    return _error("decision_not_ready", "Read services are not ready", 503)
 
 
 def _error(code: str, message: str, status_code: int) -> tuple[Response, int]:

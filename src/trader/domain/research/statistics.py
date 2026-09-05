@@ -25,7 +25,7 @@ VARIANT_FAMILY: tuple[ChallengerVariantId, ...] = (
     "coverage_shrink",
     "candidate_upper_bound",
     "heat_weak_structure",
-    "combined_v1",
+    "combined",
 )
 
 

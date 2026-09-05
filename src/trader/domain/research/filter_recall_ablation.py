@@ -292,7 +292,7 @@ class FilterRecallAblationReport:
     recommendations: tuple[str, ...]
     terminal_status: Literal["complete", "historical_data_insufficient"]
     production_authority: bool = False
-    schema_version: str = "historical_filter_recall_ablation_report_v1"
+    schema_version: str = "historical_filter_recall_ablation_report"
     baseline_recall_50bp: float | None = None
     baseline_metrics: FilterVariantMetrics | None = None
     content_hash: str = dataclasses.field(init=False)
@@ -304,7 +304,7 @@ class FilterRecallAblationReport:
             raise ValueError("filter ablation terminal status is invalid")
         if self.profitable_denominator < 0 or self.profitable_denominator > self.rows:
             raise ValueError("filter ablation profitable denominator is invalid")
-        if self.production_authority or self.schema_version != "historical_filter_recall_ablation_report_v1":
+        if self.production_authority or self.schema_version != "historical_filter_recall_ablation_report":
             raise ValueError("filter ablation report cannot authorize production")
         object.__setattr__(self, "development_dates", tuple(sorted(set(self.development_dates))))
         object.__setattr__(self, "recommendations", tuple(sorted(set(self.recommendations))))

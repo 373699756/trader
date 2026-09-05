@@ -19,7 +19,7 @@ class CrossStrategyConclusion:
     status: CrossStrategyStatus
     report_hashes: tuple[tuple[str, str], ...]
     production_authority: bool = False
-    schema_version: str = "historical_cross_strategy_conclusion_v1"
+    schema_version: str = "historical_cross_strategy_conclusion"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:

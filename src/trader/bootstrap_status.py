@@ -1,20 +1,20 @@
-"""JSON projection for the observable v2 runtime status."""
+"""JSON projection for the observable scheduler runtime status."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
 
-from trader.application.ports.runtime_status import V2InputQualityStatus, V2SupplyFunnel
+from trader.application.ports.runtime_status import InputQualityStatus, SupplyFunnel
 from trader.application.ports.tomorrow_model import TomorrowModelRuntimeStatus
 from trader.application.runtime.cadence import CadencePlannerStatus
-from trader.application.runtime.v2_runtime import V2SchedulerRuntime
-from trader.application.runtime.v2_runtime_issues import V2RuntimeIssue
+from trader.application.runtime.runtime_issues import RuntimeIssue
+from trader.application.runtime.scheduler_runtime import SchedulerRuntime
 from trader.infra.deepseek.reviewer import DeepSeekReviewer
 
 
 def runtime_status(
-    scheduler: V2SchedulerRuntime,
+    scheduler: SchedulerRuntime,
     reviewer: DeepSeekReviewer,
     market_health: Callable[[], Mapping[str, object]],
     tomorrow_model: TomorrowModelRuntimeStatus | None = None,
@@ -154,7 +154,7 @@ def _cadence_payload(status: CadencePlannerStatus) -> dict[str, object]:
     }
 
 
-def input_quality_payload(statuses: tuple[V2InputQualityStatus, ...]) -> dict[str, object]:
+def input_quality_payload(statuses: tuple[InputQualityStatus, ...]) -> dict[str, object]:
     result: dict[str, object] = {}
     for status in statuses:
         summary = status.summary
@@ -199,7 +199,7 @@ def input_quality_payload(statuses: tuple[V2InputQualityStatus, ...]) -> dict[st
     return result
 
 
-def _supply_funnel_payload(funnel: V2SupplyFunnel) -> dict[str, int]:
+def _supply_funnel_payload(funnel: SupplyFunnel) -> dict[str, int]:
     return {
         "requested_candidates": funnel.requested_candidates,
         "candidate_features": funnel.candidate_features,
@@ -220,7 +220,7 @@ def _supply_funnel_payload(funnel: V2SupplyFunnel) -> dict[str, int]:
     }
 
 
-def _runtime_issue_payload(issue: V2RuntimeIssue) -> dict[str, object]:
+def _runtime_issue_payload(issue: RuntimeIssue) -> dict[str, object]:
     return {
         "code": issue.code,
         "severity": issue.severity,

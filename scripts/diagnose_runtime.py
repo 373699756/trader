@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
-_DEFAULT_CONFIG = PROJECT_ROOT / "config" / "v2" / "runtime.json"
+_DEFAULT_CONFIG = PROJECT_ROOT / "config" / "runtime.json"
 
 Profile = Literal[
     "web",
@@ -403,7 +403,7 @@ def build_report(profile: Profile, results: Sequence[DiagnosticResult]) -> dict[
         "total": len(statuses),
     }
     return {
-        "schema_version": "trader-runtime-diagnostics-v1",
+        "schema_version": "trader-runtime-diagnostics",
         "status": "failed" if summary["failed"] else "degraded" if summary["degraded"] else "passed",
         "collected_at": datetime.now(_SHANGHAI).isoformat(),
         "profile": profile,
@@ -625,7 +625,7 @@ def _valid_research_status(payload: Mapping[str, object]) -> bool:
         for name in ("input_blockers", "production_blockers")
     ):
         return False
-    return payload.get("schema_version") == "v2_research_readiness_v9"
+    return payload.get("schema_version") == "research_readiness"
 
 
 def _findings(check: Mapping[str, object]) -> list[dict[str, object]]:
@@ -682,7 +682,7 @@ def main() -> int:
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         output = args.output if args.output == "-" else "-"
         report = {
-            "schema_version": "trader-runtime-diagnostics-v1",
+            "schema_version": "trader-runtime-diagnostics",
             "status": "failed",
             "error": type(exc).__name__,
         }

@@ -135,8 +135,8 @@ class ScoreR3BaselineReport:
         default=SCORE_P0_V1_SPEC.content_hash,
         metadata={"exclude_from_v1_hash": True},
     )
-    schema_version: str = "score_r3_baseline_report_v1"
-    replay_version: str = "production_local_baseline_v1"
+    schema_version: str = "score_r3_baseline_report"
+    replay_version: str = "production_local_baseline"
     cost_rates: tuple[float, float, float] = _COST_RATES
     report_hash: str = dataclasses.field(init=False)
 
@@ -146,9 +146,9 @@ class ScoreR3BaselineReport:
         if self.research_spec_hash != spec.content_hash:
             raise ValueError("Score-R3 report research spec hash is invalid")
         expected_schema = (
-            "score_r3_baseline_report_v2" if self.research_identity == "score_p0_v2" else "score_r3_baseline_report_v1"
+            "score_r3_candidate_report" if self.research_identity == "score_p0_v2" else "score_r3_baseline_report"
         )
-        if self.schema_version != expected_schema or self.replay_version != "production_local_baseline_v1":
+        if self.schema_version != expected_schema or self.replay_version != "production_local_baseline":
             raise ValueError("Score-R3 report identity is invalid")
         if self.cost_rates != _COST_RATES:
             raise ValueError("Score-R3 costs must remain 20bp, 50bp, and 100bp")

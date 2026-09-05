@@ -62,8 +62,8 @@ def test_currently_retired_paths_remain_absent() -> None:
         "application/queries.py",
         "application/recommendation_replay.py",
         "application/ports/decision_freezes.py",
-        "application/today_v2_runtime.py",
-        "application/tomorrow_v2_runtime.py",
+        "application/today_scheduler_runtime.py",
+        "application/tomorrow_scheduler_runtime.py",
         "application/tomorrow_shadow.py",
         "application/tomorrow_shadow_runtime.py",
         "application/tomorrow_shadow_projection.py",
@@ -246,9 +246,9 @@ def test_application_recommendation_and_decisions_are_partitioned() -> None:
         "scored_selection.py",
         "scored_quality.py",
         "scored_deepseek_fusion.py",
-        "scored_v2_projection.py",
-        "scored_v2_freezing.py",
-        "today_v2_freezing.py",
+        "scored_projection.py",
+        "scored_freezing.py",
+        "today_freezing.py",
         "tomorrow_model_scoring.py",
         "recommendation_policy_codec.py",
         "policy.py",
@@ -262,7 +262,7 @@ def test_application_recommendation_and_decisions_are_partitioned() -> None:
         "decision_overlay_refresh.py",
         "decision_queries.py",
         "decision_stream.py",
-        "v2_decision_adapters.py",
+        "decision_adapters.py",
     }
     assert {path.name for path in recommendation_root.glob("*.py")} >= recommendation_files
     assert {path.name for path in decisions_root.glob("*.py")} >= decision_files
@@ -292,13 +292,13 @@ def test_application_runtime_and_market_data_are_partitioned() -> None:
         "source_lanes.py",
         "resource_orchestration.py",
         "latest_wins.py",
-        "v2_runtime.py",
-        "v2_runtime_issues.py",
+        "scheduler_runtime.py",
+        "runtime_issues.py",
         "workers.py",
     }
     assert {path.name for path in runtime_root.glob("*.py")} >= runtime_files
-    assert (market_data_root / "v2_input_runtime.py").is_file()
-    assert not any((application_root / name).exists() for name in runtime_files | {"v2_input_runtime.py"})
+    assert (market_data_root / "input_runtime.py").is_file()
+    assert not any((application_root / name).exists() for name in runtime_files | {"input_runtime.py"})
 
     violations: list[str] = []
     for path in runtime_root.rglob("*.py"):
@@ -343,7 +343,7 @@ def test_application_research_and_outcome_services_are_partitioned() -> None:
     research_files = {
         "research_audit.py",
         "research_coordination.py",
-        "v2_research_runtime.py",
+        "research_runtime.py",
     }
 
     assert {path.name for path in research_root.glob("*.py")} >= research_files

@@ -18,7 +18,7 @@ import polars as pl
 
 from trader.application.research.models import HistoricalExtractedDay, ScoreR2HistoricalExtraction
 
-_SCHEMA_VERSION = "score_r2_partition_v1"
+_SCHEMA_VERSION = "score_r2_partition"
 _MANIFEST_NAME = "manifest.json"
 
 

@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from trader.application.decisions.decision_events import build_v2_decision_committed
+from trader.application.decisions.decision_events import build_decision_committed
 from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
 from trader.domain.recommendation.decision_identity import (
     DecisionItem,
@@ -20,8 +20,8 @@ NOW = datetime(2026, 8, 11, 10, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 def test_unified_stream_replays_monotonic_cross_strategy_events() -> None:
     stream = UnifiedDecisionEventStream(history_size=3)
-    today = stream.publish_committed(build_v2_decision_committed(_decision(Strategy.TODAY, 1)))
-    tomorrow = stream.publish_committed(build_v2_decision_committed(_decision(Strategy.TOMORROW, 1)))
+    today = stream.publish_committed(build_decision_committed(_decision(Strategy.TODAY, 1)))
+    tomorrow = stream.publish_committed(build_decision_committed(_decision(Strategy.TOMORROW, 1)))
 
     subscription = stream.open_subscription(today.sequence)
 
@@ -52,7 +52,7 @@ def test_scored_decision_event_serializes_complete_replace_patch_without_snapsho
         ),
     )
 
-    payload = serialize_event(UnifiedDecisionEventStream().publish_committed(build_v2_decision_committed(decision)))
+    payload = serialize_event(UnifiedDecisionEventStream().publish_committed(build_decision_committed(decision)))
 
     assert payload["patch_schema_version"] == 4
     assert payload["replace"] is True
@@ -117,7 +117,7 @@ def test_scored_decision_event_serializes_complete_replace_patch_without_snapsho
 def test_unified_stream_requires_resync_for_expired_and_ahead_cursors() -> None:
     stream = UnifiedDecisionEventStream(history_size=2)
     for sequence in range(1, 4):
-        stream.publish_committed(build_v2_decision_committed(_decision(Strategy.TODAY, sequence)))
+        stream.publish_committed(build_decision_committed(_decision(Strategy.TODAY, sequence)))
 
     expired = stream.open_subscription(0)
     ahead = stream.open_subscription(99)
@@ -132,8 +132,8 @@ def test_unified_stream_drops_slow_client_without_blocking_publication() -> None
     stream = UnifiedDecisionEventStream(client_queue_size=1)
     subscription = stream.open_subscription(0)
 
-    stream.publish_committed(build_v2_decision_committed(_decision(Strategy.D25, 1)))
-    stream.publish_committed(build_v2_decision_committed(_decision(Strategy.D25, 2)))
+    stream.publish_committed(build_decision_committed(_decision(Strategy.D25, 1)))
+    stream.publish_committed(build_decision_committed(_decision(Strategy.D25, 2)))
 
     assert stream.is_subscribed(subscription.queue) is False
     assert stream.status().slow_subscriber_drops == 1
@@ -162,7 +162,7 @@ def test_overlay_event_serializes_row_patch_with_parent_and_projection_identitie
 
     assert payload["snapshot_id"] == decision.version
     assert payload["projection_version"] != decision.version
-    assert payload["schema_version"] == "v2_event_v1"
+    assert payload["schema_version"] == "decision_event"
     assert payload["patch_schema_version"] == 4
     assert payload["quotes"] == [
         {

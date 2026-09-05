@@ -153,7 +153,7 @@ _FIXED_BOARD_LOCAL_WEIGHTS: dict[str, dict[str, dict[str, float]]] = {
 
 
 def _validate_strategy_settings(settings: StrategySettings) -> None:
-    if settings.deepseek_risk_mapping_version != "deepseek_v4_local_rules_2026_08":
+    if settings.deepseek_risk_mapping_version != "deepseek_local_risk_rules_2026_08":
         raise ConfigurationError("unsupported DeepSeek risk mapping version")
     _validate_filter_fusion_selection(settings)
     _validate_signal_policies(settings)

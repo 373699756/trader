@@ -24,6 +24,9 @@ class TomorrowHistoricalP2ModelArtifact:
     lightgbm_best_iteration: int
     training_rows: int
     internal_validation_rows: int
+    # This schema identity is part of the immutable packaged artifact.  The
+    # ``_v1`` suffix is historical data identity, not a runtime scoring
+    # profile, so it must remain unchanged while the active profile is ``v2``.
     schema_version: str = "score_tomorrow_historical_p2_model_v1"
     content_hash: str = dataclasses.field(init=False)
 

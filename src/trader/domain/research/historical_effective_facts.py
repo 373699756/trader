@@ -19,11 +19,11 @@ class HistoricalEffectiveFactsProbe:
     eligibility_effective_at: bool
     hard_filter_effective_at: bool
     risk_facts_effective_at: bool
-    schema_version: str = "historical_effective_facts_probe_v1"
+    schema_version: str = "historical_effective_facts_probe"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if not self.source.strip() or self.schema_version != "historical_effective_facts_probe_v1":
+        if not self.source.strip() or self.schema_version != "historical_effective_facts_probe":
             raise ValueError("historical effective-facts probe identity is invalid")
         object.__setattr__(self, "source", self.source.strip())
         object.__setattr__(self, "content_hash", canonical_hash(self))
@@ -37,7 +37,7 @@ class HistoricalEffectiveFactsAudit:
     point_in_time_parity: bool = False
     v3_training_authority: bool = False
     production_authority: bool = False
-    schema_version: str = "historical_effective_facts_capability_v1"
+    schema_version: str = "historical_effective_facts_capability"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -53,7 +53,7 @@ class HistoricalEffectiveFactsAudit:
             raise ValueError("effective-facts training eligibility must match capability status")
         if self.point_in_time_parity or self.production_authority:
             raise ValueError("effective-facts capability audit cannot authorize parity or production")
-        if self.schema_version != "historical_effective_facts_capability_v1":
+        if self.schema_version != "historical_effective_facts_capability":
             raise ValueError("historical effective-facts audit schema is invalid")
         object.__setattr__(self, "probes", probes)
         object.__setattr__(self, "failure_reasons", reasons)

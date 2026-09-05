@@ -25,7 +25,7 @@ from trader.domain.research.cost_aware_selection import (
 )
 
 _SELECTION_SPEC = {
-    "identity": "score_tomorrow_cost_aware_selection_v1",
+    "identity": "score_tomorrow_cost_aware_selection",
     "utility_fields": ("gross_expected_excess", "estimated_cost"),
     "tomorrow_entry_threshold": 0.0,
     "d25_entry_threshold": 0.002,
@@ -114,7 +114,7 @@ def _candidate(
 
 
 def _validate_parent(shadow: ShadowModelReport) -> None:
-    if shadow.schema_version != "score_tomorrow_shadow_report_v1":
+    if shadow.schema_version != "score_tomorrow_shadow_report":
         raise ValueError("cost-aware selection requires the fixed shadow report schema")
     if shadow.status != "exploratory" or shadow.production_authority:
         raise ValueError("cost-aware selection requires an exploratory shadow report")

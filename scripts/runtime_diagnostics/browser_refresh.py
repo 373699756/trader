@@ -35,16 +35,16 @@ from trader.application.decisions.decision_stream import (  # noqa: E402
     UnifiedDecisionEventStream,
     UnifiedPublishedEvent,
 )
-from trader.application.ports.runtime_status import V2InputQualityStatus  # noqa: E402
-from trader.application.ports.v2_runtime import (  # noqa: E402
+from trader.application.ports.runtime_status import InputQualityStatus  # noqa: E402
+from trader.application.ports.scheduler import (  # noqa: E402
+    CycleRequest,
+    DecisionUnavailableError,
+    RefreshOutcome,
+    ResearchIntent,
+    ResearchRuntimeStatus,
     SharedDeepSeekRuntimeContract,
-    V2CycleRequest,
-    V2DecisionUnavailableError,
-    V2RefreshOutcome,
-    V2ResearchIntent,
-    V2ResearchRuntimeStatus,
 )
-from trader.application.research.research_audit import V2CommittedResearchAudit  # noqa: E402
+from trader.application.research.research_audit import CommittedResearchAudit  # noqa: E402
 from trader.application.runtime.cadence import CadencePlanner, CadencePolicy  # noqa: E402
 from trader.application.runtime.runtime import (  # noqa: E402
     RuntimeSupervisor,
@@ -52,8 +52,8 @@ from trader.application.runtime.runtime import (  # noqa: E402
     scheduler_interval_seconds,
 )
 from trader.application.runtime.schedule import phase_at, shanghai_now  # noqa: E402
+from trader.application.runtime.scheduler_runtime import RuntimeDependencies, SchedulerRuntime  # noqa: E402
 from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep  # noqa: E402
-from trader.application.runtime.v2_runtime import V2RuntimeDependencies, V2SchedulerRuntime  # noqa: E402
 from trader.domain.recommendation.decision_identity import (  # noqa: E402
     CommittedDecisionRecord,
     DecisionIdentity,
@@ -108,7 +108,7 @@ class _RecordingData:
         self._lock = threading.Lock()
         self._calls: list[dict[str, object]] = []
 
-    def refresh(self, request: V2CycleRequest) -> None:
+    def refresh(self, request: CycleRequest) -> None:
         strategy = request.strategy
         observed_at = request.observed_at
         with self._lock:
@@ -120,8 +120,8 @@ class _RecordingData:
                 }
             )
 
-    def refresh_task(self, request) -> V2RefreshOutcome:
-        return V2RefreshOutcome(
+    def refresh_task(self, request) -> RefreshOutcome:
+        return RefreshOutcome(
             request.task,
             True,
             f"measurement:{request.task.value}:{request.observed_at:%H%M%S%f}",
@@ -136,16 +136,16 @@ class _RecordingData:
 
 
 class _OverlayOnlyDecisions:
-    def input_quality_status(self) -> tuple[V2InputQualityStatus, ...]:
+    def input_quality_status(self) -> tuple[InputQualityStatus, ...]:
         return ()
 
     def has_local_draft(self, strategy: Strategy, trade_date: date) -> bool:
         del strategy, trade_date
         return False
 
-    def build_local(self, request: V2CycleRequest) -> DecisionIdentity | None:
+    def build_local(self, request: CycleRequest) -> DecisionIdentity | None:
         del request
-        raise V2DecisionUnavailableError("measurement_score_disabled")
+        raise DecisionUnavailableError("measurement_score_disabled")
 
     def initial_overlay(self, decision: ScoredDecision) -> DecisionOverlay:
         quotes = tuple(item.quote for item in decision.items if item.quote is not None)
@@ -154,7 +154,7 @@ class _OverlayOnlyDecisions:
     def refreshed_overlay(
         self,
         decision: ScoredDecision,
-        request: V2CycleRequest,
+        request: CycleRequest,
         previous: DecisionOverlay | None,
     ) -> DecisionOverlay | None:
         observed_at = request.observed_at
@@ -172,11 +172,11 @@ class _OverlayOnlyDecisions:
         )
         return DecisionOverlay(decision.strategy, decision.trade_date, decision.version, observed_at, quotes)
 
-    def research_audit(self, version: str) -> V2CommittedResearchAudit | None:
+    def research_audit(self, version: str) -> CommittedResearchAudit | None:
         del version
         return None
 
-    def research_intent(self, decision: ScoredDecision) -> V2ResearchIntent:
+    def research_intent(self, decision: ScoredDecision) -> ResearchIntent:
         raise AssertionError(f"measurement does not build research intents: {decision.version}")
 
 
@@ -187,7 +187,7 @@ class _Reviews:
         shared_single_flight=True,
     )
 
-    def build_hybrid(self, local: ScoredDecision, request: V2CycleRequest) -> ScoredDecision:
+    def build_hybrid(self, local: ScoredDecision, request: CycleRequest) -> ScoredDecision:
         del local, request
         raise AssertionError("measurement disables scoring and DeepSeek review")
 
@@ -212,8 +212,8 @@ class _NoopResearchRuntime:
         del timeout_seconds
         return True
 
-    def status(self) -> V2ResearchRuntimeStatus:
-        return V2ResearchRuntimeStatus(state="idle")
+    def status(self) -> ResearchRuntimeStatus:
+        return ResearchRuntimeStatus(state="idle")
 
 
 class _Freezes:
@@ -261,7 +261,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--runtime-config",
-        default=str(PROJECT_ROOT / "config" / "v2" / "runtime.json"),
+        default=str(PROJECT_ROOT / "config" / "runtime.json"),
         help="runtime config supplying the Web snapshot retention window",
     )
     return parser
@@ -506,8 +506,8 @@ def _run(
         started_at=simulated_start,
     )
 
-    runtime = V2SchedulerRuntime(
-        V2RuntimeDependencies(
+    runtime = SchedulerRuntime(
+        RuntimeDependencies(
             clock=clock,
             calendar=_TradingCalendar(),
             cadence=cadence,
@@ -713,7 +713,7 @@ def _run(
         and direct_decision_patch_passed
     )
     return {
-        "schema_version": "web-refresh-interval-v2",
+        "schema_version": "web-refresh-interval",
         "passed": passed,
         "strategy": target_strategy.value,
         "simulated_start": simulated_start.isoformat(),
@@ -767,7 +767,7 @@ def main() -> int:
         )
     except (OSError, RuntimeError, TypeError, ValueError, urllib.error.URLError) as exc:
         report = {
-            "schema_version": "web-refresh-interval-v2",
+            "schema_version": "web-refresh-interval",
             "passed": False,
             "error": type(exc).__name__,
             "message": str(exc)[:300] or "no additional detail",

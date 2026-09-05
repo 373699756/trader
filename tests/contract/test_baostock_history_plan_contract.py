@@ -81,8 +81,8 @@ def test_codex_c_baostock_holdout_isolation_contract_is_implemented_without_open
     assert source.is_file()
     assert "Codex C 工程契约已完成" in section
     assert "baostock_holdout_isolation_contract" in section
-    assert "score_tomorrow_historical_candidate_v1" in section
-    assert "tomorrow_v3_point_in_time_holdout_v1" in section
+    assert "score_tomorrow_historical_candidate" in section
+    assert "tomorrow_v3_point_in_time_holdout" in section
     assert "不打开留出" in section
     assert "production_authority=false" in section
     assert "baostock_holdout_isolation_contract" in design
@@ -127,7 +127,7 @@ def test_baostock_runtime_contract_documents_resume_progress_and_final_database_
     section = strategy[strategy.index("#### 15.1.38") : strategy.index("### 15.2")]
 
     for required in (
-        "baostock_runtime_progress_v1",
+        "baostock_runtime_progress",
         "preflight",
         "supplier_login",
         "trading_calendar",

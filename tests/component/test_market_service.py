@@ -71,6 +71,24 @@ def test_market_service_components_own_distinct_locks_and_facade_has_no_shared_l
     assert not hasattr(service, "_lock")
 
 
+def test_unknown_source_contract_fallback_uses_stable_cache_identity() -> None:
+    service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+    )
+
+    identity = service.runner.cache_identity(
+        "daily_history",
+        "unconfigured-source",
+        "600001",
+        {"code": "600001"},
+        NOW,
+    )
+
+    assert identity.source_contract_version == "unconfigured-source-component"
+
+
 def _security_master_observation() -> SourceObservation:
     return SourceObservation(
         source="eastmoney_security_master",
@@ -127,7 +145,7 @@ def test_security_master_persistence_unavailable_remains_a_warning(caplog) -> No
 
 
 def test_long_quote_circuit_does_not_open_candidate_quote_circuit() -> None:
-    quote = replace(_quote("600001"), source="tencent", data_version="tencent-targeted-v1")
+    quote = replace(_quote("600001"), source="tencent", data_version="tencent-targeted")
     tencent = FailFirstTencentClient((quote,))
     gateway = MarketDataGateway(
         FailingMarketClient(),
@@ -149,13 +167,13 @@ def test_long_quote_circuit_does_not_open_candidate_quote_circuit() -> None:
 
 
 def test_long_quotes_bypass_shared_cache_for_each_realtime_refresh() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
         cadence_seconds=runtime.pipeline.cadence_seconds,
         wall_clock=lambda: NOW,
     )
-    quote = replace(_quote("600001"), source="tencent", data_version="tencent-targeted-v1")
+    quote = replace(_quote("600001"), source="tencent", data_version="tencent-targeted")
     gateway = MarketDataGateway(
         FailingMarketClient(),
         StaticMarketClient((quote,)),
@@ -178,7 +196,7 @@ def test_long_quotes_bypass_shared_cache_for_each_realtime_refresh() -> None:
 
 
 def test_final_refresh_bypasses_fresh_cache_but_remains_single_flight() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
     final_at = AFTERNOON - timedelta(milliseconds=100)
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
@@ -311,7 +329,7 @@ def test_akshare_circuit_skips_excess_requests_and_recovers_with_one_probe() -> 
 
 
 def test_auxiliary_cache_action_age_marks_new_features_observe_only() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
     measured_at = AFTERNOON + timedelta(seconds=91)
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
@@ -347,7 +365,7 @@ def test_auxiliary_cache_action_age_marks_new_features_observe_only() -> None:
                 "fixture",
                 measured_at - timedelta(seconds=1201),
                 received_at=measured_at - timedelta(seconds=1201),
-                data_version="news-old-v1",
+                data_version="news-old",
             ),
         )
     )
@@ -360,7 +378,7 @@ def test_auxiliary_cache_action_age_marks_new_features_observe_only() -> None:
             measured_at,
         ),
         history,
-        data_version="history-old-v1",
+        data_version="history-old",
         source_time=measured_at - timedelta(seconds=86401),
     )
     cache.put(
@@ -372,7 +390,7 @@ def test_auxiliary_cache_action_age_marks_new_features_observe_only() -> None:
             measured_at,
         ),
         intraday,
-        data_version="intraday-old-v1",
+        data_version="intraday-old",
         source_time=measured_at - timedelta(seconds=91),
     )
     cache.put(
@@ -384,7 +402,7 @@ def test_auxiliary_cache_action_age_marks_new_features_observe_only() -> None:
             measured_at,
         ),
         research,
-        data_version="research-old-v1",
+        data_version="research-old",
         source_time=measured_at - timedelta(seconds=1201),
     )
 
@@ -437,7 +455,7 @@ def test_feature_service_current_quote_index_prefers_latest_targeted_quote() -> 
         source="tencent",
         source_time=NOW + timedelta(seconds=5),
         received_time=NOW + timedelta(seconds=5),
-        data_version="targeted-v2",
+        data_version="targeted-refresh",
     )
     service = _service(
         StaticGatewayWithSeparateQuotes((market_quote,), (targeted_quote,)),
@@ -453,7 +471,7 @@ def test_feature_service_current_quote_index_prefers_latest_targeted_quote() -> 
     assert quotes["600001"].price == 15.0
     assert quotes["600001"].pct_change == 8.0
     assert quotes["600001"].source == "tencent"
-    assert quotes["600001"].data_version == "targeted-v2"
+    assert quotes["600001"].data_version == "targeted-refresh"
 
 
 def test_feature_service_current_quote_index_reads_canonical_quote_before_feature_commit() -> None:
@@ -461,7 +479,7 @@ def test_feature_service_current_quote_index_reads_canonical_quote_before_featur
         _quote(),
         price=14.0,
         pct_change=6.0,
-        data_version="canonical-v2",
+        data_version="canonical-snapshot",
     )
     service = _service(
         StaticGateway((canonical_quote,)),
@@ -473,7 +491,7 @@ def test_feature_service_current_quote_index_reads_canonical_quote_before_featur
 
     assert quotes["600001"].price == 14.0
     assert quotes["600001"].pct_change == 6.0
-    assert quotes["600001"].data_version == "canonical-v2"
+    assert quotes["600001"].data_version == "canonical-snapshot"
 
 
 def test_market_service_uses_injected_runtime_data_pool() -> None:
@@ -501,7 +519,7 @@ def test_market_service_uses_injected_runtime_data_pool() -> None:
 
 
 def test_degraded_candidate_cache_is_observe_only_without_rewriting_source_time() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
     monotonic = MutableMonotonic()
 
     def wall_clock() -> datetime:

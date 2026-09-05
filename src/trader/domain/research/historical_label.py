@@ -82,10 +82,10 @@ class HistoricalLabelContract:
         actual = (self.anchor, self.label_version, self.horizons, self.aggregate, self.required_metrics)
         if actual != expected:
             raise ValueError("historical label contract does not match its strategy")
-        if self.benchmark_version != "point_in_time_local_only_equal_weight_v1":
+        if self.benchmark_version != "point_in_time_local_only_equal_weight":
             raise ValueError("historical label benchmark identity is invalid")
         if (
-            self.cost_version != "round_trip_20_50_100bp_v1"
+            self.cost_version != "round_trip_20_50_100bp"
             or self.cost_bps != (20, 50, 100)
             or self.gate_cost_bps != (20, 50)
             or self.stress_cost_bps != 100
@@ -166,7 +166,7 @@ class HistoricalLabelPreregistration:
     terminal_holdout_status: Literal["terminal_holdout_not_opened"] = "terminal_holdout_not_opened"
     candidate_results_generated: bool = False
     production_authority: bool = False
-    schema_version: str = "historical_label_preregistration_v1"
+    schema_version: str = "historical_label_preregistration"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -193,7 +193,7 @@ class HistoricalLabelPreregistration:
             or self.production_authority
         ):
             raise ValueError("historical label preregistration cannot open holdout or production authority")
-        if self.schema_version != "historical_label_preregistration_v1":
+        if self.schema_version != "historical_label_preregistration":
             raise ValueError("historical label preregistration schema is invalid")
         object.__setattr__(self, "failure_reasons", reasons)
         object.__setattr__(self, "content_hash", canonical_hash(self))
@@ -202,7 +202,7 @@ class HistoricalLabelPreregistration:
 @dataclass(frozen=True)
 class HistoricalLabelPreregistrationBatch:
     strategies: tuple[HistoricalLabelPreregistration, ...]
-    schema_version: str = "historical_label_preregistration_batch_v1"
+    schema_version: str = "historical_label_preregistration_batch"
     production_authority: bool = False
     content_hash: str = dataclasses.field(init=False)
 
@@ -210,7 +210,7 @@ class HistoricalLabelPreregistrationBatch:
         ordered = tuple(sorted(self.strategies, key=lambda item: _STRATEGY_ORDER[item.strategy]))
         if tuple(item.strategy for item in ordered) != ("today", "tomorrow", "d25"):
             raise ValueError("historical label batch requires each strategy exactly once")
-        if self.schema_version != "historical_label_preregistration_batch_v1" or self.production_authority:
+        if self.schema_version != "historical_label_preregistration_batch" or self.production_authority:
             raise ValueError("historical label batch cannot authorize production")
         object.__setattr__(self, "strategies", ordered)
         object.__setattr__(self, "content_hash", canonical_hash(self))
@@ -274,8 +274,8 @@ def _label_contract(strategy: H1Strategy) -> HistoricalLabelContract:
         label_version=label_version,
         horizons=horizons,
         aggregate=aggregate,
-        benchmark_version="point_in_time_local_only_equal_weight_v1",
-        cost_version="round_trip_20_50_100bp_v1",
+        benchmark_version="point_in_time_local_only_equal_weight",
+        cost_version="round_trip_20_50_100bp",
         cost_bps=(20, 50, 100),
         gate_cost_bps=(20, 50),
         stress_cost_bps=100,
@@ -300,7 +300,7 @@ def _label_values(
     if strategy == "today":
         return (
             "11:20",
-            "today_1120_to_t1_close_market_excess_after_cost_v1",
+            "today_1120_to_t1_close_market_excess_after_cost",
             (1,),
             "single_horizon",
             (*common, "t1_low_mae_atr20"),
@@ -308,7 +308,7 @@ def _label_values(
     if strategy == "tomorrow":
         return (
             "14:50",
-            "tomorrow_1450_to_t1_close_market_excess_after_cost_v1",
+            "tomorrow_1450_to_t1_close_market_excess_after_cost",
             (1,),
             "single_horizon",
             (*common, "t1_low_mae_atr20", "risk_fact_coverage"),
@@ -316,7 +316,7 @@ def _label_values(
     if strategy == "d25":
         return (
             "14:50",
-            "d25_1450_to_t2_t5_mean_market_excess_after_cost_v1",
+            "d25_1450_to_t2_t5_mean_market_excess_after_cost",
             (2, 3, 4, 5),
             "arithmetic_mean",
             (*common, "four_horizon_net_excess", "worst_interval_mae_atr20", "overlapping_holding_turnover"),

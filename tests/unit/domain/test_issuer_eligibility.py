@@ -28,7 +28,7 @@ def _fact(*, effective_at: datetime = OBSERVED_AT) -> IssuerEligibilityFact:
         code="600001",
         reason=IssuerEligibilityReason.HISTORICAL_ST,
         effective_at=effective_at,
-        evidence_id="quote:600001:v1",
+        evidence_id="quote:600001:fixture",
         source="eastmoney_market",
         evidence_hash="a" * 64,
     )
@@ -55,7 +55,7 @@ def _quote(**overrides: object) -> MarketQuote:
         "source": "eastmoney",
         "source_time": OBSERVED_AT,
         "received_time": OBSERVED_AT,
-        "data_version": "quote-v1",
+        "data_version": "quote-fixture",
     }
     values.update(overrides)
     return MarketQuote(**values)  # type: ignore[arg-type]

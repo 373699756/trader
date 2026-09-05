@@ -4,6 +4,7 @@ import errno
 import fcntl
 import hashlib
 import json
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from trader.application.research.baostock_history_runtime import (
     BaoStockRuntimeStatus,
 )
 from trader.domain.research.baostock_daily import (
+    BAOSTOCK_LEGACY_CALENDAR_SCHEMA,
     BaoStockCalendar,
     BaoStockDailySpec,
     BaoStockSecurity,
@@ -166,6 +168,29 @@ def test_resume_loads_frozen_calendar_and_universe_without_refetching_supplier_c
     assert resumed == coordinator._run.context
     shard = SQLiteBaoStockDailyShard(coordinator._run.root / "shards" / "main-6000.sqlite3")
     assert shard.context(spec) == resumed
+
+
+def test_resume_loads_legacy_calendar_context_without_supplier_fetch(tmp_path: Path) -> None:
+    spec = BaoStockDailySpec(sessions=1)
+    calendar = replace(BaoStockCalendar((spec.source_cutoff,)), schema_version=BAOSTOCK_LEGACY_CALENDAR_SCHEMA)
+    security = BaoStockSecurity(
+        "600001",
+        "fixture",
+        "main",
+        spec.source_cutoff - timedelta(days=365),
+        None,
+        "0.9.30",
+    )
+    context = BaoStockShardContext(calendar, (security,), BaoStockSourceVersions("0.9.30", "3.14.0", ()))
+    root = tmp_path / "baostock-daily" / "sessions-1"
+    shard = SQLiteBaoStockDailyShard(root / "shards" / "main-6000.sqlite3")
+    shard.initialize(spec, context.calendar, context.universe, context.source_versions)
+
+    resumed = _load_resume_context(root, spec)
+
+    assert resumed == context
+    assert resumed is not None
+    assert resumed.calendar.schema_version == BAOSTOCK_LEGACY_CALENDAR_SCHEMA
 
 
 def test_coordinator_creates_human_readable_partition_databases_instead_of_worker_buckets(tmp_path: Path) -> None:

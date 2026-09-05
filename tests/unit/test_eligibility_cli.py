@@ -19,7 +19,7 @@ def test_eligibility_list_is_read_only_and_projects_immutable_evidence(tmp_path,
                 "600001",
                 IssuerEligibilityReason.HISTORICAL_ST,
                 observed_at,
-                "quote:600001:v1",
+                "quote:600001:fixture",
                 "eastmoney_market",
                 "a" * 64,
             ),
@@ -39,14 +39,14 @@ def test_eligibility_list_is_read_only_and_projects_immutable_evidence(tmp_path,
 
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 0
-    assert payload["schema_version"] == "issuer_eligibility_list_v1"
+    assert payload["schema_version"] == "issuer_eligibility_list"
     assert payload["manifest_hash"] == registry.status().manifest_hash
     assert payload["items"] == [
         {
             "code": "600001",
             "effective_at": observed_at.isoformat(),
             "evidence_hash": "a" * 64,
-            "evidence_id": "quote:600001:v1",
+            "evidence_id": "quote:600001:fixture",
             "reason": "historical_st",
             "source": "eastmoney_market",
         }

@@ -50,8 +50,8 @@ def test_production_tree_has_no_forward_score_validation_owner() -> None:
         for path in (
             SOURCE / "bootstrap.py",
             SOURCE / "bootstrap_status.py",
-            SOURCE / "application/market_data/v2_input_runtime.py",
-            SOURCE / "application/ports/v2_runtime.py",
+            SOURCE / "application/market_data/input_runtime.py",
+            SOURCE / "application/ports/scheduler.py",
             SOURCE / "web/api/routes.py",
         )
     )

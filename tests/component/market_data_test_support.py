@@ -107,7 +107,7 @@ TAIL_POLICY = TailSignalPolicy(
     return_score_points_per_pct=25.0,
     volume_score_points_per_ratio=50.0,
 )
-_STRATEGY_SETTINGS = load_strategy_settings(Path(__file__).parents[2] / "config" / "v2" / "strategy.json")
+_STRATEGY_SETTINGS = load_strategy_settings(Path(__file__).parents[2] / "config" / "strategy.json")
 MARKET_REGIME_POLICY = _STRATEGY_SETTINGS.market_regime
 LONG_POLICY = _STRATEGY_SETTINGS.long_research
 
@@ -121,7 +121,7 @@ class _AllowAllEligibility:
 
     def status(self) -> IssuerEligibilityRegistryStatus:
         return IssuerEligibilityRegistryStatus(
-            "issuer_eligibility_registry_v1",
+            "issuer_eligibility_registry",
             0,
             0,
             (),
@@ -153,9 +153,9 @@ def _service(
         worker_pool=worker_pool,
         source_lanes=source_lanes,
         cache=cache,
-        source_contract_versions=kwargs.pop("source_contract_versions", {"tushare": "tushare-component-v1"}),
+        source_contract_versions=kwargs.pop("source_contract_versions", {"tushare": "tushare-component"}),
         config_version=kwargs.pop("config_version", "component-default"),
-        schema_version=kwargs.pop("schema_version", "market-v15"),
+        schema_version=kwargs.pop("schema_version", "market_snapshot"),
         wall_clock=wall_clock,
     )
     history = HistoryCache(
@@ -655,7 +655,7 @@ def _quote(code: str = "600001", industry: str = "工业") -> MarketQuote:
         source="fixture",
         source_time=NOW,
         received_time=NOW,
-        data_version="fixture-v1",
+        data_version="fixture",
     )
 
 
@@ -686,7 +686,7 @@ def _tail_minute_bars() -> tuple[MinuteBar, ...]:
             volume=150.0 if index >= 31 else 100.0,
             source="eastmoney_intraday",
             received_time=AFTERNOON,
-            data_version="intraday-v1",
+            data_version="intraday",
         )
         for index in range(61)
     )

@@ -59,7 +59,7 @@ def test_manual_v1_fit_is_deterministic_bounded_and_provenance_bound() -> None:
     assert first.training_rows == 12
     assert first.source_manifest_hash == manifest.content_hash
     assert payload["content_hash"] == first.content_hash
-    assert payload["feature_contract"] == "h0_board_amount_residual_momentum_proxy_v1"
+    assert payload["feature_contract"] == "h0_board_amount_residual_momentum_proxy"
 
 
 def test_manual_v1_fit_rejects_a_manifest_from_another_archive() -> None:

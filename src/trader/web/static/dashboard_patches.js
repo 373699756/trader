@@ -3,7 +3,7 @@
 
   function patchVersionValid(patch) {
     return Boolean(
-      patch && patch.schema_version === "v2_event_v1" && patch.patch_schema_version === 4
+      patch && patch.schema_version === "decision_event" && patch.patch_schema_version === 4
     );
   }
 

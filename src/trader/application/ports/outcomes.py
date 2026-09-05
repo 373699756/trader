@@ -1,4 +1,4 @@
-"""Outcome read/write ports for immutable V2 research evidence."""
+"""Outcome read/write ports for immutable research evidence."""
 
 from collections.abc import Sequence
 from datetime import datetime

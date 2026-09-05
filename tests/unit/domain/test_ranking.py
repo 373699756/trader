@@ -330,7 +330,7 @@ def test_competition_group_mapping_does_not_override_final_industry_cap(
     rows = []
     for index in range(limit + 1):
         feature = feature_factory(code=f"{prefix}{index:03d}", board=board, industry="同业")
-        feature = replace(feature, competition_group_id="same", board_policy_version="v16")
+        feature = replace(feature, competition_group_id="same", board_policy_version="board-policy-fixture")
         rows.append(replace(_recommendation(feature, 90.0 - index), board_rank=index + 1))
 
     selected, skips = _select_top_k_with_audit(

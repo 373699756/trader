@@ -10,9 +10,9 @@ import pytest
 
 from tests.unit.domain.test_decision_identity import NOW, decision
 from trader.application.ports.decision_records import (
+    DecisionCheckpoint,
     DecisionRecordConflictError,
     DecisionRecordUnavailableError,
-    V2DecisionCheckpoint,
 )
 from trader.domain.recommendation.decision_identity import CommittedDecisionRecord
 from trader.domain.recommendation.models import Strategy
@@ -108,7 +108,7 @@ def test_corrupted_committed_record_is_quarantined_and_fails_closed(tmp_path: Pa
     repository.initialize()
     expected = record()
     repository.commit(expected)
-    payload = next((tmp_path / "v2-decisions" / "records").rglob("*.json"))
+    payload = next((tmp_path / "decisions" / "records").rglob("*.json"))
     payload.write_bytes(b"corrupt")
 
     summary = repository.recover()
@@ -116,7 +116,7 @@ def test_corrupted_committed_record_is_quarantined_and_fails_closed(tmp_path: Pa
     assert summary.quarantined == 1
     with pytest.raises(DecisionRecordUnavailableError, match="quarantined"):
         repository.load(Strategy.TOMORROW, expected.trade_date)
-    assert next((tmp_path / "v2-decisions" / "quarantine").rglob("*.json")).is_file()
+    assert next((tmp_path / "decisions" / "quarantine").rglob("*.json")).is_file()
 
 
 def test_invalid_manifest_path_is_quarantined_without_accessing_outside_root(tmp_path: Path) -> None:
@@ -124,7 +124,7 @@ def test_invalid_manifest_path_is_quarantined_without_accessing_outside_root(tmp
     repository.initialize()
     expected = record()
     repository.commit(expected)
-    database = tmp_path / "v2-decisions" / "v2-decisions.sqlite3"
+    database = tmp_path / "decisions" / "decisions.sqlite3"
     with sqlite3.connect(database) as connection:
         connection.execute(
             "UPDATE decision_records SET relative_path = '../outside.json' WHERE strategy = ?",
@@ -138,11 +138,11 @@ def test_invalid_manifest_path_is_quarantined_without_accessing_outside_root(tmp
         repository.load(Strategy.TOMORROW, expected.trade_date)
 
 
-def test_v2_checkpoint_round_trip_is_verified_and_consumed(tmp_path: Path) -> None:
+def test_checkpoint_round_trip_is_verified_and_consumed(tmp_path: Path) -> None:
     repository = SQLiteDecisionRecordRepository(tmp_path)
     repository.initialize()
     boundary = NOW.replace(hour=14, minute=50)
-    checkpoint = V2DecisionCheckpoint(replace(decision(), observed_at=boundary - timedelta(seconds=20)), boundary)
+    checkpoint = DecisionCheckpoint(replace(decision(), observed_at=boundary - timedelta(seconds=20)), boundary)
 
     repository.save_checkpoint(checkpoint)
     repository.save_checkpoint(checkpoint)
@@ -157,8 +157,8 @@ def test_concurrent_checkpoint_writers_retain_the_newest_observation(tmp_path: P
     second = SQLiteDecisionRecordRepository(tmp_path)
     first.initialize()
     boundary = NOW.replace(hour=14, minute=50)
-    older = V2DecisionCheckpoint(replace(decision(), observed_at=boundary - timedelta(seconds=20)), boundary)
-    newer = V2DecisionCheckpoint(
+    older = DecisionCheckpoint(replace(decision(), observed_at=boundary - timedelta(seconds=20)), boundary)
+    newer = DecisionCheckpoint(
         replace(decision(sequence=3), observed_at=boundary - timedelta(seconds=10)),
         boundary,
     )
@@ -182,13 +182,13 @@ def test_corrupted_checkpoint_is_quarantined_and_never_restored(tmp_path: Path) 
     repository = SQLiteDecisionRecordRepository(tmp_path)
     repository.initialize()
     boundary = NOW.replace(hour=14, minute=50)
-    checkpoint = V2DecisionCheckpoint(replace(decision(), observed_at=boundary - timedelta(seconds=20)), boundary)
+    checkpoint = DecisionCheckpoint(replace(decision(), observed_at=boundary - timedelta(seconds=20)), boundary)
     repository.save_checkpoint(checkpoint)
-    payload = next((tmp_path / "v2-decisions" / "checkpoints").rglob("*.json"))
+    payload = next((tmp_path / "decisions" / "checkpoints").rglob("*.json"))
     payload.write_bytes(b"corrupt")
 
     summary = repository.recover()
 
     assert summary.quarantined == 1
     assert repository.load_checkpoint(Strategy.TOMORROW, NOW.date()) is None
-    assert next((tmp_path / "v2-decisions" / "quarantine" / "checkpoint_invalid").rglob("*.json")).is_file()
+    assert next((tmp_path / "decisions" / "quarantine" / "checkpoint_invalid").rglob("*.json")).is_file()

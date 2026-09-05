@@ -12,7 +12,7 @@ from datetime import date, datetime
 from trader.domain.research.historical import SUPPORTED_RESEARCH_BOARDS, ResearchBoard
 from trader.domain.research.tomorrow_features import PointInTimePublishedFact, TomorrowStockFeatures
 
-TOMORROW_FEATURE_SCHEMA_VERSION = "score_tomorrow_point_in_time_features_v1"
+TOMORROW_FEATURE_SCHEMA_VERSION = "score_tomorrow_point_in_time_features"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"
 

@@ -118,8 +118,8 @@ def load_baseline_identity_evidence(runtime: RuntimeSettings) -> PackagedBaselin
             "live_runtime_identity",
             "available",
             None,
-            "running-v2-runtime",
-            source_hash("running-v2-runtime"),
+            "running-runtime",
+            source_hash("running-runtime"),
             required=False,
         ),
     )

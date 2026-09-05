@@ -1,10 +1,17 @@
 import json
 import sqlite3
+from dataclasses import replace
 from datetime import date, timedelta
 
 import pytest
 
 from trader.domain.research.baostock_daily import (
+    BAOSTOCK_CALENDAR_SCHEMA,
+    BAOSTOCK_DAILY_FACT_SCHEMA,
+    BAOSTOCK_INDUSTRY_INTERVAL_SCHEMA,
+    BAOSTOCK_LEGACY_CALENDAR_SCHEMA,
+    BAOSTOCK_LEGACY_DAILY_FACT_SCHEMA,
+    BAOSTOCK_LEGACY_INDUSTRY_INTERVAL_SCHEMA,
     BaoStockCalendar,
     BaoStockDailyFact,
     BaoStockDailySide,
@@ -69,6 +76,95 @@ def _industry(code: str, calendar: BaoStockCalendar) -> tuple[BaoStockIndustryIn
     return (BaoStockIndustryInterval(code, calendar.open_dates[0], None, "银行", "申万一级行业"),)
 
 
+def test_new_baostock_objects_use_stable_schema_names_and_reject_unknown_versions() -> None:
+    spec, calendar, _, _ = _context()
+    fact = BaoStockDailyFact("600001", calendar.open_dates[0], False)
+    interval = BaoStockIndustryInterval("600001", calendar.open_dates[0], None, "银行", "申万一级行业")
+
+    assert calendar.schema_version == BAOSTOCK_CALENDAR_SCHEMA
+    assert fact.schema_version == BAOSTOCK_DAILY_FACT_SCHEMA
+    assert interval.schema_version == BAOSTOCK_INDUSTRY_INTERVAL_SCHEMA
+    with pytest.raises(ValueError, match="schema"):
+        replace(calendar, schema_version="unsupported_calendar_schema")
+    with pytest.raises(ValueError, match="payload"):
+        replace(fact, schema_version="unsupported_daily_fact_schema")
+    with pytest.raises(ValueError, match="interval"):
+        replace(interval, schema_version="unsupported_industry_schema")
+    assert spec.schema_version == "score_baostock_daily_core_v2"
+
+
+def test_sqlite_reads_legacy_calendar_and_training_hashes_without_rewriting_identity(tmp_path) -> None:
+    spec, calendar, universe, versions = _context()
+    legacy_calendar = replace(calendar, schema_version=BAOSTOCK_LEGACY_CALENDAR_SCHEMA)
+    legacy_intervals = tuple(
+        replace(item, schema_version=BAOSTOCK_LEGACY_INDUSTRY_INTERVAL_SCHEMA)
+        for item in _industry("600001", legacy_calendar)
+    )
+    legacy_facts = tuple(
+        replace(BaoStockDailyFact("600001", day, False), schema_version=BAOSTOCK_LEGACY_DAILY_FACT_SCHEMA)
+        for day in legacy_calendar.open_dates
+    )
+    path = tmp_path / "main-6000.sqlite3"
+    shard = SQLiteBaoStockDailyShard(path)
+    shard.initialize(spec, legacy_calendar, universe, versions, legacy_intervals)
+    shard.save_batch(spec, _batch("600001", legacy_calendar))
+    shard.save_training_facts(spec, "600001", legacy_facts, legacy_intervals)
+
+    reopened = SQLiteBaoStockDailyShard(path)
+    context = reopened.context(spec)
+    assert context is not None
+    assert context.calendar.schema_version == BAOSTOCK_LEGACY_CALENDAR_SCHEMA
+    assert context.calendar.content_hash == legacy_calendar.content_hash
+    assert context.industry_intervals[0].schema_version == BAOSTOCK_LEGACY_INDUSTRY_INTERVAL_SCHEMA
+    rows = reopened.read_training_rows(spec, "600001", allowed_dates=frozenset(legacy_calendar.open_dates))
+    assert tuple(item.trade_date for item in rows) == legacy_calendar.open_dates
+
+    with sqlite3.connect(path) as connection:
+        stored_calendar = json.loads(connection.execute("SELECT calendar_json FROM context").fetchone()[0])
+        assert stored_calendar["schema_version"] == BAOSTOCK_LEGACY_CALENDAR_SCHEMA
+        stored_fact_hash = connection.execute("SELECT content_hash FROM daily_facts LIMIT 1").fetchone()[0]
+    assert stored_fact_hash == legacy_facts[0].content_hash
+
+
+def test_new_shard_writes_keep_stable_schema_even_after_legacy_read(tmp_path) -> None:
+    spec, calendar, universe, versions = _context()
+    shard = SQLiteBaoStockDailyShard(tmp_path / "main-6000.sqlite3")
+    shard.initialize(spec, calendar, universe, versions)
+
+    with sqlite3.connect(tmp_path / "main-6000.sqlite3") as connection:
+        stored_calendar = json.loads(connection.execute("SELECT calendar_json FROM context").fetchone()[0])
+    assert stored_calendar["schema_version"] == BAOSTOCK_CALENDAR_SCHEMA
+
+
+def test_legacy_hash_compatibility_does_not_accept_tampered_daily_fact_or_industry_hash(tmp_path) -> None:
+    spec, calendar, universe, versions = _context()
+    legacy_calendar = replace(calendar, schema_version=BAOSTOCK_LEGACY_CALENDAR_SCHEMA)
+    legacy_intervals = tuple(
+        replace(item, schema_version=BAOSTOCK_LEGACY_INDUSTRY_INTERVAL_SCHEMA)
+        for item in _industry("600001", legacy_calendar)
+    )
+    legacy_facts = tuple(
+        replace(BaoStockDailyFact("600001", day, False), schema_version=BAOSTOCK_LEGACY_DAILY_FACT_SCHEMA)
+        for day in legacy_calendar.open_dates
+    )
+    path = tmp_path / "main-6000.sqlite3"
+    shard = SQLiteBaoStockDailyShard(path)
+    shard.initialize(spec, legacy_calendar, universe, versions, legacy_intervals)
+    shard.save_batch(spec, _batch("600001", legacy_calendar))
+    shard.save_training_facts(spec, "600001", legacy_facts, legacy_intervals)
+
+    with sqlite3.connect(path) as connection:
+        connection.execute("UPDATE daily_facts SET content_hash=?", ("0" * 64,))
+    with pytest.raises(BaoStockDailyArtifactConflictError, match="daily fact"):
+        shard.read_training_rows(spec, "600001", allowed_dates=frozenset(legacy_calendar.open_dates))
+
+    with sqlite3.connect(path) as connection:
+        connection.execute("UPDATE daily_facts SET content_hash=?", (legacy_facts[0].content_hash,))
+        connection.execute("UPDATE industry_intervals SET content_hash=?", ("0" * 64,))
+    with pytest.raises(BaoStockDailyArtifactConflictError, match="industry interval"):
+        shard.read_training_rows(spec, "600001", allowed_dates=frozenset(legacy_calendar.open_dates))
+
+
 def test_sqlite_shard_uses_wal_is_idempotent_and_detects_tampering(tmp_path) -> None:
     spec, calendar, universe, versions = _context()
     shard = SQLiteBaoStockDailyShard(tmp_path / "shard.sqlite3")
@@ -131,7 +227,7 @@ def test_partition_manifest_is_order_independent_hash_bound_and_has_no_merged_da
         "shards/main-6000.sqlite3",
         "shards/chinext-3000.sqlite3",
     }
-    assert not (tmp_path / "left" / "score-baostock-daily-core-v2.sqlite3").exists()
+    assert not (tmp_path / "left" / "score-baostock-daily-core.sqlite3").exists()
 
     manifest_path = tmp_path / "left" / "manifest.json"
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))

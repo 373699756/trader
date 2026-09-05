@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from tests.unit.domain.test_decision_identity import NOW, decision
 from trader.application.decisions.decision_core import UnifiedDecisionIndex
-from trader.application.decisions.decision_events import V2DecisionCommitted
+from trader.application.decisions.decision_events import DecisionCommitted
 from trader.domain.recommendation.decision_identity import (
     DecisionOverlay,
     DecisionQuote,
@@ -37,7 +37,7 @@ def test_unified_index_allows_one_concurrent_expected_version_winner() -> None:
     assert sum(item.accepted for item in results) == 1
     assert {item.reason for item in results} == {"accepted", "cas_mismatch"}
     event = next(item.event for item in results if item.accepted)
-    assert isinstance(event, V2DecisionCommitted)
+    assert isinstance(event, DecisionCommitted)
     assert event.items[0].score_components == (("trend", 88.0),)
 
 
@@ -109,8 +109,8 @@ def test_long_projection_uses_the_same_cas_and_overlay_without_a_scored_event() 
         trade_date=NOW.date(),
         sequence=1,
         observed_at=NOW,
-        input_versions=(("quotes", "quotes-v1"),),
-        items=(LongProjectionItem("600001", "core", "quote-v1"),),
+        input_versions=(("quotes", "quotes-fixture"),),
+        items=(LongProjectionItem("600001", "core", "quote-fixture"),),
     )
     published = index.publish(projection, expected_version=None)
     overlay = DecisionOverlay(
@@ -209,7 +209,7 @@ def _quote() -> DecisionQuote:
         12_000_000_000.0,
         "tencent",
         NOW,
-        "quote-v2",
+        "quote-fixture",
     )
 
 

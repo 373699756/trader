@@ -1,4 +1,4 @@
-"""Immutable SQLite audit of committed V2 decision events for research."""
+"""Immutable SQLite audit of committed decision events for research."""
 
 from __future__ import annotations
 
@@ -15,26 +15,26 @@ from typing import Literal, cast
 from zoneinfo import ZoneInfo
 
 from trader.application.decisions.decision_events import (
-    V2CommittedDecisionItem,
-    V2DecisionCommitted,
+    CommittedDecisionItem,
+    DecisionCommitted,
 )
 from trader.application.research.research_audit import (
     LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
     RESEARCH_AUDIT_SCHEMA_VERSION,
+    CommittedResearchAudit,
+    DecisionObservation,
+    ResearchCandidateAudit,
+    ResearchDecisionCandidateAudit,
+    ResearchDecisionSetAudit,
+    ResearchPopulationAudit,
+    ResearchRiskFactAudit,
     ShadowMode,
-    V2CommittedResearchAudit,
-    V2DecisionObservation,
-    V2ResearchCandidateAudit,
-    V2ResearchDecisionCandidateAudit,
-    V2ResearchDecisionSetAudit,
-    V2ResearchPopulationAudit,
-    V2ResearchRiskFactAudit,
 )
 from trader.domain.recommendation.decision_identity import DecisionStage
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 
-LEGACY_RESEARCH_EVENT_SCHEMA_VERSION = "v2_research_committed_event_v1"
-RESEARCH_EVENT_SCHEMA_VERSION = "v2_research_committed_event_v2"
+LEGACY_RESEARCH_EVENT_SCHEMA_VERSION = "research_committed_event_legacy"
+RESEARCH_EVENT_SCHEMA_VERSION = "research_committed_event"
 _SCHEMA_VERSION = RESEARCH_EVENT_SCHEMA_VERSION
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -48,7 +48,7 @@ class ResearchTraceCapacityError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class V2ResearchTraceStatus:
+class ResearchTraceStatus:
     retained: int
     retained_bytes: int
     recorded: int
@@ -62,7 +62,7 @@ class V2ResearchTraceStatus:
 
 
 @dataclass(frozen=True)
-class V2ResearchTradeDateObservation:
+class ResearchTradeDateObservation:
     trade_date: date
     observed_at: datetime
 
@@ -90,12 +90,12 @@ class ResearchTraceLimits:
             self.trade_dates,
         )
         if min(values) < 1:
-            raise ValueError("V2 research trace capacities must be positive")
+            raise ValueError("research trace capacities must be positive")
         if self.payload_bytes > self.trade_date_bytes or self.trade_date_bytes > self.archive_bytes:
-            raise ValueError("V2 research payload capacity cannot exceed total capacity")
+            raise ValueError("research payload capacity cannot exceed total capacity")
 
 
-class SQLiteV2ResearchTraceStore:
+class SQLiteResearchTraceStore:
     """Observer consumer that persists only the generic committed event."""
 
     def __init__(
@@ -132,7 +132,7 @@ class SQLiteV2ResearchTraceStore:
                 self._partitions.mkdir(parents=True, exist_ok=True)
             self._initialized = True
 
-    def record(self, observation: V2DecisionObservation) -> None:
+    def record(self, observation: DecisionObservation) -> None:
         self.initialize()
         event = observation.event
         if (
@@ -143,7 +143,7 @@ class SQLiteV2ResearchTraceStore:
         payload = _observation_bytes(observation)
         payload_hash = _sha256(payload)
         if len(payload) > self._maximum_payload_bytes:
-            raise ResearchTraceCapacityError("V2 research trace payload capacity exhausted")
+            raise ResearchTraceCapacityError("research trace payload capacity exhausted")
         database = self._database_for(event.trade_date)
         with self._lock:
             existing = self._existing_row(event.decision_version, event.trade_date, database)
@@ -155,12 +155,12 @@ class SQLiteV2ResearchTraceStore:
                 if stored.event == event and observation.research_audit is None:
                     self._duplicate += 1
                     return
-                raise ResearchTraceConflictError("V2 research trace identity conflict")
+                raise ResearchTraceConflictError("research trace identity conflict")
             archive = self._archive_summary()
             if event.trade_date not in archive.trade_dates and len(archive.trade_dates) >= self._maximum_trade_dates:
-                raise ResearchTraceCapacityError("V2 research trace trade-date capacity exhausted")
+                raise ResearchTraceCapacityError("research trace trade-date capacity exhausted")
             if archive.retained_bytes + len(payload) > self._maximum_archive_bytes:
-                raise ResearchTraceCapacityError("V2 research trace archive capacity exhausted")
+                raise ResearchTraceCapacityError("research trace archive capacity exhausted")
             self._initialize_database(database)
             with self._connection(database, write=True) as connection:
                 retained = int(connection.execute("SELECT COUNT(*) FROM committed_events").fetchone()[0])
@@ -168,7 +168,7 @@ class SQLiteV2ResearchTraceStore:
                     connection.execute("SELECT COALESCE(SUM(LENGTH(payload)), 0) FROM committed_events").fetchone()[0]
                 )
                 if retained >= self._capacity or retained_bytes + len(payload) > self._maximum_total_bytes:
-                    raise ResearchTraceCapacityError("V2 research trace partition capacity exhausted")
+                    raise ResearchTraceCapacityError("research trace partition capacity exhausted")
                 connection.execute(
                     """
                     INSERT INTO committed_events (
@@ -189,7 +189,7 @@ class SQLiteV2ResearchTraceStore:
                 )
                 self._recorded += 1
 
-    def get(self, decision_version: str) -> V2DecisionObservation | None:
+    def get(self, decision_version: str) -> DecisionObservation | None:
         self.initialize()
         with self._lock:
             for database in self._source_databases():
@@ -224,7 +224,7 @@ class SQLiteV2ResearchTraceStore:
                 dates.update(date.fromisoformat(str(row["trade_date"])) for row in rows)
         return tuple(sorted(dates, reverse=True)[:limit])
 
-    def inspect_first_observations(self, *, limit: int = 40) -> tuple[V2ResearchTradeDateObservation, ...]:
+    def inspect_first_observations(self, *, limit: int = 40) -> tuple[ResearchTradeDateObservation, ...]:
         """Read the earliest committed observation for each retained trade date."""
 
         if limit < 1:
@@ -243,18 +243,18 @@ class SQLiteV2ResearchTraceStore:
                 for row in rows:
                     trade_date = date.fromisoformat(str(row["trade_date"]))
                     observed_at = datetime.fromisoformat(str(row["observed_at"]))
-                    observation = V2ResearchTradeDateObservation(trade_date, observed_at)
+                    observation = ResearchTradeDateObservation(trade_date, observed_at)
                     current = earliest.get(trade_date)
                     if current is None or observation.observed_at < current:
                         earliest[trade_date] = observation.observed_at
         return tuple(
-            V2ResearchTradeDateObservation(trade_date, earliest[trade_date])
+            ResearchTradeDateObservation(trade_date, earliest[trade_date])
             for trade_date in sorted(earliest, reverse=True)[:limit]
         )
 
-    def list_by_trade_date(self, trade_date: date) -> tuple[V2DecisionObservation, ...]:
+    def list_by_trade_date(self, trade_date: date) -> tuple[DecisionObservation, ...]:
         self.initialize()
-        observations: dict[str, V2DecisionObservation] = {}
+        observations: dict[str, DecisionObservation] = {}
         with self._lock:
             for database in self._source_databases(trade_date):
                 with self._connection(database, write=False) as connection:
@@ -271,7 +271,7 @@ class SQLiteV2ResearchTraceStore:
                         continue
                     current = observations.get(version)
                     if current is not None and current != observation:
-                        raise ResearchTraceConflictError("V2 research trace cross-partition identity conflict")
+                        raise ResearchTraceConflictError("research trace cross-partition identity conflict")
                     observations[version] = observation
         return tuple(
             sorted(
@@ -286,13 +286,13 @@ class SQLiteV2ResearchTraceStore:
         strategy: Strategy,
         *,
         cutoff: time = time(hour=14, minute=50),
-    ) -> V2DecisionObservation | None:
+    ) -> DecisionObservation | None:
         """Return the latest complete local input that existed by the research cutoff."""
 
         if cutoff.tzinfo is not None:
             raise ValueError("research cutoff must be a Shanghai wall-clock time")
         cutoff_at = datetime.combine(trade_date, cutoff, tzinfo=_SHANGHAI)
-        eligible: list[V2DecisionObservation] = []
+        eligible: list[DecisionObservation] = []
         for observation in self.list_by_trade_date(trade_date):
             audit = observation.research_audit
             if (
@@ -317,20 +317,20 @@ class SQLiteV2ResearchTraceStore:
         return max(
             eligible,
             key=lambda item: (
-                cast(V2CommittedResearchAudit, item.research_audit).input_observed_at,
+                cast(CommittedResearchAudit, item.research_audit).input_observed_at,
                 item.event.observed_at,
                 item.event.decision_version,
             ),
         )
 
-    def status(self) -> V2ResearchTraceStatus:
+    def status(self) -> ResearchTraceStatus:
         self.initialize()
         return self.inspect_status()
 
-    def inspect_status(self) -> V2ResearchTraceStatus:
+    def inspect_status(self) -> ResearchTraceStatus:
         with self._lock:
             summary = self._archive_summary()
-            return V2ResearchTraceStatus(
+            return ResearchTraceStatus(
                 summary.retained,
                 summary.retained_bytes,
                 self._recorded,
@@ -468,7 +468,7 @@ def _partition_date(path: Path) -> date | None:
         return None
 
 
-def _verified_event(row: sqlite3.Row) -> V2DecisionObservation:
+def _verified_event(row: sqlite3.Row) -> DecisionObservation:
     payload = bytes(row["payload"])
     row_schema = str(row["schema_version"])
     if row_schema not in {LEGACY_RESEARCH_EVENT_SCHEMA_VERSION, RESEARCH_EVENT_SCHEMA_VERSION}:
@@ -489,7 +489,7 @@ def _verified_event(row: sqlite3.Row) -> V2DecisionObservation:
     return observation
 
 
-def _observation_from_bytes(payload: bytes, payload_hash: str) -> V2DecisionObservation:
+def _observation_from_bytes(payload: bytes, payload_hash: str) -> DecisionObservation:
     if _sha256(payload) != payload_hash:
         raise ValueError("research event payload hash mismatch")
     raw = json.loads(payload)
@@ -499,7 +499,7 @@ def _observation_from_bytes(payload: bytes, payload_hash: str) -> V2DecisionObse
 
 
 def _observation_bytes(
-    observation: V2DecisionObservation,
+    observation: DecisionObservation,
     *,
     schema_version: str = RESEARCH_EVENT_SCHEMA_VERSION,
 ) -> bytes:
@@ -537,7 +537,7 @@ def _observation_bytes(
     return json.dumps(payload, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":")).encode()
 
 
-def _item_dict(item: V2CommittedDecisionItem) -> dict[str, object]:
+def _item_dict(item: CommittedDecisionItem) -> dict[str, object]:
     return {
         "code": item.code,
         "action": item.action.value,
@@ -552,7 +552,7 @@ def _item_dict(item: V2CommittedDecisionItem) -> dict[str, object]:
     }
 
 
-def _audit_dict(audit: V2CommittedResearchAudit | None) -> dict[str, object] | None:
+def _audit_dict(audit: CommittedResearchAudit | None) -> dict[str, object] | None:
     if audit is None:
         return None
     payload: dict[str, object] = {
@@ -583,7 +583,7 @@ def _audit_dict(audit: V2CommittedResearchAudit | None) -> dict[str, object] | N
     return payload
 
 
-def _population_audit_dict(item: V2ResearchPopulationAudit) -> dict[str, object]:
+def _population_audit_dict(item: ResearchPopulationAudit) -> dict[str, object]:
     return {
         "code": item.code,
         "board": item.board,
@@ -605,7 +605,7 @@ def _population_audit_dict(item: V2ResearchPopulationAudit) -> dict[str, object]
     }
 
 
-def _risk_fact_audit_dict(item: V2ResearchRiskFactAudit) -> dict[str, object]:
+def _risk_fact_audit_dict(item: ResearchRiskFactAudit) -> dict[str, object]:
     return {
         "risk_code": item.risk_code,
         "source": item.source,
@@ -615,7 +615,7 @@ def _risk_fact_audit_dict(item: V2ResearchRiskFactAudit) -> dict[str, object]:
     }
 
 
-def _candidate_audit_dict(item: V2ResearchCandidateAudit) -> dict[str, object]:
+def _candidate_audit_dict(item: ResearchCandidateAudit) -> dict[str, object]:
     return {
         "code": item.code,
         "board": item.board,
@@ -634,14 +634,14 @@ def _candidate_audit_dict(item: V2ResearchCandidateAudit) -> dict[str, object]:
     }
 
 
-def _decision_set_audit_dict(item: V2ResearchDecisionSetAudit) -> dict[str, object]:
+def _decision_set_audit_dict(item: ResearchDecisionSetAudit) -> dict[str, object]:
     return {
         "decision_version": item.decision_version,
         "candidates": tuple(_decision_candidate_audit_dict(candidate) for candidate in item.candidates),
     }
 
 
-def _decision_candidate_audit_dict(item: V2ResearchDecisionCandidateAudit) -> dict[str, object]:
+def _decision_candidate_audit_dict(item: ResearchDecisionCandidateAudit) -> dict[str, object]:
     return {
         "code": item.code,
         "components": item.components,
@@ -663,7 +663,7 @@ def _decision_candidate_audit_dict(item: V2ResearchDecisionCandidateAudit) -> di
     }
 
 
-def _observation_from_dict(raw: dict[str, object]) -> V2DecisionObservation:
+def _observation_from_dict(raw: dict[str, object]) -> DecisionObservation:
     schema_version = raw.get("schema_version")
     if schema_version not in {
         LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
@@ -673,7 +673,7 @@ def _observation_from_dict(raw: dict[str, object]) -> V2DecisionObservation:
     stage = _text(raw, "stage")
     if stage not in {"local", "hybrid"}:
         raise ValueError("research event stage is invalid")
-    event = V2DecisionCommitted(
+    event = DecisionCommitted(
         event_id=_text(raw, "event_id"),
         strategy=Strategy(_text(raw, "strategy")),
         trade_date=date.fromisoformat(_text(raw, "trade_date")),
@@ -700,11 +700,11 @@ def _observation_from_dict(raw: dict[str, object]) -> V2DecisionObservation:
     )
     if audit is not None and audit.schema_version != expected_audit_schema:
         raise ValueError("research event and audit schemas must advance together")
-    return V2DecisionObservation(event, audit)
+    return DecisionObservation(event, audit)
 
 
-def _item(raw: dict[str, object]) -> V2CommittedDecisionItem:
-    return V2CommittedDecisionItem(
+def _item(raw: dict[str, object]) -> CommittedDecisionItem:
+    return CommittedDecisionItem(
         code=_text(raw, "code"),
         action=RecommendationAction(_text(raw, "action")),
         selected=_boolean(raw, "selected"),
@@ -718,12 +718,12 @@ def _item(raw: dict[str, object]) -> V2CommittedDecisionItem:
     )
 
 
-def _audit(raw: dict[str, object]) -> V2CommittedResearchAudit:
+def _audit(raw: dict[str, object]) -> CommittedResearchAudit:
     schema_version = _text(raw, "schema_version")
-    is_v2 = schema_version == RESEARCH_AUDIT_SCHEMA_VERSION
+    is_current_schema = schema_version == RESEARCH_AUDIT_SCHEMA_VERSION
     if schema_version not in {LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION, RESEARCH_AUDIT_SCHEMA_VERSION}:
         raise ValueError("research audit schema is invalid")
-    audit = V2CommittedResearchAudit(
+    audit = CommittedResearchAudit(
         decision_version=_text(raw, "decision_version"),
         decision_hash=_text(raw, "decision_hash"),
         input_version=_text(raw, "input_version"),
@@ -737,25 +737,25 @@ def _audit(raw: dict[str, object]) -> V2CommittedResearchAudit:
         shadow_mode=cast(ShadowMode, _text(raw, "shadow_mode")),
         deepseek_request_delta=_integer(raw, "deepseek_request_delta"),
         schema_version=schema_version,
-        input_observed_at=(datetime.fromisoformat(_text(raw, "input_observed_at")) if is_v2 else None),
+        input_observed_at=(datetime.fromisoformat(_text(raw, "input_observed_at")) if is_current_schema else None),
         point_in_time_population=(
             tuple(
                 _population_audit(_object(item, "point_in_time_population"))
                 for item in _list(raw.get("point_in_time_population"), "point_in_time_population")
             )
-            if is_v2
+            if is_current_schema
             else ()
         ),
-        point_in_time_population_hash=(_text(raw, "point_in_time_population_hash") if is_v2 else ""),
+        point_in_time_population_hash=(_text(raw, "point_in_time_population_hash") if is_current_schema else ""),
     )
     if audit.content_hash != _text(raw, "content_hash"):
         raise ValueError("research audit content hash mismatch")
     return audit
 
 
-def _population_audit(raw: dict[str, object]) -> V2ResearchPopulationAudit:
+def _population_audit(raw: dict[str, object]) -> ResearchPopulationAudit:
     listing_date_raw = raw.get("listing_date")
-    return V2ResearchPopulationAudit(
+    return ResearchPopulationAudit(
         code=_text(raw, "code"),
         board=_text(raw, "board"),
         industry=_text(raw, "industry"),
@@ -779,8 +779,8 @@ def _population_audit(raw: dict[str, object]) -> V2ResearchPopulationAudit:
     )
 
 
-def _risk_fact_audit(raw: dict[str, object]) -> V2ResearchRiskFactAudit:
-    return V2ResearchRiskFactAudit(
+def _risk_fact_audit(raw: dict[str, object]) -> ResearchRiskFactAudit:
+    return ResearchRiskFactAudit(
         risk_code=_text(raw, "risk_code"),
         source=_text(raw, "source"),
         observed_at=datetime.fromisoformat(_text(raw, "observed_at")),
@@ -789,8 +789,8 @@ def _risk_fact_audit(raw: dict[str, object]) -> V2ResearchRiskFactAudit:
     )
 
 
-def _candidate_audit(raw: dict[str, object]) -> V2ResearchCandidateAudit:
-    return V2ResearchCandidateAudit(
+def _candidate_audit(raw: dict[str, object]) -> ResearchCandidateAudit:
+    return ResearchCandidateAudit(
         code=_text(raw, "code"),
         board=_text(raw, "board"),
         industry=_text(raw, "industry"),
@@ -808,8 +808,8 @@ def _candidate_audit(raw: dict[str, object]) -> V2ResearchCandidateAudit:
     )
 
 
-def _decision_set_audit(raw: dict[str, object]) -> V2ResearchDecisionSetAudit:
-    return V2ResearchDecisionSetAudit(
+def _decision_set_audit(raw: dict[str, object]) -> ResearchDecisionSetAudit:
+    return ResearchDecisionSetAudit(
         decision_version=_text(raw, "decision_version"),
         candidates=tuple(
             _decision_candidate_audit(_object(item, "decision_candidate"))
@@ -818,8 +818,8 @@ def _decision_set_audit(raw: dict[str, object]) -> V2ResearchDecisionSetAudit:
     )
 
 
-def _decision_candidate_audit(raw: dict[str, object]) -> V2ResearchDecisionCandidateAudit:
-    return V2ResearchDecisionCandidateAudit(
+def _decision_candidate_audit(raw: dict[str, object]) -> ResearchDecisionCandidateAudit:
+    return ResearchDecisionCandidateAudit(
         code=_text(raw, "code"),
         components=_score_pairs(raw.get("components")),
         component_coverage_ratio=_number(raw, "component_coverage_ratio"),
@@ -994,7 +994,7 @@ __all__ = [
     "ResearchTraceCapacityError",
     "ResearchTraceConflictError",
     "ResearchTraceLimits",
-    "SQLiteV2ResearchTraceStore",
-    "V2ResearchTradeDateObservation",
-    "V2ResearchTraceStatus",
+    "SQLiteResearchTraceStore",
+    "ResearchTradeDateObservation",
+    "ResearchTraceStatus",
 ]

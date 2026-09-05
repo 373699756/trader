@@ -149,11 +149,11 @@ class ChallengerVariantReplay:
     def __post_init__(self) -> None:
         _hash(self.parameter_manifest_hash, "Score-R4 parameter manifest")
         expected_version = {
-            "continuous_entry": "continuous_entry_v1",
-            "coverage_shrink": "coverage_shrink_v1",
-            "candidate_upper_bound": "candidate_upper_bound_v1",
-            "heat_weak_structure": "heat_weak_structure_v1",
-            "combined_v1": "combined_v1",
+            "continuous_entry": "continuous_entry",
+            "coverage_shrink": "coverage_shrink_baseline",
+            "candidate_upper_bound": "candidate_upper_bound",
+            "heat_weak_structure": "heat_weak_structure",
+            "combined": "combined",
         }[self.variant_id]
         if self.variant_version != expected_version:
             raise ValueError("Score-R4 variant identity and version do not match")
@@ -179,7 +179,7 @@ class ScoreR4ChallengerReport:
         default=SCORE_P0_V1_SPEC.content_hash,
         metadata={"exclude_from_v1_hash": True},
     )
-    schema_version: str = "score_r4_challenger_replay_v1"
+    schema_version: str = "score_r4_challenger_replay_baseline"
     deepseek_http_request_delta: Literal[0] = 0
     content_hash: str = dataclasses.field(init=False)
 
@@ -191,9 +191,9 @@ class ScoreR4ChallengerReport:
         if self.research_spec_hash != spec.content_hash:
             raise ValueError("Score-R4 report research spec hash is invalid")
         expected_schema = (
-            "score_r4_challenger_replay_v2"
+            "score_r4_challenger_replay_candidate"
             if self.research_identity == "score_p0_v2"
-            else "score_r4_challenger_replay_v1"
+            else "score_r4_challenger_replay_baseline"
         )
         if self.schema_version != expected_schema or self.deepseek_http_request_delta != 0:
             raise ValueError("Score-R4 report identity or DeepSeek isolation is invalid")
@@ -202,7 +202,7 @@ class ScoreR4ChallengerReport:
             "coverage_shrink",
             "candidate_upper_bound",
             "heat_weak_structure",
-            "combined_v1",
+            "combined",
         )
         if tuple(item.variant_id for item in self.variants) != expected_ids:
             raise ValueError("Score-R4 report must contain the fixed five-variant family")

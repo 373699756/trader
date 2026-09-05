@@ -88,7 +88,7 @@ class TomorrowResearchArtifactRef:
     parent_hashes: tuple[str, ...] = ()
     terminal_status: TomorrowResearchTerminalStatus | None = None
     evidence_markers: tuple[str, ...] = ()
-    schema_version: str = "tomorrow_research_artifact_ref_v1"
+    schema_version: str = "tomorrow_research_artifact_ref"
     production_authority: bool = False
 
     def __post_init__(self) -> None:
@@ -103,7 +103,7 @@ class TomorrowResearchArtifactRef:
         markers = tuple(sorted(set(self.evidence_markers)))
         if len(markers) != len(self.evidence_markers) or any(_IDENTITY.fullmatch(value) is None for value in markers):
             raise ValueError("Tomorrow research artifact evidence markers are invalid")
-        if self.schema_version != "tomorrow_research_artifact_ref_v1" or self.production_authority:
+        if self.schema_version != "tomorrow_research_artifact_ref" or self.production_authority:
             raise ValueError("Tomorrow research artifact contract cannot authorize production")
         object.__setattr__(self, "parent_hashes", parents)
         object.__setattr__(self, "evidence_markers", markers)
@@ -112,7 +112,7 @@ class TomorrowResearchArtifactRef:
 @dataclass(frozen=True)
 class TomorrowResearchArtifactGraph:
     artifacts: tuple[TomorrowResearchArtifactRef, ...]
-    schema_version: str = "tomorrow_research_artifact_graph_v1"
+    schema_version: str = "tomorrow_research_artifact_graph"
     production_authority: bool = False
     automatic_model_update: bool = False
     content_hash: str = dataclasses.field(init=False)
@@ -130,7 +130,7 @@ class TomorrowResearchArtifactGraph:
             raise ValueError("Tomorrow research artifact cannot reference itself as a parent")
         if _contains_cycle(artifacts):
             raise ValueError("Tomorrow research artifact graph contains a parent cycle")
-        if self.schema_version != "tomorrow_research_artifact_graph_v1":
+        if self.schema_version != "tomorrow_research_artifact_graph":
             raise ValueError("Tomorrow research artifact graph schema is invalid")
         if self.production_authority or self.automatic_model_update:
             raise ValueError("Tomorrow research artifact graph cannot authorize production or automatic updates")
@@ -149,7 +149,7 @@ class TomorrowResearchResourceProbe:
     peak_rss_mb: int
     available_disk_gb: float
     estimated_full_run_hours: float
-    schema_version: str = "tomorrow_research_resource_probe_v1"
+    schema_version: str = "tomorrow_research_resource_probe"
 
     def __post_init__(self) -> None:
         if min(self.pilot_stocks, self.pilot_trade_dates, self.cpu_threads, self.peak_rss_mb) < 1:
@@ -158,7 +158,7 @@ class TomorrowResearchResourceProbe:
             raise ValueError("Tomorrow research resource measurements must be finite")
         if self.available_disk_gb < 0.0 or self.estimated_full_run_hours <= 0.0:
             raise ValueError("Tomorrow research resource measurements are invalid")
-        if self.schema_version != "tomorrow_research_resource_probe_v1":
+        if self.schema_version != "tomorrow_research_resource_probe":
             raise ValueError("Tomorrow research resource probe schema is invalid")
 
     @property
@@ -186,7 +186,7 @@ class TomorrowResearchEvidencePartitionRef:
     first_trade_date: date
     last_trade_date: date
     file_format: Literal["parquet"] = "parquet"
-    schema_version: str = "tomorrow_research_evidence_partition_ref_v1"
+    schema_version: str = "tomorrow_research_evidence_partition_ref"
 
     def __post_init__(self) -> None:
         path = PurePosixPath(self.relative_path)
@@ -201,7 +201,7 @@ class TomorrowResearchEvidencePartitionRef:
         _validate_hash(self.schema_hash, "evidence schema")
         if self.row_count < 1 or self.first_trade_date > self.last_trade_date:
             raise ValueError("Tomorrow research evidence partition range is invalid")
-        if self.file_format != "parquet" or self.schema_version != "tomorrow_research_evidence_partition_ref_v1":
+        if self.file_format != "parquet" or self.schema_version != "tomorrow_research_evidence_partition_ref":
             raise ValueError("Tomorrow research evidence partition contract is invalid")
 
 
@@ -214,7 +214,7 @@ class TomorrowResearchStageHandoff:
     resource_probe: TomorrowResearchResourceProbe | None = None
     outcome: TomorrowResearchHandoffOutcome = "stage_ready"
     failure_reasons: tuple[str, ...] = ()
-    schema_version: str = "tomorrow_research_stage_handoff_v1"
+    schema_version: str = "tomorrow_research_stage_handoff"
     production_authority: bool = False
     automatic_model_update: bool = False
     content_hash: str = dataclasses.field(init=False)
@@ -245,7 +245,7 @@ class TomorrowProductionReadinessAudit:
     graph_hash: str
     blockers: tuple[str, ...]
     manual_authorization_hash: str | None
-    schema_version: str = "tomorrow_production_readiness_audit_v1"
+    schema_version: str = "tomorrow_production_readiness_audit"
     production_authority: bool = False
     automatic_model_update: bool = False
     content_hash: str = dataclasses.field(init=False)
@@ -258,7 +258,7 @@ class TomorrowProductionReadinessAudit:
         expected = "production_adaptation_blocked" if blockers else "production_adaptation_eligible"
         if self.status != expected:
             raise ValueError("Tomorrow production readiness status is inconsistent")
-        if self.schema_version != "tomorrow_production_readiness_audit_v1":
+        if self.schema_version != "tomorrow_production_readiness_audit":
             raise ValueError("Tomorrow production readiness audit schema is invalid")
         if self.production_authority or self.automatic_model_update:
             raise ValueError("Tomorrow production readiness audit cannot grant production authority")
@@ -282,7 +282,7 @@ def derive_tomorrow_research_run_id(graph: TomorrowResearchArtifactGraph) -> str
         return None
     return canonical_hash(
         {
-            "schema_version": "tomorrow_research_run_identity_v1",
+            "schema_version": "tomorrow_research_run_identity",
             "sealed_input_and_resource_probe_hash": resource_probe.content_hash,
         }
     )
@@ -409,7 +409,7 @@ def _validate_stage_reasons(
 
 
 def _validate_stage_identity(handoff: TomorrowResearchStageHandoff) -> None:
-    if handoff.schema_version != "tomorrow_research_stage_handoff_v1":
+    if handoff.schema_version != "tomorrow_research_stage_handoff":
         raise ValueError("Tomorrow research stage handoff schema is invalid")
     if handoff.production_authority or handoff.automatic_model_update:
         raise ValueError("Tomorrow research stage cannot authorize production or automatic updates")

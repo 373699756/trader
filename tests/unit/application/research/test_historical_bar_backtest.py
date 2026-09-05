@@ -60,7 +60,7 @@ def test_bar_backtest_keeps_training_and_validation_separate_and_has_no_promotio
     assert "historical_st_status_not_reconstructed" in report.limitations
     assert report.archive_manifest.universe_hash == "1" * 64
     assert report.archive_manifest.histories[0].content_hash == "3" * 64
-    assert report.screening_version == "ohlcv_cross_section_v1"
+    assert report.screening_version == "ohlcv_cross_section"
     assert report.training_window == (date(2024, 7, 1), date(2025, 12, 31))
     assert report.validation_window == (date(2026, 1, 1), date(2026, 7, 31))
     assert report.round_trip_cost_bps == 20

@@ -53,7 +53,7 @@ class HistoricalPredictionRecord:
     filter_state: ResidualFilterState
     selected: bool
     selection_reason: str
-    schema_version: str = "historical_prediction_record_v1"
+    schema_version: str = "historical_prediction_record"
     production_authority: bool = False
     content_hash: str = dataclasses.field(init=False)
 
@@ -62,7 +62,7 @@ class HistoricalPredictionRecord:
         _validate_prediction_value(self)
         if self.selected and self.filter_state != "passed":
             raise ValueError("historical prediction cannot select an ineligible row")
-        if self.schema_version != "historical_prediction_record_v1" or self.production_authority:
+        if self.schema_version != "historical_prediction_record" or self.production_authority:
             raise ValueError("historical prediction cannot authorize production")
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
@@ -110,7 +110,7 @@ class HistoricalOutcomeRecord:
     mae_atr20: float | None
     severe_loss: bool | None
     label_status: ResidualLabelStatus
-    schema_version: str = "historical_outcome_record_v1"
+    schema_version: str = "historical_outcome_record"
     production_authority: bool = False
     content_hash: str = dataclasses.field(init=False)
 
@@ -143,7 +143,7 @@ class HistoricalOutcomeRecord:
                 raise ValueError("historical outcome severe-loss label is inconsistent")
         else:
             raise ValueError("historical outcome label status is invalid")
-        if self.schema_version != "historical_outcome_record_v1" or self.production_authority:
+        if self.schema_version != "historical_outcome_record" or self.production_authority:
             raise ValueError("historical outcome cannot authorize production")
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
@@ -153,7 +153,7 @@ class JoinedHistoricalResidual:
     prediction: HistoricalPredictionRecord
     outcome: HistoricalOutcomeRecord
     prediction_error: float
-    schema_version: str = "historical_joined_residual_v1"
+    schema_version: str = "historical_joined_residual"
     production_authority: bool = False
     content_hash: str = dataclasses.field(init=False)
 
@@ -171,7 +171,7 @@ class JoinedHistoricalResidual:
         expected = self.outcome.actual_net_excess_return - self.prediction.predicted_net_excess_return
         if not math.isclose(self.prediction_error, expected, rel_tol=0.0, abs_tol=1e-12):
             raise ValueError("historical residual prediction error is inconsistent")
-        if self.schema_version != "historical_joined_residual_v1" or self.production_authority:
+        if self.schema_version != "historical_joined_residual" or self.production_authority:
             raise ValueError("historical residual cannot authorize production")
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
@@ -187,7 +187,7 @@ class HistoricalResidualSummary:
     mean_absolute_error: float
     direction_hit_rate: float
     group_metrics: tuple[tuple[str, str, int, float, float], ...]
-    schema_version: str = "historical_prediction_residual_summary_v1"
+    schema_version: str = "historical_prediction_residual_summary"
     terminal_holdout_opened: bool = False
     production_authority: bool = False
     content_hash: str = dataclasses.field(init=False)

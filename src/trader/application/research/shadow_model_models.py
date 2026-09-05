@@ -19,8 +19,8 @@ from trader.domain.research.historical import SUPPORTED_RESEARCH_BOARDS, CostSet
 
 ShadowHorizon = Literal["tomorrow", "d25"]
 ShadowWindowMode = Literal["expanding", "rolling"]
-SHADOW_REPORT_SCHEMA_VERSION = "score_tomorrow_shadow_report_v1"
-SHADOW_IMPLEMENTATION_VERSION = "score_tomorrow_shadow_models_v1"
+SHADOW_REPORT_SCHEMA_VERSION = "score_tomorrow_shadow_report"
+SHADOW_IMPLEMENTATION_VERSION = "score_tomorrow_shadow_models"
 SHADOW_RANDOM_SEED = 20260828
 SHADOW_COST_BPS = 20
 SHADOW_MIN_TRAIN_DATES = 20

@@ -8,6 +8,8 @@ All notable changes to this project are documented here.
 
 - 用户要求除评分 V1/V2/V3 外清理版本控制并禁止继续增加 `V几` 命名。现将规则写入 `AGENTS.md`，并同步到产品与策略权威文档：评分生产档位是唯一允许新增的项目版本命名；API、SSE、配置、运行目录、数据集、特征、报告、缓存、模块、测试和 Web 资源不得新增 `vN`。现有非评分后缀若是不可变历史审计、持久化解码或跨进程身份，只能原样只读兼容，不能晋级、迁移或复制扩展；供应商模型名、日期、包版本和 content hash 不作为项目版本控制。Verification: `git diff --check`、文档链接与格式检查。Residual Risks: 仓库中既有历史 schema/研究身份和 V2 架构路径仍需保持兼容，未在本批次破坏性重命名；如需删除这些不可变身份，必须由用户另行确认并单独完成 API、SSE、持久化和数据迁移批次。
 
+- 用户要求继续完成非评分 `vN/VN` 命名清理并立即交付。本轮移除行情来源 contract fallback、Tomorrow 研究 artifact kind、bootstrap 统计计划、训练命令输出 schema、运行配置身份和质量 fixture 中的普通版本后缀；评分 V1/V2/V3、供应商模型名及既有历史/持久化身份保持不变。新增回归断言确保未配置来源的 cache identity 使用稳定的 `<source>-component` 身份。Verification: 定向命名、行情服务、研究工件、入口、生产模型和字段质量测试通过；`make format-check`、`make lint`、`make type-check`、`make test`、`make package` 和 `git diff --check` 均通过。Residual Risks: V3 训练链中作为跨进程 schema 的既有 `_v1` 后缀仍按兼容边界保留，未改变其解码身份。
+
 ### Added
 
 - 用户反馈 15:00 后明日/2-5 日已完成评分，但“评分最高”卡片在没有达到观察池门槛时为空，并要求新股不足 2000 个交易日时不要用错位日期训练。根因是 DecisionView/SSE replacement 只投影正式或观察项，训练特征和标签则按个股返回行号取“下一行”，会跨停牌或上市前缺口。现新增公开 `top_scores` 投影，Today、Tomorrow、D25 均按全部已评分候选稳定返回最高三只，主推荐表和观察池语义不变；未就绪草稿也提供独立最高三项。V3 训练改用统一交易所开市日历，所有特征窗口和下一交易日标签必须命中该股票实际下载记录，缺日样本直接跳过，不补造上市前数据。DecisionView schema 升为 `v2_decision_view_v4` 并同步 release identity。另修正打包契约夹具排除易失 SQLite WAL/SHM sidecar，避免复制运行数据时竞态失败。Verification: 受影响定向 Python 测试、`node tests/js/test_dashboard_state.js`、`make format-check`、`make lint`、`make type-check`、全量 `make test`、`make package` 和 `git diff --check` 均通过；`make browser-performance-check` 已执行但因主机未安装 `geckodriver` 返回 `browser_refresh_failed`，不作为通过证据。Residual Risks: 当前机器仍无合格 BaoStock 全量 manifest，尚未进行真实 V3 训练或跨 PC 实物迁移验证；Firefox 桌面门禁需在安装 geckodriver 的环境补跑；未就绪页面的最高分依赖同一内存草稿仍在保留。`Regression-Key: top-score-and-calendar-alignment-v1`。
@@ -289,6 +291,19 @@ All notable changes to this project are documented here.
   `Regression-Key: baostock-daily-core-v2-data-plane-v1`。
 
 ### Fixed
+
+- 用户中断 BaoStock 历史下载后再次执行 `./run.sh download_history`，在 `checkpoint_loading` 阶段立即得到
+  `baostockdailyartifactconflicterror`，无法继续已有断点。确认根因是既有分片仍保存清理前的
+  `baostock_exchange_calendar_v2`、`baostock_daily_fact_v1` 和 `baostock_industry_interval_v1` 持久化身份，
+  当前稳定命名校验却只接受无后缀名称；这不是供应商请求失败，也没有删除历史数据。现为 BaoStock 恢复增加
+  严格的历史持久化 allowlist：上下文保留旧 calendar schema 以重算原 context hash，日线事实和行业区间
+  在当前/既有 schema 中仅接受唯一匹配的原 content hash；未知 schema、篡改 hash 或双重匹配仍失败关闭。
+  新建对象和新写入继续使用无后缀稳定 schema，不引入新的项目版本控制。`Regression-Key: baostock-resume-legacy-schema-v1`。
+  Verification: 旧 calendar 上下文、旧事实/行业 hash、篡改拒绝、新对象稳定命名的回归测试通过；BaoStock
+  相关定向 unit/contract 测试、受影响文件 Ruff/格式检查、3 个源码文件 mypy 通过；当前 2000 日归档只读恢复探针
+  成功解码 5,453 个证券上下文和 2,000 个交易日，并可读取既有训练行，未在检查点阶段触发 artifact conflict。
+  全量下载未在本批启动，供应商登录/网络可用性仍需外部环境验证。Residual Risks: 归档中尚未完成的证券仍受
+  BaoStock 供应商登录、限频和逐股失败影响；历史 schema 仅可读兼容，不能被新代码用于新版本或迁移写回。
 
 - 用户要求清理上一批遗留的全部未提交文件，并只提交有用改动。Review 确认历史 recent 特征与证券主数据
   在相同观察时刻并发写入不同内容时，数据平面按既有 first-wins 契约抛出 `DataPlaneConflictError`；

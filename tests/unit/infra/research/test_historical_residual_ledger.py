@@ -85,7 +85,7 @@ def test_sqlite_ledger_rejects_prediction_payload_tampering(tmp_path) -> None:
     ledger.append_predictions((_prediction(),))
     ledger.append_outcomes((_outcome(),))
     with sqlite3.connect(path) as connection:
-        connection.execute("UPDATE historical_prediction_v1 SET content_hash = ?", ("f" * 64,))
+        connection.execute("UPDATE historical_prediction SET content_hash = ?", ("f" * 64,))
 
     with pytest.raises(HistoricalResidualLedgerCorruptionError, match="prediction"):
         ledger.read_joined("today", _HASH_A)
@@ -96,10 +96,10 @@ def test_sqlite_ledger_rejects_unknown_payload_fields(tmp_path) -> None:
     ledger = SQLiteHistoricalResidualLedger(path)
     ledger.append_predictions((_prediction(),))
     with sqlite3.connect(path) as connection:
-        payload = json.loads(connection.execute("SELECT payload FROM historical_prediction_v1").fetchone()[0])
+        payload = json.loads(connection.execute("SELECT payload FROM historical_prediction").fetchone()[0])
         payload["unexpected"] = True
         connection.execute(
-            "UPDATE historical_prediction_v1 SET payload = ?",
+            "UPDATE historical_prediction SET payload = ?",
             (json.dumps(payload, sort_keys=True, separators=(",", ":")),),
         )
 

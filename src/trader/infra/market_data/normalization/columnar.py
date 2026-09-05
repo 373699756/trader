@@ -15,10 +15,10 @@ from trader.application.ports import data_plane_contracts
 from trader.domain.market.models import CanonicalMarketSnapshot, FeatureSnapshot, MarketQuote
 from trader.domain.market.research import ResearchObservation
 
-_CHANGE_SCHEMA_VERSION = "market_change_set_v1"
-_QUOTE_SCHEMA_VERSION = "columnar_quote_batch_v1"
-_RESEARCH_SCHEMA_VERSION = "columnar_research_batch_v1"
-_FEATURE_SCHEMA_VERSION = "columnar_feature_batch_v1"
+_CHANGE_SCHEMA_VERSION = "market_change_set_legacy"
+_QUOTE_SCHEMA_VERSION = "columnar_quote_batch"
+_RESEARCH_SCHEMA_VERSION = "columnar_research_batch"
+_FEATURE_SCHEMA_VERSION = "columnar_feature_batch"
 _EMPTY_MANIFEST_HASH = hashlib.sha256(canonical_json_bytes(())).hexdigest()
 _NO_VERSION = "not_applicable"
 _FIELD_FAMILIES: dict[str, str] = {

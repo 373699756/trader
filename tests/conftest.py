@@ -36,8 +36,8 @@ def recommendation_policy() -> RecommendationPolicy:
         "financial_deterioration": RiskRule("financial_deterioration", "high", 6.0, 0.7, "financial"),
     }
     return RecommendationPolicy(
-        strategy_version="strategy-v6",
-        fusion_version="fusion-v2",
+        strategy_version="strategy-current",
+        fusion_version="fusion-fixture",
         fusion=FusionPolicy(),
         selection=SelectionPolicy(
             default_top_k=6,

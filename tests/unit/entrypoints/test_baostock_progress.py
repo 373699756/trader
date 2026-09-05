@@ -46,7 +46,7 @@ def test_cli_progress_writer_flushes_stage_totals_and_database_locations() -> No
         "rate_limit_cooldown_seconds": 0.0,
         "checkpointed_codes": 15,
         "remaining_codes": 5198,
-        "schema_version": "baostock_runtime_progress_v1",
+        "schema_version": "baostock_runtime_progress",
         "sessions": 2000,
         "source": "baostock",
         "universe_count": 5211,

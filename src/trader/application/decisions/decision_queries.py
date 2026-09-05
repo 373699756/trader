@@ -1,4 +1,4 @@
-"""Unified read models for every active V2 strategy."""
+"""Unified read models for every active strategy."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from trader.domain.recommendation.models import RecommendationAction, Strategy
 
 DecisionViewStatus = Literal["ready", "not_ready", "not_applicable"]
 ScoreStatus = Literal["scored", "not_applicable"]
-DECISION_VIEW_SCHEMA_VERSION = "v2_decision_view_v4"
+DECISION_VIEW_SCHEMA_VERSION = "decision_view"
 
 
 class DecisionHistoryReader(Protocol):

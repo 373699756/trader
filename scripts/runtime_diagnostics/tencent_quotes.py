@@ -79,7 +79,7 @@ def _collect(codes: tuple[str, ...], args: argparse.Namespace) -> dict[str, obje
             time.sleep(args.interval_seconds)
     distinct_versions = {code: len(set(values)) for code, values in sorted(versions.items())}
     return {
-        "schema_version": "tencent-quote-sampling-v1",
+        "schema_version": "tencent-quote-sampling",
         "collected_at": datetime.now(_SHANGHAI).isoformat(),
         "codes": list(codes),
         "requested_interval_seconds": args.interval_seconds,
@@ -99,7 +99,7 @@ def main() -> int:
         report = _collect(codes, args)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         report = {
-            "schema_version": "tencent-quote-sampling-v1",
+            "schema_version": "tencent-quote-sampling",
             "status": "failed",
             "error": type(exc).__name__,
         }

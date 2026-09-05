@@ -84,7 +84,7 @@ class HistoricalStrategyResearchResult:
     status: Literal["historical_candidate_ready", "historical_rejected", "historical_data_insufficient"]
     terminal_holdout_status: Literal["terminal_holdout_not_opened"] = "terminal_holdout_not_opened"
     production_authority: bool = False
-    schema_version: str = "historical_strategy_candidate_result_v1"
+    schema_version: str = "historical_strategy_candidate_result"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -98,7 +98,7 @@ class HistoricalStrategyResearchResult:
         if (
             self.production_authority
             or self.terminal_holdout_status != "terminal_holdout_not_opened"
-            or self.schema_version != "historical_strategy_candidate_result_v1"
+            or self.schema_version != "historical_strategy_candidate_result"
         ):
             raise ValueError("historical strategy result cannot authorize production or open holdout")
         object.__setattr__(self, "content_hash", _canonical_hash(self))
@@ -108,13 +108,13 @@ class HistoricalStrategyResearchResult:
 class HistoricalCodexBBatchResult:
     strategies: tuple[HistoricalStrategyResearchResult, ...]
     production_authority: bool = False
-    schema_version: str = "historical_codex_b_batch_result_v1"
+    schema_version: str = "historical_codex_b_batch_result"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
         if tuple(item.strategy for item in self.strategies) != _STRATEGIES:
             raise ValueError("Codex B batch must contain Today, Tomorrow, and D25 in fixed order")
-        if self.production_authority or self.schema_version != "historical_codex_b_batch_result_v1":
+        if self.production_authority or self.schema_version != "historical_codex_b_batch_result":
             raise ValueError("Codex B batch cannot authorize production")
         object.__setattr__(self, "content_hash", _canonical_hash(self))
 
@@ -138,7 +138,7 @@ class HistoricalCodexBStrategyTerminal:
     model_artifact_hash: str | None = None
     terminal_holdout_status: Literal["terminal_holdout_not_opened"] = "terminal_holdout_not_opened"
     production_authority: bool = False
-    schema_version: str = "historical_codex_b_strategy_terminal_v1"
+    schema_version: str = "historical_codex_b_strategy_terminal"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -165,7 +165,7 @@ class HistoricalCodexBStrategyTerminal:
             raise ValueError("Codex B insufficient terminal cannot claim Holm or outcome rows")
         if self.terminal_holdout_status != "terminal_holdout_not_opened" or self.production_authority:
             raise ValueError("Codex B terminal cannot open holdout or authorize production")
-        if self.schema_version != "historical_codex_b_strategy_terminal_v1":
+        if self.schema_version != "historical_codex_b_strategy_terminal":
             raise ValueError("Codex B terminal schema is invalid")
         object.__setattr__(self, "failure_reasons", tuple(sorted(set(self.failure_reasons))))
         object.__setattr__(self, "content_hash", _canonical_hash(self))
@@ -187,7 +187,7 @@ class HistoricalCodexBInsufficientBatch:
     joint_model_artifact_hash: str | None = None
     terminal_holdout_status: Literal["terminal_holdout_not_opened"] = "terminal_holdout_not_opened"
     production_authority: bool = False
-    schema_version: str = "historical_codex_b_insufficient_batch_v1"
+    schema_version: str = "historical_codex_b_insufficient_batch"
     joint_report_hash: str = dataclasses.field(init=False)
     content_hash: str = dataclasses.field(init=False)
 
@@ -197,7 +197,7 @@ class HistoricalCodexBInsufficientBatch:
         _validate_codex_b_batch_outcome(self)
         if self.terminal_holdout_status != "terminal_holdout_not_opened" or self.production_authority:
             raise ValueError("Codex B batch cannot open holdout or authorize production")
-        if self.schema_version != "historical_codex_b_insufficient_batch_v1":
+        if self.schema_version != "historical_codex_b_insufficient_batch":
             raise ValueError("Codex B batch schema is invalid")
         residuals = tuple(sorted(self.parent_residual_ledger_hashes, key=lambda item: _STRATEGIES.index(item[0])))
         object.__setattr__(self, "parent_residual_ledger_hashes", residuals)

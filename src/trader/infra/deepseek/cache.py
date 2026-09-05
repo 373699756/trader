@@ -252,9 +252,9 @@ class ReviewCache:
                 request={"raw_key": key},
                 trade_date=_candidate_trade_date(candidate),
                 phase="review",
-                source_contract_version="deepseek_review_v17",
+                source_contract_version="deepseek_review",
                 config_version=self._config_version,
-                schema_version="deepseek_cache_v17",
+                schema_version="deepseek_cache",
             )
         )
 
@@ -267,9 +267,9 @@ class ReviewCache:
                 request={"strategy_key": key},
                 trade_date="embedded",
                 phase="review",
-                source_contract_version="deepseek_review_v17",
+                source_contract_version="deepseek_review",
                 config_version=self._config_version,
-                schema_version="deepseek_cache_v17",
+                schema_version="deepseek_cache",
             )
         )
 
@@ -282,9 +282,9 @@ class ReviewCache:
                 request={"code": code},
                 trade_date=trade_date,
                 phase="review",
-                source_contract_version="deepseek_review_v17",
+                source_contract_version="deepseek_review",
                 config_version=self._config_version,
-                schema_version="deepseek_cache_v17",
+                schema_version="deepseek_cache",
             )
         )
 

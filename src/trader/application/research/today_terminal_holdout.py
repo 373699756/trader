@@ -29,7 +29,7 @@ class TodayTerminalHoldoutService:
         return evaluate_terminal_holdout(
             TerminalHoldoutEvaluation(
                 strategy="today",
-                research_identity="score_today_historical_candidate_v1",
+                research_identity="score_today_historical_candidate",
                 parent_hash=self._parent.parent_hash,
                 candidate_hash=self._parent.candidate_hash,
                 rows=self._rows,

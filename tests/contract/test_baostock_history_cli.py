@@ -40,7 +40,7 @@ def test_download_history_contract_exposes_typed_live_progress_and_partition_rol
         expected_records=5211,
     )
 
-    assert progress.schema_version == "baostock_runtime_progress_v1"
+    assert progress.schema_version == "baostock_runtime_progress"
     assert progress.universe_count == progress.expected_records
 
 

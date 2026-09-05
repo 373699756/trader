@@ -42,10 +42,10 @@ def decision(
         observed_at=NOW,
         stage=stage,
         parent_version=parent_version,
-        input_versions=(("market", "market-v1"), ("daily", "daily-v1")),
-        config_version="config-v1",
-        strategy_version="strategy-v1",
-        fusion_version="fusion-v1",
+        input_versions=(("market", "market-initial"), ("daily", "daily-current")),
+        config_version="config-current",
+        strategy_version="strategy-current",
+        fusion_version="fusion-current",
         items=(
             DecisionItem(
                 code="600001",
@@ -67,7 +67,7 @@ def decision(
                     12_000_000_000.0,
                     "tencent",
                     NOW - timedelta(minutes=5),
-                    "quote-v1",
+                    "quote-fixture",
                 ),
             ),
         ),
@@ -113,12 +113,12 @@ def test_long_projection_has_no_scoring_fields_and_stable_identity() -> None:
         trade_date=NOW.date(),
         sequence=1,
         observed_at=NOW,
-        input_versions=(("quotes", "quotes-v1"),),
+        input_versions=(("quotes", "quotes-fixture"),),
         items=(
             LongProjectionItem(
                 "600001",
                 "group:001",
-                "quote-v1",
+                "quote-fixture",
                 name="甲公司",
                 industry="设备",
                 price=10.5,
@@ -145,10 +145,10 @@ def test_long_projection_preserves_watchlist_order_and_allows_missing_placeholde
         trade_date=NOW.date(),
         sequence=1,
         observed_at=NOW,
-        input_versions=(("watchlist", "watchlist-v1"),),
+        input_versions=(("watchlist", "watchlist-fixture"),),
         items=(
-            LongProjectionItem("600002", "group:002", "missing:watchlist-v1"),
-            LongProjectionItem("600001", "group:001", "missing:watchlist-v1"),
+            LongProjectionItem("600002", "group:002", "missing:watchlist-fixture"),
+            LongProjectionItem("600001", "group:001", "missing:watchlist-fixture"),
         ),
     )
 
@@ -167,7 +167,7 @@ def test_overlay_and_formal_record_validate_parent_time_scope_and_hash() -> None
         12_500_000_000.0,
         "tencent",
         NOW,
-        "quote-v2",
+        "quote-fixture",
     )
     overlay = DecisionOverlay(
         strategy=Strategy.TOMORROW,
@@ -201,7 +201,7 @@ def test_formal_record_round_trip_preserves_optional_distinct_coverage() -> None
     assert restored.payload_hash == record.payload_hash
 
 
-def test_v2_formal_record_round_trip_preserves_display_metadata_and_selection_diagnostics() -> None:
+def test_formal_record_round_trip_preserves_display_metadata_and_selection_diagnostics() -> None:
     item = replace(
         decision().items[0],
         setup_type="breakout",

@@ -23,14 +23,14 @@ def test_r4_registry_has_five_independent_immutable_versions() -> None:
         "coverage_shrink",
         "candidate_upper_bound",
         "heat_weak_structure",
-        "combined_v1",
+        "combined",
     )
     assert tuple(item.variant_version for item in variants) == (
-        "continuous_entry_v1",
-        "coverage_shrink_v1",
-        "candidate_upper_bound_v1",
-        "heat_weak_structure_v1",
-        "combined_v1",
+        "continuous_entry",
+        "coverage_shrink_baseline",
+        "candidate_upper_bound",
+        "heat_weak_structure",
+        "combined",
     )
     assert all(item.parameter_set_version == R4_PARAMETER_SET_VERSION for item in variants)
     assert len({id(item) for item in variants}) == 5

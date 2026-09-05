@@ -33,7 +33,7 @@ OBSERVED_AT = datetime(2026, 8, 10, 14, 50, tzinfo=SHANGHAI)
 
 def _lineage(version: str, at: datetime = OBSERVED_AT) -> ResearchDataLineage:
     return ResearchDataLineage(
-        source="v2_data_plane",
+        source="unified_data_plane",
         source_time=at,
         received_at=at,
         quality_status="complete",
@@ -64,9 +64,9 @@ def _summary() -> HistoricalDaySummary:
         candidate_quote_epoch_version="candidate:2026-08-10:1",
         research_epoch_version="research:2026-08-10:1",
         input_hash="a" * 64,
-        config_version="config-v1",
-        calendar_version="calendar-v1",
-        rule_versions=("rules-v1",),
+        config_version="config-current",
+        calendar_version="calendar-current",
+        rule_versions=("rules-current",),
         candidates=(
             _candidate("688001", "star"),
             _candidate("600001", "main"),
@@ -74,7 +74,7 @@ def _summary() -> HistoricalDaySummary:
         ),
         hard_filter_aggregates=(HardFilterAggregate("main", "st_or_delisting", 2),),
         board_coverages=tuple(BoardPointInTimeCoverage(board, True, True) for board in ("main", "chinext", "star")),
-        source_versions=(("market", "market-v1"), ("daily", "daily-v1")),
+        source_versions=(("market", "market-initial"), ("daily", "daily-current")),
     )
 
 
@@ -101,7 +101,7 @@ def _bundle(codes: tuple[str, ...]) -> HistoricalFullFieldBundle:
             volume=1000.0,
             amount=10_000.0,
             adjustment_window_id=f"window-{code}",
-            lineage=_lineage("daily-v1", OBSERVED_AT - timedelta(days=1)),
+            lineage=_lineage("daily-current", OBSERVED_AT - timedelta(days=1)),
         )
         for code in codes
     )
@@ -112,7 +112,7 @@ def _bundle(codes: tuple[str, ...]) -> HistoricalFullFieldBundle:
             close=10.5,
             volume=100.0,
             amount=1000.0,
-            lineage=_lineage("minute-v1", OBSERVED_AT - timedelta(minutes=1)),
+            lineage=_lineage("minute-fixture", OBSERVED_AT - timedelta(minutes=1)),
         )
         for code in codes
     )
@@ -122,7 +122,7 @@ def _bundle(codes: tuple[str, ...]) -> HistoricalFullFieldBundle:
             code=code,
             as_of=OBSERVED_AT - timedelta(days=1),
             factors=((TRADE_DATE - timedelta(days=1), 1.0),),
-            lineage=_lineage("factor-v1", OBSERVED_AT - timedelta(days=1)),
+            lineage=_lineage("factor-fixture", OBSERVED_AT - timedelta(days=1)),
         )
         for code in codes
     )
@@ -137,7 +137,7 @@ def _bundle(codes: tuple[str, ...]) -> HistoricalFullFieldBundle:
                 -0.5,
                 0.2,
             ),
-            lineage=_lineage("settlement-v1", OBSERVED_AT + timedelta(days=1)),
+            lineage=_lineage("settlement-fixture", OBSERVED_AT + timedelta(days=1)),
         )
         for code in codes
     )
@@ -158,7 +158,7 @@ def test_day_summary_is_sorted_point_in_time_and_hard_rejects_have_no_identity_f
     summary = _summary()
 
     assert tuple(item.code for item in summary.candidates) == ("300001", "600001", "688001")
-    assert summary.source_versions == (("daily", "daily-v1"), ("market", "market-v1"))
+    assert summary.source_versions == (("daily", "daily-current"), ("market", "market-initial"))
     assert {item.name for item in fields(HardFilterAggregate)} == {"board", "reason", "count"}
 
 

@@ -91,7 +91,7 @@ class HistoricalBarBacktestService:
             and validation.trade_dates >= self._minimum_split_days
         )
         return HistoricalBarBacktestReport(
-            schema_version="score_h0_bar_screening_v1",
+            schema_version="score_h0_bar_screening",
             research_identity=spec.research_identity,
             research_spec_hash=spec.content_hash,
             status="screened" if ready else "insufficient_coverage",
@@ -99,7 +99,7 @@ class HistoricalBarBacktestService:
             archive_manifest=archive_manifest,
             training=training,
             validation=validation,
-            screening_version="ohlcv_cross_section_v1",
+            screening_version="ohlcv_cross_section",
             training_window=(spec.training_start, spec.training_end),
             validation_window=(spec.validation_start, spec.validation_end),
             round_trip_cost_bps=spec.round_trip_cost_bps,

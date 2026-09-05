@@ -45,7 +45,7 @@
 5. 内部类型增加字段不得自动改变公开 JSON schema；公开字段变化必须同步修改 adapter、schema/API
    契约测试、`docs/software-business-design.md` 和 `CHANGELOG.md`。禁止为兼容旧字典调用保留双表示、
    临时转换层或隐藏 fallback。
-6. `tests/contract/test_v2_architecture.py` 的序列化边界 AST 契约是强制门禁。修改状态接口或新增序列化
+6. `tests/contract/test_architecture.py` 的序列化边界 AST 契约是强制门禁。修改状态接口或新增序列化
    边界时必须先更新契约测试，再更新实现；不得通过扩大豁免路径绕过本节，新增豁免必须证明该模块是
    最终外部边界且在 Review 和 Changelog 中说明理由。
 
@@ -55,7 +55,7 @@
 - `local_score` 已扣本地风险，融合时禁止再次扣除 `local_risk_penalty`。
 - DeepSeek 自由文本不得直接决定扣分；只允许本地规则映射经 schema 和证据校验的风险事实。
 - DeepSeek 每日物理 HTTP 请求全局上限为 168，重试和失败同样计数；共享预热与 emergency 必须使用独立原子预算桶。
-- today 在 11:20 冻结，tomorrow/d25 在 14:50 冻结。已有同日正式记录在冻结后不得被迟到结果修改；today 错过 11:20 后不得通过启动检查点、旧发布链或收盘行情追补，同日保持 `not_ready`，已有正式记录只更新报价 overlay；tomorrow/d25 同日正式记录缺失时，15:00 后允许优先固化本次运行 V2 current，或在冷启动时按同日收盘行情执行一次本地补算并创建 `close_fallback`，创建后同样不可覆盖。
+- today 在 11:20 冻结，tomorrow/d25 在 14:50 冻结。已有同日正式记录在冻结后不得被迟到结果修改；today 错过 11:20 后不得通过启动检查点、旧发布链或收盘行情追补，同日保持 `not_ready`，已有正式记录只更新报价 overlay；tomorrow/d25 同日正式记录缺失时，15:00 后允许优先固化本次运行 当前决策，或在冷启动时按同日收盘行情执行一次本地补算并创建 `close_fallback`，创建后同样不可覆盖。
 - long 只展示当前快照，不冻结、不写推荐历史。
 - 所有业务时间使用 `Asia/Shanghai`，时钟必须可注入且带时区。
 - 数据源或 DeepSeek 失败不能阻塞本地推荐和只读 Web；必须保留最近有效快照并显式标记降级。

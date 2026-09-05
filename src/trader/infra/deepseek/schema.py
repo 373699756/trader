@@ -1,4 +1,4 @@
-"""Strict DeepSeek v2 response parsing and evidence-subset validation."""
+"""Strict DeepSeek response parsing and evidence-subset validation."""
 
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ _RISK_FIELD_TO_CODE = {
     "earnings": "earnings_risk",
 }
 if frozenset(_RISK_FIELD_TO_CODE.values()) != DEEPSEEK_STRUCTURED_RISK_CODES:
-    raise RuntimeError("DeepSeek V4 risk fields must match the domain structured-risk contract")
+    raise RuntimeError("DeepSeek structured risk fields must match the domain structured-risk contract")
 
 
 class DeepSeekSchemaError(ValueError):
@@ -107,7 +107,7 @@ def parse_reviews(
             raise DeepSeekSchemaError(f"result contains code outside candidate batch: {code}")
         if code in reviews:
             raise DeepSeekSchemaError(f"duplicate result code: {code}")
-        reviews[code] = _parse_v4_review(raw, candidates_by_code[code], completed_at)
+        reviews[code] = _parse_review(raw, candidates_by_code[code], completed_at)
     return reviews
 
 
@@ -137,7 +137,7 @@ def classify_review(
     return replace(review, outcome=ReviewOutcome.ABSTAIN, error="insufficient_confidence_coverage")
 
 
-def _parse_v4_review(
+def _parse_review(
     raw: Mapping[str, object],
     candidate: FeatureSnapshot,
     completed_at: datetime,
@@ -162,7 +162,7 @@ def _parse_v4_review(
     }
     unknown = set(raw) - allowed_keys
     if unknown:
-        raise DeepSeekSchemaError(f"unknown V4 facts fields: {sorted(unknown)}")
+        raise DeepSeekSchemaError(f"unknown structured facts fields: {sorted(unknown)}")
     conflicts = _strings(raw.get("conflicts"), maximum=8, length=80)
     conflicted = bool(conflicts)
     catalyst = _object(raw.get("catalyst"), "catalyst")
@@ -227,7 +227,7 @@ def _parse_v4_review(
             policy_quality,
         )
     )
-    risks = _parse_v4_risks(raw.get("risks"), candidate.quote.code, allowed_evidence, completed_at)
+    risks = _parse_risks(raw.get("risks"), candidate.quote.code, allowed_evidence, completed_at)
     risk_confidence = 0.65 if risks else max(catalyst_quality, price_quality, fundamental_quality, policy_quality, 0.0)
     dimensions = {
         "value_quality": _dimension("value_quality", catalyst_score, catalyst_quality, catalyst_evidence),
@@ -258,7 +258,7 @@ def _parse_v4_review(
         dimensions=dimensions,
         risk_facts=risks,
         completed_at=completed_at,
-        error="insufficient_v4_fact_coverage" if outcome is ReviewOutcome.ABSTAIN and not abstain else "",
+        error="insufficient_structured_fact_coverage" if outcome is ReviewOutcome.ABSTAIN and not abstain else "",
         rating="neutral",
         raw_confidence=round(effective_coverage, 4),
         evidence_manifest_hash=build_review_manifest_hash(candidate),
@@ -346,7 +346,7 @@ def _policy_delta(direction: str, quality: float) -> float:
     return {"positive": 10.0, "neutral": 0.0, "negative": -12.0}[direction]
 
 
-def _parse_v4_risks(
+def _parse_risks(
     raw: object,
     code: str,
     allowed_evidence: set[str],
@@ -355,7 +355,7 @@ def _parse_v4_risks(
     risks = _object(raw, "risks")
     unknown = set(risks) - set(_RISK_FIELD_TO_CODE)
     if unknown:
-        raise DeepSeekSchemaError(f"unknown V4 risk fields: {sorted(unknown)}")
+        raise DeepSeekSchemaError(f"unknown structured risk fields: {sorted(unknown)}")
     facts: list[RiskFact] = []
     for field, risk_code in _RISK_FIELD_TO_CODE.items():
         item = _object(risks.get(field), f"risks.{field}")

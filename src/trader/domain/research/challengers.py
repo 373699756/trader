@@ -8,16 +8,16 @@ from typing import Literal
 
 from trader.domain.research.historical import ResearchBoard
 
-R4_PARAMETER_SET_VERSION = "score_r4_preregistered_parameters_v1"
-R4_ENTRY_PARAMETER_VERSION = "score_r4_entry_parameters_v1"
-R4_HEAT_PARAMETER_VERSION = "score_r4_heat_parameters_v1"
+R4_PARAMETER_SET_VERSION = "score_r4_preregistered_parameters"
+R4_ENTRY_PARAMETER_VERSION = "score_r4_entry_parameters"
+R4_HEAT_PARAMETER_VERSION = "score_r4_heat_parameters"
 
 ChallengerVariantId = Literal[
     "continuous_entry",
     "coverage_shrink",
     "candidate_upper_bound",
     "heat_weak_structure",
-    "combined_v1",
+    "combined",
 ]
 MembershipDirection = Literal["higher", "lower"]
 
@@ -78,11 +78,11 @@ class ChallengerSpecification:
 
     def __post_init__(self) -> None:
         expected = {
-            "continuous_entry": ("continuous_entry_v1", (True, False, False, False)),
-            "coverage_shrink": ("coverage_shrink_v1", (False, True, False, False)),
-            "candidate_upper_bound": ("candidate_upper_bound_v1", (False, False, True, False)),
-            "heat_weak_structure": ("heat_weak_structure_v1", (False, False, False, True)),
-            "combined_v1": ("combined_v1", (True, True, True, True)),
+            "continuous_entry": ("continuous_entry", (True, False, False, False)),
+            "coverage_shrink": ("coverage_shrink_baseline", (False, True, False, False)),
+            "candidate_upper_bound": ("candidate_upper_bound", (False, False, True, False)),
+            "heat_weak_structure": ("heat_weak_structure", (False, False, False, True)),
+            "combined": ("combined", (True, True, True, True)),
         }
         version, switches = expected[self.variant_id]
         actual = (
@@ -98,13 +98,13 @@ class ChallengerSpecification:
 
 
 _CHALLENGERS = (
-    ChallengerSpecification("continuous_entry", "continuous_entry_v1", continuous_entry=True),
-    ChallengerSpecification("coverage_shrink", "coverage_shrink_v1", coverage_shrink=True),
-    ChallengerSpecification("candidate_upper_bound", "candidate_upper_bound_v1", candidate_upper_bound=True),
-    ChallengerSpecification("heat_weak_structure", "heat_weak_structure_v1", heat_weak_structure=True),
+    ChallengerSpecification("continuous_entry", "continuous_entry", continuous_entry=True),
+    ChallengerSpecification("coverage_shrink", "coverage_shrink_baseline", coverage_shrink=True),
+    ChallengerSpecification("candidate_upper_bound", "candidate_upper_bound", candidate_upper_bound=True),
+    ChallengerSpecification("heat_weak_structure", "heat_weak_structure", heat_weak_structure=True),
     ChallengerSpecification(
-        "combined_v1",
-        "combined_v1",
+        "combined",
+        "combined",
         continuous_entry=True,
         coverage_shrink=True,
         candidate_upper_bound=True,

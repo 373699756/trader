@@ -66,7 +66,7 @@ def test_trained_v3_model_is_self_hash_bound_and_report_is_optional(tmp_path: Pa
     payload: dict[str, object] = {
         "schema_version": "tomorrow_v3_production_model_v1",
         "profile_id": "v3",
-        "model_id": "tomorrow_v3_industry_ridge_lightgbm_v1",
+        "model_id": "tomorrow_v3_industry_ridge_lightgbm",
         "feature_ids": [
             "qfq_return_1d",
             "qfq_return_3d",

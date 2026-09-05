@@ -1,4 +1,4 @@
-"""Pure unified V2 decision, projection, overlay, and formal-record identities."""
+"""Pure unified decision, projection, overlay, and formal-record identities."""
 
 from __future__ import annotations
 
@@ -15,10 +15,10 @@ from trader.domain.recommendation.models import RecommendationAction, Strategy
 
 DecisionStage = Literal["local", "hybrid"]
 CommitKind = Literal["scheduled", "checkpoint_recovery", "close_fallback"]
-DECISION_IDENTITY_SCHEMA_VERSION = "v2_decision_identity_v2"
-LONG_PROJECTION_SCHEMA_VERSION = "v2_long_projection_v2"
-OVERLAY_SCHEMA_VERSION = "v2_decision_overlay_v1"
-COMMITTED_RECORD_SCHEMA_VERSION = "v2_committed_decision_v2"
+DECISION_IDENTITY_SCHEMA_VERSION = "decision_identity"
+LONG_PROJECTION_SCHEMA_VERSION = "long_projection"
+OVERLAY_SCHEMA_VERSION = "decision_overlay"
+COMMITTED_RECORD_SCHEMA_VERSION = "committed_decision"
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _CODE = re.compile(r"^\d{6}$")
 _IDENTITY = re.compile(r"^[a-zA-Z0-9_.:+-]{1,160}$")

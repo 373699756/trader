@@ -19,7 +19,7 @@ from trader.infra.market_data.providers.tushare import TushareClient  # noqa: E4
 from trader.infra.settings import load_runtime_settings  # noqa: E402
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
-_DEFAULT_RUNTIME_CONFIG = PROJECT_ROOT / "config" / "v2" / "runtime.json"
+_DEFAULT_RUNTIME_CONFIG = PROJECT_ROOT / "config" / "runtime.json"
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -64,7 +64,7 @@ def _report(args: argparse.Namespace, codes: tuple[str, ...]) -> dict[str, objec
     row_counts = {code: sum(item.subject_key == code for item in successful) for code in codes}
     all_raw = bool(successful) and all(item.fields.get("price_adjustment") == "raw" for item in successful)
     return {
-        "schema_version": "tushare-daily-sampling-v1",
+        "schema_version": "tushare-daily-sampling",
         "status": "passed" if all(row_counts.values()) and all_raw else "degraded",
         "collected_at": now.isoformat(),
         "configuration": {"codes": list(codes), "days": args.days, "timeout_seconds": configured.timeout_seconds},
@@ -98,7 +98,7 @@ def main() -> int:
         report = _report(args, _validate(args))
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         report = {
-            "schema_version": "tushare-daily-sampling-v1",
+            "schema_version": "tushare-daily-sampling",
             "status": "failed",
             "error": type(exc).__name__,
         }

@@ -7,10 +7,10 @@ from dataclasses import dataclass
 from typing import Literal
 
 from trader.application.decisions.decision_core import UnifiedDecisionIndex
-from trader.application.ports.v2_runtime import (
-    V2CycleRequest,
-    V2DecisionBuilderPort,
-    V2DecisionUnavailableError,
+from trader.application.ports.scheduler import (
+    CycleRequest,
+    DecisionBuilderPort,
+    DecisionUnavailableError,
 )
 from trader.domain.recommendation.decision_identity import DecisionOverlay, ScoredDecision
 from trader.domain.recommendation.models import Strategy
@@ -34,21 +34,21 @@ class DecisionOverlayRefresher:
     """Coordinate overlay CAS and event delivery for all scored strategies."""
 
     index: UnifiedDecisionIndex
-    decisions: V2DecisionBuilderPort
+    decisions: DecisionBuilderPort
     publish_overlay: Callable[[DecisionOverlay], object]
     failure_code: FailureCodeMapper
 
-    def refresh(self, request: V2CycleRequest) -> tuple[OverlayRefreshOutcome, ...]:
+    def refresh(self, request: CycleRequest) -> tuple[OverlayRefreshOutcome, ...]:
         return tuple(self._refresh_strategy(strategy, request) for strategy in _SCORED_STRATEGIES)
 
-    def _refresh_strategy(self, strategy: Strategy, request: V2CycleRequest) -> OverlayRefreshOutcome:
+    def _refresh_strategy(self, strategy: Strategy, request: CycleRequest) -> OverlayRefreshOutcome:
         snapshot = self.index.snapshot(strategy)
         current = snapshot.current
         if not isinstance(current, ScoredDecision) or current.trade_date != request.trade_date:
             return OverlayRefreshOutcome(strategy, "skipped")
         try:
             overlay = self.decisions.refreshed_overlay(current, request, snapshot.overlay)
-        except V2DecisionUnavailableError as exc:
+        except DecisionUnavailableError as exc:
             return OverlayRefreshOutcome(strategy, "failed", self.failure_code(exc, "overlay_unavailable"))
         if overlay is None:
             return OverlayRefreshOutcome(strategy, "succeeded")

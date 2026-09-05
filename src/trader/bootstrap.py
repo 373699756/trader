@@ -1,4 +1,4 @@
-"""Unique composition root for the v2 application."""
+"""Unique composition root for the current application."""
 
 from __future__ import annotations
 
@@ -12,23 +12,23 @@ from pathlib import Path
 
 from flask import Flask
 
+from trader.application.decisions.decision_adapters import DeepSeekAdapter, FreezeAdapter
 from trader.application.decisions.decision_core import UnifiedDecisionIndex
 from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.decisions.decision_observers import AsyncDecisionObserver, DecisionEventConsumer
 from trader.application.decisions.decision_queries import UnifiedDecisionQueries
 from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
-from trader.application.decisions.v2_decision_adapters import V2DeepSeekAdapter, V2FreezeAdapter
-from trader.application.long_v2_runtime import LongV2Runtime, LongV2RuntimeDependencies
-from trader.application.market_data.v2_input_runtime import V2DecisionBuildDependencies, V2MarketDataAdapter
-from trader.application.outcomes.outcome_settlement import OutcomeSettlementService, V2OutcomeSettlementAdapter
+from trader.application.long_runtime import LongRuntime, LongRuntimeDependencies
+from trader.application.market_data.input_runtime import DecisionBuildDependencies, MarketDataAdapter
+from trader.application.outcomes.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
 from trader.application.ports.tomorrow_model import TomorrowScoringProfile
-from trader.application.recommendation.scored_v2_freezing import (
-    ScoredV2FreezeCoordinator,
-    V2DecisionRuntimeIdentity,
+from trader.application.recommendation.scored_freezing import (
+    DecisionRuntimeIdentity,
+    ScoredFreezeCoordinator,
 )
-from trader.application.recommendation.today_v2_freezing import TodayV2FreezeCoordinator
+from trader.application.recommendation.today_freezing import TodayFreezeCoordinator
 from trader.application.recommendation.tomorrow_model_scoring import TomorrowProductionModelScoringService
-from trader.application.research.v2_research_runtime import V2ResearchRuntime
+from trader.application.research.research_runtime import ResearchRuntime
 from trader.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.application.runtime.latency import LatencyWaterfall
 from trader.application.runtime.resource_orchestration import (
@@ -37,9 +37,9 @@ from trader.application.runtime.resource_orchestration import (
     stop_application_resources,
 )
 from trader.application.runtime.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
+from trader.application.runtime.scheduler_runtime import RuntimeDependencies, SchedulerRuntime
 from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownReport
 from trader.application.runtime.source_lanes import SourceLaneRegistry
-from trader.application.runtime.v2_runtime import V2RuntimeDependencies, V2SchedulerRuntime
 from trader.application.runtime.workers import BoundedExecutor
 from trader.bootstrap_clock import utc_now as _utc_now
 from trader.bootstrap_data_plane import _initialize_reference_data_plane
@@ -78,7 +78,7 @@ from trader.infra.persistence.data_plane import DataPlaneRepository
 from trader.infra.persistence.decision_records import SQLiteDecisionRecordRepository
 from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
-from trader.infra.persistence.research_trace import ResearchTraceLimits, SQLiteV2ResearchTraceStore
+from trader.infra.persistence.research_trace import ResearchTraceLimits, SQLiteResearchTraceStore
 from trader.infra.persistence.runtime_json import RuntimeJsonWriter
 from trader.infra.runtime_support import RuntimeWorkerResources, ShanghaiClock
 from trader.infra.settings import (
@@ -101,19 +101,19 @@ class ApplicationSystem:
     watchlist: LongWatchlist
     app: Flask
     supervisor: RuntimeSupervisor
-    scheduler: V2SchedulerRuntime
+    scheduler: SchedulerRuntime
     repository: SQLiteDecisionRecordRepository
     market_cache: BoundedLruCache[object]
     history_pool: BoundedExecutor
     research_pool: BoundedExecutor
     source_lanes: SourceLaneRegistry
     data_pool: BoundedExecutor
-    long_v2_runtime: LongV2Runtime
+    long_runtime: LongRuntime
     decision_queries: UnifiedDecisionQueries
     decision_events: UnifiedDecisionEventStream
     tomorrow_index: UnifiedDecisionIndex
     tomorrow_records: SQLiteDecisionRecordRepository
-    research_trace: SQLiteV2ResearchTraceStore
+    research_trace: SQLiteResearchTraceStore
     outcome_evidence: SQLiteOutcomeEvidenceRepository
 
     def _application_resources(self) -> ApplicationResources:
@@ -123,7 +123,7 @@ class ApplicationSystem:
             self.data_pool,
             self.history_pool,
             self.research_pool,
-            (self.long_v2_runtime,),
+            (self.long_runtime,),
             self.market_cache,
         )
 
@@ -166,13 +166,13 @@ class _PublicationContext:
     tomorrow_repository: SQLiteDecisionRecordRepository
     tomorrow_index: UnifiedDecisionIndex
     decision_drafts: UnifiedDecisionDraftIndex
-    research_trace: SQLiteV2ResearchTraceStore
-    long_runtime: LongV2Runtime
+    research_trace: SQLiteResearchTraceStore
+    long_runtime: LongRuntime
     decision_queries: UnifiedDecisionQueries
     decision_events: UnifiedDecisionEventStream
-    today_freezer: TodayV2FreezeCoordinator
-    tomorrow_freezer: ScoredV2FreezeCoordinator
-    d25_freezer: ScoredV2FreezeCoordinator
+    today_freezer: TodayFreezeCoordinator
+    tomorrow_freezer: ScoredFreezeCoordinator
+    d25_freezer: ScoredFreezeCoordinator
     observer: AsyncDecisionObserver
 
 
@@ -184,7 +184,7 @@ class _PublicationDependencies:
 
 
 @dataclass(frozen=True)
-class _V2Adapters:
+class _RuntimeAdapters:
     market_data: MarketFeatureService
     calendar: ChinaTradingCalendar
     reviewer: DeepSeekReviewer
@@ -229,18 +229,18 @@ def build_system(
             market_data,
         ),
     )
-    native_data = V2MarketDataAdapter(
+    native_data = MarketDataAdapter(
         market_data,
         config_version=effective_config_version,
         candidate_pool_size=settings.market_data.candidate_pool_size,
-        decision_build=V2DecisionBuildDependencies(
+        decision_build=DecisionBuildDependencies(
             publication.long_runtime,
             policy,
             publication.decision_drafts,
             tomorrow_model,
         ),
     )
-    deepseek = V2DeepSeekAdapter(reviewer, policy, native_data)
+    deepseek = DeepSeekAdapter(reviewer, policy, native_data)
 
     def publish_overlay_event(overlay: DecisionOverlay) -> object:
         current = publication.tomorrow_index.snapshot(overlay.strategy).current
@@ -251,8 +251,8 @@ def build_system(
             parent_content_hash=current.content_hash,
         )
 
-    scheduler = V2SchedulerRuntime(
-        V2RuntimeDependencies(
+    scheduler = SchedulerRuntime(
+        RuntimeDependencies(
             clock=ShanghaiClock(context.now),
             calendar=calendar,
             cadence=cadence_planner,
@@ -261,12 +261,12 @@ def build_system(
             reviews=deepseek,
             index=publication.tomorrow_index,
             observer=publication.observer,
-            freezes=V2FreezeAdapter(
+            freezes=FreezeAdapter(
                 publication.today_freezer,
                 publication.tomorrow_freezer,
                 publication.d25_freezer,
             ),
-            settlement=V2OutcomeSettlementAdapter(
+            settlement=OutcomeSettlementAdapter(
                 market_data,
                 OutcomeSettlementService(
                     market_data,
@@ -275,7 +275,7 @@ def build_system(
                     session_distance=calendar.session_distance,
                 ),
             ),
-            research_factory=lambda on_result: V2ResearchRuntime(
+            research_factory=lambda on_result: ResearchRuntime(
                 market_data,
                 cadence=context.cadence_policy,
                 now=context.now,
@@ -343,7 +343,7 @@ def build_system(
         research_pool=workers.research_pool,
         source_lanes=workers.source_lanes,
         data_pool=workers.data_pool,
-        long_v2_runtime=publication.long_runtime,
+        long_runtime=publication.long_runtime,
         decision_queries=publication.decision_queries,
         decision_events=publication.decision_events,
         tomorrow_index=publication.tomorrow_index,
@@ -463,7 +463,7 @@ def _build_market_data(
         cache=market_cache,
         source_contract_versions=settings.market_data.source_contract_versions,
         config_version=settings.config_version,
-        schema_version="market_snapshot_v15",
+        schema_version="market_snapshot",
         wall_clock=now,
         latency=context.latency,
         listing_open_dates=calendar.open_dates,
@@ -497,7 +497,7 @@ def _build_market_data(
         cache=market_cache,
         source_contract_versions=settings.market_data.source_contract_versions,
         config_version=settings.config_version,
-        schema_version="market_snapshot_v15",
+        schema_version="market_snapshot",
         wall_clock=now,
     )
     research_runner = MarketTaskRunner(
@@ -506,7 +506,7 @@ def _build_market_data(
         cache=market_cache,
         source_contract_versions=settings.market_data.source_contract_versions,
         config_version=settings.config_version,
-        schema_version="market_snapshot_v15",
+        schema_version="market_snapshot",
         wall_clock=now,
     )
     history_cache = HistoryCache(
@@ -678,7 +678,7 @@ def _build_publication(
     )
     clock = ShanghaiClock(context.now)
     decision_queries = UnifiedDecisionQueries(tomorrow_decisions, decision_drafts, repository, clock)
-    research_trace = SQLiteV2ResearchTraceStore(
+    research_trace = SQLiteResearchTraceStore(
         settings.runtime_dir,
         limits=ResearchTraceLimits(events_per_trade_date=max(2048, settings.pipeline.event_queue_size * 4)),
     )
@@ -686,42 +686,42 @@ def _build_publication(
     observer = AsyncDecisionObserver(
         (research_trace.record, *dependencies.additional_observers),
         capacity=max(1, min(16, settings.pipeline.event_queue_size)),
-        thread_name="trader-v2-decision-observer",
+        thread_name="trader-decision-observer",
     )
-    tomorrow_freezer = ScoredV2FreezeCoordinator(
+    tomorrow_freezer = ScoredFreezeCoordinator(
         tomorrow_decisions,
         repository,
         clock,
-        runtime_identity=V2DecisionRuntimeIdentity(
+        runtime_identity=DecisionRuntimeIdentity(
             context.effective_config_version,
             context.strategy.strategy_version,
             context.strategy.fusion.version,
         ),
         strategy=Strategy.TOMORROW,
     )
-    d25_freezer = ScoredV2FreezeCoordinator(
+    d25_freezer = ScoredFreezeCoordinator(
         tomorrow_decisions,
         repository,
         clock,
-        runtime_identity=V2DecisionRuntimeIdentity(
+        runtime_identity=DecisionRuntimeIdentity(
             context.effective_config_version,
             context.strategy.strategy_version,
             context.strategy.fusion.version,
         ),
         strategy=Strategy.D25,
     )
-    today_freezer = TodayV2FreezeCoordinator(
+    today_freezer = TodayFreezeCoordinator(
         tomorrow_decisions,
         repository,
         clock,
-        runtime_identity=V2DecisionRuntimeIdentity(
+        runtime_identity=DecisionRuntimeIdentity(
             context.effective_config_version,
             context.strategy.strategy_version,
             context.strategy.fusion.version,
         ),
     )
-    long_runtime = LongV2Runtime(
-        LongV2RuntimeDependencies(
+    long_runtime = LongRuntime(
+        LongRuntimeDependencies(
             market_data,
             tomorrow_decisions,
             context.now,
@@ -747,7 +747,7 @@ def _build_publication(
     )
 
 
-def _initialize_research_trace(trace: SQLiteV2ResearchTraceStore) -> None:
+def _initialize_research_trace(trace: SQLiteResearchTraceStore) -> None:
     try:
         trace.initialize()
     except (OSError, sqlite3.Error):

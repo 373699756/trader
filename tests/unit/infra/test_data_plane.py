@@ -175,7 +175,7 @@ def test_recent_records_preserve_newer_content_and_reject_same_time_conflicts(tm
             _security_master_record(
                 "600001",
                 observed_at=_timestamp(10, 0),
-                data_version="v2",
+                data_version="formal",
                 payload={"board": "main", "exchange": "sse"},
             )
         )
@@ -215,7 +215,7 @@ def test_formal_records_are_idempotent_for_same_payload_and_conflict_on_differen
     with pytest.raises(DataPlaneConflictError, match="formal save conflicts"):
         repository.save_security_master_formal(
             "freeze-2026-07-30",
-            _security_master_record("600002", data_version="v2", payload={"field": "formal"}),
+            _security_master_record("600002", data_version="formal", payload={"field": "formal"}),
         )
 
 
@@ -295,8 +295,8 @@ def _insert_staged_source_cursor_row(database: Path, *, cursor_name: str, payloa
                 _timestamp(9, 30).isoformat(),
                 _timestamp(9, 29).isoformat(),
                 "unit",
-                "v1",
-                "v2_data_plane_v1",
+                "fixture",
+                "data_plane",
                 payload_hash,
                 text,
                 "value-1",
@@ -312,7 +312,7 @@ def _security_master_record(
     code: str,
     *,
     observed_at: datetime | None = None,
-    data_version: str = "v1",
+    data_version: str = "fixture",
     payload: JsonObject | None = None,
 ) -> SecurityMasterRecord:
     payload_data = {"code": code} if payload is None else payload
@@ -324,7 +324,7 @@ def _security_master_record(
         data_version=data_version,
         payload=payload_data,
         payload_hash=_payload_hash(payload_data),
-        schema_version="v2_data_plane_v1",
+        schema_version="data_plane",
     )
 
 
@@ -341,10 +341,10 @@ def _historical_feature_record(
         observed_at=_timestamp(9, 30),
         source_time=_timestamp(9, 29),
         source="unit",
-        data_version="v1",
+        data_version="fixture",
         payload=payload_data,
         payload_hash=_payload_hash(payload_data),
-        schema_version="v2_data_plane_v1",
+        schema_version="data_plane",
     )
 
 
@@ -356,10 +356,10 @@ def _risk_evidence_record(code: str, evidence_id: str) -> RiskEvidenceRecord:
         observed_at=_timestamp(9, 30),
         source_time=_timestamp(9, 29),
         source="unit",
-        data_version="v1",
+        data_version="fixture",
         payload=payload_data,
         payload_hash=_payload_hash(payload_data),
-        schema_version="v2_data_plane_v1",
+        schema_version="data_plane",
     )
 
 
@@ -371,10 +371,10 @@ def _source_cursor_record(cursor_name: str, *, payload: JsonObject | None = None
         observed_at=_timestamp(9, 30),
         source_time=_timestamp(9, 29),
         source="unit",
-        data_version="v1",
+        data_version="fixture",
         payload=payload_data,
         payload_hash=_payload_hash(payload_data),
-        schema_version="v2_data_plane_v1",
+        schema_version="data_plane",
     )
 
 
@@ -388,10 +388,10 @@ def _trading_calendar_record() -> TradingCalendarRecord:
         observed_at=_timestamp(9, 30),
         source_time=_timestamp(9, 29),
         source="exchange_calendar",
-        data_version="calendar-v1",
+        data_version="calendar-current",
         payload=payload,
         payload_hash=_payload_hash(payload),
-        schema_version="v2_data_plane_v1",
+        schema_version="data_plane",
     )
 
 
@@ -408,4 +408,4 @@ def _payload_hash(payload: JsonObject) -> str:
 
 
 def _database_path(runtime_root: Path) -> Path:
-    return runtime_root / "v2-data" / "v2-data.sqlite3"
+    return runtime_root / "market-data" / "market-data.sqlite3"

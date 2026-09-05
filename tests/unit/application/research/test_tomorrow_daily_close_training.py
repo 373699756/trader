@@ -116,7 +116,7 @@ def test_fold_training_rows_exclude_labels_not_mature_before_validation_start() 
 def _artifact() -> CandidateModelArtifact:
     return CandidateModelArtifact(
         model_id="tomorrow_daily_close_candidate_v1",
-        candidate_id="ridge_lightgbm_ensemble_with_shrinkage_v1",
+        candidate_id="ridge_lightgbm_ensemble_with_shrinkage",
         base_model_kind="ridge_lightgbm_ensemble",
         manifest_hash=_HASH_A,
         filter_spec_hash=_HASH_A,
@@ -178,14 +178,14 @@ def test_candidate_artifact_represents_each_registered_base_model_without_fake_p
     ensemble = _artifact()
     ridge = replace(
         ensemble,
-        candidate_id="ridge_v1",
+        candidate_id="ridge",
         base_model_kind="ridge",
         lightgbm_model_text=None,
         lightgbm_best_iteration=None,
     )
     lightgbm = replace(
         ensemble,
-        candidate_id="lightgbm_v1",
+        candidate_id="lightgbm",
         base_model_kind="lightgbm",
         ridge_intercept=None,
         ridge_coefficients=None,

@@ -1,4 +1,4 @@
-"""Immutable storage for the one-shot V1/V2 H0 holdout report."""
+"""Immutable storage for the one-shot scoring-profile H0 holdout report."""
 
 from __future__ import annotations
 

@@ -92,7 +92,7 @@ class MarketTaskRunner:
                 request=request,
                 trade_date=local.date().isoformat(),
                 phase=phase_at(local, is_trading_day=True).value,
-                source_contract_version=self.source_contract_versions.get(source, f"{source}-component-v1"),
+                source_contract_version=self.source_contract_versions.get(source, f"{source}-component"),
                 config_version=self.config_version,
                 schema_version=self.schema_version,
             )

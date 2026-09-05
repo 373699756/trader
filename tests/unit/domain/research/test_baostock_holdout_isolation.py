@@ -137,7 +137,7 @@ def test_identity_and_required_new_parent_hashes_are_fixed() -> None:
         replace(
             value,
             daily_identity="score_baostock_daily_core_v1",
-            legacy_holdout_identity="tomorrow_v3_point_in_time_holdout_v1",
+            legacy_holdout_identity="tomorrow_v3_point_in_time_holdout",
             new_holdout_parent_hashes=(_DAILY_HASH,),
         )
     )

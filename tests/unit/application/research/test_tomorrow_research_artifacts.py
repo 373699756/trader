@@ -19,7 +19,7 @@ from trader.application.research.tomorrow_research_artifacts import (
 def _ref(artifact_id: str, owner: str, *, parents: tuple[str, ...] = ()) -> TomorrowResearchArtifactRef:
     return TomorrowResearchArtifactRef(
         artifact_id=artifact_id,
-        artifact_kind=f"{artifact_id}_v1",
+        artifact_kind=artifact_id,
         owner=owner,  # type: ignore[arg-type]
         content_hash=hashlib.sha256(artifact_id.encode("ascii")).hexdigest(),
         parent_hashes=parents,

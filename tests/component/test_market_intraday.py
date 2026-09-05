@@ -96,7 +96,7 @@ def test_intraday_tail_has_a_lane_independent_from_full_market_refresh() -> None
 
 
 def test_expired_unified_intraday_cache_triggers_a_new_physical_load() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
     monotonic = MutableMonotonic()
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
@@ -172,7 +172,7 @@ def test_feature_builder_derives_auditable_tail_inputs_without_fabricating_missi
     assert tail_evidence.source == "eastmoney_intraday"
     assert tail_evidence.published_at == AFTERNOON
     assert tail_evidence.received_at == AFTERNOON
-    assert tail_evidence.data_version == "intraday-v1"
+    assert tail_evidence.data_version == "intraday"
     assert "30分钟收益=2.000000%" in tail_evidence.title
     assert "量比=1.500000" in tail_evidence.title
     assert missing.values["tail_return_30m_pct"] is None
@@ -260,7 +260,7 @@ def test_market_service_fetches_intraday_minutes_only_for_requested_candidate_mo
     assert service.health()["intraday_tail_covered_rows"] == 1
     assert service.health()["intraday_tail_latest_source_time"] == AFTERNOON.isoformat()
     assert service.health()["intraday_tail_sources"] == ("eastmoney_intraday",)
-    assert service.health()["intraday_tail_data_versions"] == ("intraday-v1",)
+    assert service.health()["intraday_tail_data_versions"] == ("intraday",)
 
 
 def test_market_service_schedules_intraday_io_round_robin_across_boards() -> None:
@@ -442,7 +442,7 @@ def test_source_lane_intraday_batch_timeout_returns_without_waiting_for_blocked_
 
 
 def test_timed_out_intraday_lane_cannot_mutate_caller_restrictions_after_return() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "v2" / "runtime.json")
+    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
     measured_at = AFTERNOON + timedelta(seconds=91)
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,

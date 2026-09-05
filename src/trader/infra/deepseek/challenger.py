@@ -17,8 +17,8 @@ from trader.domain.review.models import (
 )
 from trader.infra.deepseek.evidence_router import route_prompt_evidence
 
-CHALLENGER_SCHEMA_VERSION = "deepseek_challenger_v1"
-CHALLENGER_PROMPT_VERSION = "deepseek_challenger_prompt_v1"
+CHALLENGER_SCHEMA_VERSION = "deepseek_challenger"
+CHALLENGER_PROMPT_VERSION = "deepseek_challenger_prompt"
 MAX_CHALLENGER_RESPONSE_CHARACTERS = 100_000
 
 

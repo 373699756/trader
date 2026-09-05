@@ -1,4 +1,4 @@
-"""SQLite-backed persistence for the V2 data-plane families."""
+"""SQLite-backed persistence for the unified data-plane families."""
 
 from __future__ import annotations
 
@@ -88,11 +88,11 @@ class _PreparedWrite:
 
 
 class DataPlaneRepository:
-    """Persist and recover V2 data-plane records."""
+    """Persist and recover unified data-plane records."""
 
     def __init__(self, runtime_root: Path) -> None:
-        self._runtime_root = runtime_root / "v2-data"
-        self._database = self._runtime_root / "v2-data.sqlite3"
+        self._runtime_root = runtime_root / "market-data"
+        self._database = self._runtime_root / "market-data.sqlite3"
         self._lock = threading.RLock()
 
     def initialize(self) -> None:

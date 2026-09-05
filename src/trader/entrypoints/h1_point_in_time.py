@@ -50,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
         failed = failed or manifest.state == "historical_data_insufficient"
     print(
         json.dumps(
-            {"schema_version": "score_h1_point_in_time_audit_v1", "strategies": audits},
+            {"schema_version": "score_h1_point_in_time_audit", "strategies": audits},
             ensure_ascii=False,
             sort_keys=True,
         )

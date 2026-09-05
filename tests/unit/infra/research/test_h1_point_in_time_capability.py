@@ -73,7 +73,7 @@ def test_free_source_probe_preserves_success_when_another_supplier_fails(tmp_pat
     assert report.probe_failures == ("eastmoney_historical_minute_probe_failed",)
     assert {item.state for item in report.strategies} == {"historical_data_insufficient"}
     restored = H1CapabilityArtifactStore(tmp_path).write(report)
-    assert restored.schema_version == "score_h1_source_capability_audit_v2"
+    assert restored.schema_version == "score_h1_source_capability_audit"
     assert restored.probe_failures == report.probe_failures
     assert restored.content_hash == report.content_hash
 

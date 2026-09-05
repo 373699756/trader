@@ -1,4 +1,4 @@
-"""Injected read-only V2 services used by Flask."""
+"""Injected read-only services used by Flask."""
 
 from __future__ import annotations
 

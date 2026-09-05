@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.application.outcomes.outcome_settlement import OutcomeSettlementService, V2OutcomeSettlementAdapter
+from trader.application.outcomes.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
 from trader.domain.outcome.models import BenchmarkReturn, OutcomeBar, OutcomeTarget
 from trader.domain.recommendation.models import Strategy
 
@@ -124,11 +124,11 @@ def test_equal_weight_benchmark_requires_every_market_return(application_feature
     assert repository.benchmark == ()
 
 
-def test_v2_adapter_fetches_fresh_close_market_before_settlement(application_feature_factory) -> None:
+def test_adapter_fetches_fresh_close_market_before_settlement(application_feature_factory) -> None:
     feature = application_feature_factory("600001", NOW)
     market_data = _MarketData((feature,))
     repository = _Repository()
-    adapter = V2OutcomeSettlementAdapter(market_data, _service(market_data, repository))
+    adapter = OutcomeSettlementAdapter(market_data, _service(market_data, repository))
 
     adapter.settle(NOW)
 

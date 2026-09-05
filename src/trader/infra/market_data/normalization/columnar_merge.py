@@ -418,7 +418,7 @@ def _quote_from_complete_observation(
         None,
         None,
         8.0 if projection.board is Board.MAIN else 16.0,
-        "cn-board-rules-v1",
+        "cn-board-rules",
         _RULE_EFFECTIVE_DATE,
         projection.restrictions,
     )

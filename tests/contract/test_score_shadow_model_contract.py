@@ -11,7 +11,7 @@ def test_batch_three_contract_freezes_walk_forward_models_and_calibration() -> N
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
     for token in (
-        "score_tomorrow_shadow_report_v1",
+        "score_tomorrow_shadow_report",
         "expanding",
         "rolling_252",
         "Tomorrow embargo=1",

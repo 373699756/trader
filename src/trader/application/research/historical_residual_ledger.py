@@ -40,7 +40,7 @@ class HistoricalResidualLedgerBatch:
     prediction_records_received: int
     outcome_records_received: int
     summary: HistoricalResidualSummary | None
-    schema_version: str = "historical_prediction_residual_ledger_batch_v1"
+    schema_version: str = "historical_prediction_residual_ledger_batch"
     terminal_holdout_opened: bool = False
     production_authority: bool = False
     content_hash: str = dataclasses.field(init=False)
@@ -55,7 +55,7 @@ class HistoricalResidualLedgerBatch:
             raise ValueError("historical residual batch status is inconsistent")
         if self.summary is not None and self.summary.parent_split_hash != self.parent_split_hash:
             raise ValueError("historical residual batch summary parent does not match")
-        if self.schema_version != "historical_prediction_residual_ledger_batch_v1":
+        if self.schema_version != "historical_prediction_residual_ledger_batch":
             raise ValueError("historical residual batch schema is invalid")
         if self.terminal_holdout_opened or self.production_authority:
             raise ValueError("historical residual batch cannot open holdout or production")

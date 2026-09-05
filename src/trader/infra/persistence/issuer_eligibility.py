@@ -21,7 +21,7 @@ from trader.domain.market.eligibility import (
     resolve_issuer_eligibility,
 )
 
-_SCHEMA_VERSION = "issuer_eligibility_registry_v1"
+_SCHEMA_VERSION = "issuer_eligibility_registry"
 _EMPTY_MANIFEST_HASH = hashlib.sha256(b"").hexdigest()
 
 

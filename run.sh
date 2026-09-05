@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${VENV_DIR:-$ROOT_DIR/.venv}"
-CONFIG_PATH="${TRADER_CONFIG:-$ROOT_DIR/config/v2/runtime.json}"
+CONFIG_PATH="${TRADER_CONFIG:-$ROOT_DIR/config/runtime.json}"
 MODE=""
 MODE_SET=0
 SCORING_PROFILE="v1"

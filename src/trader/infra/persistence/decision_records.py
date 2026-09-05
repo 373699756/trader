@@ -1,4 +1,4 @@
-"""Crash-recoverable formal storage for unified V2 scored decisions."""
+"""Crash-recoverable formal storage for unified scored decisions."""
 
 from __future__ import annotations
 
@@ -15,10 +15,10 @@ from pathlib import Path
 from typing import cast
 
 from trader.application.ports.decision_records import (
+    DecisionCheckpoint,
     DecisionRecordConflictError,
     DecisionRecordRecoverySummary,
     DecisionRecordUnavailableError,
-    V2DecisionCheckpoint,
 )
 from trader.domain.recommendation.decision_identity import CommittedDecisionRecord
 from trader.domain.recommendation.models import Strategy
@@ -29,7 +29,7 @@ _MAX_RECOVERY_PAYLOAD_BYTES = 8 * 1024 * 1024
 
 
 class SnapshotConflictError(RuntimeError):
-    """An immutable V2 decision path already contains different bytes."""
+    """An immutable current decision path already contains different bytes."""
 
 
 def _fsync_directory(directory: Path) -> None:
@@ -50,7 +50,7 @@ def _atomic_create_immutable(
     if target.exists():
         if _sha256(target.read_bytes()) == expected_sha256:
             return
-        raise SnapshotConflictError(f"immutable V2 decision path has different content: {target}")
+        raise SnapshotConflictError(f"immutable current decision path has different content: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
     try:
@@ -64,7 +64,7 @@ def _atomic_create_immutable(
             os.link(temporary_name, target)
         except FileExistsError as exc:
             if _sha256(target.read_bytes()) != expected_sha256:
-                raise SnapshotConflictError(f"immutable V2 decision path has different content: {target}") from exc
+                raise SnapshotConflictError(f"immutable current decision path has different content: {target}") from exc
         os.unlink(temporary_name)
         _fsync_directory(target.parent)
     except BaseException:
@@ -84,8 +84,8 @@ class SQLiteDecisionRecordRepository:
         *,
         fault_injector: FaultInjector | None = None,
     ) -> None:
-        self._root = runtime_dir / "v2-decisions"
-        self._database = self._root / "v2-decisions.sqlite3"
+        self._root = runtime_dir / "decisions"
+        self._database = self._root / "decisions.sqlite3"
         self._records = self._root / "records"
         self._checkpoints = self._root / "checkpoints"
         self._quarantine = self._root / "quarantine"
@@ -231,7 +231,7 @@ class SQLiteDecisionRecordRepository:
             raise DecisionRecordUnavailableError("decision date listing failed") from exc
         return tuple(date.fromisoformat(str(row["trade_date"])) for row in rows)
 
-    def save_checkpoint(self, checkpoint: V2DecisionCheckpoint) -> None:
+    def save_checkpoint(self, checkpoint: DecisionCheckpoint) -> None:
         envelope = CommittedDecisionRecord(
             checkpoint.decision,
             checkpoint.boundary_at,
@@ -301,7 +301,7 @@ class SQLiteDecisionRecordRepository:
             except sqlite3.Error as exc:
                 raise DecisionRecordUnavailableError("decision checkpoint save failed") from exc
 
-    def load_checkpoint(self, strategy: Strategy, trade_date: date) -> V2DecisionCheckpoint | None:
+    def load_checkpoint(self, strategy: Strategy, trade_date: date) -> DecisionCheckpoint | None:
         with self._lock:
             try:
                 with self._connect() as connection:
@@ -317,7 +317,7 @@ class SQLiteDecisionRecordRepository:
 
     def consume_checkpoint(
         self,
-        checkpoint: V2DecisionCheckpoint,
+        checkpoint: DecisionCheckpoint,
         *,
         consumed_at: datetime,
     ) -> None:
@@ -347,12 +347,12 @@ class SQLiteDecisionRecordRepository:
             except sqlite3.Error as exc:
                 raise DecisionRecordUnavailableError("decision checkpoint consume failed") from exc
 
-    def _load_checkpoint_row(self, row: sqlite3.Row) -> V2DecisionCheckpoint:
+    def _load_checkpoint_row(self, row: sqlite3.Row) -> DecisionCheckpoint:
         payload = self._verified_payload(str(row["relative_path"]), str(row["payload_sha256"]))
         try:
             envelope = committed_record_from_bytes(payload)
             boundary = envelope.committed_at
-            checkpoint = V2DecisionCheckpoint(envelope.decision, boundary)
+            checkpoint = DecisionCheckpoint(envelope.decision, boundary)
         except (TypeError, UnicodeError, ValueError) as exc:
             raise DecisionRecordUnavailableError("decision checkpoint verification failed") from exc
         if (

@@ -83,7 +83,7 @@ class ScoreR6DailySpec:
 
 
 def _validate_identity(spec: ScoreR6DailySpec) -> None:
-    if spec.research_identity != "score_r6_daily_trend_v1" or _IDENTITY.fullmatch(spec.research_identity) is None:
+    if spec.research_identity != "score_r6_daily_trend" or _IDENTITY.fullmatch(spec.research_identity) is None:
         raise ValueError("daily trend research identity is fixed")
     if spec.preregistered_on != date(2026, 8, 21):
         raise ValueError("daily trend preregistration date is fixed")
@@ -137,8 +137,8 @@ def _validate_metrics_contract(spec: ScoreR6DailySpec) -> None:
     if fixed != (20, -8.0, 0.10, 0.05, 0.10, 0.0, 0.05, 8.0, 0.05, 0.25, 0.10):
         raise ValueError("daily trend objective and validation gates are fixed")
     if (
-        spec.data_schema_version != "score_r6_daily_trend_row_v1"
-        or spec.report_schema_version != "score_r6_daily_trend_report_v1"
+        spec.data_schema_version != "score_r6_daily_trend_row"
+        or spec.report_schema_version != "score_r6_daily_trend_report"
     ):
         raise ValueError("daily trend schema versions are fixed")
     if spec.promotion_authority:
@@ -186,7 +186,7 @@ _WEIGHT_CANDIDATES = (
 )
 
 SCORE_R6_DAILY_SPEC = ScoreR6DailySpec(
-    research_identity="score_r6_daily_trend_v1",
+    research_identity="score_r6_daily_trend",
     preregistered_on=date(2026, 8, 21),
     parent_research_identity=SCORE_H0_V1_SPEC.research_identity,
     parent_research_spec_hash=SCORE_H0_V1_SPEC.content_hash,
@@ -217,8 +217,8 @@ SCORE_R6_DAILY_SPEC = ScoreR6DailySpec(
     objective_turnover_coefficient=0.05,
     objective_stability_coefficient=0.25,
     objective_recall_coefficient=0.10,
-    data_schema_version="score_r6_daily_trend_row_v1",
-    report_schema_version="score_r6_daily_trend_report_v1",
+    data_schema_version="score_r6_daily_trend_row",
+    report_schema_version="score_r6_daily_trend_report",
 )
 
 __all__ = [

@@ -28,7 +28,7 @@ def _handoff() -> TomorrowResearchStageHandoff:
     return TomorrowResearchStageHandoff(
         stage="resource_probe",
         parent_graph_hash=None,
-        artifacts=(TomorrowResearchArtifactRef("resource_probe_report", "resource_probe_v1", "codex_d", "a" * 64),),
+        artifacts=(TomorrowResearchArtifactRef("resource_probe_report", "resource_probe", "codex_d", "a" * 64),),
         resource_probe=TomorrowResearchResourceProbe(100, 120, 2, 1024, 40.0, 8.0),
     )
 
@@ -46,10 +46,14 @@ def _development_handoff(
         stage="development_training",
         parent_graph_hash=graph.content_hash,
         artifacts=(
-            TomorrowResearchArtifactRef("h1_coverage_audit", "h1_v1", "codex_a", "b" * 64, ("a" * 64,)),
-            TomorrowResearchArtifactRef("daily_close_c3_candidate", "c3_v1", "codex_a", "c" * 64, ("b" * 64,)),
-            TomorrowResearchArtifactRef("filter_confirmation", "filter_v1", "codex_b", "d" * 64, ("a" * 64,)),
-            TomorrowResearchArtifactRef("tomorrow_joint_candidate", "joint_v1", "codex_b", "e" * 64, ("c" * 64,)),
+            TomorrowResearchArtifactRef("h1_coverage_audit", "h1_coverage_audit", "codex_a", "b" * 64, ("a" * 64,)),
+            TomorrowResearchArtifactRef(
+                "daily_close_c3_candidate", "daily_close_c3_candidate", "codex_a", "c" * 64, ("b" * 64,)
+            ),
+            TomorrowResearchArtifactRef("filter_confirmation", "filter_confirmation", "codex_b", "d" * 64, ("a" * 64,)),
+            TomorrowResearchArtifactRef(
+                "tomorrow_joint_candidate", "tomorrow_joint_candidate", "codex_b", "e" * 64, ("c" * 64,)
+            ),
         ),
         evidence_partitions=evidence,
     )
@@ -106,15 +110,15 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
         parent_graph_hash=graph.content_hash,
         artifacts=(
             TomorrowResearchArtifactRef(
-                "daily_close_confirmation_report", "confirmation_v1", "codex_a", "f" * 64, ("c" * 64,)
+                "daily_close_confirmation_report", "daily_close_confirmation_report", "codex_a", "f" * 64, ("c" * 64,)
             ),
             TomorrowResearchArtifactRef(
-                "joint_confirmation_report", "joint_confirmation_v1", "codex_b", "0" * 64, ("e" * 64,)
+                "joint_confirmation_report", "joint_confirmation_report", "codex_b", "0" * 64, ("e" * 64,)
             ),
         ),
     )
     graph = graph.extend(confirmation.artifacts)
-    model_payload = {"schema_version": "tomorrow_joint_candidate_model_artifact_v1"}
+    model_payload = {"schema_version": "tomorrow_joint_candidate_model_artifact"}
     model_hash = canonical_hash(model_payload)
     model_payload["content_hash"] = model_hash
     proxy = TomorrowResearchStageHandoff(
@@ -123,7 +127,7 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
         artifacts=(
             TomorrowResearchArtifactRef(
                 "daily_close_proxy_validation_report",
-                "proxy_validation_v1",
+                "daily_close_proxy_validation_report",
                 "codex_a",
                 "1" * 64,
                 ("f" * 64,),
@@ -131,7 +135,7 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
             ),
             TomorrowResearchArtifactRef(
                 "joint_candidate_model_artifact",
-                "tomorrow_joint_candidate_model_artifact_v1",
+                "tomorrow_joint_candidate_model_artifact",
                 "codex_b",
                 model_hash,
                 ("0" * 64,),
@@ -146,7 +150,7 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
         artifacts=(
             TomorrowResearchArtifactRef(
                 "tomorrow_point_in_time_holdout_report",
-                "point_in_time_holdout_v1",
+                "point_in_time_holdout",
                 "codex_c",
                 "2" * 64,
                 ("1" * 64, model_hash),
@@ -154,7 +158,7 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
                 ("historical_point_in_time_parity",),
             ),
             TomorrowResearchArtifactRef(
-                "cross_strategy_conclusion", "cross_strategy_v1", "codex_c", "3" * 64, ("2" * 64,)
+                "cross_strategy_conclusion", "cross_strategy_conclusion", "codex_c", "3" * 64, ("2" * 64,)
             ),
         ),
         outcome="historical_validated",
@@ -188,7 +192,7 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
     next_probe = TomorrowResearchStageHandoff(
         stage="resource_probe",
         parent_graph_hash=None,
-        artifacts=(TomorrowResearchArtifactRef("resource_probe_report", "resource_probe_v1", "codex_d", "5" * 64),),
+        artifacts=(TomorrowResearchArtifactRef("resource_probe_report", "resource_probe", "codex_d", "5" * 64),),
         resource_probe=TomorrowResearchResourceProbe(100, 120, 2, 900, 39.0, 7.0),
     )
     store.seal_handoff(next_probe)
@@ -202,7 +206,7 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
 
 def test_model_document_rejects_tampering_before_it_can_enter_a_run(tmp_path) -> None:
     store = TomorrowResearchArtifactStore(tmp_path, available_disk_gb=lambda _path: 40.0)
-    payload = {"schema_version": "tomorrow_joint_candidate_model_artifact_v1"}
+    payload = {"schema_version": "tomorrow_joint_candidate_model_artifact"}
     expected_hash = canonical_hash(payload)
     payload["content_hash"] = expected_hash
     payload["unexpected"] = True

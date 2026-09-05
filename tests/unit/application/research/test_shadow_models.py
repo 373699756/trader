@@ -57,8 +57,8 @@ def test_shadow_models_use_walk_forward_embargo_same_data_and_complete_predictio
 
     report = service.build(days)
 
-    assert report.schema_version == "score_tomorrow_shadow_report_v1"
-    assert report.feature_version == "score_tomorrow_point_in_time_features_v1"
+    assert report.schema_version == "score_tomorrow_shadow_report"
+    assert report.feature_version == "score_tomorrow_point_in_time_features"
     assert report.random_seed == 20260828
     assert report.cost_bps == 20
     assert report.production_authority is False

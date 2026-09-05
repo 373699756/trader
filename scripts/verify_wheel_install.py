@@ -20,7 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--runtime-config",
         type=Path,
-        default=PROJECT_ROOT / "config" / "v2" / "runtime.json",
+        default=PROJECT_ROOT / "config" / "runtime.json",
     )
     return parser
 
@@ -74,7 +74,7 @@ def verify_wheel_install(*, dist_dir: Path, runtime_config: Path) -> dict[str, o
     if not isinstance(payload, dict):
         raise TypeError("wheel resource probe returned an invalid result")
     return {
-        "schema_version": "trader_wheel_install_verification_v1",
+        "schema_version": "trader_wheel_install_verification",
         "status": "passed",
         "wheel": wheel.name,
         "resource_count": payload["resource_count"],

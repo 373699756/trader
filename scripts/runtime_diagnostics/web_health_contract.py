@@ -1,4 +1,4 @@
-"""Typed parsing boundary for sanitized V2 Web-health samples."""
+"""Typed parsing boundary for sanitized 统一 Web-health samples."""
 
 from __future__ import annotations
 
