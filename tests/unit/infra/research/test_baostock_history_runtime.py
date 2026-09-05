@@ -19,9 +19,11 @@ from trader.application.research.baostock_history_runtime import (
 from trader.domain.research.baostock_daily import (
     BAOSTOCK_LEGACY_CALENDAR_SCHEMA,
     BaoStockCalendar,
+    BaoStockDailySide,
     BaoStockDailySpec,
     BaoStockSecurity,
     BaoStockSourceVersions,
+    join_baostock_daily_sides,
 )
 from trader.infra.research.baostock_daily import SQLiteBaoStockDailyShard
 from trader.infra.research.baostock_history_runtime import (
@@ -30,6 +32,7 @@ from trader.infra.research.baostock_history_runtime import (
     _DownloadCoordinator,
     _DownloadLock,
     _DownloadRun,
+    _failure_code,
     _fetch_context,
     _load_resume_context,
     _partition_name,
@@ -92,6 +95,29 @@ def _coordinator(tmp_path: Path) -> tuple[_DownloadCoordinator, BaoStockSecurity
     return _DownloadCoordinator(run), security, recorder
 
 
+def _batch_for_security(security: BaoStockSecurity, spec: BaoStockDailySpec):
+    day = spec.source_cutoff
+
+    def side(adjustment: str) -> BaoStockDailySide:
+        return BaoStockDailySide(
+            security.code,
+            day,
+            adjustment,
+            10.0,
+            10.5,
+            9.8,
+            10.2,
+            100.0,
+            1_000.0,
+            9.9 if adjustment == "unadjusted" else None,
+            3.03 if adjustment == "unadjusted" else None,
+            1.2 if adjustment == "unadjusted" else None,
+            "trading",
+        )
+
+    return join_baostock_daily_sides(security.code, (day,), (side("unadjusted"),), (side("qfq"),))
+
+
 def test_blacklist_is_a_run_level_failure_instead_of_queuing_thousands_of_retries(tmp_path: Path) -> None:
     coordinator, security, _ = _coordinator(tmp_path)
     coordinator._initialize_shards()
@@ -119,6 +145,46 @@ def test_progress_uses_checkpoint_database_as_resume_source(tmp_path: Path) -> N
     assert progress.downloaded_records == 0
     assert progress.completed_codes == 0
     assert progress.failed_codes == 0
+
+
+def test_resume_progress_reads_checkpoint_index_without_snapshot_payload_decode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    coordinator, security, recorder = _coordinator(tmp_path)
+    coordinator._initialize_shards()
+    shard = coordinator._failure_shard(security)
+    shard.record_failure(coordinator._run.spec, security.code, "supplier_query_failed")
+
+    def snapshot_must_not_run(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("resume progress must not decode daily payloads")
+
+    monkeypatch.setattr(shard, "snapshot", snapshot_must_not_run)
+    coordinator._refresh_checkpoint_progress()
+
+    assert coordinator._failed_codes == {security.code}
+    assert coordinator._downloaded_records == 0
+
+
+def test_completed_daily_batch_with_incomplete_industry_is_not_downloaded_again(tmp_path: Path) -> None:
+    coordinator, security, _ = _coordinator(tmp_path)
+    coordinator._initialize_shards()
+    coordinator._pending.clear()
+    shard = coordinator._failure_shard(security)
+    shard.save_batch(coordinator._run.spec, _batch_for_security(security, coordinator._run.spec))
+
+    coordinator._initialize_shards()
+
+    assert not coordinator._pending
+    assert coordinator._terminal_failures == {security.code: "historical_industry_incomplete"}
+    assert coordinator._completed_codes == {security.code}
+    assert coordinator._ready_codes == set()
+    assert coordinator._failed_codes == set()
+
+
+def test_incomplete_historical_industry_has_stable_failure_code() -> None:
+    assert _failure_code(ValueError("BaoStock historical industry does not cover every expected date")) == (
+        "historical_industry_incomplete"
+    )
 
 
 def test_partial_status_refreshes_checkpoints_committed_outside_parent_response(tmp_path: Path) -> None:

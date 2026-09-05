@@ -185,6 +185,23 @@ def test_sqlite_shard_uses_wal_is_idempotent_and_detects_tampering(tmp_path) -> 
         shard.snapshot(spec)
 
 
+def test_checkpoint_index_counts_completed_rows_without_decoding_daily_payload(tmp_path) -> None:
+    spec, calendar, universe, versions = _context()
+    shard = SQLiteBaoStockDailyShard(tmp_path / "shard.sqlite3")
+    shard.initialize(spec, calendar, universe, versions)
+    shard.save_batch(spec, _batch("600001", calendar))
+
+    checkpoint = shard.checkpoint(
+        spec,
+        expected_records_by_code={item.code: len(calendar.expected_dates(item)) for item in universe},
+    )
+
+    assert checkpoint.completed_codes == frozenset({"600001"})
+    assert checkpoint.ready_codes == frozenset()
+    assert checkpoint.failures == ()
+    assert checkpoint.downloaded_records == len(calendar.open_dates)
+
+
 def test_partition_manifest_is_order_independent_hash_bound_and_has_no_merged_database(tmp_path) -> None:
     spec, calendar, universe, versions = _context()
     industries = _industry("600001", calendar) + _industry("300001", calendar)

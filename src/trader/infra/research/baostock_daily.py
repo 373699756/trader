@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -265,14 +265,18 @@ class SQLiteBaoStockDailyShard:
             _json(_encode_versions(source_versions)),
             context_hash,
         )
+        inserted_context = True
         try:
             with self._connect() as connection:
                 connection.execute("INSERT INTO context VALUES (?, ?, ?, ?, ?, ?)", values)
         except sqlite3.IntegrityError:
-            existing = self.context(spec)
-            if existing != BaoStockShardContext(calendar, ordered_universe, source_versions, tuple(industry_intervals)):
+            inserted_context = False
+            expected_context = BaoStockShardContext(
+                calendar, ordered_universe, source_versions, tuple(industry_intervals)
+            )
+            if not self.context_matches(spec, expected_context):
                 raise BaoStockDailyArtifactConflictError("BaoStock shard context identity conflict") from None
-        if industry_intervals:
+        if industry_intervals and (inserted_context or not self._has_industry_intervals()):
             with self._connect() as connection:
                 connection.executemany(
                     "INSERT OR IGNORE INTO industry_intervals VALUES (?, ?, ?, ?, ?, ?)",
@@ -288,6 +292,11 @@ class SQLiteBaoStockDailyShard:
                         for item in industry_intervals
                     ),
                 )
+
+    def _has_industry_intervals(self) -> bool:
+        with self._connect() as connection:
+            row = connection.execute("SELECT 1 FROM industry_intervals LIMIT 1").fetchone()
+        return row is not None
 
     def completed_codes(self, spec: BaoStockDailySpec) -> frozenset[str]:
         self._require_context(spec)
@@ -385,7 +394,12 @@ class SQLiteBaoStockDailyShard:
             ).fetchall()
         return frozenset(cast(str, row[0]) for row in rows)
 
-    def checkpoint(self, spec: BaoStockDailySpec) -> BaoStockShardCheckpoint:
+    def checkpoint(
+        self,
+        spec: BaoStockDailySpec,
+        *,
+        expected_records_by_code: Mapping[str, int] | None = None,
+    ) -> BaoStockShardCheckpoint:
         """Read the durable resume index without decoding any daily payload.
 
         ``daily_cells.payload_json`` can be gigabytes large.  It is deliberately
@@ -393,10 +407,11 @@ class SQLiteBaoStockDailyShard:
         completed/failed codes, and the caller can derive their expected row
         counts from the frozen calendar.
         """
-        context = self._require_context(spec)
-        expected_by_code = {
-            item.code: len(context.calendar.expected_dates(item)) for item in context.universe
-        }
+        if expected_records_by_code is None:
+            context = self._require_context(spec)
+            expected_by_code = {item.code: len(context.calendar.expected_dates(item)) for item in context.universe}
+        else:
+            expected_by_code = dict(expected_records_by_code)
         try:
             with self._connect() as connection:
                 completed_rows = connection.execute(
@@ -675,6 +690,14 @@ def _industry_for_date(
     )
 
 
+def industry_covers_expected_dates(security: BaoStockSecurity, context: BaoStockShardContext) -> bool:
+    intervals = tuple(item for item in context.industry_intervals if item.code == security.code)
+    return bool(intervals) and all(
+        any(item.effective_from <= day and (item.effective_to is None or day < item.effective_to) for item in intervals)
+        for day in context.calendar.expected_dates(security)
+    )
+
+
 def _valid_error_code(value: str) -> bool:
     return (
         0 < len(value) <= 64 and value.isascii() and all(character.isalnum() or character == "_" for character in value)
@@ -698,4 +721,5 @@ __all__ = [
     "BaoStockSdkPort",
     "BaoStockShardSnapshot",
     "SQLiteBaoStockDailyShard",
+    "industry_covers_expected_dates",
 ]

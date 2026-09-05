@@ -1832,7 +1832,10 @@ OOF/model 以及生产/自动更新权限。当前真实审计已使三个策略
 断点时再次依赖供应商证券主数据。下载期间和完成后都只存在 WAL 分片 checkpoint、`catalog.sqlite3` 与规范
 `manifest.json`，不生成单一总库；单个分库损坏时移入 `quarantine/`，只重新下载该分库覆盖的股票，其他分片继续可读。供应商返回 `10001011` 时统一投影
 `supplier_query_failed_blacklisted` 并立即停止整次运行，保留已提交断点；文件系统不支持进程锁时失败关闭，
-不得无锁继续。
+不得无锁继续。续传启动只读取 `checkpoints`、`training_fact_checkpoints` 和冻结上下文哈希，不解码
+`daily_cells.payload_json`；因此已落盘日线不会因恢复扫描重复读取。日线 checkpoint 与训练事实 checkpoint
+独立：行业历史无法覆盖上市日至收盘窗口时保留已完成日线，并以 `historical_industry_incomplete`
+终止该股票，后续启动不再重复下载其日线。
 
 备用来源不与 BaoStock checkpoint、SQLite 或 manifest 混写。2026-09-03 的单股票 600 日真实能力探针中，
 腾讯 `proxy` 和 `direct` K 线主机均未返回有效行，东方财富同样未返回有效行；120 积分 Tushare 只声明 raw 日线，

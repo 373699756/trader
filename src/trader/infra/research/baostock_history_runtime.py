@@ -48,6 +48,7 @@ from trader.infra.research.baostock_daily import (
     BaoStockSdkPort,
     BaoStockShardSnapshot,
     SQLiteBaoStockDailyShard,
+    industry_covers_expected_dates,
 )
 from trader.infra.research.baostock_v3_dataset import (
     BaoStockV3DatasetArtifactConflictError,
@@ -396,16 +397,17 @@ def _sha256_file(path: Path) -> str:
 
 
 def _load_resume_context(root: Path, spec: BaoStockDailySpec) -> BaoStockShardContext | None:
-    contexts: list[BaoStockShardContext] = []
-    for path in sorted((root / "shards").glob("*.sqlite3")):
-        context = SQLiteBaoStockDailyShard(path).context(spec)
-        if context is not None:
-            contexts.append(context)
-    if not contexts:
+    paths = tuple(sorted((root / "shards").glob("*.sqlite3")))
+    if not paths:
         return None
-    first = contexts[0]
-    if any(context != first for context in contexts[1:]):
-        raise BaoStockDailyArtifactConflictError("BaoStock resume shard contexts do not match")
+    first_shard = SQLiteBaoStockDailyShard(paths[0])
+    first = first_shard.context(spec)
+    if first is None:
+        return None
+    for path in paths[1:]:
+        shard = SQLiteBaoStockDailyShard(path)
+        if not shard.context_matches(spec, first):
+            raise BaoStockDailyArtifactConflictError("BaoStock resume shard contexts do not match")
     return first
 
 
@@ -544,11 +546,8 @@ class _DownloadRun:
 class _DownloadCoordinator:
     def __init__(self, run: _DownloadRun) -> None:
         self._run = run
-        self._shards = tuple(
-            SQLiteBaoStockDailyShard(run.root / "shards" / _partition_name(item.board, item.code))
-            for item in run.context.universe
-            if item.code == _partition_first_code(run.context.universe, item.board, item.code)
-        )
+        partition_names = sorted({_partition_name(item.board, item.code) for item in run.context.universe})
+        self._shards = tuple(SQLiteBaoStockDailyShard(run.root / "shards" / name) for name in partition_names)
         self._shards_by_name = {shard.path.name: shard for shard in self._shards}
         self._pending: deque[BaoStockSecurity] = deque()
         self._attempts: dict[str, int] = {}
@@ -567,6 +566,8 @@ class _DownloadCoordinator:
 
     def run(self) -> BaoStockRuntimeStatus:
         self._initialize_shards()
+        if not self._pending:
+            return self._finish()
         self._report("worker_starting")
         startup_failure = self._start_workers()
         if not self._handles:
@@ -597,15 +598,44 @@ class _DownloadCoordinator:
                 run.context.industry_intervals,
             )
         self._refresh_checkpoint_progress()
-        self._pending.extend(item for item in run.context.universe if item.code not in self._ready_codes)
+        for item in run.context.universe:
+            if item.code in self._ready_codes:
+                continue
+            if item.code in self._completed_codes:
+                if industry_covers_expected_dates(item, run.context):
+                    self._pending.append(item)
+                else:
+                    self._terminal_failures[item.code] = "historical_industry_incomplete"
+                continue
+            self._pending.append(item)
 
-    def _refresh_checkpoint_progress(self) -> tuple[BaoStockShardSnapshot, ...]:
-        snapshots = tuple(shard.snapshot(self._run.spec) for shard in self._shards)
-        self._completed_codes = {batch.code for snapshot in snapshots for batch in snapshot.batches}
-        self._ready_codes = {code for shard in self._shards for code in shard.training_ready_codes(self._run.spec)}
-        self._failed_codes = {code for snapshot in snapshots for code, _ in snapshot.failures}
-        self._downloaded_records = sum(len(batch.cells) for snapshot in snapshots for batch in snapshot.batches)
-        return snapshots
+    def _refresh_checkpoint_progress(self, *, decode: bool = False) -> tuple[BaoStockShardSnapshot, ...] | None:
+        if decode:
+            snapshots = tuple(shard.snapshot(self._run.spec) for shard in self._shards)
+            self._completed_codes = {batch.code for snapshot in snapshots for batch in snapshot.batches}
+            self._ready_codes = {code for shard in self._shards for code in shard.training_ready_codes(self._run.spec)}
+            self._failed_codes = {code for snapshot in snapshots for code, _ in snapshot.failures}
+            self._downloaded_records = sum(len(batch.cells) for snapshot in snapshots for batch in snapshot.batches)
+            return snapshots
+
+        expected = {
+            item.code: len(self._run.context.calendar.expected_dates(item)) for item in self._run.context.universe
+        }
+        completed: set[str] = set()
+        ready: set[str] = set()
+        failures: dict[str, str] = {}
+        downloaded = 0
+        for shard in self._shards:
+            checkpoint = shard.checkpoint(self._run.spec, expected_records_by_code=expected)
+            completed.update(checkpoint.completed_codes)
+            ready.update(checkpoint.ready_codes)
+            failures.update(checkpoint.failures)
+            downloaded += checkpoint.downloaded_records
+        self._completed_codes = completed
+        self._ready_codes = ready
+        self._failed_codes = set(failures)
+        self._downloaded_records = downloaded
+        return None
 
     def _start_workers(self) -> str:
         failure = ""
@@ -766,7 +796,9 @@ class _DownloadCoordinator:
             return self._partial("cancelled", ("cancelled",))
         if self._terminal_failures:
             return self._partial("completed_with_failures", tuple(self._terminal_failures.values()))
-        snapshots = self._refresh_checkpoint_progress()
+        snapshots = self._refresh_checkpoint_progress(decode=True)
+        if snapshots is None:
+            raise RuntimeError("BaoStock final checkpoint snapshot is missing")
         completed = frozenset(code for shard in self._shards for code in shard.training_ready_codes(self._run.spec))
         if completed != frozenset(item.code for item in self._run.context.universe):
             return self._partial("completed_with_failures", ("incomplete_codes",))
@@ -999,11 +1031,6 @@ def _partition_name(board: str, code: str) -> str:
     return f"{board}-{code[:4]}{suffix}.sqlite3"
 
 
-def _partition_first_code(universe: tuple[BaoStockSecurity, ...], board: str, code: str) -> str:
-    name = _partition_name(board, code)
-    return min(item.code for item in universe if _partition_name(item.board, item.code) == name)
-
-
 def _stop_worker(handle: _WorkerHandle, *, graceful: bool) -> None:
     if graceful and handle.process.is_alive():
         try:
@@ -1110,6 +1137,10 @@ def _process_rss_mb(pid: int) -> float:
 
 def _failure_code(exc: BaseException) -> str:
     message = str(exc)
+    if "historical industry does not cover every expected date" in message:
+        return "historical_industry_incomplete"
+    if "historical industry is missing" in message:
+        return "historical_industry_missing"
     if _valid_failure_code(message):
         return message
     return type(exc).__name__.lower()[:48]

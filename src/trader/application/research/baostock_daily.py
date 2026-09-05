@@ -187,6 +187,11 @@ class BaoStockDailyDownloadService:
 
 
 def _failure_code(exc: BaseException) -> str:
+    message = str(exc)
+    if "historical industry does not cover every expected date" in message:
+        return "historical_industry_incomplete"
+    if "historical industry is missing" in message:
+        return "historical_industry_missing"
     if isinstance(exc, TimeoutError):
         return "supplier_call_timeout"
     if isinstance(exc, OSError):
