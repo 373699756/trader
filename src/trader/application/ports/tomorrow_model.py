@@ -9,7 +9,9 @@ import math
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-TomorrowScoringProfile = Literal["v1", "v2", "v3"]
+from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
+
+TomorrowScoringProfile = ScoringProfileId
 
 
 @dataclass(frozen=True)

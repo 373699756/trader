@@ -6,6 +6,8 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 按 `docs/score.md` 计划项 2，新增纯领域评分档位身份模块，集中定义并解析唯一允许的 `v1/v2/v3`；配置加载、CLI 和 Server 参数统一复用该来源，Tomorrow 端口和设置类型改为引用同一类型。未修改历史下载代码、checkpoint、分片或运行目录。Verification: 相关设置、入口、V3 契约和新身份单元测试通过，Ruff/mypy/`git diff --check` 通过。Residual Risks: Today/D25 策略头和通用评分路由仍按后续计划项实施，当前生产评分行为不变。
+
 - 用户要求精简 `download_history` 的长 JSON 进度输出。CLI 现在在标准错误显示单行摘要，包含阶段、已下载股票/记录数、未下载数、失败数、分秒耗时、当前代码、最近失败原因和归档路径；最终状态 JSON 和内部类型化进度契约保持不变。Verification: BaoStock CLI 进度、入口契约测试、Ruff、格式检查和 `git diff --check` 通过；现场输出已验证。Residual Risks: 已运行中的旧进程不会热切换输出格式，需结束后重新启动命令。
 
 - 用户反馈 `./run.sh download_history` 续传阶段长时间卡住且失败原因只显示 `valueerror`。根因已确认：恢复进度原先解码所有分片的 `daily_cells.payload_json`，并且日线已成功落盘后行业历史覆盖校验失败，下一次又重复抓取整段日线。现改为只读 SQLite checkpoint 索引和上下文哈希；日线完成与训练事实就绪分离，行业覆盖不足稳定标记为 `historical_industry_incomplete`，保留日线 checkpoint 并跳过重复下载。真实 sessions-2000 运行已在约 18 秒进入 `downloading`（此前约数分钟），显示 `completed_codes=1435`、`failed_codes=4018`、`remaining_codes=4018`。Verification: 37 个 BaoStock 日线/运行时定向测试、Ruff、`git diff --check` 通过；真实网络 `timeout 30s ./run.sh download_history` 进入 worker 并持续下载。Residual Risks: BaoStock 仍固定单 worker、每次查询至少间隔 2 秒，4018 个待处理股票的完整下载仍可能需要数小时；供应商网络和行业历史事实缺口仍需外部数据改善，未伪造行业值。

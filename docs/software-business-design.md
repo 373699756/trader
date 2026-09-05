@@ -624,7 +624,8 @@ BaoStock 离线基础设施在 `infra/research` 内继续按真实职责拆分�
 
 - `domain`：按 `market`、`recommendation`、`research`、`review`、`outcome` 五个业务能力包组织不可变
   值对象和纯函数。`market` 负责点时行情、因子、研究、新闻与尾盘信号；
-  `recommendation` 负责过滤、板内评分、策略组合、融合、下行保护和稳定排名；`review`
+  `recommendation` 负责过滤、板内评分、策略组合、融合、下行保护和稳定排名；其中
+  `domain/recommendation/model_scoring/profile_identity.py` 是 V1/V2/V3 评分档位身份的唯一纯领域来源；`review`
   负责结构化复核值与本地风险映射；`research` 负责离线研究身份、报告与晋级值对象；
   `outcome` 负责冻结推荐结果结算。领域包不得读取配置、
   时钟、网络、文件或数据库，不保留旧根级模块或动态兼容导出。

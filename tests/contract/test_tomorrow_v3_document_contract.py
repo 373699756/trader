@@ -19,8 +19,6 @@ def test_v3_is_a_single_offline_industry_model_without_stacking() -> None:
     raw_strategy = (ROOT / "docs" / "recommendation-strategy.md").read_text(encoding="utf-8")
     strategy = " ".join(raw_strategy.split())
     section = raw_strategy[raw_strategy.index("#### 15.1.35") : raw_strategy.index("#### 15.1.36")]
-    model_port = (ROOT / "src" / "trader" / "application" / "ports" / "tomorrow_model.py").read_text(encoding="utf-8")
-
     required_contract = (
         "V3 是新的唯一 Tomorrow 模型",
         "C3 只表示其离线训练阶段",
@@ -36,7 +34,9 @@ def test_v3_is_a_single_offline_industry_model_without_stacking() -> None:
     assert all(value in strategy for value in required_contract)
     assert "3,000" not in section
     assert "rolling_1500" not in section
-    assert 'TomorrowScoringProfile = Literal["v1", "v2", "v3"]' in model_port
+    assert 'ScoringProfileId = Literal["v1", "v2", "v3"]' in (
+        ROOT / "src" / "trader" / "domain" / "recommendation" / "model_scoring" / "profile_identity.py"
+    ).read_text(encoding="utf-8")
 
 
 def test_v3_minimum_dates_can_satisfy_every_preregistered_segment() -> None:
@@ -99,4 +99,4 @@ def test_trained_v3_profile_remains_hash_bound() -> None:
     assert "data/train/tomorrow-v3/<run_id>/" in strategy
     assert "主程序启动时读取最新 `model.json`" in strategy
     assert "内容 hash" in strategy
-    assert 'TomorrowScoringProfile = Literal["v1", "v2", "v3"]' in model_port
+    assert "TomorrowScoringProfile = ScoringProfileId" in model_port

@@ -14,6 +14,7 @@ from typing import IO, cast
 from zoneinfo import ZoneInfo
 
 from trader.application.ports.tomorrow_model import TomorrowScoringProfile
+from trader.domain.recommendation.model_scoring.profile_identity import SCORING_PROFILE_IDS
 from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
 from trader.infra.settings import RuntimeSettings, load_long_watchlist, load_runtime_settings, load_strategy_settings
 
@@ -31,7 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--profile",
-        choices=("v1", "v2", "v3"),
+        choices=SCORING_PROFILE_IDS,
         help="Effective Tomorrow scoring profile for this process; config value is used when omitted.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)

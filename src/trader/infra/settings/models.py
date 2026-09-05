@@ -5,12 +5,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 
 from trader.application.cache import CachePolicy
 from trader.domain.market.news import NewsSignalPolicy
 from trader.domain.market.research import LongResearchPolicy, MarketRegimePolicy
 from trader.domain.market.tail import TailSignalPolicy
+from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
 
 
 @dataclass(frozen=True)
@@ -225,7 +225,7 @@ class FactorDefinition:
 class StrategySettings:
     schema_version: int
     strategy_version: str
-    tomorrow_scoring_profile: Literal["v1", "v2", "v3"]
+    tomorrow_scoring_profile: ScoringProfileId
     deepseek_risk_mapping_version: str
     fusion: FusionSettings
     selection: SelectionSettings
