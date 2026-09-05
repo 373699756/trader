@@ -12,6 +12,7 @@ from trader.application.research.tomorrow_historical_validation import (
     evaluate_historical_risk_probability,
     evaluate_historical_selected_days,
 )
+from trader.domain.recommendation.model_scoring import V1_V2_EXPOSURE_CONTRACT
 
 
 class _Predictor:
@@ -26,6 +27,7 @@ class _Predictor:
         "qfq_residual_momentum_40d_skip5",
         "qfq_residual_momentum_60d_skip5",
     )
+    exposure_contract = V1_V2_EXPOSURE_CONTRACT
 
     def predict(self, inputs: tuple[TomorrowModelInput, ...]) -> tuple[TomorrowModelPrediction, ...]:
         return tuple(

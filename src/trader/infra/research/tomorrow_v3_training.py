@@ -8,7 +8,7 @@ import math
 import os
 import tempfile
 from collections import defaultdict
-from collections.abc import Collection
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from importlib.metadata import version
@@ -19,11 +19,13 @@ import lightgbm as lgb
 import numpy as np
 
 from trader.application.research.tomorrow_v3_training import TomorrowV3TrainingWindow
-from trader.domain.research.baostock_daily import BaoStockDailyManifest, BaoStockV3Split
+from trader.domain.recommendation.model_scoring import V3_EXPOSURE_CONTRACT, residualize_exposure
+from trader.domain.research.baostock_daily import BaoStockDailyManifest, BaoStockTrainingRow, BaoStockV3Split
 from trader.infra.research.baostock_daily import (
     BaoStockDailyArtifactConflictError,
     BaoStockDailyPartitionedArchive,
 )
+from trader.infra.scoring.artifact_hashing import artifact_content_hash
 
 _FEATURE_IDS = (
     "qfq_return_1d",
@@ -55,6 +57,7 @@ class _Sample:
     trade_date: date
     board: str
     industry: str
+    average_amount_20d: float
     features: tuple[float, ...]
     next_return: float
     eligible: bool
@@ -79,7 +82,7 @@ def run_tomorrow_v3_training(history_root: Path, train_root: Path) -> TomorrowV3
             )
         models, training_rows, validation_rows = _fit_models(samples, split)
         report = _build_report(manifest.content_hash, split, models, training_rows, validation_rows)
-        report_hash = _content_hash(report)
+        report_hash = artifact_content_hash(report)
         report["content_hash"] = report_hash
         _write_json(output / "report.json", report)
         if not report["validation_passed"]:
@@ -95,7 +98,7 @@ def run_tomorrow_v3_training(history_root: Path, train_root: Path) -> TomorrowV3
                 tuple(cast(list[str], report["failure_reasons"])),
             )
         model = _model_document(manifest.content_hash, split, report_hash, models, training_rows, validation_rows)
-        model_hash = _content_hash(model)
+        model_hash = artifact_content_hash(model)
         model["content_hash"] = model_hash
         _write_json(output / "model.json", model)
         return TomorrowV3TrainingResult(
@@ -143,6 +146,9 @@ def _build_samples(
             ):
                 continue
             close = float(row.qfq.close_price)
+            average_amount_20d = _average_amount_20d(rows_by_date, calendar, _index)
+            if average_amount_20d is None:
+                continue
             features = (
                 _return(close, closes.get(calendar[previous_1])),
                 _return(close, closes.get(calendar[previous_3])),
@@ -159,6 +165,7 @@ def _build_samples(
                     row.trade_date,
                     row.board,
                     row.industry,
+                    average_amount_20d,
                     features,
                     float(next_row.qfq.close_price) / close - 1.0,
                     not row.is_st and row.unadjusted.trading_status == "trading",
@@ -166,27 +173,25 @@ def _build_samples(
             )
     result: list[_Sample] = []
     for day, values in by_date.items():
-        eligible_returns = tuple(item.next_return for item in values if item.eligible)
-        if not eligible_returns:
+        eligible = tuple(item for item in values if item.eligible)
+        if not eligible:
             continue
-        benchmark = math.fsum(eligible_returns) / len(eligible_returns)
-        board_means = _group_means(values, 1)
-        industry_means = _group_means(values, 2)
-        for item in values:
-            residuals = tuple(
-                item.features[3 + offset]
-                - math.fsum(value.features[3 + offset] for value in values) / len(values)
-                - board_means.get((item.board, offset), 0.0)
-                - industry_means.get((item.industry, offset), 0.0)
-                for offset in range(3)
-            )
+        benchmark = math.fsum(item.next_return for item in eligible) / len(eligible)
+        residuals = _residualize_sample_day(
+            tuple(item.features[3:] for item in eligible),
+            tuple(item.board for item in eligible),
+            tuple(item.industry for item in eligible),
+            tuple(item.average_amount_20d for item in eligible),
+        )
+        for index, item in enumerate(eligible):
             result.append(
                 _Sample(
                     item.code,
                     day,
                     item.board,
                     item.industry,
-                    (*item.features[:3], *residuals),
+                    item.average_amount_20d,
+                    (*item.features[:3], *(values[index] for values in residuals)),
                     item.next_return - benchmark - 0.002,
                     item.eligible,
                 )
@@ -206,20 +211,44 @@ def _aligned_sample_dates(
         indices = (index, index - 1, index - 3, index - 5, index - 25, index - 45, index - 65, next_index)
         if next_index >= len(calendar) or any(value < 0 for value in indices):
             continue
-        required_dates = tuple(calendar[value] for value in indices)
+        amount_indices = tuple(range(index - 19, index + 1))
+        required_dates = tuple(calendar[value] for value in (*indices, *amount_indices))
         if not set(required_dates).issubset(readable_dates) or not set(required_dates).issubset(available):
             continue
         result.append((day, calendar[next_index], indices[:-1]))
     return tuple(result)
 
 
-def _group_means(values: list[_Sample], dimension: int) -> dict[tuple[str, int], float]:
-    grouped: dict[tuple[str, int], list[float]] = defaultdict(list)
-    for item in values:
-        key = (item.board if dimension == 1 else item.industry, 0)
-        for offset in range(3):
-            grouped[(key[0], offset)].append(item.features[3 + offset])
-    return {key: math.fsum(items) / len(items) for key, items in grouped.items()}
+def _average_amount_20d(
+    rows_by_date: Mapping[date, BaoStockTrainingRow],
+    calendar: tuple[date, ...],
+    index: int,
+) -> float | None:
+    rows = tuple(rows_by_date.get(calendar[position]) for position in range(index - 19, index + 1))
+    amounts = tuple(row.qfq.amount if row is not None else None for row in rows)
+    if any(amount is None or not math.isfinite(amount) or amount <= 0.0 for amount in amounts):
+        return None
+    return math.fsum(cast(float, amount) for amount in amounts) / 20.0
+
+
+def _residualize_sample_day(
+    momenta: Sequence[Sequence[float]],
+    boards: Sequence[str],
+    industries: Sequence[str],
+    average_amounts: Sequence[float],
+) -> tuple[tuple[float, ...], ...]:
+    if not momenta or not momenta[0] or any(len(row) != len(momenta[0]) for row in momenta):
+        raise ValueError("V3 training momentum rows must have one consistent non-empty width")
+    return tuple(
+        residualize_exposure(
+            tuple(row[offset] for row in momenta),
+            boards,
+            average_amounts,
+            industries=industries,
+            contract=V3_EXPOSURE_CONTRACT,
+        )
+        for offset in range(len(momenta[0]))
+    )
 
 
 def _fit_models(samples: tuple[_Sample, ...], split: BaoStockV3Split) -> tuple[dict[str, dict[str, object]], int, int]:
@@ -240,7 +269,7 @@ def _fit_models(samples: tuple[_Sample, ...], split: BaoStockV3Split) -> tuple[d
             for item in samples
             if item.trade_date in split.early_stopping_dates and item.industry == industry and item.eligible
         )
-        if len(train_rows) < 20_000 or not calibration_rows or not early_rows:
+        if len(train_rows) < 20_000 or not calibration_rows or not early_rows or not valid_rows:
             continue
         features = np.asarray(tuple(item.features for item in train_rows), dtype=np.float64)
         labels = np.asarray(tuple(item.next_return for item in train_rows), dtype=np.float64)
@@ -330,7 +359,16 @@ def _model_document(  # noqa: PLR0913 - every value is part of the sealed model 
         "schema_version": "tomorrow_v3_production_model_v1",
         "profile_id": "v3",
         "model_id": _MODEL_ID,
+        "strategy_head": "tomorrow",
         "feature_ids": list(_FEATURE_IDS),
+        "feature_units": ["decimal_return"] * len(_FEATURE_IDS),
+        "exposure_contract": {
+            "market": True,
+            "board": True,
+            "industry": True,
+            "log_average_amount_20d": True,
+            "order": list(V3_EXPOSURE_CONTRACT.order),
+        },
         "manifest_hash": manifest_hash,
         "split_hash": split.content_hash,
         "report_hash": report_hash,
@@ -339,6 +377,8 @@ def _model_document(  # noqa: PLR0913 - every value is part of the sealed model 
         "point_in_time_parity": False,
         "training_rows": training_rows,
         "validation_rows": validation_rows,
+        "industry_count": len(models),
+        "ensemble_weights": {"ridge": 0.5, "lightgbm": 0.5},
         "industries": models,
         "dependencies": {"lightgbm": version("lightgbm"), "numpy": version("numpy")},
         "automatic_model_update": False,
@@ -357,11 +397,6 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
         os.replace(temporary_name, path)
     finally:
         Path(temporary_name).unlink(missing_ok=True)
-
-
-def _content_hash(payload: dict[str, object]) -> str:
-    encoded = json.dumps(payload, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(encoded.encode()).hexdigest()
 
 
 def _return(current: float | None, previous: float | None) -> float:

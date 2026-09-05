@@ -26,6 +26,17 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- 用户要求按 `docs/score.md` 完整迁移并修正 V3，且不得干扰正在运行的历史下载。确认根因是 V3 训练只按
+  市场、板块和行业处理残差，线上只按市场、板块和 20 日平均成交额处理残差，两端没有共享合同；旧 V3
+  loader 还同时承担目录定位、JSON 校验和 Ridge/LightGBM 推理。现新增 V3 独立 locator、codec、Tomorrow
+  predictor、profile 和实际单头组合器；训练与线上统一调用类型化暴露合同，训练样本补齐连续 20 个交易日
+  正成交额均值，行业或成交额缺失时失败关闭，工件显式绑定特征顺序、单位、暴露顺序、50/50 权重、行业数
+  和内容 hash。V1/V2 工件及 hash 未修改，V3 仍只装配 Tomorrow 头，不自动训练、启用或回退。Verification:
+  81 项定向领域、应用、研究、V1/V2/V3 profile 和架构契约测试，受影响源码 Ruff、31 个源码文件 mypy 及
+  `git diff --check` 通过；按用户要求，全量测试、打包和性能门禁统一留到评分计划全部完成后执行。
+  Residual Risks: 当前没有读取或训练真实历史工件，真实 V3 训练产物仍需在最终统一门禁之外按授权单独生成和
+  审核；本批未修改历史下载实现或运行数据。`Regression-Key: v3-training-runtime-exposure-parity`。
+
 - 用户反馈 15:00 后明日/2-5 日已完成评分，但“评分最高”卡片在没有达到观察池门槛时为空，并要求新股不足 2000 个交易日时不要用错位日期训练。根因是 DecisionView/SSE replacement 只投影正式或观察项，训练特征和标签则按个股返回行号取“下一行”，会跨停牌或上市前缺口。现新增公开 `top_scores` 投影，Today、Tomorrow、D25 均按全部已评分候选稳定返回最高三只，主推荐表和观察池语义不变；未就绪草稿也提供独立最高三项。V3 训练改用统一交易所开市日历，所有特征窗口和下一交易日标签必须命中该股票实际下载记录，缺日样本直接跳过，不补造上市前数据。DecisionView schema 升为 `v2_decision_view_v4` 并同步 release identity。另修正打包契约夹具排除易失 SQLite WAL/SHM sidecar，避免复制运行数据时竞态失败。Verification: 受影响定向 Python 测试、`node tests/js/test_dashboard_state.js`、`make format-check`、`make lint`、`make type-check`、全量 `make test`、`make package` 和 `git diff --check` 均通过；`make browser-performance-check` 已执行但因主机未安装 `geckodriver` 返回 `browser_refresh_failed`，不作为通过证据。Residual Risks: 当前机器仍无合格 BaoStock 全量 manifest，尚未进行真实 V3 训练或跨 PC 实物迁移验证；Firefox 桌面门禁需在安装 geckodriver 的环境补跑；未就绪页面的最高分依赖同一内存草稿仍在保留。`Regression-Key: top-score-and-calendar-alignment-v1`。
 
 - 用户反馈 15:00 后明日/2-5 日评分已完成但“评分最高”卡片显示暂无数据，且切换到长期策略时仍显示评分完成时间。根因是短线 API 只向主表投影被选中的股票，最高分低于观察门槛或被限制时主表为空，而摘要诊断仍保留最高分；长期策略复用了短线完成时间渲染。现让卡片在无正式/观察项但存在最高分诊断时显示最高分并明确无达到观察门槛的股票，长期策略固定显示“不评分”。Verification: `node tests/js/test_dashboard_state.js`、全量 `make test`、`make format-check`、`make lint`、`make type-check`、`make package` 和 `git diff --check` 通过。Residual Risks: 无法从当前正式/观察投影恢复未入池股票的代码和名称，卡片在该场景仅显示最高分；如需展示股票身份，需另立 API 投影契约批次。 `Regression-Key: top-score-empty-snapshot-v1`。

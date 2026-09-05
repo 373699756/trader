@@ -73,7 +73,10 @@ class TomorrowProductionModelScoringService:
         self._predictor = predictor
         self._feature_positions = tuple(_MODEL_FEATURE_IDS.index(item) for item in predictor.feature_ids)
         self._requires_reversal = any(position < 3 for position in self._feature_positions)
-        self._industry_ids = frozenset(getattr(predictor, "industry_ids", ()))
+        self._industry_ids = frozenset(predictor.industry_ids)
+        self._exposure_contract = predictor.exposure_contract
+        if self._exposure_contract.requires_industry and not self._industry_ids:
+            raise ValueError("Tomorrow production model industry coverage is missing")
 
     @property
     def model_version(self) -> str:
@@ -84,7 +87,10 @@ class TomorrowProductionModelScoringService:
         return _HISTORY_REQUIRED_SESSIONS
 
     def is_input_eligible(self, feature: FeatureSnapshot) -> bool:
-        return _raw_row(feature, require_reversal=self._requires_reversal) is not None
+        row = _raw_row(feature, require_reversal=self._requires_reversal)
+        return row is not None and (
+            not self._exposure_contract.requires_industry or row.industry in self._industry_ids
+        )
 
     def status(self) -> TomorrowModelRuntimeStatus:
         evidence = self._predictor.profile_evidence
@@ -112,7 +118,9 @@ class TomorrowProductionModelScoringService:
             row = _raw_row(feature, require_reversal=self._requires_reversal)
             if row is None:
                 missing.append(feature.quote.code)
-            elif self._industry_ids and row.industry not in self._industry_ids:
+            elif self._exposure_contract.requires_industry and (
+                not row.industry or row.industry not in self._industry_ids
+            ):
                 missing.append(feature.quote.code)
             else:
                 rows.append(row)
@@ -123,6 +131,8 @@ class TomorrowProductionModelScoringService:
                 tuple(row.momentum[index] for row in rows),
                 tuple(row.board for row in rows),
                 tuple(row.average_amount_20d for row in rows),
+                industries=tuple(row.industry for row in rows),
+                contract=self._exposure_contract,
             )
             for index in range(3)
         )

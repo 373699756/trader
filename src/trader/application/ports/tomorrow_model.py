@@ -8,6 +8,7 @@ from typing import Protocol
 
 from trader.application.ports.model_scoring import ProfileEvidence, ScoringProfileRuntimeStatus
 from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
+from trader.domain.recommendation.model_scoring.residualization import ExposureContract
 
 TomorrowScoringProfile = ScoringProfileId
 
@@ -54,6 +55,9 @@ class TomorrowModelPredictorPort(Protocol):
 
     @property
     def feature_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def exposure_contract(self) -> ExposureContract: ...
 
     @property
     def industry_ids(self) -> tuple[str, ...]: ...

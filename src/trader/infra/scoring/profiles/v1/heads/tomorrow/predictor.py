@@ -6,6 +6,7 @@ import numpy as np
 
 from trader.application.ports.model_scoring import ProfileEvidence
 from trader.application.ports.tomorrow_model import TomorrowModelInput, TomorrowModelPrediction, TomorrowScoringProfile
+from trader.domain.recommendation.model_scoring import V1_V2_EXPOSURE_CONTRACT, ExposureContract
 from trader.infra.scoring.profiles.v1.artifact_codec import V1TomorrowModelArtifact
 
 
@@ -32,6 +33,10 @@ class V1TomorrowPredictor:
     @property
     def feature_ids(self) -> tuple[str, ...]:
         return self._artifact.feature_ids
+
+    @property
+    def exposure_contract(self) -> ExposureContract:
+        return V1_V2_EXPOSURE_CONTRACT
 
     @property
     def industry_ids(self) -> tuple[str, ...]:

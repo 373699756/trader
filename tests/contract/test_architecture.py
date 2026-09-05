@@ -130,6 +130,26 @@ def test_v2_scoring_profile_is_separate_from_research_artifacts_and_the_legacy_l
     assert "_load_p2" not in legacy
 
 
+def test_v3_scoring_profile_owns_its_locator_codec_predictor_and_combiner() -> None:
+    v3_root = SOURCE_ROOT / "infra/scoring/profiles/v3"
+    legacy = (SOURCE_ROOT / "infra/tomorrow_production_model.py").read_text(encoding="utf-8")
+
+    for relative in (
+        "bundle_codec.py",
+        "bundle_locator.py",
+        "composition.py",
+        "profile.py",
+        "heads/tomorrow/predictor.py",
+    ):
+        assert (v3_root / relative).is_file()
+    assert "class PackagedV3TomorrowProductionModel" not in legacy
+    assert "_load_training_v3_model" not in legacy
+    assert not any("trader.infra.research" in imported for path in v3_root.rglob("*.py") for imported in _imports(path))
+    profile_source = (v3_root / "profile.py").read_text(encoding="utf-8")
+    assert "Strategy.TOMORROW" in profile_source
+    assert all(head not in profile_source for head in ("T2Head", "T3Head", "T4Head", "T5Head"))
+
+
 def test_old_production_chain_has_no_active_files() -> None:
     retired = (
         "application/candidate_features.py",
