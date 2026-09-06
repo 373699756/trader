@@ -179,13 +179,15 @@ class _BaoStockProgressWriter:
         if not isinstance(progress, BaoStockRuntimeProgress):
             raise TypeError("BaoStock progress writer requires a typed progress value")
         elapsed = max(0, int(self._monotonic() - self._started_at))
-        minutes, seconds = divmod(elapsed, 60)
+        hours, remainder = divmod(elapsed, 3600)
+        minutes, seconds = divmod(remainder, 60)
         current = f"，当前 {progress.current_code}" if progress.current_code else ""
-        failure = f"，最近失败 {progress.last_failure_reason}" if progress.last_failure_reason else ""
+        failure = progress.last_failure_reason or "无"
+        save_filename = "*.sqlite3"
         print(
-            f"[{progress.phase}] 已下载 {progress.completed_codes:,} 只/{progress.downloaded_records:,} 条，"
-            f"未下载 {progress.remaining_codes:,} 只，失败 {progress.failed_codes:,} 只，"
-            f"耗时 {minutes}分{seconds:02d}秒{current}{failure}，路径 {self._root}",
+            f"[{progress.phase}] 已下载/总数：{progress.completed_codes:,}/{progress.universe_count:,}，"
+            f"总下载条数：{progress.downloaded_records:,}，未下载：{progress.remaining_codes:,}，"
+            f"耗时：{hours}时{minutes:02d}分{seconds:02d}秒{current}，失败原因：{failure}，保存文件：{save_filename}",
             file=self._stream,
             flush=True,
         )

@@ -58,6 +58,15 @@ from trader.infra.research.historical_effective_facts import (
     HistoricalEffectiveFactsArtifactConflictError,
     HistoricalEffectiveFactsArtifactStore,
 )
+from trader.infra.research.baostock_history_messages import (
+    ContextResponse as _ContextResponse,
+    ContextStage as _ContextStage,
+    DownloadCommand as _DownloadCommand,
+    DownloadResponse as _DownloadResponse,
+    StopCommand as _StopCommand,
+    SupplierCallActivity as _SupplierCallActivity,
+    WorkerReady as _WorkerReady,
+)
 
 BAOSTOCK_CANCEL_GRACE_SECONDS = 10.0
 BAOSTOCK_QUERY_INTERVAL_SECONDS = 2.0
@@ -70,44 +79,6 @@ class _BaoStockSessionSdkPort(BaoStockSdkPort, Protocol):
     def login(self) -> BaoStockRowResult: ...
 
     def logout(self) -> BaoStockRowResult: ...
-
-
-@dataclass(frozen=True)
-class _ContextResponse:
-    context: BaoStockShardContext | None
-    failure_reason: str = ""
-
-
-@dataclass(frozen=True)
-class _ContextStage:
-    phase: BaoStockRuntimePhase
-
-
-@dataclass(frozen=True)
-class _SupplierCallActivity:
-    state: Literal["started", "completed"]
-
-
-@dataclass(frozen=True)
-class _WorkerReady:
-    failure_reason: str = ""
-
-
-@dataclass(frozen=True)
-class _DownloadCommand:
-    security: BaoStockSecurity
-
-
-@dataclass(frozen=True)
-class _DownloadResponse:
-    code: str
-    succeeded: bool
-    failure_reason: str = ""
-
-
-@dataclass(frozen=True)
-class _StopCommand:
-    pass
 
 
 @dataclass
@@ -715,10 +686,17 @@ class _DownloadCoordinator:
             self._retry_or_record(security, failure_reason)
         else:
             self._attempts.pop(security.code, None)
-            self._terminal_failures.pop(security.code, None)
             self._failed_codes.discard(security.code)
             self._completed_codes.add(security.code)
-            self._ready_codes.add(security.code)
+            if response.training_ready:
+                self._terminal_failures.pop(security.code, None)
+                self._ready_codes.add(security.code)
+            else:
+                reason = response.failure_reason or "supplier_payload_invalid"
+                self._terminal_failures[security.code] = reason
+                self._ready_codes.discard(security.code)
+                if reason not in {"historical_industry_incomplete", "historical_industry_missing"}:
+                    failure_reason = reason
             self._downloaded_records += len(self._run.context.calendar.expected_dates(security))
             for shard in self._shards:
                 shard.clear_failure(self._run.spec, security.code)
@@ -1005,7 +983,14 @@ def _download_worker_main(
                 download = gateway.fetch_code_download(spec, command.security, context.calendar)
                 archive.save_batch(spec, download.batch)
                 intervals = tuple(item for item in context.industry_intervals if item.code == command.security.code)
-                archive.save_training_facts(spec, command.security.code, download.daily_facts, intervals)
+                try:
+                    archive.save_training_facts(spec, command.security.code, download.daily_facts, intervals)
+                except ValueError as exc:
+                    reason = _failure_code(exc)
+                    if reason not in {"historical_industry_incomplete", "historical_industry_missing"}:
+                        raise
+                    connection.send(_DownloadResponse(command.security.code, True, reason, training_ready=False))
+                    continue
             except Exception as exc:
                 connection.send(_DownloadResponse(command.security.code, False, _failure_code(exc)))
             else:

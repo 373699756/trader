@@ -6,6 +6,16 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户反馈 `download_history` 长时间显示 `historical_industry_incomplete` 且把已下载股票计为失败。根因是 worker
+  已提交日线 `save_batch` 后，行业区间无法覆盖 2000 个交易日，`save_training_facts` 的事实校验异常被当作整只股票
+  下载失败并触发重试；日线数据实际已经保存。现将 worker 响应显式区分“日线已下载”和“训练事实就绪”：行业事实缺失
+  只保留 `historical_industry_incomplete` 降级标记，不增加失败计数、不重复抓取日线，训练就绪集合仍保持失败关闭；该降级标记
+  不再冒充 CLI 的下载失败原因。CLI 进度改为 `已下载/总数`、总下载条数、未下载、时分秒、失败原因和 SQLite 文件名模式的单行摘要。Verification:
+  `pytest -q tests/unit/entrypoints/test_baostock_progress.py tests/unit/infra/research/test_baostock_history_runtime.py`、
+  受影响源码 Ruff、mypy 和 `git diff --check` 通过；现场分片检查确认存在日线 checkpoint 但行业事实就绪不足。
+  全量门禁待大任务收尾统一执行。Residual Risks: BaoStock 当前行业接口仍无法为全部历史交易日提供可验证的有效区间，
+  因此归档可以完成日线下载但不能生成合格训练 manifest；供应商网络失败仍按原重试和失败策略处理。
+
 - 用户要求明确三份权威文档的职责，并把评分优化计划、历史研究路线和开发任务分工集中管理。现新增
   `docs/work.md` 作为开发任务拆分、依赖、owner、状态、验证和交付记录；`recommendation-strategy.md`
   精简为荐股流程、过滤、评分 V1/V2/V3、风险、融合、动作、TopK、冻结和展示规则；

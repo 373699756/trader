@@ -31,6 +31,7 @@ from trader.infra.research.baostock_history_runtime import (
     _ContextStage,
     _DownloadCoordinator,
     _DownloadLock,
+    _DownloadResponse,
     _DownloadRun,
     _failure_code,
     _fetch_context,
@@ -185,6 +186,41 @@ def test_incomplete_historical_industry_has_stable_failure_code() -> None:
     assert _failure_code(ValueError("BaoStock historical industry does not cover every expected date")) == (
         "historical_industry_incomplete"
     )
+
+
+def test_industry_incomplete_response_counts_daily_download_without_marking_code_failed(tmp_path: Path) -> None:
+    coordinator, security, recorder = _coordinator(tmp_path)
+    coordinator._initialize_shards()
+
+    class _Connection:
+        def recv(self) -> object:
+            return _DownloadResponse(
+                security.code,
+                True,
+                "historical_industry_incomplete",
+                training_ready=False,
+            )
+
+    class _Process:
+        def is_alive(self) -> bool:
+            return True
+
+    handle = _WorkerHandle(  # type: ignore[arg-type] -- focused process/connection doubles
+        process=_Process(),
+        connection=_Connection(),
+        shard_path=tmp_path,
+        current=security,
+        started_at=1.0,
+    )
+
+    coordinator._accept_response(handle, now=2.0)
+
+    assert coordinator._completed_codes == {security.code}
+    assert coordinator._ready_codes == set()
+    assert coordinator._failed_codes == set()
+    assert coordinator._terminal_failures == {security.code: "historical_industry_incomplete"}
+    assert recorder.values[-1].downloaded_records == 1
+    assert recorder.values[-1].last_failure_reason == ""
 
 
 def test_partial_status_refreshes_checkpoints_committed_outside_parent_response(tmp_path: Path) -> None:
