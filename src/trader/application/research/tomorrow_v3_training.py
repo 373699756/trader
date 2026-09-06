@@ -4,8 +4,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
+from typing import Literal, Protocol
 
 from trader.domain.research.baostock_daily import BaoStockV3Split
+
+TomorrowV3TrainingStage = Literal["input_snapshot", "sample_build", "model_fit", "completed"]
+
+
+@dataclass(frozen=True)
+class TomorrowV3TrainingProgress:
+    stage: TomorrowV3TrainingStage
+    processed_codes: int
+    total_codes: int
+
+    def __post_init__(self) -> None:
+        if min(self.processed_codes, self.total_codes) < 0 or self.processed_codes > self.total_codes:
+            raise ValueError("Tomorrow V3 training progress counts are invalid")
+
+
+class TomorrowV3TrainingProgressPort(Protocol):
+    def publish(self, progress: TomorrowV3TrainingProgress) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -35,4 +53,9 @@ class TomorrowV3TrainingWindow:
             raise ValueError("Tomorrow V3 date is outside the frozen split")
 
 
-__all__ = ["TomorrowV3TrainingWindow"]
+__all__ = [
+    "TomorrowV3TrainingProgress",
+    "TomorrowV3TrainingProgressPort",
+    "TomorrowV3TrainingStage",
+    "TomorrowV3TrainingWindow",
+]

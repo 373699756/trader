@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DESIGN = ROOT / "docs" / "software-business-design.md"
-STRATEGY = ROOT / "docs" / "recommendation-strategy.md"
+DESIGN = ROOT / "docs" / "02_工程设计.md"
+STRATEGY = ROOT / "docs" / "01_评分逻辑.md"
 
 
 def test_authoritative_docs_record_completed_gates_without_claiming_a_formal_release() -> None:

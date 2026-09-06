@@ -40,7 +40,10 @@ def _document() -> dict[str, object]:
             "log_average_amount_20d": True,
             "order": ["market", "board", "industry", "log_average_amount_20d"],
         },
-        "manifest_hash": "a" * 64,
+        "training_input_scope": "complete_manifest",
+        "training_input_hash": "a" * 64,
+        "training_input_codes": 100,
+        "training_universe_codes": 100,
         "split_hash": "b" * 64,
         "report_hash": "c" * 64,
         "training_anchor": "15:00_close",
@@ -66,6 +69,7 @@ def _document() -> dict[str, object]:
         },
         "dependencies": {"lightgbm": "4.7.0", "numpy": "2.0.0"},
         "automatic_model_update": False,
+        "production_authority": False,
     }
     payload["content_hash"] = artifact_content_hash(payload)
     return payload
@@ -109,10 +113,30 @@ def test_v3_codec_profile_and_predictor_preserve_the_complete_contract(tmp_path:
     assert predictor.industry_ids == ("银行",)
     assert predictor.exposure_contract.requires_industry is True
     assert tuple(head.strategy for head in profile.heads) == (Strategy.TOMORROW,)
+    assert profile.evidence.historical_status == "historical_validated"
     prediction = predictor.predict((row,))[0]
     assert profile.combiner.combine((prediction,)) == prediction
     with pytest.raises(ValueError, match="exactly one"):
         profile.combiner.combine(())
+
+
+def test_partial_v3_profile_scores_but_never_claims_historical_validation() -> None:
+    document = _document()
+    document.pop("content_hash")
+    document["training_input_scope"] = "partial_checkpoint"
+    document["training_input_codes"] = 60
+    document["training_universe_codes"] = 100
+    document["content_hash"] = artifact_content_hash(document)
+
+    profile = build_v3_scoring_profile(decode_v3_tomorrow_bundle(document))
+    prediction = profile.heads[0].predictor.predict(
+        (ModelInput("600000", (0.01, 0.02, 0.03, 0.01, -0.02, 0.03), "银行"),)
+    )
+
+    assert prediction[0].code == "600000"
+    assert profile.evidence.historical_status == "historical_unavailable"
+    assert profile.evidence.historical_failure_reasons == ("partial_history_pipeline_trial",)
+    assert profile.evidence.activation_basis == "manual_user_override"
 
 
 @pytest.mark.parametrize(

@@ -9,8 +9,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_cost_aware_selection_is_documented_and_exploratory_only() -> None:
-    strategy = (ROOT / "docs" / "recommendation-strategy.md").read_text(encoding="utf-8")
-    work = (ROOT / "docs" / "work.md").read_text(encoding="utf-8")
+    strategy = (ROOT / "docs" / "01_评分逻辑.md").read_text(encoding="utf-8")
+    work = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
     source_paths = (
         ROOT / "src" / "trader" / "domain" / "research" / "cost_aware_selection.py",
         ROOT / "src" / "trader" / "application" / "research" / "cost_aware_selection.py",

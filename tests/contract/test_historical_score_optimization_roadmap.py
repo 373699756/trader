@@ -10,7 +10,7 @@ def _compact(path: Path) -> str:
 
 
 def test_strategy_roadmap_is_ordered_benefit_first_and_strategy_complete() -> None:
-    work = _compact(ROOT / "docs/work.md")
+    work = _compact(ROOT / "docs/03_工程实施.md")
 
     ordered_sections = (
         "## 1. 当前基线",
@@ -40,9 +40,9 @@ def test_strategy_roadmap_is_ordered_benefit_first_and_strategy_complete() -> No
 
 
 def test_roadmap_cannot_restore_forward_collection_or_reuse_observed_holdout_as_blind() -> None:
-    strategy = _compact(ROOT / "docs/recommendation-strategy.md")
-    work = _compact(ROOT / "docs/work.md")
-    design = _compact(ROOT / "docs/software-business-design.md")
+    strategy = _compact(ROOT / "docs/01_评分逻辑.md")
+    work = _compact(ROOT / "docs/03_工程实施.md")
+    design = _compact(ROOT / "docs/02_工程设计.md")
 
     for token in (
         "不得恢复未来日 collector",
@@ -70,7 +70,7 @@ def test_roadmap_cannot_restore_forward_collection_or_reuse_observed_holdout_as_
 
 
 def test_each_strategy_gate_requires_point_in_time_parity_and_terminal_evidence() -> None:
-    strategy = _compact(ROOT / "docs/recommendation-strategy.md")
+    strategy = _compact(ROOT / "docs/01_评分逻辑.md")
 
     for token in (
         "historical_point_in_time_parity",

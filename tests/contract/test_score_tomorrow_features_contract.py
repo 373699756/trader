@@ -6,8 +6,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_batch_two_contract_freezes_five_point_in_time_feature_families() -> None:
-    strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
-    work = (ROOT / "docs/work.md").read_text(encoding="utf-8")
+    strategy = (ROOT / "docs/01_评分逻辑.md").read_text(encoding="utf-8")
+    work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
 
     for token in (
         "score_tomorrow_point_in_time_features",

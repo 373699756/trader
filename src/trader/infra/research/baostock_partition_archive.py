@@ -6,10 +6,14 @@ import json
 import os
 import sqlite3
 import tempfile
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Literal
 
+from trader.application.research.baostock_daily import BaoStockShardContext
 from trader.domain.research.baostock_daily import (
+    BaoStockCalendar,
     BaoStockDailyCell,
     BaoStockDailyManifest,
     BaoStockDailySpec,
@@ -31,12 +35,158 @@ from trader.infra.research.baostock_catalog import (
 from trader.infra.research.baostock_daily import (
     _FROZEN_DAILY_FIELDS,
     BaoStockDailyArtifactConflictError,
+    BaoStockTrainingCodeIdentity,
     SQLiteBaoStockDailyShard,
     _decode_cell,
     _decode_spec,
     _json_object,
 )
 from trader.infra.research.baostock_daily_serialization import _decode_manifest, _encode_manifest
+
+BaoStockTrainingInputScope = Literal["complete_manifest", "partial_checkpoint"]
+
+
+@dataclass(frozen=True)
+class BaoStockV3TrainingCodeReference:
+    relative_path: str
+    identity: BaoStockTrainingCodeIdentity
+
+    def __post_init__(self) -> None:
+        path = Path(self.relative_path)
+        if path.is_absolute() or ".." in path.parts or path.suffix != ".sqlite3":
+            raise ValueError("BaoStock training shard reference is invalid")
+
+
+@dataclass(frozen=True)
+class BaoStockV3TrainingInputSnapshot:
+    input_scope: BaoStockTrainingInputScope
+    input_hash: str
+    calendar: BaoStockCalendar
+    universe_count: int
+    completed_code_count: int
+    references: tuple[BaoStockV3TrainingCodeReference, ...]
+
+    def __post_init__(self) -> None:
+        references = tuple(sorted(self.references, key=lambda item: item.identity.code))
+        codes = tuple(item.identity.code for item in references)
+        if (
+            self.input_scope not in ("complete_manifest", "partial_checkpoint")
+            or len(self.input_hash) != 64
+            or any(character not in "0123456789abcdef" for character in self.input_hash)
+            or self.universe_count < 1
+            or not 0 < len(codes) <= self.completed_code_count <= self.universe_count
+            or len(set(codes)) != len(codes)
+        ):
+            raise ValueError("BaoStock V3 training input snapshot is invalid")
+        if self.input_scope == "complete_manifest" and len(codes) != self.universe_count:
+            raise ValueError("BaoStock complete training input must cover the universe")
+        object.__setattr__(self, "references", references)
+
+    @property
+    def content_hash(self) -> str:
+        return self.input_hash
+
+    @property
+    def training_codes(self) -> tuple[str, ...]:
+        return tuple(item.identity.code for item in self.references)
+
+
+class BaoStockV3TrainingInputArchive:
+    def __init__(
+        self,
+        root: Path,
+        spec: BaoStockDailySpec,
+        context: BaoStockShardContext,
+        snapshot: BaoStockV3TrainingInputSnapshot,
+        shards_by_code: dict[str, SQLiteBaoStockDailyShard],
+    ) -> None:
+        self._root = root
+        self._spec = spec
+        self._context = context
+        self.snapshot = snapshot
+        self._shards_by_code = dict(shards_by_code)
+        self._references_by_code = {item.identity.code: item.identity for item in snapshot.references}
+
+    @classmethod
+    def open(  # noqa: C901 - archive opening validates every identity boundary before exposing the snapshot
+        cls,
+        root: Path,
+        *,
+        sessions: int = 2000,
+        allow_partial_history: bool = False,
+    ) -> BaoStockV3TrainingInputArchive:
+        spec = BaoStockDailySpec(sessions=sessions)
+        paths = tuple(sorted((root / "shards").glob("*.sqlite3")))
+        if not paths:
+            raise BaoStockDailyArtifactConflictError("BaoStock history manifest is unavailable")
+        shards = tuple(SQLiteBaoStockDailyShard(path) for path in paths)
+        context = shards[0].context(spec)
+        if context is None:
+            raise BaoStockDailyArtifactConflictError("BaoStock training context is unavailable")
+        if any(not shard.context_matches(spec, context) for shard in shards[1:]):
+            raise BaoStockDailyArtifactConflictError("BaoStock training shard contexts do not match")
+        expected = {item.code: len(context.calendar.expected_dates(item)) for item in context.universe}
+        completed: set[str] = set()
+        references: list[BaoStockV3TrainingCodeReference] = []
+        shards_by_code: dict[str, SQLiteBaoStockDailyShard] = {}
+        for shard in shards:
+            completed.update(shard.checkpoint(spec, expected_records_by_code=expected).completed_codes)
+            relative_path = shard.path.relative_to(root).as_posix()
+            for identity in shard.training_code_identities(spec, frozen_context=context):
+                if identity.code in shards_by_code:
+                    raise BaoStockDailyArtifactConflictError("BaoStock training code is present in multiple shards")
+                references.append(BaoStockV3TrainingCodeReference(relative_path, identity))
+                shards_by_code[identity.code] = shard
+        if not references:
+            raise BaoStockDailyArtifactConflictError("BaoStock training-ready checkpoints are unavailable")
+        manifest_path = root / "manifest.json"
+        if manifest_path.is_file():
+            manifest = BaoStockDailyPartitionedArchive(root).verify()
+            expected_codes = frozenset(code for partition in manifest.partitions for code in partition.codes)
+            if manifest.audit.status != "coverage_ready" or frozenset(shards_by_code) != expected_codes:
+                raise BaoStockDailyArtifactConflictError("BaoStock complete manifest is not training-ready")
+            input_scope: BaoStockTrainingInputScope = "complete_manifest"
+            input_hash = manifest.content_hash
+        else:
+            if not allow_partial_history:
+                raise BaoStockDailyArtifactConflictError("BaoStock history manifest is unavailable")
+            input_scope = "partial_checkpoint"
+            input_hash = canonical_hash(
+                (
+                    spec.content_hash,
+                    context.calendar.content_hash,
+                    canonical_hash(context.universe),
+                    context.source_versions.content_hash,
+                    tuple(references),
+                )
+            )
+        snapshot = BaoStockV3TrainingInputSnapshot(
+            input_scope,
+            input_hash,
+            context.calendar,
+            len(context.universe),
+            len(completed),
+            tuple(references),
+        )
+        return cls(root, spec, context, snapshot, shards_by_code)
+
+    def read_training_rows(
+        self,
+        code: str,
+        *,
+        allowed_dates: frozenset[date],
+    ) -> tuple[BaoStockTrainingRow, ...]:
+        shard = self._shards_by_code.get(code)
+        identity = self._references_by_code.get(code)
+        if shard is None or identity is None:
+            raise ValueError("BaoStock code is outside the frozen training input")
+        return shard.read_training_rows(
+            self._spec,
+            code,
+            allowed_dates=allowed_dates,
+            frozen_context=self._context,
+            expected_identity=identity,
+        )
 
 
 class BaoStockDailyPartitionedArchive:

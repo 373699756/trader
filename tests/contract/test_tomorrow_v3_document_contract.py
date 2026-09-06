@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_daily_close_training_contract_has_non_overlapping_authorities() -> None:
-    work = " ".join((ROOT / "docs" / "work.md").read_text(encoding="utf-8").split())
+    work = " ".join((ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8").split())
 
     assert "15.1.36 V3 条件式生产适配" in work
     assert "15.1.37 四路实施边界" in work
@@ -16,7 +16,7 @@ def test_daily_close_training_contract_has_non_overlapping_authorities() -> None
 
 
 def test_v3_is_a_single_offline_industry_model_without_stacking() -> None:
-    raw_work = (ROOT / "docs" / "work.md").read_text(encoding="utf-8")
+    raw_work = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
     work = " ".join(raw_work.split())
     section = raw_work[raw_work.index("### 3.3 V3 训练与验证") : raw_work.index("### 3.4 BaoStock")]
     required_contract = (
@@ -56,8 +56,8 @@ def test_v3_minimum_dates_can_satisfy_every_preregistered_segment() -> None:
 
 
 def test_v3_research_has_four_isolated_owners_and_one_public_command() -> None:
-    strategy = (ROOT / "docs" / "work.md").read_text(encoding="utf-8")
-    design = (ROOT / "docs" / "software-business-design.md").read_text(encoding="utf-8")
+    strategy = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs" / "02_工程设计.md").read_text(encoding="utf-8")
 
     required_strategy_contract = (
         "Codex A",
@@ -94,7 +94,7 @@ def test_v3_research_has_four_isolated_owners_and_one_public_command() -> None:
 
 
 def test_trained_v3_profile_remains_hash_bound() -> None:
-    strategy = (ROOT / "docs" / "work.md").read_text(encoding="utf-8")
+    strategy = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
     model_port = (ROOT / "src" / "trader" / "application" / "ports" / "model_scoring.py").read_text(encoding="utf-8")
 
     assert "data/train/tomorrow-v3/<run_id>/" in strategy

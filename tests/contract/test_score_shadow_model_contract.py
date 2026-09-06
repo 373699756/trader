@@ -6,8 +6,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_batch_three_contract_freezes_walk_forward_models_and_calibration() -> None:
-    strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
-    work = " ".join((ROOT / "docs/work.md").read_text(encoding="utf-8").split())
+    strategy = " ".join((ROOT / "docs/01_评分逻辑.md").read_text(encoding="utf-8").split())
+    work = " ".join((ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8").split())
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
     for token in (

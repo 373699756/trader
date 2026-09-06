@@ -13,17 +13,22 @@ from dataclasses import dataclass
 from datetime import date
 from importlib.metadata import version
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 import lightgbm as lgb
 import numpy as np
 
-from trader.application.research.tomorrow_v3_training import TomorrowV3TrainingWindow
+from trader.application.research.tomorrow_v3_training import (
+    TomorrowV3TrainingProgress,
+    TomorrowV3TrainingProgressPort,
+    TomorrowV3TrainingWindow,
+)
 from trader.domain.recommendation.model_scoring import V3_EXPOSURE_CONTRACT, residualize_exposure
-from trader.domain.research.baostock_daily import BaoStockDailyManifest, BaoStockTrainingRow, BaoStockV3Split
+from trader.domain.research.baostock_daily import BaoStockTrainingRow, BaoStockV3Split
 from trader.infra.research.baostock_daily import (
     BaoStockDailyArtifactConflictError,
-    BaoStockDailyPartitionedArchive,
+    BaoStockV3TrainingInputArchive,
+    BaoStockV3TrainingInputSnapshot,
 )
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
 
@@ -41,8 +46,11 @@ _MODEL_ID = "tomorrow_v3_industry_ridge_lightgbm"
 @dataclass(frozen=True)
 class TomorrowV3TrainingResult:
     status: str
+    training_input_scope: Literal["unavailable", "complete_manifest", "partial_checkpoint"]
     run_id: str | None
-    manifest_hash: str
+    training_input_hash: str
+    training_input_codes: int
+    training_universe_codes: int
     report_hash: str
     model_hash: str
     industry_count: int
@@ -63,33 +71,58 @@ class _Sample:
     eligible: bool
 
 
-def run_tomorrow_v3_training(history_root: Path, train_root: Path) -> TomorrowV3TrainingResult:
+def run_tomorrow_v3_training(
+    history_root: Path,
+    train_root: Path,
+    *,
+    allow_partial_history: bool = False,
+    progress: TomorrowV3TrainingProgressPort | None = None,
+) -> TomorrowV3TrainingResult:
     try:
-        archive = BaoStockDailyPartitionedArchive(history_root / "baostock-daily" / "sessions-2000")
-        manifest = archive.verify()
+        archive = BaoStockV3TrainingInputArchive.open(
+            history_root / "baostock-daily" / "sessions-2000",
+            allow_partial_history=allow_partial_history,
+        )
     except (BaoStockDailyArtifactConflictError, OSError, ValueError) as exc:
-        return TomorrowV3TrainingResult("blocked", None, "", "", "", 0, 0, 0, (_reason(exc),))
-    run_id = hashlib.sha256(f"{manifest.content_hash}:tomorrow-v3".encode()).hexdigest()
+        return TomorrowV3TrainingResult("blocked", "unavailable", None, "", 0, 0, "", "", 0, 0, 0, (_reason(exc),))
+    snapshot = archive.snapshot
+    _publish_progress(progress, "input_snapshot", len(snapshot.training_codes), len(snapshot.training_codes))
+    run_id = hashlib.sha256(f"{snapshot.input_hash}:tomorrow-v3".encode()).hexdigest()
     output = train_root / "tomorrow-v3" / run_id
     try:
-        dates = archive.complete_dates()
-        split = _build_split(dates, manifest.content_hash)
+        _write_training_input_evidence(output, snapshot)
+        split = _build_split(snapshot.calendar.open_dates, snapshot.input_hash)
         window = TomorrowV3TrainingWindow(split)
-        samples = _build_samples(archive, manifest, window)
+        samples = _build_samples(archive, snapshot.training_codes, window, progress=progress)
         if not samples:
             return TomorrowV3TrainingResult(
-                "blocked", run_id, manifest.content_hash, "", "", 0, 0, 0, ("v3_training_rows_empty",)
+                "blocked",
+                snapshot.input_scope,
+                run_id,
+                snapshot.input_hash,
+                len(snapshot.training_codes),
+                snapshot.universe_count,
+                "",
+                "",
+                0,
+                0,
+                0,
+                ("v3_training_rows_empty",),
             )
+        _publish_progress(progress, "model_fit", 0, len(snapshot.training_codes))
         models, training_rows, validation_rows = _fit_models(samples, split)
-        report = _build_report(manifest.content_hash, split, models, training_rows, validation_rows)
+        report = _build_report(snapshot, split, models, training_rows, validation_rows)
         report_hash = artifact_content_hash(report)
         report["content_hash"] = report_hash
         _write_json(output / "report.json", report)
         if not report["validation_passed"]:
             return TomorrowV3TrainingResult(
                 "rejected",
+                snapshot.input_scope,
                 run_id,
-                manifest.content_hash,
+                snapshot.input_hash,
+                len(snapshot.training_codes),
+                snapshot.universe_count,
                 report_hash,
                 "",
                 len(models),
@@ -97,14 +130,28 @@ def run_tomorrow_v3_training(history_root: Path, train_root: Path) -> TomorrowV3
                 validation_rows,
                 tuple(cast(list[str], report["failure_reasons"])),
             )
-        model = _model_document(manifest.content_hash, split, report_hash, models, training_rows, validation_rows)
+        model = _model_document(
+            snapshot.input_scope,
+            snapshot.input_hash,
+            len(snapshot.training_codes),
+            snapshot.universe_count,
+            split,
+            report_hash,
+            models,
+            training_rows,
+            validation_rows,
+        )
         model_hash = artifact_content_hash(model)
         model["content_hash"] = model_hash
         _write_json(output / "model.json", model)
+        _publish_progress(progress, "completed", len(snapshot.training_codes), len(snapshot.training_codes))
         return TomorrowV3TrainingResult(
-            "validated",
+            "trial_ready" if snapshot.input_scope == "partial_checkpoint" else "validated",
+            snapshot.input_scope,
             run_id,
-            manifest.content_hash,
+            snapshot.input_hash,
+            len(snapshot.training_codes),
+            snapshot.universe_count,
             report_hash,
             model_hash,
             len(models),
@@ -113,7 +160,20 @@ def run_tomorrow_v3_training(history_root: Path, train_root: Path) -> TomorrowV3
             (),
         )
     except (BaoStockDailyArtifactConflictError, OSError, ValueError, RuntimeError) as exc:
-        return TomorrowV3TrainingResult("blocked", run_id, manifest.content_hash, "", "", 0, 0, 0, (_reason(exc),))
+        return TomorrowV3TrainingResult(
+            "blocked",
+            snapshot.input_scope,
+            run_id,
+            snapshot.input_hash,
+            len(snapshot.training_codes),
+            snapshot.universe_count,
+            "",
+            "",
+            0,
+            0,
+            0,
+            (_reason(exc),),
+        )
 
 
 def _build_split(dates: tuple[date, ...], manifest_hash: str) -> BaoStockV3Split:
@@ -123,14 +183,15 @@ def _build_split(dates: tuple[date, ...], manifest_hash: str) -> BaoStockV3Split
 
 
 def _build_samples(
-    archive: BaoStockDailyPartitionedArchive,
-    manifest: BaoStockDailyManifest,
+    archive: BaoStockV3TrainingInputArchive,
+    codes: tuple[str, ...],
     window: TomorrowV3TrainingWindow,
+    *,
+    progress: TomorrowV3TrainingProgressPort | None = None,
 ) -> tuple[_Sample, ...]:
-    codes = tuple(code for partition in manifest.partitions for code in partition.codes)
-    calendar = archive.complete_dates()
+    calendar = archive.snapshot.calendar.open_dates
     by_date: dict[date, list[_Sample]] = defaultdict(list)
-    for code in codes:
+    for position, code in enumerate(codes, start=1):
         rows = archive.read_training_rows(code, allowed_dates=window.readable_dates)
         rows_by_date = {item.trade_date: item for item in rows}
         closes = {item.trade_date: item.qfq.close_price for item in rows}
@@ -171,6 +232,8 @@ def _build_samples(
                     not row.is_st and row.unadjusted.trading_status == "trading",
                 )
             )
+        if position == 1 or position % 50 == 0 or position == len(codes):
+            _publish_progress(progress, "sample_build", position, len(codes))
     result: list[_Sample] = []
     for day, values in by_date.items():
         eligible = tuple(item for item in values if item.eligible)
@@ -323,7 +386,7 @@ def _fit_models(samples: tuple[_Sample, ...], split: BaoStockV3Split) -> tuple[d
 
 
 def _build_report(
-    manifest_hash: str,
+    snapshot: BaoStockV3TrainingInputSnapshot,
     split: BaoStockV3Split,
     models: dict[str, dict[str, object]],
     training_rows: int,
@@ -333,7 +396,10 @@ def _build_report(
     return {
         "schema_version": "tomorrow_v3_training_report_v1",
         "model_id": _MODEL_ID,
-        "manifest_hash": manifest_hash,
+        "training_input_scope": snapshot.input_scope,
+        "training_input_hash": snapshot.input_hash,
+        "training_input_codes": len(snapshot.training_codes),
+        "training_universe_codes": snapshot.universe_count,
         "split_hash": split.content_hash,
         "training_anchor": "15:00_close",
         "runtime_anchor": "14:50",
@@ -343,12 +409,22 @@ def _build_report(
         "validation_rows": validation_rows,
         "validation_passed": not reasons,
         "failure_reasons": reasons,
+        "historical_status": (
+            "historical_unavailable" if snapshot.input_scope == "partial_checkpoint" else "historical_validated"
+        ),
+        "historical_failure_reasons": (
+            ["partial_history_pipeline_trial"] if snapshot.input_scope == "partial_checkpoint" else []
+        ),
         "automatic_model_update": False,
+        "production_authority": False,
     }
 
 
 def _model_document(  # noqa: PLR0913 - every value is part of the sealed model identity
-    manifest_hash: str,
+    training_input_scope: str,
+    training_input_hash: str,
+    training_input_codes: int,
+    training_universe_codes: int,
     split: BaoStockV3Split,
     report_hash: str,
     models: dict[str, dict[str, object]],
@@ -369,7 +445,10 @@ def _model_document(  # noqa: PLR0913 - every value is part of the sealed model 
             "log_average_amount_20d": True,
             "order": list(V3_EXPOSURE_CONTRACT.order),
         },
-        "manifest_hash": manifest_hash,
+        "training_input_scope": training_input_scope,
+        "training_input_hash": training_input_hash,
+        "training_input_codes": training_input_codes,
+        "training_universe_codes": training_universe_codes,
         "split_hash": split.content_hash,
         "report_hash": report_hash,
         "training_anchor": "15:00_close",
@@ -382,7 +461,33 @@ def _model_document(  # noqa: PLR0913 - every value is part of the sealed model 
         "industries": models,
         "dependencies": {"lightgbm": version("lightgbm"), "numpy": version("numpy")},
         "automatic_model_update": False,
+        "production_authority": False,
     }
+
+
+def _write_training_input_evidence(output: Path, snapshot: BaoStockV3TrainingInputSnapshot) -> None:
+    document: dict[str, object] = {
+        "schema_version": "tomorrow_v3_training_input",
+        "training_input_scope": snapshot.input_scope,
+        "training_input_hash": snapshot.input_hash,
+        "training_input_codes": len(snapshot.training_codes),
+        "training_universe_codes": snapshot.universe_count,
+        "completed_codes": snapshot.completed_code_count,
+        "codes": list(snapshot.training_codes),
+        "production_authority": False,
+    }
+    document["content_hash"] = artifact_content_hash(document)
+    _write_json(output / "evidence" / "training-input.json", document)
+
+
+def _publish_progress(
+    progress: TomorrowV3TrainingProgressPort | None,
+    stage: Literal["input_snapshot", "sample_build", "model_fit", "completed"],
+    processed_codes: int,
+    total_codes: int,
+) -> None:
+    if progress is not None:
+        progress.publish(TomorrowV3TrainingProgress(stage, processed_codes, total_codes))
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:

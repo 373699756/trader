@@ -20,6 +20,7 @@ from trader.application.research.tomorrow_research_artifacts import (
     production_readiness_audit,
 )
 from trader.application.research.tomorrow_research_prerequisites import CodexATomorrowResearchPrerequisite
+from trader.application.research.tomorrow_v3_training import TomorrowV3TrainingProgress
 from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC
 from trader.domain.research.score_r6_stability import SCORE_R6_STABILITY_SPEC
 from trader.domain.research.tomorrow_historical_p2 import TOMORROW_HISTORICAL_P2_SPEC
@@ -60,6 +61,7 @@ from trader.infra.settings import RuntimeSettings
 class ResearchCommandOptions:
     workers: int = 5
     history_root: Path | None = None
+    allow_partial_history: bool = False
 
 
 class _TomorrowResearchProgress(TomorrowResearchProgressPort):
@@ -84,6 +86,23 @@ class _TomorrowResearchProgress(TomorrowResearchProgressPort):
         )
 
 
+class _TomorrowV3TrainingProgress:
+    def publish(self, progress: TomorrowV3TrainingProgress) -> None:
+        print(
+            json.dumps(
+                {
+                    "schema_version": "tomorrow_v3_training_progress",
+                    "stage": progress.stage,
+                    "processed_codes": progress.processed_codes,
+                    "total_codes": progress.total_codes,
+                },
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 def run_research_command(
     command: str,
     config_path: Path,
@@ -91,7 +110,11 @@ def run_research_command(
     options: ResearchCommandOptions,
 ) -> int:
     if command == "train-tomorrow":
-        return _run_tomorrow_research_orchestrator(runtime, history_root=options.history_root)
+        return _run_tomorrow_research_orchestrator(
+            runtime,
+            history_root=options.history_root,
+            allow_partial_history=options.allow_partial_history,
+        )
     if command == "research-status":
         trace = SQLiteResearchTraceStore(runtime.runtime_dir)
         status = trace.inspect_status()
@@ -219,16 +242,29 @@ def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
     return 0 if audit.status == "baseline_identity_consistent" else 1
 
 
-def _run_tomorrow_research_orchestrator(runtime: RuntimeSettings, *, history_root: Path | None = None) -> int:
+def _run_tomorrow_research_orchestrator(
+    runtime: RuntimeSettings,
+    *,
+    history_root: Path | None = None,
+    allow_partial_history: bool = False,
+) -> int:
     del runtime
     from trader.infra.research.tomorrow_v3_training import run_tomorrow_v3_training
 
-    result = run_tomorrow_v3_training(history_root or _history_data_root(), _train_data_root())
+    result = run_tomorrow_v3_training(
+        history_root or _history_data_root(),
+        _train_data_root(),
+        allow_partial_history=allow_partial_history,
+        progress=_TomorrowV3TrainingProgress(),
+    )
     payload = {
         "schema_version": "tomorrow_v3_training_result",
         "status": result.status,
         "run_id": result.run_id,
-        "manifest_hash": result.manifest_hash,
+        "training_input_scope": result.training_input_scope,
+        "training_input_hash": result.training_input_hash,
+        "training_input_codes": result.training_input_codes,
+        "training_universe_codes": result.training_universe_codes,
         "report_hash": result.report_hash,
         "model_hash": result.model_hash,
         "industry_count": result.industry_count,
@@ -236,7 +272,7 @@ def _run_tomorrow_research_orchestrator(runtime: RuntimeSettings, *, history_roo
         "validation_rows": result.validation_rows,
         "failure_reasons": list(result.failure_reasons),
         "blockers": list(result.failure_reasons),
-        "next_stage": "data_manifest" if result.status == "blocked" and not result.manifest_hash else None,
+        "next_stage": "data_manifest" if result.status == "blocked" and not result.training_input_hash else None,
         "training_anchor": "15:00_close",
         "runtime_anchor": "14:50",
         "point_in_time_parity": False,
@@ -244,7 +280,7 @@ def _run_tomorrow_research_orchestrator(runtime: RuntimeSettings, *, history_roo
         "automatic_model_update": False,
     }
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-    return 0 if result.status == "validated" else 1
+    return 0 if result.status in {"trial_ready", "validated"} else 1
 
 
 def _train_data_root() -> Path:

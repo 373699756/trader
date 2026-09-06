@@ -529,14 +529,14 @@
 
   更新：
 
-  - docs/software-business-design.md
+  - docs/02_工程设计.md
       - 模块结构
       - 依赖方向
       - 组合根
       - 三策略能力矩阵
       - 生产/研究隔离
 
-  - docs/recommendation-strategy.md
+  - docs/01_评分逻辑.md
       - V1/V2/V3差异
       - Today/Tomorrow/D25三头定义
       - D25是单一2–5日策略

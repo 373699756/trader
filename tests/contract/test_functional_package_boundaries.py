@@ -5,7 +5,7 @@ from pathlib import Path
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "trader"
 PROJECT_ROOT = SOURCE_ROOT.parents[1]
-DESIGN = PROJECT_ROOT / "docs" / "software-business-design.md"
+DESIGN = PROJECT_ROOT / "docs" / "02_工程设计.md"
 
 TARGET_PACKAGES = (
     "domain/market",
@@ -55,7 +55,7 @@ def test_final_target_packages_are_documented() -> None:
 
 def test_scoring_profile_capability_matrix_and_d25_single_head_are_documented() -> None:
     design = DESIGN.read_text(encoding="utf-8")
-    strategy = (PROJECT_ROOT / "docs" / "recommendation-strategy.md").read_text(encoding="utf-8")
+    strategy = (PROJECT_ROOT / "docs" / "01_评分逻辑.md").read_text(encoding="utf-8")
 
     for token in (
         "| 评分档位 | Today | Tomorrow | D25 |",

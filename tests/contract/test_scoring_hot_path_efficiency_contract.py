@@ -17,7 +17,7 @@ def test_scoring_hot_path_baseline_has_explicit_cli_and_fixed_identity() -> None
 
 
 def test_strategy_contract_requires_all_hot_path_denominators_and_equivalence_cases() -> None:
-    work = " ".join((ROOT / "docs/work.md").read_text(encoding="utf-8").split())
+    work = " ".join((ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8").split())
     for token in (
         "每个完成评分 epoch",
         "每个被评估候选",

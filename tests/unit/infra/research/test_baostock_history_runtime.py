@@ -41,6 +41,7 @@ from trader.infra.research.baostock_history_runtime import (
     _run_locked,
     _SupplierCallActivity,
     _WorkerHandle,
+    inspect_baostock_history,
     run_baostock_history,
 )
 
@@ -238,6 +239,30 @@ def test_partial_status_refreshes_checkpoints_committed_outside_parent_response(
     assert recorder.values[-1].failed_codes == 1
     assert recorder.values[-1].active_workers == 0
     assert recorder.values[-1].last_failure_reason == "supplier_query_failed_blacklisted"
+
+
+def test_inspection_reports_in_progress_checkpoint_counts_without_a_manifest(tmp_path: Path) -> None:
+    coordinator, security, _ = _coordinator(tmp_path)
+    spec = coordinator._run.spec
+    context = coordinator._run.context
+    root = tmp_path / "baostock-daily" / "sessions-1"
+    shard = SQLiteBaoStockDailyShard(root / "shards" / "main-6000.sqlite3")
+    shard.initialize(
+        spec,
+        context.calendar,
+        context.universe,
+        context.source_versions,
+        context.industry_intervals,
+    )
+    shard.save_batch(spec, _batch_for_security(security, spec))
+
+    status = inspect_baostock_history(tmp_path, sessions=1)
+
+    assert status.state == "completed_with_failures"
+    assert status.universe_count == 1
+    assert status.completed_codes == 1
+    assert status.training_ready_codes == 0
+    assert status.failure_reasons == ("incomplete_codes",)
 
 
 def test_worker_unavailable_stops_the_run_without_failing_unattempted_codes(tmp_path: Path) -> None:

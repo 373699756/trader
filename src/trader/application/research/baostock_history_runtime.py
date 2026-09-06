@@ -130,6 +130,7 @@ class BaoStockRuntimeStatus:
     shard_count: int = 0
     universe_count: int = 0
     completed_codes: int = 0
+    training_ready_codes: int = 0
     failed_codes: int = 0
     peak_rss_mb: float = 0.0
     manifest_hash: str = ""
@@ -151,11 +152,19 @@ class BaoStockRuntimeStatus:
         hashes = (self.manifest_hash, self.historical_effective_facts_hash, self.v3_dataset_hash)
         if any(value and _SHA256.fullmatch(value) is None for value in hashes):
             raise ValueError("BaoStock runtime artifact hash must be SHA-256")
-        counts = (self.shard_count, self.universe_count, self.completed_codes, self.failed_codes)
+        counts = (
+            self.shard_count,
+            self.universe_count,
+            self.completed_codes,
+            self.training_ready_codes,
+            self.failed_codes,
+        )
         if any(isinstance(value, bool) or value < 0 for value in counts):
             raise ValueError("BaoStock runtime counts must be non-negative integers")
         if self.completed_codes + self.failed_codes > self.universe_count:
             raise ValueError("BaoStock runtime code counts exceed the universe")
+        if self.training_ready_codes > self.completed_codes:
+            raise ValueError("BaoStock training-ready codes exceed completed codes")
         if not math.isfinite(self.peak_rss_mb) or self.peak_rss_mb < 0:
             raise ValueError("BaoStock runtime RSS must be finite and non-negative")
         object.__setattr__(self, "failure_reasons", tuple(sorted(set(self.failure_reasons))))

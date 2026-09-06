@@ -6,6 +6,26 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户希望在 BaoStock 全量历史仍下载中时，先用已完成部分训练并让模型参与评分，验证数据到评分的完整流程。
+  根因已确认：已有分片实际包含可训练数据，但 `research-status` 在最终 manifest 缺失时固定投影
+  `not_started/0`，`train-tomorrow` 也只接受最终 manifest，无法安全消费已经原子提交的 checkpoint。本批新增
+  显式 `train-tomorrow --allow-partial-history`：只选择同时具有 completed 日线和 training-fact checkpoint 的股票，
+  用日历、股票池、来源版本、分片路径和逐股 batch/facts hash 封存不可变输入；后续下载可以继续追加其它股票，
+  快照内身份漂移则失败关闭。完整 manifest 与部分试跑复用同一 V3 特征、交易日切分、Ridge/LightGBM 50/50、
+  codec 和评分路由。部分模型固定报告 `historical_unavailable`、`partial_history_pipeline_trial`、
+  `manual_user_override`、`production_authority=false`，只有用户显式 `--profile v3` 才参与评分，不自动改变默认 V1、
+  V2、冻结、DeepSeek 或下载续传。状态接口现从 checkpoint 索引只读显示真实已下载和训练就绪数量；长训练在 stderr
+  输出有界阶段及已处理/总代码数。真实试跑封存 2104/5453 只股票，形成 1,891,230 条训练样本、1,358,875 条验证
+  样本和 23 个行业模型；模型 hash `06d2fb1432289ccb4f980813e28879c901f666ae2edf48f00538f6fcf926e484`，
+  V3 生产 loader 校验通过，离线性能门禁以 360 候选、三策略、100 tick 完成 7 组评分等价场景且网络请求为 0。
+  Verification: 受影响 checkpoint/训练/codec/profile/CLI/状态契约定向测试 122 项通过；受影响 Python Ruff 与 mypy
+  通过；真实 `./run.sh train-tomorrow --allow-partial-history` 返回 `trial_ready`；V3 `performance-check` 通过。
+  完整 `make format-check`、`make lint`、`make type-check`、`make test`、`make package` 已通过；其中测试首轮发现的文档锚点缺失已补回并完成全量重跑。
+  Residual Risks: 部分样本不是全量覆盖或 point-in-time 14:50 证据，不能证明收益、打开终端留出或正式晋级；当前
+  部分训练约耗时 12 分钟；真实常驻服务仍需在本批代码提交后的重启实证确认其加载相同模型身份。仓库外轮包安装验证因
+  隔离环境依赖安装受外部包索引阻塞，未宣称通过；`make package` 构建本身已通过。
+  `Regression-Key: partial-history-v3-pipeline-trial`。
+
 - 用户反馈 `download_history` 再次以 `completed_with_failures` 结束，终态同时出现
   `historical_industry_incomplete` 和 `worker_unavailable`，并要求下载打印增加完成进度百分比。根因已确认：
   单 worker 退出且重启失败后，协调器把队列中所有尚未尝试股票批量持久化为 `worker_unavailable`，

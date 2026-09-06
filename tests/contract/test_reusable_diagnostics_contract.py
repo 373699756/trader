@@ -71,7 +71,7 @@ def test_legacy_diagnostic_wrappers_are_deleted_after_unified_cli_migration() ->
         for path in (
             ROOT / "Makefile",
             ROOT / "README.md",
-            ROOT / "docs" / "software-business-design.md",
+            ROOT / "docs" / "02_工程设计.md",
             ROOT / "src" / "trader" / "entrypoints" / "performance.py",
             ROOT / ".agents" / "skills" / "trader-delivery" / "SKILL.md",
             ROOT / ".agents" / "skills" / "trader-delivery" / "references" / "runtime-diagnostics.md",

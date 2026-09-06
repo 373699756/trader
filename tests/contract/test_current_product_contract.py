@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_authoritative_design_requires_one_final_product_chain_without_runtime_compatibility() -> None:
-    design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
 
     for statement in (
         "current-only 最终 release 边界",
@@ -25,7 +25,7 @@ def test_authoritative_design_requires_one_final_product_chain_without_runtime_c
 
 
 def test_strategy_contract_requires_native_decisions_and_no_legacy_replay() -> None:
-    strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
+    strategy = (ROOT / "docs/01_评分逻辑.md").read_text(encoding="utf-8")
     compact = " ".join(strategy.split())
 
     for statement in (
@@ -38,8 +38,8 @@ def test_strategy_contract_requires_native_decisions_and_no_legacy_replay() -> N
 
 
 def test_parallel_overview_plan_and_operations_docs_are_retired() -> None:
-    design = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
-    strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
+    strategy = (ROOT / "docs/01_评分逻辑.md").read_text(encoding="utf-8")
     design_compact = " ".join(design.split())
 
     assert "current-only 工程与发布门禁验收已闭合" in design
@@ -69,7 +69,7 @@ def test_parallel_overview_plan_and_operations_docs_are_retired() -> None:
 
 def test_release_guides_expose_only_unified_api_and_desktop_gate() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    operations = (ROOT / "docs/software-business-design.md").read_text(encoding="utf-8")
+    operations = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
 
     for content in (readme, operations):
         assert "/api/status" in content

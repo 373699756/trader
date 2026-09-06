@@ -54,7 +54,10 @@ def test_train_tomorrow_uses_the_project_data_roots() -> None:
 
 
 def test_train_tomorrow_can_reuse_an_explicit_download_history_root() -> None:
-    args = build_parser().parse_args(["train-tomorrow", "--runtime-dir", "/tmp/trader-baostock"])
+    args = build_parser().parse_args(
+        ["train-tomorrow", "--runtime-dir", "/tmp/trader-baostock", "--allow-partial-history"]
+    )
 
     assert args.command == "train-tomorrow"
     assert args.runtime_dir == Path("/tmp/trader-baostock")
+    assert args.allow_partial_history is True

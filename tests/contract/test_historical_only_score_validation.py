@@ -7,8 +7,8 @@ SOURCE = ROOT / "src/trader"
 
 
 def test_authoritative_contracts_make_history_the_only_score_validation_source() -> None:
-    strategy = " ".join((ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8").split())
-    design = " ".join((ROOT / "docs/software-business-design.md").read_text(encoding="utf-8").split())
+    strategy = " ".join((ROOT / "docs/01_评分逻辑.md").read_text(encoding="utf-8").split())
+    design = " ".join((ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8").split())
 
     for expected in (
         "所有评分策略验证只使用历史 point-in-time 数据",
@@ -65,7 +65,7 @@ def test_production_tree_has_no_forward_score_validation_owner() -> None:
 
 
 def test_online_outcomes_remain_monitoring_only_without_changing_scoring_or_freeze() -> None:
-    strategy = (ROOT / "docs/recommendation-strategy.md").read_text(encoding="utf-8")
+    strategy = (ROOT / "docs/01_评分逻辑.md").read_text(encoding="utf-8")
     bootstrap = (SOURCE / "bootstrap.py").read_text(encoding="utf-8")
 
     for invariant in (

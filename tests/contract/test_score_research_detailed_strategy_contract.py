@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-STRATEGY = ROOT / "docs/recommendation-strategy.md"
+STRATEGY = ROOT / "docs/01_评分逻辑.md"
 
 
 def test_score_research_uses_ordered_historical_splits_and_bounded_terminal_states() -> None:

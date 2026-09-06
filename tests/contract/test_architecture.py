@@ -354,7 +354,7 @@ def test_dashboard_stream_transport_is_a_separate_packaged_dependency() -> None:
 
 
 def test_functional_package_final_cutover_contract_is_authoritative() -> None:
-    design = PROJECT_ROOT / "docs/software-business-design.md"
+    design = PROJECT_ROOT / "docs/02_工程设计.md"
     content = design.read_text(encoding="utf-8")
     assert "### 3.1 功能包目标布局与迁移约束" in content
     assert "最终包状态已固化" in content

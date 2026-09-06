@@ -144,7 +144,9 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert "./run.sh check                   依次校验配置、研究状态和性能门禁" in completed.stdout
     assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
     assert "./run.sh download_history        下载/续传 BaoStock 历史日线归档" in completed.stdout
-    assert "./run.sh train-tomorrow          从封存状态推导并连续运行可用 Tomorrow 训练阶段" in completed.stdout
+    assert "./run.sh train-tomorrow          从完整 manifest 运行 Tomorrow 训练" in completed.stdout
+    assert "./run.sh train-tomorrow --allow-partial-history" in completed.stdout
+    assert "从已提交 checkpoint 运行非生产流程试训" in completed.stdout
     assert "research-r7-dossier" not in completed.stdout
     assert "所有命令都可追加 --profile v1|v2|v3；未指定时为 V1" in completed.stdout
     assert "./run.sh serve" not in completed.stdout
@@ -406,7 +408,9 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert ".\\run.ps1 download_history        下载/续传 BaoStock 历史日线归档" in powershell
     assert "research-history" not in powershell
     assert "research-screen" not in powershell
-    assert ".\\run.ps1 train-tomorrow          从封存状态推导并连续运行可用 Tomorrow 训练阶段" in powershell
+    assert ".\\run.ps1 train-tomorrow          从完整 manifest 运行 Tomorrow 训练" in powershell
+    assert ".\\run.ps1 train-tomorrow --allow-partial-history" in powershell
+    assert "从已提交 checkpoint 运行非生产流程试训" in powershell
     assert "所有命令都可追加 --profile v1|v2|v3；未指定时为 V1" in powershell
     assert "& $SelectedEntryPoint --help" in powershell
     assert '$ScoringProfile -notin @("v1", "v2", "v3")' in powershell
@@ -480,7 +484,8 @@ def test_train_tomorrow_runs_a_prerequisite_before_resource_handoff_without_crea
     assert payload["status"] == "blocked"
     assert payload["next_stage"] == "data_manifest"
     assert payload["blockers"] == ["history_manifest_unavailable"]
-    assert payload["manifest_hash"] == ""
+    assert payload["training_input_hash"] == ""
+    assert payload["training_input_scope"] == "unavailable"
     assert payload["production_authority"] is False
     assert {os.environ[name] for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")} == {"2"}
     assert not runtime_dir.exists()
@@ -494,27 +499,49 @@ def test_train_tomorrow_passes_the_explicit_history_root_to_the_training_owner(
     config = tmp_path / "runtime.json"
     config.write_text(json.dumps(runtime), encoding="utf-8")
     history = tmp_path / "downloaded-history"
-    observed: list[tuple[Path, Path]] = []
+    observed: list[tuple[Path, Path, bool]] = []
 
-    def train(history_root: Path, train_root: Path) -> SimpleNamespace:
-        observed.append((history_root, train_root))
+    def train(
+        history_root: Path,
+        train_root: Path,
+        *,
+        allow_partial_history: bool,
+        progress: object,
+    ) -> SimpleNamespace:
+        assert progress is not None
+        observed.append((history_root, train_root, allow_partial_history))
         return SimpleNamespace(
             status="blocked",
             run_id=None,
-            manifest_hash="",
+            training_input_hash="",
             report_hash="",
             model_hash="",
             industry_count=0,
             training_rows=0,
             validation_rows=0,
+            training_input_scope="unavailable",
+            training_input_codes=0,
+            training_universe_codes=0,
             failure_reasons=("history_manifest_unavailable",),
         )
 
     monkeypatch.setattr("trader.infra.research.tomorrow_v3_training.run_tomorrow_v3_training", train)
 
-    assert main(["--config", str(config), "train-tomorrow", "--runtime-dir", str(history)]) == 1
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "train-tomorrow",
+                "--runtime-dir",
+                str(history),
+                "--allow-partial-history",
+            ]
+        )
+        == 1
+    )
 
-    assert observed == [(history, ROOT / "data" / "train")]
+    assert observed == [(history, ROOT / "data" / "train", True)]
     assert json.loads(capsys.readouterr().out)["report_hash"] == ""
 
 

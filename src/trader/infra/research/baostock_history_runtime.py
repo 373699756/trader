@@ -71,6 +71,7 @@ from trader.infra.research.baostock_history_messages import (
 from trader.infra.research.baostock_history_messages import (
     WorkerReady as _WorkerReady,
 )
+from trader.infra.research.baostock_history_status import inspect_baostock_checkpoints
 from trader.infra.research.baostock_v3_dataset import (
     BaoStockV3DatasetArtifactConflictError,
     BaoStockV3DatasetArtifactStore,
@@ -212,7 +213,7 @@ def run_baostock_history(
 def inspect_baostock_history(runtime_dir: Path, *, sessions: int = 2000) -> BaoStockRuntimeStatus:
     root = _runtime_root(runtime_dir, sessions)
     if not (root / "manifest.json").is_file():
-        return BaoStockRuntimeStatus()
+        return inspect_baostock_checkpoints(root, sessions=sessions)
     try:
         store = BaoStockDailyPartitionedArchive(root)
         value = store.verify()
@@ -232,6 +233,7 @@ def inspect_baostock_history(runtime_dir: Path, *, sessions: int = 2000) -> BaoS
         shard_count=len(tuple((root / "shards").glob("*.sqlite3"))),
         universe_count=audit.universe_count,
         completed_codes=len(audit.code_coverages),
+        training_ready_codes=len(audit.code_coverages),
         failed_codes=len(audit.failed_codes),
         manifest_hash=value.content_hash,
         coverage_status=audit.status,
@@ -251,6 +253,7 @@ def project_baostock_runtime_status(status: BaoStockRuntimeStatus) -> dict[str, 
         "shard_count": status.shard_count,
         "universe_count": status.universe_count,
         "completed_codes": status.completed_codes,
+        "training_ready_codes": status.training_ready_codes,
         "failed_codes": status.failed_codes,
         "peak_rss_mb": status.peak_rss_mb,
         "manifest_hash": status.manifest_hash,
@@ -816,6 +819,7 @@ class _DownloadCoordinator:
             shard_count=len(partitioned.partitions),
             universe_count=len(self._run.context.universe),
             completed_codes=len(completed),
+            training_ready_codes=len(completed),
             failed_codes=len(audit.failed_codes),
             peak_rss_mb=self._peak_rss_mb,
             manifest_hash=partitioned.content_hash,
@@ -843,6 +847,7 @@ class _DownloadCoordinator:
             shard_count=len(self._shards),
             universe_count=len(self._run.context.universe),
             completed_codes=len(self._completed_codes),
+            training_ready_codes=len(self._ready_codes),
             failed_codes=len(self._failed_codes),
             peak_rss_mb=self._peak_rss_mb,
             failure_reasons=failure_reasons,
@@ -867,8 +872,6 @@ class _DownloadCoordinator:
                 downloaded_records=self._downloaded_records,
                 active_workers=sum(handle.process.is_alive() for handle in self._handles),
                 current_code=current_code,
-                # The worker owns the two-second query pacing. It does not expose
-                # a pending sleep, so a zero value truthfully means no known hold.
                 rate_limit_cooldown_seconds=0.0,
                 last_failure_reason=(
                     last_failure_reason if _valid_failure_code(last_failure_reason) else "supplier_query_failed"

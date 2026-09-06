@@ -4,7 +4,7 @@ from importlib import resources
 
 import pytest
 
-from trader.application.research.tomorrow_v3_training import TomorrowV3TrainingWindow
+from trader.application.research.tomorrow_v3_training import TomorrowV3TrainingProgress, TomorrowV3TrainingWindow
 from trader.domain.recommendation.model_scoring import V3_EXPOSURE_CONTRACT, residualize_exposure
 from trader.domain.research.baostock_daily import build_baostock_v3_split
 from trader.infra.research.tomorrow_v3_training import _aligned_sample_dates, _model_document, _residualize_sample_day
@@ -21,6 +21,12 @@ def test_training_window_never_authorizes_the_latest_two_hundred_dates() -> None
     assert split.daily_proxy_holdout_dates[-1] in window.readable_dates
     with pytest.raises(ValueError, match="point-in-time holdout"):
         window.require_readable((split.point_in_time_holdout_dates[0],))
+
+
+def test_training_progress_rejects_impossible_counts() -> None:
+    assert TomorrowV3TrainingProgress("sample_build", 50, 100).processed_codes == 50
+    with pytest.raises(ValueError, match="counts"):
+        TomorrowV3TrainingProgress("sample_build", 101, 100)
 
 
 def test_training_window_rejects_dates_outside_the_frozen_manifest() -> None:
@@ -103,11 +109,23 @@ def test_v3_training_document_is_accepted_by_the_production_codec() -> None:
         "training_rows": 20_000,
         "validation_rows": 1_000,
     }
-    document = _model_document("a" * 64, split, "b" * 64, {"银行": industry_model}, 20_000, 1_000)
+    document = _model_document(
+        "complete_manifest",
+        "a" * 64,
+        100,
+        100,
+        split,
+        "b" * 64,
+        {"银行": industry_model},
+        20_000,
+        1_000,
+    )
     document["content_hash"] = artifact_content_hash(document)
 
     artifact = decode_v3_tomorrow_bundle(document)
 
     assert artifact.feature_ids[-1] == "qfq_residual_momentum_60d_skip5"
     assert artifact.exposure_contract == V3_EXPOSURE_CONTRACT
+    assert artifact.training_input_scope == "complete_manifest"
+    assert artifact.training_input_hash == "a" * 64
     assert tuple(industry for industry, _model in artifact.industries) == ("银行",)

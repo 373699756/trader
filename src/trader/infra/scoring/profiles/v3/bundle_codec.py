@@ -29,7 +29,10 @@ _DOCUMENT_FIELDS = {
     "feature_ids",
     "feature_units",
     "exposure_contract",
-    "manifest_hash",
+    "training_input_scope",
+    "training_input_hash",
+    "training_input_codes",
+    "training_universe_codes",
     "split_hash",
     "report_hash",
     "training_anchor",
@@ -42,6 +45,7 @@ _DOCUMENT_FIELDS = {
     "industries",
     "dependencies",
     "automatic_model_update",
+    "production_authority",
 }
 _INDUSTRY_MODEL_FIELDS = {
     "transformer_means",
@@ -80,7 +84,10 @@ class V3TomorrowBundleArtifact:
     exposure_contract: ExposureContract
     ridge_weight: float
     lightgbm_weight: float
-    manifest_hash: str
+    training_input_scope: Literal["complete_manifest", "partial_checkpoint"]
+    training_input_hash: str
+    training_input_codes: int
+    training_universe_codes: int
     split_hash: str
     report_hash: str
     training_rows: int
@@ -114,7 +121,10 @@ def decode_v3_tomorrow_bundle(document: object) -> V3TomorrowBundleArtifact:
         exposure_contract,
         ridge_weight,
         lightgbm_weight,
-        _text(payload, "manifest_hash"),
+        _training_input_scope(payload),
+        _text(payload, "training_input_hash"),
+        _integer(payload, "training_input_codes"),
+        _integer(payload, "training_universe_codes"),
         _text(payload, "split_hash"),
         _text(payload, "report_hash"),
         _integer(payload, "training_rows"),
@@ -152,17 +162,25 @@ def _decode_contract(
         or feature_ids != _FEATURE_IDS
         or feature_units != _FEATURE_UNITS
         or exposure_contract != V3_EXPOSURE_CONTRACT
-        or not _sha256_text(payload, "manifest_hash")
+        or not _sha256_text(payload, "training_input_hash")
         or not _sha256_text(payload, "split_hash")
         or not _sha256_text(payload, "report_hash")
         or _text(payload, "training_anchor") != "15:00_close"
         or _text(payload, "runtime_anchor") != "14:50"
         or _boolean(payload, "point_in_time_parity")
         or _boolean(payload, "automatic_model_update")
+        or _boolean(payload, "production_authority")
         or _integer(payload, "training_rows") < 1
         or _integer(payload, "validation_rows") < 1
     ):
         raise ValueError("Tomorrow V3 training model identity or feature contract is invalid")
+    input_scope = _training_input_scope(payload)
+    input_codes = _integer(payload, "training_input_codes")
+    universe_codes = _integer(payload, "training_universe_codes")
+    if input_codes < 1 or universe_codes < input_codes:
+        raise ValueError("Tomorrow V3 training input coverage is invalid")
+    if input_scope == "complete_manifest" and input_codes != universe_codes:
+        raise ValueError("Tomorrow V3 complete training input coverage is invalid")
     return stored_hash, feature_ids, feature_units, exposure_contract, ridge_weight, lightgbm_weight
 
 
@@ -266,6 +284,13 @@ def _industry_name(value: object) -> str:
     if not isinstance(value, str) or not value.strip():
         raise TypeError("Tomorrow V3 industry name must be non-empty text")
     return value.strip()
+
+
+def _training_input_scope(payload: dict[str, object]) -> Literal["complete_manifest", "partial_checkpoint"]:
+    value = _text(payload, "training_input_scope")
+    if value not in ("complete_manifest", "partial_checkpoint"):
+        raise ValueError("Tomorrow V3 training input scope is invalid")
+    return cast(Literal["complete_manifest", "partial_checkpoint"], value)
 
 
 def _text(payload: dict[str, object], name: str) -> str:

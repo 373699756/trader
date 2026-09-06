@@ -4,7 +4,7 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DESIGN = ROOT / "docs" / "software-business-design.md"
+DESIGN = ROOT / "docs" / "02_工程设计.md"
 RUNTIME = ROOT / "src" / "trader" / "application" / "runtime" / "scheduler_runtime.py"
 
 

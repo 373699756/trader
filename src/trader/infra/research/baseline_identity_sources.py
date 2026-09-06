@@ -32,8 +32,8 @@ class PackagedBaselineIdentityEvidence(BaselineIdentityEvidence):
 def load_baseline_identity_evidence(runtime: RuntimeSettings) -> PackagedBaselineIdentityEvidence:
     strategy = load_strategy_settings(runtime.strategy_config_path)
     strategy_hash = _file_hash(runtime.strategy_config_path)
-    design_path = runtime.project_root / "docs/software-business-design.md"
-    strategy_doc_path = runtime.project_root / "docs/recommendation-strategy.md"
+    design_path = runtime.project_root / "docs/02_工程设计.md"
+    strategy_doc_path = runtime.project_root / "docs/01_评分逻辑.md"
     v1 = load_scoring_profile("v1").identity
     v2 = load_scoring_profile("v2").identity
     p2_store = TomorrowHistoricalP2ArtifactStore(runtime.runtime_dir / "score-tomorrow-p2")

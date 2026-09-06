@@ -24,6 +24,7 @@ from trader.domain.research.baostock_daily import (
 from trader.infra.research.baostock_daily import (
     BaoStockDailyArtifactConflictError,
     BaoStockDailyPartitionedArchive,
+    BaoStockV3TrainingInputArchive,
     SQLiteBaoStockDailyShard,
 )
 
@@ -271,6 +272,60 @@ def test_training_facts_are_complete_per_code_and_queryable_without_scanning_oth
     assert all(row.industry == "银行" and row.is_st is False for row in rows)
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM industry_intervals WHERE code='600001'").fetchone() == (1,)
+
+
+def test_partial_training_input_seals_only_ready_checkpoints_and_remains_stable_after_append(tmp_path) -> None:
+    spec, calendar, universe, versions = _context()
+    root = tmp_path / "sessions-2000"
+    main = SQLiteBaoStockDailyShard(root / "shards" / "main-6000.sqlite3")
+    chinext = SQLiteBaoStockDailyShard(root / "shards" / "chinext-3000.sqlite3")
+    industries = _industry("600001", calendar) + _industry("300001", calendar)
+    for shard in (main, chinext):
+        shard.initialize(spec, calendar, universe, versions, industries)
+    main.save_batch(spec, _batch("600001", calendar))
+    main.save_training_facts(spec, "600001", _facts("600001", calendar), _industry("600001", calendar))
+
+    archive = BaoStockV3TrainingInputArchive.open(root, sessions=3, allow_partial_history=True)
+    initial_hash = archive.snapshot.content_hash
+
+    assert archive.snapshot.input_scope == "partial_checkpoint"
+    assert archive.snapshot.training_codes == ("600001",)
+    assert archive.snapshot.completed_code_count == 1
+    assert archive.snapshot.universe_count == 2
+    assert (
+        tuple(
+            row.trade_date for row in archive.read_training_rows("600001", allowed_dates=frozenset(calendar.open_dates))
+        )
+        == calendar.open_dates
+    )
+
+    chinext.save_batch(spec, _batch("300001", calendar))
+    assert archive.snapshot.content_hash == initial_hash
+    assert archive.snapshot.training_codes == ("600001",)
+
+
+def test_partial_training_input_requires_explicit_authorization_and_rejects_hash_drift(tmp_path) -> None:
+    spec, calendar, universe, versions = _context()
+    root = tmp_path / "sessions-2000"
+    path = root / "shards" / "main-6000.sqlite3"
+    shard = SQLiteBaoStockDailyShard(path)
+    industry = _industry("600001", calendar)
+    shard.initialize(spec, calendar, universe, versions, industry)
+    shard.save_batch(spec, _batch("600001", calendar))
+    shard.save_training_facts(spec, "600001", _facts("600001", calendar), industry)
+
+    with pytest.raises(BaoStockDailyArtifactConflictError, match="manifest"):
+        BaoStockV3TrainingInputArchive.open(root, sessions=3, allow_partial_history=False)
+
+    archive = BaoStockV3TrainingInputArchive.open(root, sessions=3, allow_partial_history=True)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE training_fact_checkpoints SET content_hash=? WHERE code='600001'",
+            ("0" * 64,),
+        )
+
+    with pytest.raises(BaoStockDailyArtifactConflictError, match="snapshot identity"):
+        archive.read_training_rows("600001", allowed_dates=frozenset(calendar.open_dates))
 
 
 def test_training_facts_reject_industry_intervals_that_differ_from_the_frozen_context(tmp_path) -> None:

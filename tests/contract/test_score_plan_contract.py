@@ -11,8 +11,8 @@ def _compact(path: Path) -> str:
 
 
 def test_historical_only_score_validation_is_the_authoritative_route() -> None:
-    strategy = _compact(ROOT / "docs/recommendation-strategy.md")
-    design = _compact(ROOT / "docs/software-business-design.md")
+    strategy = _compact(ROOT / "docs/01_评分逻辑.md")
+    design = _compact(ROOT / "docs/02_工程设计.md")
 
     for token in (
         "所有评分策略验证只使用历史 point-in-time 数据",
@@ -60,9 +60,8 @@ def test_forward_score_validation_owners_and_commands_are_retired() -> None:
 
 
 def test_remaining_offline_research_is_historical_and_production_isolated() -> None:
-    strategy = _compact(ROOT / "docs/recommendation-strategy.md")
-    design = _compact(ROOT / "docs/software-business-design.md")
-    work = _compact(ROOT / "docs/work.md")
+    design = _compact(ROOT / "docs/02_工程设计.md")
+    work = _compact(ROOT / "docs/03_工程实施.md")
 
     for token in (
         "score_r6_historical_legacy",
@@ -80,7 +79,7 @@ def test_remaining_offline_research_is_historical_and_production_isolated() -> N
 
 
 def test_p2_historical_rejection_and_manual_production_override_remain_explicit() -> None:
-    strategy = _compact(ROOT / "docs/recommendation-strategy.md")
+    strategy = _compact(ROOT / "docs/01_评分逻辑.md")
 
     for token in (
         "daily_reconstructible_ensemble_v1",
@@ -97,9 +96,9 @@ def test_p2_historical_rejection_and_manual_production_override_remain_explicit(
 
 
 def test_v1_v2_historical_evidence_does_not_create_a_running_collection_gate() -> None:
-    strategy = _compact(ROOT / "docs/recommendation-strategy.md")
-    design = _compact(ROOT / "docs/software-business-design.md")
-    work = _compact(ROOT / "docs/work.md")
+    strategy = _compact(ROOT / "docs/01_评分逻辑.md")
+    design = _compact(ROOT / "docs/02_工程设计.md")
+    work = _compact(ROOT / "docs/03_工程实施.md")
 
     for token in (
         "不能据此断言 V2 未来更能挣钱",
@@ -114,8 +113,8 @@ def test_v1_v2_historical_evidence_does_not_create_a_running_collection_gate() -
 
 
 def test_tomorrow_zero_score_is_explained_as_a_cost_aware_cash_result() -> None:
-    strategy = _compact(ROOT / "docs/recommendation-strategy.md")
-    design = _compact(ROOT / "docs/software-business-design.md")
+    strategy = _compact(ROOT / "docs/01_评分逻辑.md")
+    design = _compact(ROOT / "docs/02_工程设计.md")
 
     for token in (
         "`no_positive_net_utility`",
