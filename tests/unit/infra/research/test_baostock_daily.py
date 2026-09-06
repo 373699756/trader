@@ -338,6 +338,17 @@ def test_cross_shard_retry_can_clear_a_stale_failure_checkpoint(tmp_path) -> Non
     assert shard.snapshot(spec).failures == ()
 
 
+def test_run_level_worker_failure_checkpoint_can_be_cleared_by_reason(tmp_path) -> None:
+    spec, calendar, universe, versions = _context()
+    shard = SQLiteBaoStockDailyShard(tmp_path / "shard.sqlite3")
+    shard.initialize(spec, calendar, universe, versions)
+    shard.record_failure(spec, "600001", "worker_unavailable")
+
+    shard.clear_failures_by_reason(spec, "worker_unavailable")
+
+    assert shard.checkpoint(spec).failures == ()
+
+
 def test_shard_wraps_sqlite_cell_identity_collision_as_typed_conflict(tmp_path) -> None:
     spec, calendar, universe, versions = _context()
     path = tmp_path / "shard.sqlite3"

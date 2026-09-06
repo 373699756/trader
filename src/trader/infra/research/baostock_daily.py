@@ -521,6 +521,16 @@ class SQLiteBaoStockDailyShard:
         with self._connect() as connection:
             connection.execute("DELETE FROM checkpoints WHERE code=? AND state='failed'", (code,))
 
+    def clear_failures_by_reason(self, spec: BaoStockDailySpec, error_code: str) -> None:
+        self._require_context(spec)
+        if not _valid_error_code(error_code):
+            raise ValueError("BaoStock checkpoint failure identity is invalid")
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM checkpoints WHERE state='failed' AND error_code=?",
+                (error_code,),
+            )
+
     def snapshot(self, spec: BaoStockDailySpec) -> BaoStockShardSnapshot:
         try:
             return self._snapshot(spec)

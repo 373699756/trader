@@ -6,6 +6,22 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户反馈 `download_history` 再次以 `completed_with_failures` 结束，终态同时出现
+  `historical_industry_incomplete` 和 `worker_unavailable`，并要求下载打印增加完成进度百分比。根因已确认：
+  单 worker 退出且重启失败后，协调器把队列中所有尚未尝试股票批量持久化为 `worker_unavailable`，
+  把一次进程故障误报为数千只股票的数据故障；现场 92 个分片的只读核对确认仍有 2738 条该错误标记。
+  现将 worker 不可用与重启失败收敛为运行级失败，并保留重启阶段的具体稳定失败码；待下载队列保留、不写股票失败 checkpoint，
+  下次续传初始化会按原因清理旧实现误写的标记，不删除已落盘日线。CLI 输出新增由完成股票数除以股票池总数
+  派生的两位小数百分比，股票池尚未建立时显示 `0.00%`；内部类型和最终 JSON schema 不变。Verification:
+  新增 worker 不可用、worker 重启失败、旧 checkpoint 续传清理、百分比及零股票池回归；BaoStock CLI/日线存储/运行时
+  定向测试 57 项、`make format-check`、`make type-check` 和 `make package` 通过。`make lint` 未通过，仅报已推送基线
+  `tests/contract/test_score_plan_contract.py:63` 的未使用变量；`make test` 未通过，其 57 个失败均为已推送的
+  `0186865` 把三份文档改为中文文件名后，既有契约测试仍读取已不存在的 `software-business-design.md`、
+  `recommendation-strategy.md` 或 `work.md`，本批未混入该独立文档迁移修复。Residual Risks: BaoStock 供应商连接和
+  历史行业事实缺口仍是外部风险，本批未自动启动真实长时续传；统一 `research` 诊断另报
+  `research_status_shape_invalid`，与本次下载器故障无同一根因，未混入本批修改。
+  `Regression-Key: baostock-worker-unavailable-run-scope`。
+
 - 用户反馈 `download_history` 长时间显示 `historical_industry_incomplete` 且把已下载股票计为失败。根因是 worker
   已提交日线 `save_batch` 后，行业区间无法覆盖 2000 个交易日，`save_training_facts` 的事实校验异常被当作整只股票
   下载失败并触发重试；日线数据实际已经保存。现将 worker 响应显式区分“日线已下载”和“训练事实就绪”：行业事实缺失

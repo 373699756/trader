@@ -240,6 +240,74 @@ def test_partial_status_refreshes_checkpoints_committed_outside_parent_response(
     assert recorder.values[-1].last_failure_reason == "supplier_query_failed_blacklisted"
 
 
+def test_worker_unavailable_stops_the_run_without_failing_unattempted_codes(tmp_path: Path) -> None:
+    coordinator, security, _ = _coordinator(tmp_path)
+    coordinator._initialize_shards()
+
+    coordinator._record_unavailable()
+    status = coordinator._finish()
+
+    assert status.state == "failed"
+    assert status.failure_reasons == ("worker_unavailable",)
+    assert status.failed_codes == 0
+    assert tuple(coordinator._pending) == (security,)
+    assert coordinator._failure_shard(security).checkpoint(coordinator._run.spec).failures == ()
+
+
+def test_resume_clears_legacy_worker_unavailable_code_failures(tmp_path: Path) -> None:
+    coordinator, security, _ = _coordinator(tmp_path)
+    coordinator._initialize_shards()
+    coordinator._failure_shard(security).record_failure(
+        coordinator._run.spec,
+        security.code,
+        "worker_unavailable",
+    )
+
+    resumed, _, _ = _coordinator(tmp_path)
+    resumed._initialize_shards()
+
+    assert resumed._failed_codes == set()
+    assert tuple(resumed._pending) == (security,)
+    assert resumed._failure_shard(security).checkpoint(resumed._run.spec).failures == ()
+
+
+def test_worker_replacement_preserves_run_failure_and_keeps_the_code_resumable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    coordinator, security, _ = _coordinator(tmp_path)
+    coordinator._initialize_shards()
+    coordinator._pending.clear()
+
+    class _Connection:
+        def poll(self) -> bool:
+            return False
+
+    class _Process:
+        def is_alive(self) -> bool:
+            return True
+
+    handle = _WorkerHandle(  # type: ignore[arg-type] -- focused process/connection doubles
+        process=_Process(),
+        connection=_Connection(),
+        shard_path=tmp_path,
+        current=security,
+        started_at=1.0,
+    )
+    monkeypatch.setattr(
+        "trader.infra.research.baostock_history_runtime._terminate_process",
+        lambda _process: None,
+    )
+    monkeypatch.setattr(coordinator, "_replace", lambda _handle: "supplier_login_failed_blacklisted")
+
+    coordinator._service_worker(handle, now=62.0)
+    status = coordinator._finish()
+
+    assert status.state == "failed"
+    assert status.failure_reasons == ("supplier_login_failed_blacklisted",)
+    assert status.failed_codes == 0
+    assert tuple(coordinator._pending) == (security,)
+
+
 def test_download_lock_distinguishes_an_active_owner_from_unsupported_locking(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

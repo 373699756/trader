@@ -50,6 +50,27 @@ from trader.infra.research.baostock_daily import (
     SQLiteBaoStockDailyShard,
     industry_covers_expected_dates,
 )
+from trader.infra.research.baostock_history_messages import (
+    ContextResponse as _ContextResponse,
+)
+from trader.infra.research.baostock_history_messages import (
+    ContextStage as _ContextStage,
+)
+from trader.infra.research.baostock_history_messages import (
+    DownloadCommand as _DownloadCommand,
+)
+from trader.infra.research.baostock_history_messages import (
+    DownloadResponse as _DownloadResponse,
+)
+from trader.infra.research.baostock_history_messages import (
+    StopCommand as _StopCommand,
+)
+from trader.infra.research.baostock_history_messages import (
+    SupplierCallActivity as _SupplierCallActivity,
+)
+from trader.infra.research.baostock_history_messages import (
+    WorkerReady as _WorkerReady,
+)
 from trader.infra.research.baostock_v3_dataset import (
     BaoStockV3DatasetArtifactConflictError,
     BaoStockV3DatasetArtifactStore,
@@ -57,15 +78,6 @@ from trader.infra.research.baostock_v3_dataset import (
 from trader.infra.research.historical_effective_facts import (
     HistoricalEffectiveFactsArtifactConflictError,
     HistoricalEffectiveFactsArtifactStore,
-)
-from trader.infra.research.baostock_history_messages import (
-    ContextResponse as _ContextResponse,
-    ContextStage as _ContextStage,
-    DownloadCommand as _DownloadCommand,
-    DownloadResponse as _DownloadResponse,
-    StopCommand as _StopCommand,
-    SupplierCallActivity as _SupplierCallActivity,
-    WorkerReady as _WorkerReady,
 )
 
 BAOSTOCK_CANCEL_GRACE_SECONDS = 10.0
@@ -568,6 +580,9 @@ class _DownloadCoordinator:
                 run.context.source_versions,
                 run.context.industry_intervals,
             )
+            # Older runs incorrectly persisted a dead worker as a failure for
+            # every unattempted code. It is a run-level condition, not data state.
+            shard.clear_failures_by_reason(run.spec, "worker_unavailable")
         self._refresh_checkpoint_progress()
         for item in run.context.universe:
             if item.code in self._ready_codes:
@@ -649,7 +664,9 @@ class _DownloadCoordinator:
     def _service_worker(self, handle: _WorkerHandle, now: float) -> None:
         if handle.current is None:
             if not handle.process.is_alive() and self._cancelling_since is None:
-                self._replace(handle)
+                replacement_failure = self._replace(handle)
+                if replacement_failure:
+                    self._run_failure_reason = replacement_failure
             return
         if handle.connection.poll():
             self._accept_response(handle, now)
@@ -657,14 +674,17 @@ class _DownloadCoordinator:
         if not handle.process.is_alive():
             security = self._release(handle)
             self._retry_or_record(security, "worker_process_failed")
-            self._replace(handle)
+            replacement_failure = self._replace(handle)
+            if replacement_failure:
+                self._run_failure_reason = replacement_failure
             return
         if now - handle.started_at > self._run.request.timeout_seconds:
             security = self._release(handle)
             _terminate_process(handle.process)
             self._retry_or_record(security, "supplier_call_timeout")
-            if not self._replace(handle):
-                self._terminal_failures[security.code] = "worker_restart_failed"
+            replacement_failure = self._replace(handle)
+            if replacement_failure:
+                self._run_failure_reason = replacement_failure
 
     def _accept_response(self, handle: _WorkerHandle, now: float) -> None:
         failure_reason = ""
@@ -732,13 +752,9 @@ class _DownloadCoordinator:
                 handle.started_at = time.monotonic()
 
     def _record_unavailable(self) -> None:
-        while self._pending:
-            security = self._pending.popleft()
-            self._terminal_failures[security.code] = "worker_unavailable"
-            self._failed_codes.add(security.code)
-            self._failure_shard(security).record_failure(self._run.spec, security.code, "worker_unavailable")
+        self._run_failure_reason = "worker_unavailable"
 
-    def _replace(self, handle: _WorkerHandle) -> bool:
+    def _replace(self, handle: _WorkerHandle) -> str:
         return _replace_worker(
             handle,
             self._run.process_context,
@@ -930,16 +946,16 @@ def _replace_worker(
     spec: BaoStockDailySpec,
     context: BaoStockShardContext,
     request: BaoStockRuntimeRequest,
-) -> bool:
-    replacement, _ = _start_worker(process_context, spec, context, handle.shard_path, request)
+) -> str:
+    replacement, failure_reason = _start_worker(process_context, spec, context, handle.shard_path, request)
     if replacement is None:
-        return False
+        return failure_reason or "worker_restart_failed"
     handle.connection.close()
     handle.process = replacement.process
     handle.connection = replacement.connection
     handle.current = None
     handle.started_at = 0.0
-    return True
+    return ""
 
 
 def _download_worker_main(

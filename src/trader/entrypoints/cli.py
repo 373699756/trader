@@ -184,9 +184,13 @@ class _BaoStockProgressWriter:
         current = f"，当前 {progress.current_code}" if progress.current_code else ""
         failure = progress.last_failure_reason or "无"
         save_filename = "*.sqlite3"
+        completion_percentage = (
+            100.0 * progress.completed_codes / progress.universe_count if progress.universe_count else 0.0
+        )
         print(
             f"[{progress.phase}] 已下载/总数：{progress.completed_codes:,}/{progress.universe_count:,}，"
-            f"总下载条数：{progress.downloaded_records:,}，未下载：{progress.remaining_codes:,}，"
+            f"完成进度：{completion_percentage:.2f}%，总下载条数：{progress.downloaded_records:,}，"
+            f"未下载：{progress.remaining_codes:,}，"
             f"耗时：{hours}时{minutes:02d}分{seconds:02d}秒{current}，失败原因：{failure}，保存文件：{save_filename}",
             file=self._stream,
             flush=True,
