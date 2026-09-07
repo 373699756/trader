@@ -6,6 +6,21 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求把 `docs/score.md` 合并到 `docs/03_工程实施.md`，明确哪些评分工作已经完成、哪些尚未完成，
+  然后删除重复文档。根因已确认：评分模块化计划项 1–9 已经交付，但旧 `score.md` 仍以完整待办形式保留，
+  与工程实施文档形成双计划源，并混合了已完成架构、受数据阻塞的 V3、尚未授权的 Today/D25 模型和当前
+  不采用的三策略头组合设想。现将系统性方案、实际模块边界、计划项 1–9 交付表、完成检查、部分历史工程
+  试跑证据、后续独立任务及风险匹配门禁统一归入 `03_工程实施.md`；状态明确区分 `completed`、`pending`、
+  `blocked_*`、`not_started` 和 `not_current_route`。同时删除 `docs/score.md` 并更新文档治理契约，今后评分
+  规则仍只由 `01_评分逻辑.md` 定义，系统契约仍只由 `02_工程设计.md` 定义，开发状态只在
+  `03_工程实施.md` 维护。此次合并保留用户对“成本不应改写模型信号分”的已有修改，同时明确成本后净效用
+  仍是独立执行门；不改变运行代码、评分、融合、冻结、API 或 Web。Verification: 11 个直接相关文档契约
+  文件共 38 项测试通过，受影响测试文件 Ruff 无缓存检查、文档引用清理和 `git diff --check` 通过；全量测试、
+  打包、仓库外安装、性能和浏览器门禁不适用，因为本批只调整 Markdown 与其直接文档治理契约。
+  Residual Risks: BaoStock 正式全量 manifest、V3 收益/终端留出、Today/D25 模型和 V3 生产授权仍保持各自
+  未完成或阻塞状态；本批不把部分历史工程试跑解释为收益证明。
+  `Regression-Key: merge-score-plan-into-work-plan`。
+
 - 用户希望在 BaoStock 全量历史仍下载中时，先用已完成部分训练并让模型参与评分，验证数据到评分的完整流程。
   根因已确认：已有分片实际包含可训练数据，但 `research-status` 在最终 manifest 缺失时固定投影
   `not_started/0`，`train-tomorrow` 也只接受最终 manifest，无法安全消费已经原子提交的 checkpoint。本批新增

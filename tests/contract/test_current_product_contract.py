@@ -40,6 +40,7 @@ def test_strategy_contract_requires_native_decisions_and_no_legacy_replay() -> N
 def test_parallel_overview_plan_and_operations_docs_are_retired() -> None:
     design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
     strategy = (ROOT / "docs/01_评分逻辑.md").read_text(encoding="utf-8")
+    work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
     design_compact = " ".join(design.split())
 
     assert "current-only 工程与发布门禁验收已闭合" in design
@@ -63,8 +64,16 @@ def test_parallel_overview_plan_and_operations_docs_are_retired() -> None:
     ):
         assert not (ROOT / "docs" / retired).exists()
     assert not (ROOT / "docs/V2_plan.md").exists()
-    assert (ROOT / "docs/score.md").is_file()
+    assert not (ROOT / "docs/score.md").exists()
     assert not (ROOT / "docs/plan.md").exists()
+    for merged_plan_contract in (
+        "评分模块化计划项 1–9",
+        "全部完成",
+        "后续独立评分任务",
+        "待独立授权",
+        "当前不采用",
+    ):
+        assert merged_plan_contract in work
 
 
 def test_release_guides_expose_only_unified_api_and_desktop_gate() -> None:

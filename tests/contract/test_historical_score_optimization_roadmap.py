@@ -20,7 +20,8 @@ def test_strategy_roadmap_is_ordered_benefit_first_and_strategy_complete() -> No
         "### 3.2 依赖状态",
         "### 3.3 V3 训练与验证（15.1.35–15.1.36）",
         "### 3.4 BaoStock 2000 日归档（15.1.38）",
-        "## 4. 交付与验证",
+        "## 4. 后续独立评分任务",
+        "## 5. 交付与验证",
     )
     positions = tuple(work.index(section) for section in ordered_sections)
     assert positions == tuple(sorted(positions))
