@@ -10,7 +10,7 @@ from trader.application.research.tomorrow_historical_validation import (
     HistoricalRiskValidationOutcome,
     HistoricalRiskValidationReport,
 )
-from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC
+from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC
 from trader.infra.research.tomorrow_historical_risk_artifacts import (
     TomorrowHistoricalRiskArtifactConflictError,
     TomorrowHistoricalRiskArtifactStore,
@@ -20,7 +20,7 @@ from trader.infra.research.tomorrow_historical_risk_artifacts import (
 def _outcome() -> HistoricalRiskValidationOutcome:
     model = HistoricalRiskModelArtifact(
         spec_hash=HISTORICAL_RISK_VALIDATION_SPEC.content_hash,
-        source_spec_hash=SCORE_H0_V1_SPEC.content_hash,
+        source_spec_hash=HISTORICAL_SCREENING_SPEC.content_hash,
         parent_model_id="test-risk-model",
         parent_model_hash="1" * 64,
         feature_ids=(
@@ -83,7 +83,7 @@ def test_historical_risk_artifact_tampering_fails_closed(tmp_path) -> None:  # n
     store.seal(_outcome())
     model_path = (
         tmp_path
-        / "tomorrow-v2-historical-risk"
+        / "tomorrow-historical-risk"
         / HISTORICAL_RISK_VALIDATION_SPEC.research_identity
         / "model-artifact.json"
     )

@@ -1,4 +1,4 @@
-"""Pure, preregistered Score-R4 challenger parameters and transformations."""
+"""Pure, preregistered Challenger replay challenger parameters and transformations."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ from typing import Literal
 
 from trader.domain.research.historical import ResearchBoard
 
-R4_PARAMETER_SET_VERSION = "score_r4_preregistered_parameters"
-R4_ENTRY_PARAMETER_VERSION = "score_r4_entry_parameters"
-R4_HEAT_PARAMETER_VERSION = "score_r4_heat_parameters"
+CHALLENGER_PARAMETER_SET_IDENTITY = "challenger_preregistered_parameters"
+CHALLENGER_ENTRY_PARAMETER_IDENTITY = "challenger_entry_parameters"
+CHALLENGER_HEAT_PARAMETER_IDENTITY = "challenger_heat_parameters"
 
 ChallengerVariantId = Literal[
     "continuous_entry",
@@ -74,7 +74,7 @@ class ChallengerSpecification:
     coverage_shrink: bool = False
     candidate_upper_bound: bool = False
     heat_weak_structure: bool = False
-    parameter_set_version: str = R4_PARAMETER_SET_VERSION
+    parameter_set_version: str = CHALLENGER_PARAMETER_SET_IDENTITY
 
     def __post_init__(self) -> None:
         expected = {
@@ -92,9 +92,9 @@ class ChallengerSpecification:
             self.heat_weak_structure,
         )
         if self.variant_version != version or actual != switches:
-            raise ValueError("Score-R4 challenger version and behavior switches do not match")
-        if self.parameter_set_version != R4_PARAMETER_SET_VERSION:
-            raise ValueError("Score-R4 challenger parameter-set identity is invalid")
+            raise ValueError("Challenger replay challenger version and behavior switches do not match")
+        if self.parameter_set_version != CHALLENGER_PARAMETER_SET_IDENTITY:
+            raise ValueError("Challenger replay challenger parameter-set identity is invalid")
 
 
 _CHALLENGERS = (
@@ -114,7 +114,7 @@ _CHALLENGERS = (
 
 
 @dataclass(frozen=True)
-class R4ParameterManifest:
+class ChallengerParameterManifest:
     parameter_set_version: str
     entry_parameter_version: str
     heat_parameter_version: str
@@ -124,10 +124,10 @@ class R4ParameterManifest:
     weak_structure: WeakStructureThresholds
 
 
-_PARAMETER_MANIFEST = R4ParameterManifest(
-    R4_PARAMETER_SET_VERSION,
-    R4_ENTRY_PARAMETER_VERSION,
-    R4_HEAT_PARAMETER_VERSION,
+_PARAMETER_MANIFEST = ChallengerParameterManifest(
+    CHALLENGER_PARAMETER_SET_IDENTITY,
+    CHALLENGER_ENTRY_PARAMETER_IDENTITY,
+    CHALLENGER_HEAT_PARAMETER_IDENTITY,
     _CHALLENGERS,
     ENTRY_TRANSITIONS,
     HEAT_BANDS,
@@ -141,8 +141,8 @@ def challenger_registry() -> tuple[ChallengerSpecification, ...]:
     return _CHALLENGERS
 
 
-def challenger_parameter_manifest() -> R4ParameterManifest:
-    """Return every frozen threshold and version that identifies an R4 replay."""
+def challenger_parameter_manifest() -> ChallengerParameterManifest:
+    """Return every frozen threshold and version that identifies a challenger replay."""
 
     return _PARAMETER_MANIFEST
 
@@ -188,10 +188,10 @@ class ContinuousEntryAssessment:
     pullback_score: float | None
     breakout_score: float | None
     score: float | None
-    parameter_version: str = R4_ENTRY_PARAMETER_VERSION
+    parameter_version: str = CHALLENGER_ENTRY_PARAMETER_IDENTITY
 
     def __post_init__(self) -> None:
-        if self.parameter_version != R4_ENTRY_PARAMETER_VERSION:
+        if self.parameter_version != CHALLENGER_ENTRY_PARAMETER_IDENTITY:
             raise ValueError("continuous-entry parameter identity is invalid")
         for value in (self.pullback_score, self.breakout_score, self.score):
             if value is not None and not 0.0 <= value <= 100.0:
@@ -289,11 +289,13 @@ class HeatWeakStructureAssessment:
     in_high_heat_band: bool | None
     force_observe_only: bool
     reasons: tuple[str, ...]
-    parameter_version: str = R4_HEAT_PARAMETER_VERSION
+    parameter_version: str = CHALLENGER_HEAT_PARAMETER_IDENTITY
 
     def __post_init__(self) -> None:
         allowed = {"weak_close", "tail_weakening", "intraday_drawdown", "weak_structure_missing"}
-        if self.parameter_version != R4_HEAT_PARAMETER_VERSION or any(reason not in allowed for reason in self.reasons):
+        if self.parameter_version != CHALLENGER_HEAT_PARAMETER_IDENTITY or any(
+            reason not in allowed for reason in self.reasons
+        ):
             raise ValueError("heat/weak-structure assessment identity is invalid")
         if self.force_observe_only != bool(self.reasons):
             raise ValueError("heat/weak-structure observe state must match its reasons")
@@ -310,7 +312,7 @@ def assess_heat_weak_structure(
     if inputs.change_pct is None:
         return HeatWeakStructureAssessment(None, True, ("weak_structure_missing",))
     if inputs.change_pct > hard_cap:
-        raise ValueError("hard heat cap reject identity cannot enter Score-R4")
+        raise ValueError("hard heat cap reject identity cannot enter Challenger replay")
     if inputs.change_pct < lower:
         return HeatWeakStructureAssessment(False, False, ())
     weak_values = (inputs.close_location, inputs.tail_return_30m_pct, inputs.intraday_drawdown_pct)
@@ -354,16 +356,16 @@ def _lower_membership(value: float, full_at: float, zero_at: float) -> float:
 
 
 __all__ = [
-    "R4_ENTRY_PARAMETER_VERSION",
-    "R4_HEAT_PARAMETER_VERSION",
-    "R4_PARAMETER_SET_VERSION",
+    "CHALLENGER_ENTRY_PARAMETER_IDENTITY",
+    "CHALLENGER_HEAT_PARAMETER_IDENTITY",
+    "CHALLENGER_PARAMETER_SET_IDENTITY",
     "ChallengerSpecification",
     "ChallengerVariantId",
     "ContinuousEntryAssessment",
     "ContinuousEntryInputs",
     "HeatWeakStructureAssessment",
     "HeatWeakStructureInputs",
-    "R4ParameterManifest",
+    "ChallengerParameterManifest",
     "assess_continuous_entry",
     "assess_heat_weak_structure",
     "challenger_parameter_manifest",

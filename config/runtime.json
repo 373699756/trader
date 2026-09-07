@@ -1,6 +1,4 @@
 {
-  "schema_version": 10,
-  "config_version": "runtime_tushare_120_daily_audit_2026_08_26",
   "runtime_dir": ".runtime/trader",
   "strategy_config": "strategy.json",
   "long_watchlist": "long_watchlist.json",
@@ -104,7 +102,7 @@
     "single_flight": true,
     "circuit_breaker_failures": 3,
     "circuit_breaker_seconds": 30,
-    "source_contract_versions": {
+    "source_contracts": {
       "eastmoney": "eastmoney_quote_security_master",
       "sina": "sina_quote_hedged",
       "tencent": "tencent_quote",
@@ -118,8 +116,6 @@
       "token_file": ".token_key"
     },
     "cache_policy": {
-      "schema_version": 6,
-      "policy_version": "market_cache",
       "datasets": {
         "full_market_quotes": {
           "refresh_ttl_seconds": null,
@@ -128,7 +124,7 @@
           "action_max_age_multiplier": 3,
           "negative_ttl_seconds": 10,
           "capacity": 6000,
-          "group": "p1_observation",
+          "group": "observation",
           "persisted": false
         },
         "candidate_quotes": {
@@ -138,7 +134,7 @@
           "action_max_age_multiplier": 3,
           "negative_ttl_seconds": 3,
           "capacity": 360,
-          "group": "p1_observation",
+          "group": "observation",
           "persisted": false
         },
         "intraday_minutes": {
@@ -148,7 +144,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 45,
           "capacity": 360,
-          "group": "p1_observation",
+          "group": "observation",
           "persisted": false
         },
         "research_success": {
@@ -158,7 +154,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 60,
           "capacity": 360,
-          "group": "p1_observation",
+          "group": "observation",
           "persisted": true
         },
         "research_failure": {
@@ -168,7 +164,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 60,
           "capacity": 360,
-          "group": "p1_observation",
+          "group": "observation",
           "persisted": false
         },
         "daily_history": {
@@ -178,7 +174,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 60,
           "capacity": 360,
-          "group": "p1_observation",
+          "group": "observation",
           "persisted": false
         },
         "security_master_calendar": {
@@ -188,7 +184,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 300,
           "capacity": 6000,
-          "group": "p1_observation",
+          "group": "observation",
           "persisted": false
         },
         "daily_valuation_financials": {
@@ -198,7 +194,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 300,
           "capacity": 360,
-          "group": "p1_observation",
+          "group": "observation",
           "persisted": false
         },
         "history_summary": {
@@ -208,7 +204,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 60,
           "capacity": 360,
-          "group": "p3_features",
+          "group": "feature_batches",
           "persisted": false
         },
         "board_cross_section": {
@@ -218,7 +214,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 60,
           "capacity": 24,
-          "group": "p3_features",
+          "group": "feature_batches",
           "persisted": false
         },
         "candidate_preselection": {
@@ -228,7 +224,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 60,
           "capacity": 4,
-          "group": "p3_features",
+          "group": "feature_batches",
           "persisted": false
         },
         "competition_group_mapping": {
@@ -238,7 +234,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 60,
           "capacity": 2,
-          "group": "p3_features",
+          "group": "feature_batches",
           "persisted": false
         },
         "raw_deepseek_review": {
@@ -248,7 +244,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 60,
           "capacity": 2000,
-          "group": "p5_review",
+          "group": "review",
           "persisted": false
         },
         "strategy_deepseek_review": {
@@ -258,7 +254,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 60,
           "capacity": 2000,
-          "group": "p5_review",
+          "group": "review",
           "persisted": false
         },
         "canonical_market_snapshot": {
@@ -268,7 +264,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 10,
           "capacity": 3,
-          "group": "p2_canonical",
+          "group": "canonical_snapshots",
           "persisted": false
         },
         "canonical_candidate_snapshot": {
@@ -278,7 +274,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 10,
           "capacity": 6,
-          "group": "p2_canonical",
+          "group": "canonical_snapshots",
           "persisted": false
         },
         "current_quote_index": {
@@ -288,7 +284,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 10,
           "capacity": 3,
-          "group": "p2_canonical",
+          "group": "canonical_snapshots",
           "persisted": false
         },
         "candidate_feature_batch": {
@@ -298,7 +294,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 60,
           "capacity": 24,
-          "group": "p3_features",
+          "group": "feature_batches",
           "persisted": false
         },
         "hard_filter_batch": {
@@ -308,7 +304,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 60,
           "capacity": 24,
-          "group": "p3_features",
+          "group": "feature_batches",
           "persisted": false
         },
         "board_score_batch": {
@@ -318,7 +314,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 60,
           "capacity": 24,
-          "group": "p4_local_scoring",
+          "group": "local_scoring",
           "persisted": false
         },
         "global_local_draft": {
@@ -328,7 +324,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 60,
           "capacity": 4,
-          "group": "p4_local_scoring",
+          "group": "local_scoring",
           "persisted": false
         },
         "deepseek_seen_codes": {
@@ -338,7 +334,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 60,
           "capacity": 6000,
-          "group": "p5_review",
+          "group": "review",
           "persisted": false
         },
         "published_recommendation_view": {
@@ -348,7 +344,7 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 60,
           "capacity": 72,
-          "group": "p6_projection",
+          "group": "projection",
           "persisted": false
         },
         "published_date_index": {
@@ -358,26 +354,25 @@
           "action_max_age_multiplier": null,
           "negative_ttl_seconds": 60,
           "capacity": 3,
-          "group": "p6_projection",
+          "group": "projection",
           "persisted": false
         }
       },
       "groups": {
-        "p1_observation": 134217728,
-        "p2_canonical": 58720256,
-        "p3_features": 25165824,
-        "p4_local_scoring": 16777216,
-        "p5_review": 12582912,
-        "p6_projection": 12582912
+        "observation": 134217728,
+        "canonical_snapshots": 58720256,
+        "feature_batches": 25165824,
+        "local_scoring": 16777216,
+        "review": 12582912,
+        "projection": 12582912
       },
       "total_bytes": 260046848,
       "runtime_reserve_bytes": 8388608,
       "pool_total_bytes": 268435456,
-      "estimator_version": "canonical_json_utf8"
+      "estimator": "canonical_json_utf8"
     }
   },
   "performance_budgets": {
-    "schema_version": 2,
     "workload": {
       "market_rows": 5500,
       "candidate_rows": 360

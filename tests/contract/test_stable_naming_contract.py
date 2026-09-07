@@ -18,6 +18,7 @@ TEXT_SUFFIXES = {".css", ".html", ".js", ".json", ".md", ".ps1", ".py", ".sh"}
 # version controls; no other BaoStock ``*_vN`` value is permitted.
 LEGACY_BAOSTOCK_PERSISTENCE_SCHEMAS = frozenset(
     {
+        "score_baostock_daily_core_v2",
         "baostock_exchange_calendar_v2",
         "baostock_daily_fact_v1",
         "baostock_industry_interval_v1",
@@ -33,9 +34,7 @@ LEGACY_BAOSTOCK_PERSISTENCE_SCHEMAS = frozenset(
 # their model/training identities. External supplier names and URLs are not
 # project version controls. Everything else must use a stable semantic name.
 ALLOWED_SCORING_PATH = re.compile(
-    r"(?:infra/scoring/profiles/v[123](?:/|$)|tests/unit/infra/scoring/test_v[123]_profile\.py$|"
-    r"tomorrow[_-]v[123](?:[_-](?:model|training|input|dataset))?|tomorrow_v1_model\.json|"
-    r"test_tomorrow_v3_|package_tomorrow_v1_model)"
+    r"(?:infra/scoring/profiles/v[123](?:/|$)|tests/unit/infra/scoring/test_v[123]_[a-z0-9_]+\.py$)"
 )
 PROHIBITED_PATH = re.compile(
     r"(?:^|/)(?:v\d+)(?:/|$)|"
@@ -117,7 +116,7 @@ def test_baostock_legacy_schema_allowlist_is_explicit_and_bounded() -> None:
         PROJECT_ROOT / "src/trader/domain/research/baostock_daily.py",
         PROJECT_ROOT / "src/trader/infra/research/baostock_daily.py",
     )
-    token_pattern = re.compile(r'"(baostock_[a-z0-9_]+_v\d+)"')
+    token_pattern = re.compile(r'"((?:score_)?baostock_[a-z0-9_]+_v\d+)"')
     tokens = {token for path in source_paths for token in token_pattern.findall(path.read_text(encoding="utf-8"))}
     assert tokens <= LEGACY_BAOSTOCK_PERSISTENCE_SCHEMAS
     assert tokens == LEGACY_BAOSTOCK_PERSISTENCE_SCHEMAS

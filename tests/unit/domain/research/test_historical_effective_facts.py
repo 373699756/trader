@@ -28,5 +28,5 @@ def test_baostock_alone_cannot_authorize_historical_effective_facts() -> None:
         "historical_risk_facts_effective_at_unavailable",
     )
     assert report.production_authority is False
-    assert report.v3_training_authority is False
+    assert report.training_authority is False
     assert report.point_in_time_parity is False

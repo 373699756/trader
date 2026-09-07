@@ -182,7 +182,7 @@ def test_long_quotes_bypass_shared_cache_for_each_realtime_refresh() -> None:
         circuit_breaker_failures=3,
         circuit_breaker_seconds=60,
         cache=cache,
-        source_contract_versions=runtime.market_data.source_contract_versions,
+        source_contracts=runtime.market_data.source_contracts,
         config_version=runtime.config_version,
         wall_clock=lambda: NOW,
     )
@@ -215,7 +215,7 @@ def test_final_refresh_bypasses_fresh_cache_but_remains_single_flight() -> None:
         circuit_breaker_failures=3,
         circuit_breaker_seconds=60,
         cache=cache,
-        source_contract_versions=runtime.market_data.source_contract_versions,
+        source_contracts=runtime.market_data.source_contracts,
         config_version=runtime.config_version,
         wall_clock=lambda: final_at,
     )
@@ -342,7 +342,7 @@ def test_auxiliary_cache_action_age_marks_new_features_observe_only() -> None:
         StaticHistoryClient(),
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         cache=cache,
-        source_contract_versions=runtime.market_data.source_contract_versions,
+        source_contracts=runtime.market_data.source_contracts,
         config_version=runtime.config_version,
         wall_clock=lambda: measured_at,
     )
@@ -540,7 +540,7 @@ def test_degraded_candidate_cache_is_observe_only_without_rewriting_source_time(
         circuit_breaker_failures=3,
         circuit_breaker_seconds=60,
         cache=cache,
-        source_contract_versions=runtime.market_data.source_contract_versions,
+        source_contracts=runtime.market_data.source_contracts,
         config_version=runtime.config_version,
         monotonic=monotonic,
         wall_clock=wall_clock,

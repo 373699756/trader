@@ -19,15 +19,15 @@ from trader.infra.scoring.profiles.v3.composition import SingleHeadCombiner
 from trader.infra.scoring.profiles.v3.heads.tomorrow.predictor import V3TomorrowPredictor
 
 
-def build_v3_tomorrow_predictor(artifact: V3TomorrowBundleArtifact) -> V3TomorrowPredictor:
+def build_tomorrow_predictor(artifact: V3TomorrowBundleArtifact) -> V3TomorrowPredictor:
     try:
         return V3TomorrowPredictor(artifact, _evidence(artifact))
     except LightGBMError as exc:
         raise ValueError("Tomorrow V3 LightGBM model is invalid") from exc
 
 
-def build_v3_scoring_profile(artifact: V3TomorrowBundleArtifact) -> LoadedScoringProfile:
-    predictor = build_v3_tomorrow_predictor(artifact)
+def build_scoring_profile(artifact: V3TomorrowBundleArtifact) -> LoadedScoringProfile:
+    predictor = build_tomorrow_predictor(artifact)
     evidence = _evidence(artifact)
     return LoadedScoringProfile(
         identity=ProfileIdentity("v3", predictor.model_id, predictor.model_hash),
@@ -47,4 +47,4 @@ def _evidence(artifact: V3TomorrowBundleArtifact) -> ProfileEvidence:
     return ProfileEvidence("historical_validated", (), "trained_artifact")
 
 
-__all__ = ["build_v3_scoring_profile", "build_v3_tomorrow_predictor"]
+__all__ = ["build_scoring_profile", "build_tomorrow_predictor"]

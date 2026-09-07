@@ -1,4 +1,4 @@
-"""Immutable Polars partitions and reproducible manifests for Score-R2."""
+"""Immutable Polars partitions and reproducible manifests for Historical extraction."""
 
 from __future__ import annotations
 
@@ -16,9 +16,9 @@ from types import MappingProxyType
 
 import polars as pl
 
-from trader.application.research.models import HistoricalExtractedDay, ScoreR2HistoricalExtraction
+from trader.application.research.models import HistoricalExtractedDay, HistoricalExtraction
 
-_SCHEMA_VERSION = "score_r2_partition"
+_SCHEMA_VERSION = "historical_partition"
 _MANIFEST_NAME = "manifest.json"
 
 
@@ -48,13 +48,13 @@ class PolarsHistoricalPartitionStore:
     def __init__(self, root: Path) -> None:
         self._root = root
 
-    def write_extraction(self, extraction: ScoreR2HistoricalExtraction) -> tuple[HistoricalPartitionManifest, ...]:
+    def write_extraction(self, extraction: HistoricalExtraction) -> tuple[HistoricalPartitionManifest, ...]:
         self._root.mkdir(parents=True, exist_ok=True)
         top_manifest_path = self._root / "extraction-manifest.json"
         if top_manifest_path.exists():
             existing = self.verify_extraction()
             if existing.get("extraction_hash") != extraction.content_hash:
-                raise HistoricalPartitionConflictError("Score-R2 top manifest identity conflict")
+                raise HistoricalPartitionConflictError("Historical extraction top manifest identity conflict")
         manifests = tuple(self.write_day(day) for day in extraction.days)
         top_payload: dict[str, object] = {
             "schema_version": _SCHEMA_VERSION,
@@ -82,23 +82,23 @@ class PolarsHistoricalPartitionStore:
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            raise HistoricalPartitionConflictError("Score-R2 top manifest is invalid") from exc
+            raise HistoricalPartitionConflictError("Historical extraction top manifest is invalid") from exc
         if not isinstance(raw, dict) or raw.get("schema_version") != _SCHEMA_VERSION:
-            raise HistoricalPartitionConflictError("Score-R2 top manifest schema mismatch")
+            raise HistoricalPartitionConflictError("Historical extraction top manifest schema mismatch")
         content_hash = raw.get("content_hash")
         identity = {key: value for key, value in raw.items() if key != "content_hash"}
         if not isinstance(content_hash, str) or _payload_hash(identity) != content_hash:
-            raise HistoricalPartitionConflictError("Score-R2 top manifest hash mismatch")
+            raise HistoricalPartitionConflictError("Historical extraction top manifest hash mismatch")
         days = raw.get("days")
         if not isinstance(days, list):
-            raise HistoricalPartitionConflictError("Score-R2 top manifest days are invalid")
+            raise HistoricalPartitionConflictError("Historical extraction top manifest days are invalid")
         for item in days:
             if not isinstance(item, dict):
-                raise HistoricalPartitionConflictError("Score-R2 top manifest day identity is invalid")
+                raise HistoricalPartitionConflictError("Historical extraction top manifest day identity is invalid")
             trade_date = date.fromisoformat(str(item.get("trade_date")))
             manifest = self.verify_day(trade_date)
             if manifest.day_hash != item.get("day_hash") or manifest.content_hash != item.get("manifest_hash"):
-                raise HistoricalPartitionConflictError("Score-R2 top manifest day mismatch")
+                raise HistoricalPartitionConflictError("Historical extraction top manifest day mismatch")
         return {str(key): value for key, value in raw.items()}
 
     def write_day(self, day: HistoricalExtractedDay) -> HistoricalPartitionManifest:
@@ -106,7 +106,7 @@ class PolarsHistoricalPartitionStore:
         if target.exists():
             existing = self.verify_day(day.summary.trade_date)
             if existing.day_hash != day.content_hash:
-                raise HistoricalPartitionConflictError("Score-R2 day partition identity conflict")
+                raise HistoricalPartitionConflictError("Historical extraction day partition identity conflict")
             return existing
         self._root.mkdir(parents=True, exist_ok=True)
         temporary = Path(tempfile.mkdtemp(prefix=f".{target.name}-", dir=self._root))
@@ -121,7 +121,9 @@ class PolarsHistoricalPartitionStore:
                     raise
                 existing = self.verify_day(day.summary.trade_date)
                 if existing.day_hash != day.content_hash:
-                    raise HistoricalPartitionConflictError("Score-R2 day partition identity conflict") from None
+                    raise HistoricalPartitionConflictError(
+                        "Historical extraction day partition identity conflict"
+                    ) from None
                 return existing
             return self.verify_day(day.summary.trade_date)
         finally:
@@ -134,16 +136,16 @@ class PolarsHistoricalPartitionStore:
             raw = json.loads((directory / _MANIFEST_NAME).read_text(encoding="utf-8"))
             manifest = _manifest_from_payload(raw)
         except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise HistoricalPartitionConflictError("Score-R2 partition manifest is invalid") from exc
+            raise HistoricalPartitionConflictError("Historical extraction partition manifest is invalid") from exc
         if (
             manifest.trade_date != trade_date
             or _payload_hash(_manifest_identity_payload(manifest)) != manifest.content_hash
         ):
-            raise HistoricalPartitionConflictError("Score-R2 partition manifest identity mismatch")
+            raise HistoricalPartitionConflictError("Historical extraction partition manifest identity mismatch")
         for item in manifest.files:
             path = directory / item.path
             if not path.is_file() or path.stat().st_size != item.size or _file_hash(path) != item.sha256:
-                raise HistoricalPartitionConflictError("Score-R2 partition file verification failed")
+                raise HistoricalPartitionConflictError("Historical extraction partition file verification failed")
         return manifest
 
     @staticmethod
@@ -217,19 +219,19 @@ def _manifest_identity_payload(manifest: HistoricalPartitionManifest) -> dict[st
 
 def _manifest_from_payload(raw: object) -> HistoricalPartitionManifest:
     if not isinstance(raw, dict) or raw.get("schema_version") != _SCHEMA_VERSION:
-        raise ValueError("Score-R2 partition schema mismatch")
+        raise ValueError("Historical extraction partition schema mismatch")
     files_raw = raw["files"]
     if not isinstance(files_raw, list):
-        raise TypeError("Score-R2 partition files must be a list")
+        raise TypeError("Historical extraction partition files must be a list")
     files = tuple(
         HistoricalPartitionFile(str(item["path"]), int(item["size"]), str(item["sha256"]))
         for item in files_raw
         if isinstance(item, dict)
     )
     if len(files) != len(files_raw) or tuple(item.path for item in files) != tuple(sorted(item.path for item in files)):
-        raise ValueError("Score-R2 partition files are invalid")
+        raise ValueError("Historical extraction partition files are invalid")
     if any(Path(item.path).name != item.path or item.size < 0 or len(item.sha256) != 64 for item in files):
-        raise ValueError("Score-R2 partition file identity is invalid")
+        raise ValueError("Historical extraction partition file identity is invalid")
     return HistoricalPartitionManifest(
         date.fromisoformat(str(raw["trade_date"])),
         str(raw["day_hash"]),
@@ -243,9 +245,9 @@ def _write_immutable_json(path: Path, payload: Mapping[str, object]) -> None:
         try:
             existing = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            raise HistoricalPartitionConflictError("Score-R2 top manifest is invalid") from exc
+            raise HistoricalPartitionConflictError("Historical extraction top manifest is invalid") from exc
         if existing != payload:
-            raise HistoricalPartitionConflictError("Score-R2 top manifest identity conflict")
+            raise HistoricalPartitionConflictError("Historical extraction top manifest identity conflict")
         return
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     _write_json(temporary, payload)
@@ -255,7 +257,7 @@ def _write_immutable_json(path: Path, payload: Mapping[str, object]) -> None:
         except FileExistsError:
             existing = json.loads(path.read_text(encoding="utf-8"))
             if existing != payload:
-                raise HistoricalPartitionConflictError("Score-R2 top manifest identity conflict") from None
+                raise HistoricalPartitionConflictError("Historical extraction top manifest identity conflict") from None
     finally:
         temporary.unlink(missing_ok=True)
 

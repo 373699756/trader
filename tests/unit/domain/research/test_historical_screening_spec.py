@@ -5,13 +5,13 @@ from datetime import date
 
 import pytest
 
-from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC
+from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC
 
 
-def test_score_h0_v1_preregisters_a_retrospective_screen_without_promotion_authority() -> None:
-    spec = SCORE_H0_V1_SPEC
+def test_historical_screening_preregisters_a_retrospective_screen_without_promotion_authority() -> None:
+    spec = HISTORICAL_SCREENING_SPEC
 
-    assert spec.research_identity == "score_h0_v1"
+    assert spec.research_identity == "historical_screening"
     assert spec.registered_on == date(2026, 8, 20)
     assert spec.source_cutoff == date(2026, 8, 19)
     assert spec.download_sessions == 640
@@ -28,6 +28,6 @@ def test_score_h0_v1_preregisters_a_retrospective_screen_without_promotion_autho
 
 def test_score_h0_spec_rejects_overlap_and_future_source_data() -> None:
     with pytest.raises(ValueError, match="training window"):
-        replace(SCORE_H0_V1_SPEC, training_end=date(2026, 2, 1))
+        replace(HISTORICAL_SCREENING_SPEC, training_end=date(2026, 2, 1))
     with pytest.raises(ValueError, match="source cutoff"):
-        replace(SCORE_H0_V1_SPEC, source_cutoff=date(2026, 7, 31))
+        replace(HISTORICAL_SCREENING_SPEC, source_cutoff=date(2026, 7, 31))

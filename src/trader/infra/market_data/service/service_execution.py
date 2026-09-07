@@ -24,7 +24,7 @@ class MarketTaskRunnerOptions(TypedDict):
     worker_pool: BoundedExecutor | None
     source_lanes: SourceLaneRegistry | None
     cache: BoundedCache[object] | None
-    source_contract_versions: Mapping[str, str]
+    source_contracts: Mapping[str, str]
     config_version: str
     schema_version: str
     wall_clock: Callable[[], datetime]
@@ -38,7 +38,7 @@ class MarketTaskRunner:
         self.worker_pool = options["worker_pool"]
         self.source_lanes = options["source_lanes"]
         self.cache = options["cache"]
-        self.source_contract_versions = dict(options["source_contract_versions"])
+        self.source_contracts = dict(options["source_contracts"])
         self.config_version = options["config_version"]
         self.schema_version = options["schema_version"]
         self.wall_clock = options["wall_clock"]
@@ -92,7 +92,7 @@ class MarketTaskRunner:
                 request=request,
                 trade_date=local.date().isoformat(),
                 phase=phase_at(local, is_trading_day=True).value,
-                source_contract_version=self.source_contract_versions.get(source, f"{source}-component"),
+                source_contract_version=self.source_contracts.get(source, f"{source}-component"),
                 config_version=self.config_version,
                 schema_version=self.schema_version,
             )

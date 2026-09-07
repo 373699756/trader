@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.infra.market_data.normalization.features import FEATURE_SCHEMA_NAMES, FEATURE_SCHEMA_VERSION
+from trader.infra.market_data.normalization.features import FEATURE_SCHEMA_ID, FEATURE_SCHEMA_NAMES
 from trader.infra.settings.models import FactorDefinition, StrategySettings
 from trader.infra.settings.parser import (
     ConfigurationError,
@@ -28,18 +28,19 @@ from trader.infra.settings.parser import (
 from trader.infra.settings.parser import (
     number as _number,
 )
+from trader.infra.settings.parser import require_exact_keys as _require_exact_keys
 from trader.infra.settings.parser import (
     text as _text,
 )
 
 
 def _validate_feature_schema_contract(settings: StrategySettings) -> None:
-    version = settings.factor_contract.get("feature_schema_version")
-    if not isinstance(version, str):
-        raise ConfigurationError("factor_contract.feature_schema_version is required")
-    if version != FEATURE_SCHEMA_VERSION:
+    schema_id = settings.factor_contract.get("feature_schema")
+    if not isinstance(schema_id, str):
+        raise ConfigurationError("factor_contract.feature_schema is required")
+    if schema_id != FEATURE_SCHEMA_ID:
         raise ConfigurationError(
-            f"factor_contract.feature_schema_version mismatch: expected={FEATURE_SCHEMA_VERSION}, got={version}"
+            f"factor_contract.feature_schema mismatch: expected={FEATURE_SCHEMA_ID}, got={schema_id}"
         )
     configured_names = settings.factor_contract.get("feature_names")
     if configured_names is not None:
@@ -322,6 +323,26 @@ def _validate_tail_factor_definition(
 def _parse_factor_definition(factor_id: str, raw: object) -> FactorDefinition:
     if not isinstance(raw, dict):
         raise ConfigurationError(f"factor_registry.{factor_id} must be an object")
+    _require_exact_keys(
+        raw,
+        {
+            "factor_id",
+            "strategies",
+            "raw_inputs",
+            "formula",
+            "unit",
+            "direction",
+            "observation_time",
+            "adjustment",
+            "lookback_window",
+            "minimum_samples",
+            "winsorization",
+            "normalization",
+            "missing_policy",
+            "output_range",
+        },
+        f"factor_registry.{factor_id}",
+    )
     if _text(raw, "factor_id") != factor_id:
         raise ConfigurationError(f"factor_registry.{factor_id}.factor_id must match its key")
     strategies = raw.get("strategies")
@@ -369,13 +390,11 @@ def _parse_factor_definition(factor_id: str, raw: object) -> FactorDefinition:
         normalization=_text(raw, "normalization"),
         missing_policy=_text(raw, "missing_policy"),
         output_range=(float(output_range[0]), float(output_range[1])),
-        version=_text(raw, "version"),
     )
 
 
-def _strategy_contract_version(raw: Mapping[str, object]) -> str:
+def _strategy_contract_identity(raw: Mapping[str, object]) -> str:
     canonical = dict(raw)
-    canonical.pop("strategy_version", None)
     try:
         payload = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     except ValueError as exc:

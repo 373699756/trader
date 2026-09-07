@@ -153,8 +153,6 @@ _FIXED_BOARD_LOCAL_WEIGHTS: dict[str, dict[str, dict[str, float]]] = {
 
 
 def _validate_strategy_settings(settings: StrategySettings) -> None:
-    if settings.deepseek_risk_mapping_version != "deepseek_local_risk_rules_2026_08":
-        raise ConfigurationError("unsupported DeepSeek risk mapping version")
     _validate_filter_fusion_selection(settings)
     _validate_signal_policies(settings)
     _validate_strategy_weights(settings)
@@ -209,8 +207,8 @@ def _validate_selection(settings: StrategySettings) -> None:
         raise ConfigurationError("default_top_k cannot exceed maximum_top_k")
     if settings.selection.default_top_k != 6 or settings.selection.maximum_top_k != 12:
         raise ConfigurationError("active selection limits are fixed at 6 formal and 6 observation")
-    if settings.board_policy_version != "board_policy_score_first_2026_07":
-        raise ConfigurationError("unsupported board policy version")
+    if settings.board_policy_version != "score_first":
+        raise ConfigurationError("unsupported board policy identity")
     if settings.selection.maximum_board_fraction != 0.6:
         raise ConfigurationError("maximum board fraction is fixed at 0.6")
     if settings.selection.maximum_per_industry != 2:
@@ -500,7 +498,6 @@ def _validate_short_risk_factors(factors: Mapping[str, FactorDefinition]) -> Non
             20,
             20,
             "mixed_anchor_unadjusted_history_forward",
-            "2",
         ),
         "short_term_overheat": (
             ("return_5d", "return_10d", "ma20_deviation_pct"),
@@ -508,7 +505,6 @@ def _validate_short_risk_factors(factors: Mapping[str, FactorDefinition]) -> Non
             20,
             6,
             "forward",
-            "1",
         ),
         "intraday_reversal": (
             ("unadjusted_intraday_high", "unadjusted_price", "close_location", "completed_trading_minutes"),
@@ -516,7 +512,6 @@ def _validate_short_risk_factors(factors: Mapping[str, FactorDefinition]) -> Non
             0,
             30,
             "none",
-            "1",
         ),
         "liquidity_contraction": (
             ("volume_ratio", "intraday_amount", "amount_median_20d"),
@@ -524,7 +519,6 @@ def _validate_short_risk_factors(factors: Mapping[str, FactorDefinition]) -> Non
             20,
             20,
             "none",
-            "1",
         ),
         "trend_breakdown": (
             ("ma20_deviation_pct", "ma_slope", "return_5d"),
@@ -532,7 +526,6 @@ def _validate_short_risk_factors(factors: Mapping[str, FactorDefinition]) -> Non
             20,
             20,
             "forward",
-            "1",
         ),
     }
     for name, contract in expected.items():
@@ -545,7 +538,6 @@ def _validate_short_risk_factors(factors: Mapping[str, FactorDefinition]) -> Non
             factor.lookback_window,
             factor.minimum_samples,
             factor.adjustment,
-            factor.version,
         )
         if actual != contract:
             raise ConfigurationError(f"risk factor {name} does not match the current fixed formula")

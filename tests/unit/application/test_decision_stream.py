@@ -72,7 +72,7 @@ def test_scored_decision_event_serializes_complete_replace_patch_without_snapsho
     assert "filtered_count" not in payload
     assert payload["input_versions"] == {
         "market": "market:1",
-        "score_model": "daily_reconstructible_ensemble_v1:model-hash",
+        "score_model": "daily_reconstructible_ensemble:model-hash",
     }
     assert payload["upserts"] == [
         {
@@ -201,7 +201,7 @@ def _decision(strategy: Strategy, sequence: int) -> ScoredDecision:
         None,
         (
             ("market", f"market:{sequence}"),
-            ("score_model", "daily_reconstructible_ensemble_v1:model-hash"),
+            ("score_model", "daily_reconstructible_ensemble:model-hash"),
         ),
         "config:1",
         "strategy:1",

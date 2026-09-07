@@ -85,8 +85,8 @@ def _canonical(value: object) -> object:
     return value.isoformat() if isinstance(value, date) else value
 
 
-SCORE_H0_V1_SPEC = HistoricalScreeningSpec(
-    research_identity="score_h0_v1",
+HISTORICAL_SCREENING_SPEC = HistoricalScreeningSpec(
+    research_identity="historical_screening",
     registered_on=date(2026, 8, 20),
     source_cutoff=date(2026, 8, 19),
     download_sessions=640,
@@ -100,4 +100,4 @@ SCORE_H0_V1_SPEC = HistoricalScreeningSpec(
 )
 
 
-__all__ = ["HistoricalPriceBar", "HistoricalScreeningSpec", "SCORE_H0_V1_SPEC"]
+__all__ = ["HistoricalPriceBar", "HistoricalScreeningSpec", "HISTORICAL_SCREENING_SPEC"]

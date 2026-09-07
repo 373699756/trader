@@ -1,4 +1,4 @@
-"""Immutable Score-R4 challenger replay manifests and same-stock pair rows."""
+"""Immutable Challenger replay challenger replay manifests and same-stock pair rows."""
 
 from __future__ import annotations
 
@@ -12,12 +12,12 @@ from typing import Literal
 from trader.application.research.replay_models import canonical_hash
 from trader.domain.research.challengers import ChallengerVariantId
 from trader.domain.research.historical import CostSettlementBasis, ResearchBoard
-from trader.domain.research.specification import SCORE_P0_V1_SPEC, get_score_research_spec
+from trader.domain.research.specification import HISTORICAL_RESEARCH_SPEC, get_score_research_spec
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 HybridSource = Literal["control_copy", "existing_facts"]
 SelectionStatus = Literal["selected", "no_decision"]
-R4ReplayStatus = Literal["replayed", "exploratory"]
+ChallengerReplayStatus = Literal["replayed", "exploratory"]
 
 
 @dataclass(frozen=True)
@@ -63,11 +63,11 @@ class ChallengerReplaySelection:
         _code(self.code)
         for rank in (self.production_rank, self.local_rank, self.hybrid_rank):
             if rank is not None and not 1 <= rank <= 6:
-                raise ValueError("Score-R4 ranks must identify Top6 items")
+                raise ValueError("Challenger replay ranks must identify Top6 items")
         _score(self.local_score)
         _score(self.hybrid_score)
         if self.hybrid_source == "control_copy" and self.hybrid_score != self.local_score:
-            raise ValueError("Score-R4 hybrid control copy must preserve the local score")
+            raise ValueError("Challenger replay hybrid control copy must preserve the local score")
 
 
 @dataclass(frozen=True)
@@ -89,22 +89,22 @@ class ChallengerSameStockPair:
     def __post_init__(self) -> None:
         _code(self.code)
         if self.board != self.settlement.board or self.code != self.settlement.code:
-            raise ValueError("Score-R4 pair must use the matching R2 settlement basis")
+            raise ValueError("Challenger replay pair must use the matching historical extraction settlement basis")
         for rank, weight in (
             (self.production_rank, self.production_weight),
             (self.local_rank, self.local_weight),
             (self.hybrid_rank, self.hybrid_weight),
         ):
             if rank is not None and not 1 <= rank <= 6:
-                raise ValueError("Score-R4 pair ranks must identify Top6 items")
+                raise ValueError("Challenger replay pair ranks must identify Top6 items")
             if not math.isfinite(weight) or not 0.0 <= weight <= 1.0:
-                raise ValueError("Score-R4 pair weights must be finite and in [0, 1]")
+                raise ValueError("Challenger replay pair weights must be finite and in [0, 1]")
             if (rank is None) != (weight == 0.0):
-                raise ValueError("Score-R4 unselected pair sides must have zero weight")
+                raise ValueError("Challenger replay unselected pair sides must have zero weight")
         _score(self.local_score)
         _score(self.hybrid_score)
         if self.hybrid_source == "control_copy" and self.hybrid_score != self.local_score:
-            raise ValueError("Score-R4 pair control copy must preserve the local score")
+            raise ValueError("Challenger replay pair control copy must preserve the local score")
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
 
@@ -120,14 +120,14 @@ class ChallengerDayReplay:
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
-        _hash(self.day_hash, "Score-R4 day")
-        _hash(self.input_hash, "Score-R4 input")
+        _hash(self.day_hash, "Challenger replay day")
+        _hash(self.input_hash, "Challenger replay input")
         overrides = tuple(sorted(self.overrides, key=lambda item: item.code))
         pairs = tuple(sorted(self.pairs, key=lambda item: item.code))
         if tuple(item.code for item in overrides) != tuple(item.code for item in pairs):
-            raise ValueError("Score-R4 overrides and pair rows must cover the same stocks")
+            raise ValueError("Challenger replay overrides and pair rows must cover the same stocks")
         if any(item.settlement.decision_date != self.trade_date for item in pairs):
-            raise ValueError("Score-R4 pair settlement dates must match the replay day")
+            raise ValueError("Challenger replay pair settlement dates must match the replay day")
         _validate_status(self.local_status, tuple(item.local_rank for item in pairs), "local")
         _validate_status(self.hybrid_status, tuple(item.hybrid_rank for item in pairs), "hybrid")
         _validate_weight_sum(tuple(item.production_weight for item in pairs), "production")
@@ -147,7 +147,7 @@ class ChallengerVariantReplay:
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
-        _hash(self.parameter_manifest_hash, "Score-R4 parameter manifest")
+        _hash(self.parameter_manifest_hash, "Challenger replay parameter manifest")
         expected_version = {
             "continuous_entry": "continuous_entry",
             "coverage_shrink": "coverage_shrink_baseline",
@@ -156,47 +156,47 @@ class ChallengerVariantReplay:
             "combined": "combined",
         }[self.variant_id]
         if self.variant_version != expected_version:
-            raise ValueError("Score-R4 variant identity and version do not match")
+            raise ValueError("Challenger replay variant identity and version do not match")
         days = tuple(sorted(self.days, key=lambda item: item.trade_date))
         if len(days) > 40 or len({item.trade_date for item in days}) != len(days):
-            raise ValueError("Score-R4 variant accepts at most 40 unique historical days")
+            raise ValueError("Challenger replay variant accepts at most 40 unique historical days")
         object.__setattr__(self, "days", days)
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
 
 @dataclass(frozen=True)
-class ScoreR4ChallengerReport:
-    status: R4ReplayStatus
+class ChallengerReport:
+    status: ChallengerReplayStatus
     extraction_hash: str
     baseline_report_hash: str
     parameter_manifest_hash: str
     variants: tuple[ChallengerVariantReplay, ...]
     research_identity: str = dataclasses.field(
-        default=SCORE_P0_V1_SPEC.research_identity,
+        default=HISTORICAL_RESEARCH_SPEC.research_identity,
         metadata={"exclude_from_v1_hash": True},
     )
     research_spec_hash: str = dataclasses.field(
-        default=SCORE_P0_V1_SPEC.content_hash,
+        default=HISTORICAL_RESEARCH_SPEC.content_hash,
         metadata={"exclude_from_v1_hash": True},
     )
-    schema_version: str = "score_r4_challenger_replay_baseline"
+    schema_version: str = "challenger_replay_baseline"
     deepseek_http_request_delta: Literal[0] = 0
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
-        _hash(self.extraction_hash, "Score-R4 extraction")
-        _hash(self.baseline_report_hash, "Score-R4 baseline")
-        _hash(self.parameter_manifest_hash, "Score-R4 parameter manifest")
+        _hash(self.extraction_hash, "Challenger replay extraction")
+        _hash(self.baseline_report_hash, "Challenger replay baseline")
+        _hash(self.parameter_manifest_hash, "Challenger replay parameter manifest")
         spec = get_score_research_spec(self.research_identity)
         if self.research_spec_hash != spec.content_hash:
-            raise ValueError("Score-R4 report research spec hash is invalid")
+            raise ValueError("Challenger replay report research spec hash is invalid")
         expected_schema = (
-            "score_r4_challenger_replay_candidate"
-            if self.research_identity == "score_p0_v2"
-            else "score_r4_challenger_replay_baseline"
+            "challenger_replay_candidate"
+            if self.research_identity == "preregistered_research"
+            else "challenger_replay_baseline"
         )
         if self.schema_version != expected_schema or self.deepseek_http_request_delta != 0:
-            raise ValueError("Score-R4 report identity or DeepSeek isolation is invalid")
+            raise ValueError("Challenger replay report identity or DeepSeek isolation is invalid")
         expected_ids = (
             "continuous_entry",
             "coverage_shrink",
@@ -205,36 +205,36 @@ class ScoreR4ChallengerReport:
             "combined",
         )
         if tuple(item.variant_id for item in self.variants) != expected_ids:
-            raise ValueError("Score-R4 report must contain the fixed five-variant family")
+            raise ValueError("Challenger replay report must contain the fixed five-variant family")
         if any(item.parameter_manifest_hash != self.parameter_manifest_hash for item in self.variants):
-            raise ValueError("Score-R4 variants must bind the same frozen parameter manifest")
+            raise ValueError("Challenger replay variants must bind the same frozen parameter manifest")
         day_counts = {len(item.days) for item in self.variants}
         if len(day_counts) != 1:
-            raise ValueError("Score-R4 variants must replay the same historical days")
+            raise ValueError("Challenger replay variants must replay the same historical days")
         day_identities = {
             tuple((day.trade_date, day.day_hash, tuple(pair.code for pair in day.pairs)) for day in item.days)
             for item in self.variants
         }
         if len(day_identities) != 1:
-            raise ValueError("Score-R4 variants must bind identical day and same-stock identities")
+            raise ValueError("Challenger replay variants must bind identical day and same-stock identities")
         if any(day.trade_date not in spec.allowed_historical_dates for item in self.variants for day in item.days):
-            raise ValueError("Score-R4 report contains dates outside its research spec")
+            raise ValueError("Challenger replay report contains dates outside its research spec")
         expected_status = "replayed" if day_counts == {40} else "exploratory"
         if self.status != expected_status:
-            raise ValueError("Score-R4 status must match its historical-day evidence")
+            raise ValueError("Challenger replay status must match its historical-day evidence")
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
 
 def _validate_status(status: SelectionStatus, ranks: tuple[int | None, ...], label: str) -> None:
     expected = "selected" if any(rank is not None for rank in ranks) else "no_decision"
     if status != expected:
-        raise ValueError(f"Score-R4 {label} status must match its selection")
+        raise ValueError(f"Challenger replay {label} status must match its selection")
 
 
 def _validate_weight_sum(weights: tuple[float, ...], label: str) -> None:
     total = math.fsum(weights)
     if total != 0.0 and not math.isclose(total, 1.0, rel_tol=0.0, abs_tol=1e-12):
-        raise ValueError(f"Score-R4 {label} selected weights must sum to one")
+        raise ValueError(f"Challenger replay {label} selected weights must sum to one")
 
 
 def _code(code: str) -> None:
@@ -244,7 +244,7 @@ def _code(code: str) -> None:
 
 def _score(value: float) -> None:
     if not math.isfinite(value) or not 0.0 <= value <= 100.0:
-        raise ValueError("Score-R4 scores must be finite and in [0, 100]")
+        raise ValueError("Challenger replay scores must be finite and in [0, 100]")
 
 
 def _optional_score(value: float | None) -> None:
@@ -264,6 +264,6 @@ __all__ = [
     "ChallengerSameStockPair",
     "ChallengerVariantReplay",
     "HybridSource",
-    "R4ReplayStatus",
-    "ScoreR4ChallengerReport",
+    "ChallengerReplayStatus",
+    "ChallengerReport",
 ]

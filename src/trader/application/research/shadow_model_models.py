@@ -12,7 +12,7 @@ from typing import Literal
 
 from trader.application.research.shadow_model_ports import ShadowModelFamily
 from trader.application.research.tomorrow_feature_models import (
-    TOMORROW_FEATURE_SCHEMA_VERSION,
+    TOMORROW_FEATURE_SCHEMA_ID,
     TomorrowPointInTimeFeatureBatch,
 )
 from trader.domain.research.historical import SUPPORTED_RESEARCH_BOARDS, CostSettlementBasis, ResearchBoard
@@ -155,7 +155,7 @@ class ShadowModelReport:
     folds: tuple[ShadowFoldRecord, ...]
     predictions: tuple[ShadowPrediction, ...]
     spec_hash: str = field(default_factory=lambda: shadow_spec_hash())
-    feature_version: str = TOMORROW_FEATURE_SCHEMA_VERSION
+    feature_version: str = TOMORROW_FEATURE_SCHEMA_ID
     random_seed: int = SHADOW_RANDOM_SEED
     cost_bps: int = SHADOW_COST_BPS
     status: Literal["exploratory"] = "exploratory"
@@ -167,7 +167,7 @@ class ShadowModelReport:
         if self.training_window_start > self.training_window_end or self.spec_hash != shadow_spec_hash():
             raise ValueError("shadow report training identity is invalid")
         if (
-            self.feature_version != TOMORROW_FEATURE_SCHEMA_VERSION
+            self.feature_version != TOMORROW_FEATURE_SCHEMA_ID
             or self.random_seed != SHADOW_RANDOM_SEED
             or self.cost_bps != SHADOW_COST_BPS
             or self.status != "exploratory"
@@ -210,7 +210,7 @@ def shadow_spec_hash() -> str:
     return _canonical_hash(
         {
             "implementation_version": SHADOW_IMPLEMENTATION_VERSION,
-            "feature_version": TOMORROW_FEATURE_SCHEMA_VERSION,
+            "feature_version": TOMORROW_FEATURE_SCHEMA_ID,
             "random_seed": SHADOW_RANDOM_SEED,
             "cost_bps": SHADOW_COST_BPS,
             "window_modes": ("expanding", "rolling_252"),

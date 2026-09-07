@@ -89,20 +89,16 @@ class CacheGroupPolicy:
 
 @dataclass(frozen=True)
 class CachePolicy:
-    schema_version: int
-    policy_version: str
     datasets: Mapping[str, CacheDatasetPolicy]
     groups: Mapping[str, CacheGroupPolicy]
     total_bytes: int
     runtime_reserve_bytes: int
     pool_total_bytes: int
-    estimator_version: str
+    estimator: str
 
     def __post_init__(self) -> None:
-        if self.schema_version != 6:
-            raise ValueError("cache schema version must be 6")
-        if not self.policy_version or not self.estimator_version:
-            raise ValueError("cache policy and estimator versions must not be empty")
+        if self.estimator != "canonical_json_utf8":
+            raise ValueError("cache estimator must be canonical_json_utf8")
         dataset_copy = dict(self.datasets)
         group_copy = dict(self.groups)
         if not dataset_copy or not group_copy:

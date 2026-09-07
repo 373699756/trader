@@ -1,4 +1,4 @@
-"""Score-R3 historical production-local baseline replay and report aggregation."""
+"""Historical replay historical production-local baseline replay and report aggregation."""
 
 from __future__ import annotations
 
@@ -9,14 +9,14 @@ from collections.abc import Callable
 from trader.application.research.models import (
     HistoricalEvaluatedCandidate,
     HistoricalExtractedDay,
-    ScoreR2HistoricalExtraction,
+    HistoricalExtraction,
 )
 from trader.application.research.ports import HistoricalBaselineReplayEvaluator
 from trader.application.research.replay_models import (
     BaselineAggregateMetrics,
     BaselineDayMetrics,
     BaselineReplaySelection,
-    ScoreR3BaselineReport,
+    HistoricalBaselineReport,
 )
 from trader.domain.research.baseline import mean_rank_ic, population_spearman, quantile_bucket, stock_net_contribution
 from trader.domain.research.historical import CostSettlementBasis
@@ -26,16 +26,16 @@ _MAXIMUM_PER_BOARD = 4
 _MAXIMUM_PER_INDUSTRY = 2
 
 
-class ScoreR3BaselineReplayer:
+class HistoricalBaselineReplayer:
     """Replay the production baseline through an injected production pure-function adapter."""
 
     def __init__(self, evaluator: HistoricalBaselineReplayEvaluator) -> None:
         self._evaluator = evaluator
 
-    def replay(self, extraction: ScoreR2HistoricalExtraction) -> ScoreR3BaselineReport:
+    def replay(self, extraction: HistoricalExtraction) -> HistoricalBaselineReport:
         days = tuple(self._replay_day(day) for day in extraction.days)
         aggregate = _aggregate(days)
-        return ScoreR3BaselineReport(
+        return HistoricalBaselineReport(
             "replayed" if extraction.status == "extracted" and len(days) == 40 else "exploratory",
             extraction.content_hash,
             extraction.status,
@@ -44,9 +44,9 @@ class ScoreR3BaselineReplayer:
             extraction.research_identity,
             extraction.research_spec_hash,
             schema_version=(
-                "score_r3_candidate_report"
-                if extraction.research_identity == "score_p0_v2"
-                else "score_r3_baseline_report"
+                "historical_candidate_report"
+                if extraction.research_identity == "preregistered_research"
+                else "historical_baseline_report"
             ),
         )
 
@@ -253,4 +253,4 @@ def _portfolio_return(
     )
 
 
-__all__ = ["ScoreR3BaselineReplayer"]
+__all__ = ["HistoricalBaselineReplayer"]

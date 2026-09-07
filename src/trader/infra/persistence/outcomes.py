@@ -214,7 +214,7 @@ class SQLiteOutcomeEvidenceRepository:
 def _outcome_bytes(outcome: RecommendationOutcome) -> bytes:
     return _canonical_bytes(
         {
-            "schema_version": outcome.version,
+            "schema_version": outcome.schema_identity,
             "snapshot_id": outcome.snapshot_id,
             "strategy": outcome.strategy.value,
             "recommend_date": outcome.recommend_date,
@@ -239,7 +239,7 @@ def _outcome_bytes(outcome: RecommendationOutcome) -> bytes:
 def _benchmark_bytes(benchmark: BenchmarkReturn) -> bytes:
     return _canonical_bytes(
         {
-            "schema_version": "v2_benchmark_return_v1",
+            "schema_version": "benchmark_return",
             "trade_date": benchmark.trade_date,
             "return_pct": benchmark.return_pct,
         }

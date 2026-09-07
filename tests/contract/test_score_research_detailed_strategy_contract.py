@@ -45,7 +45,7 @@ def test_historical_risk_probability_gate_is_fixed_before_production_use() -> No
     strategy = " ".join(STRATEGY.read_text(encoding="utf-8").split())
 
     for token in (
-        "tomorrow_v2_historical_risk_probability_v1",
+        "tomorrow_historical_risk_probability",
         "MAE / ATR20 <= -1.5",
         "60 日训练、20 日校准、40 日独立检验",
         "Brier 分数严格优于",

@@ -48,7 +48,7 @@ class MarketDataSettings:
     single_flight: bool
     circuit_breaker_failures: int
     circuit_breaker_seconds: int
-    source_contract_versions: Mapping[str, str]
+    source_contracts: Mapping[str, str]
     tushare: TushareSettings
     cache_policy: CachePolicy
 
@@ -83,7 +83,6 @@ class PerformanceMemorySettings:
 
 @dataclass(frozen=True)
 class PerformanceBudgetSettings:
-    schema_version: int
     workload: PerformanceWorkloadSettings
     rounds: PerformanceRoundSettings
     latency_p95_ms: Mapping[str, float]
@@ -133,7 +132,6 @@ class ApiSettings:
 
 @dataclass(frozen=True)
 class RuntimeSettings:
-    schema_version: int
     config_version: str
     config_path: Path
     project_root: Path
@@ -218,15 +216,12 @@ class FactorDefinition:
     normalization: str
     missing_policy: str
     output_range: tuple[float, float]
-    version: str
 
 
 @dataclass(frozen=True)
 class StrategySettings:
-    schema_version: int
     strategy_version: str
     tomorrow_scoring_profile: ScoringProfileId
-    deepseek_risk_mapping_version: str
     fusion: FusionSettings
     selection: SelectionSettings
     candidate_weights: Mapping[str, float]
@@ -270,7 +265,6 @@ class LongWatchGroup:
 
 @dataclass(frozen=True)
 class LongWatchlist:
-    schema_version: int
     watchlist_version: str
     items: tuple[LongWatchItem, ...]
     groups: tuple[LongWatchGroup, ...] = ()

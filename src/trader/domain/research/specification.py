@@ -170,8 +170,8 @@ def _canonical(value: object) -> object:
     return value
 
 
-SCORE_P0_V1_SPEC = ScoreResearchSpec(
-    research_identity="score_p0_v1",
+HISTORICAL_RESEARCH_SPEC = ScoreResearchSpec(
+    research_identity="historical_research_baseline",
     preregistered_on=date(2026, 8, 11),
     historical_dates=_dates(
         "2026-06-15",
@@ -242,8 +242,8 @@ SCORE_P0_V1_SPEC = ScoreResearchSpec(
     historical_window_mode="retrospective",
 )
 
-SCORE_P0_V2_SPEC = ScoreResearchSpec(
-    research_identity="score_p0_v2",
+PREREGISTERED_RESEARCH_SPEC = ScoreResearchSpec(
+    research_identity="preregistered_research",
     preregistered_on=date(2026, 8, 20),
     historical_dates=_dates(
         "2026-08-21",
@@ -313,10 +313,10 @@ SCORE_P0_V2_SPEC = ScoreResearchSpec(
     bootstrap_master_seed=20260820,
 )
 
-ACTIVE_SCORE_RESEARCH_SPEC = SCORE_P0_V2_SPEC
+ACTIVE_SCORE_RESEARCH_SPEC = PREREGISTERED_RESEARCH_SPEC
 _SPEC_BY_IDENTITY = {
-    SCORE_P0_V1_SPEC.research_identity: SCORE_P0_V1_SPEC,
-    SCORE_P0_V2_SPEC.research_identity: SCORE_P0_V2_SPEC,
+    HISTORICAL_RESEARCH_SPEC.research_identity: HISTORICAL_RESEARCH_SPEC,
+    PREREGISTERED_RESEARCH_SPEC.research_identity: PREREGISTERED_RESEARCH_SPEC,
 }
 
 
@@ -329,8 +329,8 @@ def get_score_research_spec(research_identity: str) -> ScoreResearchSpec:
 
 __all__ = [
     "ACTIVE_SCORE_RESEARCH_SPEC",
-    "SCORE_P0_V1_SPEC",
-    "SCORE_P0_V2_SPEC",
+    "HISTORICAL_RESEARCH_SPEC",
+    "PREREGISTERED_RESEARCH_SPEC",
     "SCORE_RESEARCH_OBSERVATION_CUTOFF",
     "ScoreResearchCoverage",
     "ScoreResearchSpec",

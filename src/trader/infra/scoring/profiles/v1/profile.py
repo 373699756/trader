@@ -13,8 +13,8 @@ from trader.application.ports.model_scoring import (
 )
 from trader.domain.recommendation.models import Strategy
 from trader.infra.scoring.composition import SingleHeadCombiner
-from trader.infra.scoring.profiles.v1.artifact_codec import V1TomorrowModelArtifact
-from trader.infra.scoring.profiles.v1.heads.tomorrow.predictor import V1TomorrowPredictor
+from trader.infra.scoring.profiles.v1.artifact_codec import TomorrowModelArtifact
+from trader.infra.scoring.profiles.v1.heads.tomorrow.predictor import TomorrowPredictor
 
 _EVIDENCE = ProfileEvidence(
     historical_status="historical_unavailable",
@@ -26,12 +26,12 @@ _EVIDENCE = ProfileEvidence(
 )
 
 
-def build_v1_tomorrow_predictor(artifact: V1TomorrowModelArtifact) -> V1TomorrowPredictor:
-    return V1TomorrowPredictor(artifact, _EVIDENCE)
+def build_tomorrow_predictor(artifact: TomorrowModelArtifact) -> TomorrowPredictor:
+    return TomorrowPredictor(artifact, _EVIDENCE)
 
 
-def build_v1_scoring_profile(artifact: V1TomorrowModelArtifact) -> LoadedScoringProfile:
-    predictor = build_v1_tomorrow_predictor(artifact)
+def build_scoring_profile(artifact: TomorrowModelArtifact) -> LoadedScoringProfile:
+    predictor = build_tomorrow_predictor(artifact)
     return LoadedScoringProfile(
         identity=ProfileIdentity("v1", predictor.model_id, predictor.model_hash),
         heads=(HeadRuntime(Strategy.TOMORROW, cast(HeadPredictorPort, predictor)),),
@@ -40,4 +40,4 @@ def build_v1_scoring_profile(artifact: V1TomorrowModelArtifact) -> LoadedScoring
     )
 
 
-__all__ = ["build_v1_scoring_profile", "build_v1_tomorrow_predictor"]
+__all__ = ["build_scoring_profile", "build_tomorrow_predictor"]

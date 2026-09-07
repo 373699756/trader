@@ -1,4 +1,4 @@
-"""Score-R4 orchestration for five isolated historical challenger replays."""
+"""Challenger replay orchestration for five isolated historical challenger replays."""
 
 from __future__ import annotations
 
@@ -12,17 +12,17 @@ from trader.application.research.challenger_models import (
     ChallengerCandidateOverride,
     ChallengerDayReplay,
     ChallengerReplaySelection,
+    ChallengerReport,
     ChallengerSameStockPair,
     ChallengerVariantReplay,
-    ScoreR4ChallengerReport,
 )
 from trader.application.research.models import (
     HistoricalEvaluatedCandidate,
     HistoricalExtractedDay,
-    ScoreR2HistoricalExtraction,
+    HistoricalExtraction,
 )
 from trader.application.research.ports import HistoricalChallengerReplayEvaluator
-from trader.application.research.replay_models import BaselineDayMetrics, ScoreR3BaselineReport, canonical_hash
+from trader.application.research.replay_models import BaselineDayMetrics, HistoricalBaselineReport, canonical_hash
 from trader.domain.research.challengers import (
     ChallengerSpecification,
     ContinuousEntryInputs,
@@ -38,7 +38,7 @@ _MAXIMUM_PER_BOARD = 4
 _MAXIMUM_PER_INDUSTRY = 2
 
 
-class ScoreR4ChallengerReplayer:
+class ChallengerReplayer:
     """Build immutable overrides and delegate every score/selection replay to production functions."""
 
     def __init__(self, evaluator: HistoricalChallengerReplayEvaluator) -> None:
@@ -46,9 +46,9 @@ class ScoreR4ChallengerReplayer:
 
     def replay(
         self,
-        extraction: ScoreR2HistoricalExtraction,
-        baseline: ScoreR3BaselineReport,
-    ) -> ScoreR4ChallengerReport:
+        extraction: HistoricalExtraction,
+        baseline: HistoricalBaselineReport,
+    ) -> ChallengerReport:
         _validate_parent_reports(extraction, baseline)
         parameter_hash = canonical_hash(challenger_parameter_manifest())
         baseline_by_date = {item.trade_date: item for item in baseline.days}
@@ -56,7 +56,7 @@ class ScoreR4ChallengerReplayer:
             self._replay_variant(specification, extraction.days, baseline_by_date, parameter_hash)
             for specification in challenger_registry()
         )
-        return ScoreR4ChallengerReport(
+        return ChallengerReport(
             "replayed" if extraction.status == "extracted" and len(extraction.days) == 40 else "exploratory",
             extraction.content_hash,
             baseline.report_hash,
@@ -65,9 +65,9 @@ class ScoreR4ChallengerReplayer:
             extraction.research_identity,
             extraction.research_spec_hash,
             schema_version=(
-                "score_r4_challenger_replay_candidate"
-                if extraction.research_identity == "score_p0_v2"
-                else "score_r4_challenger_replay_baseline"
+                "challenger_replay_candidate"
+                if extraction.research_identity == "preregistered_research"
+                else "challenger_replay_baseline"
             ),
         )
 
@@ -199,17 +199,17 @@ def _build_overrides(
 
 
 def _validate_parent_reports(
-    extraction: ScoreR2HistoricalExtraction,
-    baseline: ScoreR3BaselineReport,
+    extraction: HistoricalExtraction,
+    baseline: HistoricalBaselineReport,
 ) -> None:
     if baseline.extraction_hash != extraction.content_hash:
-        raise ValueError("Score-R4 baseline must bind the same R2 extraction")
+        raise ValueError("Challenger replay baseline must bind the same historical extraction extraction")
     baseline_days = tuple((item.trade_date, item.day_hash, item.input_hash) for item in baseline.days)
     extraction_days = tuple(
         (item.summary.trade_date, item.content_hash, item.summary.input_hash) for item in extraction.days
     )
     if baseline_days != extraction_days:
-        raise ValueError("Score-R4 baseline days must match the R2 extraction")
+        raise ValueError("Challenger replay baseline days must match the historical extraction extraction")
 
 
 def _validate_selections(
@@ -220,30 +220,30 @@ def _validate_selections(
 ) -> None:
     expected_codes = tuple(item.code for item in day.evaluated)
     if tuple(item.code for item in selections) != expected_codes:
-        raise ValueError("Score-R4 evaluator must preserve exact active-set code order")
+        raise ValueError("Challenger replay evaluator must preserve exact active-set code order")
     override_by_code = {item.code: item for item in overrides}
     summary_by_code = {item.code: item for item in day.summary.candidates}
     evaluated_by_code = {item.code: item for item in day.evaluated}
     baseline_ranks = {code: rank for rank, code in enumerate(baseline.selected_codes, start=1)}
     if any(item.production_rank != baseline_ranks.get(item.code) for item in selections):
-        raise ValueError("Score-R4 production ranks must equal the frozen Score-R3 baseline")
+        raise ValueError("Challenger replay production ranks must equal the frozen Historical replay baseline")
     for item in selections:
         override = override_by_code[item.code]
         summary = summary_by_code[item.code]
         if (item.local_rank is not None or item.hybrid_rank is not None) and (
             not override.selection_eligible or override.force_observe_only
         ):
-            raise ValueError("Score-R4 challenger selected an ineligible or observe-only candidate")
+            raise ValueError("Challenger replay challenger selected an ineligible or observe-only candidate")
         expected_source = "existing_facts" if summary.recorded_deepseek_score is not None else "control_copy"
         if item.hybrid_source != expected_source:
-            raise ValueError("Score-R4 hybrid may only apply existing facts or an exact local control copy")
+            raise ValueError("Challenger replay hybrid may only apply existing facts or an exact local control copy")
     _validate_ranked_pool(selections, evaluated_by_code, lambda item: item.production_rank, "production")
     _validate_ranked_pool(selections, evaluated_by_code, lambda item: item.local_rank, "local")
     _validate_ranked_pool(selections, evaluated_by_code, lambda item: item.hybrid_rank, "hybrid")
     if all(item.hybrid_source == "control_copy" for item in selections) and any(
         item.hybrid_rank != item.local_rank for item in selections
     ):
-        raise ValueError("Score-R4 all-control hybrid selection must equal local-only")
+        raise ValueError("Challenger replay all-control hybrid selection must equal local-only")
 
 
 def _validate_ranked_pool(
@@ -255,7 +255,7 @@ def _validate_ranked_pool(
     selected = tuple(item for item in selections if rank_getter(item) is not None)
     ranks = sorted(rank for item in selected if (rank := rank_getter(item)) is not None)
     if ranks != list(range(1, len(selected) + 1)) or len(selected) > 6:
-        raise ValueError(f"Score-R4 {label} ranks must be contiguous Top6")
+        raise ValueError(f"Challenger replay {label} ranks must be contiguous Top6")
     if not selected:
         return
     if label == "production":
@@ -278,13 +278,13 @@ def _validate_ranked_pool(
         )
     actual = tuple(item.code for item in sorted(selected, key=lambda item: rank_getter(item) or 0))
     if expected != actual:
-        raise ValueError(f"Score-R4 {label} ranks must use the production stable score order")
+        raise ValueError(f"Challenger replay {label} ranks must use the production stable score order")
     boards = Counter(evaluated_by_code[item.code].board for item in selected)
     industries = Counter(evaluated_by_code[item.code].industry or "unknown" for item in selected)
     if any(count > _MAXIMUM_PER_BOARD for count in boards.values()):
-        raise ValueError(f"Score-R4 {label} exceeds the board concentration limit")
+        raise ValueError(f"Challenger replay {label} exceeds the board concentration limit")
     if any(count > _MAXIMUM_PER_INDUSTRY for count in industries.values()):
-        raise ValueError(f"Score-R4 {label} exceeds the industry concentration limit")
+        raise ValueError(f"Challenger replay {label} exceeds the industry concentration limit")
 
 
 def _weight(rank: int | None, selected_count: int) -> float:
@@ -295,11 +295,11 @@ def _number(value: object) -> float | None:
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("Score-R4 numeric payload fields must be numbers or null")
+        raise ValueError("Challenger replay numeric payload fields must be numbers or null")
     number = float(value)
     if not math.isfinite(number):
-        raise ValueError("Score-R4 numeric payload fields must be finite")
+        raise ValueError("Challenger replay numeric payload fields must be finite")
     return number
 
 
-__all__ = ["ScoreR4ChallengerReplayer"]
+__all__ = ["ChallengerReplayer"]

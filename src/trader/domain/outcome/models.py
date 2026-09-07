@@ -55,7 +55,7 @@ class RecommendationOutcome:
     mae_atr: float | None = None
     severe_drawdown: bool | None = None
     quality_reason: str = ""
-    version: str = "outcome_v1_mae_atr_cost20bp"
+    schema_identity: str = "recommendation_outcome_mae_atr_cost20bp"
 
 
 __all__ = ["BenchmarkReturn", "OutcomeBar", "OutcomeTarget", "RecommendationOutcome"]

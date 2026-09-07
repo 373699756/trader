@@ -111,7 +111,7 @@ def test_expired_unified_intraday_cache_triggers_a_new_physical_load() -> None:
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         intraday_client=intraday,
         cache=cache,
-        source_contract_versions=runtime.market_data.source_contract_versions,
+        source_contracts=runtime.market_data.source_contracts,
         config_version=runtime.config_version,
         intraday_ttl_seconds=45,
         monotonic=monotonic,
@@ -461,7 +461,7 @@ def test_timed_out_intraday_lane_cannot_mutate_caller_restrictions_after_return(
         worker_pool=pool,
         source_lanes=lanes,
         cache=cache,
-        source_contract_versions=runtime.market_data.source_contract_versions,
+        source_contracts=runtime.market_data.source_contracts,
         config_version=runtime.config_version,
         wall_clock=lambda: measured_at,
     )

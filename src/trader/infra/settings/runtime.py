@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import os
 from collections.abc import Mapping
@@ -69,8 +71,6 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
     _require_exact_keys(
         raw,
         {
-            "schema_version",
-            "config_version",
             "runtime_dir",
             "strategy_config",
             "long_watchlist",
@@ -83,10 +83,6 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
         },
         "runtime",
     )
-    schema_version = _integer(raw, "schema_version", minimum=1)
-    if schema_version != 10:
-        raise ConfigurationError("runtime schema_version must be 10")
-
     config_dir = path.parent
     project_root = _infer_project_root(config_dir)
     server_raw = _mapping(raw, "server")
@@ -123,7 +119,7 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
         "single_flight",
         "circuit_breaker_failures",
         "circuit_breaker_seconds",
-        "source_contract_versions",
+        "source_contracts",
         "tushare",
         "cache_policy",
     }
@@ -185,8 +181,7 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
         "cadence_seconds",
     )
     settings = RuntimeSettings(
-        schema_version=schema_version,
-        config_version=_text(raw, "config_version"),
+        config_version=_configuration_identity("runtime", raw),
         config_path=path,
         project_root=project_root,
         runtime_dir=runtime_dir,
@@ -232,7 +227,7 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
             single_flight=_boolean(market_raw, "single_flight"),
             circuit_breaker_failures=_integer(market_raw, "circuit_breaker_failures", minimum=1),
             circuit_breaker_seconds=_integer(market_raw, "circuit_breaker_seconds", minimum=1),
-            source_contract_versions=_text_mapping(market_raw, "source_contract_versions"),
+            source_contracts=_text_mapping(market_raw, "source_contracts"),
             tushare=_parse_tushare_settings(_mapping(market_raw, "tushare"), project_root),
             cache_policy=_parse_cache_policy(_mapping(market_raw, "cache_policy")),
         ),
@@ -356,8 +351,16 @@ def _text_mapping(raw: Mapping[str, object], key: str) -> dict[str, str]:
     result = {str(name): _text(values, str(name)) for name in values}
     expected = {"eastmoney", "sina", "tencent", "tushare", "akshare"}
     if set(result) != expected:
-        raise ConfigurationError("market_data.source_contract_versions must define all five sources")
+        raise ConfigurationError("market_data.source_contracts must define all five sources")
     return result
+
+
+def _configuration_identity(label: str, raw: Mapping[str, object]) -> str:
+    try:
+        payload = json.dumps(raw, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except ValueError as exc:
+        raise ConfigurationError(f"{label} configuration numbers must be finite") from exc
+    return f"{label}_sha256_{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:20]}"
 
 
 def _validate_runtime_settings(settings: RuntimeSettings) -> None:

@@ -10,19 +10,19 @@ import pytest
 from trader.application.ports.model_scoring import ModelInput
 from trader.domain.recommendation.models import Strategy
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
-from trader.infra.scoring.profiles.v3.bundle_codec import decode_v3_tomorrow_bundle, load_v3_tomorrow_bundle
-from trader.infra.scoring.profiles.v3.bundle_locator import locate_latest_v3_bundle
-from trader.infra.scoring.profiles.v3.profile import build_v3_scoring_profile, build_v3_tomorrow_predictor
+from trader.infra.scoring.profiles.v3.bundle_codec import decode_tomorrow_bundle, load_tomorrow_bundle
+from trader.infra.scoring.profiles.v3.bundle_locator import locate_latest_bundle
+from trader.infra.scoring.profiles.v3.profile import build_scoring_profile, build_tomorrow_predictor
 
 
 def _document() -> dict[str, object]:
     p2 = json.loads(
-        resources.files("trader.resources.models").joinpath("tomorrow_p2_model.json").read_text(encoding="utf-8")
+        resources.files("trader.infra.scoring.profiles.v2").joinpath("model.json").read_text(encoding="utf-8")
     )
     payload: dict[str, object] = {
-        "schema_version": "tomorrow_v3_production_model_v1",
+        "schema_version": "tomorrow_production_model",
         "profile_id": "v3",
-        "model_id": "tomorrow_v3_industry_ridge_lightgbm",
+        "model_id": "industry_ridge_lightgbm",
         "strategy_head": "tomorrow",
         "feature_ids": [
             "qfq_return_1d",
@@ -81,31 +81,31 @@ def _write_bundle(path: Path, document: dict[str, object]) -> None:
 
 
 def test_v3_locator_selects_latest_model_deterministically(tmp_path: Path) -> None:
-    first = tmp_path / "tomorrow-v3/run-a/model.json"
-    second = tmp_path / "tomorrow-v3/run-b/model.json"
+    first = tmp_path / "scoring/v3/training/run-a/model.json"
+    second = tmp_path / "scoring/v3/training/run-b/model.json"
     _write_bundle(first, _document())
     _write_bundle(second, _document())
     os.utime(first, ns=(1_000, 1_000))
     os.utime(second, ns=(2_000, 2_000))
 
-    assert locate_latest_v3_bundle(tmp_path) == second
+    assert locate_latest_bundle(tmp_path) == second
     os.utime(first, ns=(2_000, 2_000))
-    assert locate_latest_v3_bundle(tmp_path) == second
+    assert locate_latest_bundle(tmp_path) == second
 
 
 def test_v3_locator_fails_closed_when_no_model_exists(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match="model.json"):
-        locate_latest_v3_bundle(tmp_path)
+        locate_latest_bundle(tmp_path)
 
 
 def test_v3_codec_profile_and_predictor_preserve_the_complete_contract(tmp_path: Path) -> None:
-    path = tmp_path / "tomorrow-v3/run-a/model.json"
+    path = tmp_path / "scoring/v3/training/run-a/model.json"
     document = _document()
     _write_bundle(path, document)
 
-    artifact = load_v3_tomorrow_bundle(path)
-    predictor = build_v3_tomorrow_predictor(artifact)
-    profile = build_v3_scoring_profile(artifact)
+    artifact = load_tomorrow_bundle(path)
+    predictor = build_tomorrow_predictor(artifact)
+    profile = build_scoring_profile(artifact)
     row = ModelInput("600000", (0.01, 0.02, 0.03, 0.01, -0.02, 0.03), "银行")
 
     assert artifact.content_hash == document["content_hash"]
@@ -128,7 +128,7 @@ def test_partial_v3_profile_scores_but_never_claims_historical_validation() -> N
     document["training_universe_codes"] = 100
     document["content_hash"] = artifact_content_hash(document)
 
-    profile = build_v3_scoring_profile(decode_v3_tomorrow_bundle(document))
+    profile = build_scoring_profile(decode_tomorrow_bundle(document))
     prediction = profile.heads[0].predictor.predict(
         (ModelInput("600000", (0.01, 0.02, 0.03, 0.01, -0.02, 0.03), "银行"),)
     )
@@ -154,14 +154,14 @@ def test_v3_codec_rejects_old_or_incomplete_contracts(field: str, message: str) 
     document["content_hash"] = artifact_content_hash(document)
 
     with pytest.raises((TypeError, ValueError), match=message):
-        decode_v3_tomorrow_bundle(document)
+        decode_tomorrow_bundle(document)
 
 
 def test_v3_codec_rejects_tampering_and_invalid_industry_models() -> None:
     tampered = _document()
     tampered["training_rows"] = 1
     with pytest.raises(ValueError, match="content hash"):
-        decode_v3_tomorrow_bundle(tampered)
+        decode_tomorrow_bundle(tampered)
 
     invalid = _document()
     invalid.pop("content_hash")
@@ -172,18 +172,18 @@ def test_v3_codec_rejects_tampering_and_invalid_industry_models() -> None:
     bank["transformer_scales"] = [0.0] * 6
     invalid["content_hash"] = artifact_content_hash(invalid)
     with pytest.raises(ValueError, match="industry model"):
-        decode_v3_tomorrow_bundle(invalid)
+        decode_tomorrow_bundle(invalid)
 
     unknown = _document()
     unknown.pop("content_hash")
     unknown["undefined_contract"] = True
     unknown["content_hash"] = artifact_content_hash(unknown)
     with pytest.raises(ValueError, match="fields are invalid"):
-        decode_v3_tomorrow_bundle(unknown)
+        decode_tomorrow_bundle(unknown)
 
 
 def test_v3_predictor_rejects_uncovered_industry() -> None:
-    predictor = build_v3_tomorrow_predictor(decode_v3_tomorrow_bundle(_document()))
+    predictor = build_tomorrow_predictor(decode_tomorrow_bundle(_document()))
 
     with pytest.raises(ValueError, match="industry is not covered"):
         predictor.predict((ModelInput("600000", (0.0,) * 6, "软件"),))
@@ -199,6 +199,6 @@ def test_v3_profile_rejects_an_invalid_lightgbm_model() -> None:
     bank["lightgbm_model"] = "not-a-lightgbm-model"
     document["content_hash"] = artifact_content_hash(document)
 
-    artifact = decode_v3_tomorrow_bundle(document)
+    artifact = decode_tomorrow_bundle(document)
     with pytest.raises(ValueError, match="LightGBM model is invalid"):
-        build_v3_tomorrow_predictor(artifact)
+        build_tomorrow_predictor(artifact)

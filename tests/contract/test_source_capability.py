@@ -52,10 +52,10 @@ def test_unimplemented_sources_are_not_wired_into_market_runtime() -> None:
             assert all(forbidden not in name.split(".") for name in imports), f"unexpected {forbidden} in {path}"
 
 
-def test_source_contract_versions_contract_expected_five_sources() -> None:
+def test_source_contracts_contract_expected_five_sources() -> None:
     text = SETTINGS_RUNTIME.read_text(encoding="utf-8")
     expected_raw = re.search(r"expected = \{([^}]*)\}", text)
-    assert expected_raw is not None, "market_data.source_contract_versions expected set not found"
+    assert expected_raw is not None, "market_data.source_contracts expected set not found"
     actual = {
         token.strip().strip("\"'").split(":")[0]
         for token in expected_raw.group(1).replace("\n", " ").split(",")

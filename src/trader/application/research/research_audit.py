@@ -73,9 +73,9 @@ class ResearchCandidateAudit:
         if not 0.0 <= self.coverage_ratio <= 1.0 or not 0.0 <= self.board_reliability <= 1.0:
             raise ValueError("research candidate ratios must be in [0, 1]")
         if self.optimistic_upper_bound is not None or self.upper_bound_status != "not_computed":
-            raise ValueError("Score-R1 must not manufacture an optimistic upper bound")
+            raise ValueError("Research audit must not manufacture an optimistic upper bound")
         if self.upper_bound_protected:
-            raise ValueError("Score-R1 cannot mark upper-bound protection")
+            raise ValueError("Research audit cannot mark upper-bound protection")
         if self.candidate_score is not None:
             _validate_scores(self.candidate_score)
         components = _score_pairs(self.candidate_components, "candidate")

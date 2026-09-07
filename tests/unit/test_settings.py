@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from trader.infra.market_data.normalization.features import FEATURE_SCHEMA_NAMES, FEATURE_SCHEMA_VERSION
+from trader.infra.market_data.normalization.features import FEATURE_SCHEMA_ID, FEATURE_SCHEMA_NAMES
 from trader.infra.settings import (
     ConfigurationError,
     load_long_watchlist,
@@ -23,11 +23,10 @@ def test_configuration_contract_is_valid() -> None:
     strategy = load_strategy_settings(runtime.strategy_config_path)
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
 
-    assert runtime.schema_version == 10
-    assert strategy.schema_version == 15
     assert strategy.tomorrow_scoring_profile == "v1"
-    assert runtime.config_version == "runtime_tushare_120_daily_audit_2026_08_26"
-    assert runtime.market_data.source_contract_versions["eastmoney"] == ("eastmoney_quote_security_master")
+    assert runtime.config_version.startswith("runtime_sha256_")
+    assert strategy.strategy_version.startswith("strategy_sha256_")
+    assert runtime.market_data.source_contracts["eastmoney"] == ("eastmoney_quote_security_master")
     assert runtime.api.default_top_n == 12
     assert runtime.api.maximum_top_n == 12
     assert runtime.runtime_dir == PROJECT_ROOT / ".runtime" / "trader"
@@ -39,7 +38,7 @@ def test_configuration_contract_is_valid() -> None:
     assert runtime.api.web_snapshot_retention_seconds == 35
     assert runtime.market_data.tushare.timeout_seconds == 8
     assert runtime.market_data.tushare.points == 120
-    assert runtime.market_data.source_contract_versions["tushare"] == "tushare_sdk_120_point_daily_audit"
+    assert runtime.market_data.source_contracts["tushare"] == "tushare_sdk_120_point_daily_audit"
     assert runtime.market_data.tushare.token_file == PROJECT_ROOT / ".token_key"
     assert set(runtime.market_data.cache_policy.datasets) == {
         "full_market_quotes",
@@ -67,7 +66,7 @@ def test_configuration_contract_is_valid() -> None:
         "published_recommendation_view",
         "published_date_index",
     }
-    assert runtime.market_data.cache_policy.schema_version == 6
+    assert runtime.market_data.cache_policy.estimator == "canonical_json_utf8"
     assert runtime.market_data.cache_policy.total_bytes == 248 * 1024 * 1024
     assert runtime.market_data.cache_policy.runtime_reserve_bytes == 8 * 1024 * 1024
     assert runtime.market_data.cache_policy.pool_total_bytes == 256 * 1024 * 1024
@@ -99,7 +98,6 @@ def test_configuration_contract_is_valid() -> None:
     }
     assert runtime.performance_budgets.workload.market_rows == 5500
     assert runtime.performance_budgets.workload.candidate_rows == 360
-    assert runtime.performance_budgets.schema_version == 2
     assert runtime.performance_budgets.rounds.warmup == 1
     assert runtime.performance_budgets.rounds.measurement == 5
     assert runtime.performance_budgets.latency_p95_ms["market_normalization"] == 250
@@ -175,8 +173,7 @@ def test_configuration_contract_is_valid() -> None:
     assert strategy.long_research.financial_max_age_days == 550
     assert strategy.long_research.pledge_thresholds == (10.0, 20.0, 35.0)
     assert "监管函" in strategy.long_research.negative_medium_keywords
-    assert watchlist.schema_version == 2
-    assert watchlist.watchlist_version == "long_watchlist_strategic_merge_2026_07"
+    assert watchlist.watchlist_version.startswith("watchlist_sha256_")
     assert len(watchlist.items) == 224
     assert len(watchlist.groups) == 50
     assert max(len(group.codes) for group in watchlist.groups if group.category == "chokepoint") <= 5
@@ -339,14 +336,14 @@ def test_retired_tomorrow_scoring_profile_names_are_rejected(tmp_path, retired_p
         load_strategy_settings(strategy_path)
 
 
-@pytest.mark.parametrize("schema_version", (5, 6, 7, 8, 9))
-def test_runtime_rejects_every_pre_release_schema(tmp_path, schema_version: int) -> None:
+@pytest.mark.parametrize("controller", ("schema_version", "config_version"))
+def test_runtime_rejects_manual_version_controllers(tmp_path, controller: str) -> None:
     raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
-    raw["schema_version"] = schema_version
-    changed_path = tmp_path / f"runtime-v{schema_version}.json"
+    raw[controller] = "unsupported"
+    changed_path = tmp_path / "runtime.json"
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
 
-    with pytest.raises(ConfigurationError, match="runtime schema_version must be 10"):
+    with pytest.raises(ConfigurationError, match="runtime contains unknown keys"):
         load_runtime_settings(changed_path)
 
 
@@ -537,11 +534,11 @@ def test_runtime_settings_rejects_insecure_tushare_token_file(tmp_path, monkeypa
         ),
         (
             lambda raw: raw["market_data"]["cache_policy"].update({"policy_version": "unknown"}),
-            "policy_version must be market_cache",
+            "cache_policy contains unknown keys",
         ),
         (
-            lambda raw: raw["market_data"]["cache_policy"].update({"estimator_version": "unknown"}),
-            "estimator_version must be canonical_json_utf8",
+            lambda raw: raw["market_data"]["cache_policy"].update({"estimator": "unknown"}),
+            "estimator must be canonical_json_utf8",
         ),
         (
             lambda raw: raw["performance_budgets"]["workload"].update({"market_rows": 5499}),
@@ -583,18 +580,18 @@ def test_feature_schema_contract_can_be_explicitly_reconciled_with_registered_sc
 
     strategy = load_strategy_settings(strategy_path)
 
-    assert strategy.factor_contract["feature_schema_version"] == FEATURE_SCHEMA_VERSION
+    assert strategy.factor_contract["feature_schema"] == FEATURE_SCHEMA_ID
     assert strategy.factor_contract["feature_schema_expected"] == len(FEATURE_SCHEMA_NAMES)
 
 
 def test_feature_schema_contract_rejects_schema_contract_version_mismatch(tmp_path) -> None:
     source = PROJECT_ROOT / "config" / "strategy.json"
     raw = json.loads(source.read_text(encoding="utf-8"))
-    raw["factor_contract"]["feature_schema_version"] = "feature_schema_unsupported"
+    raw["factor_contract"]["feature_schema"] = "feature_schema_unsupported"
     strategy_path = tmp_path / "strategy.json"
     strategy_path.write_text(json.dumps(raw), encoding="utf-8")
 
-    with pytest.raises(ConfigurationError, match="feature_schema_version mismatch"):
+    with pytest.raises(ConfigurationError, match="feature_schema mismatch"):
         load_strategy_settings(strategy_path)
 
 
@@ -696,13 +693,13 @@ def test_fixed_strategy_weight_vectors_cannot_drift(tmp_path, weight_family: str
         load_strategy_settings(strategy_path)
 
 
-def test_deepseek_risk_mapping_version_is_required_and_fixed(tmp_path) -> None:
+def test_deepseek_risk_mapping_version_controller_is_rejected(tmp_path) -> None:
     strategy_path = tmp_path / "strategy.json"
     raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
     raw["deepseek_risk_mapping_version"] = "unsupported"
     strategy_path.write_text(json.dumps(raw), encoding="utf-8")
 
-    with pytest.raises(ConfigurationError, match="risk mapping version"):
+    with pytest.raises(ConfigurationError, match="strategy contains unknown keys"):
         load_strategy_settings(strategy_path)
 
 
@@ -767,7 +764,7 @@ def test_today_news_signal_is_required(tmp_path) -> None:
     changed_path = tmp_path / "strategy.json"
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
 
-    with pytest.raises(ConfigurationError, match="today_news_signal must be an object"):
+    with pytest.raises(ConfigurationError, match="strategy.today_news_signal is required"):
         load_strategy_settings(changed_path)
 
 
@@ -789,7 +786,7 @@ def test_tomorrow_tail_signal_is_required(tmp_path) -> None:
     changed_path = tmp_path / "strategy.json"
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
 
-    with pytest.raises(ConfigurationError, match="tomorrow_tail_signal must be an object"):
+    with pytest.raises(ConfigurationError, match="strategy.tomorrow_tail_signal is required"):
         load_strategy_settings(changed_path)
 
 
@@ -804,9 +801,8 @@ def test_tomorrow_tail_signal_fixed_formula_cannot_drift(tmp_path) -> None:
         load_strategy_settings(changed_path)
 
 
-def test_tomorrow_tail_signal_changes_strategy_version(tmp_path) -> None:
+def test_tomorrow_tail_signal_rejects_manual_factor_version(tmp_path) -> None:
     source = PROJECT_ROOT / "config" / "strategy.json"
-    baseline = load_strategy_settings(source)
     raw = json.loads(source.read_text(encoding="utf-8"))
     raw["tomorrow_tail_signal"]["volume_score_points_per_ratio"] = 49
     changed_path = tmp_path / "strategy.json"
@@ -818,8 +814,8 @@ def test_tomorrow_tail_signal_changes_strategy_version(tmp_path) -> None:
     raw["factor_registry"]["tail_volume_ratio"]["version"] = "3"
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
 
-    changed = load_strategy_settings(changed_path)
-    assert changed.strategy_version != baseline.strategy_version
+    with pytest.raises(ConfigurationError, match="contains unknown keys: version"):
+        load_strategy_settings(changed_path)
 
 
 def test_tomorrow_tail_factor_registry_cannot_contradict_executable_formula(tmp_path) -> None:
@@ -851,7 +847,7 @@ def test_d25_market_regime_policy_is_required_and_cannot_drift(tmp_path) -> None
         load_strategy_settings(changed_path)
 
 
-def test_long_research_contract_is_required_and_versions_keyword_changes(tmp_path) -> None:
+def test_long_research_contract_is_required_and_hashes_keyword_changes(tmp_path) -> None:
     source = PROJECT_ROOT / "config" / "strategy.json"
     baseline = load_strategy_settings(source)
     raw = json.loads(source.read_text(encoding="utf-8"))
@@ -865,7 +861,7 @@ def test_long_research_contract_is_required_and_versions_keyword_changes(tmp_pat
 
     del raw["long_research"]
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(ConfigurationError, match="long_research must be an object"):
+    with pytest.raises(ConfigurationError, match="strategy.long_research is required"):
         load_strategy_settings(changed_path)
 
 

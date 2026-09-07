@@ -19,8 +19,8 @@ def test_profile_factory_preserves_v2_identity_and_deterministic_prediction() ->
     first = predictor.predict((row,))[0]
     second = predictor.predict((row,))[0]
 
-    assert predictor.model_id == "daily_reconstructible_ensemble_v1"
-    assert predictor.model_hash == "27034e52813f1776e2ed218c1c397f481b244fb852b01be08ddc21249d887da5"
+    assert predictor.model_id == "daily_reconstructible_ensemble"
+    assert predictor.model_hash == "8397657c9ae83d2e774dc533a30f477a1ec599bc9fb82b60fae014a0b0202012"
     assert first == second
     assert first.code == "600000"
     assert first.predicted_excess_return == pytest.approx(-3.2489670901064623e-07)
@@ -35,7 +35,7 @@ def test_profile_factory_preserves_v1_identity_and_linear_inference() -> None:
     second = predictor.predict((row,))[0]
 
     assert predictor.profile_id == "v1"
-    assert predictor.model_id == "v1_manual_residual_momentum_v1"
+    assert predictor.model_id == "residual_momentum_linear"
     assert predictor.model_hash == "4291ea514c233a14ab6f9262e72ea541d1e9a794e73d02f10f8220509f6f502b"
     assert predictor.feature_ids == (
         "qfq_residual_momentum_20d_skip5",

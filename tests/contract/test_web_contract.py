@@ -58,7 +58,7 @@ def test_unified_decision_routes_validate_strategy_date_and_etag() -> None:
     assert current.get_json()["items"][0]["industry"] == "银行"
     assert current.get_json()["items"][0]["scores"]["predicted_net_excess_pct"] == 1.25
     assert [item["code"] for item in current.get_json()["top_scores"]] == ["600000"]
-    assert current.get_json()["input_versions"]["score_model"] == ("daily_reconstructible_ensemble_v1:model-hash")
+    assert current.get_json()["input_versions"]["score_model"] == ("daily_reconstructible_ensemble:model-hash")
     assert current.get_json()["items"][0]["quote"] == {
         "price": 10.25,
         "pct_change": 2.5,
@@ -174,7 +174,7 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     }
     assert decision_patch["coverage"] == client.get("/api/decisions/today/current").get_json()["coverage"]
     assert "filtered_count" not in decision_patch
-    assert decision_patch["input_versions"]["score_model"] == ("daily_reconstructible_ensemble_v1:model-hash")
+    assert decision_patch["input_versions"]["score_model"] == ("daily_reconstructible_ensemble:model-hash")
     assert [item["code"] for item in decision_patch["upserts"]] == ["600000"]
     assert decision_patch["upserts"][0]["scores"]["predicted_net_excess_pct"] == 1.25
     assert status["events"]["sequence"] == 1
@@ -599,7 +599,7 @@ def _decision() -> ScoredDecision:
         None,
         (
             ("market", "market:1"),
-            ("score_model", "daily_reconstructible_ensemble_v1:model-hash"),
+            ("score_model", "daily_reconstructible_ensemble:model-hash"),
         ),
         "config:1",
         "strategy:1",

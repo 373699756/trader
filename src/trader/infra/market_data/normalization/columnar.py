@@ -1,4 +1,4 @@
-"""Typed Polars batches and deterministic dirty-set projection for P1-P3."""
+"""Typed Polars batches and deterministic dirty-set projection for observation-to-feature."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from trader.domain.market.research import ResearchObservation
 _CHANGE_SCHEMA_VERSION = "market_change_set_legacy"
 _QUOTE_SCHEMA_VERSION = "columnar_quote_batch"
 _RESEARCH_SCHEMA_VERSION = "columnar_research_batch"
-_FEATURE_SCHEMA_VERSION = "columnar_feature_batch"
+_FEATURE_SCHEMA_ID = "columnar_feature_batch"
 _EMPTY_MANIFEST_HASH = hashlib.sha256(canonical_json_bytes(())).hexdigest()
 _NO_VERSION = "not_applicable"
 _FIELD_FAMILIES: dict[str, str] = {
@@ -215,7 +215,7 @@ class ColumnarFeatureBatch:
                 board_policy_version=options.board_policy_version,
                 strategy_version=options.strategy_version,
                 config_version=options.config_version,
-                schema_version=options.feature_schema_version,
+                schema_version=options.feature_schema,
                 manifest_hash=_evidence_manifest_hash(frame),
                 content_hash=content_hash,
             ),
@@ -237,7 +237,7 @@ class ColumnarFeatureBatch:
             merge_epoch=self.identity.merge_epoch,
             data_version=options.data_version,
             config_version=self.identity.config_version,
-            feature_schema_version=self.identity.schema_version,
+            feature_schema=self.identity.schema_version,
             content_hash=self.identity.content_hash,
             feature_snapshots=tuple(sorted(features, key=lambda snapshot: snapshot.quote.code)),
             market_change_set=change_set.to_public(),
@@ -248,7 +248,7 @@ class ColumnarFeatureBatch:
 class ColumnarFeatureBatchOptions:
     merge_epoch: str
     config_version: str
-    feature_schema_version: str
+    feature_schema: str
     feature_names: tuple[str, ...]
     strategy_version: str = _NO_VERSION
     board_policy_version: str = _NO_VERSION

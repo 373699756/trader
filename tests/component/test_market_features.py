@@ -214,14 +214,14 @@ def test_feature_builder_reconstructs_the_six_packaged_p2_inputs_from_61_qfq_ses
     )[0]
 
     required = {
-        "p2_return_1d",
-        "p2_return_3d",
-        "p2_return_5d",
-        "p2_momentum_20d_skip5",
-        "p2_momentum_40d_skip5",
-        "p2_momentum_60d_skip5",
-        "p2_amihud_20d",
-        "p2_average_amount_20d",
+        "qfq_return_1d",
+        "qfq_return_3d",
+        "qfq_return_5d",
+        "qfq_momentum_20d_skip5",
+        "qfq_momentum_40d_skip5",
+        "qfq_momentum_60d_skip5",
+        "qfq_amihud_20d",
+        "qfq_average_amount_20d",
     }
     assert all(feature.optional_value(name) is not None for name in required)
     assert required.isdisjoint(feature.missing_fields)

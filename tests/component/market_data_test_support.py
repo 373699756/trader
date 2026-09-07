@@ -153,7 +153,7 @@ def _service(
         worker_pool=worker_pool,
         source_lanes=source_lanes,
         cache=cache,
-        source_contract_versions=kwargs.pop("source_contract_versions", {"tushare": "tushare-component"}),
+        source_contracts=kwargs.pop("source_contracts", {"tushare": "tushare-component"}),
         config_version=kwargs.pop("config_version", "component-default"),
         schema_version=kwargs.pop("schema_version", "market_snapshot"),
         wall_clock=wall_clock,

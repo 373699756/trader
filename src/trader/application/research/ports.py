@@ -1,4 +1,4 @@
-"""Read ports for the offline Score-R2 evidence boundary."""
+"""Read ports for the offline Historical extraction evidence boundary."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from trader.domain.research.challengers import ChallengerSpecification
 
 
 class HistoricalDataPlaneReadPort(DataPlaneReadPort, Protocol):
-    """Offline extension of the canonical E1 read port for Score-R2 adapters.
+    """Offline extension of the canonical E1 read port for Historical extraction adapters.
 
     Implementations retain the canonical immutable snapshot boundary and must
     discard hard-reject identities when projecting historical research data.

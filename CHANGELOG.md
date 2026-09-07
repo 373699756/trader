@@ -6,6 +6,24 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户反馈活动树仍存在 `tomorrow_historical_p2_artifacts.py`、`tomorrow_manual_v1_model.py`、
+  `score_r6_daily_artifacts.py`、`tomorrow_p2_model.json` 等非评分版本命名，要求除评分生产档位
+  V1/V2/V3 外不再用 `Rn/Pn/vN` 管理代码和数据。根因已确认：历史研究阶段号、实验批次号与评分档位曾在
+  文件名、类型、配置、缓存组、特征名和工件路径中并行演进，且已退役的 R6 链仍留在活动树；评分模型资源
+  也未由各 profile 自己拥有。现删除无消费者的编号研究链，将仍有用途的历史筛选、回放、报告、训练输入和
+  BaoStock 数据集统一为职责语义名；V1/V2/V3 模型分别由 `infra/scoring/profiles/v1|v2|v3` 拥有，模型文件
+  统一叫 `model.json`，打包脚本统一为 `package_scoring_model.py`。运行/策略配置移除人工 schema、policy、
+  factor 和 watchlist 版本键，改用规范内容 SHA-256 作为配置身份；缓存组与 qfq 特征去掉阶段前缀。新增命名
+  AST/路径/配置契约，禁止编号命名回流；BaoStock 已落盘的旧身份仅允许原样只读解码，新工件写稳定语义名，
+  不迁移、不覆盖用户历史分片。评分公式、V1/V2/V3 选择、固定 `83.40` 融合向量、冻结、DeepSeek 预算和 Web
+  行为不变。Verification: 命名、配置、评分 profile、BaoStock 旧数据只读兼容、历史研究、Web 投影、架构、
+  `create_app()` 副作用和固定 `83.40` 融合向量回归通过；`make format-check`、`make lint`、`make type-check`、
+  `make test`、`make package`、`make performance-check` 和 `git diff --check` 通过，性能报告网络请求为 0；
+  构建 wheel 在仓库外安装后通过配置校验、`pip check` 与 6 项包资源读取。桌面浏览器门禁不适用，因为本批
+  未改变 HTML、CSS、交互逻辑或公开 Web schema。Residual Risks: 评分 profile 内封存模型及 BaoStock 旧 checkpoint 中的历史 `_vN` 字符串为
+  hash 绑定的只读身份，按兼容边界保留且不得复制到新命名；本批不改变它们的内容或自动迁移运行数据。
+  `Regression-Key: semantic-naming-scoring-profiles-only`。
+
 - 用户要求 Review `docs/01_评分逻辑.md`，聚焦数据采集、过滤、评分、冻结和展示的完整荐股链，并逐环节
   说明实时性、稳定性与提高收益的优化空间，同时删除无关内容。根因已确认：原文虽包含完整规则，但把当前
   策略与约 500 行历史研究批次、工件交付、release 状态、底层运行细节和长期观察池维护历史混排；Tomorrow

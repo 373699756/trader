@@ -1010,11 +1010,11 @@ const modelVersionDrawer = state.drawer(
     ...frozenToday,
     strategy: "tomorrow",
     input_versions: {
-      score_model: "daily_reconstructible_ensemble_v1:model-hash",
+      score_model: "daily_reconstructible_ensemble:model-hash",
     },
   },
 );
-assert.match(modelVersionDrawer, /daily_reconstructible_ensemble_v1:model-hash/);
+assert.match(modelVersionDrawer, /daily_reconstructible_ensemble:model-hash/);
 assert.match(modelVersionDrawer, /模型信号分/);
 assert.doesNotMatch(modelVersionDrawer, /P2信号分/);
 const longDrawer = state.drawer(

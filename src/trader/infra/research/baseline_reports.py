@@ -1,4 +1,4 @@
-"""Immutable JSON persistence for deterministic Score-R3 baseline reports."""
+"""Immutable JSON persistence for deterministic Historical replay baseline reports."""
 
 from __future__ import annotations
 
@@ -12,14 +12,14 @@ from trader.application.research.replay_models import (
     BaselineAggregateMetrics,
     BaselineDayMetrics,
     BaselineReportStatus,
-    ScoreR3BaselineReport,
+    HistoricalBaselineReport,
     canonical_hash,
     canonical_json,
     canonical_value,
 )
-from trader.domain.research.specification import SCORE_P0_V1_SPEC
+from trader.domain.research.specification import HISTORICAL_RESEARCH_SPEC
 
-_REPORT_NAME = "score-r3-baseline-report.json"
+_REPORT_NAME = "historical-baseline-report.json"
 
 
 class BaselineReportConflictError(RuntimeError):
@@ -32,17 +32,17 @@ class JsonBaselineReportStore:
     def __init__(self, root: Path) -> None:
         self._root = root
 
-    def write(self, report: ScoreR3BaselineReport) -> ScoreR3BaselineReport:
+    def write(self, report: HistoricalBaselineReport) -> HistoricalBaselineReport:
         self._root.mkdir(parents=True, exist_ok=True)
         path = self._root / _REPORT_NAME
         if path.exists():
             existing = self.verify()
             if existing.report_hash != report.report_hash:
-                raise BaselineReportConflictError("Score-R3 report identity conflict")
+                raise BaselineReportConflictError("Historical replay report identity conflict")
             return existing
         payload = canonical_value(report)
         if not isinstance(payload, dict):
-            raise TypeError("Score-R3 report payload must be an object")
+            raise TypeError("Historical replay report payload must be an object")
         payload["report_hash"] = report.report_hash
         temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
         temporary.write_text(canonical_json(payload), encoding="utf-8")
@@ -52,13 +52,13 @@ class JsonBaselineReportStore:
             except FileExistsError:
                 existing = self.verify()
                 if existing.report_hash != report.report_hash:
-                    raise BaselineReportConflictError("Score-R3 report identity conflict") from None
+                    raise BaselineReportConflictError("Historical replay report identity conflict") from None
                 return existing
         finally:
             temporary.unlink(missing_ok=True)
         return self.verify()
 
-    def verify(self) -> ScoreR3BaselineReport:
+    def verify(self) -> HistoricalBaselineReport:
         path = self._root / _REPORT_NAME
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
@@ -69,20 +69,20 @@ class JsonBaselineReportStore:
                 raise ValueError("report hash mismatch")
             report = _report_from_payload(raw)
         except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise BaselineReportConflictError("Score-R3 report hash or schema is invalid") from exc
+            raise BaselineReportConflictError("Historical replay report hash or schema is invalid") from exc
         if report.report_hash != stored_hash:
-            raise BaselineReportConflictError("Score-R3 report reconstructed hash mismatch")
+            raise BaselineReportConflictError("Historical replay report reconstructed hash mismatch")
         return report
 
 
-def _report_from_payload(raw: dict[str, object]) -> ScoreR3BaselineReport:
+def _report_from_payload(raw: dict[str, object]) -> HistoricalBaselineReport:
     days_raw = raw["days"]
     aggregate_raw = raw["aggregate"]
     if not isinstance(days_raw, list) or not isinstance(aggregate_raw, dict):
-        raise TypeError("Score-R3 report metrics are invalid")
+        raise TypeError("Historical replay report metrics are invalid")
     days = tuple(_day_from_payload(item) for item in days_raw if isinstance(item, dict))
     if len(days) != len(days_raw):
-        raise TypeError("Score-R3 day metrics are invalid")
+        raise TypeError("Historical replay day metrics are invalid")
     aggregate = BaselineAggregateMetrics(
         _triple(aggregate_raw["net_excess_returns"]),
         _optional_float(aggregate_raw["mean_mae_atr20"]),
@@ -96,15 +96,15 @@ def _report_from_payload(raw: dict[str, object]) -> ScoreR3BaselineReport:
     )
     status = str(raw["status"])
     if status not in {"replayed", "exploratory"}:
-        raise ValueError("Score-R3 report status is invalid")
-    return ScoreR3BaselineReport(
+        raise ValueError("Historical replay report status is invalid")
+    return HistoricalBaselineReport(
         cast(BaselineReportStatus, status),
         str(raw["extraction_hash"]),
         _extraction_status(raw["extraction_status"]),
         days,
         aggregate,
-        research_identity=str(raw.get("research_identity", SCORE_P0_V1_SPEC.research_identity)),
-        research_spec_hash=str(raw.get("research_spec_hash", SCORE_P0_V1_SPEC.content_hash)),
+        research_identity=str(raw.get("research_identity", HISTORICAL_RESEARCH_SPEC.research_identity)),
+        research_spec_hash=str(raw.get("research_spec_hash", HISTORICAL_RESEARCH_SPEC.content_hash)),
         schema_version=str(raw["schema_version"]),
         replay_version=str(raw["replay_version"]),
         cost_rates=_triple(raw["cost_rates"]),
@@ -115,7 +115,7 @@ def _day_from_payload(raw: dict[str, object]) -> BaselineDayMetrics:
     selected = raw["selected_codes"]
     oracle = raw["oracle_codes"]
     if not isinstance(selected, list) or not isinstance(oracle, list):
-        raise TypeError("Score-R3 production or oracle codes are invalid")
+        raise TypeError("Historical replay production or oracle codes are invalid")
     return BaselineDayMetrics(
         date.fromisoformat(str(raw["trade_date"])),
         str(raw["day_hash"]),
@@ -140,13 +140,13 @@ def _day_from_payload(raw: dict[str, object]) -> BaselineDayMetrics:
 
 def _triple(value: object) -> tuple[float, float, float]:
     if not isinstance(value, list) or len(value) != 3:
-        raise TypeError("Score-R3 triple metric is invalid")
+        raise TypeError("Historical replay triple metric is invalid")
     return float(value[0]), float(value[1]), float(value[2])
 
 
 def _optional_five(value: object) -> tuple[float | None, float | None, float | None, float | None, float | None]:
     if not isinstance(value, list) or len(value) != 5:
-        raise TypeError("Score-R3 quintile metric is invalid")
+        raise TypeError("Historical replay quintile metric is invalid")
     return tuple(_optional_float(item) for item in value)  # type: ignore[return-value]
 
 
@@ -156,25 +156,25 @@ def _optional_float(value: object) -> float | None:
 
 def _required_float(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-        raise TypeError("Score-R3 numeric metric is invalid")
+        raise TypeError("Historical replay numeric metric is invalid")
     return float(value)
 
 
 def _required_int(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError("Score-R3 count metric is invalid")
+        raise TypeError("Historical replay count metric is invalid")
     return value
 
 
 def _selection_status(value: object) -> Literal["selected", "no_decision"]:
     if value not in {"selected", "no_decision"}:
-        raise ValueError("Score-R3 selection status is invalid")
+        raise ValueError("Historical replay selection status is invalid")
     return value
 
 
 def _extraction_status(value: object) -> Literal["extracted", "exploratory"]:
     if value not in {"extracted", "exploratory"}:
-        raise ValueError("Score-R3 extraction status is invalid")
+        raise ValueError("Historical replay extraction status is invalid")
     return value
 
 

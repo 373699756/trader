@@ -532,7 +532,7 @@ def test_source_lane_waits_for_hedged_physical_refresh_when_market_cache_is_due(
         worker_pool=pool,
         source_lanes=lanes,
         cache=cache,
-        source_contract_versions=runtime.market_data.source_contract_versions,
+        source_contracts=runtime.market_data.source_contracts,
         config_version=runtime.config_version,
         monotonic=monotonic,
         wall_clock=lambda: NOW,

@@ -30,8 +30,8 @@ from trader.domain.research.baostock_daily import (
     BaoStockDailyManifest,
     BaoStockDailySpec,
     BaoStockSecurity,
-    BaoStockV3DatasetManifest,
-    build_baostock_v3_dataset_manifest,
+    BaoStockTrainingDatasetManifest,
+    build_baostock_training_dataset_manifest,
 )
 from trader.domain.research.historical_effective_facts import (
     HistoricalEffectiveFactsAudit,
@@ -70,9 +70,9 @@ from trader.infra.research.baostock_history_messages import (
     WorkerReady as _WorkerReady,
 )
 from trader.infra.research.baostock_history_status import inspect_baostock_checkpoints
-from trader.infra.research.baostock_v3_dataset import (
-    BaoStockV3DatasetArtifactConflictError,
-    BaoStockV3DatasetArtifactStore,
+from trader.infra.research.baostock_training_dataset import (
+    BaoStockTrainingDatasetArtifactConflictError,
+    BaoStockTrainingDatasetArtifactStore,
 )
 from trader.infra.research.historical_effective_facts import (
     HistoricalEffectiveFactsArtifactConflictError,
@@ -217,10 +217,10 @@ def inspect_baostock_history(runtime_dir: Path, *, sessions: int = 2000) -> BaoS
         value = store.verify()
         descriptor = store.describe_frozen_daily_input()
         facts = HistoricalEffectiveFactsArtifactStore(root).verify()
-        dataset = BaoStockV3DatasetArtifactStore(root).verify()
+        dataset = BaoStockTrainingDatasetArtifactStore(root).verify()
     except (
         BaoStockDailyArtifactConflictError,
-        BaoStockV3DatasetArtifactConflictError,
+        BaoStockTrainingDatasetArtifactConflictError,
         HistoricalEffectiveFactsArtifactConflictError,
     ):
         return BaoStockRuntimeStatus(state="failed", failure_reasons=("manifest_invalid",))
@@ -237,8 +237,8 @@ def inspect_baostock_history(runtime_dir: Path, *, sessions: int = 2000) -> BaoS
         coverage_status=audit.status,
         historical_effective_facts_status=facts.status,
         historical_effective_facts_hash=facts.content_hash,
-        v3_dataset_status=dataset.status,
-        v3_dataset_hash=dataset.content_hash,
+        training_dataset_status=dataset.status,
+        training_dataset_hash=dataset.content_hash,
         failure_reasons=audit.failure_reasons,
     )
 
@@ -258,8 +258,8 @@ def project_baostock_runtime_status(status: BaoStockRuntimeStatus) -> dict[str, 
         "coverage_status": status.coverage_status,
         "historical_effective_facts_status": status.historical_effective_facts_status,
         "historical_effective_facts_hash": status.historical_effective_facts_hash,
-        "v3_dataset_status": status.v3_dataset_status,
-        "v3_dataset_hash": status.v3_dataset_hash,
+        "training_dataset_status": status.training_dataset_status,
+        "training_dataset_hash": status.training_dataset_hash,
         "failure_reasons": list(status.failure_reasons),
         "production_authority": status.production_authority,
         "point_in_time_parity": status.point_in_time_parity,
@@ -824,8 +824,8 @@ class _DownloadCoordinator:
             coverage_status=audit.status,
             historical_effective_facts_status=facts.status,
             historical_effective_facts_hash=facts.content_hash,
-            v3_dataset_status=dataset.status,
-            v3_dataset_hash=dataset.content_hash,
+            training_dataset_status=dataset.status,
+            training_dataset_hash=dataset.content_hash,
             failure_reasons=audit.failure_reasons,
         )
 
@@ -883,7 +883,7 @@ class _DownloadCoordinator:
 def _seal_research_handoff(
     root: Path,
     daily: BaoStockDailyManifest,
-) -> tuple[HistoricalEffectiveFactsAudit, BaoStockV3DatasetManifest]:
+) -> tuple[HistoricalEffectiveFactsAudit, BaoStockTrainingDatasetManifest]:
     facts = HistoricalEffectiveFactsArtifactStore(root).write(
         build_historical_effective_facts_audit(
             (
@@ -898,8 +898,8 @@ def _seal_research_handoff(
             )
         )
     )
-    dataset = BaoStockV3DatasetArtifactStore(root).write(
-        build_baostock_v3_dataset_manifest(
+    dataset = BaoStockTrainingDatasetArtifactStore(root).write(
+        build_baostock_training_dataset_manifest(
             daily,
             facts,
             BaoStockDailyPartitionedArchive(root).complete_dates(),

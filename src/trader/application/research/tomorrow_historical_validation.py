@@ -12,7 +12,7 @@ from typing import Literal, Protocol
 
 from trader.application.ports.model_scoring import ModelInput, ModelPredictorPort
 from trader.application.research.replay_models import canonical_hash
-from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC, HistoricalScreeningSpec
+from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalScreeningSpec
 from trader.domain.research.shadow_calibration import (
     LinearModel,
     PlattCalibrator,
@@ -35,7 +35,7 @@ _REASON = re.compile(r"^[a-z0-9_]{1,160}$")
 
 @dataclass(frozen=True)
 class HistoricalRiskValidationSpec:
-    research_identity: str = "tomorrow_v2_historical_risk_probability_v1"
+    research_identity: str = "tomorrow_historical_risk_probability"
     training_trade_dates: int = 60
     calibration_trade_dates: int = 20
     test_trade_dates: int = 40
@@ -44,19 +44,19 @@ class HistoricalRiskValidationSpec:
     maximum_expected_calibration_error: float = 0.05
     calibration_bins: int = 10
     production_authority: bool = False
-    schema_version: str = "tomorrow_v2_historical_risk_validation_spec_v1"
+    schema_version: str = "tomorrow_historical_risk_validation_spec"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         if (
-            self.research_identity != "tomorrow_v2_historical_risk_probability_v1"
+            self.research_identity != "tomorrow_historical_risk_probability"
             or (self.training_trade_dates, self.calibration_trade_dates, self.test_trade_dates) != (60, 20, 40)
             or self.embargo_trade_dates_per_boundary != 1
             or self.severe_loss_mae_atr20 != -1.5
             or self.maximum_expected_calibration_error != 0.05
             or self.calibration_bins != 10
             or self.production_authority
-            or self.schema_version != "tomorrow_v2_historical_risk_validation_spec_v1"
+            or self.schema_version != "tomorrow_historical_risk_validation_spec"
         ):
             raise ValueError("Tomorrow historical risk validation contract is fixed")
         object.__setattr__(self, "content_hash", canonical_hash(self))
@@ -165,7 +165,7 @@ class HistoricalRiskModelArtifact:
     training_evidence_hash: str
     calibration_evidence_hash: str
     production_authority: bool = False
-    schema_version: str = "tomorrow_v2_historical_risk_model_v1"
+    schema_version: str = "tomorrow_historical_risk_model"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -179,7 +179,7 @@ class HistoricalRiskModelArtifact:
         values = (self.logistic_intercept, *self.logistic_coefficients, self.platt_intercept, self.platt_slope)
         if (
             self.spec_hash != HISTORICAL_RISK_VALIDATION_SPEC.content_hash
-            or self.source_spec_hash != SCORE_H0_V1_SPEC.content_hash
+            or self.source_spec_hash != HISTORICAL_SCREENING_SPEC.content_hash
             or any(_SHA256.fullmatch(value) is None for value in hashes)
             or not self.parent_model_id
             or self.feature_ids
@@ -194,7 +194,7 @@ class HistoricalRiskModelArtifact:
             or any(not math.isfinite(value) for value in values)
             or (self.platt_constant is not None and not 0.0 < self.platt_constant < 1.0)
             or self.production_authority
-            or self.schema_version != "tomorrow_v2_historical_risk_model_v1"
+            or self.schema_version != "tomorrow_historical_risk_model"
         ):
             raise ValueError("Historical risk model artifact is invalid")
         object.__setattr__(self, "content_hash", canonical_hash(self))
@@ -225,7 +225,7 @@ class HistoricalRiskValidationReport:
     status: HistoricalRiskStatus
     failure_reasons: tuple[str, ...]
     production_authority: bool = False
-    schema_version: str = "tomorrow_v2_historical_risk_validation_report_v1"
+    schema_version: str = "tomorrow_historical_risk_validation_report"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -314,7 +314,7 @@ class HistoricalRiskValidationService:
         self._predictor = predictor
 
     def execute(self) -> HistoricalRiskValidationOutcome:
-        rows = tuple(self._evidence.tomorrow_historical_risk_rows(SCORE_H0_V1_SPEC))
+        rows = tuple(self._evidence.tomorrow_historical_risk_rows(HISTORICAL_SCREENING_SPEC))
         return build_historical_risk_probability(rows, self._predictor)
 
 
@@ -390,7 +390,7 @@ def build_historical_risk_probability(
         sorted(
             row
             for row in rows
-            if SCORE_H0_V1_SPEC.validation_start <= row.trade_date <= SCORE_H0_V1_SPEC.validation_end
+            if HISTORICAL_SCREENING_SPEC.validation_start <= row.trade_date <= HISTORICAL_SCREENING_SPEC.validation_end
         )
     )
     if len({(row.trade_date, row.code) for row in ordered}) != len(ordered):
@@ -439,7 +439,7 @@ def build_historical_risk_probability(
     )
     artifact = HistoricalRiskModelArtifact(
         spec_hash=spec.content_hash,
-        source_spec_hash=SCORE_H0_V1_SPEC.content_hash,
+        source_spec_hash=HISTORICAL_SCREENING_SPEC.content_hash,
         parent_model_id=predictor.model_id,
         parent_model_hash=predictor.model_hash,
         feature_ids=(

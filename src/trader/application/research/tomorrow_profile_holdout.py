@@ -12,10 +12,10 @@ from typing import Protocol
 from trader.application.ports.model_scoring import ModelInput, ModelPredictorPort
 from trader.application.research.historical_screening import HistoricalArchiveManifest, HistoricalArchiveStatus
 from trader.application.research.replay_models import canonical_hash
-from trader.application.research.tomorrow_historical_p2_models import TomorrowHistoricalP2GateMetrics
-from trader.application.research.tomorrow_historical_p2_screening import TomorrowHistoricalP2Row
+from trader.application.research.tomorrow_historical_models import TomorrowHistoricalGateMetrics
+from trader.application.research.tomorrow_historical_screening import TomorrowHistoricalRow
 from trader.domain.research.baseline import mean_rank_ic, population_spearman, quantile_bucket, stock_net_contribution
-from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC, HistoricalScreeningSpec
+from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalScreeningSpec
 from trader.domain.research.paired_statistics import (
     PreregisteredBootstrapPlan,
     newey_west_long_run_std,
@@ -39,7 +39,7 @@ class TomorrowProfileHoldoutEvidence(Protocol):
 
     def manifest(self, spec: HistoricalScreeningSpec) -> HistoricalArchiveManifest: ...
 
-    def tomorrow_historical_p2_rows(self, spec: HistoricalScreeningSpec) -> Sequence[TomorrowHistoricalP2Row]: ...
+    def tomorrow_historical_rows(self, spec: HistoricalScreeningSpec) -> Sequence[TomorrowHistoricalRow]: ...
 
 
 @dataclass(frozen=True)
@@ -47,7 +47,7 @@ class TomorrowProfileHoldoutMetrics:
     profile_id: str
     model_id: str
     model_hash: str
-    gates: TomorrowHistoricalP2GateMetrics
+    gates: TomorrowHistoricalGateMetrics
     failure_reasons: tuple[str, ...]
 
 
@@ -65,12 +65,12 @@ class TomorrowProfileHoldoutReport:
     historical_long_run_difference_std_pct: float
     status: str = "completed"
     production_authority: bool = False
-    schema_version: str = "tomorrow_v1_v2_h0_holdout_report_v2"
+    schema_version: str = "tomorrow_profile_holdout_report"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         if (
-            self.source_spec_hash != SCORE_H0_V1_SPEC.content_hash
+            self.source_spec_hash != HISTORICAL_SCREENING_SPEC.content_hash
             or len(self.source_manifest_hash) != 64
             or len(self.validation_evidence_hash) != 64
             or self.validation_trade_dates < 1
@@ -114,14 +114,17 @@ class TomorrowProfileHoldoutService:
         self._v2 = v2
 
     def execute(self) -> TomorrowProfileHoldoutReport:
-        archive = self._evidence.inspect(SCORE_H0_V1_SPEC.research_identity)
-        manifest = self._evidence.manifest(SCORE_H0_V1_SPEC)
-        if archive.spec_hash != SCORE_H0_V1_SPEC.content_hash or manifest.spec_hash != SCORE_H0_V1_SPEC.content_hash:
+        archive = self._evidence.inspect(HISTORICAL_SCREENING_SPEC.research_identity)
+        manifest = self._evidence.manifest(HISTORICAL_SCREENING_SPEC)
+        if (
+            archive.spec_hash != HISTORICAL_SCREENING_SPEC.content_hash
+            or manifest.spec_hash != HISTORICAL_SCREENING_SPEC.content_hash
+        ):
             raise ValueError("Tomorrow holdout requires the exact H0 evidence identity")
         rows = tuple(
             row
-            for row in self._evidence.tomorrow_historical_p2_rows(SCORE_H0_V1_SPEC)
-            if SCORE_H0_V1_SPEC.validation_start <= row.trade_date <= SCORE_H0_V1_SPEC.validation_end
+            for row in self._evidence.tomorrow_historical_rows(HISTORICAL_SCREENING_SPEC)
+            if HISTORICAL_SCREENING_SPEC.validation_start <= row.trade_date <= HISTORICAL_SCREENING_SPEC.validation_end
         )
         if not rows:
             raise ValueError("Tomorrow holdout validation rows are unavailable")
@@ -137,7 +140,7 @@ class TomorrowProfileHoldoutService:
             (right.daily_net[0] - left.daily_net[0]) * 100.0 for left, right in zip(v1_days, v2_days, strict=True)
         )
         return TomorrowProfileHoldoutReport(
-            source_spec_hash=SCORE_H0_V1_SPEC.content_hash,
+            source_spec_hash=HISTORICAL_SCREENING_SPEC.content_hash,
             source_manifest_hash=manifest.content_hash,
             validation_evidence_hash=canonical_hash(ordered),
             validation_trade_dates=len(v1_days),
@@ -152,7 +155,7 @@ class TomorrowProfileHoldoutService:
 
 def _predict(
     predictor: ModelPredictorPort,
-    rows: tuple[TomorrowHistoricalP2Row, ...],
+    rows: tuple[TomorrowHistoricalRow, ...],
 ) -> tuple[float, ...]:
     positions = tuple(_FEATURE_IDS.index(item) for item in predictor.feature_ids)
     inputs = tuple(ModelInput(row.code, tuple(row.alpha_features[position] for position in positions)) for row in rows)
@@ -163,7 +166,7 @@ def _predict(
 
 
 def _profile_days(
-    rows: tuple[TomorrowHistoricalP2Row, ...],
+    rows: tuple[TomorrowHistoricalRow, ...],
     predictions: tuple[float, ...] | None,
     *,
     feature_ids: tuple[str, ...],
@@ -172,7 +175,7 @@ def _profile_days(
     del feature_ids
     if predictions is not None and len(predictions) != len(rows):
         raise ValueError("Tomorrow holdout predictions are incomplete")
-    grouped: dict[date, list[tuple[TomorrowHistoricalP2Row, float | None]]] = defaultdict(list)
+    grouped: dict[date, list[tuple[TomorrowHistoricalRow, float | None]]] = defaultdict(list)
     for index, row in enumerate(rows):
         grouped[row.trade_date].append((row, predictions[index] if predictions is not None else None))
     previous: frozenset[str] = frozenset()
@@ -242,7 +245,7 @@ def _profile_days(
     return tuple(days)
 
 
-def _costs(population: tuple[tuple[TomorrowHistoricalP2Row, float | None], ...]) -> tuple[float, ...]:
+def _costs(population: tuple[tuple[TomorrowHistoricalRow, float | None], ...]) -> tuple[float, ...]:
     values = tuple(item[0].amihud_20d for item in population)
     order = sorted(range(len(values)), key=lambda index: (values[index], index))
     ranks = [0.0] * len(values)
@@ -252,11 +255,11 @@ def _costs(population: tuple[tuple[TomorrowHistoricalP2Row, float | None], ...])
 
 
 def _select(
-    values: tuple[tuple[float, TomorrowHistoricalP2Row, float | None], ...],
+    values: tuple[tuple[float, TomorrowHistoricalRow, float | None], ...],
     *,
     require_positive: bool,
-) -> tuple[tuple[float, TomorrowHistoricalP2Row, float | None], ...]:
-    selected: list[tuple[float, TomorrowHistoricalP2Row, float | None]] = []
+) -> tuple[tuple[float, TomorrowHistoricalRow, float | None], ...]:
+    selected: list[tuple[float, TomorrowHistoricalRow, float | None]] = []
     boards: Counter[str] = Counter()
     for item in sorted(values, key=lambda value: (-value[0], value[1].code)):
         if (require_positive and item[0] <= 0.0) or boards[item[1].board] >= 3:
@@ -285,7 +288,7 @@ def _profile_metrics(
     bootstrap = paired_moving_block_statistics(
         differences[0],
         plan=PreregisteredBootstrapPlan(
-            identity="tomorrow_v1_v2_h0_holdout_v1",
+            identity="tomorrow_profile_holdout",
             master_seed=20260831,
             challenger_id=predictor.profile_id,
             block_days=5,
@@ -301,7 +304,7 @@ def _profile_metrics(
     severe_candidate = _mean(tuple(item.severe_rate for item in profile if item.severe_rate is not None))
     severe_baseline = _mean(tuple(item.severe_rate for item in baseline if item.severe_rate is not None))
     coverage = archive.completed_codes / archive.universe_count if archive.universe_count else 0.0
-    gates = TomorrowHistoricalP2GateMetrics(
+    gates = TomorrowHistoricalGateMetrics(
         archive_coverage=coverage,
         training_trade_dates=0,
         validation_trade_dates=len(profile),
@@ -332,7 +335,7 @@ def _profile_metrics(
     )
 
 
-def _failures(metrics: TomorrowHistoricalP2GateMetrics) -> tuple[str, ...]:
+def _failures(metrics: TomorrowHistoricalGateMetrics) -> tuple[str, ...]:
     checks = (
         (metrics.archive_coverage < 0.95, "archive_coverage"),
         (

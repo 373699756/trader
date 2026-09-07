@@ -20,27 +20,17 @@ from trader.application.research.tomorrow_research_artifacts import (
     production_readiness_audit,
 )
 from trader.application.research.tomorrow_research_prerequisites import CodexATomorrowResearchPrerequisite
-from trader.application.research.tomorrow_v3_training import TomorrowV3TrainingProgress
-from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC
-from trader.domain.research.score_r6_stability import SCORE_R6_STABILITY_SPEC
-from trader.domain.research.tomorrow_historical_p2 import TOMORROW_HISTORICAL_P2_SPEC
+from trader.application.research.tomorrow_training import TomorrowTrainingProgress
+from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC
+from trader.domain.research.tomorrow_historical import TOMORROW_HISTORICAL_SPEC
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
 from trader.infra.persistence.research_trace import SQLiteResearchTraceStore
 from trader.infra.research.baostock_history_runtime import inspect_baostock_history, project_baostock_runtime_status
 from trader.infra.research.h1_point_in_time_archive import H1ArchiveConflictError, SQLiteH1PointInTimeArchive
 from trader.infra.research.history_archive import SQLiteHistoricalArchive
-from trader.infra.research.score_r6_artifacts import ScoreR6ArtifactConflictError, ScoreR6ArtifactStore
-from trader.infra.research.score_r6_daily_artifacts import (
-    ScoreR6DailyArtifactConflictError,
-    ScoreR6DailyArtifactStore,
-)
-from trader.infra.research.score_r6_stability_artifacts import (
-    ScoreR6StabilityArtifactConflictError,
-    ScoreR6StabilityArtifactStore,
-)
-from trader.infra.research.tomorrow_historical_p2_artifacts import (
-    TomorrowHistoricalP2ArtifactConflictError,
-    TomorrowHistoricalP2ArtifactStore,
+from trader.infra.research.tomorrow_historical_artifacts import (
+    TomorrowHistoricalArtifactConflictError,
+    TomorrowHistoricalArtifactStore,
 )
 from trader.infra.research.tomorrow_historical_risk_artifacts import (
     TomorrowHistoricalRiskArtifactConflictError,
@@ -86,12 +76,12 @@ class _TomorrowResearchProgress(TomorrowResearchProgressPort):
         )
 
 
-class _TomorrowV3TrainingProgress:
-    def publish(self, progress: TomorrowV3TrainingProgress) -> None:
+class _TomorrowTrainingProgress:
+    def publish(self, progress: TomorrowTrainingProgress) -> None:
         print(
             json.dumps(
                 {
-                    "schema_version": "tomorrow_v3_training_progress",
+                    "schema_version": "tomorrow_training_progress",
                     "stage": progress.stage,
                     "processed_codes": progress.processed_codes,
                     "total_codes": progress.total_codes,
@@ -120,37 +110,18 @@ def run_research_command(
         status = trace.inspect_status()
         first_observations = trace.inspect_first_observations(limit=120)
         dates = tuple(item.trade_date for item in first_observations)
-        historical_archive = SQLiteHistoricalArchive(runtime.runtime_dir).inspect(SCORE_H0_V1_SPEC.research_identity)
+        historical_archive = SQLiteHistoricalArchive(runtime.runtime_dir).inspect(
+            HISTORICAL_SCREENING_SPEC.research_identity
+        )
         screening_coverage = (
             historical_archive.completed_codes / historical_archive.universe_count
             if historical_archive.universe_count
             else 0.0
         )
-        screening_ready = historical_archive.spec_hash == SCORE_H0_V1_SPEC.content_hash and screening_coverage >= 0.95
-        try:
-            score_r6 = ScoreR6ArtifactStore(runtime.runtime_dir / "score-r6").inspect()
-            score_r6_artifact_error = ""
-        except ScoreR6ArtifactConflictError:
-            score_r6 = {
-                "historical_report_hash": "",
-                "historical_gate_passed": False,
-                "validation_mode": "historical_only",
-                "production_authority": False,
-            }
-            score_r6_artifact_error = "score_r6_artifact_invalid"
-        try:
-            score_r6_daily = ScoreR6DailyArtifactStore(runtime.runtime_dir / "score-r6-daily").inspect()
-        except ScoreR6DailyArtifactConflictError:
-            score_r6_daily = {
-                "report_hash": "",
-                "status": "artifact_invalid",
-                "historical_gate_passed": False,
-                "selected_candidate_hash": "",
-                "failure_reasons": ["score_r6_daily_artifact_invalid"],
-                "promotion_authority": False,
-            }
-        score_r6_stability = _read_score_r6_stability_status(runtime)
-        tomorrow_p2 = _read_tomorrow_p2_status(runtime)
+        screening_ready = (
+            historical_archive.spec_hash == HISTORICAL_SCREENING_SPEC.content_hash and screening_coverage >= 0.95
+        )
+        tomorrow_historical = _read_tomorrow_historical_status(runtime)
         tomorrow_holdout = _read_tomorrow_profile_holdout_status(runtime)
         tomorrow_risk = _read_tomorrow_historical_risk_status(runtime)
         tomorrow_research = _read_tomorrow_research_status(runtime)
@@ -160,27 +131,21 @@ def run_research_command(
                 {
                     "schema_version": "research_readiness",
                     "validation_mode": "historical_only",
-                    "score_r6_executable": screening_ready,
-                    "score_r6_screening_executable": screening_ready,
                     "blockers": [] if screening_ready else ["score_h0_archive_coverage_incomplete"],
-                    "score_r6": score_r6,
-                    "score_r6_artifact_error": score_r6_artifact_error or None,
-                    "score_r6_daily": score_r6_daily,
-                    "score_r6_stability": score_r6_stability,
-                    "tomorrow_p2": tomorrow_p2,
+                    "tomorrow_historical": tomorrow_historical,
                     "tomorrow_profile_holdout": tomorrow_holdout,
-                    "tomorrow_v2_historical_risk": tomorrow_risk,
+                    "tomorrow_historical_risk": tomorrow_risk,
                     "tomorrow_research": tomorrow_research,
                     "baostock_history": baostock_status,
                     "recorded_trade_dates": [value.isoformat() for value in dates],
                     "retired_research": (
                         {
-                            "research_identity": "score_p0_v1",
+                            "research_identity": "historical_research_baseline",
                             "status": "historical_rejected",
                             "blocker": "historical_point_in_time_missing",
                         },
                         {
-                            "research_identity": "score_p0_v2",
+                            "research_identity": "preregistered_research",
                             "status": "historical_collection_failed",
                             "blocker": "fixed_historical_dates_missed",
                         },
@@ -189,14 +154,14 @@ def run_research_command(
                     "historical_screening": {
                         **asdict(historical_archive),
                         "coverage_ratio": round(screening_coverage, 6),
-                        "research_spec_hash": SCORE_H0_V1_SPEC.content_hash,
+                        "research_spec_hash": HISTORICAL_SCREENING_SPEC.content_hash,
                         "training_window": {
-                            "start": SCORE_H0_V1_SPEC.training_start.isoformat(),
-                            "end": SCORE_H0_V1_SPEC.training_end.isoformat(),
+                            "start": HISTORICAL_SCREENING_SPEC.training_start.isoformat(),
+                            "end": HISTORICAL_SCREENING_SPEC.training_end.isoformat(),
                         },
                         "validation_window": {
-                            "start": SCORE_H0_V1_SPEC.validation_start.isoformat(),
-                            "end": SCORE_H0_V1_SPEC.validation_end.isoformat(),
+                            "start": HISTORICAL_SCREENING_SPEC.validation_start.isoformat(),
+                            "end": HISTORICAL_SCREENING_SPEC.validation_end.isoformat(),
                         },
                         "promotion_authority": False,
                     },
@@ -249,16 +214,16 @@ def _run_tomorrow_research_orchestrator(
     allow_partial_history: bool = False,
 ) -> int:
     del runtime
-    from trader.infra.research.tomorrow_v3_training import run_tomorrow_v3_training
+    from trader.infra.scoring.profiles.v3.training import run_tomorrow_training
 
-    result = run_tomorrow_v3_training(
+    result = run_tomorrow_training(
         history_root or _history_data_root(),
         _train_data_root(),
         allow_partial_history=allow_partial_history,
-        progress=_TomorrowV3TrainingProgress(),
+        progress=_TomorrowTrainingProgress(),
     )
     payload = {
-        "schema_version": "tomorrow_v3_training_result",
+        "schema_version": "tomorrow_training_result",
         "status": result.status,
         "run_id": result.run_id,
         "training_input_scope": result.training_input_scope,
@@ -391,30 +356,15 @@ def _tomorrow_research_prerequisite(runtime: RuntimeSettings) -> CodexATomorrowR
     return CodexATomorrowResearchPrerequisite(HistoricalLabelPreregistrationService(archive))
 
 
-def _read_score_r6_stability_status(runtime: RuntimeSettings) -> dict[str, object]:
+def _read_tomorrow_historical_status(runtime: RuntimeSettings) -> dict[str, object]:
     try:
-        return ScoreR6StabilityArtifactStore(runtime.runtime_dir / "score-r6-stability").inspect()
-    except ScoreR6StabilityArtifactConflictError:
+        return TomorrowHistoricalArtifactStore(runtime.runtime_dir / "tomorrow-historical").inspect()
+    except TomorrowHistoricalArtifactConflictError:
         return {
             "report_hash": "",
             "status": "artifact_invalid",
-            "diagnostic_gate_passed": False,
-            "selected_candidate_hash": "",
-            "failure_reasons": ["score_r6_stability_artifact_invalid"],
-            "evidence_class": SCORE_R6_STABILITY_SPEC.evidence_class,
-            "promotion_authority": False,
-        }
-
-
-def _read_tomorrow_p2_status(runtime: RuntimeSettings) -> dict[str, object]:
-    try:
-        return TomorrowHistoricalP2ArtifactStore(runtime.runtime_dir / "score-tomorrow-p2").inspect()
-    except TomorrowHistoricalP2ArtifactConflictError:
-        return {
-            "report_hash": "",
-            "status": "artifact_invalid",
-            "candidate_id": TOMORROW_HISTORICAL_P2_SPEC.candidate.candidate_id,
-            "failure_reasons": ["tomorrow_p2_artifact_invalid"],
+            "candidate_id": TOMORROW_HISTORICAL_SPEC.candidate.candidate_id,
+            "failure_reasons": ["tomorrow_historical_artifact_invalid"],
             "validation_mode": "historical_only",
             "production_authority": False,
         }

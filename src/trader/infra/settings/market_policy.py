@@ -27,38 +27,29 @@ def parse_cache_policy(raw: Mapping[str, object]) -> CachePolicy:
     require_exact_keys(
         raw,
         {
-            "schema_version",
-            "policy_version",
             "datasets",
             "groups",
             "total_bytes",
             "runtime_reserve_bytes",
             "pool_total_bytes",
-            "estimator_version",
+            "estimator",
         },
         "cache_policy",
     )
-    if integer(raw, "schema_version", minimum=1) != 6:
-        raise ConfigurationError("cache_policy.schema_version must be 6")
-    policy_version = text(raw, "policy_version")
-    if policy_version != "market_cache":
-        raise ConfigurationError("cache_policy.policy_version must be market_cache")
-    estimator_version = text(raw, "estimator_version")
-    if estimator_version != "canonical_json_utf8":
-        raise ConfigurationError("cache_policy.estimator_version must be canonical_json_utf8")
+    estimator = text(raw, "estimator")
+    if estimator != "canonical_json_utf8":
+        raise ConfigurationError("cache_policy.estimator must be canonical_json_utf8")
     datasets = _parse_cache_datasets(mapping(raw, "datasets"))
     _validate_fixed_cache_datasets(datasets)
     groups = _parse_cache_groups(mapping(raw, "groups"))
     try:
         return CachePolicy(
-            schema_version=6,
-            policy_version=policy_version,
             datasets=datasets,
             groups=groups,
             total_bytes=integer(raw, "total_bytes", minimum=1),
             runtime_reserve_bytes=integer(raw, "runtime_reserve_bytes", minimum=1),
             pool_total_bytes=integer(raw, "pool_total_bytes", minimum=1),
-            estimator_version=estimator_version,
+            estimator=estimator,
         )
     except ValueError as exc:
         raise ConfigurationError(f"cache_policy: {exc}") from exc
@@ -130,12 +121,12 @@ def _parse_cache_datasets(datasets_raw: Mapping[str, object]) -> dict[str, Cache
 
 def _validate_fixed_cache_datasets(datasets: Mapping[str, CacheDatasetPolicy]) -> None:
     expected_policies = {
-        "full_market_quotes": (None, None, "full_market", 3.0, 10.0, 6000, "p1_observation", False),
-        "candidate_quotes": (None, None, "candidate_quotes", 3.0, 3.0, 360, "p1_observation", False),
-        "intraday_minutes": (45.0, 90.0, None, None, 45.0, 360, "p1_observation", False),
-        "research_success": (600.0, 1200.0, None, None, 60.0, 360, "p1_observation", True),
-        "research_failure": (60.0, 60.0, None, None, 60.0, 360, "p1_observation", False),
-        "daily_history": (21600.0, 86400.0, None, None, 60.0, 360, "p1_observation", False),
+        "full_market_quotes": (None, None, "full_market", 3.0, 10.0, 6000, "observation", False),
+        "candidate_quotes": (None, None, "candidate_quotes", 3.0, 3.0, 360, "observation", False),
+        "intraday_minutes": (45.0, 90.0, None, None, 45.0, 360, "observation", False),
+        "research_success": (600.0, 1200.0, None, None, 60.0, 360, "observation", True),
+        "research_failure": (60.0, 60.0, None, None, 60.0, 360, "observation", False),
+        "daily_history": (21600.0, 86400.0, None, None, 60.0, 360, "observation", False),
         "security_master_calendar": (
             86400.0,
             86400.0,
@@ -143,7 +134,7 @@ def _validate_fixed_cache_datasets(datasets: Mapping[str, CacheDatasetPolicy]) -
             None,
             300.0,
             6000,
-            "p1_observation",
+            "observation",
             False,
         ),
         "daily_valuation_financials": (
@@ -153,19 +144,19 @@ def _validate_fixed_cache_datasets(datasets: Mapping[str, CacheDatasetPolicy]) -
             None,
             300.0,
             360,
-            "p1_observation",
+            "observation",
             False,
         ),
-        "canonical_market_snapshot": (60.0, 180.0, None, None, 10.0, 3, "p2_canonical", False),
-        "canonical_candidate_snapshot": (30.0, 90.0, None, None, 10.0, 6, "p2_canonical", False),
-        "current_quote_index": (30.0, 90.0, None, None, 10.0, 3, "p2_canonical", False),
-        "history_summary": (21600.0, 86400.0, None, None, 60.0, 360, "p3_features", False),
-        "candidate_feature_batch": (86400.0, 86400.0, None, None, 60.0, 24, "p3_features", False),
-        "hard_filter_batch": (86400.0, 86400.0, None, None, 60.0, 24, "p3_features", False),
-        "board_cross_section": (86400.0, 86400.0, None, None, 60.0, 24, "p3_features", False),
-        "candidate_preselection": (86400.0, 86400.0, None, None, 60.0, 4, "p3_features", False),
-        "board_score_batch": (86400.0, 86400.0, None, None, 60.0, 24, "p4_local_scoring", False),
-        "global_local_draft": (86400.0, 86400.0, None, None, 60.0, 4, "p4_local_scoring", False),
+        "canonical_market_snapshot": (60.0, 180.0, None, None, 10.0, 3, "canonical_snapshots", False),
+        "canonical_candidate_snapshot": (30.0, 90.0, None, None, 10.0, 6, "canonical_snapshots", False),
+        "current_quote_index": (30.0, 90.0, None, None, 10.0, 3, "canonical_snapshots", False),
+        "history_summary": (21600.0, 86400.0, None, None, 60.0, 360, "feature_batches", False),
+        "candidate_feature_batch": (86400.0, 86400.0, None, None, 60.0, 24, "feature_batches", False),
+        "hard_filter_batch": (86400.0, 86400.0, None, None, 60.0, 24, "feature_batches", False),
+        "board_cross_section": (86400.0, 86400.0, None, None, 60.0, 24, "feature_batches", False),
+        "candidate_preselection": (86400.0, 86400.0, None, None, 60.0, 4, "feature_batches", False),
+        "board_score_batch": (86400.0, 86400.0, None, None, 60.0, 24, "local_scoring", False),
+        "global_local_draft": (86400.0, 86400.0, None, None, 60.0, 4, "local_scoring", False),
         "competition_group_mapping": (
             86400.0,
             86400.0,
@@ -173,10 +164,10 @@ def _validate_fixed_cache_datasets(datasets: Mapping[str, CacheDatasetPolicy]) -
             None,
             60.0,
             2,
-            "p3_features",
+            "feature_batches",
             False,
         ),
-        "raw_deepseek_review": (600.0, 600.0, None, None, 60.0, 2000, "p5_review", False),
+        "raw_deepseek_review": (600.0, 600.0, None, None, 60.0, 2000, "review", False),
         "strategy_deepseek_review": (
             600.0,
             600.0,
@@ -184,12 +175,12 @@ def _validate_fixed_cache_datasets(datasets: Mapping[str, CacheDatasetPolicy]) -
             None,
             60.0,
             2000,
-            "p5_review",
+            "review",
             False,
         ),
-        "deepseek_seen_codes": (600.0, 600.0, None, None, 60.0, 6000, "p5_review", False),
-        "published_recommendation_view": (86400.0, 86400.0, None, None, 60.0, 72, "p6_projection", False),
-        "published_date_index": (86400.0, 86400.0, None, None, 60.0, 3, "p6_projection", False),
+        "deepseek_seen_codes": (600.0, 600.0, None, None, 60.0, 6000, "review", False),
+        "published_recommendation_view": (86400.0, 86400.0, None, None, 60.0, 72, "projection", False),
+        "published_date_index": (86400.0, 86400.0, None, None, 60.0, 3, "projection", False),
     }
     for name, expected in expected_policies.items():
         policy = datasets[name]
@@ -209,12 +200,12 @@ def _validate_fixed_cache_datasets(datasets: Mapping[str, CacheDatasetPolicy]) -
 
 def _parse_cache_groups(groups_raw: Mapping[str, object]) -> dict[str, CacheGroupPolicy]:
     expected_groups = {
-        "p1_observation": 128 * 1024 * 1024,
-        "p2_canonical": 56 * 1024 * 1024,
-        "p3_features": 24 * 1024 * 1024,
-        "p4_local_scoring": 16 * 1024 * 1024,
-        "p5_review": 12 * 1024 * 1024,
-        "p6_projection": 12 * 1024 * 1024,
+        "observation": 128 * 1024 * 1024,
+        "canonical_snapshots": 56 * 1024 * 1024,
+        "feature_batches": 24 * 1024 * 1024,
+        "local_scoring": 16 * 1024 * 1024,
+        "review": 12 * 1024 * 1024,
+        "projection": 12 * 1024 * 1024,
     }
     if groups_raw != expected_groups:
         raise ConfigurationError("cache_policy.groups must match the fixed 128/56/24/16/12/12 MiB allocation")
@@ -225,7 +216,6 @@ def parse_performance_budgets(raw: Mapping[str, object]) -> PerformanceBudgetSet
     require_exact_keys(
         raw,
         {
-            "schema_version",
             "workload",
             "rounds",
             "latency_p95_ms",
@@ -235,8 +225,6 @@ def parse_performance_budgets(raw: Mapping[str, object]) -> PerformanceBudgetSet
         },
         "performance_budgets",
     )
-    if integer(raw, "schema_version", minimum=1) != 2:
-        raise ConfigurationError("performance_budgets.schema_version must be 2")
     workload_raw = mapping(raw, "workload")
     require_exact_keys(workload_raw, {"market_rows", "candidate_rows"}, "performance_budgets.workload")
     workload = PerformanceWorkloadSettings(
@@ -302,7 +290,7 @@ def parse_performance_budgets(raw: Mapping[str, object]) -> PerformanceBudgetSet
     relative = number(raw, "relative_regression_percent", minimum=0.000001)
     if relative != 5.0:
         raise ConfigurationError("relative_regression_percent must remain fixed at 5")
-    return PerformanceBudgetSettings(2, workload, rounds, latency, data_age, memory, relative)
+    return PerformanceBudgetSettings(workload, rounds, latency, data_age, memory, relative)
 
 
 def _fixed_positive_number_mapping(

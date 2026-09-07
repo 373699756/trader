@@ -45,14 +45,14 @@ def test_status_preserves_bounded_resource_and_resume_evidence() -> None:
         failed_codes=1,
         peak_rss_mb=128.5,
         historical_effective_facts_hash="a" * 64,
-        v3_dataset_hash="b" * 64,
+        training_dataset_hash="b" * 64,
         failure_reasons=("supplier_query_failed",),
     )
 
     assert status.sessions == 7
     assert status.peak_rss_mb == 128.5
     assert status.historical_effective_facts_status == "historical_data_insufficient"
-    assert status.v3_dataset_status == "historical_data_insufficient"
+    assert status.training_dataset_status == "historical_data_insufficient"
     assert status.completed_codes + status.failed_codes == status.universe_count
 
 

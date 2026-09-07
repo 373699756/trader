@@ -89,7 +89,7 @@ class _GatewayOptionalOptions(TypedDict, total=False):
     worker_pool: BoundedExecutor | None
     source_lanes: SourceLaneRegistry | None
     cache: BoundedCache[object] | None
-    source_contract_versions: Mapping[str, str] | None
+    source_contracts: Mapping[str, str] | None
     config_version: str
     schema_version: str
     monotonic: Callable[[], float]
@@ -132,17 +132,17 @@ class MarketDataGateway:
         self._worker_pool = options.get("worker_pool")
         self._source_lanes = options.get("source_lanes")
         self._cache = options.get("cache")
-        self._source_contract_versions = dict(
-            options.get("source_contract_versions")
+        self._source_contracts = dict(
+            options.get("source_contracts")
             or {
                 "eastmoney": "eastmoney-component",
                 "sina": "sina-component",
                 "tencent": "tencent-component",
             }
         )
-        self._source_contract_versions.setdefault(
+        self._source_contracts.setdefault(
             "tencent_long",
-            self._source_contract_versions.get("tencent", "tencent-component"),
+            self._source_contracts.get("tencent", "tencent-component"),
         )
         self._config_version = options.get("config_version", "component-default")
         self._schema_version = options.get("schema_version", "market_snapshot")
@@ -186,7 +186,7 @@ class MarketDataGateway:
                 worker_pool=self._worker_pool,
                 source_lanes=self._source_lanes,
                 cache=self._cache,
-                source_contract_versions=self._source_contract_versions,
+                source_contracts=self._source_contracts,
                 config_version=self._config_version,
                 schema_version=self._schema_version,
                 monotonic=self._monotonic,

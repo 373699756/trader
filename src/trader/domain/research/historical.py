@@ -1,4 +1,4 @@
-"""Immutable Score-R2 interface values shared with the future E1 adapter."""
+"""Immutable Historical extraction interface values shared with the future E1 adapter."""
 
 from __future__ import annotations
 
@@ -140,7 +140,7 @@ def _validate_components(components: tuple[ScoreComponent, ...]) -> None:
 
 
 def coverage_shrunk_score(components: tuple[ScoreComponent, ...]) -> float:
-    """Return the preregistered missing-to-neutral Score-R2 research score."""
+    """Return the preregistered missing-to-neutral Historical extraction research score."""
 
     _validate_components(components)
     known = tuple((component.weight, component.value) for component in components if component.value is not None)
@@ -158,7 +158,7 @@ def optimistic_final_upper_bound(
     recorded_deepseek_score: float | None = None,
     recorded_deepseek_risk_penalty: float = 0.0,
 ) -> float:
-    """Compute a safe Score-R2 upper bound without manufacturing model facts."""
+    """Compute a safe Historical extraction upper bound without manufacturing model facts."""
 
     _validate_components(components)
     _validate_penalty(mandatory_local_risk_penalty, "mandatory local risk penalty")

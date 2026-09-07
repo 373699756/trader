@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import os
 from collections.abc import Mapping
@@ -11,7 +13,7 @@ from trader.domain.market.news import NewsSignalPolicy
 from trader.domain.market.research import LongResearchPolicy, MarketRegimePolicy
 from trader.domain.market.tail import TailSignalPolicy
 from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId, parse_scoring_profile
-from trader.infra.settings.factor_validation import _parse_factor_definition, _strategy_contract_version
+from trader.infra.settings.factor_validation import _parse_factor_definition, _strategy_contract_identity
 from trader.infra.settings.models import (
     ApiSettings,
     DeepSeekSettings,
@@ -54,12 +56,31 @@ from trader.infra.settings.parser import (
 from trader.infra.settings.parser import (
     read_json_object as _read_json_object,
 )
+from trader.infra.settings.parser import require_exact_keys as _require_exact_keys
 from trader.infra.settings.parser import (
     text as _text,
 )
 from trader.infra.settings.parser import triple_nested_number_mapping as _triple_nested_number_mapping
 from trader.infra.settings.runtime import load_runtime_settings
 from trader.infra.settings.strategy_validation import _validate_strategy_settings
+
+_STRATEGY_KEYS = {
+    "tomorrow_scoring_profile",
+    "fusion",
+    "selection",
+    "candidate_weights",
+    "hard_filters",
+    "board_candidate_weights",
+    "board_local_strategy_weights",
+    "today_news_signal",
+    "tomorrow_tail_signal",
+    "market_regime",
+    "long_research",
+    "dimension_weights",
+    "risk_rules",
+    "factor_registry",
+    "factor_contract",
+}
 
 
 def load_strategy_settings(
@@ -69,8 +90,7 @@ def load_strategy_settings(
 ) -> StrategySettings:
     path = Path(config_path).expanduser().resolve()
     raw = _read_json_object(path)
-    if _integer(raw, "schema_version", minimum=1) != 15:
-        raise ConfigurationError("strategy schema_version must be 15")
+    _require_exact_keys(raw, _STRATEGY_KEYS, "strategy")
     configured_profile = _text(raw, "tomorrow_scoring_profile")
     try:
         configured_profile = parse_scoring_profile(configured_profile)
@@ -110,12 +130,10 @@ def load_strategy_settings(
         for factor_id, definition in factor_registry_raw.items()
     }
     settings = StrategySettings(
-        schema_version=15,
-        strategy_version=_strategy_contract_version(raw),
+        strategy_version=_strategy_contract_identity(raw),
         tomorrow_scoring_profile=parse_scoring_profile(effective_profile),
-        deepseek_risk_mapping_version=_text(raw, "deepseek_risk_mapping_version"),
         fusion=FusionSettings(
-            version=_text(fusion_raw, "version"),
+            version="fusion_local68_deepseek32",
             local_weight=_number(fusion_raw, "local_weight", minimum=0.0, maximum=1.0),
             deepseek_weight=_number(fusion_raw, "deepseek_weight", minimum=0.0, maximum=1.0),
             confidence_coverage_min=_number(
@@ -154,7 +172,7 @@ def load_strategy_settings(
         market_regime=market_regime,
         long_research=long_research,
         dimension_weights=dimension_weights,
-        board_policy_version=_text(raw, "board_policy_version"),
+        board_policy_version="score_first",
         board_candidate_weights=board_candidate_weights,
         board_local_strategy_weights=board_local_strategy_weights,
         risk_rules=risk_rules,
@@ -197,11 +215,18 @@ def load_long_watchlist(config_path: str | os.PathLike[str]) -> LongWatchlist:
         )
     groups = _parse_long_watch_groups(raw, codes)
     return LongWatchlist(
-        schema_version=_integer(raw, "schema_version", minimum=1),
-        watchlist_version=_text(raw, "watchlist_version"),
+        watchlist_version=_configuration_identity("watchlist", raw),
         items=tuple(items),
         groups=groups,
     )
+
+
+def _configuration_identity(label: str, raw: Mapping[str, object]) -> str:
+    try:
+        payload = json.dumps(raw, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except ValueError as exc:
+        raise ConfigurationError(f"{label} configuration numbers must be finite") from exc
+    return f"{label}_sha256_{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:20]}"
 
 
 def _parse_long_watch_groups(raw: Mapping[str, object], item_codes: set[str]) -> tuple[LongWatchGroup, ...]:

@@ -7,7 +7,7 @@ from trader.application.research.historical_screening import (
     HistoricalDownloadService,
     HistoricalSecurity,
 )
-from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC, HistoricalPriceBar
+from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalPriceBar
 
 
 def _bar(code: str) -> HistoricalPriceBar:
@@ -28,7 +28,7 @@ def _bar(code: str) -> HistoricalPriceBar:
 
 def _bars(code: str) -> tuple[HistoricalPriceBar, ...]:
     last = _bar(code)
-    required = SCORE_H0_V1_SPEC.minimum_history_sessions + SCORE_H0_V1_SPEC.label_horizon_sessions
+    required = HISTORICAL_SCREENING_SPEC.minimum_history_sessions + HISTORICAL_SCREENING_SPEC.label_horizon_sessions
     return tuple(
         replace(last, trade_date=last.trade_date - timedelta(days=offset)) for offset in reversed(range(required))
     )
@@ -86,7 +86,9 @@ def test_history_download_is_bounded_resumable_and_does_not_persist_exception_te
     progress: list[tuple[int, int, str]] = []
     service = HistoricalDownloadService(_Universe(), history, archive, workers=2)
 
-    result = service.execute(SCORE_H0_V1_SPEC, progress=lambda done, total, code: progress.append((done, total, code)))
+    result = service.execute(
+        HISTORICAL_SCREENING_SPEC, progress=lambda done, total, code: progress.append((done, total, code))
+    )
 
     assert archive.universe == (
         HistoricalSecurity("300001", "chinext", "乙", False, False),
@@ -126,7 +128,7 @@ def test_history_download_rejects_non_qfq_or_dates_after_the_fixed_cutoff() -> N
     archive = _Archive()
     service = HistoricalDownloadService(_Universe(), InvalidHistory(), archive, workers=1)
 
-    result = service.execute(SCORE_H0_V1_SPEC)
+    result = service.execute(HISTORICAL_SCREENING_SPEC)
 
     assert result.failed == 2
     assert set(archive.failures.values()) == {"invalid_history"}
@@ -141,7 +143,9 @@ def test_history_download_does_not_mark_short_history_as_complete() -> None:
             del days
             return (_bar(code),)
 
-    result = HistoricalDownloadService(_Universe(), ShortHistory(), archive, workers=1).execute(SCORE_H0_V1_SPEC)
+    result = HistoricalDownloadService(_Universe(), ShortHistory(), archive, workers=1).execute(
+        HISTORICAL_SCREENING_SPEC
+    )
 
     assert result.downloaded == 0
     assert result.failed == 2
@@ -160,7 +164,7 @@ def test_history_download_reuses_the_frozen_universe_on_resume() -> None:
 
     service = HistoricalDownloadService(ChangingUniverse(), _History(), archive, workers=1)
 
-    result = service.execute(SCORE_H0_V1_SPEC)
+    result = service.execute(HISTORICAL_SCREENING_SPEC)
 
     assert result.downloaded == 1
     assert set(archive.saved) == {"600001"}

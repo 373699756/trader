@@ -26,15 +26,15 @@ from trader.domain.recommendation.models import Strategy
 from trader.domain.recommendation.strategies.composition import LocalScoreResult
 
 _ALPHA_FIELDS = (
-    "p2_return_1d",
-    "p2_return_3d",
-    "p2_return_5d",
-    "p2_momentum_20d_skip5",
-    "p2_momentum_40d_skip5",
-    "p2_momentum_60d_skip5",
+    "qfq_return_1d",
+    "qfq_return_3d",
+    "qfq_return_5d",
+    "qfq_momentum_20d_skip5",
+    "qfq_momentum_40d_skip5",
+    "qfq_momentum_60d_skip5",
 )
-_AMOUNT_FIELD = "p2_average_amount_20d"
-_AMIHUD_FIELD = "p2_amihud_20d"
+_AMOUNT_FIELD = "qfq_average_amount_20d"
+_AMIHUD_FIELD = "qfq_amihud_20d"
 _COST_RATE = 0.002
 _HISTORY_REQUIRED_SESSIONS = 61
 _MODEL_FEATURE_IDS = (

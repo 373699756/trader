@@ -12,7 +12,7 @@ from datetime import date, datetime
 from trader.domain.research.historical import SUPPORTED_RESEARCH_BOARDS, ResearchBoard
 from trader.domain.research.tomorrow_features import PointInTimePublishedFact, TomorrowStockFeatures
 
-TOMORROW_FEATURE_SCHEMA_VERSION = "score_tomorrow_point_in_time_features"
+TOMORROW_FEATURE_SCHEMA_ID = "score_tomorrow_point_in_time_features"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"
 
@@ -111,7 +111,7 @@ class TomorrowPointInTimeFeatureBatch:
     context_hash: str
     rows: tuple[TomorrowStockFeatures, ...]
     production_authority: bool = False
-    schema_version: str = TOMORROW_FEATURE_SCHEMA_VERSION
+    schema_version: str = TOMORROW_FEATURE_SCHEMA_ID
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -122,7 +122,7 @@ class TomorrowPointInTimeFeatureBatch:
             or _SHA256.fullmatch(self.context_hash) is None
         ):
             raise ValueError("Tomorrow feature batch identity is invalid")
-        if self.schema_version != TOMORROW_FEATURE_SCHEMA_VERSION or self.production_authority:
+        if self.schema_version != TOMORROW_FEATURE_SCHEMA_ID or self.production_authority:
             raise ValueError("Tomorrow feature batch cannot have production authority")
         rows = tuple(sorted(self.rows, key=lambda item: item.code))
         if not rows or len({item.code for item in rows}) != len(rows):
@@ -226,7 +226,7 @@ def _require_shanghai(value: datetime, label: str) -> None:
 
 
 __all__ = [
-    "TOMORROW_FEATURE_SCHEMA_VERSION",
+    "TOMORROW_FEATURE_SCHEMA_ID",
     "TomorrowFeatureContext",
     "TomorrowFeatureContextBatch",
     "TomorrowPointInTimeFeatureBatch",

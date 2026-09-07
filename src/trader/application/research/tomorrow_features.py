@@ -1,4 +1,4 @@
-"""Bind Score-R2 evidence to pure Tomorrow point-in-time feature engineering."""
+"""Bind Historical extraction evidence to pure Tomorrow point-in-time feature engineering."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from trader.domain.research.tomorrow_features import (
 
 
 class ScoreTomorrowPointInTimeFeatures:
-    """Build an immutable research-only feature batch from one R2 day."""
+    """Build an immutable research-only feature batch from one historical extraction day."""
 
     def build(
         self,
@@ -74,14 +74,14 @@ def _validate_parent_identity(
     contexts: TomorrowFeatureContextBatch,
 ) -> None:
     if summary.trade_date != bundle.trade_date or summary.trade_date != contexts.trade_date:
-        raise ValueError("Tomorrow feature trade date does not match R2 evidence")
+        raise ValueError("Tomorrow feature trade date does not match historical extraction evidence")
     if summary.input_hash != bundle.input_hash or summary.input_hash != contexts.input_hash:
-        raise ValueError("Tomorrow feature input hash does not match R2 evidence")
+        raise ValueError("Tomorrow feature input hash does not match historical extraction evidence")
     requested = set(bundle.requested_codes)
     if {item.code for item in contexts.contexts} != requested:
-        raise ValueError("Tomorrow feature contexts must exactly cover R2 requested codes")
+        raise ValueError("Tomorrow feature contexts must exactly cover historical extraction requested codes")
     if not requested.issubset({item.code for item in summary.candidates}):
-        raise ValueError("Tomorrow feature codes must belong to the R2 day summary")
+        raise ValueError("Tomorrow feature codes must belong to the historical extraction day summary")
 
 
 def _validate_stock_identity(
@@ -92,11 +92,11 @@ def _validate_stock_identity(
     context: TomorrowFeatureContext,
 ) -> None:
     if context.board != summary_board or context.board != full_board:
-        raise ValueError("Tomorrow feature board does not match R2 evidence")
+        raise ValueError("Tomorrow feature board does not match historical extraction evidence")
     if context.industry != industry:
-        raise ValueError("Tomorrow feature industry does not match R2 evidence")
+        raise ValueError("Tomorrow feature industry does not match historical extraction evidence")
     if context.observed_at != feature_as_of:
-        raise ValueError("Tomorrow feature cutoff does not match R2 full fields")
+        raise ValueError("Tomorrow feature cutoff does not match historical extraction full fields")
 
 
 def _daily_points(bundle: HistoricalFullFieldBundle) -> dict[str, tuple[DailyFeaturePoint, ...]]:

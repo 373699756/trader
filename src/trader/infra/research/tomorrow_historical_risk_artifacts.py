@@ -19,7 +19,7 @@ class TomorrowHistoricalRiskArtifactConflictError(RuntimeError):
 
 class TomorrowHistoricalRiskArtifactStore:
     def __init__(self, runtime_dir: Path) -> None:
-        self._root = runtime_dir / "tomorrow-v2-historical-risk" / HISTORICAL_RISK_VALIDATION_SPEC.research_identity
+        self._root = runtime_dir / "tomorrow-historical-risk" / HISTORICAL_RISK_VALIDATION_SPEC.research_identity
 
     def seal(self, outcome: HistoricalRiskValidationOutcome) -> str:
         report = outcome.report

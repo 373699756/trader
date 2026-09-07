@@ -1,1 +1,0 @@
-"""Packaged immutable runtime resources."""

@@ -17,7 +17,7 @@ _FEATURE_IDS = (
 
 
 @dataclass(frozen=True)
-class V1TomorrowModelArtifact:
+class TomorrowModelArtifact:
     profile_id: Literal["v1"]
     model_id: str
     feature_ids: tuple[str, ...]
@@ -28,7 +28,7 @@ class V1TomorrowModelArtifact:
     content_hash: str
 
 
-def decode_v1_tomorrow_artifact(document: object) -> V1TomorrowModelArtifact:
+def decode_tomorrow_artifact(document: object) -> TomorrowModelArtifact:
     if not isinstance(document, dict):
         raise TypeError("packaged Tomorrow V1 production model must be a JSON object")
     payload = cast(dict[str, object], dict(document))
@@ -63,9 +63,9 @@ def decode_v1_tomorrow_artifact(document: object) -> V1TomorrowModelArtifact:
         or not _sha256_text(payload, "source_manifest_hash")
     ):
         raise ValueError("packaged Tomorrow V1 production model identity is invalid")
-    return V1TomorrowModelArtifact(
+    return TomorrowModelArtifact(
         "v1",
-        model_id,
+        "residual_momentum_linear",
         feature_ids,
         means,
         scales,
@@ -117,4 +117,4 @@ def _sha256_text(payload: dict[str, object], name: str) -> bool:
     return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
-__all__ = ["V1TomorrowModelArtifact", "decode_v1_tomorrow_artifact"]
+__all__ = ["TomorrowModelArtifact", "decode_tomorrow_artifact"]

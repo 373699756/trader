@@ -588,7 +588,7 @@ def test_tushare_negative_refresh_marks_preserved_reference_data_degraded() -> N
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
         tushare_client=client,
         cache=cache,
-        source_contract_versions=runtime.market_data.source_contract_versions,
+        source_contracts=runtime.market_data.source_contracts,
         config_version=runtime.config_version,
         wall_clock=lambda: NOW,
     )

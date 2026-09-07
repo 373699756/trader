@@ -20,7 +20,7 @@ _FEATURE_IDS = (
     "qfq_residual_momentum_60d_skip5",
 )
 _FEATURE_UNITS = ("decimal_return",) * len(_FEATURE_IDS)
-_MODEL_ID = "tomorrow_v3_industry_ridge_lightgbm"
+_MODEL_ID = "industry_ridge_lightgbm"
 _DOCUMENT_FIELDS = {
     "schema_version",
     "profile_id",
@@ -97,12 +97,12 @@ class V3TomorrowBundleArtifact:
     content_hash: str
 
 
-def load_v3_tomorrow_bundle(path: Path) -> V3TomorrowBundleArtifact:
+def load_tomorrow_bundle(path: Path) -> V3TomorrowBundleArtifact:
     document = json.loads(path.read_text(encoding="utf-8"))
-    return decode_v3_tomorrow_bundle(document)
+    return decode_tomorrow_bundle(document)
 
 
-def decode_v3_tomorrow_bundle(document: object) -> V3TomorrowBundleArtifact:
+def decode_tomorrow_bundle(document: object) -> V3TomorrowBundleArtifact:
     if not isinstance(document, dict):
         raise TypeError("Tomorrow V3 training model must be a JSON object")
     payload = cast(dict[str, object], dict(document))
@@ -155,7 +155,7 @@ def _decode_contract(
     exposure_contract = _exposure_contract(payload)
     ridge_weight, lightgbm_weight = _ensemble_weights(payload)
     if (
-        _text(payload, "schema_version") != "tomorrow_v3_production_model_v1"
+        _text(payload, "schema_version") != "tomorrow_production_model"
         or _text(payload, "profile_id") != "v3"
         or _text(payload, "model_id") != _MODEL_ID
         or _text(payload, "strategy_head") != "tomorrow"
@@ -346,6 +346,6 @@ def _number_list(payload: dict[str, object], name: str) -> list[float]:
 __all__ = [
     "V3IndustryModelArtifact",
     "V3TomorrowBundleArtifact",
-    "decode_v3_tomorrow_bundle",
-    "load_v3_tomorrow_bundle",
+    "decode_tomorrow_bundle",
+    "load_tomorrow_bundle",
 ]

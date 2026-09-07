@@ -49,7 +49,7 @@ class MarketSourceDependencies:
     worker_pool: BoundedExecutor | None
     source_lanes: SourceLaneRegistry | None
     cache: BoundedCache[object] | None
-    source_contract_versions: Mapping[str, str]
+    source_contracts: Mapping[str, str]
     config_version: str
     schema_version: str
     monotonic: Callable[[], float]
@@ -130,7 +130,7 @@ class MarketSourceCoordinator:
         self._worker_pool = dependencies.worker_pool
         self._source_lanes = dependencies.source_lanes
         self._cache = dependencies.cache
-        self._source_contract_versions = dict(dependencies.source_contract_versions)
+        self._source_contracts = dict(dependencies.source_contracts)
         self._config_version = dependencies.config_version
         self._schema_version = dependencies.schema_version
         self._monotonic = dependencies.monotonic
@@ -579,7 +579,7 @@ class MarketSourceCoordinator:
                 request=request,
                 trade_date=local.date().isoformat(),
                 phase=phase,
-                source_contract_version=self._source_contract_versions[source],
+                source_contract_version=self._source_contracts[source],
                 config_version=self._config_version,
                 schema_version=self._schema_version,
             )

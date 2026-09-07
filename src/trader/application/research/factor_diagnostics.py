@@ -1,4 +1,4 @@
-"""Offline native factor diagnostics over immutable Score-R2/R3 evidence."""
+"""Offline native factor diagnostics over immutable Historical extraction/historical replay evidence."""
 
 from __future__ import annotations
 
@@ -23,8 +23,8 @@ from trader.application.research.factor_diagnostic_models import (
     ScoreFactorDiagnosticReport,
     StratumDimension,
 )
-from trader.application.research.models import ScoreR2HistoricalExtraction
-from trader.application.research.replay_models import ScoreR3BaselineReport
+from trader.application.research.models import HistoricalExtraction
+from trader.application.research.replay_models import HistoricalBaselineReport
 from trader.domain.research.baseline import mean_rank_ic, population_spearman, quantile_bucket
 from trader.domain.research.factor_diagnostics import (
     factor_concentration,
@@ -56,12 +56,12 @@ class _FactorRow:
 
 
 class ScoreNativeFactorDiagnostics:
-    """Build one deterministic, non-authoritative report from matching R2/R3 parents."""
+    """Build one deterministic, non-authoritative report from matching historical extraction/replay parents."""
 
     def evaluate(
         self,
-        extraction: ScoreR2HistoricalExtraction,
-        baseline: ScoreR3BaselineReport,
+        extraction: HistoricalExtraction,
+        baseline: HistoricalBaselineReport,
         dimensions: FactorDiagnosticDimensions,
     ) -> ScoreFactorDiagnosticReport:
         _validate_parent_evidence(extraction, baseline, dimensions)
@@ -82,8 +82,8 @@ class ScoreNativeFactorDiagnostics:
 
 
 def _validate_parent_evidence(
-    extraction: ScoreR2HistoricalExtraction,
-    baseline: ScoreR3BaselineReport,
+    extraction: HistoricalExtraction,
+    baseline: HistoricalBaselineReport,
     dimensions: FactorDiagnosticDimensions,
 ) -> None:
     if (
@@ -91,29 +91,29 @@ def _validate_parent_evidence(
         or baseline.research_identity != extraction.research_identity
         or baseline.research_spec_hash != extraction.research_spec_hash
     ):
-        raise ValueError("factor diagnostics require the matching R3 baseline parent")
+        raise ValueError("factor diagnostics require the matching historical replay baseline parent")
     if dimensions.extraction_hash != extraction.content_hash:
-        raise ValueError("factor diagnostic dimension extraction identity does not match R2")
+        raise ValueError("factor diagnostic dimension extraction identity does not match historical extraction")
     baseline_by_date = {item.trade_date: item for item in baseline.days}
     if set(baseline_by_date) != {item.summary.trade_date for item in extraction.days}:
-        raise ValueError("factor diagnostics require identical R2/R3 day coverage")
+        raise ValueError("factor diagnostics require identical historical extraction/replay day coverage")
     expected_dimensions: set[tuple[date, str]] = set()
     for day in extraction.days:
         baseline_day = baseline_by_date[day.summary.trade_date]
         if baseline_day.day_hash != day.content_hash or baseline_day.input_hash != day.summary.input_hash:
-            raise ValueError("factor diagnostics require matching R2/R3 day and input hashes")
+            raise ValueError("factor diagnostics require matching historical extraction/replay day and input hashes")
         expected_dimensions.update((day.summary.trade_date, item.code) for item in day.evaluated)
     actual_dimensions = {(item.trade_date, item.code) for item in dimensions.records}
     if actual_dimensions != expected_dimensions:
-        raise ValueError("factor diagnostic dimensions must exactly cover every evaluated R2 row")
+        raise ValueError("factor diagnostic dimensions must exactly cover every evaluated historical extraction row")
     day_by_date = {item.summary.trade_date: item for item in extraction.days}
     for record in dimensions.records:
         day = day_by_date[record.trade_date]
         if record.day_hash != day.content_hash or record.input_hash != day.summary.input_hash:
-            raise ValueError("factor diagnostic dimension day/input identity does not match R2")
+            raise ValueError("factor diagnostic dimension day/input identity does not match historical extraction")
 
 
-def _factor_names(extraction: ScoreR2HistoricalExtraction) -> tuple[str, ...]:
+def _factor_names(extraction: HistoricalExtraction) -> tuple[str, ...]:
     names: set[str] = set()
     for day in extraction.days:
         evaluated_codes = {item.code for item in day.evaluated}
@@ -124,7 +124,7 @@ def _factor_names(extraction: ScoreR2HistoricalExtraction) -> tuple[str, ...]:
 
 
 def _evaluate_factor(
-    extraction: ScoreR2HistoricalExtraction,
+    extraction: HistoricalExtraction,
     dimensions: dict[tuple[date, str], FactorDiagnosticDimensionRecord],
     factor_name: str,
 ) -> FactorAggregateDiagnostic:
@@ -169,7 +169,7 @@ def _evaluate_factor(
 
 
 def _factor_rows(
-    extraction: ScoreR2HistoricalExtraction,
+    extraction: HistoricalExtraction,
     dimensions: dict[tuple[date, str], FactorDiagnosticDimensionRecord],
     factor_name: str,
 ) -> tuple[tuple[date, str, str, tuple[_FactorRow, ...]], ...]:
@@ -392,7 +392,7 @@ def _stratum_metric(dimension: str, label: str, rows: tuple[_FactorRow, ...]) ->
     )
 
 
-def _oracle_recall(extraction: ScoreR2HistoricalExtraction, baseline: ScoreR3BaselineReport) -> OracleRecallDiagnostic:
+def _oracle_recall(extraction: HistoricalExtraction, baseline: HistoricalBaselineReport) -> OracleRecallDiagnostic:
     baseline_by_date = {item.trade_date: item for item in baseline.days}
     days: list[OracleRecallDay] = []
     for day in extraction.days:
@@ -402,7 +402,7 @@ def _oracle_recall(extraction: ScoreR2HistoricalExtraction, baseline: ScoreR3Bas
         pre = sum(1 for code in oracle if code in summary_by_code)
         post = sum(1 for code in oracle if code in summary_by_code and summary_by_code[code].production_top120)
         if post != baseline_day.recalled_oracle_count:
-            raise ValueError("factor diagnostic post-pruning recall does not match R3")
+            raise ValueError("factor diagnostic post-pruning recall does not match historical replay")
         days.append(
             OracleRecallDay(
                 day.summary.trade_date,

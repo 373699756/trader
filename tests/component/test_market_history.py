@@ -110,7 +110,7 @@ def test_history_cache_reuses_actionable_refresh_due_value_with_degradation() ->
         worker_pool=None,
         source_lanes=None,
         cache=cache,
-        source_contract_versions=runtime.market_data.source_contract_versions,
+        source_contracts=runtime.market_data.source_contracts,
         config_version=runtime.config_version,
         schema_version="market_snapshot",
         wall_clock=lambda: NOW,
@@ -192,7 +192,7 @@ def test_full_market_deadline_does_not_wait_for_blocked_history_warmup() -> None
         worker_pool=pool,
         source_lanes=lanes,
         cache=cache,
-        source_contract_versions=runtime.market_data.source_contract_versions,
+        source_contracts=runtime.market_data.source_contracts,
         config_version=runtime.config_version,
     )
     pool.start()

@@ -80,13 +80,16 @@ def _decode_spec(raw: dict[str, object]) -> BaoStockDailySpec:
         },
         "spec",
     )
+    research_identity = _string(raw["research_identity"])
+    schema_version = _string(raw["schema_version"])
     return BaoStockDailySpec(
         sessions=_integer(raw["sessions"]),
-        research_identity=_string(raw["research_identity"]),
+        research_identity=research_identity,
         source_cutoff=date.fromisoformat(_string(raw["source_cutoff"])),
         production_authority=_boolean(raw["production_authority"]),
         point_in_time_parity=_boolean(raw["point_in_time_parity"]),
-        schema_version=_string(raw["schema_version"]),
+        schema_version=schema_version,
+        _decode_legacy=True,
     )
 
 
@@ -282,7 +285,7 @@ def _encode_audit(value: BaoStockCoverageAudit) -> dict[str, object]:
                 "expected_cells": item.expected_cells,
                 "obtained_cells": item.obtained_cells,
                 "coverage_ratio": item.coverage_ratio,
-                "eligible_for_v3_population": item.eligible_for_v3_population,
+                "eligible_for_training_population": item.eligible_for_training_population,
             }
             for item in value.code_coverages
         ],
@@ -491,7 +494,7 @@ def _decode_code_coverages(value: object) -> tuple[BaoStockCodeCoverage, ...]:
         raw = _object(item, "code coverage")
         _fields(
             raw,
-            {"code", "expected_cells", "obtained_cells", "coverage_ratio", "eligible_for_v3_population"},
+            {"code", "expected_cells", "obtained_cells", "coverage_ratio", "eligible_for_training_population"},
             "code coverage",
         )
         results.append(
@@ -500,7 +503,7 @@ def _decode_code_coverages(value: object) -> tuple[BaoStockCodeCoverage, ...]:
                 _integer(raw["expected_cells"]),
                 _integer(raw["obtained_cells"]),
                 _number(raw["coverage_ratio"]),
-                _boolean(raw["eligible_for_v3_population"]),
+                _boolean(raw["eligible_for_training_population"]),
             )
         )
     return tuple(results)

@@ -21,7 +21,7 @@ from trader.domain.research.baostock_daily import (
     build_baostock_coverage_audit,
 )
 from trader.domain.research.h1_point_in_time import canonical_hash
-from trader.domain.research.tomorrow_v3_input_compatibility import FrozenDailyInputDescriptor
+from trader.domain.research.tomorrow_training_input import FrozenDailyInputDescriptor
 from trader.infra.research.baostock_catalog import (
     checkpoint_database,
     common_context,
@@ -47,7 +47,7 @@ BaoStockTrainingInputScope = Literal["complete_manifest", "partial_checkpoint"]
 
 
 @dataclass(frozen=True)
-class BaoStockV3TrainingCodeReference:
+class BaoStockTrainingTrainingCodeReference:
     relative_path: str
     identity: BaoStockTrainingCodeIdentity
 
@@ -58,13 +58,13 @@ class BaoStockV3TrainingCodeReference:
 
 
 @dataclass(frozen=True)
-class BaoStockV3TrainingInputSnapshot:
+class BaoStockTrainingTrainingInputSnapshot:
     input_scope: BaoStockTrainingInputScope
     input_hash: str
     calendar: BaoStockCalendar
     universe_count: int
     completed_code_count: int
-    references: tuple[BaoStockV3TrainingCodeReference, ...]
+    references: tuple[BaoStockTrainingTrainingCodeReference, ...]
 
     def __post_init__(self) -> None:
         references = tuple(sorted(self.references, key=lambda item: item.identity.code))
@@ -77,7 +77,7 @@ class BaoStockV3TrainingInputSnapshot:
             or not 0 < len(codes) <= self.completed_code_count <= self.universe_count
             or len(set(codes)) != len(codes)
         ):
-            raise ValueError("BaoStock V3 training input snapshot is invalid")
+            raise ValueError("BaoStock training training input snapshot is invalid")
         if self.input_scope == "complete_manifest" and len(codes) != self.universe_count:
             raise ValueError("BaoStock complete training input must cover the universe")
         object.__setattr__(self, "references", references)
@@ -91,13 +91,13 @@ class BaoStockV3TrainingInputSnapshot:
         return tuple(item.identity.code for item in self.references)
 
 
-class BaoStockV3TrainingInputArchive:
+class BaoStockTrainingTrainingInputArchive:
     def __init__(
         self,
         root: Path,
         spec: BaoStockDailySpec,
         context: BaoStockShardContext,
-        snapshot: BaoStockV3TrainingInputSnapshot,
+        snapshot: BaoStockTrainingTrainingInputSnapshot,
         shards_by_code: dict[str, SQLiteBaoStockDailyShard],
     ) -> None:
         self._root = root
@@ -114,7 +114,7 @@ class BaoStockV3TrainingInputArchive:
         *,
         sessions: int = 2000,
         allow_partial_history: bool = False,
-    ) -> BaoStockV3TrainingInputArchive:
+    ) -> BaoStockTrainingTrainingInputArchive:
         spec = BaoStockDailySpec(sessions=sessions)
         paths = tuple(sorted((root / "shards").glob("*.sqlite3")))
         if not paths:
@@ -127,7 +127,7 @@ class BaoStockV3TrainingInputArchive:
             raise BaoStockDailyArtifactConflictError("BaoStock training shard contexts do not match")
         expected = {item.code: len(context.calendar.expected_dates(item)) for item in context.universe}
         completed: set[str] = set()
-        references: list[BaoStockV3TrainingCodeReference] = []
+        references: list[BaoStockTrainingTrainingCodeReference] = []
         shards_by_code: dict[str, SQLiteBaoStockDailyShard] = {}
         for shard in shards:
             completed.update(shard.checkpoint(spec, expected_records_by_code=expected).completed_codes)
@@ -135,7 +135,7 @@ class BaoStockV3TrainingInputArchive:
             for identity in shard.training_code_identities(spec, frozen_context=context):
                 if identity.code in shards_by_code:
                     raise BaoStockDailyArtifactConflictError("BaoStock training code is present in multiple shards")
-                references.append(BaoStockV3TrainingCodeReference(relative_path, identity))
+                references.append(BaoStockTrainingTrainingCodeReference(relative_path, identity))
                 shards_by_code[identity.code] = shard
         if not references:
             raise BaoStockDailyArtifactConflictError("BaoStock training-ready checkpoints are unavailable")
@@ -160,7 +160,7 @@ class BaoStockV3TrainingInputArchive:
                     tuple(references),
                 )
             )
-        snapshot = BaoStockV3TrainingInputSnapshot(
+        snapshot = BaoStockTrainingTrainingInputSnapshot(
             input_scope,
             input_hash,
             context.calendar,

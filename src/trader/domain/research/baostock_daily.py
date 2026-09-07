@@ -4,20 +4,22 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from datetime import date
 from typing import Literal
 
 from trader.domain.research.h1_point_in_time import canonical_hash
 from trader.domain.research.historical_effective_facts import HistoricalEffectiveFactsAudit
 
-BAOSTOCK_RESEARCH_IDENTITY = "score_baostock_daily_core_v2"
+BAOSTOCK_RESEARCH_IDENTITY = "baostock_daily_core"
+BAOSTOCK_LEGACY_RESEARCH_IDENTITY = "score_baostock_daily_core_v2"
+BAOSTOCK_LEGACY_SPEC_SCHEMA = "score_baostock_daily_core_v2"
 BAOSTOCK_SOURCE_CUTOFF = date(2026, 8, 31)
 BAOSTOCK_MAX_SESSIONS = 2000
 BAOSTOCK_MIN_COVERAGE = 0.95
 BAOSTOCK_FAILED_CODE_COVERAGE = 0.90
 BAOSTOCK_POINT_IN_TIME_RESERVE = 200
-BAOSTOCK_MIN_V3_DATES = 1250
+BAOSTOCK_MIN_TRAINING_DATES = 1250
 
 BaoStockBoard = Literal["main", "chinext", "star"]
 BaoStockAdjustment = Literal["unadjusted", "qfq"]
@@ -30,7 +32,7 @@ BaoStockCellStatus = Literal[
     "unknown_missing",
 ]
 BaoStockCoverageStatus = Literal["coverage_ready", "historical_data_insufficient"]
-BaoStockV3DatasetStatus = Literal["dataset_ready", "historical_data_insufficient"]
+BaoStockTrainingDatasetStatus = Literal["dataset_ready", "historical_data_insufficient"]
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CODE = re.compile(r"^[0-9]{6}$")
@@ -72,18 +74,26 @@ class BaoStockDailySpec:
     source_cutoff: date = BAOSTOCK_SOURCE_CUTOFF
     production_authority: bool = False
     point_in_time_parity: bool = False
-    schema_version: str = "score_baostock_daily_core_v2"
+    schema_version: str = "baostock_daily_core"
+    _decode_legacy: InitVar[bool] = False
     content_hash: str = field(init=False)
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _decode_legacy: bool) -> None:
         if isinstance(self.sessions, bool) or not 1 <= self.sessions <= BAOSTOCK_MAX_SESSIONS:
             raise ValueError("BaoStock sessions must be in [1, 2000]")
-        if self.research_identity != BAOSTOCK_RESEARCH_IDENTITY or self.source_cutoff != BAOSTOCK_SOURCE_CUTOFF:
+        current_identity = (
+            self.research_identity == BAOSTOCK_RESEARCH_IDENTITY and self.schema_version == "baostock_daily_core"
+        )
+        legacy_identity = (
+            self.research_identity == BAOSTOCK_LEGACY_RESEARCH_IDENTITY
+            and self.schema_version == BAOSTOCK_LEGACY_SPEC_SCHEMA
+        )
+        if (
+            not current_identity and not (_decode_legacy and legacy_identity)
+        ) or self.source_cutoff != BAOSTOCK_SOURCE_CUTOFF:
             raise ValueError("BaoStock daily identity and source cutoff are fixed")
         if self.production_authority or self.point_in_time_parity:
             raise ValueError("BaoStock daily data cannot authorize production or point-in-time parity")
-        if self.schema_version != "score_baostock_daily_core_v2":
-            raise ValueError("BaoStock daily schema is invalid")
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
     @property
@@ -429,7 +439,7 @@ class BaoStockCodeCoverage:
     expected_cells: int
     obtained_cells: int
     coverage_ratio: float
-    eligible_for_v3_population: bool
+    eligible_for_training_population: bool
 
     def __post_init__(self) -> None:
         if _CODE.fullmatch(self.code) is None or min(self.expected_cells, self.obtained_cells) < 0:
@@ -440,8 +450,8 @@ class BaoStockCodeCoverage:
         if not math.isclose(self.coverage_ratio, expected_ratio):
             raise ValueError("BaoStock code coverage ratio does not match counts")
         eligible = self.expected_cells > 0 and self.coverage_ratio >= BAOSTOCK_FAILED_CODE_COVERAGE
-        if self.eligible_for_v3_population != eligible:
-            raise ValueError("BaoStock code V3 eligibility does not match coverage")
+        if self.eligible_for_training_population != eligible:
+            raise ValueError("BaoStock code training eligibility does not match coverage")
 
 
 @dataclass(frozen=True)
@@ -776,29 +786,29 @@ class BaoStockPartitionRef:
 
 
 @dataclass(frozen=True)
-class BaoStockV3LabelContract:
+class BaoStockTrainingLabelContract:
     formula: str = "(close[D+1]/close[D]-1)-eligible_universe_equal_weight_return[D+1]-round_trip_cost"
     primary_cost_bps: int = 20
     gate_cost_bps: int = 50
     stress_cost_bps: int = 100
     label_pending_required: bool = True
-    schema_version: str = "tomorrow_v3_daily_label_v1"
+    schema_version: str = "next_day_return_label"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         if self.formula != ("(close[D+1]/close[D]-1)-eligible_universe_equal_weight_return[D+1]-round_trip_cost"):
-            raise ValueError("BaoStock V3 label formula is fixed")
+            raise ValueError("BaoStock training label formula is fixed")
         if (self.primary_cost_bps, self.gate_cost_bps, self.stress_cost_bps) != (20, 50, 100):
-            raise ValueError("BaoStock V3 label costs are fixed")
-        if not self.label_pending_required or self.schema_version != "tomorrow_v3_daily_label_v1":
-            raise ValueError("BaoStock V3 label contract is invalid")
+            raise ValueError("BaoStock training label costs are fixed")
+        if not self.label_pending_required or self.schema_version != "next_day_return_label":
+            raise ValueError("BaoStock training label contract is invalid")
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
 
 @dataclass(frozen=True)
-class BaoStockV3Split:
+class BaoStockTrainingSplit:
     parent_manifest_hash: str
-    label_contract: BaoStockV3LabelContract
+    label_contract: BaoStockTrainingLabelContract
     model_fit_dates: tuple[date, ...]
     early_stopping_dates: tuple[date, ...]
     calibration_dates: tuple[date, ...]
@@ -812,23 +822,23 @@ class BaoStockV3Split:
     point_in_time_parity: bool = False
     terminal_holdout_opened: bool = False
     production_authority: bool = False
-    schema_version: str = "tomorrow_v3_baostock_split_v1"
+    schema_version: str = "baostock_training_split"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         if _SHA256.fullmatch(self.parent_manifest_hash) is None:
-            raise ValueError("BaoStock V3 split parent hash is invalid")
-        _validate_v3_split_dates(self)
+            raise ValueError("BaoStock training split parent hash is invalid")
+        _validate_training_split_dates(self)
         if self.training_anchor != "15:00_daily_close" or self.point_in_time_parity:
-            raise ValueError("BaoStock V3 split must remain a daily-close proxy")
+            raise ValueError("BaoStock training split must remain a daily-close proxy")
         if self.terminal_holdout_opened or self.production_authority:
-            raise ValueError("BaoStock V3 split cannot open holdouts or authorize production")
-        if self.schema_version != "tomorrow_v3_baostock_split_v1":
-            raise ValueError("BaoStock V3 split schema is invalid")
+            raise ValueError("BaoStock training split cannot open holdouts or authorize production")
+        if self.schema_version != "baostock_training_split":
+            raise ValueError("BaoStock training split schema is invalid")
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
 
-def _validate_v3_split_dates(value: BaoStockV3Split) -> None:
+def _validate_training_split_dates(value: BaoStockTrainingSplit) -> None:
     ordered_groups = (
         value.development_dates,
         value.first_embargo_dates,
@@ -839,27 +849,27 @@ def _validate_v3_split_dates(value: BaoStockV3Split) -> None:
     )
     flattened = tuple(day for group in ordered_groups for day in group)
     if flattened != tuple(sorted(set(flattened))):
-        raise ValueError("BaoStock V3 split dates must be unique and chronological")
+        raise ValueError("BaoStock training split dates must be unique and chronological")
     if len(value.development_dates) < 600 or len(value.confirmation_dates) < 200:
-        raise ValueError("BaoStock V3 development or confirmation dates are insufficient")
+        raise ValueError("BaoStock training development or confirmation dates are insufficient")
     if len(value.daily_proxy_holdout_dates) < 200 or len(value.point_in_time_holdout_dates) != 200:
-        raise ValueError("BaoStock V3 holdout dates are insufficient")
+        raise ValueError("BaoStock training holdout dates are insufficient")
     if len(value.first_embargo_dates) != 5 or len(value.second_embargo_dates) != 5:
-        raise ValueError("BaoStock V3 split requires two five-day embargoes")
+        raise ValueError("BaoStock training split requires two five-day embargoes")
     if len(value.early_stopping_dates) != 20 or len(value.calibration_dates) != 20:
-        raise ValueError("BaoStock V3 split requires fixed early-stop and calibration dates")
+        raise ValueError("BaoStock training split requires fixed early-stop and calibration dates")
     if value.model_fit_dates + value.early_stopping_dates + value.calibration_dates != value.development_dates:
-        raise ValueError("BaoStock V3 development sub-splits are invalid")
+        raise ValueError("BaoStock training development sub-splits are invalid")
 
 
-def build_baostock_v3_split(
+def build_baostock_training_split(
     dates: tuple[date, ...],
     *,
     parent_manifest_hash: str,
-) -> BaoStockV3Split:
+) -> BaoStockTrainingSplit:
     ordered = tuple(dates)
-    if ordered != tuple(sorted(set(ordered))) or len(ordered) < BAOSTOCK_MIN_V3_DATES:
-        raise ValueError("BaoStock V3 split requires at least 1250 unique ordered dates")
+    if ordered != tuple(sorted(set(ordered))) or len(ordered) < BAOSTOCK_MIN_TRAINING_DATES:
+        raise ValueError("BaoStock training split requires at least 1250 unique ordered dates")
     point_in_time = ordered[-BAOSTOCK_POINT_IN_TIME_RESERVE:]
     earlier = ordered[:-BAOSTOCK_POINT_IN_TIME_RESERVE]
     first_boundary = int(len(earlier) * 0.60)
@@ -874,9 +884,9 @@ def build_baostock_v3_split(
     model_fit = development[:-40]
     early_stopping = development[-40:-20]
     calibration = development[-20:]
-    return BaoStockV3Split(
+    return BaoStockTrainingSplit(
         parent_manifest_hash=parent_manifest_hash,
-        label_contract=BaoStockV3LabelContract(),
+        label_contract=BaoStockTrainingLabelContract(),
         model_fit_dates=model_fit,
         early_stopping_dates=early_stopping,
         calibration_dates=calibration,
@@ -936,63 +946,63 @@ class BaoStockDailyManifest:
 
 
 @dataclass(frozen=True)
-class BaoStockV3DatasetManifest:
+class BaoStockTrainingDatasetManifest:
     daily_manifest_hash: str
     effective_facts_hash: str
-    label_contract: BaoStockV3LabelContract
-    status: BaoStockV3DatasetStatus
-    split: BaoStockV3Split | None
+    label_contract: BaoStockTrainingLabelContract
+    status: BaoStockTrainingDatasetStatus
+    split: BaoStockTrainingSplit | None
     failure_reasons: tuple[str, ...]
     point_in_time_parity: bool = False
     production_authority: bool = False
     terminal_holdout_opened: bool = False
-    schema_version: str = "tomorrow_v3_baostock_dataset_v1"
+    schema_version: str = "baostock_training_dataset"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         if any(_SHA256.fullmatch(value) is None for value in (self.daily_manifest_hash, self.effective_facts_hash)):
-            raise ValueError("BaoStock V3 dataset parent hash is invalid")
+            raise ValueError("BaoStock training dataset parent hash is invalid")
         reasons = tuple(sorted(set(self.failure_reasons)))
         if self.status == "dataset_ready":
             if reasons or self.split is None:
-                raise ValueError("ready BaoStock V3 dataset requires one split and no failures")
+                raise ValueError("ready BaoStock training dataset requires one split and no failures")
             if self.split.parent_manifest_hash != self.daily_manifest_hash:
-                raise ValueError("BaoStock V3 dataset split parent mismatch")
+                raise ValueError("BaoStock training dataset split parent mismatch")
             if self.label_contract != self.split.label_contract:
-                raise ValueError("BaoStock V3 dataset label contract does not match its split")
+                raise ValueError("BaoStock training dataset label contract does not match its split")
         elif self.status == "historical_data_insufficient":
             if not reasons or self.split is not None:
-                raise ValueError("insufficient BaoStock V3 dataset requires failures and no split")
+                raise ValueError("insufficient BaoStock training dataset requires failures and no split")
         else:
-            raise ValueError("BaoStock V3 dataset status is invalid")
+            raise ValueError("BaoStock training dataset status is invalid")
         if self.point_in_time_parity or self.production_authority or self.terminal_holdout_opened:
-            raise ValueError("BaoStock V3 dataset cannot authorize parity, production, or open holdouts")
-        if self.schema_version != "tomorrow_v3_baostock_dataset_v1":
-            raise ValueError("BaoStock V3 dataset schema is invalid")
+            raise ValueError("BaoStock training dataset cannot authorize parity, production, or open holdouts")
+        if self.schema_version != "baostock_training_dataset":
+            raise ValueError("BaoStock training dataset schema is invalid")
         object.__setattr__(self, "failure_reasons", reasons)
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
 
-def build_baostock_v3_dataset_manifest(
+def build_baostock_training_dataset_manifest(
     daily: BaoStockDailyManifest,
     effective_facts: HistoricalEffectiveFactsAudit,
     complete_dates: tuple[date, ...],
-) -> BaoStockV3DatasetManifest:
+) -> BaoStockTrainingDatasetManifest:
     reasons = set(daily.audit.failure_reasons)
     reasons.update(effective_facts.failure_reasons)
-    if not reasons and len(complete_dates) < BAOSTOCK_MIN_V3_DATES:
-        reasons.add("v3_complete_dates_below_1250")
+    if not reasons and len(complete_dates) < BAOSTOCK_MIN_TRAINING_DATES:
+        reasons.add("training_dates_below_1250")
     if reasons:
-        return BaoStockV3DatasetManifest(
+        return BaoStockTrainingDatasetManifest(
             daily.content_hash,
             effective_facts.content_hash,
-            BaoStockV3LabelContract(),
+            BaoStockTrainingLabelContract(),
             "historical_data_insufficient",
             None,
             tuple(reasons),
         )
-    split = build_baostock_v3_split(complete_dates, parent_manifest_hash=daily.content_hash)
-    return BaoStockV3DatasetManifest(
+    split = build_baostock_training_split(complete_dates, parent_manifest_hash=daily.content_hash)
+    return BaoStockTrainingDatasetManifest(
         daily.content_hash,
         effective_facts.content_hash,
         split.label_contract,
@@ -1042,12 +1052,12 @@ __all__ = [
     "BaoStockSourceVersions",
     "BaoStockTrainingRow",
     "BaoStockTradingStatus",
-    "BaoStockV3LabelContract",
-    "BaoStockV3DatasetManifest",
-    "BaoStockV3DatasetStatus",
-    "BaoStockV3Split",
+    "BaoStockTrainingLabelContract",
+    "BaoStockTrainingDatasetManifest",
+    "BaoStockTrainingDatasetStatus",
+    "BaoStockTrainingSplit",
     "build_baostock_coverage_audit",
-    "build_baostock_v3_split",
-    "build_baostock_v3_dataset_manifest",
+    "build_baostock_training_split",
+    "build_baostock_training_dataset_manifest",
     "join_baostock_daily_sides",
 ]

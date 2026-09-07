@@ -442,7 +442,7 @@ def test_gateway_full_market_cache_avoids_duplicate_physical_requests_and_report
         circuit_breaker_failures=3,
         circuit_breaker_seconds=60,
         cache=cache,
-        source_contract_versions=runtime.market_data.source_contract_versions,
+        source_contracts=runtime.market_data.source_contracts,
         config_version=runtime.config_version,
         wall_clock=lambda: NOW,
     )
@@ -483,7 +483,7 @@ def test_gateway_negative_refresh_keeps_failure_degradation_with_last_valid_valu
         circuit_breaker_failures=3,
         circuit_breaker_seconds=60,
         cache=cache,
-        source_contract_versions=runtime.market_data.source_contract_versions,
+        source_contracts=runtime.market_data.source_contracts,
         config_version=runtime.config_version,
         wall_clock=lambda: NOW,
     )
@@ -563,7 +563,7 @@ def test_gateway_background_refresh_failure_uses_negative_cache_to_suppress_retr
         circuit_breaker_seconds=60,
         worker_pool=pool,
         cache=cache,
-        source_contract_versions=runtime.market_data.source_contract_versions,
+        source_contracts=runtime.market_data.source_contracts,
         config_version=runtime.config_version,
         monotonic=monotonic,
         wall_clock=lambda: NOW,

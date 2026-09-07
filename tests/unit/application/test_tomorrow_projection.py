@@ -34,7 +34,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 class _ProductionPredictor:
     profile_id = "v2"
-    model_id = "daily_reconstructible_ensemble_v1"
+    model_id = "daily_reconstructible_ensemble"
     model_hash = "b" * 64
     feature_ids = (
         "qfq_return_1d",
@@ -101,7 +101,7 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     assert projection.local.selection_diagnostics.executable_threshold == 78.0
     assert projection.local.selection_diagnostics.observation_floor == 73.0
     assert projection.input_quality.history_required_sessions == 61
-    assert ("score_model", f"daily_reconstructible_ensemble_v1:{'b' * 64}") in projection.local.input_versions
+    assert ("score_model", f"daily_reconstructible_ensemble:{'b' * 64}") in projection.local.input_versions
     assert all(item.model_diagnostics is not None for item in projection.local.items)
     assert all(
         item.model_diagnostics.predicted_net_excess_pct > 0 for item in projection.local.items if item.model_diagnostics
@@ -245,7 +245,7 @@ def test_tomorrow_model_history_coverage_requires_the_active_profile_fields(
             2,
         ).values
     )
-    missing_values["p2_momentum_60d_skip5"] = None
+    missing_values["qfq_momentum_60d_skip5"] = None
     incomplete = replace(
         _with_model_features(
             _verified_feature(application_feature_factory("600002", EVALUATED_AT - timedelta(seconds=10))),
@@ -457,14 +457,14 @@ def _with_model_features(feature: FeatureSnapshot, index: int) -> FeatureSnapsho
     offset = index / 1000.0
     values.update(
         {
-            "p2_return_1d": 0.01 + offset,
-            "p2_return_3d": 0.02 + offset,
-            "p2_return_5d": 0.03 + offset,
-            "p2_momentum_20d_skip5": 0.04 + offset,
-            "p2_momentum_40d_skip5": 0.05 + offset,
-            "p2_momentum_60d_skip5": 0.06 + offset,
-            "p2_amihud_20d": 0.001 + offset,
-            "p2_average_amount_20d": 100_000_000.0 + index,
+            "qfq_return_1d": 0.01 + offset,
+            "qfq_return_3d": 0.02 + offset,
+            "qfq_return_5d": 0.03 + offset,
+            "qfq_momentum_20d_skip5": 0.04 + offset,
+            "qfq_momentum_40d_skip5": 0.05 + offset,
+            "qfq_momentum_60d_skip5": 0.06 + offset,
+            "qfq_amihud_20d": 0.001 + offset,
+            "qfq_average_amount_20d": 100_000_000.0 + index,
         }
     )
     return replace(feature, values=values, history_days=61)

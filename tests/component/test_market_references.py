@@ -561,7 +561,7 @@ def test_reference_refresh_reuses_cache_and_refreshes_due_entries_inside_tushare
         worker_pool=pool,
         source_lanes=lanes,
         cache=cache,
-        source_contract_versions=runtime.market_data.source_contract_versions,
+        source_contracts=runtime.market_data.source_contracts,
         config_version=runtime.config_version,
         monotonic=monotonic,
         wall_clock=lambda: NOW,
@@ -579,7 +579,7 @@ def test_reference_refresh_reuses_cache_and_refreshes_due_entries_inside_tushare
         worker_pool=pool,
         source_lanes=lanes,
         cache=cache,
-        source_contract_versions=runtime.market_data.source_contract_versions,
+        source_contracts=runtime.market_data.source_contracts,
         config_version=runtime.config_version,
         wall_clock=lambda: NOW,
     )
@@ -720,7 +720,7 @@ def test_reference_refresh_structures_tushare_history_valuation_and_financial_da
         worker_pool=pool,
         source_lanes=lanes,
         cache=cache,
-        source_contract_versions=runtime.market_data.source_contract_versions,
+        source_contracts=runtime.market_data.source_contracts,
         config_version=runtime.config_version,
         wall_clock=lambda: AFTERNOON,
     )
@@ -737,7 +737,7 @@ def test_reference_refresh_structures_tushare_history_valuation_and_financial_da
         worker_pool=pool,
         source_lanes=lanes,
         cache=cache,
-        source_contract_versions=runtime.market_data.source_contract_versions,
+        source_contracts=runtime.market_data.source_contracts,
         config_version=runtime.config_version,
         wall_clock=lambda: AFTERNOON,
     )
@@ -965,7 +965,7 @@ def test_equal_quote_version_can_gain_new_tushare_board_metadata_from_cache_hit(
         circuit_breaker_failures=3,
         circuit_breaker_seconds=60,
         cache=cache,
-        source_contract_versions=runtime.market_data.source_contract_versions,
+        source_contracts=runtime.market_data.source_contracts,
         config_version=runtime.config_version,
         wall_clock=lambda: NOW,
     )

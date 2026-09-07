@@ -4,16 +4,16 @@ from dataclasses import replace
 
 import pytest
 
+from tests.unit.application.research.test_historical_extraction import _Evaluator, _WindowPort
 from tests.unit.application.research.test_historical_ports import TRADE_DATE, _bundle, _summary
-from tests.unit.application.research.test_score_r2_extraction import _Evaluator, _WindowPort
-from trader.application.research.extraction import ScoreR2HistoricalExtractor
+from trader.application.research.extraction import HistoricalExtractor
 from trader.application.research.factor_diagnostic_models import (
     FactorDiagnosticDimensionRecord,
     FactorDiagnosticDimensions,
 )
 from trader.application.research.factor_diagnostics import ScoreNativeFactorDiagnostics
 from trader.application.research.models import HistoricalEvaluatedCandidate, HistoricalFullFieldBundle
-from trader.application.research.replay import ScoreR3BaselineReplayer
+from trader.application.research.replay import HistoricalBaselineReplayer
 from trader.application.research.replay_models import BaselineReplaySelection
 from trader.domain.research.historical import ScoreComponent
 
@@ -125,8 +125,8 @@ class _GenericReplayEvaluator:
 
 
 def _evidence():  # noqa: ANN202
-    extraction = ScoreR2HistoricalExtractor(_FactorPort(), _FactorEvaluator()).extract()
-    baseline = ScoreR3BaselineReplayer(_FactorReplayEvaluator()).replay(extraction)
+    extraction = HistoricalExtractor(_FactorPort(), _FactorEvaluator()).extract()
+    baseline = HistoricalBaselineReplayer(_FactorReplayEvaluator()).replay(extraction)
     day = extraction.days[0]
     dimensions = FactorDiagnosticDimensions(
         extraction.content_hash,
@@ -178,15 +178,15 @@ def test_native_factor_report_covers_metrics_and_binds_r2_r3_evidence() -> None:
 def test_native_factor_report_rejects_mismatched_parent_and_dimension_identity() -> None:
     extraction, baseline, dimensions = _evidence()
 
-    with pytest.raises(ValueError, match="R3 baseline"):
+    with pytest.raises(ValueError, match="historical replay baseline"):
         ScoreNativeFactorDiagnostics().evaluate(extraction, replace(baseline, extraction_hash="f" * 64), dimensions)
     with pytest.raises(ValueError, match="dimension"):
         ScoreNativeFactorDiagnostics().evaluate(extraction, baseline, replace(dimensions, extraction_hash="f" * 64))
 
 
 def test_native_factor_report_only_marks_exactly_40_valid_parent_days_evaluated() -> None:
-    extraction = ScoreR2HistoricalExtractor(_WindowPort(), _Evaluator()).extract()
-    baseline = ScoreR3BaselineReplayer(_GenericReplayEvaluator()).replay(extraction)
+    extraction = HistoricalExtractor(_WindowPort(), _Evaluator()).extract()
+    baseline = HistoricalBaselineReplayer(_GenericReplayEvaluator()).replay(extraction)
     dimensions = FactorDiagnosticDimensions(
         extraction.content_hash,
         tuple(

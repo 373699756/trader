@@ -430,10 +430,9 @@ def test_research_status_is_historical_only_and_does_not_create_runtime_files(tm
     assert payload["validation_mode"] == "historical_only"
     assert payload["recorded_trade_dates"] == []
     assert payload["outcomes"]["initialized"] is False
-    assert payload["score_r6_executable"] is False
     assert payload["blockers"] == ["score_h0_archive_coverage_incomplete"]
-    assert payload["tomorrow_p2"]["validation_mode"] == "historical_only"
-    assert payload["tomorrow_v2_historical_risk"] == {
+    assert payload["tomorrow_historical"]["validation_mode"] == "historical_only"
+    assert payload["tomorrow_historical_risk"] == {
         "model_artifact_hash": "",
         "production_authority": False,
         "report_hash": "",
@@ -453,12 +452,12 @@ def test_research_status_is_historical_only_and_does_not_create_runtime_files(tm
     assert payload["retired_research"] == [
         {
             "blocker": "historical_point_in_time_missing",
-            "research_identity": "score_p0_v1",
+            "research_identity": "historical_research_baseline",
             "status": "historical_rejected",
         },
         {
             "blocker": "fixed_historical_dates_missed",
-            "research_identity": "score_p0_v2",
+            "research_identity": "preregistered_research",
             "status": "historical_collection_failed",
         },
     ]
@@ -525,7 +524,7 @@ def test_train_tomorrow_passes_the_explicit_history_root_to_the_training_owner(
             failure_reasons=("history_manifest_unavailable",),
         )
 
-    monkeypatch.setattr("trader.infra.research.tomorrow_v3_training.run_tomorrow_v3_training", train)
+    monkeypatch.setattr("trader.infra.scoring.profiles.v3.training.run_tomorrow_training", train)
 
     assert (
         main(

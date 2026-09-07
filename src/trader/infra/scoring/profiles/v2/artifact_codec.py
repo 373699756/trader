@@ -8,11 +8,11 @@ from typing import Literal, cast
 
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
 
-_AUTHORIZED_HASH = "27034e52813f1776e2ed218c1c397f481b244fb852b01be08ddc21249d887da5"
+_AUTHORIZED_HASH = "8397657c9ae83d2e774dc533a30f477a1ec599bc9fb82b60fae014a0b0202012"
 
 
 @dataclass(frozen=True)
-class V2TomorrowModelArtifact:
+class TomorrowModelArtifact:
     profile_id: Literal["v2"]
     model_id: str
     feature_ids: tuple[str, ...]
@@ -27,7 +27,7 @@ class V2TomorrowModelArtifact:
     content_hash: str
 
 
-def decode_v2_tomorrow_artifact(document: object) -> V2TomorrowModelArtifact:
+def decode_tomorrow_artifact(document: object) -> TomorrowModelArtifact:
     if not isinstance(document, dict):
         raise TypeError("packaged Tomorrow V2 production model must be a JSON object")
     payload = cast(dict[str, object], dict(document))
@@ -55,14 +55,14 @@ def decode_v2_tomorrow_artifact(document: object) -> V2TomorrowModelArtifact:
         or _integer(payload, "lightgbm_best_iteration") < 1
         or training_rows < 1
         or not 1 <= internal_validation_rows < training_rows
-        or _text(payload, "schema_version") != "score_tomorrow_historical_p2_model_v1"
+        or _text(payload, "schema_version") != "score_tomorrow_historical_model_v1"
         or any(not math.isfinite(value) for value in (*means, *scales, intercept, *coefficients))
         or any(value <= 0.0 for value in scales)
     ):
         raise ValueError("packaged Tomorrow V2 production model identity is invalid")
-    return V2TomorrowModelArtifact(
+    return TomorrowModelArtifact(
         "v2",
-        model_id,
+        "daily_reconstructible_ensemble",
         feature_ids,
         means,
         scales,
@@ -113,4 +113,4 @@ def _number_list(payload: dict[str, object], name: str) -> list[float]:
     return [float(item) for item in value]
 
 
-__all__ = ["V2TomorrowModelArtifact", "decode_v2_tomorrow_artifact"]
+__all__ = ["TomorrowModelArtifact", "decode_tomorrow_artifact"]

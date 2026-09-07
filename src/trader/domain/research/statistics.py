@@ -1,4 +1,4 @@
-"""Pure preregistered Score-R5 paired statistics."""
+"""Pure preregistered Stability analysis paired statistics."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from trader.domain.research.paired_statistics import (
     paired_moving_block_statistics,
     preregistered_seed,
 )
-from trader.domain.research.specification import SCORE_P0_V1_SPEC, ScoreResearchSpec
+from trader.domain.research.specification import HISTORICAL_RESEARCH_SPEC, ScoreResearchSpec
 
 BOOTSTRAP_MASTER_SEED = 20260811
 BOOTSTRAP_REPETITIONS = 10_000
@@ -60,12 +60,12 @@ def bootstrap_seed(
     variant_id: ChallengerVariantId,
     block_days: int,
     *,
-    spec: ScoreResearchSpec = SCORE_P0_V1_SPEC,
+    spec: ScoreResearchSpec = HISTORICAL_RESEARCH_SPEC,
 ) -> int:
     if variant_id not in VARIANT_FAMILY:
-        raise ValueError("Score-R5 bootstrap requires a preregistered variant")
+        raise ValueError("Stability analysis bootstrap requires a preregistered variant")
     if block_days not in BOOTSTRAP_BLOCK_DAYS:
-        raise ValueError("Score-R5 bootstrap requires a preregistered block length")
+        raise ValueError("Stability analysis bootstrap requires a preregistered block length")
     return preregistered_seed(spec.research_identity, spec.bootstrap_master_seed, variant_id, block_days)
 
 
@@ -75,7 +75,7 @@ def paired_moving_block_bootstrap(
     variant_id: ChallengerVariantId,
     block_days: int,
     *,
-    spec: ScoreResearchSpec = SCORE_P0_V1_SPEC,
+    spec: ScoreResearchSpec = HISTORICAL_RESEARCH_SPEC,
 ) -> PairedBootstrapResult:
     """Bootstrap two aligned daily metrics with identical non-circular block indices."""
 
@@ -115,10 +115,10 @@ def holm_step_down(
     """Apply the fixed five-member Holm family without dropping invalid variants."""
 
     if set(p_values) != set(VARIANT_FAMILY):
-        raise ValueError("Score-R5 Holm input must contain the fixed five-variant family")
+        raise ValueError("Stability analysis Holm input must contain the fixed five-variant family")
     for value in p_values.values():
         if value is not None and (not math.isfinite(value) or not 0.0 <= value <= 1.0):
-            raise ValueError("Score-R5 Holm p-values must be finite and in [0, 1]")
+            raise ValueError("Stability analysis Holm p-values must be finite and in [0, 1]")
     generic_p_values: dict[str, float | None] = {str(key): value for key, value in p_values.items()}
     decisions = fixed_family_holm(generic_p_values, family=VARIANT_FAMILY, alpha=HOLM_ALPHA)
     return tuple(
@@ -135,9 +135,9 @@ def holm_step_down(
 
 def _validate_series(values: tuple[float, ...], paired_metric: tuple[float, ...]) -> None:
     if len(values) != len(paired_metric):
-        raise ValueError("Score-R5 paired bootstrap series must have identical lengths")
+        raise ValueError("Stability analysis paired bootstrap series must have identical lengths")
     if any(not math.isfinite(value) for value in (*values, *paired_metric)):
-        raise ValueError("Score-R5 paired bootstrap inputs must be finite")
+        raise ValueError("Stability analysis paired bootstrap inputs must be finite")
 
 
 __all__ = [

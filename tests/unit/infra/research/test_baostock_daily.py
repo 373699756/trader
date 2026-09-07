@@ -24,9 +24,10 @@ from trader.domain.research.baostock_daily import (
 from trader.infra.research.baostock_daily import (
     BaoStockDailyArtifactConflictError,
     BaoStockDailyPartitionedArchive,
-    BaoStockV3TrainingInputArchive,
+    BaoStockTrainingTrainingInputArchive,
     SQLiteBaoStockDailyShard,
 )
+from trader.infra.research.baostock_daily_serialization import _decode_spec
 
 
 def _side(code: str, day: date, adjustment: str, close: float = 10.2) -> BaoStockDailySide:
@@ -91,7 +92,29 @@ def test_new_baostock_objects_use_stable_schema_names_and_reject_unknown_version
         replace(fact, schema_version="unsupported_daily_fact_schema")
     with pytest.raises(ValueError, match="interval"):
         replace(interval, schema_version="unsupported_industry_schema")
-    assert spec.schema_version == "score_baostock_daily_core_v2"
+    assert spec.schema_version == "baostock_daily_core"
+
+
+def test_legacy_baostock_spec_is_decode_only_and_keeps_its_frozen_hash() -> None:
+    raw = {
+        "sessions": 2000,
+        "research_identity": "score_baostock_daily_core_v2",
+        "source_cutoff": "2026-08-31",
+        "production_authority": False,
+        "point_in_time_parity": False,
+        "schema_version": "score_baostock_daily_core_v2",
+    }
+
+    decoded = _decode_spec(raw)
+
+    assert decoded.research_identity == raw["research_identity"]
+    assert decoded.schema_version == raw["schema_version"]
+    assert len(decoded.content_hash) == 64
+    with pytest.raises(ValueError, match="identity"):
+        BaoStockDailySpec(
+            research_identity=str(raw["research_identity"]),
+            schema_version=str(raw["schema_version"]),
+        )
 
 
 def test_sqlite_reads_legacy_calendar_and_training_hashes_without_rewriting_identity(tmp_path) -> None:
@@ -235,7 +258,7 @@ def test_partition_manifest_is_order_independent_hash_bound_and_has_no_merged_da
     assert left.terminal_holdout_opened is False
     descriptor = BaoStockDailyPartitionedArchive(tmp_path / "left").describe_frozen_daily_input()
     assert descriptor.manifest_hash == left.content_hash
-    assert descriptor.source_identity == "score_baostock_daily_core_v2"
+    assert descriptor.source_identity == "baostock_daily_core"
     assert descriptor.requested_sessions == 3
     assert descriptor.raw_qfq_layout == "same_row"
     assert {field.name for field in descriptor.fields} >= {"raw_close", "qfq_close", "board"}
@@ -285,7 +308,7 @@ def test_partial_training_input_seals_only_ready_checkpoints_and_remains_stable_
     main.save_batch(spec, _batch("600001", calendar))
     main.save_training_facts(spec, "600001", _facts("600001", calendar), _industry("600001", calendar))
 
-    archive = BaoStockV3TrainingInputArchive.open(root, sessions=3, allow_partial_history=True)
+    archive = BaoStockTrainingTrainingInputArchive.open(root, sessions=3, allow_partial_history=True)
     initial_hash = archive.snapshot.content_hash
 
     assert archive.snapshot.input_scope == "partial_checkpoint"
@@ -315,9 +338,9 @@ def test_partial_training_input_requires_explicit_authorization_and_rejects_hash
     shard.save_training_facts(spec, "600001", _facts("600001", calendar), industry)
 
     with pytest.raises(BaoStockDailyArtifactConflictError, match="manifest"):
-        BaoStockV3TrainingInputArchive.open(root, sessions=3, allow_partial_history=False)
+        BaoStockTrainingTrainingInputArchive.open(root, sessions=3, allow_partial_history=False)
 
-    archive = BaoStockV3TrainingInputArchive.open(root, sessions=3, allow_partial_history=True)
+    archive = BaoStockTrainingTrainingInputArchive.open(root, sessions=3, allow_partial_history=True)
     with sqlite3.connect(path) as connection:
         connection.execute(
             "UPDATE training_fact_checkpoints SET content_hash=? WHERE code='600001'",

@@ -92,7 +92,7 @@ def _encode(report: HistoricalEffectiveFactsAudit) -> dict[str, object]:
         "status": report.status,
         "failure_reasons": list(report.failure_reasons),
         "point_in_time_parity": report.point_in_time_parity,
-        "v3_training_authority": report.v3_training_authority,
+        "training_authority": report.training_authority,
         "production_authority": report.production_authority,
         "schema_version": report.schema_version,
     }
@@ -104,7 +104,7 @@ def _decode(raw: dict[str, object]) -> HistoricalEffectiveFactsAudit:
         "status",
         "failure_reasons",
         "point_in_time_parity",
-        "v3_training_authority",
+        "training_authority",
         "production_authority",
         "schema_version",
     }
@@ -123,7 +123,7 @@ def _decode(raw: dict[str, object]) -> HistoricalEffectiveFactsAudit:
         status=cast(HistoricalEffectiveFactsStatus, _string(raw["status"])),
         failure_reasons=tuple(cast(list[str], reasons)),
         point_in_time_parity=_boolean(raw["point_in_time_parity"]),
-        v3_training_authority=_boolean(raw["v3_training_authority"]),
+        training_authority=_boolean(raw["training_authority"]),
         production_authority=_boolean(raw["production_authority"]),
         schema_version=_string(raw["schema_version"]),
     )

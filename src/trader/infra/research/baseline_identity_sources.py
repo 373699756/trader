@@ -8,9 +8,9 @@ from pathlib import Path
 
 from trader.application.research.baseline_identity_audit import BaselineIdentityEvidence
 from trader.domain.research.baseline_identity import BaselineIdentityClaim, source_hash
-from trader.infra.research.tomorrow_historical_p2_artifacts import (
-    TomorrowHistoricalP2ArtifactConflictError,
-    TomorrowHistoricalP2ArtifactStore,
+from trader.infra.research.tomorrow_historical_artifacts import (
+    TomorrowHistoricalArtifactConflictError,
+    TomorrowHistoricalArtifactStore,
 )
 from trader.infra.scoring.profile_factory import load_scoring_profile
 from trader.infra.settings import RuntimeSettings, load_strategy_settings
@@ -36,19 +36,21 @@ def load_baseline_identity_evidence(runtime: RuntimeSettings) -> PackagedBaselin
     strategy_doc_path = runtime.project_root / "docs/01_评分逻辑.md"
     v1 = load_scoring_profile("v1").identity
     v2 = load_scoring_profile("v2").identity
-    p2_store = TomorrowHistoricalP2ArtifactStore(runtime.runtime_dir / "score-tomorrow-p2")
-    p2_source = runtime.runtime_dir / "score-tomorrow-p2"
-    p2_conflict = False
+    historical_store = TomorrowHistoricalArtifactStore(runtime.runtime_dir / "tomorrow-historical")
+    historical_source = runtime.runtime_dir / "tomorrow-historical"
+    historical_conflict = False
     try:
-        p2_report = p2_store.read_report_payload()
-    except TomorrowHistoricalP2ArtifactConflictError:
-        p2_report = None
-        p2_conflict = True
-    p2_report_hash = _optional_text(p2_report, "content_hash")
-    p2_model_hash = _optional_text(p2_report, "model_artifact_hash")
-    p2_status = "artifact_conflict" if p2_conflict else _optional_text(p2_report, "status")
-    p2_hash_source = source_hash(str(p2_source / "historical-report.json"))
-    p2_binding = "conflict" if p2_conflict else "bound" if p2_report_hash and p2_model_hash else None
+        historical_report = historical_store.read_report_payload()
+    except TomorrowHistoricalArtifactConflictError:
+        historical_report = None
+        historical_conflict = True
+    historical_report_hash = _optional_text(historical_report, "content_hash")
+    historical_model_hash = _optional_text(historical_report, "model_artifact_hash")
+    historical_status = "artifact_conflict" if historical_conflict else _optional_text(historical_report, "status")
+    historical_hash_source = source_hash(str(historical_source / "historical-report.json"))
+    historical_binding = (
+        "conflict" if historical_conflict else "bound" if historical_report_hash and historical_model_hash else None
+    )
     claims = (
         BaselineIdentityClaim(
             "active_profile",
@@ -59,31 +61,31 @@ def load_baseline_identity_evidence(runtime: RuntimeSettings) -> PackagedBaselin
         ),
         BaselineIdentityClaim(
             "v1_model_identity",
-            "v1_manual_residual_momentum_v1",
+            "residual_momentum_linear",
             v1.model_id,
-            "trader.resources.models.tomorrow_v1_model.json",
+            "trader.infra.scoring.profiles.v1/model.json",
             source_hash(v1.model_hash),
         ),
         BaselineIdentityClaim(
             "v2_model_identity",
-            "daily_reconstructible_ensemble_v1",
+            "daily_reconstructible_ensemble",
             v2.model_id,
-            "trader.resources.models.tomorrow_p2_model.json",
+            "trader.infra.scoring.profiles.v2/model.json",
             source_hash(v2.model_hash),
         ),
         BaselineIdentityClaim(
-            "p2_historical_conclusion",
+            "historical_screening_conclusion",
             "historical_rejected",
-            p2_status,
-            str(p2_source / "historical-report.json"),
-            p2_hash_source,
+            historical_status,
+            str(historical_source / "historical-report.json"),
+            historical_hash_source,
         ),
         BaselineIdentityClaim(
-            "p2_model_report_binding",
+            "historical_model_report_binding",
             "bound",
-            p2_binding,
-            str(p2_source / "historical-report.json"),
-            p2_hash_source,
+            historical_binding,
+            str(historical_source / "historical-report.json"),
+            historical_hash_source,
             required=False,
         ),
         BaselineIdentityClaim(

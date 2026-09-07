@@ -1,4 +1,4 @@
-"""Deterministic two-phase extraction for the preregistered Score-R2 window."""
+"""Deterministic two-phase extraction for the preregistered Historical extraction window."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from trader.application.research.models import (
     HistoricalCoverageRecord,
     HistoricalEvaluatedCandidate,
     HistoricalExtractedDay,
-    ScoreR2HistoricalExtraction,
+    HistoricalExtraction,
 )
 from trader.application.research.ports import HistoricalCandidateEvaluator, HistoricalDataPlaneReadPort
 from trader.domain.research.historical import (
@@ -22,25 +22,25 @@ from trader.domain.research.historical import (
     optimistic_component_upper_bound,
     optimistic_final_upper_bound,
 )
-from trader.domain.research.specification import SCORE_P0_V1_SPEC, ScoreResearchSpec
+from trader.domain.research.specification import HISTORICAL_RESEARCH_SPEC, ScoreResearchSpec
 
-_PROOF_RULE_VERSION = "score_r2_active_set"
+_PROOF_RULE_VERSION = "historical_active_set"
 
 
 @dataclass(frozen=True)
-class ScoreR2ExtractionPolicy:
+class HistoricalExtractionPolicy:
     top_k: int = 6
     maximum_board_fraction: float = 0.6
     maximum_per_industry: int = 2
 
     def __post_init__(self) -> None:
         if not 1 <= self.top_k <= 6:
-            raise ValueError("Score-R2 TopK must be in [1, 6]")
+            raise ValueError("Historical extraction TopK must be in [1, 6]")
         if not 0.0 < self.maximum_board_fraction <= 1.0 or self.maximum_per_industry < 1:
-            raise ValueError("Score-R2 concentration limits are invalid")
+            raise ValueError("Historical extraction concentration limits are invalid")
 
 
-class ScoreR2HistoricalExtractor:
+class HistoricalExtractor:
     """Read only point-in-time evidence and retain a provably sufficient active set."""
 
     def __init__(
@@ -48,16 +48,16 @@ class ScoreR2HistoricalExtractor:
         data_plane: HistoricalDataPlaneReadPort,
         evaluator: HistoricalCandidateEvaluator,
         *,
-        policy: ScoreR2ExtractionPolicy | None = None,
-        spec: ScoreResearchSpec = SCORE_P0_V1_SPEC,
+        policy: HistoricalExtractionPolicy | None = None,
+        spec: ScoreResearchSpec = HISTORICAL_RESEARCH_SPEC,
     ) -> None:
         self._data_plane = data_plane
         self._evaluator = evaluator
-        self._policy = policy or ScoreR2ExtractionPolicy()
+        self._policy = policy or HistoricalExtractionPolicy()
         self._spec = spec
         self._maximum_board_count = math.ceil(self._policy.top_k * self._policy.maximum_board_fraction)
 
-    def extract(self) -> ScoreR2HistoricalExtraction:
+    def extract(self) -> HistoricalExtraction:
         coverage: list[HistoricalCoverageRecord] = []
         days: list[HistoricalExtractedDay] = []
         for trade_date in self._spec.historical_dates:
@@ -70,14 +70,16 @@ class ScoreR2HistoricalExtractor:
             days = sorted(days, key=lambda item: item.summary.trade_date)[-self._spec.maximum_historical_days :]
             retained = {item.summary.trade_date for item in days}
             coverage = [item for item in coverage if item.status == "failed" or item.trade_date in retained]
-        return ScoreR2HistoricalExtraction(
+        return HistoricalExtraction(
             status="extracted" if len(days) == self._spec.maximum_historical_days else "exploratory",
             coverage=tuple(coverage),
             days=tuple(days),
             research_identity=self._spec.research_identity,
             research_spec_hash=self._spec.content_hash,
             schema_version=(
-                "score_r2_historical" if self._spec.research_identity == "score_p0_v2" else "score_r2_historical_legacy"
+                "historical_extraction"
+                if self._spec.research_identity == "preregistered_research"
+                else "historical_extraction_legacy"
             ),
         )
 
@@ -183,7 +185,7 @@ def _can_enter(
     pool: ResearchSelectionPool,
     evaluated: tuple[HistoricalEvaluatedCandidate, ...],
     *,
-    policy: ScoreR2ExtractionPolicy,
+    policy: HistoricalExtractionPolicy,
     maximum_board_count: int,
 ) -> bool:
     optimistic = HistoricalEvaluatedCandidate(
@@ -238,7 +240,7 @@ def _proofs(
     evaluated: tuple[HistoricalEvaluatedCandidate, ...],
     loaded_codes: set[str],
     *,
-    policy: ScoreR2ExtractionPolicy,
+    policy: HistoricalExtractionPolicy,
     maximum_board_count: int,
 ) -> tuple[HistoricalCandidateProof, ...]:
     frontiers = {
@@ -309,4 +311,4 @@ def _coverage_reason(exc: Exception) -> str:
     return "point_in_time_evidence_invalid"
 
 
-__all__ = ["ScoreR2ExtractionPolicy", "ScoreR2HistoricalExtractor"]
+__all__ = ["HistoricalExtractionPolicy", "HistoricalExtractor"]

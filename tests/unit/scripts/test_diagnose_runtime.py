@@ -83,7 +83,7 @@ def test_history_profile_passes_explicit_source_to_the_bounded_probe(source: str
         ("security-master", "exchange_security_master"),
         ("tencent", "tencent_quotes"),
         ("tushare", "tushare_daily"),
-        ("research", "score_p0_readiness"),
+        ("research", "research_readiness"),
         ("browser", "browser_refresh"),
         ("performance", "production_performance"),
     ],
@@ -95,10 +95,10 @@ def test_single_check_profiles_preserve_targeted_gate_execution(profile: str, ex
     assert commands[0].argv[:2] == ("/python", "-m")
 
 
-def test_research_profile_runs_only_score_p0_readiness_probe() -> None:
+def test_research_profile_runs_only_research_readiness_probe() -> None:
     commands = build_commands(_options(profile="research"), python_executable="/python")
 
-    assert tuple(command.name for command in commands) == ("score_p0_readiness",)
+    assert tuple(command.name for command in commands) == ("research_readiness",)
     assert commands[0].argv == (
         "/python",
         "-m",
@@ -114,7 +114,7 @@ def test_research_status_projection_uses_current_baostock_and_v3_blockers() -> N
         "research",
         (
             DiagnosticResult(
-                "score_p0_readiness",
+                "research_readiness",
                 0,
                 4.0,
                 {
@@ -127,7 +127,7 @@ def test_research_status_projection_uses_current_baostock_and_v3_blockers() -> N
                         "failed_codes": 1,
                         "failure_reasons": ["supplier_login_failed_blacklisted"],
                         "historical_effective_facts_status": "historical_data_insufficient",
-                        "v3_dataset_status": "historical_data_insufficient",
+                        "training_dataset_status": "historical_data_insufficient",
                         "production_authority": False,
                         "point_in_time_parity": False,
                     },
@@ -158,7 +158,7 @@ def test_research_status_projection_uses_current_baostock_and_v3_blockers() -> N
         "failed_codes": 1,
         "failure_reasons": ["supplier_login_failed_blacklisted"],
         "historical_effective_facts_status": "historical_data_insufficient",
-        "v3_dataset_status": "historical_data_insufficient",
+        "training_dataset_status": "historical_data_insufficient",
         "production_authority": False,
         "point_in_time_parity": False,
     }
@@ -181,7 +181,7 @@ def test_research_status_projection_rejects_unsupported_schema() -> None:
         "research",
         (
             DiagnosticResult(
-                "score_p0_readiness",
+                "research_readiness",
                 0,
                 1.0,
                 {"schema_version": "research_readiness_unsupported", "research_state": "historical_collecting"},

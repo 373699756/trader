@@ -66,7 +66,7 @@ class FeatureSnapshotEnvelope:
     merge_epoch: str
     data_version: str
     config_version: str
-    feature_schema_version: str
+    feature_schema: str
     content_hash: str
     feature_snapshots: tuple[FeatureSnapshot, ...]
     market_change_set: MarketChangeSet
@@ -82,7 +82,7 @@ class FeatureSnapshotEnvelope:
             "merge_epoch",
             "data_version",
             "config_version",
-            "feature_schema_version",
+            "feature_schema",
             "content_hash",
         ):
             _require_text(getattr(self, name), name)

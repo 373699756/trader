@@ -55,7 +55,7 @@ def test_parallel_overview_plan_and_operations_docs_are_retired() -> None:
     assert "达到观察线/正式线数量" in design_compact
     assert "当前可配置 Tomorrow 模型允许展示评分版本" in design_compact
     assert "loss_probability_status=not_modeled" in design_compact
-    assert "P2 路线已经终止，当前没有可继续晋级的 P2 候选" in strategy
+    assert "旧历史候选路线已经终止，当前没有可继续晋级的候选" in strategy
     assert "新的候选必须另立未读取新收益的研究身份" in strategy
     for retired in (
         "V2.md",

@@ -28,5 +28,5 @@ def test_authority_fixes_real_production_and_browser_budgets() -> None:
     assert "5500 行标准化 250ms、两源合并 600ms、统一快照可读 900ms" in authority
     assert "360 行定向 报价提交 100ms" in " ".join(authority.split())
     assert "SSE 到浏览器下一帧 100ms" in authority
-    assert "performance_budgets.schema_version=2" in authority
+    assert "稳定的 `performance_budgets` 字段合同，不设置独立编号版本" in authority
     assert "不得以占位 DataFrame 或纯序列化替代真实" in authority

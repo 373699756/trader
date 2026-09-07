@@ -125,7 +125,7 @@ def test_research_loader_recovers_cninfo_announcements_as_structured_risk(tmp_pa
             worker_pool=None,
             source_lanes=None,
             cache=None,
-            source_contract_versions={"akshare": "akshare-test"},
+            source_contracts={"akshare": "akshare-test"},
             config_version="test",
             schema_version="test",
             wall_clock=lambda: OBSERVED_AT,

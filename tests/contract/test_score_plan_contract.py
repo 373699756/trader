@@ -64,12 +64,9 @@ def test_remaining_offline_research_is_historical_and_production_isolated() -> N
     work = _compact(ROOT / "docs/03_工程实施.md")
 
     for token in (
-        "score_r6_historical_legacy",
-        "score_r6_daily_trend",
-        "score_r6_daily_stability",
-        "score_tomorrow_historical_p2",
-        "tomorrow_v1_v2_h0_holdout_report_v2",
-        "tomorrow_v2_historical_risk_probability_v1",
+        "score_tomorrow_historical",
+        "tomorrow_profile_holdout_report",
+        "tomorrow_historical_risk_probability",
     ):
         assert token in work or token in design
     assert "旧 H0 历史归档、回测和筛选命令已经退役" in design
@@ -82,9 +79,9 @@ def test_p2_historical_rejection_and_manual_production_override_remain_explicit(
     strategy = _compact(ROOT / "docs/01_评分逻辑.md")
 
     for token in (
-        "daily_reconstructible_ensemble_v1",
+        "daily_reconstructible_ensemble",
         "single_candidate_pass_or_stop",
-        "score_h0_ohlcv_cross_section",
+        "historical_ohlcv_cross_section",
         "historical_rejected",
         "manual_user_override",
         "automatic_t1_outcome_settlement",
@@ -103,7 +100,7 @@ def test_v1_v2_historical_evidence_does_not_create_a_running_collection_gate() -
     for token in (
         "不能据此断言 V2 未来更能挣钱",
         "V2 的平均成本后净增量证据强于 V1",
-        "tomorrow_v1_v2_h0_holdout_report_v2",
+        "tomorrow_profile_holdout_report",
         "不设跨年配对采集任务",
     ):
         assert token in strategy or token in work

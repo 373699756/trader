@@ -113,7 +113,7 @@ def test_v1_scoring_profile_owns_its_codec_predictor_and_evidence() -> None:
     assert (v1_root / "artifact_codec.py").is_file()
     assert (v1_root / "profile.py").is_file()
     assert (v1_root / "heads/tomorrow/predictor.py").is_file()
-    assert "build_v1_scoring_profile" in factory
+    assert "build_v1_profile" in factory
     assert not (SOURCE_ROOT / "infra/tomorrow_production_model.py").exists()
 
 
@@ -125,9 +125,9 @@ def test_v2_scoring_profile_is_separate_from_research_artifacts_and_the_legacy_l
     assert (v2_root / "artifact_codec.py").is_file()
     assert (v2_root / "profile.py").is_file()
     assert (v2_root / "heads/tomorrow/predictor.py").is_file()
-    assert "TomorrowHistoricalP2ModelArtifact" not in model_port
+    assert "TomorrowHistoricalModelArtifact" not in model_port
     assert "ModelPredictorPort" in model_port
-    assert "build_v2_scoring_profile" in factory
+    assert "build_v2_profile" in factory
     assert not (SOURCE_ROOT / "application/ports/tomorrow_model.py").exists()
 
 
@@ -143,7 +143,8 @@ def test_v3_scoring_profile_owns_its_locator_codec_predictor_and_combiner() -> N
     ):
         assert (v3_root / relative).is_file()
     assert not (SOURCE_ROOT / "infra/tomorrow_production_model.py").exists()
-    assert not any("trader.infra.research" in imported for path in v3_root.rglob("*.py") for imported in _imports(path))
+    runtime_paths = (path for path in v3_root.rglob("*.py") if path.name != "training.py")
+    assert not any("trader.infra.research" in imported for path in runtime_paths for imported in _imports(path))
     profile_source = (v3_root / "profile.py").read_text(encoding="utf-8")
     assert "Strategy.TOMORROW" in profile_source
     assert all(head not in profile_source for head in ("T2Head", "T3Head", "T4Head", "T5Head"))

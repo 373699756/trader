@@ -22,8 +22,7 @@ def test_authoritative_contracts_make_history_the_only_score_validation_source()
 
     for retired in (
         "forward_collecting",
-        "score_r5_forward_day",
-        "score_r6_forward_",
+        "online_settlement_day",
         "tomorrow_v1_v2_paired_forward",
         "等待 20 个未来",
         "前向 collector",

@@ -35,7 +35,7 @@ class HistoricalEffectiveFactsAudit:
     status: HistoricalEffectiveFactsStatus
     failure_reasons: tuple[str, ...]
     point_in_time_parity: bool = False
-    v3_training_authority: bool = False
+    training_authority: bool = False
     production_authority: bool = False
     schema_version: str = "historical_effective_facts_capability"
     content_hash: str = field(init=False)
@@ -49,7 +49,7 @@ class HistoricalEffectiveFactsAudit:
         reasons = tuple(sorted(set(self.failure_reasons)))
         if (self.status == "historical_effective_facts_ready") == bool(reasons):
             raise ValueError("historical effective-facts status and reasons are inconsistent")
-        if self.v3_training_authority != (self.status == "historical_effective_facts_ready"):
+        if self.training_authority != (self.status == "historical_effective_facts_ready"):
             raise ValueError("effective-facts training eligibility must match capability status")
         if self.point_in_time_parity or self.production_authority:
             raise ValueError("effective-facts capability audit cannot authorize parity or production")
@@ -76,7 +76,7 @@ def build_historical_effective_facts_audit(
         probes,
         "historical_effective_facts_ready" if not reasons else "historical_data_insufficient",
         reasons,
-        v3_training_authority=not reasons,
+        training_authority=not reasons,
     )
 
 

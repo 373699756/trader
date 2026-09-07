@@ -11,7 +11,7 @@ from trader.application.research.historical_screening import (
     HistoricalArchiveStatus,
     HistoricalHistoryIdentity,
 )
-from trader.domain.research.historical_screening import SCORE_H0_V1_SPEC
+from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC
 
 
 class _Evidence:
@@ -19,11 +19,11 @@ class _Evidence:
     def inspect(_identity):
         return HistoricalArchiveStatus(
             initialized=True,
-            research_identity="score_h0_v1",
+            research_identity="historical_screening",
             universe_count=100,
             completed_codes=98,
             bar_count=1000,
-            spec_hash=SCORE_H0_V1_SPEC.content_hash,
+            spec_hash=HISTORICAL_SCREENING_SPEC.content_hash,
         )
 
     @staticmethod
@@ -39,8 +39,8 @@ class _Evidence:
     @staticmethod
     def manifest(_spec):
         return HistoricalArchiveManifest(
-            research_identity="score_h0_v1",
-            spec_hash=SCORE_H0_V1_SPEC.content_hash,
+            research_identity="historical_screening",
+            spec_hash=HISTORICAL_SCREENING_SPEC.content_hash,
             universe_hash="1" * 64,
             histories_hash="2" * 64,
             histories=(HistoricalHistoryIdentity("600001", 640, "3" * 64),),
@@ -48,7 +48,7 @@ class _Evidence:
 
 
 def test_bar_backtest_keeps_training_and_validation_separate_and_has_no_promotion_authority() -> None:
-    report = HistoricalBarBacktestService(_Evidence(), minimum_split_days=10).execute(SCORE_H0_V1_SPEC)
+    report = HistoricalBarBacktestService(_Evidence(), minimum_split_days=10).execute(HISTORICAL_SCREENING_SPEC)
 
     assert report.status == "screened"
     assert report.training.trade_dates == 10
@@ -68,7 +68,7 @@ def test_bar_backtest_keeps_training_and_validation_separate_and_has_no_promotio
 
 
 def test_bar_backtest_reports_insufficient_coverage_without_relabeling_it_as_passed() -> None:
-    report = HistoricalBarBacktestService(_Evidence(), minimum_split_days=20).execute(SCORE_H0_V1_SPEC)
+    report = HistoricalBarBacktestService(_Evidence(), minimum_split_days=20).execute(HISTORICAL_SCREENING_SPEC)
 
     assert report.status == "insufficient_coverage"
     assert report.promotion_authority is False

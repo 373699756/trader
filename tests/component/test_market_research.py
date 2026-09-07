@@ -80,7 +80,7 @@ def test_history_intraday_and_research_share_the_bounded_market_cache() -> None:
         intraday_client=intraday,
         research_client=research,
         cache=cache,
-        source_contract_versions=runtime.market_data.source_contract_versions,
+        source_contracts=runtime.market_data.source_contracts,
         config_version=runtime.config_version,
         wall_clock=lambda: NOW,
     )
@@ -236,7 +236,7 @@ def test_source_lane_research_deadline_discards_late_memory_and_disk_cache(tmp_p
         worker_pool=pool,
         source_lanes=lanes,
         cache=cache,
-        source_contract_versions=runtime.market_data.source_contract_versions,
+        source_contracts=runtime.market_data.source_contracts,
         config_version=runtime.config_version,
     )
     pool.start()

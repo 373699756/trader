@@ -1,4 +1,4 @@
-"""Pure Score-R3 metrics for deterministic historical baseline reports."""
+"""Pure Historical replay metrics for deterministic historical baseline reports."""
 
 from __future__ import annotations
 

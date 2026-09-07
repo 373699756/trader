@@ -9,7 +9,7 @@ def test_baostock_history_plan_freezes_2000_row_scope_and_four_owner_boundaries(
     section = strategy[strategy.index("### 3.4 BaoStock 2000 日归档") :]
 
     for required in (
-        "score_baostock_daily_core_v2",
+        "baostock_daily_core",
         "每只股票最多 2000 个代码-日期逻辑记录",
         "`--sessions` 接受 1–2000 且默认 2000",
         "最近 2000 个交易所开市日",
@@ -27,7 +27,7 @@ def test_baostock_history_plan_freezes_2000_row_scope_and_four_owner_boundaries(
         "不得",
     ):
         assert required in section
-    assert "score_baostock_daily_core_v2" in design
+    assert "baostock_daily_core" in design
     assert "download_history" in design
     assert "--sessions 2000" in design
     assert "开发工作计划" in design
@@ -82,7 +82,7 @@ def test_codex_c_baostock_holdout_isolation_contract_is_implemented_without_open
     assert "Codex C 工程契约已完成" in section
     assert "baostock_holdout_isolation_contract" in section
     assert "score_tomorrow_historical_candidate" in section
-    assert "tomorrow_v3_point_in_time_holdout" in section
+    assert "point_in_time_holdout" in section
     assert "不打开留出" in section
     assert "production_authority=false" in section
     assert "baostock_holdout_isolation_contract" in design
@@ -93,13 +93,13 @@ def test_codex_b_wave_one_has_a_read_only_hash_bound_input_contract() -> None:
     strategy = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
     design = (ROOT / "docs" / "02_工程设计.md").read_text(encoding="utf-8")
     section = strategy[strategy.index("### 3.4 BaoStock 2000 日归档") :]
-    domain_contract = ROOT / "src" / "trader" / "domain" / "research" / "tomorrow_v3_input_compatibility.py"
-    application_contract = ROOT / "src" / "trader" / "application" / "research" / "tomorrow_v3_input_compatibility.py"
+    domain_contract = ROOT / "src" / "trader" / "domain" / "research" / "tomorrow_training_input.py"
+    application_contract = ROOT / "src" / "trader" / "application" / "research" / "tomorrow_training_input.py"
 
     assert "Codex B 波次 1 状态：已完成" in section
-    assert "tomorrow_v3_input_compatibility_v1" in section
+    assert "tomorrow_training_input" in section
     assert "15.1.38 整节仍为 `pending`" in section
-    assert "tomorrow_v3_input_compatibility_v1" in design
+    assert "tomorrow_training_input" in design
     assert domain_contract.is_file()
     assert application_contract.is_file()
 

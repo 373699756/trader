@@ -1,4 +1,4 @@
-"""Pure audit contract for the BaoStock V3 holdout boundary."""
+"""Pure audit contract for the BaoStock training holdout boundary."""
 
 from __future__ import annotations
 
@@ -12,10 +12,10 @@ from typing import Literal
 from trader.domain.research.h1_point_in_time import canonical_hash
 
 BAOSTOCK_HOLDOUT_ISOLATION_CONTRACT = "baostock_holdout_isolation_contract"
-BAOSTOCK_DAILY_IDENTITY = "score_baostock_daily_core_v2"
+BAOSTOCK_DAILY_IDENTITY = "baostock_daily_core"
 BAOSTOCK_SOURCE_ANCHOR = "15:00_daily_close"
 LEGACY_HOLDOUT_IDENTITY = "score_tomorrow_historical_candidate"
-POINT_IN_TIME_HOLDOUT_IDENTITY = "tomorrow_v3_point_in_time_holdout"
+POINT_IN_TIME_HOLDOUT_IDENTITY = "point_in_time_holdout"
 
 _POINT_IN_TIME_RESERVE_DAYS = 200
 _SHA256 = re.compile(r"[0-9a-f]{64}")

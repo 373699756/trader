@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 from trader.application.research.replay_models import canonical_hash, canonical_json
-from trader.application.research.tomorrow_historical_p2_models import TomorrowHistoricalP2GateMetrics
+from trader.application.research.tomorrow_historical_models import TomorrowHistoricalGateMetrics
 from trader.application.research.tomorrow_profile_holdout import (
     TomorrowProfileHoldoutMetrics,
     TomorrowProfileHoldoutReport,
@@ -20,7 +20,7 @@ class TomorrowProfileHoldoutArtifactConflictError(RuntimeError):
 
 class TomorrowProfileHoldoutArtifactStore:
     def __init__(self, runtime_root: Path) -> None:
-        self._path = runtime_root / "score-tomorrow-profile" / "v1-v2-h0-holdout-v2.json"
+        self._path = runtime_root / "score-tomorrow-profile" / "profile-holdout.json"
 
     def seal(self, report: TomorrowProfileHoldoutReport) -> str:
         payload = holdout_report_payload(report)
@@ -112,7 +112,7 @@ def _profile_payload(value: TomorrowProfileHoldoutMetrics) -> dict[str, object]:
     }
 
 
-def _gate_payload(value: TomorrowHistoricalP2GateMetrics) -> dict[str, object]:
+def _gate_payload(value: TomorrowHistoricalGateMetrics) -> dict[str, object]:
     return {
         "archive_coverage": value.archive_coverage,
         "training_trade_dates": value.training_trade_dates,

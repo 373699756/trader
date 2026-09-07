@@ -11,7 +11,7 @@ from trader.domain.research.baostock_daily import (
     BaoStockDailySpec,
     BaoStockSecurity,
     build_baostock_coverage_audit,
-    build_baostock_v3_split,
+    build_baostock_training_split,
     join_baostock_daily_sides,
 )
 
@@ -42,7 +42,7 @@ def _side(day: date, adjustment: str, *, trading_status: str = "trading") -> Bao
 def test_baostock_spec_rejects_more_than_2000_sessions_and_keeps_identity() -> None:
     spec = BaoStockDailySpec()
 
-    assert spec.research_identity == "score_baostock_daily_core_v2"
+    assert spec.research_identity == "baostock_daily_core"
     assert spec.sessions == 2000
     assert spec.production_authority is False
     assert spec.point_in_time_parity is False
@@ -160,7 +160,7 @@ def test_v3_split_permanently_reserves_latest_200_dates() -> None:
     start = date(2021, 1, 1)
     dates = tuple(start + timedelta(days=offset) for offset in range(1250))
 
-    split = build_baostock_v3_split(dates, parent_manifest_hash="a" * 64)
+    split = build_baostock_training_split(dates, parent_manifest_hash="a" * 64)
 
     assert len(split.development_dates) >= 600
     assert len(split.confirmation_dates) >= 200

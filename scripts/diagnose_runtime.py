@@ -43,7 +43,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "security-master": ("exchange_security_master",),
     "tencent": ("tencent_quotes",),
     "tushare": ("tushare_daily",),
-    "research": ("score_p0_readiness",),
+    "research": ("research_readiness",),
     "browser": ("browser_refresh",),
     "performance": ("production_performance",),
     "runtime": ("web_health",),
@@ -287,8 +287,8 @@ def build_commands(
             ),
             common_timeout,
         ),
-        "score_p0_readiness": DiagnosticCommand(
-            "score_p0_readiness",
+        "research_readiness": DiagnosticCommand(
+            "research_readiness",
             (
                 python_executable,
                 "-m",
@@ -516,7 +516,7 @@ def _research_details(result: DiagnosticResult, source: Mapping[str, object], pa
             "failed_codes": baostock.get("failed_codes"),
             "failure_reasons": _safe_string_list(baostock.get("failure_reasons"), limit=20),
             "historical_effective_facts_status": baostock.get("historical_effective_facts_status"),
-            "v3_dataset_status": baostock.get("v3_dataset_status"),
+            "training_dataset_status": baostock.get("training_dataset_status"),
             "production_authority": baostock.get("production_authority"),
             "point_in_time_parity": baostock.get("point_in_time_parity"),
         },
@@ -558,7 +558,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "exchange_security_master": _security_master_details,
     "tencent_quotes": _tencent_quote_details,
     "tushare_daily": _tushare_details,
-    "score_p0_readiness": _research_details,
+    "research_readiness": _research_details,
     "browser_refresh": _browser_details,
     "production_performance": _performance_details,
 }
@@ -567,9 +567,9 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
 def _status(result: DiagnosticResult) -> CheckStatus:
     if result.error_code is not None or result.payload is None or result.return_code != 0:
         return "failed"
-    if result.name == "score_p0_readiness" and not _valid_research_status(result.payload):
+    if result.name == "research_readiness" and not _valid_research_status(result.payload):
         return "failed"
-    if result.name == "score_p0_readiness":
+    if result.name == "research_readiness":
         tomorrow = _mapping(result.payload.get("tomorrow_research"))
         if tomorrow.get("status") == "blocked":
             return "failed"
@@ -611,7 +611,7 @@ def _valid_research_status(payload: Mapping[str, object]) -> bool:
             "failed_codes",
             "failure_reasons",
             "historical_effective_facts_status",
-            "v3_dataset_status",
+            "training_dataset_status",
         )
     ):
         return False

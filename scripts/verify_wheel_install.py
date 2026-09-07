@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import subprocess
+import sysconfig
 import tempfile
 import venv
 from pathlib import Path
@@ -36,10 +37,28 @@ def verify_wheel_install(*, dist_dir: Path, runtime_config: Path) -> dict[str, o
         venv.EnvBuilder(with_pip=True, system_site_packages=True).create(environment)
         python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         cli = environment / ("Scripts/trader-cli.exe" if os.name == "nt" else "bin/trader-cli")
+        dependency_site = Path(sysconfig.get_paths()["purelib"]).resolve()
+        installed_site = subprocess.run(
+            (str(python), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"),
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        Path(installed_site, "trader-build-dependencies.pth").write_text(
+            f"{dependency_site}{os.linesep}", encoding="utf-8"
+        )
         clean_environment = dict(os.environ)
         clean_environment.pop("PYTHONPATH", None)
         subprocess.run(
-            (str(python), "-m", "pip", "install", "--disable-pip-version-check", str(wheel)),
+            (
+                str(python),
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "--no-deps",
+                str(wheel),
+            ),
             cwd=temporary,
             env=clean_environment,
             check=True,
@@ -97,8 +116,8 @@ required = (
     ("trader.web", "static/dashboard.css"),
     ("trader.web", "static/dashboard.js"),
     ("trader.web", "static/trader-mark.svg"),
-    ("trader.resources.models", "tomorrow_v1_model.json"),
-    ("trader.resources.models", "tomorrow_p2_model.json"),
+    ("trader.infra.scoring.profiles.v1", "model.json"),
+    ("trader.infra.scoring.profiles.v2", "model.json"),
 )
 for package, relative in required:
     resource = resources.files(package).joinpath(relative)

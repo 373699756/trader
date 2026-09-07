@@ -528,14 +528,14 @@ def _performance_feature_values(position: int) -> dict[str, float]:
     offset = (position % 120) / 10_000.0
     return {
         **_FEATURE_VALUES,
-        "p2_return_1d": 0.002 + offset,
-        "p2_return_3d": 0.004 + offset,
-        "p2_return_5d": 0.006 + offset,
-        "p2_momentum_20d_skip5": 0.01 + offset,
-        "p2_momentum_40d_skip5": 0.02 + offset,
-        "p2_momentum_60d_skip5": 0.03 + offset,
-        "p2_amihud_20d": 0.0001 + position / 1_000_000.0,
-        "p2_average_amount_20d": 100_000_000.0 + position * 100_000.0,
+        "qfq_return_1d": 0.002 + offset,
+        "qfq_return_3d": 0.004 + offset,
+        "qfq_return_5d": 0.006 + offset,
+        "qfq_momentum_20d_skip5": 0.01 + offset,
+        "qfq_momentum_40d_skip5": 0.02 + offset,
+        "qfq_momentum_60d_skip5": 0.03 + offset,
+        "qfq_amihud_20d": 0.0001 + position / 1_000_000.0,
+        "qfq_average_amount_20d": 100_000_000.0 + position * 100_000.0,
     }
 
 

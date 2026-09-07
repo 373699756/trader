@@ -137,8 +137,8 @@ class BaoStockRuntimeStatus:
     coverage_status: str = "historical_data_insufficient"
     historical_effective_facts_status: str = "historical_data_insufficient"
     historical_effective_facts_hash: str = ""
-    v3_dataset_status: str = "historical_data_insufficient"
-    v3_dataset_hash: str = ""
+    training_dataset_status: str = "historical_data_insufficient"
+    training_dataset_hash: str = ""
     failure_reasons: tuple[str, ...] = ()
     production_authority: bool = False
     point_in_time_parity: bool = False
@@ -149,7 +149,7 @@ class BaoStockRuntimeStatus:
             raise ValueError("BaoStock runtime cannot authorize production or point-in-time parity")
         if not 1 <= self.sessions <= 2000:
             raise ValueError("BaoStock runtime sessions must be in 1..2000")
-        hashes = (self.manifest_hash, self.historical_effective_facts_hash, self.v3_dataset_hash)
+        hashes = (self.manifest_hash, self.historical_effective_facts_hash, self.training_dataset_hash)
         if any(value and _SHA256.fullmatch(value) is None for value in hashes):
             raise ValueError("BaoStock runtime artifact hash must be SHA-256")
         counts = (

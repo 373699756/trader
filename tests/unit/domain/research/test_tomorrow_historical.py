@@ -1,0 +1,73 @@
+from __future__ import annotations
+
+from dataclasses import replace
+
+import pytest
+
+from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC
+from trader.domain.research.tomorrow_historical import (
+    TOMORROW_HISTORICAL_CANDIDATE_ID,
+    TOMORROW_HISTORICAL_SPEC,
+)
+
+
+def test_p2_spec_binds_h0_field_eligibility_single_candidate_and_all_gates() -> None:
+    spec = TOMORROW_HISTORICAL_SPEC
+    statuses = {item.field_id: item.status for item in spec.field_eligibility}
+
+    assert spec.research_identity == "score_tomorrow_historical"
+    assert spec.source_research_identity == HISTORICAL_SCREENING_SPEC.research_identity
+    assert spec.source_spec_hash == HISTORICAL_SCREENING_SPEC.content_hash
+    assert spec.training_window == (HISTORICAL_SCREENING_SPEC.training_start, HISTORICAL_SCREENING_SPEC.training_end)
+    assert spec.validation_window == (
+        HISTORICAL_SCREENING_SPEC.validation_start,
+        HISTORICAL_SCREENING_SPEC.validation_end,
+    )
+    assert spec.candidate.candidate_id == TOMORROW_HISTORICAL_CANDIDATE_ID
+    assert spec.candidate.model_families == ("linear", "lightgbm")
+    assert spec.candidate.model_weights == (0.5, 0.5)
+    assert spec.candidate.model_random_seed == 20260830
+    assert spec.candidate.lightgbm_num_threads == 1
+    assert spec.selection_rule == "single_candidate_pass_or_stop"
+    assert spec.portfolio_sort_order == (
+        "net_utility_desc",
+        "severe_loss_probability_asc",
+        "model_disagreement_asc",
+        "code_asc",
+    )
+    assert spec.allow_empty_portfolio is True
+    assert spec.comparator_id == "historical_ohlcv_cross_section"
+    assert spec.cost_rates == (0.002, 0.005, 0.01)
+    assert spec.minimum_archive_coverage == 0.95
+    assert spec.minimum_validation_pairs == 300
+    assert spec.bootstrap_block_days == 5
+    assert spec.bootstrap_repetitions == 10_000
+    assert spec.production_authority is False
+    assert spec.forward_research_identity is None
+    assert spec.forward_trade_dates == ()
+    assert statuses["qfq_return_1d"] == "eligible"
+    assert statuses["amihud_20d"] == "eligible"
+    assert statuses["historical_st_status"] == "not_reconstructed"
+    assert statuses["historical_industry"] == "not_reconstructed"
+    assert statuses["intraday_1450_tail"] == "not_reconstructed"
+    assert statuses["deepseek_facts_point_in_time"] == "not_reconstructed"
+    assert "tomorrow_shadow_baseline" in spec.excluded_evidence_identities
+
+
+def test_p2_spec_rejects_field_gate_candidate_or_forward_mutation() -> None:
+    spec = TOMORROW_HISTORICAL_SPEC
+
+    with pytest.raises(ValueError, match="field eligibility matrix"):
+        replace(spec, field_eligibility=spec.field_eligibility[:-1])
+    with pytest.raises(ValueError, match="candidate family"):
+        replace(spec, candidate=replace(spec.candidate, model_weights=(1.0, 0.0)))
+    with pytest.raises(ValueError, match="historical gates"):
+        replace(spec, minimum_validation_pairs=299)
+    with pytest.raises(ValueError, match="candidate family"):
+        replace(spec, candidate=replace(spec.candidate, model_random_seed=1))
+    with pytest.raises(ValueError, match="historical gates"):
+        replace(spec, portfolio_sort_order=("code_asc",))
+    with pytest.raises(ValueError, match="cannot bind a forward identity"):
+        replace(spec, forward_research_identity="score_tomorrow_shadow_p2")
+    with pytest.raises(ValueError, match="cannot authorize production"):
+        replace(spec, production_authority=True)

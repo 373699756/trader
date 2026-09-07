@@ -28,7 +28,7 @@ from trader.domain.research.baostock_daily import (
     BaoStockTrainingRow,
 )
 from trader.domain.research.h1_point_in_time import canonical_hash
-from trader.domain.research.tomorrow_v3_input_compatibility import DailyInputField
+from trader.domain.research.tomorrow_training_input import DailyInputField
 from trader.infra.research.baostock_daily_codec import encode_json as _json
 from trader.infra.research.baostock_daily_codec import json_array as _json_array
 from trader.infra.research.baostock_daily_codec import json_object as _json_object
@@ -238,7 +238,7 @@ class SQLiteBaoStockDailyShard:
             universe = _decode_universe(_json_array(row[2]))
             versions = _decode_versions(_json_object(row[3]))
             expected_hash = canonical_hash((stored_spec, calendar, universe, versions))
-            if stored_spec.content_hash != spec.content_hash or row[4] != expected_hash:
+            if not _spec_contract_matches(spec, stored_spec) or row[4] != expected_hash:
                 raise BaoStockDailyArtifactConflictError("BaoStock shard context identity conflict")
             intervals = _decode_all_industry_intervals(industry_rows)
             return BaoStockShardContext(calendar, universe, versions, intervals)
@@ -255,12 +255,15 @@ class SQLiteBaoStockDailyShard:
         blobs for every shard is unnecessary; the full payload is still decoded
         by ``context``/``snapshot`` at the explicit validation boundaries.
         """
-        expected_hash = canonical_hash((spec, context.calendar, context.universe, context.source_versions))
         try:
             with self._connect() as connection:
-                row = connection.execute("SELECT context_hash FROM context WHERE singleton=1").fetchone()
-            return row is not None and row[0] == expected_hash
-        except sqlite3.DatabaseError as exc:
+                row = connection.execute("SELECT spec_json, context_hash FROM context WHERE singleton=1").fetchone()
+            if row is None:
+                return False
+            stored_spec = _decode_spec(_json_object(row[0]))
+            expected_hash = canonical_hash((stored_spec, context.calendar, context.universe, context.source_versions))
+            return _spec_contract_matches(spec, stored_spec) and row[1] == expected_hash
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError, sqlite3.DatabaseError) as exc:
             raise BaoStockDailyArtifactConflictError("BaoStock shard context identity is unreadable") from exc
 
     def initialize(
@@ -803,6 +806,17 @@ def _decode_all_industry_intervals(
     return tuple(sorted(result, key=lambda item: (item.code, item.effective_from)))
 
 
+def _spec_contract_matches(expected: BaoStockDailySpec, stored: BaoStockDailySpec) -> bool:
+    """Treat the sealed legacy identity as the same read-only data contract."""
+
+    return (
+        expected.sessions == stored.sessions
+        and expected.source_cutoff == stored.source_cutoff
+        and expected.production_authority == stored.production_authority
+        and expected.point_in_time_parity == stored.point_in_time_parity
+    )
+
+
 def _industry_for_date(
     intervals: tuple[BaoStockIndustryInterval, ...],
     day: date,
@@ -838,8 +852,8 @@ from trader.infra.research.baostock_gateway import (  # noqa: E402
 )
 from trader.infra.research.baostock_partition_archive import (  # noqa: E402
     BaoStockDailyPartitionedArchive,
-    BaoStockV3TrainingInputArchive,
-    BaoStockV3TrainingInputSnapshot,
+    BaoStockTrainingTrainingInputArchive,
+    BaoStockTrainingTrainingInputSnapshot,
 )
 
 __all__ = [
@@ -847,8 +861,8 @@ __all__ = [
     "BAOSTOCK_SHARD_SNAPSHOT_SCHEMA",
     "BaoStockDailyArtifactConflictError",
     "BaoStockDailyPartitionedArchive",
-    "BaoStockV3TrainingInputArchive",
-    "BaoStockV3TrainingInputSnapshot",
+    "BaoStockTrainingTrainingInputArchive",
+    "BaoStockTrainingTrainingInputSnapshot",
     "BaoStockRowGateway",
     "BaoStockRowResult",
     "BaoStockSdkPort",
