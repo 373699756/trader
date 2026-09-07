@@ -30,6 +30,7 @@
     score_threshold_met: "评分达到执行门槛",
     near_score_threshold: "接近执行门槛，继续观察",
     below_score_threshold: "评分未达到执行门槛",
+    model_net_utility_non_positive: "成本后净超额未转正",
     pending_merge: "等待评分合并",
   };
 

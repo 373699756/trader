@@ -112,7 +112,7 @@ def test_v1_v2_historical_evidence_does_not_create_a_running_collection_gate() -
         assert retired not in design
 
 
-def test_tomorrow_zero_score_is_explained_as_a_cost_aware_cash_result() -> None:
+def test_tomorrow_score_is_separate_from_the_cost_aware_execution_gate() -> None:
     strategy = _compact(ROOT / "docs/01_评分逻辑.md")
     design = _compact(ROOT / "docs/02_工程设计.md")
 
@@ -120,12 +120,13 @@ def test_tomorrow_zero_score_is_explained_as_a_cost_aware_cash_result() -> None:
         "`no_positive_net_utility`",
         "预测成本后净效用均不大于 0",
         "合法空仓结果",
-        "不得为了显示非零分数",
+        "成本正负不得把评分改写为 0",
+        "`model_net_utility_non_positive`",
     ):
         assert token in strategy
     for token in (
         "模型预测成本后净超额均未转正",
-        "按固定成本规则信号分为 0",
-        "不能误报成数据异常",
+        "保持空仓",
+        "成本不得把评分统一清零",
     ):
         assert token in design

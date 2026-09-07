@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from trader.domain.market.models import Board
 from trader.domain.recommendation.models import BoardStrategyPolicy, ScoredDisposition, Strategy
 from trader.domain.recommendation.selection.scored_selection import (
+    ScoredModelOverrides,
     ScoredSelectionPolicy,
     ScoredSelectionRequest,
     select_scored,
@@ -189,9 +190,9 @@ def test_production_model_ineligible_candidate_does_not_consume_board_limit(
     features = _features(application_feature_factory, count=2)
     request = replace(
         _request(features, _selection_policy(candidate_limit=1, top_k=1)),
-        local_score_overrides={
-            "600001": LocalScoreResult(components={"model": 80.0}, base_score=80.0),
-        },
+        model_overrides=ScoredModelOverrides(
+            {"600001": LocalScoreResult(components={"model": 80.0}, base_score=80.0)},
+        ),
     )
 
     result = select_scored(request)

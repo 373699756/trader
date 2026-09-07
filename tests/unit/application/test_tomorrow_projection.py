@@ -62,7 +62,7 @@ class _RecordingProductionPredictor(_ProductionPredictor):
 
 class _NonPositiveProductionPredictor(_ProductionPredictor):
     def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
-        return tuple(ModelPrediction(item.code, 0.001, 0.0) for item in inputs)
+        return tuple(ModelPrediction(item.code, 0.001 + index * 0.0001, 0.0) for index, item in enumerate(inputs))
 
 
 def test_native_local_and_valid_facts_publish_one_parented_hybrid(
@@ -139,7 +139,7 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     assert index.snapshot(Strategy.TOMORROW).current == hybrid
 
 
-def test_tomorrow_zero_score_identifies_the_cost_aware_cash_result(
+def test_tomorrow_non_positive_utility_keeps_scores_but_cannot_enter_recommendation_pools(
     application_feature_factory,
 ) -> None:
     policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "strategy.json"))
@@ -162,8 +162,12 @@ def test_tomorrow_zero_score_identifies_the_cost_aware_cash_result(
 
     diagnostics = projection.local.selection_diagnostics
     assert diagnostics is not None
-    assert diagnostics.maximum_final_score == 0.0
+    assert diagnostics.maximum_final_score == 100.0
     assert diagnostics.empty_reason == "no_positive_net_utility"
+    assert projection.review_candidates == ()
+    assert not any(item.selected for item in projection.local.items)
+    assert {item.action.value for item in projection.local.items} == {"unavailable"}
+    assert {item.reason for item in projection.local.items} == {"model_net_utility_non_positive"}
     assert _supply_status(projection).primary_blocker == "no_positive_net_utility"
 
 

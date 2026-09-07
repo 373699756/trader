@@ -1,4 +1,4 @@
-"""Pure cost-aware utility and deterministic ranking functions."""
+"""Pure deterministic ranking functions."""
 
 from __future__ import annotations
 
@@ -15,11 +15,4 @@ def percentile_ranks(values: Sequence[float]) -> tuple[float, ...]:
     return tuple(ranks)
 
 
-def positive_utility_scores(values: Sequence[float]) -> tuple[float, ...]:
-    if len(values) == 1:
-        return (100.0 if values[0] > 0.0 else 0.0,)
-    ranks = percentile_ranks(values)
-    return tuple(100.0 * rank if value > 0.0 else 0.0 for value, rank in zip(values, ranks, strict=True))
-
-
-__all__ = ["percentile_ranks", "positive_utility_scores"]
+__all__ = ["percentile_ranks"]

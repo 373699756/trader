@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-from trader.application.ports.model_scoring import ModelDiagnostics, ModelScoringPort
+from trader.application.ports.model_scoring import ModelDiagnostics, ModelScoreBatch, ModelScoringPort
 from trader.application.ports.scored import ScoredNativeInput
 from trader.application.recommendation.policy import RecommendationPolicy
 from trader.application.recommendation.recommendation_policy_codec import preselection_replay_feature
@@ -42,6 +42,7 @@ from trader.domain.recommendation.risk_fusion.scored_fusion import (
     build_scored_decision_epoch,
     select_scored_review_candidates,
 )
+from trader.domain.recommendation.selection.scored_selection import ScoredModelOverrides
 from trader.domain.review.models import DeepSeekReview, ReviewOutcome
 
 
@@ -114,7 +115,7 @@ def build_scored_local(
             data_version=native_input.data_version,
             merge_epoch=native_input.input_version,
         ),
-        local_score_overrides=model_batch.scores if model_batch is not None else None,
+        model_overrides=_model_overrides(model_batch, strategy),
     )
     quality = assess_scored_input_quality(
         native_input,
@@ -164,6 +165,24 @@ def build_scored_local(
         model_version,
         tuple(sorted(model_batch.diagnostics.items())) if model_batch is not None else (),
     )
+
+
+def _model_overrides(
+    model_batch: ModelScoreBatch | None,
+    strategy: Strategy,
+) -> ScoredModelOverrides | None:
+    if model_batch is None:
+        return None
+    gate_reasons = (
+        {
+            code: "model_net_utility_non_positive"
+            for code, diagnostics in model_batch.diagnostics.items()
+            if diagnostics.predicted_net_excess_pct <= 0.0
+        }
+        if strategy is Strategy.TOMORROW
+        else {}
+    )
+    return ScoredModelOverrides(model_batch.scores, gate_reasons)
 
 
 def _model_eligible_candidates(
@@ -344,7 +363,7 @@ def _decision_item(
         ),
         model_diagnostics=(
             DecisionModelDiagnostics(
-                signal_score=entry.score.components["model_net_utility_rank"],
+                signal_score=entry.score.components["model_prediction_rank"],
                 predicted_excess_return_pct=model_diagnostics.predicted_excess_return_pct,
                 estimated_cost_pct=model_diagnostics.estimated_cost_pct,
                 predicted_net_excess_pct=model_diagnostics.predicted_net_excess_pct,

@@ -390,6 +390,7 @@ def select_scored_review_candidates(
         item
         for item in selection.scored_candidates
         if item.disposition is ScoredDisposition.PASS
+        and not item.execution_gate_reason
         and item.local_score is not None
         and not any(fact.veto for fact in item.local_risk_facts)
     )
@@ -528,6 +529,8 @@ def _unavailable_reason(
 ) -> str | None:
     if evaluation.local_score is None or evaluation.disposition is ScoredDisposition.REJECT:
         return evaluation.selection_skip_reason or "not_scored"
+    if evaluation.execution_gate_reason:
+        return evaluation.execution_gate_reason
     if veto:
         return "risk_veto"
     if score.final_score < policy.executable_threshold - policy.observation_margin:

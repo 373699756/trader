@@ -859,7 +859,7 @@ assert.strictEqual(
       coverage: { evaluated_count: 57 },
       selection_diagnostics: {
         empty_reason: "no_positive_net_utility",
-        maximum_final_score: 0,
+        maximum_final_score: 100,
         observation_floor: 73,
         executable_threshold: 78,
       },
@@ -867,13 +867,13 @@ assert.strictEqual(
     0,
     {
       supply_funnel: {
-        observation_threshold_met_count: 0,
-        executable_threshold_met_count: 0,
+        observation_threshold_met_count: 1,
+        executable_threshold_met_count: 1,
       },
-      supply_reason_counts: { below_score_threshold: 57 },
+      supply_reason_counts: { model_net_utility_non_positive: 57 },
     },
   ),
-  "评分已完成｜最高分 0.00，距离正式线 78.00；达到观察线 0只、正式线 0只；成本后净超额均未转正，按固定成本规则信号分为 0；主要原因：评分未达到执行门槛（57只）",
+  "评分已完成｜最高分 100.00，已达到正式线 78.00；达到观察线 1只、正式线 1只；成本后净超额均未转正，保持空仓；主要原因：成本后净超额未转正（57只）",
 );
 assert.strictEqual(
   state.emptyRecommendationMessage({

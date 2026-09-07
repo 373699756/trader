@@ -58,7 +58,7 @@ def _model_feature(feature: FeatureSnapshot, *, offset: float, amihud: float) ->
     return replace(feature, values=values, history_days=61)
 
 
-def test_production_model_residualizes_the_bound_features_and_maps_net_utility_to_local_score(
+def test_production_model_residualizes_bound_features_and_maps_prediction_rank_to_local_score(
     application_feature_factory,
 ) -> None:
     features = tuple(
@@ -78,7 +78,34 @@ def test_production_model_residualizes_the_bound_features_and_maps_net_utility_t
     assert batch.scores["600001"].base_score == 50.0
     assert batch.scores["600000"].base_score == 0.0
     assert batch.diagnostics["600002"].predicted_net_excess_pct == pytest.approx(3.2)
-    assert batch.scores["600002"].components["model_net_utility_rank"] == 100.0
+    assert batch.scores["600002"].components["model_prediction_rank"] == 100.0
+
+
+def test_non_positive_net_utility_keeps_relative_scores_for_observability(
+    application_feature_factory,
+) -> None:
+    class _NonPositivePredictor(_Predictor):
+        def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
+            return tuple(ModelPrediction(item.code, 0.001 + index * 0.0004, 0.0) for index, item in enumerate(inputs))
+
+    features = tuple(
+        _model_feature(
+            application_feature_factory(f"60000{index}", NOW),
+            offset=index / 100.0,
+            amihud=float(index + 1),
+        )
+        for index in range(3)
+    )
+
+    batch = TomorrowProductionModelScoringService(profile_for(_NonPositivePredictor())).score(features)
+
+    assert all(item.predicted_net_excess_pct < 0.0 for item in batch.diagnostics.values())
+    assert {code: score.base_score for code, score in batch.scores.items()} == {
+        "600000": 0.0,
+        "600001": 50.0,
+        "600002": 100.0,
+    }
+    assert batch.scores["600002"].components["model_prediction_rank"] == 100.0
 
 
 def test_v1_profile_receives_only_the_residual_momentum_feature_family(application_feature_factory) -> None:

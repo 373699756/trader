@@ -20,7 +20,6 @@ from trader.domain.market.models import Board, FeatureSnapshot
 from trader.domain.recommendation.filtering.filters import board_for_snapshot
 from trader.domain.recommendation.model_scoring import (
     percentile_ranks,
-    positive_utility_scores,
     residualize_exposure,
 )
 from trader.domain.recommendation.models import Strategy
@@ -174,14 +173,16 @@ class TomorrowProductionModelScoringService:
         utilities = tuple(
             prediction.predicted_excess_return - cost for prediction, cost in zip(predictions, costs, strict=True)
         )
-        utility_scores = positive_utility_scores(utilities)
+        prediction_scores = _relative_prediction_scores(
+            tuple(prediction.predicted_excess_return for prediction in predictions)
+        )
         scores: dict[str, LocalScoreResult] = {}
         diagnostics: dict[str, ModelDiagnostics] = {}
         for prediction, cost, utility, score in zip(
             predictions,
             costs,
             utilities,
-            utility_scores,
+            prediction_scores,
             strict=True,
         ):
             predicted_pct = prediction.predicted_excess_return * 100.0
@@ -189,7 +190,7 @@ class TomorrowProductionModelScoringService:
             net_pct = utility * 100.0
             disagreement_pct = prediction.model_disagreement * 100.0
             components = {
-                "model_net_utility_rank": round_score(score),
+                "model_prediction_rank": round_score(score),
                 "model_confidence": round_score(clamp(100.0 / (1.0 + 100.0 * prediction.model_disagreement))),
             }
             scores[prediction.code] = LocalScoreResult(components, round_score(score))
@@ -206,6 +207,12 @@ class TomorrowProductionModelScoringService:
             predictions,
             tuple(missing),
         )
+
+
+def _relative_prediction_scores(values: tuple[float, ...]) -> tuple[float, ...]:
+    if len(values) == 1:
+        return (100.0,)
+    return tuple(100.0 * rank for rank in percentile_ranks(values))
 
 
 def _raw_row(feature: FeatureSnapshot, *, require_reversal: bool) -> _RawRow | None:

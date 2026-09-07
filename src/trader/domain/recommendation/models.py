@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -15,6 +16,8 @@ from trader.domain.review.models import DeepSeekReview, RiskFact
 
 if TYPE_CHECKING:
     from trader.domain.recommendation.risk_fusion.downside import DownsideAssessment
+
+_STRUCTURED_REASON = re.compile(r"^[a-z0-9_]{1,64}$")
 
 
 class Strategy(str, Enum):
@@ -124,8 +127,11 @@ class ScoredStockEvaluation:
     board_rank: int = 0
     rank: int = 0
     selection_skip_reason: str = ""
+    execution_gate_reason: str = ""
 
     def __post_init__(self) -> None:
+        if self.execution_gate_reason and _STRUCTURED_REASON.fullmatch(self.execution_gate_reason) is None:
+            raise ValueError("scored execution gate reason must be structured")
         object.__setattr__(self, "candidate_components", MappingProxyType(dict(self.candidate_components)))
         object.__setattr__(self, "local_components", MappingProxyType(dict(self.local_components)))
 

@@ -6,15 +6,13 @@ from trader.domain.recommendation.model_scoring import (
     V3_EXPOSURE_CONTRACT,
     ExposureContract,
     percentile_ranks,
-    positive_utility_scores,
     residualize_exposure,
 )
 
 
-def test_percentile_and_positive_utility_scores_are_deterministic() -> None:
+def test_percentile_ranks_are_deterministic() -> None:
     values = (0.2, -0.1, 0.4)
     assert percentile_ranks(values) == (0.5, 0.0, 1.0)
-    assert positive_utility_scores(values) == (50.0, 0.0, 100.0)
 
 
 def test_residualization_removes_market_and_board_exposure() -> None:

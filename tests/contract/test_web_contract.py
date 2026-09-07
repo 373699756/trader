@@ -615,7 +615,7 @@ def _decision() -> ScoredDecision:
                 84.0,
                 (
                     ("local_score", 84.0),
-                    ("model_net_utility_rank", 84.0),
+                    ("model_prediction_rank", 84.0),
                 ),
                 (),
                 "threshold_met",

@@ -21,11 +21,11 @@ from trader.domain.recommendation.models import ScoredSelectionResult, Strategy
 from trader.domain.recommendation.selection.ranking import minimum_selection_score
 from trader.domain.recommendation.selection.scored_selection import (
     BoardCrossSectionFallback,
+    ScoredModelOverrides,
     ScoredSelectionPolicy,
     ScoredSelectionRequest,
     select_scored,
 )
-from trader.domain.recommendation.strategies.composition import LocalScoreResult
 
 _SUPPORTED_BOARDS = (Board.MAIN, Board.CHINEXT, Board.STAR)
 
@@ -143,7 +143,7 @@ def select_scored_features(
     options: ScoredSelectionOptions,
     identity: ScoredSelectionIdentity,
     *,
-    local_score_overrides: Mapping[str, LocalScoreResult] | None = None,
+    model_overrides: ScoredModelOverrides | None = None,
 ) -> ScoredSelectionResult:
     """Select scored candidates from an already coherent point-in-time population."""
 
@@ -176,7 +176,7 @@ def select_scored_features(
             policy=_selection_policy(policy, options),
             candidate_features=options.candidate_features,
             fallbacks=options.fallbacks or {},
-            local_score_overrides=local_score_overrides,
+            model_overrides=model_overrides,
             population_evaluated_at=population_evaluated_at,
             population_max_age_seconds=options.population_max_age_seconds,
             minimum_history_sessions=options.minimum_history_sessions,

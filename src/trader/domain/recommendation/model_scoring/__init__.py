@@ -12,7 +12,7 @@ from trader.domain.recommendation.model_scoring.residualization import (
     ExposureDimension,
     residualize_exposure,
 )
-from trader.domain.recommendation.model_scoring.utility_scoring import percentile_ranks, positive_utility_scores
+from trader.domain.recommendation.model_scoring.utility_scoring import percentile_ranks
 
 __all__ = [
     "SCORING_PROFILE_IDS",
@@ -23,6 +23,5 @@ __all__ = [
     "V3_EXPOSURE_CONTRACT",
     "parse_scoring_profile",
     "percentile_ranks",
-    "positive_utility_scores",
     "residualize_exposure",
 ]

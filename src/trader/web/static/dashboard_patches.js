@@ -141,7 +141,7 @@
     const reasons = reasonCountSummary(inputQuality && inputQuality.supply_reason_counts, 3);
     const noPositiveUtility = payload && payload.strategy === "tomorrow" && diagnostics.empty_reason === "no_positive_net_utility";
     const utilityReason = noPositiveUtility
-      ? "；成本后净超额均未转正，按固定成本规则信号分为 0"
+      ? "；成本后净超额均未转正，保持空仓"
       : "";
     return `评分已完成｜最高分 ${maximum.toFixed(2)}，${position}；达到观察线 ${observationCount}只、正式线 ${executableCount}只${utilityReason}${reasons ? `；主要原因：${reasons}` : ""}`;
   }
