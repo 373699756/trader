@@ -18,6 +18,7 @@ _SHANGHAI = ZoneInfo("Asia/Shanghai")
 @dataclass(frozen=True)
 class RuntimeWorkerResources:
     data_pool: BoundedExecutor
+    quote_pool: BoundedExecutor
     history_pool: BoundedExecutor
     research_pool: BoundedExecutor
     persistence_pool: BoundedExecutor

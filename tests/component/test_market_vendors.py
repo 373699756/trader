@@ -193,6 +193,42 @@ def test_tencent_targeted_quotes_use_three_bounded_shards() -> None:
     assert all(url.count(",") <= 119 for url in state["urls"])
 
 
+def test_tencent_targeted_quotes_keep_successful_shards_when_one_shard_fails() -> None:
+    requested_codes = tuple(f"{600000 + index:06d}" for index in range(241))
+
+    class PartialSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def get(self, url, **_kwargs):
+            symbols = url.split("q=", 1)[1].split(",")
+            if any(symbol.endswith("600120") for symbol in symbols):
+                raise requests.Timeout("one shard timed out")
+            records = []
+            for symbol in symbols:
+                fields = [""] * 50
+                fields[1] = symbol
+                fields[2] = symbol[2:]
+                fields[3] = "12.00"
+                fields[4] = "11.65"
+                fields[30] = "20260716100000"
+                records.append(f'v_{symbol}="{"~".join(fields)}";')
+            return FakeResponse("".join(records).encode("gb18030"))
+
+    quotes = TencentClient(
+        timeout_seconds=2,
+        session_factory=PartialSession,
+    ).fetch_quotes(requested_codes, NOW)
+
+    assert len(quotes) == 121
+    assert quotes[0].code == "600000"
+    assert quotes[-1].code == "600240"
+    assert {quote.code for quote in quotes}.isdisjoint({f"{600120 + index:06d}" for index in range(120)})
+
+
 def test_tencent_history_preserves_volume_amount_and_turnover_fields() -> None:
     rows = [
         [

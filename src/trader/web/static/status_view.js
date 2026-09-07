@@ -1,12 +1,7 @@
 (function () {
   "use strict";
 
-  const STRATEGY_LABELS = {
-    today: "今早",
-    tomorrow: "明日",
-    d25: "2-5日",
-    long: "长期",
-  };
+  const STRATEGIES = new Set(["today", "tomorrow", "d25", "long"]);
 
   const STAGE_LABELS = {
     refresh: "数据刷新",
@@ -117,7 +112,11 @@
   }
 
   function presentIssue(issue) {
-    const strategy = STRATEGY_LABELS[issue.strategy] || (issue.strategy ? "其他策略" : "系统");
+    const strategy = STRATEGIES.has(issue.strategy)
+      ? strategyLabel(issue.strategy)
+      : issue.strategy
+        ? "其他策略"
+        : "系统";
     const stage = STAGE_LABELS[issue.stage] || "运行链路";
     const time = issue.lastOccurredAt ? formatTime(issue.lastOccurredAt) : "时间待确认";
     const recovery = issue.recoveryStatus === "recovered" ? "已恢复" : "处理中";
@@ -462,7 +461,7 @@
       return;
     }
     const cutoff = payload.strategy === "today" ? "11:20" : "14:50";
-    const strategy = STRATEGY_LABELS[payload.strategy] || "当前策略";
+    const strategy = STRATEGIES.has(payload.strategy) ? strategyLabel(payload.strategy) : "当前策略";
     if (payload.frozen) {
       els.publicationStatus.textContent = "已冻结";
       els.publicationMeta.textContent = `${strategy} ${cutoff} 已固化`;
@@ -748,7 +747,7 @@
     const separator = code.indexOf(":");
     if (separator > 0) {
       const prefix = code.slice(0, separator);
-      if (STRATEGY_LABELS[prefix]) return { strategy: prefix, code: code.slice(separator + 1) };
+      if (STRATEGIES.has(prefix)) return { strategy: prefix, code: code.slice(separator + 1) };
     }
     return { strategy: cleanString(fallbackStrategy), code };
   }
@@ -774,6 +773,10 @@
     if (typeof value !== "string") return null;
     const cleaned = value.trim();
     return cleaned ? cleaned.slice(0, 128) : null;
+  }
+
+  function strategyLabel(strategy) {
+    return window.TraderSelection?.strategyLabel(strategy) || strategy;
   }
 
   function finitePositiveInteger(value) {

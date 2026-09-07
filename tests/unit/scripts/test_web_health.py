@@ -48,6 +48,9 @@ def _sample(
     degraded_reasons: tuple[str, ...] = (),
     frozen: bool | None = None,
     recent_errors: list[dict[str, object]] | None = None,
+    highest_final_score: float | None = 74.0,
+    top_scores: list[dict[str, object]] | None = None,
+    candidate_quote_age: tuple[float, float, float] = (1.0, 2.0, 3.0),
 ) -> WebSample:
     quality = (
         {
@@ -67,7 +70,7 @@ def _sample(
                 "quote_covered_count": 360,
                 "quote_missing_count": 0,
                 "security_identity_missing_count": 0,
-                "highest_final_score": 74.0,
+                "highest_final_score": highest_final_score,
             },
         }
         if funnel is not None or decision_status != "not_ready"
@@ -112,6 +115,12 @@ def _sample(
         "market_data": {
             "market_feature_rows": 5500,
             "candidate_quote_cache_entries": 360,
+            "candidate_quote_age": {
+                "p50_seconds": candidate_quote_age[0],
+                "p95_seconds": candidate_quote_age[1],
+                "maximum_seconds": candidate_quote_age[2],
+                "sample_count": 360,
+            },
             "history_universe_rows": 360,
             "history_covered_rows": warmup[1],
             "history_coverage_ratio": warmup[1] / 360,
@@ -157,7 +166,18 @@ def _sample(
             "rejected_count": 295 if decision_status == "ready" else 0,
             "selected_count": 0,
         },
-        "selection_diagnostics": {"empty_reason": empty_reason} if empty_reason is not None else None,
+        "selection_diagnostics": (
+            {"empty_reason": empty_reason, "maximum_final_score": highest_final_score}
+            if empty_reason is not None
+            else {"maximum_final_score": highest_final_score}
+        ),
+        "top_scores": (
+            top_scores
+            if top_scores is not None
+            else [{"scores": {"final": highest_final_score}}]
+            if highest_final_score is not None
+            else []
+        ),
         "items": items or [],
     }
     return parse_web_sample(
@@ -371,6 +391,88 @@ def test_no_positive_net_utility_requires_at_least_one_scored_candidate() -> Non
     )
 
 
+def test_ready_strategy_without_scored_candidates_is_reported_immediately() -> None:
+    findings = analyze_samples(
+        (
+            _sample(
+                1,
+                funnel=_funnel(full_scored=0, review_eligible=0, action_unavailable=0),
+                evaluated_count=0,
+                highest_final_score=None,
+            ),
+        ),
+        strategies=(_STRATEGY,),
+        consecutive_zero_threshold=3,
+    )
+
+    assert any(
+        finding.code == "scored_candidates_missing"
+        and finding.severity == "error"
+        and finding.evidence.get("candidate_features") == 360
+        for finding in findings
+    )
+
+
+def test_zero_highest_score_is_reported_for_scored_strategy() -> None:
+    findings = analyze_samples(
+        (_sample(1, highest_final_score=0.0, phase="midday", quality_status="not_ready"),),
+        strategies=(_STRATEGY,),
+        consecutive_zero_threshold=3,
+    )
+
+    assert any(
+        finding.code == "highest_final_score_non_positive"
+        and finding.severity == "error"
+        and finding.evidence.get("highest_final_score") == 0.0
+        for finding in findings
+    )
+
+
+def test_missing_top_scores_is_reported_when_candidates_were_scored() -> None:
+    findings = analyze_samples(
+        (_sample(1, top_scores=[]),),
+        strategies=(_STRATEGY,),
+        consecutive_zero_threshold=3,
+    )
+
+    assert any(finding.code == "scored_top_scores_missing" and finding.severity == "error" for finding in findings)
+
+
+def test_stale_candidate_quote_majority_is_reported_during_scoring() -> None:
+    findings = analyze_samples(
+        (_sample(1, candidate_quote_age=(501.0, 505.0, 512.0)),),
+        strategies=(_STRATEGY,),
+        consecutive_zero_threshold=3,
+    )
+
+    assert any(
+        finding.code == "candidate_quotes_stale"
+        and finding.severity == "error"
+        and finding.evidence.get("p95_seconds") == 505.0
+        and finding.evidence.get("limit_seconds") == 20.0
+        for finding in findings
+    )
+
+
+def test_candidate_quote_age_limit_follows_strategy_phase() -> None:
+    today_findings = analyze_samples(
+        (_sample(1, phase="today_main", candidate_quote_age=(19.0, 21.0, 22.0)),),
+        strategies=(_STRATEGY,),
+        consecutive_zero_threshold=3,
+    )
+    afternoon_findings = analyze_samples(
+        (_sample(1, phase="afternoon", candidate_quote_age=(25.0, 29.0, 31.0)),),
+        strategies=(_STRATEGY,),
+        consecutive_zero_threshold=3,
+    )
+
+    assert any(
+        finding.code == "candidate_quotes_stale" and finding.evidence.get("limit_seconds") == 20.0
+        for finding in today_findings
+    )
+    assert not any(finding.code == "candidate_quotes_stale" for finding in afternoon_findings)
+
+
 def test_frozen_no_positive_inconsistency_is_a_controlled_degradation() -> None:
     findings = analyze_samples(
         (_sample(1, empty_reason="no_positive_net_utility", evaluated_count=0, frozen=True),),
@@ -538,8 +640,18 @@ def test_json_report_contains_only_aggregated_projection_data() -> None:
     assert report["status"] == "passed"
     assert report["samples"][0]["market"]["history_warmup"]["planned_count"] == 20
     assert report["samples"][0]["market"]["history_warmup"]["batch_timeout_seconds"] == 20.0
+    assert report["samples"][0]["market"]["candidate_quote_age"] == {
+        "p50_seconds": 1.0,
+        "p95_seconds": 2.0,
+        "maximum_seconds": 3.0,
+        "sample_count": 360,
+    }
     strategy = report["samples"][0]["strategies"][_STRATEGY]
     assert strategy["history_required_sessions"] == 61
+    assert strategy["highest_final_score"] == 74.0
+    assert strategy["current_projection"]["maximum_final_score"] == 74.0
+    assert strategy["current_projection"]["top_score_count"] == 1
+    assert strategy["current_projection"]["highest_top_score"] == 74.0
     assert strategy["supply_funnel"] == _funnel()
     assert strategy["population_filter_reason_counts"] == {"stale_quote": 5571}
     assert strategy["candidate_filter_reason_counts"] == {"history_too_short": 71}

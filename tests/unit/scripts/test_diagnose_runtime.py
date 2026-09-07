@@ -207,7 +207,15 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
                 "findings": [],
                 "samples": [
                     {
-                        "market": {"history_warmup": {"completed_count": 20}},
+                        "market": {
+                            "candidate_quote_age": {
+                                "p50_seconds": 1.0,
+                                "p95_seconds": 2.0,
+                                "maximum_seconds": 3.0,
+                                "sample_count": 360,
+                            },
+                            "history_warmup": {"completed_count": 20},
+                        },
                         "company_research": {
                             "state": "idle",
                             "running_codes": 0,
@@ -254,6 +262,7 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
     assert "600519" not in rendered
     assert "999.0" not in rendered
     assert "secret vendor payload" not in rendered
+    assert report["checks"][0]["latest_runtime"]["candidate_quote_age"]["p95_seconds"] == 2.0
     assert report["checks"][0]["latest_runtime"]["history_warmup"]["completed_count"] == 20
     assert report["checks"][0]["latest_runtime"]["company_research"] == {
         "state": "idle",

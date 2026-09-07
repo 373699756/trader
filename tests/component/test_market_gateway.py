@@ -76,6 +76,39 @@ def test_gateway_falls_back_and_tracks_health() -> None:
     assert "eastmoney:source_failed" in gateway.canonical_snapshot().degraded_reasons
 
 
+def test_candidate_request_reserves_deadline_for_normalization_and_commit() -> None:
+    quote = replace(_quote(), source="tencent")
+
+    class RecordingTencentClient(StaticTencentClient):
+        def __init__(self) -> None:
+            super().__init__((quote,))
+            self.timeout_seconds: float | None = None
+
+        def fetch_quotes(self, codes, *, timeout_seconds=None):
+            self.timeout_seconds = timeout_seconds
+            return super().fetch_quotes(codes, timeout_seconds=timeout_seconds)
+
+    tencent = RecordingTencentClient()
+    gateway = MarketDataGateway(
+        StaticMarketClient((quote,)),
+        StaticMarketClient((quote,)),
+        tencent,
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        wall_clock=lambda: NOW,
+    )
+
+    fetched = gateway.fetch_candidates(
+        (quote.code,),
+        observed_at=NOW,
+        deadline=NOW + timedelta(seconds=3),
+    )
+
+    assert fetched[0].code == quote.code
+    assert tencent.timeout_seconds == pytest.approx(2.8)
+
+
 def test_gateway_columnar_projection_failure_preserves_scalar_market_and_marks_degraded(monkeypatch) -> None:
     quote = replace(_quote(), source="sina")
     gateway = MarketDataGateway(

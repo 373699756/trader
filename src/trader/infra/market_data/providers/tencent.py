@@ -96,9 +96,9 @@ class TencentClient:
                     except (OSError, RuntimeError, requests.RequestException) as exc:
                         failures.append(exc)
         self._ensure_running()
-        if failures:
-            raise RuntimeError("one or more Tencent quote shards failed") from failures[0]
         if not quotes:
+            if failures:
+                raise RuntimeError("all Tencent quote shards failed") from failures[0]
             raise RuntimeError("tencent returned no usable candidate quotes")
         return tuple(sorted(quotes, key=lambda quote: quote.code))
 

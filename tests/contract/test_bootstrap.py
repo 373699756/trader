@@ -67,6 +67,9 @@ def test_build_system_is_lazy_and_current_only(tmp_path, monkeypatch) -> None:
     assert system.scheduler is not None
     assert system.repository is not None
     assert system.research_trace is not None
+    assert system.quote_pool.status().workers == 4
+    assert system.quote_pool.is_running() is False
+    assert system.scheduler._dependencies.data._market.quotes.gateway._tencent._worker_pool is system.quote_pool
     assert not (tmp_path / "runtime" / "research").exists()
     assert system.long_runtime is not None
     assert isinstance(system.scheduler._research, ResearchRuntime)

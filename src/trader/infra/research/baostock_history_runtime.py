@@ -1,5 +1,3 @@
-"""Bounded process supervision for the explicit BaoStock research download."""
-
 from __future__ import annotations
 
 import errno

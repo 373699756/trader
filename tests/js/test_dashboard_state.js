@@ -315,10 +315,10 @@ assert.strictEqual(summaryElements.inputQualityStatus.textContent, "评分输入
 assert.strictEqual(summaryElements.inputQualityMeta.textContent, "当前名单行情 1 / 2");
 assert.strictEqual(summaryElements.funnelStatus.textContent, "120 → 80 → 1");
 assert.strictEqual(summaryElements.funnelMeta.textContent, "过滤 40 · 观察 1 · 最高 82.00");
-assert.strictEqual(summaryElements.inputQualityStrategy.textContent, "今早");
+assert.strictEqual(summaryElements.inputQualityStrategy.textContent, "今");
 assert.strictEqual(summaryElements.inputQualityScoreTime.textContent, "评分时间不可用");
 assert.strictEqual(summaryElements.publicationStatus.textContent, "实时滚动");
-assert.strictEqual(summaryElements.publicationMeta.textContent, "今早 11:20 固化");
+assert.strictEqual(summaryElements.publicationMeta.textContent, "今 11:20 固化");
 assert.strictEqual(
   summaryElements.topScoresStatus.textContent,
   "82.00 - 600001 - 正式股票\n75.00 - 600002 - 观察股票",
@@ -542,14 +542,14 @@ assert.strictEqual(emptyTomorrowElements.quoteSource.textContent, "腾讯行情"
 assert.strictEqual(emptyTomorrowElements.quoteAge.textContent, "1分 5秒");
 assert.strictEqual(emptyTomorrowElements.inputQualityScoreTime.textContent, "评分于 11:19:00 完成");
 assert.strictEqual(emptyTomorrowElements.publicationStatus.textContent, "实时滚动");
-assert.strictEqual(emptyTomorrowElements.publicationMeta.textContent, "明日 14:50 固化");
+assert.strictEqual(emptyTomorrowElements.publicationMeta.textContent, "明 14:50 固化");
 state.renderPublicationStatus(
   emptyTomorrowElements,
   { status: "ready", strategy: "d25", frozen: true },
   {},
 );
 assert.strictEqual(emptyTomorrowElements.publicationStatus.textContent, "已冻结");
-assert.strictEqual(emptyTomorrowElements.publicationMeta.textContent, "2-5日 14:50 已固化");
+assert.strictEqual(emptyTomorrowElements.publicationMeta.textContent, "2-5 14:50 已固化");
 state.renderSummary(
   summaryElements,
   {
@@ -625,7 +625,7 @@ assert.strictEqual(degradedHealth.level, "degraded");
 assert.strictEqual(degradedHealth.issueCount, 2);
 assert.strictEqual(degradedHealth.badge, "降级 · 2项");
 assert.strictEqual(degradedHealth.primary.message, "行情刷新暂时不可用");
-assert.strictEqual(degradedHealth.primary.meta.includes("明日"), true);
+assert.strictEqual(degradedHealth.primary.meta.includes("明"), true);
 assert.strictEqual(degradedHealth.primary.meta.includes("数据刷新"), true);
 assert.strictEqual(degradedHealth.issues.length, 2);
 const runtimeRows = state.runtimeErrorRows(degradedHealth.issues);
@@ -746,7 +746,7 @@ assert.deepStrictEqual(
     readiness_reason: "snapshot_not_published",
   }))),
   {
-    message: "明日策略当前快照尚未发布",
+    message: "明策略当前快照尚未发布",
     notice: "当前策略快照尚未形成，等待本地评分发布",
     level: "idle",
   },

@@ -49,6 +49,8 @@ _MONITORED_FUNNEL_FIELDS = (
     "full_scored",
 )
 _MAX_RESPONSE_BYTES = 1_048_576
+_TODAY_QUOTE_MAX_AGE_SECONDS = 20.0
+_OTHER_SHORT_QUOTE_MAX_AGE_SECONDS = 30.0
 _REPORT_SCHEMA_VERSION = "web_recommendation_health"
 _EvidenceValue = str | int | float | bool | None
 
@@ -148,6 +150,40 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
                 "status lacks recommendation market-cache telemetry during a scoring phase",
             )
         )
+    if status.phase in _SCORING_PHASES and (status.candidate_quote_entries or 0) > 0:
+        candidate_age = status.candidate_quote_age
+        age_limit = (
+            _TODAY_QUOTE_MAX_AGE_SECONDS
+            if status.phase in _TODAY_SCORING_PHASES
+            else _OTHER_SHORT_QUOTE_MAX_AGE_SECONDS
+        )
+        if candidate_age.p95_seconds is None:
+            findings.append(
+                _finding(
+                    "error",
+                    "candidate_quote_age_missing",
+                    sample,
+                    None,
+                    "candidate quote cache is populated but its age telemetry is missing",
+                )
+            )
+        elif candidate_age.p95_seconds > age_limit:
+            findings.append(
+                _finding(
+                    "error",
+                    "candidate_quotes_stale",
+                    sample,
+                    None,
+                    "most candidate quotes exceeded the scoring-phase freshness limit",
+                    {
+                        "p50_seconds": candidate_age.p50_seconds,
+                        "p95_seconds": candidate_age.p95_seconds,
+                        "maximum_seconds": candidate_age.maximum_seconds,
+                        "sample_count": candidate_age.sample_count,
+                        "limit_seconds": age_limit,
+                    },
+                )
+            )
     if status.company_research.state is None:
         findings.append(
             _finding(
@@ -186,6 +222,102 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
                 )
             findings.extend(_funnel_consistency_findings(sample, strategy, quality.funnel))
             findings.extend(_history_gate_findings(sample, strategy, quality))
+            findings.extend(_scoring_output_findings(sample, strategy, quality, decision))
+    return findings
+
+
+def _scoring_output_findings(
+    sample: WebSample,
+    strategy: str,
+    quality: InputQualitySnapshot,
+    decision: ProjectionSnapshot | None,
+) -> list[Finding]:
+    candidate_features = quality.funnel.candidate_features or 0
+    full_scored = quality.funnel.full_scored
+    if quality.status == "ready" and candidate_features > 0 and full_scored == 0:
+        return [
+            _finding(
+                "error",
+                "scored_candidates_missing",
+                sample,
+                strategy,
+                "strategy reported ready without any scored candidate despite populated candidate features",
+                {"candidate_features": candidate_features, "full_scored": full_scored},
+            )
+        ]
+    if full_scored is None or full_scored <= 0:
+        return []
+    findings: list[Finding] = []
+    if quality.highest_final_score is None:
+        findings.append(
+            _finding(
+                "error",
+                "highest_final_score_missing",
+                sample,
+                strategy,
+                "input quality omitted the highest final score despite scored candidates",
+                {"field": "input_quality", "full_scored": full_scored},
+            )
+        )
+    if decision is not None and decision.status == "ready" and decision.maximum_final_score is None:
+        findings.append(
+            _finding(
+                "error",
+                "highest_final_score_missing",
+                sample,
+                strategy,
+                "ready decision omitted the maximum final score despite scored candidates",
+                {"field": "current", "full_scored": full_scored},
+            )
+        )
+    score_values = tuple(
+        score
+        for score in (
+            quality.highest_final_score,
+            decision.maximum_final_score if decision is not None else None,
+            decision.highest_top_score if decision is not None else None,
+        )
+        if score is not None
+    )
+    if score_values and min(score_values) <= 0.0:
+        findings.append(
+            _finding(
+                "error",
+                "highest_final_score_non_positive",
+                sample,
+                strategy,
+                "scored candidates exist but a published highest final score is not positive",
+                {
+                    "highest_final_score": quality.highest_final_score,
+                    "decision_maximum_final_score": decision.maximum_final_score if decision is not None else None,
+                    "top_score": decision.highest_top_score if decision is not None else None,
+                    "full_scored": full_scored,
+                },
+            )
+        )
+    if decision is not None and decision.status == "ready":
+        if not decision.top_score_count:
+            findings.append(
+                _finding(
+                    "error",
+                    "scored_top_scores_missing",
+                    sample,
+                    strategy,
+                    "ready decision omitted top score rows despite scored candidates",
+                    {"full_scored": full_scored, "evaluated_count": decision.coverage.evaluated_count},
+                )
+            )
+        elif decision.top_score_count is not None and decision.highest_top_score is None:
+            findings.append(
+                _finding(
+                    "error",
+                    "top_score_value_invalid",
+                    sample,
+                    strategy,
+                    "ready decision top score rows lack a valid final score",
+                    {"top_score_count": decision.top_score_count},
+                )
+            )
     return findings
 
 
@@ -813,6 +945,7 @@ def _sample_payload(sample: WebSample, strategies: tuple[str, ...]) -> dict[str,
             "input_quality_status": quality.status if quality is not None else None,
             "primary_blocker": quality.primary_blocker if quality is not None else None,
             "history_required_sessions": quality.history_required_sessions if quality is not None else None,
+            "highest_final_score": quality.highest_final_score if quality is not None else None,
             "supply_funnel": _funnel_payload(quality.funnel if quality is not None else None),
             "population_filter_reason_counts": (
                 dict(quality.population_filter_reason_counts) if quality is not None else {}
@@ -840,6 +973,16 @@ def _sample_payload(sample: WebSample, strategies: tuple[str, ...]) -> dict[str,
             "market_feature_rows": status.market_feature_rows if status is not None else None,
             "candidate_quote_cache_entries": status.candidate_quote_entries if status is not None else None,
             "candidate_quote_latest_source": status.candidate_quote_source if status is not None else None,
+            "candidate_quote_age": (
+                {
+                    "p50_seconds": status.candidate_quote_age.p50_seconds,
+                    "p95_seconds": status.candidate_quote_age.p95_seconds,
+                    "maximum_seconds": status.candidate_quote_age.maximum_seconds,
+                    "sample_count": status.candidate_quote_age.sample_count,
+                }
+                if status is not None
+                else None
+            ),
             "history_warmup": (
                 {
                     "universe_rows": status.history_warmup.universe_rows,
@@ -906,6 +1049,9 @@ def _projection_summary(payload: ProjectionSnapshot | None) -> dict[str, object]
         "candidate_count": payload.coverage.candidate_count if payload is not None else None,
         "evaluated_count": payload.coverage.evaluated_count if payload is not None else None,
         "selected_count": payload.coverage.selected_count if payload is not None else None,
+        "maximum_final_score": payload.maximum_final_score if payload is not None else None,
+        "top_score_count": payload.top_score_count if payload is not None else None,
+        "highest_top_score": payload.highest_top_score if payload is not None else None,
     }
 
 

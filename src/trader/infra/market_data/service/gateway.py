@@ -75,6 +75,9 @@ from trader.infra.market_data.service.source_coordinator import (
     SourceObservationRequest,
 )
 
+_TARGET_QUOTE_MAX_COMMIT_RESERVE_SECONDS = 0.2
+_TARGET_QUOTE_MIN_TRANSPORT_TIMEOUT_SECONDS = 0.05
+
 
 class _GatewayRequiredOptions(TypedDict):
     minimum_market_rows: int
@@ -511,7 +514,7 @@ class MarketDataGateway:
             quote_request,
             lambda: self._tencent.fetch_quotes(
                 normalized_codes,
-                timeout_seconds=_remaining_seconds(request.deadline, self._wall_clock),
+                timeout_seconds=_target_quote_timeout_seconds(request.deadline, self._wall_clock),
             ),
             request.requested_at,
             request.force,
@@ -894,13 +897,18 @@ class MarketDataGateway:
             state.last_error = "circuit_open"
 
 
-def _remaining_seconds(
+def _target_quote_timeout_seconds(
     deadline: datetime | None,
     wall_clock: Callable[[], datetime],
 ) -> float | None:
     if deadline is None:
         return None
-    return max(0.05, (deadline - wall_clock()).total_seconds())
+    remaining = max(
+        _TARGET_QUOTE_MIN_TRANSPORT_TIMEOUT_SECONDS,
+        (deadline - wall_clock()).total_seconds(),
+    )
+    commit_reserve = min(_TARGET_QUOTE_MAX_COMMIT_RESERVE_SECONDS, remaining / 3.0)
+    return max(_TARGET_QUOTE_MIN_TRANSPORT_TIMEOUT_SECONDS, remaining - commit_reserve)
 
 
 def _try_columnar_snapshot(

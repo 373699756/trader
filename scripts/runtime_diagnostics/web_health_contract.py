@@ -62,6 +62,9 @@ class ProjectionSnapshot:
     coverage: CoverageSnapshot
     item_count: int | None
     empty_reason: str | None
+    maximum_final_score: float | None
+    top_score_count: int | None
+    highest_top_score: float | None
     degraded_reasons: tuple[str, ...] = ()
 
 
@@ -71,6 +74,7 @@ class InputQualitySnapshot:
     trade_date: str | None
     primary_blocker: str | None
     history_required_sessions: int | None
+    highest_final_score: float | None
     funnel: FunnelSnapshot
     population_filter_reason_counts: Mapping[str, int]
     candidate_filter_reason_counts: Mapping[str, int]
@@ -104,6 +108,14 @@ class HistoryWarmupSnapshot:
     inflight_age_seconds: float | None
     batch_timeout_seconds: float | None
     last_source: str | None
+
+
+@dataclass(frozen=True)
+class CandidateQuoteAgeSnapshot:
+    p50_seconds: float | None
+    p95_seconds: float | None
+    maximum_seconds: float | None
+    sample_count: int | None
 
 
 @dataclass(frozen=True)
@@ -156,6 +168,7 @@ class StatusSnapshot:
     market_feature_rows: int | None
     candidate_quote_entries: int | None
     candidate_quote_source: str | None
+    candidate_quote_age: CandidateQuoteAgeSnapshot
     history_warmup: HistoryWarmupSnapshot
     company_research: CompanyResearchSnapshot
     recent_errors: tuple[RuntimeIssueSnapshot, ...]
@@ -206,6 +219,7 @@ def _parse_status(payload: Mapping[str, object]) -> StatusSnapshot:
     events = _mapping(payload.get("events"))
     scheduler = _mapping(payload.get("scheduler"))
     company_research = _mapping(payload.get("company_research"))
+    candidate_quote_age = _mapping(market.get("candidate_quote_age"))
     strategies = {
         strategy: _parse_projection(value, include_items=False)
         for strategy, raw in _mapping(payload.get("strategies")).items()
@@ -227,6 +241,12 @@ def _parse_status(payload: Mapping[str, object]) -> StatusSnapshot:
         market_feature_rows=_nonnegative_int(market.get("market_feature_rows")),
         candidate_quote_entries=_nonnegative_int(market.get("candidate_quote_cache_entries")),
         candidate_quote_source=_text(market.get("candidate_quote_latest_source")),
+        candidate_quote_age=CandidateQuoteAgeSnapshot(
+            p50_seconds=_nonnegative_number(candidate_quote_age.get("p50_seconds")),
+            p95_seconds=_nonnegative_number(candidate_quote_age.get("p95_seconds")),
+            maximum_seconds=_nonnegative_number(candidate_quote_age.get("maximum_seconds")),
+            sample_count=_nonnegative_int(candidate_quote_age.get("sample_count")),
+        ),
         history_warmup=HistoryWarmupSnapshot(
             universe_rows=_nonnegative_int(market.get("history_universe_rows")),
             covered_rows=_nonnegative_int(market.get("history_covered_rows")),
@@ -282,6 +302,7 @@ def _parse_projection(payload: Mapping[str, object], *, include_items: bool) -> 
     diagnostics = _mapping(payload.get("selection_diagnostics"))
     items = payload.get("items")
     frozen = payload.get("frozen")
+    top_score_count, highest_top_score = _top_score_summary(payload.get("top_scores"))
     return ProjectionSnapshot(
         schema_version=_text(payload.get("schema_version")),
         strategy=_text(payload.get("strategy")),
@@ -296,16 +317,21 @@ def _parse_projection(payload: Mapping[str, object], *, include_items: bool) -> 
         ),
         item_count=len(items) if include_items and isinstance(items, list) else None,
         empty_reason=_text(diagnostics.get("empty_reason")),
+        maximum_final_score=_nonnegative_number(diagnostics.get("maximum_final_score")),
+        top_score_count=top_score_count,
+        highest_top_score=highest_top_score,
         degraded_reasons=_text_tuple(payload.get("degraded_reasons"), limit=32),
     )
 
 
 def _parse_input_quality(payload: Mapping[str, object]) -> InputQualitySnapshot:
+    summary = _mapping(payload.get("summary"))
     return InputQualitySnapshot(
         status=_text(payload.get("status")),
-        trade_date=_text(_mapping(payload.get("summary")).get("trade_date")),
+        trade_date=_text(summary.get("trade_date")),
         primary_blocker=_text(payload.get("primary_blocker")),
         history_required_sessions=_nonnegative_int(payload.get("history_required_sessions")),
+        highest_final_score=_nonnegative_number(summary.get("highest_final_score")),
         funnel=_parse_funnel(_mapping(payload.get("supply_funnel"))),
         population_filter_reason_counts=_parse_reason_counts(payload.get("population_filter_reason_counts")),
         candidate_filter_reason_counts=_parse_reason_counts(payload.get("candidate_filter_reason_counts")),
@@ -313,6 +339,17 @@ def _parse_input_quality(payload: Mapping[str, object]) -> InputQualitySnapshot:
         candidate_optional_reason_counts=_parse_reason_counts(payload.get("candidate_optional_reason_counts")),
         supply_reason_counts=_parse_reason_counts(payload.get("supply_reason_counts")),
     )
+
+
+def _top_score_summary(value: object) -> tuple[int | None, float | None]:
+    if not isinstance(value, (list, tuple)):
+        return None, None
+    scores = tuple(
+        score
+        for raw in value[:3]
+        if (score := _nonnegative_number(_mapping(_mapping(raw).get("scores")).get("final"))) is not None
+    )
+    return len(value), max(scores) if scores else None
 
 
 def _parse_funnel(payload: Mapping[str, object]) -> FunnelSnapshot:

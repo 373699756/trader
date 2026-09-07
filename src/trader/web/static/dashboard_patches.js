@@ -230,7 +230,7 @@
       };
     }
     if (reason === "snapshot_not_published") {
-      const label = ({ today: "今早", tomorrow: "明日", d25: "2-5日" })[strategy] || "当前";
+      const label = window.TraderSelection?.strategyLabel(strategy) || "当前";
       return {
         message: `${label}策略当前快照尚未发布`,
         notice: "当前策略快照尚未形成，等待本地评分发布",

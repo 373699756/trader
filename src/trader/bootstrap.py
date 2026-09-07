@@ -109,6 +109,7 @@ class ApplicationSystem:
     research_pool: BoundedExecutor
     source_lanes: SourceLaneRegistry
     data_pool: BoundedExecutor
+    quote_pool: BoundedExecutor
     long_runtime: LongRuntime
     decision_queries: UnifiedDecisionQueries
     decision_events: UnifiedDecisionEventStream
@@ -122,6 +123,7 @@ class ApplicationSystem:
             self.supervisor,
             self.source_lanes,
             self.data_pool,
+            self.quote_pool,
             self.history_pool,
             self.research_pool,
             (self.long_runtime,),
@@ -343,6 +345,7 @@ def build_system(
         research_pool=workers.research_pool,
         source_lanes=workers.source_lanes,
         data_pool=workers.data_pool,
+        quote_pool=workers.quote_pool,
         long_runtime=publication.long_runtime,
         decision_queries=publication.decision_queries,
         decision_events=publication.decision_events,
@@ -362,6 +365,11 @@ def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) 
         thread_name_prefix="source-data",
     )
     source_lanes = SourceLaneRegistry(data_pool, latency=latency)
+    quote_pool = BoundedExecutor(
+        worker_count=4,
+        queue_capacity=4,
+        thread_name_prefix="candidate-quotes",
+    )
     history_pool = BoundedExecutor(
         worker_count=settings.pipeline.market_workers,
         queue_capacity=settings.market_data.candidate_pool_size,
@@ -384,13 +392,14 @@ def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) 
         wall_clock=_utc_now,
     )
     return RuntimeWorkerResources(
-        data_pool,
-        history_pool,
-        research_pool,
-        persistence_pool,
-        source_lanes,
-        json_writer,
-        market_cache,
+        data_pool=data_pool,
+        quote_pool=quote_pool,
+        history_pool=history_pool,
+        research_pool=research_pool,
+        persistence_pool=persistence_pool,
+        source_lanes=source_lanes,
+        json_writer=json_writer,
+        market_cache=market_cache,
     )
 
 
@@ -452,7 +461,7 @@ def _build_market_data(
             timeout_seconds=settings.market_data.candidate_timeout_seconds,
             cancel_requested=lambda: source_lanes.is_stopped("tencent"),
             wall_clock=now,
-            worker_pool=data_pool,
+            worker_pool=workers.quote_pool,
         ),
         minimum_market_rows=settings.market_data.minimum_market_rows,
         circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
