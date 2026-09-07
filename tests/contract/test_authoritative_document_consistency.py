@@ -13,10 +13,10 @@ def test_authoritative_docs_record_completed_gates_without_claiming_a_formal_rel
 
     assert "当前交付状态：current-only 工程与发布门禁验收已闭合" in design
     assert "发布候选契约" in design
-    assert "旧链已从活动树物理删除" in strategy
     assert "current-only 是唯一活动产品链" in design
-    assert "正式 0.2.0 release 尚未声明" in strategy
-    assert "当前版本仍为 Unreleased" in design
+    assert "当前代码仍属于 `Unreleased`" in design
+    assert "正式 0.2.0 release 尚未声明" not in strategy
+    assert "旧链已从活动树物理删除" not in strategy
 
 
 def test_authoritative_docs_do_not_retain_superseded_migration_chronology() -> None:

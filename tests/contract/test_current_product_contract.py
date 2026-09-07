@@ -24,17 +24,19 @@ def test_authoritative_design_requires_one_final_product_chain_without_runtime_c
         assert statement in design
 
 
-def test_strategy_contract_requires_native_decisions_and_no_legacy_replay() -> None:
+def test_strategy_contract_focuses_on_current_decisions_without_release_chronology() -> None:
     strategy = (ROOT / "docs/01_评分逻辑.md").read_text(encoding="utf-8")
     compact = " ".join(strategy.split())
 
     for statement in (
         "最终 V2 评分口径只产生 `ScoredDecision`",
-        "新 release 不得构造或读取旧 `RecommendationSnapshot`",
-        "不回放旧策略、旧引擎或旧 schema",
+        "当前链只产生 `ScoredDecision` 和 `LongProjection`",
+        "不构造 `RecommendationSnapshot`",
+        "旧策略、旧引擎或旧 schema 不参与当前链重新评分",
         "long 不借用评分字段伪造荐股决策形状",
     ):
         assert statement in compact
+    assert "正式 0.2.0 release 尚未声明" not in compact
 
 
 def test_parallel_overview_plan_and_operations_docs_are_retired() -> None:
