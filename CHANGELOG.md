@@ -6,6 +6,20 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户说明 `docs/download.md` 中的任务尚未开始，要求将其并入 `docs/03_工程实施.md` 后删除旧文件。
+  根因已确认：`download.md` 单独保存了日线归档、历史行业补齐、训练对照和 Shadow/生产启用四批计划，
+  与工程实施文档中的 15.1.38、V3 训练和生产依赖形成重复计划源，而且开头“三批”的描述与实际四批结构
+  不一致。现将四批任务完整归入 `03_工程实施.md`，明确计划整体尚未开始：第一批映射唯一可执行的
+  15.1.38 并保持 `pending`，后三批分别标记为受日线归档、行业历史和训练收益验证阻塞；同时保留单进程
+  下载与监控、覆盖验收、历史行业来源评估、只写行业事实、三组时间外对照、Shadow 人工授权和日线 hash
+  不变等完成条件。删除 `docs/download.md` 并用契约测试固定单一计划源。本批不启动下载、不修改历史分片或
+  checkpoint，也不改变评分、训练、生产、冻结、API 或 Web 行为。Verification: 相关文档契约测试、受影响
+  测试文件 Ruff、文档引用/结构检查和 `git diff --check`；全量测试、打包、仓库外安装、性能和浏览器门禁
+  不适用，因为本批只调整 Markdown 和直接文档治理契约。Residual Risks: 2000 日正式全量 manifest 尚未
+  完成，历史行业来源与有效期仍待评估，三组收益验证、Shadow 和生产授权均未开始；这些状态不得由部分
+  checkpoint 或既有部分训练试跑改写。
+  `Regression-Key: merge-download-plan-into-work-plan`。
+
 - 用户要求把 `docs/score.md` 合并到 `docs/03_工程实施.md`，明确哪些评分工作已经完成、哪些尚未完成，
   然后删除重复文档。根因已确认：评分模块化计划项 1–9 已经交付，但旧 `score.md` 仍以完整待办形式保留，
   与工程实施文档形成双计划源，并混合了已完成架构、受数据阻塞的 V3、尚未授权的 Today/D25 模型和当前

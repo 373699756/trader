@@ -57,6 +57,7 @@ def test_parallel_overview_plan_and_operations_docs_are_retired() -> None:
     assert "新的候选必须另立未读取新收益的研究身份" in strategy
     for retired in (
         "V2.md",
+        "download.md",
         "implementation-plan.md",
         "start_stop.md",
         "review.md",
@@ -72,6 +73,8 @@ def test_parallel_overview_plan_and_operations_docs_are_retired() -> None:
         "后续独立评分任务",
         "待独立授权",
         "当前不采用",
+        "历史下载与行业补全执行计划",
+        "计划整体状态：`not_started`",
     ):
         assert merged_plan_contract in work
 
