@@ -13,12 +13,12 @@ def test_authoritative_contract_freezes_runtime_capacity_and_shutdown() -> None:
 
     for token in (
         "SchedulerRuntime",
-        "每策略一个运行中任务和一个 latest-wins 待处理槽",
-        "tomorrow 独占完整决策 lane",
-        "SharedDeepSeekRuntimeContract",
-        "daily_physical_limit=168",
+        "每策略一个 running 加一个 pending",
+        "尚未开始的旧 pending 可以被最新输入替换",
+        "DeepSeek 物理请求、预算、缓存与 single-flight",
+        "全局 168 上限",
         "AsyncDecisionObserver",
-        "同一个 `ShutdownDeadline`",
+        "只能读取同一个 deadline 的剩余时间",
     ):
         assert token in design
 

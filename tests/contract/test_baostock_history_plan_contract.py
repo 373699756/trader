@@ -60,11 +60,12 @@ def test_baostock_plan_has_one_semantic_task_and_fixed_operational_caps() -> Non
         assert required in section
 
 
-def test_baostock_plan_is_the_only_next_action_before_v3_training() -> None:
+def test_baostock_plan_remains_pending_but_does_not_override_direct_user_work() -> None:
     work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
     compact = " ".join(work.split())
 
-    assert "当前计划中唯一下一执行章节是 `baostock_daily_archive`" in compact
+    assert "`baostock_daily_archive` 保持 `pending`" in compact
+    assert "用户直接授权的新任务优先" in compact
     assert "`tomorrow_v3_training_validation` | `blocked_by_baostock_daily_archive`" in work
     assert "`historical_workstream_boundaries` | `control_only`" in work
 

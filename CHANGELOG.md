@@ -6,6 +6,21 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求把重新确认的评分链路优化计划纳入 `01_评分逻辑.md`、`02_工程设计.md`、`03_工程实施.md` 等权威
+  文档并立即开始执行。现状判断已确认：既有文档有逐环节建议，但缺少统一组件所有权、候选召回归因、预测
+  不确定性和可逐章执行的依赖路线；既有历史数据计划还把 BaoStock 归档写成唯一下一章节，与本次直接授权
+  冲突。Added: 新增收益真值、统一特征合同、增量特征计算、点时数据资格、候选召回归因、有限参数族、
+  风险/成本/不确定性与 DeepSeek 消融、Shadow/人工授权八章路线，并新增六类候选股票参数目录和目标组件
+  所有权。Changed: `baostock_daily_archive` 保持原 `pending` 和 V3 blocker，不再覆盖用户直接授权的新任务；
+  `outcome_truth_contract` 成为当前执行章节。Fixed: 明确 D25 活动结算必须覆盖 T+2/T+3/T+4/T+5，并禁止
+  15:00 收盘代理、未来 collector、未验证数据和自动晋级污染收益结论。Removed: 未删除既有研究任务、运行
+  入口或生产规则。Verification: 文档契约先以 6 项预期失败证明缺口；全部 238 项 contract、受影响测试 Ruff、
+  文档链接/结构契约和 `git diff --check` 通过；同时清理 7 个仍断言上一批已删除交付状态、旧章节号和旧任务名
+  的失效测试。全量运行、打包、性能和浏览器门禁对本计划文档批次不适用；第一章实现将独立执行高风险门禁。
+  Residual Risks: 历史分钟来源能力、完整 BaoStock/行业事实、
+  新参数样本外收益、DeepSeek 增量价值和 Shadow 稳定性仍待后续章节实证，不能把路线写入视为收益已提高。
+  `Regression-Key: scoring-feature-outcome-optimization`。
+
 - 用户要求闭合权威文档中的失效章节引用、不可执行命令、D25 T+4 漏项、latest-wins 冲突、Tomorrow
   challenger 策略缺口、候选资格顺序和 V3 行业语义，并进一步收敛重复规范、历史交付状态与研究评价口径。
   根因已确认：评分、设计和实施文档在多次章节合并后仍保留旧编号、重复任务与旧基线措辞；调度语义在不同
