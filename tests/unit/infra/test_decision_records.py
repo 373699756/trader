@@ -16,6 +16,7 @@ from trader.application.ports.decision_records import (
 )
 from trader.domain.recommendation.decision_identity import CommittedDecisionRecord
 from trader.domain.recommendation.models import Strategy
+from trader.infra.persistence import decision_records as decision_records_module
 from trader.infra.persistence.decision_records import SQLiteDecisionRecordRepository
 
 
@@ -101,6 +102,45 @@ def test_staged_half_commit_recovers_the_same_payload(tmp_path: Path) -> None:
 
     assert summary.recovered == 1
     assert recovered.load(Strategy.TOMORROW, expected.trade_date) == expected
+
+
+def test_committed_load_hashes_file_bytes_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repository = SQLiteDecisionRecordRepository(tmp_path)
+    repository.initialize()
+    expected = record()
+    repository.commit(expected)
+    original = decision_records_module._sha256
+    calls = 0
+
+    def count_hash(payload: bytes) -> str:
+        nonlocal calls
+        calls += 1
+        return original(payload)
+
+    monkeypatch.setattr(decision_records_module, "_sha256", count_hash)
+
+    assert repository.load(Strategy.TOMORROW, expected.trade_date) == expected
+    assert calls == 1
+
+
+def test_committed_recovery_hashes_each_file_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repository = SQLiteDecisionRecordRepository(tmp_path)
+    repository.initialize()
+    repository.commit(record())
+    original = decision_records_module._sha256
+    calls = 0
+
+    def count_hash(payload: bytes) -> str:
+        nonlocal calls
+        calls += 1
+        return original(payload)
+
+    monkeypatch.setattr(decision_records_module, "_sha256", count_hash)
+
+    summary = repository.recover()
+
+    assert summary.quarantined == 0
+    assert calls == 1
 
 
 def test_corrupted_committed_record_is_quarantined_and_fails_closed(tmp_path: Path) -> None:

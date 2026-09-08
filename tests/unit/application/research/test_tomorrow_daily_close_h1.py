@@ -74,6 +74,8 @@ def test_h1_adapter_freezes_six_features_before_attaching_next_day_labels() -> N
         "qfq_residual_momentum_40d_skip5",
         "qfq_residual_momentum_60d_skip5",
     )
+    assert batch.feature_units == ("decimal_return",) * 6
+    assert batch.rows[0].trade_date == date(2024, 3, 1)
     assert samples
     assert samples[0].net_excess_returns[0] - samples[0].net_excess_returns[1] == pytest.approx(0.003)
     assert samples[0].net_excess_returns[1] - samples[0].net_excess_returns[2] == pytest.approx(0.005)

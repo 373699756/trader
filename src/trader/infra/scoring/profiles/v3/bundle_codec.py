@@ -8,18 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
+from trader.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
 from trader.domain.recommendation.model_scoring import V3_EXPOSURE_CONTRACT, ExposureContract
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
 
-_FEATURE_IDS = (
-    "qfq_return_1d",
-    "qfq_return_3d",
-    "qfq_return_5d",
-    "qfq_residual_momentum_20d_skip5",
-    "qfq_residual_momentum_40d_skip5",
-    "qfq_residual_momentum_60d_skip5",
-)
-_FEATURE_UNITS = ("decimal_return",) * len(_FEATURE_IDS)
+_FEATURE_IDS = TOMORROW_MODEL_FEATURE_MANIFEST.names
+_FEATURE_UNITS = TOMORROW_MODEL_FEATURE_MANIFEST.units
 _MODEL_ID = "industry_ridge_lightgbm"
 _DOCUMENT_FIELDS = {
     "schema_version",

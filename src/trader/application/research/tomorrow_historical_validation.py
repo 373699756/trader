@@ -12,6 +12,7 @@ from typing import Literal, Protocol
 
 from trader.application.ports.model_scoring import ModelInput, ModelPredictorPort
 from trader.application.research.replay_models import canonical_hash
+from trader.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalScreeningSpec
 from trader.domain.research.shadow_calibration import (
     LinearModel,
@@ -20,14 +21,7 @@ from trader.domain.research.shadow_calibration import (
     fit_platt_calibrator,
 )
 
-_MODEL_FEATURE_IDS = (
-    "qfq_return_1d",
-    "qfq_return_3d",
-    "qfq_return_5d",
-    "qfq_residual_momentum_20d_skip5",
-    "qfq_residual_momentum_40d_skip5",
-    "qfq_residual_momentum_60d_skip5",
-)
+_MODEL_FEATURE_IDS = TOMORROW_MODEL_FEATURE_MANIFEST.names
 _PRIMARY_COST = 0.002
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REASON = re.compile(r"^[a-z0-9_]{1,160}$")

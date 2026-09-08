@@ -69,6 +69,7 @@ class BaoStockRuntimeProgress:
     sessions: int = 2000
     universe_count: int = 0
     completed_codes: int = 0
+    training_ready_codes: int = 0
     failed_codes: int = 0
     expected_records: int = 0
     downloaded_records: int = 0
@@ -81,11 +82,19 @@ class BaoStockRuntimeProgress:
         _validate_progress_source(self.source, self.current_code, self.rate_limit_cooldown_seconds)
         if not 1 <= self.sessions <= 2000:
             raise ValueError("BaoStock progress sessions must be in 1..2000")
-        code_counts = (self.universe_count, self.completed_codes, self.failed_codes, self.active_workers)
+        code_counts = (
+            self.universe_count,
+            self.completed_codes,
+            self.training_ready_codes,
+            self.failed_codes,
+            self.active_workers,
+        )
         if any(isinstance(value, bool) or value < 0 for value in code_counts):
             raise ValueError("BaoStock progress code counts must be non-negative integers")
         if self.completed_codes + self.failed_codes > self.universe_count:
             raise ValueError("BaoStock progress code counts exceed the universe")
+        if self.training_ready_codes > self.completed_codes:
+            raise ValueError("BaoStock progress training-ready codes exceed completed codes")
         record_counts = (self.expected_records, self.downloaded_records)
         if any(isinstance(value, bool) or value < 0 for value in record_counts):
             raise ValueError("BaoStock progress record counts must be non-negative integers")
@@ -108,6 +117,10 @@ class BaoStockRuntimeProgress:
     def remaining_codes(self) -> int:
         """Return codes that still need a successful durable download."""
         return self.universe_count - self.completed_codes
+
+    @property
+    def remaining_training_codes(self) -> int:
+        return self.universe_count - self.training_ready_codes
 
 
 def _validate_progress_source(source: str, current_code: str, cooldown_seconds: float) -> None:

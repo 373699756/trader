@@ -182,7 +182,7 @@ def test_compact_coverage_evidence_matches_daily_batch_audit() -> None:
     )
 
 
-def test_discarded_supplier_rows_remain_audited_without_overriding_logical_coverage() -> None:
+def test_discarded_supplier_rows_remain_audited_and_fail_integrity() -> None:
     spec = BaoStockDailySpec(sessions=2000)
     calendar = _calendar(2000)
     security = BaoStockSecurity("600001", "Old", "main", calendar.open_dates[0], None, "fixture")
@@ -196,10 +196,10 @@ def test_discarded_supplier_rows_remain_audited_without_overriding_logical_cover
 
     audit = build_baostock_coverage_audit(spec, calendar, (security,), (batch,))
 
-    assert audit.status == "coverage_ready"
+    assert audit.status == "historical_data_insufficient"
     assert audit.all_cell_coverage == 1.0
     assert audit.null_rows == 1
-    assert "null_rows_present" not in audit.failure_reasons
+    assert "null_rows_present" in audit.failure_reasons
 
 
 def test_v3_split_permanently_reserves_latest_200_dates() -> None:

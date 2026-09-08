@@ -14,6 +14,7 @@ from trader.application.research.historical_screening import HistoricalArchiveMa
 from trader.application.research.replay_models import canonical_hash
 from trader.application.research.tomorrow_historical_models import TomorrowHistoricalGateMetrics
 from trader.application.research.tomorrow_historical_screening import TomorrowHistoricalRow
+from trader.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
 from trader.domain.research.baseline import mean_rank_ic, population_spearman, quantile_bucket, stock_net_contribution
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalScreeningSpec
 from trader.domain.research.paired_statistics import (
@@ -22,14 +23,7 @@ from trader.domain.research.paired_statistics import (
     paired_moving_block_statistics,
 )
 
-_FEATURE_IDS = (
-    "qfq_return_1d",
-    "qfq_return_3d",
-    "qfq_return_5d",
-    "qfq_residual_momentum_20d_skip5",
-    "qfq_residual_momentum_40d_skip5",
-    "qfq_residual_momentum_60d_skip5",
-)
+_FEATURE_IDS = TOMORROW_MODEL_FEATURE_MANIFEST.names
 _COST_RATES = (0.002, 0.005, 0.01)
 TOMORROW_PROFILE_HOLDOUT_REPORT_HASH = "47e2b9bfd4d404521f8251e2e51c491aa96c1bc0d8423dea95e63320daa6e3bf"
 

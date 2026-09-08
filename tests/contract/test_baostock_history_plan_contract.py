@@ -3,25 +3,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_baostock_history_plan_freezes_2000_row_scope_and_four_owner_boundaries() -> None:
-    strategy = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
-    design = (ROOT / "docs" / "02_工程设计.md").read_text(encoding="utf-8")
-    section = strategy[strategy.index("### 3.4 BaoStock 2000 日归档") :]
+def _baostock_section(work: str) -> str:
+    return work[work.index("#### `baostock_daily_archive`") : work.index("#### `historical_industry_facts`")]
+
+
+def test_baostock_history_plan_freezes_one_stable_2000_session_scope() -> None:
+    work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
+    section = _baostock_section(work)
 
     for required in (
         "baostock_daily_core",
         "每只股票最多 2000 个代码-日期逻辑记录",
         "`--sessions` 接受 1–2000 且默认 2000",
         "最近 2000 个交易所开市日",
-        "2026-08-31",
-        "前复权",
-        "未复权",
-        "同一行",
+        "raw/qfq 必须在同一行",
         "production_authority=false",
-        "Codex A",
-        "Codex B",
-        "Codex C",
-        "Codex D",
         "11:20",
         "14:50",
         "不得",
@@ -34,28 +31,27 @@ def test_baostock_history_plan_freezes_2000_row_scope_and_four_owner_boundaries(
     assert "最近 1500" not in section
     assert "--sessions 1500" not in section
     assert "score_baostock_daily_core_v1" not in section
+    assert "15.1.38" not in section
+    assert "Codex A" not in section
 
 
 def test_baostock_plan_does_not_treat_recent_ipos_as_missing_2000_day_rows() -> None:
-    strategy = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
-    section = strategy[strategy.index("### 3.4 BaoStock 2000 日归档") :]
+    work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
+    section = _baostock_section(work)
 
     assert "上市日" in section
     assert "应有交易日" in section
     assert "新上市股票" in section
-    assert "伪造" in section
+    assert "补造" in section
 
 
-def test_baostock_plan_has_one_data_owner_and_fixed_operational_caps() -> None:
-    strategy = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
-    section = strategy[strategy.index("### 3.4 BaoStock 2000 日归档") :]
+def test_baostock_plan_has_one_semantic_task_and_fixed_operational_caps() -> None:
+    work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
+    section = _baostock_section(work)
 
     for required in (
-        "Codex A 独占数据内容语义",
-        "Codex B 不实现下载、覆盖审计或切分",
-        "Codex C 不定义或重切数据集",
-        "Codex D 不决定覆盖是否通过",
-        "固定最多 1 个进程",
+        "本节是 BaoStock 2000 日日线正式归档的唯一执行定义",
+        "1 个下载进程和 1 个 SDK 子进程",
         "单次供应商调用墙钟上限 60 秒",
         "最多重试 2 次",
         "每次查询至少间隔 2 秒",
@@ -64,43 +60,43 @@ def test_baostock_plan_has_one_data_owner_and_fixed_operational_caps() -> None:
         assert required in section
 
 
-def test_industry_history_is_the_only_next_action_before_v3_training() -> None:
-    strategy = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
+def test_baostock_plan_is_complete_but_does_not_override_direct_user_work() -> None:
+    work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
+    compact = " ".join(work.split())
 
-    assert "当前计划中唯一下一执行章节是第 4.2 节历史行业事实补齐" in strategy
-    assert "15.1.35 Tomorrow V3 单一行业模型 | `blocked_by_industry_history`" in strategy
-    assert "15.1.38 BaoStock 2000 日归档 | `completed`" in strategy
-    assert "15.1.37 四路实施边界 | `control_only`" in strategy
+    assert "`baostock_daily_archive` 已经完成正式全量 manifest 和训练输入交接" in compact
+    assert "下一可执行项是 `historical_industry_facts`" in compact
+    assert "用户直接授权的新任务优先" in compact
+    assert "本节只保留既有审计名称的兼容索引" in work
+    assert "发生冲突时只以第 4 节为准" in work
+    assert "不能单独解除 V3 训练、Shadow 或生产 blocker" in compact
 
 
-def test_codex_c_baostock_holdout_isolation_contract_is_implemented_without_opening_holdout() -> None:
-    strategy = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
-    design = (ROOT / "docs" / "02_工程设计.md").read_text(encoding="utf-8")
-    source = ROOT / "src" / "trader" / "domain" / "research" / "baostock_holdout_isolation.py"
-    section = strategy[strategy.index("### 3.4 BaoStock 2000 日归档") :]
+def test_baostock_holdout_isolation_contract_is_archived_without_opening_holdout() -> None:
+    work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
+    source = ROOT / "src/trader/domain/research/baostock_holdout_isolation.py"
 
     assert source.is_file()
-    assert "Codex C 工程契约已完成" in section
-    assert "baostock_holdout_isolation_contract" in section
-    assert "score_tomorrow_historical_candidate" in section
-    assert "point_in_time_holdout" in section
-    assert "不打开留出" in section
-    assert "production_authority=false" in section
+    assert "baostock_holdout_isolation_contract" in work
+    assert "score_tomorrow_historical_candidate" in work
+    assert "point_in_time_holdout" in work
+    assert "不打开留出" in work
+    assert "production_authority=false" in work
     assert "baostock_holdout_isolation_contract" in design
     assert "terminal_holdout_opened=false" in design
 
 
-def test_codex_b_wave_one_has_a_read_only_hash_bound_input_contract() -> None:
-    strategy = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
-    design = (ROOT / "docs" / "02_工程设计.md").read_text(encoding="utf-8")
-    section = strategy[strategy.index("### 3.4 BaoStock 2000 日归档") :]
-    domain_contract = ROOT / "src" / "trader" / "domain" / "research" / "tomorrow_training_input.py"
-    application_contract = ROOT / "src" / "trader" / "application" / "research" / "tomorrow_training_input.py"
+def test_training_input_has_a_read_only_hash_bound_contract() -> None:
+    work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
+    domain_contract = ROOT / "src/trader/domain/research/tomorrow_training_input.py"
+    application_contract = ROOT / "src/trader/application/research/tomorrow_training_input.py"
 
-    assert "Codex B 波次 1 状态：已完成" in section
-    assert "tomorrow_training_input" in section
-    assert "15.1.38 已由真实全量 manifest 和覆盖证据闭合" in section
-    assert "剩余行业/训练事实缺口属于第 4.2 节" in section
+    assert "tomorrow_training_input" in work
+    assert "只读校验" in work
+    assert "父 manifest hash" in work
+    assert "#### `baostock_daily_archive`\n\n状态：`completed`" in work
     assert "tomorrow_training_input" in design
     assert domain_contract.is_file()
     assert application_contract.is_file()
@@ -109,7 +105,7 @@ def test_codex_b_wave_one_has_a_read_only_hash_bound_input_contract() -> None:
 def test_baostock_runtime_keeps_retry_rate_timeout_and_cancel_caps_executable() -> None:
     runtime = (ROOT / "src/trader/infra/research/baostock_history_runtime.py").read_text(encoding="utf-8")
     gateway = (ROOT / "src/trader/infra/research/baostock_daily.py").read_text(encoding="utf-8")
-    strategy = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
+    work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
     design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
 
     assert "ProcessPoolExecutor" not in runtime
@@ -119,14 +115,14 @@ def test_baostock_runtime_keeps_retry_rate_timeout_and_cancel_caps_executable() 
     assert "request.timeout_seconds" in runtime
     assert ".terminate()" in runtime
     assert ".get_data(" not in gateway
-    for contract in (strategy, design):
-        assert "60 秒只约束单次供应商调用，不约束包含多次正常调用的完整阶段或单股任务" in contract
+    assert "单次供应商调用墙钟上限 60 秒" in work
+    assert "60 秒只约束单次供应商调用，不约束包含多次正常调用的完整阶段或单股任务" in design
 
 
-def test_baostock_runtime_contract_documents_resume_progress_and_final_database_boundary() -> None:
-    strategy = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
-    design = (ROOT / "docs" / "02_工程设计.md").read_text(encoding="utf-8")
-    section = strategy[strategy.index("### 3.4 BaoStock 2000 日归档") :]
+def test_baostock_runtime_contract_has_one_observability_owner() -> None:
+    work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
+    section = _baostock_section(work)
 
     for required in (
         "baostock_runtime_progress",
@@ -161,23 +157,39 @@ def test_baostock_runtime_contract_documents_resume_progress_and_final_database_
         "shards/<board>-<code-prefix>.sqlite3",
         "catalog.sqlite3",
     ):
-        assert required in section
         assert required in design
+    assert "运行进度字段以 `02_工程设计.md` 第 14.1 节为唯一规范" in section
+
+
+def test_baostock_sealing_is_partition_bounded_and_keeps_sealed_bytes_immutable() -> None:
+    work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
+    section = _baostock_section(work)
 
     for contract in (section, design):
-        assert "日线分片完整性 hash 只覆盖日线上下文、日线记录、批次和成功 checkpoint" in contract
-        assert "追加行业和训练事实不得改变日线 manifest" in contract
-        assert "一次只解码一个 SQLite 分片" in contract
-        assert "不得在收尾前把全部分片日线载荷同时载入内存" in contract
-        assert "供应商物理坏行数只保留为质量证据" in contract
-        assert "不得越过逻辑覆盖率门禁" in contract
-        assert "history_manifest_unavailable" in contract
-        assert "incomplete_codes" in contract
+        compact = " ".join(contract.split())
+        assert "轻量 checkpoint 索引" in compact
+        assert "一次只校验一个 SQLite 分片" in compact
+        assert "紧凑有类型覆盖证据" in compact
+        assert "不得同时构造全部分片的日线领域对象" in compact
+        assert "整文件 SHA-256" in compact
+
+
+def test_baostock_resume_repairs_training_facts_without_reusing_unqualified_industry_dates() -> None:
+    work = " ".join(_baostock_section((ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")).split())
+    design = " ".join((ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8").split())
+
+    for contract in (work, design):
+        assert "旧日线局部 Hash 只读识别" in contract
+        assert "date,code,tradestatus,isST" in contract
+        assert "不重复下载 qfq" in contract
+        assert "行业生效区间未覆盖的早期日期排除出训练" in contract
+        assert "不得用当前行业回填" in contract
 
 
 def test_baostock_history_is_partitioned_by_board_and_four_digit_code_prefix() -> None:
-    strategy = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
-    section = strategy[strategy.index("### 3.4 BaoStock 2000 日归档") :]
+    work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
+    section = _baostock_section(work)
 
     for required in (
         "data/history/baostock-daily/sessions-2000/",

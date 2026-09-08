@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from importlib import resources
 from pathlib import Path
 
@@ -10,6 +9,7 @@ import pytest
 from trader.application.ports.model_scoring import ModelInput
 from trader.domain.recommendation.models import Strategy
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
+from trader.infra.scoring.profile_factory import load_scoring_profile
 from trader.infra.scoring.profiles.v3.bundle_codec import decode_tomorrow_bundle, load_tomorrow_bundle
 from trader.infra.scoring.profiles.v3.bundle_locator import locate_latest_bundle
 from trader.infra.scoring.profiles.v3.profile import build_scoring_profile, build_tomorrow_predictor
@@ -80,17 +80,13 @@ def _write_bundle(path: Path, document: dict[str, object]) -> None:
     path.write_text(json.dumps(document), encoding="utf-8")
 
 
-def test_v3_locator_selects_latest_model_deterministically(tmp_path: Path) -> None:
-    first = tmp_path / "scoring/v3/training/run-a/model.json"
-    second = tmp_path / "scoring/v3/training/run-b/model.json"
-    _write_bundle(first, _document())
-    _write_bundle(second, _document())
-    os.utime(first, ns=(1_000, 1_000))
-    os.utime(second, ns=(2_000, 2_000))
+def test_v3_locator_uses_the_direct_training_model(tmp_path: Path) -> None:
+    model = tmp_path / "tomorrow-v3/model.json"
+    legacy = tmp_path / "tomorrow-v3/input-hash/model.json"
+    _write_bundle(model, _document())
+    _write_bundle(legacy, _document())
 
-    assert locate_latest_bundle(tmp_path) == second
-    os.utime(first, ns=(2_000, 2_000))
-    assert locate_latest_bundle(tmp_path) == second
+    assert locate_latest_bundle(tmp_path) == model
 
 
 def test_v3_locator_fails_closed_when_no_model_exists(tmp_path: Path) -> None:
@@ -99,13 +95,14 @@ def test_v3_locator_fails_closed_when_no_model_exists(tmp_path: Path) -> None:
 
 
 def test_v3_codec_profile_and_predictor_preserve_the_complete_contract(tmp_path: Path) -> None:
-    path = tmp_path / "scoring/v3/training/run-a/model.json"
+    path = tmp_path / "tomorrow-v3/model.json"
     document = _document()
     _write_bundle(path, document)
 
     artifact = load_tomorrow_bundle(path)
     predictor = build_tomorrow_predictor(artifact)
     profile = build_scoring_profile(artifact)
+    loaded_profile = load_scoring_profile("v3", training_root=tmp_path)
     row = ModelInput("600000", (0.01, 0.02, 0.03, 0.01, -0.02, 0.03), "银行")
 
     assert artifact.content_hash == document["content_hash"]
@@ -113,6 +110,7 @@ def test_v3_codec_profile_and_predictor_preserve_the_complete_contract(tmp_path:
     assert predictor.industry_ids == ("银行",)
     assert predictor.exposure_contract.requires_industry is True
     assert tuple(head.strategy for head in profile.heads) == (Strategy.TOMORROW,)
+    assert loaded_profile.heads[0].predictor.predict((row,)) == predictor.predict((row,))
     assert profile.evidence.historical_status == "historical_validated"
     prediction = predictor.predict((row,))[0]
     assert profile.combiner.combine((prediction,)) == prediction

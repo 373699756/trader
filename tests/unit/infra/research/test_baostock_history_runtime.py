@@ -19,13 +19,17 @@ from trader.application.research.baostock_history_runtime import (
 from trader.domain.research.baostock_daily import (
     BAOSTOCK_LEGACY_CALENDAR_SCHEMA,
     BaoStockCalendar,
+    BaoStockDailyManifest,
     BaoStockDailySide,
     BaoStockDailySpec,
+    BaoStockIndustryInterval,
     BaoStockSecurity,
     BaoStockSourceVersions,
     join_baostock_daily_sides,
 )
-from trader.infra.research.baostock_daily import SQLiteBaoStockDailyShard
+from trader.infra.research.baostock_catalog import partition_name
+from trader.infra.research.baostock_daily import BaoStockDailyPartitionedArchive, SQLiteBaoStockDailyShard
+from trader.infra.research.baostock_history_legacy import legacy_daily_database_sha256, migrate_legacy_archive
 from trader.infra.research.baostock_history_runtime import (
     _ContextResponse,
     _ContextStage,
@@ -36,12 +40,12 @@ from trader.infra.research.baostock_history_runtime import (
     _failure_code,
     _fetch_context,
     _load_resume_context,
-    _partition_name,
     _quarantine_corrupt_archive_parts,
     _run_locked,
     _SupplierCallActivity,
     _WorkerHandle,
     inspect_baostock_history,
+    project_baostock_runtime_status,
     run_baostock_history,
 )
 
@@ -57,7 +61,7 @@ from trader.infra.research.baostock_history_runtime import (
 def test_partition_name_is_human_readable_and_bounds_each_database_to_one_hundred_codes(
     board: str, code: str, expected: str
 ) -> None:
-    assert _partition_name(board, code) == expected
+    assert partition_name(board, code) == expected
 
 
 class _ProgressRecorder:
@@ -66,6 +70,19 @@ class _ProgressRecorder:
 
     def publish(self, progress: BaoStockRuntimeProgress) -> None:
         self.values.append(progress)
+
+
+def test_runtime_status_projection_explicitly_publishes_training_readiness() -> None:
+    projected = project_baostock_runtime_status(
+        BaoStockRuntimeStatus(
+            universe_count=2,
+            completed_codes=2,
+            training_ready_codes=1,
+        )
+    )
+
+    assert projected["completed_codes"] == 2
+    assert projected["training_ready_codes"] == 1
 
 
 def _coordinator(tmp_path: Path) -> tuple[_DownloadCoordinator, BaoStockSecurity, _ProgressRecorder]:
@@ -167,35 +184,24 @@ def test_resume_progress_reads_checkpoint_index_without_snapshot_payload_decode(
     assert coordinator._downloaded_records == 0
 
 
-def test_finish_uses_checkpoint_indexes_before_partitioned_manifest_write(
+def test_finish_uses_checkpoint_indexes_and_streamed_partition_sealing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     coordinator, security, _ = _coordinator(tmp_path)
     coordinator._initialize_shards()
     shard = coordinator._failure_shard(security)
     shard.save_batch(coordinator._run.spec, _batch_for_security(security, coordinator._run.spec))
-    coordinator._refresh_checkpoint_progress()
 
     def snapshot_must_not_run(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("finish must not pre-decode every partition")
-
-    published: list[tuple[frozenset[str], frozenset[str]]] = []
-    expected = BaoStockRuntimeStatus(
-        state="completed_with_failures",
-        sessions=1,
-        universe_count=1,
-        completed_codes=1,
-    )
-
-    def publish(completed: frozenset[str], ready: frozenset[str]) -> BaoStockRuntimeStatus:
-        published.append((completed, ready))
-        return expected
+        raise AssertionError("finish must not decode every partition before sealing")
 
     monkeypatch.setattr(shard, "snapshot", snapshot_must_not_run)
-    monkeypatch.setattr(coordinator, "_publish", publish)
 
-    assert coordinator._finish() == expected
-    assert published == [(frozenset({security.code}), frozenset())]
+    status = coordinator._finish()
+
+    assert status.completed_codes == 1
+    assert status.training_ready_codes == 0
+    assert status.manifest_hash
 
 
 def test_completed_daily_batch_with_incomplete_industry_is_not_downloaded_again(tmp_path: Path) -> None:
@@ -214,60 +220,106 @@ def test_completed_daily_batch_with_incomplete_industry_is_not_downloaded_again(
     assert coordinator._failed_codes == set()
 
 
-def test_completed_daily_archive_seals_without_claiming_industry_training_readiness(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_completed_daily_batch_with_partially_usable_industry_queues_facts_only(tmp_path: Path) -> None:
+    base, security, recorder = _coordinator(tmp_path)
+    first_day = base._run.spec.source_cutoff - timedelta(days=1)
+    calendar = BaoStockCalendar((first_day, base._run.spec.source_cutoff))
+    spec = BaoStockDailySpec(sessions=2)
+    partial = (
+        BaoStockIndustryInterval(
+            security.code,
+            spec.source_cutoff,
+            None,
+            "银行",
+            "申万一级行业",
+        ),
+    )
+    context = BaoStockShardContext(calendar, (security,), base._run.context.source_versions, partial)
+    run = replace(
+        base._run,
+        request=replace(base._run.request, sessions=2),
+        spec=spec,
+        context=context,
+        root=tmp_path / "partial-industry",
+        progress=recorder,
+    )
+    coordinator = _DownloadCoordinator(run)
+    coordinator._initialize_shards()
+    shard = coordinator._failure_shard(security)
+    shard.save_batch(
+        spec,
+        join_baostock_daily_sides(
+            security.code,
+            calendar.open_dates,
+            tuple(
+                BaoStockDailySide(
+                    security.code, day, "unadjusted", 10.0, 10.5, 9.8, 10.2, 100.0, 1_000.0, 9.9, 3.03, 1.2, "trading"
+                )
+                for day in calendar.open_dates
+            ),
+            tuple(
+                BaoStockDailySide(
+                    security.code, day, "qfq", 10.0, 10.5, 9.8, 10.2, 100.0, 1_000.0, None, None, None, "trading"
+                )
+                for day in calendar.open_dates
+            ),
+        ),
+    )
+
+    coordinator._pending.clear()
+    coordinator._initialize_shards()
+
+    assert tuple(coordinator._pending) == (security,)
+    assert coordinator._terminal_failures == {}
+    assert coordinator._completed_codes == {security.code}
+    assert coordinator._ready_codes == set()
+
+
+def test_daily_archive_seals_independently_and_keeps_industry_training_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    coordinator, security, _ = _coordinator(tmp_path)
+    base, security, _ = _coordinator(tmp_path)
+    coordinator = _DownloadCoordinator(replace(base._run, root=tmp_path / "baostock-daily" / "sessions-1"))
+    verification_calls = 0
+    original_verify = BaoStockDailyPartitionedArchive.verify
+
+    def _counted_verify(archive: BaoStockDailyPartitionedArchive) -> BaoStockDailyManifest:
+        nonlocal verification_calls
+        verification_calls += 1
+        return original_verify(archive)
+
+    monkeypatch.setattr(BaoStockDailyPartitionedArchive, "verify", _counted_verify)
     coordinator._initialize_shards()
     coordinator._failure_shard(security).save_batch(
         coordinator._run.spec,
-        _batch_for_security(security, coordinator._run.spec),
+        join_baostock_daily_sides(
+            security.code,
+            (coordinator._run.spec.source_cutoff,),
+            (),
+            (),
+            null_rows=2,
+        ),
     )
-
-    resumed, _, _ = _coordinator(tmp_path)
-    resumed._initialize_shards()
-    status = resumed._finish()
-
-    assert status.state == "completed_with_failures"
-    assert status.completed_codes == 1
-    assert status.training_ready_codes == 0
-    assert status.manifest_hash
-    assert status.historical_effective_facts_status == "historical_data_insufficient"
-    assert status.training_dataset_status == "historical_data_insufficient"
-    assert (resumed._run.root / "manifest.json").is_file()
-    assert (resumed._run.root / "catalog.sqlite3").is_file()
-
-    monkeypatch.setattr(
-        "trader.infra.research.baostock_history_runtime._runtime_root",
-        lambda _runtime_dir, _sessions: resumed._run.root,
-    )
-    inspected = inspect_baostock_history(tmp_path, sessions=1)
-
-    assert inspected.state == "completed_with_failures"
-    assert inspected.completed_codes == 1
-    assert inspected.training_ready_codes == 0
-    assert inspected.manifest_hash == status.manifest_hash
-    assert inspected.historical_effective_facts_status == "historical_data_insufficient"
-    assert inspected.training_dataset_status == "historical_data_insufficient"
-
-
-def test_completed_batch_with_missing_cells_is_coverage_failure_not_download_failure(tmp_path: Path) -> None:
-    coordinator, security, _ = _coordinator(tmp_path)
     coordinator._initialize_shards()
-    missing_batch = join_baostock_daily_sides(
-        security.code,
-        coordinator._run.context.calendar.open_dates,
-        (),
-        (),
-    )
-    coordinator._failure_shard(security).save_batch(coordinator._run.spec, missing_batch)
 
     status = coordinator._finish()
 
+    assert status.state == "completed_with_failures"
     assert status.completed_codes == 1
     assert status.failed_codes == 0
+    assert status.training_ready_codes == 0
     assert status.coverage_status == "historical_data_insufficient"
-    assert "all_expected_cell_coverage_below_95_percent" in status.failure_reasons
+    assert status.historical_effective_facts_status == "historical_data_insufficient"
+    assert "historical_industry_effective_at_unavailable" in status.failure_reasons
+    assert (coordinator._run.root / "manifest.json").is_file()
+    assert verification_calls == 1
+
+    inspected = inspect_baostock_history(tmp_path, sessions=1)
+    assert inspected.completed_codes == 1
+    assert inspected.training_ready_codes == 0
+    assert inspected.historical_effective_facts_status == "historical_data_insufficient"
+    assert verification_calls == 1
 
 
 def test_incomplete_historical_industry_has_stable_failure_code() -> None:
@@ -311,6 +363,65 @@ def test_industry_incomplete_response_counts_daily_download_without_marking_code
     assert recorder.values[-1].last_failure_reason == ""
 
 
+def test_training_fact_only_response_does_not_double_count_durable_daily_rows(tmp_path: Path) -> None:
+    coordinator, security, recorder = _coordinator(tmp_path)
+    coordinator._initialize_shards()
+    coordinator._completed_codes.add(security.code)
+    coordinator._downloaded_records = 1
+
+    class _Connection:
+        def recv(self) -> object:
+            return _DownloadResponse(security.code, True, daily_downloaded=False)
+
+    class _Process:
+        def is_alive(self) -> bool:
+            return True
+
+    handle = _WorkerHandle(  # type: ignore[arg-type] -- focused process/connection doubles
+        process=_Process(),
+        connection=_Connection(),
+        shard_path=tmp_path,
+        current=security,
+        started_at=1.0,
+    )
+
+    coordinator._accept_response(handle, now=2.0)
+
+    assert coordinator._ready_codes == {security.code}
+    assert coordinator._downloaded_records == 1
+    assert recorder.values[-1].training_ready_codes == 1
+
+
+def test_success_clears_only_the_codes_owning_partition(tmp_path: Path) -> None:
+    coordinator, security, _ = _coordinator(tmp_path)
+    coordinator._initialize_shards()
+
+    class _Connection:
+        def recv(self) -> object:
+            return _DownloadResponse(security.code, True)
+
+    class _Process:
+        def is_alive(self) -> bool:
+            return True
+
+    class _UnrelatedShard:
+        def clear_failure(self, *_args: object) -> None:
+            raise AssertionError("unrelated partitions must not decode their full context")
+
+    coordinator._shards = (*coordinator._shards, _UnrelatedShard())  # type: ignore[assignment]
+    handle = _WorkerHandle(  # type: ignore[arg-type] -- focused process/connection doubles
+        process=_Process(),
+        connection=_Connection(),
+        shard_path=tmp_path,
+        current=security,
+        started_at=1.0,
+    )
+
+    coordinator._accept_response(handle, now=2.0)
+
+    assert coordinator._completed_codes == {security.code}
+
+
 def test_partial_status_refreshes_checkpoints_committed_outside_parent_response(tmp_path: Path) -> None:
     coordinator, security, recorder = _coordinator(tmp_path)
     coordinator._initialize_shards()
@@ -328,7 +439,7 @@ def test_partial_status_refreshes_checkpoints_committed_outside_parent_response(
     assert recorder.values[-1].last_failure_reason == "supplier_query_failed_blacklisted"
 
 
-def test_inspection_reports_completed_checkpoints_as_an_unsealed_manifest(tmp_path: Path) -> None:
+def test_inspection_reports_in_progress_checkpoint_counts_without_a_manifest(tmp_path: Path) -> None:
     coordinator, security, _ = _coordinator(tmp_path)
     spec = coordinator._run.spec
     context = coordinator._run.context
@@ -349,7 +460,94 @@ def test_inspection_reports_completed_checkpoints_as_an_unsealed_manifest(tmp_pa
     assert status.universe_count == 1
     assert status.completed_codes == 1
     assert status.training_ready_codes == 0
-    assert status.failure_reasons == ("history_manifest_unavailable",)
+    assert status.failure_reasons == ("incomplete_codes",)
+
+
+def test_inspection_preserves_checkpoint_counts_when_manifest_is_invalid(tmp_path: Path) -> None:
+    coordinator, security, _ = _coordinator(tmp_path)
+    spec = coordinator._run.spec
+    context = coordinator._run.context
+    root = tmp_path / "baostock-daily" / "sessions-1"
+    shard = SQLiteBaoStockDailyShard(root / "shards" / "main-6000.sqlite3")
+    shard.initialize(spec, context.calendar, context.universe, context.source_versions)
+    shard.save_batch(spec, _batch_for_security(security, spec))
+    (root / "manifest.json").write_text("{}", encoding="utf-8")
+
+    status = inspect_baostock_history(tmp_path, sessions=1)
+
+    assert status.state == "failed"
+    assert status.universe_count == 1
+    assert status.completed_codes == 1
+    assert status.failure_reasons == ("manifest_invalid",)
+
+
+def test_inspection_keeps_root_level_legacy_checkpoints_visible_before_migration(tmp_path: Path) -> None:
+    coordinator, security, _ = _coordinator(tmp_path)
+    spec = coordinator._run.spec
+    context = coordinator._run.context
+    root = tmp_path / "baostock-daily" / "sessions-1"
+    shard = SQLiteBaoStockDailyShard(root / "shard-000.sqlite3")
+    shard.initialize(spec, context.calendar, context.universe, context.source_versions)
+    shard.save_batch(spec, _batch_for_security(security, spec))
+
+    status = inspect_baostock_history(tmp_path, sessions=1)
+
+    assert status.state == "completed_with_failures"
+    assert status.shard_count == 1
+    assert status.universe_count == 1
+    assert status.completed_codes == 1
+    assert status.training_ready_codes == 0
+
+
+def test_resume_context_loads_from_root_level_legacy_checkpoint_without_supplier_fetch(tmp_path: Path) -> None:
+    coordinator, _, _ = _coordinator(tmp_path)
+    spec = coordinator._run.spec
+    context = coordinator._run.context
+    root = tmp_path / "baostock-daily" / "sessions-1"
+    legacy = SQLiteBaoStockDailyShard(root / "shard-000.sqlite3")
+    legacy.initialize(spec, context.calendar, context.universe, context.source_versions)
+
+    resumed = _load_resume_context(root, spec)
+
+    assert resumed == context
+
+
+def test_root_level_legacy_checkpoints_migrate_into_partitions_without_data_loss(tmp_path: Path) -> None:
+    coordinator, security, _ = _coordinator(tmp_path)
+    spec = coordinator._run.spec
+    context = coordinator._run.context
+    root = tmp_path / "baostock-daily" / "sessions-1"
+    legacy = SQLiteBaoStockDailyShard(root / "shard-000.sqlite3")
+    legacy.initialize(spec, context.calendar, context.universe, context.source_versions)
+    batch = _batch_for_security(security, spec)
+    legacy.save_batch(spec, batch)
+
+    migrate_legacy_archive(root, spec, context)
+
+    migrated = SQLiteBaoStockDailyShard(root / "shards" / "main-6000.sqlite3")
+    assert migrated.snapshot(spec).batches == (batch,)
+    assert not (root / "shard-000.sqlite3").exists()
+    recovery = tuple((root / "recovery").glob("legacy-*"))
+    assert len(recovery) == 1
+    assert (recovery[0] / "shard-000.sqlite3").is_file()
+
+
+def test_checkpoint_inspection_does_not_keep_stale_failure_after_code_completed(tmp_path: Path) -> None:
+    coordinator, security, _ = _coordinator(tmp_path)
+    spec = coordinator._run.spec
+    context = coordinator._run.context
+    root = tmp_path / "baostock-daily" / "sessions-1"
+    current = SQLiteBaoStockDailyShard(root / "shards" / "main-6000.sqlite3")
+    current.initialize(spec, context.calendar, context.universe, context.source_versions)
+    current.save_batch(spec, _batch_for_security(security, spec))
+    legacy = SQLiteBaoStockDailyShard(root / "shard-000.sqlite3")
+    legacy.initialize(spec, context.calendar, context.universe, context.source_versions)
+    legacy.record_failure(spec, security.code, "supplier_query_failed")
+
+    status = inspect_baostock_history(tmp_path, sessions=1)
+
+    assert status.completed_codes == 1
+    assert status.failed_codes == 0
 
 
 def test_worker_unavailable_stops_the_run_without_failing_unattempted_codes(tmp_path: Path) -> None:
@@ -517,6 +715,114 @@ def test_corrupt_partition_is_quarantined_without_removing_healthy_shards(tmp_pa
     assert (quarantine[0] / corrupt.name).is_file()
     assert (quarantine[0] / "manifest.json").is_file()
     assert (quarantine[0] / "catalog.sqlite3").is_file()
+
+
+def test_repairable_qfq_quality_partition_is_quarantined_at_shard_granularity(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    shards = root / "shards"
+    shards.mkdir(parents=True)
+    healthy = shards / "main-6000.sqlite3"
+    repairable = shards / "main-0019.sqlite3"
+    healthy.write_bytes(b"healthy")
+    repairable.write_bytes(b"repairable")
+    catalog = root / "catalog.sqlite3"
+    catalog.write_bytes(b"catalog")
+    (root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "catalog_sha256": hashlib.sha256(catalog.read_bytes()).hexdigest(),
+                "audit": {"failed_codes": ["001914"]},
+                "partitions": [
+                    {
+                        "relative_path": "shards/main-6000.sqlite3",
+                        "database_sha256": hashlib.sha256(healthy.read_bytes()).hexdigest(),
+                        "codes": ["600001"],
+                    },
+                    {
+                        "relative_path": "shards/main-0019.sqlite3",
+                        "database_sha256": hashlib.sha256(repairable.read_bytes()).hexdigest(),
+                        "codes": ["001914", "001965", "001979"],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _quarantine_corrupt_archive_parts(root)
+
+    assert healthy.is_file()
+    assert not repairable.exists()
+    quarantine = tuple((root / "quarantine").glob("recovery-*"))
+    assert len(quarantine) == 1
+    assert (quarantine[0] / repairable.name).is_file()
+
+
+def test_manifest_path_outside_archive_is_never_moved(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    outside = tmp_path / "outside.sqlite3"
+    outside.write_bytes(b"must-stay")
+    catalog = root / "catalog.sqlite3"
+    catalog.write_bytes(b"catalog")
+    (root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "catalog_sha256": hashlib.sha256(catalog.read_bytes()).hexdigest(),
+                "partitions": [
+                    {
+                        "relative_path": "../outside.sqlite3",
+                        "database_sha256": hashlib.sha256(outside.read_bytes()).hexdigest(),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _quarantine_corrupt_archive_parts(root)
+
+    assert outside.read_bytes() == b"must-stay"
+    assert not (root / "manifest.json").exists()
+    quarantine = tuple((root / "quarantine").glob("recovery-*"))
+    assert len(quarantine) == 1
+    assert not (quarantine[0] / outside.name).exists()
+
+
+def test_legacy_daily_hash_manifest_is_resealed_without_quarantining_healthy_shard(tmp_path: Path) -> None:
+    coordinator, security, _ = _coordinator(tmp_path)
+    root = coordinator._run.root
+    coordinator._initialize_shards()
+    shard = coordinator._failure_shard(security)
+    shard.save_batch(coordinator._run.spec, _batch_for_security(security, coordinator._run.spec))
+    catalog = root / "catalog.sqlite3"
+    catalog.write_bytes(b"legacy-catalog")
+    derived = root / "tomorrow-training-dataset.json"
+    derived.write_text("{}", encoding="utf-8")
+    (root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "catalog_sha256": hashlib.sha256(catalog.read_bytes()).hexdigest(),
+                "partitions": [
+                    {
+                        "relative_path": shard.path.relative_to(root).as_posix(),
+                        "database_sha256": legacy_daily_database_sha256(shard.path),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _quarantine_corrupt_archive_parts(root)
+
+    assert shard.path.is_file()
+    assert not (root / "manifest.json").exists()
+    recovery = tuple((root / "quarantine").glob("recovery-*"))
+    assert len(recovery) == 1
+    assert (recovery[0] / "manifest.json").is_file()
+    assert (recovery[0] / "catalog.sqlite3").is_file()
+    assert (recovery[0] / derived.name).is_file()
 
 
 def test_resume_reports_persisted_totals_before_starting_a_supplier_worker(

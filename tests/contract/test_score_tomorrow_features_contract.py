@@ -10,17 +10,20 @@ def test_batch_two_contract_freezes_five_point_in_time_feature_families() -> Non
     work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
 
     for token in (
+        "published_at",
+        "industry_effective_at",
+        "production_authority=false",
+    ):
+        assert token in strategy
+    for token in (
         "score_tomorrow_point_in_time_features",
         "residual_reversal",
         "residual_momentum",
         "overnight",
         "intraday",
         "tail",
-        "published_at",
-        "industry_effective_at",
-        "production_authority=false",
     ):
-        assert token in strategy
+        assert token in work
     assert "ScoreTomorrowPointInTimeFeatures" in work
     assert "不接入 `bootstrap.py`、HTTP、调度、活动运行库、正式决策或 DeepSeek" in work
 

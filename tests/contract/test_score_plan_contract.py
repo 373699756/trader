@@ -64,7 +64,7 @@ def test_remaining_offline_research_is_historical_and_production_isolated() -> N
     work = _compact(ROOT / "docs/03_工程实施.md")
 
     for token in (
-        "score_tomorrow_historical",
+        "tomorrow_historical",
         "tomorrow_profile_holdout_report",
         "tomorrow_historical_risk_probability",
     ):
@@ -77,19 +77,26 @@ def test_remaining_offline_research_is_historical_and_production_isolated() -> N
 
 def test_p2_historical_rejection_and_manual_production_override_remain_explicit() -> None:
     strategy = _compact(ROOT / "docs/01_评分逻辑.md")
+    work = _compact(ROOT / "docs/03_工程实施.md")
+    changelog = _compact(ROOT / "CHANGELOG.md")
 
+    for token in (
+        "historical_rejected",
+        "manual_user_override",
+        "automatic_model_update=false",
+        "loss_probability_status=not_modeled",
+    ):
+        assert token in strategy
     for token in (
         "daily_reconstructible_ensemble",
         "single_candidate_pass_or_stop",
         "historical_ohlcv_cross_section",
-        "historical_rejected",
-        "manual_user_override",
         "automatic_t1_outcome_settlement",
-        "automatic_model_update=false",
-        "loss_probability_status=not_modeled",
-        "27034e52813f1776e2ed218c1c397f481b244fb852b01be08ddc21249d887da5",
     ):
-        assert token in strategy
+        assert token in work
+    artifact_hash = "27034e52813f1776e2ed218c1c397f481b244fb852b01be08ddc21249d887da5"
+    assert artifact_hash in changelog
+    assert artifact_hash not in strategy
 
 
 def test_v1_v2_historical_evidence_does_not_create_a_running_collection_gate() -> None:

@@ -14,9 +14,9 @@ from typing import Literal
 
 from trader.application.research.baostock_daily import BaoStockShardContext
 from trader.domain.research.baostock_daily import (
-    BAOSTOCK_LEGACY_PARTITION_REF_SCHEMA,
     BaoStockCalendar,
     BaoStockCodeCoverageEvidence,
+    BaoStockCoverageAudit,
     BaoStockDailyCell,
     BaoStockDailyManifest,
     BaoStockDailySpec,
@@ -28,21 +28,23 @@ from trader.domain.research.h1_point_in_time import canonical_hash
 from trader.domain.research.tomorrow_training_input import FrozenDailyInputDescriptor
 from trader.infra.research.baostock_catalog import (
     checkpoint_database,
-    daily_database_sha256,
     file_sha256,
+    has_pending_wal,
     manifest_spec,
-    partition_ref,
-    write_catalog,
+    partition_ref_from_index,
+    write_catalog_from_hashes,
     write_immutable_json,
 )
 from trader.infra.research.baostock_daily import (
     _FROZEN_DAILY_FIELDS,
     BaoStockDailyArtifactConflictError,
+    BaoStockShardContextIdentity,
     BaoStockTrainingCodeIdentity,
     SQLiteBaoStockDailyShard,
     _decode_cell,
     _decode_spec,
     _json_object,
+    shared_context_identity,
 )
 from trader.infra.research.baostock_daily_serialization import _decode_manifest, _encode_manifest
 
@@ -99,13 +101,13 @@ class BaoStockTrainingTrainingInputArchive:
         self,
         root: Path,
         spec: BaoStockDailySpec,
-        context: BaoStockShardContext,
+        context_identity: BaoStockShardContextIdentity,
         snapshot: BaoStockTrainingTrainingInputSnapshot,
         shards_by_code: dict[str, SQLiteBaoStockDailyShard],
     ) -> None:
         self._root = root
         self._spec = spec
-        self._context = context
+        self._context_identity = context_identity
         self.snapshot = snapshot
         self._shards_by_code = dict(shards_by_code)
         self._references_by_code = {item.identity.code: item.identity for item in snapshot.references}
@@ -126,8 +128,7 @@ class BaoStockTrainingTrainingInputArchive:
         context = shards[0].context(spec)
         if context is None:
             raise BaoStockDailyArtifactConflictError("BaoStock training context is unavailable")
-        if any(not shard.context_matches(spec, context) for shard in shards[1:]):
-            raise BaoStockDailyArtifactConflictError("BaoStock training shard contexts do not match")
+        context_identity = shared_context_identity(spec, context, shards)
         expected = {item.code: len(context.calendar.expected_dates(item)) for item in context.universe}
         completed: set[str] = set()
         references: list[BaoStockTrainingTrainingCodeReference] = []
@@ -135,7 +136,7 @@ class BaoStockTrainingTrainingInputArchive:
         for shard in shards:
             completed.update(shard.checkpoint(spec, expected_records_by_code=expected).completed_codes)
             relative_path = shard.path.relative_to(root).as_posix()
-            for identity in shard.training_code_identities(spec, frozen_context=context):
+            for identity in shard.training_code_identities(spec, frozen_identity=context_identity):
                 if identity.code in shards_by_code:
                     raise BaoStockDailyArtifactConflictError("BaoStock training code is present in multiple shards")
                 references.append(BaoStockTrainingTrainingCodeReference(relative_path, identity))
@@ -146,7 +147,10 @@ class BaoStockTrainingTrainingInputArchive:
         if manifest_path.is_file():
             manifest = BaoStockDailyPartitionedArchive(root).verify()
             expected_codes = frozenset(code for partition in manifest.partitions for code in partition.codes)
-            if manifest.audit.status != "coverage_ready" or frozenset(shards_by_code) != expected_codes:
+            if (
+                not _supports_complete_nonproduction_training(manifest.audit)
+                or frozenset(shards_by_code) != expected_codes
+            ):
                 raise BaoStockDailyArtifactConflictError("BaoStock complete manifest is not training-ready")
             input_scope: BaoStockTrainingInputScope = "complete_manifest"
             input_hash = manifest.content_hash
@@ -171,7 +175,7 @@ class BaoStockTrainingTrainingInputArchive:
             len(completed),
             tuple(references),
         )
-        return cls(root, spec, context, snapshot, shards_by_code)
+        return cls(root, spec, context_identity, snapshot, shards_by_code)
 
     def read_training_rows(
         self,
@@ -187,9 +191,23 @@ class BaoStockTrainingTrainingInputArchive:
             self._spec,
             code,
             allowed_dates=allowed_dates,
-            frozen_context=self._context,
+            frozen_identity=self._context_identity,
             expected_identity=identity,
         )
+
+
+def _supports_complete_nonproduction_training(audit: BaoStockCoverageAudit) -> bool:
+    if audit.status == "coverage_ready":
+        return True
+    return (
+        audit.failure_reasons == ("null_rows_present",)
+        and audit.null_rows > 0
+        and not audit.failed_codes
+        and audit.duplicate_rows == 0
+        and audit.out_of_window_rows == 0
+        and audit.future_rows == 0
+        and all(item.eligible_for_training_population for item in audit.code_coverages)
+    )
 
 
 def _common_daily_context(
@@ -217,7 +235,7 @@ def _stream_partition_evidence(
         index = shard.daily_audit_index(spec, context)
         if not index.batch_hashes:
             continue
-        references.append(partition_ref(root, shard, index))
+        references.append(partition_ref_from_index(root, shard, index))
         for code, batch_hash in index.batch_hashes:
             previous = batch_hashes.get(code)
             if previous is not None and previous != batch_hash:
@@ -250,14 +268,15 @@ class BaoStockDailyPartitionedArchive:
         ordered_refs = tuple(sorted(refs, key=lambda item: item.relative_path))
         if not ordered_refs:
             raise BaoStockDailyArtifactConflictError("BaoStock partition manifest has no completed daily batches")
-        if frozenset(code for item in ordered_refs for code in item.codes) != frozenset(batch_hashes):
-            raise BaoStockDailyArtifactConflictError("BaoStock partitions do not cover every daily batch")
+        manifest_codes = frozenset(code for item in ordered_refs for code in item.codes)
+        if manifest_codes != frozenset(item.code for item in context.universe):
+            raise BaoStockDailyArtifactConflictError("BaoStock partitions do not cover the frozen universe")
         descriptor, temporary_name = tempfile.mkstemp(prefix=".baostock-catalog.", suffix=".sqlite3", dir=self._root)
         os.close(descriptor)
         temporary = Path(temporary_name)
         temporary.unlink()
         try:
-            write_catalog(temporary, ordered_refs, context.universe, batch_hashes)
+            write_catalog_from_hashes(temporary, ordered_refs, context.universe, batch_hashes)
             checkpoint_database(temporary)
             catalog_hash = file_sha256(temporary)
             logical_hash = canonical_hash(
@@ -281,13 +300,20 @@ class BaoStockDailyPartitionedArchive:
                 return existing
             os.link(temporary, self._catalog)
             write_immutable_json(self._manifest, _encode_manifest(manifest), manifest.content_hash)
-            return manifest
+            return self.verify()
         finally:
             temporary.unlink(missing_ok=True)
             temporary.with_name(temporary.name + "-wal").unlink(missing_ok=True)
             temporary.with_name(temporary.name + "-shm").unlink(missing_ok=True)
 
     def verify(self) -> BaoStockDailyManifest:
+        return self._read_manifest(verify_partition_hashes=True)
+
+    def inspect_manifest(self) -> BaoStockDailyManifest:
+        """Read bounded status metadata without re-hashing every sealed partition."""
+        return self._read_manifest(verify_partition_hashes=False)
+
+    def _read_manifest(self, *, verify_partition_hashes: bool) -> BaoStockDailyManifest:
         try:
             raw = _json_object(self._manifest.read_text(encoding="utf-8"))
             stored_hash = raw.pop("content_hash")
@@ -297,36 +323,40 @@ class BaoStockDailyPartitionedArchive:
             if manifest.content_hash != stored_hash or manifest.catalog_sha256 != file_sha256(self._catalog):
                 raise ValueError("BaoStock manifest or catalog hash mismatch")
             for reference in manifest.partitions:
-                path = self._root / reference.relative_path
-                digest = (
-                    file_sha256(path)
-                    if reference.schema_version == BAOSTOCK_LEGACY_PARTITION_REF_SCHEMA
-                    else daily_database_sha256(path)
-                )
-                if digest != reference.database_sha256:
+                path = (self._root / reference.relative_path).resolve()
+                if self._root.resolve() not in path.parents or not path.is_file() or has_pending_wal(path):
+                    raise ValueError(f"BaoStock partition path is invalid: {reference.relative_path}")
+                if verify_partition_hashes and file_sha256(path) != reference.database_sha256:
                     raise ValueError(f"BaoStock partition hash mismatch: {reference.relative_path}")
             return manifest
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, sqlite3.DatabaseError) as exc:
             raise BaoStockDailyArtifactConflictError("BaoStock partition manifest is invalid") from exc
 
-    def describe_frozen_daily_input(self) -> FrozenDailyInputDescriptor:
-        manifest = self.verify()
+    def describe_frozen_daily_input(
+        self,
+        verified_manifest: BaoStockDailyManifest | None = None,
+    ) -> FrozenDailyInputDescriptor:
+        manifest = verified_manifest or self.verify()
         try:
             first = self._root / manifest.partitions[0].relative_path
             with sqlite3.connect(first) as connection:
                 row = connection.execute("SELECT spec_json FROM context WHERE singleton=1").fetchone()
             if row is None:
                 raise ValueError("BaoStock partition context is missing")
-            spec = _decode_spec(_json_object(row[0]))
-            if spec.content_hash != manifest.spec_hash:
+            stored_spec = _decode_spec(_json_object(row[0]))
+            active_spec = BaoStockDailySpec(
+                sessions=stored_spec.sessions,
+                source_cutoff=stored_spec.source_cutoff,
+            )
+            if active_spec.content_hash != manifest.spec_hash:
                 raise ValueError("BaoStock partition spec hash mismatch")
         except (TypeError, ValueError, json.JSONDecodeError, sqlite3.DatabaseError) as exc:
             raise BaoStockDailyArtifactConflictError("BaoStock partition input description is invalid") from exc
         return FrozenDailyInputDescriptor(
             manifest_hash=manifest.content_hash,
-            source_identity=spec.research_identity,
-            source_cutoff=spec.source_cutoff,
-            requested_sessions=spec.sessions,
+            source_identity=active_spec.research_identity,
+            source_cutoff=active_spec.source_cutoff,
+            requested_sessions=active_spec.sessions,
             primary_key=("code", "trade_date"),
             fields=_FROZEN_DAILY_FIELDS,
             raw_qfq_layout="same_row",

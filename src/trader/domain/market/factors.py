@@ -6,6 +6,7 @@ import math
 from collections.abc import Iterable, Mapping
 from decimal import ROUND_HALF_UP, Decimal
 
+from trader.domain.market.feature_contracts import TOMORROW_RAW_ALPHA_FEATURE_MANIFEST
 from trader.domain.market.models import CrossSectionStats
 
 PRODUCTION_FACTOR_IDS = frozenset(
@@ -55,12 +56,7 @@ PRODUCTION_FACTOR_IDS = frozenset(
         "pledge_risk",
         "qfq_amihud_20d",
         "qfq_average_amount_20d",
-        "qfq_momentum_20d_skip5",
-        "qfq_momentum_40d_skip5",
-        "qfq_momentum_60d_skip5",
-        "qfq_return_1d",
-        "qfq_return_3d",
-        "qfq_return_5d",
+        *TOMORROW_RAW_ALPHA_FEATURE_MANIFEST.names,
         "official_investigation_history",
         "price_executability",
         "price_volume_confirmation",

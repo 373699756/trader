@@ -7,14 +7,16 @@ DESIGN = ROOT / "docs" / "02_工程设计.md"
 STRATEGY = ROOT / "docs" / "01_评分逻辑.md"
 
 
-def test_authoritative_docs_record_completed_gates_without_claiming_a_formal_release() -> None:
+def test_authoritative_design_defers_delivery_status_to_the_work_plan() -> None:
     design = DESIGN.read_text(encoding="utf-8")
     strategy = STRATEGY.read_text(encoding="utf-8")
+    work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
 
-    assert "当前交付状态：current-only 工程与发布门禁验收已闭合" in design
-    assert "发布候选契约" in design
-    assert "current-only 是唯一活动产品链" in design
-    assert "当前代码仍属于 `Unreleased`" in design
+    assert "交付状态只由 `03_工程实施.md` 维护" in design
+    assert "评分模块化计划项 1–9 | `completed`" in work
+    assert "#### `baostock_daily_archive`\n\n状态：`completed`" in work
+    assert "当前交付状态：current-only 工程与发布门禁验收已闭合" not in design
+    assert "当前代码仍属于 `Unreleased`" not in design
     assert "正式 0.2.0 release 尚未声明" not in strategy
     assert "旧链已从活动树物理删除" not in strategy
 
@@ -44,7 +46,7 @@ def test_authoritative_docs_do_not_retain_superseded_migration_chronology() -> N
     ):
         assert obsolete not in design
 
-    assert "迁移过程、事故复盘和逐批实现记录只保存在 `CHANGELOG.md`" in _compact(design)
+    assert "历史证据统一见[工程实施](03_工程实施.md)与 `CHANGELOG.md`" in _compact(design)
     assert "历史迁移门禁比较旧档位" not in strategy
     for obsolete_identity in ("DecisionEpoch", "CurrentDecisionIndex", ".runtime/v17"):
         assert obsolete_identity not in design

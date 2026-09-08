@@ -408,7 +408,16 @@ class SQLiteDecisionRecordRepository:
 
     def _recover_staged(self, connection: sqlite3.Connection, row: sqlite3.Row) -> bool:
         payload = _recovery_payload(row)
-        if payload is None or self._record_error(row, payload):
+        if payload is None:
+            self._quarantine_manifest(connection, row, "recovery_payload_invalid")
+            return False
+        recovery_sha = str(row["recovery_sha256"])
+        if (
+            not recovery_sha
+            or recovery_sha != str(row["payload_sha256"])
+            or _sha256(payload) != recovery_sha
+            or _record_from_verified_payload(row, payload)[1]
+        ):
             self._quarantine_manifest(connection, row, "recovery_payload_invalid")
             return False
         try:
@@ -443,35 +452,14 @@ class SQLiteDecisionRecordRepository:
             payload = self._verified_payload(str(row["relative_path"]), str(row["payload_sha256"]))
         except DecisionRecordUnavailableError:
             return "committed_file_missing_or_invalid"
-        return self._record_error(row, payload)
-
-    def _record_error(self, row: sqlite3.Row, payload: bytes) -> str:
-        if _sha256(payload) != str(row["payload_sha256"]):
-            return "payload_hash_mismatch"
-        recovery_sha = str(row["recovery_sha256"])
-        if recovery_sha and _sha256(payload) != recovery_sha:
-            return "recovery_hash_mismatch"
-        try:
-            record = committed_record_from_bytes(payload)
-        except (ValueError, TypeError, UnicodeError):
-            return "payload_invalid"
-        if (
-            record.strategy.value != row["strategy"]
-            or record.trade_date.isoformat() != row["trade_date"]
-            or record.version != row["version"]
-            or record.payload_hash != row["payload_hash"]
-            or record.committed_at.isoformat() != row["committed_at"]
-            or record.commit_kind != row["commit_kind"]
-        ):
-            return "manifest_mismatch"
-        return ""
+        return _record_from_verified_payload(row, payload)[1]
 
     def _load_manifest(self, row: sqlite3.Row) -> CommittedDecisionRecord:
         payload = self._verified_payload(str(row["relative_path"]), str(row["payload_sha256"]))
-        error = self._record_error(row, payload)
-        if error:
+        record, error = _record_from_verified_payload(row, payload)
+        if record is None or error:
             raise DecisionRecordUnavailableError("decision record verification failed")
-        return committed_record_from_bytes(payload)
+        return record
 
     def _manifest(self, strategy: Strategy, trade_date: date) -> sqlite3.Row | None:
         try:
@@ -633,6 +621,26 @@ def _recovery_payload(row: sqlite3.Row) -> bytes | None:
 
 def _row_matches(row: sqlite3.Row, record: CommittedDecisionRecord) -> bool:
     return str(row["version"]) == record.version and str(row["payload_hash"]) == record.payload_hash
+
+
+def _record_from_verified_payload(
+    row: sqlite3.Row,
+    payload: bytes,
+) -> tuple[CommittedDecisionRecord | None, str]:
+    try:
+        record = committed_record_from_bytes(payload)
+    except (ValueError, TypeError, UnicodeError):
+        return None, "payload_invalid"
+    if (
+        record.strategy.value != row["strategy"]
+        or record.trade_date.isoformat() != row["trade_date"]
+        or record.version != row["version"]
+        or record.payload_hash != row["payload_hash"]
+        or record.committed_at.isoformat() != row["committed_at"]
+        or record.commit_kind != row["commit_kind"]
+    ):
+        return None, "manifest_mismatch"
+    return record, ""
 
 
 def _sha256(payload: bytes) -> str:

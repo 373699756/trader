@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from trader.application.research.baostock_daily import BaoStockShardContext
 from trader.domain.research.baostock_daily import (
@@ -48,8 +48,14 @@ from trader.infra.research.baostock_daily_serialization import (
     _encode_spec,
     _encode_versions,
 )
-from trader.infra.research.baostock_errors import BaoStockDailyArtifactConflictError
 from trader.infra.research.baostock_gateway import BaoStockRowGateway, BaoStockRowResult, BaoStockSdkPort
+
+if TYPE_CHECKING:
+    from trader.infra.research.baostock_partition_archive import (
+        BaoStockDailyPartitionedArchive,
+        BaoStockTrainingTrainingInputArchive,
+        BaoStockTrainingTrainingInputSnapshot,
+    )
 
 _BOARDS: tuple[BaoStockBoard, ...] = ("main", "chinext", "star")
 BAOSTOCK_SHARD_SNAPSHOT_SCHEMA = "baostock_daily_shard_snapshot"
@@ -77,6 +83,10 @@ _FROZEN_DAILY_FIELDS = (
     DailyInputField("qfq_volume", "shares"),
     DailyInputField("qfq_amount", "cny"),
 )
+
+
+class BaoStockDailyArtifactConflictError(RuntimeError):
+    """Raised when a shard, catalog, or manifest changes identity."""
 
 
 @dataclass(frozen=True)
@@ -129,6 +139,41 @@ class BaoStockShardCheckpoint:
         object.__setattr__(self, "completed_codes", completed)
         object.__setattr__(self, "ready_codes", ready)
         object.__setattr__(self, "failures", failures)
+
+
+@dataclass(frozen=True)
+class BaoStockShardContextIdentity:
+    requested_spec: BaoStockDailySpec
+    stored_specs: tuple[BaoStockDailySpec, ...]
+    context: BaoStockShardContext
+    content_hashes: tuple[tuple[BaoStockDailySpec, str], ...] = field(init=False)
+
+    def __post_init__(self) -> None:
+        stored_specs = tuple(dict.fromkeys(self.stored_specs))
+        if not stored_specs or any(not _spec_contract_matches(self.requested_spec, item) for item in stored_specs):
+            raise ValueError("BaoStock stored context specs do not match the requested contract")
+        object.__setattr__(
+            self,
+            "content_hashes",
+            tuple(
+                (
+                    stored_spec,
+                    canonical_hash(
+                        (
+                            stored_spec,
+                            self.context.calendar,
+                            self.context.universe,
+                            self.context.source_versions,
+                        )
+                    ),
+                )
+                for stored_spec in stored_specs
+            ),
+        )
+        object.__setattr__(self, "stored_specs", stored_specs)
+
+    def content_hash_for(self, stored_spec: BaoStockDailySpec) -> str | None:
+        return next((value for candidate, value in self.content_hashes if candidate == stored_spec), None)
 
 
 @dataclass(frozen=True)
@@ -288,14 +333,45 @@ class SQLiteBaoStockDailyShard:
         blobs for every shard is unnecessary; the full payload is still decoded
         by ``context``/``snapshot`` at the explicit validation boundaries.
         """
+        return self.context_identity(spec, context) is not None
+
+    def context_identity(
+        self,
+        spec: BaoStockDailySpec,
+        context: BaoStockShardContext,
+    ) -> BaoStockShardContextIdentity | None:
+        stored_spec = self.stored_context_spec(spec)
+        identity = BaoStockShardContextIdentity(spec, (stored_spec,), context)
+        return identity if self.context_identity_matches(identity) else None
+
+    def stored_context_spec(self, spec: BaoStockDailySpec) -> BaoStockDailySpec:
+        try:
+            with self._connect() as connection:
+                row = connection.execute("SELECT spec_json FROM context WHERE singleton=1").fetchone()
+            if row is None:
+                raise BaoStockDailyArtifactConflictError("BaoStock shard context is missing")
+            stored_spec = _decode_spec(_json_object(row[0]))
+            if not _spec_contract_matches(spec, stored_spec):
+                raise BaoStockDailyArtifactConflictError("BaoStock shard spec contract changed")
+            return stored_spec
+        except BaoStockDailyArtifactConflictError:
+            raise
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError, sqlite3.DatabaseError) as exc:
+            raise BaoStockDailyArtifactConflictError("BaoStock shard context identity is unreadable") from exc
+
+    def context_identity_matches(self, identity: BaoStockShardContextIdentity) -> bool:
         try:
             with self._connect() as connection:
                 row = connection.execute("SELECT spec_json, context_hash FROM context WHERE singleton=1").fetchone()
             if row is None:
                 return False
             stored_spec = _decode_spec(_json_object(row[0]))
-            expected_hash = canonical_hash((stored_spec, context.calendar, context.universe, context.source_versions))
-            return _spec_contract_matches(spec, stored_spec) and row[1] == expected_hash
+            expected_hash = identity.content_hash_for(stored_spec)
+            return (
+                _spec_contract_matches(identity.requested_spec, stored_spec)
+                and expected_hash is not None
+                and row[1] == expected_hash
+            )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError, sqlite3.DatabaseError) as exc:
             raise BaoStockDailyArtifactConflictError("BaoStock shard context identity is unreadable") from exc
 
@@ -310,7 +386,10 @@ class SQLiteBaoStockDailyShard:
         ordered_universe = tuple(sorted(universe, key=lambda item: item.code))
         if len(calendar.open_dates) != spec.sessions:
             raise ValueError("BaoStock shard calendar does not match requested sessions")
-        context_hash = canonical_hash((spec, calendar, ordered_universe, source_versions))
+        context = BaoStockShardContext(calendar, ordered_universe, source_versions, industry_intervals)
+        context_hash = BaoStockShardContextIdentity(spec, (spec,), context).content_hash_for(spec)
+        if context_hash is None:
+            raise AssertionError("BaoStock new context identity is missing")
         values = (
             1,
             _json(_encode_spec(spec)),
@@ -404,17 +483,21 @@ class SQLiteBaoStockDailyShard:
         security = next((item for item in context.universe if item.code == code), None)
         if security is None:
             raise ValueError("BaoStock training facts code is outside the registered universe")
-        expected_dates = context.calendar.expected_dates(security)
-        ordered_facts = tuple(sorted(facts, key=lambda item: item.trade_date))
+        supplied_facts = tuple(sorted(facts, key=lambda item: item.trade_date))
         ordered_intervals = tuple(sorted(intervals, key=lambda item: item.effective_from))
-        if tuple(item.trade_date for item in ordered_facts) != expected_dates or any(
-            item.code != code for item in ordered_facts
-        ):
+        expected_dates = tuple(
+            day
+            for day in context.calendar.expected_dates(security)
+            if _industry_for_date(ordered_intervals, day) is not None
+        )
+        facts_by_date = {item.trade_date: item for item in supplied_facts}
+        if len(facts_by_date) != len(supplied_facts) or any(item.code != code for item in supplied_facts):
             raise ValueError("BaoStock daily facts do not cover the registered expected dates")
+        if any(day not in facts_by_date for day in expected_dates):
+            raise ValueError("BaoStock daily facts do not cover the registered expected dates")
+        ordered_facts = tuple(facts_by_date[day] for day in expected_dates)
         if not ordered_intervals or any(item.code != code for item in ordered_intervals):
             raise ValueError("BaoStock historical industry is missing")
-        if any(_industry_for_date(ordered_intervals, day) is None for day in expected_dates):
-            raise ValueError("BaoStock historical industry does not cover every expected date")
         frozen_intervals = tuple(item for item in context.industry_intervals if item.code == code)
         if ordered_intervals != frozen_intervals:
             raise BaoStockDailyArtifactConflictError("BaoStock training industry differs from frozen context")
@@ -447,8 +530,13 @@ class SQLiteBaoStockDailyShard:
         spec: BaoStockDailySpec,
         *,
         frozen_context: BaoStockShardContext | None = None,
+        frozen_identity: BaoStockShardContextIdentity | None = None,
     ) -> tuple[BaoStockTrainingCodeIdentity, ...]:
-        if frozen_context is None:
+        if frozen_identity is not None:
+            context = frozen_identity.context
+            if spec != frozen_identity.requested_spec or not self.context_identity_matches(frozen_identity):
+                raise BaoStockDailyArtifactConflictError("BaoStock training shard context changed")
+        elif frozen_context is None:
             context = self._require_context(spec)
         else:
             context = frozen_context
@@ -613,11 +701,17 @@ class SQLiteBaoStockDailyShard:
         code: str,
         *,
         allowed_dates: frozenset[date],
-        frozen_context: BaoStockShardContext | None = None,
+        frozen_identity: BaoStockShardContextIdentity | None = None,
         expected_identity: BaoStockTrainingCodeIdentity | None = None,
     ) -> tuple[BaoStockTrainingRow, ...]:
-        context = frozen_context or self._require_context(spec)
-        security, identity = self._resolve_training_identity(spec, code, context, expected_identity)
+        context = frozen_identity.context if frozen_identity is not None else self._require_context(spec)
+        security, identity = self._resolve_training_identity(
+            spec,
+            code,
+            context,
+            frozen_identity,
+            expected_identity,
+        )
         batch_row, cell_rows, fact_rows, industry_rows = self._load_training_payload(code)
         cells, batch, facts, intervals = self._decode_training_payload(
             code, identity, batch_row, cell_rows, fact_rows, industry_rows
@@ -629,24 +723,78 @@ class SQLiteBaoStockDailyShard:
                 rows.append(row)
         return tuple(rows)
 
+    def read_training_facts(
+        self,
+        spec: BaoStockDailySpec,
+        code: str,
+    ) -> tuple[tuple[BaoStockDailyFact, ...], tuple[BaoStockIndustryInterval, ...]]:
+        """Read validated fact payloads solely for locked checkpoint migration."""
+
+        context = self._require_context(spec)
+        _security, identity = self._resolve_training_identity(spec, code, context, None, None)
+        batch_row, cell_rows, fact_rows, industry_rows = self._load_training_payload(code)
+        _cells, _batch, facts, intervals = self._decode_training_payload(
+            code,
+            identity,
+            batch_row,
+            cell_rows,
+            fact_rows,
+            industry_rows,
+        )
+        return tuple(facts[day] for day in sorted(facts)), intervals
+
     def _resolve_training_identity(
         self,
         spec: BaoStockDailySpec,
         code: str,
         context: BaoStockShardContext,
+        frozen_identity: BaoStockShardContextIdentity | None,
         expected_identity: BaoStockTrainingCodeIdentity | None,
     ) -> tuple[BaoStockSecurity, BaoStockTrainingCodeIdentity]:
-        if not self.context_matches(spec, context):
+        matches = (
+            spec == frozen_identity.requested_spec and self.context_identity_matches(frozen_identity)
+            if frozen_identity is not None
+            else self.context_matches(spec, context)
+        )
+        if not matches:
             raise BaoStockDailyArtifactConflictError("BaoStock training shard context changed")
         security = next((item for item in context.universe if item.code == code), None)
-        identity = next(
-            (item for item in self.training_code_identities(spec, frozen_context=context) if item.code == code), None
+        identity = (
+            self._training_code_identity(code)
+            if expected_identity is not None
+            else next(
+                (
+                    item
+                    for item in self.training_code_identities(
+                        spec,
+                        frozen_identity=frozen_identity,
+                    )
+                    if item.code == code
+                ),
+                None,
+            )
         )
         if security is None or identity is None:
             raise BaoStockDailyArtifactConflictError("BaoStock code is not training-ready")
         if expected_identity is not None and identity != expected_identity:
             raise BaoStockDailyArtifactConflictError("BaoStock training snapshot identity changed")
         return security, identity
+
+    def _training_code_identity(self, code: str) -> BaoStockTrainingCodeIdentity | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT c.code, c.batch_hash, f.content_hash FROM checkpoints c "
+                "JOIN code_batches b ON b.code=c.code AND b.content_hash=c.batch_hash "
+                "JOIN training_fact_checkpoints f ON f.code=c.code "
+                "WHERE c.state='completed' AND c.code=?",
+                (code,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            return BaoStockTrainingCodeIdentity(*(cast(str, value) for value in row))
+        except (TypeError, ValueError) as exc:
+            raise BaoStockDailyArtifactConflictError("BaoStock training checkpoint identity is invalid") from exc
 
     def _load_training_payload(
         self, code: str
@@ -782,6 +930,20 @@ class SQLiteBaoStockDailyShard:
         return context
 
 
+def shared_context_identity(
+    spec: BaoStockDailySpec,
+    context: BaoStockShardContext,
+    shards: Sequence[SQLiteBaoStockDailyShard],
+) -> BaoStockShardContextIdentity:
+    stored_specs: list[BaoStockDailySpec] = []
+    for shard in shards:
+        stored_specs.append(shard.stored_context_spec(spec))
+    shared = BaoStockShardContextIdentity(spec, tuple(stored_specs), context)
+    if any(not shard.context_identity_matches(shared) for shard in shards):
+        raise BaoStockDailyArtifactConflictError("BaoStock shard contexts do not match")
+    return shared
+
+
 def _training_row_for_cell(  # noqa: PLR0913 - row projection keeps all typed boundary fields visible
     code: str,
     board: BaoStockBoard,
@@ -795,7 +957,9 @@ def _training_row_for_cell(  # noqa: PLR0913 - row projection keeps all typed bo
         return None
     fact = facts.get(day)
     industry = _industry_for_date(intervals, day)
-    if fact is None or industry is None or cell.unadjusted is None or cell.qfq is None:
+    if industry is None:
+        return None
+    if fact is None or cell.unadjusted is None or cell.qfq is None:
         raise BaoStockDailyArtifactConflictError("BaoStock training facts are incomplete")
     return BaoStockTrainingRow(
         code,
@@ -975,22 +1139,52 @@ def industry_covers_expected_dates(security: BaoStockSecurity, context: BaoStock
     )
 
 
+def industry_has_training_dates(security: BaoStockSecurity, context: BaoStockShardContext) -> bool:
+    intervals = tuple(item for item in context.industry_intervals if item.code == security.code)
+    return bool(intervals) and any(
+        any(item.effective_from <= day and (item.effective_to is None or day < item.effective_to) for item in intervals)
+        for day in context.calendar.expected_dates(security)
+    )
+
+
 def _valid_error_code(value: str) -> bool:
     return (
         0 < len(value) <= 64 and value.isascii() and all(character.isalnum() or character == "_" for character in value)
     )
 
 
+def __getattr__(name: str) -> type[object]:
+    if name not in {
+        "BaoStockDailyPartitionedArchive",
+        "BaoStockTrainingTrainingInputArchive",
+        "BaoStockTrainingTrainingInputSnapshot",
+    }:
+        raise AttributeError(name)
+    from trader.infra.research import baostock_partition_archive
+
+    if name == "BaoStockDailyPartitionedArchive":
+        return baostock_partition_archive.BaoStockDailyPartitionedArchive
+    if name == "BaoStockTrainingTrainingInputArchive":
+        return baostock_partition_archive.BaoStockTrainingTrainingInputArchive
+    return baostock_partition_archive.BaoStockTrainingTrainingInputSnapshot
+
+
 __all__ = [
     "BAOSTOCK_LEGACY_SHARD_SNAPSHOT_SCHEMA",
     "BAOSTOCK_SHARD_SNAPSHOT_SCHEMA",
     "BaoStockDailyArtifactConflictError",
+    "BaoStockDailyPartitionedArchive",
+    "BaoStockTrainingTrainingInputArchive",
+    "BaoStockTrainingTrainingInputSnapshot",
     "BaoStockRowGateway",
     "BaoStockRowResult",
     "BaoStockSdkPort",
+    "BaoStockShardContextIdentity",
     "BaoStockShardDailyIndex",
     "BaoStockShardSnapshot",
     "BaoStockTrainingCodeIdentity",
     "SQLiteBaoStockDailyShard",
     "industry_covers_expected_dates",
+    "industry_has_training_dates",
+    "shared_context_identity",
 ]

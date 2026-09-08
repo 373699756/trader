@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import platform
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Protocol
 
@@ -24,6 +25,29 @@ from trader.domain.research.baostock_daily import (
 )
 
 _DAILY_FIELDS = "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST"
+_DAILY_FACT_FIELDS = "date,code,tradestatus,isST"
+
+
+@dataclass(frozen=True)
+class _QfqCodeAlias:
+    current_source_code: str
+    historical_source_code: str
+    historical_effective_to: date
+
+
+_QFQ_CODE_ALIASES = (_QfqCodeAlias("sz.001914", "sz.000043", date(2019, 6, 6)),)
+
+
+@dataclass(frozen=True)
+class _DailySideQuery:
+    adjustment: BaoStockAdjustment
+    adjustflag: str
+    expected: tuple[date, ...]
+    source_code: str | None = None
+
+
+def repairable_qfq_codes() -> frozenset[str]:
+    return frozenset(item.current_source_code.split(".")[-1] for item in _QFQ_CODE_ALIASES)
 
 
 class BaoStockRowResult(Protocol):
@@ -139,8 +163,12 @@ class BaoStockRowGateway:
         expected = calendar.expected_dates(security)
         if not expected:
             return BaoStockCodeDownload(BaoStockCodeBatch(security.code, ()), ())
-        raw, facts, raw_nulls, raw_future = self._daily_sides(spec, security, "unadjusted", "3", expected)
-        qfq, _, qfq_nulls, qfq_future = self._daily_sides(spec, security, "qfq", "2", expected)
+        raw, facts, raw_nulls, raw_future = self._daily_sides(
+            spec,
+            security,
+            _DailySideQuery("unadjusted", "3", expected),
+        )
+        qfq, qfq_nulls, qfq_future = self._qfq_sides(spec, security, expected)
         batch = join_baostock_daily_sides(
             security.code,
             expected,
@@ -163,6 +191,79 @@ class BaoStockRowGateway:
             facts,
         )
 
+    def _qfq_sides(
+        self,
+        spec: BaoStockDailySpec,
+        security: BaoStockSecurity,
+        expected: tuple[date, ...],
+    ) -> tuple[tuple[BaoStockDailySide, ...], int, int]:
+        alias = next(
+            (item for item in _QFQ_CODE_ALIASES if item.current_source_code == security.source_code),
+            None,
+        )
+        if alias is None:
+            direct_sides, _facts, null_rows, future_rows = self._daily_sides(
+                spec,
+                security,
+                _DailySideQuery("qfq", "2", expected),
+            )
+            return direct_sides, null_rows, future_rows
+        historical = tuple(day for day in expected if day < alias.historical_effective_to)
+        current = tuple(day for day in expected if day >= alias.historical_effective_to)
+        combined_sides: list[BaoStockDailySide] = []
+        null_rows = future_rows = 0
+        for dates, source_code in (
+            (historical, alias.historical_source_code),
+            (current, alias.current_source_code),
+        ):
+            if not dates:
+                continue
+            values, _facts, invalid, future = self._daily_sides(
+                spec,
+                security,
+                _DailySideQuery("qfq", "2", dates, source_code),
+            )
+            combined_sides.extend(values)
+            null_rows += invalid
+            future_rows += future
+        return tuple(sorted(combined_sides, key=lambda item: item.trade_date)), null_rows, future_rows
+
+    def fetch_daily_facts(
+        self,
+        spec: BaoStockDailySpec,
+        security: BaoStockSecurity,
+        calendar: BaoStockCalendar,
+        *,
+        start_on: date,
+    ) -> tuple[BaoStockDailyFact, ...]:
+        """Fetch only raw daily facts for a code whose raw/qfq batch is durable."""
+        expected = tuple(day for day in calendar.expected_dates(security) if day >= start_on)
+        if not expected:
+            return ()
+        result = self._sdk.query_history_k_data_plus(
+            security.source_code,
+            _DAILY_FACT_FIELDS,
+            expected[0].isoformat(),
+            expected[-1].isoformat(),
+            frequency="d",
+            adjustflag="3",
+        )
+        rows = _result_rows(result, "unadjusted_daily_fact_query_failed")
+        facts: list[BaoStockDailyFact] = []
+        for row in rows:
+            trade_date = _date(row.get("date"), "BaoStock daily fact date is missing")
+            if (
+                trade_date > spec.source_cutoff
+                or row.get("code") != security.source_code
+                or row.get("tradestatus") not in {"0", "1"}
+            ):
+                raise ValueError("BaoStock daily training fact row is invalid")
+            facts.append(BaoStockDailyFact(security.code, trade_date, _is_st(row.get("isST"))))
+        ordered = tuple(sorted(facts, key=lambda item: item.trade_date))
+        if tuple(item.trade_date for item in ordered) != expected:
+            raise ValueError("BaoStock daily training facts are incomplete")
+        return ordered
+
     def fetch_industry_intervals(
         self,
         spec: BaoStockDailySpec,
@@ -182,13 +283,24 @@ class BaoStockRowGateway:
                 code = allowed.get(row.get("code", ""))
                 industry = row.get("industry", "").strip()
                 classification = row.get("industryClassification", "").strip()
-                if code is None or not industry or not classification:
+                effective_from = _optional_date(row.get("updateDate"))
+                if (
+                    code is None
+                    or not industry
+                    or not classification
+                    or effective_from is None
+                    or effective_from > snapshot_date
+                ):
                     continue
-                observations[code].append((snapshot_date, industry, classification))
+                observations[code].append((effective_from, industry, classification))
         intervals: list[BaoStockIndustryInterval] = []
         for code, values in observations.items():
+            ordered = tuple(sorted(set(values)))
+            for left, right in zip(ordered, ordered[1:], strict=False):
+                if left[0] == right[0] and left[1:] != right[1:]:
+                    raise ValueError("BaoStock industry facts conflict at the same effective date")
             compressed: list[tuple[date, str, str]] = []
-            for value in values:
+            for value in ordered:
                 if not compressed or value[1:] != compressed[-1][1:]:
                     compressed.append(value)
             for index, (effective_from, industry, classification) in enumerate(compressed):
@@ -200,19 +312,18 @@ class BaoStockRowGateway:
         self,
         spec: BaoStockDailySpec,
         security: BaoStockSecurity,
-        adjustment: BaoStockAdjustment,
-        adjustflag: str,
-        expected: tuple[date, ...],
+        query: _DailySideQuery,
     ) -> tuple[tuple[BaoStockDailySide, ...], tuple[BaoStockDailyFact, ...], int, int]:
+        query_code = query.source_code or security.source_code
         result = self._sdk.query_history_k_data_plus(
-            security.source_code,
+            query_code,
             _DAILY_FIELDS,
-            expected[0].isoformat(),
-            expected[-1].isoformat(),
+            query.expected[0].isoformat(),
+            query.expected[-1].isoformat(),
             frequency="d",
-            adjustflag=adjustflag,
+            adjustflag=query.adjustflag,
         )
-        rows = _result_rows(result, f"{adjustment}_daily_query_failed")
+        rows = _result_rows(result, f"{query.adjustment}_daily_query_failed")
         sides: list[BaoStockDailySide] = []
         facts: list[BaoStockDailyFact] = []
         null_rows = future_rows = 0
@@ -222,10 +333,10 @@ class BaoStockRowGateway:
                 if trade_date > spec.source_cutoff:
                     future_rows += 1
                     continue
-                if row.get("code") != security.source_code or row.get("adjustflag") != adjustflag:
+                if row.get("code") != query_code or row.get("adjustflag") != query.adjustflag:
                     raise ValueError("BaoStock daily row identity is invalid")
-                side = _daily_side(security.code, trade_date, adjustment, row)
-                if adjustment == "unadjusted":
+                side = _daily_side(security.code, trade_date, query.adjustment, row)
+                if query.adjustment == "unadjusted":
                     facts.append(BaoStockDailyFact(security.code, trade_date, _is_st(row.get("isST"))))
             except (TypeError, ValueError):
                 null_rows += 1
@@ -345,4 +456,4 @@ def _board(source_code: str) -> BaoStockBoard | None:
     return "main" if source_code.startswith(main_prefixes) else None
 
 
-__all__ = ["BaoStockRowGateway", "BaoStockRowResult", "BaoStockSdkPort"]
+__all__ = ["BaoStockRowGateway", "BaoStockRowResult", "BaoStockSdkPort", "repairable_qfq_codes"]

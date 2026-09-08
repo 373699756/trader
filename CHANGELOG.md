@@ -6,29 +6,214 @@ All notable changes to this project are documented here.
 
 ### Changed
 
-- 用户继续执行 `03_工程实施.md` 的下一完整未完成章节，反馈 2000 日日线虽已下载完，但仍有约 2000 只
-  股票显示不可用，并要求先把下载/封存逻辑改为分片处理，避免一次耗尽个人电脑性能。根因已确认：现场
-  92 个 SQLite 分片实际已有 5453/5453 只股票和 9,085,235 个逻辑日线记录，原收尾却先把全部分片
-  `daily_cells.payload_json` 解码为领域对象并同时驻留内存，又错误地把历史行业 training-fact 就绪作为日线
-  manifest 的前置条件；新稳定 manifest 写在只读兼容旧 spec 分片上时，读取端还只接受 spec hash 完全相同。
-  现将收尾改为先读轻量 checkpoint 索引，再按稳定路径逐个分片用 SQLite 游标校验日期、逐行 hash 和批次 hash，
-  只生成逐代码紧凑覆盖证据，顺序组装 catalog/manifest，不再重建或持有 900 多万个日线对象。日线完整性 hash
-  仅绑定上下文、日线、批次和成功 checkpoint，后续追加行业/训练事实不会使日线 manifest 失效；旧 spec 只有在
-  sessions、截止日和权限等固定合同完全一致时才映射到当前稳定 spec，旧分片原样只读保留。供应商物理坏行仍
-  丢弃并记录 `null_rows`，对应逻辑日期保持显式缺失；达到全体、逐板和老股 95% 门槛时不再由物理坏行计数
-  单独否决。`research-status` 现可由公开启动脚本直接只读调用，并分别显示日线完成、training-ready、覆盖与
-  manifest 状态。真实低优先级封存得到 5453/5453、92 分片、`failed_codes=0`、`coverage_ready`，全体覆盖
-  99.9949%，三板均高于 99.99%，全窗口老股通过率 99.9391%，正式 manifest hash 为
-  `ad358452ed17f91549e7b660de6c4a2d4086bf631a1dc51cdd9ab2f1675563cb`；独立只读重开得到相同身份。
-  导入 Review 另发现 catalog 与既有归档兼容性重导出形成环，现将共享冲突异常下沉到叶子模块、消费者直接依赖
-  分片归档模块，所有导入顺序均可独立加载。Verification: 分片/领域覆盖/运行时/入口/文档契约定向测试通过；
-  `make format-check`、`make lint`（含零新增重构债）、`make type-check`、`make test`、`make package` 全部通过，
-  仓库外 wheel 安装、CLI 与 6 项静态资源读取验证通过；两次最终实证分别记录约 144 MiB 最大 RSS、无 swap，
-  最终封存 5 分 54 秒，独立 `research-status` 重验 4 分 22 秒。浏览器门禁不适用：本批未修改 Web。
-  Residual Risks: 当前仅 3521/5453 只股票具有
-  完整历史行业/训练事实，剩余 1932 只必须由下一独立的第 4.2 节评估带生效日期的可靠行业来源并只追加事实，
-  不得重新下载或改写本批日线；统一 `research` 诊断仍受既有 `research_status_shape_invalid` 阻塞，本批以权威
-  `research-status` 完成归档重开验收。`Regression-Key: baostock-partitioned-daily-seal-v1`。
+- 用户要求训练 JSON 不再放进输入 hash 子目录，并要求该目录中的训练模型直接参与实际评分。根因已确认：
+  训练器写入 `data/train/tomorrow-v3/<input-hash>/model.json`，V3 评分 loader 却读取另一套
+  `data/train/scoring/v3/training/*/model.json`，两端路径从未闭合。Changed: 训练成功后把
+  `model.json`、`report.json` 和 `training-input.json` 直接原子写入 `data/train/tomorrow-v3/`；审计
+  `run_id` 和输入 hash 继续保存在结果/JSON 身份中，但不再形成目录。V3 loader 只读取该固定目录的
+  `model.json`，并继续执行 codec、schema、特征合同和内容 hash 校验；报告与输入证据不参与算分，也不增加
+  旧目录 fallback。Verification: 固定目录写入、旧 hash 子目录不被选择、训练模型经生产 profile factory
+  加载后产生相同 V3 predictor 结果的回归通过；`make format-check`、`make lint`、`make type-check`、
+  `make test`、`make package` 和仓库外 wheel 安装验证全部通过，严格复杂度债务保持为零且 6 个 Web 资源
+  可从安装包读取。
+  Residual Risks: 既有 hash 子目录属于 Git 忽略的本地运行数据，本批按工作树安全要求保留、不自动删除；
+  V3 仍是 `production_authority=false`，实际选择必须由用户显式 `--profile v3`，不自动修改默认 V1。
+  `Regression-Key: tomorrow-v3-direct-training-artifact`。
+
+- 用户要求在保留分片和电脑资源上限的前提下，把 `./run.sh download_history` 已有 5453 只日线中仅约
+  3000 多只可用于训练的问题修到完整训练输入可用，并继续保持拉取 GitHub 后的合并不提交。根因已确认：
+  1932 只已有 raw/qfq 日线但缺逐日 `isST` 训练 checkpoint，旧逻辑要求供应商行业区间覆盖上市以来每个
+  日期；补事实路径还重复请求 14 列和全窗口、每成功一只都解码 92 个分片。旧 manifest 使用退役的日线
+  局部 Hash，现行整文件校验会误把 92 个健康分片全部隔离；`001914` 在 2019-06-06 前对 qfq 请求实际返回
+  raw `adjustflag=3`，真实 qfq 位于历史代码 `000043`。收尾还重复校验 8.8GiB 分片，并把覆盖审计失败代码
+  与已完成 checkpoint 重叠计数，最终把真实 5453 完成错误投影成零计数 `valueerror`。
+  Added: 新增退役 Hash 只读识别、分片级质量修复、历史代码 qfq 日期边界、训练就绪公开字段、manifest
+  路径越界保护和 Ctrl+C 十秒优雅取消回归。Changed: 已完成日线只请求
+  `date,code,tradestatus,isST`，从最早真实行业生效日开始，并只更新所属分片；行业未覆盖的更早日期从训练
+  排除，不用当前行业回填。封存以轻量 checkpoint 和逐分片 cursor 生成紧凑覆盖证据，登记整文件 SHA-256，
+  研究交接复用刚验证的 manifest，不再第二次 Hash。`001914` 所在 `main-0019` 分片单独隔离后只重下其中
+  3 只，其余 91 分片和 5450 只 checkpoint 保持不动。Fixed: 下载失败数恢复为与 completed 互斥的供应商/
+  checkpoint 失败语义；非生产完整训练在所有代码训练 checkpoint 齐全、无覆盖失败代码、重复、越界或
+  未来行时跳过少量 null cell，其它原因继续失败关闭。最终 Review 进一步把状态展示与内容信任边界分开：
+  `check` 只校验 manifest/catalog 身份、分片路径、存在性和 WAL，不再为状态重复 Hash 8.8GiB；恢复、正式
+  封存和训练仍执行整文件 SHA-256。稳定/退役 spec 混合分片通过共享有类型 context identity 只读兼容，
+  每种身份只计算一次；测试 CLI 的仓库数据路径被隔离到临时目录，避免误扫真实归档。
+  Verification: 真实公开入口最终为 5453/5453、9,085,235 个预期日线单元、训练事实 5453/5453、下载失败
+  0、92 分片、峰值 RSS 212MiB，并生成 manifest `a3bd8aa73b42...`；完整训练输入以
+  `complete_manifest` 打开 5453/5453，抽查 `000001/001872/001914/300750/688981` 分别读取
+  2000/1741/1615/1879/1366 条有效训练行。网关、分片、恢复、入口、状态投影、V3 loader 和文档定向回归
+  通过；统一真实 `research` 诊断约 15.05 秒完成，正确投影 5453 个 checkpoint，并因预期的行业、资格、
+  风险和分钟点时缺口返回失败关闭。`make format-check`、`make lint`、`make type-check`、`make test`、
+  `make package`、仓库外 wheel 安装和 `git diff --check` 全部通过；严格复杂度债务为零。Residual Risks:
+  仍有 216 个供应商 null 日线单元被诚实排除，全市场
+  覆盖率 99.9976%，没有代码低于训练人口覆盖门；历史资格、硬过滤、行业全区间、风险事实、11:20/14:50
+  分钟点时和终端留出仍为 `historical_data_insufficient`，所以本批只证明非生产训练数据可读，不执行模型
+  拟合、不授权生产、不声称收益提高；下一独立章节是 `historical_industry_facts`，本批不提前实施。
+  `Regression-Key: baostock-training-fact-shard-repair`。
+
+- 用户继续执行点时数据资格章节后明确要求停止 5000 多只股票的长时下载，只下载一只股票验证效果并把重点
+  放在代码。根因已确认：checkpoint 状态只扫描新 `shards/` 布局，把根级旧分片中的 268/5453 只误报为 0；
+  旧迁移路径又重复拼接仓库目录而无法命中真实归档；日线 manifest 被历史行业训练事实绑架，研究交接还会从
+  日线完成凭空构造行业、资格、硬过滤和风险事实全部可用的探针；BaoStock 行业适配器把请求日冒充
+  `effective_from`。Added: 新增不可变 `PointInTimeDataQualificationReport` 及日线、历史行业、历史分钟三个
+  独立资格值对象；新增只读、参数化单股资格脚本、白名单 JSON 投影、旧 checkpoint 持锁迁移模块、阶段报告和
+  三门失败关闭回归。Changed: 状态查询同时读取当前分区和根级旧 checkpoint，完成记录覆盖同代码陈旧失败；
+  日线 manifest 只绑定 raw/qfq 日线 batch，行业与训练事实不再决定日线归档能否封存；旧分片迁移逐条验证
+  context 与事实后写入有界分区并保留 recovery 副本；资格报告只有在 2000 日日线完整、至少 300 只历史行业
+  全字段证据和历史分钟 95% 分层覆盖全部通过时才合格。Fixed: BaoStock 行业只接纳供应商实际 `updateDate`，
+  拒绝缺失、未来和同日冲突；删除日线完成自动伪造历史事实就绪的路径；修复已有 checkpoint 被隐藏和迁移
+  根路径错误。Removed: 移除日线逻辑记录 hash 对训练事实 hash 的耦合及日线发布前的训练事实完整性要求；
+  未删除必要的 manifest、分片、来源或外部证据完整性 hash。Verification: 定向 domain/application/infra/
+  script/CLI/文档契约定向回归 114 项通过；`make format-check`、`make lint`、`make type-check` 和
+  `git diff --check` 通过；仅联网请求 600519、61 日、1 worker 的
+  腾讯直连 smoke 为 1/1 可用，普通特征与 Outcome raw/qfq 配对均可用，零空结果、零错误，约 819ms 且无
+  持久化。全量 2000 日命令因约 14GiB 可用空间低于 25GiB，在供应商请求前以 `disk_below_25gb` 退出，实际
+  未下载或改写股票；此后未再运行全市场命令。Delivery State: 用户要求立即终止并推送，本提交是明确的
+  `in_progress: checkpoint_pushed` 恢复点；`make test`、`make package`、最终完整 diff Review 和完成状态收口
+  尚未执行，下次“继续”必须先闭合本章，不能进入下一章节。Residual Risks:
+  正式日线仍只有 268/5453 且无 manifest；历史行业未完成 300 只分层证据，免费分钟链不能证明旧日
+  11:20/14:50、量额、时区、raw/qfq 和公司行动语义，所以资格结论保持 `historical_data_insufficient`，
+  `point_in_time_dataset`、V3 正式训练、终端留出与生产权限继续阻塞；本批不宣称未来收益提高。
+  `Regression-Key: point-in-time-data-qualification-fail-closed`。
+
+- 用户要求把已确认的 V3 重复成本与 Outcome 真值缺口排入工程计划，并继续执行下一个完整未完成章节。
+  根因已确认：活动 `OutcomeBar` 只有一套无复权身份的 OHLC，raw 决策锚点被直接除以前复权退出价；缺失交易日、
+  停牌和一字跌停也没有进入稳定退出状态。最初 fixture 方案还错误假设腾讯一次 qfq 响应同时包含 raw；把
+  raw/qfq 覆盖加入统一实测后稳定暴露成对历史为 0，进一步确认腾讯 raw 请求必须显式使用 `bfq`，且两种
+  返回窗口会相差交易日。Added: 新增不可变 `OutcomePrice`、`OutcomeTradingStatus`、`OutcomeExitStatus`、
+  raw/qfq 成对边界和历史诊断中的普通特征/Outcome 双覆盖字段；新增锚点换算、缺日顺延、停牌、一字跌停、
+  未知状态失败关闭、供应商成对/fallback、持久化线格式和诊断降级回归。Changed: raw 盘中锚点先按推荐日
+  同源 `qfq.close/raw.close` 转为 qfq，收益、MAE 与退出估值只使用 qfq；缺少完整价格对的预期交易日按上一
+  有效 qfq close carry-forward，退出状态和不可交易日期随 outcome 持久化。腾讯分别请求 `qfq/bfq`，东财
+  分别请求 `fqt=1/0`；窗口不齐只保留同源同日完整交集，fallback 不跨源拼接。Fixed: 消除 raw/qfq 混算、
+  缺日样本删除和退出不可交易事实丢失；统一实测 600519 得到普通 qfq 61 行、同源同日 Outcome 对 60 行、
+  零错误并通过覆盖门。Removed: 删除旧 `anchor_price/minimum_low/end_close` 歧义持久化字段和价格跳变猜测，
+  未删除正式证据、评分档位或必要完整性 Hash。Verification: Outcome/供应商/历史/持久化/调度及文档契约
+  定向回归通过；`make format-check`、`make lint`、`make type-check`、`make test`、`make package` 和
+  `git diff --check` 通过，严格复杂度债务保持为零；打包首次受沙箱代理限制，按授权在沙箱外用相同命令
+  重跑成功。公开 API/SSE、冻结、DeepSeek、评分融合、活动 Web 与桌面布局专项不适用，因为本批不改变
+  这些边界。Residual Risks: `v3_single_cost_ownership` 已稳定排入 `tomorrow_v3_training_validation`，但受点时
+  数据、候选召回和有限参数研究前置门阻塞，本批没有提前删除训练标签的 20bp、重训/激活 V3 或声称未来收益
+  已提高；供应商缺少任一价格侧时会保守顺延，完整 14:50 点时与终端留出仍待后续章节闭合。
+  `Regression-Key: outcome-qfq-raw-tradability-truth`。
+
+- 用户要求结合此前四份文档 Review 的问题先统一契约，再删除没有实际保护价值的 Hash 校验。根因已确认：文档
+  混淆 V1/V2/V3 在线 61 日窗口与 V3 最多 2000 日离线训练，把 V3 训练标签和在线执行成本重复扣除，允许
+  `historical_validated` 在完整终端留出之前出现，且 outcome 没有统一 raw/qfq 与退出不可交易语义；代码中
+  `FeatureComputationPlan` 还为无人消费的进程内计划计算 SHA-256，正式记录加载/恢复则对同一文件字节重复
+  Hash 并在成功路径重复解码。Added: 新增历史窗口、成本所有权、完整生产同源训练人口、终端留出顺序和
+  Hash 信任边界的文档契约；新增正式记录普通加载与 committed 启动恢复“每个文件只 Hash 一次”的回归。
+  Changed: 四份文档统一为“收益真值修复→点时资格/数据集→召回/有限参数→V3 开发与确认→增量同源→完整
+  风险/成本/不确定性/DeepSeek 链确认→一次性终端留出→Shadow”，并明确 V1/V2 使用封存模型、V3 离线完整
+  训练最多 2000 日且至少 1250 个共同完整交易日、三档盘中只消费已预热/持久化的最近至少 61 日；V3 alpha
+  统一预测扣成本前超额，`historical_validated` 只能来自完整终端报告。Fixed: 重新打开尚未满足 raw/qfq、
+  mark-to-market 与 carry-forward 的 `outcome_truth_contract`，阻止旧完成状态掩盖真实缺口；正式记录现于文件
+  信任边界完成一次 SHA-256 后复用已验证字节，只解码并核对 manifest 一次。Removed: 删除无人消费的
+  `FeatureComputationPlan.content_hash` 及其序列化计算，删除正式记录对相同字节的第二次 SHA-256 和成功路径
+  第二次 decode；模型工件、不可变研究归档、正式冻结、staged/committed 恢复、CAS/幂等冲突、ETag/缓存与
+  外部证据边界的必要 Hash 均保留。Verification: 相关文档、持久化、冻结和调度定向回归 77 项通过；
+  `make format-check`、`make lint`、`make type-check`、`make test`、`make package` 和 `git diff --check` 通过，
+  严格复杂度债务保持为零；打包首次受沙箱代理限制，按授权在沙箱外重跑成功。性能、真实供应商、API/SSE、
+  Web 与浏览器专项不适用，因为本批不改变评分热链、网络、公开 schema 或页面，且实现只删除固定额外工作。
+  Residual Risks: 当前 V3 训练实现仍预扣 20bp，`OutcomeBar` 仍未同时携带 qfq 结算价、raw 可交易性和退出交易
+  状态；完整生产同源人口、14:50 点时数据、终端留出及 V3 生产授权仍由后续章节失败关闭。本批修正文档与
+  Hash 开销，不宣称已修复这些独立评分/收益实现缺口或已经提高未来收益。
+  `Regression-Key: trust-boundary-hash-and-research-contract-alignment`。
+
+- 用户要求把历史下载、参数研究、V3 训练结果、实时评分和收益验证合并为更优的整体计划，并按
+  `03_工程实施.md` 执行首个未完成章节。根因已确认：在线归一化、V3 训练、H1 回放、holdout、Shadow 及
+  V1/V2/V3 codec 分别维护 Tomorrow 六项特征名称、顺序和单位；其中训练/H1 慢动量实际使用
+  `D-5/D-{25,45,65}`，活动生产与历史 SQL 使用 `D-5/D-{20,40,60}`，研究输入还把相同小数收益标成
+  `ratio`，使训练/在线一致性不能成立。Added: 新增不可变 `FeatureId`、`FeatureSpecCatalog`、
+  `FeatureVectorManifest`、带缺失掩码的特征向量、日收益/跳过近五日动量纯计算器，以及应用层确定性分组
+  `FeatureComputationPlan`；新增 catalog/hash/依赖、训练与在线窗口、H1 单位、消费者所有权和架构回归。
+  Changed: 在线、训练、codec、历史筛选/留出和 Shadow 统一消费同一 catalog/manifest，V3/H1 历史窗口改为
+  61 根并统一 `decimal_return`；`01_评分逻辑.md`、`02_工程设计.md`、`03_工程实施.md`、`04_策略回溯.md`
+  现以“收益真值→特征合同→点时数据资格/数据集→召回→有限参数→V3 验证→增量计算→风险/成本/不确定性
+  →Shadow”为唯一计划，并规定只有验证通过的 alpha 才能进入 V3。Fixed: 消除训练/在线慢动量端点与单位
+  分歧，不再让下载可得性等同于模型输入资格。Removed: 删除消费者中的重复六特征常量和重复收益计算函数，
+  并在门禁 Review 中消除 overlay 合并对全量报价的重复排序与嵌套来源映射重复复制；不删除评分档位、模型工件
+  或历史数据。Verification: 特征合同、生产构造、V3 训练、H1、profile/codec、架构
+  和文档定向回归通过；`make format-check`、`make lint`、`make type-check`、`make test`、`make package`、
+  `make performance-check` 与 `git diff --check` 通过，严格复杂度债务保持为零；性能 Review 先稳定复现
+  overlay 绝对门禁失败，优化不可变映射复用后 `targeted_overlay_commit` P95 降至 11.661ms，等价 hash、0%
+  分配增长和零网络请求保持通过。打包首次受沙箱网络限制，获准在沙箱外重跑成功。浏览器、真实供应商、
+  API/SSE 和冻结专项不适用，因为本批不改变 Web、网络、公开 JSON schema、调度或冻结行为。Residual Risks:
+  当前 V3 部分历史工件仍是
+  `15:00_close` 代理且 `point_in_time_parity=false`；完整 BaoStock/历史行业和真实 11:20/14:50 分钟资格
+  尚未闭合，新增股票参数也尚未经过样本外收益门，不能把本批一致性修复解释为已经提高未来收益。
+  `Regression-Key: unified-feature-contract-training-online-parity`。
+
+- 用户授权评分链路优化路线后，第一章先修复收益结算真值。根因已确认：D25 活动应用调度与 SQLite 完成判断
+  分别硬编码 T+2/T+3/T+5，遗漏 T+4；旧库已有三个 horizon 时会把目标重新投入全部计算，行情修订后可能
+  与不可变旧证据冲突，导致 T+4 无法补齐；基准、单 horizon 与聚合计算也没有统一纯领域所有者。Added:
+  新增 `CanonicalOutcomeEvaluator`、有类型 `BenchmarkConstituentReturn`、领域唯一 `outcome_horizons()`、
+  D25 四 horizon 算术聚合及 20/50/100bp 参数化成本验证。Changed: `OutcomeTarget` 显式携带排序且唯一的
+  `pending_horizons`，应用只评估到期且缺失的项；持久化从唯一领域合同计算缺口。Fixed: D25 结算覆盖
+  T+2/T+3/T+4/T+5，旧 `(2,3,5)` 记录可只补 T+4，补齐后不再入队；当前决策、冻结内容和公开 JSON schema
+  不变。Removed: 删除应用与持久化各自维护的重复 horizon 列表。Verification: 领域、应用、SQLite、调度、
+  组合根、架构与文档定向回归共 107 项通过；`make format-check`、`make lint`、`make type-check`、`make test`、
+  `make package` 和 `git diff --check` 通过，严格复杂度债务保持为零；打包首次受沙箱网络限制，按授权在沙箱外
+  重跑成功。格式门禁同时修正一个上一批文档契约测试的既有 Ruff 排版差异。性能、真实供应商、运行中 Web
+  与三档浏览器门禁不适用，因为本章不改变评分热链、网络、公开 schema 或 Web。Residual Risks: 当前盘后全市场等权涨跌幅只用于正式推荐运行监控，不能证明历史策略锚点基准；真实
+  14:50 人口、停牌/一字板、公司行为和同一前复权输入仍由 `point_in_time_data_qualification` 失败关闭，不能
+  把本章工程闭环解释为新增参数已提高收益。`Regression-Key: d25-four-horizon-outcome-truth`。
+
+- 用户要求把重新确认的评分链路优化计划纳入 `01_评分逻辑.md`、`02_工程设计.md`、`03_工程实施.md` 等权威
+  文档并立即开始执行。现状判断已确认：既有文档有逐环节建议，但缺少统一组件所有权、候选召回归因、预测
+  不确定性和可逐章执行的依赖路线；既有历史数据计划还把 BaoStock 归档写成唯一下一章节，与本次直接授权
+  冲突。Added: 新增收益真值、统一特征合同、增量特征计算、点时数据资格、候选召回归因、有限参数族、
+  风险/成本/不确定性与 DeepSeek 消融、Shadow/人工授权八章路线，并新增六类候选股票参数目录和目标组件
+  所有权。Changed: `baostock_daily_archive` 保持原 `pending` 和 V3 blocker，不再覆盖用户直接授权的新任务；
+  `outcome_truth_contract` 成为当前执行章节。Fixed: 明确 D25 活动结算必须覆盖 T+2/T+3/T+4/T+5，并禁止
+  15:00 收盘代理、未来 collector、未验证数据和自动晋级污染收益结论。Removed: 未删除既有研究任务、运行
+  入口或生产规则。Verification: 文档契约先以 6 项预期失败证明缺口；全部 238 项 contract、受影响测试 Ruff、
+  文档链接/结构契约和 `git diff --check` 通过；同时清理 7 个仍断言上一批已删除交付状态、旧章节号和旧任务名
+  的失效测试。全量运行、打包、性能和浏览器门禁对本计划文档批次不适用；第一章实现将独立执行高风险门禁。
+  Residual Risks: 历史分钟来源能力、完整 BaoStock/行业事实、
+  新参数样本外收益、DeepSeek 增量价值和 Shadow 稳定性仍待后续章节实证，不能把路线写入视为收益已提高。
+  `Regression-Key: scoring-feature-outcome-optimization`。
+
+- 用户要求闭合权威文档中的失效章节引用、不可执行命令、D25 T+4 漏项、latest-wins 冲突、Tomorrow
+  challenger 策略缺口、候选资格顺序和 V3 行业语义，并进一步收敛重复规范、历史交付状态与研究评价口径。
+  根因已确认：评分、设计和实施文档在多次章节合并后仍保留旧编号、重复任务与旧基线措辞；调度语义在不同
+  章节分别描述，且历史工件证据与当前评分规则混排。Added: `01_评分逻辑.md` 完整定义进场/退出价、停牌与
+  涨跌停处理、前复权、round-trip 成本、历史时点基准股票池、带符号 MAE、D25 T+2/T+3/T+4/T+5 四项
+  净超额算术平均及终端留出一次性开启证据；补齐仅 Tomorrow 使用、每日最多 2 次且计入全局 168 物理请求
+  预算的保守 challenger 策略。Changed: 候选链统一为先校验硬过滤、历史和模型字段资格，再占用每板 120 只
+  限额；行业直接评分权重保持 0，但 V3 可将有效行业身份用于风险中性化/残差化且不得形成正向行业加分；
+  `02_工程设计.md` 以表 R/T/F/A 分别作为资源所有权、时间线、失败分类和 API schema 的唯一规范，并统一为
+  “已开始旧任务可发布 local、有新 pending 时跳过 DeepSeek、新 local 再以 CAS 替换”的 latest-wins 语义；
+  `03_工程实施.md` 合并 BaoStock 重复章节，以 `baostock_daily_archive` 等稳定语义任务维护状态，把旧编号和
+  提交 hash 限定为历史审计，并把详细研究工件证据从评分文档迁入交付记录。Fixed: 三处失效评分章节引用
+  统一指向评分逻辑第 7.2 节；公开诊断固定为 `./run.sh check`，精确底层诊断固定为
+  `.venv/bin/trader-cli --config "$PWD/config/runtime.json" research-status`，不再要求不存在的
+  `./run.sh research-status`；D25 验证补回 T+4。Removed: 设计文档中的批次完成/未发布/历史迁移陈述、重复
+  latest-wins 定义、实施文档的 BaoStock 双任务身份，以及评分文档中的精确历史 hash 和冗长工件身份。
+  Verification: 逐项对照当前 scheduler、候选选择、D25 合同、DeepSeek 配置和 `run.sh` 入口；16 个相关
+  contract 文件共 90 项测试通过，受影响测试 Ruff、失效引用/重复规范扫描和 `git diff --check` 通过。
+  全量测试、打包、仓库外安装、性能和浏览器门禁不适用，因为本批只修改 Markdown 与直接文档契约，不改变
+  机器 schema、构建入口、评分实现或 Web 行为。Residual Risks: BaoStock 2000 日正式 manifest、可验证历史
+  行业、14:50 point-in-time 收益、V3 终端留出及生产授权仍未闭合；本批只补齐可复现定义，不把研究计划
+  解释为已通过收益门禁。`Regression-Key: authoritative-doc-single-source-consistency`。
+
+- 用户明确 D25 应筛选未来 2–5 个交易日区间内具备上涨能力的股票，并质疑工程计划为何要求执行不存在的
+  `./run.sh research-status`，同时要求增加历史下载、训练和实时评分的完整链路说明。根因已确认：D25 原表述
+  只写“综合表现”，没有直接说明选股目标；底层 `trader-cli research-status` 虽是 `./run.sh check` 的只读阶段，
+  却被工程计划误写成公开脚本命令；下载字段、点时样本、模型工件与实时荐股的职责分散在三份文档中。
+  Added: 新增 `docs/04_策略回溯.md`，逐项解释交易日历、证券身份、raw/qfq OHLCV、成交额、停牌、逐日 ST、
+  历史行业、coverage、manifest/hash 的作用，并贯穿 Tomorrow 六特征、T+1 成熟标签、时间切分、
+  Ridge/LightGBM、工件校验、61 根实时历史、模型分位、成本门、本地风险、DeepSeek、固定 68/32 融合、Top6
+  和冻结。Changed: `01_评分逻辑.md` 明确 D25 是未来 T+2 至 T+5 区间上涨能力的单一策略信号，当前仍由
+  独立规则评分；`02_工程设计.md` 和 README 增加回溯导航。Fixed: `03_工程实施.md` 删除无效的公开命令，
+  改为下载终态或既有 `./run.sh check` 内部只读阶段。Removed: 未新增、也没有删除任何运行入口；公开命令
+  仍固定为 `check`、`download_history` 和 `train-tomorrow`。Verification: 策略链、下载计划、策略回溯、
+  当前产品、V3 文档、评分计划与 BaoStock 计划 7 个定向契约文件共 37 项测试通过；进一步运行所有直接引用
+  README 或四份文档的 28 个 contract 文件，共 125 项测试通过；受影响测试 Ruff、文档链接检查和
+  `git diff --check` 通过。全量测试、打包、仓库外安装、性能和浏览器门禁不适用，因为本批只改
+  Markdown 与直接文档契约，不改变机器 schema、构建入口或运行行为。Residual Risks: 完整 2000 日 manifest、
+  可验证历史行业、14:50 point-in-time 收益、V3 终端留出和生产授权仍未闭合；当前 D25 尚无独立模型，其规则
+  信号不保证未来区间上涨。`Regression-Key: historical-training-live-scoring-guide`。
 
 - 用户反馈活动树仍存在 `tomorrow_historical_p2_artifacts.py`、`tomorrow_manual_v1_model.py`、
   `score_r6_daily_artifacts.py`、`tomorrow_p2_model.json` 等非评分版本命名，要求除评分生产档位

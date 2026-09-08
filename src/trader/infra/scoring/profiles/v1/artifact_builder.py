@@ -8,19 +8,17 @@ import math
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date
+from typing import cast
 
 import numpy as np
 
 from trader.application.research.historical_screening import HistoricalArchiveManifest
 from trader.application.research.tomorrow_historical_screening import TomorrowHistoricalRow
+from trader.domain.market.feature_contracts import TOMORROW_RESIDUAL_MOMENTUM_FEATURE_MANIFEST
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalScreeningSpec
 
 V1_MODEL_ID = "v1_manual_residual_momentum_v1"
-V1_FEATURE_IDS: tuple[str, str, str] = (
-    "qfq_residual_momentum_20d_skip5",
-    "qfq_residual_momentum_40d_skip5",
-    "qfq_residual_momentum_60d_skip5",
-)
+V1_FEATURE_IDS = cast(tuple[str, str, str], TOMORROW_RESIDUAL_MOMENTUM_FEATURE_MANIFEST.names)
 V1_FEATURE_CONTRACT = "h0_board_amount_residual_momentum_proxy"
 _RIDGE = 1e-3
 

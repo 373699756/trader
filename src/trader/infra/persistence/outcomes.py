@@ -16,7 +16,7 @@ from typing import Protocol
 
 from trader.application.ports.data_plane import HistoricalFeatureRecord
 from trader.application.ports.decision_records import DecisionRecordRepositoryPort
-from trader.domain.outcome.models import BenchmarkReturn, OutcomeTarget, RecommendationOutcome
+from trader.domain.outcome.models import BenchmarkReturn, OutcomeTarget, RecommendationOutcome, outcome_horizons
 from trader.domain.recommendation.models import Strategy
 
 
@@ -94,11 +94,10 @@ class SQLiteOutcomeEvidenceRepository:
                 if record is None:
                     continue
                 for item in sorted(record.decision.items, key=lambda value: value.code):
-                    if (
-                        not item.selected
-                        or item.quote is None
-                        or self._is_fully_settled(record.version, strategy, item.code)
-                    ):
+                    if not item.selected or item.quote is None:
+                        continue
+                    pending_horizons = self._pending_horizons(record.version, strategy, item.code)
+                    if not pending_horizons:
                         continue
                     targets.append(
                         OutcomeTarget(
@@ -108,6 +107,7 @@ class SQLiteOutcomeEvidenceRepository:
                             item.code,
                             item.quote.price,
                             self._atr20_pct(item.code, trade_date.isoformat()),
+                            pending_horizons,
                         )
                     )
                     if len(targets) >= limit:
@@ -180,14 +180,15 @@ class SQLiteOutcomeEvidenceRepository:
                         ),
                     )
 
-    def _is_fully_settled(self, snapshot_id: str, strategy: Strategy, code: str) -> bool:
-        horizons = (2, 3, 5) if strategy is Strategy.D25 else (1,)
+    def _pending_horizons(self, snapshot_id: str, strategy: Strategy, code: str) -> tuple[int, ...]:
+        horizons = outcome_horizons(strategy)
         with self._lock, self._connection() as connection:
             rows = connection.execute(
                 "SELECT horizon FROM recommendation_outcomes WHERE snapshot_id = ? AND strategy = ? AND stock_code = ?",
                 (snapshot_id, strategy.value, code),
             ).fetchall()
-        return {int(row["horizon"]) for row in rows} == set(horizons)
+        settled = {int(row["horizon"]) for row in rows}
+        return tuple(horizon for horizon in horizons if horizon not in settled)
 
     def _atr20_pct(self, code: str, trade_date: str) -> float:
         record = self._historical.load_historical_feature_recent(code, trade_date)
@@ -221,10 +222,14 @@ def _outcome_bytes(outcome: RecommendationOutcome) -> bytes:
             "stock_code": outcome.stock_code,
             "horizon": outcome.horizon,
             "status": outcome.status,
-            "anchor_price": outcome.anchor_price,
+            "anchor_raw_price": outcome.anchor_raw_price,
+            "anchor_qfq_price": outcome.anchor_qfq_price,
             "atr20_pct": outcome.atr20_pct,
-            "minimum_low": outcome.minimum_low,
-            "end_close": outcome.end_close,
+            "minimum_qfq_low": outcome.minimum_qfq_low,
+            "end_qfq_close": outcome.end_qfq_close,
+            "exit_status": outcome.exit_status.value if outcome.exit_status is not None else None,
+            "exit_untradable": outcome.exit_untradable,
+            "untradable_dates": list(outcome.untradable_dates),
             "gross_return_pct": outcome.gross_return_pct,
             "benchmark_return_pct": outcome.benchmark_return_pct,
             "net_excess_return_pct": outcome.net_excess_return_pct,

@@ -10,9 +10,11 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from threading import Event
 from typing import IO, cast
 from zoneinfo import ZoneInfo
 
+from trader.application.runtime.shutdown import ShutdownSignalController
 from trader.domain.recommendation.model_scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
 from trader.infra.settings import RuntimeSettings, load_long_watchlist, load_runtime_settings, load_strategy_settings
@@ -138,27 +140,38 @@ def _run_baostock_history(runtime_dir: Path, sessions: int) -> int:
     runtime_dir = _repository_data_path(runtime_dir)
     request = BaoStockRuntimeRequest(runtime_dir=runtime_dir, sessions=sessions)
     progress = _BaoStockProgressWriter(runtime_dir, sessions=sessions)
+    cancelled = Event()
+    controller = ShutdownSignalController(
+        timeout_seconds=10.0,
+        on_first_signal=lambda _deadline: cancelled.set(),
+    )
+    controller.install()
     try:
-        status = run_baostock_history(
-            request,
-            _repository_root_for_validation(),
-            progress=progress,
-        )
-    except ValueError as exc:
-        print(
-            json.dumps(
-                {
-                    "schema_version": "baostock_runtime_status",
-                    "state": "invalid_request",
-                    "error": str(exc),
-                },
-                ensure_ascii=False,
-                sort_keys=True,
+        try:
+            status = run_baostock_history(
+                request,
+                _repository_root_for_validation(),
+                cancel_requested=cancelled.is_set,
+                progress=progress,
             )
-        )
-        return 2
+        except ValueError as exc:
+            print(
+                json.dumps(
+                    {
+                        "schema_version": "baostock_runtime_status",
+                        "state": "invalid_request",
+                        "error": str(exc),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+            return 2
+    finally:
+        controller.mark_completed()
+        controller.restore()
     print(json.dumps(project_baostock_runtime_status(status), ensure_ascii=False, sort_keys=True))
-    return 0 if status.state == "completed" else 1
+    return controller.exit_code or (0 if status.state == "completed" else 1)
 
 
 def _repository_data_path(path: Path) -> Path:
@@ -197,6 +210,8 @@ class _BaoStockProgressWriter:
             f"[{progress.phase}] 已下载/总数：{progress.completed_codes:,}/{progress.universe_count:,}，"
             f"完成进度：{completion_percentage:.2f}%，总下载条数：{progress.downloaded_records:,}，"
             f"未下载：{progress.remaining_codes:,}，"
+            f"训练可用/总数：{progress.training_ready_codes:,}/{progress.universe_count:,}，"
+            f"待补训练事实：{progress.remaining_training_codes:,}，"
             f"耗时：{hours}时{minutes:02d}分{seconds:02d}秒{current}，失败原因：{failure}，保存文件：{save_filename}",
             file=self._stream,
             flush=True,

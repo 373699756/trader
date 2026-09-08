@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import replace
 from datetime import timedelta
@@ -9,7 +10,7 @@ import pytest
 
 from tests.unit.domain.test_decision_identity import NOW, decision
 from trader.application.ports.data_plane import HistoricalFeatureRecord
-from trader.domain.outcome.models import BenchmarkReturn, RecommendationOutcome
+from trader.domain.outcome.models import BenchmarkReturn, OutcomeExitStatus, RecommendationOutcome
 from trader.domain.recommendation.decision_identity import CommittedDecisionRecord
 from trader.domain.recommendation.models import Strategy
 from trader.infra.persistence.outcomes import OutcomeEvidenceConflictError, SQLiteOutcomeEvidenceRepository
@@ -48,19 +49,29 @@ def _repository(tmp_path: Path, record: CommittedDecisionRecord | None = None):
     return SQLiteOutcomeEvidenceRepository(tmp_path, _Decisions(record), _Historical())
 
 
-def _outcome(*, net_excess_return_pct: float = 1.2, settled_at=NOW) -> RecommendationOutcome:
+def _outcome(
+    *,
+    net_excess_return_pct: float = 1.2,
+    settled_at=NOW,
+    snapshot_id: str = "snapshot-fixture",
+    strategy: Strategy = Strategy.TOMORROW,
+    stock_code: str = "600001",
+    horizon: int = 1,
+) -> RecommendationOutcome:
     return RecommendationOutcome(
-        snapshot_id="snapshot-fixture",
-        strategy=Strategy.TOMORROW,
+        snapshot_id=snapshot_id,
+        strategy=strategy,
         recommend_date="2026-07-20",
-        stock_code="600001",
-        horizon=1,
+        stock_code=stock_code,
+        horizon=horizon,
         status="complete",
         settled_at=settled_at,
-        anchor_price=10.0,
+        anchor_raw_price=10.0,
+        anchor_qfq_price=10.0,
         atr20_pct=2.5,
-        minimum_low=9.8,
-        end_close=10.2,
+        minimum_qfq_low=9.8,
+        end_qfq_close=10.2,
+        exit_status=OutcomeExitStatus.TRADABLE,
         gross_return_pct=2.0,
         benchmark_return_pct=0.6,
         net_excess_return_pct=net_excess_return_pct,
@@ -84,7 +95,7 @@ def test_pending_targets_are_derived_only_from_selected_formal_decisions(tmp_pat
 
     assert len(targets) == 1
     assert targets[0].snapshot_id == formal.version
-    assert targets[0].anchor_price == item.quote.price
+    assert targets[0].anchor_raw_price == item.quote.price
     assert targets[0].atr20_pct == 2.5
 
 
@@ -110,12 +121,21 @@ def test_outcome_schema_and_payload_are_durable(tmp_path: Path) -> None:
 
     database = tmp_path / "research" / "outcomes.sqlite3"
     with sqlite3.connect(database) as connection:
-        row = connection.execute("SELECT status, payload_hash, length(payload) FROM recommendation_outcomes").fetchone()
+        row = connection.execute("SELECT status, payload_hash, payload FROM recommendation_outcomes").fetchone()
 
     assert row is not None
     assert row[0] == "complete"
     assert len(row[1]) == 64
-    assert row[2] > 0
+    payload = json.loads(row[2])
+    assert payload["anchor_raw_price"] == 10.0
+    assert payload["anchor_qfq_price"] == 10.0
+    assert payload["minimum_qfq_low"] == 9.8
+    assert payload["end_qfq_close"] == 10.2
+    assert payload["exit_status"] == "tradable"
+    assert payload["exit_untradable"] is False
+    assert "anchor_price" not in payload
+    assert "minimum_low" not in payload
+    assert "end_close" not in payload
     status = SQLiteOutcomeEvidenceRepository.inspect_status(tmp_path)
     assert status.initialized is True
     assert status.recommendation_outcomes == 1
@@ -139,3 +159,43 @@ def test_benchmark_read_rejects_tampered_columns(tmp_path: Path) -> None:
 
     with pytest.raises(OutcomeEvidenceConflictError, match="benchmark return"):
         repository.benchmark_returns_after("2026-07-20", limit=1)
+
+
+def test_legacy_d25_outcomes_resume_with_only_t4_pending(tmp_path: Path) -> None:
+    original = decision(Strategy.D25)
+    item = original.items[0]
+    formal = CommittedDecisionRecord(
+        replace(original, items=(replace(item, selected=True, rank=1),)),
+        NOW,
+        "scheduled",
+    )
+    repository = _repository(tmp_path, formal)
+    repository.save_recommendation_outcomes(
+        tuple(
+            _outcome(
+                snapshot_id=formal.version,
+                strategy=Strategy.D25,
+                stock_code=item.code,
+                horizon=horizon,
+            )
+            for horizon in (2, 3, 5)
+        )
+    )
+
+    targets = repository.pending_outcome_targets(limit=10)
+
+    assert len(targets) == 1
+    assert targets[0].pending_horizons == (4,)
+
+    repository.save_recommendation_outcomes(
+        (
+            _outcome(
+                snapshot_id=formal.version,
+                strategy=Strategy.D25,
+                stock_code=item.code,
+                horizon=4,
+            ),
+        )
+    )
+
+    assert repository.pending_outcome_targets(limit=10) == ()

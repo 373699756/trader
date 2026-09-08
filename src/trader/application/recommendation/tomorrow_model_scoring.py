@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import cast
 
+from trader.application.market_data.feature_computation import build_feature_computation_plan
 from trader.application.ports.model_scoring import (
     LoadedScoringProfile,
     ModelDiagnostics,
@@ -16,6 +17,11 @@ from trader.application.ports.model_scoring import (
     ScoringProfileRuntimeStatus,
 )
 from trader.domain.market.factors import clamp, round_score
+from trader.domain.market.feature_contracts import (
+    TOMORROW_MODEL_FEATURE_MANIFEST,
+    TOMORROW_RAW_ALPHA_FEATURE_MANIFEST,
+    FeatureValue,
+)
 from trader.domain.market.models import Board, FeatureSnapshot
 from trader.domain.recommendation.filtering.filters import board_for_snapshot
 from trader.domain.recommendation.model_scoring import (
@@ -25,26 +31,13 @@ from trader.domain.recommendation.model_scoring import (
 from trader.domain.recommendation.models import Strategy
 from trader.domain.recommendation.strategies.composition import LocalScoreResult
 
-_ALPHA_FIELDS = (
-    "qfq_return_1d",
-    "qfq_return_3d",
-    "qfq_return_5d",
-    "qfq_momentum_20d_skip5",
-    "qfq_momentum_40d_skip5",
-    "qfq_momentum_60d_skip5",
-)
+_ALPHA_FIELDS = TOMORROW_RAW_ALPHA_FEATURE_MANIFEST.names
 _AMOUNT_FIELD = "qfq_average_amount_20d"
 _AMIHUD_FIELD = "qfq_amihud_20d"
 _COST_RATE = 0.002
 _HISTORY_REQUIRED_SESSIONS = 61
-_MODEL_FEATURE_IDS = (
-    "qfq_return_1d",
-    "qfq_return_3d",
-    "qfq_return_5d",
-    "qfq_residual_momentum_20d_skip5",
-    "qfq_residual_momentum_40d_skip5",
-    "qfq_residual_momentum_60d_skip5",
-)
+_MODEL_COMPUTATION_PLAN = build_feature_computation_plan(TOMORROW_MODEL_FEATURE_MANIFEST)
+_MODEL_FEATURE_IDS = _MODEL_COMPUTATION_PLAN.output_names
 TomorrowModelDiagnostics = ModelDiagnostics
 TomorrowModelScoreBatch = ModelScoreBatch
 
@@ -150,17 +143,7 @@ class TomorrowProductionModelScoringService:
         inputs = tuple(
             ModelInput(
                 row.code,
-                tuple(
-                    (
-                        row.return_1d,
-                        row.return_3d,
-                        row.return_5d,
-                        residuals[0][index],
-                        residuals[1][index],
-                        residuals[2][index],
-                    )[position]
-                    for position in self._feature_positions
-                ),
+                tuple(_model_feature_vector(row, residuals, index)[position] for position in self._feature_positions),
                 row.industry,
             )
             for index, row in enumerate(rows)
@@ -213,6 +196,20 @@ def _relative_prediction_scores(values: tuple[float, ...]) -> tuple[float, ...]:
     if len(values) == 1:
         return (100.0,)
     return tuple(100.0 * rank for rank in percentile_ranks(values))
+
+
+def _model_feature_vector(
+    row: _RawRow,
+    residuals: tuple[tuple[float, ...], ...],
+    index: int,
+) -> tuple[float, ...]:
+    raw = (row.return_1d, row.return_3d, row.return_5d, residuals[0][index], residuals[1][index], residuals[2][index])
+    return TOMORROW_MODEL_FEATURE_MANIFEST.bind(
+        tuple(
+            FeatureValue(feature_id, value)
+            for feature_id, value in zip(TOMORROW_MODEL_FEATURE_MANIFEST.feature_ids, raw, strict=True)
+        )
+    ).require_complete()
 
 
 def _raw_row(feature: FeatureSnapshot, *, require_reversal: bool) -> _RawRow | None:

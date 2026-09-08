@@ -6,14 +6,11 @@ import math
 from dataclasses import dataclass
 from typing import Literal, cast
 
+from trader.domain.market.feature_contracts import TOMORROW_RESIDUAL_MOMENTUM_FEATURE_MANIFEST
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
 
 _AUTHORIZED_HASH = "4291ea514c233a14ab6f9262e72ea541d1e9a794e73d02f10f8220509f6f502b"
-_FEATURE_IDS = (
-    "qfq_residual_momentum_20d_skip5",
-    "qfq_residual_momentum_40d_skip5",
-    "qfq_residual_momentum_60d_skip5",
-)
+_FEATURE_IDS = TOMORROW_RESIDUAL_MOMENTUM_FEATURE_MANIFEST.names
 
 
 @dataclass(frozen=True)

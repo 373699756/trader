@@ -34,6 +34,7 @@ class WorkerReady:
 @dataclass(frozen=True)
 class DownloadCommand:
     security: BaoStockSecurity
+    purpose: Literal["daily_and_facts", "training_facts"] = "daily_and_facts"
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ class DownloadResponse:
     succeeded: bool
     failure_reason: str = ""
     training_ready: bool = True
+    daily_downloaded: bool = True
 
 
 @dataclass(frozen=True)

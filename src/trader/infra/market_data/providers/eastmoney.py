@@ -19,8 +19,10 @@ import requests
 from trader.application.runtime.workers import BorrowExecutorOptions, BoundedExecutor, borrow_executor
 from trader.domain.market.models import Board, MarketQuote
 from trader.domain.market.tail import MinuteBar
+from trader.domain.outcome.models import OutcomeBar
 from trader.domain.recommendation.filtering.filters import board_for_code
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
+from trader.infra.market_data.history.outcome_history import pair_outcome_history
 from trader.infra.market_data.normalization.normalize import (
     MarketQuoteInput,
     build_market_quote,
@@ -137,6 +139,27 @@ class EastmoneyClient:
         return quotes
 
     def fetch_history(self, code: str, *, days: int = 90, now: datetime | None = None) -> tuple[DailyBar, ...]:
+        return self._fetch_daily_history(code, days=days, now=now, adjustment=PriceAdjustment.QFQ)
+
+    def fetch_outcome_history(
+        self,
+        code: str,
+        *,
+        days: int = 61,
+        now: datetime | None = None,
+    ) -> tuple[OutcomeBar, ...]:
+        qfq = self._fetch_daily_history(code, days=days, now=now, adjustment=PriceAdjustment.QFQ)
+        raw = self._fetch_daily_history(code, days=days, now=now, adjustment=PriceAdjustment.RAW)
+        return pair_outcome_history(qfq, raw)
+
+    def _fetch_daily_history(
+        self,
+        code: str,
+        *,
+        days: int,
+        now: datetime | None,
+        adjustment: PriceAdjustment,
+    ) -> tuple[DailyBar, ...]:
         end = (now or self._wall_clock()).date()
         start = end - timedelta(days=max(days * 2, 180))
         payload = self._get(
@@ -147,7 +170,7 @@ class EastmoneyClient:
                 "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
                 "ut": "7eea3edcaed734bea9cbfc24409ed989",
                 "klt": "101",
-                "fqt": "1",
+                "fqt": "1" if adjustment is PriceAdjustment.QFQ else "0",
                 "secid": _secid(code),
                 "beg": start.strftime("%Y%m%d"),
                 "end": end.strftime("%Y%m%d"),
@@ -178,7 +201,7 @@ class EastmoneyClient:
                     amount=amount,
                     pct_change=pct_change,
                     turnover_rate=turnover_rate,
-                    adjustment=PriceAdjustment.QFQ,
+                    adjustment=adjustment,
                     source="eastmoney",
                 )
             )

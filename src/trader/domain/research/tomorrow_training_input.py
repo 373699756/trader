@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
+from trader.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
 from trader.domain.research.h1_point_in_time import canonical_hash
 
 TomorrowInputCompatibilityStatus = Literal["compatible", "incompatible"]
@@ -22,15 +23,8 @@ _RAW_QFQ_LAYOUT = "same_row"
 _ROW_HASH_ALGORITHM = "sha256"
 _INPUT_SCHEMA_VERSION = "frozen_daily_training_input"
 
-TOMORROW_TRAINING_ALPHA_NAMES = (
-    "qfq_return_1d",
-    "qfq_return_3d",
-    "qfq_return_5d",
-    "qfq_residual_momentum_20d_skip5",
-    "qfq_residual_momentum_40d_skip5",
-    "qfq_residual_momentum_60d_skip5",
-)
-TOMORROW_TRAINING_ALPHA_UNITS = ("ratio",) * len(TOMORROW_TRAINING_ALPHA_NAMES)
+TOMORROW_TRAINING_ALPHA_NAMES = TOMORROW_MODEL_FEATURE_MANIFEST.names
+TOMORROW_TRAINING_ALPHA_UNITS = TOMORROW_MODEL_FEATURE_MANIFEST.units
 
 
 @dataclass(frozen=True, order=True)

@@ -736,6 +736,7 @@ def _coverage_integrity_reasons(
         reasons.append("full_window_stock_completeness_below_95_percent")
     anomalies = (
         (summary.duplicate_rows, "duplicate_rows_present"),
+        (summary.null_rows, "null_rows_present"),
         (summary.out_of_window_rows, "out_of_window_rows_present"),
         (summary.future_rows, "future_rows_present"),
     )

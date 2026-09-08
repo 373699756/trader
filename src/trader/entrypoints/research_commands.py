@@ -130,6 +130,7 @@ def run_research_command(
             json.dumps(
                 {
                     "schema_version": "research_readiness",
+                    "production_authority": False,
                     "validation_mode": "historical_only",
                     "blockers": [] if screening_ready else ["score_h0_archive_coverage_incomplete"],
                     "tomorrow_historical": tomorrow_historical,

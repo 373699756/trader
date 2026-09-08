@@ -1,8 +1,9 @@
+from datetime import date
 from types import SimpleNamespace
 
 import pytest
 
-from trader.domain.research.baostock_daily import BaoStockDailySpec
+from trader.domain.research.baostock_daily import BaoStockCalendar, BaoStockDailySpec, BaoStockSecurity
 from trader.infra.research.baostock_daily import BaoStockRowGateway
 from trader.infra.research.baostock_gateway import _result_rows
 from trader.infra.research.baostock_history_runtime import _login, _RateLimitedBaoStockSdk
@@ -44,7 +45,8 @@ class _Sdk:
 
     def query_history_k_data_plus(self, code, fields, start_date, end_date, **kwargs):
         assert code == "sh.600001"
-        assert (start_date, end_date) == ("2026-08-29", "2026-08-30")
+        assert start_date in {"2026-08-29", "2026-08-30"}
+        assert end_date == "2026-08-30"
         adjustment = "3" if kwargs["adjustflag"] == "3" else "2"
         rows = (
             (
@@ -80,7 +82,7 @@ class _Sdk:
                 "1",
             ),
         )
-        return _Result(tuple(fields.split(",")), rows)
+        return _Result(tuple(fields.split(",")), tuple(row for row in rows if row[0] >= start_date))
 
     def query_stock_industry(self, *, code="", date=""):
         assert code == ""
@@ -110,6 +112,87 @@ def test_gateway_consumes_only_baostock_row_iteration_boundary() -> None:
     assert download.daily_facts[1].is_st is True
 
 
+def test_gateway_uses_real_historical_code_for_qfq_before_code_identity_change() -> None:
+    class _AliasSdk(_Sdk):
+        def __init__(self) -> None:
+            self.requests: list[tuple[str, str, str, str]] = []
+
+        def query_history_k_data_plus(self, code, fields, start_date, end_date, **kwargs):
+            self.requests.append((code, kwargs["adjustflag"], start_date, end_date))
+            rows = []
+            for day, expected_code, close in (
+                ("2019-06-05", "sz.000043", "9"),
+                ("2019-06-06", "sz.001914", "11"),
+            ):
+                if start_date <= day <= end_date and (kwargs["adjustflag"] == "3" or code == expected_code):
+                    rows.append(
+                        (
+                            day,
+                            code,
+                            close,
+                            close,
+                            close,
+                            close,
+                            close,
+                            "100",
+                            "1000",
+                            kwargs["adjustflag"],
+                            "1",
+                            "1",
+                            "0",
+                            "0",
+                        )
+                    )
+            return _Result(tuple(fields.split(",")), tuple(rows))
+
+    sdk = _AliasSdk()
+    gateway = BaoStockRowGateway(sdk, python_version="3.14.0")
+    spec = BaoStockDailySpec(sessions=2)
+    calendar = BaoStockCalendar((date(2019, 6, 5), date(2019, 6, 6)))
+    security = BaoStockSecurity("001914", "招商积余", "main", date(1994, 9, 28), None, "fixture")
+
+    batch = gateway.fetch_code_download(spec, security, calendar).batch
+
+    assert tuple(cell.qfq.close_price for cell in batch.cells if cell.qfq is not None) == (9.0, 11.0)
+    assert all(cell.status == "complete" for cell in batch.cells)
+    assert sdk.requests == [
+        ("sz.001914", "3", "2019-06-05", "2019-06-06"),
+        ("sz.000043", "2", "2019-06-05", "2019-06-05"),
+        ("sz.001914", "2", "2019-06-06", "2019-06-06"),
+    ]
+
+
+def test_gateway_fetches_missing_training_facts_without_redownloading_qfq() -> None:
+    class _FactsOnlySdk(_Sdk):
+        def __init__(self) -> None:
+            self.adjustflags: list[str] = []
+            self.windows: list[tuple[str, str]] = []
+            self.requested_fields: list[str] = []
+
+        def query_history_k_data_plus(self, code, fields, start_date, end_date, **kwargs):
+            self.adjustflags.append(kwargs["adjustflag"])
+            self.windows.append((start_date, end_date))
+            self.requested_fields.append(fields)
+            rows = (
+                ("2026-08-29", code, "1", "0"),
+                ("2026-08-30", code, "1", "1"),
+            )
+            return _Result(tuple(fields.split(",")), tuple(row for row in rows if row[0] >= start_date))
+
+    sdk = _FactsOnlySdk()
+    gateway = BaoStockRowGateway(sdk, python_version="3.14.0")
+    spec = BaoStockDailySpec(sessions=2)
+    calendar = gateway.fetch_calendar(spec)
+    security = gateway.fetch_universe(spec)[0]
+
+    facts = gateway.fetch_daily_facts(spec, security, calendar, start_on=calendar.open_dates[1])
+
+    assert tuple(item.is_st for item in facts) == (True,)
+    assert sdk.adjustflags == ["3"]
+    assert sdk.windows == [("2026-08-30", "2026-08-30")]
+    assert sdk.requested_fields == ["date,code,tradestatus,isST"]
+
+
 def test_gateway_downloads_historical_industry_snapshots_and_compresses_intervals() -> None:
     gateway = BaoStockRowGateway(_Sdk(), python_version="3.14.0", dependency_versions=(("pandas", "2.3.0"),))
     spec = BaoStockDailySpec(sessions=2)
@@ -123,6 +206,50 @@ def test_gateway_downloads_historical_industry_snapshots_and_compresses_interval
     assert intervals[0].industry == "银行"
     assert intervals[0].classification == "申万一级行业"
     assert intervals[0].effective_from == calendar.open_dates[0]
+
+
+def test_gateway_uses_supplier_update_date_for_industry_effective_time() -> None:
+    class _IndustrySdk(_Sdk):
+        def query_stock_industry(self, *, code="", date=""):
+            assert code == ""
+            return _Result(
+                ("updateDate", "code", "code_name", "industry", "industryClassification"),
+                (("2026-08-28", "sh.600001", "A", "银行", "申万一级行业"),),
+            )
+
+    gateway = BaoStockRowGateway(
+        _IndustrySdk(),
+        python_version="3.14.0",
+        dependency_versions=(("pandas", "2.3.0"),),
+    )
+    spec = BaoStockDailySpec(sessions=2)
+    calendar = gateway.fetch_calendar(spec)
+
+    intervals = gateway.fetch_industry_intervals(spec, calendar, gateway.fetch_universe(spec))
+
+    assert intervals[0].effective_from.isoformat() == "2026-08-28"
+
+
+def test_gateway_rejects_industry_rows_that_were_not_effective_at_the_requested_snapshot() -> None:
+    class _FutureIndustrySdk(_Sdk):
+        def query_stock_industry(self, *, code="", date=""):
+            assert code == ""
+            return _Result(
+                ("updateDate", "code", "code_name", "industry", "industryClassification"),
+                (("2026-08-31", "sh.600001", "A", "银行", "申万一级行业"),),
+            )
+
+    gateway = BaoStockRowGateway(
+        _FutureIndustrySdk(),
+        python_version="3.14.0",
+        dependency_versions=(("pandas", "2.3.0"),),
+    )
+    spec = BaoStockDailySpec(sessions=2)
+    calendar = gateway.fetch_calendar(spec)
+
+    intervals = gateway.fetch_industry_intervals(spec, calendar, gateway.fetch_universe(spec))
+
+    assert intervals == ()
 
 
 def test_sdk_queries_are_started_at_most_once_every_two_seconds() -> None:

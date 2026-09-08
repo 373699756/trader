@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, TypedDict
@@ -207,22 +207,30 @@ def overlay_canonical_snapshot(
 ) -> CanonicalMarketSnapshot:
     if base is None:
         return overlay
-    quotes = {quote.code: quote for quote in base.quotes}
+    quotes = list(base.quotes)
+    positions = {quote.code: index for index, quote in enumerate(quotes)}
+    inserted = False
     overlay_codes: set[str] = set()
     for quote in overlay.quotes:
-        current = quotes.get(quote.code)
+        position = positions.get(quote.code)
+        current = None if position is None else quotes[position]
         if current is None or _overlay_replaces(
             current,
             quote,
             base_observed_at=base.observed_at,
             overlay_observed_at=overlay.observed_at,
         ):
-            quotes[quote.code] = quote
+            if position is None:
+                positions[quote.code] = len(quotes)
+                quotes.append(quote)
+                inserted = True
+            else:
+                quotes[position] = quote
             overlay_codes.add(quote.code)
-    field_sources = {code: dict(sources) for code, sources in base.field_sources.items()}
-    field_sources.update(
-        {code: dict(sources) for code, sources in overlay.field_sources.items() if code in overlay_codes}
-    )
+    if inserted:
+        quotes.sort(key=lambda item: item.code)
+    field_sources = dict(base.field_sources)
+    field_sources.update({code: sources for code, sources in overlay.field_sources.items() if code in overlay_codes})
     source_versions = _merge_source_versions(base, overlay, overlay_codes)
     conflicts = {conflict for conflict in base.conflicts if _conflict_subject(conflict) not in overlay_codes}
     conflicts.update(conflict for conflict in overlay.conflicts if _conflict_subject(conflict) in overlay_codes)
@@ -243,7 +251,7 @@ def overlay_canonical_snapshot(
     ).hexdigest()[:24]
     return _canonical_snapshot(
         observed_at=max(base.observed_at, overlay.observed_at),
-        quotes=tuple(quotes[code] for code in sorted(quotes)),
+        quotes=tuple(quotes),
         field_sources=field_sources,
         source_versions=source_versions,
         conflicts=tuple(sorted(conflicts)),
@@ -346,7 +354,7 @@ def _empty_snapshot(observed_at: datetime, degraded: set[str]) -> CanonicalMarke
 class _CanonicalSnapshotRequiredOptions(TypedDict):
     observed_at: datetime
     quotes: tuple[MarketQuote, ...]
-    field_sources: dict[str, dict[str, str]]
+    field_sources: Mapping[str, Mapping[str, str]]
     source_versions: dict[str, str]
     conflicts: tuple[str, ...]
     missing_reasons: dict[str, str]

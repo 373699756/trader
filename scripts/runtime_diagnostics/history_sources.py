@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sample live daily-history sources in bounded worker waves and report latency."""
+"""Sample feature and raw/qfq outcome histories in bounded worker waves."""
 
 from __future__ import annotations
 
@@ -39,8 +39,11 @@ class HistoryObservation:
     source: Source
     selected_source: str | None
     row_count: int
+    outcome_selected_source: str | None
+    outcome_pair_count: int
     latency_ms: float
     error: str | None
+    outcome_error: str | None
     bars: tuple[DailyBar, ...] = field(repr=False)
 
 
@@ -96,7 +99,7 @@ def _validate(args: argparse.Namespace) -> tuple[str, ...]:
     return codes
 
 
-def _client(options: HistorySamplingOptions):
+def _client(options: HistorySamplingOptions) -> TencentClient | EastmoneyClient | FallbackHistoryClient:
     if options.source == "tencent":
         return TencentClient(timeout_seconds=options.timeout_seconds)
     if options.source == "eastmoney":
@@ -109,33 +112,75 @@ def _client(options: HistorySamplingOptions):
 
 def _sample_one(sample: int, code: str, options: HistorySamplingOptions) -> HistoryObservation:
     started = time.monotonic()
+    bars: tuple[DailyBar, ...] = ()
+    outcome_pair_count = 0
+    selected_source: str | None = None
+    outcome_selected_source: str | None = None
+    error: str | None = None
+    outcome_error: str | None = None
     try:
         client = _client(options)
-        if options.source == "tencent":
-            bars = tuple(client.fetch_history(code, days=options.days, history_host=options.tencent_history_host))
-        else:
-            bars = tuple(client.fetch_history(code, days=options.days))
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        client_error = _error_code(exc)
         return HistoryObservation(
             sample,
             code,
             options.source,
             None,
             0,
+            None,
+            0,
             round((time.monotonic() - started) * 1000.0, 1),
-            type(exc).__name__,
+            client_error,
+            client_error,
             (),
         )
+    try:
+        if options.source == "tencent":
+            assert isinstance(client, TencentClient)
+            bars = tuple(client.fetch_history(code, days=options.days, history_host=options.tencent_history_host))
+        else:
+            bars = tuple(client.fetch_history(code, days=options.days))
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        error = _error_code(exc)
+    else:
+        selected_source = bars[-1].source if bars else None
+    try:
+        if options.source == "tencent":
+            assert isinstance(client, TencentClient)
+            outcome_bars = tuple(
+                client.fetch_outcome_history(
+                    code,
+                    days=options.days,
+                    history_host=options.tencent_history_host,
+                )
+            )
+        else:
+            outcome_bars = tuple(client.fetch_outcome_history(code, days=options.days))
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        outcome_error = _error_code(exc)
+    else:
+        outcome_pair_count = len(outcome_bars)
+        outcome_selected_source = outcome_bars[-1].source if outcome_bars else None
     return HistoryObservation(
         sample,
         code,
         options.source,
-        bars[-1].source if bars else None,
+        selected_source,
         len(bars),
+        outcome_selected_source,
+        outcome_pair_count,
         round((time.monotonic() - started) * 1000.0, 1),
-        None,
+        error,
+        outcome_error,
         bars,
     )
+
+
+def _error_code(exc: OSError | RuntimeError | TypeError | ValueError) -> str:
+    if isinstance(exc, ValueError) and str(exc):
+        return str(exc)
+    return type(exc).__name__
 
 
 def collect_history_samples(
@@ -231,7 +276,9 @@ def build_report(
     args: argparse.Namespace,
     persistence: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    usable = sum(item.row_count >= 20 for item in observations)
+    feature_usable = sum(item.row_count >= 20 for item in observations)
+    outcome_usable = sum(item.outcome_pair_count >= 20 for item in observations)
+    usable = sum(item.row_count >= 20 and item.outcome_pair_count >= 20 for item in observations)
     return {
         "schema_version": "history-source-sampling",
         "status": "passed" if usable == len(observations) else "degraded",
@@ -247,8 +294,12 @@ def build_report(
         },
         "summary": {
             "usable_observations": usable,
-            "empty_observations": sum(item.row_count == 0 for item in observations),
-            "error_observations": sum(item.error is not None for item in observations),
+            "feature_usable_observations": feature_usable,
+            "outcome_pair_usable_observations": outcome_usable,
+            "empty_observations": sum(item.row_count == 0 or item.outcome_pair_count == 0 for item in observations),
+            "error_observations": sum(
+                item.error is not None or item.outcome_error is not None for item in observations
+            ),
             "latency": _latency_summary(observations),
             "persistence": persistence,
         },
@@ -259,8 +310,11 @@ def build_report(
                 "requested_source": item.source,
                 "selected_source": item.selected_source,
                 "row_count": item.row_count,
+                "outcome_selected_source": item.outcome_selected_source,
+                "outcome_pair_count": item.outcome_pair_count,
                 "latency_ms": item.latency_ms,
                 "error": item.error,
+                "outcome_error": item.outcome_error,
             }
             for item in observations
         ],

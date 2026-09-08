@@ -8,9 +8,9 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_daily_close_training_contract_has_non_overlapping_authorities() -> None:
     work = " ".join((ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8").split())
 
-    assert "15.1.36 V3 条件式生产适配" in work
-    assert "15.1.37 四路实施边界" in work
-    assert "15.1.38 BaoStock 2000 日归档" in work
+    assert "`15.1.36` 对应 `tomorrow_v3_activation`" in work
+    assert "`15.1.37` 对应 `historical_workstream_boundaries`" in work
+    assert "`15.1.38` 对应 `baostock_daily_archive`" in work
     assert not (ROOT / "docs" / "trade.md").exists()
     assert "`trade.md`" not in work
 
@@ -18,7 +18,11 @@ def test_daily_close_training_contract_has_non_overlapping_authorities() -> None
 def test_v3_is_a_single_offline_industry_model_without_stacking() -> None:
     raw_work = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
     work = " ".join(raw_work.split())
-    section = raw_work[raw_work.index("### 3.3 V3 训练与验证") : raw_work.index("### 3.4 BaoStock")]
+    section = raw_work[
+        raw_work.index("### 3.3 `tomorrow_v3_training_validation`") : raw_work.index(
+            "## 4. 历史数据、参数研究、V3 训练与实时评分统一路线"
+        )
+    ]
     required_contract = (
         "V3 是新的唯一 Tomorrow 模型",
         "C3 只表示其离线训练阶段",
@@ -60,19 +64,18 @@ def test_v3_research_has_four_isolated_owners_and_one_public_command() -> None:
     design = (ROOT / "docs" / "02_工程设计.md").read_text(encoding="utf-8")
 
     required_strategy_contract = (
-        "Codex A",
-        "Codex B",
-        "Codex C",
-        "Codex D",
         "## 3. 历史评分研究路线",
+        "`baostock_daily_archive`",
+        "`historical_industry_facts`",
+        "`tomorrow_v3_training_validation`",
+        "`shadow_and_manual_activation`",
         "老 V2 predictor、bundle、hash、配置语义、历史和冻结记录全部封存且不修改",
         "./run.sh train-tomorrow",
-        "一次命令形成一个由输入 manifest 和 hash 派生的 `run_id`",
-        "data/train/tomorrow-v3/<run_id>/",
+        "输入 hash 只保留在 JSON 审计字段",
+        "data/train/tomorrow-v3/",
         "report.json",
         "model.json",
-        "evidence/",
-        "Codex D",
+        "training-input.json",
         "不得自动 promotion",
         "共享文档、CLI",
     )
@@ -81,7 +84,7 @@ def test_v3_research_has_four_isolated_owners_and_one_public_command() -> None:
     assert "V1/V2/C3 原始预测级联合研究路线" not in design
     assert "内部 V1/V2/C3" not in design
     assert "15.1.36 V3 条件式生产适配 | `blocked_by_15.1.35`" not in strategy
-    assert "15.1.36 V3 条件式生产适配" in strategy
+    assert "`shadow_and_manual_activation` | `blocked_by_risk_cost_uncertainty_deepseek`" in strategy
 
     for internal_stage in (
         "research-tomorrow",
@@ -93,11 +96,11 @@ def test_v3_research_has_four_isolated_owners_and_one_public_command() -> None:
         assert f"`./run.sh {internal_stage}" not in strategy
 
 
-def test_trained_v3_profile_remains_hash_bound() -> None:
+def test_trained_v3_profile_loads_the_direct_model_and_remains_content_hash_bound() -> None:
     strategy = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
     model_port = (ROOT / "src" / "trader" / "application" / "ports" / "model_scoring.py").read_text(encoding="utf-8")
 
-    assert "data/train/tomorrow-v3/<run_id>/" in strategy
-    assert "主程序启动时读取最新 `model.json`" in strategy
+    assert "data/train/tomorrow-v3/<run_id>/" not in strategy
+    assert "主程序启动时直接读取 `data/train/tomorrow-v3/model.json`" in strategy
     assert "内容 hash" in strategy
     assert "class ModelPredictorPort" in model_port
