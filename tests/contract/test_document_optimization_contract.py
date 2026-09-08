@@ -149,6 +149,49 @@ def test_strategy_document_does_not_own_artifact_hashes() -> None:
     assert "详细工件身份、hash 与交付证据统一见 `03_工程实施.md` 和 `CHANGELOG.md`" in strategy
 
 
+def test_history_windows_cost_ownership_and_terminal_order_are_unambiguous() -> None:
+    strategy = _read(STRATEGY)
+    design = _read(DESIGN)
+    work = _read(WORK)
+    replay = _read(REPLAY)
+
+    assert "V1/V2 使用已封存模型，不要求用户下载 2000 日历史或重新训练" in strategy
+    assert "Tomorrow V1/V2/V3 在线推理至少需要 61 个有效 qfq 交易日" in design
+    assert "V3 离线训练最多消费 2000 个交易所开市日" in design
+    assert "扣成本前的预测超额收益" in strategy
+    assert "训练目标不得先扣 20bp 后又由在线门重复扣除" in replay
+    assert "不能只用 `非 ST + 当日有交易` 代替完整生产漏斗" in replay
+    assert "`historical_validated` 只能由一次性终端留出完整报告产生" in replay
+
+    route = replay[replay.index("## 11. 新优化路线如何形成证据闭环") :]
+    ordered = (
+        "V3 训练与开发/确认",
+        "增量同源计算",
+        "风险/成本/不确定性与 DeepSeek 消融",
+        "完整选择链冻结",
+        "一次性终端留出",
+        "Shadow",
+    )
+    positions = tuple(route.index(item) for item in ordered)
+    assert positions == tuple(sorted(positions))
+    assert "状态：`reopened_by_review`" in work
+
+
+def test_hash_validation_is_limited_to_trust_boundaries() -> None:
+    strategy = _read(STRATEGY)
+    design = _read(DESIGN)
+    work = _read(WORK)
+
+    for required in (
+        "Hash 校验只属于信任边界",
+        "下游不得对同一字节或同一不可变对象再次规范序列化、重新计算 SHA-256",
+        "Hash 不能替代点时、字段、单位、覆盖率",
+        "不生成无人消费的",
+    ):
+        assert required in design or required in work
+    assert "进程内下游复用已接纳身份，不重复序列化和校验同一对象" in strategy
+
+
 def test_design_uses_normative_language_instead_of_delivery_chronology() -> None:
     design = _read(DESIGN)
 

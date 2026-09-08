@@ -6,6 +6,29 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求结合此前四份文档 Review 的问题先统一契约，再删除没有实际保护价值的 Hash 校验。根因已确认：文档
+  混淆 V1/V2/V3 在线 61 日窗口与 V3 最多 2000 日离线训练，把 V3 训练标签和在线执行成本重复扣除，允许
+  `historical_validated` 在完整终端留出之前出现，且 outcome 没有统一 raw/qfq 与退出不可交易语义；代码中
+  `FeatureComputationPlan` 还为无人消费的进程内计划计算 SHA-256，正式记录加载/恢复则对同一文件字节重复
+  Hash 并在成功路径重复解码。Added: 新增历史窗口、成本所有权、完整生产同源训练人口、终端留出顺序和
+  Hash 信任边界的文档契约；新增正式记录普通加载与 committed 启动恢复“每个文件只 Hash 一次”的回归。
+  Changed: 四份文档统一为“收益真值修复→点时资格/数据集→召回/有限参数→V3 开发与确认→增量同源→完整
+  风险/成本/不确定性/DeepSeek 链确认→一次性终端留出→Shadow”，并明确 V1/V2 使用封存模型、V3 离线完整
+  训练最多 2000 日且至少 1250 个共同完整交易日、三档盘中只消费已预热/持久化的最近至少 61 日；V3 alpha
+  统一预测扣成本前超额，`historical_validated` 只能来自完整终端报告。Fixed: 重新打开尚未满足 raw/qfq、
+  mark-to-market 与 carry-forward 的 `outcome_truth_contract`，阻止旧完成状态掩盖真实缺口；正式记录现于文件
+  信任边界完成一次 SHA-256 后复用已验证字节，只解码并核对 manifest 一次。Removed: 删除无人消费的
+  `FeatureComputationPlan.content_hash` 及其序列化计算，删除正式记录对相同字节的第二次 SHA-256 和成功路径
+  第二次 decode；模型工件、不可变研究归档、正式冻结、staged/committed 恢复、CAS/幂等冲突、ETag/缓存与
+  外部证据边界的必要 Hash 均保留。Verification: 相关文档、持久化、冻结和调度定向回归 77 项通过；
+  `make format-check`、`make lint`、`make type-check`、`make test`、`make package` 和 `git diff --check` 通过，
+  严格复杂度债务保持为零；打包首次受沙箱代理限制，按授权在沙箱外重跑成功。性能、真实供应商、API/SSE、
+  Web 与浏览器专项不适用，因为本批不改变评分热链、网络、公开 schema 或页面，且实现只删除固定额外工作。
+  Residual Risks: 当前 V3 训练实现仍预扣 20bp，`OutcomeBar` 仍未同时携带 qfq 结算价、raw 可交易性和退出交易
+  状态；完整生产同源人口、14:50 点时数据、终端留出及 V3 生产授权仍由后续章节失败关闭。本批修正文档与
+  Hash 开销，不宣称已修复这些独立评分/收益实现缺口或已经提高未来收益。
+  `Regression-Key: trust-boundary-hash-and-research-contract-alignment`。
+
 - 用户要求把历史下载、参数研究、V3 训练结果、实时评分和收益验证合并为更优的整体计划，并按
   `03_工程实施.md` 执行首个未完成章节。根因已确认：在线归一化、V3 训练、H1 回放、holdout、Shadow 及
   V1/V2/V3 codec 分别维护 Tomorrow 六项特征名称、顺序和单位；其中训练/H1 慢动量实际使用

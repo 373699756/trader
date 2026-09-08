@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from trader.domain.market.feature_contracts import (
     FEATURE_SPEC_CATALOG,
@@ -30,31 +29,10 @@ class FeatureComputationPlan:
     manifest: FeatureVectorManifest
     stages: tuple[FeatureComputationStage, ...]
     required_fact_ids: tuple[str, ...]
-    content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         if not self.stages or len(set(self.required_fact_ids)) != len(self.required_fact_ids):
             raise ValueError("feature computation plan is invalid")
-        object.__setattr__(
-            self,
-            "content_hash",
-            _content_hash(
-                (
-                    "feature_computation_plan",
-                    self.manifest.content_hash,
-                    *(
-                        token
-                        for stage in self.stages
-                        for token in (
-                            stage.calculator_group,
-                            *(item.value for item in stage.output_ids),
-                            *(item.value for item in stage.dependency_ids),
-                        )
-                    ),
-                    *self.required_fact_ids,
-                )
-            ),
-        )
 
     @property
     def output_names(self) -> tuple[str, ...]:
@@ -123,15 +101,6 @@ def _group_stages(ordered_specs: tuple[FeatureSpec, ...]) -> tuple[FeatureComput
         for group in group_order
     )
     return stages
-
-
-def _content_hash(parts: tuple[str, ...]) -> str:
-    digest = hashlib.sha256()
-    for part in parts:
-        encoded = part.encode("utf-8")
-        digest.update(len(encoded).to_bytes(4, "big"))
-        digest.update(encoded)
-    return digest.hexdigest()
 
 
 __all__ = [

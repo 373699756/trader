@@ -38,4 +38,4 @@ def test_model_plan_resolves_raw_features_before_cross_section_residuals() -> No
         "industry_cross_section",
         "qfq_average_amount_20d",
     }
-    assert len(plan.content_hash) == 64
+    assert not hasattr(plan, "content_hash")
