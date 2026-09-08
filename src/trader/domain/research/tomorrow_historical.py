@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
+from trader.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC
 
 HistoricalFieldStatus = Literal["eligible", "not_reconstructed"]
@@ -45,12 +46,14 @@ class HistoricalFieldEligibility:
 
 
 _FIELD_ELIGIBILITY = (
-    HistoricalFieldEligibility("qfq_return_1d", "eligible", "alpha", "lagged_qfq_close"),
-    HistoricalFieldEligibility("qfq_return_3d", "eligible", "alpha", "lagged_qfq_close"),
-    HistoricalFieldEligibility("qfq_return_5d", "eligible", "alpha", "lagged_qfq_close"),
-    HistoricalFieldEligibility("qfq_residual_momentum_20d_skip5", "eligible", "alpha", "lagged_qfq_cross_section"),
-    HistoricalFieldEligibility("qfq_residual_momentum_40d_skip5", "eligible", "alpha", "lagged_qfq_cross_section"),
-    HistoricalFieldEligibility("qfq_residual_momentum_60d_skip5", "eligible", "alpha", "lagged_qfq_cross_section"),
+    *(
+        HistoricalFieldEligibility(name, "eligible", "alpha", "lagged_qfq_close")
+        for name in TOMORROW_MODEL_FEATURE_MANIFEST.names[:3]
+    ),
+    *(
+        HistoricalFieldEligibility(name, "eligible", "alpha", "lagged_qfq_cross_section")
+        for name in TOMORROW_MODEL_FEATURE_MANIFEST.names[3:]
+    ),
     HistoricalFieldEligibility(
         "market_cross_section", "eligible", "residualization", "same_manifest_market_cross_section"
     ),

@@ -19,7 +19,9 @@ def test_v3_is_a_single_offline_industry_model_without_stacking() -> None:
     raw_work = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
     work = " ".join(raw_work.split())
     section = raw_work[
-        raw_work.index("### 3.3 `tomorrow_v3_training_validation`") : raw_work.index("## 4. 历史数据与训练执行计划")
+        raw_work.index("### 3.3 `tomorrow_v3_training_validation`") : raw_work.index(
+            "## 4. 历史数据、参数研究、V3 训练与实时评分统一路线"
+        )
     ]
     required_contract = (
         "V3 是新的唯一 Tomorrow 模型",
@@ -65,8 +67,8 @@ def test_v3_research_has_four_isolated_owners_and_one_public_command() -> None:
         "## 3. 历史评分研究路线",
         "`baostock_daily_archive`",
         "`historical_industry_facts`",
-        "`tomorrow_training_validation`",
-        "`shadow_and_production_activation`",
+        "`tomorrow_v3_training_validation`",
+        "`shadow_and_manual_activation`",
         "老 V2 predictor、bundle、hash、配置语义、历史和冻结记录全部封存且不修改",
         "./run.sh train-tomorrow",
         "一次命令形成一个由输入 manifest 和 hash 派生的 `run_id`",
@@ -82,7 +84,7 @@ def test_v3_research_has_four_isolated_owners_and_one_public_command() -> None:
     assert "V1/V2/C3 原始预测级联合研究路线" not in design
     assert "内部 V1/V2/C3" not in design
     assert "15.1.36 V3 条件式生产适配 | `blocked_by_15.1.35`" not in strategy
-    assert "`tomorrow_v3_activation` | `blocked_by_tomorrow_training_validation`" in strategy
+    assert "`shadow_and_manual_activation` | `blocked_by_risk_cost_uncertainty_deepseek`" in strategy
 
     for internal_stage in (
         "research-tomorrow",

@@ -17,20 +17,23 @@ def test_authoritative_docs_define_one_ordered_optimization_route() -> None:
     strategy = _read(STRATEGY)
     design = _read(DESIGN)
     work = _read(WORK)
+    route = work[work.index("## 4. 历史数据、参数研究、V3 训练与实时评分统一路线") :]
 
     ordered_tasks = (
-        "outcome_truth_contract",
-        "feature_contract_unification",
-        "incremental_feature_computation",
-        "point_in_time_data_qualification",
-        "candidate_recall_attribution",
-        "limited_factor_family_research",
-        "risk_cost_uncertainty_deepseek",
-        "shadow_and_manual_activation",
+        "### 4.1 `outcome_truth_contract`",
+        "### 4.2 `feature_contract_unification`",
+        "### 4.3 `point_in_time_data_qualification`",
+        "### 4.4 `point_in_time_dataset`",
+        "### 4.5 `candidate_recall_attribution`",
+        "### 4.6 `limited_factor_family_research`",
+        "### 4.7 `tomorrow_v3_training_validation`",
+        "### 4.8 `incremental_feature_computation`",
+        "### 4.9 `risk_cost_uncertainty_deepseek`",
+        "### 4.10 `shadow_and_manual_activation`",
     )
-    positions = tuple(work.index(task) for task in ordered_tasks)
+    positions = tuple(route.index(task) for task in ordered_tasks)
     assert positions == tuple(sorted(positions))
-    assert "评分链路可靠性与收益优化计划" in work
+    assert "历史数据、参数研究、V3 训练与实时评分统一路线" in work
     assert "收益真值" in strategy
     assert "评分优化目标组件" in design
 
@@ -94,11 +97,24 @@ def test_route_cannot_smuggle_unverified_data_or_automatic_promotion() -> None:
     assert "scoring-feature-outcome-optimization" in work
 
 
-def test_work_plan_records_completed_first_chapter_and_next_chapter() -> None:
+def test_work_plan_records_completed_feature_chapter_and_next_chapter() -> None:
     work = _read(WORK)
 
-    assert "最近完成章节：`outcome_truth_contract`" in work
-    assert "下一执行章节：`feature_contract_unification`" in work
-    assert "每次开始、发现阻塞、完成验证、提交并推送" in work
+    assert "最近完成章节：`feature_contract_unification`" in work
+    assert "下一执行章节：`point_in_time_data_qualification`" in work
+    assert "进度在每次开始、发现阻塞、" in work
+    assert "完成验证、提交并推送时更新" in work
     assert "D25 T+2/T+3/T+4/T+5" in work
     assert "`baostock_daily_archive` 保持 `pending`" in work
+
+
+def test_history_training_and_optimization_are_one_dependency_route() -> None:
+    work = _read(WORK)
+    replay = _read(REPLAY)
+
+    assert "历史数据、参数研究、V3 训练与实时评分统一路线" in work
+    assert "第 4 节与第 7 节" not in work
+    assert "15:00_close" in replay
+    assert "point_in_time_parity=false" in replay
+    assert "BaoStock 日线不能单独证明 14:50" in replay
+    assert "FeatureVectorManifest" in replay

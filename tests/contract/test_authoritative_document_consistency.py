@@ -14,7 +14,7 @@ def test_authoritative_design_defers_delivery_status_to_the_work_plan() -> None:
 
     assert "交付状态只由 `03_工程实施.md` 维护" in design
     assert "评分模块化计划项 1–9 | `completed`" in work
-    assert "BaoStock 2000 日正式归档 | `pending`" in work
+    assert "#### `baostock_daily_archive`\n\n状态：`pending`" in work
     assert "当前交付状态：current-only 工程与发布门禁验收已闭合" not in design
     assert "当前代码仍属于 `Unreleased`" not in design
     assert "正式 0.2.0 release 尚未声明" not in strategy

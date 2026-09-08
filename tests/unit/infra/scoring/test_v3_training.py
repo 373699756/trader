@@ -56,7 +56,18 @@ def test_v3_sample_dates_do_not_pad_short_listing_history() -> None:
     samples = _aligned_sample_dates(dates, available, frozenset(dates))
 
     assert samples
-    assert samples[0][0] == dates[95]
+    assert samples[0][0] == dates[90]
+
+
+def test_v3_sample_dates_use_the_same_skip_five_lookbacks_as_online_features() -> None:
+    dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(100))
+
+    samples = _aligned_sample_dates(dates, set(dates), frozenset(dates))
+
+    day, next_day, indices = samples[0]
+    assert day == dates[60]
+    assert next_day == dates[61]
+    assert indices == (60, 59, 57, 55, 40, 20, 0)
 
 
 def test_v3_sample_dates_require_every_amount_window_session() -> None:

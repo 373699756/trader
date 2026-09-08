@@ -6,6 +6,30 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求把历史下载、参数研究、V3 训练结果、实时评分和收益验证合并为更优的整体计划，并按
+  `03_工程实施.md` 执行首个未完成章节。根因已确认：在线归一化、V3 训练、H1 回放、holdout、Shadow 及
+  V1/V2/V3 codec 分别维护 Tomorrow 六项特征名称、顺序和单位；其中训练/H1 慢动量实际使用
+  `D-5/D-{25,45,65}`，活动生产与历史 SQL 使用 `D-5/D-{20,40,60}`，研究输入还把相同小数收益标成
+  `ratio`，使训练/在线一致性不能成立。Added: 新增不可变 `FeatureId`、`FeatureSpecCatalog`、
+  `FeatureVectorManifest`、带缺失掩码的特征向量、日收益/跳过近五日动量纯计算器，以及应用层确定性分组
+  `FeatureComputationPlan`；新增 catalog/hash/依赖、训练与在线窗口、H1 单位、消费者所有权和架构回归。
+  Changed: 在线、训练、codec、历史筛选/留出和 Shadow 统一消费同一 catalog/manifest，V3/H1 历史窗口改为
+  61 根并统一 `decimal_return`；`01_评分逻辑.md`、`02_工程设计.md`、`03_工程实施.md`、`04_策略回溯.md`
+  现以“收益真值→特征合同→点时数据资格/数据集→召回→有限参数→V3 验证→增量计算→风险/成本/不确定性
+  →Shadow”为唯一计划，并规定只有验证通过的 alpha 才能进入 V3。Fixed: 消除训练/在线慢动量端点与单位
+  分歧，不再让下载可得性等同于模型输入资格。Removed: 删除消费者中的重复六特征常量和重复收益计算函数，
+  并在门禁 Review 中消除 overlay 合并对全量报价的重复排序与嵌套来源映射重复复制；不删除评分档位、模型工件
+  或历史数据。Verification: 特征合同、生产构造、V3 训练、H1、profile/codec、架构
+  和文档定向回归通过；`make format-check`、`make lint`、`make type-check`、`make test`、`make package`、
+  `make performance-check` 与 `git diff --check` 通过，严格复杂度债务保持为零；性能 Review 先稳定复现
+  overlay 绝对门禁失败，优化不可变映射复用后 `targeted_overlay_commit` P95 降至 11.661ms，等价 hash、0%
+  分配增长和零网络请求保持通过。打包首次受沙箱网络限制，获准在沙箱外重跑成功。浏览器、真实供应商、
+  API/SSE 和冻结专项不适用，因为本批不改变 Web、网络、公开 JSON schema、调度或冻结行为。Residual Risks:
+  当前 V3 部分历史工件仍是
+  `15:00_close` 代理且 `point_in_time_parity=false`；完整 BaoStock/历史行业和真实 11:20/14:50 分钟资格
+  尚未闭合，新增股票参数也尚未经过样本外收益门，不能把本批一致性修复解释为已经提高未来收益。
+  `Regression-Key: unified-feature-contract-training-online-parity`。
+
 - 用户授权评分链路优化路线后，第一章先修复收益结算真值。根因已确认：D25 活动应用调度与 SQLite 完成判断
   分别硬编码 T+2/T+3/T+5，遗漏 T+4；旧库已有三个 horizon 时会把目标重新投入全部计算，行情修订后可能
   与不可变旧证据冲突，导致 T+4 无法补齐；基准、单 horizon 与聚合计算也没有统一纯领域所有者。Added:

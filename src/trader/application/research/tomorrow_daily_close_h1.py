@@ -11,18 +11,15 @@ from datetime import date
 
 from trader.application.research.replay_models import canonical_hash
 from trader.application.research.tomorrow_daily_close_training import DailyCloseBoard, DailyCloseSourceSample
+from trader.domain.market.feature_contracts import (
+    TOMORROW_MODEL_FEATURE_MANIFEST,
+    TOMORROW_RAW_ALPHA_FEATURE_MANIFEST,
+    QfqPriceAnchors,
+    calculate_tomorrow_qfq_alpha,
+)
 from trader.domain.research.h1_point_in_time import H1PointInTimeRecord
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_FEATURE_NAMES = (
-    "qfq_return_1d",
-    "qfq_return_3d",
-    "qfq_return_5d",
-    "qfq_residual_momentum_20d_skip5",
-    "qfq_residual_momentum_40d_skip5",
-    "qfq_residual_momentum_60d_skip5",
-)
-_FEATURE_UNITS = ("ratio",) * 6
 _COSTS = (0.002, 0.005, 0.01)
 
 
@@ -80,8 +77,8 @@ class H1DailyCloseFeatureRow:
 class H1DailyCloseFeatureBatch:
     rows: tuple[H1DailyCloseFeatureRow, ...]
     source_archive_hash: str
-    feature_names: tuple[str, ...] = _FEATURE_NAMES
-    feature_units: tuple[str, ...] = _FEATURE_UNITS
+    feature_names: tuple[str, ...] = TOMORROW_MODEL_FEATURE_MANIFEST.names
+    feature_units: tuple[str, ...] = TOMORROW_MODEL_FEATURE_MANIFEST.units
     schema_version: str = "tomorrow_h1_daily_close_feature_batch"
     production_authority: bool = False
     content_hash: str = dataclasses.field(init=False)
@@ -93,7 +90,10 @@ class H1DailyCloseFeatureBatch:
             raise ValueError("Tomorrow H1 feature batch identities are invalid")
         if _SHA256.fullmatch(self.source_archive_hash) is None:
             raise ValueError("Tomorrow H1 feature batch source identity is invalid")
-        if self.feature_names != _FEATURE_NAMES or self.feature_units != _FEATURE_UNITS:
+        if (
+            self.feature_names != TOMORROW_MODEL_FEATURE_MANIFEST.names
+            or self.feature_units != TOMORROW_MODEL_FEATURE_MANIFEST.units
+        ):
             raise ValueError("Tomorrow H1 feature batch contract is invalid")
         if self.schema_version != "tomorrow_h1_daily_close_feature_batch" or self.production_authority:
             raise ValueError("Tomorrow H1 feature batch cannot authorize production")
@@ -123,16 +123,20 @@ def build_h1_daily_close_features(
     for observation in ordered:
         history = histories[observation.record.code]
         history.append(observation)
-        if len(history) < 66:
+        if len(history) < 61:
             continue
         closes = tuple(item.record.daily_bar.close for item in history)
         amounts = tuple(item.record.daily_bar.amount for item in history[-20:])
-        base = (_return(closes, 1), _return(closes, 3), _return(closes, 5))
-        momentum = (
-            _skip_five_return(closes, 20),
-            _skip_five_return(closes, 40),
-            _skip_five_return(closes, 60),
-        )
+        raw_vector = TOMORROW_RAW_ALPHA_FEATURE_MANIFEST.bind(
+            calculate_tomorrow_qfq_alpha(
+                QfqPriceAnchors(
+                    closes[-1],
+                    tuple((horizon, closes[-horizon - 1]) for horizon in (1, 3, 5, 20, 40, 60)),
+                )
+            )
+        ).require_complete()
+        base = (raw_vector[0], raw_vector[1], raw_vector[2])
+        momentum = (raw_vector[3], raw_vector[4], raw_vector[5])
         log_amount = math.log(max(math.fsum(amounts) / len(amounts), 1e-12))
         raw_by_date[observation.record.trade_date].append((observation, base, momentum, log_amount))
     rows: list[H1DailyCloseFeatureRow] = []
@@ -218,14 +222,6 @@ def attach_matured_daily_close_labels(
             )
         )
     return tuple(samples)
-
-
-def _return(closes: tuple[float, ...], sessions: int) -> float:
-    return closes[-1] / closes[-sessions - 1] - 1.0
-
-
-def _skip_five_return(closes: tuple[float, ...], window: int) -> float:
-    return closes[-6] / closes[-window - 6] - 1.0
 
 
 def _cross_section_residuals(

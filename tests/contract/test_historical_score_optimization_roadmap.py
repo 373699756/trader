@@ -21,8 +21,8 @@ def test_strategy_roadmap_is_ordered_benefit_first_and_strategy_complete() -> No
         "### 3.1 已封存章节",
         "### 3.2 依赖状态",
         "### 3.3 `tomorrow_v3_training_validation`",
-        "## 4. 历史数据与训练执行计划",
-        "### 4.1 `baostock_daily_archive`",
+        "## 4. 历史数据、参数研究、V3 训练与实时评分统一路线",
+        "### 4.1 `outcome_truth_contract`",
         "## 5. 后续独立评分任务",
         "## 6. 交付与验证",
     )

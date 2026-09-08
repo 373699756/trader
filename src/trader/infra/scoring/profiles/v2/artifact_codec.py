@@ -6,6 +6,7 @@ import math
 from dataclasses import dataclass
 from typing import Literal, cast
 
+from trader.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
 
 _AUTHORIZED_HASH = "8397657c9ae83d2e774dc533a30f477a1ec599bc9fb82b60fae014a0b0202012"
@@ -46,7 +47,7 @@ def decode_tomorrow_artifact(document: object) -> TomorrowModelArtifact:
     if (
         stored_hash != _AUTHORIZED_HASH
         or model_id != "daily_reconstructible_ensemble_v1"
-        or width < 1
+        or feature_ids != TOMORROW_MODEL_FEATURE_MANIFEST.names
         or len(set(feature_ids)) != width
         or len(means) != width
         or len(scales) != width

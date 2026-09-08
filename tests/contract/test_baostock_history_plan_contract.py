@@ -4,7 +4,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def _baostock_section(work: str) -> str:
-    return work[work.index("### 4.1 `baostock_daily_archive`") : work.index("### 4.2")]
+    return work[work.index("#### `baostock_daily_archive`") : work.index("#### `historical_industry_facts`")]
 
 
 def test_baostock_history_plan_freezes_one_stable_2000_session_scope() -> None:
@@ -66,8 +66,9 @@ def test_baostock_plan_remains_pending_but_does_not_override_direct_user_work() 
 
     assert "`baostock_daily_archive` 保持 `pending`" in compact
     assert "用户直接授权的新任务优先" in compact
-    assert "`tomorrow_v3_training_validation` | `blocked_by_baostock_daily_archive`" in work
-    assert "`historical_workstream_boundaries` | `control_only`" in work
+    assert "本节只保留既有审计名称的兼容索引" in work
+    assert "发生冲突时只以第 4 节为准" in work
+    assert "不能单独\n解除 V3 训练、Shadow 或生产 blocker" in work
 
 
 def test_baostock_holdout_isolation_contract_is_archived_without_opening_holdout() -> None:
@@ -94,7 +95,7 @@ def test_training_input_has_a_read_only_hash_bound_contract() -> None:
     assert "tomorrow_training_input" in work
     assert "只读校验" in work
     assert "父 manifest hash" in work
-    assert "`baostock_daily_archive` | `pending`" in work
+    assert "#### `baostock_daily_archive`\n\n状态：`pending`" in work
     assert "tomorrow_training_input" in design
     assert domain_contract.is_file()
     assert application_contract.is_file()

@@ -74,8 +74,8 @@ def test_parallel_overview_plan_and_operations_docs_are_retired() -> None:
         "后续独立评分任务",
         "待独立授权",
         "当前不采用",
-        "历史数据与训练执行计划",
-        "计划整体状态：`pending`",
+        "历史数据、参数研究、V3 训练与实时评分统一路线",
+        "计划整体状态：`in_progress`",
     ):
         assert merged_plan_contract in work
 

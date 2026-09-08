@@ -225,3 +225,9 @@ def test_feature_builder_reconstructs_the_six_packaged_p2_inputs_from_61_qfq_ses
     }
     assert all(feature.optional_value(name) is not None for name in required)
     assert required.isdisjoint(feature.missing_fields)
+    assert feature.optional_value("qfq_return_1d") == pytest.approx(bars[-1].close / bars[-2].close - 1.0)
+    assert feature.optional_value("qfq_return_3d") == pytest.approx(bars[-1].close / bars[-4].close - 1.0)
+    assert feature.optional_value("qfq_return_5d") == pytest.approx(bars[-1].close / bars[-6].close - 1.0)
+    assert feature.optional_value("qfq_momentum_20d_skip5") == pytest.approx(bars[-6].close / bars[-21].close - 1.0)
+    assert feature.optional_value("qfq_momentum_40d_skip5") == pytest.approx(bars[-6].close / bars[-41].close - 1.0)
+    assert feature.optional_value("qfq_momentum_60d_skip5") == pytest.approx(bars[-6].close / bars[-61].close - 1.0)

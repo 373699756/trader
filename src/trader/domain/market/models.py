@@ -85,9 +85,13 @@ class CanonicalMarketSnapshot:
             raise ValueError("canonical snapshot observed_at must be timezone-aware")
         if not self.merge_epoch:
             raise ValueError("canonical snapshot merge_epoch must not be empty")
-        if tuple(sorted(quote.code for quote in self.quotes)) != tuple(quote.code for quote in self.quotes):
+        codes = tuple(quote.code for quote in self.quotes)
+        if any(left > right for left, right in zip(codes, codes[1:], strict=False)):
             raise ValueError("canonical snapshot quotes must be sorted by code")
-        nested = {str(code): MappingProxyType(dict(sources)) for code, sources in self.field_sources.items()}
+        nested = {
+            str(code): sources if isinstance(sources, MappingProxyType) else MappingProxyType(dict(sources))
+            for code, sources in self.field_sources.items()
+        }
         object.__setattr__(self, "field_sources", MappingProxyType(nested))
         object.__setattr__(self, "source_versions", MappingProxyType(dict(self.source_versions)))
         object.__setattr__(self, "missing_reasons", MappingProxyType(dict(self.missing_reasons)))

@@ -117,12 +117,13 @@ def test_work_plan_has_one_stable_baostock_task_and_historical_aliases_only() ->
 
     assert "## 1. 交付基线与历史证据" in work
     assert "## 1. 当前基线" not in work
-    assert work.count("### 4.1 `baostock_daily_archive`") == 1
-    assert "计划整体状态：`pending`" in work
+    assert work.count("#### `baostock_daily_archive`") == 1
+    assert "计划整体状态：`in_progress`" in work
     assert "状态：`pending`" in work
     assert "blocked_by_baostock_daily_archive" in work
-    assert "blocked_by_historical_industry_facts" in work
-    assert "blocked_by_tomorrow_training_validation" in work
+    assert "blocked_by_point_in_time_data_qualification" in work
+    assert "blocked_by_risk_cost_uncertainty_deepseek" in work
+    assert "blocked_by_shadow_and_manual_activation" in work
     alias = work[work.index("### 1.2 历史审计别名") : work.index("## 2.")]
     assert "15.1.35" in alias
     assert "15.1.36" in alias

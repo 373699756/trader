@@ -23,6 +23,12 @@ from trader.application.research.tomorrow_training import (
     TomorrowTrainingProgressPort,
     TomorrowTrainingWindow,
 )
+from trader.domain.market.feature_contracts import (
+    TOMORROW_MODEL_FEATURE_MANIFEST,
+    TOMORROW_RAW_ALPHA_FEATURE_MANIFEST,
+    QfqPriceAnchors,
+    calculate_tomorrow_qfq_alpha,
+)
 from trader.domain.recommendation.model_scoring import V3_EXPOSURE_CONTRACT, residualize_exposure
 from trader.domain.research.baostock_daily import BaoStockTrainingRow, BaoStockTrainingSplit
 from trader.infra.research.baostock_daily import (
@@ -32,14 +38,6 @@ from trader.infra.research.baostock_daily import (
 )
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
 
-_FEATURE_IDS = (
-    "qfq_return_1d",
-    "qfq_return_3d",
-    "qfq_return_5d",
-    "qfq_residual_momentum_20d_skip5",
-    "qfq_residual_momentum_40d_skip5",
-    "qfq_residual_momentum_60d_skip5",
-)
 _MODEL_ID = "industry_ridge_lightgbm"
 
 
@@ -210,16 +208,24 @@ def _build_samples(
             average_amount_20d = _average_amount_20d(rows_by_date, calendar, _index)
             if average_amount_20d is None:
                 continue
-            features = (
-                _return(close, closes.get(calendar[previous_1])),
-                _return(close, closes.get(calendar[previous_3])),
-                _return(close, closes.get(calendar[previous_5])),
-                _return(closes.get(calendar[previous_5]), closes.get(calendar[momentum_20])),
-                _return(closes.get(calendar[previous_5]), closes.get(calendar[momentum_40])),
-                _return(closes.get(calendar[previous_5]), closes.get(calendar[momentum_60])),
+            raw_features = TOMORROW_RAW_ALPHA_FEATURE_MANIFEST.bind(
+                calculate_tomorrow_qfq_alpha(
+                    QfqPriceAnchors(
+                        close,
+                        (
+                            (1, closes.get(calendar[previous_1])),
+                            (3, closes.get(calendar[previous_3])),
+                            (5, closes.get(calendar[previous_5])),
+                            (20, closes.get(calendar[momentum_20])),
+                            (40, closes.get(calendar[momentum_40])),
+                            (60, closes.get(calendar[momentum_60])),
+                        ),
+                    )
+                )
             )
-            if not all(math.isfinite(value) for value in features):
+            if any(raw_features.missing_mask):
                 continue
+            features = raw_features.require_complete()
             by_date[row.trade_date].append(
                 _Sample(
                     code,
@@ -271,7 +277,7 @@ def _aligned_sample_dates(
     result: list[tuple[date, date, tuple[int, ...]]] = []
     for index, day in enumerate(calendar):
         next_index = index + 1
-        indices = (index, index - 1, index - 3, index - 5, index - 25, index - 45, index - 65, next_index)
+        indices = (index, index - 1, index - 3, index - 5, index - 20, index - 40, index - 60, next_index)
         if next_index >= len(calendar) or any(value < 0 for value in indices):
             continue
         amount_indices = tuple(range(index - 19, index + 1))
@@ -438,8 +444,8 @@ def _model_document(  # noqa: PLR0913 - every value is part of the sealed model 
         "profile_id": "v3",
         "model_id": _MODEL_ID,
         "strategy_head": "tomorrow",
-        "feature_ids": list(_FEATURE_IDS),
-        "feature_units": ["decimal_return"] * len(_FEATURE_IDS),
+        "feature_ids": list(TOMORROW_MODEL_FEATURE_MANIFEST.names),
+        "feature_units": list(TOMORROW_MODEL_FEATURE_MANIFEST.units),
         "exposure_contract": {
             "market": True,
             "board": True,
@@ -504,10 +510,6 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
         os.replace(temporary_name, path)
     finally:
         Path(temporary_name).unlink(missing_ok=True)
-
-
-def _return(current: float | None, previous: float | None) -> float:
-    return current / previous - 1.0 if current is not None and previous not in (None, 0.0) else float("nan")
 
 
 def _reason(exc: BaseException) -> str:

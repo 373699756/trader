@@ -17,6 +17,7 @@ from trader.application.research.tomorrow_historical_models import (
     TomorrowHistoricalGateMetrics,
     TomorrowHistoricalReport,
 )
+from trader.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
 from trader.domain.research.baseline import mean_rank_ic, population_spearman, quantile_bucket, stock_net_contribution
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalScreeningSpec
 from trader.domain.research.paired_statistics import (
@@ -31,14 +32,7 @@ from trader.domain.research.tomorrow_historical import (
 )
 
 HistoricalBoard = Literal["main", "chinext", "star"]
-TOMORROW_HISTORICAL_ALPHA_FEATURE_IDS = (
-    "qfq_return_1d",
-    "qfq_return_3d",
-    "qfq_return_5d",
-    "qfq_residual_momentum_20d_skip5",
-    "qfq_residual_momentum_40d_skip5",
-    "qfq_residual_momentum_60d_skip5",
-)
+TOMORROW_HISTORICAL_ALPHA_FEATURE_IDS = TOMORROW_MODEL_FEATURE_MANIFEST.names
 
 
 @dataclass(frozen=True, order=True)
