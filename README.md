@@ -199,7 +199,8 @@ final_score = clamp(local_score * 0.68
 产品、架构、运行、API 与运维契约见
 [软件业务设计文档](docs/02_工程设计.md)，候选、过滤、评分、DeepSeek、融合与
 TopK 契约见[荐股策略文档](docs/01_评分逻辑.md)，协作与强制 review 流程见
-[AGENTS.md](AGENTS.md)。
+[AGENTS.md](AGENTS.md)。历史数据下载、Tomorrow 训练和训练工件参与实时荐股的完整说明见
+[策略回溯文档](docs/04_策略回溯.md)。
 
 ## 质量检查
 
@@ -217,7 +218,7 @@ make package
 
 ```text
 config/          运行与策略配置
-docs/               软件业务设计与荐股策略两份权威文档
+docs/               工程设计、评分逻辑、工程实施与策略回溯文档
 scripts/            工程辅助脚本
 src/trader/         唯一活动产品包
 tests/              单元、组件、契约和集成测试

@@ -6,6 +6,24 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户明确 D25 应筛选未来 2–5 个交易日区间内具备上涨能力的股票，并质疑工程计划为何要求执行不存在的
+  `./run.sh research-status`，同时要求增加历史下载、训练和实时评分的完整链路说明。根因已确认：D25 原表述
+  只写“综合表现”，没有直接说明选股目标；底层 `trader-cli research-status` 虽是 `./run.sh check` 的只读阶段，
+  却被工程计划误写成公开脚本命令；下载字段、点时样本、模型工件与实时荐股的职责分散在三份文档中。
+  Added: 新增 `docs/04_策略回溯.md`，逐项解释交易日历、证券身份、raw/qfq OHLCV、成交额、停牌、逐日 ST、
+  历史行业、coverage、manifest/hash 的作用，并贯穿 Tomorrow 六特征、T+1 成熟标签、时间切分、
+  Ridge/LightGBM、工件校验、61 根实时历史、模型分位、成本门、本地风险、DeepSeek、固定 68/32 融合、Top6
+  和冻结。Changed: `01_评分逻辑.md` 明确 D25 是未来 T+2 至 T+5 区间上涨能力的单一策略信号，当前仍由
+  独立规则评分；`02_工程设计.md` 和 README 增加回溯导航。Fixed: `03_工程实施.md` 删除无效的公开命令，
+  改为下载终态或既有 `./run.sh check` 内部只读阶段。Removed: 未新增、也没有删除任何运行入口；公开命令
+  仍固定为 `check`、`download_history` 和 `train-tomorrow`。Verification: 策略链、下载计划、策略回溯、
+  当前产品、V3 文档、评分计划与 BaoStock 计划 7 个定向契约文件共 37 项测试通过；进一步运行所有直接引用
+  README 或四份文档的 28 个 contract 文件，共 125 项测试通过；受影响测试 Ruff、文档链接检查和
+  `git diff --check` 通过。全量测试、打包、仓库外安装、性能和浏览器门禁不适用，因为本批只改
+  Markdown 与直接文档契约，不改变机器 schema、构建入口或运行行为。Residual Risks: 完整 2000 日 manifest、
+  可验证历史行业、14:50 point-in-time 收益、V3 终端留出和生产授权仍未闭合；当前 D25 尚无独立模型，其规则
+  信号不保证未来区间上涨。`Regression-Key: historical-training-live-scoring-guide`。
+
 - 用户反馈活动树仍存在 `tomorrow_historical_p2_artifacts.py`、`tomorrow_manual_v1_model.py`、
   `score_r6_daily_artifacts.py`、`tomorrow_p2_model.json` 等非评分版本命名，要求除评分生产档位
   V1/V2/V3 外不再用 `Rn/Pn/vN` 管理代码和数据。根因已确认：历史研究阶段号、实验批次号与评分档位曾在

@@ -24,6 +24,13 @@ def test_download_plan_is_merged_with_explicit_unfinished_batch_states() -> None
         assert required in section
 
 
+def test_download_plan_does_not_publish_an_extra_research_status_command() -> None:
+    work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
+
+    assert "./run.sh research-status" not in work
+    assert "./run.sh check" in work
+
+
 def test_industry_repair_plan_preserves_daily_archive_identity() -> None:
     work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
     section = work[work.index("### 4.2 第二批：独立补齐历史行业事实") :]
