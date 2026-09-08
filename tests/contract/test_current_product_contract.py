@@ -10,7 +10,6 @@ def test_authoritative_design_requires_one_final_product_chain_without_runtime_c
 
     for statement in (
         "current-only 最终 release 边界",
-        "当前交付状态：current-only 工程与发布门禁验收已闭合",
         "新 release 不读取旧运行目录、旧数据库、旧快照或旧 schema",
         "当前唯一运行目录固定为 `.runtime/trader`",
         "旧 release 只能与其对应旧运行目录整体回退",
@@ -22,6 +21,7 @@ def test_authoritative_design_requires_one_final_product_chain_without_runtime_c
         "GET /api/events",
     ):
         assert statement in design
+    assert "当前交付状态：current-only 工程与发布门禁验收已闭合" not in design
 
 
 def test_strategy_contract_focuses_on_current_decisions_without_release_chronology() -> None:
@@ -45,9 +45,8 @@ def test_parallel_overview_plan_and_operations_docs_are_retired() -> None:
     work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
     design_compact = " ".join(design.split())
 
-    assert "current-only 工程与发布门禁验收已闭合" in design
-    assert "当前代码仍属于 `Unreleased`" in design
-    assert "只有用户显式发起独立发布批次" in design
+    assert "不记录“已完成、未发布、迁移到哪一步”等批次状态" in design
+    assert "交付状态只由 `03_工程实施.md` 维护" in design
     assert "新 release 不读取旧运行目录、旧数据库、旧快照或旧 schema" in design
     assert "原生评分因子诊断层" in design
     assert "多种行情来源不等于证券主数据存在同等冗余供给" in design
@@ -75,8 +74,8 @@ def test_parallel_overview_plan_and_operations_docs_are_retired() -> None:
         "后续独立评分任务",
         "待独立授权",
         "当前不采用",
-        "历史下载与行业补全执行计划",
-        "计划整体状态：`not_started`",
+        "历史数据与训练执行计划",
+        "计划整体状态：`pending`",
     ):
         assert merged_plan_contract in work
 

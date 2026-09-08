@@ -7,19 +7,19 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_download_plan_is_merged_with_explicit_unfinished_batch_states() -> None:
     work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
-    section = work[work.index("## 4. 历史下载与行业补全执行计划") :]
+    section = work[work.index("## 4. 历史数据与训练执行计划") :]
 
     assert not (ROOT / "docs/download.md").exists()
     for required in (
-        "计划整体状态：`not_started`",
-        "第一批：完成 2000 日日线正式归档",
+        "计划整体状态：`pending`",
+        "### 4.1 `baostock_daily_archive`",
         "状态：`pending`",
-        "第二批：独立补齐历史行业事实",
-        "状态：`blocked_by_daily_archive`",
-        "第三批：冻结训练输入并验证收益",
-        "状态：`blocked_by_industry_history`",
-        "第四批：Shadow 与生产启用",
-        "状态：`blocked_by_training_validation`",
+        "### 4.2 `historical_industry_facts`",
+        "状态：`blocked_by_baostock_daily_archive`",
+        "### 4.3 `tomorrow_training_validation`",
+        "状态：`blocked_by_historical_industry_facts`",
+        "### 4.4 `shadow_and_production_activation`",
+        "状态：`blocked_by_tomorrow_training_validation`",
     ):
         assert required in section
 
@@ -33,7 +33,7 @@ def test_download_plan_does_not_publish_an_extra_research_status_command() -> No
 
 def test_industry_repair_plan_preserves_daily_archive_identity() -> None:
     work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
-    section = work[work.index("### 4.2 第二批：独立补齐历史行业事实") :]
+    section = work[work.index("### 4.2 `historical_industry_facts`") :]
 
     for required in (
         "不能把当前行业直接当作历史行业",
@@ -50,7 +50,7 @@ def test_industry_repair_plan_preserves_daily_archive_identity() -> None:
 
 def test_training_comparison_and_shadow_cannot_auto_promote() -> None:
     work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
-    section = work[work.index("### 4.3 第三批：冻结训练输入并验证收益") :]
+    section = work[work.index("### 4.3 `tomorrow_training_validation`") :]
 
     for required in (
         "2000 日线归档 hash",

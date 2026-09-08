@@ -43,13 +43,17 @@ def test_historical_reports_are_tamper_evident_and_non_production() -> None:
 
 def test_historical_risk_probability_gate_is_fixed_before_production_use() -> None:
     strategy = " ".join(STRATEGY.read_text(encoding="utf-8").split())
+    work = " ".join((ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8").split())
 
     for token in (
-        "tomorrow_historical_risk_probability",
-        "MAE / ATR20 <= -1.5",
-        "60 日训练、20 日校准、40 日独立检验",
-        "Brier 分数严格优于",
-        "ECE 不超过 0.05",
+        "MAE/ATR20 <= -1.5",
         "loss_probability_status=not_modeled",
     ):
         assert token in strategy
+    for token in (
+        "tomorrow_historical_risk_probability",
+        "60 日训练、20 日校准、40 日独立检验",
+        "Brier 分数严格优于",
+        "ECE 不超过 0.05",
+    ):
+        assert token in work

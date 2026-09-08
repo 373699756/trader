@@ -13,14 +13,16 @@ def test_strategy_roadmap_is_ordered_benefit_first_and_strategy_complete() -> No
     work = _compact(ROOT / "docs/03_工程实施.md")
 
     ordered_sections = (
-        "## 1. 当前基线",
+        "## 1. 交付基线与历史证据",
+        "### 1.1 历史交付基线",
+        "### 1.2 历史审计别名",
         "## 2. 评分模块化交付记录",
         "## 3. 历史评分研究路线",
         "### 3.1 已封存章节",
         "### 3.2 依赖状态",
-        "### 3.3 V3 训练与验证（15.1.35–15.1.36）",
-        "### 3.4 BaoStock 2000 日归档（15.1.38）",
-        "## 4. 历史下载与行业补全执行计划",
+        "### 3.3 `tomorrow_v3_training_validation`",
+        "## 4. 历史数据与训练执行计划",
+        "### 4.1 `baostock_daily_archive`",
         "## 5. 后续独立评分任务",
         "## 6. 交付与验证",
     )
@@ -52,11 +54,12 @@ def test_roadmap_cannot_restore_forward_collection_or_reuse_observed_holdout_as_
         "线上 outcome 仍只用于正式推荐历史、运行监控和回退告警",
         "每次“继续”只交付下一个完整未完成章节",
         "不得定时、在线或无人授权地自动训练/调参、自动晋级、自动激活或自动回退",
-        "用户显式调用第 15.1.20 节的 `train-tomorrow`",
+        "唯一公开训练命令是 `./run.sh train-tomorrow`",
     ):
         assert token in work
     assert "开发工作计划" in design
     assert "15.1.21–15.1.34" in work
+    assert "第 15.1.20 节" not in work
 
     for removed_section in (
         "15.1.28 历史 DeepSeek 点时事实与增量证据",

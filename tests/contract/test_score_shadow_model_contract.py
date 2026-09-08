@@ -10,6 +10,7 @@ def test_batch_three_contract_freezes_walk_forward_models_and_calibration() -> N
     work = " ".join((ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8").split())
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
+    assert "production_authority=false" in strategy
     for token in (
         "score_tomorrow_shadow_report",
         "expanding",
@@ -22,9 +23,8 @@ def test_batch_three_contract_freezes_walk_forward_models_and_calibration() -> N
         "仿射校准",
         "Platt 校准",
         "完整逐日逐股预测",
-        "production_authority=false",
     ):
-        assert token in strategy
+        assert token in work
     assert "ScoreTomorrowShadowModels" in work
     assert "ShadowModelArtifactStore" in work
     assert '"lightgbm>=4.7,<5"' in pyproject

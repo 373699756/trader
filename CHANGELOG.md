@@ -6,6 +6,29 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求闭合权威文档中的失效章节引用、不可执行命令、D25 T+4 漏项、latest-wins 冲突、Tomorrow
+  challenger 策略缺口、候选资格顺序和 V3 行业语义，并进一步收敛重复规范、历史交付状态与研究评价口径。
+  根因已确认：评分、设计和实施文档在多次章节合并后仍保留旧编号、重复任务与旧基线措辞；调度语义在不同
+  章节分别描述，且历史工件证据与当前评分规则混排。Added: `01_评分逻辑.md` 完整定义进场/退出价、停牌与
+  涨跌停处理、前复权、round-trip 成本、历史时点基准股票池、带符号 MAE、D25 T+2/T+3/T+4/T+5 四项
+  净超额算术平均及终端留出一次性开启证据；补齐仅 Tomorrow 使用、每日最多 2 次且计入全局 168 物理请求
+  预算的保守 challenger 策略。Changed: 候选链统一为先校验硬过滤、历史和模型字段资格，再占用每板 120 只
+  限额；行业直接评分权重保持 0，但 V3 可将有效行业身份用于风险中性化/残差化且不得形成正向行业加分；
+  `02_工程设计.md` 以表 R/T/F/A 分别作为资源所有权、时间线、失败分类和 API schema 的唯一规范，并统一为
+  “已开始旧任务可发布 local、有新 pending 时跳过 DeepSeek、新 local 再以 CAS 替换”的 latest-wins 语义；
+  `03_工程实施.md` 合并 BaoStock 重复章节，以 `baostock_daily_archive` 等稳定语义任务维护状态，把旧编号和
+  提交 hash 限定为历史审计，并把详细研究工件证据从评分文档迁入交付记录。Fixed: 三处失效评分章节引用
+  统一指向评分逻辑第 7.2 节；公开诊断固定为 `./run.sh check`，精确底层诊断固定为
+  `.venv/bin/trader-cli --config "$PWD/config/runtime.json" research-status`，不再要求不存在的
+  `./run.sh research-status`；D25 验证补回 T+4。Removed: 设计文档中的批次完成/未发布/历史迁移陈述、重复
+  latest-wins 定义、实施文档的 BaoStock 双任务身份，以及评分文档中的精确历史 hash 和冗长工件身份。
+  Verification: 逐项对照当前 scheduler、候选选择、D25 合同、DeepSeek 配置和 `run.sh` 入口；16 个相关
+  contract 文件共 90 项测试通过，受影响测试 Ruff、失效引用/重复规范扫描和 `git diff --check` 通过。
+  全量测试、打包、仓库外安装、性能和浏览器门禁不适用，因为本批只修改 Markdown 与直接文档契约，不改变
+  机器 schema、构建入口、评分实现或 Web 行为。Residual Risks: BaoStock 2000 日正式 manifest、可验证历史
+  行业、14:50 point-in-time 收益、V3 终端留出及生产授权仍未闭合；本批只补齐可复现定义，不把研究计划
+  解释为已通过收益门禁。`Regression-Key: authoritative-doc-single-source-consistency`。
+
 - 用户明确 D25 应筛选未来 2–5 个交易日区间内具备上涨能力的股票，并质疑工程计划为何要求执行不存在的
   `./run.sh research-status`，同时要求增加历史下载、训练和实时评分的完整链路说明。根因已确认：D25 原表述
   只写“综合表现”，没有直接说明选股目标；底层 `trader-cli research-status` 虽是 `./run.sh check` 的只读阶段，
