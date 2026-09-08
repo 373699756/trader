@@ -17,6 +17,7 @@ usage() {
     "  ./run.sh                         以默认 V1 启动本地 A 股研究看板" \
     "  ./run.sh --profile v2            显式使用 V2 启动" \
     "  ./run.sh check                   依次校验配置、研究状态和性能门禁" \
+    "  ./run.sh research-status         只读查看研究归档与训练就绪状态" \
     "  ./run.sh help                    查看本帮助" \
     "" \
     "离线研究（仅在明确执行研究任务时使用）:" \
@@ -51,7 +52,7 @@ while (($#)); do
       SCORING_PROFILE="${1#--profile=}"
       shift
       ;;
-    help|-h|--help|check|download_history|train-tomorrow)
+    help|-h|--help|check|research-status|download_history|train-tomorrow)
       if ((MODE_SET)); then
         FORWARD_ARGS+=("$1")
       else
@@ -87,7 +88,7 @@ case "$MODE" in
   "")
     COMMAND_KIND="server"
     ;;
-  check|download_history|train-tomorrow)
+  check|research-status|download_history|train-tomorrow)
     COMMAND_KIND="cli"
     ;;
   *)

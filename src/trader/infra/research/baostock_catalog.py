@@ -6,34 +6,43 @@ import hashlib
 import os
 import sqlite3
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
+from typing import Protocol, cast
 
-from trader.application.research.baostock_daily import BaoStockShardContext
 from trader.domain.research.baostock_daily import (
     BaoStockBoard,
-    BaoStockCodeBatch,
     BaoStockDailyManifest,
     BaoStockDailySpec,
     BaoStockPartitionRef,
     BaoStockSecurity,
 )
-from trader.domain.research.h1_point_in_time import canonical_hash
-from trader.infra.research.baostock_daily import (
-    BaoStockDailyArtifactConflictError,
-    BaoStockShardSnapshot,
-    SQLiteBaoStockDailyShard,
-)
 from trader.infra.research.baostock_daily_codec import encode_json as _json
 from trader.infra.research.baostock_daily_codec import json_object as _json_object
 from trader.infra.research.baostock_daily_serialization import _decode_spec, _encode_security
+from trader.infra.research.baostock_errors import BaoStockDailyArtifactConflictError
+
+
+class _ShardPath(Protocol):
+    @property
+    def path(self) -> Path: ...
+
+
+class _DailyIndex(Protocol):
+    @property
+    def codes(self) -> tuple[str, ...]: ...
+
+    @property
+    def row_count(self) -> int: ...
+
+    @property
+    def logical_records_hash(self) -> str: ...
 
 
 def partition_ref(
     root: Path,
-    spec: BaoStockDailySpec,
-    shard: SQLiteBaoStockDailyShard,
-    snapshot: BaoStockShardSnapshot,
+    shard: _ShardPath,
+    index: _DailyIndex,
 ) -> BaoStockPartitionRef:
     try:
         relative = shard.path.relative_to(root).as_posix()
@@ -43,23 +52,16 @@ def partition_ref(
     if "-" not in stem:
         raise ValueError("BaoStock partition filename is invalid")
     board, prefix = stem.rsplit("-", 1)
-    codes = tuple(item.code for item in snapshot.batches)
-    if frozenset(codes) != shard.training_ready_codes(spec):
-        raise BaoStockDailyArtifactConflictError("BaoStock partition training facts are incomplete")
+    codes = index.codes
     checkpoint_database(shard.path)
     return BaoStockPartitionRef(
         relative,
         cast(BaoStockBoard, board),
         prefix,
         codes,
-        sum(len(item.cells) for item in snapshot.batches),
-        canonical_hash(
-            (
-                tuple((item.code, item.content_hash) for item in snapshot.batches),
-                shard.training_facts_hash(spec),
-            )
-        ),
-        file_sha256(shard.path),
+        index.row_count,
+        index.logical_records_hash,
+        daily_database_sha256(shard.path),
     )
 
 
@@ -67,10 +69,9 @@ def write_catalog(
     path: Path,
     references: tuple[BaoStockPartitionRef, ...],
     universe: tuple[BaoStockSecurity, ...],
-    batches: tuple[BaoStockCodeBatch, ...],
+    batch_hashes: Mapping[str, str],
 ) -> None:
     securities = {item.code: item for item in universe}
-    batch_hashes = {item.code: item.content_hash for item in batches}
     with sqlite3.connect(path) as connection:
         connection.executescript(
             """
@@ -118,45 +119,58 @@ def manifest_spec(root: Path, manifest: BaoStockDailyManifest) -> BaoStockDailyS
         row = connection.execute("SELECT spec_json FROM context WHERE singleton=1").fetchone()
     if row is None:
         raise BaoStockDailyArtifactConflictError("BaoStock partition context is missing")
-    spec = _decode_spec(_json_object(row[0]))
-    if spec.content_hash != manifest.spec_hash:
+    stored = _decode_spec(_json_object(row[0]))
+    if stored.content_hash == manifest.spec_hash:
+        return stored
+    active = BaoStockDailySpec(sessions=stored.sessions)
+    if (
+        active.content_hash != manifest.spec_hash
+        or stored.source_cutoff != active.source_cutoff
+        or stored.production_authority != active.production_authority
+        or stored.point_in_time_parity != active.point_in_time_parity
+    ):
         raise BaoStockDailyArtifactConflictError("BaoStock partition spec hash mismatch")
-    return spec
-
-
-def common_context(spec: BaoStockDailySpec, snapshots: tuple[BaoStockShardSnapshot, ...]) -> BaoStockShardContext:
-    first = snapshots[0].context
-    for snapshot in snapshots:
-        if (
-            snapshot.spec.content_hash != spec.content_hash
-            or snapshot.context.calendar != first.calendar
-            or snapshot.context.universe != first.universe
-            or snapshot.context.source_versions != first.source_versions
-        ):
-            raise BaoStockDailyArtifactConflictError("BaoStock shard contexts do not match")
-    intervals = tuple(
-        sorted(
-            {item for snapshot in snapshots for item in snapshot.context.industry_intervals},
-            key=lambda item: (item.code, item.effective_from),
-        )
-    )
-    return BaoStockShardContext(first.calendar, first.universe, first.source_versions, intervals)
-
-
-def merged_batches(snapshots: tuple[BaoStockShardSnapshot, ...]) -> tuple[BaoStockCodeBatch, ...]:
-    batches: dict[str, BaoStockCodeBatch] = {}
-    for snapshot in snapshots:
-        for batch in snapshot.batches:
-            previous = batches.get(batch.code)
-            if previous is not None and previous.content_hash != batch.content_hash:
-                raise BaoStockDailyArtifactConflictError("BaoStock duplicate shard code identity conflict")
-            batches[batch.code] = batch
-    return tuple(sorted(batches.values(), key=lambda item: item.code))
+    return active
 
 
 def checkpoint_database(path: Path) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
+_DAILY_INTEGRITY_QUERIES: tuple[tuple[str, str], ...] = (
+    (
+        "context",
+        "SELECT spec_json, calendar_json, universe_json, versions_json, context_hash FROM context WHERE singleton=1",
+    ),
+    (
+        "daily_cells",
+        "SELECT code, trade_date, payload_json, content_hash FROM daily_cells ORDER BY code, trade_date",
+    ),
+    (
+        "code_batches",
+        "SELECT code, metadata_json, content_hash FROM code_batches ORDER BY code",
+    ),
+    (
+        "completed_checkpoints",
+        "SELECT code, state, error_code, batch_hash FROM checkpoints WHERE state='completed' ORDER BY code",
+    ),
+)
+
+
+def daily_database_sha256(path: Path) -> str:
+    """Hash only the immutable daily-owned rows in a mixed-purpose shard."""
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    digest = hashlib.sha256()
+    with sqlite3.connect(path) as connection:
+        for table, query in _DAILY_INTEGRITY_QUERIES:
+            digest.update(table.encode("ascii"))
+            digest.update(b"\0")
+            for row in connection.execute(query):
+                digest.update(_json(list(row)).encode("utf-8"))
+                digest.update(b"\n")
+    return digest.hexdigest()
 
 
 def write_immutable_json(path: Path, payload: dict[str, object], content_hash: str) -> None:
@@ -186,10 +200,9 @@ def file_sha256(path: Path) -> str:
 
 __all__ = [
     "checkpoint_database",
-    "common_context",
+    "daily_database_sha256",
     "file_sha256",
     "manifest_spec",
-    "merged_batches",
     "partition_ref",
     "write_catalog",
     "write_immutable_json",

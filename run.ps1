@@ -15,6 +15,7 @@ function Show-Usage {
   .\run.ps1                         以默认 V1 启动本地 A 股研究看板
   .\run.ps1 --profile v2            显式使用 V2 启动
   .\run.ps1 check                   依次校验配置、研究状态和性能门禁
+  .\run.ps1 research-status         只读查看研究归档与训练就绪状态
   .\run.ps1 help                    查看本帮助
 
 离线研究（仅在明确执行研究任务时使用）:
@@ -36,7 +37,7 @@ function Show-Usage {
 "@ | Write-Host
 }
 
-$PublicModes = @("help", "-h", "--help", "check", "download_history", "train-tomorrow")
+$PublicModes = @("help", "-h", "--help", "check", "research-status", "download_history", "train-tomorrow")
 
 for ($Index = 0; $Index -lt $args.Count; $Index++) {
     $Argument = [string]$args[$Index]
@@ -76,7 +77,7 @@ if ($Mode -in @("help", "-h", "--help")) {
     exit 0
 }
 $IsServerMode = [string]::IsNullOrEmpty($Mode)
-if (-not $IsServerMode -and $Mode -notin @("check", "download_history", "train-tomorrow")) {
+if (-not $IsServerMode -and $Mode -notin @("check", "research-status", "download_history", "train-tomorrow")) {
     [Console]::Error.WriteLine("未知命令: $Mode")
     [Console]::Error.WriteLine("日常启动直接运行: .\run.ps1")
     [Console]::Error.WriteLine("查看全部命令: .\run.ps1 help")
@@ -89,7 +90,7 @@ $VenvPython = if ($IsWindowsHost) { Join-Path $VenvDir "Scripts\python.exe" } el
 $Server = if ($IsWindowsHost) { Join-Path $VenvDir "Scripts\trader-server.exe" } else { Join-Path $VenvDir "bin/trader-server" }
 $Cli = if ($IsWindowsHost) { Join-Path $VenvDir "Scripts\trader-cli.exe" } else { Join-Path $VenvDir "bin/trader-cli" }
 $SelectedEntryPoint = if ($IsServerMode) { $Server } else { $Cli }
-$ConfigPath = if ($env:TRADER_CONFIG) { $env:TRADER_CONFIG } else { Join-Path $RootDir "config\v2\runtime.json" }
+$ConfigPath = if ($env:TRADER_CONFIG) { $env:TRADER_CONFIG } else { Join-Path $RootDir "config\runtime.json" }
 
 if (-not (Test-Path $VenvPython)) {
     $Launcher = Get-Command python -ErrorAction SilentlyContinue

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Iterable
 from dataclasses import InitVar, dataclass, field
 from datetime import date
 from typing import Literal
@@ -571,6 +572,34 @@ def _validate_coverage_ratios(value: BaoStockCoverageAudit) -> None:
 
 
 @dataclass(frozen=True)
+class BaoStockCodeCoverageEvidence:
+    code: str
+    obtained_cells: int
+    duplicate_rows: int = 0
+    null_rows: int = 0
+    out_of_window_rows: int = 0
+    future_rows: int = 0
+    failure_reasons: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        counts = (
+            self.obtained_cells,
+            self.duplicate_rows,
+            self.null_rows,
+            self.out_of_window_rows,
+            self.future_rows,
+        )
+        reasons = tuple(sorted(set(self.failure_reasons)))
+        if (
+            _CODE.fullmatch(self.code) is None
+            or any(isinstance(value, bool) or value < 0 for value in counts)
+            or any(not reason or len(reason) > 64 for reason in reasons)
+        ):
+            raise ValueError("BaoStock code coverage evidence is invalid")
+        object.__setattr__(self, "failure_reasons", reasons)
+
+
+@dataclass(frozen=True)
 class _CoverageSummary:
     board_expected: tuple[tuple[BaoStockBoard, int], ...]
     board_obtained: tuple[tuple[BaoStockBoard, int], ...]
@@ -580,35 +609,70 @@ class _CoverageSummary:
     full_window: int
     full_window_success: int
     failed_codes: tuple[str, ...]
+    duplicate_rows: int
+    null_rows: int
+    out_of_window_rows: int
+    future_rows: int
+    batch_failures_present: bool
 
 
 def _summarize_coverage(
     calendar: BaoStockCalendar,
     securities: tuple[BaoStockSecurity, ...],
-    batches: tuple[BaoStockCodeBatch, ...],
+    batches: Iterable[BaoStockCodeBatch | BaoStockCodeCoverageEvidence],
 ) -> _CoverageSummary:
-    universe_codes = {item.code for item in securities}
-    by_code = {item.code: item for item in batches}
-    if len(universe_codes) != len(securities):
+    securities_by_code = {item.code: item for item in securities}
+    if len(securities_by_code) != len(securities):
         raise ValueError("BaoStock coverage universe contains duplicate codes")
-    if len(by_code) != len(batches) or not set(by_code) <= universe_codes:
-        raise ValueError("BaoStock coverage batches do not match the universe")
     expected_by_board: dict[BaoStockBoard, int] = {board: 0 for board in _BOARDS}
     obtained_by_board: dict[BaoStockBoard, int] = {board: 0 for board in _BOARDS}
-    expected_total = obtained_total = 0
+    expected_by_code: dict[str, int] = {}
+    obtained_by_code: dict[str, int] = {}
+    expected_total = 0
+    for security in securities:
+        expected_count = len(calendar.expected_dates(security))
+        expected_by_code[security.code] = expected_count
+        expected_total += expected_count
+        expected_by_board[security.board] += expected_count
+    duplicate_rows = null_rows = out_of_window_rows = future_rows = 0
+    batch_failures_present = False
+    seen_codes: set[str] = set()
+    for item in batches:
+        evidence = (
+            BaoStockCodeCoverageEvidence(
+                item.code,
+                sum(cell.obtained for cell in item.cells),
+                item.duplicate_rows,
+                item.null_rows,
+                item.out_of_window_rows,
+                item.future_rows,
+                item.failure_reasons,
+            )
+            if isinstance(item, BaoStockCodeBatch)
+            else item
+        )
+        batch_security = securities_by_code.get(evidence.code)
+        if batch_security is None or evidence.code in seen_codes:
+            raise ValueError("BaoStock coverage batches do not match the universe")
+        expected_count = expected_by_code[evidence.code]
+        if evidence.obtained_cells > expected_count:
+            raise ValueError("BaoStock coverage obtained cells exceed expected cells")
+        seen_codes.add(evidence.code)
+        obtained_by_code[evidence.code] = evidence.obtained_cells
+        obtained_by_board[batch_security.board] += evidence.obtained_cells
+        duplicate_rows += evidence.duplicate_rows
+        null_rows += evidence.null_rows
+        out_of_window_rows += evidence.out_of_window_rows
+        future_rows += evidence.future_rows
+        batch_failures_present = batch_failures_present or bool(evidence.failure_reasons)
+
+    obtained_total = sum(obtained_by_code.values())
     full_window = full_window_success = 0
     failed_codes: list[str] = []
     code_coverages: list[BaoStockCodeCoverage] = []
     for security in securities:
-        expected_dates = calendar.expected_dates(security)
-        batch = by_code.get(security.code)
-        cells = {item.trade_date: item for item in batch.cells} if batch is not None else {}
-        expected_count = len(expected_dates)
-        obtained_count = sum(cells.get(day) is not None and cells[day].obtained for day in expected_dates)
-        expected_total += expected_count
-        obtained_total += obtained_count
-        expected_by_board[security.board] += expected_count
-        obtained_by_board[security.board] += obtained_count
+        expected_count = expected_by_code[security.code]
+        obtained_count = obtained_by_code.get(security.code, 0)
         ratio = obtained_count / expected_count if expected_count else 1.0
         if expected_count == len(calendar.open_dates):
             full_window += 1
@@ -633,6 +697,11 @@ def _summarize_coverage(
         full_window,
         full_window_success,
         tuple(failed_codes),
+        duplicate_rows,
+        null_rows,
+        out_of_window_rows,
+        future_rows,
+        batch_failures_present,
     )
 
 
@@ -658,7 +727,6 @@ def _coverage_scope_reasons(
 
 def _coverage_integrity_reasons(
     summary: _CoverageSummary,
-    batches: tuple[BaoStockCodeBatch, ...],
 ) -> tuple[str, ...]:
     reasons: list[str] = []
     old_stock_ratio = summary.full_window_success / summary.full_window if summary.full_window else 0.0
@@ -667,13 +735,12 @@ def _coverage_integrity_reasons(
     elif old_stock_ratio < BAOSTOCK_MIN_COVERAGE:
         reasons.append("full_window_stock_completeness_below_95_percent")
     anomalies = (
-        (sum(item.duplicate_rows for item in batches), "duplicate_rows_present"),
-        (sum(item.null_rows for item in batches), "null_rows_present"),
-        (sum(item.out_of_window_rows for item in batches), "out_of_window_rows_present"),
-        (sum(item.future_rows for item in batches), "future_rows_present"),
+        (summary.duplicate_rows, "duplicate_rows_present"),
+        (summary.out_of_window_rows, "out_of_window_rows_present"),
+        (summary.future_rows, "future_rows_present"),
     )
     reasons.extend(reason for count, reason in anomalies if count)
-    if any(item.failure_reasons for item in batches):
+    if summary.batch_failures_present:
         reasons.append("code_batch_failures_present")
     return tuple(reasons)
 
@@ -682,7 +749,7 @@ def build_baostock_coverage_audit(
     spec: BaoStockDailySpec,
     calendar: BaoStockCalendar,
     universe: tuple[BaoStockSecurity, ...],
-    batches: tuple[BaoStockCodeBatch, ...],
+    batches: Iterable[BaoStockCodeBatch | BaoStockCodeCoverageEvidence],
 ) -> BaoStockCoverageAudit:
     securities = tuple(sorted(universe, key=lambda item: item.code))
     summary = _summarize_coverage(calendar, securities, batches)
@@ -699,13 +766,7 @@ def build_baostock_coverage_audit(
     )
     overall = summary.obtained_total / summary.expected_total if summary.expected_total else 0.0
     old_stock_ratio = summary.full_window_success / summary.full_window if summary.full_window else 0.0
-    duplicate_rows = sum(item.duplicate_rows for item in batches)
-    null_rows = sum(item.null_rows for item in batches)
-    out_of_window_rows = sum(item.out_of_window_rows for item in batches)
-    future_rows = sum(item.future_rows for item in batches)
-    reasons = _coverage_scope_reasons(spec, calendar, overall, board_rates) + _coverage_integrity_reasons(
-        summary, batches
-    )
+    reasons = _coverage_scope_reasons(spec, calendar, overall, board_rates) + _coverage_integrity_reasons(summary)
     return BaoStockCoverageAudit(
         spec_hash=spec.content_hash,
         calendar_hash=calendar.content_hash,
@@ -723,10 +784,10 @@ def build_baostock_coverage_audit(
         full_window_stocks_at_95_percent=summary.full_window_success,
         full_window_stock_success_ratio=old_stock_ratio,
         failed_codes=summary.failed_codes,
-        duplicate_rows=duplicate_rows,
-        null_rows=null_rows,
-        out_of_window_rows=out_of_window_rows,
-        future_rows=future_rows,
+        duplicate_rows=summary.duplicate_rows,
+        null_rows=summary.null_rows,
+        out_of_window_rows=summary.out_of_window_rows,
+        future_rows=summary.future_rows,
         latest_reserved_dates=calendar.open_dates[-BAOSTOCK_POINT_IN_TIME_RESERVE:],
         status="coverage_ready" if not reasons else "historical_data_insufficient",
         failure_reasons=tuple(reasons),
@@ -1039,6 +1100,7 @@ __all__ = [
     "BaoStockCodeBatch",
     "BaoStockCodeDownload",
     "BaoStockCodeCoverage",
+    "BaoStockCodeCoverageEvidence",
     "BaoStockCoverageAudit",
     "BaoStockCoverageStatus",
     "BaoStockDailyCell",

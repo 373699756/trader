@@ -167,6 +167,37 @@ def test_resume_progress_reads_checkpoint_index_without_snapshot_payload_decode(
     assert coordinator._downloaded_records == 0
 
 
+def test_finish_uses_checkpoint_indexes_before_partitioned_manifest_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    coordinator, security, _ = _coordinator(tmp_path)
+    coordinator._initialize_shards()
+    shard = coordinator._failure_shard(security)
+    shard.save_batch(coordinator._run.spec, _batch_for_security(security, coordinator._run.spec))
+    coordinator._refresh_checkpoint_progress()
+
+    def snapshot_must_not_run(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("finish must not pre-decode every partition")
+
+    published: list[tuple[frozenset[str], frozenset[str]]] = []
+    expected = BaoStockRuntimeStatus(
+        state="completed_with_failures",
+        sessions=1,
+        universe_count=1,
+        completed_codes=1,
+    )
+
+    def publish(completed: frozenset[str], ready: frozenset[str]) -> BaoStockRuntimeStatus:
+        published.append((completed, ready))
+        return expected
+
+    monkeypatch.setattr(shard, "snapshot", snapshot_must_not_run)
+    monkeypatch.setattr(coordinator, "_publish", publish)
+
+    assert coordinator._finish() == expected
+    assert published == [(frozenset({security.code}), frozenset())]
+
+
 def test_completed_daily_batch_with_incomplete_industry_is_not_downloaded_again(tmp_path: Path) -> None:
     coordinator, security, _ = _coordinator(tmp_path)
     coordinator._initialize_shards()
@@ -181,6 +212,62 @@ def test_completed_daily_batch_with_incomplete_industry_is_not_downloaded_again(
     assert coordinator._completed_codes == {security.code}
     assert coordinator._ready_codes == set()
     assert coordinator._failed_codes == set()
+
+
+def test_completed_daily_archive_seals_without_claiming_industry_training_readiness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    coordinator, security, _ = _coordinator(tmp_path)
+    coordinator._initialize_shards()
+    coordinator._failure_shard(security).save_batch(
+        coordinator._run.spec,
+        _batch_for_security(security, coordinator._run.spec),
+    )
+
+    resumed, _, _ = _coordinator(tmp_path)
+    resumed._initialize_shards()
+    status = resumed._finish()
+
+    assert status.state == "completed_with_failures"
+    assert status.completed_codes == 1
+    assert status.training_ready_codes == 0
+    assert status.manifest_hash
+    assert status.historical_effective_facts_status == "historical_data_insufficient"
+    assert status.training_dataset_status == "historical_data_insufficient"
+    assert (resumed._run.root / "manifest.json").is_file()
+    assert (resumed._run.root / "catalog.sqlite3").is_file()
+
+    monkeypatch.setattr(
+        "trader.infra.research.baostock_history_runtime._runtime_root",
+        lambda _runtime_dir, _sessions: resumed._run.root,
+    )
+    inspected = inspect_baostock_history(tmp_path, sessions=1)
+
+    assert inspected.state == "completed_with_failures"
+    assert inspected.completed_codes == 1
+    assert inspected.training_ready_codes == 0
+    assert inspected.manifest_hash == status.manifest_hash
+    assert inspected.historical_effective_facts_status == "historical_data_insufficient"
+    assert inspected.training_dataset_status == "historical_data_insufficient"
+
+
+def test_completed_batch_with_missing_cells_is_coverage_failure_not_download_failure(tmp_path: Path) -> None:
+    coordinator, security, _ = _coordinator(tmp_path)
+    coordinator._initialize_shards()
+    missing_batch = join_baostock_daily_sides(
+        security.code,
+        coordinator._run.context.calendar.open_dates,
+        (),
+        (),
+    )
+    coordinator._failure_shard(security).save_batch(coordinator._run.spec, missing_batch)
+
+    status = coordinator._finish()
+
+    assert status.completed_codes == 1
+    assert status.failed_codes == 0
+    assert status.coverage_status == "historical_data_insufficient"
+    assert "all_expected_cell_coverage_below_95_percent" in status.failure_reasons
 
 
 def test_incomplete_historical_industry_has_stable_failure_code() -> None:
@@ -241,7 +328,7 @@ def test_partial_status_refreshes_checkpoints_committed_outside_parent_response(
     assert recorder.values[-1].last_failure_reason == "supplier_query_failed_blacklisted"
 
 
-def test_inspection_reports_in_progress_checkpoint_counts_without_a_manifest(tmp_path: Path) -> None:
+def test_inspection_reports_completed_checkpoints_as_an_unsealed_manifest(tmp_path: Path) -> None:
     coordinator, security, _ = _coordinator(tmp_path)
     spec = coordinator._run.spec
     context = coordinator._run.context
@@ -262,7 +349,7 @@ def test_inspection_reports_in_progress_checkpoint_counts_without_a_manifest(tmp
     assert status.universe_count == 1
     assert status.completed_codes == 1
     assert status.training_ready_codes == 0
-    assert status.failure_reasons == ("incomplete_codes",)
+    assert status.failure_reasons == ("history_manifest_unavailable",)
 
 
 def test_worker_unavailable_stops_the_run_without_failing_unattempted_codes(tmp_path: Path) -> None:

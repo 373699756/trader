@@ -25,8 +25,8 @@ from trader.application.research.tomorrow_training import (
 )
 from trader.domain.recommendation.model_scoring import V3_EXPOSURE_CONTRACT, residualize_exposure
 from trader.domain.research.baostock_daily import BaoStockTrainingRow, BaoStockTrainingSplit
-from trader.infra.research.baostock_daily import (
-    BaoStockDailyArtifactConflictError,
+from trader.infra.research.baostock_errors import BaoStockDailyArtifactConflictError
+from trader.infra.research.baostock_partition_archive import (
     BaoStockTrainingTrainingInputArchive,
     BaoStockTrainingTrainingInputSnapshot,
 )

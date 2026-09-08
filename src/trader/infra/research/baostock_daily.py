@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections.abc import Mapping, Sequence
@@ -19,6 +20,7 @@ from trader.domain.research.baostock_daily import (
     BaoStockBoard,
     BaoStockCalendar,
     BaoStockCodeBatch,
+    BaoStockCodeCoverageEvidence,
     BaoStockDailyCell,
     BaoStockDailyFact,
     BaoStockDailySpec,
@@ -46,6 +48,8 @@ from trader.infra.research.baostock_daily_serialization import (
     _encode_spec,
     _encode_versions,
 )
+from trader.infra.research.baostock_errors import BaoStockDailyArtifactConflictError
+from trader.infra.research.baostock_gateway import BaoStockRowGateway, BaoStockRowResult, BaoStockSdkPort
 
 _BOARDS: tuple[BaoStockBoard, ...] = ("main", "chinext", "star")
 BAOSTOCK_SHARD_SNAPSHOT_SCHEMA = "baostock_daily_shard_snapshot"
@@ -73,10 +77,6 @@ _FROZEN_DAILY_FIELDS = (
     DailyInputField("qfq_volume", "shares"),
     DailyInputField("qfq_amount", "cny"),
 )
-
-
-class BaoStockDailyArtifactConflictError(RuntimeError):
-    """Raised when a shard, merged database, or manifest changes identity."""
 
 
 @dataclass(frozen=True)
@@ -129,6 +129,39 @@ class BaoStockShardCheckpoint:
         object.__setattr__(self, "completed_codes", completed)
         object.__setattr__(self, "ready_codes", ready)
         object.__setattr__(self, "failures", failures)
+
+
+@dataclass(frozen=True)
+class BaoStockShardDailyIndex:
+    coverage_evidence: tuple[BaoStockCodeCoverageEvidence, ...]
+    batch_hashes: tuple[tuple[str, str], ...]
+    failures: tuple[tuple[str, str], ...]
+    row_count: int
+
+    def __post_init__(self) -> None:
+        evidence = tuple(sorted(self.coverage_evidence, key=lambda item: item.code))
+        hashes = tuple(sorted(self.batch_hashes))
+        failures = tuple(sorted(self.failures))
+        codes = tuple(item.code for item in evidence)
+        if (
+            codes != tuple(code for code, _digest in hashes)
+            or len(set(codes)) != len(codes)
+            or len({code for code, _reason in failures}) != len(failures)
+            or set(codes) & {code for code, _reason in failures}
+            or self.row_count < sum(item.obtained_cells for item in evidence)
+        ):
+            raise ValueError("BaoStock shard daily index is invalid")
+        object.__setattr__(self, "coverage_evidence", evidence)
+        object.__setattr__(self, "batch_hashes", hashes)
+        object.__setattr__(self, "failures", failures)
+
+    @property
+    def codes(self) -> tuple[str, ...]:
+        return tuple(item.code for item in self.coverage_evidence)
+
+    @property
+    def logical_records_hash(self) -> str:
+        return canonical_hash(self.batch_hashes)
 
 
 @dataclass(frozen=True)
@@ -487,6 +520,93 @@ class SQLiteBaoStockDailyShard:
         except (TypeError, ValueError, sqlite3.DatabaseError) as exc:
             raise BaoStockDailyArtifactConflictError("BaoStock checkpoint index is invalid") from exc
 
+    def daily_audit_index(
+        self,
+        spec: BaoStockDailySpec,
+        context: BaoStockShardContext,
+    ) -> BaoStockShardDailyIndex:
+        """Validate and summarize one partition without rebuilding daily objects."""
+        if not self.context_matches(spec, context):
+            raise BaoStockDailyArtifactConflictError("BaoStock daily shard context changed")
+        universe = {item.code: item for item in context.universe}
+        try:
+            with self._connect() as connection:
+                batch_rows = connection.execute(
+                    "SELECT code, metadata_json, content_hash FROM code_batches ORDER BY code"
+                ).fetchall()
+                checkpoint_rows = connection.execute(
+                    "SELECT code, state, error_code, batch_hash FROM checkpoints ORDER BY code"
+                ).fetchall()
+                evidence: list[BaoStockCodeCoverageEvidence] = []
+                batch_hashes: list[tuple[str, str]] = []
+                stored_batches: dict[str, str] = {}
+                row_count = 0
+                for code_raw, metadata_raw, stored_hash_raw in batch_rows:
+                    code = cast(str, code_raw)
+                    stored_hash = cast(str, stored_hash_raw)
+                    security = universe.get(code)
+                    if security is None or code in stored_batches:
+                        raise BaoStockDailyArtifactConflictError("BaoStock daily batch is outside the frozen universe")
+                    metadata = _decode_batch_metadata(code, _json_object(cast(str, metadata_raw)), ())
+                    expected_dates = context.calendar.expected_dates(security)
+                    row_count += len(expected_dates)
+                    digest = hashlib.sha256()
+                    digest.update(b'{"cells":[')
+                    obtained = 0
+                    rows = connection.execute(
+                        "SELECT trade_date, payload_json, content_hash, "
+                        "json_extract(payload_json, '$.code'), json_extract(payload_json, '$.trade_date'), "
+                        "json_extract(payload_json, '$.status') "
+                        "FROM daily_cells WHERE code=? ORDER BY trade_date",
+                        (code,),
+                    )
+                    for index, (day, row) in enumerate(zip(expected_dates, rows, strict=True)):
+                        trade_date, payload_raw, cell_hash_raw, payload_code, payload_date, status = row
+                        payload = cast(str, payload_raw)
+                        cell_hash = cast(str, cell_hash_raw)
+                        expected_date = day.isoformat()
+                        if (
+                            trade_date != expected_date
+                            or payload_code != code
+                            or payload_date != expected_date
+                            or status
+                            not in (
+                                "complete",
+                                "supplier_marked_suspended",
+                                "unadjusted_missing",
+                                "qfq_missing",
+                                "unknown_missing",
+                            )
+                            or hashlib.sha256(payload.encode("utf-8")).hexdigest() != cell_hash
+                        ):
+                            raise BaoStockDailyArtifactConflictError("BaoStock daily cell payload or hash is invalid")
+                        if index:
+                            digest.update(b",")
+                        digest.update(payload.encode("utf-8"))
+                        obtained += status in ("complete", "supplier_marked_suspended")
+                    digest.update(_batch_hash_suffix(code, metadata))
+                    if digest.hexdigest() != stored_hash:
+                        raise BaoStockDailyArtifactConflictError("BaoStock code batch payload or hash is invalid")
+                    stored_batches[code] = stored_hash
+                    batch_hashes.append((code, stored_hash))
+                    evidence.append(
+                        BaoStockCodeCoverageEvidence(
+                            code,
+                            obtained,
+                            metadata.duplicate_rows,
+                            metadata.null_rows,
+                            metadata.out_of_window_rows,
+                            metadata.future_rows,
+                            metadata.failure_reasons,
+                        )
+                    )
+                failures = _validate_daily_checkpoint_rows(checkpoint_rows, universe, stored_batches)
+            return BaoStockShardDailyIndex(tuple(evidence), tuple(batch_hashes), failures, row_count)
+        except BaoStockDailyArtifactConflictError:
+            raise
+        except (TypeError, ValueError, json.JSONDecodeError, sqlite3.DatabaseError) as exc:
+            raise BaoStockDailyArtifactConflictError("BaoStock shard daily index is invalid") from exc
+
     def read_training_rows(
         self,
         spec: BaoStockDailySpec,
@@ -719,18 +839,24 @@ def _decode_batch_rows(
     return tuple(batches)
 
 
-def _decode_checkpoint_rows(
+def _batch_hash_suffix(code: str, metadata: BaoStockCodeBatch) -> bytes:
+    return (
+        f'],"code":{_json(code)},"duplicate_rows":{metadata.duplicate_rows},'
+        f'"failure_reasons":{_json(list(metadata.failure_reasons))},"future_rows":{metadata.future_rows},'
+        f'"null_rows":{metadata.null_rows},"out_of_window_rows":{metadata.out_of_window_rows}}}'
+    ).encode()
+
+
+def _validate_daily_checkpoint_rows(
     rows: Sequence[Sequence[object]],
-    context: BaoStockShardContext,
-    batches: tuple[BaoStockCodeBatch, ...],
+    universe: Mapping[str, BaoStockSecurity],
+    batch_hashes: Mapping[str, str],
 ) -> tuple[tuple[str, str], ...]:
-    batch_hashes = {item.code: item.content_hash for item in batches}
     failures: list[tuple[str, str]] = []
     seen: set[str] = set()
-    universe_codes = {item.code for item in context.universe}
     for code, state, error_code, batch_hash in rows:
         code_value = cast(str, code)
-        if code_value in seen or code_value not in universe_codes:
+        if code_value in seen or code_value not in universe:
             raise BaoStockDailyArtifactConflictError("BaoStock shard checkpoint identity is invalid")
         seen.add(code_value)
         if state == "completed":
@@ -745,6 +871,16 @@ def _decode_checkpoint_rows(
     if seen.intersection(batch_hashes) != set(batch_hashes):
         raise BaoStockDailyArtifactConflictError("BaoStock shard completed checkpoint is missing")
     return tuple(failures)
+
+
+def _decode_checkpoint_rows(
+    rows: Sequence[Sequence[object]],
+    context: BaoStockShardContext,
+    batches: tuple[BaoStockCodeBatch, ...],
+) -> tuple[tuple[str, str], ...]:
+    batch_hashes = {item.code: item.content_hash for item in batches}
+    universe = {item.code: item for item in context.universe}
+    return _validate_daily_checkpoint_rows(rows, universe, batch_hashes)
 
 
 def _decode_daily_facts(
@@ -845,27 +981,14 @@ def _valid_error_code(value: str) -> bool:
     )
 
 
-from trader.infra.research.baostock_gateway import (  # noqa: E402
-    BaoStockRowGateway,
-    BaoStockRowResult,
-    BaoStockSdkPort,
-)
-from trader.infra.research.baostock_partition_archive import (  # noqa: E402
-    BaoStockDailyPartitionedArchive,
-    BaoStockTrainingTrainingInputArchive,
-    BaoStockTrainingTrainingInputSnapshot,
-)
-
 __all__ = [
     "BAOSTOCK_LEGACY_SHARD_SNAPSHOT_SCHEMA",
     "BAOSTOCK_SHARD_SNAPSHOT_SCHEMA",
     "BaoStockDailyArtifactConflictError",
-    "BaoStockDailyPartitionedArchive",
-    "BaoStockTrainingTrainingInputArchive",
-    "BaoStockTrainingTrainingInputSnapshot",
     "BaoStockRowGateway",
     "BaoStockRowResult",
     "BaoStockSdkPort",
+    "BaoStockShardDailyIndex",
     "BaoStockShardSnapshot",
     "BaoStockTrainingCodeIdentity",
     "SQLiteBaoStockDailyShard",

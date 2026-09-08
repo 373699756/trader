@@ -5,23 +5,24 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_download_plan_is_merged_with_explicit_unfinished_batch_states() -> None:
+def test_download_plan_tracks_completed_daily_archive_and_next_industry_batch() -> None:
     work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
     section = work[work.index("## 4. 历史下载与行业补全执行计划") :]
+    daily = section[section.index("### 4.1") : section.index("### 4.2")]
+    industry = section[section.index("### 4.2") : section.index("### 4.3")]
+    training = section[section.index("### 4.3") : section.index("### 4.4")]
+    production = section[section.index("### 4.4") :]
 
     assert not (ROOT / "docs/download.md").exists()
-    for required in (
-        "计划整体状态：`not_started`",
-        "第一批：完成 2000 日日线正式归档",
-        "状态：`pending`",
-        "第二批：独立补齐历史行业事实",
-        "状态：`blocked_by_daily_archive`",
-        "第三批：冻结训练输入并验证收益",
-        "状态：`blocked_by_industry_history`",
-        "第四批：Shadow 与生产启用",
-        "状态：`blocked_by_training_validation`",
-    ):
-        assert required in section
+    assert "计划整体状态：第一批 `completed`，第二批 `pending`" in section
+    assert "第一批：完成 2000 日日线正式归档" in daily
+    assert "状态：`completed`" in daily
+    assert "第二批：独立补齐历史行业事实" in industry
+    assert "状态：`pending`" in industry
+    assert "第三批：冻结训练输入并验证收益" in training
+    assert "状态：`blocked_by_industry_history`" in training
+    assert "第四批：Shadow 与生产启用" in production
+    assert "状态：`blocked_by_training_validation`" in production
 
 
 def test_industry_repair_plan_preserves_daily_archive_identity() -> None:

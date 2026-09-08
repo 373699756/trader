@@ -64,11 +64,12 @@ def test_baostock_plan_has_one_data_owner_and_fixed_operational_caps() -> None:
         assert required in section
 
 
-def test_baostock_plan_is_the_only_next_action_before_v3_training() -> None:
+def test_industry_history_is_the_only_next_action_before_v3_training() -> None:
     strategy = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
 
-    assert "当前计划中唯一下一执行章节是 15.1.38" in strategy
-    assert "15.1.35 Tomorrow V3 单一行业模型 | `blocked_by_15_1_38`" in strategy
+    assert "当前计划中唯一下一执行章节是第 4.2 节历史行业事实补齐" in strategy
+    assert "15.1.35 Tomorrow V3 单一行业模型 | `blocked_by_industry_history`" in strategy
+    assert "15.1.38 BaoStock 2000 日归档 | `completed`" in strategy
     assert "15.1.37 四路实施边界 | `control_only`" in strategy
 
 
@@ -98,7 +99,8 @@ def test_codex_b_wave_one_has_a_read_only_hash_bound_input_contract() -> None:
 
     assert "Codex B 波次 1 状态：已完成" in section
     assert "tomorrow_training_input" in section
-    assert "15.1.38 整节仍为 `pending`" in section
+    assert "15.1.38 已由真实全量 manifest 和覆盖证据闭合" in section
+    assert "剩余行业/训练事实缺口属于第 4.2 节" in section
     assert "tomorrow_training_input" in design
     assert domain_contract.is_file()
     assert application_contract.is_file()
@@ -161,6 +163,16 @@ def test_baostock_runtime_contract_documents_resume_progress_and_final_database_
     ):
         assert required in section
         assert required in design
+
+    for contract in (section, design):
+        assert "日线分片完整性 hash 只覆盖日线上下文、日线记录、批次和成功 checkpoint" in contract
+        assert "追加行业和训练事实不得改变日线 manifest" in contract
+        assert "一次只解码一个 SQLite 分片" in contract
+        assert "不得在收尾前把全部分片日线载荷同时载入内存" in contract
+        assert "供应商物理坏行数只保留为质量证据" in contract
+        assert "不得越过逻辑覆盖率门禁" in contract
+        assert "history_manifest_unavailable" in contract
+        assert "incomplete_codes" in contract
 
 
 def test_baostock_history_is_partitioned_by_board_and_four_digit_code_prefix() -> None:

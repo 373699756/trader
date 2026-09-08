@@ -107,17 +107,17 @@ def test_performance_entrypoint_does_not_import_posix_resource_at_module_load() 
     )
 
 
-def test_run_script_exposes_only_the_aggregated_public_workflows() -> None:
+def test_run_script_exposes_the_bounded_public_workflows() -> None:
     shell = (ROOT / "run.sh").read_text(encoding="utf-8")
 
     assert "check" in shell
     assert "download_history" in shell
+    assert "research-status" in shell
     assert "train-tomorrow" in shell
     assert "research-r7-dossier" not in shell
     assert "serve|app" not in shell
     for internal_stage in (
         "validate-config",
-        "research-status",
         "performance-check",
         "research-history",
         "research-screen",
@@ -142,6 +142,7 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert "./run.sh                         以默认 V1 启动本地 A 股研究看板" in completed.stdout
     assert "./run.sh --profile v2            显式使用 V2 启动" in completed.stdout
     assert "./run.sh check                   依次校验配置、研究状态和性能门禁" in completed.stdout
+    assert "./run.sh research-status         只读查看研究归档与训练就绪状态" in completed.stdout
     assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
     assert "./run.sh download_history        下载/续传 BaoStock 历史日线归档" in completed.stdout
     assert "./run.sh train-tomorrow          从完整 manifest 运行 Tomorrow 训练" in completed.stdout
@@ -324,6 +325,27 @@ def test_run_script_forwards_the_single_tomorrow_training_command_without_stage_
     assert completed.stdout == f"cli:--config {config} --profile v1 train-tomorrow\n"
 
 
+def test_run_script_forwards_the_read_only_research_status_command(tmp_path: Path) -> None:
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    _write_fake_entrypoint(venv_bin / "python", "exit 99")
+    _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
+    _write_fake_entrypoint(venv_bin / "trader-cli", "printf 'cli:%s\\n' \"$*\"")
+    config = tmp_path / "runtime.json"
+
+    completed = subprocess.run(
+        ("bash", str(ROOT / "run.sh"), "research-status"),
+        cwd=ROOT,
+        env={**os.environ, "VENV_DIR": str(venv_bin.parent), "TRADER_CONFIG": str(config)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == f"cli:--config {config} --profile v1 research-status\n"
+
+
 def test_run_script_forwards_the_tomorrow_training_history_root(tmp_path: Path) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
@@ -406,6 +428,7 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert "日常使用（不做离线研究）:" in powershell
     assert "离线研究（仅在明确执行研究任务时使用）:" in powershell
     assert ".\\run.ps1 download_history        下载/续传 BaoStock 历史日线归档" in powershell
+    assert ".\\run.ps1 research-status         只读查看研究归档与训练就绪状态" in powershell
     assert "research-history" not in powershell
     assert "research-screen" not in powershell
     assert ".\\run.ps1 train-tomorrow          从完整 manifest 运行 Tomorrow 训练" in powershell
@@ -414,6 +437,8 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert "所有命令都可追加 --profile v1|v2|v3；未指定时为 V1" in powershell
     assert "& $SelectedEntryPoint --help" in powershell
     assert '$ScoringProfile -notin @("v1", "v2", "v3")' in powershell
+    assert "config\\runtime.json" in powershell
+    assert "config\\v2\\runtime.json" not in powershell
 
 
 def test_research_status_is_historical_only_and_does_not_create_runtime_files(tmp_path: Path, capsys) -> None:

@@ -7,6 +7,7 @@ from trader.domain.research.baostock_daily import (
     BaoStockBoardCoverage,
     BaoStockCalendar,
     BaoStockCodeCoverage,
+    BaoStockCodeCoverageEvidence,
     BaoStockDailySide,
     BaoStockDailySpec,
     BaoStockSecurity,
@@ -154,6 +155,51 @@ def test_coverage_uses_listing_and_delisting_dates_not_a_common_intersection() -
     assert audit.failed_codes == ()
     assert audit.status == "historical_data_insufficient"
     assert "authoritative_calendar_below_2000" in audit.failure_reasons
+
+
+def test_compact_coverage_evidence_matches_daily_batch_audit() -> None:
+    spec = BaoStockDailySpec(sessions=5)
+    calendar = _calendar(5)
+    security = BaoStockSecurity("600001", "Old", "main", calendar.open_dates[0], None, "fixture")
+    batch = join_baostock_daily_sides(
+        security.code,
+        calendar.open_dates,
+        tuple(_side(day, "unadjusted") for day in calendar.open_dates),
+        tuple(_side(day, "qfq") for day in calendar.open_dates),
+    )
+    evidence = BaoStockCodeCoverageEvidence(
+        batch.code,
+        sum(cell.obtained for cell in batch.cells),
+        batch.duplicate_rows,
+        batch.null_rows,
+        batch.out_of_window_rows,
+        batch.future_rows,
+        batch.failure_reasons,
+    )
+
+    assert build_baostock_coverage_audit(spec, calendar, (security,), (evidence,)) == (
+        build_baostock_coverage_audit(spec, calendar, (security,), (batch,))
+    )
+
+
+def test_discarded_supplier_rows_remain_audited_without_overriding_logical_coverage() -> None:
+    spec = BaoStockDailySpec(sessions=2000)
+    calendar = _calendar(2000)
+    security = BaoStockSecurity("600001", "Old", "main", calendar.open_dates[0], None, "fixture")
+    batch = join_baostock_daily_sides(
+        security.code,
+        calendar.open_dates,
+        tuple(_side(day, "unadjusted") for day in calendar.open_dates),
+        tuple(_side(day, "qfq") for day in calendar.open_dates),
+        null_rows=1,
+    )
+
+    audit = build_baostock_coverage_audit(spec, calendar, (security,), (batch,))
+
+    assert audit.status == "coverage_ready"
+    assert audit.all_cell_coverage == 1.0
+    assert audit.null_rows == 1
+    assert "null_rows_present" not in audit.failure_reasons
 
 
 def test_v3_split_permanently_reserves_latest_200_dates() -> None:

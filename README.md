@@ -42,6 +42,7 @@ TRADER_PORT=5050 ./run.sh
 DEEPSEEK_API_KEY=your-key ./run.sh
 TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 ./run.sh check
+./run.sh research-status
 ./run.sh --profile v2
 ./run.sh download_history --runtime-dir /absolute/path/outside/repository --sessions 2000
 ./run.sh train-tomorrow
@@ -49,7 +50,8 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 ```
 
 日常启动不需要参数，默认使用 Tomorrow V1；追加 `--profile v2` 才使用 V2，该覆盖不会写回配置。
-`check` 依次执行配置校验、只读研究状态和所选档位的离线性能门禁；`download_history` 只负责 BaoStock
+`check` 依次执行配置校验、只读研究状态和所选档位的离线性能门禁；`research-status` 只读显示归档、
+已下载和 training-ready 状态，不访问网络或启动下载/训练；`download_history` 只负责 BaoStock
 历史日线下载/续传，`train-tomorrow` 负责统一的 Tomorrow 离线训练链。旧 H0 历史归档、回测和筛选入口已退役，
 不再通过启动流程执行。离线研究不会随服务启动自动执行。底层
 `trader-cli performance-check` 仍可用 `--output` 保存报告或用 `--baseline` 执行 5% 相对回归门禁；它

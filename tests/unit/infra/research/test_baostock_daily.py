@@ -21,13 +21,17 @@ from trader.domain.research.baostock_daily import (
     BaoStockSourceVersions,
     join_baostock_daily_sides,
 )
+from trader.infra.research import baostock_partition_archive as partition_archive_module
+from trader.infra.research.baostock_catalog import manifest_spec
 from trader.infra.research.baostock_daily import (
-    BaoStockDailyArtifactConflictError,
-    BaoStockDailyPartitionedArchive,
-    BaoStockTrainingTrainingInputArchive,
     SQLiteBaoStockDailyShard,
 )
 from trader.infra.research.baostock_daily_serialization import _decode_spec
+from trader.infra.research.baostock_errors import BaoStockDailyArtifactConflictError
+from trader.infra.research.baostock_partition_archive import (
+    BaoStockDailyPartitionedArchive,
+    BaoStockTrainingTrainingInputArchive,
+)
 
 
 def _side(code: str, day: date, adjustment: str, close: float = 10.2) -> BaoStockDailySide:
@@ -115,6 +119,32 @@ def test_legacy_baostock_spec_is_decode_only_and_keeps_its_frozen_hash() -> None
             research_identity=str(raw["research_identity"]),
             schema_version=str(raw["schema_version"]),
         )
+
+
+def test_stable_manifest_reopens_legacy_spec_shards_without_rewriting_them(tmp_path) -> None:
+    spec, calendar, universe, versions = _context()
+    legacy_spec = _decode_spec(
+        {
+            "sessions": spec.sessions,
+            "research_identity": "score_baostock_daily_core_v2",
+            "source_cutoff": spec.source_cutoff.isoformat(),
+            "production_authority": False,
+            "point_in_time_parity": False,
+            "schema_version": "score_baostock_daily_core_v2",
+        }
+    )
+    root = tmp_path / "archive"
+    shard = SQLiteBaoStockDailyShard(root / "shards" / "main-6000.sqlite3")
+    shard.initialize(legacy_spec, calendar, universe, versions)
+    shard.save_batch(spec, _batch("600001", calendar))
+
+    manifest = BaoStockDailyPartitionedArchive(root).write(spec, (shard,))
+
+    assert manifest.spec_hash == spec.content_hash
+    assert manifest_spec(root, manifest) == spec
+    with sqlite3.connect(shard.path) as connection:
+        stored = json.loads(connection.execute("SELECT spec_json FROM context").fetchone()[0])
+    assert stored["schema_version"] == "score_baostock_daily_core_v2"
 
 
 def test_sqlite_reads_legacy_calendar_and_training_hashes_without_rewriting_identity(tmp_path) -> None:
@@ -226,7 +256,9 @@ def test_checkpoint_index_counts_completed_rows_without_decoding_daily_payload(t
     assert checkpoint.downloaded_records == len(calendar.open_dates)
 
 
-def test_partition_manifest_is_order_independent_hash_bound_and_has_no_merged_database(tmp_path) -> None:
+def test_partition_manifest_is_order_independent_hash_bound_and_has_no_merged_database(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     spec, calendar, universe, versions = _context()
     industries = _industry("600001", calendar) + _industry("300001", calendar)
     left_root = tmp_path / "left"
@@ -246,9 +278,25 @@ def test_partition_manifest_is_order_independent_hash_bound_and_has_no_merged_da
     first_right.save_training_facts(spec, "600001", _facts("600001", calendar), _industry("600001", calendar))
     second_right.save_training_facts(spec, "300001", _facts("300001", calendar), _industry("300001", calendar))
 
+    real_audit = partition_archive_module.build_baostock_coverage_audit
+    audit_inputs_are_streamed: list[bool] = []
+
+    def capture_audit(spec, calendar, universe, batches):
+        audit_inputs_are_streamed.append(not isinstance(batches, tuple))
+        return real_audit(spec, calendar, universe, batches)
+
+    monkeypatch.setattr(partition_archive_module, "build_baostock_coverage_audit", capture_audit)
+
+    def snapshot_must_not_run(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("partition sealing must not rebuild every daily domain object")
+
+    for shard in (first, second, first_right, second_right):
+        monkeypatch.setattr(shard, "snapshot", snapshot_must_not_run)
+
     left = BaoStockDailyPartitionedArchive(left_root).write(spec, (first, second))
     right = BaoStockDailyPartitionedArchive(right_root).write(spec, (second_right, first_right))
 
+    assert audit_inputs_are_streamed == [True, True]
     assert left.logical_records_hash == right.logical_records_hash
     assert left.audit.content_hash == right.audit.content_hash
     assert left.source_versions == versions
@@ -276,6 +324,28 @@ def test_partition_manifest_is_order_independent_hash_bound_and_has_no_merged_da
     manifest_path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(BaoStockDailyArtifactConflictError, match="manifest"):
         BaoStockDailyPartitionedArchive(tmp_path / "left").verify()
+
+
+def test_daily_manifest_survives_training_fact_append_but_rejects_daily_tampering(tmp_path) -> None:
+    spec, calendar, universe, versions = _context()
+    root = tmp_path / "archive"
+    path = root / "shards" / "main-6000.sqlite3"
+    shard = SQLiteBaoStockDailyShard(path)
+    industry = _industry("600001", calendar)
+    shard.initialize(spec, calendar, universe, versions, industry)
+    shard.save_batch(spec, _batch("600001", calendar))
+    archive = BaoStockDailyPartitionedArchive(root)
+    manifest = archive.write(spec, (shard,))
+
+    shard.save_training_facts(spec, "600001", _facts("600001", calendar), industry)
+
+    assert archive.verify() == manifest
+    assert archive.verify().partitions[0].database_sha256 == manifest.partitions[0].database_sha256
+
+    with sqlite3.connect(path) as connection:
+        connection.execute("UPDATE daily_cells SET payload_json='{}' WHERE code='600001'")
+    with pytest.raises(BaoStockDailyArtifactConflictError, match="manifest"):
+        archive.verify()
 
 
 def test_training_facts_are_complete_per_code_and_queryable_without_scanning_other_shards(tmp_path) -> None:

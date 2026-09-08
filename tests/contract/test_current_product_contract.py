@@ -76,7 +76,7 @@ def test_parallel_overview_plan_and_operations_docs_are_retired() -> None:
         "待独立授权",
         "当前不采用",
         "历史下载与行业补全执行计划",
-        "计划整体状态：`not_started`",
+        "计划整体状态：第一批 `completed`，第二批 `pending`",
     ):
         assert merged_plan_contract in work
 
@@ -91,7 +91,12 @@ def test_release_guides_expose_only_unified_api_and_desktop_gate() -> None:
         assert "trader-cli perf-check" not in content
     assert "deepseek-budget.sqlite3" in operations
     assert "卡脖子、高成长、低价潜力" in operations
-    for public_command in ("./run.sh check", "./run.sh download_history", "./run.sh train-tomorrow"):
+    for public_command in (
+        "./run.sh check",
+        "./run.sh research-status",
+        "./run.sh download_history",
+        "./run.sh train-tomorrow",
+    ):
         assert public_command in readme
         assert public_command in operations
     for retired_command in ("./run.sh validate-config", "./run.sh performance-check"):

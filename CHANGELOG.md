@@ -6,6 +6,30 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户继续执行 `03_工程实施.md` 的下一完整未完成章节，反馈 2000 日日线虽已下载完，但仍有约 2000 只
+  股票显示不可用，并要求先把下载/封存逻辑改为分片处理，避免一次耗尽个人电脑性能。根因已确认：现场
+  92 个 SQLite 分片实际已有 5453/5453 只股票和 9,085,235 个逻辑日线记录，原收尾却先把全部分片
+  `daily_cells.payload_json` 解码为领域对象并同时驻留内存，又错误地把历史行业 training-fact 就绪作为日线
+  manifest 的前置条件；新稳定 manifest 写在只读兼容旧 spec 分片上时，读取端还只接受 spec hash 完全相同。
+  现将收尾改为先读轻量 checkpoint 索引，再按稳定路径逐个分片用 SQLite 游标校验日期、逐行 hash 和批次 hash，
+  只生成逐代码紧凑覆盖证据，顺序组装 catalog/manifest，不再重建或持有 900 多万个日线对象。日线完整性 hash
+  仅绑定上下文、日线、批次和成功 checkpoint，后续追加行业/训练事实不会使日线 manifest 失效；旧 spec 只有在
+  sessions、截止日和权限等固定合同完全一致时才映射到当前稳定 spec，旧分片原样只读保留。供应商物理坏行仍
+  丢弃并记录 `null_rows`，对应逻辑日期保持显式缺失；达到全体、逐板和老股 95% 门槛时不再由物理坏行计数
+  单独否决。`research-status` 现可由公开启动脚本直接只读调用，并分别显示日线完成、training-ready、覆盖与
+  manifest 状态。真实低优先级封存得到 5453/5453、92 分片、`failed_codes=0`、`coverage_ready`，全体覆盖
+  99.9949%，三板均高于 99.99%，全窗口老股通过率 99.9391%，正式 manifest hash 为
+  `ad358452ed17f91549e7b660de6c4a2d4086bf631a1dc51cdd9ab2f1675563cb`；独立只读重开得到相同身份。
+  导入 Review 另发现 catalog 与既有归档兼容性重导出形成环，现将共享冲突异常下沉到叶子模块、消费者直接依赖
+  分片归档模块，所有导入顺序均可独立加载。Verification: 分片/领域覆盖/运行时/入口/文档契约定向测试通过；
+  `make format-check`、`make lint`（含零新增重构债）、`make type-check`、`make test`、`make package` 全部通过，
+  仓库外 wheel 安装、CLI 与 6 项静态资源读取验证通过；两次最终实证分别记录约 144 MiB 最大 RSS、无 swap，
+  最终封存 5 分 54 秒，独立 `research-status` 重验 4 分 22 秒。浏览器门禁不适用：本批未修改 Web。
+  Residual Risks: 当前仅 3521/5453 只股票具有
+  完整历史行业/训练事实，剩余 1932 只必须由下一独立的第 4.2 节评估带生效日期的可靠行业来源并只追加事实，
+  不得重新下载或改写本批日线；统一 `research` 诊断仍受既有 `research_status_shape_invalid` 阻塞，本批以权威
+  `research-status` 完成归档重开验收。`Regression-Key: baostock-partitioned-daily-seal-v1`。
+
 - 用户反馈活动树仍存在 `tomorrow_historical_p2_artifacts.py`、`tomorrow_manual_v1_model.py`、
   `score_r6_daily_artifacts.py`、`tomorrow_p2_model.json` 等非评分版本命名，要求除评分生产档位
   V1/V2/V3 外不再用 `Rn/Pn/vN` 管理代码和数据。根因已确认：历史研究阶段号、实验批次号与评分档位曾在
