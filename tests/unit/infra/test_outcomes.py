@@ -48,13 +48,21 @@ def _repository(tmp_path: Path, record: CommittedDecisionRecord | None = None):
     return SQLiteOutcomeEvidenceRepository(tmp_path, _Decisions(record), _Historical())
 
 
-def _outcome(*, net_excess_return_pct: float = 1.2, settled_at=NOW) -> RecommendationOutcome:
+def _outcome(
+    *,
+    net_excess_return_pct: float = 1.2,
+    settled_at=NOW,
+    snapshot_id: str = "snapshot-fixture",
+    strategy: Strategy = Strategy.TOMORROW,
+    stock_code: str = "600001",
+    horizon: int = 1,
+) -> RecommendationOutcome:
     return RecommendationOutcome(
-        snapshot_id="snapshot-fixture",
-        strategy=Strategy.TOMORROW,
+        snapshot_id=snapshot_id,
+        strategy=strategy,
         recommend_date="2026-07-20",
-        stock_code="600001",
-        horizon=1,
+        stock_code=stock_code,
+        horizon=horizon,
         status="complete",
         settled_at=settled_at,
         anchor_price=10.0,
@@ -139,3 +147,43 @@ def test_benchmark_read_rejects_tampered_columns(tmp_path: Path) -> None:
 
     with pytest.raises(OutcomeEvidenceConflictError, match="benchmark return"):
         repository.benchmark_returns_after("2026-07-20", limit=1)
+
+
+def test_legacy_d25_outcomes_resume_with_only_t4_pending(tmp_path: Path) -> None:
+    original = decision(Strategy.D25)
+    item = original.items[0]
+    formal = CommittedDecisionRecord(
+        replace(original, items=(replace(item, selected=True, rank=1),)),
+        NOW,
+        "scheduled",
+    )
+    repository = _repository(tmp_path, formal)
+    repository.save_recommendation_outcomes(
+        tuple(
+            _outcome(
+                snapshot_id=formal.version,
+                strategy=Strategy.D25,
+                stock_code=item.code,
+                horizon=horizon,
+            )
+            for horizon in (2, 3, 5)
+        )
+    )
+
+    targets = repository.pending_outcome_targets(limit=10)
+
+    assert len(targets) == 1
+    assert targets[0].pending_horizons == (4,)
+
+    repository.save_recommendation_outcomes(
+        (
+            _outcome(
+                snapshot_id=formal.version,
+                strategy=Strategy.D25,
+                stock_code=item.code,
+                horizon=4,
+            ),
+        )
+    )
+
+    assert repository.pending_outcome_targets(limit=10) == ()

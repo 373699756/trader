@@ -94,10 +94,11 @@ def test_route_cannot_smuggle_unverified_data_or_automatic_promotion() -> None:
     assert "scoring-feature-outcome-optimization" in work
 
 
-def test_work_plan_records_current_chapter_and_progress_update_contract() -> None:
+def test_work_plan_records_completed_first_chapter_and_next_chapter() -> None:
     work = _read(WORK)
 
-    assert "当前执行章节：`outcome_truth_contract`" in work
+    assert "最近完成章节：`outcome_truth_contract`" in work
+    assert "下一执行章节：`feature_contract_unification`" in work
     assert "每次开始、发现阻塞、完成验证、提交并推送" in work
     assert "D25 T+2/T+3/T+4/T+5" in work
     assert "`baostock_daily_archive` 保持 `pending`" in work

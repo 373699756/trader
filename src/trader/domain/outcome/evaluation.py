@@ -6,7 +6,14 @@ import math
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.domain.outcome.models import OutcomeBar, OutcomeTarget, RecommendationOutcome
+from trader.domain.outcome.models import (
+    BenchmarkConstituentReturn,
+    BenchmarkReturn,
+    OutcomeBar,
+    OutcomeTarget,
+    RecommendationOutcome,
+    outcome_horizons,
+)
 from trader.domain.recommendation.models import Strategy
 
 
@@ -25,68 +32,113 @@ class OutcomeEvaluationRequest:
         object.__setattr__(self, "bars", tuple(self.bars))
         object.__setattr__(self, "benchmark_returns", tuple(self.benchmark_returns))
         object.__setattr__(self, "expected_trade_dates", tuple(self.expected_trade_dates))
+        if not math.isfinite(self.round_trip_cost_pct) or self.round_trip_cost_pct < 0.0:
+            raise ValueError("outcome round-trip cost must be finite and non-negative")
+        if self.expected_sessions is not None and self.expected_sessions < 0:
+            raise ValueError("expected outcome sessions cannot be negative")
+
+
+class CanonicalOutcomeEvaluator:
+    """Pure owner of benchmark and immutable recommendation outcome calculations."""
+
+    def equal_weight_benchmark(
+        self,
+        trade_date: str,
+        constituents: tuple[BenchmarkConstituentReturn, ...],
+    ) -> BenchmarkReturn | None:
+        codes = tuple(item.stock_code for item in constituents)
+        if (
+            not constituents
+            or len(set(codes)) != len(codes)
+            or any(item.trade_date != trade_date or not math.isfinite(item.return_pct) for item in constituents)
+        ):
+            return None
+        return BenchmarkReturn(trade_date, sum(item.return_pct for item in constituents) / len(constituents))
+
+    def evaluate(self, request: OutcomeEvaluationRequest) -> RecommendationOutcome:
+        target = request.target
+        bars = request.bars
+        horizon = request.horizon
+        benchmark_returns = request.benchmark_returns
+        settled_at = request.settled_at
+        expected_sessions = request.expected_sessions
+        expected_trade_dates = request.expected_trade_dates
+        round_trip_cost_pct = request.round_trip_cost_pct
+        if horizon not in outcome_horizons(target.strategy):
+            raise ValueError("outcome horizon is incompatible with strategy")
+        ordered_bars = tuple(sorted(bars, key=lambda bar: bar.trade_date))
+        reference = next((bar for bar in ordered_bars if bar.trade_date == target.recommend_date), None)
+        ordered = tuple(bar for bar in ordered_bars if bar.trade_date > target.recommend_date)
+        if expected_sessions is not None and expected_sessions > len(ordered):
+            return _insufficient(target, horizon, settled_at, "missing_or_suspended_session")
+        window = ordered[:horizon]
+        if len(window) < horizon:
+            return _insufficient(target, horizon, settled_at, "horizon_not_due")
+        if expected_trade_dates and tuple(bar.trade_date for bar in window) != expected_trade_dates[:horizon]:
+            return _insufficient(target, horizon, settled_at, "missing_or_suspended_session")
+        if (
+            reference is None
+            or not _bars_are_valid((reference, *window))
+            or not math.isfinite(target.anchor_price)
+            or target.anchor_price <= 0.0
+            or not math.isfinite(target.atr20_pct)
+            or target.atr20_pct <= 0.0
+        ):
+            return _insufficient(target, horizon, settled_at, "invalid_price_window")
+        if _has_price_discontinuity(reference.close, window):
+            return _insufficient(target, horizon, settled_at, "price_discontinuity")
+        minimum_low = min(bar.low for bar in window)
+        end_close = window[-1].close
+        gross = (end_close / target.anchor_price - 1.0) * 100.0
+        mae = (minimum_low / target.anchor_price - 1.0) * 100.0
+        mae_atr = mae / target.atr20_pct
+        threshold = -1.5 if target.strategy in {Strategy.TODAY, Strategy.TOMORROW} else -2.5
+        benchmark = _compound_returns(benchmark_returns[:horizon]) if len(benchmark_returns) >= horizon else None
+        net_excess = None if benchmark is None else gross - benchmark - round_trip_cost_pct
+        return RecommendationOutcome(
+            snapshot_id=target.snapshot_id,
+            strategy=target.strategy,
+            recommend_date=target.recommend_date,
+            stock_code=target.stock_code,
+            horizon=horizon,
+            status="complete" if benchmark is not None else "benchmark_missing",
+            settled_at=settled_at,
+            anchor_price=target.anchor_price,
+            atr20_pct=target.atr20_pct,
+            minimum_low=minimum_low,
+            end_close=end_close,
+            gross_return_pct=gross,
+            benchmark_return_pct=benchmark,
+            net_excess_return_pct=net_excess,
+            mae_pct=mae,
+            mae_atr=mae_atr,
+            severe_drawdown=mae_atr <= threshold,
+            quality_reason="" if benchmark is not None else "benchmark_missing",
+        )
+
+    def d25_aggregate(self, outcomes: tuple[RecommendationOutcome, ...]) -> float | None:
+        if len(outcomes) != len(outcome_horizons(Strategy.D25)):
+            return None
+        ordered = tuple(sorted(outcomes, key=lambda item: item.horizon))
+        first = ordered[0]
+        if tuple(item.horizon for item in ordered) != outcome_horizons(Strategy.D25) or any(
+            item.strategy is not Strategy.D25
+            or item.snapshot_id != first.snapshot_id
+            or item.recommend_date != first.recommend_date
+            or item.stock_code != first.stock_code
+            or item.status != "complete"
+            or item.net_excess_return_pct is None
+            or not math.isfinite(item.net_excess_return_pct)
+            for item in ordered
+        ):
+            return None
+        return sum(item.net_excess_return_pct for item in ordered if item.net_excess_return_pct is not None) / len(
+            ordered
+        )
 
 
 def evaluate_outcome(request: OutcomeEvaluationRequest) -> RecommendationOutcome:
-    target = request.target
-    bars = request.bars
-    horizon = request.horizon
-    benchmark_returns = request.benchmark_returns
-    settled_at = request.settled_at
-    expected_sessions = request.expected_sessions
-    expected_trade_dates = request.expected_trade_dates
-    round_trip_cost_pct = request.round_trip_cost_pct
-    if horizon not in ({1} if target.strategy in {Strategy.TODAY, Strategy.TOMORROW} else {2, 3, 5}):
-        raise ValueError("outcome horizon is incompatible with strategy")
-    ordered_bars = tuple(sorted(bars, key=lambda bar: bar.trade_date))
-    reference = next((bar for bar in ordered_bars if bar.trade_date == target.recommend_date), None)
-    ordered = tuple(bar for bar in ordered_bars if bar.trade_date > target.recommend_date)
-    if expected_sessions is not None and expected_sessions > len(ordered):
-        return _insufficient(target, horizon, settled_at, "missing_or_suspended_session")
-    window = ordered[:horizon]
-    if len(window) < horizon:
-        return _insufficient(target, horizon, settled_at, "horizon_not_due")
-    if expected_trade_dates and tuple(bar.trade_date for bar in window) != expected_trade_dates[:horizon]:
-        return _insufficient(target, horizon, settled_at, "missing_or_suspended_session")
-    if (
-        reference is None
-        or not _bars_are_valid((reference, *window))
-        or not math.isfinite(target.anchor_price)
-        or target.anchor_price <= 0.0
-        or not math.isfinite(target.atr20_pct)
-        or target.atr20_pct <= 0.0
-    ):
-        return _insufficient(target, horizon, settled_at, "invalid_price_window")
-    if _has_price_discontinuity(reference.close, window):
-        return _insufficient(target, horizon, settled_at, "price_discontinuity")
-    minimum_low = min(bar.low for bar in window)
-    end_close = window[-1].close
-    gross = (end_close / target.anchor_price - 1.0) * 100.0
-    mae = (minimum_low / target.anchor_price - 1.0) * 100.0
-    mae_atr = mae / target.atr20_pct
-    threshold = -1.5 if target.strategy in {Strategy.TODAY, Strategy.TOMORROW} else -2.5
-    benchmark = _compound_returns(benchmark_returns[:horizon]) if len(benchmark_returns) >= horizon else None
-    net_excess = None if benchmark is None else gross - benchmark - round_trip_cost_pct
-    return RecommendationOutcome(
-        snapshot_id=target.snapshot_id,
-        strategy=target.strategy,
-        recommend_date=target.recommend_date,
-        stock_code=target.stock_code,
-        horizon=horizon,
-        status="complete" if benchmark is not None else "benchmark_missing",
-        settled_at=settled_at,
-        anchor_price=target.anchor_price,
-        atr20_pct=target.atr20_pct,
-        minimum_low=minimum_low,
-        end_close=end_close,
-        gross_return_pct=gross,
-        benchmark_return_pct=benchmark,
-        net_excess_return_pct=net_excess,
-        mae_pct=mae,
-        mae_atr=mae_atr,
-        severe_drawdown=mae_atr <= threshold,
-        quality_reason="" if benchmark is not None else "benchmark_missing",
-    )
+    return CanonicalOutcomeEvaluator().evaluate(request)
 
 
 def _insufficient(
@@ -138,4 +190,4 @@ def _compound_returns(values: tuple[float, ...]) -> float | None:
     return (total - 1.0) * 100.0
 
 
-__all__ = ["OutcomeEvaluationRequest", "evaluate_outcome"]
+__all__ = ["CanonicalOutcomeEvaluator", "OutcomeEvaluationRequest", "evaluate_outcome"]

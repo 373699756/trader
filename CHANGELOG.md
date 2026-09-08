@@ -6,6 +6,21 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户授权评分链路优化路线后，第一章先修复收益结算真值。根因已确认：D25 活动应用调度与 SQLite 完成判断
+  分别硬编码 T+2/T+3/T+5，遗漏 T+4；旧库已有三个 horizon 时会把目标重新投入全部计算，行情修订后可能
+  与不可变旧证据冲突，导致 T+4 无法补齐；基准、单 horizon 与聚合计算也没有统一纯领域所有者。Added:
+  新增 `CanonicalOutcomeEvaluator`、有类型 `BenchmarkConstituentReturn`、领域唯一 `outcome_horizons()`、
+  D25 四 horizon 算术聚合及 20/50/100bp 参数化成本验证。Changed: `OutcomeTarget` 显式携带排序且唯一的
+  `pending_horizons`，应用只评估到期且缺失的项；持久化从唯一领域合同计算缺口。Fixed: D25 结算覆盖
+  T+2/T+3/T+4/T+5，旧 `(2,3,5)` 记录可只补 T+4，补齐后不再入队；当前决策、冻结内容和公开 JSON schema
+  不变。Removed: 删除应用与持久化各自维护的重复 horizon 列表。Verification: 领域、应用、SQLite、调度、
+  组合根、架构与文档定向回归共 107 项通过；`make format-check`、`make lint`、`make type-check`、`make test`、
+  `make package` 和 `git diff --check` 通过，严格复杂度债务保持为零；打包首次受沙箱网络限制，按授权在沙箱外
+  重跑成功。格式门禁同时修正一个上一批文档契约测试的既有 Ruff 排版差异。性能、真实供应商、运行中 Web
+  与三档浏览器门禁不适用，因为本章不改变评分热链、网络、公开 schema 或 Web。Residual Risks: 当前盘后全市场等权涨跌幅只用于正式推荐运行监控，不能证明历史策略锚点基准；真实
+  14:50 人口、停牌/一字板、公司行为和同一前复权输入仍由 `point_in_time_data_qualification` 失败关闭，不能
+  把本章工程闭环解释为新增参数已提高收益。`Regression-Key: d25-four-horizon-outcome-truth`。
+
 - 用户要求把重新确认的评分链路优化计划纳入 `01_评分逻辑.md`、`02_工程设计.md`、`03_工程实施.md` 等权威
   文档并立即开始执行。现状判断已确认：既有文档有逐环节建议，但缺少统一组件所有权、候选召回归因、预测
   不确定性和可逐章执行的依赖路线；既有历史数据计划还把 BaoStock 归档写成唯一下一章节，与本次直接授权

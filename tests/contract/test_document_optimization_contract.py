@@ -138,7 +138,7 @@ def test_public_and_low_level_research_status_commands_are_unambiguous() -> None
 
     assert "./run.sh research-status" not in work
     assert "公开流程：`./run.sh check`" in work
-    assert ".venv/bin/trader-cli --config \"$PWD/config/runtime.json\" research-status" in work
+    assert '.venv/bin/trader-cli --config "$PWD/config/runtime.json" research-status' in work
 
 
 def test_strategy_document_does_not_own_artifact_hashes() -> None:
