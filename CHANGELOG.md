@@ -6,6 +6,31 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户继续执行点时数据资格章节后明确要求停止 5000 多只股票的长时下载，只下载一只股票验证效果并把重点
+  放在代码。根因已确认：checkpoint 状态只扫描新 `shards/` 布局，把根级旧分片中的 268/5453 只误报为 0；
+  旧迁移路径又重复拼接仓库目录而无法命中真实归档；日线 manifest 被历史行业训练事实绑架，研究交接还会从
+  日线完成凭空构造行业、资格、硬过滤和风险事实全部可用的探针；BaoStock 行业适配器把请求日冒充
+  `effective_from`。Added: 新增不可变 `PointInTimeDataQualificationReport` 及日线、历史行业、历史分钟三个
+  独立资格值对象；新增只读、参数化单股资格脚本、白名单 JSON 投影、旧 checkpoint 持锁迁移模块、阶段报告和
+  三门失败关闭回归。Changed: 状态查询同时读取当前分区和根级旧 checkpoint，完成记录覆盖同代码陈旧失败；
+  日线 manifest 只绑定 raw/qfq 日线 batch，行业与训练事实不再决定日线归档能否封存；旧分片迁移逐条验证
+  context 与事实后写入有界分区并保留 recovery 副本；资格报告只有在 2000 日日线完整、至少 300 只历史行业
+  全字段证据和历史分钟 95% 分层覆盖全部通过时才合格。Fixed: BaoStock 行业只接纳供应商实际 `updateDate`，
+  拒绝缺失、未来和同日冲突；删除日线完成自动伪造历史事实就绪的路径；修复已有 checkpoint 被隐藏和迁移
+  根路径错误。Removed: 移除日线逻辑记录 hash 对训练事实 hash 的耦合及日线发布前的训练事实完整性要求；
+  未删除必要的 manifest、分片、来源或外部证据完整性 hash。Verification: 定向 domain/application/infra/
+  script/CLI/文档契约定向回归 114 项通过；`make format-check`、`make lint`、`make type-check` 和
+  `git diff --check` 通过；仅联网请求 600519、61 日、1 worker 的
+  腾讯直连 smoke 为 1/1 可用，普通特征与 Outcome raw/qfq 配对均可用，零空结果、零错误，约 819ms 且无
+  持久化。全量 2000 日命令因约 14GiB 可用空间低于 25GiB，在供应商请求前以 `disk_below_25gb` 退出，实际
+  未下载或改写股票；此后未再运行全市场命令。Delivery State: 用户要求立即终止并推送，本提交是明确的
+  `in_progress: checkpoint_pushed` 恢复点；`make test`、`make package`、最终完整 diff Review 和完成状态收口
+  尚未执行，下次“继续”必须先闭合本章，不能进入下一章节。Residual Risks:
+  正式日线仍只有 268/5453 且无 manifest；历史行业未完成 300 只分层证据，免费分钟链不能证明旧日
+  11:20/14:50、量额、时区、raw/qfq 和公司行动语义，所以资格结论保持 `historical_data_insufficient`，
+  `point_in_time_dataset`、V3 正式训练、终端留出与生产权限继续阻塞；本批不宣称未来收益提高。
+  `Regression-Key: point-in-time-data-qualification-fail-closed`。
+
 - 用户要求把已确认的 V3 重复成本与 Outcome 真值缺口排入工程计划，并继续执行下一个完整未完成章节。
   根因已确认：活动 `OutcomeBar` 只有一套无复权身份的 OHLC，raw 决策锚点被直接除以前复权退出价；缺失交易日、
   停牌和一字跌停也没有进入稳定退出状态。最初 fixture 方案还错误假设腾讯一次 qfq 响应同时包含 raw；把

@@ -2,6 +2,7 @@ import json
 import sqlite3
 from dataclasses import replace
 from datetime import date, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -276,6 +277,24 @@ def test_partition_manifest_is_order_independent_hash_bound_and_has_no_merged_da
     manifest_path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(BaoStockDailyArtifactConflictError, match="manifest"):
         BaoStockDailyPartitionedArchive(tmp_path / "left").verify()
+
+
+def test_daily_manifest_does_not_require_historical_industry_training_facts(tmp_path: Path) -> None:
+    spec, calendar, universe, versions = _context()
+    root = tmp_path / "daily-only"
+    main = SQLiteBaoStockDailyShard(root / "shards" / "main-6000.sqlite3")
+    chinext = SQLiteBaoStockDailyShard(root / "shards" / "chinext-3000.sqlite3")
+    for shard in (main, chinext):
+        shard.initialize(spec, calendar, universe, versions)
+    main.save_batch(spec, _batch("600001", calendar))
+    chinext.save_batch(spec, _batch("300001", calendar))
+
+    manifest = BaoStockDailyPartitionedArchive(root).write(spec, (main, chinext))
+
+    assert len(manifest.partitions) == 2
+    assert manifest.audit.obtained_cells == manifest.audit.expected_cells
+    assert main.training_ready_codes(spec) == frozenset()
+    assert chinext.training_ready_codes(spec) == frozenset()
 
 
 def test_training_facts_are_complete_per_code_and_queryable_without_scanning_other_shards(tmp_path) -> None:

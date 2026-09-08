@@ -509,6 +509,26 @@ class SQLiteBaoStockDailyShard:
                 rows.append(row)
         return tuple(rows)
 
+    def read_training_facts(
+        self,
+        spec: BaoStockDailySpec,
+        code: str,
+    ) -> tuple[tuple[BaoStockDailyFact, ...], tuple[BaoStockIndustryInterval, ...]]:
+        """Read validated fact payloads solely for locked checkpoint migration."""
+
+        context = self._require_context(spec)
+        _security, identity = self._resolve_training_identity(spec, code, context, None)
+        batch_row, cell_rows, fact_rows, industry_rows = self._load_training_payload(code)
+        _cells, _batch, facts, intervals = self._decode_training_payload(
+            code,
+            identity,
+            batch_row,
+            cell_rows,
+            fact_rows,
+            industry_rows,
+        )
+        return tuple(facts[day] for day in sorted(facts)), intervals
+
     def _resolve_training_identity(
         self,
         spec: BaoStockDailySpec,

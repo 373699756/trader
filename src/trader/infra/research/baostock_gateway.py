@@ -182,13 +182,24 @@ class BaoStockRowGateway:
                 code = allowed.get(row.get("code", ""))
                 industry = row.get("industry", "").strip()
                 classification = row.get("industryClassification", "").strip()
-                if code is None or not industry or not classification:
+                effective_from = _optional_date(row.get("updateDate"))
+                if (
+                    code is None
+                    or not industry
+                    or not classification
+                    or effective_from is None
+                    or effective_from > snapshot_date
+                ):
                     continue
-                observations[code].append((snapshot_date, industry, classification))
+                observations[code].append((effective_from, industry, classification))
         intervals: list[BaoStockIndustryInterval] = []
         for code, values in observations.items():
+            ordered = tuple(sorted(set(values)))
+            for left, right in zip(ordered, ordered[1:], strict=False):
+                if left[0] == right[0] and left[1:] != right[1:]:
+                    raise ValueError("BaoStock industry facts conflict at the same effective date")
             compressed: list[tuple[date, str, str]] = []
-            for value in values:
+            for value in ordered:
                 if not compressed or value[1:] != compressed[-1][1:]:
                     compressed.append(value)
             for index, (effective_from, industry, classification) in enumerate(compressed):

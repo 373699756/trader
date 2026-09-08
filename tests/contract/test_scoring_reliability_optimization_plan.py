@@ -97,12 +97,14 @@ def test_route_cannot_smuggle_unverified_data_or_automatic_promotion() -> None:
     assert "scoring-feature-outcome-optimization" in work
 
 
-def test_work_plan_records_completed_outcome_chapter_and_next_data_qualification() -> None:
+def test_work_plan_records_interrupted_data_qualification_checkpoint_and_resume_boundary() -> None:
     work = _read(WORK)
 
-    assert "最近完成章节：`outcome_truth_contract`" in work
-    assert "研究路线下一执行章节为" in work
+    assert "当前中断章节：`point_in_time_data_qualification`" in work
+    assert "`in_progress: checkpoint_pushed`" in work
     assert "`point_in_time_data_qualification`" in work
+    assert "下次“继续”必须先从本章" in work
+    assert "不得先进入" in work
     assert "`outcome_truth_contract`" in work
     assert "outcome_price_basis_and_tradability" in work
     assert "v3_single_cost_ownership" in work
@@ -111,6 +113,28 @@ def test_work_plan_records_completed_outcome_chapter_and_next_data_qualification
     assert "D25" in work
     assert "T+2、T+3、T+4、T+5" in work
     assert "`baostock_daily_archive` 保持 `pending`" in work
+
+
+def test_point_in_time_qualification_has_three_independent_gates_and_no_production_authority() -> None:
+    strategy = _read(STRATEGY)
+    design = _read(DESIGN)
+    work = _read(WORK)
+    replay = _read(REPLAY)
+    combined = strategy + design + work + replay
+
+    for required in (
+        "PointInTimeDataQualificationReport",
+        "historical_minute_source_qualification",
+        "至少 300 只",
+        "11:20/14:50",
+        "raw/qfq",
+        "historical_data_insufficient",
+        "production_authority=false",
+    ):
+        assert required in combined
+    assert "268/5453" in work
+    assert "只做单股只读实测" in work
+    assert "不再运行全市场命令" in work
 
 
 def test_history_training_and_optimization_are_one_dependency_route() -> None:

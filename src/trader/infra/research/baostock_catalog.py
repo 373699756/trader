@@ -44,8 +44,6 @@ def partition_ref(
         raise ValueError("BaoStock partition filename is invalid")
     board, prefix = stem.rsplit("-", 1)
     codes = tuple(item.code for item in snapshot.batches)
-    if frozenset(codes) != shard.training_ready_codes(spec):
-        raise BaoStockDailyArtifactConflictError("BaoStock partition training facts are incomplete")
     checkpoint_database(shard.path)
     return BaoStockPartitionRef(
         relative,
@@ -53,14 +51,18 @@ def partition_ref(
         prefix,
         codes,
         sum(len(item.cells) for item in snapshot.batches),
-        canonical_hash(
-            (
-                tuple((item.code, item.content_hash) for item in snapshot.batches),
-                shard.training_facts_hash(spec),
-            )
-        ),
+        canonical_hash(tuple((item.code, item.content_hash) for item in snapshot.batches)),
         file_sha256(shard.path),
     )
+
+
+def partition_name(board: str, code: str) -> str:
+    """Return the stable board/code partition without depending on runtime orchestration."""
+    if board not in {"main", "chinext", "star"} or len(code) != 6 or not code.isdigit():
+        raise ValueError("BaoStock partition identity is invalid")
+    bucket = int(code[4:]) // 100
+    suffix = "" if bucket == 0 else f"-{bucket:02d}"
+    return f"{board}-{code[:4]}{suffix}.sqlite3"
 
 
 def write_catalog(
@@ -190,6 +192,7 @@ __all__ = [
     "file_sha256",
     "manifest_spec",
     "merged_batches",
+    "partition_name",
     "partition_ref",
     "write_catalog",
     "write_immutable_json",

@@ -25,7 +25,9 @@ from trader.domain.research.baostock_daily import (
     BaoStockSourceVersions,
     join_baostock_daily_sides,
 )
+from trader.infra.research.baostock_catalog import partition_name
 from trader.infra.research.baostock_daily import SQLiteBaoStockDailyShard
+from trader.infra.research.baostock_history_legacy import migrate_legacy_archive
 from trader.infra.research.baostock_history_runtime import (
     _ContextResponse,
     _ContextStage,
@@ -36,7 +38,6 @@ from trader.infra.research.baostock_history_runtime import (
     _failure_code,
     _fetch_context,
     _load_resume_context,
-    _partition_name,
     _quarantine_corrupt_archive_parts,
     _run_locked,
     _SupplierCallActivity,
@@ -57,7 +58,7 @@ from trader.infra.research.baostock_history_runtime import (
 def test_partition_name_is_human_readable_and_bounds_each_database_to_one_hundred_codes(
     board: str, code: str, expected: str
 ) -> None:
-    assert _partition_name(board, code) == expected
+    assert partition_name(board, code) == expected
 
 
 class _ProgressRecorder:
@@ -183,6 +184,32 @@ def test_completed_daily_batch_with_incomplete_industry_is_not_downloaded_again(
     assert coordinator._failed_codes == set()
 
 
+def test_daily_archive_seals_independently_and_keeps_industry_training_fail_closed(tmp_path: Path) -> None:
+    base, security, _ = _coordinator(tmp_path)
+    coordinator = _DownloadCoordinator(replace(base._run, root=tmp_path / "baostock-daily" / "sessions-1"))
+    coordinator._initialize_shards()
+    coordinator._failure_shard(security).save_batch(
+        coordinator._run.spec,
+        _batch_for_security(security, coordinator._run.spec),
+    )
+    coordinator._initialize_shards()
+
+    status = coordinator._finish()
+
+    assert status.state == "completed_with_failures"
+    assert status.completed_codes == 1
+    assert status.training_ready_codes == 0
+    assert status.coverage_status == "historical_data_insufficient"
+    assert status.historical_effective_facts_status == "historical_data_insufficient"
+    assert "historical_industry_effective_at_unavailable" in status.failure_reasons
+    assert (coordinator._run.root / "manifest.json").is_file()
+
+    inspected = inspect_baostock_history(tmp_path, sessions=1)
+    assert inspected.completed_codes == 1
+    assert inspected.training_ready_codes == 0
+    assert inspected.historical_effective_facts_status == "historical_data_insufficient"
+
+
 def test_incomplete_historical_industry_has_stable_failure_code() -> None:
     assert _failure_code(ValueError("BaoStock historical industry does not cover every expected date")) == (
         "historical_industry_incomplete"
@@ -263,6 +290,75 @@ def test_inspection_reports_in_progress_checkpoint_counts_without_a_manifest(tmp
     assert status.completed_codes == 1
     assert status.training_ready_codes == 0
     assert status.failure_reasons == ("incomplete_codes",)
+
+
+def test_inspection_keeps_root_level_legacy_checkpoints_visible_before_migration(tmp_path: Path) -> None:
+    coordinator, security, _ = _coordinator(tmp_path)
+    spec = coordinator._run.spec
+    context = coordinator._run.context
+    root = tmp_path / "baostock-daily" / "sessions-1"
+    shard = SQLiteBaoStockDailyShard(root / "shard-000.sqlite3")
+    shard.initialize(spec, context.calendar, context.universe, context.source_versions)
+    shard.save_batch(spec, _batch_for_security(security, spec))
+
+    status = inspect_baostock_history(tmp_path, sessions=1)
+
+    assert status.state == "completed_with_failures"
+    assert status.shard_count == 1
+    assert status.universe_count == 1
+    assert status.completed_codes == 1
+    assert status.training_ready_codes == 0
+
+
+def test_resume_context_loads_from_root_level_legacy_checkpoint_without_supplier_fetch(tmp_path: Path) -> None:
+    coordinator, _, _ = _coordinator(tmp_path)
+    spec = coordinator._run.spec
+    context = coordinator._run.context
+    root = tmp_path / "baostock-daily" / "sessions-1"
+    legacy = SQLiteBaoStockDailyShard(root / "shard-000.sqlite3")
+    legacy.initialize(spec, context.calendar, context.universe, context.source_versions)
+
+    resumed = _load_resume_context(root, spec)
+
+    assert resumed == context
+
+
+def test_root_level_legacy_checkpoints_migrate_into_partitions_without_data_loss(tmp_path: Path) -> None:
+    coordinator, security, _ = _coordinator(tmp_path)
+    spec = coordinator._run.spec
+    context = coordinator._run.context
+    root = tmp_path / "baostock-daily" / "sessions-1"
+    legacy = SQLiteBaoStockDailyShard(root / "shard-000.sqlite3")
+    legacy.initialize(spec, context.calendar, context.universe, context.source_versions)
+    batch = _batch_for_security(security, spec)
+    legacy.save_batch(spec, batch)
+
+    migrate_legacy_archive(root, spec, context)
+
+    migrated = SQLiteBaoStockDailyShard(root / "shards" / "main-6000.sqlite3")
+    assert migrated.snapshot(spec).batches == (batch,)
+    assert not (root / "shard-000.sqlite3").exists()
+    recovery = tuple((root / "recovery").glob("legacy-*"))
+    assert len(recovery) == 1
+    assert (recovery[0] / "shard-000.sqlite3").is_file()
+
+
+def test_checkpoint_inspection_does_not_keep_stale_failure_after_code_completed(tmp_path: Path) -> None:
+    coordinator, security, _ = _coordinator(tmp_path)
+    spec = coordinator._run.spec
+    context = coordinator._run.context
+    root = tmp_path / "baostock-daily" / "sessions-1"
+    current = SQLiteBaoStockDailyShard(root / "shards" / "main-6000.sqlite3")
+    current.initialize(spec, context.calendar, context.universe, context.source_versions)
+    current.save_batch(spec, _batch_for_security(security, spec))
+    legacy = SQLiteBaoStockDailyShard(root / "shard-000.sqlite3")
+    legacy.initialize(spec, context.calendar, context.universe, context.source_versions)
+    legacy.record_failure(spec, security.code, "supplier_query_failed")
+
+    status = inspect_baostock_history(tmp_path, sessions=1)
+
+    assert status.completed_codes == 1
+    assert status.failed_codes == 0
 
 
 def test_worker_unavailable_stops_the_run_without_failing_unattempted_codes(tmp_path: Path) -> None:

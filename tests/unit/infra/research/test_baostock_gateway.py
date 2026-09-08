@@ -125,6 +125,50 @@ def test_gateway_downloads_historical_industry_snapshots_and_compresses_interval
     assert intervals[0].effective_from == calendar.open_dates[0]
 
 
+def test_gateway_uses_supplier_update_date_for_industry_effective_time() -> None:
+    class _IndustrySdk(_Sdk):
+        def query_stock_industry(self, *, code="", date=""):
+            assert code == ""
+            return _Result(
+                ("updateDate", "code", "code_name", "industry", "industryClassification"),
+                (("2026-08-28", "sh.600001", "A", "银行", "申万一级行业"),),
+            )
+
+    gateway = BaoStockRowGateway(
+        _IndustrySdk(),
+        python_version="3.14.0",
+        dependency_versions=(("pandas", "2.3.0"),),
+    )
+    spec = BaoStockDailySpec(sessions=2)
+    calendar = gateway.fetch_calendar(spec)
+
+    intervals = gateway.fetch_industry_intervals(spec, calendar, gateway.fetch_universe(spec))
+
+    assert intervals[0].effective_from.isoformat() == "2026-08-28"
+
+
+def test_gateway_rejects_industry_rows_that_were_not_effective_at_the_requested_snapshot() -> None:
+    class _FutureIndustrySdk(_Sdk):
+        def query_stock_industry(self, *, code="", date=""):
+            assert code == ""
+            return _Result(
+                ("updateDate", "code", "code_name", "industry", "industryClassification"),
+                (("2026-08-31", "sh.600001", "A", "银行", "申万一级行业"),),
+            )
+
+    gateway = BaoStockRowGateway(
+        _FutureIndustrySdk(),
+        python_version="3.14.0",
+        dependency_versions=(("pandas", "2.3.0"),),
+    )
+    spec = BaoStockDailySpec(sessions=2)
+    calendar = gateway.fetch_calendar(spec)
+
+    intervals = gateway.fetch_industry_intervals(spec, calendar, gateway.fetch_universe(spec))
+
+    assert intervals == ()
+
+
 def test_sdk_queries_are_started_at_most_once_every_two_seconds() -> None:
     sdk = _Sdk()
     now = [0.0]

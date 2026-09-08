@@ -8,12 +8,13 @@ from pathlib import Path
 from trader.application.research.baostock_history_runtime import BaoStockRuntimeStatus
 from trader.domain.research.baostock_daily import BaoStockDailySpec
 from trader.infra.research.baostock_daily import BaoStockDailyArtifactConflictError, SQLiteBaoStockDailyShard
+from trader.infra.research.baostock_history_legacy import checkpoint_paths
 
 
 def inspect_baostock_checkpoints(root: Path, *, sessions: int) -> BaoStockRuntimeStatus:
     try:
         spec = BaoStockDailySpec(sessions=sessions)
-        paths = tuple(sorted((root / "shards").glob("*.sqlite3")))
+        paths = checkpoint_paths(root)
         if not paths:
             return BaoStockRuntimeStatus(sessions=sessions)
         shards = tuple(SQLiteBaoStockDailyShard(path) for path in paths)
@@ -26,7 +27,7 @@ def inspect_baostock_checkpoints(root: Path, *, sessions: int) -> BaoStockRuntim
         checkpoints = tuple(shard.checkpoint(spec, expected_records_by_code=expected) for shard in shards)
         completed = frozenset(code for item in checkpoints for code in item.completed_codes)
         ready = frozenset(code for item in checkpoints for code in item.ready_codes)
-        failed = frozenset(code for item in checkpoints for code, _reason in item.failures)
+        failed = frozenset(code for item in checkpoints for code, _reason in item.failures) - completed
         return BaoStockRuntimeStatus(
             state="completed_with_failures" if completed or failed else "not_started",
             sessions=sessions,
