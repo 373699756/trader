@@ -75,7 +75,6 @@ class OutcomeSettlementService:
                             bars=bars,
                             horizon=horizon,
                             benchmark_returns=tuple(item.return_pct for item in benchmarks),
-                            expected_sessions=horizon,
                             expected_trade_dates=expected_dates,
                             settled_at=now,
                         )

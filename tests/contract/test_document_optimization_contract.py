@@ -174,7 +174,8 @@ def test_history_windows_cost_ownership_and_terminal_order_are_unambiguous() -> 
     )
     positions = tuple(route.index(item) for item in ordered)
     assert positions == tuple(sorted(positions))
-    assert "状态：`reopened_by_review`" in work
+    assert "outcome_price_basis_and_tradability" in work
+    assert "v3_single_cost_ownership" in work
 
 
 def test_hash_validation_is_limited_to_trust_boundaries() -> None:

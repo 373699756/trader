@@ -50,6 +50,7 @@ from tests.component.market_data_test_support import (
     timedelta,
     timezone,
 )
+from trader.domain.outcome.models import OutcomeBar, OutcomePrice, OutcomeTradingStatus
 
 
 def test_eastmoney_normalizes_quote_and_history() -> None:
@@ -111,6 +112,35 @@ def test_eastmoney_history_fallback_attempts_each_host_once() -> None:
 
     assert len(session.calls) == 3
     assert len({call[0][0].split("/", 3)[2] for call in session.calls}) == 3
+
+
+def test_eastmoney_outcome_history_requests_explicit_qfq_and_raw_pairs() -> None:
+    qfq_payload = {
+        "data": {
+            "klines": [
+                "2026-07-14,5,5,5.1,4.9,100,1000000,4,0",
+                "2026-07-15,4.5,4.5,4.5,4.5,100,900000,0,-10",
+            ]
+        }
+    }
+    raw_payload = {
+        "data": {
+            "klines": [
+                "2026-07-14,10,10,10.2,9.8,100,1000000,4,0",
+                "2026-07-15,9,9,9,9,100,900000,0,-10",
+            ]
+        }
+    }
+    session = FakeSession([qfq_payload, raw_payload])
+    client = EastmoneyClient(timeout_seconds=2, session_factory=lambda: session)
+
+    bars = client.fetch_outcome_history("600001", days=20, now=NOW)
+
+    assert [call[1]["params"]["fqt"] for call in session.calls] == ["1", "0"]
+    assert bars[0].qfq.close == 5.0
+    assert bars[0].raw.close == 10.0
+    assert bars[1].trading_status is OutcomeTradingStatus.ONE_PRICE_LIMIT_DOWN
+    assert {bar.source for bar in bars} == {"eastmoney"}
 
 
 def test_tencent_normalizes_targeted_quote() -> None:
@@ -266,6 +296,45 @@ def test_tencent_history_preserves_volume_amount_and_turnover_fields() -> None:
     assert session.calls[0][1]["proxies"] == {"http": "", "https": "", "all": ""}
 
 
+def test_tencent_outcome_history_requests_raw_and_qfq_from_one_source() -> None:
+    qfq_rows = [
+        ["2026-07-14", "5.00", "5.00", "5.10", "4.90", "1000", {}, "1.0", "6000"],
+        ["2026-07-15", "4.50", "4.50", "4.50", "4.50", "1000", {}, "1.0", "6000"],
+    ]
+    raw_rows = [
+        ["2026-07-14", "10.00", "10.00", "10.20", "9.80", "1000", {}, "1.0", "6000"],
+        ["2026-07-15", "9.00", "9.00", "9.00", "9.00", "1000", {}, "1.0", "6000"],
+    ]
+    qfq_body = "kline_dayqfq2026=" + json.dumps({"data": {"sh600001": {"qfqday": qfq_rows}}})
+    raw_body = "kline_day2026=" + json.dumps({"data": {"sh600001": {"day": raw_rows}}})
+    session = FakeSession([qfq_body, raw_body])
+    client = TencentClient(timeout_seconds=2, session_factory=lambda: session)
+
+    bars = client.fetch_outcome_history("600001", days=20)
+
+    assert [call[1]["params"]["param"].rsplit(",", 1)[-1] for call in session.calls] == ["qfq", "bfq"]
+    assert bars[0].qfq.close == 5.0
+    assert bars[0].raw.close == 10.0
+    assert bars[1].trading_status is OutcomeTradingStatus.ONE_PRICE_LIMIT_DOWN
+    assert {bar.source for bar in bars} == {"tencent"}
+
+
+def test_tencent_outcome_history_keeps_only_complete_same_date_pairs() -> None:
+    qfq_rows = [
+        ["2026-07-14", "5.00", "5.00", "5.10", "4.90", "1000", {}, "1.0", "6000"],
+        ["2026-07-15", "5.00", "5.10", "5.20", "4.90", "1000", {}, "1.0", "6000"],
+    ]
+    raw_rows = [["2026-07-14", "10.00", "10.00", "10.20", "9.80", "1000", {}, "1.0", "6000"]]
+    qfq_body = "kline_dayqfq2026=" + json.dumps({"data": {"sh600001": {"qfqday": qfq_rows}}})
+    raw_body = "kline_day2026=" + json.dumps({"data": {"sh600001": {"day": raw_rows}}})
+    session = FakeSession([qfq_body, raw_body])
+    client = TencentClient(timeout_seconds=2, session_factory=lambda: session)
+
+    bars = client.fetch_outcome_history("600001", days=20)
+
+    assert tuple(bar.trade_date for bar in bars) == ("2026-07-14",)
+
+
 def test_tencent_history_rejects_unadjusted_day_payload_when_qfq_is_missing() -> None:
     rows = [["2026-07-15", "10", "11", "12", "9", "1000", {}, "0.3", "6000"]]
     body = "kline_dayqfq2026=" + json.dumps({"data": {"sh600001": {"day": rows}}})
@@ -353,6 +422,30 @@ def test_history_fallback_uses_eastmoney_only_when_tencent_is_insufficient() -> 
     assert len(bars) == 60
     assert primary.calls == ["600001"]
     assert fallback.calls == ["600001"]
+
+
+def test_outcome_history_fallback_keeps_raw_and_qfq_from_one_provider() -> None:
+    prices = OutcomePrice(10.0, 10.2, 9.8, 10.0)
+    expected = (OutcomeBar("2026-07-15", prices, prices, OutcomeTradingStatus.TRADABLE, "fallback"),)
+
+    class OutcomeClient(CountingHistoryClient):
+        def __init__(self, outcome_bars) -> None:
+            super().__init__(())
+            self.outcome_bars = outcome_bars
+            self.outcome_calls = []
+
+        def fetch_outcome_history(self, code, *, days):
+            self.outcome_calls.append((code, days))
+            return self.outcome_bars
+
+    primary = OutcomeClient(())
+    fallback = OutcomeClient(expected)
+
+    bars = FallbackHistoryClient(primary, fallback, minimum_rows=1).fetch_outcome_history("600001", days=20)
+
+    assert bars == expected
+    assert primary.outcome_calls == [("600001", 20)]
+    assert fallback.outcome_calls == [("600001", 20)]
 
 
 def test_sina_market_request_bypasses_environment_proxy() -> None:

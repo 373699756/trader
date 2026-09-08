@@ -18,7 +18,9 @@ from trader.application.runtime.workers import (
     submit_or_run_inline,
 )
 from trader.domain.market.models import MarketQuote
+from trader.domain.outcome.models import OutcomeBar
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
+from trader.infra.market_data.history.outcome_history import pair_outcome_history
 from trader.infra.market_data.normalization.normalize import (
     MarketQuoteInput,
     build_market_quote,
@@ -133,8 +135,55 @@ class TencentClient:
         )
 
     def fetch_history(self, code: str, *, days: int = 90, history_host: str = "proxy") -> tuple[DailyBar, ...]:
-        if len(code) != 6 or not code.isdigit() or not code.startswith(("0", "3", "6")):
+        stock = self._fetch_history_stock(
+            code,
+            days=days,
+            history_host=history_host,
+            adjustment=PriceAdjustment.QFQ,
+        )
+        rows = _qfq_rows(stock)
+        if not isinstance(rows, list):
             return ()
+        return _history_bars(rows, days=days, adjustment=PriceAdjustment.QFQ)
+
+    def fetch_outcome_history(
+        self,
+        code: str,
+        *,
+        days: int = 61,
+        history_host: str = "proxy",
+    ) -> tuple[OutcomeBar, ...]:
+        qfq_stock = self._fetch_history_stock(
+            code,
+            days=days,
+            history_host=history_host,
+            adjustment=PriceAdjustment.QFQ,
+        )
+        raw_stock = self._fetch_history_stock(
+            code,
+            days=days,
+            history_host=history_host,
+            adjustment=PriceAdjustment.RAW,
+        )
+        qfq_rows = _qfq_rows(qfq_stock)
+        raw_rows = _raw_rows(raw_stock)
+        if not isinstance(qfq_rows, list) or not isinstance(raw_rows, list):
+            return ()
+        return pair_outcome_history(
+            _history_bars(qfq_rows, days=days, adjustment=PriceAdjustment.QFQ),
+            _history_bars(raw_rows, days=days, adjustment=PriceAdjustment.RAW),
+        )
+
+    def _fetch_history_stock(
+        self,
+        code: str,
+        *,
+        days: int,
+        history_host: str,
+        adjustment: PriceAdjustment,
+    ) -> object:
+        if len(code) != 6 or not code.isdigit() or not code.startswith(("0", "3", "6")):
+            return None
         self._ensure_running()
         try:
             history_endpoint = _HISTORY_ENDPOINTS[history_host]
@@ -143,12 +192,13 @@ class TencentClient:
         end = self._wall_clock().astimezone(_SHANGHAI).date()
         start = end - timedelta(days=max(days * 2, 180))
         symbol = _symbol(code)
+        adjustment_mode = "qfq" if adjustment is PriceAdjustment.QFQ else "bfq"
         with self._session_factory() as session:
             response = session.get(
                 history_endpoint,
                 params={
-                    "_var": f"kline_dayqfq{end.year}",
-                    "param": f"{symbol},day,{start.isoformat()},{end.isoformat()},640,qfq",
+                    "_var": f"kline_day{adjustment_mode}{end.year}",
+                    "param": f"{symbol},day,{start.isoformat()},{end.isoformat()},640,{adjustment_mode}",
                     "r": "0.8205512681390605",
                 },
                 headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
@@ -160,17 +210,13 @@ class TencentClient:
         self._ensure_running()
         marker = text.find("={")
         if marker < 0:
-            return ()
+            return None
         try:
             payload = json.loads(text[marker + 1 :])
         except (TypeError, ValueError):
-            return ()
+            return None
         data = payload.get("data") if isinstance(payload, Mapping) else None
-        stock = data.get(symbol) if isinstance(data, Mapping) else None
-        rows = _qfq_rows(stock)
-        if not isinstance(rows, list):
-            return ()
-        return _history_bars(rows, days=days)
+        return data.get(symbol) if isinstance(data, Mapping) else None
 
     def _ensure_running(self) -> None:
         if self._cancel_requested():
@@ -234,7 +280,12 @@ def _timestamp(raw: str, fallback: datetime) -> datetime:
     return parsed.replace(tzinfo=_SHANGHAI)
 
 
-def _history_bars(rows: Sequence[object], *, days: int) -> tuple[DailyBar, ...]:
+def _history_bars(
+    rows: Sequence[object],
+    *,
+    days: int,
+    adjustment: PriceAdjustment,
+) -> tuple[DailyBar, ...]:
     parsed: list[tuple[date, float, float, float, float, float, float, float | None]] = []
     for raw in rows:
         if not isinstance(raw, list) or len(raw) < 9:
@@ -275,7 +326,7 @@ def _history_bars(rows: Sequence[object], *, days: int) -> tuple[DailyBar, ...]:
                 amount=amount * 10_000.0,
                 pct_change=pct_change,
                 turnover_rate=turnover_rate,
-                adjustment=PriceAdjustment.QFQ,
+                adjustment=adjustment,
                 source="tencent",
             )
         )
@@ -295,6 +346,13 @@ def _qfq_rows(stock: object) -> list[object] | None:
     if all(_day_row_is_qfq_equivalent(item) for item in raw):
         return raw
     return None
+
+
+def _raw_rows(stock: object) -> list[object] | None:
+    if not isinstance(stock, Mapping):
+        return None
+    raw = stock.get("day")
+    return raw if isinstance(raw, list) else None
 
 
 def _day_row_is_qfq_equivalent(raw: object) -> bool:

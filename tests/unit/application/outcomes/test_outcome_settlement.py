@@ -7,10 +7,21 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.application.outcomes.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
-from trader.domain.outcome.models import BenchmarkReturn, OutcomeBar, OutcomeTarget
+from trader.domain.outcome.models import (
+    BenchmarkReturn,
+    OutcomeBar,
+    OutcomePrice,
+    OutcomeTarget,
+    OutcomeTradingStatus,
+)
 from trader.domain.recommendation.models import Strategy
 
 NOW = datetime(2026, 7, 21, 15, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+
+def _bar(trade_date: str, open_price: float, high: float, low: float, close: float) -> OutcomeBar:
+    prices = OutcomePrice(open_price, high, low, close)
+    return OutcomeBar(trade_date, prices, prices, OutcomeTradingStatus.TRADABLE, "fixture")
 
 
 class _MarketData:
@@ -30,8 +41,8 @@ class _MarketData:
         assert observed_at == NOW
         return {
             "600001": (
-                OutcomeBar("2026-07-20", 10.0, 10.1, 9.9, 10.0, 0.0),
-                OutcomeBar("2026-07-21", 10.0, 10.3, 9.6, 10.2, 2.0),
+                _bar("2026-07-20", 10.0, 10.1, 9.9, 10.0),
+                _bar("2026-07-21", 10.0, 10.3, 9.6, 10.2),
             ),
         }
 
@@ -161,9 +172,7 @@ def test_d25_settlement_includes_t4_but_only_evaluates_pending_horizons(applicat
             return tuple(BenchmarkReturn(f"2026-07-{20 + offset:02d}", 0.0) for offset in range(1, 5))
 
     repository = _D25Repository()
-    bars = tuple(
-        OutcomeBar(f"2026-07-{20 + offset:02d}", 10.0, 10.5, 9.8, 10.0 + offset / 10, 1.0) for offset in range(5)
-    )
+    bars = tuple(_bar(f"2026-07-{20 + offset:02d}", 10.0, 10.5, 9.8, 10.0 + offset / 10) for offset in range(5))
     market_data = _MarketData(bars=bars)
     service = OutcomeSettlementService(
         market_data,

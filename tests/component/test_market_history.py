@@ -48,6 +48,7 @@ from tests.component.market_data_test_support import (
     timezone,
 )
 from trader.application.ports.data_plane import DataPlaneConflictError
+from trader.domain.outcome.models import OutcomeBar, OutcomePrice, OutcomeTradingStatus
 from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
 
 
@@ -95,6 +96,35 @@ def test_history_cache_fetches_sixty_one_bars_but_retains_only_twenty_raw_rows()
     assert entry.context.profile.moving_average_60d is not None
     assert status.raw_rows == 20
     assert status.profile_entries == 1
+
+
+def test_history_cache_reads_typed_outcome_pairs_without_reusing_qfq_feature_rows() -> None:
+    prices = OutcomePrice(10.0, 10.2, 9.8, 10.0)
+    expected = (OutcomeBar("2026-07-15", prices, prices, OutcomeTradingStatus.TRADABLE, "fixture"),)
+
+    class OutcomeHistory:
+        calls: list[tuple[str, int]] = []
+
+        @staticmethod
+        def fetch_history(_code, *, days):
+            return ()
+
+        def fetch_outcome_history(self, code, *, days):
+            self.calls.append((code, days))
+            return expected
+
+    history = OutcomeHistory()
+    service = _service(
+        StaticGateway((_quote(),)),
+        history,
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        wall_clock=lambda: NOW,
+    )
+
+    bars = service.history.read_outcome_bars(("600001",), NOW)
+
+    assert bars == {"600001": expected}
+    assert history.calls == [("600001", 61)]
 
 
 def test_history_cache_reuses_actionable_refresh_due_value_with_degradation() -> None:

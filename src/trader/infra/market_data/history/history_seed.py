@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol
 
+from trader.domain.outcome.models import OutcomeBar
 from trader.infra.market_data.history.history import DailyBar
 
 
@@ -12,13 +13,17 @@ class DailyHistoryClient(Protocol):
     def fetch_history(self, code: str, *, days: int = 61) -> Sequence[DailyBar]: ...
 
 
+class OutcomeHistoryClient(DailyHistoryClient, Protocol):
+    def fetch_outcome_history(self, code: str, *, days: int = 61) -> Sequence[OutcomeBar]: ...
+
+
 class FallbackHistoryClient:
     """Prefer Tencent qfq history and fall back to Eastmoney qfq history."""
 
     def __init__(
         self,
-        primary: DailyHistoryClient,
-        fallback: DailyHistoryClient,
+        primary: OutcomeHistoryClient,
+        fallback: OutcomeHistoryClient,
         *,
         minimum_rows: int = 20,
     ) -> None:
@@ -34,6 +39,14 @@ class FallbackHistoryClient:
         selected = fallback if len(fallback) >= len(primary) else primary
         return selected[-days:]
 
+    def fetch_outcome_history(self, code: str, *, days: int = 61) -> tuple[OutcomeBar, ...]:
+        primary = _safe_outcome_history(self._primary, code, days)
+        if len(primary) >= self._minimum_rows:
+            return primary[-days:]
+        fallback = _safe_outcome_history(self._fallback, code, days)
+        selected = fallback if len(fallback) >= len(primary) else primary
+        return selected[-days:]
+
 
 def _safe_history(client: DailyHistoryClient, code: str, days: int) -> tuple[DailyBar, ...]:
     try:
@@ -42,4 +55,11 @@ def _safe_history(client: DailyHistoryClient, code: str, days: int) -> tuple[Dai
         return ()
 
 
-__all__ = ["DailyHistoryClient", "FallbackHistoryClient"]
+def _safe_outcome_history(client: OutcomeHistoryClient, code: str, days: int) -> tuple[OutcomeBar, ...]:
+    try:
+        return tuple(client.fetch_outcome_history(code, days=days))
+    except Exception:
+        return ()
+
+
+__all__ = ["DailyHistoryClient", "FallbackHistoryClient", "OutcomeHistoryClient"]

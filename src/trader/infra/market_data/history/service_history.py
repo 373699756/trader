@@ -39,7 +39,7 @@ from trader.infra.market_data.history.history import (
     build_history_context,
     require_qfq_history,
 )
-from trader.infra.market_data.history.history_seed import DailyHistoryClient
+from trader.infra.market_data.history.history_seed import OutcomeHistoryClient
 from trader.infra.market_data.service.market_cache_identity import (
     _add_action_restriction,
     _history_version,
@@ -108,7 +108,7 @@ class HistoryCacheOptions(TypedDict):
 class HistoryCache:
     def __init__(
         self,
-        history_client: DailyHistoryClient,
+        history_client: OutcomeHistoryClient,
         runner: MarketTaskRunner,
         **options: Unpack[HistoryCacheOptions],
     ) -> None:
@@ -620,22 +620,59 @@ class HistoryCache:
         codes: Sequence[str],
         observed_at: datetime,
     ) -> Mapping[str, tuple[OutcomeBar, ...]]:
-        del observed_at
-        histories = self.load(codes, force=True)
-        return {
-            code: tuple(
-                OutcomeBar(
-                    trade_date=bar.trade_date,
-                    open_price=bar.open_price,
-                    high=bar.high,
-                    low=bar.low,
-                    close=bar.close,
-                    pct_change=bar.pct_change,
-                )
-                for bar in bars
-            )
-            for code, bars in histories.items()
-        }
+        requested = tuple(dict.fromkeys(codes))
+        if not requested:
+            return {}
+        source_lanes = self._runner.source_lanes
+        if source_lanes is not None and not source_lanes.owns_current_thread(_HISTORY_SOURCE_LANE):
+            identity = _source_batch_identity("outcome_history", requested, observed_at)
+            return source_lanes.submit(
+                _HISTORY_SOURCE_LANE,
+                identity,
+                observed_at,
+                self.read_outcome_bars,
+                requested,
+                observed_at,
+            ).result()
+        return self._read_outcome_bars_local(requested)
+
+    def _read_outcome_bars_local(self, codes: tuple[str, ...]) -> Mapping[str, tuple[OutcomeBar, ...]]:
+        history_pool = self._history_worker_pool or self._runner.worker_pool
+        source_lanes = self._runner.source_lanes
+        result: dict[str, tuple[OutcomeBar, ...]] = {}
+        with borrow_executor(
+            history_pool,
+            BorrowExecutorOptions(
+                worker_count=min(self._history_workers, len(codes)),
+                thread_name_prefix="outcome-history",
+                queue_capacity=len(codes),
+                nested_inline=(
+                    history_pool is self._runner.worker_pool
+                    and source_lanes is not None
+                    and source_lanes.owns_current_thread(_HISTORY_SOURCE_LANE)
+                ),
+            ),
+        ) as pool:
+            futures = {
+                submit_or_run_inline(
+                    pool,
+                    self._history_client.fetch_outcome_history,
+                    code,
+                    days=_HISTORY_CACHE_LOOKBACK_DAYS,
+                ): code
+                for code in codes
+            }
+            for future in as_completed(futures):
+                code = futures[future]
+                try:
+                    bars = tuple(sorted(future.result(), key=lambda item: item.trade_date))
+                except Exception:
+                    with self._lock:
+                        self._history_error_count += 1
+                    continue
+                if bars:
+                    result[code] = bars
+        return result
 
 
 def _serialize_daily_bar(bar: DailyBar) -> JsonObject:

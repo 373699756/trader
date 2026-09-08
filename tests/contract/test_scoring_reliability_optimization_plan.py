@@ -97,13 +97,15 @@ def test_route_cannot_smuggle_unverified_data_or_automatic_promotion() -> None:
     assert "scoring-feature-outcome-optimization" in work
 
 
-def test_work_plan_records_completed_feature_chapter_and_reopened_outcome_chapter() -> None:
+def test_work_plan_records_completed_outcome_chapter_and_next_data_qualification() -> None:
     work = _read(WORK)
 
-    assert "最近完成章节：`feature_contract_unification`" in work
-    assert "研究路线下一执行章节据此改为该修复" in work
+    assert "最近完成章节：`outcome_truth_contract`" in work
+    assert "研究路线下一执行章节为" in work
+    assert "`point_in_time_data_qualification`" in work
     assert "`outcome_truth_contract`" in work
-    assert "状态：`reopened_by_review`" in work
+    assert "outcome_price_basis_and_tradability" in work
+    assert "v3_single_cost_ownership" in work
     assert "进度在每次开始、发现阻塞、" in work
     assert "完成验证、提交并推送时更新" in work
     assert "D25" in work

@@ -10,7 +10,9 @@ from trader.domain.outcome.models import (
     BenchmarkConstituentReturn,
     BenchmarkReturn,
     OutcomeBar,
+    OutcomeExitStatus,
     OutcomeTarget,
+    OutcomeTradingStatus,
     RecommendationOutcome,
     outcome_horizons,
 )
@@ -24,7 +26,6 @@ class OutcomeEvaluationRequest:
     horizon: int
     benchmark_returns: tuple[float, ...]
     settled_at: datetime
-    expected_sessions: int | None = None
     expected_trade_dates: tuple[str, ...] = ()
     round_trip_cost_pct: float = 0.20
 
@@ -34,8 +35,22 @@ class OutcomeEvaluationRequest:
         object.__setattr__(self, "expected_trade_dates", tuple(self.expected_trade_dates))
         if not math.isfinite(self.round_trip_cost_pct) or self.round_trip_cost_pct < 0.0:
             raise ValueError("outcome round-trip cost must be finite and non-negative")
-        if self.expected_sessions is not None and self.expected_sessions < 0:
-            raise ValueError("expected outcome sessions cannot be negative")
+        if tuple(sorted(set(self.expected_trade_dates))) != self.expected_trade_dates:
+            raise ValueError("expected outcome trade dates must be sorted and unique")
+
+
+@dataclass(frozen=True)
+class _SettlementPoint:
+    trade_date: str
+    qfq_low: float
+    qfq_close: float
+    exit_status: OutcomeExitStatus
+
+
+@dataclass(frozen=True)
+class _SettlementWindow:
+    points: tuple[_SettlementPoint, ...]
+    failure_reason: str = ""
 
 
 class CanonicalOutcomeEvaluator:
@@ -61,36 +76,30 @@ class CanonicalOutcomeEvaluator:
         horizon = request.horizon
         benchmark_returns = request.benchmark_returns
         settled_at = request.settled_at
-        expected_sessions = request.expected_sessions
         expected_trade_dates = request.expected_trade_dates
         round_trip_cost_pct = request.round_trip_cost_pct
         if horizon not in outcome_horizons(target.strategy):
             raise ValueError("outcome horizon is incompatible with strategy")
         ordered_bars = tuple(sorted(bars, key=lambda bar: bar.trade_date))
+        if len({bar.trade_date for bar in ordered_bars}) != len(ordered_bars):
+            return _insufficient(target, horizon, settled_at, "duplicate_trade_date")
         reference = next((bar for bar in ordered_bars if bar.trade_date == target.recommend_date), None)
         ordered = tuple(bar for bar in ordered_bars if bar.trade_date > target.recommend_date)
-        if expected_sessions is not None and expected_sessions > len(ordered):
-            return _insufficient(target, horizon, settled_at, "missing_or_suspended_session")
-        window = ordered[:horizon]
-        if len(window) < horizon:
-            return _insufficient(target, horizon, settled_at, "horizon_not_due")
-        if expected_trade_dates and tuple(bar.trade_date for bar in window) != expected_trade_dates[:horizon]:
-            return _insufficient(target, horizon, settled_at, "missing_or_suspended_session")
-        if (
-            reference is None
-            or not _bars_are_valid((reference, *window))
-            or not math.isfinite(target.anchor_price)
-            or target.anchor_price <= 0.0
-            or not math.isfinite(target.atr20_pct)
-            or target.atr20_pct <= 0.0
-        ):
+        if reference is None or reference.trading_status is OutcomeTradingStatus.UNKNOWN:
+            return _insufficient(target, horizon, settled_at, "invalid_reference_bar")
+        anchor_qfq_price = _anchor_qfq_price(target.anchor_raw_price, reference)
+        if anchor_qfq_price is None or not math.isfinite(target.atr20_pct) or target.atr20_pct <= 0.0:
             return _insufficient(target, horizon, settled_at, "invalid_price_window")
-        if _has_price_discontinuity(reference.close, window):
-            return _insufficient(target, horizon, settled_at, "price_discontinuity")
-        minimum_low = min(bar.low for bar in window)
-        end_close = window[-1].close
-        gross = (end_close / target.anchor_price - 1.0) * 100.0
-        mae = (minimum_low / target.anchor_price - 1.0) * 100.0
+        settlement = _settlement_window(reference, ordered, expected_trade_dates, horizon)
+        if settlement is None:
+            return _insufficient(target, horizon, settled_at, "horizon_not_due")
+        if settlement.failure_reason:
+            return _insufficient(target, horizon, settled_at, settlement.failure_reason)
+        window = settlement.points
+        minimum_low = min(point.qfq_low for point in window)
+        end_close = window[-1].qfq_close
+        gross = (end_close / anchor_qfq_price - 1.0) * 100.0
+        mae = (minimum_low / anchor_qfq_price - 1.0) * 100.0
         mae_atr = mae / target.atr20_pct
         threshold = -1.5 if target.strategy in {Strategy.TODAY, Strategy.TOMORROW} else -2.5
         benchmark = _compound_returns(benchmark_returns[:horizon]) if len(benchmark_returns) >= horizon else None
@@ -103,10 +112,15 @@ class CanonicalOutcomeEvaluator:
             horizon=horizon,
             status="complete" if benchmark is not None else "benchmark_missing",
             settled_at=settled_at,
-            anchor_price=target.anchor_price,
+            anchor_raw_price=target.anchor_raw_price,
+            anchor_qfq_price=anchor_qfq_price,
             atr20_pct=target.atr20_pct,
-            minimum_low=minimum_low,
-            end_close=end_close,
+            minimum_qfq_low=minimum_low,
+            end_qfq_close=end_close,
+            exit_status=window[-1].exit_status,
+            untradable_dates=tuple(
+                point.trade_date for point in window if point.exit_status is not OutcomeExitStatus.TRADABLE
+            ),
             gross_return_pct=gross,
             benchmark_return_pct=benchmark,
             net_excess_return_pct=net_excess,
@@ -155,30 +169,67 @@ def _insufficient(
         horizon=horizon,
         status="insufficient_data",
         settled_at=settled_at,
-        anchor_price=target.anchor_price,
+        anchor_raw_price=target.anchor_raw_price,
+        anchor_qfq_price=None,
         atr20_pct=target.atr20_pct,
         quality_reason=reason,
     )
 
 
-def _bars_are_valid(bars: tuple[OutcomeBar, ...]) -> bool:
-    return all(
-        all(math.isfinite(value) and value > 0.0 for value in (bar.open_price, bar.high, bar.low, bar.close))
-        and math.isfinite(bar.pct_change)
-        and bar.high >= max(bar.open_price, bar.close, bar.low)
-        and bar.low <= min(bar.open_price, bar.close, bar.high)
-        for bar in bars
-    )
+def _anchor_qfq_price(anchor_raw_price: float, reference: OutcomeBar) -> float | None:
+    if not math.isfinite(anchor_raw_price) or anchor_raw_price <= 0.0:
+        return None
+    factor = reference.qfq.close / reference.raw.close
+    converted = anchor_raw_price * factor
+    return converted if math.isfinite(converted) and converted > 0.0 else None
 
 
-def _has_price_discontinuity(anchor_price: float, bars: tuple[OutcomeBar, ...]) -> bool:
-    previous_close = anchor_price
-    for current in bars:
-        implied = (current.close / previous_close - 1.0) * 100.0
-        if abs(implied - current.pct_change) > 0.5:
-            return True
-        previous_close = current.close
-    return False
+def _settlement_window(
+    reference: OutcomeBar,
+    ordered: tuple[OutcomeBar, ...],
+    expected_trade_dates: tuple[str, ...],
+    horizon: int,
+) -> _SettlementWindow | None:
+    if expected_trade_dates:
+        if len(expected_trade_dates) < horizon:
+            return None
+        by_date = {bar.trade_date: bar for bar in ordered}
+        dates = expected_trade_dates[:horizon]
+    else:
+        if len(ordered) < horizon:
+            return None
+        dates = tuple(bar.trade_date for bar in ordered[:horizon])
+        by_date = {bar.trade_date: bar for bar in ordered}
+    previous_close = reference.qfq.close
+    points: list[_SettlementPoint] = []
+    for trade_date in dates:
+        bar = by_date.get(trade_date)
+        if bar is None:
+            points.append(
+                _SettlementPoint(
+                    trade_date,
+                    previous_close,
+                    previous_close,
+                    OutcomeExitStatus.MISSING_CARRIED_FORWARD,
+                )
+            )
+            continue
+        exit_status = _exit_status(bar.trading_status)
+        if exit_status is None:
+            return _SettlementWindow((), "tradability_unknown")
+        points.append(_SettlementPoint(trade_date, bar.qfq.low, bar.qfq.close, exit_status))
+        previous_close = bar.qfq.close
+    return _SettlementWindow(tuple(points))
+
+
+def _exit_status(status: OutcomeTradingStatus) -> OutcomeExitStatus | None:
+    if status is OutcomeTradingStatus.TRADABLE:
+        return OutcomeExitStatus.TRADABLE
+    if status is OutcomeTradingStatus.SUSPENDED:
+        return OutcomeExitStatus.SUSPENDED
+    if status is OutcomeTradingStatus.ONE_PRICE_LIMIT_DOWN:
+        return OutcomeExitStatus.ONE_PRICE_LIMIT_DOWN
+    return None
 
 
 def _compound_returns(values: tuple[float, ...]) -> float | None:

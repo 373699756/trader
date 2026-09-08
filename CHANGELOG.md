@@ -6,6 +6,27 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求把已确认的 V3 重复成本与 Outcome 真值缺口排入工程计划，并继续执行下一个完整未完成章节。
+  根因已确认：活动 `OutcomeBar` 只有一套无复权身份的 OHLC，raw 决策锚点被直接除以前复权退出价；缺失交易日、
+  停牌和一字跌停也没有进入稳定退出状态。最初 fixture 方案还错误假设腾讯一次 qfq 响应同时包含 raw；把
+  raw/qfq 覆盖加入统一实测后稳定暴露成对历史为 0，进一步确认腾讯 raw 请求必须显式使用 `bfq`，且两种
+  返回窗口会相差交易日。Added: 新增不可变 `OutcomePrice`、`OutcomeTradingStatus`、`OutcomeExitStatus`、
+  raw/qfq 成对边界和历史诊断中的普通特征/Outcome 双覆盖字段；新增锚点换算、缺日顺延、停牌、一字跌停、
+  未知状态失败关闭、供应商成对/fallback、持久化线格式和诊断降级回归。Changed: raw 盘中锚点先按推荐日
+  同源 `qfq.close/raw.close` 转为 qfq，收益、MAE 与退出估值只使用 qfq；缺少完整价格对的预期交易日按上一
+  有效 qfq close carry-forward，退出状态和不可交易日期随 outcome 持久化。腾讯分别请求 `qfq/bfq`，东财
+  分别请求 `fqt=1/0`；窗口不齐只保留同源同日完整交集，fallback 不跨源拼接。Fixed: 消除 raw/qfq 混算、
+  缺日样本删除和退出不可交易事实丢失；统一实测 600519 得到普通 qfq 61 行、同源同日 Outcome 对 60 行、
+  零错误并通过覆盖门。Removed: 删除旧 `anchor_price/minimum_low/end_close` 歧义持久化字段和价格跳变猜测，
+  未删除正式证据、评分档位或必要完整性 Hash。Verification: Outcome/供应商/历史/持久化/调度及文档契约
+  定向回归通过；`make format-check`、`make lint`、`make type-check`、`make test`、`make package` 和
+  `git diff --check` 通过，严格复杂度债务保持为零；打包首次受沙箱代理限制，按授权在沙箱外用相同命令
+  重跑成功。公开 API/SSE、冻结、DeepSeek、评分融合、活动 Web 与桌面布局专项不适用，因为本批不改变
+  这些边界。Residual Risks: `v3_single_cost_ownership` 已稳定排入 `tomorrow_v3_training_validation`，但受点时
+  数据、候选召回和有限参数研究前置门阻塞，本批没有提前删除训练标签的 20bp、重训/激活 V3 或声称未来收益
+  已提高；供应商缺少任一价格侧时会保守顺延，完整 14:50 点时与终端留出仍待后续章节闭合。
+  `Regression-Key: outcome-qfq-raw-tradability-truth`。
+
 - 用户要求结合此前四份文档 Review 的问题先统一契约，再删除没有实际保护价值的 Hash 校验。根因已确认：文档
   混淆 V1/V2/V3 在线 61 日窗口与 V3 最多 2000 日离线训练，把 V3 训练标签和在线执行成本重复扣除，允许
   `historical_validated` 在完整终端留出之前出现，且 outcome 没有统一 raw/qfq 与退出不可交易语义；代码中
