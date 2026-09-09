@@ -376,6 +376,8 @@ def _decision_item(
         ),
         risk_codes=tuple(fact.risk_code for fact in (*entry.local_risk_facts, *entry.deepseek_risk_facts)),
         reason=reason,
+        board=entry.features.quote.board,
+        selection_rank=entry.selection_rank,
         name=entry.features.quote.name,
         industry=entry.features.quote.industry,
         quote=_decision_quote(entry.features.quote),

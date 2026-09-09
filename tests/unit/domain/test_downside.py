@@ -5,7 +5,7 @@ from dataclasses import replace
 import pytest
 
 from trader.domain.recommendation.models import Strategy
-from trader.domain.recommendation.risk_fusion.downside import assess_downside, derive_entry_setup
+from trader.domain.recommendation.risk_fusion.downside import EntrySetup, assess_downside, derive_entry_setup
 
 
 def test_heat_alone_does_not_trigger_downside_guard(feature_factory) -> None:
@@ -106,6 +106,42 @@ def test_shrink_pullback_and_volume_breakout_are_deterministic(feature_factory) 
     assert derive_entry_setup(pullback).score == 100.0
     assert derive_entry_setup(breakout).setup_type == "volume_breakout"
     assert derive_entry_setup(breakout).score == 100.0
+
+
+def test_confirmed_pullback_does_not_require_breakout_only_inputs(feature_factory) -> None:
+    feature = feature_factory(
+        price=10.05,
+        values={
+            "ma5": 10.0,
+            "ma10": 9.9,
+            "ma20": 9.8,
+            "ma20_slope_pct": 1.0,
+            "volume_to_5d_average": 0.7,
+            "prior_high_20d": None,
+            "breakout_deviation_pct": None,
+            "close_location": None,
+        },
+    )
+
+    assert derive_entry_setup(feature) == EntrySetup("shrink_pullback", 100.0)
+
+
+def test_confirmed_breakout_does_not_require_pullback_only_inputs(feature_factory) -> None:
+    feature = feature_factory(
+        price=10.3,
+        values={
+            "ma5": None,
+            "ma10": None,
+            "ma20": None,
+            "ma20_slope_pct": None,
+            "volume_to_5d_average": 2.0,
+            "prior_high_20d": 10.0,
+            "breakout_deviation_pct": 3.0,
+            "close_location": 70.0,
+        },
+    )
+
+    assert derive_entry_setup(feature) == EntrySetup("volume_breakout", 100.0)
 
 
 def test_entry_quality_remains_available_without_optional_industry_breadth(feature_factory) -> None:

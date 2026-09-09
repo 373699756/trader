@@ -7,6 +7,7 @@ from datetime import date, datetime
 from typing import Literal, TypeAlias, cast
 from zoneinfo import ZoneInfo
 
+from trader.domain.market.models import Board
 from trader.domain.recommendation.decision_identity import (
     COMMITTED_RECORD_SCHEMA_VERSION,
     DECISION_IDENTITY_SCHEMA_VERSION,
@@ -70,6 +71,8 @@ _ITEM_FIELDS = frozenset(
         "score_components",
         "risk_codes",
         "reason",
+        "board",
+        "selection_rank",
         "setup_type",
         "downside",
         "review_outcome",
@@ -185,6 +188,8 @@ def _decision_item_from_json(raw: object) -> DecisionItem:
         score_components=_score_pairs(value.get("score_components")),
         risk_codes=tuple(_strings(value.get("risk_codes"), "risk_codes")),
         reason=_text(value, "reason"),
+        board=Board(_text(value, "board")),
+        selection_rank=_integer(value, "selection_rank"),
         name=_optional_display_text(value.get("name"), "decision item name"),
         industry=_optional_display_text(value.get("industry"), "decision item industry"),
         quote=_decision_quote_from_json(value.get("quote")),

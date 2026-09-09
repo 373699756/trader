@@ -977,6 +977,7 @@ const frozenTodayItem = {
   rank: 1,
   code: "600001",
   name: "锚点股票",
+  board: "main",
   industry: "测试行业",
   anchor_price: 10,
   anchor_source_time: "2026-07-23T11:19:50+08:00",
@@ -993,6 +994,7 @@ const frozenTodayItem = {
 };
 const frozenTodayRows = state.tableRows([frozenTodayItem], frozenToday);
 assert.match(frozenTodayRows, /11:19:50/);
+assert.match(frozenTodayRows, /主板/);
 assert.match(frozenTodayRows, />11\.00</);
 assert.match(frozenTodayRows, /\+10\.00%/);
 const frozenTodayDrawer = state.drawer(frozenTodayItem, frozenToday);
@@ -1631,6 +1633,8 @@ assert.strictEqual(
   "TopK 行情刷新暂时降级",
 );
 assert.strictEqual(sandbox.window.TraderRender.fusionModeLabel("local_degraded"), "本地评分模式");
+assert.strictEqual(sandbox.window.TraderRender.actionReason("industry_limit"), "超过行业集中度上限");
+assert.strictEqual(sandbox.window.TraderRender.actionReason("top_k_limit"), "位于正式候选池名额之外");
 const runtimeDiagnostics = [];
 sandbox.window.TraderRender.rememberDiagnostic(runtimeDiagnostics, "raw_runtime_code");
 sandbox.window.TraderRender.rememberDiagnostic(runtimeDiagnostics, "raw_runtime_code");

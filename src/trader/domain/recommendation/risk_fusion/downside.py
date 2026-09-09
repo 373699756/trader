@@ -67,39 +67,37 @@ def derive_entry_setup_values(
     breakout_deviation = _finite(values.get("breakout_deviation_pct"))
     close_location = _finite(values.get("close_location"))
     industry_breadth = _finite(values.get("industry_breadth"))
-    required = (
-        ma5,
-        ma10,
-        ma20,
-        slope,
-        price,
-        volume_ratio,
-        prior_high,
-        breakout_deviation,
-        close_location,
-    )
-    if any(value is None for value in required):
-        return EntrySetup("none", None)
-    assert ma5 is not None and ma10 is not None and ma20 is not None
-    assert slope is not None and price is not None and volume_ratio is not None
-    assert prior_high is not None and breakout_deviation is not None
-    assert close_location is not None
-    trend_ok = ma5 >= ma10 >= ma20 and slope > 0.0 and price >= ma20
-    if not trend_ok:
-        return EntrySetup("none", 0.0)
-    near_support = abs(price / ma5 - 1.0) <= 0.01 or abs(price / ma10 - 1.0) <= 0.02
-    if near_support and volume_ratio <= 0.70:
+    pullback_ready = all(value is not None for value in (ma5, ma10, ma20, slope, price, volume_ratio))
+    breakout_ready = all(
+        value is not None for value in (price, volume_ratio, prior_high, breakout_deviation, close_location)
+    ) and (not require_industry_breadth or industry_breadth is not None)
+    pullback_confirmed = False
+    trend_ok = False
+    if pullback_ready:
+        assert ma5 is not None and ma10 is not None and ma20 is not None
+        assert slope is not None and price is not None and volume_ratio is not None
+        trend_ok = ma5 >= ma10 >= ma20 and slope > 0.0 and price >= ma20
+        near_support = abs(price / ma5 - 1.0) <= 0.01 or abs(price / ma10 - 1.0) <= 0.02
+        pullback_confirmed = trend_ok and near_support and volume_ratio <= 0.70
+    if pullback_confirmed:
         return EntrySetup("shrink_pullback", 100.0)
-    breakout = (
-        price >= prior_high
-        and volume_ratio >= 2.0
-        and close_location >= 70.0
-        and 0.0 <= breakout_deviation <= 5.0
-        and (not require_industry_breadth or (industry_breadth is not None and industry_breadth >= 60.0))
-    )
-    if breakout:
+    if breakout_ready:
+        assert price is not None and volume_ratio is not None and prior_high is not None
+        assert breakout_deviation is not None and close_location is not None
+        breakout_confirmed = (
+            price >= prior_high
+            and volume_ratio >= 2.0
+            and close_location >= 70.0
+            and 0.0 <= breakout_deviation <= 5.0
+            and (not require_industry_breadth or (industry_breadth is not None and industry_breadth >= 60.0))
+        )
+    else:
+        breakout_confirmed = False
+    if breakout_confirmed:
         return EntrySetup("volume_breakout", 100.0)
-    return EntrySetup("trend_unconfirmed", 50.0)
+    if not pullback_ready or not breakout_ready:
+        return EntrySetup("none", None)
+    return EntrySetup("trend_unconfirmed", 50.0) if trend_ok else EntrySetup("none", 0.0)
 
 
 def assess_downside(

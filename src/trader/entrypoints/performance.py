@@ -466,6 +466,8 @@ def _performance_decision(
                 (("local_score", 85.0 - rank / 10.0),),
                 (),
                 "threshold_met" if rank <= 6 else "near_threshold",
+                quote.board,
+                rank if rank <= 6 else rank - 6,
                 quote.name,
                 quote.industry,
                 DecisionQuote(

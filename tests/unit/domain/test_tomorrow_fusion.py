@@ -265,11 +265,22 @@ def test_final_action_pools_apply_stable_board_and_industry_limits() -> None:
     epoch = build_scored_decision_epoch(_request(_selection(tuple(reversed(evaluations)))))
     selected = tuple(item for item in epoch.entries if item.selected)
     executable = tuple(item for item in selected if item.action is RecommendationAction.EXECUTABLE)
+    by_code = {item.code: item for item in epoch.entries}
 
-    assert len(executable) == 6
+    assert len(executable) == 4
     assert sum(item.features.quote.board is Board.MAIN for item in executable) <= 4
     assert sum(item.features.quote.industry == "concentrated" for item in executable) <= 2
     assert tuple(item.rank for item in selected) == tuple(range(1, len(selected) + 1))
+    assert tuple(item.code for item in executable) == ("600000", "600001", "600004", "600005")
+    assert (by_code["600002"].selection_rank, by_code["600002"].decision_skip_reason) == (
+        3,
+        "industry_limit",
+    )
+    assert (by_code["600003"].selection_rank, by_code["600003"].decision_skip_reason) == (
+        4,
+        "industry_limit",
+    )
+    assert (by_code["600006"].selection_rank, by_code["600006"].decision_skip_reason) == (7, "top_k_limit")
     assert tuple(item.code for item in executable) == tuple(
         item.code
         for item in sorted(
@@ -345,6 +356,30 @@ def test_decision_epoch_carries_and_enforces_its_selection_limits() -> None:
         replace(epoch, selection_limits=replace(epoch.selection_limits, top_k=0))
     with pytest.raises(ValueError, match="board limit"):
         replace(epoch, selection_limits=replace(epoch.selection_limits, maximum_board_fraction=0.30))
+
+
+def test_decision_epoch_rejects_pool_external_backfill_even_when_capacity_is_unchanged() -> None:
+    evaluations = tuple(
+        _evaluation(
+            index,
+            local_score=95.0 - index,
+            board=Board.MAIN if index % 2 == 0 else Board.CHINEXT,
+            industry=f"industry-{index}",
+        )
+        for index in range(7)
+    )
+    epoch = build_scored_decision_epoch(_request(_selection(evaluations)))
+    entries = []
+    for item in epoch.entries:
+        if item.selection_rank == 6:
+            entries.append(replace(item, selected=False, rank=0, decision_skip_reason="top_k_limit"))
+        elif item.selection_rank == 7:
+            entries.append(replace(item, selected=True, rank=6, decision_skip_reason=""))
+        else:
+            entries.append(item)
+
+    with pytest.raises(ValueError, match="outside its fixed top window"):
+        replace(epoch, entries=tuple(entries))
 
 
 @pytest.mark.parametrize(

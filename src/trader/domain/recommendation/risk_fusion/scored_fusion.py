@@ -104,6 +104,7 @@ class ScoredDecisionEntry:
     review: DeepSeekReview | None
     review_outcome: ReviewOutcome | None
     veto: bool
+    selection_rank: int = 0
     local_selection_skip_reason: str = ""
     decision_skip_reason: str = ""
 
@@ -318,6 +319,7 @@ def _validate_decision_entries(
         raise ValueError("selected decision ranks must be contiguous")
     if any(item.action is RecommendationAction.UNAVAILABLE for item in payload.selected):
         raise ValueError("unavailable decisions cannot be selected")
+    _validate_selection_ranks(payload.entries)
     _validate_stage_entries(epoch.projection_stage, payload.entries, set(payload.review_codes))
     _validate_selected_pools(list(payload.selected), epoch.selection_limits)
 
@@ -491,6 +493,7 @@ def _fuse_evaluation(
         review=review,
         review_outcome=review.outcome if review is not None else None,
         veto=veto,
+        selection_rank=0,
         local_selection_skip_reason=evaluation.selection_skip_reason,
         decision_skip_reason="" if action is not RecommendationAction.UNAVAILABLE else action_reason,
     )
@@ -570,15 +573,15 @@ def _select_pool(
     policy: ScoredDecisionPolicy,
 ) -> tuple[tuple[ScoredDecisionEntry, str], ...]:
     ordered = sorted(entries, key=_decision_order)
-    selected_count = 0
     board_counts: Counter[Board] = Counter()
     industry_counts: Counter[str] = Counter()
     maximum_per_board = math.ceil(limit * policy.maximum_board_fraction) if limit else 0
     result: list[tuple[ScoredDecisionEntry, str]] = []
-    for item in ordered:
+    for selection_rank, original in enumerate(ordered, start=1):
+        item = replace(original, selection_rank=selection_rank)
         board = item.features.quote.board
         industry = item.features.quote.industry.strip() or "unknown"
-        if selected_count >= limit:
+        if selection_rank > limit:
             result.append(
                 (item, "top_k_limit" if item.action is RecommendationAction.EXECUTABLE else "observation_limit")
             )
@@ -589,7 +592,6 @@ def _select_pool(
         if industry_counts[industry] >= policy.maximum_per_industry:
             result.append((item, "industry_limit"))
             continue
-        selected_count += 1
         board_counts[board] += 1
         industry_counts[industry] += 1
         result.append((item, ""))
@@ -677,6 +679,8 @@ def _validate_selected_pools(
     for pool, pool_limit in ((executable, limits.top_k), (observations, limits.observation_limit)):
         if tuple(sorted(pool, key=_decision_order)) != pool:
             raise ValueError("selected decision pool order is unstable")
+        if any(item.selection_rank > pool_limit for item in pool):
+            raise ValueError("selected decision is outside its fixed top window")
         board_limit = math.ceil(pool_limit * limits.maximum_board_fraction) if pool_limit else 0
         board_counts = Counter(item.features.quote.board for item in pool)
         industry_counts = Counter(item.features.quote.industry.strip() or "unknown" for item in pool)
@@ -684,6 +688,18 @@ def _validate_selected_pools(
             raise ValueError("selected decision pool exceeds its board limit")
         if any(count > limits.maximum_per_industry for count in industry_counts.values()):
             raise ValueError("selected decision pool exceeds its industry limit")
+
+
+def _validate_selection_ranks(entries: tuple[ScoredDecisionEntry, ...]) -> None:
+    unavailable = tuple(item for item in entries if item.action is RecommendationAction.UNAVAILABLE)
+    if any(item.selection_rank != 0 for item in unavailable):
+        raise ValueError("unavailable decisions must use selection rank zero")
+    for action in (RecommendationAction.EXECUTABLE, RecommendationAction.OBSERVE):
+        pool = tuple(sorted((item for item in entries if item.action is action), key=lambda item: item.selection_rank))
+        if [item.selection_rank for item in pool] != list(range(1, len(pool) + 1)):
+            raise ValueError("decision selection ranks must be contiguous within each action pool")
+        if tuple(sorted(pool, key=_decision_order)) != pool:
+            raise ValueError("decision selection ranks must preserve the stable score order")
 
 
 def _local_order(item: ScoredStockEvaluation) -> tuple[float, float, str]:
@@ -725,6 +741,7 @@ def _decision_entry_identity(item: ScoredDecisionEntry) -> dict[str, object]:
         "action_reason": item.action_reason,
         "selected": item.selected,
         "rank": item.rank,
+        "selection_rank": item.selection_rank,
         "candidate_score": item.candidate_score,
         "candidate_rank": item.candidate_rank,
         "board_rank": item.board_rank,

@@ -39,10 +39,12 @@ class DecisionHistoryReader(Protocol):
 class DecisionItemView:
     code: str
     name: str
+    board: str
     industry: str
     group: str | None
     selected: bool
     rank: int
+    selection_rank: int
     action: str
     action_reason: str
     score_status: ScoreStatus
@@ -209,7 +211,7 @@ def _observation_draft(decision: ScoredDecision) -> DecisionDraftView:
         key=lambda item: item.rank,
     )
     all_items = tuple(_scored_item(item, None) for item in decision.items)
-    top_scores = tuple(sorted(all_items, key=lambda item: (-(item.final_score or 0.0), item.code))[:3])
+    top_scores = tuple(sorted(all_items, key=_top_score_order)[:3])
     return DecisionDraftView(
         decision.version,
         decision.content_hash,
@@ -233,7 +235,7 @@ def _scored_view(
     top_scores = tuple(
         sorted(
             (item for item in all_items if item.final_score is not None),
-            key=lambda item: (-(item.final_score or 0.0), item.code),
+            key=_top_score_order,
         )[:3]
     )
     coverage = scored_decision_coverage(decision)
@@ -270,10 +272,12 @@ def _scored_item(item: DecisionItem, quote: DecisionQuote | None) -> DecisionIte
     return DecisionItemView(
         item.code,
         item.name,
+        item.board.value,
         item.industry,
         None,
         item.selected,
         item.rank,
+        item.selection_rank,
         item.action.value,
         item.reason,
         "scored",
@@ -356,9 +360,11 @@ def _long_item(item: LongProjectionItem) -> DecisionItemView:
     return DecisionItemView(
         item.code,
         item.name,
+        "unsupported",
         item.industry,
         item.group,
         True,
+        0,
         0,
         "observe",
         "fixed_long_watchlist",
@@ -389,6 +395,10 @@ def _valid_overlay_quotes(decision: ScoredDecision, overlay: DecisionOverlay | N
     ):
         return {}
     return {quote.code: quote for quote in overlay.quotes}
+
+
+def _top_score_order(item: DecisionItemView) -> tuple[float, float, str]:
+    return (-(item.final_score or 0.0), -(item.local_score or 0.0), item.code)
 
 
 def _empty_view(

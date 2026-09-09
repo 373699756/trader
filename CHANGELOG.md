@@ -6,6 +6,27 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求再次逐节核对 `01_评分逻辑.md` 与当前工程，修复扫描问题，并在文档中区分已实现、代码不一致和
+  后续缺口。根因确认四项：D25 入场质量错误地要求回踩与突破两组专属字段同时齐全；最终集中度选择会跳过
+  受限股票后继续从第 7 名以后补数且不保留动作池原位次；`top_scores` 同分时遗漏本地分第二排序键；短线
+  决策身份未固化板块，导致持久化、GET/SSE 和 Web 无法可靠展示评分时板块。另确认工程实施计划仍把已经
+  闭合的 V3 扣成本前训练标签写成待修复，属于文档假缺口。Added: 为短线决策增加有类型 `board` 和动作池
+  `selection_rank`，贯穿内容哈希、正式记录 codec、查询、GET/SSE 与 Web；新增逐节评分链实现复核报告。
+  Changed: D25 回踩/突破改为独立确认；正式池与观察池先固定前 N 名再做集中度，受限项保留原位次和原因且
+  禁止池外补数；最高分统一按最终分、本地分、代码稳定排序；页面展示中文板块及集中度/池外原因。
+  Fixed: 实施计划改为如实记录 `label_target=pre_cost_excess_return`、`training_cost_bps=0` 已实现，只保留
+  active archive 接入、流式样本与三件工件整组原子发布等真实任务，并修正 Today/D25 可选章节编号。
+  Verification: D25 独立分支、固定 TopN/集中度、决策身份/codec、查询排序、SSE、Web schema/JS、文档状态
+  契约及相邻决策链定向回归通过；`make format-check`、`make lint`（严格复杂度零债务）、`make type-check`
+  （383 个源码文件）、完整 `make test` 和 `make package` 通过。打包首次仅因沙箱禁止隔离环境下载 setuptools
+  失败，获准在主机环境用同一命令重跑后成功。桌面 runner 曾成功加载页面并发现、修复 unavailable fixture
+  遗留 `selection_rank=1`；修复后的 fixture/页面契约回归通过。
+  Residual Risks: 整份评分逻辑尚未全部实现；动态归档尚未贯通 V3 训练输入，当前 V3 工件不合格，真实历史
+  行业/分钟/资格/风险点时证据、统一 `ShadowMonitor`、终端留出、Shadow 收益门与人工生产授权均未闭合；
+  V1/V2 个股严重亏损概率继续明确为 `not_modeled`，不得用总体统计伪造。三档浏览器最终渲染门仍受外部环境
+  阻断：Firefox/geckodriver 未安装，Chrome 在修复后复跑时未能在 15 秒内开放 DevTools 端点；不得宣称该项通过。
+  `Regression-Key: scoring-chain-implementation-status-and-selection-rank`。
+
 - 用户要求实现“父归档 + 增量归档”完整章节，通过测试后自动执行增量下载，并在下载结束后继续运行现有 Tomorrow
   训练入口。根因确认：既有 `download_history` 遇到父 `manifest.json` 会直接返回，无法消费已交付的只读缺口
   计划；旧 92 个 SQLite 分片又已封存，不能原地扩展或改写。Added: 新增稳定字段族、active/increment manifest、

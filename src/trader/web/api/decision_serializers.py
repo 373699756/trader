@@ -78,10 +78,12 @@ def serialize_decision_item(item: DecisionItemView) -> dict[str, object]:
     return {
         "code": item.code,
         "name": item.name,
+        "board": item.board,
         "industry": item.industry,
         "group": item.group,
         "selected": item.selected,
         "rank": item.rank,
+        "selection_rank": item.selection_rank,
         "action": item.action,
         "action_reason": item.action_reason,
         "score_status": item.score_status,
@@ -253,8 +255,10 @@ def _serialize_decision_patch_item(item: DecisionItem) -> dict[str, object]:
     model = item.model_diagnostics
     return {
         "rank": item.rank,
+        "selection_rank": item.selection_rank,
         "code": item.code,
         "name": item.name,
+        "board": item.board.value,
         "industry": item.industry,
         "price": quote.price if quote is not None else None,
         "pct_change": quote.pct_change if quote is not None else None,

@@ -31,6 +31,7 @@ from trader.application.decisions.decision_drafts import UnifiedDecisionDraftInd
 from trader.application.decisions.decision_queries import UnifiedDecisionQueries  # noqa: E402
 from trader.application.decisions.decision_stream import UnifiedDecisionEventStream  # noqa: E402
 from trader.application.ports.decision_records import CommittedDecisionRecord  # noqa: E402
+from trader.domain.market.models import Board  # noqa: E402
 from trader.domain.recommendation.decision_identity import (  # noqa: E402
     DecisionItem,
     DecisionQuote,
@@ -552,6 +553,7 @@ def _browser_services() -> tuple[UnifiedWebServices, Callable[[], None]]:
                     _observation_item(code, rank=rank, final_score=score),
                     selected=False,
                     rank=0,
+                    selection_rank=0,
                     action=RecommendationAction.UNAVAILABLE,
                     reason="risk_veto",
                 )
@@ -641,6 +643,8 @@ def _observation_item(code: str, *, rank: int, final_score: float) -> DecisionIt
         (("local_score", final_score),),
         (),
         "observation_band",
+        Board.MAIN,
+        rank,
         quote=DecisionQuote(
             code,
             10.25,

@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from trader.domain.market.models import Board
 from trader.domain.recommendation.decision_identity import (
     CommittedDecisionRecord,
     DecisionDownside,
@@ -58,6 +59,8 @@ def decision(
                 score_components=(("trend", 88.0),),
                 risk_codes=(),
                 reason="selected",
+                board=Board.MAIN,
+                selection_rank=1,
                 quote=DecisionQuote(
                     "600001",
                     10.5,
@@ -191,12 +194,16 @@ def test_formal_record_round_trip_preserves_optional_distinct_coverage() -> None
     current = replace(decision(), items=(item,), population_count=82, rejected_count=81)
     record = CommittedDecisionRecord(current, NOW + timedelta(minutes=10), "scheduled")
 
-    restored = committed_record_from_bytes(committed_record_bytes(record))
+    encoded = committed_record_bytes(record)
+    restored = committed_record_from_bytes(encoded)
+    encoded_item = json.loads(encoded)["decision"]["items"][0]
 
     assert restored.decision.population_count == 82
     assert restored.decision.rejected_count == 81
     assert restored.decision.items[0].name == "浦发银行"
     assert restored.decision.items[0].industry == "银行"
+    assert encoded_item["board"] == "main"
+    assert encoded_item["selection_rank"] == 1
     assert restored.decision.items[0].quote == item.quote
     assert restored.payload_hash == record.payload_hash
 

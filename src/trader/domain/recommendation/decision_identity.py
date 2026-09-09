@@ -11,6 +11,7 @@ from datetime import date, datetime
 from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo
 
+from trader.domain.market.models import Board
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 
 DecisionStage = Literal["local", "hybrid"]
@@ -142,6 +143,8 @@ class DecisionItem:
     score_components: tuple[tuple[str, float | None], ...]
     risk_codes: tuple[str, ...]
     reason: str
+    board: Board
+    selection_rank: int
     name: str = ""
     industry: str = ""
     quote: DecisionQuote | None = None
@@ -167,10 +170,7 @@ class DecisionItem:
             raise ValueError("decision risk codes must be structured")
         if _ACTION_REASON.fullmatch(self.reason) is None:
             raise ValueError("decision reason must be structured")
-        if self.selected and (self.rank < 1 or self.action is RecommendationAction.UNAVAILABLE):
-            raise ValueError("selected decisions require a positive rank and available action")
-        if not self.selected and self.rank != 0:
-            raise ValueError("unselected decisions must use rank zero")
+        _validate_decision_item_selection(self)
         name = _display_text(self.name, "decision item name")
         industry = _display_text(self.industry, "decision item industry")
         if self.quote is not None and self.quote.code != self.code:
@@ -533,6 +533,8 @@ def _decision_item_payload(item: DecisionItem) -> dict[str, _Json]:
         "score_components": [[name, value] for name, value in item.score_components],
         "risk_codes": list(item.risk_codes),
         "reason": item.reason,
+        "board": item.board.value,
+        "selection_rank": item.selection_rank,
     }
     if item.name:
         payload["name"] = item.name
@@ -658,6 +660,19 @@ def _validate_scored_schema(
 def _validate_score(value: float, label: str) -> None:
     if not math.isfinite(value) or not 0.0 <= value <= 100.0:
         raise ValueError(f"{label} must be finite and in [0, 100]")
+
+
+def _validate_decision_item_selection(item: DecisionItem) -> None:
+    if item.selected and (item.rank < 1 or item.action is RecommendationAction.UNAVAILABLE):
+        raise ValueError("selected decisions require a positive rank and available action")
+    if not item.selected and item.rank != 0:
+        raise ValueError("unselected decisions must use rank zero")
+    if not isinstance(item.board, Board):
+        raise ValueError("decision item board is invalid")
+    if item.action is RecommendationAction.UNAVAILABLE and item.selection_rank != 0:
+        raise ValueError("unavailable decisions must use selection rank zero")
+    if item.action is not RecommendationAction.UNAVAILABLE and item.selection_rank < 1:
+        raise ValueError("available decisions require a positive selection rank")
 
 
 def _validate_optional_score(value: float | None, label: str) -> None:

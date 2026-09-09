@@ -10,7 +10,7 @@ from trader.application.decisions.decision_drafts import UnifiedDecisionDraftInd
 from trader.application.decisions.decision_events import build_decision_committed
 from trader.application.decisions.decision_queries import UnifiedDecisionQueries
 from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
-from trader.domain.market.models import MarketQuote
+from trader.domain.market.models import Board, MarketQuote
 from trader.domain.recommendation.decision_identity import (
     DecisionItem,
     DecisionModelDiagnostics,
@@ -55,7 +55,9 @@ def test_unified_decision_routes_validate_strategy_date_and_etag() -> None:
     assert current.get_json()["draft"] is None
     assert current.get_json()["strategy"] == "today"
     assert current.get_json()["items"][0]["name"] == "浦发银行"
+    assert current.get_json()["items"][0]["board"] == "main"
     assert current.get_json()["items"][0]["industry"] == "银行"
+    assert current.get_json()["items"][0]["selection_rank"] == 1
     assert current.get_json()["items"][0]["scores"]["predicted_net_excess_pct"] == 1.25
     assert [item["code"] for item in current.get_json()["top_scores"]] == ["600000"]
     assert current.get_json()["input_versions"]["score_model"] == ("daily_reconstructible_ensemble:model-hash")
@@ -619,6 +621,8 @@ def _decision() -> ScoredDecision:
                 ),
                 (),
                 "threshold_met",
+                Board.MAIN,
+                1,
                 "浦发银行",
                 "银行",
                 DecisionQuote(

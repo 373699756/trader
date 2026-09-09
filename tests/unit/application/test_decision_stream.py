@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from trader.application.decisions.decision_events import build_decision_committed
 from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
+from trader.domain.market.models import Board
 from trader.domain.recommendation.decision_identity import (
     DecisionItem,
     DecisionOverlay,
@@ -44,6 +45,7 @@ def test_scored_decision_event_serializes_complete_replace_patch_without_snapsho
                 action=RecommendationAction.UNAVAILABLE,
                 selected=False,
                 rank=0,
+                selection_rank=0,
                 candidate_score=95.0,
                 local_score=91.0,
                 final_score=91.0,
@@ -80,6 +82,7 @@ def test_scored_decision_event_serializes_complete_replace_patch_without_snapsho
             "action_reason": "threshold_met",
             "anchor_price": None,
             "anchor_source_time": None,
+            "board": "main",
             "code": "600000",
             "downside": None,
             "industry": "",
@@ -89,6 +92,7 @@ def test_scored_decision_event_serializes_complete_replace_patch_without_snapsho
             "pct_change": None,
             "quote_status": "missing",
             "rank": 1,
+            "selection_rank": 1,
             "research_coverage": None,
             "review_outcome": None,
             "risks": [],
@@ -191,6 +195,8 @@ def _decision(strategy: Strategy, sequence: int) -> ScoredDecision:
         (("local_score", 84.0),),
         (),
         "threshold_met",
+        Board.MAIN,
+        1,
     )
     return ScoredDecision(
         strategy,

@@ -31,6 +31,10 @@
     near_score_threshold: "接近执行门槛，继续观察",
     below_score_threshold: "评分未达到执行门槛",
     model_net_utility_non_positive: "成本后净超额未转正",
+    board_concentration_limit: "超过板块集中度上限",
+    industry_limit: "超过行业集中度上限",
+    top_k_limit: "位于正式候选池名额之外",
+    observation_limit: "位于观察候选池名额之外",
     pending_merge: "等待评分合并",
   };
 
@@ -238,7 +242,8 @@
   }
 
   function stock(item) {
-    return `<span class="stock-name">${escapeHtml(item.name || "-")}</span><span class="stock-code">${escapeHtml(item.code || "-")} · ${escapeHtml(item.industry || "未分类")}</span>`;
+    const context = [BOARD_LABELS[item.board], item.industry || "未分类"].filter(Boolean).join(" · ");
+    return `<span class="stock-name">${escapeHtml(item.name || "-")}</span><span class="stock-code">${escapeHtml(item.code || "-")} · ${escapeHtml(context)}</span>`;
   }
 
   function currentRow(item) {

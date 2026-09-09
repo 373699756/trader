@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from trader.application.decisions.decision_core import UnifiedDecisionIndex
 from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.decisions.decision_queries import UnifiedDecisionQueries
+from trader.domain.market.models import Board
 from trader.domain.recommendation.decision_identity import (
     CommittedDecisionRecord,
     DecisionItem,
@@ -195,6 +196,28 @@ def test_scored_query_restores_rank_order_from_code_sorted_identity() -> None:
     ]
 
 
+def test_top_scores_break_final_score_ties_by_local_score_then_code() -> None:
+    index = UnifiedDecisionIndex()
+    parent = _decision()
+    decision = replace(
+        parent,
+        sequence=2,
+        stage="hybrid",
+        parent_version=parent.version,
+        items=(
+            _item("600003", RecommendationAction.EXECUTABLE, rank=3, final_score=80.0, local_score=81.0),
+            _item("600001", RecommendationAction.EXECUTABLE, rank=1, final_score=80.0, local_score=79.0),
+            _item("600002", RecommendationAction.EXECUTABLE, rank=2, final_score=80.0, local_score=81.0),
+        ),
+    )
+    assert index.publish(parent, expected_version=None).accepted
+    assert index.publish(decision, expected_version=parent.version).accepted
+
+    view = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), _Clock()).current(Strategy.TODAY)
+
+    assert [item.code for item in view.top_scores] == ["600002", "600003", "600001"]
+
+
 def test_not_ready_current_exposes_observation_draft_without_formal_items() -> None:
     drafts = UnifiedDecisionDraftIndex()
     draft = replace(
@@ -256,18 +279,22 @@ def _item(
     *,
     rank: int,
     final_score: float,
+    local_score: float | None = None,
 ) -> DecisionItem:
+    local = final_score if local_score is None else local_score
     return DecisionItem(
         code,
         action,
         True,
         rank,
         final_score,
+        local,
         final_score,
-        final_score,
-        (("local_score", final_score),),
+        (("local_score", local),),
         (),
         "threshold_met" if action is RecommendationAction.EXECUTABLE else "near_score_threshold",
+        Board.MAIN,
+        rank,
         f"样例{code}",
         "样例行业",
         DecisionQuote(
@@ -308,6 +335,8 @@ def _decision(*, trade_date: date = TRADE_DATE) -> ScoredDecision:
                 (("local_score", 84.0),),
                 ("risk_example",),
                 "threshold_met",
+                Board.MAIN,
+                1,
                 "浦发银行",
                 "银行",
                 DecisionQuote(
