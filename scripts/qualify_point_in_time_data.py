@@ -28,6 +28,9 @@ from trader.infra.research.h1_point_in_time_capability import (  # noqa: E402
     FreeSourceH1CapabilityProbe,
     H1HTTPSession,
 )
+from trader.infra.research.historical_industry_archive import (  # noqa: E402
+    audit_archived_historical_industry_facts,
+)
 
 
 def execute(
@@ -39,11 +42,12 @@ def execute(
     session: H1HTTPSession,
 ) -> PointInTimeDataQualificationReport:
     archive = inspect_baostock_history(history_root, sessions=2000)
+    industry = audit_archived_historical_industry_facts(history_root)
     sources = FreeSourceH1CapabilityProbe(session, timeout_seconds=timeout_seconds).run(
         code=code,
         historical_anchor_date=historical_anchor_date,
     )
-    return assemble_point_in_time_data_qualification(archive, sources)
+    return assemble_point_in_time_data_qualification(archive, sources, industry)
 
 
 def project_point_in_time_data_qualification(

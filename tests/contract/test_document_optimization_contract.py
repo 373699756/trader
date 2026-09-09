@@ -120,8 +120,8 @@ def test_work_plan_has_one_stable_baostock_task_and_historical_aliases_only() ->
     assert work.count("#### `baostock_daily_archive`") == 1
     assert "计划整体状态：`in_progress`" in work
     assert "#### `baostock_daily_archive`\n\n状态：`completed`" in work
-    assert "#### `historical_industry_facts`\n\n状态：`pending`" in work
-    assert "下一可执行数据前置项是 `historical_industry_facts`" in work
+    assert "#### `historical_industry_facts`\n\n状态：`in_progress: checkpoint_pushed`" in work
+    assert "`point_in_time_dataset` 保持阻塞" in work
     assert "blocked_by_baostock_daily_archive" not in work
     assert "blocked_by_point_in_time_data_qualification" in work
     assert "blocked_by_risk_cost_uncertainty_deepseek" in work

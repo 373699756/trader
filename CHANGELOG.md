@@ -6,6 +6,30 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户发送“继续”，要求执行工程计划中的下一个完整未完成章节 `historical_industry_facts`。根因已确认：既有
+  5453 个 `training_ready_codes` 只证明日线和逐日 ST checkpoint 可供非生产工程试跑，行业区间却被误当成
+  已满足独立点时资格；既有事实没有 `queried_at` 和独立行业数据集身份，资格用例还用硬编码的 0 样本探针，
+  无法证明逐交易日覆盖、多来源冲突或时间穿越。当前 Tushare 配置仅 120 积分，也不足以取得需 2000 积分的
+  历史指数成分候选接口。Added: 新增不可变强类型的历史行业来源合同、事实、逐股/逐来源审计和
+  `historical_industry_dataset` 报告；新增一致事实合并、冲突失败关闭、实际交易日期覆盖、逐事实/数据集 hash
+  计算，以及可复用的只读参数化审计脚本和独立证据报告。Changed: 点时资格组装器改为消费真实有类型行业
+  报告；脚本完整验证封存 manifest/92 个分片，默认只投影聚合结果，逐股票与逐事实明细只能写入仓库外绝对
+  路径；Makefile 将新脚本纳入格式门禁。Fixed: 阻止来源仅声明查询时间能力却交付空 `queried_at` 的事实进入
+  合格集合，并明确 5453 个工程训练 checkpoint 不等于历史行业合格。Removed: 移除点时资格中硬编码的
+  BaoStock 0 样本与字段能力推测；未删除历史证据、未修改日线下载器或任何封存日线字节/hash。
+  Verification: 定向 domain/application/infra/script/文档契约 49 项与脚本 `--help` smoke 通过；初次真实只读审计
+  覆盖 5453 只、9,085,235 个实际交易日期，BaoStock 区间覆盖 8,931,889 日（98.3121%），3521 只完整、
+  1932 只缺 153,346 日，6326 条事实、0 冲突、0 时间穿越；审计约 318.67 秒、峰值 RSS 约 120.0MiB，
+  数据集 hash 为 `a7b5691e1b1f648896260177ed08a2510182f3673a4e6228b726271c3e511d54`，以预期退出码 1
+  返回 `historical_data_insufficient`。加入跨来源整体冲突字段后，最终 schema 复跑在约 90 秒时被用户中断且
+  未生成输出文件；受影响 Ruff、mypy 和 `git diff --check` 通过，全量门禁待本批收尾统一执行。Delivery State:
+  用户要求立即记录进度并推送，本提交是 `in_progress: checkpoint_pushed` 恢复点；下次必须重新运行只读全量
+  审计、更新最终报告内容 hash、完成完整 diff Review、`make format-check`、`make lint`、`make type-check`、
+  `make test`、`make package` 和仓库外 wheel 验证，才能把本节标为完成。Residual Risks: BaoStock 事实没有可证明的查询时间且 1932 只存在覆盖缺口，Tushare 候选未获权限、
+  未采样，所以合格股票为 0，历史分钟门也仍不合格；`point_in_time_dataset`、V3 正式训练、终端留出和生产
+  权限继续失败关闭。本批无网络请求、无日线重下载、无模型拟合且不进入相邻章节。
+  `Regression-Key: historical-industry-facts-fail-closed`。
+
 - 用户要求训练 JSON 不再放进输入 hash 子目录，并要求该目录中的训练模型直接参与实际评分。根因已确认：
   训练器写入 `data/train/tomorrow-v3/<input-hash>/model.json`，V3 评分 loader 却读取另一套
   `data/train/scoring/v3/training/*/model.json`，两端路径从未闭合。Changed: 训练成功后把

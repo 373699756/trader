@@ -3,7 +3,14 @@ from __future__ import annotations
 import json
 from datetime import date
 
+import scripts.qualify_point_in_time_data as script
 from scripts.qualify_point_in_time_data import PROJECT_ROOT, execute, main, project_point_in_time_data_qualification
+from trader.domain.research.historical_industry_facts import (
+    HistoricalIndustrySourceContract,
+    build_historical_industry_dataset_report,
+    build_historical_industry_source_audit,
+    merge_historical_industry_facts,
+)
 
 
 class _Response:
@@ -26,7 +33,27 @@ class _Session:
         return _Response({"data": {"klines": []}})
 
 
-def test_script_assembles_sanitized_fail_closed_report_without_downloading(tmp_path) -> None:
+def _industry_report():
+    source = build_historical_industry_source_audit(
+        HistoricalIndustrySourceContract(
+            "baostock_archived_industry",
+            "00.9.30",
+            True,
+            True,
+            True,
+            True,
+            True,
+            False,
+            True,
+        ),
+        (),
+        (),
+    )
+    return build_historical_industry_dataset_report("a" * 64, (source,), merge_historical_industry_facts(()))
+
+
+def test_script_assembles_sanitized_fail_closed_report_without_downloading(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(script, "audit_archived_historical_industry_facts", lambda _root: _industry_report())
     report = execute(
         history_root=tmp_path,
         code="600519",

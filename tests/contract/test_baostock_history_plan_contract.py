@@ -65,7 +65,7 @@ def test_baostock_plan_is_complete_but_does_not_override_direct_user_work() -> N
     compact = " ".join(work.split())
 
     assert "`baostock_daily_archive` 已经完成正式全量 manifest 和训练输入交接" in compact
-    assert "下一可执行项是 `historical_industry_facts`" in compact
+    assert "`historical_industry_facts` 也已完成来源能力审计" in compact
     assert "用户直接授权的新任务优先" in compact
     assert "本节只保留既有审计名称的兼容索引" in work
     assert "发生冲突时只以第 4 节为准" in work

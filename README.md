@@ -145,6 +145,19 @@ python3 -m venv .venv
 不调用。SDK 已由 `pyproject.toml` 作为默认运行依赖安装；Token 缺失时显式降级。
 `scripts/diagnose_runtime.py --profile tushare --output -` 可只读实测当前 Token，统一报告输出延迟、
 能力和进程内配额计数，不会输出 Token、价格、逐股载荷或完整供应商响应。
+
+已有完整日线归档时，可用下列工程脚本只读审计历史行业事实；它不请求供应商、不修改归档，数据不足时以
+退出码 1 和 `historical_data_insufficient` 失败关闭。默认输出只有聚合结果；逐股票与逐事实 hash 必须配合
+`--include-details` 写到仓库外绝对路径。
+
+```bash
+.venv/bin/python scripts/audit_historical_industry_facts.py \
+  --history-root "$PWD/data/history" \
+  --required-sample-codes 300 \
+  --tushare-access-points 120 \
+  --output -
+```
+
 项目根目录 `.token_key` 同时保存两个独立字段：
 
 ```bash

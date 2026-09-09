@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from trader.application.research.baostock_history_runtime import BaoStockRuntimeStatus
 from trader.domain.research.h1_point_in_time import H1CapabilityAuditReport, H1CapabilityProbe
-from trader.domain.research.historical_effective_facts import baostock_effective_facts_probe
+from trader.domain.research.historical_industry_facts import (
+    HistoricalIndustryDatasetReport,
+    HistoricalIndustrySourceAudit,
+)
 from trader.domain.research.point_in_time_data_qualification import (
     DailyArchiveQualification,
     HistoricalIndustryQualification,
@@ -17,6 +20,7 @@ from trader.domain.research.point_in_time_data_qualification import (
 def assemble_point_in_time_data_qualification(
     archive: BaoStockRuntimeStatus,
     source_capability: H1CapabilityAuditReport,
+    industry_report: HistoricalIndustryDatasetReport,
 ) -> PointInTimeDataQualificationReport:
     daily_reasons: list[str] = []
     if archive.sessions != 2000:
@@ -40,35 +44,38 @@ def assemble_point_in_time_data_qualification(
         tuple(daily_reasons),
     )
 
-    industry_probe = baostock_effective_facts_probe()
-    industry_reasons = (
-        "industry_sample_below_300",
-        "industry_effective_from_unavailable",
-        "industry_effective_to_unavailable",
-        "industry_query_time_unavailable",
-    )
-    industry = HistoricalIndustryQualification(
-        source="baostock",
-        sampled_codes=0,
-        required_sample_codes=300,
-        code_available=False,
-        industry_available=False,
-        classification_available=False,
-        effective_from_available=industry_probe.industry_effective_at,
-        effective_to_available=False,
-        queried_at_available=False,
-        source_identity_available=True,
-        source_evidence_hash=industry_probe.content_hash,
-        state="historical_data_insufficient",
-        failure_reasons=industry_reasons,
-    )
+    industries = tuple(_industry_qualification(item, industry_report) for item in industry_report.sources)
 
     minute_probes = tuple(
         _minute_qualification(item) for item in source_capability.probes if item.source == "eastmoney_historical_minute"
     )
     if not minute_probes:
         raise ValueError("historical minute capability evidence is missing")
-    return build_point_in_time_data_qualification(daily, (industry,), minute_probes)
+    return build_point_in_time_data_qualification(daily, industries, minute_probes)
+
+
+def _industry_qualification(
+    source: HistoricalIndustrySourceAudit,
+    dataset: HistoricalIndustryDatasetReport,
+) -> HistoricalIndustryQualification:
+    contract = source.contract
+    state = source.status if dataset.status == "qualified" else "historical_data_insufficient"
+    reasons = source.failure_reasons if source.status != "qualified" else dataset.failure_reasons
+    return HistoricalIndustryQualification(
+        source=source.source,
+        sampled_codes=source.sampled_codes,
+        required_sample_codes=source.required_sample_codes,
+        code_available=contract.code_available,
+        industry_available=contract.industry_available,
+        classification_available=contract.classification_available,
+        effective_from_available=contract.effective_from_available,
+        effective_to_available=contract.effective_to_available,
+        queried_at_available=contract.queried_at_available,
+        source_identity_available=contract.source_identity_available,
+        source_evidence_hash=source.dataset_hash,
+        state=state,
+        failure_reasons=reasons,
+    )
 
 
 def _minute_qualification(probe: H1CapabilityProbe) -> HistoricalMinuteQualification:

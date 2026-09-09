@@ -15,7 +15,7 @@ def test_download_plan_is_merged_with_explicit_unfinished_batch_states() -> None
         "#### `baostock_daily_archive`",
         "状态：`completed`（2026-09-09）",
         "#### `historical_industry_facts`",
-        "状态：`pending`；日线归档已经完整交付",
+        "状态：`in_progress: checkpoint_pushed`（2026-09-09）",
         "### 4.7 `tomorrow_v3_training_validation`",
         "状态：`blocked_by_limited_factor_family_research`",
         "### 4.10 `shadow_and_manual_activation`",
@@ -44,6 +44,8 @@ def test_industry_repair_plan_preserves_daily_archive_identity() -> None:
         "无法证明的日期继续保持未就绪",
         "排除出 V3 训练",
         "时间穿越检查结果",
+        "日线分片保持只读",
+        "合格股票 0",
     ):
         assert required in section
 
