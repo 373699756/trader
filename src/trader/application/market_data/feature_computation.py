@@ -39,6 +39,22 @@ class FeatureComputationPlan:
         return self.manifest.names
 
 
+@dataclass(frozen=True, order=True)
+class FeatureFactRevision:
+    fact_id: str
+    revision: str
+
+    def __post_init__(self) -> None:
+        if not self.fact_id or not self.revision:
+            raise ValueError("feature fact revision identity must not be empty")
+
+
+@dataclass(frozen=True)
+class FeatureStageInvalidation:
+    dirty_fact_ids: tuple[str, ...]
+    affected_groups: tuple[str, ...]
+
+
 def build_feature_computation_plan(
     manifest: FeatureVectorManifest,
     catalog: FeatureSpecCatalog = FEATURE_SPEC_CATALOG,
@@ -47,6 +63,38 @@ def build_feature_computation_plan(
         raise ValueError("feature manifest does not belong to the selected catalog")
     ordered_specs, facts = _FeatureDependencyResolver(catalog).resolve(manifest.feature_ids)
     return FeatureComputationPlan(manifest, _group_stages(ordered_specs), tuple(item.value for item in facts))
+
+
+def affected_feature_stages(
+    plan: FeatureComputationPlan,
+    previous: tuple[FeatureFactRevision, ...] | None,
+    current: tuple[FeatureFactRevision, ...],
+) -> FeatureStageInvalidation:
+    current_by_id = _revision_map(current, plan.required_fact_ids)
+    if previous is None:
+        dirty_facts = set(plan.required_fact_ids)
+    else:
+        previous_by_id = _revision_map(previous, plan.required_fact_ids)
+        dirty_facts = {
+            fact_id for fact_id in plan.required_fact_ids if previous_by_id[fact_id] != current_by_id[fact_id]
+        }
+    dirty_dependencies = {FeatureId(fact_id) for fact_id in dirty_facts}
+    groups: list[str] = []
+    for stage in plan.stages:
+        if any(dependency in dirty_dependencies for dependency in stage.dependency_ids):
+            groups.append(stage.calculator_group)
+            dirty_dependencies.update(stage.output_ids)
+    return FeatureStageInvalidation(tuple(sorted(dirty_facts)), tuple(groups))
+
+
+def _revision_map(
+    revisions: tuple[FeatureFactRevision, ...],
+    required_fact_ids: tuple[str, ...],
+) -> dict[str, str]:
+    values = {item.fact_id: item.revision for item in revisions}
+    if len(values) != len(revisions) or set(values) != set(required_fact_ids):
+        raise ValueError("feature fact revisions do not match the computation plan")
+    return values
 
 
 class _FeatureDependencyResolver:
@@ -104,7 +152,10 @@ def _group_stages(ordered_specs: tuple[FeatureSpec, ...]) -> tuple[FeatureComput
 
 
 __all__ = [
+    "FeatureFactRevision",
     "FeatureComputationPlan",
     "FeatureComputationStage",
+    "FeatureStageInvalidation",
+    "affected_feature_stages",
     "build_feature_computation_plan",
 ]

@@ -114,6 +114,25 @@ def _tomorrow_model_payload(status: ScoringProfileRuntimeStatus | None) -> dict[
         "training_anchor": status.training_anchor,
         "runtime_anchor": status.runtime_anchor,
         "point_in_time_parity": status.point_in_time_parity,
+        "computation": {
+            "candidate_count": status.computation.candidate_count,
+            "request_count": status.computation.request_count,
+            "cache_hit_count": status.computation.cache_hit_count,
+            "predictor_batch_count": status.computation.predictor_batch_count,
+            "computed_groups": list(status.computation.computed_groups),
+            "reused_groups": list(status.computation.reused_groups),
+            "stage_durations": [
+                {
+                    "calculator_group": item.calculator_group,
+                    "execution_count": item.execution_count,
+                    "last_duration_ms": item.last_duration_ms,
+                    "cumulative_duration_ms": item.cumulative_duration_ms,
+                }
+                for item in status.computation.stage_durations
+            ],
+            "decision_age_ms": status.computation.decision_age_ms,
+            "deadline_abandon_reason": status.computation.deadline_abandon_reason,
+        },
     }
 
 

@@ -84,6 +84,17 @@ def test_build_system_is_lazy_and_current_only(tmp_path, monkeypatch) -> None:
     assert status.get_json()["tomorrow_model"]["activation_basis"] == "manual_user_override"
     assert status.get_json()["tomorrow_model"]["monitoring_mode"] == "automatic_t1_outcome_settlement"
     assert status.get_json()["tomorrow_model"]["automatic_model_update"] is False
+    assert status.get_json()["tomorrow_model"]["computation"] == {
+        "cache_hit_count": 0,
+        "candidate_count": 0,
+        "computed_groups": [],
+        "deadline_abandon_reason": None,
+        "decision_age_ms": 0.0,
+        "predictor_batch_count": 0,
+        "request_count": 0,
+        "reused_groups": [],
+        "stage_durations": [],
+    }
     assert "tomorrow_profile_comparison" not in status.get_json()
     page = system.app.test_client().get("/").get_data(as_text=True)
     assert 'name="trader-web-snapshot-retention-ms"' in page

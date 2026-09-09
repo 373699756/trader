@@ -6,6 +6,30 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求继续实施双 PC 整改计划，本批闭合 `incremental_feature_computation`。根因已确认：共享
+  `FeatureComputationPlan` 只被 Tomorrow scorer 用来读取最终特征顺序，生产评分每轮仍重新抽取全部模型 facts、
+  重做三组横截面残差并调用 predictor；计算状态也没有候选规模、逐组耗时、决策年龄或 deadline 放弃原因。
+  Added: 新增不可变 `FeatureFactRevision`/`FeatureStageInvalidation`，按 catalog 依赖传递脏 facts；新增有类型
+  `ModelScoringContext`、计算阶段/汇总状态和 deadline 错误，`/api/status.tomorrow_model.computation` 以白名单
+  加法字段公开有界聚合诊断。Changed: 完整双来源全市场快路以 O(S*N) 单次扫描选择每只股票 winner，移除
+  仅为二选一而构造、排序和去重中间列式表的固定成本，同时保持字段、冲突和 merge epoch 身份不变；Tomorrow
+  模型服务缓存唯一上一批不可变计算状态，相同 facts 直接复用
+  `ModelScoreBatch`，1/3 日收益独有 facts 只失效 `daily_return`，共享 lag-5 或 momentum/暴露 facts 按 catalog
+  继续失效动量及残差组，所有候选仍按代码稳定排序
+  并一次批量推理；调度输入通过注入时钟传递距 14:50 的剩余预算与输入年龄，合法 `close_fallback` 不套用
+  盘中截止。Fixed: 普通价格 overlay 不再重复模型推理，成本事实单独变化只重建成本诊断；任一阶段越过预算
+  都放弃新批次、记录稳定原因并保留最近有效计算/正式决策；全体候选不合格时不再对空批次发起物理预测。
+  Removed: 未删除既有 latest-wins、冻结或缓存链；
+  `FeatureComputationPlan` 仍不生成无人消费的 hash。Verification: 首批合同先在缺失事实 revision 与评分 timing
+  类型处失败；实施后特征失效、模型缓存/成本/deadline、空预测、输入运行、投影、组合根、架构与文档定向回归 96 项
+  通过；`make format-check`、`make lint`、`make type-check`（372 个源文件）、`make test`（1727 项）、
+  `make package`、严格复杂度零债务和 `git diff --check` 通过；固定离线性能门使用 5500 行
+  全市场、360 个候选、三策略完整人口，等价/绝对/相对 CPU 和分配门全部通过，`market_merge` P95
+  584.968ms、Tomorrow `local_scoring` P95 17.815ms、内存增长 0、外网调用 0。Delivery State: `completed`。
+  Residual Risks: 本批只优化已确认的生产计算接缝，不产生新的历史收益证据，V3 仍为
+  `historical_data_insufficient`；真实交易日冻结前延迟仍需持续从新增诊断观察，未改变候选数、固定向量、
+  68/32、风险一次扣除、Top6、DeepSeek 168 预算或默认 V1。`Regression-Key: incremental-model-fact-revisions`。
+
 - 用户要求继续实施双 PC 历史训练与本机代码整改计划，本批闭合
   `tomorrow_v3_training_validation`。根因已确认：V3 日线训练标签预扣 20bp、完整 manifest 会被错误标记为
   `historical_validated`，生产只校验单个模型 self-hash，且模型/报告没有来源代码、特征合同和训练合同的共同

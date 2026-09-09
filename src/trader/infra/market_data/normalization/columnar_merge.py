@@ -292,40 +292,31 @@ def _merge_complete_realtime(
 
 
 def _winner_indexes(observations: Sequence[SourceObservation], sources: tuple[str, ...]) -> tuple[int, ...]:
-    frame = pl.DataFrame(
-        {
-            "code": [observation.subject_key for observation in observations],
-            "source_time": [observation.source_time for observation in observations],
-            "received_time": [observation.received_at for observation in observations],
-            "source_priority": [_SOURCE_PRIORITY[source] for source in sources],
-            "data_version": [observation.data_version for observation in observations],
-            "payload_hash": [observation.payload_hash for observation in observations],
-            "row_index": range(len(observations)),
-        },
-        schema={
-            "code": pl.String,
-            "source_time": pl.Datetime(time_unit="us", time_zone="UTC"),
-            "received_time": pl.Datetime(time_unit="us", time_zone="UTC"),
-            "source_priority": pl.Int64,
-            "data_version": pl.String,
-            "payload_hash": pl.String,
-            "row_index": pl.Int64,
-        },
-    )
-    return tuple(
-        frame.sort(
-            "code",
-            "source_time",
-            "received_time",
-            "source_priority",
-            "data_version",
-            "payload_hash",
+    winners: dict[str, int] = {}
+    for index, (observation, source) in enumerate(zip(observations, sources, strict=True)):
+        current_index = winners.get(observation.subject_key)
+        if current_index is None:
+            winners[observation.subject_key] = index
+            continue
+        current = observations[current_index]
+        current_source = sources[current_index]
+        candidate_order = (
+            observation.source_time,
+            observation.received_at,
+            _SOURCE_PRIORITY[source],
+            observation.data_version,
+            observation.payload_hash,
         )
-        .unique(subset="code", keep="last", maintain_order=True)
-        .sort("code")
-        .get_column("row_index")
-        .to_list()
-    )
+        current_order = (
+            current.source_time,
+            current.received_at,
+            _SOURCE_PRIORITY[current_source],
+            current.data_version,
+            current.payload_hash,
+        )
+        if candidate_order > current_order:
+            winners[observation.subject_key] = index
+    return tuple(winners[code] for code in sorted(winners))
 
 
 def _quote_from_complete_observation(

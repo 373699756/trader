@@ -239,6 +239,7 @@ def build_system(
             publication.long_runtime,
             policy,
             publication.decision_drafts,
+            ShanghaiClock(now).now,
             model_scoring,
         ),
     )

@@ -115,6 +115,73 @@ class ModelScoreBatch:
         object.__setattr__(self, "diagnostics", MappingProxyType(dict(self.diagnostics)))
 
 
+@dataclass(frozen=True)
+class ModelScoringContext:
+    time_budget_seconds: float | None = None
+    input_age_seconds: float = 0.0
+
+    def __post_init__(self) -> None:
+        if (
+            (
+                self.time_budget_seconds is not None
+                and (not math.isfinite(self.time_budget_seconds) or self.time_budget_seconds < 0.0)
+            )
+            or not math.isfinite(self.input_age_seconds)
+            or self.input_age_seconds < 0.0
+        ):
+            raise ValueError("model scoring context must contain finite non-negative timing values")
+
+
+class ModelScoringDeadlineError(RuntimeError):
+    """The current model batch can no longer finish before its scoring boundary."""
+
+
+@dataclass(frozen=True)
+class ModelComputationStageStatus:
+    calculator_group: str
+    execution_count: int
+    last_duration_ms: float
+    cumulative_duration_ms: float
+
+    def __post_init__(self) -> None:
+        if (
+            not self.calculator_group
+            or self.execution_count < 1
+            or not math.isfinite(self.last_duration_ms)
+            or not math.isfinite(self.cumulative_duration_ms)
+            or self.last_duration_ms < 0.0
+            or self.cumulative_duration_ms < self.last_duration_ms
+        ):
+            raise ValueError("model computation stage status is invalid")
+
+
+@dataclass(frozen=True)
+class ModelComputationStatus:
+    candidate_count: int = 0
+    request_count: int = 0
+    cache_hit_count: int = 0
+    predictor_batch_count: int = 0
+    computed_groups: tuple[str, ...] = ()
+    reused_groups: tuple[str, ...] = ()
+    stage_durations: tuple[ModelComputationStageStatus, ...] = ()
+    decision_age_ms: float = 0.0
+    deadline_abandon_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        counts = (self.candidate_count, self.request_count, self.cache_hit_count, self.predictor_batch_count)
+        if (
+            any(value < 0 for value in counts)
+            or self.cache_hit_count > self.request_count
+            or len(set(self.computed_groups)) != len(self.computed_groups)
+            or len(set(self.reused_groups)) != len(self.reused_groups)
+            or set(self.computed_groups).intersection(self.reused_groups)
+            or not math.isfinite(self.decision_age_ms)
+            or self.decision_age_ms < 0.0
+            or self.deadline_abandon_reason == ""
+        ):
+            raise ValueError("model computation status is invalid")
+
+
 class ProfileCombinerPort(Protocol):
     """Combine pre-risk head signals into one target prediction."""
 
@@ -178,6 +245,7 @@ class ScoringProfileRuntimeStatus:
     monitoring_mode: Literal["automatic_t1_outcome_settlement"]
     automatic_model_update: bool
     loss_probability_status: Literal["not_modeled"]
+    computation: ModelComputationStatus = ModelComputationStatus()
     training_anchor: Literal["15:00_close", "15:00_close_proxy", "14:50_point_in_time"] = "15:00_close"
     runtime_anchor: Literal["14:50"] = "14:50"
     point_in_time_parity: bool = False
@@ -189,7 +257,12 @@ class ScoringCapabilityPort(Protocol):
 
     def is_input_eligible(self, feature: FeatureSnapshot) -> bool: ...
 
-    def score(self, features: Sequence[FeatureSnapshot]) -> ModelScoreBatch: ...
+    def score(
+        self,
+        features: Sequence[FeatureSnapshot],
+        *,
+        context: ModelScoringContext | None = None,
+    ) -> ModelScoreBatch: ...
 
     def status(self) -> ScoringProfileRuntimeStatus: ...
 
@@ -201,7 +274,13 @@ class ModelScoringPort(Protocol):
 
     def is_input_eligible(self, strategy: Strategy, feature: FeatureSnapshot) -> bool: ...
 
-    def score(self, strategy: Strategy, features: Sequence[FeatureSnapshot]) -> ModelScoreBatch | None: ...
+    def score(
+        self,
+        strategy: Strategy,
+        features: Sequence[FeatureSnapshot],
+        *,
+        context: ModelScoringContext | None = None,
+    ) -> ModelScoreBatch | None: ...
 
     def status(self) -> ScoringProfileRuntimeStatus | None: ...
 
@@ -212,11 +291,15 @@ __all__ = [
     "HeadRuntime",
     "LoadedScoringProfile",
     "ModelDiagnostics",
+    "ModelComputationStageStatus",
+    "ModelComputationStatus",
     "ModelInput",
     "ModelScoreBatch",
     "ModelPrediction",
     "ModelPredictorPort",
     "ModelScoringPort",
+    "ModelScoringContext",
+    "ModelScoringDeadlineError",
     "ProfileCombinerPort",
     "ProfileEvidence",
     "ProfileIdentity",

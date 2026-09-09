@@ -420,6 +420,48 @@ def _tomorrow_model(runtime: Mapping[str, object]) -> dict[str, object]:
     failures = raw.get("historical_failure_reasons")
     if isinstance(failures, (tuple, list)):
         result["historical_failure_reasons"] = [str(item) for item in failures if isinstance(item, str)]
+    computation = raw.get("computation")
+    if isinstance(computation, Mapping):
+        result["computation"] = _model_computation(computation)
+    return result
+
+
+def _model_computation(raw: Mapping[str, object]) -> dict[str, object]:
+    result: dict[str, object] = {
+        field: raw[field]
+        for field in (
+            "candidate_count",
+            "request_count",
+            "cache_hit_count",
+            "predictor_batch_count",
+            "decision_age_ms",
+            "deadline_abandon_reason",
+        )
+        if field in raw and (_json_scalar(raw[field]) or raw[field] is None)
+    }
+    for field in ("computed_groups", "reused_groups"):
+        value = raw.get(field)
+        if isinstance(value, (tuple, list)):
+            result[field] = [str(item) for item in value if isinstance(item, str)]
+    durations = raw.get("stage_durations")
+    result["stage_durations"] = (
+        [
+            {
+                field: item[field]
+                for field in (
+                    "calculator_group",
+                    "execution_count",
+                    "last_duration_ms",
+                    "cumulative_duration_ms",
+                )
+                if field in item and _json_scalar(item[field])
+            }
+            for item in durations
+            if isinstance(item, Mapping)
+        ]
+        if isinstance(durations, (tuple, list))
+        else []
+    )
     return result
 
 

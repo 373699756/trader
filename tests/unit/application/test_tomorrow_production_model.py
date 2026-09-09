@@ -7,7 +7,12 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.unit.application.scoring_helpers import profile_for
-from trader.application.ports.model_scoring import ModelInput, ModelPrediction
+from trader.application.ports.model_scoring import (
+    ModelInput,
+    ModelPrediction,
+    ModelScoringContext,
+    ModelScoringDeadlineError,
+)
 from trader.application.recommendation.tomorrow_model_scoring import TomorrowProductionModelScoringService
 from trader.domain.market.models import Board, FeatureSnapshot
 from trader.domain.recommendation.model_scoring import V1_V2_EXPOSURE_CONTRACT, V3_EXPOSURE_CONTRACT
@@ -190,6 +195,31 @@ def test_production_model_does_not_fall_back_to_the_legacy_score_when_bound_feat
     assert batch.missing_codes == ("600002",)
 
 
+def test_production_model_skips_physical_prediction_when_every_input_is_ineligible(
+    application_feature_factory,
+) -> None:
+    class _CountingPredictor(_Predictor):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
+            self.calls += 1
+            return super().predict(inputs)
+
+    predictor = _CountingPredictor()
+    complete = _model_feature(application_feature_factory("600001", NOW), offset=0.01, amihud=1.0)
+    incomplete_values = dict(complete.values)
+    incomplete_values["qfq_momentum_60d_skip5"] = None
+
+    batch = TomorrowProductionModelScoringService(profile_for(predictor)).score(
+        (replace(complete, values=incomplete_values),)
+    )
+
+    assert predictor.calls == 0
+    assert batch.scores == {}
+    assert batch.missing_codes == ("600001",)
+
+
 def test_v3_routes_each_input_to_its_current_industry_model(application_feature_factory) -> None:
     class _V3Predictor(_Predictor):
         profile_id = "v3"
@@ -253,3 +283,141 @@ def test_production_model_rejects_an_unsupported_board_from_its_cross_section(
 
     assert set(batch.scores) == {"600001"}
     assert batch.missing_codes == ("830001",)
+
+
+def test_incremental_scoring_reuses_unchanged_groups_and_batches_prediction(
+    application_feature_factory,
+) -> None:
+    class _CountingPredictor(_Predictor):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
+            self.calls += 1
+            return super().predict(inputs)
+
+    predictor = _CountingPredictor()
+    service = TomorrowProductionModelScoringService(profile_for(predictor))
+    features = tuple(
+        _model_feature(application_feature_factory(f"60000{index}", NOW), offset=index / 100.0, amihud=index + 1.0)
+        for index in range(3)
+    )
+
+    first = service.score(features)
+    second = service.score(features)
+    status = service.computation_status()
+
+    assert second is first
+    assert predictor.calls == 1
+    assert status.candidate_count == 3
+    assert status.request_count == 2
+    assert status.cache_hit_count == 1
+    assert status.predictor_batch_count == 1
+    assert status.computed_groups == ()
+    assert status.reused_groups == ("daily_return", "skip_recent_momentum", "cross_section_residual")
+
+
+def test_incremental_scoring_recomputes_only_catalog_dependent_groups(
+    application_feature_factory,
+) -> None:
+    class _CountingPredictor(_Predictor):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
+            self.calls += 1
+            return super().predict(inputs)
+
+    predictor = _CountingPredictor()
+    service = TomorrowProductionModelScoringService(profile_for(predictor))
+    features = tuple(
+        _model_feature(application_feature_factory(f"60000{index}", NOW), offset=index / 100.0, amihud=index + 1.0)
+        for index in range(3)
+    )
+    service.score(features)
+    values = dict(features[0].values)
+    values["qfq_return_1d"] = 0.123
+
+    service.score((replace(features[0], values=values), *features[1:]))
+    status = service.computation_status()
+
+    assert predictor.calls == 2
+    assert status.computed_groups == ("daily_return",)
+    assert status.reused_groups == ("skip_recent_momentum", "cross_section_residual")
+
+
+def test_incremental_scoring_propagates_momentum_changes_and_keeps_cost_outside_the_model(
+    application_feature_factory,
+) -> None:
+    class _CountingPredictor(_Predictor):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
+            self.calls += 1
+            return super().predict(inputs)
+
+    predictor = _CountingPredictor()
+    service = TomorrowProductionModelScoringService(profile_for(predictor))
+    features = tuple(
+        _model_feature(application_feature_factory(f"60000{index}", NOW), offset=index / 100.0, amihud=index + 1.0)
+        for index in range(3)
+    )
+    service.score(features)
+    momentum_values = dict(features[0].values)
+    momentum_values["qfq_momentum_20d_skip5"] = 0.321
+    momentum_features = (replace(features[0], values=momentum_values), *features[1:])
+
+    service.score(momentum_features)
+    momentum_status = service.computation_status()
+    cost_values = dict(momentum_features[0].values)
+    cost_values["qfq_amihud_20d"] = 99.0
+    service.score((replace(momentum_features[0], values=cost_values), *momentum_features[1:]))
+    cost_status = service.computation_status()
+
+    assert momentum_status.computed_groups == ("skip_recent_momentum", "cross_section_residual")
+    assert predictor.calls == 2
+    assert cost_status.computed_groups == ()
+    assert cost_status.reused_groups == ("daily_return", "skip_recent_momentum", "cross_section_residual")
+
+
+def test_incremental_scoring_ignores_quote_overlay_when_model_facts_are_unchanged(
+    application_feature_factory,
+) -> None:
+    class _CountingPredictor(_Predictor):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
+            self.calls += 1
+            return super().predict(inputs)
+
+    predictor = _CountingPredictor()
+    service = TomorrowProductionModelScoringService(profile_for(predictor))
+    feature = _model_feature(application_feature_factory("600001", NOW), offset=0.01, amihud=1.0)
+    first = service.score((feature,))
+    overlay = replace(
+        feature,
+        quote=replace(feature.quote, price=(feature.quote.price or 0.0) + 0.01, data_version="overlay"),
+    )
+
+    second = service.score((overlay,))
+
+    assert second is first
+    assert predictor.calls == 1
+
+
+def test_incremental_scoring_fails_closed_at_its_deadline_and_retains_the_last_batch(
+    application_feature_factory,
+) -> None:
+    service = TomorrowProductionModelScoringService(profile_for(_Predictor()))
+    feature = _model_feature(application_feature_factory("600001", NOW), offset=0.01, amihud=1.0)
+    accepted = service.score((feature,))
+
+    with pytest.raises(ModelScoringDeadlineError, match="before_feature_computation"):
+        service.score((feature,), context=ModelScoringContext(time_budget_seconds=0.0, input_age_seconds=2.5))
+
+    status = service.computation_status()
+    assert status.deadline_abandon_reason == "before_feature_computation"
+    assert status.decision_age_ms >= 2500.0
+    assert service.score((feature,)) is accepted

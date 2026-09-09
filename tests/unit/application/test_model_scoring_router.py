@@ -19,8 +19,8 @@ class _TomorrowScoring:
         self.eligible_calls += 1
         return False
 
-    def score(self, features):
-        del features
+    def score(self, features, *, context=None):
+        del features, context
         self.score_calls += 1
         return "tomorrow-batch"
 

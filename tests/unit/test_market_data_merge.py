@@ -78,7 +78,7 @@ def test_merge_is_deterministic_and_prefers_eastmoney_at_equal_time() -> None:
     assert first.merge_epoch == "e178db776ef0df57d475aab7"
 
 
-def test_complete_realtime_columnar_projection_matches_scalar_field_merge() -> None:
+def test_complete_realtime_columnar_projection_matches_scalar_field_merge(monkeypatch) -> None:
     complete_fields = {
         "name": "测试股份",
         "price": 10.0,
@@ -106,6 +106,11 @@ def test_complete_realtime_columnar_projection_matches_scalar_field_merge() -> N
         _observation("sina", price=10.04),
         fields={**complete_fields, "price": 10.04},
     )
+
+    def reject_intermediate_frame(*_args, **_kwargs):
+        raise AssertionError("complete merge winner selection must not build an intermediate frame")
+
+    monkeypatch.setattr(columnar_merge_module.pl, "DataFrame", reject_intermediate_frame)
 
     projection = try_merge_complete_realtime((sina, eastmoney))
     expected_quote, expected_sources, expected_conflicts = merge_code(

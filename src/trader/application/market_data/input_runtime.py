@@ -8,14 +8,14 @@ import threading
 from collections import Counter
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Protocol
 
 from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.long_runtime import LongRuntime
 from trader.application.ports.long import LongRefreshRequest
 from trader.application.ports.market import MarketDataUnavailableError, ResearchRefreshResult
-from trader.application.ports.model_scoring import ModelScoringPort
+from trader.application.ports.model_scoring import ModelScoringContext, ModelScoringPort
 from trader.application.ports.runtime_status import InputQualityStatus, SupplyFunnel, SupplySummary
 from trader.application.ports.scheduler import (
     CycleRequest,
@@ -78,6 +78,7 @@ class DecisionBuildDependencies:
     long_runtime: LongRuntime
     policy: RecommendationPolicy
     draft_index: UnifiedDecisionDraftIndex
+    now: Callable[[], datetime]
     model_scoring: ModelScoringPort | None = None
 
 
@@ -170,6 +171,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         self._long_runtime = decision_build.long_runtime
         self._policy = decision_build.policy
         self._draft_index = decision_build.draft_index
+        self._now = decision_build.now
         self._model_scoring = decision_build.model_scoring
         self._lock = threading.RLock()
         self._batches: dict[tuple[Strategy, str], InputBatch] = {}
@@ -611,6 +613,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                     self._policy,
                     sequence=sequence,
                     model_scoring=self._model_scoring,
+                    scoring_context=_model_scoring_context(request, batch, self._now()),
                 )
             else:
                 tomorrow_native = (TomorrowNativeInput if request.strategy is Strategy.TOMORROW else D25NativeInput)(
@@ -631,6 +634,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                     self._policy,
                     sequence=sequence,
                     model_scoring=self._model_scoring,
+                    scoring_context=_model_scoring_context(request, batch, self._now()),
                 )
         except (RuntimeError, TypeError, ValueError) as exc:
             raise DecisionUnavailableError(_decision_failure_code(exc)) from exc
@@ -1061,6 +1065,25 @@ def _decision_observed_at(batch: InputBatch) -> datetime:
     if any(value.tzinfo is None or value.utcoffset() is None for value in values):
         raise ValueError("decision input times must be timezone-aware")
     return max(value.astimezone(target_zone) for value in values)
+
+
+def _model_scoring_context(
+    request: CycleRequest,
+    batch: InputBatch,
+    now: datetime,
+) -> ModelScoringContext:
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("model scoring clock must be timezone-aware")
+    local_now = now.astimezone(SHANGHAI)
+    input_at = _decision_observed_at(batch).astimezone(SHANGHAI)
+    input_age_seconds = max(0.0, (local_now - input_at).total_seconds())
+    if request.strategy is not Strategy.TOMORROW or request.phase == "close_fallback":
+        return ModelScoringContext(input_age_seconds=input_age_seconds)
+    deadline = datetime.combine(request.trade_date, time(14, 50), tzinfo=SHANGHAI)
+    return ModelScoringContext(
+        time_budget_seconds=max(0.0, (deadline - local_now).total_seconds()),
+        input_age_seconds=input_age_seconds,
+    )
 
 
 _CANDIDATE_WEIGHTS = {

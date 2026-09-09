@@ -6,6 +6,7 @@ from collections.abc import Sequence
 
 from trader.application.ports.model_scoring import (
     ModelScoreBatch,
+    ModelScoringContext,
     ModelScoringPort,
     ScoringCapabilityPort,
     ScoringProfileRuntimeStatus,
@@ -32,8 +33,14 @@ class ModelScoringRouter(ModelScoringPort):
     def is_input_eligible(self, strategy: Strategy, feature: FeatureSnapshot) -> bool:
         return self._tomorrow.is_input_eligible(feature) if self.uses_model(strategy) and self._tomorrow else True
 
-    def score(self, strategy: Strategy, features: Sequence[FeatureSnapshot]) -> ModelScoreBatch | None:
-        return self._tomorrow.score(features) if self.uses_model(strategy) and self._tomorrow else None
+    def score(
+        self,
+        strategy: Strategy,
+        features: Sequence[FeatureSnapshot],
+        *,
+        context: ModelScoringContext | None = None,
+    ) -> ModelScoreBatch | None:
+        return self._tomorrow.score(features, context=context) if self.uses_model(strategy) and self._tomorrow else None
 
     def status(self) -> ScoringProfileRuntimeStatus | None:
         return self._tomorrow.status() if self._tomorrow is not None else None

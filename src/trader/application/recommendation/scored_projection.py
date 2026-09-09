@@ -6,7 +6,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-from trader.application.ports.model_scoring import ModelDiagnostics, ModelScoreBatch, ModelScoringPort
+from trader.application.ports.model_scoring import (
+    ModelDiagnostics,
+    ModelScoreBatch,
+    ModelScoringContext,
+    ModelScoringPort,
+)
 from trader.application.ports.scored import ScoredNativeInput
 from trader.application.recommendation.policy import RecommendationPolicy
 from trader.application.recommendation.recommendation_policy_codec import preselection_replay_feature
@@ -74,6 +79,7 @@ def build_scored_local(
     *,
     sequence: int,
     model_scoring: ModelScoringPort | None = None,
+    scoring_context: ModelScoringContext | None = None,
 ) -> ScoredLocalProjection:
     if sequence < 1:
         raise ValueError("scored decision sequence must be positive")
@@ -82,7 +88,11 @@ def build_scored_local(
     population = tuple(preselection_replay_feature(feature) for feature in native_input.market_features)
     uses_model = model_scoring is not None and model_scoring.uses_model(strategy)
     model_batch = (
-        model_scoring.score(strategy, _model_eligible_candidates(native_input, policy))
+        model_scoring.score(
+            strategy,
+            _model_eligible_candidates(native_input, policy),
+            context=scoring_context,
+        )
         if model_scoring is not None and uses_model
         else None
     )

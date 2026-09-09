@@ -10,7 +10,12 @@ import pytest
 
 from tests.unit.domain.test_decision_identity import decision
 from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
-from trader.application.market_data.input_runtime import DecisionBuildDependencies, MarketDataAdapter
+from trader.application.market_data.input_runtime import (
+    DecisionBuildDependencies,
+    InputBatch,
+    MarketDataAdapter,
+    _model_scoring_context,
+)
 from trader.application.ports.scheduler import (
     CycleRequest,
     DataRefreshUnavailableError,
@@ -27,6 +32,7 @@ from trader.domain.recommendation.models import Strategy
 from trader.infra.settings import load_strategy_settings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+TEST_NOW = datetime(2026, 8, 12, 14, 0, tzinfo=SHANGHAI)
 
 
 class _Market:
@@ -98,7 +104,12 @@ class _RejectingLongRuntime:
 def _decision_build(
     drafts: UnifiedDecisionDraftIndex | None = None,
 ) -> DecisionBuildDependencies:
-    return DecisionBuildDependencies(_LongRuntime(), _policy(), drafts or UnifiedDecisionDraftIndex())
+    return DecisionBuildDependencies(
+        _LongRuntime(),
+        _policy(),
+        drafts or UnifiedDecisionDraftIndex(),
+        lambda: TEST_NOW,
+    )
 
 
 def _request(
@@ -117,6 +128,28 @@ def _request(
         False,
         observed_at.replace(hour=14, minute=48),
     )
+
+
+def test_model_scoring_context_uses_the_freeze_budget_and_input_age(application_feature_factory) -> None:
+    observed_at = datetime(2026, 8, 12, 14, 49, 45, tzinfo=SHANGHAI)
+    feature = application_feature_factory("600001", observed_at)
+    request = _request(observed_at, phase="final_quote")
+    batch = InputBatch(request, (feature,), (feature.quote.code,), (feature,), "test-data")
+
+    context = _model_scoring_context(
+        request,
+        batch,
+        datetime(2026, 8, 12, 14, 49, 51, tzinfo=SHANGHAI),
+    )
+    close_context = _model_scoring_context(
+        replace(request, phase="close_fallback"),
+        batch,
+        datetime(2026, 8, 12, 15, 1, tzinfo=SHANGHAI),
+    )
+
+    assert context.time_budget_seconds == 9.0
+    assert context.input_age_seconds == 6.0
+    assert close_context.time_budget_seconds is None
 
 
 def _prime_scoring_cache(adapter: MarketDataAdapter, observed_at: datetime) -> None:
@@ -190,6 +223,7 @@ def test_long_refresh_rejection_is_visible_to_scheduler_recovery() -> None:
             _RejectingLongRuntime(),
             _policy(),
             UnifiedDecisionDraftIndex(),
+            lambda: TEST_NOW,
         ),
     )
 
