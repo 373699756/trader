@@ -15,6 +15,7 @@ from trader.application.ports.model_scoring import ModelInput, ModelPrediction
 from trader.application.ports.scored import D25NativeInput, ScoredNativeInput, TodayNativeInput, TomorrowNativeInput
 from trader.application.recommendation.model_scoring_router import ModelScoringRouter
 from trader.application.recommendation.scored_projection import (
+    ScoredBuildRuntime,
     build_scored_hybrid,
     build_scored_local,
 )
@@ -78,7 +79,9 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
         _native_input(model_features),
         policy,
         sequence=1,
-        model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(profile_for(_ProductionPredictor()))),
+        runtime=ScoredBuildRuntime(
+            model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(profile_for(_ProductionPredictor())))
+        ),
     )
     assert projection.review_candidates
     assert all(item.name.startswith("测试") for item in projection.local.items)
@@ -155,8 +158,10 @@ def test_tomorrow_non_positive_utility_keeps_scores_but_cannot_enter_recommendat
         _native_input(features),
         policy,
         sequence=1,
-        model_scoring=ModelScoringRouter(
-            TomorrowProductionModelScoringService(profile_for(_NonPositiveProductionPredictor()))
+        runtime=ScoredBuildRuntime(
+            model_scoring=ModelScoringRouter(
+                TomorrowProductionModelScoringService(profile_for(_NonPositiveProductionPredictor()))
+            )
         ),
     )
 
@@ -169,6 +174,7 @@ def test_tomorrow_non_positive_utility_keeps_scores_but_cannot_enter_recommendat
     assert {item.action.value for item in projection.local.items} == {"unavailable"}
     assert {item.reason for item in projection.local.items} == {"model_net_utility_non_positive"}
     assert build_supply_status(projection).primary_blocker == "no_positive_net_utility"
+    assert build_supply_status(projection, candidate_quote_eligible=0).supply_funnel.candidate_quote_eligible == 0
 
 
 def test_tomorrow_model_cross_section_excludes_hard_filter_rejections(
@@ -190,7 +196,9 @@ def test_tomorrow_model_cross_section_excludes_hard_filter_rejections(
         _native_input((accepted, rejected)),
         policy,
         sequence=1,
-        model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(profile_for(predictor))),
+        runtime=ScoredBuildRuntime(
+            model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(profile_for(predictor)))
+        ),
     )
 
     assert predictor.codes == ("600001",)
@@ -219,7 +227,9 @@ def test_tomorrow_model_excludes_only_candidate_below_its_61_session_requirement
         _native_input((eligible, insufficient)),
         policy,
         sequence=1,
-        model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(profile_for(predictor))),
+        runtime=ScoredBuildRuntime(
+            model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(profile_for(predictor)))
+        ),
     )
 
     assert predictor.codes == ("600001",)
@@ -258,7 +268,9 @@ def test_tomorrow_model_history_coverage_requires_the_active_profile_fields(
         _native_input((eligible, incomplete)),
         policy,
         sequence=1,
-        model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(profile_for(_ProductionPredictor()))),
+        runtime=ScoredBuildRuntime(
+            model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(profile_for(_ProductionPredictor())))
+        ),
     )
 
     assert projection.input_quality.history_required_sessions == 61
@@ -376,6 +388,20 @@ def test_native_projection_does_not_treat_stale_candidate_quotes_as_fresh_popula
 
     assert projection.input_quality.candidate_scored_count == 0
     assert projection.input_quality.candidate_transient_reason_counts["stale_quote"] == 100
+
+
+def test_native_projection_classifies_an_invalid_candidate_quote_as_transient(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "strategy.json"))
+    source = _verified_feature(application_feature_factory("600001", EVALUATED_AT - timedelta(seconds=10)))
+    invalid = replace(source, quote=replace(source.quote, price=None))
+
+    projection = build_scored_local(_native_input((invalid,)), policy, sequence=1)
+
+    assert projection.input_quality.candidate_scored_count == 0
+    assert projection.input_quality.status == "transient_invalid_empty"
+    assert projection.input_quality.candidate_transient_reason_counts["invalid_price"] == 1
 
 
 def test_review_completed_after_1448_cannot_create_hybrid(application_feature_factory) -> None:

@@ -11,7 +11,7 @@ from typing import Literal
 
 from trader.application.ports.scored import ScoredNativeInput
 from trader.domain.market.models import Board, FeatureSnapshot
-from trader.domain.recommendation.models import ScoredDisposition, ScoredSelectionResult
+from trader.domain.recommendation.models import ScoredDisposition, ScoredSelectionResult, ScoredStockEvaluation
 from trader.domain.recommendation.selection.scored_selection import (
     ScoredCandidatePlan,
     ScoredCandidateStageCounts,
@@ -26,6 +26,13 @@ ScoredInputQualityStatus = Literal[
 
 _TRANSIENT_FILTER_REASONS = frozenset(
     {
+        "future_quote",
+        "invalid_amount",
+        "invalid_cross_source_deviation",
+        "invalid_pct_change",
+        "invalid_price",
+        "invalid_quote_structure",
+        "invalid_quote_time",
         "stale_quote",
         "missing_liquidity_history",
         "invalid_liquidity_history",
@@ -120,15 +127,24 @@ class ScoredInputQuality:
         return self.status in {"ready", "business_empty"}
 
 
+@dataclass(frozen=True)
+class ScoredInputQualityOptions:
+    minimum_history_sessions: int = 20
+    profile_history_qualified_codes: Collection[str] | None = None
+    candidate_stage_counts: ScoredCandidateStageCounts | None = None
+    preselection_transient_invalid: bool = False
+
+
 def assess_scored_input_quality(
     native_input: ScoredNativeInput,
     selection: ScoredSelectionResult,
-    *,
-    minimum_history_sessions: int = 20,
-    profile_history_qualified_codes: Collection[str] | None = None,
-    candidate_stage_counts: ScoredCandidateStageCounts | None = None,
-    preselection_transient_invalid: bool = False,
+    options: ScoredInputQualityOptions | None = None,
 ) -> ScoredInputQuality:
+    options = options or ScoredInputQualityOptions()
+    minimum_history_sessions = options.minimum_history_sessions
+    profile_history_qualified_codes = options.profile_history_qualified_codes
+    candidate_stage_counts = options.candidate_stage_counts
+    preselection_transient_invalid = options.preselection_transient_invalid
     if minimum_history_sessions < 1:
         raise ValueError("scored input minimum history sessions must be positive")
     requested_codes = set(native_input.requested_codes)
@@ -234,10 +250,13 @@ def assess_scored_input_quality(
 
 
 def has_transient_candidate_gap(plan: ScoredCandidatePlan) -> bool:
-    return any(
-        _TRANSIENT_FILTER_REASONS.intersection(reason.code for reason in item.filter_reasons)
-        or item.selection_skip_reason in _TRANSIENT_SELECTION_REASONS
-        for item in plan.evaluations
+    return any(has_transient_evaluation_gap(item) for item in plan.evaluations)
+
+
+def has_transient_evaluation_gap(evaluation: ScoredStockEvaluation) -> bool:
+    return bool(
+        _TRANSIENT_FILTER_REASONS.intersection(reason.code for reason in evaluation.filter_reasons)
+        or evaluation.selection_skip_reason in _TRANSIENT_SELECTION_REASONS
     )
 
 

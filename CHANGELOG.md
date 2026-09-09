@@ -6,6 +6,22 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求把当前候选链、评分 Review 和实施计划修改统一收口提交。根因确认：旧实时链先按通用候选分截断，
+  再检查策略历史、活动模型字段和定向行情有效性，使无资格或刷新失效股票占用每板 120 只窗口，后继合格股票
+  无法补位；候选漏斗还不能区分永久资格、动态过滤、策略历史、模型输入、候选分与行情刷新阶段。Added: 新增
+  不可变候选规划上下文、六级单调漏斗、按 `strategy + board` 隔离的有序储备，以及同一 deadline 内逐波补位
+  和瞬时失效诊断。Changed: Today/Tomorrow/D25 共用策略自身的领域候选规划，物理行情只刷新三策略窗口的
+  稳定去重并集；评分输入严格丢弃供应商额外返回的未请求代码，正式投影复用同一规划状态。Fixed: ST、停牌、
+  历史不足、活动模型字段缺失、stale/invalid 或缺失定向报价不再消耗最终板内名额，合格同板后继可以补位；
+  合法业务空集、输入未就绪和瞬时行情耗尽保持不同状态。Verification: 候选规划、行情输入、Today/Tomorrow
+  投影和领域选择定向回归通过；`make format-check`、`make lint`、`make type-check`（379 个源文件）、完整
+  `make test`、`make package` 和 `make performance-check` 通过，严格重构债务保持为零，性能门确认
+  `network_calls=0`、分配增长 0% 且生产候选规划 provenance 生效。实施计划已删除完成的候选/评分章节，并把
+  父加增量归档设为下一唯一执行项。Residual Risks: 不扩大每板 120 只上限、不修改候选权重/最低分、评分
+  权重、动作门、DeepSeek 预算或冻结；真实供应商仍可能
+  在 deadline 前耗尽全部同板储备，此时按瞬时不可用失败关闭。
+  `Regression-Key: candidate-eligibility-before-cap-single-owner`。
+
 - 用户要求把 `03_工程实施.md` 与当前代码逐项对照，删除所有已完成内容并只保留未完成计划。根因确认：旧文档
   同时保存历史基线、完成台账、失败关闭章节、已放弃设想和当前任务，导致真实执行顺序被 600 多行历史记录
   淹没；同时当前工作树存在候选资格、评分 Review 和增量归档多批未提交改动，本地 V3 旧 schema 工件又被
@@ -34,6 +50,25 @@ All notable changes to this project are documented here.
   不能执行；真实点时资格/风险事实不足，必须保持 `historical_data_insufficient`、
   `point_in_time_parity=false`、`production_authority=false`。
   `Regression-Key: replay-incremental-download-v3-training-boundary`。
+
+- 用户要求修复评分链 Review 发现并确认 `01_评分逻辑.md` 是否整链实现。根因确认：Tomorrow 线上预测分与
+  Amihud 成本分位用代码次序拆开并列值，单样本又被映射为满分；历史筛选、风险校准和 profile 留出链复制了
+  同一旧算法；DeepSeek
+  primary 的四项准入条件只参与排序而未真正过滤，且所有 primary 候选都被伪标为下行保护集合，导致普通候选
+  被补满复核并可能误入 challenger。Changed: 线上与离线统一使用纯领域横截面平均秩，并列值同分、单样本固定
+  中性 50；primary 只接纳高风险、动作门附近、TopK 边界或证据冲突候选，28 只仅作为上限；保护集字段由实际
+  下行保护器判定，不再由 primary 身份强制置真；一级资格文字进一步区分已知事实前置裁剪、首次权威资格事实
+  采集及登记后的二次裁剪。Review: 文档第 2–10 节生产决策主链均有活动实现与契约入口；第 11–12 节是尚未
+  全部完成的研究/收益验证路线，完整历史 point-in-time parity、V3 收益门禁、严重亏损概率和生产授权仍保持
+  未完成/失败关闭，不能表述为整份文档全部实现。Verification: 平均秩与成本门、primary/challenger 保护语义、
+  Today/Tomorrow 投影、固定融合、下行保护、离线筛选/风险/profile 留出、DeepSeek schema 和文档契约定向
+  回归通过；固定融合专项结果仍为 `83.40`，DeepSeek 原子预算并发、`create_app()` 无副作用和架构 AST 专项
+  通过；统一批次的 `make format-check`、`make lint`、`make type-check`、完整 `make test`、`make package` 与
+  `make performance-check` 全部通过，性能等价向量和分配预算通过。Residual Risks: 本批不改变权重、阈值、
+  预算、冻结、API 或 Web，也不补造缺失的真实点时研究证据；研究链剩余缺口继续返回
+  `historical_data_insufficient` 或
+  `loss_probability_status=not_modeled`，V3 仍无自动生产权限。
+  `Regression-Key: scoring-review-protection-average-rank`。
 
 - 用户要求在不改写既有 92 个分片、旧 manifest、未提交工作树和运行数据库的前提下增量补采并重训 V3；本批先完成
   只读盘点子任务。根因确认：现有 `download_history` 发现封存 manifest 后直接复用，无法发现 2026-08-31 之后的新

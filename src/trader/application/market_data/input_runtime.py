@@ -11,6 +11,7 @@ from typing import Protocol
 
 from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.long_runtime import LongRuntime
+from trader.application.market_data.supply_status import build_supply_status
 from trader.application.ports.long import LongRefreshRequest
 from trader.application.ports.market import MarketDataUnavailableError, ResearchRefreshResult
 from trader.application.ports.model_scoring import ModelScoringContext, ModelScoringPort
@@ -27,27 +28,26 @@ from trader.application.ports.scheduler import (
 )
 from trader.application.ports.scored import D25NativeInput, TodayNativeInput, TomorrowNativeInput
 from trader.application.recommendation.candidate_planning import (
-    CandidatePlanSet,
     SCORED_STRATEGIES,
+    CandidatePlanningContext,
+    CandidatePlanSet,
     build_candidate_plans,
     refresh_candidate_reserves,
 )
 from trader.application.recommendation.policy import RecommendationPolicy
 from trader.application.recommendation.scored_projection import (
+    ScoredBuildRuntime,
     ScoredLocalProjection,
     build_scored_local,
 )
-from trader.application.recommendation.scored_quality import (
-    has_transient_candidate_gap,
-)
-from trader.application.market_data.supply_status import build_supply_status
+from trader.application.recommendation.scored_quality import has_transient_candidate_gap
 from trader.application.research.research_audit import (
     CommittedResearchAudit,
     try_build_committed_research_audit,
 )
 from trader.application.runtime.cadence import PipelineTask, task_execution_budget_seconds
 from trader.application.runtime.schedule import SHANGHAI
-from trader.domain.market.models import Board, FeatureSnapshot
+from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.decision_identity import (
     DecisionIdentity,
     DecisionOverlay,
@@ -197,6 +197,9 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         self._strategy_candidate_features: dict[Strategy, tuple[FeatureSnapshot, ...]] = {
             strategy: () for strategy in SCORED_STRATEGIES
         }
+        self._strategy_preselection_transient_invalid: dict[Strategy, bool] = {
+            strategy: False for strategy in SCORED_STRATEGIES
+        }
         self._latest_topk_quotes: _TopKQuoteBatch | None = None
         self._market_version = "market:unavailable"
         self._candidate_version = "candidate:unavailable"
@@ -263,12 +266,14 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         completed_at = _refresh_completed_at(request, features)
         candidate_plans = build_candidate_plans(
             features,
-            candidate_features=None,
-            evaluated_at=completed_at,
-            data_version=data_version,
-            policy=self._policy,
-            model_scoring=self._model_scoring,
-            limit_per_board=self._candidate_pool_size,
+            None,
+            CandidatePlanningContext(
+                evaluated_at=completed_at,
+                data_version=data_version,
+                policy=self._policy,
+                model_scoring=self._model_scoring,
+                limit_per_board=self._candidate_pool_size,
+            ),
         )
         requested = candidate_plans.physical_union()
         quote_versions = _quote_versions(features)
@@ -290,6 +295,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                 strategy: candidate_plans.strategy_codes(strategy) for strategy in SCORED_STRATEGIES
             }
             self._strategy_candidate_features = {strategy: () for strategy in SCORED_STRATEGIES}
+            self._strategy_preselection_transient_invalid = {strategy: False for strategy in SCORED_STRATEGIES}
             self._market_version = data_version
             self._market_quote_versions = quote_versions
             self._record_pending_quality_locked(
@@ -321,11 +327,14 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         refresh_plan = refresh_candidate_reserves(
             population,
             initial_plans,
-            observed_at=request.observed_at,
-            data_version=self._market_version,
-            policy=self._policy,
-            model_scoring=self._model_scoring,
-            refresh_quotes=lambda codes: self._market.refresh_candidate_quotes(
+            CandidatePlanningContext(
+                evaluated_at=request.observed_at,
+                data_version=self._market_version,
+                policy=self._policy,
+                model_scoring=self._model_scoring,
+                limit_per_board=initial_plans.limit_per_board,
+            ),
+            lambda codes: self._market.refresh_candidate_quotes(
                 codes,
                 request.observed_at,
                 force=True,
@@ -356,6 +365,11 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             self._latest_requested_codes = requested
             self._strategy_requested_codes = strategy_requested
             self._strategy_candidate_features = strategy_features
+            self._strategy_preselection_transient_invalid = {
+                strategy: strategy in refresh_plan.transient_invalid_strategies
+                or has_transient_candidate_gap(initial_plans.plans[strategy])
+                for strategy in SCORED_STRATEGIES
+            }
             epoch = self._scoring_epoch_locked(include_intraday_tail=False)
             if len(set(strategy_requested.values())) == 1:
                 codes = strategy_requested[Strategy.TODAY]
@@ -584,6 +598,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             requested = self._strategy_requested_codes[request.strategy]
             candidate_features = self._strategy_candidate_features[request.strategy]
             candidate_plans = self._candidate_plans
+            preselection_transient_invalid = self._strategy_preselection_transient_invalid[request.strategy]
         if not market_features or candidate_plans is None:
             raise DataRefreshUnavailableError("market_snapshot_unavailable")
         scoring_batch = (
@@ -601,7 +616,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             scoring_batch.features,
             candidate_plans.plans[request.strategy].stage_counts,
             len(candidate_features),
-            has_transient_candidate_gap(candidate_plans.plans[request.strategy]),
+            preselection_transient_invalid,
         )
 
     def _score_features(
@@ -617,13 +632,16 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             cached = self._score_feature_batches.get(key)
             if cached is not None:
                 return _ScoringFeatureBatch(cached)
+        requested_codes = frozenset(requested)
         features = tuple(
-            self._market.read_candidate_features(
+            feature
+            for feature in self._market.read_candidate_features(
                 requested,
                 observed_at,
                 include_intraday_tail=include_intraday_tail,
                 include_structured_research=True,
             )
+            if feature.quote.code in requested_codes
         )
         with self._lock:
             if epoch == self._scoring_epoch_locked(include_intraday_tail=include_intraday_tail):
@@ -696,10 +714,12 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                     today_native,
                     self._policy,
                     sequence=sequence,
-                    model_scoring=self._model_scoring,
-                    scoring_context=_model_scoring_context(request, batch, self._now()),
-                    candidate_stage_counts=batch.candidate_stage_counts,
-                    preselection_transient_invalid=batch.preselection_transient_invalid,
+                    runtime=ScoredBuildRuntime(
+                        model_scoring=self._model_scoring,
+                        scoring_context=_model_scoring_context(request, batch, self._now()),
+                        candidate_stage_counts=batch.candidate_stage_counts,
+                        preselection_transient_invalid=batch.preselection_transient_invalid,
+                    ),
                 )
             else:
                 tomorrow_native = (TomorrowNativeInput if request.strategy is Strategy.TOMORROW else D25NativeInput)(
@@ -719,10 +739,12 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                     tomorrow_native,
                     self._policy,
                     sequence=sequence,
-                    model_scoring=self._model_scoring,
-                    scoring_context=_model_scoring_context(request, batch, self._now()),
-                    candidate_stage_counts=batch.candidate_stage_counts,
-                    preselection_transient_invalid=batch.preselection_transient_invalid,
+                    runtime=ScoredBuildRuntime(
+                        model_scoring=self._model_scoring,
+                        scoring_context=_model_scoring_context(request, batch, self._now()),
+                        candidate_stage_counts=batch.candidate_stage_counts,
+                        preselection_transient_invalid=batch.preselection_transient_invalid,
+                    ),
                 )
         except (RuntimeError, TypeError, ValueError) as exc:
             raise DecisionUnavailableError(_decision_failure_code(exc)) from exc

@@ -444,8 +444,6 @@ def _fact_revisions(rows: tuple[_RawRow, ...]) -> tuple[FeatureFactRevision, ...
 
 
 def _relative_prediction_scores(values: tuple[float, ...]) -> tuple[float, ...]:
-    if len(values) == 1:
-        return (100.0,)
     return tuple(100.0 * rank for rank in percentile_ranks(values))
 
 

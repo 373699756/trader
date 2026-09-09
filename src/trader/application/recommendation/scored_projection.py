@@ -19,7 +19,11 @@ from trader.application.recommendation.scored_deepseek_fusion import (
     normalize_scored_review_times,
     scored_decision_policy,
 )
-from trader.application.recommendation.scored_quality import ScoredInputQuality, assess_scored_input_quality
+from trader.application.recommendation.scored_quality import (
+    ScoredInputQuality,
+    ScoredInputQualityOptions,
+    assess_scored_input_quality,
+)
 from trader.application.recommendation.scored_selection import (
     ScoredSelectionIdentity,
     ScoredSelectionOptions,
@@ -76,27 +80,34 @@ class _DecisionProjectionContext:
     model_diagnostics: Mapping[str, ModelDiagnostics] | None = None
 
 
+@dataclass(frozen=True)
+class ScoredBuildRuntime:
+    model_scoring: ModelScoringPort | None = None
+    scoring_context: ModelScoringContext | None = None
+    candidate_stage_counts: ScoredCandidateStageCounts | None = None
+    preselection_transient_invalid: bool = False
+
+
 def build_scored_local(
     native_input: ScoredNativeInput,
     policy: RecommendationPolicy,
     *,
     sequence: int,
-    model_scoring: ModelScoringPort | None = None,
-    scoring_context: ModelScoringContext | None = None,
-    candidate_stage_counts: ScoredCandidateStageCounts | None = None,
-    preselection_transient_invalid: bool = False,
+    runtime: ScoredBuildRuntime | None = None,
 ) -> ScoredLocalProjection:
     if sequence < 1:
         raise ValueError("scored decision sequence must be positive")
+    runtime = runtime or ScoredBuildRuntime()
     strategy = native_input.strategy
     decision_policy = scored_decision_policy(policy, strategy, phase=native_input.phase)
     population = tuple(preselection_replay_feature(feature) for feature in native_input.market_features)
+    model_scoring = runtime.model_scoring
     uses_model = model_scoring is not None and model_scoring.uses_model(strategy)
     model_batch = (
         model_scoring.score(
             strategy,
             _model_eligible_candidates(native_input, policy),
-            context=scoring_context,
+            context=runtime.scoring_context,
         )
         if model_scoring is not None and uses_model
         else None
@@ -137,10 +148,12 @@ def build_scored_local(
     quality = assess_scored_input_quality(
         native_input,
         selection,
-        minimum_history_sessions=minimum_history_sessions,
-        profile_history_qualified_codes=profile_history_qualified_codes,
-        candidate_stage_counts=candidate_stage_counts,
-        preselection_transient_invalid=preselection_transient_invalid,
+        ScoredInputQualityOptions(
+            minimum_history_sessions=minimum_history_sessions,
+            profile_history_qualified_codes=profile_history_qualified_codes,
+            candidate_stage_counts=runtime.candidate_stage_counts,
+            preselection_transient_invalid=runtime.preselection_transient_invalid,
+        ),
     )
     candidates = select_scored_review_candidates(selection, decision_policy)
     input_hash = native_input.input_version.removeprefix("native-input:")

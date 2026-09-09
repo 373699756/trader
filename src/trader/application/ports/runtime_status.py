@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, fields
 from datetime import date, datetime
+from itertools import pairwise
 from typing import Literal
 
 from trader.domain.recommendation.models import Strategy
@@ -39,8 +40,19 @@ class SupplyFunnel:
     selected_observe: int = 0
 
     def __post_init__(self) -> None:
-        if any(getattr(self, item.name) < 0 for item in fields(self)):
+        values = tuple(getattr(self, item.name) for item in fields(self))
+        if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in values):
             raise ValueError("supply funnel counts cannot be negative")
+        stages = (
+            self.issuer_eligible_population,
+            self.dynamic_filter_eligible,
+            self.strategy_history_eligible,
+            self.model_input_eligible,
+            self.candidate_score_eligible,
+            self.candidate_limit_selected,
+        )
+        if any(left < right for left, right in pairwise(stages)):
+            raise ValueError("supply funnel candidate stages must be monotonic")
 
 
 @dataclass(frozen=True)

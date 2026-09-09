@@ -5,14 +5,20 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from itertools import pairwise
 from types import MappingProxyType
 
 from trader.domain.market.factors import clamp, round_score
 from trader.domain.market.models import Board, FeatureSnapshot
-from trader.domain.recommendation.filtering.filters import HardFilterPolicy, hard_filter
+from trader.domain.recommendation.filtering.filters import (
+    HardFilterPolicy,
+    apply_filters,
+    hard_filter,
+    level_one_filter_rules,
+)
 from trader.domain.recommendation.models import (
     BoardStrategyPolicy,
     FilterAudit,
@@ -121,7 +127,9 @@ class ScoredCandidateStageCounts:
             self.candidate_score_eligible,
             self.candidate_limit_selected,
         )
-        if any(value < 0 for value in counts) or any(left < right for left, right in zip(counts, counts[1:])):
+        if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in counts) or any(
+            left < right for left, right in pairwise(counts)
+        ):
             raise ValueError("candidate stage counts must be non-negative and monotonic")
 
 
@@ -154,6 +162,8 @@ class ScoredCandidatePlan:
             "population_filter_reason_counts",
             MappingProxyType(dict(self.population_filter_reason_counts)),
         )
+        if not isinstance(self.population_rejected_count, int) or isinstance(self.population_rejected_count, bool):
+            raise ValueError("candidate population rejected count must be an integer")
         if self.population_rejected_count < 0:
             raise ValueError("candidate population rejected count cannot be negative")
 
@@ -181,20 +191,7 @@ class ScoredSelectionRequest:
     model_input_eligible_codes: frozenset[str] | None = None
 
     def __post_init__(self) -> None:
-        features = tuple(self.features)
-        if self.evaluated_at.tzinfo is None or self.evaluated_at.utcoffset() is None:
-            raise ValueError("evaluation time must be timezone-aware")
-        if getattr(self.evaluated_at.tzinfo, "key", None) != _SHANGHAI_TIMEZONE:
-            raise ValueError("evaluation time must use Asia/Shanghai")
-        if not all((self.trade_date, self.phase, self.data_version, self.merge_epoch)):
-            raise ValueError("scored selection identity must not be empty")
-        codes = tuple(item.quote.code for item in features)
-        if len(codes) != len(set(codes)):
-            raise ValueError("scored selection features must contain unique codes")
-        if any(item.observed_at > self.evaluated_at for item in features):
-            raise ValueError("scored selection cannot use future features")
-        if self.minimum_history_sessions < 1:
-            raise ValueError("scored selection minimum history sessions must be positive")
+        features, codes = _validated_selection_features(self)
         population_evaluated_at, population_max_age_seconds = _validated_population_window(
             features,
             candidate_evaluated_at=self.evaluated_at,
@@ -217,14 +214,33 @@ class ScoredSelectionRequest:
         object.__setattr__(self, "fallbacks", MappingProxyType(fallbacks))
         object.__setattr__(self, "population_evaluated_at", population_evaluated_at)
         object.__setattr__(self, "population_max_age_seconds", population_max_age_seconds)
-        if self.model_overrides is not None:
-            if not set(self.model_overrides.scores).issubset(set(codes)):
-                raise ValueError("local score overrides must belong to the scored population")
+        if self.model_overrides is not None and not set(self.model_overrides.scores).issubset(codes):
+            raise ValueError("local score overrides must belong to the scored population")
         if self.model_input_eligible_codes is not None:
             eligible_codes = frozenset(self.model_input_eligible_codes)
-            if not eligible_codes.issubset(set(codes)):
+            if not eligible_codes.issubset(codes):
                 raise ValueError("model input eligible codes must belong to the scored population")
             object.__setattr__(self, "model_input_eligible_codes", eligible_codes)
+
+
+def _validated_selection_features(
+    request: ScoredSelectionRequest,
+) -> tuple[tuple[FeatureSnapshot, ...], set[str]]:
+    features = tuple(request.features)
+    if request.evaluated_at.tzinfo is None or request.evaluated_at.utcoffset() is None:
+        raise ValueError("evaluation time must be timezone-aware")
+    if getattr(request.evaluated_at.tzinfo, "key", None) != _SHANGHAI_TIMEZONE:
+        raise ValueError("evaluation time must use Asia/Shanghai")
+    if not all((request.trade_date, request.phase, request.data_version, request.merge_epoch)):
+        raise ValueError("scored selection identity must not be empty")
+    codes = tuple(item.quote.code for item in features)
+    if len(codes) != len(set(codes)):
+        raise ValueError("scored selection features must contain unique codes")
+    if any(item.observed_at > request.evaluated_at for item in features):
+        raise ValueError("scored selection cannot use future features")
+    if request.minimum_history_sessions < 1:
+        raise ValueError("scored selection minimum history sessions must be positive")
+    return features, set(codes)
 
 
 def _validated_candidate_features(
@@ -367,6 +383,22 @@ def plan_scored_candidates(request: ScoredSelectionRequest) -> ScoredCandidatePl
         )
         reserves[board] = _rank_board_candidates(enriched, policy, request, evaluations)
 
+    if request.candidate_features is None:
+        assert request.population_evaluated_at is not None
+        assert request.population_max_age_seconds is not None
+        issuer_evaluations = population_evaluations.values()
+        issuer_evaluated_at = request.population_evaluated_at
+        issuer_max_age_seconds = request.population_max_age_seconds
+    else:
+        issuer_evaluations = candidate_evaluations.values()
+        issuer_evaluated_at = request.evaluated_at
+        issuer_max_age_seconds = request.policy.max_age_seconds
+    issuer_eligible = _issuer_eligible_count(
+        issuer_evaluations,
+        request,
+        evaluated_at=issuer_evaluated_at,
+        max_age_seconds=issuer_max_age_seconds,
+    )
     dynamic_eligible = sum(item.disposition is not ScoredDisposition.REJECT for item in candidate_evaluations.values())
     history_eligible = sum(
         item.disposition is not ScoredDisposition.REJECT
@@ -395,7 +427,7 @@ def plan_scored_candidates(request: ScoredSelectionRequest) -> ScoredCandidatePl
         reserves=reserves,
         population_versions=population_versions,
         stage_counts=ScoredCandidateStageCounts(
-            issuer_eligible_population=len(candidate_evaluations),
+            issuer_eligible_population=issuer_eligible,
             dynamic_filter_eligible=dynamic_eligible,
             strategy_history_eligible=history_eligible,
             model_input_eligible=model_input_eligible,
@@ -476,6 +508,27 @@ def _filter_features(
             optional_flags=filtered.optional_flags,
         )
     return result
+
+
+def _issuer_eligible_count(
+    evaluations: Iterable[ScoredStockEvaluation],
+    request: ScoredSelectionRequest,
+    *,
+    evaluated_at: datetime,
+    max_age_seconds: float,
+) -> int:
+    """Count the population remaining after the permanent issuer gate.
+
+    The complete ``hard_filter`` result remains the evaluation source used by
+    scoring.  This second, tier-specific projection only supplies the funnel's
+    first stage so permanent exclusions cannot be confused with dynamic data
+    quality failures.
+    """
+    rules = level_one_filter_rules(
+        max_age_seconds=max_age_seconds,
+        policy=request.policy.hard_filter,
+    )
+    return sum(apply_filters(item.features, rules, now=evaluated_at).allowed for item in evaluations)
 
 
 def _rank_board_candidates(

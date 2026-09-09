@@ -989,6 +989,185 @@ def test_candidate_qualification_precedes_board_limit_and_failed_quote_promotes_
     assert all(item.supply_funnel.candidate_quote_eligible == 1 for item in statuses.values())
 
 
+def test_candidate_quote_exhaustion_is_reported_as_transient_empty(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+    feature = replace(
+        application_feature_factory("600001", observed_at),
+        quote=replace(
+            application_feature_factory("600001", observed_at).quote,
+            board=Board.MAIN,
+            board_source="security_master",
+            board_reliability="verified",
+            listing_age_sessions=100,
+        ),
+    )
+
+    class EmptyCandidateMarket(_Market):
+        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None):
+            self.candidate_quote_refresh_count += 1
+            self.candidate_requests.append(tuple(codes))
+            return ()
+
+    market = EmptyCandidateMarket((feature,))
+    adapter = MarketDataAdapter(
+        market,
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=_decision_build(),
+    )
+    adapter.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
+    adapter.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
+    request = _request(observed_at, phase="morning")
+
+    adapter.refresh(request)
+
+    with pytest.raises(DecisionUnavailableError, match="transient_invalid_empty"):
+        adapter.build_local(request)
+    status = next(item for item in adapter.input_quality_status() if item.strategy is Strategy.TOMORROW)
+    assert status.status == "transient_invalid_empty"
+    assert status.publishable is False
+
+
+def test_unrequested_vendor_candidate_is_discarded_before_scoring(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+    feature = replace(
+        application_feature_factory("600001", observed_at),
+        quote=replace(
+            application_feature_factory("600001", observed_at).quote,
+            board=Board.MAIN,
+            board_source="security_master",
+            board_reliability="verified",
+            listing_age_sessions=100,
+        ),
+    )
+    extra = replace(feature, quote=replace(feature.quote, code="600999"))
+
+    class ExtraCandidateMarket(_Market):
+        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None):
+            return (
+                *super().refresh_candidate_quotes(codes, observed_at, force=force, deadline=deadline),
+                extra,
+            )
+
+        def read_candidate_features(
+            self,
+            codes,
+            observed_at,
+            *,
+            include_intraday_tail=False,
+            include_structured_research=False,
+        ):
+            return (
+                *super().read_candidate_features(
+                    codes,
+                    observed_at,
+                    include_intraday_tail=include_intraday_tail,
+                    include_structured_research=include_structured_research,
+                ),
+                extra,
+            )
+
+    market = ExtraCandidateMarket((feature,))
+    adapter = MarketDataAdapter(
+        market,
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=_decision_build(),
+    )
+    request = _request(observed_at, phase="morning")
+
+    _prime_scoring_cache(adapter, observed_at)
+    adapter.refresh(request)
+    built = adapter.build_local(request)
+
+    assert built is not None
+    batch = adapter._batches[(Strategy.TOMORROW, request.input_version)]
+    assert tuple(feature.quote.code for feature in batch.candidate_features) == ("600001",)
+    assert all(item.code != "600999" for item in built.items)
+
+
+def test_stale_candidate_quote_promotes_next_same_board_reserve(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+
+    def ranked(code: str, score: float, *, is_st: bool = False):
+        feature = application_feature_factory(code, observed_at)
+        return replace(
+            feature,
+            quote=replace(
+                feature.quote,
+                board=Board.MAIN,
+                is_st=is_st,
+                board_source="security_master",
+                board_reliability="verified",
+                listing_age_sessions=100,
+                change_5m=1.0,
+                speed=1.0,
+                volume_ratio=2.0,
+            ),
+            values={
+                **feature.values,
+                "amount_percentile_20d": score,
+                "speed_percentile": score,
+                "relative_strength_5d": score,
+                "trend_score": score,
+                "low_volatility_score": score,
+                "low_drawdown_score": score,
+                "turnover_shock_score": score,
+                "amount_shock_score": score,
+                "capacity_score": score,
+                "moderate_amplitude": score,
+                "price_executability": score,
+            },
+        )
+
+    first = ranked("600001", 100.0, is_st=True)
+    stale_source = observed_at - timedelta(minutes=1)
+    valid_first = ranked("600002", 90.0)
+    stale = replace(
+        valid_first,
+        observed_at=stale_source,
+        quote=replace(
+            valid_first.quote,
+            source_time=stale_source,
+            received_time=stale_source,
+        ),
+    )
+    valid_second = ranked("600003", 85.0)
+    invalid = replace(valid_second, quote=replace(valid_second.quote, price=None))
+    successor = ranked("600004", 80.0)
+
+    class StaleFirstCandidateMarket(_Market):
+        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None):
+            self.candidate_quote_refresh_count += 1
+            self.candidate_requests.append(tuple(codes))
+            requested = set(codes)
+            if self.candidate_quote_refresh_count == 1:
+                return (stale,) if "600002" in requested else ()
+            if self.candidate_quote_refresh_count == 2:
+                return (invalid,) if "600003" in requested else ()
+            return (successor,) if "600004" in requested else ()
+
+    market = StaleFirstCandidateMarket((first, valid_first, valid_second, successor))
+    adapter = MarketDataAdapter(
+        market,
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=_decision_build(),
+    )
+
+    adapter.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
+    adapter.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
+
+    assert market.candidate_requests == [("600002",), ("600003",), ("600004",)]
+    assert adapter._strategy_requested_codes[Strategy.TOMORROW] == ("600004",)
+
+
 def test_strategy_candidate_windows_are_isolated_while_quote_io_uses_their_union(
     application_feature_factory,
 ) -> None:
@@ -1044,14 +1223,26 @@ def test_strategy_candidate_windows_are_isolated_while_quote_io_uses_their_union
     )
 
     _prime_scoring_cache(adapter, observed_at)
-    for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
-        adapter.refresh(_request(observed_at, strategy=strategy, phase="today_main"))
+    requests = tuple(
+        _request(observed_at, strategy=strategy, phase="today_main")
+        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+    )
+    for request in requests:
+        adapter.refresh(request)
 
     assert set(market.candidate_requests[0]) == {"600001", "600002"}
     requested_by_strategy = {request[0][0] for request in market.candidate_reads if request[0]}
     assert requested_by_strategy == {"600001", "600002"}
     assert any(codes == ("600001",) for codes, _tail, _research in market.candidate_reads)
     assert any(codes == ("600002",) for codes, _tail, _research in market.candidate_reads)
+    batches = {request.strategy: adapter._batches[(request.strategy, request.input_version)] for request in requests}
+    assert batches[Strategy.TODAY].requested_codes == ("600001",)
+    assert batches[Strategy.TOMORROW].requested_codes == ("600002",)
+    assert batches[Strategy.D25].requested_codes == ("600002",)
+    assert all(
+        {feature.quote.code for feature in batch.candidate_features} <= set(batch.requested_codes)
+        for batch in batches.values()
+    )
 
 
 def test_reference_refresh_scheduling_failure_does_not_block_local_decision(

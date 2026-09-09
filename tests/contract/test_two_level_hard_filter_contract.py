@@ -20,6 +20,9 @@ def test_authoritative_documents_define_two_level_filter_before_h1_download() ->
         "事实生效时间",
         "不得用当前一级名单反向删除",
         "全市场批量接口",
+        "首次形成一级事实",
+        "不是资格通过后的公司研究增强",
+        "二次执行一级资格裁剪",
         "DeepSeek",
     )
     required_design = (
@@ -47,5 +50,6 @@ def test_historical_aliases_are_retired_from_the_unfinished_plan() -> None:
     assert level_one >= 0
     assert "15.1.35" not in work
     assert "15.1.21–15.1.34" not in work
-    assert "candidate_eligibility_before_board_cap" in work
+    assert "candidate_eligibility_before_board_cap" not in work
+    assert "baostock_increment_archive" in work
     assert "二级动态硬过滤" in strategy

@@ -30,7 +30,7 @@ def test_review_candidates_are_deterministic_bounded_and_exclude_non_pass() -> N
     evaluations = tuple(
         _evaluation(
             index,
-            local_score=95.0 - index / 2,
+            local_score=78.0,
             disposition=ScoredDisposition.OBSERVE_ONLY if index in {0, 1} else ScoredDisposition.PASS,
         )
         for index in range(40)
@@ -46,7 +46,31 @@ def test_review_candidates_are_deterministic_bounded_and_exclude_non_pass() -> N
     assert len(forward) == 28
     assert tuple(item.code for item in forward) == tuple(item.code for item in reverse)
     assert {"600000", "600001"}.isdisjoint(item.code for item in forward)
-    assert all(item.context.in_protection_set for item in forward)
+    assert all(item.context.near_action_threshold for item in forward)
+    assert all(not item.context.in_protection_set for item in forward)
+
+
+def test_review_candidates_exclude_pass_rows_outside_every_documented_predicate() -> None:
+    selection = _selection(
+        (
+            _evaluation(0, local_score=95.0),
+            _evaluation(1, local_score=60.0),
+            _evaluation(2, local_score=55.0),
+        )
+    )
+
+    assert select_scored_review_candidates(selection, _policy()) == ()
+
+
+def test_review_context_marks_only_actual_downside_protection_members() -> None:
+    ordinary = _evaluation(0, local_score=78.0)
+    protected = _evaluation(1, local_score=78.0, values={"trend_breakdown": 1.0})
+
+    selected = select_scored_review_candidates(_selection((ordinary, protected)), _policy())
+    contexts = {item.code: item.context for item in selected}
+
+    assert contexts[ordinary.code].in_protection_set is False
+    assert contexts[protected.code].in_protection_set is True
 
 
 def test_hybrid_decision_uses_fixed_fusion_without_repeating_local_risk() -> None:

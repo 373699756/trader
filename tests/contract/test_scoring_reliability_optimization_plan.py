@@ -18,12 +18,12 @@ def test_authoritative_docs_define_one_ordered_optimization_route() -> None:
     design = _read(DESIGN)
     work = _read(WORK)
     ordered_tasks = (
-        "## 4. BaoStock 父归档加增量归档",
-        "## 5. 动态截止日与缺失事实补采",
-        "## 6. V3 训练工件重建与整组发布",
-        "## 7. V3 工程运行验收",
-        "## 8. 点时证据修复",
-        "## 9. 一次性终端留出、Shadow 与人工生产授权",
+        "## 2. 当前执行章节：BaoStock 父归档加增量归档",
+        "## 3. 动态截止日与缺失事实补采",
+        "## 4. V3 训练工件重建与整组发布",
+        "## 5. V3 工程运行验收",
+        "## 6. 点时证据修复",
+        "## 7. 一次性终端留出、Shadow 与人工生产授权",
     )
     positions = tuple(work.index(task) for task in ordered_tasks)
     assert positions == tuple(sorted(positions))

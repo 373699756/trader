@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from decimal import ROUND_HALF_UP, Decimal
 
 from trader.domain.market.feature_contracts import TOMORROW_RAW_ALPHA_FEATURE_MANIFEST
@@ -133,6 +133,32 @@ def weighted_score(values: Mapping[str, float], weights: Mapping[str, float]) ->
     return clamp(sum(clamp(values[name]) * weights[name] for name in weights))
 
 
+def average_rank_percentiles(values: Sequence[float]) -> tuple[float, ...]:
+    """Return stable 0-1 average-rank percentiles aligned with the input."""
+
+    parsed = tuple(float(value) for value in values)
+    if any(not math.isfinite(value) for value in parsed):
+        raise ValueError("percentile values must be finite")
+    if not parsed:
+        return ()
+    if len(parsed) == 1:
+        return (0.5,)
+
+    order = sorted(range(len(parsed)), key=parsed.__getitem__)
+    ranks = [0.0] * len(parsed)
+    index = 0
+    while index < len(order):
+        end = index + 1
+        while end < len(order) and parsed[order[end]] == parsed[order[index]]:
+            end += 1
+        average_rank = (index + end - 1) / 2.0
+        percentile = average_rank / (len(parsed) - 1)
+        for position in order[index:end]:
+            ranks[position] = percentile
+        index = end
+    return tuple(ranks)
+
+
 def percentile_scores(values: Mapping[str, float | None], *, inverse: bool = False) -> dict[str, float]:
     scores, _ = percentile_scores_with_metadata(values, inverse=inverse)
     return scores
@@ -176,23 +202,9 @@ def percentile_scores_with_metadata(
         upper_quantile,
         population_data_version,
     )
-    if len(finite) == 1:
-        only_key = finite[0][1]
-        result[only_key] = 50.0
-        return result, metadata
-
-    index = 0
-    while index < len(finite):
-        end = index + 1
-        while end < len(finite) and finite[end][0] == finite[index][0]:
-            end += 1
-        average_rank = (index + end - 1) / 2
-        score = average_rank * 100.0 / (len(finite) - 1)
-        if inverse:
-            score = 100.0 - score
-        for _, key in finite[index:end]:
-            result[key] = score
-        index = end
+    ranks = average_rank_percentiles(tuple(value for value, _key in finite))
+    for (_value, key), rank in zip(finite, ranks, strict=True):
+        result[key] = 100.0 * (1.0 - rank if inverse else rank)
     return result, metadata
 
 
@@ -224,6 +236,7 @@ def _quantile(sorted_values: list[float], quantile: float) -> float:
 
 
 __all__ = [
+    "average_rank_percentiles",
     "band_score",
     "clamp",
     "inverse_score",

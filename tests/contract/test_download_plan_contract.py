@@ -12,12 +12,12 @@ def _work() -> str:
 def test_download_plan_contains_only_the_remaining_dependency_route() -> None:
     work = _work()
     ordered = (
-        "## 4. BaoStock 父归档加增量归档",
-        "## 5. 动态截止日与缺失事实补采",
-        "## 6. V3 训练工件重建与整组发布",
-        "## 7. V3 工程运行验收",
-        "## 8. 点时证据修复",
-        "## 9. 一次性终端留出、Shadow 与人工生产授权",
+        "## 2. 当前执行章节：BaoStock 父归档加增量归档",
+        "## 3. 动态截止日与缺失事实补采",
+        "## 4. V3 训练工件重建与整组发布",
+        "## 5. V3 工程运行验收",
+        "## 6. 点时证据修复",
+        "## 7. 一次性终端留出、Shadow 与人工生产授权",
     )
     positions = tuple(work.index(item) for item in ordered)
     assert positions == tuple(sorted(positions))
@@ -27,7 +27,7 @@ def test_download_plan_contains_only_the_remaining_dependency_route() -> None:
 
 def test_increment_plan_preserves_parent_and_fails_closed_on_missing_facts() -> None:
     work = _work()
-    section = work[work.index("## 4. BaoStock") : work.index("## 6. V3")]
+    section = work[work.index("## 2. 当前执行章节：BaoStock") : work.index("## 4. V3")]
 
     for token in (
         "父 manifest 原字节不变",
@@ -43,7 +43,7 @@ def test_increment_plan_preserves_parent_and_fails_closed_on_missing_facts() -> 
 
 def test_training_and_runtime_acceptance_cannot_auto_promote() -> None:
     work = _work()
-    section = work[work.index("## 6. V3") : work.index("## 10.")]
+    section = work[work.index("## 4. V3") : work.index("## 8.")]
 
     for token in (
         "一次原子切换",

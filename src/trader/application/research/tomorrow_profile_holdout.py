@@ -15,6 +15,7 @@ from trader.application.research.replay_models import canonical_hash
 from trader.application.research.tomorrow_historical_models import TomorrowHistoricalGateMetrics
 from trader.application.research.tomorrow_historical_screening import TomorrowHistoricalRow
 from trader.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
+from trader.domain.recommendation.model_scoring import percentile_ranks
 from trader.domain.research.baseline import mean_rank_ic, population_spearman, quantile_bucket, stock_net_contribution
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalScreeningSpec
 from trader.domain.research.paired_statistics import (
@@ -241,10 +242,7 @@ def _profile_days(
 
 def _costs(population: tuple[tuple[TomorrowHistoricalRow, float | None], ...]) -> tuple[float, ...]:
     values = tuple(item[0].amihud_20d for item in population)
-    order = sorted(range(len(values)), key=lambda index: (values[index], index))
-    ranks = [0.0] * len(values)
-    for position, index in enumerate(order):
-        ranks[index] = position / (len(values) - 1) if len(values) > 1 else 0.0
+    ranks = percentile_ranks(values)
     return tuple(_COST_RATES[0] * (1.0 + rank) for rank in ranks)
 
 

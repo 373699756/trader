@@ -396,8 +396,9 @@ def select_scored_review_candidates(
     )
     ordered = sorted(eligible, key=_local_order)
     contexts = {item.code: _review_context(item, index + 1, policy) for index, item in enumerate(ordered)}
+    reviewable = tuple(item for item in ordered if _primary_review_predicate(contexts[item.code]))
     prioritized = sorted(
-        ordered,
+        reviewable,
         key=lambda item: (
             not contexts[item.code].has_new_high_risk,
             not contexts[item.code].near_action_threshold,
@@ -408,8 +409,7 @@ def select_scored_review_candidates(
         ),
     )
     return tuple(
-        ScoredReviewCandidate(item, replace(contexts[item.code], in_protection_set=True))
-        for item in prioritized[: policy.review_candidate_limit]
+        ScoredReviewCandidate(item, contexts[item.code]) for item in prioritized[: policy.review_candidate_limit]
     )
 
 
@@ -602,11 +602,12 @@ def _review_context(
     policy: ScoredDecisionPolicy,
 ) -> ReviewCandidateContext:
     assert item.local_score is not None
+    downside = assess_downside(item.features, policy.strategy, require_industry_breadth=False)
     return ReviewCandidateContext(
         local_score=item.local_score,
         local_rank=rank,
         action_threshold=policy.executable_threshold,
-        in_protection_set=False,
+        in_protection_set=downside.status == "observe",
         has_new_high_risk=any(
             fact.severity == "high" and fact.confidence >= 0.7
             for fact in (*item.local_risk_facts, *item.features.external_risk_facts)
@@ -617,6 +618,17 @@ def _review_context(
             value in {"cross_source_deviation", "board_classification_conflict"}
             for value in item.features.quote.execution_restrictions
         ),
+    )
+
+
+def _primary_review_predicate(context: ReviewCandidateContext) -> bool:
+    return any(
+        (
+            context.has_new_high_risk,
+            context.near_action_threshold,
+            context.near_global_boundary,
+            context.evidence_conflict,
+        )
     )
 
 

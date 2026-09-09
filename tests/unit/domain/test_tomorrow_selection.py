@@ -10,6 +10,7 @@ from trader.domain.recommendation.selection.scored_selection import (
     ScoredModelOverrides,
     ScoredSelectionPolicy,
     ScoredSelectionRequest,
+    plan_scored_candidates,
     select_scored,
 )
 from trader.domain.recommendation.strategies.composition import LocalScoreResult
@@ -200,6 +201,38 @@ def test_production_model_ineligible_candidate_does_not_consume_board_limit(
 
     assert tuple(item.code for item in result.scored_candidates) == ("600001",)
     assert by_code["600000"].selection_skip_reason == "production_model_features_missing"
+
+
+def test_candidate_stage_counts_follow_issuer_and_dynamic_qualification_before_cap(
+    application_feature_factory,
+) -> None:
+    features = list(_features(application_feature_factory, count=5))
+    features[0] = replace(features[0], quote=replace(features[0].quote, is_st=True))
+    features[1] = replace(features[1], quote=replace(features[1].quote, is_suspended=True))
+    features[2] = replace(features[2], history_days=10)
+    features[3] = replace(
+        features[3],
+        values={
+            **features[3].values,
+            "trend_score": None,
+            "volatility_20d": None,
+            "max_drawdown_20d": None,
+        },
+    )
+
+    plan = plan_scored_candidates(
+        replace(
+            _request(tuple(features), _selection_policy(candidate_limit=1)),
+            minimum_history_sessions=20,
+        )
+    )
+
+    assert plan.stage_counts.issuer_eligible_population == 4
+    assert plan.stage_counts.dynamic_filter_eligible == 3
+    assert plan.stage_counts.strategy_history_eligible == 2
+    assert plan.stage_counts.model_input_eligible == 2
+    assert plan.stage_counts.candidate_score_eligible == 1
+    assert plan.stage_counts.candidate_limit_selected == 1
 
 
 def test_tomorrow_selection_records_local_threshold_exclusion(application_feature_factory) -> None:

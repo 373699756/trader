@@ -18,6 +18,7 @@ from trader.application.research.tomorrow_historical_models import (
     TomorrowHistoricalReport,
 )
 from trader.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
+from trader.domain.recommendation.model_scoring import percentile_ranks
 from trader.domain.research.baseline import mean_rank_ic, population_spearman, quantile_bucket, stock_net_contribution
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalScreeningSpec
 from trader.domain.research.paired_statistics import (
@@ -266,7 +267,7 @@ def _evaluate(
     bottom_values: list[float] = []
     for trade_date in sorted(grouped):
         population = tuple(sorted(grouped[trade_date], key=lambda item: item[0].code))
-        amihud_ranks = _percentile_ranks(tuple(item[0].amihud_20d for item in population))
+        amihud_ranks = percentile_ranks(tuple(item[0].amihud_20d for item in population))
         candidates = tuple(
             (
                 prediction - spec.cost_rates[0] * (1.0 + amihud_ranks[index]),
@@ -472,16 +473,6 @@ def _gate_failures(metrics: TomorrowHistoricalGateMetrics, spec: TomorrowHistori
         ),
     )
     return tuple(reason for failed, reason in checks if failed)
-
-
-def _percentile_ranks(values: tuple[float, ...]) -> tuple[float, ...]:
-    if len(values) <= 1:
-        return (0.0,) * len(values)
-    order = sorted(range(len(values)), key=lambda index: (values[index], index))
-    ranks = [0.0] * len(values)
-    for position, index in enumerate(order):
-        ranks[index] = position / (len(values) - 1)
-    return tuple(ranks)
 
 
 def _rows_hash(rows: tuple[TomorrowHistoricalRow, ...]) -> str:

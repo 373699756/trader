@@ -17,7 +17,7 @@ def build_supply_status(
     projection: ScoredLocalProjection,
     candidate_stage_counts: ScoredCandidateStageCounts | None = None,
     *,
-    candidate_quote_eligible: int = 0,
+    candidate_quote_eligible: int | None = None,
 ) -> InputQualityStatus:
     quality = projection.input_quality
     diagnostics = projection.local.selection_diagnostics
@@ -41,7 +41,9 @@ def build_supply_status(
         model_input_eligible=stage_counts.model_input_eligible,
         candidate_score_eligible=stage_counts.candidate_score_eligible,
         candidate_limit_selected=stage_counts.candidate_limit_selected,
-        candidate_quote_eligible=candidate_quote_eligible or quality.candidate_feature_count,
+        candidate_quote_eligible=(
+            quality.candidate_feature_count if candidate_quote_eligible is None else candidate_quote_eligible
+        ),
         requested_candidates=quality.candidate_count,
         candidate_features=quality.candidate_feature_count,
         security_master=quality.security_master_covered_count,

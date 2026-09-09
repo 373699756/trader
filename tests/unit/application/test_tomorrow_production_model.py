@@ -113,6 +113,45 @@ def test_non_positive_net_utility_keeps_relative_scores_for_observability(
     assert batch.scores["600002"].components["model_prediction_rank"] == 100.0
 
 
+def test_equal_predictions_and_cost_inputs_have_equal_scores_costs_and_utility(
+    application_feature_factory,
+) -> None:
+    class _EqualPredictor(_Predictor):
+        def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
+            return tuple(ModelPrediction(item.code, 0.0025, 0.0) for item in inputs)
+
+    features = tuple(
+        _model_feature(
+            application_feature_factory(f"60000{index}", NOW),
+            offset=index / 100.0,
+            amihud=1.0,
+        )
+        for index in range(3)
+    )
+
+    batch = TomorrowProductionModelScoringService(profile_for(_EqualPredictor())).score(features)
+
+    assert {score.base_score for score in batch.scores.values()} == {50.0}
+    assert tuple(item.estimated_cost_pct for item in batch.diagnostics.values()) == pytest.approx((0.3, 0.3, 0.3))
+    assert tuple(item.predicted_net_excess_pct for item in batch.diagnostics.values()) == pytest.approx(
+        (-0.05, -0.05, -0.05)
+    )
+
+
+def test_single_prediction_uses_neutral_rank_for_score_and_cost(application_feature_factory) -> None:
+    class _SinglePredictor(_Predictor):
+        def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
+            return tuple(ModelPrediction(item.code, 0.0025, 0.0) for item in inputs)
+
+    feature = _model_feature(application_feature_factory("600001", NOW), offset=0.0, amihud=1.0)
+
+    batch = TomorrowProductionModelScoringService(profile_for(_SinglePredictor())).score((feature,))
+
+    assert batch.scores["600001"].base_score == 50.0
+    assert batch.diagnostics["600001"].estimated_cost_pct == pytest.approx(0.3)
+    assert batch.diagnostics["600001"].predicted_net_excess_pct == pytest.approx(-0.05)
+
+
 def test_v1_profile_receives_only_the_residual_momentum_feature_family(application_feature_factory) -> None:
     class _V1Predictor(_Predictor):
         profile_id = "v1"

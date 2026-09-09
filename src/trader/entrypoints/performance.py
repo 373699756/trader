@@ -24,9 +24,11 @@ from trader.application.decisions.decision_queries import UnifiedDecisionQueries
 from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
 from trader.application.ports.model_scoring import ModelScoringPort
 from trader.application.ports.scored import TomorrowNativeInput
+from trader.application.recommendation.candidate_planning import CandidatePlanningContext, build_candidate_plans
 from trader.application.recommendation.model_scoring_router import ModelScoringRouter
 from trader.application.recommendation.policy import RecommendationPolicy
 from trader.application.recommendation.scored_projection import (
+    ScoredBuildRuntime,
     ScoredLocalProjection,
     build_scored_hybrid,
     build_scored_local,
@@ -52,7 +54,6 @@ from trader.domain.recommendation.decision_identity import (
 from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 from trader.domain.recommendation.scoring.scoring import score_board_strategy
-from trader.domain.recommendation.selection.ranking import candidate_score
 from trader.domain.recommendation.strategies.composition import LocalScoreResult
 from trader.domain.review.models import DeepSeekReview, ReviewOutcome
 from trader.infra.market_data.normalization.columnar import ColumnarQuoteBatch, targeted_market_changes
@@ -258,7 +259,7 @@ def _operations(
         tomorrow_input,
         policy,
         sequence=1,
-        model_scoring=model_scoring,
+        runtime=ScoredBuildRuntime(model_scoring=model_scoring),
     )
     reviews = _abstaining_reviews(local_projection, observed_at)
     api_operations = _api_operations(candidates, observed_at)
@@ -269,7 +270,7 @@ def _operations(
             tomorrow_input,
             policy,
             sequence=1,
-            model_scoring=model_scoring,
+            runtime=ScoredBuildRuntime(model_scoring=model_scoring),
         )
 
     def candidate_projection() -> object:
@@ -277,7 +278,7 @@ def _operations(
             candidate_input,
             policy,
             sequence=1,
-            model_scoring=model_scoring,
+            runtime=ScoredBuildRuntime(model_scoring=model_scoring),
         )
 
     def active_score(strategy: Strategy, item: FeatureSnapshot) -> LocalScoreResult:
@@ -285,6 +286,25 @@ def _operations(
         if board_policy is None:
             raise ValueError(f"missing board policy for {strategy.value}/{item.quote.board.value}")
         return score_board_strategy(item, board_policy)
+
+    def candidate_preselection() -> object:
+        """Exercise the production planner for one bounded board window."""
+
+        board_features = tuple(feature for feature in candidates if feature.quote.board is Board.MAIN)
+        plans = build_candidate_plans(
+            board_features,
+            None,
+            CandidatePlanningContext(
+                evaluated_at=observed_at,
+                data_version="performance-candidate-planning",
+                policy=policy,
+                model_scoring=model_scoring,
+                limit_per_board=120,
+            ),
+        )
+        selected_codes = plans.plans[Strategy.TOMORROW].limited_codes(120)
+        by_code = {feature.quote.code: feature for feature in board_features}
+        return tuple(by_code[code] for code in selected_codes)
 
     operations: dict[str, Callable[[], object]] = {
         "market_normalization": lambda: tuple(build_market_quote(item) for item in market_inputs),
@@ -299,11 +319,7 @@ def _operations(
             targeted_market_changes(merged, committed_overlay, tuple(quote.code for quote in changed_quotes)),
             overlay_commit(),
         ),
-        "board_preselection": lambda: sorted(
-            candidates,
-            key=lambda item: candidate_score(item, _CANDIDATE_WEIGHTS),
-            reverse=True,
-        ),
+        "board_preselection": candidate_preselection,
         "board_local_scoring": lambda: tuple(active_score(Strategy.TOMORROW, item) for item in candidates),
         "three_strategy_board_scoring": lambda: tuple(
             tuple(active_score(strategy, item) for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25))
@@ -332,7 +348,7 @@ def _operations(
         "market_merge": "trader.infra.market_data.normalization.merge.merge_market_observations",
         "canonical_snapshot": "trader.infra.market_data.normalization.columnar.ColumnarQuoteBatch.from_snapshot",
         "targeted_overlay_commit": "trader.infra.market_data.normalization.merge.overlay_canonical_snapshot + trader.application.decisions.decision_core.UnifiedDecisionIndex.publish_overlay",
-        "board_preselection": "trader.domain.recommendation.selection.ranking.candidate_score",
+        "board_preselection": "trader.application.recommendation.candidate_planning.build_candidate_plans",
         "board_local_scoring": "trader.domain.recommendation.scoring.scoring.score_board_strategy",
         "three_strategy_board_scoring": "trader.domain.recommendation.scoring.scoring.score_board_strategy",
         "three_board_wall_clock": "trader.domain.recommendation.scoring.scoring.score_board_strategy",
@@ -929,13 +945,6 @@ class _EmptyHistory:
         del strategy, limit
         return ()
 
-
-_CANDIDATE_WEIGHTS = {
-    "liquidity": 0.25,
-    "short_momentum": 0.25,
-    "trend": 0.25,
-    "data_completeness": 0.25,
-}
 
 _FEATURE_VALUES = {
     "liquidity_score": 60.0,

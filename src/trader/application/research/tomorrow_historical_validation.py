@@ -13,6 +13,7 @@ from typing import Literal, Protocol
 from trader.application.ports.model_scoring import ModelInput, ModelPredictorPort
 from trader.application.research.replay_models import canonical_hash
 from trader.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
+from trader.domain.recommendation.model_scoring import percentile_ranks
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalScreeningSpec
 from trader.domain.research.shadow_calibration import (
     LinearModel,
@@ -489,7 +490,7 @@ def _risk_features(
     costs = [0.0] * len(rows)
     scores = [0.0] * len(rows)
     for indices in grouped.values():
-        ranks = _percentile_ranks(tuple(rows[index].amihud_20d for index in indices))
+        ranks = percentile_ranks(tuple(rows[index].amihud_20d for index in indices))
         utilities = tuple(
             predictions[index].predicted_excess_return - _PRIMARY_COST * (1.0 + rank)
             for index, rank in zip(indices, ranks, strict=True)
@@ -542,24 +543,14 @@ def _insufficient_report(
     )
 
 
-def _percentile_ranks(values: tuple[float, ...]) -> tuple[float, ...]:
-    if len(values) <= 1:
-        return (0.0,) * len(values)
-    order = sorted(range(len(values)), key=lambda index: (values[index], index))
-    result = [0.0] * len(values)
-    for position, index in enumerate(order):
-        result[index] = position / (len(values) - 1)
-    return tuple(result)
-
-
 def _positive_utility_scores(values: tuple[float, ...]) -> tuple[float, ...]:
     positive = tuple(index for index, value in enumerate(values) if value > 0.0)
     result = [0.0] * len(values)
     if not positive:
         return tuple(result)
-    order = sorted(positive, key=lambda index: (values[index], index))
-    for position, index in enumerate(order):
-        result[index] = 100.0 if len(order) == 1 else 100.0 * position / (len(order) - 1)
+    ranks = percentile_ranks(tuple(values[index] for index in positive))
+    for index, rank in zip(positive, ranks, strict=True):
+        result[index] = 100.0 * rank
     return tuple(result)
 
 

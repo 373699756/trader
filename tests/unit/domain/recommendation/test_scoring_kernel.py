@@ -15,6 +15,11 @@ def test_percentile_ranks_are_deterministic() -> None:
     assert percentile_ranks(values) == (0.5, 0.0, 1.0)
 
 
+def test_percentile_ranks_use_average_ties_and_keep_a_single_sample_neutral() -> None:
+    assert percentile_ranks((0.2, 0.2, 0.2)) == (0.5, 0.5, 0.5)
+    assert percentile_ranks((0.2,)) == (0.5,)
+
+
 def test_residualization_removes_market_and_board_exposure() -> None:
     result = residualize_exposure((1.0, 2.0, 3.0, 4.0), ("main", "main", "star", "star"), (10.0, 10.0, 10.0, 10.0))
     assert result == pytest.approx((-0.5, 0.5, -0.5, 0.5))

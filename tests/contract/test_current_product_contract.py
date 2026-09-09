@@ -69,7 +69,8 @@ def test_parallel_overview_plan_and_operations_docs_are_retired() -> None:
     assert not (ROOT / "docs/score.md").exists()
     assert not (ROOT / "docs/plan.md").exists()
     assert "本文件只维护尚未完成的工程任务" in work
-    assert "candidate_eligibility_before_board_cap" in work
+    assert "candidate_eligibility_before_board_cap" not in work
+    assert "baostock_increment_archive" in work
     assert "terminal_holdout_shadow_and_manual_activation" in work
     for completed_marker in ("`completed`", "`not_current_route`", "评分模块化计划项 1–9"):
         assert completed_marker not in work
