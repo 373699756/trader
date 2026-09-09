@@ -6,6 +6,30 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求继续 `03_工程实施.md` 的下一个完整未完成章节，并明确暂不处理已丢失/下载中的历史记录、先闭合代码。
+  现状已确认：`point_in_time_data_qualification` 与历史行业工程实现已完成，但当前行业/分钟资格仍为
+  `historical_data_insufficient`，因此不能诚实生成真实 14:50 数据集；既有生产选择纯函数和统一 outcome 已能
+  提供正确口径，缺少的是资格前置、逐日重建、日期隔离及可重放封存这一条完整研究边界。Added: 新增不可变
+  `PointInTimeDateSplit`、历史行业/事件/来源身份、数据行、板内总体、首次拒绝边界、逐日覆盖、开发分片和根
+  manifest；新增应用构建器、来源端口及逐日白名单 JSON 工件库。Changed: 合格路径直接复用生产纯领域
+  `select_scored`，逐日重建永久资格、动态硬过滤、字段资格、候选阈值和每板上限；候选阈值/板限之后的淘汰行
+  仍保留在 `point_in_time_local_only_equal_weight` 基准，拒绝行全部进入分片与覆盖。唯一
+  `CanonicalOutcomeEvaluator` 负责 Tomorrow 14:50→T+1 raw/qfq 换算、20/50/100bp、MAE/ATR20 和退出
+  不可交易标签，并由领域不变量校验成本只扣一次。Fixed: 资格不足时在调用来源前返回空的
+  `historical_data_insufficient`，基准合格人口标签不完整时不发布部分 manifest；训练、早停、校准、确认、
+  两段至少 5 日 embargo 与至少 200 日终端留出严格按日期隔离，构建阶段对终端留出零读取。工件按日分片，
+  根 manifest 绑定资格、日线归档、特征、日历、证券主数据、选择策略和完整日期切分；同内容幂等、不同内容
+  冲突、篡改失败关闭。Removed: 未删除任何历史记录、下载器或封存证据；未新增历史下载、模型拟合、生产
+  profile 切换、Web/HTTP/调度接线或自动晋级。Verification: 新增及相关资格、选择、Outcome、架构和文档定向
+  回归 87 项通过；`make format-check`、`make lint`、`make type-check`、`make test`、`make package`、仓库外
+  wheel 安装和 `git diff --check` 全部通过，严格复杂度债务为零；打包首次返回输出截断，重新运行并确认
+  sdist/wheel 成功生成，安装验证确认 CLI、包导入和 6 个 Web 资源可用。
+  Delivery State: `completed: historical_data_insufficient`；代码路径在合格 fixture 上可重放，但按用户要求本批
+  不恢复/下载历史，真实数据集保持未生成。Residual Risks: 当前日线正式 manifest/92 分片仍不可用，历史行业
+  没有合格 `queried_at` 全覆盖，免费分钟链也不能证明旧日 14:50 raw/qfq/量额/公司行动语义；因此没有真实
+  收益、基准或利润结论，`terminal_holdout_opened=false`、`production_authority=false`，下游
+  `candidate_recall_attribution` 继续被真实合格数据集阻塞。`Regression-Key: point-in-time-dataset-fail-closed`。
+
 - 用户发送“继续”，要求执行工程计划中的下一个完整未完成章节 `historical_industry_facts`。根因已确认：既有
   5453 个 `training_ready_codes` 只证明日线和逐日 ST checkpoint 可供非生产工程试跑，行业区间却被误当成
   已满足独立点时资格；既有事实没有 `queried_at` 和独立行业数据集身份，资格用例还用硬编码的 0 样本探针，

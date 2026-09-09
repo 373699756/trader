@@ -97,13 +97,14 @@ def test_route_cannot_smuggle_unverified_data_or_automatic_promotion() -> None:
     assert "scoring-feature-outcome-optimization" in work
 
 
-def test_work_plan_records_completed_data_qualification_and_remaining_blocker() -> None:
+def test_work_plan_records_completed_qualification_and_fail_closed_dataset_code() -> None:
     work = _read(WORK)
 
     assert "当前资格章节：`point_in_time_data_qualification` 已以 `historical_data_insufficient` 完成交付" in work
     assert "`point_in_time_data_qualification`" in work
     assert "`historical_industry_facts` 已以 `historical_data_insufficient` 完成交付" in work
-    assert "`point_in_time_dataset` 保持阻塞" in work
+    assert "`point_in_time_dataset` 的失败关闭构建、分片封存和契约代码" in work
+    assert "| 4 | `point_in_time_dataset` | `completed: historical_data_insufficient`" in work
     assert "不得重新抓取或修改已经封存的 2000 日日线" in work
     assert "`outcome_truth_contract`" in work
     assert "outcome_price_basis_and_tradability" in work

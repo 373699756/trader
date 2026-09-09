@@ -296,7 +296,10 @@ def test_identity_and_audit_payloads_have_one_explicit_field_projection() -> Non
 
 
 def test_tomorrow_holdout_serializer_uses_an_explicit_public_field_whitelist() -> None:
-    paths = (SOURCE_ROOT / "infra/research/tomorrow_profile_holdout_artifacts.py",)
+    paths = (
+        SOURCE_ROOT / "infra/research/point_in_time_dataset_artifacts.py",
+        SOURCE_ROOT / "infra/research/tomorrow_profile_holdout_artifacts.py",
+    )
     violations: list[str] = []
     for path in paths:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
