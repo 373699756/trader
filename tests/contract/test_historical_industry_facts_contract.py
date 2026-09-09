@@ -8,8 +8,11 @@ def test_historical_industry_section_has_one_fail_closed_checkpoint_owner() -> N
     design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
     section = work[work.index("#### `historical_industry_facts`") : work.index("#### `historical_minute")]
 
-    assert "状态：`in_progress: checkpoint_pushed`" in section
-    assert "下次必须先复跑最终报告" in section
+    assert "状态：`completed: historical_data_insufficient`" in section
+    assert "按用户明确要求暂不恢复正式归档" in section
+    assert "`daily_archive_invalid`" in section
+    assert "不得用当前 22 个旧分片冒充最终证据" in section
+    assert "最终 schema 实物复跑未验证" in section
     assert "5453" in section
     assert "baostock_archived_industry" in section
     assert "tushare_index_member_all" in section

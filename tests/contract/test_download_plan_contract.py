@@ -15,7 +15,7 @@ def test_download_plan_is_merged_with_explicit_unfinished_batch_states() -> None
         "#### `baostock_daily_archive`",
         "状态：`completed`（2026-09-09）",
         "#### `historical_industry_facts`",
-        "状态：`in_progress: checkpoint_pushed`（2026-09-09）",
+        "状态：`completed: historical_data_insufficient`（2026-09-09）",
         "### 4.7 `tomorrow_v3_training_validation`",
         "状态：`blocked_by_limited_factor_family_research`",
         "### 4.10 `shadow_and_manual_activation`",

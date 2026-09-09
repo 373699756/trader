@@ -399,15 +399,10 @@ def build_historical_industry_source_audit(
     missing = sum(item.missing_dates for item in stocks)
     conflicts = sum(item.conflict_dates for item in stocks)
     time_travel = sum(item.time_travel_dates for item in stocks)
-    eligible = sum(item.eligible for item in stocks)
     reasons = _source_failure_reasons(
         contract,
-        len(stocks),
-        eligible,
-        conflicts,
-        time_travel,
-        bool(facts),
-        all(item.queried_at is not None for item in facts),
+        stocks,
+        facts,
         required_sample_codes,
     )
     complete = sum(item.missing_dates == 0 and item.conflict_dates == 0 for item in stocks)
@@ -496,28 +491,24 @@ def _audit_stock(
 
 def _source_failure_reasons(
     contract: HistoricalIndustrySourceContract,
-    sampled: int,
-    eligible: int,
-    conflicts: int,
-    time_travel: int,
-    facts_present: bool,
-    fact_query_times_complete: bool,
+    stocks: tuple[HistoricalIndustryStockAudit, ...],
+    facts: tuple[HistoricalIndustryFact, ...],
     required: int,
 ) -> tuple[str, ...]:
     reasons = list(_capability_reasons(contract))
     if contract.unavailable_reason:
         reasons.append(contract.unavailable_reason)
-    if sampled < required:
+    if len(stocks) < required:
         reasons.append("industry_sample_below_300")
-    if eligible < required:
+    if sum(item.eligible for item in stocks) < required:
         reasons.append("industry_eligible_codes_below_300")
-    if not facts_present:
+    if not facts:
         reasons.append("industry_fact_evidence_missing")
-    elif contract.queried_at_available and not fact_query_times_complete:
+    elif contract.queried_at_available and any(item.queried_at is None for item in facts):
         reasons.append("industry_query_time_unavailable")
-    if conflicts:
+    if any(item.conflict_dates for item in stocks):
         reasons.append("industry_conflicts_present")
-    if time_travel:
+    if any(item.time_travel_dates for item in stocks):
         reasons.append("industry_time_travel_present")
     return _reasons(tuple(reasons))
 

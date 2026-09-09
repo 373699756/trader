@@ -22,10 +22,17 @@ All notable changes to this project are documented here.
   1932 只缺 153,346 日，6326 条事实、0 冲突、0 时间穿越；审计约 318.67 秒、峰值 RSS 约 120.0MiB，
   数据集 hash 为 `a7b5691e1b1f648896260177ed08a2510182f3673a4e6228b726271c3e511d54`，以预期退出码 1
   返回 `historical_data_insufficient`。加入跨来源整体冲突字段后，最终 schema 复跑在约 90 秒时被用户中断且
-  未生成输出文件；受影响 Ruff、mypy 和 `git diff --check` 通过，全量门禁待本批收尾统一执行。Delivery State:
-  用户要求立即记录进度并推送，本提交是 `in_progress: checkpoint_pushed` 恢复点；下次必须重新运行只读全量
-  审计、更新最终报告内容 hash、完成完整 diff Review、`make format-check`、`make lint`、`make type-check`、
-  `make test`、`make package` 和仓库外 wheel 验证，才能把本节标为完成。Residual Risks: BaoStock 事实没有可证明的查询时间且 1932 只存在覆盖缺口，Tushare 候选未获权限、
+  未生成输出文件。本次继续执行时发现 checkpoint 新增的 8 参数辅助函数违反零复杂度债务门禁，现改为直接
+  消费有类型股票审计与事实集合，输出语义不变。定向回归 49 项、`make format-check`、`make lint`、
+  `make type-check`、`make test`、`make package`、仓库外 wheel 安装和 `git diff --check` 已通过，严格复杂度
+  债务为零；package 首次因沙箱禁网失败，获准取得隔离构建依赖后通过。统一 `research` 诊断如实返回
+  `failed`：当前 268 只完成、5185 只不足，主 blocker 为 `tomorrow_common_trading_days_below_1000`，
+  `production_authority=false`。用户随后明确要求先闭合代码、暂不处理下载历史。Delivery State:
+  `completed: historical_data_insufficient`；最终 schema 复跑在信任边界立即以 `daily_archive_invalid` 退出；
+  当前工作区只剩旧布局 22 个根级分片、268/5453 个 checkpoint，缺少上次实测使用的 92 个封存分片、`manifest.json`
+  与 `catalog.sqlite3`，全盘未找到被移动的副本或仍持有删除文件的进程。按用户要求该实物门禁记为未验证，
+  没有写成通过；代码、契约、完整门禁和 Review 已闭合，本批不为补证据重下载或改写日线。Residual Risks:
+  最终 schema 实物报告及新内容 hash 尚未复现；BaoStock 事实没有可证明的查询时间且 1932 只存在覆盖缺口，Tushare 候选未获权限、
   未采样，所以合格股票为 0，历史分钟门也仍不合格；`point_in_time_dataset`、V3 正式训练、终端留出和生产
   权限继续失败关闭。本批无网络请求、无日线重下载、无模型拟合且不进入相邻章节。
   `Regression-Key: historical-industry-facts-fail-closed`。
