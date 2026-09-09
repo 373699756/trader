@@ -97,3 +97,35 @@ def test_strategy_replay_document_keeps_public_commands_and_strategy_ownership_b
         "Long 不评分",
     ):
         assert required in content
+
+
+def test_strategy_replay_document_explains_planned_incremental_download_and_atomic_training() -> None:
+    content = REPLAY.read_text(encoding="utf-8")
+
+    for required in (
+        "尚未实现",
+        "--mode update",
+        "history-plan",
+        "父归档",
+        "增量 SQLite 分片",
+        "active manifest",
+        "parent_manifest_hash",
+        "increment_manifest_hash",
+        "active_data_hash",
+        "动态 `source_cutoff`",
+        "effective_at",
+        "published_at",
+        "同一 key 内容冲突",
+        "扣成本前超额收益",
+        "raw `next_return`",
+        "整组原子切换",
+        "失败时保留上一组有效工件",
+        "historical_data_insufficient",
+        "point_in_time_parity=false",
+        "production_authority=false",
+        "默认 V1 不变",
+    ):
+        assert required in content
+
+    assert "当前可以执行 `--mode update`" not in content
+    assert "当前快照回填历史" in content

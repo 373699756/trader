@@ -22,6 +22,19 @@ All notable changes to this project are documented here.
   修改工作树，本计划按审计基线 `fefe57c` 和当时可见草稿整理；后续批次必须重新读取 HEAD、拆分重叠文件，
   不得把未提交草稿当作完成或混入同一提交。`Regression-Key: implementation-plan-unfinished-only`。
 
+- 用户要求先让 `04_策略回溯.md` 与新的增量下载、训练和 V3 评分参与需求一致。根因确认：该解释文档仍描述
+  固定 cutoff、直接续传旧分片和单一最终 manifest，没有说明已封存父归档不可变、增量 SQLite、active
+  manifest、动态 `source_cutoff`、三件训练工件整组发布及非生产权威边界。Changed: 文档按“当前能力/目标
+  能力”区分已可执行的只读 `history-plan` 与尚未实现的 `download_history --mode update`，补充父加增量读取、
+  字段族 checkpoint、冲突失败关闭、真实 `effective_at/published_at`、扣成本前标签、流式样本和工件原子切换；
+  同时明确新模型只能参与显式 Tomorrow V3 工程评分，默认 V1 不变。Verification: 策略回溯、V3、文档优化、
+  权威文档一致性、当前产品和下载计划 50 项契约测试通过；契约测试 Ruff、任务文件格式检查、引用检查和
+  `git diff --check` 通过。全量代码门禁不适用：本批不修改运行代码、公开 schema、下载器、训练器或 Web。
+  Residual Risks: `--mode update`、active manifest 和整组工件发布仍是 `03_工程实施.md` 中的待实现任务，当前
+  不能执行；真实点时资格/风险事实不足，必须保持 `historical_data_insufficient`、
+  `point_in_time_parity=false`、`production_authority=false`。
+  `Regression-Key: replay-incremental-download-v3-training-boundary`。
+
 - 用户要求在不改写既有 92 个分片、旧 manifest、未提交工作树和运行数据库的前提下增量补采并重训 V3；本批先完成
   只读盘点子任务。根因确认：现有 `download_history` 发现封存 manifest 后直接复用，无法发现 2026-08-31 之后的新
   交易日；旧 `tomorrow_production_model`/`tomorrow_training_report_v1` 又不满足当前 loader 合同，且 report 错标
