@@ -6,6 +6,22 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求实施双 PC 历史数据、V3 训练与评分整改总计划，本批先闭合下一完整章节
+  `limited_factor_family_research`。根因已确认：旧因子诊断有统计组件但不绑定新点时数据集与候选召回父身份，
+  也不能阻止上游数据不足时读取因子证据或看完收益后改选候选。Added: 新增不可变单族预注册、日级候选序列、
+  Holm/移动区块统计证据、完整收益/排序/尾部/容量门和应用来源端口。Changed: 固定现有六项 alpha 对照、
+  14:50 锚点、一个预选候选、5 日区块、10000 次 bootstrap、Holm 0.05、95% 全体与逐板覆盖，并报告
+  20/50/100bp、Rank IC、Q1-Q5、Top10/20/50、换手、容量、严重亏损、回撤和市场状态。Fixed: 点时数据、
+  manifest 或候选召回不足/错配时在来源读取前返回空的 `historical_data_insufficient`；完整证据未通过任一门时
+  稳定 `historical_rejected`，不保留部分结论。Removed: 未删除旧诊断纯数学实现；新路径只复用通用统计，不
+  复用旧数据所有者或状态。Verification: 新增回归已先以模块缺失失败；实施后新增及相关点时数据集、候选
+  召回、配对统计、架构与文档契约定向回归 72 项通过，受影响文件 Ruff、mypy、严格复杂度零债务和
+  `git diff --check` 通过；完整门禁按总计划在 4.7 高风险边界及 4.9 大任务收尾执行。Delivery State:
+  `completed: historical_data_insufficient`；当前没有真实合格点时数据集与候选召回，未读取真实收益、未确认
+  新 alpha、未打开终端留出。Residual Risks: 4.7 只能把训练 PC 的日线训练视为工程代理，正式 V3 继续继承
+  点时数据不足；本批不修改生产评分、融合、风险、冻结、DeepSeek、Web 或默认档位。
+  `Regression-Key: limited-factor-family-fail-closed`。
+
 - 用户再次发送“继续”，要求执行 `03_工程实施.md` 的下一个完整未完成章节
   `candidate_recall_attribution`。根因已确认：上一章点时数据行只封存到候选阈值/每板上限，既有
   `FilterRecallAblationRow` 是未绑定新数据集行身份的旧隔离消融，不能证明评分、风险、动作、集中度的真实
