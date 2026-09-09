@@ -6,6 +6,26 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户再次发送“继续”，要求执行 `03_工程实施.md` 的下一个完整未完成章节
+  `candidate_recall_attribution`。根因已确认：上一章点时数据行只封存到候选阈值/每板上限，既有
+  `FilterRecallAblationRow` 是未绑定新数据集行身份的旧隔离消融，不能证明评分、风险、动作、集中度的真实
+  首次拒绝边界，也没有全市场 oracle Top10/20/50、逐板微汇总或可比较延迟证据。Added: 新增不可变
+  `CandidateRecallDayTrace`、完整漏斗账本行、日级/跨日阶段指标、全市场与逐板 TopK recall、尾部率、候选
+  规模和累计延迟 p50/p95；新增离线 `CandidateRecallTracePort` 与应用构建器。Changed: oracle 每日只从点时
+  数据集全部行的成熟 20bp 成本后净超额按代码稳定打破同分，跨日按分子/分母微汇总；永久资格至每板上限
+  复用数据集首次边界，仅为通过上限的行消费评分/风险/动作/集中度 trace。Fixed: 父数据不足时 trace 读取数
+  为零；任一日缺追踪、日/行 hash 不匹配、跨日延迟证据 hash 漂移或手工交换 oracle rank 时整份报告失败
+  关闭，不保留部分日或自洽但错误的指标。Removed: 未删除旧消融实现；它继续只服务既有隔离研究，明确禁止
+  作为本账本的第二个真实漏斗来源。Verification: 新增及相关点时数据集、Outcome、旧隔离消融、架构和文档
+  契约定向回归 97 项通过；`make format-check`、`make lint`、`make type-check`、`make test`、`make package`、
+  仓库外 wheel 安装与 `git diff --check` 全部通过，严格复杂度债务为零，wheel 已包含领域与应用账本模块且
+  6 个 Web 资源仍可读取。Delivery State:
+  `completed: historical_data_insufficient`；代码在合格 fixture 上完成十阶段归因，但本批按用户此前要求不恢复/
+  下载历史，当前没有真实点时数据集、完整后续漏斗或延迟证据，因此没有生成真实 oracle、召回、不可交易、
+  严重亏损、延迟或利润结论。Residual Risks: `limited_factor_family_research` 继续被真实候选归因报告阻塞；
+  本批不读取终端留出、不接 Web/网络/DeepSeek/调度/生产组合根，不放宽候选或安全阈值，也不自动进入相邻
+  章节。`Regression-Key: candidate-recall-ledger-fail-closed`。
+
 - 用户要求继续 `03_工程实施.md` 的下一个完整未完成章节，并明确暂不处理已丢失/下载中的历史记录、先闭合代码。
   现状已确认：`point_in_time_data_qualification` 与历史行业工程实现已完成，但当前行业/分钟资格仍为
   `historical_data_insufficient`，因此不能诚实生成真实 14:50 数据集；既有生产选择纯函数和统一 outcome 已能

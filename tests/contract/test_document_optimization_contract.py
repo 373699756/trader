@@ -122,8 +122,11 @@ def test_work_plan_has_one_stable_baostock_task_and_historical_aliases_only() ->
     assert "#### `baostock_daily_archive`\n\n状态：`completed`" in work
     assert "#### `historical_industry_facts`\n\n状态：`completed: historical_data_insufficient`" in work
     assert "`point_in_time_dataset` 的失败关闭构建、分片封存和契约代码" in work
+    assert "`candidate_recall_attribution` 的账本、逐层归因和失败关闭代码" in work
     assert "blocked_by_baostock_daily_archive" not in work
     assert "| 4 | `point_in_time_dataset` | `completed: historical_data_insufficient`" in work
+    assert "| 5 | `candidate_recall_attribution` | `completed: historical_data_insufficient`" in work
+    assert "| 6 | `limited_factor_family_research` | `blocked_by_candidate_recall_attribution`" in work
     assert "blocked_by_risk_cost_uncertainty_deepseek" in work
     assert "blocked_by_shadow_and_manual_activation" in work
     alias = work[work.index("### 1.2 历史审计别名") : work.index("## 2.")]
