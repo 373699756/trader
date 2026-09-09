@@ -6,6 +6,26 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求继续实施双 PC 历史训练与本机代码整改计划，本批闭合
+  `tomorrow_v3_training_validation`。根因已确认：V3 日线训练标签预扣 20bp、完整 manifest 会被错误标记为
+  `historical_validated`，生产只校验单个模型 self-hash，且模型/报告没有来源代码、特征合同和训练合同的共同
+  身份，旧训练 PC 产物因此可能把 15:00 收盘代理冒充 14:50 历史证据。Added: 模型与报告新增来源 commit、
+  特征 manifest、训练合同、模型载荷和报告内容 hash 的成对校验；训练输入审计同步保留来源与合同身份。
+  Changed: 完整日线训练只返回 `engineering_ready`，部分训练返回 `trial_ready`；两者都显式记录
+  `15:00_close_proxy -> 14:50_point_in_time`、`point_in_time_parity=false`、
+  `daily_close_engineering_proxy` 和 `historical_data_insufficient`，V3 仍只可由用户显式选择。
+  Fixed: 训练标签改为不含成本的下一日基准超额收益，20/50/100bp 由验证/执行边界各自仅扣一次；缺失报告、
+  旧 schema、配对字段漂移、内容篡改或来源 commit 不可用均失败关闭，不再由可解码模型自动产生历史通过。
+  Removed: 删除完整日线训练自动宣称 `historical_validated` 与 `trained_artifact` 权限的路径；没有迁移或覆盖训练
+  PC 正在生成的旧格式文件。Verification: 首个成本所有权回归先以缺少纯目标函数失败；实施后文档/训练/codec/
+  profile/入口定向回归 106 项和生产组合、V1/V2/V3、特征、架构、固定融合相关回归 125 项通过；
+  `make format-check`、修正一处测试导入排序后的 `make lint`、`make type-check`（372 个源文件）、`make test`
+  （1717 项）和 `make package` 通过，打包首轮仅因沙箱网络受限失败，获准以相同命令重跑成功；
+  `git diff --check` 通过。Delivery State: `completed: historical_data_insufficient`；训练 PC 拉取本提交后必须
+  重新训练并同时提交新的 `model.json`/`report.json`，旧产物会按合同拒绝。Residual Risks: 当前仍没有合格
+  14:50 点时父数据、确认集或终端留出，本批不宣称收益改善、不授权自动晋级，也未改变固定 68/32、风险、
+  冻结、DeepSeek、默认 V1 或 Web schema。`Regression-Key: v3-single-cost-and-artifact-pair`。
+
 - 用户要求实施双 PC 历史数据、V3 训练与评分整改总计划，本批先闭合下一完整章节
   `limited_factor_family_research`。根因已确认：旧因子诊断有统计组件但不绑定新点时数据集与候选召回父身份，
   也不能阻止上游数据不足时读取因子证据或看完收益后改选候选。Added: 新增不可变单族预注册、日级候选序列、

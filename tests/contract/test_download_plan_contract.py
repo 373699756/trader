@@ -17,7 +17,7 @@ def test_download_plan_is_merged_with_explicit_unfinished_batch_states() -> None
         "#### `historical_industry_facts`",
         "状态：`completed: historical_data_insufficient`（2026-09-09）",
         "### 4.7 `tomorrow_v3_training_validation`",
-        "状态：`blocked_by_limited_factor_family_research`",
+        "状态：`completed: historical_data_insufficient`（2026-09-09）",
         "### 4.10 `shadow_and_manual_activation`",
         "状态：`blocked_by_risk_cost_uncertainty_deepseek`",
     ):
@@ -64,5 +64,8 @@ def test_training_comparison_and_shadow_cannot_auto_promote() -> None:
         "不自动 promotion",
         "用户明确授权",
         "原始日线 hash 保持不变",
+        "15:00_close_proxy",
+        "daily_close_engineering_proxy",
+        "模型载荷 hash",
     ):
         assert required in section

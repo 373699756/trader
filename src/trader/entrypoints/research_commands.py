@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -222,6 +223,7 @@ def _run_tomorrow_research_orchestrator(
         _train_data_root(),
         allow_partial_history=allow_partial_history,
         progress=_TomorrowTrainingProgress(),
+        source_commit=_repository_source_commit(),
     )
     payload = {
         "schema_version": "tomorrow_training_result",
@@ -239,14 +241,31 @@ def _run_tomorrow_research_orchestrator(
         "failure_reasons": list(result.failure_reasons),
         "blockers": list(result.failure_reasons),
         "next_stage": "data_manifest" if result.status == "blocked" and not result.training_input_hash else None,
-        "training_anchor": "15:00_close",
+        "training_anchor": "15:00_close_proxy",
         "runtime_anchor": "14:50",
         "point_in_time_parity": False,
         "production_authority": False,
         "automatic_model_update": False,
     }
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-    return 0 if result.status in {"trial_ready", "validated"} else 1
+    return 0 if result.status in {"trial_ready", "engineering_ready"} else 1
+
+
+def _repository_source_commit() -> str:
+    root = Path(__file__).resolve().parents[3]
+    try:
+        result = subprocess.run(
+            ("git", "rev-parse", "--verify", "HEAD"),
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    commit = result.stdout.strip().lower()
+    return commit if len(commit) == 40 and all(character in "0123456789abcdef" for character in commit) else ""
 
 
 def _train_data_root() -> Path:

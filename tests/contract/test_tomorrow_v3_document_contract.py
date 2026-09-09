@@ -103,4 +103,6 @@ def test_trained_v3_profile_loads_the_direct_model_and_remains_content_hash_boun
     assert "data/train/tomorrow-v3/<run_id>/" not in strategy
     assert "主程序启动时直接读取 `data/train/tomorrow-v3/model.json`" in strategy
     assert "内容 hash" in strategy
+    assert "`model.json` 与 `report.json` 是生产加载的原子逻辑对" in strategy
+    assert "15:00_close_proxy" in strategy
     assert "class ModelPredictorPort" in model_port

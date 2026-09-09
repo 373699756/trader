@@ -517,8 +517,10 @@ def test_train_tomorrow_passes_the_explicit_history_root_to_the_training_owner(
         *,
         allow_partial_history: bool,
         progress: object,
+        source_commit: str,
     ) -> SimpleNamespace:
         assert progress is not None
+        assert len(source_commit) == 40
         observed.append((history_root, train_root, allow_partial_history))
         return SimpleNamespace(
             status="blocked",

@@ -127,6 +127,7 @@ def test_work_plan_has_one_stable_baostock_task_and_historical_aliases_only() ->
     assert "| 4 | `point_in_time_dataset` | `completed: historical_data_insufficient`" in work
     assert "| 5 | `candidate_recall_attribution` | `completed: historical_data_insufficient`" in work
     assert "| 6 | `limited_factor_family_research` | `completed: historical_data_insufficient`" in work
+    assert "| 7 | `tomorrow_v3_training_validation` | `completed: historical_data_insufficient`" in work
     assert "blocked_by_risk_cost_uncertainty_deepseek" in work
     assert "blocked_by_shadow_and_manual_activation" in work
     alias = work[work.index("### 1.2 历史审计别名") : work.index("## 2.")]
@@ -181,6 +182,7 @@ def test_history_windows_cost_ownership_and_terminal_order_are_unambiguous() -> 
     assert positions == tuple(sorted(positions))
     assert "outcome_price_basis_and_tradability" in work
     assert "v3_single_cost_ownership" in work
+    assert "`v3_single_cost_ownership` | `tomorrow_v3_training_validation` | `completed`" in work
 
 
 def test_hash_validation_is_limited_to_trust_boundaries() -> None:

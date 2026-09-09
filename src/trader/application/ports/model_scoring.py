@@ -123,13 +123,18 @@ class ProfileCombinerPort(Protocol):
 
 @dataclass(frozen=True)
 class ProfileEvidence:
-    historical_status: Literal["historical_rejected", "historical_unavailable", "historical_validated"]
+    historical_status: Literal[
+        "historical_rejected",
+        "historical_unavailable",
+        "historical_data_insufficient",
+        "historical_validated",
+    ]
     historical_failure_reasons: tuple[str, ...]
     activation_basis: Literal["manual_user_override", "trained_artifact"]
     monitoring_mode: Literal["automatic_t1_outcome_settlement"] = "automatic_t1_outcome_settlement"
     automatic_model_update: bool = False
     loss_probability_status: Literal["not_modeled"] = "not_modeled"
-    training_anchor: Literal["15:00_close"] = "15:00_close"
+    training_anchor: Literal["15:00_close", "15:00_close_proxy", "14:50_point_in_time"] = "15:00_close"
     runtime_anchor: Literal["14:50"] = "14:50"
     point_in_time_parity: bool = False
 
@@ -163,12 +168,17 @@ class ScoringProfileRuntimeStatus:
     model_hash: str
     scoring_version: str
     activation_basis: Literal["manual_user_override", "trained_artifact"]
-    historical_status: Literal["historical_rejected", "historical_unavailable", "historical_validated"]
+    historical_status: Literal[
+        "historical_rejected",
+        "historical_unavailable",
+        "historical_data_insufficient",
+        "historical_validated",
+    ]
     historical_failure_reasons: tuple[str, ...]
     monitoring_mode: Literal["automatic_t1_outcome_settlement"]
     automatic_model_update: bool
     loss_probability_status: Literal["not_modeled"]
-    training_anchor: Literal["15:00_close"] = "15:00_close"
+    training_anchor: Literal["15:00_close", "15:00_close_proxy", "14:50_point_in_time"] = "15:00_close"
     runtime_anchor: Literal["14:50"] = "14:50"
     point_in_time_parity: bool = False
 

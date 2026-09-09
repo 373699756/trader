@@ -14,6 +14,7 @@ from trader.infra.scoring.artifact_hashing import artifact_content_hash
 
 _FEATURE_IDS = TOMORROW_MODEL_FEATURE_MANIFEST.names
 _FEATURE_UNITS = TOMORROW_MODEL_FEATURE_MANIFEST.units
+_FEATURE_MANIFEST_HASH = TOMORROW_MODEL_FEATURE_MANIFEST.content_hash
 _MODEL_ID = "industry_ridge_lightgbm"
 _DOCUMENT_FIELDS = {
     "schema_version",
@@ -29,6 +30,15 @@ _DOCUMENT_FIELDS = {
     "training_universe_codes",
     "split_hash",
     "report_hash",
+    "source_commit",
+    "feature_manifest_hash",
+    "training_contract_hash",
+    "label_target",
+    "training_cost_bps",
+    "validation_scope",
+    "historical_status",
+    "historical_failure_reasons",
+    "model_payload_hash",
     "training_anchor",
     "runtime_anchor",
     "point_in_time_parity",
@@ -38,6 +48,34 @@ _DOCUMENT_FIELDS = {
     "ensemble_weights",
     "industries",
     "dependencies",
+    "automatic_model_update",
+    "production_authority",
+}
+_REPORT_FIELDS = {
+    "schema_version",
+    "model_id",
+    "training_input_scope",
+    "training_input_hash",
+    "training_input_codes",
+    "training_universe_codes",
+    "feature_manifest_hash",
+    "split_hash",
+    "source_commit",
+    "training_contract_hash",
+    "model_payload_hash",
+    "label_target",
+    "training_cost_bps",
+    "training_anchor",
+    "runtime_anchor",
+    "point_in_time_parity",
+    "validation_scope",
+    "historical_status",
+    "historical_failure_reasons",
+    "industry_count",
+    "training_rows",
+    "validation_rows",
+    "validation_passed",
+    "failure_reasons",
     "automatic_model_update",
     "production_authority",
 }
@@ -84,6 +122,18 @@ class V3TomorrowBundleArtifact:
     training_universe_codes: int
     split_hash: str
     report_hash: str
+    source_commit: str
+    feature_manifest_hash: str
+    training_contract_hash: str
+    model_payload_hash: str
+    label_target: Literal["pre_cost_excess_return"]
+    training_cost_bps: Literal[0]
+    validation_scope: Literal["daily_close_engineering_proxy"]
+    historical_status: Literal["historical_data_insufficient"]
+    historical_failure_reasons: tuple[str, ...]
+    training_anchor: Literal["15:00_close_proxy"]
+    runtime_anchor: Literal["14:50"]
+    point_in_time_parity: Literal[False]
     training_rows: int
     validation_rows: int
     industries: tuple[tuple[str, V3IndustryModelArtifact], ...]
@@ -91,47 +141,89 @@ class V3TomorrowBundleArtifact:
     content_hash: str
 
 
+@dataclass(frozen=True)
+class _DecodedContract:
+    stored_hash: str
+    feature_ids: tuple[str, ...]
+    feature_units: tuple[str, ...]
+    exposure_contract: ExposureContract
+    ridge_weight: float
+    lightgbm_weight: float
+
+
+@dataclass(frozen=True)
+class _V3TrainingReportArtifact:
+    content_hash: str
+    training_input_scope: Literal["complete_manifest", "partial_checkpoint"]
+    training_input_hash: str
+    training_input_codes: int
+    training_universe_codes: int
+    feature_manifest_hash: str
+    split_hash: str
+    source_commit: str
+    training_contract_hash: str
+    model_payload_hash: str
+    historical_failure_reasons: tuple[str, ...]
+    industry_count: int
+    training_rows: int
+    validation_rows: int
+
+
 def load_tomorrow_bundle(path: Path) -> V3TomorrowBundleArtifact:
     document = json.loads(path.read_text(encoding="utf-8"))
-    return decode_tomorrow_bundle(document)
+    artifact = decode_tomorrow_bundle(document)
+    report_path = path.with_name("report.json")
+    report = _decode_training_report(json.loads(report_path.read_text(encoding="utf-8")))
+    _validate_report_pair(artifact, report)
+    return artifact
 
 
 def decode_tomorrow_bundle(document: object) -> V3TomorrowBundleArtifact:
     if not isinstance(document, dict):
         raise TypeError("Tomorrow V3 training model must be a JSON object")
     payload = cast(dict[str, object], dict(document))
-    stored_hash, feature_ids, feature_units, exposure_contract, ridge_weight, lightgbm_weight = _decode_contract(
-        payload
-    )
+    contract = _decode_contract(payload)
     dependencies = _dependencies(payload)
-    industries = _decode_industries(payload, len(feature_ids))
+    industries = _decode_industries(payload, len(contract.feature_ids))
     if len(industries) != _integer(payload, "industry_count"):
         raise ValueError("Tomorrow V3 industry model count is invalid")
     return V3TomorrowBundleArtifact(
         "v3",
         _MODEL_ID,
-        feature_ids,
-        feature_units,
-        exposure_contract,
-        ridge_weight,
-        lightgbm_weight,
+        contract.feature_ids,
+        contract.feature_units,
+        contract.exposure_contract,
+        contract.ridge_weight,
+        contract.lightgbm_weight,
         _training_input_scope(payload),
         _text(payload, "training_input_hash"),
         _integer(payload, "training_input_codes"),
         _integer(payload, "training_universe_codes"),
         _text(payload, "split_hash"),
         _text(payload, "report_hash"),
+        _text(payload, "source_commit"),
+        _text(payload, "feature_manifest_hash"),
+        _text(payload, "training_contract_hash"),
+        _text(payload, "model_payload_hash"),
+        "pre_cost_excess_return",
+        0,
+        "daily_close_engineering_proxy",
+        "historical_data_insufficient",
+        tuple(_string_list(payload, "historical_failure_reasons")),
+        "15:00_close_proxy",
+        "14:50",
+        False,
         _integer(payload, "training_rows"),
         _integer(payload, "validation_rows"),
         industries,
         dependencies,
-        stored_hash,
+        contract.stored_hash,
     )
 
 
 def _decode_contract(
     payload: dict[str, object],
-) -> tuple[str, tuple[str, ...], tuple[str, ...], ExposureContract, float, float]:
+) -> _DecodedContract:
     stored_hash = payload.pop("content_hash", None)
     if not isinstance(stored_hash, str) or artifact_content_hash(payload) != stored_hash:
         raise ValueError("Tomorrow V3 training model content hash is invalid")
@@ -149,7 +241,7 @@ def _decode_contract(
     exposure_contract = _exposure_contract(payload)
     ridge_weight, lightgbm_weight = _ensemble_weights(payload)
     if (
-        _text(payload, "schema_version") != "tomorrow_production_model"
+        _text(payload, "schema_version") != "tomorrow_scoring_model"
         or _text(payload, "profile_id") != "v3"
         or _text(payload, "model_id") != _MODEL_ID
         or _text(payload, "strategy_head") != "tomorrow"
@@ -159,13 +251,25 @@ def _decode_contract(
         or not _sha256_text(payload, "training_input_hash")
         or not _sha256_text(payload, "split_hash")
         or not _sha256_text(payload, "report_hash")
-        or _text(payload, "training_anchor") != "15:00_close"
+        or not _sha256_text(payload, "feature_manifest_hash")
+        or _text(payload, "feature_manifest_hash") != _FEATURE_MANIFEST_HASH
+        or not _sha256_text(payload, "training_contract_hash")
+        or not _sha256_text(payload, "model_payload_hash")
+        or not _source_commit(payload)
+        or _text(payload, "label_target") != "pre_cost_excess_return"
+        or _integer(payload, "training_cost_bps") != 0
+        or _text(payload, "validation_scope") != "daily_close_engineering_proxy"
+        or _text(payload, "historical_status") != "historical_data_insufficient"
+        or not _proxy_failure_reasons(payload)
+        or _integer(payload, "industry_count") < 1
+        or _text(payload, "training_anchor") != "15:00_close_proxy"
         or _text(payload, "runtime_anchor") != "14:50"
         or _boolean(payload, "point_in_time_parity")
         or _boolean(payload, "automatic_model_update")
         or _boolean(payload, "production_authority")
         or _integer(payload, "training_rows") < 1
         or _integer(payload, "validation_rows") < 1
+        or _model_payload_hash(payload) != _text(payload, "model_payload_hash")
     ):
         raise ValueError("Tomorrow V3 training model identity or feature contract is invalid")
     input_scope = _training_input_scope(payload)
@@ -175,7 +279,123 @@ def _decode_contract(
         raise ValueError("Tomorrow V3 training input coverage is invalid")
     if input_scope == "complete_manifest" and input_codes != universe_codes:
         raise ValueError("Tomorrow V3 complete training input coverage is invalid")
-    return stored_hash, feature_ids, feature_units, exposure_contract, ridge_weight, lightgbm_weight
+    return _DecodedContract(
+        stored_hash,
+        feature_ids,
+        feature_units,
+        exposure_contract,
+        ridge_weight,
+        lightgbm_weight,
+    )
+
+
+def _decode_training_report(document: object) -> _V3TrainingReportArtifact:
+    if not isinstance(document, dict):
+        raise TypeError("Tomorrow V3 training report must be a JSON object")
+    payload = cast(dict[str, object], dict(document))
+    stored_hash = payload.pop("content_hash", None)
+    if not isinstance(stored_hash, str) or artifact_content_hash(payload) != stored_hash:
+        raise ValueError("Tomorrow V3 training report content hash is invalid")
+    if set(payload) != _REPORT_FIELDS:
+        raise ValueError("Tomorrow V3 training report fields are invalid")
+    if (
+        _text(payload, "schema_version") != "tomorrow_training_report"
+        or _text(payload, "model_id") != _MODEL_ID
+        or not _sha256_text(payload, "training_input_hash")
+        or _text(payload, "feature_manifest_hash") != _FEATURE_MANIFEST_HASH
+        or not _sha256_text(payload, "split_hash")
+        or not _source_commit(payload)
+        or not _sha256_text(payload, "training_contract_hash")
+        or not _sha256_text(payload, "model_payload_hash")
+        or _text(payload, "training_anchor") != "15:00_close_proxy"
+        or _text(payload, "runtime_anchor") != "14:50"
+        or _boolean(payload, "point_in_time_parity")
+        or _text(payload, "validation_scope") != "daily_close_engineering_proxy"
+        or _text(payload, "historical_status") != "historical_data_insufficient"
+        or not _proxy_failure_reasons(payload)
+        or _text(payload, "label_target") != "pre_cost_excess_return"
+        or _integer(payload, "training_cost_bps") != 0
+        or _integer(payload, "training_input_codes") < 1
+        or _integer(payload, "training_universe_codes") < _integer(payload, "training_input_codes")
+        or _integer(payload, "industry_count") < 1
+        or _integer(payload, "training_rows") < 1
+        or _integer(payload, "validation_rows") < 1
+        or not _boolean(payload, "validation_passed")
+        or _string_list(payload, "failure_reasons")
+        or _boolean(payload, "automatic_model_update")
+        or _boolean(payload, "production_authority")
+    ):
+        raise ValueError("Tomorrow V3 training report identity is invalid")
+    return _V3TrainingReportArtifact(
+        stored_hash,
+        _training_input_scope(payload),
+        _text(payload, "training_input_hash"),
+        _integer(payload, "training_input_codes"),
+        _integer(payload, "training_universe_codes"),
+        _text(payload, "feature_manifest_hash"),
+        _text(payload, "split_hash"),
+        _text(payload, "source_commit"),
+        _text(payload, "training_contract_hash"),
+        _text(payload, "model_payload_hash"),
+        tuple(_string_list(payload, "historical_failure_reasons")),
+        _integer(payload, "industry_count"),
+        _integer(payload, "training_rows"),
+        _integer(payload, "validation_rows"),
+    )
+
+
+def _validate_report_pair(artifact: V3TomorrowBundleArtifact, report: _V3TrainingReportArtifact) -> None:
+    model_values = (
+        artifact.training_input_scope,
+        artifact.training_input_hash,
+        artifact.training_input_codes,
+        artifact.training_universe_codes,
+        artifact.feature_manifest_hash,
+        artifact.split_hash,
+        artifact.source_commit,
+        artifact.training_contract_hash,
+        artifact.model_payload_hash,
+        artifact.historical_failure_reasons,
+        len(artifact.industries),
+        artifact.training_rows,
+        artifact.validation_rows,
+    )
+    report_values = (
+        report.training_input_scope,
+        report.training_input_hash,
+        report.training_input_codes,
+        report.training_universe_codes,
+        report.feature_manifest_hash,
+        report.split_hash,
+        report.source_commit,
+        report.training_contract_hash,
+        report.model_payload_hash,
+        report.historical_failure_reasons,
+        report.industry_count,
+        report.training_rows,
+        report.validation_rows,
+    )
+    if artifact.report_hash != report.content_hash or model_values != report_values:
+        raise ValueError("Tomorrow V3 model and report pair is inconsistent")
+
+
+def _model_payload_hash(payload: dict[str, object]) -> str:
+    excluded = {"content_hash", "report_hash", "model_payload_hash"}
+    return artifact_content_hash({key: value for key, value in payload.items() if key not in excluded})
+
+
+def _source_commit(payload: dict[str, object]) -> bool:
+    value = _text(payload, "source_commit")
+    return len(value) == 40 and all(character in "0123456789abcdef" for character in value)
+
+
+def _proxy_failure_reasons(payload: dict[str, object]) -> bool:
+    reasons = tuple(_string_list(payload, "historical_failure_reasons"))
+    allowed = {"daily_close_proxy_not_point_in_time", "partial_history_pipeline_trial"}
+    return reasons in {
+        ("daily_close_proxy_not_point_in_time",),
+        ("daily_close_proxy_not_point_in_time", "partial_history_pipeline_trial"),
+    } and set(reasons).issubset(allowed)
 
 
 def _decode_industries(

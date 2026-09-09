@@ -38,13 +38,14 @@ def build_scoring_profile(artifact: V3TomorrowBundleArtifact) -> LoadedScoringPr
 
 
 def _evidence(artifact: V3TomorrowBundleArtifact) -> ProfileEvidence:
-    if artifact.training_input_scope == "partial_checkpoint":
-        return ProfileEvidence(
-            "historical_unavailable",
-            ("partial_history_pipeline_trial",),
-            "manual_user_override",
-        )
-    return ProfileEvidence("historical_validated", (), "trained_artifact")
+    return ProfileEvidence(
+        artifact.historical_status,
+        artifact.historical_failure_reasons,
+        "manual_user_override",
+        training_anchor=artifact.training_anchor,
+        runtime_anchor=artifact.runtime_anchor,
+        point_in_time_parity=artifact.point_in_time_parity,
+    )
 
 
 __all__ = ["build_scoring_profile", "build_tomorrow_predictor"]

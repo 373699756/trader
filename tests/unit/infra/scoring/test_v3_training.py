@@ -15,6 +15,8 @@ from trader.infra.scoring.profiles.v3.training import (
     _model_document,
     _residualize_sample_day,
     _training_output_directory,
+    _TrainingArtifactContext,
+    training_alpha_target,
 )
 
 
@@ -115,6 +117,13 @@ def test_v3_training_uses_the_shared_online_exposure_contract() -> None:
         assert actual_values == pytest.approx(expected_values)
 
 
+def test_v3_training_target_keeps_round_trip_cost_out_of_the_alpha_label() -> None:
+    target = training_alpha_target(next_return=0.06, benchmark_return=0.01)
+
+    assert target == pytest.approx(0.05)
+    assert target - 0.002 == pytest.approx(0.048)
+
+
 def test_v3_training_document_is_accepted_by_the_production_codec() -> None:
     p2 = json.loads(
         resources.files("trader.infra.scoring.profiles.v2").joinpath("model.json").read_text(encoding="utf-8")
@@ -133,16 +142,21 @@ def test_v3_training_document_is_accepted_by_the_production_codec() -> None:
         "training_rows": 20_000,
         "validation_rows": 1_000,
     }
-    document = _model_document(
+    context = _TrainingArtifactContext(
         "complete_manifest",
         "a" * 64,
         100,
         100,
         split,
-        "b" * 64,
-        {"银行": industry_model},
+        "d" * 40,
+        "e" * 64,
         20_000,
         1_000,
+    )
+    document = _model_document(
+        context,
+        "b" * 64,
+        {"银行": industry_model},
     )
     document["content_hash"] = artifact_content_hash(document)
 
@@ -152,4 +166,8 @@ def test_v3_training_document_is_accepted_by_the_production_codec() -> None:
     assert artifact.exposure_contract == V3_EXPOSURE_CONTRACT
     assert artifact.training_input_scope == "complete_manifest"
     assert artifact.training_input_hash == "a" * 64
+    assert artifact.training_contract_hash == "e" * 64
+    assert artifact.source_commit == "d" * 40
+    assert artifact.training_anchor == "15:00_close_proxy"
+    assert artifact.historical_status == "historical_data_insufficient"
     assert tuple(industry for industry, _model in artifact.industries) == ("银行",)

@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import tempfile
 from collections import defaultdict
 from collections.abc import Collection, Mapping, Sequence
@@ -39,6 +40,7 @@ from trader.infra.research.baostock_daily import (
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
 
 _MODEL_ID = "industry_ridge_lightgbm"
+_SOURCE_COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
 
 @dataclass(frozen=True)
@@ -69,12 +71,26 @@ class _Sample:
     eligible: bool
 
 
+@dataclass(frozen=True)
+class _TrainingArtifactContext:
+    training_input_scope: Literal["complete_manifest", "partial_checkpoint"]
+    training_input_hash: str
+    training_input_codes: int
+    training_universe_codes: int
+    split: BaoStockTrainingSplit
+    source_commit: str
+    training_contract_hash: str
+    training_rows: int
+    validation_rows: int
+
+
 def run_tomorrow_training(
     history_root: Path,
     train_root: Path,
     *,
     allow_partial_history: bool = False,
     progress: TomorrowTrainingProgressPort | None = None,
+    source_commit: str = "",
 ) -> TomorrowTrainingResult:
     try:
         archive = BaoStockTrainingTrainingInputArchive.open(
@@ -84,12 +100,28 @@ def run_tomorrow_training(
     except (BaoStockDailyArtifactConflictError, OSError, ValueError) as exc:
         return TomorrowTrainingResult("blocked", "unavailable", None, "", 0, 0, "", "", 0, 0, 0, (_reason(exc),))
     snapshot = archive.snapshot
+    if _SOURCE_COMMIT.fullmatch(source_commit) is None:
+        return TomorrowTrainingResult(
+            "blocked",
+            snapshot.input_scope,
+            None,
+            snapshot.input_hash,
+            len(snapshot.training_codes),
+            snapshot.universe_count,
+            "",
+            "",
+            0,
+            0,
+            0,
+            ("source_commit_unavailable",),
+        )
     _publish_progress(progress, "input_snapshot", len(snapshot.training_codes), len(snapshot.training_codes))
     run_id = hashlib.sha256(f"{snapshot.input_hash}:tomorrow-v3".encode()).hexdigest()
     output = _training_output_directory(train_root)
     try:
-        _write_training_input_evidence(output, snapshot)
         split = _build_split(snapshot.calendar.open_dates, snapshot.input_hash)
+        training_contract_hash = _training_contract_hash(snapshot, split, source_commit)
+        _write_training_input_evidence(output, snapshot, source_commit, training_contract_hash)
         window = TomorrowTrainingWindow(split)
         samples = _build_samples(archive, snapshot.training_codes, window, progress=progress)
         if not samples:
@@ -109,7 +141,20 @@ def run_tomorrow_training(
             )
         _publish_progress(progress, "model_fit", 0, len(snapshot.training_codes))
         models, training_rows, validation_rows = _fit_models(samples, split)
-        report = _build_report(snapshot, split, models, training_rows, validation_rows)
+        context = _TrainingArtifactContext(
+            snapshot.input_scope,
+            snapshot.input_hash,
+            len(snapshot.training_codes),
+            snapshot.universe_count,
+            split,
+            source_commit,
+            training_contract_hash,
+            training_rows,
+            validation_rows,
+        )
+        provisional_model = _model_document(context, "0" * 64, models)
+        model_payload_hash = cast(str, provisional_model["model_payload_hash"])
+        report = _build_report(context, models, model_payload_hash)
         report_hash = artifact_content_hash(report)
         report["content_hash"] = report_hash
         _write_json(output / "report.json", report)
@@ -128,23 +173,13 @@ def run_tomorrow_training(
                 validation_rows,
                 tuple(cast(list[str], report["failure_reasons"])),
             )
-        model = _model_document(
-            snapshot.input_scope,
-            snapshot.input_hash,
-            len(snapshot.training_codes),
-            snapshot.universe_count,
-            split,
-            report_hash,
-            models,
-            training_rows,
-            validation_rows,
-        )
+        model = _model_document(context, report_hash, models)
         model_hash = artifact_content_hash(model)
         model["content_hash"] = model_hash
         _write_json(output / "model.json", model)
         _publish_progress(progress, "completed", len(snapshot.training_codes), len(snapshot.training_codes))
         return TomorrowTrainingResult(
-            "trial_ready" if snapshot.input_scope == "partial_checkpoint" else "validated",
+            "trial_ready" if snapshot.input_scope == "partial_checkpoint" else "engineering_ready",
             snapshot.input_scope,
             run_id,
             snapshot.input_hash,
@@ -261,11 +296,19 @@ def _build_samples(
                     item.industry,
                     item.average_amount_20d,
                     (*item.features[:3], *(values[index] for values in residuals)),
-                    item.next_return - benchmark - 0.002,
+                    training_alpha_target(next_return=item.next_return, benchmark_return=benchmark),
                     item.eligible,
                 )
             )
     return tuple(sorted(result, key=lambda item: (item.trade_date, item.code)))
+
+
+def training_alpha_target(*, next_return: float, benchmark_return: float) -> float:
+    """Return pre-cost alpha; validation and execution own round-trip costs."""
+
+    if not math.isfinite(next_return) or not math.isfinite(benchmark_return):
+        raise ValueError("V3 training alpha inputs must be finite")
+    return next_return - benchmark_return
 
 
 def _aligned_sample_dates(
@@ -394,53 +437,48 @@ def _fit_models(
 
 
 def _build_report(
-    snapshot: BaoStockTrainingTrainingInputSnapshot,
-    split: BaoStockTrainingSplit,
+    context: _TrainingArtifactContext,
     models: dict[str, dict[str, object]],
-    training_rows: int,
-    validation_rows: int,
+    model_payload_hash: str,
 ) -> dict[str, object]:
-    reasons = [] if models and validation_rows > 0 else ["v3_industry_model_validation_insufficient"]
+    reasons = [] if models and context.validation_rows > 0 else ["v3_industry_model_validation_insufficient"]
     return {
-        "schema_version": "tomorrow_training_report_v1",
+        "schema_version": "tomorrow_training_report",
         "model_id": _MODEL_ID,
-        "training_input_scope": snapshot.input_scope,
-        "training_input_hash": snapshot.input_hash,
-        "training_input_codes": len(snapshot.training_codes),
-        "training_universe_codes": snapshot.universe_count,
-        "split_hash": split.content_hash,
-        "training_anchor": "15:00_close",
+        "training_input_scope": context.training_input_scope,
+        "training_input_hash": context.training_input_hash,
+        "training_input_codes": context.training_input_codes,
+        "training_universe_codes": context.training_universe_codes,
+        "feature_manifest_hash": TOMORROW_MODEL_FEATURE_MANIFEST.content_hash,
+        "split_hash": context.split.content_hash,
+        "source_commit": context.source_commit,
+        "training_contract_hash": context.training_contract_hash,
+        "model_payload_hash": model_payload_hash,
+        "label_target": "pre_cost_excess_return",
+        "training_cost_bps": 0,
+        "training_anchor": "15:00_close_proxy",
         "runtime_anchor": "14:50",
         "point_in_time_parity": False,
+        "validation_scope": "daily_close_engineering_proxy",
         "industry_count": len(models),
-        "training_rows": training_rows,
-        "validation_rows": validation_rows,
+        "training_rows": context.training_rows,
+        "validation_rows": context.validation_rows,
         "validation_passed": not reasons,
         "failure_reasons": reasons,
-        "historical_status": (
-            "historical_unavailable" if snapshot.input_scope == "partial_checkpoint" else "historical_validated"
-        ),
-        "historical_failure_reasons": (
-            ["partial_history_pipeline_trial"] if snapshot.input_scope == "partial_checkpoint" else []
-        ),
+        "historical_status": "historical_data_insufficient",
+        "historical_failure_reasons": list(_historical_failure_reasons(context.training_input_scope)),
         "automatic_model_update": False,
         "production_authority": False,
     }
 
 
-def _model_document(  # noqa: PLR0913 - every value is part of the sealed model identity
-    training_input_scope: str,
-    training_input_hash: str,
-    training_input_codes: int,
-    training_universe_codes: int,
-    split: BaoStockTrainingSplit,
+def _model_document(
+    context: _TrainingArtifactContext,
     report_hash: str,
     models: dict[str, dict[str, object]],
-    training_rows: int,
-    validation_rows: int,
 ) -> dict[str, object]:
-    return {
-        "schema_version": "tomorrow_production_model",
+    document: dict[str, object] = {
+        "schema_version": "tomorrow_scoring_model",
         "profile_id": "v3",
         "model_id": _MODEL_ID,
         "strategy_head": "tomorrow",
@@ -453,17 +491,25 @@ def _model_document(  # noqa: PLR0913 - every value is part of the sealed model 
             "log_average_amount_20d": True,
             "order": list(V3_EXPOSURE_CONTRACT.order),
         },
-        "training_input_scope": training_input_scope,
-        "training_input_hash": training_input_hash,
-        "training_input_codes": training_input_codes,
-        "training_universe_codes": training_universe_codes,
-        "split_hash": split.content_hash,
+        "training_input_scope": context.training_input_scope,
+        "training_input_hash": context.training_input_hash,
+        "training_input_codes": context.training_input_codes,
+        "training_universe_codes": context.training_universe_codes,
+        "split_hash": context.split.content_hash,
         "report_hash": report_hash,
-        "training_anchor": "15:00_close",
+        "source_commit": context.source_commit,
+        "feature_manifest_hash": TOMORROW_MODEL_FEATURE_MANIFEST.content_hash,
+        "training_contract_hash": context.training_contract_hash,
+        "label_target": "pre_cost_excess_return",
+        "training_cost_bps": 0,
+        "validation_scope": "daily_close_engineering_proxy",
+        "historical_status": "historical_data_insufficient",
+        "historical_failure_reasons": list(_historical_failure_reasons(context.training_input_scope)),
+        "training_anchor": "15:00_close_proxy",
         "runtime_anchor": "14:50",
         "point_in_time_parity": False,
-        "training_rows": training_rows,
-        "validation_rows": validation_rows,
+        "training_rows": context.training_rows,
+        "validation_rows": context.validation_rows,
         "industry_count": len(models),
         "ensemble_weights": {"ridge": 0.5, "lightgbm": 0.5},
         "industries": models,
@@ -471,9 +517,46 @@ def _model_document(  # noqa: PLR0913 - every value is part of the sealed model 
         "automatic_model_update": False,
         "production_authority": False,
     }
+    document["model_payload_hash"] = _model_payload_hash(document)
+    return document
 
 
-def _write_training_input_evidence(output: Path, snapshot: BaoStockTrainingTrainingInputSnapshot) -> None:
+def _training_contract_hash(
+    snapshot: BaoStockTrainingTrainingInputSnapshot,
+    split: BaoStockTrainingSplit,
+    source_commit: str,
+) -> str:
+    contract: dict[str, object] = {
+        "schema_version": "tomorrow_training_contract",
+        "source_commit": source_commit,
+        "training_input_scope": snapshot.input_scope,
+        "training_input_hash": snapshot.input_hash,
+        "feature_manifest_hash": TOMORROW_MODEL_FEATURE_MANIFEST.content_hash,
+        "feature_ids": list(TOMORROW_MODEL_FEATURE_MANIFEST.names),
+        "feature_units": list(TOMORROW_MODEL_FEATURE_MANIFEST.units),
+        "split_hash": split.content_hash,
+        "label_target": "pre_cost_excess_return",
+        "benchmark": "daily_close_equal_weight_engineering_proxy",
+        "training_cost_bps": 0,
+        "evaluation_cost_bps": [20, 50, 100],
+        "ensemble_weights": {"ridge": 0.5, "lightgbm": 0.5},
+        "training_anchor": "15:00_close_proxy",
+        "runtime_anchor": "14:50",
+        "point_in_time_parity": False,
+        "validation_scope": "daily_close_engineering_proxy",
+        "terminal_holdout_opened": False,
+        "automatic_model_update": False,
+        "production_authority": False,
+    }
+    return artifact_content_hash(contract)
+
+
+def _write_training_input_evidence(
+    output: Path,
+    snapshot: BaoStockTrainingTrainingInputSnapshot,
+    source_commit: str,
+    training_contract_hash: str,
+) -> None:
     document: dict[str, object] = {
         "schema_version": "tomorrow_training_input",
         "training_input_scope": snapshot.input_scope,
@@ -482,10 +565,30 @@ def _write_training_input_evidence(output: Path, snapshot: BaoStockTrainingTrain
         "training_universe_codes": snapshot.universe_count,
         "completed_codes": snapshot.completed_code_count,
         "codes": list(snapshot.training_codes),
+        "source_commit": source_commit,
+        "feature_manifest_hash": TOMORROW_MODEL_FEATURE_MANIFEST.content_hash,
+        "training_contract_hash": training_contract_hash,
+        "label_target": "pre_cost_excess_return",
+        "training_cost_bps": 0,
+        "validation_scope": "daily_close_engineering_proxy",
         "production_authority": False,
     }
     document["content_hash"] = artifact_content_hash(document)
     _write_json(output / "training-input.json", document)
+
+
+def _model_payload_hash(document: dict[str, object]) -> str:
+    excluded = {"content_hash", "report_hash", "model_payload_hash"}
+    return artifact_content_hash({key: value for key, value in document.items() if key not in excluded})
+
+
+def _historical_failure_reasons(
+    training_input_scope: str,
+) -> tuple[str, ...]:
+    reasons = ["daily_close_proxy_not_point_in_time"]
+    if training_input_scope == "partial_checkpoint":
+        reasons.append("partial_history_pipeline_trial")
+    return tuple(reasons)
 
 
 def _training_output_directory(train_root: Path) -> Path:
