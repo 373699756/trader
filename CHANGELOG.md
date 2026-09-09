@@ -6,6 +6,32 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求继续实施双 PC 代码整改总计划，本批闭合 `risk_cost_uncertainty_deepseek`。根因已确认：既有生产链
+  分散存在风险扣分、成本选择和固定融合，但研究层没有分别表达 alpha、风险、不确定性、执行成本与选择效用的
+  真实类型，也没有在同一父证据上比较 DeepSeek 三组增量；直接沿用当前 V3 日线工程代理会把 15:00 收盘数据
+  冒充 14:50 点时证据。Added: 新增不可变 `AlphaScore`、`RiskDecision`、`UncertaintyAssessment`、
+  `ExecutionCost`、`SelectionUtility`、三组消融决定/指标与失败关闭应用构建器；报告严重亏损概率 Brier、10 桶
+  ECE、概率/预测区间/模型分歧/训练窗口分歧/OOD/缺失不确定性覆盖率、四维三分位桶的成本后净超额与
+  严重亏损率，以及逐日同约束 oracle 机会成本。Changed: 隔离研究固定复用 Top6、每板最多 3、每行业最多 2，
+  并比较 local-only、结构化
+  facts veto、固定 68/32；独立 evidence hash 绑定逐股 alpha/risk/cost、结构化 DeepSeek 结果和真实 outcome，
+  报告内容 hash 只显式投影公开字段，DeepSeek narrative 不参与身份。Fixed: 固定融合先使用
+  已扣一次本地风险的 `local_score`，只再扣经过结构化事实验证的 DeepSeek penalty；失败、迟到、预算耗尽和
+  abstain 均保留 local，非 applied 结果不能携带 score、penalty、veto 或 facts；机会成本按交易日分别计算，
+  不再让跨日全局 TopK 产生错误基准。Removed: 未删除或替换现有生产风险、成本、DeepSeek、融合或 TopK 链；
+  新研究构建器不接组合根、Web、HTTP、调度或活动数据库。Verification: 契约先以缺少五个领域/应用模块失败；
+  实施后定向领域、应用、推荐、架构与文档回归通过，`make format-check`、`make lint`、`make type-check`
+  （377 个源文件）、`make test`（1739 项）、`make package`、严格复杂度零债务和 `git diff --check` 通过。
+  全量测试首轮仅有既有 10ms 日内批次 deadline 并发用例偶发取得空错误字符串；该单项连续复跑 5 次通过，
+  随后完整测试重跑无失败。打包首轮仅因沙箱网络受限失败，获准以相同命令安装隔离构建依赖后成功。
+  固定离线性能门使用 5500 行全市场、360 个候选和三策略完整人口，全部等价/绝对/相对 CPU 与分配门通过；
+  `market_merge` P95 360.597ms、Tomorrow `local_scoring` P95 16.341ms、内存增长 0、外网调用 0。
+  Delivery State: `completed: historical_data_insufficient`。Residual Risks: 4.7 当前仍是
+  `historical_data_insufficient`，真实 14:50 点时父证据和训练 PC 新
+  工件尚未提交；本批必须零读取真实评价收益，不生成或宣称 Brier/ECE/收益结论，不打开终端留出、不授权
+  Shadow/生产切换，也不改变固定融合、DeepSeek 168 预算、冻结或默认 V1。
+  `Regression-Key: risk-cost-uncertainty-deepseek-fail-closed`。
+
 - 用户要求继续实施双 PC 整改计划，本批闭合 `incremental_feature_computation`。根因已确认：共享
   `FeatureComputationPlan` 只被 Tomorrow scorer 用来读取最终特征顺序，生产评分每轮仍重新抽取全部模型 facts、
   重做三组横截面残差并调用 predictor；计算状态也没有候选规模、逐组耗时、决策年龄或 deadline 放弃原因。
