@@ -12,6 +12,10 @@ from typing import Literal
 from trader.application.ports.scored import ScoredNativeInput
 from trader.domain.market.models import Board, FeatureSnapshot
 from trader.domain.recommendation.models import ScoredDisposition, ScoredSelectionResult
+from trader.domain.recommendation.selection.scored_selection import (
+    ScoredCandidatePlan,
+    ScoredCandidateStageCounts,
+)
 
 ScoredInputQualityStatus = Literal[
     "ready",
@@ -122,6 +126,8 @@ def assess_scored_input_quality(
     *,
     minimum_history_sessions: int = 20,
     profile_history_qualified_codes: Collection[str] | None = None,
+    candidate_stage_counts: ScoredCandidateStageCounts | None = None,
+    preselection_transient_invalid: bool = False,
 ) -> ScoredInputQuality:
     if minimum_history_sessions < 1:
         raise ValueError("scored input minimum history sessions must be positive")
@@ -169,18 +175,35 @@ def assess_scored_input_quality(
     requested_count = len(requested_codes)
     candidate_feature_coverage_ratio = _coverage_ratio(len(candidate_codes), requested_count)
     security_master_coverage_ratio = _coverage_ratio(security_master_covered_count, requested_count)
-    history_coverage_ratio = _coverage_ratio(history_covered_count, requested_count)
+    history_coverage_ratio = (
+        _coverage_ratio(
+            candidate_stage_counts.strategy_history_eligible,
+            candidate_stage_counts.dynamic_filter_eligible,
+        )
+        if candidate_stage_counts is not None
+        else _coverage_ratio(history_covered_count, requested_count)
+    )
     blocking_coverage_reasons = tuple(
         reason
         for failed, reason in (
-            (candidate_feature_coverage_ratio < 1.0, "candidate_feature_coverage_incomplete"),
-            (security_master_coverage_ratio < 1.0, "security_master_coverage_incomplete"),
+            (
+                requested_count > 0 and candidate_feature_coverage_ratio < 1.0,
+                "candidate_feature_coverage_incomplete",
+            ),
+            (
+                requested_count > 0 and security_master_coverage_ratio < 1.0,
+                "security_master_coverage_incomplete",
+            ),
         )
         if failed
     )
     history_reasons = ("strategy_history_coverage_partial",) if history_coverage_ratio < 1.0 else ()
-    if not requested_codes or blocking_coverage_reasons:
-        status: ScoredInputQualityStatus = "not_ready"
+    if not requested_codes:
+        status: ScoredInputQualityStatus = (
+            "transient_invalid_empty" if preselection_transient_invalid else "business_empty"
+        )
+    elif blocking_coverage_reasons:
+        status = "not_ready"
     elif candidate_scored_count:
         status = "ready"
     elif transient_counts:
@@ -207,6 +230,14 @@ def assess_scored_input_quality(
         candidate_transient_reason_counts=transient_counts,
         candidate_optional_reason_counts=optional_counts,
         degraded_reasons=(*tuple(optional_counts), *blocking_coverage_reasons, *history_reasons),
+    )
+
+
+def has_transient_candidate_gap(plan: ScoredCandidatePlan) -> bool:
+    return any(
+        _TRANSIENT_FILTER_REASONS.intersection(reason.code for reason in item.filter_reasons)
+        or item.selection_skip_reason in _TRANSIENT_SELECTION_REASONS
+        for item in plan.evaluations
     )
 
 
@@ -239,4 +270,5 @@ __all__ = [
     "ScoredInputQuality",
     "ScoredInputQualityStatus",
     "assess_scored_input_quality",
+    "has_transient_candidate_gap",
 ]

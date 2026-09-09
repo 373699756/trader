@@ -51,7 +51,6 @@ def _recommendation_policy() -> RecommendationPolicy:
         fusion_version="fusion-fixture",
         fusion=FusionPolicy(),
         selection=_selection_policy(),
-        candidate_weights={},
         dimension_weights={},
         risk_rules={},
     )

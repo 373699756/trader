@@ -46,12 +46,6 @@ def recommendation_policy() -> RecommendationPolicy:
             observation_margin=5.0,
             thresholds={"today_main": 70.0, "today_late": 76.0, "tomorrow": 72.0, "d25": 70.0},
         ),
-        candidate_weights={
-            "liquidity": 7 / 18,
-            "short_momentum": 5 / 18,
-            "trend": 2 / 9,
-            "data_completeness": 1 / 9,
-        },
         dimension_weights={
             strategy: {
                 **{name: 0.25 for name in DIMENSION_NAMES if name != "industry_policy"},

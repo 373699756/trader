@@ -42,6 +42,7 @@ class _Market:
         self.candidate_quote_refresh_count = 0
         self.topk_quote_refresh_count = 0
         self.candidate_reads: list[tuple[tuple[str, ...], bool, bool]] = []
+        self.candidate_requests: list[tuple[str, ...]] = []
         self.reference_requests: list[tuple[tuple[str, ...], tuple[str, ...], datetime, bool]] = []
         self.requested_codes: tuple[str, ...] = ()
 
@@ -54,6 +55,7 @@ class _Market:
         del force, deadline
         self.candidate_quote_refresh_count += 1
         self.requested_codes = tuple(codes)
+        self.candidate_requests.append(tuple(codes))
         requested = set(codes)
         return tuple(feature for feature in self._features if feature.quote.code in requested)
 
@@ -595,7 +597,6 @@ def test_production_adapter_accepts_exactly_ninety_nine_percent_history_coverage
             quote=replace(
                 application_feature_factory(f"600{index:03d}", observed_at).quote,
                 board=Board.MAIN,
-                is_st=True,
             ),
             history_days=19 if index == 0 else 60,
         )
@@ -618,9 +619,9 @@ def test_production_adapter_accepts_exactly_ninety_nine_percent_history_coverage
     assert status.history_covered_count == 99
     assert status.history_coverage_ratio == 0.99
     assert status.publishable is True
-    assert status.supply_funnel.history == 99
-    assert status.supply_funnel.filter_reject == 100
-    assert status.primary_blocker == "no_scored_candidates"
+    assert status.supply_funnel.strategy_history_eligible == 99
+    assert status.supply_funnel.dynamic_filter_eligible == 100
+    assert status.supply_funnel.filter_reject == 0
 
 
 def test_production_adapter_rejects_partial_candidate_feature_response(
@@ -671,7 +672,7 @@ def test_three_scored_strategies_share_one_fast_market_input_cycle(
     observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
     codes = (("600001", Board.MAIN), ("300001", Board.CHINEXT), ("688001", Board.STAR))
     features = tuple(
-        replace(feature, quote=replace(feature.quote, board=board, is_st=True))
+        replace(feature, quote=replace(feature.quote, board=board))
         for code, board in codes
         for feature in (application_feature_factory(code, observed_at),)
     )
@@ -710,7 +711,6 @@ def test_three_scored_strategies_share_one_fast_market_input_cycle(
         )
     ]
     assert all(decision is not None for decision in decisions)
-    assert all(decision.items == () for decision in decisions if decision is not None)
     assert len(market.candidate_reads) == 1
     assert market.candidate_reads[0][1] is True
     assert all(read[2] for read in market.candidate_reads)
@@ -819,7 +819,7 @@ def test_three_scored_strategies_use_refresh_completion_as_the_decision_time(
     features = []
     for code, board in (("600001", Board.MAIN), ("300001", Board.CHINEXT), ("688001", Board.STAR)):
         feature = application_feature_factory(code, requested_at)
-        features.append(replace(feature, quote=replace(feature.quote, board=board, is_st=True)))
+        features.append(replace(feature, quote=replace(feature.quote, board=board)))
 
     class AdvancingMarket(_Market):
         def refresh_candidate_quotes(self, codes, _observed_at, *, force=False, deadline=None):
@@ -918,6 +918,140 @@ def test_candidate_pool_limit_is_applied_per_supported_board(
 
     assert len(market.requested_codes) == 3
     assert {code[:3] for code in market.requested_codes} == {"600", "300", "688"}
+
+
+def test_candidate_qualification_precedes_board_limit_and_failed_quote_promotes_next_reserve(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+
+    def ranked(code: str, score: float, *, is_st: bool = False):
+        feature = application_feature_factory(code, observed_at)
+        return replace(
+            feature,
+            quote=replace(
+                feature.quote,
+                board=Board.MAIN,
+                is_st=is_st,
+                board_source="security_master",
+                board_reliability="verified",
+                listing_age_sessions=100,
+                change_5m=1.0,
+                speed=1.0,
+                volume_ratio=2.0,
+            ),
+            values={
+                **feature.values,
+                "amount_percentile_20d": score,
+                "speed_percentile": score,
+                "relative_strength_5d": score,
+                "trend_score": score,
+                "low_volatility_score": score,
+                "low_drawdown_score": score,
+                "turnover_shock_score": score,
+                "amount_shock_score": score,
+                "capacity_score": score,
+                "moderate_amplitude": score,
+                "price_executability": score,
+            },
+        )
+
+    features = (
+        ranked("600001", 100.0, is_st=True),
+        ranked("600002", 90.0),
+        ranked("600003", 80.0),
+    )
+
+    class MissingFirstQuoteMarket(_Market):
+        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None):
+            self.candidate_quote_refresh_count += 1
+            self.requested_codes = tuple(codes)
+            self.candidate_requests.append(tuple(codes))
+            if self.candidate_quote_refresh_count == 1:
+                return ()
+            requested = set(codes)
+            return tuple(feature for feature in self._features if feature.quote.code in requested)
+
+    market = MissingFirstQuoteMarket(features)
+    adapter = MarketDataAdapter(
+        market,
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=_decision_build(),
+    )
+
+    adapter.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
+    adapter.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
+
+    assert market.candidate_requests == [("600002",), ("600003",)]
+    statuses = {item.strategy: item for item in adapter.input_quality_status()}
+    assert all(item.supply_funnel.candidate_limit_selected == 1 for item in statuses.values())
+    assert all(item.supply_funnel.candidate_quote_eligible == 1 for item in statuses.values())
+
+
+def test_strategy_candidate_windows_are_isolated_while_quote_io_uses_their_union(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+    today = application_feature_factory("600001", observed_at)
+    later = application_feature_factory("600002", observed_at)
+    common_quote = {
+        "board": Board.MAIN,
+        "board_source": "security_master",
+        "board_reliability": "verified",
+        "listing_age_sessions": 100,
+    }
+    today = replace(
+        today,
+        quote=replace(today.quote, **common_quote, change_5m=1.0, speed=1.0, volume_ratio=2.0),
+        values={
+            **today.values,
+            "amount_percentile_20d": 100.0,
+            "speed_percentile": 100.0,
+            "turnover_shock_score": 100.0,
+            "amount_shock_score": 100.0,
+            "trend_score": 0.0,
+            "low_volatility_score": 0.0,
+            "low_drawdown_score": 0.0,
+            "capacity_score": 0.0,
+            "moderate_amplitude": 0.0,
+            "price_executability": 0.0,
+        },
+    )
+    later = replace(
+        later,
+        quote=replace(later.quote, **common_quote, change_5m=0.0, speed=0.0, volume_ratio=1.0),
+        values={
+            **later.values,
+            "amount_percentile_20d": 60.0,
+            "speed_percentile": 30.0,
+            "turnover_shock_score": 30.0,
+            "amount_shock_score": 30.0,
+            "trend_score": 100.0,
+            "low_volatility_score": 100.0,
+            "low_drawdown_score": 100.0,
+            "capacity_score": 100.0,
+            "moderate_amplitude": 100.0,
+            "price_executability": 100.0,
+        },
+    )
+    market = _Market((today, later))
+    adapter = MarketDataAdapter(
+        market,
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=_decision_build(),
+    )
+
+    _prime_scoring_cache(adapter, observed_at)
+    for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
+        adapter.refresh(_request(observed_at, strategy=strategy, phase="today_main"))
+
+    assert set(market.candidate_requests[0]) == {"600001", "600002"}
+    requested_by_strategy = {request[0][0] for request in market.candidate_reads if request[0]}
+    assert requested_by_strategy == {"600001", "600002"}
+    assert any(codes == ("600001",) for codes, _tail, _research in market.candidate_reads)
+    assert any(codes == ("600002",) for codes, _tail, _research in market.candidate_reads)
 
 
 def test_reference_refresh_scheduling_failure_does_not_block_local_decision(

@@ -669,14 +669,11 @@ def test_fixed_review_and_observation_gates_cannot_drift(
         load_strategy_settings(strategy_path)
 
 
-@pytest.mark.parametrize("weight_family", ("candidate", "dimension", "board_candidate", "board_local"))
+@pytest.mark.parametrize("weight_family", ("dimension", "board_candidate", "board_local"))
 def test_fixed_strategy_weight_vectors_cannot_drift(tmp_path, weight_family: str) -> None:
     strategy_path = tmp_path / "strategy.json"
     raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
-    if weight_family == "candidate":
-        weights = raw["candidate_weights"]
-        first, second = "liquidity", "short_momentum"
-    elif weight_family == "dimension":
+    if weight_family == "dimension":
         weights = raw["dimension_weights"]["tomorrow"]
         first, second = "value_quality", "financial_health"
     elif weight_family == "board_candidate":
@@ -691,6 +688,15 @@ def test_fixed_strategy_weight_vectors_cannot_drift(tmp_path, weight_family: str
 
     with pytest.raises(ConfigurationError, match="fixed vector"):
         load_strategy_settings(strategy_path)
+
+
+def test_strategy_config_has_only_board_specific_candidate_weights() -> None:
+    raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
+    settings = load_strategy_settings(PROJECT_ROOT / "config" / "strategy.json")
+
+    assert "candidate_weights" not in raw
+    assert not hasattr(settings, "candidate_weights")
+    assert set(settings.board_candidate_weights) == {"today", "tomorrow", "d25"}
 
 
 def test_deepseek_risk_mapping_version_controller_is_rejected(tmp_path) -> None:

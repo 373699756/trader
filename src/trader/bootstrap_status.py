@@ -220,6 +220,13 @@ def input_quality_payload(statuses: tuple[InputQualityStatus, ...]) -> dict[str,
 
 def _supply_funnel_payload(funnel: SupplyFunnel) -> dict[str, int]:
     return {
+        "issuer_eligible_population": funnel.issuer_eligible_population,
+        "dynamic_filter_eligible": funnel.dynamic_filter_eligible,
+        "strategy_history_eligible": funnel.strategy_history_eligible,
+        "model_input_eligible": funnel.model_input_eligible,
+        "candidate_score_eligible": funnel.candidate_score_eligible,
+        "candidate_limit_selected": funnel.candidate_limit_selected,
+        "candidate_quote_eligible": funnel.candidate_quote_eligible,
         "requested_candidates": funnel.requested_candidates,
         "candidate_features": funnel.candidate_features,
         "security_master": funnel.security_master,

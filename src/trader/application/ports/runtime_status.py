@@ -14,6 +14,13 @@ InputQualityState = Literal["ready", "business_empty", "transient_invalid_empty"
 
 @dataclass(frozen=True)
 class SupplyFunnel:
+    issuer_eligible_population: int = 0
+    dynamic_filter_eligible: int = 0
+    strategy_history_eligible: int = 0
+    model_input_eligible: int = 0
+    candidate_score_eligible: int = 0
+    candidate_limit_selected: int = 0
+    candidate_quote_eligible: int = 0
     requested_candidates: int = 0
     candidate_features: int = 0
     security_master: int = 0

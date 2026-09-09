@@ -18,12 +18,6 @@ from trader.infra.settings.parser import (
     ConfigurationError,
 )
 
-_FIXED_CANDIDATE_WEIGHTS = {
-    "liquidity": 7 / 18,
-    "short_momentum": 5 / 18,
-    "trend": 4 / 18,
-    "data_completeness": 2 / 18,
-}
 _FIXED_DIMENSION_WEIGHTS = {
     "today": {
         "value_quality": 2 / 17,
@@ -271,16 +265,6 @@ def _validate_signal_policies(settings: StrategySettings) -> None:
 
 
 def _validate_strategy_weights(settings: StrategySettings) -> None:
-    _validate_weight_sum("candidate_weights", settings.candidate_weights)
-    required_candidate_weights = {
-        "liquidity",
-        "short_momentum",
-        "trend",
-        "data_completeness",
-    }
-    if set(settings.candidate_weights) != required_candidate_weights:
-        raise ConfigurationError("candidate_weights contains unsupported components")
-    _validate_fixed_vector("candidate_weights", settings.candidate_weights, _FIXED_CANDIDATE_WEIGHTS)
     required_thresholds = {"today_main", "today_late", "tomorrow", "d25"}
     if set(settings.selection.thresholds) != required_thresholds:
         raise ConfigurationError("selection thresholds must define today_main, today_late, tomorrow and d25")

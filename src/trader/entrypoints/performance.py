@@ -247,7 +247,7 @@ def _operations(
         candidates,
         30.0,
         30.0,
-        len(candidates),
+        120,
     )
     candidate_input = replace(
         tomorrow_input,

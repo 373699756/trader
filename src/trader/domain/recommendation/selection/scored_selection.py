@@ -104,6 +104,66 @@ class ScoredModelOverrides:
 
 
 @dataclass(frozen=True)
+class ScoredCandidateStageCounts:
+    issuer_eligible_population: int
+    dynamic_filter_eligible: int
+    strategy_history_eligible: int
+    model_input_eligible: int
+    candidate_score_eligible: int
+    candidate_limit_selected: int
+
+    def __post_init__(self) -> None:
+        counts = (
+            self.issuer_eligible_population,
+            self.dynamic_filter_eligible,
+            self.strategy_history_eligible,
+            self.model_input_eligible,
+            self.candidate_score_eligible,
+            self.candidate_limit_selected,
+        )
+        if any(value < 0 for value in counts) or any(left < right for left, right in zip(counts, counts[1:])):
+            raise ValueError("candidate stage counts must be non-negative and monotonic")
+
+
+@dataclass(frozen=True)
+class ScoredCandidatePlan:
+    evaluations: tuple[ScoredStockEvaluation, ...]
+    reserves: Mapping[Board, tuple[str, ...]]
+    population_versions: Mapping[Board, str]
+    stage_counts: ScoredCandidateStageCounts
+    hard_filter_reason_counts: Mapping[str, int]
+    population_rejected_count: int
+    population_filter_reason_counts: Mapping[str, int]
+
+    def __post_init__(self) -> None:
+        reserves = {board: tuple(codes) for board, codes in self.reserves.items()}
+        if any(board not in _SUPPORTED_BOARDS for board in reserves):
+            raise ValueError("candidate reserves require supported boards")
+        flattened = tuple(code for board in _SUPPORTED_BOARDS for code in reserves.get(board, ()))
+        if len(flattened) != len(set(flattened)):
+            raise ValueError("candidate reserves must contain unique codes")
+        object.__setattr__(self, "reserves", MappingProxyType(reserves))
+        object.__setattr__(self, "population_versions", MappingProxyType(dict(self.population_versions)))
+        object.__setattr__(
+            self,
+            "hard_filter_reason_counts",
+            MappingProxyType(dict(self.hard_filter_reason_counts)),
+        )
+        object.__setattr__(
+            self,
+            "population_filter_reason_counts",
+            MappingProxyType(dict(self.population_filter_reason_counts)),
+        )
+        if self.population_rejected_count < 0:
+            raise ValueError("candidate population rejected count cannot be negative")
+
+    def limited_codes(self, limit_per_board: int) -> tuple[str, ...]:
+        if limit_per_board < 1:
+            raise ValueError("candidate board limit must be positive")
+        return tuple(code for board in _SUPPORTED_BOARDS for code in self.reserves.get(board, ())[:limit_per_board])
+
+
+@dataclass(frozen=True)
 class ScoredSelectionRequest:
     features: Sequence[FeatureSnapshot]
     evaluated_at: datetime
@@ -118,6 +178,7 @@ class ScoredSelectionRequest:
     population_evaluated_at: datetime | None = None
     population_max_age_seconds: float | None = None
     minimum_history_sessions: int = 20
+    model_input_eligible_codes: frozenset[str] | None = None
 
     def __post_init__(self) -> None:
         features = tuple(self.features)
@@ -159,6 +220,11 @@ class ScoredSelectionRequest:
         if self.model_overrides is not None:
             if not set(self.model_overrides.scores).issubset(set(codes)):
                 raise ValueError("local score overrides must belong to the scored population")
+        if self.model_input_eligible_codes is not None:
+            eligible_codes = frozenset(self.model_input_eligible_codes)
+            if not eligible_codes.issubset(set(codes)):
+                raise ValueError("model input eligible codes must belong to the scored population")
+            object.__setattr__(self, "model_input_eligible_codes", eligible_codes)
 
 
 def _validated_candidate_features(
@@ -208,6 +274,39 @@ def _validated_population_window(
 
 
 def select_scored(request: ScoredSelectionRequest) -> ScoredSelectionResult:
+    plan = plan_scored_candidates(request)
+    evaluations = {item.code: item for item in plan.evaluations}
+    scored_codes: list[str] = []
+    for board in _SUPPORTED_BOARDS:
+        policy = request.policy.board_policies[board]
+        scored_codes.extend(
+            _score_board_candidates(
+                plan.reserves.get(board, ()),
+                policy,
+                request,
+                evaluations,
+            )
+        )
+
+    _rank_local_candidates(scored_codes, evaluations)
+    selected_codes = _select_global(scored_codes, evaluations, request.policy)
+    ordered_evaluations = tuple(evaluations[code] for code in sorted(evaluations))
+    scored = tuple(sorted((evaluations[code] for code in scored_codes), key=_local_order))
+    observations = tuple(item for item in scored if item.disposition is ScoredDisposition.OBSERVE_ONLY)
+    selected = tuple(evaluations[code] for code in selected_codes)
+    return ScoredSelectionResult(
+        ordered_evaluations,
+        scored,
+        observations,
+        selected,
+        plan.population_versions,
+        plan.hard_filter_reason_counts,
+        plan.population_rejected_count,
+        plan.population_filter_reason_counts,
+    )
+
+
+def plan_scored_candidates(request: ScoredSelectionRequest) -> ScoredCandidatePlan:
     population_evaluations = _filter_features(
         request.features,
         request,
@@ -227,7 +326,7 @@ def select_scored(request: ScoredSelectionRequest) -> ScoredSelectionResult:
     )
     evaluations.update(candidate_evaluations)
     population_versions: dict[Board, str] = {}
-    scored_codes: list[str] = []
+    reserves: dict[Board, tuple[str, ...]] = {}
     for board in _SUPPORTED_BOARDS:
         population = tuple(
             item.features
@@ -266,36 +365,50 @@ def select_scored(request: ScoredSelectionRequest) -> ScoredSelectionResult:
             if request.candidate_features is None
             else project_board_policy(cross_section, request.policy.strategy, policy, candidates)
         )
-        scored_codes.extend(_score_board_candidates(enriched, policy, request, evaluations))
+        reserves[board] = _rank_board_candidates(enriched, policy, request, evaluations)
 
-    _rank_local_candidates(scored_codes, evaluations)
-    selected_codes = _select_global(scored_codes, evaluations, request.policy)
-    ordered_evaluations = tuple(evaluations[code] for code in sorted(evaluations))
-    scored = tuple(
+    dynamic_eligible = sum(item.disposition is not ScoredDisposition.REJECT for item in candidate_evaluations.values())
+    history_eligible = sum(
+        item.disposition is not ScoredDisposition.REJECT
+        and item.features.history_days >= request.minimum_history_sessions
+        for item in candidate_evaluations.values()
+    )
+    model_input_eligible = sum(
+        item.disposition is not ScoredDisposition.REJECT
+        and item.features.history_days >= request.minimum_history_sessions
+        and _model_input_is_eligible(item.code, request)
+        for item in candidate_evaluations.values()
+    )
+    candidate_score_eligible = sum(len(codes) for codes in reserves.values())
+    population_filter_reason_counts = dict(
         sorted(
-            (evaluations[code] for code in scored_codes),
-            key=_local_order,
+            Counter(reason.code for item in population_evaluations.values() for reason in item.filter_reasons).items()
         )
     )
-    observations = tuple(item for item in scored if item.disposition is ScoredDisposition.OBSERVE_ONLY)
-    selected = tuple(evaluations[code] for code in selected_codes)
-    population_filter_reason_counts: Counter[str] = Counter(
-        reason.code for item in population_evaluations.values() for reason in item.filter_reasons
-    )
-    hard_filter_reason_counts = population_filter_reason_counts.copy()
+    hard_filter_reason_counts = Counter(population_filter_reason_counts)
     if request.candidate_features is not None:
         hard_filter_reason_counts.update(
             reason.code for item in candidate_evaluations.values() for reason in item.filter_reasons
         )
-    return ScoredSelectionResult(
-        ordered_evaluations,
-        scored,
-        observations,
-        selected,
-        population_versions,
-        dict(sorted(hard_filter_reason_counts.items())),
-        sum(item.disposition is ScoredDisposition.REJECT for item in population_evaluations.values()),
-        dict(sorted(population_filter_reason_counts.items())),
+    return ScoredCandidatePlan(
+        evaluations=tuple(evaluations[code] for code in sorted(evaluations)),
+        reserves=reserves,
+        population_versions=population_versions,
+        stage_counts=ScoredCandidateStageCounts(
+            issuer_eligible_population=len(candidate_evaluations),
+            dynamic_filter_eligible=dynamic_eligible,
+            strategy_history_eligible=history_eligible,
+            model_input_eligible=model_input_eligible,
+            candidate_score_eligible=candidate_score_eligible,
+            candidate_limit_selected=sum(
+                min(len(codes), request.policy.candidate_limit_per_board) for codes in reserves.values()
+            ),
+        ),
+        hard_filter_reason_counts=dict(sorted(hard_filter_reason_counts.items())),
+        population_rejected_count=sum(
+            item.disposition is ScoredDisposition.REJECT for item in population_evaluations.values()
+        ),
+        population_filter_reason_counts=population_filter_reason_counts,
     )
 
 
@@ -365,7 +478,7 @@ def _filter_features(
     return result
 
 
-def _score_board_candidates(
+def _rank_board_candidates(
     features: Sequence[FeatureSnapshot],
     policy: BoardStrategyPolicy,
     request: ScoredSelectionRequest,
@@ -414,15 +527,21 @@ def _score_board_candidates(
             )
         )
     candidates.sort(key=lambda row: (row[0], -row[1], row[2].quote.code))
-    selected = candidates[: request.policy.candidate_limit_per_board]
-    for _unreliable, _score, feature, _missing in candidates[request.policy.candidate_limit_per_board :]:
-        evaluations[feature.quote.code] = replace(
-            evaluations[feature.quote.code],
-            selection_skip_reason="board_candidate_limit",
-        )
+    return tuple(feature.quote.code for _unreliable, _score, feature, _missing in candidates)
+
+
+def _score_board_candidates(
+    ranked_codes: Sequence[str],
+    policy: BoardStrategyPolicy,
+    request: ScoredSelectionRequest,
+    evaluations: dict[str, ScoredStockEvaluation],
+) -> tuple[str, ...]:
+    selected = tuple(ranked_codes[: request.policy.candidate_limit_per_board])
+    for code in ranked_codes[request.policy.candidate_limit_per_board :]:
+        evaluations[code] = replace(evaluations[code], selection_skip_reason="board_candidate_limit")
     selected_codes: list[str] = []
-    for candidate_rank, (_unreliable, _score, feature, _missing) in enumerate(selected, start=1):
-        code = feature.quote.code
+    for candidate_rank, code in enumerate(selected, start=1):
+        feature = evaluations[code].features
         local = (
             request.model_overrides.scores.get(code)
             if request.model_overrides
@@ -467,9 +586,15 @@ def _score_board_candidates(
 def _score_input_skip_reason(feature: FeatureSnapshot, request: ScoredSelectionRequest) -> str | None:
     if feature.history_days < request.minimum_history_sessions:
         return "strategy_history_insufficient"
-    if request.model_overrides is not None and feature.quote.code not in request.model_overrides.scores:
+    if not _model_input_is_eligible(feature.quote.code, request):
         return "production_model_features_missing"
     return None
+
+
+def _model_input_is_eligible(code: str, request: ScoredSelectionRequest) -> bool:
+    if request.model_input_eligible_codes is not None:
+        return code in request.model_input_eligible_codes
+    return request.model_overrides is None or code in request.model_overrides.scores
 
 
 def _rank_local_candidates(
@@ -543,7 +668,10 @@ def _reliability_audit(feature: FeatureSnapshot, threshold: float) -> FilterAudi
 __all__ = [
     "BoardCrossSectionFallback",
     "ScoredModelOverrides",
+    "ScoredCandidatePlan",
+    "ScoredCandidateStageCounts",
     "ScoredSelectionPolicy",
     "ScoredSelectionRequest",
+    "plan_scored_candidates",
     "select_scored",
 ]

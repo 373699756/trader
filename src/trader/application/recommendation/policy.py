@@ -56,7 +56,6 @@ class RecommendationPolicy:
     fusion_version: str
     fusion: FusionPolicy
     selection: SelectionPolicy
-    candidate_weights: Mapping[str, float]
     dimension_weights: Mapping[Strategy, Mapping[str, float]]
     risk_rules: Mapping[str, RiskRule]
     board_policy_version: str = ""
@@ -69,7 +68,6 @@ class RecommendationPolicy:
     hard_filter: HardFilterPolicy = field(default_factory=HardFilterPolicy)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "candidate_weights", MappingProxyType(dict(self.candidate_weights)))
         object.__setattr__(
             self,
             "dimension_weights",

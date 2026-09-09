@@ -68,7 +68,6 @@ _STRATEGY_KEYS = {
     "tomorrow_scoring_profile",
     "fusion",
     "selection",
-    "candidate_weights",
     "hard_filters",
     "board_candidate_weights",
     "board_local_strategy_weights",
@@ -162,7 +161,6 @@ def load_strategy_settings(
             minimum_board_reliability=_number(selection_raw, "minimum_board_reliability", minimum=0.0, maximum=1.0),
             review_candidate_limit=_integer(selection_raw, "review_candidate_limit", minimum=1, maximum=120),
         ),
-        candidate_weights=_number_mapping(raw, "candidate_weights"),
         hard_filters=HardFilterSettings(
             blacklist_codes=tuple(blacklist_raw),
             structured_risk_thresholds=_number_mapping(hard_filters_raw, "structured_risk_thresholds"),

@@ -224,7 +224,6 @@ class StrategySettings:
     tomorrow_scoring_profile: ScoringProfileId
     fusion: FusionSettings
     selection: SelectionSettings
-    candidate_weights: Mapping[str, float]
     hard_filters: HardFilterSettings
     today_news_signal: NewsSignalPolicy
     tomorrow_tail_signal: TailSignalPolicy

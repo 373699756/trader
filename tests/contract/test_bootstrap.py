@@ -318,6 +318,13 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
             highest_final_score=74.25,
         ),
         supply_funnel=SupplyFunnel(
+            issuer_eligible_population=5200,
+            dynamic_filter_eligible=4800,
+            strategy_history_eligible=4300,
+            model_input_eligible=4200,
+            candidate_score_eligible=900,
+            candidate_limit_selected=360,
+            candidate_quote_eligible=352,
             requested_candidates=360,
             full_scored=65,
             filter_reject=216,
@@ -348,6 +355,9 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
         "highest_final_score": 74.25,
     }
     assert payload["tomorrow"]["supply_funnel"]["full_scored"] == 65
+    assert payload["tomorrow"]["supply_funnel"]["issuer_eligible_population"] == 5200
+    assert payload["tomorrow"]["supply_funnel"]["candidate_limit_selected"] == 360
+    assert payload["tomorrow"]["supply_funnel"]["candidate_quote_eligible"] == 352
     assert payload["tomorrow"]["history_required_sessions"] == 61
     assert payload["tomorrow"]["supply_funnel"]["observation_threshold_met_count"] == 12
     assert payload["tomorrow"]["supply_funnel"]["executable_threshold_met_count"] == 3

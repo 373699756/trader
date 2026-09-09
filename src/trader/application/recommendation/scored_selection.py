@@ -21,9 +21,11 @@ from trader.domain.recommendation.models import ScoredSelectionResult, Strategy
 from trader.domain.recommendation.selection.ranking import minimum_selection_score
 from trader.domain.recommendation.selection.scored_selection import (
     BoardCrossSectionFallback,
+    ScoredCandidatePlan,
     ScoredModelOverrides,
     ScoredSelectionPolicy,
     ScoredSelectionRequest,
+    plan_scored_candidates,
     select_scored,
 )
 
@@ -42,6 +44,8 @@ class ScoredSelectionOptions:
     population_evaluated_at: datetime | None = None
     population_max_age_seconds: float | None = None
     minimum_history_sessions: int = 20
+    model_input_eligible_codes: frozenset[str] | None = None
+    candidate_limit_per_board: int = 120
 
 
 @dataclass(frozen=True)
@@ -147,6 +151,28 @@ def select_scored_features(
 ) -> ScoredSelectionResult:
     """Select scored candidates from an already coherent point-in-time population."""
 
+    return select_scored(_selection_request(features, policy, options, identity, model_overrides=model_overrides))
+
+
+def plan_scored_feature_candidates(
+    features: Sequence[FeatureSnapshot],
+    policy: RecommendationPolicy,
+    options: ScoredSelectionOptions,
+    identity: ScoredSelectionIdentity,
+) -> ScoredCandidatePlan:
+    """Build the strategy-owned eligible reserve before any board cap is applied."""
+
+    return plan_scored_candidates(_selection_request(features, policy, options, identity))
+
+
+def _selection_request(
+    features: Sequence[FeatureSnapshot],
+    policy: RecommendationPolicy,
+    options: ScoredSelectionOptions,
+    identity: ScoredSelectionIdentity,
+    *,
+    model_overrides: ScoredModelOverrides | None = None,
+) -> ScoredSelectionRequest:
     evaluated_at = options.evaluated_at
     population = tuple(features)
     if evaluated_at.date() != identity.trade_date:
@@ -165,22 +191,21 @@ def select_scored_features(
             )
             for feature in population
         )
-    return select_scored(
-        ScoredSelectionRequest(
-            features=population,
-            evaluated_at=evaluated_at,
-            trade_date=identity.trade_date.isoformat(),
-            phase=options.phase,
-            data_version=identity.data_version,
-            merge_epoch=identity.merge_epoch,
-            policy=_selection_policy(policy, options),
-            candidate_features=options.candidate_features,
-            fallbacks=options.fallbacks or {},
-            model_overrides=model_overrides,
-            population_evaluated_at=population_evaluated_at,
-            population_max_age_seconds=options.population_max_age_seconds,
-            minimum_history_sessions=options.minimum_history_sessions,
-        )
+    return ScoredSelectionRequest(
+        features=population,
+        evaluated_at=evaluated_at,
+        trade_date=identity.trade_date.isoformat(),
+        phase=options.phase,
+        data_version=identity.data_version,
+        merge_epoch=identity.merge_epoch,
+        policy=_selection_policy(policy, options),
+        candidate_features=options.candidate_features,
+        fallbacks=options.fallbacks or {},
+        model_overrides=model_overrides,
+        population_evaluated_at=population_evaluated_at,
+        population_max_age_seconds=options.population_max_age_seconds,
+        minimum_history_sessions=options.minimum_history_sessions,
+        model_input_eligible_codes=options.model_input_eligible_codes,
     )
 
 
@@ -204,7 +229,7 @@ def _selection_policy(
         risk_rules=policy.risk_rules,
         max_age_seconds=options.max_age_seconds,
         local_risk_cap=policy.fusion.local_risk_cap,
-        candidate_limit_per_board=120,
+        candidate_limit_per_board=options.candidate_limit_per_board,
         top_k=min(policy.selection.default_top_k, 10),
         maximum_per_industry=policy.selection.maximum_per_industry,
         minimum_local_score=minimum_score if minimum_score is not None else 100.0,
@@ -399,6 +424,7 @@ __all__ = [
     "ScoredSelectionOptions",
     "ScoredSelectionUseCase",
     "assemble_scored_features",
+    "plan_scored_feature_candidates",
     "select_scored_features",
     "select_scored_snapshot",
 ]

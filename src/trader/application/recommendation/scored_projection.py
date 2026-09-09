@@ -47,7 +47,10 @@ from trader.domain.recommendation.risk_fusion.scored_fusion import (
     build_scored_decision_epoch,
     select_scored_review_candidates,
 )
-from trader.domain.recommendation.selection.scored_selection import ScoredModelOverrides
+from trader.domain.recommendation.selection.scored_selection import (
+    ScoredCandidateStageCounts,
+    ScoredModelOverrides,
+)
 from trader.domain.review.models import DeepSeekReview, ReviewOutcome
 
 
@@ -80,6 +83,8 @@ def build_scored_local(
     sequence: int,
     model_scoring: ModelScoringPort | None = None,
     scoring_context: ModelScoringContext | None = None,
+    candidate_stage_counts: ScoredCandidateStageCounts | None = None,
+    preselection_transient_invalid: bool = False,
 ) -> ScoredLocalProjection:
     if sequence < 1:
         raise ValueError("scored decision sequence must be positive")
@@ -119,6 +124,8 @@ def build_scored_local(
             normalize_discovery_source_time=True,
             strategy=strategy,
             minimum_history_sessions=minimum_history_sessions,
+            model_input_eligible_codes=profile_history_qualified_codes,
+            candidate_limit_per_board=native_input.candidate_pool_size,
         ),
         ScoredSelectionIdentity(
             trade_date=native_input.trade_date,
@@ -132,6 +139,8 @@ def build_scored_local(
         selection,
         minimum_history_sessions=minimum_history_sessions,
         profile_history_qualified_codes=profile_history_qualified_codes,
+        candidate_stage_counts=candidate_stage_counts,
+        preselection_transient_invalid=preselection_transient_invalid,
     )
     candidates = select_scored_review_candidates(selection, decision_policy)
     input_hash = native_input.input_version.removeprefix("native-input:")

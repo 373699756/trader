@@ -10,7 +10,7 @@ import pytest
 from tests.unit.application.review_helpers import review
 from tests.unit.application.scoring_helpers import profile_for
 from trader.application.decisions.decision_core import UnifiedDecisionIndex
-from trader.application.market_data.input_runtime import _supply_status
+from trader.application.market_data.supply_status import build_supply_status
 from trader.application.ports.model_scoring import ModelInput, ModelPrediction
 from trader.application.ports.scored import D25NativeInput, ScoredNativeInput, TodayNativeInput, TomorrowNativeInput
 from trader.application.recommendation.model_scoring_router import ModelScoringRouter
@@ -168,7 +168,7 @@ def test_tomorrow_non_positive_utility_keeps_scores_but_cannot_enter_recommendat
     assert not any(item.selected for item in projection.local.items)
     assert {item.action.value for item in projection.local.items} == {"unavailable"}
     assert {item.reason for item in projection.local.items} == {"model_net_utility_non_positive"}
-    assert _supply_status(projection).primary_blocker == "no_positive_net_utility"
+    assert build_supply_status(projection).primary_blocker == "no_positive_net_utility"
 
 
 def test_tomorrow_model_cross_section_excludes_hard_filter_rejections(
