@@ -6,6 +6,31 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户反馈 Tomorrow 显示“最高分 100.00、已达到正式线 78.00”，却同时显示观察线和正式线均为 0只且没有推荐；
+  D25 表现正常。根因确认不是 Tomorrow 没有完成评分，而是该档位的 0–100 分是同批横截面相对排名，当前所有
+  已评分股票的预测超额扣除执行成本后均不大于 0，按既定成本门必须保持空仓；Web 又把这个相对最高分与普通
+  分数线文案、可能来自另一冻结时点的漏斗计数拼接，错误暗示 100 分已经具备执行资格。Added: 新增覆盖
+  “Tomorrow 最高相对分 100、观察/正式计数 0、成本净效用全非正”现场形状的 JavaScript 回归。
+  Changed: `no_positive_net_utility` 专项摘要改用同一决策的已评分数量和“最高相对信号分”，明确该分数只用于
+  同批排序、不代表通过成本门；权威评分与工程文档同步禁止该空结果拼接普通达线结论。Fixed: Tomorrow 不再
+  显示“已达到正式线但正式推荐 0只”的自相矛盾文案，而是明确观察池、正式推荐均为 0只并保持空仓；D25 通用
+  摘要、Tomorrow 固定 78 分阈值、成本公式、风险门、排序、冻结和推荐结果均未改变。Removed: 删除了 Tomorrow
+  该专项空结果对普通距线/达线计数文案的复用，没有删除 API 字段或持久化数据。Verification: 契约先以旧文案
+  失败；实现后 `node tests/js/test_dashboard_state.js`、评分文档契约和 Web JS 装载契约通过，D25 邻接断言确认仍走
+  原通用分支；`make format-check`、`make lint`、`make type-check`（377 个源文件）、两次完整 `make test`、
+  `make package` 和 `git diff --check` 通过。打包首轮仅因沙箱禁止联网安装隔离构建依赖失败，获准用同一命令重跑
+  后成功。桌面浏览器门禁首轮仅因沙箱不能启动浏览器失败，主机环境重跑后通过，10 次 DOM 刷新 P50 0.994 秒、
+  P95 1.052 秒，patch-to-paint P95 8 毫秒。修复前主机诊断记录 Tomorrow 同日漏斗
+  `360→351→351→340→239→0/0`，239 只已评分股票均因成本净效用非正不可执行；D25 同次完整评分 269 只、
+  动作观察 7 只、最终观察 2 只。真实服务随后经正常 SIGTERM 收尾并由 `run.sh --profile v1` 重启；三次运行采样
+  无错误，运行身份为 `runtime_sha256_5d890f72b2b26a7364f3+strategy_sha256_542d7c55f4d061a0d754`，新静态资源
+  ETag 与仓库文件 SHA-256 `57f915b3f57d204a0a11f2b17467bf81dca8d3a1630cdf7a0c2f03a16ce4f5fd`
+  一致。Residual Risks: 当前生产 V1 的成本后净效用若继续全部非正，Tomorrow 仍会合法零推荐；本批只修复解释
+  真实性，不降低门槛、不把负净效用股票包装成推荐。重启发生在 14:50 冻结后，同日正式空记录按契约只保留
+  5323 个候选、0 个正式评分项和 `no_positive_net_utility`，因此重启后的盘中完整漏斗不可再现；诊断对此保留
+  `no_positive_net_utility_without_scored_candidates` 受控降级警告。训练 PC 尚未提交的新模型工件不在本批范围。
+  `Regression-Key: tomorrow-relative-score-cost-gate-copy`。
+
 - 用户要求继续实施双 PC 代码整改总计划，本批闭合 `risk_cost_uncertainty_deepseek`。根因已确认：既有生产链
   分散存在风险扣分、成本选择和固定融合，但研究层没有分别表达 alpha、风险、不确定性、执行成本与选择效用的
   真实类型，也没有在同一父证据上比较 DeepSeek 三组增量；直接沿用当前 V3 日线工程代理会把 15:00 收盘数据

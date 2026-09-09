@@ -856,7 +856,7 @@ assert.strictEqual(
   state.emptyRecommendationMessage(
     {
       strategy: "tomorrow",
-      coverage: { evaluated_count: 57 },
+      coverage: { evaluated_count: 239 },
       selection_diagnostics: {
         empty_reason: "no_positive_net_utility",
         maximum_final_score: 100,
@@ -867,13 +867,18 @@ assert.strictEqual(
     0,
     {
       supply_funnel: {
-        observation_threshold_met_count: 1,
-        executable_threshold_met_count: 1,
+        observation_threshold_met_count: 0,
+        executable_threshold_met_count: 0,
       },
-      supply_reason_counts: { model_net_utility_non_positive: 57 },
+      supply_reason_counts: {
+        corporate_risk_history_unavailable: 360,
+        stale_quote: 360,
+        structured_risk_unavailable: 360,
+        model_net_utility_non_positive: 239,
+      },
     },
   ),
-  "评分已完成｜最高分 100.00，已达到正式线 78.00；达到观察线 1只、正式线 1只；成本后净超额均未转正，保持空仓；主要原因：成本后净超额未转正（57只）",
+  "评分已完成｜最高相对信号分 100.00（仅表示 239 只已评分股票内的排序，不代表已通过成本门）；239 只已评分股票的预测成本后净超额均未转正，因此观察池和正式推荐均为 0只，保持空仓；主要原因：公司风险历史暂不可核验（360只）、行情已过期，仅供观察（360只）、结构化风险数据尚未就绪（360只）",
 );
 assert.strictEqual(
   state.emptyRecommendationMessage({
@@ -901,6 +906,7 @@ assert.strictEqual(
 assert.strictEqual(
   state.emptyRecommendationMessage(
     {
+      strategy: "d25",
       selection_diagnostics: {
         empty_reason: "risk_or_execution_blocked",
         maximum_final_score: 76.4,
