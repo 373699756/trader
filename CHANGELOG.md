@@ -6,6 +6,21 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求在不改写既有 92 个分片、旧 manifest、未提交工作树和运行数据库的前提下增量补采并重训 V3；本批先完成
+  只读盘点子任务。根因确认：现有 `download_history` 发现封存 manifest 后直接复用，无法发现 2026-08-31 之后的新
+  交易日；旧 `tomorrow_production_model`/`tomorrow_training_report_v1` 又不满足当前 loader 合同，且 report 错标
+  `historical_validated`。Added: 统一诊断新增 `history-plan` 精确 profile，以 SQLite `mode=ro&immutable=1` 扫描父归档，
+  输出最新完整交易日、活动 2000 日窗口、逐股已有范围和 raw/qfq/isST/行业缺口、不可伪造的资格/硬过滤/风险事实缺口、
+  复用行数、增量请求估算及 manifest/训练输入 hash；完整逐股明细只允许写入显式仓库外路径。Changed: isST 估算只在
+  raw 日线无需请求时追加事实专用请求，避免同一 raw 查询已返回 isST 后重复计数。Fixed: 诊断捕获 BaoStock 在网络
+  建连失败时抛出的已知 `UnboundLocalError` 并投影稳定失败码，不再污染 JSON 输出。Verification: 新增只读回归证明扫描
+  前后所有父文件 size/mtime 不变；23 项脚本定向测试、受影响文件 Ruff 和格式检查通过；真实 8.9GB 归档扫描确认最新
+  完整交易日为 2026-09-08、92 分片/5453 股、活动窗口 2000 日、可复用完整 daily cell 9,063,874 行，逐股计划已写入
+  仓库外文件。全量门禁待大任务收尾统一执行。Residual Risks: 当前扫描耗时约 369 秒；父数据仍缺 raw 31,266 行、
+  qfq 31,476 行、isST 184,461 行、行业 153,315 行，资格/硬过滤/风险真实点时事实仍无来源，因此保持
+  `historical_data_insufficient`、`point_in_time_parity=false`、`production_authority=false`；本子任务尚未下载或训练。
+  `Regression-Key: baostock-active-archive-refresh-and-v3-retrain`。
+
 - 用户要求修复当日 Review 扫描出的文档问题，并把两台 PC 的当前执行进度和起点同步到
   `03_工程实施.md`。根因确认有三项：评分文档把初次全量审计证据写成当前仍持有正式 manifest，实施计划在
   第 4.9 节完成后仍用其作为第 4.10 节 blocker，且第 4.4–4.10 节复制了评分公式、API 字段和研究门等权威

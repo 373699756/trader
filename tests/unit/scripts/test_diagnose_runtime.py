@@ -36,6 +36,9 @@ def _options(**overrides: object) -> DiagnosticOptions:
         browser_minimum_updates=3,
         command_timeout_seconds=180.0,
         persistence_runtime_dir=None,
+        history_archive_root=Path("data/history/baostock-daily/sessions-2000"),
+        history_target_cutoff=None,
+        history_plan_details_output=None,
     )
     return replace(defaults, **overrides)
 
@@ -80,6 +83,7 @@ def test_history_profile_passes_explicit_source_to_the_bounded_probe(source: str
     [
         ("web", "web_health"),
         ("history", "history_sources"),
+        ("history-plan", "history_archive_plan"),
         ("security-master", "exchange_security_master"),
         ("tencent", "tencent_quotes"),
         ("tushare", "tushare_daily"),
@@ -106,6 +110,31 @@ def test_research_profile_runs_only_research_readiness_probe() -> None:
         "--config",
         "config/runtime.json",
         "research-status",
+    )
+
+
+def test_history_plan_profile_is_read_only_and_passes_explicit_paths() -> None:
+    commands = build_commands(
+        _options(
+            profile="history-plan",
+            history_archive_root=Path("/archive/sessions-2000"),
+            history_target_cutoff="2026-09-08",
+            history_plan_details_output=Path("/outside/history-plan.json"),
+        ),
+        python_executable="/python",
+    )
+
+    assert tuple(command.name for command in commands) == ("history_archive_plan",)
+    assert commands[0].argv == (
+        "/python",
+        "-m",
+        "scripts.runtime_diagnostics.history_archive_plan",
+        "--archive-root",
+        "/archive/sessions-2000",
+        "--target-cutoff",
+        "2026-09-08",
+        "--details-output",
+        "/outside/history-plan.json",
     )
 
 

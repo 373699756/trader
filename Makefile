@@ -8,7 +8,7 @@ SOURCE_PATHS := src/trader tests scripts/check_refactor_quality.py scripts/gener
 	scripts/runtime_diagnostics/browser_refresh.py \
 	scripts/runtime_diagnostics/exchange_security_master.py \
 	scripts/runtime_diagnostics/history_sources.py scripts/runtime_diagnostics/tencent_quotes.py \
-	scripts/runtime_diagnostics/tushare_daily.py
+	scripts/runtime_diagnostics/tushare_daily.py scripts/runtime_diagnostics/history_archive_plan.py
 
 .PHONY: help install-dev format format-check lint long-watchlist-check type-check test test-unit test-component test-contract test-integration test-release quality package performance-check browser-performance-check diagnose-live diagnose-full
 

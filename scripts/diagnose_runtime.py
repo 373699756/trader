@@ -22,6 +22,7 @@ _DEFAULT_CONFIG = PROJECT_ROOT / "config" / "runtime.json"
 Profile = Literal[
     "web",
     "history",
+    "history-plan",
     "security-master",
     "tencent",
     "tushare",
@@ -40,6 +41,7 @@ TencentHistoryHost = Literal["proxy", "direct"]
 _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "web": ("web_health",),
     "history": ("history_sources",),
+    "history-plan": ("history_archive_plan",),
     "security-master": ("exchange_security_master",),
     "tencent": ("tencent_quotes",),
     "tushare": ("tushare_daily",),
@@ -81,6 +83,9 @@ class DiagnosticOptions:
     browser_minimum_updates: int
     command_timeout_seconds: float
     persistence_runtime_dir: Path | None
+    history_archive_root: Path
+    history_target_cutoff: str | None
+    history_plan_details_output: Path | None
 
 
 @dataclass(frozen=True)
@@ -151,6 +156,18 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="optional absolute repository-external directory for history persistence comparison",
     )
+    parser.add_argument(
+        "--history-archive-root",
+        type=Path,
+        default=PROJECT_ROOT / "data" / "history" / "baostock-daily" / "sessions-2000",
+        help="sealed BaoStock archive inspected by the history-plan profile",
+    )
+    parser.add_argument("--history-target-cutoff", help="optional YYYY-MM-DD upper bound for history-plan")
+    parser.add_argument(
+        "--history-plan-details-output",
+        type=Path,
+        help="optional repository-external JSON path for per-stock history-plan details",
+    )
     parser.add_argument("--output", default="-", help="combined JSON output path outside the repository, or -")
     return parser
 
@@ -177,6 +194,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
     if args.web_interval_seconds < 0 or args.source_interval_seconds < 0:
         raise ValueError("sample intervals must not be negative")
     persistence = _external_path(args.persistence_runtime_dir, "--persistence-runtime-dir")
+    details_output = _external_path(args.history_plan_details_output, "--history-plan-details-output")
     output = args.output
     if output != "-":
         output = str(_external_path(Path(output), "--output"))
@@ -200,6 +218,9 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             browser_minimum_updates=args.browser_minimum_updates,
             command_timeout_seconds=args.command_timeout_seconds,
             persistence_runtime_dir=persistence,
+            history_archive_root=Path(args.history_archive_root).expanduser().resolve(),
+            history_target_cutoff=args.history_target_cutoff,
+            history_plan_details_output=details_output,
         ),
         output,
     )
@@ -243,6 +264,11 @@ def build_commands(
         "history_sources": DiagnosticCommand(
             "history_sources",
             _history_command(options, python_executable),
+            common_timeout,
+        ),
+        "history_archive_plan": DiagnosticCommand(
+            "history_archive_plan",
+            _history_plan_command(options, python_executable),
             common_timeout,
         ),
         "exchange_security_master": DiagnosticCommand(
@@ -351,6 +377,21 @@ def _history_command(options: DiagnosticOptions, python_executable: str) -> tupl
     ]
     if options.persistence_runtime_dir is not None:
         command.extend(("--persistence-runtime-dir", str(options.persistence_runtime_dir)))
+    return tuple(command)
+
+
+def _history_plan_command(options: DiagnosticOptions, python_executable: str) -> tuple[str, ...]:
+    command = [
+        python_executable,
+        "-m",
+        "scripts.runtime_diagnostics.history_archive_plan",
+        "--archive-root",
+        str(options.history_archive_root),
+    ]
+    if options.history_target_cutoff is not None:
+        command.extend(("--target-cutoff", options.history_target_cutoff))
+    if options.history_plan_details_output is not None:
+        command.extend(("--details-output", str(options.history_plan_details_output)))
     return tuple(command)
 
 
@@ -555,6 +596,7 @@ def _performance_details(_result: DiagnosticResult, source: Mapping[str, object]
 _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], dict[str, object]], None]] = {
     "web_health": _web_health_details,
     "history_sources": _history_details,
+    "history_archive_plan": _history_details,
     "exchange_security_master": _security_master_details,
     "tencent_quotes": _tencent_quote_details,
     "tushare_daily": _tushare_details,
