@@ -84,7 +84,7 @@ def test_v3_research_has_four_isolated_owners_and_one_public_command() -> None:
     assert "V1/V2/C3 原始预测级联合研究路线" not in design
     assert "内部 V1/V2/C3" not in design
     assert "15.1.36 V3 条件式生产适配 | `blocked_by_15.1.35`" not in strategy
-    assert "`shadow_and_manual_activation` | `blocked_by_risk_cost_uncertainty_deepseek`" in strategy
+    assert "`shadow_and_manual_activation` | `blocked_by_point_in_time_evidence_and_user_authorization`" in strategy
 
     for internal_stage in (
         "research-tomorrow",
@@ -98,11 +98,12 @@ def test_v3_research_has_four_isolated_owners_and_one_public_command() -> None:
 
 def test_trained_v3_profile_loads_the_direct_model_and_remains_content_hash_bound() -> None:
     strategy = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs" / "02_工程设计.md").read_text(encoding="utf-8")
     model_port = (ROOT / "src" / "trader" / "application" / "ports" / "model_scoring.py").read_text(encoding="utf-8")
 
     assert "data/train/tomorrow-v3/<run_id>/" not in strategy
     assert "主程序启动时直接读取 `data/train/tomorrow-v3/model.json`" in strategy
     assert "内容 hash" in strategy
-    assert "`model.json` 与 `report.json` 是生产加载的原子逻辑对" in strategy
+    assert "模型与报告必须构成来源/输入/特征/切分/训练合同/模型载荷 hash 一致的逻辑对" in design
     assert "15:00_close_proxy" in strategy
     assert "class ModelPredictorPort" in model_port

@@ -128,7 +128,8 @@ def test_work_plan_has_one_stable_baostock_task_and_historical_aliases_only() ->
     assert "| 5 | `candidate_recall_attribution` | `completed: historical_data_insufficient`" in work
     assert "| 6 | `limited_factor_family_research` | `completed: historical_data_insufficient`" in work
     assert "| 7 | `tomorrow_v3_training_validation` | `completed: historical_data_insufficient`" in work
-    assert "blocked_by_risk_cost_uncertainty_deepseek" in work
+    assert "blocked_by_point_in_time_evidence_and_user_authorization" in work
+    assert "blocked_by_risk_cost_uncertainty_deepseek" not in work
     assert "blocked_by_shadow_and_manual_activation" in work
     alias = work[work.index("### 1.2 历史审计别名") : work.index("## 2.")]
     assert "15.1.35" in alias
@@ -153,6 +154,44 @@ def test_strategy_document_does_not_own_artifact_hashes() -> None:
 
     assert "27034e52813f1776e2ed218c1c397f481b244fb852b01be08ddc21249d887da5" not in strategy
     assert "详细工件身份、hash 与交付证据统一见 `03_工程实施.md` 和 `CHANGELOG.md`" in strategy
+
+
+def test_current_historical_evidence_is_not_described_as_a_present_artifact() -> None:
+    strategy = _read(STRATEGY)
+    compact = " ".join(strategy.split())
+
+    assert "历史审计曾验证这条失败关闭边界" in compact
+    assert "初次全量审计当时曾封存正式 manifest" in compact
+    assert "本 PC 工作区中的正式 manifest、catalog 和 92 个封存分片当前不可用" in compact
+    assert "最终 schema 实物复跑仍未验证" in compact
+    assert "当前资格审计已验证这条失败关闭边界" not in compact
+
+
+def test_work_plan_is_a_two_pc_handoff_not_a_second_normative_contract() -> None:
+    work = _read(WORK)
+    route = work[work.index("## 4. 历史数据、参数研究、V3 训练与实时评分统一路线") :]
+    compact = " ".join(route.split())
+
+    for required in (
+        "### 当前双 PC 交接点",
+        "git pull --rebase",
+        "训练 PC 当前起点",
+        "代码 PC 当前边界",
+        "不得自动进入第 4.10 节",
+        "579056a",
+        "engineering_ready",
+        "point_in_time_parity=false",
+        "production_authority=false",
+        "training-input.json",
+        "不通过 Git 交接",
+        "评分规则只引用 `01_评分逻辑.md`",
+        "运行时、API 和运维契约只引用 `02_工程设计.md`",
+    ):
+        assert required in compact
+
+    assert "clamp(local_score * 0.68 + deepseek_score * 0.32 - deepseek_risk_penalty, 0, 100)" not in route
+    assert "/api/status.tomorrow_model.computation" not in route
+    assert "20bp/50bp bootstrap 下界必须为正且通过 Holm" not in route
 
 
 def test_history_windows_cost_ownership_and_terminal_order_are_unambiguous() -> None:

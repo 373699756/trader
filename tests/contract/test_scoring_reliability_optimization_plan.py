@@ -83,6 +83,7 @@ def test_design_assigns_narrow_typed_component_owners() -> None:
 def test_incremental_feature_computation_is_complete_and_observable_without_a_plan_hash() -> None:
     design = _read(DESIGN)
     work = _read(WORK)
+    combined = " ".join((design + work).split())
 
     for required in (
         "| 8 | `incremental_feature_computation` | `completed`",
@@ -92,7 +93,7 @@ def test_incremental_feature_computation_is_complete_and_observable_without_a_pl
         "5500 行全市场、360 个候选",
         "deadline 放弃原因",
     ):
-        assert required in design + work
+        assert required in combined
     assert "`tomorrow_model.computation` 只允许包含" in design
     assert "`FeatureComputationPlan`" in design
     assert "不生成无人消费的" in design

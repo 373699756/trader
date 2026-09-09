@@ -6,6 +6,27 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求修复当日 Review 扫描出的文档问题，并把两台 PC 的当前执行进度和起点同步到
+  `03_工程实施.md`。根因确认有三项：评分文档把初次全量审计证据写成当前仍持有正式 manifest，实施计划在
+  第 4.9 节完成后仍用其作为第 4.10 节 blocker，且第 4.4–4.10 节复制了评分公式、API 字段和研究门等权威
+  定义，形成第二真相源。Added: 新增“当前双 PC 交接点”，明确两端开工前拉取、同文件串行、训练 PC 可修复
+  下载/训练/工件加载/实际评分消费错误、代码 PC 不接管运行中训练与历史库；记录训练 PC 已下载 5000 多只并
+  正在训练但尚无可提交结果，健康且来源不早于 `579056a` 的任务无需因本次文档提交重启。Changed: 历史审计
+  改为“当时曾完成”，同时记录本 PC 正式 manifest/catalog/92 分片当前不可用和最终 schema 实物复跑未验证；
+  第 4.10 节状态改为 `blocked_by_point_in_time_evidence_and_user_authorization`，真实列出合格 14:50 父证据、未打开
+  终端留出和用户授权三项前置。Fixed: 不再把日线工程代理训练写成被完全禁止，完整输入训练仍最多只形成
+  `engineering_ready`、`point_in_time_parity=false`、`production_authority=false`；训练完成后只通过 Git 交接
+  可跟踪的 `model.json`/`report.json`，被忽略的 `training-input.json` 留在训练机本地审计。Removed: 从实施状态
+  章节删除重复的融合公式、API 诊断字段、统计公式和详细准入定义，改为引用 `01_评分逻辑.md` 与
+  `02_工程设计.md`；未删除历史交付证据或任何运行代码。Verification: 新契约先以旧历史时态、旧 blocker、
+  缺少双 PC 交接和重复权威定义失败，文档修正后 23 项定向契约通过；首轮完整契约发现既有断言错误依赖
+  Markdown 物理换行，改为压缩空白后的语义检查。最终 `make test-contract` 264 项、`make format-check`
+  （648 个文件）、4 个受影响契约文件 Ruff 和 `git diff --check` 通过。mypy、全量测试、打包、性能、真实供应商、
+  API/SSE、运行中 Web 与浏览器门禁不适用：本批不修改运行代码、类型、构建、公开 schema 或页面行为。
+  Residual Risks: 训练 PC 的运行来源 commit、完成状态和新工件
+  尚未在本 PC 实物核验；合格 14:50 历史数据、终端留出和 Shadow/生产授权仍未具备。本批不改变评分、成本、
+  风险、冻结、API、Web 或默认 V1。`Regression-Key: two-pc-plan-handoff-and-evidence-tense`。
+
 - 用户反馈 Tomorrow 显示“最高分 100.00、已达到正式线 78.00”，却同时显示观察线和正式线均为 0只且没有推荐；
   D25 表现正常。根因确认不是 Tomorrow 没有完成评分，而是该档位的 0–100 分是同批横截面相对排名，当前所有
   已评分股票的预测超额扣除执行成本后均不大于 0，按既定成本门必须保持空仓；Web 又把这个相对最高分与普通
