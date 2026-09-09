@@ -9,16 +9,26 @@ from trader.entrypoints.cli import build_parser
 
 def test_download_history_is_explicit_and_bounded() -> None:
     args = build_parser().parse_args(
-        ["download_history", "--runtime-dir", "/tmp/trader-baostock", "--sessions", "2000"]
+        [
+            "download_history",
+            "--runtime-dir",
+            "/tmp/trader-baostock",
+            "--sessions",
+            "2000",
+            "--mode",
+            "update",
+        ]
     )
     assert args.command == "download_history"
     assert args.runtime_dir == Path("/tmp/trader-baostock")
     assert args.sessions == 2000
+    assert args.mode == "update"
 
 
 def test_download_history_defaults_to_ignored_repository_history_directory() -> None:
     args = build_parser().parse_args(["download_history"])
     assert args.runtime_dir == Path("data/history")
+    assert args.mode == "snapshot"
 
 
 def test_download_history_rejects_more_than_2000_during_argument_parsing(tmp_path: Path) -> None:

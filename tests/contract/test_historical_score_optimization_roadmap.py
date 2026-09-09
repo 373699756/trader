@@ -12,7 +12,6 @@ def _compact(relative: str) -> str:
 def test_unfinished_roadmap_orders_data_before_training_and_activation() -> None:
     work = _compact("docs/03_工程实施.md")
     ordered = (
-        "baostock_increment_archive",
         "dynamic_cutoff_and_missing_fact_acquisition",
         "v3_training_artifact_rebuild",
         "v3_runtime_acceptance",

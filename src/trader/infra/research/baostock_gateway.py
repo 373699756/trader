@@ -50,6 +50,26 @@ def repairable_qfq_codes() -> frozenset[str]:
     return frozenset(item.current_source_code.split(".")[-1] for item in _QFQ_CODE_ALIASES)
 
 
+def qfq_source_windows(
+    source_code: str,
+    dates: tuple[date, ...],
+) -> tuple[tuple[str, tuple[date, ...]], ...]:
+    """Return supplier identities for a qfq request spanning a code rename."""
+    alias = next((item for item in _QFQ_CODE_ALIASES if item.current_source_code == source_code), None)
+    if alias is None:
+        return ((source_code, dates),) if dates else ()
+    historical = tuple(day for day in dates if day < alias.historical_effective_to)
+    current = tuple(day for day in dates if day >= alias.historical_effective_to)
+    return tuple(
+        (code, values)
+        for code, values in (
+            (alias.historical_source_code, historical),
+            (alias.current_source_code, current),
+        )
+        if values
+    )
+
+
 class BaoStockRowResult(Protocol):
     error_code: str
     error_msg: str
@@ -197,27 +217,9 @@ class BaoStockRowGateway:
         security: BaoStockSecurity,
         expected: tuple[date, ...],
     ) -> tuple[tuple[BaoStockDailySide, ...], int, int]:
-        alias = next(
-            (item for item in _QFQ_CODE_ALIASES if item.current_source_code == security.source_code),
-            None,
-        )
-        if alias is None:
-            direct_sides, _facts, null_rows, future_rows = self._daily_sides(
-                spec,
-                security,
-                _DailySideQuery("qfq", "2", expected),
-            )
-            return direct_sides, null_rows, future_rows
-        historical = tuple(day for day in expected if day < alias.historical_effective_to)
-        current = tuple(day for day in expected if day >= alias.historical_effective_to)
         combined_sides: list[BaoStockDailySide] = []
         null_rows = future_rows = 0
-        for dates, source_code in (
-            (historical, alias.historical_source_code),
-            (current, alias.current_source_code),
-        ):
-            if not dates:
-                continue
+        for source_code, dates in qfq_source_windows(security.source_code, expected):
             values, _facts, invalid, future = self._daily_sides(
                 spec,
                 security,
@@ -456,4 +458,10 @@ def _board(source_code: str) -> BaoStockBoard | None:
     return "main" if source_code.startswith(main_prefixes) else None
 
 
-__all__ = ["BaoStockRowGateway", "BaoStockRowResult", "BaoStockSdkPort", "repairable_qfq_codes"]
+__all__ = [
+    "BaoStockRowGateway",
+    "BaoStockRowResult",
+    "BaoStockSdkPort",
+    "qfq_source_windows",
+    "repairable_qfq_codes",
+]

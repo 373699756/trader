@@ -63,6 +63,12 @@ def build_parser() -> argparse.ArgumentParser:
     baostock = subparsers.add_parser("download_history", help="Download and resume the BaoStock daily-history archive.")
     baostock.add_argument("--runtime-dir", type=Path, default=Path("data/history"))
     baostock.add_argument("--sessions", type=int, choices=range(1, 2001), default=2000)
+    baostock.add_argument(
+        "--mode",
+        choices=("snapshot", "update"),
+        default="snapshot",
+        help="Reuse/build the sealed snapshot, or append only planned missing fields into an increment.",
+    )
     subparsers.add_parser("research-status", help="Read immutable research coverage and capacity status.")
     subparsers.add_parser(
         "research-scoring-hot-path-baseline",
@@ -85,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI command dispatch
     args = build_parser().parse_args(argv)
     if args.command == "download_history":
-        return _run_baostock_history(args.runtime_dir, args.sessions)
+        return _run_baostock_history(args.runtime_dir, args.sessions, args.mode)
     if args.command == "train-tomorrow":
         _configure_tomorrow_training_resources()
     config_path = _absolute_config_path(args.config)
@@ -130,15 +136,19 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
     return _run_config_validation(runtime, profile_override)
 
 
-def _run_baostock_history(runtime_dir: Path, sessions: int) -> int:
-    from trader.application.research.baostock_history_runtime import BaoStockRuntimeRequest
+def _run_baostock_history(runtime_dir: Path, sessions: int, mode: str = "snapshot") -> int:
+    from trader.application.research.baostock_history_runtime import BaoStockDownloadMode, BaoStockRuntimeRequest
     from trader.infra.research.baostock_history_runtime import (
         project_baostock_runtime_status,
         run_baostock_history,
     )
 
     runtime_dir = _repository_data_path(runtime_dir)
-    request = BaoStockRuntimeRequest(runtime_dir=runtime_dir, sessions=sessions)
+    request = BaoStockRuntimeRequest(
+        runtime_dir=runtime_dir,
+        sessions=sessions,
+        mode=cast(BaoStockDownloadMode, mode),
+    )
     progress = _BaoStockProgressWriter(runtime_dir, sessions=sessions)
     cancelled = Event()
     controller = ShutdownSignalController(

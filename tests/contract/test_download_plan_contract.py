@@ -12,12 +12,11 @@ def _work() -> str:
 def test_download_plan_contains_only_the_remaining_dependency_route() -> None:
     work = _work()
     ordered = (
-        "## 2. 当前执行章节：BaoStock 父归档加增量归档",
-        "## 3. 动态截止日与缺失事实补采",
-        "## 4. V3 训练工件重建与整组发布",
-        "## 5. V3 工程运行验收",
-        "## 6. 点时证据修复",
-        "## 7. 一次性终端留出、Shadow 与人工生产授权",
+        "## 2. 当前执行章节：动态截止日与缺失事实补采",
+        "## 3. V3 训练工件重建与整组发布",
+        "## 4. V3 工程运行验收",
+        "## 5. 点时证据修复",
+        "## 6. 一次性终端留出、Shadow 与人工生产授权",
     )
     positions = tuple(work.index(item) for item in ordered)
     assert positions == tuple(sorted(positions))
@@ -26,14 +25,13 @@ def test_download_plan_contains_only_the_remaining_dependency_route() -> None:
 
 
 def test_increment_plan_preserves_parent_and_fails_closed_on_missing_facts() -> None:
+    design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
     work = _work()
-    section = work[work.index("## 2. 当前执行章节：BaoStock") : work.index("## 4. V3")]
+    section = work[work.index("## 2. 当前执行章节：动态截止日") : work.index("## 3. V3")]
 
+    for token in ("父 manifest 原字节不变", "同一 key 同内容幂等", "不同内容", "失败关闭"):
+        assert token in design
     for token in (
-        "父 manifest 原字节不变",
-        "同一 key 同内容幂等",
-        "不同内容",
-        "失败关闭",
         "effective_at",
         "published_at",
         "禁止用当前快照回填历史",
@@ -43,7 +41,7 @@ def test_increment_plan_preserves_parent_and_fails_closed_on_missing_facts() -> 
 
 def test_training_and_runtime_acceptance_cannot_auto_promote() -> None:
     work = _work()
-    section = work[work.index("## 4. V3") : work.index("## 8.")]
+    section = work[work.index("## 3. V3") : work.index("## 7.")]
 
     for token in (
         "一次原子切换",

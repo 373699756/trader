@@ -18,6 +18,7 @@ BaoStockRuntimeState = Literal[
     "failed",
     "resource_blocked",
 ]
+BaoStockDownloadMode = Literal["snapshot", "update"]
 BaoStockRuntimePhase = Literal[
     "preflight",
     "checkpoint_loading",
@@ -41,6 +42,7 @@ class BaoStockRuntimeRequest:
     workers: int = 1
     timeout_seconds: float = 60.0
     retries: int = 2
+    mode: BaoStockDownloadMode = "snapshot"
 
     def validate(self, repository_root: Path) -> None:
         if not self.runtime_dir.is_absolute():
@@ -59,6 +61,8 @@ class BaoStockRuntimeRequest:
             raise ValueError("BaoStock timeout must be in (0, 60]")
         if isinstance(self.retries, bool) or not 0 <= self.retries <= 2:
             raise ValueError("BaoStock retries must be in 0..2")
+        if self.mode not in ("snapshot", "update"):
+            raise ValueError("BaoStock download mode is invalid")
 
 
 @dataclass(frozen=True)
@@ -185,6 +189,7 @@ class BaoStockRuntimeStatus:
 
 __all__ = [
     "BaoStockRuntimePhase",
+    "BaoStockDownloadMode",
     "BaoStockRuntimeProgress",
     "BaoStockRuntimeProgressPort",
     "BaoStockRuntimeRequest",

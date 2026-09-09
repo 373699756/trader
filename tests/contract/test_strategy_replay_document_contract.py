@@ -103,7 +103,7 @@ def test_strategy_replay_document_explains_planned_incremental_download_and_atom
     content = REPLAY.read_text(encoding="utf-8")
 
     for required in (
-        "尚未实现",
+        "仍未实现",
         "--mode update",
         "history-plan",
         "父归档",

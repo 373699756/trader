@@ -58,7 +58,7 @@ def test_v3_research_has_four_isolated_owners_and_one_public_command() -> None:
     design = (ROOT / "docs" / "02_工程设计.md").read_text(encoding="utf-8")
 
     required_strategy_contract = (
-        "baostock_increment_archive",
+        "dynamic_cutoff_and_missing_fact_acquisition",
         "v3_training_artifact_rebuild",
         "v3_runtime_acceptance",
         "terminal_holdout_shadow_and_manual_activation",

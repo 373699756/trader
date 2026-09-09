@@ -51,5 +51,5 @@ def test_historical_aliases_are_retired_from_the_unfinished_plan() -> None:
     assert "15.1.35" not in work
     assert "15.1.21–15.1.34" not in work
     assert "candidate_eligibility_before_board_cap" not in work
-    assert "baostock_increment_archive" in work
+    assert "baostock_increment_archive" not in work
     assert "二级动态硬过滤" in strategy

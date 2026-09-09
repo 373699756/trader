@@ -117,7 +117,7 @@ def test_work_plan_contains_only_unfinished_tasks_and_no_historical_aliases() ->
 
     assert "本文件只维护尚未完成的工程任务" in work
     assert work.count("状态：`in_progress`") == 1
-    assert "baostock_increment_archive" in work
+    assert "baostock_increment_archive" not in work
     assert "blocked_by_point_in_time_evidence_and_user_authorization" in work
     for retired in ("`completed`", "15.1.35", "15.1.36", "15.1.37", "15.1.38"):
         assert retired not in work
@@ -156,7 +156,6 @@ def test_work_plan_is_an_unfinished_queue_not_a_second_normative_contract() -> N
     for required in (
         "评分逻辑](01_评分逻辑.md)",
         "工程设计](02_工程设计.md)",
-        "baostock_increment_archive",
         "dynamic_cutoff_and_missing_fact_acquisition",
         "v3_training_artifact_rebuild",
         "terminal_holdout_shadow_and_manual_activation",

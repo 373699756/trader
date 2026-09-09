@@ -313,6 +313,10 @@ def _run_locked(
     cancel_requested: Callable[[], bool],
     progress: BaoStockRuntimeProgressPort | None,
 ) -> BaoStockRuntimeStatus:
+    if request.mode == "update":
+        from trader.infra.research.baostock_increment_runtime import run_baostock_increment_update
+
+        return run_baostock_increment_update(request, root, cancel_requested=cancel_requested, progress=progress)
     _quarantine_corrupt_archive_parts(root)
     if (root / "manifest.json").is_file():
         store = BaoStockDailyPartitionedArchive(root)

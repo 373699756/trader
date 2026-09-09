@@ -6,6 +6,24 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求实现“父归档 + 增量归档”完整章节，通过测试后自动执行增量下载，并在下载结束后继续运行现有 Tomorrow
+  训练入口。根因确认：既有 `download_history` 遇到父 `manifest.json` 会直接返回，无法消费已交付的只读缺口
+  计划；旧 92 个 SQLite 分片又已封存，不能原地扩展或改写。Added: 新增稳定字段族、active/increment manifest、
+  每个代码/日期/字段族 checkpoint、分代 SQLite writer、父加增量有类型只读视图，以及同一下载入口的显式
+  `--mode update`。Changed: `history-plan` 扫描核心迁入可安装的研究基础设施并由诊断 adapter 与下载器共同消费；
+  update 只请求未完成 raw/qfq/isST，raw 同请求保存 isST，行业只接收真实 `updateDate`；增量经 FULL synchronous、
+  WAL checkpoint、完整性/整文件 hash 校验后才原子切换 active manifest。Fixed: 同 key 同内容重放幂等，不同内容、
+  父 hash 漂移、损坏或中断失败关闭；供应商失败保留可重试 checkpoint，黑名单错误立即停止，上一 active 与父
+  归档保持不变。Verification: active/increment 领域、持久化、恢复、冲突、计划消费、请求去重、CLI、既有下载
+  runtime、入口与架构定向回归通过；`make format-check`、`make lint`、`make type-check`、稳定源码上的完整
+  `make test` 和 `make package` 通过，严格重构债务保持为零。首次全量测试的 Node 10 秒超时定向重跑 0.68 秒通过；
+  文件稳定后全量复跑全部通过。
+  Residual Risks: 当前训练输入仍使用固定截止日父归档，尚不消费 active increment；因此自动训练只能验证现有
+  训练入口，不能把新增数据误称为已参与训练或评分。真实历史资格、硬过滤、风险事实及行业查询时间仍不足，
+  必须保持 `historical_data_insufficient`、`point_in_time_parity=false`、`production_authority=false`。本批未运行全市场真实增量下载：
+  它会写入 Git 忽略的 8.9GB 本地归档并受供应商限速约束，不影响本批类型、持久化与失败关闭契约的发布结论。
+  `Regression-Key: baostock-parent-increment-active-archive`。
+
 - 用户要求把当前候选链、评分 Review 和实施计划修改统一收口提交。根因确认：旧实时链先按通用候选分截断，
   再检查策略历史、活动模型字段和定向行情有效性，使无资格或刷新失效股票占用每板 120 只窗口，后继合格股票
   无法补位；候选漏斗还不能区分永久资格、动态过滤、策略历史、模型输入、候选分与行情刷新阶段。Added: 新增

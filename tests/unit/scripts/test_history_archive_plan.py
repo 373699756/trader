@@ -178,3 +178,23 @@ def test_archive_plan_rejects_a_target_calendar_that_does_not_extend_the_parent(
         assert "parent calendar" in str(exc)
     else:
         raise AssertionError("target calendar must retain every parent date before rolling-window trimming")
+
+
+def test_archive_plan_requests_a_whole_parent_cell_gap_without_redownloading_neighbors(tmp_path: Path) -> None:
+    _archive(tmp_path)
+    shard = tmp_path / "shards" / "main-6000.sqlite3"
+    with sqlite3.connect(shard) as connection:
+        connection.execute(
+            "DELETE FROM daily_cells WHERE code=? AND trade_date=?",
+            ("600001", "2026-08-31"),
+        )
+
+    plan = build_archive_plan(
+        tmp_path,
+        target_open_dates=(date(2026, 8, 28), date(2026, 8, 31)),
+    )
+
+    stock = plan.stocks[0]
+    assert stock.missing_raw_dates == (date(2026, 8, 31),)
+    assert stock.missing_qfq_dates == (date(2026, 8, 31),)
+    assert stock.missing_is_st_dates == (date(2026, 8, 31),)
