@@ -11,7 +11,7 @@ def test_baseline_audit_is_an_explicit_read_only_cli_command() -> None:
     parser = build_parser()
     args = parser.parse_args(["research-baseline-audit"])
     assert args.command == "research-baseline-audit"
-    work = " ".join((ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8").split())
+    work = " ".join((ROOT / "CHANGELOG.md").read_text(encoding="utf-8").split())
     assert "score_current_baseline_consistency_audit" in work
     assert "baseline_identity_inconsistent" in work
 

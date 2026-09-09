@@ -4,21 +4,19 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_historical_industry_section_has_one_fail_closed_checkpoint_owner() -> None:
-    work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
+    report = (ROOT / "docs/reports/historical-industry-facts-2026-09-09.md").read_text(encoding="utf-8")
     design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
-    section = work[work.index("#### `historical_industry_facts`") : work.index("#### `historical_minute")]
 
-    assert "状态：`completed: historical_data_insufficient`" in section
-    assert "按用户明确要求暂不恢复正式归档" in section
-    assert "`daily_archive_invalid`" in section
-    assert "不得用当前 22 个旧分片冒充最终证据" in section
-    assert "最终 schema 实物复跑未验证" in section
-    assert "5453" in section
-    assert "baostock_archived_industry" in section
-    assert "tushare_index_member_all" in section
-    assert "queried_at" in section
-    assert "逐事实 hash" in section
-    assert "日线分片保持只读" in section
+    for token in (
+        "historical_data_insufficient",
+        "按用户明确要求暂不恢复正式归档",
+        "daily_archive_invalid",
+        "最终报告 schema 实物复跑：未验证",
+        "5453",
+        "查询时间",
+        "逐事实 hash",
+    ):
+        assert token in report
     assert "historical_industry_dataset" in design
     assert "scripts/audit_historical_industry_facts.py" in design
 

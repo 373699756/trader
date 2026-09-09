@@ -6,6 +6,22 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求把 `03_工程实施.md` 与当前代码逐项对照，删除所有已完成内容并只保留未完成计划。根因确认：旧文档
+  同时保存历史基线、完成台账、失败关闭章节、已放弃设想和当前任务，导致真实执行顺序被 600 多行历史记录
+  淹没；同时当前工作树存在候选资格、评分 Review 和增量归档多批未提交改动，本地 V3 旧 schema 工件又被
+  当前 loader 实测拒绝。Added: 建立十项有依赖的未完成任务队列，逐项记录代码已有能力、首个未闭合边界、
+  blocker 和完成条件。Changed: 普通“继续”从唯一 `in_progress` 章节开始，评分修复、父加增量归档、动态
+  cutoff、V3 重训/运行验收、点时证据、Shadow/人工启用及 Today/D25 独立模型按明确依赖推进。Fixed: 已交付的
+  `history-plan` 不再误列待办；三策略统一数据 epoch 已有实现，不再重复规划；V3 训练标签仍预扣成本、旧工件
+  schema、全量样本驻留和逐文件发布四类缺口已明确归入同一重建章节。Removed: 从实施计划删除全部完成章节、历史证据
+  复述、旧编号、完成勾选表、重复质量门禁和非当前 stacking 设想，共收缩 600 余行；历史证据仍保留在 Git、
+  Changelog 和报告中。Verification: 对照两份权威文档、活动代码、测试和当前工件；候选定向回归、调度集成、
+  架构契约及固定离线性能门通过；依赖旧实施历史的契约已迁移为校验当前权威文档、代码边界或交付报告，完整
+  `make test-contract`、契约目录 Ruff、引用目标检查和 `git diff --check` 通过。全量代码门禁不适用：本批只改
+  实施计划、Changelog 及其文档契约测试，不改变运行代码、公开 schema 或产品行为。Residual Risks: 审计期间另一个工作流持续提交并
+  修改工作树，本计划按审计基线 `fefe57c` 和当时可见草稿整理；后续批次必须重新读取 HEAD、拆分重叠文件，
+  不得把未提交草稿当作完成或混入同一提交。`Regression-Key: implementation-plan-unfinished-only`。
+
 - 用户要求在不改写既有 92 个分片、旧 manifest、未提交工作树和运行数据库的前提下增量补采并重训 V3；本批先完成
   只读盘点子任务。根因确认：现有 `download_history` 发现封存 manifest 后直接复用，无法发现 2026-08-31 之后的新
   交易日；旧 `tomorrow_production_model`/`tomorrow_training_report_v1` 又不满足当前 loader 合同，且 report 错标

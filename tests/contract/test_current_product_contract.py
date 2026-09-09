@@ -68,16 +68,11 @@ def test_parallel_overview_plan_and_operations_docs_are_retired() -> None:
     assert not (ROOT / "docs/V2_plan.md").exists()
     assert not (ROOT / "docs/score.md").exists()
     assert not (ROOT / "docs/plan.md").exists()
-    for merged_plan_contract in (
-        "评分模块化计划项 1–9",
-        "全部完成",
-        "后续独立评分任务",
-        "待独立授权",
-        "当前不采用",
-        "历史数据、参数研究、V3 训练与实时评分统一路线",
-        "计划整体状态：`in_progress`",
-    ):
-        assert merged_plan_contract in work
+    assert "本文件只维护尚未完成的工程任务" in work
+    assert "candidate_eligibility_before_board_cap" in work
+    assert "terminal_holdout_shadow_and_manual_activation" in work
+    for completed_marker in ("`completed`", "`not_current_route`", "评分模块化计划项 1–9"):
+        assert completed_marker not in work
 
 
 def test_release_guides_expose_only_unified_api_and_desktop_gate() -> None:

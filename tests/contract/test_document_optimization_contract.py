@@ -112,41 +112,23 @@ def test_research_settlement_is_reproducible_and_one_shot() -> None:
         assert required in replay
 
 
-def test_work_plan_has_one_stable_baostock_task_and_historical_aliases_only() -> None:
+def test_work_plan_contains_only_unfinished_tasks_and_no_historical_aliases() -> None:
     work = _read(WORK)
 
-    assert "## 1. 交付基线与历史证据" in work
-    assert "## 1. 当前基线" not in work
-    assert work.count("#### `baostock_daily_archive`") == 1
-    assert "计划整体状态：`in_progress`" in work
-    assert "#### `baostock_daily_archive`\n\n状态：`completed`" in work
-    assert "#### `historical_industry_facts`\n\n状态：`completed: historical_data_insufficient`" in work
-    assert "`point_in_time_dataset` 的失败关闭构建、分片封存和契约代码" in work
-    assert "`candidate_recall_attribution` 的账本、逐层归因和失败关闭代码" in work
-    assert "blocked_by_baostock_daily_archive" not in work
-    assert "| 4 | `point_in_time_dataset` | `completed: historical_data_insufficient`" in work
-    assert "| 5 | `candidate_recall_attribution` | `completed: historical_data_insufficient`" in work
-    assert "| 6 | `limited_factor_family_research` | `completed: historical_data_insufficient`" in work
-    assert "| 7 | `tomorrow_v3_training_validation` | `completed: historical_data_insufficient`" in work
+    assert "本文件只维护尚未完成的工程任务" in work
+    assert work.count("状态：`in_progress`") == 1
+    assert "baostock_increment_archive" in work
     assert "blocked_by_point_in_time_evidence_and_user_authorization" in work
-    assert "blocked_by_risk_cost_uncertainty_deepseek" not in work
-    assert "blocked_by_shadow_and_manual_activation" in work
-    alias = work[work.index("### 1.2 历史审计别名") : work.index("## 2.")]
-    assert "15.1.35" in alias
-    assert "15.1.36" in alias
-    assert "15.1.37" in alias
-    assert "15.1.38" in alias
-    assert "15.1.38" not in work[work.index("## 2.") :]
-    assert "第 15.1.20 节" not in work
-    assert "第 3.4 节" not in work
+    for retired in ("`completed`", "15.1.35", "15.1.36", "15.1.37", "15.1.38"):
+        assert retired not in work
 
 
 def test_public_and_low_level_research_status_commands_are_unambiguous() -> None:
-    work = _read(WORK)
+    design = _read(DESIGN)
 
-    assert "./run.sh research-status" not in work
-    assert "公开流程：`./run.sh check`" in work
-    assert '.venv/bin/trader-cli --config "$PWD/config/runtime.json" research-status' in work
+    assert "./run.sh research-status" not in design
+    assert "./run.sh check" in design
+    assert "research-status" in design
 
 
 def test_strategy_document_does_not_own_artifact_hashes() -> None:
@@ -167,31 +149,22 @@ def test_current_historical_evidence_is_not_described_as_a_present_artifact() ->
     assert "当前资格审计已验证这条失败关闭边界" not in compact
 
 
-def test_work_plan_is_a_two_pc_handoff_not_a_second_normative_contract() -> None:
+def test_work_plan_is_an_unfinished_queue_not_a_second_normative_contract() -> None:
     work = _read(WORK)
-    route = work[work.index("## 4. 历史数据、参数研究、V3 训练与实时评分统一路线") :]
-    compact = " ".join(route.split())
+    compact = " ".join(work.split())
 
     for required in (
-        "### 当前双 PC 交接点",
-        "git pull --rebase",
-        "训练 PC 当前起点",
-        "代码 PC 当前边界",
-        "不得自动进入第 4.10 节",
-        "579056a",
-        "engineering_ready",
-        "point_in_time_parity=false",
-        "production_authority=false",
-        "training-input.json",
-        "不通过 Git 交接",
-        "评分规则只引用 `01_评分逻辑.md`",
-        "运行时、API 和运维契约只引用 `02_工程设计.md`",
+        "评分逻辑](01_评分逻辑.md)",
+        "工程设计](02_工程设计.md)",
+        "baostock_increment_archive",
+        "dynamic_cutoff_and_missing_fact_acquisition",
+        "v3_training_artifact_rebuild",
+        "terminal_holdout_shadow_and_manual_activation",
     ):
         assert required in compact
 
-    assert "clamp(local_score * 0.68 + deepseek_score * 0.32 - deepseek_risk_penalty, 0, 100)" not in route
-    assert "/api/status.tomorrow_model.computation" not in route
-    assert "20bp/50bp bootstrap 下界必须为正且通过 Holm" not in route
+    assert "clamp(local_score * 0.68 + deepseek_score * 0.32 - deepseek_risk_penalty, 0, 100)" not in work
+    assert "/api/status.tomorrow_model.computation" not in work
 
 
 def test_history_windows_cost_ownership_and_terminal_order_are_unambiguous() -> None:
@@ -219,9 +192,10 @@ def test_history_windows_cost_ownership_and_terminal_order_are_unambiguous() -> 
     )
     positions = tuple(route.index(item) for item in ordered)
     assert positions == tuple(sorted(positions))
-    assert "outcome_price_basis_and_tradability" in work
-    assert "v3_single_cost_ownership" in work
-    assert "`v3_single_cost_ownership` | `tomorrow_v3_training_validation` | `completed`" in work
+    changelog = _read(ROOT / "CHANGELOG.md")
+    assert "CanonicalOutcomeEvaluator" in changelog
+    assert "v3_single_cost_ownership" in changelog
+    assert "`completed`" not in work
 
 
 def test_hash_validation_is_limited_to_trust_boundaries() -> None:

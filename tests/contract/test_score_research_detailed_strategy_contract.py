@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from trader.application.research.tomorrow_historical_validation import HISTORICAL_RISK_VALIDATION_SPEC
+
 ROOT = Path(__file__).resolve().parents[2]
 STRATEGY = ROOT / "docs/01_评分逻辑.md"
 
@@ -43,17 +45,16 @@ def test_historical_reports_are_tamper_evident_and_non_production() -> None:
 
 def test_historical_risk_probability_gate_is_fixed_before_production_use() -> None:
     strategy = " ".join(STRATEGY.read_text(encoding="utf-8").split())
-    work = " ".join((ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8").split())
 
     for token in (
         "MAE/ATR20 <= -1.5",
         "loss_probability_status=not_modeled",
     ):
         assert token in strategy
-    for token in (
-        "tomorrow_historical_risk_probability",
-        "60 日训练、20 日校准、40 日独立检验",
-        "Brier 分数严格优于",
-        "ECE 不超过 0.05",
-    ):
-        assert token in work
+    assert HISTORICAL_RISK_VALIDATION_SPEC.research_identity == "tomorrow_historical_risk_probability"
+    assert (
+        HISTORICAL_RISK_VALIDATION_SPEC.training_trade_dates,
+        HISTORICAL_RISK_VALIDATION_SPEC.calibration_trade_dates,
+        HISTORICAL_RISK_VALIDATION_SPEC.test_trade_dates,
+    ) == (60, 20, 40)
+    assert HISTORICAL_RISK_VALIDATION_SPEC.maximum_expected_calibration_error == 0.05

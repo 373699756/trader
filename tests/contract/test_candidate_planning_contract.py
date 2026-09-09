@@ -20,7 +20,7 @@ def test_candidate_planning_contract_is_synchronized_across_authoritative_docume
     assert "某项定向行情缺失、过期、结构非法或刷新后不再满足资格/最低分时" in compact_strategy
     assert "最坏并集为 1080 只" in design
     assert "最终 `ScoredNativeInput.requested_codes` 与候选特征按策略隔离" in design
-    assert "## 8. 当前直接授权批次：候选资格先于板内限额" in work
+    assert "## 2. 当前执行章节：候选资格先于板内限额" in work
     assert "candidate-eligibility-before-cap-single-owner" in work
 
 

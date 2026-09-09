@@ -7,7 +7,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_batch_three_contract_freezes_walk_forward_models_and_calibration() -> None:
     strategy = " ".join((ROOT / "docs/01_评分逻辑.md").read_text(encoding="utf-8").split())
-    work = " ".join((ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8").split())
+    models = (ROOT / "src/trader/application/research/shadow_model_models.py").read_text(encoding="utf-8")
+    scoring = (ROOT / "src/trader/application/research/shadow_models.py").read_text(encoding="utf-8")
+    artifacts = (ROOT / "src/trader/infra/research/shadow_model_artifacts.py").read_text(encoding="utf-8")
+    combined = models + scoring + artifacts
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
     assert "production_authority=false" in strategy
@@ -15,18 +18,16 @@ def test_batch_three_contract_freezes_walk_forward_models_and_calibration() -> N
         "score_tomorrow_shadow_report",
         "expanding",
         "rolling_252",
-        "Tomorrow embargo=1",
-        "D25 embargo=25",
         "max_depth=3",
         "num_leaves=7",
         "min_data_in_leaf=20",
-        "仿射校准",
-        "Platt 校准",
-        "完整逐日逐股预测",
+        "affine",
+        "platt",
     ):
-        assert token in work
-    assert "ScoreTomorrowShadowModels" in work
-    assert "ShadowModelArtifactStore" in work
+        assert token in combined.replace('"', "").replace(": ", "=")
+    assert '(("tomorrow", 1), ("d25", 25))' in models
+    assert "ScoreTomorrowShadowModels" in combined
+    assert "ShadowModelArtifactStore" in combined
     assert '"lightgbm>=4.7,<5"' in pyproject
 
 

@@ -5,72 +5,57 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_download_plan_is_merged_with_explicit_unfinished_batch_states() -> None:
-    work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
-    section = work[work.index("## 4. 历史数据、参数研究、V3 训练与实时评分统一路线") :]
-
-    assert not (ROOT / "docs/download.md").exists()
-    for required in (
-        "计划整体状态：`in_progress`",
-        "#### `baostock_daily_archive`",
-        "状态：`completed`（2026-09-09）",
-        "#### `historical_industry_facts`",
-        "状态：`completed: historical_data_insufficient`（2026-09-09）",
-        "### 4.7 `tomorrow_v3_training_validation`",
-        "状态：`completed: historical_data_insufficient`（2026-09-09）",
-        "### 4.10 `shadow_and_manual_activation`",
-        "状态：`blocked_by_point_in_time_evidence_and_user_authorization`",
-    ):
-        assert required in section
+def _work() -> str:
+    return (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
 
 
-def test_download_plan_does_not_publish_an_extra_research_status_command() -> None:
-    work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
+def test_download_plan_contains_only_the_remaining_dependency_route() -> None:
+    work = _work()
+    ordered = (
+        "## 4. BaoStock 父归档加增量归档",
+        "## 5. 动态截止日与缺失事实补采",
+        "## 6. V3 训练工件重建与整组发布",
+        "## 7. V3 工程运行验收",
+        "## 8. 点时证据修复",
+        "## 9. 一次性终端留出、Shadow 与人工生产授权",
+    )
+    positions = tuple(work.index(item) for item in ordered)
+    assert positions == tuple(sorted(positions))
+    assert "`completed`" not in work
+    assert "baostock_daily_archive" not in work
 
-    assert "./run.sh research-status" not in work
-    assert "./run.sh check" in work
 
+def test_increment_plan_preserves_parent_and_fails_closed_on_missing_facts() -> None:
+    work = _work()
+    section = work[work.index("## 4. BaoStock") : work.index("## 6. V3")]
 
-def test_industry_repair_plan_preserves_daily_archive_identity() -> None:
-    work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
-    section = work[work.index("#### `historical_industry_facts`") :]
-
-    for required in (
-        "不能把当前行业直接当作历史行业",
-        "只写行业事实和训练事实 checkpoint",
-        "不得修改 `daily_cells`、`code_batches`",
-        "独立行业数据集 hash",
+    for token in (
+        "父 manifest 原字节不变",
+        "同一 key 同内容幂等",
+        "不同内容",
+        "失败关闭",
         "effective_at",
-        "无法证明的日期继续保持未就绪",
-        "排除出 V3 训练",
-        "时间穿越检查结果",
-        "日线分片保持只读",
-        "合格股票 0",
+        "published_at",
+        "禁止用当前快照回填历史",
     ):
-        assert required in section
+        assert token in section
 
 
-def test_training_handoff_and_shadow_cannot_auto_promote() -> None:
-    work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
-    section = work[work.index("### 4.7 `tomorrow_v3_training_validation`") :]
+def test_training_and_runtime_acceptance_cannot_auto_promote() -> None:
+    work = _work()
+    section = work[work.index("## 6. V3") : work.index("## 10.")]
 
-    for required in (
-        "训练 PC 当前起点",
-        "./run.sh train-tomorrow",
-        "./run.sh --profile v3",
-        "5000 多只历史数据",
-        "model.json",
-        "report.json",
-        "training-input.json",
-        "不通过 Git 交接",
-        "不得自动进入第 4.10 节",
-    ):
-        assert required in work
-
-    for required in (
-        "用户明确授权",
-        "15:00_close_proxy",
-        "daily_close_engineering_proxy",
+    for token in (
+        "一次原子切换",
+        "重新训练而不是给旧 schema 补字段或放宽 loader",
+        "historical_data_insufficient",
         "point_in_time_parity=false",
+        "production_authority=false",
+        "默认 V1 不变",
+        "用户在独立批次明确授权",
     ):
-        assert required in section
+        assert token in section
+
+
+def test_plan_does_not_publish_an_extra_research_status_command() -> None:
+    assert "./run.sh research-status" not in _work()

@@ -17,13 +17,17 @@ def test_scoring_hot_path_baseline_has_explicit_cli_and_fixed_identity() -> None
 
 
 def test_strategy_contract_requires_all_hot_path_denominators_and_equivalence_cases() -> None:
-    work = " ".join((ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8").split())
+    source = (ROOT / "src/trader/application/research/scoring_hot_path_baseline.py").read_text(encoding="utf-8")
+
     for token in (
-        "每个完成评分 epoch",
-        "每个被评估候选",
-        "每次正式 current/frozen 决策",
-        "每个实际 DeepSeek 候选",
-        "相同输入的候选、分数、风险、动作、排名和决策 hash 完全一致",
-        "100 tick 分配增长不超过 20%",
+        "completed_epoch_count",
+        "evaluated_candidate_count",
+        "formal_current_decision_count",
+        "formal_frozen_decision_count",
+        "deepseek_candidate_count",
+        "ScoringHotPathEquivalence",
+        "result_hash",
+        "allocation_growth_percent",
+        "allocation_budget_passed",
     ):
-        assert token in work
+        assert token in source

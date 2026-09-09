@@ -61,14 +61,17 @@ def test_forward_score_validation_owners_and_commands_are_retired() -> None:
 
 def test_remaining_offline_research_is_historical_and_production_isolated() -> None:
     design = _compact(ROOT / "docs/02_工程设计.md")
-    work = _compact(ROOT / "docs/03_工程实施.md")
+    research_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            SOURCE / "application/research/tomorrow_historical_screening.py",
+            SOURCE / "application/research/tomorrow_profile_holdout.py",
+            SOURCE / "application/research/tomorrow_historical_validation.py",
+        )
+    )
 
-    for token in (
-        "tomorrow_historical",
-        "tomorrow_profile_holdout_report",
-        "tomorrow_historical_risk_probability",
-    ):
-        assert token in work or token in design
+    for token in ("tomorrow_historical", "tomorrow_profile_holdout_report", "tomorrow_historical_risk_probability"):
+        assert token in research_sources
     assert "旧 H0 历史归档、回测和筛选命令已经退役" in design
     assert "download_history" in design
     assert "train-tomorrow" in design
@@ -77,7 +80,6 @@ def test_remaining_offline_research_is_historical_and_production_isolated() -> N
 
 def test_p2_historical_rejection_and_manual_production_override_remain_explicit() -> None:
     strategy = _compact(ROOT / "docs/01_评分逻辑.md")
-    work = _compact(ROOT / "docs/03_工程实施.md")
     changelog = _compact(ROOT / "CHANGELOG.md")
 
     for token in (
@@ -87,13 +89,16 @@ def test_p2_historical_rejection_and_manual_production_override_remain_explicit(
         "loss_probability_status=not_modeled",
     ):
         assert token in strategy
-    for token in (
-        "daily_reconstructible_ensemble",
-        "single_candidate_pass_or_stop",
-        "historical_ohlcv_cross_section",
-        "automatic_t1_outcome_settlement",
-    ):
-        assert token in work
+    runtime_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            SOURCE / "domain/research/tomorrow_historical.py",
+            SOURCE / "application/ports/model_scoring.py",
+        )
+    )
+    for token in ("daily_reconstructible_ensemble", "single_candidate_pass_or_stop", "historical_ohlcv_cross_section"):
+        assert token in runtime_sources
+    assert "automatic_t1_outcome_settlement" in runtime_sources
     artifact_hash = "27034e52813f1776e2ed218c1c397f481b244fb852b01be08ddc21249d887da5"
     assert artifact_hash in changelog
     assert artifact_hash not in strategy
@@ -102,15 +107,15 @@ def test_p2_historical_rejection_and_manual_production_override_remain_explicit(
 def test_v1_v2_historical_evidence_does_not_create_a_running_collection_gate() -> None:
     strategy = _compact(ROOT / "docs/01_评分逻辑.md")
     design = _compact(ROOT / "docs/02_工程设计.md")
-    work = _compact(ROOT / "docs/03_工程实施.md")
+    holdout = _compact(SOURCE / "application/research/tomorrow_profile_holdout.py")
 
     for token in (
         "不能据此断言 V2 未来更能挣钱",
         "V2 的平均成本后净增量证据强于 V1",
-        "tomorrow_profile_holdout_report",
         "不设跨年配对采集任务",
     ):
-        assert token in strategy or token in work
+        assert token in strategy
+    assert "tomorrow_profile_holdout_report" in holdout
     for retired in ("522 个有效交易日", "tomorrow_v1_v2_paired_forward_v1"):
         assert retired not in strategy
         assert retired not in design

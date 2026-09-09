@@ -67,9 +67,10 @@ def test_outcome_contract_owns_explicit_price_basis_and_exit_tradability() -> No
     assert "fetch_outcome_history" in history
 
 
-def test_work_plan_tracks_outcome_truth_and_v3_cost_as_separate_tasks() -> None:
+def test_outcome_truth_and_v3_cost_remediation_have_separate_owners() -> None:
+    models = MODELS.read_text(encoding="utf-8")
     work = WORK.read_text(encoding="utf-8")
 
-    assert "outcome_price_basis_and_tradability" in work
-    assert "v3_single_cost_ownership" in work
-    assert "不得把两个修复合并成一个不可独立验收的任务" in work
+    assert "class OutcomePrice" in models
+    assert "V3 训练工件重建与整组发布" in work
+    assert "成本只由选择和评价层按场景扣一次" in work

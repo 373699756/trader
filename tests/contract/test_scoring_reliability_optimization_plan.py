@@ -17,23 +17,16 @@ def test_authoritative_docs_define_one_ordered_optimization_route() -> None:
     strategy = _read(STRATEGY)
     design = _read(DESIGN)
     work = _read(WORK)
-    route = work[work.index("## 4. 历史数据、参数研究、V3 训练与实时评分统一路线") :]
-
     ordered_tasks = (
-        "### 4.1 `outcome_truth_contract`",
-        "### 4.2 `feature_contract_unification`",
-        "### 4.3 `point_in_time_data_qualification`",
-        "### 4.4 `point_in_time_dataset`",
-        "### 4.5 `candidate_recall_attribution`",
-        "### 4.6 `limited_factor_family_research`",
-        "### 4.7 `tomorrow_v3_training_validation`",
-        "### 4.8 `incremental_feature_computation`",
-        "### 4.9 `risk_cost_uncertainty_deepseek`",
-        "### 4.10 `shadow_and_manual_activation`",
+        "## 4. BaoStock 父归档加增量归档",
+        "## 5. 动态截止日与缺失事实补采",
+        "## 6. V3 训练工件重建与整组发布",
+        "## 7. V3 工程运行验收",
+        "## 8. 点时证据修复",
+        "## 9. 一次性终端留出、Shadow 与人工生产授权",
     )
-    positions = tuple(route.index(task) for task in ordered_tasks)
+    positions = tuple(work.index(task) for task in ordered_tasks)
     assert positions == tuple(sorted(positions))
-    assert "历史数据、参数研究、V3 训练与实时评分统一路线" in work
     assert "收益真值" in strategy
     assert "评分优化目标组件" in design
 
@@ -82,11 +75,11 @@ def test_design_assigns_narrow_typed_component_owners() -> None:
 
 def test_incremental_feature_computation_is_complete_and_observable_without_a_plan_hash() -> None:
     design = _read(DESIGN)
-    work = _read(WORK)
-    combined = " ".join((design + work).split())
+    changelog = _read(ROOT / "CHANGELOG.md")
+    combined = " ".join((design + changelog).split())
 
     for required in (
-        "| 8 | `incremental_feature_computation` | `completed`",
+        "incremental_feature_computation",
         "FeatureFactRevision",
         "FeatureStageInvalidation",
         "普通价格 overlay",
@@ -113,28 +106,21 @@ def test_route_cannot_smuggle_unverified_data_or_automatic_promotion() -> None:
         "必须由用户明确授权",
     ):
         assert required in strategy + work + replay
-    assert "scoring-feature-outcome-optimization" in work
+    assert "terminal_holdout_shadow_and_manual_activation" in work
 
 
-def test_work_plan_records_completed_fail_closed_dataset_and_recall_code() -> None:
-    work = _read(WORK)
+def test_changelog_records_completed_fail_closed_dataset_and_recall_code() -> None:
+    work = _read(ROOT / "CHANGELOG.md")
 
-    assert "当前资格章节：`point_in_time_data_qualification` 已以 `historical_data_insufficient` 完成交付" in work
-    assert "`point_in_time_data_qualification`" in work
-    assert "`historical_industry_facts` 已以 `historical_data_insufficient` 完成交付" in work
-    assert "`point_in_time_dataset` 的失败关闭构建、分片封存和契约代码" in work
-    assert "`candidate_recall_attribution` 的账本、逐层归因和失败关闭代码" in work
-    assert "| 4 | `point_in_time_dataset` | `completed: historical_data_insufficient`" in work
-    assert "| 5 | `candidate_recall_attribution` | `completed: historical_data_insufficient`" in work
-    assert "不得重新抓取或修改已经封存的 2000 日日线" in work
-    assert "`outcome_truth_contract`" in work
-    assert "outcome_price_basis_and_tradability" in work
-    assert "v3_single_cost_ownership" in work
-    assert "进度在每次开始、发现阻塞、" in work
-    assert "完成验证、提交并推送时更新" in work
-    assert "D25" in work
-    assert "T+2、T+3、T+4、T+5" in work
-    assert "#### `baostock_daily_archive`\n\n状态：`completed`" in work
+    for token in (
+        "point_in_time_data_qualification",
+        "point_in_time_dataset",
+        "candidate_recall_attribution",
+        "historical_data_insufficient",
+        "v3_single_cost_ownership",
+        "D25",
+    ):
+        assert token in work
 
 
 def test_point_in_time_qualification_has_three_independent_gates_and_no_production_authority() -> None:
@@ -142,11 +128,12 @@ def test_point_in_time_qualification_has_three_independent_gates_and_no_producti
     design = _read(DESIGN)
     work = _read(WORK)
     replay = _read(REPLAY)
-    combined = strategy + design + work + replay
+    changelog = _read(ROOT / "CHANGELOG.md")
+    combined = strategy + design + work + replay + changelog
 
     for required in (
         "PointInTimeDataQualificationReport",
-        "historical_minute_source_qualification",
+        "历史分钟",
         "至少 300 只",
         "11:20/14:50",
         "raw/qfq",
@@ -154,9 +141,9 @@ def test_point_in_time_qualification_has_three_independent_gates_and_no_producti
         "production_authority=false",
     ):
         assert required in combined
-    assert "5453/5453" in work
-    assert "9,085,235" in work
-    assert "99.9976%" in work
+    assert "5453/5453" in changelog
+    assert "9,085,235" in changelog
+    assert "99.9976%" in changelog
     assert "分钟点时" in work
 
 
@@ -164,8 +151,9 @@ def test_history_training_and_optimization_are_one_dependency_route() -> None:
     work = _read(WORK)
     replay = _read(REPLAY)
 
-    assert "历史数据、参数研究、V3 训练与实时评分统一路线" in work
-    assert "第 4 节与第 7 节" not in work
+    assert "baostock_increment_archive" in work
+    assert "v3_training_artifact_rebuild" in work
+    assert work.index("baostock_increment_archive") < work.index("v3_training_artifact_rebuild")
     assert "15:00_close" in replay
     assert "point_in_time_parity=false" in replay
     assert "BaoStock 日线不能单独证明 14:50" in replay

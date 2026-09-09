@@ -19,14 +19,12 @@ def test_risk_cost_uncertainty_components_live_in_their_authoritative_layers() -
     assert "deepseek_weight = 0.32" in research
 
 
-def test_work_plan_records_complete_fail_closed_risk_cost_and_deepseek_stage() -> None:
-    work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
+def test_authoritative_contracts_record_fail_closed_risk_cost_and_deepseek_boundaries() -> None:
     strategy = (ROOT / "docs/01_评分逻辑.md").read_text(encoding="utf-8")
     design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
-    combined = work + strategy + design
+    combined = strategy + design
 
     for required in (
-        "| 9 | `risk_cost_uncertainty_deepseek` | `completed: historical_data_insufficient`",
         "Brier",
         "ECE",
         "预测区间覆盖率",

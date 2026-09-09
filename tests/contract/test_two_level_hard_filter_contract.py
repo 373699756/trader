@@ -39,16 +39,13 @@ def test_authoritative_documents_define_two_level_filter_before_h1_download() ->
         assert token in design
 
 
-def test_historical_aliases_are_confined_before_the_current_stable_plan() -> None:
+def test_historical_aliases_are_retired_from_the_unfinished_plan() -> None:
     strategy = (ROOT / "docs" / "01_评分逻辑.md").read_text(encoding="utf-8")
     work = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
 
     level_one = strategy.index("一级永久资格过滤")
-    alias_section = work[work.index("### 1.2 历史审计别名") : work.index("### 1.3")]
-    current_plan = work[work.index("## 2. 评分模块化交付记录") :]
-
     assert level_one >= 0
-    assert "15.1.35" in alias_section
-    assert "15.1.21–15.1.34" in current_plan
-    assert "15.1.35" not in current_plan
+    assert "15.1.35" not in work
+    assert "15.1.21–15.1.34" not in work
+    assert "candidate_eligibility_before_board_cap" in work
     assert "二级动态硬过滤" in strategy

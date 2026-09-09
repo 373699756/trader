@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from trader.application.research.tomorrow_historical_validation import HISTORICAL_RISK_VALIDATION_SPEC
+
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src/trader"
 
@@ -9,7 +11,6 @@ SOURCE = ROOT / "src/trader"
 def test_authoritative_contracts_make_history_the_only_score_validation_source() -> None:
     strategy = " ".join((ROOT / "docs/01_评分逻辑.md").read_text(encoding="utf-8").split())
     design = " ".join((ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8").split())
-    work = " ".join((ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8").split())
 
     for expected in (
         "所有评分策略验证只使用历史 point-in-time 数据",
@@ -18,7 +19,11 @@ def test_authoritative_contracts_make_history_the_only_score_validation_source()
         "线上 T+1 结算只用于正式推荐历史与运行监控",
     ):
         assert expected in strategy
-    assert "60 日训练、20 日校准、40 日独立检验均从已封存历史日期取得" in work
+    assert (
+        HISTORICAL_RISK_VALIDATION_SPEC.training_trade_dates,
+        HISTORICAL_RISK_VALIDATION_SPEC.calibration_trade_dates,
+        HISTORICAL_RISK_VALIDATION_SPEC.test_trade_dates,
+    ) == (60, 20, 40)
     assert "评分验证唯一使用历史 point-in-time 回放" in design
 
     for retired in (
