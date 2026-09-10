@@ -107,7 +107,7 @@ class MarketDataHealth:
             }
         gateway_health["sources"] = sources
         market_quotes = quote_status.market_features
-        candidate_quotes = quote_status.candidate_quotes
+        candidate_quotes = quote_status.active_candidate_quotes
         latest_candidate_quote = (
             max(candidate_quotes, key=lambda quote: (quote.source_time, quote.received_time, quote.data_version))
             if candidate_quotes

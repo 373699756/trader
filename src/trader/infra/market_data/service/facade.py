@@ -207,7 +207,7 @@ class MarketFeatureService:
                 deadline=deadline,
             )
         )
-        self.quotes.update_candidate_quotes(fetched)
+        self.quotes.update_candidate_quotes(fetched, candidate_cycle=observed_at)
         resolved = self.quotes.candidate_snapshot(normalized)
         action_restrictions: dict[str, set[str]] = {}
         return self.quotes.build_candidate_features(

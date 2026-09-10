@@ -105,12 +105,14 @@ class _RejectingLongRuntime:
 
 def _decision_build(
     drafts: UnifiedDecisionDraftIndex | None = None,
+    *,
+    now=lambda: TEST_NOW,
 ) -> DecisionBuildDependencies:
     return DecisionBuildDependencies(
         _LongRuntime(),
         _policy(),
         drafts or UnifiedDecisionDraftIndex(),
-        lambda: TEST_NOW,
+        now,
     )
 
 
@@ -364,7 +366,7 @@ def test_topk_overlay_batch_is_independent_from_full_market_and_scoring_cache(
         market,
         config_version="test-config",
         candidate_pool_size=1,
-        decision_build=_decision_build(),
+        decision_build=_decision_build(now=lambda: observed_at),
     )
     source = decision(Strategy.TOMORROW)
     anchor = source.items[0].quote
@@ -681,7 +683,7 @@ def test_three_scored_strategies_share_one_fast_market_input_cycle(
         market,
         config_version="test-config",
         candidate_pool_size=1,
-        decision_build=_decision_build(),
+        decision_build=_decision_build(now=lambda: observed_at),
     )
     requests = tuple(
         _request(observed_at, strategy=strategy, phase="morning")
@@ -977,7 +979,7 @@ def test_candidate_qualification_precedes_board_limit_and_failed_quote_promotes_
         market,
         config_version="test-config",
         candidate_pool_size=1,
-        decision_build=_decision_build(),
+        decision_build=_decision_build(now=lambda: observed_at),
     )
 
     adapter.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
@@ -987,6 +989,106 @@ def test_candidate_qualification_precedes_board_limit_and_failed_quote_promotes_
     statuses = {item.strategy: item for item in adapter.input_quality_status()}
     assert all(item.supply_funnel.candidate_limit_selected == 1 for item in statuses.values())
     assert all(item.supply_funnel.candidate_quote_eligible == 1 for item in statuses.values())
+
+
+def test_rank_one_quote_failure_promotes_exactly_rank_121_without_duplicate_requests(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+    features = tuple(
+        replace(
+            application_feature_factory(f"600{index:03d}", observed_at),
+            quote=replace(
+                application_feature_factory(f"600{index:03d}", observed_at).quote,
+                board=Board.MAIN,
+                board_source="security_master",
+                board_reliability="verified",
+                listing_age_sessions=100,
+            ),
+        )
+        for index in range(121)
+    )
+
+    class RankOneFailureMarket(_Market):
+        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None):
+            refreshed = super().refresh_candidate_quotes(codes, observed_at, force=force, deadline=deadline)
+            if self.candidate_quote_refresh_count == 1:
+                return tuple(item for item in refreshed if item.quote.code != "600000")
+            return refreshed
+
+    market = RankOneFailureMarket(features)
+    adapter = MarketDataAdapter(
+        market,
+        config_version="test-config",
+        candidate_pool_size=120,
+        decision_build=_decision_build(now=lambda: observed_at),
+    )
+
+    adapter.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
+    adapter.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
+
+    assert market.candidate_requests[0] == tuple(f"600{index:03d}" for index in range(120))
+    assert market.candidate_requests[1] == ("600120",)
+    assert len(tuple(code for wave in market.candidate_requests for code in wave)) == 121
+    assert len(set(code for wave in market.candidate_requests for code in wave)) == 121
+    assert adapter._strategy_requested_codes[Strategy.TOMORROW] == (
+        *(f"600{index:03d}" for index in range(1, 120)),
+        "600120",
+    )
+
+
+def test_deadline_stops_refill_and_preserves_the_last_complete_candidate_batch(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+    current_time = [observed_at]
+    features = tuple(
+        replace(
+            application_feature_factory(f"600{index:03d}", observed_at),
+            quote=replace(
+                application_feature_factory(f"600{index:03d}", observed_at).quote,
+                board=Board.MAIN,
+                board_source="security_master",
+                board_reliability="verified",
+                listing_age_sessions=100,
+            ),
+        )
+        for index in range(121)
+    )
+
+    class DeadlineMarket(_Market):
+        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None):
+            refreshed = super().refresh_candidate_quotes(codes, observed_at, force=force, deadline=deadline)
+            if self.candidate_quote_refresh_count == 2:
+                assert deadline is not None
+                current_time[0] = deadline
+                return tuple(item for item in refreshed if item.quote.code != "600000")
+            if self.candidate_quote_refresh_count > 2:
+                raise AssertionError("candidate refill must stop after its deadline")
+            return refreshed
+
+    market = DeadlineMarket(features)
+    adapter = MarketDataAdapter(
+        market,
+        config_version="test-config",
+        candidate_pool_size=120,
+        decision_build=_decision_build(now=lambda: current_time[0]),
+    )
+    adapter.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
+    first = adapter.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
+    first_codes = adapter._strategy_requested_codes[Strategy.TOMORROW]
+    first_features = adapter._strategy_candidate_features[Strategy.TOMORROW]
+
+    second = adapter.refresh_task(
+        PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at + timedelta(seconds=1))
+    )
+
+    assert second.changed is False
+    assert second.used_fallback is True
+    assert second.data_version == first.data_version
+    assert market.candidate_quote_refresh_count == 2
+    assert adapter._strategy_requested_codes[Strategy.TOMORROW] == first_codes
+    assert adapter._strategy_candidate_features[Strategy.TOMORROW] == first_features
 
 
 def test_candidate_quote_exhaustion_is_reported_as_transient_empty(
@@ -1158,7 +1260,7 @@ def test_stale_candidate_quote_promotes_next_same_board_reserve(
         market,
         config_version="test-config",
         candidate_pool_size=1,
-        decision_build=_decision_build(),
+        decision_build=_decision_build(now=lambda: observed_at),
     )
 
     adapter.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))

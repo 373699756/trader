@@ -343,7 +343,16 @@ def enrich_board_features(
 
 
 def board_candidate_score(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy) -> float:
-    return compose(board_candidate_components(snapshot, policy), policy.candidate_weights).base_score
+    return board_candidate_score_from_components(board_candidate_components(snapshot, policy), policy)
+
+
+def board_candidate_score_from_components(
+    components: Mapping[str, float],
+    policy: BoardStrategyPolicy,
+) -> float:
+    """Compose already-derived candidate components with the configured board weights."""
+
+    return compose(components, policy.candidate_weights).base_score
 
 
 def board_candidate_components(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy) -> Mapping[str, float]:
@@ -458,6 +467,7 @@ __all__ = [
     "MIN_BOARD_SAMPLE",
     "apply_board_policy",
     "board_candidate_score",
+    "board_candidate_score_from_components",
     "board_candidate_components",
     "build_board_cross_section",
     "candidate_fields",

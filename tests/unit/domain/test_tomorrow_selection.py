@@ -235,6 +235,104 @@ def test_candidate_stage_counts_follow_issuer_and_dynamic_qualification_before_c
     assert plan.stage_counts.candidate_limit_selected == 1
 
 
+def test_every_required_candidate_rejection_is_applied_before_the_board_cap(
+    application_feature_factory,
+) -> None:
+    def feature(code: str):
+        value = application_feature_factory(code, NOW, industry=f"industry-{code}")
+        return replace(
+            value,
+            quote=replace(
+                value.quote,
+                board=Board.MAIN,
+                board_source="security_master",
+                board_reliability="verified",
+                listing_age_sessions=100,
+            ),
+        )
+
+    unsupported = feature("900001")
+    st = feature("600001")
+    delisting = feature("600002")
+    suspended = feature("600003")
+    invalid_price = feature("600004")
+    invalid_amount = feature("600005")
+    stale = feature("600006")
+    too_new = feature("600007")
+    one_price = feature("600008")
+    no_liquidity_history = feature("600009")
+    no_strategy_history = feature("600010")
+    no_model_input = feature("600011")
+    core_missing = feature("600012")
+    eligible = tuple(feature(code) for code in ("600100", "600101", "600102"))
+    rejected = (
+        replace(unsupported, quote=replace(unsupported.quote, board=Board.UNSUPPORTED)),
+        replace(st, quote=replace(st.quote, is_st=True)),
+        replace(delisting, quote=replace(delisting.quote, name="退市样本")),
+        replace(suspended, quote=replace(suspended.quote, is_suspended=True)),
+        replace(invalid_price, quote=replace(invalid_price.quote, price=None)),
+        replace(invalid_amount, quote=replace(invalid_amount.quote, amount=None)),
+        replace(stale, quote=replace(stale.quote, source_time=NOW - timedelta(seconds=61))),
+        replace(too_new, quote=replace(too_new.quote, listing_age_sessions=5)),
+        replace(one_price, quote=replace(one_price.quote, is_one_price_limit=True)),
+        replace(no_liquidity_history, values={**no_liquidity_history.values, "amount_median_20d": None}),
+        replace(no_strategy_history, history_days=19),
+        no_model_input,
+        replace(
+            core_missing,
+            values={
+                **core_missing.values,
+                "trend_score": None,
+                "volatility_20d": None,
+                "max_drawdown_20d": None,
+            },
+        ),
+    )
+    features = (*rejected, *eligible)
+    request = replace(
+        _request(features, _selection_policy(candidate_limit=3)),
+        minimum_history_sessions=20,
+        model_input_eligible_codes=frozenset(
+            item.quote.code for item in features if item.quote.code != no_model_input.quote.code
+        ),
+    )
+
+    plan = plan_scored_candidates(request)
+    by_code = {item.code: item for item in plan.evaluations}
+
+    assert plan.limited_codes(3) == tuple(item.quote.code for item in eligible)
+    assert {reason.code for reason in by_code[unsupported.quote.code].filter_reasons} == {"unsupported_code"}
+    assert {reason.code for reason in by_code[st.quote.code].filter_reasons} == {"st_or_delisting"}
+    assert {reason.code for reason in by_code[delisting.quote.code].filter_reasons} == {"st_or_delisting"}
+    assert {reason.code for reason in by_code[suspended.quote.code].filter_reasons} == {"suspended"}
+    assert {reason.code for reason in by_code[invalid_price.quote.code].filter_reasons} == {"invalid_price"}
+    assert {reason.code for reason in by_code[invalid_amount.quote.code].filter_reasons} == {"invalid_amount"}
+    assert {reason.code for reason in by_code[stale.quote.code].filter_reasons} == {"stale_quote"}
+    assert {reason.code for reason in by_code[too_new.quote.code].filter_reasons} == {"new_listing_session"}
+    assert {reason.code for reason in by_code[one_price.quote.code].filter_reasons} == {"one_price_limit"}
+    assert {reason.code for reason in by_code[no_liquidity_history.quote.code].filter_reasons} == {
+        "missing_liquidity_history"
+    }
+    assert by_code[no_strategy_history.quote.code].selection_skip_reason == "strategy_history_insufficient"
+    assert by_code[no_model_input.quote.code].selection_skip_reason == "production_model_features_missing"
+    assert by_code[core_missing.quote.code].selection_skip_reason == "candidate_core_missing"
+
+
+def test_st_and_suspended_rough_leaders_do_not_displace_the_next_three_eligible_codes(
+    application_feature_factory,
+) -> None:
+    features = list(_features(application_feature_factory, count=5))
+    features[0] = replace(features[0], quote=replace(features[0].quote, is_st=True))
+    features[1] = replace(features[1], quote=replace(features[1].quote, is_suspended=True))
+
+    request = _request(tuple(features), _selection_policy(candidate_limit=3))
+    plan = plan_scored_candidates(request)
+    repeated = plan_scored_candidates(replace(request, features=tuple(reversed(features))))
+
+    assert plan.limited_codes(3) == ("600002", "600003", "600004")
+    assert repeated.limited_codes(3) == plan.limited_codes(3)
+
+
 def test_tomorrow_selection_records_local_threshold_exclusion(application_feature_factory) -> None:
     policy = replace(_selection_policy(top_k=1), minimum_local_score=100.0)
 

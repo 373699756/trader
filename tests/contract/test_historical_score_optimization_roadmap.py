@@ -12,7 +12,6 @@ def _compact(relative: str) -> str:
 def test_unfinished_roadmap_orders_data_before_training_and_activation() -> None:
     work = _compact("docs/03_工程实施.md")
     ordered = (
-        "candidate_single_owner_acceptance_revalidation",
         "scoring_weight_configuration_single_source",
         "v3_training_artifact_rebuild",
         "v3_runtime_acceptance",

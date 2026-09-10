@@ -133,7 +133,7 @@
           "cadence_task": "candidate_quotes",
           "action_max_age_multiplier": 3,
           "negative_ttl_seconds": 3,
-          "capacity": 360,
+          "capacity": 1080,
           "group": "observation",
           "persisted": false
         },
@@ -375,7 +375,7 @@
   "performance_budgets": {
     "workload": {
       "market_rows": 5500,
-      "candidate_rows": 360
+      "candidate_rows": 1080
     },
     "rounds": {
       "warmup": 1,
@@ -386,7 +386,8 @@
       "market_merge": 600,
       "canonical_snapshot": 900,
       "targeted_overlay_commit": 100,
-      "board_preselection": 250,
+      "board_preselection": 5000,
+      "candidate_union_projection": 100,
       "board_local_scoring": 250,
       "three_strategy_board_scoring": 750,
       "three_board_wall_clock": 1000,

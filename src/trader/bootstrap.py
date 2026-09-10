@@ -590,7 +590,7 @@ def _build_market_data(
     quote_cache = QuoteCache(
         QuoteCacheDependencies(gateway, feature_builder, history_cache, references),
         market_ttl_seconds=min(context.cadence_policy.intervals[PipelineTask.FULL_MARKET].values()),
-        candidate_capacity=settings.market_data.cache_policy.datasets["intraday_minutes"].capacity,
+        candidate_capacity=settings.market_data.cache_policy.datasets["candidate_quotes"].capacity,
         monotonic=time.monotonic,
     )
     market_health = MarketDataHealth(

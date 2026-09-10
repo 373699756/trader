@@ -6,6 +6,30 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求继续完成 `candidate_single_owner_acceptance_revalidation`。根因确认：候选资格、策略隔离和有序储备
+  已在生产链生效，但补位循环只把 deadline 传给供应商，没有在波次间停止，因而可能在 deadline 后提交部分
+  新批次；候选报价缓存又错误沿用 360 条分钟缓存容量，固定性能门仍只声明 360 候选，当前周期健康年龄还会被
+  缓存中的旧候选污染。Added: 新增完整拒绝类型、ST/停牌后 C/D/E、精确第 121 名补位、同轮不重复请求、
+  deadline 停止并保留最近完整批次、三策略最坏 1080 并集/缓存及浏览器诊断 fixture 回归；性能 runner 现在
+  对 5500 全市场执行三套完整策略候选规划，并用生产 overlay 投影完全不重合的 1080 报价。Changed: 候选报价
+  缓存容量改为 1080 且组合根从 `candidate_quotes` 配置装配；健康年龄只统计最近候选周期，条目数仍报告真实
+  有界占用；全市场候选规划复用一次发现时间规范化、单次过滤结果、板块策略投影和候选组件，5 秒预算不改变
+  20 秒全市场 deadline。Fixed: 补位波次到达 deadline 后不再发布半批；有完整旧批次时返回最近有效批次，
+  冷启动没有完整批次时明确 `candidate_refresh_deadline_exceeded`；浏览器性能诊断补齐当前 `DecisionItem` 的
+  板块和选择位次。Verification: 完整拒绝/资格顺序、精确补位、deadline、策略隔离、缓存/健康、设置及架构
+  定向回归通过；Ruff 与受影响公共类型 mypy 通过；独立性能门及统一 `full` 诊断中的性能项通过，固定负载为
+  5500/1080，最终 `full` 诊断候选规划 P95 2868.030ms、1080 报价投影 P95 8.721ms、峰值 RSS
+  297668KiB、
+  `network_calls=0`。真实重启后全市场 5306 行首次完整执行 15895.554ms；Tomorrow/D25 为 ready，错过
+  11:20 的 Today 两个调度点为 missed 且保持 not_ready；完整诊断 7 项中 5 项通过、2 项受控降级、0 项失败，
+  Firefox patch-to-paint P95 28ms，交易所主数据 5218 行，Tencent/Tushare 探针通过。`make format-check`、
+  `make lint`（零重构债务）、`make type-check`（384 个源码文件）、完整 `make test`、`make package` 和
+  `make performance-check` 全部通过；打包首次仅因沙箱禁止隔离环境下载 setuptools 失败，获准在主机环境以
+  同一命令重跑后成功。Residual Risks: 历史来源抽样仍有 1/3 空结果，运行快照仍公开历史、结构化风险和
+  公司事实覆盖降级；这不归因于候选容量或排序，也不授权强制推荐。批次不改变任何候选/评分权重、每板 120、
+  最低 50、30% 缺失门、0.85 可靠度、V1/V2/V3、68/32、Top6、动作线、DeepSeek 168 或冻结规则；所有生产
+  权重配置单一来源仍是下一独立章节。`Regression-Key: candidate-eligibility-before-cap-single-owner`。
+
 - 用户要求按未完成计划继续执行 `dynamic_cutoff_and_missing_fact_acquisition`。根因确认：父加增量下载计划和
   active manifest 已按目标交易日动态生成，但当前 `BaoStockDailySpec`、日线/ST/行业值对象、行合并审计及
   Tomorrow 训练输入兼容检查仍以 2026-08-31 进程常量判断；active context 又只保存日历 hash，不保存其精确

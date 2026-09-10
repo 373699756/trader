@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -65,3 +66,17 @@ def test_runtime_has_no_generic_candidate_weight_owner() -> None:
         '"board_preselection": "trader.application.recommendation.candidate_planning.build_candidate_plans"'
         in performance
     )
+    assert (
+        '"candidate_union_projection": '
+        '"trader.application.recommendation.candidate_planning.CandidatePlanSet.physical_union + '
+        'trader.infra.market_data.normalization.merge.overlay_canonical_snapshot"' in performance
+    )
+    assert '"candidate_rows": 1080' in _read("config/runtime.json")
+
+
+def test_candidate_quote_cache_is_sized_and_wired_for_the_physical_union() -> None:
+    bootstrap = _read("src/trader/bootstrap.py")
+    runtime_config = json.loads(_read("config/runtime.json"))
+
+    assert 'datasets["candidate_quotes"].capacity' in bootstrap
+    assert runtime_config["market_data"]["cache_policy"]["datasets"]["candidate_quotes"]["capacity"] == 1080

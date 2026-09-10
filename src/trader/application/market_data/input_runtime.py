@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import threading
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Protocol
@@ -322,6 +322,9 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         with self._lock:
             population = self._latest_market_features
             initial_plans = self._candidate_plans
+            previous_candidate_version = self._candidate_version
+            previous_strategy_requested = dict(self._strategy_requested_codes)
+            previous_strategy_features = dict(self._strategy_candidate_features)
         if not population or initial_plans is None:
             raise DataRefreshUnavailableError("candidate_universe_unavailable")
         refresh_plan = refresh_candidate_reserves(
@@ -340,7 +343,19 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                 force=True,
                 deadline=deadline,
             ),
+            can_refill=lambda: deadline is None or self._now() < deadline,
         )
+        if refresh_plan.deadline_reached:
+            if _candidate_batch_is_complete(previous_strategy_requested, previous_strategy_features):
+                return RefreshOutcome(
+                    request.task,
+                    False,
+                    previous_candidate_version,
+                    (),
+                    request.observed_at,
+                    True,
+                )
+            raise DataRefreshUnavailableError("candidate_refresh_deadline_exceeded")
         features = refresh_plan.features
         final_plans = refresh_plan.plans
         strategy_requested = {strategy: final_plans.strategy_codes(strategy) for strategy in SCORED_STRATEGIES}
@@ -929,6 +944,17 @@ def _merge_overlay_quote(
 def _task_deadline(request: PipelineTaskRequest) -> datetime | None:
     seconds = task_execution_budget_seconds(request.task)
     return request.observed_at + timedelta(seconds=seconds) if seconds is not None else None
+
+
+def _candidate_batch_is_complete(
+    requested: Mapping[Strategy, tuple[str, ...]],
+    features: Mapping[Strategy, tuple[FeatureSnapshot, ...]],
+) -> bool:
+    if not any(requested.values()):
+        return False
+    return all(
+        tuple(item.quote.code for item in features[strategy]) == requested[strategy] for strategy in SCORED_STRATEGIES
+    )
 
 
 def _require_codes(codes: tuple[str, ...], error_code: str) -> None:

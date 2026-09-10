@@ -157,7 +157,7 @@ def test_work_plan_is_an_unfinished_queue_not_a_second_normative_contract() -> N
     for required in (
         "评分逻辑](01_评分逻辑.md)",
         "工程设计](02_工程设计.md)",
-        "candidate_single_owner_acceptance_revalidation",
+        "scoring_weight_configuration_single_source",
         "v3_training_artifact_rebuild",
         "terminal_holdout_and_shadow",
         "manual_candidate_strategy_activation",

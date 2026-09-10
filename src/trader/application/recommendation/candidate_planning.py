@@ -13,6 +13,7 @@ from trader.application.recommendation.scored_quality import has_transient_evalu
 from trader.application.recommendation.scored_selection import (
     ScoredSelectionIdentity,
     ScoredSelectionOptions,
+    normalize_candidate_discovery_population,
     plan_scored_feature_candidates,
 )
 from trader.domain.market.models import FeatureSnapshot
@@ -57,12 +58,15 @@ class CandidateRefreshPlan:
     features: tuple[FeatureSnapshot, ...]
     plans: CandidatePlanSet
     transient_invalid_strategies: frozenset[Strategy] = frozenset()
+    deadline_reached: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "features", tuple(self.features))
         strategies = frozenset(self.transient_invalid_strategies)
         if not strategies.issubset(SCORED_STRATEGIES):
             raise ValueError("candidate refresh transient strategies must be scored strategies")
+        if not isinstance(self.deadline_reached, bool):
+            raise ValueError("candidate refresh deadline state must be boolean")
         object.__setattr__(self, "transient_invalid_strategies", strategies)
 
 
@@ -80,7 +84,7 @@ def build_candidate_plans(
     candidate_features: Sequence[FeatureSnapshot] | None,
     context: CandidatePlanningContext,
 ) -> CandidatePlanSet:
-    features = tuple(population)
+    features = normalize_candidate_discovery_population(population, context.evaluated_at)
     candidates = tuple(candidate_features) if candidate_features is not None else None
     plans = {
         strategy: plan_scored_feature_candidates(
@@ -93,7 +97,7 @@ def build_candidate_plans(
                 population_max_age_seconds=_maximum_age_seconds(strategy),
                 phase="candidate_discovery",
                 candidate_features=candidates,
-                normalize_discovery_source_time=True,
+                normalize_discovery_source_time=False,
                 strategy=strategy,
                 minimum_history_sessions=_history_required_sessions(context.model_scoring, strategy),
                 model_input_eligible_codes=_model_eligible_codes(
@@ -137,6 +141,8 @@ def refresh_candidate_reserves(
     initial_plans: CandidatePlanSet,
     context: CandidatePlanningContext,
     refresh_quotes: Callable[[tuple[str, ...]], Sequence[FeatureSnapshot]],
+    *,
+    can_refill: Callable[[], bool],
 ) -> CandidateRefreshPlan:
     pending = initial_plans.physical_union()
     if not pending:
@@ -181,6 +187,13 @@ def refresh_candidate_reserves(
         )
         transient_invalid_strategies.update(_transient_refresh_strategies(final_plans, requested))
         pending = _replacement_codes(initial_plans, final_plans, attempted)
+        if pending and not can_refill():
+            return CandidateRefreshPlan(
+                tuple(refreshed.values()),
+                final_plans,
+                frozenset(transient_invalid_strategies),
+                deadline_reached=True,
+            )
     return CandidateRefreshPlan(tuple(refreshed.values()), final_plans, frozenset(transient_invalid_strategies))
 
 

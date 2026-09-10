@@ -12,14 +12,13 @@ def _work() -> str:
 def test_download_plan_contains_only_the_remaining_dependency_route() -> None:
     work = _work()
     ordered = (
-        "## 2. 当前执行章节：候选单一所有权验收复核",
-        "## 3. 生产权重配置单一来源",
-        "## 4. V3 训练工件重建与整组发布",
-        "## 5. V3 工程运行验收",
-        "## 6. 点时证据修复",
-        "## 7. 候选容量与排序历史验证",
-        "## 8. 一次性终端留出与 Shadow",
-        "## 9. 人工候选策略生产启用",
+        "## 2. 当前执行章节：生产权重配置单一来源",
+        "## 3. V3 训练工件重建与整组发布",
+        "## 4. V3 工程运行验收",
+        "## 5. 点时证据修复",
+        "## 6. 候选容量与排序历史验证",
+        "## 7. 一次性终端留出与 Shadow",
+        "## 8. 人工候选策略生产启用",
     )
     positions = tuple(work.index(item) for item in ordered)
     assert positions == tuple(sorted(positions))
@@ -44,7 +43,7 @@ def test_increment_plan_preserves_parent_and_fails_closed_on_missing_facts() -> 
 
 def test_training_and_runtime_acceptance_cannot_auto_promote() -> None:
     work = _work()
-    section = work[work.index("## 4. V3") : work.index("## 10.")]
+    section = work[work.index("## 3. V3") : work.index("## 9.")]
 
     for token in (
         "一次原子切换",

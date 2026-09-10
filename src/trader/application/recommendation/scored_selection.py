@@ -165,6 +165,23 @@ def plan_scored_feature_candidates(
     return plan_scored_candidates(_selection_request(features, policy, options, identity))
 
 
+def normalize_candidate_discovery_population(
+    features: Sequence[FeatureSnapshot],
+    evaluated_at: datetime,
+) -> tuple[FeatureSnapshot, ...]:
+    """Normalize one discovery population once before strategy-specific planning."""
+
+    normalized: list[FeatureSnapshot] = []
+    for feature in features:
+        source_time = min(evaluated_at, feature.quote.received_time)
+        normalized.append(
+            feature
+            if feature.quote.source_time == source_time
+            else replace(feature, quote=replace(feature.quote, source_time=source_time))
+        )
+    return tuple(normalized)
+
+
 def _selection_request(
     features: Sequence[FeatureSnapshot],
     policy: RecommendationPolicy,
@@ -181,16 +198,7 @@ def _selection_request(
         raise ScoredSelectionNotReadyError("coherent_market_epoch_unavailable")
     population_evaluated_at = options.population_evaluated_at or evaluated_at
     if options.normalize_discovery_source_time:
-        population = tuple(
-            replace(
-                feature,
-                quote=replace(
-                    feature.quote,
-                    source_time=min(population_evaluated_at, feature.quote.received_time),
-                ),
-            )
-            for feature in population
-        )
+        population = normalize_candidate_discovery_population(population, population_evaluated_at)
     return ScoredSelectionRequest(
         features=population,
         evaluated_at=evaluated_at,
@@ -424,6 +432,7 @@ __all__ = [
     "ScoredSelectionOptions",
     "ScoredSelectionUseCase",
     "assemble_scored_features",
+    "normalize_candidate_discovery_population",
     "plan_scored_feature_candidates",
     "select_scored_features",
     "select_scored_snapshot",

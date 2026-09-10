@@ -122,7 +122,7 @@ def _parse_cache_datasets(datasets_raw: Mapping[str, object]) -> dict[str, Cache
 def _validate_fixed_cache_datasets(datasets: Mapping[str, CacheDatasetPolicy]) -> None:
     expected_policies = {
         "full_market_quotes": (None, None, "full_market", 3.0, 10.0, 6000, "observation", False),
-        "candidate_quotes": (None, None, "candidate_quotes", 3.0, 3.0, 360, "observation", False),
+        "candidate_quotes": (None, None, "candidate_quotes", 3.0, 3.0, 1080, "observation", False),
         "intraday_minutes": (45.0, 90.0, None, None, 45.0, 360, "observation", False),
         "research_success": (600.0, 1200.0, None, None, 60.0, 360, "observation", True),
         "research_failure": (60.0, 60.0, None, None, 60.0, 360, "observation", False),
@@ -231,8 +231,8 @@ def parse_performance_budgets(raw: Mapping[str, object]) -> PerformanceBudgetSet
         market_rows=integer(workload_raw, "market_rows", minimum=1),
         candidate_rows=integer(workload_raw, "candidate_rows", minimum=1),
     )
-    if workload != PerformanceWorkloadSettings(5500, 360):
-        raise ConfigurationError("performance workload must remain fixed at 5500 market rows and 360 candidates")
+    if workload != PerformanceWorkloadSettings(5500, 1080):
+        raise ConfigurationError("performance workload must remain fixed at 5500 market rows and 1080 candidates")
 
     rounds_raw = mapping(raw, "rounds")
     require_exact_keys(rounds_raw, {"warmup", "measurement"}, "performance_budgets.rounds")
@@ -248,7 +248,8 @@ def parse_performance_budgets(raw: Mapping[str, object]) -> PerformanceBudgetSet
         "market_merge": 600.0,
         "canonical_snapshot": 900.0,
         "targeted_overlay_commit": 100.0,
-        "board_preselection": 250.0,
+        "board_preselection": 5000.0,
+        "candidate_union_projection": 100.0,
         "board_local_scoring": 250.0,
         "three_strategy_board_scoring": 750.0,
         "three_board_wall_clock": 1000.0,

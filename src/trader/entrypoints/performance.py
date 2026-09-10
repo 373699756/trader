@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import os
@@ -24,7 +25,12 @@ from trader.application.decisions.decision_queries import UnifiedDecisionQueries
 from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
 from trader.application.ports.model_scoring import ModelScoringPort
 from trader.application.ports.scored import TomorrowNativeInput
-from trader.application.recommendation.candidate_planning import CandidatePlanningContext, build_candidate_plans
+from trader.application.recommendation.candidate_planning import (
+    SCORED_STRATEGIES,
+    CandidatePlanningContext,
+    CandidatePlanSet,
+    build_candidate_plans,
+)
 from trader.application.recommendation.model_scoring_router import ModelScoringRouter
 from trader.application.recommendation.policy import RecommendationPolicy
 from trader.application.recommendation.scored_projection import (
@@ -54,6 +60,10 @@ from trader.domain.recommendation.decision_identity import (
 from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 from trader.domain.recommendation.scoring.scoring import score_board_strategy
+from trader.domain.recommendation.selection.scored_selection import (
+    ScoredCandidatePlan,
+    ScoredCandidateStageCounts,
+)
 from trader.domain.recommendation.strategies.composition import LocalScoreResult
 from trader.domain.review.models import DeepSeekReview, ReviewOutcome
 from trader.infra.market_data.normalization.columnar import ColumnarQuoteBatch, targeted_market_changes
@@ -76,6 +86,12 @@ class _OperationContext:
     config_version: str
     policy: RecommendationPolicy
     model_scoring: ModelScoringPort
+
+
+@dataclass(frozen=True)
+class _CandidateUnionFixture:
+    plans: CandidatePlanSet
+    quotes: tuple[MarketQuote, ...]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -111,10 +127,14 @@ def run(
             )
         ),
     )
+    worst_case_plans = _worst_case_candidate_plans(budgets.workload.market_rows)
+    candidate_union = _candidate_union_quotes(market_quotes, worst_case_plans)
+    candidate_union_fixture = _CandidateUnionFixture(worst_case_plans, candidate_union)
     operations, provenance = _operations(
         market_inputs,
         market_quotes,
         candidates,
+        candidate_union_fixture,
         context,
     )
     measurements = {
@@ -166,7 +186,10 @@ def run(
         },
         "workload": {
             "market_rows": len(market_inputs),
-            "candidate_rows": len(candidates),
+            "candidate_rows": len(candidate_union),
+            "candidate_rows_per_strategy": len(candidates),
+            "candidate_union_is_disjoint": len(candidate_union)
+            == sum(len(worst_case_plans.strategy_codes(strategy)) for strategy in SCORED_STRATEGIES),
             "strategies": 3,
             "warmup_rounds": budgets.rounds.warmup,
             "measurement_rounds": budgets.rounds.measurement,
@@ -205,6 +228,7 @@ def _operations(
     market_inputs: tuple[MarketQuoteInput, ...],
     market_quotes: tuple[MarketQuote, ...],
     candidates: tuple[FeatureSnapshot, ...],
+    candidate_union_fixture: _CandidateUnionFixture,
     context: _OperationContext,
 ) -> tuple[dict[str, Callable[[], object]], dict[str, str]]:
     config_version = context.config_version
@@ -233,6 +257,23 @@ def _operations(
         targeted_codes=tuple(quote.code for quote in changed_quotes),
     )
     committed_overlay = overlay_canonical_snapshot(merged, overlay_snapshot)
+    candidate_union_snapshot = merge_market_observations(
+        tuple(
+            observation_from_quote(
+                replace(
+                    quote,
+                    source_time=changed_at,
+                    received_time=changed_at,
+                    data_version=f"{quote.data_version}:candidate-union",
+                ),
+                source="performance_candidate_union",
+                observed_at=changed_at,
+            )
+            for quote in candidate_union_fixture.quotes
+        ),
+        observed_at=changed_at,
+        targeted_codes=candidate_union_fixture.plans.physical_union(),
+    )
     market_features = tuple(
         FeatureSnapshot(quote, candidates[index % len(candidates)].values, observed_at, 61)
         for index, quote in enumerate(market_quotes)
@@ -288,11 +329,14 @@ def _operations(
         return score_board_strategy(item, board_policy)
 
     def candidate_preselection() -> object:
-        """Exercise the production planner for one bounded board window."""
+        """Exercise all three production planners against the complete market population."""
 
-        board_features = tuple(feature for feature in candidates if feature.quote.board is Board.MAIN)
-        plans = build_candidate_plans(
-            board_features,
+        nonlocal observations
+        if observations:
+            observations = ()
+            gc.collect()
+        return build_candidate_plans(
+            market_features,
             None,
             CandidatePlanningContext(
                 evaluated_at=observed_at,
@@ -302,9 +346,11 @@ def _operations(
                 limit_per_board=120,
             ),
         )
-        selected_codes = plans.plans[Strategy.TOMORROW].limited_codes(120)
-        by_code = {feature.quote.code: feature for feature in board_features}
-        return tuple(by_code[code] for code in selected_codes)
+
+    def candidate_union_projection() -> object:
+        if len(candidate_union_fixture.plans.physical_union()) != len(candidate_union_fixture.quotes):
+            raise ValueError("candidate union fixture identity mismatch")
+        return overlay_canonical_snapshot(merged, candidate_union_snapshot)
 
     operations: dict[str, Callable[[], object]] = {
         "market_normalization": lambda: tuple(build_market_quote(item) for item in market_inputs),
@@ -320,6 +366,7 @@ def _operations(
             overlay_commit(),
         ),
         "board_preselection": candidate_preselection,
+        "candidate_union_projection": candidate_union_projection,
         "board_local_scoring": lambda: tuple(active_score(Strategy.TOMORROW, item) for item in candidates),
         "three_strategy_board_scoring": lambda: tuple(
             tuple(active_score(strategy, item) for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25))
@@ -349,6 +396,7 @@ def _operations(
         "canonical_snapshot": "trader.infra.market_data.normalization.columnar.ColumnarQuoteBatch.from_snapshot",
         "targeted_overlay_commit": "trader.infra.market_data.normalization.merge.overlay_canonical_snapshot + trader.application.decisions.decision_core.UnifiedDecisionIndex.publish_overlay",
         "board_preselection": "trader.application.recommendation.candidate_planning.build_candidate_plans",
+        "candidate_union_projection": "trader.application.recommendation.candidate_planning.CandidatePlanSet.physical_union + trader.infra.market_data.normalization.merge.overlay_canonical_snapshot",
         "board_local_scoring": "trader.domain.recommendation.scoring.scoring.score_board_strategy",
         "three_strategy_board_scoring": "trader.domain.recommendation.scoring.scoring.score_board_strategy",
         "three_board_wall_clock": "trader.domain.recommendation.scoring.scoring.score_board_strategy",
@@ -529,7 +577,8 @@ def _fixtures(
         *range(2500, 2620),
         *range(4000, 4120),
     )
-    selected = tuple(candidate_indexes[: budgets.workload.candidate_rows])
+    per_strategy_candidates = budgets.workload.candidate_rows // len(SCORED_STRATEGIES)
+    selected = tuple(candidate_indexes[:per_strategy_candidates])
     candidates = tuple(
         FeatureSnapshot(
             quotes[index],
@@ -540,6 +589,53 @@ def _fixtures(
         for position, index in enumerate(selected)
     )
     return market, quotes, candidates
+
+
+def _worst_case_candidate_plans(market_rows: int) -> CandidatePlanSet:
+    if market_rows < 4360:
+        raise ValueError("performance market fixture cannot provide three disjoint strategy windows")
+    board_starts = {
+        Board.MAIN: 600000,
+        Board.CHINEXT: 300000,
+        Board.STAR: 688000,
+    }
+    strategy_offsets = {
+        Strategy.TODAY: 0,
+        Strategy.TOMORROW: 120,
+        Strategy.D25: 240,
+    }
+    plans: dict[Strategy, ScoredCandidatePlan] = {}
+    for strategy in SCORED_STRATEGIES:
+        offset = strategy_offsets[strategy]
+        reserves = {
+            board: tuple(f"{start + offset + index:06d}" for index in range(120))
+            for board, start in board_starts.items()
+        }
+        plans[strategy] = ScoredCandidatePlan(
+            evaluations=(),
+            reserves=reserves,
+            population_versions={},
+            stage_counts=ScoredCandidateStageCounts(
+                market_rows,
+                market_rows,
+                market_rows,
+                market_rows,
+                360,
+                360,
+            ),
+            hard_filter_reason_counts={},
+            population_rejected_count=0,
+            population_filter_reason_counts={},
+        )
+    return CandidatePlanSet(plans, limit_per_board=120)
+
+
+def _candidate_union_quotes(
+    market_quotes: tuple[MarketQuote, ...],
+    plans: CandidatePlanSet,
+) -> tuple[MarketQuote, ...]:
+    by_code = {quote.code: quote for quote in market_quotes}
+    return tuple(by_code[code] for code in plans.physical_union())
 
 
 def _performance_feature_values(position: int) -> dict[str, float]:

@@ -446,6 +446,61 @@ def test_feature_service_health_reports_bounded_quote_age_summaries() -> None:
     assert health["candidate_quote_latest_source"] == "fixture"
 
 
+def test_candidate_quote_cache_retains_disjoint_three_strategy_union() -> None:
+    service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+    )
+    quotes = tuple(
+        replace(
+            _quote(),
+            code=f"{600000 + offset:06d}",
+            data_version=f"candidate-{offset:04d}",
+        )
+        for offset in range(1080)
+    )
+
+    service.quotes.update_candidate_quotes(quotes)
+
+    codes = tuple(quote.code for quote in quotes)
+    assert tuple(quote.code for quote in service.quotes.candidate_snapshot(codes)) == codes
+
+
+def test_candidate_quote_health_age_only_covers_the_latest_candidate_cycle() -> None:
+    fresh = _quote()
+    measured_at = NOW + timedelta(seconds=1)
+    service = _service(
+        StaticGateway((fresh,)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        wall_clock=lambda: measured_at,
+    )
+    old_quotes = tuple(
+        replace(
+            fresh,
+            code=f"{601000 + offset:06d}",
+            source_time=NOW - timedelta(minutes=10),
+            received_time=NOW - timedelta(minutes=10),
+            data_version=f"old-candidate-{offset:04d}",
+        )
+        for offset in range(1080)
+    )
+    service.quotes.update_candidate_quotes(old_quotes)
+
+    service.refresh_candidate_quotes((fresh.code,), NOW)
+
+    health = service.health()
+    assert health["candidate_quote_cache_entries"] == 1080
+    assert health["candidate_quote_age"] == {
+        "sample_count": 1,
+        "p50_seconds": 1.0,
+        "p95_seconds": 1.0,
+        "maximum_seconds": 1.0,
+        "latest_source_time": NOW.isoformat(),
+    }
+
+
 def test_feature_service_current_quote_index_prefers_latest_targeted_quote() -> None:
     market_quote = _quote()
     targeted_quote = replace(

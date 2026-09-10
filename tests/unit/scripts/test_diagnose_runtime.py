@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,10 @@ from scripts.diagnose_runtime import (
     execute_command,
     run_diagnostics,
 )
+from scripts.runtime_diagnostics.browser_refresh import _seed
+from trader.application.decisions.decision_core import UnifiedDecisionIndex
+from trader.application.runtime.schedule import SHANGHAI
+from trader.domain.recommendation.models import Strategy
 
 
 def _options(**overrides: object) -> DiagnosticOptions:
@@ -41,6 +46,18 @@ def _options(**overrides: object) -> DiagnosticOptions:
         history_plan_details_output=None,
     )
     return replace(defaults, **overrides)
+
+
+def test_browser_diagnostic_seed_matches_the_current_decision_item_contract() -> None:
+    index = UnifiedDecisionIndex()
+    observed_at = datetime(2026, 8, 24, 13, 5, tzinfo=SHANGHAI)
+
+    _seed(index, Strategy.TOMORROW, observed_at, "600002")
+
+    current = index.snapshot(Strategy.TOMORROW).current
+    assert current is not None
+    assert current.items[0].board.value == "main"
+    assert current.items[0].selection_rank == 1
 
 
 def test_live_profile_combines_runtime_and_all_source_probes() -> None:

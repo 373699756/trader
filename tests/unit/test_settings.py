@@ -70,6 +70,7 @@ def test_configuration_contract_is_valid() -> None:
     assert runtime.market_data.cache_policy.total_bytes == 248 * 1024 * 1024
     assert runtime.market_data.cache_policy.runtime_reserve_bytes == 8 * 1024 * 1024
     assert runtime.market_data.cache_policy.pool_total_bytes == 256 * 1024 * 1024
+    assert runtime.market_data.cache_policy.datasets["candidate_quotes"].capacity == 1080
     assert {name: policy.persisted for name, policy in runtime.market_data.cache_policy.datasets.items()} == {
         "full_market_quotes": False,
         "candidate_quotes": False,
@@ -97,10 +98,11 @@ def test_configuration_contract_is_valid() -> None:
         "published_date_index": False,
     }
     assert runtime.performance_budgets.workload.market_rows == 5500
-    assert runtime.performance_budgets.workload.candidate_rows == 360
+    assert runtime.performance_budgets.workload.candidate_rows == 1080
     assert runtime.performance_budgets.rounds.warmup == 1
     assert runtime.performance_budgets.rounds.measurement == 5
     assert runtime.performance_budgets.latency_p95_ms["market_normalization"] == 250
+    assert runtime.performance_budgets.latency_p95_ms["board_preselection"] == 5000
     assert runtime.performance_budgets.latency_p95_ms["market_merge"] == 600
     assert runtime.performance_budgets.latency_p95_ms["canonical_snapshot"] == 900
     assert runtime.performance_budgets.latency_p95_ms["targeted_overlay_commit"] == 100
@@ -542,6 +544,10 @@ def test_runtime_settings_rejects_insecure_tushare_token_file(tmp_path, monkeypa
         ),
         (
             lambda raw: raw["performance_budgets"]["workload"].update({"market_rows": 5499}),
+            "performance workload",
+        ),
+        (
+            lambda raw: raw["performance_budgets"]["workload"].update({"candidate_rows": 1079}),
             "performance workload",
         ),
         (

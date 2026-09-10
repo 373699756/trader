@@ -201,6 +201,7 @@ def _service(
         monotonic=monotonic,
     )
     intraday_capacity = kwargs.pop("intraday_cache_limit", 360)
+    candidate_quote_capacity = kwargs.pop("candidate_quote_cache_limit", 1080)
     intraday = IntradayLoader(
         kwargs.pop("intraday_client", None),
         runner,
@@ -213,7 +214,7 @@ def _service(
     quotes = QuoteCache(
         QuoteCacheDependencies(gateway, feature_builder, history, references),
         market_ttl_seconds=kwargs.pop("market_ttl_seconds", 30),
-        candidate_capacity=intraday_capacity,
+        candidate_capacity=candidate_quote_capacity,
         monotonic=monotonic,
     )
     health = MarketDataHealth(

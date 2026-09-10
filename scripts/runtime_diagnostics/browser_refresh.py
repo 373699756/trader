@@ -54,6 +54,7 @@ from trader.application.runtime.runtime import (  # noqa: E402
 from trader.application.runtime.schedule import phase_at, shanghai_now  # noqa: E402
 from trader.application.runtime.scheduler_runtime import RuntimeDependencies, SchedulerRuntime  # noqa: E402
 from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep  # noqa: E402
+from trader.domain.market.models import Board  # noqa: E402
 from trader.domain.recommendation.decision_identity import (  # noqa: E402
     CommittedDecisionRecord,
     DecisionIdentity,
@@ -304,6 +305,8 @@ def _seed(index: UnifiedDecisionIndex, strategy: Strategy, at: datetime, code: s
         (("local_score", 80.0),),
         (),
         "measurement",
+        Board.MAIN,
+        1,
         name=f"测量{code}",
         industry="测量行业",
         quote=quote,

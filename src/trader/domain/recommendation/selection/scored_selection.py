@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from itertools import pairwise
@@ -14,10 +14,10 @@ from types import MappingProxyType
 from trader.domain.market.factors import clamp, round_score
 from trader.domain.market.models import Board, FeatureSnapshot
 from trader.domain.recommendation.filtering.filters import (
+    FilterTier,
     HardFilterPolicy,
     apply_filters,
-    hard_filter,
-    level_one_filter_rules,
+    default_filter_rules,
 )
 from trader.domain.recommendation.models import (
     BoardStrategyPolicy,
@@ -32,7 +32,7 @@ from trader.domain.recommendation.scoring.scoring import (
     BoardCrossSectionRequest,
     apply_board_policy,
     board_candidate_components,
-    board_candidate_score,
+    board_candidate_score_from_components,
     build_board_cross_section,
     candidate_fields,
     project_board_policy,
@@ -55,6 +55,12 @@ class BoardCrossSectionFallback:
     def __post_init__(self) -> None:
         if self.age_sessions < 0:
             raise ValueError("fallback age cannot be negative")
+
+
+@dataclass(frozen=True)
+class _FilteredFeatures:
+    evaluations: Mapping[str, ScoredStockEvaluation]
+    issuer_eligible_count: int
 
 
 @dataclass(frozen=True)
@@ -323,15 +329,16 @@ def select_scored(request: ScoredSelectionRequest) -> ScoredSelectionResult:
 
 
 def plan_scored_candidates(request: ScoredSelectionRequest) -> ScoredCandidatePlan:
-    population_evaluations = _filter_features(
+    population_filtered = _filter_features(
         request.features,
         request,
         evaluated_at=request.population_evaluated_at,
         max_age_seconds=request.population_max_age_seconds,
     )
+    population_evaluations = population_filtered.evaluations
     evaluations = dict(population_evaluations)
-    candidate_evaluations = (
-        population_evaluations
+    candidate_filtered = (
+        population_filtered
         if request.candidate_features is None
         else _filter_features(
             request.candidate_features,
@@ -340,6 +347,7 @@ def plan_scored_candidates(request: ScoredSelectionRequest) -> ScoredCandidatePl
             max_age_seconds=request.policy.max_age_seconds,
         )
     )
+    candidate_evaluations = candidate_filtered.evaluations
     evaluations.update(candidate_evaluations)
     population_versions: dict[Board, str] = {}
     reserves: dict[Board, tuple[str, ...]] = {}
@@ -371,34 +379,28 @@ def plan_scored_candidates(request: ScoredSelectionRequest) -> ScoredCandidatePl
         )
         population_versions[board] = cross_section.population.population_version
         policy = request.policy.board_policies[board]
-        _audit_board_population(
-            apply_board_policy(cross_section, request.policy.strategy, policy),
-            policy,
-            evaluations,
-        )
+        enriched_population = apply_board_policy(cross_section, request.policy.strategy, policy)
+        if request.candidate_features is not None:
+            _audit_board_population(enriched_population, policy, evaluations)
         enriched = (
-            apply_board_policy(cross_section, request.policy.strategy, policy)
+            enriched_population
             if request.candidate_features is None
             else project_board_policy(cross_section, request.policy.strategy, policy, candidates)
         )
-        reserves[board] = _rank_board_candidates(enriched, policy, request, evaluations)
+        reserves[board] = _rank_board_candidates(
+            enriched,
+            policy,
+            request,
+            evaluations,
+            audit_population=request.candidate_features is None,
+        )
 
     if request.candidate_features is None:
         assert request.population_evaluated_at is not None
         assert request.population_max_age_seconds is not None
-        issuer_evaluations = population_evaluations.values()
-        issuer_evaluated_at = request.population_evaluated_at
-        issuer_max_age_seconds = request.population_max_age_seconds
+        issuer_eligible = population_filtered.issuer_eligible_count
     else:
-        issuer_evaluations = candidate_evaluations.values()
-        issuer_evaluated_at = request.evaluated_at
-        issuer_max_age_seconds = request.policy.max_age_seconds
-    issuer_eligible = _issuer_eligible_count(
-        issuer_evaluations,
-        request,
-        evaluated_at=issuer_evaluated_at,
-        max_age_seconds=issuer_max_age_seconds,
-    )
+        issuer_eligible = candidate_filtered.issuer_eligible_count
     dynamic_eligible = sum(item.disposition is not ScoredDisposition.REJECT for item in candidate_evaluations.values())
     history_eligible = sum(
         item.disposition is not ScoredDisposition.REJECT
@@ -456,7 +458,7 @@ def _audit_board_population(
         current = evaluations[code]
         missing_ratio = feature.missing_ratio(required_fields)
         components = board_candidate_components(feature, policy)
-        score = board_candidate_score(feature, policy)
+        score = board_candidate_score_from_components(components, policy)
         pruning_reason = ""
         if missing_ratio > 0.30:
             pruning_reason = "candidate_core_missing"
@@ -483,18 +485,22 @@ def _filter_features(
     *,
     evaluated_at: datetime | None = None,
     max_age_seconds: float | None = None,
-) -> dict[str, ScoredStockEvaluation]:
+) -> _FilteredFeatures:
     filter_time = evaluated_at or request.evaluated_at
     quote_max_age = request.policy.max_age_seconds if max_age_seconds is None else max_age_seconds
+    rules = default_filter_rules(max_age_seconds=quote_max_age, policy=request.policy.hard_filter)
+    permanent_filter_codes = frozenset(rule.name for rule in rules if rule.tier is FilterTier.ISSUER_PERMANENT)
     result: dict[str, ScoredStockEvaluation] = {}
+    issuer_eligible_count = 0
     for feature in sorted(features, key=lambda item: item.quote.code):
-        filtered = hard_filter(
-            feature,
-            filter_time,
-            max_age_seconds=quote_max_age,
-            policy=request.policy.hard_filter,
+        filtered = apply_filters(feature, rules, now=filter_time)
+        if not any(reason.code in permanent_filter_codes for reason in filtered.reasons):
+            issuer_eligible_count += 1
+        normalized = (
+            feature
+            if feature.quote.board is filtered.board
+            else replace(feature, quote=replace(feature.quote, board=filtered.board))
         )
-        normalized = replace(feature, quote=replace(feature.quote, board=filtered.board))
         if not filtered.allowed:
             disposition = ScoredDisposition.REJECT
         elif filtered.optional_flags or feature.quote.execution_restrictions:
@@ -507,28 +513,7 @@ def _filter_features(
             filter_reasons=filtered.reasons,
             optional_flags=filtered.optional_flags,
         )
-    return result
-
-
-def _issuer_eligible_count(
-    evaluations: Iterable[ScoredStockEvaluation],
-    request: ScoredSelectionRequest,
-    *,
-    evaluated_at: datetime,
-    max_age_seconds: float,
-) -> int:
-    """Count the population remaining after the permanent issuer gate.
-
-    The complete ``hard_filter`` result remains the evaluation source used by
-    scoring.  This second, tier-specific projection only supplies the funnel's
-    first stage so permanent exclusions cannot be confused with dynamic data
-    quality failures.
-    """
-    rules = level_one_filter_rules(
-        max_age_seconds=max_age_seconds,
-        policy=request.policy.hard_filter,
-    )
-    return sum(apply_filters(item.features, rules, now=evaluated_at).allowed for item in evaluations)
+    return _FilteredFeatures(MappingProxyType(result), issuer_eligible_count)
 
 
 def _rank_board_candidates(
@@ -536,6 +521,8 @@ def _rank_board_candidates(
     policy: BoardStrategyPolicy,
     request: ScoredSelectionRequest,
     evaluations: dict[str, ScoredStockEvaluation],
+    *,
+    audit_population: bool,
 ) -> tuple[str, ...]:
     candidates: list[tuple[bool, float, FeatureSnapshot, float]] = []
     required_fields = candidate_fields(request.policy.strategy)
@@ -552,21 +539,34 @@ def _rank_board_candidates(
         if feature.board_data_reliability < policy.minimum_reliability:
             disposition = ScoredDisposition.OBSERVE_ONLY
             optional_flags = (*optional_flags, _reliability_audit(feature, policy.minimum_reliability))
+        components = board_candidate_components(feature, policy)
         current = replace(
             current,
             features=feature,
             disposition=disposition,
             optional_flags=optional_flags,
             candidate_missing_ratio=round(missing_ratio, 6),
-            candidate_components={
-                name: round(value, 6) for name, value in board_candidate_components(feature, policy).items()
-            },
+            candidate_components={name: round(value, 6) for name, value in components.items()},
         )
         if missing_ratio > 0.30:
-            evaluations[code] = replace(current, selection_skip_reason="candidate_core_missing")
+            evaluations[code] = replace(
+                current,
+                selection_skip_reason="candidate_core_missing",
+                candidate_audit_pruning_reason=(
+                    "candidate_core_missing" if audit_population else current.candidate_audit_pruning_reason
+                ),
+            )
             continue
-        candidate_score = board_candidate_score(feature, policy)
-        current = replace(current, candidate_score=round_score(candidate_score))
+        candidate_score = board_candidate_score_from_components(components, policy)
+        current = replace(
+            current,
+            candidate_score=round_score(candidate_score),
+            candidate_audit_pruning_reason=(
+                "candidate_score_below_minimum"
+                if audit_population and candidate_score < policy.candidate_min_score
+                else current.candidate_audit_pruning_reason
+            ),
+        )
         if candidate_score < policy.candidate_min_score:
             evaluations[code] = replace(current, selection_skip_reason="candidate_score_below_minimum")
             continue
@@ -580,6 +580,10 @@ def _rank_board_candidates(
             )
         )
     candidates.sort(key=lambda row: (row[0], -row[1], row[2].quote.code))
+    if audit_population:
+        for rank, (_unreliable, _score, feature, _missing) in enumerate(candidates, start=1):
+            code = feature.quote.code
+            evaluations[code] = replace(evaluations[code], candidate_audit_rank=rank)
     return tuple(feature.quote.code for _unreliable, _score, feature, _missing in candidates)
 
 
