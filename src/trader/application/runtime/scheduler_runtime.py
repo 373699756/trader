@@ -37,8 +37,8 @@ from trader.application.ports.scheduler import (
     SettlementPort,
     SettlementUnavailableError,
     SharedDeepSeekRuntimeContract,
-    TradingCalendarUnavailableError,
     TradingCalendarPort,
+    TradingCalendarUnavailableError,
 )
 from trader.application.research.research_audit import DecisionObservation
 from trader.application.runtime.cadence import (

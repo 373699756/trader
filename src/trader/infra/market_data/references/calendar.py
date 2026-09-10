@@ -99,10 +99,10 @@ class ChinaTradingCalendar:
 
             self._fetch_thread = threading.Thread(target=fetch, name="trading-calendar-fetch", daemon=True)
             self._fetch_thread.start()
-        completed = self._fetch_completed
-        if completed is None:
+        fetch_completed = self._fetch_completed
+        if fetch_completed is None:
             raise TradingCalendarUnavailableError("trading calendar fetch state is unavailable")
-        if not completed.wait(self._fetch_timeout_seconds):
+        if not fetch_completed.wait(self._fetch_timeout_seconds):
             raise TradingCalendarUnavailableError("trading calendar fetch timed out")
         result = self._fetch_result
         error = self._fetch_error
