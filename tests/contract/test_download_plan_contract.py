@@ -58,3 +58,14 @@ def test_training_and_runtime_acceptance_cannot_auto_promote() -> None:
 
 def test_plan_does_not_publish_an_extra_research_status_command() -> None:
     assert "./run.sh research-status" not in _work()
+
+
+def test_current_training_task_uses_the_reviewed_zero_argument_history_prerequisite() -> None:
+    work = _work()
+
+    for required in (
+        "第 12.7 节阶段 A–G",
+        "下一完整实施切片为阶段 A",
+        "`download_history --mode update` 只表示当前旧实现",
+    ):
+        assert required in work

@@ -175,3 +175,38 @@ def test_strategy_replay_document_records_the_zero_argument_history_rebuild_plan
         "单个巨型 SQLite",
     ):
         assert f"不再保留 `{retired_shape}`" in plan or f"拒绝 `{retired_shape}`" in plan
+
+
+def test_strategy_replay_document_has_an_executable_maintenance_and_reminder_plan() -> None:
+    content = REPLAY.read_text(encoding="utf-8")
+    plan = content.split("## 12. 零参数历史归档重构计划（待实施）", maxsplit=1)[1]
+
+    for required in (
+        "每天触发不等于每天全市场逐股重拉",
+        "5453 × 2 秒约为 3 小时",
+        "日更来源能力门",
+        "Asia/Shanghai 15:10",
+        "Asia/Shanghai 20:30",
+        "已完整发布则返回 `already_current`",
+        "失败、未执行、未完整发布或中断则只补缺口",
+        "Persistent=true",
+        "StartWhenAvailable",
+        "already_running",
+        "活动模型成功训练所绑定的 `label_cutoff`",
+        "matured_label_days_since_training",
+        "initial_training_required",
+        "cadence_due",
+        "input_revision_due",
+        "data_incomplete",
+        "只有成功发布新训练 bundle 才能清零",
+        "每天最多提醒一次",
+        "automatic_model_update=false",
+        "每日自动同步、到期只提醒",
+        "不得自动调用 `train-tomorrow`",
+        "磁盘余量",
+        "控制库损坏",
+        "SIGTERM",
+        "阶段 A",
+        "阶段 G",
+    ):
+        assert required in plan
