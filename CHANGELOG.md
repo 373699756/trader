@@ -6,6 +6,19 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户反馈 `./run.sh` 启动后交易日历获取超时，调度线程持续输出 `runtime schedule tick failed` 堆栈。
+  根因确认：调度入口直接调用外部日历且未接管可用性状态，超时异常击穿 supervisor；日历适配器每次超时又
+  丢弃仍在执行的线程及其迟到结果，后续 tick 会重复创建请求。Changed: 将
+  `TradingCalendarUnavailableError` 提升为应用端口契约，统一调度入口在日历不可用时 fail closed，不提交
+  行情、评分、研究或冻结任务，并按 30/60/120/300 秒封顶退避；同交易日成功结果由调度器复用，异步输入和
+  研究回调不再绕过门控。Fixed: 日历适配器保留单个在途刷新及其迟到结果，重试不再堆积供应商线程；
+  `scheduler.calendar` 加法暴露日期、状态、是否交易日、连续失败次数和下一重试时间，恢复后自动解除
+  `calendar:calendar_unavailable` 降级。Verification: 日历超时 single-flight、完整退避序列、fail-closed、
+  状态 JSON 与恢复回归已通过；完整高风险门禁待本批收尾统一执行。Residual Risks: 当前本地有效缓存已覆盖到
+  2026-12-31，但上游 AKShare/Sina 仍可能网络超时；此时系统保持只读可用并等待后台重试。交易 session
+  generation、时钟不连续检测及旧 generation 结果隔离仍是 `02_工程设计.md` 已记录但未闭合的后续项。
+  `Regression-Key: calendar-timeout-scheduler-fail-closed-backoff`。
+
 - 用户要求再次逐节核对 `01_评分逻辑.md` 与当前工程，修复扫描问题，并在文档中区分已实现、代码不一致和
   后续缺口。根因确认四项：D25 入场质量错误地要求回踩与突破两组专属字段同时齐全；最终集中度选择会跳过
   受限股票后继续从第 7 名以后补数且不保留动作池原位次；`top_scores` 同分时遗漏本地分第二排序键；短线

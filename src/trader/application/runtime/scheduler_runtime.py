@@ -368,6 +368,8 @@ class SchedulerRuntime:
                 self._calendar_consecutive_failure_count = 0
                 self._calendar_next_retry_at = None
             next_retry_at = self._calendar_next_retry_at
+            if self._calendar_state == "ready" and self._calendar_is_trading_day is not None:
+                return self._calendar_is_trading_day, 0.0
             if next_retry_at is not None and observed_at < next_retry_at:
                 return None, max(0.05, (next_retry_at - observed_at).total_seconds())
         try:
@@ -524,7 +526,9 @@ class SchedulerRuntime:
 
     def _trigger_scoring_after_input(self) -> None:
         completed_at = shanghai_now(self._dependencies.clock.now())
-        is_trading_day = self._dependencies.calendar.is_trading_day(completed_at.date())
+        is_trading_day, _retry_delay = self._calendar_decision(completed_at)
+        if is_trading_day is None:
+            return
         scheduled = self._dependencies.cadence.plan_score_after_input(
             completed_at,
             is_trading_day=is_trading_day,
@@ -784,7 +788,9 @@ class SchedulerRuntime:
             if not self._running:
                 return
         completed_at = shanghai_now(result.completed_at or self._dependencies.clock.now())
-        is_trading_day = self._dependencies.calendar.is_trading_day(completed_at.date())
+        is_trading_day, _retry_delay = self._calendar_decision(completed_at)
+        if is_trading_day is None:
+            return
         schedule = decision_at(completed_at, is_trading_day=is_trading_day)
         if not schedule.should_score:
             return

@@ -730,7 +730,7 @@ def test_calendar_failure_fails_closed_with_backoff_and_observable_recovery() ->
 
         def is_trading_day(self, _day: date) -> bool:
             self.calls += 1
-            if self.calls < 3:
+            if self.calls < 6:
                 raise TradingCalendarUnavailableError("provider timeout")
             return True
 
@@ -787,15 +787,21 @@ def test_calendar_failure_fails_closed_with_backoff_and_observable_recovery() ->
         assert calendar.calls == 1
         assert data.task_requests == []
 
-        clock.current = observed_at + timedelta(seconds=30)
-        assert runtime.submit_due(clock.current) == 60.0
-        assert calendar.calls == 2
-        assert runtime.status().calendar.next_retry_at == observed_at + timedelta(seconds=90)
+        for offset, expected_delay, expected_calls in (
+            (30, 60.0, 2),
+            (90, 120.0, 3),
+            (210, 300.0, 4),
+            (510, 300.0, 5),
+        ):
+            clock.current = observed_at + timedelta(seconds=offset)
+            assert runtime.submit_due(clock.current) == expected_delay
+            assert calendar.calls == expected_calls
+            assert runtime.status().calendar.next_retry_at == clock.current + timedelta(seconds=expected_delay)
 
-        clock.current = observed_at + timedelta(seconds=90)
+        clock.current = observed_at + timedelta(seconds=810)
         runtime.submit_due(clock.current)
         recovered = runtime.status()
-        assert calendar.calls == 3
+        assert calendar.calls == 6
         assert recovered.calendar.state == "ready"
         assert recovered.calendar.is_trading_day is True
         assert recovered.calendar.consecutive_failure_count == 0
