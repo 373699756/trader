@@ -7,14 +7,9 @@ from datetime import date
 from pathlib import Path
 from typing import Literal
 
+from trader.domain.research.history_control import HistoryTrainingDueReason
+
 HistoryMaintenanceState = Literal["blocked", "already_current", "already_running", "completed"]
-HistoryTrainingDueReason = Literal[
-    "not_due",
-    "initial_training_required",
-    "cadence_due",
-    "input_revision_due",
-    "data_incomplete",
-]
 
 
 @dataclass(frozen=True)
@@ -41,10 +36,10 @@ class HistoryMaintenanceStatus:
 
 
 def blocked_history_maintenance_status() -> HistoryMaintenanceStatus:
-    """Fail closed while the target control plane and monthly archive are not implemented."""
+    """Fail closed until the monthly archive read/write plane is implemented."""
     return HistoryMaintenanceStatus(
         state="blocked",
-        reason="history_control_plane_pending",
+        reason="history_monthly_archive_pending",
         archive_root=Path("data/history/baostock"),
         selected_baseline_source="baostock",
         efficient_daily_source=None,

@@ -30,7 +30,7 @@ def test_download_history_rejects_every_legacy_argument_during_parsing(
     assert not runtime_dir.exists()
 
 
-def test_download_history_fails_closed_until_the_new_control_plane_exists(
+def test_download_history_fails_closed_until_the_monthly_archive_exists(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     assert main(["download_history"]) == 1
@@ -44,7 +44,7 @@ def test_download_history_fails_closed_until_the_new_control_plane_exists(
         "efficient_daily_source": None,
         "label_cutoff": None,
         "matured_label_days_since_training": 0,
-        "reason": "history_control_plane_pending",
+        "reason": "history_monthly_archive_pending",
         "schema_version": "history_maintenance_status",
         "selected_baseline_source": "baostock",
         "state": "blocked",
@@ -59,7 +59,7 @@ def test_download_history_contract_exposes_an_immutable_typed_status() -> None:
     status = blocked_history_maintenance_status()
 
     assert status.state == "blocked"
-    assert status.reason == "history_control_plane_pending"
+    assert status.reason == "history_monthly_archive_pending"
     assert status.archive_root == Path("data/history/baostock")
     assert status.training_due is False
     assert status.training_due_reason == "data_incomplete"

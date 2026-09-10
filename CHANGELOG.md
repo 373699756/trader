@@ -6,6 +6,22 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求按 `04_策略回溯.md` 继续下一未完成任务，并明确本批新增命名不得使用泛化的存储术语。
+  根因确认：阶段 A 只建立了零参数命令和来源能力门，代码仅有固定 blocked 状态；来源、日历、证券总体、同步
+  checkpoint、训练 due、提醒、active snapshot、控制库恢复、互斥和磁盘预算均无新控制面所有者。Added: 新增
+  纯领域不可变控制身份与内容 hash，新增 `SQLiteHistoryControlRepository` 作为 `control.sqlite3` 唯一 codec/
+  持久化边界，新增跨平台 `HistoryMaintenanceLock` 与合计月旁路、SQLite 临时区、训练工作区及保留空间的
+  `HistoryDiskRequirement` 预检。Changed: 同逻辑身份同内容重放幂等、异内容失败；snapshot 只能引用已封存
+  来源/日历/总体，先耐久保存对象再单调切换 active sequence，断电后的孤立对象可由同内容重试接续；控制库损坏
+  只接受类型化验证状态旁路重建，经 codec 回读、WAL checkpoint、fsync 后原子替换。公开零参数命令继续不联网、
+  不写历史目录，但 blocker 推进为 `history_monthly_archive_pending`；阶段 C 月分片是下一切片。Verification:
+  114 项领域、SQLite codec、幂等/冲突、父身份引用、断电/重建中断恢复、active 防倒退、进程锁、磁盘边界、CLI、
+  架构序列化边界和权威文档定向回归通过；受影响 Python 的 Ruff、format 和 mypy 通过，`git diff --check` 通过。
+  全量门禁按 A–G 大任务在阶段 G 统一执行。Residual Risks: 本批不
+  建月分片、不调用供应商、不下载真实 2000 日、不接训练节奏或自动任务；因此没有 active snapshot，V3 仍保持
+  `historical_data_insufficient`、`point_in_time_parity=false`、`production_authority=false`，默认 V1 不变。
+  `Regression-Key: zero-argument-history-snapshot-training-alignment`。
+
 - 用户要求按已 Review 的零参数历史下载方案开始改代码，并说明已清空 `data/history`、可以全量重下。根因确认：
   公开 CLI 仍接受 `--runtime-dir/--sessions/--mode/--profile` 并会写回已否决的父加增量目录；同时当前候选来源
   没有一个同时证明全市场单日 raw、qfq/复权因子、停牌、代码变更和完整发布 cutoff，若直接实现“高效日更”会

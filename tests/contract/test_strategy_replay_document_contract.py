@@ -100,12 +100,12 @@ def test_strategy_replay_document_keeps_public_commands_and_strategy_ownership_b
         assert required in content
 
 
-def test_strategy_replay_document_records_the_stage_a_source_gate_and_atomic_training() -> None:
+def test_strategy_replay_document_records_the_stage_a_b_gates_and_atomic_training() -> None:
     content = REPLAY.read_text(encoding="utf-8")
 
     for required in (
         "history_maintenance_status",
-        "history_control_plane_pending",
+        "history_monthly_archive_pending",
         "history-daily-capability",
         "Tushare 120 积分",
         "raw 3/3",
@@ -209,7 +209,10 @@ def test_strategy_replay_document_has_an_executable_maintenance_and_reminder_pla
         "控制库损坏",
         "SIGTERM",
         "阶段 A（已完成）",
-        "阶段 B",
+        "阶段 B（已完成）",
+        "SQLiteHistoryControlRepository",
+        "HistoryMaintenanceLock",
+        "HistoryDiskRequirement",
         "阶段 G",
     ):
         assert required in plan
