@@ -129,3 +129,49 @@ def test_strategy_replay_document_explains_incremental_download_and_atomic_train
 
     assert "当前可以执行 `--mode update`" not in content
     assert "当前快照回填历史" in content
+
+
+def test_strategy_replay_document_records_the_zero_argument_history_rebuild_plan() -> None:
+    content = REPLAY.read_text(encoding="utf-8")
+    plan = content.split("## 12. 零参数历史归档重构计划（待实施）", maxsplit=1)[1]
+
+    for required in (
+        "`./run.sh download_history` 是唯一历史维护入口",
+        "不接受 `--runtime-dir`、`--sessions`、`--mode` 或 `--profile`",
+        "control.sqlite3",
+        "按自然年目录、自然月分片",
+        "YYYY/MM.sqlite3",
+        "只打开命中的月库",
+        "下载顺序不决定物理布局",
+        "PRIMARY KEY (trade_date, code, revision_id) WITHOUT ROWID",
+        "训练样本缓存同样按 `(trade_date, code)`",
+        "`(code, trade_date)`",
+        "`(trade_date, board, code)`",
+        "滚动 2000 个完整交易日",
+        "750、1000、1250",
+        "约 250 日确认区",
+        "约 250 日终端留出",
+        "全市场交易日历是唯一日期主轴",
+        "上市前日期不造空行",
+        "至少 61 个实际有效交易日",
+        "同一交易日的全部股票必须进入同一切分",
+        "退市股票在退市生效日前的历史继续保留",
+        "每新增 20 个标签成熟交易日",
+        "最近 5 个交易日",
+        "新上市证券从上市日",
+        "退市证券保留既有历史",
+        "training_due",
+        "already_current",
+        "不会自动启动训练",
+        "失败时继续使用上一活动模型",
+        "Regression-Key: zero-argument-history-snapshot-training-alignment",
+    ):
+        assert required in plan
+
+    for retired_shape in (
+        "父归档 + 增量归档",
+        "sessions-2000/",
+        "active-manifest.json",
+        "单个巨型 SQLite",
+    ):
+        assert f"不再保留 `{retired_shape}`" in plan or f"拒绝 `{retired_shape}`" in plan
