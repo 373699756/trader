@@ -118,10 +118,8 @@ class SQLiteHistoryMonthlyArchive:
             or dates[-1] != snapshot.data_cutoff
         ):
             raise ValueError("history training calendar is invalid")
-        expected_paths = tuple(
-            f"partitions/{year:04d}/{month:02d}.sqlite3" for year, month in route_history_months(dates[0], dates[-1])
-        )
-        if tuple(reference.relative_path for reference in snapshot.partitions) != expected_paths:
+        expected_months = route_history_months(dates[0], dates[-1])
+        if tuple(_reference_month(reference) for reference in snapshot.partitions) != expected_months:
             raise HistoryMonthlyArchiveError("history snapshot does not cover the active calendar")
         position = {day: index for index, day in enumerate(dates)}
         buffers: dict[str, deque[BaoStockTrainingRow]] = {}
@@ -152,8 +150,7 @@ class SQLiteHistoryMonthlyArchive:
         year: int,
         month: int,
     ) -> HistorySnapshotPartition:
-        relative_path = f"partitions/{year:04d}/{month:02d}.sqlite3"
-        matches = tuple(item for item in snapshot.partitions if item.relative_path == relative_path)
+        matches = tuple(item for item in snapshot.partitions if _reference_month(item) == (year, month))
         if len(matches) != 1:
             raise HistoryMonthlyArchiveError("history snapshot month is missing")
         return matches[0]
@@ -173,7 +170,7 @@ class SQLiteHistoryMonthlyArchive:
 
 def _reference_month(reference: HistorySnapshotPartition) -> tuple[int, int]:
     parts = Path(reference.relative_path).parts
-    return int(parts[1]), int(Path(parts[2]).stem)
+    return int(parts[1]), int(parts[2])
 
 
 __all__ = ["HistoryMonthlyArchiveError", "SQLiteHistoryMonthlyArchive", "route_history_months"]

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 
 import pytest
 
+from trader.application.research.history_maintenance import HistoryMaintenanceStatus
 from trader.entrypoints.cli import build_parser, main
 
 
@@ -30,36 +32,64 @@ def test_download_history_rejects_every_legacy_argument_during_parsing(
     assert not runtime_dir.exists()
 
 
-def test_download_history_fails_closed_until_synchronization_exists(
+def test_download_history_runs_the_typed_zero_argument_synchronization(
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert main(["download_history"]) == 1
+    status = HistoryMaintenanceStatus(
+        "completed",
+        None,
+        Path("data/history/baostock"),
+        "baostock",
+        None,
+        "a" * 64,
+        date(2026, 9, 10),
+        date(2026, 9, 9),
+        0,
+        False,
+        "data_incomplete",
+        False,
+    )
+    monkeypatch.setattr("trader.infra.research.history_sync_runtime.run_history_sync", lambda *_args: status)
+
+    assert main(["download_history"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
-        "active_snapshot_hash": None,
+        "active_snapshot_hash": "a" * 64,
         "archive_root": "data/history/baostock",
         "automatic_training": False,
-        "data_cutoff": None,
+        "data_cutoff": "2026-09-10",
         "efficient_daily_source": None,
-        "label_cutoff": None,
+        "label_cutoff": "2026-09-09",
         "matured_label_days_since_training": 0,
-        "reason": "history_sync_pending",
+        "reason": None,
         "schema_version": "history_maintenance_status",
         "selected_baseline_source": "baostock",
-        "state": "blocked",
+        "state": "completed",
         "training_due": False,
         "training_due_reason": "data_incomplete",
     }
 
 
 def test_download_history_contract_exposes_an_immutable_typed_status() -> None:
-    from trader.application.research.history_maintenance import blocked_history_maintenance_status
+    status = HistoryMaintenanceStatus(
+        "already_current",
+        None,
+        Path("data/history/baostock"),
+        "baostock",
+        None,
+        "a" * 64,
+        date(2026, 9, 10),
+        date(2026, 9, 9),
+        0,
+        False,
+        "data_incomplete",
+        False,
+    )
 
-    status = blocked_history_maintenance_status()
-
-    assert status.state == "blocked"
-    assert status.reason == "history_sync_pending"
+    assert status.state == "already_current"
+    assert status.reason is None
     assert status.archive_root == Path("data/history/baostock")
     assert status.training_due is False
     assert status.training_due_reason == "data_incomplete"

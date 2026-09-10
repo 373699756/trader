@@ -19,12 +19,13 @@ import signal
 import sqlite3
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager, closing
 from dataclasses import dataclass, replace
-from datetime import date, datetime, time as datetime_time
+from datetime import date, datetime
+from datetime import time as datetime_time
 from pathlib import Path
-from typing import Any, Callable, Literal, cast
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 from trader.domain.research.history_control import (
@@ -1270,8 +1271,11 @@ def _apply_gap_result(
         if not additions:
             refreshed.append(previous)
             continue
-        path = _safe_child(staging, previous.relative_path, "converted partition")
-        with closing(_connect(path, cache_mib, wal=True)) as connection:
+        source_path = _safe_child(staging, previous.relative_path, "converted partition")
+        pending = staging / "partitions" / f"{previous.year:04d}" / f".{previous.month:02d}.supplement.pending.sqlite3"
+        _remove_pending(pending)
+        shutil.copy2(source_path, pending)
+        with closing(_connect(pending, cache_mib, wal=True)) as connection:
             for key, rows in sorted(additions.items()):
                 written += int(
                     _write_overlay(
@@ -1290,13 +1294,12 @@ def _apply_gap_result(
                 raise ConversionError(
                     f"supplemented month failed integrity check: {previous.year:04d}-{previous.month:02d}"
                 )
-            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        _remove_empty_sqlite_sidecars(path)
-        _fsync_file(path)
+        reference = SQLiteHistoryMonthPartitionRepository(pending, previous.year, previous.month).seal()
         refreshed.append(
             replace(
                 previous,
-                database_sha256=_hash_file(path, throttle_seconds, cancellation),
+                relative_path=reference.relative_path,
+                database_sha256=_hash_file(staging / reference.relative_path, throttle_seconds, cancellation),
                 logical_content_hash=logical_hash,
                 physical_rows=physical_rows,
                 active_rows=active_rows,
@@ -1374,16 +1377,15 @@ def _convert_month(
     cancellation: _Cancellation,
     progress: _ProgressTracker,
 ) -> PartitionResult:
-    relative = Path("partitions") / f"{year:04d}" / f"{month:02d}.sqlite3"
-    final_path = staging / relative
-    pending = final_path.with_suffix(".sqlite3.pending")
-    final_path.parent.mkdir(parents=True, exist_ok=True)
+    pending = staging / "partitions" / f"{year:04d}" / f".{month:02d}.pending.sqlite3"
+    pending.parent.mkdir(parents=True, exist_ok=True)
     _remove_pending(pending)
     start, end = _month_bounds(year, month)
     start = max(start, active_start)
     current = f"月份={year:04d}-{month:02d}"
     try:
-        SQLiteHistoryMonthPartitionRepository(pending, year, month).initialize()
+        repository = SQLiteHistoryMonthPartitionRepository(pending, year, month)
+        repository.initialize()
         with closing(_connect(pending, cache_mib, wal=True)) as connection:
             parent_rows = _copy_parent_month(
                 connection,
@@ -1417,16 +1419,15 @@ def _convert_month(
             physical_rows = cast(int, connection.execute("SELECT COUNT(*) FROM daily_records").fetchone()[0])
             if connection.execute("PRAGMA integrity_check").fetchone() != ("ok",):
                 raise ConversionError(f"converted month failed integrity check: {year:04d}-{month:02d}")
-            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        _remove_empty_sqlite_sidecars(pending)
-        _fsync_file(pending)
-        os.replace(pending, final_path)
-        _fsync_directory(final_path.parent)
+        reference = repository.seal()
+        final_path = staging / reference.relative_path
         database_sha256 = _hash_file(final_path, throttle_seconds, cancellation)
+        if database_sha256 != reference.sha256:
+            raise ConversionError(f"sealed month hash changed: {year:04d}-{month:02d}")
         return PartitionResult(
             year,
             month,
-            str(relative),
+            reference.relative_path,
             database_sha256,
             logical_hash,
             physical_rows,

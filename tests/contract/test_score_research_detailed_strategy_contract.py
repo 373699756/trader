@@ -34,7 +34,7 @@ def test_historical_reports_are_tamper_evident_and_non_production() -> None:
     strategy = " ".join(STRATEGY.read_text(encoding="utf-8").split())
 
     for token in (
-        "报告必须绑定规范、父归档、manifest、模型/候选和证据 hash",
+        "报告必须绑定规范、active snapshot、模型/候选和证据 hash",
         "同内容重放幂等",
         "不同内容冲突",
         "production_authority=false",

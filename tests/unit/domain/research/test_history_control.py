@@ -55,7 +55,7 @@ def _snapshot(
         calendar_hash=calendar.content_hash,
         universe_hash=universe.content_hash,
         source_identity_hash=source.content_hash,
-        partitions=(HistorySnapshotPartition("partitions/2026/09.sqlite3", "a" * 64, 6),),
+        partitions=(HistorySnapshotPartition(f"partitions/2026/09/{'a' * 64}.sqlite3", "a" * 64, 6),),
     )
 
 
@@ -98,6 +98,24 @@ def test_history_control_values_are_immutable_and_hash_bound() -> None:
 
 
 def test_history_control_rejects_invalid_progress_due_and_reminder_states() -> None:
+    with pytest.raises(ValueError, match="partition"):
+        HistorySnapshotPartition("partitions/2026/09.sqlite3", "a" * 64, 6)
+    source = _source()
+    calendar = _calendar(source)
+    universe = _universe(source)
+    with pytest.raises(ValueError, match="snapshot"):
+        HistoryActiveSnapshot(
+            1,
+            date(2026, 9, 10),
+            date(2026, 9, 9),
+            calendar.content_hash,
+            universe.content_hash,
+            source.content_hash,
+            (
+                HistorySnapshotPartition(f"partitions/2026/09/{'a' * 64}.sqlite3", "a" * 64, 6),
+                HistorySnapshotPartition(f"partitions/2026/09/{'b' * 64}.sqlite3", "b" * 64, 6),
+            ),
+        )
     with pytest.raises(ValueError, match="checkpoint"):
         HistorySyncCheckpoint("sync-20260910", 1, "completed", NOW, 9, 10, None)
     with pytest.raises(ValueError, match="checkpoint"):

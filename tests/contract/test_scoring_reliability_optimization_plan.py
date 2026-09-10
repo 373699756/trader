@@ -155,7 +155,7 @@ def test_history_training_and_optimization_are_one_dependency_route() -> None:
     assert "baostock_increment_archive" not in work
     assert "v3_training_artifact_rebuild" in work
     assert "dynamic_cutoff_and_missing_fact_acquisition" not in work
-    assert "动态 `source_cutoff`、精确滚动" in replay
+    assert "初次下载、缺口续传、最近 5 日回读" in replay
     assert "15:00_close" in replay
     assert "point_in_time_parity=false" in replay
     assert "BaoStock 日线不能单独证明 14:50" in replay

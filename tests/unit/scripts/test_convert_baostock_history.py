@@ -359,9 +359,10 @@ def test_converter_streams_parent_and_active_increment_into_month_partitions(tmp
     assert _file_hashes(source) == before
     assert not target.with_name(".baostock-conversion").exists()
 
-    august = target / "partitions/2026/08.sqlite3"
-    september = target / "partitions/2026/09.sqlite3"
-    assert not august.exists()
+    september_files = tuple((target / "partitions/2026/09").glob("*.sqlite3"))
+    assert not (target / "partitions/2026/08").exists()
+    assert len(september_files) == 1
+    september = september_files[0]
     assert september.is_file()
     with sqlite3.connect(september) as connection:
         schema = connection.execute(
@@ -403,7 +404,7 @@ def test_converter_streams_parent_and_active_increment_into_month_partitions(tmp
     assert tuple(item.isoformat() for item in calendar.open_dates) == ("2026-09-01", "2026-09-02")
     assert state.active_snapshot.content_hash == summary.snapshot_hash
     assert state.active_snapshot.sequence == 1
-    assert state.active_snapshot.partitions[0].relative_path == "partitions/2026/09.sqlite3"
+    assert state.active_snapshot.partitions[0].relative_path == f"partitions/2026/09/{september.stem}.sqlite3"
     for partition in state.active_snapshot.partitions:
         SQLiteHistoryMonthPartitionRepository.verify(target / partition.relative_path, partition)
     assert state.checkpoints[-1].state == "completed"
@@ -473,7 +474,8 @@ def test_converter_downloads_only_supplier_provable_missing_daily_fields(tmp_pat
     ]
     assert summary.supplemented_rows == 1
     assert summary.remaining_downloadable_gaps == 0
-    with sqlite3.connect(target / "partitions/2026/09.sqlite3") as connection:
+    partition = next((target / "partitions/2026/09").glob("*.sqlite3"))
+    with sqlite3.connect(partition) as connection:
         row = connection.execute(
             "SELECT payload_json FROM daily_records WHERE code='600001' AND trade_date='2026-09-02' "
             "ORDER BY first_seen_sequence DESC LIMIT 1"
@@ -505,8 +507,8 @@ def test_converter_keeps_completed_months_resumable_when_gap_download_fails(tmp_
 
     staging = target.with_name(".target-conversion")
     assert not target.exists()
-    assert not (staging / "partitions/2026/08.sqlite3").exists()
-    assert (staging / "partitions/2026/09.sqlite3").is_file()
+    assert not (staging / "partitions/2026/08").exists()
+    assert len(tuple((staging / "partitions/2026/09").glob("*.sqlite3"))) == 1
 
     summary = converter.convert_archive(
         source,

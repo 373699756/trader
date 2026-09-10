@@ -9,7 +9,14 @@ from typing import Literal
 
 from trader.domain.research.history_control import HistoryTrainingDueReason
 
-HistoryMaintenanceState = Literal["blocked", "already_current", "already_running", "completed"]
+HistoryMaintenanceState = Literal[
+    "blocked",
+    "already_current",
+    "already_running",
+    "cancelled",
+    "completed",
+    "failed",
+]
 
 
 @dataclass(frozen=True)
@@ -35,27 +42,8 @@ class HistoryMaintenanceStatus:
             raise ValueError("training due flag and reason disagree")
 
 
-def blocked_history_maintenance_status() -> HistoryMaintenanceStatus:
-    """Fail closed until the zero-argument synchronization workflow is implemented."""
-    return HistoryMaintenanceStatus(
-        state="blocked",
-        reason="history_sync_pending",
-        archive_root=Path("data/history/baostock"),
-        selected_baseline_source="baostock",
-        efficient_daily_source=None,
-        active_snapshot_hash=None,
-        data_cutoff=None,
-        label_cutoff=None,
-        matured_label_days_since_training=0,
-        training_due=False,
-        training_due_reason="data_incomplete",
-        automatic_training=False,
-    )
-
-
 __all__ = [
     "HistoryMaintenanceState",
     "HistoryMaintenanceStatus",
     "HistoryTrainingDueReason",
-    "blocked_history_maintenance_status",
 ]

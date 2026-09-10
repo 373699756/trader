@@ -6,6 +6,29 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户按 `04_策略回溯.md` 再次“继续”，本批完成第 12.7 节阶段 D 零参数同步，并延续新增命名不使用泛化
+  `store` 的约束。根因确认：固定 `partitions/YYYY/MM.sqlite3` 会在同月 revision 时原地改变整文件 hash，既
+  无法保留旧 snapshot 重放，也无法让多月更新只在最后一步原子可见；原公开命令又仍固定返回
+  `history_sync_pending`。Changed: 月分片改为 `partitions/YYYY/MM/<sha256>.sqlite3` 内容寻址不可变文件；同步
+  只为首月裁剪和实际写入月份从上一 active 文件旁路构造完整月副本，未变化月份复用旧不可变引用；完成所有
+  hash/quick-check 后才单调切换控制库 active 指针，旧 snapshot 继续引用旧文件。Added: 新增类型化
+  `HistorySyncConfiguration/HistorySupplierContext`
+  和零参数同步编排；无归档时下载最近 2000 日，有归档时合并新缺口并回读最近 5 日，只在旧日期 qfq hash
+  变化时整股重拉活动窗口；证券上市/退市日期限定预期日，ST 与具有效期的行业事实按日绑定。新增单一长驻
+  BaoStock SDK 子进程，固定至少 2 秒查询间隔、单次 45 秒活动超时、最多 2 次重试和 10 秒关闭宽限；每只股票
+  落耐久 checkpoint，失败、迟到不完整数据和取消不改变上一 active，重试从已完成代码继续；同 cutoff/身份
+  返回 `already_current`，锁竞争返回 `already_running`，下载永不自动训练。Removed: 公开 blocked 占位状态、
+  父加增量活动合同文字和启动帮助中的“当前重构中”标记；一次性旧归档转换仍是唯一显式只读桥接，不进入
+  公开命令的供应商调用链。Verification: 新增全新发布/同日重复、日更缺口/5 日回读、公司行动整窗修订、旧
+  snapshot 重放、未变化月份引用复用、供应商失败、迟到数据、取消续传和 active 指针稳定性测试；同步、控制库、
+  月库、读取面和转换桥接 33 项合并定向单测通过，全部 256 项架构/文档/CLI 契约通过；受影响文件严格 Ruff、
+  format、9 个源码文件 mypy、零复杂度债务检查、Shell 语法、CLI/help 冒烟及 `git diff --check` 通过。A–G
+  大任务全量 `make format-check/lint/type-check/test/package` 仍待阶段 G 对完整合并 diff 统一执行。
+  Residual Risks: 尚未执行约 9 GiB 的真实全量下载/转换，也未发起真实 BaoStock 网络请求；阶段 E 尚未把训练
+  节奏和训练入口切到新 active snapshot，历史行业、资格、硬过滤、分钟与风险事实的点时证据仍不完整，V3
+  继续 `historical_data_insufficient/point_in_time_parity=false/production_authority=false`，默认 V1 不变。
+  `Regression-Key: zero-argument-history-snapshot-training-alignment`。
+
 - 用户要求把现有 `data/history/baostock-daily` 历史转换为当前月分片合同，显示转换进度、下载补充缺字段，且
   限制资源避免个人 PC 卡死。根因确认：工作机实际仍有 92 个父分片和 92 个增量分片，旧归档约 908.5 万父行、
   26.45 万增量记录；活动产品已切断旧 codec，阶段 C 月库又采用独立内容行与同步观察表，直接复用旧目录或再建

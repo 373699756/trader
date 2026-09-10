@@ -23,8 +23,8 @@ def test_one_time_history_conversion_is_documented_without_unblocking_daily_main
     ):
         assert token in design
     assert "阶段 D" in plan
-    assert "history_sync_pending" in plan
-    assert "不会解除 `download_history` 的阶段 D blocker" in replay
+    assert "阶段 D 已完成" in plan
+    assert "不进入公开命令的供应商调用链" in replay
 
 
 def test_converter_is_part_of_repository_quality_scope() -> None:

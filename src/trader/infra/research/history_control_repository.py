@@ -305,27 +305,7 @@ class SQLiteHistoryControlRepository:
         try:
             rebuilt = cls(temporary)
             rebuilt.initialize()
-            for source in state.sources:
-                rebuilt.save_source(source)
-            for calendar in state.calendars:
-                rebuilt.save_calendar(calendar)
-            for universe in state.universes:
-                rebuilt.save_universe(universe)
-            for checkpoint in state.checkpoints:
-                rebuilt.save_checkpoint(checkpoint)
-            for due_state in state.due_states:
-                rebuilt.save_due_state(due_state)
-            for reminder in state.reminders:
-                rebuilt.save_reminder(reminder)
-            for snapshot in state.snapshots:
-                rebuilt._save(
-                    "snapshot",
-                    str(snapshot.sequence),
-                    snapshot.content_hash,
-                    _snapshot_payload(snapshot),
-                )
-            if state.active_snapshot is not None:
-                rebuilt.publish_snapshot(state.active_snapshot)
+            _populate_rebuilt_control(rebuilt, state)
             if rebuilt.load_state() != state:
                 raise HistoryControlError("rebuilt history control state does not match its source")
             _checkpoint_wal(temporary)
@@ -365,6 +345,33 @@ class SQLiteHistoryControlRepository:
 
     def _read_connection(self) -> sqlite3.Connection:
         return sqlite3.connect(f"file:{self._path.as_posix()}?mode=ro", uri=True, timeout=5.0)
+
+
+def _populate_rebuilt_control(
+    repository: SQLiteHistoryControlRepository,
+    state: HistoryControlState,
+) -> None:
+    for source in state.sources:
+        repository.save_source(source)
+    for calendar in state.calendars:
+        repository.save_calendar(calendar)
+    for universe in state.universes:
+        repository.save_universe(universe)
+    for checkpoint in state.checkpoints:
+        repository.save_checkpoint(checkpoint)
+    for due_state in state.due_states:
+        repository.save_due_state(due_state)
+    for reminder in state.reminders:
+        repository.save_reminder(reminder)
+    for snapshot in state.snapshots:
+        repository._save(
+            "snapshot",
+            str(snapshot.sequence),
+            snapshot.content_hash,
+            _snapshot_payload(snapshot),
+        )
+    if state.active_snapshot is not None:
+        repository.publish_snapshot(state.active_snapshot)
 
 
 def inspect_history_disk(
@@ -483,33 +490,34 @@ def _decode_record(kind: ControlKind, payload_json: str) -> ControlRecord:
 
 
 def _decode_payload(kind: ControlKind, payload: dict[str, object]) -> ControlRecord:
+    value: ControlRecord
     if kind == "source":
         _require_keys(payload, {"source", "dataset", "supplier_contract", "observed_at"})
-        return HistorySourceIdentity(
+        value = HistorySourceIdentity(
             _text(payload, "source"),
             _text(payload, "dataset"),
             _text(payload, "supplier_contract"),
             _shanghai_datetime(payload, "observed_at"),
         )
-    if kind == "calendar":
+    elif kind == "calendar":
         _require_keys(payload, {"open_dates", "source_identity_hash"})
-        return HistoryCalendarIdentity(
+        value = HistoryCalendarIdentity(
             tuple(date.fromisoformat(value) for value in _strings(payload, "open_dates")),
             _text(payload, "source_identity_hash"),
         )
-    if kind == "universe":
+    elif kind == "universe":
         _require_keys(payload, {"securities", "source_identity_hash"})
         raw_securities = payload["securities"]
         if not isinstance(raw_securities, list):
             raise TypeError("history securities must be a list")
         securities = tuple(_decode_security(item) for item in raw_securities)
-        return HistoryUniverseIdentity(securities, _text(payload, "source_identity_hash"))
-    if kind == "checkpoint":
+        value = HistoryUniverseIdentity(securities, _text(payload, "source_identity_hash"))
+    elif kind == "checkpoint":
         _require_keys(
             payload,
             {"sync_identity", "ordinal", "state", "observed_at", "completed_units", "total_units", "error_code"},
         )
-        return HistorySyncCheckpoint(
+        value = HistorySyncCheckpoint(
             _text(payload, "sync_identity"),
             _integer(payload, "ordinal"),
             cast(HistorySyncState, _text(payload, "state")),
@@ -518,7 +526,7 @@ def _decode_payload(kind: ControlKind, payload: dict[str, object]) -> ControlRec
             _integer(payload, "total_units"),
             _optional_text(payload, "error_code"),
         )
-    if kind == "due":
+    elif kind == "due":
         _require_keys(
             payload,
             {
@@ -531,7 +539,7 @@ def _decode_payload(kind: ControlKind, payload: dict[str, object]) -> ControlRec
                 "observed_at",
             },
         )
-        return HistoryTrainingDueState(
+        value = HistoryTrainingDueState(
             _text(payload, "due_identity"),
             cast(HistoryTrainingDueReason, _text(payload, "reason")),
             _optional_date(payload, "baseline_label_cutoff"),
@@ -540,39 +548,41 @@ def _decode_payload(kind: ControlKind, payload: dict[str, object]) -> ControlRec
             _boolean(payload, "input_revision"),
             _shanghai_datetime(payload, "observed_at"),
         )
-    if kind == "reminder":
+    elif kind == "reminder":
         _require_keys(payload, {"due_identity", "reminder_date", "outcome", "attempted_at", "error_code"})
-        return HistoryReminderState(
+        value = HistoryReminderState(
             _text(payload, "due_identity"),
             date.fromisoformat(_text(payload, "reminder_date")),
             cast(HistoryReminderOutcome, _text(payload, "outcome")),
             _shanghai_datetime(payload, "attempted_at"),
             _optional_text(payload, "error_code"),
         )
-    _require_keys(
-        payload,
-        {
-            "sequence",
-            "data_cutoff",
-            "label_cutoff",
-            "calendar_hash",
-            "universe_hash",
-            "source_identity_hash",
-            "partitions",
-        },
-    )
-    raw_partitions = payload["partitions"]
-    if not isinstance(raw_partitions, list):
-        raise TypeError("history snapshot partitions must be a list")
-    return HistoryActiveSnapshot(
-        _integer(payload, "sequence"),
-        date.fromisoformat(_text(payload, "data_cutoff")),
-        date.fromisoformat(_text(payload, "label_cutoff")),
-        _text(payload, "calendar_hash"),
-        _text(payload, "universe_hash"),
-        _text(payload, "source_identity_hash"),
-        tuple(_decode_partition(item) for item in raw_partitions),
-    )
+    else:
+        _require_keys(
+            payload,
+            {
+                "sequence",
+                "data_cutoff",
+                "label_cutoff",
+                "calendar_hash",
+                "universe_hash",
+                "source_identity_hash",
+                "partitions",
+            },
+        )
+        raw_partitions = payload["partitions"]
+        if not isinstance(raw_partitions, list):
+            raise TypeError("history snapshot partitions must be a list")
+        value = HistoryActiveSnapshot(
+            _integer(payload, "sequence"),
+            date.fromisoformat(_text(payload, "data_cutoff")),
+            date.fromisoformat(_text(payload, "label_cutoff")),
+            _text(payload, "calendar_hash"),
+            _text(payload, "universe_hash"),
+            _text(payload, "source_identity_hash"),
+            tuple(_decode_partition(item) for item in raw_partitions),
+        )
+    return value
 
 
 def _decode_security(raw: object) -> HistorySecurityIdentity:

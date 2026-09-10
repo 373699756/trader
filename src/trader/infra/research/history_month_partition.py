@@ -159,6 +159,25 @@ class SQLiteHistoryMonthPartitionRepository:
             raise ValueError("history month code is invalid")
         return tuple(self.iter_range(start, end, snapshot_sequence=snapshot_sequence, code=code))
 
+    def prune_before(self, first_date: date) -> None:
+        """Remove rows outside a new rolling window from a mutable side copy."""
+        if (first_date.year, first_date.month) != (self._calendar_year, self._calendar_month):
+            raise ValueError("history rolling-window boundary does not belong to the target month")
+        try:
+            with closing(self._write_connection()) as connection, connection:
+                connection.execute("BEGIN IMMEDIATE")
+                self._require_metadata(connection)
+                connection.execute("DELETE FROM daily_observations WHERE trade_date < ?", (first_date.isoformat(),))
+                connection.execute(
+                    "DELETE FROM daily_records WHERE NOT EXISTS ("
+                    "SELECT 1 FROM daily_observations AS observations "
+                    "WHERE observations.trade_date=daily_records.trade_date "
+                    "AND observations.code=daily_records.code "
+                    "AND observations.revision_id=daily_records.revision_id)",
+                )
+        except sqlite3.Error as exc:
+            raise HistoryMonthPartitionError("history month rolling-window prune failed") from exc
+
     def iter_range(
         self,
         start: date,
@@ -215,13 +234,24 @@ class SQLiteHistoryMonthPartitionRepository:
             raise HistoryMonthPartitionError("history month sealing failed") from exc
         try:
             _fsync_file(self._path)
-            _fsync_directory(self._path.parent)
+            if self._path.parent.name != f"{self._calendar_year:04d}" or self._path.parent.parent.name != "partitions":
+                raise HistoryMonthPartitionError("history month partition path is outside the archive layout")
+            database_sha256 = _sha256_file(self._path)
             reference = HistorySnapshotPartition(
-                f"partitions/{self._calendar_year:04d}/{self._calendar_month:02d}.sqlite3",
-                _sha256_file(self._path),
+                f"partitions/{self._calendar_year:04d}/{self._calendar_month:02d}/{database_sha256}.sqlite3",
+                database_sha256,
                 row_count,
             )
-            self.verify(self._path, reference)
+            destination = self._path.parent / f"{self._calendar_month:02d}" / f"{database_sha256}.sqlite3"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                self.verify(destination, reference)
+                self._path.unlink()
+            else:
+                os.replace(self._path, destination)
+            _fsync_directory(destination.parent)
+            _fsync_directory(self._path.parent)
+            self.verify(destination, reference)
             return reference
         except HistoryMonthPartitionError:
             raise
@@ -238,8 +268,9 @@ class SQLiteHistoryMonthPartitionRepository:
             wal = Path(f"{path}-wal")
             if wal.exists() and wal.stat().st_size > 0:
                 raise HistoryMonthPartitionError("history month partition has pending WAL")
-            year = int(reference.relative_path.split("/")[1])
-            month = int(Path(reference.relative_path).stem)
+            parts = Path(reference.relative_path).parts
+            year = int(parts[1])
+            month = int(parts[2])
             candidate = cls(path, year, month)
             with closing(candidate._read_connection()) as connection:
                 candidate._require_metadata(connection)

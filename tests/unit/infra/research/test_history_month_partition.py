@@ -112,13 +112,14 @@ def test_sealed_month_partition_has_stable_hash_and_fails_closed_on_tamper(tmp_p
 
     reference = repository.seal()
 
-    assert reference.relative_path == "partitions/2026/09.sqlite3"
+    assert reference.relative_path == f"partitions/2026/09/{reference.sha256}.sqlite3"
     assert reference.row_count == 1
-    SQLiteHistoryMonthPartitionRepository.verify(path, reference)
-    with path.open("ab") as handle:
+    sealed_path = tmp_path / reference.relative_path
+    SQLiteHistoryMonthPartitionRepository.verify(sealed_path, reference)
+    with sealed_path.open("ab") as handle:
         handle.write(b"tamper")
     with pytest.raises(HistoryMonthPartitionError, match="hash"):
-        SQLiteHistoryMonthPartitionRepository.verify(path, reference)
+        SQLiteHistoryMonthPartitionRepository.verify(sealed_path, reference)
 
 
 def test_month_partition_refuses_to_seal_invalid_codec_rows(tmp_path: Path) -> None:

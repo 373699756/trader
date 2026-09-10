@@ -105,7 +105,7 @@ def test_strategy_replay_document_records_the_stage_a_b_gates_and_atomic_trainin
 
     for required in (
         "history_maintenance_status",
-        "history_sync_pending",
+        "阶段 D（已完成）",
         "history-daily-capability",
         "Tushare 120 积分",
         "raw 3/3",
@@ -142,7 +142,7 @@ def test_strategy_replay_document_records_the_zero_argument_history_rebuild_plan
         "不接受 `--runtime-dir`、`--sessions`、`--mode` 或 `--profile`",
         "control.sqlite3",
         "按自然年目录、自然月分片",
-        "YYYY/MM.sqlite3",
+        "YYYY/MM/<sha256>.sqlite3",
         "只打开命中的月库",
         "下载顺序不决定物理布局",
         "PRIMARY KEY (trade_date, code, revision_id) WITHOUT ROWID",

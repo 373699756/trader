@@ -143,7 +143,7 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert "./run.sh --profile v2            显式使用 V2 启动" in completed.stdout
     assert "./run.sh check                   依次校验配置、研究状态和性能门禁" in completed.stdout
     assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
-    assert "./run.sh download_history        零参数历史维护（当前重构中）" in completed.stdout
+    assert "./run.sh download_history        零参数历史维护" in completed.stdout
     assert "./run.sh train-tomorrow          从完整 manifest 运行 Tomorrow 训练" in completed.stdout
     assert "--allow-partial-history" not in completed.stdout
     assert "research-r7-dossier" not in completed.stdout
@@ -420,7 +420,7 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
 
     assert "日常使用（不做离线研究）:" in powershell
     assert "离线研究（仅在明确执行研究任务时使用）:" in powershell
-    assert ".\\run.ps1 download_history        零参数历史维护（当前重构中）" in powershell
+    assert ".\\run.ps1 download_history        零参数历史维护" in powershell
     assert "research-history" not in powershell
     assert "research-screen" not in powershell
     assert ".\\run.ps1 train-tomorrow          从完整 manifest 运行 Tomorrow 训练" in powershell

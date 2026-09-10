@@ -145,8 +145,8 @@ def test_current_historical_evidence_is_not_described_as_a_present_artifact() ->
 
     assert "历史审计曾验证这条失败关闭边界" in compact
     assert "初次全量审计当时曾封存正式 manifest" in compact
-    assert "本 PC 工作区中的正式 manifest、catalog 和 92 个封存分片当前不可用" in compact
-    assert "最终 schema 实物复跑仍未验证" in compact
+    assert "92 个封存分片当前仍可供显式一次性转换" in compact
+    assert "最终新 schema 实物复跑尚未验证" in compact
     assert "当前资格审计已验证这条失败关闭边界" not in compact
 
 

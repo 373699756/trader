@@ -80,17 +80,21 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
     if args.command == "download_history":
         if args.profile is not None:
             parser.error("download_history does not accept --profile")
-        from trader.application.research.history_maintenance import blocked_history_maintenance_status
+        from trader.application.research.history_sync import HistorySyncConfiguration
         from trader.entrypoints.history_maintenance_projection import project_history_maintenance_status
+        from trader.infra.research.baostock_sync_supplier import BaoStockHistorySupplier
+        from trader.infra.research.history_sync_runtime import run_history_sync
 
-        print(
-            json.dumps(
-                project_history_maintenance_status(blocked_history_maintenance_status()),
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-        )
-        return 1
+        configuration = HistorySyncConfiguration()
+        with BaoStockHistorySupplier(
+            timeout_seconds=configuration.supplier_timeout_seconds,
+            retries=configuration.supplier_retries,
+            query_interval_seconds=configuration.query_interval_seconds,
+            cancellation_grace_seconds=configuration.cancellation_grace_seconds,
+        ) as supplier:
+            status = run_history_sync(configuration, supplier)
+        print(json.dumps(project_history_maintenance_status(status), ensure_ascii=False, sort_keys=True))
+        return 0 if status.state in {"completed", "already_current"} else 1
     if args.command == "train-tomorrow":
         _configure_tomorrow_training_resources()
     config_path = _absolute_config_path(args.config)

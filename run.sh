@@ -21,7 +21,7 @@ usage() {
     "  ./run.sh help                    查看本帮助" \
     "" \
     "离线研究（仅在明确执行研究任务时使用）:" \
-    "  ./run.sh download_history        零参数历史维护（当前重构中）" \
+    "  ./run.sh download_history        零参数历史维护" \
     "  ./run.sh train-tomorrow          从完整 manifest 运行 Tomorrow 训练" \
     "" \
     "看板和 check 可追加 --profile v1|v2|v3；download_history 不接受评分档位。" \
