@@ -6,6 +6,29 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求按 `candidate-eligibility-before-cap-single-owner` 复核四批候选计划的当前实现状态，并把未实现项同步
+  到权威文档。根因/现状确认：资格先于板内上限、三策略独立候选、完整有序储备、定向报价稳定去重并集与
+  同板补位已经进入活动链，顶层通用 `candidate_weights` 和运行时四项 25% 粗分也已删除；但“所有生产权重
+  只由配置拥有”尚未闭合，候选/本地组件内部仍有领域数值系数，设置校验器还复制板块、维度和融合权重。
+  批次二只有 `CandidateRecallLedger`、有限参数族、Holm/bootstrap 等基础骨架，没有 60/120/180/240/完整人口
+  容量族、五种指定排序方案、NDCG/分组/完整性能报告或真实确认结果；历史点时父证据仍不足。终端留出与
+  shadow 部件虽存在，但留出未打开、统一 `ShadowMonitor` 未实现、Shadow 未运行，人工生产启用也未获授权，
+  默认 Tomorrow 仍为 V1。Added: 在实现复核报告中增加四批逐项证据矩阵，并为当前候选验收复核、权重配置
+  单一来源、候选容量/排序历史验证、终端留出与 Shadow、人工启用建立独立任务身份。Changed: `01_评分逻辑.md`
+  固定所有权重由 `config/strategy.json` 经有类型策略注入，并补齐容量族、五方案、指标和失败关闭门；
+  `02_工程设计.md` 增加权重配置数据流与隔离研究组件；`03_工程实施.md` 只保留尚未闭合的验收和后续批次，
+  不重复规划已实现候选链。Verification: 119 项候选规划、输入、领域选择、配置和状态定向回归通过；文档契约
+  先在旧文档上失败，更新后通过。统一 `full` 诊断因 127.0.0.1:5000 未启动及外部来源/浏览器不可用而失败，
+  不能形成六检查点运行证明；其中离线性能与独立 `make performance-check` 连续两次均只在
+  `board_preselection:absolute_budget` 失败，P95 分别为 302.648ms 和 289.049ms，等价性、相对预算、内存和
+  `network_calls=0` 通过。更新后的定向文档契约、固定融合 83.40、Ruff 和 `make format-check` 通过；完整
+  contract 门除基线已存在的 `scheduler_runtime.py` 1232 行超过 1200 行上限外全部通过，且该文件在本批未修改。
+  Residual Risks: 当前固定性能负载仍为 5500/360，未覆盖三策略完全不重合的 1080
+  候选报价最坏路径；精确第 121 名、完整拒绝类型、deadline/最近有效整批组合回归及真实服务重启实证仍待
+  `03_工程实施.md` 后续章节闭合。本批只审查并同步文档，不修改生产代码、权重数值、每板 120、阈值、预算、
+  冻结或推荐结果。
+  `Regression-Key: candidate-eligibility-before-cap-single-owner`。
+
 - 用户反馈 `./run.sh` 启动后交易日历获取超时，调度线程持续输出 `runtime schedule tick failed` 堆栈。
   根因确认：调度入口直接调用外部日历且未接管可用性状态，超时异常击穿 supervisor；日历适配器每次超时又
   丢弃仍在执行的线程及其迟到结果，后续 tick 会重复创建请求。Changed: 将

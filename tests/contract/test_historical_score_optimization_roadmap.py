@@ -16,7 +16,8 @@ def test_unfinished_roadmap_orders_data_before_training_and_activation() -> None
         "v3_training_artifact_rebuild",
         "v3_runtime_acceptance",
         "point_in_time_evidence_remediation",
-        "terminal_holdout_shadow_and_manual_activation",
+        "terminal_holdout_and_shadow",
+        "manual_candidate_strategy_activation",
     )
     first_positions = tuple(work.index(item) for item in ordered)
     assert first_positions == tuple(sorted(first_positions))

@@ -19,10 +19,14 @@ def test_authoritative_docs_define_one_ordered_optimization_route() -> None:
     work = _read(WORK)
     ordered_tasks = (
         "## 2. 当前执行章节：动态截止日与缺失事实补采",
-        "## 3. V3 训练工件重建与整组发布",
-        "## 4. V3 工程运行验收",
-        "## 5. 点时证据修复",
-        "## 6. 一次性终端留出、Shadow 与人工生产授权",
+        "## 3. 候选单一所有权当前验收复核",
+        "## 4. 生产权重配置单一来源",
+        "## 5. V3 训练工件重建与整组发布",
+        "## 6. V3 工程运行验收",
+        "## 7. 点时证据修复",
+        "## 8. 候选容量与排序历史验证",
+        "## 9. 一次性终端留出与 Shadow",
+        "## 10. 人工候选策略生产启用",
     )
     positions = tuple(work.index(task) for task in ordered_tasks)
     assert positions == tuple(sorted(positions))
@@ -105,7 +109,8 @@ def test_route_cannot_smuggle_unverified_data_or_automatic_promotion() -> None:
         "必须由用户明确授权",
     ):
         assert required in strategy + work + replay
-    assert "terminal_holdout_shadow_and_manual_activation" in work
+    assert "terminal_holdout_and_shadow" in work
+    assert "manual_candidate_strategy_activation" in work
 
 
 def test_changelog_records_completed_fail_closed_dataset_and_recall_code() -> None:

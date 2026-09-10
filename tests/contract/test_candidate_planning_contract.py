@@ -24,6 +24,29 @@ def test_candidate_planning_contract_is_synchronized_across_authoritative_docume
     assert "candidate-eligibility-before-cap-single-owner" in changelog
 
 
+def test_candidate_followup_plan_preserves_weight_research_and_activation_boundaries() -> None:
+    strategy = _read("docs/01_评分逻辑.md")
+    design = _read("docs/02_工程设计.md")
+    work = _read("docs/03_工程实施.md")
+    review = _read("docs/reports/2026-09-10-scoring-chain-implementation-review.md")
+
+    compact_strategy = "".join(strategy.split())
+    compact_design = "".join(design.split())
+    assert "所有生产权重参数只能由`config/strategy.json`拥有数值" in compact_strategy
+    assert "配置加载后先解析为不可变有类型权重策略" in compact_design
+    for task_id in (
+        "scoring_weight_configuration_single_source",
+        "candidate_capacity_and_ranking_historical_validation",
+        "terminal_holdout_and_shadow",
+        "manual_candidate_strategy_activation",
+    ):
+        assert task_id in work
+    assert "批次一：资格顺序与候选单一所有权" in review
+    assert "批次二：候选容量与排序历史验证" in review
+    assert "批次三：一次性终端留出与 Shadow" in review
+    assert "批次四：人工生产启用" in review
+
+
 def test_runtime_has_no_generic_candidate_weight_owner() -> None:
     runtime = _read("src/trader/application/market_data/input_runtime.py")
     config = _read("config/strategy.json")

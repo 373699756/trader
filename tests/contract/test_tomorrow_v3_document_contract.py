@@ -9,7 +9,8 @@ def test_daily_close_training_contract_has_non_overlapping_authorities() -> None
     work = " ".join((ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8").split())
 
     assert "v3_training_artifact_rebuild" in work
-    assert "terminal_holdout_shadow_and_manual_activation" in work
+    assert "terminal_holdout_and_shadow" in work
+    assert "manual_candidate_strategy_activation" in work
     assert "15.1.36" not in work
     assert "15.1.37" not in work
     assert "15.1.38" not in work
@@ -61,7 +62,8 @@ def test_v3_research_has_four_isolated_owners_and_one_public_command() -> None:
         "dynamic_cutoff_and_missing_fact_acquisition",
         "v3_training_artifact_rebuild",
         "v3_runtime_acceptance",
-        "terminal_holdout_shadow_and_manual_activation",
+        "terminal_holdout_and_shadow",
+        "manual_candidate_strategy_activation",
         "report.json",
         "model.json",
         "training-input.json",
@@ -72,7 +74,8 @@ def test_v3_research_has_four_isolated_owners_and_one_public_command() -> None:
     assert "V1/V2/C3 原始预测级联合研究路线" not in design
     assert "内部 V1/V2/C3" not in design
     assert "15.1.36 V3 条件式生产适配 | `blocked_by_15.1.35`" not in strategy
-    assert "状态：`blocked_by_point_in_time_evidence_and_user_authorization`" in strategy
+    assert "状态：`blocked_by_candidate_validation`" in strategy
+    assert "状态：`blocked_by_shadow_and_user_authorization`" in strategy
 
     for internal_stage in (
         "research-tomorrow",

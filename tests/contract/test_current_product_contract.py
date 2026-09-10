@@ -72,7 +72,8 @@ def test_parallel_overview_plan_and_operations_docs_are_retired() -> None:
     assert "candidate_eligibility_before_board_cap" not in work
     assert "baostock_increment_archive" not in work
     assert "dynamic_cutoff_and_missing_fact_acquisition" in work
-    assert "terminal_holdout_shadow_and_manual_activation" in work
+    assert "terminal_holdout_and_shadow" in work
+    assert "manual_candidate_strategy_activation" in work
     for completed_marker in ("`completed`", "`not_current_route`", "评分模块化计划项 1–9"):
         assert completed_marker not in work
 

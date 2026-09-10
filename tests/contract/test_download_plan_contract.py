@@ -13,10 +13,14 @@ def test_download_plan_contains_only_the_remaining_dependency_route() -> None:
     work = _work()
     ordered = (
         "## 2. 当前执行章节：动态截止日与缺失事实补采",
-        "## 3. V3 训练工件重建与整组发布",
-        "## 4. V3 工程运行验收",
-        "## 5. 点时证据修复",
-        "## 6. 一次性终端留出、Shadow 与人工生产授权",
+        "## 3. 候选单一所有权当前验收复核",
+        "## 4. 生产权重配置单一来源",
+        "## 5. V3 训练工件重建与整组发布",
+        "## 6. V3 工程运行验收",
+        "## 7. 点时证据修复",
+        "## 8. 候选容量与排序历史验证",
+        "## 9. 一次性终端留出与 Shadow",
+        "## 10. 人工候选策略生产启用",
     )
     positions = tuple(work.index(item) for item in ordered)
     assert positions == tuple(sorted(positions))
@@ -27,7 +31,7 @@ def test_download_plan_contains_only_the_remaining_dependency_route() -> None:
 def test_increment_plan_preserves_parent_and_fails_closed_on_missing_facts() -> None:
     design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
     work = _work()
-    section = work[work.index("## 2. 当前执行章节：动态截止日") : work.index("## 3. V3")]
+    section = work[work.index("## 2. 当前执行章节：动态截止日") : work.index("## 3. 候选单一所有权")]
 
     for token in ("父 manifest 原字节不变", "同一 key 同内容幂等", "不同内容", "失败关闭"):
         assert token in design
@@ -41,7 +45,7 @@ def test_increment_plan_preserves_parent_and_fails_closed_on_missing_facts() -> 
 
 def test_training_and_runtime_acceptance_cannot_auto_promote() -> None:
     work = _work()
-    section = work[work.index("## 3. V3") : work.index("## 7.")]
+    section = work[work.index("## 5. V3") : work.index("## 11.")]
 
     for token in (
         "一次原子切换",
