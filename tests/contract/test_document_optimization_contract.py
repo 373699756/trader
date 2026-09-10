@@ -7,6 +7,7 @@ STRATEGY = ROOT / "docs/01_评分逻辑.md"
 DESIGN = ROOT / "docs/02_工程设计.md"
 WORK = ROOT / "docs/03_工程实施.md"
 REPLAY = ROOT / "docs/04_策略回溯.md"
+DELIVERY_HISTORY = ROOT / "docs/changelog/archive/legacy-through-2026-09-10.md"
 
 
 def _read(path: Path) -> str:
@@ -136,7 +137,7 @@ def test_strategy_document_does_not_own_artifact_hashes() -> None:
     strategy = _read(STRATEGY)
 
     assert "27034e52813f1776e2ed218c1c397f481b244fb852b01be08ddc21249d887da5" not in strategy
-    assert "详细工件身份、hash 与交付证据统一见 `03_工程实施.md` 和 `CHANGELOG.md`" in strategy
+    assert "详细工件身份、hash 与交付证据统一见 `03_工程实施.md` 和[交付记录](changelog/README.md)" in strategy
 
 
 def test_current_historical_evidence_is_not_described_as_a_present_artifact() -> None:
@@ -194,7 +195,7 @@ def test_history_windows_cost_ownership_and_terminal_order_are_unambiguous() -> 
     )
     positions = tuple(route.index(item) for item in ordered)
     assert positions == tuple(sorted(positions))
-    changelog = _read(ROOT / "CHANGELOG.md")
+    changelog = _read(DELIVERY_HISTORY)
     assert "CanonicalOutcomeEvaluator" in changelog
     assert "v3_single_cost_ownership" in changelog
     assert "`completed`" not in work

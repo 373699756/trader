@@ -7,6 +7,7 @@ STRATEGY = ROOT / "docs/01_评分逻辑.md"
 DESIGN = ROOT / "docs/02_工程设计.md"
 WORK = ROOT / "docs/03_工程实施.md"
 REPLAY = ROOT / "docs/04_策略回溯.md"
+DELIVERY_HISTORY = ROOT / "docs/changelog/archive/legacy-through-2026-09-10.md"
 
 
 def _read(path: Path) -> str:
@@ -75,7 +76,7 @@ def test_design_assigns_narrow_typed_component_owners() -> None:
 
 def test_incremental_feature_computation_is_complete_and_observable_without_a_plan_hash() -> None:
     design = _read(DESIGN)
-    changelog = _read(ROOT / "CHANGELOG.md")
+    changelog = _read(DELIVERY_HISTORY)
     combined = " ".join((design + changelog).split())
 
     for required in (
@@ -111,7 +112,7 @@ def test_route_cannot_smuggle_unverified_data_or_automatic_promotion() -> None:
 
 
 def test_changelog_records_completed_fail_closed_dataset_and_recall_code() -> None:
-    work = _read(ROOT / "CHANGELOG.md")
+    work = _read(DELIVERY_HISTORY)
 
     for token in (
         "point_in_time_data_qualification",
@@ -129,7 +130,7 @@ def test_point_in_time_qualification_has_three_independent_gates_and_no_producti
     design = _read(DESIGN)
     work = _read(WORK)
     replay = _read(REPLAY)
-    changelog = _read(ROOT / "CHANGELOG.md")
+    changelog = _read(DELIVERY_HISTORY)
     combined = strategy + design + work + replay + changelog
 
     for required in (

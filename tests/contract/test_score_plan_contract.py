@@ -4,6 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src/trader"
+DELIVERY_HISTORY = ROOT / "docs/changelog/archive/legacy-through-2026-09-10.md"
 
 
 def _compact(path: Path) -> str:
@@ -80,7 +81,7 @@ def test_remaining_offline_research_is_historical_and_production_isolated() -> N
 
 def test_p2_historical_rejection_and_manual_production_override_remain_explicit() -> None:
     strategy = _compact(ROOT / "docs/01_评分逻辑.md")
-    changelog = _compact(ROOT / "CHANGELOG.md")
+    changelog = _compact(DELIVERY_HISTORY)
 
     for token in (
         "historical_rejected",

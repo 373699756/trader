@@ -51,7 +51,7 @@ def test_authoritative_docs_do_not_retain_superseded_migration_chronology() -> N
     ):
         assert obsolete not in design
 
-    assert "历史证据统一见[工程实施](03_工程实施.md)与 `CHANGELOG.md`" in _compact(design)
+    assert "历史证据统一见[工程实施](03_工程实施.md)与[交付记录](changelog/README.md)" in _compact(design)
     assert "历史迁移门禁比较旧档位" not in strategy
     for obsolete_identity in ("DecisionEpoch", "CurrentDecisionIndex", ".runtime/v17"):
         assert obsolete_identity not in design

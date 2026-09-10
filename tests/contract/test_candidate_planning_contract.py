@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+DELIVERY_HISTORY = ROOT / "docs/changelog/archive/legacy-through-2026-09-10.md"
 
 
 def _read(relative: str) -> str:
@@ -14,7 +15,7 @@ def test_candidate_planning_contract_is_synchronized_across_authoritative_docume
     strategy = _read("docs/01_评分逻辑.md")
     design = _read("docs/02_工程设计.md")
     work = _read("docs/03_工程实施.md")
-    changelog = _read("CHANGELOG.md")
+    changelog = DELIVERY_HISTORY.read_text(encoding="utf-8")
 
     compact_strategy = "".join(strategy.split())
     assert "资格、候选分和稳定排序只有一个领域所有者" in compact_strategy
@@ -42,7 +43,7 @@ def test_candidate_followup_plan_preserves_weight_research_and_activation_bounda
     ):
         assert task_id in work
     assert "scoring_weight_configuration_single_source" not in work
-    assert "scoring-weight-config-single-source" in _read("CHANGELOG.md")
+    assert "scoring-weight-config-single-source" in DELIVERY_HISTORY.read_text(encoding="utf-8")
     assert "批次一：资格顺序与候选单一所有权" in review
     assert "批次二：候选容量与排序历史验证" in review
     assert "批次三：一次性终端留出与 Shadow" in review

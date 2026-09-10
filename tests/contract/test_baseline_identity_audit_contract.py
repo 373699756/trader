@@ -5,13 +5,14 @@ from pathlib import Path
 from trader.entrypoints.cli import build_parser
 
 ROOT = Path(__file__).resolve().parents[2]
+DELIVERY_HISTORY = ROOT / "docs/changelog/archive/legacy-through-2026-09-10.md"
 
 
 def test_baseline_audit_is_an_explicit_read_only_cli_command() -> None:
     parser = build_parser()
     args = parser.parse_args(["research-baseline-audit"])
     assert args.command == "research-baseline-audit"
-    work = " ".join((ROOT / "CHANGELOG.md").read_text(encoding="utf-8").split())
+    work = " ".join(DELIVERY_HISTORY.read_text(encoding="utf-8").split())
     assert "score_current_baseline_consistency_audit" in work
     assert "baseline_identity_inconsistent" in work
 
