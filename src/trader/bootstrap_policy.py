@@ -48,6 +48,12 @@ def _recommendation_policy(settings: StrategySettings) -> RecommendationPolicy:
             Strategy(strategy): {Board(board): weights for board, weights in boards.items()}
             for strategy, boards in settings.board_local_strategy_weights.items()
         },
+        candidate_component_weights={
+            Strategy(strategy): weights for strategy, weights in settings.candidate_component_weights.items()
+        },
+        local_component_weights={
+            Strategy(strategy): weights for strategy, weights in settings.local_component_weights.items()
+        },
         risk_rules={
             rule.risk_code: RiskRule(
                 risk_code=rule.risk_code,

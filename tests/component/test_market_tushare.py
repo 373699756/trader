@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tests.component.market_data_test_support import (
+    FEATURE_WEIGHT_POLICY,
     LONG_POLICY,
     MARKET_REGIME_POLICY,
     NEWS_POLICY,
@@ -36,7 +37,7 @@ def test_tushare_reference_version_uses_response_time_before_hash_order() -> Non
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
     )
     newer = SourceObservation(
         source="tushare",
@@ -585,7 +586,7 @@ def test_tushare_negative_refresh_marks_preserved_reference_data_degraded() -> N
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         tushare_client=client,
         cache=cache,
         source_contracts=runtime.market_data.source_contracts,

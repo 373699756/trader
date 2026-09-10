@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from types import MappingProxyType
 
@@ -54,12 +55,12 @@ STRUCTURED_REVIEW_FEATURES = frozenset(
 
 @dataclass(frozen=True)
 class FusionPolicy:
-    local_weight: float = 0.68
-    deepseek_weight: float = 0.32
-    confidence_coverage_min: float = 0.50
-    minimum_known_dimensions: int = 2
-    local_risk_cap: float = 25.0
-    deepseek_risk_cap: float = 30.0
+    local_weight: float
+    deepseek_weight: float
+    confidence_coverage_min: float
+    minimum_known_dimensions: int
+    local_risk_cap: float
+    deepseek_risk_cap: float
 
 
 @dataclass(frozen=True)
@@ -77,7 +78,7 @@ class FusionRequest:
     dimension_weights: Mapping[str, float]
     risk_rules: Mapping[str, RiskRule]
     fusion_mode: FusionMode
-    policy: FusionPolicy = field(default_factory=FusionPolicy)
+    policy: FusionPolicy
     evidence: Sequence[Evidence] = ()
     evaluated_at: datetime | None = None
 
@@ -175,12 +176,21 @@ def _review_score(
 
 
 def _validate_policy(policy: FusionPolicy) -> None:
+    if any(
+        not math.isfinite(value) or not 0.0 <= value <= 1.0 for value in (policy.local_weight, policy.deepseek_weight)
+    ):
+        raise ValueError("fusion weights must be finite and between 0 and 1")
     if abs(policy.local_weight + policy.deepseek_weight - 1.0) > 1e-9:
         raise ValueError("fusion weights must sum to 1.0")
-    if abs(policy.local_weight - 0.68) > 1e-9 or abs(policy.deepseek_weight - 0.32) > 1e-9:
-        raise ValueError("fusion weights are fixed at 0.68/0.32")
     if not 0.0 <= policy.confidence_coverage_min <= 1.0:
         raise ValueError("confidence coverage must be between 0 and 1")
+    if policy.minimum_known_dimensions < 1:
+        raise ValueError("minimum known dimensions must be positive")
+    if any(
+        not math.isfinite(value) or not 0.0 <= value <= 100.0
+        for value in (policy.local_risk_cap, policy.deepseek_risk_cap)
+    ):
+        raise ValueError("risk caps must be finite and between 0 and 100")
 
 
 __all__ = [

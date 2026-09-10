@@ -21,6 +21,65 @@ from trader.domain.recommendation.scoring.scoring import (
 
 NOW = datetime(2026, 7, 16, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 
+_CANDIDATE_COMPONENT_WEIGHTS = {
+    Strategy.TODAY: {
+        "intraday_structure": {"change_5m": 0.35, "speed_percentile": 0.25, "pct_change": 0.2, "volume_ratio": 0.2},
+        "turnover_state": {"turnover_shock_score": 0.5, "amount_shock_score": 0.5},
+    },
+    Strategy.TOMORROW: {"stability": {"low_volatility_score": 0.5, "low_drawdown_score": 0.5}},
+    Strategy.D25: {
+        "stability": {"low_volatility_score": 0.5, "low_drawdown_score": 0.5},
+        "execution": {
+            "capacity_score": 1 / 3,
+            "moderate_amplitude": 1 / 3,
+            "price_executability": 1 / 3,
+        },
+    },
+}
+
+_LOCAL_COMPONENT_WEIGHTS = {
+    Strategy.TODAY: {
+        "intraday_structure": {
+            "change_5m": 0.3,
+            "speed_percentile": 0.2,
+            "pct_change": 0.2,
+            "volume_ratio": 0.15,
+            "relative_strength_3d": 0.15,
+        },
+        "turnover_state": {
+            "turnover_shock_score": 1 / 3,
+            "amount_shock_score": 1 / 3,
+            "flow_confirmation_score": 1 / 3,
+        },
+        "liquidity_execution": {
+            "amount_percentile_20d": 0.6,
+            "turnover_rate": 0.2,
+            "limit_distance_safety": 0.2,
+        },
+        "stability": {"low_volatility_score": 0.5, "low_drawdown_score": 0.5},
+    },
+    Strategy.TOMORROW: {
+        "tail_structure": {"tail_return_30m": 0.35, "tail_volume_ratio": 0.3, "close_location": 0.35},
+        "turnover_flow": {
+            "turnover_shock_score": 0.35,
+            "amount_shock_score": 0.35,
+            "flow_confirmation_score": 0.3,
+        },
+        "trend": {"ma20_60_position": 0.375, "ma_slope": 0.375, "breakout_20d": 0.25},
+        "stability": {"low_volatility_score": 0.5, "low_drawdown_score": 0.5},
+    },
+    Strategy.D25: {
+        "trend": {"ma20_60_structure": 7 / 17, "ma_slope": 6 / 17, "breakout_20d": 4 / 17},
+        "quality_value": {"quality_score": 0.5, "value_score": 0.3, "growth_score": 0.2},
+        "stability": {"low_volatility_score": 0.5, "low_drawdown_score": 0.5},
+        "flow_liquidity": {
+            "amount_percentile_20d": 0.5,
+            "turnover_shock_score": 0.25,
+            "amount_shock_score": 0.25,
+        },
+    },
+}
+
 
 def _build_board_cross_section(
     features,
@@ -75,6 +134,8 @@ def _policy(strategy: Strategy, board: Board, weights: dict[str, float]) -> Boar
         strategy=strategy,
         candidate_weights=candidate,
         local_weights=weights,
+        candidate_component_weights=_CANDIDATE_COMPONENT_WEIGHTS[strategy],
+        local_component_weights=_LOCAL_COMPONENT_WEIGHTS[strategy],
     )
 
 

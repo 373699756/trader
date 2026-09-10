@@ -160,7 +160,7 @@ def _validate_long_research_factor_contract(settings: StrategySettings) -> None:
         "industry_policy_score": {
             **score_common,
             "raw_inputs": ("industry_strength", "validated_announcements"),
-            "formula": "0.6*industry_strength+0.4*clamp(50+10*(unique_positive_keyword_hits-unique_negative_keyword_hits))",
+            "formula": "weighted(industry_strength,evidence_score;feature_component_weights.industry_policy_score)",
             "observation_time": "latest_published_before_observation",
             "adjustment": "none",
             "lookback_window": 180,
@@ -171,7 +171,7 @@ def _validate_long_research_factor_contract(settings: StrategySettings) -> None:
         "risk_protection_score": {
             **score_common,
             "raw_inputs": ("low_volatility_score", "low_drawdown_score"),
-            "formula": "0.5*low_volatility_score+0.5*low_drawdown_score",
+            "formula": "weighted(low_volatility_score,low_drawdown_score;feature_component_weights.risk_protection_score)",
             "observation_time": "point_in_time",
             "adjustment": "forward",
             "lookback_window": 20,

@@ -6,6 +6,30 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求继续执行 `scoring_weight_configuration_single_source`，并明确所有权重参数必须全部在配置文件中。
+  根因确认：板块候选/本地权重和 DeepSeek 维度虽已由配置加载，但候选与本地组件内部、趋势/行业政策/风险
+  保护复合特征仍在领域或行情特征代码中写死数值；设置校验器又保存一套板块、维度和融合固定表，融合策略及
+  若干板块策略允许缺项默认值，无消费者的旧候选/流动性排名函数也继续形成误导性所有者。Added: 在
+  `config/strategy.json` 补齐三策略候选组件内部、本地组件内部和生产复合特征权重，新增不可变有类型
+  `FeatureComponentWeightPolicy`、完整字段/有限非负/合计校验、三策略黄金向量、配置变更到领域消费者、冻结
+  runtime identity 及禁止代码权重字面量的回归。Changed: 配置经设置类型、`bootstrap.py` 和不可变策略一次
+  注入候选、本地评分、复合特征、DeepSeek 维度与 68/32 融合；领域纯函数只消费显式权重，factor registry
+  公式只引用配置键而不重复或求值数值，策略 hash 覆盖全部权重并参与冻结复算身份。Removed: 删除校验器中的
+  重复固定权重表、领域权重默认值、旧 `candidate_score()`、旧 `liquidity_score()` 和相应无消费者测试，不保留
+  fallback、双表示或新项目版本名。Verification: 配置/评分/融合/冻结定向回归、全部 unit/component/contract
+  测试及 JavaScript 状态测试通过；`make format-check`、`make lint`（含严格债务为零）、`make type-check`
+  （384 个源码文件）、`make test`、`make package` 和 `make performance-check` 全部通过。5500 全市场、三策略
+  完整人口和最坏 1080 个互不重合候选的性能门通过，`network_calls=0`、分配增长 0%；真实服务重启后发布
+  `runtime_sha256_197276bf3e395b2cd060+strategy_sha256_6493c5e53c1425b6a2f0`，Tomorrow/D25 均在 5300 个
+  合格总体上进入本地评分，沙箱外 `diagnose_runtime.py --profile full` 的交易所主数据、历史源、Tencent、
+  Tushare、浏览器刷新及生产性能 6 项通过。Residual Risks: 诊断期间后台历史预热仍发生供应商超时，使 Web
+  健康项因超时计数增加及最近有效 Tomorrow/D25 决策的漏斗投影暂为零而失败；服务继续保留最近有效决策并
+  显式降级，该外部数据可用性风险不由本批权重链改动掩盖。本批未调整任何权重、120 容量、动作线、
+  V1/V2/V3、DeepSeek 168 上限或冻结规则；训练产生并由模型工件 hash 固化的模型系数属于模型身份，不是
+  运行时策略权重，继续由模型 codec 管理。真实点时证据、候选容量收益验证、终端留出、Shadow 与人工启用
+  仍按实施计划失败关闭；下一独立章节为 V3 训练工件重建。
+  `Regression-Key: scoring-weight-config-single-source`。
+
 - 用户要求继续完成 `candidate_single_owner_acceptance_revalidation`。根因确认：候选资格、策略隔离和有序储备
   已在生产链生效，但补位循环只把 deadline 传给供应商，没有在波次间停止，因而可能在 deadline 后提交部分
   新批次；候选报价缓存又错误沿用 360 条分钟缓存容量，固定性能门仍只声明 360 候选，当前周期健康年龄还会被

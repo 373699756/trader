@@ -226,11 +226,6 @@ def _band_or_none(
     )
 
 
-def _mean_known(snapshot: FeatureSnapshot, fields: tuple[str, ...]) -> float:
-    known = [snapshot.value(field) for field in fields if snapshot.optional_value(field) is not None]
-    return sum(known) / len(known) if known else 50.0
-
-
 def _candidate_fields(strategy: Strategy) -> tuple[str, ...]:
     fields: set[str] = set()
     for names in _CANDIDATE_INPUTS[strategy].values():

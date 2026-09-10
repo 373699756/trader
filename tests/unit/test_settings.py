@@ -2,10 +2,21 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
+from trader.bootstrap_policy import _recommendation_policy
+from trader.domain.market.models import Board
+from trader.domain.recommendation.models import Strategy
+from trader.domain.recommendation.scoring.scoring import (
+    board_candidate_components,
+    board_candidate_score,
+    score_board_strategy,
+)
 from trader.infra.market_data.normalization.features import FEATURE_SCHEMA_ID, FEATURE_SCHEMA_NAMES
 from trader.infra.settings import (
     ConfigurationError,
@@ -630,15 +641,17 @@ def test_invalid_strategy_weight_sum_is_rejected(tmp_path) -> None:
         load_strategy_settings(strategy_path)
 
 
-def test_alternative_fusion_weights_are_rejected_even_when_they_sum_to_one(tmp_path) -> None:
+def test_alternative_fusion_weights_have_one_configuration_owner(tmp_path) -> None:
     strategy_path = tmp_path / "strategy.json"
     raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
     raw["fusion"]["local_weight"] = 0.5
     raw["fusion"]["deepseek_weight"] = 0.5
     strategy_path.write_text(json.dumps(raw), encoding="utf-8")
 
-    with pytest.raises(ConfigurationError, match="fixed at 0.68 and 0.32"):
-        load_strategy_settings(strategy_path)
+    settings = load_strategy_settings(strategy_path)
+
+    assert settings.fusion.local_weight == 0.5
+    assert settings.fusion.deepseek_weight == 0.5
 
 
 def test_non_finite_configuration_number_is_rejected(tmp_path) -> None:
@@ -676,7 +689,7 @@ def test_fixed_review_and_observation_gates_cannot_drift(
 
 
 @pytest.mark.parametrize("weight_family", ("dimension", "board_candidate", "board_local"))
-def test_fixed_strategy_weight_vectors_cannot_drift(tmp_path, weight_family: str) -> None:
+def test_strategy_weight_vectors_are_loaded_from_configuration(tmp_path, weight_family: str) -> None:
     strategy_path = tmp_path / "strategy.json"
     raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
     if weight_family == "dimension":
@@ -692,8 +705,16 @@ def test_fixed_strategy_weight_vectors_cannot_drift(tmp_path, weight_family: str
     weights[second] -= 0.01
     strategy_path.write_text(json.dumps(raw), encoding="utf-8")
 
-    with pytest.raises(ConfigurationError, match="fixed vector"):
-        load_strategy_settings(strategy_path)
+    settings = load_strategy_settings(strategy_path)
+
+    if weight_family == "dimension":
+        actual = settings.dimension_weights["tomorrow"]
+    elif weight_family == "board_candidate":
+        actual = settings.board_candidate_weights["tomorrow"]["main"]
+    else:
+        actual = settings.board_local_strategy_weights["tomorrow"]["main"]
+    assert actual[first] == pytest.approx(weights[first])
+    assert actual[second] == pytest.approx(weights[second])
 
 
 def test_strategy_config_has_only_board_specific_candidate_weights() -> None:
@@ -703,6 +724,132 @@ def test_strategy_config_has_only_board_specific_candidate_weights() -> None:
     assert "candidate_weights" not in raw
     assert not hasattr(settings, "candidate_weights")
     assert set(settings.board_candidate_weights) == {"today", "tomorrow", "d25"}
+
+
+def test_strategy_config_requires_complete_component_weight_families(tmp_path) -> None:
+    raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
+
+    assert set(raw["candidate_component_weights"]) == {"today", "tomorrow", "d25"}
+    assert set(raw["local_component_weights"]) == {"today", "tomorrow", "d25"}
+    assert set(raw["feature_component_weights"]) == {
+        "trend_score",
+        "industry_policy_score",
+        "risk_protection_score",
+    }
+
+    del raw["local_component_weights"]["tomorrow"]["trend"]["breakout_20d"]
+    strategy_path = tmp_path / "strategy.json"
+    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="local_component_weights.tomorrow.trend"):
+        load_strategy_settings(strategy_path)
+
+
+def test_component_weight_sum_is_rejected(tmp_path) -> None:
+    raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
+    raw["candidate_component_weights"]["today"]["intraday_structure"]["change_5m"] = 0.5
+    strategy_path = tmp_path / "strategy.json"
+    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="candidate_component_weights.today.intraday_structure"):
+        load_strategy_settings(strategy_path)
+
+
+def test_feature_component_weight_fields_and_sum_are_rejected(tmp_path) -> None:
+    raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
+    raw["feature_component_weights"]["trend_score"] = {"ma20_60_position": 1.0}
+    strategy_path = tmp_path / "strategy.json"
+    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="feature_component_weights.trend_score"):
+        load_strategy_settings(strategy_path)
+
+    raw["feature_component_weights"]["trend_score"] = {
+        "ma20_60_position": 0.7,
+        "ma_slope": 0.4,
+    }
+    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="feature_component_weights trend_score weights must sum"):
+        load_strategy_settings(strategy_path)
+
+
+def test_feature_component_weight_configuration_is_typed_immutable_and_changes_identity(tmp_path) -> None:
+    source_path = PROJECT_ROOT / "config" / "strategy.json"
+    baseline = load_strategy_settings(source_path)
+    raw = json.loads(source_path.read_text(encoding="utf-8"))
+    raw["feature_component_weights"]["trend_score"] = {
+        "ma20_60_position": 0.7,
+        "ma_slope": 0.3,
+    }
+    changed_path = tmp_path / "strategy.json"
+    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    changed = load_strategy_settings(changed_path)
+
+    assert changed.strategy_version != baseline.strategy_version
+    assert changed.feature_component_weights.trend_score == {
+        "ma20_60_position": 0.7,
+        "ma_slope": 0.3,
+    }
+    with pytest.raises(TypeError):
+        changed.feature_component_weights.trend_score["ma_slope"] = 0.4  # type: ignore[index]
+
+
+def test_component_weight_configuration_reaches_domain_and_changes_strategy_identity(
+    tmp_path,
+    application_feature_factory,
+) -> None:
+    source_path = PROJECT_ROOT / "config" / "strategy.json"
+    source = load_strategy_settings(source_path)
+    raw = json.loads(source_path.read_text(encoding="utf-8"))
+    weights = raw["candidate_component_weights"]["today"]["intraday_structure"]
+    weights["change_5m"] -= 0.1
+    weights["speed_percentile"] += 0.1
+    changed_path = tmp_path / "strategy.json"
+    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed = load_strategy_settings(changed_path)
+    observed_at = datetime(2026, 9, 10, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    feature = application_feature_factory("600001", observed_at)
+    feature = replace(feature, quote=replace(feature.quote, board=Board.MAIN))
+    source_policy = _recommendation_policy(source).board_policy(Strategy.TODAY, Board.MAIN)
+    changed_policy = _recommendation_policy(changed).board_policy(Strategy.TODAY, Board.MAIN)
+
+    assert source_policy is not None
+    assert changed_policy is not None
+    assert source.strategy_version != changed.strategy_version
+    assert changed_policy.candidate_component_weights["intraday_structure"] == weights
+    assert board_candidate_components(feature, source_policy) != board_candidate_components(feature, changed_policy)
+
+
+def test_configured_candidate_and_local_weights_preserve_three_strategy_golden_vectors(
+    application_feature_factory,
+) -> None:
+    settings = load_strategy_settings(PROJECT_ROOT / "config" / "strategy.json")
+    policy = _recommendation_policy(settings)
+    observed_at = datetime(2026, 9, 10, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    source = application_feature_factory("600001", observed_at)
+    feature = replace(
+        source,
+        quote=replace(source.quote, board=Board.MAIN),
+        values={
+            **source.values,
+            "turnover_shock_score": 80.0,
+            "amount_shock_score": 60.0,
+            "flow_confirmation_score": 70.0,
+        },
+    )
+    expected = {
+        Strategy.TODAY: (82.27941176470587, 80.46875),
+        Strategy.TOMORROW: (75.58823529411764, 68.20833333333334),
+        Strategy.D25: (74.58333333333333, 70.55363321799307),
+    }
+
+    for strategy, (candidate_score, local_score) in expected.items():
+        board_policy = policy.board_policy(strategy, Board.MAIN)
+        assert board_policy is not None
+        assert board_candidate_score(feature, board_policy) == pytest.approx(candidate_score)
+        assert score_board_strategy(feature, board_policy).base_score == pytest.approx(local_score)
 
 
 def test_deepseek_risk_mapping_version_controller_is_rejected(tmp_path) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tests.component.market_data_test_support import (
+    FEATURE_WEIGHT_POLICY,
     LONG_POLICY,
     MARKET_REGIME_POLICY,
     NEWS_POLICY,
@@ -716,7 +717,7 @@ def test_eastmoney_history_completion_cannot_overwrite_newer_tushare_history() -
     service = _service(
         StaticGateway((_quote(),)),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         wall_clock=lambda: NOW,
     )
     result: dict[str, tuple[DailyBar, ...]] = {}
@@ -939,7 +940,7 @@ def test_late_eastmoney_hedge_preserves_security_identity_without_overwriting_si
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         data_plane=data_plane,
         wall_clock=lambda: observed_at,
     )
@@ -970,7 +971,7 @@ def test_candidate_feature_service_keeps_tencent_priority_before_cross_vendor_ve
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         wall_clock=lambda: NOW,
     )
     service.fetch_market_features(NOW)

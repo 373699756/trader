@@ -38,7 +38,7 @@ def recommendation_policy() -> RecommendationPolicy:
     return RecommendationPolicy(
         strategy_version="strategy-current",
         fusion_version="fusion-fixture",
-        fusion=FusionPolicy(),
+        fusion=FusionPolicy(0.68, 0.32, 0.5, 2, 25.0, 30.0),
         selection=SelectionPolicy(
             default_top_k=6,
             maximum_top_k=12,
@@ -54,6 +54,11 @@ def recommendation_policy() -> RecommendationPolicy:
             for strategy in Strategy
         },
         risk_rules=risk_rules,
+        board_policy_version="fixture",
+        board_candidate_weights={},
+        board_local_strategy_weights={},
+        candidate_component_weights={},
+        local_component_weights={},
     )
 
 

@@ -53,12 +53,12 @@ class ScoredDecisionPolicy:
     risk_rules: Mapping[str, RiskRule]
     executable_threshold: float
     observation_margin: float
+    fusion: FusionPolicy
     review_candidate_limit: int = 28
     top_k: int = 10
     observation_limit: int = 8
     maximum_per_industry: int = 2
     maximum_board_fraction: float = 0.60
-    fusion: FusionPolicy = field(default_factory=FusionPolicy)
     executable_enabled: bool = True
     strategy: Strategy = Strategy.TOMORROW
 

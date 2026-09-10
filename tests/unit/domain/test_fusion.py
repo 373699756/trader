@@ -19,6 +19,12 @@ from trader.domain.review.rules import deepseek_risk_rule_code
 
 DIMENSION_WEIGHTS = {name: 0.2 for name in DIMENSION_NAMES}
 NOW = datetime(2026, 7, 16, 14, 30, tzinfo=timezone.utc)
+FUSION_POLICY = FusionPolicy(0.68, 0.32, 0.5, 2, 25.0, 30.0)
+
+
+def test_fusion_policy_has_no_runtime_weight_defaults() -> None:
+    with pytest.raises(TypeError):
+        FusionPolicy()  # type: ignore[call-arg]
 
 
 def _fuse_score(
@@ -41,7 +47,7 @@ def _fuse_score(
             dimension_weights=dimension_weights,
             risk_rules=risk_rules,
             fusion_mode=fusion_mode,
-            policy=policy or FusionPolicy(),
+            policy=policy or FUSION_POLICY,
             evidence=evidence,
             evaluated_at=evaluated_at,
         )
@@ -233,24 +239,25 @@ def test_low_confidence_review_is_not_applied() -> None:
         DIMENSION_WEIGHTS,
         {},
         FusionMode.HYBRID,
-        FusionPolicy(confidence_coverage_min=0.5),
+        FUSION_POLICY,
     )
 
     assert result.score.confidence_coverage == 0.2
     assert result.score.final_score == 72.0
 
 
-def test_fusion_policy_rejects_weights_other_than_fixed_68_32() -> None:
-    with pytest.raises(ValueError, match="fixed at 0.68/0.32"):
-        _fuse_score(
-            LocalScoreResult(components={"test": 72.0}, base_score=72.0),
-            (),
-            _review(80.0),
-            DIMENSION_WEIGHTS,
-            {},
-            FusionMode.HYBRID,
-            FusionPolicy(local_weight=0.5, deepseek_weight=0.5),
-        )
+def test_fusion_uses_the_injected_weight_policy() -> None:
+    result = _fuse_score(
+        LocalScoreResult(components={"test": 72.0}, base_score=72.0),
+        (),
+        _review(80.0),
+        DIMENSION_WEIGHTS,
+        {},
+        FusionMode.HYBRID,
+        FusionPolicy(0.5, 0.5, 0.5, 2, 25.0, 30.0),
+    )
+
+    assert result.score.final_score == 76.0
 
 
 def test_fusion_keeps_unrounded_local_precision_until_final_rounding() -> None:

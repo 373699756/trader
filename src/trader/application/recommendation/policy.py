@@ -58,13 +58,11 @@ class RecommendationPolicy:
     selection: SelectionPolicy
     dimension_weights: Mapping[Strategy, Mapping[str, float]]
     risk_rules: Mapping[str, RiskRule]
-    board_policy_version: str = ""
-    board_candidate_weights: Mapping[Strategy, Mapping[Board, Mapping[str, float]]] = field(
-        default_factory=lambda: MappingProxyType({})
-    )
-    board_local_strategy_weights: Mapping[Strategy, Mapping[Board, Mapping[str, float]]] = field(
-        default_factory=lambda: MappingProxyType({})
-    )
+    board_policy_version: str
+    board_candidate_weights: Mapping[Strategy, Mapping[Board, Mapping[str, float]]]
+    board_local_strategy_weights: Mapping[Strategy, Mapping[Board, Mapping[str, float]]]
+    candidate_component_weights: Mapping[Strategy, Mapping[str, Mapping[str, float]]]
+    local_component_weights: Mapping[Strategy, Mapping[str, Mapping[str, float]]]
     hard_filter: HardFilterPolicy = field(default_factory=HardFilterPolicy)
 
     def __post_init__(self) -> None:
@@ -82,11 +80,23 @@ class RecommendationPolicy:
             "board_local_strategy_weights",
             _freeze_board_weights(self.board_local_strategy_weights),
         )
+        object.__setattr__(
+            self,
+            "candidate_component_weights",
+            _freeze_strategy_component_weights(self.candidate_component_weights),
+        )
+        object.__setattr__(
+            self,
+            "local_component_weights",
+            _freeze_strategy_component_weights(self.local_component_weights),
+        )
 
     def board_policy(self, strategy: Strategy, board: Board) -> BoardStrategyPolicy | None:
         candidate = self.board_candidate_weights.get(strategy, {}).get(board)
         local = self.board_local_strategy_weights.get(strategy, {}).get(board)
-        if candidate is None or local is None:
+        candidate_components = self.candidate_component_weights.get(strategy)
+        local_components = self.local_component_weights.get(strategy)
+        if candidate is None or local is None or candidate_components is None or local_components is None:
             return None
         return BoardStrategyPolicy(
             policy_id=f"{self.board_policy_version}:{strategy.value}:{board.value}",
@@ -95,6 +105,8 @@ class RecommendationPolicy:
             strategy=strategy,
             candidate_weights=candidate,
             local_weights=local,
+            candidate_component_weights=candidate_components,
+            local_component_weights=local_components,
             candidate_min_score=self.selection.candidate_min_score,
             minimum_reliability=self.selection.minimum_board_reliability,
         )
@@ -107,6 +119,19 @@ def _freeze_board_weights(
         {
             strategy: MappingProxyType({board: MappingProxyType(dict(weights)) for board, weights in boards.items()})
             for strategy, boards in values.items()
+        }
+    )
+
+
+def _freeze_strategy_component_weights(
+    values: Mapping[Strategy, Mapping[str, Mapping[str, float]]],
+) -> Mapping[Strategy, Mapping[str, Mapping[str, float]]]:
+    return MappingProxyType(
+        {
+            strategy: MappingProxyType(
+                {component: MappingProxyType(dict(weights)) for component, weights in components.items()}
+            )
+            for strategy, components in values.items()
         }
     )
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from tests.component.market_data_test_support import (
     _SHANGHAI,
     AFTERNOON,
+    FEATURE_WEIGHT_POLICY,
     LONG_POLICY,
     MARKET_REGIME_POLICY,
     NEWS_POLICY,
@@ -76,7 +77,7 @@ def test_history_intraday_and_research_share_the_bounded_market_cache() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         intraday_client=intraday,
         research_client=research,
         cache=cache,
@@ -143,7 +144,7 @@ def test_level_one_exclusion_prunes_every_non_frozen_per_stock_data_request(tmp_
     service = _service(
         gateway,
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         eligibility=registry,
         research_client=research,
         intraday_client=intraday,
@@ -205,7 +206,7 @@ def test_newly_discovered_annual_loss_stops_quote_and_history_in_same_candidate_
     service = _service(
         gateway,
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         eligibility=registry,
         research_client=research,
     )
@@ -230,7 +231,7 @@ def test_source_lane_research_deadline_discards_late_memory_and_disk_cache(tmp_p
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         research_client=research,
         research_cache_dir=tmp_path,
         worker_pool=pool,
@@ -360,7 +361,7 @@ def test_research_cache_is_used_after_restart_before_source_request(tmp_path) ->
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         research_client=FailingResearchClient(),
         research_cache_dir=cache_dir,
         research_workers=1,
@@ -411,7 +412,7 @@ def test_research_cache_expired_calls_research_client(tmp_path) -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         research_client=research,
         research_cache_dir=cache_dir,
         research_workers=1,
@@ -535,7 +536,7 @@ def test_akshare_structured_research_is_point_in_time_and_builds_real_long_input
     observation = client.fetch_snapshot("600001", observed_at=AFTERNOON)
     repeated = client.fetch_snapshot("600001", observed_at=AFTERNOON + timedelta(minutes=1))
     client.fetch_snapshot("600001", observed_at=AFTERNOON + timedelta(minutes=11))
-    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY).build(
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY).build(
         (replace(_quote(), price=20.0),),
         {"600001": _history_bars()},
         AFTERNOON,
@@ -673,7 +674,7 @@ def test_structured_research_source_failure_preserves_null_and_other_sources() -
         source_errors=("pledge:timeout",),
     )
 
-    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY).build(
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY).build(
         (_quote(),),
         {"600001": _history_bars()},
         AFTERNOON,
@@ -734,7 +735,7 @@ def test_candidate_news_is_cached_and_failure_does_not_block() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         research_client=research,
         research_workers=1,
     )
@@ -752,7 +753,7 @@ def test_candidate_news_is_cached_and_failure_does_not_block() -> None:
     degraded = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         research_client=FailingResearchClient(),
         research_workers=1,
     )
@@ -780,7 +781,7 @@ def test_structured_research_upgrades_news_only_cache_and_is_reused() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         research_client=research,
         research_workers=1,
     )
@@ -824,7 +825,7 @@ def test_read_candidate_features_reuses_structured_research_disk_cache_after_res
     writer = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         research_client=StaticStructuredResearchClient((), observation),
         research_cache_dir=cache_dir,
         research_workers=1,
@@ -837,7 +838,7 @@ def test_read_candidate_features_reuses_structured_research_disk_cache_after_res
     reader = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         research_client=None,
         research_cache_dir=cache_dir,
         research_workers=1,
@@ -862,7 +863,7 @@ def test_stock_risk_refresh_reuses_successful_ten_minute_cache() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         research_client=research,
         research_workers=1,
     )
@@ -885,7 +886,7 @@ def test_stock_risk_refresh_reports_only_real_research_version_changes() -> None
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         research_client=StaticStructuredResearchClient((), observation),
         research_workers=1,
         research_ttl_seconds=60,
@@ -909,7 +910,7 @@ def test_stock_risk_batch_deadline_keeps_completed_codes_and_defers_late_codes()
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         research_client=research,
         research_workers=2,
         wall_clock=lambda: datetime.now(timezone.utc),
@@ -940,7 +941,7 @@ def test_stock_risk_batch_deadline_discards_only_late_result() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         research_client=research,
         research_workers=1,
         wall_clock=lambda: datetime.now(timezone.utc),
@@ -1018,7 +1019,7 @@ def test_research_loader_recover_from_data_plane_overrides_component_statuses(tm
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         data_plane=data_plane,
         research_client=StaticStructuredResearchClient((), observation),
         research_workers=1,
@@ -1088,7 +1089,7 @@ def test_news_research_does_not_persist_risk_components() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         data_plane=data_plane,
         research_client=StaticResearchClient(()),
         research_workers=1,
@@ -1114,7 +1115,7 @@ def test_research_data_plane_persistence_unavailable_does_not_block_research_loa
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         data_plane=FailingRiskSaveDataPlane(),
         research_client=StaticStructuredResearchClient(
             (),

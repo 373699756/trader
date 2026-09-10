@@ -8,7 +8,7 @@ from pathlib import Path
 
 from trader.application.cache import CachePolicy
 from trader.domain.market.news import NewsSignalPolicy
-from trader.domain.market.research import LongResearchPolicy, MarketRegimePolicy
+from trader.domain.market.research import FeatureComponentWeightPolicy, LongResearchPolicy, MarketRegimePolicy
 from trader.domain.market.tail import TailSignalPolicy
 from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
 
@@ -233,6 +233,9 @@ class StrategySettings:
     board_policy_version: str
     board_candidate_weights: Mapping[str, Mapping[str, Mapping[str, float]]]
     board_local_strategy_weights: Mapping[str, Mapping[str, Mapping[str, float]]]
+    candidate_component_weights: Mapping[str, Mapping[str, Mapping[str, float]]]
+    local_component_weights: Mapping[str, Mapping[str, Mapping[str, float]]]
+    feature_component_weights: FeatureComponentWeightPolicy
     risk_rules: tuple[RiskRuleSettings, ...]
     factor_contract: Mapping[str, object]
     factor_registry: Mapping[str, FactorDefinition]

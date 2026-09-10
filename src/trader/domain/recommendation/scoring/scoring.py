@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Literal
 
-from trader.domain.market.factors import band_score, clamp
+from trader.domain.market.factors import band_score, clamp, weighted_score
 from trader.domain.market.models import (
     Board,
     BoardPopulation,
@@ -26,7 +26,6 @@ from trader.domain.recommendation.scoring.scoring_calculations import (
     _default_competition_group,
     _distributions,
     _liquidity_bucket,
-    _mean_known,
     _normalize_features,
     _population_version,
     _PopulationVersionIdentity,
@@ -364,28 +363,47 @@ def board_candidate_components(snapshot: FeatureSnapshot, policy: BoardStrategyP
     if policy.strategy is Strategy.TODAY:
         values = {
             "liquidity": snapshot.value("amount_percentile_20d"),
-            "intraday_structure": clamp(
-                0.35 * band_score(snapshot.quote.change_5m, 0.0, 0.2, 1.8, 3.5)
-                + 0.25 * snapshot.value("speed_percentile")
-                + 0.20 * band_score(snapshot.quote.pct_change, -1.0, 1.0, 5.5, 8.0)
-                + 0.20 * band_score(snapshot.quote.volume_ratio, 0.8, 1.2, 3.5, 6.0)
+            "intraday_structure": weighted_score(
+                {
+                    "change_5m": band_score(snapshot.quote.change_5m, 0.0, 0.2, 1.8, 3.5),
+                    "speed_percentile": snapshot.value("speed_percentile"),
+                    "pct_change": band_score(snapshot.quote.pct_change, -1.0, 1.0, 5.5, 8.0),
+                    "volume_ratio": band_score(snapshot.quote.volume_ratio, 0.8, 1.2, 3.5, 6.0),
+                },
+                policy.candidate_component_weights["intraday_structure"],
             ),
-            "turnover_state": _mean_known(snapshot, ("turnover_shock_score", "amount_shock_score")),
+            "turnover_state": _weighted_known(
+                snapshot,
+                ("turnover_shock_score", "amount_shock_score"),
+                policy.candidate_component_weights["turnover_state"],
+            ),
             "data_completeness": completeness,
         }
     elif policy.strategy is Strategy.TOMORROW:
         values = {
             "liquidity": snapshot.value("amount_percentile_20d"),
             "trend": snapshot.value("trend_score"),
-            "stability": _mean_known(snapshot, ("low_volatility_score", "low_drawdown_score")),
+            "stability": _weighted_known(
+                snapshot,
+                ("low_volatility_score", "low_drawdown_score"),
+                policy.candidate_component_weights["stability"],
+            ),
             "data_completeness": completeness,
         }
     else:
         values = {
             "liquidity": snapshot.value("amount_percentile_20d"),
             "trend": snapshot.value("trend_score"),
-            "stability": _mean_known(snapshot, ("low_volatility_score", "low_drawdown_score")),
-            "execution": _mean_known(snapshot, ("capacity_score", "moderate_amplitude", "price_executability")),
+            "stability": _weighted_known(
+                snapshot,
+                ("low_volatility_score", "low_drawdown_score"),
+                policy.candidate_component_weights["stability"],
+            ),
+            "execution": _weighted_known(
+                snapshot,
+                ("capacity_score", "moderate_amplitude", "price_executability"),
+                policy.candidate_component_weights["execution"],
+            ),
             "data_completeness": completeness,
         }
     return values
@@ -396,67 +414,121 @@ def score_board_strategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy)
         raise ValueError("board score policy does not match snapshot board")
     if policy.strategy is Strategy.TODAY:
         components = {
-            "intraday_structure": clamp(
-                0.30 * band_score(snapshot.quote.change_5m, 0.0, 0.2, 1.8, 3.5)
-                + 0.20 * snapshot.value("speed_percentile")
-                + 0.20 * band_score(snapshot.quote.pct_change, -1.0, 1.0, 5.5, 8.0)
-                + 0.15 * band_score(snapshot.quote.volume_ratio, 0.8, 1.2, 3.5, 6.0)
-                + 0.15 * snapshot.value("relative_strength_3d")
+            "intraday_structure": weighted_score(
+                {
+                    "change_5m": band_score(snapshot.quote.change_5m, 0.0, 0.2, 1.8, 3.5),
+                    "speed_percentile": snapshot.value("speed_percentile"),
+                    "pct_change": band_score(snapshot.quote.pct_change, -1.0, 1.0, 5.5, 8.0),
+                    "volume_ratio": band_score(snapshot.quote.volume_ratio, 0.8, 1.2, 3.5, 6.0),
+                    "relative_strength_3d": snapshot.value("relative_strength_3d"),
+                },
+                policy.local_component_weights["intraday_structure"],
             ),
-            "turnover_state": _mean_known(
-                snapshot, ("turnover_shock_score", "amount_shock_score", "flow_confirmation_score")
+            "turnover_state": _weighted_known(
+                snapshot,
+                ("turnover_shock_score", "amount_shock_score", "flow_confirmation_score"),
+                policy.local_component_weights["turnover_state"],
             ),
-            "liquidity_execution": clamp(
-                0.60 * snapshot.value("amount_percentile_20d")
-                + 0.20 * band_score(snapshot.quote.turnover_rate, 0.5, 1.5, 8.0, 15.0)
-                + 0.20 * snapshot.value("limit_distance_safety")
+            "liquidity_execution": weighted_score(
+                {
+                    "amount_percentile_20d": snapshot.value("amount_percentile_20d"),
+                    "turnover_rate": band_score(snapshot.quote.turnover_rate, 0.5, 1.5, 8.0, 15.0),
+                    "limit_distance_safety": snapshot.value("limit_distance_safety"),
+                },
+                policy.local_component_weights["liquidity_execution"],
             ),
-            "stability": _mean_known(snapshot, ("low_volatility_score", "low_drawdown_score")),
+            "stability": _weighted_known(
+                snapshot,
+                ("low_volatility_score", "low_drawdown_score"),
+                policy.local_component_weights["stability"],
+            ),
         }
     elif policy.strategy is Strategy.TOMORROW:
         components = {
-            "tail_structure": clamp(
-                0.35 * snapshot.value("tail_return_30m")
-                + 0.30 * snapshot.value("tail_volume_ratio")
-                + 0.35 * snapshot.value("close_location")
+            "tail_structure": weighted_score(
+                {
+                    "tail_return_30m": snapshot.value("tail_return_30m"),
+                    "tail_volume_ratio": snapshot.value("tail_volume_ratio"),
+                    "close_location": snapshot.value("close_location"),
+                },
+                policy.local_component_weights["tail_structure"],
             ),
-            "turnover_flow": clamp(
-                0.35 * snapshot.value("turnover_shock_score")
-                + 0.35 * snapshot.value("amount_shock_score")
-                + 0.30 * snapshot.value("flow_confirmation_score")
+            "turnover_flow": weighted_score(
+                {
+                    "turnover_shock_score": snapshot.value("turnover_shock_score"),
+                    "amount_shock_score": snapshot.value("amount_shock_score"),
+                    "flow_confirmation_score": snapshot.value("flow_confirmation_score"),
+                },
+                policy.local_component_weights["turnover_flow"],
             ),
-            "trend": clamp(
-                0.375 * snapshot.value("ma20_60_position")
-                + 0.375 * snapshot.value("ma_slope")
-                + 0.25 * snapshot.value("breakout_20d")
+            "trend": weighted_score(
+                {
+                    "ma20_60_position": snapshot.value("ma20_60_position"),
+                    "ma_slope": snapshot.value("ma_slope"),
+                    "breakout_20d": snapshot.value("breakout_20d"),
+                },
+                policy.local_component_weights["trend"],
             ),
-            "stability": _mean_known(snapshot, ("low_volatility_score", "low_drawdown_score")),
+            "stability": _weighted_known(
+                snapshot,
+                ("low_volatility_score", "low_drawdown_score"),
+                policy.local_component_weights["stability"],
+            ),
             "market_state": {"risk_on": 60.0, "neutral": 50.0, "risk_off": 40.0}.get(snapshot.market_regime, 50.0),
             "entry_quality": snapshot.value("entry_quality"),
         }
     elif policy.strategy is Strategy.D25:
         components = {
-            "trend": clamp(
-                7 / 17 * snapshot.value("ma20_60_structure")
-                + 6 / 17 * snapshot.value("ma_slope")
-                + 4 / 17 * snapshot.value("breakout_20d")
+            "trend": weighted_score(
+                {
+                    "ma20_60_structure": snapshot.value("ma20_60_structure"),
+                    "ma_slope": snapshot.value("ma_slope"),
+                    "breakout_20d": snapshot.value("breakout_20d"),
+                },
+                policy.local_component_weights["trend"],
             ),
-            "quality_value": clamp(
-                0.50 * snapshot.value("quality_score")
-                + 0.30 * snapshot.value("value_score")
-                + 0.20 * snapshot.value("growth_score")
+            "quality_value": weighted_score(
+                {
+                    "quality_score": snapshot.value("quality_score"),
+                    "value_score": snapshot.value("value_score"),
+                    "growth_score": snapshot.value("growth_score"),
+                },
+                policy.local_component_weights["quality_value"],
             ),
-            "stability": _mean_known(snapshot, ("low_volatility_score", "low_drawdown_score")),
-            "flow_liquidity": clamp(
-                0.50 * snapshot.value("amount_percentile_20d")
-                + 0.25 * snapshot.value("turnover_shock_score")
-                + 0.25 * snapshot.value("amount_shock_score")
+            "stability": _weighted_known(
+                snapshot,
+                ("low_volatility_score", "low_drawdown_score"),
+                policy.local_component_weights["stability"],
+            ),
+            "flow_liquidity": weighted_score(
+                {
+                    "amount_percentile_20d": snapshot.value("amount_percentile_20d"),
+                    "turnover_shock_score": snapshot.value("turnover_shock_score"),
+                    "amount_shock_score": snapshot.value("amount_shock_score"),
+                },
+                policy.local_component_weights["flow_liquidity"],
             ),
             "entry_quality": snapshot.value("entry_quality"),
         }
     else:
         raise ValueError("long has no board score")
     return compose(components, policy.local_weights)
+
+
+def _weighted_known(
+    snapshot: FeatureSnapshot,
+    fields: tuple[str, ...],
+    weights: Mapping[str, float],
+) -> float:
+    if set(weights) != set(fields):
+        raise ValueError("known-value component weights do not match its fields")
+    known = tuple(field for field in fields if snapshot.optional_value(field) is not None)
+    if not known:
+        return 50.0
+    known_weight = sum(weights[field] for field in known)
+    if known_weight <= 0.0:
+        return 50.0
+    return clamp(sum(snapshot.value(field) * weights[field] for field in known) / known_weight)
 
 
 __all__ = [

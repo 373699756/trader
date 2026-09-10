@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -14,8 +15,10 @@ from trader.application.recommendation.scored_freezing import (
 from trader.domain.recommendation.decision_identity import ScoredDecision
 from trader.domain.recommendation.models import Strategy
 from trader.infra.persistence.decision_records import SQLiteDecisionRecordRepository
+from trader.infra.settings import load_strategy_settings
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 @dataclass
@@ -69,6 +72,30 @@ def test_checkpoint_recovers_same_decision_identity_after_restart(tmp_path: Path
     restored_current = restored.snapshot(Strategy.TOMORROW).current
     assert isinstance(restored_current, ScoredDecision)
     assert result.record.decision.content_hash == restored_current.content_hash
+
+
+def test_weight_configuration_hash_participates_in_freeze_runtime_identity(tmp_path: Path) -> None:
+    strategy_path = PROJECT_ROOT / "config" / "strategy.json"
+    baseline = load_strategy_settings(strategy_path)
+    raw = json.loads(strategy_path.read_text(encoding="utf-8"))
+    weights = raw["local_component_weights"]["tomorrow"]["trend"]
+    weights["ma20_60_position"] -= 0.01
+    weights["ma_slope"] += 0.01
+    changed_path = tmp_path / "strategy.json"
+    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed = load_strategy_settings(changed_path)
+    current = replace(decision(), strategy_version=baseline.strategy_version)
+
+    baseline_identity = DecisionRuntimeIdentity(
+        current.config_version,
+        baseline.strategy_version,
+        current.fusion_version,
+    )
+    changed_identity = replace(baseline_identity, strategy_version=changed.strategy_version)
+
+    assert baseline.strategy_version != changed.strategy_version
+    assert baseline_identity.matches(current)
+    assert not changed_identity.matches(current)
 
 
 def test_freeze_is_idempotent_non_overwritable_and_accepts_empty_formal_result(tmp_path: Path) -> None:

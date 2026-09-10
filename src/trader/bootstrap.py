@@ -484,6 +484,7 @@ def _build_market_data(
         strategy.tomorrow_tail_signal,
         strategy.market_regime,
         strategy.long_research,
+        strategy.feature_component_weights,
     )
     research_client = AkshareResearchClient(
         timeout_seconds=settings.market_data.research_timeout_seconds,

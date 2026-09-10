@@ -7,6 +7,7 @@ import pytest
 from trader.domain.market.research import (
     CorporateRiskCategory,
     CorporateRiskFact,
+    FeatureComponentWeightPolicy,
     FinancialReport,
     LongResearchInputs,
     LongResearchPolicy,
@@ -93,6 +94,30 @@ def test_long_research_missing_sources_stay_missing_instead_of_becoming_zero() -
     assert features["pledge_risk"] is None
     assert features["reduction_or_unlock"] is None
     assert features["risk_protection_score"] == pytest.approx(75.0)
+
+
+def test_long_research_composite_scores_consume_explicit_weight_policy() -> None:
+    observation = ResearchObservation(
+        announcements=(ResearchAnnouncement("公司获得政策支持", NOW),),
+        announcements_available=True,
+    )
+    inputs = LongResearchInputs(20.0, 80.0, 60.0, 100.0)
+    baseline = derive_long_research_features(observation, inputs, _long_policy(), _feature_component_weights())
+    changed = derive_long_research_features(
+        observation,
+        inputs,
+        _long_policy(),
+        FeatureComponentWeightPolicy(
+            trend_score={"ma20_60_position": 0.7, "ma_slope": 0.3},
+            industry_policy_score={"industry_strength": 0.75, "evidence_score": 0.25},
+            risk_protection_score={"low_volatility_score": 0.25, "low_drawdown_score": 0.75},
+        ),
+    )
+
+    assert baseline["industry_policy_score"] == 72.0
+    assert changed["industry_policy_score"] == 75.0
+    assert baseline["risk_protection_score"] == 80.0
+    assert changed["risk_protection_score"] == 90.0
 
 
 def test_successful_empty_event_sources_are_auditable_real_zeroes() -> None:
@@ -307,6 +332,15 @@ def _derive_long_research_features(
             low_drawdown_score=low_drawdown_score,
         ),
         policy,
+        _feature_component_weights(),
+    )
+
+
+def _feature_component_weights() -> FeatureComponentWeightPolicy:
+    return FeatureComponentWeightPolicy(
+        trend_score={"ma20_60_position": 0.6, "ma_slope": 0.4},
+        industry_policy_score={"industry_strength": 0.6, "evidence_score": 0.4},
+        risk_protection_score={"low_volatility_score": 0.5, "low_drawdown_score": 0.5},
     )
 
 

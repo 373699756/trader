@@ -6,6 +6,7 @@ import pytest
 
 from tests.component.market_data_test_support import (
     AFTERNOON,
+    FEATURE_WEIGHT_POLICY,
     LONG_POLICY,
     MARKET_REGIME_POLICY,
     NEWS_POLICY,
@@ -55,7 +56,7 @@ def test_market_service_components_own_distinct_locks_and_facade_has_no_shared_l
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
     )
 
     component_locks = (
@@ -75,7 +76,7 @@ def test_unknown_source_contract_fallback_uses_stable_cache_identity() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
     )
 
     identity = service.runner.cache_identity(
@@ -116,7 +117,7 @@ def test_security_master_persistence_conflict_is_debug_only(caplog) -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         data_plane=ConflictingDataPlane(),
     )
     service.references._persist_security_masters(NOW, (_security_master_observation(),))
@@ -134,7 +135,7 @@ def test_security_master_persistence_unavailable_remains_a_warning(caplog) -> No
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         data_plane=UnavailableDataPlane(),
     )
 
@@ -273,7 +274,7 @@ def test_akshare_circuit_skips_excess_requests_and_recovers_with_one_probe() -> 
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         research_client=research,
         research_workers=1,
         worker_pool=pool,
@@ -340,7 +341,7 @@ def test_auxiliary_cache_action_age_marks_new_features_observe_only() -> None:
     service = _service(
         StaticGateway((quote,)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         cache=cache,
         source_contracts=runtime.market_data.source_contracts,
         config_version=runtime.config_version,
@@ -427,7 +428,7 @@ def test_feature_service_health_reports_bounded_quote_age_summaries() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         wall_clock=lambda: measured_at,
     )
     service.fetch_market_features(NOW)
@@ -450,7 +451,7 @@ def test_candidate_quote_cache_retains_disjoint_three_strategy_union() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
     )
     quotes = tuple(
         replace(
@@ -473,7 +474,7 @@ def test_candidate_quote_health_age_only_covers_the_latest_candidate_cycle() -> 
     service = _service(
         StaticGateway((fresh,)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         wall_clock=lambda: measured_at,
     )
     old_quotes = tuple(
@@ -515,7 +516,7 @@ def test_feature_service_current_quote_index_prefers_latest_targeted_quote() -> 
     service = _service(
         StaticGatewayWithSeparateQuotes((market_quote,), (targeted_quote,)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
     )
     service.fetch_market_features(NOW)
     service.refresh_candidate_quotes(("600001",), NOW + timedelta(seconds=5))
@@ -539,7 +540,7 @@ def test_feature_service_current_quote_index_reads_canonical_quote_before_featur
     service = _service(
         StaticGateway((canonical_quote,)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
     )
 
     quotes = service.current_quotes(("600001",))
@@ -556,7 +557,7 @@ def test_market_service_uses_injected_runtime_data_pool() -> None:
     service = _service(
         gateway,
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         worker_pool=pool,
         history_workers=2,
     )
@@ -667,7 +668,7 @@ def test_late_free_identity_is_persisted_without_waiting_for_next_score_cycle(
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         data_plane=data_plane,
         worker_pool=pool,
         source_lanes=lanes,

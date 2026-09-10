@@ -115,6 +115,19 @@ def _board_policy(board: Board) -> BoardStrategyPolicy:
             "market_state": 0.1,
             "entry_quality": 0.2,
         },
+        candidate_component_weights={
+            "stability": {"low_volatility_score": 0.5, "low_drawdown_score": 0.5},
+        },
+        local_component_weights={
+            "tail_structure": {"tail_return_30m": 0.35, "tail_volume_ratio": 0.3, "close_location": 0.35},
+            "turnover_flow": {
+                "turnover_shock_score": 0.35,
+                "amount_shock_score": 0.35,
+                "flow_confirmation_score": 0.3,
+            },
+            "trend": {"ma20_60_position": 0.375, "ma_slope": 0.375, "breakout_20d": 0.25},
+            "stability": {"low_volatility_score": 0.5, "low_drawdown_score": 0.5},
+        },
         candidate_min_score=0.0,
     )
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from tests.component.market_data_test_support import (
     _SHANGHAI,
     AFTERNOON,
+    FEATURE_WEIGHT_POLICY,
     LONG_POLICY,
     MARKET_REGIME_POLICY,
     NEWS_POLICY,
@@ -108,7 +109,7 @@ def test_expired_unified_intraday_cache_triggers_a_new_physical_load() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         intraday_client=intraday,
         cache=cache,
         source_contracts=runtime.market_data.source_contracts,
@@ -140,7 +141,7 @@ def test_out_of_order_intraday_refresh_keeps_last_valid_tail_input() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         intraday_client=SequenceIntradayClient((current, older)),
         intraday_ttl_seconds=1,
         monotonic=monotonic,
@@ -156,7 +157,7 @@ def test_out_of_order_intraday_refresh_keeps_last_valid_tail_input() -> None:
 
 
 def test_feature_builder_derives_auditable_tail_inputs_without_fabricating_missing_values() -> None:
-    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY)
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY)
     available, missing = builder.build(
         (_quote(), _quote(code="600002")),
         {},
@@ -200,7 +201,9 @@ def test_close_location_has_exact_boundaries_and_preserves_missing(
 ) -> None:
     quote = replace(_quote(), price=price, high=high, low=low)
 
-    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY).build((quote,), {}, NOW)[0]
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY).build(
+        (quote,), {}, NOW
+    )[0]
 
     if expected is None:
         assert feature.optional_value("close_location") is None
@@ -226,7 +229,7 @@ def test_zero_historical_return_has_neutral_price_volume_confirmation() -> None:
     )
     quote = replace(_quote(), price=10.0, amount=100_000_000.0)
 
-    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY).build(
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY).build(
         (quote,), {quote.code: bars}, NOW
     )[0]
 
@@ -239,7 +242,7 @@ def test_market_service_fetches_intraday_minutes_only_for_requested_candidate_mo
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         intraday_client=intraday,
         intraday_workers=1,
     )
@@ -274,7 +277,7 @@ def test_market_service_schedules_intraday_io_round_robin_across_boards() -> Non
     service = _service(
         StaticGateway(quotes),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         intraday_client=intraday,
         intraday_workers=1,
     )
@@ -293,7 +296,7 @@ def test_intraday_cache_has_a_hard_entry_limit() -> None:
     service = _service(
         StaticGateway((_quote(), _quote(code="600002"))),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         intraday_client=intraday,
         intraday_workers=1,
         intraday_cache_limit=1,
@@ -310,7 +313,7 @@ def test_intraday_failure_keeps_tomorrow_features_available_and_marks_missing() 
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         intraday_client=FailingIntradayClient(),
         intraday_workers=1,
     )
@@ -334,7 +337,7 @@ def test_intraday_health_requires_complete_tail_signals_for_coverage() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         intraday_client=intraday,
         intraday_workers=1,
     )
@@ -357,7 +360,7 @@ def test_intraday_batch_deadline_does_not_wait_for_every_candidate_request() -> 
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         intraday_client=intraday,
         intraday_workers=1,
         intraday_batch_timeout_seconds=0.01,
@@ -383,7 +386,7 @@ def test_cancelled_before_start_intraday_request_is_retried_on_next_refresh() ->
     service = _service(
         StaticGateway((_quote(), _quote(code="600002"))),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         intraday_client=intraday,
         intraday_workers=1,
         intraday_batch_timeout_seconds=0.1,
@@ -414,7 +417,7 @@ def test_source_lane_intraday_batch_timeout_returns_without_waiting_for_blocked_
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         intraday_client=intraday,
         intraday_workers=1,
         intraday_batch_timeout_seconds=0.01,
@@ -454,7 +457,7 @@ def test_timed_out_intraday_lane_cannot_mutate_caller_restrictions_after_return(
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         intraday_client=StaticIntradayClient(_tail_minute_bars()),
         intraday_workers=1,
         intraday_batch_timeout_seconds=0.01,
@@ -507,7 +510,7 @@ def test_source_lane_cancels_queued_intraday_io_after_batch_timeout() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         intraday_client=intraday,
         intraday_workers=1,
         intraday_batch_timeout_seconds=0.01,
@@ -552,7 +555,7 @@ def test_history_cache_persists_intraday_current_day_bar_without_future_source_t
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         data_plane=data_plane,
         wall_clock=lambda: observed_at,
     )

@@ -110,6 +110,7 @@ TAIL_POLICY = TailSignalPolicy(
 _STRATEGY_SETTINGS = load_strategy_settings(Path(__file__).parents[2] / "config" / "strategy.json")
 MARKET_REGIME_POLICY = _STRATEGY_SETTINGS.market_regime
 LONG_POLICY = _STRATEGY_SETTINGS.long_research
+FEATURE_WEIGHT_POLICY = _STRATEGY_SETTINGS.feature_component_weights
 
 
 class _AllowAllEligibility:

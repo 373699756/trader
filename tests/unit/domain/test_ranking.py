@@ -18,7 +18,6 @@ from trader.domain.recommendation.selection.ranking import (
     ActionPolicy,
     SelectionPolicy,
     action_for,
-    candidate_score,
     minimum_selection_score,
     select_top_k,
     select_top_k_with_audit,
@@ -28,17 +27,6 @@ from trader.domain.review.models import (
     ReviewOutcome,
 )
 from trader.domain.review.rules import Rating
-
-CANDIDATE_WEIGHTS = {
-    "liquidity": 7 / 18,
-    "short_momentum": 5 / 18,
-    "trend": 2 / 9,
-    "data_completeness": 1 / 9,
-}
-
-
-def test_candidate_score_is_bounded(feature_factory) -> None:
-    assert 0.0 <= candidate_score(feature_factory(), CANDIDATE_WEIGHTS) <= 100.0
 
 
 def test_tomorrow_and_d25_have_morning_draft_selection_floors() -> None:

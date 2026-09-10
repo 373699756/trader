@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from trader.domain.market.news import NewsSignalPolicy
-from trader.domain.market.research import LongResearchPolicy, MarketRegimePolicy
+from trader.domain.market.research import FeatureComponentWeightPolicy, LongResearchPolicy, MarketRegimePolicy
 from trader.domain.market.tail import TailSignalPolicy
 from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId, parse_scoring_profile
 from trader.infra.settings.factor_validation import _parse_factor_definition, _strategy_contract_identity
@@ -71,6 +71,9 @@ _STRATEGY_KEYS = {
     "hard_filters",
     "board_candidate_weights",
     "board_local_strategy_weights",
+    "candidate_component_weights",
+    "local_component_weights",
+    "feature_component_weights",
     "today_news_signal",
     "tomorrow_tail_signal",
     "market_regime",
@@ -103,6 +106,20 @@ def load_strategy_settings(
         raw = {**raw, "tomorrow_scoring_profile": tomorrow_scoring_profile}
     effective_profile = _text(raw, "tomorrow_scoring_profile")
     fusion_raw = _mapping(raw, "fusion")
+    _require_exact_keys(
+        fusion_raw,
+        {
+            "local_weight",
+            "deepseek_weight",
+            "confidence_coverage_min",
+            "minimum_known_dimensions",
+            "local_risk_cap",
+            "deepseek_risk_cap",
+            "score_decimals",
+            "rounding",
+        },
+        "strategy.fusion",
+    )
     selection_raw = _mapping(raw, "selection")
     hard_filters_raw = _mapping(raw, "hard_filters")
     blacklist_raw = hard_filters_raw.get("blacklist_codes")
@@ -119,6 +136,22 @@ def load_strategy_settings(
     dimension_weights = _nested_number_mapping(raw, "dimension_weights")
     board_candidate_weights = _triple_nested_number_mapping(raw, "board_candidate_weights")
     board_local_strategy_weights = _triple_nested_number_mapping(raw, "board_local_strategy_weights")
+    candidate_component_weights = _triple_nested_number_mapping(raw, "candidate_component_weights")
+    local_component_weights = _triple_nested_number_mapping(raw, "local_component_weights")
+    feature_component_weights_raw = _mapping(raw, "feature_component_weights")
+    _require_exact_keys(
+        feature_component_weights_raw,
+        {"trend_score", "industry_policy_score", "risk_protection_score"},
+        "strategy.feature_component_weights",
+    )
+    try:
+        feature_component_weights = FeatureComponentWeightPolicy(
+            trend_score=_number_mapping(feature_component_weights_raw, "trend_score"),
+            industry_policy_score=_number_mapping(feature_component_weights_raw, "industry_policy_score"),
+            risk_protection_score=_number_mapping(feature_component_weights_raw, "risk_protection_score"),
+        )
+    except ValueError as exc:
+        raise ConfigurationError(f"feature_component_weights {exc}") from exc
     today_news_signal = _parse_news_signal_policy(_mapping(raw, "today_news_signal"))
     tomorrow_tail_signal = _parse_tail_signal_policy(_mapping(raw, "tomorrow_tail_signal"))
     market_regime = _parse_market_regime_policy(_mapping(raw, "market_regime"))
@@ -173,6 +206,9 @@ def load_strategy_settings(
         board_policy_version="score_first",
         board_candidate_weights=board_candidate_weights,
         board_local_strategy_weights=board_local_strategy_weights,
+        candidate_component_weights=candidate_component_weights,
+        local_component_weights=local_component_weights,
+        feature_component_weights=feature_component_weights,
         risk_rules=risk_rules,
         factor_contract=dict(_mapping(raw, "factor_contract")),
         factor_registry=factor_registry,

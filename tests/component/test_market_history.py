@@ -5,6 +5,7 @@ from dataclasses import asdict
 
 from tests.component.market_data_test_support import (
     _SHANGHAI,
+    FEATURE_WEIGHT_POLICY,
     LONG_POLICY,
     MARKET_REGIME_POLICY,
     NEWS_POLICY,
@@ -80,7 +81,7 @@ def test_history_cache_fetches_sixty_one_bars_but_retains_only_twenty_raw_rows()
     service = _service(
         StaticGateway((_quote(),)),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         wall_clock=lambda: NOW,
     )
 
@@ -117,7 +118,7 @@ def test_history_cache_reads_typed_outcome_pairs_without_reusing_qfq_feature_row
     service = _service(
         StaticGateway((_quote(),)),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         wall_clock=lambda: NOW,
     )
 
@@ -195,7 +196,7 @@ def test_feature_service_does_not_commit_history_cache_after_deadline() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         wall_clock=lambda: next(wall_times, deadline),
     )
 
@@ -218,7 +219,7 @@ def test_full_market_deadline_does_not_wait_for_blocked_history_warmup() -> None
     service = _service(
         StaticGateway((_quote(),)),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         worker_pool=pool,
         source_lanes=lanes,
         cache=cache,
@@ -253,7 +254,7 @@ def test_market_service_bounds_history_preload_to_stratified_candidate_universe(
     service = _service(
         StaticGateway(quotes),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         history_workers=2,
         history_preload_limit=2,
     )
@@ -273,7 +274,7 @@ def test_level_one_exclusion_is_recorded_before_history_and_removed_from_market_
     service = _service(
         StaticGateway((excluded, eligible)),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         eligibility=registry,
         history_preload_limit=2,
     )
@@ -341,7 +342,7 @@ def test_repeated_refresh_does_not_queue_multiple_history_warmup_batches() -> No
     service = _service(
         StaticGateway(tuple(_quote(code=code) for code in codes)),
         BlockingHistory(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         worker_pool=pool,
         source_lanes=lanes,
         history_warmup_batch_size=3,
@@ -384,7 +385,7 @@ def test_history_warmup_does_not_supersede_pending_candidate_history() -> None:
     service = _service(
         StaticGateway(tuple(_quote(code=code) for code in codes)),
         BlockingFirstHistory(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         worker_pool=pool,
         source_lanes=lanes,
         history_warmup_batch_size=1,
@@ -441,7 +442,7 @@ def test_history_warmup_deadline_releases_blocked_batch_identity() -> None:
     service = _service(
         StaticGateway((_quote(),)),
         BlockingHistory(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         worker_pool=source_pool,
         history_worker_pool=history_pool,
         source_lanes=lanes,
@@ -491,7 +492,7 @@ def test_history_warmup_deadline_keeps_completed_stock_and_retries_only_slow_tai
     service = _service(
         StaticGateway((_quote(),)),
         PartialHistory(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         worker_pool=source_pool,
         history_worker_pool=history_pool,
         source_lanes=lanes,
@@ -533,7 +534,7 @@ def test_market_service_reloads_expired_history_and_reports_failed_coverage() ->
     service = _service(
         StaticGateway((_quote(), _quote(code="600002"))),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         history_workers=2,
         history_ttl_seconds=60,
         market_ttl_seconds=1,
@@ -587,7 +588,7 @@ def test_history_cache_recover_from_data_plane_restores_context_and_window(tmp_p
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         data_plane=data_plane,
         wall_clock=lambda: NOW,
     )
@@ -611,7 +612,7 @@ def test_history_cache_persists_latest_compact_summary_with_raw_window(tmp_path:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         data_plane=data_plane,
         wall_clock=lambda: datetime(2026, 7, 16, 15, 0, tzinfo=_SHANGHAI),
     )
@@ -633,7 +634,7 @@ def test_history_cache_persists_latest_compact_summary_with_raw_window(tmp_path:
     restored_service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         data_plane=trimmed_plane,
         wall_clock=lambda: datetime(2026, 7, 16, 15, 1, tzinfo=_SHANGHAI),
     )
@@ -663,7 +664,7 @@ def test_history_cache_rebuilds_a_legacy_summary_for_tomorrow_model_inputs(tmp_p
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         data_plane=data_plane,
         wall_clock=lambda: datetime(2026, 7, 16, 15, 0, tzinfo=_SHANGHAI),
     )
@@ -686,7 +687,7 @@ def test_history_cache_rebuilds_a_legacy_summary_for_tomorrow_model_inputs(tmp_p
     restored_service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         data_plane=legacy_plane,
         wall_clock=lambda: datetime(2026, 7, 16, 15, 1, tzinfo=_SHANGHAI),
     )
@@ -715,7 +716,7 @@ def test_history_cache_persistence_unavailable_does_not_block_history_load(caplo
     service = _service(
         StaticGateway((_quote(),)),
         CountingHistoryClient(bars),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         data_plane=data_plane,
         wall_clock=lambda: NOW,
     )
@@ -738,7 +739,7 @@ def test_history_cache_persistence_conflict_is_debug_only(caplog) -> None:
     service = _service(
         StaticGateway((_quote(),)),
         CountingHistoryClient(_history_bars()[-20:]),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         data_plane=ConflictingHistoryDataPlane(),
         wall_clock=lambda: NOW,
     )

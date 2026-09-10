@@ -10,6 +10,7 @@ import pytest
 
 from tests.component.market_data_test_support import (
     _SHANGHAI,
+    FEATURE_WEIGHT_POLICY,
     LONG_POLICY,
     MARKET_REGIME_POLICY,
     NEWS_POLICY,
@@ -70,7 +71,7 @@ def test_official_exchange_security_master_closes_listing_coverage_and_persists_
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         data_plane=data_plane,
         exchange_security_master_client=client,
         wall_clock=lambda: observed_at,
@@ -141,7 +142,7 @@ def test_failed_official_exchange_refresh_retains_previous_security_master() -> 
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         exchange_security_master_client=client,
         wall_clock=lambda: observed_at,
     )
@@ -191,7 +192,7 @@ def test_official_security_master_refresh_is_independent_from_quote_deadline() -
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         exchange_security_master_client=client,
         worker_pool=pool,
         source_lanes=lanes,

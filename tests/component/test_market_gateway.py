@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tests.component.market_data_test_support import (
+    FEATURE_WEIGHT_POLICY,
     LONG_POLICY,
     MARKET_REGIME_POLICY,
     NEWS_POLICY,
@@ -395,7 +396,7 @@ def test_feature_service_rejects_targeted_quote_older_than_full_market_snapshot(
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         wall_clock=lambda: NOW + timedelta(seconds=5),
     )
     service.refresh_candidate_quotes(("600001",), NOW)
@@ -415,7 +416,7 @@ def test_feature_service_does_not_commit_full_market_result_after_deadline() -> 
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         wall_clock=lambda: next(wall_times),
     )
 

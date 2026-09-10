@@ -18,133 +18,6 @@ from trader.infra.settings.parser import (
     ConfigurationError,
 )
 
-_FIXED_DIMENSION_WEIGHTS = {
-    "today": {
-        "value_quality": 2 / 17,
-        "financial_health": 2 / 17,
-        "market_flow": 8 / 17,
-        "industry_policy": 0.0,
-        "risk_quality": 5 / 17,
-    },
-    "tomorrow": {
-        "value_quality": 3 / 16,
-        "financial_health": 4 / 16,
-        "market_flow": 5 / 16,
-        "industry_policy": 0.0,
-        "risk_quality": 4 / 16,
-    },
-    "d25": {
-        "value_quality": 4 / 16,
-        "financial_health": 5 / 16,
-        "market_flow": 4 / 16,
-        "industry_policy": 0.0,
-        "risk_quality": 3 / 16,
-    },
-}
-_FIXED_TODAY_BOARD_CANDIDATE_WEIGHTS = {
-    "liquidity": 6 / 17,
-    "intraday_structure": 5 / 17,
-    "turnover_state": 4 / 17,
-    "data_completeness": 2 / 17,
-}
-_FIXED_BOARD_CANDIDATE_WEIGHTS: dict[str, dict[str, dict[str, float]]] = {
-    "today": {
-        "main": _FIXED_TODAY_BOARD_CANDIDATE_WEIGHTS,
-        "chinext": _FIXED_TODAY_BOARD_CANDIDATE_WEIGHTS,
-        "star": _FIXED_TODAY_BOARD_CANDIDATE_WEIGHTS,
-    },
-    "tomorrow": {
-        "main": {"liquidity": 7 / 17, "trend": 5 / 17, "stability": 3 / 17, "data_completeness": 2 / 17},
-        "chinext": {"liquidity": 4 / 14, "trend": 5 / 14, "stability": 3 / 14, "data_completeness": 2 / 14},
-        "star": {"liquidity": 5 / 17, "trend": 6 / 17, "stability": 4 / 17, "data_completeness": 2 / 17},
-    },
-    "d25": {
-        "main": {
-            "liquidity": 6 / 16,
-            "trend": 4 / 16,
-            "stability": 3 / 16,
-            "execution": 2 / 16,
-            "data_completeness": 1 / 16,
-        },
-        "chinext": {
-            "liquidity": 4 / 14,
-            "trend": 4 / 14,
-            "stability": 2 / 14,
-            "execution": 3 / 14,
-            "data_completeness": 1 / 14,
-        },
-        "star": {
-            "liquidity": 5 / 17,
-            "trend": 6 / 17,
-            "stability": 3 / 17,
-            "execution": 2 / 17,
-            "data_completeness": 1 / 17,
-        },
-    },
-}
-_FIXED_TODAY_BOARD_LOCAL_WEIGHTS = {
-    "intraday_structure": 3 / 8,
-    "turnover_state": 2 / 8,
-    "liquidity_execution": 2 / 8,
-    "stability": 1 / 8,
-}
-_FIXED_BOARD_LOCAL_WEIGHTS: dict[str, dict[str, dict[str, float]]] = {
-    "today": {
-        "main": _FIXED_TODAY_BOARD_LOCAL_WEIGHTS,
-        "chinext": _FIXED_TODAY_BOARD_LOCAL_WEIGHTS,
-        "star": _FIXED_TODAY_BOARD_LOCAL_WEIGHTS,
-    },
-    "tomorrow": {
-        "main": {
-            "tail_structure": 3 / 18,
-            "turnover_flow": 1 / 18,
-            "trend": 4 / 18,
-            "stability": 5 / 18,
-            "market_state": 2 / 18,
-            "entry_quality": 3 / 18,
-        },
-        "chinext": {
-            "tail_structure": 4 / 16,
-            "turnover_flow": 3 / 16,
-            "trend": 3 / 16,
-            "stability": 2 / 16,
-            "market_state": 1 / 16,
-            "entry_quality": 3 / 16,
-        },
-        "star": {
-            "tail_structure": 3 / 18,
-            "turnover_flow": 1 / 18,
-            "trend": 5 / 18,
-            "stability": 5 / 18,
-            "market_state": 1 / 18,
-            "entry_quality": 3 / 18,
-        },
-    },
-    "d25": {
-        "main": {
-            "trend": 5 / 17,
-            "quality_value": 5 / 17,
-            "stability": 3 / 17,
-            "flow_liquidity": 2 / 17,
-            "entry_quality": 2 / 17,
-        },
-        "chinext": {
-            "trend": 4 / 14,
-            "quality_value": 2 / 14,
-            "stability": 2 / 14,
-            "flow_liquidity": 4 / 14,
-            "entry_quality": 2 / 14,
-        },
-        "star": {
-            "trend": 6 / 17,
-            "quality_value": 5 / 17,
-            "stability": 3 / 17,
-            "flow_liquidity": 2 / 17,
-            "entry_quality": 1 / 17,
-        },
-    },
-}
-
 
 def _validate_strategy_settings(settings: StrategySettings) -> None:
     _validate_filter_fusion_selection(settings)
@@ -182,8 +55,6 @@ def _validate_hard_filters(settings: StrategySettings) -> None:
 def _validate_fusion(settings: StrategySettings) -> None:
     if abs(settings.fusion.local_weight + settings.fusion.deepseek_weight - 1.0) > 1e-9:
         raise ConfigurationError("fusion weights must sum to 1.0")
-    if abs(settings.fusion.local_weight - 0.68) > 1e-9 or abs(settings.fusion.deepseek_weight - 0.32) > 1e-9:
-        raise ConfigurationError("fusion weights are fixed at 0.68 and 0.32")
     if settings.fusion.version != "fusion_local68_deepseek32":
         raise ConfigurationError("unsupported fusion version")
     if settings.fusion.score_decimals != 2:
@@ -278,6 +149,25 @@ def _validate_strategy_weights(settings: StrategySettings) -> None:
     required_strategies = {"today", "tomorrow", "d25"}
     _validate_dimension_weights(settings, required_strategies)
     _validate_board_weights(settings)
+    _validate_component_weights(settings, required_strategies)
+    _validate_feature_component_weights(settings)
+
+
+def _validate_feature_component_weights(settings: StrategySettings) -> None:
+    expected = {
+        "trend_score": {"ma20_60_position", "ma_slope"},
+        "industry_policy_score": {"industry_strength", "evidence_score"},
+        "risk_protection_score": {"low_volatility_score", "low_drawdown_score"},
+    }
+    actual = {
+        "trend_score": settings.feature_component_weights.trend_score,
+        "industry_policy_score": settings.feature_component_weights.industry_policy_score,
+        "risk_protection_score": settings.feature_component_weights.risk_protection_score,
+    }
+    for name, expected_fields in expected.items():
+        weights = actual[name]
+        if set(weights) != expected_fields:
+            raise ConfigurationError(f"feature_component_weights.{name} has invalid fields")
 
 
 def _validate_dimension_weights(settings: StrategySettings, required_strategies: set[str]) -> None:
@@ -294,11 +184,6 @@ def _validate_dimension_weights(settings: StrategySettings, required_strategies:
         _validate_weight_sum(f"dimension_weights.{strategy}", weights)
         if set(weights) != required_dimensions:
             raise ConfigurationError(f"dimension_weights.{strategy} must define the five review dimensions")
-        _validate_fixed_vector(
-            f"dimension_weights.{strategy}",
-            weights,
-            _FIXED_DIMENSION_WEIGHTS[strategy],
-        )
 
 
 def _validate_risk_registry(settings: StrategySettings) -> None:
@@ -561,22 +446,76 @@ def _validate_board_weights(settings: StrategySettings) -> None:
                 raise ConfigurationError(f"board candidate components for {strategy}.{board} are invalid")
             if set(local_boards[board]) != local_components[strategy]:
                 raise ConfigurationError(f"board local components for {strategy}.{board} are invalid")
-            _validate_fixed_vector(
-                f"board_candidate_weights.{strategy}.{board}",
-                candidate_boards[board],
-                _FIXED_BOARD_CANDIDATE_WEIGHTS[strategy][board],
-            )
-            _validate_fixed_vector(
-                f"board_local_strategy_weights.{strategy}.{board}",
-                local_boards[board],
-                _FIXED_BOARD_LOCAL_WEIGHTS[strategy][board],
-            )
 
 
-def _validate_fixed_vector(
+def _validate_component_weights(settings: StrategySettings, strategies: set[str]) -> None:
+    candidate_fields = {
+        "today": {
+            "intraday_structure": {"change_5m", "speed_percentile", "pct_change", "volume_ratio"},
+            "turnover_state": {"turnover_shock_score", "amount_shock_score"},
+        },
+        "tomorrow": {
+            "stability": {"low_volatility_score", "low_drawdown_score"},
+        },
+        "d25": {
+            "stability": {"low_volatility_score", "low_drawdown_score"},
+            "execution": {"capacity_score", "moderate_amplitude", "price_executability"},
+        },
+    }
+    local_fields = {
+        "today": {
+            "intraday_structure": {
+                "change_5m",
+                "speed_percentile",
+                "pct_change",
+                "volume_ratio",
+                "relative_strength_3d",
+            },
+            "turnover_state": {"turnover_shock_score", "amount_shock_score", "flow_confirmation_score"},
+            "liquidity_execution": {"amount_percentile_20d", "turnover_rate", "limit_distance_safety"},
+            "stability": {"low_volatility_score", "low_drawdown_score"},
+        },
+        "tomorrow": {
+            "tail_structure": {"tail_return_30m", "tail_volume_ratio", "close_location"},
+            "turnover_flow": {"turnover_shock_score", "amount_shock_score", "flow_confirmation_score"},
+            "trend": {"ma20_60_position", "ma_slope", "breakout_20d"},
+            "stability": {"low_volatility_score", "low_drawdown_score"},
+        },
+        "d25": {
+            "trend": {"ma20_60_structure", "ma_slope", "breakout_20d"},
+            "quality_value": {"quality_score", "value_score", "growth_score"},
+            "stability": {"low_volatility_score", "low_drawdown_score"},
+            "flow_liquidity": {"amount_percentile_20d", "turnover_shock_score", "amount_shock_score"},
+        },
+    }
+    _validate_component_weight_family(
+        "candidate_component_weights",
+        settings.candidate_component_weights,
+        candidate_fields,
+        strategies,
+    )
+    _validate_component_weight_family(
+        "local_component_weights",
+        settings.local_component_weights,
+        local_fields,
+        strategies,
+    )
+
+
+def _validate_component_weight_family(
     name: str,
-    actual: Mapping[str, float],
-    expected: Mapping[str, float],
+    actual: Mapping[str, Mapping[str, Mapping[str, float]]],
+    expected: Mapping[str, Mapping[str, set[str]]],
+    strategies: set[str],
 ) -> None:
-    if set(actual) != set(expected) or any(abs(actual[key] - expected[key]) > 1e-12 for key in expected):
-        raise ConfigurationError(f"{name} must match its fixed vector")
+    if set(actual) != strategies:
+        raise ConfigurationError(f"{name} must define today, tomorrow and d25")
+    for strategy, expected_components in expected.items():
+        components = actual[strategy]
+        if set(components) != set(expected_components):
+            raise ConfigurationError(f"{name}.{strategy} has invalid components")
+        for component, expected_fields in expected_components.items():
+            weights = components[component]
+            if set(weights) != expected_fields:
+                raise ConfigurationError(f"{name}.{strategy}.{component} has invalid fields")
+            _validate_weight_sum(f"{name}.{strategy}.{component}", weights)

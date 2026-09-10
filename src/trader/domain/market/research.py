@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from enum import Enum
+from types import MappingProxyType
 
-from trader.domain.market.factors import clamp
+from trader.domain.market.factors import clamp, weighted_score
 from trader.domain.market.models import Evidence
 
 
@@ -55,6 +57,28 @@ class LongResearchPolicy:
     def __post_init__(self) -> None:
         _validate_long_numeric_policy(self)
         _validate_long_keyword_policy(self)
+
+
+@dataclass(frozen=True)
+class FeatureComponentWeightPolicy:
+    """Weights for composite production features derived before strategy scoring."""
+
+    trend_score: Mapping[str, float]
+    industry_policy_score: Mapping[str, float]
+    risk_protection_score: Mapping[str, float]
+
+    def __post_init__(self) -> None:
+        for name, configured in (
+            ("trend_score", self.trend_score),
+            ("industry_policy_score", self.industry_policy_score),
+            ("risk_protection_score", self.risk_protection_score),
+        ):
+            weights = dict(configured)
+            if not weights or any(not math.isfinite(value) or value < 0.0 for value in weights.values()):
+                raise ValueError(f"{name} weights must be finite and nonnegative")
+            if abs(sum(weights.values()) - 1.0) > 1e-9:
+                raise ValueError(f"{name} weights must sum to 1.0")
+            object.__setattr__(self, name, MappingProxyType(weights))
 
 
 def _validate_long_numeric_policy(policy: LongResearchPolicy) -> None:
@@ -267,14 +291,20 @@ def derive_long_research_features(
     observation: ResearchObservation,
     inputs: LongResearchInputs,
     policy: LongResearchPolicy,
+    component_weights: FeatureComponentWeightPolicy,
 ) -> dict[str, float | None]:
     event_features = _event_features(observation, policy)
     return {
         "value_score": _valuation_score(observation.financial, inputs.price, policy),
         "growth_score": _growth_score(observation.financial, policy),
         "quality_score": _quality_score(observation.financial, policy),
-        "industry_policy_score": _industry_policy_score(observation, inputs.industry_strength, policy),
-        "risk_protection_score": _protection_score(inputs),
+        "industry_policy_score": _industry_policy_score(
+            observation,
+            inputs.industry_strength,
+            policy,
+            component_weights.industry_policy_score,
+        ),
+        "risk_protection_score": _protection_score(inputs, component_weights.risk_protection_score),
         "financial_deterioration": _financial_deterioration(observation.financial, policy),
         **event_features,
     }
@@ -504,6 +534,7 @@ def _industry_policy_score(
     observation: ResearchObservation,
     industry_strength: float | None,
     policy: LongResearchPolicy,
+    weights: Mapping[str, float],
 ) -> float | None:
     if not observation.announcements_available:
         return None
@@ -512,13 +543,23 @@ def _industry_policy_score(
     negative_hits = sum(any(keyword in title for title in titles) for keyword in policy.policy_negative_keywords)
     evidence_score = clamp(50.0 + policy.policy_keyword_score_step * (positive_hits - negative_hits))
     industry_value = _finite_or_none(industry_strength)
-    return None if industry_value is None else clamp(0.6 * industry_value + 0.4 * evidence_score)
+    if industry_value is None:
+        return None
+    return weighted_score(
+        {"industry_strength": industry_value, "evidence_score": evidence_score},
+        weights,
+    )
 
 
-def _protection_score(inputs: LongResearchInputs) -> float | None:
+def _protection_score(inputs: LongResearchInputs, weights: Mapping[str, float]) -> float | None:
     volatility = _finite_or_none(inputs.low_volatility_score)
     drawdown = _finite_or_none(inputs.low_drawdown_score)
-    return None if volatility is None or drawdown is None else clamp(0.5 * volatility + 0.5 * drawdown)
+    if volatility is None or drawdown is None:
+        return None
+    return weighted_score(
+        {"low_volatility_score": volatility, "low_drawdown_score": drawdown},
+        weights,
+    )
 
 
 def announcement_level(title: str, policy: LongResearchPolicy) -> int:

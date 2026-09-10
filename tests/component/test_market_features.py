@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from tests.component.market_data_test_support import (
     AFTERNOON,
+    FEATURE_WEIGHT_POLICY,
     LONG_POLICY,
     MARKET_REGIME_POLICY,
     NEWS_POLICY,
@@ -35,7 +36,9 @@ def test_feature_builder_does_not_compute_limit_proximity_when_limit_is_inapplic
         listing_age_sessions=1,
     )
 
-    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY).build((quote,), {}, NOW)[0]
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY).build(
+        (quote,), {}, NOW
+    )[0]
 
     assert feature.values["limit_proximity"] is None
     assert feature.values["limit_distance_safety"] is None
@@ -59,7 +62,9 @@ def test_feature_builder_marks_history_missing_and_builds_cross_section() -> Non
         for index in range(1, 61)
     )
 
-    with_history, without_history = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY).build(
+    with_history, without_history = FeatureBuilder(
+        NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY
+    ).build(
         (quote, _quote(code="600002", industry="银行")),
         {"600001": bars},
         NOW,
@@ -73,7 +78,7 @@ def test_feature_builder_marks_history_missing_and_builds_cross_section() -> Non
 
 
 def test_targeted_feature_build_preserves_full_market_cross_section() -> None:
-    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY)
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY)
     low = replace(_quote(code="600001"), speed=0.1)
     middle = replace(_quote(code="600002"), speed=0.2)
     high = replace(_quote(code="600003"), speed=0.3)
@@ -87,7 +92,7 @@ def test_targeted_feature_build_preserves_full_market_cross_section() -> None:
 
 
 def test_feature_builder_partitions_cross_sections_and_excludes_missing_breadth() -> None:
-    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY)
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY)
     quotes = (
         replace(_quote(code="600001"), speed=0.1, pct_change=1.0, data_version="fixture-group-a"),
         replace(_quote(code="600002"), speed=0.2, pct_change=-1.0, data_version="fixture-group-a"),
@@ -114,7 +119,7 @@ def test_market_service_loads_history_before_cold_start_candidate_cross_section(
     service = _service(
         StaticGateway((_quote(), _quote(code="600002"))),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         history_workers=2,
     )
 
@@ -130,7 +135,7 @@ def test_feature_builder_rejects_unadjusted_history_for_qfq_features() -> None:
     raw_bars = tuple(replace(bar, adjustment=PriceAdjustment.RAW, source="tushare") for bar in _history_bars())
 
     with pytest.raises(HistoryAdjustmentError, match="requires qfq"):
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY).build(
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY).build(
             (_quote(),),
             {"600001": raw_bars},
             NOW,
@@ -157,7 +162,7 @@ def test_strategy_loader_rejects_missing_factor_registration(tmp_path) -> None:
 
 
 def test_feature_builder_populates_every_tomorrow_component_from_point_in_time_inputs() -> None:
-    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY).build(
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY).build(
         (_quote(),),
         {"600001": _history_bars()},
         AFTERNOON,
@@ -206,7 +211,7 @@ def test_feature_builder_reconstructs_the_six_packaged_p2_inputs_from_61_qfq_ses
     )
     quote = replace(_quote(), price=bars[-1].close, source_time=AFTERNOON)
 
-    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY).build(
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY).build(
         (quote,),
         {quote.code: bars[-20:]},
         AFTERNOON,

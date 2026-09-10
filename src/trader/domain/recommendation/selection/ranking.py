@@ -8,10 +8,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 
-from trader.domain.market.factors import band_score, clamp, weighted_score
 from trader.domain.market.models import (
     Board,
-    FeatureSnapshot,
 )
 from trader.domain.recommendation.models import (
     Recommendation,
@@ -91,30 +89,6 @@ class _SelectionState:
     industry_counts: Counter[str] = field(default_factory=Counter)
     board_counts: Counter[Board] = field(default_factory=Counter)
     competition_counts: Counter[tuple[Board, str]] = field(default_factory=Counter)
-
-
-def candidate_score(snapshot: FeatureSnapshot, weights: Mapping[str, float]) -> float:
-    liquidity = 0.65 * snapshot.value("amount_percentile_20d") + 0.35 * band_score(
-        snapshot.quote.turnover_rate,
-        0.5,
-        1.5,
-        8.0,
-        15.0,
-    )
-    short_momentum = (
-        0.40 * band_score(snapshot.quote.change_5m, 0.0, 0.2, 1.8, 3.5)
-        + 0.35 * snapshot.value("relative_strength_5d")
-        + 0.25 * band_score(snapshot.quote.volume_ratio, 0.8, 1.2, 3.5, 6.0)
-    )
-    values = {
-        "liquidity": clamp(liquidity),
-        "short_momentum": clamp(short_momentum),
-        "trend": clamp(snapshot.value("trend_score")),
-        "data_completeness": 100.0 * (1.0 - snapshot.missing_ratio(CORE_FIELDS)),
-    }
-    if "industry_strength" in weights:
-        values["industry_strength"] = clamp(snapshot.value("industry_strength"))
-    return weighted_score(values, weights)
 
 
 def action_for(
@@ -312,7 +286,6 @@ __all__ = [
     "CORE_FIELDS",
     "SelectionPolicy",
     "action_for",
-    "candidate_score",
     "minimum_selection_score",
     "select_top_k",
     "select_top_k_with_audit",

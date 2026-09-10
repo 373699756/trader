@@ -73,7 +73,8 @@ def test_parallel_overview_plan_and_operations_docs_are_retired() -> None:
     assert "baostock_increment_archive" not in work
     assert "dynamic_cutoff_and_missing_fact_acquisition" not in work
     assert "candidate_single_owner_acceptance_revalidation" not in work
-    assert "scoring_weight_configuration_single_source" in work
+    assert "scoring_weight_configuration_single_source" not in work
+    assert "v3_training_artifact_rebuild" in work
     assert "terminal_holdout_and_shadow" in work
     assert "manual_candidate_strategy_activation" in work
     for completed_marker in ("`completed`", "`not_current_route`", "评分模块化计划项 1–9"):

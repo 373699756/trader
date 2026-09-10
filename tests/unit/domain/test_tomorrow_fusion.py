@@ -13,6 +13,7 @@ from trader.domain.recommendation.models import (
     ScoredSelectionResult,
     ScoredStockEvaluation,
 )
+from trader.domain.recommendation.risk_fusion.fusion import FusionPolicy
 from trader.domain.recommendation.risk_fusion.scored_fusion import (
     DecisionSelectionLimits,
     ScoredDecisionPolicy,
@@ -419,6 +420,7 @@ def _policy() -> ScoredDecisionPolicy:
         },
         executable_threshold=78.0,
         observation_margin=5.0,
+        fusion=FusionPolicy(0.68, 0.32, 0.5, 2, 25.0, 30.0),
         review_candidate_limit=28,
         top_k=6,
         observation_limit=6,

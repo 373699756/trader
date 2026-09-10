@@ -18,7 +18,8 @@ def test_authoritative_design_defers_delivery_status_to_the_work_plan() -> None:
     assert "baostock_increment_archive" not in work
     assert "dynamic_cutoff_and_missing_fact_acquisition" not in work
     assert "candidate_single_owner_acceptance_revalidation" not in work
-    assert "scoring_weight_configuration_single_source" in work
+    assert "scoring_weight_configuration_single_source" not in work
+    assert "v3_training_artifact_rebuild" in work
     assert "当前交付状态：current-only 工程与发布门禁验收已闭合" not in design
     assert "当前代码仍属于 `Unreleased`" not in design
     assert "正式 0.2.0 release 尚未声明" not in strategy

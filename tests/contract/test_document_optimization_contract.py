@@ -157,13 +157,13 @@ def test_work_plan_is_an_unfinished_queue_not_a_second_normative_contract() -> N
     for required in (
         "评分逻辑](01_评分逻辑.md)",
         "工程设计](02_工程设计.md)",
-        "scoring_weight_configuration_single_source",
         "v3_training_artifact_rebuild",
         "terminal_holdout_and_shadow",
         "manual_candidate_strategy_activation",
     ):
         assert required in compact
 
+    assert "scoring_weight_configuration_single_source" not in work
     assert "dynamic_cutoff_and_missing_fact_acquisition" not in work
     assert "clamp(local_score * 0.68 + deepseek_score * 0.32 - deepseek_risk_penalty, 0, 100)" not in work
     assert "/api/status.tomorrow_model.computation" not in work

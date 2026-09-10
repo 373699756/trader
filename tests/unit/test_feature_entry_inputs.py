@@ -25,6 +25,7 @@ def test_entry_inputs_exclude_same_day_history_bar() -> None:
         settings.tomorrow_tail_signal,
         settings.market_regime,
         settings.long_research,
+        settings.feature_component_weights,
     )
     prior = tuple(
         DailyBar(
@@ -97,6 +98,7 @@ def test_entry_quality_uses_amount_intensity_when_volume_ratio_is_missing() -> N
         settings.tomorrow_tail_signal,
         settings.market_regime,
         settings.long_research,
+        settings.feature_component_weights,
     )
     bars = tuple(
         DailyBar(

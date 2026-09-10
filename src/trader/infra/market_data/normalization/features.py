@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.domain.market.factors import clamp, percentile_scores_with_metadata
+from trader.domain.market.factors import clamp, percentile_scores_with_metadata, weighted_score
 from trader.domain.market.feature_contracts import (
     TOMORROW_RAW_ALPHA_FEATURE_MANIFEST,
     QfqPriceAnchors,
@@ -26,6 +26,7 @@ from trader.domain.market.models import (
 )
 from trader.domain.market.news import NewsSignalPolicy, derive_news_signals
 from trader.domain.market.research import (
+    FeatureComponentWeightPolicy,
     LongResearchInputs,
     LongResearchPolicy,
     MarketRegimePolicy,
@@ -217,11 +218,13 @@ class FeatureBuilder:
         tail_signal_policy: TailSignalPolicy,
         market_regime_policy: MarketRegimePolicy,
         long_research_policy: LongResearchPolicy,
+        feature_component_weights: FeatureComponentWeightPolicy,
     ) -> None:
         self._news_signal_policy = news_signal_policy
         self._tail_signal_policy = tail_signal_policy
         self._market_regime_policy = market_regime_policy
         self._long_research_policy = long_research_policy
+        self._feature_component_weights = feature_component_weights
 
     def build(
         self,
@@ -392,6 +395,7 @@ class FeatureBuilder:
                         low_drawdown_score=values.get("low_drawdown_score"),
                     ),
                     self._long_research_policy,
+                    self._feature_component_weights,
                 )
             )
             observation = research_observation or ResearchObservation()
@@ -509,7 +513,14 @@ class FeatureBuilder:
         if returns[20] is not None and volatility is not None and volatility > 0:
             risk_adjusted = clamp(50.0 + returns[20] / volatility * 5.0)
         close_location = _close_location(quote)
-        trend_score = None if ma_position is None else clamp(0.6 * ma_position + 0.4 * (slope or 50.0))
+        trend_score = (
+            None
+            if ma_position is None
+            else weighted_score(
+                {"ma20_60_position": ma_position, "ma_slope": slope or 50.0},
+                self._feature_component_weights.trend_score,
+            )
+        )
         ma20_deviation = (
             (quote.price / ma20 - 1.0) * 100.0
             if quote.price is not None and math.isfinite(quote.price) and ma20 is not None and ma20 > 0.0

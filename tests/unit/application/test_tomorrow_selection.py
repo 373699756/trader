@@ -195,6 +195,27 @@ def _policy(recommendation_policy):
         board_policy_version="tomorrow-policy",
         board_candidate_weights={Strategy.TOMORROW: {board: candidate for board in boards}},
         board_local_strategy_weights={Strategy.TOMORROW: {board: local for board in boards}},
+        candidate_component_weights={
+            Strategy.TOMORROW: {
+                "stability": {"low_volatility_score": 0.5, "low_drawdown_score": 0.5},
+            }
+        },
+        local_component_weights={
+            Strategy.TOMORROW: {
+                "tail_structure": {
+                    "tail_return_30m": 0.35,
+                    "tail_volume_ratio": 0.3,
+                    "close_location": 0.35,
+                },
+                "turnover_flow": {
+                    "turnover_shock_score": 0.35,
+                    "amount_shock_score": 0.35,
+                    "flow_confirmation_score": 0.3,
+                },
+                "trend": {"ma20_60_position": 0.375, "ma_slope": 0.375, "breakout_20d": 0.25},
+                "stability": {"low_volatility_score": 0.5, "low_drawdown_score": 0.5},
+            }
+        },
         selection=replace(
             recommendation_policy.selection,
             candidate_min_score=50.0,

@@ -36,12 +36,13 @@ def test_candidate_followup_plan_preserves_weight_research_and_activation_bounda
     assert "所有生产权重参数只能由`config/strategy.json`拥有数值" in compact_strategy
     assert "配置加载后先解析为不可变有类型权重策略" in compact_design
     for task_id in (
-        "scoring_weight_configuration_single_source",
         "candidate_capacity_and_ranking_historical_validation",
         "terminal_holdout_and_shadow",
         "manual_candidate_strategy_activation",
     ):
         assert task_id in work
+    assert "scoring_weight_configuration_single_source" not in work
+    assert "scoring-weight-config-single-source" in _read("CHANGELOG.md")
     assert "批次一：资格顺序与候选单一所有权" in review
     assert "批次二：候选容量与排序历史验证" in review
     assert "批次三：一次性终端留出与 Shadow" in review

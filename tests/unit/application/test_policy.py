@@ -21,12 +21,14 @@ def test_selection_policy_default_competition_limits_are_isolated_and_immutable(
         first.competition_group_limits[Board.MAIN] = 3  # type: ignore[index]
 
 
-def test_recommendation_policy_default_board_weights_are_isolated_and_immutable() -> None:
+def test_recommendation_policy_weight_maps_are_isolated_and_immutable() -> None:
     first = _recommendation_policy()
     second = _recommendation_policy()
 
     assert first.board_candidate_weights == {}
     assert first.board_local_strategy_weights == {}
+    assert first.candidate_component_weights == {}
+    assert first.local_component_weights == {}
     assert first.board_candidate_weights is not second.board_candidate_weights
     assert first.board_local_strategy_weights is not second.board_local_strategy_weights
     assert isinstance(first.board_candidate_weights, MappingProxyType)
@@ -49,8 +51,13 @@ def _recommendation_policy() -> RecommendationPolicy:
     return RecommendationPolicy(
         strategy_version="strategy-fixture",
         fusion_version="fusion-fixture",
-        fusion=FusionPolicy(),
+        fusion=FusionPolicy(0.68, 0.32, 0.5, 2, 25.0, 30.0),
         selection=_selection_policy(),
         dimension_weights={},
         risk_rules={},
+        board_policy_version="fixture",
+        board_candidate_weights={},
+        board_local_strategy_weights={},
+        candidate_component_weights={},
+        local_component_weights={},
     )

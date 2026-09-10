@@ -3,6 +3,7 @@ from __future__ import annotations
 from tests.component.market_data_test_support import (
     _SHANGHAI,
     AFTERNOON,
+    FEATURE_WEIGHT_POLICY,
     LONG_POLICY,
     MARKET_REGIME_POLICY,
     NEWS_POLICY,
@@ -108,7 +109,7 @@ def test_scheduled_reference_refresh_uses_bounded_history_warmup_instead_of_full
     service = _service(
         ReferenceGateway((_quote(),)),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         tushare_client=tushare,
         worker_pool=pool,
         source_lanes=lanes,
@@ -187,7 +188,7 @@ def test_reference_loader_recover_restores_security_master_and_calendar_cursor(t
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         data_plane=data_plane,
         wall_clock=lambda: NOW,
     )
@@ -235,7 +236,7 @@ def test_reference_loader_persists_full_market_free_security_master_once_per_pay
     service = _service(
         ReferenceGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         data_plane=data_plane,
         wall_clock=lambda: observed_at,
     )
@@ -264,7 +265,7 @@ def test_reference_loader_persists_cumulative_calendar_sessions(tmp_path: Path) 
     service = _service(
         StaticGateway(()),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         data_plane=data_plane,
         wall_clock=lambda: observed_at,
     )
@@ -324,7 +325,7 @@ def test_reference_loader_recover_isolation_of_unavailable_data_plane() -> None:
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         data_plane=UnavailableDataPlane(),
         wall_clock=lambda: NOW,
     )
@@ -479,7 +480,7 @@ def test_snapshot_metadata_copies_tushare_versions_under_service_lock() -> None:
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         wall_clock=lambda: NOW,
     )
 
@@ -569,7 +570,7 @@ def test_reference_refresh_reuses_cache_and_refreshes_due_entries_inside_tushare
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         tushare_client=TushareClient(
             token="secret-token",
             timeout_seconds=8,
@@ -727,7 +728,7 @@ def test_reference_refresh_structures_tushare_history_valuation_and_financial_da
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         tushare_client=TushareClient(
             token="secret-token",
             timeout_seconds=8,
@@ -803,7 +804,7 @@ def test_unadjusted_tushare_history_is_not_consumed_and_warmup_uses_qfq_fallback
     service = _service(
         StaticGateway(quotes),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         tushare_client=TushareClient(
             token="secret-token",
             timeout_seconds=8,
@@ -865,7 +866,7 @@ def test_permission_denied_tushare_falls_back_to_batched_history_lane() -> None:
     service = _service(
         StaticGateway(quotes),
         history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         tushare_client=PermissionDeniedTushare(),
         worker_pool=pool,
         source_lanes=lanes,

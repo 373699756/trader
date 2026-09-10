@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tests.component.market_data_test_support import (
+    FEATURE_WEIGHT_POLICY,
     LONG_POLICY,
     MARKET_REGIME_POLICY,
     NEWS_POLICY,
@@ -230,7 +231,7 @@ def test_scheduled_tushare_reference_refresh_does_not_block_fast_source_lane() -
     service = _service(
         ReferenceGateway((_quote(),)),
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         tushare_client=tushare,
         worker_pool=pool,
         source_lanes=lanes,
@@ -354,7 +355,7 @@ def test_topk_quote_refresh_uses_reserved_urgent_worker() -> None:
     service = _service(
         gateway,
         StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         worker_pool=pool,
         source_lanes=lanes,
         wall_clock=lambda: NOW,
@@ -395,7 +396,7 @@ def test_dedicated_history_workers_do_not_consume_realtime_source_workers() -> N
     service = _service(
         StaticGateway((_quote(),)),
         BlockingRemoteHistory(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         worker_pool=source_pool,
         history_worker_pool=history_pool,
         source_lanes=lanes,

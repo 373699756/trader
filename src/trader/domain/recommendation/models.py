@@ -170,25 +170,55 @@ class BoardStrategyPolicy:
     strategy: Strategy
     candidate_weights: Mapping[str, float]
     local_weights: Mapping[str, float]
+    candidate_component_weights: Mapping[str, Mapping[str, float]]
+    local_component_weights: Mapping[str, Mapping[str, float]]
     candidate_min_score: float = 50.0
     minimum_reliability: float = 0.85
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "candidate_weights", MappingProxyType(dict(self.candidate_weights)))
-        object.__setattr__(self, "local_weights", MappingProxyType(dict(self.local_weights)))
+        object.__setattr__(self, "candidate_weights", _freeze_weight_vector("candidate", self.candidate_weights))
+        object.__setattr__(self, "local_weights", _freeze_weight_vector("local", self.local_weights))
+        object.__setattr__(
+            self,
+            "candidate_component_weights",
+            _freeze_component_weights("candidate component", self.candidate_component_weights),
+        )
+        object.__setattr__(
+            self,
+            "local_component_weights",
+            _freeze_component_weights("local component", self.local_component_weights),
+        )
         if not self.policy_id or not self.version:
             raise ValueError("board strategy policy identity must not be empty")
         if self.board is Board.UNSUPPORTED or self.strategy is Strategy.LONG:
             raise ValueError("board strategy policies only support the three active short strategies")
-        for name, weights in (("candidate", self.candidate_weights), ("local", self.local_weights)):
-            if not weights or any(not math.isfinite(value) or value < 0.0 for value in weights.values()):
-                raise ValueError(f"{name} weights must contain finite non-negative values")
-            if abs(sum(weights.values()) - 1.0) > 1e-9:
-                raise ValueError(f"{name} weights must sum to 1.0")
         if not math.isfinite(self.candidate_min_score) or not 0.0 <= self.candidate_min_score <= 100.0:
             raise ValueError("candidate minimum score must be in [0, 100]")
         if not math.isfinite(self.minimum_reliability) or not 0.0 <= self.minimum_reliability <= 1.0:
             raise ValueError("minimum reliability must be in [0, 1]")
+
+
+def _freeze_component_weights(
+    family_name: str,
+    values: Mapping[str, Mapping[str, float]],
+) -> Mapping[str, Mapping[str, float]]:
+    if not values:
+        raise ValueError(f"{family_name} weights must not be empty")
+    return MappingProxyType(
+        {
+            component: _freeze_weight_vector(f"{family_name} {component}", weights)
+            for component, weights in values.items()
+        }
+    )
+
+
+def _freeze_weight_vector(name: str, values: Mapping[str, float]) -> Mapping[str, float]:
+    weights = dict(values)
+    if not weights or any(not math.isfinite(value) or value < 0.0 for value in weights.values()):
+        raise ValueError(f"{name} weights must contain finite non-negative values")
+    if abs(sum(weights.values()) - 1.0) > 1e-9:
+        raise ValueError(f"{name} weights must sum to 1.0")
+    return MappingProxyType(weights)
 
 
 __all__ = [
