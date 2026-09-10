@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from scripts.runtime_diagnostics.history_archive_plan import build_archive_plan
@@ -150,6 +150,7 @@ def test_archive_plan_reuses_existing_rows_and_requests_only_missing_families(tm
     assert plan.parent_manifest_hash == "a" * 64
     assert plan.parent_source_cutoff == date(2026, 8, 31)
     assert plan.target_source_cutoff == date(2026, 9, 1)
+    assert plan.active_calendar_dates == (date(2026, 8, 31), date(2026, 9, 1))
     assert stock.existing_first_date == date(2026, 8, 28)
     assert stock.existing_last_date == date(2026, 8, 31)
     assert stock.reusable_daily_cells == 0
@@ -178,6 +179,31 @@ def test_archive_plan_rejects_a_target_calendar_that_does_not_extend_the_parent(
         assert "parent calendar" in str(exc)
     else:
         raise AssertionError("target calendar must retain every parent date before rolling-window trimming")
+
+
+def test_archive_plan_rolls_the_dynamic_window_to_exactly_2000_dates(tmp_path: Path) -> None:
+    _archive(tmp_path)
+    shard = tmp_path / "shards" / "main-6000.sqlite3"
+    with sqlite3.connect(shard) as connection:
+        row = connection.execute("SELECT spec_json FROM context WHERE singleton=1").fetchone()
+        assert row is not None
+        spec = json.loads(row[0])
+        spec["sessions"] = 2000
+        connection.execute(
+            "UPDATE context SET spec_json=? WHERE singleton=1",
+            (json.dumps(spec),),
+        )
+    last = date(2026, 9, 2)
+    target = tuple(last - timedelta(days=offset) for offset in range(2100, -1, -1))
+
+    first = build_archive_plan(tmp_path, target_open_dates=target)
+    second = build_archive_plan(tmp_path, target_open_dates=target)
+
+    assert len(first.active_calendar_dates) == 2000
+    assert first.active_calendar_dates == target[-2000:]
+    assert first.target_source_cutoff == last
+    assert first == second
+    assert first.field_coverage.daily_raw.reusable_rows + first.field_coverage.daily_raw.missing_rows == 2000
 
 
 def test_archive_plan_requests_a_whole_parent_cell_gap_without_redownloading_neighbors(tmp_path: Path) -> None:

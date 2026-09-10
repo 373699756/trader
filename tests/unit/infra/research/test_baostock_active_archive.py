@@ -14,6 +14,7 @@ from trader.domain.research.baostock_active_archive import (
     BaoStockArchiveRecordKey,
     BaoStockFieldCoverage,
 )
+from trader.domain.research.h1_point_in_time import canonical_hash
 from trader.infra.research.baostock_active_archive import (
     BaoStockActiveArchive,
     BaoStockActiveArchiveConflictError,
@@ -23,6 +24,7 @@ from trader.infra.research.baostock_active_archive import (
 
 
 def _context(root: Path) -> BaoStockActiveArchiveContext:
+    calendar_dates = (date(2026, 9, 7), date(2026, 9, 8))
     parent = root / "manifest.json"
     shard = root / "shards" / "main-00.sqlite3"
     shard.parent.mkdir(exist_ok=True)
@@ -36,6 +38,16 @@ def _context(root: Path) -> BaoStockActiveArchiveContext:
         connection.execute(
             "CREATE TABLE IF NOT EXISTS industry_intervals(code TEXT, effective_from TEXT, effective_to TEXT, "
             "industry TEXT, classification TEXT, content_hash TEXT)"
+        )
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS context(singleton INTEGER PRIMARY KEY, spec_json TEXT, calendar_json TEXT)"
+        )
+        connection.execute(
+            "INSERT OR REPLACE INTO context VALUES (1, ?, ?)",
+            (
+                json.dumps({"sessions": 2}),
+                json.dumps({"open_dates": [item.isoformat() for item in calendar_dates]}),
+            ),
         )
     if not parent.exists():
         parent.write_text(
@@ -53,9 +65,10 @@ def _context(root: Path) -> BaoStockActiveArchiveContext:
         parent_manifest_hash="a" * 64,
         parent_manifest_file_hash=hashlib.sha256(parent.read_bytes()).hexdigest(),
         source_cutoff=date(2026, 9, 8),
-        calendar_hash="c" * 64,
+        calendar_hash=canonical_hash(calendar_dates),
         source_identity_hash="d" * 64,
         partition_by_code=(("600001", "main-00"),),
+        active_calendar_dates=calendar_dates,
     )
 
 
@@ -99,6 +112,24 @@ def _record(value: int = 1) -> BaoStockIncrementRecord:
         BaoStockArchiveRecordKey("600001", date(2026, 9, 8), "daily_raw"),
         payload,
     )
+
+
+def _as_legacy_context(payload: dict[str, object]) -> dict[str, object]:
+    payload.pop("active_calendar_dates")
+    payload["content_hash"] = canonical_hash(
+        {
+            key: payload[key]
+            for key in (
+                "parent_manifest_hash",
+                "parent_manifest_file_hash",
+                "source_cutoff",
+                "calendar_hash",
+                "source_identity_hash",
+                "partition_by_code",
+            )
+        }
+    )
+    return payload
 
 
 def test_publish_is_idempotent_and_parent_files_remain_byte_identical(tmp_path: Path) -> None:
@@ -180,15 +211,68 @@ def test_interrupted_staging_can_advance_to_a_later_cutoff_without_losing_checkp
         initial_context.parent_manifest_hash,
         initial_context.parent_manifest_file_hash,
         date(2026, 9, 9),
-        "e" * 64,
+        canonical_hash((*initial_context.active_calendar_dates, date(2026, 9, 9))),
         initial_context.source_identity_hash,
         initial_context.partition_by_code,
+        (*initial_context.active_calendar_dates, date(2026, 9, 9)),
     )
 
     resumed = BaoStockActiveArchive(tmp_path, later).resume_writer()
 
     assert resumed.completed(_record().key)
     assert resumed.context == later
+
+
+def test_legacy_staging_context_is_read_compatibly_without_changing_the_sealed_parent(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    parent = tmp_path / "manifest.json"
+    parent_before = parent.read_bytes()
+    archive = BaoStockActiveArchive(tmp_path, context)
+    archive.resume_writer().save(_record())
+    context_path = tmp_path / ".increment-staging" / "context.json"
+    payload = _as_legacy_context(json.loads(context_path.read_text(encoding="utf-8")))
+    context_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    resumed = archive.resume_writer()
+
+    assert resumed.completed(_record().key)
+    assert json.loads(context_path.read_text(encoding="utf-8"))["active_calendar_dates"] == [
+        "2026-09-07",
+        "2026-09-08",
+    ]
+    assert parent.read_bytes() == parent_before
+
+
+def test_legacy_sealed_active_context_reopens_read_only_from_parent_and_increment_dates(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    archive = BaoStockActiveArchive(tmp_path, context)
+    writer = archive.resume_writer()
+    writer.save(_record())
+    active = archive.publish(writer, _coverage())
+    context_path = (tmp_path / active.increment_manifest_path).parent / "context.json"
+    payload = _as_legacy_context(json.loads(context_path.read_text(encoding="utf-8")))
+    context_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    reopened = BaoStockActiveArchive.open(tmp_path)
+
+    assert reopened.context.active_calendar_dates == context.active_calendar_dates
+    assert reopened.verify() == active
+
+
+def test_active_archive_exposes_hash_bound_dynamic_calendar_and_training_descriptor(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    archive = BaoStockActiveArchive(tmp_path, context)
+    writer = archive.resume_writer()
+    writer.save(_record())
+    active = archive.publish(writer, _coverage())
+
+    descriptor = archive.describe_frozen_daily_input()
+
+    assert archive.active_calendar.open_dates == context.active_calendar_dates
+    assert archive.universe_codes == ("600001",)
+    assert descriptor.manifest_hash == active.active_data_hash
+    assert descriptor.source_cutoff == context.source_cutoff
+    assert descriptor.requested_sessions == len(context.active_calendar_dates)
 
 
 def test_active_view_reads_parent_then_increment_and_rejects_overlap_conflicts(tmp_path: Path) -> None:

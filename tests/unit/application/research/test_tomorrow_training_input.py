@@ -34,7 +34,11 @@ def test_use_case_reads_only_descriptor_and_returns_hash_bound_compatibility() -
     )
     port = _FrozenPort(descriptor)
 
-    report = verify_tomorrow_training_input_port(port, expected_manifest_hash=descriptor.manifest_hash)
+    report = verify_tomorrow_training_input_port(
+        port,
+        expected_manifest_hash=descriptor.manifest_hash,
+        expected_source_cutoff=descriptor.source_cutoff,
+    )
 
     assert report.status == "compatible"
     assert report.parent_manifest_hash == descriptor.manifest_hash

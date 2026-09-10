@@ -19,6 +19,7 @@ from trader.application.research.baostock_history_runtime import (
 from trader.domain.research.baostock_daily import (
     BAOSTOCK_LEGACY_CALENDAR_SCHEMA,
     BaoStockCalendar,
+    BaoStockDailyJoinRequest,
     BaoStockDailyManifest,
     BaoStockDailySide,
     BaoStockDailySpec,
@@ -134,7 +135,11 @@ def _batch_for_security(security: BaoStockSecurity, spec: BaoStockDailySpec):
             "trading",
         )
 
-    return join_baostock_daily_sides(security.code, (day,), (side("unadjusted"),), (side("qfq"),))
+    return join_baostock_daily_sides(
+        BaoStockDailyJoinRequest(security.code, (day,), spec.source_cutoff),
+        (side("unadjusted"),),
+        (side("qfq"),),
+    )
 
 
 def test_blacklist_is_a_run_level_failure_instead_of_queuing_thousands_of_retries(tmp_path: Path) -> None:
@@ -249,8 +254,7 @@ def test_completed_daily_batch_with_partially_usable_industry_queues_facts_only(
     shard.save_batch(
         spec,
         join_baostock_daily_sides(
-            security.code,
-            calendar.open_dates,
+            BaoStockDailyJoinRequest(security.code, calendar.open_dates, spec.source_cutoff),
             tuple(
                 BaoStockDailySide(
                     security.code, day, "unadjusted", 10.0, 10.5, 9.8, 10.2, 100.0, 1_000.0, 9.9, 3.03, 1.2, "trading"
@@ -294,11 +298,14 @@ def test_daily_archive_seals_independently_and_keeps_industry_training_fail_clos
     coordinator._failure_shard(security).save_batch(
         coordinator._run.spec,
         join_baostock_daily_sides(
-            security.code,
-            (coordinator._run.spec.source_cutoff,),
+            BaoStockDailyJoinRequest(
+                security.code,
+                (coordinator._run.spec.source_cutoff,),
+                coordinator._run.spec.source_cutoff,
+                2,
+            ),
             (),
             (),
-            null_rows=2,
         ),
     )
     coordinator._initialize_shards()

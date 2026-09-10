@@ -28,6 +28,7 @@ from trader.domain.research.baostock_daily import (
     BaoStockSecurity,
     BaoStockSourceVersions,
     BaoStockTrainingRow,
+    validate_baostock_archive_window,
 )
 from trader.domain.research.h1_point_in_time import canonical_hash
 from trader.domain.research.tomorrow_training_input import DailyInputField
@@ -315,6 +316,7 @@ class SQLiteBaoStockDailyShard:
             calendar = _decode_calendar(_json_object(row[1]))
             universe = _decode_universe(_json_array(row[2]))
             versions = _decode_versions(_json_object(row[3]))
+            validate_baostock_archive_window(stored_spec, calendar, universe)
             expected_hash = canonical_hash((stored_spec, calendar, universe, versions))
             if not _spec_contract_matches(spec, stored_spec) or row[4] != expected_hash:
                 raise BaoStockDailyArtifactConflictError("BaoStock shard context identity conflict")
@@ -345,15 +347,18 @@ class SQLiteBaoStockDailyShard:
         return identity if self.context_identity_matches(identity) else None
 
     def stored_context_spec(self, spec: BaoStockDailySpec) -> BaoStockDailySpec:
+        stored_spec = self.read_stored_spec()
+        if not _spec_contract_matches(spec, stored_spec):
+            raise BaoStockDailyArtifactConflictError("BaoStock shard spec contract changed")
+        return stored_spec
+
+    def read_stored_spec(self) -> BaoStockDailySpec:
         try:
             with self._connect() as connection:
                 row = connection.execute("SELECT spec_json FROM context WHERE singleton=1").fetchone()
             if row is None:
                 raise BaoStockDailyArtifactConflictError("BaoStock shard context is missing")
-            stored_spec = _decode_spec(_json_object(row[0]))
-            if not _spec_contract_matches(spec, stored_spec):
-                raise BaoStockDailyArtifactConflictError("BaoStock shard spec contract changed")
-            return stored_spec
+            return _decode_spec(_json_object(row[0]))
         except BaoStockDailyArtifactConflictError:
             raise
         except (KeyError, TypeError, ValueError, json.JSONDecodeError, sqlite3.DatabaseError) as exc:
@@ -384,8 +389,7 @@ class SQLiteBaoStockDailyShard:
         industry_intervals: tuple[BaoStockIndustryInterval, ...] = (),
     ) -> None:
         ordered_universe = tuple(sorted(universe, key=lambda item: item.code))
-        if len(calendar.open_dates) != spec.sessions:
-            raise ValueError("BaoStock shard calendar does not match requested sessions")
+        validate_baostock_archive_window(spec, calendar, ordered_universe, tuple(industry_intervals))
         context = BaoStockShardContext(calendar, ordered_universe, source_versions, industry_intervals)
         context_hash = BaoStockShardContextIdentity(spec, (spec,), context).content_hash_for(spec)
         if context_hash is None:

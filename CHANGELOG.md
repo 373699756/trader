@@ -6,6 +6,33 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求按未完成计划继续执行 `dynamic_cutoff_and_missing_fact_acquisition`。根因确认：父加增量下载计划和
+  active manifest 已按目标交易日动态生成，但当前 `BaoStockDailySpec`、日线/ST/行业值对象、行合并审计及
+  Tomorrow 训练输入兼容检查仍以 2026-08-31 进程常量判断；active context 又只保存日历 hash，不保存其精确
+  有序日期，导致新活动归档不能单独还原和验证滚动窗口，训练边界也会拒绝任何新截止日。Added: 新增不可变
+  `BaoStockDailyJoinRequest`，把代码、期望日期、动态截止日和空行计数作为唯一行合并上下文；active context 保存
+  并校验精确交易日元组，公开同一上下文的动态日历、股票代码总体及绑定 `active_data_hash` 的冻结训练输入描述。
+  Changed: 当前稳定 `baostock_daily_core` 接受显式动态截止日，归档级纯函数统一校验日历长度/末日、证券上市日
+  和行业生效日；Tomorrow 输入兼容改为由消费者传入预期活动截止日，分区训练输入从封存 shard spec 读取截止日，
+  不再另造固定 spec。Fixed: 供应商未来行按所属动态截止日审计；rolling 2000、覆盖分母与请求估算保持一致且
+  重复计划/hash 确定；旧固定身份仍只读解码，旧未封存 staging 可携 checkpoint 重绑到新上下文，父归档字节不变。
+  缺失 raw/qfq/isST 继续只按计划补采，raw 返回的 isST 复用；行业只接收真实 `updateDate`，不能证明
+  `effective_at`/`published_at` 的资格、硬过滤和风险事实继续显式缺失，未用当前快照回填。Removed: 删除活动
+  日线叶子类型和 Tomorrow 训练输入对固定截止常量的运行依赖；已完成动态章节从未完成计划移除，下一节候选
+  单一所有权验收成为唯一 `in_progress`。Review: 为闭合既有架构门禁，将调度请求阶段、顺序、lane、相关身份和
+  稳定错误码纯函数提取到 `schedule_requests.py`，`scheduler_runtime.py` 降至 1187 行，行为不变。
+  Verification: 动态截止/未来日期、精确 calendar hash、旧 staging 兼容、父字节不变、滚动 2000、覆盖/请求、
+  active descriptor、训练输入及整个 research 目录定向回归通过；30 项调度集成与架构 AST 回归通过；
+  `make format-check`、`make lint`（严格重构债务为零）、`make type-check`（384 个源码文件）、完整 `make test` 和
+  `make package` 通过。打包首次因沙箱禁止隔离环境解析 setuptools 失败，获准以相同命令在主机环境重跑后成功。
+  性能与三档浏览器门不适用：本批不改变生产候选/评分热路径、API、SSE 或 Web。
+  Residual Risks: 本机没有 sealed/active BaoStock 归档，只读 `history-plan` 实证返回
+  `history_archive_plan_failed`，不能宣称真实父/增量实物已在本机复跑；当前训练命令尚未逐行消费 active archive，
+  流式样本与三件工件原子发布属于后续 `v3_training_artifact_rebuild`。历史行业仍缺可证明查询时间，历史资格、
+  硬过滤、风险事实及 11:20/14:50 分钟点时来源仍不足，继续保持 `historical_data_insufficient`、
+  `point_in_time_parity=false`、`production_authority=false`；本批不调整任何权重、候选容量、V1/V2/V3、68/32、
+  DeepSeek 预算、动作线或冻结规则。`Regression-Key: dynamic-cutoff-active-context-single-owner`。
+
 - 用户要求按 `candidate-eligibility-before-cap-single-owner` 复核四批候选计划的当前实现状态，并把未实现项同步
   到权威文档。根因/现状确认：资格先于板内上限、三策略独立候选、完整有序储备、定向报价稳定去重并集与
   同板补位已经进入活动链，顶层通用 `candidate_weights` 和运行时四项 25% 粗分也已删除；但“所有生产权重

@@ -663,6 +663,7 @@ def _active_context(root: Path, plan: ArchiveIncrementPlan, sdk_version: str) ->
         canonical_hash(plan.active_calendar_dates),
         canonical_hash(("baostock", sdk_version, _dependency_versions())),
         tuple(partition_by_code),
+        plan.active_calendar_dates,
     )
 
 

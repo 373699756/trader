@@ -98,6 +98,7 @@ class BaoStockActiveArchiveContext:
     calendar_hash: str
     source_identity_hash: str
     partition_by_code: tuple[tuple[str, str], ...]
+    active_calendar_dates: tuple[date, ...]
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -118,7 +119,17 @@ class BaoStockActiveArchiveContext:
             )
         ):
             raise ValueError("BaoStock active archive partition map is invalid")
+        calendar = tuple(self.active_calendar_dates)
+        if (
+            not calendar
+            or calendar != tuple(sorted(set(calendar)))
+            or len(calendar) > 2000
+            or calendar[-1] != self.source_cutoff
+            or canonical_hash(calendar) != self.calendar_hash
+        ):
+            raise ValueError("BaoStock active archive calendar is invalid")
         object.__setattr__(self, "partition_by_code", partitions)
+        object.__setattr__(self, "active_calendar_dates", calendar)
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
     def partition_for(self, code: str) -> str:
@@ -126,6 +137,10 @@ class BaoStockActiveArchiveContext:
         if partition is None:
             raise ValueError("BaoStock code is outside the active archive universe")
         return partition
+
+    @property
+    def universe_codes(self) -> tuple[str, ...]:
+        return tuple(code for code, _partition in self.partition_by_code)
 
 
 @dataclass(frozen=True)

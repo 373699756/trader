@@ -43,13 +43,19 @@ def test_completed_increment_contract_lives_in_design_not_the_unfinished_plan() 
 
 
 def test_dynamic_cutoff_keeps_legacy_identity_read_only() -> None:
+    design = _read("docs/02_工程设计.md")
+    replay = _read("docs/04_策略回溯.md")
     work = _read("docs/03_工程实施.md")
-    section = work[work.index("## 2. 当前执行章节：动态截止日") : work.index("## 3.")]
 
-    assert "source_cutoff" in section
-    assert "历史工件/父归档解码时原样只读兼容" in section
-    assert "不得自动迁移、覆盖或产生新的项目版本名" in section
-    assert "禁止用当前快照回填历史" in section
+    for required in (
+        "动态 `source_cutoff`",
+        "精确、有序、唯一的交易日元组",
+        "只允许解码既有父工件",
+        "不得用当前快照回填历史",
+    ):
+        assert required in design
+    assert "冻结训练输入描述" in replay
+    assert "dynamic_cutoff_and_missing_fact_acquisition" not in work
 
 
 def test_holdout_isolation_remains_closed_until_real_point_in_time_evidence() -> None:

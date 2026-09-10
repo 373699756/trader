@@ -54,12 +54,11 @@ def test_v3_minimum_dates_can_satisfy_every_preregistered_segment() -> None:
     assert daily_close_holdout_dates >= 200
 
 
-def test_v3_research_has_four_isolated_owners_and_one_public_command() -> None:
+def test_remaining_v3_research_has_isolated_owners_and_one_public_command() -> None:
     strategy = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
     design = (ROOT / "docs" / "02_工程设计.md").read_text(encoding="utf-8")
 
     required_strategy_contract = (
-        "dynamic_cutoff_and_missing_fact_acquisition",
         "v3_training_artifact_rebuild",
         "v3_runtime_acceptance",
         "terminal_holdout_and_shadow",
@@ -70,6 +69,7 @@ def test_v3_research_has_four_isolated_owners_and_one_public_command() -> None:
         "默认 V1 不变",
     )
     assert all(value in strategy for value in required_strategy_contract)
+    assert "dynamic_cutoff_and_missing_fact_acquisition" not in strategy
     assert "./run.sh train-tomorrow" in design
     assert "V1/V2/C3 原始预测级联合研究路线" not in design
     assert "内部 V1/V2/C3" not in design

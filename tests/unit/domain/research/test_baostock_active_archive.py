@@ -6,6 +6,7 @@ import pytest
 
 from trader.domain.research.baostock_active_archive import (
     BAOSTOCK_ARCHIVE_FIELD_FAMILIES,
+    BaoStockActiveArchiveContext,
     BaoStockActiveManifest,
     BaoStockArchiveRecordKey,
     BaoStockFieldCoverage,
@@ -13,6 +14,7 @@ from trader.domain.research.baostock_active_archive import (
     BaoStockIncrementManifest,
     BaoStockIncrementPartition,
 )
+from trader.domain.research.h1_point_in_time import canonical_hash
 
 
 def _coverage() -> tuple[BaoStockFieldCoverage, ...]:
@@ -56,6 +58,32 @@ def test_active_manifest_binds_parent_increment_cutoff_and_field_coverage() -> N
     assert active.production_authority is False
     assert active.point_in_time_parity is False
     assert tuple(item.family for item in active.field_coverage) == BAOSTOCK_ARCHIVE_FIELD_FAMILIES
+
+
+def test_active_context_binds_the_exact_ordered_calendar_to_its_cutoff_and_hash() -> None:
+    calendar = (date(2026, 9, 7), date(2026, 9, 8))
+    context = BaoStockActiveArchiveContext(
+        "a" * 64,
+        "b" * 64,
+        calendar[-1],
+        canonical_hash(calendar),
+        "c" * 64,
+        (("600001", "main-00"),),
+        calendar,
+    )
+
+    assert context.active_calendar_dates == calendar
+    assert context.universe_codes == ("600001",)
+    with pytest.raises(ValueError, match="calendar"):
+        BaoStockActiveArchiveContext(
+            context.parent_manifest_hash,
+            context.parent_manifest_file_hash,
+            context.source_cutoff,
+            "d" * 64,
+            context.source_identity_hash,
+            context.partition_by_code,
+            calendar,
+        )
 
 
 def test_record_and_checkpoint_identities_are_typed_and_fail_closed() -> None:

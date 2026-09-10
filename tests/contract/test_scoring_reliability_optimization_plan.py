@@ -18,15 +18,14 @@ def test_authoritative_docs_define_one_ordered_optimization_route() -> None:
     design = _read(DESIGN)
     work = _read(WORK)
     ordered_tasks = (
-        "## 2. 当前执行章节：动态截止日与缺失事实补采",
-        "## 3. 候选单一所有权当前验收复核",
-        "## 4. 生产权重配置单一来源",
-        "## 5. V3 训练工件重建与整组发布",
-        "## 6. V3 工程运行验收",
-        "## 7. 点时证据修复",
-        "## 8. 候选容量与排序历史验证",
-        "## 9. 一次性终端留出与 Shadow",
-        "## 10. 人工候选策略生产启用",
+        "## 2. 当前执行章节：候选单一所有权验收复核",
+        "## 3. 生产权重配置单一来源",
+        "## 4. V3 训练工件重建与整组发布",
+        "## 5. V3 工程运行验收",
+        "## 6. 点时证据修复",
+        "## 7. 候选容量与排序历史验证",
+        "## 8. 一次性终端留出与 Shadow",
+        "## 9. 人工候选策略生产启用",
     )
     positions = tuple(work.index(task) for task in ordered_tasks)
     assert positions == tuple(sorted(positions))
@@ -157,7 +156,8 @@ def test_history_training_and_optimization_are_one_dependency_route() -> None:
 
     assert "baostock_increment_archive" not in work
     assert "v3_training_artifact_rebuild" in work
-    assert work.index("dynamic_cutoff_and_missing_fact_acquisition") < work.index("v3_training_artifact_rebuild")
+    assert "dynamic_cutoff_and_missing_fact_acquisition" not in work
+    assert "动态 `source_cutoff`、精确滚动" in replay
     assert "15:00_close" in replay
     assert "point_in_time_parity=false" in replay
     assert "BaoStock 日线不能单独证明 14:50" in replay

@@ -12,7 +12,8 @@ def _compact(relative: str) -> str:
 def test_unfinished_roadmap_orders_data_before_training_and_activation() -> None:
     work = _compact("docs/03_工程实施.md")
     ordered = (
-        "dynamic_cutoff_and_missing_fact_acquisition",
+        "candidate_single_owner_acceptance_revalidation",
+        "scoring_weight_configuration_single_source",
         "v3_training_artifact_rebuild",
         "v3_runtime_acceptance",
         "point_in_time_evidence_remediation",
@@ -21,6 +22,7 @@ def test_unfinished_roadmap_orders_data_before_training_and_activation() -> None
     )
     first_positions = tuple(work.index(item) for item in ordered)
     assert first_positions == tuple(sorted(first_positions))
+    assert "dynamic_cutoff_and_missing_fact_acquisition" not in work
 
 
 def test_roadmap_keeps_point_in_time_and_manual_authority_fail_closed() -> None:

@@ -82,6 +82,8 @@ class BaoStockDailySpec:
     def __post_init__(self, _decode_legacy: bool) -> None:
         if isinstance(self.sessions, bool) or not 1 <= self.sessions <= BAOSTOCK_MAX_SESSIONS:
             raise ValueError("BaoStock sessions must be in [1, 2000]")
+        if type(self.source_cutoff) is not date:
+            raise ValueError("BaoStock source cutoff must be a date")
         current_identity = (
             self.research_identity == BAOSTOCK_RESEARCH_IDENTITY and self.schema_version == "baostock_daily_core"
         )
@@ -89,10 +91,10 @@ class BaoStockDailySpec:
             self.research_identity == BAOSTOCK_LEGACY_RESEARCH_IDENTITY
             and self.schema_version == BAOSTOCK_LEGACY_SPEC_SCHEMA
         )
-        if (
-            not current_identity and not (_decode_legacy and legacy_identity)
-        ) or self.source_cutoff != BAOSTOCK_SOURCE_CUTOFF:
-            raise ValueError("BaoStock daily identity and source cutoff are fixed")
+        if not current_identity and not (_decode_legacy and legacy_identity):
+            raise ValueError("BaoStock daily identity is invalid")
+        if legacy_identity and self.source_cutoff != BAOSTOCK_SOURCE_CUTOFF:
+            raise ValueError("BaoStock legacy source cutoff is fixed")
         if self.production_authority or self.point_in_time_parity:
             raise ValueError("BaoStock daily data cannot authorize production or point-in-time parity")
         object.__setattr__(self, "content_hash", canonical_hash(self))
@@ -115,8 +117,6 @@ class BaoStockSecurity:
     def __post_init__(self) -> None:
         if _CODE.fullmatch(self.code) is None or not self.name.strip() or self.board not in _BOARDS:
             raise ValueError("BaoStock security identity is invalid")
-        if self.listed_on > BAOSTOCK_SOURCE_CUTOFF:
-            raise ValueError("BaoStock security listing date exceeds source cutoff")
         if self.delisted_on is not None and self.delisted_on <= self.listed_on:
             raise ValueError("BaoStock security delisting date is invalid")
         if not self.source_version.strip():
@@ -141,8 +141,6 @@ class BaoStockCalendar:
         values = tuple(self.open_dates)
         if not values or values != tuple(sorted(set(values))) or len(values) > BAOSTOCK_MAX_SESSIONS:
             raise ValueError("BaoStock open calendar must be non-empty, unique, ordered, and bounded")
-        if values[-1] > BAOSTOCK_SOURCE_CUTOFF:
-            raise ValueError("BaoStock calendar exceeds source cutoff")
         if self.schema_version not in (BAOSTOCK_CALENDAR_SCHEMA, BAOSTOCK_LEGACY_CALENDAR_SCHEMA):
             raise ValueError("BaoStock calendar schema is invalid")
         object.__setattr__(self, "open_dates", values)
@@ -154,6 +152,26 @@ class BaoStockCalendar:
             for day in self.open_dates
             if day >= security.listed_on and (security.delisted_on is None or day < security.delisted_on)
         )
+
+
+def validate_baostock_archive_window(
+    spec: BaoStockDailySpec,
+    calendar: BaoStockCalendar,
+    universe: tuple[BaoStockSecurity, ...],
+    industry_intervals: tuple[BaoStockIndustryInterval, ...] = (),
+) -> None:
+    """Validate dates against the owning archive context instead of a process constant."""
+
+    if len(calendar.open_dates) != spec.sessions or calendar.open_dates[-1] != spec.source_cutoff:
+        raise ValueError("BaoStock calendar does not match the active source cutoff")
+    codes = tuple(item.code for item in universe)
+    code_set = set(codes)
+    if not codes or len(code_set) != len(codes):
+        raise ValueError("BaoStock archive universe must be non-empty and unique")
+    if any(item.listed_on > spec.source_cutoff for item in universe):
+        raise ValueError("BaoStock security listing date exceeds the active source cutoff")
+    if any(item.code not in code_set or item.effective_from > spec.source_cutoff for item in industry_intervals):
+        raise ValueError("BaoStock industry interval exceeds the active archive context")
 
 
 @dataclass(frozen=True)
@@ -174,7 +192,7 @@ class BaoStockDailySide:
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if _CODE.fullmatch(self.code) is None or self.trade_date > BAOSTOCK_SOURCE_CUTOFF:
+        if _CODE.fullmatch(self.code) is None:
             raise ValueError("BaoStock daily side identity is invalid")
         if self.adjustment not in ("unadjusted", "qfq") or self.trading_status not in ("trading", "suspended"):
             raise ValueError("BaoStock daily side semantics are invalid")
@@ -212,7 +230,7 @@ class BaoStockDailyCell:
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if _CODE.fullmatch(self.code) is None or self.trade_date > BAOSTOCK_SOURCE_CUTOFF:
+        if _CODE.fullmatch(self.code) is None:
             raise ValueError("BaoStock daily cell identity is invalid")
         for side, adjustment in ((self.unadjusted, "unadjusted"), (self.qfq, "qfq")):
             if side is not None and (
@@ -268,7 +286,7 @@ class BaoStockDailyFact:
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if _CODE.fullmatch(self.code) is None or self.trade_date > BAOSTOCK_SOURCE_CUTOFF:
+        if _CODE.fullmatch(self.code) is None:
             raise ValueError("BaoStock daily fact identity is invalid")
         if not isinstance(self.is_st, bool) or self.schema_version not in (
             BAOSTOCK_DAILY_FACT_SCHEMA,
@@ -291,7 +309,6 @@ class BaoStockIndustryInterval:
     def __post_init__(self) -> None:
         if (
             _CODE.fullmatch(self.code) is None
-            or self.effective_from > BAOSTOCK_SOURCE_CUTOFF
             or (self.effective_to is not None and self.effective_to <= self.effective_from)
             or not self.industry.strip()
             or not self.classification.strip()
@@ -345,26 +362,41 @@ class BaoStockTrainingRow:
             raise ValueError("BaoStock training row is invalid")
 
 
+@dataclass(frozen=True)
+class BaoStockDailyJoinRequest:
+    code: str
+    expected_dates: tuple[date, ...]
+    source_cutoff: date
+    null_rows: int = 0
+
+    def __post_init__(self) -> None:
+        expected = tuple(self.expected_dates)
+        if _CODE.fullmatch(self.code) is None or type(self.source_cutoff) is not date:
+            raise ValueError("BaoStock daily join identity is invalid")
+        if expected != tuple(sorted(set(expected))):
+            raise ValueError("BaoStock expected dates must be unique and ordered")
+        if expected and expected[-1] > self.source_cutoff:
+            raise ValueError("BaoStock expected dates exceed the active source cutoff")
+        if isinstance(self.null_rows, bool) or self.null_rows < 0:
+            raise ValueError("BaoStock null row count is invalid")
+        object.__setattr__(self, "expected_dates", expected)
+
+
 def join_baostock_daily_sides(
-    code: str,
-    expected_dates: tuple[date, ...],
+    request: BaoStockDailyJoinRequest,
     unadjusted: tuple[BaoStockDailySide, ...],
     qfq: tuple[BaoStockDailySide, ...],
-    *,
-    null_rows: int = 0,
 ) -> BaoStockCodeBatch:
-    expected = tuple(expected_dates)
-    if expected != tuple(sorted(set(expected))):
-        raise ValueError("BaoStock expected dates must be unique and ordered")
-    raw_by_date, raw_duplicates = _index_sides(code, "unadjusted", unadjusted)
-    qfq_by_date, qfq_duplicates = _index_sides(code, "qfq", qfq)
+    expected = request.expected_dates
+    raw_by_date, raw_duplicates = _index_sides(request.code, "unadjusted", unadjusted)
+    qfq_by_date, qfq_duplicates = _index_sides(request.code, "qfq", qfq)
     expected_set = set(expected)
     observed_dates = set(raw_by_date) | set(qfq_by_date)
-    future = sum(day > BAOSTOCK_SOURCE_CUTOFF for day in observed_dates)
-    out_of_window = sum(day not in expected_set and day <= BAOSTOCK_SOURCE_CUTOFF for day in observed_dates)
+    future = sum(day > request.source_cutoff for day in observed_dates)
+    out_of_window = sum(day not in expected_set and day <= request.source_cutoff for day in observed_dates)
     cells = tuple(
         BaoStockDailyCell(
-            code,
+            request.code,
             day,
             _cell_status(raw_by_date.get(day), qfq_by_date.get(day)),
             raw_by_date.get(day),
@@ -373,10 +405,10 @@ def join_baostock_daily_sides(
         for day in expected
     )
     return BaoStockCodeBatch(
-        code,
+        request.code,
         cells,
         duplicate_rows=raw_duplicates + qfq_duplicates,
-        null_rows=null_rows,
+        null_rows=request.null_rows,
         out_of_window_rows=out_of_window,
         future_rows=future,
     )
@@ -753,6 +785,7 @@ def build_baostock_coverage_audit(
     batches: Iterable[BaoStockCodeBatch | BaoStockCodeCoverageEvidence],
 ) -> BaoStockCoverageAudit:
     securities = tuple(sorted(universe, key=lambda item: item.code))
+    validate_baostock_archive_window(spec, calendar, securities)
     summary = _summarize_coverage(calendar, securities, batches)
     expected_by_board = dict(summary.board_expected)
     obtained_by_board = dict(summary.board_obtained)
@@ -1107,6 +1140,7 @@ __all__ = [
     "BaoStockDailyCell",
     "BaoStockDailyManifest",
     "BaoStockDailyFact",
+    "BaoStockDailyJoinRequest",
     "BaoStockDailySide",
     "BaoStockDailySpec",
     "BaoStockIndustryInterval",
@@ -1123,4 +1157,5 @@ __all__ = [
     "build_baostock_training_split",
     "build_baostock_training_dataset_manifest",
     "join_baostock_daily_sides",
+    "validate_baostock_archive_window",
 ]

@@ -14,6 +14,7 @@ from trader.domain.research.baostock_active_archive import (
     BaoStockArchiveFieldFamily,
     BaoStockArchiveRecordKey,
 )
+from trader.domain.research.h1_point_in_time import canonical_hash
 from trader.infra.research import baostock_increment_runtime as increment_runtime
 from trader.infra.research.baostock_active_archive import (
     BaoStockActiveArchive,
@@ -209,9 +210,10 @@ def _archive(root: Path) -> tuple[ArchiveIncrementPlan, BaoStockActiveArchive]:
         plan.parent_manifest_hash,
         file_hash,
         plan.target_source_cutoff,
-        "c" * 64,
+        canonical_hash(plan.active_calendar_dates),
         "d" * 64,
         (("600001", "main-6000"),),
+        plan.active_calendar_dates,
     )
     return plan, BaoStockActiveArchive(root, context)
 

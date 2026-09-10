@@ -120,11 +120,14 @@ class BaoStockTrainingTrainingInputArchive:
         sessions: int = 2000,
         allow_partial_history: bool = False,
     ) -> BaoStockTrainingTrainingInputArchive:
-        spec = BaoStockDailySpec(sessions=sessions)
         paths = tuple(sorted((root / "shards").glob("*.sqlite3")))
         if not paths:
             raise BaoStockDailyArtifactConflictError("BaoStock history manifest is unavailable")
         shards = tuple(SQLiteBaoStockDailyShard(path) for path in paths)
+        stored_spec = shards[0].read_stored_spec()
+        if stored_spec.sessions != sessions:
+            raise BaoStockDailyArtifactConflictError("BaoStock training input uses different sessions")
+        spec = BaoStockDailySpec(sessions=sessions, source_cutoff=stored_spec.source_cutoff)
         context = shards[0].context(spec)
         if context is None:
             raise BaoStockDailyArtifactConflictError("BaoStock training context is unavailable")

@@ -3,17 +3,23 @@ from datetime import date, timedelta
 import pytest
 
 from trader.domain.research.baostock_daily import (
+    BAOSTOCK_LEGACY_RESEARCH_IDENTITY,
+    BAOSTOCK_LEGACY_SPEC_SCHEMA,
     BAOSTOCK_SOURCE_CUTOFF,
     BaoStockBoardCoverage,
     BaoStockCalendar,
     BaoStockCodeCoverage,
     BaoStockCodeCoverageEvidence,
+    BaoStockDailyFact,
+    BaoStockDailyJoinRequest,
     BaoStockDailySide,
     BaoStockDailySpec,
+    BaoStockIndustryInterval,
     BaoStockSecurity,
     build_baostock_coverage_audit,
     build_baostock_training_split,
     join_baostock_daily_sides,
+    validate_baostock_archive_window,
 )
 
 
@@ -49,6 +55,75 @@ def test_baostock_spec_rejects_more_than_2000_sessions_and_keeps_identity() -> N
     assert spec.point_in_time_parity is False
     with pytest.raises(ValueError, match=r"\[1, 2000\]"):
         BaoStockDailySpec(sessions=2001)
+    with pytest.raises(ValueError, match="cutoff"):
+        BaoStockDailySpec(source_cutoff="2026-09-01")  # type: ignore[arg-type]
+
+
+def test_current_daily_contract_uses_explicit_dynamic_cutoff_and_keeps_legacy_cutoff_read_only() -> None:
+    cutoff = date(2026, 9, 2)
+    spec = BaoStockDailySpec(sessions=2, source_cutoff=cutoff)
+    calendar = BaoStockCalendar((date(2026, 9, 1), cutoff))
+    security = BaoStockSecurity("600001", "Dynamic", "main", date(2020, 1, 1), None, "fixture")
+    raw = _side(cutoff, "unadjusted")
+    qfq = _side(cutoff, "qfq")
+
+    batch = join_baostock_daily_sides(
+        BaoStockDailyJoinRequest(security.code, (cutoff,), spec.source_cutoff),
+        (raw,),
+        (qfq,),
+    )
+
+    assert spec.source_cutoff == cutoff
+    assert calendar.open_dates[-1] == cutoff
+    assert batch.cells[0].trade_date == cutoff
+    assert BaoStockDailyFact(security.code, cutoff, False).trade_date == cutoff
+    assert (
+        BaoStockIndustryInterval(
+            security.code,
+            cutoff,
+            None,
+            "银行",
+            "申万一级行业",
+        ).effective_from
+        == cutoff
+    )
+    with pytest.raises(ValueError, match="legacy.*cutoff"):
+        BaoStockDailySpec(
+            sessions=2,
+            research_identity=BAOSTOCK_LEGACY_RESEARCH_IDENTITY,
+            source_cutoff=cutoff,
+            schema_version=BAOSTOCK_LEGACY_SPEC_SCHEMA,
+            _decode_legacy=True,
+        )
+
+
+def test_join_audits_rows_after_the_injected_cutoff_as_future() -> None:
+    cutoff = date(2026, 9, 1)
+    future = date(2026, 9, 2)
+
+    batch = join_baostock_daily_sides(
+        BaoStockDailyJoinRequest("600001", (cutoff,), cutoff),
+        (_side(cutoff, "unadjusted"), _side(future, "unadjusted")),
+        (_side(cutoff, "qfq"), _side(future, "qfq")),
+    )
+
+    assert batch.future_rows == 1
+    assert batch.out_of_window_rows == 0
+    with pytest.raises(ValueError, match="expected dates exceed"):
+        join_baostock_daily_sides(
+            BaoStockDailyJoinRequest("600001", (future,), cutoff),
+            (_side(future, "unadjusted"),),
+            (_side(future, "qfq"),),
+        )
+
+
+def test_archive_window_rejects_calendar_or_universe_dates_after_the_dynamic_cutoff() -> None:
+    spec = BaoStockDailySpec(sessions=1, source_cutoff=date(2026, 9, 1))
+    calendar = BaoStockCalendar((date(2026, 9, 2),))
+    security = BaoStockSecurity("600001", "Future", "main", date(2026, 9, 2), None, "fixture")
+
+    with pytest.raises(ValueError, match="calendar"):
+        validate_baostock_archive_window(spec, calendar, (security,))
 
 
 def test_coverage_values_reject_inconsistent_ratios_and_empty_population_eligibility() -> None:
@@ -64,8 +139,7 @@ def test_raw_and_qfq_are_one_logical_cell_and_missing_side_is_explicit() -> None
     days = (date(2026, 8, 29), date(2026, 8, 30))
 
     batch = join_baostock_daily_sides(
-        "600001",
-        days,
+        BaoStockDailyJoinRequest("600001", days, days[-1]),
         (_side(days[0], "unadjusted"), _side(days[1], "unadjusted")),
         (_side(days[0], "qfq"),),
     )
@@ -100,8 +174,7 @@ def test_supplier_marked_suspension_can_preserve_empty_market_fields() -> None:
         )
 
     batch = join_baostock_daily_sides(
-        "600001",
-        (day,),
+        BaoStockDailyJoinRequest("600001", (day,), day),
         (suspended("unadjusted"),),
         (suspended("qfq"),),
     )
@@ -118,20 +191,17 @@ def test_coverage_uses_listing_and_delisting_dates_not_a_common_intersection() -
     delisted = BaoStockSecurity("688001", "Past", "star", calendar.open_dates[0], calendar.open_dates[3], "fixture")
     batches = (
         join_baostock_daily_sides(
-            old.code,
-            calendar.expected_dates(old),
+            BaoStockDailyJoinRequest(old.code, calendar.expected_dates(old), spec.source_cutoff),
             tuple(_side_for(old.code, day, "unadjusted") for day in calendar.expected_dates(old)),
             tuple(_side_for(old.code, day, "qfq") for day in calendar.expected_dates(old)),
         ),
         join_baostock_daily_sides(
-            recent.code,
-            calendar.expected_dates(recent),
+            BaoStockDailyJoinRequest(recent.code, calendar.expected_dates(recent), spec.source_cutoff),
             tuple(_side_for(recent.code, day, "unadjusted") for day in calendar.expected_dates(recent)),
             tuple(_side_for(recent.code, day, "qfq") for day in calendar.expected_dates(recent)),
         ),
         join_baostock_daily_sides(
-            delisted.code,
-            calendar.expected_dates(delisted),
+            BaoStockDailyJoinRequest(delisted.code, calendar.expected_dates(delisted), spec.source_cutoff),
             tuple(_side_for(delisted.code, day, "unadjusted") for day in calendar.expected_dates(delisted)),
             tuple(_side_for(delisted.code, day, "qfq") for day in calendar.expected_dates(delisted)),
         ),
@@ -162,8 +232,7 @@ def test_compact_coverage_evidence_matches_daily_batch_audit() -> None:
     calendar = _calendar(5)
     security = BaoStockSecurity("600001", "Old", "main", calendar.open_dates[0], None, "fixture")
     batch = join_baostock_daily_sides(
-        security.code,
-        calendar.open_dates,
+        BaoStockDailyJoinRequest(security.code, calendar.open_dates, spec.source_cutoff),
         tuple(_side(day, "unadjusted") for day in calendar.open_dates),
         tuple(_side(day, "qfq") for day in calendar.open_dates),
     )
@@ -187,11 +256,9 @@ def test_discarded_supplier_rows_remain_audited_and_fail_integrity() -> None:
     calendar = _calendar(2000)
     security = BaoStockSecurity("600001", "Old", "main", calendar.open_dates[0], None, "fixture")
     batch = join_baostock_daily_sides(
-        security.code,
-        calendar.open_dates,
+        BaoStockDailyJoinRequest(security.code, calendar.open_dates, spec.source_cutoff, 1),
         tuple(_side(day, "unadjusted") for day in calendar.open_dates),
         tuple(_side(day, "qfq") for day in calendar.open_dates),
-        null_rows=1,
     )
 
     audit = build_baostock_coverage_audit(spec, calendar, (security,), (batch,))

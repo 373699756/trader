@@ -16,7 +16,6 @@ TomorrowInputCompatibilityStatus = Literal["compatible", "incompatible"]
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REASON = re.compile(r"^[a-z0-9_]{1,96}$")
 _SOURCE_IDENTITY = "baostock_daily_core"
-_SOURCE_CUTOFF = date(2026, 8, 31)
 _AUTHORITATIVE_SESSIONS = 2000
 _PRIMARY_KEY = ("code", "trade_date")
 _RAW_QFQ_LAYOUT = "same_row"
@@ -133,6 +132,7 @@ def evaluate_tomorrow_training_input(
     descriptor: FrozenDailyInputDescriptor,
     *,
     expected_manifest_hash: str,
+    expected_source_cutoff: date,
 ) -> TomorrowInputCompatibility:
     """Validate only B's metadata consumption boundary, without reading source rows."""
 
@@ -140,7 +140,7 @@ def evaluate_tomorrow_training_input(
         raise ValueError("Tomorrow training expected manifest hash is invalid")
     reasons: list[str] = []
     _append_if(descriptor.source_identity != _SOURCE_IDENTITY, "source_identity_invalid", reasons)
-    _append_if(descriptor.source_cutoff != _SOURCE_CUTOFF, "source_cutoff_invalid", reasons)
+    _append_if(descriptor.source_cutoff != expected_source_cutoff, "source_cutoff_mismatch", reasons)
     _append_if(descriptor.requested_sessions != _AUTHORITATIVE_SESSIONS, "requested_sessions_invalid", reasons)
     _append_if(descriptor.primary_key != _PRIMARY_KEY, "primary_key_invalid", reasons)
     _append_if(descriptor.raw_qfq_layout != _RAW_QFQ_LAYOUT, "raw_qfq_layout_invalid", reasons)

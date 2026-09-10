@@ -17,6 +17,7 @@ from trader.domain.research.baostock_daily import (
     BAOSTOCK_LEGACY_INDUSTRY_INTERVAL_SCHEMA,
     BaoStockCalendar,
     BaoStockDailyFact,
+    BaoStockDailyJoinRequest,
     BaoStockDailySide,
     BaoStockDailySpec,
     BaoStockIndustryInterval,
@@ -68,8 +69,7 @@ def _context(count: int = 3):
 def _batch(code: str, calendar: BaoStockCalendar, *, close: float = 10.2):
     dates = calendar.open_dates
     return join_baostock_daily_sides(
-        code,
-        dates,
+        BaoStockDailyJoinRequest(code, dates, dates[-1]),
         tuple(_side(code, day, "unadjusted", close) for day in dates),
         tuple(_side(code, day, "qfq", close) for day in dates),
     )
@@ -498,6 +498,25 @@ def test_partial_training_input_seals_only_ready_checkpoints_and_remains_stable_
 
     chinext.save_batch(spec, _batch("300001", calendar))
     assert archive.snapshot.content_hash == initial_hash
+    assert archive.snapshot.training_codes == ("600001",)
+
+
+def test_training_input_archive_reads_its_dynamic_cutoff_from_the_frozen_context(tmp_path: Path) -> None:
+    cutoff = date(2026, 9, 2)
+    spec = BaoStockDailySpec(sessions=3, source_cutoff=cutoff)
+    calendar = BaoStockCalendar((date(2026, 8, 31), date(2026, 9, 1), cutoff))
+    universe = (BaoStockSecurity("600001", "A", "main", date(2020, 1, 1), None, "fixture"),)
+    versions = BaoStockSourceVersions("0.9.3", "3.14.0", (("pandas", "2.3.0"),))
+    root = tmp_path / "sessions-2000"
+    shard = SQLiteBaoStockDailyShard(root / "shards" / "main-6000.sqlite3")
+    industry = _industry("600001", calendar)
+    shard.initialize(spec, calendar, universe, versions, industry)
+    shard.save_batch(spec, _batch("600001", calendar))
+    shard.save_training_facts(spec, "600001", _facts("600001", calendar), industry)
+
+    archive = BaoStockTrainingTrainingInputArchive.open(root, sessions=3, allow_partial_history=True)
+
+    assert archive.snapshot.calendar.open_dates[-1] == cutoff
     assert archive.snapshot.training_codes == ("600001",)
 
 

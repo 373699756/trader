@@ -26,8 +26,11 @@ from trader.domain.research.baostock_active_archive import (
     BaoStockIncrementManifest,
     BaoStockIncrementPartition,
 )
+from trader.domain.research.baostock_daily import BAOSTOCK_RESEARCH_IDENTITY, BaoStockCalendar
 from trader.domain.research.h1_point_in_time import canonical_hash
+from trader.domain.research.tomorrow_training_input import FrozenDailyInputDescriptor
 from trader.infra.research.baostock_catalog import file_sha256
+from trader.infra.research.baostock_daily import _FROZEN_DAILY_FIELDS
 
 
 class BaoStockActiveArchiveConflictError(RuntimeError):
@@ -284,6 +287,29 @@ class BaoStockActiveArchive:
     def context(self) -> BaoStockActiveArchiveContext:
         return self._context
 
+    @property
+    def active_calendar(self) -> BaoStockCalendar:
+        return BaoStockCalendar(self._context.active_calendar_dates)
+
+    @property
+    def universe_codes(self) -> tuple[str, ...]:
+        return self._context.universe_codes
+
+    def describe_frozen_daily_input(self) -> FrozenDailyInputDescriptor:
+        active = self.verify()
+        return FrozenDailyInputDescriptor(
+            manifest_hash=active.active_data_hash,
+            source_identity=BAOSTOCK_RESEARCH_IDENTITY,
+            source_cutoff=self._context.source_cutoff,
+            requested_sessions=len(self._context.active_calendar_dates),
+            primary_key=("code", "trade_date"),
+            fields=_FROZEN_DAILY_FIELDS,
+            raw_qfq_layout="same_row",
+            row_hash_algorithm="sha256",
+            frozen=True,
+            production_authority=False,
+        )
+
     @classmethod
     def open(cls, root: Path) -> BaoStockActiveArchive:
         active = _decode_active_manifest(root / "active-manifest.json")
@@ -294,14 +320,18 @@ class BaoStockActiveArchive:
             or file_sha256(parent_path) != active.parent_manifest_file_hash
         ):
             raise BaoStockActiveArchiveConflictError("BaoStock sealed parent manifest changed")
-        context = BaoStockActiveArchiveContext(
-            active.parent_manifest_hash,
-            active.parent_manifest_file_hash,
-            active.source_cutoff,
-            active.calendar_hash,
-            active.source_identity_hash,
-            _partition_map(parent, root),
-        )
+        context_path = (root / active.increment_manifest_path).parent / "context.json"
+        calendar_dates = _active_calendar_dates(root, active, parent)
+        context = _read_context(context_path, legacy_calendar_dates=calendar_dates)
+        if (
+            context.parent_manifest_hash != active.parent_manifest_hash
+            or context.parent_manifest_file_hash != active.parent_manifest_file_hash
+            or context.source_cutoff != active.source_cutoff
+            or context.calendar_hash != active.calendar_hash
+            or context.source_identity_hash != active.source_identity_hash
+            or context.partition_by_code != _partition_map(parent, root)
+        ):
+            raise BaoStockActiveArchiveConflictError("BaoStock active context does not match its manifest")
         archive = cls(root, context)
         archive.verify()
         return archive
@@ -310,8 +340,10 @@ class BaoStockActiveArchive:
         self._verify_parent()
         self._root.mkdir(parents=True, exist_ok=True)
         if self._staging.exists():
-            stored = _read_context(self._staging / "context.json")
-            if stored != self._context:
+            context_path = self._staging / "context.json"
+            legacy_context = _context_uses_legacy_schema(context_path)
+            stored = _read_context(context_path, legacy_calendar_dates=self._context.active_calendar_dates)
+            if legacy_context or stored != self._context:
                 if (
                     stored.parent_manifest_hash != self._context.parent_manifest_hash
                     or stored.parent_manifest_file_hash != self._context.parent_manifest_file_hash
@@ -781,13 +813,28 @@ def _encode_context(value: BaoStockActiveArchiveContext) -> dict[str, object]:
         "calendar_hash": value.calendar_hash,
         "source_identity_hash": value.source_identity_hash,
         "partition_by_code": [list(item) for item in value.partition_by_code],
+        "active_calendar_dates": [item.isoformat() for item in value.active_calendar_dates],
         "content_hash": value.content_hash,
     }
 
 
-def _read_context(path: Path) -> BaoStockActiveArchiveContext:
+@dataclass(frozen=True)
+class _LegacyActiveArchiveContext:
+    parent_manifest_hash: str
+    parent_manifest_file_hash: str
+    source_cutoff: date
+    calendar_hash: str
+    source_identity_hash: str
+    partition_by_code: tuple[tuple[str, str], ...]
+
+
+def _read_context(
+    path: Path,
+    *,
+    legacy_calendar_dates: tuple[date, ...] | None = None,
+) -> BaoStockActiveArchiveContext:
     raw = _read_json(path)
-    expected = {
+    legacy_fields = {
         "schema_version",
         "parent_manifest_hash",
         "parent_manifest_file_hash",
@@ -797,9 +844,28 @@ def _read_context(path: Path) -> BaoStockActiveArchiveContext:
         "partition_by_code",
         "content_hash",
     }
-    if set(raw) != expected or raw["schema_version"] != "baostock_active_archive_context":
+    current_fields = legacy_fields | {"active_calendar_dates"}
+    if set(raw) not in (legacy_fields, current_fields) or raw["schema_version"] != "baostock_active_archive_context":
         raise BaoStockActiveArchiveConflictError("BaoStock increment staging context is invalid")
     pairs = _pairs(raw["partition_by_code"])
+    if set(raw) == legacy_fields:
+        if legacy_calendar_dates is None:
+            raise BaoStockActiveArchiveConflictError("BaoStock legacy active calendar is unavailable")
+        legacy = _LegacyActiveArchiveContext(
+            _string(raw["parent_manifest_hash"]),
+            _string(raw["parent_manifest_file_hash"]),
+            date.fromisoformat(_string(raw["source_cutoff"])),
+            _string(raw["calendar_hash"]),
+            _string(raw["source_identity_hash"]),
+            pairs,
+        )
+        if canonical_hash(legacy) != raw["content_hash"]:
+            raise BaoStockActiveArchiveConflictError("BaoStock increment staging context hash is invalid")
+        calendar_dates = legacy_calendar_dates
+    else:
+        calendar_dates = tuple(
+            date.fromisoformat(_string(item)) for item in _list(raw["active_calendar_dates"], "active calendar")
+        )
     value = BaoStockActiveArchiveContext(
         _string(raw["parent_manifest_hash"]),
         _string(raw["parent_manifest_file_hash"]),
@@ -807,10 +873,15 @@ def _read_context(path: Path) -> BaoStockActiveArchiveContext:
         _string(raw["calendar_hash"]),
         _string(raw["source_identity_hash"]),
         pairs,
+        calendar_dates,
     )
-    if value.content_hash != raw["content_hash"]:
+    if set(raw) == current_fields and value.content_hash != raw["content_hash"]:
         raise BaoStockActiveArchiveConflictError("BaoStock increment staging context hash is invalid")
     return value
+
+
+def _context_uses_legacy_schema(path: Path) -> bool:
+    return "active_calendar_dates" not in _read_json(path)
 
 
 def _encode_increment_manifest(value: BaoStockIncrementManifest) -> dict[str, object]:
@@ -965,6 +1036,52 @@ def _increment_partition(value: object) -> dict[str, object]:
     if set(item) != {"schema_version", "relative_path", "sha256", "record_count", "checkpoint_count"}:
         raise ValueError("increment partition fields are invalid")
     return item
+
+
+def _active_calendar_dates(
+    root: Path,
+    active: BaoStockActiveManifest,
+    parent: dict[str, object],
+) -> tuple[date, ...]:
+    context_path = (root / active.increment_manifest_path).parent / "context.json"
+    context_raw = _read_json(context_path)
+    if "active_calendar_dates" in context_raw:
+        return tuple(
+            date.fromisoformat(_string(item)) for item in _list(context_raw["active_calendar_dates"], "active calendar")
+        )
+    parent_partitions = _list(parent.get("partitions"), "parent partitions")
+    if not parent_partitions:
+        raise BaoStockActiveArchiveConflictError("BaoStock parent partition map is empty")
+    first = _json_object(parent_partitions[0], "parent partition")
+    parent_path = root / _string(first.get("relative_path"))
+    try:
+        with sqlite3.connect(f"file:{parent_path.as_posix()}?mode=ro&immutable=1", uri=True) as connection:
+            row = connection.execute("SELECT spec_json, calendar_json FROM context WHERE singleton=1").fetchone()
+        if row is None:
+            raise ValueError("parent context missing")
+        spec = _json_object(json.loads(cast(str, row[0])), "parent spec")
+        calendar = _json_object(json.loads(cast(str, row[1])), "parent calendar")
+        sessions = _integer(spec["sessions"])
+        dates = {date.fromisoformat(_string(item)) for item in _list(calendar["open_dates"], "parent calendar dates")}
+        increment = _read_increment_manifest(root / active.increment_manifest_path)
+        for reference in increment.partitions:
+            path = (root / active.increment_manifest_path).parent / reference.relative_path
+            with sqlite3.connect(f"file:{path.as_posix()}?mode=ro&immutable=1", uri=True) as connection:
+                rows = connection.execute(
+                    "SELECT DISTINCT trade_date FROM records "
+                    "WHERE field_family IN ('daily_raw', 'daily_qfq') ORDER BY trade_date"
+                ).fetchall()
+            dates.update(date.fromisoformat(cast(str, item[0])) for item in rows)
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, sqlite3.DatabaseError) as exc:
+        raise BaoStockActiveArchiveConflictError("BaoStock legacy active calendar is invalid") from exc
+    active_dates = tuple(sorted(dates))[-sessions:]
+    if (
+        not active_dates
+        or active_dates[-1] != active.source_cutoff
+        or canonical_hash(active_dates) != active.calendar_hash
+    ):
+        raise BaoStockActiveArchiveConflictError("BaoStock legacy active calendar identity is invalid")
+    return active_dates
 
 
 def _partition_map(parent: dict[str, object], root: Path) -> tuple[tuple[str, str], ...]:

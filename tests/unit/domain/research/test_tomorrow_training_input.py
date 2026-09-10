@@ -30,6 +30,7 @@ def test_compatible_frozen_daily_input_binds_six_alpha_contract_and_parent_hash(
     report = evaluate_tomorrow_training_input(
         descriptor,
         expected_manifest_hash=descriptor.manifest_hash,
+        expected_source_cutoff=descriptor.source_cutoff,
     )
 
     assert report.status == "compatible"
@@ -66,6 +67,7 @@ def test_incompatible_input_reports_all_contract_failures_without_training() -> 
     report = evaluate_tomorrow_training_input(
         descriptor,
         expected_manifest_hash="b" * 64,
+        expected_source_cutoff=date(2026, 8, 31),
     )
 
     assert report.status == "incompatible"
@@ -81,7 +83,7 @@ def test_incompatible_input_reports_all_contract_failures_without_training() -> 
         "raw_qfq_layout_invalid",
         "requested_sessions_invalid",
         "row_hash_algorithm_invalid",
-        "source_cutoff_invalid",
+        "source_cutoff_mismatch",
         "source_identity_invalid",
     }
     assert report.training_started is False
@@ -99,6 +101,25 @@ def test_extra_source_fields_do_not_break_the_consumer_contract() -> None:
     report = evaluate_tomorrow_training_input(
         descriptor,
         expected_manifest_hash=descriptor.manifest_hash,
+        expected_source_cutoff=descriptor.source_cutoff,
     )
 
     assert report.status == "compatible"
+
+
+def test_dynamic_active_cutoff_is_compatible_only_when_bound_by_the_consumer() -> None:
+    descriptor = replace(_descriptor(), source_cutoff=date(2026, 9, 2))
+
+    compatible = evaluate_tomorrow_training_input(
+        descriptor,
+        expected_manifest_hash=descriptor.manifest_hash,
+        expected_source_cutoff=date(2026, 9, 2),
+    )
+    stale = evaluate_tomorrow_training_input(
+        descriptor,
+        expected_manifest_hash=descriptor.manifest_hash,
+        expected_source_cutoff=date(2026, 9, 1),
+    )
+
+    assert compatible.status == "compatible"
+    assert stale.failure_reasons == ("source_cutoff_mismatch",)

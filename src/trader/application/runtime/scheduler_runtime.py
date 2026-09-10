@@ -1,8 +1,5 @@
-"""Independent scheduling, strategy lanes, publication, and shutdown."""
-
 from __future__ import annotations
 
-import re
 import threading
 import time
 from collections import OrderedDict
@@ -10,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from datetime import time as wall_time
-from typing import Literal, cast
+from typing import Literal
 
 from trader.application.decisions.decision_core import UnifiedDecisionIndex
 from trader.application.decisions.decision_events import DecisionCommitted
@@ -63,6 +60,17 @@ from trader.application.runtime.schedule import (
     SchedulePoint,
     decision_at,
     shanghai_now,
+)
+from trader.application.runtime.schedule_requests import (
+    cycle_correlation_id,
+    cycle_order_key,
+    cycle_phase,
+    failure_code,
+    pipeline_lane,
+    pipeline_task_correlation_id,
+    pipeline_task_order_key,
+    research_input_version,
+    validate_cycle_identity,
 )
 from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
 from trader.application.runtime.workers import BoundedExecutor
@@ -197,7 +205,7 @@ class SchedulerRuntime:
             dependencies.index,
             dependencies.decisions,
             dependencies.publish_overlay,
-            _failure_code,
+            failure_code,
         )
         self._research = dependencies.research_factory(self._on_research_result)
         self._config_version = config_version
@@ -220,10 +228,10 @@ class SchedulerRuntime:
             strategy: LatestWinsWorker(
                 f"trader-{strategy.value}",
                 self._process_cycle,
-                order_key=_cycle_order_key,
+                order_key=cycle_order_key,
                 telemetry=LatestWinsTelemetry(
                     dependencies.latency,
-                    _cycle_correlation_id,
+                    cycle_correlation_id,
                     lambda request: f"score:{request.strategy.value}",
                 ),
             )
@@ -236,7 +244,7 @@ class SchedulerRuntime:
                 order_key=_hybrid_order_key,
                 telemetry=LatestWinsTelemetry(
                     dependencies.latency,
-                    lambda request: f"hybrid:{_cycle_correlation_id(request.cycle)}",
+                    lambda request: f"hybrid:{cycle_correlation_id(request.cycle)}",
                     lambda request: f"hybrid:{request.cycle.strategy.value}",
                 ),
             )
@@ -246,10 +254,10 @@ class SchedulerRuntime:
             task: LatestWinsWorker(
                 f"trader-task-{task.value}",
                 self._process_pipeline_task,
-                order_key=_pipeline_task_order_key,
+                order_key=pipeline_task_order_key,
                 telemetry=LatestWinsTelemetry(
                     dependencies.latency,
-                    _pipeline_task_correlation_id,
+                    pipeline_task_correlation_id,
                     lambda request: f"data:{request.task.value}",
                 ),
             )
@@ -355,7 +363,7 @@ class SchedulerRuntime:
         try:
             self._research.offer_due(observed_at, phase, is_trading_day=is_trading_day)
         except (RuntimeError, TypeError, ValueError) as exc:
-            self._record_failure("research", _failure_code(exc, "research_offer_failed"), None)
+            self._record_failure("research", failure_code(exc, "research_offer_failed"), None)
         return batch.next_delay_seconds
 
     def _calendar_decision(self, observed_at: datetime) -> tuple[bool | None, float]:
@@ -436,7 +444,7 @@ class SchedulerRuntime:
             accepted = True
             completed_immediately = True
         else:
-            offer = self._task_lanes[_pipeline_lane(scheduled.task)].offer(scheduled)
+            offer = self._task_lanes[pipeline_lane(scheduled.task)].offer(scheduled)
             accepted = offer is not LatestWinsOffer.REJECTED
         self._dependencies.cadence.record_submission(
             scheduled,
@@ -464,7 +472,7 @@ class SchedulerRuntime:
         for strategy in self._due_strategies(decision, None, scheduled.scheduled_at):
             if strategy is Strategy.LONG:
                 continue
-            phase = _cycle_phase(strategy, decision.phase)
+            phase = cycle_phase(strategy, decision.phase)
             offer = self.submit_cycle(self._scheduled_request(strategy, scheduled.scheduled_at, phase))
             accepted = accepted or offer is not LatestWinsOffer.REJECTED
         return accepted
@@ -497,7 +505,7 @@ class SchedulerRuntime:
         try:
             outcome = self._dependencies.data.refresh_task(request)
         except DataRefreshUnavailableError as exc:
-            self._record_failure("refresh", _failure_code(exc, "refresh_unavailable"))
+            self._record_failure("refresh", failure_code(exc, "refresh_unavailable"))
             self._record_pipeline_result(scheduled, SchedulePointResult.RETRY)
             return
         self._after_successful_data_refresh(scheduled, outcome)
@@ -767,7 +775,7 @@ class SchedulerRuntime:
                 request,
             )
         except (RuntimeError, TypeError, ValueError) as exc:
-            self._record_failure("research", _failure_code(exc, "research_intent_failed"), request.strategy)
+            self._record_failure("research", failure_code(exc, "research_intent_failed"), request.strategy)
             return False
 
     def _process_hybrid(self, request: _HybridUpgradeRequest) -> None:
@@ -797,7 +805,7 @@ class SchedulerRuntime:
         strategies: tuple[Strategy, ...] = (Strategy.TOMORROW, Strategy.D25)
         if schedule.phase in {MarketPhase.TODAY_OBSERVE, MarketPhase.TODAY_MAIN, MarketPhase.TODAY_LATE}:
             strategies = (*strategies, Strategy.TODAY)
-        risk_version = _research_input_version(result)
+        risk_version = research_input_version(result)
         for strategy in strategies:
             current = self._dependencies.index.snapshot(strategy).current
             if not isinstance(current, ScoredDecision) or current.trade_date != completed_at.date():
@@ -809,7 +817,7 @@ class SchedulerRuntime:
         try:
             self._dependencies.data.refresh(request)
         except DataRefreshUnavailableError as exc:
-            self._record_failure("refresh", _failure_code(exc, "refresh_unavailable"), request.strategy)
+            self._record_failure("refresh", failure_code(exc, "refresh_unavailable"), request.strategy)
             return False
         return True
 
@@ -830,9 +838,9 @@ class SchedulerRuntime:
         try:
             local = self._dependencies.decisions.build_local(request)
             if local is not None:
-                _validate_cycle_identity(request, local)
+                validate_cycle_identity(request, local)
         except DecisionUnavailableError as exc:
-            self._record_failure("decision", _failure_code(exc, "decision_unavailable"), request.strategy)
+            self._record_failure("decision", failure_code(exc, "decision_unavailable"), request.strategy)
             return None
         return local
 
@@ -842,7 +850,7 @@ class SchedulerRuntime:
             try:
                 overlay = self._dependencies.decisions.initial_overlay(identity)
             except DecisionUnavailableError as exc:
-                self._record_failure("decision", _failure_code(exc, "decision_quote_unavailable"), identity.strategy)
+                self._record_failure("decision", failure_code(exc, "decision_quote_unavailable"), identity.strategy)
                 return False
             published = self._dependencies.index.publish_scored(
                 identity,
@@ -864,12 +872,12 @@ class SchedulerRuntime:
         try:
             hybrid = self._dependencies.reviews.build_hybrid(local, request)
         except ReviewUnavailableError as exc:
-            self._record_failure("review", _failure_code(exc, "review_unavailable"), request.strategy)
+            self._record_failure("review", failure_code(exc, "review_unavailable"), request.strategy)
             return
         if hybrid is None:
             return
         try:
-            _validate_cycle_identity(request, hybrid)
+            validate_cycle_identity(request, hybrid)
         except DecisionUnavailableError:
             self._record_failure("review", "review_identity_mismatch", request.strategy)
             return
@@ -1047,7 +1055,7 @@ class SchedulerRuntime:
         try:
             self._dependencies.freezes.capture_checkpoint(strategy, at)
         except FreezeUnavailableError as exc:
-            self._record_failure("checkpoint", _failure_code(exc, "checkpoint_unavailable"), strategy)
+            self._record_failure("checkpoint", failure_code(exc, "checkpoint_unavailable"), strategy)
         except Exception as exc:
             self._record_failure("checkpoint", f"checkpoint_unexpected:{type(exc).__name__}", strategy)
         else:
@@ -1172,61 +1180,8 @@ class SchedulerRuntime:
         )
 
 
-def _cycle_phase(strategy: Strategy, phase: MarketPhase) -> str:
-    if strategy in {Strategy.TOMORROW, Strategy.D25} and phase is MarketPhase.AFTER_CLOSE:
-        return "close_fallback"
-    if phase is MarketPhase.MIDDAY:
-        return "midday_recovery"
-    return cast(str, phase.value)
-
-
-def _validate_cycle_identity(request: CycleRequest, identity: DecisionIdentity) -> None:
-    if identity.strategy is not request.strategy or identity.trade_date != request.trade_date:
-        raise DecisionUnavailableError("decision identity does not match its scheduled cycle")
-    if identity.observed_at < request.observed_at:
-        raise DecisionUnavailableError("decision identity predates its scheduled cycle")
-
-
-def _cycle_order_key(request: CycleRequest) -> int:
-    return request.trade_date.toordinal() * 1_000_000_000 + request.sequence
-
-
-def _cycle_correlation_id(request: CycleRequest) -> str:
-    return f"score:{request.strategy.value}:{request.trade_date.isoformat()}:{request.sequence}"
-
-
 def _hybrid_order_key(request: _HybridUpgradeRequest) -> int:
-    return _cycle_order_key(request.cycle)
-
-
-def _pipeline_task_order_key(request: ScheduledPipelineTask) -> int:
-    return int(request.scheduled_at.timestamp() * 1_000_000)
-
-
-def _pipeline_task_correlation_id(request: ScheduledPipelineTask) -> str:
-    return f"data:{request.task.value}:{request.scheduled_at.isoformat()}"
-
-
-def _pipeline_lane(task: PipelineTask) -> PipelineTask:
-    if task in {PipelineTask.CURRENT_QUOTES, PipelineTask.CLOSE_QUOTES}:
-        return PipelineTask.FULL_MARKET
-    if task is PipelineTask.FINAL_CANDIDATE_QUOTES:
-        return PipelineTask.CANDIDATE_QUOTES
-    return task
-
-
-def _failure_code(exc: BaseException, fallback: str) -> str:
-    value = str(exc).strip().lower().replace(" ", "_")
-    if re.fullmatch(r"[a-z0-9_]{1,64}", value) is not None:
-        return value
-    return fallback
-
-
-def _research_input_version(result: ResearchRefreshResult) -> str:
-    import hashlib
-
-    material = (result.data_version, result.requested_codes, result.changed_codes, result.completed_at)
-    return hashlib.sha256(repr(material).encode("utf-8")).hexdigest()[:20]
+    return cycle_order_key(request.cycle)
 
 
 __all__ = ["RuntimeDependencies", "RuntimeIssue", "SchedulerRuntimeStatus", "SchedulerRuntime"]

@@ -15,6 +15,7 @@ from trader.domain.research.baostock_daily import (
     BaoStockCodeBatch,
     BaoStockCodeDownload,
     BaoStockDailyFact,
+    BaoStockDailyJoinRequest,
     BaoStockDailySide,
     BaoStockDailySpec,
     BaoStockIndustryInterval,
@@ -190,11 +191,14 @@ class BaoStockRowGateway:
         )
         qfq, qfq_nulls, qfq_future = self._qfq_sides(spec, security, expected)
         batch = join_baostock_daily_sides(
-            security.code,
-            expected,
+            BaoStockDailyJoinRequest(
+                security.code,
+                expected,
+                spec.source_cutoff,
+                raw_nulls + qfq_nulls,
+            ),
             raw,
             qfq,
-            null_rows=raw_nulls + qfq_nulls,
         )
         if raw_future + qfq_future == 0:
             return BaoStockCodeDownload(batch, facts)
