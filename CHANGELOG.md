@@ -6,6 +6,27 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求按已 Review 的零参数历史下载方案开始改代码，并说明已清空 `data/history`、可以全量重下。根因确认：
+  公开 CLI 仍接受 `--runtime-dir/--sessions/--mode/--profile` 并会写回已否决的父加增量目录；同时当前候选来源
+  没有一个同时证明全市场单日 raw、qfq/复权因子、停牌、代码变更和完整发布 cutoff，若直接实现“高效日更”会
+  把逐股小样本或 raw-only 数据误作训练完备来源。Changed: 完成 `04_策略回溯.md` 第 12.7 节阶段 A；Shell、
+  PowerShell 和底层 CLI 将 `download_history` 切为唯一零参数合同，旧参数在环境创建、联网和写文件前拒绝；
+  新控制面落地前合法调用只输出不可变 `history_maintenance_status` 的
+  `blocked/history_control_plane_pending`，选定 BaoStock 为正确性基线、`efficient_daily_source=null`、禁止自动
+  训练且不写已清空目录。Added: 新增统一 `history-daily-capability` 只读诊断，以独立进程和硬超时抽样
+  BaoStock，只投影来源能力、行数、错误类别与调用下限；并纳入 `sources/live/full`。真实实证为 Tushare 120
+  积分 3/3 raw 成功但 qfq/复权因子不可用，腾讯 3/3 raw/qfq 成功但只能逐股，东财 0/3，BaoStock 8 秒登录
+  探测超时；5453 只单面至少 5453 次/10,904 秒，raw+qfq 至少 10,906 次/21,810 秒，未计其它查询与重试。
+  `01_评分逻辑.md`、`02_工程设计.md`、`03_工程实施.md`、`04_策略回溯.md` 和 README 同步记录来源门、CLI
+  状态、空目录现状及阶段 B 为下一切片。Removed: 删除公开旧下载 dispatch、进度 writer 及其旧入口测试；底层
+  父增量组件只作为待阶段 D/G 删除的不可达内部代码，不再有公开写入口。Verification: 契约先在缺失新诊断和
+  仍接受旧参数的实现上失败；随后 133 项 CLI、架构、文档与诊断定向测试通过，受影响文件 Ruff/format、mypy
+  和 `bash -n` 通过；联网来源小样本完成，零参数 blocked 实测后 `data/history` 仍为空。PowerShell 仅由静态
+  契约覆盖，本机未安装 `pwsh`，未执行解释器语法检查。完整高风险门禁待 A–G 大任务阶段 G 对合并 diff 统一执行。Residual Risks:
+  阶段 B–G 尚未完成，当前零参数下载有意返回 blocked，尚未建立控制库、月分片、2000 日归档、20 日训练 due、
+  15:10/20:30 自动任务或真实模型；BaoStock 当次登录超时且没有高效日更源，后续只能先实现可续传慢速基线，
+  不得把 blocked 写成已下载或已训练。`Regression-Key: zero-argument-history-snapshot-training-alignment`。
+
 - 用户要求再次 Review 零参数历史下载整体方案，并把每日自动更新、每 20 个成熟标签日如何自动训练或提醒、
   以及完整可执行顺序合并输出。根因确认：上一版只定义 `training_due`，没有定义触发所有者、休眠补跑、due
   计数基线、通知去重或三平台安装；按当前 5453 只总体和 BaoStock 最短 2 秒逐股间隔，单轮请求下限已约 3

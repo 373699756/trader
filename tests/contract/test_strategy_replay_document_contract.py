@@ -85,7 +85,8 @@ def test_strategy_replay_document_keeps_public_commands_and_strategy_ownership_b
         REPLAY,
     )
 
-    assert "./run.sh download_history --sessions 2000" in content
+    assert "./run.sh download_history" in content
+    assert "./run.sh download_history --sessions" not in content
     assert "./run.sh train-tomorrow" in content
     for guide in public_guides:
         assert "./run.sh research-status" not in guide.read_text(encoding="utf-8")
@@ -99,23 +100,24 @@ def test_strategy_replay_document_keeps_public_commands_and_strategy_ownership_b
         assert required in content
 
 
-def test_strategy_replay_document_explains_incremental_download_and_atomic_training() -> None:
+def test_strategy_replay_document_records_the_stage_a_source_gate_and_atomic_training() -> None:
     content = REPLAY.read_text(encoding="utf-8")
 
     for required in (
-        "训练命令现已逐股读取该活动归档",
-        "--mode update",
-        "history-plan",
-        "父归档",
-        "增量 SQLite 分片",
-        "active manifest",
-        "parent_manifest_hash",
-        "increment_manifest_hash",
-        "active_data_hash",
-        "动态 `source_cutoff`",
+        "history_maintenance_status",
+        "history_control_plane_pending",
+        "history-daily-capability",
+        "Tushare 120 积分",
+        "raw 3/3",
+        "qfq/复权因子不可用",
+        "腾讯 raw/qfq 3/3",
+        "东财 0/3",
+        "BaoStock",
+        "10,906",
+        "21,810 秒",
+        "高效日更来源保持阻塞",
         "effective_at",
         "published_at",
-        "同一 key 内容冲突",
         "扣成本前超额收益",
         "raw `next_return`",
         "active-bundle.json",
@@ -127,13 +129,13 @@ def test_strategy_replay_document_explains_incremental_download_and_atomic_train
     ):
         assert required in content
 
-    assert "当前可以执行 `--mode update`" not in content
+    assert "download_history --mode update" not in content
     assert "当前快照回填历史" in content
 
 
 def test_strategy_replay_document_records_the_zero_argument_history_rebuild_plan() -> None:
     content = REPLAY.read_text(encoding="utf-8")
-    plan = content.split("## 12. 零参数历史归档重构计划（待实施）", maxsplit=1)[1]
+    plan = content.split("## 12. 零参数历史归档重构计划（实施中）", maxsplit=1)[1]
 
     for required in (
         "`./run.sh download_history` 是唯一历史维护入口",
@@ -179,7 +181,7 @@ def test_strategy_replay_document_records_the_zero_argument_history_rebuild_plan
 
 def test_strategy_replay_document_has_an_executable_maintenance_and_reminder_plan() -> None:
     content = REPLAY.read_text(encoding="utf-8")
-    plan = content.split("## 12. 零参数历史归档重构计划（待实施）", maxsplit=1)[1]
+    plan = content.split("## 12. 零参数历史归档重构计划（实施中）", maxsplit=1)[1]
 
     for required in (
         "每天触发不等于每天全市场逐股重拉",
@@ -206,7 +208,8 @@ def test_strategy_replay_document_has_an_executable_maintenance_and_reminder_pla
         "磁盘余量",
         "控制库损坏",
         "SIGTERM",
-        "阶段 A",
+        "阶段 A（已完成）",
+        "阶段 B",
         "阶段 G",
     ):
         assert required in plan

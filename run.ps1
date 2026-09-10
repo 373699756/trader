@@ -5,6 +5,7 @@ $RootDir = Split-Path -Parent $PSCommandPath
 $Mode = ""
 $ModeSet = $false
 $ScoringProfile = "v1"
+$ScoringProfileSet = $false
 $ForwardArgs = @()
 
 function Show-Usage {
@@ -18,10 +19,10 @@ function Show-Usage {
   .\run.ps1 help                    查看本帮助
 
 离线研究（仅在明确执行研究任务时使用）:
-  .\run.ps1 download_history        下载/续传 BaoStock 历史日线归档
+  .\run.ps1 download_history        零参数历史维护（当前重构中）
   .\run.ps1 train-tomorrow          从完整 manifest 运行 Tomorrow 训练
 
-所有命令都可追加 --profile v1|v2|v3；未指定时为 V1。
+看板和 check 可追加 --profile v1|v2|v3；download_history 不接受评分档位。
 
 高级配置（一般无需设置）:
   TRADER_CONFIG=C:\absolute\path\runtime.json
@@ -45,9 +46,11 @@ for ($Index = 0; $Index -lt $args.Count; $Index++) {
         }
         $Index++
         $ScoringProfile = [string]$args[$Index]
+        $ScoringProfileSet = $true
     }
     elseif ($Argument.StartsWith("--profile=")) {
         $ScoringProfile = $Argument.Substring("--profile=".Length)
+        $ScoringProfileSet = $true
     }
     elseif ($Argument -in $PublicModes -and -not $ModeSet) {
         $Mode = $Argument
@@ -66,6 +69,10 @@ for ($Index = 0; $Index -lt $args.Count; $Index++) {
 
 if ($ScoringProfile -notin @("v1", "v2", "v3")) {
     [Console]::Error.WriteLine("评分档位只能是 v1、v2 或 v3: $ScoringProfile")
+    exit 2
+}
+if ($Mode -eq "download_history" -and ($ScoringProfileSet -or $ForwardArgs.Count -gt 0)) {
+    [Console]::Error.WriteLine("download_history 不接受任何参数；请只运行 .\run.ps1 download_history。")
     exit 2
 }
 
@@ -140,6 +147,10 @@ if (-not $env:TRADER_PORT) {
 
 if ($IsServerMode) {
     & $SelectedEntryPoint --config $ConfigPath --profile $ScoringProfile @ForwardArgs
+    exit $LASTEXITCODE
+}
+if ($Mode -eq "download_history") {
+    & $SelectedEntryPoint --config $ConfigPath download_history
     exit $LASTEXITCODE
 }
 & $SelectedEntryPoint --config $ConfigPath --profile $ScoringProfile $Mode @ForwardArgs

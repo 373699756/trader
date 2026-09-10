@@ -7,6 +7,7 @@ CONFIG_PATH="${TRADER_CONFIG:-$ROOT_DIR/config/runtime.json}"
 MODE=""
 MODE_SET=0
 SCORING_PROFILE="v1"
+SCORING_PROFILE_SET=0
 FORWARD_ARGS=()
 
 usage() {
@@ -20,10 +21,10 @@ usage() {
     "  ./run.sh help                    查看本帮助" \
     "" \
     "离线研究（仅在明确执行研究任务时使用）:" \
-    "  ./run.sh download_history        下载/续传 BaoStock 历史日线归档" \
+    "  ./run.sh download_history        零参数历史维护（当前重构中）" \
     "  ./run.sh train-tomorrow          从完整 manifest 运行 Tomorrow 训练" \
     "" \
-    "所有命令都可追加 --profile v1|v2|v3；未指定时为 V1。" \
+    "看板和 check 可追加 --profile v1|v2|v3；download_history 不接受评分档位。" \
     "" \
     "高级配置（一般无需设置）:" \
     "  TRADER_CONFIG=/absolute/path/runtime.json" \
@@ -43,10 +44,12 @@ while (($#)); do
         exit 2
       fi
       SCORING_PROFILE="$2"
+      SCORING_PROFILE_SET=1
       shift 2
       ;;
     --profile=*)
       SCORING_PROFILE="${1#--profile=}"
+      SCORING_PROFILE_SET=1
       shift
       ;;
     help|-h|--help|check|download_history|train-tomorrow)
@@ -74,6 +77,11 @@ done
 
 if [[ "$SCORING_PROFILE" != "v1" && "$SCORING_PROFILE" != "v2" && "$SCORING_PROFILE" != "v3" ]]; then
   printf '评分档位只能是 v1、v2 或 v3: %s\n' "$SCORING_PROFILE" >&2
+  exit 2
+fi
+
+if [[ "$MODE" == "download_history" ]] && ((SCORING_PROFILE_SET || ${#FORWARD_ARGS[@]})); then
+  printf '%s\n' 'download_history 不接受任何参数；请只运行 ./run.sh download_history。' >&2
   exit 2
 fi
 
@@ -138,5 +146,8 @@ export TRADER_PORT="${TRADER_PORT:-5000}"
 
 if [[ "$COMMAND_KIND" == "server" ]]; then
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" --profile "$SCORING_PROFILE" "${FORWARD_ARGS[@]}"
+fi
+if [[ "$MODE" == "download_history" ]]; then
+  exec "$ENTRYPOINT" --config "$CONFIG_PATH" download_history
 fi
 exec "$ENTRYPOINT" --config "$CONFIG_PATH" --profile "$SCORING_PROFILE" "$MODE" "${FORWARD_ARGS[@]}"

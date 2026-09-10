@@ -1,57 +1,72 @@
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from trader.entrypoints.cli import build_parser
+from trader.entrypoints.cli import build_parser, main
 
 
-def test_download_history_is_explicit_and_bounded() -> None:
-    args = build_parser().parse_args(
-        [
-            "download_history",
-            "--runtime-dir",
-            "/tmp/trader-baostock",
-            "--sessions",
-            "2000",
-            "--mode",
-            "update",
-        ]
-    )
-    assert args.command == "download_history"
-    assert args.runtime_dir == Path("/tmp/trader-baostock")
-    assert args.sessions == 2000
-    assert args.mode == "update"
-
-
-def test_download_history_defaults_to_ignored_repository_history_directory() -> None:
+def test_download_history_is_a_zero_argument_command() -> None:
     args = build_parser().parse_args(["download_history"])
-    assert args.runtime_dir == Path("data/history")
-    assert args.mode == "snapshot"
+
+    assert args.command == "download_history"
+    assert not hasattr(args, "runtime_dir")
+    assert not hasattr(args, "sessions")
+    assert not hasattr(args, "mode")
 
 
-def test_download_history_rejects_more_than_2000_during_argument_parsing(tmp_path: Path) -> None:
+@pytest.mark.parametrize("arguments", (("--runtime-dir", "/tmp/history"), ("--sessions", "2000"), ("--mode", "update")))
+def test_download_history_rejects_every_legacy_argument_during_parsing(
+    arguments: tuple[str, ...], tmp_path: Path
+) -> None:
     runtime_dir = tmp_path / "must-not-exist"
 
     with pytest.raises(SystemExit):
-        build_parser().parse_args(["download_history", "--runtime-dir", str(runtime_dir), "--sessions", "2001"])
+        build_parser().parse_args(["download_history", *arguments])
 
     assert not runtime_dir.exists()
 
 
-def test_download_history_contract_exposes_typed_live_progress_and_partition_roles() -> None:
-    from trader.application.research.baostock_history_runtime import BaoStockRuntimeProgress
+def test_download_history_fails_closed_until_the_new_control_plane_exists(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["download_history"]) == 1
 
-    progress = BaoStockRuntimeProgress(
-        phase="database_initializing",
-        sessions=1,
-        universe_count=5211,
-        expected_records=5211,
-    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "active_snapshot_hash": None,
+        "archive_root": "data/history/baostock",
+        "automatic_training": False,
+        "data_cutoff": None,
+        "efficient_daily_source": None,
+        "label_cutoff": None,
+        "matured_label_days_since_training": 0,
+        "reason": "history_control_plane_pending",
+        "schema_version": "history_maintenance_status",
+        "selected_baseline_source": "baostock",
+        "state": "blocked",
+        "training_due": False,
+        "training_due_reason": "data_incomplete",
+    }
 
-    assert progress.schema_version == "baostock_runtime_progress"
-    assert progress.universe_count == progress.expected_records
+
+def test_download_history_contract_exposes_an_immutable_typed_status() -> None:
+    from trader.application.research.history_maintenance import blocked_history_maintenance_status
+
+    status = blocked_history_maintenance_status()
+
+    assert status.state == "blocked"
+    assert status.reason == "history_control_plane_pending"
+    assert status.archive_root == Path("data/history/baostock")
+    assert status.training_due is False
+    assert status.training_due_reason == "data_incomplete"
+    with pytest.raises(ValueError, match="flag and reason disagree"):
+        replace(status, training_due=True)
+    with pytest.raises(AttributeError):
+        status.state = "completed"  # type: ignore[misc]
 
 
 def test_train_tomorrow_uses_the_project_data_roots() -> None:

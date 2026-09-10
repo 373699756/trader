@@ -26,6 +26,7 @@ Profile = Literal[
     "security-master",
     "tencent",
     "tushare",
+    "history-daily-capability",
     "research",
     "browser",
     "performance",
@@ -45,18 +46,33 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "security-master": ("exchange_security_master",),
     "tencent": ("tencent_quotes",),
     "tushare": ("tushare_daily",),
+    "history-daily-capability": ("history_daily_capability",),
     "research": ("research_readiness",),
     "browser": ("browser_refresh",),
     "performance": ("production_performance",),
     "runtime": ("web_health",),
-    "sources": ("exchange_security_master", "history_sources", "tencent_quotes", "tushare_daily"),
-    "live": ("web_health", "exchange_security_master", "history_sources", "tencent_quotes", "tushare_daily"),
+    "sources": (
+        "exchange_security_master",
+        "history_sources",
+        "tencent_quotes",
+        "tushare_daily",
+        "history_daily_capability",
+    ),
+    "live": (
+        "web_health",
+        "exchange_security_master",
+        "history_sources",
+        "tencent_quotes",
+        "tushare_daily",
+        "history_daily_capability",
+    ),
     "full": (
         "web_health",
         "exchange_security_master",
         "history_sources",
         "tencent_quotes",
         "tushare_daily",
+        "history_daily_capability",
         "browser_refresh",
         "production_performance",
     ),
@@ -313,6 +329,17 @@ def build_commands(
             ),
             common_timeout,
         ),
+        "history_daily_capability": DiagnosticCommand(
+            "history_daily_capability",
+            (
+                python_executable,
+                "-m",
+                "scripts.runtime_diagnostics.history_daily_capability",
+                "--runtime-config",
+                str(options.runtime_config),
+            ),
+            common_timeout,
+        ),
         "research_readiness": DiagnosticCommand(
             "research_readiness",
             (
@@ -520,6 +547,33 @@ def _tushare_details(_result: DiagnosticResult, source: Mapping[str, object], pa
     }
 
 
+def _history_daily_capability_details(
+    _result: DiagnosticResult,
+    source: Mapping[str, object],
+    payload: dict[str, object],
+) -> None:
+    candidates = source.get("candidates")
+    candidate_values = candidates if isinstance(candidates, list) else []
+    payload["summary"] = {
+        "decision": _mapping(source.get("decision")),
+        "baostock_lower_bound": _mapping(source.get("baostock_lower_bound")),
+        "candidates": [
+            {
+                "source": item.get("source"),
+                "request_scope": item.get("request_scope"),
+                "market_day_batch": item.get("market_day_batch"),
+                "market_day_raw": item.get("market_day_raw"),
+                "adjustment_factor": item.get("adjustment_factor"),
+                "raw_qfq_semantics_observed": item.get("raw_qfq_semantics_observed"),
+                "probe_status": item.get("probe_status"),
+                "probe_error": item.get("probe_error"),
+            }
+            for item in candidate_values[:10]
+            if isinstance(item, dict)
+        ],
+    }
+
+
 def _research_details(result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]) -> None:
     if result.payload is not None and not _valid_research_status(source):
         payload["findings"] = [
@@ -600,6 +654,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "exchange_security_master": _security_master_details,
     "tencent_quotes": _tencent_quote_details,
     "tushare_daily": _tushare_details,
+    "history_daily_capability": _history_daily_capability_details,
     "research_readiness": _research_details,
     "browser_refresh": _browser_details,
     "production_performance": _performance_details,

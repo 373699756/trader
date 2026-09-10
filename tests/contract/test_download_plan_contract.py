@@ -25,16 +25,23 @@ def test_download_plan_contains_only_the_remaining_dependency_route() -> None:
     assert "baostock_daily_archive" not in work
 
 
-def test_increment_plan_preserves_parent_and_fails_closed_on_missing_facts() -> None:
+def test_monthly_snapshot_plan_is_idempotent_and_fails_closed_on_missing_facts() -> None:
     design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
     work = _work()
 
-    for token in ("父 manifest 原字节不变", "同一 key 同内容幂等", "不同内容", "失败关闭"):
+    for token in (
+        "control.sqlite3",
+        "partitions/YYYY/MM.sqlite3",
+        "(trade_date, code, revision_id)",
+        "重复内容幂等",
+        "不同内容写新 revision",
+        "活动指针不因",
+    ):
         assert token in design
     for token in (
         "effective_at",
         "published_at",
-        "不得用当前快照回填历史",
+        "禁止当前快照回填历史",
     ):
         assert token in design
     assert "dynamic_cutoff_and_missing_fact_acquisition" not in work
@@ -65,7 +72,8 @@ def test_current_training_task_uses_the_reviewed_zero_argument_history_prerequis
 
     for required in (
         "第 12.7 节阶段 A–G",
-        "下一完整实施切片为阶段 A",
-        "`download_history --mode update` 只表示当前旧实现",
+        "阶段 A 已完成",
+        "下一完整实施切片为阶段 B",
+        "高效日更来源保持阻塞",
     ):
         assert required in work

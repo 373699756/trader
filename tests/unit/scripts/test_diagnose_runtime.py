@@ -69,6 +69,7 @@ def test_live_profile_combines_runtime_and_all_source_probes() -> None:
         "history_sources",
         "tencent_quotes",
         "tushare_daily",
+        "history_daily_capability",
     )
     assert all(command.argv[0] == "/python" for command in commands)
     assert all("--output" not in command.argv for command in commands)
@@ -83,6 +84,7 @@ def test_full_profile_adds_browser_and_offline_performance_without_duplicate_pro
         "history_sources",
         "tencent_quotes",
         "tushare_daily",
+        "history_daily_capability",
         "browser_refresh",
         "production_performance",
     )
@@ -104,6 +106,7 @@ def test_history_profile_passes_explicit_source_to_the_bounded_probe(source: str
         ("security-master", "exchange_security_master"),
         ("tencent", "tencent_quotes"),
         ("tushare", "tushare_daily"),
+        ("history-daily-capability", "history_daily_capability"),
         ("research", "research_readiness"),
         ("browser", "browser_refresh"),
         ("performance", "production_performance"),
@@ -319,6 +322,52 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
     }
 
 
+def test_daily_history_capability_projection_keeps_only_the_audit_whitelist() -> None:
+    report = build_report(
+        "history-daily-capability",
+        (
+            DiagnosticResult(
+                "history_daily_capability",
+                0,
+                8.0,
+                {
+                    "schema_version": "history-daily-capability-audit",
+                    "status": "degraded",
+                    "decision": {"status": "blocked", "efficient_daily_source": None},
+                    "baostock_lower_bound": {"minimum_raw_qfq_calls": 10906},
+                    "candidates": [
+                        {
+                            "source": "baostock",
+                            "request_scope": "security_range",
+                            "market_day_batch": False,
+                            "probe_status": "failed",
+                            "probe_error": "supplier_call_timeout",
+                            "vendor_payload": "must-not-escape",
+                        }
+                    ],
+                    "configuration": {"runtime_config": "/private/path"},
+                },
+                None,
+            ),
+        ),
+    )
+
+    rendered = str(report)
+    assert report["status"] == "degraded"
+    assert report["checks"][0]["summary"]["candidates"][0] == {
+        "source": "baostock",
+        "request_scope": "security_range",
+        "market_day_batch": False,
+        "market_day_raw": None,
+        "adjustment_factor": None,
+        "raw_qfq_semantics_observed": None,
+        "probe_status": "failed",
+        "probe_error": "supplier_call_timeout",
+    }
+    assert "must-not-escape" not in rendered
+    assert "/private/path" not in rendered
+
+
 def test_runner_continues_after_a_failed_check_and_preserves_check_order() -> None:
     commands = build_commands(_options(profile="sources"), python_executable="/python")
     called: list[str] = []
@@ -337,7 +386,13 @@ def test_runner_continues_after_a_failed_check_and_preserves_check_order() -> No
 
     report = run_diagnostics("sources", commands, runner=runner)
 
-    assert called == ["exchange_security_master", "history_sources", "tencent_quotes", "tushare_daily"]
+    assert called == [
+        "exchange_security_master",
+        "history_sources",
+        "tencent_quotes",
+        "tushare_daily",
+        "history_daily_capability",
+    ]
     assert report["status"] == "failed"
     assert report["summary"]["failed"] == 1
 

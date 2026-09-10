@@ -6,15 +6,11 @@ import argparse
 import json
 import os
 import sys
-import time
-from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from threading import Event
-from typing import IO, cast
+from typing import cast
 from zoneinfo import ZoneInfo
 
-from trader.application.runtime.shutdown import ShutdownSignalController
 from trader.domain.recommendation.model_scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
 from trader.infra.settings import RuntimeSettings, load_long_watchlist, load_runtime_settings, load_strategy_settings
@@ -55,14 +51,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     performance.add_argument("--output", type=Path)
     performance.add_argument("--baseline", type=Path)
-    baostock = subparsers.add_parser("download_history", help="Download and resume the BaoStock daily-history archive.")
-    baostock.add_argument("--runtime-dir", type=Path, default=Path("data/history"))
-    baostock.add_argument("--sessions", type=int, choices=range(1, 2001), default=2000)
-    baostock.add_argument(
-        "--mode",
-        choices=("snapshot", "update"),
-        default="snapshot",
-        help="Reuse/build the sealed snapshot, or append only planned missing fields into an increment.",
+    subparsers.add_parser(
+        "download_history",
+        help="Run the zero-argument historical-data maintenance workflow.",
     )
     subparsers.add_parser("research-status", help="Read immutable research coverage and capacity status.")
     subparsers.add_parser(
@@ -84,9 +75,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI command dispatch
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     if args.command == "download_history":
-        return _run_baostock_history(args.runtime_dir, args.sessions, args.mode)
+        if args.profile is not None:
+            parser.error("download_history does not accept --profile")
+        from trader.application.research.history_maintenance import blocked_history_maintenance_status
+        from trader.entrypoints.history_maintenance_projection import project_history_maintenance_status
+
+        print(
+            json.dumps(
+                project_history_maintenance_status(blocked_history_maintenance_status()),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 1
     if args.command == "train-tomorrow":
         _configure_tomorrow_training_resources()
     config_path = _absolute_config_path(args.config)
@@ -130,96 +134,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
     return _run_config_validation(runtime, profile_override)
 
 
-def _run_baostock_history(runtime_dir: Path, sessions: int, mode: str = "snapshot") -> int:
-    from trader.application.research.baostock_history_runtime import BaoStockDownloadMode, BaoStockRuntimeRequest
-    from trader.infra.research.baostock_history_runtime import (
-        project_baostock_runtime_status,
-        run_baostock_history,
-    )
-
-    runtime_dir = _repository_data_path(runtime_dir)
-    request = BaoStockRuntimeRequest(
-        runtime_dir=runtime_dir,
-        sessions=sessions,
-        mode=cast(BaoStockDownloadMode, mode),
-    )
-    progress = _BaoStockProgressWriter(runtime_dir, sessions=sessions)
-    cancelled = Event()
-    controller = ShutdownSignalController(
-        timeout_seconds=10.0,
-        on_first_signal=lambda _deadline: cancelled.set(),
-    )
-    controller.install()
-    try:
-        try:
-            status = run_baostock_history(
-                request,
-                _repository_root_for_validation(),
-                cancel_requested=cancelled.is_set,
-                progress=progress,
-            )
-        except ValueError as exc:
-            print(
-                json.dumps(
-                    {
-                        "schema_version": "baostock_runtime_status",
-                        "state": "invalid_request",
-                        "error": str(exc),
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
-            )
-            return 2
-    finally:
-        controller.mark_completed()
-        controller.restore()
-    print(json.dumps(project_baostock_runtime_status(status), ensure_ascii=False, sort_keys=True))
-    return controller.exit_code or (0 if status.state == "completed" else 1)
-
-
 def _repository_data_path(path: Path) -> Path:
     return path if path.is_absolute() else _repository_root_for_validation() / path
-
-
-class _BaoStockProgressWriter:
-    def __init__(
-        self,
-        runtime_dir: Path,
-        *,
-        sessions: int = 2000,
-        stream: IO[str] = sys.stderr,
-        monotonic: Callable[[], float] = time.monotonic,
-    ) -> None:
-        self._root = runtime_dir / "baostock-daily" / f"sessions-{sessions}"
-        self._stream = stream
-        self._monotonic = monotonic
-        self._started_at = monotonic()
-
-    def publish(self, progress: object) -> None:
-        from trader.application.research.baostock_history_runtime import BaoStockRuntimeProgress
-
-        if not isinstance(progress, BaoStockRuntimeProgress):
-            raise TypeError("BaoStock progress writer requires a typed progress value")
-        elapsed = max(0, int(self._monotonic() - self._started_at))
-        hours, remainder = divmod(elapsed, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        current = f"，当前 {progress.current_code}" if progress.current_code else ""
-        failure = progress.last_failure_reason or "无"
-        save_filename = "*.sqlite3"
-        completion_percentage = (
-            100.0 * progress.completed_codes / progress.universe_count if progress.universe_count else 0.0
-        )
-        print(
-            f"[{progress.phase}] 已下载/总数：{progress.completed_codes:,}/{progress.universe_count:,}，"
-            f"完成进度：{completion_percentage:.2f}%，总下载条数：{progress.downloaded_records:,}，"
-            f"未下载：{progress.remaining_codes:,}，"
-            f"训练可用/总数：{progress.training_ready_codes:,}/{progress.universe_count:,}，"
-            f"待补训练事实：{progress.remaining_training_codes:,}，"
-            f"耗时：{hours}时{minutes:02d}分{seconds:02d}秒{current}，失败原因：{failure}，保存文件：{save_filename}",
-            file=self._stream,
-            flush=True,
-        )
 
 
 def _configure_tomorrow_training_resources() -> None:

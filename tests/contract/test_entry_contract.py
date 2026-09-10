@@ -143,11 +143,11 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert "./run.sh --profile v2            显式使用 V2 启动" in completed.stdout
     assert "./run.sh check                   依次校验配置、研究状态和性能门禁" in completed.stdout
     assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
-    assert "./run.sh download_history        下载/续传 BaoStock 历史日线归档" in completed.stdout
+    assert "./run.sh download_history        零参数历史维护（当前重构中）" in completed.stdout
     assert "./run.sh train-tomorrow          从完整 manifest 运行 Tomorrow 训练" in completed.stdout
     assert "--allow-partial-history" not in completed.stdout
     assert "research-r7-dossier" not in completed.stdout
-    assert "所有命令都可追加 --profile v1|v2|v3；未指定时为 V1" in completed.stdout
+    assert "看板和 check 可追加 --profile v1|v2|v3；download_history 不接受评分档位" in completed.stdout
     assert "./run.sh serve" not in completed.stdout
     assert not missing_venv.exists()
 
@@ -170,6 +170,34 @@ def test_run_script_unknown_command_fails_before_environment_setup_with_concise_
     assert completed.returncode == 2
     assert completed.stdout == ""
     assert completed.stderr == ("未知命令: serv\n日常启动直接运行: ./run.sh\n查看全部命令: ./run.sh help\n")
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        ("download_history", "--sessions", "2000"),
+        ("download_history", "--mode", "update"),
+        ("--profile", "v2", "download_history"),
+    ),
+)
+def test_run_script_rejects_download_history_arguments_before_environment_setup(
+    arguments: tuple[str, ...], tmp_path: Path
+) -> None:
+    missing_venv = tmp_path / "must-not-exist"
+
+    completed = subprocess.run(
+        ("bash", str(ROOT / "run.sh"), *arguments),
+        cwd=ROOT,
+        env={**os.environ, "VENV_DIR": str(missing_venv)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert "download_history 不接受任何参数" in completed.stderr
+    assert not missing_venv.exists()
 
 
 def test_run_script_without_arguments_still_starts_the_dashboard(tmp_path: Path) -> None:
@@ -269,7 +297,7 @@ def test_run_script_accepts_an_explicit_profile_without_a_serve_alias(
     assert completed.stdout == f"server:--config {config} --profile {profile}\n"
 
 
-def test_run_script_forwards_baostock_download_arguments_after_normalizing_the_profile(tmp_path: Path) -> None:
+def test_run_script_forwards_only_the_zero_argument_history_command(tmp_path: Path) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
     _write_fake_entrypoint(venv_bin / "python", "exit 99")
@@ -278,17 +306,7 @@ def test_run_script_forwards_baostock_download_arguments_after_normalizing_the_p
     config = tmp_path / "runtime.json"
 
     completed = subprocess.run(
-        (
-            "bash",
-            str(ROOT / "run.sh"),
-            "download_history",
-            "--runtime-dir",
-            str(tmp_path / "outside"),
-            "--sessions",
-            "3",
-            "--profile",
-            "v2",
-        ),
+        ("bash", str(ROOT / "run.sh"), "download_history"),
         cwd=ROOT,
         env={**os.environ, "VENV_DIR": str(venv_bin.parent), "TRADER_CONFIG": str(config)},
         text=True,
@@ -297,9 +315,7 @@ def test_run_script_forwards_baostock_download_arguments_after_normalizing_the_p
     )
 
     assert completed.returncode == 0
-    assert completed.stdout == (
-        f"cli:--config {config} --profile v2 download_history --runtime-dir {tmp_path / 'outside'} --sessions 3\n"
-    )
+    assert completed.stdout == f"cli:--config {config} download_history\n"
 
 
 def test_run_script_forwards_the_single_tomorrow_training_command_without_stage_arguments(tmp_path: Path) -> None:
@@ -404,16 +420,17 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
 
     assert "日常使用（不做离线研究）:" in powershell
     assert "离线研究（仅在明确执行研究任务时使用）:" in powershell
-    assert ".\\run.ps1 download_history        下载/续传 BaoStock 历史日线归档" in powershell
+    assert ".\\run.ps1 download_history        零参数历史维护（当前重构中）" in powershell
     assert "research-history" not in powershell
     assert "research-screen" not in powershell
     assert ".\\run.ps1 train-tomorrow          从完整 manifest 运行 Tomorrow 训练" in powershell
     assert "--allow-partial-history" not in powershell
-    assert "所有命令都可追加 --profile v1|v2|v3；未指定时为 V1" in powershell
+    assert "看板和 check 可追加 --profile v1|v2|v3；download_history 不接受评分档位" in powershell
     assert "& $SelectedEntryPoint --help" in powershell
     assert '$ScoringProfile -notin @("v1", "v2", "v3")' in powershell
     assert "config\\runtime.json" in powershell
     assert "config\\v2\\runtime.json" not in powershell
+    assert '$Mode -eq "download_history" -and ($ScoringProfileSet -or $ForwardArgs.Count -gt 0)' in powershell
 
 
 def test_research_status_is_historical_only_and_does_not_create_runtime_files(

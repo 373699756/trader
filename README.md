@@ -43,21 +43,21 @@ DEEPSEEK_API_KEY=your-key ./run.sh
 TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 ./run.sh check
 ./run.sh --profile v2
-./run.sh download_history --runtime-dir /absolute/path/outside/repository --sessions 2000
+./run.sh download_history
 ./run.sh train-tomorrow
 ./run.sh help
 ```
 
 日常启动不需要参数，默认使用 Tomorrow V1；追加 `--profile v2` 才使用 V2，该覆盖不会写回配置。
-`check` 依次执行配置校验、只读研究状态和所选档位的离线性能门禁；`download_history` 只负责 BaoStock
-历史日线下载/续传，`train-tomorrow` 负责统一的 Tomorrow 离线训练链。旧 H0 历史归档、回测和筛选入口已退役，
+`check` 依次执行配置校验、只读研究状态和所选档位的离线性能门禁；`download_history` 是唯一零参数历史维护
+入口，`train-tomorrow` 负责统一的 Tomorrow 离线训练链。旧 H0 历史归档、回测和筛选入口已退役，
 不再通过启动流程执行。离线研究不会随服务启动自动执行。底层
 `trader-cli performance-check` 仍可用 `--output` 保存报告或用 `--baseline` 执行 5% 相对回归门禁；它
 禁止外网并直接测量活动生产标准化、合并、三策略评分、overlay CAS、API/ETag/status、SSE 和 100 tick RSS。
-BaoStock 下载是独立研究命令，必须先安装 `trader-research-dashboard[research]`；默认写入 Git 忽略的
-`trader/data/history/`，也可用绝对 `--runtime-dir` 覆盖。命令在标准错误持续输出阶段、股票完成数/总数和
-逻辑日线落盘数/总数。下载期间先写 `shard-*.sqlite3` 作为续传 checkpoint，全部完成后才原子创建最终库和
-manifest；它不会被启动、`check`、Web 或 `train-tomorrow` 隐式调用。
+BaoStock 下载是独立研究命令，必须先安装 `trader-research-dashboard[research]`。路径、滚动 2000 日和资源
+参数不对用户开放；`--runtime-dir`、`--sessions`、`--mode`、`--profile` 等参数都会在环境创建前拒绝。零参数
+重构的控制库和月分片尚未接通期间，命令返回 `history_control_plane_pending` 且不联网、不写
+`data/history`；它不会被启动、`check`、Web 或 `train-tomorrow` 隐式调用。
 
 启动脚本只读取 `TRADER_HOST` 和 `TRADER_PORT`；旧 `HOST`/`PORT` 不再映射到 当前进程。
 
