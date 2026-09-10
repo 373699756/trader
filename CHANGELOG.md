@@ -6,6 +6,22 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求回退本轮 258 只子集训练尝试，并在文档中写清项目当前进展。现状确认：本地与上游 HEAD 均为
+  `5cdd10696bc34a95965cb4c1a80570f8c25fd55f`；当前正式历史目录只有旧布局 22 个 SQLite 分片，
+  `research-status` 为 5453 只总体、268 只完成、5185 只未完成、training-ready 0、
+  `completed_with_failures/incomplete_codes`，没有 catalog、父 manifest 或 active manifest；训练目录没有
+  `active-bundle.json`，显式 V3 loader 返回模型不可用，默认仍为 V1。Changed: 精确撤销本轮新增的 258 只
+  子集复制、补事实、空增量发布和 watchdog 心跳代码/测试/脚本；把中断下载在正式历史目录新增的 64 KiB
+  空分区移到仓库外临时备份，使状态恢复为真实 268/5453，不改动旧 22 个分片或任何已推送提交；三份权威
+  三份权威文档同步区分已实现的训练/loader 能力、当前数据实物和未完成运行证据。Verification: 回退后 `git status`
+  干净、`git diff --check` 通过；底层只读 `research-status` 恢复并精确投影 268/5453、5185 未完成、
+  training-ready 0；显式 V3 loader 复核为 `Tomorrow V3 training model is unavailable`，默认配置复核为 V1。
+  本批最终只修改 Markdown，按低风险文档门禁运行文档契约与 `git diff --check`，不把未运行的全量代码、打包、
+  性能或浏览器门禁写成通过。Residual Risks: 258 只尝试没有形成 sealed/active 归档、训练模型或评分结果；
+  `v3_training_artifact_rebuild` 继续是唯一 `in_progress`，须先取得完整且 hash 有效的 active archive，再做真实
+  重训、重复确定性、2048 MiB 内存门禁和显式 V3 运行验收。本批不改默认 V1、生产评分、冻结、DeepSeek
+  预算、候选容量或权重。
+
 - 用户要求继续执行 `v3_training_artifact_rebuild`。根因确认：训练器仍打开旧固定截止目录的
   `BaoStockTrainingTrainingInputArchive`，按日期聚合全量 `_Sample` 后又复制训练/校准/验证集合，且
   `training-input.json`、`report.json`、`model.json` 逐文件覆盖，失败可能留下混合代际；运行 loader 只校验
