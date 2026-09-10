@@ -6,6 +6,25 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求继续 `04_策略回溯.md` 的下一完整未完成任务，并延续新增命名不得使用泛化存储术语的约束。根因确认：
+  阶段 B 只有控制库，活动源码仍无目标 `partitions/YYYY/MM.sqlite3` schema、revision 选择、snapshot 日期路由、
+  61 个实际交易日滚动读取或按日训练缓存，旧父归档加增量链不符合已确认架构。Added: 新增不可变
+  `HistoryMonthlyRevision/HistoryTrainingWindow`、严格 `history_month_codec`、
+  `SQLiteHistoryMonthPartitionRepository`、`SQLiteHistoryMonthlyArchive` 和 `SQLiteHistoryTrainingCache`；月库以
+  `(trade_date, code, revision_id) WITHOUT ROWID` 聚簇，建立单股及日期/板块双索引，同内容重放幂等、异内容按
+  更高同步序号形成 revision，并以不可变观察映射保证 A→B→A 可按 snapshot sequence 重放；同序号冲突或内容
+  倒填失败关闭。Changed: active snapshot 读取只遍历其明确引用月份，
+  封存校验 WAL、quick check、行数和 SHA-256；单股最多接受 61 个有序交易日，全量扫描逐月顺序打开且每股只
+  保留连续 61 行，训练缓存绑定 snapshot hash 并按 `(trade_date, code)` 聚簇；控制面创业板值与既有 BaoStock
+  `chinext` 统一。公开命令仍不联网、不写历史目录，blocker 推进为 `history_sync_pending`，阶段 D 是下一切片。
+  Verification: 月库 codec/schema/revision/索引、单日/单股/跨月、61 日滚动、训练缓存、损坏与 snapshot 缺口、
+  2000 日实物查询及相关 CLI/架构/权威文档共 68 项定向门禁通过；受影响文件 Ruff/format 与全活动包 mypy
+  通过，月库和控制库 SQLite 连接均显式关闭，2000 日扫描文件描述符门通过；全量门禁待 A–G 大任务阶段 G
+  统一执行。
+  Residual Risks: 本批不调用供应商、不创建生产月库、不下载真实 2000 个交易日、不发布 active snapshot，也不
+  接训练或系统定时任务；V3 点时证据和生产权限不变，默认 V1 不变。
+  `Regression-Key: zero-argument-history-snapshot-training-alignment`。
+
 - 用户要求按 `04_策略回溯.md` 继续下一未完成任务，并明确本批新增命名不得使用泛化的存储术语。
   根因确认：阶段 A 只建立了零参数命令和来源能力门，代码仅有固定 blocked 状态；来源、日历、证券总体、同步
   checkpoint、训练 due、提醒、active snapshot、控制库恢复、互斥和磁盘预算均无新控制面所有者。Added: 新增

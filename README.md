@@ -56,7 +56,7 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 禁止外网并直接测量活动生产标准化、合并、三策略评分、overlay CAS、API/ETag/status、SSE 和 100 tick RSS。
 BaoStock 下载是独立研究命令，必须先安装 `trader-research-dashboard[research]`。路径、滚动 2000 日和资源
 参数不对用户开放；`--runtime-dir`、`--sessions`、`--mode`、`--profile` 等参数都会在环境创建前拒绝。零参数
-重构控制库已经交付，月分片和同步尚未接通期间，命令返回 `history_monthly_archive_pending` 且不联网、不写
+重构控制库与月分片读取面已经交付，同步尚未接通期间，命令返回 `history_sync_pending` 且不联网、不写
 `data/history`；它不会被启动、`check`、Web 或 `train-tomorrow` 隐式调用。
 
 启动脚本只读取 `TRADER_HOST` 和 `TRADER_PORT`；旧 `HOST`/`PORT` 不再映射到 当前进程。

@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from trader.domain.research.h1_point_in_time import canonical_hash
 
-HistorySecurityBoard = Literal["main", "growth", "star"]
+HistorySecurityBoard = Literal["main", "chinext", "star"]
 HistorySyncState = Literal["pending", "running", "completed", "failed", "cancelled"]
 HistoryTrainingDueReason = Literal[
     "not_due",
@@ -75,7 +75,7 @@ class HistorySecurityIdentity:
         if (
             _CODE.fullmatch(self.code) is None
             or not self.name.strip()
-            or self.board not in {"main", "growth", "star"}
+            or self.board not in {"main", "chinext", "star"}
             or (self.delisted_on is not None and self.delisted_on <= self.listed_on)
         ):
             raise ValueError("history security identity is invalid")

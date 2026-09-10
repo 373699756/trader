@@ -394,6 +394,23 @@ def test_domain_and_application_do_not_own_persistence_or_json_decoders() -> Non
     assert violations == []
 
 
+def test_history_month_values_and_sqlite_codec_keep_serialization_at_the_infra_boundary() -> None:
+    domain_path = SOURCE_ROOT / "domain/research/history_monthly.py"
+    codec_path = SOURCE_ROOT / "infra/research/history_month_codec.py"
+    partition_path = SOURCE_ROOT / "infra/research/history_month_partition.py"
+    domain_source = domain_path.read_text(encoding="utf-8")
+    codec_source = codec_path.read_text(encoding="utf-8")
+    partition_source = partition_path.read_text(encoding="utf-8")
+
+    assert "import json" not in domain_source
+    assert "import sqlite3" not in domain_source
+    assert "import json" in codec_source
+    assert "import sqlite3" in partition_source
+    assert "history_month_codec" in partition_source
+    for automatic_projection in ("asdict(", ".__dict__", "vars("):
+        assert automatic_projection not in codec_source
+
+
 def test_production_composition_injects_the_single_cadence_planner() -> None:
     source = (SOURCE_ROOT / "bootstrap.py").read_text(encoding="utf-8")
 

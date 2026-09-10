@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 import tempfile
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -141,7 +142,7 @@ class SQLiteHistoryControlRepository:
             raise HistoryControlError("history control database is corrupt")
         self._path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            with self._connect() as connection:
+            with closing(self._connect()) as connection, connection:
                 connection.execute("PRAGMA journal_mode=WAL")
                 connection.execute("PRAGMA synchronous=FULL")
                 connection.executescript(_SCHEMA)
@@ -162,7 +163,7 @@ class SQLiteHistoryControlRepository:
         if not self._path.is_file():
             return HistoryControlIntegrityStatus("missing", "control_database_missing")
         try:
-            with self._read_connection() as connection:
+            with closing(self._read_connection()) as connection:
                 check = connection.execute("PRAGMA quick_check").fetchone()
                 identity = connection.execute("SELECT schema_identity FROM metadata WHERE singleton=1").fetchone()
         except sqlite3.Error:
@@ -196,7 +197,7 @@ class SQLiteHistoryControlRepository:
         self._save("snapshot", str(value.sequence), value.content_hash, _snapshot_payload(value))
         self._fault_injector("snapshot_committed")
         try:
-            with self._connect() as connection:
+            with closing(self._connect()) as connection, connection:
                 connection.execute("BEGIN IMMEDIATE")
                 current = connection.execute(
                     "SELECT snapshot_hash, sequence FROM active_snapshot WHERE singleton=1"
@@ -224,7 +225,7 @@ class SQLiteHistoryControlRepository:
             ("universe", value.universe_hash),
         )
         try:
-            with self._read_connection() as connection:
+            with closing(self._read_connection()) as connection:
                 present = {
                     (kind, record_key)
                     for kind, record_key in connection.execute(
@@ -242,7 +243,7 @@ class SQLiteHistoryControlRepository:
         if self.integrity().state != "healthy":
             raise HistoryControlError("history control database is unavailable")
         try:
-            with self._read_connection() as connection:
+            with closing(self._read_connection()) as connection:
                 rows = connection.execute(
                     "SELECT kind, content_hash, payload_json FROM immutable_records ORDER BY kind, record_key"
                 ).fetchall()
@@ -340,7 +341,7 @@ class SQLiteHistoryControlRepository:
     def _save(self, kind: ControlKind, key: str, content_hash: str, payload: dict[str, object]) -> None:
         payload_json = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
         try:
-            with self._connect() as connection:
+            with closing(self._connect()) as connection, connection:
                 connection.execute("BEGIN IMMEDIATE")
                 existing = connection.execute(
                     "SELECT content_hash, payload_json FROM immutable_records WHERE kind=? AND record_key=?",
@@ -661,6 +662,8 @@ def _fsync_file(path: Path) -> None:
 
 
 def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
     descriptor = os.open(path, os.O_RDONLY)
     try:
         os.fsync(descriptor)
@@ -686,7 +689,7 @@ def _remove_sqlite_sidecars(path: Path) -> None:
 
 def _checkpoint_wal(path: Path) -> None:
     try:
-        with sqlite3.connect(path) as connection:
+        with closing(sqlite3.connect(path)) as connection:
             result = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
     except sqlite3.Error as exc:
         raise HistoryControlError("history control WAL checkpoint failed") from exc

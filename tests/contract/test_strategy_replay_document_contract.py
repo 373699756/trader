@@ -105,7 +105,7 @@ def test_strategy_replay_document_records_the_stage_a_b_gates_and_atomic_trainin
 
     for required in (
         "history_maintenance_status",
-        "history_monthly_archive_pending",
+        "history_sync_pending",
         "history-daily-capability",
         "Tushare 120 积分",
         "raw 3/3",
@@ -213,6 +213,10 @@ def test_strategy_replay_document_has_an_executable_maintenance_and_reminder_pla
         "SQLiteHistoryControlRepository",
         "HistoryMaintenanceLock",
         "HistoryDiskRequirement",
+        "阶段 C（已完成）",
+        "SQLiteHistoryMonthPartitionRepository",
+        "SQLiteHistoryMonthlyArchive",
+        "SQLiteHistoryTrainingCache",
         "阶段 G",
     ):
         assert required in plan

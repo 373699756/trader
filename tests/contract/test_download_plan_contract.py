@@ -73,8 +73,8 @@ def test_current_training_task_uses_the_reviewed_zero_argument_history_prerequis
     for required in (
         "第 12.7 节阶段 A–G",
         "阶段 A 已完成",
-        "阶段 B 已完成",
-        "下一完整实施切片为阶段 C",
+        "阶段 C 已完成",
+        "下一完整实施切片为阶段 D",
         "高效日更来源保持阻塞",
     ):
         assert required in work

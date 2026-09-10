@@ -37,7 +37,7 @@ def _universe(source: HistorySourceIdentity) -> HistoryUniverseIdentity:
     return HistoryUniverseIdentity(
         (
             HistorySecurityIdentity("600001", "浦发银行", "main", date(1999, 11, 10), None),
-            HistorySecurityIdentity("300001", "特锐德", "growth", date(2009, 10, 30), None),
+            HistorySecurityIdentity("300001", "特锐德", "chinext", date(2009, 10, 30), None),
         ),
         source.content_hash,
     )

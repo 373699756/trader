@@ -36,10 +36,10 @@ class HistoryMaintenanceStatus:
 
 
 def blocked_history_maintenance_status() -> HistoryMaintenanceStatus:
-    """Fail closed until the monthly archive read/write plane is implemented."""
+    """Fail closed until the zero-argument synchronization workflow is implemented."""
     return HistoryMaintenanceStatus(
         state="blocked",
-        reason="history_monthly_archive_pending",
+        reason="history_sync_pending",
         archive_root=Path("data/history/baostock"),
         selected_baseline_source="baostock",
         efficient_daily_source=None,
