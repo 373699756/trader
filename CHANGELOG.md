@@ -35,7 +35,8 @@ All notable changes to this project are documented here.
   update 只请求未完成 raw/qfq/isST，raw 同请求保存 isST，行业只接收真实 `updateDate`；增量经 FULL synchronous、
   WAL checkpoint、完整性/整文件 hash 校验后才原子切换 active manifest。Fixed: 同 key 同内容重放幂等，不同内容、
   父 hash 漂移、损坏或中断失败关闭；供应商失败保留可重试 checkpoint，黑名单错误立即停止，上一 active 与父
-  归档保持不变。Verification: active/increment 领域、持久化、恢复、冲突、计划消费、请求去重、CLI、既有下载
+  归档保持不变；真实运行发现供应商在 001239 上市首日对 qfq 请求返回未复权身份，现保留其余合法 qfq，仅将该键标为
+  `supplier_adjustment_unavailable`，不改标伪造。Verification: active/increment 领域、持久化、恢复、冲突、计划消费、请求去重、CLI、既有下载
   runtime、入口与架构定向回归通过；`make format-check`、`make lint`、`make type-check`、稳定源码上的完整
   `make test` 和 `make package` 通过，严格重构债务保持为零。首次全量测试的 Node 10 秒超时定向重跑 0.68 秒通过；
   文件稳定后全量复跑全部通过。

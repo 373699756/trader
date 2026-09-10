@@ -27,6 +27,7 @@ from trader.infra.research.baostock_archive_plan import (
     StockArchivePlan,
 )
 from trader.infra.research.baostock_increment_runtime import (
+    BaoStockIncrementFetch,
     IncrementApplyOptions,
     _BaoStockIncrementSource,
     apply_increment_plan,
@@ -83,8 +84,9 @@ class _Sdk:
 
 
 class _Source:
-    def __init__(self, *, fail_qfq: bool = False) -> None:
+    def __init__(self, *, fail_qfq: bool = False, unavailable_qfq: bool = False) -> None:
         self.fail_qfq = fail_qfq
+        self.unavailable_qfq = unavailable_qfq
         self.calls: list[tuple[str, BaoStockArchiveFieldFamily, tuple[date, ...]]] = []
 
     def fetch_daily(
@@ -92,14 +94,20 @@ class _Source:
         code: str,
         family: BaoStockArchiveFieldFamily,
         dates: tuple[date, ...],
-    ) -> tuple[BaoStockIncrementRecord, ...]:
+    ) -> BaoStockIncrementFetch:
         self.calls.append((code, family, dates))
         if family == "daily_qfq" and self.fail_qfq:
             raise RuntimeError("qfq_query_failed")
+        if family == "daily_qfq" and self.unavailable_qfq:
+            return BaoStockIncrementFetch(
+                (),
+                tuple(BaoStockArchiveRecordKey(code, day, family) for day in dates),
+                "supplier_adjustment_unavailable",
+            )
         records = [_record(code, day, family) for day in dates]
         if family == "daily_raw":
             records.extend(_record(code, day, "is_st") for day in dates)
-        return tuple(records)
+        return BaoStockIncrementFetch(tuple(records))
 
     def fetch_industry(
         self,
@@ -262,10 +270,26 @@ def test_increment_failure_keeps_active_pointer_and_retry_skips_completed_raw(tm
 def test_increment_supplier_accepts_negative_price_change_and_reuses_raw_is_st() -> None:
     source = _BaoStockIncrementSource(_Sdk())
 
-    records = source.fetch_daily("600001", "daily_raw", (date(2026, 9, 1),))
+    result = source.fetch_daily("600001", "daily_raw", (date(2026, 9, 1),))
 
-    assert tuple(item.key.family for item in records) == ("daily_raw", "is_st")
-    assert '"pct_change":-0.1' in records[0].payload_json
+    assert tuple(item.key.family for item in result.records) == ("daily_raw", "is_st")
+    assert '"pct_change":-0.1' in result.records[0].payload_json
+
+
+def test_deterministic_supplier_adjustment_gap_publishes_degraded_active_manifest(tmp_path: Path) -> None:
+    plan, archive = _archive(tmp_path)
+
+    status = apply_increment_plan(
+        plan,
+        archive,
+        archive.resume_writer(),
+        _Source(unavailable_qfq=True),
+        IncrementApplyOptions(sessions=2000),
+    )
+
+    assert status.state == "completed_with_failures"
+    assert status.failure_reasons == ("supplier_adjustment_unavailable",)
+    assert archive.verify().content_hash == status.manifest_hash
 
 
 def test_parent_integrity_is_verified_once_before_worker_retries(

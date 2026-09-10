@@ -17,6 +17,7 @@ from trader.application.ports.scheduler import (
     ResearchIntent,
     ResearchRuntimeStatus,
     SharedDeepSeekRuntimeContract,
+    TradingCalendarUnavailableError,
 )
 from trader.application.runtime.cadence import (
     CadencePlanner,
@@ -715,6 +716,94 @@ class Settlement:
 
     def settle(self, at: datetime) -> None:
         self.calls.append(at)
+
+
+def test_calendar_failure_fails_closed_with_backoff_and_observable_recovery() -> None:
+    observed_at = datetime(2026, 8, 11, 10, 0, tzinfo=SHANGHAI)
+    clock = FixedClock(observed_at)
+    data = DataRefresh()
+    freezes = Freezes()
+
+    class RecoveringCalendar:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def is_trading_day(self, _day: date) -> bool:
+            self.calls += 1
+            if self.calls < 3:
+                raise TradingCalendarUnavailableError("provider timeout")
+            return True
+
+    calendar = RecoveringCalendar()
+    runtime = SchedulerRuntime(
+        RuntimeDependencies(
+            clock=clock,
+            calendar=calendar,
+            cadence=_cadence(observed_at),
+            data=data,
+            decisions=Decisions(),
+            reviews=SharedReviews(),
+            index=UnifiedDecisionIndex(),
+            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-calendar-observer"),
+            freezes=freezes,
+            settlement=Settlement(),
+            research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
+            publish_overlay=lambda _overlay: None,
+        ),
+        config_version="runtime-current",
+    )
+
+    runtime.start()
+    try:
+        assert runtime.submit_due(observed_at) == 30.0
+        failed = runtime.status()
+        assert failed.calendar.state == "unavailable"
+        assert failed.calendar.trade_date == observed_at.date()
+        assert failed.calendar.is_trading_day is None
+        assert failed.calendar.consecutive_failure_count == 1
+        assert failed.calendar.next_retry_at == observed_at + timedelta(seconds=30)
+        assert failed.last_error_code == "calendar:calendar_unavailable"
+        assert data.task_requests == []
+        assert freezes.calls == []
+
+        class StatusReviewer:
+            @staticmethod
+            def status():
+                return {"status": "ready", "budget": {"limit": 168, "used": 0, "remaining": 168}}
+
+        payload = runtime_status(runtime, StatusReviewer(), lambda: {})  # type: ignore[arg-type]
+        assert payload["health"] == {"level": "degraded", "issue_count": 1}
+        assert payload["scheduler"]["calendar"] == {  # type: ignore[index]
+            "state": "unavailable",
+            "trade_date": observed_at.date().isoformat(),
+            "is_trading_day": None,
+            "consecutive_failure_count": 1,
+            "next_retry_at": (observed_at + timedelta(seconds=30)).isoformat(),
+        }
+
+        clock.current = observed_at + timedelta(seconds=10)
+        assert runtime.submit_due(clock.current) == 20.0
+        assert calendar.calls == 1
+        assert data.task_requests == []
+
+        clock.current = observed_at + timedelta(seconds=30)
+        assert runtime.submit_due(clock.current) == 60.0
+        assert calendar.calls == 2
+        assert runtime.status().calendar.next_retry_at == observed_at + timedelta(seconds=90)
+
+        clock.current = observed_at + timedelta(seconds=90)
+        runtime.submit_due(clock.current)
+        recovered = runtime.status()
+        assert calendar.calls == 3
+        assert recovered.calendar.state == "ready"
+        assert recovered.calendar.is_trading_day is True
+        assert recovered.calendar.consecutive_failure_count == 0
+        assert recovered.calendar.next_retry_at is None
+        assert recovered.last_error_code == ""
+        assert recovered.recent_errors[0].recovery_status == "recovered"
+    finally:
+        runtime.stop(ShutdownDeadline.start(2.0))
 
 
 def test_periodic_tick_does_not_score_until_a_scoring_input_finishes() -> None:

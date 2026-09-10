@@ -8,7 +8,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from datetime import time as wall_time
 from typing import Literal, cast
 
@@ -37,6 +37,7 @@ from trader.application.ports.scheduler import (
     SettlementPort,
     SettlementUnavailableError,
     SharedDeepSeekRuntimeContract,
+    TradingCalendarUnavailableError,
     TradingCalendarPort,
 )
 from trader.application.research.research_audit import DecisionObservation
@@ -99,6 +100,7 @@ _SCORING_INPUT_TASKS = frozenset(
         PipelineTask.STOCK_RISK,
     }
 )
+_CALENDAR_RETRY_DELAYS_SECONDS = (30.0, 60.0, 120.0, 300.0)
 
 
 @dataclass(frozen=True)
@@ -123,6 +125,15 @@ class RuntimeDependencies:
 class _HybridUpgradeRequest:
     local: ScoredDecision
     cycle: CycleRequest
+
+
+@dataclass(frozen=True)
+class TradingCalendarRuntimeStatus:
+    state: Literal["unknown", "ready", "unavailable"]
+    trade_date: date | None
+    is_trading_day: bool | None
+    consecutive_failure_count: int
+    next_retry_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -157,6 +168,13 @@ class SchedulerRuntimeStatus:
     strategy_error_codes: tuple[tuple[str, str], ...]
     recent_errors: tuple[RuntimeIssue, ...]
     input_quality: tuple[InputQualityStatus, ...]
+    calendar: TradingCalendarRuntimeStatus = TradingCalendarRuntimeStatus(
+        state="unknown",
+        trade_date=None,
+        is_trading_day=None,
+        consecutive_failure_count=0,
+        next_retry_at=None,
+    )
 
 
 class SchedulerRuntime:
@@ -252,6 +270,11 @@ class SchedulerRuntime:
         self._settlement_failure_count = 0
         self._issues = RuntimeIssueRegistry()
         self._midday_long_handoff_date: date | None = None
+        self._calendar_state: Literal["unknown", "ready", "unavailable"] = "unknown"
+        self._calendar_trade_date: date | None = None
+        self._calendar_is_trading_day: bool | None = None
+        self._calendar_consecutive_failure_count = 0
+        self._calendar_next_retry_at: datetime | None = None
 
     def start(self) -> bool:
         with self._lock:
@@ -311,7 +334,11 @@ class SchedulerRuntime:
             if not self._running:
                 return 30.0
         observed_at = shanghai_now(at or self._dependencies.clock.now())
-        is_trading_day = self._dependencies.calendar.is_trading_day(observed_at.date())
+        is_trading_day, retry_delay = self._calendar_decision(observed_at)
+        if is_trading_day is None:
+            with self._lock:
+                self._phase = MarketPhase.CLOSED
+            return retry_delay
         batch = self._dependencies.cadence.plan(observed_at, is_trading_day=is_trading_day)
         with self._lock:
             self._phase = (
@@ -330,6 +357,46 @@ class SchedulerRuntime:
         except (RuntimeError, TypeError, ValueError) as exc:
             self._record_failure("research", _failure_code(exc, "research_offer_failed"), None)
         return batch.next_delay_seconds
+
+    def _calendar_decision(self, observed_at: datetime) -> tuple[bool | None, float]:
+        trade_date = observed_at.date()
+        with self._lock:
+            if self._calendar_trade_date != trade_date:
+                self._calendar_state = "unknown"
+                self._calendar_trade_date = trade_date
+                self._calendar_is_trading_day = None
+                self._calendar_consecutive_failure_count = 0
+                self._calendar_next_retry_at = None
+            next_retry_at = self._calendar_next_retry_at
+            if next_retry_at is not None and observed_at < next_retry_at:
+                return None, max(0.05, (next_retry_at - observed_at).total_seconds())
+        try:
+            is_trading_day = self._dependencies.calendar.is_trading_day(trade_date)
+        except TradingCalendarUnavailableError:
+            with self._lock:
+                retry_index = min(
+                    self._calendar_consecutive_failure_count,
+                    len(_CALENDAR_RETRY_DELAYS_SECONDS) - 1,
+                )
+                retry_delay = _CALENDAR_RETRY_DELAYS_SECONDS[retry_index]
+                self._calendar_state = "unavailable"
+                self._calendar_is_trading_day = None
+                self._calendar_consecutive_failure_count += 1
+                self._calendar_next_retry_at = observed_at + timedelta(seconds=retry_delay)
+                self._issues.record(
+                    "calendar:calendar_unavailable",
+                    "calendar",
+                    None,
+                    observed_at,
+                )
+            return None, retry_delay
+        with self._lock:
+            self._calendar_state = "ready"
+            self._calendar_is_trading_day = is_trading_day
+            self._calendar_consecutive_failure_count = 0
+            self._calendar_next_retry_at = None
+            self._issues.resolve(observed_at, stages=frozenset({"calendar"}))
+        return is_trading_day, 0.0
 
     def _dispatch_pipeline_task(self, scheduled: ScheduledPipelineTask) -> None:
         completed_immediately = False
@@ -598,6 +665,13 @@ class SchedulerRuntime:
                 strategy_error_codes=issues.strategy_error_codes,
                 recent_errors=issues.recent_errors,
                 input_quality=self._dependencies.decisions.input_quality_status(),
+                calendar=TradingCalendarRuntimeStatus(
+                    state=self._calendar_state,
+                    trade_date=self._calendar_trade_date,
+                    is_trading_day=self._calendar_is_trading_day,
+                    consecutive_failure_count=self._calendar_consecutive_failure_count,
+                    next_retry_at=self._calendar_next_retry_at,
+                ),
             )
 
     def _scheduled_request(self, strategy: Strategy, observed_at: datetime, phase: str) -> CycleRequest:

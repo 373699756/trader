@@ -162,6 +162,10 @@ class SettlementUnavailableError(RuntimeError):
     """Background settlement failed without changing current decisions."""
 
 
+class TradingCalendarUnavailableError(RuntimeError):
+    """The trading session cannot be trusted until the calendar recovers."""
+
+
 class TradingCalendarPort(Protocol):
     def is_trading_day(self, day: date) -> bool: ...
 
@@ -283,5 +287,6 @@ __all__ = [
     "ResearchRuntimeStatus",
     "SettlementPort",
     "SettlementUnavailableError",
+    "TradingCalendarUnavailableError",
     "TradingCalendarPort",
 ]

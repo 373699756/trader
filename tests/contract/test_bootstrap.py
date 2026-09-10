@@ -20,6 +20,7 @@ from trader.application.runtime.cadence import (
     SchedulePointStatus,
 )
 from trader.application.runtime.schedule import SchedulePoint
+from trader.application.runtime.scheduler_runtime import TradingCalendarRuntimeStatus
 from trader.bootstrap import (
     _initialize_reference_data_plane,
     _initialize_research_trace,
@@ -256,6 +257,13 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
         settlement_failure_count=0,
         last_error_code="",
         input_quality=(),
+        calendar=TradingCalendarRuntimeStatus(
+            state="unknown",
+            trade_date=None,
+            is_trading_day=None,
+            consecutive_failure_count=0,
+            next_retry_at=None,
+        ),
     )
     reviewer = Mock()
     reviewer.status.return_value = {
@@ -284,6 +292,13 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
     assert payload["scheduler"]["overlay_failure_count"] == 0
     assert payload["scheduler"]["hybrid_lanes"] == []
     assert payload["scheduler"]["cadence"]["started_at"] is None
+    assert payload["scheduler"]["calendar"] == {
+        "state": "unknown",
+        "trade_date": None,
+        "is_trading_day": None,
+        "consecutive_failure_count": 0,
+        "next_retry_at": None,
+    }
     assert payload["scheduler"]["cadence"]["schedule_points"] == [
         {
             "trade_date": "2026-08-31",

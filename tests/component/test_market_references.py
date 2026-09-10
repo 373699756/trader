@@ -926,10 +926,15 @@ def test_calendar_uses_cache_and_fails_closed(tmp_path) -> None:
 def test_calendar_fetch_timeout_is_bounded(tmp_path) -> None:
     release = threading.Event()
     started = threading.Event()
+    completed = threading.Event()
+    calls = 0
 
     def slow_fetcher():
+        nonlocal calls
+        calls += 1
         started.set()
         release.wait(1.0)
+        completed.set()
         return (date(2026, 7, 16),)
 
     calendar = ChinaTradingCalendar(
@@ -942,11 +947,16 @@ def test_calendar_fetch_timeout_is_bounded(tmp_path) -> None:
     try:
         with pytest.raises(TradingCalendarUnavailableError, match="timed out"):
             calendar.is_trading_day(date(2026, 7, 16))
+        with pytest.raises(TradingCalendarUnavailableError, match="timed out"):
+            calendar.is_trading_day(date(2026, 7, 16))
     finally:
         release.set()
 
     assert started.is_set()
     assert time.monotonic() - began < 0.5
+    assert completed.wait(1.0)
+    assert calendar.is_trading_day(date(2026, 7, 16)) is True
+    assert calls == 1
 
 
 def test_equal_quote_version_can_gain_new_tushare_board_metadata_from_cache_hit() -> None:

@@ -10,11 +10,9 @@ from collections.abc import Callable, Iterable
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from trader.application.ports.scheduler import TradingCalendarUnavailableError
+
 CalendarFetcher = Callable[[], Iterable[date]]
-
-
-class TradingCalendarUnavailableError(RuntimeError):
-    pass
 
 
 class ChinaTradingCalendar:
@@ -37,6 +35,10 @@ class ChinaTradingCalendar:
         self._dates: frozenset[date] = frozenset()
         self._fetched_at: datetime | None = None
         self._load_lock = threading.Lock()
+        self._fetch_thread: threading.Thread | None = None
+        self._fetch_completed: threading.Event | None = None
+        self._fetch_result: frozenset[date] | None = None
+        self._fetch_error: BaseException | None = None
 
     def is_trading_day(self, day: date) -> bool:
         self._ensure_loaded()
@@ -81,24 +83,36 @@ class ChinaTradingCalendar:
             self._save_cache()
 
     def _fetch_with_timeout(self) -> frozenset[date]:
-        result: list[frozenset[date]] = []
-        error: list[BaseException] = []
-        completed = threading.Event()
+        if self._fetch_thread is None:
+            completed = threading.Event()
+            self._fetch_completed = completed
+            self._fetch_result = None
+            self._fetch_error = None
 
-        def fetch() -> None:
-            try:
-                result.append(frozenset(self._fetcher()))
-            except BaseException as exc:
-                error.append(exc)
-            finally:
-                completed.set()
+            def fetch() -> None:
+                try:
+                    self._fetch_result = frozenset(self._fetcher())
+                except BaseException as exc:
+                    self._fetch_error = exc
+                finally:
+                    completed.set()
 
-        threading.Thread(target=fetch, name="trading-calendar-fetch", daemon=True).start()
+            self._fetch_thread = threading.Thread(target=fetch, name="trading-calendar-fetch", daemon=True)
+            self._fetch_thread.start()
+        completed = self._fetch_completed
+        if completed is None:
+            raise TradingCalendarUnavailableError("trading calendar fetch state is unavailable")
         if not completed.wait(self._fetch_timeout_seconds):
             raise TradingCalendarUnavailableError("trading calendar fetch timed out")
-        if error:
-            raise TradingCalendarUnavailableError(f"cannot refresh trading calendar: {error[0]}") from error[0]
-        return result[0] if result else frozenset()
+        result = self._fetch_result
+        error = self._fetch_error
+        self._fetch_thread = None
+        self._fetch_completed = None
+        self._fetch_result = None
+        self._fetch_error = None
+        if error is not None:
+            raise TradingCalendarUnavailableError(f"cannot refresh trading calendar: {error}") from error
+        return result or frozenset()
 
     def _load_cache(self) -> None:
         try:

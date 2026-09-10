@@ -62,7 +62,7 @@ class BaoStockIncrementSourcePort(Protocol):
         code: str,
         family: BaoStockArchiveFieldFamily,
         dates: tuple[date, ...],
-    ) -> tuple[BaoStockIncrementRecord, ...]: ...
+    ) -> BaoStockIncrementFetch: ...
 
     def fetch_industry(
         self,
@@ -105,6 +105,23 @@ class IncrementApplyOptions:
     retries: int = 2
     cancel_requested: Callable[[], bool] = lambda: False
     report: Callable[[BaoStockRuntimeProgress], None] = lambda _value: None
+
+
+@dataclass(frozen=True)
+class BaoStockIncrementFetch:
+    records: tuple[BaoStockIncrementRecord, ...]
+    unavailable_keys: tuple[BaoStockArchiveRecordKey, ...] = ()
+    unavailable_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        unavailable = tuple(sorted(self.unavailable_keys))
+        if bool(unavailable) != (self.unavailable_reason is not None):
+            raise ValueError("BaoStock increment unavailable result is invalid")
+        if self.unavailable_reason not in {None, "supplier_adjustment_unavailable"}:
+            raise ValueError("BaoStock increment unavailable reason is invalid")
+        if len(set(unavailable)) != len(unavailable):
+            raise ValueError("BaoStock increment unavailable keys are duplicated")
+        object.__setattr__(self, "unavailable_keys", unavailable)
 
 
 def run_baostock_increment_update(
@@ -273,10 +290,12 @@ class _PlanExecutor:
             self._report(stock.code)
         self._apply_industry()
         incomplete = self._incomplete_codes()
-        if incomplete:
+        if incomplete and not self._only_deterministic_gaps(incomplete):
             return self._incomplete_status(incomplete)
         coverage = _field_coverage(self._plan, self._writer)
         active = self._archive.publish(self._writer, coverage)
+        if incomplete or self._failure_reasons:
+            return self._incomplete_status(incomplete, manifest_hash=active.content_hash)
         return BaoStockRuntimeStatus(
             state="completed",
             sessions=self._options.sessions,
@@ -308,12 +327,15 @@ class _PlanExecutor:
         keys = tuple(BaoStockArchiveRecordKey(code, day, family) for day in dates)
         for attempt in range(self._options.retries + 1):
             try:
-                records = self._source.fetch_daily(code, family, dates)
-                _save_complete_response(self._writer, keys, records, family=family)
+                result = self._source.fetch_daily(code, family, dates)
+                _save_fetch_response(self._writer, keys, result, family=family)
                 self._downloaded_records = min(
                     self._expected_records,
-                    self._downloaded_records + len(records),
+                    self._downloaded_records + len(result.records),
                 )
+                if result.unavailable_reason is not None:
+                    self._failure_reasons.add(result.unavailable_reason)
+                    self._failed_codes.add(code)
                 return
             except BaoStockActiveArchiveConflictError:
                 raise
@@ -371,6 +393,14 @@ class _PlanExecutor:
             if any(not self._writer.completed(key) for key in keys)
         }
 
+    def _only_deterministic_gaps(self, incomplete: set[str]) -> bool:
+        return all(
+            self._writer.checkpoint(key).error_code == "supplier_adjustment_unavailable"
+            for code in incomplete
+            for key in self._required_by_code[code]
+            if not self._writer.completed(key)
+        )
+
     def _cancelled(self) -> BaoStockRuntimeStatus:
         return BaoStockRuntimeStatus(
             state="cancelled",
@@ -391,13 +421,14 @@ class _PlanExecutor:
             failure_reasons=("supplier_query_failed_blacklisted",),
         )
 
-    def _incomplete_status(self, incomplete: set[str]) -> BaoStockRuntimeStatus:
+    def _incomplete_status(self, incomplete: set[str], *, manifest_hash: str = "") -> BaoStockRuntimeStatus:
         return BaoStockRuntimeStatus(
             state="completed_with_failures",
             sessions=self._options.sessions,
             universe_count=self._plan.universe_count,
             completed_codes=self._plan.universe_count - len(incomplete),
             failed_codes=len(incomplete),
+            manifest_hash=manifest_hash,
             failure_reasons=tuple(sorted(self._failure_reasons or {"increment_required_field_missing"})),
         )
 
@@ -411,7 +442,7 @@ class _BaoStockIncrementSource:
         code: str,
         family: BaoStockArchiveFieldFamily,
         dates: tuple[date, ...],
-    ) -> tuple[BaoStockIncrementRecord, ...]:
+    ) -> BaoStockIncrementFetch:
         if family not in ("daily_raw", "daily_qfq", "is_st") or not dates:
             raise ValueError("BaoStock increment daily request is invalid")
         source_code = ("sh." if code.startswith("6") else "sz.") + code
@@ -420,6 +451,7 @@ class _BaoStockIncrementSource:
         expected = frozenset(dates)
         records: list[BaoStockIncrementRecord] = []
         observed: set[date] = set()
+        unavailable: set[date] = set()
         windows = qfq_source_windows(source_code, dates) if family == "daily_qfq" else ((source_code, dates),)
         for query_code, query_dates in windows:
             rows = _rows(
@@ -437,13 +469,9 @@ class _BaoStockIncrementSource:
                 day = date.fromisoformat(_required(row, "date"))
                 if day not in expected:
                     continue
-                if (
-                    row.get("code") != query_code
-                    or row.get("tradestatus") not in {"0", "1"}
-                    or family != "is_st"
-                    and row.get("adjustflag") != adjustment
-                ):
-                    raise ValueError("BaoStock increment row identity is invalid")
+                if _qfq_adjustment_unavailable(row, query_code, family, adjustment):
+                    unavailable.add(day)
+                    continue
                 if day in observed:
                     raise ValueError("BaoStock increment response contains duplicate dates")
                 observed.add(day)
@@ -453,9 +481,14 @@ class _BaoStockIncrementSource:
                 records.append(_daily_record(code, day, family, row))
                 if family == "daily_raw":
                     records.append(_record(code, day, "is_st", {"is_st": _flag(row.get("isST"))}))
-        if observed != expected:
-            raise ValueError("BaoStock increment response is incomplete")
-        return tuple(records)
+        if observed | unavailable != expected:
+            raise RuntimeError("supplier_response_incomplete")
+        unavailable_keys = tuple(BaoStockArchiveRecordKey(code, day, family) for day in unavailable)
+        return BaoStockIncrementFetch(
+            tuple(records),
+            unavailable_keys,
+            "supplier_adjustment_unavailable" if unavailable_keys else None,
+        )
 
     def fetch_industry(
         self,
@@ -497,6 +530,21 @@ class _BaoStockIncrementSource:
             identities[key] = record
         records.extend(identities.values())
         return tuple(sorted(records, key=lambda item: item.key))
+
+
+def _qfq_adjustment_unavailable(
+    row: dict[str, str],
+    query_code: str,
+    family: BaoStockArchiveFieldFamily,
+    adjustment: str,
+) -> bool:
+    if row.get("code") != query_code or row.get("tradestatus") not in {"0", "1"}:
+        raise ValueError("BaoStock increment row identity is invalid")
+    if family == "is_st" or row.get("adjustflag") == adjustment:
+        return False
+    if family == "daily_qfq" and row.get("adjustflag") == "3":
+        return True
+    raise ValueError("BaoStock increment adjustment identity is invalid")
 
 
 class _IncrementSdk(Protocol):
@@ -647,21 +695,28 @@ def _required_keys(stock: StockArchivePlan) -> set[BaoStockArchiveRecordKey]:
     return values
 
 
-def _save_complete_response(
+def _save_fetch_response(
     writer: BaoStockIncrementWriter,
     required: tuple[BaoStockArchiveRecordKey, ...],
-    records: tuple[BaoStockIncrementRecord, ...],
+    result: BaoStockIncrementFetch,
     *,
     family: BaoStockArchiveFieldFamily,
 ) -> None:
-    for record in records:
+    required_set = set(required)
+    if any(key not in required_set for key in result.unavailable_keys):
+        raise ValueError("BaoStock increment unavailable key was not requested")
+    for record in result.records:
         writer.save(record)
+    if result.unavailable_reason is not None:
+        for key in result.unavailable_keys:
+            writer.record_failure(key, result.unavailable_reason)
     if family == "daily_raw":
         expected = {*required, *(BaoStockArchiveRecordKey(item.code, item.trade_date, "is_st") for item in required)}
     else:
         expected = set(required)
-    if any(not writer.completed(key) for key in expected):
-        raise ValueError("BaoStock increment response did not complete every requested key")
+    unavailable = set(result.unavailable_keys)
+    if any(not writer.completed(key) and key not in unavailable for key in expected):
+        raise RuntimeError("supplier_response_incomplete")
 
 
 def _field_coverage(
@@ -795,6 +850,7 @@ def _bounded_failure_code(exc: Exception) -> str:
 
 __all__ = [
     "BaoStockIncrementSourcePort",
+    "BaoStockIncrementFetch",
     "IncrementApplyOptions",
     "apply_increment_plan",
     "run_baostock_increment_update",

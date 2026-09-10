@@ -73,6 +73,15 @@ def runtime_status(
             "hybrid_lanes": [asdict(lane) for lane in status.hybrid_lanes],
             "task_lanes": [asdict(lane) for lane in status.task_lanes],
             "cadence": _cadence_payload(status.cadence),
+            "calendar": {
+                "state": status.calendar.state,
+                "trade_date": status.calendar.trade_date.isoformat() if status.calendar.trade_date is not None else None,
+                "is_trading_day": status.calendar.is_trading_day,
+                "consecutive_failure_count": status.calendar.consecutive_failure_count,
+                "next_retry_at": (
+                    status.calendar.next_retry_at.isoformat() if status.calendar.next_retry_at is not None else None
+                ),
+            },
             "control": {
                 "running": status.control_running,
                 "inflight": status.control_inflight,
