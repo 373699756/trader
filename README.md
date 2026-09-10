@@ -59,6 +59,17 @@ BaoStock 下载是独立研究命令，必须先安装 `trader-research-dashboar
 重构控制库与月分片读取面已经交付，同步尚未接通期间，命令返回 `history_sync_pending` 且不联网、不写
 `data/history`；它不会被启动、`check`、Web 或 `train-tomorrow` 隐式调用。
 
+如工作机仍有封存的旧父/增量归档，可运行一次性、带进度的低资源转换；默认补下载可证明的
+`raw/qfq/is_st` 缺口，完全离线时追加 `--offline`：
+
+```bash
+.venv/bin/python scripts/convert_baostock_history.py
+.venv/bin/python scripts/convert_baostock_history.py --offline
+```
+
+脚本默认从 `data/history/baostock-daily/sessions-2000` 旁路生成 `data/history/baostock`，不会删除或改写旧源；
+它是显式运维桥接，不会解除零参数 `download_history` 当前的 `history_sync_pending`。
+
 启动脚本只读取 `TRADER_HOST` 和 `TRADER_PORT`；旧 `HOST`/`PORT` 不再映射到 当前进程。
 
 ## 荐股漏斗诊断

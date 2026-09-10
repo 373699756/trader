@@ -6,6 +6,26 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求把现有 `data/history/baostock-daily` 历史转换为当前月分片合同，显示转换进度、下载补充缺字段，且
+  限制资源避免个人 PC 卡死。根因确认：工作机实际仍有 92 个父分片和 92 个增量分片，旧归档约 908.5 万父行、
+  26.45 万增量记录；活动产品已切断旧 codec，阶段 C 月库又采用独立内容行与同步观察表，直接复用旧目录或再建
+  一套控制/schema 都会破坏当前合同。Added: 新增显式一次性 `scripts/convert_baostock_history.py`，只读校验旧
+  manifest/SQLite/hash，逐月流式写入正式月库 schema，以独立进度库续传并在全部完整后用
+  `SQLiteHistoryControlRepository` 原子发布；标准错误持续显示源校验、当前月份/请求、百分比、计数与耗时。
+  新增单个受控 BaoStock SDK 子进程，只按代码/字段合并补下载 `raw/qfq/is_st` 空洞，固定至少 2 秒请求间隔、
+  60 秒调用超时、最多 2 次重试和 10 秒终止上限；`--offline` 可禁止联网。Changed: 转换默认批量 256、SQLite
+  单连接缓存 8 MiB、`threads=1`、禁用 mmap、每批/哈希块让步 5 ms、POSIX nice +10，磁盘额外保留 2048 MiB；
+  只转换活动滚动 2000 日，校验父/增量/active manifest 身份链，拒绝并保留不属于本次转换的旁路目录；所有
+  SQLite 连接显式关闭，供应商子进程逐请求核对返回顺序与完整身份集合；
+  README 与权威文档同步恢复“封存旧归档仍存在”的真实现状，并明确一次性脚本不解除阶段 D blocker。
+  Verification: 18 项转换/补缺/文档直接测试、10 项正式 control/月库边界测试及 27 项架构契约，共 55 项通过；
+  受影响文件 Ruff、format、mypy 及 `--help` 冒烟通过。真实旧归档只读预检确认截止 2026-09-09、2000 日、5453 只证券及
+  209 行可下载 qfq 缺口；A–G 大任务全量门禁仍按计划留到阶段 G 统一执行。
+  Residual Risks: 未执行约 9 GiB 的真实全量转换，也未发起真实 BaoStock 补缺请求；约 909.7 万资格/硬过滤/
+  风险事实与 15.1 万行业缺口缺少历史 `effective_at/published_at`，继续标记 `data_incomplete`，不得伪造回填；
+  公开零参数 `download_history` 仍为 `history_sync_pending`，日常同步仍属于阶段 D。
+  `Regression-Key: legacy-history-monthly-conversion`。
+
 - 用户要求继续 `04_策略回溯.md` 的下一完整未完成任务，并延续新增命名不得使用泛化存储术语的约束。根因确认：
   阶段 B 只有控制库，活动源码仍无目标 `partitions/YYYY/MM.sqlite3` schema、revision 选择、snapshot 日期路由、
   61 个实际交易日滚动读取或按日训练缓存，旧父归档加增量链不符合已确认架构。Added: 新增不可变

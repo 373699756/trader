@@ -1,0 +1,1985 @@
+#!/usr/bin/env python3
+"""Convert the sealed BaoStock parent/increment archive into monthly SQLite shards.
+
+The converter is deliberately an offline, single-process tool. It reads the
+legacy archive without writing it, builds one month at a time in a resumable
+sibling staging directory, and publishes the target directory with one rename.
+"""
+
+from __future__ import annotations
+
+import argparse
+import bisect
+import errno
+import hashlib
+import json
+import os
+import shutil
+import signal
+import sqlite3
+import sys
+import time
+from collections.abc import Sequence
+from contextlib import AbstractContextManager, closing
+from dataclasses import dataclass, replace
+from datetime import date, datetime, time as datetime_time
+from pathlib import Path
+from typing import Any, Callable, Literal, cast
+from zoneinfo import ZoneInfo
+
+from trader.domain.research.history_control import (
+    HistoryActiveSnapshot,
+    HistoryCalendarIdentity,
+    HistorySecurityBoard,
+    HistorySecurityIdentity,
+    HistorySnapshotPartition,
+    HistorySourceIdentity,
+    HistorySyncCheckpoint,
+    HistoryTrainingDueState,
+    HistoryUniverseIdentity,
+)
+from trader.domain.research.history_monthly import HistoryMonthlyRevision
+from trader.infra.research.baostock_gap_supplier import (
+    BaoStockGapFamily,
+    BaoStockGapRequest,
+    BaoStockGapResult,
+    BaoStockGapSupplierError,
+    fetch_baostock_gaps,
+)
+from trader.infra.research.history_control_repository import HistoryControlError, SQLiteHistoryControlRepository
+from trader.infra.research.history_month_codec import (
+    decode_history_monthly_revision,
+    encode_history_monthly_revision,
+)
+from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
+
+DEFAULT_SOURCE = Path("data/history/baostock-daily/sessions-2000")
+DEFAULT_TARGET = Path("data/history/baostock")
+DEFAULT_BATCH_SIZE = 256
+DEFAULT_CACHE_MIB = 8
+DEFAULT_THROTTLE_MS = 5
+DEFAULT_MINIMUM_FREE_MIB = 2048
+DEFAULT_NICE_INCREMENT = 10
+_HASH_CHUNK_BYTES = 4 * 1024 * 1024
+_PROGRESS_SCHEMA = "baostock_history_conversion_progress"
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+_SOURCE_FAMILIES = frozenset(
+    {"daily_raw", "daily_qfq", "is_st", "industry", "qualification", "hard_filter", "risk_facts"}
+)
+DOWNLOADABLE_FIELD_FAMILIES = frozenset({"daily_raw", "daily_qfq", "is_st"})
+
+
+class ConversionError(RuntimeError):
+    """Raised when conversion cannot safely produce an atomic target."""
+
+
+@dataclass(frozen=True)
+class SourcePartition:
+    relative_path: str
+    path: Path
+    expected_sha256: str
+    expected_rows: int
+    board: str
+
+
+@dataclass(frozen=True)
+class IncrementPartition:
+    relative_path: str
+    path: Path
+    expected_sha256: str
+    expected_rows: int
+
+
+@dataclass(frozen=True)
+class Security:
+    code: str
+    name: str
+    board: str
+    listed_on: str
+    delisted_on: str | None
+    source_version: str
+
+
+@dataclass(frozen=True)
+class IndustryInterval:
+    effective_from: str
+    effective_to: str | None
+    industry: str
+    classification: str
+    content_hash: str
+
+
+@dataclass(frozen=True)
+class SourceArchive:
+    root: Path
+    source_fingerprint: str
+    manifest_file_hash: str
+    active_manifest_file_hash: str
+    parent_manifest_hash: str
+    active_data_hash: str
+    source_identity_hash: str
+    source_cutoff: str
+    sessions: int
+    calendar_dates: tuple[str, ...]
+    securities: tuple[Security, ...]
+    source_versions_json: str
+    parent_partitions: tuple[SourcePartition, ...]
+    increment_partitions: tuple[IncrementPartition, ...]
+    field_coverage: tuple[tuple[str, int, int, int, str | None], ...]
+    production_authority: bool
+    point_in_time_parity: bool
+
+
+@dataclass(frozen=True)
+class DailyRecord:
+    trade_date: str
+    code: str
+    sync_sequence: int
+    board: str
+    status: str
+    raw_payload_json: str | None
+    qfq_payload_json: str | None
+    is_st: int | None
+    industry: str | None
+    industry_classification: str | None
+    raw_content_hash: str | None
+    qfq_content_hash: str | None
+    is_st_content_hash: str | None
+    industry_content_hash: str | None
+    row_hash: str
+
+    @property
+    def revision_id(self) -> str:
+        return self.row_hash
+
+
+@dataclass(frozen=True)
+class PartitionResult:
+    year: int
+    month: int
+    relative_path: str
+    database_sha256: str
+    logical_content_hash: str
+    physical_rows: int
+    active_rows: int
+    source_rows: int
+
+
+@dataclass(frozen=True)
+class ConversionSummary:
+    state: str
+    partition_count: int
+    physical_rows: int
+    active_rows: int
+    active_calendar_days: int
+    data_cutoff: str
+    snapshot_hash: str
+    batch_size: int
+    cache_mib: int
+    throttle_ms: int
+    supplemented_rows: int
+    remaining_downloadable_gaps: int
+
+
+ProgressSink = Callable[["ConversionProgress"], None]
+SupplementProvider = Callable[..., BaoStockGapResult]
+
+
+@dataclass(frozen=True)
+class ConversionProgress:
+    phase: str
+    completed: int
+    total: int
+    current: str
+    elapsed_seconds: float
+
+    @property
+    def percentage(self) -> float:
+        return 100.0 if self.total == 0 else min(100.0, self.completed * 100.0 / self.total)
+
+
+class _ProgressTracker:
+    def __init__(self, phase: str, total: int, sink: ProgressSink | None) -> None:
+        self._phase = phase
+        self._total = total
+        self._sink = sink
+        self._completed = 0
+        self._started = time.monotonic()
+        self._last_emitted = 0.0
+        self.emit("-", force=True)
+
+    def advance(self, amount: int, current: str, *, force: bool = False) -> None:
+        self._completed += amount
+        if self._completed > self._total:
+            raise ConversionError("conversion progress exceeded its declared source rows")
+        self.emit(current, force=force or self._completed == self._total)
+
+    def emit(self, current: str, *, force: bool) -> None:
+        now = time.monotonic()
+        if self._sink is None or (not force and now - self._last_emitted < 1.0):
+            return
+        self._sink(ConversionProgress(self._phase, self._completed, self._total, current, now - self._started))
+        self._last_emitted = now
+
+
+class _SourceLock(AbstractContextManager["_SourceLock"]):
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._handle: Any = None
+
+    def __enter__(self) -> _SourceLock:
+        if not self._path.is_file():
+            raise ConversionError("source download lock is missing")
+        self._handle = self._path.open("a+")
+        try:
+            import fcntl
+
+            fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except ImportError as exc:  # pragma: no cover - exercised on non-POSIX hosts
+            self._handle.close()
+            self._handle = None
+            raise ConversionError("source lock is unsupported on this platform") from exc
+        except OSError as exc:
+            self._handle.close()
+            self._handle = None
+            if exc.errno in (errno.EACCES, errno.EAGAIN):
+                raise ConversionError("source download is already running") from exc
+            raise ConversionError("source lock could not be acquired") from exc
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        if self._handle is None:
+            return
+        try:
+            import fcntl
+
+            fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            self._handle.close()
+            self._handle = None
+
+
+class _Cancellation:
+    def __init__(self) -> None:
+        self.requested = False
+        self._previous: dict[int, Any] = {}
+
+    def __enter__(self) -> _Cancellation:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            self._previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, self._request)
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        for signum, handler in self._previous.items():
+            signal.signal(signum, handler)
+
+    def _request(self, _signum: int, _frame: object) -> None:
+        self.requested = True
+
+    def check(self) -> None:
+        if self.requested:
+            raise ConversionError("conversion cancelled; completed months remain resumable")
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def _hash_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _hash_file(path: Path, throttle_seconds: float = 0.0, cancellation: _Cancellation | None = None) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(_HASH_CHUNK_BYTES):
+            digest.update(chunk)
+            if cancellation is not None:
+                cancellation.check()
+            if throttle_seconds > 0:
+                time.sleep(throttle_seconds)
+    return digest.hexdigest()
+
+
+def _load_json(path: Path, label: str) -> dict[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ConversionError(f"{label} is unreadable") from exc
+    if not isinstance(value, dict):
+        raise ConversionError(f"{label} must be a JSON object")
+    return cast(dict[str, object], value)
+
+
+def _string(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ConversionError(f"{label} must be a non-empty string")
+    return value
+
+
+def _integer(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ConversionError(f"{label} must be a non-negative integer")
+    return value
+
+
+def _boolean(value: object, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConversionError(f"{label} must be boolean")
+    return value
+
+
+def _list(value: object, label: str) -> list[object]:
+    if not isinstance(value, list):
+        raise ConversionError(f"{label} must be an array")
+    return cast(list[object], value)
+
+
+def _object(value: object, label: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ConversionError(f"{label} must be an object")
+    return cast(dict[str, object], value)
+
+
+def _safe_child(root: Path, relative: str, label: str) -> Path:
+    candidate = Path(relative)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise ConversionError(f"{label} path is unsafe")
+    resolved = (root / candidate).resolve()
+    if root.resolve() not in resolved.parents:
+        raise ConversionError(f"{label} path escapes its archive")
+    return resolved
+
+
+def _parse_security(raw: object) -> Security:
+    value = _object(raw, "security")
+    delisted = value.get("delisted_on")
+    if delisted is not None and not isinstance(delisted, str):
+        raise ConversionError("security delisted_on must be a date or null")
+    return Security(
+        code=_string(value.get("code"), "security code"),
+        name=_string(value.get("name"), "security name"),
+        board=_string(value.get("board"), "security board"),
+        listed_on=_string(value.get("listed_on"), "security listed_on"),
+        delisted_on=delisted,
+        source_version=_string(value.get("source_version"), "security source_version"),
+    )
+
+
+def _load_context(path: Path) -> tuple[dict[str, object], tuple[str, ...], tuple[Security, ...], str]:
+    try:
+        with closing(sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)) as connection:
+            row = connection.execute(
+                "SELECT spec_json, calendar_json, universe_json, versions_json FROM context WHERE singleton=1"
+            ).fetchone()
+    except sqlite3.DatabaseError as exc:
+        raise ConversionError("parent archive context is unreadable") from exc
+    if row is None:
+        raise ConversionError("parent archive context is missing")
+    try:
+        spec = _object(json.loads(row[0]), "parent spec")
+        calendar = _object(json.loads(row[1]), "parent calendar")
+        securities = tuple(_parse_security(item) for item in _list(json.loads(row[2]), "parent universe"))
+        versions = _canonical_json(_object(json.loads(row[3]), "source versions"))
+        dates = tuple(_string(item, "calendar date") for item in _list(calendar.get("open_dates"), "calendar dates"))
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ConversionError("parent archive context JSON is invalid") from exc
+    if not dates or dates != tuple(sorted(set(dates))):
+        raise ConversionError("parent calendar is empty, duplicated, or unordered")
+    if not securities or len({item.code for item in securities}) != len(securities):
+        raise ConversionError("parent security universe is empty or duplicated")
+    return spec, dates, securities, versions
+
+
+def _parse_parent_partitions(root: Path, manifest: dict[str, object]) -> tuple[SourcePartition, ...]:
+    parsed: list[SourcePartition] = []
+    for item in _list(manifest.get("partitions"), "parent partitions"):
+        value = _object(item, "parent partition")
+        relative = _string(value.get("relative_path"), "parent partition relative_path")
+        parsed.append(
+            SourcePartition(
+                relative_path=relative,
+                path=_safe_child(root, relative, "parent partition"),
+                expected_sha256=_string(value.get("database_sha256"), "parent partition SHA-256"),
+                expected_rows=_integer(value.get("row_count"), "parent partition row count"),
+                board=_string(value.get("board"), "parent partition board"),
+            )
+        )
+    if not parsed:
+        raise ConversionError("parent manifest contains no partitions")
+    return tuple(sorted(parsed, key=lambda item: item.relative_path))
+
+
+def _parse_increment_partitions(
+    root: Path,
+    active: dict[str, object],
+    manifest: dict[str, object],
+) -> tuple[IncrementPartition, ...]:
+    relative_manifest = _string(active.get("increment_manifest_path"), "increment manifest path")
+    manifest_path = _safe_child(root, relative_manifest, "increment manifest")
+    manifest_root = manifest_path.parent
+    parsed: list[IncrementPartition] = []
+    for item in _list(manifest.get("partitions"), "increment partitions"):
+        value = _object(item, "increment partition")
+        relative = _string(value.get("relative_path"), "increment partition relative_path")
+        parsed.append(
+            IncrementPartition(
+                relative_path=str(Path(relative_manifest).parent / relative),
+                path=_safe_child(manifest_root, relative, "increment partition"),
+                expected_sha256=_string(value.get("sha256"), "increment partition SHA-256"),
+                expected_rows=_integer(value.get("record_count"), "increment partition row count"),
+            )
+        )
+    return tuple(sorted(parsed, key=lambda item: item.relative_path))
+
+
+def _field_coverage(active: dict[str, object]) -> tuple[tuple[str, int, int, int, str | None], ...]:
+    rows: list[tuple[str, int, int, int, str | None]] = []
+    for item in _list(active.get("field_coverage", []), "field coverage"):
+        value = _object(item, "field coverage row")
+        family = _string(value.get("family"), "field coverage family")
+        if family not in _SOURCE_FAMILIES:
+            raise ConversionError("field coverage contains an unsupported family")
+        reason = value.get("missing_reason")
+        if reason is not None and not isinstance(reason, str):
+            raise ConversionError("field coverage missing reason must be a string or null")
+        rows.append(
+            (
+                family,
+                _integer(value.get("reusable_rows"), "reusable rows"),
+                _integer(value.get("incremental_rows"), "incremental rows"),
+                _integer(value.get("missing_rows"), "missing rows"),
+                reason,
+            )
+        )
+    return tuple(sorted(rows))
+
+
+def _load_source(root: Path) -> SourceArchive:
+    manifest_path = root / "manifest.json"
+    active_path = root / "active-manifest.json"
+    manifest = _load_json(manifest_path, "parent manifest")
+    active = _load_json(active_path, "active manifest")
+    if manifest.get("schema_version") != "baostock_daily_manifest":
+        raise ConversionError("parent manifest schema is unsupported")
+    if active.get("schema_version") != "baostock_active_manifest":
+        raise ConversionError("active manifest schema is unsupported")
+    manifest_hash = _hash_file(manifest_path)
+    increment_manifest_path = _safe_child(
+        root,
+        _string(active.get("increment_manifest_path"), "increment manifest path"),
+        "increment manifest",
+    )
+    increment_manifest = _load_json(increment_manifest_path, "increment manifest")
+    identity_fields = (
+        "parent_manifest_hash",
+        "parent_manifest_file_hash",
+        "source_cutoff",
+        "calendar_hash",
+        "source_identity_hash",
+    )
+    if (
+        active.get("parent_manifest_hash") != manifest.get("content_hash")
+        or active.get("parent_manifest_file_hash") != manifest_hash
+        or active.get("increment_manifest_hash") != increment_manifest.get("content_hash")
+        or any(increment_manifest.get(field) != active.get(field) for field in identity_fields)
+        or _boolean(active.get("production_authority"), "production authority")
+        or _boolean(active.get("point_in_time_parity"), "point-in-time parity")
+        or _boolean(increment_manifest.get("production_authority"), "increment production authority")
+        or _boolean(increment_manifest.get("point_in_time_parity"), "increment point-in-time parity")
+    ):
+        raise ConversionError("source manifest identity chain is inconsistent")
+    parent_partitions = _parse_parent_partitions(root, manifest)
+    increment_partitions = _parse_increment_partitions(root, active, increment_manifest)
+    spec, dates, securities, source_versions = _load_context(parent_partitions[0].path)
+    sessions = _integer(spec.get("sessions"), "parent sessions")
+    if sessions < 1 or sessions > 2000:
+        raise ConversionError("parent sessions must be within 1..2000")
+    source_cutoff = _string(active.get("source_cutoff"), "active source cutoff")
+    active_hash = _hash_file(active_path)
+    fingerprint = _hash_text(
+        _canonical_json(
+            {
+                "active_manifest_file_hash": active_hash,
+                "increment_partitions": [
+                    [item.relative_path, item.expected_sha256, item.expected_rows] for item in increment_partitions
+                ],
+                "manifest_file_hash": manifest_hash,
+                "parent_partitions": [
+                    [item.relative_path, item.expected_sha256, item.expected_rows] for item in parent_partitions
+                ],
+            }
+        )
+    )
+    return SourceArchive(
+        root=root,
+        source_fingerprint=fingerprint,
+        manifest_file_hash=manifest_hash,
+        active_manifest_file_hash=active_hash,
+        parent_manifest_hash=_string(manifest.get("content_hash"), "parent manifest content hash"),
+        active_data_hash=_string(active.get("active_data_hash"), "active data hash"),
+        source_identity_hash=_string(active.get("source_identity_hash"), "source identity hash"),
+        source_cutoff=source_cutoff,
+        sessions=sessions,
+        calendar_dates=dates,
+        securities=securities,
+        source_versions_json=source_versions,
+        parent_partitions=parent_partitions,
+        increment_partitions=increment_partitions,
+        field_coverage=_field_coverage(active),
+        production_authority=_boolean(active.get("production_authority"), "production authority"),
+        point_in_time_parity=_boolean(active.get("point_in_time_parity"), "point-in-time parity"),
+    )
+
+
+def _connect(
+    path: Path,
+    cache_mib: int,
+    *,
+    read_only: bool = False,
+    wal: bool = False,
+) -> sqlite3.Connection:
+    if read_only:
+        connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+        connection.execute("PRAGMA query_only=ON")
+    else:
+        connection = sqlite3.connect(path)
+        connection.execute(f"PRAGMA journal_mode={'WAL' if wal else 'DELETE'}")
+        connection.execute("PRAGMA synchronous=FULL")
+    connection.execute(f"PRAGMA cache_size=-{cache_mib * 1024}")
+    connection.execute("PRAGMA temp_store=FILE")
+    connection.execute("PRAGMA threads=1")
+    connection.execute("PRAGMA mmap_size=0")
+    connection.execute("PRAGMA foreign_keys=ON")
+    return connection
+
+
+def _verify_database(
+    path: Path,
+    expected_sha256: str,
+    expected_rows: int,
+    table: str,
+    cache_mib: int,
+    throttle_seconds: float,
+    cancellation: _Cancellation,
+) -> None:
+    if not path.is_file():
+        raise ConversionError(f"source partition is missing: {path.name}")
+    if _hash_file(path, throttle_seconds, cancellation) != expected_sha256:
+        raise ConversionError(f"source partition SHA-256 mismatch: {path.name}")
+    try:
+        with closing(_connect(path, cache_mib, read_only=True)) as connection:
+            if connection.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                raise ConversionError(f"source partition integrity check failed: {path.name}")
+            count = cast(int, connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+    except sqlite3.DatabaseError as exc:
+        raise ConversionError(f"source partition is unreadable: {path.name}") from exc
+    if count != expected_rows:
+        raise ConversionError(f"source partition row count mismatch: {path.name}")
+
+
+def _source_signature(source: SourceArchive) -> str:
+    entries: list[tuple[str, int, int, str]] = []
+    for parent_partition in source.parent_partitions:
+        stat = parent_partition.path.stat()
+        entries.append(
+            (
+                parent_partition.relative_path,
+                stat.st_size,
+                stat.st_mtime_ns,
+                parent_partition.expected_sha256,
+            )
+        )
+    for increment_partition in source.increment_partitions:
+        stat = increment_partition.path.stat()
+        entries.append(
+            (
+                increment_partition.relative_path,
+                stat.st_size,
+                stat.st_mtime_ns,
+                increment_partition.expected_sha256,
+            )
+        )
+    return _hash_text(_canonical_json(entries))
+
+
+def _verify_source(
+    source: SourceArchive,
+    control: sqlite3.Connection,
+    cache_mib: int,
+    throttle_seconds: float,
+    cancellation: _Cancellation,
+    progress_sink: ProgressSink | None,
+) -> None:
+    signature = _source_signature(source)
+    stored = control.execute("SELECT value FROM metadata WHERE key='verified_source_signature'").fetchone()
+    total = len(source.parent_partitions) + len(source.increment_partitions)
+    progress = _ProgressTracker("源校验", total, progress_sink)
+    if stored == (signature,):
+        progress.advance(total, "已缓存", force=True)
+        return
+    for index, partition in enumerate(source.parent_partitions, 1):
+        cancellation.check()
+        _verify_database(
+            partition.path,
+            partition.expected_sha256,
+            partition.expected_rows,
+            "daily_cells",
+            cache_mib,
+            throttle_seconds,
+            cancellation,
+        )
+        progress.advance(1, f"文件={partition.path.name}", force=index == total)
+    offset = len(source.parent_partitions)
+    for index, increment_partition in enumerate(source.increment_partitions, 1):
+        cancellation.check()
+        _verify_database(
+            increment_partition.path,
+            increment_partition.expected_sha256,
+            increment_partition.expected_rows,
+            "records",
+            cache_mib,
+            throttle_seconds,
+            cancellation,
+        )
+        progress.advance(1, f"文件={increment_partition.path.name}", force=offset + index == total)
+    with control:
+        control.execute(
+            "INSERT OR REPLACE INTO metadata(key, value) VALUES ('verified_source_signature', ?)",
+            (signature,),
+        )
+
+
+def _create_progress_database(path: Path, source: SourceArchive, cache_mib: int) -> sqlite3.Connection:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = _connect(path, cache_mib)
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        ) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS conversion_progress (
+            year INTEGER NOT NULL,
+            month INTEGER NOT NULL,
+            relative_path TEXT NOT NULL,
+            database_sha256 TEXT NOT NULL,
+            logical_content_hash TEXT NOT NULL,
+            physical_rows INTEGER NOT NULL,
+            active_rows INTEGER NOT NULL,
+            source_rows INTEGER NOT NULL,
+            PRIMARY KEY (year, month)
+        ) WITHOUT ROWID;
+        """
+    )
+    existing = connection.execute("SELECT value FROM metadata WHERE key='source_fingerprint'").fetchone()
+    if existing is not None and existing != (source.source_fingerprint,):
+        connection.close()
+        raise ConversionError("staging directory belongs to a different source archive")
+    with connection:
+        for key, value in (
+            ("schema", _PROGRESS_SCHEMA),
+            ("state", "converting"),
+            ("source_fingerprint", source.source_fingerprint),
+            ("manifest_file_hash", source.manifest_file_hash),
+            ("active_manifest_file_hash", source.active_manifest_file_hash),
+            ("source_versions", source.source_versions_json),
+        ):
+            connection.execute("INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)", (key, value))
+    return connection
+
+
+def _increment_dates(source: SourceArchive, cache_mib: int) -> set[str]:
+    dates: set[str] = set()
+    for partition in source.increment_partitions:
+        try:
+            with closing(_connect(partition.path, cache_mib, read_only=True)) as connection:
+                rows = connection.execute(
+                    "SELECT DISTINCT trade_date FROM records "
+                    "WHERE field_family IN ('daily_raw', 'daily_qfq') ORDER BY trade_date"
+                )
+                dates.update(cast(str, row[0]) for row in rows)
+        except sqlite3.DatabaseError as exc:
+            raise ConversionError(f"increment dates are unreadable: {partition.path.name}") from exc
+    return dates
+
+
+def _source_rows_from(source: SourceArchive, start: str, cache_mib: int) -> int:
+    total = 0
+    try:
+        for parent_partition in source.parent_partitions:
+            with closing(_connect(parent_partition.path, cache_mib, read_only=True)) as connection:
+                total += cast(
+                    int,
+                    connection.execute(
+                        "SELECT COUNT(*) FROM daily_cells WHERE trade_date>=?",
+                        (start,),
+                    ).fetchone()[0],
+                )
+        for increment_partition in source.increment_partitions:
+            with closing(_connect(increment_partition.path, cache_mib, read_only=True)) as connection:
+                total += cast(
+                    int,
+                    connection.execute(
+                        "SELECT COUNT(*) FROM records WHERE trade_date>=?",
+                        (start,),
+                    ).fetchone()[0],
+                )
+    except sqlite3.DatabaseError as exc:
+        raise ConversionError("source row counts are unreadable") from exc
+    return total
+
+
+def _months(dates: Sequence[str]) -> tuple[tuple[int, int], ...]:
+    return tuple(sorted({(int(day[:4]), int(day[5:7])) for day in dates}))
+
+
+def _month_bounds(year: int, month: int) -> tuple[str, str]:
+    start = f"{year:04d}-{month:02d}-01"
+    if month == 12:
+        end = f"{year + 1:04d}-01-01"
+    else:
+        end = f"{year:04d}-{month + 1:02d}-01"
+    return start, end
+
+
+def _load_industries(source: SourceArchive, cache_mib: int) -> dict[str, tuple[IndustryInterval, ...]]:
+    result: dict[tuple[str, str], IndustryInterval] = {}
+    try:
+        with closing(_connect(source.parent_partitions[0].path, cache_mib, read_only=True)) as connection:
+            rows = connection.execute(
+                "SELECT code, effective_from, effective_to, industry, classification, content_hash "
+                "FROM industry_intervals ORDER BY code, effective_from"
+            )
+            for code, effective_from, effective_to, industry, classification, content_hash in rows:
+                key = (cast(str, code), cast(str, effective_from))
+                result[key] = IndustryInterval(
+                    key[1],
+                    cast(str | None, effective_to),
+                    cast(str, industry),
+                    cast(str, classification),
+                    cast(str, content_hash),
+                )
+        for partition in source.increment_partitions:
+            with closing(_connect(partition.path, cache_mib, read_only=True)) as connection:
+                rows = connection.execute(
+                    "SELECT code, trade_date, payload_json, content_hash FROM records "
+                    "WHERE field_family='industry' ORDER BY code, trade_date"
+                )
+                for code, effective_from, payload_json, content_hash in rows:
+                    payload = _object(json.loads(cast(str, payload_json)), "increment industry")
+                    _validate_overlay_identity(payload, cast(str, code), cast(str, effective_from))
+                    effective_to = payload.get("effective_to")
+                    if effective_to is not None and not isinstance(effective_to, str):
+                        raise ConversionError("increment industry effective_to is invalid")
+                    interval = IndustryInterval(
+                        cast(str, effective_from),
+                        effective_to,
+                        _string(payload.get("industry"), "increment industry"),
+                        _string(payload.get("classification"), "increment industry classification"),
+                        cast(str, content_hash),
+                    )
+                    key = (cast(str, code), cast(str, effective_from))
+                    previous = result.get(key)
+                    if previous is not None and previous != interval:
+                        raise ConversionError("industry interval identity conflicts across source layers")
+                    result[key] = interval
+    except (sqlite3.DatabaseError, json.JSONDecodeError, TypeError) as exc:
+        raise ConversionError("source industry intervals are unreadable") from exc
+    by_code: dict[str, list[IndustryInterval]] = {}
+    for (code, _effective_from), interval in sorted(result.items()):
+        by_code.setdefault(code, []).append(interval)
+    return {code: tuple(items) for code, items in by_code.items()}
+
+
+def _industry_for(
+    intervals_by_code: dict[str, tuple[IndustryInterval, ...]], code: str, day: str
+) -> IndustryInterval | None:
+    intervals = intervals_by_code.get(code, ())
+    if not intervals:
+        return None
+    starts = [item.effective_from for item in intervals]
+    index = bisect.bisect_right(starts, day) - 1
+    if index < 0:
+        return None
+    candidate = intervals[index]
+    return candidate if candidate.effective_to is None or day < candidate.effective_to else None
+
+
+def _payload_json(value: object, label: str) -> str | None:
+    if value is None:
+        return None
+    payload = _object(value, label)
+    return _canonical_json(payload)
+
+
+def _record_hash(record: DailyRecord) -> str:
+    return _monthly_revision(record).revision_id
+
+
+def _monthly_revision(record: DailyRecord) -> HistoryMonthlyRevision:
+    status = "unknown_missing" if record.status == "unavailable" else record.status
+    payload = {
+        "first_seen_sequence": record.sync_sequence,
+        "board": _normalized_board(record.board),
+        "cell": {
+            "code": record.code,
+            "trade_date": record.trade_date,
+            "status": status,
+            "unadjusted": json.loads(record.raw_payload_json) if record.raw_payload_json is not None else None,
+            "qfq": json.loads(record.qfq_payload_json) if record.qfq_payload_json is not None else None,
+        },
+        "is_st": bool(record.is_st) if record.is_st is not None else None,
+        "industry": record.industry,
+        "industry_classification": record.industry_classification,
+    }
+    try:
+        return decode_history_monthly_revision(_canonical_json(payload))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ConversionError("converted history row does not satisfy the monthly contract") from exc
+
+
+def _status(raw_json: str | None, qfq_json: str | None, fallback: str | None = None) -> str:
+    if raw_json is not None and qfq_json is not None:
+        raw = _object(json.loads(raw_json), "raw side")
+        qfq = _object(json.loads(qfq_json), "qfq side")
+        if raw.get("trading_status") == "suspended" and qfq.get("trading_status") == "suspended":
+            return "supplier_marked_suspended"
+        return "complete"
+    if raw_json is not None:
+        return "qfq_missing"
+    if qfq_json is not None:
+        return "unadjusted_missing"
+    return fallback or "unknown_missing"
+
+
+def _parent_record(
+    code: str,
+    day: str,
+    payload_json: str,
+    is_st: int | None,
+    is_st_hash: str | None,
+    board_by_code: dict[str, str],
+    industries: dict[str, tuple[IndustryInterval, ...]],
+) -> DailyRecord:
+    try:
+        payload = _object(json.loads(payload_json), "parent daily cell")
+    except json.JSONDecodeError as exc:
+        raise ConversionError("parent daily cell JSON is invalid") from exc
+    if payload.get("code") != code or payload.get("trade_date") != day:
+        raise ConversionError("parent daily cell identity does not match its SQLite key")
+    raw_json = _payload_json(payload.get("unadjusted"), "parent raw side")
+    qfq_json = _payload_json(payload.get("qfq"), "parent qfq side")
+    interval = _industry_for(industries, code, day)
+    record = DailyRecord(
+        trade_date=day,
+        code=code,
+        sync_sequence=1,
+        board=board_by_code.get(code, "unknown"),
+        status=_status(raw_json, qfq_json, cast(str | None, payload.get("status"))),
+        raw_payload_json=raw_json,
+        qfq_payload_json=qfq_json,
+        is_st=is_st,
+        industry=interval.industry if interval is not None else None,
+        industry_classification=interval.classification if interval is not None else None,
+        raw_content_hash=_hash_text(raw_json) if raw_json is not None else None,
+        qfq_content_hash=_hash_text(qfq_json) if qfq_json is not None else None,
+        is_st_content_hash=is_st_hash,
+        industry_content_hash=interval.content_hash if interval is not None else None,
+        row_hash="",
+    )
+    return record
+
+
+_INSERT_RECORD = """
+    INSERT OR IGNORE INTO daily_records(
+        trade_date, code, revision_id, first_seen_sequence, board, payload_json, content_hash
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+"""
+_INSERT_OBSERVATION = """
+    INSERT INTO daily_observations(trade_date, code, sync_sequence, revision_id)
+    VALUES (?, ?, ?, ?)
+"""
+
+
+def _persistence_values(record: DailyRecord) -> tuple[tuple[object, ...], tuple[object, ...]]:
+    revision = _monthly_revision(record)
+    return (
+        (
+            revision.trade_date.isoformat(),
+            revision.code,
+            revision.revision_id,
+            revision.first_seen_sequence,
+            revision.board,
+            encode_history_monthly_revision(revision),
+            revision.content_hash,
+        ),
+        (
+            revision.trade_date.isoformat(),
+            revision.code,
+            record.sync_sequence,
+            revision.revision_id,
+        ),
+    )
+
+
+def _pause(throttle_seconds: float, cancellation: _Cancellation) -> None:
+    cancellation.check()
+    if throttle_seconds > 0:
+        time.sleep(throttle_seconds)
+
+
+def _copy_parent_month(
+    target: sqlite3.Connection,
+    source: SourceArchive,
+    start: str,
+    end: str,
+    board_by_code: dict[str, str],
+    industries: dict[str, tuple[IndustryInterval, ...]],
+    batch_size: int,
+    cache_mib: int,
+    throttle_seconds: float,
+    cancellation: _Cancellation,
+    progress: _ProgressTracker,
+    current: str,
+) -> int:
+    copied = 0
+    uncommitted = 0
+    for partition in source.parent_partitions:
+        try:
+            with closing(_connect(partition.path, cache_mib, read_only=True)) as connection:
+                cursor = connection.execute(
+                    "SELECT cells.code, cells.trade_date, cells.payload_json, facts.is_st, facts.content_hash "
+                    "FROM daily_cells AS cells LEFT JOIN daily_facts AS facts "
+                    "ON facts.code=cells.code AND facts.trade_date=cells.trade_date "
+                    "WHERE cells.trade_date>=? AND cells.trade_date<? "
+                    "ORDER BY cells.trade_date, cells.code",
+                    (start, end),
+                )
+                while rows := cursor.fetchmany(batch_size):
+                    records = [
+                        _parent_record(
+                            cast(str, code),
+                            cast(str, day),
+                            cast(str, payload_json),
+                            cast(int | None, is_st),
+                            cast(str | None, fact_hash),
+                            board_by_code,
+                            industries,
+                        )
+                        for code, day, payload_json, is_st, fact_hash in rows
+                    ]
+                    values = [_persistence_values(item) for item in records]
+                    target.executemany(_INSERT_RECORD, (item[0] for item in values))
+                    target.executemany(_INSERT_OBSERVATION, (item[1] for item in values))
+                    copied += len(rows)
+                    uncommitted += len(rows)
+                    if uncommitted >= 8192:
+                        target.commit()
+                        uncommitted = 0
+                    progress.advance(len(rows), current)
+                    _pause(throttle_seconds, cancellation)
+        except sqlite3.DatabaseError as exc:
+            raise ConversionError(f"parent month scan failed: {partition.path.name}") from exc
+    target.commit()
+    return copied
+
+
+def _active_record(connection: sqlite3.Connection, code: str, day: str) -> DailyRecord | None:
+    row = connection.execute(
+        "SELECT records.payload_json FROM daily_observations AS observations "
+        "JOIN daily_records AS records ON records.trade_date=observations.trade_date "
+        "AND records.code=observations.code AND records.revision_id=observations.revision_id "
+        "WHERE observations.trade_date=? AND observations.code=? "
+        "ORDER BY observations.sync_sequence DESC LIMIT 1",
+        (day, code),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        revision = decode_history_monthly_revision(cast(str, row[0]))
+        payload = _object(json.loads(cast(str, row[0])), "monthly revision")
+        cell = _object(payload["cell"], "monthly cell")
+        raw_json = _payload_json(cell.get("unadjusted"), "monthly raw side")
+        qfq_json = _payload_json(cell.get("qfq"), "monthly qfq side")
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ConversionError("converted monthly revision is unreadable") from exc
+    record = DailyRecord(
+        revision.trade_date.isoformat(),
+        revision.code,
+        revision.first_seen_sequence,
+        revision.board,
+        revision.cell.status,
+        raw_json,
+        qfq_json,
+        int(revision.is_st) if revision.is_st is not None else None,
+        revision.industry,
+        revision.industry_classification,
+        _hash_text(raw_json) if raw_json is not None else None,
+        _hash_text(qfq_json) if qfq_json is not None else None,
+        None,
+        None,
+        revision.revision_id,
+    )
+    return record
+
+
+def _validate_overlay_identity(payload: dict[str, object], code: str, day: str) -> None:
+    if payload.get("code") != code or payload.get("trade_date") != day:
+        raise ConversionError("increment record identity does not match its SQLite key")
+
+
+def _overlay_record(
+    base: DailyRecord | None,
+    code: str,
+    day: str,
+    rows: Sequence[tuple[str, str, str]],
+    board_by_code: dict[str, str],
+    industries: dict[str, tuple[IndustryInterval, ...]],
+    sync_sequence: int,
+) -> DailyRecord | None:
+    interval = _industry_for(industries, code, day)
+    record = base or DailyRecord(
+        trade_date=day,
+        code=code,
+        sync_sequence=sync_sequence,
+        board=board_by_code.get(code, "unknown"),
+        status="unknown_missing",
+        raw_payload_json=None,
+        qfq_payload_json=None,
+        is_st=None,
+        industry=interval.industry if interval is not None else None,
+        industry_classification=interval.classification if interval is not None else None,
+        raw_content_hash=None,
+        qfq_content_hash=None,
+        is_st_content_hash=None,
+        industry_content_hash=interval.content_hash if interval is not None else None,
+        row_hash="",
+    )
+    if base is not None and interval is not None:
+        record = replace(
+            record,
+            industry=interval.industry,
+            industry_classification=interval.classification,
+            industry_content_hash=interval.content_hash,
+        )
+    has_daily_data = base is not None
+    for family, payload_json, content_hash in rows:
+        try:
+            payload = _object(json.loads(payload_json), "increment record")
+        except json.JSONDecodeError as exc:
+            raise ConversionError("increment record JSON is invalid") from exc
+        _validate_overlay_identity(payload, code, day)
+        canonical = _canonical_json(payload)
+        if family == "daily_raw":
+            record = replace(record, raw_payload_json=canonical, raw_content_hash=content_hash)
+            has_daily_data = True
+        elif family == "daily_qfq":
+            record = replace(record, qfq_payload_json=canonical, qfq_content_hash=content_hash)
+            has_daily_data = True
+        elif family == "is_st":
+            value = payload.get("is_st")
+            if not isinstance(value, bool):
+                raise ConversionError("increment is_st payload is invalid")
+            record = replace(record, is_st=int(value), is_st_content_hash=content_hash)
+        elif family == "industry":
+            industry = payload.get("industry")
+            classification = payload.get("classification")
+            if (
+                not isinstance(industry, str)
+                or not industry
+                or not isinstance(classification, str)
+                or not classification
+            ):
+                raise ConversionError("increment industry payload is invalid")
+            record = replace(
+                record,
+                industry=industry,
+                industry_classification=classification,
+                industry_content_hash=content_hash,
+            )
+        elif family not in _SOURCE_FAMILIES:
+            raise ConversionError("increment field family is unsupported")
+    if not has_daily_data:
+        return None
+    record = replace(
+        record,
+        sync_sequence=sync_sequence,
+        status=_status(record.raw_payload_json, record.qfq_payload_json, record.status),
+        row_hash="",
+    )
+    return replace(record, row_hash=_record_hash(record))
+
+
+def _copy_increment_month(
+    target: sqlite3.Connection,
+    source: SourceArchive,
+    start: str,
+    end: str,
+    board_by_code: dict[str, str],
+    industries: dict[str, tuple[IndustryInterval, ...]],
+    batch_size: int,
+    cache_mib: int,
+    throttle_seconds: float,
+    cancellation: _Cancellation,
+    progress: _ProgressTracker,
+    current: str,
+) -> int:
+    copied = 0
+    uncommitted = 0
+    for partition in source.increment_partitions:
+        try:
+            with closing(_connect(partition.path, cache_mib, read_only=True)) as connection:
+                cursor = connection.execute(
+                    "SELECT code, trade_date, field_family, payload_json, content_hash FROM records "
+                    "WHERE trade_date>=? AND trade_date<? ORDER BY code, trade_date, field_family",
+                    (start, end),
+                )
+                current_key: tuple[str, str] | None = None
+                grouped: list[tuple[str, str, str]] = []
+                since_pause = 0
+                for code_value, day_value, family_value, payload_json_value, content_hash_value in cursor:
+                    key = (cast(str, code_value), cast(str, day_value))
+                    if current_key is not None and key != current_key:
+                        _write_overlay(target, current_key, grouped, board_by_code, industries)
+                        grouped = []
+                    current_key = key
+                    grouped.append(
+                        (cast(str, family_value), cast(str, payload_json_value), cast(str, content_hash_value))
+                    )
+                    since_pause += 1
+                    copied += 1
+                    uncommitted += 1
+                    progress.advance(1, current)
+                    if uncommitted >= 8192:
+                        target.commit()
+                        uncommitted = 0
+                    if since_pause >= batch_size:
+                        _pause(throttle_seconds, cancellation)
+                        since_pause = 0
+                if current_key is not None:
+                    _write_overlay(target, current_key, grouped, board_by_code, industries)
+                _pause(throttle_seconds, cancellation)
+        except sqlite3.DatabaseError as exc:
+            raise ConversionError(f"increment month scan failed: {partition.path.name}") from exc
+    target.commit()
+    return copied
+
+
+def _write_overlay(
+    connection: sqlite3.Connection,
+    key: tuple[str, str],
+    rows: Sequence[tuple[str, str, str]],
+    board_by_code: dict[str, str],
+    industries: dict[str, tuple[IndustryInterval, ...]],
+    *,
+    sync_sequence: int = 2,
+) -> bool:
+    code, day = key
+    base = _active_record(connection, code, day)
+    record = _overlay_record(base, code, day, rows, board_by_code, industries, sync_sequence)
+    if record is not None and (base is None or record.row_hash != base.row_hash):
+        record_values, observation_values = _persistence_values(record)
+        connection.execute(_INSERT_RECORD, record_values)
+        connection.execute(_INSERT_OBSERVATION, observation_values)
+        return True
+    return False
+
+
+def _logical_hash(connection: sqlite3.Connection) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    count = 0
+    rows = connection.execute(
+        "SELECT records.revision_id FROM daily_observations AS observations "
+        "JOIN daily_records AS records ON records.trade_date=observations.trade_date "
+        "AND records.code=observations.code AND records.revision_id=observations.revision_id "
+        "WHERE observations.sync_sequence=(SELECT MAX(candidate.sync_sequence) "
+        "FROM daily_observations AS candidate WHERE candidate.trade_date=observations.trade_date "
+        "AND candidate.code=observations.code) ORDER BY observations.trade_date, observations.code"
+    )
+    for (revision_id,) in rows:
+        digest.update(cast(str, revision_id).encode("ascii"))
+        digest.update(b"\n")
+        count += 1
+    return digest.hexdigest(), count
+
+
+def _missing_gap_requests(
+    staging: Path,
+    results: Sequence[PartitionResult],
+    cache_mib: int,
+    progress_sink: ProgressSink | None = None,
+) -> tuple[BaoStockGapRequest, ...]:
+    grouped: dict[tuple[str, str], set[date]] = {}
+    progress = _ProgressTracker("缺口扫描", sum(item.active_rows for item in results), progress_sink)
+    for result in results:
+        path = _safe_child(staging, result.relative_path, "converted partition")
+        with closing(_connect(path, cache_mib, read_only=True)) as connection:
+            cursor = connection.execute(
+                "SELECT records.payload_json FROM daily_observations AS observations "
+                "JOIN daily_records AS records ON records.trade_date=observations.trade_date "
+                "AND records.code=observations.code AND records.revision_id=observations.revision_id "
+                "WHERE observations.sync_sequence=(SELECT MAX(candidate.sync_sequence) "
+                "FROM daily_observations AS candidate WHERE candidate.trade_date=observations.trade_date "
+                "AND candidate.code=observations.code) ORDER BY observations.code, observations.trade_date"
+            )
+            while rows := cursor.fetchmany(512):
+                for (payload_json,) in rows:
+                    try:
+                        revision = decode_history_monthly_revision(cast(str, payload_json))
+                    except (TypeError, ValueError) as exc:
+                        raise ConversionError("converted monthly revision is unreadable") from exc
+                    missing = (
+                        ("daily_raw", revision.cell.unadjusted),
+                        ("daily_qfq", revision.cell.qfq),
+                        ("is_st", revision.is_st),
+                    )
+                    for family, value in missing:
+                        if value is None:
+                            grouped.setdefault((revision.code, family), set()).add(revision.trade_date)
+                progress.advance(len(rows), f"月份={result.year:04d}-{result.month:02d}")
+        _remove_empty_sqlite_sidecars(path)
+    return tuple(
+        BaoStockGapRequest(code, cast(BaoStockGapFamily, family), tuple(sorted(days)))
+        for (code, family), days in sorted(grouped.items())
+    )
+
+
+def _apply_gap_result(
+    staging: Path,
+    results: Sequence[PartitionResult],
+    result: BaoStockGapResult,
+    board_by_code: dict[str, str],
+    industries: dict[str, tuple[IndustryInterval, ...]],
+    cache_mib: int,
+    throttle_seconds: float,
+    cancellation: _Cancellation,
+) -> tuple[tuple[PartitionResult, ...], int]:
+    by_month: dict[tuple[int, int], dict[tuple[str, str], list[tuple[str, str, str]]]] = {}
+    for item in result.records:
+        month_key = (item.trade_date.year, item.trade_date.month)
+        row_key = (item.code, item.trade_date.isoformat())
+        by_month.setdefault(month_key, {}).setdefault(row_key, []).append(
+            (item.family, item.payload_json, item.content_hash)
+        )
+    refreshed: list[PartitionResult] = []
+    written = 0
+    for previous in results:
+        additions = by_month.get((previous.year, previous.month), {})
+        if not additions:
+            refreshed.append(previous)
+            continue
+        path = _safe_child(staging, previous.relative_path, "converted partition")
+        with closing(_connect(path, cache_mib, wal=True)) as connection:
+            for key, rows in sorted(additions.items()):
+                written += int(
+                    _write_overlay(
+                        connection,
+                        key,
+                        rows,
+                        board_by_code,
+                        industries,
+                        sync_sequence=3,
+                    )
+                )
+            connection.commit()
+            logical_hash, active_rows = _logical_hash(connection)
+            physical_rows = cast(int, connection.execute("SELECT COUNT(*) FROM daily_records").fetchone()[0])
+            if connection.execute("PRAGMA integrity_check").fetchone() != ("ok",):
+                raise ConversionError(
+                    f"supplemented month failed integrity check: {previous.year:04d}-{previous.month:02d}"
+                )
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        _remove_empty_sqlite_sidecars(path)
+        _fsync_file(path)
+        refreshed.append(
+            replace(
+                previous,
+                database_sha256=_hash_file(path, throttle_seconds, cancellation),
+                logical_content_hash=logical_hash,
+                physical_rows=physical_rows,
+                active_rows=active_rows,
+            )
+        )
+    return tuple(refreshed), written
+
+
+def _supplement_missing_fields(
+    staging: Path,
+    results: Sequence[PartitionResult],
+    board_by_code: dict[str, str],
+    industries: dict[str, tuple[IndustryInterval, ...]],
+    cache_mib: int,
+    throttle_seconds: float,
+    cancellation: _Cancellation,
+    progress_sink: ProgressSink | None,
+    provider: SupplementProvider,
+) -> tuple[tuple[PartitionResult, ...], int, int]:
+    requests = _missing_gap_requests(staging, results, cache_mib, progress_sink)
+    progress = _ProgressTracker("补缺下载", len(requests), progress_sink)
+    if not requests:
+        progress.emit("无可下载缺口", force=True)
+        return tuple(results), 0, 0
+    requested_keys = {(item.code, day, item.family) for item in requests for day in item.trade_dates}
+    completed = 0
+
+    def report(value: int, _total: int, current: str) -> None:
+        nonlocal completed
+        progress.advance(value - completed, f"请求={current}", force=value == len(requests))
+        completed = value
+
+    try:
+        fetched = provider(
+            requests,
+            cancel_requested=lambda: cancellation.requested,
+            progress=report,
+        )
+    except BaoStockGapSupplierError as exc:
+        raise ConversionError("downloadable field supplementation failed") from exc
+    result_keys = {(item.code, item.trade_date, item.family) for item in fetched.records}
+    unavailable_keys = {(item.code, item.trade_date, item.family) for item in fetched.unavailable}
+    if result_keys | unavailable_keys != requested_keys:
+        raise ConversionError("gap supplier result does not match requested identities")
+    refreshed, written = _apply_gap_result(
+        staging,
+        results,
+        fetched,
+        board_by_code,
+        industries,
+        cache_mib,
+        throttle_seconds,
+        cancellation,
+    )
+    return refreshed, written, len(unavailable_keys)
+
+
+def _remove_pending(path: Path) -> None:
+    for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm"), Path(f"{path}-journal")):
+        if candidate.is_file():
+            candidate.unlink()
+
+
+def _convert_month(
+    source: SourceArchive,
+    staging: Path,
+    year: int,
+    month: int,
+    active_start: str,
+    board_by_code: dict[str, str],
+    industries: dict[str, tuple[IndustryInterval, ...]],
+    batch_size: int,
+    cache_mib: int,
+    throttle_seconds: float,
+    cancellation: _Cancellation,
+    progress: _ProgressTracker,
+) -> PartitionResult:
+    relative = Path("partitions") / f"{year:04d}" / f"{month:02d}.sqlite3"
+    final_path = staging / relative
+    pending = final_path.with_suffix(".sqlite3.pending")
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    _remove_pending(pending)
+    start, end = _month_bounds(year, month)
+    start = max(start, active_start)
+    current = f"月份={year:04d}-{month:02d}"
+    try:
+        SQLiteHistoryMonthPartitionRepository(pending, year, month).initialize()
+        with closing(_connect(pending, cache_mib, wal=True)) as connection:
+            parent_rows = _copy_parent_month(
+                connection,
+                source,
+                start,
+                end,
+                board_by_code,
+                industries,
+                batch_size,
+                cache_mib,
+                throttle_seconds,
+                cancellation,
+                progress,
+                current,
+            )
+            increment_rows = _copy_increment_month(
+                connection,
+                source,
+                start,
+                end,
+                board_by_code,
+                industries,
+                batch_size,
+                cache_mib,
+                throttle_seconds,
+                cancellation,
+                progress,
+                current,
+            )
+            logical_hash, active_rows = _logical_hash(connection)
+            physical_rows = cast(int, connection.execute("SELECT COUNT(*) FROM daily_records").fetchone()[0])
+            if connection.execute("PRAGMA integrity_check").fetchone() != ("ok",):
+                raise ConversionError(f"converted month failed integrity check: {year:04d}-{month:02d}")
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        _remove_empty_sqlite_sidecars(pending)
+        _fsync_file(pending)
+        os.replace(pending, final_path)
+        _fsync_directory(final_path.parent)
+        database_sha256 = _hash_file(final_path, throttle_seconds, cancellation)
+        return PartitionResult(
+            year,
+            month,
+            str(relative),
+            database_sha256,
+            logical_hash,
+            physical_rows,
+            active_rows,
+            parent_rows + increment_rows,
+        )
+    except BaseException:
+        _remove_pending(pending)
+        raise
+
+
+def _completed_partition(
+    control: sqlite3.Connection, staging: Path, year: int, month: int, throttle_seconds: float
+) -> PartitionResult | None:
+    row = control.execute(
+        "SELECT relative_path, database_sha256, logical_content_hash, physical_rows, active_rows, source_rows "
+        "FROM conversion_progress WHERE year=? AND month=?",
+        (year, month),
+    ).fetchone()
+    if row is None:
+        return None
+    relative, expected_hash, logical_hash, physical_rows, active_rows, source_rows = cast(tuple[Any, ...], row)
+    path = _safe_child(staging, cast(str, relative), "completed partition")
+    if not path.is_file() or _hash_file(path, throttle_seconds) != expected_hash:
+        raise ConversionError(f"completed staging month changed: {year:04d}-{month:02d}")
+    return PartitionResult(
+        year,
+        month,
+        cast(str, relative),
+        cast(str, expected_hash),
+        cast(str, logical_hash),
+        cast(int, physical_rows),
+        cast(int, active_rows),
+        cast(int, source_rows),
+    )
+
+
+def _save_progress(control: sqlite3.Connection, result: PartitionResult) -> None:
+    with control:
+        control.execute(
+            "INSERT OR REPLACE INTO conversion_progress VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                result.year,
+                result.month,
+                result.relative_path,
+                result.database_sha256,
+                result.logical_content_hash,
+                result.physical_rows,
+                result.active_rows,
+                result.source_rows,
+            ),
+        )
+
+
+def _normalized_board(value: str) -> HistorySecurityBoard:
+    if value == "growth":
+        return "chinext"
+    if value in {"main", "chinext", "star"}:
+        return cast(HistorySecurityBoard, value)
+    raise ConversionError(f"unsupported security board: {value}")
+
+
+def _finalize_control(
+    staging: Path,
+    source: SourceArchive,
+    all_dates: Sequence[str],
+    results: Sequence[PartitionResult],
+) -> tuple[str, tuple[str, ...]]:
+    active_dates = tuple(sorted(set(all_dates))[-source.sessions :])
+    if not active_dates or active_dates[-1] != source.source_cutoff:
+        raise ConversionError("active calendar does not end at the active source cutoff")
+    cutoff = date.fromisoformat(source.source_cutoff)
+    observed_at = datetime.combine(cutoff, datetime_time(15, 0), tzinfo=_SHANGHAI)
+    source_identity = HistorySourceIdentity(
+        "baostock",
+        f"legacy_daily.{source.source_fingerprint}",
+        "sealed_parent_increment",
+        observed_at,
+    )
+    calendar = HistoryCalendarIdentity(
+        tuple(date.fromisoformat(item) for item in active_dates),
+        source_identity.content_hash,
+    )
+    universe = HistoryUniverseIdentity(
+        tuple(
+            HistorySecurityIdentity(
+                item.code,
+                item.name,
+                _normalized_board(item.board),
+                date.fromisoformat(item.listed_on),
+                date.fromisoformat(item.delisted_on) if item.delisted_on is not None else None,
+            )
+            for item in source.securities
+        ),
+        source_identity.content_hash,
+    )
+    label_cutoff = calendar.open_dates[-2] if len(calendar.open_dates) > 1 else calendar.open_dates[-1]
+    snapshot = HistoryActiveSnapshot(
+        1,
+        cutoff,
+        label_cutoff,
+        calendar.content_hash,
+        universe.content_hash,
+        source_identity.content_hash,
+        tuple(
+            HistorySnapshotPartition(item.relative_path, item.database_sha256, item.physical_rows) for item in results
+        ),
+    )
+    identity_suffix = source.source_fingerprint[:24]
+    checkpoint = HistorySyncCheckpoint(
+        f"conversion.{identity_suffix}",
+        1,
+        "completed",
+        observed_at,
+        len(results),
+        len(results),
+        None,
+    )
+    missing_rows = sum(item[3] for item in source.field_coverage)
+    due_state = HistoryTrainingDueState(
+        f"conversion.{identity_suffix}",
+        "data_incomplete" if missing_rows else "initial_training_required",
+        None,
+        label_cutoff,
+        0,
+        False,
+        observed_at,
+    )
+    pending = staging / "control.sqlite3.pending"
+    _remove_pending(pending)
+    try:
+        repository = SQLiteHistoryControlRepository(pending)
+        repository.initialize()
+        repository.save_source(source_identity)
+        repository.save_calendar(calendar)
+        repository.save_universe(universe)
+        repository.save_checkpoint(checkpoint)
+        repository.save_due_state(due_state)
+        repository.publish_snapshot(snapshot)
+        if repository.load_state().active_snapshot != snapshot:
+            raise ConversionError("converted control state did not round-trip")
+        with closing(sqlite3.connect(pending)) as connection:
+            checkpoint_result = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if checkpoint_result is None or checkpoint_result[0] != 0:
+                raise ConversionError("converted control WAL checkpoint did not complete")
+        _fsync_file(pending)
+        os.replace(pending, staging / "control.sqlite3")
+        _fsync_directory(staging)
+    except (HistoryControlError, ValueError) as exc:
+        raise ConversionError("converted control database is invalid") from exc
+    finally:
+        _remove_pending(pending)
+    return snapshot.content_hash, active_dates
+
+
+def _read_completed_summary(
+    target: Path,
+    source_fingerprint: str,
+    batch_size: int,
+    cache_mib: int,
+    throttle_ms: int,
+    progress_sink: ProgressSink | None,
+) -> ConversionSummary | None:
+    control_path = target / "control.sqlite3"
+    if not control_path.is_file():
+        return None
+    try:
+        state = SQLiteHistoryControlRepository(control_path).load_state()
+        _remove_empty_sqlite_sidecars(control_path)
+        snapshot = state.active_snapshot
+        if snapshot is None:
+            return None
+        source = next(item for item in state.sources if item.content_hash == snapshot.source_identity_hash)
+        if source.dataset != f"legacy_daily.{source_fingerprint}":
+            raise ConversionError("target already exists for a different source archive")
+        calendar = next(item for item in state.calendars if item.content_hash == snapshot.calendar_hash)
+        physical_rows = 0
+        active_rows = 0
+        completed_results: list[PartitionResult] = []
+        for partition in snapshot.partitions:
+            path = _safe_child(target, partition.relative_path, "active partition")
+            with closing(_connect(path, cache_mib, read_only=True)) as connection:
+                physical_rows += cast(int, connection.execute("SELECT COUNT(*) FROM daily_records").fetchone()[0])
+                month_active_rows = cast(
+                    int,
+                    connection.execute(
+                        "SELECT COUNT(*) FROM (SELECT trade_date, code FROM daily_records GROUP BY trade_date, code)"
+                    ).fetchone()[0],
+                )
+                active_rows += month_active_rows
+            _remove_empty_sqlite_sidecars(path)
+            parts = Path(partition.relative_path).parts
+            completed_results.append(
+                PartitionResult(
+                    int(parts[1]),
+                    int(Path(parts[2]).stem),
+                    partition.relative_path,
+                    partition.sha256,
+                    "",
+                    partition.row_count,
+                    month_active_rows,
+                    0,
+                )
+            )
+        remaining_gaps = sum(
+            len(item.trade_dates) for item in _missing_gap_requests(target, completed_results, cache_mib, progress_sink)
+        )
+        return ConversionSummary(
+            "already_current",
+            len(snapshot.partitions),
+            physical_rows,
+            active_rows,
+            len(calendar.open_dates),
+            snapshot.data_cutoff.isoformat(),
+            snapshot.content_hash,
+            batch_size,
+            cache_mib,
+            throttle_ms,
+            0,
+            remaining_gaps,
+        )
+    except ConversionError:
+        raise
+    except (HistoryControlError, StopIteration, TypeError, sqlite3.DatabaseError) as exc:
+        raise ConversionError("existing target control database is invalid") from exc
+
+
+def _source_size(source: SourceArchive) -> int:
+    paths = {item.path for item in source.parent_partitions}
+    paths.update(item.path for item in source.increment_partitions)
+    return sum(path.stat().st_size for path in paths)
+
+
+def _check_free_space(target: Path, required: int) -> None:
+    probe = target.parent
+    while not probe.exists():
+        probe = probe.parent
+    free = shutil.disk_usage(probe).free
+    if free < required:
+        raise ConversionError(f"insufficient free disk space: require {required} bytes, available {free} bytes")
+
+
+def _validate_staging_directory(staging: Path, progress_database: Path, *, publishing: bool = False) -> None:
+    if not staging.exists():
+        if publishing:
+            raise ConversionError("conversion staging directory disappeared")
+        return
+    sealed_control = staging / "control.sqlite3"
+    resumable = progress_database.is_file() or sealed_control.is_file()
+    if not staging.is_dir() or (not publishing and not resumable):
+        raise ConversionError("staging directory is not a resumable conversion")
+    allowed = {
+        progress_database.name,
+        f"{progress_database.name}-journal",
+        f"{progress_database.name}-shm",
+        f"{progress_database.name}-wal",
+        "control.sqlite3",
+        "control.sqlite3.pending",
+        "control.sqlite3.pending-shm",
+        "control.sqlite3.pending-wal",
+        "partitions",
+    }
+    unexpected = {item.name for item in staging.iterdir()} - allowed
+    if unexpected:
+        raise ConversionError("staging directory contains unrelated files")
+
+
+def _fsync_file(path: Path) -> None:
+    with path.open("rb") as handle:
+        os.fsync(handle.fileno())
+
+
+def _remove_empty_sqlite_sidecars(path: Path) -> None:
+    wal = Path(f"{path}-wal")
+    shm = Path(f"{path}-shm")
+    try:
+        if wal.stat().st_size > 0:
+            return
+    except FileNotFoundError:
+        pass
+    for candidate in (wal, shm):
+        try:
+            candidate.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _apply_niceness() -> None:
+    if os.name == "posix":
+        try:
+            os.nice(DEFAULT_NICE_INCREMENT)
+        except OSError as exc:
+            raise ConversionError("could not lower converter CPU scheduling priority") from exc
+
+
+def convert_archive(
+    source_root: Path,
+    target_root: Path,
+    *,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    cache_mib: int = DEFAULT_CACHE_MIB,
+    throttle_seconds: float = DEFAULT_THROTTLE_MS / 1000,
+    minimum_free_bytes: int = DEFAULT_MINIMUM_FREE_MIB * 1024 * 1024,
+    apply_niceness: bool = True,
+    progress_sink: ProgressSink | None = None,
+    supplement_missing: bool = False,
+    supplement_provider: SupplementProvider | None = None,
+) -> ConversionSummary:
+    """Convert a sealed archive without mutating it or exposing partial target data."""
+
+    if batch_size < 1 or batch_size > 4096:
+        raise ConversionError("batch size must be within 1..4096")
+    if cache_mib < 1 or cache_mib > 64:
+        raise ConversionError("cache MiB must be within 1..64")
+    if throttle_seconds < 0 or throttle_seconds > 1:
+        raise ConversionError("throttle must be within 0..1 seconds")
+    if minimum_free_bytes < 0:
+        raise ConversionError("minimum free bytes cannot be negative")
+    source = source_root.resolve()
+    target = target_root.resolve()
+    if not source.is_dir():
+        raise ConversionError("source archive directory is missing")
+    if source == target or source in target.parents or target in source.parents:
+        raise ConversionError("source and target must be separate sibling trees")
+    if apply_niceness:
+        _apply_niceness()
+    with _SourceLock(source / ".download.lock"), _Cancellation() as cancellation:
+        archive = _load_source(source)
+        completed = _read_completed_summary(
+            target,
+            archive.source_fingerprint,
+            batch_size,
+            cache_mib,
+            round(throttle_seconds * 1000),
+            progress_sink,
+        )
+        if completed is not None:
+            return completed
+        if target.exists():
+            raise ConversionError("target already exists and is not a completed conversion")
+        staging = target.with_name(f".{target.name}-conversion")
+        progress_database = staging / ".conversion-progress.sqlite3"
+        _validate_staging_directory(staging, progress_database)
+        if staging.is_dir() and not progress_database.is_file():
+            sealed = _read_completed_summary(
+                staging,
+                archive.source_fingerprint,
+                batch_size,
+                cache_mib,
+                round(throttle_seconds * 1000),
+                progress_sink,
+            )
+            if sealed is None:
+                raise ConversionError("sealed staging conversion is invalid")
+            _validate_staging_directory(staging, progress_database, publishing=True)
+            os.replace(staging, target)
+            _fsync_directory(target.parent)
+            return replace(sealed, state="completed")
+        staging.mkdir(parents=True, exist_ok=True)
+        control = _create_progress_database(progress_database, archive, cache_mib)
+        try:
+            _check_free_space(target, _source_size(archive) + minimum_free_bytes)
+            _verify_source(archive, control, cache_mib, throttle_seconds, cancellation, progress_sink)
+            increment_dates = _increment_dates(archive, cache_mib)
+            all_dates = tuple(sorted(set(archive.calendar_dates) | increment_dates))
+            if all_dates[-1] != archive.source_cutoff:
+                raise ConversionError("source cutoff is absent from daily raw/qfq records")
+            active_dates = all_dates[-archive.sessions :]
+            active_start = active_dates[0]
+            months = _months(active_dates)
+            board_by_code = {item.code: item.board for item in archive.securities}
+            industries = _load_industries(archive, cache_mib)
+            total_source_rows = _source_rows_from(archive, active_start, cache_mib)
+            progress = _ProgressTracker("转换", total_source_rows, progress_sink)
+            results: list[PartitionResult] = []
+            for year, month in months:
+                cancellation.check()
+                existing = _completed_partition(control, staging, year, month, throttle_seconds)
+                if existing is not None:
+                    results.append(existing)
+                    progress.advance(existing.source_rows, f"月份={year:04d}-{month:02d}", force=True)
+                    continue
+                result = _convert_month(
+                    archive,
+                    staging,
+                    year,
+                    month,
+                    active_start,
+                    board_by_code,
+                    industries,
+                    batch_size,
+                    cache_mib,
+                    throttle_seconds,
+                    cancellation,
+                    progress,
+                )
+                _save_progress(control, result)
+                results.append(result)
+                progress.emit(f"月份={year:04d}-{month:02d}", force=True)
+            if supplement_missing:
+                refreshed, supplemented_rows, remaining_gaps = _supplement_missing_fields(
+                    staging,
+                    results,
+                    board_by_code,
+                    industries,
+                    cache_mib,
+                    throttle_seconds,
+                    cancellation,
+                    progress_sink,
+                    supplement_provider or fetch_baostock_gaps,
+                )
+                results = list(refreshed)
+                for result in results:
+                    _save_progress(control, result)
+            else:
+                gap_requests = _missing_gap_requests(staging, results, cache_mib, progress_sink)
+                supplemented_rows = 0
+                remaining_gaps = sum(len(item.trade_dates) for item in gap_requests)
+            snapshot_hash, active_dates = _finalize_control(staging, archive, all_dates, results)
+            physical_rows = sum(item.physical_rows for item in results)
+            active_rows = sum(item.active_rows for item in results)
+        finally:
+            control.close()
+        _remove_pending(progress_database)
+        _validate_staging_directory(staging, progress_database, publishing=True)
+        _fsync_file(staging / "control.sqlite3")
+        _fsync_directory(staging)
+        os.replace(staging, target)
+        _fsync_directory(target.parent)
+        return ConversionSummary(
+            "completed",
+            len(results),
+            physical_rows,
+            active_rows,
+            len(active_dates),
+            archive.source_cutoff,
+            snapshot_hash,
+            batch_size,
+            cache_mib,
+            round(throttle_seconds * 1000),
+            supplemented_rows,
+            remaining_gaps,
+        )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "把旧 BaoStock 父/增量归档流式转换为 control.sqlite3 + YYYY/MM.sqlite3；"
+            "转换全程单进程、逐月旁路构建、原子发布，并可续传已校验月份；"
+            "缺失 raw/qfq/is_st 默认由一个受控 SDK 子进程补齐。"
+        )
+    )
+    parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE, help="旧 sessions-2000 归档目录")
+    parser.add_argument("--target", type=Path, default=DEFAULT_TARGET, help="新月分片归档目录")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
+        help=f"每批读取行数（默认 {DEFAULT_BATCH_SIZE}，越小内存和瞬时 CPU 越低）",
+    )
+    parser.add_argument(
+        "--cache-mib",
+        type=int,
+        default=DEFAULT_CACHE_MIB,
+        help=f"每个 SQLite 连接的缓存上限 MiB（默认 {DEFAULT_CACHE_MIB}）",
+    )
+    parser.add_argument(
+        "--throttle-ms",
+        type=int,
+        default=DEFAULT_THROTTLE_MS,
+        help=f"每批及每个哈希块后的让步毫秒数（默认 {DEFAULT_THROTTLE_MS}）",
+    )
+    parser.add_argument(
+        "--minimum-free-mib",
+        type=int,
+        default=DEFAULT_MINIMUM_FREE_MIB,
+        help=f"除源分片总大小外还必须保留的磁盘余量 MiB（默认 {DEFAULT_MINIMUM_FREE_MIB}）",
+    )
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="只转换现有父/增量归档，不联网补 raw/qfq/is_st 缺口",
+    )
+    parser.add_argument("--no-nice", action="store_true", help="不降低 POSIX CPU 调度优先级")
+    return parser
+
+
+def _summary_payload(value: ConversionSummary) -> dict[str, object]:
+    return {
+        "active_calendar_days": value.active_calendar_days,
+        "active_rows": value.active_rows,
+        "batch_size": value.batch_size,
+        "cache_mib": value.cache_mib,
+        "data_cutoff": value.data_cutoff,
+        "partition_count": value.partition_count,
+        "physical_rows": value.physical_rows,
+        "snapshot_hash": value.snapshot_hash,
+        "state": value.state,
+        "supplemented_rows": value.supplemented_rows,
+        "throttle_ms": value.throttle_ms,
+        "remaining_downloadable_gaps": value.remaining_downloadable_gaps,
+    }
+
+
+def _duration(seconds: float) -> str:
+    total = max(0, int(seconds))
+    hours, remainder = divmod(total, 3600)
+    minutes, seconds_part = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds_part:02d}"
+
+
+def _print_progress(value: ConversionProgress) -> None:
+    print(
+        f"阶段={value.phase} {value.current} 进度={value.percentage:.2f}% "
+        f"已处理={value.completed}/{value.total} 耗时={_duration(value.elapsed_seconds)}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        if args.throttle_ms < 0 or args.minimum_free_mib < 0:
+            raise ConversionError("resource limit arguments cannot be negative")
+        summary = convert_archive(
+            args.source,
+            args.target,
+            batch_size=args.batch_size,
+            cache_mib=args.cache_mib,
+            throttle_seconds=args.throttle_ms / 1000,
+            minimum_free_bytes=args.minimum_free_mib * 1024 * 1024,
+            apply_niceness=not args.no_nice,
+            progress_sink=_print_progress,
+            supplement_missing=not args.offline,
+        )
+    except ConversionError as exc:
+        print(_canonical_json({"reason": str(exc), "state": "failed"}), file=sys.stderr)
+        return 1
+    print(json.dumps(_summary_payload(summary), ensure_ascii=False, sort_keys=True, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
