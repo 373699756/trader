@@ -75,7 +75,9 @@ def runtime_status(
             "cadence": _cadence_payload(status.cadence),
             "calendar": {
                 "state": status.calendar.state,
-                "trade_date": status.calendar.trade_date.isoformat() if status.calendar.trade_date is not None else None,
+                "trade_date": status.calendar.trade_date.isoformat()
+                if status.calendar.trade_date is not None
+                else None,
                 "is_trading_day": status.calendar.is_trading_day,
                 "consecutive_failure_count": status.calendar.consecutive_failure_count,
                 "next_retry_at": (
