@@ -52,7 +52,6 @@ from trader.infra.settings import RuntimeSettings
 class ResearchCommandOptions:
     workers: int = 5
     history_root: Path | None = None
-    allow_partial_history: bool = False
 
 
 class _TomorrowResearchProgress(TomorrowResearchProgressPort):
@@ -104,7 +103,6 @@ def run_research_command(
         return _run_tomorrow_research_orchestrator(
             runtime,
             history_root=options.history_root,
-            allow_partial_history=options.allow_partial_history,
         )
     if command == "research-status":
         trace = SQLiteResearchTraceStore(runtime.runtime_dir)
@@ -213,7 +211,6 @@ def _run_tomorrow_research_orchestrator(
     runtime: RuntimeSettings,
     *,
     history_root: Path | None = None,
-    allow_partial_history: bool = False,
 ) -> int:
     del runtime
     from trader.infra.scoring.profiles.v3.training import run_tomorrow_training
@@ -221,7 +218,6 @@ def _run_tomorrow_research_orchestrator(
     result = run_tomorrow_training(
         history_root or _history_data_root(),
         _train_data_root(),
-        allow_partial_history=allow_partial_history,
         progress=_TomorrowTrainingProgress(),
         source_commit=_repository_source_commit(),
     )

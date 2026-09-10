@@ -145,6 +145,9 @@ def test_v3_training_document_is_accepted_by_the_production_codec() -> None:
     context = _TrainingArtifactContext(
         "complete_manifest",
         "a" * 64,
+        "1" * 64,
+        "2" * 64,
+        "3" * 64,
         100,
         100,
         split,

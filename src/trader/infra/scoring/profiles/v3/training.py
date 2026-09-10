@@ -7,8 +7,8 @@ import json
 import math
 import os
 import re
+import shutil
 import tempfile
-from collections import defaultdict
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -32,12 +32,18 @@ from trader.domain.market.feature_contracts import (
 )
 from trader.domain.recommendation.model_scoring import V3_EXPOSURE_CONTRACT, residualize_exposure
 from trader.domain.research.baostock_daily import BaoStockTrainingRow, BaoStockTrainingSplit
-from trader.infra.research.baostock_daily import (
-    BaoStockDailyArtifactConflictError,
-    BaoStockTrainingTrainingInputArchive,
-    BaoStockTrainingTrainingInputSnapshot,
+from trader.domain.research.tomorrow_training_input import evaluate_tomorrow_training_input
+from trader.infra.research.baostock_active_archive import BaoStockActiveArchiveConflictError
+from trader.infra.research.baostock_active_training import (
+    BaoStockActiveTrainingInputArchive,
+    BaoStockActiveTrainingInputSnapshot,
 )
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
+from trader.infra.scoring.profiles.v3.bundle_store import (
+    make_bundle_staging_directory,
+    publish_tomorrow_bundle,
+)
+from trader.infra.scoring.profiles.v3.sample_store import V3SampleStore, V3StoredSample
 
 _MODEL_ID = "industry_ridge_lightgbm"
 _SOURCE_COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -46,7 +52,7 @@ _SOURCE_COMMIT = re.compile(r"^[0-9a-f]{40}$")
 @dataclass(frozen=True)
 class TomorrowTrainingResult:
     status: str
-    training_input_scope: Literal["unavailable", "complete_manifest", "partial_checkpoint"]
+    training_input_scope: Literal["unavailable", "complete_manifest"]
     run_id: str | None
     training_input_hash: str
     training_input_codes: int
@@ -60,21 +66,12 @@ class TomorrowTrainingResult:
 
 
 @dataclass(frozen=True)
-class _Sample:
-    code: str
-    trade_date: date
-    board: str
-    industry: str
-    average_amount_20d: float
-    features: tuple[float, ...]
-    next_return: float
-    eligible: bool
-
-
-@dataclass(frozen=True)
 class _TrainingArtifactContext:
-    training_input_scope: Literal["complete_manifest", "partial_checkpoint"]
+    training_input_scope: Literal["complete_manifest"]
     training_input_hash: str
+    parent_manifest_hash: str
+    increment_manifest_hash: str
+    training_input_document_hash: str
     training_input_codes: int
     training_universe_codes: int
     split: BaoStockTrainingSplit
@@ -88,19 +85,23 @@ def run_tomorrow_training(
     history_root: Path,
     train_root: Path,
     *,
-    allow_partial_history: bool = False,
     progress: TomorrowTrainingProgressPort | None = None,
     source_commit: str = "",
 ) -> TomorrowTrainingResult:
     try:
-        archive = BaoStockTrainingTrainingInputArchive.open(
-            history_root / "baostock-daily" / "sessions-2000",
-            allow_partial_history=allow_partial_history,
-        )
-    except (BaoStockDailyArtifactConflictError, OSError, ValueError) as exc:
+        archive = BaoStockActiveTrainingInputArchive.open(history_root / "baostock-daily" / "sessions-2000")
+    except (BaoStockActiveArchiveConflictError, OSError, ValueError) as exc:
         return TomorrowTrainingResult("blocked", "unavailable", None, "", 0, 0, "", "", 0, 0, 0, (_reason(exc),))
     snapshot = archive.snapshot
+    compatibility = evaluate_tomorrow_training_input(
+        archive.describe_frozen_daily_input(),
+        expected_manifest_hash=snapshot.input_hash,
+        expected_source_cutoff=snapshot.source_cutoff,
+    )
+    preflight_reasons = list(compatibility.failure_reasons)
     if _SOURCE_COMMIT.fullmatch(source_commit) is None:
+        preflight_reasons.append("source_commit_unavailable")
+    if preflight_reasons:
         return TomorrowTrainingResult(
             "blocked",
             snapshot.input_scope,
@@ -113,37 +114,45 @@ def run_tomorrow_training(
             0,
             0,
             0,
-            ("source_commit_unavailable",),
+            tuple(preflight_reasons),
         )
     _publish_progress(progress, "input_snapshot", len(snapshot.training_codes), len(snapshot.training_codes))
     run_id = hashlib.sha256(f"{snapshot.input_hash}:tomorrow-v3".encode()).hexdigest()
     output = _training_output_directory(train_root)
+    staging: Path | None = None
     try:
         split = _build_split(snapshot.calendar.open_dates, snapshot.input_hash)
         training_contract_hash = _training_contract_hash(snapshot, split, source_commit)
-        _write_training_input_evidence(output, snapshot, source_commit, training_contract_hash)
+        training_input = _training_input_document(snapshot, source_commit, training_contract_hash)
+        training_input_hash = cast(str, training_input["content_hash"])
         window = TomorrowTrainingWindow(split)
-        samples = _build_samples(archive, snapshot.training_codes, window, progress=progress)
-        if not samples:
-            return TomorrowTrainingResult(
-                "blocked",
-                snapshot.input_scope,
-                run_id,
-                snapshot.input_hash,
-                len(snapshot.training_codes),
-                snapshot.universe_count,
-                "",
-                "",
-                0,
-                0,
-                0,
-                ("v3_training_rows_empty",),
-            )
-        _publish_progress(progress, "model_fit", 0, len(snapshot.training_codes))
-        models, training_rows, validation_rows = _fit_models(samples, split)
+        output.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".sample-workspace.", dir=output) as workspace:
+            with V3SampleStore(Path(workspace) / "samples.sqlite3") as samples:
+                _build_samples(archive, snapshot.training_codes, window, samples, progress=progress)
+                if samples.count() == 0:
+                    return TomorrowTrainingResult(
+                        "blocked",
+                        snapshot.input_scope,
+                        run_id,
+                        snapshot.input_hash,
+                        len(snapshot.training_codes),
+                        snapshot.universe_count,
+                        "",
+                        "",
+                        0,
+                        0,
+                        0,
+                        ("v3_training_rows_empty",),
+                    )
+                _publish_progress(progress, "model_fit", 0, len(snapshot.training_codes))
+                models, training_rows, validation_rows = _fit_models(samples, split)
         context = _TrainingArtifactContext(
             snapshot.input_scope,
             snapshot.input_hash,
+            snapshot.parent_manifest_hash,
+            snapshot.increment_manifest_hash,
+            training_input_hash,
             len(snapshot.training_codes),
             snapshot.universe_count,
             split,
@@ -157,7 +166,6 @@ def run_tomorrow_training(
         report = _build_report(context, models, model_payload_hash)
         report_hash = artifact_content_hash(report)
         report["content_hash"] = report_hash
-        _write_json(output / "report.json", report)
         if not report["validation_passed"]:
             return TomorrowTrainingResult(
                 "rejected",
@@ -176,10 +184,21 @@ def run_tomorrow_training(
         model = _model_document(context, report_hash, models)
         model_hash = artifact_content_hash(model)
         model["content_hash"] = model_hash
-        _write_json(output / "model.json", model)
+        staging = make_bundle_staging_directory(output)
+        _write_json(staging / "training-input.json", training_input)
+        _write_json(staging / "report.json", report)
+        _write_json(staging / "model.json", model)
+        publish_tomorrow_bundle(
+            staging,
+            output,
+            training_input_hash=snapshot.input_hash,
+            parent_manifest_hash=snapshot.parent_manifest_hash,
+            increment_manifest_hash=snapshot.increment_manifest_hash,
+        )
+        staging = None
         _publish_progress(progress, "completed", len(snapshot.training_codes), len(snapshot.training_codes))
         return TomorrowTrainingResult(
-            "trial_ready" if snapshot.input_scope == "partial_checkpoint" else "engineering_ready",
+            "engineering_ready",
             snapshot.input_scope,
             run_id,
             snapshot.input_hash,
@@ -192,7 +211,7 @@ def run_tomorrow_training(
             validation_rows,
             (),
         )
-    except (BaoStockDailyArtifactConflictError, OSError, ValueError, RuntimeError) as exc:
+    except (BaoStockActiveArchiveConflictError, OSError, ValueError, RuntimeError) as exc:
         return TomorrowTrainingResult(
             "blocked",
             snapshot.input_scope,
@@ -207,6 +226,9 @@ def run_tomorrow_training(
             0,
             (_reason(exc),),
         )
+    finally:
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 def _build_split(dates: tuple[date, ...], manifest_hash: str) -> BaoStockTrainingSplit:
@@ -216,18 +238,19 @@ def _build_split(dates: tuple[date, ...], manifest_hash: str) -> BaoStockTrainin
 
 
 def _build_samples(
-    archive: BaoStockTrainingTrainingInputArchive,
+    archive: BaoStockActiveTrainingInputArchive,
     codes: tuple[str, ...],
     window: TomorrowTrainingWindow,
+    store: V3SampleStore,
     *,
     progress: TomorrowTrainingProgressPort | None = None,
-) -> tuple[_Sample, ...]:
+) -> None:
     calendar = archive.snapshot.calendar.open_dates
-    by_date: dict[date, list[_Sample]] = defaultdict(list)
     for position, code in enumerate(codes, start=1):
         rows = archive.read_training_rows(code, allowed_dates=window.readable_dates)
         rows_by_date = {item.trade_date: item for item in rows}
         closes = {item.trade_date: item.qfq.close_price for item in rows}
+        raw_samples: list[V3StoredSample] = []
         for day, next_day, indices in _aligned_sample_dates(calendar, rows_by_date.keys(), window.readable_dates):
             _index, previous_1, previous_3, previous_5, momentum_20, momentum_40, momentum_60 = indices
             row = rows_by_date.get(day)
@@ -261,8 +284,10 @@ def _build_samples(
             if any(raw_features.missing_mask):
                 continue
             features = raw_features.require_complete()
-            by_date[row.trade_date].append(
-                _Sample(
+            if row.is_st or row.unadjusted.trading_status != "trading":
+                continue
+            raw_samples.append(
+                V3StoredSample(
                     code,
                     row.trade_date,
                     row.board,
@@ -270,37 +295,35 @@ def _build_samples(
                     average_amount_20d,
                     features,
                     float(next_row.qfq.close_price) / close - 1.0,
-                    not row.is_st and row.unadjusted.trading_status == "trading",
                 )
             )
+        store.add_raw(raw_samples)
         if position == 1 or position % 50 == 0 or position == len(codes):
             _publish_progress(progress, "sample_build", position, len(codes))
-    result: list[_Sample] = []
-    for day, values in by_date.items():
-        eligible = tuple(item for item in values if item.eligible)
-        if not eligible:
+    for day in store.raw_dates():
+        values = store.raw_for_date(day)
+        if not values:
             continue
-        benchmark = math.fsum(item.next_return for item in eligible) / len(eligible)
+        benchmark = math.fsum(item.target for item in values) / len(values)
         residuals = _residualize_sample_day(
-            tuple(item.features[3:] for item in eligible),
-            tuple(item.board for item in eligible),
-            tuple(item.industry for item in eligible),
-            tuple(item.average_amount_20d for item in eligible),
+            tuple(item.features[3:] for item in values),
+            tuple(item.board for item in values),
+            tuple(item.industry for item in values),
+            tuple(item.average_amount_20d for item in values),
         )
-        for index, item in enumerate(eligible):
-            result.append(
-                _Sample(
-                    item.code,
-                    day,
-                    item.board,
-                    item.industry,
-                    item.average_amount_20d,
-                    (*item.features[:3], *(values[index] for values in residuals)),
-                    training_alpha_target(next_return=item.next_return, benchmark_return=benchmark),
-                    item.eligible,
-                )
+        store.add_final(
+            V3StoredSample(
+                item.code,
+                day,
+                item.board,
+                item.industry,
+                item.average_amount_20d,
+                (*item.features[:3], *(residual[index] for residual in residuals)),
+                training_alpha_target(next_return=item.target, benchmark_return=benchmark),
             )
-    return tuple(sorted(result, key=lambda item: (item.trade_date, item.code)))
+            for index, item in enumerate(values)
+        )
+        store.discard_raw_date(day)
 
 
 def training_alpha_target(*, next_return: float, benchmark_return: float) -> float:
@@ -363,30 +386,21 @@ def _residualize_sample_day(
     )
 
 
-def _fit_models(
-    samples: tuple[_Sample, ...], split: BaoStockTrainingSplit
-) -> tuple[dict[str, dict[str, object]], int, int]:
+def _fit_models(samples: V3SampleStore, split: BaoStockTrainingSplit) -> tuple[dict[str, dict[str, object]], int, int]:
     models: dict[str, dict[str, object]] = {}
-    training = tuple(item for item in samples if item.trade_date in split.model_fit_dates and item.eligible)
-    calibration = tuple(item for item in samples if item.trade_date in split.calibration_dates and item.eligible)
-    validation = tuple(
-        item
-        for item in samples
-        if item.trade_date in (*split.confirmation_dates, *split.daily_proxy_holdout_dates) and item.eligible
-    )
-    for industry in sorted({item.industry for item in training}):
-        train_rows = tuple(item for item in training if item.industry == industry)
-        calibration_rows = tuple(item for item in calibration if item.industry == industry)
-        valid_rows = tuple(item for item in validation if item.industry == industry)
-        early_rows = tuple(
-            item
-            for item in samples
-            if item.trade_date in split.early_stopping_dates and item.industry == industry and item.eligible
-        )
+    training_dates = frozenset(split.model_fit_dates)
+    calibration_dates = frozenset(split.calibration_dates)
+    early_dates = frozenset(split.early_stopping_dates)
+    validation_dates = frozenset((*split.confirmation_dates, *split.daily_proxy_holdout_dates))
+    for industry in samples.industries(training_dates):
+        train_rows = samples.samples_for(industry, training_dates)
+        calibration_rows = samples.samples_for(industry, calibration_dates)
+        valid_rows = samples.samples_for(industry, validation_dates)
+        early_rows = samples.samples_for(industry, early_dates)
         if len(train_rows) < 20_000 or not calibration_rows or not early_rows or not valid_rows:
             continue
         features = np.asarray(tuple(item.features for item in train_rows), dtype=np.float64)
-        labels = np.asarray(tuple(item.next_return for item in train_rows), dtype=np.float64)
+        labels = np.asarray(tuple(item.target for item in train_rows), dtype=np.float64)
         means = features.mean(axis=0)
         scales = np.where(features.std(axis=0) > 1e-12, features.std(axis=0), 1.0)
         normalized = (features - means) / scales
@@ -405,12 +419,16 @@ def _fit_models(
                 "num_boost_round": 200,
                 "max_bin": 63,
                 "deterministic": True,
+                "seed": 0,
+                "feature_fraction_seed": 0,
+                "bagging_seed": 0,
+                "data_random_seed": 0,
                 "num_threads": 1,
                 "verbosity": -1,
             },
             lgb.Dataset(normalized, label=labels),
             num_boost_round=200,
-            valid_sets=[lgb.Dataset(early_features, label=np.asarray(tuple(item.next_return for item in early_rows)))],
+            valid_sets=[lgb.Dataset(early_features, label=np.asarray(tuple(item.target for item in early_rows)))],
             callbacks=[lgb.early_stopping(20, verbose=False)],
         )
         calibration_features = (
@@ -419,7 +437,7 @@ def _fit_models(
         tree = booster.predict(calibration_features, num_iteration=booster.best_iteration)
         ridge = coefficients[0] + calibration_features @ coefficients[1:]
         predicted = 0.5 * ridge + 0.5 * tree
-        actual = np.asarray(tuple(item.next_return for item in calibration_rows))
+        actual = np.asarray(tuple(item.target for item in calibration_rows))
         slope, intercept = np.polyfit(predicted, actual, 1) if len(calibration_rows) >= 2 else (1.0, 0.0)
         models[industry] = {
             "transformer_means": means.tolist(),
@@ -433,7 +451,7 @@ def _fit_models(
             "training_rows": len(train_rows),
             "validation_rows": len(valid_rows),
         }
-    return models, len(training), len(validation)
+    return models, samples.count(training_dates), samples.count(validation_dates)
 
 
 def _build_report(
@@ -447,6 +465,9 @@ def _build_report(
         "model_id": _MODEL_ID,
         "training_input_scope": context.training_input_scope,
         "training_input_hash": context.training_input_hash,
+        "parent_manifest_hash": context.parent_manifest_hash,
+        "increment_manifest_hash": context.increment_manifest_hash,
+        "training_input_document_hash": context.training_input_document_hash,
         "training_input_codes": context.training_input_codes,
         "training_universe_codes": context.training_universe_codes,
         "feature_manifest_hash": TOMORROW_MODEL_FEATURE_MANIFEST.content_hash,
@@ -493,6 +514,9 @@ def _model_document(
         },
         "training_input_scope": context.training_input_scope,
         "training_input_hash": context.training_input_hash,
+        "parent_manifest_hash": context.parent_manifest_hash,
+        "increment_manifest_hash": context.increment_manifest_hash,
+        "training_input_document_hash": context.training_input_document_hash,
         "training_input_codes": context.training_input_codes,
         "training_universe_codes": context.training_universe_codes,
         "split_hash": context.split.content_hash,
@@ -522,7 +546,7 @@ def _model_document(
 
 
 def _training_contract_hash(
-    snapshot: BaoStockTrainingTrainingInputSnapshot,
+    snapshot: BaoStockActiveTrainingInputSnapshot,
     split: BaoStockTrainingSplit,
     source_commit: str,
 ) -> str:
@@ -531,6 +555,11 @@ def _training_contract_hash(
         "source_commit": source_commit,
         "training_input_scope": snapshot.input_scope,
         "training_input_hash": snapshot.input_hash,
+        "parent_manifest_hash": snapshot.parent_manifest_hash,
+        "increment_manifest_hash": snapshot.increment_manifest_hash,
+        "calendar_hash": snapshot.calendar_hash,
+        "source_cutoff": snapshot.source_cutoff.isoformat(),
+        "input_descriptor_hash": snapshot.input_descriptor_hash,
         "feature_manifest_hash": TOMORROW_MODEL_FEATURE_MANIFEST.content_hash,
         "feature_ids": list(TOMORROW_MODEL_FEATURE_MANIFEST.names),
         "feature_units": list(TOMORROW_MODEL_FEATURE_MANIFEST.units),
@@ -551,19 +580,23 @@ def _training_contract_hash(
     return artifact_content_hash(contract)
 
 
-def _write_training_input_evidence(
-    output: Path,
-    snapshot: BaoStockTrainingTrainingInputSnapshot,
+def _training_input_document(
+    snapshot: BaoStockActiveTrainingInputSnapshot,
     source_commit: str,
     training_contract_hash: str,
-) -> None:
+) -> dict[str, object]:
     document: dict[str, object] = {
         "schema_version": "tomorrow_training_input",
         "training_input_scope": snapshot.input_scope,
         "training_input_hash": snapshot.input_hash,
+        "parent_manifest_hash": snapshot.parent_manifest_hash,
+        "increment_manifest_hash": snapshot.increment_manifest_hash,
+        "calendar_hash": snapshot.calendar_hash,
+        "source_cutoff": snapshot.source_cutoff.isoformat(),
+        "requested_sessions": len(snapshot.calendar.open_dates),
+        "input_descriptor_hash": snapshot.input_descriptor_hash,
         "training_input_codes": len(snapshot.training_codes),
         "training_universe_codes": snapshot.universe_count,
-        "completed_codes": snapshot.completed_code_count,
         "codes": list(snapshot.training_codes),
         "source_commit": source_commit,
         "feature_manifest_hash": TOMORROW_MODEL_FEATURE_MANIFEST.content_hash,
@@ -574,7 +607,7 @@ def _write_training_input_evidence(
         "production_authority": False,
     }
     document["content_hash"] = artifact_content_hash(document)
-    _write_json(output / "training-input.json", document)
+    return document
 
 
 def _model_payload_hash(document: dict[str, object]) -> str:
@@ -582,13 +615,8 @@ def _model_payload_hash(document: dict[str, object]) -> str:
     return artifact_content_hash({key: value for key, value in document.items() if key not in excluded})
 
 
-def _historical_failure_reasons(
-    training_input_scope: str,
-) -> tuple[str, ...]:
-    reasons = ["daily_close_proxy_not_point_in_time"]
-    if training_input_scope == "partial_checkpoint":
-        reasons.append("partial_history_pipeline_trial")
-    return tuple(reasons)
+def _historical_failure_reasons(_training_input_scope: str) -> tuple[str, ...]:
+    return ("daily_close_proxy_not_point_in_time",)
 
 
 def _training_output_directory(train_root: Path) -> Path:

@@ -87,15 +87,29 @@ def test_remaining_v3_research_has_isolated_owners_and_one_public_command() -> N
         assert f"`./run.sh {internal_stage}" not in strategy
 
 
-def test_trained_v3_profile_loads_the_direct_model_and_remains_content_hash_bound() -> None:
+def test_trained_v3_profile_loads_only_the_active_hash_bound_group() -> None:
     strategy = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
     design = (ROOT / "docs" / "02_工程设计.md").read_text(encoding="utf-8")
     model_port = (ROOT / "src" / "trader" / "application" / "ports" / "model_scoring.py").read_text(encoding="utf-8")
 
     locator = (ROOT / "src/trader/infra/scoring/profiles/v3/bundle_locator.py").read_text(encoding="utf-8")
+    store = (ROOT / "src/trader/infra/scoring/profiles/v3/bundle_store.py").read_text(encoding="utf-8")
     assert "tomorrow-v3" in locator
-    assert "model.json" in locator
+    assert "active-bundle.json" in store
+    assert "model.json" in store
     assert "内容和父身份全部有效" in strategy
-    assert "模型与报告必须构成来源/输入/特征/切分/训练合同/模型载荷 hash 一致的逻辑对" in design
+    assert "active-bundle.json" in design
+    assert "三者必须共享" in design
     assert "15:00_close_proxy" in design
     assert "class ModelPredictorPort" in model_port
+
+
+def test_v3_training_owns_one_active_archive_and_disk_backed_sample_source() -> None:
+    training = (ROOT / "src/trader/infra/scoring/profiles/v3/training.py").read_text(encoding="utf-8")
+
+    assert "BaoStockActiveTrainingInputArchive.open" in training
+    assert "BaoStockTrainingTrainingInputArchive" not in training
+    assert "V3SampleStore" in training
+    assert "defaultdict" not in training
+    assert "tuple[_Sample" not in training
+    assert "allow_partial_history" not in training

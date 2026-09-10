@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Literal, cast
 
@@ -26,6 +27,9 @@ _DOCUMENT_FIELDS = {
     "exposure_contract",
     "training_input_scope",
     "training_input_hash",
+    "parent_manifest_hash",
+    "increment_manifest_hash",
+    "training_input_document_hash",
     "training_input_codes",
     "training_universe_codes",
     "split_hash",
@@ -56,6 +60,9 @@ _REPORT_FIELDS = {
     "model_id",
     "training_input_scope",
     "training_input_hash",
+    "parent_manifest_hash",
+    "increment_manifest_hash",
+    "training_input_document_hash",
     "training_input_codes",
     "training_universe_codes",
     "feature_manifest_hash",
@@ -77,6 +84,27 @@ _REPORT_FIELDS = {
     "validation_passed",
     "failure_reasons",
     "automatic_model_update",
+    "production_authority",
+}
+_TRAINING_INPUT_FIELDS = {
+    "schema_version",
+    "training_input_scope",
+    "training_input_hash",
+    "parent_manifest_hash",
+    "increment_manifest_hash",
+    "calendar_hash",
+    "source_cutoff",
+    "requested_sessions",
+    "input_descriptor_hash",
+    "training_input_codes",
+    "training_universe_codes",
+    "codes",
+    "source_commit",
+    "feature_manifest_hash",
+    "training_contract_hash",
+    "label_target",
+    "training_cost_bps",
+    "validation_scope",
     "production_authority",
 }
 _INDUSTRY_MODEL_FIELDS = {
@@ -116,8 +144,11 @@ class V3TomorrowBundleArtifact:
     exposure_contract: ExposureContract
     ridge_weight: float
     lightgbm_weight: float
-    training_input_scope: Literal["complete_manifest", "partial_checkpoint"]
+    training_input_scope: Literal["complete_manifest"]
     training_input_hash: str
+    parent_manifest_hash: str
+    increment_manifest_hash: str
+    training_input_document_hash: str
     training_input_codes: int
     training_universe_codes: int
     split_hash: str
@@ -154,8 +185,11 @@ class _DecodedContract:
 @dataclass(frozen=True)
 class _V3TrainingReportArtifact:
     content_hash: str
-    training_input_scope: Literal["complete_manifest", "partial_checkpoint"]
+    training_input_scope: Literal["complete_manifest"]
     training_input_hash: str
+    parent_manifest_hash: str
+    increment_manifest_hash: str
+    training_input_document_hash: str
     training_input_codes: int
     training_universe_codes: int
     feature_manifest_hash: str
@@ -169,12 +203,28 @@ class _V3TrainingReportArtifact:
     validation_rows: int
 
 
+@dataclass(frozen=True)
+class _V3TrainingInputArtifact:
+    content_hash: str
+    training_input_scope: Literal["complete_manifest"]
+    training_input_hash: str
+    parent_manifest_hash: str
+    increment_manifest_hash: str
+    feature_manifest_hash: str
+    source_commit: str
+    training_contract_hash: str
+    training_input_codes: int
+    training_universe_codes: int
+
+
 def load_tomorrow_bundle(path: Path) -> V3TomorrowBundleArtifact:
     document = json.loads(path.read_text(encoding="utf-8"))
     artifact = decode_tomorrow_bundle(document)
     report_path = path.with_name("report.json")
     report = _decode_training_report(json.loads(report_path.read_text(encoding="utf-8")))
-    _validate_report_pair(artifact, report)
+    input_path = path.with_name("training-input.json")
+    training_input = _decode_training_input(json.loads(input_path.read_text(encoding="utf-8")))
+    _validate_bundle_group(artifact, report, training_input)
     return artifact
 
 
@@ -197,6 +247,9 @@ def decode_tomorrow_bundle(document: object) -> V3TomorrowBundleArtifact:
         contract.lightgbm_weight,
         _training_input_scope(payload),
         _text(payload, "training_input_hash"),
+        _text(payload, "parent_manifest_hash"),
+        _text(payload, "increment_manifest_hash"),
+        _text(payload, "training_input_document_hash"),
         _integer(payload, "training_input_codes"),
         _integer(payload, "training_universe_codes"),
         _text(payload, "split_hash"),
@@ -249,6 +302,9 @@ def _decode_contract(
         or feature_units != _FEATURE_UNITS
         or exposure_contract != V3_EXPOSURE_CONTRACT
         or not _sha256_text(payload, "training_input_hash")
+        or not _sha256_text(payload, "parent_manifest_hash")
+        or not _sha256_text(payload, "increment_manifest_hash")
+        or not _sha256_text(payload, "training_input_document_hash")
         or not _sha256_text(payload, "split_hash")
         or not _sha256_text(payload, "report_hash")
         or not _sha256_text(payload, "feature_manifest_hash")
@@ -302,6 +358,9 @@ def _decode_training_report(document: object) -> _V3TrainingReportArtifact:
         _text(payload, "schema_version") != "tomorrow_training_report"
         or _text(payload, "model_id") != _MODEL_ID
         or not _sha256_text(payload, "training_input_hash")
+        or not _sha256_text(payload, "parent_manifest_hash")
+        or not _sha256_text(payload, "increment_manifest_hash")
+        or not _sha256_text(payload, "training_input_document_hash")
         or _text(payload, "feature_manifest_hash") != _FEATURE_MANIFEST_HASH
         or not _sha256_text(payload, "split_hash")
         or not _source_commit(payload)
@@ -330,6 +389,9 @@ def _decode_training_report(document: object) -> _V3TrainingReportArtifact:
         stored_hash,
         _training_input_scope(payload),
         _text(payload, "training_input_hash"),
+        _text(payload, "parent_manifest_hash"),
+        _text(payload, "increment_manifest_hash"),
+        _text(payload, "training_input_document_hash"),
         _integer(payload, "training_input_codes"),
         _integer(payload, "training_universe_codes"),
         _text(payload, "feature_manifest_hash"),
@@ -344,10 +406,66 @@ def _decode_training_report(document: object) -> _V3TrainingReportArtifact:
     )
 
 
-def _validate_report_pair(artifact: V3TomorrowBundleArtifact, report: _V3TrainingReportArtifact) -> None:
+def _decode_training_input(document: object) -> _V3TrainingInputArtifact:
+    if not isinstance(document, dict):
+        raise TypeError("Tomorrow V3 training input must be a JSON object")
+    payload = cast(dict[str, object], dict(document))
+    stored_hash = payload.pop("content_hash", None)
+    codes = _string_list(payload, "codes")
+    if (
+        not isinstance(stored_hash, str)
+        or artifact_content_hash(payload) != stored_hash
+        or set(payload) != _TRAINING_INPUT_FIELDS
+        or _text(payload, "schema_version") != "tomorrow_training_input"
+        or _training_input_scope(payload) != "complete_manifest"
+        or not _sha256_text(payload, "training_input_hash")
+        or not _sha256_text(payload, "parent_manifest_hash")
+        or not _sha256_text(payload, "increment_manifest_hash")
+        or not _sha256_text(payload, "calendar_hash")
+        or not _sha256_text(payload, "input_descriptor_hash")
+        or _text(payload, "feature_manifest_hash") != _FEATURE_MANIFEST_HASH
+        or not _source_commit(payload)
+        or not _sha256_text(payload, "training_contract_hash")
+        or _text(payload, "label_target") != "pre_cost_excess_return"
+        or _integer(payload, "training_cost_bps") != 0
+        or _text(payload, "validation_scope") != "daily_close_engineering_proxy"
+        or _boolean(payload, "production_authority")
+        or _integer(payload, "requested_sessions") != 2000
+        or codes != sorted(set(codes))
+        or any(len(code) != 6 or not code.isdigit() for code in codes)
+        or len(codes) != _integer(payload, "training_input_codes")
+        or len(codes) != _integer(payload, "training_universe_codes")
+    ):
+        raise ValueError("Tomorrow V3 training input identity is invalid")
+    try:
+        date.fromisoformat(_text(payload, "source_cutoff"))
+    except ValueError as exc:
+        raise ValueError("Tomorrow V3 training input source cutoff is invalid") from exc
+    return _V3TrainingInputArtifact(
+        stored_hash,
+        "complete_manifest",
+        _text(payload, "training_input_hash"),
+        _text(payload, "parent_manifest_hash"),
+        _text(payload, "increment_manifest_hash"),
+        _text(payload, "feature_manifest_hash"),
+        _text(payload, "source_commit"),
+        _text(payload, "training_contract_hash"),
+        _integer(payload, "training_input_codes"),
+        _integer(payload, "training_universe_codes"),
+    )
+
+
+def _validate_bundle_group(
+    artifact: V3TomorrowBundleArtifact,
+    report: _V3TrainingReportArtifact,
+    training_input: _V3TrainingInputArtifact,
+) -> None:
     model_values = (
         artifact.training_input_scope,
         artifact.training_input_hash,
+        artifact.parent_manifest_hash,
+        artifact.increment_manifest_hash,
+        artifact.training_input_document_hash,
         artifact.training_input_codes,
         artifact.training_universe_codes,
         artifact.feature_manifest_hash,
@@ -363,6 +481,9 @@ def _validate_report_pair(artifact: V3TomorrowBundleArtifact, report: _V3Trainin
     report_values = (
         report.training_input_scope,
         report.training_input_hash,
+        report.parent_manifest_hash,
+        report.increment_manifest_hash,
+        report.training_input_document_hash,
         report.training_input_codes,
         report.training_universe_codes,
         report.feature_manifest_hash,
@@ -375,8 +496,35 @@ def _validate_report_pair(artifact: V3TomorrowBundleArtifact, report: _V3Trainin
         report.training_rows,
         report.validation_rows,
     )
-    if artifact.report_hash != report.content_hash or model_values != report_values:
-        raise ValueError("Tomorrow V3 model and report pair is inconsistent")
+    input_values = (
+        training_input.training_input_scope,
+        training_input.training_input_hash,
+        training_input.parent_manifest_hash,
+        training_input.increment_manifest_hash,
+        training_input.feature_manifest_hash,
+        training_input.source_commit,
+        training_input.training_contract_hash,
+        training_input.training_input_codes,
+        training_input.training_universe_codes,
+    )
+    group_values = (
+        artifact.training_input_scope,
+        artifact.training_input_hash,
+        artifact.parent_manifest_hash,
+        artifact.increment_manifest_hash,
+        artifact.feature_manifest_hash,
+        artifact.source_commit,
+        artifact.training_contract_hash,
+        artifact.training_input_codes,
+        artifact.training_universe_codes,
+    )
+    if (
+        artifact.report_hash != report.content_hash
+        or model_values != report_values
+        or artifact.training_input_document_hash != training_input.content_hash
+        or input_values != group_values
+    ):
+        raise ValueError("Tomorrow V3 model, report, and training input group is inconsistent")
 
 
 def _model_payload_hash(payload: dict[str, object]) -> str:
@@ -391,11 +539,7 @@ def _source_commit(payload: dict[str, object]) -> bool:
 
 def _proxy_failure_reasons(payload: dict[str, object]) -> bool:
     reasons = tuple(_string_list(payload, "historical_failure_reasons"))
-    allowed = {"daily_close_proxy_not_point_in_time", "partial_history_pipeline_trial"}
-    return reasons in {
-        ("daily_close_proxy_not_point_in_time",),
-        ("daily_close_proxy_not_point_in_time", "partial_history_pipeline_trial"),
-    } and set(reasons).issubset(allowed)
+    return reasons == ("daily_close_proxy_not_point_in_time",)
 
 
 def _decode_industries(
@@ -500,11 +644,11 @@ def _industry_name(value: object) -> str:
     return value.strip()
 
 
-def _training_input_scope(payload: dict[str, object]) -> Literal["complete_manifest", "partial_checkpoint"]:
+def _training_input_scope(payload: dict[str, object]) -> Literal["complete_manifest"]:
     value = _text(payload, "training_input_scope")
-    if value not in ("complete_manifest", "partial_checkpoint"):
+    if value != "complete_manifest":
         raise ValueError("Tomorrow V3 training input scope is invalid")
-    return cast(Literal["complete_manifest", "partial_checkpoint"], value)
+    return "complete_manifest"
 
 
 def _text(payload: dict[str, object], name: str) -> str:

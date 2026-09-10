@@ -145,8 +145,7 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
     assert "./run.sh download_history        下载/续传 BaoStock 历史日线归档" in completed.stdout
     assert "./run.sh train-tomorrow          从完整 manifest 运行 Tomorrow 训练" in completed.stdout
-    assert "./run.sh train-tomorrow --allow-partial-history" in completed.stdout
-    assert "从已提交 checkpoint 运行非生产流程试训" in completed.stdout
+    assert "--allow-partial-history" not in completed.stdout
     assert "research-r7-dossier" not in completed.stdout
     assert "所有命令都可追加 --profile v1|v2|v3；未指定时为 V1" in completed.stdout
     assert "./run.sh serve" not in completed.stdout
@@ -409,8 +408,7 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert "research-history" not in powershell
     assert "research-screen" not in powershell
     assert ".\\run.ps1 train-tomorrow          从完整 manifest 运行 Tomorrow 训练" in powershell
-    assert ".\\run.ps1 train-tomorrow --allow-partial-history" in powershell
-    assert "从已提交 checkpoint 运行非生产流程试训" in powershell
+    assert "--allow-partial-history" not in powershell
     assert "所有命令都可追加 --profile v1|v2|v3；未指定时为 V1" in powershell
     assert "& $SelectedEntryPoint --help" in powershell
     assert '$ScoringProfile -notin @("v1", "v2", "v3")' in powershell
@@ -509,19 +507,18 @@ def test_train_tomorrow_passes_the_explicit_history_root_to_the_training_owner(
     config = tmp_path / "runtime.json"
     config.write_text(json.dumps(runtime), encoding="utf-8")
     history = tmp_path / "downloaded-history"
-    observed: list[tuple[Path, Path, bool]] = []
+    observed: list[tuple[Path, Path]] = []
 
     def train(
         history_root: Path,
         train_root: Path,
         *,
-        allow_partial_history: bool,
         progress: object,
         source_commit: str,
     ) -> SimpleNamespace:
         assert progress is not None
         assert len(source_commit) == 40
-        observed.append((history_root, train_root, allow_partial_history))
+        observed.append((history_root, train_root))
         return SimpleNamespace(
             status="blocked",
             run_id=None,
@@ -547,13 +544,12 @@ def test_train_tomorrow_passes_the_explicit_history_root_to_the_training_owner(
                 "train-tomorrow",
                 "--runtime-dir",
                 str(history),
-                "--allow-partial-history",
             ]
         )
         == 1
     )
 
-    assert observed == [(history, ROOT / "data" / "train", True)]
+    assert observed == [(history, ROOT / "data" / "train")]
     assert json.loads(capsys.readouterr().out)["report_hash"] == ""
 
 

@@ -14,6 +14,17 @@ from trader.domain.research.baostock_active_archive import (
     BaoStockArchiveRecordKey,
     BaoStockFieldCoverage,
 )
+from trader.domain.research.baostock_daily import (
+    BaoStockCalendar,
+    BaoStockDailyFact,
+    BaoStockDailyJoinRequest,
+    BaoStockDailySide,
+    BaoStockDailySpec,
+    BaoStockIndustryInterval,
+    BaoStockSecurity,
+    BaoStockSourceVersions,
+    join_baostock_daily_sides,
+)
 from trader.domain.research.h1_point_in_time import canonical_hash
 from trader.infra.research.baostock_active_archive import (
     BaoStockActiveArchive,
@@ -21,6 +32,9 @@ from trader.infra.research.baostock_active_archive import (
     BaoStockActiveArchiveView,
     BaoStockIncrementRecord,
 )
+from trader.infra.research.baostock_active_training import BaoStockActiveTrainingInputArchive
+from trader.infra.research.baostock_catalog import file_sha256
+from trader.infra.research.baostock_daily import BaoStockDailyPartitionedArchive, SQLiteBaoStockDailyShard
 
 
 def _context(root: Path) -> BaoStockActiveArchiveContext:
@@ -273,6 +287,105 @@ def test_active_archive_exposes_hash_bound_dynamic_calendar_and_training_descrip
     assert descriptor.manifest_hash == active.active_data_hash
     assert descriptor.source_cutoff == context.source_cutoff
     assert descriptor.requested_sessions == len(context.active_calendar_dates)
+
+
+def test_active_training_input_reads_parent_plus_increment_as_one_deterministic_population(tmp_path: Path) -> None:
+    parent_day = date(2026, 9, 7)
+    spec = BaoStockDailySpec(sessions=1, source_cutoff=parent_day)
+    calendar = BaoStockCalendar((parent_day,))
+    security = BaoStockSecurity("600001", "A", "main", parent_day, None, "fixture")
+    versions = BaoStockSourceVersions("0.9.3", "3.14.0", (("pandas", "2.3.0"),))
+    shard = SQLiteBaoStockDailyShard(tmp_path / "shards/main-6000.sqlite3")
+    shard.initialize(
+        spec, calendar, (security,), versions, (BaoStockIndustryInterval("600001", parent_day, None, "银行", "申万"),)
+    )
+    sides = tuple(
+        BaoStockDailySide(
+            "600001",
+            parent_day,
+            adjustment,
+            7.0,
+            7.0,
+            7.0,
+            7.0,
+            1.0,
+            1.0,
+            7.0 if adjustment == "unadjusted" else None,
+            0.0 if adjustment == "unadjusted" else None,
+            0.0 if adjustment == "unadjusted" else None,
+            "trading",
+        )
+        for adjustment in ("unadjusted", "qfq")
+    )
+    batch = join_baostock_daily_sides(
+        BaoStockDailyJoinRequest("600001", (parent_day,), parent_day), (sides[0],), (sides[1],)
+    )
+    shard.save_batch(spec, batch)
+    shard.save_training_facts(
+        spec,
+        "600001",
+        (BaoStockDailyFact("600001", parent_day, False),),
+        (BaoStockIndustryInterval("600001", parent_day, None, "银行", "申万"),),
+    )
+    parent = BaoStockDailyPartitionedArchive(tmp_path).write(spec, (shard,))
+    child_day = date(2026, 9, 8)
+    dates = (parent_day, child_day)
+    context = BaoStockActiveArchiveContext(
+        parent.content_hash,
+        file_sha256(tmp_path / "manifest.json"),
+        child_day,
+        canonical_hash(dates),
+        "d" * 64,
+        (("600001", "main-6000"),),
+        dates,
+    )
+    archive = BaoStockActiveArchive(tmp_path, context)
+    writer = archive.resume_writer()
+    for family, payload in (
+        ("daily_raw", _side_payload(child_day, "unadjusted", 8.0)),
+        ("daily_qfq", _side_payload(child_day, "qfq", 8.0)),
+        ("is_st", {"code": "600001", "trade_date": child_day.isoformat(), "is_st": False}),
+    ):
+        writer.save(
+            BaoStockIncrementRecord(
+                BaoStockArchiveRecordKey("600001", child_day, family),
+                json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            )
+        )
+    active = archive.publish(writer, _coverage())
+
+    training = BaoStockActiveTrainingInputArchive.open(tmp_path)
+    rows = training.read_training_rows("600001", allowed_dates=frozenset(dates))
+
+    assert tuple(row.trade_date for row in rows) == dates
+    assert tuple(row.qfq.close_price for row in rows) == (7.0, 8.0)
+    assert all(row.industry == "银行" for row in rows)
+    assert training.snapshot.input_hash == active.active_data_hash
+    assert training.snapshot.parent_manifest_hash == active.parent_manifest_hash
+    assert training.snapshot.increment_manifest_hash == active.increment_manifest_hash
+
+    shard.path.write_bytes(shard.path.read_bytes() + b"tampered")
+    with pytest.raises(BaoStockActiveArchiveConflictError, match="parent"):
+        BaoStockActiveTrainingInputArchive.open(tmp_path)
+
+
+def _side_payload(day: date, adjustment: str, price: float) -> dict[str, object]:
+    qfq = adjustment == "qfq"
+    return {
+        "code": "600001",
+        "trade_date": day.isoformat(),
+        "adjustment": adjustment,
+        "open_price": price,
+        "high_price": price,
+        "low_price": price,
+        "close_price": price,
+        "volume": 1.0,
+        "amount": 1.0,
+        "preclose": None if qfq else price,
+        "pct_change": None if qfq else 0.0,
+        "turnover": None if qfq else 0.0,
+        "trading_status": "trading",
+    }
 
 
 def test_active_view_reads_parent_then_increment_and_rejects_overlap_conflicts(tmp_path: Path) -> None:

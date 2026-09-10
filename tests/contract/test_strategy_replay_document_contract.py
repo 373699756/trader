@@ -99,11 +99,11 @@ def test_strategy_replay_document_keeps_public_commands_and_strategy_ownership_b
         assert required in content
 
 
-def test_strategy_replay_document_explains_planned_incremental_download_and_atomic_training() -> None:
+def test_strategy_replay_document_explains_incremental_download_and_atomic_training() -> None:
     content = REPLAY.read_text(encoding="utf-8")
 
     for required in (
-        "尚未改为逐行读取父加增量活动归档",
+        "训练命令现已逐股读取该活动归档",
         "--mode update",
         "history-plan",
         "父归档",
@@ -118,8 +118,8 @@ def test_strategy_replay_document_explains_planned_incremental_download_and_atom
         "同一 key 内容冲突",
         "扣成本前超额收益",
         "raw `next_return`",
-        "整组原子切换",
-        "失败时保留上一组有效工件",
+        "active-bundle.json",
+        "失败时保留上一活动组",
         "historical_data_insufficient",
         "point_in_time_parity=false",
         "production_authority=false",

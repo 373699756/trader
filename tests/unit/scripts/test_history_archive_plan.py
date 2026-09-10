@@ -170,6 +170,21 @@ def test_archive_plan_reuses_existing_rows_and_requests_only_missing_families(tm
     assert after == before
 
 
+def test_archive_plan_ignores_the_removed_root_training_input_path(tmp_path: Path) -> None:
+    _archive(tmp_path)
+    legacy = tmp_path / "train/tomorrow-v3/training-input.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(json.dumps({"training_input_hash": "9" * 64}), encoding="utf-8")
+
+    plan = build_archive_plan(
+        tmp_path,
+        target_open_dates=(date(2026, 8, 28), date(2026, 8, 31), date(2026, 9, 1)),
+    )
+
+    assert plan.training_input_hash is None
+    assert plan.training_input_file_hash is None
+
+
 def test_archive_plan_rejects_a_target_calendar_that_does_not_extend_the_parent(tmp_path: Path) -> None:
     _archive(tmp_path)
 

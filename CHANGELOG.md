@@ -6,6 +6,32 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- 用户要求继续执行 `v3_training_artifact_rebuild`。根因确认：训练器仍打开旧固定截止目录的
+  `BaoStockTrainingTrainingInputArchive`，按日期聚合全量 `_Sample` 后又复制训练/校准/验证集合，且
+  `training-input.json`、`report.json`、`model.json` 逐文件覆盖，失败可能留下混合代际；运行 loader 只校验
+  模型/报告二件配对，旧 partial checkpoint 参数继续形成第二套输入真相。Added: 新增父加增量 active archive
+  的有类型逐股训练读取面、SQLite 一次性样本工作库、三件工件 codec、内容寻址 generation、原子
+  `active-bundle.json` 指针，以及显式真实训练峰值 RSS 脚本。Changed: 训练输入一次绑定 active data、父
+  manifest、increment manifest、动态截止日、精确 2000 日历、代码总体和 descriptor hash；按代码构造原始
+  样本、按单日有界残差化、按行业/切分拟合，LightGBM 固定全部随机种子。三个 JSON 只在独立临时目录全部
+  生成并通过 codec/父身份配对后发布，任何生成、校验或指针切换失败都保留上一活动组；V3 loader 只跟随
+  活动指针，历史增量计划的训练输入诊断也只跟随同一已校验指针，不读取旧根目录文件。Removed: 删除公开
+  `--allow-partial-history` 和训练/codec 的 partial
+  checkpoint 双表示；旧 schema、缺件、篡改和父身份错配继续失败关闭，不给旧工件补字段。Verification:
+  active 父加增量合并、磁盘样本稳定顺序/10 万行工作集、三件配对、旧格式及旧根路径拒绝、相同输入同
+  generation、失败发布保留旧指针、CLI/文档/架构定向回归通过；`make format-check`、`make lint`（严格重构债务为零）、
+  `make type-check`（387 个源码文件）、完整 `make test`、`make package` 和 `make performance-check` 全部通过，
+  固定生产性能负载仍为 5500/1080、`network_calls=0`、峰值 RSS 297328 KiB。打包首次仅因沙箱禁止隔离环境
+  连接 setuptools 索引失败，获准在主机环境以同一命令重跑后成功。真实训练命令和内存脚本均已对本机历史根
+  运行并返回 `status=blocked`、`history_manifest_unavailable`；脚本进程峰值 RSS 98971648 字节只代表失败前置，
+  不能当作训练内存通过，且没有发布或改写工件。
+  Residual Risks: 本机 `data/history/baostock-daily/sessions-2000` 缺少 `active-manifest.json`，所以不能伪造真实
+  新模型、重复训练内容 hash 或 2048 MiB 峰值 RSS 通过；实施计划继续把本章保持为唯一 `in_progress`，并明确
+  active archive 实物阻塞，下一 V3 运行验收继续被阻塞。须先由既有下载链形成有效 active archive，
+  再复用 `scripts/check_tomorrow_training_memory.py` 对仓库外输出完成真实重训与内存证据。本批不打开终端留出、不授予
+  生产权限、不改默认 V1、评分/候选权重、每板 120、68/32、DeepSeek 168、Top6、动作线或冻结规则。
+  `Regression-Key: v3-training-active-archive-atomic-bundle`。
+
 - 用户要求继续执行 `scoring_weight_configuration_single_source`，并明确所有权重参数必须全部在配置文件中。
   根因确认：板块候选/本地权重和 DeepSeek 维度虽已由配置加载，但候选与本地组件内部、趋势/行业政策/风险
   保护复合特征仍在领域或行情特征代码中写死数值；设置校验器又保存一套板块、维度和融合固定表，融合策略及

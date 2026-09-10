@@ -13,6 +13,7 @@ from trader.infra.scoring.artifact_hashing import artifact_content_hash
 from trader.infra.scoring.profile_factory import load_scoring_profile
 from trader.infra.scoring.profiles.v3.bundle_codec import decode_tomorrow_bundle, load_tomorrow_bundle
 from trader.infra.scoring.profiles.v3.bundle_locator import locate_latest_bundle
+from trader.infra.scoring.profiles.v3.bundle_store import publish_tomorrow_bundle
 from trader.infra.scoring.profiles.v3.profile import build_scoring_profile, build_tomorrow_predictor
 
 
@@ -43,6 +44,9 @@ def _document() -> dict[str, object]:
         },
         "training_input_scope": "complete_manifest",
         "training_input_hash": "a" * 64,
+        "parent_manifest_hash": "1" * 64,
+        "increment_manifest_hash": "2" * 64,
+        "training_input_document_hash": "3" * 64,
         "training_input_codes": 100,
         "training_universe_codes": 100,
         "split_hash": "b" * 64,
@@ -101,6 +105,9 @@ def _report(document: dict[str, object]) -> dict[str, object]:
         "model_id": document["model_id"],
         "training_input_scope": document["training_input_scope"],
         "training_input_hash": document["training_input_hash"],
+        "parent_manifest_hash": document["parent_manifest_hash"],
+        "increment_manifest_hash": document["increment_manifest_hash"],
+        "training_input_document_hash": document["training_input_document_hash"],
         "training_input_codes": document["training_input_codes"],
         "training_universe_codes": document["training_universe_codes"],
         "feature_manifest_hash": document["feature_manifest_hash"],
@@ -130,32 +137,116 @@ def _report(document: dict[str, object]) -> dict[str, object]:
 
 def _write_bundle(path: Path, document: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    training_input = _training_input(document)
+    document["training_input_document_hash"] = training_input["content_hash"]
+    document.pop("content_hash", None)
+    document["model_payload_hash"] = _model_payload_hash(document)
     report = _report(document)
-    document.pop("content_hash")
     document["report_hash"] = report["content_hash"]
     document["content_hash"] = artifact_content_hash(document)
     path.write_text(json.dumps(document), encoding="utf-8")
     path.with_name("report.json").write_text(json.dumps(report), encoding="utf-8")
+    path.with_name("training-input.json").write_text(json.dumps(training_input), encoding="utf-8")
 
 
-def test_v3_locator_uses_the_direct_training_model(tmp_path: Path) -> None:
-    model = tmp_path / "tomorrow-v3/model.json"
-    legacy = tmp_path / "tomorrow-v3/input-hash/model.json"
-    _write_bundle(model, _document())
-    _write_bundle(legacy, _document())
+def _training_input(document: dict[str, object]) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": "tomorrow_training_input",
+        "training_input_scope": "complete_manifest",
+        "training_input_hash": document["training_input_hash"],
+        "parent_manifest_hash": document["parent_manifest_hash"],
+        "increment_manifest_hash": document["increment_manifest_hash"],
+        "calendar_hash": "4" * 64,
+        "source_cutoff": "2026-09-09",
+        "requested_sessions": 2000,
+        "input_descriptor_hash": "5" * 64,
+        "training_input_codes": document["training_input_codes"],
+        "training_universe_codes": document["training_universe_codes"],
+        "codes": [f"{index:06d}" for index in range(100)],
+        "source_commit": document["source_commit"],
+        "feature_manifest_hash": document["feature_manifest_hash"],
+        "training_contract_hash": document["training_contract_hash"],
+        "label_target": "pre_cost_excess_return",
+        "training_cost_bps": 0,
+        "validation_scope": "daily_close_engineering_proxy",
+        "production_authority": False,
+    }
+    payload["content_hash"] = artifact_content_hash(payload)
+    return payload
 
-    assert locate_latest_bundle(tmp_path) == model
+
+def test_v3_locator_uses_only_the_atomically_selected_generation(tmp_path: Path) -> None:
+    staging = tmp_path / "staging"
+    _write_bundle(staging / "model.json", _document())
+    selected = publish_tomorrow_bundle(
+        staging,
+        tmp_path / "tomorrow-v3",
+        training_input_hash="a" * 64,
+        parent_manifest_hash="1" * 64,
+        increment_manifest_hash="2" * 64,
+    )
+
+    assert locate_latest_bundle(tmp_path) == selected
+
+    repeated_staging = tmp_path / "repeated-staging"
+    _write_bundle(repeated_staging / "model.json", _document())
+    repeated = publish_tomorrow_bundle(
+        repeated_staging,
+        tmp_path / "tomorrow-v3",
+        training_input_hash="a" * 64,
+        parent_manifest_hash="1" * 64,
+        increment_manifest_hash="2" * 64,
+    )
+    assert repeated == selected
 
 
 def test_v3_locator_fails_closed_when_no_model_exists(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError, match="model.json"):
+    with pytest.raises(FileNotFoundError, match="active-bundle.json"):
         locate_latest_bundle(tmp_path)
 
 
+def test_v3_failed_staging_validation_preserves_the_previous_active_group(tmp_path: Path) -> None:
+    first_staging = tmp_path / "first-staging"
+    _write_bundle(first_staging / "model.json", _document())
+    first = publish_tomorrow_bundle(
+        first_staging,
+        tmp_path / "tomorrow-v3",
+        training_input_hash="a" * 64,
+        parent_manifest_hash="1" * 64,
+        increment_manifest_hash="2" * 64,
+    )
+    pointer_before = (tmp_path / "tomorrow-v3/active-bundle.json").read_bytes()
+    broken_staging = tmp_path / "broken-staging"
+    _write_bundle(broken_staging / "model.json", _document())
+    training_input = json.loads((broken_staging / "training-input.json").read_text(encoding="utf-8"))
+    training_input["parent_manifest_hash"] = "f" * 64
+    (broken_staging / "training-input.json").write_text(json.dumps(training_input), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="training input"):
+        publish_tomorrow_bundle(
+            broken_staging,
+            tmp_path / "tomorrow-v3",
+            training_input_hash="a" * 64,
+            parent_manifest_hash="1" * 64,
+            increment_manifest_hash="2" * 64,
+        )
+
+    assert locate_latest_bundle(tmp_path) == first
+    assert (tmp_path / "tomorrow-v3/active-bundle.json").read_bytes() == pointer_before
+
+
 def test_v3_codec_profile_and_predictor_preserve_the_complete_contract(tmp_path: Path) -> None:
-    path = tmp_path / "tomorrow-v3/model.json"
+    staging = tmp_path / "staging"
+    path = staging / "model.json"
     document = _document()
     _write_bundle(path, document)
+    path = publish_tomorrow_bundle(
+        staging,
+        tmp_path / "tomorrow-v3",
+        training_input_hash="a" * 64,
+        parent_manifest_hash="1" * 64,
+        increment_manifest_hash="2" * 64,
+    )
 
     artifact = load_tomorrow_bundle(path)
     predictor = build_tomorrow_predictor(artifact)
@@ -179,7 +270,7 @@ def test_v3_codec_profile_and_predictor_preserve_the_complete_contract(tmp_path:
         profile.combiner.combine(())
 
 
-def test_partial_v3_profile_scores_but_never_claims_historical_validation() -> None:
+def test_partial_checkpoint_v3_profile_is_rejected_by_the_active_archive_contract() -> None:
     document = _document()
     document.pop("content_hash")
     document["training_input_scope"] = "partial_checkpoint"
@@ -192,18 +283,8 @@ def test_partial_v3_profile_scores_but_never_claims_historical_validation() -> N
     document["model_payload_hash"] = _model_payload_hash(document)
     document["content_hash"] = artifact_content_hash(document)
 
-    profile = build_scoring_profile(decode_tomorrow_bundle(document))
-    prediction = profile.heads[0].predictor.predict(
-        (ModelInput("600000", (0.01, 0.02, 0.03, 0.01, -0.02, 0.03), "银行"),)
-    )
-
-    assert prediction[0].code == "600000"
-    assert profile.evidence.historical_status == "historical_data_insufficient"
-    assert profile.evidence.historical_failure_reasons == (
-        "daily_close_proxy_not_point_in_time",
-        "partial_history_pipeline_trial",
-    )
-    assert profile.evidence.activation_basis == "manual_user_override"
+    with pytest.raises(ValueError, match="identity"):
+        decode_tomorrow_bundle(document)
 
 
 @pytest.mark.parametrize(
@@ -276,7 +357,25 @@ def test_v3_loader_rejects_a_missing_or_mismatched_report_pair(tmp_path: Path) -
     )
     model.with_name("report.json").write_text(json.dumps(report), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="report pair"):
+    with pytest.raises(ValueError, match="group"):
+        load_tomorrow_bundle(model)
+
+
+def test_v3_loader_rejects_a_missing_or_mismatched_training_input(tmp_path: Path) -> None:
+    model = tmp_path / "tomorrow-v3/model.json"
+    _write_bundle(model, _document())
+    model.with_name("training-input.json").unlink()
+    with pytest.raises(FileNotFoundError, match="training-input.json"):
+        load_tomorrow_bundle(model)
+
+    _write_bundle(model, _document())
+    training_input = json.loads(model.with_name("training-input.json").read_text(encoding="utf-8"))
+    training_input["increment_manifest_hash"] = "f" * 64
+    training_input["content_hash"] = artifact_content_hash(
+        {key: value for key, value in training_input.items() if key != "content_hash"}
+    )
+    model.with_name("training-input.json").write_text(json.dumps(training_input), encoding="utf-8")
+    with pytest.raises(ValueError, match="group"):
         load_tomorrow_bundle(model)
 
 

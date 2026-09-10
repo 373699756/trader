@@ -48,11 +48,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("data/history"),
         help="BaoStock history root previously used by download_history.",
     )
-    training.add_argument(
-        "--allow-partial-history",
-        action="store_true",
-        help="Train a non-production V3 pipeline trial from hash-bound training-ready checkpoints.",
-    )
     subparsers.add_parser("validate-config", help="Validate runtime and strategy configuration.")
     performance = subparsers.add_parser(
         "performance-check",
@@ -130,7 +125,6 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
             ResearchCommandOptions(
                 workers=int(getattr(args, "workers", 5)),
                 history_root=_repository_data_path(args.runtime_dir) if args.command == "train-tomorrow" else None,
-                allow_partial_history=bool(getattr(args, "allow_partial_history", False)),
             ),
         )
     return _run_config_validation(runtime, profile_override)

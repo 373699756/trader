@@ -22,8 +22,6 @@ usage() {
     "离线研究（仅在明确执行研究任务时使用）:" \
     "  ./run.sh download_history        下载/续传 BaoStock 历史日线归档" \
     "  ./run.sh train-tomorrow          从完整 manifest 运行 Tomorrow 训练" \
-    "  ./run.sh train-tomorrow --allow-partial-history" \
-    "                                   从已提交 checkpoint 运行非生产流程试训" \
     "" \
     "所有命令都可追加 --profile v1|v2|v3；未指定时为 V1。" \
     "" \

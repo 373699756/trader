@@ -295,8 +295,11 @@ class BaoStockActiveArchive:
     def universe_codes(self) -> tuple[str, ...]:
         return self._context.universe_codes
 
-    def describe_frozen_daily_input(self) -> FrozenDailyInputDescriptor:
-        active = self.verify()
+    def describe_frozen_daily_input(
+        self,
+        verified_manifest: BaoStockActiveManifest | None = None,
+    ) -> FrozenDailyInputDescriptor:
+        active = verified_manifest or self.verify()
         return FrozenDailyInputDescriptor(
             manifest_hash=active.active_data_hash,
             source_identity=BAOSTOCK_RESEARCH_IDENTITY,

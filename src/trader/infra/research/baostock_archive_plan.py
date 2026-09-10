@@ -10,6 +10,8 @@ from datetime import date
 from pathlib import Path
 from typing import cast
 
+from trader.infra.scoring.profiles.v3.bundle_store import locate_active_tomorrow_bundle
+
 
 @dataclass(frozen=True)
 class ArchiveRequestEstimate:
@@ -432,13 +434,16 @@ def _read_only(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(f"file:{path.as_posix()}?mode=ro&immutable=1", uri=True)
 
 
-def _default_training_input(root: Path) -> Path:
+def _default_training_input(root: Path) -> Path | None:
     data_root = next((parent for parent in root.parents if parent.name == "data"), root)
-    return data_root / "train" / "tomorrow-v3" / "training-input.json"
+    output_root = data_root / "train" / "tomorrow-v3"
+    if not (output_root / "active-bundle.json").is_file():
+        return None
+    return locate_active_tomorrow_bundle(output_root).with_name("training-input.json")
 
 
-def _training_hashes(path: Path) -> tuple[str | None, str | None]:
-    if not path.is_file():
+def _training_hashes(path: Path | None) -> tuple[str | None, str | None]:
+    if path is None or not path.is_file():
         return None, None
     raw = _object(json.loads(path.read_text(encoding="utf-8")), "training input")
     value = raw.get("training_input_hash")

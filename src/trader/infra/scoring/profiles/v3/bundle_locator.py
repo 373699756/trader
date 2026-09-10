@@ -6,10 +6,9 @@ from pathlib import Path
 
 
 def locate_latest_bundle(training_root: Path) -> Path:
-    model = training_root / "tomorrow-v3" / "model.json"
-    if not model.is_file():
-        raise FileNotFoundError(model)
-    return model
+    from trader.infra.scoring.profiles.v3.bundle_store import locate_active_tomorrow_bundle
+
+    return locate_active_tomorrow_bundle(training_root / "tomorrow-v3")
 
 
 __all__ = ["locate_latest_bundle"]
