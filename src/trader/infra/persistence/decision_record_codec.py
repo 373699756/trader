@@ -104,6 +104,7 @@ _SELECTION_FIELDS = frozenset(
         "empty_reason",
     }
 )
+_SELECTION_OPTIONAL_FIELDS = frozenset({"evaluated_count"})
 _QUOTE_FIELDS = frozenset(
     {
         "code",
@@ -244,7 +245,12 @@ def _model_diagnostics_from_json(raw: object) -> DecisionModelDiagnostics | None
 def _selection_diagnostics_from_json(raw: object) -> SelectionDiagnostics | None:
     if raw is None:
         return None
-    value = _object(raw, "selection diagnostics", required=_SELECTION_FIELDS)
+    value = _object(
+        raw,
+        "selection diagnostics",
+        required=_SELECTION_FIELDS,
+        optional=_SELECTION_OPTIONAL_FIELDS,
+    )
     return SelectionDiagnostics(
         _optional_number(value.get("maximum_final_score")),
         _number(value, "executable_threshold"),
@@ -255,6 +261,7 @@ def _selection_diagnostics_from_json(raw: object) -> SelectionDiagnostics | None
         _integer(value, "selected_observation_count"),
         _integer(value, "review_candidate_count"),
         _optional_text(value.get("empty_reason")),
+        _optional_integer(value.get("evaluated_count"), "evaluated_count"),
     )
 
 

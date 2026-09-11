@@ -20,6 +20,7 @@ from trader.domain.recommendation.decision_identity import (
     LongProjectionItem,
     ScoredDecision,
     SelectionDiagnostics,
+    formal_scored_decision,
 )
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 from trader.infra.persistence.decision_record_codec import committed_record_bytes, committed_record_from_bytes
@@ -220,16 +221,78 @@ def test_formal_record_round_trip_preserves_display_metadata_and_selection_diagn
     current = replace(
         decision(),
         items=(item,),
-        selection_diagnostics=SelectionDiagnostics(88.0, 78.0, 70.0, 6, 6, 1, 0, 1),
+        selection_diagnostics=SelectionDiagnostics(88.0, 78.0, 70.0, 6, 6, 1, 0, 1, evaluated_count=37),
     )
     record = CommittedDecisionRecord(current, NOW + timedelta(minutes=10), "scheduled")
 
     restored = committed_record_from_bytes(committed_record_bytes(record))
+    encoded = json.loads(committed_record_bytes(record))
 
     assert restored == record
     assert restored.decision.items[0].downside == item.downside
     assert restored.decision.items[0].model_diagnostics == item.model_diagnostics
     assert restored.decision.selection_diagnostics == current.selection_diagnostics
+    assert encoded["decision"]["selection_diagnostics"]["evaluated_count"] == 37
+
+
+def test_formal_record_codec_keeps_pre_aggregate_selection_diagnostics_compatible() -> None:
+    current = replace(
+        decision(),
+        selection_diagnostics=SelectionDiagnostics(88.0, 78.0, 70.0, 6, 6, 1, 0, 1),
+    )
+    record = CommittedDecisionRecord(current, NOW + timedelta(minutes=10), "scheduled")
+
+    encoded = committed_record_bytes(record)
+    restored = committed_record_from_bytes(encoded)
+
+    assert "evaluated_count" not in json.loads(encoded)["decision"]["selection_diagnostics"]
+    assert restored == record
+    assert restored.decision.selection_diagnostics is not None
+    assert restored.decision.selection_diagnostics.evaluated_count is None
+
+
+def test_selection_diagnostics_rejects_inconsistent_evaluated_aggregates() -> None:
+    with pytest.raises(ValueError, match="maximum score must match"):
+        SelectionDiagnostics(97.44, 78.0, 73.0, 6, 6, 0, 0, 0, evaluated_count=0)
+    with pytest.raises(ValueError, match="counts cannot exceed"):
+        SelectionDiagnostics(97.44, 78.0, 73.0, 6, 6, 0, 0, 2, evaluated_count=1)
+
+
+def test_formal_projection_preserves_evaluated_count_without_retaining_non_official_items() -> None:
+    current = replace(
+        decision(),
+        items=(
+            replace(
+                decision().items[0],
+                action=RecommendationAction.UNAVAILABLE,
+                selected=False,
+                rank=0,
+                selection_rank=0,
+            ),
+        ),
+        selection_diagnostics=SelectionDiagnostics(
+            97.44,
+            78.0,
+            73.0,
+            6,
+            6,
+            0,
+            0,
+            0,
+            "no_positive_net_utility",
+            evaluated_count=239,
+        ),
+    )
+
+    formal = formal_scored_decision(current)
+    restored = committed_record_from_bytes(
+        committed_record_bytes(CommittedDecisionRecord(formal, NOW + timedelta(minutes=10), "scheduled"))
+    )
+
+    assert formal.items == ()
+    assert restored.decision.items == ()
+    assert restored.decision.selection_diagnostics is not None
+    assert restored.decision.selection_diagnostics.evaluated_count == 239
 
 
 @pytest.mark.parametrize("location", ["record", "decision", "item"])

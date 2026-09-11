@@ -181,8 +181,70 @@ state.renderSummary(
   {},
 );
 assert.strictEqual(scoreOnlySummary.topScoresStatus.textContent, "最高分 55.00");
-assert.strictEqual(scoreOnlySummary.topScoresMeta.textContent, "最高最终分 · 当前无达到观察门槛的股票");
+assert.strictEqual(scoreOnlySummary.topScoresMeta.textContent, "策略内最高最终分 · 当前无达到观察门槛的股票");
 assert.strictEqual(scoreOnlySummary.inputQualityScoreTime.textContent, "评分于 19:53:30 完成");
+const tomorrowCostGateSummary = summaryFixture();
+state.renderSummary(
+  tomorrowCostGateSummary,
+  {
+    status: "ready",
+    strategy: "tomorrow",
+    trade_date: "2026-08-14",
+    observed_at: "2026-08-14T14:49:30+08:00",
+    frozen: true,
+    score_status: "scored",
+    coverage: { candidate_count: 5323, evaluated_count: 239, rejected_count: 5084 },
+    items: [],
+    selection_diagnostics: {
+      maximum_final_score: 97.44,
+      executable_threshold: 78,
+      observation_floor: 73,
+      empty_reason: "no_positive_net_utility",
+    },
+  },
+  [],
+  "closed",
+  null,
+  sandbox.window.TraderSelection,
+  sandbox.window.TraderRender,
+  {},
+);
+assert.strictEqual(tomorrowCostGateSummary.topScoresStatus.textContent, "最高相对信号分 97.44");
+assert.strictEqual(
+  tomorrowCostGateSummary.topScoresMeta.textContent,
+  "明日策略内相对排名 · 未通过成本门",
+);
+const tomorrowLegacyFrozenSummary = summaryFixture();
+state.renderSummary(
+  tomorrowLegacyFrozenSummary,
+  {
+    status: "ready",
+    strategy: "tomorrow",
+    trade_date: "2026-08-14",
+    observed_at: "2026-08-14T14:49:30+08:00",
+    frozen: true,
+    score_status: "scored",
+    coverage: { candidate_count: 5323, evaluated_count: 0, rejected_count: 5084 },
+    items: [],
+    selection_diagnostics: {
+      maximum_final_score: 97.44,
+      executable_threshold: 78,
+      observation_floor: 73,
+      empty_reason: "no_positive_net_utility",
+    },
+  },
+  [],
+  "closed",
+  null,
+  sandbox.window.TraderSelection,
+  sandbox.window.TraderRender,
+  {},
+);
+assert.strictEqual(tomorrowLegacyFrozenSummary.topScoresStatus.textContent, "暂无可核验评分");
+assert.strictEqual(
+  tomorrowLegacyFrozenSummary.topScoresMeta.textContent,
+  "明日冻结记录 · 已评分证据不完整",
+);
 assert.strictEqual(
   sandbox.window.TraderDashboardDiagnostics.snapshot().webSnapshotRetentionMs,
   35000,

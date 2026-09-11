@@ -16,6 +16,8 @@ from trader.domain.recommendation.decision_identity import (
     LongProjection,
     LongProjectionItem,
     ScoredDecision,
+    SelectionDiagnostics,
+    formal_scored_decision,
 )
 from trader.domain.recommendation.models import RecommendationAction, Strategy
 
@@ -165,6 +167,50 @@ def test_scored_coverage_uses_distinct_evaluation_counts_not_overlapping_reasons
     assert view.coverage.evaluated_count == 1
     assert view.coverage.rejected_count == 81
     assert dict(view.filter_reason_counts) == {"hard_filter": 10}
+
+
+def test_frozen_empty_decision_keeps_aggregate_evaluated_count_without_stock_items() -> None:
+    trade_date = date(2026, 8, 8)
+    item = replace(
+        _decision(trade_date=trade_date).items[0],
+        action=RecommendationAction.UNAVAILABLE,
+        selected=False,
+        rank=0,
+        selection_rank=0,
+        reason="model_net_utility_non_positive",
+    )
+    current = replace(
+        _decision(trade_date=trade_date),
+        strategy=Strategy.TOMORROW,
+        items=(item,),
+        population_count=5323,
+        rejected_count=5084,
+        selection_diagnostics=SelectionDiagnostics(
+            97.44,
+            78.0,
+            73.0,
+            6,
+            6,
+            0,
+            0,
+            0,
+            "no_positive_net_utility",
+            evaluated_count=239,
+        ),
+    )
+    record = CommittedDecisionRecord(
+        formal_scored_decision(current),
+        datetime(2026, 8, 8, 14, 50, tzinfo=SHANGHAI),
+        "scheduled",
+    )
+    queries = UnifiedDecisionQueries(UnifiedDecisionIndex(), UnifiedDecisionDraftIndex(), _Repository(record), _Clock())
+
+    history = queries.history(Strategy.TOMORROW, trade_date)
+
+    assert history.items == ()
+    assert history.coverage.evaluated_count == 239
+    assert history.selection_diagnostics is not None
+    assert history.selection_diagnostics.maximum_final_score == 97.44
 
 
 def test_scored_query_restores_rank_order_from_code_sorted_identity() -> None:

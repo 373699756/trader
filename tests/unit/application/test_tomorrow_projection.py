@@ -168,6 +168,7 @@ def test_tomorrow_non_positive_utility_keeps_scores_but_cannot_enter_recommendat
     diagnostics = projection.local.selection_diagnostics
     assert diagnostics is not None
     assert diagnostics.maximum_final_score == 100.0
+    assert diagnostics.evaluated_count == 3
     assert diagnostics.empty_reason == "no_positive_net_utility"
     assert projection.review_candidates == ()
     assert not any(item.selected for item in projection.local.items)

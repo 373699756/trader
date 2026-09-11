@@ -474,19 +474,31 @@
   function renderTopScores(els, payload, items) {
     if (!els.topScoresStatus) return;
     const scoredItems = topScoredStocks(payload, items);
-    const maximum = finiteNumber(payload && payload.selection_diagnostics
-      && payload.selection_diagnostics.maximum_final_score);
+    const diagnostics = payload && payload.selection_diagnostics || {};
+    const tomorrowCostBlocked = payload && payload.strategy === "tomorrow"
+      && diagnostics.empty_reason === "no_positive_net_utility";
+    const evaluated = Number(payload && payload.coverage && payload.coverage.evaluated_count);
+    const scoreEvidenceMissing = tomorrowCostBlocked && Number.isInteger(evaluated) && evaluated === 0;
+    const maximum = scoreEvidenceMissing ? null : finiteNumber(diagnostics.maximum_final_score);
     els.topScoresStatus.textContent = scoredItems.length
       ? scoredItems.map((item) => `${item.score.toFixed(2)} - ${item.code} - ${item.name}`).join("\n")
-      : maximum == null
-        ? "暂无评分数据"
-        : `最高分 ${maximum.toFixed(2)}`;
-    if (els.topScoresMeta) {
-      els.topScoresMeta.textContent = scoredItems.length
-        ? `最终评分 · ${scoredItems.length} 只`
+      : scoreEvidenceMissing
+        ? "暂无可核验评分"
         : maximum == null
-          ? "最终评分 · 当前无可用数据"
-          : "最高最终分 · 当前无达到观察门槛的股票";
+          ? "暂无评分数据"
+          : tomorrowCostBlocked
+            ? `最高相对信号分 ${maximum.toFixed(2)}`
+            : `最高分 ${maximum.toFixed(2)}`;
+    if (els.topScoresMeta) {
+      els.topScoresMeta.textContent = scoreEvidenceMissing
+        ? "明日冻结记录 · 已评分证据不完整"
+        : tomorrowCostBlocked
+          ? "明日策略内相对排名 · 未通过成本门"
+          : scoredItems.length
+            ? `策略内最终评分 · ${scoredItems.length} 只`
+            : maximum == null
+              ? "策略内最终评分 · 当前无可用数据"
+              : "策略内最高最终分 · 当前无达到观察门槛的股票";
     }
   }
 

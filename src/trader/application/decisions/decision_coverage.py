@@ -36,9 +36,15 @@ def scored_decision_coverage(decision: ScoredDecision) -> DecisionCoverage:
     )
     population = decision.population_count if decision.population_count is not None else len(decision.items) + rejected
     selected = tuple(item for item in decision.items if item.selected)
+    diagnostics = decision.selection_diagnostics
+    evaluated = (
+        diagnostics.evaluated_count
+        if diagnostics is not None and diagnostics.evaluated_count is not None
+        else len(decision.items)
+    )
     return DecisionCoverage(
         candidate_count=population,
-        evaluated_count=len(decision.items),
+        evaluated_count=evaluated,
         rejected_count=rejected,
         selected_count=len(selected),
         executable_count=sum(item.action is RecommendationAction.EXECUTABLE for item in selected),

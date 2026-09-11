@@ -428,15 +428,16 @@ def _selection_diagnostics(
         else:
             empty_reason = "risk_or_execution_blocked"
     return SelectionDiagnostics(
-        maximum_final_score,
-        policy.executable_threshold,
-        observation_floor,
-        policy.top_k,
-        policy.observation_limit,
-        sum(item.action is RecommendationAction.EXECUTABLE for item in selected),
-        sum(item.action is RecommendationAction.OBSERVE for item in selected),
-        len(epoch.review_candidate_codes),
-        empty_reason,
+        maximum_final_score=maximum_final_score,
+        executable_threshold=policy.executable_threshold,
+        observation_floor=observation_floor,
+        executable_limit=policy.top_k,
+        observation_limit=policy.observation_limit,
+        selected_executable_count=sum(item.action is RecommendationAction.EXECUTABLE for item in selected),
+        selected_observation_count=sum(item.action is RecommendationAction.OBSERVE for item in selected),
+        review_candidate_count=len(epoch.review_candidate_codes),
+        empty_reason=empty_reason,
+        evaluated_count=len(epoch.entries),
     )
 
 

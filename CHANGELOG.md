@@ -7,4 +7,4 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
-- [History archive cutover and release verification](docs/changelog/2026-09-11-history-archive-cutover.md)
+- [Tomorrow relative-score freeze evidence and Web explanation](docs/changelog/2026-09-11-tomorrow-relative-score-freeze-evidence.md)

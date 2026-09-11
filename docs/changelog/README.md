@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Tomorrow relative-score freeze evidence and Web explanation](2026-09-11-tomorrow-relative-score-freeze-evidence.md)
 - [History archive cutover and release verification](2026-09-11-history-archive-cutover.md)
 - [Compact history download progress and failure diagnostics](2026-09-11-compact-history-progress.md)
 - [Cross-platform history automation and due reminders](2026-09-11-history-automation.md)

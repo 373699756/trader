@@ -93,6 +93,7 @@ class SelectionDiagnostics:
     selected_observation_count: int
     review_candidate_count: int
     empty_reason: str | None = None
+    evaluated_count: int | None = None
 
     def __post_init__(self) -> None:
         _validate_optional_score(self.maximum_final_score, "maximum final score")
@@ -107,10 +108,22 @@ class SelectionDiagnostics:
                 self.selected_executable_count,
                 self.selected_observation_count,
                 self.review_candidate_count,
+                self.evaluated_count if self.evaluated_count is not None else 0,
             )
             < 0
         ):
             raise ValueError("selection diagnostic counts cannot be negative")
+        if self.evaluated_count is not None:
+            if (self.evaluated_count == 0) != (self.maximum_final_score is None):
+                raise ValueError("selection maximum score must match evaluated candidates")
+            if (
+                max(
+                    self.selected_executable_count + self.selected_observation_count,
+                    self.review_candidate_count,
+                )
+                > self.evaluated_count
+            ):
+                raise ValueError("selection counts cannot exceed evaluated candidates")
         if self.empty_reason is not None and _REASON.fullmatch(self.empty_reason) is None:
             raise ValueError("selection empty reason must be structured")
 
@@ -586,7 +599,7 @@ def _model_diagnostics_payload(value: DecisionModelDiagnostics) -> dict[str, _Js
 def _selection_diagnostics_payload(value: SelectionDiagnostics | None) -> dict[str, _Json] | None:
     if value is None:
         return None
-    return {
+    payload: dict[str, _Json] = {
         "maximum_final_score": value.maximum_final_score,
         "executable_threshold": value.executable_threshold,
         "observation_floor": value.observation_floor,
@@ -597,6 +610,9 @@ def _selection_diagnostics_payload(value: SelectionDiagnostics | None) -> dict[s
         "review_candidate_count": value.review_candidate_count,
         "empty_reason": value.empty_reason,
     }
+    if value.evaluated_count is not None:
+        payload["evaluated_count"] = value.evaluated_count
+    return payload
 
 
 def _decision_quote_payload(quote: DecisionQuote) -> dict[str, _Json]:
