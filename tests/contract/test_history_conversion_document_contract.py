@@ -57,6 +57,8 @@ def test_current_docs_and_tools_only_name_the_monthly_history_owner() -> None:
     ):
         assert current in active_text
     assert "scripts/convert_baostock_history.py" in active_text
+    assert "已完成的 hash 子目录转换结果" in design
+    assert "原地归一化为稳定年月文件" in replay
 
 
 def test_retained_converter_is_isolated_from_the_retired_download_chain() -> None:

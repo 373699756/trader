@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [BaoStock converted-history layout normalization](2026-09-11-baostock-history-layout-normalization.md)
 - [Trader delivery scoring-chain routing](2026-09-11-trader-delivery-scoring-chain-routing.md)
 - [Unified short-horizon score scale](2026-09-11-unified-short-horizon-score-scale.md)
 - [Tomorrow relative-score freeze evidence and Web explanation](2026-09-11-tomorrow-relative-score-freeze-evidence.md)

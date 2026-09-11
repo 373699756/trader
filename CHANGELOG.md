@@ -7,4 +7,4 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
-- [Trader delivery scoring-chain routing](docs/changelog/2026-09-11-trader-delivery-scoring-chain-routing.md)
+- [BaoStock converted-history layout normalization](docs/changelog/2026-09-11-baostock-history-layout-normalization.md)

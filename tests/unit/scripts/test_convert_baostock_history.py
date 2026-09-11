@@ -10,8 +10,9 @@ import pytest
 
 from scripts import convert_baostock_history as converter
 from trader.infra.research.baostock_gap_supplier import BaoStockGapRecord, BaoStockGapResult
-from trader.infra.research.history_control_repository import SQLiteHistoryControlRepository
+from trader.infra.research.history_control_repository import HistoryControlError, SQLiteHistoryControlRepository
 from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.infra.research.history_training_input import SQLiteHistoryTrainingInputArchive
 
 
 def _json(value: object) -> str:
@@ -334,6 +335,28 @@ def _file_hashes(root: Path) -> dict[str, str]:
     return {str(path.relative_to(root)): _sha256(path) for path in sorted(root.rglob("*")) if path.is_file()}
 
 
+def _rewrite_completed_target_as_hash_layout(target: Path) -> tuple[Path, Path]:
+    control = target / "control.sqlite3"
+    with sqlite3.connect(control) as connection:
+        record_key, payload_json = connection.execute(
+            "SELECT record_key, payload_json FROM immutable_records WHERE kind='snapshot'"
+        ).fetchone()
+        payload = json.loads(payload_json)
+        partition = payload["partitions"][0]
+        stable = target / partition["relative_path"]
+        hashed = stable.with_suffix("") / f"{partition['sha256']}.sqlite3"
+        hashed.parent.mkdir(parents=True)
+        stable.replace(hashed)
+        partition["relative_path"] = str(hashed.relative_to(target))
+        legacy_hash = hashlib.sha256(_json(payload).encode()).hexdigest()
+        connection.execute(
+            "UPDATE immutable_records SET content_hash=?, payload_json=? WHERE kind='snapshot' AND record_key=?",
+            (legacy_hash, _json(payload), record_key),
+        )
+        connection.execute("UPDATE active_snapshot SET snapshot_hash=? WHERE singleton=1", (legacy_hash,))
+    return stable, hashed
+
+
 def test_converter_streams_parent_and_active_increment_into_month_partitions(tmp_path: Path) -> None:
     source = tmp_path / "baostock-daily/sessions-2000"
     target = tmp_path / "baostock"
@@ -441,6 +464,142 @@ def test_converter_is_idempotent_and_does_not_rewrite_completed_target(tmp_path:
     assert _file_hashes(target) == before
 
 
+def test_converter_renames_completed_hash_layout_and_rebuilds_current_snapshot(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    _create_source(source)
+    converter.convert_archive(
+        source,
+        target,
+        batch_size=2,
+        cache_mib=4,
+        throttle_seconds=0,
+        minimum_free_bytes=0,
+        apply_niceness=False,
+    )
+    stable, hashed = _rewrite_completed_target_as_hash_layout(target)
+    source_before = _file_hashes(source)
+    with pytest.raises(HistoryControlError, match="payload is invalid"):
+        SQLiteHistoryControlRepository(target / "control.sqlite3").load_state()
+
+    summary = converter.convert_archive(
+        source,
+        target,
+        batch_size=2,
+        cache_mib=4,
+        throttle_seconds=0,
+        minimum_free_bytes=0,
+        apply_niceness=False,
+    )
+
+    assert summary.state == "completed"
+    assert stable.is_file()
+    assert not hashed.exists()
+    assert not hashed.parent.exists()
+    assert _file_hashes(source) == source_before
+    state = SQLiteHistoryControlRepository(target / "control.sqlite3").load_state()
+    assert state.active_snapshot is not None
+    assert state.active_snapshot.content_hash == summary.snapshot_hash
+    assert state.active_snapshot.partitions[0].relative_path == "partitions/2026/09.sqlite3"
+    archive = SQLiteHistoryTrainingInputArchive.open(target)
+    assert archive.snapshot.training_codes == ("600001",)
+
+    before_replay = _file_hashes(target)
+    replay = converter.convert_archive(
+        source,
+        target,
+        batch_size=2,
+        cache_mib=4,
+        throttle_seconds=0,
+        minimum_free_bytes=0,
+        apply_niceness=False,
+    )
+    assert replay.state == "already_current"
+    assert replay.snapshot_hash == summary.snapshot_hash
+    assert _file_hashes(target) == before_replay
+
+
+def test_converter_resumes_hash_layout_rename_after_control_publication_is_interrupted(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    _create_source(source)
+    converter.convert_archive(
+        source,
+        target,
+        batch_size=2,
+        cache_mib=4,
+        throttle_seconds=0,
+        minimum_free_bytes=0,
+        apply_niceness=False,
+    )
+    stable, hashed = _rewrite_completed_target_as_hash_layout(target)
+
+    def interrupt(stage: str) -> None:
+        if stage == "hash_layout_partitions_renamed":
+            raise RuntimeError("simulated interruption")
+
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        converter.convert_archive(
+            source,
+            target,
+            batch_size=2,
+            cache_mib=4,
+            throttle_seconds=0,
+            minimum_free_bytes=0,
+            apply_niceness=False,
+            fault_injector=interrupt,
+        )
+
+    assert stable.is_file()
+    assert not hashed.exists()
+    with pytest.raises(HistoryControlError, match="payload is invalid"):
+        SQLiteHistoryControlRepository(target / "control.sqlite3").load_state()
+
+    summary = converter.convert_archive(
+        source,
+        target,
+        batch_size=2,
+        cache_mib=4,
+        throttle_seconds=0,
+        minimum_free_bytes=0,
+        apply_niceness=False,
+    )
+    assert summary.state == "completed"
+    assert SQLiteHistoryControlRepository(target / "control.sqlite3").load_state().active_snapshot is not None
+
+
+def test_converter_rejects_changed_hash_layout_partition_without_renaming_it(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    _create_source(source)
+    converter.convert_archive(
+        source,
+        target,
+        batch_size=2,
+        cache_mib=4,
+        throttle_seconds=0,
+        minimum_free_bytes=0,
+        apply_niceness=False,
+    )
+    stable, hashed = _rewrite_completed_target_as_hash_layout(target)
+    with hashed.open("ab") as handle:
+        handle.write(b"changed")
+
+    with pytest.raises(converter.ConversionError, match="hash-layout partition verification failed"):
+        converter.convert_archive(
+            source,
+            target,
+            batch_size=2,
+            cache_mib=4,
+            throttle_seconds=0,
+            minimum_free_bytes=0,
+            apply_niceness=False,
+        )
+
+    assert hashed.is_file()
+    assert not stable.exists()
+
+
 def test_converter_downloads_only_supplier_provable_missing_daily_fields(tmp_path: Path) -> None:
     source = tmp_path / "source"
     target = tmp_path / "target"
@@ -524,6 +683,20 @@ def test_converter_keeps_completed_months_resumable_when_gap_download_fails(tmp_
     assert summary.state == "completed"
     assert summary.remaining_downloadable_gaps == 1
     assert not staging.exists()
+
+    replay = converter.convert_archive(
+        source,
+        target,
+        batch_size=2,
+        cache_mib=4,
+        throttle_seconds=0,
+        minimum_free_bytes=0,
+        apply_niceness=False,
+        supplement_missing=False,
+    )
+    assert replay.state == "already_current"
+    assert replay.active_rows == summary.active_rows
+    assert replay.remaining_downloadable_gaps == 1
 
 
 def test_converter_rejects_an_unrelated_existing_target(tmp_path: Path) -> None:

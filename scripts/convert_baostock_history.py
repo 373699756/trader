@@ -24,7 +24,7 @@ from contextlib import AbstractContextManager, closing
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from datetime import time as datetime_time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
@@ -47,12 +47,20 @@ from trader.infra.research.baostock_gap_supplier import (
     BaoStockGapSupplierError,
     fetch_baostock_gaps,
 )
-from trader.infra.research.history_control_repository import HistoryControlError, SQLiteHistoryControlRepository
+from trader.infra.research.history_control_repository import (
+    HistoryControlError,
+    HistoryMaintenanceAlreadyRunningError,
+    HistoryMaintenanceLock,
+    SQLiteHistoryControlRepository,
+)
 from trader.infra.research.history_month_codec import (
     decode_history_monthly_revision,
     encode_history_monthly_revision,
 )
-from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.infra.research.history_month_partition import (
+    HistoryMonthPartitionError,
+    SQLiteHistoryMonthPartitionRepository,
+)
 
 DEFAULT_SOURCE = Path("data/history/baostock-daily/sessions-2000")
 DEFAULT_TARGET = Path("data/history/baostock")
@@ -184,6 +192,20 @@ class ConversionSummary:
 
 ProgressSink = Callable[["ConversionProgress"], None]
 SupplementProvider = Callable[..., BaoStockGapResult]
+FaultInjector = Callable[[str], None]
+
+
+@dataclass(frozen=True)
+class _HashLayoutPartition:
+    previous_relative_path: str
+    current_reference: HistorySnapshotPartition
+
+
+@dataclass(frozen=True)
+class _HashLayoutSnapshot:
+    previous_hash: str
+    current: HistoryActiveSnapshot
+    partitions: tuple[_HashLayoutPartition, ...]
 
 
 @dataclass(frozen=True)
@@ -816,7 +838,7 @@ def _payload_json(value: object, label: str) -> str | None:
 
 
 def _record_hash(record: DailyRecord) -> str:
-    return _monthly_revision(record).revision_id
+    return cast(str, _monthly_revision(record).revision_id)
 
 
 def _monthly_revision(record: DailyRecord) -> HistoryMonthlyRevision:
@@ -1606,35 +1628,33 @@ def _read_completed_summary(
         calendar = next(item for item in state.calendars if item.content_hash == snapshot.calendar_hash)
         physical_rows = 0
         active_rows = 0
-        completed_results: list[PartitionResult] = []
+        remaining_gaps = 0
+        progress = _ProgressTracker("完成态统计", len(snapshot.partitions), progress_sink)
         for partition in snapshot.partitions:
             path = _safe_child(target, partition.relative_path, "active partition")
             with closing(_connect(path, cache_mib, read_only=True)) as connection:
-                physical_rows += cast(int, connection.execute("SELECT COUNT(*) FROM daily_records").fetchone()[0])
-                month_active_rows = cast(
-                    int,
-                    connection.execute(
-                        "SELECT COUNT(*) FROM (SELECT trade_date, code FROM daily_records GROUP BY trade_date, code)"
-                    ).fetchone()[0],
-                )
+                summary = connection.execute(
+                    "WITH latest AS ("
+                    "SELECT trade_date, code, MAX(sync_sequence) AS sync_sequence FROM daily_observations "
+                    "GROUP BY trade_date, code"
+                    ") SELECT COUNT(*), "
+                    "COALESCE(SUM(json_extract(records.payload_json, '$.cell.unadjusted') IS NULL), 0), "
+                    "COALESCE(SUM(json_extract(records.payload_json, '$.cell.qfq') IS NULL), 0), "
+                    "COALESCE(SUM(json_extract(records.payload_json, '$.is_st') IS NULL), 0) "
+                    "FROM latest JOIN daily_observations AS observations "
+                    "ON observations.trade_date=latest.trade_date AND observations.code=latest.code "
+                    "AND observations.sync_sequence=latest.sync_sequence "
+                    "JOIN daily_records AS records ON records.trade_date=observations.trade_date "
+                    "AND records.code=observations.code AND records.revision_id=observations.revision_id"
+                ).fetchone()
+                if summary is None:
+                    raise ConversionError("completed monthly partition summary is unavailable")
+                month_active_rows, missing_raw, missing_qfq, missing_is_st = cast(tuple[int, int, int, int], summary)
+                physical_rows += partition.row_count
                 active_rows += month_active_rows
+                remaining_gaps += missing_raw + missing_qfq + missing_is_st
             _remove_empty_sqlite_sidecars(path)
-            parts = Path(partition.relative_path).parts
-            completed_results.append(
-                PartitionResult(
-                    int(parts[1]),
-                    int(Path(parts[2]).stem),
-                    partition.relative_path,
-                    partition.sha256,
-                    "",
-                    partition.row_count,
-                    month_active_rows,
-                    0,
-                )
-            )
-        remaining_gaps = sum(
-            len(item.trade_dates) for item in _missing_gap_requests(target, completed_results, cache_mib, progress_sink)
-        )
+            progress.advance(1, partition.relative_path, force=True)
         return ConversionSummary(
             "already_current",
             len(snapshot.partitions),
@@ -1653,6 +1673,224 @@ def _read_completed_summary(
         raise
     except (HistoryControlError, StopIteration, TypeError, sqlite3.DatabaseError) as exc:
         raise ConversionError("existing target control database is invalid") from exc
+
+
+def _read_hash_layout_snapshot(target: Path, source_fingerprint: str, cache_mib: int) -> _HashLayoutSnapshot | None:
+    control_path = target / "control.sqlite3"
+    if not control_path.is_file():
+        return None
+    try:
+        with closing(_connect(control_path, cache_mib, read_only=True)) as connection:
+            if connection.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                raise ConversionError("hash-layout control database failed integrity check")
+            if connection.execute("SELECT schema_identity FROM metadata WHERE singleton=1").fetchone() != (
+                "history_control",
+            ):
+                return None
+            active = connection.execute(
+                "SELECT snapshot_hash, sequence FROM active_snapshot WHERE singleton=1"
+            ).fetchone()
+            snapshot_rows = connection.execute(
+                "SELECT record_key, content_hash, payload_json FROM immutable_records "
+                "WHERE kind='snapshot' ORDER BY record_key"
+            ).fetchall()
+            if active is None or len(snapshot_rows) != 1:
+                return None
+            record_key, stored_hash, payload_json = cast(tuple[str, str, str], snapshot_rows[0])
+            payload = _object(json.loads(payload_json), "hash-layout snapshot")
+            required = {
+                "sequence",
+                "data_cutoff",
+                "label_cutoff",
+                "calendar_hash",
+                "universe_hash",
+                "source_identity_hash",
+                "partitions",
+            }
+            if set(payload) != required:
+                raise ConversionError("hash-layout snapshot fields are invalid")
+            sequence = _integer(payload["sequence"], "hash-layout snapshot sequence")
+            if record_key != str(sequence) or active != (stored_hash, sequence):
+                raise ConversionError("hash-layout active snapshot pointer is inconsistent")
+            if _hash_text(_canonical_json(payload)) != stored_hash:
+                raise ConversionError("hash-layout snapshot hash is invalid")
+            raw_partitions = _list(payload["partitions"], "hash-layout partitions")
+            old_layout_flags: list[bool] = []
+            parsed: list[_HashLayoutPartition] = []
+            for item in raw_partitions:
+                raw = _object(item, "hash-layout partition")
+                if set(raw) != {"relative_path", "sha256", "row_count"}:
+                    raise ConversionError("hash-layout partition fields are invalid")
+                relative_path = _string(raw["relative_path"], "hash-layout partition path")
+                sha256 = _string(raw["sha256"], "hash-layout partition SHA-256")
+                row_count = _integer(raw["row_count"], "hash-layout partition row count")
+                parts = PurePosixPath(relative_path).parts
+                is_old_layout = (
+                    len(parts) == 4
+                    and parts[0] == "partitions"
+                    and len(parts[1]) == 4
+                    and parts[1].isdigit()
+                    and len(parts[2]) == 2
+                    and parts[2].isdigit()
+                    and 1 <= int(parts[2]) <= 12
+                    and PurePosixPath(parts[3]).suffix == ".sqlite3"
+                    and PurePosixPath(parts[3]).stem == sha256
+                )
+                old_layout_flags.append(is_old_layout)
+                if is_old_layout:
+                    current = HistorySnapshotPartition(
+                        f"partitions/{parts[1]}/{parts[2]}.sqlite3",
+                        sha256,
+                        row_count,
+                    )
+                    parsed.append(_HashLayoutPartition(relative_path, current))
+            if not old_layout_flags or not any(old_layout_flags):
+                return None
+            if not all(old_layout_flags):
+                raise ConversionError("hash-layout snapshot mixes incompatible partition paths")
+            source_identity_hash = _string(payload["source_identity_hash"], "hash-layout source identity")
+            source_row = connection.execute(
+                "SELECT payload_json FROM immutable_records WHERE kind='source' AND content_hash=?",
+                (source_identity_hash,),
+            ).fetchone()
+            if source_row is None:
+                raise ConversionError("hash-layout source identity is missing")
+            source_payload = _object(json.loads(cast(str, source_row[0])), "hash-layout source identity")
+            if source_payload.get("dataset") != f"legacy_daily.{source_fingerprint}":
+                raise ConversionError("target already exists for a different source archive")
+        current_snapshot = HistoryActiveSnapshot(
+            sequence,
+            date.fromisoformat(_string(payload["data_cutoff"], "hash-layout data cutoff")),
+            date.fromisoformat(_string(payload["label_cutoff"], "hash-layout label cutoff")),
+            _string(payload["calendar_hash"], "hash-layout calendar hash"),
+            _string(payload["universe_hash"], "hash-layout universe hash"),
+            source_identity_hash,
+            tuple(item.current_reference for item in parsed),
+        )
+    except ConversionError:
+        raise
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, sqlite3.DatabaseError) as exc:
+        raise ConversionError("hash-layout target control database is invalid") from exc
+    return _HashLayoutSnapshot(stored_hash, current_snapshot, tuple(parsed))
+
+
+def _current_snapshot_payload(snapshot: HistoryActiveSnapshot) -> dict[str, object]:
+    return {
+        "sequence": snapshot.sequence,
+        "data_cutoff": snapshot.data_cutoff.isoformat(),
+        "label_cutoff": snapshot.label_cutoff.isoformat(),
+        "calendar_hash": snapshot.calendar_hash,
+        "universe_hash": snapshot.universe_hash,
+        "source_identity_hash": snapshot.source_identity_hash,
+        "partitions": [
+            {
+                "relative_path": item.relative_path,
+                "sha256": item.sha256,
+                "row_count": item.row_count,
+            }
+            for item in snapshot.partitions
+        ],
+    }
+
+
+def _prepare_current_layout_control(
+    target: Path,
+    layout: _HashLayoutSnapshot,
+    cache_mib: int,
+) -> Path:
+    control_path = target / "control.sqlite3"
+    pending = target / ".control.layout.pending.sqlite3"
+    _remove_pending(pending)
+    try:
+        with closing(sqlite3.connect(control_path)) as connection:
+            checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if checkpoint is None or checkpoint[0] != 0:
+                raise ConversionError("hash-layout control WAL checkpoint did not complete")
+        _remove_empty_sqlite_sidecars(control_path)
+        with (
+            closing(_connect(control_path, cache_mib, read_only=True)) as source_connection,
+            closing(sqlite3.connect(pending)) as pending_connection,
+        ):
+            source_connection.backup(pending_connection)
+        with closing(_connect(pending, cache_mib)) as connection, connection:
+            updated = connection.execute(
+                "UPDATE immutable_records SET content_hash=?, payload_json=? "
+                "WHERE kind='snapshot' AND record_key=? AND content_hash=?",
+                (
+                    layout.current.content_hash,
+                    _canonical_json(_current_snapshot_payload(layout.current)),
+                    str(layout.current.sequence),
+                    layout.previous_hash,
+                ),
+            ).rowcount
+            pointer_updated = connection.execute(
+                "UPDATE active_snapshot SET snapshot_hash=? WHERE singleton=1 AND snapshot_hash=? AND sequence=?",
+                (layout.current.content_hash, layout.previous_hash, layout.current.sequence),
+            ).rowcount
+            if updated != 1 or pointer_updated != 1:
+                raise ConversionError("hash-layout control update did not match its active snapshot")
+        state = SQLiteHistoryControlRepository(pending).load_state()
+        if state.active_snapshot != layout.current:
+            raise ConversionError("current-layout control database did not round-trip")
+        with closing(sqlite3.connect(pending)) as connection:
+            checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if checkpoint is None or checkpoint[0] != 0:
+                raise ConversionError("current-layout control WAL checkpoint did not complete")
+        _remove_empty_sqlite_sidecars(pending)
+        _fsync_file(pending)
+        return pending
+    except ConversionError:
+        raise
+    except (HistoryControlError, OSError, sqlite3.DatabaseError) as exc:
+        raise ConversionError("current-layout control database preparation failed") from exc
+
+
+def _normalize_hash_layout_target(
+    target: Path,
+    source_fingerprint: str,
+    cache_mib: int,
+    progress_sink: ProgressSink | None,
+    fault_injector: FaultInjector,
+) -> bool:
+    layout = _read_hash_layout_snapshot(target, source_fingerprint, cache_mib)
+    if layout is None:
+        return False
+    pending = _prepare_current_layout_control(target, layout, cache_mib)
+    fault_injector("hash_layout_control_prepared")
+    progress = _ProgressTracker("布局归一化", len(layout.partitions), progress_sink)
+    previous_directories: set[Path] = set()
+    for item in layout.partitions:
+        previous = _safe_child(target, item.previous_relative_path, "hash-layout partition")
+        current = _safe_child(target, item.current_reference.relative_path, "current-layout partition")
+        previous_directories.add(previous.parent)
+        if previous.is_file() and current.exists():
+            raise ConversionError("hash-layout partition has duplicate old and current files")
+        candidate = previous if previous.is_file() else current
+        if not candidate.is_file():
+            raise ConversionError("hash-layout partition is missing from both resumable locations")
+        try:
+            SQLiteHistoryMonthPartitionRepository.verify(candidate, item.current_reference)
+        except HistoryMonthPartitionError as exc:
+            raise ConversionError("hash-layout partition verification failed") from exc
+        _remove_empty_sqlite_sidecars(candidate)
+        if candidate == previous:
+            current.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(previous, current)
+            _fsync_directory(current.parent)
+            _fsync_directory(previous.parent)
+        progress.advance(1, item.current_reference.relative_path, force=True)
+    fault_injector("hash_layout_partitions_renamed")
+    control_path = target / "control.sqlite3"
+    _remove_empty_sqlite_sidecars(control_path)
+    os.replace(pending, control_path)
+    _fsync_directory(target)
+    fault_injector("hash_layout_control_published")
+    for directory in sorted(previous_directories, key=lambda value: len(value.parts), reverse=True):
+        try:
+            directory.rmdir()
+        except OSError:
+            continue
+    return True
 
 
 def _source_size(source: SourceArchive) -> int:
@@ -1745,8 +1983,9 @@ def convert_archive(
     progress_sink: ProgressSink | None = None,
     supplement_missing: bool = False,
     supplement_provider: SupplementProvider | None = None,
+    fault_injector: FaultInjector | None = None,
 ) -> ConversionSummary:
-    """Convert a sealed archive without mutating it or exposing partial target data."""
+    """Convert a sealed archive and normalize this converter's completed hash layout."""
 
     if batch_size < 1 or batch_size > 4096:
         raise ConversionError("batch size must be within 1..4096")
@@ -1764,16 +2003,43 @@ def convert_archive(
         raise ConversionError("source and target must be separate sibling trees")
     if apply_niceness:
         _apply_niceness()
+    inject_fault = fault_injector or (lambda _stage: None)
     with _SourceLock(source / ".download.lock"), _Cancellation() as cancellation:
         archive = _load_source(source)
-        completed = _read_completed_summary(
-            target,
-            archive.source_fingerprint,
-            batch_size,
-            cache_mib,
-            round(throttle_seconds * 1000),
-            progress_sink,
-        )
+        try:
+            completed = _read_completed_summary(
+                target,
+                archive.source_fingerprint,
+                batch_size,
+                cache_mib,
+                round(throttle_seconds * 1000),
+                progress_sink,
+            )
+        except ConversionError as current_error:
+            try:
+                with HistoryMaintenanceLock(target / ".maintenance.lock"):
+                    normalized = _normalize_hash_layout_target(
+                        target,
+                        archive.source_fingerprint,
+                        cache_mib,
+                        progress_sink,
+                        inject_fault,
+                    )
+            except HistoryMaintenanceAlreadyRunningError as exc:
+                raise ConversionError("history maintenance is already running") from exc
+            if not normalized:
+                raise current_error
+            completed = _read_completed_summary(
+                target,
+                archive.source_fingerprint,
+                batch_size,
+                cache_mib,
+                round(throttle_seconds * 1000),
+                progress_sink,
+            )
+            if completed is None:
+                raise ConversionError("normalized target is not a completed conversion") from None
+            return replace(completed, state="completed")
         if completed is not None:
             return completed
         if target.exists():
@@ -1888,6 +2154,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "把旧 BaoStock 父/增量归档流式转换为 control.sqlite3 + YYYY/MM.sqlite3；"
             "转换全程单进程、逐月旁路构建、原子发布，并可续传已校验月份；"
+            "已完成的 hash 子目录结果会在完整校验后原地归一化；"
             "缺失 raw/qfq/is_st 默认由一个受控 SDK 子进程补齐。"
         )
     )
