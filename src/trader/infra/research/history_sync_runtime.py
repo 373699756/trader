@@ -46,6 +46,7 @@ from trader.infra.research.history_control_repository import (
 )
 from trader.infra.research.history_month_archive import route_history_months
 from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.infra.research.history_training_due import evaluate_history_training_due
 
 Clock: TypeAlias = Callable[[], datetime]
 Cancellation: TypeAlias = Callable[[], bool]
@@ -90,7 +91,14 @@ def run_history_sync(
             return _run_locked(configuration, supplier, observed_at, cancel)
     except HistoryMaintenanceAlreadyRunningError:
         active = _safe_active(SQLiteHistoryControlRepository(root / "control.sqlite3"))
-        return _status("already_running", "history_maintenance_running", root, active)
+        return _status(
+            "already_running",
+            "history_maintenance_running",
+            root,
+            active,
+            training_root=configuration.training_root,
+            observed_at=observed_at,
+        )
 
 
 def _run_locked(
@@ -113,13 +121,27 @@ def _run_locked(
         if not previous_codes.issubset(item.code for item in universe.securities):
             raise RuntimeError("supplier_universe_regressed")
         if _is_current(active, calendar, universe):
-            return _status("already_current", None, root, active)
+            return _status(
+                "already_current",
+                None,
+                root,
+                active,
+                training_root=configuration.training_root,
+                observed_at=observed_at,
+            )
         disk = inspect_history_disk(
             root,
             HistoryDiskRequirement(configuration.minimum_free_bytes, 0, 0, 0),
         )
         if not disk.sufficient:
-            return _status("blocked", "disk_space_insufficient", root, active)
+            return _status(
+                "blocked",
+                "disk_space_insufficient",
+                root,
+                active,
+                training_root=configuration.training_root,
+                observed_at=observed_at,
+            )
         return _synchronize(
             configuration,
             supplier,
@@ -134,7 +156,14 @@ def _run_locked(
         )
     except (HistoryControlError, OSError, RuntimeError, TypeError, ValueError) as exc:
         active = _safe_active(control)
-        return _status("failed", _failure_code(exc), root, active)
+        return _status(
+            "failed",
+            _failure_code(exc),
+            root,
+            active,
+            training_root=configuration.training_root,
+            observed_at=observed_at,
+        )
 
 
 def _synchronize(  # noqa: PLR0913
@@ -182,7 +211,14 @@ def _synchronize(  # noqa: PLR0913
                 control.save_checkpoint(
                     HistorySyncCheckpoint(sync_identity, ordinal, "cancelled", observed_at, index, total, "cancelled")
                 )
-                return _status("cancelled", "cancelled", configuration.archive_root, active)
+                return _status(
+                    "cancelled",
+                    "cancelled",
+                    configuration.archive_root,
+                    active,
+                    training_root=configuration.training_root,
+                    observed_at=observed_at,
+                )
             download = _download_for_security(supplier, download_context, security)
             revisions = _revisions(download, security, context.industry_intervals, sequence)
             _write_revisions(pending, revisions)
@@ -195,7 +231,14 @@ def _synchronize(  # noqa: PLR0913
             control.save_checkpoint(
                 HistorySyncCheckpoint(sync_identity, ordinal, "cancelled", observed_at, completed, total, "cancelled")
             )
-            return _status("cancelled", "cancelled", configuration.archive_root, active)
+            return _status(
+                "cancelled",
+                "cancelled",
+                configuration.archive_root,
+                active,
+                training_root=configuration.training_root,
+                observed_at=observed_at,
+            )
         references = _seal_pending(configuration.archive_root, pending)
         control.save_source(source)
         control.save_calendar(calendar)
@@ -219,18 +262,39 @@ def _synchronize(  # noqa: PLR0913
             _remove_pending(pending)
         except OSError:
             pass
-        return _status("completed", None, configuration.archive_root, snapshot)
+        return _status(
+            "completed",
+            None,
+            configuration.archive_root,
+            snapshot,
+            training_root=configuration.training_root,
+            observed_at=observed_at,
+        )
     except KeyboardInterrupt:
         control.save_checkpoint(
             HistorySyncCheckpoint(sync_identity, ordinal, "cancelled", observed_at, completed, total, "cancelled")
         )
-        return _status("cancelled", "cancelled", configuration.archive_root, active)
+        return _status(
+            "cancelled",
+            "cancelled",
+            configuration.archive_root,
+            active,
+            training_root=configuration.training_root,
+            observed_at=observed_at,
+        )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         reason = _failure_code(exc)
         control.save_checkpoint(
             HistorySyncCheckpoint(sync_identity, ordinal, "failed", observed_at, completed, total, reason)
         )
-        return _status("failed", reason, configuration.archive_root, active)
+        return _status(
+            "failed",
+            reason,
+            configuration.archive_root,
+            active,
+            training_root=configuration.training_root,
+            observed_at=observed_at,
+        )
 
 
 def _download_for_security(
@@ -551,7 +615,22 @@ def _status(
     reason: str | None,
     root: Path,
     snapshot: HistoryActiveSnapshot | None,
+    *,
+    training_root: Path = Path("data/train"),
+    observed_at: datetime | None = None,
 ) -> HistoryMaintenanceStatus:
+    due = None
+    if snapshot is not None:
+        due = evaluate_history_training_due(
+            root,
+            training_root,
+            observed_at or datetime.now(_SHANGHAI),
+        )
+    due_state = (
+        due.state
+        if due is not None and snapshot is not None and due.active_snapshot.content_hash == snapshot.content_hash
+        else None
+    )
     return HistoryMaintenanceStatus(
         state=state,
         reason=reason,
@@ -561,9 +640,9 @@ def _status(
         active_snapshot_hash=snapshot.content_hash if snapshot is not None else None,
         data_cutoff=snapshot.data_cutoff if snapshot is not None else None,
         label_cutoff=snapshot.label_cutoff if snapshot is not None else None,
-        matured_label_days_since_training=0,
-        training_due=False,
-        training_due_reason="data_incomplete",
+        matured_label_days_since_training=(due_state.matured_label_days_since_training if due_state else 0),
+        training_due=(due_state.training_due if due_state else False),
+        training_due_reason=(due_state.reason if due_state else "data_incomplete"),
         automatic_training=False,
     )
 

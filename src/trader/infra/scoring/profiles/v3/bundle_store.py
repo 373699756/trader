@@ -6,12 +6,26 @@ import json
 import os
 import shutil
 import tempfile
+from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import cast
 
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
 
 _POINTER_NAME = "active-bundle.json"
+
+
+@dataclass(frozen=True)
+class ActiveTomorrowBundle:
+    """Validated identity of the bundle selected by the active pointer."""
+
+    model_path: Path
+    generation: str
+    training_input_hash: str
+    parent_manifest_hash: str
+    increment_manifest_hash: str
+    label_cutoff: date | None
 
 
 def publish_tomorrow_bundle(
@@ -21,6 +35,7 @@ def publish_tomorrow_bundle(
     training_input_hash: str,
     parent_manifest_hash: str,
     increment_manifest_hash: str,
+    label_cutoff: date | None = None,
 ) -> Path:
     """Validate staging first, then atomically switch a small active pointer."""
 
@@ -64,6 +79,7 @@ def publish_tomorrow_bundle(
         "training_input_hash": training_input_hash,
         "parent_manifest_hash": parent_manifest_hash,
         "increment_manifest_hash": increment_manifest_hash,
+        "label_cutoff": label_cutoff.isoformat() if label_cutoff is not None else None,
         "training_input_document_hash": training_input_document["content_hash"],
         "report_hash": report_document["content_hash"],
         "model_hash": artifact.content_hash,
@@ -74,6 +90,10 @@ def publish_tomorrow_bundle(
 
 
 def locate_active_tomorrow_bundle(output_root: Path) -> Path:
+    return inspect_active_tomorrow_bundle(output_root).model_path
+
+
+def inspect_active_tomorrow_bundle(output_root: Path) -> ActiveTomorrowBundle:
     pointer = _read_json(output_root / _POINTER_NAME)
     stored_hash = pointer.pop("content_hash", None)
     expected_fields = {
@@ -82,6 +102,7 @@ def locate_active_tomorrow_bundle(output_root: Path) -> Path:
         "training_input_hash",
         "parent_manifest_hash",
         "increment_manifest_hash",
+        "label_cutoff",
         "training_input_document_hash",
         "report_hash",
         "model_hash",
@@ -91,7 +112,11 @@ def locate_active_tomorrow_bundle(output_root: Path) -> Path:
         or artifact_content_hash(pointer) != stored_hash
         or set(pointer) != expected_fields
         or pointer.get("schema_version") != "tomorrow_training_active_bundle"
-        or not all(_sha256(pointer.get(name)) for name in expected_fields - {"schema_version"})
+        or not all(
+            _sha256(pointer.get(name))
+            for name in expected_fields - {"schema_version", "label_cutoff"}
+        )
+        or not _optional_iso_date_valid(pointer.get("label_cutoff"))
     ):
         raise ValueError("Tomorrow V3 active bundle pointer is invalid")
     generation = cast(str, pointer["generation"])
@@ -112,7 +137,14 @@ def locate_active_tomorrow_bundle(output_root: Path) -> Path:
         or artifact.increment_manifest_hash != pointer["increment_manifest_hash"]
     ):
         raise ValueError("Tomorrow V3 active bundle pointer does not match its generation")
-    return model
+    return ActiveTomorrowBundle(
+        model,
+        generation,
+        pointer["training_input_hash"],
+        pointer["parent_manifest_hash"],
+        pointer["increment_manifest_hash"],
+        _optional_iso_date(pointer.get("label_cutoff")),
+    )
 
 
 def make_bundle_staging_directory(output_root: Path) -> Path:
@@ -155,4 +187,33 @@ def _sha256(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
-__all__ = ["locate_active_tomorrow_bundle", "make_bundle_staging_directory", "publish_tomorrow_bundle"]
+def _optional_iso_date_valid(value: object) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, str):
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _optional_iso_date(value: object) -> date | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("Tomorrow V3 active bundle label cutoff is invalid")
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("Tomorrow V3 active bundle label cutoff is invalid") from exc
+
+
+__all__ = [
+    "ActiveTomorrowBundle",
+    "inspect_active_tomorrow_bundle",
+    "locate_active_tomorrow_bundle",
+    "make_bundle_staging_directory",
+    "publish_tomorrow_bundle",
+]

@@ -105,6 +105,22 @@ class SQLiteHistoryMonthlyArchive:
                 snapshot_sequence=snapshot.sequence,
             )
 
+    def iter_code(
+        self,
+        code: str,
+        start: date,
+        end: date,
+        snapshot: HistoryActiveSnapshot,
+    ) -> Iterator[HistoryMonthlyRevision]:
+        """Stream one code across only the months that cover its date range."""
+
+        if _CODE.fullmatch(code) is None or start > end or end > snapshot.data_cutoff:
+            raise ValueError("history code scan is invalid")
+        for year, month in route_history_months(start, end):
+            reference = self._reference(snapshot, year, month)
+            repository = self._verified_repository(reference)
+            yield from repository.read_code(code, start, end, snapshot_sequence=snapshot.sequence)
+
     def iter_training_windows(
         self,
         snapshot: HistoryActiveSnapshot,

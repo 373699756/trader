@@ -37,12 +37,12 @@ def build_parser() -> argparse.ArgumentParser:
         "check",
         help="Run config validation, research readiness, and the active-profile performance gate.",
     )
-    training = subparsers.add_parser("train-tomorrow", help="Run every available immutable Tomorrow training stage.")
+    training = subparsers.add_parser("train-tomorrow", help="Run the due immutable Tomorrow training stage.")
     training.add_argument(
         "--runtime-dir",
         type=Path,
         default=Path("data/history"),
-        help="BaoStock history root previously used by download_history.",
+        help="Override the repository history root for offline tests and maintenance.",
     )
     subparsers.add_parser("validate-config", help="Validate runtime and strategy configuration.")
     performance = subparsers.add_parser(
@@ -85,7 +85,11 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
         from trader.infra.research.baostock_sync_supplier import BaoStockHistorySupplier
         from trader.infra.research.history_sync_runtime import run_history_sync
 
-        configuration = HistorySyncConfiguration()
+        repository_root = _repository_root_for_validation()
+        configuration = HistorySyncConfiguration(
+            archive_root=repository_root / "data" / "history" / "baostock",
+            training_root=repository_root / "data" / "train",
+        )
         with BaoStockHistorySupplier(
             timeout_seconds=configuration.supplier_timeout_seconds,
             retries=configuration.supplier_retries,

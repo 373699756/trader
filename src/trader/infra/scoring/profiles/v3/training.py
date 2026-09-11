@@ -11,10 +11,11 @@ import shutil
 import tempfile
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from importlib.metadata import version
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, Protocol, cast
+from zoneinfo import ZoneInfo
 
 import lightgbm as lgb
 import numpy as np
@@ -33,10 +34,12 @@ from trader.domain.market.feature_contracts import (
 from trader.domain.recommendation.model_scoring import V3_EXPOSURE_CONTRACT, residualize_exposure
 from trader.domain.research.baostock_daily import BaoStockTrainingRow, BaoStockTrainingSplit
 from trader.domain.research.tomorrow_training_input import evaluate_tomorrow_training_input
-from trader.infra.research.baostock_active_archive import BaoStockActiveArchiveConflictError
-from trader.infra.research.baostock_active_training import (
-    BaoStockActiveTrainingInputArchive,
-    BaoStockActiveTrainingInputSnapshot,
+from trader.domain.research.tomorrow_training_input import FrozenDailyInputDescriptor
+from trader.infra.research.baostock_active_training import BaoStockActiveTrainingInputSnapshot
+from trader.infra.research.history_training_due import evaluate_history_training_due
+from trader.infra.research.history_training_input import (
+    HistoryTrainingInputError,
+    SQLiteHistoryTrainingInputArchive,
 )
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
 from trader.infra.scoring.profiles.v3.bundle_store import (
@@ -47,6 +50,22 @@ from trader.infra.scoring.profiles.v3.sample_store import V3SampleStore, V3Store
 
 _MODEL_ID = "industry_ridge_lightgbm"
 _SOURCE_COMMIT = re.compile(r"^[0-9a-f]{40}$")
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+class _TrainingInputArchive(Protocol):
+    snapshot: BaoStockActiveTrainingInputSnapshot
+
+    def describe_frozen_daily_input(self) -> FrozenDailyInputDescriptor:
+        ...
+
+    def read_training_rows(
+        self,
+        code: str,
+        *,
+        allowed_dates: frozenset[date],
+    ) -> tuple[BaoStockTrainingRow, ...]:
+        ...
 
 
 @dataclass(frozen=True)
@@ -87,12 +106,63 @@ def run_tomorrow_training(
     *,
     progress: TomorrowTrainingProgressPort | None = None,
     source_commit: str = "",
+    observed_at: datetime | None = None,
 ) -> TomorrowTrainingResult:
     try:
-        archive = BaoStockActiveTrainingInputArchive.open(history_root / "baostock-daily" / "sessions-2000")
-    except (BaoStockActiveArchiveConflictError, OSError, ValueError) as exc:
+        archive = SQLiteHistoryTrainingInputArchive.open(history_root)
+    except (HistoryTrainingInputError, OSError, ValueError) as exc:
         return TomorrowTrainingResult("blocked", "unavailable", None, "", 0, 0, "", "", 0, 0, 0, (_reason(exc),))
     snapshot = archive.snapshot
+    due = evaluate_history_training_due(
+        archive.archive_root,
+        train_root,
+        observed_at.astimezone(_SHANGHAI) if observed_at is not None else datetime.now(_SHANGHAI),
+    )
+    if due is None:
+        return TomorrowTrainingResult(
+            "blocked",
+            snapshot.input_scope,
+            None,
+            snapshot.input_hash,
+            len(snapshot.training_codes),
+            snapshot.universe_count,
+            "",
+            "",
+            0,
+            0,
+            0,
+            ("history_manifest_unavailable",),
+        )
+    if due.state.reason == "data_incomplete":
+        return TomorrowTrainingResult(
+            "blocked",
+            snapshot.input_scope,
+            None,
+            snapshot.input_hash,
+            len(snapshot.training_codes),
+            snapshot.universe_count,
+            "",
+            "",
+            0,
+            0,
+            0,
+            ("history_training_data_incomplete",),
+        )
+    if not due.state.training_due:
+        return TomorrowTrainingResult(
+            "already_current" if due.bundle is not None else "not_due",
+            snapshot.input_scope,
+            None,
+            snapshot.input_hash,
+            len(snapshot.training_codes),
+            snapshot.universe_count,
+            "",
+            "",
+            0,
+            0,
+            0,
+            (),
+        )
     compatibility = evaluate_tomorrow_training_input(
         archive.describe_frozen_daily_input(),
         expected_manifest_hash=snapshot.input_hash,
@@ -194,6 +264,7 @@ def run_tomorrow_training(
             training_input_hash=snapshot.input_hash,
             parent_manifest_hash=snapshot.parent_manifest_hash,
             increment_manifest_hash=snapshot.increment_manifest_hash,
+            label_cutoff=snapshot.label_cutoff,
         )
         staging = None
         _publish_progress(progress, "completed", len(snapshot.training_codes), len(snapshot.training_codes))
@@ -211,7 +282,7 @@ def run_tomorrow_training(
             validation_rows,
             (),
         )
-    except (BaoStockActiveArchiveConflictError, OSError, ValueError, RuntimeError) as exc:
+    except (HistoryTrainingInputError, OSError, ValueError, RuntimeError) as exc:
         return TomorrowTrainingResult(
             "blocked",
             snapshot.input_scope,
@@ -238,7 +309,7 @@ def _build_split(dates: tuple[date, ...], manifest_hash: str) -> BaoStockTrainin
 
 
 def _build_samples(
-    archive: BaoStockActiveTrainingInputArchive,
+    archive: _TrainingInputArchive,
     codes: tuple[str, ...],
     window: TomorrowTrainingWindow,
     store: V3SampleStore,
@@ -649,6 +720,8 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
 
 def _reason(exc: BaseException) -> str:
     text = str(exc).lower()
+    if text in {"history_manifest_unavailable", "history_manifest_parent_unavailable"}:
+        return "history_manifest_unavailable"
     return "history_manifest_unavailable" if "manifest" in text or "no such file" in text else "v3_training_failed"
 
 

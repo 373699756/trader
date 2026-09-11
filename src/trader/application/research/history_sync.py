@@ -26,6 +26,7 @@ class HistorySyncConfiguration:
     supplier_retries: int = 2
     query_interval_seconds: float = 2.0
     cancellation_grace_seconds: float = 10.0
+    training_root: Path = Path("data/train")
 
     def __post_init__(self) -> None:
         if (

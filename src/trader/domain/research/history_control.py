@@ -186,6 +186,59 @@ class HistoryTrainingDueState:
         return self.reason in {"initial_training_required", "cadence_due", "input_revision_due"}
 
 
+def calculate_history_training_due(
+    *,
+    due_identity: str,
+    baseline_label_cutoff: date | None,
+    current_label_cutoff: date | None,
+    calendar_dates: tuple[date, ...],
+    input_revision: bool,
+    observed_at: datetime,
+    data_complete: bool = True,
+) -> HistoryTrainingDueState:
+    """Derive the immutable training cadence from mature trading sessions.
+
+    The count is deliberately based on the exchange calendar rather than elapsed
+    wall-clock time.  A missing input is represented as ``data_incomplete`` and
+    never advances the training baseline.
+    """
+
+    dates = tuple(calendar_dates)
+    if not dates or dates != tuple(sorted(set(dates))):
+        raise ValueError("history training calendar is invalid")
+    current = current_label_cutoff
+    if current is not None and current not in dates:
+        raise ValueError("history training current label cutoff is outside the calendar")
+    if baseline_label_cutoff is not None and current is not None and baseline_label_cutoff > current:
+        raise ValueError("history training baseline label cutoff is after the current cutoff")
+    if not data_complete or current is None:
+        reason: HistoryTrainingDueReason = "data_incomplete"
+        matured = 0
+    else:
+        matured = (
+            sum(day > baseline_label_cutoff and day <= current for day in dates)
+            if baseline_label_cutoff is not None
+            else 0
+        )
+        if baseline_label_cutoff is None:
+            reason = "initial_training_required"
+        elif input_revision:
+            reason = "input_revision_due"
+        elif matured >= 20:
+            reason = "cadence_due"
+        else:
+            reason = "not_due"
+    return HistoryTrainingDueState(
+        due_identity,
+        reason,
+        baseline_label_cutoff,
+        current,
+        matured,
+        input_revision,
+        observed_at,
+    )
+
+
 @dataclass(frozen=True)
 class HistoryReminderState:
     due_identity: str
@@ -371,4 +424,5 @@ __all__ = [
     "HistoryTrainingDueReason",
     "HistoryTrainingDueState",
     "HistoryUniverseIdentity",
+    "calculate_history_training_due",
 ]

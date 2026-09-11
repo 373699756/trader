@@ -244,7 +244,7 @@ def _run_tomorrow_research_orchestrator(
         "automatic_model_update": False,
     }
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-    return 0 if result.status in {"trial_ready", "engineering_ready"} else 1
+    return 0 if result.status in {"trial_ready", "engineering_ready", "already_current", "not_due"} else 1
 
 
 def _repository_source_commit() -> str:

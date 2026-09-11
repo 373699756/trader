@@ -45,6 +45,7 @@ class BaoStockActiveTrainingInputSnapshot:
     calendar: BaoStockCalendar
     training_codes: tuple[str, ...]
     input_descriptor_hash: str
+    label_cutoff: date | None = None
 
     @property
     def universe_count(self) -> int:

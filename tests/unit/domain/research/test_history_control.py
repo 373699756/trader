@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -17,6 +17,7 @@ from trader.domain.research.history_control import (
     HistorySyncCheckpoint,
     HistoryTrainingDueState,
     HistoryUniverseIdentity,
+    calculate_history_training_due,
 )
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -149,3 +150,84 @@ def test_history_control_state_canonicalizes_caller_owned_collections() -> None:
     assert state.sources == (source,)
     assert state.calendars == (calendar,)
     assert state.active_snapshot is None
+
+
+def test_training_due_counts_matured_exchange_sessions_not_calendar_days() -> None:
+    dates = tuple(date(2026, 8, 1) + timedelta(days=index) for index in range(25))
+    state = calculate_history_training_due(
+        due_identity="due-cadence",
+        baseline_label_cutoff=dates[0],
+        current_label_cutoff=dates[-1],
+        calendar_dates=dates,
+        input_revision=False,
+        observed_at=NOW,
+    )
+
+    assert state.reason == "cadence_due"
+    assert state.matured_label_days_since_training == 24
+    assert state.training_due is True
+
+
+def test_training_due_changes_from_not_due_on_the_twentieth_mature_label_day() -> None:
+    dates = tuple(date(2026, 8, 1) + timedelta(days=index) for index in range(21))
+    nineteenth = calculate_history_training_due(
+        due_identity="due-nineteenth",
+        baseline_label_cutoff=dates[0],
+        current_label_cutoff=dates[19],
+        calendar_dates=dates,
+        input_revision=False,
+        observed_at=NOW,
+    )
+    twentieth = calculate_history_training_due(
+        due_identity="due-twentieth",
+        baseline_label_cutoff=dates[0],
+        current_label_cutoff=dates[20],
+        calendar_dates=dates,
+        input_revision=False,
+        observed_at=NOW,
+    )
+
+    assert nineteenth.reason == "not_due"
+    assert nineteenth.matured_label_days_since_training == 19
+    assert twentieth.reason == "cadence_due"
+    assert twentieth.matured_label_days_since_training == 20
+
+
+def test_training_due_prefers_revision_and_does_not_advance_on_incomplete_data() -> None:
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    revised = calculate_history_training_due(
+        due_identity="due-revision",
+        baseline_label_cutoff=dates[0],
+        current_label_cutoff=dates[-1],
+        calendar_dates=dates,
+        input_revision=True,
+        observed_at=NOW,
+    )
+    incomplete = calculate_history_training_due(
+        due_identity="due-incomplete",
+        baseline_label_cutoff=dates[0],
+        current_label_cutoff=dates[-1],
+        calendar_dates=dates,
+        input_revision=False,
+        observed_at=NOW,
+        data_complete=False,
+    )
+
+    assert revised.reason == "input_revision_due"
+    assert incomplete.reason == "data_incomplete"
+    assert incomplete.matured_label_days_since_training == 0
+
+
+def test_training_due_requires_initial_training_without_a_bundle_baseline() -> None:
+    dates = (date(2026, 9, 8), date(2026, 9, 9))
+    state = calculate_history_training_due(
+        due_identity="due-initial",
+        baseline_label_cutoff=None,
+        current_label_cutoff=dates[-1],
+        calendar_dates=dates,
+        input_revision=False,
+        observed_at=NOW,
+    )
+
+    assert state.reason == "initial_training_required"
+    assert state.training_due is True
