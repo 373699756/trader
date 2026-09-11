@@ -19,6 +19,7 @@ from trader.infra.scoring.profiles.v3.bundle_codec import decode_tomorrow_bundle
 from trader.infra.scoring.profiles.v3.sample_store import V3StoredSample
 from trader.infra.scoring.profiles.v3.training import (
     _aligned_sample_dates,
+    _fit_models,
     _model_document,
     _residualize_sample_day,
     _training_output_directory,
@@ -55,7 +56,10 @@ def _cadence_archive(archive_root: Path) -> SimpleNamespace:
     return SimpleNamespace(
         snapshot=snapshot,
         archive_root=archive_root,
+        active_snapshot=SimpleNamespace(partitions=(object(),)),
         describe_frozen_daily_input=lambda: descriptor,
+        verify_partitions=lambda _progress=None: None,
+        count_training_rows=lambda _dates: 0,
     )
 
 
@@ -191,7 +195,7 @@ def test_successful_bundle_publication_is_the_only_event_that_clears_due_state(
     monkeypatch.setattr("trader.infra.scoring.profiles.v3.training._build_samples", build_samples)
     monkeypatch.setattr(
         "trader.infra.scoring.profiles.v3.training._fit_models",
-        lambda _samples, _split: ({"银行": {}}, 1, 1),
+        lambda _samples, _split, *, progress: ({"银行": {}}, 1, 1),
     )
     published: list[str] = []
     monkeypatch.setattr(
@@ -268,9 +272,51 @@ def test_training_window_never_authorizes_the_latest_two_hundred_dates() -> None
 
 
 def test_training_progress_rejects_impossible_counts() -> None:
-    assert TomorrowTrainingProgress("sample_build", 50, 100).processed_codes == 50
+    progress = TomorrowTrainingProgress("history_conversion", "running", 50, 100, produced_units=40)
+
+    assert progress.completed_units == 50
+    assert progress.produced_units == 40
     with pytest.raises(ValueError, match="counts"):
-        TomorrowTrainingProgress("sample_build", 101, 100)
+        TomorrowTrainingProgress("history_conversion", "running", 101, 100)
+    with pytest.raises(ValueError, match="counts"):
+        TomorrowTrainingProgress("history_conversion", "running", 50, 100, produced_units=-1)
+
+
+def test_model_progress_uses_the_real_industry_count_even_when_an_industry_is_skipped() -> None:
+    dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1250))
+    split = build_baostock_training_split(dates, parent_manifest_hash="a" * 64)
+
+    class Samples:
+        @staticmethod
+        def industries(_dates) -> tuple[str, ...]:
+            return ("银行", "软件")
+
+        @staticmethod
+        def samples_for(_industry, _dates) -> tuple[V3StoredSample, ...]:
+            return ()
+
+        @staticmethod
+        def count(_dates) -> int:
+            return 0
+
+    class Progress:
+        def __init__(self) -> None:
+            self.values: list[TomorrowTrainingProgress] = []
+
+        def publish(self, progress: TomorrowTrainingProgress) -> None:
+            self.values.append(progress)
+
+    progress = Progress()
+
+    models, training_rows, validation_rows = _fit_models(Samples(), split, progress=progress)  # type: ignore[arg-type]
+
+    assert models == {}
+    assert training_rows == validation_rows == 0
+    assert [(item.state, item.completed_units, item.total_units) for item in progress.values] == [
+        ("started", 0, 2),
+        ("running", 1, 2),
+        ("completed", 2, 2),
+    ]
 
 
 def test_training_window_rejects_dates_outside_the_frozen_manifest() -> None:

@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Tomorrow training progress and verified-read performance](2026-09-11-tomorrow-training-progress.md)
 - [BaoStock QFQ gap repair](2026-09-11-baostock-qfq-gap-repair.md)
 - [BaoStock converted-history layout normalization](2026-09-11-baostock-history-layout-normalization.md)
 - [Trader delivery scoring-chain routing](2026-09-11-trader-delivery-scoring-chain-routing.md)

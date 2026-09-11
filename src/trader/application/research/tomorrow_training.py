@@ -8,17 +8,33 @@ from typing import Literal, Protocol
 
 from trader.domain.research.baostock_daily import BaoStockTrainingSplit
 
-TomorrowTrainingStage = Literal["input_snapshot", "sample_build", "model_fit", "completed"]
+TomorrowTrainingStage = Literal[
+    "resource_preflight",
+    "partition_validation",
+    "history_conversion",
+    "cross_section_conversion",
+    "model_fit",
+    "artifact_publish",
+    "completed",
+]
+TomorrowTrainingProgressState = Literal["started", "running", "completed"]
+TOMORROW_TRAINING_COMPUTE_THREADS = 2
+TOMORROW_TRAINING_PEAK_RSS_MIB = 2_048
 
 
 @dataclass(frozen=True)
 class TomorrowTrainingProgress:
     stage: TomorrowTrainingStage
-    processed_codes: int
-    total_codes: int
+    state: TomorrowTrainingProgressState
+    completed_units: int
+    total_units: int
+    produced_units: int = 0
 
     def __post_init__(self) -> None:
-        if min(self.processed_codes, self.total_codes) < 0 or self.processed_codes > self.total_codes:
+        if (
+            min(self.completed_units, self.total_units, self.produced_units) < 0
+            or self.completed_units > self.total_units
+        ):
             raise ValueError("Tomorrow V3 training progress counts are invalid")
 
 
@@ -54,8 +70,11 @@ class TomorrowTrainingWindow:
 
 
 __all__ = [
+    "TOMORROW_TRAINING_COMPUTE_THREADS",
+    "TOMORROW_TRAINING_PEAK_RSS_MIB",
     "TomorrowTrainingProgress",
     "TomorrowTrainingProgressPort",
+    "TomorrowTrainingProgressState",
     "TomorrowTrainingStage",
     "TomorrowTrainingWindow",
 ]

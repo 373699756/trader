@@ -9,7 +9,7 @@ import os
 import re
 import shutil
 import tempfile
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from importlib.metadata import version
@@ -33,7 +33,11 @@ from trader.domain.market.feature_contracts import (
 )
 from trader.domain.recommendation.model_scoring import V3_EXPOSURE_CONTRACT, residualize_exposure
 from trader.domain.research.baostock_daily import BaoStockTrainingRow, BaoStockTrainingSplit
-from trader.domain.research.history_control import HistoryTrainingDueReason, HistoryTrainingDueState
+from trader.domain.research.history_control import (
+    HistoryActiveSnapshot,
+    HistoryTrainingDueReason,
+    HistoryTrainingDueState,
+)
 from trader.domain.research.tomorrow_training_input import FrozenDailyInputDescriptor, evaluate_tomorrow_training_input
 from trader.infra.research.history_control_repository import (
     HistoryMaintenanceAlreadyRunningError,
@@ -43,6 +47,7 @@ from trader.infra.research.history_training_due import HistoryTrainingDueEvaluat
 from trader.infra.research.history_training_input import (
     HistoryTrainingInputError,
     HistoryTrainingInputSnapshot,
+    HistoryTrainingRowBatch,
     SQLiteHistoryTrainingInputArchive,
 )
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
@@ -61,7 +66,21 @@ TomorrowTrainingStatus = Literal["blocked", "rejected", "engineering_ready", "al
 class _TrainingInputArchive(Protocol):
     snapshot: HistoryTrainingInputSnapshot
 
+    @property
+    def active_snapshot(self) -> HistoryActiveSnapshot: ...
+
     def describe_frozen_daily_input(self) -> FrozenDailyInputDescriptor: ...
+
+    def verify_partitions(self, progress: Callable[[int, int], None] | None = None) -> None: ...
+
+    def count_training_rows(self, allowed_dates: frozenset[date]) -> int: ...
+
+    def read_training_batch(
+        self,
+        code: str,
+        *,
+        allowed_dates: frozenset[date],
+    ) -> HistoryTrainingRowBatch: ...
 
     def read_training_rows(
         self,
@@ -128,6 +147,7 @@ def run_tomorrow_training(
     source_commit: str = "",
     observed_at: datetime | None = None,
 ) -> TomorrowTrainingResult:
+    _publish_progress(progress, "resource_preflight", "completed", 1, 1)
     try:
         archive = SQLiteHistoryTrainingInputArchive.open(history_root)
     except (HistoryTrainingInputError, OSError, ValueError) as exc:
@@ -281,7 +301,6 @@ def _prepare_training(
             invalidated_dates,
         )
     output = _training_output_directory(train_root)
-    _publish_progress(progress, "input_snapshot", len(snapshot.training_codes), len(snapshot.training_codes))
     run_id = hashlib.sha256(f"{snapshot.active_snapshot_hash}:tomorrow-v3".encode()).hexdigest()
     return _TrainingExecution(
         archive,
@@ -317,6 +336,17 @@ def _execute_training(plan: _TrainingExecution) -> TomorrowTrainingResult:
         )
         training_input_hash = cast(str, training_input["content_hash"])
         window = TomorrowTrainingWindow(split)
+        partition_total = len(archive.active_snapshot.partitions)
+        _publish_progress(progress, "partition_validation", "started", 0, partition_total)
+        archive.verify_partitions(
+            lambda completed, total: _publish_progress(
+                progress,
+                "partition_validation",
+                "completed" if completed == total else "running",
+                completed,
+                total,
+            )
+        )
         output.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".sample-workspace.", dir=output) as workspace:
             with V3SampleStore(Path(workspace) / "samples.sqlite3") as samples:
@@ -340,8 +370,7 @@ def _execute_training(plan: _TrainingExecution) -> TomorrowTrainingResult:
                         due.state,
                         invalidated_dates,
                     )
-                _publish_progress(progress, "model_fit", 0, len(snapshot.training_codes))
-                models, training_rows, validation_rows = _fit_models(samples, split)
+                models, training_rows, validation_rows = _fit_models(samples, split, progress=progress)
         context = _TrainingArtifactContext(
             snapshot.input_scope,
             snapshot.active_snapshot_hash,
@@ -356,6 +385,7 @@ def _execute_training(plan: _TrainingExecution) -> TomorrowTrainingResult:
             training_rows,
             validation_rows,
         )
+        _publish_progress(progress, "artifact_publish", "started", 0, 1)
         provisional_model = _model_document(context, "0" * 64, models)
         model_payload_hash = cast(str, provisional_model["model_payload_hash"])
         report = _build_report(context, models, model_payload_hash)
@@ -395,7 +425,8 @@ def _execute_training(plan: _TrainingExecution) -> TomorrowTrainingResult:
             label_cutoff=label_cutoff,
         )
         staging = None
-        _publish_progress(progress, "completed", len(snapshot.training_codes), len(snapshot.training_codes))
+        _publish_progress(progress, "artifact_publish", "completed", 1, 1)
+        _publish_progress(progress, "completed", "completed", 1, 1)
         return _after_success(
             TomorrowTrainingResult(
                 "engineering_ready",
@@ -453,8 +484,13 @@ def _build_samples(
     progress: TomorrowTrainingProgressPort | None = None,
 ) -> None:
     calendar = archive.snapshot.calendar.open_dates
-    for position, code in enumerate(codes, start=1):
-        rows = archive.read_training_rows(code, allowed_dates=window.readable_dates)
+    total_rows = archive.count_training_rows(window.readable_dates)
+    processed_rows = 0
+    generated_samples = 0
+    _publish_progress(progress, "history_conversion", "started", 0, total_rows)
+    for code in codes:
+        batch = archive.read_training_batch(code, allowed_dates=window.readable_dates)
+        rows = batch.rows
         rows_by_date = {item.trade_date: item for item in rows}
         closes = {item.trade_date: item.qfq.close_price for item in rows}
         raw_samples: list[V3StoredSample] = []
@@ -505,8 +541,29 @@ def _build_samples(
                 )
             )
         store.add_raw(raw_samples)
-        if position == 1 or position % 50 == 0 or position == len(codes):
-            _publish_progress(progress, "sample_build", position, len(codes))
+        processed_rows += batch.inspected_rows
+        generated_samples += len(raw_samples)
+        _publish_progress(
+            progress,
+            "history_conversion",
+            "running",
+            processed_rows,
+            total_rows,
+            generated_samples,
+        )
+    if processed_rows != total_rows:
+        raise HistoryTrainingInputError("history_training_row_count_mismatch")
+    _publish_progress(
+        progress,
+        "history_conversion",
+        "completed",
+        processed_rows,
+        total_rows,
+        generated_samples,
+    )
+    raw_total = store.raw_count()
+    converted_samples = 0
+    _publish_progress(progress, "cross_section_conversion", "started", 0, raw_total)
     for day in store.raw_dates():
         values = store.raw_for_date(day)
         if not values:
@@ -531,6 +588,17 @@ def _build_samples(
             for index, item in enumerate(values)
         )
         store.discard_raw_date(day)
+        converted_samples += len(values)
+        _publish_progress(
+            progress,
+            "cross_section_conversion",
+            "completed" if converted_samples == raw_total else "running",
+            converted_samples,
+            raw_total,
+            converted_samples,
+        )
+    if raw_total == 0:
+        _publish_progress(progress, "cross_section_conversion", "completed", 0, 0)
 
 
 def training_alpha_target(*, next_return: float, benchmark_return: float) -> float:
@@ -593,18 +661,33 @@ def _residualize_sample_day(
     )
 
 
-def _fit_models(samples: V3SampleStore, split: BaoStockTrainingSplit) -> tuple[dict[str, dict[str, object]], int, int]:
+def _fit_models(
+    samples: V3SampleStore,
+    split: BaoStockTrainingSplit,
+    *,
+    progress: TomorrowTrainingProgressPort | None = None,
+) -> tuple[dict[str, dict[str, object]], int, int]:
     models: dict[str, dict[str, object]] = {}
     training_dates = frozenset(split.model_fit_dates)
     calibration_dates = frozenset(split.calibration_dates)
     early_dates = frozenset(split.early_stopping_dates)
     validation_dates = frozenset((*split.confirmation_dates, *split.daily_proxy_holdout_dates))
-    for industry in samples.industries(training_dates):
+    industries = samples.industries(training_dates)
+    _publish_progress(progress, "model_fit", "started", 0, len(industries))
+    for position, industry in enumerate(industries, start=1):
         train_rows = samples.samples_for(industry, training_dates)
         calibration_rows = samples.samples_for(industry, calibration_dates)
         valid_rows = samples.samples_for(industry, validation_dates)
         early_rows = samples.samples_for(industry, early_dates)
         if len(train_rows) < 20_000 or not calibration_rows or not early_rows or not valid_rows:
+            _publish_progress(
+                progress,
+                "model_fit",
+                "completed" if position == len(industries) else "running",
+                position,
+                len(industries),
+                len(models),
+            )
             continue
         features = np.asarray(tuple(item.features for item in train_rows), dtype=np.float64)
         labels = np.asarray(tuple(item.target for item in train_rows), dtype=np.float64)
@@ -658,6 +741,16 @@ def _fit_models(samples: V3SampleStore, split: BaoStockTrainingSplit) -> tuple[d
             "training_rows": len(train_rows),
             "validation_rows": len(valid_rows),
         }
+        _publish_progress(
+            progress,
+            "model_fit",
+            "completed" if position == len(industries) else "running",
+            position,
+            len(industries),
+            len(models),
+        )
+    if not industries:
+        _publish_progress(progress, "model_fit", "completed", 0, 0)
     return models, samples.count(training_dates), samples.count(validation_dates)
 
 
@@ -864,12 +957,22 @@ def _after_success(
 
 def _publish_progress(
     progress: TomorrowTrainingProgressPort | None,
-    stage: Literal["input_snapshot", "sample_build", "model_fit", "completed"],
-    processed_codes: int,
-    total_codes: int,
+    stage: Literal[
+        "resource_preflight",
+        "partition_validation",
+        "history_conversion",
+        "cross_section_conversion",
+        "model_fit",
+        "artifact_publish",
+        "completed",
+    ],
+    state: Literal["started", "running", "completed"],
+    completed_units: int,
+    total_units: int,
+    produced_units: int = 0,
 ) -> None:
     if progress is not None:
-        progress.publish(TomorrowTrainingProgress(stage, processed_codes, total_codes))
+        progress.publish(TomorrowTrainingProgress(stage, state, completed_units, total_units, produced_units))
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -72,6 +73,16 @@ class HistoryTrainingInputError(RuntimeError):
     """The active monthly snapshot cannot be used as a complete input."""
 
 
+@dataclass(frozen=True)
+class HistoryTrainingRowBatch:
+    inspected_rows: int
+    rows: tuple[BaoStockTrainingRow, ...]
+
+    def __post_init__(self) -> None:
+        if self.inspected_rows < len(self.rows):
+            raise ValueError("history training row batch count is invalid")
+
+
 class SQLiteHistoryTrainingInputArchive:
     """Expose one verified active snapshot through the V3 training row contract."""
 
@@ -140,28 +151,59 @@ class SQLiteHistoryTrainingInputArchive:
     def describe_frozen_daily_input(self) -> FrozenDailyInputDescriptor:
         return self._descriptor
 
+    def verify_partitions(self, progress: Callable[[int, int], None] | None = None) -> None:
+        try:
+            self._archive.verify_snapshot(self._active, progress)
+        except (HistoryMonthlyArchiveError, OSError, ValueError) as exc:
+            raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
+
+    def count_training_rows(self, allowed_dates: frozenset[date]) -> int:
+        if not allowed_dates:
+            return 0
+        try:
+            return self._archive.count_range(
+                min(allowed_dates),
+                max(allowed_dates),
+                self._active,
+                codes=self._codes,
+            )
+        except (HistoryMonthlyArchiveError, OSError, ValueError) as exc:
+            raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
+
+    def read_training_batch(
+        self,
+        code: str,
+        *,
+        allowed_dates: frozenset[date],
+    ) -> HistoryTrainingRowBatch:
+        if code not in self._codes:
+            raise HistoryTrainingInputError("history_code_outside_active_universe")
+        try:
+            revisions = tuple(
+                self._archive.iter_code(
+                    code,
+                    min(allowed_dates),
+                    max(allowed_dates),
+                    self._active,
+                )
+            )
+            usable_rows: list[BaoStockTrainingRow] = []
+            for revision in revisions:
+                row = revision.training_row
+                if revision.trade_date in allowed_dates and row is not None:
+                    usable_rows.append(row)
+            rows = tuple(sorted(usable_rows, key=lambda item: item.trade_date))
+            return HistoryTrainingRowBatch(len(revisions), rows)
+        except (HistoryMonthlyArchiveError, OSError, ValueError) as exc:
+            raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
+
     def read_training_rows(
         self,
         code: str,
         *,
         allowed_dates: frozenset[date],
     ) -> tuple[BaoStockTrainingRow, ...]:
-        if code not in self._codes:
-            raise HistoryTrainingInputError("history_code_outside_active_universe")
-        try:
-            rows = (
-                revision.training_row
-                for revision in self._archive.iter_code(
-                    code,
-                    min(allowed_dates),
-                    max(allowed_dates),
-                    self._active,
-                )
-                if revision.trade_date in allowed_dates
-            )
-            return tuple(sorted((row for row in rows if row is not None), key=lambda item: item.trade_date))
-        except (HistoryMonthlyArchiveError, OSError, ValueError) as exc:
-            raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
+        return self.read_training_batch(code, allowed_dates=allowed_dates).rows
 
 
 def _security(value: HistorySecurityIdentity) -> BaoStockSecurity:
@@ -197,5 +239,6 @@ def _snapshot_for_training(
 __all__ = [
     "HistoryTrainingInputError",
     "HistoryTrainingInputSnapshot",
+    "HistoryTrainingRowBatch",
     "SQLiteHistoryTrainingInputArchive",
 ]

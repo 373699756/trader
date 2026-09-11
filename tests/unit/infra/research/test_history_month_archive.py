@@ -142,3 +142,32 @@ def test_archive_reads_2000_sessions_without_directory_scan_or_unbounded_windows
     assert final_window.trade_date == dates[-1]
     if baseline_descriptors is not None and peak_descriptors is not None:
         assert peak_descriptors <= baseline_descriptors + 4
+
+
+def test_verified_snapshot_reuses_each_partition_check_and_counts_latest_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "history"
+    dates = tuple(date(2026, 8, 30) + timedelta(days=offset) for offset in range(4))
+    rows = tuple(_revision(code, day) for day in dates for code in ("600001", "600002"))
+    snapshot = _build_snapshot(root, rows)
+    archive = SQLiteHistoryMonthlyArchive(root)
+    original = SQLiteHistoryMonthPartitionRepository.verify.__func__
+    verified: list[Path] = []
+
+    def verify(cls, path: Path, reference: HistorySnapshotPartition) -> None:
+        verified.append(path)
+        original(cls, path, reference)
+
+    monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "verify", classmethod(verify))
+
+    observed: list[tuple[int, int]] = []
+    archive.verify_snapshot(snapshot, lambda completed, total: observed.append((completed, total)))
+    assert archive.count_range(dates[0], dates[-1], snapshot, codes=("600001",)) == len(dates)
+    assert archive.count_range(dates[0], dates[-1], snapshot, codes=("600001", "600002")) == len(rows)
+    assert len(tuple(archive.iter_code("600001", dates[0], dates[-1], snapshot))) == len(dates)
+    assert len(tuple(archive.iter_code("600002", dates[0], dates[-1], snapshot))) == len(dates)
+
+    assert observed[-1] == (len(snapshot.partitions), len(snapshot.partitions))
+    assert len(verified) == len(snapshot.partitions)

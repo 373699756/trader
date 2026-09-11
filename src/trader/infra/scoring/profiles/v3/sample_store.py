@@ -77,6 +77,10 @@ class V3SampleStore:
         rows = self._connection.execute("SELECT DISTINCT trade_date FROM raw_samples ORDER BY trade_date")
         return tuple(date.fromisoformat(row[0]) for row in rows)
 
+    def raw_count(self) -> int:
+        row = self._connection.execute("SELECT COUNT(*) FROM raw_samples").fetchone()
+        return int(row[0]) if row is not None else 0
+
     def raw_for_date(self, day: date) -> tuple[V3StoredSample, ...]:
         rows = self._connection.execute(
             "SELECT * FROM raw_samples WHERE trade_date=? ORDER BY code", (day.isoformat(),)

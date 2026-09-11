@@ -92,6 +92,23 @@ def test_monthly_training_input_binds_active_snapshot_and_reads_typed_rows(tmp_p
     assert archive.snapshot.label_cutoff == dates[-2]
 
 
+def test_training_input_reports_exact_inspected_rows_from_one_verified_snapshot(tmp_path: Path) -> None:
+    archive_root = tmp_path / "history" / "baostock"
+    configuration = HistorySyncConfiguration(archive_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
+    archive = SQLiteHistoryTrainingInputArchive.open(tmp_path / "history")
+    progress: list[tuple[int, int]] = []
+
+    archive.verify_partitions(lambda completed, total: progress.append((completed, total)))
+    assert archive.count_training_rows(frozenset(dates)) == 3
+    batch = archive.read_training_batch("600001", allowed_dates=frozenset(dates))
+
+    assert progress[-1] == (1, 1)
+    assert batch.inspected_rows == 3
+    assert tuple(row.trade_date for row in batch.rows) == dates
+
+
 def test_training_due_uses_the_active_snapshot_label_cutoff_and_marks_initial(tmp_path: Path) -> None:
     archive_root = tmp_path / "history" / "baostock"
     configuration = HistorySyncConfiguration(archive_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)

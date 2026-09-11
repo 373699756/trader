@@ -579,6 +579,24 @@ def test_train_tomorrow_runs_a_prerequisite_before_resource_handoff_without_crea
     assert not runtime_dir.exists()
 
 
+def test_tomorrow_training_resource_policy_is_two_threads_and_lower_priority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[int] = []
+    monkeypatch.setattr(cli_module, "_TOMORROW_PRIORITY_LOWERED", False)
+    monkeypatch.setattr(cli_module.os, "name", "posix")
+    monkeypatch.setattr(cli_module.os, "nice", observed.append)
+
+    cli_module._configure_tomorrow_training_resources()
+    cli_module._configure_tomorrow_training_resources()
+
+    assert observed == [10]
+    assert {
+        os.environ[name]
+        for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS")
+    } == {"2"}
+
+
 def test_train_tomorrow_passes_the_fixed_project_history_root_to_the_training_owner(
     tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -6,7 +6,7 @@ import hashlib
 import os
 import re
 import sqlite3
-from collections.abc import Iterable, Iterator
+from collections.abc import Collection, Iterable, Iterator
 from contextlib import closing
 from datetime import date
 from pathlib import Path
@@ -77,6 +77,7 @@ WHERE latest.revision_rank = 1
   AND (? IS NULL OR records.board = ?)
 ORDER BY records.trade_date, records.code
 """
+_COUNT_CODE_BATCH_SIZE = 500
 
 
 class HistoryMonthPartitionError(RuntimeError):
@@ -158,6 +159,43 @@ class SQLiteHistoryMonthPartitionRepository:
         if _CODE.fullmatch(code) is None:
             raise ValueError("history month code is invalid")
         return tuple(self.iter_range(start, end, snapshot_sequence=snapshot_sequence, code=code))
+
+    def count_range(
+        self,
+        start: date,
+        end: date,
+        *,
+        snapshot_sequence: int,
+        codes: Collection[str],
+    ) -> int:
+        if start > end or snapshot_sequence < 1:
+            raise ValueError("history month count range is invalid")
+        ordered_codes = tuple(sorted(set(codes)))
+        if any(len(code) != 6 or not code.isdigit() for code in ordered_codes):
+            raise ValueError("history month count codes are invalid")
+        if not ordered_codes:
+            return 0
+        try:
+            with closing(self._read_connection()) as connection:
+                self._require_metadata(connection)
+                count = 0
+                for offset in range(0, len(ordered_codes), _COUNT_CODE_BATCH_SIZE):
+                    batch = ordered_codes[offset : offset + _COUNT_CODE_BATCH_SIZE]
+                    placeholders = ",".join("?" for _code in batch)
+                    row = connection.execute(
+                        "SELECT COUNT(*) FROM ("
+                        "SELECT trade_date, code FROM daily_observations "
+                        "WHERE sync_sequence <= ? AND trade_date BETWEEN ? AND ? "
+                        f"AND code IN ({placeholders}) GROUP BY trade_date, code"
+                        ")",
+                        (snapshot_sequence, start.isoformat(), end.isoformat(), *batch),
+                    ).fetchone()
+                    if row is None:
+                        raise HistoryMonthPartitionError("history month count is unavailable")
+                    count += cast(int, row[0])
+        except (sqlite3.Error, TypeError, ValueError) as exc:
+            raise HistoryMonthPartitionError("history month count failed") from exc
+        return count
 
     def prune_before(self, first_date: date) -> None:
         """Remove rows outside a new rolling window from a mutable side copy."""

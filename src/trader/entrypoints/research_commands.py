@@ -22,7 +22,6 @@ from trader.application.research.tomorrow_research_artifacts import (
     production_readiness_audit,
 )
 from trader.application.research.tomorrow_research_prerequisites import CodexATomorrowResearchPrerequisite
-from trader.application.research.tomorrow_training import TomorrowTrainingProgress
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC
 from trader.domain.research.tomorrow_historical import TOMORROW_HISTORICAL_SPEC
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
@@ -68,23 +67,6 @@ class _TomorrowResearchProgress(TomorrowResearchProgressPort):
                     "stage": stage,
                     "status": status,
                     "elapsed_seconds": round(now - started_at, 3),
-                },
-                sort_keys=True,
-            ),
-            file=sys.stderr,
-            flush=True,
-        )
-
-
-class _TomorrowTrainingProgress:
-    def publish(self, progress: TomorrowTrainingProgress) -> None:
-        print(
-            json.dumps(
-                {
-                    "schema_version": "tomorrow_training_progress",
-                    "stage": progress.stage,
-                    "processed_codes": progress.processed_codes,
-                    "total_codes": progress.total_codes,
                 },
                 sort_keys=True,
             ),
@@ -223,14 +205,21 @@ def _run_tomorrow_research_orchestrator(
     runtime: RuntimeSettings,
 ) -> int:
     del runtime
+    from trader.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
     from trader.infra.scoring.profiles.v3.training import run_tomorrow_training
 
-    result = run_tomorrow_training(
-        _history_data_root(),
-        _train_data_root(),
-        progress=_TomorrowTrainingProgress(),
-        source_commit=_repository_source_commit(),
-    )
+    with StderrTomorrowTrainingProgress() as progress:
+        try:
+            result = run_tomorrow_training(
+                _history_data_root(),
+                _train_data_root(),
+                progress=progress,
+                source_commit=_repository_source_commit(),
+            )
+            progress.publish_result(result.status, result.failure_reasons[0] if result.failure_reasons else None)
+        except KeyboardInterrupt:
+            progress.publish_cancelled()
+            return 130
     payload = {
         "schema_version": "tomorrow_training_result",
         "status": result.status,

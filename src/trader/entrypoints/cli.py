@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import sys
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
 _COMMAND_GROUPS = {
     "check": ("validate-config", "research-status", "history-automation-status", "performance-check"),
 }
+_TOMORROW_PRIORITY_LOWERED = False
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -143,8 +145,29 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
 
 
 def _configure_tomorrow_training_resources() -> None:
+    from trader.application.research.tomorrow_training import TOMORROW_TRAINING_COMPUTE_THREADS
+
     for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
-        os.environ[name] = "2"
+        os.environ[name] = str(TOMORROW_TRAINING_COMPUTE_THREADS)
+    _lower_tomorrow_training_priority()
+
+
+def _lower_tomorrow_training_priority() -> None:
+    global _TOMORROW_PRIORITY_LOWERED  # noqa: PLW0603 - one process-level resource policy
+    if _TOMORROW_PRIORITY_LOWERED:
+        return
+    if os.name == "posix":
+        os.nice(10)
+        _TOMORROW_PRIORITY_LOWERED = True
+        return
+    if os.name != "nt":
+        _TOMORROW_PRIORITY_LOWERED = True
+        return
+    below_normal_priority_class = 0x00004000
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    if not kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), below_normal_priority_class):
+        raise OSError(ctypes.__dict__["get_last_error"](), "could not lower Tomorrow training priority")
+    _TOMORROW_PRIORITY_LOWERED = True
 
 
 def _run_history_maintenance_command(

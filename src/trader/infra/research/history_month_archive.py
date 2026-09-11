@@ -5,7 +5,7 @@ from __future__ import annotations
 import calendar
 import re
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Callable, Collection, Iterator
 from datetime import date
 from pathlib import Path
 
@@ -47,6 +47,38 @@ def route_history_months(start: date, end: date) -> tuple[tuple[int, int], ...]:
 class SQLiteHistoryMonthlyArchive:
     def __init__(self, root: Path) -> None:
         self._root = root
+        self._verified: dict[HistorySnapshotPartition, SQLiteHistoryMonthPartitionRepository] = {}
+
+    def verify_snapshot(
+        self,
+        snapshot: HistoryActiveSnapshot,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> None:
+        total = len(snapshot.partitions)
+        for completed, reference in enumerate(snapshot.partitions, start=1):
+            self._verified_repository(reference)
+            if progress is not None:
+                progress(completed, total)
+
+    def count_range(
+        self,
+        start: date,
+        end: date,
+        snapshot: HistoryActiveSnapshot,
+        *,
+        codes: Collection[str],
+    ) -> int:
+        if start > end or end > snapshot.data_cutoff:
+            raise ValueError("history range count is invalid")
+        return sum(
+            self._verified_repository(self._reference(snapshot, year, month)).count_range(
+                start,
+                end,
+                snapshot_sequence=snapshot.sequence,
+                codes=codes,
+            )
+            for year, month in route_history_months(start, end)
+        )
 
     def read_day(
         self,
@@ -190,13 +222,18 @@ class SQLiteHistoryMonthlyArchive:
         self,
         reference: HistorySnapshotPartition,
     ) -> SQLiteHistoryMonthPartitionRepository:
+        existing = self._verified.get(reference)
+        if existing is not None:
+            return existing
         year, month = _reference_month(reference)
         path = self._root / reference.relative_path
         try:
             SQLiteHistoryMonthPartitionRepository.verify(path, reference)
         except HistoryMonthPartitionError as exc:
             raise HistoryMonthlyArchiveError("history snapshot partition verification failed") from exc
-        return SQLiteHistoryMonthPartitionRepository(path, year, month)
+        repository = SQLiteHistoryMonthPartitionRepository(path, year, month)
+        self._verified[reference] = repository
+        return repository
 
 
 def _reference_month(reference: HistorySnapshotPartition) -> tuple[int, int]:

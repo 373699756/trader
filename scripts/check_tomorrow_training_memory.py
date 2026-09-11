@@ -9,6 +9,7 @@ import resource
 import sys
 from pathlib import Path
 
+from trader.application.research.tomorrow_training import TOMORROW_TRAINING_PEAK_RSS_MIB
 from trader.infra.scoring.profiles.v3.training import run_tomorrow_training
 
 
@@ -17,7 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--history-root", type=Path, required=True)
     parser.add_argument("--train-root", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
-    parser.add_argument("--max-rss-mib", type=int, default=2_048)
+    parser.add_argument("--max-rss-mib", type=int, default=TOMORROW_TRAINING_PEAK_RSS_MIB)
     return parser
 
 
