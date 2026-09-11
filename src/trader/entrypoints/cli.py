@@ -76,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
             parser.error("download_history does not accept --profile")
         from trader.application.research.history_sync import HistorySyncConfiguration
         from trader.entrypoints.history_maintenance_projection import project_history_maintenance_status
+        from trader.entrypoints.history_sync_progress import StderrHistorySyncProgress
         from trader.infra.research.baostock_sync_supplier import BaoStockHistorySupplier
         from trader.infra.research.history_sync_runtime import run_history_sync
 
@@ -84,13 +85,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
             archive_root=repository_root / "data" / "history" / "baostock",
             training_root=repository_root / "data" / "train",
         )
-        with BaoStockHistorySupplier(
-            timeout_seconds=configuration.supplier_timeout_seconds,
-            retries=configuration.supplier_retries,
-            query_interval_seconds=configuration.query_interval_seconds,
-            cancellation_grace_seconds=configuration.cancellation_grace_seconds,
-        ) as supplier:
-            status = run_history_sync(configuration, supplier)
+        progress = StderrHistorySyncProgress()
+        with BaoStockHistorySupplier(configuration, progress=progress) as supplier:
+            status = run_history_sync(configuration, supplier, progress=progress)
         print(json.dumps(project_history_maintenance_status(status), ensure_ascii=False, sort_keys=True))
         return 0 if status.state in {"completed", "already_current"} else 1
     if args.command == "train-tomorrow":

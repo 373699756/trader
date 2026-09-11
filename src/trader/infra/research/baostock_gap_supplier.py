@@ -18,11 +18,11 @@ from trader.domain.research.baostock_active_archive import (
 from trader.infra.research.baostock_active_archive import BaoStockIncrementRecord
 from trader.infra.research.baostock_history_messages import SupplierCallActivity
 from trader.infra.research.baostock_history_runtime import (
-    _RateLimitedBaoStockSdk,
     _failure_code,
     _load_sdk,
     _login,
     _logout,
+    _RateLimitedBaoStockSdk,
 )
 from trader.infra.research.baostock_increment_runtime import _BaoStockIncrementSource
 

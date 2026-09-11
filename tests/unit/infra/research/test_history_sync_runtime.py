@@ -7,7 +7,11 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.application.research.history_sync import HistorySupplierContext, HistorySyncConfiguration
+from trader.application.research.history_sync import (
+    HistorySupplierContext,
+    HistorySyncConfiguration,
+    HistorySyncProgress,
+)
 from trader.domain.research.baostock_daily import (
     BaoStockCalendar,
     BaoStockCodeBatch,
@@ -105,6 +109,14 @@ def _configuration(root: Path) -> HistorySyncConfiguration:
     return HistorySyncConfiguration(root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
 
 
+@dataclass
+class ProgressRecorder:
+    values: list[HistorySyncProgress] = field(default_factory=list)
+
+    def publish(self, progress: HistorySyncProgress) -> None:
+        self.values.append(progress)
+
+
 def test_history_sync_configuration_owns_bounded_supplier_resources(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="configuration"):
         HistorySyncConfiguration(tmp_path, query_interval_seconds=1.99)
@@ -112,6 +124,8 @@ def test_history_sync_configuration_owns_bounded_supplier_resources(tmp_path: Pa
         HistorySyncConfiguration(tmp_path, supplier_retries=3)
     with pytest.raises(ValueError, match="configuration"):
         HistorySyncConfiguration(tmp_path, cancellation_grace_seconds=10.01)
+    with pytest.raises(ValueError, match="configuration"):
+        HistorySyncConfiguration(tmp_path, supplier_timeout_seconds=4.0, progress_heartbeat_seconds=5.0)
 
 
 def test_initial_sync_publishes_verified_snapshot_and_same_cutoff_is_noop(tmp_path: Path) -> None:
@@ -130,6 +144,61 @@ def test_initial_sync_publishes_verified_snapshot_and_same_cutoff_is_noop(tmp_pa
     assert snapshot is not None
     assert len(SQLiteHistoryMonthlyArchive(tmp_path).read_day(dates[-1], snapshot)) == 2
     assert all(len(Path(item.relative_path).parts) == 4 for item in snapshot.partitions)
+
+
+def test_history_sync_reports_context_code_sealing_and_publication_progress(tmp_path: Path) -> None:
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    recorder = ProgressRecorder()
+
+    result = run_history_sync(
+        _configuration(tmp_path),
+        FakeSupplier(dates),
+        clock=lambda: NOW,
+        progress=recorder,
+    )
+
+    assert result.state == "completed"
+    assert [(item.stage, item.state) for item in recorder.values] == [
+        ("initializing", "started"),
+        ("initializing", "completed"),
+        ("loading_context", "started"),
+        ("loading_context", "completed"),
+        ("preparing_partitions", "started"),
+        ("preparing_partitions", "completed"),
+        ("downloading_codes", "started"),
+        ("downloading_codes", "completed"),
+        ("downloading_codes", "started"),
+        ("downloading_codes", "completed"),
+        ("sealing_partitions", "started"),
+        ("sealing_partitions", "completed"),
+        ("publishing_snapshot", "started"),
+        ("publishing_snapshot", "completed"),
+    ]
+    assert recorder.values[6].current_item == "600001"
+    assert recorder.values[6].completed_units == 0
+    assert recorder.values[7].completed_units == 1
+    assert recorder.values[9].completed_units == 2
+
+
+def test_history_sync_cancels_cleanly_during_supplier_context_loading(tmp_path: Path) -> None:
+    recorder = ProgressRecorder()
+
+    class InterruptedSupplier(FakeSupplier):
+        def load_context(self, _as_of: date, _sessions: int) -> HistorySupplierContext:
+            raise KeyboardInterrupt
+
+    result = run_history_sync(
+        _configuration(tmp_path),
+        InterruptedSupplier((date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))),
+        clock=lambda: NOW,
+        progress=recorder,
+    )
+
+    assert result.state == "cancelled"
+    assert result.reason == "cancelled"
+    assert recorder.values[-1].stage == "loading_context"
+    assert recorder.values[-1].state == "cancelled"
+    assert SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().checkpoints == ()
 
 
 def test_daily_sync_rereads_recent_dates_and_full_window_only_for_qfq_revision(tmp_path: Path) -> None:

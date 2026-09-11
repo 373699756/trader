@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 from trader.domain.research.h1_point_in_time import canonical_hash
 from trader.domain.research.history_control import (
     HistoryActiveSnapshot,
+    HistoryTrainingDueRequest,
     HistoryTrainingDueState,
     calculate_history_training_cache_invalidation_dates,
     calculate_history_training_due,
@@ -67,13 +68,15 @@ def evaluate_history_training_due(
     if bundle_invalid:
         due_identity = "due-" + canonical_hash((active.content_hash, "invalid_bundle"))[:32]
         due = calculate_history_training_due(
-            due_identity=due_identity,
-            baseline_label_cutoff=None,
-            current_label_cutoff=active.label_cutoff,
-            calendar_dates=calendar.open_dates,
-            input_revision=False,
-            observed_at=observed_at,
-            data_complete=False,
+            HistoryTrainingDueRequest(
+                due_identity=due_identity,
+                baseline_label_cutoff=None,
+                current_label_cutoff=active.label_cutoff,
+                calendar_dates=calendar.open_dates,
+                input_revision=False,
+                observed_at=observed_at,
+                data_complete=False,
+            )
         )
         return HistoryTrainingDueEvaluation(archive_root, active, due, None, (), ())
     baseline_cutoff = bundle.label_cutoff if bundle is not None else None
@@ -114,13 +117,15 @@ def evaluate_history_training_due(
         )[:32]
     )
     due = calculate_history_training_due(
-        due_identity=due_identity,
-        baseline_label_cutoff=baseline_cutoff,
-        current_label_cutoff=active.label_cutoff,
-        calendar_dates=calendar.open_dates,
-        input_revision=input_revision,
-        observed_at=observed_at,
-        data_complete=data_complete,
+        HistoryTrainingDueRequest(
+            due_identity=due_identity,
+            baseline_label_cutoff=baseline_cutoff,
+            current_label_cutoff=active.label_cutoff,
+            calendar_dates=calendar.open_dates,
+            input_revision=input_revision,
+            observed_at=observed_at,
+            data_complete=data_complete,
+        )
     )
     previous = next((item for item in state.due_states if item.due_identity == due.due_identity), None)
     if previous is None:

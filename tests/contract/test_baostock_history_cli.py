@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from trader.application.research.history_maintenance import HistoryMaintenanceStatus
+from trader.application.research.history_sync import HistorySyncProgress
 from trader.entrypoints.cli import build_parser, main
 
 
@@ -50,11 +51,17 @@ def test_download_history_runs_the_typed_zero_argument_synchronization(
         "data_incomplete",
         False,
     )
-    monkeypatch.setattr("trader.infra.research.history_sync_runtime.run_history_sync", lambda *_args: status)
+
+    def synchronize(*_args, progress, **_kwargs):
+        progress.publish(HistorySyncProgress("supplier_calendar", "waiting", 0, 1, call_elapsed_seconds=5.0))
+        return status
+
+    monkeypatch.setattr("trader.infra.research.history_sync_runtime.run_history_sync", synchronize)
 
     assert main(["download_history"]) == 0
 
-    payload = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
     assert payload == {
         "active_snapshot_hash": "a" * 64,
         "archive_root": "data/history/baostock",
@@ -69,6 +76,20 @@ def test_download_history_runs_the_typed_zero_argument_synchronization(
         "state": "completed",
         "training_due": False,
         "training_due_reason": "data_incomplete",
+    }
+    progress = json.loads(captured.err)
+    assert progress == {
+        "attempt": 1,
+        "call_elapsed_seconds": 5.0,
+        "completed_units": 0,
+        "current_item": None,
+        "elapsed_seconds": pytest.approx(0.0, abs=0.1),
+        "max_attempts": 1,
+        "percent": 0.0,
+        "schema_version": "history_sync_progress",
+        "stage": "supplier_calendar",
+        "state": "waiting",
+        "total_units": 1,
     }
 
 

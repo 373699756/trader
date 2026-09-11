@@ -12,8 +12,8 @@ from trader.domain.recommendation.model_scoring import V3_EXPOSURE_CONTRACT, res
 from trader.domain.research.baostock_daily import BaoStockCalendar, build_baostock_training_split
 from trader.domain.research.history_control import HistoryTrainingDueState
 from trader.domain.research.tomorrow_training_input import REQUIRED_DAILY_FIELDS, FrozenDailyInputDescriptor
-from trader.infra.research.history_training_input import HistoryTrainingInputSnapshot
 from trader.infra.research.history_control_repository import HistoryMaintenanceAlreadyRunningError
+from trader.infra.research.history_training_input import HistoryTrainingInputSnapshot
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
 from trader.infra.scoring.profiles.v3.bundle_codec import decode_tomorrow_bundle
 from trader.infra.scoring.profiles.v3.sample_store import V3StoredSample
@@ -23,8 +23,8 @@ from trader.infra.scoring.profiles.v3.training import (
     _residualize_sample_day,
     _training_output_directory,
     _TrainingArtifactContext,
-    training_alpha_target,
     run_tomorrow_training,
+    training_alpha_target,
 )
 
 

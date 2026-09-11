@@ -10,13 +10,16 @@ from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from pathlib import Path
-from typing import TypeAlias
+from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo
 
 from trader.application.research.history_maintenance import HistoryMaintenanceState, HistoryMaintenanceStatus
 from trader.application.research.history_sync import (
     HistorySupplierContext,
     HistorySyncConfiguration,
+    HistorySyncProgress,
+    HistorySyncProgressPort,
+    HistorySyncProgressStage,
     HistorySyncSupplier,
 )
 from trader.domain.research.baostock_daily import (
@@ -78,6 +81,7 @@ def run_history_sync(
     *,
     clock: Clock | None = None,
     cancel_requested: Cancellation | None = None,
+    progress: HistorySyncProgressPort | None = None,
 ) -> HistoryMaintenanceStatus:
     """Synchronize and publish one complete immutable snapshot."""
     observed_at = (clock or (lambda: datetime.now(_SHANGHAI)))()
@@ -86,19 +90,17 @@ def run_history_sync(
     observed_at = observed_at.astimezone(_SHANGHAI)
     cancel = cancel_requested or (lambda: False)
     root = configuration.archive_root
+    _publish_progress(progress, "initializing", "started")
     try:
         with HistoryMaintenanceLock(root / ".maintenance.lock"):
-            return _run_locked(configuration, supplier, observed_at, cancel)
-    except HistoryMaintenanceAlreadyRunningError:
+            return _run_locked(configuration, supplier, observed_at, cancel, progress)
+    except KeyboardInterrupt:
         active = _safe_active(SQLiteHistoryControlRepository(root / "control.sqlite3"))
-        return _status(
-            "already_running",
-            "history_maintenance_running",
-            root,
-            active,
-            training_root=configuration.training_root,
-            observed_at=observed_at,
-        )
+        return _status("cancelled", "cancelled", configuration, active, observed_at)
+    except HistoryMaintenanceAlreadyRunningError:
+        _publish_progress(progress, "initializing", "failed")
+        active = _safe_active(SQLiteHistoryControlRepository(root / "control.sqlite3"))
+        return _status("already_running", "history_maintenance_running", configuration, active, observed_at)
 
 
 def _run_locked(
@@ -106,13 +108,24 @@ def _run_locked(
     supplier: HistorySyncSupplier,
     observed_at: datetime,
     cancel_requested: Cancellation,
+    progress: HistorySyncProgressPort | None,
 ) -> HistoryMaintenanceStatus:
     root = configuration.archive_root
     control = SQLiteHistoryControlRepository(root / "control.sqlite3")
     try:
         control.initialize()
         state = control.load_state()
-        context = supplier.load_context(observed_at.date(), configuration.sessions)
+        _publish_progress(progress, "initializing", "completed", (1, 1))
+        _publish_progress(progress, "loading_context", "started")
+        try:
+            context = supplier.load_context(observed_at.date(), configuration.sessions)
+        except KeyboardInterrupt:
+            _publish_progress(progress, "loading_context", "cancelled")
+            raise
+        except (OSError, RuntimeError, TypeError, ValueError):
+            _publish_progress(progress, "loading_context", "failed")
+            raise
+        _publish_progress(progress, "loading_context", "completed", (1, 1))
         _validate_context(context, configuration.sessions)
         source, calendar, universe = _control_identities(context)
         active = state.active_snapshot
@@ -121,27 +134,13 @@ def _run_locked(
         if not previous_codes.issubset(item.code for item in universe.securities):
             raise RuntimeError("supplier_universe_regressed")
         if _is_current(active, calendar, universe):
-            return _status(
-                "already_current",
-                None,
-                root,
-                active,
-                training_root=configuration.training_root,
-                observed_at=observed_at,
-            )
+            return _status("already_current", None, configuration, active, observed_at)
         disk = inspect_history_disk(
             root,
             HistoryDiskRequirement(configuration.minimum_free_bytes, 0, 0, 0),
         )
         if not disk.sufficient:
-            return _status(
-                "blocked",
-                "disk_space_insufficient",
-                root,
-                active,
-                training_root=configuration.training_root,
-                observed_at=observed_at,
-            )
+            return _status("blocked", "disk_space_insufficient", configuration, active, observed_at)
         return _synchronize(
             configuration,
             supplier,
@@ -153,17 +152,11 @@ def _run_locked(
             source,
             calendar,
             universe,
+            progress,
         )
     except (HistoryControlError, OSError, RuntimeError, TypeError, ValueError) as exc:
         active = _safe_active(control)
-        return _status(
-            "failed",
-            _failure_code(exc),
-            root,
-            active,
-            training_root=configuration.training_root,
-            observed_at=observed_at,
-        )
+        return _status("failed", _failure_code(exc), configuration, active, observed_at)
 
 
 def _synchronize(  # noqa: PLR0913
@@ -177,6 +170,7 @@ def _synchronize(  # noqa: PLR0913
     source: HistorySourceIdentity,
     calendar: HistoryCalendarIdentity,
     universe: HistoryUniverseIdentity,
+    progress: HistorySyncProgressPort | None,
 ) -> HistoryMaintenanceStatus:
     sequence = 1 if active is None else active.sequence + 1
     sync_identity = _sync_identity(calendar, universe, active)
@@ -185,7 +179,9 @@ def _synchronize(  # noqa: PLR0913
     ordinal = max((item.ordinal for item in checkpoints), default=0) + 1
     total = len(context.universe)
     try:
+        _publish_progress(progress, "preparing_partitions", "started")
         pending = _prepare_pending(configuration.archive_root, calendar.open_dates, active, completed > 0)
+        _publish_progress(progress, "preparing_partitions", "completed", (1, 1))
         if not checkpoints:
             control.save_checkpoint(
                 HistorySyncCheckpoint(sync_identity, ordinal, "running", observed_at, 0, total, None)
@@ -207,18 +203,13 @@ def _synchronize(  # noqa: PLR0913
             existing_qfq,
         )
         for index, security in enumerate(context.universe[completed:], start=completed):
+            _publish_progress(progress, "downloading_codes", "started", (index, total), security.code)
             if cancel_requested():
+                _publish_progress(progress, "downloading_codes", "cancelled", (index, total), security.code)
                 control.save_checkpoint(
                     HistorySyncCheckpoint(sync_identity, ordinal, "cancelled", observed_at, index, total, "cancelled")
                 )
-                return _status(
-                    "cancelled",
-                    "cancelled",
-                    configuration.archive_root,
-                    active,
-                    training_root=configuration.training_root,
-                    observed_at=observed_at,
-                )
+                return _status("cancelled", "cancelled", configuration, active, observed_at)
             download = _download_for_security(supplier, download_context, security)
             revisions = _revisions(download, security, context.industry_intervals, sequence)
             _write_revisions(pending, revisions)
@@ -226,23 +217,16 @@ def _synchronize(  # noqa: PLR0913
             control.save_checkpoint(
                 HistorySyncCheckpoint(sync_identity, ordinal, "running", observed_at, completed, total, None)
             )
+            _publish_progress(progress, "downloading_codes", "completed", (completed, total), security.code)
             ordinal += 1
         if cancel_requested():
+            _publish_progress(progress, "downloading_codes", "cancelled", (completed, total))
             control.save_checkpoint(
                 HistorySyncCheckpoint(sync_identity, ordinal, "cancelled", observed_at, completed, total, "cancelled")
             )
-            return _status(
-                "cancelled",
-                "cancelled",
-                configuration.archive_root,
-                active,
-                training_root=configuration.training_root,
-                observed_at=observed_at,
-            )
-        references = _seal_pending(configuration.archive_root, pending)
-        control.save_source(source)
-        control.save_calendar(calendar)
-        control.save_universe(universe)
+            return _status("cancelled", "cancelled", configuration, active, observed_at)
+        references = _seal_pending(configuration.archive_root, pending, progress)
+        _publish_progress(progress, "publishing_snapshot", "started")
         label_cutoff = calendar.open_dates[-2] if len(calendar.open_dates) > 1 else calendar.open_dates[-1]
         snapshot = HistoryActiveSnapshot(
             sequence,
@@ -253,48 +237,30 @@ def _synchronize(  # noqa: PLR0913
             source.content_hash,
             references,
         )
-        control.save_checkpoint(
-            HistorySyncCheckpoint(sync_identity, ordinal, "completed", observed_at, total, total, None)
+        _publish_snapshot(
+            control,
+            (source, calendar, universe),
+            snapshot,
+            HistorySyncCheckpoint(sync_identity, ordinal, "completed", observed_at, total, total, None),
         )
-        ordinal += 1
-        control.publish_snapshot(snapshot)
+        _publish_progress(progress, "publishing_snapshot", "completed", (1, 1))
         try:
             _remove_pending(pending)
         except OSError:
             pass
-        return _status(
-            "completed",
-            None,
-            configuration.archive_root,
-            snapshot,
-            training_root=configuration.training_root,
-            observed_at=observed_at,
-        )
+        return _status("completed", None, configuration, snapshot, observed_at)
     except KeyboardInterrupt:
+        _publish_progress(progress, "downloading_codes", "cancelled", (completed, total))
         control.save_checkpoint(
             HistorySyncCheckpoint(sync_identity, ordinal, "cancelled", observed_at, completed, total, "cancelled")
         )
-        return _status(
-            "cancelled",
-            "cancelled",
-            configuration.archive_root,
-            active,
-            training_root=configuration.training_root,
-            observed_at=observed_at,
-        )
+        return _status("cancelled", "cancelled", configuration, active, observed_at)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         reason = _failure_code(exc)
         control.save_checkpoint(
             HistorySyncCheckpoint(sync_identity, ordinal, "failed", observed_at, completed, total, reason)
         )
-        return _status(
-            "failed",
-            reason,
-            configuration.archive_root,
-            active,
-            training_root=configuration.training_root,
-            observed_at=observed_at,
-        )
+        return _status("failed", reason, configuration, active, observed_at)
 
 
 def _download_for_security(
@@ -480,22 +446,44 @@ def _write_revisions(pending: _PendingPartitions, revisions: tuple[HistoryMonthl
         repository.save_revisions(sorted(values, key=lambda item: (item.trade_date, item.code, item.revision_id)))
 
 
-def _seal_pending(root: Path, pending: _PendingPartitions) -> tuple[HistorySnapshotPartition, ...]:
+def _seal_pending(
+    root: Path,
+    pending: _PendingPartitions,
+    progress: HistorySyncProgressPort | None = None,
+) -> tuple[HistorySnapshotPartition, ...]:
     references = []
-    for (year, month), path in sorted(pending.paths.items()):
+    total = len(pending.paths)
+    for index, ((year, month), path) in enumerate(sorted(pending.paths.items())):
+        current_item = f"{year:04d}-{month:02d}"
+        _publish_progress(progress, "sealing_partitions", "started", (index, total), current_item)
         if path.is_file():
             candidate = path.with_name(f".{month:02d}.seal.sqlite3")
             _remove_sqlite(candidate)
             _backup_database(path, candidate)
-            references.append(SQLiteHistoryMonthPartitionRepository(candidate, year, month).seal())
-            continue
-        reference = pending.active_by_month.get((year, month))
-        if reference is None:
-            raise RuntimeError("history_snapshot_month_missing")
-        references.append(reference)
-    for reference in references:
+            reference = SQLiteHistoryMonthPartitionRepository(candidate, year, month).seal()
+        else:
+            existing_reference = pending.active_by_month.get((year, month))
+            if existing_reference is None:
+                raise RuntimeError("history_snapshot_month_missing")
+            reference = existing_reference
         SQLiteHistoryMonthPartitionRepository.verify(root / reference.relative_path, reference)
+        references.append(reference)
+        _publish_progress(progress, "sealing_partitions", "completed", (index + 1, total), current_item)
     return tuple(references)
+
+
+def _publish_snapshot(
+    control: SQLiteHistoryControlRepository,
+    identities: tuple[HistorySourceIdentity, HistoryCalendarIdentity, HistoryUniverseIdentity],
+    snapshot: HistoryActiveSnapshot,
+    checkpoint: HistorySyncCheckpoint,
+) -> None:
+    source, calendar, universe = identities
+    control.save_source(source)
+    control.save_calendar(calendar)
+    control.save_universe(universe)
+    control.save_checkpoint(checkpoint)
+    control.publish_snapshot(snapshot)
 
 
 def _backup_database(source: Path, destination: Path) -> None:
@@ -610,21 +598,35 @@ def _failure_code(exc: BaseException) -> str:
     return value if _ERROR_CODE.fullmatch(value) else "history_sync_failed"
 
 
+def _publish_progress(
+    progress: HistorySyncProgressPort | None,
+    stage: HistorySyncProgressStage,
+    state: Literal["started", "waiting", "retrying", "completed", "failed", "cancelled"],
+    counts: tuple[int, int] = (0, 1),
+    current_item: str | None = None,
+) -> None:
+    if progress is None:
+        return
+    try:
+        progress.publish(HistorySyncProgress(stage, state, *counts, current_item))
+    except OSError:
+        pass
+
+
 def _status(
     state: HistoryMaintenanceState,
     reason: str | None,
-    root: Path,
+    configuration: HistorySyncConfiguration,
     snapshot: HistoryActiveSnapshot | None,
-    *,
-    training_root: Path = Path("data/train"),
-    observed_at: datetime | None = None,
+    observed_at: datetime,
 ) -> HistoryMaintenanceStatus:
+    root = configuration.archive_root
     due = None
     if snapshot is not None:
         due = evaluate_history_training_due(
             root,
-            training_root,
-            observed_at or datetime.now(_SHANGHAI),
+            configuration.training_root,
+            observed_at,
         )
     due_state = (
         due.state

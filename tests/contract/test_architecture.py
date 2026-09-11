@@ -411,6 +411,23 @@ def test_history_month_values_and_sqlite_codec_keep_serialization_at_the_infra_b
         assert automatic_projection not in codec_source
 
 
+def test_history_sync_progress_stays_typed_until_the_entrypoint_projection() -> None:
+    contract = (SOURCE_ROOT / "application/research/history_sync.py").read_text(encoding="utf-8")
+    supplier = (SOURCE_ROOT / "infra/research/baostock_sync_supplier.py").read_text(encoding="utf-8")
+    runtime = (SOURCE_ROOT / "infra/research/history_sync_runtime.py").read_text(encoding="utf-8")
+    projection = (SOURCE_ROOT / "entrypoints/history_sync_progress.py").read_text(encoding="utf-8")
+
+    assert "class HistorySyncProgress:" in contract
+    assert "class HistorySyncProgressPort(Protocol):" in contract
+    assert all("import json" not in source for source in (contract, supplier, runtime))
+    assert "import json" in projection
+    assert '"schema_version": "history_sync_progress"' in projection
+    assert '"stage": progress.stage' in projection
+    assert '"percent": round(percent, 2)' in projection
+    assert "file=sys.stderr" in projection
+    assert "flush=True" in projection
+
+
 def test_production_composition_injects_the_single_cadence_planner() -> None:
     source = (SOURCE_ROOT / "bootstrap.py").read_text(encoding="utf-8")
 

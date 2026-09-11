@@ -7,14 +7,20 @@ import os
 import platform
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from multiprocessing import get_context
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from typing import Literal, Protocol, cast
 
-from trader.application.research.history_sync import HistorySupplierContext
+from trader.application.research.history_sync import (
+    HistorySupplierContext,
+    HistorySyncConfiguration,
+    HistorySyncProgress,
+    HistorySyncProgressPort,
+    HistorySyncProgressStage,
+)
 from trader.domain.research.baostock_daily import (
     BaoStockCalendar,
     BaoStockCodeDownload,
@@ -49,7 +55,32 @@ class _Stop:
 
 @dataclass(frozen=True)
 class _Activity:
-    state: Literal["started", "completed"]
+    stage: HistorySyncProgressStage
+    state: Literal["started", "returned"]
+    current_item: str | None = None
+
+
+@dataclass(frozen=True)
+class _Attempt:
+    number: int
+    total: int
+
+
+@dataclass(frozen=True)
+class _RequestState:
+    stage: HistorySyncProgressStage
+    current_item: str | None
+    call_started_at: float
+    deadline: float = 0.0
+    next_heartbeat: float = 0.0
+    worker_ready: bool = False
+
+
+@dataclass(frozen=True)
+class _AttemptResult:
+    response: _Response | None
+    state: _RequestState
+    failure_reason: str | None
 
 
 @dataclass(frozen=True)
@@ -68,7 +99,7 @@ class _RateLimitedSdk:
     def __init__(
         self,
         sdk: _SessionSdk,
-        activity: Callable[[Literal["started", "completed"]], None],
+        activity: Callable[[HistorySyncProgressStage, Literal["started", "returned"], str | None], None],
         interval_seconds: float,
         *,
         monotonic: Callable[[], float] = time.monotonic,
@@ -83,13 +114,21 @@ class _RateLimitedSdk:
         self._last_started: float | None = None
 
     def query_trade_dates(self, *, start_date: str, end_date: str) -> BaoStockRowResult:
-        return self._call(lambda: self._sdk.query_trade_dates(start_date=start_date, end_date=end_date))
+        return self._call(
+            "supplier_calendar",
+            f"{start_date}:{end_date}",
+            lambda: self._sdk.query_trade_dates(start_date=start_date, end_date=end_date),
+        )
 
     def query_stock_basic(self) -> BaoStockRowResult:
-        return self._call(self._sdk.query_stock_basic)
+        return self._call("supplier_universe", None, self._sdk.query_stock_basic)
 
     def query_stock_industry(self, *, code: str = "", date: str = "") -> BaoStockRowResult:
-        return self._call(lambda: self._sdk.query_stock_industry(code=code, date=date))
+        return self._call(
+            "supplier_industry",
+            code or date or None,
+            lambda: self._sdk.query_stock_industry(code=code, date=date),
+        )
 
     def query_history_k_data_plus(  # noqa: PLR0913
         self,
@@ -101,7 +140,10 @@ class _RateLimitedSdk:
         frequency: str,
         adjustflag: str,
     ) -> BaoStockRowResult:
+        stage: HistorySyncProgressStage = "supplier_daily_raw" if adjustflag == "3" else "supplier_daily_qfq"
         return self._call(
+            stage,
+            code,
             lambda: self._sdk.query_history_k_data_plus(
                 code,
                 fields,
@@ -109,10 +151,15 @@ class _RateLimitedSdk:
                 end_date,
                 frequency=frequency,
                 adjustflag=adjustflag,
-            )
+            ),
         )
 
-    def _call(self, call: Callable[[], BaoStockRowResult]) -> BaoStockRowResult:
+    def _call(
+        self,
+        stage: HistorySyncProgressStage,
+        current_item: str | None,
+        call: Callable[[], BaoStockRowResult],
+    ) -> BaoStockRowResult:
         now = self._monotonic()
         if self._last_started is not None:
             remaining = self._interval_seconds - (now - self._last_started)
@@ -120,11 +167,11 @@ class _RateLimitedSdk:
                 self._sleep(remaining)
                 now = self._monotonic()
         self._last_started = now
-        self._activity("started")
+        self._activity(stage, "started", current_item)
         try:
             return call()
         finally:
-            self._activity("completed")
+            self._activity(stage, "returned", current_item)
 
 
 class BaoStockHistorySupplier:
@@ -132,23 +179,19 @@ class BaoStockHistorySupplier:
 
     def __init__(
         self,
+        configuration: HistorySyncConfiguration | None = None,
         *,
-        timeout_seconds: float = 45.0,
-        retries: int = 2,
-        query_interval_seconds: float = 2.0,
-        cancellation_grace_seconds: float = 10.0,
+        progress: HistorySyncProgressPort | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
-        if (
-            timeout_seconds <= 0
-            or not 0 <= retries <= 2
-            or query_interval_seconds < 2.0
-            or not 0 < cancellation_grace_seconds <= 10.0
-        ):
-            raise ValueError("BaoStock supplier bounds are invalid")
-        self._timeout_seconds = timeout_seconds
-        self._retries = retries
-        self._query_interval_seconds = query_interval_seconds
-        self._cancellation_grace_seconds = cancellation_grace_seconds
+        settings = configuration or HistorySyncConfiguration()
+        self._timeout_seconds = settings.supplier_timeout_seconds
+        self._retries = settings.supplier_retries
+        self._query_interval_seconds = settings.query_interval_seconds
+        self._cancellation_grace_seconds = settings.cancellation_grace_seconds
+        self._heartbeat_interval_seconds = settings.progress_heartbeat_seconds
+        self._progress = progress
+        self._monotonic = monotonic
         self._process: BaseProcess | None = None
         self._connection: Connection | None = None
 
@@ -188,36 +231,105 @@ class BaoStockHistorySupplier:
 
     def _request(self, command: _LoadContext | _FetchCode) -> _Response:
         failure = "supplier_process_failed"
-        for _attempt in range(self._retries + 1):
-            try:
-                self._start()
-                connection = self._require_connection()
-                connection.send(command)
-                deadline = time.monotonic() + self._timeout_seconds
-                while True:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0 or not connection.poll(min(remaining, 0.1)):
-                        if remaining <= 0:
-                            failure = "supplier_call_timeout"
-                            break
-                        continue
-                    response = connection.recv()
-                    if isinstance(response, _Activity):
-                        deadline = time.monotonic() + self._timeout_seconds
-                        continue
-                    if isinstance(response, _Response):
-                        if response.failure_reason is None:
-                            return response
-                        failure = response.failure_reason
-                        break
-                    failure = "supplier_protocol_invalid"
-                    break
-            except (EOFError, OSError):
-                failure = "supplier_process_failed"
+        max_attempts = self._retries + 1
+        initial_stage, initial_item = _command_progress(command)
+        for attempt_number in range(1, max_attempts + 1):
+            attempt = _Attempt(attempt_number, max_attempts)
+            result = self._request_once(
+                command,
+                _RequestState(initial_stage, initial_item, self._monotonic()),
+                attempt,
+            )
+            state = result.state
+            failure = result.failure_reason or ""
+            if result.response is not None and not failure:
+                self._publish(state.stage, "completed", attempt, state.current_item, self._elapsed(state))
+                return result.response
+            self._publish(state.stage, "failed", attempt, state.current_item, self._elapsed(state))
             self.close()
+            if attempt.number < attempt.total:
+                next_attempt = _Attempt(attempt.number + 1, attempt.total)
+                self._publish(state.stage, "retrying", next_attempt, state.current_item, 0.0)
         raise RuntimeError(failure)
 
-    def _start(self) -> None:
+    def _request_once(
+        self,
+        command: _LoadContext | _FetchCode,
+        state: _RequestState,
+        attempt: _Attempt,
+    ) -> _AttemptResult:
+        try:
+            self._start(attempt)
+            state = replace(state, worker_ready=True)
+            connection = self._require_connection()
+            connection.send(command)
+            started_at = self._monotonic()
+            state = replace(
+                state,
+                call_started_at=started_at,
+                deadline=started_at + self._timeout_seconds,
+                next_heartbeat=started_at + self._heartbeat_interval_seconds,
+            )
+            self._publish(state.stage, "started", attempt, state.current_item, 0.0)
+            while True:
+                response, state = self._receive(connection, state, attempt)
+                if response is None:
+                    continue
+                if isinstance(response, _Activity):
+                    state = self._handle_activity(response, state, attempt)
+                    continue
+                if not isinstance(response, _Response):
+                    raise RuntimeError("supplier_protocol_invalid")
+                return _AttemptResult(response, state, response.failure_reason)
+        except (EOFError, OSError, RuntimeError) as exc:
+            if not state.worker_ready:
+                state = replace(state, stage="supplier_login", current_item=None)
+            return _AttemptResult(None, state, _failure_code(exc))
+
+    def _receive(
+        self,
+        connection: Connection,
+        state: _RequestState,
+        attempt: _Attempt,
+    ) -> tuple[object | None, _RequestState]:
+        now = self._monotonic()
+        remaining = state.deadline - now
+        if remaining <= 0:
+            raise RuntimeError(f"{state.stage}_timeout")
+        poll_seconds = min(remaining, max(0.0, state.next_heartbeat - now), 0.1)
+        if connection.poll(poll_seconds):
+            return cast(object, connection.recv()), state
+        now = self._monotonic()
+        if now >= state.next_heartbeat:
+            self._publish(state.stage, "waiting", attempt, state.current_item, self._elapsed(state))
+            state = replace(state, next_heartbeat=now + self._heartbeat_interval_seconds)
+        return None, state
+
+    def _handle_activity(
+        self,
+        activity: _Activity,
+        state: _RequestState,
+        attempt: _Attempt,
+    ) -> _RequestState:
+        now = self._monotonic()
+        if activity.state == "started":
+            state = replace(
+                state,
+                stage=activity.stage,
+                current_item=activity.current_item,
+                call_started_at=now,
+                deadline=now + self._timeout_seconds,
+            )
+            self._publish(state.stage, "started", attempt, state.current_item, 0.0)
+        else:
+            state = replace(state, stage=activity.stage, current_item=activity.current_item)
+            self._publish(state.stage, "waiting", attempt, state.current_item, self._elapsed(state))
+        return replace(state, next_heartbeat=now + self._heartbeat_interval_seconds)
+
+    def _elapsed(self, state: _RequestState) -> float:
+        return max(0.0, self._monotonic() - state.call_started_at)
+
+    def _start(self, attempt: _Attempt) -> None:
         if self._process is not None and self._process.is_alive() and self._connection is not None:
             return
         self.close()
@@ -232,18 +344,60 @@ class BaoStockHistorySupplier:
         child.close()
         self._process = process
         self._connection = parent
-        if not parent.poll(self._timeout_seconds):
-            self.close()
-            raise RuntimeError("supplier_login_timeout")
+        started_at = self._monotonic()
+        deadline = started_at + self._timeout_seconds
+        next_heartbeat = started_at + self._heartbeat_interval_seconds
+        self._publish("supplier_login", "started", attempt, None, 0.0)
+        while not parent.poll(min(0.1, max(0.0, min(deadline, next_heartbeat) - self._monotonic()))):
+            now = self._monotonic()
+            if now >= deadline:
+                self.close()
+                raise RuntimeError("supplier_login_timeout")
+            if now >= next_heartbeat:
+                self._publish("supplier_login", "waiting", attempt, None, now - started_at)
+                next_heartbeat = now + self._heartbeat_interval_seconds
         response = parent.recv()
         if not isinstance(response, _Ready) or response.failure_reason is not None:
             self.close()
             raise RuntimeError(response.failure_reason if isinstance(response, _Ready) else "supplier_protocol_invalid")
+        self._publish(
+            "supplier_login",
+            "completed",
+            attempt,
+            None,
+            self._monotonic() - started_at,
+        )
 
     def _require_connection(self) -> Connection:
         if self._connection is None:
             raise RuntimeError("supplier_process_failed")
         return self._connection
+
+    def _publish(
+        self,
+        stage: HistorySyncProgressStage,
+        state: Literal["started", "waiting", "retrying", "completed", "failed"],
+        attempt: _Attempt,
+        current_item: str | None,
+        call_elapsed_seconds: float,
+    ) -> None:
+        if self._progress is None:
+            return
+        try:
+            self._progress.publish(
+                HistorySyncProgress(
+                    stage,
+                    state,
+                    1 if state == "completed" else 0,
+                    1,
+                    current_item=current_item,
+                    attempt=attempt.number,
+                    max_attempts=attempt.total,
+                    call_elapsed_seconds=max(0.0, call_elapsed_seconds),
+                )
+            )
+        except OSError:
+            pass
 
 
 def _worker_main(connection: Connection, query_interval_seconds: float) -> None:
@@ -255,7 +409,7 @@ def _worker_main(connection: Connection, query_interval_seconds: float) -> None:
         gateway = BaoStockRowGateway(
             _RateLimitedSdk(
                 sdk,
-                lambda state: connection.send(_Activity(state)),
+                lambda stage, state, current_item: connection.send(_Activity(stage, state, current_item)),
                 query_interval_seconds,
             ),
             python_version=platform.python_version(),
@@ -342,6 +496,12 @@ def _silence_vendor_output() -> None:
 def _failure_code(exc: BaseException) -> str:
     value = str(exc).strip()
     return value if value and len(value) <= 64 and value.replace("_", "").isalnum() else "supplier_failed"
+
+
+def _command_progress(command: _LoadContext | _FetchCode) -> tuple[HistorySyncProgressStage, str | None]:
+    if isinstance(command, _LoadContext):
+        return "supplier_calendar", None
+    return "supplier_daily_raw", command.security.code
 
 
 def _terminate(process: BaseProcess) -> None:

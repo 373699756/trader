@@ -34,17 +34,16 @@ from trader.domain.market.feature_contracts import (
 from trader.domain.recommendation.model_scoring import V3_EXPOSURE_CONTRACT, residualize_exposure
 from trader.domain.research.baostock_daily import BaoStockTrainingRow, BaoStockTrainingSplit
 from trader.domain.research.history_control import HistoryTrainingDueReason, HistoryTrainingDueState
-from trader.domain.research.tomorrow_training_input import evaluate_tomorrow_training_input
-from trader.domain.research.tomorrow_training_input import FrozenDailyInputDescriptor
-from trader.infra.research.history_training_due import evaluate_history_training_due
+from trader.domain.research.tomorrow_training_input import FrozenDailyInputDescriptor, evaluate_tomorrow_training_input
+from trader.infra.research.history_control_repository import (
+    HistoryMaintenanceAlreadyRunningError,
+    HistoryMaintenanceLock,
+)
+from trader.infra.research.history_training_due import HistoryTrainingDueEvaluation, evaluate_history_training_due
 from trader.infra.research.history_training_input import (
     HistoryTrainingInputError,
     HistoryTrainingInputSnapshot,
     SQLiteHistoryTrainingInputArchive,
-)
-from trader.infra.research.history_control_repository import (
-    HistoryMaintenanceAlreadyRunningError,
-    HistoryMaintenanceLock,
 )
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
 from trader.infra.scoring.profiles.v3.bundle_store import (
@@ -109,6 +108,18 @@ class _TrainingArtifactContext:
     validation_rows: int
 
 
+@dataclass(frozen=True)
+class _TrainingExecution:
+    archive: _TrainingInputArchive
+    snapshot: HistoryTrainingInputSnapshot
+    due: HistoryTrainingDueEvaluation
+    label_cutoff: date
+    output: Path
+    run_id: str
+    progress: TomorrowTrainingProgressPort | None
+    source_commit: str
+
+
 def run_tomorrow_training(
     history_root: Path,
     train_root: Path,
@@ -157,6 +168,19 @@ def _run_tomorrow_training_locked(
     source_commit: str = "",
     observed_at: datetime | None = None,
 ) -> TomorrowTrainingResult:
+    prepared = _prepare_training(history_root, train_root, progress, source_commit, observed_at)
+    if isinstance(prepared, TomorrowTrainingResult):
+        return prepared
+    return _execute_training(prepared)
+
+
+def _prepare_training(
+    history_root: Path,
+    train_root: Path,
+    progress: TomorrowTrainingProgressPort | None,
+    source_commit: str,
+    observed_at: datetime | None,
+) -> _TrainingExecution | TomorrowTrainingResult:
     try:
         archive = SQLiteHistoryTrainingInputArchive.open(history_root)
     except (HistoryTrainingInputError, OSError, ValueError) as exc:
@@ -259,13 +283,35 @@ def _run_tomorrow_training_locked(
     output = _training_output_directory(train_root)
     _publish_progress(progress, "input_snapshot", len(snapshot.training_codes), len(snapshot.training_codes))
     run_id = hashlib.sha256(f"{snapshot.active_snapshot_hash}:tomorrow-v3".encode()).hexdigest()
+    return _TrainingExecution(
+        archive,
+        snapshot,
+        due,
+        cast(date, label_cutoff),
+        output,
+        run_id,
+        progress,
+        source_commit,
+    )
+
+
+def _execute_training(plan: _TrainingExecution) -> TomorrowTrainingResult:
+    archive = plan.archive
+    snapshot = plan.snapshot
+    due = plan.due
+    invalidated_dates = due.invalidated_cache_dates
+    label_cutoff = plan.label_cutoff
+    output = plan.output
+    run_id = plan.run_id
+    progress = plan.progress
+    source_commit = plan.source_commit
     staging: Path | None = None
     try:
         split = _build_split(snapshot.calendar.open_dates, snapshot.active_snapshot_hash)
-        training_contract_hash = _training_contract_hash(snapshot, split, source_commit, cast(date, label_cutoff))
+        training_contract_hash = _training_contract_hash(snapshot, split, source_commit, label_cutoff)
         training_input = _training_input_document(
             snapshot,
-            cast(date, label_cutoff),
+            label_cutoff,
             source_commit,
             training_contract_hash,
         )
@@ -299,7 +345,7 @@ def _run_tomorrow_training_locked(
         context = _TrainingArtifactContext(
             snapshot.input_scope,
             snapshot.active_snapshot_hash,
-            cast(date, label_cutoff),
+            label_cutoff,
             snapshot.source_identity_hash,
             training_input_hash,
             len(snapshot.training_codes),
@@ -346,7 +392,7 @@ def _run_tomorrow_training_locked(
             output,
             training_input_hash=snapshot.active_snapshot_hash,
             source_identity_hash=snapshot.source_identity_hash,
-            label_cutoff=cast(date, label_cutoff),
+            label_cutoff=label_cutoff,
         )
         staging = None
         _publish_progress(progress, "completed", len(snapshot.training_codes), len(snapshot.training_codes))
@@ -365,7 +411,7 @@ def _run_tomorrow_training_locked(
                 validation_rows,
                 (),
             ),
-            cast(date, label_cutoff),
+            label_cutoff,
             invalidated_dates,
         )
     except (HistoryTrainingInputError, OSError, ValueError, RuntimeError) as exc:
