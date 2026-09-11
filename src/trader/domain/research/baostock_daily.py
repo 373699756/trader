@@ -4,21 +4,15 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Iterable
-from dataclasses import InitVar, dataclass, field
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
 from trader.domain.research.h1_point_in_time import canonical_hash
-from trader.domain.research.historical_effective_facts import HistoricalEffectiveFactsAudit
 
 BAOSTOCK_RESEARCH_IDENTITY = "baostock_daily_core"
-BAOSTOCK_LEGACY_RESEARCH_IDENTITY = "score_baostock_daily_core_v2"
-BAOSTOCK_LEGACY_SPEC_SCHEMA = "score_baostock_daily_core_v2"
 BAOSTOCK_SOURCE_CUTOFF = date(2026, 8, 31)
 BAOSTOCK_MAX_SESSIONS = 2000
-BAOSTOCK_MIN_COVERAGE = 0.95
-BAOSTOCK_FAILED_CODE_COVERAGE = 0.90
 BAOSTOCK_POINT_IN_TIME_RESERVE = 200
 BAOSTOCK_MIN_TRAINING_DATES = 1250
 
@@ -32,40 +26,14 @@ BaoStockCellStatus = Literal[
     "qfq_missing",
     "unknown_missing",
 ]
-BaoStockCoverageStatus = Literal["coverage_ready", "historical_data_insufficient"]
-BaoStockTrainingDatasetStatus = Literal["dataset_ready", "historical_data_insufficient"]
-
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CODE = re.compile(r"^[0-9]{6}$")
 _BOARDS: tuple[BaoStockBoard, ...] = ("main", "chinext", "star")
 
-# These stable names are the only identities emitted by new BaoStock artifacts.
-# The legacy values are retained solely so immutable checkpoints created before
-# the naming cleanup can be decoded without changing their content hashes.
 BAOSTOCK_CALENDAR_SCHEMA = "baostock_exchange_calendar"
-BAOSTOCK_LEGACY_CALENDAR_SCHEMA = "baostock_exchange_calendar_v2"
 BAOSTOCK_DAILY_FACT_SCHEMA = "baostock_daily_fact"
-BAOSTOCK_LEGACY_DAILY_FACT_SCHEMA = "baostock_daily_fact_v1"
 BAOSTOCK_INDUSTRY_INTERVAL_SCHEMA = "baostock_industry_interval"
-BAOSTOCK_LEGACY_INDUSTRY_INTERVAL_SCHEMA = "baostock_industry_interval_v1"
 BAOSTOCK_CODE_DOWNLOAD_SCHEMA = "baostock_code_download"
-BAOSTOCK_LEGACY_CODE_DOWNLOAD_SCHEMA = "baostock_code_download_v1"
-BAOSTOCK_COVERAGE_AUDIT_SCHEMA = "baostock_daily_coverage_audit"
-BAOSTOCK_LEGACY_COVERAGE_AUDIT_SCHEMA = "baostock_daily_coverage_audit_v2"
-BAOSTOCK_PARTITION_REF_SCHEMA = "baostock_partition_ref"
-BAOSTOCK_LEGACY_PARTITION_REF_SCHEMA = "baostock_partition_ref_v1"
-BAOSTOCK_DAILY_MANIFEST_SCHEMA = "baostock_daily_manifest"
-BAOSTOCK_LEGACY_DAILY_MANIFEST_SCHEMA = "baostock_daily_manifest_v3"
-
-BAOSTOCK_LEGACY_PERSISTENCE_SCHEMAS: tuple[str, ...] = (
-    BAOSTOCK_LEGACY_CALENDAR_SCHEMA,
-    BAOSTOCK_LEGACY_DAILY_FACT_SCHEMA,
-    BAOSTOCK_LEGACY_INDUSTRY_INTERVAL_SCHEMA,
-    BAOSTOCK_LEGACY_CODE_DOWNLOAD_SCHEMA,
-    BAOSTOCK_LEGACY_COVERAGE_AUDIT_SCHEMA,
-    BAOSTOCK_LEGACY_PARTITION_REF_SCHEMA,
-    BAOSTOCK_LEGACY_DAILY_MANIFEST_SCHEMA,
-)
 
 
 @dataclass(frozen=True)
@@ -76,25 +44,15 @@ class BaoStockDailySpec:
     production_authority: bool = False
     point_in_time_parity: bool = False
     schema_version: str = "baostock_daily_core"
-    _decode_legacy: InitVar[bool] = False
     content_hash: str = field(init=False)
 
-    def __post_init__(self, _decode_legacy: bool) -> None:
+    def __post_init__(self) -> None:
         if isinstance(self.sessions, bool) or not 1 <= self.sessions <= BAOSTOCK_MAX_SESSIONS:
             raise ValueError("BaoStock sessions must be in [1, 2000]")
         if type(self.source_cutoff) is not date:
             raise ValueError("BaoStock source cutoff must be a date")
-        current_identity = (
-            self.research_identity == BAOSTOCK_RESEARCH_IDENTITY and self.schema_version == "baostock_daily_core"
-        )
-        legacy_identity = (
-            self.research_identity == BAOSTOCK_LEGACY_RESEARCH_IDENTITY
-            and self.schema_version == BAOSTOCK_LEGACY_SPEC_SCHEMA
-        )
-        if not current_identity and not (_decode_legacy and legacy_identity):
+        if self.research_identity != BAOSTOCK_RESEARCH_IDENTITY or self.schema_version != "baostock_daily_core":
             raise ValueError("BaoStock daily identity is invalid")
-        if legacy_identity and self.source_cutoff != BAOSTOCK_SOURCE_CUTOFF:
-            raise ValueError("BaoStock legacy source cutoff is fixed")
         if self.production_authority or self.point_in_time_parity:
             raise ValueError("BaoStock daily data cannot authorize production or point-in-time parity")
         object.__setattr__(self, "content_hash", canonical_hash(self))
@@ -141,7 +99,7 @@ class BaoStockCalendar:
         values = tuple(self.open_dates)
         if not values or values != tuple(sorted(set(values))) or len(values) > BAOSTOCK_MAX_SESSIONS:
             raise ValueError("BaoStock open calendar must be non-empty, unique, ordered, and bounded")
-        if self.schema_version not in (BAOSTOCK_CALENDAR_SCHEMA, BAOSTOCK_LEGACY_CALENDAR_SCHEMA):
+        if self.schema_version != BAOSTOCK_CALENDAR_SCHEMA:
             raise ValueError("BaoStock calendar schema is invalid")
         object.__setattr__(self, "open_dates", values)
         object.__setattr__(self, "content_hash", canonical_hash(self))
@@ -152,26 +110,6 @@ class BaoStockCalendar:
             for day in self.open_dates
             if day >= security.listed_on and (security.delisted_on is None or day < security.delisted_on)
         )
-
-
-def validate_baostock_archive_window(
-    spec: BaoStockDailySpec,
-    calendar: BaoStockCalendar,
-    universe: tuple[BaoStockSecurity, ...],
-    industry_intervals: tuple[BaoStockIndustryInterval, ...] = (),
-) -> None:
-    """Validate dates against the owning archive context instead of a process constant."""
-
-    if len(calendar.open_dates) != spec.sessions or calendar.open_dates[-1] != spec.source_cutoff:
-        raise ValueError("BaoStock calendar does not match the active source cutoff")
-    codes = tuple(item.code for item in universe)
-    code_set = set(codes)
-    if not codes or len(code_set) != len(codes):
-        raise ValueError("BaoStock archive universe must be non-empty and unique")
-    if any(item.listed_on > spec.source_cutoff for item in universe):
-        raise ValueError("BaoStock security listing date exceeds the active source cutoff")
-    if any(item.code not in code_set or item.effective_from > spec.source_cutoff for item in industry_intervals):
-        raise ValueError("BaoStock industry interval exceeds the active archive context")
 
 
 @dataclass(frozen=True)
@@ -288,10 +226,7 @@ class BaoStockDailyFact:
     def __post_init__(self) -> None:
         if _CODE.fullmatch(self.code) is None:
             raise ValueError("BaoStock daily fact identity is invalid")
-        if not isinstance(self.is_st, bool) or self.schema_version not in (
-            BAOSTOCK_DAILY_FACT_SCHEMA,
-            BAOSTOCK_LEGACY_DAILY_FACT_SCHEMA,
-        ):
+        if not isinstance(self.is_st, bool) or self.schema_version != BAOSTOCK_DAILY_FACT_SCHEMA:
             raise ValueError("BaoStock daily fact payload is invalid")
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
@@ -312,7 +247,7 @@ class BaoStockIndustryInterval:
             or (self.effective_to is not None and self.effective_to <= self.effective_from)
             or not self.industry.strip()
             or not self.classification.strip()
-            or self.schema_version not in (BAOSTOCK_INDUSTRY_INTERVAL_SCHEMA, BAOSTOCK_LEGACY_INDUSTRY_INTERVAL_SCHEMA)
+            or self.schema_version != BAOSTOCK_INDUSTRY_INTERVAL_SCHEMA
         ):
             raise ValueError("BaoStock industry interval is invalid")
         object.__setattr__(self, "industry", self.industry.strip())
@@ -332,7 +267,7 @@ class BaoStockCodeDownload:
         if (
             any(item.code != self.batch.code for item in facts)
             or tuple(item.trade_date for item in facts) != tuple(item.trade_date for item in self.batch.cells)
-            or self.schema_version not in (BAOSTOCK_CODE_DOWNLOAD_SCHEMA, BAOSTOCK_LEGACY_CODE_DOWNLOAD_SCHEMA)
+            or self.schema_version != BAOSTOCK_CODE_DOWNLOAD_SCHEMA
         ):
             raise ValueError("BaoStock code download facts do not match its daily batch")
         object.__setattr__(self, "daily_facts", facts)
@@ -450,385 +385,6 @@ def _cell_status(
 
 
 @dataclass(frozen=True)
-class BaoStockBoardCoverage:
-    board: BaoStockBoard
-    expected_cells: int
-    obtained_cells: int
-    coverage_ratio: float
-
-    def __post_init__(self) -> None:
-        if self.board not in _BOARDS or min(self.expected_cells, self.obtained_cells) < 0:
-            raise ValueError("BaoStock board coverage identity is invalid")
-        if self.obtained_cells > self.expected_cells or not 0 <= self.coverage_ratio <= 1:
-            raise ValueError("BaoStock board coverage values are invalid")
-        expected_ratio = self.obtained_cells / self.expected_cells if self.expected_cells else 0.0
-        if not math.isclose(self.coverage_ratio, expected_ratio):
-            raise ValueError("BaoStock board coverage ratio does not match counts")
-
-
-@dataclass(frozen=True)
-class BaoStockCodeCoverage:
-    code: str
-    expected_cells: int
-    obtained_cells: int
-    coverage_ratio: float
-    eligible_for_training_population: bool
-
-    def __post_init__(self) -> None:
-        if _CODE.fullmatch(self.code) is None or min(self.expected_cells, self.obtained_cells) < 0:
-            raise ValueError("BaoStock code coverage identity is invalid")
-        if self.obtained_cells > self.expected_cells or not 0 <= self.coverage_ratio <= 1:
-            raise ValueError("BaoStock code coverage values are invalid")
-        expected_ratio = self.obtained_cells / self.expected_cells if self.expected_cells else 1.0
-        if not math.isclose(self.coverage_ratio, expected_ratio):
-            raise ValueError("BaoStock code coverage ratio does not match counts")
-        eligible = self.expected_cells > 0 and self.coverage_ratio >= BAOSTOCK_FAILED_CODE_COVERAGE
-        if self.eligible_for_training_population != eligible:
-            raise ValueError("BaoStock code training eligibility does not match coverage")
-
-
-@dataclass(frozen=True)
-class BaoStockCoverageAudit:
-    spec_hash: str
-    calendar_hash: str
-    universe_hash: str
-    calendar_sessions: int
-    calendar_first_date: date
-    calendar_last_date: date
-    universe_count: int
-    expected_cells: int
-    obtained_cells: int
-    all_cell_coverage: float
-    board_coverages: tuple[BaoStockBoardCoverage, ...]
-    code_coverages: tuple[BaoStockCodeCoverage, ...]
-    full_window_stock_count: int
-    full_window_stocks_at_95_percent: int
-    full_window_stock_success_ratio: float
-    failed_codes: tuple[str, ...]
-    duplicate_rows: int
-    null_rows: int
-    out_of_window_rows: int
-    future_rows: int
-    latest_reserved_dates: tuple[date, ...]
-    status: BaoStockCoverageStatus
-    failure_reasons: tuple[str, ...]
-    terminal_holdout_opened: bool = False
-    production_authority: bool = False
-    point_in_time_parity: bool = False
-    schema_version: str = BAOSTOCK_COVERAGE_AUDIT_SCHEMA
-    content_hash: str = field(init=False)
-
-    def __post_init__(self) -> None:
-        _validate_coverage_identity(self)
-        _validate_coverage_counts(self)
-        _validate_coverage_ratios(self)
-        reasons = tuple(sorted(set(self.failure_reasons)))
-        if (self.status == "coverage_ready") == bool(reasons):
-            raise ValueError("BaoStock coverage status and reasons are inconsistent")
-        if self.terminal_holdout_opened or self.production_authority or self.point_in_time_parity:
-            raise ValueError("BaoStock coverage cannot open holdout or authorize production/parity")
-        object.__setattr__(self, "failed_codes", tuple(sorted(set(self.failed_codes))))
-        object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
-
-
-def _validate_coverage_identity(value: BaoStockCoverageAudit) -> None:
-    if any(_SHA256.fullmatch(item) is None for item in (value.spec_hash, value.calendar_hash, value.universe_hash)):
-        raise ValueError("BaoStock coverage parent hash is invalid")
-    if tuple(item.board for item in value.board_coverages) != _BOARDS:
-        raise ValueError("BaoStock board coverage order is invalid")
-    codes = tuple(item.code for item in value.code_coverages)
-    if codes != tuple(sorted(codes)) or value.universe_count != len(codes):
-        raise ValueError("BaoStock code coverage identity is inconsistent")
-    if value.calendar_sessions <= 0 or value.calendar_first_date > value.calendar_last_date:
-        raise ValueError("BaoStock coverage calendar range is invalid")
-    if value.status not in ("coverage_ready", "historical_data_insufficient"):
-        raise ValueError("BaoStock coverage status is invalid")
-    if value.schema_version not in (BAOSTOCK_COVERAGE_AUDIT_SCHEMA, BAOSTOCK_LEGACY_COVERAGE_AUDIT_SCHEMA):
-        raise ValueError("BaoStock coverage audit schema is invalid")
-
-
-def _validate_coverage_counts(value: BaoStockCoverageAudit) -> None:
-    counts = (
-        value.calendar_sessions,
-        value.universe_count,
-        value.expected_cells,
-        value.obtained_cells,
-        value.full_window_stock_count,
-        value.full_window_stocks_at_95_percent,
-        value.duplicate_rows,
-        value.null_rows,
-        value.out_of_window_rows,
-        value.future_rows,
-    )
-    if any(item < 0 for item in counts) or value.obtained_cells > value.expected_cells:
-        raise ValueError("BaoStock coverage counts are invalid")
-    expected = sum(item.expected_cells for item in value.board_coverages)
-    obtained = sum(item.obtained_cells for item in value.board_coverages)
-    code_expected = sum(item.expected_cells for item in value.code_coverages)
-    code_obtained = sum(item.obtained_cells for item in value.code_coverages)
-    if (expected, obtained, code_expected, code_obtained) != (
-        value.expected_cells,
-        value.obtained_cells,
-        value.expected_cells,
-        value.obtained_cells,
-    ):
-        raise ValueError("BaoStock coverage aggregate counts are inconsistent")
-    if not 0 <= value.full_window_stocks_at_95_percent <= value.full_window_stock_count <= value.universe_count:
-        raise ValueError("BaoStock full-window coverage counts are inconsistent")
-
-
-def _validate_coverage_ratios(value: BaoStockCoverageAudit) -> None:
-    rates = (
-        value.all_cell_coverage,
-        value.full_window_stock_success_ratio,
-        *(item.coverage_ratio for item in value.board_coverages),
-    )
-    if any(not math.isfinite(item) or not 0 <= item <= 1 for item in rates):
-        raise ValueError("BaoStock coverage ratio is invalid")
-    expected_ratio = value.obtained_cells / value.expected_cells if value.expected_cells else 0.0
-    full_ratio = (
-        value.full_window_stocks_at_95_percent / value.full_window_stock_count if value.full_window_stock_count else 0.0
-    )
-    if not math.isclose(value.all_cell_coverage, expected_ratio) or not math.isclose(
-        value.full_window_stock_success_ratio, full_ratio
-    ):
-        raise ValueError("BaoStock coverage aggregate ratios are inconsistent")
-    expected_failed = tuple(
-        item.code
-        for item in value.code_coverages
-        if item.expected_cells and item.coverage_ratio < BAOSTOCK_FAILED_CODE_COVERAGE
-    )
-    if tuple(sorted(set(value.failed_codes))) != expected_failed:
-        raise ValueError("BaoStock failed code coverage is inconsistent")
-
-
-@dataclass(frozen=True)
-class BaoStockCodeCoverageEvidence:
-    code: str
-    obtained_cells: int
-    duplicate_rows: int = 0
-    null_rows: int = 0
-    out_of_window_rows: int = 0
-    future_rows: int = 0
-    failure_reasons: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        counts = (
-            self.obtained_cells,
-            self.duplicate_rows,
-            self.null_rows,
-            self.out_of_window_rows,
-            self.future_rows,
-        )
-        reasons = tuple(sorted(set(self.failure_reasons)))
-        if (
-            _CODE.fullmatch(self.code) is None
-            or any(isinstance(value, bool) or value < 0 for value in counts)
-            or any(not reason or len(reason) > 64 for reason in reasons)
-        ):
-            raise ValueError("BaoStock code coverage evidence is invalid")
-        object.__setattr__(self, "failure_reasons", reasons)
-
-
-@dataclass(frozen=True)
-class _CoverageSummary:
-    board_expected: tuple[tuple[BaoStockBoard, int], ...]
-    board_obtained: tuple[tuple[BaoStockBoard, int], ...]
-    code_coverages: tuple[BaoStockCodeCoverage, ...]
-    expected_total: int
-    obtained_total: int
-    full_window: int
-    full_window_success: int
-    failed_codes: tuple[str, ...]
-    duplicate_rows: int
-    null_rows: int
-    out_of_window_rows: int
-    future_rows: int
-    batch_failures_present: bool
-
-
-def _summarize_coverage(
-    calendar: BaoStockCalendar,
-    securities: tuple[BaoStockSecurity, ...],
-    batches: Iterable[BaoStockCodeBatch | BaoStockCodeCoverageEvidence],
-) -> _CoverageSummary:
-    securities_by_code = {item.code: item for item in securities}
-    if len(securities_by_code) != len(securities):
-        raise ValueError("BaoStock coverage universe contains duplicate codes")
-    expected_by_board: dict[BaoStockBoard, int] = {board: 0 for board in _BOARDS}
-    obtained_by_board: dict[BaoStockBoard, int] = {board: 0 for board in _BOARDS}
-    expected_by_code: dict[str, int] = {}
-    obtained_by_code: dict[str, int] = {}
-    expected_total = 0
-    for security in securities:
-        expected_count = len(calendar.expected_dates(security))
-        expected_by_code[security.code] = expected_count
-        expected_total += expected_count
-        expected_by_board[security.board] += expected_count
-    duplicate_rows = null_rows = out_of_window_rows = future_rows = 0
-    batch_failures_present = False
-    seen_codes: set[str] = set()
-    for item in batches:
-        evidence = (
-            BaoStockCodeCoverageEvidence(
-                item.code,
-                sum(cell.obtained for cell in item.cells),
-                item.duplicate_rows,
-                item.null_rows,
-                item.out_of_window_rows,
-                item.future_rows,
-                item.failure_reasons,
-            )
-            if isinstance(item, BaoStockCodeBatch)
-            else item
-        )
-        batch_security = securities_by_code.get(evidence.code)
-        if batch_security is None or evidence.code in seen_codes:
-            raise ValueError("BaoStock coverage batches do not match the universe")
-        expected_count = expected_by_code[evidence.code]
-        if evidence.obtained_cells > expected_count:
-            raise ValueError("BaoStock coverage obtained cells exceed expected cells")
-        seen_codes.add(evidence.code)
-        obtained_by_code[evidence.code] = evidence.obtained_cells
-        obtained_by_board[batch_security.board] += evidence.obtained_cells
-        duplicate_rows += evidence.duplicate_rows
-        null_rows += evidence.null_rows
-        out_of_window_rows += evidence.out_of_window_rows
-        future_rows += evidence.future_rows
-        batch_failures_present = batch_failures_present or bool(evidence.failure_reasons)
-
-    obtained_total = sum(obtained_by_code.values())
-    full_window = full_window_success = 0
-    failed_codes: list[str] = []
-    code_coverages: list[BaoStockCodeCoverage] = []
-    for security in securities:
-        expected_count = expected_by_code[security.code]
-        obtained_count = obtained_by_code.get(security.code, 0)
-        ratio = obtained_count / expected_count if expected_count else 1.0
-        if expected_count == len(calendar.open_dates):
-            full_window += 1
-            full_window_success += ratio >= BAOSTOCK_MIN_COVERAGE
-        if expected_count and ratio < BAOSTOCK_FAILED_CODE_COVERAGE:
-            failed_codes.append(security.code)
-        code_coverages.append(
-            BaoStockCodeCoverage(
-                security.code,
-                expected_count,
-                obtained_count,
-                ratio,
-                expected_count > 0 and ratio >= BAOSTOCK_FAILED_CODE_COVERAGE,
-            )
-        )
-    return _CoverageSummary(
-        tuple((board, expected_by_board[board]) for board in _BOARDS),
-        tuple((board, obtained_by_board[board]) for board in _BOARDS),
-        tuple(code_coverages),
-        expected_total,
-        obtained_total,
-        full_window,
-        full_window_success,
-        tuple(failed_codes),
-        duplicate_rows,
-        null_rows,
-        out_of_window_rows,
-        future_rows,
-        batch_failures_present,
-    )
-
-
-def _coverage_scope_reasons(
-    spec: BaoStockDailySpec,
-    calendar: BaoStockCalendar,
-    overall: float,
-    board_rates: tuple[BaoStockBoardCoverage, ...],
-) -> tuple[str, ...]:
-    reasons: list[str] = []
-    if not spec.authoritative or len(calendar.open_dates) != BAOSTOCK_MAX_SESSIONS:
-        reasons.append("authoritative_calendar_below_2000")
-    if len(calendar.open_dates) != spec.sessions:
-        reasons.append("calendar_session_count_mismatch")
-    if overall < BAOSTOCK_MIN_COVERAGE:
-        reasons.append("all_expected_cell_coverage_below_95_percent")
-    if any(item.expected_cells and item.coverage_ratio < BAOSTOCK_MIN_COVERAGE for item in board_rates):
-        reasons.append("board_expected_cell_coverage_below_95_percent")
-    if len(calendar.open_dates) < BAOSTOCK_POINT_IN_TIME_RESERVE:
-        reasons.append("point_in_time_reserve_below_200")
-    return tuple(reasons)
-
-
-def _coverage_integrity_reasons(
-    summary: _CoverageSummary,
-) -> tuple[str, ...]:
-    reasons: list[str] = []
-    old_stock_ratio = summary.full_window_success / summary.full_window if summary.full_window else 0.0
-    if not summary.full_window:
-        reasons.append("full_window_stock_population_missing")
-    elif old_stock_ratio < BAOSTOCK_MIN_COVERAGE:
-        reasons.append("full_window_stock_completeness_below_95_percent")
-    anomalies = (
-        (summary.duplicate_rows, "duplicate_rows_present"),
-        (summary.null_rows, "null_rows_present"),
-        (summary.out_of_window_rows, "out_of_window_rows_present"),
-        (summary.future_rows, "future_rows_present"),
-    )
-    reasons.extend(reason for count, reason in anomalies if count)
-    if summary.batch_failures_present:
-        reasons.append("code_batch_failures_present")
-    return tuple(reasons)
-
-
-def build_baostock_coverage_audit(
-    spec: BaoStockDailySpec,
-    calendar: BaoStockCalendar,
-    universe: tuple[BaoStockSecurity, ...],
-    batches: Iterable[BaoStockCodeBatch | BaoStockCodeCoverageEvidence],
-) -> BaoStockCoverageAudit:
-    securities = tuple(sorted(universe, key=lambda item: item.code))
-    validate_baostock_archive_window(spec, calendar, securities)
-    summary = _summarize_coverage(calendar, securities, batches)
-    expected_by_board = dict(summary.board_expected)
-    obtained_by_board = dict(summary.board_obtained)
-    board_rates = tuple(
-        BaoStockBoardCoverage(
-            board,
-            expected_by_board[board],
-            obtained_by_board[board],
-            obtained_by_board[board] / expected_by_board[board] if expected_by_board[board] else 0.0,
-        )
-        for board in _BOARDS
-    )
-    overall = summary.obtained_total / summary.expected_total if summary.expected_total else 0.0
-    old_stock_ratio = summary.full_window_success / summary.full_window if summary.full_window else 0.0
-    reasons = _coverage_scope_reasons(spec, calendar, overall, board_rates) + _coverage_integrity_reasons(summary)
-    return BaoStockCoverageAudit(
-        spec_hash=spec.content_hash,
-        calendar_hash=calendar.content_hash,
-        universe_hash=canonical_hash(securities),
-        calendar_sessions=len(calendar.open_dates),
-        calendar_first_date=calendar.open_dates[0],
-        calendar_last_date=calendar.open_dates[-1],
-        universe_count=len(securities),
-        expected_cells=summary.expected_total,
-        obtained_cells=summary.obtained_total,
-        all_cell_coverage=overall,
-        board_coverages=board_rates,
-        code_coverages=summary.code_coverages,
-        full_window_stock_count=summary.full_window,
-        full_window_stocks_at_95_percent=summary.full_window_success,
-        full_window_stock_success_ratio=old_stock_ratio,
-        failed_codes=summary.failed_codes,
-        duplicate_rows=summary.duplicate_rows,
-        null_rows=summary.null_rows,
-        out_of_window_rows=summary.out_of_window_rows,
-        future_rows=summary.future_rows,
-        latest_reserved_dates=calendar.open_dates[-BAOSTOCK_POINT_IN_TIME_RESERVE:],
-        status="coverage_ready" if not reasons else "historical_data_insufficient",
-        failure_reasons=tuple(reasons),
-    )
-
-
-@dataclass(frozen=True)
 class BaoStockSourceVersions:
     sdk_version: str
     python_version: str
@@ -844,39 +400,6 @@ class BaoStockSourceVersions:
         if len({name for name, _ in dependencies}) != len(dependencies):
             raise ValueError("BaoStock dependency versions must be unique")
         object.__setattr__(self, "dependency_versions", dependencies)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
-
-
-@dataclass(frozen=True)
-class BaoStockPartitionRef:
-    relative_path: str
-    board: BaoStockBoard
-    code_prefix: str
-    codes: tuple[str, ...]
-    row_count: int
-    logical_records_hash: str
-    database_sha256: str
-    schema_version: str = BAOSTOCK_PARTITION_REF_SCHEMA
-    content_hash: str = field(init=False)
-
-    def __post_init__(self) -> None:
-        codes = tuple(sorted(self.codes))
-        expected_name = f"shards/{self.board}-{self.code_prefix}.sqlite3"
-        if (
-            self.board not in _BOARDS
-            or not re.fullmatch(r"[0-9]{4}", self.code_prefix)
-            or self.relative_path != expected_name
-            or not codes
-            or len(codes) > 100
-            or any(_CODE.fullmatch(code) is None or not code.startswith(self.code_prefix) for code in codes)
-            or len(set(codes)) != len(codes)
-            or self.row_count < 0
-            or _SHA256.fullmatch(self.logical_records_hash) is None
-            or _SHA256.fullmatch(self.database_sha256) is None
-            or self.schema_version not in (BAOSTOCK_PARTITION_REF_SCHEMA, BAOSTOCK_LEGACY_PARTITION_REF_SCHEMA)
-        ):
-            raise ValueError("BaoStock partition reference is invalid")
-        object.__setattr__(self, "codes", codes)
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
 
@@ -994,168 +517,32 @@ def build_baostock_training_split(
     )
 
 
-@dataclass(frozen=True)
-class BaoStockDailyManifest:
-    spec_hash: str
-    calendar_hash: str
-    universe_hash: str
-    logical_records_hash: str
-    source_versions_hash: str
-    source_versions: BaoStockSourceVersions
-    catalog_sha256: str
-    partitions: tuple[BaoStockPartitionRef, ...]
-    audit: BaoStockCoverageAudit
-    production_authority: bool = False
-    point_in_time_parity: bool = False
-    terminal_holdout_opened: bool = False
-    schema_version: str = BAOSTOCK_DAILY_MANIFEST_SCHEMA
-    content_hash: str = field(init=False)
-
-    def __post_init__(self) -> None:
-        hashes = (
-            self.spec_hash,
-            self.calendar_hash,
-            self.universe_hash,
-            self.logical_records_hash,
-            self.source_versions_hash,
-            self.catalog_sha256,
-        )
-        if any(_SHA256.fullmatch(value) is None for value in hashes):
-            raise ValueError("BaoStock manifest hash is invalid")
-        partitions = tuple(sorted(self.partitions, key=lambda item: item.relative_path))
-        codes = tuple(code for item in partitions for code in item.codes)
-        if self.audit.status == "coverage_ready" and (not partitions or len(codes) != len(set(codes))):
-            raise ValueError("BaoStock manifest partitions are empty or overlap")
-        if self.source_versions.content_hash != self.source_versions_hash:
-            raise ValueError("BaoStock manifest source versions hash mismatch")
-        if self.audit.spec_hash != self.spec_hash or self.audit.calendar_hash != self.calendar_hash:
-            raise ValueError("BaoStock manifest audit parent mismatch")
-        if self.audit.universe_hash != self.universe_hash:
-            raise ValueError("BaoStock manifest universe parent mismatch")
-        if self.production_authority or self.point_in_time_parity or self.terminal_holdout_opened:
-            raise ValueError("BaoStock manifest cannot authorize production, parity, or holdouts")
-        if self.schema_version not in (BAOSTOCK_DAILY_MANIFEST_SCHEMA, BAOSTOCK_LEGACY_DAILY_MANIFEST_SCHEMA):
-            raise ValueError("BaoStock manifest schema is invalid")
-        object.__setattr__(self, "partitions", partitions)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
-
-
-@dataclass(frozen=True)
-class BaoStockTrainingDatasetManifest:
-    daily_manifest_hash: str
-    effective_facts_hash: str
-    label_contract: BaoStockTrainingLabelContract
-    status: BaoStockTrainingDatasetStatus
-    split: BaoStockTrainingSplit | None
-    failure_reasons: tuple[str, ...]
-    point_in_time_parity: bool = False
-    production_authority: bool = False
-    terminal_holdout_opened: bool = False
-    schema_version: str = "baostock_training_dataset"
-    content_hash: str = field(init=False)
-
-    def __post_init__(self) -> None:
-        if any(_SHA256.fullmatch(value) is None for value in (self.daily_manifest_hash, self.effective_facts_hash)):
-            raise ValueError("BaoStock training dataset parent hash is invalid")
-        reasons = tuple(sorted(set(self.failure_reasons)))
-        if self.status == "dataset_ready":
-            if reasons or self.split is None:
-                raise ValueError("ready BaoStock training dataset requires one split and no failures")
-            if self.split.parent_manifest_hash != self.daily_manifest_hash:
-                raise ValueError("BaoStock training dataset split parent mismatch")
-            if self.label_contract != self.split.label_contract:
-                raise ValueError("BaoStock training dataset label contract does not match its split")
-        elif self.status == "historical_data_insufficient":
-            if not reasons or self.split is not None:
-                raise ValueError("insufficient BaoStock training dataset requires failures and no split")
-        else:
-            raise ValueError("BaoStock training dataset status is invalid")
-        if self.point_in_time_parity or self.production_authority or self.terminal_holdout_opened:
-            raise ValueError("BaoStock training dataset cannot authorize parity, production, or open holdouts")
-        if self.schema_version != "baostock_training_dataset":
-            raise ValueError("BaoStock training dataset schema is invalid")
-        object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
-
-
-def build_baostock_training_dataset_manifest(
-    daily: BaoStockDailyManifest,
-    effective_facts: HistoricalEffectiveFactsAudit,
-    complete_dates: tuple[date, ...],
-) -> BaoStockTrainingDatasetManifest:
-    reasons = set(daily.audit.failure_reasons)
-    reasons.update(effective_facts.failure_reasons)
-    if not reasons and len(complete_dates) < BAOSTOCK_MIN_TRAINING_DATES:
-        reasons.add("training_dates_below_1250")
-    if reasons:
-        return BaoStockTrainingDatasetManifest(
-            daily.content_hash,
-            effective_facts.content_hash,
-            BaoStockTrainingLabelContract(),
-            "historical_data_insufficient",
-            None,
-            tuple(reasons),
-        )
-    split = build_baostock_training_split(complete_dates, parent_manifest_hash=daily.content_hash)
-    return BaoStockTrainingDatasetManifest(
-        daily.content_hash,
-        effective_facts.content_hash,
-        split.label_contract,
-        "dataset_ready",
-        split,
-        (),
-    )
-
-
 __all__ = [
     "BAOSTOCK_CALENDAR_SCHEMA",
     "BAOSTOCK_CODE_DOWNLOAD_SCHEMA",
-    "BAOSTOCK_COVERAGE_AUDIT_SCHEMA",
     "BAOSTOCK_DAILY_FACT_SCHEMA",
-    "BAOSTOCK_DAILY_MANIFEST_SCHEMA",
     "BAOSTOCK_INDUSTRY_INTERVAL_SCHEMA",
-    "BAOSTOCK_LEGACY_CALENDAR_SCHEMA",
-    "BAOSTOCK_LEGACY_CODE_DOWNLOAD_SCHEMA",
-    "BAOSTOCK_LEGACY_COVERAGE_AUDIT_SCHEMA",
-    "BAOSTOCK_LEGACY_DAILY_FACT_SCHEMA",
-    "BAOSTOCK_LEGACY_DAILY_MANIFEST_SCHEMA",
-    "BAOSTOCK_LEGACY_INDUSTRY_INTERVAL_SCHEMA",
-    "BAOSTOCK_LEGACY_PARTITION_REF_SCHEMA",
-    "BAOSTOCK_PARTITION_REF_SCHEMA",
-    "BAOSTOCK_LEGACY_PERSISTENCE_SCHEMAS",
     "BAOSTOCK_MAX_SESSIONS",
     "BAOSTOCK_RESEARCH_IDENTITY",
     "BAOSTOCK_SOURCE_CUTOFF",
     "BaoStockAdjustment",
     "BaoStockBoard",
-    "BaoStockBoardCoverage",
     "BaoStockCalendar",
     "BaoStockCellStatus",
     "BaoStockCodeBatch",
     "BaoStockCodeDownload",
-    "BaoStockCodeCoverage",
-    "BaoStockCodeCoverageEvidence",
-    "BaoStockCoverageAudit",
-    "BaoStockCoverageStatus",
     "BaoStockDailyCell",
-    "BaoStockDailyManifest",
     "BaoStockDailyFact",
     "BaoStockDailyJoinRequest",
     "BaoStockDailySide",
     "BaoStockDailySpec",
     "BaoStockIndustryInterval",
-    "BaoStockPartitionRef",
     "BaoStockSecurity",
     "BaoStockSourceVersions",
-    "BaoStockTrainingRow",
     "BaoStockTradingStatus",
     "BaoStockTrainingLabelContract",
-    "BaoStockTrainingDatasetManifest",
-    "BaoStockTrainingDatasetStatus",
+    "BaoStockTrainingRow",
     "BaoStockTrainingSplit",
-    "build_baostock_coverage_audit",
     "build_baostock_training_split",
-    "build_baostock_training_dataset_manifest",
     "join_baostock_daily_sides",
-    "validate_baostock_archive_window",
 ]

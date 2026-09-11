@@ -19,12 +19,12 @@ from .common import emit_report
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from trader.infra.research.baostock_history_runtime import (  # noqa: E402
+from trader.infra.research.baostock_session import (  # noqa: E402
     BAOSTOCK_QUERY_INTERVAL_SECONDS,
-    _BaoStockSessionSdkPort,
-    _load_sdk,
-    _login,
-    _logout,
+    BaoStockSessionSdkPort,
+    load_baostock_sdk,
+    login_baostock,
+    logout_baostock,
 )
 from trader.infra.settings import load_runtime_settings  # noqa: E402
 
@@ -141,8 +141,8 @@ def _probe_baostock_in_process(code: str, *, days: int, today: date | None = Non
     sdk = None
     try:
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            sdk = _load_sdk()
-            _login(sdk)
+            sdk = load_baostock_sdk()
+            login_baostock(sdk)
             raw = _query_summary(sdk, source_code, start, end, adjustflag="3")
             qfq = _query_summary(sdk, source_code, start, end, adjustflag="2")
     except Exception as exc:  # third-party SDK raises inconsistent exception types
@@ -150,7 +150,7 @@ def _probe_baostock_in_process(code: str, *, days: int, today: date | None = Non
     finally:
         if sdk is not None:
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                _logout(sdk)
+                logout_baostock(sdk)
     raw_count, raw_flag, includes_status, latest = raw
     qfq_count, qfq_flag, _, _ = qfq
     passed = raw_count > 0 and qfq_count > 0 and raw_flag == "3" and qfq_flag == "2" and includes_status
@@ -167,7 +167,7 @@ def _probe_baostock_in_process(code: str, *, days: int, today: date | None = Non
 
 
 def _query_summary(
-    sdk: _BaoStockSessionSdkPort,
+    sdk: BaoStockSessionSdkPort,
     source_code: str,
     start: date,
     end: date,

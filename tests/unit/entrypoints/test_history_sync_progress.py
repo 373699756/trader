@@ -33,7 +33,7 @@ def _failed_status(reason: str) -> HistoryMaintenanceStatus:
     )
 
 
-def test_supplier_progress_uses_compact_stage_item_retry_and_clock_format(capsys) -> None:
+def test_supplier_waiting_heartbeat_is_silent_but_retry_is_reported(capsys) -> None:
     progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 978.061))
 
     progress.publish(
@@ -48,12 +48,25 @@ def test_supplier_progress_uses_compact_stage_item_retry_and_clock_format(capsys
             call_elapsed_seconds=10.849,
         )
     )
+    assert capsys.readouterr().err == ""
 
-    assert capsys.readouterr().err == ("00:14:38 | 行业快照 | 等待 | 日期 2021-01-04 | 尝试 3/3 | 调用 00:00:10\n")
+    progress.publish(
+        HistorySyncProgress(
+            "supplier_industry",
+            "retrying",
+            0,
+            1,
+            current_item="2021-01-04",
+            attempt=3,
+            max_attempts=3,
+        )
+    )
+
+    assert capsys.readouterr().err == "00:14:38 | 行业快照 | 重试 | 日期 2021-01-04 | 尝试 3/3\n"
 
 
-def test_supplier_daily_progress_retains_compact_overall_stock_count(capsys) -> None:
-    progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 130.0, 135.0))
+def test_daily_download_prints_only_after_one_stock_is_complete(capsys) -> None:
+    progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 135.0))
 
     progress.publish(HistorySyncProgress("downloading_codes", "started", 12, 100, current_item="600001"))
     progress.publish(
@@ -68,15 +81,15 @@ def test_supplier_daily_progress_retains_compact_overall_stock_count(capsys) -> 
             call_elapsed_seconds=5.9,
         )
     )
+    progress.publish(HistorySyncProgress("supplier_daily_raw", "completed", 1, 1, current_item="sh.600001"))
+    progress.publish(HistorySyncProgress("supplier_daily_qfq", "completed", 1, 1, current_item="sh.600001"))
+    progress.publish(HistorySyncProgress("downloading_codes", "completed", 13, 100, current_item="600001"))
 
-    assert capsys.readouterr().err.splitlines() == [
-        "00:00:30 | 股票下载 | 开始 | 12/100 (12.00%) | 股票 600001",
-        "00:00:35 | 未复权日线 | 等待 | 股票 sh.600001 | 总进度 12/100 (12.00%) | 尝试 1/3 | 调用 00:00:05",
-    ]
+    assert capsys.readouterr().err == "00:00:35 | 股票下载 | 完成 | 13/100 (13.00%) | 股票 600001\n"
 
 
 def test_failed_result_keeps_the_specific_supplier_stage_and_error_code(capsys) -> None:
-    progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 145.0, 150.0, 1070.569))
+    progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 145.0, 1070.569))
     progress.publish(
         HistorySyncProgress(
             "supplier_industry",

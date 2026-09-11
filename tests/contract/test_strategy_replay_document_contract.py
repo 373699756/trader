@@ -142,7 +142,7 @@ def test_strategy_replay_document_records_the_zero_argument_history_rebuild_plan
         "不接受 `--runtime-dir`、`--sessions`、`--mode` 或 `--profile`",
         "control.sqlite3",
         "按自然年目录、自然月分片",
-        "YYYY/MM/<sha256>.sqlite3",
+        "YYYY/MM.sqlite3",
         "只打开命中的月库",
         "下载顺序不决定物理布局",
         "PRIMARY KEY (trade_date, code, revision_id) WITHOUT ROWID",
@@ -170,13 +170,8 @@ def test_strategy_replay_document_records_the_zero_argument_history_rebuild_plan
     ):
         assert required in plan
 
-    for retired_shape in (
-        "父归档 + 增量归档",
-        "sessions-2000/",
-        "active-manifest.json",
-        "单个巨型 SQLite",
-    ):
-        assert f"不再保留 `{retired_shape}`" in plan or f"拒绝 `{retired_shape}`" in plan
+    assert "旧目录、旧活动指针、legacy、迁移、subset workaround 和对应测试均已删除" in plan
+    assert "拒绝 `单个巨型 SQLite`" in plan
 
 
 def test_strategy_replay_document_has_an_executable_maintenance_and_reminder_plan() -> None:

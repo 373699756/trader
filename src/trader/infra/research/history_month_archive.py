@@ -201,7 +201,7 @@ class SQLiteHistoryMonthlyArchive:
 
 def _reference_month(reference: HistorySnapshotPartition) -> tuple[int, int]:
     parts = Path(reference.relative_path).parts
-    return int(parts[1]), int(parts[2])
+    return int(parts[1]), int(Path(parts[2]).stem)
 
 
 __all__ = ["HistoryMonthlyArchiveError", "SQLiteHistoryMonthlyArchive", "route_history_months"]

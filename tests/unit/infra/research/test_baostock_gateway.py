@@ -4,9 +4,8 @@ from types import SimpleNamespace
 import pytest
 
 from trader.domain.research.baostock_daily import BaoStockCalendar, BaoStockDailySpec, BaoStockSecurity
-from trader.infra.research.baostock_daily import BaoStockRowGateway
-from trader.infra.research.baostock_gateway import _result_rows
-from trader.infra.research.baostock_history_runtime import _login, _RateLimitedBaoStockSdk
+from trader.infra.research.baostock_gateway import BaoStockRowGateway, _result_rows
+from trader.infra.research.baostock_session import RateLimitedBaoStockSdk, login_baostock
 
 
 class _Result:
@@ -193,19 +192,30 @@ def test_gateway_fetches_missing_training_facts_without_redownloading_qfq() -> N
     assert sdk.requested_fields == ["date,code,tradestatus,isST"]
 
 
-def test_gateway_downloads_historical_industry_snapshots_and_compresses_intervals() -> None:
-    gateway = BaoStockRowGateway(_Sdk(), python_version="3.14.0", dependency_versions=(("pandas", "2.3.0"),))
+def test_gateway_fetches_only_the_latest_industry_snapshot_before_daily_downloads() -> None:
+    class _IndustrySdk(_Sdk):
+        def __init__(self) -> None:
+            self.requested_dates: list[str] = []
+
+        def query_stock_industry(self, *, code="", date=""):
+            assert code == ""
+            self.requested_dates.append(date)
+            return super().query_stock_industry(code=code, date=date)
+
+    sdk = _IndustrySdk()
+    gateway = BaoStockRowGateway(sdk, python_version="3.14.0", dependency_versions=(("pandas", "2.3.0"),))
     spec = BaoStockDailySpec(sessions=2)
-    calendar = gateway.fetch_calendar(spec)
+    calendar = BaoStockCalendar((date(2019, 1, 2), date(2020, 1, 2), date(2026, 8, 30)))
     universe = gateway.fetch_universe(spec)
 
     intervals = gateway.fetch_industry_intervals(spec, calendar, universe)
 
+    assert sdk.requested_dates == ["2026-08-30"]
     assert len(intervals) == 1
     assert intervals[0].code == "600001"
     assert intervals[0].industry == "银行"
     assert intervals[0].classification == "申万一级行业"
-    assert intervals[0].effective_from == calendar.open_dates[0]
+    assert intervals[0].effective_from == calendar.open_dates[-1]
 
 
 def test_gateway_uses_supplier_update_date_for_industry_effective_time() -> None:
@@ -261,7 +271,7 @@ def test_sdk_queries_are_started_at_most_once_every_two_seconds() -> None:
         delays.append(seconds)
         now[0] += seconds
 
-    limited = _RateLimitedBaoStockSdk(sdk, monotonic=lambda: now[0], sleep=advance)
+    limited = RateLimitedBaoStockSdk(sdk, monotonic=lambda: now[0], sleep=advance)
     limited.query_trade_dates(start_date="2026-08-29", end_date="2026-08-30")
     limited.query_stock_basic()
     limited.query_stock_industry(code="", date="2026-08-29")
@@ -279,7 +289,7 @@ def test_sdk_queries_are_started_at_most_once_every_two_seconds() -> None:
 
 def test_sdk_queries_report_each_supplier_call_start_and_completion() -> None:
     activity: list[str] = []
-    limited = _RateLimitedBaoStockSdk(_Sdk(), activity=activity.append)
+    limited = RateLimitedBaoStockSdk(_Sdk(), activity=activity.append)
 
     limited.query_trade_dates(start_date="2026-08-29", end_date="2026-08-30")
     limited.query_stock_basic()
@@ -306,7 +316,7 @@ def test_login_preserves_legacy_anonymous_call_shape(monkeypatch: pytest.MonkeyP
 
     sdk = _AnonymousOnlySdk()
 
-    _login(sdk)  # type: ignore[arg-type]
+    login_baostock(sdk)  # type: ignore[arg-type]
 
 
 def test_login_maps_blacklist_and_sdk_socket_bug_to_controlled_codes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -315,14 +325,14 @@ def test_login_maps_blacklist_and_sdk_socket_bug_to_controlled_codes(monkeypatch
     monkeypatch.delenv("BAOSTOCK_API_KEY", raising=False)
 
     with pytest.raises(RuntimeError, match="supplier_login_failed_blacklisted"):
-        _login(_LoginSdk("10001011"))  # type: ignore[arg-type]
+        login_baostock(_LoginSdk("10001011"))  # type: ignore[arg-type]
 
     class _BrokenLoginSdk(_LoginSdk):
         def login(self) -> SimpleNamespace:
             raise UnboundLocalError("mySockect")
 
     with pytest.raises(RuntimeError, match="supplier_login_transport_failed"):
-        _login(_BrokenLoginSdk())  # type: ignore[arg-type]
+        login_baostock(_BrokenLoginSdk())  # type: ignore[arg-type]
 
 
 def test_gateway_maps_baostock_blacklist_to_run_level_failure() -> None:

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -9,22 +12,25 @@ from datetime import date
 from multiprocessing import get_context
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
-from typing import Literal, cast
+from typing import Literal
 
-from trader.domain.research.baostock_active_archive import (
-    BaoStockArchiveFieldFamily,
-    BaoStockArchiveRecordKey,
+from trader.domain.research.baostock_daily import BaoStockAdjustment
+from trader.infra.research.baostock_gateway import (
+    _DAILY_FACT_FIELDS,
+    _DAILY_FIELDS,
+    BaoStockSdkPort,
+    _daily_side,
+    _is_st,
+    _result_rows,
+    qfq_source_windows,
 )
-from trader.infra.research.baostock_active_archive import BaoStockIncrementRecord
-from trader.infra.research.baostock_history_messages import SupplierCallActivity
-from trader.infra.research.baostock_history_runtime import (
-    _failure_code,
-    _load_sdk,
-    _login,
-    _logout,
-    _RateLimitedBaoStockSdk,
+from trader.infra.research.baostock_session import (
+    BaoStockSessionSdkPort,
+    RateLimitedBaoStockSdk,
+    load_baostock_sdk,
+    login_baostock,
+    logout_baostock,
 )
-from trader.infra.research.baostock_increment_runtime import _BaoStockIncrementSource
 
 BaoStockGapFamily = Literal["daily_raw", "daily_qfq", "is_st"]
 GapProgress = Callable[[int, int, str], None]
@@ -34,6 +40,11 @@ _SECURITY_CODE_LENGTH = 6
 
 class BaoStockGapSupplierError(RuntimeError):
     """The bounded supplier worker could not prove all requested gap results."""
+
+
+@dataclass(frozen=True)
+class _SupplierCallActivity:
+    state: Literal["started", "completed"]
 
 
 @dataclass(frozen=True, order=True)
@@ -64,13 +75,15 @@ class BaoStockGapRecord:
 
     def __post_init__(self) -> None:
         try:
-            validated = BaoStockIncrementRecord(
-                BaoStockArchiveRecordKey(self.code, self.trade_date, self.family),
-                self.payload_json,
-            )
-        except ValueError as exc:
+            payload = json.loads(self.payload_json)
+        except (TypeError, json.JSONDecodeError) as exc:
             raise ValueError("BaoStock gap record identity is invalid") from exc
-        object.__setattr__(self, "content_hash", validated.content_hash)
+        if not _valid_gap_payload(self.code, self.trade_date, self.family, payload):
+            raise ValueError("BaoStock gap record identity is invalid")
+        canonical = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        if canonical != self.payload_json:
+            raise ValueError("BaoStock gap record identity is invalid")
+        object.__setattr__(self, "content_hash", hashlib.sha256(canonical.encode()).hexdigest())
 
 
 @dataclass(frozen=True, order=True)
@@ -184,7 +197,7 @@ class _WorkerMonitor:
                 raise BaoStockGapSupplierError("supplier worker exited unexpectedly")
 
     def _accept(self, message: object) -> None:
-        if isinstance(message, SupplierCallActivity):
+        if isinstance(message, _SupplierCallActivity):
             self._refresh_deadline()
             return
         if isinstance(message, _WorkerReady):
@@ -247,18 +260,17 @@ def fetch_baostock_gaps(
 
 
 def _worker_main(connection: Connection, requests: tuple[BaoStockGapRequest, ...], retries: int) -> None:
-    sdk = None
+    sdk: BaoStockSessionSdkPort | None = None
     try:
-        sdk = _load_sdk()
-        _login(sdk)
-        limited = _RateLimitedBaoStockSdk(
+        sdk = load_baostock_sdk()
+        login_baostock(sdk)
+        limited = RateLimitedBaoStockSdk(
             sdk,
-            activity=lambda state: connection.send(SupplierCallActivity(state)),
+            activity=lambda state: connection.send(_SupplierCallActivity(state)),
         )
-        source = _BaoStockIncrementSource(limited)
         connection.send(_WorkerReady())
         for request in requests:
-            response = _fetch_one(source, request, retries)
+            response = _fetch_one(limited, request, retries)
             connection.send(response)
             if response.failure_reason:
                 break
@@ -268,47 +280,159 @@ def _worker_main(connection: Connection, requests: tuple[BaoStockGapRequest, ...
         connection.send(_WorkerReady(_failure_code(exc)))
     finally:
         if sdk is not None:
-            _logout(sdk)
+            logout_baostock(sdk)
         connection.close()
 
 
 def _fetch_one(
-    source: _BaoStockIncrementSource,
+    source: BaoStockSdkPort,
     request: BaoStockGapRequest,
     retries: int,
 ) -> _WorkerResponse:
     for attempt in range(retries + 1):
         try:
-            result = source.fetch_daily(
-                request.code,
-                cast(BaoStockArchiveFieldFamily, request.family),
-                request.trade_dates,
-            )
-            records = tuple(
-                BaoStockGapRecord(
-                    item.key.code,
-                    item.key.trade_date,
-                    item.key.family,
-                    item.payload_json,
-                )
-                for item in result.records
-                if item.key.family == request.family
-            )
-            unavailable = tuple(
-                BaoStockGapUnavailable(
-                    item.code,
-                    item.trade_date,
-                    cast(BaoStockGapFamily, item.family),
-                    result.unavailable_reason or "supplier_adjustment_unavailable",
-                )
-                for item in result.unavailable_keys
-            )
+            records, unavailable = _fetch_request(source, request)
             return _WorkerResponse(request, records, unavailable)
         except Exception as exc:
             reason = _failure_code(exc)
             if reason == "supplier_query_failed_blacklisted" or attempt == retries:
                 return _WorkerResponse(request, failure_reason=reason)
     raise AssertionError("unreachable BaoStock gap retry state")
+
+
+def _fetch_request(
+    source: BaoStockSdkPort,
+    request: BaoStockGapRequest,
+) -> tuple[tuple[BaoStockGapRecord, ...], tuple[BaoStockGapUnavailable, ...]]:
+    source_code = ("sh." if request.code.startswith("6") else "sz.") + request.code
+    expected = frozenset(request.trade_dates)
+    fields = _DAILY_FACT_FIELDS if request.family == "is_st" else _DAILY_FIELDS
+    adjustflag = "3" if request.family in {"daily_raw", "is_st"} else "2"
+    windows = (
+        qfq_source_windows(source_code, request.trade_dates)
+        if request.family == "daily_qfq"
+        else ((source_code, request.trade_dates),)
+    )
+    records: list[BaoStockGapRecord] = []
+    unavailable: list[BaoStockGapUnavailable] = []
+    observed: set[date] = set()
+    for query_code, query_dates in windows:
+        rows = _result_rows(
+            source.query_history_k_data_plus(
+                query_code,
+                fields,
+                query_dates[0].isoformat(),
+                query_dates[-1].isoformat(),
+                frequency="d",
+                adjustflag=adjustflag,
+            ),
+            f"{request.family}_query_failed",
+        )
+        for row in rows:
+            day = date.fromisoformat(row.get("date", ""))
+            if day not in expected:
+                continue
+            if day in observed or row.get("code") != query_code or row.get("tradestatus") not in {"0", "1"}:
+                raise ValueError("BaoStock gap response identity is invalid")
+            observed.add(day)
+            if request.family == "daily_qfq" and row.get("adjustflag") == "3":
+                unavailable.append(
+                    BaoStockGapUnavailable(
+                        request.code,
+                        day,
+                        request.family,
+                        "supplier_adjustment_unavailable",
+                    )
+                )
+                continue
+            if request.family != "is_st" and row.get("adjustflag") != adjustflag:
+                raise ValueError("BaoStock gap response adjustment is invalid")
+            payload = (
+                {"code": request.code, "trade_date": day.isoformat(), "is_st": _is_st(row.get("isST"))}
+                if request.family == "is_st"
+                else _side_payload(request.code, day, request.family, row)
+            )
+            records.append(
+                BaoStockGapRecord(
+                    request.code,
+                    day,
+                    request.family,
+                    json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
+                )
+            )
+    if observed != expected:
+        raise RuntimeError("supplier_response_incomplete")
+    return tuple(records), tuple(unavailable)
+
+
+def _side_payload(
+    code: str,
+    day: date,
+    family: BaoStockGapFamily,
+    row: dict[str, str],
+) -> dict[str, object]:
+    adjustment: BaoStockAdjustment = "unadjusted" if family == "daily_raw" else "qfq"
+    side = _daily_side(code, day, adjustment, row)
+    return {
+        "code": code,
+        "trade_date": day.isoformat(),
+        "adjustment": side.adjustment,
+        "open_price": side.open_price,
+        "high_price": side.high_price,
+        "low_price": side.low_price,
+        "close_price": side.close_price,
+        "volume": side.volume,
+        "amount": side.amount,
+        "preclose": side.preclose,
+        "pct_change": side.pct_change,
+        "turnover": side.turnover,
+        "trading_status": side.trading_status,
+    }
+
+
+def _valid_gap_payload(
+    code: str,
+    trade_date: date,
+    family: BaoStockGapFamily,
+    payload: object,
+) -> bool:
+    if (
+        not isinstance(payload, dict)
+        or payload.get("code") != code
+        or payload.get("trade_date") != trade_date.isoformat()
+    ):
+        return False
+    if family == "is_st":
+        return set(payload) == {"code", "trade_date", "is_st"} and isinstance(payload.get("is_st"), bool)
+    numeric = {
+        "open_price",
+        "high_price",
+        "low_price",
+        "close_price",
+        "volume",
+        "amount",
+        "preclose",
+        "pct_change",
+        "turnover",
+    }
+    expected = {"code", "trade_date", "adjustment", "trading_status", *numeric}
+    adjustment = "unadjusted" if family == "daily_raw" else "qfq"
+    return (
+        set(payload) == expected
+        and payload.get("adjustment") == adjustment
+        and payload.get("trading_status") in {"trading", "suspended"}
+        and all(
+            value is None or isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+            for key, value in payload.items()
+            if key in numeric
+        )
+        and (family == "daily_raw" or all(payload.get(key) is None for key in ("preclose", "pct_change", "turnover")))
+    )
+
+
+def _failure_code(exc: BaseException) -> str:
+    value = str(exc).strip()
+    return value if value and len(value) <= 64 and value.replace("_", "").isalnum() else "supplier_failed"
 
 
 def _terminate(process: BaseProcess) -> None:

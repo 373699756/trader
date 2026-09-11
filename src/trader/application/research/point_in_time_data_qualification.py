@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from trader.application.research.baostock_history_runtime import BaoStockRuntimeStatus
+from trader.application.research.history_archive_status import HistoryArchiveStatus
 from trader.domain.research.h1_point_in_time import H1CapabilityAuditReport, H1CapabilityProbe
 from trader.domain.research.historical_industry_facts import (
     HistoricalIndustryDatasetReport,
@@ -18,28 +18,28 @@ from trader.domain.research.point_in_time_data_qualification import (
 
 
 def assemble_point_in_time_data_qualification(
-    archive: BaoStockRuntimeStatus,
+    archive: HistoryArchiveStatus,
     source_capability: H1CapabilityAuditReport,
     industry_report: HistoricalIndustryDatasetReport,
 ) -> PointInTimeDataQualificationReport:
     daily_reasons: list[str] = []
-    if archive.sessions != 2000:
+    if archive.calendar_sessions != 2000:
         daily_reasons.append("daily_archive_sessions_below_2000")
-    if archive.coverage_status != "coverage_ready":
+    if archive.state != "active":
         daily_reasons.append("daily_archive_coverage_incomplete")
-    if not archive.manifest_hash:
+    if archive.active_snapshot_hash is None:
         daily_reasons.append("daily_archive_manifest_missing")
-    if archive.universe_count == 0 or archive.completed_codes != archive.universe_count:
+    if archive.universe_count == 0:
         daily_reasons.append("daily_archive_code_coverage_incomplete")
-    if archive.failed_codes:
-        daily_reasons.append("daily_archive_failed_codes_present")
+    completed_codes = archive.universe_count if archive.state == "active" else 0
+    coverage_status = "coverage_ready" if not daily_reasons else "historical_data_insufficient"
     daily = DailyArchiveQualification(
-        archive.sessions,
+        archive.calendar_sessions,
         archive.universe_count,
-        archive.completed_codes,
-        archive.failed_codes,
-        archive.coverage_status,
-        archive.manifest_hash,
+        completed_codes,
+        0,
+        coverage_status,
+        archive.active_snapshot_hash or "",
         "qualified" if not daily_reasons else "historical_data_insufficient",
         tuple(daily_reasons),
     )

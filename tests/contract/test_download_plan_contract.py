@@ -31,7 +31,7 @@ def test_monthly_snapshot_plan_is_idempotent_and_fails_closed_on_missing_facts()
 
     for token in (
         "control.sqlite3",
-        "partitions/YYYY/MM/<sha256>.sqlite3",
+        "partitions/YYYY/MM.sqlite3",
         "(trade_date, code, revision_id)",
         "重复内容幂等",
         "不同内容写新 revision",
@@ -73,7 +73,10 @@ def test_current_training_task_uses_the_reviewed_zero_argument_history_prerequis
     for required in (
         "第 12.7 节阶段 A–G",
         "阶段 A 至 F 已完成",
-        "下一完整实施切片为阶段 G",
+        "阶段 G 已完成代码切换与发布门禁收尾",
+        "最低 10 GiB",
+        "行业上下文收敛为最近完整交易日快照",
+        "20:30 前不再请求尚未发布的当日日线",
         "高效日更来源保持阻塞",
     ):
         assert required in work

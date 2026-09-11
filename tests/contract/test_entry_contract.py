@@ -497,6 +497,19 @@ def test_research_status_is_historical_only_and_does_not_create_runtime_files(
     assert payload["schema_version"] == "research_readiness"
     assert payload["production_authority"] is False
     assert payload["validation_mode"] == "historical_only"
+    assert payload["history_archive"] == {
+        "active_snapshot_hash": None,
+        "calendar_sessions": 0,
+        "data_cutoff": None,
+        "label_cutoff": None,
+        "partition_count": 0,
+        "point_in_time_parity": False,
+        "production_authority": False,
+        "reason": "history_snapshot_unavailable",
+        "state": "unavailable",
+        "universe_count": 0,
+    }
+    assert "baostock_history" not in payload
     assert payload["recorded_trade_dates"] == []
     assert payload["outcomes"]["initialized"] is False
     assert payload["blockers"] == ["score_h0_archive_coverage_incomplete"]

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.metadata
 import os
 import platform
 import time
@@ -12,7 +11,7 @@ from datetime import date
 from multiprocessing import get_context
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
-from typing import Literal, Protocol, cast
+from typing import Literal, cast
 
 from trader.application.research.history_sync import (
     HistorySupplierContext,
@@ -27,13 +26,14 @@ from trader.domain.research.baostock_daily import (
     BaoStockDailySpec,
     BaoStockSecurity,
 )
-from trader.infra.research.baostock_gateway import BaoStockRowGateway, BaoStockRowResult, BaoStockSdkPort
-
-
-class _SessionSdk(BaoStockSdkPort, Protocol):
-    def login(self) -> BaoStockRowResult: ...
-
-    def logout(self) -> BaoStockRowResult: ...
+from trader.infra.research.baostock_gateway import BaoStockRowGateway, BaoStockRowResult
+from trader.infra.research.baostock_session import (
+    BaoStockSessionSdkPort,
+    baostock_dependency_versions,
+    load_baostock_sdk,
+    login_baostock,
+    logout_baostock,
+)
 
 
 @dataclass(frozen=True)
@@ -98,7 +98,7 @@ class _Response:
 class _RateLimitedSdk:
     def __init__(
         self,
-        sdk: _SessionSdk,
+        sdk: BaoStockSessionSdkPort,
         activity: Callable[[HistorySyncProgressStage, Literal["started", "returned"], str | None], None],
         interval_seconds: float,
         *,
@@ -402,10 +402,10 @@ class BaoStockHistorySupplier:
 
 def _worker_main(connection: Connection, query_interval_seconds: float) -> None:
     _silence_vendor_output()
-    sdk: _SessionSdk | None = None
+    sdk: BaoStockSessionSdkPort | None = None
     try:
-        sdk = _load_sdk()
-        _login(sdk)
+        sdk = load_baostock_sdk()
+        login_baostock(sdk)
         gateway = BaoStockRowGateway(
             _RateLimitedSdk(
                 sdk,
@@ -413,7 +413,7 @@ def _worker_main(connection: Connection, query_interval_seconds: float) -> None:
                 query_interval_seconds,
             ),
             python_version=platform.python_version(),
-            dependency_versions=_dependency_versions(),
+            dependency_versions=baostock_dependency_versions(),
         )
         connection.send(_Ready())
         while True:
@@ -442,46 +442,8 @@ def _worker_main(connection: Connection, query_interval_seconds: float) -> None:
         connection.send(_Ready(_failure_code(exc)))
     finally:
         if sdk is not None:
-            _logout(sdk)
+            logout_baostock(sdk)
         connection.close()
-
-
-def _load_sdk() -> _SessionSdk:
-    try:
-        import baostock
-    except ImportError as exc:
-        raise RuntimeError("dependency_unavailable") from exc
-    return cast(_SessionSdk, baostock)
-
-
-def _login(sdk: _SessionSdk) -> None:
-    try:
-        result = sdk.login()
-    except TimeoutError as exc:
-        raise RuntimeError("supplier_login_timeout") from exc
-    except OSError as exc:
-        raise RuntimeError("supplier_login_network_failed") from exc
-    except Exception as exc:
-        raise RuntimeError("supplier_login_sdk_failed") from exc
-    if str(result.error_code) != "0":
-        raise RuntimeError("supplier_login_rejected")
-
-
-def _logout(sdk: _SessionSdk) -> None:
-    try:
-        sdk.logout()
-    except Exception:
-        pass
-
-
-def _dependency_versions() -> tuple[tuple[str, str], ...]:
-    values = []
-    for package in ("baostock", "pandas"):
-        try:
-            values.append((package, importlib.metadata.version(package)))
-        except importlib.metadata.PackageNotFoundError:
-            values.append((package, "not-installed"))
-    return tuple(values)
 
 
 def _silence_vendor_output() -> None:

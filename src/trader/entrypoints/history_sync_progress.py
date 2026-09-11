@@ -63,11 +63,29 @@ class StderrHistorySyncProgress:
         if progress.stage == "downloading_codes":
             self._stock_counts = (progress.completed_units, progress.total_units)
         self._last_progress = (progress.stage, progress.current_item)
-        if progress.stage.startswith("supplier_"):
-            if progress.state == "completed":
-                self._specific_failure = None
-            elif progress.state == "failed":
-                self._specific_failure = self._last_progress
+        self._record_supplier_failure(progress)
+        if self._should_suppress(progress):
+            return
+        self._print(self._progress_parts(progress))
+
+    def _record_supplier_failure(self, progress: HistorySyncProgress) -> None:
+        if not progress.stage.startswith("supplier_"):
+            return
+        if progress.state == "completed":
+            self._specific_failure = None
+        elif progress.state == "failed":
+            self._specific_failure = self._last_progress
+
+    def _should_suppress(self, progress: HistorySyncProgress) -> bool:
+        if progress.state in {"started", "waiting"}:
+            return True
+        if progress.stage in _DAILY_STAGES and progress.state == "completed":
+            return True
+        return progress.stage == "loading_context" and (
+            progress.state == "completed" or progress.state == "failed" and self._specific_failure is not None
+        )
+
+    def _progress_parts(self, progress: HistorySyncProgress) -> list[str]:
         parts = [
             _format_duration(self._elapsed()),
             _STAGE_LABELS[progress.stage],
@@ -84,7 +102,7 @@ class StderrHistorySyncProgress:
             parts.append(f"尝试 {progress.attempt}/{progress.max_attempts}")
         if progress.call_elapsed_seconds > 0.0:
             parts.append(f"调用 {_format_duration(progress.call_elapsed_seconds)}")
-        self._print(parts)
+        return parts
 
     def publish_result(self, status: HistoryMaintenanceStatus) -> None:
         parts = [_format_duration(self._elapsed()), _RESULT_LABELS[status.state]]

@@ -54,7 +54,7 @@ def _values(sequence: int = 1, cutoff: date = date(2026, 9, 10)):
         calendar.content_hash,
         universe.content_hash,
         source.content_hash,
-        (HistorySnapshotPartition(f"partitions/{cutoff:%Y/%m}/{'a' * 64}.sqlite3", "a" * 64, 2),),
+        (HistorySnapshotPartition(f"partitions/{cutoff:%Y/%m}.sqlite3", "a" * 64, 2),),
     )
     return source, calendar, universe, checkpoint, due, reminder_claim, reminder, snapshot
 

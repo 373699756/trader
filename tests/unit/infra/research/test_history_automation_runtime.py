@@ -60,7 +60,7 @@ def _seed_due_control(root: Path) -> None:
         calendar.content_hash,
         universe.content_hash,
         source.content_hash,
-        (HistorySnapshotPartition(f"partitions/2026/09/{'a' * 64}.sqlite3", "a" * 64, 2),),
+        (HistorySnapshotPartition("partitions/2026/09.sqlite3", "a" * 64, 2),),
     )
     repository.save_source(source)
     repository.save_calendar(calendar)

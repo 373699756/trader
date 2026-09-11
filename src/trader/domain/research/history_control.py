@@ -319,15 +319,14 @@ class HistorySnapshotPartition:
         _require_hash(self.sha256, "partition")
         if (
             path.is_absolute()
-            or len(parts) != 4
+            or len(parts) != 3
             or parts[0] != "partitions"
             or len(parts[1]) != 4
             or not parts[1].isdigit()
-            or len(parts[2]) != 2
-            or not parts[2].isdigit()
-            or path.stem != self.sha256
+            or len(path.stem) != 2
+            or not path.stem.isdigit()
             or path.suffix != ".sqlite3"
-            or not 1 <= int(parts[2]) <= 12
+            or not 1 <= int(path.stem) <= 12
             or self.row_count < 0
         ):
             raise ValueError("history snapshot partition is invalid")
@@ -352,7 +351,7 @@ class HistoryActiveSnapshot:
         ):
             _require_hash(value, label)
         partitions = tuple(sorted(self.partitions))
-        months = tuple(PurePosixPath(item.relative_path).parts[1:3] for item in partitions)
+        months = tuple(PurePosixPath(item.relative_path).parts[1:] for item in partitions)
         if (
             self.sequence < 1
             or self.label_cutoff > self.data_cutoff

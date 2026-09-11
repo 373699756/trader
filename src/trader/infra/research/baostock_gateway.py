@@ -354,19 +354,7 @@ class BaoStockRowGateway:
 def _industry_snapshot_dates(open_dates: tuple[date, ...]) -> tuple[date, ...]:
     if not open_dates:
         return ()
-    values = [open_dates[0]]
-    for day in open_dates[1:-1]:
-        previous = values[-1]
-        if (
-            day.year != previous.year
-            and day.month >= 1
-            or day.year == previous.year
-            and day.month >= previous.month + 6
-        ):
-            values.append(day)
-    if open_dates[-1] != values[-1]:
-        values.append(open_dates[-1])
-    return tuple(values)
+    return (open_dates[-1],)
 
 
 def _result_rows(result: BaoStockRowResult, error_code: str) -> tuple[dict[str, str], ...]:

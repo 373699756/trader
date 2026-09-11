@@ -13,23 +13,6 @@ SCANNED_ROOTS = (
 )
 TEXT_SUFFIXES = {".css", ".html", ".js", ".json", ".md", ".ps1", ".py", ".sh"}
 
-# These are immutable BaoStock checkpoint identities written before the stable
-# naming cleanup.  They are decode-only compatibility values, not project
-# version controls; no other BaoStock ``*_vN`` value is permitted.
-LEGACY_BAOSTOCK_PERSISTENCE_SCHEMAS = frozenset(
-    {
-        "score_baostock_daily_core_v2",
-        "baostock_exchange_calendar_v2",
-        "baostock_daily_fact_v1",
-        "baostock_industry_interval_v1",
-        "baostock_code_download_v1",
-        "baostock_daily_coverage_audit_v2",
-        "baostock_partition_ref_v1",
-        "baostock_daily_manifest_v3",
-        "baostock_daily_shard_snapshot_v2",
-    }
-)
-
 # V1/V2/V3 are reserved for the user-selected Tomorrow scoring profiles and
 # their model/training identities. External supplier names and URLs are not
 # project version controls. Everything else must use a stable semantic name.
@@ -111,13 +94,13 @@ def test_runtime_and_configuration_paths_are_not_project_versioned() -> None:
     assert versioned_runtime_root.search(runtime_config) is None
 
 
-def test_baostock_legacy_schema_allowlist_is_explicit_and_bounded() -> None:
+def test_active_baostock_modules_contain_no_legacy_versioned_schema() -> None:
     source_paths = (
         PROJECT_ROOT / "src/trader/domain/research/baostock_daily.py",
-        PROJECT_ROOT / "src/trader/infra/research/baostock_daily.py",
+        PROJECT_ROOT / "src/trader/infra/research/baostock_gateway.py",
+        PROJECT_ROOT / "src/trader/infra/research/baostock_session.py",
+        PROJECT_ROOT / "src/trader/infra/research/baostock_sync_supplier.py",
     )
     token_pattern = re.compile(r'"((?:score_)?baostock_[a-z0-9_]+_v\d+)"')
     tokens = {token for path in source_paths for token in token_pattern.findall(path.read_text(encoding="utf-8"))}
-    assert tokens <= LEGACY_BAOSTOCK_PERSISTENCE_SCHEMAS
-    assert tokens == LEGACY_BAOSTOCK_PERSISTENCE_SCHEMAS
-    assert all("_v4" not in token and "_v5" not in token for token in tokens)
+    assert tokens == set()

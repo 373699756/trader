@@ -39,7 +39,7 @@ def _control_state(
         calendar.content_hash,
         universe.content_hash,
         source.content_hash,
-        (HistorySnapshotPartition(f"partitions/2026/09/{'a' * 64}.sqlite3", "a" * 64, 2),),
+        (HistorySnapshotPartition("partitions/2026/09.sqlite3", "a" * 64, 2),),
     )
     due = HistoryTrainingDueState(
         "due-20260910",

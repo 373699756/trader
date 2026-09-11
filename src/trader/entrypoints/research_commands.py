@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from trader.application.research.historical_label import HistoricalLabelPreregistrationService
+from trader.application.research.history_archive_status import HistoryArchiveStatus
 from trader.application.research.research_tomorrow_orchestrator import (
     TomorrowResearchAdvanceResult,
     TomorrowResearchProgressPort,
@@ -26,9 +27,9 @@ from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPE
 from trader.domain.research.tomorrow_historical import TOMORROW_HISTORICAL_SPEC
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
 from trader.infra.persistence.research_trace import SQLiteResearchTraceStore
-from trader.infra.research.baostock_history_runtime import inspect_baostock_history, project_baostock_runtime_status
 from trader.infra.research.h1_point_in_time_archive import H1ArchiveConflictError, SQLiteH1PointInTimeArchive
 from trader.infra.research.history_archive import SQLiteHistoricalArchive
+from trader.infra.research.history_archive_status import inspect_history_archive
 from trader.infra.research.tomorrow_historical_artifacts import (
     TomorrowHistoricalArtifactConflictError,
     TomorrowHistoricalArtifactStore,
@@ -120,7 +121,7 @@ def run_research_command(
         tomorrow_holdout = _read_tomorrow_profile_holdout_status(runtime)
         tomorrow_risk = _read_tomorrow_historical_risk_status(runtime)
         tomorrow_research = _read_tomorrow_research_status(runtime)
-        baostock_status = project_baostock_runtime_status(inspect_baostock_history(_history_data_root()))
+        history_status = _project_history_archive_status(inspect_history_archive(_history_data_root()))
         print(
             json.dumps(
                 {
@@ -132,7 +133,7 @@ def run_research_command(
                     "tomorrow_profile_holdout": tomorrow_holdout,
                     "tomorrow_historical_risk": tomorrow_risk,
                     "tomorrow_research": tomorrow_research,
-                    "baostock_history": baostock_status,
+                    "history_archive": history_status,
                     "recorded_trade_dates": [value.isoformat() for value in dates],
                     "retired_research": (
                         {
@@ -171,6 +172,21 @@ def run_research_command(
     if command == "research-baseline-audit":
         return _run_baseline_identity_audit(runtime)
     raise ValueError(f"unsupported research command: {command}")
+
+
+def _project_history_archive_status(status: HistoryArchiveStatus) -> dict[str, object]:
+    return {
+        "state": status.state,
+        "active_snapshot_hash": status.active_snapshot_hash,
+        "data_cutoff": status.data_cutoff.isoformat() if status.data_cutoff is not None else None,
+        "label_cutoff": status.label_cutoff.isoformat() if status.label_cutoff is not None else None,
+        "calendar_sessions": status.calendar_sessions,
+        "universe_count": status.universe_count,
+        "partition_count": status.partition_count,
+        "reason": status.reason,
+        "production_authority": status.production_authority,
+        "point_in_time_parity": status.point_in_time_parity,
+    }
 
 
 def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:

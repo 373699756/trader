@@ -41,9 +41,6 @@ def _options(**overrides: object) -> DiagnosticOptions:
         browser_minimum_updates=3,
         command_timeout_seconds=180.0,
         persistence_runtime_dir=None,
-        history_archive_root=Path("data/history/baostock-daily/sessions-2000"),
-        history_target_cutoff=None,
-        history_plan_details_output=None,
     )
     return replace(defaults, **overrides)
 
@@ -102,7 +99,6 @@ def test_history_profile_passes_explicit_source_to_the_bounded_probe(source: str
     [
         ("web", "web_health"),
         ("history", "history_sources"),
-        ("history-plan", "history_archive_plan"),
         ("security-master", "exchange_security_master"),
         ("tencent", "tencent_quotes"),
         ("tushare", "tushare_daily"),
@@ -133,32 +129,7 @@ def test_research_profile_runs_only_research_readiness_probe() -> None:
     )
 
 
-def test_history_plan_profile_is_read_only_and_passes_explicit_paths() -> None:
-    commands = build_commands(
-        _options(
-            profile="history-plan",
-            history_archive_root=Path("/archive/sessions-2000"),
-            history_target_cutoff="2026-09-08",
-            history_plan_details_output=Path("/outside/history-plan.json"),
-        ),
-        python_executable="/python",
-    )
-
-    assert tuple(command.name for command in commands) == ("history_archive_plan",)
-    assert commands[0].argv == (
-        "/python",
-        "-m",
-        "scripts.runtime_diagnostics.history_archive_plan",
-        "--archive-root",
-        "/archive/sessions-2000",
-        "--target-cutoff",
-        "2026-09-08",
-        "--details-output",
-        "/outside/history-plan.json",
-    )
-
-
-def test_research_status_projection_uses_current_baostock_and_v3_blockers() -> None:
+def test_research_status_projection_uses_the_active_monthly_archive_and_v3_blockers() -> None:
     report = build_report(
         "research",
         (
@@ -168,15 +139,15 @@ def test_research_status_projection_uses_current_baostock_and_v3_blockers() -> N
                 4.0,
                 {
                     "schema_version": "research_readiness",
-                    "baostock_history": {
-                        "state": "completed_with_failures",
-                        "sessions": 1,
-                        "coverage_status": "historical_data_insufficient",
-                        "completed_codes": 0,
-                        "failed_codes": 1,
-                        "failure_reasons": ["supplier_login_failed_blacklisted"],
-                        "historical_effective_facts_status": "historical_data_insufficient",
-                        "training_dataset_status": "historical_data_insufficient",
+                    "history_archive": {
+                        "state": "invalid",
+                        "active_snapshot_hash": "a" * 64,
+                        "calendar_sessions": 2000,
+                        "universe_count": 5453,
+                        "partition_count": 100,
+                        "data_cutoff": "2026-09-10",
+                        "label_cutoff": "2026-09-09",
+                        "reason": "history_snapshot_partition_invalid",
                         "production_authority": False,
                         "point_in_time_parity": False,
                     },
@@ -199,15 +170,15 @@ def test_research_status_projection_uses_current_baostock_and_v3_blockers() -> N
 
     assert report["status"] == "failed"
     summary = report["checks"][0]["summary"]
-    assert summary["baostock_history"] == {
-        "state": "completed_with_failures",
-        "sessions": 1,
-        "coverage_status": "historical_data_insufficient",
-        "completed_codes": 0,
-        "failed_codes": 1,
-        "failure_reasons": ["supplier_login_failed_blacklisted"],
-        "historical_effective_facts_status": "historical_data_insufficient",
-        "training_dataset_status": "historical_data_insufficient",
+    assert summary["history_archive"] == {
+        "state": "invalid",
+        "active_snapshot_hash": "a" * 64,
+        "calendar_sessions": 2000,
+        "universe_count": 5453,
+        "partition_count": 100,
+        "data_cutoff": "2026-09-10",
+        "label_cutoff": "2026-09-09",
+        "reason": "history_snapshot_partition_invalid",
         "production_authority": False,
         "point_in_time_parity": False,
     }

@@ -112,7 +112,7 @@ def test_sealed_month_partition_has_stable_hash_and_fails_closed_on_tamper(tmp_p
 
     reference = repository.seal()
 
-    assert reference.relative_path == f"partitions/2026/09/{reference.sha256}.sqlite3"
+    assert reference.relative_path == "partitions/2026/09.sqlite3"
     assert reference.row_count == 1
     sealed_path = tmp_path / reference.relative_path
     SQLiteHistoryMonthPartitionRepository.verify(sealed_path, reference)

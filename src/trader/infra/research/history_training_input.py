@@ -1,4 +1,4 @@
-"""Training input adapter for the content-addressed monthly history archive."""
+"""Training input adapter for the stable-path monthly history archive."""
 
 from __future__ import annotations
 

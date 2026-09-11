@@ -22,7 +22,6 @@ _DEFAULT_CONFIG = PROJECT_ROOT / "config" / "runtime.json"
 Profile = Literal[
     "web",
     "history",
-    "history-plan",
     "security-master",
     "tencent",
     "tushare",
@@ -42,7 +41,6 @@ TencentHistoryHost = Literal["proxy", "direct"]
 _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "web": ("web_health",),
     "history": ("history_sources",),
-    "history-plan": ("history_archive_plan",),
     "security-master": ("exchange_security_master",),
     "tencent": ("tencent_quotes",),
     "tushare": ("tushare_daily",),
@@ -99,9 +97,6 @@ class DiagnosticOptions:
     browser_minimum_updates: int
     command_timeout_seconds: float
     persistence_runtime_dir: Path | None
-    history_archive_root: Path
-    history_target_cutoff: str | None
-    history_plan_details_output: Path | None
 
 
 @dataclass(frozen=True)
@@ -172,18 +167,6 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="optional absolute repository-external directory for history persistence comparison",
     )
-    parser.add_argument(
-        "--history-archive-root",
-        type=Path,
-        default=PROJECT_ROOT / "data" / "history" / "baostock-daily" / "sessions-2000",
-        help="sealed BaoStock archive inspected by the history-plan profile",
-    )
-    parser.add_argument("--history-target-cutoff", help="optional YYYY-MM-DD upper bound for history-plan")
-    parser.add_argument(
-        "--history-plan-details-output",
-        type=Path,
-        help="optional repository-external JSON path for per-stock history-plan details",
-    )
     parser.add_argument("--output", default="-", help="combined JSON output path outside the repository, or -")
     return parser
 
@@ -210,7 +193,6 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
     if args.web_interval_seconds < 0 or args.source_interval_seconds < 0:
         raise ValueError("sample intervals must not be negative")
     persistence = _external_path(args.persistence_runtime_dir, "--persistence-runtime-dir")
-    details_output = _external_path(args.history_plan_details_output, "--history-plan-details-output")
     output = args.output
     if output != "-":
         output = str(_external_path(Path(output), "--output"))
@@ -234,9 +216,6 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             browser_minimum_updates=args.browser_minimum_updates,
             command_timeout_seconds=args.command_timeout_seconds,
             persistence_runtime_dir=persistence,
-            history_archive_root=Path(args.history_archive_root).expanduser().resolve(),
-            history_target_cutoff=args.history_target_cutoff,
-            history_plan_details_output=details_output,
         ),
         output,
     )
@@ -280,11 +259,6 @@ def build_commands(
         "history_sources": DiagnosticCommand(
             "history_sources",
             _history_command(options, python_executable),
-            common_timeout,
-        ),
-        "history_archive_plan": DiagnosticCommand(
-            "history_archive_plan",
-            _history_plan_command(options, python_executable),
             common_timeout,
         ),
         "exchange_security_master": DiagnosticCommand(
@@ -404,21 +378,6 @@ def _history_command(options: DiagnosticOptions, python_executable: str) -> tupl
     ]
     if options.persistence_runtime_dir is not None:
         command.extend(("--persistence-runtime-dir", str(options.persistence_runtime_dir)))
-    return tuple(command)
-
-
-def _history_plan_command(options: DiagnosticOptions, python_executable: str) -> tuple[str, ...]:
-    command = [
-        python_executable,
-        "-m",
-        "scripts.runtime_diagnostics.history_archive_plan",
-        "--archive-root",
-        str(options.history_archive_root),
-    ]
-    if options.history_target_cutoff is not None:
-        command.extend(("--target-cutoff", options.history_target_cutoff))
-    if options.history_plan_details_output is not None:
-        command.extend(("--details-output", str(options.history_plan_details_output)))
     return tuple(command)
 
 
@@ -584,7 +543,7 @@ def _research_details(result: DiagnosticResult, source: Mapping[str, object], pa
             }
         ]
         return
-    baostock = _mapping(source.get("baostock_history"))
+    history = _mapping(source.get("history_archive"))
     tomorrow = _mapping(source.get("tomorrow_research"))
     input_blockers = _safe_string_list(tomorrow.get("input_blockers"), limit=20)
     production_blockers = _safe_string_list(tomorrow.get("production_blockers"), limit=20)
@@ -603,17 +562,17 @@ def _research_details(result: DiagnosticResult, source: Mapping[str, object], pa
             }
         ]
     payload["summary"] = {
-        "baostock_history": {
-            "state": baostock.get("state"),
-            "sessions": baostock.get("sessions"),
-            "coverage_status": baostock.get("coverage_status"),
-            "completed_codes": baostock.get("completed_codes"),
-            "failed_codes": baostock.get("failed_codes"),
-            "failure_reasons": _safe_string_list(baostock.get("failure_reasons"), limit=20),
-            "historical_effective_facts_status": baostock.get("historical_effective_facts_status"),
-            "training_dataset_status": baostock.get("training_dataset_status"),
-            "production_authority": baostock.get("production_authority"),
-            "point_in_time_parity": baostock.get("point_in_time_parity"),
+        "history_archive": {
+            "state": history.get("state"),
+            "active_snapshot_hash": history.get("active_snapshot_hash"),
+            "data_cutoff": history.get("data_cutoff"),
+            "label_cutoff": history.get("label_cutoff"),
+            "calendar_sessions": history.get("calendar_sessions"),
+            "universe_count": history.get("universe_count"),
+            "partition_count": history.get("partition_count"),
+            "reason": history.get("reason"),
+            "production_authority": history.get("production_authority"),
+            "point_in_time_parity": history.get("point_in_time_parity"),
         },
         "v3": {
             "status": tomorrow.get("status"),
@@ -650,7 +609,6 @@ def _performance_details(_result: DiagnosticResult, source: Mapping[str, object]
 _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], dict[str, object]], None]] = {
     "web_health": _web_health_details,
     "history_sources": _history_details,
-    "history_archive_plan": _history_details,
     "exchange_security_master": _security_master_details,
     "tencent_quotes": _tencent_quote_details,
     "tushare_daily": _tushare_details,
@@ -688,33 +646,27 @@ def _status(result: DiagnosticResult) -> CheckStatus:
 
 
 def _valid_research_status(payload: Mapping[str, object]) -> bool:
-    baostock = payload.get("baostock_history")
+    history = payload.get("history_archive")
     tomorrow = payload.get("tomorrow_research")
-    if not isinstance(baostock, dict) or not isinstance(tomorrow, dict):
+    if not isinstance(history, dict) or not isinstance(tomorrow, dict):
         return False
     if payload.get("production_authority") is not False:
         return False
-    if baostock.get("production_authority") is not False or baostock.get("point_in_time_parity") is not False:
+    if history.get("production_authority") is not False or history.get("point_in_time_parity") is not False:
         return False
     if tomorrow.get("production_authority") is not False:
         return False
     if not all(
-        isinstance(baostock.get(name), (str, int, float, list))
+        isinstance(history.get(name), (str, int))
         for name in (
             "state",
-            "sessions",
-            "coverage_status",
-            "completed_codes",
-            "failed_codes",
-            "failure_reasons",
-            "historical_effective_facts_status",
-            "training_dataset_status",
+            "calendar_sessions",
+            "universe_count",
+            "partition_count",
         )
     ):
         return False
-    if not isinstance(baostock.get("failure_reasons"), list) or not all(
-        isinstance(item, str) for item in baostock["failure_reasons"]
-    ):
+    if history.get("reason") is not None and not isinstance(history.get("reason"), str):
         return False
     if not isinstance(tomorrow.get("status"), str) or not isinstance(tomorrow.get("production_readiness"), str):
         return False

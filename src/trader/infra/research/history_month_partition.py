@@ -238,19 +238,14 @@ class SQLiteHistoryMonthPartitionRepository:
                 raise HistoryMonthPartitionError("history month partition path is outside the archive layout")
             database_sha256 = _sha256_file(self._path)
             reference = HistorySnapshotPartition(
-                f"partitions/{self._calendar_year:04d}/{self._calendar_month:02d}/{database_sha256}.sqlite3",
+                f"partitions/{self._calendar_year:04d}/{self._calendar_month:02d}.sqlite3",
                 database_sha256,
                 row_count,
             )
-            destination = self._path.parent / f"{self._calendar_month:02d}" / f"{database_sha256}.sqlite3"
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if destination.exists():
-                self.verify(destination, reference)
-                self._path.unlink()
-            else:
+            destination = self._path.parent / f"{self._calendar_month:02d}.sqlite3"
+            if self._path != destination:
                 os.replace(self._path, destination)
             _fsync_directory(destination.parent)
-            _fsync_directory(self._path.parent)
             self.verify(destination, reference)
             return reference
         except HistoryMonthPartitionError:
@@ -270,7 +265,7 @@ class SQLiteHistoryMonthPartitionRepository:
                 raise HistoryMonthPartitionError("history month partition has pending WAL")
             parts = Path(reference.relative_path).parts
             year = int(parts[1])
-            month = int(parts[2])
+            month = int(Path(parts[2]).stem)
             candidate = cls(path, year, month)
             with closing(candidate._read_connection()) as connection:
                 candidate._require_metadata(connection)

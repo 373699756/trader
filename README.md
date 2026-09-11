@@ -58,7 +58,7 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 禁止外网并直接测量活动生产标准化、合并、三策略评分、overlay CAS、API/ETag/status、SSE 和 100 tick RSS。
 BaoStock 下载是独立研究命令，必须先安装 `trader-research-dashboard[research]`。路径、滚动 2000 日和资源
 参数不对用户开放；`--runtime-dir`、`--sessions`、`--mode`、`--profile` 等参数都会在环境创建前拒绝。零参数
-重构控制库、内容寻址月分片读取面和零参数同步已经交付：命令自动执行初次最近 2000 日、日更缺口、最近 5 日
+重构控制库、稳定年月月分片读取面和零参数同步已经交付：命令自动执行初次最近 2000 日、日更缺口、最近 5 日
 回读或返回 `already_current`，失败与取消不改变上一 active snapshot；它不会被启动、`check`、Web 或
 `train-tomorrow` 隐式调用。
 交互式下载进度固定在 stderr 显示紧凑单行：累计和调用耗时使用 `HH:MM:SS`，股票和月分片使用
@@ -73,16 +73,11 @@ macOS 安装带日历触发与登录补跑的 LaunchAgent；每天按上海时�
 任务日志写入 `.runtime/trader/logs/history-automation.log` 并按大小轮转。同一训练 due 身份在每个上海日期最多通知
 一次；桌面通知不可用只记为 `notification_degraded`，不会把成功下载改成失败，也不会自动训练、切换档位或重启服务。
 
-如工作机仍有封存的旧父/增量归档，可运行一次性、带进度的低资源转换；默认补下载可证明的
-`raw/qfq/is_st` 缺口，完全离线时追加 `--offline`：
-
-```bash
-.venv/bin/python scripts/convert_baostock_history.py
-.venv/bin/python scripts/convert_baostock_history.py --offline
-```
-
-脚本默认从 `data/history/baostock-daily/sessions-2000` 旁路生成 `data/history/baostock`，不会删除或改写旧源；
-它是显式运维桥接，不进入零参数 `download_history` 的供应商调用链；已转换的 active snapshot 可由后续日更继续维护。
+历史归档只接受 `data/history/baostock/control.sqlite3` 与 `partitions/YYYY/MM.sqlite3` 月分片；文件 hash 保存在
+控制状态中用于校验，旧目录和兼容读取均不进入活动产品。
+若仍有唯一旧归档，可显式运行 `.venv/bin/python scripts/convert_baostock_history.py` 一次性转换；该脚本不被启动、
+Web、`check`、训练或零参数同步隐式调用。`research-status` 和统一诊断的 `research` profile 只读投影同一个
+active snapshot 身份，不会触发下载、训练或文件写入。
 
 启动脚本只读取 `TRADER_HOST` 和 `TRADER_PORT`；旧 `HOST`/`PORT` 不再映射到 当前进程。
 

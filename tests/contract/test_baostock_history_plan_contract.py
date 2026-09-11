@@ -30,7 +30,7 @@ def test_retired_increment_contract_is_not_a_training_input() -> None:
     work = _read("docs/03_工程实施.md")
 
     for token in (
-        "content-addressed",
+        "partitions/YYYY/MM.sqlite3",
         "active snapshot",
         "最近 5 日",
         "重复内容幂等",

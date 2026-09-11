@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import sqlite3
 from collections import defaultdict
 from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo
@@ -48,12 +50,16 @@ from trader.infra.research.history_control_repository import (
     inspect_history_disk,
 )
 from trader.infra.research.history_month_archive import route_history_months
-from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.infra.research.history_month_partition import (
+    HistoryMonthPartitionError,
+    SQLiteHistoryMonthPartitionRepository,
+)
 from trader.infra.research.history_training_due import evaluate_history_training_due
 
 Clock: TypeAlias = Callable[[], datetime]
 Cancellation: TypeAlias = Callable[[], bool]
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
+_BAOSTOCK_DAILY_READY = time(20, 30)
 _ERROR_CODE = re.compile(r"[a-z0-9_]{1,64}")
 
 
@@ -73,6 +79,18 @@ class _PendingPartitions:
     paths: dict[tuple[int, int], Path]
     active_by_month: dict[tuple[int, int], HistorySnapshotPartition]
     first_date: date
+
+
+@dataclass(frozen=True)
+class _PartitionReplacement:
+    destination: Path
+    rollback: Path
+
+
+@dataclass(frozen=True)
+class _SealedPartitions:
+    references: tuple[HistorySnapshotPartition, ...]
+    replacements: tuple[_PartitionReplacement, ...]
 
 
 def run_history_sync(
@@ -116,9 +134,13 @@ def _run_locked(
         control.initialize()
         state = control.load_state()
         _publish_progress(progress, "initializing", "completed", (1, 1))
+        active = state.active_snapshot
+        _recover_partition_replacements(root, active)
+        if active is None and not _has_sufficient_disk(root, configuration.minimum_free_bytes):
+            return _status("blocked", "disk_space_insufficient", configuration, None, observed_at)
         _publish_progress(progress, "loading_context", "started")
         try:
-            context = supplier.load_context(observed_at.date(), configuration.sessions)
+            context = supplier.load_context(_latest_completed_daily_date(observed_at), configuration.sessions)
         except KeyboardInterrupt:
             _publish_progress(progress, "loading_context", "cancelled")
             raise
@@ -128,18 +150,13 @@ def _run_locked(
         _publish_progress(progress, "loading_context", "completed", (1, 1))
         _validate_context(context, configuration.sessions)
         source, calendar, universe = _control_identities(context)
-        active = state.active_snapshot
         _verify_snapshot(root, active)
         previous_codes = _active_universe(control, active)
         if not previous_codes.issubset(item.code for item in universe.securities):
             raise RuntimeError("supplier_universe_regressed")
         if _is_current(active, calendar, universe):
             return _status("already_current", None, configuration, active, observed_at)
-        disk = inspect_history_disk(
-            root,
-            HistoryDiskRequirement(configuration.minimum_free_bytes, 0, 0, 0),
-        )
-        if not disk.sufficient:
+        if not _has_sufficient_disk(root, configuration.minimum_free_bytes):
             return _status("blocked", "disk_space_insufficient", configuration, active, observed_at)
         return _synchronize(
             configuration,
@@ -157,6 +174,10 @@ def _run_locked(
     except (HistoryControlError, OSError, RuntimeError, TypeError, ValueError) as exc:
         active = _safe_active(control)
         return _status("failed", _failure_code(exc), configuration, active, observed_at)
+
+
+def _has_sufficient_disk(root: Path, minimum_free_bytes: int) -> bool:
+    return inspect_history_disk(root, HistoryDiskRequirement(minimum_free_bytes, 0, 0, 0)).sufficient
 
 
 def _synchronize(  # noqa: PLR0913
@@ -225,23 +246,17 @@ def _synchronize(  # noqa: PLR0913
                 HistorySyncCheckpoint(sync_identity, ordinal, "cancelled", observed_at, completed, total, "cancelled")
             )
             return _status("cancelled", "cancelled", configuration, active, observed_at)
-        references = _seal_pending(configuration.archive_root, pending, progress)
-        _publish_progress(progress, "publishing_snapshot", "started")
-        label_cutoff = calendar.open_dates[-2] if len(calendar.open_dates) > 1 else calendar.open_dates[-1]
-        snapshot = HistoryActiveSnapshot(
-            sequence,
-            calendar.open_dates[-1],
-            label_cutoff,
-            calendar.content_hash,
-            universe.content_hash,
-            source.content_hash,
-            references,
-        )
-        _publish_snapshot(
+        snapshot = _seal_and_publish(
+            configuration.archive_root,
+            pending,
             control,
             (source, calendar, universe),
-            snapshot,
-            HistorySyncCheckpoint(sync_identity, ordinal, "completed", observed_at, total, total, None),
+            sequence,
+            sync_identity,
+            ordinal,
+            total,
+            observed_at,
+            progress,
         )
         _publish_progress(progress, "publishing_snapshot", "completed", (1, 1))
         try:
@@ -261,6 +276,52 @@ def _synchronize(  # noqa: PLR0913
             HistorySyncCheckpoint(sync_identity, ordinal, "failed", observed_at, completed, total, reason)
         )
         return _status("failed", reason, configuration, active, observed_at)
+
+
+def _seal_and_publish(  # noqa: PLR0913
+    root: Path,
+    pending: _PendingPartitions,
+    control: SQLiteHistoryControlRepository,
+    identities: tuple[HistorySourceIdentity, HistoryCalendarIdentity, HistoryUniverseIdentity],
+    sequence: int,
+    sync_identity: str,
+    ordinal: int,
+    total: int,
+    observed_at: datetime,
+    progress: HistorySyncProgressPort | None,
+) -> HistoryActiveSnapshot:
+    source, calendar, universe = identities
+    sealed = _seal_pending(root, pending, progress)
+    _publish_progress(progress, "publishing_snapshot", "started")
+    label_cutoff = calendar.open_dates[-2] if len(calendar.open_dates) > 1 else calendar.open_dates[-1]
+    snapshot = HistoryActiveSnapshot(
+        sequence,
+        calendar.open_dates[-1],
+        label_cutoff,
+        calendar.content_hash,
+        universe.content_hash,
+        source.content_hash,
+        sealed.references,
+    )
+    try:
+        _publish_snapshot(
+            control,
+            identities,
+            snapshot,
+            HistorySyncCheckpoint(sync_identity, ordinal, "completed", observed_at, total, total, None),
+        )
+    except BaseException:
+        try:
+            active_hash = control.load_state().active_snapshot_hash
+        except HistoryControlError:
+            raise
+        if active_hash == snapshot.content_hash:
+            _discard_partition_replacements(sealed.replacements)
+            return snapshot
+        _restore_partition_replacements(sealed.replacements)
+        raise
+    _discard_partition_replacements(sealed.replacements)
+    return snapshot
 
 
 def _download_for_security(
@@ -317,10 +378,7 @@ def _existing_qfq(
     for day in recent_dates:
         if day <= active.data_cutoff:
             dates_by_month[(day.year, day.month)].append(day)
-    references = {
-        (int(Path(item.relative_path).parts[1]), int(Path(item.relative_path).parts[2])): item
-        for item in active.partitions
-    }
+    references = {_partition_month(item): item for item in active.partitions}
     for (year, month), dates in dates_by_month.items():
         reference = references.get((year, month))
         if reference is None:
@@ -388,14 +446,7 @@ def _prepare_pending(
     active: HistoryActiveSnapshot | None,
     resume: bool,
 ) -> _PendingPartitions:
-    active_by_month = (
-        {
-            (int(Path(item.relative_path).parts[1]), int(Path(item.relative_path).parts[2])): item
-            for item in active.partitions
-        }
-        if active is not None
-        else {}
-    )
+    active_by_month = {_partition_month(item): item for item in active.partitions} if active is not None else {}
     paths: dict[tuple[int, int], Path] = {}
     for year, month in route_history_months(dates[0], dates[-1]):
         path = root / "partitions" / f"{year:04d}" / f".{month:02d}.pending.sqlite3"
@@ -450,26 +501,99 @@ def _seal_pending(
     root: Path,
     pending: _PendingPartitions,
     progress: HistorySyncProgressPort | None = None,
-) -> tuple[HistorySnapshotPartition, ...]:
+) -> _SealedPartitions:
     references = []
+    replacements: list[_PartitionReplacement] = []
     total = len(pending.paths)
-    for index, ((year, month), path) in enumerate(sorted(pending.paths.items())):
-        current_item = f"{year:04d}-{month:02d}"
-        _publish_progress(progress, "sealing_partitions", "started", (index, total), current_item)
-        if path.is_file():
-            candidate = path.with_name(f".{month:02d}.seal.sqlite3")
-            _remove_sqlite(candidate)
-            _backup_database(path, candidate)
-            reference = SQLiteHistoryMonthPartitionRepository(candidate, year, month).seal()
-        else:
-            existing_reference = pending.active_by_month.get((year, month))
-            if existing_reference is None:
-                raise RuntimeError("history_snapshot_month_missing")
-            reference = existing_reference
-        SQLiteHistoryMonthPartitionRepository.verify(root / reference.relative_path, reference)
-        references.append(reference)
-        _publish_progress(progress, "sealing_partitions", "completed", (index + 1, total), current_item)
-    return tuple(references)
+    try:
+        for index, ((year, month), path) in enumerate(sorted(pending.paths.items())):
+            current_item = f"{year:04d}-{month:02d}"
+            _publish_progress(progress, "sealing_partitions", "started", (index, total), current_item)
+            if path.is_file():
+                candidate = path.with_name(f".{month:02d}.seal.sqlite3")
+                _remove_sqlite(candidate)
+                _backup_database(path, candidate)
+                destination = root / "partitions" / f"{year:04d}" / f"{month:02d}.sqlite3"
+                replacement = _create_partition_rollback(destination)
+                if replacement is not None:
+                    replacements.append(replacement)
+                reference = SQLiteHistoryMonthPartitionRepository(candidate, year, month).seal()
+            else:
+                existing_reference = pending.active_by_month.get((year, month))
+                if existing_reference is None:
+                    raise RuntimeError("history_snapshot_month_missing")
+                reference = existing_reference
+            SQLiteHistoryMonthPartitionRepository.verify(root / reference.relative_path, reference)
+            references.append(reference)
+            _publish_progress(progress, "sealing_partitions", "completed", (index + 1, total), current_item)
+    except BaseException:
+        _restore_partition_replacements(tuple(replacements))
+        raise
+    return _SealedPartitions(tuple(references), tuple(replacements))
+
+
+def _create_partition_rollback(destination: Path) -> _PartitionReplacement | None:
+    if not destination.is_file():
+        return None
+    rollback = destination.with_name(f".{destination.stem}.rollback.sqlite3")
+    pending = rollback.with_suffix(f"{rollback.suffix}.pending")
+    pending.unlink(missing_ok=True)
+    shutil.copyfile(destination, pending)
+    _fsync_file(pending)
+    os.replace(pending, rollback)
+    _fsync_directory(destination.parent)
+    return _PartitionReplacement(destination, rollback)
+
+
+def _recover_partition_replacements(root: Path, active: HistoryActiveSnapshot | None) -> None:
+    partition_root = root / "partitions"
+    for pending in partition_root.glob("*/*.rollback.sqlite3.pending"):
+        pending.unlink(missing_ok=True)
+    replacements = tuple(
+        _PartitionReplacement(path.with_name(f"{path.name[1:3]}.sqlite3"), path)
+        for path in sorted(partition_root.glob("*/.??.rollback.sqlite3"))
+    )
+    if not replacements:
+        return
+    if active is None:
+        raise RuntimeError("history_partition_recovery_failed")
+    references = {root / item.relative_path: item for item in active.partitions}
+    for replacement in replacements:
+        reference = references.get(replacement.destination)
+        if reference is None:
+            raise RuntimeError("history_partition_recovery_failed")
+        if _partition_matches(replacement.destination, reference):
+            replacement.rollback.unlink(missing_ok=True)
+            continue
+        if not _partition_matches(replacement.rollback, reference):
+            raise RuntimeError("history_partition_recovery_failed")
+        os.replace(replacement.rollback, replacement.destination)
+        _fsync_directory(replacement.destination.parent)
+
+
+def _partition_matches(path: Path, reference: HistorySnapshotPartition) -> bool:
+    try:
+        SQLiteHistoryMonthPartitionRepository.verify(path, reference)
+    except HistoryMonthPartitionError:
+        return False
+    return True
+
+
+def _restore_partition_replacements(replacements: tuple[_PartitionReplacement, ...]) -> None:
+    for replacement in reversed(replacements):
+        if not replacement.rollback.is_file():
+            raise RuntimeError("history_partition_rollback_missing")
+        os.replace(replacement.rollback, replacement.destination)
+        _fsync_directory(replacement.destination.parent)
+
+
+def _discard_partition_replacements(replacements: tuple[_PartitionReplacement, ...]) -> None:
+    for replacement in replacements:
+        try:
+            replacement.rollback.unlink(missing_ok=True)
+            _fsync_directory(replacement.destination.parent)
+        except OSError:
+            pass
 
 
 def _publish_snapshot(
@@ -503,6 +627,24 @@ def _remove_pending(pending: _PendingPartitions) -> None:
 def _remove_sqlite(path: Path) -> None:
     for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
         candidate.unlink(missing_ok=True)
+
+
+def _fsync_file(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _control_identities(
@@ -575,6 +717,17 @@ def _full_refresh_codes(
         for item in universe.securities
         if item.code in previous_by_code and item != previous_by_code[item.code]
     )
+
+
+def _latest_completed_daily_date(observed_at: datetime) -> date:
+    if observed_at.time() >= _BAOSTOCK_DAILY_READY:
+        return observed_at.date()
+    return observed_at.date() - timedelta(days=1)
+
+
+def _partition_month(reference: HistorySnapshotPartition) -> tuple[int, int]:
+    path = Path(reference.relative_path)
+    return int(path.parts[1]), int(path.stem)
 
 
 def _sync_identity(

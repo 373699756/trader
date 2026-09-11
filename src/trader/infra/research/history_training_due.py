@@ -180,7 +180,7 @@ def _revised_dates_since_bundle(
 
 def _partition_month(relative_path: str) -> tuple[int, int]:
     parts = PurePosixPath(relative_path).parts
-    return int(parts[1]), int(parts[2])
+    return int(parts[1]), int(PurePosixPath(parts[2]).stem)
 
 
 def _active_bundle(training_root: Path) -> tuple[ActiveTomorrowBundle | None, bool]:

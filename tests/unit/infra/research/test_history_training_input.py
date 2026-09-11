@@ -118,7 +118,7 @@ def test_revision_detection_compares_semantic_rows_only_in_changed_months(
         "a" * 64,
         "b" * 64,
         "c" * 64,
-        (HistorySnapshotPartition(f"partitions/2026/09/{'d' * 64}.sqlite3", "d" * 64, 1),),
+        (HistorySnapshotPartition("partitions/2026/09.sqlite3", "d" * 64, 1),),
     )
     active = HistoryActiveSnapshot(
         2,
@@ -127,7 +127,7 @@ def test_revision_detection_compares_semantic_rows_only_in_changed_months(
         "a" * 64,
         "b" * 64,
         "c" * 64,
-        (HistorySnapshotPartition(f"partitions/2026/09/{'e' * 64}.sqlite3", "e" * 64, 1),),
+        (HistorySnapshotPartition("partitions/2026/09.sqlite3", "e" * 64, 1),),
     )
 
     class _Archive:
