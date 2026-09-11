@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from trader.domain.research.baostock_daily import BaoStockCalendar, BaoStockDailySpec, BaoStockSecurity
-from trader.infra.research.baostock_gateway import BaoStockRowGateway, _result_rows
+from trader.infra.research.baostock_gateway import BaoStockRowGateway, _result_rows, qfq_source_windows
 from trader.infra.research.baostock_session import RateLimitedBaoStockSdk, login_baostock
 
 
@@ -159,6 +159,15 @@ def test_gateway_uses_real_historical_code_for_qfq_before_code_identity_change()
         ("sz.000043", "2", "2019-06-05", "2019-06-05"),
         ("sz.001914", "2", "2019-06-06", "2019-06-06"),
     ]
+
+
+def test_qfq_source_windows_follow_the_confirmed_001872_code_change() -> None:
+    dates = (date(2018, 12, 25), date(2018, 12, 26))
+
+    assert qfq_source_windows("sz.001872", dates) == (
+        ("sz.000022", (date(2018, 12, 25),)),
+        ("sz.001872", (date(2018, 12, 26),)),
+    )
 
 
 def test_gateway_fetches_missing_training_facts_without_redownloading_qfq() -> None:

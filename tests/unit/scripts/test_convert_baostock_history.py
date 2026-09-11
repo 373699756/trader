@@ -4,13 +4,21 @@ import hashlib
 import json
 import sqlite3
 from datetime import date
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 import pytest
 
 from scripts import convert_baostock_history as converter
-from trader.infra.research.baostock_gap_supplier import BaoStockGapRecord, BaoStockGapResult
+from trader.domain.research.baostock_daily import BaoStockDailyCell, BaoStockDailySide
+from trader.domain.research.history_monthly import HistoryMonthlyRevision
+from trader.infra.research.baostock_gap_supplier import (
+    BaoStockGapRecord,
+    BaoStockGapResult,
+    BaoStockGapUnavailable,
+)
 from trader.infra.research.history_control_repository import HistoryControlError, SQLiteHistoryControlRepository
+from trader.infra.research.history_month_archive import SQLiteHistoryMonthlyArchive
 from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
 from trader.infra.research.history_training_input import SQLiteHistoryTrainingInputArchive
 
@@ -45,19 +53,19 @@ def _side(code: str, day: str, adjustment: str, close: float) -> dict[str, objec
     }
 
 
-def _cell(code: str, day: str, raw_close: float, qfq_close: float) -> str:
+def _cell(code: str, day: str, raw_close: float, qfq_close: float | None) -> str:
     return _json(
         {
             "code": code,
-            "qfq": _side(code, day, "qfq", qfq_close),
-            "status": "complete",
+            "qfq": _side(code, day, "qfq", qfq_close) if qfq_close is not None else None,
+            "status": "complete" if qfq_close is not None else "qfq_missing",
             "trade_date": day,
             "unadjusted": _side(code, day, "unadjusted", raw_close),
         }
     )
 
 
-def _create_parent(root: Path) -> Path:
+def _create_parent(root: Path, *, qfq_gap: bool = False) -> Path:
     shard = root / "shards/main-6000.sqlite3"
     shard.parent.mkdir(parents=True)
     calendar = {
@@ -140,7 +148,7 @@ def _create_parent(root: Path) -> Path:
             ("2026-08-31", 10.0, 9.0),
             ("2026-09-01", 11.0, 10.0),
         ):
-            payload = _cell("600001", day, raw_close, qfq_close)
+            payload = _cell("600001", day, raw_close, None if qfq_gap and day == "2026-09-01" else qfq_close)
             connection.execute(
                 "INSERT INTO daily_cells VALUES (?, ?, ?, ?)",
                 ("600001", day, payload, hashlib.sha256(payload.encode()).hexdigest()),
@@ -156,7 +164,7 @@ def _create_parent(root: Path) -> Path:
     return shard
 
 
-def _create_increment(root: Path) -> tuple[Path, Path]:
+def _create_increment(root: Path, *, qfq_gap: bool = False) -> tuple[Path, Path]:
     increment_root = root / "increments/fixture"
     shard = increment_root / "shards/increment-main-6000.sqlite3"
     shard.parent.mkdir(parents=True)
@@ -188,7 +196,6 @@ def _create_increment(root: Path) -> tuple[Path, Path]:
         )
         connection.execute("INSERT INTO archive_context VALUES (1, ?)", ("2" * 64,))
         records = (
-            ("600001", "2026-09-01", "daily_qfq", _json(_side("600001", "2026-09-01", "qfq", 10.5))),
             ("600001", "2026-09-02", "daily_raw", _json(_side("600001", "2026-09-02", "unadjusted", 12.0))),
             ("600001", "2026-09-02", "daily_qfq", _json(_side("600001", "2026-09-02", "qfq", 11.0))),
             ("600001", "2026-09-02", "is_st", _json({"code": "600001", "is_st": True, "trade_date": "2026-09-02"})),
@@ -207,6 +214,11 @@ def _create_increment(root: Path) -> tuple[Path, Path]:
                 ),
             ),
         )
+        if not qfq_gap:
+            records = (
+                ("600001", "2026-09-01", "daily_qfq", _json(_side("600001", "2026-09-01", "qfq", 10.5))),
+                *records,
+            )
         for code, day, family, payload in records:
             content_hash = hashlib.sha256(payload.encode()).hexdigest()
             connection.execute(
@@ -217,6 +229,11 @@ def _create_increment(root: Path) -> tuple[Path, Path]:
                 "INSERT INTO checkpoints VALUES (?, ?, ?, 'completed', NULL, ?)",
                 (code, day, family, content_hash),
             )
+        if qfq_gap:
+            connection.execute(
+                "INSERT INTO checkpoints VALUES (?, ?, ?, 'failed', ?, NULL)",
+                ("600001", "2026-09-01", "daily_qfq", "supplier_adjustment_unavailable"),
+            )
     manifest_path = increment_root / "manifest.json"
     manifest_path.write_text(
         _json(
@@ -224,7 +241,7 @@ def _create_increment(root: Path) -> tuple[Path, Path]:
                 "partitions": [
                     {
                         "checkpoint_count": 5,
-                        "record_count": 5,
+                        "record_count": 4 if qfq_gap else 5,
                         "relative_path": "shards/increment-main-6000.sqlite3",
                         "schema_version": "baostock_increment_partition",
                         "sha256": _sha256(shard),
@@ -239,10 +256,10 @@ def _create_increment(root: Path) -> tuple[Path, Path]:
     return manifest_path, shard
 
 
-def _create_source(root: Path) -> None:
+def _create_source(root: Path, *, qfq_gap: bool = False) -> None:
     root.mkdir(parents=True)
-    parent_shard = _create_parent(root)
-    increment_manifest, _increment_shard = _create_increment(root)
+    parent_shard = _create_parent(root, qfq_gap=qfq_gap)
+    increment_manifest, _increment_shard = _create_increment(root, qfq_gap=qfq_gap)
     manifest = {
         "audit": {"status": "historical_data_insufficient"},
         "calendar_hash": "3" * 64,
@@ -291,6 +308,13 @@ def _create_source(root: Path) -> None:
                 "missing_reason": None,
                 "missing_rows": 0,
                 "reusable_rows": 2,
+            },
+            {
+                "family": "daily_qfq",
+                "incremental_rows": 1 if qfq_gap else 2,
+                "missing_reason": "supplier_data_unavailable" if qfq_gap else None,
+                "missing_rows": 1 if qfq_gap else 0,
+                "reusable_rows": 1,
             },
             {
                 "family": "qualification",
@@ -426,12 +450,16 @@ def test_converter_streams_parent_and_active_increment_into_month_partitions(tmp
     calendar = next(item for item in state.calendars if item.content_hash == state.active_snapshot.calendar_hash)
     assert tuple(item.isoformat() for item in calendar.open_dates) == ("2026-09-01", "2026-09-02")
     assert state.active_snapshot.content_hash == summary.snapshot_hash
-    assert state.active_snapshot.sequence == 1
+    assert state.active_snapshot.sequence == 2
     assert state.active_snapshot.partitions[0].relative_path == "partitions/2026/09.sqlite3"
     for partition in state.active_snapshot.partitions:
         SQLiteHistoryMonthPartitionRepository.verify(target / partition.relative_path, partition)
     assert state.checkpoints[-1].state == "completed"
     assert state.due_states[-1].reason == "data_incomplete"
+
+    visible = SQLiteHistoryMonthlyArchive(target).read_day(date(2026, 9, 1), state.active_snapshot)
+    assert visible[0].cell.qfq is not None
+    assert visible[0].cell.qfq.close_price == 10.5
 
 
 def test_converter_is_idempotent_and_does_not_rewrite_completed_target(tmp_path: Path) -> None:
@@ -462,6 +490,186 @@ def test_converter_is_idempotent_and_does_not_rewrite_completed_target(tmp_path:
     assert first.snapshot_hash == second.snapshot_hash
     assert second.state == "already_current"
     assert _file_hashes(target) == before
+
+
+def test_converter_repairs_completed_qfq_gaps_with_official_factor_and_publishes_snapshot(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    _create_source(source, qfq_gap=True)
+    first = converter.convert_archive(
+        source,
+        target,
+        batch_size=2,
+        cache_mib=4,
+        throttle_seconds=0,
+        minimum_free_bytes=0,
+        apply_niceness=False,
+    )
+    source_before = _file_hashes(source)
+    previous_snapshot = SQLiteHistoryControlRepository(target / "control.sqlite3").load_state().active_snapshot
+    assert previous_snapshot is not None
+    assert first.remaining_downloadable_gaps == 1
+
+    calls = 0
+
+    def unavailable_provider(requests, **_kwargs):
+        nonlocal calls
+        calls += 1
+        assert [(item.code, item.family, item.trade_dates) for item in requests] == [
+            ("600001", "daily_qfq", (date(2026, 9, 1),))
+        ]
+        return BaoStockGapResult(
+            (),
+            (BaoStockGapUnavailable("600001", date(2026, 9, 1), "daily_qfq", "supplier_adjustment_unavailable"),),
+        )
+
+    summary = converter.convert_archive(
+        source,
+        target,
+        batch_size=2,
+        cache_mib=4,
+        throttle_seconds=0,
+        minimum_free_bytes=0,
+        apply_niceness=False,
+        supplement_missing=True,
+        supplement_provider=unavailable_provider,
+    )
+
+    assert calls == 1
+    assert summary.state == "supplemented"
+    assert summary.supplemented_rows == 1
+    assert summary.remaining_downloadable_gaps == 0
+    assert _file_hashes(source) == source_before
+    state = SQLiteHistoryControlRepository(target / "control.sqlite3").load_state()
+    assert state.active_snapshot is not None
+    assert state.active_snapshot.sequence == 3
+    assert state.active_snapshot.content_hash != previous_snapshot.content_hash
+    repair_source = next(
+        item for item in state.sources if item.content_hash == state.active_snapshot.source_identity_hash
+    )
+    assert repair_source.source == "baostock"
+    assert repair_source.supplier_contract == "sealed_parent_increment_official_qfq_repair"
+    revisions = SQLiteHistoryMonthlyArchive(target).read_day(date(2026, 9, 1), state.active_snapshot)
+    assert len(revisions) == 1
+    assert revisions[0].cell.qfq is not None
+    anchor_factor = (Decimal("11") / Decimal("12")).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+    expected_factor = (anchor_factor * Decimal("11.9") / Decimal("11")).quantize(
+        Decimal("0.000001"), rounding=ROUND_HALF_UP
+    )
+    assert revisions[0].cell.qfq.close_price == float(Decimal("11") * expected_factor)
+
+    replay = converter.convert_archive(
+        source,
+        target,
+        batch_size=2,
+        cache_mib=4,
+        throttle_seconds=0,
+        minimum_free_bytes=0,
+        apply_niceness=False,
+        supplement_missing=True,
+        supplement_provider=lambda *_args, **_kwargs: pytest.fail("completed repair must be idempotent"),
+    )
+    assert replay.state == "already_current"
+    assert replay.remaining_downloadable_gaps == 0
+
+
+def test_completed_qfq_repair_preserves_supplier_suspended_cell_status() -> None:
+    day = date(2026, 9, 1)
+    raw = BaoStockDailySide(
+        "600001",
+        day,
+        "unadjusted",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        "suspended",
+    )
+    current = HistoryMonthlyRevision(
+        2,
+        "main",
+        BaoStockDailyCell("600001", day, "qfq_missing", raw, None),
+        False,
+        None,
+        None,
+    )
+    payload = _side("600001", day.isoformat(), "qfq", 10.0)
+    payload.update(
+        {
+            "amount": None,
+            "close_price": None,
+            "high_price": None,
+            "low_price": None,
+            "open_price": None,
+            "trading_status": "suspended",
+            "volume": None,
+        }
+    )
+    repaired = converter._repaired_qfq_revision(
+        3,
+        current,
+        BaoStockGapRecord("600001", day, "daily_qfq", _json(payload)),
+    )
+
+    assert repaired.cell.status == "supplier_marked_suspended"
+    assert repaired.cell.qfq is not None
+    assert repaired.cell.qfq.trading_status == "suspended"
+
+
+def test_completed_qfq_repair_restores_active_partition_when_publication_fails(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    _create_source(source, qfq_gap=True)
+    converter.convert_archive(
+        source,
+        target,
+        batch_size=2,
+        cache_mib=4,
+        throttle_seconds=0,
+        minimum_free_bytes=0,
+        apply_niceness=False,
+    )
+    control = SQLiteHistoryControlRepository(target / "control.sqlite3")
+    snapshot_before = control.load_state().active_snapshot
+    assert snapshot_before is not None
+    partition = target / snapshot_before.partitions[0].relative_path
+    partition_hash_before = _sha256(partition)
+    control_hash_before = _sha256(target / "control.sqlite3")
+
+    def unavailable_provider(_requests, **_kwargs):
+        return BaoStockGapResult(
+            (),
+            (BaoStockGapUnavailable("600001", date(2026, 9, 1), "daily_qfq", "supplier_adjustment_unavailable"),),
+        )
+
+    with pytest.raises(RuntimeError, match="injected failure"):
+        converter.convert_archive(
+            source,
+            target,
+            batch_size=2,
+            cache_mib=4,
+            throttle_seconds=0,
+            minimum_free_bytes=0,
+            apply_niceness=False,
+            supplement_missing=True,
+            supplement_provider=unavailable_provider,
+            fault_injector=lambda stage: (
+                (_ for _ in ()).throw(RuntimeError("injected failure"))
+                if stage == "completed_qfq_partitions_replaced"
+                else None
+            ),
+        )
+
+    assert control.load_state().active_snapshot == snapshot_before
+    assert _sha256(partition) == partition_hash_before
+    assert _sha256(target / "control.sqlite3") == control_hash_before
+    assert not tuple(target.glob("partitions/*/.*.rollback.sqlite3"))
+    assert not tuple(target.glob("partitions/*/.*.pending.sqlite3"))
 
 
 def test_converter_renames_completed_hash_layout_and_rebuilds_current_snapshot(tmp_path: Path) -> None:

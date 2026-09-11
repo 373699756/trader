@@ -7,4 +7,4 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
-- [BaoStock converted-history layout normalization](docs/changelog/2026-09-11-baostock-history-layout-normalization.md)
+- [BaoStock QFQ gap repair](docs/changelog/2026-09-11-baostock-qfq-gap-repair.md)

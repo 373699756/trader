@@ -24,10 +24,12 @@ from contextlib import AbstractContextManager, closing
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from datetime import time as datetime_time
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
-from typing import Any, cast
+from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo
 
+from trader.domain.research.baostock_daily import BaoStockDailyCell, BaoStockDailySide
 from trader.domain.research.history_control import (
     HistoryActiveSnapshot,
     HistoryCalendarIdentity,
@@ -42,6 +44,7 @@ from trader.domain.research.history_control import (
 from trader.domain.research.history_monthly import HistoryMonthlyRevision
 from trader.infra.research.baostock_gap_supplier import (
     BaoStockGapFamily,
+    BaoStockGapRecord,
     BaoStockGapRequest,
     BaoStockGapResult,
     BaoStockGapSupplierError,
@@ -60,6 +63,19 @@ from trader.infra.research.history_month_codec import (
 from trader.infra.research.history_month_partition import (
     HistoryMonthPartitionError,
     SQLiteHistoryMonthPartitionRepository,
+)
+from trader.infra.research.history_sync_runtime import (
+    _backup_database,
+    _discard_partition_replacements,
+    _PendingPartitions,
+    _publish_snapshot,
+    _recover_partition_replacements,
+    _restore_partition_replacements,
+    _seal_pending,
+    _write_revisions,
+)
+from trader.infra.research.history_sync_runtime import (
+    _remove_pending as _remove_sync_pending,
 )
 
 DEFAULT_SOURCE = Path("data/history/baostock-daily/sessions-2000")
@@ -838,7 +854,10 @@ def _payload_json(value: object, label: str) -> str | None:
 
 
 def _record_hash(record: DailyRecord) -> str:
-    return cast(str, _monthly_revision(record).revision_id)
+    value = _monthly_revision(record).revision_id
+    if not isinstance(value, str):
+        raise ConversionError("converted history revision identity is invalid")
+    return value
 
 
 def _monthly_revision(record: DailyRecord) -> HistoryMonthlyRevision:
@@ -1517,6 +1536,7 @@ def _finalize_control(
     source: SourceArchive,
     all_dates: Sequence[str],
     results: Sequence[PartitionResult],
+    snapshot_sequence: int,
 ) -> tuple[str, tuple[str, ...]]:
     active_dates = tuple(sorted(set(all_dates))[-source.sessions :])
     if not active_dates or active_dates[-1] != source.source_cutoff:
@@ -1548,7 +1568,7 @@ def _finalize_control(
     )
     label_cutoff = calendar.open_dates[-2] if len(calendar.open_dates) > 1 else calendar.open_dates[-1]
     snapshot = HistoryActiveSnapshot(
-        1,
+        snapshot_sequence,
         cutoff,
         label_cutoff,
         calendar.content_hash,
@@ -1561,7 +1581,7 @@ def _finalize_control(
     identity_suffix = source.source_fingerprint[:24]
     checkpoint = HistorySyncCheckpoint(
         f"conversion.{identity_suffix}",
-        1,
+        snapshot_sequence,
         "completed",
         observed_at,
         len(results),
@@ -1673,6 +1693,498 @@ def _read_completed_summary(
         raise
     except (HistoryControlError, StopIteration, TypeError, sqlite3.DatabaseError) as exc:
         raise ConversionError("existing target control database is invalid") from exc
+
+
+def _read_completed_metadata(
+    target: Path,
+    source: SourceArchive,
+    batch_size: int,
+    cache_mib: int,
+    throttle_ms: int,
+    *,
+    remaining_gaps: int,
+) -> ConversionSummary | None:
+    control_path = target / "control.sqlite3"
+    if not control_path.is_file():
+        return None
+    try:
+        state = SQLiteHistoryControlRepository(control_path).load_state()
+        snapshot = state.active_snapshot
+        if snapshot is None:
+            return None
+        identity = next(item for item in state.sources if item.content_hash == snapshot.source_identity_hash)
+        if identity.dataset != f"legacy_daily.{source.source_fingerprint}":
+            raise ConversionError("target already exists for a different source archive")
+        calendar = next(item for item in state.calendars if item.content_hash == snapshot.calendar_hash)
+        raw_coverage = next(item for item in source.field_coverage if item[0] == "daily_raw")
+        return ConversionSummary(
+            "already_current",
+            len(snapshot.partitions),
+            sum(item.row_count for item in snapshot.partitions),
+            raw_coverage[1] + raw_coverage[2],
+            len(calendar.open_dates),
+            snapshot.data_cutoff.isoformat(),
+            snapshot.content_hash,
+            batch_size,
+            cache_mib,
+            throttle_ms,
+            0,
+            remaining_gaps,
+        )
+    except ConversionError:
+        raise
+    except (HistoryControlError, StopIteration, TypeError) as exc:
+        raise ConversionError("existing target control metadata is invalid") from exc
+
+
+def _source_failed_qfq_requests(source: SourceArchive, cache_mib: int) -> tuple[BaoStockGapRequest, ...]:
+    grouped: dict[str, set[date]] = {}
+    try:
+        for partition in source.increment_partitions:
+            with closing(_connect(partition.path, cache_mib, read_only=True)) as connection:
+                rows = connection.execute(
+                    "SELECT code, trade_date FROM checkpoints WHERE field_family='daily_qfq' "
+                    "AND state='failed' AND error_code='supplier_adjustment_unavailable' "
+                    "ORDER BY code, trade_date"
+                )
+                for code_value, day_value in rows:
+                    code = cast(str, code_value)
+                    grouped.setdefault(code, set()).add(date.fromisoformat(cast(str, day_value)))
+    except (sqlite3.DatabaseError, TypeError, ValueError) as exc:
+        raise ConversionError("source qfq failure checkpoints are unreadable") from exc
+    return tuple(BaoStockGapRequest(code, "daily_qfq", tuple(sorted(days))) for code, days in sorted(grouped.items()))
+
+
+def _fetch_completed_gaps(
+    requests: Sequence[BaoStockGapRequest],
+    cancellation: _Cancellation,
+    progress_sink: ProgressSink | None,
+    provider: SupplementProvider,
+) -> BaoStockGapResult:
+    progress = _ProgressTracker("已发布归档补缺核验", len(requests), progress_sink)
+    requested_keys = {(item.code, day, item.family) for item in requests for day in item.trade_dates}
+    completed = 0
+
+    def report(value: int, _total: int, current: str) -> None:
+        nonlocal completed
+        progress.advance(value - completed, f"请求={current}", force=value == len(requests))
+        completed = value
+
+    try:
+        fetched = provider(
+            requests,
+            cancel_requested=lambda: cancellation.requested,
+            progress=report,
+        )
+    except BaoStockGapSupplierError as exc:
+        raise ConversionError("completed archive qfq audit failed") from exc
+    result_keys = {(item.code, item.trade_date, item.family) for item in fetched.records}
+    unavailable_keys = {(item.code, item.trade_date, item.family) for item in fetched.unavailable}
+    if result_keys | unavailable_keys != requested_keys:
+        raise ConversionError("completed archive gap result does not match requested identities")
+    if any(item.reason != "supplier_adjustment_unavailable" for item in fetched.unavailable):
+        raise ConversionError("completed archive contains a qfq gap without an official reconstruction basis")
+    return fetched
+
+
+def _latest_revisions_for_codes(
+    target: Path,
+    snapshot: HistoryActiveSnapshot,
+    codes: Sequence[str],
+    first_date: date,
+    cache_mib: int,
+) -> tuple[dict[str, tuple[HistoryMonthlyRevision, ...]], int]:
+    grouped: dict[str, list[HistoryMonthlyRevision]] = {code: [] for code in codes}
+    maximum_sequence = max(snapshot.sequence, 2)
+    placeholders = ",".join("?" for _item in codes)
+    parameters = (*codes, first_date.isoformat())
+    for reference in snapshot.partitions:
+        parts = PurePosixPath(reference.relative_path).parts
+        partition_month = date(int(parts[1]), int(PurePosixPath(parts[2]).stem), 1)
+        if partition_month < first_date.replace(day=1):
+            continue
+        path = _safe_child(target, reference.relative_path, "active partition")
+        with closing(_connect(path, cache_mib, read_only=True)) as connection:
+            rows = connection.execute(
+                "SELECT records.payload_json FROM daily_observations AS observations "
+                "JOIN daily_records AS records ON records.trade_date=observations.trade_date "
+                "AND records.code=observations.code AND records.revision_id=observations.revision_id "
+                f"WHERE observations.code IN ({placeholders}) AND observations.trade_date>=? "
+                "AND observations.sync_sequence=(SELECT MAX(candidate.sync_sequence) "
+                "FROM daily_observations AS candidate WHERE candidate.trade_date=observations.trade_date "
+                "AND candidate.code=observations.code) ORDER BY observations.code, observations.trade_date",
+                parameters,
+            )
+            for (payload_json,) in rows:
+                try:
+                    revision = decode_history_monthly_revision(cast(str, payload_json))
+                except (TypeError, ValueError) as exc:
+                    raise ConversionError("active monthly revision is unreadable during qfq repair") from exc
+                grouped[revision.code].append(revision)
+        _remove_empty_sqlite_sidecars(path)
+    return {code: tuple(values) for code, values in grouped.items()}, maximum_sequence
+
+
+_QFQ_FACTOR_QUANTUM = Decimal("0.000001")
+
+
+def _side_factor(side: BaoStockDailySide, raw: BaoStockDailySide) -> Decimal:
+    if side.close_price is None or raw.close_price is None or side.close_price <= 0 or raw.close_price <= 0:
+        raise ConversionError("qfq reconstruction anchor has no positive close price")
+    try:
+        return (Decimal(str(side.close_price)) / Decimal(str(raw.close_price))).quantize(
+            _QFQ_FACTOR_QUANTUM,
+            rounding=ROUND_HALF_UP,
+        )
+    except (InvalidOperation, ZeroDivisionError) as exc:
+        raise ConversionError("qfq reconstruction anchor factor is invalid") from exc
+
+
+def _scaled_price(value: float | None, factor: Decimal) -> float | None:
+    return None if value is None else float(Decimal(str(value)) * factor)
+
+
+def _reconstructed_qfq_payload(revision: HistoryMonthlyRevision, factor: Decimal) -> str:
+    raw = revision.cell.unadjusted
+    if raw is None:
+        raise ConversionError("qfq reconstruction requires the same-day BaoStock raw side")
+    side = BaoStockDailySide(
+        revision.code,
+        revision.trade_date,
+        "qfq",
+        _scaled_price(raw.open_price, factor),
+        _scaled_price(raw.high_price, factor),
+        _scaled_price(raw.low_price, factor),
+        _scaled_price(raw.close_price, factor),
+        raw.volume,
+        raw.amount,
+        None,
+        None,
+        None,
+        raw.trading_status,
+    )
+    payload = {
+        "code": side.code,
+        "trade_date": side.trade_date.isoformat(),
+        "adjustment": side.adjustment,
+        "open_price": side.open_price,
+        "high_price": side.high_price,
+        "low_price": side.low_price,
+        "close_price": side.close_price,
+        "volume": side.volume,
+        "amount": side.amount,
+        "preclose": side.preclose,
+        "pct_change": side.pct_change,
+        "turnover": side.turnover,
+        "trading_status": side.trading_status,
+    }
+    return _canonical_json(payload)
+
+
+def _reconstruct_unavailable_qfq(
+    revisions_by_code: dict[str, tuple[HistoryMonthlyRevision, ...]],
+    unavailable_keys: frozenset[tuple[str, date, str]],
+) -> tuple[BaoStockGapRecord, ...]:
+    requested_by_code: dict[str, set[date]] = {}
+    for code, trade_date, family in unavailable_keys:
+        if family != "daily_qfq":
+            raise ConversionError("official factor reconstruction is restricted to qfq gaps")
+        requested_by_code.setdefault(code, set()).add(trade_date)
+    repaired: list[BaoStockGapRecord] = []
+    for code, requested_dates in sorted(requested_by_code.items()):
+        revisions = revisions_by_code.get(code, ())
+        by_date = {item.trade_date: index for index, item in enumerate(revisions)}
+        missing_indices: list[int] = []
+        for trade_date in sorted(requested_dates):
+            index = by_date.get(trade_date)
+            if index is None:
+                raise ConversionError("qfq gap has no same-day monthly row")
+            revision = revisions[index]
+            if revision.cell.unadjusted is None or revision.cell.qfq is not None:
+                raise ConversionError("qfq gap row is not eligible for official factor reconstruction")
+            missing_indices.append(index)
+        last_gap = max(missing_indices)
+        anchor_index = next(
+            (index for index in range(last_gap + 1, len(revisions)) if _is_qfq_anchor(revisions[index])),
+            None,
+        )
+        if anchor_index is None:
+            raise ConversionError("qfq gap has no subsequent BaoStock qfq anchor")
+        anchor = revisions[anchor_index]
+        assert anchor.cell.qfq is not None and anchor.cell.unadjusted is not None
+        factor = _side_factor(anchor.cell.qfq, anchor.cell.unadjusted)
+        requested_indices = set(missing_indices)
+        for index in range(anchor_index - 1, min(missing_indices) - 1, -1):
+            current_raw = revisions[index + 1].cell.unadjusted
+            previous = revisions[index]
+            previous_raw = previous.cell.unadjusted
+            if (
+                current_raw is None
+                or previous_raw is None
+                or current_raw.preclose is None
+                or previous_raw.close_price is None
+                or current_raw.preclose <= 0
+                or previous_raw.close_price <= 0
+            ):
+                raise ConversionError("qfq reconstruction chain lacks a positive BaoStock close or preclose")
+            factor = (factor * Decimal(str(current_raw.preclose)) / Decimal(str(previous_raw.close_price))).quantize(
+                _QFQ_FACTOR_QUANTUM, rounding=ROUND_HALF_UP
+            )
+            if previous.cell.qfq is not None:
+                factor = _side_factor(previous.cell.qfq, previous_raw)
+            if index in requested_indices:
+                repaired.append(
+                    BaoStockGapRecord(
+                        code,
+                        previous.trade_date,
+                        "daily_qfq",
+                        _reconstructed_qfq_payload(previous, factor),
+                    )
+                )
+    if {(item.code, item.trade_date, item.family) for item in repaired} != unavailable_keys:
+        raise ConversionError("official qfq reconstruction did not cover every unavailable identity")
+    return tuple(sorted(repaired))
+
+
+def _is_qfq_anchor(revision: HistoryMonthlyRevision) -> bool:
+    raw = revision.cell.unadjusted
+    qfq = revision.cell.qfq
+    return (
+        raw is not None
+        and qfq is not None
+        and raw.close_price is not None
+        and qfq.close_price is not None
+        and raw.close_price > 0
+        and qfq.close_price > 0
+    )
+
+
+def _repaired_qfq_revision(
+    sequence: int,
+    current: HistoryMonthlyRevision,
+    item: BaoStockGapRecord,
+) -> HistoryMonthlyRevision:
+    qfq_payload = _object(json.loads(item.payload_json), "repaired qfq payload")
+    trading_status = qfq_payload["trading_status"]
+    if trading_status not in {"trading", "suspended"}:
+        raise ConversionError("repaired qfq trading status is invalid")
+    qfq = BaoStockDailySide(
+        item.code,
+        item.trade_date,
+        "qfq",
+        cast(float | None, qfq_payload["open_price"]),
+        cast(float | None, qfq_payload["high_price"]),
+        cast(float | None, qfq_payload["low_price"]),
+        cast(float | None, qfq_payload["close_price"]),
+        cast(float | None, qfq_payload["volume"]),
+        cast(float | None, qfq_payload["amount"]),
+        None,
+        None,
+        None,
+        trading_status,
+    )
+    status: Literal["complete", "supplier_marked_suspended"] = (
+        "supplier_marked_suspended" if qfq.trading_status == "suspended" else "complete"
+    )
+    cell = BaoStockDailyCell(item.code, item.trade_date, status, current.cell.unadjusted, qfq)
+    return HistoryMonthlyRevision(
+        sequence,
+        current.board,
+        cell,
+        current.is_st,
+        current.industry,
+        current.industry_classification,
+    )
+
+
+def _repair_completed_qfq_gaps(  # noqa: PLR0913
+    target: Path,
+    archive: SourceArchive,
+    batch_size: int,
+    cache_mib: int,
+    throttle_seconds: float,
+    cancellation: _Cancellation,
+    progress_sink: ProgressSink | None,
+    provider: SupplementProvider,
+    fault_injector: FaultInjector,
+) -> ConversionSummary:
+    control = SQLiteHistoryControlRepository(target / "control.sqlite3")
+    state = control.load_state()
+    active = state.active_snapshot
+    if active is None:
+        raise ConversionError("completed archive has no active snapshot")
+    _recover_partition_replacements(target, active)
+    source_requests = _source_failed_qfq_requests(archive, cache_mib)
+    expected_gap_count = next(item[3] for item in archive.field_coverage if item[0] == "daily_qfq")
+    if sum(len(item.trade_dates) for item in source_requests) != expected_gap_count:
+        raise ConversionError("source qfq failure checkpoints do not match sealed field coverage")
+    if not source_requests:
+        completed = _read_completed_metadata(
+            target,
+            archive,
+            batch_size,
+            cache_mib,
+            round(throttle_seconds * 1000),
+            remaining_gaps=0,
+        )
+        if completed is None:
+            raise ConversionError("completed archive disappeared during qfq repair")
+        return completed
+    codes = tuple(sorted({item.code for item in source_requests}))
+    first_date = min(day for item in source_requests for day in item.trade_dates)
+    revisions_by_code, maximum_sequence = _latest_revisions_for_codes(
+        target,
+        active,
+        codes,
+        first_date,
+        cache_mib,
+    )
+    missing_by_code: dict[str, list[date]] = {}
+    for request in source_requests:
+        current_by_date = {item.trade_date: item for item in revisions_by_code.get(request.code, ())}
+        for trade_date in request.trade_dates:
+            current = current_by_date.get(trade_date)
+            if current is None:
+                raise ConversionError("source qfq failure is absent from the completed archive")
+            if current.cell.qfq is None:
+                missing_by_code.setdefault(request.code, []).append(trade_date)
+    requests = tuple(
+        BaoStockGapRequest(code, "daily_qfq", tuple(days)) for code, days in sorted(missing_by_code.items())
+    )
+    if not requests:
+        completed = _read_completed_metadata(
+            target,
+            archive,
+            batch_size,
+            cache_mib,
+            round(throttle_seconds * 1000),
+            remaining_gaps=0,
+        )
+        if completed is None:
+            raise ConversionError("completed archive disappeared during qfq repair")
+        return completed
+    fetched = _fetch_completed_gaps(requests, cancellation, progress_sink, provider)
+    unavailable_keys = frozenset((item.code, item.trade_date, item.family) for item in fetched.unavailable)
+    reconstructed = _reconstruct_unavailable_qfq(revisions_by_code, unavailable_keys)
+    complete_result = BaoStockGapResult(tuple((*fetched.records, *reconstructed)), ())
+    requested_keys = {(item.code, day, item.family) for item in requests for day in item.trade_dates}
+    if {(item.code, item.trade_date, item.family) for item in complete_result.records} != requested_keys:
+        raise ConversionError("completed archive qfq repair is incomplete")
+
+    sequence = maximum_sequence + 1
+    repaired_revisions: list[HistoryMonthlyRevision] = []
+    current_by_key = {
+        (revision.code, revision.trade_date): revision
+        for revisions in revisions_by_code.values()
+        for revision in revisions
+    }
+    for item in complete_result.records:
+        current = current_by_key.get((item.code, item.trade_date))
+        if current is None or current.cell.unadjusted is None or current.cell.qfq is not None:
+            raise ConversionError("completed archive qfq repair target changed during preparation")
+        try:
+            repaired_revisions.append(_repaired_qfq_revision(sequence, current, item))
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ConversionError(
+                f"repaired qfq payload violates the monthly archive contract: {item.code}:{item.trade_date}"
+            ) from exc
+
+    active_by_month = {
+        (
+            int(PurePosixPath(item.relative_path).parts[1]),
+            int(PurePosixPath(item.relative_path).stem),
+        ): item
+        for item in active.partitions
+    }
+    affected_months = sorted({(item.trade_date.year, item.trade_date.month) for item in repaired_revisions})
+    pending_paths = {
+        month: target / "partitions" / f"{month[0]:04d}" / f".{month[1]:02d}.pending.sqlite3"
+        for month in affected_months
+    }
+    pending = _PendingPartitions(
+        target, pending_paths, active_by_month, min(item.trade_date for item in repaired_revisions)
+    )
+    for month, path in pending_paths.items():
+        _remove_pending(path)
+        reference = active_by_month.get(month)
+        if reference is None:
+            raise ConversionError("qfq repair month is absent from the active snapshot")
+        _backup_database(target / reference.relative_path, path)
+    observed_at = datetime.now(_SHANGHAI)
+    old_source = next(item for item in state.sources if item.content_hash == active.source_identity_hash)
+    old_calendar = next(item for item in state.calendars if item.content_hash == active.calendar_hash)
+    old_universe = next(item for item in state.universes if item.content_hash == active.universe_hash)
+    source = HistorySourceIdentity(
+        "baostock",
+        old_source.dataset,
+        "sealed_parent_increment_official_qfq_repair",
+        observed_at,
+    )
+    calendar = HistoryCalendarIdentity(old_calendar.open_dates, source.content_hash)
+    universe = HistoryUniverseIdentity(old_universe.securities, source.content_hash)
+    sealed = None
+    try:
+        _write_revisions(pending, tuple(repaired_revisions))
+        fault_injector("completed_qfq_repair_prepared")
+        sealed = _seal_pending(target, pending)
+        replacements_by_month = {
+            (
+                int(PurePosixPath(item.relative_path).parts[1]),
+                int(PurePosixPath(item.relative_path).stem),
+            ): item
+            for item in sealed.references
+        }
+        references = tuple(replacements_by_month.get(month, reference) for month, reference in active_by_month.items())
+        snapshot = HistoryActiveSnapshot(
+            sequence,
+            active.data_cutoff,
+            active.label_cutoff,
+            calendar.content_hash,
+            universe.content_hash,
+            source.content_hash,
+            references,
+        )
+        fault_injector("completed_qfq_partitions_replaced")
+        _publish_snapshot(
+            control,
+            (source, calendar, universe),
+            snapshot,
+            HistorySyncCheckpoint(
+                f"conversion_qfq_repair.{snapshot.content_hash[:24]}",
+                sequence,
+                "completed",
+                observed_at,
+                len(repaired_revisions),
+                len(repaired_revisions),
+                None,
+            ),
+        )
+        fault_injector("completed_qfq_snapshot_published")
+    except BaseException:
+        if sealed is not None:
+            published = control.load_state().active_snapshot
+            if published is not None and "snapshot" in locals() and published.content_hash == snapshot.content_hash:
+                _discard_partition_replacements(sealed.replacements)
+            else:
+                _restore_partition_replacements(sealed.replacements)
+        raise
+    else:
+        _discard_partition_replacements(sealed.replacements)
+    finally:
+        _remove_sync_pending(pending)
+        for reference in (active_by_month[month] for month in affected_months):
+            _remove_sqlite_sidecars(target / reference.relative_path)
+    completed = _read_completed_metadata(
+        target,
+        archive,
+        batch_size,
+        cache_mib,
+        round(throttle_seconds * 1000),
+        remaining_gaps=0,
+    )
+    if completed is None or completed.remaining_downloadable_gaps:
+        raise ConversionError("published qfq repair did not produce a complete archive")
+    return replace(completed, state="supplemented", supplemented_rows=len(repaired_revisions))
 
 
 def _read_hash_layout_snapshot(target: Path, source_fingerprint: str, cache_mib: int) -> _HashLayoutSnapshot | None:
@@ -1953,6 +2465,11 @@ def _remove_empty_sqlite_sidecars(path: Path) -> None:
             pass
 
 
+def _remove_sqlite_sidecars(path: Path) -> None:
+    for candidate in (Path(f"{path}-wal"), Path(f"{path}-shm"), Path(f"{path}-journal")):
+        candidate.unlink(missing_ok=True)
+
+
 def _fsync_directory(path: Path) -> None:
     if os.name == "nt":
         return
@@ -2006,6 +2523,37 @@ def convert_archive(
     inject_fault = fault_injector or (lambda _stage: None)
     with _SourceLock(source / ".download.lock"), _Cancellation() as cancellation:
         archive = _load_source(source)
+        if supplement_missing:
+            downloadable_gaps = sum(
+                item[3] for item in archive.field_coverage if item[0] in DOWNLOADABLE_FIELD_FAMILIES
+            )
+            try:
+                completed_metadata = _read_completed_metadata(
+                    target,
+                    archive,
+                    batch_size,
+                    cache_mib,
+                    round(throttle_seconds * 1000),
+                    remaining_gaps=downloadable_gaps,
+                )
+            except ConversionError:
+                completed_metadata = None
+            if completed_metadata is not None:
+                try:
+                    with HistoryMaintenanceLock(target / ".maintenance.lock"):
+                        return _repair_completed_qfq_gaps(
+                            target,
+                            archive,
+                            batch_size,
+                            cache_mib,
+                            throttle_seconds,
+                            cancellation,
+                            progress_sink,
+                            supplement_provider or fetch_baostock_gaps,
+                            inject_fault,
+                        )
+                except HistoryMaintenanceAlreadyRunningError as exc:
+                    raise ConversionError("history maintenance is already running") from exc
         try:
             completed = _read_completed_summary(
                 target,
@@ -2039,8 +2587,24 @@ def convert_archive(
             )
             if completed is None:
                 raise ConversionError("normalized target is not a completed conversion") from None
-            return replace(completed, state="completed")
+            completed = replace(completed, state="completed")
         if completed is not None:
+            if supplement_missing and completed.remaining_downloadable_gaps:
+                try:
+                    with HistoryMaintenanceLock(target / ".maintenance.lock"):
+                        return _repair_completed_qfq_gaps(
+                            target,
+                            archive,
+                            batch_size,
+                            cache_mib,
+                            throttle_seconds,
+                            cancellation,
+                            progress_sink,
+                            supplement_provider or fetch_baostock_gaps,
+                            inject_fault,
+                        )
+                except HistoryMaintenanceAlreadyRunningError as exc:
+                    raise ConversionError("history maintenance is already running") from exc
             return completed
         if target.exists():
             raise ConversionError("target already exists and is not a completed conversion")
@@ -2122,7 +2686,13 @@ def convert_archive(
                 gap_requests = _missing_gap_requests(staging, results, cache_mib, progress_sink)
                 supplemented_rows = 0
                 remaining_gaps = sum(len(item.trade_dates) for item in gap_requests)
-            snapshot_hash, active_dates = _finalize_control(staging, archive, all_dates, results)
+            snapshot_hash, active_dates = _finalize_control(
+                staging,
+                archive,
+                all_dates,
+                results,
+                3 if supplemented_rows else 2,
+            )
             physical_rows = sum(item.physical_rows for item in results)
             active_rows = sum(item.active_rows for item in results)
         finally:

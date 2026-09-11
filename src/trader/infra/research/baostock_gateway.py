@@ -36,7 +36,10 @@ class _QfqCodeAlias:
     historical_effective_to: date
 
 
-_QFQ_CODE_ALIASES = (_QfqCodeAlias("sz.001914", "sz.000043", date(2019, 6, 6)),)
+_QFQ_CODE_ALIASES = (
+    _QfqCodeAlias("sz.001872", "sz.000022", date(2018, 12, 26)),
+    _QfqCodeAlias("sz.001914", "sz.000043", date(2019, 6, 6)),
+)
 
 
 @dataclass(frozen=True)
