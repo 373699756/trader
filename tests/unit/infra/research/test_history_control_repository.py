@@ -7,8 +7,8 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
-import trader.infra.research.history_control_repository as control_repository_module
 
+import trader.infra.research.history_control_repository as control_repository_module
 from trader.domain.research.history_control import (
     HistoryActiveSnapshot,
     HistoryCalendarIdentity,

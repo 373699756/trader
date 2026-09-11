@@ -77,20 +77,11 @@ def test_download_history_runs_the_typed_zero_argument_synchronization(
         "training_due": False,
         "training_due_reason": "data_incomplete",
     }
-    progress = json.loads(captured.err)
-    assert progress == {
-        "attempt": 1,
-        "call_elapsed_seconds": 5.0,
-        "completed_units": 0,
-        "current_item": None,
-        "elapsed_seconds": pytest.approx(0.0, abs=0.1),
-        "max_attempts": 1,
-        "percent": 0.0,
-        "schema_version": "history_sync_progress",
-        "stage": "supplier_calendar",
-        "state": "waiting",
-        "total_units": 1,
-    }
+    progress_lines = captured.err.splitlines()
+    assert progress_lines[0].startswith("00:00:00 | 交易日历 | 等待 | 调用 00:00:05")
+    assert progress_lines[1] == "00:00:00 | 同步完成"
+    assert "completed_units" not in captured.err
+    assert "total_units" not in captured.err
 
 
 def test_download_history_contract_exposes_an_immutable_typed_status() -> None:

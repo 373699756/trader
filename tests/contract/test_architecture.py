@@ -420,10 +420,10 @@ def test_history_sync_progress_stays_typed_until_the_entrypoint_projection() -> 
     assert "class HistorySyncProgress:" in contract
     assert "class HistorySyncProgressPort(Protocol):" in contract
     assert all("import json" not in source for source in (contract, supplier, runtime))
-    assert "import json" in projection
-    assert '"schema_version": "history_sync_progress"' in projection
-    assert '"stage": progress.stage' in projection
-    assert '"percent": round(percent, 2)' in projection
+    assert "import json" not in projection
+    assert "def publish_result(" in projection
+    assert "总进度" in projection
+    assert "尝试" in projection
     assert "file=sys.stderr" in projection
     assert "flush=True" in projection
 

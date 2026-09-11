@@ -61,6 +61,10 @@ BaoStock 下载是独立研究命令，必须先安装 `trader-research-dashboar
 重构控制库、内容寻址月分片读取面和零参数同步已经交付：命令自动执行初次最近 2000 日、日更缺口、最近 5 日
 回读或返回 `already_current`，失败与取消不改变上一 active snapshot；它不会被启动、`check`、Web 或
 `train-tomorrow` 隐式调用。
+交互式下载进度固定在 stderr 显示紧凑单行：累计和调用耗时使用 `HH:MM:SS`，股票和月分片使用
+`n/m (百分比)`，供应商重试使用“尝试 n/m”；日历、行业等子阶段只显示真实当前项，不再把内部 `0/1`
+占位冒充整体进度。失败摘要保留最后一个具体供应商阶段、当前日期或股票和稳定错误码；最终 stdout JSON 保持不变，
+供脚本消费。
 
 历史自动化固定为“每日自动同步、到期只提醒”。`install-history-automation` 会先显示待写入的当前用户任务并要求
 确认：Linux 安装带 `Persistent=true` 的 systemd user timer，Windows 安装带 `StartWhenAvailable` 的任务，

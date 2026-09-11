@@ -7,4 +7,4 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
-- [Cross-platform history automation and due reminders](docs/changelog/2026-09-11-history-automation.md)
+- [Compact history download progress and failure diagnostics](docs/changelog/2026-09-11-compact-history-progress.md)

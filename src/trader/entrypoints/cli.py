@@ -191,6 +191,7 @@ def _run_history_download() -> int:
     progress = StderrHistorySyncProgress()
     with BaoStockHistorySupplier(configuration, progress=progress) as supplier:
         status = run_history_sync(configuration, supplier, progress=progress)
+    progress.publish_result(status)
     print(json.dumps(project_history_maintenance_status(status), ensure_ascii=False, sort_keys=True))
     return 0 if status.state in {"completed", "already_current"} else 1
 
