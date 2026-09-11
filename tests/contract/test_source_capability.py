@@ -9,7 +9,7 @@ REPORT = ROOT / "docs" / "reports" / "v2-p1-source-capability-baseline.md"
 BOOTSTRAP = ROOT / "src" / "trader" / "bootstrap.py"
 GATEWAY = ROOT / "src" / "trader" / "infra" / "market_data" / "service" / "gateway.py"
 COORDINATOR = ROOT / "src" / "trader" / "infra" / "market_data" / "service" / "source_coordinator.py"
-SETTINGS_RUNTIME = ROOT / "src" / "trader" / "infra" / "settings" / "runtime.py"
+SETTINGS_RUNTIME = ROOT / "src" / "trader" / "infra" / "settings" / "runtime_loader.py"
 MARKET_DIR = ROOT / "src" / "trader" / "infra" / "market_data"
 MARKET_PORTS = ROOT / "src" / "trader" / "application" / "ports" / "market.py"
 DATA_PLANE_PORTS = ROOT / "src" / "trader" / "application" / "ports" / "data_plane.py"
@@ -71,5 +71,5 @@ def test_source_contract_freezes_unified_read_and_persisted_calendar_ports() -> 
     data_plane_classes = {node.name for node in ast.walk(data_plane_tree) if isinstance(node, ast.ClassDef)}
 
     assert "DataPlaneReadPort" in market_classes
-    assert "DataPlaneCoverage" in market_classes
+    assert "DataPlaneCoverageSummary" in market_classes
     assert "TradingCalendarRecord" in data_plane_classes

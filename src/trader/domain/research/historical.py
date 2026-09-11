@@ -1,4 +1,4 @@
-"""Immutable Historical extraction interface values shared with the future E1 adapter."""
+"""Immutable Historical extraction interface values shared with the point-in-time research adapter."""
 
 from __future__ import annotations
 

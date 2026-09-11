@@ -10,7 +10,7 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Protocol
 
-from trader.application.ports.types import JsonObject
+from trader.application.ports.json_values import JsonObject
 from trader.domain.market.epochs import CandidateQuoteEpoch, DailyFeaturePack, MarketEpoch, ResearchEpoch
 from trader.domain.market.models import FeatureSnapshot, LiveQuote
 from trader.domain.outcome.models import OutcomeBar
@@ -119,7 +119,7 @@ class DataPlaneFailure:
 
 
 @dataclass(frozen=True)
-class DataPlaneCoverage:
+class DataPlaneCoverageSummary:
     potential_executable_count: int = 0
     security_master_covered_count: int = 0
     candidate_count: int = 0
@@ -159,7 +159,7 @@ class MarketDataPlaneSnapshot:
     candidate_quotes: CandidateQuoteEpoch | None
     research: ResearchEpoch | None
     failures: Mapping[DataPlaneChannel, DataPlaneFailure] = field(default_factory=lambda: MappingProxyType({}))
-    coverage: DataPlaneCoverage = field(default_factory=DataPlaneCoverage)
+    coverage: DataPlaneCoverageSummary = field(default_factory=DataPlaneCoverageSummary)
 
     def __post_init__(self) -> None:
         if self.market is not None:

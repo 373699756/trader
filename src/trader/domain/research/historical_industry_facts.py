@@ -11,8 +11,8 @@ from datetime import date, datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
 
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.baostock_daily import BaoStockBoard
-from trader.domain.research.h1_point_in_time import canonical_hash
 
 HistoricalIndustryStatus = Literal["qualified", "historical_data_insufficient"]
 HistoricalIndustryCohort = Literal["old", "new", "delisted"]
@@ -49,7 +49,7 @@ class HistoricalIndustrySourceContract:
         ):
             raise ValueError("historical industry source contract is invalid")
         object.__setattr__(self, "source_version", self.source_version.strip())
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
     @property
     def capabilities(self) -> tuple[bool, ...]:
@@ -100,7 +100,7 @@ class HistoricalIndustryFact:
         object.__setattr__(self, "source_version", self.source_version.strip())
         object.__setattr__(self, "industry", self.industry.strip())
         object.__setattr__(self, "classification", self.classification.strip())
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -158,7 +158,7 @@ class MergedHistoricalIndustryFact:
             raise ValueError("merged historical industry fact is invalid")
         object.__setattr__(self, "sources", sources)
         object.__setattr__(self, "evidence_hashes", evidence)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -251,8 +251,8 @@ class HistoricalIndustrySourceAudit:
         object.__setattr__(self, "stocks", stocks)
         object.__setattr__(self, "fact_hashes", fact_hashes)
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "dataset_hash", canonical_hash((self.contract.content_hash, fact_hashes)))
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "dataset_hash", canonical_artifact_hash((self.contract.content_hash, fact_hashes)))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
     @property
     def source(self) -> str:
@@ -305,8 +305,8 @@ class HistoricalIndustryDatasetReport:
         object.__setattr__(self, "sources", sources)
         object.__setattr__(self, "merged_fact_hashes", merged_fact_hashes)
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "dataset_hash", canonical_hash(tuple(item.dataset_hash for item in sources)))
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "dataset_hash", canonical_artifact_hash(tuple(item.dataset_hash for item in sources)))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
     @property
     def eligible_codes(self) -> tuple[str, ...]:

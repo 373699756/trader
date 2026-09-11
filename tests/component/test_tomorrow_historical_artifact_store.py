@@ -5,7 +5,7 @@ from dataclasses import replace
 
 import pytest
 
-from trader.application.research.tomorrow_historical_models import (
+from trader.application.research.tomorrow_historical_report import (
     TomorrowHistoricalGateMetrics,
     TomorrowHistoricalReport,
 )

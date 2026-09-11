@@ -6,11 +6,6 @@ from datetime import date
 
 import pytest
 
-from trader.application.research.replay_models import canonical_hash, canonical_json
-from trader.application.research.research_tomorrow_orchestrator import (
-    TomorrowResearchOrchestrator,
-    TomorrowResearchPrerequisite,
-)
 from trader.application.research.tomorrow_research_artifacts import (
     TomorrowResearchArtifactGraph,
     TomorrowResearchArtifactRef,
@@ -18,6 +13,11 @@ from trader.application.research.tomorrow_research_artifacts import (
     TomorrowResearchResourceProbe,
     TomorrowResearchStageHandoff,
 )
+from trader.application.research.tomorrow_research_orchestrator import (
+    TomorrowResearchOrchestrator,
+    TomorrowResearchPrerequisiteStatus,
+)
+from trader.domain.research.artifact_identity import canonical_artifact_hash, canonical_artifact_json
 from trader.infra.research.tomorrow_research_artifacts import (
     TomorrowResearchArtifactStore,
     TomorrowResearchArtifactStoreError,
@@ -34,8 +34,8 @@ def _handoff() -> TomorrowResearchStageHandoff:
 
 
 class _ReadyPrerequisite:
-    def inspect(self) -> TomorrowResearchPrerequisite:
-        return TomorrowResearchPrerequisite("ready", "9" * 64, ())
+    def inspect(self) -> TomorrowResearchPrerequisiteStatus:
+        return TomorrowResearchPrerequisiteStatus("ready", "9" * 64, ())
 
 
 def _development_handoff(
@@ -47,7 +47,9 @@ def _development_handoff(
         parent_graph_hash=graph.content_hash,
         artifacts=(
             TomorrowResearchArtifactRef("h1_coverage_audit", "h1_research_completion", "b" * 64, ("a" * 64,)),
-            TomorrowResearchArtifactRef("daily_close_c3_candidate", "daily_close_c3_candidate", "c" * 64, ("b" * 64,)),
+            TomorrowResearchArtifactRef(
+                "daily_close_model_selection", "daily_close_model_selection", "c" * 64, ("b" * 64,)
+            ),
             TomorrowResearchArtifactRef("filter_confirmation", "filter_confirmation", "d" * 64, ("a" * 64,)),
             TomorrowResearchArtifactRef("tomorrow_joint_candidate", "tomorrow_joint_candidate", "e" * 64, ("c" * 64,)),
         ),
@@ -96,8 +98,8 @@ def test_store_rejects_legacy_owner_even_when_payload_hash_is_valid(tmp_path) ->
     artifact = artifacts[0]
     assert isinstance(artifact, dict)
     artifact["owner"] = "h1_coverage"
-    payload["content_hash"] = canonical_hash(payload)
-    path.write_text(canonical_json(payload), encoding="utf-8")
+    payload["content_hash"] = canonical_artifact_hash(payload)
+    path.write_text(canonical_artifact_json(payload), encoding="utf-8")
 
     with pytest.raises(TomorrowResearchArtifactStoreError, match="invalid"):
         store.load_handoff("resource_probe")
@@ -135,7 +137,7 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
     )
     graph = graph.extend(confirmation.artifacts)
     model_payload = {"schema_version": "tomorrow_joint_candidate_model_artifact"}
-    model_hash = canonical_hash(model_payload)
+    model_hash = canonical_artifact_hash(model_payload)
     model_payload["content_hash"] = model_hash
     proxy = TomorrowResearchStageHandoff(
         stage="daily_close_proxy_holdout",
@@ -179,7 +181,7 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
     for handoff in (resource_probe, development, confirmation, proxy, point_in_time):
         store.seal_handoff(handoff)
     store.seal_evidence_partition(evidence, evidence_source)
-    store.seal_model(canonical_json(model_payload), model_hash)
+    store.seal_model(canonical_artifact_json(model_payload), model_hash)
 
     result = TomorrowResearchOrchestrator(store, _ReadyPrerequisite()).advance()
 
@@ -221,12 +223,12 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
 def test_model_document_rejects_tampering_before_it_can_enter_a_run(tmp_path) -> None:
     store = TomorrowResearchArtifactStore(tmp_path, available_disk_gb=lambda _path: 40.0)
     payload = {"schema_version": "tomorrow_joint_candidate_model_artifact"}
-    expected_hash = canonical_hash(payload)
+    expected_hash = canonical_artifact_hash(payload)
     payload["content_hash"] = expected_hash
     payload["unexpected"] = True
 
     with pytest.raises(TomorrowResearchArtifactStoreError, match="hash"):
-        store.seal_model(canonical_json(payload), expected_hash)
+        store.seal_model(canonical_artifact_json(payload), expected_hash)
 
 
 def test_store_stops_before_committing_when_host_disk_is_below_30gb(tmp_path) -> None:

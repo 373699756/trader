@@ -7,8 +7,8 @@ import re
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from trader.application.research.replay_models import canonical_hash
-from trader.domain.research.h1_point_in_time import H1Strategy
+from trader.domain.research.artifact_identity import canonical_artifact_hash
+from trader.domain.research.h1_point_in_time import ResearchStrategy
 from trader.domain.research.historical_residual_ledger import (
     HistoricalOutcomeRecord,
     HistoricalPredictionRecord,
@@ -25,16 +25,18 @@ class HistoricalResidualLedgerPort(Protocol):
 
     def append_outcomes(self, records: tuple[HistoricalOutcomeRecord, ...]) -> None: ...
 
-    def read_joined(self, strategy: H1Strategy, parent_split_hash: str) -> tuple[JoinedHistoricalResidual, ...]: ...
+    def read_joined(
+        self, strategy: ResearchStrategy, parent_split_hash: str
+    ) -> tuple[JoinedHistoricalResidual, ...]: ...
 
     def read_predictions(
-        self, strategy: H1Strategy, parent_split_hash: str
+        self, strategy: ResearchStrategy, parent_split_hash: str
     ) -> tuple[HistoricalPredictionRecord, ...]: ...
 
 
 @dataclass(frozen=True)
 class HistoricalResidualLedgerBatch:
-    strategy: H1Strategy
+    strategy: ResearchStrategy
     parent_split_hash: str
     status: Literal["label_pending", "residuals_ready"]
     prediction_records_received: int
@@ -59,7 +61,7 @@ class HistoricalResidualLedgerBatch:
             raise ValueError("historical residual batch schema is invalid")
         if self.terminal_holdout_opened or self.production_authority:
             raise ValueError("historical residual batch cannot open holdout or production")
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 class HistoricalResidualLedgerService:
@@ -68,7 +70,7 @@ class HistoricalResidualLedgerService:
 
     def append(
         self,
-        strategy: H1Strategy,
+        strategy: ResearchStrategy,
         parent_split_hash: str,
         predictions: tuple[HistoricalPredictionRecord, ...],
         outcomes: tuple[HistoricalOutcomeRecord, ...],

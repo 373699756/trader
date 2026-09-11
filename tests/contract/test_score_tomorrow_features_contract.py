@@ -9,7 +9,7 @@ def test_batch_two_contract_freezes_five_point_in_time_feature_families() -> Non
     strategy = (ROOT / "docs/01_评分逻辑.md").read_text(encoding="utf-8")
     domain = (ROOT / "src/trader/domain/research/tomorrow_features.py").read_text(encoding="utf-8")
     application = (ROOT / "src/trader/application/research/tomorrow_features.py").read_text(encoding="utf-8")
-    models = (ROOT / "src/trader/application/research/tomorrow_feature_models.py").read_text(encoding="utf-8")
+    models = (ROOT / "src/trader/application/research/tomorrow_feature_contracts.py").read_text(encoding="utf-8")
     combined = domain + application + models
 
     for token in (
@@ -27,7 +27,7 @@ def test_batch_two_contract_freezes_five_point_in_time_feature_families() -> Non
         "tail",
     ):
         assert token in combined
-    assert "ScoreTomorrowPointInTimeFeatures" in combined
+    assert "TomorrowPointInTimeFeatureBuilder" in combined
     for forbidden in ("trader.bootstrap", "trader.web", "requests", "sqlite3"):
         assert forbidden not in combined
 

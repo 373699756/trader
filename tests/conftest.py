@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from trader.application.recommendation.policy import RecommendationPolicy, SelectionPolicy
+from trader.application.recommendation.policy import RecommendationPolicy, RecommendationSelectionSettings
 from trader.domain.market.models import (
     FeatureSnapshot,
     MarketQuote,
@@ -39,7 +39,7 @@ def recommendation_policy() -> RecommendationPolicy:
         strategy_version="strategy-current",
         fusion_version="fusion-fixture",
         fusion=FusionPolicy(0.68, 0.32, 0.5, 2, 25.0, 30.0),
-        selection=SelectionPolicy(
+        selection=RecommendationSelectionSettings(
             default_top_k=6,
             maximum_top_k=12,
             maximum_per_industry=2,

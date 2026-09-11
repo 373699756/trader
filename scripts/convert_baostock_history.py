@@ -50,6 +50,19 @@ from trader.infra.research.baostock_gap_supplier import (
     BaoStockGapSupplierError,
     fetch_baostock_gaps,
 )
+from trader.infra.research.history_archive_sync import (
+    _backup_database,
+    _discard_partition_replacements,
+    _PendingPartitions,
+    _publish_snapshot,
+    _recover_partition_replacements,
+    _restore_partition_replacements,
+    _seal_pending,
+    _write_revisions,
+)
+from trader.infra.research.history_archive_sync import (
+    _remove_pending as _remove_sync_pending,
+)
 from trader.infra.research.history_control_repository import (
     HistoryControlError,
     HistoryMaintenanceAlreadyRunningError,
@@ -63,19 +76,6 @@ from trader.infra.research.history_month_codec import (
 from trader.infra.research.history_month_partition import (
     HistoryMonthPartitionError,
     SQLiteHistoryMonthPartitionRepository,
-)
-from trader.infra.research.history_sync_runtime import (
-    _backup_database,
-    _discard_partition_replacements,
-    _PendingPartitions,
-    _publish_snapshot,
-    _recover_partition_replacements,
-    _restore_partition_replacements,
-    _seal_pending,
-    _write_revisions,
-)
-from trader.infra.research.history_sync_runtime import (
-    _remove_pending as _remove_sync_pending,
 )
 
 DEFAULT_SOURCE = Path("data/history/baostock-daily/sessions-2000")

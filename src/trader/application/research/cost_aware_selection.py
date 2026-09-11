@@ -7,11 +7,11 @@ import json
 from collections import defaultdict
 from datetime import date
 
-from trader.application.research.cost_aware_selection_models import (
+from trader.application.research.cost_aware_selection_report import (
     CostAwareSelectionDay,
     CostAwareSelectionReport,
 )
-from trader.application.research.shadow_model_models import (
+from trader.application.research.shadow_model_report import (
     ShadowHorizon,
     ShadowModelFamily,
     ShadowModelReport,
@@ -40,7 +40,7 @@ COST_AWARE_SELECTION_SPEC_HASH = hashlib.sha256(
 ).hexdigest()
 
 
-class ScoreTomorrowCostAwareSelection:
+class TomorrowCostAwareSelectionEvaluator:
     """Apply one frozen selection specification to every shadow-model fold."""
 
     def build(self, shadow: ShadowModelReport) -> CostAwareSelectionReport:
@@ -125,4 +125,4 @@ def _validate_parent(shadow: ShadowModelReport) -> None:
         raise ValueError("cost-aware parent contains duplicate predictions")
 
 
-__all__ = ["COST_AWARE_SELECTION_SPEC_HASH", "ScoreTomorrowCostAwareSelection"]
+__all__ = ["COST_AWARE_SELECTION_SPEC_HASH", "TomorrowCostAwareSelectionEvaluator"]

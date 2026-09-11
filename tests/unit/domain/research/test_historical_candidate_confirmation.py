@@ -7,9 +7,9 @@ from trader.domain.research.filter_recall_ablation import FilterAblationRow, run
 from trader.domain.research.historical_candidate_confirmation import (
     CandidateConfirmationPlan,
     CandidateConfirmationSeries,
-    confirm_transparent_candidates,
+    confirm_rule_candidates,
 )
-from trader.domain.research.transparent_candidate import preregister_transparent_candidates
+from trader.domain.research.preregistered_rule_candidate import preregister_rule_candidates
 
 
 def test_confirmation_plan_rejects_invalid_statistics() -> None:
@@ -42,9 +42,7 @@ def test_confirmation_keeps_terminal_holdout_closed_and_joint_family():
         )
         for index, day in enumerate(dates)
     )
-    family = preregister_transparent_candidates(
-        run_filter_recall_ablation(rows, strategy="tomorrow", development_dates=dates)
-    )
+    family = preregister_rule_candidates(run_filter_recall_ablation(rows, strategy="tomorrow", development_dates=dates))
     series = tuple(
         CandidateConfirmationSeries(
             candidate.candidate_id,
@@ -65,7 +63,7 @@ def test_confirmation_keeps_terminal_holdout_closed_and_joint_family():
         for item in series
         if item.candidate_id in {family.candidates[0].candidate_id, selected_candidate_id}
     )
-    report = confirm_transparent_candidates(
+    report = confirm_rule_candidates(
         family,
         series,
         confirmation_series,
@@ -97,9 +95,7 @@ def test_confirmation_rejects_positive_increment_with_negative_absolute_returns(
         )
         for index, day in enumerate(dates)
     )
-    family = preregister_transparent_candidates(
-        run_filter_recall_ablation(rows, strategy="tomorrow", development_dates=dates)
-    )
+    family = preregister_rule_candidates(run_filter_recall_ablation(rows, strategy="tomorrow", development_dates=dates))
     series = tuple(
         CandidateConfirmationSeries(
             candidate.candidate_id,
@@ -121,7 +117,7 @@ def test_confirmation_rejects_positive_increment_with_negative_absolute_returns(
         for item in series
         if item.candidate_id in {family.candidates[0].candidate_id, selected_candidate_id}
     )
-    report = confirm_transparent_candidates(
+    report = confirm_rule_candidates(
         family,
         series,
         confirmation_series,
@@ -153,9 +149,7 @@ def test_confirmation_retains_additional_filter_candidates_in_the_joint_holm_fam
         )
         for index, day in enumerate(dates)
     )
-    family = preregister_transparent_candidates(
-        run_filter_recall_ablation(rows, strategy="tomorrow", development_dates=dates)
-    )
+    family = preregister_rule_candidates(run_filter_recall_ablation(rows, strategy="tomorrow", development_dates=dates))
     family_series = tuple(
         CandidateConfirmationSeries(
             candidate.candidate_id,
@@ -187,7 +181,7 @@ def test_confirmation_retains_additional_filter_candidates_in_the_joint_holm_fam
         for item in family_series
         if item.candidate_id in {family.candidates[0].candidate_id, selected_candidate_id}
     )
-    report = confirm_transparent_candidates(
+    report = confirm_rule_candidates(
         family,
         family_series,
         confirmation_series,

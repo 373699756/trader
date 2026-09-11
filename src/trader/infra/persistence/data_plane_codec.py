@@ -16,7 +16,7 @@ from trader.application.ports.data_plane import (
     SourceCursorRecord,
     TradingCalendarRecord,
 )
-from trader.application.ports.types import JsonObject
+from trader.application.ports.json_values import JsonObject
 from trader.infra.persistence.data_plane_types import Record, _Profile
 
 

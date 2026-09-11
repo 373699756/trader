@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Literal, cast
 from zoneinfo import ZoneInfo
 
-from trader.application.research.replay_models import canonical_hash, canonical_json
 from trader.domain.market.feature_contracts import FeatureVector
 from trader.domain.market.models import Board
 from trader.domain.outcome.models import (
@@ -18,6 +17,7 @@ from trader.domain.outcome.models import (
     RecommendationOutcome,
 )
 from trader.domain.recommendation.models import Strategy
+from trader.domain.research.artifact_identity import canonical_artifact_hash, canonical_artifact_json
 from trader.domain.research.point_in_time_dataset import (
     PointInTimeBoardPopulation,
     PointInTimeBoundaryCount,
@@ -70,7 +70,7 @@ class PointInTimeDatasetArtifactStore:
                 }
             )
         root_payload = _encode_report_root(report, day_entries)
-        root_payload["artifact_hash"] = canonical_hash(root_payload)
+        root_payload["artifact_hash"] = canonical_artifact_hash(root_payload)
         _write_once(root_path, root_payload)
         verified = self.verify()
         if verified.content_hash != report.content_hash:
@@ -81,7 +81,7 @@ class PointInTimeDatasetArtifactStore:
         try:
             root = _read_object(self._root / "point-in-time-dataset.json")
             artifact_hash = _pop_string(root, "artifact_hash")
-            if canonical_hash(root) != artifact_hash:
+            if canonical_artifact_hash(root) != artifact_hash:
                 raise ValueError("point-in-time dataset root hash mismatch")
             day_entries = root.pop("days")
             if not isinstance(day_entries, list) or not all(isinstance(item, dict) for item in day_entries):
@@ -118,7 +118,7 @@ class PointInTimeDatasetArtifactStore:
 
 
 def _write_once(path: Path, payload: dict[str, object]) -> None:
-    rendered = canonical_json(payload)
+    rendered = canonical_artifact_json(payload)
     if path.exists():
         if path.read_text(encoding="utf-8") != rendered:
             raise PointInTimeDatasetArtifactConflictError("point-in-time dataset shard identity conflict")

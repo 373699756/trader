@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
 from zoneinfo import ZoneInfo
 
-from trader.application.ports.types import JsonInput, JsonObject, freeze_json_object
+from trader.application.ports.json_values import JsonInput, JsonObject, freeze_json_object
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack

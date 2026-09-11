@@ -36,10 +36,10 @@ from trader.application.runtime.resource_orchestration import (
     start_application_resources,
     stop_application_resources,
 )
-from trader.application.runtime.runtime import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
 from trader.application.runtime.scheduler_runtime import RuntimeDependencies, SchedulerRuntime
 from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownReport
 from trader.application.runtime.source_lanes import SourceLaneRegistry
+from trader.application.runtime.supervisor import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
 from trader.application.runtime.workers import BoundedExecutor
 from trader.bootstrap_clock import utc_now as _utc_now
 from trader.bootstrap_data_plane import _initialize_reference_data_plane
@@ -54,11 +54,11 @@ from trader.infra.deepseek.cache import ReviewCache
 from trader.infra.deepseek.factory import create_deepseek_client
 from trader.infra.deepseek.health_gate import DeepSeekHealthPolicy
 from trader.infra.deepseek.reviewer import DeepSeekReviewer
+from trader.infra.market_data.history.daily_history_cache import HistoryCache
+from trader.infra.market_data.history.daily_history_warmup import HistoryWarmup, build_history_warmup_policy
 from trader.infra.market_data.history.history_seed import (
     FallbackHistoryClient,
 )
-from trader.infra.market_data.history.service_history import HistoryCache
-from trader.infra.market_data.history.service_history_warmup import HistoryWarmup, build_history_warmup_policy
 from trader.infra.market_data.normalization.features import FeatureBuilder
 from trader.infra.market_data.providers.akshare import AkshareResearchClient
 from trader.infra.market_data.providers.eastmoney import EastmoneyClient
@@ -67,21 +67,21 @@ from trader.infra.market_data.providers.sina import SinaClient
 from trader.infra.market_data.providers.tencent import TencentClient
 from trader.infra.market_data.providers.tushare import TushareClient
 from trader.infra.market_data.references.calendar import ChinaTradingCalendar
-from trader.infra.market_data.service.facade import MarketFeatureDependencies, MarketFeatureService
+from trader.infra.market_data.service.candidate_quote_cache import QuoteCache, QuoteCacheDependencies
 from trader.infra.market_data.service.gateway import MarketDataGateway
-from trader.infra.market_data.service.service_candidates import QuoteCache, QuoteCacheDependencies
-from trader.infra.market_data.service.service_execution import MarketTaskRunner
-from trader.infra.market_data.service.service_health import MarketDataHealth, MarketDataHealthDependencies
-from trader.infra.market_data.service.service_intraday import IntradayLoader
-from trader.infra.market_data.service.service_research import ResearchLoader
-from trader.infra.market_data.service.service_tushare import ReferenceLoader
+from trader.infra.market_data.service.intraday_loader import IntradayLoader
+from trader.infra.market_data.service.market_data_health import MarketDataHealth, MarketDataHealthDependencies
+from trader.infra.market_data.service.market_feature_service import MarketFeatureDependencies, MarketFeatureService
+from trader.infra.market_data.service.market_task_runner import MarketTaskRunner
+from trader.infra.market_data.service.research_observation_loader import ResearchLoader
+from trader.infra.market_data.service.tushare_reference_loader import ReferenceLoader
 from trader.infra.persistence.data_plane import DataPlaneRepository
 from trader.infra.persistence.decision_records import SQLiteDecisionRecordRepository
 from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
 from trader.infra.persistence.research_trace import ResearchTraceLimits, SQLiteResearchTraceStore
 from trader.infra.persistence.runtime_json import RuntimeJsonWriter
-from trader.infra.runtime_support import RuntimeWorkerResources, ShanghaiClock
+from trader.infra.runtime_resources import RuntimeWorkerResources, ShanghaiClock
 from trader.infra.scoring.profile_factory import load_scoring_profile
 from trader.infra.settings import (
     LongWatchlist,

@@ -61,7 +61,7 @@ from trader.infra.settings.parser import (
     text as _text,
 )
 from trader.infra.settings.parser import triple_nested_number_mapping as _triple_nested_number_mapping
-from trader.infra.settings.runtime import load_runtime_settings
+from trader.infra.settings.runtime_loader import load_runtime_settings
 from trader.infra.settings.strategy_validation import _validate_strategy_settings
 
 _STRATEGY_KEYS = {

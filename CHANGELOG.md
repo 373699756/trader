@@ -7,6 +7,7 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
+- [Professional business naming](docs/changelog/2026-09-12-professional-business-naming.md)
 - [Semantic research artifact identities](docs/changelog/2026-09-12-semantic-research-identities.md)
 - [Tomorrow training progress and verified-read performance](docs/changelog/2026-09-11-tomorrow-training-progress.md)
 - [BaoStock QFQ gap repair](docs/changelog/2026-09-11-baostock-qfq-gap-repair.md)

@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 from trader.application.research.cross_strategy_conclusion import CrossStrategyConclusion
-from trader.application.research.replay_models import canonical_hash, canonical_json
+from trader.domain.research.artifact_identity import canonical_artifact_hash, canonical_artifact_json
 from trader.infra.research.terminal_holdout_artifacts import (
     TerminalHoldoutArtifactConflictError,
     decode_terminal_holdout_report,
@@ -34,7 +34,7 @@ class CrossStrategyConclusionArtifactStore:
         temporary = Path(temporary_name)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(canonical_json(payload))
+                handle.write(canonical_artifact_json(payload))
                 handle.flush()
                 os.fsync(handle.fileno())
             try:
@@ -55,7 +55,7 @@ class CrossStrategyConclusionArtifactStore:
             if not isinstance(raw, dict):
                 raise TypeError("cross-strategy conclusion is not an object")
             stored_hash = raw.pop("content_hash")
-            if not isinstance(stored_hash, str) or canonical_hash(raw) != stored_hash:
+            if not isinstance(stored_hash, str) or canonical_artifact_hash(raw) != stored_hash:
                 raise ValueError("cross-strategy conclusion hash mismatch")
             conclusion = _decode_conclusion(raw)
             if conclusion.content_hash != stored_hash:

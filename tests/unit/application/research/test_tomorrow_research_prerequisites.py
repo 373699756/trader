@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 
 from trader.application.research.historical_label import HistoricalLabelPreregistrationService
-from trader.application.research.tomorrow_research_prerequisites import TomorrowLabelReadinessPrerequisite
+from trader.application.research.tomorrow_research_prerequisites import TomorrowLabelReadinessInspector
 from trader.domain.research.h1_point_in_time import H1PointInTimeSpec
 from trader.domain.research.historical_label import H1CoverageMetadata
 
@@ -23,7 +23,7 @@ class _MetadataPort:
 
 
 def test_label_readiness_prerequisite_blocks_on_tomorrow_h1_metadata_without_sealing_artifacts() -> None:
-    prerequisite = TomorrowLabelReadinessPrerequisite(
+    prerequisite = TomorrowLabelReadinessInspector(
         HistoricalLabelPreregistrationService(_MetadataPort(ready=False))
     ).inspect()
 
@@ -39,7 +39,7 @@ def test_label_readiness_prerequisite_blocks_on_tomorrow_h1_metadata_without_sea
 def test_label_readiness_prerequisite_releases_resource_probe_only_after_preregistration_is_ready() -> None:
     service = HistoricalLabelPreregistrationService(_MetadataPort(ready=True))
     batch = service.execute()
-    prerequisite = TomorrowLabelReadinessPrerequisite(service).inspect()
+    prerequisite = TomorrowLabelReadinessInspector(service).inspect()
 
     assert prerequisite.status == "ready"
     assert prerequisite.blockers == ()

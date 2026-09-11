@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal, Protocol
 
-from trader.application.research.replay_models import canonical_hash
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.historical_screening import HistoricalPriceBar, HistoricalScreeningSpec
 
 ResearchBoard = Literal["main", "chinext", "star", "unsupported"]
@@ -86,7 +86,7 @@ class HistoricalArchiveManifest:
         if self.spec_hash and _SHA256.fullmatch(self.spec_hash) is None:
             raise ValueError("historical archive spec hash is invalid")
         object.__setattr__(self, "histories", histories)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 class HistoricalUniverseProvider(Protocol):

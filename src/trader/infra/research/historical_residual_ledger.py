@@ -9,7 +9,7 @@ from datetime import date
 from pathlib import Path
 from typing import cast
 
-from trader.domain.research.h1_point_in_time import H1Strategy
+from trader.domain.research.h1_point_in_time import ResearchStrategy
 from trader.domain.research.historical_residual_ledger import (
     HistoricalOutcomeRecord,
     HistoricalPredictionRecord,
@@ -78,7 +78,7 @@ class SQLiteHistoricalResidualLedger:
                     ),
                 )
 
-    def read_joined(self, strategy: H1Strategy, parent_split_hash: str) -> tuple[JoinedHistoricalResidual, ...]:
+    def read_joined(self, strategy: ResearchStrategy, parent_split_hash: str) -> tuple[JoinedHistoricalResidual, ...]:
         with self._connect() as connection:
             outcomes = connection.execute(
                 "SELECT content_hash, payload FROM historical_outcome WHERE strategy = ? AND parent_split_hash = ?",
@@ -97,7 +97,9 @@ class SQLiteHistoricalResidualLedger:
                 joined.append(join_prediction_outcome(prediction, joined_outcome))
         return tuple(joined)
 
-    def read_predictions(self, strategy: H1Strategy, parent_split_hash: str) -> tuple[HistoricalPredictionRecord, ...]:
+    def read_predictions(
+        self, strategy: ResearchStrategy, parent_split_hash: str
+    ) -> tuple[HistoricalPredictionRecord, ...]:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT content_hash, payload FROM historical_prediction "
@@ -203,7 +205,7 @@ def _encode_key(key: ResidualJoinKey) -> dict[str, object]:
 def _decode_key(payload: dict[str, object]) -> ResidualJoinKey:
     _exact_fields(payload, {"strategy", "trade_date", "anchor", "code", "horizon"})
     return ResidualJoinKey(
-        cast(H1Strategy, str(payload["strategy"])),
+        cast(ResearchStrategy, str(payload["strategy"])),
         date.fromisoformat(str(payload["trade_date"])),
         cast(ResidualAnchor, str(payload["anchor"])),
         str(payload["code"]),

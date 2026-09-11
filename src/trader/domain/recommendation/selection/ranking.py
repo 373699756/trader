@@ -69,7 +69,7 @@ class ActionPolicy:
 
 
 @dataclass(frozen=True)
-class SelectionPolicy:
+class PortfolioSelectionPolicy:
     top_k: int
     maximum_per_industry: int
     minimum_final_score: float = 0.0
@@ -146,7 +146,7 @@ def _action_blocker(
 
 def select_top_k(
     recommendations: Iterable[Recommendation],
-    policy: SelectionPolicy,
+    policy: PortfolioSelectionPolicy,
 ) -> tuple[Recommendation, ...]:
     selected, _skips = select_top_k_with_audit(recommendations, policy)
     return selected
@@ -154,7 +154,7 @@ def select_top_k(
 
 def select_top_k_with_audit(
     recommendations: Iterable[Recommendation],
-    policy: SelectionPolicy,
+    policy: PortfolioSelectionPolicy,
 ) -> tuple[tuple[Recommendation, ...], tuple[SelectionSkip, ...]]:
     ordered = sorted(
         (item for item in recommendations if item.score.final_score >= policy.minimum_final_score),
@@ -196,7 +196,7 @@ def select_top_k_with_audit(
     return tuple(state.selected), tuple(state.skips)
 
 
-def _validate_selection_policy(policy: SelectionPolicy) -> None:
+def _validate_selection_policy(policy: PortfolioSelectionPolicy) -> None:
     if not 0 <= policy.top_k <= 18:
         raise ValueError("top_k must be between 0 and 18")
     if policy.maximum_per_industry < 1:
@@ -211,7 +211,7 @@ def _selection_limit(
     item: Recommendation,
     state: _SelectionState,
     *,
-    policy: SelectionPolicy,
+    policy: PortfolioSelectionPolicy,
     maximum_per_board: int,
 ) -> tuple[str, int] | None:
     board = item.features.quote.board
@@ -284,7 +284,7 @@ def _threshold_key(strategy: Strategy, phase: str) -> str | None:
 __all__ = [
     "ActionPolicy",
     "CORE_FIELDS",
-    "SelectionPolicy",
+    "PortfolioSelectionPolicy",
     "action_for",
     "minimum_selection_score",
     "select_top_k",

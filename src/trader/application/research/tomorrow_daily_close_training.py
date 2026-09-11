@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
-from trader.application.research.replay_models import canonical_hash
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.tomorrow_daily_close import ExpandingWalkForwardFold
 
 DailyCloseBoard = Literal["main", "chinext", "star"]
@@ -135,7 +135,7 @@ class DatasetManifest:
             raise ValueError("daily-close manifest identity is invalid")
         if self.production_authority:
             raise ValueError("daily-close research manifest cannot authorize production")
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -162,7 +162,7 @@ class FeatureDataset:
         if self.production_authority:
             raise ValueError("daily-close feature dataset cannot authorize production")
         object.__setattr__(self, "rows", rows)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -224,7 +224,7 @@ class ValidationReport:
         if self.production_authority or self.automatic_model_update:
             raise ValueError("daily-close validation report cannot authorize production or automatic updates")
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 def _validate_validation_report_identity(report: ValidationReport) -> None:
@@ -354,7 +354,7 @@ class CandidateModelArtifact:
         object.__setattr__(self, "stratum_corrections", strata)
         object.__setattr__(self, "stock_residual_corrections", stocks)
         object.__setattr__(self, "dependencies", dependencies)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 def _validate_candidate_model_identity(artifact: CandidateModelArtifact) -> int:

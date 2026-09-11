@@ -12,13 +12,13 @@ from datetime import date
 from typing import Literal, Protocol
 
 from trader.application.research.historical_screening import HistoricalArchiveManifest, HistoricalArchiveStatus
-from trader.application.research.replay_models import canonical_json
-from trader.application.research.tomorrow_historical_models import (
+from trader.application.research.tomorrow_historical_report import (
     TomorrowHistoricalGateMetrics,
     TomorrowHistoricalReport,
 )
 from trader.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
 from trader.domain.recommendation.model_scoring import percentile_ranks
+from trader.domain.research.artifact_identity import canonical_artifact_json
 from trader.domain.research.baseline import mean_rank_ic, population_spearman, quantile_bucket, stock_net_contribution
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalScreeningSpec
 from trader.domain.research.paired_statistics import (
@@ -478,7 +478,7 @@ def _gate_failures(metrics: TomorrowHistoricalGateMetrics, spec: TomorrowHistori
 def _rows_hash(rows: tuple[TomorrowHistoricalRow, ...]) -> str:
     digest = hashlib.sha256()
     for row in rows:
-        digest.update(canonical_json(row).encode())
+        digest.update(canonical_artifact_json(row).encode())
         digest.update(b"\n")
     return digest.hexdigest()
 

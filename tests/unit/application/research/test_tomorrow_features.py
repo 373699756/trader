@@ -6,11 +6,11 @@ from datetime import date, timedelta
 import pytest
 
 from tests.unit.application.research.test_historical_ports import OBSERVED_AT, TRADE_DATE, _bundle, _summary
-from trader.application.research.tomorrow_feature_models import (
+from trader.application.research.tomorrow_feature_contracts import (
     TomorrowFeatureContext,
     TomorrowFeatureContextBatch,
 )
-from trader.application.research.tomorrow_features import ScoreTomorrowPointInTimeFeatures
+from trader.application.research.tomorrow_features import TomorrowPointInTimeFeatureBuilder
 from trader.domain.research.tomorrow_features import PointInTimePublishedFact
 
 
@@ -53,7 +53,7 @@ def _contexts() -> TomorrowFeatureContextBatch:
 
 
 def test_feature_batch_binds_r2_identity_and_has_stable_content_hash() -> None:
-    service = ScoreTomorrowPointInTimeFeatures()
+    service = TomorrowPointInTimeFeatureBuilder()
 
     first = service.build(_summary(), _bundle(("300001", "600001", "688001")), _contexts())
     second = service.build(_summary(), _bundle(("300001", "600001", "688001")), _contexts())
@@ -68,7 +68,7 @@ def test_feature_batch_binds_r2_identity_and_has_stable_content_hash() -> None:
 
 
 def test_feature_batch_rejects_r2_identity_and_industry_mismatches() -> None:
-    service = ScoreTomorrowPointInTimeFeatures()
+    service = TomorrowPointInTimeFeatureBuilder()
     bundle = _bundle(("300001", "600001", "688001"))
 
     with pytest.raises(ValueError, match="input hash"):

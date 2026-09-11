@@ -48,10 +48,10 @@ def test_h1_research_completion_seals_all_downstream_insufficient_states_without
     assert completion.status == "historical_data_insufficient"
     assert {item.status for item in completion.labels.strategies} == {"historical_data_insufficient"}
     assert {item.status for item in completion.residual_ledgers} == {"historical_data_insufficient"}
-    assert completion.c3.status == "historical_data_insufficient"
-    assert completion.c3.oof_artifact_hash is None
-    assert completion.c3.candidate_model_artifact_hash is None
-    assert "eastmoney_historical_minute_probe_failed" in completion.c3.failure_reasons
+    assert completion.daily_close_selection.status == "historical_data_insufficient"
+    assert completion.daily_close_selection.oof_artifact_hash is None
+    assert completion.daily_close_selection.candidate_model_artifact_hash is None
+    assert "eastmoney_historical_minute_probe_failed" in completion.daily_close_selection.failure_reasons
     assert completion.terminal_holdout_opened is False
     assert completion.production_authority is False
 

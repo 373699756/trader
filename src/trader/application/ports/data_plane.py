@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from trader.application.ports.types import JsonObject, freeze_json_object
+from trader.application.ports.json_values import JsonObject, freeze_json_object
 
 
 @dataclass(frozen=True, kw_only=True)

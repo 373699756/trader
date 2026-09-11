@@ -65,7 +65,7 @@ class ColumnarBatchIdentity:
 
 
 @dataclass(frozen=True)
-class MarketChangeSet:
+class NormalizedMarketChangeSet:
     merge_epoch: str
     inserted_codes: tuple[str, ...]
     updated_codes: tuple[str, ...]
@@ -225,7 +225,7 @@ class ColumnarFeatureBatch:
     def to_public_envelope(
         self,
         features: tuple[FeatureSnapshot, ...],
-        change_set: MarketChangeSet,
+        change_set: NormalizedMarketChangeSet,
         options: FeatureEnvelopeOptions,
     ) -> data_plane_contracts.FeatureSnapshotEnvelope:
         return data_plane_contracts.FeatureSnapshotEnvelope(
@@ -266,10 +266,10 @@ class FeatureEnvelopeOptions:
 def market_changes(
     previous: ColumnarQuoteBatch | None,
     current: ColumnarQuoteBatch,
-) -> MarketChangeSet:
+) -> NormalizedMarketChangeSet:
     if previous is None or previous.frame.is_empty():
         inserted = _sorted_strings(current.frame.get_column("code").to_list())
-        return MarketChangeSet(
+        return NormalizedMarketChangeSet(
             current.identity.merge_epoch,
             inserted,
             (),
@@ -304,7 +304,7 @@ def market_changes(
         full_invalidation_reason = "schema_version_changed"
     elif previous.identity.config_version != current.identity.config_version:
         full_invalidation_reason = "config_version_changed"
-    return MarketChangeSet(
+    return NormalizedMarketChangeSet(
         current.identity.merge_epoch,
         inserted_codes,
         updated_codes,
@@ -325,7 +325,7 @@ def targeted_market_changes(
     previous: CanonicalMarketSnapshot | None,
     current: CanonicalMarketSnapshot,
     codes: Iterable[str],
-) -> MarketChangeSet:
+) -> NormalizedMarketChangeSet:
     """Describe a bounded quote overlay without rebuilding the full columnar batch."""
 
     selected = set(codes)
@@ -366,7 +366,7 @@ def targeted_market_changes(
             }
         )
     ).hexdigest()
-    return MarketChangeSet(
+    return NormalizedMarketChangeSet(
         merge_epoch=current.merge_epoch,
         inserted_codes=inserted,
         updated_codes=updated,
@@ -607,7 +607,7 @@ __all__ = [
     "ColumnarQuoteBatch",
     "ColumnarResearchBatch",
     "FeatureEnvelopeOptions",
-    "MarketChangeSet",
+    "NormalizedMarketChangeSet",
     "market_changes",
     "targeted_market_changes",
 ]

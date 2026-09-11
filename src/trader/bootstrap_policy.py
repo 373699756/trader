@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from trader.application.long_groups import LongGroupDefinition, LongGroupSectionDefinition, LongWatchItemDefinition
-from trader.application.recommendation.policy import RecommendationPolicy, SelectionPolicy
+from trader.application.recommendation.policy import RecommendationPolicy, RecommendationSelectionSettings
 from trader.domain.market.models import Board
 from trader.domain.recommendation.filtering.filters import HardFilterPolicy
 from trader.domain.recommendation.models import Strategy
@@ -24,7 +24,7 @@ def _recommendation_policy(settings: StrategySettings) -> RecommendationPolicy:
             local_risk_cap=settings.fusion.local_risk_cap,
             deepseek_risk_cap=settings.fusion.deepseek_risk_cap,
         ),
-        selection=SelectionPolicy(
+        selection=RecommendationSelectionSettings(
             default_top_k=settings.selection.default_top_k,
             maximum_top_k=settings.selection.maximum_top_k,
             maximum_per_industry=settings.selection.maximum_per_industry,

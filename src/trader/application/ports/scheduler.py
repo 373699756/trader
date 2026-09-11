@@ -9,6 +9,7 @@ from datetime import date, datetime
 from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
+from trader.application.ports.clock import TradingCalendarPort
 from trader.application.ports.market import ResearchRefreshResult
 from trader.application.ports.runtime_status import InputQualityStatus
 from trader.application.research.research_audit import CommittedResearchAudit
@@ -164,10 +165,6 @@ class SettlementUnavailableError(RuntimeError):
 
 class TradingCalendarUnavailableError(RuntimeError):
     """The trading session cannot be trusted until the calendar recovers."""
-
-
-class TradingCalendarPort(Protocol):
-    def is_trading_day(self, day: date) -> bool: ...
 
 
 class DataRefreshPort(Protocol):

@@ -3,7 +3,7 @@ from datetime import date, timedelta
 import pytest
 
 from trader.application.research.tomorrow_daily_close_training import DailyCloseFeatureRow
-from trader.infra.research.tomorrow_daily_close_training import FixedC3BaseModelTrainer
+from trader.infra.research.tomorrow_daily_close_training import DeterministicDailyCloseBaseModelTrainer
 
 
 def _rows(count: int = 80) -> tuple[DailyCloseFeatureRow, ...]:
@@ -23,8 +23,8 @@ def _rows(count: int = 80) -> tuple[DailyCloseFeatureRow, ...]:
     )
 
 
-def test_fixed_c3_trainer_is_deterministic_bounded_and_reloadable() -> None:
-    trainer = FixedC3BaseModelTrainer()
+def test_deterministic_daily_close_trainer_is_deterministic_bounded_and_reloadable() -> None:
+    trainer = DeterministicDailyCloseBaseModelTrainer()
     rows = _rows()
 
     first = trainer.fit(rows, feature_count=2)

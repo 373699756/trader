@@ -22,18 +22,22 @@ from trader.domain.research.paired_statistics import (
     paired_moving_block_statistics,
 )
 
-TomorrowJointCandidateId = Literal["c3", "v1_c3", "v1_v2_c3"]
+TomorrowJointCandidateId = Literal["daily_close_ensemble", "v1_daily_close_ensemble", "v1_v2_daily_close_ensemble"]
 TomorrowJointPredictionSemantics = Literal["pre_base_score_cost_adjusted_net_excess"]
 
-TOMORROW_JOINT_CANDIDATES: tuple[TomorrowJointCandidateId, ...] = ("c3", "v1_c3", "v1_v2_c3")
+TOMORROW_JOINT_CANDIDATES: tuple[TomorrowJointCandidateId, ...] = (
+    "daily_close_ensemble",
+    "v1_daily_close_ensemble",
+    "v1_v2_daily_close_ensemble",
+)
 TOMORROW_JOINT_LAMBDAS = (0.1, 1.0, 10.0, 100.0)
 _CANDIDATE_INDICES: dict[TomorrowJointCandidateId, tuple[int, ...]] = {
-    "c3": (2,),
-    "v1_c3": (0, 2),
-    "v1_v2_c3": (0, 1, 2),
+    "daily_close_ensemble": (2,),
+    "v1_daily_close_ensemble": (0, 2),
+    "v1_v2_daily_close_ensemble": (0, 1, 2),
 }
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_JOINT_PROFILES: tuple[str, ...] = ("v1", "v2", "c3")
+_JOINT_PROFILES: tuple[str, ...] = ("v1", "v2", "daily_close_ensemble")
 
 
 @dataclass(frozen=True)
@@ -113,7 +117,7 @@ class TomorrowJointAlignedRow:
     severe_loss: bool
     v1_predicted_net_excess_20bp: float
     v2_predicted_net_excess_20bp: float
-    c3_predicted_net_excess_20bp: float
+    daily_close_ensemble_predicted_net_excess_20bp: float
 
     def __post_init__(self) -> None:
         TomorrowJointRowKey(self.trade_date, self.code)
@@ -122,7 +126,7 @@ class TomorrowJointAlignedRow:
             self.actual_net_excess_50bp,
             self.v1_predicted_net_excess_20bp,
             self.v2_predicted_net_excess_20bp,
-            self.c3_predicted_net_excess_20bp,
+            self.daily_close_ensemble_predicted_net_excess_20bp,
         )
         if self.candidate_order < 0 or self.label_matured_at <= self.trade_date:
             raise ValueError("Tomorrow joint row requires an ordered, mature label")
@@ -138,7 +142,7 @@ class TomorrowJointAlignedRow:
         return (
             self.v1_predicted_net_excess_20bp,
             self.v2_predicted_net_excess_20bp,
-            self.c3_predicted_net_excess_20bp,
+            self.daily_close_ensemble_predicted_net_excess_20bp,
         )
 
 
@@ -146,10 +150,10 @@ class TomorrowJointAlignedRow:
 class TomorrowJointWeights:
     v1: float
     v2: float
-    c3: float
+    daily_close_ensemble: float
 
     def __post_init__(self) -> None:
-        values = (self.v1, self.v2, self.c3)
+        values = (self.v1, self.v2, self.daily_close_ensemble)
         if any(not math.isfinite(value) or value < 0.0 for value in values):
             raise ValueError("Tomorrow joint weights must be finite and non-negative")
         if not math.isclose(math.fsum(values), 1.0, rel_tol=0.0, abs_tol=1e-12):
@@ -157,7 +161,7 @@ class TomorrowJointWeights:
 
     @property
     def values(self) -> tuple[float, float, float]:
-        return self.v1, self.v2, self.c3
+        return self.v1, self.v2, self.daily_close_ensemble
 
 
 @dataclass(frozen=True)
@@ -170,7 +174,7 @@ class TomorrowJointCandidateFit:
     production_authority: bool = False
 
     def __post_init__(self) -> None:
-        if self.candidate_id not in {"v1_c3", "v1_v2_c3"}:
+        if self.candidate_id not in {"v1_daily_close_ensemble", "v1_v2_daily_close_ensemble"}:
             raise ValueError("Tomorrow joint candidate fit requires a fused candidate")
         if self.regularization_lambda not in TOMORROW_JOINT_LAMBDAS:
             raise ValueError("Tomorrow joint lambda is not preregistered")
@@ -198,9 +202,9 @@ class TomorrowJointFittedModel:
     def __post_init__(self) -> None:
         if self.candidate_id not in TOMORROW_JOINT_CANDIDATES:
             raise ValueError("Tomorrow joint candidate is not preregistered")
-        if self.candidate_id == "c3":
+        if self.candidate_id == "daily_close_ensemble":
             if self.regularization_lambda is not None or self.weights.values != (0.0, 0.0, 1.0):
-                raise ValueError("C3 candidate must remain the unfused challenger")
+                raise ValueError("daily-close model selection candidate must remain the unfused challenger")
         elif self.regularization_lambda not in TOMORROW_JOINT_LAMBDAS:
             raise ValueError("Tomorrow joint lambda is not preregistered")
         allowed = frozenset(_CANDIDATE_INDICES[self.candidate_id])
@@ -239,7 +243,7 @@ class TomorrowJointPrediction:
     severe_loss: bool
     v1_predicted_net_excess_20bp: float
     v2_predicted_net_excess_20bp: float
-    c3_predicted_net_excess_20bp: float
+    daily_close_ensemble_predicted_net_excess_20bp: float
     predicted_net_excess_20bp: float
     weights: TomorrowJointWeights
     prediction_semantics: TomorrowJointPredictionSemantics = "pre_base_score_cost_adjusted_net_excess"
@@ -253,7 +257,7 @@ class TomorrowJointPrediction:
             self.actual_net_excess_50bp,
             self.v1_predicted_net_excess_20bp,
             self.v2_predicted_net_excess_20bp,
-            self.c3_predicted_net_excess_20bp,
+            self.daily_close_ensemble_predicted_net_excess_20bp,
             self.predicted_net_excess_20bp,
         )
         if self.prediction_semantics != "pre_base_score_cost_adjusted_net_excess":
@@ -469,7 +473,7 @@ class TomorrowJointFamilyConfirmation:
     holm: tuple[PreregisteredHolmDecision, ...]
     selected_model: TomorrowJointFittedModel | None
     status: Literal["historical_candidate_ready", "historical_rejected"]
-    fallback_to_c3: bool
+    fallback_to_daily_close_ensemble: bool
     terminal_holdout_status: Literal["terminal_holdout_not_opened"] = "terminal_holdout_not_opened"
     production_authority: bool = False
     schema_version: str = "tomorrow_joint_confirmation_report"
@@ -483,8 +487,10 @@ class TomorrowJointFamilyConfirmation:
         expected = "historical_candidate_ready" if self.selected_model is not None else "historical_rejected"
         if self.status != expected:
             raise ValueError("Tomorrow joint confirmation status is inconsistent")
-        if self.fallback_to_c3 != (self.selected_model is not None and self.selected_model.candidate_id == "c3"):
-            raise ValueError("Tomorrow joint C3 fallback marker is inconsistent")
+        if self.fallback_to_daily_close_ensemble != (
+            self.selected_model is not None and self.selected_model.candidate_id == "daily_close_ensemble"
+        ):
+            raise ValueError("Tomorrow joint daily-close model selection fallback marker is inconsistent")
         if (
             self.production_authority
             or self.terminal_holdout_status != "terminal_holdout_not_opened"
@@ -503,7 +509,7 @@ def fit_tomorrow_joint_candidate(
     """Fit one convex candidate on a development-training slice."""
 
     ordered = _validate_aligned_rows(rows)
-    if candidate_id == "c3" or candidate_id not in TOMORROW_JOINT_CANDIDATES:
+    if candidate_id == "daily_close_ensemble" or candidate_id not in TOMORROW_JOINT_CANDIDATES:
         raise ValueError("Only fused candidates accept a regularization lambda")
     if regularization_lambda not in TOMORROW_JOINT_LAMBDAS:
         raise ValueError("Tomorrow joint lambda is not preregistered")
@@ -532,7 +538,7 @@ def fit_tomorrow_joint_candidate_family(
         raise ValueError("Tomorrow joint training labels must mature strictly before tuning dates")
     candidates: list[TomorrowJointFittedModel] = [
         TomorrowJointFittedModel(
-            candidate_id="c3",
+            candidate_id="daily_close_ensemble",
             regularization_lambda=None,
             weights=TomorrowJointWeights(0.0, 0.0, 1.0),
             training_rows=len(training),
@@ -540,7 +546,7 @@ def fit_tomorrow_joint_candidate_family(
             tuning_mean_squared_error=_mean_squared_error(tuning, TomorrowJointWeights(0.0, 0.0, 1.0)),
         )
     ]
-    for candidate_id in ("v1_c3", "v1_v2_c3"):
+    for candidate_id in ("v1_daily_close_ensemble", "v1_v2_daily_close_ensemble"):
         lambda_candidates: list[TomorrowJointFittedModel] = []
         for regularization_lambda in TOMORROW_JOINT_LAMBDAS:
             trained = fit_tomorrow_joint_candidate(
@@ -591,7 +597,7 @@ def predict_tomorrow_joint(
                 severe_loss=row.severe_loss,
                 v1_predicted_net_excess_20bp=row.v1_predicted_net_excess_20bp,
                 v2_predicted_net_excess_20bp=row.v2_predicted_net_excess_20bp,
-                c3_predicted_net_excess_20bp=row.c3_predicted_net_excess_20bp,
+                daily_close_ensemble_predicted_net_excess_20bp=row.daily_close_ensemble_predicted_net_excess_20bp,
                 predicted_net_excess_20bp=prediction,
                 weights=model.weights,
             )
@@ -866,7 +872,7 @@ def confirm_tomorrow_joint_family(
     *,
     alpha: float = 0.05,
 ) -> TomorrowJointFamilyConfirmation:
-    """Apply one Holm family and require any fused model to beat frozen C3 evidence."""
+    """Apply one Holm family and require any fused model to beat frozen daily-close model selection evidence."""
 
     ordered_reports = tuple(sorted(reports, key=lambda item: TOMORROW_JOINT_CANDIDATES.index(item.candidate_id)))
     if tuple(item.candidate_id for item in ordered_reports) != TOMORROW_JOINT_CANDIDATES:
@@ -885,16 +891,18 @@ def confirm_tomorrow_joint_family(
     )
     holm_by_id = {item.challenger_id: item for item in raw_holm}
     holm = tuple(holm_by_id[candidate_id] for candidate_id in TOMORROW_JOINT_CANDIDATES)
-    c3 = ordered_reports[0]
+    daily_close_ensemble = ordered_reports[0]
     fused = tuple(
         item
         for item in ordered_reports[1:]
         if item.passed
         and holm_by_id[item.candidate_id].rejected_null
-        and item.paired_increment_20bp > c3.paired_increment_20bp
-        and item.paired_increment_50bp > c3.paired_increment_50bp
-        and (item.bootstrap_20bp.confidence_lower or -math.inf) > (c3.bootstrap_20bp.confidence_lower or -math.inf)
-        and (item.bootstrap_50bp.confidence_lower or -math.inf) > (c3.bootstrap_50bp.confidence_lower or -math.inf)
+        and item.paired_increment_20bp > daily_close_ensemble.paired_increment_20bp
+        and item.paired_increment_50bp > daily_close_ensemble.paired_increment_50bp
+        and (item.bootstrap_20bp.confidence_lower or -math.inf)
+        > (daily_close_ensemble.bootstrap_20bp.confidence_lower or -math.inf)
+        and (item.bootstrap_50bp.confidence_lower or -math.inf)
+        > (daily_close_ensemble.bootstrap_50bp.confidence_lower or -math.inf)
     )
     selected: TomorrowJointFittedModel | None = None
     if fused:
@@ -907,15 +915,15 @@ def confirm_tomorrow_joint_family(
             ),
         )
         selected = models[best.candidate_id]
-    elif c3.passed and holm_by_id["c3"].rejected_null:
-        selected = models["c3"]
+    elif daily_close_ensemble.passed and holm_by_id["daily_close_ensemble"].rejected_null:
+        selected = models["daily_close_ensemble"]
     return TomorrowJointFamilyConfirmation(
         candidate_family=candidate_family,
         reports=ordered_reports,
         holm=holm,
         selected_model=selected,
         status="historical_candidate_ready" if selected is not None else "historical_rejected",
-        fallback_to_c3=selected is not None and selected.candidate_id == "c3",
+        fallback_to_daily_close_ensemble=selected is not None and selected.candidate_id == "daily_close_ensemble",
     )
 
 

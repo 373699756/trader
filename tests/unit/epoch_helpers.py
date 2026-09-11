@@ -4,7 +4,7 @@ import hashlib
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 
-from trader.domain.market.epochs import DataPlaneCoverage
+from trader.domain.market.epochs import DataPlaneCoverageEvidence
 from trader.domain.market.models import Board, LiveQuote, MarketQuote
 from trader.domain.market.quality import FieldQualityState, FieldValue
 
@@ -114,10 +114,10 @@ def coverage(
     codes: Sequence[str],
     *,
     candidate_codes: Sequence[str] | None = None,
-) -> DataPlaneCoverage:
+) -> DataPlaneCoverageEvidence:
     normalized = tuple(sorted(codes))
     candidates = tuple(sorted(candidate_codes if candidate_codes is not None else codes))
-    return DataPlaneCoverage(
+    return DataPlaneCoverageEvidence(
         potential_executable_codes=normalized,
         security_master_codes=normalized,
         candidate_codes=candidates,

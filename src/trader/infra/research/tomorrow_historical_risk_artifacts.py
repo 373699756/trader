@@ -6,10 +6,14 @@ import json
 import os
 from pathlib import Path
 
-from trader.application.research.replay_models import canonical_hash, canonical_json, canonical_value
 from trader.application.research.tomorrow_historical_validation import (
     HISTORICAL_RISK_VALIDATION_SPEC,
     HistoricalRiskValidationOutcome,
+)
+from trader.domain.research.artifact_identity import (
+    canonical_artifact_hash,
+    canonical_artifact_json,
+    canonical_artifact_value,
 )
 
 
@@ -60,7 +64,7 @@ class TomorrowHistoricalRiskArtifactStore:
         }
 
     def _write(self, path: Path, value: object, expected_hash: str) -> None:
-        payload = canonical_value(value)
+        payload = canonical_artifact_value(value)
         if not isinstance(payload, dict):
             raise TypeError("historical risk artifact must serialize to an object")
         payload["content_hash"] = expected_hash
@@ -70,7 +74,7 @@ class TomorrowHistoricalRiskArtifactStore:
                 raise TomorrowHistoricalRiskArtifactConflictError("historical risk artifact identity conflict")
             return
         temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        temporary.write_text(canonical_json(payload), encoding="utf-8")
+        temporary.write_text(canonical_artifact_json(payload), encoding="utf-8")
         try:
             try:
                 os.link(temporary, path)
@@ -89,7 +93,7 @@ class TomorrowHistoricalRiskArtifactStore:
             if not isinstance(raw, dict):
                 raise TypeError("historical risk artifact is not an object")
             stored = raw.pop("content_hash")
-            if not isinstance(stored, str) or canonical_hash(raw) != stored:
+            if not isinstance(stored, str) or canonical_artifact_hash(raw) != stored:
                 raise ValueError("historical risk artifact hash mismatch")
         except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise TomorrowHistoricalRiskArtifactConflictError("historical risk artifact is invalid") from exc

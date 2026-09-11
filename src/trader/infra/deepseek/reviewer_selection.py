@@ -20,8 +20,8 @@ from trader.domain.review.models import (
     ReviewOutcome,
     RiskFact,
 )
-from trader.infra.deepseek.base_client import DeepSeekClientBase, DeepSeekHttpResult
 from trader.infra.deepseek.budget import DeepSeekBudgetLedger
+from trader.infra.deepseek.completion_client_contract import DeepSeekCompletionClient, DeepSeekHttpResult
 from trader.infra.deepseek.schema import (
     build_review_manifest_hash,
 )
@@ -166,7 +166,7 @@ def _annotate_review(
     )
 
 
-def _thinking_mode(client: DeepSeekClientBase, model: str) -> str:
+def _thinking_mode(client: DeepSeekCompletionClient, model: str) -> str:
     try:
         capabilities = client.capabilities(model)
         return "reasoning" if capabilities.requires_reasoning_roundtrip else "standard"

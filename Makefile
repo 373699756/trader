@@ -5,7 +5,7 @@ SOURCE_PATHS := src/trader tests scripts/check_refactor_quality.py scripts/gener
 	scripts/package_scoring_model.py \
 	scripts/convert_baostock_history.py \
 	scripts/verify_wheel_install.py \
-	scripts/runtime_diagnostics/__init__.py scripts/runtime_diagnostics/common.py \
+	scripts/runtime_diagnostics/__init__.py scripts/runtime_diagnostics/reporting.py \
 	scripts/runtime_diagnostics/web_health.py scripts/runtime_diagnostics/web_health_contract.py \
 	scripts/runtime_diagnostics/browser_refresh.py \
 	scripts/runtime_diagnostics/exchange_security_master.py \

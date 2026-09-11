@@ -89,7 +89,7 @@ class _EpochCoordinates(Protocol):
 
 
 @dataclass(frozen=True)
-class DataPlaneCoverage:
+class DataPlaneCoverageEvidence:
     potential_executable_codes: tuple[str, ...]
     security_master_codes: tuple[str, ...]
     candidate_codes: tuple[str, ...]
@@ -180,7 +180,7 @@ class DailyFeaturePack:
     calendar_version: str
     rows: tuple[DailyFeatureRow, ...]
     source_versions: Mapping[str, str]
-    coverage: DataPlaneCoverage
+    coverage: DataPlaneCoverageEvidence
     schema_version: str = DAILY_FEATURE_PACK_SCHEMA_VERSION
     content_hash: str = field(init=False)
     version: str = field(init=False)
@@ -751,7 +751,7 @@ __all__ = [
     "RESEARCH_EPOCH_SCHEMA_VERSION",
     "CandidateFeatureRow",
     "CandidateQuoteEpoch",
-    "DataPlaneCoverage",
+    "DataPlaneCoverageEvidence",
     "DailyFeaturePack",
     "DailyFeatureRow",
     "MarketEpoch",

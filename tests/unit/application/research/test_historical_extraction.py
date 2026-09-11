@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from tests.unit.application.research.test_historical_ports import TRADE_DATE, _bundle, _summary
 from trader.application.ports.market import MarketDataPlaneSnapshot
 from trader.application.research.extraction import HistoricalExtractor
-from trader.application.research.models import (
+from trader.application.research.historical_extraction_models import (
     HistoricalDaySummary,
     HistoricalEvaluatedCandidate,
     HistoricalFullFieldBundle,

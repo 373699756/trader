@@ -260,13 +260,13 @@ class TomorrowHistoricalSpec:
             or self.validation_window
             != (HISTORICAL_SCREENING_SPEC.validation_start, HISTORICAL_SCREENING_SPEC.validation_end)
         ):
-            raise ValueError("Tomorrow historical historical source identity is frozen")
+            raise ValueError("Tomorrow historical source identity is frozen")
         if self.field_eligibility != _FIELD_ELIGIBILITY:
             raise ValueError("Tomorrow historical field eligibility matrix is frozen")
         if self.candidate != _CANDIDATE:
             raise ValueError("Tomorrow historical candidate family is frozen")
         if self.forward_research_identity is not None or self.forward_trade_dates:
-            raise ValueError("Tomorrow historical historical spec cannot bind a forward identity or calendar")
+            raise ValueError("Tomorrow historical spec cannot bind a forward identity or calendar")
         if (
             self.comparator_id != "historical_ohlcv_cross_section"
             or self.selection_rule != "single_candidate_pass_or_stop"
@@ -296,9 +296,9 @@ class TomorrowHistoricalSpec:
             or self.excluded_evidence_identities != _EXCLUDED_EVIDENCE_IDENTITIES
             or self.report_schema_version != "score_tomorrow_historical_report"
         ):
-            raise ValueError("Tomorrow historical historical gates are frozen")
+            raise ValueError("Tomorrow historical gates are frozen")
         if self.production_authority or self.schema_version != "score_tomorrow_historical_spec":
-            raise ValueError("Tomorrow historical historical spec cannot authorize production")
+            raise ValueError("Tomorrow historical spec cannot authorize production")
         object.__setattr__(self, "content_hash", _canonical_hash(self))
 
 

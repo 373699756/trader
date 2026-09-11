@@ -19,7 +19,7 @@ from trader.domain.market.epochs import (
     CandidateQuoteEpoch,
     DailyFeaturePack,
     DailyFeatureRow,
-    DataPlaneCoverage,
+    DataPlaneCoverageEvidence,
     MarketEpoch,
     ResearchEpoch,
 )
@@ -510,14 +510,14 @@ def test_epoch_rejects_invalid_quote_and_research_event_time_ordering() -> None:
 
 def test_daily_feature_pack_enforces_master_but_accepts_partial_candidate_history_coverage() -> None:
     with pytest.raises(ValueError, match="security-master coverage must be 100%"):
-        DataPlaneCoverage(
+        DataPlaneCoverageEvidence(
             potential_executable_codes=("600001",),
             security_master_codes=(),
             candidate_codes=(),
             candidate_history_codes=(),
         )
 
-    partial = DataPlaneCoverage(
+    partial = DataPlaneCoverageEvidence(
         potential_executable_codes=("600001", "600002"),
         security_master_codes=("600001", "600002"),
         candidate_codes=("600001", "600002"),

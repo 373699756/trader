@@ -12,15 +12,15 @@ from typing import Protocol, cast
 
 import requests
 
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.h1_point_in_time import (
     H1_SOURCE_CUTOFF,
     H1CapabilityAuditReport,
     H1CapabilityProbe,
     H1CapabilityStrategyStatus,
     H1CoverageState,
-    H1Strategy,
+    ResearchStrategy,
     build_h1_capability_audit,
-    canonical_hash,
 )
 
 
@@ -32,7 +32,7 @@ class _Response(Protocol):
     def raise_for_status(self) -> None: ...
 
 
-class H1HTTPSession(Protocol):
+class PointInTimeSourceSession(Protocol):
     def get(self, url: str, *, params: dict[str, object], timeout: float) -> _Response: ...
 
 
@@ -43,7 +43,7 @@ class H1CapabilityArtifactConflictError(RuntimeError):
 class FreeSourceH1CapabilityProbe:
     """Probe only bounded metadata; supplier payload values are never retained."""
 
-    def __init__(self, session: H1HTTPSession, *, timeout_seconds: float = 5.0) -> None:
+    def __init__(self, session: PointInTimeSourceSession, *, timeout_seconds: float = 5.0) -> None:
         if timeout_seconds <= 0:
             raise ValueError("H1 capability timeout must be positive")
         self._session = session
@@ -168,7 +168,7 @@ class H1CapabilityArtifactStore:
             if not isinstance(raw, dict):
                 raise TypeError("H1 capability artifact must be an object")
             stored_hash = raw.pop("content_hash")
-            if not isinstance(stored_hash, str) or canonical_hash(raw) != stored_hash:
+            if not isinstance(stored_hash, str) or canonical_artifact_hash(raw) != stored_hash:
                 raise ValueError("H1 capability artifact hash mismatch")
             report = _decode(cast(dict[str, object], raw))
             if report.content_hash != stored_hash:
@@ -345,7 +345,7 @@ def _decode_strategy(raw: object) -> H1CapabilityStrategyStatus:
     if not isinstance(reasons, list) or not all(isinstance(item, str) for item in reasons):
         raise TypeError("H1 capability strategy reasons are invalid")
     return H1CapabilityStrategyStatus(
-        cast(H1Strategy, _string(raw["strategy"])),
+        cast(ResearchStrategy, _string(raw["strategy"])),
         cast(H1CoverageState, _string(raw["state"])),
         tuple(reasons),
         _bool(raw["terminal_holdout_opened"]),
@@ -379,5 +379,5 @@ __all__ = [
     "FreeSourceH1CapabilityProbe",
     "H1CapabilityArtifactConflictError",
     "H1CapabilityArtifactStore",
-    "H1HTTPSession",
+    "PointInTimeSourceSession",
 ]

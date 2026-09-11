@@ -4,7 +4,7 @@ from types import MappingProxyType
 
 import pytest
 
-from trader.application.recommendation.policy import RecommendationPolicy, SelectionPolicy
+from trader.application.recommendation.policy import RecommendationPolicy, RecommendationSelectionSettings
 from trader.domain.market.models import Board
 from trader.domain.recommendation.models import Strategy
 from trader.domain.recommendation.risk_fusion.fusion import FusionPolicy
@@ -37,8 +37,8 @@ def test_recommendation_policy_weight_maps_are_isolated_and_immutable() -> None:
         first.board_candidate_weights[Strategy.TODAY] = {}  # type: ignore[index]
 
 
-def _selection_policy() -> SelectionPolicy:
-    return SelectionPolicy(
+def _selection_policy() -> RecommendationSelectionSettings:
+    return RecommendationSelectionSettings(
         default_top_k=10,
         maximum_top_k=18,
         maximum_per_industry=3,

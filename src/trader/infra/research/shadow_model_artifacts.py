@@ -7,7 +7,7 @@ import json
 import os
 from pathlib import Path
 
-from trader.application.research.shadow_model_models import ShadowFoldRecord, ShadowModelReport, ShadowPrediction
+from trader.application.research.shadow_model_report import ShadowFoldRecord, ShadowModelReport, ShadowPrediction
 
 
 class ShadowModelArtifactConflictError(RuntimeError):

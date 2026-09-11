@@ -13,11 +13,11 @@ from typing import cast
 from trader.application.research.historical_candidate_confirmation import (
     HistoricalConfirmationTerminalBatch,
 )
-from trader.application.research.replay_models import canonical_hash, canonical_json
-from trader.domain.research.h1_point_in_time import H1Strategy
+from trader.domain.research.artifact_identity import canonical_artifact_hash, canonical_artifact_json
+from trader.domain.research.h1_point_in_time import ResearchStrategy
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_STRATEGIES: tuple[H1Strategy, ...] = ("today", "tomorrow", "d25")
+_STRATEGIES: tuple[ResearchStrategy, ...] = ("today", "tomorrow", "d25")
 
 
 class HistoricalConfirmationArtifactConflictError(RuntimeError):
@@ -47,7 +47,7 @@ class HistoricalConfirmationArtifactStore:
         temporary = Path(temporary_name)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(canonical_json(payload))
+                handle.write(canonical_artifact_json(payload))
                 handle.flush()
                 os.fsync(handle.fileno())
             try:
@@ -70,7 +70,7 @@ class HistoricalConfirmationArtifactStore:
                 raise TypeError("Historical confirmation terminal artifact is not an object")
             payload = cast(dict[str, object], raw)
             stored_hash = payload.pop("content_hash")
-            if not isinstance(stored_hash, str) or canonical_hash(payload) != stored_hash:
+            if not isinstance(stored_hash, str) or canonical_artifact_hash(payload) != stored_hash:
                 raise ValueError("Historical confirmation terminal artifact hash mismatch")
             index = _decode(payload)
             if index.content_hash != stored_hash:
@@ -87,9 +87,9 @@ class HistoricalConfirmationArtifactIndex:
     completion_hash: str
     capability_hash: str
     label_batch_hash: str
-    residual_terminal_hashes: tuple[tuple[H1Strategy, str], ...]
-    c3_terminal_hash: str
-    strategy_terminal_hashes: tuple[tuple[H1Strategy, str], ...]
+    residual_terminal_hashes: tuple[tuple[ResearchStrategy, str], ...]
+    daily_close_selection_hash: str
+    strategy_terminal_hashes: tuple[tuple[ResearchStrategy, str], ...]
     joint_report_hash: str
     status: str = "historical_data_insufficient"
     terminal_holdout_status: str = "terminal_holdout_not_opened"
@@ -102,7 +102,7 @@ class HistoricalConfirmationArtifactIndex:
             self.completion_hash,
             self.capability_hash,
             self.label_batch_hash,
-            self.c3_terminal_hash,
+            self.daily_close_selection_hash,
             self.joint_report_hash,
         )
         if any(_SHA256.fullmatch(value) is None for value in hashes):
@@ -118,7 +118,7 @@ class HistoricalConfirmationArtifactIndex:
             raise ValueError("Historical confirmation terminal index cannot authorize production")
         object.__setattr__(self, "residual_terminal_hashes", residuals)
         object.__setattr__(self, "strategy_terminal_hashes", strategies)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 def _index(batch: HistoricalConfirmationTerminalBatch) -> HistoricalConfirmationArtifactIndex:
@@ -127,7 +127,7 @@ def _index(batch: HistoricalConfirmationTerminalBatch) -> HistoricalConfirmation
         capability_hash=batch.parent_capability_hash,
         label_batch_hash=batch.parent_label_hash,
         residual_terminal_hashes=batch.parent_residual_ledger_hashes,
-        c3_terminal_hash=batch.parent_c3_hash,
+        daily_close_selection_hash=batch.parent_daily_close_selection_hash,
         strategy_terminal_hashes=tuple((item.strategy, item.content_hash) for item in batch.strategies),
         joint_report_hash=batch.joint_report_hash,
     )
@@ -139,7 +139,7 @@ def _encode(index: HistoricalConfirmationArtifactIndex) -> dict[str, object]:
         "capability_hash": index.capability_hash,
         "label_batch_hash": index.label_batch_hash,
         "residual_terminal_hashes": [list(item) for item in index.residual_terminal_hashes],
-        "c3_terminal_hash": index.c3_terminal_hash,
+        "daily_close_selection_hash": index.daily_close_selection_hash,
         "strategy_terminal_hashes": [list(item) for item in index.strategy_terminal_hashes],
         "joint_report_hash": index.joint_report_hash,
         "status": index.status,
@@ -155,7 +155,7 @@ def _decode(raw: dict[str, object]) -> HistoricalConfirmationArtifactIndex:
         "capability_hash",
         "label_batch_hash",
         "residual_terminal_hashes",
-        "c3_terminal_hash",
+        "daily_close_selection_hash",
         "strategy_terminal_hashes",
         "joint_report_hash",
         "status",
@@ -170,7 +170,7 @@ def _decode(raw: dict[str, object]) -> HistoricalConfirmationArtifactIndex:
         capability_hash=_string(raw["capability_hash"]),
         label_batch_hash=_string(raw["label_batch_hash"]),
         residual_terminal_hashes=_hash_pairs(raw["residual_terminal_hashes"]),
-        c3_terminal_hash=_string(raw["c3_terminal_hash"]),
+        daily_close_selection_hash=_string(raw["daily_close_selection_hash"]),
         strategy_terminal_hashes=_hash_pairs(raw["strategy_terminal_hashes"]),
         joint_report_hash=_string(raw["joint_report_hash"]),
         status=_string(raw["status"]),
@@ -180,21 +180,21 @@ def _decode(raw: dict[str, object]) -> HistoricalConfirmationArtifactIndex:
     )
 
 
-def _ordered_hashes(values: tuple[tuple[H1Strategy, str], ...]) -> tuple[tuple[H1Strategy, str], ...]:
+def _ordered_hashes(values: tuple[tuple[ResearchStrategy, str], ...]) -> tuple[tuple[ResearchStrategy, str], ...]:
     ordered = tuple(sorted(values, key=lambda item: _STRATEGIES.index(item[0])))
     if tuple(item[0] for item in ordered) != _STRATEGIES or any(_SHA256.fullmatch(item[1]) is None for item in ordered):
         raise ValueError("Historical confirmation terminal strategy hashes are invalid")
     return ordered
 
 
-def _hash_pairs(value: object) -> tuple[tuple[H1Strategy, str], ...]:
+def _hash_pairs(value: object) -> tuple[tuple[ResearchStrategy, str], ...]:
     if not isinstance(value, list):
         raise TypeError("Historical confirmation terminal hash pairs are invalid")
-    pairs: list[tuple[H1Strategy, str]] = []
+    pairs: list[tuple[ResearchStrategy, str]] = []
     for item in value:
         if not isinstance(item, list) or len(item) != 2 or not all(isinstance(part, str) for part in item):
             raise TypeError("Historical confirmation terminal hash pair is invalid")
-        pairs.append((cast(H1Strategy, item[0]), item[1]))
+        pairs.append((cast(ResearchStrategy, item[0]), item[1]))
     return tuple(pairs)
 
 

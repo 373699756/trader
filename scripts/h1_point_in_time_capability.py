@@ -26,7 +26,7 @@ from trader.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeAr
 from trader.infra.research.h1_point_in_time_capability import (  # noqa: E402
     FreeSourceH1CapabilityProbe,
     H1CapabilityArtifactStore,
-    H1HTTPSession,
+    PointInTimeSourceSession,
 )
 from trader.infra.research.h1_point_in_time_completion import (  # noqa: E402
     H1ResearchCompletionArtifactIndex,
@@ -36,7 +36,7 @@ from trader.infra.research.historical_label_artifacts import HistoricalLabelArti
 
 
 class _SessionFactory(Protocol):
-    def __call__(self) -> H1HTTPSession: ...
+    def __call__(self) -> PointInTimeSourceSession: ...
 
 
 class _DirectSession:
@@ -66,8 +66,8 @@ class _DirectSession:
             )
 
 
-def _direct_session() -> H1HTTPSession:
-    return cast(H1HTTPSession, _DirectSession())
+def _direct_session() -> PointInTimeSourceSession:
+    return cast(PointInTimeSourceSession, _DirectSession())
 
 
 def _request_params(params: dict[str, object]) -> dict[str, str | tuple[str, ...]]:
@@ -107,7 +107,7 @@ def execute(
     code: str,
     historical_anchor_date: date,
     timeout_seconds: float,
-    session: H1HTTPSession,
+    session: PointInTimeSourceSession,
 ) -> tuple[H1CapabilityAuditReport, H1ResearchCompletion, H1ResearchCompletionArtifactIndex]:
     capability = FreeSourceH1CapabilityProbe(session, timeout_seconds=timeout_seconds).run(
         code=code,
@@ -184,9 +184,9 @@ def _projection(
             for item in capability.strategies
         ],
         "residual_terminal_hashes": [list(item) for item in index.residual_terminal_hashes],
-        "c3_terminal_hash": index.c3_terminal_hash,
-        "oof_generated": completion.c3.oof_artifact_hash is not None,
-        "model_generated": completion.c3.candidate_model_artifact_hash is not None,
+        "daily_close_selection_hash": index.daily_close_selection_hash,
+        "oof_generated": completion.daily_close_selection.oof_artifact_hash is not None,
+        "model_generated": completion.daily_close_selection.candidate_model_artifact_hash is not None,
         "production_authority": False,
         "automatic_model_update": False,
     }

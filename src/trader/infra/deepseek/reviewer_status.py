@@ -9,11 +9,11 @@ from collections.abc import Mapping
 from typing import cast
 from zoneinfo import ZoneInfo
 
-from trader.application.ports.types import JsonInput, JsonObject, freeze_json_object
+from trader.application.ports.json_values import JsonInput, JsonObject, freeze_json_object
 from trader.domain.recommendation.models import Strategy
 from trader.domain.review.models import ReviewOutcome
-from trader.infra.deepseek.base_client import DeepSeekHttpResult
 from trader.infra.deepseek.budget_batch_ledger import BudgetBatchCompletion
+from trader.infra.deepseek.completion_client_contract import DeepSeekHttpResult
 from trader.infra.deepseek.reviewer_context import ReviewerContext
 from trader.infra.deepseek.reviewer_selection import _physical_call_acceptance
 

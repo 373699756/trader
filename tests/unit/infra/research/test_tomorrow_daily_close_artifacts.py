@@ -129,8 +129,8 @@ def test_json_codec_rejects_content_tampering_and_unknown_fields() -> None:
     payload = json.loads(TomorrowDailyCloseArtifactCodec.encode(_artifact()))
     payload["unexpected"] = True
     payload_without_hash = {key: value for key, value in payload.items() if key != "content_hash"}
-    from trader.application.research.replay_models import canonical_hash
+    from trader.domain.research.artifact_identity import canonical_artifact_hash
 
-    payload["content_hash"] = canonical_hash(payload_without_hash)
+    payload["content_hash"] = canonical_artifact_hash(payload_without_hash)
     with pytest.raises(TomorrowDailyCloseArtifactError, match="schema"):
         TomorrowDailyCloseArtifactCodec.decode_candidate_model(json.dumps(payload))

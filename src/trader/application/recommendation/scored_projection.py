@@ -79,7 +79,7 @@ class _DecisionProjectionContext:
 
 
 @dataclass(frozen=True)
-class ScoredBuildRuntime:
+class ScoredProjectionInputs:
     model_scoring: ModelScoringPort | None = None
     scoring_context: ModelScoringContext | None = None
     candidate_stage_counts: ScoredCandidateStageCounts | None = None
@@ -91,11 +91,11 @@ def build_scored_local(
     policy: RecommendationPolicy,
     *,
     sequence: int,
-    runtime: ScoredBuildRuntime | None = None,
+    runtime: ScoredProjectionInputs | None = None,
 ) -> ScoredLocalProjection:
     if sequence < 1:
         raise ValueError("scored decision sequence must be positive")
-    runtime = runtime or ScoredBuildRuntime()
+    runtime = runtime or ScoredProjectionInputs()
     strategy = native_input.strategy
     decision_policy = scored_decision_policy(policy, strategy, phase=native_input.phase)
     population = tuple(preselection_replay_feature(feature) for feature in native_input.market_features)

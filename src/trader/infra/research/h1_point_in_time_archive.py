@@ -13,14 +13,14 @@ from zoneinfo import ZoneInfo
 
 from trader.application.research.h1_point_in_time import H1ArchivePort
 from trader.application.research.historical_screening import HistoricalSecurity, ResearchBoard
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.h1_point_in_time import (
     H1CoverageAudit,
     H1CoverageManifest,
     H1CoverageState,
     H1PointInTimeRecord,
     H1PointInTimeSpec,
-    H1Strategy,
-    canonical_hash,
+    ResearchStrategy,
 )
 from trader.domain.research.historical_label import H1CoverageMetadata
 
@@ -32,7 +32,7 @@ class H1ArchiveConflictError(RuntimeError):
 @dataclass(frozen=True)
 class H1ArchiveStatus:
     initialized: bool = False
-    strategy: H1Strategy = "today"
+    strategy: ResearchStrategy = "today"
     universe_count: int = 0
     completed_codes: int = 0
     failed_codes: int = 0
@@ -113,7 +113,7 @@ class SQLiteH1PointInTimeArchive(H1ArchivePort):
             if existing and existing != requested:
                 raise H1ArchiveConflictError("H1 universe set conflict")
             for item in ordered:
-                payload_hash = canonical_hash(item)
+                payload_hash = canonical_artifact_hash(item)
                 prior = connection.execute(
                     "SELECT payload_hash FROM universe WHERE strategy = ? AND code = ?",
                     (spec.strategy, item.code),
@@ -133,7 +133,7 @@ class SQLiteH1PointInTimeArchive(H1ArchivePort):
                     ),
                 )
 
-    def registered_universe(self, strategy: H1Strategy) -> tuple[HistoricalSecurity, ...]:
+    def registered_universe(self, strategy: ResearchStrategy) -> tuple[HistoricalSecurity, ...]:
         if not self._database.is_file():
             return ()
         with self._read_connection() as connection:
@@ -146,7 +146,7 @@ class SQLiteH1PointInTimeArchive(H1ArchivePort):
             for code, board, name, is_st, is_suspended in rows
         )
 
-    def completed_codes(self, strategy: H1Strategy) -> frozenset[str]:
+    def completed_codes(self, strategy: ResearchStrategy) -> frozenset[str]:
         if not self._database.is_file():
             return frozenset()
         with self._read_connection() as connection:
@@ -177,7 +177,7 @@ class SQLiteH1PointInTimeArchive(H1ArchivePort):
             hashes: list[str] = []
             for record in ordered:
                 payload = _record_payload(record)
-                payload_hash = canonical_hash(payload)
+                payload_hash = canonical_artifact_hash(payload)
                 hashes.append(payload_hash)
                 prior = connection.execute(
                     "SELECT payload_hash FROM records WHERE strategy = ? AND code = ? AND trade_date = ?",
@@ -212,7 +212,7 @@ class SQLiteH1PointInTimeArchive(H1ArchivePort):
                         payload_hash,
                     ),
                 )
-            content_hash = canonical_hash({"code": code, "records": hashes})
+            content_hash = canonical_artifact_hash({"code": code, "records": hashes})
             prior_download = connection.execute(
                 "SELECT content_hash FROM downloads WHERE strategy = ? AND code = ? AND status = 'complete'",
                 (spec.strategy, code),
@@ -281,7 +281,7 @@ class SQLiteH1PointInTimeArchive(H1ArchivePort):
         )
 
     def manifest(self, spec: H1PointInTimeSpec) -> H1CoverageManifest:
-        empty = canonical_hash(())
+        empty = canonical_artifact_hash(())
         if not self._database.is_file():
             return H1CoverageManifest(
                 spec.content_hash, empty, empty, empty, empty, empty, 0, 0, 0, 0, "historical_data_insufficient"
@@ -289,7 +289,7 @@ class SQLiteH1PointInTimeArchive(H1ArchivePort):
         snapshot = self._manifest_snapshot(spec)
         universe_hash = _h1_universe_hash(snapshot.universe_rows)
         history_hashes = tuple((str(row[0]), _db_int(row[1]), str(row[2])) for row in snapshot.completed_rows)
-        histories_hash = canonical_hash(history_hashes)
+        histories_hash = canonical_artifact_hash(history_hashes)
         audit = _audit_h1_records(spec, snapshot.records)
         _validate_h1_histories(history_hashes, audit.per_code)
         completed_codes = tuple(code for code, _count, _hash in history_hashes)
@@ -311,9 +311,9 @@ class SQLiteH1PointInTimeArchive(H1ArchivePort):
             spec.content_hash,
             universe_hash,
             histories_hash,
-            canonical_hash(calendar_values),
-            canonical_hash(audit.field_values),
-            canonical_hash(audit.source_values),
+            canonical_artifact_hash(calendar_values),
+            canonical_artifact_hash(audit.field_values),
+            canonical_artifact_hash(audit.source_values),
             completed_count,
             universe_count,
             common_days,
@@ -403,11 +403,11 @@ def _h1_universe_hash(rows: tuple[tuple[object, ...], ...]) -> str:
         security = HistoricalSecurity(
             str(code), cast(ResearchBoard, str(board)), str(name), bool(is_st), bool(is_suspended)
         )
-        payload_hash = canonical_hash(security)
+        payload_hash = canonical_artifact_hash(security)
         if payload_hash != str(stored_hash):
             raise H1ArchiveConflictError("H1 universe payload conflict")
         identities.append((security.code, payload_hash))
-    return canonical_hash(tuple(identities))
+    return canonical_artifact_hash(tuple(identities))
 
 
 def _audit_h1_records(
@@ -479,7 +479,7 @@ def _audit_h1_record(
         "risk_facts_hash": str(risk_hash),
         "tail_field_hash": str(tail_hash),
     }
-    if canonical_hash(payload) != str(payload_hash):
+    if canonical_artifact_hash(payload) != str(payload_hash):
         raise H1ArchiveConflictError("H1 record payload conflict")
     fields = (str(code), str(trade_date), str(state_hash), str(sector_hash), str(risk_hash))
     return str(code), str(trade_date), str(payload_hash), fields, (str(code), str(trade_date), str(source))
@@ -510,7 +510,7 @@ def _validate_h1_histories(
 ) -> None:
     for code, count, content_hash in history_hashes:
         hashes = per_code.get(code, [])
-        if len(hashes) != count or canonical_hash({"code": code, "records": hashes}) != content_hash:
+        if len(hashes) != count or canonical_artifact_hash({"code": code, "records": hashes}) != content_hash:
             raise H1ArchiveConflictError("H1 record content conflict")
 
 

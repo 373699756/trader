@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from tests.unit.application.research.test_shadow_models import _labeled_day, _RecordingTrainer
-from trader.application.research.cost_aware_selection import ScoreTomorrowCostAwareSelection
-from trader.application.research.shadow_models import ScoreTomorrowShadowModels
+from tests.unit.application.research.test_shadow_model_evaluation import _labeled_day, _RecordingTrainer
+from trader.application.research.cost_aware_selection import TomorrowCostAwareSelectionEvaluator
+from trader.application.research.shadow_model_evaluation import TomorrowShadowModelEvaluator
 
 
 def test_cost_aware_report_covers_every_shadow_prediction_and_model_family() -> None:
     shadow = _shadow_report()
 
-    report = ScoreTomorrowCostAwareSelection().build(shadow)
+    report = TomorrowCostAwareSelectionEvaluator().build(shadow)
 
     expected_days = {
         (prediction.prediction_date, prediction.horizon, prediction.window_mode, model_family)
@@ -40,7 +40,7 @@ def test_d25_uses_previous_selection_only_for_maintenance() -> None:
         elif prediction.horizon == "d25" and prediction.prediction_date == second:
             value = 0.001
         rewritten.append(replace(prediction, linear_net_excess=value, lightgbm_net_excess=value))
-    report = ScoreTomorrowCostAwareSelection().build(replace(shadow, predictions=tuple(rewritten)))
+    report = TomorrowCostAwareSelectionEvaluator().build(replace(shadow, predictions=tuple(rewritten)))
 
     second_days = tuple(day for day in report.days if day.horizon == "d25" and day.prediction_date == second)
     assert second_days
@@ -49,11 +49,11 @@ def test_d25_uses_previous_selection_only_for_maintenance() -> None:
 
 
 def test_tomorrow_never_carries_incumbent_state_between_days() -> None:
-    report = ScoreTomorrowCostAwareSelection().build(_shadow_report())
+    report = TomorrowCostAwareSelectionEvaluator().build(_shadow_report())
 
     assert all(not item.incumbent for day in report.days if day.horizon == "tomorrow" for item in day.evaluations)
 
 
 def _shadow_report():
     days = tuple(day for index in range(70) for day in (_labeled_day(index, "tomorrow"), _labeled_day(index, "d25")))
-    return ScoreTomorrowShadowModels((_RecordingTrainer("linear"), _RecordingTrainer("lightgbm"))).build(days)
+    return TomorrowShadowModelEvaluator((_RecordingTrainer("linear"), _RecordingTrainer("lightgbm"))).build(days)

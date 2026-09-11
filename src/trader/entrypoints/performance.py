@@ -34,8 +34,8 @@ from trader.application.recommendation.candidate_planning import (
 from trader.application.recommendation.model_scoring_router import ModelScoringRouter
 from trader.application.recommendation.policy import RecommendationPolicy
 from trader.application.recommendation.scored_projection import (
-    ScoredBuildRuntime,
     ScoredLocalProjection,
+    ScoredProjectionInputs,
     build_scored_hybrid,
     build_scored_local,
 )
@@ -300,7 +300,7 @@ def _operations(
         tomorrow_input,
         policy,
         sequence=1,
-        runtime=ScoredBuildRuntime(model_scoring=model_scoring),
+        runtime=ScoredProjectionInputs(model_scoring=model_scoring),
     )
     reviews = _abstaining_reviews(local_projection, observed_at)
     api_operations = _api_operations(candidates, observed_at)
@@ -311,7 +311,7 @@ def _operations(
             tomorrow_input,
             policy,
             sequence=1,
-            runtime=ScoredBuildRuntime(model_scoring=model_scoring),
+            runtime=ScoredProjectionInputs(model_scoring=model_scoring),
         )
 
     def candidate_projection() -> object:
@@ -319,7 +319,7 @@ def _operations(
             candidate_input,
             policy,
             sequence=1,
-            runtime=ScoredBuildRuntime(model_scoring=model_scoring),
+            runtime=ScoredProjectionInputs(model_scoring=model_scoring),
         )
 
     def active_score(strategy: Strategy, item: FeatureSnapshot) -> LocalScoreResult:

@@ -23,8 +23,8 @@ from trader.domain.research.tomorrow_joint import (
     seal_tomorrow_joint_insufficient_terminal,
 )
 
-TomorrowJointProfileId = Literal["v1", "v2", "c3"]
-_PROFILES: tuple[TomorrowJointProfileId, ...] = ("v1", "v2", "c3")
+TomorrowJointProfileId = Literal["v1", "v2", "daily_close_ensemble"]
+_PROFILES: tuple[TomorrowJointProfileId, ...] = ("v1", "v2", "daily_close_ensemble")
 
 
 @dataclass(frozen=True)
@@ -63,7 +63,7 @@ class TomorrowJointProfileBatch:
 
     def __post_init__(self) -> None:
         if self.profile_id not in _PROFILES:
-            raise ValueError("Tomorrow joint batch profile must be V1, V2, or C3")
+            raise ValueError("Tomorrow joint batch profile must be V1, V2, or daily-close model selection")
         if self.prediction_semantics != "pre_base_score_cost_adjusted_net_excess":
             raise ValueError("Tomorrow joint batch prediction semantics must precede base-score mapping")
         if not self.rows:
@@ -141,11 +141,11 @@ class TomorrowJointInference:
 def align_tomorrow_joint_batches(
     batches: tuple[TomorrowJointProfileBatch, ...],
 ) -> TomorrowJointAlignedDataset:
-    """Align V1/V2/C3 on the strict common eligible intersection."""
+    """Align V1/V2/daily-close model selection on the strict common eligible intersection."""
 
     by_profile = {batch.profile_id: batch for batch in batches}
     if len(batches) != len(_PROFILES) or tuple(sorted(by_profile)) != tuple(sorted(_PROFILES)):
-        raise ValueError("Tomorrow joint alignment requires exactly one V1, V2, and C3 batch")
+        raise ValueError("Tomorrow joint alignment requires exactly one V1, V2, and daily-close model selection batch")
     rows_by_profile = {profile_id: {row.key: row for row in by_profile[profile_id].rows} for profile_id in _PROFILES}
     union = frozenset().union(*(frozenset(rows) for rows in rows_by_profile.values()))
     common = frozenset.intersection(*(frozenset(rows) for rows in rows_by_profile.values()))
@@ -155,7 +155,7 @@ def align_tomorrow_joint_batches(
     for key in sorted(common):
         v1 = rows_by_profile["v1"][key]
         v2 = rows_by_profile["v2"][key]
-        c3 = rows_by_profile["c3"][key]
+        daily_close_ensemble = rows_by_profile["daily_close_ensemble"][key]
         metadata = {
             (
                 row.candidate_order,
@@ -164,7 +164,7 @@ def align_tomorrow_joint_batches(
                 row.actual_net_excess_50bp,
                 row.severe_loss,
             )
-            for row in (v1, v2, c3)
+            for row in (v1, v2, daily_close_ensemble)
         }
         if len(metadata) != 1:
             raise ValueError("Tomorrow joint common rows must share metadata and mature labels")
@@ -179,7 +179,7 @@ def align_tomorrow_joint_batches(
                 severe_loss=v1.severe_loss,
                 v1_predicted_net_excess_20bp=v1.predicted_net_excess_20bp,
                 v2_predicted_net_excess_20bp=v2.predicted_net_excess_20bp,
-                c3_predicted_net_excess_20bp=c3.predicted_net_excess_20bp,
+                daily_close_ensemble_predicted_net_excess_20bp=daily_close_ensemble.predicted_net_excess_20bp,
             )
         )
     ordered = tuple(sorted(aligned, key=lambda item: (item.trade_date, item.candidate_order, item.code)))
@@ -241,7 +241,7 @@ def seal_tomorrow_joint_data_insufficient(
     parent_profile_hashes: tuple[tuple[str, str], ...],
     failure_reasons: tuple[str, ...],
 ) -> TomorrowJointInsufficientTerminal:
-    """Close the V1/V2/C3 joint branch without fabricating raw predictions."""
+    """Close the V1/V2/daily-close model selection joint branch without fabricating raw predictions."""
 
     return seal_tomorrow_joint_insufficient_terminal(
         parent_completion_hash=parent_completion_hash,

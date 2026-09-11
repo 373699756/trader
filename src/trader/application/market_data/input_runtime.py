@@ -36,8 +36,8 @@ from trader.application.recommendation.candidate_planning import (
 )
 from trader.application.recommendation.policy import RecommendationPolicy
 from trader.application.recommendation.scored_projection import (
-    ScoredBuildRuntime,
     ScoredLocalProjection,
+    ScoredProjectionInputs,
     build_scored_local,
 )
 from trader.application.recommendation.scored_quality import has_transient_candidate_gap
@@ -729,7 +729,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                     today_native,
                     self._policy,
                     sequence=sequence,
-                    runtime=ScoredBuildRuntime(
+                    runtime=ScoredProjectionInputs(
                         model_scoring=self._model_scoring,
                         scoring_context=_model_scoring_context(request, batch, self._now()),
                         candidate_stage_counts=batch.candidate_stage_counts,
@@ -754,7 +754,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                     tomorrow_native,
                     self._policy,
                     sequence=sequence,
-                    runtime=ScoredBuildRuntime(
+                    runtime=ScoredProjectionInputs(
                         model_scoring=self._model_scoring,
                         scoring_context=_model_scoring_context(request, batch, self._now()),
                         candidate_stage_counts=batch.candidate_stage_counts,

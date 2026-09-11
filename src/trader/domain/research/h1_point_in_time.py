@@ -8,8 +8,6 @@ be proved to have been available at a historical decision anchor.
 from __future__ import annotations
 
 import dataclasses
-import hashlib
-import json
 import math
 import re
 from dataclasses import dataclass
@@ -17,6 +15,7 @@ from datetime import date, datetime, time
 from typing import Literal
 from zoneinfo import ZoneInfo
 
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.historical_screening import HistoricalPriceBar
 
 _IDENTITY = re.compile(r"^[a-z0-9_]{1,64}$")
@@ -30,14 +29,14 @@ H1_MIN_COMMON_DAYS = 1000
 H1_MIN_COVERAGE = 0.95
 H1_TERMINAL_HOLDOUT_DAYS = 200
 
-H1Strategy = Literal["today", "tomorrow", "d25"]
+ResearchStrategy = Literal["today", "tomorrow", "d25"]
 H1AnchorKind = Literal["today_1120", "tomorrow_1450", "d25_1450"]
 H1CoverageState = Literal["coverage_ready", "historical_data_insufficient"]
 
 
 @dataclass(frozen=True)
 class H1PointInTimeSpec:
-    strategy: H1Strategy
+    strategy: ResearchStrategy
     research_identity: str = H1_RESEARCH_IDENTITY
     registered_on: date = H1_REGISTERED_ON
     source_cutoff: date = H1_SOURCE_CUTOFF
@@ -63,10 +62,7 @@ class H1PointInTimeSpec:
             raise ValueError("H1 coverage threshold is invalid")
         if self.promotion_authority:
             raise ValueError("H1 research cannot have production authority")
-        payload = {
-            field.name: _canonical(getattr(self, field.name)) for field in dataclasses.fields(self) if field.init
-        }
-        object.__setattr__(self, "content_hash", _sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"))))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
     @property
     def anchor_kind(self) -> H1AnchorKind:
@@ -79,7 +75,7 @@ class H1PointInTimeSpec:
 
 @dataclass(frozen=True)
 class H1PointInTimeRecord:
-    strategy: H1Strategy
+    strategy: ResearchStrategy
     code: str
     trade_date: date
     observed_at: datetime
@@ -97,7 +93,7 @@ class H1PointInTimeRecord:
         _validate_h1_record_identity(self)
         _validate_h1_record_anchor(self)
         _validate_h1_record_hashes(self)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 def _validate_h1_record_identity(record: H1PointInTimeRecord) -> None:
@@ -153,7 +149,7 @@ class H1CapabilityProbe:
             raise ValueError("H1 capability limits are invalid")
         if not math.isfinite(self.estimated_seconds) or self.estimated_seconds < 0:
             raise ValueError("H1 capability estimate is invalid")
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
     @property
     def point_in_time_anchors_proven(self) -> bool:
@@ -162,7 +158,7 @@ class H1CapabilityProbe:
 
 @dataclass(frozen=True)
 class H1CapabilityStrategyStatus:
-    strategy: H1Strategy
+    strategy: ResearchStrategy
     state: H1CoverageState
     failure_reasons: tuple[str, ...]
     terminal_holdout_opened: bool = False
@@ -207,7 +203,7 @@ class H1CapabilityAuditReport:
         object.__setattr__(self, "probes", probes)
         object.__setattr__(self, "strategies", strategies)
         object.__setattr__(self, "probe_failures", failures)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 def build_h1_capability_audit(
@@ -272,12 +268,12 @@ class H1CoverageManifest:
             raise ValueError("H1 manifest dates are invalid")
         if self.state not in ("coverage_ready", "historical_data_insufficient"):
             raise ValueError("H1 coverage state is invalid")
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
 class H1CoverageAudit:
-    strategy: H1Strategy
+    strategy: ResearchStrategy
     manifest: H1CoverageManifest
     coverage_ratio: float
     terminal_holdout_opened: bool = False
@@ -287,26 +283,6 @@ class H1CoverageAudit:
             raise ValueError("H1 audit values are invalid")
         if self.terminal_holdout_opened:
             raise ValueError("H1 coverage audit cannot open terminal holdout")
-
-
-def canonical_hash(value: object) -> str:
-    return _sha256(json.dumps(_canonical(value), ensure_ascii=True, sort_keys=True, separators=(",", ":")))
-
-
-def _canonical(value: object) -> object:
-    if dataclasses.is_dataclass(value):
-        return {field.name: _canonical(getattr(value, field.name)) for field in dataclasses.fields(value) if field.init}
-    if isinstance(value, (date, datetime)):
-        return value.isoformat()
-    if isinstance(value, (tuple, list)):
-        return [_canonical(item) for item in value]
-    if isinstance(value, dict):
-        return {str(key): _canonical(item) for key, item in value.items()}
-    return value
-
-
-def _sha256(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 __all__ = [
@@ -319,10 +295,9 @@ __all__ = [
     "H1PointInTimeSpec",
     "H1AnchorKind",
     "H1CoverageState",
-    "H1Strategy",
+    "ResearchStrategy",
     "H1_RESEARCH_IDENTITY",
     "H1_REGISTERED_ON",
     "H1_SOURCE_CUTOFF",
-    "canonical_hash",
     "build_h1_capability_audit",
 ]

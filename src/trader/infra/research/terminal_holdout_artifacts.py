@@ -8,7 +8,7 @@ import tempfile
 from datetime import date
 from pathlib import Path
 
-from trader.application.research.replay_models import canonical_json
+from trader.domain.research.artifact_identity import canonical_artifact_json
 from trader.domain.research.terminal_holdout import (
     TerminalHoldoutMetrics,
     TerminalHoldoutReport,
@@ -40,7 +40,7 @@ class TerminalHoldoutArtifactStore:
         temporary = Path(temporary_name)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(canonical_json(payload))
+                handle.write(canonical_artifact_json(payload))
                 handle.flush()
                 os.fsync(handle.fileno())
             try:
@@ -231,7 +231,7 @@ def _decode_metrics(raw: dict[str, object]) -> TerminalHoldoutMetrics:
 def _canonical_hash(value: object) -> str:
     from hashlib import sha256
 
-    return sha256(canonical_json(value).encode()).hexdigest()
+    return sha256(canonical_artifact_json(value).encode()).hexdigest()
 
 
 def _string(value: object) -> str:

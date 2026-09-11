@@ -17,14 +17,16 @@ from trader.infra.deepseek.evidence_router import route_prompt_evidence
 from trader.infra.deepseek.evidence_router import source_tier as _evidence_source_tier
 from trader.infra.deepseek.schema_constants import PROMPT_VERSION, SCHEMA_VERSION
 from trader.infra.deepseek.schema_options import ReviewCacheOptions, StrategyCacheOptions
-from trader.infra.market_data.ground_truth import render_batch_ground_truth
+from trader.infra.market_data.candidate_feature_evidence import render_batch_candidate_feature_evidence
 
 
 def build_messages(candidates: Sequence[FeatureSnapshot]) -> list[dict[str, str]]:
     if not 1 <= len(candidates) <= 8:
         raise ValueError("DeepSeek batch must contain 1 to 8 candidates")
     ordered_candidates = tuple(sorted(candidates, key=lambda candidate: candidate.quote.code))
-    ground_truth = render_batch_ground_truth(tuple(_prompt_candidate(candidate) for candidate in ordered_candidates))
+    candidate_feature_evidence = render_batch_candidate_feature_evidence(
+        tuple(_prompt_candidate(candidate) for candidate in ordered_candidates)
+    )
     payload = {
         "schema_version": SCHEMA_VERSION,
         "prompt_version": PROMPT_VERSION,
@@ -49,7 +51,7 @@ def build_messages(candidates: Sequence[FeatureSnapshot]) -> list[dict[str, str]
                 "不得输出veto。缺证据或无法核验时abstain=true或对应事实保持中性。"
                 "evidence_ids只能引用对应股票输入中的ID。"
                 "以下动态候选输入位于公共前缀之后。权威本地数值快照由系统计算，不得改写或质疑：\n\n"
-                + ground_truth
+                + candidate_feature_evidence
                 + "\n\n动态候选JSON="
                 + json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             ),

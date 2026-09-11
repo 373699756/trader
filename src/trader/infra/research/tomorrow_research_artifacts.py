@@ -12,7 +12,6 @@ from datetime import date
 from pathlib import Path
 from typing import Literal, cast
 
-from trader.application.research.replay_models import canonical_hash, canonical_json, canonical_value
 from trader.application.research.tomorrow_research_artifacts import (
     TomorrowResearchArtifactGraph,
     TomorrowResearchArtifactRef,
@@ -25,6 +24,11 @@ from trader.application.research.tomorrow_research_artifacts import (
     derive_tomorrow_research_run_id,
     next_research_stage,
     production_readiness_audit,
+)
+from trader.domain.research.artifact_identity import (
+    canonical_artifact_hash,
+    canonical_artifact_json,
+    canonical_artifact_value,
 )
 from trader.infra.process_lock import ProcessLock, ProcessLockError
 
@@ -239,11 +243,11 @@ class TomorrowResearchArtifactStore:
 
 
 def _encode(value: TomorrowResearchArtifactGraph | TomorrowResearchStageHandoff) -> str:
-    payload = canonical_value(value)
+    payload = canonical_artifact_value(value)
     if not isinstance(payload, dict):
         raise TypeError("Tomorrow research artifact must encode to an object")
     payload["content_hash"] = value.content_hash
-    return canonical_json(payload)
+    return canonical_artifact_json(payload)
 
 
 def _available_disk_gb(path: Path) -> float:
@@ -415,7 +419,7 @@ def _report(
         ],
         "completed_stage": handoff.stage,
         "next_stage": next_stage,
-        "resource_probe": canonical_value(resource_probe),
+        "resource_probe": canonical_artifact_value(resource_probe),
         "evidence_partitions": [
             {
                 "relative_path": item.relative_path,
@@ -435,8 +439,8 @@ def _report(
         "production_authority": False,
         "automatic_model_update": False,
     }
-    payload["content_hash"] = canonical_hash(payload)
-    return canonical_json(payload)
+    payload["content_hash"] = canonical_artifact_hash(payload)
+    return canonical_artifact_json(payload)
 
 
 def _read_report_resource_probe(path: Path) -> TomorrowResearchResourceProbe | None:
@@ -490,7 +494,7 @@ def _verified_object(encoded: str) -> dict[str, object]:
         raise TypeError("Tomorrow research artifact must be an object")
     payload = cast(dict[str, object], raw)
     stored_hash = payload.pop("content_hash")
-    if not isinstance(stored_hash, str) or canonical_hash(payload) != stored_hash:
+    if not isinstance(stored_hash, str) or canonical_artifact_hash(payload) != stored_hash:
         raise ValueError("Tomorrow research artifact hash mismatch")
     payload["content_hash"] = stored_hash
     return payload
@@ -502,10 +506,10 @@ def _verified_model_document(encoded: str, expected_hash: str) -> str:
         raise TomorrowResearchArtifactStoreError("Tomorrow research model document is invalid")
     payload = cast(dict[str, object], raw)
     stored_hash = payload.pop("content_hash", None)
-    if stored_hash != expected_hash or canonical_hash(payload) != expected_hash:
+    if stored_hash != expected_hash or canonical_artifact_hash(payload) != expected_hash:
         raise TomorrowResearchArtifactStoreError("Tomorrow research model document hash is invalid")
     payload["content_hash"] = expected_hash
-    return canonical_json(payload)
+    return canonical_artifact_json(payload)
 
 
 def _seal_immutable(path: Path, encoded: str) -> None:

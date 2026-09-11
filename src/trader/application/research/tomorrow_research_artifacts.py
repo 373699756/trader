@@ -10,7 +10,7 @@ from datetime import date
 from pathlib import PurePosixPath
 from typing import Literal
 
-from trader.application.research.replay_models import canonical_hash
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 
 TomorrowResearchStage = Literal[
     "resource_probe",
@@ -47,7 +47,7 @@ _REQUIRED_ARTIFACTS: dict[TomorrowResearchStage, frozenset[str]] = {
     "development_training": frozenset(
         {
             "h1_coverage_audit",
-            "daily_close_c3_candidate",
+            "daily_close_model_selection",
             "filter_confirmation",
             "tomorrow_joint_candidate",
         }
@@ -66,7 +66,7 @@ _TERMINAL_REPORT_ARTIFACT: dict[TomorrowResearchStage, str] = {
 _ARTIFACT_KINDS = {
     "resource_probe_report": "resource_probe",
     "h1_coverage_audit": "h1_research_completion",
-    "daily_close_c3_candidate": "daily_close_c3_candidate",
+    "daily_close_model_selection": "daily_close_model_selection",
     "filter_confirmation": "filter_confirmation",
     "tomorrow_joint_candidate": "tomorrow_joint_candidate",
     "daily_close_confirmation_report": "daily_close_confirmation_report",
@@ -131,7 +131,7 @@ class TomorrowResearchArtifactGraph:
         if self.production_authority or self.automatic_model_update:
             raise ValueError("Tomorrow research artifact graph cannot authorize production or automatic updates")
         object.__setattr__(self, "artifacts", artifacts)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
     def extend(self, artifacts: tuple[TomorrowResearchArtifactRef, ...]) -> TomorrowResearchArtifactGraph:
         return TomorrowResearchArtifactGraph((*self.artifacts, *artifacts))
@@ -232,7 +232,7 @@ class TomorrowResearchStageHandoff:
         object.__setattr__(self, "artifacts", artifacts)
         object.__setattr__(self, "evidence_partitions", evidence)
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -259,7 +259,7 @@ class TomorrowProductionReadinessAudit:
         if self.production_authority or self.automatic_model_update:
             raise ValueError("Tomorrow production readiness audit cannot grant production authority")
         object.__setattr__(self, "blockers", blockers)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 def next_research_stage(graph: TomorrowResearchArtifactGraph) -> TomorrowResearchStage | None:
@@ -276,7 +276,7 @@ def derive_tomorrow_research_run_id(graph: TomorrowResearchArtifactGraph) -> str
     resource_probe = _artifact(graph, "resource_probe_report")
     if resource_probe is None:
         return None
-    return canonical_hash(
+    return canonical_artifact_hash(
         {
             "schema_version": "tomorrow_research_run_identity",
             "sealed_input_and_resource_probe_hash": resource_probe.content_hash,

@@ -1,4 +1,4 @@
-"""Date-ordered confirmation and Holm control for transparent candidates."""
+"""Date-ordered confirmation and Holm control for preregistered rule candidates."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from trader.domain.research.paired_statistics import (
     fixed_family_holm,
     paired_moving_block_statistics,
 )
-from trader.domain.research.transparent_candidate import TransparentCandidateFamily
+from trader.domain.research.preregistered_rule_candidate import PreregisteredRuleCandidateFamily
 
 ConfirmationStatus = Literal["historical_candidate_ready", "historical_rejected", "historical_data_insufficient"]
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -182,7 +182,7 @@ class CandidateConfirmationPlan:
 
 @dataclass(frozen=True)
 class _ConfirmationSegment:
-    family: TransparentCandidateFamily
+    family: PreregisteredRuleCandidateFamily
     plan: CandidateConfirmationPlan
     supplied: dict[str, CandidateConfirmationSeries]
     ids: tuple[str, ...]
@@ -202,7 +202,7 @@ class _ConfirmationStatistics:
 
 
 def _evaluate_candidate_family_segment(
-    family: TransparentCandidateFamily,
+    family: PreregisteredRuleCandidateFamily,
     series: tuple[CandidateConfirmationSeries, ...],
     plan: CandidateConfirmationPlan,
     additional_series: tuple[CandidateConfirmationSeries, ...] = (),
@@ -248,7 +248,7 @@ def _evaluate_candidate_family_segment(
 
 
 def _prepare_confirmation_segment(
-    family: TransparentCandidateFamily,
+    family: PreregisteredRuleCandidateFamily,
     series: tuple[CandidateConfirmationSeries, ...],
     additional_series: tuple[CandidateConfirmationSeries, ...],
     plan: CandidateConfirmationPlan,
@@ -268,7 +268,7 @@ def _prepare_confirmation_segment(
         raise ValueError("confirmation candidates must share identical dates")
     registered_challengers = ids[1:]
     if plan.selected_candidate_id not in registered_challengers:
-        raise ValueError("confirmation selected candidate must belong to the sealed transparent family")
+        raise ValueError("confirmation selected candidate must belong to the sealed preregistered rule family")
     challenger_ids = tuple(item for item in supplied if item != ids[0])
     return _ConfirmationSegment(
         family,
@@ -437,8 +437,8 @@ def _optional_mean(values: tuple[float, ...], default: float | None = None) -> f
     return _mean(values) if values else default
 
 
-def confirm_transparent_candidates(
-    family: TransparentCandidateFamily,
+def confirm_rule_candidates(
+    family: PreregisteredRuleCandidateFamily,
     development_series: tuple[CandidateConfirmationSeries, ...],
     confirmation_series: tuple[CandidateConfirmationSeries, ...],
     plan: CandidateConfirmationPlan,
@@ -474,7 +474,7 @@ def confirm_transparent_candidates(
         raise ValueError("confirmation control and selected candidate must share identical dates")
     if confirmation_dates[0] <= development_series[0].trade_dates[-1]:
         raise ValueError("confirmation dates must strictly follow development dates")
-    confirmation_family = TransparentCandidateFamily(
+    confirmation_family = PreregisteredRuleCandidateFamily(
         strategy=family.strategy,
         candidates=(candidates[control_id], candidates[plan.selected_candidate_id]),
         source_ablation_hash=family.source_ablation_hash,
@@ -546,7 +546,7 @@ def build_confirmation_folds(confirmation_dates: tuple[date, ...]) -> tuple[tupl
 
 
 def _insufficient(
-    family: TransparentCandidateFamily, dates: tuple[date, ...], ids: tuple[str, ...]
+    family: PreregisteredRuleCandidateFamily, dates: tuple[date, ...], ids: tuple[str, ...]
 ) -> HistoricalCandidateConfirmationReport:
     return HistoricalCandidateConfirmationReport(
         family.strategy,
@@ -561,7 +561,7 @@ def _insufficient(
 
 
 def inherit_candidate_confirmation(
-    family: TransparentCandidateFamily,
+    family: PreregisteredRuleCandidateFamily,
     *,
     confirmation_dates: tuple[date, ...],
     status: Literal["historical_rejected", "historical_data_insufficient"],
@@ -586,7 +586,7 @@ def _mean(values: tuple[float, ...]) -> float:
 
 
 def _hash(value: object) -> str:
-    from trader.domain.research.transparent_candidate import _hash as candidate_hash
+    from trader.domain.research.preregistered_rule_candidate import _hash as candidate_hash
 
     return candidate_hash(value)
 
@@ -597,6 +597,6 @@ __all__ = [
     "CandidateConfirmationSeries",
     "HistoricalCandidateConfirmationReport",
     "build_confirmation_folds",
-    "confirm_transparent_candidates",
+    "confirm_rule_candidates",
     "inherit_candidate_confirmation",
 ]

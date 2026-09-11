@@ -11,17 +11,17 @@ from pathlib import Path
 
 from trader.application.research.historical_label import HistoricalLabelPreregistrationService
 from trader.application.research.history_archive_status import HistoryArchiveStatus
-from trader.application.research.research_tomorrow_orchestrator import (
-    TomorrowResearchAdvanceResult,
-    TomorrowResearchProgressPort,
-)
 from trader.application.research.tomorrow_research_artifacts import (
     TomorrowResearchStage,
     derive_tomorrow_research_run_id,
     next_research_stage,
     production_readiness_audit,
 )
-from trader.application.research.tomorrow_research_prerequisites import TomorrowLabelReadinessPrerequisite
+from trader.application.research.tomorrow_research_orchestrator import (
+    TomorrowResearchAdvanceResult,
+    TomorrowResearchProgressPort,
+)
+from trader.application.research.tomorrow_research_prerequisites import TomorrowLabelReadinessInspector
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC
 from trader.domain.research.tomorrow_historical import TOMORROW_HISTORICAL_SPEC
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
@@ -371,9 +371,9 @@ def _tomorrow_research_result_payload(
     }
 
 
-def _tomorrow_research_prerequisite(runtime: RuntimeSettings) -> TomorrowLabelReadinessPrerequisite:
+def _tomorrow_research_prerequisite(runtime: RuntimeSettings) -> TomorrowLabelReadinessInspector:
     archive = SQLiteH1PointInTimeArchive(runtime.runtime_dir)
-    return TomorrowLabelReadinessPrerequisite(HistoricalLabelPreregistrationService(archive))
+    return TomorrowLabelReadinessInspector(HistoricalLabelPreregistrationService(archive))
 
 
 def _read_tomorrow_historical_status(runtime: RuntimeSettings) -> dict[str, object]:

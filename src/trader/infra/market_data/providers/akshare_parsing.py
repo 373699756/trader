@@ -8,25 +8,14 @@ import json
 import logging
 import math
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime, time
-from typing import Protocol
 from zoneinfo import ZoneInfo
 
 import requests
 
 _LOGGER = logging.getLogger(__name__)
 
-
-class HttpResponse(Protocol):
-    text: str
-
-    def raise_for_status(self) -> None: ...
-
-    def json(self) -> object: ...
-
-
-GetFunction = Callable[..., HttpResponse]
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 _DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
 _SOURCE_EXCEPTIONS = (OSError, RuntimeError, ValueError, requests.RequestException)

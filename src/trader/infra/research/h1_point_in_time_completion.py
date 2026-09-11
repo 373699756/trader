@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Literal, cast
 
 from trader.application.research.h1_point_in_time_completion import H1ResearchCompletion
-from trader.domain.research.h1_point_in_time import H1Strategy, canonical_hash
+from trader.domain.research.artifact_identity import canonical_artifact_hash
+from trader.domain.research.h1_point_in_time import ResearchStrategy
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -26,8 +27,8 @@ class H1ResearchCompletionArtifactIndex:
     completion_hash: str
     capability_hash: str
     label_batch_hash: str
-    residual_terminal_hashes: tuple[tuple[H1Strategy, str], ...]
-    c3_terminal_hash: str
+    residual_terminal_hashes: tuple[tuple[ResearchStrategy, str], ...]
+    daily_close_selection_hash: str
     status: Literal["historical_data_insufficient"] = "historical_data_insufficient"
     terminal_holdout_opened: bool = False
     production_authority: bool = False
@@ -40,7 +41,7 @@ class H1ResearchCompletionArtifactIndex:
             self.completion_hash,
             self.capability_hash,
             self.label_batch_hash,
-            self.c3_terminal_hash,
+            self.daily_close_selection_hash,
         ):
             _hash(value)
         residuals = tuple(
@@ -57,7 +58,7 @@ class H1ResearchCompletionArtifactIndex:
         if self.schema_version != "h1_terminal_index":
             raise ValueError("H1 research terminal index schema is invalid")
         object.__setattr__(self, "residual_terminal_hashes", residuals)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 class H1ResearchCompletionArtifactStore:
@@ -102,7 +103,7 @@ class H1ResearchCompletionArtifactStore:
                 raise TypeError("H1 research terminal artifact is not an object")
             payload = cast(dict[str, object], raw)
             stored_hash = payload.pop("content_hash")
-            if not isinstance(stored_hash, str) or canonical_hash(payload) != stored_hash:
+            if not isinstance(stored_hash, str) or canonical_artifact_hash(payload) != stored_hash:
                 raise ValueError("H1 research terminal artifact hash mismatch")
             index = _decode(payload)
             if index.content_hash != stored_hash:
@@ -120,7 +121,7 @@ def _index(completion: H1ResearchCompletion) -> H1ResearchCompletionArtifactInde
         capability_hash=completion.capability_hash,
         label_batch_hash=completion.labels.content_hash,
         residual_terminal_hashes=tuple((item.strategy, item.content_hash) for item in completion.residual_ledgers),
-        c3_terminal_hash=completion.c3.content_hash,
+        daily_close_selection_hash=completion.daily_close_selection.content_hash,
     )
 
 
@@ -130,7 +131,7 @@ def _encode(index: H1ResearchCompletionArtifactIndex) -> dict[str, object]:
         "capability_hash": index.capability_hash,
         "label_batch_hash": index.label_batch_hash,
         "residual_terminal_hashes": [list(item) for item in index.residual_terminal_hashes],
-        "c3_terminal_hash": index.c3_terminal_hash,
+        "daily_close_selection_hash": index.daily_close_selection_hash,
         "status": index.status,
         "terminal_holdout_opened": index.terminal_holdout_opened,
         "production_authority": index.production_authority,
@@ -145,7 +146,7 @@ def _decode(raw: dict[str, object]) -> H1ResearchCompletionArtifactIndex:
         "capability_hash",
         "label_batch_hash",
         "residual_terminal_hashes",
-        "c3_terminal_hash",
+        "daily_close_selection_hash",
         "status",
         "terminal_holdout_opened",
         "production_authority",
@@ -157,17 +158,17 @@ def _decode(raw: dict[str, object]) -> H1ResearchCompletionArtifactIndex:
     residuals = raw["residual_terminal_hashes"]
     if not isinstance(residuals, list):
         raise TypeError("H1 research residual terminal references are invalid")
-    values: list[tuple[H1Strategy, str]] = []
+    values: list[tuple[ResearchStrategy, str]] = []
     for item in residuals:
         if not isinstance(item, list) or len(item) != 2 or not all(isinstance(value, str) for value in item):
             raise TypeError("H1 research residual terminal reference is invalid")
-        values.append((cast(H1Strategy, item[0]), cast(str, item[1])))
+        values.append((cast(ResearchStrategy, item[0]), cast(str, item[1])))
     return H1ResearchCompletionArtifactIndex(
         completion_hash=_string(raw["completion_hash"]),
         capability_hash=_string(raw["capability_hash"]),
         label_batch_hash=_string(raw["label_batch_hash"]),
         residual_terminal_hashes=tuple(values),
-        c3_terminal_hash=_string(raw["c3_terminal_hash"]),
+        daily_close_selection_hash=_string(raw["daily_close_selection_hash"]),
         status=cast(Literal["historical_data_insufficient"], _string(raw["status"])),
         terminal_holdout_opened=_bool(raw["terminal_holdout_opened"]),
         production_authority=_bool(raw["production_authority"]),

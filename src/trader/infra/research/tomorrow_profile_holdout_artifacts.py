@@ -6,12 +6,12 @@ import json
 import os
 from pathlib import Path
 
-from trader.application.research.replay_models import canonical_hash, canonical_json
-from trader.application.research.tomorrow_historical_models import TomorrowHistoricalGateMetrics
+from trader.application.research.tomorrow_historical_report import TomorrowHistoricalGateMetrics
 from trader.application.research.tomorrow_profile_holdout import (
     TomorrowProfileHoldoutMetrics,
     TomorrowProfileHoldoutReport,
 )
+from trader.domain.research.artifact_identity import canonical_artifact_hash, canonical_artifact_json
 
 
 class TomorrowProfileHoldoutArtifactConflictError(RuntimeError):
@@ -31,7 +31,7 @@ class TomorrowProfileHoldoutArtifactStore:
                 raise TomorrowProfileHoldoutArtifactConflictError("Tomorrow profile holdout identity conflict")
             return report.content_hash
         temporary = self._path.with_name(f".{self._path.name}.{os.getpid()}.tmp")
-        temporary.write_text(canonical_json(payload), encoding="utf-8")
+        temporary.write_text(canonical_artifact_json(payload), encoding="utf-8")
         try:
             try:
                 os.link(temporary, self._path)
@@ -53,7 +53,7 @@ class TomorrowProfileHoldoutArtifactStore:
             if not isinstance(raw, dict):
                 raise TypeError("Tomorrow profile holdout artifact is not an object")
             stored = raw.pop("content_hash")
-            if not isinstance(stored, str) or canonical_hash(raw) != stored:
+            if not isinstance(stored, str) or canonical_artifact_hash(raw) != stored:
                 raise ValueError("Tomorrow profile holdout hash mismatch")
         except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise TomorrowProfileHoldoutArtifactConflictError("Tomorrow profile holdout artifact is invalid") from exc

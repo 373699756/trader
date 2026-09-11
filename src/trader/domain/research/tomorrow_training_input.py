@@ -9,7 +9,7 @@ from datetime import date
 from typing import Literal
 
 from trader.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
-from trader.domain.research.h1_point_in_time import canonical_hash
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 
 TomorrowInputCompatibilityStatus = Literal["compatible", "incompatible"]
 
@@ -82,7 +82,7 @@ class FrozenDailyInputDescriptor:
         if not self.fields or len({field.name for field in self.fields}) != len(self.fields):
             raise ValueError("Tomorrow training input fields must be present and unique")
         object.__setattr__(self, "fields", tuple(sorted(self.fields)))
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -125,7 +125,7 @@ class TomorrowInputCompatibility:
         if self.schema_version != "tomorrow_training_input":
             raise ValueError("Tomorrow training input compatibility schema is invalid")
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 def evaluate_tomorrow_training_input(

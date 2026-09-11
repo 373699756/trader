@@ -24,7 +24,7 @@ from trader.domain.market.research import (
 from trader.domain.market.tail import MinuteBar
 from trader.infra.market_data.history.history import DailyBar
 from trader.infra.market_data.normalization.merge_quote import source_name, source_priority
-from trader.infra.market_data.service.service_models import _ResearchEntry
+from trader.infra.market_data.service.market_feature_cache_entries import _ResearchEntry
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")

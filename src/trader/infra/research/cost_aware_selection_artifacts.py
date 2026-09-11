@@ -7,7 +7,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from trader.application.research.cost_aware_selection_models import CostAwareSelectionReport
+from trader.application.research.cost_aware_selection_report import CostAwareSelectionReport
 
 
 class CostAwareSelectionArtifactConflictError(RuntimeError):

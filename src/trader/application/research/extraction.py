@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
-from trader.application.research.models import (
+from trader.application.research.historical_extraction_models import (
     HistoricalCandidateProof,
     HistoricalCoverageRecord,
     HistoricalEvaluatedCandidate,
@@ -22,7 +22,7 @@ from trader.domain.research.historical import (
     optimistic_component_upper_bound,
     optimistic_final_upper_bound,
 )
-from trader.domain.research.specification import HISTORICAL_RESEARCH_SPEC, ScoreResearchSpec
+from trader.domain.research.specification import HISTORICAL_RESEARCH_SPEC, ScoringResearchSpec
 
 _PROOF_RULE_VERSION = "historical_active_set"
 
@@ -49,7 +49,7 @@ class HistoricalExtractor:
         evaluator: HistoricalCandidateEvaluator,
         *,
         policy: HistoricalExtractionPolicy | None = None,
-        spec: ScoreResearchSpec = HISTORICAL_RESEARCH_SPEC,
+        spec: ScoringResearchSpec = HISTORICAL_RESEARCH_SPEC,
     ) -> None:
         self._data_plane = data_plane
         self._evaluator = evaluator

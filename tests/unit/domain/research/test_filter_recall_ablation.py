@@ -7,10 +7,10 @@ from trader.domain.research.filter_recall_ablation import (
     FilterScoreComponent,
     run_filter_recall_ablation,
 )
-from trader.domain.research.transparent_candidate import (
-    TransparentCandidate,
-    evaluate_transparent_candidate,
-    preregister_transparent_candidates,
+from trader.domain.research.preregistered_rule_candidate import (
+    PreregisteredRuleCandidate,
+    evaluate_rule_candidate,
+    preregister_rule_candidates,
 )
 
 
@@ -58,11 +58,11 @@ def test_transparent_family_contains_control_and_never_authorizes_production():
     report = run_filter_recall_ablation(
         _rows(), strategy="tomorrow", development_dates=tuple(row.trade_date for row in _rows())
     )
-    family = preregister_transparent_candidates(report)
+    family = preregister_rule_candidates(report)
     assert family.candidates[0].change_kind == "control"
     assert len(family.candidates) <= 8
     assert family.production_authority is False
-    assert evaluate_transparent_candidate(family.candidates[0], _rows()).candidate_id.endswith("control")
+    assert evaluate_rule_candidate(family.candidates[0], _rows()).candidate_id.endswith("control")
 
 
 def test_candidate_missing_and_unknown_score_are_not_conflated_with_zero():
@@ -139,9 +139,9 @@ def test_severe_loss_guard_uses_point_in_time_risk_not_outcome_label():
             "predicted_severe_loss_risk": 0.05,
         }
     )
-    candidate = TransparentCandidate("tomorrow_cost_guard", "tomorrow", "cost_guard", severe_loss_guard=0.10)
+    candidate = PreregisteredRuleCandidate("tomorrow_cost_guard", "tomorrow", "cost_guard", severe_loss_guard=0.10)
 
-    metrics = evaluate_transparent_candidate(candidate, tuple(rows))
+    metrics = evaluate_rule_candidate(candidate, tuple(rows))
 
     assert metrics.evaluated_rows == 1
     assert metrics.severe_loss_rate == 1.0
@@ -168,13 +168,13 @@ def test_removed_component_recomputes_and_renormalizes_candidate_score():
             FilterScoreComponent("strong", 50.0, 0.75),
         ),
     )
-    control = TransparentCandidate("tomorrow_control", "tomorrow", "control")
-    candidate = TransparentCandidate(
+    control = PreregisteredRuleCandidate("tomorrow_control", "tomorrow", "control")
+    candidate = PreregisteredRuleCandidate(
         "tomorrow_remove_weak",
         "tomorrow",
         "remove_component",
         removed_component="weak",
     )
 
-    assert evaluate_transparent_candidate(control, (row,)).evaluated_rows == 0
-    assert evaluate_transparent_candidate(candidate, (row,)).evaluated_rows == 1
+    assert evaluate_rule_candidate(control, (row,)).evaluated_rows == 0
+    assert evaluate_rule_candidate(candidate, (row,)).evaluated_rows == 1

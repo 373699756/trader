@@ -13,7 +13,7 @@ from trader.application.decisions.decision_core import UnifiedDecisionIndex
 from trader.application.decisions.decision_events import DecisionCommitted
 from trader.application.decisions.decision_observers import DecisionObserverRuntime, DecisionObserverStatus
 from trader.application.decisions.decision_overlay_refresh import DecisionOverlayRefresher
-from trader.application.ports.clock import Clock
+from trader.application.ports.clock import Clock, TradingCalendarPort
 from trader.application.ports.market import ResearchRefreshResult
 from trader.application.ports.runtime_status import InputQualityStatus
 from trader.application.ports.scheduler import (
@@ -34,7 +34,6 @@ from trader.application.ports.scheduler import (
     SettlementPort,
     SettlementUnavailableError,
     SharedDeepSeekRuntimeContract,
-    TradingCalendarPort,
     TradingCalendarUnavailableError,
 )
 from trader.application.research.research_audit import DecisionObservation

@@ -11,7 +11,7 @@ DOMAIN = ROOT / "src/trader/domain/outcome/evaluation.py"
 MODELS = ROOT / "src/trader/domain/outcome/models.py"
 APPLICATION = ROOT / "src/trader/application/outcomes/outcome_settlement.py"
 PERSISTENCE = ROOT / "src/trader/infra/persistence/outcomes.py"
-HISTORY = ROOT / "src/trader/infra/market_data/history/service_history.py"
+HISTORY = ROOT / "src/trader/infra/market_data/history/daily_history_cache.py"
 WORK = ROOT / "docs/03_工程实施.md"
 
 

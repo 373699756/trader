@@ -8,11 +8,11 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.h1_point_in_time import (
     H1_SOURCE_CUTOFF,
     H1CoverageState,
-    H1Strategy,
-    canonical_hash,
+    ResearchStrategy,
 )
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -28,7 +28,7 @@ HistoricalAnchor = Literal["11:20", "14:50"]
 
 @dataclass(frozen=True)
 class H1CoverageMetadata:
-    strategy: H1Strategy
+    strategy: ResearchStrategy
     coverage_state: H1CoverageState
     common_trading_dates: tuple[date, ...]
     universe_hash: str
@@ -48,12 +48,12 @@ class H1CoverageMetadata:
         _strict_dates(self.common_trading_dates)
         if self.common_trading_dates and self.common_trading_dates[-1] > self.source_cutoff:
             raise ValueError("historical label dates exceed source cutoff")
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
 class HistoricalLabelContract:
-    strategy: H1Strategy
+    strategy: ResearchStrategy
     anchor: HistoricalAnchor
     label_version: str
     horizons: tuple[int, ...]
@@ -102,7 +102,7 @@ class HistoricalLabelContract:
             "benchmark_market_data",
         ):
             raise ValueError("historical label parity dimensions are invalid")
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -137,9 +137,9 @@ class HistoricalTemporalSplit:
             raise ValueError("historical label split date bounds are inconsistent")
         if len(self.terminal_holdout_dates) < _MINIMUM_TERMINAL_DAYS:
             raise ValueError("historical label terminal holdout must retain at least 200 dates")
-        if self.date_set_hash != canonical_hash(self.all_dates):
+        if self.date_set_hash != canonical_artifact_hash(self.all_dates):
             raise ValueError("historical label date set hash is invalid")
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
     @property
     def all_dates(self) -> tuple[date, ...]:
@@ -154,7 +154,7 @@ class HistoricalTemporalSplit:
 
 @dataclass(frozen=True)
 class HistoricalLabelPreregistration:
-    strategy: H1Strategy
+    strategy: ResearchStrategy
     status: HistoricalPreregistrationStatus
     h1_metadata_hash: str
     h1_manifest_hash: str
@@ -196,7 +196,7 @@ class HistoricalLabelPreregistration:
         if self.schema_version != "historical_label_preregistration":
             raise ValueError("historical label preregistration schema is invalid")
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -213,7 +213,7 @@ class HistoricalLabelPreregistrationBatch:
         if self.schema_version != "historical_label_preregistration_batch" or self.production_authority:
             raise ValueError("historical label batch cannot authorize production")
         object.__setattr__(self, "strategies", ordered)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 def preregister_historical_label(metadata: H1CoverageMetadata) -> HistoricalLabelPreregistration:
@@ -259,14 +259,14 @@ def _split(dates: tuple[date, ...]) -> HistoricalTemporalSplit:
         terminal_holdout_dates=dates[second_boundary:],
         first_trade_date=dates[0],
         last_trade_date=dates[-1],
-        date_set_hash=canonical_hash(dates),
+        date_set_hash=canonical_artifact_hash(dates),
     )
     if split.all_dates != dates:
         raise ValueError("historical label split must retain every date exactly once")
     return split
 
 
-def _label_contract(strategy: H1Strategy) -> HistoricalLabelContract:
+def _label_contract(strategy: ResearchStrategy) -> HistoricalLabelContract:
     anchor, label_version, horizons, aggregate, metrics = _label_values(strategy)
     return HistoricalLabelContract(
         strategy=strategy,
@@ -284,7 +284,7 @@ def _label_contract(strategy: H1Strategy) -> HistoricalLabelContract:
 
 
 def _label_values(
-    strategy: H1Strategy,
+    strategy: ResearchStrategy,
 ) -> tuple[HistoricalAnchor, str, tuple[int, ...], HistoricalLabelAggregate, tuple[str, ...]]:
     common = (
         "daily_portfolio_net_excess_mean",

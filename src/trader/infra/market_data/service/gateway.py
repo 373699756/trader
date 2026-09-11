@@ -32,7 +32,7 @@ from trader.domain.market.models import (
 )
 from trader.infra.market_data.normalization.columnar import (
     ColumnarQuoteBatch,
-    MarketChangeSet,
+    NormalizedMarketChangeSet,
     market_changes,
     targeted_market_changes,
 )
@@ -173,7 +173,7 @@ class MarketDataGateway:
         self._listing_open_dates_retry_at = 0.0
         self._latest_snapshot: CanonicalMarketSnapshot | None = None
         self._latest_batch: ColumnarQuoteBatch | None = None
-        self._latest_changes = MarketChangeSet("", (), (), ())
+        self._latest_changes = NormalizedMarketChangeSet("", (), (), ())
         self._latest_source = "unavailable"
         self._last_route_outcome: RouteOutcome | None = None
         self._merge_count = 0
@@ -935,14 +935,14 @@ def _try_columnar_snapshot(
 def _columnar_failure_changes(
     previous: CanonicalMarketSnapshot | None,
     current: CanonicalMarketSnapshot,
-) -> MarketChangeSet:
+) -> NormalizedMarketChangeSet:
     previous_quotes = {} if previous is None else {quote.code: quote for quote in previous.quotes}
     current_quotes = {quote.code: quote for quote in current.quotes}
     previous_codes = set(previous_quotes)
     current_codes = set(current_quotes)
     dirty_codes = tuple(sorted(previous_codes | current_codes))
     dimensions = (*previous_quotes.values(), *current_quotes.values())
-    return MarketChangeSet(
+    return NormalizedMarketChangeSet(
         merge_epoch=current.merge_epoch,
         inserted_codes=tuple(sorted(current_codes - previous_codes)),
         updated_codes=tuple(sorted(current_codes & previous_codes)),

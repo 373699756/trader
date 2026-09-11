@@ -17,7 +17,6 @@ from trader.domain.review.models import (
     ReviewCandidateContext,
     ReviewOutcome,
 )
-from trader.infra.deepseek.base_client import DeepSeekHttpResult
 from trader.infra.deepseek.challenger import (
     CHALLENGER_PROMPT_VERSION,
     CHALLENGER_SCHEMA_VERSION,
@@ -27,6 +26,7 @@ from trader.infra.deepseek.challenger import (
     merge_challenger_review,
     parse_challenger_reviews,
 )
+from trader.infra.deepseek.completion_client_contract import DeepSeekHttpResult
 from trader.infra.deepseek.reviewer_context import ReviewerContext
 from trader.infra.deepseek.reviewer_selection import (
     _automatic_emergency_reason,

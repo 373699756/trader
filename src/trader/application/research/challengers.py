@@ -8,7 +8,8 @@ from collections.abc import Callable
 from datetime import date
 from typing import Literal
 
-from trader.application.research.challenger_models import (
+from trader.application.research.baseline_replay_report import BaselineDayMetrics, HistoricalBaselineReport
+from trader.application.research.challenger_replay_report import (
     ChallengerCandidateOverride,
     ChallengerDayReplay,
     ChallengerReplaySelection,
@@ -16,13 +17,13 @@ from trader.application.research.challenger_models import (
     ChallengerSameStockPair,
     ChallengerVariantReplay,
 )
-from trader.application.research.models import (
+from trader.application.research.historical_extraction_models import (
     HistoricalEvaluatedCandidate,
     HistoricalExtractedDay,
     HistoricalExtraction,
 )
 from trader.application.research.ports import HistoricalChallengerReplayEvaluator
-from trader.application.research.replay_models import BaselineDayMetrics, HistoricalBaselineReport, canonical_hash
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.challengers import (
     ChallengerSpecification,
     ContinuousEntryInputs,
@@ -50,7 +51,7 @@ class ChallengerReplayer:
         baseline: HistoricalBaselineReport,
     ) -> ChallengerReport:
         _validate_parent_reports(extraction, baseline)
-        parameter_hash = canonical_hash(challenger_parameter_manifest())
+        parameter_hash = canonical_artifact_hash(challenger_parameter_manifest())
         baseline_by_date = {item.trade_date: item for item in baseline.days}
         variants = tuple(
             self._replay_variant(specification, extraction.days, baseline_by_date, parameter_hash)
@@ -203,13 +204,13 @@ def _validate_parent_reports(
     baseline: HistoricalBaselineReport,
 ) -> None:
     if baseline.extraction_hash != extraction.content_hash:
-        raise ValueError("Challenger replay baseline must bind the same historical extraction extraction")
+        raise ValueError("Challenger replay baseline must bind the same historical extraction")
     baseline_days = tuple((item.trade_date, item.day_hash, item.input_hash) for item in baseline.days)
     extraction_days = tuple(
         (item.summary.trade_date, item.content_hash, item.summary.input_hash) for item in extraction.days
     )
     if baseline_days != extraction_days:
-        raise ValueError("Challenger replay baseline days must match the historical extraction extraction")
+        raise ValueError("Challenger replay baseline days must match the historical extraction")
 
 
 def _validate_selections(

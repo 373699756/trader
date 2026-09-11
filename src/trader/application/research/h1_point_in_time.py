@@ -14,7 +14,7 @@ from trader.domain.research.h1_point_in_time import (
     H1CoverageAudit,
     H1PointInTimeRecord,
     H1PointInTimeSpec,
-    H1Strategy,
+    ResearchStrategy,
 )
 
 
@@ -22,16 +22,16 @@ class H1PointInTimeProvider(Protocol):
     def fetch(self, code: str, spec: H1PointInTimeSpec) -> Sequence[H1PointInTimeRecord]: ...
 
 
-class H1UniverseProvider(Protocol):
+class PointInTimeUniverseProvider(Protocol):
     def fetch(self) -> Sequence[HistoricalSecurity]: ...
 
 
 class H1ArchivePort(Protocol):
-    def registered_universe(self, strategy: H1Strategy) -> tuple[HistoricalSecurity, ...]: ...
+    def registered_universe(self, strategy: ResearchStrategy) -> tuple[HistoricalSecurity, ...]: ...
 
     def register_universe(self, spec: H1PointInTimeSpec, universe: Sequence[HistoricalSecurity]) -> None: ...
 
-    def completed_codes(self, strategy: H1Strategy) -> frozenset[str]: ...
+    def completed_codes(self, strategy: ResearchStrategy) -> frozenset[str]: ...
 
     def save_records(self, spec: H1PointInTimeSpec, code: str, records: Sequence[H1PointInTimeRecord]) -> None: ...
 
@@ -42,7 +42,7 @@ class H1ArchivePort(Protocol):
 
 @dataclass(frozen=True)
 class H1DownloadResult:
-    strategy: H1Strategy
+    strategy: ResearchStrategy
     universe_count: int
     previously_completed: int
     attempted: int
@@ -69,7 +69,7 @@ def run_capability_probe(
 class H1PointInTimeDownloadService:
     def __init__(
         self,
-        universe: H1UniverseProvider,
+        universe: PointInTimeUniverseProvider,
         history: H1PointInTimeProvider,
         archive: H1ArchivePort,
         *,
@@ -205,6 +205,6 @@ __all__ = [
     "H1DownloadResult",
     "H1PointInTimeDownloadService",
     "H1PointInTimeProvider",
-    "H1UniverseProvider",
+    "PointInTimeUniverseProvider",
     "run_capability_probe",
 ]

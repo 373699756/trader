@@ -11,10 +11,10 @@ from trader.application.research.tomorrow_research_artifacts import (
     TomorrowResearchArtifactRef,
     TomorrowResearchStageHandoff,
 )
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.h1_point_in_time import (
     H1CapabilityAuditReport,
-    H1Strategy,
-    canonical_hash,
+    ResearchStrategy,
 )
 from trader.domain.research.historical_label import (
     H1CoverageMetadata,
@@ -27,7 +27,7 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 @dataclass(frozen=True)
 class HistoricalResidualLedgerTerminal:
-    strategy: H1Strategy
+    strategy: ResearchStrategy
     capability_hash: str
     parent_preregistration_hash: str
     status: Literal["historical_data_insufficient"]
@@ -52,11 +52,11 @@ class HistoricalResidualLedgerTerminal:
         if self.schema_version != "historical_prediction_residual_ledger_terminal":
             raise ValueError("historical residual terminal schema is invalid")
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
-class TomorrowC3Terminal:
+class TomorrowDailyCloseModelSelectionTerminal:
     capability_hash: str
     parent_preregistration_hash: str
     parent_residual_ledger_hash: str
@@ -67,27 +67,29 @@ class TomorrowC3Terminal:
     terminal_holdout_opened: bool = False
     production_authority: bool = False
     automatic_model_update: bool = False
-    schema_version: str = "tomorrow_daily_close_c3_terminal"
+    schema_version: str = "tomorrow_daily_close_model_selection_terminal"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
         for value, label in (
-            (self.capability_hash, "C3 capability"),
-            (self.parent_preregistration_hash, "C3 preregistration"),
-            (self.parent_residual_ledger_hash, "C3 residual ledger"),
+            (self.capability_hash, "daily-close model selection capability"),
+            (self.parent_preregistration_hash, "daily-close model selection preregistration"),
+            (self.parent_residual_ledger_hash, "daily-close model selection residual ledger"),
         ):
             _hash(value, label)
         reasons = tuple(sorted(set(self.failure_reasons)))
         if self.status != "historical_data_insufficient" or not reasons:
-            raise ValueError("C3 terminal requires bounded insufficient reasons")
+            raise ValueError("daily-close model selection terminal requires bounded insufficient reasons")
         if self.oof_artifact_hash is not None or self.candidate_model_artifact_hash is not None:
-            raise ValueError("insufficient C3 evidence cannot claim OOF or a model artifact")
+            raise ValueError("insufficient daily-close model selection evidence cannot claim OOF or a model artifact")
         if self.terminal_holdout_opened or self.production_authority or self.automatic_model_update:
-            raise ValueError("C3 terminal cannot open holdout, authorize production, or update models")
-        if self.schema_version != "tomorrow_daily_close_c3_terminal":
-            raise ValueError("C3 terminal schema is invalid")
+            raise ValueError(
+                "daily-close model selection terminal cannot open holdout, authorize production, or update models"
+            )
+        if self.schema_version != "tomorrow_daily_close_model_selection_terminal":
+            raise ValueError("daily-close model selection terminal schema is invalid")
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -95,7 +97,7 @@ class H1ResearchCompletion:
     capability_hash: str
     labels: HistoricalLabelPreregistrationBatch
     residual_ledgers: tuple[HistoricalResidualLedgerTerminal, ...]
-    c3: TomorrowC3Terminal
+    daily_close_selection: TomorrowDailyCloseModelSelectionTerminal
     status: Literal["historical_data_insufficient"] = "historical_data_insufficient"
     terminal_holdout_opened: bool = False
     production_authority: bool = False
@@ -115,11 +117,11 @@ class H1ResearchCompletion:
         tomorrow_label = next(item for item in self.labels.strategies if item.strategy == "tomorrow")
         tomorrow_ledger = next(item for item in ledgers if item.strategy == "tomorrow")
         if (
-            self.c3.capability_hash != self.capability_hash
-            or self.c3.parent_preregistration_hash != tomorrow_label.content_hash
-            or self.c3.parent_residual_ledger_hash != tomorrow_ledger.content_hash
+            self.daily_close_selection.capability_hash != self.capability_hash
+            or self.daily_close_selection.parent_preregistration_hash != tomorrow_label.content_hash
+            or self.daily_close_selection.parent_residual_ledger_hash != tomorrow_ledger.content_hash
         ):
-            raise ValueError("H1 research completion C3 parent mismatch")
+            raise ValueError("H1 research completion daily-close model selection parent mismatch")
         if self.status != "historical_data_insufficient":
             raise ValueError("H1 research insufficient completion status is invalid")
         if self.terminal_holdout_opened or self.production_authority or self.automatic_model_update:
@@ -127,7 +129,7 @@ class H1ResearchCompletion:
         if self.schema_version != "h1_research_completion":
             raise ValueError("H1 research completion schema is invalid")
         object.__setattr__(self, "residual_ledgers", ledgers)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
     def to_development_handoff(
         self,
@@ -187,14 +189,14 @@ def complete_h1_research(
     )
     tomorrow_label = next(item for item in labels.strategies if item.strategy == "tomorrow")
     tomorrow_ledger = next(item for item in ledgers if item.strategy == "tomorrow")
-    c3 = TomorrowC3Terminal(
+    daily_close_selection = TomorrowDailyCloseModelSelectionTerminal(
         capability_hash=capability.content_hash,
         parent_preregistration_hash=tomorrow_label.content_hash,
         parent_residual_ledger_hash=tomorrow_ledger.content_hash,
         status="historical_data_insufficient",
         failure_reasons=tomorrow_ledger.failure_reasons,
     )
-    return H1ResearchCompletion(capability.content_hash, labels, ledgers, c3)
+    return H1ResearchCompletion(capability.content_hash, labels, ledgers, daily_close_selection)
 
 
 def _hash(value: str, label: str) -> None:
@@ -205,6 +207,6 @@ def _hash(value: str, label: str) -> None:
 __all__ = [
     "H1ResearchCompletion",
     "HistoricalResidualLedgerTerminal",
-    "TomorrowC3Terminal",
+    "TomorrowDailyCloseModelSelectionTerminal",
     "complete_h1_research",
 ]

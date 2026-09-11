@@ -17,7 +17,7 @@ from trader.domain.research.baostock_daily import (
     BaoStockSourceVersions,
 )
 from trader.infra.research.historical_industry_archive import audit_archived_historical_industry_facts
-from trader.infra.research.history_sync_runtime import run_history_sync
+from trader.infra.research.history_archive_sync import run_history_sync
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 

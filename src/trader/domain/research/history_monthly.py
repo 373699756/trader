@@ -5,12 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.baostock_daily import (
     BaoStockBoard,
     BaoStockDailyCell,
     BaoStockTrainingRow,
 )
-from trader.domain.research.h1_point_in_time import canonical_hash
 
 HISTORY_TRAINING_WINDOW_SESSIONS = 61
 
@@ -39,9 +39,9 @@ class HistoryMonthlyRevision:
             raise ValueError("history monthly revision industry facts are invalid")
         object.__setattr__(self, "industry", industry)
         object.__setattr__(self, "industry_classification", classification)
-        revision_id = canonical_hash((self.board, self.cell, self.is_st, industry, classification))
+        revision_id = canonical_artifact_hash((self.board, self.cell, self.is_st, industry, classification))
         object.__setattr__(self, "revision_id", revision_id)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
     @property
     def code(self) -> str:

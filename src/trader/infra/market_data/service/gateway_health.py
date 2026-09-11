@@ -10,7 +10,7 @@ from trader.application.cache import CacheStatus
 from trader.application.runtime.latency import LatencyWaterfallStatus
 from trader.application.runtime.source_lanes import SourceLaneRegistryStatus
 from trader.domain.market.models import CanonicalMarketSnapshot
-from trader.infra.market_data.normalization.columnar import MarketChangeSet
+from trader.infra.market_data.normalization.columnar import NormalizedMarketChangeSet
 from trader.infra.market_data.service.router import RouteOutcome
 
 
@@ -52,7 +52,7 @@ class MarketGatewayHealthStatus:
     merge_count: int
     conflict_count: int
     snapshot: CanonicalMarketSnapshot | None
-    changes: MarketChangeSet
+    changes: NormalizedMarketChangeSet
     route: RouteOutcome | None
     source_lanes: SourceLaneRegistryStatus | None
     security_master: SecurityMasterHealthStatus

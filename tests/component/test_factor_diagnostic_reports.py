@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 
 from tests.unit.application.research.test_factor_diagnostics import _evidence
-from trader.application.research.factor_diagnostics import ScoreNativeFactorDiagnostics
+from trader.application.research.factor_diagnostics import NativeFactorDiagnosticEvaluator
 from trader.infra.research.factor_diagnostic_reports import (
     FactorDiagnosticReportConflictError,
     JsonFactorDiagnosticReportStore,
@@ -15,7 +15,7 @@ from trader.infra.research.factor_diagnostic_reports import (
 
 def test_factor_report_is_immutable_verifiable_and_idempotent(tmp_path) -> None:
     extraction, baseline, dimensions = _evidence()
-    report = ScoreNativeFactorDiagnostics().evaluate(extraction, baseline, dimensions)
+    report = NativeFactorDiagnosticEvaluator().evaluate(extraction, baseline, dimensions)
     store = JsonFactorDiagnosticReportStore(tmp_path)
 
     assert store.write(report) == report
@@ -29,7 +29,7 @@ def test_factor_report_is_immutable_verifiable_and_idempotent(tmp_path) -> None:
 
 def test_factor_report_rejects_tampering_and_same_identity_conflicts(tmp_path) -> None:
     extraction, baseline, dimensions = _evidence()
-    report = ScoreNativeFactorDiagnostics().evaluate(extraction, baseline, dimensions)
+    report = NativeFactorDiagnosticEvaluator().evaluate(extraction, baseline, dimensions)
     store = JsonFactorDiagnosticReportStore(tmp_path)
     store.write(report)
 
@@ -44,6 +44,6 @@ def test_factor_report_rejects_tampering_and_same_identity_conflicts(tmp_path) -
     store.write(report)
     changed_record = replace(dimensions.records[0], market_cap=9999.0)
     changed_dimensions = replace(dimensions, records=(changed_record, *dimensions.records[1:]))
-    conflicting = ScoreNativeFactorDiagnostics().evaluate(extraction, baseline, changed_dimensions)
+    conflicting = NativeFactorDiagnosticEvaluator().evaluate(extraction, baseline, changed_dimensions)
     with pytest.raises(FactorDiagnosticReportConflictError, match="identity conflict"):
         store.write(conflicting)

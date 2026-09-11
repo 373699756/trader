@@ -13,7 +13,7 @@ def test_cost_aware_selection_is_documented_and_exploratory_only() -> None:
     source_paths = (
         ROOT / "src" / "trader" / "domain" / "research" / "cost_aware_selection.py",
         ROOT / "src" / "trader" / "application" / "research" / "cost_aware_selection.py",
-        ROOT / "src" / "trader" / "application" / "research" / "cost_aware_selection_models.py",
+        ROOT / "src" / "trader" / "application" / "research" / "cost_aware_selection_report.py",
     )
 
     assert COST_AWARE_UTILITY_FIELDS == ("gross_expected_excess", "estimated_cost")

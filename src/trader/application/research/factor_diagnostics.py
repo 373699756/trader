@@ -9,22 +9,22 @@ from dataclasses import dataclass
 from datetime import date
 from typing import cast
 
-from trader.application.research.factor_diagnostic_models import (
+from trader.application.research.baseline_replay_report import HistoricalBaselineReport
+from trader.application.research.factor_diagnostic_report import (
     FactorAggregateDiagnostic,
     FactorCostQuintiles,
     FactorDailyDiagnostic,
     FactorDiagnosticDimensionRecord,
     FactorDiagnosticDimensions,
+    FactorDiagnosticReport,
     FactorLagDiagnostic,
     FactorStratumDiagnostic,
     OracleRecallDay,
     OracleRecallDiagnostic,
     QuintileValues,
-    ScoreFactorDiagnosticReport,
     StratumDimension,
 )
-from trader.application.research.models import HistoricalExtraction
-from trader.application.research.replay_models import HistoricalBaselineReport
+from trader.application.research.historical_extraction_models import HistoricalExtraction
 from trader.domain.research.baseline import mean_rank_ic, population_spearman, quantile_bucket
 from trader.domain.research.factor_diagnostics import (
     factor_concentration,
@@ -55,7 +55,7 @@ class _FactorRow:
         return self.gross_excess_return - self.turnover * cost_rate
 
 
-class ScoreNativeFactorDiagnostics:
+class NativeFactorDiagnosticEvaluator:
     """Build one deterministic, non-authoritative report from matching historical extraction/replay parents."""
 
     def evaluate(
@@ -63,13 +63,13 @@ class ScoreNativeFactorDiagnostics:
         extraction: HistoricalExtraction,
         baseline: HistoricalBaselineReport,
         dimensions: FactorDiagnosticDimensions,
-    ) -> ScoreFactorDiagnosticReport:
+    ) -> FactorDiagnosticReport:
         _validate_parent_evidence(extraction, baseline, dimensions)
         dimension_by_key = {(item.trade_date, item.code): item for item in dimensions.records}
         factor_names = _factor_names(extraction)
         factors = tuple(_evaluate_factor(extraction, dimension_by_key, factor_name) for factor_name in factor_names)
         oracle = _oracle_recall(extraction, baseline)
-        return ScoreFactorDiagnosticReport(
+        return FactorDiagnosticReport(
             "evaluated" if len(extraction.days) == 40 else "exploratory",
             extraction.content_hash,
             baseline.report_hash,
@@ -434,4 +434,4 @@ def _optional_mean(values: tuple[float | None, ...]) -> float | None:
     return _mean(tuple(value for value in values if value is not None))
 
 
-__all__ = ["ScoreNativeFactorDiagnostics"]
+__all__ = ["NativeFactorDiagnosticEvaluator"]

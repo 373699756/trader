@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
+from trader.application.ports.json_values import JsonObject
 from trader.application.ports.reviews import DeepSeekReviewUnavailableError
-from trader.application.ports.types import JsonObject
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.models import Strategy
 from trader.domain.review.models import (
@@ -19,10 +19,10 @@ from trader.domain.review.models import (
     ReviewCandidateContext,
     ReviewOutcome,
 )
-from trader.infra.deepseek.base_client import DeepSeekClientBase, DeepSeekHttpResult
 from trader.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.infra.deepseek.budget_batch_ledger import BudgetBatchCompletion, BudgetBatchRequest
 from trader.infra.deepseek.cache import ReviewCache
+from trader.infra.deepseek.completion_client_contract import DeepSeekCompletionClient, DeepSeekHttpResult
 from trader.infra.deepseek.reviewer_context import ReviewerContext
 from trader.infra.deepseek.reviewer_requests import ReviewerRequestExecutor
 from trader.infra.deepseek.reviewer_selection import (
@@ -127,7 +127,7 @@ class DeepSeekReviewer:
         self,
         settings: DeepSeekSettings,
         budget: DeepSeekBudgetLedger,
-        client: DeepSeekClientBase,
+        client: DeepSeekCompletionClient,
         cache: ReviewCache,
         **options: Unpack[ReviewerOptions],
     ) -> None:

@@ -9,7 +9,7 @@ from datetime import date
 from typing import Literal
 
 from trader.domain.market.feature_contracts import TOMORROW_RAW_ALPHA_FEATURE_MANIFEST
-from trader.domain.research.h1_point_in_time import canonical_hash
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.paired_statistics import (
     PreregisteredBootstrapPlan,
     PreregisteredBootstrapResult,
@@ -114,7 +114,7 @@ class LimitedFactorFamilySpec:
         object.__setattr__(self, "candidates", candidates)
         object.__setattr__(self, "development_dates", development)
         object.__setattr__(self, "confirmation_dates", confirmation)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
     @property
     def research_dates(self) -> tuple[date, ...]:
@@ -272,7 +272,7 @@ class LimitedFactorFamilyReport:
             raise ValueError("limited factor report schema is invalid")
         object.__setattr__(self, "evidence", evidence)
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 def _validate_report_identity(report: LimitedFactorFamilyReport, reasons: tuple[str, ...]) -> None:
@@ -506,9 +506,9 @@ def _bootstrap(
     )
 
 
-def _ordered_dates(values: tuple[date, ...], owner: str) -> None:
+def _ordered_dates(values: tuple[date, ...], date_set_name: str) -> None:
     if not values or tuple(sorted(set(values))) != values:
-        raise ValueError(f"limited factor {owner} dates must be strictly ordered")
+        raise ValueError(f"limited factor {date_set_name} dates must be strictly ordered")
 
 
 def _mean(values: tuple[float, ...]) -> float:

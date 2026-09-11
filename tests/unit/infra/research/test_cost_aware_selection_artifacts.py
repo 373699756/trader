@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from tests.unit.application.research.test_cost_aware_selection import _shadow_report
-from trader.application.research.cost_aware_selection import ScoreTomorrowCostAwareSelection
+from trader.application.research.cost_aware_selection import TomorrowCostAwareSelectionEvaluator
 from trader.infra.research.cost_aware_selection_artifacts import (
     CostAwareSelectionArtifactConflictError,
     CostAwareSelectionArtifactStore,
@@ -11,7 +11,7 @@ from trader.infra.research.cost_aware_selection_artifacts import (
 
 
 def test_cost_aware_selection_artifact_is_idempotent_and_tamper_evident(tmp_path) -> None:
-    report = ScoreTomorrowCostAwareSelection().build(_shadow_report())
+    report = TomorrowCostAwareSelectionEvaluator().build(_shadow_report())
     store = CostAwareSelectionArtifactStore(tmp_path)
 
     assert store.seal(report) == report.content_hash

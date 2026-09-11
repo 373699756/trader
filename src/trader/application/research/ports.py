@@ -6,19 +6,19 @@ from datetime import date
 from typing import Protocol
 
 from trader.application.ports.market import DataPlaneReadPort
-from trader.application.research.challenger_models import ChallengerCandidateOverride, ChallengerReplaySelection
-from trader.application.research.models import (
+from trader.application.research.baseline_replay_report import BaselineReplaySelection
+from trader.application.research.challenger_replay_report import ChallengerCandidateOverride, ChallengerReplaySelection
+from trader.application.research.historical_extraction_models import (
     HistoricalDaySummary,
     HistoricalEvaluatedCandidate,
     HistoricalExtractedDay,
     HistoricalFullFieldBundle,
 )
-from trader.application.research.replay_models import BaselineReplaySelection
 from trader.domain.research.challengers import ChallengerSpecification
 
 
 class HistoricalDataPlaneReadPort(DataPlaneReadPort, Protocol):
-    """Offline extension of the canonical E1 read port for Historical extraction adapters.
+    """Offline extension of the canonical historical read port for Historical extraction adapters.
 
     Implementations retain the canonical immutable snapshot boundary and must
     discard hard-reject identities when projecting historical research data.

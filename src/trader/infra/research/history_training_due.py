@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path, PurePosixPath
 
-from trader.domain.research.h1_point_in_time import canonical_hash
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.history_control import (
     HistoryActiveSnapshot,
     HistoryTrainingDueRequest,
@@ -66,7 +66,7 @@ def evaluate_history_training_due(
 
     bundle, bundle_invalid = _active_bundle(training_root)
     if bundle_invalid:
-        due_identity = "due-" + canonical_hash((active.content_hash, "invalid_bundle"))[:32]
+        due_identity = "due-" + canonical_artifact_hash((active.content_hash, "invalid_bundle"))[:32]
         due = calculate_history_training_due(
             HistoryTrainingDueRequest(
                 due_identity=due_identity,
@@ -105,7 +105,7 @@ def evaluate_history_training_due(
     )
     due_identity = (
         "due-"
-        + canonical_hash(
+        + canonical_artifact_hash(
             (
                 active.content_hash,
                 bundle.training_input_hash if bundle is not None else None,

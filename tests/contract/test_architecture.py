@@ -241,8 +241,8 @@ def test_internal_state_is_typed_until_an_explicit_observability_boundary() -> N
         Path("application/ports/market.py"),
         Path("infra/deepseek/reviewer.py"),
         Path("infra/deepseek/reviewer_status.py"),
-        Path("infra/market_data/service/facade.py"),
-        Path("infra/market_data/service/service_health.py"),
+        Path("infra/market_data/service/market_feature_service.py"),
+        Path("infra/market_data/service/market_data_health.py"),
     }
     trader_root = SOURCE_ROOT
     forbidden_status_types = {"Any", "JsonObject", "JsonValue", "Mapping", "MutableMapping", "dict", "object"}
@@ -414,7 +414,7 @@ def test_history_month_values_and_sqlite_codec_keep_serialization_at_the_infra_b
 def test_history_sync_progress_stays_typed_until_the_entrypoint_projection() -> None:
     contract = (SOURCE_ROOT / "application/research/history_sync.py").read_text(encoding="utf-8")
     supplier = (SOURCE_ROOT / "infra/research/baostock_sync_supplier.py").read_text(encoding="utf-8")
-    runtime = (SOURCE_ROOT / "infra/research/history_sync_runtime.py").read_text(encoding="utf-8")
+    runtime = (SOURCE_ROOT / "infra/research/history_archive_sync.py").read_text(encoding="utf-8")
     projection = (SOURCE_ROOT / "entrypoints/history_sync_progress.py").read_text(encoding="utf-8")
 
     assert "class HistorySyncProgress:" in contract

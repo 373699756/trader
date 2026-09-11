@@ -7,9 +7,9 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from trader.domain.recommendation.models import Strategy
-from trader.infra.deepseek.base_client import DeepSeekClientBase
 from trader.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.infra.deepseek.cache import ReviewCache
+from trader.infra.deepseek.completion_client_contract import DeepSeekCompletionClient
 from trader.infra.settings.models import DeepSeekSettings
 
 
@@ -17,7 +17,7 @@ from trader.infra.settings.models import DeepSeekSettings
 class ReviewerContext:
     settings: DeepSeekSettings
     budget: DeepSeekBudgetLedger
-    client: DeepSeekClientBase
+    client: DeepSeekCompletionClient
     cache: ReviewCache
     dimension_weights: Mapping[Strategy, Mapping[str, float]]
     strategy_version: str

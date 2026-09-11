@@ -6,7 +6,6 @@ import json
 from datetime import date
 from typing import cast
 
-from trader.application.research.replay_models import canonical_hash, canonical_json, canonical_value
 from trader.application.research.tomorrow_daily_close_training import (
     BaseModelKind,
     CandidateModelArtifact,
@@ -22,6 +21,11 @@ from trader.application.research.tomorrow_daily_close_training import (
     ValidationMetrics,
     ValidationReport,
 )
+from trader.domain.research.artifact_identity import (
+    canonical_artifact_hash,
+    canonical_artifact_json,
+    canonical_artifact_value,
+)
 
 TomorrowDailyCloseArtifact = DatasetManifest | FeatureDataset | ValidationReport | CandidateModelArtifact
 
@@ -35,11 +39,11 @@ class TomorrowDailyCloseArtifactCodec:
 
     @staticmethod
     def encode(artifact: TomorrowDailyCloseArtifact) -> str:
-        payload = canonical_value(artifact)
+        payload = canonical_artifact_value(artifact)
         if not isinstance(payload, dict):
             raise TypeError("Tomorrow daily-close artifact must encode to an object")
         payload["content_hash"] = artifact.content_hash
-        return canonical_json(payload)
+        return canonical_artifact_json(payload)
 
     @classmethod
     def decode_manifest(cls, encoded: str) -> DatasetManifest:
@@ -154,7 +158,7 @@ class TomorrowDailyCloseArtifactCodec:
                 raise TypeError("artifact payload is not an object")
             payload = {str(key): value for key, value in raw.items()}
             stored_hash = payload.pop("content_hash")
-            if not isinstance(stored_hash, str) or canonical_hash(payload) != stored_hash:
+            if not isinstance(stored_hash, str) or canonical_artifact_hash(payload) != stored_hash:
                 raise ValueError("artifact content hash mismatch")
             payload["content_hash"] = stored_hash
             return payload

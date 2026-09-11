@@ -9,7 +9,7 @@ Adding a new model requires:
 
 from __future__ import annotations
 
-from trader.infra.deepseek.base_client import ModelCapabilities
+from trader.infra.deepseek.completion_client_contract import ModelCapabilities
 
 MODELS: dict[str, ModelCapabilities] = {
     "deepseek-v4-flash": ModelCapabilities(

@@ -20,7 +20,7 @@ from trader.domain.recommendation.selection.scored_selection import (
     ScoredSelectionRequest,
     select_scored,
 )
-from trader.domain.research.h1_point_in_time import canonical_hash
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.point_in_time_data_qualification import PointInTimeDataQualificationReport
 from trader.domain.research.point_in_time_dataset import (
     POINT_IN_TIME_BOUNDARIES,
@@ -248,7 +248,7 @@ class PointInTimeDatasetBuilder:
                 trade_date=source.trade_date.isoformat(),
                 phase="final_quote",
                 data_version=f"point-in-time:{source.trade_date.isoformat()}",
-                merge_epoch=f"point-in-time:{canonical_hash(tuple(item.source_identity for item in source.rows))}",
+                merge_epoch=f"point-in-time:{canonical_artifact_hash(tuple(item.source_identity for item in source.rows))}",
                 policy=request.selection_policy,
             )
         )
@@ -404,9 +404,9 @@ def _first_boundary(
     return "eligible", ()
 
 
-def _require_shanghai(value: datetime, owner: str) -> None:
+def _require_shanghai(value: datetime, field_name: str) -> None:
     if value.tzinfo is None or value.utcoffset() is None or getattr(value.tzinfo, "key", None) != "Asia/Shanghai":
-        raise ValueError(f"{owner} must use Asia/Shanghai")
+        raise ValueError(f"{field_name} must use Asia/Shanghai")
 
 
 def _selection_policy_hash(policy: ScoredSelectionPolicy) -> str:
@@ -423,7 +423,7 @@ def _selection_policy_hash(policy: ScoredSelectionPolicy) -> str:
         for board, value in sorted(policy.board_policies.items(), key=lambda item: item[0].value)
     )
     risk_rules = tuple((name, _risk_rule_identity(value)) for name, value in sorted(policy.risk_rules.items()))
-    return canonical_hash(
+    return canonical_artifact_hash(
         (
             "point_in_time_selection_policy",
             board_policies,

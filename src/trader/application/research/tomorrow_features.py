@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime
 
-from trader.application.research.models import HistoricalDaySummary, HistoricalFullFieldBundle
-from trader.application.research.tomorrow_feature_models import (
+from trader.application.research.historical_extraction_models import HistoricalDaySummary, HistoricalFullFieldBundle
+from trader.application.research.tomorrow_feature_contracts import (
     TomorrowFeatureContext,
     TomorrowFeatureContextBatch,
     TomorrowPointInTimeFeatureBatch,
@@ -19,7 +19,7 @@ from trader.domain.research.tomorrow_features import (
 )
 
 
-class ScoreTomorrowPointInTimeFeatures:
+class TomorrowPointInTimeFeatureBuilder:
     """Build an immutable research-only feature batch from one historical extraction day."""
 
     def build(
@@ -113,4 +113,4 @@ def _minute_points(bundle: HistoricalFullFieldBundle) -> dict[str, tuple[Intrada
     return {code: tuple(sorted(values, key=lambda item: item.observed_at)) for code, values in grouped.items()}
 
 
-__all__ = ["ScoreTomorrowPointInTimeFeatures"]
+__all__ = ["TomorrowPointInTimeFeatureBuilder"]

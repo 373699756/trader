@@ -9,12 +9,12 @@ from datetime import date
 from enum import Enum
 from typing import Literal
 
-from trader.domain.research.h1_point_in_time import canonical_hash
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 
 BAOSTOCK_HOLDOUT_ISOLATION_CONTRACT = "baostock_holdout_isolation_contract"
 BAOSTOCK_DAILY_IDENTITY = "baostock_daily_core"
 BAOSTOCK_SOURCE_ANCHOR = "15:00_daily_close"
-LEGACY_HOLDOUT_IDENTITY = "score_tomorrow_historical_candidate"
+HISTORICAL_CANDIDATE_HOLDOUT_IDENTITY = "score_tomorrow_historical_candidate"
 POINT_IN_TIME_HOLDOUT_IDENTITY = "point_in_time_holdout"
 
 _POINT_IN_TIME_RESERVE_DAYS = 200
@@ -33,9 +33,9 @@ class BaoStockHoldoutIsolationBlocker(str, Enum):
     DAILY_SOURCE_ANCHOR_INVALID = "daily_source_anchor_invalid"
     DAILY_SOURCE_CLAIMS_POINT_IN_TIME = "daily_source_claims_point_in_time"
     POINT_IN_TIME_HOLDOUT_ALREADY_OPENED = "point_in_time_holdout_already_opened"
-    LEGACY_HOLDOUT_IDENTITY_MISMATCH = "legacy_holdout_identity_mismatch"
-    NEW_HOLDOUT_IDENTITY_MISMATCH = "new_holdout_identity_mismatch"
-    LEGACY_HOLDOUT_REUSED_AS_PARENT = "legacy_holdout_reused_as_parent"
+    HISTORICAL_CANDIDATE_HOLDOUT_IDENTITY_MISMATCH = "historical_candidate_holdout_identity_mismatch"
+    POINT_IN_TIME_HOLDOUT_IDENTITY_MISMATCH = "point_in_time_holdout_identity_mismatch"
+    HISTORICAL_CANDIDATE_HOLDOUT_REUSED_AS_PARENT = "historical_candidate_holdout_reused_as_parent"
     REQUIRED_PARENT_HASH_MISSING = "required_parent_hash_missing"
 
 
@@ -54,24 +54,24 @@ class BaoStockHoldoutIsolationInput:
     source_anchor: str
     point_in_time_parity_claimed: bool
     point_in_time_holdout_opened: bool
-    legacy_holdout_identity: str
-    legacy_holdout_hash: str
-    new_holdout_identity: str
-    new_holdout_parent_hashes: tuple[str, ...]
+    historical_candidate_holdout_identity: str
+    historical_candidate_holdout_hash: str
+    point_in_time_holdout_identity: str
+    point_in_time_holdout_parent_hashes: tuple[str, ...]
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
         hashes = (
             self.daily_manifest_hash,
             self.split_manifest_hash,
-            self.legacy_holdout_hash,
-            *self.new_holdout_parent_hashes,
+            self.historical_candidate_holdout_hash,
+            *self.point_in_time_holdout_parent_hashes,
         )
         if any(_SHA256.fullmatch(value) is None for value in hashes):
             raise ValueError("BaoStock holdout metadata requires lowercase SHA-256 hashes")
         if self.daily_manifest_hash == self.split_manifest_hash:
             raise ValueError("BaoStock daily and split manifest hashes must be distinct")
-        if len(set(self.new_holdout_parent_hashes)) != len(self.new_holdout_parent_hashes):
+        if len(set(self.point_in_time_holdout_parent_hashes)) != len(self.point_in_time_holdout_parent_hashes):
             raise ValueError("BaoStock holdout parent hashes must be unique")
 
         _require_strictly_increasing(self.ordered_complete_dates, required=True)
@@ -87,7 +87,7 @@ class BaoStockHoldoutIsolationInput:
         if any(not set(values) <= complete_dates for values in consumed_groups):
             raise ValueError("BaoStock consumed and reserved dates must belong to the complete calendar")
 
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -96,8 +96,8 @@ class BaoStockHoldoutIsolationAudit:
     input_content_hash: str
     daily_manifest_hash: str
     split_manifest_hash: str
-    legacy_holdout_identity: str
-    new_holdout_identity: str
+    historical_candidate_holdout_identity: str
+    point_in_time_holdout_identity: str
     source_anchor: str
     reserved_date_count: int
     status: BaoStockHoldoutIsolationStatus
@@ -126,7 +126,7 @@ class BaoStockHoldoutIsolationAudit:
             raise ValueError("blocked BaoStock holdout audit requires blockers")
         if self.point_in_time_parity or self.terminal_holdout_opened or self.production_authority:
             raise ValueError("BaoStock daily-close audit cannot grant holdout or production authority")
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 def audit_baostock_holdout_isolation(
@@ -142,8 +142,8 @@ def audit_baostock_holdout_isolation(
         input_content_hash=value.content_hash,
         daily_manifest_hash=value.daily_manifest_hash,
         split_manifest_hash=value.split_manifest_hash,
-        legacy_holdout_identity=value.legacy_holdout_identity,
-        new_holdout_identity=value.new_holdout_identity,
+        historical_candidate_holdout_identity=value.historical_candidate_holdout_identity,
+        point_in_time_holdout_identity=value.point_in_time_holdout_identity,
         source_anchor=value.source_anchor,
         reserved_date_count=len(value.point_in_time_reserved_dates),
         status="blocked" if blockers else "isolated",
@@ -184,14 +184,14 @@ def _holdout_identity_blockers(
     value: BaoStockHoldoutIsolationInput,
 ) -> list[BaoStockHoldoutIsolationBlocker]:
     blockers: list[BaoStockHoldoutIsolationBlocker] = []
-    if value.legacy_holdout_identity != LEGACY_HOLDOUT_IDENTITY:
-        blockers.append(BaoStockHoldoutIsolationBlocker.LEGACY_HOLDOUT_IDENTITY_MISMATCH)
-    if value.new_holdout_identity != POINT_IN_TIME_HOLDOUT_IDENTITY:
-        blockers.append(BaoStockHoldoutIsolationBlocker.NEW_HOLDOUT_IDENTITY_MISMATCH)
-    if value.legacy_holdout_hash in value.new_holdout_parent_hashes:
-        blockers.append(BaoStockHoldoutIsolationBlocker.LEGACY_HOLDOUT_REUSED_AS_PARENT)
+    if value.historical_candidate_holdout_identity != HISTORICAL_CANDIDATE_HOLDOUT_IDENTITY:
+        blockers.append(BaoStockHoldoutIsolationBlocker.HISTORICAL_CANDIDATE_HOLDOUT_IDENTITY_MISMATCH)
+    if value.point_in_time_holdout_identity != POINT_IN_TIME_HOLDOUT_IDENTITY:
+        blockers.append(BaoStockHoldoutIsolationBlocker.POINT_IN_TIME_HOLDOUT_IDENTITY_MISMATCH)
+    if value.historical_candidate_holdout_hash in value.point_in_time_holdout_parent_hashes:
+        blockers.append(BaoStockHoldoutIsolationBlocker.HISTORICAL_CANDIDATE_HOLDOUT_REUSED_AS_PARENT)
     required_parent_hashes = {value.daily_manifest_hash, value.split_manifest_hash}
-    if not required_parent_hashes <= set(value.new_holdout_parent_hashes):
+    if not required_parent_hashes <= set(value.point_in_time_holdout_parent_hashes):
         blockers.append(BaoStockHoldoutIsolationBlocker.REQUIRED_PARENT_HASH_MISSING)
     return blockers
 
@@ -205,7 +205,7 @@ __all__ = [
     "BAOSTOCK_DAILY_IDENTITY",
     "BAOSTOCK_HOLDOUT_ISOLATION_CONTRACT",
     "BAOSTOCK_SOURCE_ANCHOR",
-    "LEGACY_HOLDOUT_IDENTITY",
+    "HISTORICAL_CANDIDATE_HOLDOUT_IDENTITY",
     "POINT_IN_TIME_HOLDOUT_IDENTITY",
     "BaoStockHoldoutIsolationAudit",
     "BaoStockHoldoutIsolationBlocker",

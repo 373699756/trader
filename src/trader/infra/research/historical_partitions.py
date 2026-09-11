@@ -16,7 +16,7 @@ from types import MappingProxyType
 
 import polars as pl
 
-from trader.application.research.models import HistoricalExtractedDay, HistoricalExtraction
+from trader.application.research.historical_extraction_models import HistoricalExtractedDay, HistoricalExtraction
 
 _SCHEMA_VERSION = "historical_partition"
 _MANIFEST_NAME = "manifest.json"

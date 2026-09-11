@@ -25,7 +25,7 @@ from trader.domain.research.point_in_time_data_qualification import (  # noqa: E
 )
 from trader.infra.research.h1_point_in_time_capability import (  # noqa: E402
     FreeSourceH1CapabilityProbe,
-    H1HTTPSession,
+    PointInTimeSourceSession,
 )
 from trader.infra.research.historical_industry_archive import (  # noqa: E402
     audit_archived_historical_industry_facts,
@@ -39,7 +39,7 @@ def execute(
     code: str,
     historical_anchor_date: date,
     timeout_seconds: float,
-    session: H1HTTPSession,
+    session: PointInTimeSourceSession,
 ) -> PointInTimeDataQualificationReport:
     archive = inspect_history_archive(history_root, verify_partitions=True)
     industry = audit_archived_historical_industry_facts(history_root)
@@ -140,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
                 code=args.code,
                 historical_anchor_date=args.historical_anchor_date,
                 timeout_seconds=args.timeout_seconds,
-                session=cast(H1HTTPSession, session),
+                session=cast(PointInTimeSourceSession, session),
             )
         payload = project_point_in_time_data_qualification(report)
     except (OSError, RuntimeError, TypeError, ValueError, requests.RequestException) as exc:

@@ -20,7 +20,7 @@ from trader.application.ports.data_plane import (
     SourceCursorRecord,
     TradingCalendarRecord,
 )
-from trader.application.ports.types import JsonObject
+from trader.application.ports.json_values import JsonObject
 from trader.infra.persistence import data_plane_sqlite
 from trader.infra.persistence.data_plane import DataPlaneRepository
 

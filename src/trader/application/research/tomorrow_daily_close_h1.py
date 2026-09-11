@@ -1,4 +1,4 @@
-"""Two-stage H1 feature and matured-label adapter for Tomorrow C3."""
+"""Two-stage H1 feature and matured-label adapter for Tomorrow daily-close model selection."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
 
-from trader.application.research.replay_models import canonical_hash
 from trader.application.research.tomorrow_daily_close_training import DailyCloseBoard, DailyCloseSourceSample
 from trader.domain.market.feature_contracts import (
     TOMORROW_MODEL_FEATURE_MANIFEST,
@@ -17,6 +16,7 @@ from trader.domain.market.feature_contracts import (
     QfqPriceAnchors,
     calculate_tomorrow_qfq_alpha,
 )
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.h1_point_in_time import H1PointInTimeRecord
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -70,7 +70,7 @@ class H1DailyCloseFeatureRow:
             raise ValueError("Tomorrow H1 daily-close filter evidence is inconsistent")
         if self.schema_version != "tomorrow_h1_daily_close_feature_row":
             raise ValueError("Tomorrow H1 daily-close feature row schema is invalid")
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -98,7 +98,7 @@ class H1DailyCloseFeatureBatch:
         if self.schema_version != "tomorrow_h1_daily_close_feature_batch" or self.production_authority:
             raise ValueError("Tomorrow H1 feature batch cannot authorize production")
         object.__setattr__(self, "rows", ordered)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 def build_h1_daily_close_features(
@@ -158,7 +158,7 @@ def build_h1_daily_close_features(
             )
     return H1DailyCloseFeatureBatch(
         tuple(rows),
-        canonical_hash(tuple(item.record.content_hash for item in ordered)),
+        canonical_artifact_hash(tuple(item.record.content_hash for item in ordered)),
     )
 
 
@@ -212,7 +212,7 @@ def attach_matured_daily_close_labels(
                 hard_filter_passed=row.hard_filter_passed,
                 hard_filter_evidence_complete=row.hard_filter_evidence_complete,
                 filter_evidence_hash=row.filter_evidence_hash,
-                source_row_hash=canonical_hash(
+                source_row_hash=canonical_artifact_hash(
                     {
                         "feature_hash": row.content_hash,
                         "label_record_hash": following_for_label.record.content_hash,

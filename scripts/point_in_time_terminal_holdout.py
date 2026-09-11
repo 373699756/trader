@@ -23,7 +23,7 @@ from trader.application.research.today_terminal_holdout import TodayTerminalHold
 from trader.application.research.tomorrow_point_in_time_holdout import (  # noqa: E402
     TomorrowPointInTimeHoldoutService,
 )
-from trader.domain.research.h1_point_in_time import H1CapabilityAuditReport, H1Strategy  # noqa: E402
+from trader.domain.research.h1_point_in_time import H1CapabilityAuditReport, ResearchStrategy  # noqa: E402
 from trader.domain.research.terminal_holdout import (  # noqa: E402
     TerminalHoldoutParentState,
     TerminalHoldoutReport,
@@ -67,7 +67,7 @@ def execute(*, parent_artifact_dir: Path, output_dir: Path) -> CrossStrategyConc
     ).execute()
     tomorrow = TomorrowPointInTimeHoldoutService(
         (),
-        _parent_state(parent, statuses["tomorrow"].strategy, parent.index.c3_terminal_hash),
+        _parent_state(parent, statuses["tomorrow"].strategy, parent.index.daily_close_selection_hash),
     ).execute()
     d25 = D25TerminalHoldoutService(
         (),
@@ -93,7 +93,7 @@ def _read_parent(root: Path) -> _ParentArtifacts:
     return _ParentArtifacts(capability, index)
 
 
-def _parent_state(parent: _ParentArtifacts, strategy: H1Strategy, candidate_hash: str) -> TerminalHoldoutParentState:
+def _parent_state(parent: _ParentArtifacts, strategy: ResearchStrategy, candidate_hash: str) -> TerminalHoldoutParentState:
     status = next(item for item in parent.capability.strategies if item.strategy == strategy)
     return TerminalHoldoutParentState(
         candidate_status=status.state,

@@ -6,10 +6,10 @@
 
 from __future__ import annotations
 
-from trader.infra.deepseek.base_client import DeepSeekClientBase
+from trader.infra.deepseek.completion_client_contract import DeepSeekCompletionClient
 
 
-def create_deepseek_client(*, provider: str = "http") -> DeepSeekClientBase:
+def create_deepseek_client(*, provider: str = "http") -> DeepSeekCompletionClient:
     """Create a DeepSeek client by provider.
 
     Args:
@@ -17,7 +17,7 @@ def create_deepseek_client(*, provider: str = "http") -> DeepSeekClientBase:
             - `http`: 使用当前的 `DeepSeekHttpClient` 实现。
 
     Returns:
-        一个实现 `DeepSeekClientBase` 的实例。
+        一个实现 `DeepSeekCompletionClient` 的实例。
     """
     normalized = provider.strip().lower()
     if normalized == "http":

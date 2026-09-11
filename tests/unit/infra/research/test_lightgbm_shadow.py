@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from tests.unit.application.research.test_shadow_models import _labeled_day, _RecordingTrainer
+from tests.unit.application.research.test_shadow_model_evaluation import _labeled_day, _RecordingTrainer
+from trader.application.research.shadow_model_evaluation import TomorrowShadowModelEvaluator
 from trader.application.research.shadow_model_ports import ShadowFitRequest
-from trader.application.research.shadow_models import ScoreTomorrowShadowModels
 from trader.infra.research.lightgbm_shadow import LightGbmShadowTrainer
 from trader.infra.research.shadow_model_artifacts import ShadowModelArtifactConflictError, ShadowModelArtifactStore
 
@@ -43,7 +43,7 @@ def test_lightgbm_shadow_trainer_is_shallow_deterministic_and_hashable(objective
 
 def test_shadow_report_artifact_is_idempotent_and_tamper_evident(tmp_path) -> None:
     days = tuple(day for index in range(66) for day in (_labeled_day(index, "tomorrow"), _labeled_day(index, "d25")))
-    report = ScoreTomorrowShadowModels((_RecordingTrainer("linear"), _RecordingTrainer("lightgbm"))).build(days)
+    report = TomorrowShadowModelEvaluator((_RecordingTrainer("linear"), _RecordingTrainer("lightgbm"))).build(days)
     store = ShadowModelArtifactStore(tmp_path)
 
     assert store.seal(report) == report.content_hash
@@ -51,7 +51,7 @@ def test_shadow_report_artifact_is_idempotent_and_tamper_evident(tmp_path) -> No
     later_days = tuple(
         day for index in range(67) for day in (_labeled_day(index, "tomorrow"), _labeled_day(index, "d25"))
     )
-    later_report = ScoreTomorrowShadowModels((_RecordingTrainer("linear"), _RecordingTrainer("lightgbm"))).build(
+    later_report = TomorrowShadowModelEvaluator((_RecordingTrainer("linear"), _RecordingTrainer("lightgbm"))).build(
         later_days
     )
     assert store.seal(later_report) == later_report.content_hash

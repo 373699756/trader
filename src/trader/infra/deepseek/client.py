@@ -12,9 +12,9 @@ if TYPE_CHECKING:
 
 import requests
 
-from trader.infra.deepseek.base_client import (
+from trader.infra.deepseek.completion_client_contract import (
     CompletionOptions,
-    DeepSeekClientBase,
+    DeepSeekCompletionClient,
     DeepSeekHttpAttempt,
     DeepSeekHttpResult,
     ModelCapabilities,
@@ -70,7 +70,7 @@ class _FailedAttemptOptions(TypedDict):
     started: float
 
 
-class DeepSeekHttpClient(DeepSeekClientBase):
+class DeepSeekHttpClient(DeepSeekCompletionClient):
     RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
     def __init__(self, post: _POST_TYPE | None = None, sleep: Callable[[float], None] = time.sleep) -> None:

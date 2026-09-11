@@ -8,20 +8,24 @@ from datetime import date
 from pathlib import Path
 from typing import cast
 
-from trader.application.research.factor_diagnostic_models import (
+from trader.application.research.factor_diagnostic_report import (
     DiagnosticStatus,
     FactorAggregateDiagnostic,
     FactorCostQuintiles,
     FactorDailyDiagnostic,
+    FactorDiagnosticReport,
     FactorLagDiagnostic,
     FactorStratumDiagnostic,
     OracleRecallDay,
     OracleRecallDiagnostic,
     QuintileValues,
-    ScoreFactorDiagnosticReport,
     StratumDimension,
 )
-from trader.application.research.replay_models import canonical_hash, canonical_json, canonical_value
+from trader.domain.research.artifact_identity import (
+    canonical_artifact_hash,
+    canonical_artifact_json,
+    canonical_artifact_value,
+)
 
 _REPORT_NAME = "score-factor-diagnostic-report.json"
 
@@ -36,7 +40,7 @@ class JsonFactorDiagnosticReportStore:
     def __init__(self, root: Path) -> None:
         self._root = root
 
-    def write(self, report: ScoreFactorDiagnosticReport) -> ScoreFactorDiagnosticReport:
+    def write(self, report: FactorDiagnosticReport) -> FactorDiagnosticReport:
         self._root.mkdir(parents=True, exist_ok=True)
         path = self._root / _REPORT_NAME
         if path.exists():
@@ -44,12 +48,12 @@ class JsonFactorDiagnosticReportStore:
             if existing.report_hash != report.report_hash:
                 raise FactorDiagnosticReportConflictError("factor diagnostic report identity conflict")
             return existing
-        payload = canonical_value(report)
+        payload = canonical_artifact_value(report)
         if not isinstance(payload, dict):
             raise TypeError("factor diagnostic report payload must be an object")
         payload["report_hash"] = report.report_hash
         temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        temporary.write_text(canonical_json(payload), encoding="utf-8")
+        temporary.write_text(canonical_artifact_json(payload), encoding="utf-8")
         try:
             try:
                 os.link(temporary, path)
@@ -62,14 +66,14 @@ class JsonFactorDiagnosticReportStore:
             temporary.unlink(missing_ok=True)
         return self.verify()
 
-    def verify(self) -> ScoreFactorDiagnosticReport:
+    def verify(self) -> FactorDiagnosticReport:
         path = self._root / _REPORT_NAME
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 raise TypeError("factor report payload is not an object")
             stored_hash = raw.pop("report_hash")
-            if not isinstance(stored_hash, str) or canonical_hash(raw) != stored_hash:
+            if not isinstance(stored_hash, str) or canonical_artifact_hash(raw) != stored_hash:
                 raise ValueError("factor report hash mismatch")
             report = _report_from_payload(raw)
         except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -79,11 +83,11 @@ class JsonFactorDiagnosticReportStore:
         return report
 
 
-def _report_from_payload(raw: dict[str, object]) -> ScoreFactorDiagnosticReport:
+def _report_from_payload(raw: dict[str, object]) -> FactorDiagnosticReport:
     status = str(raw["status"])
     if status not in {"evaluated", "exploratory"}:
         raise ValueError("factor report status is invalid")
-    return ScoreFactorDiagnosticReport(
+    return FactorDiagnosticReport(
         cast(DiagnosticStatus, status),
         str(raw["extraction_hash"]),
         str(raw["baseline_report_hash"]),

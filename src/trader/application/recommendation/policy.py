@@ -17,7 +17,7 @@ from trader.domain.review.models import RiskRule
 
 
 @dataclass(frozen=True)
-class SelectionPolicy:
+class RecommendationSelectionSettings:
     default_top_k: int
     maximum_top_k: int
     maximum_per_industry: int
@@ -55,7 +55,7 @@ class RecommendationPolicy:
     strategy_version: str
     fusion_version: str
     fusion: FusionPolicy
-    selection: SelectionPolicy
+    selection: RecommendationSelectionSettings
     dimension_weights: Mapping[Strategy, Mapping[str, float]]
     risk_rules: Mapping[str, RiskRule]
     board_policy_version: str
@@ -136,4 +136,4 @@ def _freeze_strategy_component_weights(
     )
 
 
-__all__ = ["RecommendationPolicy", "SelectionPolicy"]
+__all__ = ["RecommendationPolicy", "RecommendationSelectionSettings"]

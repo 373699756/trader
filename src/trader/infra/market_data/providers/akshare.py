@@ -8,7 +8,7 @@ import math
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
@@ -26,6 +26,10 @@ from trader.domain.market.research import (
     announcement_level,
     corporate_risk_facts_from_announcements,
     reduction_level,
+)
+from trader.infra.market_data.providers.akshare_http_contracts import (
+    AkshareGetFunction,
+    AkshareHttpResponse,
 )
 from trader.infra.market_data.providers.akshare_news import fetch_news as _fetch_news
 from trader.infra.market_data.providers.akshare_parsing import (
@@ -123,15 +127,6 @@ def _announcement_payload_with_rows(
     return result
 
 
-class HttpResponse(Protocol):
-    text: str
-
-    def raise_for_status(self) -> None: ...
-
-    def json(self) -> object: ...
-
-
-GetFunction = Callable[..., HttpResponse]
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 _DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
 _SOURCE_EXCEPTIONS = (OSError, RuntimeError, ValueError, requests.RequestException)
@@ -147,7 +142,7 @@ _ANNOUNCEMENT_MAX_PAGES = 50
 
 class _AkshareOptions(TypedDict, total=False):
     timeout_seconds: float
-    get: GetFunction | None
+    get: AkshareGetFunction | None
     long_research_policy: LongResearchPolicy | None
     evidence_cache_dir: Path | None
     json_writer: RuntimeJsonWriter | None
@@ -162,7 +157,7 @@ class AkshareResearchClient:
         timeout_seconds = options.get("timeout_seconds", 8.0)
         get = options.get("get")
         self._timeout_seconds = max(0.1, timeout_seconds)
-        self._get = get if get is not None else cast(GetFunction, requests.get)
+        self._get = get if get is not None else cast(AkshareGetFunction, requests.get)
         self._long_research_policy = options.get("long_research_policy")
         self._evidence_cache_dir = options.get("evidence_cache_dir")
         self._json_writer = options.get("json_writer")
@@ -576,7 +571,7 @@ class AkshareResearchClient:
         *,
         params: Mapping[str, object],
         headers: Mapping[str, str] | None = None,
-    ) -> HttpResponse:
+    ) -> AkshareHttpResponse:
         self._ensure_running()
         response = self._get(
             url,

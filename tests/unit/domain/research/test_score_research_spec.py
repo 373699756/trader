@@ -9,7 +9,7 @@ from trader.domain.research.specification import (
     ACTIVE_SCORE_RESEARCH_SPEC,
     HISTORICAL_RESEARCH_SPEC,
     PREREGISTERED_RESEARCH_SPEC,
-    ScoreResearchSpec,
+    ScoringResearchSpec,
     assess_score_research_coverage,
     get_score_research_spec,
 )
@@ -42,7 +42,7 @@ def test_preregistered_research_is_preregistered_before_its_complete_future_wind
 
 def test_research_spec_rejects_registration_after_window_start() -> None:
     with pytest.raises(ValueError, match="before the first planned observation"):
-        ScoreResearchSpec(
+        ScoringResearchSpec(
             research_identity="invalid",
             preregistered_on=date(2026, 8, 21),
             historical_dates=(date(2026, 8, 21),),

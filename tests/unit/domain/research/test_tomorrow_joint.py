@@ -30,7 +30,7 @@ def _row(
     *,
     v1: float,
     v2: float,
-    c3: float,
+    daily_close_ensemble: float,
     actual: float,
 ) -> TomorrowJointAlignedRow:
     trade_date = date(2025, 1, 1) + timedelta(days=day_index)
@@ -44,7 +44,7 @@ def _row(
         severe_loss=actual < -0.04,
         v1_predicted_net_excess_20bp=v1,
         v2_predicted_net_excess_20bp=v2,
-        c3_predicted_net_excess_20bp=c3,
+        daily_close_ensemble_predicted_net_excess_20bp=daily_close_ensemble,
     )
 
 
@@ -55,7 +55,7 @@ def _fit_rows(start_day: int, days: int) -> tuple[TomorrowJointAlignedRow, ...]:
             code_index,
             v1=signal * 0.8,
             v2=-signal * 500.0,
-            c3=signal * 1.2,
+            daily_close_ensemble=signal * 1.2,
             actual=signal,
         )
         for day_index in range(days)
@@ -65,7 +65,11 @@ def _fit_rows(start_day: int, days: int) -> tuple[TomorrowJointAlignedRow, ...]:
 
 
 def test_joint_contract_is_fixed_and_inputs_are_immutable() -> None:
-    assert TOMORROW_JOINT_CANDIDATES == ("c3", "v1_c3", "v1_v2_c3")
+    assert TOMORROW_JOINT_CANDIDATES == (
+        "daily_close_ensemble",
+        "v1_daily_close_ensemble",
+        "v1_v2_daily_close_ensemble",
+    )
     assert TOMORROW_JOINT_LAMBDAS == (0.1, 1.0, 10.0, 100.0)
     row = _fit_rows(0, 1)[0]
 
@@ -76,7 +80,7 @@ def test_joint_contract_is_fixed_and_inputs_are_immutable() -> None:
 def test_joint_insufficient_terminal_has_no_prediction_or_model_evidence() -> None:
     terminal = seal_tomorrow_joint_insufficient_terminal(
         parent_completion_hash="a" * 64,
-        parent_profile_hashes=(("v1", "b" * 64), ("v2", "c" * 64), ("c3", "d" * 64)),
+        parent_profile_hashes=(("v1", "b" * 64), ("v2", "c" * 64), ("daily_close_ensemble", "d" * 64)),
         failure_reasons=("h1_historical_data_insufficient",),
     )
 
@@ -91,7 +95,7 @@ def test_joint_insufficient_terminal_has_no_prediction_or_model_evidence() -> No
     with pytest.raises(ValueError, match="cannot claim predictions"):
         TomorrowJointInsufficientTerminal(
             parent_completion_hash="a" * 64,
-            parent_profile_hashes=(("v1", "b" * 64), ("v2", "c" * 64), ("c3", "d" * 64)),
+            parent_profile_hashes=(("v1", "b" * 64), ("v2", "c" * 64), ("daily_close_ensemble", "d" * 64)),
             status="historical_data_insufficient",
             failure_reasons=("h1_historical_data_insufficient",),
             prediction_rows=1,
@@ -100,20 +104,20 @@ def test_joint_insufficient_terminal_has_no_prediction_or_model_evidence() -> No
 
 def test_three_way_candidate_can_shrink_v2_exactly_to_zero() -> None:
     rows = tuple(
-        _row(day_index, code_index, v1=0.02, v2=10.0, c3=0.02, actual=0.01)
+        _row(day_index, code_index, v1=0.02, v2=10.0, daily_close_ensemble=0.02, actual=0.01)
         for day_index in range(12)
         for code_index in range(1, 7)
     )
     model = fit_tomorrow_joint_candidate(
         rows,
-        candidate_id="v1_v2_c3",
+        candidate_id="v1_v2_daily_close_ensemble",
         regularization_lambda=0.1,
     )
 
     assert model.weights.v2 == 0.0
     assert model.weights.v1 >= 0.0
-    assert model.weights.c3 >= 0.0
-    assert model.weights.v1 + model.weights.v2 + model.weights.c3 == pytest.approx(1.0)
+    assert model.weights.daily_close_ensemble >= 0.0
+    assert model.weights.v1 + model.weights.v2 + model.weights.daily_close_ensemble == pytest.approx(1.0)
 
 
 def test_development_freezes_all_structures_without_using_mse_as_profit_selection() -> None:
@@ -126,7 +130,9 @@ def test_development_freezes_all_structures_without_using_mse_as_profit_selectio
     assert family.selection_status == "portfolio_evidence_required"
     assert family.production_authority is False
     assert all(
-        item.regularization_lambda in TOMORROW_JOINT_LAMBDAS for item in family.candidates if item.candidate_id != "c3"
+        item.regularization_lambda in TOMORROW_JOINT_LAMBDAS
+        for item in family.candidates
+        if item.candidate_id != "daily_close_ensemble"
     )
 
     with pytest.raises(ValueError, match="strictly precede"):
@@ -135,14 +141,14 @@ def test_development_freezes_all_structures_without_using_mse_as_profit_selectio
 
 def test_prediction_is_one_pre_score_net_excess_value() -> None:
     model = TomorrowJointFittedModel(
-        candidate_id="v1_v2_c3",
+        candidate_id="v1_v2_daily_close_ensemble",
         regularization_lambda=1.0,
         weights=TomorrowJointWeights(0.25, 0.0, 0.75),
         training_rows=60,
         tuning_rows=30,
         tuning_mean_squared_error=0.001,
     )
-    row = _row(0, 1, v1=0.02, v2=0.99, c3=0.06, actual=0.04)
+    row = _row(0, 1, v1=0.02, v2=0.99, daily_close_ensemble=0.06, actual=0.04)
 
     prediction = predict_tomorrow_joint(model, (row,))[0]
 
@@ -159,7 +165,7 @@ def test_validation_reports_paired_profit_risk_turnover_and_rank_gates() -> None
             code_index,
             v1=rank / 100.0,
             v2=rank / 110.0,
-            c3=rank / 90.0,
+            daily_close_ensemble=rank / 90.0,
             actual=rank / 80.0,
         )
         for day_index in range(12)
@@ -167,7 +173,7 @@ def test_validation_reports_paired_profit_risk_turnover_and_rank_gates() -> None
         for rank in (code_index - 5.5,)
     )
     model = TomorrowJointFittedModel(
-        candidate_id="v1_c3",
+        candidate_id="v1_daily_close_ensemble",
         regularization_lambda=10.0,
         weights=TomorrowJointWeights(0.5, 0.0, 0.5),
         training_rows=100,
@@ -207,7 +213,7 @@ def test_validation_reports_paired_profit_risk_turnover_and_rank_gates() -> None
 def test_validation_fails_when_50bp_increment_is_not_positive() -> None:
     rows = _fit_rows(0, 6)
     model = TomorrowJointFittedModel(
-        candidate_id="c3",
+        candidate_id="daily_close_ensemble",
         regularization_lambda=None,
         weights=TomorrowJointWeights(0.0, 0.0, 1.0),
         training_rows=30,
@@ -240,7 +246,7 @@ def test_validation_fails_when_50bp_increment_is_not_positive() -> None:
 def test_validation_requires_increment_over_active_v2_when_v2_is_active() -> None:
     rows = _fit_rows(0, 6)
     model = TomorrowJointFittedModel(
-        candidate_id="c3",
+        candidate_id="daily_close_ensemble",
         regularization_lambda=None,
         weights=TomorrowJointWeights(0.0, 0.0, 1.0),
         training_rows=30,
@@ -276,9 +282,11 @@ def test_validation_requires_increment_over_active_v2_when_v2_is_active() -> Non
 def test_final_structure_selection_uses_complete_profit_evidence_not_tuning_mse() -> None:
     rows = _fit_rows(0, 6)
     models = (
-        TomorrowJointFittedModel("c3", None, TomorrowJointWeights(0.0, 0.0, 1.0), 30, 12, 0.0001),
-        TomorrowJointFittedModel("v1_c3", 1.0, TomorrowJointWeights(0.5, 0.0, 0.5), 30, 12, 0.0003),
-        TomorrowJointFittedModel("v1_v2_c3", 0.1, TomorrowJointWeights(0.5, 0.0, 0.5), 30, 12, 0.0002),
+        TomorrowJointFittedModel("daily_close_ensemble", None, TomorrowJointWeights(0.0, 0.0, 1.0), 30, 12, 0.0001),
+        TomorrowJointFittedModel("v1_daily_close_ensemble", 1.0, TomorrowJointWeights(0.5, 0.0, 0.5), 30, 12, 0.0003),
+        TomorrowJointFittedModel(
+            "v1_v2_daily_close_ensemble", 0.1, TomorrowJointWeights(0.5, 0.0, 0.5), 30, 12, 0.0002
+        ),
     )
     family = TomorrowJointCandidateFamily(models)
     reports = []
@@ -306,12 +314,14 @@ def test_final_structure_selection_uses_complete_profit_evidence_not_tuning_mse(
     assert models[0].tuning_mean_squared_error < models[1].tuning_mean_squared_error
 
 
-def test_joint_confirmation_uses_one_holm_family_and_falls_back_to_c3() -> None:
+def test_joint_confirmation_uses_one_holm_family_and_falls_back_to_daily_close_ensemble() -> None:
     rows = _fit_rows(0, 6)
     models = (
-        TomorrowJointFittedModel("c3", None, TomorrowJointWeights(0.0, 0.0, 1.0), 30, 12, 0.0001),
-        TomorrowJointFittedModel("v1_c3", 1.0, TomorrowJointWeights(0.5, 0.0, 0.5), 30, 12, 0.0002),
-        TomorrowJointFittedModel("v1_v2_c3", 1.0, TomorrowJointWeights(0.5, 0.0, 0.5), 30, 12, 0.0003),
+        TomorrowJointFittedModel("daily_close_ensemble", None, TomorrowJointWeights(0.0, 0.0, 1.0), 30, 12, 0.0001),
+        TomorrowJointFittedModel("v1_daily_close_ensemble", 1.0, TomorrowJointWeights(0.5, 0.0, 0.5), 30, 12, 0.0002),
+        TomorrowJointFittedModel(
+            "v1_v2_daily_close_ensemble", 1.0, TomorrowJointWeights(0.5, 0.0, 0.5), 30, 12, 0.0003
+        ),
     )
     family = TomorrowJointCandidateFamily(models)
     reports = []
@@ -335,8 +345,8 @@ def test_joint_confirmation_uses_one_holm_family_and_falls_back_to_c3() -> None:
     confirmation = confirm_tomorrow_joint_family(family, tuple(reports))
 
     assert tuple(item.challenger_id for item in confirmation.holm) == TOMORROW_JOINT_CANDIDATES
-    assert confirmation.selected_model.candidate_id == "c3"
-    assert confirmation.fallback_to_c3 is True
+    assert confirmation.selected_model.candidate_id == "daily_close_ensemble"
+    assert confirmation.fallback_to_daily_close_ensemble is True
     assert confirmation.production_authority is False
     assert len(confirmation.content_hash) == 64
 
@@ -344,9 +354,11 @@ def test_joint_confirmation_uses_one_holm_family_and_falls_back_to_c3() -> None:
 def test_joint_confirmation_requires_one_active_profile_across_the_family() -> None:
     rows = _fit_rows(0, 6)
     models = (
-        TomorrowJointFittedModel("c3", None, TomorrowJointWeights(0.0, 0.0, 1.0), 30, 12, 0.0001),
-        TomorrowJointFittedModel("v1_c3", 1.0, TomorrowJointWeights(0.5, 0.0, 0.5), 30, 12, 0.0002),
-        TomorrowJointFittedModel("v1_v2_c3", 1.0, TomorrowJointWeights(0.5, 0.0, 0.5), 30, 12, 0.0003),
+        TomorrowJointFittedModel("daily_close_ensemble", None, TomorrowJointWeights(0.0, 0.0, 1.0), 30, 12, 0.0001),
+        TomorrowJointFittedModel("v1_daily_close_ensemble", 1.0, TomorrowJointWeights(0.5, 0.0, 0.5), 30, 12, 0.0002),
+        TomorrowJointFittedModel(
+            "v1_v2_daily_close_ensemble", 1.0, TomorrowJointWeights(0.5, 0.0, 0.5), 30, 12, 0.0003
+        ),
     )
     reports = []
     for index, model in enumerate(models):

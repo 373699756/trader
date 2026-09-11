@@ -13,7 +13,7 @@ import pytest
 import trader.entrypoints.cli as cli_module
 import trader.entrypoints.research_commands as research_commands
 import trader.entrypoints.server as server_module
-from trader.application.research.research_tomorrow_orchestrator import TomorrowResearchPrerequisite
+from trader.application.research.tomorrow_research_orchestrator import TomorrowResearchPrerequisiteStatus
 from trader.entrypoints.cli import build_parser, main
 from trader.entrypoints.server import build_parser as build_server_parser
 from trader.infra.process_lock import ProcessLockError
@@ -655,8 +655,8 @@ def test_research_status_keeps_tomorrow_graph_conflict_out_of_h1_input_blockers(
     config.write_text(json.dumps(runtime), encoding="utf-8")
 
     class _ReadyPrerequisite:
-        def inspect(self) -> TomorrowResearchPrerequisite:
-            return TomorrowResearchPrerequisite("ready", "a" * 64)
+        def inspect(self) -> TomorrowResearchPrerequisiteStatus:
+            return TomorrowResearchPrerequisiteStatus("ready", "a" * 64)
 
     monkeypatch.setattr(research_commands, "_tomorrow_research_prerequisite", lambda _runtime: _ReadyPrerequisite())
     monkeypatch.setattr(
@@ -681,7 +681,7 @@ def test_research_status_reports_h1_conflict_as_the_input_boundary(tmp_path: Pat
     config.write_text(json.dumps(runtime), encoding="utf-8")
 
     class _BrokenPrerequisite:
-        def inspect(self) -> TomorrowResearchPrerequisite:
+        def inspect(self) -> TomorrowResearchPrerequisiteStatus:
             raise H1ArchiveConflictError("H1 archive invalid")
 
     monkeypatch.setattr(research_commands, "_tomorrow_research_prerequisite", lambda _runtime: _BrokenPrerequisite())

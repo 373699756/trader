@@ -40,9 +40,9 @@ def test_completion_index_seals_every_terminal_hash_and_rejects_tampering(tmp_pa
     assert index.residual_terminal_hashes == tuple(
         (item.strategy, item.content_hash) for item in completion.residual_ledgers
     )
-    assert index.c3_terminal_hash == completion.c3.content_hash
+    assert index.daily_close_selection_hash == completion.daily_close_selection.content_hash
     assert store.write(completion) == index
     path = tmp_path / "artifacts" / "h1_research_terminal.json"
-    path.write_text(path.read_text().replace(completion.c3.content_hash, "0" * 64), encoding="utf-8")
+    path.write_text(path.read_text().replace(completion.daily_close_selection.content_hash, "0" * 64), encoding="utf-8")
     with pytest.raises(H1ResearchCompletionArtifactConflictError, match="schema or hash"):
         store.verify()

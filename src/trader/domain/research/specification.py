@@ -16,7 +16,7 @@ SCORE_RESEARCH_OBSERVATION_CUTOFF = time(14, 50)
 
 
 @dataclass(frozen=True)
-class ScoreResearchSpec:
+class ScoringResearchSpec:
     """Bind a score experiment to dates and a deterministic random namespace."""
 
     research_identity: str
@@ -44,7 +44,7 @@ class ScoreResearchSpec:
 
 
 @dataclass(frozen=True)
-class ScoreResearchWindowCoverage:
+class ResearchWindowCoverage:
     """Typed coverage of one immutable planned-date window."""
 
     recorded_dates: tuple[date, ...]
@@ -63,24 +63,24 @@ class ScoreResearchWindowCoverage:
 
 
 @dataclass(frozen=True)
-class ScoreResearchCoverage:
-    historical: ScoreResearchWindowCoverage
-    forward: ScoreResearchWindowCoverage
+class ResearchCoverage:
+    historical: ResearchWindowCoverage
+    forward: ResearchWindowCoverage
 
 
 def assess_score_research_coverage(
-    spec: ScoreResearchSpec,
+    spec: ScoringResearchSpec,
     recorded_dates: Iterable[date],
     *,
     as_of: datetime,
     observation_cutoff: time = SCORE_RESEARCH_OBSERVATION_CUTOFF,
-) -> ScoreResearchCoverage:
+) -> ResearchCoverage:
     """Assess fixed dates against the timezone-aware observation cutoff."""
 
     if as_of.tzinfo is None or as_of.utcoffset() is None:
         raise ValueError("research coverage clock must be timezone-aware")
     recorded = frozenset(recorded_dates)
-    return ScoreResearchCoverage(
+    return ResearchCoverage(
         historical=_assess_window(spec.historical_dates, recorded, as_of, observation_cutoff),
         forward=_assess_window(spec.forward_dates, recorded, as_of, observation_cutoff),
     )
@@ -91,7 +91,7 @@ def _assess_window(
     recorded_dates: frozenset[date],
     as_of: datetime,
     observation_cutoff: time,
-) -> ScoreResearchWindowCoverage:
+) -> ResearchWindowCoverage:
     current_date = as_of.date()
     current_time = as_of.timetz().replace(tzinfo=None)
 
@@ -111,7 +111,7 @@ def _assess_window(
         state = "failed"
     else:
         state = "collecting"
-    return ScoreResearchWindowCoverage(
+    return ResearchWindowCoverage(
         recorded_dates=recorded,
         missed_dates=missed,
         maximum_attainable_days=len(planned_dates) - len(missed),
@@ -120,7 +120,7 @@ def _assess_window(
     )
 
 
-def _validate_spec_identity(spec: ScoreResearchSpec) -> None:
+def _validate_spec_identity(spec: ScoringResearchSpec) -> None:
     if _IDENTITY.fullmatch(spec.research_identity) is None:
         raise ValueError("research identity must be a bounded lowercase identifier")
     if spec.historical_window_mode not in {"retrospective", "future"}:
@@ -129,7 +129,7 @@ def _validate_spec_identity(spec: ScoreResearchSpec) -> None:
         raise ValueError("research bootstrap seed must be positive")
 
 
-def _validate_spec_dates(spec: ScoreResearchSpec) -> None:
+def _validate_spec_dates(spec: ScoringResearchSpec) -> None:
     if not spec.historical_dates or not spec.forward_dates:
         raise ValueError("research spec requires historical and forward dates")
     if spec.maximum_historical_days < 1 or len(spec.historical_dates) != spec.maximum_historical_days:
@@ -170,7 +170,7 @@ def _canonical(value: object) -> object:
     return value
 
 
-HISTORICAL_RESEARCH_SPEC = ScoreResearchSpec(
+HISTORICAL_RESEARCH_SPEC = ScoringResearchSpec(
     research_identity="historical_research_baseline",
     preregistered_on=date(2026, 8, 11),
     historical_dates=_dates(
@@ -242,7 +242,7 @@ HISTORICAL_RESEARCH_SPEC = ScoreResearchSpec(
     historical_window_mode="retrospective",
 )
 
-PREREGISTERED_RESEARCH_SPEC = ScoreResearchSpec(
+PREREGISTERED_RESEARCH_SPEC = ScoringResearchSpec(
     research_identity="preregistered_research",
     preregistered_on=date(2026, 8, 20),
     historical_dates=_dates(
@@ -320,7 +320,7 @@ _SPEC_BY_IDENTITY = {
 }
 
 
-def get_score_research_spec(research_identity: str) -> ScoreResearchSpec:
+def get_score_research_spec(research_identity: str) -> ScoringResearchSpec:
     try:
         return _SPEC_BY_IDENTITY[research_identity]
     except KeyError as exc:
@@ -332,9 +332,9 @@ __all__ = [
     "HISTORICAL_RESEARCH_SPEC",
     "PREREGISTERED_RESEARCH_SPEC",
     "SCORE_RESEARCH_OBSERVATION_CUTOFF",
-    "ScoreResearchCoverage",
-    "ScoreResearchSpec",
-    "ScoreResearchWindowCoverage",
+    "ResearchCoverage",
+    "ScoringResearchSpec",
+    "ResearchWindowCoverage",
     "assess_score_research_coverage",
     "get_score_research_spec",
 ]

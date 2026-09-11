@@ -8,7 +8,7 @@ from datetime import date
 from typing import Literal, Protocol
 
 from trader.application.research.historical_screening import HistoricalArchiveManifest, HistoricalArchiveStatus
-from trader.application.research.replay_models import canonical_hash
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.historical_screening import HistoricalScreeningSpec
 
 
@@ -57,7 +57,7 @@ class HistoricalBarBacktestReport:
     report_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "report_hash", canonical_hash(self))
+        object.__setattr__(self, "report_hash", canonical_artifact_hash(self))
 
 
 class HistoricalScreeningEvidence(Protocol):

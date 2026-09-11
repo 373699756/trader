@@ -45,7 +45,7 @@ def _probe(**overrides: object) -> TomorrowResearchResourceProbe:
 
 def test_graph_is_canonical_and_rejects_missing_or_conflicting_parents() -> None:
     parent = _ref("h1_coverage_audit")
-    child = _ref("daily_close_c3_candidate", parents=(parent.content_hash,))
+    child = _ref("daily_close_model_selection", parents=(parent.content_hash,))
 
     first = TomorrowResearchArtifactGraph((child, parent))
     second = TomorrowResearchArtifactGraph((parent, child))
@@ -73,7 +73,7 @@ def test_stage_handoff_binds_exact_required_artifacts_and_resource_limits() -> N
     )
     artifacts = (
         _ref("h1_coverage_audit", artifact_kind="h1_research_completion"),
-        _ref("daily_close_c3_candidate"),
+        _ref("daily_close_model_selection"),
         _ref("filter_confirmation"),
         _ref("tomorrow_joint_candidate"),
     )

@@ -9,7 +9,7 @@ from datetime import date
 from typing import Literal, cast
 
 from trader.domain.market.models import Board
-from trader.domain.research.h1_point_in_time import canonical_hash
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.point_in_time_dataset import (
     PointInTimeDatasetReport,
     PointInTimeDatasetRow,
@@ -98,7 +98,7 @@ class CandidateRecallDownstreamTrace:
         if (self.first_rejection_boundary == "selected") == bool(reasons):
             raise ValueError("candidate recall boundary and reasons are inconsistent")
         object.__setattr__(self, "rejection_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -124,7 +124,7 @@ class CandidateRecallDayTrace:
             raise ValueError("candidate recall cumulative latency must be monotonic")
         object.__setattr__(self, "downstream_rows", rows)
         object.__setattr__(self, "stage_latencies", latencies)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -162,7 +162,7 @@ class CandidateRecallLedgerRow:
         if not math.isfinite(self.net_excess_return_20bp):
             raise ValueError("candidate recall ledger outcome is invalid")
         object.__setattr__(self, "rejection_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -261,7 +261,7 @@ class CandidateRecallDayAttribution:
             raise ValueError("candidate recall day stage metrics do not match rows")
         object.__setattr__(self, "rows", rows)
         object.__setattr__(self, "stages", stages)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -351,7 +351,7 @@ class CandidateRecallReport:
         object.__setattr__(self, "days", days)
         object.__setattr__(self, "aggregate_stages", stages)
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 def attribute_candidate_recall_day(
@@ -581,17 +581,17 @@ def _percentile(values: tuple[float, ...], quantile: float) -> float:
     return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
-def _validate_recall(oracle: int, recalled: int, recall: float | None, owner: str) -> None:
+def _validate_recall(oracle: int, recalled: int, recall: float | None, metric_name: str) -> None:
     if oracle < 0 or not 0 <= recalled <= oracle:
-        raise ValueError(f"{owner} counts are invalid")
+        raise ValueError(f"{metric_name} counts are invalid")
     expected = _fraction(recalled, oracle)
     if recall != expected:
-        raise ValueError(f"{owner} rate does not match counts")
+        raise ValueError(f"{metric_name} rate does not match counts")
 
 
-def _validate_rates(values: tuple[float | None, ...], owner: str) -> None:
+def _validate_rates(values: tuple[float | None, ...], metric_name: str) -> None:
     if any(value is not None and (not math.isfinite(value) or not 0.0 <= value <= 1.0) for value in values):
-        raise ValueError(f"{owner} rates must be in [0, 1]")
+        raise ValueError(f"{metric_name} rates must be in [0, 1]")
 
 
 __all__ = [

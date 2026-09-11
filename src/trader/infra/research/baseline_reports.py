@@ -8,14 +8,16 @@ from datetime import date
 from pathlib import Path
 from typing import Literal, cast
 
-from trader.application.research.replay_models import (
+from trader.application.research.baseline_replay_report import (
     BaselineAggregateMetrics,
     BaselineDayMetrics,
     BaselineReportStatus,
     HistoricalBaselineReport,
-    canonical_hash,
-    canonical_json,
-    canonical_value,
+)
+from trader.domain.research.artifact_identity import (
+    canonical_artifact_hash,
+    canonical_artifact_json,
+    canonical_artifact_value,
 )
 from trader.domain.research.specification import HISTORICAL_RESEARCH_SPEC
 
@@ -40,12 +42,12 @@ class JsonBaselineReportStore:
             if existing.report_hash != report.report_hash:
                 raise BaselineReportConflictError("Historical replay report identity conflict")
             return existing
-        payload = canonical_value(report)
+        payload = canonical_artifact_value(report)
         if not isinstance(payload, dict):
             raise TypeError("Historical replay report payload must be an object")
         payload["report_hash"] = report.report_hash
         temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        temporary.write_text(canonical_json(payload), encoding="utf-8")
+        temporary.write_text(canonical_artifact_json(payload), encoding="utf-8")
         try:
             try:
                 os.link(temporary, path)
@@ -65,7 +67,7 @@ class JsonBaselineReportStore:
             if not isinstance(raw, dict):
                 raise TypeError("report payload is not an object")
             stored_hash = raw.pop("report_hash")
-            if not isinstance(stored_hash, str) or canonical_hash(raw) != stored_hash:
+            if not isinstance(stored_hash, str) or canonical_artifact_hash(raw) != stored_hash:
                 raise ValueError("report hash mismatch")
             report = _report_from_payload(raw)
         except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:

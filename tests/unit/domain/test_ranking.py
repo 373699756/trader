@@ -16,7 +16,7 @@ from trader.domain.recommendation.models import (
 from trader.domain.recommendation.risk_fusion.downside import DownsideAssessment
 from trader.domain.recommendation.selection.ranking import (
     ActionPolicy,
-    SelectionPolicy,
+    PortfolioSelectionPolicy,
     action_for,
     minimum_selection_score,
     select_top_k,
@@ -366,7 +366,7 @@ def _select_top_k(
 ):
     return select_top_k(
         recommendations,
-        SelectionPolicy(
+        PortfolioSelectionPolicy(
             top_k=top_k,
             maximum_per_industry=maximum_per_industry,
             minimum_final_score=minimum_final_score,
@@ -387,7 +387,7 @@ def _select_top_k_with_audit(
 ):
     return select_top_k_with_audit(
         recommendations,
-        SelectionPolicy(
+        PortfolioSelectionPolicy(
             top_k=top_k,
             maximum_per_industry=maximum_per_industry,
             minimum_final_score=minimum_final_score,

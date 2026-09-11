@@ -8,7 +8,7 @@ import pytest
 from trader.domain.research.baostock_holdout_isolation import (
     BAOSTOCK_DAILY_IDENTITY,
     BAOSTOCK_SOURCE_ANCHOR,
-    LEGACY_HOLDOUT_IDENTITY,
+    HISTORICAL_CANDIDATE_HOLDOUT_IDENTITY,
     POINT_IN_TIME_HOLDOUT_IDENTITY,
     BaoStockHoldoutIsolationBlocker,
     BaoStockHoldoutIsolationInput,
@@ -40,10 +40,10 @@ def _valid_input() -> BaoStockHoldoutIsolationInput:
         source_anchor=BAOSTOCK_SOURCE_ANCHOR,
         point_in_time_parity_claimed=False,
         point_in_time_holdout_opened=False,
-        legacy_holdout_identity=LEGACY_HOLDOUT_IDENTITY,
-        legacy_holdout_hash=_LEGACY_HASH,
-        new_holdout_identity=POINT_IN_TIME_HOLDOUT_IDENTITY,
-        new_holdout_parent_hashes=(_DAILY_HASH, _SPLIT_HASH),
+        historical_candidate_holdout_identity=HISTORICAL_CANDIDATE_HOLDOUT_IDENTITY,
+        historical_candidate_holdout_hash=_LEGACY_HASH,
+        point_in_time_holdout_identity=POINT_IN_TIME_HOLDOUT_IDENTITY,
+        point_in_time_holdout_parent_hashes=(_DAILY_HASH, _SPLIT_HASH),
     )
 
 
@@ -115,19 +115,19 @@ def test_audit_blocks_an_already_opened_point_in_time_holdout() -> None:
     assert result.terminal_holdout_opened is False
 
 
-def test_new_holdout_cannot_reuse_legacy_identity_or_parent_hash() -> None:
+def test_point_in_time_holdout_cannot_reuse_historical_candidate_identity_or_parent_hash() -> None:
     value = _valid_input()
     result = audit_baostock_holdout_isolation(
         replace(
             value,
-            new_holdout_identity=LEGACY_HOLDOUT_IDENTITY,
-            new_holdout_parent_hashes=(_DAILY_HASH, _SPLIT_HASH, _LEGACY_HASH),
+            point_in_time_holdout_identity=HISTORICAL_CANDIDATE_HOLDOUT_IDENTITY,
+            point_in_time_holdout_parent_hashes=(_DAILY_HASH, _SPLIT_HASH, _LEGACY_HASH),
         )
     )
 
     assert result.blockers == (
-        BaoStockHoldoutIsolationBlocker.NEW_HOLDOUT_IDENTITY_MISMATCH,
-        BaoStockHoldoutIsolationBlocker.LEGACY_HOLDOUT_REUSED_AS_PARENT,
+        BaoStockHoldoutIsolationBlocker.POINT_IN_TIME_HOLDOUT_IDENTITY_MISMATCH,
+        BaoStockHoldoutIsolationBlocker.HISTORICAL_CANDIDATE_HOLDOUT_REUSED_AS_PARENT,
     )
 
 
@@ -137,14 +137,14 @@ def test_identity_and_required_new_parent_hashes_are_fixed() -> None:
         replace(
             value,
             daily_identity="score_baostock_daily_core_v1",
-            legacy_holdout_identity="point_in_time_holdout",
-            new_holdout_parent_hashes=(_DAILY_HASH,),
+            historical_candidate_holdout_identity="point_in_time_holdout",
+            point_in_time_holdout_parent_hashes=(_DAILY_HASH,),
         )
     )
 
     assert result.blockers == (
         BaoStockHoldoutIsolationBlocker.DAILY_IDENTITY_MISMATCH,
-        BaoStockHoldoutIsolationBlocker.LEGACY_HOLDOUT_IDENTITY_MISMATCH,
+        BaoStockHoldoutIsolationBlocker.HISTORICAL_CANDIDATE_HOLDOUT_IDENTITY_MISMATCH,
         BaoStockHoldoutIsolationBlocker.REQUIRED_PARENT_HASH_MISSING,
     )
 
@@ -157,7 +157,7 @@ def test_identity_and_required_new_parent_hashes_are_fixed() -> None:
         ("ordered_complete_dates", (*_dates(2), _dates(2)[-1]), "strictly increasing"),
         ("training_consumed_dates", (_dates(2)[1], _dates(2)[0]), "strictly increasing"),
         ("split_manifest_hash", _DAILY_HASH, "must be distinct"),
-        ("new_holdout_parent_hashes", (_DAILY_HASH, _DAILY_HASH), "must be unique"),
+        ("point_in_time_holdout_parent_hashes", (_DAILY_HASH, _DAILY_HASH), "must be unique"),
     ),
 )
 def test_structurally_invalid_metadata_is_rejected(field: str, value: object, message: str) -> None:

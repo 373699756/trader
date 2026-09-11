@@ -6,9 +6,9 @@ import pytest
 
 from tests.unit.application.research.test_historical_extraction import _Evaluator, _Port, _WindowPort
 from tests.unit.application.research.test_historical_ports import _summary
+from trader.application.research.baseline_replay_report import BaselineReplaySelection
 from trader.application.research.extraction import HistoricalExtractor
 from trader.application.research.replay import HistoricalBaselineReplayer
-from trader.application.research.replay_models import BaselineReplaySelection
 
 
 class _ReplayEvaluator:

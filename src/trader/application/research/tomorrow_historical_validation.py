@@ -11,9 +11,9 @@ from datetime import date
 from typing import Literal, Protocol
 
 from trader.application.ports.model_scoring import ModelInput, ModelPredictorPort
-from trader.application.research.replay_models import canonical_hash
 from trader.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
 from trader.domain.recommendation.model_scoring import percentile_ranks
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalScreeningSpec
 from trader.domain.research.shadow_calibration import (
     LinearModel,
@@ -54,7 +54,7 @@ class HistoricalRiskValidationSpec:
             or self.schema_version != "tomorrow_historical_risk_validation_spec"
         ):
             raise ValueError("Tomorrow historical risk validation contract is fixed")
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
     @property
     def required_trade_dates(self) -> int:
@@ -192,7 +192,7 @@ class HistoricalRiskModelArtifact:
             or self.schema_version != "tomorrow_historical_risk_model"
         ):
             raise ValueError("Historical risk model artifact is invalid")
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
     def predict(self, rows: tuple[tuple[float, float, float, float, float], ...]) -> tuple[float, ...]:
         model = LinearModel(self.logistic_intercept, self.logistic_coefficients, logistic=True)
@@ -227,7 +227,7 @@ class HistoricalRiskValidationReport:
         _validate_risk_report_identity(self)
         _validate_risk_report_state(self)
         object.__setattr__(self, "failure_reasons", tuple(sorted(set(self.failure_reasons))))
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 def _validate_risk_report_identity(report: HistoricalRiskValidationReport) -> None:
@@ -449,14 +449,14 @@ def build_historical_risk_probability(
         platt_intercept=calibrator.intercept,
         platt_slope=calibrator.slope,
         platt_constant=calibrator.constant,
-        training_evidence_hash=canonical_hash(training),
-        calibration_evidence_hash=canonical_hash(calibration),
+        training_evidence_hash=canonical_artifact_hash(training),
+        calibration_evidence_hash=canonical_artifact_hash(calibration),
     )
     report = HistoricalRiskValidationReport(
         spec_hash=spec.content_hash,
         model_id=predictor.model_id,
         model_hash=predictor.model_hash,
-        evidence_hash=canonical_hash(included),
+        evidence_hash=canonical_artifact_hash(included),
         training_trade_dates=len(train_dates),
         calibration_trade_dates=len(calibration_dates),
         test_trade_dates=len(test_dates),
@@ -526,7 +526,7 @@ def _insufficient_report(
         spec_hash=spec.content_hash,
         model_id=predictor.model_id,
         model_hash=predictor.model_hash,
-        evidence_hash=canonical_hash(rows),
+        evidence_hash=canonical_artifact_hash(rows),
         training_trade_dates=0,
         calibration_trade_dates=0,
         test_trade_dates=0,

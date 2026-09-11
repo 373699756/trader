@@ -1,4 +1,4 @@
-"""Immutable report and model storage for Tomorrow historical historical screening."""
+"""Immutable report and model storage for Tomorrow historical screening."""
 
 from __future__ import annotations
 
@@ -6,8 +6,12 @@ import json
 import os
 from pathlib import Path
 
-from trader.application.research.replay_models import canonical_hash, canonical_json, canonical_value
-from trader.application.research.tomorrow_historical_models import TomorrowHistoricalReport
+from trader.application.research.tomorrow_historical_report import TomorrowHistoricalReport
+from trader.domain.research.artifact_identity import (
+    canonical_artifact_hash,
+    canonical_artifact_json,
+    canonical_artifact_value,
+)
 from trader.domain.research.tomorrow_historical import (
     TOMORROW_HISTORICAL_SPEC,
     TomorrowHistoricalModelArtifact,
@@ -75,12 +79,12 @@ class TomorrowHistoricalArtifactStore:
             if stored_hash != content_hash:
                 raise TomorrowHistoricalArtifactConflictError("Tomorrow historical artifact identity conflict")
             return stored_hash
-        payload = canonical_value(value)
+        payload = canonical_artifact_value(value)
         if not isinstance(payload, dict):
             raise TypeError("Tomorrow historical artifact must be a JSON object")
         payload["content_hash"] = content_hash
         temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        temporary.write_text(canonical_json(payload), encoding="utf-8")
+        temporary.write_text(canonical_artifact_json(payload), encoding="utf-8")
         try:
             try:
                 os.link(temporary, path)
@@ -107,7 +111,7 @@ class TomorrowHistoricalArtifactStore:
             if not isinstance(raw, dict):
                 raise TypeError("artifact payload is not an object")
             stored_hash = raw.pop("content_hash")
-            if not isinstance(stored_hash, str) or canonical_hash(raw) != stored_hash:
+            if not isinstance(stored_hash, str) or canonical_artifact_hash(raw) != stored_hash:
                 raise ValueError("artifact hash mismatch")
         except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise TomorrowHistoricalArtifactConflictError(

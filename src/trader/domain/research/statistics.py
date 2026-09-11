@@ -13,7 +13,7 @@ from trader.domain.research.paired_statistics import (
     paired_moving_block_statistics,
     preregistered_seed,
 )
-from trader.domain.research.specification import HISTORICAL_RESEARCH_SPEC, ScoreResearchSpec
+from trader.domain.research.specification import HISTORICAL_RESEARCH_SPEC, ScoringResearchSpec
 
 BOOTSTRAP_MASTER_SEED = 20260811
 BOOTSTRAP_REPETITIONS = 10_000
@@ -60,7 +60,7 @@ def bootstrap_seed(
     variant_id: ChallengerVariantId,
     block_days: int,
     *,
-    spec: ScoreResearchSpec = HISTORICAL_RESEARCH_SPEC,
+    spec: ScoringResearchSpec = HISTORICAL_RESEARCH_SPEC,
 ) -> int:
     if variant_id not in VARIANT_FAMILY:
         raise ValueError("Stability analysis bootstrap requires a preregistered variant")
@@ -75,7 +75,7 @@ def paired_moving_block_bootstrap(
     variant_id: ChallengerVariantId,
     block_days: int,
     *,
-    spec: ScoreResearchSpec = HISTORICAL_RESEARCH_SPEC,
+    spec: ScoringResearchSpec = HISTORICAL_RESEARCH_SPEC,
 ) -> PairedBootstrapResult:
     """Bootstrap two aligned daily metrics with identical non-circular block indices."""
 

@@ -23,7 +23,7 @@ INTERNAL_DIAGNOSTIC_MODULES = (
     ROOT / "scripts" / "runtime_diagnostics" / "tencent_quotes.py",
     ROOT / "scripts" / "runtime_diagnostics" / "tushare_daily.py",
 )
-INTERNAL_COMMON = ROOT / "scripts" / "runtime_diagnostics" / "common.py"
+INTERNAL_REPORTING = ROOT / "scripts" / "runtime_diagnostics" / "reporting.py"
 SKILL_ROOT = ROOT / ".agents" / "skills" / "trader-delivery"
 
 
@@ -87,7 +87,7 @@ def test_legacy_diagnostic_wrappers_are_deleted_after_unified_cli_migration() ->
         source = module.read_text(encoding="utf-8")
         assert "def main() -> int:" in source
         assert "argparse.ArgumentParser" in source
-        assert "from .common import emit_report" in source
+        assert "from .reporting import emit_report" in source
         result = subprocess.run(
             (sys.executable, "-m", f"scripts.runtime_diagnostics.{module.stem}", "--help"),
             cwd=ROOT,
@@ -99,8 +99,8 @@ def test_legacy_diagnostic_wrappers_are_deleted_after_unified_cli_migration() ->
         assert result.returncode == 0, result.stderr
         assert "--output" not in result.stdout
 
-    common = INTERNAL_COMMON.read_text(encoding="utf-8")
-    assert "def emit_report(" in common
+    reporting = INTERNAL_REPORTING.read_text(encoding="utf-8")
+    assert "def emit_report(" in reporting
 
 
 def test_agent_workflow_requires_reusing_diagnostic_scripts() -> None:

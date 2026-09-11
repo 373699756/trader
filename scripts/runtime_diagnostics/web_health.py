@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 from trader.web.static_assets import STATUS_SCHEMA_VERSION as _STATUS_SCHEMA_VERSION
 
-from .common import emit_report
+from .reporting import emit_report
 from .web_health_contract import (
     FetchIssue,
     FunnelSnapshot,

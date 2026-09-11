@@ -17,19 +17,19 @@ from trader.domain.research.historical_candidate_confirmation import (
     CandidateConfirmationSeries,
     HistoricalCandidateConfirmationReport,
     build_confirmation_folds,
-    confirm_transparent_candidates,
+    confirm_rule_candidates,
     inherit_candidate_confirmation,
 )
-from trader.domain.research.tomorrow_joint import TomorrowJointInsufficientTerminal
-from trader.domain.research.transparent_candidate import (
-    TransparentCandidate,
-    TransparentCandidateFamily,
-    TransparentCandidateMetrics,
-    TransparentCandidateReport,
-    evaluate_transparent_candidate,
-    evaluate_transparent_candidate_family,
-    preregister_transparent_candidates,
+from trader.domain.research.preregistered_rule_candidate import (
+    PreregisteredRuleCandidate,
+    PreregisteredRuleCandidateFamily,
+    RuleCandidateEvaluationReport,
+    RuleCandidateMetrics,
+    evaluate_rule_candidate,
+    evaluate_rule_candidate_family,
+    preregister_rule_candidates,
 )
+from trader.domain.research.tomorrow_joint import TomorrowJointInsufficientTerminal
 
 HistoricalStrategy = Literal["today", "tomorrow", "d25"]
 _STRATEGIES: tuple[HistoricalStrategy, ...] = ("today", "tomorrow", "d25")
@@ -79,7 +79,7 @@ class HistoricalStrategyResearchResult:
     parent_split_hash: str
     parent_residual_ledger_hash: str
     ablation_report_hash: str
-    candidate_report: TransparentCandidateReport
+    candidate_report: RuleCandidateEvaluationReport
     confirmation_report: HistoricalCandidateConfirmationReport
     status: Literal["historical_candidate_ready", "historical_rejected", "historical_data_insufficient"]
     terminal_holdout_status: Literal["terminal_holdout_not_opened"] = "terminal_holdout_not_opened"
@@ -128,7 +128,7 @@ class HistoricalConfirmationStrategyTerminal:
     parent_capability_hash: str
     parent_label_hash: str
     parent_residual_ledger_hash: str
-    parent_c3_hash: str | None
+    parent_daily_close_selection_hash: str | None
     status: Literal["historical_data_insufficient"]
     failure_reasons: tuple[str, ...]
     candidate_family_hash: str | None = None
@@ -152,8 +152,11 @@ class HistoricalConfirmationStrategyTerminal:
         )
         if any(_SHA256.fullmatch(value) is None for value in hashes):
             raise ValueError("Historical confirmation terminal parent hash is invalid")
-        if self.parent_c3_hash is not None and _SHA256.fullmatch(self.parent_c3_hash) is None:
-            raise ValueError("Historical confirmation terminal C3 parent hash is invalid")
+        if (
+            self.parent_daily_close_selection_hash is not None
+            and _SHA256.fullmatch(self.parent_daily_close_selection_hash) is None
+        ):
+            raise ValueError("Historical confirmation terminal daily-close model selection parent hash is invalid")
         if self.status != "historical_data_insufficient" or not self.failure_reasons:
             raise ValueError("Historical confirmation terminal requires bounded insufficient reasons")
         if any(
@@ -179,7 +182,7 @@ class HistoricalConfirmationTerminalBatch:
     parent_capability_hash: str
     parent_label_hash: str
     parent_residual_ledger_hashes: tuple[tuple[HistoricalStrategy, str], ...]
-    parent_c3_hash: str
+    parent_daily_close_selection_hash: str
     strategies: tuple[HistoricalConfirmationStrategyTerminal, ...]
     joint_terminal: TomorrowJointInsufficientTerminal
     status: Literal["historical_data_insufficient"] = "historical_data_insufficient"
@@ -216,7 +219,7 @@ def seal_historical_confirmation_terminal_batch(
     for strategy in _STRATEGIES:
         reasons = set(labels[strategy].failure_reasons) | set(ledgers[strategy].failure_reasons)
         if strategy == "tomorrow":
-            reasons.update(completion.c3.failure_reasons)
+            reasons.update(completion.daily_close_selection.failure_reasons)
         strategy_terminals.append(
             HistoricalConfirmationStrategyTerminal(
                 strategy=strategy,
@@ -224,7 +227,9 @@ def seal_historical_confirmation_terminal_batch(
                 parent_capability_hash=completion.capability_hash,
                 parent_label_hash=labels[strategy].content_hash,
                 parent_residual_ledger_hash=ledgers[strategy].content_hash,
-                parent_c3_hash=completion.c3.content_hash if strategy == "tomorrow" else None,
+                parent_daily_close_selection_hash=completion.daily_close_selection.content_hash
+                if strategy == "tomorrow"
+                else None,
                 status="historical_data_insufficient",
                 failure_reasons=tuple(sorted(reasons)),
             )
@@ -234,24 +239,29 @@ def seal_historical_confirmation_terminal_batch(
         parent_profile_hashes=(
             ("v1", completion.content_hash),
             ("v2", completion.content_hash),
-            ("c3", completion.c3.content_hash),
+            ("daily_close_ensemble", completion.daily_close_selection.content_hash),
         ),
         status="historical_data_insufficient",
-        failure_reasons=tuple(sorted(set(completion.c3.failure_reasons))),
+        failure_reasons=tuple(sorted(set(completion.daily_close_selection.failure_reasons))),
     )
     return HistoricalConfirmationTerminalBatch(
         parent_completion_hash=completion.content_hash,
         parent_capability_hash=completion.capability_hash,
         parent_label_hash=completion.labels.content_hash,
         parent_residual_ledger_hashes=tuple((item.strategy, item.content_hash) for item in completion.residual_ledgers),
-        parent_c3_hash=completion.c3.content_hash,
+        parent_daily_close_selection_hash=completion.daily_close_selection.content_hash,
         strategies=tuple(strategy_terminals),
         joint_terminal=joint_terminal,
     )
 
 
 def _validate_confirmation_batch_parent(batch: HistoricalConfirmationTerminalBatch) -> None:
-    hashes = (batch.parent_completion_hash, batch.parent_capability_hash, batch.parent_label_hash, batch.parent_c3_hash)
+    hashes = (
+        batch.parent_completion_hash,
+        batch.parent_capability_hash,
+        batch.parent_label_hash,
+        batch.parent_daily_close_selection_hash,
+    )
     if any(_SHA256.fullmatch(value) is None for value in hashes):
         raise ValueError("Historical confirmation batch parent hash is invalid")
     residuals = tuple(sorted(batch.parent_residual_ledger_hashes, key=lambda item: _STRATEGIES.index(item[0])))
@@ -284,7 +294,7 @@ def _validate_confirmation_batch_outcome(batch: HistoricalConfirmationTerminalBa
 
 
 def execute_historical_candidate_confirmation(
-    family: TransparentCandidateFamily,
+    family: PreregisteredRuleCandidateFamily,
     development_series: tuple[CandidateConfirmationSeries, ...],
     confirmation_series: tuple[CandidateConfirmationSeries, ...],
     *,
@@ -292,7 +302,7 @@ def execute_historical_candidate_confirmation(
 ) -> HistoricalCandidateConfirmationReport:
     """Evaluate a sealed development family and its sole confirmation candidate."""
 
-    return confirm_transparent_candidates(
+    return confirm_rule_candidates(
         family,
         development_series,
         confirmation_series,
@@ -310,8 +320,8 @@ def execute_historical_strategy_research(
         strategy=request.strategy,
         development_dates=request.development_dates,
     )
-    family = preregister_transparent_candidates(ablation, removed_components=request.removed_components)
-    candidate_report = evaluate_transparent_candidate_family(family, request.development_rows)
+    family = preregister_rule_candidates(ablation, removed_components=request.removed_components)
+    candidate_report = evaluate_rule_candidate_family(family, request.development_rows)
     if request.parent_status == "ready" and candidate_report.status == "candidate_family_sealed":
         selected_candidate_id = candidate_report.selected_candidate_id
         if selected_candidate_id is None:
@@ -329,7 +339,7 @@ def execute_historical_strategy_research(
             rows=request.confirmation_rows,
             dates=request.confirmation_dates,
         )
-        confirmation = confirm_transparent_candidates(
+        confirmation = confirm_rule_candidates(
             family,
             development_series,
             confirmation_series,
@@ -387,7 +397,7 @@ def execute_historical_confirmation_batch(
 
 
 def _candidate_series(
-    candidates: tuple[TransparentCandidate, ...],
+    candidates: tuple[PreregisteredRuleCandidate, ...],
     *,
     rows: tuple[FilterAblationRow, ...],
     dates: tuple[date, ...],
@@ -438,23 +448,23 @@ def _candidate_series(
 
 
 def _daily_metrics(
-    candidate: TransparentCandidate,
+    candidate: PreregisteredRuleCandidate,
     rows: tuple[FilterAblationRow, ...],
     trade_date: date,
-) -> TransparentCandidateMetrics:
+) -> RuleCandidateMetrics:
     daily = tuple(row for row in rows if row.trade_date == trade_date)
-    return evaluate_transparent_candidate(candidate, daily, evaluation_dates=(trade_date,))
+    return evaluate_rule_candidate(candidate, daily, evaluation_dates=(trade_date,))
 
 
 def _fold_direction(
-    candidate: TransparentCandidate,
-    control: TransparentCandidate,
+    candidate: PreregisteredRuleCandidate,
+    control: PreregisteredRuleCandidate,
     rows: tuple[FilterAblationRow, ...],
     fold: tuple[date, ...],
 ) -> int:
     fold_rows = tuple(row for row in rows if row.trade_date in fold)
-    candidate_metrics = evaluate_transparent_candidate(candidate, fold_rows, evaluation_dates=fold)
-    control_metrics = evaluate_transparent_candidate(control, fold_rows, evaluation_dates=fold)
+    candidate_metrics = evaluate_rule_candidate(candidate, fold_rows, evaluation_dates=fold)
+    control_metrics = evaluate_rule_candidate(control, fold_rows, evaluation_dates=fold)
     increment = candidate_metrics.net_excess_20bp - control_metrics.net_excess_20bp
     return 1 if increment > 0.0 else (-1 if increment < 0.0 else 0)
 

@@ -207,7 +207,7 @@ def _run_history_download() -> int:
     from trader.entrypoints.history_maintenance_projection import project_history_maintenance_status
     from trader.entrypoints.history_sync_progress import StderrHistorySyncProgress
     from trader.infra.research.baostock_sync_supplier import BaoStockHistorySupplier
-    from trader.infra.research.history_sync_runtime import run_history_sync
+    from trader.infra.research.history_archive_sync import run_history_sync
 
     repository_root = _repository_root_for_validation()
     configuration = _history_sync_configuration(repository_root)
@@ -222,12 +222,12 @@ def _run_history_download() -> int:
 def _run_scheduled_history_maintenance(runtime_dir: Path) -> int:
     from trader.entrypoints.history_automation_projection import project_history_automation_run_status
     from trader.infra.research.baostock_sync_supplier import BaoStockHistorySupplier
-    from trader.infra.research.history_automation_runtime import (
+    from trader.infra.research.history_archive_sync import run_history_sync
+    from trader.infra.research.history_maintenance_runner import (
         PlatformHistoryDesktopNotifier,
         RotatingHistoryAutomationLog,
         run_scheduled_history_maintenance,
     )
-    from trader.infra.research.history_sync_runtime import run_history_sync
 
     observed_at = _shanghai_now()
     repository_root = _repository_root_for_validation()

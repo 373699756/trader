@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
-from trader.domain.research.h1_point_in_time import canonical_hash
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 
 BAOSTOCK_RESEARCH_IDENTITY = "baostock_daily_core"
 BAOSTOCK_SOURCE_CUTOFF = date(2026, 8, 31)
@@ -55,7 +55,7 @@ class BaoStockDailySpec:
             raise ValueError("BaoStock daily identity is invalid")
         if self.production_authority or self.point_in_time_parity:
             raise ValueError("BaoStock daily data cannot authorize production or point-in-time parity")
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
     @property
     def authoritative(self) -> bool:
@@ -81,7 +81,7 @@ class BaoStockSecurity:
             raise ValueError("BaoStock security source version is required")
         object.__setattr__(self, "name", self.name.strip())
         object.__setattr__(self, "source_version", self.source_version.strip())
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
     @property
     def source_code(self) -> str:
@@ -102,7 +102,7 @@ class BaoStockCalendar:
         if self.schema_version != BAOSTOCK_CALENDAR_SCHEMA:
             raise ValueError("BaoStock calendar schema is invalid")
         object.__setattr__(self, "open_dates", values)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
     def expected_dates(self, security: BaoStockSecurity) -> tuple[date, ...]:
         return tuple(
@@ -155,7 +155,7 @@ class BaoStockDailySide:
                 raise ValueError("BaoStock unadjusted side contains an invalid non-negative field")
         elif any(value is not None for value in (self.preclose, self.pct_change, self.turnover)):
             raise ValueError("BaoStock qfq side cannot carry unadjusted-only fields")
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -178,7 +178,7 @@ class BaoStockDailyCell:
         expected = _cell_status(self.unadjusted, self.qfq)
         if self.status != expected:
             raise ValueError("BaoStock daily cell status does not match its sides")
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
     @property
     def obtained(self) -> bool:
@@ -212,7 +212,7 @@ class BaoStockCodeBatch:
             raise ValueError("BaoStock code batch failure reason is invalid")
         object.__setattr__(self, "cells", cells)
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -228,7 +228,7 @@ class BaoStockDailyFact:
             raise ValueError("BaoStock daily fact identity is invalid")
         if not isinstance(self.is_st, bool) or self.schema_version != BAOSTOCK_DAILY_FACT_SCHEMA:
             raise ValueError("BaoStock daily fact payload is invalid")
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -252,7 +252,7 @@ class BaoStockIndustryInterval:
             raise ValueError("BaoStock industry interval is invalid")
         object.__setattr__(self, "industry", self.industry.strip())
         object.__setattr__(self, "classification", self.classification.strip())
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -271,7 +271,7 @@ class BaoStockCodeDownload:
         ):
             raise ValueError("BaoStock code download facts do not match its daily batch")
         object.__setattr__(self, "daily_facts", facts)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -400,7 +400,7 @@ class BaoStockSourceVersions:
         if len({name for name, _ in dependencies}) != len(dependencies):
             raise ValueError("BaoStock dependency versions must be unique")
         object.__setattr__(self, "dependency_versions", dependencies)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -420,7 +420,7 @@ class BaoStockTrainingLabelContract:
             raise ValueError("BaoStock training label costs are fixed")
         if not self.label_pending_required or self.schema_version != "next_day_return_label":
             raise ValueError("BaoStock training label contract is invalid")
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -453,7 +453,7 @@ class BaoStockTrainingSplit:
             raise ValueError("BaoStock training split cannot open holdouts or authorize production")
         if self.schema_version != "baostock_training_split":
             raise ValueError("BaoStock training split schema is invalid")
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 def _validate_training_split_dates(value: BaoStockTrainingSplit) -> None:

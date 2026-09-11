@@ -1,4 +1,4 @@
-"""Fixed, deterministic Ridge and shallow LightGBM implementation for C3."""
+"""Fixed, deterministic Ridge and shallow LightGBM implementation for daily-close model selection."""
 
 from __future__ import annotations
 
@@ -7,23 +7,25 @@ from importlib.metadata import version
 import lightgbm as lgb
 import numpy as np
 
-from trader.application.research.tomorrow_daily_close_c3 import FittedBaseModels
+from trader.application.research.tomorrow_daily_close_model_selection import DailyCloseBaseModelFit
 from trader.application.research.tomorrow_daily_close_training import DailyCloseFeatureRow
 
 _RIDGE_ALPHA = 10.0
 _LIGHTGBM_ROUNDS = 80
 
 
-class FixedC3BaseModelTrainer:
+class DeterministicDailyCloseBaseModelTrainer:
     """Fit the preregistered finite base-model family with bounded resources."""
 
-    def fit(self, training_rows: tuple[DailyCloseFeatureRow, ...], *, feature_count: int) -> FittedBaseModels:
+    def fit(self, training_rows: tuple[DailyCloseFeatureRow, ...], *, feature_count: int) -> DailyCloseBaseModelFit:
         if (
             not training_rows
             or feature_count < 1
             or any(len(row.feature_values) != feature_count for row in training_rows)
         ):
-            raise ValueError("C3 fit requires non-empty rows with the registered feature width")
+            raise ValueError(
+                "daily-close model selection fit requires non-empty rows with the registered feature width"
+            )
         features = np.asarray(tuple(row.feature_values for row in training_rows), dtype=np.float64)
         labels = np.asarray(tuple(row.net_excess_returns[0] for row in training_rows), dtype=np.float64)
         means = features.mean(axis=0)
@@ -54,7 +56,7 @@ class FixedC3BaseModelTrainer:
             lgb.Dataset(normalized, label=labels, free_raw_data=True),
             num_boost_round=_LIGHTGBM_ROUNDS,
         )
-        return FittedBaseModels(
+        return DailyCloseBaseModelFit(
             preprocessing_means=tuple(float(value) for value in means),
             preprocessing_scales=tuple(float(value) for value in scales),
             ridge_intercept=float(coefficients[0]),
@@ -66,11 +68,11 @@ class FixedC3BaseModelTrainer:
 
     def predict(
         self,
-        fitted: FittedBaseModels,
+        fitted: DailyCloseBaseModelFit,
         rows: tuple[DailyCloseFeatureRow, ...],
     ) -> tuple[tuple[float, ...], tuple[float, ...]]:
         if any(len(row.feature_values) != len(fitted.preprocessing_means) for row in rows):
-            raise ValueError("C3 prediction rows do not match the fitted feature width")
+            raise ValueError("daily-close model selection prediction rows do not match the fitted feature width")
         if not rows:
             return (), ()
         features = np.asarray(tuple(row.feature_values for row in rows), dtype=np.float64)
@@ -84,4 +86,4 @@ class FixedC3BaseModelTrainer:
         )
 
 
-__all__ = ["FixedC3BaseModelTrainer"]
+__all__ = ["DeterministicDailyCloseBaseModelTrainer"]

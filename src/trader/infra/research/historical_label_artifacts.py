@@ -9,8 +9,8 @@ from datetime import date
 from pathlib import Path
 from typing import Literal, cast
 
-from trader.application.research.replay_models import canonical_hash, canonical_json
-from trader.domain.research.h1_point_in_time import H1Strategy
+from trader.domain.research.artifact_identity import canonical_artifact_hash, canonical_artifact_json
+from trader.domain.research.h1_point_in_time import ResearchStrategy
 from trader.domain.research.historical_label import (
     HistoricalAnchor,
     HistoricalLabelAggregate,
@@ -44,7 +44,7 @@ class HistoricalLabelArtifactStore:
         temporary = Path(temporary_name)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(canonical_json(payload))
+                handle.write(canonical_artifact_json(payload))
                 handle.flush()
                 os.fsync(handle.fileno())
             try:
@@ -65,7 +65,7 @@ class HistoricalLabelArtifactStore:
             if not isinstance(raw, dict):
                 raise TypeError("historical label artifact is not an object")
             stored_hash = raw.pop("content_hash")
-            if not isinstance(stored_hash, str) or canonical_hash(raw) != stored_hash:
+            if not isinstance(stored_hash, str) or canonical_artifact_hash(raw) != stored_hash:
                 raise ValueError("historical label artifact hash mismatch")
             batch = _decode_batch(raw)
             if batch.content_hash != stored_hash:
@@ -175,7 +175,7 @@ def _decode_preregistration(raw: dict[str, object]) -> HistoricalLabelPreregistr
     if split is not None and not isinstance(split, dict):
         raise TypeError("historical label split is invalid")
     return HistoricalLabelPreregistration(
-        strategy=cast(H1Strategy, _string(raw["strategy"])),
+        strategy=cast(ResearchStrategy, _string(raw["strategy"])),
         status=cast(HistoricalPreregistrationStatus, _string(raw["status"])),
         h1_metadata_hash=_string(raw["h1_metadata_hash"]),
         h1_manifest_hash=_string(raw["h1_manifest_hash"]),
@@ -212,7 +212,7 @@ def _decode_label(raw: dict[str, object]) -> HistoricalLabelContract:
     if set(raw) != expected:
         raise ValueError("historical label contract fields are invalid")
     return HistoricalLabelContract(
-        strategy=cast(H1Strategy, _string(raw["strategy"])),
+        strategy=cast(ResearchStrategy, _string(raw["strategy"])),
         anchor=cast(HistoricalAnchor, _string(raw["anchor"])),
         label_version=_string(raw["label_version"]),
         horizons=_ints(raw["horizons"]),

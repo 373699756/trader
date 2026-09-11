@@ -423,7 +423,7 @@ def test_auxiliary_cache_action_age_marks_new_features_observe_only() -> None:
     assert features[0].evidence[-1].evidence_id == "news-old"
 
 
-def test_feature_service_health_reports_bounded_quote_age_summaries() -> None:
+def test_feature_market_data_health_reports_bounded_quote_age_summaries() -> None:
     measured_at = NOW + timedelta(seconds=31)
     service = _service(
         StaticGateway((_quote(),)),

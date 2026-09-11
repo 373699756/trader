@@ -15,7 +15,7 @@ from trader.application.ports.model_scoring import ModelInput, ModelPrediction
 from trader.application.ports.scored import D25NativeInput, ScoredNativeInput, TodayNativeInput, TomorrowNativeInput
 from trader.application.recommendation.model_scoring_router import ModelScoringRouter
 from trader.application.recommendation.scored_projection import (
-    ScoredBuildRuntime,
+    ScoredProjectionInputs,
     build_scored_hybrid,
     build_scored_local,
 )
@@ -79,7 +79,7 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
         _native_input(model_features),
         policy,
         sequence=1,
-        runtime=ScoredBuildRuntime(
+        runtime=ScoredProjectionInputs(
             model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(profile_for(_ProductionPredictor())))
         ),
     )
@@ -161,7 +161,7 @@ def test_tomorrow_non_positive_utility_keeps_scores_but_cannot_enter_recommendat
         _native_input(features),
         policy,
         sequence=1,
-        runtime=ScoredBuildRuntime(
+        runtime=ScoredProjectionInputs(
             model_scoring=ModelScoringRouter(
                 TomorrowProductionModelScoringService(profile_for(_NonPositiveProductionPredictor()))
             )
@@ -205,7 +205,7 @@ def test_tomorrow_model_cross_section_excludes_hard_filter_rejections(
         _native_input((accepted, rejected)),
         policy,
         sequence=1,
-        runtime=ScoredBuildRuntime(
+        runtime=ScoredProjectionInputs(
             model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(profile_for(predictor)))
         ),
     )
@@ -236,7 +236,7 @@ def test_tomorrow_model_excludes_only_candidate_below_its_61_session_requirement
         _native_input((eligible, insufficient)),
         policy,
         sequence=1,
-        runtime=ScoredBuildRuntime(
+        runtime=ScoredProjectionInputs(
             model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(profile_for(predictor)))
         ),
     )
@@ -277,7 +277,7 @@ def test_tomorrow_model_history_coverage_requires_the_active_profile_fields(
         _native_input((eligible, incomplete)),
         policy,
         sequence=1,
-        runtime=ScoredBuildRuntime(
+        runtime=ScoredProjectionInputs(
             model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(profile_for(_ProductionPredictor())))
         ),
     )

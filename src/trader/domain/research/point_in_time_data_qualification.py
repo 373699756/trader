@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
-from trader.domain.research.h1_point_in_time import canonical_hash
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 
 QualificationState = Literal["qualified", "historical_data_insufficient"]
 
@@ -185,7 +185,7 @@ class PointInTimeDataQualificationReport:
         object.__setattr__(self, "industry_sources", industries)
         object.__setattr__(self, "minute_sources", minutes)
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 def build_point_in_time_data_qualification(

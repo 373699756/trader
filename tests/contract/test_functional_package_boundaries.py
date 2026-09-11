@@ -181,12 +181,12 @@ def test_market_history_references_and_services_are_partitioned() -> None:
     assert history_root.is_dir()
     assert references_root.is_dir()
     assert service_root.is_dir()
-    assert (service_root / "facade.py").is_file()
+    assert (service_root / "market_feature_service.py").is_file()
     legacy_files = (
         "history.py",
         "history_seed.py",
-        "service_history.py",
-        "service_history_warmup.py",
+        "daily_history_cache.py",
+        "daily_history_warmup.py",
         "calendar.py",
         "security_references.py",
         "gateway.py",
@@ -196,16 +196,16 @@ def test_market_history_references_and_services_are_partitioned() -> None:
         "observations.py",
         "router.py",
         "service.py",
-        "service_calendar_state.py",
-        "service_candidates.py",
-        "service_execution.py",
-        "service_health.py",
-        "service_intraday.py",
-        "service_models.py",
-        "service_research.py",
-        "service_research_data_plane.py",
-        "service_research_models.py",
-        "service_tushare.py",
+        "trading_calendar_state_codec.py",
+        "candidate_quote_cache.py",
+        "market_task_runner.py",
+        "market_data_health.py",
+        "intraday_loader.py",
+        "market_feature_cache_entries.py",
+        "research_observation_loader.py",
+        "research_component_persistence.py",
+        "research_load_status.py",
+        "tushare_reference_loader.py",
         "source_coordinator.py",
     )
     assert not any((market_root / name).exists() for name in legacy_files)
@@ -304,7 +304,7 @@ def test_application_runtime_and_market_data_are_partitioned() -> None:
     runtime_files = {
         "cadence.py",
         "latency.py",
-        "runtime.py",
+        "supervisor.py",
         "schedule.py",
         "shutdown.py",
         "source_lanes.py",

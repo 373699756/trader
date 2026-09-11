@@ -11,11 +11,11 @@ from typing import Protocol
 
 from trader.application.ports.model_scoring import ModelInput, ModelPredictorPort
 from trader.application.research.historical_screening import HistoricalArchiveManifest, HistoricalArchiveStatus
-from trader.application.research.replay_models import canonical_hash
-from trader.application.research.tomorrow_historical_models import TomorrowHistoricalGateMetrics
+from trader.application.research.tomorrow_historical_report import TomorrowHistoricalGateMetrics
 from trader.application.research.tomorrow_historical_screening import TomorrowHistoricalRow
 from trader.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
 from trader.domain.recommendation.model_scoring import percentile_ranks
+from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.baseline import mean_rank_ic, population_spearman, quantile_bucket, stock_net_contribution
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalScreeningSpec
 from trader.domain.research.paired_statistics import (
@@ -79,7 +79,7 @@ class TomorrowProfileHoldoutReport:
             or self.production_authority
         ):
             raise ValueError("Tomorrow profile holdout report is invalid")
-        object.__setattr__(self, "content_hash", canonical_hash(self))
+        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
 @dataclass(frozen=True)
@@ -137,7 +137,7 @@ class TomorrowProfileHoldoutService:
         return TomorrowProfileHoldoutReport(
             source_spec_hash=HISTORICAL_SCREENING_SPEC.content_hash,
             source_manifest_hash=manifest.content_hash,
-            validation_evidence_hash=canonical_hash(ordered),
+            validation_evidence_hash=canonical_artifact_hash(ordered),
             validation_trade_dates=len(v1_days),
             validation_pairs=len(ordered),
             v1=_profile_metrics(self._v1, v1_days, baseline, archive, len(ordered)),

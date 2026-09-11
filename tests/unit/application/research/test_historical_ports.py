@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.application.ports.market import DataPlaneReadPort, MarketDataPlaneSnapshot
-from trader.application.research.models import (
+from trader.application.research.historical_extraction_models import (
     AdjustmentFactorWindow,
     BoardPointInTimeCoverage,
     HardFilterAggregate,
