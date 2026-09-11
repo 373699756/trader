@@ -28,7 +28,7 @@ stages independently:
 1. supplier request and response classification;
 2. normalization and feature construction;
 3. immutable market/feature publication;
-4. typed `V2RefreshOutcome` construction;
+4. typed `RefreshOutcome` construction;
 5. scheduler task settlement and downstream scoring submission;
 6. decision publication, status projection, API/SSE, and Web rendering.
 
@@ -49,7 +49,7 @@ object and therefore preserves its original timezone.
 
 - Reject naive datetimes at the input boundary.
 - Compare instants only after confirming awareness, then explicitly project the selected completion instant to
-  `Asia/Shanghai` before constructing application state such as `V2RefreshOutcome`.
+  `Asia/Shanghai` before constructing application state such as `RefreshOutcome`.
 - Do not weaken the Shanghai-time typed value-object contract or add dual UTC/Shanghai representations.
 - Regression tests must make a later UTC `received_time` win over a Shanghai request/feature time and assert both the
   absolute instant and the final timezone.
@@ -97,7 +97,7 @@ Classify the observation using the authoritative hot/cold five-period matrix bef
 
 - Today cannot be backfilled after 11:20. A cold start after the freeze remains `not_ready`; only quote overlay may change
   an existing formal record.
-- Tomorrow/D25 freeze at 14:50. When the same-day formal record is missing, 15:00+ recovery may freeze the current V2 run
+- Tomorrow/D25 freeze at 14:50. When the same-day formal record is missing, 15:00+ recovery may freeze the current run
   or create the permitted local `close_fallback`; it must not call DeepSeek or overwrite an existing formal record.
 - Inspect the `close_quotes` refresh state separately from Today. A failed close refresh can block permitted Tomorrow/D25
   recovery while Today's non-backfill remains correct.

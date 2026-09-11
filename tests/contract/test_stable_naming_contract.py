@@ -10,6 +10,7 @@ SCANNED_ROOTS = (
     PROJECT_ROOT / "tests",
     PROJECT_ROOT / "scripts",
     PROJECT_ROOT / "config",
+    PROJECT_ROOT / ".agents" / "skills",
 )
 TEXT_SUFFIXES = {".css", ".html", ".js", ".json", ".md", ".ps1", ".py", ".sh"}
 

@@ -25,7 +25,9 @@ For a defect, preserve evidence at both ends:
 3. Add a negative assertion for the adjacent behavior that must remain unchanged.
 4. Re-run the historical failure shape when a `Regression-Key` already exists.
 
-For timing-sensitive current/freeze/Web behavior, cover the applicable matrix from `docs/software-business-design.md` section 13.1: morning hot run, midday cold start, 11:20 and 14:50 boundaries, 15:00+ hot run/cold recovery, formal-record hit, and permitted close fallback. Record why any cell is not applicable.
+For timing-sensitive current/freeze/Web behavior, cover the applicable matrix from `docs/02_工程设计.md` section 13.1: morning hot run, midday cold start, 11:20 and 14:50 boundaries, 15:00+ hot run/cold recovery, formal-record hit, and permitted close fallback. Record why any cell is not applicable.
+
+For scoring-chain changes, record the first changed semantic owner and the resulting values at each affected boundary: evidence-quality score, local risk, model diagnostics, execution gate, fused score, action/rank, decision identities, frozen/current/history record, and external projection. Use [the scoring-chain guide](scoring-chain.md); do not collapse these values into a single “score passed” claim.
 
 ## Live evidence
 
@@ -43,4 +45,5 @@ stage counts; do not summarize every zero as “no data”.
 - Inspect new files, removed paths, duplicate owners, hidden fallbacks, TODOs, generated output, and source-file size.
 - Run `git diff --check`; confirm the staged set contains only this batch.
 - In `CHANGELOG.md`, connect the symptom, `Regression-Key`, confirmed cause or `pending verification`, behavior change, verification, and residual risks.
+- Search matching current records under `docs/changelog/`; consult `docs/changelog/archive/` only when the current index or a matching record points to legacy evidence.
 - Do not mark the batch complete before its single commit is pushed and local/upstream hashes match.

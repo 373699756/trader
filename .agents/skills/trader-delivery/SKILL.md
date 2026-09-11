@@ -1,6 +1,6 @@
 ---
 name: trader-delivery
-description: Plan, implement, diagnose, review, and verify changes in the Trader A-share dashboard when work can affect market data, history warmup, scoring, DeepSeek, scheduling, freezing, persistence, API/SSE, Web, runtime performance, or release behavior. Use for repository change plans, bug fixes, performance work, and engineering reviews; do not use for a purely explanatory read-only question with no requested repository change.
+description: Plan, implement, diagnose, review, and verify Trader A-share dashboard changes across market data, scoring, DeepSeek, scheduling, freezing, persistence, API/SSE, Web, research evidence, performance, and release boundaries. Use for repository mutations and engineering reviews; skip purely explanatory questions that require no repository analysis or change.
 ---
 
 # Trader Delivery
@@ -11,8 +11,8 @@ Deliver one repository change without reopening a known failure or regressing an
 
 1. Follow the repository `AGENTS.md`; this skill adds routing and evidence requirements but does not duplicate or override it.
 2. Record `HEAD`, `@{upstream}`, staged and unstaged files, and the exact task file scope before editing. Preserve unrelated user changes.
-3. Search `CHANGELOG.md` for the reported symptom, error code, affected strategy, and likely boundary. Treat old root causes as leads, not current facts.
-4. Read the applicable authoritative contract before planning: `docs/software-business-design.md` for architecture, runtime, API, Web, operations, and acceptance; `docs/recommendation-strategy.md` for candidate, score, risk, DeepSeek, fusion, action, and ranking behavior.
+3. Search `CHANGELOG.md` and `docs/changelog/` for the symptom, error code, affected strategy, likely boundary, and `Regression-Key`. Open only matching records; use the legacy archive only when current records point there. Treat old root causes as leads, not current facts.
+4. Read the applicable authoritative contract before planning: `docs/02_工程设计.md` for product, architecture, runtime, API, Web, operations, and acceptance; `docs/01_评分逻辑.md` for candidates, scoring, risk, DeepSeek, fusion, action, ranking, and profit-validation gates. Use `docs/03_工程实施.md` for current task order/status and `docs/04_策略回溯.md` when historical data, training, or model-to-production flow is involved; neither overrides the two authoritative contracts.
 5. Read [the change-impact matrix](references/change-impact-matrix.md), select every affected row, and put its downstream consumers and required evidence into the plan. A plan that names only the edited module is incomplete.
 
 ## Plan and implement
@@ -22,6 +22,7 @@ Deliver one repository change without reopening a known failure or regressing an
 - Add or change contracts and failing tests before implementation. Cover the first broken boundary and the final user-visible boundary; avoid asserting implementation wording alone.
 - For scheduling, freezing, current/history, or Web visibility changes, use the hot/cold five-period matrix in the authoritative design. A single timestamp or fixture is insufficient.
 - For state or JSON changes, trace the typed value from owner to final serializer and browser consumer. Do not add dictionary fallbacks or parallel status sources.
+- For candidate, score, model diagnostic, cost gate, risk, fusion, action, ranking, decision identity, or score research changes, read [the scoring-chain guide](references/scoring-chain.md) and trace the changed meaning through every listed owner and consumer.
 - For concurrency or deadlines, account separately for queue wait, vendor attempts, validation, persistence, publication, cancellation, and shutdown.
 
 ## Diagnose and verify
@@ -33,5 +34,7 @@ For empty recommendations, a stuck collecting state, unexpected funnel counts, o
 Read [the delivery evidence guide](references/delivery-evidence.md) before marking implementation or Review complete. It defines the minimum root-cause, regression, live-process, diff, and handoff evidence.
 
 Do not claim live verification from mocks, HTTP 200 alone, an old process, or source code inspection. If real service, supplier, token, browser, or time-window evidence is unavailable, record the precise unverified gate and keep the claim bounded.
+
+When this skill or its references change, verify that linked files, named source/test paths, commands, API routes, configuration paths, and stable identities still exist. A syntax-only skill validator cannot prove routing correctness.
 
 This skill is a repository delivery workflow loaded by the agent under `AGENTS.md`; it is not a product runtime hook and will never be triggered by Web, market-data, or scheduler events. If it was not loaded for an eligible repository mutation, record and correct the process omission instead of adding product trigger logic.

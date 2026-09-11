@@ -7,4 +7,4 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
-- [Unified short-horizon score scale](docs/changelog/2026-09-11-unified-short-horizon-score-scale.md)
+- [Trader delivery scoring-chain routing](docs/changelog/2026-09-11-trader-delivery-scoring-chain-routing.md)

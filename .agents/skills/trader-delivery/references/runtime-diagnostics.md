@@ -8,14 +8,14 @@ Use the unified read-only entrypoint when one run should scan multiple boundarie
 
 Profiles:
 
-- `web`, `security-master`, `history`, `tencent`, `tushare`, `browser`, `performance`: run exactly one owning diagnostic module through the unified CLI. `security-master` checks the atomic official SSE/SZSE listing snapshot without emitting stock identities. Use these after a combined scan has isolated one boundary or when executing its dedicated gate.
+- `web`, `security-master`, `history`, `tencent`, `tushare`, `history-daily-capability`, `browser`, `performance`: run exactly one owning diagnostic module through the unified CLI. `security-master` checks the atomic official SSE/SZSE listing snapshot without emitting stock identities; `history-daily-capability` audits the configured daily-history source boundary. Use these after a combined scan has isolated one boundary or when executing its dedicated gate.
 - `research`: reuse the read-only `trader-cli research-status` observability contract and emit only the active score identity, historical/forward windows, blocker, and bounded finding. Do not duplicate research coverage computation in a diagnostic module.
-- `runtime`: samples the running `/api/v2/status` and Today/Tomorrow/D25 current projections. Use for no-data, funnel, release/schema, projection identity, warmup-state, and restart symptoms.
+- `runtime`: samples the running `/api/status` and Today/Tomorrow/D25 current projections. Use for no-data, funnel, release/schema, projection identity, warmup-state, and restart symptoms.
 - `sources`: samples the official SSE/SZSE security master, bounded history, Tencent quotes, and configured Tushare daily capability. It performs real supplier requests and consumes applicable quotas.
 - `live`: recommended incident profile; runs `runtime` plus all source probes and continues after an individual failure so one report can separate internal pipeline faults from supplier faults.
 - `full`: adds the isolated Firefox refresh/patch gate and offline production performance gate. Use for Web delivery, hot-path, release, or explicit full verification; it is not the default response to every defect.
 
-The combined report is `trader-runtime-diagnostics-v1`. It contains per-check status, duration, bounded summaries and findings; it intentionally drops prices, stock-level supplier observations, raw stderr, tokens, and external payloads. `failed` means at least one check could not run or failed its gate; `degraded` means all checks ran but at least one reported a controlled degradation.
+The combined report is `trader-runtime-diagnostics`. It contains per-check status, duration, bounded summaries and findings; it intentionally drops prices, stock-level supplier observations, raw stderr, tokens, and external payloads. `failed` means at least one check could not run or failed its gate; `degraded` means all checks ran but at least one reported a controlled degradation.
 
 Useful options:
 
@@ -23,7 +23,7 @@ Useful options:
 .venv/bin/python scripts/diagnose_runtime.py \
   --profile live \
   --base-url http://127.0.0.1:5000 \
-  --runtime-config config/v2/runtime.json \
+  --runtime-config config/runtime.json \
   --codes 600519 300750 688981 \
   --web-samples 6 \
   --web-interval-seconds 5 \

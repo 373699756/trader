@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +24,7 @@ INTERNAL_DIAGNOSTIC_MODULES = (
     ROOT / "scripts" / "runtime_diagnostics" / "tushare_daily.py",
 )
 INTERNAL_COMMON = ROOT / "scripts" / "runtime_diagnostics" / "common.py"
+SKILL_ROOT = ROOT / ".agents" / "skills" / "trader-delivery"
 
 
 def test_unified_runtime_diagnostic_is_the_only_public_parameterized_script() -> None:
@@ -111,9 +113,8 @@ def test_agent_workflow_requires_reusing_diagnostic_scripts() -> None:
 
 
 def test_repository_delivery_skill_is_discoverable_and_routes_diagnostics() -> None:
-    skill_root = ROOT / ".agents" / "skills" / "trader-delivery"
-    skill = (skill_root / "SKILL.md").read_text(encoding="utf-8")
-    metadata = (skill_root / "agents" / "openai.yaml").read_text(encoding="utf-8")
+    skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+    metadata = (SKILL_ROOT / "agents" / "openai.yaml").read_text(encoding="utf-8")
     ignore_rules = (ROOT / ".gitignore").read_text(encoding="utf-8")
     instructions = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 
@@ -123,6 +124,7 @@ def test_repository_delivery_skill_is_discoverable_and_routes_diagnostics() -> N
     assert "references/runtime-diagnostics.md" in skill
     assert "references/delivery-evidence.md" in skill
     assert "references/recommendation-funnel-incidents.md" in skill
+    assert "references/scoring-chain.md" in skill
     assert "$trader-delivery" in metadata
     assert "allow_implicit_invocation: true" in metadata
     assert "!.agents/skills/trader-delivery/" in ignore_rules
@@ -134,8 +136,79 @@ def test_repository_delivery_skill_is_discoverable_and_routes_diagnostics() -> N
         "runtime-diagnostics.md",
         "delivery-evidence.md",
         "recommendation-funnel-incidents.md",
+        "scoring-chain.md",
     ):
-        assert (skill_root / "references" / reference).is_file()
+        assert (SKILL_ROOT / "references" / reference).is_file()
+
+
+def test_repository_delivery_skill_links_resolve_and_route_current_contracts() -> None:
+    skill_files = (
+        SKILL_ROOT / "SKILL.md",
+        *(SKILL_ROOT / "references").glob("*.md"),
+    )
+    active_text = "\n".join(path.read_text(encoding="utf-8") for path in skill_files)
+
+    for source in skill_files:
+        content = source.read_text(encoding="utf-8")
+        for target in re.findall(r"\[[^]]+\]\(([^)]+\.md)(?:#[^)]+)?\)", content):
+            assert (source.parent / target).is_file(), f"missing skill reference: {source.name} -> {target}"
+
+    assert "docs/01_评分逻辑.md" in active_text
+    assert "docs/02_工程设计.md" in active_text
+    assert "docs/changelog/" in active_text
+    assert "src/trader/application/runtime/" in active_text
+    assert "tests/integration/test_scheduler_runtime.py" in active_text
+    assert "/api/status" in active_text
+    assert "config/runtime.json" in active_text
+    assert "trader-runtime-diagnostics" in active_text
+
+    for current_target in (
+        ROOT / "docs" / "01_评分逻辑.md",
+        ROOT / "docs" / "02_工程设计.md",
+        ROOT / "docs" / "changelog",
+        ROOT / "src" / "trader" / "application" / "runtime",
+        ROOT / "tests" / "integration" / "test_scheduler_runtime.py",
+        ROOT / "config" / "runtime.json",
+    ):
+        assert current_target.exists(), f"skill route does not exist: {current_target.relative_to(ROOT)}"
+
+    for retired_reference in (
+        "docs/software-" + "business-design.md",
+        "docs/recommendation-" + "strategy.md",
+        "src/trader/application/{" + "v2_runtime",
+        "test_" + "v2_scheduler_runtime.py",
+        "/api/" + "v2/status",
+        "config/" + "v2/runtime.json",
+        "trader-runtime-diagnostics-" + "v1",
+        "V2" + "RefreshOutcome",
+    ):
+        assert retired_reference not in active_text
+
+
+def test_delivery_skill_routes_scoring_changes_through_the_full_semantic_chain() -> None:
+    scoring = (SKILL_ROOT / "references" / "scoring-chain.md").read_text(encoding="utf-8")
+
+    for invariant in (
+        "weighted_evidence_quality_0_100",
+        "model_prediction_rank",
+        "model_net_utility_non_positive",
+        "local_risk_penalty",
+        "0.68",
+        "0.32",
+        "ROUND_HALF_UP",
+        "83.40",
+        "score_scale",
+        "GET",
+        "SSE",
+        "Legacy Tomorrow",
+        "records without `score_scale`",
+        "point-in-time",
+        "11:20",
+        "14:50",
+        "Shadow",
+        "explicit human authorization",
+    ):
+        assert invariant in scoring
 
 
 def test_delivery_skill_preserves_recommendation_funnel_incident_checkpoints() -> None:
