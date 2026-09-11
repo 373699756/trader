@@ -1,18 +1,18 @@
 from datetime import date, timedelta
 
-from trader.application.research.h1_point_in_time_completion import complete_codex_a_research
+from trader.application.research.h1_point_in_time_completion import complete_h1_research
 from trader.application.research.historical_candidate_confirmation import (
     HistoricalStrategyResearchRequest,
-    execute_codex_b_batch,
+    execute_historical_confirmation_batch,
     execute_historical_strategy_research,
-    seal_codex_b_insufficient_batch,
+    seal_historical_confirmation_terminal_batch,
 )
 from trader.domain.research.filter_recall_ablation import FilterAblationRow
 from trader.domain.research.h1_point_in_time import H1CapabilityProbe, H1PointInTimeSpec, build_h1_capability_audit
 from trader.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive
 
 
-def _codex_a_completion(tmp_path):
+def _h1_research_completion(tmp_path):
     capability = build_h1_capability_audit(
         (
             H1CapabilityProbe("tencent_qfq_daily", date(2023, 1, 10), False, False, "qfq", False, 640, 3, 1024, 0.5),
@@ -21,7 +21,7 @@ def _codex_a_completion(tmp_path):
         probe_failures=("eastmoney_historical_minute_probe_failed",),
     )
     archive = SQLiteH1PointInTimeArchive(tmp_path)
-    return complete_codex_a_research(
+    return complete_h1_research(
         capability=capability,
         metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("today", "tomorrow", "d25")),
     )
@@ -82,7 +82,7 @@ def test_strategy_research_seals_one_candidate_and_keeps_terminal_holdout_closed
 
 
 def test_batch_returns_three_independent_strategy_terminal_states() -> None:
-    batch = execute_codex_b_batch(
+    batch = execute_historical_confirmation_batch(
         (
             _request("today", code_offset=0),
             _request("tomorrow", code_offset=200),
@@ -92,6 +92,7 @@ def test_batch_returns_three_independent_strategy_terminal_states() -> None:
     )
 
     assert tuple(item.strategy for item in batch.strategies) == ("today", "tomorrow", "d25")
+    assert batch.schema_version == "historical_confirmation_batch_result"
     assert all(item.terminal_holdout_status == "terminal_holdout_not_opened" for item in batch.strategies)
     assert batch.production_authority is False
     assert len(batch.content_hash) == 64
@@ -168,10 +169,10 @@ def test_ready_parent_without_research_rows_closes_as_data_insufficient() -> Non
     assert result.confirmation_report.failure_reasons == ("development_data_insufficient",)
 
 
-def test_codex_b_seals_parent_insufficient_terminal_without_dates_or_research_results(tmp_path) -> None:
-    completion = _codex_a_completion(tmp_path)
+def test_historical_confirmation_seals_parent_insufficient_terminal_without_dates_or_results(tmp_path) -> None:
+    completion = _h1_research_completion(tmp_path)
 
-    batch = seal_codex_b_insufficient_batch(completion)
+    batch = seal_historical_confirmation_terminal_batch(completion)
 
     assert batch.status == "historical_data_insufficient"
     assert tuple(item.strategy for item in batch.strategies) == ("today", "tomorrow", "d25")

@@ -77,7 +77,7 @@ def test_script_seals_sanitized_insufficient_terminal_chain_outside_repository(t
     assert "masked" not in json.dumps(payload)
     assert (artifacts / "h1_capability_audit.json").is_file()
     assert (artifacts / "historical_label_preregistration.json").is_file()
-    assert (artifacts / "codex_a_h1_terminal.json").is_file()
+    assert (artifacts / "h1_research_terminal.json").is_file()
 
 
 def test_script_reports_partial_probe_failure_without_discarding_success(tmp_path, capsys) -> None:

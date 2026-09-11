@@ -1,4 +1,4 @@
-"""Bridge Codex A point-in-time label readiness into Tomorrow orchestration."""
+"""Bridge point-in-time label readiness into Tomorrow orchestration."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ class HistoricalLabelPreregistrationPort(Protocol):
     def execute(self) -> HistoricalLabelPreregistrationBatch: ...
 
 
-class CodexATomorrowResearchPrerequisite:
+class TomorrowLabelReadinessPrerequisite:
     def __init__(self, labels: HistoricalLabelPreregistrationPort) -> None:
         self._labels = labels
 
@@ -27,4 +27,4 @@ class CodexATomorrowResearchPrerequisite:
         )
 
 
-__all__ = ["CodexATomorrowResearchPrerequisite", "HistoricalLabelPreregistrationPort"]
+__all__ = ["HistoricalLabelPreregistrationPort", "TomorrowLabelReadinessPrerequisite"]

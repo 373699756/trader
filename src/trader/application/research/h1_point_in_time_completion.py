@@ -1,4 +1,4 @@
-"""Fail-closed CodexA terminal chain for unavailable H1 point-in-time evidence."""
+"""Fail-closed terminal chain for unavailable H1 point-in-time evidence."""
 
 from __future__ import annotations
 
@@ -91,7 +91,7 @@ class TomorrowC3Terminal:
 
 
 @dataclass(frozen=True)
-class CodexAResearchCompletion:
+class H1ResearchCompletion:
     capability_hash: str
     labels: HistoricalLabelPreregistrationBatch
     residual_ledgers: tuple[HistoricalResidualLedgerTerminal, ...]
@@ -104,14 +104,14 @@ class CodexAResearchCompletion:
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
-        _hash(self.capability_hash, "CodexA capability")
+        _hash(self.capability_hash, "H1 research capability")
         ledgers = tuple(
             sorted(self.residual_ledgers, key=lambda item: ("today", "tomorrow", "d25").index(item.strategy))
         )
         if tuple(item.strategy for item in ledgers) != ("today", "tomorrow", "d25"):
-            raise ValueError("CodexA completion requires every residual ledger terminal")
+            raise ValueError("H1 research completion requires every residual ledger terminal")
         if any(item.capability_hash != self.capability_hash for item in ledgers):
-            raise ValueError("CodexA completion residual capability parent mismatch")
+            raise ValueError("H1 research completion residual capability parent mismatch")
         tomorrow_label = next(item for item in self.labels.strategies if item.strategy == "tomorrow")
         tomorrow_ledger = next(item for item in ledgers if item.strategy == "tomorrow")
         if (
@@ -119,13 +119,13 @@ class CodexAResearchCompletion:
             or self.c3.parent_preregistration_hash != tomorrow_label.content_hash
             or self.c3.parent_residual_ledger_hash != tomorrow_ledger.content_hash
         ):
-            raise ValueError("CodexA completion C3 parent mismatch")
+            raise ValueError("H1 research completion C3 parent mismatch")
         if self.status != "historical_data_insufficient":
-            raise ValueError("CodexA insufficient completion status is invalid")
+            raise ValueError("H1 research insufficient completion status is invalid")
         if self.terminal_holdout_opened or self.production_authority or self.automatic_model_update:
-            raise ValueError("CodexA completion cannot open holdout, authorize production, or update models")
+            raise ValueError("H1 research completion cannot open holdout, authorize production, or update models")
         if self.schema_version != "h1_research_completion":
-            raise ValueError("CodexA completion schema is invalid")
+            raise ValueError("H1 research completion schema is invalid")
         object.__setattr__(self, "residual_ledgers", ledgers)
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
@@ -140,7 +140,6 @@ class CodexAResearchCompletion:
         artifact = TomorrowResearchArtifactRef(
             artifact_id="h1_coverage_audit",
             artifact_kind="h1_research_completion",
-            owner="codex_a",
             content_hash=self.content_hash,
             parent_hashes=(resource_probe_artifact_hash,),
             terminal_status="historical_data_insufficient",
@@ -155,16 +154,16 @@ class CodexAResearchCompletion:
         )
 
 
-def complete_codex_a_research(
+def complete_h1_research(
     *,
     capability: H1CapabilityAuditReport,
     metadata: tuple[H1CoverageMetadata, ...],
-) -> CodexAResearchCompletion:
+) -> H1ResearchCompletion:
     if any(item.state != "historical_data_insufficient" for item in capability.strategies):
-        raise ValueError("CodexA insufficient closure cannot replace a coverage-capable research execution")
+        raise ValueError("H1 research insufficient closure cannot replace a coverage-capable research execution")
     labels = preregister_historical_labels(metadata)
     if any(item.status != "historical_data_insufficient" for item in labels.strategies):
-        raise ValueError("CodexA insufficient closure requires insufficient H1 metadata for every strategy")
+        raise ValueError("H1 research insufficient closure requires insufficient H1 metadata for every strategy")
     capability_by_strategy = {item.strategy: item for item in capability.strategies}
     ledgers = tuple(
         HistoricalResidualLedgerTerminal(
@@ -195,7 +194,7 @@ def complete_codex_a_research(
         status="historical_data_insufficient",
         failure_reasons=tomorrow_ledger.failure_reasons,
     )
-    return CodexAResearchCompletion(capability.content_hash, labels, ledgers, c3)
+    return H1ResearchCompletion(capability.content_hash, labels, ledgers, c3)
 
 
 def _hash(value: str, label: str) -> None:
@@ -204,8 +203,8 @@ def _hash(value: str, label: str) -> None:
 
 
 __all__ = [
-    "CodexAResearchCompletion",
+    "H1ResearchCompletion",
     "HistoricalResidualLedgerTerminal",
     "TomorrowC3Terminal",
-    "complete_codex_a_research",
+    "complete_h1_research",
 ]

@@ -4,6 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 STRATEGY = ROOT / "docs/01_评分逻辑.md"
+ACTIVE_CODE_ROOTS = (ROOT / "src" / "trader", ROOT / "scripts")
 
 
 def test_strategy_document_follows_the_end_to_end_stock_selection_chain() -> None:
@@ -57,6 +58,7 @@ def test_every_chain_stage_has_realtime_stability_and_return_review() -> None:
 
 def test_strategy_document_removes_delivery_history_and_implementation_noise() -> None:
     content = STRATEGY.read_text(encoding="utf-8")
+    executor_label = "Co" + "dex"
 
     for removed in (
         "engine_review28_2026_07",
@@ -71,14 +73,23 @@ def test_strategy_document_removes_delivery_history_and_implementation_noise() -
         "#### 15.1.18",
         "#### 15.1.19",
         "#### 15.1.20",
-        "Codex A",
-        "Codex B",
-        "Codex C",
-        "Codex D",
+        *(f"{executor_label} {lane}" for lane in "ABCD"),
         "CHOKEPOINT_INDUSTRY_LEADERS",
         "docs/reports/a-share-long-industry-research",
     ):
         assert removed not in content
+
+
+def test_active_code_uses_business_responsibilities_instead_of_agent_lane_names() -> None:
+    executor_label = ("co" + "dex").casefold()
+    offending = tuple(
+        path.relative_to(ROOT).as_posix()
+        for root in ACTIVE_CODE_ROOTS
+        for path in root.rglob("*.py")
+        if executor_label in path.as_posix().casefold() or executor_label in path.read_text(encoding="utf-8").casefold()
+    )
+
+    assert offending == ()
 
 
 def test_fixed_scoring_and_freeze_invariants_remain_explicit() -> None:

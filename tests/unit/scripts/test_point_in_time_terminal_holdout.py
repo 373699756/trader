@@ -3,16 +3,16 @@ from __future__ import annotations
 import json
 from datetime import date
 
-from scripts.codex_c_terminal_holdout import main
-from trader.application.research.h1_point_in_time_completion import complete_codex_a_research
+from scripts.point_in_time_terminal_holdout import main
+from trader.application.research.h1_point_in_time_completion import complete_h1_research
 from trader.domain.research.h1_point_in_time import H1CapabilityProbe, H1PointInTimeSpec, build_h1_capability_audit
 from trader.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive
 from trader.infra.research.h1_point_in_time_capability import H1CapabilityArtifactStore
-from trader.infra.research.h1_point_in_time_completion import CodexACompletionArtifactStore
+from trader.infra.research.h1_point_in_time_completion import H1ResearchCompletionArtifactStore
 from trader.infra.research.historical_label_artifacts import HistoricalLabelArtifactStore
 
 
-def _seal_codex_a_parent(root):
+def _seal_h1_research_parent(root):
     capability = build_h1_capability_audit(
         (
             H1CapabilityProbe("tencent_qfq_daily", date(2024, 1, 9), False, False, "qfq", False, 640, 10, 100, 1.0),
@@ -21,7 +21,7 @@ def _seal_codex_a_parent(root):
         probe_failures=("eastmoney_historical_minute_probe_failed",),
     )
     archive = SQLiteH1PointInTimeArchive(root / "archive")
-    completion = complete_codex_a_research(
+    completion = complete_h1_research(
         capability=capability,
         metadata=tuple(
             archive.label_metadata(H1PointInTimeSpec(strategy)) for strategy in ("today", "tomorrow", "d25")
@@ -29,13 +29,13 @@ def _seal_codex_a_parent(root):
     )
     H1CapabilityArtifactStore(root).write(capability)
     HistoricalLabelArtifactStore(root).write(completion.labels)
-    CodexACompletionArtifactStore(root).write(completion)
+    H1ResearchCompletionArtifactStore(root).write(completion)
 
 
-def test_codex_c_script_seals_three_parent_insufficient_reports_and_conclusion(tmp_path, capsys) -> None:
+def test_point_in_time_script_seals_three_parent_insufficient_reports_and_conclusion(tmp_path, capsys) -> None:
     parent = tmp_path / "parent"
     output = tmp_path / "output"
-    _seal_codex_a_parent(parent)
+    _seal_h1_research_parent(parent)
 
     result = main(["--parent-artifact-dir", str(parent), "--output-dir", str(output), "--output", "-"])
 

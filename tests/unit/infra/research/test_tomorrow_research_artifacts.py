@@ -28,7 +28,7 @@ def _handoff() -> TomorrowResearchStageHandoff:
     return TomorrowResearchStageHandoff(
         stage="resource_probe",
         parent_graph_hash=None,
-        artifacts=(TomorrowResearchArtifactRef("resource_probe_report", "resource_probe", "codex_d", "a" * 64),),
+        artifacts=(TomorrowResearchArtifactRef("resource_probe_report", "resource_probe", "a" * 64),),
         resource_probe=TomorrowResearchResourceProbe(100, 120, 2, 1024, 40.0, 8.0),
     )
 
@@ -46,14 +46,10 @@ def _development_handoff(
         stage="development_training",
         parent_graph_hash=graph.content_hash,
         artifacts=(
-            TomorrowResearchArtifactRef("h1_coverage_audit", "h1_coverage_audit", "codex_a", "b" * 64, ("a" * 64,)),
-            TomorrowResearchArtifactRef(
-                "daily_close_c3_candidate", "daily_close_c3_candidate", "codex_a", "c" * 64, ("b" * 64,)
-            ),
-            TomorrowResearchArtifactRef("filter_confirmation", "filter_confirmation", "codex_b", "d" * 64, ("a" * 64,)),
-            TomorrowResearchArtifactRef(
-                "tomorrow_joint_candidate", "tomorrow_joint_candidate", "codex_b", "e" * 64, ("c" * 64,)
-            ),
+            TomorrowResearchArtifactRef("h1_coverage_audit", "h1_research_completion", "b" * 64, ("a" * 64,)),
+            TomorrowResearchArtifactRef("daily_close_c3_candidate", "daily_close_c3_candidate", "c" * 64, ("b" * 64,)),
+            TomorrowResearchArtifactRef("filter_confirmation", "filter_confirmation", "d" * 64, ("a" * 64,)),
+            TomorrowResearchArtifactRef("tomorrow_joint_candidate", "tomorrow_joint_candidate", "e" * 64, ("c" * 64,)),
         ),
         evidence_partitions=evidence,
     )
@@ -64,6 +60,8 @@ def test_store_seals_handoff_idempotently_and_recovers_one_stage_commit(tmp_path
     handoff = _handoff()
 
     store.seal_handoff(handoff)
+    sealed = json.loads((tmp_path / ".handoffs" / "resource_probe.json").read_text(encoding="utf-8"))
+    assert "owner" not in sealed["artifacts"][0]
     store.seal_handoff(handoff)
     graph = store.commit(store.load_graph().content_hash, handoff)
 
@@ -82,6 +80,24 @@ def test_store_rejects_different_content_for_the_same_handoff_identity_and_tampe
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["parent_graph_hash"] = "f" * 64
     path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(TomorrowResearchArtifactStoreError, match="invalid"):
+        store.load_handoff("resource_probe")
+
+
+def test_store_rejects_legacy_owner_even_when_payload_hash_is_valid(tmp_path) -> None:
+    store = TomorrowResearchArtifactStore(tmp_path, available_disk_gb=lambda _path: 40.0)
+    store.seal_handoff(_handoff())
+    path = tmp_path / ".handoffs" / "resource_probe.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload.pop("content_hash")
+    artifacts = payload["artifacts"]
+    assert isinstance(artifacts, list)
+    artifact = artifacts[0]
+    assert isinstance(artifact, dict)
+    artifact["owner"] = "h1_coverage"
+    payload["content_hash"] = canonical_hash(payload)
+    path.write_text(canonical_json(payload), encoding="utf-8")
 
     with pytest.raises(TomorrowResearchArtifactStoreError, match="invalid"):
         store.load_handoff("resource_probe")
@@ -110,10 +126,10 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
         parent_graph_hash=graph.content_hash,
         artifacts=(
             TomorrowResearchArtifactRef(
-                "daily_close_confirmation_report", "daily_close_confirmation_report", "codex_a", "f" * 64, ("c" * 64,)
+                "daily_close_confirmation_report", "daily_close_confirmation_report", "f" * 64, ("c" * 64,)
             ),
             TomorrowResearchArtifactRef(
-                "joint_confirmation_report", "joint_confirmation_report", "codex_b", "0" * 64, ("e" * 64,)
+                "joint_confirmation_report", "joint_confirmation_report", "0" * 64, ("e" * 64,)
             ),
         ),
     )
@@ -128,7 +144,6 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
             TomorrowResearchArtifactRef(
                 "daily_close_proxy_validation_report",
                 "daily_close_proxy_validation_report",
-                "codex_a",
                 "1" * 64,
                 ("f" * 64,),
                 "historical_daily_close_proxy_validated",
@@ -136,7 +151,6 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
             TomorrowResearchArtifactRef(
                 "joint_candidate_model_artifact",
                 "tomorrow_joint_candidate_model_artifact",
-                "codex_b",
                 model_hash,
                 ("0" * 64,),
             ),
@@ -151,14 +165,13 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
             TomorrowResearchArtifactRef(
                 "tomorrow_point_in_time_holdout_report",
                 "point_in_time_holdout",
-                "codex_c",
                 "2" * 64,
                 ("1" * 64, model_hash),
                 "historical_validated",
                 ("historical_point_in_time_parity",),
             ),
             TomorrowResearchArtifactRef(
-                "cross_strategy_conclusion", "cross_strategy_conclusion", "codex_c", "3" * 64, ("2" * 64,)
+                "cross_strategy_conclusion", "cross_strategy_conclusion", "3" * 64, ("2" * 64,)
             ),
         ),
         outcome="historical_validated",
@@ -186,13 +199,14 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
     assert (run_root / "evidence" / evidence.relative_path).read_bytes() == evidence_bytes
     report = json.loads((run_root / "report.json").read_text(encoding="utf-8"))
     assert report["publishable"] is True
+    assert "owner" not in report["artifact_graph"][0]
     assert report["evidence_partitions"][0]["content_hash"] == evidence_hash
     assert report["production_blockers"] == ["manual_production_authorization_missing"]
 
     next_probe = TomorrowResearchStageHandoff(
         stage="resource_probe",
         parent_graph_hash=None,
-        artifacts=(TomorrowResearchArtifactRef("resource_probe_report", "resource_probe", "codex_d", "5" * 64),),
+        artifacts=(TomorrowResearchArtifactRef("resource_probe_report", "resource_probe", "5" * 64),),
         resource_probe=TomorrowResearchResourceProbe(100, 120, 2, 900, 39.0, 7.0),
     )
     store.seal_handoff(next_probe)

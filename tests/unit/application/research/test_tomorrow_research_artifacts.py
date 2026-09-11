@@ -16,11 +16,15 @@ from trader.application.research.tomorrow_research_artifacts import (
 )
 
 
-def _ref(artifact_id: str, owner: str, *, parents: tuple[str, ...] = ()) -> TomorrowResearchArtifactRef:
+def _ref(
+    artifact_id: str,
+    *,
+    artifact_kind: str | None = None,
+    parents: tuple[str, ...] = (),
+) -> TomorrowResearchArtifactRef:
     return TomorrowResearchArtifactRef(
         artifact_id=artifact_id,
-        artifact_kind=artifact_id,
-        owner=owner,  # type: ignore[arg-type]
+        artifact_kind=artifact_kind or artifact_id,
         content_hash=hashlib.sha256(artifact_id.encode("ascii")).hexdigest(),
         parent_hashes=parents,
     )
@@ -40,8 +44,8 @@ def _probe(**overrides: object) -> TomorrowResearchResourceProbe:
 
 
 def test_graph_is_canonical_and_rejects_missing_or_conflicting_parents() -> None:
-    parent = _ref("h1_coverage_audit", "codex_a")
-    child = _ref("daily_close_c3_candidate", "codex_a", parents=(parent.content_hash,))
+    parent = _ref("h1_coverage_audit")
+    child = _ref("daily_close_c3_candidate", parents=(parent.content_hash,))
 
     first = TomorrowResearchArtifactGraph((child, parent))
     second = TomorrowResearchArtifactGraph((parent, child))
@@ -53,14 +57,14 @@ def test_graph_is_canonical_and_rejects_missing_or_conflicting_parents() -> None
     with pytest.raises(ValueError, match="identity"):
         TomorrowResearchArtifactGraph((parent, replace(parent, content_hash="f" * 64)))
 
-    left = _ref("left", "codex_d", parents=("f" * 64,))
-    right = replace(_ref("right", "codex_d"), content_hash="f" * 64, parent_hashes=(left.content_hash,))
+    left = _ref("left", parents=("f" * 64,))
+    right = replace(_ref("right"), content_hash="f" * 64, parent_hashes=(left.content_hash,))
     with pytest.raises(ValueError, match="cycle"):
         TomorrowResearchArtifactGraph((left, right))
 
 
-def test_stage_handoff_binds_exact_required_roles_and_resource_limits() -> None:
-    probe_ref = _ref("resource_probe_report", "codex_d")
+def test_stage_handoff_binds_exact_required_artifacts_and_resource_limits() -> None:
+    probe_ref = _ref("resource_probe_report", artifact_kind="resource_probe")
     probe_handoff = TomorrowResearchStageHandoff(
         stage="resource_probe",
         parent_graph_hash=None,
@@ -68,10 +72,10 @@ def test_stage_handoff_binds_exact_required_roles_and_resource_limits() -> None:
         resource_probe=_probe(),
     )
     artifacts = (
-        _ref("h1_coverage_audit", "codex_a"),
-        _ref("daily_close_c3_candidate", "codex_a"),
-        _ref("filter_confirmation", "codex_b"),
-        _ref("tomorrow_joint_candidate", "codex_b"),
+        _ref("h1_coverage_audit", artifact_kind="h1_research_completion"),
+        _ref("daily_close_c3_candidate"),
+        _ref("filter_confirmation"),
+        _ref("tomorrow_joint_candidate"),
     )
     handoff = TomorrowResearchStageHandoff(
         stage="development_training",
@@ -85,8 +89,9 @@ def test_stage_handoff_binds_exact_required_roles_and_resource_limits() -> None:
         replace(handoff, artifacts=artifacts[:-1])
     with pytest.raises(ValueError, match="resource"):
         replace(probe_handoff, resource_probe=_probe(peak_rss_mb=4097))
-    with pytest.raises(ValueError, match="owner"):
-        replace(handoff, artifacts=(replace(artifacts[0], owner="codex_b"), *artifacts[1:]))
+    with pytest.raises(ValueError, match="kind"):
+        replace(handoff, artifacts=(replace(artifacts[0], artifact_kind="filter_confirmation"), *artifacts[1:]))
+    assert not hasattr(artifacts[0], "owner")
 
 
 def test_production_readiness_requires_both_holdouts_parity_and_new_authorization() -> None:

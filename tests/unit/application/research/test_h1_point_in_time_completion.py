@@ -1,6 +1,6 @@
 from datetime import date
 
-from trader.application.research.h1_point_in_time_completion import complete_codex_a_research
+from trader.application.research.h1_point_in_time_completion import complete_h1_research
 from trader.domain.research.h1_point_in_time import H1CapabilityProbe, H1PointInTimeSpec, build_h1_capability_audit
 from trader.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive
 
@@ -37,10 +37,10 @@ def _insufficient_capability():
     )
 
 
-def test_codex_a_completion_seals_all_downstream_insufficient_states_without_fake_rows(tmp_path) -> None:
+def test_h1_research_completion_seals_all_downstream_insufficient_states_without_fake_rows(tmp_path) -> None:
     archive = SQLiteH1PointInTimeArchive(tmp_path)
 
-    completion = complete_codex_a_research(
+    completion = complete_h1_research(
         capability=_insufficient_capability(),
         metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("today", "tomorrow", "d25")),
     )
@@ -56,9 +56,9 @@ def test_codex_a_completion_seals_all_downstream_insufficient_states_without_fak
     assert completion.production_authority is False
 
 
-def test_codex_a_completion_projects_a_terminal_development_handoff_with_parent_hashes(tmp_path) -> None:
+def test_h1_research_completion_projects_a_terminal_development_handoff_with_parent_hashes(tmp_path) -> None:
     archive = SQLiteH1PointInTimeArchive(tmp_path)
-    completion = complete_codex_a_research(
+    completion = complete_h1_research(
         capability=_insufficient_capability(),
         metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("today", "tomorrow", "d25")),
     )
@@ -71,7 +71,7 @@ def test_codex_a_completion_projects_a_terminal_development_handoff_with_parent_
     assert handoff.stage == "development_training"
     assert handoff.outcome == "historical_data_insufficient"
     assert tuple(item.artifact_id for item in handoff.artifacts) == ("h1_coverage_audit",)
-    assert handoff.artifacts[0].owner == "codex_a"
+    assert not hasattr(handoff.artifacts[0], "owner")
     assert handoff.parent_graph_hash == "f" * 64
     assert handoff.artifacts[0].parent_hashes == ("e" * 64,)
     assert handoff.artifacts[0].content_hash == completion.content_hash

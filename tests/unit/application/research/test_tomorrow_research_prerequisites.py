@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 
 from trader.application.research.historical_label import HistoricalLabelPreregistrationService
-from trader.application.research.tomorrow_research_prerequisites import CodexATomorrowResearchPrerequisite
+from trader.application.research.tomorrow_research_prerequisites import TomorrowLabelReadinessPrerequisite
 from trader.domain.research.h1_point_in_time import H1PointInTimeSpec
 from trader.domain.research.historical_label import H1CoverageMetadata
 
@@ -22,8 +22,8 @@ class _MetadataPort:
         )
 
 
-def test_codex_a_prerequisite_blocks_on_tomorrow_h1_metadata_without_sealing_artifacts() -> None:
-    prerequisite = CodexATomorrowResearchPrerequisite(
+def test_label_readiness_prerequisite_blocks_on_tomorrow_h1_metadata_without_sealing_artifacts() -> None:
+    prerequisite = TomorrowLabelReadinessPrerequisite(
         HistoricalLabelPreregistrationService(_MetadataPort(ready=False))
     ).inspect()
 
@@ -36,10 +36,10 @@ def test_codex_a_prerequisite_blocks_on_tomorrow_h1_metadata_without_sealing_art
     assert prerequisite.production_authority is False
 
 
-def test_codex_a_prerequisite_releases_resource_probe_only_after_preregistration_is_ready() -> None:
+def test_label_readiness_prerequisite_releases_resource_probe_only_after_preregistration_is_ready() -> None:
     service = HistoricalLabelPreregistrationService(_MetadataPort(ready=True))
     batch = service.execute()
-    prerequisite = CodexATomorrowResearchPrerequisite(service).inspect()
+    prerequisite = TomorrowLabelReadinessPrerequisite(service).inspect()
 
     assert prerequisite.status == "ready"
     assert prerequisite.blockers == ()

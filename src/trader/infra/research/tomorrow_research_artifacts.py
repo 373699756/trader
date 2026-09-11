@@ -18,7 +18,6 @@ from trader.application.research.tomorrow_research_artifacts import (
     TomorrowResearchArtifactRef,
     TomorrowResearchEvidencePartitionRef,
     TomorrowResearchHandoffOutcome,
-    TomorrowResearchOwner,
     TomorrowResearchResourceProbe,
     TomorrowResearchStage,
     TomorrowResearchStageHandoff,
@@ -316,7 +315,6 @@ def _decode_ref(raw: dict[str, object]) -> TomorrowResearchArtifactRef:
         {
             "artifact_id",
             "artifact_kind",
-            "owner",
             "content_hash",
             "parent_hashes",
             "terminal_status",
@@ -329,7 +327,6 @@ def _decode_ref(raw: dict[str, object]) -> TomorrowResearchArtifactRef:
     return TomorrowResearchArtifactRef(
         artifact_id=_string(raw["artifact_id"]),
         artifact_kind=_string(raw["artifact_kind"]),
-        owner=cast(TomorrowResearchOwner, _string(raw["owner"])),
         content_hash=_string(raw["content_hash"]),
         parent_hashes=_strings(raw["parent_hashes"]),
         terminal_status=cast(TomorrowResearchTerminalStatus | None, status),
@@ -409,7 +406,6 @@ def _report(
             {
                 "artifact_id": item.artifact_id,
                 "artifact_kind": item.artifact_kind,
-                "owner": item.owner,
                 "content_hash": item.content_hash,
                 "parent_hashes": list(item.parent_hashes),
                 "terminal_status": item.terminal_status,

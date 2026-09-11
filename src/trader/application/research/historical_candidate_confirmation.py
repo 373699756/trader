@@ -1,4 +1,4 @@
-"""Complete Codex B orchestration for historical filter candidates."""
+"""Orchestrate historical filter candidate confirmation."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
-from trader.application.research.h1_point_in_time_completion import CodexAResearchCompletion
+from trader.application.research.h1_point_in_time_completion import H1ResearchCompletion
 from trader.domain.research.filter_recall_ablation import FilterAblationRow, run_filter_recall_ablation
 from trader.domain.research.historical_candidate_confirmation import (
     CandidateConfirmationPlan,
@@ -105,23 +105,23 @@ class HistoricalStrategyResearchResult:
 
 
 @dataclass(frozen=True)
-class HistoricalCodexBBatchResult:
+class HistoricalConfirmationBatchResult:
     strategies: tuple[HistoricalStrategyResearchResult, ...]
     production_authority: bool = False
-    schema_version: str = "historical_codex_b_batch_result"
+    schema_version: str = "historical_confirmation_batch_result"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
         if tuple(item.strategy for item in self.strategies) != _STRATEGIES:
-            raise ValueError("Codex B batch must contain Today, Tomorrow, and D25 in fixed order")
-        if self.production_authority or self.schema_version != "historical_codex_b_batch_result":
-            raise ValueError("Codex B batch cannot authorize production")
+            raise ValueError("Historical confirmation batch must contain Today, Tomorrow, and D25 in fixed order")
+        if self.production_authority or self.schema_version != "historical_confirmation_batch_result":
+            raise ValueError("Historical confirmation batch cannot authorize production")
         object.__setattr__(self, "content_hash", _canonical_hash(self))
 
 
 @dataclass(frozen=True)
-class HistoricalCodexBStrategyTerminal:
-    """Fail-closed B terminal when Codex A has no usable historical population."""
+class HistoricalConfirmationStrategyTerminal:
+    """Fail-closed terminal when H1 research has no usable historical population."""
 
     strategy: HistoricalStrategy
     parent_completion_hash: str
@@ -138,12 +138,12 @@ class HistoricalCodexBStrategyTerminal:
     model_artifact_hash: str | None = None
     terminal_holdout_status: Literal["terminal_holdout_not_opened"] = "terminal_holdout_not_opened"
     production_authority: bool = False
-    schema_version: str = "historical_codex_b_strategy_terminal"
+    schema_version: str = "historical_confirmation_strategy_terminal"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
         if self.strategy not in _STRATEGIES:
-            raise ValueError("Codex B terminal strategy is invalid")
+            raise ValueError("Historical confirmation terminal strategy is invalid")
         hashes = (
             self.parent_completion_hash,
             self.parent_capability_hash,
@@ -151,72 +151,74 @@ class HistoricalCodexBStrategyTerminal:
             self.parent_residual_ledger_hash,
         )
         if any(_SHA256.fullmatch(value) is None for value in hashes):
-            raise ValueError("Codex B terminal parent hash is invalid")
+            raise ValueError("Historical confirmation terminal parent hash is invalid")
         if self.parent_c3_hash is not None and _SHA256.fullmatch(self.parent_c3_hash) is None:
-            raise ValueError("Codex B terminal C3 parent hash is invalid")
+            raise ValueError("Historical confirmation terminal C3 parent hash is invalid")
         if self.status != "historical_data_insufficient" or not self.failure_reasons:
-            raise ValueError("Codex B terminal requires bounded insufficient reasons")
+            raise ValueError("Historical confirmation terminal requires bounded insufficient reasons")
         if any(
             value is not None
             for value in (self.candidate_family_hash, self.confirmation_report_hash, self.model_artifact_hash)
         ):
-            raise ValueError("Codex B insufficient terminal cannot claim candidate or model artifacts")
+            raise ValueError("Historical confirmation terminal cannot claim candidate or model artifacts")
         if self.holm_test_count is not None or self.outcome_rows is not None:
-            raise ValueError("Codex B insufficient terminal cannot claim Holm or outcome rows")
+            raise ValueError("Historical confirmation terminal cannot claim Holm or outcome rows")
         if self.terminal_holdout_status != "terminal_holdout_not_opened" or self.production_authority:
-            raise ValueError("Codex B terminal cannot open holdout or authorize production")
-        if self.schema_version != "historical_codex_b_strategy_terminal":
-            raise ValueError("Codex B terminal schema is invalid")
+            raise ValueError("Historical confirmation terminal cannot open holdout or authorize production")
+        if self.schema_version != "historical_confirmation_strategy_terminal":
+            raise ValueError("Historical confirmation terminal schema is invalid")
         object.__setattr__(self, "failure_reasons", tuple(sorted(set(self.failure_reasons))))
         object.__setattr__(self, "content_hash", _canonical_hash(self))
 
 
 @dataclass(frozen=True)
-class HistoricalCodexBInsufficientBatch:
-    """The immutable three-strategy B closure inherited from one Codex A completion."""
+class HistoricalConfirmationTerminalBatch:
+    """Immutable three-strategy closure inherited from one H1 research completion."""
 
     parent_completion_hash: str
     parent_capability_hash: str
     parent_label_hash: str
     parent_residual_ledger_hashes: tuple[tuple[HistoricalStrategy, str], ...]
     parent_c3_hash: str
-    strategies: tuple[HistoricalCodexBStrategyTerminal, ...]
+    strategies: tuple[HistoricalConfirmationStrategyTerminal, ...]
     joint_terminal: TomorrowJointInsufficientTerminal
     status: Literal["historical_data_insufficient"] = "historical_data_insufficient"
     joint_holm_test_count: int | None = None
     joint_model_artifact_hash: str | None = None
     terminal_holdout_status: Literal["terminal_holdout_not_opened"] = "terminal_holdout_not_opened"
     production_authority: bool = False
-    schema_version: str = "historical_codex_b_insufficient_batch"
+    schema_version: str = "historical_confirmation_terminal_batch"
     joint_report_hash: str = dataclasses.field(init=False)
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
-        _validate_codex_b_batch_parent(self)
-        _validate_codex_b_batch_strategies(self)
-        _validate_codex_b_batch_outcome(self)
+        _validate_confirmation_batch_parent(self)
+        _validate_confirmation_batch_strategies(self)
+        _validate_confirmation_batch_outcome(self)
         if self.terminal_holdout_status != "terminal_holdout_not_opened" or self.production_authority:
-            raise ValueError("Codex B batch cannot open holdout or authorize production")
-        if self.schema_version != "historical_codex_b_insufficient_batch":
-            raise ValueError("Codex B batch schema is invalid")
+            raise ValueError("Historical confirmation batch cannot open holdout or authorize production")
+        if self.schema_version != "historical_confirmation_terminal_batch":
+            raise ValueError("Historical confirmation batch schema is invalid")
         residuals = tuple(sorted(self.parent_residual_ledger_hashes, key=lambda item: _STRATEGIES.index(item[0])))
         object.__setattr__(self, "parent_residual_ledger_hashes", residuals)
         object.__setattr__(self, "joint_report_hash", self.joint_terminal.content_hash)
         object.__setattr__(self, "content_hash", _canonical_hash(self))
 
 
-def seal_codex_b_insufficient_batch(completion: CodexAResearchCompletion) -> HistoricalCodexBInsufficientBatch:
-    """Seal B's no-data terminal without inventing dates, rows, candidates, or statistics."""
+def seal_historical_confirmation_terminal_batch(
+    completion: H1ResearchCompletion,
+) -> HistoricalConfirmationTerminalBatch:
+    """Seal a no-data confirmation terminal without inventing dates, rows, candidates, or statistics."""
 
     ledgers = {item.strategy: item for item in completion.residual_ledgers}
     labels = {item.strategy: item for item in completion.labels.strategies}
-    strategy_terminals: list[HistoricalCodexBStrategyTerminal] = []
+    strategy_terminals: list[HistoricalConfirmationStrategyTerminal] = []
     for strategy in _STRATEGIES:
         reasons = set(labels[strategy].failure_reasons) | set(ledgers[strategy].failure_reasons)
         if strategy == "tomorrow":
             reasons.update(completion.c3.failure_reasons)
         strategy_terminals.append(
-            HistoricalCodexBStrategyTerminal(
+            HistoricalConfirmationStrategyTerminal(
                 strategy=strategy,
                 parent_completion_hash=completion.content_hash,
                 parent_capability_hash=completion.capability_hash,
@@ -237,7 +239,7 @@ def seal_codex_b_insufficient_batch(completion: CodexAResearchCompletion) -> His
         status="historical_data_insufficient",
         failure_reasons=tuple(sorted(set(completion.c3.failure_reasons))),
     )
-    return HistoricalCodexBInsufficientBatch(
+    return HistoricalConfirmationTerminalBatch(
         parent_completion_hash=completion.content_hash,
         parent_capability_hash=completion.capability_hash,
         parent_label_hash=completion.labels.content_hash,
@@ -248,37 +250,37 @@ def seal_codex_b_insufficient_batch(completion: CodexAResearchCompletion) -> His
     )
 
 
-def _validate_codex_b_batch_parent(batch: HistoricalCodexBInsufficientBatch) -> None:
+def _validate_confirmation_batch_parent(batch: HistoricalConfirmationTerminalBatch) -> None:
     hashes = (batch.parent_completion_hash, batch.parent_capability_hash, batch.parent_label_hash, batch.parent_c3_hash)
     if any(_SHA256.fullmatch(value) is None for value in hashes):
-        raise ValueError("Codex B batch parent hash is invalid")
+        raise ValueError("Historical confirmation batch parent hash is invalid")
     residuals = tuple(sorted(batch.parent_residual_ledger_hashes, key=lambda item: _STRATEGIES.index(item[0])))
     if tuple(item[0] for item in residuals) != _STRATEGIES or any(
         _SHA256.fullmatch(item[1]) is None for item in residuals
     ):
-        raise ValueError("Codex B batch requires all residual parent hashes")
+        raise ValueError("Historical confirmation batch requires all residual parent hashes")
 
 
-def _validate_codex_b_batch_strategies(batch: HistoricalCodexBInsufficientBatch) -> None:
+def _validate_confirmation_batch_strategies(batch: HistoricalConfirmationTerminalBatch) -> None:
     if tuple(item.strategy for item in batch.strategies) != _STRATEGIES:
-        raise ValueError("Codex B batch terminal strategies must be ordered")
+        raise ValueError("Historical confirmation batch terminal strategies must be ordered")
     if any(item.parent_completion_hash != batch.parent_completion_hash for item in batch.strategies):
-        raise ValueError("Codex B strategy terminal parent mismatch")
+        raise ValueError("Historical confirmation strategy terminal parent mismatch")
     if any(item.status != "historical_data_insufficient" for item in batch.strategies):
-        raise ValueError("Codex B insufficient batch contains a non-terminal strategy")
+        raise ValueError("Historical confirmation batch contains a non-terminal strategy")
 
 
-def _validate_codex_b_batch_outcome(batch: HistoricalCodexBInsufficientBatch) -> None:
+def _validate_confirmation_batch_outcome(batch: HistoricalConfirmationTerminalBatch) -> None:
     if batch.joint_terminal.parent_completion_hash != batch.parent_completion_hash:
-        raise ValueError("Codex B joint terminal parent mismatch")
+        raise ValueError("Historical confirmation joint terminal parent mismatch")
     if batch.joint_terminal.status != "historical_data_insufficient":
-        raise ValueError("Codex B joint terminal status is invalid")
+        raise ValueError("Historical confirmation joint terminal status is invalid")
     if (
         batch.status != "historical_data_insufficient"
         or batch.joint_holm_test_count is not None
         or batch.joint_model_artifact_hash is not None
     ):
-        raise ValueError("Codex B insufficient batch cannot claim joint results")
+        raise ValueError("Historical confirmation terminal batch cannot claim joint results")
 
 
 def execute_historical_candidate_confirmation(
@@ -368,15 +370,15 @@ def execute_historical_strategy_research(
     )
 
 
-def execute_codex_b_batch(
+def execute_historical_confirmation_batch(
     requests: tuple[HistoricalStrategyResearchRequest, ...],
     *,
     repetitions: int = 10_000,
-) -> HistoricalCodexBBatchResult:
+) -> HistoricalConfirmationBatchResult:
     by_strategy = {request.strategy: request for request in requests}
     if len(requests) != len(_STRATEGIES) or set(by_strategy) != set(_STRATEGIES):
-        raise ValueError("Codex B batch requires exactly one request for each strategy")
-    return HistoricalCodexBBatchResult(
+        raise ValueError("Historical confirmation batch requires exactly one request for each strategy")
+    return HistoricalConfirmationBatchResult(
         tuple(
             execute_historical_strategy_research(by_strategy[strategy], repetitions=repetitions)
             for strategy in _STRATEGIES
@@ -481,13 +483,13 @@ def _canonical_hash(value: object) -> str:
 
 
 __all__ = [
-    "HistoricalCodexBInsufficientBatch",
-    "HistoricalCodexBBatchResult",
-    "HistoricalCodexBStrategyTerminal",
+    "HistoricalConfirmationBatchResult",
+    "HistoricalConfirmationStrategyTerminal",
+    "HistoricalConfirmationTerminalBatch",
     "HistoricalStrategyResearchRequest",
     "HistoricalStrategyResearchResult",
-    "execute_codex_b_batch",
+    "execute_historical_confirmation_batch",
     "execute_historical_candidate_confirmation",
     "execute_historical_strategy_research",
-    "seal_codex_b_insufficient_batch",
+    "seal_historical_confirmation_terminal_batch",
 ]

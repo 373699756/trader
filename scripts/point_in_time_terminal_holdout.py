@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Seal Codex C terminal holdout outcomes from an immutable Codex A parent."""
+"""Seal point-in-time terminal holdout outcomes from immutable H1 research evidence."""
 
 from __future__ import annotations
 
@@ -38,8 +38,8 @@ from trader.infra.research.h1_point_in_time_capability import (  # noqa: E402
     H1CapabilityArtifactStore,
 )
 from trader.infra.research.h1_point_in_time_completion import (  # noqa: E402
-    CodexACompletionArtifactIndex,
-    CodexACompletionArtifactStore,
+    H1ResearchCompletionArtifactIndex,
+    H1ResearchCompletionArtifactStore,
 )
 from trader.infra.research.historical_label_artifacts import HistoricalLabelArtifactStore  # noqa: E402
 from trader.infra.research.today_terminal_holdout_artifacts import (  # noqa: E402
@@ -53,7 +53,7 @@ from trader.infra.research.tomorrow_point_in_time_holdout_artifacts import (  # 
 @dataclass(frozen=True)
 class _ParentArtifacts:
     capability: H1CapabilityAuditReport
-    index: CodexACompletionArtifactIndex
+    index: H1ResearchCompletionArtifactIndex
 
 
 def execute(*, parent_artifact_dir: Path, output_dir: Path) -> CrossStrategyConclusion:
@@ -85,11 +85,11 @@ def execute(*, parent_artifact_dir: Path, output_dir: Path) -> CrossStrategyConc
 def _read_parent(root: Path) -> _ParentArtifacts:
     capability = H1CapabilityArtifactStore(root).verify()
     labels = HistoricalLabelArtifactStore(root).verify()
-    index = CodexACompletionArtifactStore(root).verify()
+    index = H1ResearchCompletionArtifactStore(root).verify()
     if index.capability_hash != capability.content_hash:
-        raise ValueError("Codex C parent capability hash does not match terminal index")
+        raise ValueError("Terminal holdout parent capability hash does not match terminal index")
     if index.label_batch_hash != labels.content_hash:
-        raise ValueError("Codex C parent label hash does not match terminal index")
+        raise ValueError("Terminal holdout parent label hash does not match terminal index")
     return _ParentArtifacts(capability, index)
 
 
@@ -105,7 +105,7 @@ def _parent_state(parent: _ParentArtifacts, strategy: H1Strategy, candidate_hash
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--parent-artifact-dir", type=Path, required=True, help="Codex A artifact directory")
+    parser.add_argument("--parent-artifact-dir", type=Path, required=True, help="H1 research artifact directory")
     parser.add_argument("--output-dir", type=Path, required=True, help="absolute output directory outside repository")
     parser.add_argument("--output", default="-", help="sanitized JSON output path outside repository, or -")
     return parser

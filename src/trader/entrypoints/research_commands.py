@@ -21,7 +21,7 @@ from trader.application.research.tomorrow_research_artifacts import (
     next_research_stage,
     production_readiness_audit,
 )
-from trader.application.research.tomorrow_research_prerequisites import CodexATomorrowResearchPrerequisite
+from trader.application.research.tomorrow_research_prerequisites import TomorrowLabelReadinessPrerequisite
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC
 from trader.domain.research.tomorrow_historical import TOMORROW_HISTORICAL_SPEC
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
@@ -371,9 +371,9 @@ def _tomorrow_research_result_payload(
     }
 
 
-def _tomorrow_research_prerequisite(runtime: RuntimeSettings) -> CodexATomorrowResearchPrerequisite:
+def _tomorrow_research_prerequisite(runtime: RuntimeSettings) -> TomorrowLabelReadinessPrerequisite:
     archive = SQLiteH1PointInTimeArchive(runtime.runtime_dir)
-    return CodexATomorrowResearchPrerequisite(HistoricalLabelPreregistrationService(archive))
+    return TomorrowLabelReadinessPrerequisite(HistoricalLabelPreregistrationService(archive))
 
 
 def _read_tomorrow_historical_status(runtime: RuntimeSettings) -> dict[str, object]:

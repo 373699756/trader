@@ -12,7 +12,6 @@ from typing import Literal
 
 from trader.application.research.replay_models import canonical_hash
 
-TomorrowResearchOwner = Literal["codex_a", "codex_b", "codex_c", "codex_d"]
 TomorrowResearchStage = Literal[
     "resource_probe",
     "development_training",
@@ -64,18 +63,18 @@ _TERMINAL_REPORT_ARTIFACT: dict[TomorrowResearchStage, str] = {
     "daily_close_proxy_holdout": "daily_close_proxy_validation_report",
     "point_in_time_holdout": "tomorrow_point_in_time_holdout_report",
 }
-_ARTIFACT_OWNERS: dict[str, TomorrowResearchOwner] = {
-    "resource_probe_report": "codex_d",
-    "h1_coverage_audit": "codex_a",
-    "daily_close_c3_candidate": "codex_a",
-    "filter_confirmation": "codex_b",
-    "tomorrow_joint_candidate": "codex_b",
-    "daily_close_confirmation_report": "codex_a",
-    "joint_confirmation_report": "codex_b",
-    "daily_close_proxy_validation_report": "codex_a",
-    "joint_candidate_model_artifact": "codex_b",
-    "tomorrow_point_in_time_holdout_report": "codex_c",
-    "cross_strategy_conclusion": "codex_c",
+_ARTIFACT_KINDS = {
+    "resource_probe_report": "resource_probe",
+    "h1_coverage_audit": "h1_research_completion",
+    "daily_close_c3_candidate": "daily_close_c3_candidate",
+    "filter_confirmation": "filter_confirmation",
+    "tomorrow_joint_candidate": "tomorrow_joint_candidate",
+    "daily_close_confirmation_report": "daily_close_confirmation_report",
+    "joint_confirmation_report": "joint_confirmation_report",
+    "daily_close_proxy_validation_report": "daily_close_proxy_validation_report",
+    "joint_candidate_model_artifact": "tomorrow_joint_candidate_model_artifact",
+    "tomorrow_point_in_time_holdout_report": "point_in_time_holdout",
+    "cross_strategy_conclusion": "cross_strategy_conclusion",
 }
 
 
@@ -83,7 +82,6 @@ _ARTIFACT_OWNERS: dict[str, TomorrowResearchOwner] = {
 class TomorrowResearchArtifactRef:
     artifact_id: str
     artifact_kind: str
-    owner: TomorrowResearchOwner
     content_hash: str
     parent_hashes: tuple[str, ...] = ()
     terminal_status: TomorrowResearchTerminalStatus | None = None
@@ -94,8 +92,6 @@ class TomorrowResearchArtifactRef:
     def __post_init__(self) -> None:
         if _IDENTITY.fullmatch(self.artifact_id) is None or _IDENTITY.fullmatch(self.artifact_kind) is None:
             raise ValueError("Tomorrow research artifact identity is invalid")
-        if self.owner not in {"codex_a", "codex_b", "codex_c", "codex_d"}:
-            raise ValueError("Tomorrow research artifact owner is invalid")
         _validate_hash(self.content_hash, "artifact content")
         parents = tuple(sorted(set(self.parent_hashes)))
         if len(parents) != len(self.parent_hashes) or any(_SHA256.fullmatch(value) is None for value in parents):
@@ -361,8 +357,8 @@ def _validate_stage_artifacts(
     artifact_ids = frozenset(item.artifact_id for item in artifacts)
     if len(artifact_ids) != len(artifacts) or not artifact_ids.issubset(_REQUIRED_ARTIFACTS[stage]):
         raise ValueError("Tomorrow research stage required artifacts are incomplete or unexpected")
-    if any(item.owner != _ARTIFACT_OWNERS[item.artifact_id] for item in artifacts):
-        raise ValueError("Tomorrow research stage artifact owner is invalid")
+    if any(item.artifact_kind != _ARTIFACT_KINDS[item.artifact_id] for item in artifacts):
+        raise ValueError("Tomorrow research stage artifact kind is invalid")
     successful = outcome in {"stage_ready", "historical_daily_close_proxy_validated", "historical_validated"}
     if successful and artifact_ids != _REQUIRED_ARTIFACTS[stage]:
         raise ValueError("Tomorrow research stage required artifacts are incomplete or unexpected")
@@ -446,7 +442,6 @@ __all__ = [
     "TomorrowResearchArtifactRef",
     "TomorrowResearchEvidencePartitionRef",
     "TomorrowResearchHandoffOutcome",
-    "TomorrowResearchOwner",
     "TomorrowResearchResourceProbe",
     "TomorrowResearchStage",
     "TomorrowResearchStageHandoff",

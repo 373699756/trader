@@ -14,11 +14,10 @@ from trader.application.research.tomorrow_research_artifacts import (
 )
 
 
-def _ref(artifact_id: str, owner: str, hash_char: str) -> TomorrowResearchArtifactRef:
+def _ref(artifact_id: str, hash_char: str, *, artifact_kind: str | None = None) -> TomorrowResearchArtifactRef:
     return TomorrowResearchArtifactRef(
         artifact_id=artifact_id,
-        artifact_kind=artifact_id,
-        owner=owner,  # type: ignore[arg-type]
+        artifact_kind=artifact_kind or artifact_id,
         content_hash=hash_char * 64,
     )
 
@@ -27,7 +26,7 @@ def _resource_handoff() -> TomorrowResearchStageHandoff:
     return TomorrowResearchStageHandoff(
         stage="resource_probe",
         parent_graph_hash=None,
-        artifacts=(_ref("resource_probe_report", "codex_d", "a"),),
+        artifacts=(_ref("resource_probe_report", "a", artifact_kind="resource_probe"),),
         resource_probe=TomorrowResearchResourceProbe(100, 120, 2, 1024, 40.0, 8.0),
     )
 
@@ -114,7 +113,7 @@ def test_each_invocation_continues_until_the_next_required_handoff_is_missing() 
 
 def test_mismatched_parent_graph_fails_closed_without_importing_handoff() -> None:
     store = MemoryStore(handoff=_resource_handoff())
-    store.graph = store.graph.extend((_ref("existing", "codex_d", "e"),))
+    store.graph = store.graph.extend((_ref("existing", "e"),))
 
     result = TomorrowResearchOrchestrator(store, _ready_prerequisite()).advance()
 

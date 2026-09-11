@@ -2,12 +2,12 @@ from datetime import date
 
 import pytest
 
-from trader.application.research.h1_point_in_time_completion import complete_codex_a_research
+from trader.application.research.h1_point_in_time_completion import complete_h1_research
 from trader.domain.research.h1_point_in_time import H1CapabilityProbe, H1PointInTimeSpec, build_h1_capability_audit
 from trader.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive
 from trader.infra.research.h1_point_in_time_completion import (
-    CodexACompletionArtifactConflictError,
-    CodexACompletionArtifactStore,
+    H1ResearchCompletionArtifactConflictError,
+    H1ResearchCompletionArtifactStore,
 )
 
 
@@ -23,7 +23,7 @@ def _completion(tmp_path):
         )
     )
     archive = SQLiteH1PointInTimeArchive(tmp_path / "archive")
-    return complete_codex_a_research(
+    return complete_h1_research(
         capability=capability,
         metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("today", "tomorrow", "d25")),
     )
@@ -31,7 +31,7 @@ def _completion(tmp_path):
 
 def test_completion_index_seals_every_terminal_hash_and_rejects_tampering(tmp_path) -> None:
     completion = _completion(tmp_path)
-    store = CodexACompletionArtifactStore(tmp_path / "artifacts")
+    store = H1ResearchCompletionArtifactStore(tmp_path / "artifacts")
 
     index = store.write(completion)
 
@@ -42,7 +42,7 @@ def test_completion_index_seals_every_terminal_hash_and_rejects_tampering(tmp_pa
     )
     assert index.c3_terminal_hash == completion.c3.content_hash
     assert store.write(completion) == index
-    path = tmp_path / "artifacts" / "codex_a_h1_terminal.json"
+    path = tmp_path / "artifacts" / "h1_research_terminal.json"
     path.write_text(path.read_text().replace(completion.c3.content_hash, "0" * 64), encoding="utf-8")
-    with pytest.raises(CodexACompletionArtifactConflictError, match="schema or hash"):
+    with pytest.raises(H1ResearchCompletionArtifactConflictError, match="schema or hash"):
         store.verify()

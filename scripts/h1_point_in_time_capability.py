@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Probe free H1 source capability and seal the CodexA fail-closed terminal chain."""
+"""Probe free H1 source capability and seal the fail-closed research terminal chain."""
 
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from trader.application.research.h1_point_in_time_completion import (  # noqa: E402
-    CodexAResearchCompletion,
-    complete_codex_a_research,
+    H1ResearchCompletion,
+    complete_h1_research,
 )
 from trader.domain.research.h1_point_in_time import H1CapabilityAuditReport, H1PointInTimeSpec  # noqa: E402
 from trader.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive  # noqa: E402
@@ -29,8 +29,8 @@ from trader.infra.research.h1_point_in_time_capability import (  # noqa: E402
     H1HTTPSession,
 )
 from trader.infra.research.h1_point_in_time_completion import (  # noqa: E402
-    CodexACompletionArtifactIndex,
-    CodexACompletionArtifactStore,
+    H1ResearchCompletionArtifactIndex,
+    H1ResearchCompletionArtifactStore,
 )
 from trader.infra.research.historical_label_artifacts import HistoricalLabelArtifactStore  # noqa: E402
 
@@ -108,17 +108,17 @@ def execute(
     historical_anchor_date: date,
     timeout_seconds: float,
     session: H1HTTPSession,
-) -> tuple[H1CapabilityAuditReport, CodexAResearchCompletion, CodexACompletionArtifactIndex]:
+) -> tuple[H1CapabilityAuditReport, H1ResearchCompletion, H1ResearchCompletionArtifactIndex]:
     capability = FreeSourceH1CapabilityProbe(session, timeout_seconds=timeout_seconds).run(
         code=code,
         historical_anchor_date=historical_anchor_date,
     )
     archive = SQLiteH1PointInTimeArchive(h1_runtime_dir)
     metadata = tuple(archive.label_metadata(H1PointInTimeSpec(strategy)) for strategy in ("today", "tomorrow", "d25"))
-    completion = complete_codex_a_research(capability=capability, metadata=metadata)
+    completion = complete_h1_research(capability=capability, metadata=metadata)
     H1CapabilityArtifactStore(artifact_dir).write(capability)
     HistoricalLabelArtifactStore(artifact_dir).write(completion.labels)
-    index = CodexACompletionArtifactStore(artifact_dir).write(completion)
+    index = H1ResearchCompletionArtifactStore(artifact_dir).write(completion)
     return capability, completion, index
 
 
@@ -152,8 +152,8 @@ def main(argv: list[str] | None = None, *, session_factory: _SessionFactory = _d
 
 def _projection(
     capability: H1CapabilityAuditReport,
-    completion: CodexAResearchCompletion,
-    index: CodexACompletionArtifactIndex,
+    completion: H1ResearchCompletion,
+    index: H1ResearchCompletionArtifactIndex,
 ) -> dict[str, object]:
     return {
         "schema_version": "h1_capability_execution",

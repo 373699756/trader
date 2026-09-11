@@ -1,4 +1,4 @@
-"""Immutable artifact index for the fail-closed CodexA H1 terminal chain."""
+"""Immutable artifact index for the fail-closed H1 research terminal chain."""
 
 from __future__ import annotations
 
@@ -11,18 +11,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-from trader.application.research.h1_point_in_time_completion import CodexAResearchCompletion
+from trader.application.research.h1_point_in_time_completion import H1ResearchCompletion
 from trader.domain.research.h1_point_in_time import H1Strategy, canonical_hash
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
-class CodexACompletionArtifactConflictError(RuntimeError):
+class H1ResearchCompletionArtifactConflictError(RuntimeError):
     """Raised when a terminal index conflicts with or no longer matches its sealed hash."""
 
 
 @dataclass(frozen=True)
-class CodexACompletionArtifactIndex:
+class H1ResearchCompletionArtifactIndex:
     completion_hash: str
     capability_hash: str
     label_batch_hash: str
@@ -47,35 +47,35 @@ class CodexACompletionArtifactIndex:
             sorted(self.residual_terminal_hashes, key=lambda item: ("today", "tomorrow", "d25").index(item[0]))
         )
         if tuple(item[0] for item in residuals) != ("today", "tomorrow", "d25"):
-            raise ValueError("CodexA terminal index requires every strategy")
+            raise ValueError("H1 research terminal index requires every strategy")
         if any(_SHA256.fullmatch(item[1]) is None for item in residuals):
-            raise ValueError("CodexA residual terminal hash is invalid")
+            raise ValueError("H1 research residual terminal hash is invalid")
         if self.status != "historical_data_insufficient":
-            raise ValueError("CodexA terminal index status is invalid")
+            raise ValueError("H1 research terminal index status is invalid")
         if self.terminal_holdout_opened or self.production_authority or self.automatic_model_update:
-            raise ValueError("CodexA terminal index cannot open holdout or authorize runtime changes")
+            raise ValueError("H1 research terminal index cannot open holdout or authorize runtime changes")
         if self.schema_version != "h1_terminal_index":
-            raise ValueError("CodexA terminal index schema is invalid")
+            raise ValueError("H1 research terminal index schema is invalid")
         object.__setattr__(self, "residual_terminal_hashes", residuals)
         object.__setattr__(self, "content_hash", canonical_hash(self))
 
 
-class CodexACompletionArtifactStore:
+class H1ResearchCompletionArtifactStore:
     def __init__(self, root: Path) -> None:
         self._root = root
-        self._path = root / "codex_a_h1_terminal.json"
+        self._path = root / "h1_research_terminal.json"
 
-    def write(self, completion: CodexAResearchCompletion) -> CodexACompletionArtifactIndex:
+    def write(self, completion: H1ResearchCompletion) -> H1ResearchCompletionArtifactIndex:
         index = _index(completion)
         self._root.mkdir(parents=True, exist_ok=True)
         if self._path.exists():
             existing = self.verify()
             if existing.content_hash != index.content_hash:
-                raise CodexACompletionArtifactConflictError("CodexA terminal artifact identity conflict")
+                raise H1ResearchCompletionArtifactConflictError("H1 research terminal artifact identity conflict")
             return existing
         payload = _encode(index)
         payload["content_hash"] = index.content_hash
-        descriptor, temporary_name = tempfile.mkstemp(prefix=".codex-a-h1.", suffix=".tmp", dir=self._root)
+        descriptor, temporary_name = tempfile.mkstemp(prefix=".h1-research-terminal.", suffix=".tmp", dir=self._root)
         temporary = Path(temporary_name)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
@@ -87,31 +87,35 @@ class CodexACompletionArtifactStore:
             except FileExistsError:
                 existing = self.verify()
                 if existing.content_hash != index.content_hash:
-                    raise CodexACompletionArtifactConflictError("CodexA terminal artifact identity conflict") from None
+                    raise H1ResearchCompletionArtifactConflictError(
+                        "H1 research terminal artifact identity conflict"
+                    ) from None
                 return existing
         finally:
             temporary.unlink(missing_ok=True)
         return self.verify()
 
-    def verify(self) -> CodexACompletionArtifactIndex:
+    def verify(self) -> H1ResearchCompletionArtifactIndex:
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict) or any(not isinstance(key, str) for key in raw):
-                raise TypeError("CodexA terminal artifact is not an object")
+                raise TypeError("H1 research terminal artifact is not an object")
             payload = cast(dict[str, object], raw)
             stored_hash = payload.pop("content_hash")
             if not isinstance(stored_hash, str) or canonical_hash(payload) != stored_hash:
-                raise ValueError("CodexA terminal artifact hash mismatch")
+                raise ValueError("H1 research terminal artifact hash mismatch")
             index = _decode(payload)
             if index.content_hash != stored_hash:
-                raise ValueError("CodexA terminal artifact reconstructed hash mismatch")
+                raise ValueError("H1 research terminal artifact reconstructed hash mismatch")
             return index
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise CodexACompletionArtifactConflictError("CodexA terminal artifact schema or hash is invalid") from exc
+            raise H1ResearchCompletionArtifactConflictError(
+                "H1 research terminal artifact schema or hash is invalid"
+            ) from exc
 
 
-def _index(completion: CodexAResearchCompletion) -> CodexACompletionArtifactIndex:
-    return CodexACompletionArtifactIndex(
+def _index(completion: H1ResearchCompletion) -> H1ResearchCompletionArtifactIndex:
+    return H1ResearchCompletionArtifactIndex(
         completion_hash=completion.content_hash,
         capability_hash=completion.capability_hash,
         label_batch_hash=completion.labels.content_hash,
@@ -120,7 +124,7 @@ def _index(completion: CodexAResearchCompletion) -> CodexACompletionArtifactInde
     )
 
 
-def _encode(index: CodexACompletionArtifactIndex) -> dict[str, object]:
+def _encode(index: H1ResearchCompletionArtifactIndex) -> dict[str, object]:
     return {
         "completion_hash": index.completion_hash,
         "capability_hash": index.capability_hash,
@@ -135,7 +139,7 @@ def _encode(index: CodexACompletionArtifactIndex) -> dict[str, object]:
     }
 
 
-def _decode(raw: dict[str, object]) -> CodexACompletionArtifactIndex:
+def _decode(raw: dict[str, object]) -> H1ResearchCompletionArtifactIndex:
     expected = {
         "completion_hash",
         "capability_hash",
@@ -149,16 +153,16 @@ def _decode(raw: dict[str, object]) -> CodexACompletionArtifactIndex:
         "schema_version",
     }
     if set(raw) != expected:
-        raise ValueError("CodexA terminal artifact fields are invalid")
+        raise ValueError("H1 research terminal artifact fields are invalid")
     residuals = raw["residual_terminal_hashes"]
     if not isinstance(residuals, list):
-        raise TypeError("CodexA residual terminal references are invalid")
+        raise TypeError("H1 research residual terminal references are invalid")
     values: list[tuple[H1Strategy, str]] = []
     for item in residuals:
         if not isinstance(item, list) or len(item) != 2 or not all(isinstance(value, str) for value in item):
-            raise TypeError("CodexA residual terminal reference is invalid")
+            raise TypeError("H1 research residual terminal reference is invalid")
         values.append((cast(H1Strategy, item[0]), cast(str, item[1])))
-    return CodexACompletionArtifactIndex(
+    return H1ResearchCompletionArtifactIndex(
         completion_hash=_string(raw["completion_hash"]),
         capability_hash=_string(raw["capability_hash"]),
         label_batch_hash=_string(raw["label_batch_hash"]),
@@ -174,23 +178,23 @@ def _decode(raw: dict[str, object]) -> CodexACompletionArtifactIndex:
 
 def _hash(value: str) -> None:
     if _SHA256.fullmatch(value) is None:
-        raise ValueError("CodexA terminal hash is invalid")
+        raise ValueError("H1 research terminal hash is invalid")
 
 
 def _string(value: object) -> str:
     if not isinstance(value, str):
-        raise TypeError("CodexA terminal string field is invalid")
+        raise TypeError("H1 research terminal string field is invalid")
     return value
 
 
 def _bool(value: object) -> bool:
     if not isinstance(value, bool):
-        raise TypeError("CodexA terminal boolean field is invalid")
+        raise TypeError("H1 research terminal boolean field is invalid")
     return value
 
 
 __all__ = [
-    "CodexACompletionArtifactConflictError",
-    "CodexACompletionArtifactIndex",
-    "CodexACompletionArtifactStore",
+    "H1ResearchCompletionArtifactConflictError",
+    "H1ResearchCompletionArtifactIndex",
+    "H1ResearchCompletionArtifactStore",
 ]
