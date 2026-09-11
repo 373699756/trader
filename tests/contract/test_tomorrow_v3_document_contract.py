@@ -97,7 +97,7 @@ def test_trained_v3_profile_loads_only_the_active_hash_bound_group() -> None:
     assert "tomorrow-v3" in locator
     assert "active-bundle.json" in store
     assert "model.json" in store
-    assert "内容和父身份全部有效" in strategy
+    assert "active snapshot 和来源身份全部有效" in strategy
     assert "active-bundle.json" in design
     assert "三者必须共享" in design
     assert "15:00_close_proxy" in design
@@ -107,7 +107,7 @@ def test_trained_v3_profile_loads_only_the_active_hash_bound_group() -> None:
 def test_v3_training_owns_one_active_archive_and_disk_backed_sample_source() -> None:
     training = (ROOT / "src/trader/infra/scoring/profiles/v3/training.py").read_text(encoding="utf-8")
 
-    assert "BaoStockActiveTrainingInputArchive.open" in training
+    assert "SQLiteHistoryTrainingInputArchive.open" in training
     assert "BaoStockTrainingTrainingInputArchive" not in training
     assert "V3SampleStore" in training
     assert "defaultdict" not in training

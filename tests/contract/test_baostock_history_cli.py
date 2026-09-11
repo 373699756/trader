@@ -108,9 +108,18 @@ def test_train_tomorrow_uses_the_project_data_roots() -> None:
     assert _train_data_root() == root / "data" / "train"
 
 
-def test_train_tomorrow_can_reuse_an_explicit_download_history_root() -> None:
-    args = build_parser().parse_args(["train-tomorrow", "--runtime-dir", "/tmp/trader-baostock"])
+def test_train_tomorrow_is_a_zero_argument_command() -> None:
+    args = build_parser().parse_args(["train-tomorrow"])
 
     assert args.command == "train-tomorrow"
-    assert args.runtime_dir == Path("/tmp/trader-baostock")
+    assert not hasattr(args, "runtime_dir")
     assert not hasattr(args, "allow_partial_history")
+
+
+def test_train_tomorrow_rejects_an_explicit_history_root_during_parsing(tmp_path: Path) -> None:
+    history = tmp_path / "must-not-be-used"
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["train-tomorrow", "--runtime-dir", str(history)])
+
+    assert not history.exists()

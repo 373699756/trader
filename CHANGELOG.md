@@ -7,4 +7,4 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
-- [2026-09-11 delivery-log archive](docs/changelog/2026-09-11-delivery-log-archive.md)
+- [Tomorrow training cadence](docs/changelog/2026-09-11-tomorrow-training-cadence.md)

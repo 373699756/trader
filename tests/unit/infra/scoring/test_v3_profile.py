@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from importlib import resources
 from pathlib import Path
 
@@ -44,8 +45,8 @@ def _document() -> dict[str, object]:
         },
         "training_input_scope": "complete_manifest",
         "training_input_hash": "a" * 64,
-        "parent_manifest_hash": "1" * 64,
-        "increment_manifest_hash": "2" * 64,
+        "label_cutoff": "2026-09-08",
+        "source_identity_hash": "1" * 64,
         "training_input_document_hash": "3" * 64,
         "training_input_codes": 100,
         "training_universe_codes": 100,
@@ -105,8 +106,8 @@ def _report(document: dict[str, object]) -> dict[str, object]:
         "model_id": document["model_id"],
         "training_input_scope": document["training_input_scope"],
         "training_input_hash": document["training_input_hash"],
-        "parent_manifest_hash": document["parent_manifest_hash"],
-        "increment_manifest_hash": document["increment_manifest_hash"],
+        "label_cutoff": document["label_cutoff"],
+        "source_identity_hash": document["source_identity_hash"],
         "training_input_document_hash": document["training_input_document_hash"],
         "training_input_codes": document["training_input_codes"],
         "training_universe_codes": document["training_universe_codes"],
@@ -154,8 +155,8 @@ def _training_input(document: dict[str, object]) -> dict[str, object]:
         "schema_version": "tomorrow_training_input",
         "training_input_scope": "complete_manifest",
         "training_input_hash": document["training_input_hash"],
-        "parent_manifest_hash": document["parent_manifest_hash"],
-        "increment_manifest_hash": document["increment_manifest_hash"],
+        "label_cutoff": document["label_cutoff"],
+        "source_identity_hash": document["source_identity_hash"],
         "calendar_hash": "4" * 64,
         "source_cutoff": "2026-09-09",
         "requested_sessions": 2000,
@@ -182,8 +183,8 @@ def test_v3_locator_uses_only_the_atomically_selected_generation(tmp_path: Path)
         staging,
         tmp_path / "tomorrow-v3",
         training_input_hash="a" * 64,
-        parent_manifest_hash="1" * 64,
-        increment_manifest_hash="2" * 64,
+        source_identity_hash="1" * 64,
+        label_cutoff=date(2026, 9, 8),
     )
 
     assert locate_latest_bundle(tmp_path) == selected
@@ -194,8 +195,8 @@ def test_v3_locator_uses_only_the_atomically_selected_generation(tmp_path: Path)
         repeated_staging,
         tmp_path / "tomorrow-v3",
         training_input_hash="a" * 64,
-        parent_manifest_hash="1" * 64,
-        increment_manifest_hash="2" * 64,
+        source_identity_hash="1" * 64,
+        label_cutoff=date(2026, 9, 8),
     )
     assert repeated == selected
 
@@ -212,14 +213,14 @@ def test_v3_failed_staging_validation_preserves_the_previous_active_group(tmp_pa
         first_staging,
         tmp_path / "tomorrow-v3",
         training_input_hash="a" * 64,
-        parent_manifest_hash="1" * 64,
-        increment_manifest_hash="2" * 64,
+        source_identity_hash="1" * 64,
+        label_cutoff=date(2026, 9, 8),
     )
     pointer_before = (tmp_path / "tomorrow-v3/active-bundle.json").read_bytes()
     broken_staging = tmp_path / "broken-staging"
     _write_bundle(broken_staging / "model.json", _document())
     training_input = json.loads((broken_staging / "training-input.json").read_text(encoding="utf-8"))
-    training_input["parent_manifest_hash"] = "f" * 64
+    training_input["source_identity_hash"] = "f" * 64
     (broken_staging / "training-input.json").write_text(json.dumps(training_input), encoding="utf-8")
 
     with pytest.raises(ValueError, match="training input"):
@@ -227,8 +228,8 @@ def test_v3_failed_staging_validation_preserves_the_previous_active_group(tmp_pa
             broken_staging,
             tmp_path / "tomorrow-v3",
             training_input_hash="a" * 64,
-            parent_manifest_hash="1" * 64,
-            increment_manifest_hash="2" * 64,
+            source_identity_hash="1" * 64,
+            label_cutoff=date(2026, 9, 8),
         )
 
     assert locate_latest_bundle(tmp_path) == first
@@ -244,8 +245,8 @@ def test_v3_codec_profile_and_predictor_preserve_the_complete_contract(tmp_path:
         staging,
         tmp_path / "tomorrow-v3",
         training_input_hash="a" * 64,
-        parent_manifest_hash="1" * 64,
-        increment_manifest_hash="2" * 64,
+        source_identity_hash="1" * 64,
+        label_cutoff=date(2026, 9, 8),
     )
 
     artifact = load_tomorrow_bundle(path)
@@ -255,6 +256,9 @@ def test_v3_codec_profile_and_predictor_preserve_the_complete_contract(tmp_path:
     row = ModelInput("600000", (0.01, 0.02, 0.03, 0.01, -0.02, 0.03), "银行")
 
     assert artifact.content_hash == document["content_hash"]
+    assert artifact.label_cutoff.isoformat() == "2026-09-08"
+    pointer = json.loads((tmp_path / "tomorrow-v3/active-bundle.json").read_text(encoding="utf-8"))
+    assert pointer["label_cutoff"] == "2026-09-08"
     assert predictor.predict((row,)) == predictor.predict((row,))
     assert predictor.industry_ids == ("银行",)
     assert predictor.exposure_contract.requires_industry is True
@@ -293,6 +297,7 @@ def test_partial_checkpoint_v3_profile_is_rejected_by_the_active_archive_contrac
         ("feature_units", "feature contract"),
         ("exposure_contract", "exposure contract"),
         ("ensemble_weights", "ensemble weights"),
+        ("label_cutoff", "fields"),
     ),
 )
 def test_v3_codec_rejects_old_or_incomplete_contracts(field: str, message: str) -> None:
@@ -370,13 +375,35 @@ def test_v3_loader_rejects_a_missing_or_mismatched_training_input(tmp_path: Path
 
     _write_bundle(model, _document())
     training_input = json.loads(model.with_name("training-input.json").read_text(encoding="utf-8"))
-    training_input["increment_manifest_hash"] = "f" * 64
+    training_input["source_identity_hash"] = "f" * 64
     training_input["content_hash"] = artifact_content_hash(
         {key: value for key, value in training_input.items() if key != "content_hash"}
     )
     model.with_name("training-input.json").write_text(json.dumps(training_input), encoding="utf-8")
     with pytest.raises(ValueError, match="group"):
         load_tomorrow_bundle(model)
+
+
+def test_v3_locator_rejects_a_pointer_with_a_different_label_cutoff(tmp_path: Path) -> None:
+    staging = tmp_path / "staging"
+    _write_bundle(staging / "model.json", _document())
+    publish_tomorrow_bundle(
+        staging,
+        tmp_path / "tomorrow-v3",
+        training_input_hash="a" * 64,
+        source_identity_hash="1" * 64,
+        label_cutoff=date(2026, 9, 8),
+    )
+    pointer_path = tmp_path / "tomorrow-v3/active-bundle.json"
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    pointer["label_cutoff"] = "2026-09-07"
+    pointer["content_hash"] = artifact_content_hash(
+        {key: value for key, value in pointer.items() if key != "content_hash"}
+    )
+    pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="does not match"):
+        locate_latest_bundle(tmp_path)
 
 
 def test_v3_predictor_rejects_uncovered_industry() -> None:

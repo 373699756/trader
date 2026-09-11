@@ -24,7 +24,7 @@ usage() {
     "  ./run.sh download_history        零参数历史维护" \
     "  ./run.sh train-tomorrow          从完整 manifest 运行 Tomorrow 训练" \
     "" \
-    "看板和 check 可追加 --profile v1|v2|v3；download_history 不接受评分档位。" \
+    "看板和 check 可追加 --profile v1|v2|v3；两个离线命令均为零参数。" \
     "" \
     "高级配置（一般无需设置）:" \
     "  TRADER_CONFIG=/absolute/path/runtime.json" \
@@ -80,8 +80,8 @@ if [[ "$SCORING_PROFILE" != "v1" && "$SCORING_PROFILE" != "v2" && "$SCORING_PROF
   exit 2
 fi
 
-if [[ "$MODE" == "download_history" ]] && ((SCORING_PROFILE_SET || ${#FORWARD_ARGS[@]})); then
-  printf '%s\n' 'download_history 不接受任何参数；请只运行 ./run.sh download_history。' >&2
+if [[ "$MODE" == "download_history" || "$MODE" == "train-tomorrow" ]] && ((SCORING_PROFILE_SET || ${#FORWARD_ARGS[@]})); then
+  printf '%s\n' "$MODE 不接受任何参数；请只运行 ./run.sh $MODE。" >&2
   exit 2
 fi
 
@@ -149,5 +149,8 @@ if [[ "$COMMAND_KIND" == "server" ]]; then
 fi
 if [[ "$MODE" == "download_history" ]]; then
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" download_history
+fi
+if [[ "$MODE" == "train-tomorrow" ]]; then
+  exec "$ENTRYPOINT" --config "$CONFIG_PATH" train-tomorrow
 fi
 exec "$ENTRYPOINT" --config "$CONFIG_PATH" --profile "$SCORING_PROFILE" "$MODE" "${FORWARD_ARGS[@]}"

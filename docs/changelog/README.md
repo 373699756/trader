@@ -12,5 +12,6 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Tomorrow training cadence](2026-09-11-tomorrow-training-cadence.md)
 - [2026-09-11 delivery-log archive](2026-09-11-delivery-log-archive.md)
 - [Legacy delivery history through 2026-09-10](archive/legacy-through-2026-09-10.md)

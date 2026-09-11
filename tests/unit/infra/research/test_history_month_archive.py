@@ -105,6 +105,11 @@ def test_archive_routes_single_day_code_window_cross_month_and_training_cache(tm
         cache.write_revisions((replace(rows[0], first_seen_sequence=2, is_st=True),))
     with pytest.raises(HistoryTrainingCacheError, match="identity conflicts"):
         SQLiteHistoryTrainingCache(tmp_path / "training.sqlite3", "d" * 64).initialize()
+    advanced = cache.advance_snapshot("d" * 64, (dates[0], dates[1]))
+    assert advanced.read_date(dates[0]) == ()
+    assert len(tuple(advanced.iter_code("600001"))) == 60
+    with pytest.raises(HistoryTrainingCacheError, match="identity conflicts"):
+        cache.read_date(dates[2])
 
 
 def test_archive_reads_2000_sessions_without_directory_scan_or_unbounded_windows(tmp_path: Path) -> None:

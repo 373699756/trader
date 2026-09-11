@@ -17,6 +17,7 @@ from trader.domain.research.history_control import (
     HistorySyncCheckpoint,
     HistoryTrainingDueState,
     HistoryUniverseIdentity,
+    calculate_history_training_cache_invalidation_dates,
     calculate_history_training_due,
 )
 
@@ -217,6 +218,16 @@ def test_training_due_prefers_revision_and_does_not_advance_on_incomplete_data()
     assert incomplete.reason == "data_incomplete"
     assert incomplete.matured_label_days_since_training == 0
 
+    ahead = calculate_history_training_due(
+        due_identity="due-ahead",
+        baseline_label_cutoff=dates[-1],
+        current_label_cutoff=dates[-2],
+        calendar_dates=dates,
+        input_revision=False,
+        observed_at=NOW,
+    )
+    assert ahead.reason == "data_incomplete"
+
 
 def test_training_due_requires_initial_training_without_a_bundle_baseline() -> None:
     dates = (date(2026, 9, 8), date(2026, 9, 9))
@@ -231,3 +242,11 @@ def test_training_due_requires_initial_training_without_a_bundle_baseline() -> N
 
     assert state.reason == "initial_training_required"
     assert state.training_due is True
+
+
+def test_training_revision_invalidates_t1_label_and_sixty_feature_dependants() -> None:
+    dates = tuple(date(2026, 1, 1) + timedelta(days=index) for index in range(80))
+
+    invalidated = calculate_history_training_cache_invalidation_dates(dates, (dates[10], dates[30]))
+
+    assert invalidated == dates[9:]

@@ -27,8 +27,8 @@ _DOCUMENT_FIELDS = {
     "exposure_contract",
     "training_input_scope",
     "training_input_hash",
-    "parent_manifest_hash",
-    "increment_manifest_hash",
+    "label_cutoff",
+    "source_identity_hash",
     "training_input_document_hash",
     "training_input_codes",
     "training_universe_codes",
@@ -60,8 +60,8 @@ _REPORT_FIELDS = {
     "model_id",
     "training_input_scope",
     "training_input_hash",
-    "parent_manifest_hash",
-    "increment_manifest_hash",
+    "label_cutoff",
+    "source_identity_hash",
     "training_input_document_hash",
     "training_input_codes",
     "training_universe_codes",
@@ -90,8 +90,8 @@ _TRAINING_INPUT_FIELDS = {
     "schema_version",
     "training_input_scope",
     "training_input_hash",
-    "parent_manifest_hash",
-    "increment_manifest_hash",
+    "label_cutoff",
+    "source_identity_hash",
     "calendar_hash",
     "source_cutoff",
     "requested_sessions",
@@ -146,8 +146,8 @@ class V3TomorrowBundleArtifact:
     lightgbm_weight: float
     training_input_scope: Literal["complete_manifest"]
     training_input_hash: str
-    parent_manifest_hash: str
-    increment_manifest_hash: str
+    label_cutoff: date
+    source_identity_hash: str
     training_input_document_hash: str
     training_input_codes: int
     training_universe_codes: int
@@ -187,8 +187,8 @@ class _V3TrainingReportArtifact:
     content_hash: str
     training_input_scope: Literal["complete_manifest"]
     training_input_hash: str
-    parent_manifest_hash: str
-    increment_manifest_hash: str
+    label_cutoff: date
+    source_identity_hash: str
     training_input_document_hash: str
     training_input_codes: int
     training_universe_codes: int
@@ -208,8 +208,8 @@ class _V3TrainingInputArtifact:
     content_hash: str
     training_input_scope: Literal["complete_manifest"]
     training_input_hash: str
-    parent_manifest_hash: str
-    increment_manifest_hash: str
+    label_cutoff: date
+    source_identity_hash: str
     feature_manifest_hash: str
     source_commit: str
     training_contract_hash: str
@@ -247,8 +247,8 @@ def decode_tomorrow_bundle(document: object) -> V3TomorrowBundleArtifact:
         contract.lightgbm_weight,
         _training_input_scope(payload),
         _text(payload, "training_input_hash"),
-        _text(payload, "parent_manifest_hash"),
-        _text(payload, "increment_manifest_hash"),
+        _date(payload, "label_cutoff"),
+        _text(payload, "source_identity_hash"),
         _text(payload, "training_input_document_hash"),
         _integer(payload, "training_input_codes"),
         _integer(payload, "training_universe_codes"),
@@ -302,8 +302,7 @@ def _decode_contract(
         or feature_units != _FEATURE_UNITS
         or exposure_contract != V3_EXPOSURE_CONTRACT
         or not _sha256_text(payload, "training_input_hash")
-        or not _sha256_text(payload, "parent_manifest_hash")
-        or not _sha256_text(payload, "increment_manifest_hash")
+        or not _sha256_text(payload, "source_identity_hash")
         or not _sha256_text(payload, "training_input_document_hash")
         or not _sha256_text(payload, "split_hash")
         or not _sha256_text(payload, "report_hash")
@@ -358,8 +357,7 @@ def _decode_training_report(document: object) -> _V3TrainingReportArtifact:
         _text(payload, "schema_version") != "tomorrow_training_report"
         or _text(payload, "model_id") != _MODEL_ID
         or not _sha256_text(payload, "training_input_hash")
-        or not _sha256_text(payload, "parent_manifest_hash")
-        or not _sha256_text(payload, "increment_manifest_hash")
+        or not _sha256_text(payload, "source_identity_hash")
         or not _sha256_text(payload, "training_input_document_hash")
         or _text(payload, "feature_manifest_hash") != _FEATURE_MANIFEST_HASH
         or not _sha256_text(payload, "split_hash")
@@ -389,8 +387,8 @@ def _decode_training_report(document: object) -> _V3TrainingReportArtifact:
         stored_hash,
         _training_input_scope(payload),
         _text(payload, "training_input_hash"),
-        _text(payload, "parent_manifest_hash"),
-        _text(payload, "increment_manifest_hash"),
+        _date(payload, "label_cutoff"),
+        _text(payload, "source_identity_hash"),
         _text(payload, "training_input_document_hash"),
         _integer(payload, "training_input_codes"),
         _integer(payload, "training_universe_codes"),
@@ -419,8 +417,7 @@ def _decode_training_input(document: object) -> _V3TrainingInputArtifact:
         or _text(payload, "schema_version") != "tomorrow_training_input"
         or _training_input_scope(payload) != "complete_manifest"
         or not _sha256_text(payload, "training_input_hash")
-        or not _sha256_text(payload, "parent_manifest_hash")
-        or not _sha256_text(payload, "increment_manifest_hash")
+        or not _sha256_text(payload, "source_identity_hash")
         or not _sha256_text(payload, "calendar_hash")
         or not _sha256_text(payload, "input_descriptor_hash")
         or _text(payload, "feature_manifest_hash") != _FEATURE_MANIFEST_HASH
@@ -437,16 +434,16 @@ def _decode_training_input(document: object) -> _V3TrainingInputArtifact:
         or len(codes) != _integer(payload, "training_universe_codes")
     ):
         raise ValueError("Tomorrow V3 training input identity is invalid")
-    try:
-        date.fromisoformat(_text(payload, "source_cutoff"))
-    except ValueError as exc:
-        raise ValueError("Tomorrow V3 training input source cutoff is invalid") from exc
+    source_cutoff = _date(payload, "source_cutoff")
+    label_cutoff = _date(payload, "label_cutoff")
+    if label_cutoff >= source_cutoff:
+        raise ValueError("Tomorrow V3 training input label cutoff is invalid")
     return _V3TrainingInputArtifact(
         stored_hash,
         "complete_manifest",
         _text(payload, "training_input_hash"),
-        _text(payload, "parent_manifest_hash"),
-        _text(payload, "increment_manifest_hash"),
+        label_cutoff,
+        _text(payload, "source_identity_hash"),
         _text(payload, "feature_manifest_hash"),
         _text(payload, "source_commit"),
         _text(payload, "training_contract_hash"),
@@ -463,8 +460,8 @@ def _validate_bundle_group(
     model_values = (
         artifact.training_input_scope,
         artifact.training_input_hash,
-        artifact.parent_manifest_hash,
-        artifact.increment_manifest_hash,
+        artifact.label_cutoff,
+        artifact.source_identity_hash,
         artifact.training_input_document_hash,
         artifact.training_input_codes,
         artifact.training_universe_codes,
@@ -481,8 +478,8 @@ def _validate_bundle_group(
     report_values = (
         report.training_input_scope,
         report.training_input_hash,
-        report.parent_manifest_hash,
-        report.increment_manifest_hash,
+        report.label_cutoff,
+        report.source_identity_hash,
         report.training_input_document_hash,
         report.training_input_codes,
         report.training_universe_codes,
@@ -499,8 +496,8 @@ def _validate_bundle_group(
     input_values = (
         training_input.training_input_scope,
         training_input.training_input_hash,
-        training_input.parent_manifest_hash,
-        training_input.increment_manifest_hash,
+        training_input.label_cutoff,
+        training_input.source_identity_hash,
         training_input.feature_manifest_hash,
         training_input.source_commit,
         training_input.training_contract_hash,
@@ -510,8 +507,8 @@ def _validate_bundle_group(
     group_values = (
         artifact.training_input_scope,
         artifact.training_input_hash,
-        artifact.parent_manifest_hash,
-        artifact.increment_manifest_hash,
+        artifact.label_cutoff,
+        artifact.source_identity_hash,
         artifact.feature_manifest_hash,
         artifact.source_commit,
         artifact.training_contract_hash,
@@ -535,6 +532,13 @@ def _model_payload_hash(payload: dict[str, object]) -> str:
 def _source_commit(payload: dict[str, object]) -> bool:
     value = _text(payload, "source_commit")
     return len(value) == 40 and all(character in "0123456789abcdef" for character in value)
+
+
+def _date(payload: dict[str, object], name: str) -> date:
+    try:
+        return date.fromisoformat(_text(payload, name))
+    except ValueError as exc:
+        raise ValueError(f"Tomorrow V3 {name.replace('_', ' ')} is invalid") from exc
 
 
 def _proxy_failure_reasons(payload: dict[str, object]) -> bool:

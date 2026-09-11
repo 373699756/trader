@@ -10,7 +10,7 @@ import re
 import shutil
 import tempfile
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from importlib.metadata import version
 from pathlib import Path
@@ -33,13 +33,18 @@ from trader.domain.market.feature_contracts import (
 )
 from trader.domain.recommendation.model_scoring import V3_EXPOSURE_CONTRACT, residualize_exposure
 from trader.domain.research.baostock_daily import BaoStockTrainingRow, BaoStockTrainingSplit
+from trader.domain.research.history_control import HistoryTrainingDueReason, HistoryTrainingDueState
 from trader.domain.research.tomorrow_training_input import evaluate_tomorrow_training_input
 from trader.domain.research.tomorrow_training_input import FrozenDailyInputDescriptor
-from trader.infra.research.baostock_active_training import BaoStockActiveTrainingInputSnapshot
 from trader.infra.research.history_training_due import evaluate_history_training_due
 from trader.infra.research.history_training_input import (
     HistoryTrainingInputError,
+    HistoryTrainingInputSnapshot,
     SQLiteHistoryTrainingInputArchive,
+)
+from trader.infra.research.history_control_repository import (
+    HistoryMaintenanceAlreadyRunningError,
+    HistoryMaintenanceLock,
 )
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
 from trader.infra.scoring.profiles.v3.bundle_store import (
@@ -51,26 +56,25 @@ from trader.infra.scoring.profiles.v3.sample_store import V3SampleStore, V3Store
 _MODEL_ID = "industry_ridge_lightgbm"
 _SOURCE_COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
+TomorrowTrainingStatus = Literal["blocked", "rejected", "engineering_ready", "already_current", "not_due"]
 
 
 class _TrainingInputArchive(Protocol):
-    snapshot: BaoStockActiveTrainingInputSnapshot
+    snapshot: HistoryTrainingInputSnapshot
 
-    def describe_frozen_daily_input(self) -> FrozenDailyInputDescriptor:
-        ...
+    def describe_frozen_daily_input(self) -> FrozenDailyInputDescriptor: ...
 
     def read_training_rows(
         self,
         code: str,
         *,
         allowed_dates: frozenset[date],
-    ) -> tuple[BaoStockTrainingRow, ...]:
-        ...
+    ) -> tuple[BaoStockTrainingRow, ...]: ...
 
 
 @dataclass(frozen=True)
 class TomorrowTrainingResult:
-    status: str
+    status: TomorrowTrainingStatus
     training_input_scope: Literal["unavailable", "complete_manifest"]
     run_id: str | None
     training_input_hash: str
@@ -82,14 +86,19 @@ class TomorrowTrainingResult:
     training_rows: int
     validation_rows: int
     failure_reasons: tuple[str, ...]
+    label_cutoff: date | None = None
+    matured_label_days_since_training: int = 0
+    training_due: bool = False
+    training_due_reason: HistoryTrainingDueReason = "data_incomplete"
+    invalidated_cache_dates: tuple[date, ...] = ()
 
 
 @dataclass(frozen=True)
 class _TrainingArtifactContext:
     training_input_scope: Literal["complete_manifest"]
     training_input_hash: str
-    parent_manifest_hash: str
-    increment_manifest_hash: str
+    label_cutoff: date
+    source_identity_hash: str
     training_input_document_hash: str
     training_input_codes: int
     training_universe_codes: int
@@ -112,6 +121,46 @@ def run_tomorrow_training(
         archive = SQLiteHistoryTrainingInputArchive.open(history_root)
     except (HistoryTrainingInputError, OSError, ValueError) as exc:
         return TomorrowTrainingResult("blocked", "unavailable", None, "", 0, 0, "", "", 0, 0, 0, (_reason(exc),))
+    try:
+        with HistoryMaintenanceLock(archive.archive_root / ".maintenance.lock"):
+            return _run_tomorrow_training_locked(
+                history_root,
+                train_root,
+                progress=progress,
+                source_commit=source_commit,
+                observed_at=observed_at,
+            )
+    except HistoryMaintenanceAlreadyRunningError:
+        snapshot = archive.snapshot
+        return TomorrowTrainingResult(
+            "blocked",
+            snapshot.input_scope,
+            None,
+            snapshot.active_snapshot_hash,
+            len(snapshot.training_codes),
+            snapshot.universe_count,
+            "",
+            "",
+            0,
+            0,
+            0,
+            ("history_maintenance_running",),
+            label_cutoff=snapshot.label_cutoff,
+        )
+
+
+def _run_tomorrow_training_locked(
+    history_root: Path,
+    train_root: Path,
+    *,
+    progress: TomorrowTrainingProgressPort | None = None,
+    source_commit: str = "",
+    observed_at: datetime | None = None,
+) -> TomorrowTrainingResult:
+    try:
+        archive = SQLiteHistoryTrainingInputArchive.open(history_root)
+    except (HistoryTrainingInputError, OSError, ValueError) as exc:
+        return TomorrowTrainingResult("blocked", "unavailable", None, "", 0, 0, "", "", 0, 0, 0, (_reason(exc),))
     snapshot = archive.snapshot
     due = evaluate_history_training_due(
         archive.archive_root,
@@ -123,7 +172,7 @@ def run_tomorrow_training(
             "blocked",
             snapshot.input_scope,
             None,
-            snapshot.input_hash,
+            snapshot.active_snapshot_hash,
             len(snapshot.training_codes),
             snapshot.universe_count,
             "",
@@ -133,67 +182,93 @@ def run_tomorrow_training(
             0,
             ("history_manifest_unavailable",),
         )
+    label_cutoff = due.state.current_label_cutoff
+    invalidated_dates = due.invalidated_cache_dates
     if due.state.reason == "data_incomplete":
-        return TomorrowTrainingResult(
-            "blocked",
-            snapshot.input_scope,
-            None,
-            snapshot.input_hash,
-            len(snapshot.training_codes),
-            snapshot.universe_count,
-            "",
-            "",
-            0,
-            0,
-            0,
-            ("history_training_data_incomplete",),
+        return _with_due(
+            TomorrowTrainingResult(
+                "blocked",
+                snapshot.input_scope,
+                None,
+                snapshot.active_snapshot_hash,
+                len(snapshot.training_codes),
+                snapshot.universe_count,
+                "",
+                "",
+                0,
+                0,
+                0,
+                ("history_training_data_incomplete",),
+            ),
+            due.state,
+            invalidated_dates,
         )
     if not due.state.training_due:
-        return TomorrowTrainingResult(
-            "already_current" if due.bundle is not None else "not_due",
-            snapshot.input_scope,
-            None,
-            snapshot.input_hash,
-            len(snapshot.training_codes),
-            snapshot.universe_count,
-            "",
-            "",
-            0,
-            0,
-            0,
-            (),
+        is_current = (
+            due.bundle is not None
+            and due.bundle.training_input_hash == snapshot.active_snapshot_hash
+            and due.bundle.label_cutoff == label_cutoff
+        )
+        return _with_due(
+            TomorrowTrainingResult(
+                "already_current" if is_current else "not_due",
+                snapshot.input_scope,
+                None,
+                snapshot.active_snapshot_hash,
+                len(snapshot.training_codes),
+                snapshot.universe_count,
+                "",
+                "",
+                0,
+                0,
+                0,
+                (),
+            ),
+            due.state,
+            invalidated_dates,
         )
     compatibility = evaluate_tomorrow_training_input(
         archive.describe_frozen_daily_input(),
-        expected_manifest_hash=snapshot.input_hash,
+        expected_manifest_hash=snapshot.active_snapshot_hash,
         expected_source_cutoff=snapshot.source_cutoff,
     )
     preflight_reasons = list(compatibility.failure_reasons)
+    if label_cutoff is None:
+        preflight_reasons.append("label_outcome_incomplete")
     if _SOURCE_COMMIT.fullmatch(source_commit) is None:
         preflight_reasons.append("source_commit_unavailable")
     if preflight_reasons:
-        return TomorrowTrainingResult(
-            "blocked",
-            snapshot.input_scope,
-            None,
-            snapshot.input_hash,
-            len(snapshot.training_codes),
-            snapshot.universe_count,
-            "",
-            "",
-            0,
-            0,
-            0,
-            tuple(preflight_reasons),
+        return _with_due(
+            TomorrowTrainingResult(
+                "blocked",
+                snapshot.input_scope,
+                None,
+                snapshot.active_snapshot_hash,
+                len(snapshot.training_codes),
+                snapshot.universe_count,
+                "",
+                "",
+                0,
+                0,
+                0,
+                tuple(preflight_reasons),
+            ),
+            due.state,
+            invalidated_dates,
         )
-    _publish_progress(progress, "input_snapshot", len(snapshot.training_codes), len(snapshot.training_codes))
-    run_id = hashlib.sha256(f"{snapshot.input_hash}:tomorrow-v3".encode()).hexdigest()
     output = _training_output_directory(train_root)
+    _publish_progress(progress, "input_snapshot", len(snapshot.training_codes), len(snapshot.training_codes))
+    run_id = hashlib.sha256(f"{snapshot.active_snapshot_hash}:tomorrow-v3".encode()).hexdigest()
     staging: Path | None = None
     try:
-        split = _build_split(snapshot.calendar.open_dates, snapshot.input_hash)
-        training_contract_hash = _training_contract_hash(snapshot, split, source_commit)
-        training_input = _training_input_document(snapshot, source_commit, training_contract_hash)
+        split = _build_split(snapshot.calendar.open_dates, snapshot.active_snapshot_hash)
+        training_contract_hash = _training_contract_hash(snapshot, split, source_commit, cast(date, label_cutoff))
+        training_input = _training_input_document(
+            snapshot,
+            cast(date, label_cutoff),
+            source_commit,
+            training_contract_hash,
+        )
         training_input_hash = cast(str, training_input["content_hash"])
         window = TomorrowTrainingWindow(split)
         output.mkdir(parents=True, exist_ok=True)
@@ -201,27 +276,31 @@ def run_tomorrow_training(
             with V3SampleStore(Path(workspace) / "samples.sqlite3") as samples:
                 _build_samples(archive, snapshot.training_codes, window, samples, progress=progress)
                 if samples.count() == 0:
-                    return TomorrowTrainingResult(
-                        "blocked",
-                        snapshot.input_scope,
-                        run_id,
-                        snapshot.input_hash,
-                        len(snapshot.training_codes),
-                        snapshot.universe_count,
-                        "",
-                        "",
-                        0,
-                        0,
-                        0,
-                        ("v3_training_rows_empty",),
+                    return _with_due(
+                        TomorrowTrainingResult(
+                            "blocked",
+                            snapshot.input_scope,
+                            run_id,
+                            snapshot.active_snapshot_hash,
+                            len(snapshot.training_codes),
+                            snapshot.universe_count,
+                            "",
+                            "",
+                            0,
+                            0,
+                            0,
+                            ("v3_training_rows_empty",),
+                        ),
+                        due.state,
+                        invalidated_dates,
                     )
                 _publish_progress(progress, "model_fit", 0, len(snapshot.training_codes))
                 models, training_rows, validation_rows = _fit_models(samples, split)
         context = _TrainingArtifactContext(
             snapshot.input_scope,
-            snapshot.input_hash,
-            snapshot.parent_manifest_hash,
-            snapshot.increment_manifest_hash,
+            snapshot.active_snapshot_hash,
+            cast(date, label_cutoff),
+            snapshot.source_identity_hash,
             training_input_hash,
             len(snapshot.training_codes),
             snapshot.universe_count,
@@ -237,19 +316,23 @@ def run_tomorrow_training(
         report_hash = artifact_content_hash(report)
         report["content_hash"] = report_hash
         if not report["validation_passed"]:
-            return TomorrowTrainingResult(
-                "rejected",
-                snapshot.input_scope,
-                run_id,
-                snapshot.input_hash,
-                len(snapshot.training_codes),
-                snapshot.universe_count,
-                report_hash,
-                "",
-                len(models),
-                training_rows,
-                validation_rows,
-                tuple(cast(list[str], report["failure_reasons"])),
+            return _with_due(
+                TomorrowTrainingResult(
+                    "rejected",
+                    snapshot.input_scope,
+                    run_id,
+                    snapshot.active_snapshot_hash,
+                    len(snapshot.training_codes),
+                    snapshot.universe_count,
+                    report_hash,
+                    "",
+                    len(models),
+                    training_rows,
+                    validation_rows,
+                    tuple(cast(list[str], report["failure_reasons"])),
+                ),
+                due.state,
+                invalidated_dates,
             )
         model = _model_document(context, report_hash, models)
         model_hash = artifact_content_hash(model)
@@ -261,41 +344,48 @@ def run_tomorrow_training(
         publish_tomorrow_bundle(
             staging,
             output,
-            training_input_hash=snapshot.input_hash,
-            parent_manifest_hash=snapshot.parent_manifest_hash,
-            increment_manifest_hash=snapshot.increment_manifest_hash,
-            label_cutoff=snapshot.label_cutoff,
+            training_input_hash=snapshot.active_snapshot_hash,
+            source_identity_hash=snapshot.source_identity_hash,
+            label_cutoff=cast(date, label_cutoff),
         )
         staging = None
         _publish_progress(progress, "completed", len(snapshot.training_codes), len(snapshot.training_codes))
-        return TomorrowTrainingResult(
-            "engineering_ready",
-            snapshot.input_scope,
-            run_id,
-            snapshot.input_hash,
-            len(snapshot.training_codes),
-            snapshot.universe_count,
-            report_hash,
-            model_hash,
-            len(models),
-            training_rows,
-            validation_rows,
-            (),
+        return _after_success(
+            TomorrowTrainingResult(
+                "engineering_ready",
+                snapshot.input_scope,
+                run_id,
+                snapshot.active_snapshot_hash,
+                len(snapshot.training_codes),
+                snapshot.universe_count,
+                report_hash,
+                model_hash,
+                len(models),
+                training_rows,
+                validation_rows,
+                (),
+            ),
+            cast(date, label_cutoff),
+            invalidated_dates,
         )
     except (HistoryTrainingInputError, OSError, ValueError, RuntimeError) as exc:
-        return TomorrowTrainingResult(
-            "blocked",
-            snapshot.input_scope,
-            run_id,
-            snapshot.input_hash,
-            len(snapshot.training_codes),
-            snapshot.universe_count,
-            "",
-            "",
-            0,
-            0,
-            0,
-            (_reason(exc),),
+        return _with_due(
+            TomorrowTrainingResult(
+                "blocked",
+                snapshot.input_scope,
+                run_id,
+                snapshot.active_snapshot_hash,
+                len(snapshot.training_codes),
+                snapshot.universe_count,
+                "",
+                "",
+                0,
+                0,
+                0,
+                (_reason(exc),),
+            ),
+            due.state,
+            invalidated_dates,
         )
     finally:
         if staging is not None:
@@ -536,8 +626,8 @@ def _build_report(
         "model_id": _MODEL_ID,
         "training_input_scope": context.training_input_scope,
         "training_input_hash": context.training_input_hash,
-        "parent_manifest_hash": context.parent_manifest_hash,
-        "increment_manifest_hash": context.increment_manifest_hash,
+        "label_cutoff": context.label_cutoff.isoformat(),
+        "source_identity_hash": context.source_identity_hash,
         "training_input_document_hash": context.training_input_document_hash,
         "training_input_codes": context.training_input_codes,
         "training_universe_codes": context.training_universe_codes,
@@ -585,8 +675,8 @@ def _model_document(
         },
         "training_input_scope": context.training_input_scope,
         "training_input_hash": context.training_input_hash,
-        "parent_manifest_hash": context.parent_manifest_hash,
-        "increment_manifest_hash": context.increment_manifest_hash,
+        "label_cutoff": context.label_cutoff.isoformat(),
+        "source_identity_hash": context.source_identity_hash,
         "training_input_document_hash": context.training_input_document_hash,
         "training_input_codes": context.training_input_codes,
         "training_universe_codes": context.training_universe_codes,
@@ -617,19 +707,20 @@ def _model_document(
 
 
 def _training_contract_hash(
-    snapshot: BaoStockActiveTrainingInputSnapshot,
+    snapshot: HistoryTrainingInputSnapshot,
     split: BaoStockTrainingSplit,
     source_commit: str,
+    label_cutoff: date,
 ) -> str:
     contract: dict[str, object] = {
         "schema_version": "tomorrow_training_contract",
         "source_commit": source_commit,
         "training_input_scope": snapshot.input_scope,
-        "training_input_hash": snapshot.input_hash,
-        "parent_manifest_hash": snapshot.parent_manifest_hash,
-        "increment_manifest_hash": snapshot.increment_manifest_hash,
+        "training_input_hash": snapshot.active_snapshot_hash,
+        "source_identity_hash": snapshot.source_identity_hash,
         "calendar_hash": snapshot.calendar_hash,
         "source_cutoff": snapshot.source_cutoff.isoformat(),
+        "label_cutoff": label_cutoff.isoformat(),
         "input_descriptor_hash": snapshot.input_descriptor_hash,
         "feature_manifest_hash": TOMORROW_MODEL_FEATURE_MANIFEST.content_hash,
         "feature_ids": list(TOMORROW_MODEL_FEATURE_MANIFEST.names),
@@ -652,16 +743,17 @@ def _training_contract_hash(
 
 
 def _training_input_document(
-    snapshot: BaoStockActiveTrainingInputSnapshot,
+    snapshot: HistoryTrainingInputSnapshot,
+    label_cutoff: date,
     source_commit: str,
     training_contract_hash: str,
 ) -> dict[str, object]:
     document: dict[str, object] = {
         "schema_version": "tomorrow_training_input",
         "training_input_scope": snapshot.input_scope,
-        "training_input_hash": snapshot.input_hash,
-        "parent_manifest_hash": snapshot.parent_manifest_hash,
-        "increment_manifest_hash": snapshot.increment_manifest_hash,
+        "training_input_hash": snapshot.active_snapshot_hash,
+        "label_cutoff": label_cutoff.isoformat(),
+        "source_identity_hash": snapshot.source_identity_hash,
         "calendar_hash": snapshot.calendar_hash,
         "source_cutoff": snapshot.source_cutoff.isoformat(),
         "requested_sessions": len(snapshot.calendar.open_dates),
@@ -692,6 +784,36 @@ def _historical_failure_reasons(_training_input_scope: str) -> tuple[str, ...]:
 
 def _training_output_directory(train_root: Path) -> Path:
     return train_root / "tomorrow-v3"
+
+
+def _with_due(
+    result: TomorrowTrainingResult,
+    state: HistoryTrainingDueState,
+    invalidated_dates: tuple[date, ...],
+) -> TomorrowTrainingResult:
+    return replace(
+        result,
+        label_cutoff=state.current_label_cutoff,
+        matured_label_days_since_training=state.matured_label_days_since_training,
+        training_due=state.training_due,
+        training_due_reason=state.reason,
+        invalidated_cache_dates=invalidated_dates,
+    )
+
+
+def _after_success(
+    result: TomorrowTrainingResult,
+    label_cutoff: date,
+    invalidated_dates: tuple[date, ...],
+) -> TomorrowTrainingResult:
+    return replace(
+        result,
+        label_cutoff=label_cutoff,
+        matured_label_days_since_training=0,
+        training_due=False,
+        training_due_reason="not_due",
+        invalidated_cache_dates=invalidated_dates,
+    )
 
 
 def _publish_progress(

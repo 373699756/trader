@@ -1,15 +1,22 @@
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from importlib import resources
 from pathlib import Path
+from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from trader.application.research.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingWindow
 from trader.domain.recommendation.model_scoring import V3_EXPOSURE_CONTRACT, residualize_exposure
-from trader.domain.research.baostock_daily import build_baostock_training_split
+from trader.domain.research.baostock_daily import BaoStockCalendar, build_baostock_training_split
+from trader.domain.research.history_control import HistoryTrainingDueState
+from trader.domain.research.tomorrow_training_input import REQUIRED_DAILY_FIELDS, FrozenDailyInputDescriptor
+from trader.infra.research.history_training_input import HistoryTrainingInputSnapshot
+from trader.infra.research.history_control_repository import HistoryMaintenanceAlreadyRunningError
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
 from trader.infra.scoring.profiles.v3.bundle_codec import decode_tomorrow_bundle
+from trader.infra.scoring.profiles.v3.sample_store import V3StoredSample
 from trader.infra.scoring.profiles.v3.training import (
     _aligned_sample_dates,
     _model_document,
@@ -17,7 +24,229 @@ from trader.infra.scoring.profiles.v3.training import (
     _training_output_directory,
     _TrainingArtifactContext,
     training_alpha_target,
+    run_tomorrow_training,
 )
+
+
+def _cadence_archive(archive_root: Path) -> SimpleNamespace:
+    dates = tuple(date(2020, 1, 1) + timedelta(days=index) for index in range(2000))
+    snapshot = HistoryTrainingInputSnapshot(
+        "complete_manifest",
+        "a" * 64,
+        "1" * 64,
+        "2" * 64,
+        dates[-1],
+        dates[-2],
+        BaoStockCalendar(dates),
+        ("600000",),
+        "4" * 64,
+    )
+    descriptor = FrozenDailyInputDescriptor(
+        manifest_hash=snapshot.active_snapshot_hash,
+        source_identity="baostock_daily_core",
+        source_cutoff=snapshot.source_cutoff,
+        requested_sessions=2000,
+        primary_key=("code", "trade_date"),
+        fields=REQUIRED_DAILY_FIELDS,
+        raw_qfq_layout="same_row",
+        row_hash_algorithm="sha256",
+        frozen=True,
+    )
+    return SimpleNamespace(
+        snapshot=snapshot,
+        archive_root=archive_root,
+        describe_frozen_daily_input=lambda: descriptor,
+    )
+
+
+def _active_bundle(archive: SimpleNamespace, trained_position: int, *, current: bool = False) -> SimpleNamespace:
+    dates = archive.snapshot.calendar.open_dates
+    return SimpleNamespace(
+        training_input_hash=archive.snapshot.active_snapshot_hash if current else "b" * 64,
+        label_cutoff=dates[trained_position],
+        content_hash="c" * 64,
+        report_hash="d" * 64,
+        source_identity_hash=archive.snapshot.source_identity_hash,
+        industries=(("银行", object()),),
+        training_rows=100,
+        validation_rows=20,
+    )
+
+
+def _due(
+    archive: SimpleNamespace,
+    trained_position: int | None,
+    reason: str,
+    *,
+    current: bool = False,
+) -> SimpleNamespace:
+    dates = archive.snapshot.calendar.open_dates
+    current_cutoff = dates[-2]
+    baseline = dates[trained_position] if trained_position is not None else None
+    state = HistoryTrainingDueState(
+        "due-test",
+        reason,  # type: ignore[arg-type]
+        baseline,
+        current_cutoff,
+        sum(baseline < day <= current_cutoff for day in dates) if baseline is not None else 0,
+        reason == "input_revision_due",
+        datetime(2026, 9, 11, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+    bundle = _active_bundle(archive, trained_position, current=current) if trained_position is not None else None
+    return SimpleNamespace(state=state, bundle=bundle, invalidated_cache_dates=())
+
+
+def test_training_cadence_stops_before_model_work_on_the_nineteenth_matured_day(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _cadence_archive(tmp_path / "history" / "baostock")
+    current_label_position = len(archive.snapshot.calendar.open_dates) - 2
+    monkeypatch.setattr(
+        "trader.infra.scoring.profiles.v3.training.SQLiteHistoryTrainingInputArchive.open",
+        lambda _path: archive,
+    )
+    monkeypatch.setattr(
+        "trader.infra.scoring.profiles.v3.training.evaluate_history_training_due",
+        lambda *_args: _due(archive, current_label_position - 19, "not_due"),
+    )
+    monkeypatch.setattr(
+        "trader.infra.scoring.profiles.v3.training._build_split",
+        lambda *_args: pytest.fail("model work must not start before cadence is due"),
+    )
+
+    result = run_tomorrow_training(tmp_path / "history", tmp_path / "train", source_commit="e" * 40)
+
+    assert result.status == "not_due"
+    assert result.matured_label_days_since_training == 19
+    assert result.training_due is False
+    assert result.training_due_reason == "not_due"
+
+
+def test_training_failure_on_the_twentieth_day_keeps_the_successful_bundle_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _cadence_archive(tmp_path / "history" / "baostock")
+    current_label_position = len(archive.snapshot.calendar.open_dates) - 2
+    monkeypatch.setattr(
+        "trader.infra.scoring.profiles.v3.training.SQLiteHistoryTrainingInputArchive.open",
+        lambda _path: archive,
+    )
+    monkeypatch.setattr(
+        "trader.infra.scoring.profiles.v3.training.evaluate_history_training_due",
+        lambda *_args: _due(archive, current_label_position - 20, "cadence_due"),
+    )
+    monkeypatch.setattr(
+        "trader.infra.scoring.profiles.v3.training._build_split",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("forced failure")),
+    )
+
+    first = run_tomorrow_training(tmp_path / "history", tmp_path / "train", source_commit="e" * 40)
+    second = run_tomorrow_training(tmp_path / "history", tmp_path / "train", source_commit="e" * 40)
+
+    assert first.status == second.status == "blocked"
+    assert first.training_due_reason == second.training_due_reason == "cadence_due"
+    assert first.matured_label_days_since_training == second.matured_label_days_since_training == 20
+    assert first.training_due is second.training_due is True
+
+
+def test_training_returns_already_current_only_for_the_same_successful_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _cadence_archive(tmp_path / "history" / "baostock")
+    current_label_position = len(archive.snapshot.calendar.open_dates) - 2
+    monkeypatch.setattr(
+        "trader.infra.scoring.profiles.v3.training.SQLiteHistoryTrainingInputArchive.open",
+        lambda _path: archive,
+    )
+    monkeypatch.setattr(
+        "trader.infra.scoring.profiles.v3.training.evaluate_history_training_due",
+        lambda *_args: _due(archive, current_label_position, "not_due", current=True),
+    )
+
+    result = run_tomorrow_training(tmp_path / "history", tmp_path / "train", source_commit="e" * 40)
+
+    assert result.status == "already_current"
+    assert result.label_cutoff == archive.snapshot.calendar.open_dates[current_label_position]
+    assert result.matured_label_days_since_training == 0
+
+
+def test_successful_bundle_publication_is_the_only_event_that_clears_due_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _cadence_archive(tmp_path / "history" / "baostock")
+    sample_day = archive.snapshot.calendar.open_dates[100]
+    monkeypatch.setattr(
+        "trader.infra.scoring.profiles.v3.training.SQLiteHistoryTrainingInputArchive.open",
+        lambda _path: archive,
+    )
+    monkeypatch.setattr(
+        "trader.infra.scoring.profiles.v3.training.evaluate_history_training_due",
+        lambda *_args: _due(archive, None, "initial_training_required"),
+    )
+
+    def build_samples(_archive, _codes, _window, store, *, progress) -> None:
+        del progress
+        store.add_final((V3StoredSample("600000", sample_day, "main", "银行", 1.0, (0.0,) * 6, 0.01),))
+
+    monkeypatch.setattr("trader.infra.scoring.profiles.v3.training._build_samples", build_samples)
+    monkeypatch.setattr(
+        "trader.infra.scoring.profiles.v3.training._fit_models",
+        lambda _samples, _split: ({"银行": {}}, 1, 1),
+    )
+    published: list[str] = []
+    monkeypatch.setattr(
+        "trader.infra.scoring.profiles.v3.training.publish_tomorrow_bundle",
+        lambda *_args, **_kwargs: published.append("published"),
+    )
+
+    result = run_tomorrow_training(tmp_path / "history", tmp_path / "train", source_commit="e" * 40)
+
+    assert published == ["published"]
+    assert result.status == "engineering_ready"
+    assert result.training_due is False
+    assert result.training_due_reason == "not_due"
+    assert result.matured_label_days_since_training == 0
+
+
+def test_training_does_not_open_a_second_snapshot_while_history_maintenance_is_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _cadence_archive(tmp_path / "history" / "baostock")
+    open_calls: list[Path] = []
+
+    def open_archive(path: Path) -> SimpleNamespace:
+        open_calls.append(path)
+        return archive
+
+    class BusyMaintenanceLock:
+        def __init__(self, _path: Path) -> None:
+            pass
+
+        def __enter__(self) -> None:
+            raise HistoryMaintenanceAlreadyRunningError("busy")
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "trader.infra.scoring.profiles.v3.training.SQLiteHistoryTrainingInputArchive.open",
+        open_archive,
+    )
+    monkeypatch.setattr(
+        "trader.infra.scoring.profiles.v3.training.HistoryMaintenanceLock",
+        BusyMaintenanceLock,
+    )
+    monkeypatch.setattr(
+        "trader.infra.scoring.profiles.v3.training.evaluate_history_training_due",
+        lambda *_args: pytest.fail("training must not inspect due state without the maintenance lock"),
+    )
+
+    result = run_tomorrow_training(tmp_path / "history", tmp_path / "train", source_commit="e" * 40)
+
+    assert result.status == "blocked"
+    assert result.failure_reasons == ("history_maintenance_running",)
+    assert result.training_input_hash == archive.snapshot.active_snapshot_hash
+    assert open_calls == [tmp_path / "history"]
 
 
 def test_v3_training_outputs_json_directly_under_the_profile_directory(tmp_path: Path) -> None:
@@ -145,8 +374,8 @@ def test_v3_training_document_is_accepted_by_the_production_codec() -> None:
     context = _TrainingArtifactContext(
         "complete_manifest",
         "a" * 64,
+        date(2026, 9, 8),
         "1" * 64,
-        "2" * 64,
         "3" * 64,
         100,
         100,

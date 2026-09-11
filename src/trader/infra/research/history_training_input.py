@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Literal
 
 from trader.domain.research.baostock_daily import (
     BAOSTOCK_RESEARCH_IDENTITY,
@@ -27,7 +29,43 @@ from trader.infra.research.history_month_archive import (
     HistoryMonthlyArchiveError,
     SQLiteHistoryMonthlyArchive,
 )
-from trader.infra.research.baostock_active_training import BaoStockActiveTrainingInputSnapshot
+
+
+@dataclass(frozen=True)
+class HistoryTrainingInputSnapshot:
+    input_scope: Literal["complete_manifest"]
+    active_snapshot_hash: str
+    source_identity_hash: str
+    calendar_hash: str
+    source_cutoff: date
+    label_cutoff: date
+    calendar: BaoStockCalendar
+    training_codes: tuple[str, ...]
+    input_descriptor_hash: str
+
+    def __post_init__(self) -> None:
+        hashes = (
+            self.active_snapshot_hash,
+            self.source_identity_hash,
+            self.calendar_hash,
+            self.input_descriptor_hash,
+        )
+        dates = self.calendar.open_dates
+        if (
+            any(len(value) != 64 or any(character not in "0123456789abcdef" for character in value) for value in hashes)
+            or not dates
+            or self.source_cutoff != dates[-1]
+            or self.label_cutoff not in dates
+            or self.label_cutoff > self.source_cutoff
+            or not self.training_codes
+            or self.training_codes != tuple(sorted(set(self.training_codes)))
+            or any(len(code) != 6 or not code.isdigit() for code in self.training_codes)
+        ):
+            raise ValueError("history training input snapshot is invalid")
+
+    @property
+    def universe_count(self) -> int:
+        return len(self.training_codes)
 
 
 class HistoryTrainingInputError(RuntimeError):
@@ -142,19 +180,22 @@ def _snapshot_for_training(
     calendar: BaoStockCalendar,
     codes: frozenset[str],
     descriptor: FrozenDailyInputDescriptor,
-) -> BaoStockActiveTrainingInputSnapshot:
-    return BaoStockActiveTrainingInputSnapshot(
+) -> HistoryTrainingInputSnapshot:
+    return HistoryTrainingInputSnapshot(
         "complete_manifest",
-        active.content_hash,
         active.content_hash,
         active.source_identity_hash,
         active.calendar_hash,
         active.data_cutoff,
+        active.label_cutoff,
         calendar,
         tuple(sorted(codes)),
         descriptor.content_hash,
-        active.label_cutoff,
     )
 
 
-__all__ = ["HistoryTrainingInputError", "SQLiteHistoryTrainingInputArchive"]
+__all__ = [
+    "HistoryTrainingInputError",
+    "HistoryTrainingInputSnapshot",
+    "SQLiteHistoryTrainingInputArchive",
+]

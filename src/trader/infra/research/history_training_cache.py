@@ -89,6 +89,36 @@ class SQLiteHistoryTrainingCache:
         except sqlite3.Error as exc:
             raise HistoryTrainingCacheError("history training row write failed") from exc
 
+    def advance_snapshot(
+        self,
+        new_snapshot_hash: str,
+        invalidated_dates: tuple[date, ...],
+    ) -> SQLiteHistoryTrainingCache:
+        """Atomically retain unaffected dates while rebinding the cache identity."""
+
+        if _SHA256.fullmatch(new_snapshot_hash) is None:
+            raise ValueError("history training snapshot hash is invalid")
+        dates = tuple(invalidated_dates)
+        if dates != tuple(sorted(set(dates))):
+            raise ValueError("history training invalidation dates are invalid")
+        try:
+            with closing(self._connection()) as connection, connection:
+                connection.execute("BEGIN IMMEDIATE")
+                self._require_metadata(connection)
+                connection.executemany(
+                    "DELETE FROM training_rows WHERE trade_date=?",
+                    ((day.isoformat(),) for day in dates),
+                )
+                connection.execute(
+                    "UPDATE metadata SET snapshot_hash=? WHERE singleton=1",
+                    (new_snapshot_hash,),
+                )
+        except HistoryTrainingCacheError:
+            raise
+        except sqlite3.Error as exc:
+            raise HistoryTrainingCacheError("history training cache advance failed") from exc
+        return SQLiteHistoryTrainingCache(self._path, new_snapshot_hash)
+
     def read_date(self, trade_date: date) -> tuple[BaoStockTrainingRow, ...]:
         return tuple(
             self._iter_query(

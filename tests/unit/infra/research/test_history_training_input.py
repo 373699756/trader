@@ -4,6 +4,8 @@ from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from trader.application.research.history_sync import HistorySupplierContext, HistorySyncConfiguration
 from trader.domain.research.baostock_daily import (
     BaoStockCalendar,
@@ -18,8 +20,9 @@ from trader.domain.research.baostock_daily import (
 )
 from trader.infra.research.history_control_repository import SQLiteHistoryControlRepository
 from trader.infra.research.history_sync_runtime import run_history_sync
-from trader.infra.research.history_training_due import evaluate_history_training_due
+from trader.infra.research.history_training_due import _revised_dates_since_bundle, evaluate_history_training_due
 from trader.infra.research.history_training_input import SQLiteHistoryTrainingInputArchive
+from trader.domain.research.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -81,9 +84,10 @@ def test_monthly_training_input_binds_active_snapshot_and_reads_typed_rows(tmp_p
     archive = SQLiteHistoryTrainingInputArchive.open(tmp_path / "history")
     rows = archive.read_training_rows("600001", allowed_dates=frozenset(dates))
 
-    assert archive.snapshot.input_hash == SQLiteHistoryControlRepository(
-        archive_root / "control.sqlite3"
-    ).load_state().active_snapshot_hash
+    assert (
+        archive.snapshot.active_snapshot_hash
+        == SQLiteHistoryControlRepository(archive_root / "control.sqlite3").load_state().active_snapshot_hash
+    )
     assert tuple(row.trade_date for row in rows) == dates
     assert archive.snapshot.label_cutoff == dates[-2]
 
@@ -100,3 +104,40 @@ def test_training_due_uses_the_active_snapshot_label_cutoff_and_marks_initial(tm
     assert evaluation.state.reason == "initial_training_required"
     assert evaluation.state.current_label_cutoff == dates[-2]
     assert evaluation.state.training_due is True
+
+
+def test_revision_detection_compares_semantic_rows_only_in_changed_months(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dates = tuple(date(2026, 9, day) for day in range(1, 6))
+    baseline = HistoryActiveSnapshot(
+        1,
+        dates[-1],
+        dates[-2],
+        "a" * 64,
+        "b" * 64,
+        "c" * 64,
+        (HistorySnapshotPartition(f"partitions/2026/09/{'d' * 64}.sqlite3", "d" * 64, 1),),
+    )
+    active = HistoryActiveSnapshot(
+        2,
+        dates[-1],
+        dates[-2],
+        "a" * 64,
+        "b" * 64,
+        "c" * 64,
+        (HistorySnapshotPartition(f"partitions/2026/09/{'e' * 64}.sqlite3", "e" * 64, 1),),
+    )
+
+    class _Archive:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def iter_range(self, _start: date, _end: date, snapshot: HistoryActiveSnapshot):
+            revision = "f" * 64 if snapshot.sequence == 1 else "0" * 64
+            return iter((type("Revision", (), {"trade_date": dates[2], "code": "600001", "revision_id": revision})(),))
+
+    monkeypatch.setattr("trader.infra.research.history_training_due.SQLiteHistoryMonthlyArchive", _Archive)
+
+    assert _revised_dates_since_bundle(tmp_path, baseline, active, dates, dates[-2]) == (dates[2],)

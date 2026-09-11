@@ -147,7 +147,7 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert "./run.sh train-tomorrow          从完整 manifest 运行 Tomorrow 训练" in completed.stdout
     assert "--allow-partial-history" not in completed.stdout
     assert "research-r7-dossier" not in completed.stdout
-    assert "看板和 check 可追加 --profile v1|v2|v3；download_history 不接受评分档位" in completed.stdout
+    assert "看板和 check 可追加 --profile v1|v2|v3；两个离线命令均为零参数" in completed.stdout
     assert "./run.sh serve" not in completed.stdout
     assert not missing_venv.exists()
 
@@ -336,10 +336,10 @@ def test_run_script_forwards_the_single_tomorrow_training_command_without_stage_
     )
 
     assert completed.returncode == 0
-    assert completed.stdout == f"cli:--config {config} --profile v1 train-tomorrow\n"
+    assert completed.stdout == f"cli:--config {config} train-tomorrow\n"
 
 
-def test_run_script_forwards_the_tomorrow_training_history_root(tmp_path: Path) -> None:
+def test_run_script_rejects_tomorrow_training_arguments_before_environment_setup(tmp_path: Path) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
     _write_fake_entrypoint(venv_bin / "python", "exit 99")
@@ -357,8 +357,9 @@ def test_run_script_forwards_the_tomorrow_training_history_root(tmp_path: Path) 
         check=False,
     )
 
-    assert completed.returncode == 0
-    assert completed.stdout == f"cli:--config {config} --profile v1 train-tomorrow --runtime-dir {history}\n"
+    assert completed.returncode != 0
+    assert completed.stdout == ""
+    assert "train-tomorrow 不接受任何参数" in completed.stderr
 
 
 def test_run_script_rejects_an_unknown_profile_before_environment_setup(tmp_path: Path) -> None:
@@ -425,12 +426,12 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert "research-screen" not in powershell
     assert ".\\run.ps1 train-tomorrow          从完整 manifest 运行 Tomorrow 训练" in powershell
     assert "--allow-partial-history" not in powershell
-    assert "看板和 check 可追加 --profile v1|v2|v3；download_history 不接受评分档位" in powershell
+    assert "看板和 check 可追加 --profile v1|v2|v3；两个离线命令均为零参数" in powershell
     assert "& $SelectedEntryPoint --help" in powershell
     assert '$ScoringProfile -notin @("v1", "v2", "v3")' in powershell
     assert "config\\runtime.json" in powershell
     assert "config\\v2\\runtime.json" not in powershell
-    assert '$Mode -eq "download_history" -and ($ScoringProfileSet -or $ForwardArgs.Count -gt 0)' in powershell
+    assert '$Mode -in @("download_history", "train-tomorrow")' in powershell
 
 
 def test_research_status_is_historical_only_and_does_not_create_runtime_files(
@@ -499,7 +500,7 @@ def test_train_tomorrow_runs_a_prerequisite_before_resource_handoff_without_crea
     runtime["runtime_dir"] = str(runtime_dir)
     config = tmp_path / "runtime.json"
     config.write_text(json.dumps(runtime), encoding="utf-8")
-    monkeypatch.setattr(cli_module, "_repository_data_path", lambda _path: history_root)
+    monkeypatch.setattr(research_commands, "_history_data_root", lambda: history_root)
     for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         monkeypatch.delenv(name, raising=False)
 
@@ -511,20 +512,26 @@ def test_train_tomorrow_runs_a_prerequisite_before_resource_handoff_without_crea
     assert payload["blockers"] == ["history_manifest_unavailable"]
     assert payload["training_input_hash"] == ""
     assert payload["training_input_scope"] == "unavailable"
+    assert payload["label_cutoff"] is None
+    assert payload["matured_label_days_since_training"] == 0
+    assert payload["training_due"] is False
+    assert payload["training_due_reason"] == "data_incomplete"
+    assert payload["invalidated_cache_dates"] == []
     assert payload["production_authority"] is False
     assert {os.environ[name] for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")} == {"2"}
     assert not runtime_dir.exists()
 
 
-def test_train_tomorrow_passes_the_explicit_history_root_to_the_training_owner(
+def test_train_tomorrow_passes_the_fixed_project_history_root_to_the_training_owner(
     tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime = json.loads((ROOT / "config/runtime.json").read_text(encoding="utf-8"))
     runtime["runtime_dir"] = str(tmp_path / "runtime")
     config = tmp_path / "runtime.json"
     config.write_text(json.dumps(runtime), encoding="utf-8")
-    history = tmp_path / "downloaded-history"
+    history = tmp_path / "project-history"
     observed: list[tuple[Path, Path]] = []
+    monkeypatch.setattr(research_commands, "_history_data_root", lambda: history)
 
     def train(
         history_root: Path,
@@ -549,25 +556,21 @@ def test_train_tomorrow_passes_the_explicit_history_root_to_the_training_owner(
             training_input_codes=0,
             training_universe_codes=0,
             failure_reasons=("history_manifest_unavailable",),
+            label_cutoff=None,
+            matured_label_days_since_training=0,
+            training_due=False,
+            training_due_reason="data_incomplete",
+            invalidated_cache_dates=(),
         )
 
     monkeypatch.setattr("trader.infra.scoring.profiles.v3.training.run_tomorrow_training", train)
 
-    assert (
-        main(
-            [
-                "--config",
-                str(config),
-                "train-tomorrow",
-                "--runtime-dir",
-                str(history),
-            ]
-        )
-        == 1
-    )
+    assert main(["--config", str(config), "train-tomorrow"]) == 1
 
     assert observed == [(history, ROOT / "data" / "train")]
-    assert json.loads(capsys.readouterr().out)["report_hash"] == ""
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["report_hash"] == ""
+    assert payload["training_due_reason"] == "data_incomplete"
 
 
 def test_research_status_keeps_tomorrow_graph_conflict_out_of_h1_input_blockers(tmp_path: Path, monkeypatch) -> None:

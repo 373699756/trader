@@ -217,6 +217,7 @@ def test_strategy_replay_document_has_an_executable_maintenance_and_reminder_pla
         "SQLiteHistoryMonthPartitionRepository",
         "SQLiteHistoryMonthlyArchive",
         "SQLiteHistoryTrainingCache",
+        "阶段 E（已完成）",
         "阶段 G",
     ):
         assert required in plan

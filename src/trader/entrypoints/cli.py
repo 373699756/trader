@@ -37,13 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
         "check",
         help="Run config validation, research readiness, and the active-profile performance gate.",
     )
-    training = subparsers.add_parser("train-tomorrow", help="Run the due immutable Tomorrow training stage.")
-    training.add_argument(
-        "--runtime-dir",
-        type=Path,
-        default=Path("data/history"),
-        help="Override the repository history root for offline tests and maintenance.",
-    )
+    subparsers.add_parser("train-tomorrow", help="Run the due immutable Tomorrow training stage.")
     subparsers.add_parser("validate-config", help="Validate runtime and strategy configuration.")
     performance = subparsers.add_parser(
         "performance-check",
@@ -100,6 +94,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
         print(json.dumps(project_history_maintenance_status(status), ensure_ascii=False, sort_keys=True))
         return 0 if status.state in {"completed", "already_current"} else 1
     if args.command == "train-tomorrow":
+        if args.profile is not None:
+            parser.error("train-tomorrow does not accept --profile")
         _configure_tomorrow_training_resources()
     config_path = _absolute_config_path(args.config)
     runtime = load_runtime_settings(config_path)
@@ -136,14 +132,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
             runtime,
             ResearchCommandOptions(
                 workers=int(getattr(args, "workers", 5)),
-                history_root=_repository_data_path(args.runtime_dir) if args.command == "train-tomorrow" else None,
             ),
         )
     return _run_config_validation(runtime, profile_override)
-
-
-def _repository_data_path(path: Path) -> Path:
-    return path if path.is_absolute() else _repository_root_for_validation() / path
 
 
 def _configure_tomorrow_training_resources() -> None:

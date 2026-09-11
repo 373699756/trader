@@ -23,9 +23,8 @@ class ActiveTomorrowBundle:
     model_path: Path
     generation: str
     training_input_hash: str
-    parent_manifest_hash: str
-    increment_manifest_hash: str
-    label_cutoff: date | None
+    source_identity_hash: str
+    label_cutoff: date
 
 
 def publish_tomorrow_bundle(
@@ -33,9 +32,8 @@ def publish_tomorrow_bundle(
     output_root: Path,
     *,
     training_input_hash: str,
-    parent_manifest_hash: str,
-    increment_manifest_hash: str,
-    label_cutoff: date | None = None,
+    source_identity_hash: str,
+    label_cutoff: date,
 ) -> Path:
     """Validate staging first, then atomically switch a small active pointer."""
 
@@ -44,20 +42,26 @@ def publish_tomorrow_bundle(
     artifact = load_tomorrow_bundle(staging / "model.json")
     if (
         artifact.training_input_hash != training_input_hash
-        or artifact.parent_manifest_hash != parent_manifest_hash
-        or artifact.increment_manifest_hash != increment_manifest_hash
+        or artifact.label_cutoff != label_cutoff
+        or artifact.source_identity_hash != source_identity_hash
     ):
         raise ValueError("Tomorrow V3 staged bundle active archive identity is inconsistent")
     training_input_document = _read_json(staging / "training-input.json")
     report_document = _read_json(staging / "report.json")
+    expected_label_cutoff = label_cutoff.isoformat()
+    if (
+        training_input_document.get("label_cutoff") != expected_label_cutoff
+        or report_document.get("label_cutoff") != expected_label_cutoff
+    ):
+        raise ValueError("Tomorrow V3 staged bundle label cutoff is inconsistent")
     bundle_hash = artifact_content_hash(
         {
             "training_input_document_hash": training_input_document["content_hash"],
             "report_hash": report_document["content_hash"],
             "model_hash": artifact.content_hash,
             "training_input_hash": training_input_hash,
-            "parent_manifest_hash": parent_manifest_hash,
-            "increment_manifest_hash": increment_manifest_hash,
+            "label_cutoff": expected_label_cutoff,
+            "source_identity_hash": source_identity_hash,
         }
     )
     output_root.mkdir(parents=True, exist_ok=True)
@@ -77,9 +81,8 @@ def publish_tomorrow_bundle(
         "schema_version": "tomorrow_training_active_bundle",
         "generation": bundle_hash,
         "training_input_hash": training_input_hash,
-        "parent_manifest_hash": parent_manifest_hash,
-        "increment_manifest_hash": increment_manifest_hash,
-        "label_cutoff": label_cutoff.isoformat() if label_cutoff is not None else None,
+        "label_cutoff": expected_label_cutoff,
+        "source_identity_hash": source_identity_hash,
         "training_input_document_hash": training_input_document["content_hash"],
         "report_hash": report_document["content_hash"],
         "model_hash": artifact.content_hash,
@@ -100,8 +103,7 @@ def inspect_active_tomorrow_bundle(output_root: Path) -> ActiveTomorrowBundle:
         "schema_version",
         "generation",
         "training_input_hash",
-        "parent_manifest_hash",
-        "increment_manifest_hash",
+        "source_identity_hash",
         "label_cutoff",
         "training_input_document_hash",
         "report_hash",
@@ -112,11 +114,8 @@ def inspect_active_tomorrow_bundle(output_root: Path) -> ActiveTomorrowBundle:
         or artifact_content_hash(pointer) != stored_hash
         or set(pointer) != expected_fields
         or pointer.get("schema_version") != "tomorrow_training_active_bundle"
-        or not all(
-            _sha256(pointer.get(name))
-            for name in expected_fields - {"schema_version", "label_cutoff"}
-        )
-        or not _optional_iso_date_valid(pointer.get("label_cutoff"))
+        or not all(_sha256(pointer.get(name)) for name in expected_fields - {"schema_version", "label_cutoff"})
+        or not _iso_date(pointer.get("label_cutoff"))
     ):
         raise ValueError("Tomorrow V3 active bundle pointer is invalid")
     generation = cast(str, pointer["generation"])
@@ -133,17 +132,16 @@ def inspect_active_tomorrow_bundle(output_root: Path) -> ActiveTomorrowBundle:
         or training_input.get("content_hash") != pointer["training_input_document_hash"]
         or report.get("content_hash") != pointer["report_hash"]
         or artifact.training_input_hash != pointer["training_input_hash"]
-        or artifact.parent_manifest_hash != pointer["parent_manifest_hash"]
-        or artifact.increment_manifest_hash != pointer["increment_manifest_hash"]
+        or artifact.label_cutoff.isoformat() != pointer["label_cutoff"]
+        or artifact.source_identity_hash != pointer["source_identity_hash"]
     ):
         raise ValueError("Tomorrow V3 active bundle pointer does not match its generation")
     return ActiveTomorrowBundle(
         model,
         generation,
         pointer["training_input_hash"],
-        pointer["parent_manifest_hash"],
-        pointer["increment_manifest_hash"],
-        _optional_iso_date(pointer.get("label_cutoff")),
+        pointer["source_identity_hash"],
+        date.fromisoformat(pointer["label_cutoff"]),
     )
 
 
@@ -187,9 +185,7 @@ def _sha256(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
-def _optional_iso_date_valid(value: object) -> bool:
-    if value is None:
-        return True
+def _iso_date(value: object) -> bool:
     if not isinstance(value, str):
         return False
     try:
@@ -197,17 +193,6 @@ def _optional_iso_date_valid(value: object) -> bool:
     except ValueError:
         return False
     return True
-
-
-def _optional_iso_date(value: object) -> date | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise ValueError("Tomorrow V3 active bundle label cutoff is invalid")
-    try:
-        return date.fromisoformat(value)
-    except ValueError as exc:
-        raise ValueError("Tomorrow V3 active bundle label cutoff is invalid") from exc
 
 
 __all__ = [

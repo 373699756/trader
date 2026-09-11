@@ -210,7 +210,7 @@ def calculate_history_training_due(
     if current is not None and current not in dates:
         raise ValueError("history training current label cutoff is outside the calendar")
     if baseline_label_cutoff is not None and current is not None and baseline_label_cutoff > current:
-        raise ValueError("history training baseline label cutoff is after the current cutoff")
+        data_complete = False
     if not data_complete or current is None:
         reason: HistoryTrainingDueReason = "data_incomplete"
         matured = 0
@@ -237,6 +237,32 @@ def calculate_history_training_due(
         input_revision,
         observed_at,
     )
+
+
+def calculate_history_training_cache_invalidation_dates(
+    calendar_dates: tuple[date, ...],
+    revised_dates: tuple[date, ...],
+    *,
+    dependency_sessions: int = 60,
+) -> tuple[date, ...]:
+    """Expand revised inputs to their T+1 label and bounded feature dependants."""
+
+    calendar = tuple(calendar_dates)
+    revisions = tuple(revised_dates)
+    if (
+        dependency_sessions < 0
+        or not calendar
+        or calendar != tuple(sorted(set(calendar)))
+        or revisions != tuple(sorted(set(revisions)))
+        or any(day not in calendar for day in revisions)
+    ):
+        raise ValueError("history training cache invalidation input is invalid")
+    positions = {day: position for position, day in enumerate(calendar)}
+    invalidated: set[date] = set()
+    for day in revisions:
+        position = positions[day]
+        invalidated.update(calendar[max(0, position - 1) : position + dependency_sessions + 1])
+    return tuple(sorted(invalidated))
 
 
 @dataclass(frozen=True)
@@ -424,5 +450,6 @@ __all__ = [
     "HistoryTrainingDueReason",
     "HistoryTrainingDueState",
     "HistoryUniverseIdentity",
+    "calculate_history_training_cache_invalidation_dates",
     "calculate_history_training_due",
 ]

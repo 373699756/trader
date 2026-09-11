@@ -22,7 +22,7 @@ function Show-Usage {
   .\run.ps1 download_history        零参数历史维护
   .\run.ps1 train-tomorrow          从完整 manifest 运行 Tomorrow 训练
 
-看板和 check 可追加 --profile v1|v2|v3；download_history 不接受评分档位。
+看板和 check 可追加 --profile v1|v2|v3；两个离线命令均为零参数。
 
 高级配置（一般无需设置）:
   TRADER_CONFIG=C:\absolute\path\runtime.json
@@ -71,8 +71,8 @@ if ($ScoringProfile -notin @("v1", "v2", "v3")) {
     [Console]::Error.WriteLine("评分档位只能是 v1、v2 或 v3: $ScoringProfile")
     exit 2
 }
-if ($Mode -eq "download_history" -and ($ScoringProfileSet -or $ForwardArgs.Count -gt 0)) {
-    [Console]::Error.WriteLine("download_history 不接受任何参数；请只运行 .\run.ps1 download_history。")
+if ($Mode -in @("download_history", "train-tomorrow") -and ($ScoringProfileSet -or $ForwardArgs.Count -gt 0)) {
+    [Console]::Error.WriteLine("$Mode 不接受任何参数；请只运行 .\run.ps1 $Mode。")
     exit 2
 }
 
@@ -151,6 +151,10 @@ if ($IsServerMode) {
 }
 if ($Mode -eq "download_history") {
     & $SelectedEntryPoint --config $ConfigPath download_history
+    exit $LASTEXITCODE
+}
+if ($Mode -eq "train-tomorrow") {
+    & $SelectedEntryPoint --config $ConfigPath train-tomorrow
     exit $LASTEXITCODE
 }
 & $SelectedEntryPoint --config $ConfigPath --profile $ScoringProfile $Mode @ForwardArgs

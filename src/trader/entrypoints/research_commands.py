@@ -51,7 +51,6 @@ from trader.infra.settings import RuntimeSettings
 @dataclass(frozen=True)
 class ResearchCommandOptions:
     workers: int = 5
-    history_root: Path | None = None
 
 
 class _TomorrowResearchProgress(TomorrowResearchProgressPort):
@@ -100,10 +99,7 @@ def run_research_command(
     options: ResearchCommandOptions,
 ) -> int:
     if command == "train-tomorrow":
-        return _run_tomorrow_research_orchestrator(
-            runtime,
-            history_root=options.history_root,
-        )
+        return _run_tomorrow_research_orchestrator(runtime)
     if command == "research-status":
         trace = SQLiteResearchTraceStore(runtime.runtime_dir)
         status = trace.inspect_status()
@@ -209,14 +205,12 @@ def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
 
 def _run_tomorrow_research_orchestrator(
     runtime: RuntimeSettings,
-    *,
-    history_root: Path | None = None,
 ) -> int:
     del runtime
     from trader.infra.scoring.profiles.v3.training import run_tomorrow_training
 
     result = run_tomorrow_training(
-        history_root or _history_data_root(),
+        _history_data_root(),
         _train_data_root(),
         progress=_TomorrowTrainingProgress(),
         source_commit=_repository_source_commit(),
@@ -227,6 +221,11 @@ def _run_tomorrow_research_orchestrator(
         "run_id": result.run_id,
         "training_input_scope": result.training_input_scope,
         "training_input_hash": result.training_input_hash,
+        "label_cutoff": result.label_cutoff.isoformat() if result.label_cutoff is not None else None,
+        "matured_label_days_since_training": result.matured_label_days_since_training,
+        "training_due": result.training_due,
+        "training_due_reason": result.training_due_reason,
+        "invalidated_cache_dates": [value.isoformat() for value in result.invalidated_cache_dates],
         "training_input_codes": result.training_input_codes,
         "training_universe_codes": result.training_universe_codes,
         "report_hash": result.report_hash,
