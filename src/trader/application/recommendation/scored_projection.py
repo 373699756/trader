@@ -51,10 +51,8 @@ from trader.domain.recommendation.risk_fusion.scored_fusion import (
     build_scored_decision_epoch,
     select_scored_review_candidates,
 )
-from trader.domain.recommendation.selection.scored_selection import (
-    ScoredCandidateStageCounts,
-    ScoredModelOverrides,
-)
+from trader.domain.recommendation.selection.scored_selection import ScoredCandidateStageCounts
+from trader.domain.recommendation.strategies.composition import WEIGHTED_EVIDENCE_SCORE_SCALE
 from trader.domain.review.models import DeepSeekReview, ReviewOutcome
 
 
@@ -143,7 +141,7 @@ def build_scored_local(
             data_version=native_input.data_version,
             merge_epoch=native_input.input_version,
         ),
-        model_overrides=_model_overrides(model_batch, strategy),
+        execution_gate_reasons=_model_execution_gate_reasons(model_batch, strategy),
     )
     quality = assess_scored_input_quality(
         native_input,
@@ -199,13 +197,13 @@ def build_scored_local(
     )
 
 
-def _model_overrides(
+def _model_execution_gate_reasons(
     model_batch: ModelScoreBatch | None,
     strategy: Strategy,
-) -> ScoredModelOverrides | None:
+) -> Mapping[str, str]:
     if model_batch is None:
-        return None
-    gate_reasons = (
+        return {}
+    return (
         {
             code: "model_net_utility_non_positive"
             for code, diagnostics in model_batch.diagnostics.items()
@@ -214,7 +212,6 @@ def _model_overrides(
         if strategy is Strategy.TOMORROW
         else {}
     )
-    return ScoredModelOverrides(model_batch.scores, gate_reasons)
 
 
 def _model_eligible_candidates(
@@ -328,6 +325,7 @@ def _scored_decision(
                 ("market", epoch.market_epoch_version),
                 ("candidate", epoch.candidate_epoch_version),
                 ("research", epoch.research_epoch_version),
+                ("score_scale", WEIGHTED_EVIDENCE_SCORE_SCALE),
                 ("score_model", context.score_model_version),
             )
             if value is not None
@@ -397,7 +395,7 @@ def _decision_item(
         ),
         model_diagnostics=(
             DecisionModelDiagnostics(
-                signal_score=entry.score.components["model_prediction_rank"],
+                signal_score=model_diagnostics.signal_score,
                 predicted_excess_return_pct=model_diagnostics.predicted_excess_return_pct,
                 estimated_cost_pct=model_diagnostics.estimated_cost_pct,
                 predicted_net_excess_pct=model_diagnostics.predicted_net_excess_pct,

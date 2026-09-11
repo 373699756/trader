@@ -147,6 +147,29 @@ assert.deepStrictEqual(
   ))),
   [{ score: 72.5, code: "600007", name: "草稿未入池最高分", index: 0 }],
 );
+const unifiedDraftSummary = summaryFixture();
+state.renderSummary(
+  unifiedDraftSummary,
+  {
+    status: "not_ready",
+    strategy: "tomorrow",
+    score_status: "scored",
+    coverage: { candidate_count: 360, evaluated_count: 0, rejected_count: 0 },
+    items: [],
+    draft: {
+      input_versions: { score_scale: "weighted_evidence_quality_0_100" },
+      top_scores: [{ code: "600007", name: "草稿未入池最高分", scores: { final_score: 72.5 } }],
+      items: [],
+    },
+  },
+  [],
+  "open",
+  null,
+  sandbox.window.TraderSelection,
+  sandbox.window.TraderRender,
+  {},
+);
+assert.strictEqual(unifiedDraftSummary.topScoresMeta.textContent, "统一最终评分 · 1 只");
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.topScoredStocks(
     { status: "ready", strategy: "today", historical: true, score_status: "scored" },
@@ -164,6 +187,7 @@ state.renderSummary(
     observed_at: "2026-08-14T19:53:30+08:00",
     frozen: true,
     score_status: "scored",
+    input_versions: { score_scale: "weighted_evidence_quality_0_100" },
     coverage: { candidate_count: 57, evaluated_count: 57, rejected_count: 57 },
     items: [],
     selection_diagnostics: {
@@ -181,7 +205,7 @@ state.renderSummary(
   {},
 );
 assert.strictEqual(scoreOnlySummary.topScoresStatus.textContent, "最高分 55.00");
-assert.strictEqual(scoreOnlySummary.topScoresMeta.textContent, "策略内最高最终分 · 当前无达到观察门槛的股票");
+assert.strictEqual(scoreOnlySummary.topScoresMeta.textContent, "统一最高最终分 · 当前无达到观察门槛的股票");
 assert.strictEqual(scoreOnlySummary.inputQualityScoreTime.textContent, "评分于 19:53:30 完成");
 const tomorrowCostGateSummary = summaryFixture();
 state.renderSummary(
@@ -193,10 +217,11 @@ state.renderSummary(
     observed_at: "2026-08-14T14:49:30+08:00",
     frozen: true,
     score_status: "scored",
+    input_versions: { score_scale: "weighted_evidence_quality_0_100" },
     coverage: { candidate_count: 5323, evaluated_count: 239, rejected_count: 5084 },
     items: [],
     selection_diagnostics: {
-      maximum_final_score: 97.44,
+      maximum_final_score: 70.25,
       executable_threshold: 78,
       observation_floor: 73,
       empty_reason: "no_positive_net_utility",
@@ -209,10 +234,10 @@ state.renderSummary(
   sandbox.window.TraderRender,
   {},
 );
-assert.strictEqual(tomorrowCostGateSummary.topScoresStatus.textContent, "最高相对信号分 97.44");
+assert.strictEqual(tomorrowCostGateSummary.topScoresStatus.textContent, "最高统一评分 70.25");
 assert.strictEqual(
   tomorrowCostGateSummary.topScoresMeta.textContent,
-  "明日策略内相对排名 · 未通过成本门",
+  "统一 0–100 质量分 · 未通过成本门",
 );
 const tomorrowLegacyFrozenSummary = summaryFixture();
 state.renderSummary(
@@ -918,6 +943,7 @@ assert.strictEqual(
   state.emptyRecommendationMessage(
     {
       strategy: "tomorrow",
+      input_versions: { score_scale: "weighted_evidence_quality_0_100" },
       coverage: { evaluated_count: 239 },
       selection_diagnostics: {
         empty_reason: "no_positive_net_utility",
@@ -940,7 +966,18 @@ assert.strictEqual(
       },
     },
   ),
-  "评分已完成｜最高相对信号分 100.00（仅表示 239 只已评分股票内的排序，不代表已通过成本门）；239 只已评分股票的预测成本后净超额均未转正，因此观察池和正式推荐均为 0只，保持空仓；主要原因：公司风险历史暂不可核验（360只）、行情已过期，仅供观察（360只）、结构化风险数据尚未就绪（360只）",
+  "评分已完成｜最高统一评分 100.00；239 只已评分股票的预测成本后净超额均未转正，因此观察池和正式推荐均为 0只，保持空仓；主要原因：公司风险历史暂不可核验（360只）、行情已过期，仅供观察（360只）、结构化风险数据尚未就绪（360只）",
+);
+assert.strictEqual(
+  state.emptyRecommendationMessage({
+    strategy: "tomorrow",
+    coverage: { evaluated_count: 239 },
+    selection_diagnostics: {
+      empty_reason: "no_positive_net_utility",
+      maximum_final_score: 97.44,
+    },
+  }),
+  "评分已完成｜最高相对信号分 97.44（仅表示 239 只已评分股票内的排序，不代表已通过成本门）；239 只已评分股票的预测成本后净超额均未转正，因此观察池和正式推荐均为 0只，保持空仓",
 );
 assert.strictEqual(
   state.emptyRecommendationMessage({
@@ -1085,7 +1122,7 @@ const modelVersionDrawer = state.drawer(
   },
 );
 assert.match(modelVersionDrawer, /daily_reconstructible_ensemble:model-hash/);
-assert.match(modelVersionDrawer, /模型信号分/);
+assert.match(modelVersionDrawer, /模型相对信号分/);
 assert.doesNotMatch(modelVersionDrawer, /P2信号分/);
 const longDrawer = state.drawer(
   {

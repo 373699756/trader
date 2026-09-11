@@ -22,7 +22,6 @@ from trader.domain.recommendation.selection.ranking import minimum_selection_sco
 from trader.domain.recommendation.selection.scored_selection import (
     BoardCrossSectionFallback,
     ScoredCandidatePlan,
-    ScoredModelOverrides,
     ScoredSelectionPolicy,
     ScoredSelectionRequest,
     plan_scored_candidates,
@@ -147,11 +146,19 @@ def select_scored_features(
     options: ScoredSelectionOptions,
     identity: ScoredSelectionIdentity,
     *,
-    model_overrides: ScoredModelOverrides | None = None,
+    execution_gate_reasons: Mapping[str, str] | None = None,
 ) -> ScoredSelectionResult:
     """Select scored candidates from an already coherent point-in-time population."""
 
-    return select_scored(_selection_request(features, policy, options, identity, model_overrides=model_overrides))
+    return select_scored(
+        _selection_request(
+            features,
+            policy,
+            options,
+            identity,
+            execution_gate_reasons=execution_gate_reasons,
+        )
+    )
 
 
 def plan_scored_feature_candidates(
@@ -188,7 +195,7 @@ def _selection_request(
     options: ScoredSelectionOptions,
     identity: ScoredSelectionIdentity,
     *,
-    model_overrides: ScoredModelOverrides | None = None,
+    execution_gate_reasons: Mapping[str, str] | None = None,
 ) -> ScoredSelectionRequest:
     evaluated_at = options.evaluated_at
     population = tuple(features)
@@ -209,7 +216,7 @@ def _selection_request(
         policy=_selection_policy(policy, options),
         candidate_features=options.candidate_features,
         fallbacks=options.fallbacks or {},
-        model_overrides=model_overrides,
+        execution_gate_reasons=execution_gate_reasons or {},
         population_evaluated_at=population_evaluated_at,
         population_max_age_seconds=options.population_max_age_seconds,
         minimum_history_sessions=options.minimum_history_sessions,

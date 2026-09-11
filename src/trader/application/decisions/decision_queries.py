@@ -87,6 +87,7 @@ class DecisionDraftView:
     decision_version: str
     content_hash: str
     observed_at: datetime
+    input_versions: tuple[tuple[str, str], ...]
     items: tuple[DecisionItemView, ...]
     top_scores: tuple[DecisionItemView, ...] = ()
 
@@ -216,6 +217,7 @@ def _observation_draft(decision: ScoredDecision) -> DecisionDraftView:
         decision.version,
         decision.content_hash,
         decision.observed_at,
+        decision.input_versions,
         tuple(_scored_item(item, None) for item in selected),
         top_scores,
     )

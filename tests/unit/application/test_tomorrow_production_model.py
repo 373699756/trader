@@ -63,7 +63,7 @@ def _model_feature(feature: FeatureSnapshot, *, offset: float, amihud: float) ->
     return replace(feature, values=values, history_days=61)
 
 
-def test_production_model_residualizes_bound_features_and_maps_prediction_rank_to_local_score(
+def test_production_model_residualizes_bound_features_and_keeps_prediction_rank_as_diagnostic(
     application_feature_factory,
 ) -> None:
     features = tuple(
@@ -79,11 +79,10 @@ def test_production_model_residualizes_bound_features_and_maps_prediction_rank_t
 
     assert batch.model_version == f"daily_reconstructible_ensemble:{'a' * 64}"
     assert tuple(item.code for item in batch.predictions) == ("600000", "600001", "600002")
-    assert batch.scores["600002"].base_score == 100.0
-    assert batch.scores["600001"].base_score == 50.0
-    assert batch.scores["600000"].base_score == 0.0
+    assert batch.diagnostics["600002"].signal_score == 100.0
+    assert batch.diagnostics["600001"].signal_score == 50.0
+    assert batch.diagnostics["600000"].signal_score == 0.0
     assert batch.diagnostics["600002"].predicted_net_excess_pct == pytest.approx(3.2)
-    assert batch.scores["600002"].components["model_prediction_rank"] == 100.0
 
 
 def test_non_positive_net_utility_keeps_relative_scores_for_observability(
@@ -105,12 +104,11 @@ def test_non_positive_net_utility_keeps_relative_scores_for_observability(
     batch = TomorrowProductionModelScoringService(profile_for(_NonPositivePredictor())).score(features)
 
     assert all(item.predicted_net_excess_pct < 0.0 for item in batch.diagnostics.values())
-    assert {code: score.base_score for code, score in batch.scores.items()} == {
+    assert {code: diagnostics.signal_score for code, diagnostics in batch.diagnostics.items()} == {
         "600000": 0.0,
         "600001": 50.0,
         "600002": 100.0,
     }
-    assert batch.scores["600002"].components["model_prediction_rank"] == 100.0
 
 
 def test_equal_predictions_and_cost_inputs_have_equal_scores_costs_and_utility(
@@ -131,7 +129,7 @@ def test_equal_predictions_and_cost_inputs_have_equal_scores_costs_and_utility(
 
     batch = TomorrowProductionModelScoringService(profile_for(_EqualPredictor())).score(features)
 
-    assert {score.base_score for score in batch.scores.values()} == {50.0}
+    assert {item.signal_score for item in batch.diagnostics.values()} == {50.0}
     assert tuple(item.estimated_cost_pct for item in batch.diagnostics.values()) == pytest.approx((0.3, 0.3, 0.3))
     assert tuple(item.predicted_net_excess_pct for item in batch.diagnostics.values()) == pytest.approx(
         (-0.05, -0.05, -0.05)
@@ -147,7 +145,7 @@ def test_single_prediction_uses_neutral_rank_for_score_and_cost(application_feat
 
     batch = TomorrowProductionModelScoringService(profile_for(_SinglePredictor())).score((feature,))
 
-    assert batch.scores["600001"].base_score == 50.0
+    assert batch.diagnostics["600001"].signal_score == 50.0
     assert batch.diagnostics["600001"].estimated_cost_pct == pytest.approx(0.3)
     assert batch.diagnostics["600001"].predicted_net_excess_pct == pytest.approx(-0.05)
 
@@ -203,7 +201,7 @@ def test_v1_profile_does_not_require_the_unselected_reversal_family(application_
         (replace(complete, values=values),)
     )
 
-    assert set(batch.scores) == {"600001"}
+    assert set(batch.diagnostics) == {"600001"}
 
 
 def test_model_service_owns_its_history_and_profile_field_eligibility(application_feature_factory) -> None:
@@ -230,7 +228,7 @@ def test_production_model_does_not_fall_back_to_the_legacy_score_when_bound_feat
 
     batch = TomorrowProductionModelScoringService(profile_for(_Predictor())).score((complete, incomplete))
 
-    assert set(batch.scores) == {"600001"}
+    assert set(batch.diagnostics) == {"600001"}
     assert batch.missing_codes == ("600002",)
 
 
@@ -255,7 +253,7 @@ def test_production_model_skips_physical_prediction_when_every_input_is_ineligib
     )
 
     assert predictor.calls == 0
-    assert batch.scores == {}
+    assert batch.diagnostics == {}
     assert batch.missing_codes == ("600001",)
 
 
@@ -282,7 +280,7 @@ def test_v3_routes_each_input_to_its_current_industry_model(application_feature_
     batch = TomorrowProductionModelScoringService(profile_for(predictor)).score((supported, unsupported))
 
     assert predictor.industries == ("银行",)
-    assert set(batch.scores) == {"600001"}
+    assert set(batch.diagnostics) == {"600001"}
     assert batch.missing_codes == ("600002",)
 
 
@@ -299,7 +297,7 @@ def test_v3_rejects_blank_industry_before_cross_sectional_prediction(application
     service = TomorrowProductionModelScoringService(profile_for(_V3Predictor()))
     batch = service.score((complete, missing_industry))
 
-    assert set(batch.scores) == {"600001"}
+    assert set(batch.diagnostics) == {"600001"}
     assert batch.missing_codes == ("600002",)
     assert service.is_input_eligible(complete) is True
     assert service.is_input_eligible(missing_industry) is False
@@ -320,7 +318,7 @@ def test_production_model_rejects_an_unsupported_board_from_its_cross_section(
 
     batch = TomorrowProductionModelScoringService(profile_for(_Predictor())).score((complete, unsupported))
 
-    assert set(batch.scores) == {"600001"}
+    assert set(batch.diagnostics) == {"600001"}
     assert batch.missing_codes == ("830001",)
 
 

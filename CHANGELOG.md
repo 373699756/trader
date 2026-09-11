@@ -7,4 +7,4 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
-- [Tomorrow relative-score freeze evidence and Web explanation](docs/changelog/2026-09-11-tomorrow-relative-score-freeze-evidence.md)
+- [Unified short-horizon score scale](docs/changelog/2026-09-11-unified-short-horizon-score-scale.md)

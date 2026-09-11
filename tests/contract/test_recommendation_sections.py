@@ -22,14 +22,22 @@ def test_dashboard_keeps_the_fixed_long_watchlist_tabs() -> None:
     assert "/api/recommendations/" not in dashboard
 
 
-def test_dashboard_labels_high_scores_as_strategy_local() -> None:
+def test_dashboard_and_explanation_use_the_unified_short_horizon_score_scale() -> None:
     template = (ROOT / "src/trader/web/templates/index.html").read_text(encoding="utf-8")
     scoring = (ROOT / "docs/01_评分逻辑.md").read_text(encoding="utf-8")
     design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
+    retrospective = (ROOT / "docs/04_策略回溯.md").read_text(encoding="utf-8")
     normalized_scoring = " ".join(scoring.split())
     normalized_design = " ".join(design.split())
+    normalized_retrospective = " ".join(retrospective.split())
 
-    assert "策略内评分最高" in template
-    assert "仅在当前策略内比较" in template
-    assert "页面上的 0–100 分只允许在当前策略内排序和解释，不得直接横向比较" in normalized_scoring
+    assert "统一评分最高" in template
+    assert "今 / 明 / 2–5 日统一 0–100 标尺" in template
+    assert "Today、Tomorrow、D25 的最终分共享同一 0–100 质量标尺" in normalized_scoring
+    assert "模型相对排名只作为诊断" in normalized_scoring
     assert "Decision coverage、 GET、SSE 完整替换和运行诊断统一读取该聚合" in normalized_design
+    assert "预测横截面分位只作为模型相对信号诊断" in normalized_retrospective
+    assert "Tomorrow | 14:50 到下一交易日收盘的成本后净超额，14:50 冻结 | 板块证据质量权重" in (
+        normalized_retrospective
+    )
+    assert "作为 Tomorrow `base_score`" not in retrospective

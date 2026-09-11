@@ -7,13 +7,11 @@ from zoneinfo import ZoneInfo
 from trader.domain.market.models import Board
 from trader.domain.recommendation.models import BoardStrategyPolicy, ScoredDisposition, Strategy
 from trader.domain.recommendation.selection.scored_selection import (
-    ScoredModelOverrides,
     ScoredSelectionPolicy,
     ScoredSelectionRequest,
     plan_scored_candidates,
     select_scored,
 )
-from trader.domain.recommendation.strategies.composition import LocalScoreResult
 from trader.domain.review.models import RiskRule
 
 NOW = datetime(2026, 7, 28, 14, 40, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -206,9 +204,7 @@ def test_production_model_ineligible_candidate_does_not_consume_board_limit(
     features = _features(application_feature_factory, count=2)
     request = replace(
         _request(features, _selection_policy(candidate_limit=1, top_k=1)),
-        model_overrides=ScoredModelOverrides(
-            {"600001": LocalScoreResult(components={"model": 80.0}, base_score=80.0)},
-        ),
+        model_input_eligible_codes=frozenset({"600001"}),
     )
 
     result = select_scored(request)

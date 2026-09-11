@@ -28,7 +28,7 @@ from trader.application.ports.model_scoring import (
     ModelScoringDeadlineError,
     ScoringProfileRuntimeStatus,
 )
-from trader.domain.market.factors import clamp, round_score
+from trader.domain.market.factors import round_score
 from trader.domain.market.feature_contracts import (
     TOMORROW_MODEL_FEATURE_MANIFEST,
     TOMORROW_RAW_ALPHA_FEATURE_MANIFEST,
@@ -42,7 +42,6 @@ from trader.domain.recommendation.model_scoring import (
     residualize_exposure,
 )
 from trader.domain.recommendation.models import Strategy
-from trader.domain.recommendation.strategies.composition import LocalScoreResult
 
 _ALPHA_FIELDS = TOMORROW_RAW_ALPHA_FEATURE_MANIFEST.names
 _AMOUNT_FIELD = "qfq_average_amount_20d"
@@ -368,7 +367,7 @@ def _score_predictions(
     missing_codes: tuple[str, ...],
 ) -> ModelScoreBatch:
     if not predictions:
-        return TomorrowModelScoreBatch(model_version, {}, {}, (), missing_codes)
+        return TomorrowModelScoreBatch(model_version, {}, (), missing_codes)
     amihud_ranks = percentile_ranks(cost_inputs)
     costs = tuple(_COST_RATE * (1.0 + rank) for rank in amihud_ranks)
     utilities = tuple(
@@ -377,7 +376,6 @@ def _score_predictions(
     prediction_scores = _relative_prediction_scores(
         tuple(prediction.predicted_excess_return for prediction in predictions)
     )
-    scores: dict[str, LocalScoreResult] = {}
     diagnostics: dict[str, ModelDiagnostics] = {}
     for prediction, cost, utility, score in zip(
         predictions,
@@ -390,18 +388,14 @@ def _score_predictions(
         cost_pct = cost * 100.0
         net_pct = utility * 100.0
         disagreement_pct = prediction.model_disagreement * 100.0
-        components = {
-            "model_prediction_rank": round_score(score),
-            "model_confidence": round_score(clamp(100.0 / (1.0 + 100.0 * prediction.model_disagreement))),
-        }
-        scores[prediction.code] = LocalScoreResult(components, round_score(score))
         diagnostics[prediction.code] = ModelDiagnostics(
-            predicted_pct,
-            cost_pct,
-            net_pct,
-            disagreement_pct,
+            signal_score=round_score(score),
+            predicted_excess_return_pct=predicted_pct,
+            estimated_cost_pct=cost_pct,
+            predicted_net_excess_pct=net_pct,
+            model_disagreement_pct=disagreement_pct,
         )
-    return TomorrowModelScoreBatch(model_version, scores, diagnostics, predictions, missing_codes)
+    return TomorrowModelScoreBatch(model_version, diagnostics, predictions, missing_codes)
 
 
 def _residualize_rows(

@@ -130,13 +130,13 @@ def test_tomorrow_score_is_separate_from_the_cost_aware_execution_gate() -> None
         "`no_positive_net_utility`",
         "预测成本后净效用均不大于 0",
         "合法空仓结果",
-        "成本正负不得把评分改写为 0",
+        "成本正负不得改写统一证据质量分",
         "`model_net_utility_non_positive`",
     ):
         assert token in strategy
     for token in (
         "模型预测成本后净超额均未转正",
         "保持空仓",
-        "成本不得把评分统一清零",
+        "成本不得把统一评分清零",
     ):
         assert token in design

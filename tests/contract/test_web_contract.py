@@ -60,6 +60,7 @@ def test_unified_decision_routes_validate_strategy_date_and_etag() -> None:
     assert current.get_json()["items"][0]["selection_rank"] == 1
     assert current.get_json()["items"][0]["scores"]["predicted_net_excess_pct"] == 1.25
     assert [item["code"] for item in current.get_json()["top_scores"]] == ["600000"]
+    assert current.get_json()["input_versions"]["score_scale"] == "weighted_evidence_quality_0_100"
     assert current.get_json()["input_versions"]["score_model"] == ("daily_reconstructible_ensemble:model-hash")
     assert current.get_json()["items"][0]["quote"] == {
         "price": 10.25,
@@ -141,6 +142,7 @@ def test_not_ready_current_keeps_observation_draft_separate_and_private_from_sta
     assert current.get_json()["items"] == []
     assert [item["code"] for item in current.get_json()["draft"]["items"]] == ["600000"]
     assert [item["code"] for item in current.get_json()["draft"]["top_scores"]] == ["600000"]
+    assert current.get_json()["draft"]["input_versions"]["score_scale"] == ("weighted_evidence_quality_0_100")
     assert current.headers["ETag"] == f'"{draft.content_hash}"'
     assert draft.version not in status.get_data(as_text=True)
 
@@ -601,6 +603,7 @@ def _decision() -> ScoredDecision:
         None,
         (
             ("market", "market:1"),
+            ("score_scale", "weighted_evidence_quality_0_100"),
             ("score_model", "daily_reconstructible_ensemble:model-hash"),
         ),
         "config:1",

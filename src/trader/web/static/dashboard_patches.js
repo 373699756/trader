@@ -132,7 +132,12 @@
       const maximum = finiteNumber(diagnostics.maximum_final_score);
       if (evaluated == null || maximum == null) return "";
       const reasons = reasonCountSummary(inputQuality && inputQuality.supply_reason_counts, 3);
-      return `评分已完成｜最高相对信号分 ${maximum.toFixed(2)}（仅表示 ${evaluated} 只已评分股票内的排序，不代表已通过成本门）；${evaluated} 只已评分股票的预测成本后净超额均未转正，因此观察池和正式推荐均为 0只，保持空仓${reasons ? `；主要原因：${reasons}` : ""}`;
+      const unifiedScale = payload.input_versions
+        && payload.input_versions.score_scale === "weighted_evidence_quality_0_100";
+      const maximumSummary = unifiedScale
+        ? `最高统一评分 ${maximum.toFixed(2)}`
+        : `最高相对信号分 ${maximum.toFixed(2)}（仅表示 ${evaluated} 只已评分股票内的排序，不代表已通过成本门）`;
+      return `评分已完成｜${maximumSummary}；${evaluated} 只已评分股票的预测成本后净超额均未转正，因此观察池和正式推荐均为 0只，保持空仓${reasons ? `；主要原因：${reasons}` : ""}`;
     }
     const funnel = inputQuality && inputQuality.supply_funnel || {};
     const maximum = finiteNumber(diagnostics.maximum_final_score);

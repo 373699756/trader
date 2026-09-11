@@ -65,6 +65,7 @@ def serialize_decision_view(view: DecisionView) -> dict[str, object]:
                 "decision_version": view.draft.decision_version,
                 "content_hash": view.draft.content_hash,
                 "observed_at": _time(view.draft.observed_at),
+                "input_versions": dict(view.draft.input_versions),
                 "items": [serialize_decision_item(item) for item in view.draft.items],
                 "top_scores": [serialize_decision_item(item) for item in view.draft.top_scores],
             }

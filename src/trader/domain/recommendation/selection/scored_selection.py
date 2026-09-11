@@ -38,7 +38,6 @@ from trader.domain.recommendation.scoring.scoring import (
     project_board_policy,
     score_board_strategy,
 )
-from trader.domain.recommendation.strategies.composition import LocalScoreResult
 from trader.domain.review.models import RiskRule
 from trader.domain.review.rules import aggregate_risk_penalty, derive_local_risk_facts
 
@@ -97,22 +96,6 @@ class ScoredSelectionPolicy:
             raise ValueError("minimum local score must be in [0, 100]")
         object.__setattr__(self, "board_policies", MappingProxyType(policies))
         object.__setattr__(self, "risk_rules", MappingProxyType(rules))
-
-
-@dataclass(frozen=True)
-class ScoredModelOverrides:
-    scores: Mapping[str, LocalScoreResult]
-    execution_gate_reasons: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
-
-    def __post_init__(self) -> None:
-        scores = dict(self.scores)
-        gate_reasons = dict(self.execution_gate_reasons)
-        if not set(gate_reasons).issubset(scores):
-            raise ValueError("execution gates must belong to model-scored candidates")
-        if any(_STRUCTURED_REASON.fullmatch(reason) is None for reason in gate_reasons.values()):
-            raise ValueError("model execution gate reasons must be structured")
-        object.__setattr__(self, "scores", MappingProxyType(scores))
-        object.__setattr__(self, "execution_gate_reasons", MappingProxyType(gate_reasons))
 
 
 @dataclass(frozen=True)
@@ -190,7 +173,7 @@ class ScoredSelectionRequest:
     policy: ScoredSelectionPolicy
     candidate_features: Sequence[FeatureSnapshot] | None = None
     fallbacks: Mapping[Board, BoardCrossSectionFallback] = field(default_factory=lambda: MappingProxyType({}))
-    model_overrides: ScoredModelOverrides | None = None
+    execution_gate_reasons: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
     population_evaluated_at: datetime | None = None
     population_max_age_seconds: float | None = None
     minimum_history_sessions: int = 20
@@ -220,8 +203,12 @@ class ScoredSelectionRequest:
         object.__setattr__(self, "fallbacks", MappingProxyType(fallbacks))
         object.__setattr__(self, "population_evaluated_at", population_evaluated_at)
         object.__setattr__(self, "population_max_age_seconds", population_max_age_seconds)
-        if self.model_overrides is not None and not set(self.model_overrides.scores).issubset(codes):
-            raise ValueError("local score overrides must belong to the scored population")
+        gate_reasons = dict(self.execution_gate_reasons)
+        if not set(gate_reasons).issubset(codes):
+            raise ValueError("execution gates must belong to the scored population")
+        if any(_STRUCTURED_REASON.fullmatch(reason) is None for reason in gate_reasons.values()):
+            raise ValueError("execution gate reasons must be structured")
+        object.__setattr__(self, "execution_gate_reasons", MappingProxyType(gate_reasons))
         if self.model_input_eligible_codes is not None:
             eligible_codes = frozenset(self.model_input_eligible_codes)
             if not eligible_codes.issubset(codes):
@@ -599,17 +586,7 @@ def _score_board_candidates(
     selected_codes: list[str] = []
     for candidate_rank, code in enumerate(selected, start=1):
         feature = evaluations[code].features
-        local = (
-            request.model_overrides.scores.get(code)
-            if request.model_overrides
-            else score_board_strategy(feature, policy)
-        )
-        if local is None:
-            evaluations[code] = replace(
-                evaluations[code],
-                selection_skip_reason="production_model_features_missing",
-            )
-            continue
+        local = score_board_strategy(feature, policy)
         local_facts = derive_local_risk_facts(
             feature,
             request.evaluated_at,
@@ -632,9 +609,7 @@ def _score_board_candidates(
             local_risk_penalty=round_score(penalty),
             local_score=round_score(clamp(local.base_score - penalty)),
             local_risk_facts=local_facts,
-            execution_gate_reason=(
-                request.model_overrides.execution_gate_reasons.get(code, "") if request.model_overrides else ""
-            ),
+            execution_gate_reason=request.execution_gate_reasons.get(code, ""),
         )
         selected_codes.append(code)
     return tuple(selected_codes)
@@ -651,7 +626,7 @@ def _score_input_skip_reason(feature: FeatureSnapshot, request: ScoredSelectionR
 def _model_input_is_eligible(code: str, request: ScoredSelectionRequest) -> bool:
     if request.model_input_eligible_codes is not None:
         return code in request.model_input_eligible_codes
-    return request.model_overrides is None or code in request.model_overrides.scores
+    return True
 
 
 def _rank_local_candidates(
@@ -724,7 +699,6 @@ def _reliability_audit(feature: FeatureSnapshot, threshold: float) -> FilterAudi
 
 __all__ = [
     "BoardCrossSectionFallback",
-    "ScoredModelOverrides",
     "ScoredCandidatePlan",
     "ScoredCandidateStageCounts",
     "ScoredSelectionPolicy",

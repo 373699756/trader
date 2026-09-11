@@ -104,8 +104,11 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     assert projection.local.selection_diagnostics.executable_threshold == 78.0
     assert projection.local.selection_diagnostics.observation_floor == 73.0
     assert projection.input_quality.history_required_sessions == 61
+    assert ("score_scale", "weighted_evidence_quality_0_100") in projection.local.input_versions
     assert ("score_model", f"daily_reconstructible_ensemble:{'b' * 64}") in projection.local.input_versions
     assert all(item.model_diagnostics is not None for item in projection.local.items)
+    assert all("model_prediction_rank" not in dict(item.score_components) for item in projection.local.items)
+    assert all("tail_structure" in dict(item.score_components) for item in projection.local.items)
     assert all(
         item.model_diagnostics.predicted_net_excess_pct > 0 for item in projection.local.items if item.model_diagnostics
     )
@@ -167,13 +170,18 @@ def test_tomorrow_non_positive_utility_keeps_scores_but_cannot_enter_recommendat
 
     diagnostics = projection.local.selection_diagnostics
     assert diagnostics is not None
-    assert diagnostics.maximum_final_score == 100.0
+    assert diagnostics.maximum_final_score == max(item.final_score for item in projection.local.items)
+    assert diagnostics.maximum_final_score < 90.0
     assert diagnostics.evaluated_count == 3
     assert diagnostics.empty_reason == "no_positive_net_utility"
     assert projection.review_candidates == ()
     assert not any(item.selected for item in projection.local.items)
     assert {item.action.value for item in projection.local.items} == {"unavailable"}
     assert {item.reason for item in projection.local.items} == {"model_net_utility_non_positive"}
+    assert len({item.local_score for item in projection.local.items}) == 1
+    assert {
+        item.model_diagnostics.signal_score for item in projection.local.items if item.model_diagnostics is not None
+    } == {0.0, 50.0, 100.0}
     assert build_supply_status(projection).primary_blocker == "no_positive_net_utility"
     assert build_supply_status(projection, candidate_quote_eligible=0).supply_funnel.candidate_quote_eligible == 0
 
@@ -359,6 +367,7 @@ def test_native_projection_scores_fresh_candidates_against_their_coherent_older_
     )
     assert projection.selection.population_rejected_count == 0
     assert projection.input_quality.candidate_scored_count == 100
+    assert ("score_scale", "weighted_evidence_quality_0_100") in projection.local.input_versions
     assert "stale_quote" not in projection.selection.population_filter_reason_counts
     assert all(item.local_score is not None for item in projection.selection.scored_candidates)
 

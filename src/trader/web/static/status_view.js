@@ -477,6 +477,11 @@
     const diagnostics = payload && payload.selection_diagnostics || {};
     const tomorrowCostBlocked = payload && payload.strategy === "tomorrow"
       && diagnostics.empty_reason === "no_positive_net_utility";
+    const scoreIdentity = payload && payload.input_versions && payload.input_versions.score_scale
+      ? payload.input_versions
+      : payload && payload.draft && payload.draft.input_versions;
+    const unifiedScale = scoreIdentity
+      && scoreIdentity.score_scale === "weighted_evidence_quality_0_100";
     const evaluated = Number(payload && payload.coverage && payload.coverage.evaluated_count);
     const scoreEvidenceMissing = tomorrowCostBlocked && Number.isInteger(evaluated) && evaluated === 0;
     const maximum = scoreEvidenceMissing ? null : finiteNumber(diagnostics.maximum_final_score);
@@ -487,18 +492,28 @@
         : maximum == null
           ? "暂无评分数据"
           : tomorrowCostBlocked
-            ? `最高相对信号分 ${maximum.toFixed(2)}`
+            ? unifiedScale
+              ? `最高统一评分 ${maximum.toFixed(2)}`
+              : `最高相对信号分 ${maximum.toFixed(2)}`
             : `最高分 ${maximum.toFixed(2)}`;
     if (els.topScoresMeta) {
       els.topScoresMeta.textContent = scoreEvidenceMissing
         ? "明日冻结记录 · 已评分证据不完整"
         : tomorrowCostBlocked
-          ? "明日策略内相对排名 · 未通过成本门"
+          ? unifiedScale
+            ? "统一 0–100 质量分 · 未通过成本门"
+            : "旧明日相对排名 · 未通过成本门"
           : scoredItems.length
-            ? `策略内最终评分 · ${scoredItems.length} 只`
+            ? unifiedScale
+              ? `统一最终评分 · ${scoredItems.length} 只`
+              : `策略内最终评分 · ${scoredItems.length} 只`
             : maximum == null
-              ? "策略内最终评分 · 当前无可用数据"
-              : "策略内最高最终分 · 当前无达到观察门槛的股票";
+              ? unifiedScale
+                ? "统一最终评分 · 当前无可用数据"
+                : "策略内最终评分 · 当前无可用数据"
+              : unifiedScale
+                ? "统一最高最终分 · 当前无达到观察门槛的股票"
+                : "策略内最高最终分 · 当前无达到观察门槛的股票";
     }
   }
 

@@ -12,7 +12,6 @@ from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
 from trader.domain.recommendation.model_scoring.residualization import ExposureContract
 from trader.domain.recommendation.models import Strategy
-from trader.domain.recommendation.strategies.composition import LocalScoreResult
 
 
 @dataclass(frozen=True)
@@ -96,23 +95,48 @@ class ModelPredictorPort(Protocol):
 
 @dataclass(frozen=True)
 class ModelDiagnostics:
+    signal_score: float
     predicted_excess_return_pct: float
     estimated_cost_pct: float
     predicted_net_excess_pct: float
     model_disagreement_pct: float
 
+    def __post_init__(self) -> None:
+        values = (
+            self.signal_score,
+            self.predicted_excess_return_pct,
+            self.estimated_cost_pct,
+            self.predicted_net_excess_pct,
+            self.model_disagreement_pct,
+        )
+        if (
+            any(not math.isfinite(value) for value in values)
+            or not 0.0 <= self.signal_score <= 100.0
+            or self.estimated_cost_pct < 0.0
+            or self.model_disagreement_pct < 0.0
+        ):
+            raise ValueError("model diagnostics are invalid")
+
 
 @dataclass(frozen=True)
 class ModelScoreBatch:
     model_version: str
-    scores: Mapping[str, LocalScoreResult]
     diagnostics: Mapping[str, ModelDiagnostics]
     predictions: tuple[HeadPrediction, ...]
     missing_codes: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "scores", MappingProxyType(dict(self.scores)))
-        object.__setattr__(self, "diagnostics", MappingProxyType(dict(self.diagnostics)))
+        diagnostics = dict(self.diagnostics)
+        prediction_codes = tuple(item.code for item in self.predictions)
+        if (
+            not self.model_version
+            or len(prediction_codes) != len(set(prediction_codes))
+            or set(diagnostics) != set(prediction_codes)
+            or len(self.missing_codes) != len(set(self.missing_codes))
+            or set(self.missing_codes).intersection(prediction_codes)
+        ):
+            raise ValueError("model score batch identity is invalid")
+        object.__setattr__(self, "diagnostics", MappingProxyType(diagnostics))
 
 
 @dataclass(frozen=True)
