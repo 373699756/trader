@@ -1,0 +1,13 @@
+# Managed by Trader history automation. Local edits prevent automatic replacement or removal.
+[Unit]
+Description=Run Trader history maintenance after market close and in the evening
+
+[Timer]
+OnCalendar=*-*-* 15:10:00 Asia/Shanghai
+OnCalendar=*-*-* 20:30:00 Asia/Shanghai
+Persistent=true
+AccuracySec=1min
+Unit=trader-history-maintenance.service
+
+[Install]
+WantedBy=timers.target

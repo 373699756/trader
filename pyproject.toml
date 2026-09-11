@@ -51,6 +51,7 @@ include = ["trader*"]
 ]
 "trader.infra.scoring.profiles.v1" = ["model.json"]
 "trader.infra.scoring.profiles.v2" = ["model.json"]
+"trader.infra.research.history_automation_templates" = ["*.in", "linux.timer"]
 
 [tool.ruff]
 line-length = 120

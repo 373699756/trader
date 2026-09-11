@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Cross-platform history automation and due reminders](2026-09-11-history-automation.md)
 - [History download progress and timeout diagnostics](2026-09-11-history-download-progress.md)
 - [Tomorrow training cadence](2026-09-11-tomorrow-training-cadence.md)
 - [2026-09-11 delivery-log archive](2026-09-11-delivery-log-archive.md)

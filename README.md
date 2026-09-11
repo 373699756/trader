@@ -45,11 +45,13 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 ./run.sh --profile v2
 ./run.sh download_history
 ./run.sh train-tomorrow
+./run.sh install-history-automation
+./run.sh uninstall-history-automation
 ./run.sh help
 ```
 
 日常启动不需要参数，默认使用 Tomorrow V1；追加 `--profile v2` 才使用 V2，该覆盖不会写回配置。
-`check` 依次执行配置校验、只读研究状态和所选档位的离线性能门禁；`download_history` 是唯一零参数历史维护
+`check` 依次执行配置校验、只读研究状态、持久化训练 due/提醒状态和所选档位的离线性能门禁；`download_history` 是唯一零参数历史维护
 入口，`train-tomorrow` 负责统一的 Tomorrow 离线训练链。旧 H0 历史归档、回测和筛选入口已退役，
 不再通过启动流程执行。离线研究不会随服务启动自动执行。底层
 `trader-cli performance-check` 仍可用 `--output` 保存报告或用 `--baseline` 执行 5% 相对回归门禁；它
@@ -59,6 +61,13 @@ BaoStock 下载是独立研究命令，必须先安装 `trader-research-dashboar
 重构控制库、内容寻址月分片读取面和零参数同步已经交付：命令自动执行初次最近 2000 日、日更缺口、最近 5 日
 回读或返回 `already_current`，失败与取消不改变上一 active snapshot；它不会被启动、`check`、Web 或
 `train-tomorrow` 隐式调用。
+
+历史自动化固定为“每日自动同步、到期只提醒”。`install-history-automation` 会先显示待写入的当前用户任务并要求
+确认：Linux 安装带 `Persistent=true` 的 systemd user timer，Windows 安装带 `StartWhenAvailable` 的任务，
+macOS 安装带日历触发与登录补跑的 LaunchAgent；每天按上海时间 15:10 和 20:30 调用同一零参数维护命令。
+安装会验证既有虚拟环境和 BaoStock 依赖，计划任务自身不会安装或升级包；卸载只移除内容未被用户改写的托管文件。
+任务日志写入 `.runtime/trader/logs/history-automation.log` 并按大小轮转。同一训练 due 身份在每个上海日期最多通知
+一次；桌面通知不可用只记为 `notification_degraded`，不会把成功下载改成失败，也不会自动训练、切换档位或重启服务。
 
 如工作机仍有封存的旧父/增量归档，可运行一次性、带进度的低资源转换；默认补下载可证明的
 `raw/qfq/is_st` 缺口，完全离线时追加 `--offline`：

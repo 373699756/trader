@@ -1,0 +1,10 @@
+# Managed by Trader history automation. Local edits prevent automatic replacement or removal.
+[Unit]
+Description=Trader historical data maintenance
+
+[Service]
+Type=oneshot
+WorkingDirectory={{WORKING_DIRECTORY}}
+ExecStart={{PYTHON_EXECUTABLE}} -m trader.entrypoints.cli --config {{CONFIG_PATH}} scheduled-history-maintenance
+Environment=PYTHONUNBUFFERED=1
+TimeoutStartSec=12h

@@ -18,6 +18,8 @@ usage() {
     "  ./run.sh                         以默认 V1 启动本地 A 股研究看板" \
     "  ./run.sh --profile v2            显式使用 V2 启动" \
     "  ./run.sh check                   依次校验配置、研究状态和性能门禁" \
+    "  ./run.sh install-history-automation   安装当前用户 15:10/20:30 历史同步任务" \
+    "  ./run.sh uninstall-history-automation 卸载当前用户历史同步任务" \
     "  ./run.sh help                    查看本帮助" \
     "" \
     "离线研究（仅在明确执行研究任务时使用）:" \
@@ -52,7 +54,7 @@ while (($#)); do
       SCORING_PROFILE_SET=1
       shift
       ;;
-    help|-h|--help|check|download_history|train-tomorrow)
+    help|-h|--help|check|download_history|train-tomorrow|install-history-automation|uninstall-history-automation)
       if ((MODE_SET)); then
         FORWARD_ARGS+=("$1")
       else
@@ -80,7 +82,7 @@ if [[ "$SCORING_PROFILE" != "v1" && "$SCORING_PROFILE" != "v2" && "$SCORING_PROF
   exit 2
 fi
 
-if [[ "$MODE" == "download_history" || "$MODE" == "train-tomorrow" ]] && ((SCORING_PROFILE_SET || ${#FORWARD_ARGS[@]})); then
+if [[ "$MODE" == "download_history" || "$MODE" == "train-tomorrow" || "$MODE" == "install-history-automation" || "$MODE" == "uninstall-history-automation" ]] && ((SCORING_PROFILE_SET || ${#FORWARD_ARGS[@]})); then
   printf '%s\n' "$MODE 不接受任何参数；请只运行 ./run.sh $MODE。" >&2
   exit 2
 fi
@@ -93,7 +95,7 @@ case "$MODE" in
   "")
     COMMAND_KIND="server"
     ;;
-  check|download_history|train-tomorrow)
+  check|download_history|train-tomorrow|install-history-automation|uninstall-history-automation)
     COMMAND_KIND="cli"
     ;;
   *)
@@ -152,5 +154,8 @@ if [[ "$MODE" == "download_history" ]]; then
 fi
 if [[ "$MODE" == "train-tomorrow" ]]; then
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" train-tomorrow
+fi
+if [[ "$MODE" == "install-history-automation" || "$MODE" == "uninstall-history-automation" ]]; then
+  exec "$ENTRYPOINT" --config "$CONFIG_PATH" "$MODE"
 fi
 exec "$ENTRYPOINT" --config "$CONFIG_PATH" --profile "$SCORING_PROFILE" "$MODE" "${FORWARD_ARGS[@]}"

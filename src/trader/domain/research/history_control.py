@@ -269,6 +269,21 @@ def calculate_history_training_cache_invalidation_dates(
 
 
 @dataclass(frozen=True)
+class HistoryReminderClaim:
+    due_identity: str
+    reminder_date: date
+    claimed_at: datetime
+    content_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        _require_identity(self.due_identity, "reminder claim due identity")
+        _require_shanghai(self.claimed_at, "reminder claim")
+        if self.claimed_at.date() != self.reminder_date:
+            raise ValueError("history reminder claim is invalid")
+        object.__setattr__(self, "content_hash", canonical_hash(self))
+
+
+@dataclass(frozen=True)
 class HistoryReminderState:
     due_identity: str
     reminder_date: date
@@ -383,6 +398,7 @@ class HistoryControlState:
     checkpoints: tuple[HistorySyncCheckpoint, ...]
     due_states: tuple[HistoryTrainingDueState, ...]
     reminders: tuple[HistoryReminderState, ...]
+    reminder_claims: tuple[HistoryReminderClaim, ...]
     snapshots: tuple[HistoryActiveSnapshot, ...]
     active_snapshot_hash: str | None
 
@@ -393,6 +409,7 @@ class HistoryControlState:
         checkpoints = tuple(sorted(self.checkpoints, key=lambda item: (item.sync_identity, item.ordinal)))
         due_states = tuple(sorted(self.due_states, key=lambda item: item.due_identity))
         reminders = tuple(sorted(self.reminders, key=lambda item: (item.due_identity, item.reminder_date)))
+        reminder_claims = tuple(sorted(self.reminder_claims, key=lambda item: (item.due_identity, item.reminder_date)))
         snapshots = tuple(sorted(self.snapshots, key=lambda item: item.sequence))
         if self.active_snapshot_hash is not None:
             _require_hash(self.active_snapshot_hash, "active snapshot")
@@ -406,6 +423,7 @@ class HistoryControlState:
             (checkpoints, tuple((item.sync_identity, item.ordinal) for item in checkpoints)),
             (due_states, tuple(item.due_identity for item in due_states)),
             (reminders, tuple((item.due_identity, item.reminder_date) for item in reminders)),
+            (reminder_claims, tuple((item.due_identity, item.reminder_date) for item in reminder_claims)),
             (snapshots, tuple(item.sequence for item in snapshots)),
         ):
             if len(values) != len(set(identities)):
@@ -430,6 +448,7 @@ class HistoryControlState:
         object.__setattr__(self, "checkpoints", checkpoints)
         object.__setattr__(self, "due_states", due_states)
         object.__setattr__(self, "reminders", reminders)
+        object.__setattr__(self, "reminder_claims", reminder_claims)
         object.__setattr__(self, "snapshots", snapshots)
 
     @property
@@ -437,11 +456,43 @@ class HistoryControlState:
         return next((item for item in self.snapshots if item.content_hash == self.active_snapshot_hash), None)
 
 
+@dataclass(frozen=True)
+class HistoryAutomationControlState:
+    """Bounded persisted state required by unattended synchronization status."""
+
+    active_snapshot: HistoryActiveSnapshot | None
+    due_states: tuple[HistoryTrainingDueState, ...]
+    reminders: tuple[HistoryReminderState, ...]
+    reminder_claims: tuple[HistoryReminderClaim, ...]
+
+    def __post_init__(self) -> None:
+        due_states = tuple(sorted(self.due_states, key=lambda item: item.due_identity))
+        reminders = tuple(sorted(self.reminders, key=lambda item: (item.due_identity, item.reminder_date)))
+        reminder_claims = tuple(sorted(self.reminder_claims, key=lambda item: (item.due_identity, item.reminder_date)))
+        for values, identities in (
+            (due_states, tuple(item.due_identity for item in due_states)),
+            (reminders, tuple((item.due_identity, item.reminder_date) for item in reminders)),
+            (reminder_claims, tuple((item.due_identity, item.reminder_date) for item in reminder_claims)),
+        ):
+            if len(values) != len(set(identities)):
+                raise ValueError("history automation control contains duplicate identities")
+        due_identities = {item.due_identity for item in due_states}
+        unsealed_reminder = any(item.due_identity not in due_identities for item in reminders)
+        unsealed_claim = any(item.due_identity not in due_identities for item in reminder_claims)
+        if unsealed_reminder or unsealed_claim:
+            raise ValueError("history automation control contains an unsealed due identity")
+        object.__setattr__(self, "due_states", due_states)
+        object.__setattr__(self, "reminders", reminders)
+        object.__setattr__(self, "reminder_claims", reminder_claims)
+
+
 __all__ = [
     "HistoryActiveSnapshot",
+    "HistoryAutomationControlState",
     "HistoryCalendarIdentity",
     "HistoryControlState",
     "HistoryDiskRequirement",
+    "HistoryReminderClaim",
     "HistoryReminderOutcome",
     "HistoryReminderState",
     "HistorySecurityBoard",

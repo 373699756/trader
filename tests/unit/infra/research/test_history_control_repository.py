@@ -7,12 +7,14 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
+import trader.infra.research.history_control_repository as control_repository_module
 
 from trader.domain.research.history_control import (
     HistoryActiveSnapshot,
     HistoryCalendarIdentity,
     HistoryControlState,
     HistoryDiskRequirement,
+    HistoryReminderClaim,
     HistoryReminderState,
     HistorySecurityIdentity,
     HistorySnapshotPartition,
@@ -44,6 +46,7 @@ def _values(sequence: int = 1, cutoff: date = date(2026, 9, 10)):
     due = HistoryTrainingDueState("due-20260910", "initial_training_required", None, cutoff, 0, False, NOW)
     reminder_at = NOW.replace(year=cutoff.year, month=cutoff.month, day=cutoff.day)
     reminder = HistoryReminderState("due-20260910", cutoff, "notification_degraded", reminder_at, "notify_failed")
+    reminder_claim = HistoryReminderClaim("due-20260910", cutoff, reminder_at)
     snapshot = HistoryActiveSnapshot(
         sequence,
         cutoff,
@@ -53,16 +56,17 @@ def _values(sequence: int = 1, cutoff: date = date(2026, 9, 10)):
         source.content_hash,
         (HistorySnapshotPartition(f"partitions/{cutoff:%Y/%m}/{'a' * 64}.sqlite3", "a" * 64, 2),),
     )
-    return source, calendar, universe, checkpoint, due, reminder, snapshot
+    return source, calendar, universe, checkpoint, due, reminder_claim, reminder, snapshot
 
 
 def _save_all(repository: SQLiteHistoryControlRepository, values) -> HistoryControlState:
-    source, calendar, universe, checkpoint, due, reminder, snapshot = values
+    source, calendar, universe, checkpoint, due, reminder_claim, reminder, snapshot = values
     repository.save_source(source)
     repository.save_calendar(calendar)
     repository.save_universe(universe)
     repository.save_checkpoint(checkpoint)
     repository.save_due_state(due)
+    repository.claim_reminder(reminder_claim)
     repository.save_reminder(reminder)
     repository.publish_snapshot(snapshot)
     return repository.load_state()
@@ -78,7 +82,31 @@ def test_control_repository_round_trips_typed_state_and_replays_same_content(tmp
 
     assert replayed == expected
     assert replayed.active_snapshot == values[-1]
+    assert replayed.reminder_claims == (values[-3],)
+    automation = repository.load_automation_state()
+    assert automation.active_snapshot == values[-1]
+    assert automation.due_states == (values[4],)
+    assert automation.reminder_claims == (values[5],)
+    assert automation.reminders == (values[6],)
     assert repository.integrity().state == "healthy"
+
+
+def test_automation_state_decodes_only_bounded_status_records(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repository = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3")
+    repository.initialize()
+    _save_all(repository, _values())
+    decoded_kinds: list[str] = []
+    original_decode = control_repository_module._decode_record
+
+    def track_decode(kind, payload_json):
+        decoded_kinds.append(kind)
+        return original_decode(kind, payload_json)
+
+    monkeypatch.setattr(control_repository_module, "_decode_record", track_decode)
+
+    repository.load_automation_state()
+
+    assert set(decoded_kinds) == {"due", "reminder_claim", "reminder", "snapshot"}
 
 
 def test_control_repository_rejects_same_identity_with_different_content(tmp_path: Path) -> None:
@@ -127,6 +155,22 @@ def test_snapshot_publication_rejects_unsealed_parent_identities(tmp_path: Path)
 
     with pytest.raises(HistoryControlConflictError, match="parent identities"):
         repository.publish_snapshot(snapshot)
+
+
+def test_reminder_claim_is_atomic_across_restart_and_dates(tmp_path: Path) -> None:
+    path = tmp_path / "control.sqlite3"
+    repository = SQLiteHistoryControlRepository(path)
+    repository.initialize()
+    first = HistoryReminderClaim("due-20260910", date(2026, 9, 10), NOW)
+
+    assert repository.claim_reminder(first) is True
+    restarted = SQLiteHistoryControlRepository(path)
+    assert restarted.claim_reminder(first) is False
+
+    next_day_at = NOW.replace(day=11)
+    next_day = HistoryReminderClaim("due-20260910", date(2026, 9, 11), next_day_at)
+    assert restarted.claim_reminder(next_day) is True
+    assert restarted.load_state().reminder_claims == (first, next_day)
 
 
 def test_corrupt_control_database_rebuilds_from_verified_typed_state(tmp_path: Path) -> None:

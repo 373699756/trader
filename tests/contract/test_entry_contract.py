@@ -200,6 +200,25 @@ def test_run_script_rejects_download_history_arguments_before_environment_setup(
     assert not missing_venv.exists()
 
 
+@pytest.mark.parametrize("command", ("install-history-automation", "uninstall-history-automation"))
+def test_run_script_rejects_automation_arguments_before_environment_setup(command: str, tmp_path: Path) -> None:
+    missing_venv = tmp_path / "must-not-exist"
+
+    completed = subprocess.run(
+        ("bash", str(ROOT / "run.sh"), command, "unexpected"),
+        cwd=ROOT,
+        env={**os.environ, "VENV_DIR": str(missing_venv)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert f"{command} 不接受任何参数" in completed.stderr
+    assert not missing_venv.exists()
+
+
 def test_run_script_without_arguments_still_starts_the_dashboard(tmp_path: Path) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
@@ -318,6 +337,28 @@ def test_run_script_forwards_only_the_zero_argument_history_command(tmp_path: Pa
     assert completed.stdout == f"cli:--config {config} download_history\n"
 
 
+@pytest.mark.parametrize("command", ("install-history-automation", "uninstall-history-automation"))
+def test_run_script_forwards_only_the_confirmed_user_automation_action(command: str, tmp_path: Path) -> None:
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    _write_fake_entrypoint(venv_bin / "python", "exit 99")
+    _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
+    _write_fake_entrypoint(venv_bin / "trader-cli", "printf 'cli:%s\\n' \"$*\"")
+    config = tmp_path / "runtime.json"
+
+    completed = subprocess.run(
+        ("bash", str(ROOT / "run.sh"), command),
+        cwd=ROOT,
+        env={**os.environ, "VENV_DIR": str(venv_bin.parent), "TRADER_CONFIG": str(config)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == f"cli:--config {config} {command}\n"
+
+
 def test_run_script_forwards_the_single_tomorrow_training_command_without_stage_arguments(tmp_path: Path) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
@@ -382,7 +423,7 @@ def test_run_script_rejects_an_unknown_profile_before_environment_setup(tmp_path
 
 @pytest.mark.parametrize(
     ("command", "extra", "expected_stages"),
-    (("check", (), ("validate-config", "research-status", "performance-check")),),
+    (("check", (), ("validate-config", "research-status", "history-automation-status", "performance-check")),),
 )
 def test_cli_aggregates_all_stages_and_preserves_nonzero_gate_results(
     command: str,
@@ -431,7 +472,10 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert '$ScoringProfile -notin @("v1", "v2", "v3")' in powershell
     assert "config\\runtime.json" in powershell
     assert "config\\v2\\runtime.json" not in powershell
-    assert '$Mode -in @("download_history", "train-tomorrow")' in powershell
+    assert (
+        '$Mode -in @("download_history", "train-tomorrow", '
+        '"install-history-automation", "uninstall-history-automation")' in powershell
+    )
 
 
 def test_research_status_is_historical_only_and_does_not_create_runtime_files(

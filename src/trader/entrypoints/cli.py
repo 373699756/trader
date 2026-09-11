@@ -8,15 +8,18 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, Literal, cast
 from zoneinfo import ZoneInfo
 
 from trader.domain.recommendation.model_scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
 from trader.infra.settings import RuntimeSettings, load_long_watchlist, load_runtime_settings, load_strategy_settings
 
+if TYPE_CHECKING:
+    from trader.application.research.history_sync import HistorySyncConfiguration
+
 _COMMAND_GROUPS = {
-    "check": ("validate-config", "research-status", "performance-check"),
+    "check": ("validate-config", "research-status", "history-automation-status", "performance-check"),
 }
 
 
@@ -49,6 +52,22 @@ def build_parser() -> argparse.ArgumentParser:
         "download_history",
         help="Run the zero-argument historical-data maintenance workflow.",
     )
+    subparsers.add_parser(
+        "scheduled-history-maintenance",
+        help="Run the installed zero-argument history task without environment installation.",
+    )
+    subparsers.add_parser(
+        "history-automation-status",
+        help="Read the persisted history due and reminder state without recalculation.",
+    )
+    subparsers.add_parser(
+        "install-history-automation",
+        help="Install the current user's 15:10 and 20:30 history synchronization tasks.",
+    )
+    subparsers.add_parser(
+        "uninstall-history-automation",
+        help="Remove the current user's Trader history synchronization tasks.",
+    )
     subparsers.add_parser("research-status", help="Read immutable research coverage and capacity status.")
     subparsers.add_parser(
         "research-scoring-hot-path-baseline",
@@ -71,25 +90,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI command dispatch
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command == "download_history":
-        if args.profile is not None:
-            parser.error("download_history does not accept --profile")
-        from trader.application.research.history_sync import HistorySyncConfiguration
-        from trader.entrypoints.history_maintenance_projection import project_history_maintenance_status
-        from trader.entrypoints.history_sync_progress import StderrHistorySyncProgress
-        from trader.infra.research.baostock_sync_supplier import BaoStockHistorySupplier
-        from trader.infra.research.history_sync_runtime import run_history_sync
-
-        repository_root = _repository_root_for_validation()
-        configuration = HistorySyncConfiguration(
-            archive_root=repository_root / "data" / "history" / "baostock",
-            training_root=repository_root / "data" / "train",
-        )
-        progress = StderrHistorySyncProgress()
-        with BaoStockHistorySupplier(configuration, progress=progress) as supplier:
-            status = run_history_sync(configuration, supplier, progress=progress)
-        print(json.dumps(project_history_maintenance_status(status), ensure_ascii=False, sort_keys=True))
-        return 0 if status.state in {"completed", "already_current"} else 1
+    maintenance_exit = _run_history_maintenance_command(
+        args.command,
+        cast(str, args.config),
+        cast(str | None, args.profile),
+        parser,
+    )
+    if maintenance_exit is not None:
+        return maintenance_exit
     if args.command == "train-tomorrow":
         if args.profile is not None:
             parser.error("train-tomorrow does not accept --profile")
@@ -137,6 +145,154 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
 def _configure_tomorrow_training_resources() -> None:
     for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         os.environ[name] = "2"
+
+
+def _run_history_maintenance_command(
+    command: str,
+    raw_config_path: str,
+    profile: str | None,
+    parser: argparse.ArgumentParser,
+) -> int | None:
+    if command == "download_history":
+        if profile is not None:
+            parser.error("download_history does not accept --profile")
+        return _run_history_download()
+    if command == "history-automation-status":
+        from trader.entrypoints.history_automation_projection import project_history_automation_status
+        from trader.infra.research.history_automation_status import read_history_automation_status
+
+        repository_root = _repository_root_for_validation()
+        status = read_history_automation_status(repository_root / "data" / "history" / "baostock", _shanghai_now())
+        print(json.dumps(project_history_automation_status(status), ensure_ascii=False, sort_keys=True))
+        return 0
+    if command not in {
+        "scheduled-history-maintenance",
+        "install-history-automation",
+        "uninstall-history-automation",
+    }:
+        return None
+    if profile is not None:
+        parser.error(f"{command} does not accept --profile")
+    config_path = _absolute_config_path(raw_config_path)
+    runtime = load_runtime_settings(config_path)
+    if command == "scheduled-history-maintenance":
+        return _run_scheduled_history_maintenance(runtime.runtime_dir)
+    return _change_history_automation_installation(command, config_path)
+
+
+def _run_history_download() -> int:
+    from trader.entrypoints.history_maintenance_projection import project_history_maintenance_status
+    from trader.entrypoints.history_sync_progress import StderrHistorySyncProgress
+    from trader.infra.research.baostock_sync_supplier import BaoStockHistorySupplier
+    from trader.infra.research.history_sync_runtime import run_history_sync
+
+    repository_root = _repository_root_for_validation()
+    configuration = _history_sync_configuration(repository_root)
+    progress = StderrHistorySyncProgress()
+    with BaoStockHistorySupplier(configuration, progress=progress) as supplier:
+        status = run_history_sync(configuration, supplier, progress=progress)
+    print(json.dumps(project_history_maintenance_status(status), ensure_ascii=False, sort_keys=True))
+    return 0 if status.state in {"completed", "already_current"} else 1
+
+
+def _run_scheduled_history_maintenance(runtime_dir: Path) -> int:
+    from trader.entrypoints.history_automation_projection import project_history_automation_run_status
+    from trader.infra.research.baostock_sync_supplier import BaoStockHistorySupplier
+    from trader.infra.research.history_automation_runtime import (
+        PlatformHistoryDesktopNotifier,
+        RotatingHistoryAutomationLog,
+        run_scheduled_history_maintenance,
+    )
+    from trader.infra.research.history_sync_runtime import run_history_sync
+
+    observed_at = _shanghai_now()
+    repository_root = _repository_root_for_validation()
+    configuration = _history_sync_configuration(repository_root)
+    task_log = RotatingHistoryAutomationLog(runtime_dir / "logs" / "history-automation.log")
+    try:
+        with BaoStockHistorySupplier(configuration, progress=task_log) as supplier:
+            status = run_scheduled_history_maintenance(
+                configuration,
+                lambda progress: run_history_sync(
+                    configuration,
+                    supplier,
+                    clock=lambda: observed_at,
+                    progress=progress,
+                ),
+                PlatformHistoryDesktopNotifier(),
+                observed_at,
+                progress=task_log,
+            )
+        try:
+            task_log.publish_run(status)
+        except OSError:
+            print(
+                '{"reason":"log_write_failed","schema_version":"history_automation_log","state":"degraded"}',
+                file=sys.stderr,
+                flush=True,
+            )
+        print(json.dumps(project_history_automation_run_status(status), ensure_ascii=False, sort_keys=True))
+        return 0 if status.successful else 1
+    finally:
+        task_log.close()
+
+
+def _change_history_automation_installation(command: str, config_path: Path) -> int:
+    from trader.entrypoints.history_automation_projection import project_history_automation_installation_result
+    from trader.infra.research.history_automation_installation import (
+        HistoryAutomationInstallationRequest,
+        apply_history_automation_installation,
+        plan_history_automation_installation,
+        remove_history_automation_installation,
+    )
+
+    request = HistoryAutomationInstallationRequest(
+        _history_automation_platform(),
+        _repository_root_for_validation(),
+        config_path,
+        Path(sys.executable).resolve(),
+        Path.home().resolve(),
+        os.getuid() if hasattr(os, "getuid") else 0,
+    )
+    plan = plan_history_automation_installation(request)
+    action = "安装" if command == "install-history-automation" else "卸载"
+    print(f"将{action}以下当前用户任务文件：")
+    for managed in plan.files:
+        print(f"  {managed.path}")
+    print("将执行：")
+    commands = plan.install_commands if command == "install-history-automation" else plan.uninstall_commands
+    for scheduler_command in commands:
+        print("  " + " ".join(scheduler_command))
+    confirmed = input(f"确认{action}？[y/N] ").strip().lower() in {"y", "yes"}
+    if command == "install-history-automation":
+        result = apply_history_automation_installation(plan, confirmed=confirmed)
+    else:
+        result = remove_history_automation_installation(plan, confirmed=confirmed)
+    print(json.dumps(project_history_automation_installation_result(result), ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+def _history_sync_configuration(repository_root: Path) -> HistorySyncConfiguration:
+    from trader.application.research.history_sync import HistorySyncConfiguration
+
+    return HistorySyncConfiguration(
+        archive_root=repository_root / "data" / "history" / "baostock",
+        training_root=repository_root / "data" / "train",
+    )
+
+
+def _history_automation_platform() -> Literal["linux", "windows", "macos"]:
+    if sys.platform.startswith("linux"):
+        return "linux"
+    if sys.platform == "darwin":
+        return "macos"
+    if sys.platform == "win32":
+        return "windows"
+    raise SystemExit("当前平台不支持历史自动化任务")
+
+
+def _shanghai_now() -> datetime:
+    return datetime.now(ZoneInfo("Asia/Shanghai"))
 
 
 def _run_config_validation(

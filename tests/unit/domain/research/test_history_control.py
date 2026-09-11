@@ -10,6 +10,7 @@ from trader.domain.research.history_control import (
     HistoryActiveSnapshot,
     HistoryCalendarIdentity,
     HistoryControlState,
+    HistoryReminderClaim,
     HistoryReminderState,
     HistorySecurityIdentity,
     HistorySnapshotPartition,
@@ -78,6 +79,7 @@ def test_history_control_values_are_immutable_and_hash_bound() -> None:
         NOW,
     )
     reminder = HistoryReminderState("due-20260910", date(2026, 9, 10), "sent", NOW, None)
+    reminder_claim = HistoryReminderClaim("due-20260910", date(2026, 9, 10), NOW)
     state = HistoryControlState(
         (source,),
         (calendar,),
@@ -85,6 +87,7 @@ def test_history_control_values_are_immutable_and_hash_bound() -> None:
         (checkpoint,),
         (due,),
         (reminder,),
+        (reminder_claim,),
         (snapshot,),
         snapshot.content_hash,
     )
@@ -137,6 +140,8 @@ def test_history_control_rejects_invalid_progress_due_and_reminder_states() -> N
         HistoryReminderState("due-20260910", date(2026, 9, 10), "sent", NOW, "notify_failed")
     with pytest.raises(ValueError, match="reminder"):
         HistoryReminderState("due-20260910", date(2026, 9, 9), "sent", NOW, None)
+    with pytest.raises(ValueError, match="reminder claim"):
+        HistoryReminderClaim("due-20260910", date(2026, 9, 9), NOW)
 
 
 def test_history_control_state_canonicalizes_caller_owned_collections() -> None:
@@ -146,7 +151,7 @@ def test_history_control_state_canonicalizes_caller_owned_collections() -> None:
     snapshot = _snapshot(source, calendar, universe)
     caller_sources = [source]
 
-    state = HistoryControlState(caller_sources, [calendar], [universe], [], [], [], [snapshot], None)  # type: ignore[arg-type]
+    state = HistoryControlState(caller_sources, [calendar], [universe], [], [], [], [], [snapshot], None)  # type: ignore[arg-type]
     caller_sources.clear()
 
     assert state.sources == (source,)

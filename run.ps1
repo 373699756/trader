@@ -16,6 +16,8 @@ function Show-Usage {
   .\run.ps1                         以默认 V1 启动本地 A 股研究看板
   .\run.ps1 --profile v2            显式使用 V2 启动
   .\run.ps1 check                   依次校验配置、研究状态和性能门禁
+  .\run.ps1 install-history-automation   安装当前用户 15:10/20:30 历史同步任务
+  .\run.ps1 uninstall-history-automation 卸载当前用户历史同步任务
   .\run.ps1 help                    查看本帮助
 
 离线研究（仅在明确执行研究任务时使用）:
@@ -35,7 +37,7 @@ function Show-Usage {
 "@ | Write-Host
 }
 
-$PublicModes = @("help", "-h", "--help", "check", "download_history", "train-tomorrow")
+$PublicModes = @("help", "-h", "--help", "check", "download_history", "train-tomorrow", "install-history-automation", "uninstall-history-automation")
 
 for ($Index = 0; $Index -lt $args.Count; $Index++) {
     $Argument = [string]$args[$Index]
@@ -71,7 +73,7 @@ if ($ScoringProfile -notin @("v1", "v2", "v3")) {
     [Console]::Error.WriteLine("评分档位只能是 v1、v2 或 v3: $ScoringProfile")
     exit 2
 }
-if ($Mode -in @("download_history", "train-tomorrow") -and ($ScoringProfileSet -or $ForwardArgs.Count -gt 0)) {
+if ($Mode -in @("download_history", "train-tomorrow", "install-history-automation", "uninstall-history-automation") -and ($ScoringProfileSet -or $ForwardArgs.Count -gt 0)) {
     [Console]::Error.WriteLine("$Mode 不接受任何参数；请只运行 .\run.ps1 $Mode。")
     exit 2
 }
@@ -81,7 +83,7 @@ if ($Mode -in @("help", "-h", "--help")) {
     exit 0
 }
 $IsServerMode = [string]::IsNullOrEmpty($Mode)
-if (-not $IsServerMode -and $Mode -notin @("check", "download_history", "train-tomorrow")) {
+if (-not $IsServerMode -and $Mode -notin @("check", "download_history", "train-tomorrow", "install-history-automation", "uninstall-history-automation")) {
     [Console]::Error.WriteLine("未知命令: $Mode")
     [Console]::Error.WriteLine("日常启动直接运行: .\run.ps1")
     [Console]::Error.WriteLine("查看全部命令: .\run.ps1 help")
@@ -155,6 +157,10 @@ if ($Mode -eq "download_history") {
 }
 if ($Mode -eq "train-tomorrow") {
     & $SelectedEntryPoint --config $ConfigPath train-tomorrow
+    exit $LASTEXITCODE
+}
+if ($Mode -in @("install-history-automation", "uninstall-history-automation")) {
+    & $SelectedEntryPoint --config $ConfigPath $Mode
     exit $LASTEXITCODE
 }
 & $SelectedEntryPoint --config $ConfigPath --profile $ScoringProfile $Mode @ForwardArgs

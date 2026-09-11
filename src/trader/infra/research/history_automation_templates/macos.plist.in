@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Managed by Trader history automation. Local edits prevent automatic replacement or removal. -->
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.local.trader.history-maintenance</string>
+  <key>ProgramArguments</key><array>
+    <string>{{PYTHON_EXECUTABLE}}</string><string>-m</string><string>trader.entrypoints.cli</string>
+    <string>--config</string><string>{{CONFIG_PATH}}</string><string>scheduled-history-maintenance</string>
+  </array>
+  <key>WorkingDirectory</key><string>{{WORKING_DIRECTORY}}</string>
+  <key>EnvironmentVariables</key><dict><key>PYTHONUNBUFFERED</key><string>1</string></dict>
+  <key>StartCalendarInterval</key><array>
+    <dict><key>Hour</key><integer>15</integer><key>Minute</key><integer>10</integer></dict>
+    <dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>30</integer></dict>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>ProcessType</key><string>Background</string>
+</dict></plist>
