@@ -41,6 +41,7 @@ FORBIDDEN_ACTIVE_PATHS = (
     "infra/research/history_automation_runtime.py",
     "infra/research/history_sync_runtime.py",
     "infra/runtime_support.py",
+    "infra/scoring/profiles/v3/sample_store.py",
     "infra/settings/runtime.py",
 )
 
@@ -69,6 +70,8 @@ FORBIDDEN_PUBLIC_NAMES = {
     "ScoreTomorrowPointInTimeFeatures",
     "ScoreTomorrowShadowModels",
     "ScoredBuildRuntime",
+    "V3SampleStore",
+    "V3StoredSample",
     "TomorrowC3Terminal",
     "TomorrowResearchPrerequisite",
     "TomorrowResearchPrerequisitePort",
@@ -87,6 +90,15 @@ def _active_python_paths() -> tuple[Path, ...]:
 def test_active_paths_use_stable_business_responsibilities() -> None:
     assert [relative for relative in FORBIDDEN_ACTIVE_PATHS if (SOURCE / relative).exists()] == []
     assert [relative for relative in FORBIDDEN_REPOSITORY_PATHS if (ROOT / relative).exists()] == []
+
+
+def test_storage_responsibility_naming_rule_is_authoritative() -> None:
+    collaboration_rules = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
+
+    for content in (collaboration_rules, design):
+        assert "不得使用 `store`、`stored` 或 `*Store`" in content
+        assert "Repository" in content
 
 
 def test_active_python_has_no_c3_or_relative_holdout_identity_names() -> None:
@@ -109,6 +121,31 @@ def test_public_python_names_describe_business_roles() -> None:
                 and node.name in FORBIDDEN_PUBLIC_NAMES
             ):
                 violations.append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}:{node.name}")
+    assert violations == []
+
+
+def test_tomorrow_training_sample_boundary_uses_repository_responsibility_names() -> None:
+    paths = (
+        SOURCE / "infra/scoring/profiles/v3/sample_builder.py",
+        SOURCE / "infra/scoring/profiles/v3/model_fitting.py",
+        SOURCE / "infra/scoring/profiles/v3/training_sample_repository.py",
+    )
+    violations: list[str] = []
+    for path in paths:
+        if not path.exists():
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            names: tuple[str, ...] = ()
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                names = (node.name,)
+            elif isinstance(node, ast.arg):
+                names = (node.arg,)
+            elif isinstance(node, ast.Name):
+                names = (node.id,)
+            for name in names:
+                if "store" in name.lower():
+                    violations.append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}:{name}")
     assert violations == []
 
 

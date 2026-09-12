@@ -93,10 +93,12 @@ def test_trained_v3_profile_loads_only_the_active_hash_bound_group() -> None:
     model_port = (ROOT / "src" / "trader" / "application" / "ports" / "model_scoring.py").read_text(encoding="utf-8")
 
     locator = (ROOT / "src/trader/infra/scoring/profiles/v3/bundle_locator.py").read_text(encoding="utf-8")
-    store = (ROOT / "src/trader/infra/scoring/profiles/v3/bundle_store.py").read_text(encoding="utf-8")
+    bundle_repository_source = (ROOT / "src/trader/infra/scoring/profiles/v3/bundle_store.py").read_text(
+        encoding="utf-8"
+    )
     assert "tomorrow-v3" in locator
-    assert "active-bundle.json" in store
-    assert "model.json" in store
+    assert "active-bundle.json" in bundle_repository_source
+    assert "model.json" in bundle_repository_source
     assert "active snapshot 和来源身份全部有效" in strategy
     assert "active-bundle.json" in design
     assert "三者必须共享" in design
@@ -106,10 +108,14 @@ def test_trained_v3_profile_loads_only_the_active_hash_bound_group() -> None:
 
 def test_v3_training_owns_one_active_archive_and_disk_backed_sample_source() -> None:
     training = (ROOT / "src/trader/infra/scoring/profiles/v3/training.py").read_text(encoding="utf-8")
+    sample_builder = (ROOT / "src/trader/infra/scoring/profiles/v3/sample_builder.py").read_text(encoding="utf-8")
 
     assert "SQLiteHistoryTrainingInputArchive.open" in training
     assert "BaoStockTrainingTrainingInputArchive" not in training
-    assert "V3SampleStore" in training
+    assert "SQLiteTomorrowTrainingSampleRepository" in training
+    assert "read_training_batch" not in training
+    assert "iter_training_windows" in sample_builder
+    assert "read_training_batch" not in sample_builder
     assert "defaultdict" not in training
     assert "tuple[_Sample" not in training
     assert "allow_partial_history" not in training

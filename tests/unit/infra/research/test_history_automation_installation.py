@@ -37,6 +37,9 @@ def test_platform_plans_use_one_fixed_zero_argument_command_and_never_train(
     assert "TUSHARE_TOKEN" not in rendered
     assert all("sudo" not in argument.lower() for command in plan.install_commands for argument in command)
     if platform == "linux":
+        escaped_root = str(root).replace(" ", r"\x20")
+        assert f"WorkingDirectory={escaped_root}" in rendered
+        assert f'WorkingDirectory="{root}"' not in rendered
         assert "15:10:00 Asia/Shanghai" in rendered
         assert "20:30:00 Asia/Shanghai" in rendered
         assert "Persistent=true" in rendered

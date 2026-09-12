@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -12,12 +12,12 @@ from trader.domain.research.baostock_daily import (
     BAOSTOCK_RESEARCH_IDENTITY,
     BaoStockCalendar,
     BaoStockSecurity,
-    BaoStockTrainingRow,
 )
 from trader.domain.research.history_control import (
     HistoryActiveSnapshot,
     HistorySecurityIdentity,
 )
+from trader.domain.research.history_monthly import HistoryTrainingWindow
 from trader.domain.research.tomorrow_training_input import (
     REQUIRED_DAILY_FIELDS,
     FrozenDailyInputDescriptor,
@@ -71,16 +71,6 @@ class HistoryTrainingInputSnapshot:
 
 class HistoryTrainingInputError(RuntimeError):
     """The active monthly snapshot cannot be used as a complete input."""
-
-
-@dataclass(frozen=True)
-class HistoryTrainingRowBatch:
-    inspected_rows: int
-    rows: tuple[BaoStockTrainingRow, ...]
-
-    def __post_init__(self) -> None:
-        if self.inspected_rows < len(self.rows):
-            raise ValueError("history training row batch count is invalid")
 
 
 class SQLiteHistoryTrainingInputArchive:
@@ -170,40 +160,30 @@ class SQLiteHistoryTrainingInputArchive:
         except (HistoryMonthlyArchiveError, OSError, ValueError) as exc:
             raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
 
-    def read_training_batch(
-        self,
-        code: str,
-        *,
-        allowed_dates: frozenset[date],
-    ) -> HistoryTrainingRowBatch:
-        if code not in self._codes:
-            raise HistoryTrainingInputError("history_code_outside_active_universe")
+    def training_row_upper_bound(self, allowed_dates: frozenset[date]) -> int:
+        if not allowed_dates:
+            return 0
         try:
-            revisions = tuple(
-                self._archive.iter_code(
-                    code,
-                    min(allowed_dates),
-                    max(allowed_dates),
-                    self._active,
-                )
+            return self._archive.row_count_upper_bound(
+                min(allowed_dates),
+                max(allowed_dates),
+                self._active,
             )
-            usable_rows: list[BaoStockTrainingRow] = []
-            for revision in revisions:
-                row = revision.training_row
-                if revision.trade_date in allowed_dates and row is not None:
-                    usable_rows.append(row)
-            rows = tuple(sorted(usable_rows, key=lambda item: item.trade_date))
-            return HistoryTrainingRowBatch(len(revisions), rows)
         except (HistoryMonthlyArchiveError, OSError, ValueError) as exc:
             raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
 
-    def read_training_rows(
+    def iter_training_windows(
         self,
-        code: str,
-        *,
         allowed_dates: frozenset[date],
-    ) -> tuple[BaoStockTrainingRow, ...]:
-        return self.read_training_batch(code, allowed_dates=allowed_dates).rows
+        progress: Callable[[int], None] | None = None,
+    ) -> Iterator[HistoryTrainingWindow]:
+        dates = tuple(day for day in self._calendar.open_dates if day in allowed_dates)
+        if not dates or frozenset(dates) != allowed_dates:
+            raise HistoryTrainingInputError("history_training_dates_invalid")
+        try:
+            yield from self._archive.iter_training_windows(self._active, dates, progress)
+        except (HistoryMonthlyArchiveError, OSError, ValueError) as exc:
+            raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
 
 
 def _security(value: HistorySecurityIdentity) -> BaoStockSecurity:
@@ -239,6 +219,5 @@ def _snapshot_for_training(
 __all__ = [
     "HistoryTrainingInputError",
     "HistoryTrainingInputSnapshot",
-    "HistoryTrainingRowBatch",
     "SQLiteHistoryTrainingInputArchive",
 ]

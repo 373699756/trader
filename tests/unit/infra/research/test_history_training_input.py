@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -74,7 +74,7 @@ class _Supplier:
         )
 
 
-def test_monthly_training_input_binds_active_snapshot_and_reads_typed_rows(tmp_path: Path) -> None:
+def test_monthly_training_input_binds_active_snapshot_and_counts_typed_rows(tmp_path: Path) -> None:
     archive_root = tmp_path / "history" / "baostock"
     configuration = HistorySyncConfiguration(archive_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
@@ -82,13 +82,11 @@ def test_monthly_training_input_binds_active_snapshot_and_reads_typed_rows(tmp_p
 
     assert result.state == "completed"
     archive = SQLiteHistoryTrainingInputArchive.open(tmp_path / "history")
-    rows = archive.read_training_rows("600001", allowed_dates=frozenset(dates))
-
     assert (
         archive.snapshot.active_snapshot_hash
         == SQLiteHistoryControlRepository(archive_root / "control.sqlite3").load_state().active_snapshot_hash
     )
-    assert tuple(row.trade_date for row in rows) == dates
+    assert archive.count_training_rows(frozenset(dates)) == len(dates)
     assert archive.snapshot.label_cutoff == dates[-2]
 
 
@@ -102,11 +100,24 @@ def test_training_input_reports_exact_inspected_rows_from_one_verified_snapshot(
 
     archive.verify_partitions(lambda completed, total: progress.append((completed, total)))
     assert archive.count_training_rows(frozenset(dates)) == 3
-    batch = archive.read_training_batch("600001", allowed_dates=frozenset(dates))
-
+    assert archive.training_row_upper_bound(frozenset(dates)) >= 3
     assert progress[-1] == (1, 1)
-    assert batch.inspected_rows == 3
-    assert tuple(row.trade_date for row in batch.rows) == dates
+
+
+def test_training_input_streams_windows_in_date_code_order_without_per_code_queries(tmp_path: Path) -> None:
+    archive_root = tmp_path / "history" / "baostock"
+    dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(62))
+    configuration = HistorySyncConfiguration(archive_root, sessions=62, reread_sessions=2, minimum_free_bytes=0)
+    run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
+    archive = SQLiteHistoryTrainingInputArchive.open(tmp_path / "history")
+    progress: list[int] = []
+
+    windows = tuple(archive.iter_training_windows(frozenset(dates), progress.append))
+
+    assert tuple(window.trade_date for window in windows) == dates[60:]
+    assert all(len(window.rows) == 61 for window in windows)
+    assert progress[-1] == len(dates)
+    assert archive.training_row_upper_bound(frozenset(dates)) >= progress[-1]
 
 
 def test_training_due_uses_the_active_snapshot_label_cutoff_and_marks_initial(tmp_path: Path) -> None:

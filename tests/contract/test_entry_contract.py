@@ -575,11 +575,11 @@ def test_train_tomorrow_runs_a_prerequisite_before_resource_handoff_without_crea
     assert payload["training_due_reason"] == "data_incomplete"
     assert payload["invalidated_cache_dates"] == []
     assert payload["production_authority"] is False
-    assert {os.environ[name] for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")} == {"2"}
+    assert {os.environ[name] for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")} == {"3"}
     assert not runtime_dir.exists()
 
 
-def test_tomorrow_training_resource_policy_is_two_threads_and_lower_priority(
+def test_tomorrow_training_resource_policy_is_three_threads_and_lower_priority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     observed: list[int] = []
@@ -594,7 +594,7 @@ def test_tomorrow_training_resource_policy_is_two_threads_and_lower_priority(
     assert {
         os.environ[name]
         for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS")
-    } == {"2"}
+    } == {"3"}
 
 
 def test_train_tomorrow_passes_the_fixed_project_history_root_to_the_training_owner(

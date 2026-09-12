@@ -132,7 +132,7 @@ class StderrTomorrowTrainingProgress:
             parts.extend(
                 (
                     f"计算线程 {TOMORROW_TRAINING_COMPUTE_THREADS}",
-                    f"内存预算 {TOMORROW_TRAINING_PEAK_RSS_MIB} MiB",
+                    f"峰值 RSS 目标 {TOMORROW_TRAINING_PEAK_RSS_MIB} MiB",
                 )
             )
         elif progress.stage == "history_conversion":

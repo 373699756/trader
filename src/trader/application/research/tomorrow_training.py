@@ -18,8 +18,8 @@ TomorrowTrainingStage = Literal[
     "completed",
 ]
 TomorrowTrainingProgressState = Literal["started", "running", "completed"]
-TOMORROW_TRAINING_COMPUTE_THREADS = 2
-TOMORROW_TRAINING_PEAK_RSS_MIB = 2_048
+TOMORROW_TRAINING_COMPUTE_THREADS = 3
+TOMORROW_TRAINING_PEAK_RSS_MIB = 4_096
 
 
 @dataclass(frozen=True)

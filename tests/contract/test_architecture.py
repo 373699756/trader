@@ -143,7 +143,14 @@ def test_v3_scoring_profile_owns_its_locator_codec_predictor_and_combiner() -> N
     ):
         assert (v3_root / relative).is_file()
     assert not (SOURCE_ROOT / "infra/tomorrow_production_model.py").exists()
-    runtime_paths = (path for path in v3_root.rglob("*.py") if path.name != "training.py")
+    offline_training_modules = {
+        "model_fitting.py",
+        "sample_builder.py",
+        "training.py",
+        "training_sample_repository.py",
+    }
+    assert all((v3_root / name).is_file() for name in offline_training_modules)
+    runtime_paths = (path for path in v3_root.rglob("*.py") if path.name not in offline_training_modules)
     assert not any("trader.infra.research" in imported for path in runtime_paths for imported in _imports(path))
     profile_source = (v3_root / "profile.py").read_text(encoding="utf-8")
     assert "Strategy.TOMORROW" in profile_source

@@ -5,27 +5,46 @@ from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import pytest
 
 from trader.application.research.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingWindow
 from trader.domain.recommendation.model_scoring import V3_EXPOSURE_CONTRACT, residualize_exposure
-from trader.domain.research.baostock_daily import BaoStockCalendar, build_baostock_training_split
+from trader.domain.research.baostock_daily import (
+    BaoStockCalendar,
+    BaoStockDailySide,
+    BaoStockTrainingRow,
+    build_baostock_training_split,
+)
 from trader.domain.research.history_control import HistoryTrainingDueState
+from trader.domain.research.history_monthly import HistoryTrainingWindow
 from trader.domain.research.tomorrow_training_input import REQUIRED_DAILY_FIELDS, FrozenDailyInputDescriptor
 from trader.infra.research.history_control_repository import HistoryMaintenanceAlreadyRunningError
 from trader.infra.research.history_training_input import HistoryTrainingInputSnapshot
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
 from trader.infra.scoring.profiles.v3.bundle_codec import decode_tomorrow_bundle
-from trader.infra.scoring.profiles.v3.sample_store import V3StoredSample
+from trader.infra.scoring.profiles.v3.model_fitting import fit_industry_models as _fit_models
+from trader.infra.scoring.profiles.v3.sample_builder import (
+    aligned_sample_dates as _aligned_sample_dates,
+)
+from trader.infra.scoring.profiles.v3.sample_builder import (
+    build_training_samples,
+    training_alpha_target,
+)
+from trader.infra.scoring.profiles.v3.sample_builder import (
+    residualize_sample_day as _residualize_sample_day,
+)
 from trader.infra.scoring.profiles.v3.training import (
-    _aligned_sample_dates,
-    _fit_models,
+    _cleanup_abandoned_sample_workspaces,
     _model_document,
-    _residualize_sample_day,
     _training_output_directory,
     _TrainingArtifactContext,
     run_tomorrow_training,
-    training_alpha_target,
+)
+from trader.infra.scoring.profiles.v3.training_sample_repository import (
+    SQLiteTomorrowTrainingSampleRepository,
+    TomorrowTrainingSample,
+    TomorrowTrainingSampleMatrix,
 )
 
 
@@ -59,7 +78,7 @@ def _cadence_archive(archive_root: Path) -> SimpleNamespace:
         active_snapshot=SimpleNamespace(partitions=(object(),)),
         describe_frozen_daily_input=lambda: descriptor,
         verify_partitions=lambda _progress=None: None,
-        count_training_rows=lambda _dates: 0,
+        training_row_upper_bound=lambda _dates: 0,
     )
 
 
@@ -188,13 +207,13 @@ def test_successful_bundle_publication_is_the_only_event_that_clears_due_state(
         lambda *_args: _due(archive, None, "initial_training_required"),
     )
 
-    def build_samples(_archive, _codes, _window, store, *, progress) -> None:
+    def build_samples(_archive, _codes, _window, repository, *, progress) -> None:
         del progress
-        store.add_final((V3StoredSample("600000", sample_day, "main", "银行", 1.0, (0.0,) * 6, 0.01),))
+        repository.add_final((TomorrowTrainingSample("600000", sample_day, "main", "银行", 1.0, (0.0,) * 6, 0.01),))
 
-    monkeypatch.setattr("trader.infra.scoring.profiles.v3.training._build_samples", build_samples)
+    monkeypatch.setattr("trader.infra.scoring.profiles.v3.training.build_training_samples", build_samples)
     monkeypatch.setattr(
-        "trader.infra.scoring.profiles.v3.training._fit_models",
+        "trader.infra.scoring.profiles.v3.training.fit_industry_models",
         lambda _samples, _split, *, progress: ({"银行": {}}, 1, 1),
     )
     published: list[str] = []
@@ -260,6 +279,20 @@ def test_v3_training_outputs_json_directly_under_the_profile_directory(tmp_path:
     assert output.parent == tmp_path
 
 
+def test_training_cleanup_removes_only_abandoned_sample_workspaces(tmp_path: Path) -> None:
+    abandoned = tmp_path / ".sample-workspace.abandoned"
+    active_bundle = tmp_path / "generations" / "bundle"
+    abandoned.mkdir()
+    active_bundle.mkdir(parents=True)
+    (abandoned / "samples.sqlite3").touch()
+    (active_bundle / "model.json").touch()
+
+    _cleanup_abandoned_sample_workspaces(tmp_path)
+
+    assert not abandoned.exists()
+    assert (active_bundle / "model.json").is_file()
+
+
 def test_training_window_never_authorizes_the_latest_two_hundred_dates() -> None:
     dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1250))
     split = build_baostock_training_split(dates, parent_manifest_hash="a" * 64)
@@ -269,6 +302,72 @@ def test_training_window_never_authorizes_the_latest_two_hundred_dates() -> None
     assert split.daily_proxy_holdout_dates[-1] in window.readable_dates
     with pytest.raises(ValueError, match="point-in-time holdout"):
         window.require_readable((split.point_in_time_holdout_dates[0],))
+
+
+def test_sample_building_uses_one_stream_and_finalizes_the_previous_day_label(tmp_path: Path) -> None:
+    dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1250))
+    split = build_baostock_training_split(dates, parent_manifest_hash="a" * 64)
+    rows = tuple(_training_row(day, 10.0 + index) for index, day in enumerate(dates[:62]))
+
+    class Archive:
+        snapshot = SimpleNamespace(calendar=BaoStockCalendar(dates))
+
+        @staticmethod
+        def training_row_upper_bound(_dates) -> int:
+            return 62
+
+        @staticmethod
+        def iter_training_windows(_dates, progress):
+            yield HistoryTrainingWindow(rows[:61])
+            yield HistoryTrainingWindow(rows[1:])
+            progress(62)
+
+    with SQLiteTomorrowTrainingSampleRepository(tmp_path / "samples.sqlite3") as repository:
+        build_training_samples(
+            Archive(),
+            ("600000",),
+            TomorrowTrainingWindow(split),
+            repository,  # type: ignore[arg-type]
+        )
+
+        assert repository.count() == 1
+        sample = repository.samples_for("银行", frozenset((dates[60],)))[0]
+        assert sample.trade_date == dates[60]
+        assert sample.target == pytest.approx(0.0)
+
+
+def _training_row(day: date, close: float) -> BaoStockTrainingRow:
+    unadjusted = BaoStockDailySide(
+        "600000",
+        day,
+        "unadjusted",
+        close,
+        close,
+        close,
+        close,
+        100.0,
+        1_000.0,
+        close - 0.1,
+        0.0,
+        0.01,
+        "trading",
+    )
+    qfq = BaoStockDailySide(
+        "600000",
+        day,
+        "qfq",
+        close,
+        close,
+        close,
+        close,
+        100.0,
+        1_000.0,
+        None,
+        None,
+        None,
+        "trading",
+    )
+    return BaoStockTrainingRow("600000", day, "main", "银行", False, unadjusted, qfq)
 
 
 def test_training_progress_rejects_impossible_counts() -> None:
@@ -292,8 +391,12 @@ def test_model_progress_uses_the_real_industry_count_even_when_an_industry_is_sk
             return ("银行", "软件")
 
         @staticmethod
-        def samples_for(_industry, _dates) -> tuple[V3StoredSample, ...]:
-            return ()
+        def matrix_for(_industry, _dates) -> TomorrowTrainingSampleMatrix:
+            return TomorrowTrainingSampleMatrix(np.empty((0, 6)), np.empty(0))
+
+        @staticmethod
+        def count_for(_industry, _dates) -> int:
+            return 0
 
         @staticmethod
         def count(_dates) -> int:

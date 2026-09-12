@@ -80,6 +80,18 @@ class SQLiteHistoryMonthlyArchive:
             for year, month in route_history_months(start, end)
         )
 
+    def row_count_upper_bound(
+        self,
+        start: date,
+        end: date,
+        snapshot: HistoryActiveSnapshot,
+    ) -> int:
+        """Return the sealed row-count bound without opening partition files."""
+
+        if start > end or end > snapshot.data_cutoff:
+            raise ValueError("history range bound is invalid")
+        return sum(self._reference(snapshot, year, month).row_count for year, month in route_history_months(start, end))
+
     def read_day(
         self,
         trade_date: date,
@@ -172,22 +184,30 @@ class SQLiteHistoryMonthlyArchive:
         self,
         snapshot: HistoryActiveSnapshot,
         calendar_dates: tuple[date, ...],
+        progress: Callable[[int], None] | None = None,
     ) -> Iterator[HistoryTrainingWindow]:
         dates = tuple(calendar_dates)
         if (
             not dates
             or len(dates) > BAOSTOCK_MAX_SESSIONS
             or dates != tuple(sorted(set(dates)))
-            or dates[-1] != snapshot.data_cutoff
+            or dates[-1] > snapshot.data_cutoff
         ):
             raise ValueError("history training calendar is invalid")
         expected_months = route_history_months(dates[0], dates[-1])
-        if tuple(_reference_month(reference) for reference in snapshot.partitions) != expected_months:
+        available_months = tuple(
+            _reference_month(reference)
+            for reference in snapshot.partitions
+            if _reference_month(reference) in expected_months
+        )
+        if available_months != expected_months:
             raise HistoryMonthlyArchiveError("history snapshot does not cover the active calendar")
         position = {day: index for index, day in enumerate(dates)}
         buffers: dict[str, deque[BaoStockTrainingRow]] = {}
         previous_positions: dict[str, int] = {}
-        for revision in self.iter_snapshot_revisions(snapshot):
+        processed_rows = 0
+        for revision in self.iter_range(dates[0], dates[-1], snapshot):
+            processed_rows += 1
             current_position = position.get(revision.trade_date)
             if current_position is None:
                 raise HistoryMonthlyArchiveError("history revision is outside the active calendar")
@@ -206,6 +226,10 @@ class SQLiteHistoryMonthlyArchive:
                 if len(buffer) == HISTORY_TRAINING_WINDOW_SESSIONS:
                     yield HistoryTrainingWindow(tuple(buffer))
             previous_positions[revision.code] = current_position
+            if progress is not None and processed_rows % 512 == 0:
+                progress(processed_rows)
+        if progress is not None:
+            progress(processed_rows)
 
     def _reference(
         self,

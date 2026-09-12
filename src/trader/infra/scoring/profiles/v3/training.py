@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import re
 import shutil
 import tempfile
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from importlib.metadata import version
@@ -17,22 +16,14 @@ from pathlib import Path
 from typing import Literal, Protocol, cast
 from zoneinfo import ZoneInfo
 
-import lightgbm as lgb
-import numpy as np
-
 from trader.application.research.tomorrow_training import (
     TomorrowTrainingProgress,
     TomorrowTrainingProgressPort,
     TomorrowTrainingWindow,
 )
-from trader.domain.market.feature_contracts import (
-    TOMORROW_MODEL_FEATURE_MANIFEST,
-    TOMORROW_RAW_ALPHA_FEATURE_MANIFEST,
-    QfqPriceAnchors,
-    calculate_tomorrow_qfq_alpha,
-)
-from trader.domain.recommendation.model_scoring import V3_EXPOSURE_CONTRACT, residualize_exposure
-from trader.domain.research.baostock_daily import BaoStockTrainingRow, BaoStockTrainingSplit
+from trader.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
+from trader.domain.recommendation.model_scoring import V3_EXPOSURE_CONTRACT
+from trader.domain.research.baostock_daily import BaoStockTrainingSplit
 from trader.domain.research.history_control import (
     HistoryActiveSnapshot,
     HistoryTrainingDueReason,
@@ -47,7 +38,6 @@ from trader.infra.research.history_training_due import HistoryTrainingDueEvaluat
 from trader.infra.research.history_training_input import (
     HistoryTrainingInputError,
     HistoryTrainingInputSnapshot,
-    HistoryTrainingRowBatch,
     SQLiteHistoryTrainingInputArchive,
 )
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
@@ -55,7 +45,11 @@ from trader.infra.scoring.profiles.v3.bundle_store import (
     make_bundle_staging_directory,
     publish_tomorrow_bundle,
 )
-from trader.infra.scoring.profiles.v3.sample_store import V3SampleStore, V3StoredSample
+from trader.infra.scoring.profiles.v3.model_fitting import fit_industry_models
+from trader.infra.scoring.profiles.v3.sample_builder import TrainingWindowArchive, build_training_samples
+from trader.infra.scoring.profiles.v3.training_sample_repository import (
+    SQLiteTomorrowTrainingSampleRepository,
+)
 
 _MODEL_ID = "industry_ridge_lightgbm"
 _SOURCE_COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -63,7 +57,7 @@ _SHANGHAI = ZoneInfo("Asia/Shanghai")
 TomorrowTrainingStatus = Literal["blocked", "rejected", "engineering_ready", "already_current", "not_due"]
 
 
-class _TrainingInputArchive(Protocol):
+class _TrainingInputArchive(TrainingWindowArchive, Protocol):
     snapshot: HistoryTrainingInputSnapshot
 
     @property
@@ -72,22 +66,6 @@ class _TrainingInputArchive(Protocol):
     def describe_frozen_daily_input(self) -> FrozenDailyInputDescriptor: ...
 
     def verify_partitions(self, progress: Callable[[int, int], None] | None = None) -> None: ...
-
-    def count_training_rows(self, allowed_dates: frozenset[date]) -> int: ...
-
-    def read_training_batch(
-        self,
-        code: str,
-        *,
-        allowed_dates: frozenset[date],
-    ) -> HistoryTrainingRowBatch: ...
-
-    def read_training_rows(
-        self,
-        code: str,
-        *,
-        allowed_dates: frozenset[date],
-    ) -> tuple[BaoStockTrainingRow, ...]: ...
 
 
 @dataclass(frozen=True)
@@ -147,7 +125,7 @@ def run_tomorrow_training(
     source_commit: str = "",
     observed_at: datetime | None = None,
 ) -> TomorrowTrainingResult:
-    _publish_progress(progress, "resource_preflight", "completed", 1, 1)
+    _publish_progress(progress, TomorrowTrainingProgress("resource_preflight", "completed", 1, 1))
     try:
         archive = SQLiteHistoryTrainingInputArchive.open(history_root)
     except (HistoryTrainingInputError, OSError, ValueError) as exc:
@@ -337,20 +315,26 @@ def _execute_training(plan: _TrainingExecution) -> TomorrowTrainingResult:
         training_input_hash = cast(str, training_input["content_hash"])
         window = TomorrowTrainingWindow(split)
         partition_total = len(archive.active_snapshot.partitions)
-        _publish_progress(progress, "partition_validation", "started", 0, partition_total)
+        _publish_progress(
+            progress,
+            TomorrowTrainingProgress("partition_validation", "started", 0, partition_total),
+        )
         archive.verify_partitions(
             lambda completed, total: _publish_progress(
                 progress,
-                "partition_validation",
-                "completed" if completed == total else "running",
-                completed,
-                total,
+                TomorrowTrainingProgress(
+                    "partition_validation",
+                    "completed" if completed == total else "running",
+                    completed,
+                    total,
+                ),
             )
         )
         output.mkdir(parents=True, exist_ok=True)
+        _cleanup_abandoned_sample_workspaces(output)
         with tempfile.TemporaryDirectory(prefix=".sample-workspace.", dir=output) as workspace:
-            with V3SampleStore(Path(workspace) / "samples.sqlite3") as samples:
-                _build_samples(archive, snapshot.training_codes, window, samples, progress=progress)
+            with SQLiteTomorrowTrainingSampleRepository(Path(workspace) / "samples.sqlite3") as samples:
+                build_training_samples(archive, snapshot.training_codes, window, samples, progress=progress)
                 if samples.count() == 0:
                     return _with_due(
                         TomorrowTrainingResult(
@@ -370,7 +354,7 @@ def _execute_training(plan: _TrainingExecution) -> TomorrowTrainingResult:
                         due.state,
                         invalidated_dates,
                     )
-                models, training_rows, validation_rows = _fit_models(samples, split, progress=progress)
+                models, training_rows, validation_rows = fit_industry_models(samples, split, progress=progress)
         context = _TrainingArtifactContext(
             snapshot.input_scope,
             snapshot.active_snapshot_hash,
@@ -385,7 +369,7 @@ def _execute_training(plan: _TrainingExecution) -> TomorrowTrainingResult:
             training_rows,
             validation_rows,
         )
-        _publish_progress(progress, "artifact_publish", "started", 0, 1)
+        _publish_progress(progress, TomorrowTrainingProgress("artifact_publish", "started", 0, 1))
         provisional_model = _model_document(context, "0" * 64, models)
         model_payload_hash = cast(str, provisional_model["model_payload_hash"])
         report = _build_report(context, models, model_payload_hash)
@@ -425,8 +409,8 @@ def _execute_training(plan: _TrainingExecution) -> TomorrowTrainingResult:
             label_cutoff=label_cutoff,
         )
         staging = None
-        _publish_progress(progress, "artifact_publish", "completed", 1, 1)
-        _publish_progress(progress, "completed", "completed", 1, 1)
+        _publish_progress(progress, TomorrowTrainingProgress("artifact_publish", "completed", 1, 1))
+        _publish_progress(progress, TomorrowTrainingProgress("completed", "completed", 1, 1))
         return _after_success(
             TomorrowTrainingResult(
                 "engineering_ready",
@@ -473,285 +457,6 @@ def _build_split(dates: tuple[date, ...], manifest_hash: str) -> BaoStockTrainin
     from trader.domain.research.baostock_daily import build_baostock_training_split
 
     return build_baostock_training_split(dates, parent_manifest_hash=manifest_hash)
-
-
-def _build_samples(
-    archive: _TrainingInputArchive,
-    codes: tuple[str, ...],
-    window: TomorrowTrainingWindow,
-    store: V3SampleStore,
-    *,
-    progress: TomorrowTrainingProgressPort | None = None,
-) -> None:
-    calendar = archive.snapshot.calendar.open_dates
-    total_rows = archive.count_training_rows(window.readable_dates)
-    processed_rows = 0
-    generated_samples = 0
-    _publish_progress(progress, "history_conversion", "started", 0, total_rows)
-    for code in codes:
-        batch = archive.read_training_batch(code, allowed_dates=window.readable_dates)
-        rows = batch.rows
-        rows_by_date = {item.trade_date: item for item in rows}
-        closes = {item.trade_date: item.qfq.close_price for item in rows}
-        raw_samples: list[V3StoredSample] = []
-        for day, next_day, indices in _aligned_sample_dates(calendar, rows_by_date.keys(), window.readable_dates):
-            _index, previous_1, previous_3, previous_5, momentum_20, momentum_40, momentum_60 = indices
-            row = rows_by_date.get(day)
-            next_row = rows_by_date.get(next_day)
-            if (
-                row is None
-                or next_row is None
-                or row.qfq.close_price in (None, 0)
-                or next_row.qfq.close_price in (None, 0)
-            ):
-                continue
-            close = float(row.qfq.close_price)
-            average_amount_20d = _average_amount_20d(rows_by_date, calendar, _index)
-            if average_amount_20d is None:
-                continue
-            raw_features = TOMORROW_RAW_ALPHA_FEATURE_MANIFEST.bind(
-                calculate_tomorrow_qfq_alpha(
-                    QfqPriceAnchors(
-                        close,
-                        (
-                            (1, closes.get(calendar[previous_1])),
-                            (3, closes.get(calendar[previous_3])),
-                            (5, closes.get(calendar[previous_5])),
-                            (20, closes.get(calendar[momentum_20])),
-                            (40, closes.get(calendar[momentum_40])),
-                            (60, closes.get(calendar[momentum_60])),
-                        ),
-                    )
-                )
-            )
-            if any(raw_features.missing_mask):
-                continue
-            features = raw_features.require_complete()
-            if row.is_st or row.unadjusted.trading_status != "trading":
-                continue
-            raw_samples.append(
-                V3StoredSample(
-                    code,
-                    row.trade_date,
-                    row.board,
-                    row.industry,
-                    average_amount_20d,
-                    features,
-                    float(next_row.qfq.close_price) / close - 1.0,
-                )
-            )
-        store.add_raw(raw_samples)
-        processed_rows += batch.inspected_rows
-        generated_samples += len(raw_samples)
-        _publish_progress(
-            progress,
-            "history_conversion",
-            "running",
-            processed_rows,
-            total_rows,
-            generated_samples,
-        )
-    if processed_rows != total_rows:
-        raise HistoryTrainingInputError("history_training_row_count_mismatch")
-    _publish_progress(
-        progress,
-        "history_conversion",
-        "completed",
-        processed_rows,
-        total_rows,
-        generated_samples,
-    )
-    raw_total = store.raw_count()
-    converted_samples = 0
-    _publish_progress(progress, "cross_section_conversion", "started", 0, raw_total)
-    for day in store.raw_dates():
-        values = store.raw_for_date(day)
-        if not values:
-            continue
-        benchmark = math.fsum(item.target for item in values) / len(values)
-        residuals = _residualize_sample_day(
-            tuple(item.features[3:] for item in values),
-            tuple(item.board for item in values),
-            tuple(item.industry for item in values),
-            tuple(item.average_amount_20d for item in values),
-        )
-        store.add_final(
-            V3StoredSample(
-                item.code,
-                day,
-                item.board,
-                item.industry,
-                item.average_amount_20d,
-                (*item.features[:3], *(residual[index] for residual in residuals)),
-                training_alpha_target(next_return=item.target, benchmark_return=benchmark),
-            )
-            for index, item in enumerate(values)
-        )
-        store.discard_raw_date(day)
-        converted_samples += len(values)
-        _publish_progress(
-            progress,
-            "cross_section_conversion",
-            "completed" if converted_samples == raw_total else "running",
-            converted_samples,
-            raw_total,
-            converted_samples,
-        )
-    if raw_total == 0:
-        _publish_progress(progress, "cross_section_conversion", "completed", 0, 0)
-
-
-def training_alpha_target(*, next_return: float, benchmark_return: float) -> float:
-    """Return pre-cost alpha; validation and execution own round-trip costs."""
-
-    if not math.isfinite(next_return) or not math.isfinite(benchmark_return):
-        raise ValueError("V3 training alpha inputs must be finite")
-    return next_return - benchmark_return
-
-
-def _aligned_sample_dates(
-    calendar: tuple[date, ...],
-    available_dates: Collection[date],
-    readable_dates: frozenset[date],
-) -> tuple[tuple[date, date, tuple[int, ...]], ...]:
-    available = set(available_dates)
-    result: list[tuple[date, date, tuple[int, ...]]] = []
-    for index, day in enumerate(calendar):
-        next_index = index + 1
-        indices = (index, index - 1, index - 3, index - 5, index - 20, index - 40, index - 60, next_index)
-        if next_index >= len(calendar) or any(value < 0 for value in indices):
-            continue
-        amount_indices = tuple(range(index - 19, index + 1))
-        required_dates = tuple(calendar[value] for value in (*indices, *amount_indices))
-        if not set(required_dates).issubset(readable_dates) or not set(required_dates).issubset(available):
-            continue
-        result.append((day, calendar[next_index], indices[:-1]))
-    return tuple(result)
-
-
-def _average_amount_20d(
-    rows_by_date: Mapping[date, BaoStockTrainingRow],
-    calendar: tuple[date, ...],
-    index: int,
-) -> float | None:
-    rows = tuple(rows_by_date.get(calendar[position]) for position in range(index - 19, index + 1))
-    amounts = tuple(row.qfq.amount if row is not None else None for row in rows)
-    if any(amount is None or not math.isfinite(amount) or amount <= 0.0 for amount in amounts):
-        return None
-    return math.fsum(cast(float, amount) for amount in amounts) / 20.0
-
-
-def _residualize_sample_day(
-    momenta: Sequence[Sequence[float]],
-    boards: Sequence[str],
-    industries: Sequence[str],
-    average_amounts: Sequence[float],
-) -> tuple[tuple[float, ...], ...]:
-    if not momenta or not momenta[0] or any(len(row) != len(momenta[0]) for row in momenta):
-        raise ValueError("V3 training momentum rows must have one consistent non-empty width")
-    return tuple(
-        residualize_exposure(
-            tuple(row[offset] for row in momenta),
-            boards,
-            average_amounts,
-            industries=industries,
-            contract=V3_EXPOSURE_CONTRACT,
-        )
-        for offset in range(len(momenta[0]))
-    )
-
-
-def _fit_models(
-    samples: V3SampleStore,
-    split: BaoStockTrainingSplit,
-    *,
-    progress: TomorrowTrainingProgressPort | None = None,
-) -> tuple[dict[str, dict[str, object]], int, int]:
-    models: dict[str, dict[str, object]] = {}
-    training_dates = frozenset(split.model_fit_dates)
-    calibration_dates = frozenset(split.calibration_dates)
-    early_dates = frozenset(split.early_stopping_dates)
-    validation_dates = frozenset((*split.confirmation_dates, *split.daily_proxy_holdout_dates))
-    industries = samples.industries(training_dates)
-    _publish_progress(progress, "model_fit", "started", 0, len(industries))
-    for position, industry in enumerate(industries, start=1):
-        train_rows = samples.samples_for(industry, training_dates)
-        calibration_rows = samples.samples_for(industry, calibration_dates)
-        valid_rows = samples.samples_for(industry, validation_dates)
-        early_rows = samples.samples_for(industry, early_dates)
-        if len(train_rows) < 20_000 or not calibration_rows or not early_rows or not valid_rows:
-            _publish_progress(
-                progress,
-                "model_fit",
-                "completed" if position == len(industries) else "running",
-                position,
-                len(industries),
-                len(models),
-            )
-            continue
-        features = np.asarray(tuple(item.features for item in train_rows), dtype=np.float64)
-        labels = np.asarray(tuple(item.target for item in train_rows), dtype=np.float64)
-        means = features.mean(axis=0)
-        scales = np.where(features.std(axis=0) > 1e-12, features.std(axis=0), 1.0)
-        normalized = (features - means) / scales
-        design = np.column_stack((np.ones(len(normalized)), normalized))
-        penalty = np.eye(7, dtype=np.float64) * 10.0
-        penalty[0, 0] = 0.0
-        coefficients = np.linalg.solve(design.T @ design + penalty, design.T @ labels)
-        early_features = (np.asarray(tuple(item.features for item in early_rows), dtype=np.float64) - means) / scales
-        booster = lgb.train(
-            {
-                "objective": "regression_l2",
-                "learning_rate": 0.05,
-                "max_depth": 3,
-                "num_leaves": 7,
-                "min_data_in_leaf": 20,
-                "num_boost_round": 200,
-                "max_bin": 63,
-                "deterministic": True,
-                "seed": 0,
-                "feature_fraction_seed": 0,
-                "bagging_seed": 0,
-                "data_random_seed": 0,
-                "num_threads": 1,
-                "verbosity": -1,
-            },
-            lgb.Dataset(normalized, label=labels),
-            num_boost_round=200,
-            valid_sets=[lgb.Dataset(early_features, label=np.asarray(tuple(item.target for item in early_rows)))],
-            callbacks=[lgb.early_stopping(20, verbose=False)],
-        )
-        calibration_features = (
-            np.asarray(tuple(item.features for item in calibration_rows), dtype=np.float64) - means
-        ) / scales
-        tree = booster.predict(calibration_features, num_iteration=booster.best_iteration)
-        ridge = coefficients[0] + calibration_features @ coefficients[1:]
-        predicted = 0.5 * ridge + 0.5 * tree
-        actual = np.asarray(tuple(item.target for item in calibration_rows))
-        slope, intercept = np.polyfit(predicted, actual, 1) if len(calibration_rows) >= 2 else (1.0, 0.0)
-        models[industry] = {
-            "transformer_means": means.tolist(),
-            "transformer_scales": scales.tolist(),
-            "ridge_intercept": float(coefficients[0]),
-            "ridge_coefficients": coefficients[1:].tolist(),
-            "lightgbm_model": booster.model_to_string(num_iteration=booster.best_iteration),
-            "lightgbm_best_iteration": int(booster.best_iteration),
-            "calibration_intercept": float(intercept),
-            "calibration_slope": float(slope),
-            "training_rows": len(train_rows),
-            "validation_rows": len(valid_rows),
-        }
-        _publish_progress(
-            progress,
-            "model_fit",
-            "completed" if position == len(industries) else "running",
-            position,
-            len(industries),
-            len(models),
-        )
-    if not industries:
-        _publish_progress(progress, "model_fit", "completed", 0, 0)
-    return models, samples.count(training_dates), samples.count(validation_dates)
 
 
 def _build_report(
@@ -925,6 +630,12 @@ def _training_output_directory(train_root: Path) -> Path:
     return train_root / "tomorrow-v3"
 
 
+def _cleanup_abandoned_sample_workspaces(output: Path) -> None:
+    for candidate in output.glob(".sample-workspace.*"):
+        if candidate.is_dir() and not candidate.is_symlink():
+            shutil.rmtree(candidate)
+
+
 def _with_due(
     result: TomorrowTrainingResult,
     state: HistoryTrainingDueState,
@@ -957,22 +668,10 @@ def _after_success(
 
 def _publish_progress(
     progress: TomorrowTrainingProgressPort | None,
-    stage: Literal[
-        "resource_preflight",
-        "partition_validation",
-        "history_conversion",
-        "cross_section_conversion",
-        "model_fit",
-        "artifact_publish",
-        "completed",
-    ],
-    state: Literal["started", "running", "completed"],
-    completed_units: int,
-    total_units: int,
-    produced_units: int = 0,
+    update: TomorrowTrainingProgress,
 ) -> None:
     if progress is not None:
-        progress.publish(TomorrowTrainingProgress(stage, state, completed_units, total_units, produced_units))
+        progress.publish(update)
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:

@@ -88,7 +88,7 @@ def plan_history_automation_installation(
         service = _render(
             "linux.service.in",
             {
-                "WORKING_DIRECTORY": _systemd_quote(request.project_root),
+                "WORKING_DIRECTORY": _systemd_path(request.project_root),
                 "PYTHON_EXECUTABLE": _systemd_quote(request.python_executable),
                 "CONFIG_PATH": _systemd_quote(request.config_path),
             },
@@ -270,6 +270,10 @@ def _render(name: str, replacements: dict[str, str]) -> str:
 
 def _systemd_quote(path: Path) -> str:
     return '"' + str(path).replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _systemd_path(path: Path) -> str:
+    return str(path).replace("%", "%%").replace("\\", r"\x5c").replace(" ", r"\x20").replace('"', r"\x22")
 
 
 def _windows_argument(path: Path) -> str:

@@ -5,12 +5,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import resource
 import sys
 from pathlib import Path
 
-from trader.application.research.tomorrow_training import TOMORROW_TRAINING_PEAK_RSS_MIB
-from trader.infra.scoring.profiles.v3.training import run_tomorrow_training
+from trader.application.research.tomorrow_training import (
+    TOMORROW_TRAINING_COMPUTE_THREADS,
+    TOMORROW_TRAINING_PEAK_RSS_MIB,
+)
+
+
+def _configure_resources() -> None:
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ[name] = str(TOMORROW_TRAINING_COMPUTE_THREADS)
+
+
+_configure_resources()
+
+from trader.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress  # noqa: E402
+from trader.infra.scoring.profiles.v3.training import run_tomorrow_training  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -24,12 +38,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    os.nice(10)
     before = _peak_rss_bytes()
-    result = run_tomorrow_training(
-        args.history_root.resolve(),
-        args.train_root.resolve(),
-        source_commit=args.source_commit,
-    )
+    with StderrTomorrowTrainingProgress() as progress:
+        result = run_tomorrow_training(
+            args.history_root.resolve(),
+            args.train_root.resolve(),
+            source_commit=args.source_commit,
+            progress=progress,
+        )
     peak = _peak_rss_bytes()
     budget = args.max_rss_mib * 1024 * 1024
     payload = {

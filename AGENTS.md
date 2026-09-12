@@ -49,6 +49,16 @@
    边界时必须先更新契约测试，再更新实现；不得通过扩大豁免路径绕过本节，新增豁免必须证明该模块是
    最终外部边界且在 Review 和 Changelog 中说明理由。
 
+### 2.2 存储职责命名边界
+
+1. 新增或重命名的项目自有模块、类型、函数、参数和局部变量不得使用 `store`、`stored` 或 `*Store`
+   这类无法表达所有权与行为的泛称；必须按实际职责选择 `Repository`、`Archive`、`Registry`、`Index`、
+   `Cache`、`Snapshot` 或更具体的业务名称。
+2. 外部协议、第三方 API、SQL/HTTP 标准字面量和不可变历史审计中的原始 `store` 文本可以原样保留，
+   但不得据此为新项目符号复制该命名；既有活动符号应在其所属重构批次迁移，不得新增双命名兼容层。
+3. 相关迁移必须先把旧路径和旧公共符号加入 `tests/contract/test_professional_naming_contract.py`
+   的禁止清单，并为目标边界增加 AST 命名契约，再修改实现和引用。
+
 ## 3. 不可破坏的业务约束
 
 - 融合公式固定为 `clamp(local_score * 0.68 + deepseek_score * 0.32 - deepseek_risk_penalty, 0, 100)`，最终使用 `ROUND_HALF_UP` 保留两位小数。
