@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def locate_latest_bundle(training_root: Path) -> Path:
-    from trader.infra.scoring.profiles.v3.bundle_store import locate_active_tomorrow_bundle
+    from trader.infra.scoring.profiles.v3.training_bundle_repository import locate_active_tomorrow_bundle
 
     return locate_active_tomorrow_bundle(training_root / "tomorrow-v3")
 

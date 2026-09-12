@@ -7,7 +7,6 @@ import re
 from collections import deque
 from collections.abc import Callable, Collection, Iterator
 from datetime import date
-from functools import partial
 from pathlib import Path
 
 from trader.domain.research.baostock_daily import BAOSTOCK_MAX_SESSIONS, BaoStockTrainingRow
@@ -60,7 +59,7 @@ class SQLiteHistoryMonthlyArchive:
         for completed, reference in enumerate(snapshot.partitions, start=1):
             self._verified_repository(
                 reference,
-                None if progress is None else partial(_report_partition_progress, progress, completed, total),
+                None if progress is None else _partition_progress(progress, completed, total),
             )
             if progress is not None:
                 size = (self._root / reference.relative_path).stat().st_size
@@ -272,22 +271,22 @@ def _reference_month(reference: HistorySnapshotPartition) -> tuple[int, int]:
     return int(parts[1]), int(Path(parts[2]).stem)
 
 
-def _report_partition_progress(
+def _partition_progress(
     progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None],
     current_partition: int,
     total_partitions: int,
-    completed_bytes: int,
-    total_bytes: int,
-    phase: HistoryPartitionVerificationPhase,
-) -> None:
-    progress(
-        current_partition - 1,
-        total_partitions,
-        current_partition,
-        completed_bytes,
-        total_bytes,
-        phase,
-    )
+) -> Callable[[int, int, HistoryPartitionVerificationPhase], None]:
+    def report(completed_bytes: int, total_bytes: int, phase: HistoryPartitionVerificationPhase) -> None:
+        progress(
+            current_partition - 1,
+            total_partitions,
+            current_partition,
+            completed_bytes,
+            total_bytes,
+            phase,
+        )
+
+    return report
 
 
 __all__ = ["HistoryMonthlyArchiveError", "SQLiteHistoryMonthlyArchive", "route_history_months"]

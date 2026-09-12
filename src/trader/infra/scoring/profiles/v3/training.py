@@ -17,6 +17,8 @@ from typing import Literal, Protocol, cast
 from zoneinfo import ZoneInfo
 
 from trader.application.research.tomorrow_training import (
+    TOMORROW_TRAINING_COMPUTE_THREADS,
+    TOMORROW_TRAINING_PEAK_RSS_MIB,
     TomorrowPartitionValidationProgress,
     TomorrowTrainingProgress,
     TomorrowTrainingProgressPort,
@@ -43,12 +45,12 @@ from trader.infra.research.history_training_input import (
     SQLiteHistoryTrainingInputArchive,
 )
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
-from trader.infra.scoring.profiles.v3.bundle_store import (
+from trader.infra.scoring.profiles.v3.model_fitting import fit_industry_models
+from trader.infra.scoring.profiles.v3.sample_builder import TrainingWindowArchive, build_training_samples
+from trader.infra.scoring.profiles.v3.training_bundle_repository import (
     make_bundle_staging_directory,
     publish_tomorrow_bundle,
 )
-from trader.infra.scoring.profiles.v3.model_fitting import fit_industry_models
-from trader.infra.scoring.profiles.v3.sample_builder import TrainingWindowArchive, build_training_samples
 from trader.infra.scoring.profiles.v3.training_sample_repository import (
     SQLiteTomorrowTrainingSampleRepository,
 )
@@ -120,6 +122,7 @@ class _TrainingExecution:
     run_id: str
     progress: TomorrowTrainingProgressPort | None
     source_commit: str
+    split: BaoStockTrainingSplit
 
 
 def run_tomorrow_training(
@@ -189,10 +192,12 @@ def _prepare_training(
     except (HistoryTrainingInputError, OSError, ValueError) as exc:
         return TomorrowTrainingResult("blocked", "unavailable", None, "", 0, 0, "", "", 0, 0, 0, (_reason(exc),))
     snapshot = archive.snapshot
+    split, expected_training_contract_hash = _expected_training_contract(snapshot, source_commit)
     due = evaluate_history_training_due(
         archive.archive_root,
         train_root,
         observed_at.astimezone(_SHANGHAI) if observed_at is not None else datetime.now(_SHANGHAI),
+        expected_training_contract_hash,
     )
     if due is None:
         return TomorrowTrainingResult(
@@ -262,6 +267,8 @@ def _prepare_training(
     preflight_reasons = list(compatibility.failure_reasons)
     if label_cutoff is None:
         preflight_reasons.append("label_outcome_incomplete")
+    if split is None:
+        preflight_reasons.append("training_split_unavailable")
     if _SOURCE_COMMIT.fullmatch(source_commit) is None:
         preflight_reasons.append("source_commit_unavailable")
     if preflight_reasons:
@@ -294,7 +301,21 @@ def _prepare_training(
         run_id,
         progress,
         source_commit,
+        cast(BaoStockTrainingSplit, split),
     )
+
+
+def _expected_training_contract(
+    snapshot: HistoryTrainingInputSnapshot,
+    source_commit: str,
+) -> tuple[BaoStockTrainingSplit | None, str | None]:
+    if snapshot.label_cutoff is None:
+        return None, None
+    try:
+        split = _build_split(snapshot.calendar.open_dates, snapshot.active_snapshot_hash)
+    except ValueError:
+        return None, None
+    return split, _training_contract_hash(snapshot, split, source_commit, snapshot.label_cutoff)
 
 
 def _execute_training(plan: _TrainingExecution) -> TomorrowTrainingResult:
@@ -309,7 +330,7 @@ def _execute_training(plan: _TrainingExecution) -> TomorrowTrainingResult:
     source_commit = plan.source_commit
     staging: Path | None = None
     try:
-        split = _build_split(snapshot.calendar.open_dates, snapshot.active_snapshot_hash)
+        split = plan.split
         training_contract_hash = _training_contract_hash(snapshot, split, source_commit, label_cutoff)
         training_input = _training_input_document(
             snapshot,
@@ -422,7 +443,6 @@ def _execute_training(plan: _TrainingExecution) -> TomorrowTrainingResult:
         )
         staging = None
         _publish_progress(progress, TomorrowTrainingProgress("artifact_publish", "completed", 1, 1))
-        _publish_progress(progress, TomorrowTrainingProgress("completed", "completed", 1, 1))
         return _after_success(
             TomorrowTrainingResult(
                 "engineering_ready",
@@ -565,12 +585,13 @@ def _model_document(
 def _training_contract_hash(
     snapshot: HistoryTrainingInputSnapshot,
     split: BaoStockTrainingSplit,
-    source_commit: str,
+    _source_commit: str,
     label_cutoff: date,
 ) -> str:
     contract: dict[str, object] = {
         "schema_version": "tomorrow_training_contract",
-        "source_commit": source_commit,
+        "compute_threads": TOMORROW_TRAINING_COMPUTE_THREADS,
+        "peak_rss_mib": TOMORROW_TRAINING_PEAK_RSS_MIB,
         "training_input_scope": snapshot.input_scope,
         "training_input_hash": snapshot.active_snapshot_hash,
         "source_identity_hash": snapshot.source_identity_hash,

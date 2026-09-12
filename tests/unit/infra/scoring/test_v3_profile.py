@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import date
 from importlib import resources
 from pathlib import Path
@@ -14,8 +15,12 @@ from trader.infra.scoring.artifact_hashing import artifact_content_hash
 from trader.infra.scoring.profile_factory import load_scoring_profile
 from trader.infra.scoring.profiles.v3.bundle_codec import decode_tomorrow_bundle, load_tomorrow_bundle
 from trader.infra.scoring.profiles.v3.bundle_locator import locate_latest_bundle
-from trader.infra.scoring.profiles.v3.bundle_store import publish_tomorrow_bundle
 from trader.infra.scoring.profiles.v3.profile import build_scoring_profile, build_tomorrow_predictor
+from trader.infra.scoring.profiles.v3.training_bundle_repository import (
+    inspect_active_tomorrow_bundle,
+    publish_tomorrow_bundle,
+    recover_tomorrow_bundle_publication,
+)
 
 
 def _document() -> dict[str, object]:
@@ -176,7 +181,7 @@ def _training_input(document: dict[str, object]) -> dict[str, object]:
     return payload
 
 
-def test_v3_locator_uses_only_the_atomically_selected_generation(tmp_path: Path) -> None:
+def test_v3_locator_uses_only_the_four_fixed_profile_files(tmp_path: Path) -> None:
     staging = tmp_path / "staging"
     _write_bundle(staging / "model.json", _document())
     selected = publish_tomorrow_bundle(
@@ -188,6 +193,13 @@ def test_v3_locator_uses_only_the_atomically_selected_generation(tmp_path: Path)
     )
 
     assert locate_latest_bundle(tmp_path) == selected
+    assert selected == tmp_path / "tomorrow-v3/model.json"
+    assert sorted(path.name for path in selected.parent.iterdir()) == [
+        "active-bundle.json",
+        "model.json",
+        "report.json",
+        "training-input.json",
+    ]
 
     repeated_staging = tmp_path / "repeated-staging"
     _write_bundle(repeated_staging / "model.json", _document())
@@ -199,6 +211,7 @@ def test_v3_locator_uses_only_the_atomically_selected_generation(tmp_path: Path)
         label_cutoff=date(2026, 9, 8),
     )
     assert repeated == selected
+    assert not (tmp_path / "tomorrow-v3/generations").exists()
 
 
 def test_v3_locator_fails_closed_when_no_model_exists(tmp_path: Path) -> None:
@@ -236,6 +249,58 @@ def test_v3_failed_staging_validation_preserves_the_previous_active_group(tmp_pa
     assert (tmp_path / "tomorrow-v3/active-bundle.json").read_bytes() == pointer_before
 
 
+def test_v3_failed_fixed_file_replacement_restores_the_previous_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "tomorrow-v3"
+    first_staging = tmp_path / "first-staging"
+    _write_bundle(first_staging / "model.json", _document())
+    publish_tomorrow_bundle(
+        first_staging,
+        output,
+        training_input_hash="a" * 64,
+        source_identity_hash="1" * 64,
+        label_cutoff=date(2026, 9, 8),
+    )
+    previous = {
+        name: (output / name).read_bytes()
+        for name in (
+            "training-input.json",
+            "report.json",
+            "model.json",
+            "active-bundle.json",
+        )
+    }
+    second_staging = tmp_path / "second-staging"
+    changed = _document()
+    changed["source_commit"] = "f" * 40
+    _write_bundle(second_staging / "model.json", changed)
+    original_replace = os.replace
+
+    def fail_report(source: str | Path, destination: str | Path) -> None:
+        if Path(source) == second_staging / "report.json":
+            raise OSError("forced replacement failure")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(
+        "trader.infra.scoring.profiles.v3.training_bundle_repository.os.replace",
+        fail_report,
+    )
+
+    with pytest.raises(OSError, match="forced replacement failure"):
+        publish_tomorrow_bundle(
+            second_staging,
+            output,
+            training_input_hash="a" * 64,
+            source_identity_hash="1" * 64,
+            label_cutoff=date(2026, 9, 8),
+        )
+
+    assert {name: (output / name).read_bytes() for name in previous} == previous
+    assert not (output / ".bundle-publication.json").exists()
+    assert not tuple(output.glob(".bundle-rollback.*"))
+
+
 def test_v3_codec_profile_and_predictor_preserve_the_complete_contract(tmp_path: Path) -> None:
     staging = tmp_path / "staging"
     path = staging / "model.json"
@@ -258,7 +323,12 @@ def test_v3_codec_profile_and_predictor_preserve_the_complete_contract(tmp_path:
     assert artifact.content_hash == document["content_hash"]
     assert artifact.label_cutoff.isoformat() == "2026-09-08"
     pointer = json.loads((tmp_path / "tomorrow-v3/active-bundle.json").read_text(encoding="utf-8"))
-    assert pointer["label_cutoff"] == "2026-09-08"
+    assert set(pointer) == {
+        "model_hash",
+        "report_hash",
+        "training_input_document_hash",
+        "content_hash",
+    }
     assert predictor.predict((row,)) == predictor.predict((row,))
     assert predictor.industry_ids == ("银行",)
     assert predictor.exposure_contract.requires_industry is True
@@ -384,7 +454,7 @@ def test_v3_loader_rejects_a_missing_or_mismatched_training_input(tmp_path: Path
         load_tomorrow_bundle(model)
 
 
-def test_v3_locator_rejects_a_pointer_with_a_different_label_cutoff(tmp_path: Path) -> None:
+def test_v3_locator_rejects_a_pointer_with_a_different_model_hash(tmp_path: Path) -> None:
     staging = tmp_path / "staging"
     _write_bundle(staging / "model.json", _document())
     publish_tomorrow_bundle(
@@ -396,7 +466,7 @@ def test_v3_locator_rejects_a_pointer_with_a_different_label_cutoff(tmp_path: Pa
     )
     pointer_path = tmp_path / "tomorrow-v3/active-bundle.json"
     pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
-    pointer["label_cutoff"] = "2026-09-07"
+    pointer["model_hash"] = "f" * 64
     pointer["content_hash"] = artifact_content_hash(
         {key: value for key, value in pointer.items() if key != "content_hash"}
     )
@@ -404,6 +474,64 @@ def test_v3_locator_rejects_a_pointer_with_a_different_label_cutoff(tmp_path: Pa
 
     with pytest.raises(ValueError, match="does not match"):
         locate_latest_bundle(tmp_path)
+
+
+def test_v3_locator_fails_closed_while_a_flat_publication_is_incomplete(tmp_path: Path) -> None:
+    output = tmp_path / "tomorrow-v3"
+    staging = tmp_path / "staging"
+    _write_bundle(staging / "model.json", _document())
+    publish_tomorrow_bundle(
+        staging,
+        output,
+        training_input_hash="a" * 64,
+        source_identity_hash="1" * 64,
+        label_cutoff=date(2026, 9, 8),
+    )
+    (output / ".bundle-publication.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="publication is incomplete"):
+        inspect_active_tomorrow_bundle(output)
+
+
+def test_flat_publication_recovery_restores_the_previous_four_files(tmp_path: Path) -> None:
+    output = tmp_path / "tomorrow-v3"
+    first_staging = tmp_path / "first-staging"
+    _write_bundle(first_staging / "model.json", _document())
+    publish_tomorrow_bundle(
+        first_staging,
+        output,
+        training_input_hash="a" * 64,
+        source_identity_hash="1" * 64,
+        label_cutoff=date(2026, 9, 8),
+    )
+    previous = {
+        name: (output / name).read_bytes()
+        for name in (
+            "training-input.json",
+            "report.json",
+            "model.json",
+            "active-bundle.json",
+        )
+    }
+    rollback = output / ".bundle-rollback.test"
+    rollback.mkdir()
+    for name, content in previous.items():
+        (rollback / name).write_bytes(content)
+    (output / "model.json").write_text("{}", encoding="utf-8")
+    journal = {
+        "schema_version": "tomorrow_training_bundle_publication",
+        "rollback_directory": rollback.name,
+        "previous_files": list(previous),
+        "new_pointer_hash": "f" * 64,
+    }
+    journal["content_hash"] = artifact_content_hash(journal)
+    (output / ".bundle-publication.json").write_text(json.dumps(journal), encoding="utf-8")
+
+    recover_tomorrow_bundle_publication(output)
+
+    assert {name: (output / name).read_bytes() for name in previous} == previous
+    assert not rollback.exists()
+    assert not (output / ".bundle-publication.json").exists()
 
 
 def test_v3_predictor_rejects_uncovered_industry() -> None:

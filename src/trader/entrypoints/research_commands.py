@@ -222,6 +222,7 @@ def _run_tomorrow_research_orchestrator(
             return 130
     payload = {
         "schema_version": "tomorrow_training_result",
+        "artifact_root": str(_train_data_root() / "tomorrow-v3"),
         "status": result.status,
         "run_id": result.run_id,
         "training_input_scope": result.training_input_scope,
@@ -269,7 +270,7 @@ def _repository_source_commit() -> str:
 
 
 def _train_data_root() -> Path:
-    """Committed training artifacts live beside the source tree's data contract."""
+    """Runtime training artifacts live under the project's fixed data root."""
     return Path(__file__).resolve().parents[3] / "data" / "train"
 
 

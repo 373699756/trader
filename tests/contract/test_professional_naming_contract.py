@@ -41,6 +41,7 @@ FORBIDDEN_ACTIVE_PATHS = (
     "infra/research/history_automation_runtime.py",
     "infra/research/history_sync_runtime.py",
     "infra/runtime_support.py",
+    "infra/scoring/profiles/v3/bundle_store.py",
     "infra/scoring/profiles/v3/sample_store.py",
     "infra/settings/runtime.py",
 )

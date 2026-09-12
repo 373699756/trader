@@ -247,6 +247,26 @@ def test_training_due_prefers_revision_and_does_not_advance_on_incomplete_data()
     assert ahead.reason == "data_incomplete"
 
 
+def test_training_due_rebuilds_when_the_execution_contract_changes() -> None:
+    dates = tuple(date(2026, 7, 1) + timedelta(days=index) for index in range(40))
+
+    state = calculate_history_training_due(
+        HistoryTrainingDueRequest(
+            due_identity="due-contract",
+            baseline_label_cutoff=dates[-2],
+            current_label_cutoff=dates[-1],
+            calendar_dates=dates,
+            input_revision=False,
+            observed_at=NOW,
+            training_contract_changed=True,
+        )
+    )
+
+    assert state.reason == "training_contract_due"
+    assert state.training_due is True
+    assert state.input_revision is False
+
+
 def test_training_due_requires_initial_training_without_a_bundle_baseline() -> None:
     dates = (date(2026, 9, 8), date(2026, 9, 9))
     state = calculate_history_training_due(

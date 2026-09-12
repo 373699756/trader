@@ -23,7 +23,6 @@ _STAGE_LABELS: dict[TomorrowTrainingStage, str] = {
     "cross_section_conversion": "横截面转换",
     "model_fit": "行业模型",
     "artifact_publish": "工件发布",
-    "completed": "Tomorrow训练",
 }
 _STATE_LABELS = {"started": "开始", "running": "运行中", "completed": "完成"}
 _PROGRESS_INTERVAL_SECONDS = 30.0

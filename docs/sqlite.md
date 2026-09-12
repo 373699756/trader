@@ -305,11 +305,11 @@ early/calibration 矩阵再各计数和读取。
 
 数据库切换后只完整训练一次：
 
-- 使用实现提交并已推送的源码 commit 作为 `source_commit`；
+- 使用实现提交并已推送的源码 commit 作为审计用 `source_commit`，但不把普通 commit 变化纳入重训合同；
 - 独立 systemd scope、2 个计算线程、峰值 RSS 不超过 2048 MiB；
 - `training_status=engineering_ready`；
 - `training_input_hash` 等于新 active snapshot hash；
-- model/report hash 非空，且与 `active-bundle.json` 和 training-input 完整配对；
+- 四个固定文件 `model.json`、`report.json`、`training-input.json`、`active-bundle.json` 完整配对，hash 不进入路径；
 - 新旧样本构建器在固定夹具上内容一致，新管线的一次性 SQLite 峰值和阶段耗时低于旧管线；
 - 无遗留 `.sample-workspace.*`、staging 或未恢复的切换日志；
 - 再运行一次命令快速返回 `already_current`，不改写活动 bundle。

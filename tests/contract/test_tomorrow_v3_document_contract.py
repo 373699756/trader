@@ -87,21 +87,24 @@ def test_remaining_v3_research_has_isolated_owners_and_one_public_command() -> N
         assert f"`./run.sh {internal_stage}" not in strategy
 
 
-def test_trained_v3_profile_loads_only_the_active_hash_bound_group() -> None:
+def test_trained_v3_profile_loads_only_the_fixed_active_bundle_files() -> None:
     strategy = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
     design = (ROOT / "docs" / "02_工程设计.md").read_text(encoding="utf-8")
     model_port = (ROOT / "src" / "trader" / "application" / "ports" / "model_scoring.py").read_text(encoding="utf-8")
 
     locator = (ROOT / "src/trader/infra/scoring/profiles/v3/bundle_locator.py").read_text(encoding="utf-8")
-    bundle_repository_source = (ROOT / "src/trader/infra/scoring/profiles/v3/bundle_store.py").read_text(
+    bundle_repository_source = (ROOT / "src/trader/infra/scoring/profiles/v3/training_bundle_repository.py").read_text(
         encoding="utf-8"
     )
     assert "tomorrow-v3" in locator
     assert "active-bundle.json" in bundle_repository_source
     assert "model.json" in bundle_repository_source
+    assert "training-input.json" in bundle_repository_source
+    assert "report.json" in bundle_repository_source
+    assert "generations" not in locator + bundle_repository_source + design
     assert "active snapshot 和来源身份全部有效" in strategy
     assert "active-bundle.json" in design
-    assert "三者必须共享" in design
+    assert "四个固定文件" in design
     assert "15:00_close_proxy" in design
     assert "class ModelPredictorPort" in model_port
 

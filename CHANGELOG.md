@@ -7,6 +7,7 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
+- [Tomorrow V3 fixed training artifact files](docs/changelog/2026-09-12-tomorrow-v3-fixed-training-artifacts.md)
 - [SQLite repack and Tomorrow training optimization plan](docs/changelog/2026-09-12-sqlite-repack-training-plan.md)
 - [Tomorrow training 2 GiB OOM isolation](docs/changelog/2026-09-12-tomorrow-training-oom-isolation.md)
 - [Tomorrow training streaming and resource bounds](docs/changelog/2026-09-12-tomorrow-training-streaming-resources.md)

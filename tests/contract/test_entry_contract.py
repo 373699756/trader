@@ -688,6 +688,7 @@ def test_train_tomorrow_passes_the_fixed_project_history_root_to_the_training_ow
     assert observed == [(history, ROOT / "data" / "train")]
     payload = json.loads(capsys.readouterr().out)
     assert payload["report_hash"] == ""
+    assert payload["artifact_root"] == str(ROOT / "data" / "train" / "tomorrow-v3")
     assert payload["training_due_reason"] == "data_incomplete"
 
 

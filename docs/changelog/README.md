@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Tomorrow V3 fixed training artifact files](2026-09-12-tomorrow-v3-fixed-training-artifacts.md)
 - [SQLite repack and Tomorrow training optimization plan](2026-09-12-sqlite-repack-training-plan.md)
 - [Tomorrow training 2 GiB OOM isolation](2026-09-12-tomorrow-training-oom-isolation.md)
 - [Tomorrow training streaming and resource bounds](2026-09-12-tomorrow-training-streaming-resources.md)

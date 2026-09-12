@@ -91,6 +91,24 @@ def test_control_repository_round_trips_typed_state_and_replays_same_content(tmp
     assert repository.integrity().state == "healthy"
 
 
+def test_control_repository_round_trips_training_contract_due(tmp_path: Path) -> None:
+    repository = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3")
+    repository.initialize()
+    due = HistoryTrainingDueState(
+        "due-contract",
+        "training_contract_due",
+        date(2026, 9, 9),
+        date(2026, 9, 10),
+        1,
+        False,
+        NOW,
+    )
+
+    repository.save_due_state(due)
+
+    assert repository.load_state().due_states == (due,)
+
+
 def test_automation_state_decodes_only_bounded_status_records(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     repository = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3")
     repository.initialize()

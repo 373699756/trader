@@ -15,7 +15,6 @@ TomorrowTrainingStage = Literal[
     "cross_section_conversion",
     "model_fit",
     "artifact_publish",
-    "completed",
 ]
 TomorrowTrainingProgressState = Literal["started", "running", "completed"]
 TomorrowPartitionValidationPhase = Literal["hash", "integrity", "row_count"]

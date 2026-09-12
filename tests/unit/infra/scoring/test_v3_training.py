@@ -37,6 +37,7 @@ from trader.infra.scoring.profiles.v3.sample_builder import (
 from trader.infra.scoring.profiles.v3.training import (
     _cleanup_abandoned_sample_workspaces,
     _model_document,
+    _training_contract_hash,
     _training_output_directory,
     _TrainingArtifactContext,
     run_tomorrow_training,
@@ -133,8 +134,8 @@ def test_training_cadence_stops_before_model_work_on_the_nineteenth_matured_day(
         lambda *_args: _due(archive, current_label_position - 19, "not_due"),
     )
     monkeypatch.setattr(
-        "trader.infra.scoring.profiles.v3.training._build_split",
-        lambda *_args: pytest.fail("model work must not start before cadence is due"),
+        "trader.infra.scoring.profiles.v3.training.build_training_samples",
+        lambda *_args, **_kwargs: pytest.fail("sample work must not start before cadence is due"),
     )
 
     result = run_tomorrow_training(tmp_path / "history", tmp_path / "train", source_commit="e" * 40)
@@ -159,8 +160,8 @@ def test_training_failure_on_the_twentieth_day_keeps_the_successful_bundle_basel
         lambda *_args: _due(archive, current_label_position - 20, "cadence_due"),
     )
     monkeypatch.setattr(
-        "trader.infra.scoring.profiles.v3.training._build_split",
-        lambda *_args: (_ for _ in ()).throw(RuntimeError("forced failure")),
+        "trader.infra.scoring.profiles.v3.training.build_training_samples",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("forced failure")),
     )
 
     first = run_tomorrow_training(tmp_path / "history", tmp_path / "train", source_commit="e" * 40)
@@ -217,18 +218,25 @@ def test_successful_bundle_publication_is_the_only_event_that_clears_due_state(
         lambda _samples, _split, *, progress: ({"银行": {}}, 1, 1),
     )
     published: list[str] = []
+    progress_updates: list[TomorrowTrainingProgress] = []
     monkeypatch.setattr(
         "trader.infra.scoring.profiles.v3.training.publish_tomorrow_bundle",
         lambda *_args, **_kwargs: published.append("published"),
     )
 
-    result = run_tomorrow_training(tmp_path / "history", tmp_path / "train", source_commit="e" * 40)
+    result = run_tomorrow_training(
+        tmp_path / "history",
+        tmp_path / "train",
+        progress=SimpleNamespace(publish=progress_updates.append),
+        source_commit="e" * 40,
+    )
 
     assert published == ["published"]
     assert result.status == "engineering_ready"
     assert result.training_due is False
     assert result.training_due_reason == "not_due"
     assert result.matured_label_days_since_training == 0
+    assert [update.stage for update in progress_updates].count("completed") == 0
 
 
 def test_training_does_not_open_a_second_snapshot_while_history_maintenance_is_running(
@@ -277,6 +285,19 @@ def test_v3_training_outputs_json_directly_under_the_profile_directory(tmp_path:
 
     assert output == tmp_path / "tomorrow-v3"
     assert output.parent == tmp_path
+
+
+def test_training_contract_hash_does_not_change_for_an_audit_only_source_commit(tmp_path: Path) -> None:
+    snapshot = _cadence_archive(tmp_path / "history" / "baostock").snapshot
+    split = build_baostock_training_split(
+        snapshot.calendar.open_dates,
+        parent_manifest_hash=snapshot.active_snapshot_hash,
+    )
+
+    first = _training_contract_hash(snapshot, split, "a" * 40, snapshot.label_cutoff)
+    second = _training_contract_hash(snapshot, split, "b" * 40, snapshot.label_cutoff)
+
+    assert first == second
 
 
 def test_training_cleanup_removes_only_abandoned_sample_workspaces(tmp_path: Path) -> None:

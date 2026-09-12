@@ -18,6 +18,7 @@ HistoryTrainingDueReason = Literal[
     "initial_training_required",
     "cadence_due",
     "input_revision_due",
+    "training_contract_due",
     "data_incomplete",
 ]
 HistoryReminderOutcome = Literal["sent", "notification_degraded"]
@@ -172,6 +173,9 @@ class HistoryTrainingDueState:
             and self.matured_label_days_since_training >= 20
             or self.reason == "input_revision_due"
             and self.input_revision
+            or self.reason == "training_contract_due"
+            and self.baseline_label_cutoff is not None
+            and self.current_label_cutoff is not None
             or self.reason == "not_due"
             and not self.input_revision
             and self.matured_label_days_since_training < 20
@@ -183,7 +187,12 @@ class HistoryTrainingDueState:
 
     @property
     def training_due(self) -> bool:
-        return self.reason in {"initial_training_required", "cadence_due", "input_revision_due"}
+        return self.reason in {
+            "initial_training_required",
+            "cadence_due",
+            "input_revision_due",
+            "training_contract_due",
+        }
 
 
 @dataclass(frozen=True)
@@ -195,6 +204,7 @@ class HistoryTrainingDueRequest:
     input_revision: bool
     observed_at: datetime
     data_complete: bool = True
+    training_contract_changed: bool = False
 
 
 def calculate_history_training_due(request: HistoryTrainingDueRequest) -> HistoryTrainingDueState:
@@ -227,6 +237,8 @@ def calculate_history_training_due(request: HistoryTrainingDueRequest) -> Histor
             reason = "initial_training_required"
         elif request.input_revision:
             reason = "input_revision_due"
+        elif request.training_contract_changed:
+            reason = "training_contract_due"
         elif matured >= 20:
             reason = "cadence_due"
         else:

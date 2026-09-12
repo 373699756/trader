@@ -24,7 +24,7 @@ from trader.infra.research.history_month_archive import (
     SQLiteHistoryMonthlyArchive,
     route_history_months,
 )
-from trader.infra.scoring.profiles.v3.bundle_store import (
+from trader.infra.scoring.profiles.v3.training_bundle_repository import (
     ActiveTomorrowBundle,
     inspect_active_tomorrow_bundle,
 )
@@ -44,6 +44,7 @@ def evaluate_history_training_due(
     archive_root: Path,
     training_root: Path,
     observed_at: datetime,
+    expected_training_contract_hash: str | None = None,
 ) -> HistoryTrainingDueEvaluation | None:
     """Read and persist one immutable due observation.
 
@@ -99,6 +100,11 @@ def evaluate_history_training_due(
         except (HistoryMonthlyArchiveError, OSError, ValueError):
             data_complete = False
     input_revision = bool(revised_dates)
+    training_contract_changed = (
+        bundle is not None
+        and expected_training_contract_hash is not None
+        and bundle.training_contract_hash != expected_training_contract_hash
+    )
     invalidated_dates = calculate_history_training_cache_invalidation_dates(
         calendar.open_dates,
         revised_dates,
@@ -113,6 +119,8 @@ def evaluate_history_training_due(
                 active.label_cutoff,
                 revised_dates,
                 data_complete,
+                expected_training_contract_hash,
+                training_contract_changed,
             )
         )[:32]
     )
@@ -125,6 +133,7 @@ def evaluate_history_training_due(
             input_revision=input_revision,
             observed_at=observed_at,
             data_complete=data_complete,
+            training_contract_changed=training_contract_changed,
         )
     )
     previous = next((item for item in state.due_states if item.due_identity == due.due_identity), None)
