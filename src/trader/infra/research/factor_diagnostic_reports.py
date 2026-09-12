@@ -34,7 +34,7 @@ class FactorDiagnosticReportConflictError(RuntimeError):
     pass
 
 
-class JsonFactorDiagnosticReportStore:
+class JsonFactorDiagnosticReportArchive:
     """Write one factor report identity once and verify every subsequent read."""
 
     def __init__(self, root: Path) -> None:
@@ -72,13 +72,13 @@ class JsonFactorDiagnosticReportStore:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 raise TypeError("factor report payload is not an object")
-            stored_hash = raw.pop("report_hash")
-            if not isinstance(stored_hash, str) or canonical_artifact_hash(raw) != stored_hash:
+            persisted_hash = raw.pop("report_hash")
+            if not isinstance(persisted_hash, str) or canonical_artifact_hash(raw) != persisted_hash:
                 raise ValueError("factor report hash mismatch")
             report = _report_from_payload(raw)
         except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise FactorDiagnosticReportConflictError("factor diagnostic report hash or schema is invalid") from exc
-        if report.report_hash != stored_hash:
+        if report.report_hash != persisted_hash:
             raise FactorDiagnosticReportConflictError("factor diagnostic report reconstructed hash mismatch")
         return report
 
@@ -271,4 +271,4 @@ def _int_triple(value: object) -> tuple[int, int, int]:
     return _integer(raw[0]), _integer(raw[1]), _integer(raw[2])
 
 
-__all__ = ["FactorDiagnosticReportConflictError", "JsonFactorDiagnosticReportStore"]
+__all__ = ["FactorDiagnosticReportConflictError", "JsonFactorDiagnosticReportArchive"]

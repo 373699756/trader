@@ -33,7 +33,7 @@ from trader.domain.research.artifact_identity import (
 from trader.infra.process_lock import ProcessLock, ProcessLockError
 
 
-class TomorrowResearchArtifactStoreError(RuntimeError):
+class TomorrowResearchArtifactRepositoryError(RuntimeError):
     pass
 
 
@@ -48,7 +48,7 @@ class _TomorrowCommitContext:
     resource_probe: TomorrowResearchResourceProbe | None
 
 
-class TomorrowResearchArtifactStore:
+class TomorrowResearchArtifactRepository:
     """Seal handoffs and advance one content-addressed graph with compare-and-set."""
 
     def __init__(self, root: Path, *, available_disk_gb: Callable[[Path], float] | None = None) -> None:
@@ -66,12 +66,12 @@ class TomorrowResearchArtifactStore:
         if path.is_file():
             existing = self.load_handoff(handoff.stage)
             if existing != handoff:
-                raise TomorrowResearchArtifactStoreError("Tomorrow research handoff identity conflict")
+                raise TomorrowResearchArtifactRepositoryError("Tomorrow research handoff identity conflict")
             return handoff.content_hash
         _seal_immutable(path, encoded)
         existing = self.load_handoff(handoff.stage)
         if existing != handoff:
-            raise TomorrowResearchArtifactStoreError("Tomorrow research handoff identity conflict")
+            raise TomorrowResearchArtifactRepositoryError("Tomorrow research handoff identity conflict")
         return handoff.content_hash
 
     def load_handoff(self, stage: TomorrowResearchStage) -> TomorrowResearchStageHandoff | None:
@@ -81,7 +81,7 @@ class TomorrowResearchArtifactStore:
         try:
             return _decode_handoff(path.read_text(encoding="utf-8"))
         except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise TomorrowResearchArtifactStoreError("Tomorrow research handoff is invalid") from exc
+            raise TomorrowResearchArtifactRepositoryError("Tomorrow research handoff is invalid") from exc
 
     def load_graph(self) -> TomorrowResearchArtifactGraph:
         run_id = self.current_run_id()
@@ -101,7 +101,7 @@ class TomorrowResearchArtifactStore:
         try:
             return _decode_graph(current_path.read_text(encoding="utf-8"))
         except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise TomorrowResearchArtifactStoreError("Tomorrow research graph is invalid") from exc
+            raise TomorrowResearchArtifactRepositoryError("Tomorrow research graph is invalid") from exc
 
     def seal_model(self, encoded: str, expected_hash: str) -> str:
         verified = _verified_model_document(encoded, expected_hash)
@@ -110,7 +110,7 @@ class TomorrowResearchArtifactStore:
 
     def seal_evidence_partition(self, reference: TomorrowResearchEvidencePartitionRef, source: Path) -> str:
         if not source.is_file() or _file_hash(source) != reference.content_hash:
-            raise TomorrowResearchArtifactStoreError("Tomorrow research evidence partition hash is invalid")
+            raise TomorrowResearchArtifactRepositoryError("Tomorrow research evidence partition hash is invalid")
         target = self._evidence_inbox_root / f"{reference.content_hash}.parquet"
         _seal_file_copy(source, target, reference.content_hash)
         return reference.content_hash
@@ -128,7 +128,7 @@ class TomorrowResearchArtifactStore:
                 self._handoff_path(handoff.stage).unlink(missing_ok=True)
                 return context.graph
         except ProcessLockError as exc:
-            raise TomorrowResearchArtifactStoreError("Tomorrow research orchestrator is already active") from exc
+            raise TomorrowResearchArtifactRepositoryError("Tomorrow research orchestrator is already active") from exc
 
     def _prepare_commit(
         self,
@@ -137,15 +137,15 @@ class TomorrowResearchArtifactStore:
     ) -> _TomorrowCommitContext:
         current = self.load_graph()
         if current.content_hash != expected_graph_hash:
-            raise TomorrowResearchArtifactStoreError("Tomorrow research graph compare-and-set conflict")
+            raise TomorrowResearchArtifactRepositoryError("Tomorrow research graph compare-and-set conflict")
         if self.load_handoff(handoff.stage) != handoff:
-            raise TomorrowResearchArtifactStoreError("Tomorrow research sealed handoff changed before commit")
+            raise TomorrowResearchArtifactRepositoryError("Tomorrow research sealed handoff changed before commit")
         if self.host_available_disk_gb() < 30.0:
-            raise TomorrowResearchArtifactStoreError("Tomorrow research available disk is below 30GB")
+            raise TomorrowResearchArtifactRepositoryError("Tomorrow research available disk is below 30GB")
         updated = current.extend(handoff.artifacts)
         run_id = derive_tomorrow_research_run_id(updated)
         if run_id is None:
-            raise TomorrowResearchArtifactStoreError("Tomorrow research run identity cannot be derived")
+            raise TomorrowResearchArtifactRepositoryError("Tomorrow research run identity cannot be derived")
         active_run_id = self.current_run_id()
         self._validate_active_run(active_run_id, run_id)
         run_root = self._run_root(run_id)
@@ -164,7 +164,7 @@ class TomorrowResearchArtifactStore:
         if active_run_id is None or active_run_id == run_id:
             return
         if next_research_stage(self._load_run_graph(active_run_id)) is not None:
-            raise TomorrowResearchArtifactStoreError("Tomorrow research active run identity conflict")
+            raise TomorrowResearchArtifactRepositoryError("Tomorrow research active run identity conflict")
 
     def _terminal_model(
         self,
@@ -179,7 +179,7 @@ class TomorrowResearchArtifactStore:
             return None
         model_source = self._model_inbox_root / f"{model_ref.content_hash}.json"
         if not model_source.is_file():
-            raise TomorrowResearchArtifactStoreError("Tomorrow research terminal model document is missing")
+            raise TomorrowResearchArtifactRepositoryError("Tomorrow research terminal model document is missing")
         return _verified_model_document(model_source.read_text(encoding="utf-8"), model_ref.content_hash)
 
     def _seal_commit_evidence(
@@ -192,10 +192,10 @@ class TomorrowResearchArtifactStore:
         for reference in additions:
             existing = evidence_by_path.get(reference.relative_path)
             if existing is not None and existing != reference:
-                raise TomorrowResearchArtifactStoreError("Tomorrow research evidence partition identity conflict")
+                raise TomorrowResearchArtifactRepositoryError("Tomorrow research evidence partition identity conflict")
             source = self._evidence_inbox_root / f"{reference.content_hash}.parquet"
             if not source.is_file() or _file_hash(source) != reference.content_hash:
-                raise TomorrowResearchArtifactStoreError("Tomorrow research sealed evidence partition is missing")
+                raise TomorrowResearchArtifactRepositoryError("Tomorrow research sealed evidence partition is missing")
             _seal_file_copy(source, run_root / "evidence" / reference.relative_path, reference.content_hash)
             evidence_by_path[reference.relative_path] = reference
         return tuple(sorted(evidence_by_path.values(), key=lambda item: item.relative_path))
@@ -230,9 +230,9 @@ class TomorrowResearchArtifactStore:
         try:
             run_id = self._active_run_path.read_text(encoding="ascii").strip()
         except OSError as exc:
-            raise TomorrowResearchArtifactStoreError("Tomorrow research active run pointer is invalid") from exc
+            raise TomorrowResearchArtifactRepositoryError("Tomorrow research active run pointer is invalid") from exc
         if len(run_id) != 64 or any(value not in "0123456789abcdef" for value in run_id):
-            raise TomorrowResearchArtifactStoreError("Tomorrow research active run pointer is invalid")
+            raise TomorrowResearchArtifactRepositoryError("Tomorrow research active run pointer is invalid")
         return run_id
 
     def _handoff_path(self, stage: TomorrowResearchStage) -> Path:
@@ -451,7 +451,7 @@ def _read_report_resource_probe(path: Path) -> TomorrowResearchResourceProbe | N
         value = raw.get("resource_probe")
         return None if value is None else _decode_resource_probe(_object(value))
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise TomorrowResearchArtifactStoreError("Tomorrow research report checkpoint is invalid") from exc
+        raise TomorrowResearchArtifactRepositoryError("Tomorrow research report checkpoint is invalid") from exc
 
 
 def _read_report_evidence(path: Path) -> tuple[TomorrowResearchEvidencePartitionRef, ...]:
@@ -461,7 +461,7 @@ def _read_report_evidence(path: Path) -> tuple[TomorrowResearchEvidencePartition
         raw = _verified_object(path.read_text(encoding="utf-8"))
         return tuple(_decode_report_evidence(_object(item)) for item in _array(raw.get("evidence_partitions", [])))
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise TomorrowResearchArtifactStoreError("Tomorrow research report checkpoint is invalid") from exc
+        raise TomorrowResearchArtifactRepositoryError("Tomorrow research report checkpoint is invalid") from exc
 
 
 def _decode_report_evidence(raw: dict[str, object]) -> TomorrowResearchEvidencePartitionRef:
@@ -493,21 +493,21 @@ def _verified_object(encoded: str) -> dict[str, object]:
     if not isinstance(raw, dict) or any(not isinstance(key, str) for key in raw):
         raise TypeError("Tomorrow research artifact must be an object")
     payload = cast(dict[str, object], raw)
-    stored_hash = payload.pop("content_hash")
-    if not isinstance(stored_hash, str) or canonical_artifact_hash(payload) != stored_hash:
+    persisted_hash = payload.pop("content_hash")
+    if not isinstance(persisted_hash, str) or canonical_artifact_hash(payload) != persisted_hash:
         raise ValueError("Tomorrow research artifact hash mismatch")
-    payload["content_hash"] = stored_hash
+    payload["content_hash"] = persisted_hash
     return payload
 
 
 def _verified_model_document(encoded: str, expected_hash: str) -> str:
     raw = json.loads(encoded)
     if not isinstance(raw, dict) or any(not isinstance(key, str) for key in raw):
-        raise TomorrowResearchArtifactStoreError("Tomorrow research model document is invalid")
+        raise TomorrowResearchArtifactRepositoryError("Tomorrow research model document is invalid")
     payload = cast(dict[str, object], raw)
-    stored_hash = payload.pop("content_hash", None)
-    if stored_hash != expected_hash or canonical_artifact_hash(payload) != expected_hash:
-        raise TomorrowResearchArtifactStoreError("Tomorrow research model document hash is invalid")
+    persisted_hash = payload.pop("content_hash", None)
+    if persisted_hash != expected_hash or canonical_artifact_hash(payload) != expected_hash:
+        raise TomorrowResearchArtifactRepositoryError("Tomorrow research model document hash is invalid")
     payload["content_hash"] = expected_hash
     return canonical_artifact_json(payload)
 
@@ -521,7 +521,7 @@ def _seal_immutable(path: Path, encoded: str) -> None:
             os.link(temporary, path)
         except FileExistsError:
             if path.read_text(encoding="utf-8") != encoded:
-                raise TomorrowResearchArtifactStoreError("Tomorrow research immutable artifact conflict") from None
+                raise TomorrowResearchArtifactRepositoryError("Tomorrow research immutable artifact conflict") from None
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -530,18 +530,18 @@ def _seal_file_copy(source: Path, target: Path, expected_hash: str) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.is_file():
         if _file_hash(target) != expected_hash:
-            raise TomorrowResearchArtifactStoreError("Tomorrow research immutable evidence conflict")
+            raise TomorrowResearchArtifactRepositoryError("Tomorrow research immutable evidence conflict")
         return
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
     shutil.copyfile(source, temporary)
     try:
         if _file_hash(temporary) != expected_hash:
-            raise TomorrowResearchArtifactStoreError("Tomorrow research copied evidence hash is invalid")
+            raise TomorrowResearchArtifactRepositoryError("Tomorrow research copied evidence hash is invalid")
         try:
             os.link(temporary, target)
         except FileExistsError:
             if _file_hash(target) != expected_hash:
-                raise TomorrowResearchArtifactStoreError("Tomorrow research immutable evidence conflict") from None
+                raise TomorrowResearchArtifactRepositoryError("Tomorrow research immutable evidence conflict") from None
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -622,4 +622,4 @@ def _file_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
-__all__ = ["TomorrowResearchArtifactStore", "TomorrowResearchArtifactStoreError"]
+__all__ = ["TomorrowResearchArtifactRepository", "TomorrowResearchArtifactRepositoryError"]

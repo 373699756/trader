@@ -14,7 +14,7 @@ class CostAwareSelectionArtifactConflictError(RuntimeError):
     pass
 
 
-class CostAwareSelectionArtifactStore:
+class CostAwareSelectionArtifactArchive:
     def __init__(self, root: Path) -> None:
         self._root = root
 
@@ -96,4 +96,4 @@ def _report_payload(report: CostAwareSelectionReport) -> dict[str, object]:
     }
 
 
-__all__ = ["CostAwareSelectionArtifactConflictError", "CostAwareSelectionArtifactStore"]
+__all__ = ["CostAwareSelectionArtifactConflictError", "CostAwareSelectionArtifactArchive"]

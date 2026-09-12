@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from trader.application.research.tomorrow_historical_validation import HISTORICAL_RISK_VALIDATION_SPEC
+from trader.application.research.tomorrow_historical_validation import TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src/trader"
@@ -20,9 +20,9 @@ def test_authoritative_contracts_make_history_the_only_score_validation_source()
     ):
         assert expected in strategy
     assert (
-        HISTORICAL_RISK_VALIDATION_SPEC.training_trade_dates,
-        HISTORICAL_RISK_VALIDATION_SPEC.calibration_trade_dates,
-        HISTORICAL_RISK_VALIDATION_SPEC.test_trade_dates,
+        TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.training_trade_dates,
+        TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.calibration_trade_dates,
+        TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.test_trade_dates,
     ) == (60, 20, 40)
     assert "评分验证唯一使用历史 point-in-time 回放" in design
 

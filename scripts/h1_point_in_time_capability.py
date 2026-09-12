@@ -25,14 +25,14 @@ from trader.domain.research.h1_point_in_time import H1CapabilityAuditReport, H1P
 from trader.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive  # noqa: E402
 from trader.infra.research.h1_point_in_time_capability import (  # noqa: E402
     FreeSourceH1CapabilityProbe,
-    H1CapabilityArtifactStore,
+    H1CapabilityArtifactArchive,
     PointInTimeSourceSession,
 )
 from trader.infra.research.h1_point_in_time_completion import (  # noqa: E402
     H1ResearchCompletionArtifactIndex,
-    H1ResearchCompletionArtifactStore,
+    H1ResearchCompletionArtifactArchive,
 )
-from trader.infra.research.historical_label_artifacts import HistoricalLabelArtifactStore  # noqa: E402
+from trader.infra.research.historical_label_artifacts import HistoricalLabelArtifactArchive  # noqa: E402
 
 
 class _SessionFactory(Protocol):
@@ -116,9 +116,9 @@ def execute(
     archive = SQLiteH1PointInTimeArchive(h1_runtime_dir)
     metadata = tuple(archive.label_metadata(H1PointInTimeSpec(strategy)) for strategy in ("today", "tomorrow", "d25"))
     completion = complete_h1_research(capability=capability, metadata=metadata)
-    H1CapabilityArtifactStore(artifact_dir).write(capability)
-    HistoricalLabelArtifactStore(artifact_dir).write(completion.labels)
-    index = H1ResearchCompletionArtifactStore(artifact_dir).write(completion)
+    H1CapabilityArtifactArchive(artifact_dir).write(capability)
+    HistoricalLabelArtifactArchive(artifact_dir).write(completion.labels)
+    index = H1ResearchCompletionArtifactArchive(artifact_dir).write(completion)
     return capability, completion, index
 
 

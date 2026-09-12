@@ -9,21 +9,21 @@ from pathlib import Path
 from typing import cast
 
 from trader.infra.research.history_archive_repack_state import (
-    HistoryArchiveActivationJournal,
-    HistoryArchiveActivationState,
+    HistoryArchiveRepackActivationJournal,
+    HistoryArchiveRepackActivationState,
     HistoryArchiveRepackBuildState,
-    HistoryArchiveRepackPartition,
-    HistoryArchiveSourceFile,
-    HistoryTrainingMemoryEvidence,
+    HistoryArchiveRepackPartitionEvidence,
+    HistoryArchiveRepackSourceFileIdentity,
 )
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
+from trader.infra.scoring.profiles.v3.training_memory_evidence import TomorrowTrainingMemoryEvidence
 
 
 class HistoryArchiveRepackCodecError(RuntimeError):
     """A persisted repack state document is missing or untrusted."""
 
 
-def write_history_repack_build_state(path: Path, state: HistoryArchiveRepackBuildState) -> None:
+def write_history_archive_repack_build_state(path: Path, state: HistoryArchiveRepackBuildState) -> None:
     partitions = [
         {
             "relative_path": item.relative_path,
@@ -67,7 +67,7 @@ def write_history_repack_build_state(path: Path, state: HistoryArchiveRepackBuil
     _write_verified_json(path, payload)
 
 
-def read_history_repack_build_state(path: Path) -> HistoryArchiveRepackBuildState:
+def read_history_archive_repack_build_state(path: Path) -> HistoryArchiveRepackBuildState:
     payload = _read_verified_json(path, "history_archive_repack_build_state")
     _require_fields(
         payload,
@@ -121,7 +121,7 @@ def read_history_repack_build_state(path: Path) -> HistoryArchiveRepackBuildStat
         raise HistoryArchiveRepackCodecError("history repack build state is invalid") from exc
 
 
-def write_history_activation_journal(path: Path, journal: HistoryArchiveActivationJournal) -> None:
+def write_history_archive_repack_activation_journal(path: Path, journal: HistoryArchiveRepackActivationJournal) -> None:
     payload: dict[str, object] = {
         "schema_version": "history_archive_repack_activation_journal",
         "state": journal.state,
@@ -134,7 +134,7 @@ def write_history_activation_journal(path: Path, journal: HistoryArchiveActivati
     _write_verified_json(path, payload)
 
 
-def read_history_activation_journal(path: Path) -> HistoryArchiveActivationJournal:
+def read_history_archive_repack_activation_journal(path: Path) -> HistoryArchiveRepackActivationJournal:
     payload = _read_verified_json(path, "history_archive_repack_activation_journal")
     _require_fields(
         payload,
@@ -150,8 +150,8 @@ def read_history_activation_journal(path: Path) -> HistoryArchiveActivationJourn
         },
     )
     try:
-        return HistoryArchiveActivationJournal(
-            cast(HistoryArchiveActivationState, _text(payload, "state")),
+        return HistoryArchiveRepackActivationJournal(
+            cast(HistoryArchiveRepackActivationState, _text(payload, "state")),
             _text(payload, "source_root"),
             _text(payload, "target_root"),
             _text(payload, "backup_root"),
@@ -162,7 +162,7 @@ def read_history_activation_journal(path: Path) -> HistoryArchiveActivationJourn
         raise HistoryArchiveRepackCodecError("history repack activation journal is invalid") from exc
 
 
-def read_training_memory_evidence(path: Path) -> HistoryTrainingMemoryEvidence:
+def read_tomorrow_training_memory_evidence(path: Path) -> TomorrowTrainingMemoryEvidence:
     payload = _read_verified_json(path, "tomorrow_training_memory_gate")
     _require_fields(
         payload,
@@ -187,7 +187,7 @@ def read_training_memory_evidence(path: Path) -> HistoryTrainingMemoryEvidence:
         failures = _list(payload, "failure_reasons")
         if failures:
             raise ValueError("training memory gate has failure reasons")
-        return HistoryTrainingMemoryEvidence(
+        return TomorrowTrainingMemoryEvidence(
             _text(payload, "training_status"),
             _text(payload, "repeat_training_status"),
             _text(payload, "training_input_hash"),
@@ -200,17 +200,17 @@ def read_training_memory_evidence(path: Path) -> HistoryTrainingMemoryEvidence:
         raise HistoryArchiveRepackCodecError("Tomorrow training memory evidence is invalid") from exc
 
 
-def _decode_source_file(raw: object) -> HistoryArchiveSourceFile:
+def _decode_source_file(raw: object) -> HistoryArchiveRepackSourceFileIdentity:
     payload = _object(raw)
     _require_fields(payload, {"relative_path", "size_bytes", "modified_ns"})
-    return HistoryArchiveSourceFile(
+    return HistoryArchiveRepackSourceFileIdentity(
         _text(payload, "relative_path"),
         _integer(payload, "size_bytes"),
         _integer(payload, "modified_ns"),
     )
 
 
-def _decode_partition(raw: object) -> HistoryArchiveRepackPartition:
+def _decode_partition(raw: object) -> HistoryArchiveRepackPartitionEvidence:
     payload = _object(raw)
     _require_fields(
         payload,
@@ -227,7 +227,7 @@ def _decode_partition(raw: object) -> HistoryArchiveRepackPartition:
             "observations_logical_hash",
         },
     )
-    return HistoryArchiveRepackPartition(
+    return HistoryArchiveRepackPartitionEvidence(
         _text(payload, "relative_path"),
         _text(payload, "source_sha256"),
         _text(payload, "target_sha256"),
@@ -317,9 +317,9 @@ def _fsync_directory(path: Path) -> None:
 
 __all__ = [
     "HistoryArchiveRepackCodecError",
-    "read_history_activation_journal",
-    "read_history_repack_build_state",
-    "read_training_memory_evidence",
-    "write_history_activation_journal",
-    "write_history_repack_build_state",
+    "read_history_archive_repack_activation_journal",
+    "read_history_archive_repack_build_state",
+    "read_tomorrow_training_memory_evidence",
+    "write_history_archive_repack_activation_journal",
+    "write_history_archive_repack_build_state",
 ]

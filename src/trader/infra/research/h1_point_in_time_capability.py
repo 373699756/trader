@@ -131,7 +131,7 @@ class FreeSourceH1CapabilityProbe:
         )
 
 
-class H1CapabilityArtifactStore:
+class H1CapabilityArtifactArchive:
     def __init__(self, root: Path) -> None:
         self._root = root
         self._path = root / "h1_capability_audit.json"
@@ -167,11 +167,11 @@ class H1CapabilityArtifactStore:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 raise TypeError("H1 capability artifact must be an object")
-            stored_hash = raw.pop("content_hash")
-            if not isinstance(stored_hash, str) or canonical_artifact_hash(raw) != stored_hash:
+            persisted_hash = raw.pop("content_hash")
+            if not isinstance(persisted_hash, str) or canonical_artifact_hash(raw) != persisted_hash:
                 raise ValueError("H1 capability artifact hash mismatch")
             report = _decode(cast(dict[str, object], raw))
-            if report.content_hash != stored_hash:
+            if report.content_hash != persisted_hash:
                 raise ValueError("H1 capability artifact reconstructed hash mismatch")
             return report
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -378,6 +378,6 @@ def _bad() -> float:
 __all__ = [
     "FreeSourceH1CapabilityProbe",
     "H1CapabilityArtifactConflictError",
-    "H1CapabilityArtifactStore",
+    "H1CapabilityArtifactArchive",
     "PointInTimeSourceSession",
 ]

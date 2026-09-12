@@ -18,7 +18,7 @@ class TomorrowProfileHoldoutArtifactConflictError(RuntimeError):
     pass
 
 
-class TomorrowProfileHoldoutArtifactStore:
+class TomorrowProfileHoldoutArtifactArchive:
     def __init__(self, runtime_root: Path) -> None:
         self._path = runtime_root / "score-tomorrow-profile" / "profile-holdout.json"
 
@@ -52,12 +52,12 @@ class TomorrowProfileHoldoutArtifactStore:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 raise TypeError("Tomorrow profile holdout artifact is not an object")
-            stored = raw.pop("content_hash")
-            if not isinstance(stored, str) or canonical_artifact_hash(raw) != stored:
+            persisted = raw.pop("content_hash")
+            if not isinstance(persisted, str) or canonical_artifact_hash(raw) != persisted:
                 raise ValueError("Tomorrow profile holdout hash mismatch")
         except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise TomorrowProfileHoldoutArtifactConflictError("Tomorrow profile holdout artifact is invalid") from exc
-        raw["content_hash"] = stored
+        raw["content_hash"] = persisted
         return raw
 
     def inspect(self) -> dict[str, object]:
@@ -135,6 +135,6 @@ def _gate_payload(value: TomorrowHistoricalGateMetrics) -> dict[str, object]:
 
 __all__ = [
     "TomorrowProfileHoldoutArtifactConflictError",
-    "TomorrowProfileHoldoutArtifactStore",
+    "TomorrowProfileHoldoutArtifactArchive",
     "holdout_report_payload",
 ]

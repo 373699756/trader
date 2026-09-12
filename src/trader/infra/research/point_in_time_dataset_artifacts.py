@@ -42,7 +42,7 @@ class PointInTimeDatasetArtifactConflictError(RuntimeError):
     """Raised when a dataset artifact is missing, conflicting, or corrupt."""
 
 
-class PointInTimeDatasetArtifactStore:
+class PointInTimeDatasetArtifactArchive:
     def __init__(self, root: Path) -> None:
         self._root = root
 
@@ -108,11 +108,11 @@ class PointInTimeDatasetArtifactStore:
         if relative != f"days/{trade_date}.json":
             raise ValueError("point-in-time dataset day path is invalid")
         payload = _read_object(self._root / relative)
-        stored_hash = _pop_string(payload, "content_hash")
-        if stored_hash != expected_hash:
+        persisted_hash = _pop_string(payload, "content_hash")
+        if persisted_hash != expected_hash:
             raise ValueError("point-in-time dataset day index hash mismatch")
         day = _decode_day(payload)
-        if day.trade_date.isoformat() != trade_date or day.content_hash != stored_hash:
+        if day.trade_date.isoformat() != trade_date or day.content_hash != persisted_hash:
             raise ValueError("point-in-time dataset day reconstructed hash mismatch")
         return day
 
@@ -755,5 +755,5 @@ def _optional_floats(value: object) -> tuple[float | None, ...]:
 
 __all__ = [
     "PointInTimeDatasetArtifactConflictError",
-    "PointInTimeDatasetArtifactStore",
+    "PointInTimeDatasetArtifactArchive",
 ]

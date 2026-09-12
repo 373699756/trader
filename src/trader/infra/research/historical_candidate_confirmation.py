@@ -24,7 +24,7 @@ class HistoricalConfirmationArtifactConflictError(RuntimeError):
     """Raised when a confirmation terminal artifact is missing, changed, or conflicting."""
 
 
-class HistoricalConfirmationArtifactStore:
+class HistoricalConfirmationArtifactArchive:
     def __init__(self, root: Path) -> None:
         self._root = root
         self._path = root / "historical_confirmation_terminal.json"
@@ -69,11 +69,11 @@ class HistoricalConfirmationArtifactStore:
             if not isinstance(raw, dict) or any(not isinstance(key, str) for key in raw):
                 raise TypeError("Historical confirmation terminal artifact is not an object")
             payload = cast(dict[str, object], raw)
-            stored_hash = payload.pop("content_hash")
-            if not isinstance(stored_hash, str) or canonical_artifact_hash(payload) != stored_hash:
+            persisted_hash = payload.pop("content_hash")
+            if not isinstance(persisted_hash, str) or canonical_artifact_hash(payload) != persisted_hash:
                 raise ValueError("Historical confirmation terminal artifact hash mismatch")
             index = _decode(payload)
-            if index.content_hash != stored_hash:
+            if index.content_hash != persisted_hash:
                 raise ValueError("Historical confirmation terminal artifact reconstructed hash mismatch")
             return index
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -213,5 +213,5 @@ def _boolean(value: object) -> bool:
 __all__ = [
     "HistoricalConfirmationArtifactConflictError",
     "HistoricalConfirmationArtifactIndex",
-    "HistoricalConfirmationArtifactStore",
+    "HistoricalConfirmationArtifactArchive",
 ]

@@ -7,7 +7,10 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal, Protocol
 
-from trader.application.research.historical_screening import HistoricalArchiveManifest, HistoricalArchiveStatus
+from trader.application.research.historical_screening import (
+    HistoricalScreeningArchiveManifest,
+    HistoricalScreeningArchiveStatus,
+)
 from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.historical_screening import HistoricalScreeningSpec
 
@@ -44,8 +47,8 @@ class HistoricalBarBacktestReport:
     research_identity: str
     research_spec_hash: str
     status: Literal["screened", "insufficient_coverage"]
-    archive: HistoricalArchiveStatus
-    archive_manifest: HistoricalArchiveManifest
+    archive: HistoricalScreeningArchiveStatus
+    archive_manifest: HistoricalScreeningArchiveManifest
     training: HistoricalSplitMetrics
     validation: HistoricalSplitMetrics
     screening_version: str
@@ -61,9 +64,9 @@ class HistoricalBarBacktestReport:
 
 
 class HistoricalScreeningEvidence(Protocol):
-    def inspect(self, research_identity: str) -> HistoricalArchiveStatus: ...
+    def inspect(self, research_identity: str) -> HistoricalScreeningArchiveStatus: ...
 
-    def manifest(self, spec: HistoricalScreeningSpec) -> HistoricalArchiveManifest: ...
+    def manifest(self, spec: HistoricalScreeningSpec) -> HistoricalScreeningArchiveManifest: ...
 
     def screening_days(self, spec: HistoricalScreeningSpec) -> Sequence[HistoricalScreeningDay]: ...
 

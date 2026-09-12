@@ -11,6 +11,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = PROJECT_ROOT / "src" / "trader"
+NAMING_ROOTS = (SOURCE_ROOT, PROJECT_ROOT / "scripts", PROJECT_ROOT / "tests")
 SELECTED_RULES = ("C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "N")
 EXPECTED_COUNTS: dict[str, int] = {}
 
@@ -58,7 +59,19 @@ def main() -> int:
         print(f"actual:   {actual_counts}", file=sys.stderr)
         return 1
 
-    print("Strict refactor debt baseline verified: zero diagnostics")
+    naming = subprocess.run(
+        (sys.executable, "-m", "ruff", "check", *(str(path) for path in NAMING_ROOTS), "--select", "N"),
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if naming.returncode != 0:
+        sys.stderr.write(naming.stdout)
+        sys.stderr.write(naming.stderr)
+        return naming.returncode
+
+    print("Strict refactor and repository-wide naming baselines verified: zero diagnostics")
     return 0
 
 

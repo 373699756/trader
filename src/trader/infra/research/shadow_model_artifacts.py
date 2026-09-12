@@ -14,7 +14,7 @@ class ShadowModelArtifactConflictError(RuntimeError):
     pass
 
 
-class ShadowModelArtifactStore:
+class ShadowModelArtifactArchive:
     def __init__(self, root: Path) -> None:
         self._root = root
 
@@ -47,10 +47,10 @@ def _verify(path: Path, expected_hash: str, expected_payload: dict[str, object])
         raw = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise TypeError("shadow artifact payload is not an object")
-        stored_hash = raw.pop("content_hash")
-        if not isinstance(stored_hash, str) or stored_hash != expected_hash:
+        persisted_hash = raw.pop("content_hash")
+        if not isinstance(persisted_hash, str) or persisted_hash != expected_hash:
             raise ValueError("shadow artifact identity mismatch")
-        if _canonical_hash(raw) != stored_hash or raw != json.loads(_canonical_json(expected_payload)):
+        if _canonical_hash(raw) != persisted_hash or raw != json.loads(_canonical_json(expected_payload)):
             raise ValueError("shadow artifact payload mismatch")
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ShadowModelArtifactConflictError("shadow report hash or schema is invalid") from exc
@@ -118,4 +118,4 @@ def _canonical_json(payload: dict[str, object]) -> str:
     return json.dumps(payload, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":"))
 
 
-__all__ = ["ShadowModelArtifactConflictError", "ShadowModelArtifactStore"]
+__all__ = ["ShadowModelArtifactConflictError", "ShadowModelArtifactArchive"]

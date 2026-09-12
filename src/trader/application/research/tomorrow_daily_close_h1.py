@@ -24,7 +24,7 @@ _COSTS = (0.002, 0.005, 0.01)
 
 
 @dataclass(frozen=True)
-class H1DailyCloseObservation:
+class TomorrowDailyCloseH1Observation:
     record: H1PointInTimeRecord
     board: DailyCloseBoard
     hard_filter_passed: bool
@@ -45,7 +45,7 @@ class H1DailyCloseObservation:
 
 
 @dataclass(frozen=True)
-class H1DailyCloseFeatureRow:
+class TomorrowDailyCloseH1FeatureRow:
     trade_date: date
     code: str
     board: DailyCloseBoard
@@ -74,8 +74,8 @@ class H1DailyCloseFeatureRow:
 
 
 @dataclass(frozen=True)
-class H1DailyCloseFeatureBatch:
-    rows: tuple[H1DailyCloseFeatureRow, ...]
+class TomorrowDailyCloseH1FeatureBatch:
+    rows: tuple[TomorrowDailyCloseH1FeatureRow, ...]
     source_archive_hash: str
     feature_names: tuple[str, ...] = TOMORROW_MODEL_FEATURE_MANIFEST.names
     feature_units: tuple[str, ...] = TOMORROW_MODEL_FEATURE_MANIFEST.units
@@ -102,18 +102,18 @@ class H1DailyCloseFeatureBatch:
 
 
 def build_h1_daily_close_features(
-    observations: tuple[H1DailyCloseObservation, ...],
-) -> H1DailyCloseFeatureBatch:
+    observations: tuple[TomorrowDailyCloseH1Observation, ...],
+) -> TomorrowDailyCloseH1FeatureBatch:
     ordered = tuple(sorted(observations, key=lambda item: (item.record.trade_date, item.record.code)))
     identities = tuple((item.record.trade_date, item.record.code) for item in ordered)
     if not ordered or len(identities) != len(set(identities)):
         raise ValueError("Tomorrow H1 observations must be unique by date and code")
-    histories: dict[str, list[H1DailyCloseObservation]] = defaultdict(list)
+    histories: dict[str, list[TomorrowDailyCloseH1Observation]] = defaultdict(list)
     raw_by_date: dict[
         date,
         list[
             tuple[
-                H1DailyCloseObservation,
+                TomorrowDailyCloseH1Observation,
                 tuple[float, float, float],
                 tuple[float, float, float],
                 float,
@@ -139,13 +139,13 @@ def build_h1_daily_close_features(
         momentum = (raw_vector[3], raw_vector[4], raw_vector[5])
         log_amount = math.log(max(math.fsum(amounts) / len(amounts), 1e-12))
         raw_by_date[observation.record.trade_date].append((observation, base, momentum, log_amount))
-    rows: list[H1DailyCloseFeatureRow] = []
+    rows: list[TomorrowDailyCloseH1FeatureRow] = []
     for day in sorted(raw_by_date):
         day_rows = raw_by_date[day]
         residuals = _cross_section_residuals(day_rows)
         for (observation, base, _, _), residual in zip(day_rows, residuals, strict=True):
             rows.append(
-                H1DailyCloseFeatureRow(
+                TomorrowDailyCloseH1FeatureRow(
                     day,
                     observation.record.code,
                     observation.board,
@@ -156,21 +156,21 @@ def build_h1_daily_close_features(
                     observation.record.content_hash,
                 )
             )
-    return H1DailyCloseFeatureBatch(
+    return TomorrowDailyCloseH1FeatureBatch(
         tuple(rows),
         canonical_artifact_hash(tuple(item.record.content_hash for item in ordered)),
     )
 
 
 def attach_matured_daily_close_labels(
-    feature_batch: H1DailyCloseFeatureBatch,
-    observations: tuple[H1DailyCloseObservation, ...],
+    feature_batch: TomorrowDailyCloseH1FeatureBatch,
+    observations: tuple[TomorrowDailyCloseH1Observation, ...],
 ) -> tuple[DailyCloseSourceSample, ...]:
-    by_code: dict[str, list[H1DailyCloseObservation]] = defaultdict(list)
+    by_code: dict[str, list[TomorrowDailyCloseH1Observation]] = defaultdict(list)
     for observation in sorted(observations, key=lambda item: (item.record.code, item.record.trade_date)):
         by_code[observation.record.code].append(observation)
-    next_by_identity: dict[tuple[date, str], H1DailyCloseObservation] = {}
-    current_by_identity: dict[tuple[date, str], H1DailyCloseObservation] = {}
+    next_by_identity: dict[tuple[date, str], TomorrowDailyCloseH1Observation] = {}
+    current_by_identity: dict[tuple[date, str], TomorrowDailyCloseH1Observation] = {}
     for code, values in by_code.items():
         for item in values:
             current_by_identity[(item.record.trade_date, code)] = item
@@ -227,7 +227,7 @@ def attach_matured_daily_close_labels(
 def _cross_section_residuals(
     rows: list[
         tuple[
-            H1DailyCloseObservation,
+            TomorrowDailyCloseH1Observation,
             tuple[float, float, float],
             tuple[float, float, float],
             float,
@@ -260,9 +260,9 @@ def _cross_section_residuals(
 
 
 __all__ = [
-    "H1DailyCloseFeatureBatch",
-    "H1DailyCloseFeatureRow",
-    "H1DailyCloseObservation",
+    "TomorrowDailyCloseH1FeatureBatch",
+    "TomorrowDailyCloseH1FeatureRow",
+    "TomorrowDailyCloseH1Observation",
     "attach_matured_daily_close_labels",
     "build_h1_daily_close_features",
 ]

@@ -48,6 +48,11 @@ FORBIDDEN_ACTIVE_PATHS = (
 
 FORBIDDEN_REPOSITORY_PATHS = ("scripts/runtime_diagnostics/common.py",)
 
+FORBIDDEN_NAMING_PATHS = (
+    "scripts/repack_baostock_history.py",
+    "src/trader/infra/research/history_archive.py",
+)
+
 FORBIDDEN_PUBLIC_NAMES = {
     "C3BaseModelFitPort",
     "C3CandidateEvaluator",
@@ -81,16 +86,58 @@ FORBIDDEN_PUBLIC_NAMES = {
     "TransparentCandidateFamily",
     "TransparentCandidateMetrics",
     "TransparentCandidateReport",
+    "H1ArchiveConflictError",
+    "H1ArchivePort",
+    "H1ArchiveStatus",
+    "H1DownloadResult",
+    "HistoricalArchiveConflictError",
+    "HistoricalArchiveManifest",
+    "HistoricalArchivePort",
+    "HistoricalArchiveStatus",
+    "HistoricalHistoryIdentity",
+    "HistoricalRiskEvidence",
+    "HistoricalRiskModelArtifact",
+    "HistoricalRiskStatus",
+    "HistoricalRiskValidationOutcome",
+    "HistoricalRiskValidationReport",
+    "HistoricalRiskValidationService",
+    "HistoricalRiskValidationSpec",
+    "HistoricalSelectedDay",
+    "HistoryArchiveActivationJournal",
+    "HistoryArchiveActivationState",
+    "HistoryArchiveRepackPartition",
+    "HistoryArchiveSourceFile",
+    "HistoryMonthlyArchiveError",
+    "HistoryMonthlyRevision",
+    "HistoryTrainingMemoryEvidence",
+    "SQLiteHistoricalArchive",
+    "SQLiteHistoryMonthlyArchive",
+    "TomorrowInputCompatibility",
+    "TomorrowInputCompatibilityStatus",
+    "TomorrowPartitionValidationProgress",
+    "read_history_activation_journal",
+    "read_history_repack_build_state",
+    "read_training_memory_evidence",
+    "require_history_repack_inactive",
+    "write_history_activation_journal",
+    "write_history_repack_build_state",
 }
+
+FORBIDDEN_MODULE_CONSTANTS = {"HISTORICAL_RISK_VALIDATION_SPEC"}
 
 
 def _active_python_paths() -> tuple[Path, ...]:
     return tuple(sorted((*SOURCE.rglob("*.py"), *(ROOT / "scripts").rglob("*.py"))))
 
 
+def _project_python_paths() -> tuple[Path, ...]:
+    return tuple(sorted((*_active_python_paths(), *(ROOT / "tests").rglob("*.py"))))
+
+
 def test_active_paths_use_stable_business_responsibilities() -> None:
     assert [relative for relative in FORBIDDEN_ACTIVE_PATHS if (SOURCE / relative).exists()] == []
     assert [relative for relative in FORBIDDEN_REPOSITORY_PATHS if (ROOT / relative).exists()] == []
+    assert [relative for relative in FORBIDDEN_NAMING_PATHS if (ROOT / relative).exists()] == []
 
 
 def test_storage_responsibility_naming_rule_is_authoritative() -> None:
@@ -117,11 +164,29 @@ def test_public_python_names_describe_business_roles() -> None:
     for path in _active_python_paths():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in tree.body:
-            if (
-                isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
-                and node.name in FORBIDDEN_PUBLIC_NAMES
-            ):
-                violations.append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}:{node.name}")
+            names: tuple[str, ...] = ()
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                names = (node.name,)
+            elif isinstance(node, ast.Assign):
+                names = tuple(target.id for target in node.targets if isinstance(target, ast.Name))
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                names = (node.target.id,)
+            for name in names:
+                if name in FORBIDDEN_PUBLIC_NAMES:
+                    violations.append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}:{name}")
+    assert violations == []
+
+
+def test_module_constants_describe_business_roles() -> None:
+    violations: list[str] = []
+    for path in _active_python_paths():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in tree.body:
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else (node.target,)
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id in FORBIDDEN_MODULE_CONSTANTS:
+                        violations.append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}:{target.id}")
     assert violations == []
 
 
@@ -173,4 +238,33 @@ def test_shared_application_contract_names_are_unique() -> None:
         for node in tree.body:
             if isinstance(node, ast.ClassDef) and node.name in occurrences:
                 occurrences[node.name].append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}")
+    assert {name: values for name, values in occurrences.items() if len(values) > 1} == {}
+
+
+def test_project_owned_python_names_do_not_use_generic_storage_terms() -> None:
+    violations: list[str] = []
+    for path in _project_python_paths():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            names: tuple[str, ...] = ()
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                names = (node.name,)
+            elif isinstance(node, ast.arg):
+                names = (node.arg,)
+            elif isinstance(node, ast.Name):
+                names = (node.id,)
+            for name in names:
+                words = name.split("_") if "_" in name else re.findall(r"[A-Z]+(?=[A-Z][a-z]|$)|[A-Z]?[a-z]+", name)
+                if any(word.lower() in {"store", "stored"} for word in words):
+                    violations.append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}:{name}")
+    assert violations == []
+
+
+def test_active_public_class_names_are_unique() -> None:
+    occurrences: dict[str, list[str]] = {}
+    for path in _active_python_paths():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and not node.name.startswith("_"):
+                occurrences.setdefault(node.name, []).append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}")
     assert {name: values for name, values in occurrences.items() if len(values) > 1} == {}

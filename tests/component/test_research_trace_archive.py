@@ -26,7 +26,7 @@ from trader.infra.persistence.research_trace import (
     ResearchTraceCapacityError,
     ResearchTraceConflictError,
     ResearchTraceLimits,
-    SQLiteResearchTraceStore,
+    SQLiteResearchTraceArchive,
 )
 
 
@@ -34,13 +34,13 @@ def test_committed_event_trace_survives_restart_and_replays_idempotently(tmp_pat
     event = build_decision_committed(decision())
     audit = _audit(event.decision_version, event.decision_hash)
     observation = DecisionObservation(event, audit)
-    first = SQLiteResearchTraceStore(tmp_path)
+    first = SQLiteResearchTraceArchive(tmp_path)
     first.initialize()
 
     first.record(observation)
     first.record(observation)
 
-    reopened = SQLiteResearchTraceStore(tmp_path)
+    reopened = SQLiteResearchTraceArchive(tmp_path)
     reopened.initialize()
     assert reopened.get(event.decision_version) == observation
     assert reopened.list_trade_dates(limit=4) == (event.trade_date,)
@@ -49,15 +49,15 @@ def test_committed_event_trace_survives_restart_and_replays_idempotently(tmp_pat
     assert first.status().duplicate == 1
 
 
-def test_legacy_v1_event_is_readable_but_cannot_be_written_by_current_store(tmp_path) -> None:
+def test_legacy_v1_event_is_readable_but_cannot_be_written_by_current_archive(tmp_path) -> None:
     event = build_decision_committed(decision())
     legacy_audit = _legacy_audit(event.decision_version, event.decision_hash)
     observation = DecisionObservation(event, legacy_audit)
-    store = SQLiteResearchTraceStore(tmp_path, use_legacy_layout=True)
-    store.initialize()
+    archive = SQLiteResearchTraceArchive(tmp_path, use_legacy_layout=True)
+    archive.initialize()
 
     with pytest.raises(ValueError, match="read-only"):
-        store.record(observation)
+        archive.record(observation)
 
     payload = research_trace_module._observation_bytes(
         observation,
@@ -84,7 +84,7 @@ def test_legacy_v1_event_is_readable_but_cannot_be_written_by_current_store(tmp_
             ),
         )
 
-    assert SQLiteResearchTraceStore(tmp_path).get(event.decision_version) == observation
+    assert SQLiteResearchTraceArchive(tmp_path).get(event.decision_version) == observation
 
 
 def test_point_in_time_population_survives_restart_and_obeys_cutoff(tmp_path) -> None:
@@ -105,18 +105,18 @@ def test_point_in_time_population_survives_restart_and_obeys_cutoff(tmp_path) ->
         late_event,
         _point_in_time_audit(late_event.decision_version, late_event.decision_hash, late.observed_at),
     )
-    store = SQLiteResearchTraceStore(tmp_path)
-    store.record(before_observation)
-    store.record(late_observation)
+    archive = SQLiteResearchTraceArchive(tmp_path)
+    archive.record(before_observation)
+    archive.record(late_observation)
 
-    reopened = SQLiteResearchTraceStore(tmp_path)
+    reopened = SQLiteResearchTraceArchive(tmp_path)
 
     assert reopened.get(before_event.decision_version) == before_observation
     assert reopened.latest_point_in_time_observation(before.trade_date, before.strategy) == before_observation
 
 
 def test_committed_event_trace_reports_first_observation_per_trade_date(tmp_path) -> None:
-    store = SQLiteResearchTraceStore(tmp_path)
+    archive = SQLiteResearchTraceArchive(tmp_path)
     base = decision()
     late = replace(base, sequence=2, observed_at=datetime(2026, 8, 11, 15, 1, tzinfo=ZoneInfo("Asia/Shanghai")))
     following = replace(
@@ -127,9 +127,9 @@ def test_committed_event_trace_reports_first_observation_per_trade_date(tmp_path
     )
     for item in (late, base, following):
         event = build_decision_committed(item)
-        store.record(DecisionObservation(event, None))
+        archive.record(DecisionObservation(event, None))
 
-    observations = store.inspect_first_observations(limit=4)
+    observations = archive.inspect_first_observations(limit=4)
 
     assert tuple(item.trade_date for item in observations) == (following.trade_date, base.trade_date)
     assert observations[0].observed_at == following.observed_at
@@ -137,20 +137,20 @@ def test_committed_event_trace_reports_first_observation_per_trade_date(tmp_path
 
 
 def test_committed_event_trace_rejects_same_identity_with_different_payload(tmp_path) -> None:
-    store = SQLiteResearchTraceStore(tmp_path)
-    store.initialize()
+    archive = SQLiteResearchTraceArchive(tmp_path)
+    archive.initialize()
     event = build_decision_committed(decision())
-    store.record(DecisionObservation(event, _audit(event.decision_version, event.decision_hash)))
+    archive.record(DecisionObservation(event, _audit(event.decision_version, event.decision_hash)))
 
     with pytest.raises(ResearchTraceConflictError):
-        store.record(DecisionObservation(replace(event, degraded_reasons=("conflicting_trace",)), None))
+        archive.record(DecisionObservation(replace(event, degraded_reasons=("conflicting_trace",)), None))
 
 
 def test_committed_event_trace_quarantines_corrupt_rows(tmp_path) -> None:
-    store = SQLiteResearchTraceStore(tmp_path)
-    store.initialize()
+    archive = SQLiteResearchTraceArchive(tmp_path)
+    archive.initialize()
     event = build_decision_committed(decision())
-    store.record(DecisionObservation(event, _audit(event.decision_version, event.decision_hash)))
+    archive.record(DecisionObservation(event, _audit(event.decision_version, event.decision_hash)))
     database = tmp_path / "research" / "committed-events" / f"{event.trade_date.isoformat()}.sqlite3"
     with sqlite3.connect(database) as connection:
         connection.execute(
@@ -158,7 +158,7 @@ def test_committed_event_trace_quarantines_corrupt_rows(tmp_path) -> None:
             (b"{}", event.decision_version),
         )
 
-    reopened = SQLiteResearchTraceStore(tmp_path)
+    reopened = SQLiteResearchTraceArchive(tmp_path)
     reopened.initialize()
 
     assert reopened.get(event.decision_version) is None
@@ -166,52 +166,52 @@ def test_committed_event_trace_quarantines_corrupt_rows(tmp_path) -> None:
 
 
 def test_committed_event_trace_refuses_capacity_without_deleting_immutable_rows(tmp_path) -> None:
-    store = SQLiteResearchTraceStore(tmp_path, limits=ResearchTraceLimits(events_per_trade_date=1))
-    store.initialize()
+    archive = SQLiteResearchTraceArchive(tmp_path, limits=ResearchTraceLimits(events_per_trade_date=1))
+    archive.initialize()
     first = build_decision_committed(decision(sequence=1))
-    store.record(DecisionObservation(first, _audit(first.decision_version, first.decision_hash)))
+    archive.record(DecisionObservation(first, _audit(first.decision_version, first.decision_hash)))
 
     with pytest.raises(RuntimeError, match="capacity"):
         second = build_decision_committed(decision(sequence=2))
-        store.record(DecisionObservation(second, _audit(second.decision_version, second.decision_hash)))
+        archive.record(DecisionObservation(second, _audit(second.decision_version, second.decision_hash)))
 
-    assert store.status().retained == 1
+    assert archive.status().retained == 1
 
 
 def test_committed_event_trace_rejects_payload_over_byte_limit(tmp_path) -> None:
-    store = SQLiteResearchTraceStore(
+    archive = SQLiteResearchTraceArchive(
         tmp_path,
         limits=ResearchTraceLimits(payload_bytes=64, trade_date_bytes=128),
     )
 
     with pytest.raises(RuntimeError, match="payload capacity"):
-        store.record(DecisionObservation(build_decision_committed(decision()), None))
+        archive.record(DecisionObservation(build_decision_committed(decision()), None))
 
-    assert store.status().retained == 0
+    assert archive.status().retained == 0
 
 
 def test_committed_event_trace_rejects_total_bytes_without_deleting_rows(tmp_path) -> None:
     first = DecisionObservation(build_decision_committed(decision(sequence=1)), None)
     second = DecisionObservation(build_decision_committed(decision(sequence=2)), None)
-    probe = SQLiteResearchTraceStore(tmp_path / "probe")
+    probe = SQLiteResearchTraceArchive(tmp_path / "probe")
     probe.record(first)
     first_bytes = probe.status().retained_bytes
-    store = SQLiteResearchTraceStore(
+    archive = SQLiteResearchTraceArchive(
         tmp_path / "bounded",
         limits=ResearchTraceLimits(payload_bytes=first_bytes + 1, trade_date_bytes=first_bytes + 1),
     )
-    store.record(first)
+    archive.record(first)
 
     with pytest.raises(RuntimeError, match="capacity"):
-        store.record(second)
+        archive.record(second)
 
-    assert store.get(first.event.decision_version) == first
-    assert store.status().retained == 1
+    assert archive.get(first.event.decision_version) == first
+    assert archive.status().retained == 1
 
 
 def test_committed_event_trace_rotates_by_trade_date_and_preserves_full_legacy_database(tmp_path) -> None:
     first = DecisionObservation(build_decision_committed(decision(sequence=1)), None)
-    legacy = SQLiteResearchTraceStore(tmp_path, use_legacy_layout=True)
+    legacy = SQLiteResearchTraceArchive(tmp_path, use_legacy_layout=True)
     legacy.record(first)
     legacy_path = tmp_path / "research" / "committed-events.sqlite3"
     legacy_bytes = legacy_path.read_bytes()
@@ -223,7 +223,7 @@ def test_committed_event_trace_rotates_by_trade_date_and_preserves_full_legacy_d
         observed_at=second_identity.observed_at + timedelta(days=1),
     )
     second = DecisionObservation(build_decision_committed(second_identity), None)
-    partitioned = SQLiteResearchTraceStore(tmp_path)
+    partitioned = SQLiteResearchTraceArchive(tmp_path)
     partitioned.record(second)
 
     assert legacy_path.read_bytes() == legacy_bytes
@@ -237,10 +237,10 @@ def test_committed_event_trace_rotates_by_trade_date_and_preserves_full_legacy_d
 
 def test_full_legacy_partition_does_not_block_a_new_trade_date(tmp_path) -> None:
     first = DecisionObservation(build_decision_committed(decision(sequence=1)), None)
-    probe = SQLiteResearchTraceStore(tmp_path / "probe")
+    probe = SQLiteResearchTraceArchive(tmp_path / "probe")
     probe.record(first)
     payload_bytes = probe.status().retained_bytes
-    legacy = SQLiteResearchTraceStore(
+    legacy = SQLiteResearchTraceArchive(
         tmp_path,
         limits=ResearchTraceLimits(payload_bytes=payload_bytes, trade_date_bytes=payload_bytes),
         use_legacy_layout=True,
@@ -253,7 +253,7 @@ def test_full_legacy_partition_does_not_block_a_new_trade_date(tmp_path) -> None
         trade_date=next_identity.trade_date + timedelta(days=1),
         observed_at=next_identity.observed_at + timedelta(days=1),
     )
-    partitioned = SQLiteResearchTraceStore(
+    partitioned = SQLiteResearchTraceArchive(
         tmp_path,
         limits=ResearchTraceLimits(
             payload_bytes=payload_bytes,
@@ -269,10 +269,10 @@ def test_full_legacy_partition_does_not_block_a_new_trade_date(tmp_path) -> None
 
 def test_archive_capacity_rejects_a_new_partition_without_creating_an_empty_database(tmp_path) -> None:
     first = DecisionObservation(build_decision_committed(decision(sequence=1)), None)
-    probe = SQLiteResearchTraceStore(tmp_path / "probe")
+    probe = SQLiteResearchTraceArchive(tmp_path / "probe")
     probe.record(first)
     payload_bytes = probe.status().retained_bytes
-    store = SQLiteResearchTraceStore(
+    archive = SQLiteResearchTraceArchive(
         tmp_path,
         limits=ResearchTraceLimits(
             payload_bytes=payload_bytes + 1,
@@ -280,7 +280,7 @@ def test_archive_capacity_rejects_a_new_partition_without_creating_an_empty_data
             archive_bytes=payload_bytes + 1,
         ),
     )
-    store.record(first)
+    archive.record(first)
     next_identity = replace(
         decision(sequence=2),
         trade_date=first.event.trade_date + timedelta(days=1),
@@ -288,24 +288,24 @@ def test_archive_capacity_rejects_a_new_partition_without_creating_an_empty_data
     )
 
     with pytest.raises(ResearchTraceCapacityError, match="archive capacity"):
-        store.record(DecisionObservation(build_decision_committed(next_identity), None))
+        archive.record(DecisionObservation(build_decision_committed(next_identity), None))
 
     rejected_partition = tmp_path / "research" / "committed-events" / f"{next_identity.trade_date.isoformat()}.sqlite3"
     assert not rejected_partition.exists()
-    assert store.status().retained == 1
+    assert archive.status().retained == 1
 
 
 def test_formal_replay_without_audit_preserves_existing_committed_audit(tmp_path) -> None:
     event = build_decision_committed(decision())
     audit = _audit(event.decision_version, event.decision_hash)
-    store = SQLiteResearchTraceStore(tmp_path)
-    store.initialize()
-    store.record(DecisionObservation(event, audit))
+    archive = SQLiteResearchTraceArchive(tmp_path)
+    archive.initialize()
+    archive.record(DecisionObservation(event, audit))
 
-    store.record(DecisionObservation(event, None))
+    archive.record(DecisionObservation(event, None))
 
-    assert store.get(event.decision_version) == DecisionObservation(event, audit)
-    assert store.status().duplicate == 1
+    assert archive.get(event.decision_version) == DecisionObservation(event, audit)
+    assert archive.status().duplicate == 1
 
 
 def test_committed_research_audit_rejects_decisions_outside_passed_population() -> None:

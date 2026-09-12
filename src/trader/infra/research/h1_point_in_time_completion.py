@@ -61,7 +61,7 @@ class H1ResearchCompletionArtifactIndex:
         object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
-class H1ResearchCompletionArtifactStore:
+class H1ResearchCompletionArtifactArchive:
     def __init__(self, root: Path) -> None:
         self._root = root
         self._path = root / "h1_research_terminal.json"
@@ -102,11 +102,11 @@ class H1ResearchCompletionArtifactStore:
             if not isinstance(raw, dict) or any(not isinstance(key, str) for key in raw):
                 raise TypeError("H1 research terminal artifact is not an object")
             payload = cast(dict[str, object], raw)
-            stored_hash = payload.pop("content_hash")
-            if not isinstance(stored_hash, str) or canonical_artifact_hash(payload) != stored_hash:
+            persisted_hash = payload.pop("content_hash")
+            if not isinstance(persisted_hash, str) or canonical_artifact_hash(payload) != persisted_hash:
                 raise ValueError("H1 research terminal artifact hash mismatch")
             index = _decode(payload)
-            if index.content_hash != stored_hash:
+            if index.content_hash != persisted_hash:
                 raise ValueError("H1 research terminal artifact reconstructed hash mismatch")
             return index
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -197,5 +197,5 @@ def _bool(value: object) -> bool:
 __all__ = [
     "H1ResearchCompletionArtifactConflictError",
     "H1ResearchCompletionArtifactIndex",
-    "H1ResearchCompletionArtifactStore",
+    "H1ResearchCompletionArtifactArchive",
 ]

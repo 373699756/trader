@@ -17,18 +17,18 @@ from trader.domain.research.history_control import (
     HistoryActiveSnapshot,
     HistorySecurityIdentity,
 )
-from trader.domain.research.history_monthly import HistoryTrainingWindow
+from trader.domain.research.history_revision import HistoryTrainingWindow
 from trader.domain.research.tomorrow_training_input import (
     REQUIRED_DAILY_FIELDS,
     FrozenDailyInputDescriptor,
 )
+from trader.infra.research.history_archive_reader import (
+    HistoryArchiveReadError,
+    SQLiteHistoryArchiveReader,
+)
 from trader.infra.research.history_control_repository import (
     HistoryControlError,
     SQLiteHistoryControlRepository,
-)
-from trader.infra.research.history_month_archive import (
-    HistoryMonthlyArchiveError,
-    SQLiteHistoryMonthlyArchive,
 )
 from trader.infra.research.history_month_partition import HistoryPartitionVerificationPhase
 
@@ -89,7 +89,7 @@ class SQLiteHistoryTrainingInputArchive:
         self._active = active
         self._calendar = calendar
         self._universe = universe
-        self._archive = SQLiteHistoryMonthlyArchive(root)
+        self._archive = SQLiteHistoryArchiveReader(root)
         self._codes = frozenset(item.code for item in universe)
         self._descriptor = descriptor
         self.snapshot = _snapshot_for_training(active, calendar, self._codes, descriptor)
@@ -148,7 +148,7 @@ class SQLiteHistoryTrainingInputArchive:
     ) -> None:
         try:
             self._archive.verify_snapshot(self._active, progress)
-        except (HistoryMonthlyArchiveError, OSError, ValueError) as exc:
+        except (HistoryArchiveReadError, OSError, ValueError) as exc:
             raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
 
     def count_training_rows(self, allowed_dates: frozenset[date]) -> int:
@@ -161,7 +161,7 @@ class SQLiteHistoryTrainingInputArchive:
                 self._active,
                 codes=self._codes,
             )
-        except (HistoryMonthlyArchiveError, OSError, ValueError) as exc:
+        except (HistoryArchiveReadError, OSError, ValueError) as exc:
             raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
 
     def training_row_upper_bound(self, allowed_dates: frozenset[date]) -> int:
@@ -173,7 +173,7 @@ class SQLiteHistoryTrainingInputArchive:
                 max(allowed_dates),
                 self._active,
             )
-        except (HistoryMonthlyArchiveError, OSError, ValueError) as exc:
+        except (HistoryArchiveReadError, OSError, ValueError) as exc:
             raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
 
     def iter_training_windows(
@@ -186,7 +186,7 @@ class SQLiteHistoryTrainingInputArchive:
             raise HistoryTrainingInputError("history_training_dates_invalid")
         try:
             yield from self._archive.iter_training_windows(self._active, dates, progress)
-        except (HistoryMonthlyArchiveError, OSError, ValueError) as exc:
+        except (HistoryArchiveReadError, OSError, ValueError) as exc:
             raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
 
 

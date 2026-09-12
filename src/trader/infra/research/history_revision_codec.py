@@ -7,10 +7,10 @@ from datetime import date
 from typing import Literal, cast
 
 from trader.domain.research.baostock_daily import BaoStockDailyCell, BaoStockDailySide
-from trader.domain.research.history_monthly import HistoryMonthlyRevision
+from trader.domain.research.history_revision import HistoryRevision
 
 
-def encode_history_monthly_revision(value: HistoryMonthlyRevision) -> str:
+def encode_history_revision(value: HistoryRevision) -> str:
     payload = {
         "first_seen_sequence": value.first_seen_sequence,
         "board": value.board,
@@ -28,7 +28,7 @@ def encode_history_monthly_revision(value: HistoryMonthlyRevision) -> str:
     return json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
-def decode_history_monthly_revision(payload_json: str) -> HistoryMonthlyRevision:
+def decode_history_revision(payload_json: str) -> HistoryRevision:
     try:
         payload = _object(json.loads(payload_json), "revision")
         _keys(
@@ -61,7 +61,7 @@ def decode_history_monthly_revision(payload_json: str) -> HistoryMonthlyRevision
             _decode_optional_side(cell_payload["unadjusted"], "unadjusted"),
             _decode_optional_side(cell_payload["qfq"], "qfq"),
         )
-        return HistoryMonthlyRevision(
+        return HistoryRevision(
             _integer(payload["first_seen_sequence"], "first seen sequence"),
             cast(Literal["main", "chinext", "star"], _text(payload["board"], "board")),
             cell,
@@ -176,4 +176,4 @@ def _optional_number(value: object, label: str) -> float | None:
     return float(value)
 
 
-__all__ = ["decode_history_monthly_revision", "encode_history_monthly_revision"]
+__all__ = ["decode_history_revision", "encode_history_revision"]

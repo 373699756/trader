@@ -14,10 +14,10 @@ from pathlib import Path
 from typing import Literal, cast
 
 from trader.domain.research.history_control import HistorySnapshotPartition
-from trader.domain.research.history_monthly import HistoryMonthlyRevision
-from trader.infra.research.history_month_codec import (
-    decode_history_monthly_revision,
-    encode_history_monthly_revision,
+from trader.domain.research.history_revision import HistoryRevision
+from trader.infra.research.history_revision_codec import (
+    decode_history_revision,
+    encode_history_revision,
 )
 
 _SCHEMA_IDENTITY = "history_month_partition"
@@ -99,7 +99,7 @@ _COUNT_CODE_BATCH_SIZE = 500
 
 @dataclass(frozen=True)
 class _EncodedRevision:
-    value: HistoryMonthlyRevision
+    value: HistoryRevision
     trade_date: str
     payload_json: str
 
@@ -163,7 +163,7 @@ class SQLiteHistoryMonthPartitionRepository:
         except OSError as exc:
             raise HistoryMonthPartitionError("history month partition durability sync failed") from exc
 
-    def save_revisions(self, revisions: Iterable[HistoryMonthlyRevision]) -> None:
+    def save_revisions(self, revisions: Iterable[HistoryRevision]) -> None:
         prepared = self._prepare_revisions(revisions)
         if not prepared:
             return
@@ -183,7 +183,7 @@ class SQLiteHistoryMonthPartitionRepository:
         *,
         snapshot_sequence: int,
         board: str | None = None,
-    ) -> tuple[HistoryMonthlyRevision, ...]:
+    ) -> tuple[HistoryRevision, ...]:
         if trade_date.year != self._calendar_year or trade_date.month != self._calendar_month:
             raise ValueError("history day does not belong to the target month")
         return tuple(self.iter_range(trade_date, trade_date, snapshot_sequence=snapshot_sequence, board=board))
@@ -195,7 +195,7 @@ class SQLiteHistoryMonthPartitionRepository:
         end: date,
         *,
         snapshot_sequence: int,
-    ) -> tuple[HistoryMonthlyRevision, ...]:
+    ) -> tuple[HistoryRevision, ...]:
         if _CODE.fullmatch(code) is None:
             raise ValueError("history month code is invalid")
         return tuple(self.iter_range(start, end, snapshot_sequence=snapshot_sequence, code=code))
@@ -264,7 +264,7 @@ class SQLiteHistoryMonthPartitionRepository:
         snapshot_sequence: int,
         code: str | None = None,
         board: str | None = None,
-    ) -> Iterator[HistoryMonthlyRevision]:
+    ) -> Iterator[HistoryRevision]:
         if start > end or snapshot_sequence < 1:
             raise ValueError("history month query range is invalid")
         if code is not None and _CODE.fullmatch(code) is None:
@@ -363,7 +363,7 @@ class SQLiteHistoryMonthPartitionRepository:
         if row_count != reference.row_count:
             raise HistoryMonthPartitionError("history month partition row count mismatch")
 
-    def _prepare_revisions(self, revisions: Iterable[HistoryMonthlyRevision]) -> tuple[_EncodedRevision, ...]:
+    def _prepare_revisions(self, revisions: Iterable[HistoryRevision]) -> tuple[_EncodedRevision, ...]:
         prepared: list[_EncodedRevision] = []
         previous_key: tuple[date, str, int, str] | None = None
         observations: dict[tuple[str, str, int], str] = {}
@@ -373,7 +373,7 @@ class SQLiteHistoryMonthPartitionRepository:
             key = (value.trade_date, value.code, value.first_seen_sequence, value.revision_id)
             if previous_key is not None and key < previous_key:
                 raise ValueError("history month revisions must be written in deterministic order")
-            encoded = _EncodedRevision(value, value.trade_date.isoformat(), encode_history_monthly_revision(value))
+            encoded = _EncodedRevision(value, value.trade_date.isoformat(), encode_history_revision(value))
             observed_revision = observations.setdefault(encoded.observation_key, value.revision_id)
             if observed_revision != value.revision_id:
                 raise HistoryMonthPartitionConflictError("history monthly revision sequence conflicts")
@@ -577,10 +577,10 @@ def _latest_query(code: str | None, board: str | None) -> tuple[str, tuple[str, 
 
 def _require_revision_identity(
     existing: tuple[int, str, str],
-    value: HistoryMonthlyRevision,
+    value: HistoryRevision,
 ) -> None:
     first_seen_sequence, existing_payload, existing_hash = existing
-    persisted = HistoryMonthlyRevision(
+    persisted = HistoryRevision(
         first_seen_sequence,
         value.board,
         value.cell,
@@ -588,11 +588,11 @@ def _require_revision_identity(
         value.industry,
         value.industry_classification,
     )
-    if existing_payload != encode_history_monthly_revision(persisted) or existing_hash != persisted.content_hash:
+    if existing_payload != encode_history_revision(persisted) or existing_hash != persisted.content_hash:
         raise HistoryMonthPartitionConflictError("history monthly revision identity conflicts")
 
 
-def _decode_row(row: tuple[object, ...]) -> HistoryMonthlyRevision:
+def _decode_row(row: tuple[object, ...]) -> HistoryRevision:
     if len(row) != 7:
         raise HistoryMonthPartitionError("history month row shape is invalid")
     trade_date_value, code, revision_id, first_seen_sequence, board, payload_json, content_hash = row
@@ -602,7 +602,7 @@ def _decode_row(row: tuple[object, ...]) -> HistoryMonthlyRevision:
         raise HistoryMonthPartitionError("history month row fields are invalid")
     if not isinstance(first_seen_sequence, int) or isinstance(first_seen_sequence, bool):
         raise HistoryMonthPartitionError("history month sequence is invalid")
-    value = decode_history_monthly_revision(cast(str, payload_json))
+    value = decode_history_revision(cast(str, payload_json))
     if (
         value.trade_date.isoformat() != trade_date_value
         or value.code != code

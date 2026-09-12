@@ -23,7 +23,7 @@ from trader.domain.recommendation.model_scoring import (
     create_exposure_context,
     residualize_exposure_with_context,
 )
-from trader.domain.research.history_monthly import HistoryTrainingWindow
+from trader.domain.research.history_revision import HistoryTrainingWindow
 from trader.infra.research.history_training_input import HistoryTrainingInputError, HistoryTrainingInputSnapshot
 from trader.infra.scoring.profiles.v3.training_sample_repository import (
     SQLiteTomorrowTrainingSampleRepository,

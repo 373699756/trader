@@ -150,7 +150,7 @@ class CompanyResearchSnapshot:
 
 
 @dataclass(frozen=True)
-class RuntimeIssueSnapshot:
+class WebRuntimeIssue:
     code: str | None
     strategy: str | None
     count: int | None
@@ -171,7 +171,7 @@ class StatusSnapshot:
     candidate_quote_age: CandidateQuoteAgeSnapshot
     history_warmup: HistoryWarmupSnapshot
     company_research: CompanyResearchSnapshot
-    recent_errors: tuple[RuntimeIssueSnapshot, ...]
+    recent_errors: tuple[WebRuntimeIssue, ...]
     strategies: Mapping[str, ProjectionSnapshot]
     input_quality: Mapping[str, InputQualitySnapshot]
 
@@ -389,16 +389,16 @@ def _parse_funnel(payload: Mapping[str, object]) -> FunnelSnapshot:
     )
 
 
-def _parse_runtime_issues(value: object) -> tuple[RuntimeIssueSnapshot, ...]:
+def _parse_runtime_issues(value: object) -> tuple[WebRuntimeIssue, ...]:
     if not isinstance(value, (list, tuple)):
         return ()
-    issues: list[RuntimeIssueSnapshot] = []
+    issues: list[WebRuntimeIssue] = []
     for raw in value[:32]:
         payload = _mapping_or_none(raw)
         if payload is None:
             continue
         issues.append(
-            RuntimeIssueSnapshot(
+            WebRuntimeIssue(
                 code=_text(payload.get("code")),
                 strategy=_text(payload.get("strategy")),
                 count=_nonnegative_int(payload.get("count")),
@@ -454,7 +454,7 @@ __all__ = [
     "FunnelSnapshot",
     "InputQualitySnapshot",
     "ProjectionSnapshot",
-    "RuntimeIssueSnapshot",
+    "WebRuntimeIssue",
     "WebSample",
     "parse_web_sample",
 ]

@@ -211,7 +211,7 @@ def test_strategy_replay_document_has_an_executable_maintenance_and_reminder_pla
         "HistoryDiskRequirement",
         "阶段 C（已完成）",
         "SQLiteHistoryMonthPartitionRepository",
-        "SQLiteHistoryMonthlyArchive",
+        "SQLiteHistoryArchiveReader",
         ".sample-workspace.*",
         "阶段 E（已完成）",
         "阶段 F（已完成）",

@@ -15,15 +15,15 @@ from trader.domain.research.history_control import (
     calculate_history_training_cache_invalidation_dates,
     calculate_history_training_due,
 )
+from trader.infra.research.history_archive_reader import (
+    HistoryArchiveReadError,
+    HistoryPartitionRevisionComparison,
+    SQLiteHistoryArchiveReader,
+    route_history_months,
+)
 from trader.infra.research.history_control_repository import (
     HistoryControlError,
     SQLiteHistoryControlRepository,
-)
-from trader.infra.research.history_month_archive import (
-    HistoryMonthlyArchiveError,
-    HistoryPartitionRevisionComparison,
-    SQLiteHistoryMonthlyArchive,
-    route_history_months,
 )
 from trader.infra.scoring.profiles.v3.training_bundle_repository import (
     ActiveTomorrowBundle,
@@ -98,7 +98,7 @@ def evaluate_history_training_due(
                 calendar.open_dates,
                 bundle.label_cutoff,
             )
-        except (HistoryMonthlyArchiveError, OSError, ValueError):
+        except (HistoryArchiveReadError, OSError, ValueError):
             data_complete = False
     input_revision = bool(revised_dates)
     snapshot_identity_rebind = (
@@ -172,11 +172,11 @@ def _revised_dates_since_bundle(
         return ()
     baseline_months = {_partition_month(item.relative_path): item for item in baseline.partitions}
     active_months = {_partition_month(item.relative_path): item for item in active.partitions}
-    archive = SQLiteHistoryMonthlyArchive(archive_root)
+    archive = SQLiteHistoryArchiveReader(archive_root)
     revisions: set[date] = set()
     for year, month in route_history_months(start, end):
         if (year, month) not in baseline_months or (year, month) not in active_months:
-            raise HistoryMonthlyArchiveError("history snapshot comparison month is missing")
+            raise HistoryArchiveReadError("history snapshot comparison month is missing")
         month_start = max(start, date(year, month, 1))
         month_end = min(end, date(year, month, month_calendar.monthrange(year, month)[1]))
         baseline_reference = baseline_months[(year, month)]

@@ -19,8 +19,8 @@ from trader.application.research.tomorrow_research_orchestrator import (
 )
 from trader.domain.research.artifact_identity import canonical_artifact_hash, canonical_artifact_json
 from trader.infra.research.tomorrow_research_artifacts import (
-    TomorrowResearchArtifactStore,
-    TomorrowResearchArtifactStoreError,
+    TomorrowResearchArtifactRepository,
+    TomorrowResearchArtifactRepositoryError,
 )
 
 
@@ -57,39 +57,39 @@ def _development_handoff(
     )
 
 
-def test_store_seals_handoff_idempotently_and_recovers_one_stage_commit(tmp_path) -> None:
-    store = TomorrowResearchArtifactStore(tmp_path, available_disk_gb=lambda _path: 40.0)
+def test_repository_seals_handoff_idempotently_and_recovers_one_stage_commit(tmp_path) -> None:
+    repository = TomorrowResearchArtifactRepository(tmp_path, available_disk_gb=lambda _path: 40.0)
     handoff = _handoff()
 
-    store.seal_handoff(handoff)
+    repository.seal_handoff(handoff)
     sealed = json.loads((tmp_path / ".handoffs" / "resource_probe.json").read_text(encoding="utf-8"))
     assert "owner" not in sealed["artifacts"][0]
-    store.seal_handoff(handoff)
-    graph = store.commit(store.load_graph().content_hash, handoff)
+    repository.seal_handoff(handoff)
+    graph = repository.commit(repository.load_graph().content_hash, handoff)
 
-    assert store.load_graph() == graph
-    assert store.load_handoff("resource_probe") is None
+    assert repository.load_graph() == graph
+    assert repository.load_handoff("resource_probe") is None
     assert len(graph.artifacts) == 1
-    assert store.current_run_id() is not None
-    assert (tmp_path / store.current_run_id() / ".report-checkpoint.json").is_file()
-    assert not (tmp_path / store.current_run_id() / "report.json").exists()
+    assert repository.current_run_id() is not None
+    assert (tmp_path / repository.current_run_id() / ".report-checkpoint.json").is_file()
+    assert not (tmp_path / repository.current_run_id() / "report.json").exists()
 
 
-def test_store_rejects_different_content_for_the_same_handoff_identity_and_tampering(tmp_path) -> None:
-    store = TomorrowResearchArtifactStore(tmp_path, available_disk_gb=lambda _path: 40.0)
-    store.seal_handoff(_handoff())
+def test_repository_rejects_different_content_for_the_same_handoff_identity_and_tampering(tmp_path) -> None:
+    repository = TomorrowResearchArtifactRepository(tmp_path, available_disk_gb=lambda _path: 40.0)
+    repository.seal_handoff(_handoff())
     path = tmp_path / ".handoffs" / "resource_probe.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["parent_graph_hash"] = "f" * 64
     path.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(TomorrowResearchArtifactStoreError, match="invalid"):
-        store.load_handoff("resource_probe")
+    with pytest.raises(TomorrowResearchArtifactRepositoryError, match="invalid"):
+        repository.load_handoff("resource_probe")
 
 
-def test_store_rejects_legacy_owner_even_when_payload_hash_is_valid(tmp_path) -> None:
-    store = TomorrowResearchArtifactStore(tmp_path, available_disk_gb=lambda _path: 40.0)
-    store.seal_handoff(_handoff())
+def test_repository_rejects_legacy_owner_even_when_payload_hash_is_valid(tmp_path) -> None:
+    repository = TomorrowResearchArtifactRepository(tmp_path, available_disk_gb=lambda _path: 40.0)
+    repository.seal_handoff(_handoff())
     path = tmp_path / ".handoffs" / "resource_probe.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload.pop("content_hash")
@@ -101,12 +101,12 @@ def test_store_rejects_legacy_owner_even_when_payload_hash_is_valid(tmp_path) ->
     payload["content_hash"] = canonical_artifact_hash(payload)
     path.write_text(canonical_artifact_json(payload), encoding="utf-8")
 
-    with pytest.raises(TomorrowResearchArtifactStoreError, match="invalid"):
-        store.load_handoff("resource_probe")
+    with pytest.raises(TomorrowResearchArtifactRepositoryError, match="invalid"):
+        repository.load_handoff("resource_probe")
 
 
 def test_single_invocation_continues_all_available_stages_and_seals_terminal_documents(tmp_path) -> None:
-    store = TomorrowResearchArtifactStore(tmp_path, available_disk_gb=lambda _path: 40.0)
+    repository = TomorrowResearchArtifactRepository(tmp_path, available_disk_gb=lambda _path: 40.0)
     resource_probe = _handoff()
     graph = TomorrowResearchArtifactGraph(resource_probe.artifacts)
     evidence_bytes = b"PAR1fixturePAR1"
@@ -179,11 +179,11 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
         outcome="historical_validated",
     )
     for handoff in (resource_probe, development, confirmation, proxy, point_in_time):
-        store.seal_handoff(handoff)
-    store.seal_evidence_partition(evidence, evidence_source)
-    store.seal_model(canonical_artifact_json(model_payload), model_hash)
+        repository.seal_handoff(handoff)
+    repository.seal_evidence_partition(evidence, evidence_source)
+    repository.seal_model(canonical_artifact_json(model_payload), model_hash)
 
-    result = TomorrowResearchOrchestrator(store, _ReadyPrerequisite()).advance()
+    result = TomorrowResearchOrchestrator(repository, _ReadyPrerequisite()).advance()
 
     assert result.status == "advanced"
     assert result.completed_stages == (
@@ -211,8 +211,8 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
         artifacts=(TomorrowResearchArtifactRef("resource_probe_report", "resource_probe", "5" * 64),),
         resource_probe=TomorrowResearchResourceProbe(100, 120, 2, 900, 39.0, 7.0),
     )
-    store.seal_handoff(next_probe)
-    next_result = TomorrowResearchOrchestrator(store, _ReadyPrerequisite()).advance()
+    repository.seal_handoff(next_probe)
+    next_result = TomorrowResearchOrchestrator(repository, _ReadyPrerequisite()).advance()
 
     assert next_result.run_id is not None and next_result.run_id != result.run_id
     assert next_result.completed_stages == ("resource_probe",)
@@ -221,22 +221,22 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
 
 
 def test_model_document_rejects_tampering_before_it_can_enter_a_run(tmp_path) -> None:
-    store = TomorrowResearchArtifactStore(tmp_path, available_disk_gb=lambda _path: 40.0)
+    repository = TomorrowResearchArtifactRepository(tmp_path, available_disk_gb=lambda _path: 40.0)
     payload = {"schema_version": "tomorrow_joint_candidate_model_artifact"}
     expected_hash = canonical_artifact_hash(payload)
     payload["content_hash"] = expected_hash
     payload["unexpected"] = True
 
-    with pytest.raises(TomorrowResearchArtifactStoreError, match="hash"):
-        store.seal_model(canonical_artifact_json(payload), expected_hash)
+    with pytest.raises(TomorrowResearchArtifactRepositoryError, match="hash"):
+        repository.seal_model(canonical_artifact_json(payload), expected_hash)
 
 
-def test_store_stops_before_committing_when_host_disk_is_below_30gb(tmp_path) -> None:
-    store = TomorrowResearchArtifactStore(tmp_path, available_disk_gb=lambda _path: 29.999)
+def test_repository_stops_before_committing_when_host_disk_is_below_30gb(tmp_path) -> None:
+    repository = TomorrowResearchArtifactRepository(tmp_path, available_disk_gb=lambda _path: 29.999)
     handoff = _handoff()
-    store.seal_handoff(handoff)
+    repository.seal_handoff(handoff)
 
-    with pytest.raises(TomorrowResearchArtifactStoreError, match="below 30GB"):
-        store.commit(store.load_graph().content_hash, handoff)
+    with pytest.raises(TomorrowResearchArtifactRepositoryError, match="below 30GB"):
+        repository.commit(repository.load_graph().content_hash, handoff)
 
-    assert store.current_run_id() is None
+    assert repository.current_run_id() is None

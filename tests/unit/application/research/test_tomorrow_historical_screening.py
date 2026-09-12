@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from trader.application.research.historical_screening import (
-    HistoricalArchiveManifest,
-    HistoricalArchiveStatus,
-    HistoricalHistoryIdentity,
+    HistoricalPriceHistoryIdentity,
+    HistoricalScreeningArchiveManifest,
+    HistoricalScreeningArchiveStatus,
 )
 from trader.application.research.tomorrow_historical_screening import (
     TomorrowHistoricalModelFit,
@@ -24,8 +24,8 @@ class _Evidence:
         self._rows = rows
         self._coverage = coverage
 
-    def inspect(self, _identity: str) -> HistoricalArchiveStatus:
-        return HistoricalArchiveStatus(
+    def inspect(self, _identity: str) -> HistoricalScreeningArchiveStatus:
+        return HistoricalScreeningArchiveStatus(
             initialized=True,
             research_identity=HISTORICAL_SCREENING_SPEC.research_identity,
             universe_count=100,
@@ -33,13 +33,13 @@ class _Evidence:
             spec_hash=HISTORICAL_SCREENING_SPEC.content_hash,
         )
 
-    def manifest(self, _spec) -> HistoricalArchiveManifest:  # noqa: ANN001
-        return HistoricalArchiveManifest(
+    def manifest(self, _spec) -> HistoricalScreeningArchiveManifest:  # noqa: ANN001
+        return HistoricalScreeningArchiveManifest(
             research_identity=HISTORICAL_SCREENING_SPEC.research_identity,
             spec_hash=HISTORICAL_SCREENING_SPEC.content_hash,
             universe_hash="1" * 64,
             histories_hash="2" * 64,
-            histories=(HistoricalHistoryIdentity("600001", 640, "3" * 64),),
+            histories=(HistoricalPriceHistoryIdentity("600001", 640, "3" * 64),),
         )
 
     def tomorrow_historical_rows(self, _spec) -> tuple[TomorrowHistoricalRow, ...]:  # noqa: ANN001

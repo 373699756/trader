@@ -32,8 +32,8 @@ from trader.domain.research.point_in_time_dataset import (
     PointInTimeSourceIdentity,
 )
 from trader.infra.research.point_in_time_dataset_artifacts import (
+    PointInTimeDatasetArtifactArchive,
     PointInTimeDatasetArtifactConflictError,
-    PointInTimeDatasetArtifactStore,
 )
 
 HASHES = tuple(character * 64 for character in "abcdef0123456789")
@@ -372,16 +372,16 @@ def test_builder_does_not_publish_a_partial_manifest_for_incomplete_benchmark_ou
     assert report.failure_reasons == ("benchmark_population_outcome_incomplete",)
 
 
-def test_artifact_store_round_trips_idempotently_and_rejects_tampering(
+def test_artifact_archive_round_trips_idempotently_and_rejects_tampering(
     tmp_path,
     application_feature_factory,
 ) -> None:
     report = PointInTimeDatasetBuilder(_Source(application_feature_factory)).build(_request(_qualification()))
-    store = PointInTimeDatasetArtifactStore(tmp_path)
+    archive = PointInTimeDatasetArtifactArchive(tmp_path)
 
-    assert store.write(report).content_hash == report.content_hash
-    assert store.write(report).content_hash == report.content_hash
-    assert store.verify().content_hash == report.content_hash
+    assert archive.write(report).content_hash == report.content_hash
+    assert archive.write(report).content_hash == report.content_hash
+    assert archive.verify().content_hash == report.content_hash
 
     original_request = _request(_qualification())
     conflicting_request = replace(
@@ -391,11 +391,11 @@ def test_artifact_store_round_trips_idempotently_and_rejects_tampering(
     assert conflicting_request.selection_policy_hash != original_request.selection_policy_hash
     conflicting = PointInTimeDatasetBuilder(_Source(application_feature_factory)).build(conflicting_request)
     with pytest.raises(PointInTimeDatasetArtifactConflictError, match="identity conflict"):
-        store.write(conflicting)
+        archive.write(conflicting)
 
     path = tmp_path / "point-in-time-dataset.json"
     raw = json.loads(path.read_text(encoding="utf-8"))
     raw["production_authority"] = True
     path.write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(PointInTimeDatasetArtifactConflictError):
-        store.verify()
+        archive.verify()

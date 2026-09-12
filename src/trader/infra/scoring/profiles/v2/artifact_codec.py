@@ -13,7 +13,7 @@ _AUTHORIZED_HASH = "8397657c9ae83d2e774dc533a30f477a1ec599bc9fb82b60fae014a0b020
 
 
 @dataclass(frozen=True)
-class TomorrowModelArtifact:
+class V2TomorrowModelArtifact:
     profile_id: Literal["v2"]
     model_id: str
     feature_ids: tuple[str, ...]
@@ -28,12 +28,12 @@ class TomorrowModelArtifact:
     content_hash: str
 
 
-def decode_tomorrow_artifact(document: object) -> TomorrowModelArtifact:
+def decode_tomorrow_artifact(document: object) -> V2TomorrowModelArtifact:
     if not isinstance(document, dict):
         raise TypeError("packaged Tomorrow V2 production model must be a JSON object")
     payload = cast(dict[str, object], dict(document))
-    stored_hash = payload.pop("content_hash", None)
-    if not isinstance(stored_hash, str) or artifact_content_hash(payload) != stored_hash:
+    persisted_hash = payload.pop("content_hash", None)
+    if not isinstance(persisted_hash, str) or artifact_content_hash(payload) != persisted_hash:
         raise ValueError("packaged Tomorrow V2 production model content hash is invalid")
     feature_ids = tuple(_string_list(payload, "feature_ids"))
     means = tuple(_number_list(payload, "transformer_means"))
@@ -45,7 +45,7 @@ def decode_tomorrow_artifact(document: object) -> TomorrowModelArtifact:
     training_rows = _integer(payload, "training_rows")
     internal_validation_rows = _integer(payload, "internal_validation_rows")
     if (
-        stored_hash != _AUTHORIZED_HASH
+        persisted_hash != _AUTHORIZED_HASH
         or model_id != "daily_reconstructible_ensemble_v1"
         or feature_ids != TOMORROW_MODEL_FEATURE_MANIFEST.names
         or len(set(feature_ids)) != width
@@ -61,7 +61,7 @@ def decode_tomorrow_artifact(document: object) -> TomorrowModelArtifact:
         or any(value <= 0.0 for value in scales)
     ):
         raise ValueError("packaged Tomorrow V2 production model identity is invalid")
-    return TomorrowModelArtifact(
+    return V2TomorrowModelArtifact(
         "v2",
         "daily_reconstructible_ensemble",
         feature_ids,
@@ -73,7 +73,7 @@ def decode_tomorrow_artifact(document: object) -> TomorrowModelArtifact:
         _integer(payload, "lightgbm_best_iteration"),
         training_rows,
         internal_validation_rows,
-        stored_hash,
+        persisted_hash,
     )
 
 
@@ -114,4 +114,4 @@ def _number_list(payload: dict[str, object], name: str) -> list[float]:
     return [float(item) for item in value]
 
 
-__all__ = ["TomorrowModelArtifact", "decode_tomorrow_artifact"]
+__all__ = ["V2TomorrowModelArtifact", "decode_tomorrow_artifact"]

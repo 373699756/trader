@@ -27,7 +27,7 @@ def test_batch_three_contract_freezes_walk_forward_models_and_calibration() -> N
         assert token in combined.replace('"', "").replace(": ", "=")
     assert '(("tomorrow", 1), ("d25", 25))' in models
     assert "TomorrowShadowModelEvaluator" in combined
-    assert "ShadowModelArtifactStore" in combined
+    assert "ShadowModelArtifactArchive" in combined
     assert '"lightgbm>=4.7,<5"' in pyproject
 
 

@@ -41,7 +41,7 @@ from trader.domain.research.history_control import (
     HistoryTrainingDueState,
     HistoryUniverseIdentity,
 )
-from trader.domain.research.history_monthly import HistoryMonthlyRevision
+from trader.domain.research.history_revision import HistoryRevision
 from trader.infra.research.baostock_gap_supplier import (
     BaoStockGapFamily,
     BaoStockGapRecord,
@@ -69,13 +69,13 @@ from trader.infra.research.history_control_repository import (
     HistoryMaintenanceLock,
     SQLiteHistoryControlRepository,
 )
-from trader.infra.research.history_month_codec import (
-    decode_history_monthly_revision,
-    encode_history_monthly_revision,
-)
 from trader.infra.research.history_month_partition import (
     HistoryMonthPartitionError,
     SQLiteHistoryMonthPartitionRepository,
+)
+from trader.infra.research.history_revision_codec import (
+    decode_history_revision,
+    encode_history_revision,
 )
 
 DEFAULT_SOURCE = Path("data/history/baostock-daily/sessions-2000")
@@ -652,10 +652,10 @@ def _verify_source(
     progress_sink: ProgressSink | None,
 ) -> None:
     signature = _source_signature(source)
-    stored = control.execute("SELECT value FROM metadata WHERE key='verified_source_signature'").fetchone()
+    persisted = control.execute("SELECT value FROM metadata WHERE key='verified_source_signature'").fetchone()
     total = len(source.parent_partitions) + len(source.increment_partitions)
     progress = _ProgressTracker("源校验", total, progress_sink)
-    if stored == (signature,):
+    if persisted == (signature,):
         progress.advance(total, "已缓存", force=True)
         return
     for index, partition in enumerate(source.parent_partitions, 1):
@@ -860,7 +860,7 @@ def _record_hash(record: DailyRecord) -> str:
     return value
 
 
-def _monthly_revision(record: DailyRecord) -> HistoryMonthlyRevision:
+def _monthly_revision(record: DailyRecord) -> HistoryRevision:
     status = "unknown_missing" if record.status == "unavailable" else record.status
     payload = {
         "first_seen_sequence": record.sync_sequence,
@@ -877,7 +877,7 @@ def _monthly_revision(record: DailyRecord) -> HistoryMonthlyRevision:
         "industry_classification": record.industry_classification,
     }
     try:
-        return decode_history_monthly_revision(_canonical_json(payload))
+        return decode_history_revision(_canonical_json(payload))
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ConversionError("converted history row does not satisfy the monthly contract") from exc
 
@@ -954,7 +954,7 @@ def _persistence_values(record: DailyRecord) -> tuple[tuple[object, ...], tuple[
             revision.revision_id,
             revision.first_seen_sequence,
             revision.board,
-            encode_history_monthly_revision(revision),
+            encode_history_revision(revision),
             revision.content_hash,
         ),
         (
@@ -1040,7 +1040,7 @@ def _active_record(connection: sqlite3.Connection, code: str, day: str) -> Daily
     if row is None:
         return None
     try:
-        revision = decode_history_monthly_revision(cast(str, row[0]))
+        revision = decode_history_revision(cast(str, row[0]))
         payload = _object(json.loads(cast(str, row[0])), "monthly revision")
         cell = _object(payload["cell"], "monthly cell")
         raw_json = _payload_json(cell.get("unadjusted"), "monthly raw side")
@@ -1269,7 +1269,7 @@ def _missing_gap_requests(
             while rows := cursor.fetchmany(512):
                 for (payload_json,) in rows:
                     try:
-                        revision = decode_history_monthly_revision(cast(str, payload_json))
+                        revision = decode_history_revision(cast(str, payload_json))
                     except (TypeError, ValueError) as exc:
                         raise ConversionError("converted monthly revision is unreadable") from exc
                     missing = (
@@ -1793,8 +1793,8 @@ def _latest_revisions_for_codes(
     codes: Sequence[str],
     first_date: date,
     cache_mib: int,
-) -> tuple[dict[str, tuple[HistoryMonthlyRevision, ...]], int]:
-    grouped: dict[str, list[HistoryMonthlyRevision]] = {code: [] for code in codes}
+) -> tuple[dict[str, tuple[HistoryRevision, ...]], int]:
+    grouped: dict[str, list[HistoryRevision]] = {code: [] for code in codes}
     maximum_sequence = max(snapshot.sequence, 2)
     placeholders = ",".join("?" for _item in codes)
     parameters = (*codes, first_date.isoformat())
@@ -1817,7 +1817,7 @@ def _latest_revisions_for_codes(
             )
             for (payload_json,) in rows:
                 try:
-                    revision = decode_history_monthly_revision(cast(str, payload_json))
+                    revision = decode_history_revision(cast(str, payload_json))
                 except (TypeError, ValueError) as exc:
                     raise ConversionError("active monthly revision is unreadable during qfq repair") from exc
                 grouped[revision.code].append(revision)
@@ -1844,7 +1844,7 @@ def _scaled_price(value: float | None, factor: Decimal) -> float | None:
     return None if value is None else float(Decimal(str(value)) * factor)
 
 
-def _reconstructed_qfq_payload(revision: HistoryMonthlyRevision, factor: Decimal) -> str:
+def _reconstructed_qfq_payload(revision: HistoryRevision, factor: Decimal) -> str:
     raw = revision.cell.unadjusted
     if raw is None:
         raise ConversionError("qfq reconstruction requires the same-day BaoStock raw side")
@@ -1882,7 +1882,7 @@ def _reconstructed_qfq_payload(revision: HistoryMonthlyRevision, factor: Decimal
 
 
 def _reconstruct_unavailable_qfq(
-    revisions_by_code: dict[str, tuple[HistoryMonthlyRevision, ...]],
+    revisions_by_code: dict[str, tuple[HistoryRevision, ...]],
     unavailable_keys: frozenset[tuple[str, date, str]],
 ) -> tuple[BaoStockGapRecord, ...]:
     requested_by_code: dict[str, set[date]] = {}
@@ -1946,7 +1946,7 @@ def _reconstruct_unavailable_qfq(
     return tuple(sorted(repaired))
 
 
-def _is_qfq_anchor(revision: HistoryMonthlyRevision) -> bool:
+def _is_qfq_anchor(revision: HistoryRevision) -> bool:
     raw = revision.cell.unadjusted
     qfq = revision.cell.qfq
     return (
@@ -1961,9 +1961,9 @@ def _is_qfq_anchor(revision: HistoryMonthlyRevision) -> bool:
 
 def _repaired_qfq_revision(
     sequence: int,
-    current: HistoryMonthlyRevision,
+    current: HistoryRevision,
     item: BaoStockGapRecord,
-) -> HistoryMonthlyRevision:
+) -> HistoryRevision:
     qfq_payload = _object(json.loads(item.payload_json), "repaired qfq payload")
     trading_status = qfq_payload["trading_status"]
     if trading_status not in {"trading", "suspended"}:
@@ -1987,7 +1987,7 @@ def _repaired_qfq_revision(
         "supplier_marked_suspended" if qfq.trading_status == "suspended" else "complete"
     )
     cell = BaoStockDailyCell(item.code, item.trade_date, status, current.cell.unadjusted, qfq)
-    return HistoryMonthlyRevision(
+    return HistoryRevision(
         sequence,
         current.board,
         cell,
@@ -2072,7 +2072,7 @@ def _repair_completed_qfq_gaps(  # noqa: PLR0913
         raise ConversionError("completed archive qfq repair is incomplete")
 
     sequence = maximum_sequence + 1
-    repaired_revisions: list[HistoryMonthlyRevision] = []
+    repaired_revisions: list[HistoryRevision] = []
     current_by_key = {
         (revision.code, revision.trade_date): revision
         for revisions in revisions_by_code.values()
@@ -2208,7 +2208,7 @@ def _read_hash_layout_snapshot(target: Path, source_fingerprint: str, cache_mib:
             ).fetchall()
             if active is None or len(snapshot_rows) != 1:
                 return None
-            record_key, stored_hash, payload_json = cast(tuple[str, str, str], snapshot_rows[0])
+            record_key, persisted_hash, payload_json = cast(tuple[str, str, str], snapshot_rows[0])
             payload = _object(json.loads(payload_json), "hash-layout snapshot")
             required = {
                 "sequence",
@@ -2222,9 +2222,9 @@ def _read_hash_layout_snapshot(target: Path, source_fingerprint: str, cache_mib:
             if set(payload) != required:
                 raise ConversionError("hash-layout snapshot fields are invalid")
             sequence = _integer(payload["sequence"], "hash-layout snapshot sequence")
-            if record_key != str(sequence) or active != (stored_hash, sequence):
+            if record_key != str(sequence) or active != (persisted_hash, sequence):
                 raise ConversionError("hash-layout active snapshot pointer is inconsistent")
-            if _hash_text(_canonical_json(payload)) != stored_hash:
+            if _hash_text(_canonical_json(payload)) != persisted_hash:
                 raise ConversionError("hash-layout snapshot hash is invalid")
             raw_partitions = _list(payload["partitions"], "hash-layout partitions")
             old_layout_flags: list[bool] = []
@@ -2283,7 +2283,7 @@ def _read_hash_layout_snapshot(target: Path, source_fingerprint: str, cache_mib:
         raise
     except (KeyError, TypeError, ValueError, json.JSONDecodeError, sqlite3.DatabaseError) as exc:
         raise ConversionError("hash-layout target control database is invalid") from exc
-    return _HashLayoutSnapshot(stored_hash, current_snapshot, tuple(parsed))
+    return _HashLayoutSnapshot(persisted_hash, current_snapshot, tuple(parsed))
 
 
 def _current_snapshot_payload(snapshot: HistoryActiveSnapshot) -> dict[str, object]:

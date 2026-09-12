@@ -42,7 +42,7 @@ class HistoricalDownloadResult:
 
 
 @dataclass(frozen=True)
-class HistoricalArchiveStatus:
+class HistoricalScreeningArchiveStatus:
     initialized: bool = False
     research_identity: str = ""
     universe_count: int = 0
@@ -55,7 +55,7 @@ class HistoricalArchiveStatus:
 
 
 @dataclass(frozen=True, order=True)
-class HistoricalHistoryIdentity:
+class HistoricalPriceHistoryIdentity:
     code: str
     bar_count: int
     content_hash: str
@@ -68,12 +68,12 @@ class HistoricalHistoryIdentity:
 
 
 @dataclass(frozen=True)
-class HistoricalArchiveManifest:
+class HistoricalScreeningArchiveManifest:
     research_identity: str
     spec_hash: str
     universe_hash: str
     histories_hash: str
-    histories: tuple[HistoricalHistoryIdentity, ...]
+    histories: tuple[HistoricalPriceHistoryIdentity, ...]
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -97,7 +97,7 @@ class HistoricalPriceProvider(Protocol):
     def fetch_history(self, code: str, *, days: int) -> Sequence[HistoricalPriceBar]: ...
 
 
-class HistoricalArchivePort(Protocol):
+class HistoricalScreeningArchivePort(Protocol):
     def registered_universe(self, research_identity: str) -> tuple[HistoricalSecurity, ...]: ...
 
     def register_universe(
@@ -126,7 +126,7 @@ class HistoricalDownloadService:
         self,
         universe: HistoricalUniverseProvider,
         history: HistoricalPriceProvider,
-        archive: HistoricalArchivePort,
+        archive: HistoricalScreeningArchivePort,
         *,
         workers: int,
     ) -> None:
@@ -188,7 +188,7 @@ class HistoricalDownloadService:
                 for future in finished:
                     code = futures.pop(future)
                     processed += 1
-                    if self._store_download(spec, code, future):
+                    if self._record_download(spec, code, future):
                         downloaded += 1
                     else:
                         failed += 1
@@ -204,7 +204,7 @@ class HistoricalDownloadService:
             pool.shutdown(wait=True, cancel_futures=True)
         return downloaded, failed
 
-    def _store_download(
+    def _record_download(
         self,
         spec: HistoricalScreeningSpec,
         code: str,
@@ -259,8 +259,8 @@ def _error_code(exc: BaseException) -> str:
 __all__ = [
     "HistoricalDownloadResult",
     "HistoricalDownloadService",
-    "HistoricalArchiveManifest",
-    "HistoricalArchiveStatus",
-    "HistoricalHistoryIdentity",
+    "HistoricalScreeningArchiveManifest",
+    "HistoricalScreeningArchiveStatus",
+    "HistoricalPriceHistoryIdentity",
     "HistoricalSecurity",
 ]

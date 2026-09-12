@@ -157,10 +157,10 @@ class TomorrowDailyCloseArtifactCodec:
             if not isinstance(raw, dict):
                 raise TypeError("artifact payload is not an object")
             payload = {str(key): value for key, value in raw.items()}
-            stored_hash = payload.pop("content_hash")
-            if not isinstance(stored_hash, str) or canonical_artifact_hash(payload) != stored_hash:
+            persisted_hash = payload.pop("content_hash")
+            if not isinstance(persisted_hash, str) or canonical_artifact_hash(payload) != persisted_hash:
                 raise ValueError("artifact content hash mismatch")
-            payload["content_hash"] = stored_hash
+            payload["content_hash"] = persisted_hash
             return payload
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise TomorrowDailyCloseArtifactError("Tomorrow daily-close artifact hash is invalid") from exc

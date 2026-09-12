@@ -14,7 +14,7 @@ _FEATURE_IDS = TOMORROW_RESIDUAL_MOMENTUM_FEATURE_MANIFEST.names
 
 
 @dataclass(frozen=True)
-class TomorrowModelArtifact:
+class V1TomorrowModelArtifact:
     profile_id: Literal["v1"]
     model_id: str
     feature_ids: tuple[str, ...]
@@ -25,15 +25,15 @@ class TomorrowModelArtifact:
     content_hash: str
 
 
-def decode_tomorrow_artifact(document: object) -> TomorrowModelArtifact:
+def decode_tomorrow_artifact(document: object) -> V1TomorrowModelArtifact:
     if not isinstance(document, dict):
         raise TypeError("packaged Tomorrow V1 production model must be a JSON object")
     payload = cast(dict[str, object], dict(document))
-    stored_hash = payload.pop("content_hash", None)
+    persisted_hash = payload.pop("content_hash", None)
     if (
-        not isinstance(stored_hash, str)
-        or artifact_content_hash(payload) != stored_hash
-        or stored_hash != _AUTHORIZED_HASH
+        not isinstance(persisted_hash, str)
+        or artifact_content_hash(payload) != persisted_hash
+        or persisted_hash != _AUTHORIZED_HASH
     ):
         raise ValueError("packaged Tomorrow V1 production model hash is not authorized")
     profile_id = _text(payload, "profile_id")
@@ -60,7 +60,7 @@ def decode_tomorrow_artifact(document: object) -> TomorrowModelArtifact:
         or not _sha256_text(payload, "source_manifest_hash")
     ):
         raise ValueError("packaged Tomorrow V1 production model identity is invalid")
-    return TomorrowModelArtifact(
+    return V1TomorrowModelArtifact(
         "v1",
         "residual_momentum_linear",
         feature_ids,
@@ -68,7 +68,7 @@ def decode_tomorrow_artifact(document: object) -> TomorrowModelArtifact:
         scales,
         intercept,
         coefficients,
-        stored_hash,
+        persisted_hash,
     )
 
 
@@ -114,4 +114,4 @@ def _sha256_text(payload: dict[str, object], name: str) -> bool:
     return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
-__all__ = ["TomorrowModelArtifact", "decode_tomorrow_artifact"]
+__all__ = ["V1TomorrowModelArtifact", "decode_tomorrow_artifact"]

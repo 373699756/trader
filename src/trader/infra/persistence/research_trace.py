@@ -95,7 +95,7 @@ class ResearchTraceLimits:
             raise ValueError("research payload capacity cannot exceed total capacity")
 
 
-class SQLiteResearchTraceStore:
+class SQLiteResearchTraceArchive:
     """Observer consumer that persists only the generic committed event."""
 
     def __init__(
@@ -151,8 +151,8 @@ class SQLiteResearchTraceStore:
                 if str(existing["payload_hash"]) == payload_hash and bytes(existing["payload"]) == payload:
                     self._duplicate += 1
                     return
-                stored = _observation_from_bytes(bytes(existing["payload"]), str(existing["payload_hash"]))
-                if stored.event == event and observation.research_audit is None:
+                persisted = _observation_from_bytes(bytes(existing["payload"]), str(existing["payload_hash"]))
+                if persisted.event == event and observation.research_audit is None:
                     self._duplicate += 1
                     return
                 raise ResearchTraceConflictError("research trace identity conflict")
@@ -994,7 +994,7 @@ __all__ = [
     "ResearchTraceCapacityError",
     "ResearchTraceConflictError",
     "ResearchTraceLimits",
-    "SQLiteResearchTraceStore",
+    "SQLiteResearchTraceArchive",
     "ResearchTradeDateObservation",
     "ResearchTraceStatus",
 ]

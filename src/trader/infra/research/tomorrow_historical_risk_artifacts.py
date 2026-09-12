@@ -7,8 +7,8 @@ import os
 from pathlib import Path
 
 from trader.application.research.tomorrow_historical_validation import (
-    HISTORICAL_RISK_VALIDATION_SPEC,
-    HistoricalRiskValidationOutcome,
+    TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC,
+    TomorrowHistoricalRiskValidationOutcome,
 )
 from trader.domain.research.artifact_identity import (
     canonical_artifact_hash,
@@ -21,11 +21,13 @@ class TomorrowHistoricalRiskArtifactConflictError(RuntimeError):
     pass
 
 
-class TomorrowHistoricalRiskArtifactStore:
+class TomorrowHistoricalRiskArtifactArchive:
     def __init__(self, runtime_dir: Path) -> None:
-        self._root = runtime_dir / "tomorrow-historical-risk" / HISTORICAL_RISK_VALIDATION_SPEC.research_identity
+        self._root = (
+            runtime_dir / "tomorrow-historical-risk" / TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.research_identity
+        )
 
-    def seal(self, outcome: HistoricalRiskValidationOutcome) -> str:
+    def seal(self, outcome: TomorrowHistoricalRiskValidationOutcome) -> str:
         report = outcome.report
         model = outcome.model_artifact
         if report.status == "historical_data_insufficient" or model is None:
@@ -92,12 +94,12 @@ class TomorrowHistoricalRiskArtifactStore:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 raise TypeError("historical risk artifact is not an object")
-            stored = raw.pop("content_hash")
-            if not isinstance(stored, str) or canonical_artifact_hash(raw) != stored:
+            persisted = raw.pop("content_hash")
+            if not isinstance(persisted, str) or canonical_artifact_hash(raw) != persisted:
                 raise ValueError("historical risk artifact hash mismatch")
         except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise TomorrowHistoricalRiskArtifactConflictError("historical risk artifact is invalid") from exc
-        raw["content_hash"] = stored
+        raw["content_hash"] = persisted
         return raw
 
     def _model_path(self) -> Path:
@@ -107,4 +109,4 @@ class TomorrowHistoricalRiskArtifactStore:
         return self._root / "validation-report.json"
 
 
-__all__ = ["TomorrowHistoricalRiskArtifactConflictError", "TomorrowHistoricalRiskArtifactStore"]
+__all__ = ["TomorrowHistoricalRiskArtifactConflictError", "TomorrowHistoricalRiskArtifactArchive"]

@@ -9,8 +9,8 @@ from pathlib import Path
 from trader.application.research.baseline_identity_audit import BaselineIdentityEvidence
 from trader.domain.research.baseline_identity import BaselineIdentityClaim, source_hash
 from trader.infra.research.tomorrow_historical_artifacts import (
+    TomorrowHistoricalArtifactArchive,
     TomorrowHistoricalArtifactConflictError,
-    TomorrowHistoricalArtifactStore,
 )
 from trader.infra.scoring.profile_factory import load_scoring_profile
 from trader.infra.settings import RuntimeSettings, load_strategy_settings
@@ -36,11 +36,11 @@ def load_baseline_identity_evidence(runtime: RuntimeSettings) -> PackagedBaselin
     strategy_doc_path = runtime.project_root / "docs/01_评分逻辑.md"
     v1 = load_scoring_profile("v1").identity
     v2 = load_scoring_profile("v2").identity
-    historical_store = TomorrowHistoricalArtifactStore(runtime.runtime_dir / "tomorrow-historical")
+    historical_archive = TomorrowHistoricalArtifactArchive(runtime.runtime_dir / "tomorrow-historical")
     historical_source = runtime.runtime_dir / "tomorrow-historical"
     historical_conflict = False
     try:
-        historical_report = historical_store.read_report_payload()
+        historical_report = historical_archive.read_report_payload()
     except TomorrowHistoricalArtifactConflictError:
         historical_report = None
         historical_conflict = True

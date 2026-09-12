@@ -6,7 +6,7 @@ import pytest
 from trader.application.research.historical_screening import HistoricalSecurity
 from trader.domain.research.h1_point_in_time import H1PointInTimeRecord, H1PointInTimeSpec
 from trader.domain.research.historical_screening import HistoricalPriceBar
-from trader.infra.research.h1_point_in_time_archive import H1ArchiveConflictError, SQLiteH1PointInTimeArchive
+from trader.infra.research.h1_point_in_time_archive import H1PointInTimeArchiveConflictError, SQLiteH1PointInTimeArchive
 
 
 def _record(close: float = 10.2):
@@ -40,7 +40,7 @@ def test_h1_archive_is_idempotent_and_detects_tampering(tmp_path):
     assert archive.completed_codes("today") == frozenset({"600001"})
     with sqlite3.connect(tmp_path / "score-h1-point-in-time" / "score-h1-point-in-time.sqlite3") as connection:
         connection.execute("UPDATE records SET close_price = 10.7 WHERE code = '600001'")
-    with pytest.raises(H1ArchiveConflictError, match="payload"):
+    with pytest.raises(H1PointInTimeArchiveConflictError, match="payload"):
         archive.manifest(spec)
 
 
@@ -60,5 +60,5 @@ def test_h1_archive_rejects_direct_identity_mismatch_and_universe_tampering(tmp_
     database = tmp_path / "score-h1-point-in-time" / "score-h1-point-in-time.sqlite3"
     with sqlite3.connect(database) as connection:
         connection.execute("UPDATE universe SET name = 'tampered' WHERE code = '600001'")
-    with pytest.raises(H1ArchiveConflictError, match="universe payload"):
+    with pytest.raises(H1PointInTimeArchiveConflictError, match="universe payload"):
         archive.manifest(spec)

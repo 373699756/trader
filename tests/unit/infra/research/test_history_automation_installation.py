@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import plistlib
-import xml.etree.ElementTree as element_tree
 from pathlib import Path
+from xml.etree import ElementTree
 
 import pytest
 
@@ -147,5 +147,5 @@ def test_windows_and_macos_templates_are_parseable_native_documents(tmp_path: Pa
         )
     )
 
-    assert element_tree.fromstring(windows.files[0].content).tag.endswith("Task")
+    assert ElementTree.fromstring(windows.files[0].content).tag.endswith("Task")
     assert plistlib.loads(macos.files[0].content.encode("utf-8"))["RunAtLoad"] is True

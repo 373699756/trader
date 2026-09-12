@@ -26,7 +26,7 @@ class HistoricalLabelArtifactConflictError(RuntimeError):
     """Raised when a preregistration artifact is missing, tampered, or conflicting."""
 
 
-class HistoricalLabelArtifactStore:
+class HistoricalLabelArtifactArchive:
     def __init__(self, root: Path) -> None:
         self._root = root
 
@@ -64,11 +64,11 @@ class HistoricalLabelArtifactStore:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 raise TypeError("historical label artifact is not an object")
-            stored_hash = raw.pop("content_hash")
-            if not isinstance(stored_hash, str) or canonical_artifact_hash(raw) != stored_hash:
+            persisted_hash = raw.pop("content_hash")
+            if not isinstance(persisted_hash, str) or canonical_artifact_hash(raw) != persisted_hash:
                 raise ValueError("historical label artifact hash mismatch")
             batch = _decode_batch(raw)
-            if batch.content_hash != stored_hash:
+            if batch.content_hash != persisted_hash:
                 raise ValueError("historical label artifact reconstructed hash mismatch")
             return batch
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -311,4 +311,4 @@ def _int(value: object) -> int:
     return value
 
 
-__all__ = ["HistoricalLabelArtifactConflictError", "HistoricalLabelArtifactStore"]
+__all__ = ["HistoricalLabelArtifactConflictError", "HistoricalLabelArtifactArchive"]

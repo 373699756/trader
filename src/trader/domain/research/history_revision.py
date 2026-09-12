@@ -16,7 +16,7 @@ HISTORY_TRAINING_WINDOW_SESSIONS = 61
 
 
 @dataclass(frozen=True)
-class HistoryMonthlyRevision:
+class HistoryRevision:
     first_seen_sequence: int
     board: BaoStockBoard
     cell: BaoStockDailyCell
@@ -98,6 +98,6 @@ class HistoryTrainingWindow:
 
 __all__ = [
     "HISTORY_TRAINING_WINDOW_SESSIONS",
-    "HistoryMonthlyRevision",
+    "HistoryRevision",
     "HistoryTrainingWindow",
 ]

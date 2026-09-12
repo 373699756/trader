@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Repository-wide Python naming consistency](2026-09-12-repository-wide-python-naming.md)
 - [History SQLite and Tomorrow training pipeline optimization](2026-09-12-history-snapshot-training-identity.md)
 - [History SQLite repack foundation](2026-09-12-history-sqlite-repack-foundation.md)
 - [Tomorrow V3 fixed training artifact files](2026-09-12-tomorrow-v3-fixed-training-artifacts.md)

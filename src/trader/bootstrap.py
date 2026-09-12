@@ -79,7 +79,7 @@ from trader.infra.persistence.data_plane import DataPlaneRepository
 from trader.infra.persistence.decision_records import SQLiteDecisionRecordRepository
 from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
-from trader.infra.persistence.research_trace import ResearchTraceLimits, SQLiteResearchTraceStore
+from trader.infra.persistence.research_trace import ResearchTraceLimits, SQLiteResearchTraceArchive
 from trader.infra.persistence.runtime_json import RuntimeJsonWriter
 from trader.infra.runtime_resources import RuntimeWorkerResources, ShanghaiClock
 from trader.infra.scoring.profile_factory import load_scoring_profile
@@ -115,7 +115,7 @@ class ApplicationSystem:
     decision_events: UnifiedDecisionEventStream
     tomorrow_index: UnifiedDecisionIndex
     tomorrow_records: SQLiteDecisionRecordRepository
-    research_trace: SQLiteResearchTraceStore
+    research_trace: SQLiteResearchTraceArchive
     outcome_evidence: SQLiteOutcomeEvidenceRepository
 
     def _application_resources(self) -> ApplicationResources:
@@ -169,7 +169,7 @@ class _PublicationContext:
     tomorrow_repository: SQLiteDecisionRecordRepository
     tomorrow_index: UnifiedDecisionIndex
     decision_drafts: UnifiedDecisionDraftIndex
-    research_trace: SQLiteResearchTraceStore
+    research_trace: SQLiteResearchTraceArchive
     long_runtime: LongRuntime
     decision_queries: UnifiedDecisionQueries
     decision_events: UnifiedDecisionEventStream
@@ -689,7 +689,7 @@ def _build_publication(
     )
     clock = ShanghaiClock(context.now)
     decision_queries = UnifiedDecisionQueries(tomorrow_decisions, decision_drafts, repository, clock)
-    research_trace = SQLiteResearchTraceStore(
+    research_trace = SQLiteResearchTraceArchive(
         settings.runtime_dir,
         limits=ResearchTraceLimits(events_per_trade_date=max(2048, settings.pipeline.event_queue_size * 4)),
     )
@@ -758,7 +758,7 @@ def _build_publication(
     )
 
 
-def _initialize_research_trace(trace: SQLiteResearchTraceStore) -> None:
+def _initialize_research_trace(trace: SQLiteResearchTraceArchive) -> None:
     try:
         trace.initialize()
     except (OSError, sqlite3.Error):

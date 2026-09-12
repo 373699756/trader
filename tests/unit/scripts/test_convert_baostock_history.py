@@ -11,14 +11,14 @@ import pytest
 
 from scripts import convert_baostock_history as converter
 from trader.domain.research.baostock_daily import BaoStockDailyCell, BaoStockDailySide
-from trader.domain.research.history_monthly import HistoryMonthlyRevision
+from trader.domain.research.history_revision import HistoryRevision
 from trader.infra.research.baostock_gap_supplier import (
     BaoStockGapRecord,
     BaoStockGapResult,
     BaoStockGapUnavailable,
 )
+from trader.infra.research.history_archive_reader import SQLiteHistoryArchiveReader
 from trader.infra.research.history_control_repository import HistoryControlError, SQLiteHistoryControlRepository
-from trader.infra.research.history_month_archive import SQLiteHistoryMonthlyArchive
 from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
 from trader.infra.research.history_training_input import SQLiteHistoryTrainingInputArchive
 
@@ -457,7 +457,7 @@ def test_converter_streams_parent_and_active_increment_into_month_partitions(tmp
     assert state.checkpoints[-1].state == "completed"
     assert state.due_states[-1].reason == "data_incomplete"
 
-    visible = SQLiteHistoryMonthlyArchive(target).read_day(date(2026, 9, 1), state.active_snapshot)
+    visible = SQLiteHistoryArchiveReader(target).read_day(date(2026, 9, 1), state.active_snapshot)
     assert visible[0].cell.qfq is not None
     assert visible[0].cell.qfq.close_price == 10.5
 
@@ -549,7 +549,7 @@ def test_converter_repairs_completed_qfq_gaps_with_official_factor_and_publishes
     )
     assert repair_source.source == "baostock"
     assert repair_source.supplier_contract == "sealed_parent_increment_official_qfq_repair"
-    revisions = SQLiteHistoryMonthlyArchive(target).read_day(date(2026, 9, 1), state.active_snapshot)
+    revisions = SQLiteHistoryArchiveReader(target).read_day(date(2026, 9, 1), state.active_snapshot)
     assert len(revisions) == 1
     assert revisions[0].cell.qfq is not None
     anchor_factor = (Decimal("11") / Decimal("12")).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
@@ -590,7 +590,7 @@ def test_completed_qfq_repair_preserves_supplier_suspended_cell_status() -> None
         None,
         "suspended",
     )
-    current = HistoryMonthlyRevision(
+    current = HistoryRevision(
         2,
         "main",
         BaoStockDailyCell("600001", day, "qfq_missing", raw, None),

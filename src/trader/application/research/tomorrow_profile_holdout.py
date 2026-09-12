@@ -10,7 +10,10 @@ from datetime import date
 from typing import Protocol
 
 from trader.application.ports.model_scoring import ModelInput, ModelPredictorPort
-from trader.application.research.historical_screening import HistoricalArchiveManifest, HistoricalArchiveStatus
+from trader.application.research.historical_screening import (
+    HistoricalScreeningArchiveManifest,
+    HistoricalScreeningArchiveStatus,
+)
 from trader.application.research.tomorrow_historical_report import TomorrowHistoricalGateMetrics
 from trader.application.research.tomorrow_historical_screening import TomorrowHistoricalRow
 from trader.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
@@ -30,9 +33,9 @@ TOMORROW_PROFILE_HOLDOUT_REPORT_HASH = "47e2b9bfd4d404521f8251e2e51c491aa96c1bc0
 
 
 class TomorrowProfileHoldoutEvidence(Protocol):
-    def inspect(self, research_identity: str) -> HistoricalArchiveStatus: ...
+    def inspect(self, research_identity: str) -> HistoricalScreeningArchiveStatus: ...
 
-    def manifest(self, spec: HistoricalScreeningSpec) -> HistoricalArchiveManifest: ...
+    def manifest(self, spec: HistoricalScreeningSpec) -> HistoricalScreeningArchiveManifest: ...
 
     def tomorrow_historical_rows(self, spec: HistoricalScreeningSpec) -> Sequence[TomorrowHistoricalRow]: ...
 
@@ -267,7 +270,7 @@ def _profile_metrics(
     predictor: ModelPredictorPort,
     profile: tuple[_ProfileDay, ...],
     baseline: tuple[_ProfileDay, ...],
-    archive: HistoricalArchiveStatus,
+    archive: HistoricalScreeningArchiveStatus,
     validation_pairs: int,
 ) -> TomorrowProfileHoldoutMetrics:
     differences = tuple(

@@ -7,7 +7,10 @@ import pytest
 
 from trader.application.research.historical_screening import HistoricalSecurity
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalPriceBar
-from trader.infra.research.history_archive import HistoricalArchiveConflictError, SQLiteHistoricalArchive
+from trader.infra.research.historical_screening_archive import (
+    HistoricalScreeningArchiveConflictError,
+    SQLiteHistoricalScreeningArchive,
+)
 
 
 def _bar(close: float = 10.5) -> HistoricalPriceBar:
@@ -26,8 +29,8 @@ def _bar(close: float = 10.5) -> HistoricalPriceBar:
     )
 
 
-def test_history_archive_is_idempotent_and_rejects_same_identity_conflicts(tmp_path) -> None:
-    archive = SQLiteHistoricalArchive(tmp_path)
+def test_historical_screening_archive_is_idempotent_and_rejects_same_identity_conflicts(tmp_path) -> None:
+    archive = SQLiteHistoricalScreeningArchive(tmp_path)
     security = HistoricalSecurity("600001", "main", "甲", False, False)
 
     archive.register_universe(HISTORICAL_SCREENING_SPEC, (security,))
@@ -52,20 +55,20 @@ def test_history_archive_is_idempotent_and_rejects_same_identity_conflicts(tmp_p
     assert manifest.histories[0].bar_count == 1
     assert len(manifest.content_hash) == 64
 
-    with pytest.raises(HistoricalArchiveConflictError):
+    with pytest.raises(HistoricalScreeningArchiveConflictError):
         archive.save_history(HISTORICAL_SCREENING_SPEC, security.code, (replace(_bar(), close=10.6, high=10.8),))
 
-    with pytest.raises(HistoricalArchiveConflictError, match="universe set"):
+    with pytest.raises(HistoricalScreeningArchiveConflictError, match="universe set"):
         archive.register_universe(
             HISTORICAL_SCREENING_SPEC,
             (security, HistoricalSecurity("600002", "main", "乙", False, False)),
         )
 
 
-def test_history_archive_manifest_detects_bar_payload_tampering(tmp_path) -> None:
+def test_historical_screening_archive_manifest_detects_bar_payload_tampering(tmp_path) -> None:
     import sqlite3
 
-    archive = SQLiteHistoricalArchive(tmp_path)
+    archive = SQLiteHistoricalScreeningArchive(tmp_path)
     security = HistoricalSecurity("600001", "main", "甲", False, False)
     archive.register_universe(HISTORICAL_SCREENING_SPEC, (security,))
     archive.save_history(HISTORICAL_SCREENING_SPEC, security.code, (_bar(),))
@@ -74,12 +77,12 @@ def test_history_archive_manifest_detects_bar_payload_tampering(tmp_path) -> Non
     with sqlite3.connect(database) as connection:
         connection.execute("UPDATE bars SET close_price = 10.7 WHERE code = '600001'")
 
-    with pytest.raises(HistoricalArchiveConflictError, match="bar payload"):
+    with pytest.raises(HistoricalScreeningArchiveConflictError, match="bar payload"):
         archive.manifest(HISTORICAL_SCREENING_SPEC)
 
 
-def test_history_archive_status_is_read_only_when_database_does_not_exist(tmp_path) -> None:
-    archive = SQLiteHistoricalArchive(tmp_path)
+def test_historical_screening_archive_status_is_read_only_when_database_does_not_exist(tmp_path) -> None:
+    archive = SQLiteHistoricalScreeningArchive(tmp_path)
 
     status = archive.inspect(HISTORICAL_SCREENING_SPEC.research_identity)
 
@@ -87,8 +90,8 @@ def test_history_archive_status_is_read_only_when_database_does_not_exist(tmp_pa
     assert not (tmp_path / "score-history").exists()
 
 
-def test_history_archive_screening_uses_only_rows_with_61_inputs_and_5_future_labels(tmp_path) -> None:
-    archive = SQLiteHistoricalArchive(tmp_path)
+def test_historical_screening_archive_uses_only_rows_with_61_inputs_and_5_future_labels(tmp_path) -> None:
+    archive = SQLiteHistoricalScreeningArchive(tmp_path)
     start = date(2024, 8, 1)
     securities = tuple(
         HistoricalSecurity(f"60{index:04d}", "main", f"样本{index}", False, False) for index in range(30)

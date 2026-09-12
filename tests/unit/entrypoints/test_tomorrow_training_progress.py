@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from trader.application.research.tomorrow_training import (
-    TomorrowPartitionValidationProgress,
+    TomorrowTrainingPartitionValidationProgress,
     TomorrowTrainingProgress,
 )
 from trader.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
@@ -56,7 +56,9 @@ def test_training_progress_shows_current_partition_hash_bytes(capsys) -> None:
             "running",
             0,
             100,
-            partition_validation=TomorrowPartitionValidationProgress(1, 100, 128 * 1024**2, 512 * 1024**2, "hash"),
+            partition_validation=TomorrowTrainingPartitionValidationProgress(
+                1, 100, 128 * 1024**2, 512 * 1024**2, "hash"
+            ),
         )
     )
 

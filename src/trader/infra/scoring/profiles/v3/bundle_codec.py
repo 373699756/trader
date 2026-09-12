@@ -174,7 +174,7 @@ class V3TomorrowBundleArtifact:
 
 @dataclass(frozen=True)
 class _DecodedContract:
-    stored_hash: str
+    persisted_hash: str
     feature_ids: tuple[str, ...]
     feature_units: tuple[str, ...]
     exposure_contract: ExposureContract
@@ -270,15 +270,15 @@ def decode_tomorrow_bundle(document: object) -> V3TomorrowBundleArtifact:
         _integer(payload, "validation_rows"),
         industries,
         dependencies,
-        contract.stored_hash,
+        contract.persisted_hash,
     )
 
 
 def _decode_contract(
     payload: dict[str, object],
 ) -> _DecodedContract:
-    stored_hash = payload.pop("content_hash", None)
-    if not isinstance(stored_hash, str) or artifact_content_hash(payload) != stored_hash:
+    persisted_hash = payload.pop("content_hash", None)
+    if not isinstance(persisted_hash, str) or artifact_content_hash(payload) != persisted_hash:
         raise ValueError("Tomorrow V3 training model content hash is invalid")
     missing_fields = _DOCUMENT_FIELDS - set(payload)
     if missing_fields & {"feature_ids", "feature_units"}:
@@ -335,7 +335,7 @@ def _decode_contract(
     if input_scope == "complete_manifest" and input_codes != universe_codes:
         raise ValueError("Tomorrow V3 complete training input coverage is invalid")
     return _DecodedContract(
-        stored_hash,
+        persisted_hash,
         feature_ids,
         feature_units,
         exposure_contract,
@@ -348,8 +348,8 @@ def _decode_training_report(document: object) -> _V3TrainingReportArtifact:
     if not isinstance(document, dict):
         raise TypeError("Tomorrow V3 training report must be a JSON object")
     payload = cast(dict[str, object], dict(document))
-    stored_hash = payload.pop("content_hash", None)
-    if not isinstance(stored_hash, str) or artifact_content_hash(payload) != stored_hash:
+    persisted_hash = payload.pop("content_hash", None)
+    if not isinstance(persisted_hash, str) or artifact_content_hash(payload) != persisted_hash:
         raise ValueError("Tomorrow V3 training report content hash is invalid")
     if set(payload) != _REPORT_FIELDS:
         raise ValueError("Tomorrow V3 training report fields are invalid")
@@ -384,7 +384,7 @@ def _decode_training_report(document: object) -> _V3TrainingReportArtifact:
     ):
         raise ValueError("Tomorrow V3 training report identity is invalid")
     return _V3TrainingReportArtifact(
-        stored_hash,
+        persisted_hash,
         _training_input_scope(payload),
         _text(payload, "training_input_hash"),
         _date(payload, "label_cutoff"),
@@ -408,11 +408,11 @@ def _decode_training_input(document: object) -> _V3TrainingInputArtifact:
     if not isinstance(document, dict):
         raise TypeError("Tomorrow V3 training input must be a JSON object")
     payload = cast(dict[str, object], dict(document))
-    stored_hash = payload.pop("content_hash", None)
+    persisted_hash = payload.pop("content_hash", None)
     codes = _string_list(payload, "codes")
     if (
-        not isinstance(stored_hash, str)
-        or artifact_content_hash(payload) != stored_hash
+        not isinstance(persisted_hash, str)
+        or artifact_content_hash(payload) != persisted_hash
         or set(payload) != _TRAINING_INPUT_FIELDS
         or _text(payload, "schema_version") != "tomorrow_training_input"
         or _training_input_scope(payload) != "complete_manifest"
@@ -439,7 +439,7 @@ def _decode_training_input(document: object) -> _V3TrainingInputArtifact:
     if label_cutoff >= source_cutoff:
         raise ValueError("Tomorrow V3 training input label cutoff is invalid")
     return _V3TrainingInputArtifact(
-        stored_hash,
+        persisted_hash,
         "complete_manifest",
         _text(payload, "training_input_hash"),
         label_cutoff,

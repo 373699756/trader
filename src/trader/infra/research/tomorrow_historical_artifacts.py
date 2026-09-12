@@ -22,7 +22,7 @@ class TomorrowHistoricalArtifactConflictError(RuntimeError):
     pass
 
 
-class TomorrowHistoricalArtifactStore:
+class TomorrowHistoricalArtifactArchive:
     def __init__(self, root: Path) -> None:
         self._root = root
 
@@ -75,10 +75,10 @@ class TomorrowHistoricalArtifactStore:
     def _seal_value(self, path: Path, value: object, content_hash: str) -> str:
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
-            stored_hash = str(self._read_verified(path, path.stem)["content_hash"])
-            if stored_hash != content_hash:
+            persisted_hash = str(self._read_verified(path, path.stem)["content_hash"])
+            if persisted_hash != content_hash:
                 raise TomorrowHistoricalArtifactConflictError("Tomorrow historical artifact identity conflict")
-            return stored_hash
+            return persisted_hash
         payload = canonical_artifact_value(value)
         if not isinstance(payload, dict):
             raise TypeError("Tomorrow historical artifact must be a JSON object")
@@ -89,8 +89,8 @@ class TomorrowHistoricalArtifactStore:
             try:
                 os.link(temporary, path)
             except FileExistsError:
-                stored_hash = str(self._read_verified(path, path.stem)["content_hash"])
-                if stored_hash != content_hash:
+                persisted_hash = str(self._read_verified(path, path.stem)["content_hash"])
+                if persisted_hash != content_hash:
                     raise TomorrowHistoricalArtifactConflictError(
                         "Tomorrow historical artifact identity conflict"
                     ) from None
@@ -110,15 +110,15 @@ class TomorrowHistoricalArtifactStore:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 raise TypeError("artifact payload is not an object")
-            stored_hash = raw.pop("content_hash")
-            if not isinstance(stored_hash, str) or canonical_artifact_hash(raw) != stored_hash:
+            persisted_hash = raw.pop("content_hash")
+            if not isinstance(persisted_hash, str) or canonical_artifact_hash(raw) != persisted_hash:
                 raise ValueError("artifact hash mismatch")
         except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise TomorrowHistoricalArtifactConflictError(
                 f"Tomorrow historical {label} artifact hash or schema is invalid"
             ) from exc
-        raw["content_hash"] = stored_hash
+        raw["content_hash"] = persisted_hash
         return raw
 
 
-__all__ = ["TomorrowHistoricalArtifactConflictError", "TomorrowHistoricalArtifactStore"]
+__all__ = ["TomorrowHistoricalArtifactConflictError", "TomorrowHistoricalArtifactArchive"]

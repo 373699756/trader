@@ -29,7 +29,7 @@ _REASON = re.compile(r"^[a-z0-9_]{1,160}$")
 
 
 @dataclass(frozen=True)
-class HistoricalRiskValidationSpec:
+class TomorrowHistoricalRiskValidationSpec:
     research_identity: str = "tomorrow_historical_risk_probability"
     training_trade_dates: int = 60
     calibration_trade_dates: int = 20
@@ -66,7 +66,7 @@ class HistoricalRiskValidationSpec:
         )
 
 
-HISTORICAL_RISK_VALIDATION_SPEC = HistoricalRiskValidationSpec()
+TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC = TomorrowHistoricalRiskValidationSpec()
 
 
 @dataclass(frozen=True, order=True)
@@ -125,7 +125,7 @@ class TomorrowHistoricalRiskRow:
 
 
 @dataclass(frozen=True)
-class HistoricalSelectedDay:
+class TomorrowHistoricalSelectedDay:
     trade_date: date
     status: Literal["invested", "cash"]
     selected_codes: tuple[str, ...]
@@ -142,11 +142,11 @@ class HistoricalSelectedDay:
             raise ValueError("Historical selected-day status must match its portfolio")
 
 
-HistoricalRiskStatus = Literal["historical_validated", "historical_rejected", "historical_data_insufficient"]
+TomorrowHistoricalRiskStatus = Literal["historical_validated", "historical_rejected", "historical_data_insufficient"]
 
 
 @dataclass(frozen=True)
-class HistoricalRiskModelArtifact:
+class TomorrowHistoricalRiskModelArtifact:
     spec_hash: str
     source_spec_hash: str
     parent_model_id: str
@@ -173,7 +173,7 @@ class HistoricalRiskModelArtifact:
         )
         values = (self.logistic_intercept, *self.logistic_coefficients, self.platt_intercept, self.platt_slope)
         if (
-            self.spec_hash != HISTORICAL_RISK_VALIDATION_SPEC.content_hash
+            self.spec_hash != TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.content_hash
             or self.source_spec_hash != HISTORICAL_SCREENING_SPEC.content_hash
             or any(_SHA256.fullmatch(value) is None for value in hashes)
             or not self.parent_model_id
@@ -201,7 +201,7 @@ class HistoricalRiskModelArtifact:
 
 
 @dataclass(frozen=True)
-class HistoricalRiskValidationReport:
+class TomorrowHistoricalRiskValidationReport:
     spec_hash: str
     model_id: str
     model_hash: str
@@ -217,7 +217,7 @@ class HistoricalRiskValidationReport:
     baseline_brier_score: float | None
     expected_calibration_error: float | None
     model_artifact_hash: str | None
-    status: HistoricalRiskStatus
+    status: TomorrowHistoricalRiskStatus
     failure_reasons: tuple[str, ...]
     production_authority: bool = False
     schema_version: str = "tomorrow_historical_risk_validation_report"
@@ -230,9 +230,9 @@ class HistoricalRiskValidationReport:
         object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
-def _validate_risk_report_identity(report: HistoricalRiskValidationReport) -> None:
+def _validate_risk_report_identity(report: TomorrowHistoricalRiskValidationReport) -> None:
     if (
-        report.spec_hash != HISTORICAL_RISK_VALIDATION_SPEC.content_hash
+        report.spec_hash != TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.content_hash
         or not report.model_id
         or _SHA256.fullmatch(report.model_hash) is None
         or _SHA256.fullmatch(report.evidence_hash) is None
@@ -244,7 +244,7 @@ def _validate_risk_report_identity(report: HistoricalRiskValidationReport) -> No
         raise ValueError("Historical risk validation cannot authorize production")
 
 
-def _validate_risk_report_state(report: HistoricalRiskValidationReport) -> None:
+def _validate_risk_report_state(report: TomorrowHistoricalRiskValidationReport) -> None:
     counts = (
         report.training_trade_dates,
         report.calibration_trade_dates,
@@ -289,9 +289,9 @@ def _validate_risk_report_state(report: HistoricalRiskValidationReport) -> None:
 
 
 @dataclass(frozen=True)
-class HistoricalRiskValidationOutcome:
-    report: HistoricalRiskValidationReport
-    model_artifact: HistoricalRiskModelArtifact | None
+class TomorrowHistoricalRiskValidationOutcome:
+    report: TomorrowHistoricalRiskValidationReport
+    model_artifact: TomorrowHistoricalRiskModelArtifact | None
 
     def __post_init__(self) -> None:
         expected = self.model_artifact.content_hash if self.model_artifact is not None else None
@@ -299,16 +299,16 @@ class HistoricalRiskValidationOutcome:
             raise ValueError("Historical risk outcome model binding is invalid")
 
 
-class HistoricalRiskEvidence(Protocol):
+class TomorrowHistoricalRiskEvidence(Protocol):
     def tomorrow_historical_risk_rows(self, spec: HistoricalScreeningSpec) -> Sequence[TomorrowHistoricalRiskRow]: ...
 
 
-class HistoricalRiskValidationService:
-    def __init__(self, evidence: HistoricalRiskEvidence, predictor: ModelPredictorPort) -> None:
+class TomorrowHistoricalRiskValidationService:
+    def __init__(self, evidence: TomorrowHistoricalRiskEvidence, predictor: ModelPredictorPort) -> None:
         self._evidence = evidence
         self._predictor = predictor
 
-    def execute(self) -> HistoricalRiskValidationOutcome:
+    def execute(self) -> TomorrowHistoricalRiskValidationOutcome:
         rows = tuple(self._evidence.tomorrow_historical_risk_rows(HISTORICAL_SCREENING_SPEC))
         return build_historical_risk_probability(rows, self._predictor)
 
@@ -316,7 +316,7 @@ class HistoricalRiskValidationService:
 def evaluate_historical_selected_days(
     rows: tuple[TomorrowHistoricalRiskRow, ...],
     utilities: tuple[float, ...],
-) -> tuple[HistoricalSelectedDay, ...]:
+) -> tuple[TomorrowHistoricalSelectedDay, ...]:
     """Evaluate every valid historical day, treating a legal empty selection as cash."""
 
     if not rows or len(rows) != len(utilities) or any(not math.isfinite(value) for value in utilities):
@@ -327,7 +327,7 @@ def evaluate_historical_selected_days(
     for row, utility in zip(rows, utilities, strict=True):
         grouped[row.trade_date].append((row, utility))
     previous: dict[str, float] = {"__cash__": 1.0}
-    result: list[HistoricalSelectedDay] = []
+    result: list[TomorrowHistoricalSelectedDay] = []
     for trade_date in sorted(grouped):
         population = tuple(sorted(grouped[trade_date], key=lambda item: item[0].code))
         benchmarks = {row.benchmark_return for row, _utility in population}
@@ -352,7 +352,7 @@ def evaluate_historical_selected_days(
         gross = math.fsum(weight * row.gross_return for row, _utility in selected)
         benchmark = next(iter(benchmarks))
         result.append(
-            HistoricalSelectedDay(
+            TomorrowHistoricalSelectedDay(
                 trade_date=trade_date,
                 status="invested" if selected else "cash",
                 selected_codes=tuple(row.code for row, _utility in selected),
@@ -369,16 +369,16 @@ def evaluate_historical_selected_days(
 def evaluate_historical_risk_probability(
     rows: tuple[TomorrowHistoricalRiskRow, ...],
     predictor: ModelPredictorPort,
-    spec: HistoricalRiskValidationSpec = HISTORICAL_RISK_VALIDATION_SPEC,
-) -> HistoricalRiskValidationReport:
+    spec: TomorrowHistoricalRiskValidationSpec = TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC,
+) -> TomorrowHistoricalRiskValidationReport:
     return build_historical_risk_probability(rows, predictor, spec).report
 
 
 def build_historical_risk_probability(
     rows: tuple[TomorrowHistoricalRiskRow, ...],
     predictor: ModelPredictorPort,
-    spec: HistoricalRiskValidationSpec = HISTORICAL_RISK_VALIDATION_SPEC,
-) -> HistoricalRiskValidationOutcome:
+    spec: TomorrowHistoricalRiskValidationSpec = TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC,
+) -> TomorrowHistoricalRiskValidationOutcome:
     """Fit, calibrate, and test severe-loss probability on sealed historical dates only."""
 
     ordered = tuple(
@@ -392,7 +392,7 @@ def build_historical_risk_probability(
         raise ValueError("Historical risk rows must be unique by date and code")
     dates = tuple(sorted({row.trade_date for row in ordered}))
     if len(dates) < spec.required_trade_dates:
-        return HistoricalRiskValidationOutcome(_insufficient_report(predictor, ordered, spec), None)
+        return TomorrowHistoricalRiskValidationOutcome(_insufficient_report(predictor, ordered, spec), None)
     selected_dates = dates[: spec.required_trade_dates]
     train_dates = frozenset(selected_dates[: spec.training_trade_dates])
     first_embargo = spec.training_trade_dates
@@ -409,7 +409,7 @@ def build_historical_risk_probability(
     )
     test = tuple((row, target) for row, target in zip(feature_rows, targets, strict=True) if row[0] in test_dates)
     if not training or not calibration or not test:
-        return HistoricalRiskValidationOutcome(
+        return TomorrowHistoricalRiskValidationOutcome(
             _insufficient_report(predictor, included, spec, "historical_split_rows_missing"),
             None,
         )
@@ -432,7 +432,7 @@ def build_historical_risk_probability(
         )
         if failed
     )
-    artifact = HistoricalRiskModelArtifact(
+    artifact = TomorrowHistoricalRiskModelArtifact(
         spec_hash=spec.content_hash,
         source_spec_hash=HISTORICAL_SCREENING_SPEC.content_hash,
         parent_model_id=predictor.model_id,
@@ -452,7 +452,7 @@ def build_historical_risk_probability(
         training_evidence_hash=canonical_artifact_hash(training),
         calibration_evidence_hash=canonical_artifact_hash(calibration),
     )
-    report = HistoricalRiskValidationReport(
+    report = TomorrowHistoricalRiskValidationReport(
         spec_hash=spec.content_hash,
         model_id=predictor.model_id,
         model_hash=predictor.model_hash,
@@ -471,13 +471,13 @@ def build_historical_risk_probability(
         status="historical_rejected" if reasons else "historical_validated",
         failure_reasons=reasons,
     )
-    return HistoricalRiskValidationOutcome(report, artifact)
+    return TomorrowHistoricalRiskValidationOutcome(report, artifact)
 
 
 def _risk_features(
     rows: tuple[TomorrowHistoricalRiskRow, ...],
     predictor: ModelPredictorPort,
-    spec: HistoricalRiskValidationSpec,
+    spec: TomorrowHistoricalRiskValidationSpec,
 ) -> tuple[tuple[tuple[date, tuple[float, ...]], ...], tuple[float, ...]]:
     positions = tuple(_MODEL_FEATURE_IDS.index(item) for item in predictor.feature_ids)
     inputs = tuple(ModelInput(row.code, tuple(row.alpha_features[position] for position in positions)) for row in rows)
@@ -519,10 +519,10 @@ def _risk_features(
 def _insufficient_report(
     predictor: ModelPredictorPort,
     rows: tuple[TomorrowHistoricalRiskRow, ...],
-    spec: HistoricalRiskValidationSpec,
+    spec: TomorrowHistoricalRiskValidationSpec,
     reason: str | None = None,
-) -> HistoricalRiskValidationReport:
-    return HistoricalRiskValidationReport(
+) -> TomorrowHistoricalRiskValidationReport:
+    return TomorrowHistoricalRiskValidationReport(
         spec_hash=spec.content_hash,
         model_id=predictor.model_id,
         model_hash=predictor.model_hash,
@@ -580,14 +580,14 @@ def _expected_calibration_error(probabilities: tuple[float, ...], targets: tuple
 
 
 __all__ = [
-    "HISTORICAL_RISK_VALIDATION_SPEC",
-    "HistoricalRiskEvidence",
-    "HistoricalRiskModelArtifact",
-    "HistoricalRiskValidationOutcome",
-    "HistoricalRiskValidationReport",
-    "HistoricalRiskValidationSpec",
-    "HistoricalRiskValidationService",
-    "HistoricalSelectedDay",
+    "TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC",
+    "TomorrowHistoricalRiskEvidence",
+    "TomorrowHistoricalRiskModelArtifact",
+    "TomorrowHistoricalRiskValidationOutcome",
+    "TomorrowHistoricalRiskValidationReport",
+    "TomorrowHistoricalRiskValidationSpec",
+    "TomorrowHistoricalRiskValidationService",
+    "TomorrowHistoricalSelectedDay",
     "TomorrowHistoricalRiskRow",
     "build_historical_risk_probability",
     "evaluate_historical_risk_probability",

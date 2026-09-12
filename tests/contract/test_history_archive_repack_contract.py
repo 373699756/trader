@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_history_repack_has_one_typed_owner_and_a_thin_explicit_cli() -> None:
     owner = ROOT / "src/trader/infra/research/history_archive_repack.py"
     codec = ROOT / "src/trader/infra/research/history_archive_repack_codec.py"
-    command = ROOT / "scripts/repack_baostock_history.py"
+    command = ROOT / "scripts/repack_baostock_history_archive.py"
 
     assert owner.is_file()
     assert codec.is_file()
@@ -16,7 +16,7 @@ def test_history_repack_has_one_typed_owner_and_a_thin_explicit_cli() -> None:
     command_source = command.read_text(encoding="utf-8")
     assert "class HistoryArchiveRepackCoordinator" in owner_source
     assert "HistoryArchiveRepackBuildState" in owner_source
-    assert "HistoryArchiveActivationJournal" in owner_source
+    assert "HistoryArchiveRepackActivationJournal" in owner_source
     assert "PRAGMA page_size=8192" in owner_source
     assert "VACUUM INTO ?" in owner_source
     assert "history_archive_repack_status" in command_source

@@ -16,7 +16,7 @@ from trader.domain.research.baostock_daily import (
     build_baostock_training_split,
 )
 from trader.domain.research.history_control import HistoryTrainingDueState
-from trader.domain.research.history_monthly import HistoryTrainingWindow
+from trader.domain.research.history_revision import HistoryTrainingWindow
 from trader.domain.research.tomorrow_training_input import REQUIRED_DAILY_FIELDS, FrozenDailyInputDescriptor
 from trader.infra.research.history_archive_repack import HistoryArchiveRepackFenceError
 from trader.infra.research.history_control_repository import HistoryMaintenanceAlreadyRunningError
@@ -289,14 +289,14 @@ def test_training_stays_blocked_after_repack_activation_until_finalize_or_rollba
         lambda _path: archive,
     )
     monkeypatch.setattr(
-        "trader.infra.scoring.profiles.v3.training.require_history_repack_inactive",
+        "trader.infra.scoring.profiles.v3.training.require_history_archive_repack_inactive",
         lambda _root: (_ for _ in ()).throw(HistoryArchiveRepackFenceError("fenced")),
     )
 
     result = run_tomorrow_training(tmp_path / "history", tmp_path / "train", source_commit="e" * 40)
 
     assert result.status == "blocked"
-    assert result.failure_reasons == ("history_repack_activation_pending",)
+    assert result.failure_reasons == ("history_archive_repack_activation_pending",)
     assert result.training_input_hash == archive.snapshot.active_snapshot_hash
 
 

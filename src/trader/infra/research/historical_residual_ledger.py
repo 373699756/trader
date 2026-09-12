@@ -85,9 +85,9 @@ class SQLiteHistoricalResidualLedger:
                 (strategy, parent_split_hash),
             ).fetchall()
         outcome_by_identity: dict[str, HistoricalOutcomeRecord] = {}
-        for stored_hash, payload in outcomes:
+        for persisted_hash, payload in outcomes:
             outcome = _decode_outcome(str(payload))
-            if outcome.content_hash != stored_hash:
+            if outcome.content_hash != persisted_hash:
                 raise HistoricalResidualLedgerCorruptionError("historical outcome payload hash mismatch")
             outcome_by_identity[_outcome_identity(outcome)] = outcome
         joined: list[JoinedHistoricalResidual] = []
@@ -108,9 +108,9 @@ class SQLiteHistoricalResidualLedger:
                 (strategy, parent_split_hash),
             ).fetchall()
         result: list[HistoricalPredictionRecord] = []
-        for stored_hash, payload in rows:
+        for persisted_hash, payload in rows:
             prediction = _decode_prediction(str(payload))
-            if prediction.content_hash != stored_hash:
+            if prediction.content_hash != persisted_hash:
                 raise HistoricalResidualLedgerCorruptionError("historical prediction payload hash mismatch")
             result.append(prediction)
         return tuple(result)

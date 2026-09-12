@@ -19,7 +19,7 @@ from itertools import islice
 from pathlib import Path
 
 from trader.domain.research.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
-from trader.domain.research.history_monthly import HistoryMonthlyRevision
+from trader.domain.research.history_revision import HistoryRevision
 from trader.infra.research.history_control_repository import HistoryControlError, SQLiteHistoryControlRepository
 from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
 
@@ -211,7 +211,7 @@ def _measure_queries(
     open_dates: tuple[date, ...],
     rounds: int,
     revision_sample_count: int,
-) -> tuple[tuple[_QueryMeasurement, ...], tuple[HistoryMonthlyRevision, ...]]:
+) -> tuple[tuple[_QueryMeasurement, ...], tuple[HistoryRevision, ...]]:
     reference = active.partitions[-1]
     path, repository = _partition_repository(root, reference)
     year, month = _partition_identity(reference)
@@ -312,7 +312,7 @@ def _query_plan(path: Path, statement: str) -> tuple[str, ...]:
         return tuple(str(row[3]) for row in rows)
 
 
-def _measure_revision_write(sample: tuple[HistoryMonthlyRevision, ...]) -> _RevisionWriteMeasurement:
+def _measure_revision_write(sample: tuple[HistoryRevision, ...]) -> _RevisionWriteMeasurement:
     if not sample:
         raise RuntimeError("history archive revision write sample is empty")
     first = sample[0]

@@ -6,7 +6,7 @@ from datetime import date, timedelta
 import pytest
 
 from trader.domain.research.baostock_daily import BaoStockDailyCell, BaoStockDailySide
-from trader.domain.research.history_monthly import HistoryMonthlyRevision, HistoryTrainingWindow
+from trader.domain.research.history_revision import HistoryRevision, HistoryTrainingWindow
 
 
 def _side(day: date, adjustment: str) -> BaoStockDailySide:
@@ -27,10 +27,10 @@ def _side(day: date, adjustment: str) -> BaoStockDailySide:
     )
 
 
-def _revision(day: date, sequence: int = 1) -> HistoryMonthlyRevision:
+def _revision(day: date, sequence: int = 1) -> HistoryRevision:
     raw = _side(day, "unadjusted")
     qfq = _side(day, "qfq")
-    return HistoryMonthlyRevision(
+    return HistoryRevision(
         sequence,
         "main",
         BaoStockDailyCell("600001", day, "complete", raw, qfq),

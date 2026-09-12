@@ -20,7 +20,7 @@ class TerminalHoldoutArtifactConflictError(RuntimeError):
     """Raised when a sealed report is missing, tampered with, or conflicts."""
 
 
-class TerminalHoldoutArtifactStore:
+class TerminalHoldoutArtifactArchive:
     def __init__(self, root: Path, *, strategy: TerminalStrategy | None = None) -> None:
         self._root = root
         self._strategy = strategy
@@ -60,11 +60,11 @@ class TerminalHoldoutArtifactStore:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 raise TypeError("terminal holdout report is not an object")
-            stored_hash = raw.pop("content_hash")
-            if not isinstance(stored_hash, str) or _canonical_hash(raw) != stored_hash:
+            persisted_hash = raw.pop("content_hash")
+            if not isinstance(persisted_hash, str) or _canonical_hash(raw) != persisted_hash:
                 raise ValueError("terminal holdout report hash mismatch")
             report = decode_terminal_holdout_report(raw)
-            if report.content_hash != stored_hash:
+            if report.content_hash != persisted_hash:
                 raise ValueError("terminal holdout report reconstructed hash mismatch")
             self._validate_strategy(report)
             return report
@@ -282,7 +282,7 @@ def _floats(value: object) -> tuple[float, ...]:
 
 __all__ = [
     "TerminalHoldoutArtifactConflictError",
-    "TerminalHoldoutArtifactStore",
+    "TerminalHoldoutArtifactArchive",
     "decode_terminal_holdout_report",
     "encode_terminal_holdout_report",
 ]

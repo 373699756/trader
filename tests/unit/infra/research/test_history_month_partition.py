@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from trader.domain.research.baostock_daily import BaoStockDailyCell, BaoStockDailySide
-from trader.domain.research.history_monthly import HistoryMonthlyRevision
+from trader.domain.research.history_revision import HistoryRevision
 from trader.infra.research import history_month_partition as partition_module
 from trader.infra.research.history_month_partition import (
     HistoryMonthPartitionConflictError,
@@ -35,10 +35,10 @@ def _side(day: date, adjustment: str, close: float) -> BaoStockDailySide:
     )
 
 
-def _revision(day: date, sequence: int, close: float) -> HistoryMonthlyRevision:
+def _revision(day: date, sequence: int, close: float) -> HistoryRevision:
     raw = _side(day, "unadjusted", close)
     qfq = _side(day, "qfq", close - 1.0)
-    return HistoryMonthlyRevision(
+    return HistoryRevision(
         sequence,
         "main",
         BaoStockDailyCell("600001", day, "complete", raw, qfq),

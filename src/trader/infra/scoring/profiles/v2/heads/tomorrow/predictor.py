@@ -8,11 +8,11 @@ import numpy as np
 from trader.application.ports.model_scoring import ModelInput, ModelPrediction, ProfileEvidence
 from trader.domain.recommendation.model_scoring import V1_V2_EXPOSURE_CONTRACT, ExposureContract
 from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
-from trader.infra.scoring.profiles.v2.artifact_codec import TomorrowModelArtifact
+from trader.infra.scoring.profiles.v2.artifact_codec import V2TomorrowModelArtifact
 
 
-class TomorrowPredictor:
-    def __init__(self, artifact: TomorrowModelArtifact, evidence: ProfileEvidence) -> None:
+class V2TomorrowPredictor:
+    def __init__(self, artifact: V2TomorrowModelArtifact, evidence: ProfileEvidence) -> None:
         self._artifact = artifact
         self._evidence = evidence
         self._booster = lgb.Booster(model_str=artifact.lightgbm_model)
@@ -81,4 +81,4 @@ class TomorrowPredictor:
         )
 
 
-__all__ = ["TomorrowPredictor"]
+__all__ = ["V2TomorrowPredictor"]

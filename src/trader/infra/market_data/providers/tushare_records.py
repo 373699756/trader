@@ -42,7 +42,7 @@ class _TushareApiError(RuntimeError):
         self.provider_code = provider_code
 
 
-class _SdkFacade:
+class _TushareSdkClientAdapter:
     def __init__(self, module: ModuleType, pro: object, token: str, timeout_seconds: float) -> None:
         self._module = module
         self._pro = pro
@@ -98,7 +98,7 @@ class _SdkFacade:
 def _default_sdk_factory(token: str, timeout_seconds: float) -> object:
     module = importlib.import_module("tushare")
     pro_api = module.pro_api
-    return _SdkFacade(module, pro_api(token, timeout=timeout_seconds), token, timeout_seconds)
+    return _TushareSdkClientAdapter(module, pro_api(token, timeout=timeout_seconds), token, timeout_seconds)
 
 
 def _invoke(client: object, method: str, **arguments: object) -> object:

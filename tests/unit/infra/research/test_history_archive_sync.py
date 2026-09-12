@@ -24,10 +24,10 @@ from trader.domain.research.baostock_daily import (
     BaoStockSecurity,
     BaoStockSourceVersions,
 )
+from trader.infra.research.history_archive_reader import SQLiteHistoryArchiveReader
 from trader.infra.research.history_archive_repack import HistoryArchiveRepackFenceError
 from trader.infra.research.history_archive_sync import run_history_sync
 from trader.infra.research.history_control_repository import SQLiteHistoryControlRepository
-from trader.infra.research.history_month_archive import SQLiteHistoryMonthlyArchive
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -173,7 +173,7 @@ def test_initial_sync_publishes_verified_snapshot_and_same_cutoff_is_noop(tmp_pa
     state = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state()
     snapshot = state.active_snapshot
     assert snapshot is not None
-    assert len(SQLiteHistoryMonthlyArchive(tmp_path).read_day(dates[-1], snapshot)) == 2
+    assert len(SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], snapshot)) == 2
     assert tuple(item.relative_path for item in snapshot.partitions) == ("partitions/2026/09.sqlite3",)
 
 
@@ -199,14 +199,14 @@ def test_history_sync_does_not_call_the_supplier_while_repack_activation_is_fenc
 ) -> None:
     supplier = FakeSupplier((date(2026, 9, 10),))
     monkeypatch.setattr(
-        "trader.infra.research.history_archive_sync.require_history_repack_inactive",
+        "trader.infra.research.history_archive_sync.require_history_archive_repack_inactive",
         lambda _root: (_ for _ in ()).throw(HistoryArchiveRepackFenceError("fenced")),
     )
 
     result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
 
     assert result.state == "blocked"
-    assert result.reason == "history_repack_activation_pending"
+    assert result.reason == "history_archive_repack_activation_pending"
     assert supplier.calls == []
 
 
@@ -270,7 +270,7 @@ def test_daily_sync_rereads_recent_dates_and_full_window_only_for_qfq_revision(t
     assert run_history_sync(_configuration(tmp_path), FakeSupplier(original), clock=lambda: NOW).state == "completed"
     old_snapshot = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot
     assert old_snapshot is not None
-    old_row = SQLiteHistoryMonthlyArchive(tmp_path).read_day(original[-1], old_snapshot)[0]
+    old_row = SQLiteHistoryArchiveReader(tmp_path).read_day(original[-1], old_snapshot)[0]
     updated = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     supplier = FakeSupplier(updated, changed_qfq_code="600001")
 
@@ -286,10 +286,10 @@ def test_daily_sync_rereads_recent_dates_and_full_window_only_for_qfq_revision(t
     state = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state()
     assert state.active_snapshot is not None
     assert state.active_snapshot.sequence == 2
-    new_row = SQLiteHistoryMonthlyArchive(tmp_path).read_day(updated[1], state.active_snapshot)[0]
+    new_row = SQLiteHistoryArchiveReader(tmp_path).read_day(updated[1], state.active_snapshot)[0]
     assert old_row.cell.qfq is not None and old_row.cell.qfq.close_price == 9.0
     assert new_row.cell.qfq is not None and new_row.cell.qfq.close_price == 10.0
-    assert SQLiteHistoryMonthlyArchive(tmp_path).read_day(original[0], state.active_snapshot) == ()
+    assert SQLiteHistoryArchiveReader(tmp_path).read_day(original[0], state.active_snapshot) == ()
 
 
 def test_snapshot_publication_failure_restores_stable_month_and_old_active(
@@ -311,7 +311,7 @@ def test_snapshot_publication_failure_restores_stable_month_and_old_active(
 
     assert failed.state == "failed"
     assert control.load_state().active_snapshot == old_snapshot
-    assert len(SQLiteHistoryMonthlyArchive(tmp_path).read_day(original[0], old_snapshot)) == 2
+    assert len(SQLiteHistoryArchiveReader(tmp_path).read_day(original[0], old_snapshot)) == 2
     assert not tuple((tmp_path / "partitions").glob("*/.*.rollback.sqlite3"))
 
 
@@ -334,7 +334,7 @@ def test_post_commit_failure_keeps_new_active_and_stable_month(
 
     assert completed.state == "completed"
     assert active is not None and active.sequence == 2
-    assert len(SQLiteHistoryMonthlyArchive(tmp_path).read_day(updated[-1], active)) == 2
+    assert len(SQLiteHistoryArchiveReader(tmp_path).read_day(updated[-1], active)) == 2
     assert not tuple((tmp_path / "partitions").glob("*/.*.rollback.sqlite3"))
 
 
@@ -352,7 +352,7 @@ def test_interrupted_stable_month_replacement_recovers_from_active_hash(tmp_path
 
     assert recovered.state == "already_current"
     assert active is not None
-    assert len(SQLiteHistoryMonthlyArchive(tmp_path).read_day(dates[-1], active)) == 2
+    assert len(SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], active)) == 2
     assert not rollback.exists()
 
 

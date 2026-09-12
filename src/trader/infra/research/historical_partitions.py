@@ -42,7 +42,7 @@ class HistoricalPartitionManifest:
     schema_version: str = _SCHEMA_VERSION
 
 
-class PolarsHistoricalPartitionStore:
+class PolarsHistoricalPartitionArchive:
     """Write each date once; verified identical replays are idempotent."""
 
     def __init__(self, root: Path) -> None:
@@ -301,5 +301,5 @@ def _file_hash(path: Path) -> str:
 __all__ = [
     "HistoricalPartitionConflictError",
     "HistoricalPartitionManifest",
-    "PolarsHistoricalPartitionStore",
+    "PolarsHistoricalPartitionArchive",
 ]

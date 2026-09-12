@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from trader.application.research.tomorrow_historical_validation import HISTORICAL_RISK_VALIDATION_SPEC
+from trader.application.research.tomorrow_historical_validation import TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC
 
 ROOT = Path(__file__).resolve().parents[2]
 STRATEGY = ROOT / "docs/01_评分逻辑.md"
@@ -51,10 +51,10 @@ def test_historical_risk_probability_gate_is_fixed_before_production_use() -> No
         "loss_probability_status=not_modeled",
     ):
         assert token in strategy
-    assert HISTORICAL_RISK_VALIDATION_SPEC.research_identity == "tomorrow_historical_risk_probability"
+    assert TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.research_identity == "tomorrow_historical_risk_probability"
     assert (
-        HISTORICAL_RISK_VALIDATION_SPEC.training_trade_dates,
-        HISTORICAL_RISK_VALIDATION_SPEC.calibration_trade_dates,
-        HISTORICAL_RISK_VALIDATION_SPEC.test_trade_dates,
+        TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.training_trade_dates,
+        TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.calibration_trade_dates,
+        TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.test_trade_dates,
     ) == (60, 20, 40)
-    assert HISTORICAL_RISK_VALIDATION_SPEC.maximum_expected_calibration_error == 0.05
+    assert TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.maximum_expected_calibration_error == 0.05

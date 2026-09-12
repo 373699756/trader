@@ -29,7 +29,7 @@
 - “相同格式”固定表示继续使用 `control.sqlite3 + partitions/YYYY/MM.sqlite3`，表、字段、索引、JSON codec、
   revision/observation、主键、snapshot sequence 和读取接口保持不变；本批只改变物理页大小、压实状态和执行路径。
 - 压实核心、校验、切换日志和恢复逻辑归属 `src/trader/infra/research` 的有类型组件；
-  `scripts/repack_baostock_history.py` 只作为显式运维入口，不复制业务规则，也不新增 `run.sh` 公开命令。
+  `scripts/repack_baostock_history_archive.py` 只作为显式运维入口，不复制业务规则，也不新增 `run.sh` 公开命令。
 - 拒绝原地 `VACUUM`、同时写新旧归档、目录级双读 fallback、取消 SHA/完整性校验、提高训练内存上限、
   提高下载并发或以降低 `synchronous` 换速度。
 - 暂不删除现有三个二级索引；它们分别服务单股、日期/板块和 observation 查询，只有完整工作负载实测证明冗余后
@@ -56,7 +56,7 @@
 ### 3.1 组件和入口
 
 - 在 `src/trader/infra/research` 新增有类型的压实协调器、转换状态、切换日志和 codec；内部状态不得以无类型字典传播。
-- 新增薄入口 `scripts/repack_baostock_history.py`，提供 `build`、`activate`、`rollback` 和 `finalize`。
+- 新增薄入口 `scripts/repack_baostock_history_archive.py`，提供 `build`、`activate`、`rollback` 和 `finalize`。
 - 进度写 stderr，最终由 CLI adapter 将稳定的有类型状态白名单投影到 stdout；外部状态身份固定为
   `history_archive_repack_status`，不增加项目版本编号。
 - 性能诊断接入 `scripts/diagnose_runtime.py` 统一入口及 `scripts/runtime_diagnostics/` 所有者模块，不增加独立诊断脚本。

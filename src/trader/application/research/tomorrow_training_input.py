@@ -7,7 +7,7 @@ from typing import Protocol
 
 from trader.domain.research.tomorrow_training_input import (
     FrozenDailyInputDescriptor,
-    TomorrowInputCompatibility,
+    TomorrowTrainingInputCompatibility,
     evaluate_tomorrow_training_input,
 )
 
@@ -21,7 +21,7 @@ def verify_tomorrow_training_input_port(
     *,
     expected_manifest_hash: str,
     expected_source_cutoff: date,
-) -> TomorrowInputCompatibility:
+) -> TomorrowTrainingInputCompatibility:
     """Bind B's compatibility result to one frozen A manifest."""
 
     return evaluate_tomorrow_training_input(

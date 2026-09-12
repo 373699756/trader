@@ -26,7 +26,7 @@ class PointInTimeUniverseProvider(Protocol):
     def fetch(self) -> Sequence[HistoricalSecurity]: ...
 
 
-class H1ArchivePort(Protocol):
+class H1PointInTimeArchivePort(Protocol):
     def registered_universe(self, strategy: ResearchStrategy) -> tuple[HistoricalSecurity, ...]: ...
 
     def register_universe(self, spec: H1PointInTimeSpec, universe: Sequence[HistoricalSecurity]) -> None: ...
@@ -41,7 +41,7 @@ class H1ArchivePort(Protocol):
 
 
 @dataclass(frozen=True)
-class H1DownloadResult:
+class H1PointInTimeDownloadResult:
     strategy: ResearchStrategy
     universe_count: int
     previously_completed: int
@@ -71,7 +71,7 @@ class H1PointInTimeDownloadService:
         self,
         universe: PointInTimeUniverseProvider,
         history: H1PointInTimeProvider,
-        archive: H1ArchivePort,
+        archive: H1PointInTimeArchivePort,
         *,
         workers: int = 5,
     ) -> None:
@@ -87,7 +87,7 @@ class H1PointInTimeDownloadService:
         spec: H1PointInTimeSpec,
         *,
         progress: Callable[[int, int, str], None] | None = None,
-    ) -> H1DownloadResult:
+    ) -> H1PointInTimeDownloadResult:
         securities = self._archive.registered_universe(spec.strategy)
         if not securities:
             securities = tuple(
@@ -104,7 +104,7 @@ class H1PointInTimeDownloadService:
         completed = self._archive.completed_codes(spec.strategy)
         pending = tuple(item for item in securities if item.code not in completed)
         downloaded, failed = self._download_all(spec, pending, progress)
-        return H1DownloadResult(
+        return H1PointInTimeDownloadResult(
             spec.strategy,
             len(securities),
             len(set(completed).intersection(item.code for item in securities)),
@@ -135,7 +135,7 @@ class H1PointInTimeDownloadService:
                 for future in finished:
                     code = futures.pop(future)
                     processed += 1
-                    if self._store_download(spec, code, future):
+                    if self._record_download(spec, code, future):
                         downloaded += 1
                     else:
                         failed += 1
@@ -154,7 +154,7 @@ class H1PointInTimeDownloadService:
     def _fetch(self, code: str, spec: H1PointInTimeSpec) -> tuple[H1PointInTimeRecord, ...]:
         return tuple(self._history.fetch(code, spec))
 
-    def _store_download(
+    def _record_download(
         self,
         spec: H1PointInTimeSpec,
         code: str,
@@ -200,9 +200,9 @@ def _error_code(exc: BaseException) -> str:
 
 
 __all__ = [
-    "H1ArchivePort",
+    "H1PointInTimeArchivePort",
     "H1CapabilityProbePort",
-    "H1DownloadResult",
+    "H1PointInTimeDownloadResult",
     "H1PointInTimeDownloadService",
     "H1PointInTimeProvider",
     "PointInTimeUniverseProvider",

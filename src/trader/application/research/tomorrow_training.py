@@ -23,7 +23,7 @@ TOMORROW_TRAINING_PEAK_RSS_MIB = 2_048
 
 
 @dataclass(frozen=True)
-class TomorrowPartitionValidationProgress:
+class TomorrowTrainingPartitionValidationProgress:
     current_partition: int
     total_partitions: int
     completed_bytes: int
@@ -47,7 +47,7 @@ class TomorrowTrainingProgress:
     completed_units: int
     total_units: int
     produced_units: int = 0
-    partition_validation: TomorrowPartitionValidationProgress | None = None
+    partition_validation: TomorrowTrainingPartitionValidationProgress | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -91,7 +91,7 @@ class TomorrowTrainingWindow:
 __all__ = [
     "TOMORROW_TRAINING_COMPUTE_THREADS",
     "TOMORROW_TRAINING_PEAK_RSS_MIB",
-    "TomorrowPartitionValidationProgress",
+    "TomorrowTrainingPartitionValidationProgress",
     "TomorrowTrainingProgress",
     "TomorrowTrainingProgressPort",
     "TomorrowTrainingProgressState",

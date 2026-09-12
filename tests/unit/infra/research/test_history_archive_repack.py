@@ -17,21 +17,21 @@ from trader.domain.research.history_control import (
     HistorySourceIdentity,
     HistoryUniverseIdentity,
 )
-from trader.domain.research.history_monthly import HistoryMonthlyRevision
+from trader.domain.research.history_revision import HistoryRevision
 from trader.infra.research.history_archive_repack import (
     HistoryArchiveRepackCoordinator,
     HistoryArchiveRepackFenceError,
-    require_history_repack_inactive,
+    require_history_archive_repack_inactive,
 )
 from trader.infra.research.history_archive_repack_state import (
     HistoryArchiveRepackRequirements,
-    HistoryTrainingMemoryEvidence,
 )
 from trader.infra.research.history_control_repository import SQLiteHistoryControlRepository
 from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
 from trader.infra.research.history_training_due import evaluate_history_training_due
 from trader.infra.scoring.profiles.v3.training import run_repack_tomorrow_training
 from trader.infra.scoring.profiles.v3.training_bundle_repository import ActiveTomorrowBundle
+from trader.infra.scoring.profiles.v3.training_memory_evidence import TomorrowTrainingMemoryEvidence
 
 NOW = datetime(2026, 9, 12, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -54,8 +54,8 @@ def _side(day: date, adjustment: str, close: float) -> BaoStockDailySide:
     )
 
 
-def _revision(day: date, sequence: int, close: float) -> HistoryMonthlyRevision:
-    return HistoryMonthlyRevision(
+def _revision(day: date, sequence: int, close: float) -> HistoryRevision:
+    return HistoryRevision(
         sequence,
         "main",
         BaoStockDailyCell(
@@ -71,7 +71,7 @@ def _revision(day: date, sequence: int, close: float) -> HistoryMonthlyRevision:
     )
 
 
-def _qfq_close(revision: HistoryMonthlyRevision) -> float:
+def _qfq_close(revision: HistoryRevision) -> float:
     assert revision.cell.qfq is not None
     close = revision.cell.qfq.close_price
     assert close is not None
@@ -202,12 +202,12 @@ def test_activation_recovers_an_interrupted_move_and_can_retry_then_rollback(tmp
     activated = HistoryArchiveRepackCoordinator(source, target, requirements=_requirements()).activate()
     assert activated.state == "verified"
     with pytest.raises(HistoryArchiveRepackFenceError, match="activation_pending"):
-        require_history_repack_inactive(source)
+        require_history_archive_repack_inactive(source)
 
     rolled_back = HistoryArchiveRepackCoordinator(source, target, requirements=_requirements()).rollback()
     assert rolled_back.state == "rolled_back"
     assert SQLiteHistoryControlRepository(source / "control.sqlite3").load_state().active_snapshot == original
-    require_history_repack_inactive(source)
+    require_history_archive_repack_inactive(source)
 
 
 def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
@@ -239,7 +239,7 @@ def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
         expected_history_snapshot_hash="f" * 64,
     )
     assert mismatch.status == "blocked"
-    assert mismatch.failure_reasons == ("history_repack_activation_pending",)
+    assert mismatch.failure_reasons == ("history_archive_repack_activation_pending",)
 
 
 def test_physical_repack_does_not_create_revision_due_or_invalidate_training_cache(
@@ -302,8 +302,8 @@ def test_finalize_deletes_only_the_verified_backup_after_bundle_and_memory_match
     )
     monkeypatch.setattr(
         repack_module,
-        "read_training_memory_evidence",
-        lambda _path: HistoryTrainingMemoryEvidence(
+        "read_tomorrow_training_memory_evidence",
+        lambda _path: TomorrowTrainingMemoryEvidence(
             "engineering_ready",
             "already_current",
             built.target_snapshot_hash,
@@ -319,7 +319,7 @@ def test_finalize_deletes_only_the_verified_backup_after_bundle_and_memory_match
     assert finalized.state == "finalized"
     assert finalized.released_bytes > 0
     assert not (tmp_path / "data/historyless/baostock-before-repack").exists()
-    require_history_repack_inactive(source)
+    require_history_archive_repack_inactive(source)
     with pytest.raises(repack_module.HistoryArchiveRepackError, match="cannot be rolled back"):
         coordinator.rollback()
 
@@ -347,8 +347,8 @@ def test_finalize_refuses_to_delete_a_backup_with_unknown_content(
     )
     monkeypatch.setattr(
         repack_module,
-        "read_training_memory_evidence",
-        lambda _path: HistoryTrainingMemoryEvidence(
+        "read_tomorrow_training_memory_evidence",
+        lambda _path: TomorrowTrainingMemoryEvidence(
             "engineering_ready",
             "already_current",
             built.target_snapshot_hash,

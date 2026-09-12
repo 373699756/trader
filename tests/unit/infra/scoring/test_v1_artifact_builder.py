@@ -4,7 +4,7 @@ from datetime import timedelta
 
 import pytest
 
-from trader.application.research.historical_screening import HistoricalArchiveManifest
+from trader.application.research.historical_screening import HistoricalScreeningArchiveManifest
 from trader.application.research.tomorrow_historical_screening import TomorrowHistoricalRow
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC
 from trader.infra.scoring.profiles.v1.artifact_builder import (
@@ -42,7 +42,7 @@ def _rows() -> tuple[TomorrowHistoricalRow, ...]:
 
 
 def test_manual_v1_fit_is_deterministic_bounded_and_provenance_bound() -> None:
-    manifest = HistoricalArchiveManifest(
+    manifest = HistoricalScreeningArchiveManifest(
         HISTORICAL_SCREENING_SPEC.research_identity,
         HISTORICAL_SCREENING_SPEC.content_hash,
         "a" * 64,
@@ -63,7 +63,7 @@ def test_manual_v1_fit_is_deterministic_bounded_and_provenance_bound() -> None:
 
 
 def test_manual_v1_fit_rejects_a_manifest_from_another_archive() -> None:
-    manifest = HistoricalArchiveManifest("other_research", "", "a" * 64, "b" * 64, ())
+    manifest = HistoricalScreeningArchiveManifest("other_research", "", "a" * 64, "b" * 64, ())
 
     with pytest.raises(ValueError, match="exact H0 manifest"):
         fit_manual_v1_model(iter(_rows()), HISTORICAL_SCREENING_SPEC, manifest)

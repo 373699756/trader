@@ -4,7 +4,7 @@ from datetime import date, datetime, time, timedelta
 import pytest
 
 from trader.application.research.tomorrow_daily_close_h1 import (
-    H1DailyCloseObservation,
+    TomorrowDailyCloseH1Observation,
     attach_matured_daily_close_labels,
     build_h1_daily_close_features,
 )
@@ -15,7 +15,7 @@ from trader.domain.research.historical_screening import HistoricalPriceBar
 _HASH = "a" * 64
 
 
-def _observations(days: int = 90) -> tuple[H1DailyCloseObservation, ...]:
+def _observations(days: int = 90) -> tuple[TomorrowDailyCloseH1Observation, ...]:
     first = date(2024, 1, 1)
     result = []
     for index in range(days):
@@ -49,7 +49,7 @@ def _observations(days: int = 90) -> tuple[H1DailyCloseObservation, ...]:
                 _HASH,
                 _HASH,
             )
-            result.append(H1DailyCloseObservation(record, board, True, True, _HASH))
+            result.append(TomorrowDailyCloseH1Observation(record, board, True, True, _HASH))
     return tuple(result)
 
 

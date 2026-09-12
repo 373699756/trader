@@ -28,7 +28,7 @@ class BaselineReportConflictError(RuntimeError):
     pass
 
 
-class JsonBaselineReportStore:
+class JsonBaselineReportArchive:
     """Write one report identity once and verify every subsequent read."""
 
     def __init__(self, root: Path) -> None:
@@ -66,13 +66,13 @@ class JsonBaselineReportStore:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 raise TypeError("report payload is not an object")
-            stored_hash = raw.pop("report_hash")
-            if not isinstance(stored_hash, str) or canonical_artifact_hash(raw) != stored_hash:
+            persisted_hash = raw.pop("report_hash")
+            if not isinstance(persisted_hash, str) or canonical_artifact_hash(raw) != persisted_hash:
                 raise ValueError("report hash mismatch")
             report = _report_from_payload(raw)
         except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise BaselineReportConflictError("Historical replay report hash or schema is invalid") from exc
-        if report.report_hash != stored_hash:
+        if report.report_hash != persisted_hash:
             raise BaselineReportConflictError("Historical replay report reconstructed hash mismatch")
         return report
 
@@ -180,4 +180,4 @@ def _extraction_status(value: object) -> Literal["extracted", "exploratory"]:
     return value
 
 
-__all__ = ["BaselineReportConflictError", "JsonBaselineReportStore"]
+__all__ = ["BaselineReportConflictError", "JsonBaselineReportArchive"]

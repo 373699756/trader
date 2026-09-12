@@ -12,9 +12,9 @@ from pathlib import Path
 
 from trader.domain.research.baostock_daily import BAOSTOCK_MAX_SESSIONS, BaoStockTrainingRow
 from trader.domain.research.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
-from trader.domain.research.history_monthly import (
+from trader.domain.research.history_revision import (
     HISTORY_TRAINING_WINDOW_SESSIONS,
-    HistoryMonthlyRevision,
+    HistoryRevision,
     HistoryTrainingWindow,
 )
 from trader.infra.research.history_month_partition import (
@@ -26,7 +26,7 @@ from trader.infra.research.history_month_partition import (
 _CODE = re.compile(r"^[0-9]{6}$")
 
 
-class HistoryMonthlyArchiveError(RuntimeError):
+class HistoryArchiveReadError(RuntimeError):
     """The active monthly history view is incomplete or inconsistent."""
 
 
@@ -59,7 +59,7 @@ def route_history_months(start: date, end: date) -> tuple[tuple[int, int], ...]:
     return tuple(routed)
 
 
-class SQLiteHistoryMonthlyArchive:
+class SQLiteHistoryArchiveReader:
     def __init__(self, root: Path) -> None:
         self._root = root
         self._verified: dict[HistorySnapshotPartition, SQLiteHistoryMonthPartitionRepository] = {}
@@ -117,7 +117,7 @@ class SQLiteHistoryMonthlyArchive:
         snapshot: HistoryActiveSnapshot,
         *,
         board: str | None = None,
-    ) -> tuple[HistoryMonthlyRevision, ...]:
+    ) -> tuple[HistoryRevision, ...]:
         if trade_date > snapshot.data_cutoff:
             raise ValueError("history day exceeds the snapshot cutoff")
         reference = self._reference(snapshot, trade_date.year, trade_date.month)
@@ -129,7 +129,7 @@ class SQLiteHistoryMonthlyArchive:
         code: str,
         session_dates: tuple[date, ...],
         snapshot: HistoryActiveSnapshot,
-    ) -> tuple[HistoryMonthlyRevision, ...]:
+    ) -> tuple[HistoryRevision, ...]:
         dates = tuple(session_dates)
         if _CODE.fullmatch(code) is None:
             raise ValueError("history code window identity is invalid")
@@ -141,7 +141,7 @@ class SQLiteHistoryMonthlyArchive:
         ):
             raise ValueError("history code window dates are invalid")
         allowed = frozenset(dates)
-        rows: list[HistoryMonthlyRevision] = []
+        rows: list[HistoryRevision] = []
         for year, month in route_history_months(dates[0], dates[-1]):
             reference = self._reference(snapshot, year, month)
             repository = self._verified_repository(reference)
@@ -157,7 +157,7 @@ class SQLiteHistoryMonthlyArchive:
             )
         return tuple(sorted(rows, key=lambda row: row.trade_date))
 
-    def iter_snapshot_revisions(self, snapshot: HistoryActiveSnapshot) -> Iterator[HistoryMonthlyRevision]:
+    def iter_snapshot_revisions(self, snapshot: HistoryActiveSnapshot) -> Iterator[HistoryRevision]:
         for reference in snapshot.partitions:
             year, month = _reference_month(reference)
             repository = self._verified_repository(reference)
@@ -173,7 +173,7 @@ class SQLiteHistoryMonthlyArchive:
         start: date,
         end: date,
         snapshot: HistoryActiveSnapshot,
-    ) -> Iterator[HistoryMonthlyRevision]:
+    ) -> Iterator[HistoryRevision]:
         """Stream only the months intersecting an inclusive date range."""
 
         if start > end or end > snapshot.data_cutoff:
@@ -202,7 +202,7 @@ class SQLiteHistoryMonthlyArchive:
             )
             after = _revision_identities(repository.iter_range(start, end, snapshot_sequence=comparison.after_sequence))
         except HistoryMonthPartitionError as exc:
-            raise HistoryMonthlyArchiveError("history partition revision comparison failed") from exc
+            raise HistoryArchiveReadError("history partition revision comparison failed") from exc
         return tuple(
             sorted(day for day, code in set(before) | set(after) if before.get((day, code)) != after.get((day, code)))
         )
@@ -213,7 +213,7 @@ class SQLiteHistoryMonthlyArchive:
         start: date,
         end: date,
         snapshot: HistoryActiveSnapshot,
-    ) -> Iterator[HistoryMonthlyRevision]:
+    ) -> Iterator[HistoryRevision]:
         """Stream one code across only the months that cover its date range."""
 
         if _CODE.fullmatch(code) is None or start > end or end > snapshot.data_cutoff:
@@ -244,7 +244,7 @@ class SQLiteHistoryMonthlyArchive:
             if _reference_month(reference) in expected_months
         )
         if available_months != expected_months:
-            raise HistoryMonthlyArchiveError("history snapshot does not cover the active calendar")
+            raise HistoryArchiveReadError("history snapshot does not cover the active calendar")
         position = {day: index for index, day in enumerate(dates)}
         buffers: dict[str, deque[BaoStockTrainingRow]] = {}
         previous_positions: dict[str, int] = {}
@@ -253,7 +253,7 @@ class SQLiteHistoryMonthlyArchive:
             processed_rows += 1
             current_position = position.get(revision.trade_date)
             if current_position is None:
-                raise HistoryMonthlyArchiveError("history revision is outside the active calendar")
+                raise HistoryArchiveReadError("history revision is outside the active calendar")
             buffer = buffers.setdefault(
                 revision.code,
                 deque(maxlen=HISTORY_TRAINING_WINDOW_SESSIONS),
@@ -282,7 +282,7 @@ class SQLiteHistoryMonthlyArchive:
     ) -> HistorySnapshotPartition:
         matches = tuple(item for item in snapshot.partitions if _reference_month(item) == (year, month))
         if len(matches) != 1:
-            raise HistoryMonthlyArchiveError("history snapshot month is missing")
+            raise HistoryArchiveReadError("history snapshot month is missing")
         return matches[0]
 
     def _verified_repository(
@@ -298,7 +298,7 @@ class SQLiteHistoryMonthlyArchive:
         try:
             SQLiteHistoryMonthPartitionRepository.verify(path, reference, progress)
         except HistoryMonthPartitionError as exc:
-            raise HistoryMonthlyArchiveError("history snapshot partition verification failed") from exc
+            raise HistoryArchiveReadError("history snapshot partition verification failed") from exc
         repository = SQLiteHistoryMonthPartitionRepository(path, year, month)
         self._verified[reference] = repository
         return repository
@@ -309,12 +309,12 @@ def _reference_month(reference: HistorySnapshotPartition) -> tuple[int, int]:
     return int(parts[1]), int(Path(parts[2]).stem)
 
 
-def _revision_identities(revisions: Iterator[HistoryMonthlyRevision]) -> dict[tuple[date, str], str]:
+def _revision_identities(revisions: Iterator[HistoryRevision]) -> dict[tuple[date, str], str]:
     identities: dict[tuple[date, str], str] = {}
     for revision in revisions:
         key = (revision.trade_date, revision.code)
         if key in identities:
-            raise HistoryMonthlyArchiveError("history partition revision comparison contains duplicate rows")
+            raise HistoryArchiveReadError("history partition revision comparison contains duplicate rows")
         identities[key] = revision.revision_id
     return identities
 
@@ -338,8 +338,8 @@ def _partition_progress(
 
 
 __all__ = [
-    "HistoryMonthlyArchiveError",
+    "HistoryArchiveReadError",
     "HistoryPartitionRevisionComparison",
-    "SQLiteHistoryMonthlyArchive",
+    "SQLiteHistoryArchiveReader",
     "route_history_months",
 ]

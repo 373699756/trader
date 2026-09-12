@@ -41,10 +41,11 @@ from trader.domain.research.history_control import (
     HistorySyncCheckpoint,
     HistoryUniverseIdentity,
 )
-from trader.domain.research.history_monthly import HistoryMonthlyRevision
+from trader.domain.research.history_revision import HistoryRevision
+from trader.infra.research.history_archive_reader import route_history_months
 from trader.infra.research.history_archive_repack import (
     HistoryArchiveRepackFenceError,
-    require_history_repack_inactive,
+    require_history_archive_repack_inactive,
 )
 from trader.infra.research.history_control_repository import (
     HistoryControlError,
@@ -53,7 +54,6 @@ from trader.infra.research.history_control_repository import (
     SQLiteHistoryControlRepository,
     inspect_history_disk,
 )
-from trader.infra.research.history_month_archive import route_history_months
 from trader.infra.research.history_month_partition import (
     HistoryMonthPartitionError,
     SQLiteHistoryMonthPartitionRepository,
@@ -115,7 +115,7 @@ def run_history_sync(
     _publish_progress(progress, "initializing", "started")
     try:
         with HistoryMaintenanceLock(root / ".maintenance.lock"):
-            require_history_repack_inactive(root)
+            require_history_archive_repack_inactive(root)
             return _run_locked(configuration, supplier, observed_at, cancel, progress)
     except KeyboardInterrupt:
         active = _safe_active(SQLiteHistoryControlRepository(root / "control.sqlite3"))
@@ -127,7 +127,7 @@ def run_history_sync(
     except HistoryArchiveRepackFenceError:
         _publish_progress(progress, "initializing", "failed")
         active = _safe_active(SQLiteHistoryControlRepository(root / "control.sqlite3"))
-        return _status("blocked", "history_repack_activation_pending", configuration, active, observed_at)
+        return _status("blocked", "history_archive_repack_activation_pending", configuration, active, observed_at)
 
 
 def _run_locked(
@@ -422,7 +422,7 @@ def _revisions(
     security: BaoStockSecurity,
     intervals: tuple[BaoStockIndustryInterval, ...],
     sequence: int,
-) -> tuple[HistoryMonthlyRevision, ...]:
+) -> tuple[HistoryRevision, ...]:
     facts = {item.trade_date: item.is_st for item in download.daily_facts}
     applicable = tuple(item for item in intervals if item.code == security.code)
     values = []
@@ -437,7 +437,7 @@ def _revisions(
             None,
         )
         values.append(
-            HistoryMonthlyRevision(
+            HistoryRevision(
                 sequence,
                 security.board,
                 cell,
@@ -496,8 +496,8 @@ def _ensure_pending(pending: _PendingPartitions, month: tuple[int, int]) -> Path
     return path
 
 
-def _write_revisions(pending: _PendingPartitions, revisions: tuple[HistoryMonthlyRevision, ...]) -> None:
-    grouped: dict[tuple[int, int], list[HistoryMonthlyRevision]] = defaultdict(list)
+def _write_revisions(pending: _PendingPartitions, revisions: tuple[HistoryRevision, ...]) -> None:
+    grouped: dict[tuple[int, int], list[HistoryRevision]] = defaultdict(list)
     for value in revisions:
         grouped[(value.trade_date.year, value.trade_date.month)].append(value)
     for (year, month), values in sorted(grouped.items()):

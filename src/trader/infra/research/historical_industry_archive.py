@@ -16,13 +16,13 @@ from trader.domain.research.historical_industry_facts import (
     build_historical_industry_source_audit,
     merge_historical_industry_facts,
 )
-from trader.domain.research.history_monthly import HistoryMonthlyRevision
+from trader.domain.research.history_revision import HistoryRevision
+from trader.infra.research.history_archive_reader import SQLiteHistoryArchiveReader
 from trader.infra.research.history_archive_status import (
     HistoryArchiveError,
     load_active_history_archive,
     verify_active_history_archive,
 )
-from trader.infra.research.history_month_archive import SQLiteHistoryMonthlyArchive
 
 _TUSHARE_HISTORICAL_INDUSTRY_MINIMUM_POINTS = 2000
 
@@ -37,7 +37,7 @@ def audit_archived_historical_industry_facts(
 
     archive = load_active_history_archive(history_root)
     verify_active_history_archive(archive)
-    revisions = tuple(SQLiteHistoryMonthlyArchive(archive.root).iter_snapshot_revisions(archive.snapshot))
+    revisions = tuple(SQLiteHistoryArchiveReader(archive.root).iter_snapshot_revisions(archive.snapshot))
     if not revisions:
         raise HistoryArchiveError("history_snapshot_rows_unavailable")
     facts = _industry_facts(revisions, archive.snapshot.content_hash)
@@ -91,10 +91,10 @@ def audit_archived_historical_industry_facts(
 
 
 def _industry_facts(
-    revisions: tuple[HistoryMonthlyRevision, ...],
+    revisions: tuple[HistoryRevision, ...],
     source_version: str,
 ) -> tuple[HistoricalIndustryFact, ...]:
-    grouped: dict[str, list[HistoryMonthlyRevision]] = defaultdict(list)
+    grouped: dict[str, list[HistoryRevision]] = defaultdict(list)
     for revision in revisions:
         if revision.industry is not None and revision.industry_classification is not None:
             grouped[revision.code].append(revision)

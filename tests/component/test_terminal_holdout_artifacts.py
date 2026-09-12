@@ -12,10 +12,10 @@ from trader.domain.research.terminal_holdout import (
     TerminalHoldoutRow,
     evaluate_terminal_holdout,
 )
-from trader.infra.research.cross_strategy_conclusion_artifacts import CrossStrategyConclusionArtifactStore
+from trader.infra.research.cross_strategy_conclusion_artifacts import CrossStrategyConclusionArtifactArchive
 from trader.infra.research.terminal_holdout_artifacts import (
+    TerminalHoldoutArtifactArchive,
     TerminalHoldoutArtifactConflictError,
-    TerminalHoldoutArtifactStore,
 )
 
 
@@ -54,45 +54,45 @@ def _report():
     )
 
 
-def test_terminal_holdout_artifact_store_is_idempotent_and_detects_tampering(tmp_path) -> None:
+def test_terminal_holdout_artifact_archive_is_idempotent_and_detects_tampering(tmp_path) -> None:
     report = _report()
-    store = TerminalHoldoutArtifactStore(tmp_path, strategy="today")
+    archive = TerminalHoldoutArtifactArchive(tmp_path, strategy="today")
 
-    assert store.write(report).content_hash == report.content_hash
-    assert store.write(replace(report)).content_hash == report.content_hash
+    assert archive.write(report).content_hash == report.content_hash
+    assert archive.write(replace(report)).content_hash == report.content_hash
     payload = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
     payload["candidate_hash"] = "c" * 64
     (tmp_path / "report.json").write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(TerminalHoldoutArtifactConflictError):
-        store.verify()
+        archive.verify()
 
 
-def test_terminal_holdout_artifact_store_rejects_different_content(tmp_path) -> None:
+def test_terminal_holdout_artifact_archive_rejects_different_content(tmp_path) -> None:
     report = _report()
-    store = TerminalHoldoutArtifactStore(tmp_path, strategy="today")
-    store.write(report)
+    archive = TerminalHoldoutArtifactArchive(tmp_path, strategy="today")
+    archive.write(report)
 
     conflicting = replace(report, candidate_hash="c" * 64)
     with pytest.raises(TerminalHoldoutArtifactConflictError, match="identity conflict"):
-        store.write(conflicting)
+        archive.write(conflicting)
 
 
-def test_terminal_holdout_artifact_store_rejects_strategy_and_schema_mismatch(tmp_path) -> None:
+def test_terminal_holdout_artifact_archive_rejects_strategy_and_schema_mismatch(tmp_path) -> None:
     report = _report()
-    store = TerminalHoldoutArtifactStore(tmp_path, strategy="tomorrow")
+    archive = TerminalHoldoutArtifactArchive(tmp_path, strategy="tomorrow")
     with pytest.raises(TerminalHoldoutArtifactConflictError, match="strategy mismatch"):
-        store.write(report)
+        archive.write(report)
 
-    store = TerminalHoldoutArtifactStore(tmp_path, strategy="today")
-    store.write(report)
+    archive = TerminalHoldoutArtifactArchive(tmp_path, strategy="today")
+    archive.write(report)
     payload = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
     payload["unexpected"] = True
     (tmp_path / "report.json").write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(TerminalHoldoutArtifactConflictError):
-        store.verify()
+        archive.verify()
 
 
-def test_cross_strategy_conclusion_artifact_store_round_trips_and_detects_conflicts(tmp_path) -> None:
+def test_cross_strategy_conclusion_artifact_archive_round_trips_and_detects_conflicts(tmp_path) -> None:
     today = _report()
     tomorrow = evaluate_terminal_holdout(
         TerminalHoldoutEvaluation(
@@ -117,16 +117,16 @@ def test_cross_strategy_conclusion_artifact_store_round_trips_and_detects_confli
         )
     )
     conclusion = CrossStrategyConclusionService().execute(today, tomorrow, d25)
-    store = CrossStrategyConclusionArtifactStore(tmp_path)
-    assert store.write(conclusion).content_hash == conclusion.content_hash
-    assert store.write(replace(conclusion)).content_hash == conclusion.content_hash
+    archive = CrossStrategyConclusionArtifactArchive(tmp_path)
+    assert archive.write(conclusion).content_hash == conclusion.content_hash
+    assert archive.write(replace(conclusion)).content_hash == conclusion.content_hash
 
     conflicting = replace(conclusion, status="historical_rejected")
     with pytest.raises(TerminalHoldoutArtifactConflictError, match="identity conflict"):
-        store.write(conflicting)
+        archive.write(conflicting)
 
     payload = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
     payload["unexpected"] = True
     (tmp_path / "report.json").write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(TerminalHoldoutArtifactConflictError):
-        store.verify()
+        archive.verify()

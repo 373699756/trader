@@ -7,8 +7,8 @@ import pytest
 
 from trader.domain.research.historical_label import H1CoverageMetadata, preregister_historical_labels
 from trader.infra.research.historical_label_artifacts import (
+    HistoricalLabelArtifactArchive,
     HistoricalLabelArtifactConflictError,
-    HistoricalLabelArtifactStore,
 )
 
 
@@ -21,19 +21,19 @@ def _batch():
     return preregister_historical_labels(metadata)
 
 
-def test_historical_label_artifact_store_round_trips_idempotently(tmp_path) -> None:
+def test_historical_label_artifact_archive_round_trips_idempotently(tmp_path) -> None:
     batch = _batch()
-    store = HistoricalLabelArtifactStore(tmp_path)
+    archive = HistoricalLabelArtifactArchive(tmp_path)
 
-    assert store.write(batch).content_hash == batch.content_hash
-    assert store.write(batch).content_hash == batch.content_hash
-    assert store.verify().content_hash == batch.content_hash
+    assert archive.write(batch).content_hash == batch.content_hash
+    assert archive.write(batch).content_hash == batch.content_hash
+    assert archive.verify().content_hash == batch.content_hash
 
 
-def test_historical_label_artifact_store_rejects_conflicts_and_tampering(tmp_path) -> None:
+def test_historical_label_artifact_archive_rejects_conflicts_and_tampering(tmp_path) -> None:
     batch = _batch()
-    store = HistoricalLabelArtifactStore(tmp_path)
-    store.write(batch)
+    archive = HistoricalLabelArtifactArchive(tmp_path)
+    archive.write(batch)
     dates = tuple(date(2022, 1, 1) + timedelta(days=index) for index in range(1_000))
 
     conflicting = preregister_historical_labels(
@@ -43,10 +43,10 @@ def test_historical_label_artifact_store_rejects_conflicts_and_tampering(tmp_pat
         )
     )
     with pytest.raises(HistoricalLabelArtifactConflictError, match="identity conflict"):
-        store.write(conflicting)
+        archive.write(conflicting)
 
     payload = json.loads((tmp_path / "historical_label_preregistration.json").read_text(encoding="utf-8"))
     payload["unexpected"] = True
     (tmp_path / "historical_label_preregistration.json").write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(HistoricalLabelArtifactConflictError):
-        store.verify()
+        archive.verify()

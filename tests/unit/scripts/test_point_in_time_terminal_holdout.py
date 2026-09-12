@@ -7,9 +7,9 @@ from scripts.point_in_time_terminal_holdout import main
 from trader.application.research.h1_point_in_time_completion import complete_h1_research
 from trader.domain.research.h1_point_in_time import H1CapabilityProbe, H1PointInTimeSpec, build_h1_capability_audit
 from trader.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive
-from trader.infra.research.h1_point_in_time_capability import H1CapabilityArtifactStore
-from trader.infra.research.h1_point_in_time_completion import H1ResearchCompletionArtifactStore
-from trader.infra.research.historical_label_artifacts import HistoricalLabelArtifactStore
+from trader.infra.research.h1_point_in_time_capability import H1CapabilityArtifactArchive
+from trader.infra.research.h1_point_in_time_completion import H1ResearchCompletionArtifactArchive
+from trader.infra.research.historical_label_artifacts import HistoricalLabelArtifactArchive
 
 
 def _seal_h1_research_parent(root):
@@ -27,9 +27,9 @@ def _seal_h1_research_parent(root):
             archive.label_metadata(H1PointInTimeSpec(strategy)) for strategy in ("today", "tomorrow", "d25")
         ),
     )
-    H1CapabilityArtifactStore(root).write(capability)
-    HistoricalLabelArtifactStore(root).write(completion.labels)
-    H1ResearchCompletionArtifactStore(root).write(completion)
+    H1CapabilityArtifactArchive(root).write(capability)
+    HistoricalLabelArtifactArchive(root).write(completion.labels)
+    H1ResearchCompletionArtifactArchive(root).write(completion)
 
 
 def test_point_in_time_script_seals_three_parent_insufficient_reports_and_conclusion(tmp_path, capsys) -> None:

@@ -1,16 +1,16 @@
-"""D25 terminal holdout artifact store."""
+"""D25 terminal holdout artifact archive."""
 
 from pathlib import Path
 
 from trader.infra.research.terminal_holdout_artifacts import (
+    TerminalHoldoutArtifactArchive,
     TerminalHoldoutArtifactConflictError,
-    TerminalHoldoutArtifactStore,
 )
 
 
-class D25TerminalHoldoutArtifactStore(TerminalHoldoutArtifactStore):
+class D25TerminalHoldoutArtifactArchive(TerminalHoldoutArtifactArchive):
     def __init__(self, root: Path):
         super().__init__(root, strategy="d25")
 
 
-__all__ = ["D25TerminalHoldoutArtifactStore", "TerminalHoldoutArtifactConflictError"]
+__all__ = ["D25TerminalHoldoutArtifactArchive", "TerminalHoldoutArtifactConflictError"]

@@ -11,7 +11,10 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal, Protocol
 
-from trader.application.research.historical_screening import HistoricalArchiveManifest, HistoricalArchiveStatus
+from trader.application.research.historical_screening import (
+    HistoricalScreeningArchiveManifest,
+    HistoricalScreeningArchiveStatus,
+)
 from trader.application.research.tomorrow_historical_report import (
     TomorrowHistoricalGateMetrics,
     TomorrowHistoricalReport,
@@ -112,9 +115,9 @@ class TomorrowHistoricalExecution:
 
 
 class TomorrowHistoricalEvidence(Protocol):
-    def inspect(self, research_identity: str) -> HistoricalArchiveStatus: ...
+    def inspect(self, research_identity: str) -> HistoricalScreeningArchiveStatus: ...
 
-    def manifest(self, spec: HistoricalScreeningSpec) -> HistoricalArchiveManifest: ...
+    def manifest(self, spec: HistoricalScreeningSpec) -> HistoricalScreeningArchiveManifest: ...
 
     def tomorrow_historical_rows(self, spec: HistoricalScreeningSpec) -> Sequence[TomorrowHistoricalRow]: ...
 
@@ -140,7 +143,7 @@ class _SelectionRow:
 @dataclass(frozen=True)
 class _ReportSource:
     spec: TomorrowHistoricalSpec
-    manifest: HistoricalArchiveManifest
+    manifest: HistoricalScreeningArchiveManifest
     coverage: float
     training: tuple[TomorrowHistoricalRow, ...]
     validation: tuple[TomorrowHistoricalRow, ...]

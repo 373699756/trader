@@ -7,9 +7,9 @@ from trader.application.research.historical_backtest import (
     HistoricalScreeningDay,
 )
 from trader.application.research.historical_screening import (
-    HistoricalArchiveManifest,
-    HistoricalArchiveStatus,
-    HistoricalHistoryIdentity,
+    HistoricalPriceHistoryIdentity,
+    HistoricalScreeningArchiveManifest,
+    HistoricalScreeningArchiveStatus,
 )
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC
 
@@ -17,7 +17,7 @@ from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPE
 class _Evidence:
     @staticmethod
     def inspect(_identity):
-        return HistoricalArchiveStatus(
+        return HistoricalScreeningArchiveStatus(
             initialized=True,
             research_identity="historical_screening",
             universe_count=100,
@@ -38,12 +38,12 @@ class _Evidence:
 
     @staticmethod
     def manifest(_spec):
-        return HistoricalArchiveManifest(
+        return HistoricalScreeningArchiveManifest(
             research_identity="historical_screening",
             spec_hash=HISTORICAL_SCREENING_SPEC.content_hash,
             universe_hash="1" * 64,
             histories_hash="2" * 64,
-            histories=(HistoricalHistoryIdentity("600001", 640, "3" * 64),),
+            histories=(HistoricalPriceHistoryIdentity("600001", 640, "3" * 64),),
         )
 
 

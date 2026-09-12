@@ -5,21 +5,21 @@ import json
 import pytest
 
 from trader.application.research.tomorrow_historical_validation import (
-    HISTORICAL_RISK_VALIDATION_SPEC,
-    HistoricalRiskModelArtifact,
-    HistoricalRiskValidationOutcome,
-    HistoricalRiskValidationReport,
+    TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC,
+    TomorrowHistoricalRiskModelArtifact,
+    TomorrowHistoricalRiskValidationOutcome,
+    TomorrowHistoricalRiskValidationReport,
 )
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC
 from trader.infra.research.tomorrow_historical_risk_artifacts import (
+    TomorrowHistoricalRiskArtifactArchive,
     TomorrowHistoricalRiskArtifactConflictError,
-    TomorrowHistoricalRiskArtifactStore,
 )
 
 
-def _outcome() -> HistoricalRiskValidationOutcome:
-    model = HistoricalRiskModelArtifact(
-        spec_hash=HISTORICAL_RISK_VALIDATION_SPEC.content_hash,
+def _outcome() -> TomorrowHistoricalRiskValidationOutcome:
+    model = TomorrowHistoricalRiskModelArtifact(
+        spec_hash=TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.content_hash,
         source_spec_hash=HISTORICAL_SCREENING_SPEC.content_hash,
         parent_model_id="test-risk-model",
         parent_model_hash="1" * 64,
@@ -38,8 +38,8 @@ def _outcome() -> HistoricalRiskValidationOutcome:
         training_evidence_hash="2" * 64,
         calibration_evidence_hash="3" * 64,
     )
-    report = HistoricalRiskValidationReport(
-        spec_hash=HISTORICAL_RISK_VALIDATION_SPEC.content_hash,
+    report = TomorrowHistoricalRiskValidationReport(
+        spec_hash=TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.content_hash,
         model_id="test-risk-model",
         model_hash="1" * 64,
         evidence_hash="4" * 64,
@@ -57,17 +57,17 @@ def _outcome() -> HistoricalRiskValidationOutcome:
         status="historical_validated",
         failure_reasons=(),
     )
-    return HistoricalRiskValidationOutcome(report, model)
+    return TomorrowHistoricalRiskValidationOutcome(report, model)
 
 
 def test_historical_risk_model_and_report_are_bound_idempotent_artifacts(tmp_path) -> None:  # noqa: ANN001
-    store = TomorrowHistoricalRiskArtifactStore(tmp_path)
+    archive = TomorrowHistoricalRiskArtifactArchive(tmp_path)
     outcome = _outcome()
     assert outcome.model_artifact is not None
 
-    assert store.seal(outcome) == outcome.report.content_hash
-    assert store.seal(outcome) == outcome.report.content_hash
-    assert store.inspect() == {
+    assert archive.seal(outcome) == outcome.report.content_hash
+    assert archive.seal(outcome) == outcome.report.content_hash
+    assert archive.inspect() == {
         "status": "historical_validated",
         "report_hash": outcome.report.content_hash,
         "model_artifact_hash": outcome.model_artifact.content_hash,
@@ -79,12 +79,12 @@ def test_historical_risk_model_and_report_are_bound_idempotent_artifacts(tmp_pat
 
 
 def test_historical_risk_artifact_tampering_fails_closed(tmp_path) -> None:  # noqa: ANN001
-    store = TomorrowHistoricalRiskArtifactStore(tmp_path)
-    store.seal(_outcome())
+    archive = TomorrowHistoricalRiskArtifactArchive(tmp_path)
+    archive.seal(_outcome())
     model_path = (
         tmp_path
         / "tomorrow-historical-risk"
-        / HISTORICAL_RISK_VALIDATION_SPEC.research_identity
+        / TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.research_identity
         / "model-artifact.json"
     )
     payload = json.loads(model_path.read_text(encoding="utf-8"))
@@ -92,4 +92,4 @@ def test_historical_risk_artifact_tampering_fails_closed(tmp_path) -> None:  # n
     model_path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(TomorrowHistoricalRiskArtifactConflictError, match="invalid"):
-        store.inspect()
+        archive.inspect()

@@ -11,7 +11,7 @@ from typing import Literal
 from trader.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
 from trader.domain.research.artifact_identity import canonical_artifact_hash
 
-TomorrowInputCompatibilityStatus = Literal["compatible", "incompatible"]
+TomorrowTrainingInputCompatibilityStatus = Literal["compatible", "incompatible"]
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REASON = re.compile(r"^[a-z0-9_]{1,96}$")
@@ -86,8 +86,8 @@ class FrozenDailyInputDescriptor:
 
 
 @dataclass(frozen=True)
-class TomorrowInputCompatibility:
-    status: TomorrowInputCompatibilityStatus
+class TomorrowTrainingInputCompatibility:
+    status: TomorrowTrainingInputCompatibilityStatus
     parent_manifest_hash: str
     input_manifest_hash: str
     input_descriptor_hash: str
@@ -133,7 +133,7 @@ def evaluate_tomorrow_training_input(
     *,
     expected_manifest_hash: str,
     expected_source_cutoff: date,
-) -> TomorrowInputCompatibility:
+) -> TomorrowTrainingInputCompatibility:
     """Validate only B's metadata consumption boundary, without reading source rows."""
 
     if _SHA256.fullmatch(expected_manifest_hash) is None:
@@ -156,7 +156,7 @@ def evaluate_tomorrow_training_input(
             reasons.append(f"field_{required.name}_missing")
         elif supplied_unit != required.unit:
             reasons.append(f"field_{required.name}_unit_invalid")
-    return TomorrowInputCompatibility(
+    return TomorrowTrainingInputCompatibility(
         status="compatible" if not reasons else "incompatible",
         parent_manifest_hash=expected_manifest_hash,
         input_manifest_hash=descriptor.manifest_hash,
@@ -178,7 +178,7 @@ __all__ = [
     "REQUIRED_DAILY_FIELDS",
     "TOMORROW_TRAINING_ALPHA_NAMES",
     "TOMORROW_TRAINING_ALPHA_UNITS",
-    "TomorrowInputCompatibility",
-    "TomorrowInputCompatibilityStatus",
+    "TomorrowTrainingInputCompatibility",
+    "TomorrowTrainingInputCompatibilityStatus",
     "evaluate_tomorrow_training_input",
 ]

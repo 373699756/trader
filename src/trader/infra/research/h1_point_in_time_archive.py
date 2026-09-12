@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import cast
 from zoneinfo import ZoneInfo
 
-from trader.application.research.h1_point_in_time import H1ArchivePort
+from trader.application.research.h1_point_in_time import H1PointInTimeArchivePort
 from trader.application.research.historical_screening import HistoricalSecurity, ResearchBoard
 from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.h1_point_in_time import (
@@ -25,12 +25,12 @@ from trader.domain.research.h1_point_in_time import (
 from trader.domain.research.historical_label import H1CoverageMetadata
 
 
-class H1ArchiveConflictError(RuntimeError):
+class H1PointInTimeArchiveConflictError(RuntimeError):
     pass
 
 
 @dataclass(frozen=True)
-class H1ArchiveStatus:
+class H1PointInTimeArchiveStatus:
     initialized: bool = False
     strategy: ResearchStrategy = "today"
     universe_count: int = 0
@@ -57,7 +57,7 @@ class _H1RecordAudit:
     source_values: tuple[tuple[str, str, str], ...]
 
 
-class SQLiteH1PointInTimeArchive(H1ArchivePort):
+class SQLiteH1PointInTimeArchive(H1PointInTimeArchivePort):
     def __init__(self, runtime_dir: Path) -> None:
         self._root = runtime_dir / "score-h1-point-in-time"
         self._database = self._root / "score-h1-point-in-time.sqlite3"
@@ -111,7 +111,7 @@ class SQLiteH1PointInTimeArchive(H1ArchivePort):
             )
             requested = tuple(item.code for item in ordered)
             if existing and existing != requested:
-                raise H1ArchiveConflictError("H1 universe set conflict")
+                raise H1PointInTimeArchiveConflictError("H1 universe set conflict")
             for item in ordered:
                 payload_hash = canonical_artifact_hash(item)
                 prior = connection.execute(
@@ -119,7 +119,7 @@ class SQLiteH1PointInTimeArchive(H1ArchivePort):
                     (spec.strategy, item.code),
                 ).fetchone()
                 if prior is not None and str(prior[0]) != payload_hash:
-                    raise H1ArchiveConflictError("H1 universe identity conflict")
+                    raise H1PointInTimeArchiveConflictError("H1 universe identity conflict")
                 connection.execute(
                     "INSERT OR IGNORE INTO universe(strategy, code, board, name, is_st, is_suspended, payload_hash) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
@@ -184,7 +184,7 @@ class SQLiteH1PointInTimeArchive(H1ArchivePort):
                     (spec.strategy, code, record.trade_date.isoformat()),
                 ).fetchone()
                 if prior is not None and str(prior[0]) != payload_hash:
-                    raise H1ArchiveConflictError("H1 record identity conflict")
+                    raise H1PointInTimeArchiveConflictError("H1 record identity conflict")
                 connection.execute(
                     """INSERT OR IGNORE INTO records(strategy, code, trade_date, observed_at, open_price, close_price, high_price, low_price, volume, amount, pct_change, turnover_rate, adjustment, source, anchor_price, anchor_volume, anchor_amount, security_state_hash, sector_hash, risk_facts_hash, tail_field_hash, payload_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
@@ -218,7 +218,7 @@ class SQLiteH1PointInTimeArchive(H1ArchivePort):
                 (spec.strategy, code),
             ).fetchone()
             if prior_download is not None and str(prior_download[0]) != content_hash:
-                raise H1ArchiveConflictError("H1 download identity conflict")
+                raise H1PointInTimeArchiveConflictError("H1 download identity conflict")
             connection.execute(
                 "INSERT INTO downloads(strategy, code, status, record_count, content_hash, error_code) VALUES (?, ?, 'complete', ?, ?, '') ON CONFLICT(strategy, code) DO UPDATE SET status = excluded.status, record_count = excluded.record_count, content_hash = excluded.content_hash, error_code = excluded.error_code",
                 (spec.strategy, code, len(ordered), content_hash),
@@ -323,11 +323,15 @@ class SQLiteH1PointInTimeArchive(H1ArchivePort):
 
     def _manifest_snapshot(self, spec: H1PointInTimeSpec) -> _H1ManifestSnapshot:
         with self._read_connection() as connection:
-            stored = connection.execute(
+            persisted = connection.execute(
                 "SELECT research_identity, spec_hash FROM specs WHERE strategy = ?", (spec.strategy,)
             ).fetchone()
-            if stored is None or str(stored[1]) != spec.content_hash or str(stored[0]) != spec.research_identity:
-                raise H1ArchiveConflictError("H1 spec manifest conflict")
+            if (
+                persisted is None
+                or str(persisted[1]) != spec.content_hash
+                or str(persisted[0]) != spec.research_identity
+            ):
+                raise H1PointInTimeArchiveConflictError("H1 spec manifest conflict")
             universe_rows = tuple(
                 connection.execute(
                     "SELECT code, board, name, is_st, is_suspended, payload_hash FROM universe WHERE strategy = ? ORDER BY code",
@@ -348,9 +352,9 @@ class SQLiteH1PointInTimeArchive(H1ArchivePort):
             )
         return _H1ManifestSnapshot(universe_rows, completed_rows, records)
 
-    def inspect(self, spec: H1PointInTimeSpec) -> H1ArchiveStatus:
+    def inspect(self, spec: H1PointInTimeSpec) -> H1PointInTimeArchiveStatus:
         if not self._database.is_file():
-            return H1ArchiveStatus(strategy=spec.strategy)
+            return H1PointInTimeArchiveStatus(strategy=spec.strategy)
         with self._read_connection() as connection:
             spec_row = connection.execute("SELECT spec_hash FROM specs WHERE strategy = ?", (spec.strategy,)).fetchone()
             universe_count = int(
@@ -363,7 +367,7 @@ class SQLiteH1PointInTimeArchive(H1ArchivePort):
             count, first_date, last_date = connection.execute(
                 "SELECT COUNT(*), MIN(trade_date), MAX(trade_date) FROM records WHERE strategy = ?", (spec.strategy,)
             ).fetchone()
-        return H1ArchiveStatus(
+        return H1PointInTimeArchiveStatus(
             True,
             spec.strategy,
             universe_count,
@@ -380,7 +384,7 @@ class SQLiteH1PointInTimeArchive(H1ArchivePort):
             "SELECT research_identity, spec_hash FROM specs WHERE strategy = ?", (spec.strategy,)
         ).fetchone()
         if prior is not None and (str(prior[0]) != spec.research_identity or str(prior[1]) != spec.content_hash):
-            raise H1ArchiveConflictError("H1 spec identity conflict")
+            raise H1PointInTimeArchiveConflictError("H1 spec identity conflict")
         connection.execute(
             "INSERT OR IGNORE INTO specs(strategy, research_identity, spec_hash) VALUES (?, ?, ?)",
             (spec.strategy, spec.research_identity, spec.content_hash),
@@ -399,13 +403,13 @@ class SQLiteH1PointInTimeArchive(H1ArchivePort):
 
 def _h1_universe_hash(rows: tuple[tuple[object, ...], ...]) -> str:
     identities: list[tuple[str, str]] = []
-    for code, board, name, is_st, is_suspended, stored_hash in rows:
+    for code, board, name, is_st, is_suspended, persisted_hash in rows:
         security = HistoricalSecurity(
             str(code), cast(ResearchBoard, str(board)), str(name), bool(is_st), bool(is_suspended)
         )
         payload_hash = canonical_artifact_hash(security)
-        if payload_hash != str(stored_hash):
-            raise H1ArchiveConflictError("H1 universe payload conflict")
+        if payload_hash != str(persisted_hash):
+            raise H1PointInTimeArchiveConflictError("H1 universe payload conflict")
         identities.append((security.code, payload_hash))
     return canonical_artifact_hash(tuple(identities))
 
@@ -480,7 +484,7 @@ def _audit_h1_record(
         "tail_field_hash": str(tail_hash),
     }
     if canonical_artifact_hash(payload) != str(payload_hash):
-        raise H1ArchiveConflictError("H1 record payload conflict")
+        raise H1PointInTimeArchiveConflictError("H1 record payload conflict")
     fields = (str(code), str(trade_date), str(state_hash), str(sector_hash), str(risk_hash))
     return str(code), str(trade_date), str(payload_hash), fields, (str(code), str(trade_date), str(source))
 
@@ -492,16 +496,16 @@ def _validate_h1_record_timing(
     adjustment: str,
 ) -> None:
     if adjustment != "qfq":
-        raise H1ArchiveConflictError("H1 non-qfq record detected")
+        raise H1PointInTimeArchiveConflictError("H1 non-qfq record detected")
     observed = datetime.fromisoformat(observed_at)
     if observed.tzinfo is None:
-        raise H1ArchiveConflictError("H1 timezone evidence missing")
+        raise H1PointInTimeArchiveConflictError("H1 timezone evidence missing")
     local_observed = observed.astimezone(ZoneInfo("Asia/Shanghai"))
     expected_hour, expected_minute = (11, 20) if spec.strategy == "today" else (14, 50)
     if trade_date > spec.source_cutoff.isoformat() or local_observed.timetz().replace(tzinfo=None) != time(
         expected_hour, expected_minute
     ):
-        raise H1ArchiveConflictError("H1 point-in-time cutoff conflict")
+        raise H1PointInTimeArchiveConflictError("H1 point-in-time cutoff conflict")
 
 
 def _validate_h1_histories(
@@ -511,19 +515,19 @@ def _validate_h1_histories(
     for code, count, content_hash in history_hashes:
         hashes = per_code.get(code, [])
         if len(hashes) != count or canonical_artifact_hash({"code": code, "records": hashes}) != content_hash:
-            raise H1ArchiveConflictError("H1 record content conflict")
+            raise H1PointInTimeArchiveConflictError("H1 record content conflict")
 
 
 def _db_int(value: object) -> int:
     if isinstance(value, (int, str)):
         return int(value)
-    raise H1ArchiveConflictError("H1 integer storage value is invalid")
+    raise H1PointInTimeArchiveConflictError("H1 integer storage value is invalid")
 
 
 def _db_float(value: object) -> float:
     if isinstance(value, (int, float, str)):
         return float(value)
-    raise H1ArchiveConflictError("H1 numeric storage value is invalid")
+    raise H1PointInTimeArchiveConflictError("H1 numeric storage value is invalid")
 
 
 def _record_payload(record: H1PointInTimeRecord) -> dict[str, object]:
@@ -553,4 +557,4 @@ def _record_payload(record: H1PointInTimeRecord) -> dict[str, object]:
     }
 
 
-__all__ = ["H1ArchiveConflictError", "H1ArchiveStatus", "SQLiteH1PointInTimeArchive"]
+__all__ = ["H1PointInTimeArchiveConflictError", "H1PointInTimeArchiveStatus", "SQLiteH1PointInTimeArchive"]

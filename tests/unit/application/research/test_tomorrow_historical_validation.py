@@ -6,7 +6,7 @@ import pytest
 
 from trader.application.ports.model_scoring import ModelInput, ModelPrediction
 from trader.application.research.tomorrow_historical_validation import (
-    HISTORICAL_RISK_VALIDATION_SPEC,
+    TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC,
     TomorrowHistoricalRiskRow,
     build_historical_risk_probability,
     evaluate_historical_risk_probability,
@@ -95,7 +95,7 @@ def test_historical_risk_validation_uses_ordered_60_20_40_splits_without_future_
     outcome = build_historical_risk_probability(rows, _Predictor())
     report = outcome.report
 
-    assert report.spec_hash == HISTORICAL_RISK_VALIDATION_SPEC.content_hash
+    assert report.spec_hash == TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.content_hash
     assert report.training_trade_dates == 60
     assert report.calibration_trade_dates == 20
     assert report.test_trade_dates == 40

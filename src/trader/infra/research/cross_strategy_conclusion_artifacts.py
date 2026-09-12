@@ -16,7 +16,7 @@ from trader.infra.research.terminal_holdout_artifacts import (
 )
 
 
-class CrossStrategyConclusionArtifactStore:
+class CrossStrategyConclusionArtifactArchive:
     def __init__(self, root: Path) -> None:
         self._root = root
 
@@ -54,11 +54,11 @@ class CrossStrategyConclusionArtifactStore:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 raise TypeError("cross-strategy conclusion is not an object")
-            stored_hash = raw.pop("content_hash")
-            if not isinstance(stored_hash, str) or canonical_artifact_hash(raw) != stored_hash:
+            persisted_hash = raw.pop("content_hash")
+            if not isinstance(persisted_hash, str) or canonical_artifact_hash(raw) != persisted_hash:
                 raise ValueError("cross-strategy conclusion hash mismatch")
             conclusion = _decode_conclusion(raw)
-            if conclusion.content_hash != stored_hash:
+            if conclusion.content_hash != persisted_hash:
                 raise ValueError("cross-strategy conclusion reconstructed hash mismatch")
             return conclusion
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -108,4 +108,4 @@ def _decode_conclusion(raw: dict[str, object]) -> CrossStrategyConclusion:
     )
 
 
-__all__ = ["CrossStrategyConclusionArtifactStore", "TerminalHoldoutArtifactConflictError"]
+__all__ = ["CrossStrategyConclusionArtifactArchive", "TerminalHoldoutArtifactConflictError"]

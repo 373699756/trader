@@ -7,11 +7,11 @@ import numpy as np
 from trader.application.ports.model_scoring import ModelInput, ModelPrediction, ProfileEvidence
 from trader.domain.recommendation.model_scoring import V1_V2_EXPOSURE_CONTRACT, ExposureContract
 from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
-from trader.infra.scoring.profiles.v1.artifact_codec import TomorrowModelArtifact
+from trader.infra.scoring.profiles.v1.artifact_codec import V1TomorrowModelArtifact
 
 
-class TomorrowPredictor:
-    def __init__(self, artifact: TomorrowModelArtifact, evidence: ProfileEvidence) -> None:
+class V1TomorrowPredictor:
+    def __init__(self, artifact: V1TomorrowModelArtifact, evidence: ProfileEvidence) -> None:
         self._artifact = artifact
         self._evidence = evidence
         self._means = np.asarray(artifact.transformer_means, dtype=np.float64)
@@ -59,4 +59,4 @@ class TomorrowPredictor:
         )
 
 
-__all__ = ["TomorrowPredictor"]
+__all__ = ["V1TomorrowPredictor"]

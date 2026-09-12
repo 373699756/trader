@@ -304,9 +304,9 @@ def _quote_changed(entry: _RawCacheEntry, candidate: FeatureSnapshot) -> bool:
     if entry.price is None or price is None:
         price_changed = entry.price != price
     else:
-        stored_price = Decimal(str(entry.price))
+        persisted_price = Decimal(str(entry.price))
         current_price = Decimal(str(price))
-        price_changed = abs(current_price / stored_price - Decimal(1)) >= Decimal("0.01")
+        price_changed = abs(current_price / persisted_price - Decimal(1)) >= Decimal("0.01")
     if entry.volume_ratio is None or volume_ratio is None:
         volume_changed = entry.volume_ratio != volume_ratio
     else:

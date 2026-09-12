@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 from trader.application.research.tomorrow_training import (
     TOMORROW_TRAINING_COMPUTE_THREADS,
     TOMORROW_TRAINING_PEAK_RSS_MIB,
-    TomorrowPartitionValidationProgress,
+    TomorrowTrainingPartitionValidationProgress,
     TomorrowTrainingProgress,
     TomorrowTrainingProgressPort,
     TomorrowTrainingWindow,
@@ -35,7 +35,7 @@ from trader.domain.research.history_control import (
 from trader.domain.research.tomorrow_training_input import FrozenDailyInputDescriptor, evaluate_tomorrow_training_input
 from trader.infra.research.history_archive_repack import (
     HistoryArchiveRepackFenceError,
-    require_history_repack_inactive,
+    require_history_archive_repack_inactive,
 )
 from trader.infra.research.history_control_repository import (
     HistoryMaintenanceAlreadyRunningError,
@@ -184,7 +184,7 @@ def _run_training_invocation(invocation: _TrainingInvocation) -> TomorrowTrainin
     try:
         with HistoryMaintenanceLock(archive.archive_root / ".maintenance.lock"):
             try:
-                require_history_repack_inactive(archive.archive_root)
+                require_history_archive_repack_inactive(archive.archive_root)
             except HistoryArchiveRepackFenceError:
                 if invocation.expected_history_snapshot_hash != archive.snapshot.active_snapshot_hash:
                     raise
@@ -192,7 +192,7 @@ def _run_training_invocation(invocation: _TrainingInvocation) -> TomorrowTrainin
     except HistoryMaintenanceAlreadyRunningError:
         return _history_maintenance_blocked(archive, "history_maintenance_running")
     except HistoryArchiveRepackFenceError:
-        return _history_maintenance_blocked(archive, "history_repack_activation_pending")
+        return _history_maintenance_blocked(archive, "history_archive_repack_activation_pending")
 
 
 def _history_maintenance_blocked(
@@ -223,7 +223,7 @@ def _run_tomorrow_training_locked(
     if invocation.expected_history_snapshot_hash is not None:
         archive = SQLiteHistoryTrainingInputArchive.open(invocation.history_root)
         if archive.snapshot.active_snapshot_hash != invocation.expected_history_snapshot_hash:
-            return _history_maintenance_blocked(archive, "history_repack_target_mismatch")
+            return _history_maintenance_blocked(archive, "history_archive_repack_target_mismatch")
     prepared = _prepare_training(
         invocation.history_root,
         invocation.train_root,
@@ -409,7 +409,7 @@ def _execute_training(plan: _TrainingExecution) -> TomorrowTrainingResult:
                     "completed" if completed == total else "running",
                     completed,
                     total,
-                    partition_validation=TomorrowPartitionValidationProgress(
+                    partition_validation=TomorrowTrainingPartitionValidationProgress(
                         current,
                         total,
                         completed_bytes,

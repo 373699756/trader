@@ -15,9 +15,9 @@ from typing import cast
 
 from trader.application.research.historical_backtest import HistoricalScreeningDay
 from trader.application.research.historical_screening import (
-    HistoricalArchiveManifest,
-    HistoricalArchiveStatus,
-    HistoricalHistoryIdentity,
+    HistoricalPriceHistoryIdentity,
+    HistoricalScreeningArchiveManifest,
+    HistoricalScreeningArchiveStatus,
     HistoricalSecurity,
     ResearchBoard,
 )
@@ -29,11 +29,11 @@ from trader.application.research.tomorrow_historical_validation import TomorrowH
 from trader.domain.research.historical_screening import HistoricalPriceBar, HistoricalScreeningSpec
 
 
-class HistoricalArchiveConflictError(RuntimeError):
+class HistoricalScreeningArchiveConflictError(RuntimeError):
     pass
 
 
-class SQLiteHistoricalArchive:
+class SQLiteHistoricalScreeningArchive:
     def __init__(self, runtime_dir: Path) -> None:
         self._root = runtime_dir / "score-history"
         self._database = self._root / "score-history.sqlite3"
@@ -59,7 +59,7 @@ class SQLiteHistoricalArchive:
             )
             requested_codes = tuple(item.code for item in ordered)
             if existing_codes and existing_codes != requested_codes:
-                raise HistoricalArchiveConflictError("historical screening universe set conflict")
+                raise HistoricalScreeningArchiveConflictError("historical screening universe set conflict")
             for item in ordered:
                 payload = _canonical(asdict(item))
                 existing = connection.execute(
@@ -67,7 +67,7 @@ class SQLiteHistoricalArchive:
                     (spec.research_identity, item.code),
                 ).fetchone()
                 if existing is not None and str(existing[0]) != _sha256(payload):
-                    raise HistoricalArchiveConflictError("historical screening universe identity conflict")
+                    raise HistoricalScreeningArchiveConflictError("historical screening universe identity conflict")
                 connection.execute(
                     """
                     INSERT OR IGNORE INTO universe(
@@ -142,7 +142,7 @@ class SQLiteHistoricalArchive:
                     (spec.research_identity, code, bar.trade_date.isoformat()),
                 ).fetchone()
                 if existing is not None and str(existing[0]) != payload_hash:
-                    raise HistoricalArchiveConflictError("historical screening bar identity conflict")
+                    raise HistoricalScreeningArchiveConflictError("historical screening bar identity conflict")
                 connection.execute(
                     """
                     INSERT OR IGNORE INTO bars(
@@ -176,7 +176,7 @@ class SQLiteHistoricalArchive:
                 (spec.research_identity, code),
             ).fetchone()
             if existing_download is not None and str(existing_download[0]) != content_hash:
-                raise HistoricalArchiveConflictError("historical screening download identity conflict")
+                raise HistoricalScreeningArchiveConflictError("historical screening download identity conflict")
             connection.execute(
                 """
                 INSERT INTO downloads(research_identity, code, status, bar_count, content_hash, error_code)
@@ -209,9 +209,9 @@ class SQLiteHistoricalArchive:
                 (spec.research_identity, code, error_code),
             )
 
-    def inspect(self, research_identity: str) -> HistoricalArchiveStatus:
+    def inspect(self, research_identity: str) -> HistoricalScreeningArchiveStatus:
         if not self._database.is_file():
-            return HistoricalArchiveStatus(research_identity=research_identity)
+            return HistoricalScreeningArchiveStatus(research_identity=research_identity)
         try:
             with self._read_connection() as connection:
                 spec = connection.execute(
@@ -239,8 +239,8 @@ class SQLiteHistoricalArchive:
                     (research_identity,),
                 ).fetchone()
         except sqlite3.DatabaseError:
-            return HistoricalArchiveStatus(initialized=True, research_identity=research_identity)
-        return HistoricalArchiveStatus(
+            return HistoricalScreeningArchiveStatus(initialized=True, research_identity=research_identity)
+        return HistoricalScreeningArchiveStatus(
             initialized=True,
             research_identity=research_identity,
             universe_count=universe_count,
@@ -252,16 +252,16 @@ class SQLiteHistoricalArchive:
             spec_hash=str(spec[0]) if spec is not None else "",
         )
 
-    def manifest(self, spec: HistoricalScreeningSpec) -> HistoricalArchiveManifest:
+    def manifest(self, spec: HistoricalScreeningSpec) -> HistoricalScreeningArchiveManifest:
         empty_hash = _sha256(_canonical(()))
         if not self._database.is_file():
-            return HistoricalArchiveManifest(spec.research_identity, "", empty_hash, empty_hash, ())
+            return HistoricalScreeningArchiveManifest(spec.research_identity, "", empty_hash, empty_hash, ())
         with self._read_connection() as connection:
-            stored_spec = connection.execute(
+            persisted_spec = connection.execute(
                 "SELECT spec_hash FROM specs WHERE research_identity = ?", (spec.research_identity,)
             ).fetchone()
-            if stored_spec is None or str(stored_spec[0]) != spec.content_hash:
-                raise HistoricalArchiveConflictError("historical screening spec manifest conflict")
+            if persisted_spec is None or str(persisted_spec[0]) != spec.content_hash:
+                raise HistoricalScreeningArchiveConflictError("historical screening spec manifest conflict")
             universe_rows = connection.execute(
                 """
                 SELECT code, board, name, is_st, is_suspended, payload_hash
@@ -270,7 +270,7 @@ class SQLiteHistoricalArchive:
                 (spec.research_identity,),
             ).fetchall()
             universe_identities: list[tuple[str, str]] = []
-            for code, board, name, is_st, is_suspended, stored_hash in universe_rows:
+            for code, board, name, is_st, is_suspended, persisted_hash in universe_rows:
                 security = HistoricalSecurity(
                     str(code),
                     cast(ResearchBoard, str(board)),
@@ -279,8 +279,8 @@ class SQLiteHistoricalArchive:
                     bool(is_suspended),
                 )
                 payload_hash = _sha256(_canonical(asdict(security)))
-                if payload_hash != str(stored_hash):
-                    raise HistoricalArchiveConflictError("historical screening universe payload conflict")
+                if payload_hash != str(persisted_hash):
+                    raise HistoricalScreeningArchiveConflictError("historical screening universe payload conflict")
                 universe_identities.append((security.code, payload_hash))
             downloads = {
                 str(code): (int(bar_count), str(content_hash))
@@ -318,21 +318,21 @@ class SQLiteHistoricalArchive:
                 }
                 payload_hash = _sha256(_canonical(payload))
                 if payload_hash != str(row[12]):
-                    raise HistoricalArchiveConflictError("historical screening bar payload conflict")
+                    raise HistoricalScreeningArchiveConflictError("historical screening bar payload conflict")
                 bar_hashes.setdefault(code, []).append(payload_hash)
         if set(bar_hashes) != set(downloads):
-            raise HistoricalArchiveConflictError("historical screening completed history set conflict")
-        histories: list[HistoricalHistoryIdentity] = []
+            raise HistoricalScreeningArchiveConflictError("historical screening completed history set conflict")
+        histories: list[HistoricalPriceHistoryIdentity] = []
         for code in sorted(downloads):
-            stored_count, stored_hash = downloads[code]
+            persisted_count, persisted_hash = downloads[code]
             hashes = bar_hashes[code]
             content_hash = _sha256(_canonical({"code": code, "bars": hashes}))
-            if stored_count != len(hashes) or stored_hash != content_hash:
-                raise HistoricalArchiveConflictError("historical screening history content conflict")
-            histories.append(HistoricalHistoryIdentity(code, len(hashes), content_hash))
+            if persisted_count != len(hashes) or persisted_hash != content_hash:
+                raise HistoricalScreeningArchiveConflictError("historical screening history content conflict")
+            histories.append(HistoricalPriceHistoryIdentity(code, len(hashes), content_hash))
         universe_hash = _sha256(_canonical({"securities": universe_identities}))
         histories_hash = _sha256(_canonical({"histories": [asdict(item) for item in histories]}))
-        return HistoricalArchiveManifest(
+        return HistoricalScreeningArchiveManifest(
             spec.research_identity,
             spec.content_hash,
             universe_hash,
@@ -454,7 +454,7 @@ class SQLiteHistoricalArchive:
             "SELECT spec_hash FROM specs WHERE research_identity = ?", (spec.research_identity,)
         ).fetchone()
         if existing is not None and str(existing[0]) != spec.content_hash:
-            raise HistoricalArchiveConflictError("historical screening spec identity conflict")
+            raise HistoricalScreeningArchiveConflictError("historical screening spec identity conflict")
         connection.execute(
             "INSERT OR IGNORE INTO specs(research_identity, spec_hash) VALUES (?, ?)",
             (spec.research_identity, spec.content_hash),
@@ -791,7 +791,7 @@ def _number(value: object) -> float:
 
 
 __all__ = [
-    "HistoricalArchiveConflictError",
-    "HistoricalArchiveStatus",
-    "SQLiteHistoricalArchive",
+    "HistoricalScreeningArchiveConflictError",
+    "HistoricalScreeningArchiveStatus",
+    "SQLiteHistoricalScreeningArchive",
 ]

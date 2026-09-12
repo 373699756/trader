@@ -22,9 +22,9 @@ from trader.domain.research.baostock_daily import (
     BaoStockSourceVersions,
 )
 from trader.domain.research.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
+from trader.infra.research.history_archive_reader import HistoryPartitionRevisionComparison
 from trader.infra.research.history_archive_sync import run_history_sync
 from trader.infra.research.history_control_repository import SQLiteHistoryControlRepository
-from trader.infra.research.history_month_archive import HistoryPartitionRevisionComparison
 from trader.infra.research.history_training_due import _revised_dates_since_bundle, evaluate_history_training_due
 from trader.infra.research.history_training_input import SQLiteHistoryTrainingInputArchive
 from trader.infra.scoring.profiles.v3.training_bundle_repository import ActiveTomorrowBundle
@@ -239,6 +239,6 @@ def test_revision_detection_compares_semantic_rows_only_in_changed_months(
             assert comparison.after_sequence == active.sequence
             return (dates[2],)
 
-    monkeypatch.setattr("trader.infra.research.history_training_due.SQLiteHistoryMonthlyArchive", _Archive)
+    monkeypatch.setattr("trader.infra.research.history_training_due.SQLiteHistoryArchiveReader", _Archive)
 
     assert _revised_dates_since_bundle(tmp_path, baseline, active, dates, dates[-2]) == (dates[2],)

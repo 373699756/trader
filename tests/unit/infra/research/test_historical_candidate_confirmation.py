@@ -8,8 +8,8 @@ from trader.application.research.historical_candidate_confirmation import seal_h
 from trader.domain.research.h1_point_in_time import H1CapabilityProbe, H1PointInTimeSpec, build_h1_capability_audit
 from trader.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive
 from trader.infra.research.historical_candidate_confirmation import (
+    HistoricalConfirmationArtifactArchive,
     HistoricalConfirmationArtifactConflictError,
-    HistoricalConfirmationArtifactStore,
 )
 
 
@@ -29,32 +29,32 @@ def _batch(tmp_path, *, failure: str = "eastmoney_historical_minute_probe_failed
     return seal_historical_confirmation_terminal_batch(completion)
 
 
-def test_historical_confirmation_store_is_idempotent_and_hash_bound(tmp_path) -> None:
+def test_historical_confirmation_archive_is_idempotent_and_hash_bound(tmp_path) -> None:
     batch = _batch(tmp_path)
-    store = HistoricalConfirmationArtifactStore(tmp_path / "artifacts")
+    archive = HistoricalConfirmationArtifactArchive(tmp_path / "artifacts")
 
-    index = store.write(batch)
+    index = archive.write(batch)
 
     assert index.completion_hash == batch.parent_completion_hash
     assert index.strategy_terminal_hashes == tuple((item.strategy, item.content_hash) for item in batch.strategies)
     assert index.joint_report_hash == batch.joint_report_hash
     assert batch.schema_version == "historical_confirmation_terminal_batch"
     assert {item.schema_version for item in batch.strategies} == {"historical_confirmation_strategy_terminal"}
-    assert store.write(batch) == index
+    assert archive.write(batch) == index
 
     path = tmp_path / "artifacts" / "historical_confirmation_terminal.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["joint_report_hash"] = "0" * 64
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(HistoricalConfirmationArtifactConflictError, match="schema or hash"):
-        store.verify()
+        archive.verify()
 
 
-def test_historical_confirmation_store_rejects_different_batch(tmp_path) -> None:
+def test_historical_confirmation_archive_rejects_different_batch(tmp_path) -> None:
     first = _batch(tmp_path / "first")
     second = _batch(tmp_path / "second", failure="historical_minute_probe_failed_again")
-    store = HistoricalConfirmationArtifactStore(tmp_path / "artifacts")
-    store.write(first)
+    archive = HistoricalConfirmationArtifactArchive(tmp_path / "artifacts")
+    archive.write(first)
 
     with pytest.raises(HistoricalConfirmationArtifactConflictError, match="identity conflict"):
-        store.write(second)
+        archive.write(second)

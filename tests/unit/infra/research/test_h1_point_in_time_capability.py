@@ -5,8 +5,8 @@ import requests
 
 from trader.infra.research.h1_point_in_time_capability import (
     FreeSourceH1CapabilityProbe,
+    H1CapabilityArtifactArchive,
     H1CapabilityArtifactConflictError,
-    H1CapabilityArtifactStore,
 )
 
 
@@ -72,7 +72,7 @@ def test_free_source_probe_preserves_success_when_another_supplier_fails(tmp_pat
     assert by_source["eastmoney_historical_minute"].page_size == 0
     assert report.probe_failures == ("eastmoney_historical_minute_probe_failed",)
     assert {item.state for item in report.strategies} == {"historical_data_insufficient"}
-    restored = H1CapabilityArtifactStore(tmp_path).write(report)
+    restored = H1CapabilityArtifactArchive(tmp_path).write(report)
     assert restored.schema_version == "score_h1_source_capability_audit"
     assert restored.probe_failures == report.probe_failures
     assert restored.content_hash == report.content_hash
@@ -82,11 +82,11 @@ def test_capability_artifact_is_immutable_and_tamper_evident(tmp_path) -> None:
     report = FreeSourceH1CapabilityProbe(_Session(), timeout_seconds=3.0).run(
         code="600519", historical_anchor_date=date(2022, 1, 4)
     )
-    store = H1CapabilityArtifactStore(tmp_path)
+    archive = H1CapabilityArtifactArchive(tmp_path)
 
-    assert store.write(report) == report
-    assert store.write(report) == report
+    assert archive.write(report) == report
+    assert archive.write(report) == report
     path = tmp_path / "h1_capability_audit.json"
     path.write_text(path.read_text().replace("tencent_qfq_daily", "tampered_source"), encoding="utf-8")
     with pytest.raises(H1CapabilityArtifactConflictError, match="schema or hash"):
-        store.verify()
+        archive.verify()

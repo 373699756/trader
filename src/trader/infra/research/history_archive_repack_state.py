@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Literal
 
-HistoryArchiveActivationState = Literal[
+HistoryArchiveRepackActivationState = Literal[
     "prepared",
     "old_partitions_moved",
     "old_control_moved",
@@ -22,7 +22,7 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
-class HistoryArchiveSourceFile:
+class HistoryArchiveRepackSourceFileIdentity:
     relative_path: str
     size_bytes: int
     modified_ns: int
@@ -34,7 +34,7 @@ class HistoryArchiveSourceFile:
 
 
 @dataclass(frozen=True)
-class HistoryArchiveRepackPartition:
+class HistoryArchiveRepackPartitionEvidence:
     relative_path: str
     source_sha256: str
     target_sha256: str
@@ -79,13 +79,13 @@ class HistoryArchiveRepackBuildState:
     source_snapshot_hash: str
     source_sequence: int
     source_file_identity_hash: str
-    source_files: tuple[HistoryArchiveSourceFile, ...]
+    source_files: tuple[HistoryArchiveRepackSourceFileIdentity, ...]
     source_bytes: int
     security_count: int
     trading_day_count: int
     expected_partition_count: int
     page_size: int
-    partitions: tuple[HistoryArchiveRepackPartition, ...]
+    partitions: tuple[HistoryArchiveRepackPartitionEvidence, ...]
     target_snapshot_hash: str | None = None
     completed: bool = False
 
@@ -119,8 +119,8 @@ class HistoryArchiveRepackBuildState:
 
 
 @dataclass(frozen=True)
-class HistoryArchiveActivationJournal:
-    state: HistoryArchiveActivationState
+class HistoryArchiveRepackActivationJournal:
+    state: HistoryArchiveRepackActivationState
     source_root: str
     target_root: str
     backup_root: str
@@ -188,40 +188,13 @@ class HistoryArchiveRepackStatus:
             raise ValueError("history repack status is invalid")
 
 
-@dataclass(frozen=True)
-class HistoryTrainingMemoryEvidence:
-    training_status: str
-    repeat_training_status: str
-    training_input_hash: str
-    model_hash: str
-    report_hash: str
-    peak_rss_bytes: int
-    max_rss_bytes: int
-
-    def __post_init__(self) -> None:
-        if (
-            self.training_status != "engineering_ready"
-            or self.repeat_training_status != "already_current"
-            or any(
-                _SHA256.fullmatch(value) is None
-                for value in (self.training_input_hash, self.model_hash, self.report_hash)
-            )
-            or self.peak_rss_bytes < 1
-            or self.max_rss_bytes < 1
-            or self.peak_rss_bytes > self.max_rss_bytes
-            or self.max_rss_bytes > 2048 * 1024 * 1024
-        ):
-            raise ValueError("Tomorrow training memory evidence is invalid")
-
-
 __all__ = [
-    "HistoryArchiveActivationJournal",
-    "HistoryArchiveActivationState",
+    "HistoryArchiveRepackActivationJournal",
+    "HistoryArchiveRepackActivationState",
     "HistoryArchiveRepackAction",
     "HistoryArchiveRepackBuildState",
-    "HistoryArchiveRepackPartition",
+    "HistoryArchiveRepackPartitionEvidence",
     "HistoryArchiveRepackRequirements",
     "HistoryArchiveRepackStatus",
-    "HistoryArchiveSourceFile",
-    "HistoryTrainingMemoryEvidence",
+    "HistoryArchiveRepackSourceFileIdentity",
 ]

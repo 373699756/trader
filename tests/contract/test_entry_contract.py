@@ -17,8 +17,8 @@ from trader.application.research.tomorrow_research_orchestrator import TomorrowR
 from trader.entrypoints.cli import build_parser, main
 from trader.entrypoints.server import build_parser as build_server_parser
 from trader.infra.process_lock import ProcessLockError
-from trader.infra.research.h1_point_in_time_archive import H1ArchiveConflictError
-from trader.infra.research.tomorrow_research_artifacts import TomorrowResearchArtifactStoreError
+from trader.infra.research.h1_point_in_time_archive import H1PointInTimeArchiveConflictError
+from trader.infra.research.tomorrow_research_artifacts import TomorrowResearchArtifactRepositoryError
 from trader.infra.settings import load_runtime_settings
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -705,9 +705,9 @@ def test_research_status_keeps_tomorrow_graph_conflict_out_of_h1_input_blockers(
 
     monkeypatch.setattr(research_commands, "_tomorrow_research_prerequisite", lambda _runtime: _ReadyPrerequisite())
     monkeypatch.setattr(
-        research_commands.TomorrowResearchArtifactStore,
+        research_commands.TomorrowResearchArtifactRepository,
         "load_graph",
-        lambda _store: (_ for _ in ()).throw(TomorrowResearchArtifactStoreError("graph invalid")),
+        lambda _repository: (_ for _ in ()).throw(TomorrowResearchArtifactRepositoryError("graph invalid")),
     )
 
     result = research_commands._read_tomorrow_research_status(load_runtime_settings(config))
@@ -727,7 +727,7 @@ def test_research_status_reports_h1_conflict_as_the_input_boundary(tmp_path: Pat
 
     class _BrokenPrerequisite:
         def inspect(self) -> TomorrowResearchPrerequisiteStatus:
-            raise H1ArchiveConflictError("H1 archive invalid")
+            raise H1PointInTimeArchiveConflictError("H1 archive invalid")
 
     monkeypatch.setattr(research_commands, "_tomorrow_research_prerequisite", lambda _runtime: _BrokenPrerequisite())
 

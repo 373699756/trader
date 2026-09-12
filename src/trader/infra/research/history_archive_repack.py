@@ -20,21 +20,21 @@ from trader.domain.research.history_control import (
 )
 from trader.infra.research.history_archive_repack_codec import (
     HistoryArchiveRepackCodecError,
-    read_history_activation_journal,
-    read_history_repack_build_state,
-    read_training_memory_evidence,
-    write_history_activation_journal,
-    write_history_repack_build_state,
+    read_history_archive_repack_activation_journal,
+    read_history_archive_repack_build_state,
+    read_tomorrow_training_memory_evidence,
+    write_history_archive_repack_activation_journal,
+    write_history_archive_repack_build_state,
 )
 from trader.infra.research.history_archive_repack_state import (
-    HistoryArchiveActivationJournal,
-    HistoryArchiveActivationState,
     HistoryArchiveRepackAction,
+    HistoryArchiveRepackActivationJournal,
+    HistoryArchiveRepackActivationState,
     HistoryArchiveRepackBuildState,
-    HistoryArchiveRepackPartition,
+    HistoryArchiveRepackPartitionEvidence,
     HistoryArchiveRepackRequirements,
+    HistoryArchiveRepackSourceFileIdentity,
     HistoryArchiveRepackStatus,
-    HistoryArchiveSourceFile,
 )
 from trader.infra.research.history_control_repository import (
     HistoryControlError,
@@ -86,7 +86,7 @@ class _RepackLayout:
 class _SourceContext:
     control_state: HistoryControlState
     active: HistoryActiveSnapshot
-    source_files: tuple[HistoryArchiveSourceFile, ...]
+    source_files: tuple[HistoryArchiveRepackSourceFileIdentity, ...]
     source_file_identity_hash: str
     source_bytes: int
     security_count: int
@@ -150,14 +150,14 @@ class HistoryArchiveRepackCoordinator:
                     state,
                     partitions=tuple(sorted((*state.partitions, evidence), key=lambda item: item.relative_path)),
                 )
-                write_history_repack_build_state(layout.state_path, state)
+                write_history_archive_repack_build_state(layout.state_path, state)
                 self._publish_progress(len(state.partitions), state.expected_partition_count, reference.relative_path)
             _require_source_unchanged(layout.source_root, state)
             _require_size_gate(state, self._requirements)
             target_snapshot = _build_target_control(layout, context, state)
             self._inject("target_control_built")
             state = replace(state, target_snapshot_hash=target_snapshot.content_hash, completed=True)
-            write_history_repack_build_state(layout.state_path, state)
+            write_history_archive_repack_build_state(layout.state_path, state)
             _verify_completed_target(layout.target_root, state)
             self._inject("build_completed")
             return _status("build", "completed", state)
@@ -165,7 +165,7 @@ class HistoryArchiveRepackCoordinator:
     def activate(self) -> HistoryArchiveRepackStatus:
         layout = self._layout
         with HistoryMaintenanceLock(layout.source_root / ".maintenance.lock"):
-            state = read_history_repack_build_state(layout.state_path)
+            state = read_history_archive_repack_build_state(layout.state_path)
             _require_completed_state(state, layout)
             existing = _optional_journal(layout.journal_path)
             if existing is not None and existing.state not in {"rolled_back", "finalized"}:
@@ -179,7 +179,7 @@ class HistoryArchiveRepackCoordinator:
             _require_stable_snapshot(layout.source_root, state.source_snapshot_hash)
             layout.backup_root.mkdir(parents=True)
             _fsync_directory(layout.backup_root.parent)
-            journal = HistoryArchiveActivationJournal(
+            journal = HistoryArchiveRepackActivationJournal(
                 "prepared",
                 str(layout.source_root),
                 str(layout.target_root),
@@ -187,7 +187,7 @@ class HistoryArchiveRepackCoordinator:
                 state.source_snapshot_hash,
                 cast(str, state.target_snapshot_hash),
             )
-            write_history_activation_journal(layout.journal_path, journal)
+            write_history_archive_repack_activation_journal(layout.journal_path, journal)
             self._inject("prepared")
             journal = self._move_and_commit(
                 layout.source_root / _PARTITIONS_NAME,
@@ -215,16 +215,16 @@ class HistoryArchiveRepackCoordinator:
             )
             _require_stable_target(layout, state, full_hash=False)
             journal = replace(journal, state="verified")
-            write_history_activation_journal(layout.journal_path, journal)
+            write_history_archive_repack_activation_journal(layout.journal_path, journal)
             self._inject("verified")
             return _activation_status("activate", "verified", state)
 
     def rollback(self) -> HistoryArchiveRepackStatus:
         layout = self._layout
         with HistoryMaintenanceLock(layout.source_root / ".maintenance.lock"):
-            state = read_history_repack_build_state(layout.state_path)
+            state = read_history_archive_repack_build_state(layout.state_path)
             _require_completed_state(state, layout)
-            journal = read_history_activation_journal(layout.journal_path)
+            journal = read_history_archive_repack_activation_journal(layout.journal_path)
             _require_journal_layout(journal, layout, state)
             if journal.state == "finalized":
                 raise HistoryArchiveRepackError("finalized history repack cannot be rolled back")
@@ -237,9 +237,9 @@ class HistoryArchiveRepackCoordinator:
     def finalize(self, training_root: Path, memory_evidence_path: Path) -> HistoryArchiveRepackStatus:
         layout = self._layout
         with HistoryMaintenanceLock(layout.source_root / ".maintenance.lock"):
-            state = read_history_repack_build_state(layout.state_path)
+            state = read_history_archive_repack_build_state(layout.state_path)
             _require_completed_state(state, layout)
-            journal = read_history_activation_journal(layout.journal_path)
+            journal = read_history_archive_repack_activation_journal(layout.journal_path)
             _require_journal_layout(journal, layout, state)
             if journal.state == "finalized":
                 return _activation_status("finalize", "finalized", state)
@@ -247,7 +247,7 @@ class HistoryArchiveRepackCoordinator:
                 raise HistoryArchiveRepackError("history repack must be verified before finalization")
             _require_stable_target(layout, state, full_hash=False)
             bundle = inspect_active_tomorrow_bundle(training_root.resolve() / "tomorrow-v3")
-            evidence = read_training_memory_evidence(memory_evidence_path.resolve())
+            evidence = read_tomorrow_training_memory_evidence(memory_evidence_path.resolve())
             if (
                 bundle.training_input_hash != state.target_snapshot_hash
                 or evidence.training_input_hash != state.target_snapshot_hash
@@ -260,14 +260,14 @@ class HistoryArchiveRepackCoordinator:
             shutil.rmtree(layout.backup_root)
             _fsync_directory(layout.backup_root.parent)
             journal = replace(journal, state="finalized")
-            write_history_activation_journal(layout.journal_path, journal)
+            write_history_archive_repack_activation_journal(layout.journal_path, journal)
             self._inject("finalized")
             return _activation_status("finalize", "finalized", state, released)
 
     def _load_or_create_build_state(self, context: _SourceContext) -> HistoryArchiveRepackBuildState:
         layout = self._layout
         if layout.state_path.exists():
-            state = read_history_repack_build_state(layout.state_path)
+            state = read_history_archive_repack_build_state(layout.state_path)
             _require_state_source(state, layout, context, self._requirements)
             return state
         if layout.target_root.exists() and any(layout.target_root.iterdir()):
@@ -288,7 +288,7 @@ class HistoryArchiveRepackCoordinator:
             self._requirements.target_page_size,
             (),
         )
-        write_history_repack_build_state(layout.state_path, state)
+        write_history_archive_repack_build_state(layout.state_path, state)
         self._inject("build_prepared")
         return state
 
@@ -308,9 +308,9 @@ class HistoryArchiveRepackCoordinator:
         self,
         source: Path,
         destination: Path,
-        journal: HistoryArchiveActivationJournal,
-        next_state: HistoryArchiveActivationState,
-    ) -> HistoryArchiveActivationJournal:
+        journal: HistoryArchiveRepackActivationJournal,
+        next_state: HistoryArchiveRepackActivationState,
+    ) -> HistoryArchiveRepackActivationJournal:
         if not source.exists() or destination.exists() or source.is_symlink():
             raise HistoryArchiveRepackError("history repack activation path is inconsistent")
         os.replace(source, destination)
@@ -318,27 +318,27 @@ class HistoryArchiveRepackCoordinator:
         _fsync_directory(destination.parent)
         self._inject(f"{next_state}_moved")
         updated = replace(journal, state=next_state)
-        write_history_activation_journal(self._layout.journal_path, updated)
+        write_history_archive_repack_activation_journal(self._layout.journal_path, updated)
         self._inject(next_state)
         return updated
 
     def _recover_activation(
         self,
-        journal: HistoryArchiveActivationJournal,
+        journal: HistoryArchiveRepackActivationJournal,
         state: HistoryArchiveRepackBuildState,
-    ) -> HistoryArchiveActivationJournal:
+    ) -> HistoryArchiveRepackActivationJournal:
         _require_journal_layout(journal, self._layout, state)
         if _stable_target_matches(self._layout, state, full_hash=False):
             recovered = replace(journal, state="verified")
-            write_history_activation_journal(self._layout.journal_path, recovered)
+            write_history_archive_repack_activation_journal(self._layout.journal_path, recovered)
             return recovered
         return self._restore_source_archive(journal, state)
 
     def _restore_source_archive(
         self,
-        journal: HistoryArchiveActivationJournal,
+        journal: HistoryArchiveRepackActivationJournal,
         state: HistoryArchiveRepackBuildState,
-    ) -> HistoryArchiveActivationJournal:
+    ) -> HistoryArchiveRepackActivationJournal:
         layout = self._layout
         _return_new_control(layout, state)
         _return_new_partitions(layout, state)
@@ -351,7 +351,7 @@ class HistoryArchiveRepackCoordinator:
             layout.backup_root.rmdir()
             _fsync_directory(layout.backup_root.parent)
         recovered = replace(journal, state="rolled_back")
-        write_history_activation_journal(layout.journal_path, recovered)
+        write_history_archive_repack_activation_journal(layout.journal_path, recovered)
         self._inject("rolled_back")
         return recovered
 
@@ -360,7 +360,7 @@ class HistoryArchiveRepackCoordinator:
             self._progress(completed, total, current)
 
 
-def require_history_repack_inactive(archive_root: Path) -> None:
+def require_history_archive_repack_inactive(archive_root: Path) -> None:
     """Fail normal history work while a conventional repack activation is fenced."""
 
     root = archive_root.expanduser().resolve()
@@ -427,15 +427,15 @@ def _load_source_context(root: Path, requirements: HistoryArchiveRepackRequireme
     )
 
 
-def _source_files(root: Path, active: HistoryActiveSnapshot) -> tuple[HistoryArchiveSourceFile, ...]:
+def _source_files(root: Path, active: HistoryActiveSnapshot) -> tuple[HistoryArchiveRepackSourceFileIdentity, ...]:
     paths = (_CONTROL_NAME, *(item.relative_path for item in active.partitions))
-    values: list[HistoryArchiveSourceFile] = []
+    values: list[HistoryArchiveRepackSourceFileIdentity] = []
     for relative in paths:
         path = root / relative
         if not path.is_file() or path.is_symlink():
             raise HistoryArchiveRepackError("history repack source file is missing or unsafe")
         stat = path.stat()
-        values.append(HistoryArchiveSourceFile(relative, stat.st_size, stat.st_mtime_ns))
+        values.append(HistoryArchiveRepackSourceFileIdentity(relative, stat.st_size, stat.st_mtime_ns))
     return tuple(sorted(values, key=lambda item: item.relative_path))
 
 
@@ -542,7 +542,7 @@ def _repack_partition(
     reference: HistorySnapshotPartition,
     snapshot_sequence: int,
     page_size: int,
-) -> HistoryArchiveRepackPartition:
+) -> HistoryArchiveRepackPartitionEvidence:
     source = source_root / reference.relative_path
     destination = target_root / reference.relative_path
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -579,7 +579,7 @@ def _repack_partition(
     SQLiteHistoryMonthPartitionRepository.verify(pending, target_reference)
     os.replace(pending, destination)
     _fsync_directory(destination.parent)
-    return HistoryArchiveRepackPartition(
+    return HistoryArchiveRepackPartitionEvidence(
         reference.relative_path,
         source_sha,
         target_sha,
@@ -707,7 +707,7 @@ def _require_completed_state(state: HistoryArchiveRepackBuildState, layout: _Rep
 def _partition_evidence(
     state: HistoryArchiveRepackBuildState,
     relative_path: str,
-) -> HistoryArchiveRepackPartition | None:
+) -> HistoryArchiveRepackPartitionEvidence | None:
     return next((item for item in state.partitions if item.relative_path == relative_path), None)
 
 
@@ -724,7 +724,7 @@ def _source_references(state: HistoryArchiveRepackBuildState) -> tuple[HistorySn
 
 
 def _require_journal_layout(
-    journal: HistoryArchiveActivationJournal,
+    journal: HistoryArchiveRepackActivationJournal,
     layout: _RepackLayout,
     state: HistoryArchiveRepackBuildState,
 ) -> None:
@@ -742,15 +742,15 @@ def _require_no_activation_fence(path: Path) -> None:
     if not path.exists():
         return
     try:
-        journal = read_history_activation_journal(path)
+        journal = read_history_archive_repack_activation_journal(path)
     except HistoryArchiveRepackCodecError as exc:
-        raise HistoryArchiveRepackFenceError("history_repack_activation_pending") from exc
+        raise HistoryArchiveRepackFenceError("history_archive_repack_activation_pending") from exc
     if journal.fenced:
-        raise HistoryArchiveRepackFenceError("history_repack_activation_pending")
+        raise HistoryArchiveRepackFenceError("history_archive_repack_activation_pending")
 
 
-def _optional_journal(path: Path) -> HistoryArchiveActivationJournal | None:
-    return read_history_activation_journal(path) if path.exists() else None
+def _optional_journal(path: Path) -> HistoryArchiveRepackActivationJournal | None:
+    return read_history_archive_repack_activation_journal(path) if path.exists() else None
 
 
 def _require_stable_snapshot(root: Path, expected_hash: str) -> None:
@@ -982,5 +982,5 @@ __all__ = [
     "HistoryArchiveRepackCoordinator",
     "HistoryArchiveRepackError",
     "HistoryArchiveRepackFenceError",
-    "require_history_repack_inactive",
+    "require_history_archive_repack_inactive",
 ]

@@ -29,24 +29,24 @@ from trader.domain.research.terminal_holdout import (  # noqa: E402
     TerminalHoldoutReport,
 )
 from trader.infra.research.cross_strategy_conclusion_artifacts import (  # noqa: E402
-    CrossStrategyConclusionArtifactStore,
+    CrossStrategyConclusionArtifactArchive,
 )
 from trader.infra.research.d25_terminal_holdout_artifacts import (  # noqa: E402
-    D25TerminalHoldoutArtifactStore,
+    D25TerminalHoldoutArtifactArchive,
 )
 from trader.infra.research.h1_point_in_time_capability import (  # noqa: E402
-    H1CapabilityArtifactStore,
+    H1CapabilityArtifactArchive,
 )
 from trader.infra.research.h1_point_in_time_completion import (  # noqa: E402
     H1ResearchCompletionArtifactIndex,
-    H1ResearchCompletionArtifactStore,
+    H1ResearchCompletionArtifactArchive,
 )
-from trader.infra.research.historical_label_artifacts import HistoricalLabelArtifactStore  # noqa: E402
+from trader.infra.research.historical_label_artifacts import HistoricalLabelArtifactArchive  # noqa: E402
 from trader.infra.research.today_terminal_holdout_artifacts import (  # noqa: E402
-    TodayTerminalHoldoutArtifactStore,
+    TodayTerminalHoldoutArtifactArchive,
 )
 from trader.infra.research.tomorrow_point_in_time_holdout_artifacts import (  # noqa: E402
-    TomorrowPointInTimeHoldoutArtifactStore,
+    TomorrowPointInTimeHoldoutArtifactArchive,
 )
 
 
@@ -74,18 +74,18 @@ def execute(*, parent_artifact_dir: Path, output_dir: Path) -> CrossStrategyConc
         _parent_state(parent, statuses["d25"].strategy, residual_hashes["d25"]),
     ).execute()
 
-    TodayTerminalHoldoutArtifactStore(output_dir / "today").write(today)
-    TomorrowPointInTimeHoldoutArtifactStore(output_dir / "tomorrow").write(tomorrow)
-    D25TerminalHoldoutArtifactStore(output_dir / "d25").write(d25)
+    TodayTerminalHoldoutArtifactArchive(output_dir / "today").write(today)
+    TomorrowPointInTimeHoldoutArtifactArchive(output_dir / "tomorrow").write(tomorrow)
+    D25TerminalHoldoutArtifactArchive(output_dir / "d25").write(d25)
     conclusion = CrossStrategyConclusionService().execute(today, tomorrow, d25)
-    CrossStrategyConclusionArtifactStore(output_dir / "cross_strategy").write(conclusion)
+    CrossStrategyConclusionArtifactArchive(output_dir / "cross_strategy").write(conclusion)
     return conclusion
 
 
 def _read_parent(root: Path) -> _ParentArtifacts:
-    capability = H1CapabilityArtifactStore(root).verify()
-    labels = HistoricalLabelArtifactStore(root).verify()
-    index = H1ResearchCompletionArtifactStore(root).verify()
+    capability = H1CapabilityArtifactArchive(root).verify()
+    labels = HistoricalLabelArtifactArchive(root).verify()
+    index = H1ResearchCompletionArtifactArchive(root).verify()
     if index.capability_hash != capability.content_hash:
         raise ValueError("Terminal holdout parent capability hash does not match terminal index")
     if index.label_batch_hash != labels.content_hash:

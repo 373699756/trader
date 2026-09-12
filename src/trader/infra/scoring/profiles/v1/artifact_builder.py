@@ -12,7 +12,7 @@ from typing import cast
 
 import numpy as np
 
-from trader.application.research.historical_screening import HistoricalArchiveManifest
+from trader.application.research.historical_screening import HistoricalScreeningArchiveManifest
 from trader.application.research.tomorrow_historical_screening import TomorrowHistoricalRow
 from trader.domain.market.feature_contracts import TOMORROW_RESIDUAL_MOMENTUM_FEATURE_MANIFEST
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalScreeningSpec
@@ -81,7 +81,7 @@ class _CompensatedSum:
 def fit_manual_v1_model(
     rows: Iterable[TomorrowHistoricalRow],
     spec: HistoricalScreeningSpec,
-    manifest: HistoricalArchiveManifest,
+    manifest: HistoricalScreeningArchiveManifest,
 ) -> TomorrowManualV1ModelArtifact:
     """Fit a deterministic ridge proxy without materializing the multi-million-row H0 archive."""
 

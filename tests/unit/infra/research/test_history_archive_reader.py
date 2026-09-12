@@ -9,11 +9,11 @@ import pytest
 
 from trader.domain.research.baostock_daily import BaoStockDailyCell, BaoStockDailySide
 from trader.domain.research.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
-from trader.domain.research.history_monthly import HistoryMonthlyRevision
-from trader.infra.research.history_month_archive import (
-    HistoryMonthlyArchiveError,
+from trader.domain.research.history_revision import HistoryRevision
+from trader.infra.research.history_archive_reader import (
+    HistoryArchiveReadError,
     HistoryPartitionRevisionComparison,
-    SQLiteHistoryMonthlyArchive,
+    SQLiteHistoryArchiveReader,
     route_history_months,
 )
 from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
@@ -37,11 +37,11 @@ def _side(code: str, day: date, adjustment: str, close: float) -> BaoStockDailyS
     )
 
 
-def _revision(code: str, day: date, sequence: int = 1) -> HistoryMonthlyRevision:
+def _revision(code: str, day: date, sequence: int = 1) -> HistoryRevision:
     close = 10.0 + day.toordinal() % 100
     raw = _side(code, day, "unadjusted", close)
     qfq = _side(code, day, "qfq", close - 1.0)
-    return HistoryMonthlyRevision(
+    return HistoryRevision(
         sequence,
         "main",
         BaoStockDailyCell(code, day, "complete", raw, qfq),
@@ -51,8 +51,8 @@ def _revision(code: str, day: date, sequence: int = 1) -> HistoryMonthlyRevision
     )
 
 
-def _build_snapshot(root: Path, rows: tuple[HistoryMonthlyRevision, ...]) -> HistoryActiveSnapshot:
-    grouped: dict[tuple[int, int], list[HistoryMonthlyRevision]] = defaultdict(list)
+def _build_snapshot(root: Path, rows: tuple[HistoryRevision, ...]) -> HistoryActiveSnapshot:
+    grouped: dict[tuple[int, int], list[HistoryRevision]] = defaultdict(list)
     for row in rows:
         grouped[(row.trade_date.year, row.trade_date.month)].append(row)
     references: list[HistorySnapshotPartition] = []
@@ -78,7 +78,7 @@ def test_archive_routes_single_day_code_window_and_cross_month_training_windows(
     dates = tuple(date(2026, 8, 1) + timedelta(days=offset) for offset in range(62))
     rows = tuple(_revision(code, day) for day in dates for code in ("600001", "600002"))
     snapshot = _build_snapshot(root, rows)
-    archive = SQLiteHistoryMonthlyArchive(root)
+    archive = SQLiteHistoryArchiveReader(root)
 
     assert route_history_months(dates[0], dates[-1]) == ((2026, 8), (2026, 9), (2026, 10))
     assert tuple(row.code for row in archive.read_day(dates[31], snapshot)) == ("600001", "600002")
@@ -92,7 +92,7 @@ def test_archive_routes_single_day_code_window_and_cross_month_training_windows(
 
     with pytest.raises(ValueError, match="cutoff"):
         archive.read_day(dates[-1] + timedelta(days=1), snapshot)
-    with pytest.raises(HistoryMonthlyArchiveError, match="cover"):
+    with pytest.raises(HistoryArchiveReadError, match="cover"):
         tuple(archive.iter_training_windows(replace(snapshot, partitions=snapshot.partitions[:-1]), dates))
 
 
@@ -101,12 +101,12 @@ def test_archive_reads_2000_sessions_without_directory_scan_or_unbounded_windows
     dates = tuple(date(2020, 1, 1) + timedelta(days=offset) for offset in range(2000))
     rows = tuple(_revision("600001", day) for day in dates)
     snapshot = _build_snapshot(root, rows)
-    archive = SQLiteHistoryMonthlyArchive(root)
+    archive = SQLiteHistoryArchiveReader(root)
 
     descriptor_root = Path("/proc/self/fd")
     baseline_descriptors = len(tuple(descriptor_root.iterdir())) if descriptor_root.is_dir() else None
     peak_descriptors = baseline_descriptors
-    replayed_rows: list[HistoryMonthlyRevision] = []
+    replayed_rows: list[HistoryRevision] = []
     for row in archive.iter_snapshot_revisions(snapshot):
         replayed_rows.append(row)
         if peak_descriptors is not None:
@@ -136,7 +136,7 @@ def test_verified_snapshot_reuses_each_partition_check_and_counts_latest_rows(
     dates = tuple(date(2026, 8, 30) + timedelta(days=offset) for offset in range(4))
     rows = tuple(_revision(code, day) for day in dates for code in ("600001", "600002"))
     snapshot = _build_snapshot(root, rows)
-    archive = SQLiteHistoryMonthlyArchive(root)
+    archive = SQLiteHistoryArchiveReader(root)
     original = SQLiteHistoryMonthPartitionRepository.verify.__func__
     verified: list[Path] = []
 
@@ -168,6 +168,6 @@ def test_revision_comparison_uses_one_current_physical_partition_for_both_sequen
     snapshot = _build_snapshot(root, (original, revised, unchanged))
     comparison = HistoryPartitionRevisionComparison(snapshot.partitions[0], 1, 2)
 
-    changed = SQLiteHistoryMonthlyArchive(root).revised_dates(first, second, comparison)
+    changed = SQLiteHistoryArchiveReader(root).revised_dates(first, second, comparison)
 
     assert changed == (first,)

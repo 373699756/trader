@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC
-from trader.infra.research.history_archive import SQLiteHistoricalArchive
+from trader.infra.research.historical_screening_archive import SQLiteHistoricalScreeningArchive
 from trader.infra.scoring.profiles.v1.artifact_builder import (
     TomorrowManualV1ModelArtifact,
     fit_manual_v1_model,
@@ -35,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     runtime = load_runtime_settings(args.runtime_config.resolve())
-    archive = SQLiteHistoricalArchive(runtime.runtime_dir)
+    archive = SQLiteHistoricalScreeningArchive(runtime.runtime_dir)
     manifest = archive.manifest(HISTORICAL_SCREENING_SPEC)
     artifact = fit_manual_v1_model(
         archive.iter_tomorrow_historical_rows(HISTORICAL_SCREENING_SPEC),

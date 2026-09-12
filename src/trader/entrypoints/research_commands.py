@@ -25,25 +25,25 @@ from trader.application.research.tomorrow_research_prerequisites import Tomorrow
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC
 from trader.domain.research.tomorrow_historical import TOMORROW_HISTORICAL_SPEC
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
-from trader.infra.persistence.research_trace import SQLiteResearchTraceStore
-from trader.infra.research.h1_point_in_time_archive import H1ArchiveConflictError, SQLiteH1PointInTimeArchive
-from trader.infra.research.history_archive import SQLiteHistoricalArchive
+from trader.infra.persistence.research_trace import SQLiteResearchTraceArchive
+from trader.infra.research.h1_point_in_time_archive import H1PointInTimeArchiveConflictError, SQLiteH1PointInTimeArchive
+from trader.infra.research.historical_screening_archive import SQLiteHistoricalScreeningArchive
 from trader.infra.research.history_archive_status import inspect_history_archive
 from trader.infra.research.tomorrow_historical_artifacts import (
+    TomorrowHistoricalArtifactArchive,
     TomorrowHistoricalArtifactConflictError,
-    TomorrowHistoricalArtifactStore,
 )
 from trader.infra.research.tomorrow_historical_risk_artifacts import (
+    TomorrowHistoricalRiskArtifactArchive,
     TomorrowHistoricalRiskArtifactConflictError,
-    TomorrowHistoricalRiskArtifactStore,
 )
 from trader.infra.research.tomorrow_profile_holdout_artifacts import (
+    TomorrowProfileHoldoutArtifactArchive,
     TomorrowProfileHoldoutArtifactConflictError,
-    TomorrowProfileHoldoutArtifactStore,
 )
 from trader.infra.research.tomorrow_research_artifacts import (
-    TomorrowResearchArtifactStore,
-    TomorrowResearchArtifactStoreError,
+    TomorrowResearchArtifactRepository,
+    TomorrowResearchArtifactRepositoryError,
 )
 from trader.infra.settings import RuntimeSettings
 
@@ -84,11 +84,11 @@ def run_research_command(
     if command == "train-tomorrow":
         return _run_tomorrow_research_orchestrator(runtime)
     if command == "research-status":
-        trace = SQLiteResearchTraceStore(runtime.runtime_dir)
+        trace = SQLiteResearchTraceArchive(runtime.runtime_dir)
         status = trace.inspect_status()
         first_observations = trace.inspect_first_observations(limit=120)
         dates = tuple(item.trade_date for item in first_observations)
-        historical_archive = SQLiteHistoricalArchive(runtime.runtime_dir).inspect(
+        historical_archive = SQLiteHistoricalScreeningArchive(runtime.runtime_dir).inspect(
             HISTORICAL_SCREENING_SPEC.research_identity
         )
         screening_coverage = (
@@ -281,10 +281,10 @@ def _history_data_root() -> Path:
 
 
 def _read_tomorrow_research_status(runtime: RuntimeSettings) -> dict[str, object]:
-    store = TomorrowResearchArtifactStore(_train_data_root())
+    repository = TomorrowResearchArtifactRepository(_train_data_root())
     try:
         prerequisite = _tomorrow_research_prerequisite(runtime).inspect()
-    except H1ArchiveConflictError:
+    except H1PointInTimeArchiveConflictError:
         return {
             "status": "artifact_conflict",
             "run_id": None,
@@ -300,8 +300,8 @@ def _read_tomorrow_research_status(runtime: RuntimeSettings) -> dict[str, object
             "automatic_model_update": False,
         }
     try:
-        graph = store.load_graph()
-    except TomorrowResearchArtifactStoreError:
+        graph = repository.load_graph()
+    except TomorrowResearchArtifactRepositoryError:
         return {
             "status": "artifact_conflict",
             "run_id": None,
@@ -380,7 +380,7 @@ def _tomorrow_research_prerequisite(runtime: RuntimeSettings) -> TomorrowLabelRe
 
 def _read_tomorrow_historical_status(runtime: RuntimeSettings) -> dict[str, object]:
     try:
-        return TomorrowHistoricalArtifactStore(runtime.runtime_dir / "tomorrow-historical").inspect()
+        return TomorrowHistoricalArtifactArchive(runtime.runtime_dir / "tomorrow-historical").inspect()
     except TomorrowHistoricalArtifactConflictError:
         return {
             "report_hash": "",
@@ -394,7 +394,7 @@ def _read_tomorrow_historical_status(runtime: RuntimeSettings) -> dict[str, obje
 
 def _read_tomorrow_profile_holdout_status(runtime: RuntimeSettings) -> dict[str, object]:
     try:
-        return TomorrowProfileHoldoutArtifactStore(runtime.runtime_dir).inspect()
+        return TomorrowProfileHoldoutArtifactArchive(runtime.runtime_dir).inspect()
     except TomorrowProfileHoldoutArtifactConflictError:
         return {
             "status": "artifact_invalid",
@@ -405,7 +405,7 @@ def _read_tomorrow_profile_holdout_status(runtime: RuntimeSettings) -> dict[str,
 
 def _read_tomorrow_historical_risk_status(runtime: RuntimeSettings) -> dict[str, object]:
     try:
-        return TomorrowHistoricalRiskArtifactStore(runtime.runtime_dir).inspect()
+        return TomorrowHistoricalRiskArtifactArchive(runtime.runtime_dir).inspect()
     except TomorrowHistoricalRiskArtifactConflictError:
         return {
             "status": "artifact_invalid",

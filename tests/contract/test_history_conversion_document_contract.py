@@ -53,7 +53,7 @@ def test_current_docs_and_tools_only_name_the_monthly_history_owner() -> None:
         "data/history/baostock/control.sqlite3",
         "partitions/YYYY/MM.sqlite3",
         "SQLiteHistoryControlRepository",
-        "SQLiteHistoryMonthlyArchive",
+        "SQLiteHistoryArchiveReader",
     ):
         assert current in active_text
     assert "scripts/convert_baostock_history.py" in active_text
