@@ -96,12 +96,12 @@ def test_training_input_reports_exact_inspected_rows_from_one_verified_snapshot(
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
     archive = SQLiteHistoryTrainingInputArchive.open(tmp_path / "history")
-    progress: list[tuple[int, int]] = []
+    progress: list[tuple[int, int, int, int, int, str]] = []
 
-    archive.verify_partitions(lambda completed, total: progress.append((completed, total)))
+    archive.verify_partitions(lambda *values: progress.append(values))
     assert archive.count_training_rows(frozenset(dates)) == 3
     assert archive.training_row_upper_bound(frozenset(dates)) >= 3
-    assert progress[-1] == (1, 1)
+    assert progress[-1][:3] == (1, 1, 1)
 
 
 def test_training_input_streams_windows_in_date_code_order_without_per_code_queries(tmp_path: Path) -> None:

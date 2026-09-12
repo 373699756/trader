@@ -36,6 +36,7 @@ _RESULT_LABELS: dict[TomorrowTrainingCommandStatus, str] = {
     "already_current": "已是最新",
     "not_due": "无需训练",
 }
+_PARTITION_PHASE_LABELS = {"hash": "SHA-256", "integrity": "完整性", "row_count": "行数"}
 
 
 class StderrTomorrowTrainingProgress:
@@ -132,8 +133,16 @@ class StderrTomorrowTrainingProgress:
             parts.extend(
                 (
                     f"计算线程 {TOMORROW_TRAINING_COMPUTE_THREADS}",
-                    f"峰值 RSS 目标 {TOMORROW_TRAINING_PEAK_RSS_MIB} MiB",
+                    f"峰值 RSS 上限 {TOMORROW_TRAINING_PEAK_RSS_MIB} MiB",
                 )
+            )
+        elif progress.stage == "partition_validation" and progress.partition_validation is not None:
+            detail = progress.partition_validation
+            completed_mib = detail.completed_bytes / (1024 * 1024)
+            total_mib = detail.total_bytes / (1024 * 1024)
+            parts.append(
+                f"当前分片 {detail.current_partition}/{detail.total_partitions}"
+                f" {_PARTITION_PHASE_LABELS[detail.phase]} {completed_mib:.1f}/{total_mib:.1f} MiB"
             )
         elif progress.stage == "history_conversion":
             parts.append(f"已生成样本 {progress.produced_units}")

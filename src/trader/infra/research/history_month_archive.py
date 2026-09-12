@@ -7,6 +7,7 @@ import re
 from collections import deque
 from collections.abc import Callable, Collection, Iterator
 from datetime import date
+from functools import partial
 from pathlib import Path
 
 from trader.domain.research.baostock_daily import BAOSTOCK_MAX_SESSIONS, BaoStockTrainingRow
@@ -18,6 +19,7 @@ from trader.domain.research.history_monthly import (
 )
 from trader.infra.research.history_month_partition import (
     HistoryMonthPartitionError,
+    HistoryPartitionVerificationPhase,
     SQLiteHistoryMonthPartitionRepository,
 )
 
@@ -52,13 +54,17 @@ class SQLiteHistoryMonthlyArchive:
     def verify_snapshot(
         self,
         snapshot: HistoryActiveSnapshot,
-        progress: Callable[[int, int], None] | None = None,
+        progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None] | None = None,
     ) -> None:
         total = len(snapshot.partitions)
         for completed, reference in enumerate(snapshot.partitions, start=1):
-            self._verified_repository(reference)
+            self._verified_repository(
+                reference,
+                None if progress is None else partial(_report_partition_progress, progress, completed, total),
+            )
             if progress is not None:
-                progress(completed, total)
+                size = (self._root / reference.relative_path).stat().st_size
+                progress(completed, total, completed, size, size, "row_count")
 
     def count_range(
         self,
@@ -245,6 +251,7 @@ class SQLiteHistoryMonthlyArchive:
     def _verified_repository(
         self,
         reference: HistorySnapshotPartition,
+        progress: Callable[[int, int, HistoryPartitionVerificationPhase], None] | None = None,
     ) -> SQLiteHistoryMonthPartitionRepository:
         existing = self._verified.get(reference)
         if existing is not None:
@@ -252,7 +259,7 @@ class SQLiteHistoryMonthlyArchive:
         year, month = _reference_month(reference)
         path = self._root / reference.relative_path
         try:
-            SQLiteHistoryMonthPartitionRepository.verify(path, reference)
+            SQLiteHistoryMonthPartitionRepository.verify(path, reference, progress)
         except HistoryMonthPartitionError as exc:
             raise HistoryMonthlyArchiveError("history snapshot partition verification failed") from exc
         repository = SQLiteHistoryMonthPartitionRepository(path, year, month)
@@ -263,6 +270,24 @@ class SQLiteHistoryMonthlyArchive:
 def _reference_month(reference: HistorySnapshotPartition) -> tuple[int, int]:
     parts = Path(reference.relative_path).parts
     return int(parts[1]), int(Path(parts[2]).stem)
+
+
+def _report_partition_progress(
+    progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None],
+    current_partition: int,
+    total_partitions: int,
+    completed_bytes: int,
+    total_bytes: int,
+    phase: HistoryPartitionVerificationPhase,
+) -> None:
+    progress(
+        current_partition - 1,
+        total_partitions,
+        current_partition,
+        completed_bytes,
+        total_bytes,
+        phase,
+    )
 
 
 __all__ = ["HistoryMonthlyArchiveError", "SQLiteHistoryMonthlyArchive", "route_history_months"]

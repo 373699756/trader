@@ -156,18 +156,19 @@ def test_verified_snapshot_reuses_each_partition_check_and_counts_latest_rows(
     original = SQLiteHistoryMonthPartitionRepository.verify.__func__
     verified: list[Path] = []
 
-    def verify(cls, path: Path, reference: HistorySnapshotPartition) -> None:
+    def verify(cls, path: Path, reference: HistorySnapshotPartition, progress=None) -> None:
         verified.append(path)
-        original(cls, path, reference)
+        original(cls, path, reference, progress)
 
     monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "verify", classmethod(verify))
 
-    observed: list[tuple[int, int]] = []
-    archive.verify_snapshot(snapshot, lambda completed, total: observed.append((completed, total)))
+    observed: list[tuple[int, int, int, int, int, str]] = []
+    archive.verify_snapshot(snapshot, lambda *values: observed.append(values))
     assert archive.count_range(dates[0], dates[-1], snapshot, codes=("600001",)) == len(dates)
     assert archive.count_range(dates[0], dates[-1], snapshot, codes=("600001", "600002")) == len(rows)
     assert len(tuple(archive.iter_code("600001", dates[0], dates[-1], snapshot))) == len(dates)
     assert len(tuple(archive.iter_code("600002", dates[0], dates[-1], snapshot))) == len(dates)
 
-    assert observed[-1] == (len(snapshot.partitions), len(snapshot.partitions))
+    assert observed[-1][:3] == (len(snapshot.partitions), len(snapshot.partitions), len(snapshot.partitions))
+    assert any(completed == 0 and current == 1 and phase == "hash" for completed, _, current, _, _, phase in observed)
     assert len(verified) == len(snapshot.partitions)

@@ -355,7 +355,7 @@ def _tomorrow_research_result_payload(
             "pilot_stocks": 100,
             "pilot_trade_dates": 120,
             "max_cpu_threads": 2,
-            "max_peak_rss_mb": 4096,
+            "max_peak_rss_mb": 2048,
             "minimum_available_disk_gb": 30,
             "maximum_estimated_full_run_hours": 18,
             "host_available_disk_gb": available_disk_gb,

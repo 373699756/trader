@@ -17,6 +17,7 @@ from typing import Literal, Protocol, cast
 from zoneinfo import ZoneInfo
 
 from trader.application.research.tomorrow_training import (
+    TomorrowPartitionValidationProgress,
     TomorrowTrainingProgress,
     TomorrowTrainingProgressPort,
     TomorrowTrainingWindow,
@@ -34,6 +35,7 @@ from trader.infra.research.history_control_repository import (
     HistoryMaintenanceAlreadyRunningError,
     HistoryMaintenanceLock,
 )
+from trader.infra.research.history_month_partition import HistoryPartitionVerificationPhase
 from trader.infra.research.history_training_due import HistoryTrainingDueEvaluation, evaluate_history_training_due
 from trader.infra.research.history_training_input import (
     HistoryTrainingInputError,
@@ -65,7 +67,10 @@ class _TrainingInputArchive(TrainingWindowArchive, Protocol):
 
     def describe_frozen_daily_input(self) -> FrozenDailyInputDescriptor: ...
 
-    def verify_partitions(self, progress: Callable[[int, int], None] | None = None) -> None: ...
+    def verify_partitions(
+        self,
+        progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None] | None = None,
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -320,13 +325,20 @@ def _execute_training(plan: _TrainingExecution) -> TomorrowTrainingResult:
             TomorrowTrainingProgress("partition_validation", "started", 0, partition_total),
         )
         archive.verify_partitions(
-            lambda completed, total: _publish_progress(
+            lambda completed, total, current, completed_bytes, total_bytes, phase: _publish_progress(
                 progress,
                 TomorrowTrainingProgress(
                     "partition_validation",
                     "completed" if completed == total else "running",
                     completed,
                     total,
+                    partition_validation=TomorrowPartitionValidationProgress(
+                        current,
+                        total,
+                        completed_bytes,
+                        total_bytes,
+                        phase,
+                    ),
                 ),
             )
         )

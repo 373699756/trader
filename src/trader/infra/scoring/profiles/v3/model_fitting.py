@@ -52,11 +52,19 @@ def fit_industry_models(
         normalized = (train.features - means) / scales
         training_labels = train.labels
         del train
-        design = np.column_stack((np.ones(len(normalized)), normalized))
         penalty = np.eye(7, dtype=np.float64) * 10.0
         penalty[0, 0] = 0.0
-        coefficients = np.linalg.solve(design.T @ design + penalty, design.T @ training_labels)
-        del design, penalty
+        gram = np.empty((7, 7), dtype=np.float64)
+        feature_sums = normalized.sum(axis=0)
+        gram[0, 0] = len(normalized)
+        gram[0, 1:] = feature_sums
+        gram[1:, 0] = feature_sums
+        gram[1:, 1:] = normalized.T @ normalized
+        target = np.empty(7, dtype=np.float64)
+        target[0] = training_labels.sum()
+        target[1:] = normalized.T @ training_labels
+        coefficients = np.linalg.solve(gram + penalty, target)
+        del feature_sums, gram, penalty, target
 
         early = samples.matrix_for(industry, early_dates)
         early_features = (early.features - means) / scales
@@ -75,6 +83,8 @@ def fit_industry_models(
                 "bagging_seed": 0,
                 "data_random_seed": 0,
                 "num_threads": TOMORROW_TRAINING_COMPUTE_THREADS,
+                "force_col_wise": True,
+                "histogram_pool_size": 64,
                 "verbosity": -1,
             },
             lgb.Dataset(normalized, label=training_labels),

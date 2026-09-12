@@ -39,7 +39,7 @@ class SQLiteTomorrowTrainingSampleRepository:
             PRAGMA journal_mode=OFF;
             PRAGMA synchronous=OFF;
             PRAGMA temp_store=FILE;
-            PRAGMA cache_size=-131072;
+            PRAGMA cache_size=-32768;
             PRAGMA mmap_size=0;
             CREATE TABLE raw_samples (
                 code TEXT NOT NULL,

@@ -365,12 +365,18 @@ def test_run_script_forwards_the_single_tomorrow_training_command_without_stage_
     _write_fake_entrypoint(venv_bin / "python", "exit 99")
     _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
     _write_fake_entrypoint(venv_bin / "trader-cli", "printf 'cli:%s\\n' \"$*\"")
+    _write_fake_entrypoint(venv_bin / "uname", "printf 'Darwin\\n'")
     config = tmp_path / "runtime.json"
 
     completed = subprocess.run(
         ("bash", str(ROOT / "run.sh"), "train-tomorrow"),
         cwd=ROOT,
-        env={**os.environ, "VENV_DIR": str(venv_bin.parent), "TRADER_CONFIG": str(config)},
+        env={
+            **os.environ,
+            "PATH": f"{venv_bin}:{os.environ['PATH']}",
+            "VENV_DIR": str(venv_bin.parent),
+            "TRADER_CONFIG": str(config),
+        },
         text=True,
         capture_output=True,
         check=False,
@@ -378,6 +384,43 @@ def test_run_script_forwards_the_single_tomorrow_training_command_without_stage_
 
     assert completed.returncode == 0
     assert completed.stdout == f"cli:--config {config} train-tomorrow\n"
+
+
+def test_run_script_isolates_tomorrow_training_in_a_two_gib_linux_scope(tmp_path: Path) -> None:
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    _write_fake_entrypoint(venv_bin / "python", "exit 99")
+    _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
+    _write_fake_entrypoint(venv_bin / "trader-cli", "exit 0")
+    _write_fake_entrypoint(venv_bin / "uname", "printf 'Linux\\n'")
+    _write_fake_entrypoint(venv_bin / "systemctl", "exit 0")
+    _write_fake_entrypoint(venv_bin / "systemd-run", "printf 'scope:%s\\n' \"$*\"")
+    config = tmp_path / "runtime.json"
+
+    completed = subprocess.run(
+        ("bash", str(ROOT / "run.sh"), "train-tomorrow"),
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{venv_bin}:{os.environ['PATH']}",
+            "VENV_DIR": str(venv_bin.parent),
+            "TRADER_CONFIG": str(config),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert "scope:--user --scope --quiet --collect" in completed.stdout
+    assert "--unit=trader-tomorrow-training" in completed.stdout
+    assert "--slice=background.slice" in completed.stdout
+    assert "--property=MemoryHigh=1792M" in completed.stdout
+    assert "--property=MemoryMax=2048M" in completed.stdout
+    assert "--property=MemorySwapMax=2048M" in completed.stdout
+    assert "--property=CPUWeight=20" in completed.stdout
+    assert "--property=IOWeight=20" in completed.stdout
+    assert completed.stdout.rstrip().endswith(f"-- {venv_bin / 'trader-cli'} --config {config} train-tomorrow")
 
 
 def test_run_script_rejects_tomorrow_training_arguments_before_environment_setup(tmp_path: Path) -> None:
@@ -575,11 +618,11 @@ def test_train_tomorrow_runs_a_prerequisite_before_resource_handoff_without_crea
     assert payload["training_due_reason"] == "data_incomplete"
     assert payload["invalidated_cache_dates"] == []
     assert payload["production_authority"] is False
-    assert {os.environ[name] for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")} == {"3"}
+    assert {os.environ[name] for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")} == {"2"}
     assert not runtime_dir.exists()
 
 
-def test_tomorrow_training_resource_policy_is_three_threads_and_lower_priority(
+def test_tomorrow_training_resource_policy_is_two_threads_and_lower_priority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     observed: list[int] = []
@@ -594,7 +637,7 @@ def test_tomorrow_training_resource_policy_is_three_threads_and_lower_priority(
     assert {
         os.environ[name]
         for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS")
-    } == {"3"}
+    } == {"2"}
 
 
 def test_train_tomorrow_passes_the_fixed_project_history_root_to_the_training_owner(

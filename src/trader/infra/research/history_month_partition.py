@@ -6,11 +6,11 @@ import hashlib
 import os
 import re
 import sqlite3
-from collections.abc import Collection, Iterable, Iterator
+from collections.abc import Callable, Collection, Iterable, Iterator
 from contextlib import closing
 from datetime import date
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from trader.domain.research.history_control import HistorySnapshotPartition
 from trader.domain.research.history_monthly import HistoryMonthlyRevision
@@ -22,6 +22,9 @@ from trader.infra.research.history_month_codec import (
 _SCHEMA_IDENTITY = "history_month_partition"
 _CODE = re.compile(r"^[0-9]{6}$")
 _HASH_CHUNK_BYTES = 1024 * 1024
+_CACHE_RELEASE_BYTES = 16 * 1024 * 1024
+HistoryPartitionVerificationPhase = Literal["hash", "integrity", "row_count"]
+HistoryPartitionVerificationProgress = Callable[[int, int, HistoryPartitionVerificationPhase], None]
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS metadata (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
@@ -292,11 +295,17 @@ class SQLiteHistoryMonthPartitionRepository:
             raise HistoryMonthPartitionError("history month sealing failed") from exc
 
     @classmethod
-    def verify(cls, path: Path, reference: HistorySnapshotPartition) -> None:
+    def verify(
+        cls,
+        path: Path,
+        reference: HistorySnapshotPartition,
+        progress: HistoryPartitionVerificationProgress | None = None,
+    ) -> None:
         if not path.is_file():
             raise HistoryMonthPartitionError("history month partition is missing")
         try:
-            if _sha256_file(path) != reference.sha256:
+            file_size = path.stat().st_size
+            if _sha256_file(path, progress) != reference.sha256:
                 raise HistoryMonthPartitionError("history month partition hash mismatch")
             wal = Path(f"{path}-wal")
             if wal.exists() and wal.stat().st_size > 0:
@@ -306,15 +315,21 @@ class SQLiteHistoryMonthPartitionRepository:
             month = int(Path(parts[2]).stem)
             candidate = cls(path, year, month)
             with closing(candidate._read_connection()) as connection:
+                if progress is not None:
+                    progress(file_size, file_size, "integrity")
                 candidate._require_metadata(connection)
                 candidate._require_schema(connection)
                 if connection.execute("PRAGMA quick_check").fetchone() != ("ok",):
                     raise HistoryMonthPartitionError("history month integrity check failed")
+                if progress is not None:
+                    progress(file_size, file_size, "row_count")
                 row_count = cast(int, connection.execute("SELECT COUNT(*) FROM daily_records").fetchone()[0])
         except HistoryMonthPartitionError:
             raise
         except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
             raise HistoryMonthPartitionError("history month verification failed") from exc
+        finally:
+            _release_file_cache(path)
         if row_count != reference.row_count:
             raise HistoryMonthPartitionError("history month partition row count mismatch")
 
@@ -476,6 +491,10 @@ class SQLiteHistoryMonthPartitionRepository:
     def _read_connection(self) -> sqlite3.Connection:
         connection = sqlite3.connect(f"file:{self._path.as_posix()}?mode=ro", uri=True, timeout=5.0)
         connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA query_only=ON")
+        connection.execute("PRAGMA cache_size=-8192")
+        connection.execute("PRAGMA mmap_size=0")
+        connection.execute("PRAGMA temp_store=FILE")
         return connection
 
 
@@ -502,12 +521,58 @@ def _decode_row(row: tuple[object, ...]) -> HistoryMonthlyRevision:
     return value
 
 
-def _sha256_file(path: Path) -> str:
+def _sha256_file(path: Path, progress: HistoryPartitionVerificationProgress | None = None) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
+    total = path.stat().st_size
+    with path.open("rb", buffering=0) as handle:
+        _advise_file_access(handle.fileno(), 0, 0, "POSIX_FADV_SEQUENTIAL")
+        released_offset = 0
+        offset = 0
         for chunk in iter(lambda: handle.read(_HASH_CHUNK_BYTES), b""):
             digest.update(chunk)
+            offset += len(chunk)
+            if offset - released_offset >= _CACHE_RELEASE_BYTES:
+                _advise_file_access(
+                    handle.fileno(),
+                    released_offset,
+                    offset - released_offset,
+                    "POSIX_FADV_DONTNEED",
+                )
+                released_offset = offset
+                if progress is not None:
+                    progress(offset, total, "hash")
+        if offset > released_offset:
+            _advise_file_access(
+                handle.fileno(),
+                released_offset,
+                offset - released_offset,
+                "POSIX_FADV_DONTNEED",
+            )
+        if progress is not None:
+            progress(offset, total, "hash")
     return digest.hexdigest()
+
+
+def _advise_file_access(descriptor: int, offset: int, length: int, advice_name: str) -> None:
+    advise = getattr(os, "posix_fadvise", None)
+    advice = getattr(os, advice_name, None)
+    if advise is None or advice is None:
+        return
+    try:
+        advise(descriptor, offset, length, advice)
+    except OSError:
+        pass
+
+
+def _release_file_cache(path: Path) -> None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        _advise_file_access(descriptor, 0, 0, "POSIX_FADV_DONTNEED")
+    finally:
+        os.close(descriptor)
 
 
 def _fsync_file(path: Path) -> None:
@@ -531,5 +596,6 @@ def _fsync_directory(path: Path) -> None:
 __all__ = [
     "HistoryMonthPartitionConflictError",
     "HistoryMonthPartitionError",
+    "HistoryPartitionVerificationPhase",
     "SQLiteHistoryMonthPartitionRepository",
 ]

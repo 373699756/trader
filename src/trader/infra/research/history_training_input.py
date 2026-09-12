@@ -30,6 +30,7 @@ from trader.infra.research.history_month_archive import (
     HistoryMonthlyArchiveError,
     SQLiteHistoryMonthlyArchive,
 )
+from trader.infra.research.history_month_partition import HistoryPartitionVerificationPhase
 
 
 @dataclass(frozen=True)
@@ -141,7 +142,10 @@ class SQLiteHistoryTrainingInputArchive:
     def describe_frozen_daily_input(self) -> FrozenDailyInputDescriptor:
         return self._descriptor
 
-    def verify_partitions(self, progress: Callable[[int, int], None] | None = None) -> None:
+    def verify_partitions(
+        self,
+        progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None] | None = None,
+    ) -> None:
         try:
             self._archive.verify_snapshot(self._active, progress)
         except (HistoryMonthlyArchiveError, OSError, ValueError) as exc:

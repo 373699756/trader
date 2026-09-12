@@ -43,19 +43,19 @@ def test_training_memory_gate_requires_explicit_roots_and_reports_peak_rss(tmp_p
     assert '"peak_rss_bytes": 100' in capsys.readouterr().out
 
 
-def test_training_memory_gate_applies_the_shared_three_thread_policy(monkeypatch) -> None:
+def test_training_memory_gate_applies_the_shared_two_thread_policy(monkeypatch) -> None:
     for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         monkeypatch.delenv(name, raising=False)
 
     check_tomorrow_training_memory._configure_resources()
 
-    assert check_tomorrow_training_memory.TOMORROW_TRAINING_PEAK_RSS_MIB == 4_096
+    assert check_tomorrow_training_memory.TOMORROW_TRAINING_PEAK_RSS_MIB == 2_048
     assert {
         name: check_tomorrow_training_memory.os.environ[name]
         for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS")
     } == {
-        "OMP_NUM_THREADS": "3",
-        "OPENBLAS_NUM_THREADS": "3",
-        "MKL_NUM_THREADS": "3",
-        "NUMEXPR_NUM_THREADS": "3",
+        "OMP_NUM_THREADS": "2",
+        "OPENBLAS_NUM_THREADS": "2",
+        "MKL_NUM_THREADS": "2",
+        "NUMEXPR_NUM_THREADS": "2",
     }

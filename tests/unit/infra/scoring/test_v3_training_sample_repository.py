@@ -17,6 +17,7 @@ def test_sample_repository_streams_by_day_and_industry_in_stable_order(tmp_path:
     first = date(2026, 1, 2)
     second = first + timedelta(days=1)
     with SQLiteTomorrowTrainingSampleRepository(tmp_path / "samples.sqlite3") as repository:
+        assert repository._connection.execute("PRAGMA cache_size").fetchone() == (-32768,)
         repository.add_raw((_sample("600002", first), _sample("600001", first), _sample("600003", second)))
 
         assert repository.raw_dates() == (first, second)

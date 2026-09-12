@@ -12,7 +12,7 @@ from trader.infra.scoring.profiles.v3.training_sample_repository import (
 )
 
 
-def test_industry_fitting_is_deterministic_with_the_three_thread_limit(tmp_path: Path) -> None:
+def test_industry_fitting_is_deterministic_with_the_two_thread_limit(tmp_path: Path) -> None:
     dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_250))
     split = build_baostock_training_split(dates, parent_manifest_hash="a" * 64)
     usable_dates = tuple((*split.development_dates, *split.confirmation_dates, *split.daily_proxy_holdout_dates))
@@ -25,11 +25,12 @@ def test_industry_fitting_is_deterministic_with_the_three_thread_limit(tmp_path:
         first, first_training_rows, first_validation_rows = fit_industry_models(repository, split)
         second, second_training_rows, second_validation_rows = fit_industry_models(repository, split)
 
-    assert TOMORROW_TRAINING_COMPUTE_THREADS == 3
+    assert TOMORROW_TRAINING_COMPUTE_THREADS == 2
     assert first == second
     assert first_training_rows == second_training_rows
     assert first_validation_rows == second_validation_rows
-    assert "[num_threads: 3]" in str(first["银行"]["lightgbm_model"])
+    assert "[num_threads: 2]" in str(first["银行"]["lightgbm_model"])
+    assert "[force_col_wise: 1]" in str(first["银行"]["lightgbm_model"])
 
 
 def _samples_for_day(day: date, day_position: int) -> tuple[TomorrowTrainingSample, ...]:

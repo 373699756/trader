@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from trader.application.research.tomorrow_training import TomorrowTrainingProgress
+from trader.application.research.tomorrow_training import (
+    TomorrowPartitionValidationProgress,
+    TomorrowTrainingProgress,
+)
 from trader.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
 
 
@@ -20,7 +23,7 @@ def test_training_progress_prints_real_rows_percent_duration_and_no_rss(capsys) 
 
     lines = capsys.readouterr().err.splitlines()
     assert lines == [
-        "00:00:00 | 资源预检 | 1/1 (100.00%) | 完成 | 计算线程 3 | 峰值 RSS 目标 4096 MiB",
+        "00:00:00 | 资源预检 | 1/1 (100.00%) | 完成 | 计算线程 2 | 峰值 RSS 上限 2048 MiB",
         "00:12:34 | 历史行转换 | 850/5453 (15.59%) | 运行中 | 已生成样本 612",
     ]
 
@@ -40,6 +43,24 @@ def test_training_progress_throttles_advances_but_emits_stage_boundaries(capsys)
         "00:00:00 | 输入分片校验 | 0/100 (0.00%) | 开始",
         "00:00:31 | 输入分片校验 | 25/100 (25.00%) | 运行中",
         "00:00:32 | 输入分片校验 | 100/100 (100.00%) | 完成",
+    ]
+
+
+def test_training_progress_shows_current_partition_hash_bytes(capsys) -> None:
+    output = StderrTomorrowTrainingProgress(monotonic=_Clock(100.0, 100.0), start_heartbeat=False)
+
+    output.publish(
+        TomorrowTrainingProgress(
+            "partition_validation",
+            "running",
+            0,
+            100,
+            partition_validation=TomorrowPartitionValidationProgress(1, 100, 128 * 1024**2, 512 * 1024**2, "hash"),
+        )
+    )
+
+    assert capsys.readouterr().err.splitlines() == [
+        "00:00:00 | 输入分片校验 | 0/100 (0.00%) | 运行中 | 当前分片 1/100 SHA-256 128.0/512.0 MiB"
     ]
 
 

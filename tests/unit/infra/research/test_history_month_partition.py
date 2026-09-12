@@ -9,6 +9,7 @@ import pytest
 
 from trader.domain.research.baostock_daily import BaoStockDailyCell, BaoStockDailySide
 from trader.domain.research.history_monthly import HistoryMonthlyRevision
+from trader.infra.research import history_month_partition as partition_module
 from trader.infra.research.history_month_partition import (
     HistoryMonthPartitionConflictError,
     HistoryMonthPartitionError,
@@ -120,6 +121,29 @@ def test_sealed_month_partition_has_stable_hash_and_fails_closed_on_tamper(tmp_p
         handle.write(b"tamper")
     with pytest.raises(HistoryMonthPartitionError, match="hash"):
         SQLiteHistoryMonthPartitionRepository.verify(sealed_path, reference)
+
+
+def test_partition_verification_bounds_sqlite_and_file_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "partitions/2026/09.sqlite3"
+    repository = SQLiteHistoryMonthPartitionRepository(path, 2026, 9)
+    repository.initialize()
+    repository.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
+    reference = repository.seal()
+    calls: list[int] = []
+    monkeypatch.setattr(
+        partition_module.os,
+        "posix_fadvise",
+        lambda _descriptor, _offset, _length, advice: calls.append(advice),
+    )
+
+    SQLiteHistoryMonthPartitionRepository.verify(tmp_path / reference.relative_path, reference)
+
+    assert calls[0] == partition_module.os.POSIX_FADV_SEQUENTIAL
+    assert partition_module.os.POSIX_FADV_DONTNEED in calls
+    with repository._read_connection() as connection:
+        assert connection.execute("PRAGMA cache_size").fetchone() == (-8192,)
+        assert connection.execute("PRAGMA mmap_size").fetchone() == (0,)
+        assert connection.execute("PRAGMA temp_store").fetchone() == (1,)
 
 
 def test_month_partition_refuses_to_seal_invalid_codec_rows(tmp_path: Path) -> None:
