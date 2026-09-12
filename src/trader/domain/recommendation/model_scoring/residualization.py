@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import math
-from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 ExposureDimension = Literal["market", "board", "industry", "log_average_amount_20d"]
@@ -31,11 +30,37 @@ class ExposureContract:
 
 
 @dataclass(frozen=True)
-class _ExposureContext:
-    boards: Sequence[str]
-    average_amounts: Sequence[float]
-    industries: Sequence[str] | None
+class ExposureContext:
+    boards: tuple[str, ...]
+    average_amounts: tuple[float, ...]
+    industries: tuple[str, ...] | None
     contract: ExposureContract
+    board_groups: tuple[tuple[int, ...], ...] = field(init=False)
+    industry_groups: tuple[tuple[int, ...], ...] = field(init=False)
+    amount_exposure: tuple[float, ...] = field(init=False)
+
+    def __post_init__(self) -> None:
+        size = len(self.boards)
+        if not self.boards or size != len(self.average_amounts) or any(not board for board in self.boards):
+            raise ValueError("scoring exposure vectors must have the same non-empty length")
+        if any(not math.isfinite(amount) or amount <= 0.0 for amount in self.average_amounts):
+            raise ValueError("scoring exposure values must be finite and amounts positive")
+        if self.contract.requires_industry and (
+            self.industries is None or len(self.industries) != size or any(not industry for industry in self.industries)
+        ):
+            raise ValueError("scoring exposure industries must have the same non-empty length")
+        board_groups = _group_indices(self.boards)
+        industry_groups = (
+            _group_indices(_required_industries(self.industries)) if self.contract.requires_industry else ()
+        )
+        amount_exposure = _center_groups_by_indices(
+            tuple(math.log(amount) for amount in self.average_amounts), board_groups
+        )
+        if self.contract.requires_industry:
+            amount_exposure = _center_groups_by_indices(amount_exposure, industry_groups)
+        object.__setattr__(self, "board_groups", board_groups)
+        object.__setattr__(self, "industry_groups", industry_groups)
+        object.__setattr__(self, "amount_exposure", amount_exposure)
 
 
 V1_V2_EXPOSURE_CONTRACT = ExposureContract(("market", "board", "log_average_amount_20d"))
@@ -50,52 +75,57 @@ def residualize_exposure(
     industries: Sequence[str] | None = None,
     contract: ExposureContract = V1_V2_EXPOSURE_CONTRACT,
 ) -> tuple[float, ...]:
-    size = len(values)
-    context = _ExposureContext(boards, average_amounts, industries, contract)
-    _validate_vectors(values, context, size)
+    context = create_exposure_context(boards, average_amounts, industries=industries, contract=contract)
+    return residualize_exposure_with_context(values, context)
+
+
+def create_exposure_context(
+    boards: Sequence[str],
+    average_amounts: Sequence[float],
+    *,
+    industries: Sequence[str] | None = None,
+    contract: ExposureContract = V1_V2_EXPOSURE_CONTRACT,
+) -> ExposureContext:
+    board_values = tuple(boards)
+    amount_values = tuple(float(value) for value in average_amounts)
+    industry_values = tuple(industries) if industries is not None else None
+    return ExposureContext(board_values, amount_values, industry_values, contract)
+
+
+def residualize_exposure_with_context(
+    values: Sequence[float],
+    context: ExposureContext,
+) -> tuple[float, ...]:
+    _validate_values(values, context)
 
     residuals = tuple(float(value) for value in values)
-    for dimension in contract.order:
+    for dimension in context.contract.order:
         residuals = _apply_dimension(residuals, dimension, context)
     return residuals
 
 
-def _validate_vectors(
+def _validate_values(
     values: Sequence[float],
-    context: _ExposureContext,
-    size: int,
+    context: ExposureContext,
 ) -> None:
-    if not values or size != len(context.boards) or size != len(context.average_amounts):
+    if not values or len(values) != len(context.boards):
         raise ValueError("scoring exposure vectors must have the same non-empty length")
-    if any(not board for board in context.boards):
-        raise ValueError("scoring exposure boards must be non-empty")
-    if any(not math.isfinite(value) for value in values) or any(
-        not math.isfinite(amount) or amount <= 0.0 for amount in context.average_amounts
-    ):
+    if any(not math.isfinite(value) for value in values):
         raise ValueError("scoring exposure values must be finite and amounts positive")
-    if context.contract.requires_industry and (
-        context.industries is None
-        or len(context.industries) != size
-        or any(not industry for industry in context.industries)
-    ):
-        raise ValueError("scoring exposure industries must have the same non-empty length")
 
 
 def _apply_dimension(
     values: Sequence[float],
     dimension: ExposureDimension,
-    context: _ExposureContext,
+    context: ExposureContext,
 ) -> tuple[float, ...]:
     if dimension == "market":
         return _center_market(values)
     if dimension == "board":
-        return _center_groups(values, context.boards)
+        return _center_groups_by_indices(values, context.board_groups)
     if dimension == "industry":
-        return _center_groups(values, _required_industries(context.industries))
-    amount_exposure = _center_groups(tuple(math.log(amount) for amount in context.average_amounts), context.boards)
-    if context.contract.requires_industry:
-        amount_exposure = _center_groups(amount_exposure, _required_industries(context.industries))
-    return _remove_linear_exposure(values, amount_exposure)
+        return _center_groups_by_indices(values, context.industry_groups)
+    return _remove_linear_exposure(values, context.amount_exposure)
 
 
 def _required_industries(industries: Sequence[str] | None) -> Sequence[str]:
@@ -109,12 +139,19 @@ def _center_market(values: Sequence[float]) -> tuple[float, ...]:
     return tuple(value - mean for value in values)
 
 
-def _center_groups(values: Sequence[float], groups: Sequence[str]) -> tuple[float, ...]:
-    indices_by_group: dict[str, list[int]] = defaultdict(list)
+def _group_indices(groups: Sequence[str]) -> tuple[tuple[int, ...], ...]:
+    indices_by_group: dict[str, list[int]] = {}
     for index, group in enumerate(groups):
-        indices_by_group[group].append(index)
+        indices_by_group.setdefault(group, []).append(index)
+    return tuple(tuple(indices) for indices in indices_by_group.values())
+
+
+def _center_groups_by_indices(
+    values: Sequence[float],
+    grouped_indices: Sequence[Sequence[int]],
+) -> tuple[float, ...]:
     result = [0.0] * len(values)
-    for indices in indices_by_group.values():
+    for indices in grouped_indices:
         mean = math.fsum(values[index] for index in indices) / len(indices)
         for index in indices:
             result[index] = values[index] - mean
@@ -133,8 +170,11 @@ def _remove_linear_exposure(values: Sequence[float], exposure: Sequence[float]) 
 
 __all__ = [
     "ExposureContract",
+    "ExposureContext",
     "ExposureDimension",
     "V1_V2_EXPOSURE_CONTRACT",
     "V3_EXPOSURE_CONTRACT",
+    "create_exposure_context",
     "residualize_exposure",
+    "residualize_exposure_with_context",
 ]

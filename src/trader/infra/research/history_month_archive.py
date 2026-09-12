@@ -6,6 +6,7 @@ import calendar
 import re
 from collections import deque
 from collections.abc import Callable, Collection, Iterator
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
@@ -27,6 +28,19 @@ _CODE = re.compile(r"^[0-9]{6}$")
 
 class HistoryMonthlyArchiveError(RuntimeError):
     """The active monthly history view is incomplete or inconsistent."""
+
+
+@dataclass(frozen=True)
+class HistoryPartitionRevisionComparison:
+    """Compare two logical sequences through one trusted physical partition."""
+
+    physical_reference: HistorySnapshotPartition
+    before_sequence: int
+    after_sequence: int
+
+    def __post_init__(self) -> None:
+        if self.before_sequence < 1 or self.after_sequence <= self.before_sequence:
+            raise ValueError("history partition revision comparison sequences are invalid")
 
 
 def route_history_months(start: date, end: date) -> tuple[tuple[int, int], ...]:
@@ -169,6 +183,30 @@ class SQLiteHistoryMonthlyArchive:
             repository = self._verified_repository(reference)
             yield from repository.iter_range(start, end, snapshot_sequence=snapshot.sequence)
 
+    def revised_dates(
+        self,
+        start: date,
+        end: date,
+        comparison: HistoryPartitionRevisionComparison,
+    ) -> tuple[date, ...]:
+        """Compare logical revision identities without trusting an obsolete file hash."""
+
+        reference = comparison.physical_reference
+        reference_month = _reference_month(reference)
+        if start > end or (start.year, start.month) != reference_month or (end.year, end.month) != reference_month:
+            raise ValueError("history partition revision comparison range is invalid")
+        repository = self._verified_repository(reference)
+        try:
+            before = _revision_identities(
+                repository.iter_range(start, end, snapshot_sequence=comparison.before_sequence)
+            )
+            after = _revision_identities(repository.iter_range(start, end, snapshot_sequence=comparison.after_sequence))
+        except HistoryMonthPartitionError as exc:
+            raise HistoryMonthlyArchiveError("history partition revision comparison failed") from exc
+        return tuple(
+            sorted(day for day, code in set(before) | set(after) if before.get((day, code)) != after.get((day, code)))
+        )
+
     def iter_code(
         self,
         code: str,
@@ -271,6 +309,16 @@ def _reference_month(reference: HistorySnapshotPartition) -> tuple[int, int]:
     return int(parts[1]), int(Path(parts[2]).stem)
 
 
+def _revision_identities(revisions: Iterator[HistoryMonthlyRevision]) -> dict[tuple[date, str], str]:
+    identities: dict[tuple[date, str], str] = {}
+    for revision in revisions:
+        key = (revision.trade_date, revision.code)
+        if key in identities:
+            raise HistoryMonthlyArchiveError("history partition revision comparison contains duplicate rows")
+        identities[key] = revision.revision_id
+    return identities
+
+
 def _partition_progress(
     progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None],
     current_partition: int,
@@ -289,4 +337,9 @@ def _partition_progress(
     return report
 
 
-__all__ = ["HistoryMonthlyArchiveError", "SQLiteHistoryMonthlyArchive", "route_history_months"]
+__all__ = [
+    "HistoryMonthlyArchiveError",
+    "HistoryPartitionRevisionComparison",
+    "SQLiteHistoryMonthlyArchive",
+    "route_history_months",
+]

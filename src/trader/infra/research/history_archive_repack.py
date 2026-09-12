@@ -6,7 +6,7 @@ import hashlib
 import os
 import shutil
 import sqlite3
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Sequence
 from contextlib import closing
 from dataclasses import dataclass, replace
 from pathlib import Path

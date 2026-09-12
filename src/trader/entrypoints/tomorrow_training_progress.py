@@ -50,6 +50,8 @@ class StderrTomorrowTrainingProgress:
         self._start_heartbeat = start_heartbeat
         self._last_emitted_at: float | None = None
         self._latest: TomorrowTrainingProgress | None = None
+        self._stage_started_at: dict[TomorrowTrainingStage, float] = {}
+        self._stage_durations: dict[TomorrowTrainingStage, float] = {}
         self._lock = threading.Lock()
         self._stopped = threading.Event()
         self._thread: threading.Thread | None = None
@@ -77,11 +79,19 @@ class StderrTomorrowTrainingProgress:
     def publish(self, progress: TomorrowTrainingProgress) -> None:
         now = self._monotonic()
         with self._lock:
+            self._stage_started_at.setdefault(progress.stage, now)
+            if progress.state == "completed":
+                self._stage_durations[progress.stage] = now - self._stage_started_at[progress.stage]
             self._latest = progress
             boundary = progress.state in {"started", "completed"}
             due = self._last_emitted_at is None or now - self._last_emitted_at >= _PROGRESS_INTERVAL_SECONDS
             if boundary or due:
                 self._emit(progress, now)
+
+    @property
+    def stage_durations(self) -> tuple[tuple[TomorrowTrainingStage, float], ...]:
+        with self._lock:
+            return tuple(self._stage_durations.items())
 
     def publish_cancelled(self) -> None:
         now = self._monotonic()

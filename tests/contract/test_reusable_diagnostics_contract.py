@@ -53,6 +53,8 @@ def test_unified_runtime_diagnostic_is_the_only_public_parameterized_script() ->
         "--output",
         "--archive-root",
         "--archive-page-sample-count",
+        "--archive-query-rounds",
+        "--archive-revision-write-sample-count",
     ):
         assert option in result.stdout
     for profile in (

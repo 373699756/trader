@@ -8,7 +8,6 @@ import tempfile
 from pathlib import Path
 from typing import cast
 
-from trader.infra.scoring.artifact_hashing import artifact_content_hash
 from trader.infra.research.history_archive_repack_state import (
     HistoryArchiveActivationJournal,
     HistoryArchiveActivationState,
@@ -17,6 +16,7 @@ from trader.infra.research.history_archive_repack_state import (
     HistoryArchiveSourceFile,
     HistoryTrainingMemoryEvidence,
 )
+from trader.infra.scoring.artifact_hashing import artifact_content_hash
 
 
 class HistoryArchiveRepackCodecError(RuntimeError):

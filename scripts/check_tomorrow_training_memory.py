@@ -56,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
             progress=progress,
             expected_history_snapshot_hash=args.expected_history_snapshot_hash,
         )
+        stage_durations = progress.stage_durations
         repeated = run_repack_tomorrow_training(
             args.history_root.resolve(),
             args.train_root.resolve(),
@@ -77,6 +78,8 @@ def main(argv: list[str] | None = None) -> int:
         "peak_rss_bytes": peak,
         "starting_peak_rss_bytes": before,
         "max_rss_bytes": budget,
+        "sample_database_peak_bytes": result.sample_database_peak_bytes,
+        "stage_durations_ms": {name: round(seconds * 1_000.0, 1) for name, seconds in stage_durations},
         "failure_reasons": list(result.failure_reasons),
     }
     payload["content_hash"] = artifact_content_hash(payload)

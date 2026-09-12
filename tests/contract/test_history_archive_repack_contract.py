@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -32,3 +31,9 @@ def test_history_repack_does_not_add_a_run_sh_public_command() -> None:
 
     assert "repack_baostock_history" not in run_script
     assert "repack-history" not in run_script
+
+
+def test_repacked_snapshot_cannot_rebind_the_retired_history_training_cache() -> None:
+    retired_cache = ROOT / "src/trader/infra/research/history_training_cache.py"
+
+    assert not retired_cache.exists()

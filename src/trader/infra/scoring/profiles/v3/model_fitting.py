@@ -24,32 +24,33 @@ def fit_industry_models(
     *,
     progress: TomorrowTrainingProgressPort | None = None,
 ) -> tuple[dict[str, dict[str, object]], int, int]:
+    samples.require_split(split)
     models: dict[str, dict[str, object]] = {}
-    training_dates = frozenset(split.model_fit_dates)
-    calibration_dates = frozenset(split.calibration_dates)
-    early_dates = frozenset(split.early_stopping_dates)
-    validation_dates = frozenset((*split.confirmation_dates, *split.daily_proxy_holdout_dates))
-    industries = samples.industries(training_dates)
-    _publish(progress, "started", 0, len(industries))
-    for position, industry in enumerate(industries, start=1):
-        train = samples.matrix_for(industry, training_dates)
-        calibration_count = samples.count_for(industry, calibration_dates)
-        early_count = samples.count_for(industry, early_dates)
-        validation_count = samples.count_for(industry, validation_dates)
-        training_count = len(train.labels)
-        if training_count < 20_000 or calibration_count == 0 or early_count == 0 or validation_count == 0:
+    workloads = samples.industry_counts()
+    _publish(progress, "started", 0, len(workloads))
+    for position, counts in enumerate(workloads, start=1):
+        if counts.training < 20_000 or counts.calibration == 0 or counts.early_stopping == 0 or counts.validation == 0:
             _publish(
                 progress,
-                "completed" if position == len(industries) else "running",
+                "completed" if position == len(workloads) else "running",
                 position,
-                len(industries),
+                len(workloads),
                 len(models),
             )
             continue
+        industry = counts.industry
+        data = samples.industry_data(counts)
+        train = data.training
+        early = data.early_stopping
+        calibration = data.calibration
+        del data
+        training_count = counts.training
         means = train.features.mean(axis=0)
         standard_deviations = train.features.std(axis=0)
         scales = np.where(standard_deviations > 1e-12, standard_deviations, 1.0)
-        normalized = (train.features - means) / scales
+        normalized = np.empty_like(train.features)
+        np.subtract(train.features, means, out=normalized)
+        np.divide(normalized, scales, out=normalized)
         training_labels = train.labels
         del train
         penalty = np.eye(7, dtype=np.float64) * 10.0
@@ -66,7 +67,6 @@ def fit_industry_models(
         coefficients = np.linalg.solve(gram + penalty, target)
         del feature_sums, gram, penalty, target
 
-        early = samples.matrix_for(industry, early_dates)
         early_features = (early.features - means) / scales
         booster = lgb.train(
             {
@@ -95,12 +95,11 @@ def fit_industry_models(
         booster.free_dataset()
         del early, early_features
 
-        calibration = samples.matrix_for(industry, calibration_dates)
         calibration_features = (calibration.features - means) / scales
         tree = booster.predict(calibration_features, num_iteration=booster.best_iteration)
         ridge = coefficients[0] + calibration_features @ coefficients[1:]
         predicted = 0.5 * ridge + 0.5 * tree
-        slope, intercept = np.polyfit(predicted, calibration.labels, 1) if calibration_count >= 2 else (1.0, 0.0)
+        slope, intercept = np.polyfit(predicted, calibration.labels, 1) if counts.calibration >= 2 else (1.0, 0.0)
         models[industry] = {
             "transformer_means": means.tolist(),
             "transformer_scales": scales.tolist(),
@@ -111,7 +110,7 @@ def fit_industry_models(
             "calibration_intercept": float(intercept),
             "calibration_slope": float(slope),
             "training_rows": training_count,
-            "validation_rows": validation_count,
+            "validation_rows": counts.validation,
         }
         del (
             calibration,
@@ -125,11 +124,11 @@ def fit_industry_models(
             booster,
         )
         _publish(
-            progress, "completed" if position == len(industries) else "running", position, len(industries), len(models)
+            progress, "completed" if position == len(workloads) else "running", position, len(workloads), len(models)
         )
-    if not industries:
+    if not workloads:
         _publish(progress, "completed", 0, 0)
-    return models, samples.count(training_dates), samples.count(validation_dates)
+    return models, samples.split_count("training"), samples.split_count("validation")
 
 
 def _publish(

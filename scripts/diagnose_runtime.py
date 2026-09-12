@@ -101,6 +101,8 @@ class DiagnosticOptions:
     persistence_runtime_dir: Path | None
     archive_root: Path
     archive_page_sample_count: int
+    archive_query_rounds: int
+    archive_revision_write_sample_count: int
 
 
 @dataclass(frozen=True)
@@ -183,6 +185,18 @@ def _parser() -> argparse.ArgumentParser:
         default=1,
         help="monthly files sampled for expensive dbstat page classification",
     )
+    parser.add_argument(
+        "--archive-query-rounds",
+        type=int,
+        default=3,
+        help="cold and warm rounds per history-archive query workload",
+    )
+    parser.add_argument(
+        "--archive-revision-write-sample-count",
+        type=int,
+        default=512,
+        help="rows copied into the disposable revision batch-write probe",
+    )
     parser.add_argument("--output", default="-", help="combined JSON output path outside the repository, or -")
     return parser
 
@@ -210,6 +224,10 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         raise ValueError("sample intervals must not be negative")
     if not 1 <= args.archive_page_sample_count <= 100:
         raise ValueError("--archive-page-sample-count must be within 1..100")
+    if not 1 <= args.archive_query_rounds <= 9:
+        raise ValueError("--archive-query-rounds must be within 1..9")
+    if not 1 <= args.archive_revision_write_sample_count <= 5_000:
+        raise ValueError("--archive-revision-write-sample-count must be within 1..5000")
     persistence = _external_path(args.persistence_runtime_dir, "--persistence-runtime-dir")
     output = args.output
     if output != "-":
@@ -236,6 +254,8 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             persistence_runtime_dir=persistence,
             archive_root=args.archive_root.expanduser().resolve(),
             archive_page_sample_count=args.archive_page_sample_count,
+            archive_query_rounds=args.archive_query_rounds,
+            archive_revision_write_sample_count=args.archive_revision_write_sample_count,
         ),
         output,
     )
@@ -344,6 +364,10 @@ def build_commands(
                 str(options.archive_root),
                 "--page-sample-count",
                 str(options.archive_page_sample_count),
+                "--query-rounds",
+                str(options.archive_query_rounds),
+                "--revision-write-sample-count",
+                str(options.archive_revision_write_sample_count),
             ),
             common_timeout,
         ),

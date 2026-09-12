@@ -24,8 +24,8 @@ from trader.domain.research.baostock_daily import (
     BaoStockSecurity,
     BaoStockSourceVersions,
 )
-from trader.infra.research.history_archive_sync import run_history_sync
 from trader.infra.research.history_archive_repack import HistoryArchiveRepackFenceError
+from trader.infra.research.history_archive_sync import run_history_sync
 from trader.infra.research.history_control_repository import SQLiteHistoryControlRepository
 from trader.infra.research.history_month_archive import SQLiteHistoryMonthlyArchive
 

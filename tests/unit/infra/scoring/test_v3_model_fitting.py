@@ -20,7 +20,7 @@ def test_industry_fitting_is_deterministic_with_the_two_thread_limit(tmp_path: P
     with SQLiteTomorrowTrainingSampleRepository(tmp_path / "samples.sqlite3") as repository:
         for day_position, day in enumerate(usable_dates):
             repository.add_final(_samples_for_day(day, day_position))
-        repository.prepare_for_model_fitting()
+        repository.prepare_for_model_fitting(split)
 
         first, first_training_rows, first_validation_rows = fit_industry_models(repository, split)
         second, second_training_rows, second_validation_rows = fit_industry_models(repository, split)

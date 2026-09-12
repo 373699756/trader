@@ -44,6 +44,7 @@ def test_training_progress_throttles_advances_but_emits_stage_boundaries(capsys)
         "00:00:31 | 输入分片校验 | 25/100 (25.00%) | 运行中",
         "00:00:32 | 输入分片校验 | 100/100 (100.00%) | 完成",
     ]
+    assert output.stage_durations == (("partition_validation", 32.0),)
 
 
 def test_training_progress_shows_current_partition_hash_bytes(capsys) -> None:

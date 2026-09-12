@@ -42,16 +42,16 @@ from trader.domain.research.history_control import (
     HistoryUniverseIdentity,
 )
 from trader.domain.research.history_monthly import HistoryMonthlyRevision
+from trader.infra.research.history_archive_repack import (
+    HistoryArchiveRepackFenceError,
+    require_history_repack_inactive,
+)
 from trader.infra.research.history_control_repository import (
     HistoryControlError,
     HistoryMaintenanceAlreadyRunningError,
     HistoryMaintenanceLock,
     SQLiteHistoryControlRepository,
     inspect_history_disk,
-)
-from trader.infra.research.history_archive_repack import (
-    HistoryArchiveRepackFenceError,
-    require_history_repack_inactive,
 )
 from trader.infra.research.history_month_archive import route_history_months
 from trader.infra.research.history_month_partition import (

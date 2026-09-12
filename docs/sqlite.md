@@ -186,6 +186,14 @@ rolled_back
 - 旧活动 bundle 保持可用，只有新 model、report、training-input 完整校验并原子发布后才切换活动指针。
 - 失败、Ctrl+C、SIGTERM 或 2 GiB OOM 都不能覆盖旧活动 bundle，也不能清除 due。
 
+实施状态（2026-09-12）：`HistoryPartitionRevisionComparison` 已把当前稳定文件的 `physical_reference` 与
+`before_sequence/after_sequence` 分离；训练到期只用新 SHA 验证一次当前月库，再在该文件上重放两个 sequence。
+纯物理压实不产生 revision 日期或缓存失效范围，但因活动 bundle 仍绑定旧 snapshot 且 `label_cutoff` 未前进，会以
+既有 `training_contract_due` 启动一次身份换绑训练；普通新增标签日仍遵循 20 日 cadence。无 bundle 继续返回
+`initial_training_required`，损坏、缺月、错误 sequence 或无法读取任一视图继续失败关闭。第 5 章代码已完成，
+未被活动链使用且允许旧 snapshot 原地换绑的 `SQLiteHistoryTrainingCache` 已删除，训练只创建新的临时样本库。
+真实 build/activate/train 尚未执行。
+
 ## 6. SQLite 读取与写入性能优化
 
 ### 6.1 最新 revision 查询
@@ -200,8 +208,9 @@ rolled_back
 该结果只是一个热缓存代表月证据，不能直接外推为完整训练提速比例。实施时：
 
 1. 为全月顺序扫描、单代码窗口、单日/板块截面提供各自明确 SQL，移除 `? IS NULL OR ...` 对查询计划的干扰。
-2. 最新 observation 使用带 `snapshot_sequence` 上限的 `NOT EXISTS` anti-join；内外查询都必须限制 sequence，
-   保持历史 snapshot 重放语义。
+2. 在真实归档上分别实测带 `snapshot_sequence` 上限的 `NOT EXISTS` anti-join 和按
+   `(trade_date, code)` 聚合 `MAX(sync_sequence)` 后精确回连 observation 的方案；替代方案只有在
+   保持历史 snapshot 重放语义且不退化时才取代窗口函数。
 3. 在普通月、revision 密集月、A→B→A、code 和 board 过滤上证明与原查询逐行一致。
 4. 比较 4 KiB/8 KiB、冷/热缓存的多轮中位数和查询计划；只有无语义变化、无工作负载退化且有稳定收益才替换。
 5. 保持 `mode=ro`、8 MiB SQLite cache、`mmap_size=0` 和 `temp_store=FILE`；不以扩大页缓存换取表面速度。
@@ -221,6 +230,14 @@ rolled_back
 
 BaoStock 全市场下载仍受逐股供应商请求和限速主导。写入优化必须以 SQLite trace/吞吐实证证明价值，不能通过增加
 供应商并发、缩短安全间隔或降低持久化等级换速度。
+
+实施状态（2026-09-12）：读取器已按 full/code/board/code+board 拆分无 nullable 分支的 SQL。原计划 anti-join 在
+当前 4 KiB 生产月实测全月热读中位数约 10.3 秒，明显退化；后续 `MAX(sync_sequence)` 聚合虽能快速得到键，回连
+大 JSON 记录后热读仍约 10.3 秒并产生最终排序临时树，两者都已否决。生产最终保留语义和实测均更快的窗口函数，
+只合入专用 filter SQL；消除窗口临时 B-tree 这一候选因性能门禁不通过而明确不实施。revision 写入已先确定性编码整批输入，以临时键表一次预取
+observation、revision 与最大 sequence，再在同一 `BEGIN IMMEDIATE` 事务中分别 `executemany`。WAL、FULL、
+外键、禁止回写、同序号冲突、幂等与 A→B→A 语义保持不变。统一性能门禁已拒绝两种在真实 4 KiB
+归档上退化的替代，最终保留窗口函数并只合入专用 filter SQL，不把“没有窗口树”本身当优化。
 
 ## 7. Tomorrow 训练数据管线优化
 
@@ -272,6 +289,13 @@ early/calibration 矩阵再各计数和读取。
 - 不改为 float32，不提高 mmap/cache，不并行训练多个行业，不扩大 2 GiB 上限。
 - 模型公式、特征 manifest、标签、切分和确定性参数不因 SQLite 页大小变化而改变。
 
+实施状态（2026-09-12）：`raw_samples` 表及其逐日读回/删除链已经移除；扫描按日期/代码推进时只缓冲一个样本日，
+同日直接计算 benchmark、三列残差与扣成本前 alpha，并在一次事务内写最终 `samples`。`sample_split_dates` 约束
+训练/早停/校准/验证日期，一次聚合形成全部行业计数，每个达标行业只顺序读取一次并按已知行数预分配三个矩阵，
+validation 只计数。三列 momentum 复用同一不可变 exposure context，仍逐列保持原 `math.fsum` 次序。线程、
+SQLite/LightGBM cache 与 2 GiB 上限未改；固定夹具的样本、残差和模型确定性已纳入统一回归，真实 2 GiB
+完整训练仍按第 10 章在生产转换后单独执行。
+
 ## 8. 避免重复全库验证
 
 完整 SHA-256 和 SQLite `quick_check` 都是必要信任边界，但同一不可变文件在一次持锁流程中不应无条件重复。
@@ -285,6 +309,10 @@ early/calibration 矩阵再各计数和读取。
 
 相对原计划，这会少做两轮活动归档全量 SHA 和 `quick_check`；按 12–15 GiB 目标库估算，可避免约 48–60 GiB
 额外顺序读取，同时不删除正式训练的信任校验。
+
+实施状态（2026-09-12）：build 收口和 activate 已复用封存校验，训练 archive 在一次进程内缓存已验证 repository；
+due/bundle 身份检查位于分片验证之前，第二次训练命中当前 bundle 时直接返回 `already_current`。正式训练仍完整执行
+且只执行一次 100 月 SHA、`quick_check` 和行数验证，没有放宽任何跨进程信任边界。
 
 ## 9. 性能诊断与验收门禁
 
@@ -301,12 +329,18 @@ early/calibration 矩阵再各计数和读取。
 
 真实训练进度除 `n/m` 外继续显示当前分片字节进度；各阶段记录开始/结束和吞吐，避免“仍存活”被误解为“速度正常”。
 
+实施状态（2026-09-12）：`history-archive` profile 已扩展为参数化冷热多轮 full month、单代码 61 交易日、单日板块
+查询，输出实际 query plan、行数、中位数、临时 B-tree 与峰值 RSS；另把活动库的有界真实 revision 复制到系统临时
+目录，记录批写 SQL、事务、吞吐和文件增长，不修改活动归档。2 GiB 训练门结果新增各阶段耗时与一次性样本库峰值。
+真实 8 KiB 数据库和完整训练证据尚未运行，验收数值不得提前填写。
+
 ### 9.2 数据库验收
 
 - 100/100 分片 `page_size=8192`、`freelist_count=0`、schema/metadata/hash/行数/外键/`quick_check` 通过。
 - 源/目标两张业务表逻辑 hash、snapshot sequence 视图和 A→B→A 回放完全一致。
 - 总大小不超过 16 GiB且至少缩小 30%；报告实际值，不把 12–15 GiB 预测写成完成事实。
-- 三类读取工作负载均无显著退化；最新 revision 新 SQL 必须消除窗口临时 B-tree，并取得可重复的中位数收益。
+- 三类读取工作负载均无显著退化；full/code/board/code+board 专用 filter SQL 的语义和中位数必须稳定。
+  如消除窗口临时 B-tree 的候选产生退化，必须拒绝该候选，不得为满足查询计划外观而合入。
 - 批量写入如实施，必须降低语句/事务开销且吞吐稳定提高；没有实测收益则不合入。
 
 ### 9.3 训练验收

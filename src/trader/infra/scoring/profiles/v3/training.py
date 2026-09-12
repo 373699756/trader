@@ -33,13 +33,13 @@ from trader.domain.research.history_control import (
     HistoryTrainingDueState,
 )
 from trader.domain.research.tomorrow_training_input import FrozenDailyInputDescriptor, evaluate_tomorrow_training_input
-from trader.infra.research.history_control_repository import (
-    HistoryMaintenanceAlreadyRunningError,
-    HistoryMaintenanceLock,
-)
 from trader.infra.research.history_archive_repack import (
     HistoryArchiveRepackFenceError,
     require_history_repack_inactive,
+)
+from trader.infra.research.history_control_repository import (
+    HistoryMaintenanceAlreadyRunningError,
+    HistoryMaintenanceLock,
 )
 from trader.infra.research.history_month_partition import HistoryPartitionVerificationPhase
 from trader.infra.research.history_training_due import HistoryTrainingDueEvaluation, evaluate_history_training_due
@@ -98,6 +98,7 @@ class TomorrowTrainingResult:
     training_due: bool = False
     training_due_reason: HistoryTrainingDueReason = "data_incomplete"
     invalidated_cache_dates: tuple[date, ...] = ()
+    sample_database_peak_bytes: int = 0
 
 
 @dataclass(frozen=True)
@@ -425,24 +426,28 @@ def _execute_training(plan: _TrainingExecution) -> TomorrowTrainingResult:
                 build_training_samples(archive, snapshot.training_codes, window, samples, progress=progress)
                 if samples.count() == 0:
                     return _with_due(
-                        TomorrowTrainingResult(
-                            "blocked",
-                            snapshot.input_scope,
-                            run_id,
-                            snapshot.active_snapshot_hash,
-                            len(snapshot.training_codes),
-                            snapshot.universe_count,
-                            "",
-                            "",
-                            0,
-                            0,
-                            0,
-                            ("v3_training_rows_empty",),
+                        replace(
+                            TomorrowTrainingResult(
+                                "blocked",
+                                snapshot.input_scope,
+                                run_id,
+                                snapshot.active_snapshot_hash,
+                                len(snapshot.training_codes),
+                                snapshot.universe_count,
+                                "",
+                                "",
+                                0,
+                                0,
+                                0,
+                                ("v3_training_rows_empty",),
+                            ),
+                            sample_database_peak_bytes=samples.database_size_bytes,
                         ),
                         due.state,
                         invalidated_dates,
                     )
                 models, training_rows, validation_rows = fit_industry_models(samples, split, progress=progress)
+                sample_database_peak_bytes = samples.database_size_bytes
         context = _TrainingArtifactContext(
             snapshot.input_scope,
             snapshot.active_snapshot_hash,
@@ -465,19 +470,22 @@ def _execute_training(plan: _TrainingExecution) -> TomorrowTrainingResult:
         report["content_hash"] = report_hash
         if not report["validation_passed"]:
             return _with_due(
-                TomorrowTrainingResult(
-                    "rejected",
-                    snapshot.input_scope,
-                    run_id,
-                    snapshot.active_snapshot_hash,
-                    len(snapshot.training_codes),
-                    snapshot.universe_count,
-                    report_hash,
-                    "",
-                    len(models),
-                    training_rows,
-                    validation_rows,
-                    tuple(cast(list[str], report["failure_reasons"])),
+                replace(
+                    TomorrowTrainingResult(
+                        "rejected",
+                        snapshot.input_scope,
+                        run_id,
+                        snapshot.active_snapshot_hash,
+                        len(snapshot.training_codes),
+                        snapshot.universe_count,
+                        report_hash,
+                        "",
+                        len(models),
+                        training_rows,
+                        validation_rows,
+                        tuple(cast(list[str], report["failure_reasons"])),
+                    ),
+                    sample_database_peak_bytes=sample_database_peak_bytes,
                 ),
                 due.state,
                 invalidated_dates,
@@ -499,19 +507,22 @@ def _execute_training(plan: _TrainingExecution) -> TomorrowTrainingResult:
         staging = None
         _publish_progress(progress, TomorrowTrainingProgress("artifact_publish", "completed", 1, 1))
         return _after_success(
-            TomorrowTrainingResult(
-                "engineering_ready",
-                snapshot.input_scope,
-                run_id,
-                snapshot.active_snapshot_hash,
-                len(snapshot.training_codes),
-                snapshot.universe_count,
-                report_hash,
-                model_hash,
-                len(models),
-                training_rows,
-                validation_rows,
-                (),
+            replace(
+                TomorrowTrainingResult(
+                    "engineering_ready",
+                    snapshot.input_scope,
+                    run_id,
+                    snapshot.active_snapshot_hash,
+                    len(snapshot.training_codes),
+                    snapshot.universe_count,
+                    report_hash,
+                    model_hash,
+                    len(models),
+                    training_rows,
+                    validation_rows,
+                    (),
+                ),
+                sample_database_peak_bytes=sample_database_peak_bytes,
             ),
             label_cutoff,
             invalidated_dates,
@@ -783,4 +794,4 @@ def _reason(exc: BaseException) -> str:
     return "history_manifest_unavailable" if "manifest" in text or "no such file" in text else "v3_training_failed"
 
 
-__all__ = ["TomorrowTrainingResult", "run_tomorrow_training"]
+__all__ = ["TomorrowTrainingResult", "run_repack_tomorrow_training", "run_tomorrow_training"]

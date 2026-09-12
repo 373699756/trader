@@ -18,15 +18,17 @@ from trader.domain.market.feature_contracts import (
     QfqPriceAnchors,
     calculate_tomorrow_qfq_alpha,
 )
-from trader.domain.recommendation.model_scoring import V3_EXPOSURE_CONTRACT, residualize_exposure
+from trader.domain.recommendation.model_scoring import (
+    V3_EXPOSURE_CONTRACT,
+    create_exposure_context,
+    residualize_exposure_with_context,
+)
 from trader.domain.research.history_monthly import HistoryTrainingWindow
 from trader.infra.research.history_training_input import HistoryTrainingInputError, HistoryTrainingInputSnapshot
 from trader.infra.scoring.profiles.v3.training_sample_repository import (
     SQLiteTomorrowTrainingSampleRepository,
     TomorrowTrainingSample,
 )
-
-_RAW_WRITE_BATCH_SIZE = 4_096
 
 
 class TrainingWindowArchive(Protocol):
@@ -68,10 +70,31 @@ def build_training_samples(
     allowed_codes = frozenset(codes)
     total_rows = archive.training_row_upper_bound(window.readable_dates)
     generated_samples = 0
+    converted_samples = 0
     processed_rows = 0
     pending: dict[str, _PendingSample] = {}
-    write_batch: list[TomorrowTrainingSample] = []
+    sample_day: date | None = None
+    day_samples: list[TomorrowTrainingSample] = []
     _publish(progress, TomorrowTrainingProgress("history_conversion", "started", 0, total_rows))
+    _publish(progress, TomorrowTrainingProgress("cross_section_conversion", "started", 0, total_rows))
+
+    def flush_sample_day() -> None:
+        nonlocal converted_samples
+        if not day_samples:
+            return
+        repository.add_final(_finalize_sample_day(day_samples))
+        converted_samples += len(day_samples)
+        day_samples.clear()
+        _publish(
+            progress,
+            TomorrowTrainingProgress(
+                "cross_section_conversion",
+                "running",
+                converted_samples,
+                total_rows,
+                converted_samples,
+            ),
+        )
 
     def report_scanned(value: int) -> None:
         nonlocal processed_rows
@@ -86,13 +109,16 @@ def build_training_samples(
         if code not in allowed_codes:
             raise HistoryTrainingInputError("history_code_outside_active_universe")
         current = training_window.rows[-1]
+        if sample_day is not None and current.trade_date != sample_day:
+            flush_sample_day()
+        sample_day = current.trade_date
         previous = pending.pop(code, None)
         if (
             previous is not None
             and previous.next_date == current.trade_date
             and current.qfq.close_price not in (None, 0)
         ):
-            write_batch.append(
+            day_samples.append(
                 TomorrowTrainingSample(
                     previous.code,
                     previous.trade_date,
@@ -104,15 +130,11 @@ def build_training_samples(
                 )
             )
             generated_samples += 1
-            if len(write_batch) >= _RAW_WRITE_BATCH_SIZE:
-                repository.add_raw(write_batch)
-                write_batch.clear()
         candidate = _pending_sample(training_window, next_dates, window.readable_dates)
         if candidate is not None:
             pending[code] = candidate
 
-    if write_batch:
-        repository.add_raw(write_batch)
+    flush_sample_day()
     _publish(
         progress,
         TomorrowTrainingProgress(
@@ -123,7 +145,17 @@ def build_training_samples(
             generated_samples,
         ),
     )
-    _convert_cross_sections(repository, progress)
+    _publish(
+        progress,
+        TomorrowTrainingProgress(
+            "cross_section_conversion",
+            "completed",
+            converted_samples,
+            converted_samples,
+            converted_samples,
+        ),
+    )
+    repository.prepare_for_model_fitting(window.split)
 
 
 def _pending_sample(
@@ -173,51 +205,28 @@ def _pending_sample(
     )
 
 
-def _convert_cross_sections(
-    repository: SQLiteTomorrowTrainingSampleRepository,
-    progress: TomorrowTrainingProgressPort | None,
-) -> None:
-    raw_total = repository.raw_count()
-    converted_samples = 0
-    _publish(progress, TomorrowTrainingProgress("cross_section_conversion", "started", 0, raw_total))
-    for day in repository.raw_dates():
-        values = repository.raw_for_date(day)
-        if not values:
-            continue
-        benchmark = math.fsum(item.target for item in values) / len(values)
-        residuals = residualize_sample_day(
-            tuple(item.features[3:] for item in values),
-            tuple(item.board for item in values),
-            tuple(item.industry for item in values),
-            tuple(item.average_amount_20d for item in values),
+def _finalize_sample_day(
+    values: Sequence[TomorrowTrainingSample],
+) -> tuple[TomorrowTrainingSample, ...]:
+    benchmark = math.fsum(item.target for item in values) / len(values)
+    residuals = residualize_sample_day(
+        tuple(item.features[3:] for item in values),
+        tuple(item.board for item in values),
+        tuple(item.industry for item in values),
+        tuple(item.average_amount_20d for item in values),
+    )
+    return tuple(
+        TomorrowTrainingSample(
+            item.code,
+            item.trade_date,
+            item.board,
+            item.industry,
+            item.average_amount_20d,
+            (*item.features[:3], *(residual[index] for residual in residuals)),
+            training_alpha_target(next_return=item.target, benchmark_return=benchmark),
         )
-        repository.add_final(
-            TomorrowTrainingSample(
-                item.code,
-                day,
-                item.board,
-                item.industry,
-                item.average_amount_20d,
-                (*item.features[:3], *(residual[index] for residual in residuals)),
-                training_alpha_target(next_return=item.target, benchmark_return=benchmark),
-            )
-            for index, item in enumerate(values)
-        )
-        repository.discard_raw_date(day)
-        converted_samples += len(values)
-        _publish(
-            progress,
-            TomorrowTrainingProgress(
-                "cross_section_conversion",
-                "completed" if converted_samples == raw_total else "running",
-                converted_samples,
-                raw_total,
-                converted_samples,
-            ),
-        )
-    if raw_total == 0:
-        _publish(progress, TomorrowTrainingProgress("cross_section_conversion", "completed", 0, 0))
-    repository.prepare_for_model_fitting()
+        for index, item in enumerate(values)
+    )
 
 
 def training_alpha_target(*, next_return: float, benchmark_return: float) -> float:
@@ -257,13 +266,16 @@ def residualize_sample_day(
 ) -> tuple[tuple[float, ...], ...]:
     if not momenta or not momenta[0] or any(len(row) != len(momenta[0]) for row in momenta):
         raise ValueError("V3 training momentum rows must have one consistent non-empty width")
+    context = create_exposure_context(
+        boards,
+        average_amounts,
+        industries=industries,
+        contract=V3_EXPOSURE_CONTRACT,
+    )
     return tuple(
-        residualize_exposure(
+        residualize_exposure_with_context(
             tuple(row[offset] for row in momenta),
-            boards,
-            average_amounts,
-            industries=industries,
-            contract=V3_EXPOSURE_CONTRACT,
+            context,
         )
         for offset in range(len(momenta[0]))
     )

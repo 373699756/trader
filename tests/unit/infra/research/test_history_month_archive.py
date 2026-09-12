@@ -12,11 +12,11 @@ from trader.domain.research.history_control import HistoryActiveSnapshot, Histor
 from trader.domain.research.history_monthly import HistoryMonthlyRevision
 from trader.infra.research.history_month_archive import (
     HistoryMonthlyArchiveError,
+    HistoryPartitionRevisionComparison,
     SQLiteHistoryMonthlyArchive,
     route_history_months,
 )
 from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
-from trader.infra.research.history_training_cache import HistoryTrainingCacheError, SQLiteHistoryTrainingCache
 
 
 def _side(code: str, day: date, adjustment: str, close: float) -> BaoStockDailySide:
@@ -73,7 +73,7 @@ def _build_snapshot(root: Path, rows: tuple[HistoryMonthlyRevision, ...]) -> His
     )
 
 
-def test_archive_routes_single_day_code_window_cross_month_and_training_cache(tmp_path: Path) -> None:
+def test_archive_routes_single_day_code_window_and_cross_month_training_windows(tmp_path: Path) -> None:
     root = tmp_path / "history"
     dates = tuple(date(2026, 8, 1) + timedelta(days=offset) for offset in range(62))
     rows = tuple(_revision(code, day) for day in dates for code in ("600001", "600002"))
@@ -94,22 +94,6 @@ def test_archive_routes_single_day_code_window_cross_month_and_training_cache(tm
         archive.read_day(dates[-1] + timedelta(days=1), snapshot)
     with pytest.raises(HistoryMonthlyArchiveError, match="cover"):
         tuple(archive.iter_training_windows(replace(snapshot, partitions=snapshot.partitions[:-1]), dates))
-
-    cache = SQLiteHistoryTrainingCache(tmp_path / "training.sqlite3", snapshot.content_hash)
-    cache.initialize()
-    cache.write_revisions(rows)
-    cache.write_revisions(rows)
-    assert len(cache.read_date(dates[0])) == 2
-    assert len(tuple(cache.iter_code("600001"))) == 62
-    with pytest.raises(HistoryTrainingCacheError, match="row conflicts"):
-        cache.write_revisions((replace(rows[0], first_seen_sequence=2, is_st=True),))
-    with pytest.raises(HistoryTrainingCacheError, match="identity conflicts"):
-        SQLiteHistoryTrainingCache(tmp_path / "training.sqlite3", "d" * 64).initialize()
-    advanced = cache.advance_snapshot("d" * 64, (dates[0], dates[1]))
-    assert advanced.read_date(dates[0]) == ()
-    assert len(tuple(advanced.iter_code("600001"))) == 60
-    with pytest.raises(HistoryTrainingCacheError, match="identity conflicts"):
-        cache.read_date(dates[2])
 
 
 def test_archive_reads_2000_sessions_without_directory_scan_or_unbounded_windows(tmp_path: Path) -> None:
@@ -172,3 +156,18 @@ def test_verified_snapshot_reuses_each_partition_check_and_counts_latest_rows(
     assert observed[-1][:3] == (len(snapshot.partitions), len(snapshot.partitions), len(snapshot.partitions))
     assert any(completed == 0 and current == 1 and phase == "hash" for completed, _, current, _, _, phase in observed)
     assert len(verified) == len(snapshot.partitions)
+
+
+def test_revision_comparison_uses_one_current_physical_partition_for_both_sequences(tmp_path: Path) -> None:
+    root = tmp_path / "history"
+    first = date(2026, 9, 9)
+    second = date(2026, 9, 10)
+    original = _revision("600001", first)
+    revised = replace(original, first_seen_sequence=2, is_st=True)
+    unchanged = _revision("600001", second)
+    snapshot = _build_snapshot(root, (original, revised, unchanged))
+    comparison = HistoryPartitionRevisionComparison(snapshot.partitions[0], 1, 2)
+
+    changed = SQLiteHistoryMonthlyArchive(root).revised_dates(first, second, comparison)
+
+    assert changed == (first,)

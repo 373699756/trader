@@ -14,7 +14,6 @@ from trader.infra.research.history_archive_repack import (
 )
 from trader.infra.research.history_archive_repack_state import HistoryArchiveRepackStatus
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE = PROJECT_ROOT / "data/history/baostock"
 DEFAULT_TARGET = PROJECT_ROOT / "data/historyless/baostock"

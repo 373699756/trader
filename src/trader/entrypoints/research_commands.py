@@ -239,6 +239,7 @@ def _run_tomorrow_research_orchestrator(
         "industry_count": result.industry_count,
         "training_rows": result.training_rows,
         "validation_rows": result.validation_rows,
+        "sample_database_peak_bytes": result.sample_database_peak_bytes,
         "failure_reasons": list(result.failure_reasons),
         "blockers": list(result.failure_reasons),
         "next_stage": "data_manifest" if result.status == "blocked" and not result.training_input_hash else None,

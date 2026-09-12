@@ -43,6 +43,8 @@ def _options(**overrides: object) -> DiagnosticOptions:
         persistence_runtime_dir=None,
         archive_root=Path("data/history/baostock"),
         archive_page_sample_count=1,
+        archive_query_rounds=3,
+        archive_revision_write_sample_count=512,
     )
     return replace(defaults, **overrides)
 

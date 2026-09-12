@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Literal
 
-
 HistoryArchiveActivationState = Literal[
     "prepared",
     "old_partitions_moved",

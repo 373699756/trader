@@ -84,6 +84,43 @@ def test_month_partition_schema_revision_replay_and_indexes(tmp_path: Path) -> N
     assert repository.read_day(date(2026, 9, 10), snapshot_sequence=4) == (original,)
 
 
+def test_month_partition_batches_revision_context_and_uses_specialized_latest_sql(tmp_path: Path) -> None:
+    path = tmp_path / "partitions/2026/09.sqlite3"
+    statements: list[str] = []
+    repository = SQLiteHistoryMonthPartitionRepository(path, 2026, 9, statement_trace=statements.append)
+    repository.initialize()
+    statements.clear()
+    revisions = tuple(_revision(date(2026, 9, day), 1, 10.0 + day) for day in range(1, 16))
+
+    repository.save_revisions(revisions)
+
+    selects = tuple(statement for statement in statements if statement.lstrip().upper().startswith("SELECT"))
+    assert len(selects) == 4  # metadata plus three set-based conflict/context reads
+    assert sum(statement.lstrip().upper().startswith("BEGIN IMMEDIATE") for statement in statements) == 1
+    statements.clear()
+
+    assert len(tuple(repository.iter_range(date(2026, 9, 1), date(2026, 9, 30), snapshot_sequence=1))) == 15
+    latest_sql = next(statement for statement in statements if statement.lstrip().startswith("WITH latest AS"))
+    assert "ROW_NUMBER" in latest_sql
+    assert "NOT EXISTS" not in latest_sql
+    assert "IS NULL OR" not in latest_sql
+
+
+def test_month_partition_batch_preserves_a_to_b_to_a_snapshot_replay(tmp_path: Path) -> None:
+    repository = SQLiteHistoryMonthPartitionRepository(tmp_path / "09.sqlite3", 2026, 9)
+    repository.initialize()
+    day = date(2026, 9, 10)
+    original = _revision(day, 1, 10.0)
+    revised = _revision(day, 2, 11.0)
+    reverted = _revision(day, 3, 10.0)
+
+    repository.save_revisions((original, revised, reverted))
+
+    assert repository.read_day(day, snapshot_sequence=1) == (original,)
+    assert repository.read_day(day, snapshot_sequence=2) == (revised,)
+    assert repository.read_day(day, snapshot_sequence=3) == (original,)
+
+
 def test_existing_month_partition_keeps_its_physical_page_size(tmp_path: Path) -> None:
     path = tmp_path / "partitions/2026/09.sqlite3"
     path.parent.mkdir(parents=True)
@@ -108,7 +145,13 @@ def test_month_partition_rejects_backdating_conflicts_and_wrong_month(tmp_path: 
     with pytest.raises(HistoryMonthPartitionConflictError, match="sequence"):
         repository.save_revisions((_revision(date(2026, 9, 10), 2, 11.0),))
     with pytest.raises(HistoryMonthPartitionConflictError, match="backdate"):
-        repository.save_revisions((_revision(date(2026, 9, 10), 1, 11.0),))
+        repository.save_revisions(
+            (
+                _revision(date(2026, 9, 9), 1, 9.0),
+                _revision(date(2026, 9, 10), 1, 11.0),
+            )
+        )
+    assert repository.read_day(date(2026, 9, 9), snapshot_sequence=1) == ()
     with pytest.raises(ValueError, match="month"):
         repository.save_revisions((_revision(date(2026, 10, 1), 3, 12.0),))
 

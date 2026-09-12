@@ -21,6 +21,7 @@ from trader.infra.research.history_control_repository import (
 )
 from trader.infra.research.history_month_archive import (
     HistoryMonthlyArchiveError,
+    HistoryPartitionRevisionComparison,
     SQLiteHistoryMonthlyArchive,
     route_history_months,
 )
@@ -100,10 +101,17 @@ def evaluate_history_training_due(
         except (HistoryMonthlyArchiveError, OSError, ValueError):
             data_complete = False
     input_revision = bool(revised_dates)
-    training_contract_changed = (
+    snapshot_identity_rebind = (
         bundle is not None
-        and expected_training_contract_hash is not None
-        and bundle.training_contract_hash != expected_training_contract_hash
+        and bundle.training_input_hash != active.content_hash
+        and bundle.label_cutoff == active.label_cutoff
+    )
+    training_contract_changed = bundle is not None and (
+        snapshot_identity_rebind
+        or (
+            expected_training_contract_hash is not None
+            and bundle.training_contract_hash != expected_training_contract_hash
+        )
     )
     invalidated_dates = calculate_history_training_cache_invalidation_dates(
         calendar.open_dates,
@@ -162,8 +170,8 @@ def _revised_dates_since_bundle(
     end = min(baseline_label_cutoff, baseline.data_cutoff, active.data_cutoff)
     if start > end:
         return ()
-    baseline_months = {_partition_month(item.relative_path): item.sha256 for item in baseline.partitions}
-    active_months = {_partition_month(item.relative_path): item.sha256 for item in active.partitions}
+    baseline_months = {_partition_month(item.relative_path): item for item in baseline.partitions}
+    active_months = {_partition_month(item.relative_path): item for item in active.partitions}
     archive = SQLiteHistoryMonthlyArchive(archive_root)
     revisions: set[date] = set()
     for year, month in route_history_months(start, end):
@@ -171,18 +179,20 @@ def _revised_dates_since_bundle(
             raise HistoryMonthlyArchiveError("history snapshot comparison month is missing")
         month_start = max(start, date(year, month, 1))
         month_end = min(end, date(year, month, month_calendar.monthrange(year, month)[1]))
-        if month_start > month_end or baseline_months[(year, month)] == active_months[(year, month)]:
+        baseline_reference = baseline_months[(year, month)]
+        physical_reference = active_months[(year, month)]
+        if month_start > month_end or baseline_reference == physical_reference:
             continue
-        before = {
-            (item.trade_date, item.code): item.revision_id
-            for item in archive.iter_range(month_start, month_end, baseline)
-        }
-        after = {
-            (item.trade_date, item.code): item.revision_id
-            for item in archive.iter_range(month_start, month_end, active)
-        }
         revisions.update(
-            day for day, code in set(before) | set(after) if before.get((day, code)) != after.get((day, code))
+            archive.revised_dates(
+                month_start,
+                month_end,
+                HistoryPartitionRevisionComparison(
+                    physical_reference,
+                    baseline.sequence,
+                    active.sequence,
+                ),
+            )
         )
     return tuple(sorted(revisions))
 

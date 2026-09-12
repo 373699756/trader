@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 import trader.infra.research.history_archive_repack as repack_module
+import trader.infra.research.history_training_due as due_module
 from trader.domain.research.baostock_daily import BaoStockDailyCell, BaoStockDailySide
 from trader.domain.research.history_control import (
     HistoryActiveSnapshot,
@@ -28,8 +29,9 @@ from trader.infra.research.history_archive_repack_state import (
 )
 from trader.infra.research.history_control_repository import SQLiteHistoryControlRepository
 from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.infra.research.history_training_due import evaluate_history_training_due
 from trader.infra.scoring.profiles.v3.training import run_repack_tomorrow_training
-
+from trader.infra.scoring.profiles.v3.training_bundle_repository import ActiveTomorrowBundle
 
 NOW = datetime(2026, 9, 12, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -238,6 +240,43 @@ def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
     )
     assert mismatch.status == "blocked"
     assert mismatch.failure_reasons == ("history_repack_activation_pending",)
+
+
+def test_physical_repack_does_not_create_revision_due_or_invalidate_training_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, target, original = _archive(tmp_path)
+    coordinator = HistoryArchiveRepackCoordinator(source, target, requirements=_requirements())
+    built = coordinator.build()
+    coordinator.activate()
+    contract_hash = "9" * 64
+    bundle = ActiveTomorrowBundle(
+        tmp_path / "data/train/tomorrow-v3/model.json",
+        original.content_hash,
+        original.source_identity_hash,
+        original.label_cutoff,
+        contract_hash,
+        "a" * 64,
+        "b" * 64,
+        "c" * 64,
+    )
+    monkeypatch.setattr(due_module, "_active_bundle", lambda _root: (bundle, False))
+
+    evaluation = evaluate_history_training_due(
+        source,
+        tmp_path / "data/train",
+        NOW,
+        contract_hash,
+    )
+
+    assert built.target_snapshot_hash is not None
+    assert evaluation is not None
+    assert evaluation.active_snapshot.content_hash == built.target_snapshot_hash
+    assert evaluation.state.reason == "training_contract_due"
+    assert evaluation.state.training_due is True
+    assert evaluation.state.input_revision is False
+    assert evaluation.revised_dates == ()
+    assert evaluation.invalidated_cache_dates == ()
 
 
 def test_finalize_deletes_only_the_verified_backup_after_bundle_and_memory_match(

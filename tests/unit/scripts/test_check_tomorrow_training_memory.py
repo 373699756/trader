@@ -24,6 +24,7 @@ def test_training_memory_gate_requires_explicit_roots_and_reports_peak_rss(tmp_p
             model_hash="b" * 64,
             report_hash="c" * 64,
             failure_reasons=(),
+            sample_database_peak_bytes=1234,
         )
 
     monkeypatch.setattr(check_tomorrow_training_memory, "run_repack_tomorrow_training", train)
@@ -58,6 +59,8 @@ def test_training_memory_gate_requires_explicit_roots_and_reports_peak_rss(tmp_p
     ]
     assert '"peak_rss_bytes":100' in capsys.readouterr().out
     assert '"repeat_training_status":"already_current"' in evidence.read_text(encoding="utf-8")
+    assert '"sample_database_peak_bytes":1234' in evidence.read_text(encoding="utf-8")
+    assert '"stage_durations_ms":{}' in evidence.read_text(encoding="utf-8")
     assert '"content_hash":' in evidence.read_text(encoding="utf-8")
 
 

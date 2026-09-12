@@ -8,6 +8,7 @@ import re
 import sqlite3
 from collections.abc import Callable, Collection, Iterable, Iterator
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Literal, cast
@@ -58,7 +59,7 @@ ON daily_records(trade_date, board, code, first_seen_sequence DESC, revision_id)
 CREATE INDEX IF NOT EXISTS history_month_observation_code_date_idx
 ON daily_observations(code, trade_date, sync_sequence DESC, revision_id);
 """
-_LATEST_SQL = """
+_LATEST_WINDOW = """
 WITH latest AS (
     SELECT trade_date, code, revision_id,
            ROW_NUMBER() OVER (
@@ -67,7 +68,7 @@ WITH latest AS (
            ) AS revision_rank
     FROM daily_observations
     WHERE sync_sequence <= ? AND trade_date BETWEEN ? AND ?
-      AND (? IS NULL OR code = ?)
+{observation_filter}
 )
 SELECT records.trade_date, records.code, records.revision_id, records.first_seen_sequence,
        records.board, records.payload_json, records.content_hash
@@ -77,10 +78,38 @@ JOIN daily_records AS records
  AND records.code = latest.code
  AND records.revision_id = latest.revision_id
 WHERE latest.revision_rank = 1
-  AND (? IS NULL OR records.board = ?)
+{record_filter}
 ORDER BY records.trade_date, records.code
 """
+_LATEST_RANGE_SQL = _LATEST_WINDOW.format(observation_filter="", record_filter="")
+_LATEST_CODE_SQL = _LATEST_WINDOW.format(
+    observation_filter="      AND code = ?",
+    record_filter="",
+)
+_LATEST_BOARD_SQL = _LATEST_WINDOW.format(
+    observation_filter="",
+    record_filter="  AND records.board = ?",
+)
+_LATEST_CODE_BOARD_SQL = _LATEST_WINDOW.format(
+    observation_filter="      AND code = ?",
+    record_filter="  AND records.board = ?",
+)
 _COUNT_CODE_BATCH_SIZE = 500
+
+
+@dataclass(frozen=True)
+class _EncodedRevision:
+    value: HistoryMonthlyRevision
+    trade_date: str
+    payload_json: str
+
+    @property
+    def observation_key(self) -> tuple[str, str, int]:
+        return self.trade_date, self.value.code, self.value.first_seen_sequence
+
+    @property
+    def revision_key(self) -> tuple[str, str, str]:
+        return self.trade_date, self.value.code, self.value.revision_id
 
 
 class HistoryMonthPartitionError(RuntimeError):
@@ -92,12 +121,22 @@ class HistoryMonthPartitionConflictError(HistoryMonthPartitionError):
 
 
 class SQLiteHistoryMonthPartitionRepository:
-    def __init__(self, path: Path, calendar_year: int, calendar_month: int) -> None:
+    def __init__(
+        self,
+        path: Path,
+        calendar_year: int,
+        calendar_month: int,
+        *,
+        statement_trace: Callable[[str], None] | None = None,
+        immutable_read: bool = False,
+    ) -> None:
         if calendar_year < 1990 or not 1 <= calendar_month <= 12:
             raise ValueError("history month partition identity is invalid")
         self._path = path
         self._calendar_year = calendar_year
         self._calendar_month = calendar_month
+        self._statement_trace = statement_trace
+        self._immutable_read = immutable_read
 
     def initialize(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -125,19 +164,14 @@ class SQLiteHistoryMonthPartitionRepository:
             raise HistoryMonthPartitionError("history month partition durability sync failed") from exc
 
     def save_revisions(self, revisions: Iterable[HistoryMonthlyRevision]) -> None:
+        prepared = self._prepare_revisions(revisions)
+        if not prepared:
+            return
         try:
             with closing(self._write_connection()) as connection, connection:
                 connection.execute("BEGIN IMMEDIATE")
                 self._require_metadata(connection)
-                previous_key: tuple[date, str, int, str] | None = None
-                for value in revisions:
-                    if value.trade_date.year != self._calendar_year or value.trade_date.month != self._calendar_month:
-                        raise ValueError("history revision does not belong to the target month")
-                    key = (value.trade_date, value.code, value.first_seen_sequence, value.revision_id)
-                    if previous_key is not None and key < previous_key:
-                        raise ValueError("history month revisions must be written in deterministic order")
-                    self._save_one(connection, value)
-                    previous_key = key
+                self._save_batch(connection, prepared)
         except HistoryMonthPartitionConflictError:
             raise
         except sqlite3.Error as exc:
@@ -240,17 +274,10 @@ class SQLiteHistoryMonthPartitionRepository:
         try:
             with closing(self._read_connection()) as connection:
                 self._require_metadata(connection)
+                query, filters = _latest_query(code, board)
                 cursor = connection.execute(
-                    _LATEST_SQL,
-                    (
-                        snapshot_sequence,
-                        start.isoformat(),
-                        end.isoformat(),
-                        code,
-                        code,
-                        board,
-                        board,
-                    ),
+                    query,
+                    (snapshot_sequence, start.isoformat(), end.isoformat(), *filters),
                 )
                 while rows := cursor.fetchmany(512):
                     for row in rows:
@@ -336,88 +363,119 @@ class SQLiteHistoryMonthPartitionRepository:
         if row_count != reference.row_count:
             raise HistoryMonthPartitionError("history month partition row count mismatch")
 
-    def _save_one(self, connection: sqlite3.Connection, value: HistoryMonthlyRevision) -> None:
-        payload_json = encode_history_monthly_revision(value)
-        observation = connection.execute(
-            "SELECT revision_id FROM daily_observations WHERE trade_date=? AND code=? AND sync_sequence=?",
-            (value.trade_date.isoformat(), value.code, value.first_seen_sequence),
-        ).fetchone()
-        if observation is not None:
-            if observation != (value.revision_id,):
+    def _prepare_revisions(self, revisions: Iterable[HistoryMonthlyRevision]) -> tuple[_EncodedRevision, ...]:
+        prepared: list[_EncodedRevision] = []
+        previous_key: tuple[date, str, int, str] | None = None
+        observations: dict[tuple[str, str, int], str] = {}
+        for value in revisions:
+            if value.trade_date.year != self._calendar_year or value.trade_date.month != self._calendar_month:
+                raise ValueError("history revision does not belong to the target month")
+            key = (value.trade_date, value.code, value.first_seen_sequence, value.revision_id)
+            if previous_key is not None and key < previous_key:
+                raise ValueError("history month revisions must be written in deterministic order")
+            encoded = _EncodedRevision(value, value.trade_date.isoformat(), encode_history_monthly_revision(value))
+            observed_revision = observations.setdefault(encoded.observation_key, value.revision_id)
+            if observed_revision != value.revision_id:
                 raise HistoryMonthPartitionConflictError("history monthly revision sequence conflicts")
-            self._require_existing_revision(connection, value)
-            return
-        latest_observation = connection.execute(
-            "SELECT MAX(sync_sequence) FROM daily_observations WHERE trade_date=? AND code=?",
-            (value.trade_date.isoformat(), value.code),
-        ).fetchone()
-        if latest_observation is not None and latest_observation[0] is not None:
-            current_sequence = cast(int, latest_observation[0])
-            if value.first_seen_sequence < current_sequence:
-                raise HistoryMonthPartitionConflictError("history monthly revision cannot backdate content")
-        existing = connection.execute(
-            "SELECT first_seen_sequence, payload_json, content_hash FROM daily_records "
-            "WHERE trade_date=? AND code=? AND revision_id=?",
-            (value.trade_date.isoformat(), value.code, value.revision_id),
-        ).fetchone()
-        if existing is not None:
-            first_seen_sequence, existing_payload, existing_hash = cast(tuple[int, str, str], existing)
-            persisted = HistoryMonthlyRevision(
-                first_seen_sequence,
-                value.board,
-                value.cell,
-                value.is_st,
-                value.industry,
-                value.industry_classification,
-            )
-            if (
-                existing_payload != encode_history_monthly_revision(persisted)
-                or existing_hash != persisted.content_hash
-            ):
-                raise HistoryMonthPartitionConflictError("history monthly revision identity conflicts")
-        else:
-            connection.execute(
-                "INSERT INTO daily_records"
-                "(trade_date, code, revision_id, first_seen_sequence, board, payload_json, content_hash) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    value.trade_date.isoformat(),
-                    value.code,
-                    value.revision_id,
-                    value.first_seen_sequence,
-                    value.board,
-                    payload_json,
-                    value.content_hash,
-                ),
-            )
-        connection.execute(
-            "INSERT INTO daily_observations(trade_date, code, sync_sequence, revision_id) VALUES (?, ?, ?, ?)",
-            (value.trade_date.isoformat(), value.code, value.first_seen_sequence, value.revision_id),
-        )
+            prepared.append(encoded)
+            previous_key = key
+        return tuple(prepared)
 
-    def _require_existing_revision(
-        self,
-        connection: sqlite3.Connection,
-        value: HistoryMonthlyRevision,
-    ) -> None:
-        existing = connection.execute(
-            "SELECT first_seen_sequence, payload_json, content_hash FROM daily_records "
-            "WHERE trade_date=? AND code=? AND revision_id=?",
-            (value.trade_date.isoformat(), value.code, value.revision_id),
-        ).fetchone()
-        if existing is None:
-            raise HistoryMonthPartitionConflictError("history monthly observation parent is missing")
-        first_seen_sequence, existing_payload, existing_hash = cast(tuple[int, str, str], existing)
-        persisted = HistoryMonthlyRevision(
-            first_seen_sequence,
-            value.board,
-            value.cell,
-            value.is_st,
-            value.industry,
-            value.industry_classification,
+    def _save_batch(self, connection: sqlite3.Connection, prepared: tuple[_EncodedRevision, ...]) -> None:
+        connection.execute(
+            "CREATE TEMP TABLE requested_history_revisions ("
+            "trade_date TEXT NOT NULL, code TEXT NOT NULL, sync_sequence INTEGER NOT NULL, "
+            "revision_id TEXT NOT NULL, PRIMARY KEY (trade_date, code, sync_sequence, revision_id)"
+            ") WITHOUT ROWID"
         )
-        if existing_payload != encode_history_monthly_revision(persisted) or existing_hash != persisted.content_hash:
-            raise HistoryMonthPartitionConflictError("history monthly revision identity conflicts")
+        connection.executemany(
+            "INSERT OR IGNORE INTO requested_history_revisions VALUES (?, ?, ?, ?)",
+            ((*item.observation_key, item.value.revision_id) for item in prepared),
+        )
+        existing_observations = {
+            (cast(str, row[0]), cast(str, row[1]), cast(int, row[2])): cast(str, row[3])
+            for row in connection.execute(
+                "SELECT observations.trade_date, observations.code, observations.sync_sequence, "
+                "observations.revision_id FROM daily_observations AS observations "
+                "JOIN requested_history_revisions AS requested "
+                "ON requested.trade_date=observations.trade_date AND requested.code=observations.code "
+                "AND requested.sync_sequence=observations.sync_sequence"
+            )
+        }
+        existing_revisions = {
+            (cast(str, row[0]), cast(str, row[1]), cast(str, row[2])): (
+                cast(int, row[3]),
+                cast(str, row[4]),
+                cast(str, row[5]),
+            )
+            for row in connection.execute(
+                "SELECT records.trade_date, records.code, records.revision_id, records.first_seen_sequence, "
+                "records.payload_json, records.content_hash FROM daily_records AS records "
+                "JOIN requested_history_revisions AS requested "
+                "ON requested.trade_date=records.trade_date AND requested.code=records.code "
+                "AND requested.revision_id=records.revision_id GROUP BY records.trade_date, records.code, "
+                "records.revision_id"
+            )
+        }
+        latest_sequences = {
+            (cast(str, row[0]), cast(str, row[1])): cast(int, row[2])
+            for row in connection.execute(
+                "SELECT observations.trade_date, observations.code, MAX(observations.sync_sequence) "
+                "FROM daily_observations AS observations JOIN ("
+                "SELECT DISTINCT trade_date, code FROM requested_history_revisions"
+                ") AS requested ON requested.trade_date=observations.trade_date "
+                "AND requested.code=observations.code GROUP BY observations.trade_date, observations.code"
+            )
+        }
+        new_records: list[tuple[object, ...]] = []
+        new_observations: list[tuple[object, ...]] = []
+        for item in prepared:
+            value = item.value
+            observation_key = item.observation_key
+            revision_key = item.revision_key
+            observed_revision = existing_observations.get(observation_key)
+            if observed_revision is not None:
+                if observed_revision != value.revision_id:
+                    raise HistoryMonthPartitionConflictError("history monthly revision sequence conflicts")
+                existing = existing_revisions.get(revision_key)
+                if existing is None:
+                    raise HistoryMonthPartitionConflictError("history monthly observation parent is missing")
+                _require_revision_identity(existing, value)
+                continue
+            date_code = item.trade_date, value.code
+            current_sequence = latest_sequences.get(date_code)
+            if current_sequence is not None and value.first_seen_sequence < current_sequence:
+                raise HistoryMonthPartitionConflictError("history monthly revision cannot backdate content")
+            existing = existing_revisions.get(revision_key)
+            if existing is None:
+                existing = (value.first_seen_sequence, item.payload_json, value.content_hash)
+                existing_revisions[revision_key] = existing
+                new_records.append(
+                    (
+                        item.trade_date,
+                        value.code,
+                        value.revision_id,
+                        value.first_seen_sequence,
+                        value.board,
+                        item.payload_json,
+                        value.content_hash,
+                    )
+                )
+            else:
+                _require_revision_identity(existing, value)
+            latest_sequences[date_code] = max(value.first_seen_sequence, current_sequence or 0)
+            existing_observations[observation_key] = value.revision_id
+            new_observations.append((*observation_key, value.revision_id))
+        connection.executemany(
+            "INSERT INTO daily_records"
+            "(trade_date, code, revision_id, first_seen_sequence, board, payload_json, content_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            new_records,
+        )
+        connection.executemany(
+            "INSERT INTO daily_observations(trade_date, code, sync_sequence, revision_id) VALUES (?, ?, ?, ?)",
+            new_observations,
+        )
 
     def _require_metadata(self, connection: sqlite3.Connection) -> None:
         metadata = connection.execute(
@@ -486,19 +544,52 @@ class SQLiteHistoryMonthPartitionRepository:
 
     def _write_connection(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._path, timeout=5.0)
+        if self._statement_trace is not None:
+            connection.set_trace_callback(self._statement_trace)
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA synchronous=FULL")
+        connection.execute("PRAGMA temp_store=FILE")
         return connection
 
     def _read_connection(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(f"file:{self._path.as_posix()}?mode=ro", uri=True, timeout=5.0)
+        immutable = "&immutable=1" if self._immutable_read else ""
+        connection = sqlite3.connect(f"file:{self._path.as_posix()}?mode=ro{immutable}", uri=True, timeout=5.0)
+        if self._statement_trace is not None:
+            connection.set_trace_callback(self._statement_trace)
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA query_only=ON")
         connection.execute("PRAGMA cache_size=-8192")
         connection.execute("PRAGMA mmap_size=0")
         connection.execute("PRAGMA temp_store=FILE")
         return connection
+
+
+def _latest_query(code: str | None, board: str | None) -> tuple[str, tuple[str, ...]]:
+    if code is not None and board is not None:
+        return _LATEST_CODE_BOARD_SQL, (code, board)
+    if code is not None:
+        return _LATEST_CODE_SQL, (code,)
+    if board is not None:
+        return _LATEST_BOARD_SQL, (board,)
+    return _LATEST_RANGE_SQL, ()
+
+
+def _require_revision_identity(
+    existing: tuple[int, str, str],
+    value: HistoryMonthlyRevision,
+) -> None:
+    first_seen_sequence, existing_payload, existing_hash = existing
+    persisted = HistoryMonthlyRevision(
+        first_seen_sequence,
+        value.board,
+        value.cell,
+        value.is_st,
+        value.industry,
+        value.industry_classification,
+    )
+    if existing_payload != encode_history_monthly_revision(persisted) or existing_hash != persisted.content_hash:
+        raise HistoryMonthPartitionConflictError("history monthly revision identity conflicts")
 
 
 def _decode_row(row: tuple[object, ...]) -> HistoryMonthlyRevision:

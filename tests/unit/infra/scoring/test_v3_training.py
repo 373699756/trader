@@ -5,7 +5,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
-import numpy as np
 import pytest
 
 from trader.application.research.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingWindow
@@ -19,8 +18,8 @@ from trader.domain.research.baostock_daily import (
 from trader.domain.research.history_control import HistoryTrainingDueState
 from trader.domain.research.history_monthly import HistoryTrainingWindow
 from trader.domain.research.tomorrow_training_input import REQUIRED_DAILY_FIELDS, FrozenDailyInputDescriptor
-from trader.infra.research.history_control_repository import HistoryMaintenanceAlreadyRunningError
 from trader.infra.research.history_archive_repack import HistoryArchiveRepackFenceError
+from trader.infra.research.history_control_repository import HistoryMaintenanceAlreadyRunningError
 from trader.infra.research.history_training_input import HistoryTrainingInputSnapshot
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
 from trader.infra.scoring.profiles.v3.bundle_codec import decode_tomorrow_bundle
@@ -45,8 +44,8 @@ from trader.infra.scoring.profiles.v3.training import (
 )
 from trader.infra.scoring.profiles.v3.training_sample_repository import (
     SQLiteTomorrowTrainingSampleRepository,
+    TomorrowTrainingIndustryCounts,
     TomorrowTrainingSample,
-    TomorrowTrainingSampleMatrix,
 )
 
 
@@ -373,14 +372,65 @@ def test_sample_building_uses_one_stream_and_finalizes_the_previous_day_label(tm
         )
 
         assert repository.count() == 1
-        sample = repository.samples_for("银行", frozenset((dates[60],)))[0]
-        assert sample.trade_date == dates[60]
-        assert sample.target == pytest.approx(0.0)
+        row = repository._connection.execute("SELECT trade_date, target FROM samples").fetchone()
+        assert row is not None
+        assert row[0] == dates[60].isoformat()
+        assert row[1] == pytest.approx(0.0)
+        assert "raw_samples" not in {
+            item[0] for item in repository._connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
 
 
-def _training_row(day: date, close: float) -> BaoStockTrainingRow:
+def test_sample_building_never_buffers_more_than_one_cross_section() -> None:
+    dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_250))
+    split = build_baostock_training_split(dates, parent_manifest_hash="a" * 64)
+    codes = ("600000", "600001", "600002")
+    rows = {
+        code: tuple(_training_row(day, 10.0 + index + position, code=code) for index, day in enumerate(dates[:62]))
+        for position, code in enumerate(codes)
+    }
+
+    class Archive:
+        snapshot = SimpleNamespace(calendar=BaoStockCalendar(dates))
+
+        @staticmethod
+        def training_row_upper_bound(_dates) -> int:
+            return 186
+
+        @staticmethod
+        def iter_training_windows(_dates, progress):
+            for offset in (0, 1):
+                for code in codes:
+                    yield HistoryTrainingWindow(rows[code][offset : offset + 61])
+            progress(186)
+
+    class Repository:
+        def __init__(self) -> None:
+            self.batch_sizes: list[int] = []
+            self.prepared_split = None
+
+        def add_final(self, samples) -> None:
+            self.batch_sizes.append(len(tuple(samples)))
+
+        def prepare_for_model_fitting(self, value) -> None:
+            self.prepared_split = value
+
+    repository = Repository()
+
+    build_training_samples(
+        Archive(),
+        codes,
+        TomorrowTrainingWindow(split),
+        repository,  # type: ignore[arg-type]
+    )
+
+    assert repository.batch_sizes == [len(codes)]
+    assert repository.prepared_split == split
+
+
+def _training_row(day: date, close: float, *, code: str = "600000") -> BaoStockTrainingRow:
     unadjusted = BaoStockDailySide(
-        "600000",
+        code,
         day,
         "unadjusted",
         close,
@@ -395,7 +445,7 @@ def _training_row(day: date, close: float) -> BaoStockTrainingRow:
         "trading",
     )
     qfq = BaoStockDailySide(
-        "600000",
+        code,
         day,
         "qfq",
         close,
@@ -409,7 +459,7 @@ def _training_row(day: date, close: float) -> BaoStockTrainingRow:
         None,
         "trading",
     )
-    return BaoStockTrainingRow("600000", day, "main", "银行", False, unadjusted, qfq)
+    return BaoStockTrainingRow(code, day, "main", "银行", False, unadjusted, qfq)
 
 
 def test_training_progress_rejects_impossible_counts() -> None:
@@ -429,19 +479,18 @@ def test_model_progress_uses_the_real_industry_count_even_when_an_industry_is_sk
 
     class Samples:
         @staticmethod
-        def industries(_dates) -> tuple[str, ...]:
-            return ("银行", "软件")
+        def require_split(_split) -> None:
+            pass
 
         @staticmethod
-        def matrix_for(_industry, _dates) -> TomorrowTrainingSampleMatrix:
-            return TomorrowTrainingSampleMatrix(np.empty((0, 6)), np.empty(0))
+        def industry_counts() -> tuple[TomorrowTrainingIndustryCounts, ...]:
+            return (
+                TomorrowTrainingIndustryCounts("银行", 0, 0, 0, 0),
+                TomorrowTrainingIndustryCounts("软件", 0, 0, 0, 0),
+            )
 
         @staticmethod
-        def count_for(_industry, _dates) -> int:
-            return 0
-
-        @staticmethod
-        def count(_dates) -> int:
+        def split_count(_split_name) -> int:
             return 0
 
     class Progress:
@@ -534,7 +583,7 @@ def test_v3_training_uses_the_shared_online_exposure_contract() -> None:
     )
 
     for actual_values, expected_values in zip(result, expected, strict=True):
-        assert actual_values == pytest.approx(expected_values)
+        assert actual_values == expected_values
 
 
 def test_v3_training_target_keeps_round_trip_cost_out_of_the_alpha_label() -> None:

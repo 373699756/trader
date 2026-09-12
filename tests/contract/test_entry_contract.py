@@ -679,6 +679,7 @@ def test_train_tomorrow_passes_the_fixed_project_history_root_to_the_training_ow
             training_due=False,
             training_due_reason="data_incomplete",
             invalidated_cache_dates=(),
+            sample_database_peak_bytes=0,
         )
 
     monkeypatch.setattr("trader.infra.scoring.profiles.v3.training.run_tomorrow_training", train)
