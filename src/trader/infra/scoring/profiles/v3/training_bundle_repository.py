@@ -29,6 +29,9 @@ class ActiveTomorrowBundle:
     source_identity_hash: str
     label_cutoff: date
     training_contract_hash: str
+    model_hash: str
+    report_hash: str
+    training_input_document_hash: str
 
 
 @dataclass(frozen=True)
@@ -190,6 +193,9 @@ def _inspect_active_tomorrow_bundle(output_root: Path, *, allow_publication: boo
         artifact.source_identity_hash,
         artifact.label_cutoff,
         artifact.training_contract_hash,
+        artifact.content_hash,
+        cast(str, pointer["report_hash"]),
+        cast(str, pointer["training_input_document_hash"]),
     )
 
 

@@ -93,6 +93,10 @@
 
 源逻辑 hash 在首次成功后保存到绑定源 snapshot 的续传状态，恢复构建时不得重复扫描已经完成且身份未变的月份。
 
+实施状态（2026-09-12）：本节的有类型 build 状态、严格 codec、串行 8 KiB `VACUUM INTO`、逐表逻辑 hash、
+分片物理校验、空间/缩减门禁和断点续传已经实现；新建月库也固定为 8 KiB。真实 100 月构建必须在本批代码提交并
+推送后显式运行，当前生产归档仍是 4 KiB、`24,956,952,576` 字节，不能把代码完成写成实物已转换。
+
 ### 3.3 后续新月和活动月份
 
 - 修改 `SQLiteHistoryMonthPartitionRepository.initialize()`：仅在新建空库、任何建表语句之前执行
@@ -147,6 +151,10 @@ rolled_back
 - 删除前再次核对备份真实路径和旧 snapshot hash，拒绝符号链接、路径越界或身份不明目录；删除后不可恢复。
 - 删除后记录实际释放空间、活动归档大小、active snapshot、model 和 report hash 摘要，并将状态推进为
   `finalized`。
+
+实施状态（2026-09-12）：切换日志、逐步 fsync/rename、跨命令恢复、rollback、下载/训练 fence，以及同时校验
+活动训练 bundle 与 2 GiB 内存门证据后才允许删除备份的 finalize 已实现。尚未对生产目录执行 activate、rollback
+或 finalize；旧归档也尚未删除。
 
 ## 5. Snapshot、训练到期和缓存身份
 
@@ -352,7 +360,9 @@ make package
    `docs/03_工程实施.md`、`docs/04_策略回溯.md`、`CHANGELOG.md` 和交付记录；如新增诊断 profile，同步更新
    `trader-delivery` 的运行诊断路由；提交并推送实现切片。
 2. 使用该已推送提交执行真实 `build`，只在 `data/historyless/baostock` 生成目标库；满足全部硬门禁后才 `activate`。
-3. 在新活动库上执行一次 2 GiB 完整训练；失败时保留新活动归档、旧归档备份和旧活动 bundle，停止诊断。
+3. 从 build 状态读取目标 snapshot hash，并通过 `scripts/check_tomorrow_training_memory.py` 的
+   `--expected-history-snapshot-hash` 显式传入；只有该 hash 与维护锁内重新打开的活动归档完全一致，验收训练才可
+   越过切换 fence。在新活动库上执行一次 2 GiB 完整训练；失败时保留新活动归档、旧归档备份和旧活动 bundle，停止诊断。
 4. 训练成功后执行重复 `already_current`、最终 Review和大任务完整门禁，提交并推送真实证据记录。
 5. 核对 `HEAD == @{upstream}` 后执行 `finalize` 删除旧归档备份，报告删除目标、不可恢复性和释放空间。
 6. 任务完成后停止，不自动启用 Tomorrow V3、不重启服务、不实施后续 schema 迁移。

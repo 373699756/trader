@@ -101,8 +101,11 @@ class SQLiteHistoryMonthPartitionRepository:
 
     def initialize(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        new_database = not self._path.exists() or self._path.stat().st_size == 0
         try:
             with closing(sqlite3.connect(self._path, timeout=5.0)) as connection, connection:
+                if new_database:
+                    connection.execute("PRAGMA page_size=8192")
                 connection.execute("PRAGMA journal_mode=WAL")
                 connection.execute("PRAGMA synchronous=FULL")
                 connection.executescript(_SCHEMA)

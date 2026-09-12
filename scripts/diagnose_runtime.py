@@ -26,6 +26,7 @@ Profile = Literal[
     "tencent",
     "tushare",
     "history-daily-capability",
+    "history-archive",
     "research",
     "browser",
     "performance",
@@ -45,6 +46,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "tencent": ("tencent_quotes",),
     "tushare": ("tushare_daily",),
     "history-daily-capability": ("history_daily_capability",),
+    "history-archive": ("history_archive_performance",),
     "research": ("research_readiness",),
     "browser": ("browser_refresh",),
     "performance": ("production_performance",),
@@ -97,6 +99,8 @@ class DiagnosticOptions:
     browser_minimum_updates: int
     command_timeout_seconds: float
     persistence_runtime_dir: Path | None
+    archive_root: Path
+    archive_page_sample_count: int
 
 
 @dataclass(frozen=True)
@@ -167,6 +171,18 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="optional absolute repository-external directory for history persistence comparison",
     )
+    parser.add_argument(
+        "--archive-root",
+        type=Path,
+        default=PROJECT_ROOT / "data/history/baostock",
+        help="stable BaoStock archive used by the read-only history-archive profile",
+    )
+    parser.add_argument(
+        "--archive-page-sample-count",
+        type=int,
+        default=1,
+        help="monthly files sampled for expensive dbstat page classification",
+    )
     parser.add_argument("--output", default="-", help="combined JSON output path outside the repository, or -")
     return parser
 
@@ -192,6 +208,8 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         raise ValueError("sample, worker, duration and timeout values must be positive")
     if args.web_interval_seconds < 0 or args.source_interval_seconds < 0:
         raise ValueError("sample intervals must not be negative")
+    if not 1 <= args.archive_page_sample_count <= 100:
+        raise ValueError("--archive-page-sample-count must be within 1..100")
     persistence = _external_path(args.persistence_runtime_dir, "--persistence-runtime-dir")
     output = args.output
     if output != "-":
@@ -216,6 +234,8 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             browser_minimum_updates=args.browser_minimum_updates,
             command_timeout_seconds=args.command_timeout_seconds,
             persistence_runtime_dir=persistence,
+            archive_root=args.archive_root.expanduser().resolve(),
+            archive_page_sample_count=args.archive_page_sample_count,
         ),
         output,
     )
@@ -311,6 +331,19 @@ def build_commands(
                 "scripts.runtime_diagnostics.history_daily_capability",
                 "--runtime-config",
                 str(options.runtime_config),
+            ),
+            common_timeout,
+        ),
+        "history_archive_performance": DiagnosticCommand(
+            "history_archive_performance",
+            (
+                python_executable,
+                "-m",
+                "scripts.runtime_diagnostics.history_archive_performance",
+                "--archive-root",
+                str(options.archive_root),
+                "--page-sample-count",
+                str(options.archive_page_sample_count),
             ),
             common_timeout,
         ),
@@ -533,6 +566,14 @@ def _history_daily_capability_details(
     }
 
 
+def _history_archive_performance_details(
+    _result: DiagnosticResult,
+    source: Mapping[str, object],
+    payload: dict[str, object],
+) -> None:
+    payload["summary"] = _mapping(source.get("summary"))
+
+
 def _research_details(result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]) -> None:
     if result.payload is not None and not _valid_research_status(source):
         payload["findings"] = [
@@ -613,6 +654,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "tencent_quotes": _tencent_quote_details,
     "tushare_daily": _tushare_details,
     "history_daily_capability": _history_daily_capability_details,
+    "history_archive_performance": _history_archive_performance_details,
     "research_readiness": _research_details,
     "browser_refresh": _browser_details,
     "production_performance": _performance_details,

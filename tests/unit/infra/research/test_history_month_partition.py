@@ -52,6 +52,8 @@ def test_month_partition_schema_revision_replay_and_indexes(tmp_path: Path) -> N
     path = tmp_path / "partitions/2026/09.sqlite3"
     repository = SQLiteHistoryMonthPartitionRepository(path, 2026, 9)
     repository.initialize()
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA page_size").fetchone() == (8192,)
     original = _revision(date(2026, 9, 10), 1, 10.0)
     revised = _revision(date(2026, 9, 10), 3, 11.0)
 
@@ -80,6 +82,19 @@ def test_month_partition_schema_revision_replay_and_indexes(tmp_path: Path) -> N
     reverted = _revision(date(2026, 9, 10), 4, 10.0)
     repository.save_revisions((reverted,))
     assert repository.read_day(date(2026, 9, 10), snapshot_sequence=4) == (original,)
+
+
+def test_existing_month_partition_keeps_its_physical_page_size(tmp_path: Path) -> None:
+    path = tmp_path / "partitions/2026/09.sqlite3"
+    path.parent.mkdir(parents=True)
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA page_size=4096")
+        connection.execute("CREATE TABLE legacy(value INTEGER)")
+
+    SQLiteHistoryMonthPartitionRepository(path, 2026, 9).initialize()
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA page_size").fetchone() == (4096,)
 
 
 def test_month_partition_rejects_backdating_conflicts_and_wrong_month(tmp_path: Path) -> None:

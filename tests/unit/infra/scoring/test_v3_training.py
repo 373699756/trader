@@ -20,6 +20,7 @@ from trader.domain.research.history_control import HistoryTrainingDueState
 from trader.domain.research.history_monthly import HistoryTrainingWindow
 from trader.domain.research.tomorrow_training_input import REQUIRED_DAILY_FIELDS, FrozenDailyInputDescriptor
 from trader.infra.research.history_control_repository import HistoryMaintenanceAlreadyRunningError
+from trader.infra.research.history_archive_repack import HistoryArchiveRepackFenceError
 from trader.infra.research.history_training_input import HistoryTrainingInputSnapshot
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
 from trader.infra.scoring.profiles.v3.bundle_codec import decode_tomorrow_bundle
@@ -278,6 +279,26 @@ def test_training_does_not_open_a_second_snapshot_while_history_maintenance_is_r
     assert result.failure_reasons == ("history_maintenance_running",)
     assert result.training_input_hash == archive.snapshot.active_snapshot_hash
     assert open_calls == [tmp_path / "history"]
+
+
+def test_training_stays_blocked_after_repack_activation_until_finalize_or_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _cadence_archive(tmp_path / "history" / "baostock")
+    monkeypatch.setattr(
+        "trader.infra.scoring.profiles.v3.training.SQLiteHistoryTrainingInputArchive.open",
+        lambda _path: archive,
+    )
+    monkeypatch.setattr(
+        "trader.infra.scoring.profiles.v3.training.require_history_repack_inactive",
+        lambda _root: (_ for _ in ()).throw(HistoryArchiveRepackFenceError("fenced")),
+    )
+
+    result = run_tomorrow_training(tmp_path / "history", tmp_path / "train", source_commit="e" * 40)
+
+    assert result.status == "blocked"
+    assert result.failure_reasons == ("history_repack_activation_pending",)
+    assert result.training_input_hash == archive.snapshot.active_snapshot_hash
 
 
 def test_v3_training_outputs_json_directly_under_the_profile_directory(tmp_path: Path) -> None:

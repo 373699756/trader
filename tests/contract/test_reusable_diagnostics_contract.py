@@ -22,6 +22,7 @@ INTERNAL_DIAGNOSTIC_MODULES = (
     ROOT / "scripts" / "runtime_diagnostics" / "exchange_security_master.py",
     ROOT / "scripts" / "runtime_diagnostics" / "tencent_quotes.py",
     ROOT / "scripts" / "runtime_diagnostics" / "tushare_daily.py",
+    ROOT / "scripts" / "runtime_diagnostics" / "history_archive_performance.py",
 )
 INTERNAL_REPORTING = ROOT / "scripts" / "runtime_diagnostics" / "reporting.py"
 SKILL_ROOT = ROOT / ".agents" / "skills" / "trader-delivery"
@@ -50,6 +51,8 @@ def test_unified_runtime_diagnostic_is_the_only_public_parameterized_script() ->
         "--codes",
         "--history-source",
         "--output",
+        "--archive-root",
+        "--archive-page-sample-count",
     ):
         assert option in result.stdout
     for profile in (
@@ -60,6 +63,7 @@ def test_unified_runtime_diagnostic_is_the_only_public_parameterized_script() ->
         "tushare",
         "browser",
         "performance",
+        "history-archive",
         "live",
         "full",
     ):

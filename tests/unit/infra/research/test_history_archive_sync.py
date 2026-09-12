@@ -25,6 +25,7 @@ from trader.domain.research.baostock_daily import (
     BaoStockSourceVersions,
 )
 from trader.infra.research.history_archive_sync import run_history_sync
+from trader.infra.research.history_archive_repack import HistoryArchiveRepackFenceError
 from trader.infra.research.history_control_repository import SQLiteHistoryControlRepository
 from trader.infra.research.history_month_archive import SQLiteHistoryMonthlyArchive
 
@@ -191,6 +192,22 @@ def test_initial_sync_fails_disk_preflight_before_slow_supplier_context(tmp_path
     assert result.reason == "disk_space_insufficient"
     assert supplier.calls == []
     assert not tuple(tmp_path.glob("partitions/**/*.sqlite3"))
+
+
+def test_history_sync_does_not_call_the_supplier_while_repack_activation_is_fenced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    supplier = FakeSupplier((date(2026, 9, 10),))
+    monkeypatch.setattr(
+        "trader.infra.research.history_archive_sync.require_history_repack_inactive",
+        lambda _root: (_ for _ in ()).throw(HistoryArchiveRepackFenceError("fenced")),
+    )
+
+    result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
+
+    assert result.state == "blocked"
+    assert result.reason == "history_repack_activation_pending"
+    assert supplier.calls == []
 
 
 def test_history_sync_reports_context_code_sealing_and_publication_progress(tmp_path: Path) -> None:

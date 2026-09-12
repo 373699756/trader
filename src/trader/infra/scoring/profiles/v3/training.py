@@ -37,6 +37,10 @@ from trader.infra.research.history_control_repository import (
     HistoryMaintenanceAlreadyRunningError,
     HistoryMaintenanceLock,
 )
+from trader.infra.research.history_archive_repack import (
+    HistoryArchiveRepackFenceError,
+    require_history_repack_inactive,
+)
 from trader.infra.research.history_month_partition import HistoryPartitionVerificationPhase
 from trader.infra.research.history_training_due import HistoryTrainingDueEvaluation, evaluate_history_training_due
 from trader.infra.research.history_training_input import (
@@ -125,6 +129,16 @@ class _TrainingExecution:
     split: BaoStockTrainingSplit
 
 
+@dataclass(frozen=True)
+class _TrainingInvocation:
+    history_root: Path
+    train_root: Path
+    progress: TomorrowTrainingProgressPort | None
+    source_commit: str
+    observed_at: datetime | None
+    expected_history_snapshot_hash: str | None
+
+
 def run_tomorrow_training(
     history_root: Path,
     train_root: Path,
@@ -133,48 +147,89 @@ def run_tomorrow_training(
     source_commit: str = "",
     observed_at: datetime | None = None,
 ) -> TomorrowTrainingResult:
-    _publish_progress(progress, TomorrowTrainingProgress("resource_preflight", "completed", 1, 1))
+    return _run_training_invocation(
+        _TrainingInvocation(history_root, train_root, progress, source_commit, observed_at, None)
+    )
+
+
+def run_repack_tomorrow_training(
+    history_root: Path,
+    train_root: Path,
+    *,
+    expected_history_snapshot_hash: str,
+    progress: TomorrowTrainingProgressPort | None = None,
+    source_commit: str = "",
+) -> TomorrowTrainingResult:
+    """Run the explicit post-repack gate for one exact activated snapshot."""
+
+    return _run_training_invocation(
+        _TrainingInvocation(
+            history_root,
+            train_root,
+            progress,
+            source_commit,
+            None,
+            expected_history_snapshot_hash,
+        )
+    )
+
+
+def _run_training_invocation(invocation: _TrainingInvocation) -> TomorrowTrainingResult:
+    _publish_progress(invocation.progress, TomorrowTrainingProgress("resource_preflight", "completed", 1, 1))
     try:
-        archive = SQLiteHistoryTrainingInputArchive.open(history_root)
+        archive = SQLiteHistoryTrainingInputArchive.open(invocation.history_root)
     except (HistoryTrainingInputError, OSError, ValueError) as exc:
         return TomorrowTrainingResult("blocked", "unavailable", None, "", 0, 0, "", "", 0, 0, 0, (_reason(exc),))
     try:
         with HistoryMaintenanceLock(archive.archive_root / ".maintenance.lock"):
-            return _run_tomorrow_training_locked(
-                history_root,
-                train_root,
-                progress=progress,
-                source_commit=source_commit,
-                observed_at=observed_at,
-            )
+            try:
+                require_history_repack_inactive(archive.archive_root)
+            except HistoryArchiveRepackFenceError:
+                if invocation.expected_history_snapshot_hash != archive.snapshot.active_snapshot_hash:
+                    raise
+            return _run_tomorrow_training_locked(invocation)
     except HistoryMaintenanceAlreadyRunningError:
-        snapshot = archive.snapshot
-        return TomorrowTrainingResult(
-            "blocked",
-            snapshot.input_scope,
-            None,
-            snapshot.active_snapshot_hash,
-            len(snapshot.training_codes),
-            snapshot.universe_count,
-            "",
-            "",
-            0,
-            0,
-            0,
-            ("history_maintenance_running",),
-            label_cutoff=snapshot.label_cutoff,
-        )
+        return _history_maintenance_blocked(archive, "history_maintenance_running")
+    except HistoryArchiveRepackFenceError:
+        return _history_maintenance_blocked(archive, "history_repack_activation_pending")
+
+
+def _history_maintenance_blocked(
+    archive: SQLiteHistoryTrainingInputArchive,
+    reason: str,
+) -> TomorrowTrainingResult:
+    snapshot = archive.snapshot
+    return TomorrowTrainingResult(
+        "blocked",
+        snapshot.input_scope,
+        None,
+        snapshot.active_snapshot_hash,
+        len(snapshot.training_codes),
+        snapshot.universe_count,
+        "",
+        "",
+        0,
+        0,
+        0,
+        (reason,),
+        label_cutoff=snapshot.label_cutoff,
+    )
 
 
 def _run_tomorrow_training_locked(
-    history_root: Path,
-    train_root: Path,
-    *,
-    progress: TomorrowTrainingProgressPort | None = None,
-    source_commit: str = "",
-    observed_at: datetime | None = None,
+    invocation: _TrainingInvocation,
 ) -> TomorrowTrainingResult:
-    prepared = _prepare_training(history_root, train_root, progress, source_commit, observed_at)
+    if invocation.expected_history_snapshot_hash is not None:
+        archive = SQLiteHistoryTrainingInputArchive.open(invocation.history_root)
+        if archive.snapshot.active_snapshot_hash != invocation.expected_history_snapshot_hash:
+            return _history_maintenance_blocked(archive, "history_repack_target_mismatch")
+    prepared = _prepare_training(
+        invocation.history_root,
+        invocation.train_root,
+        invocation.progress,
+        invocation.source_commit,
+        invocation.observed_at,
+    )
     if isinstance(prepared, TomorrowTrainingResult):
         return prepared
     return _execute_training(prepared)

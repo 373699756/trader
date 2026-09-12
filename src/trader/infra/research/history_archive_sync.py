@@ -49,6 +49,10 @@ from trader.infra.research.history_control_repository import (
     SQLiteHistoryControlRepository,
     inspect_history_disk,
 )
+from trader.infra.research.history_archive_repack import (
+    HistoryArchiveRepackFenceError,
+    require_history_repack_inactive,
+)
 from trader.infra.research.history_month_archive import route_history_months
 from trader.infra.research.history_month_partition import (
     HistoryMonthPartitionError,
@@ -111,6 +115,7 @@ def run_history_sync(
     _publish_progress(progress, "initializing", "started")
     try:
         with HistoryMaintenanceLock(root / ".maintenance.lock"):
+            require_history_repack_inactive(root)
             return _run_locked(configuration, supplier, observed_at, cancel, progress)
     except KeyboardInterrupt:
         active = _safe_active(SQLiteHistoryControlRepository(root / "control.sqlite3"))
@@ -119,6 +124,10 @@ def run_history_sync(
         _publish_progress(progress, "initializing", "failed")
         active = _safe_active(SQLiteHistoryControlRepository(root / "control.sqlite3"))
         return _status("already_running", "history_maintenance_running", configuration, active, observed_at)
+    except HistoryArchiveRepackFenceError:
+        _publish_progress(progress, "initializing", "failed")
+        active = _safe_active(SQLiteHistoryControlRepository(root / "control.sqlite3"))
+        return _status("blocked", "history_repack_activation_pending", configuration, active, observed_at)
 
 
 def _run_locked(
