@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import cast
 
+from trader.application.research.tomorrow_training import TomorrowTrainingStage
 from trader.infra.research.history_archive_repack_state import (
     HistoryArchiveRepackActivationJournal,
     HistoryArchiveRepackActivationState,
@@ -16,7 +17,10 @@ from trader.infra.research.history_archive_repack_state import (
     HistoryArchiveRepackSourceFileIdentity,
 )
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
-from trader.infra.scoring.profiles.v3.training_memory_evidence import TomorrowTrainingMemoryEvidence
+from trader.infra.scoring.profiles.v3.training_memory_evidence import (
+    TomorrowTrainingMemoryEvidence,
+    TomorrowTrainingStageDuration,
+)
 
 
 class HistoryArchiveRepackCodecError(RuntimeError):
@@ -177,6 +181,8 @@ def read_tomorrow_training_memory_evidence(path: Path) -> TomorrowTrainingMemory
             "peak_rss_bytes",
             "starting_peak_rss_bytes",
             "max_rss_bytes",
+            "sample_database_peak_bytes",
+            "stage_durations_ms",
             "failure_reasons",
             "content_hash",
         },
@@ -187,14 +193,20 @@ def read_tomorrow_training_memory_evidence(path: Path) -> TomorrowTrainingMemory
         failures = _list(payload, "failure_reasons")
         if failures:
             raise ValueError("training memory gate has failure reasons")
+        starting_peak_rss_bytes = _integer(payload, "starting_peak_rss_bytes")
+        peak_rss_bytes = _integer(payload, "peak_rss_bytes")
+        if starting_peak_rss_bytes < 1 or starting_peak_rss_bytes > peak_rss_bytes:
+            raise ValueError("training memory starting peak is invalid")
         return TomorrowTrainingMemoryEvidence(
             _text(payload, "training_status"),
             _text(payload, "repeat_training_status"),
             _text(payload, "training_input_hash"),
             _text(payload, "model_hash"),
             _text(payload, "report_hash"),
-            _integer(payload, "peak_rss_bytes"),
+            peak_rss_bytes,
             _integer(payload, "max_rss_bytes"),
+            _integer(payload, "sample_database_peak_bytes"),
+            _stage_durations(payload),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise HistoryArchiveRepackCodecError("Tomorrow training memory evidence is invalid") from exc
@@ -298,6 +310,16 @@ def _integer(payload: dict[str, object], key: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise TypeError(f"history repack {key} must be integer")
     return value
+
+
+def _stage_durations(payload: dict[str, object]) -> tuple[TomorrowTrainingStageDuration, ...]:
+    durations = _object(payload["stage_durations_ms"])
+    decoded: list[TomorrowTrainingStageDuration] = []
+    for stage, value in durations.items():
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise TypeError("history repack stage duration must be numeric")
+        decoded.append(TomorrowTrainingStageDuration(cast(TomorrowTrainingStage, stage), float(value)))
+    return tuple(sorted(decoded, key=lambda item: item.stage))
 
 
 def _require_fields(payload: dict[str, object], fields: set[str]) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
@@ -23,17 +24,40 @@ from trader.infra.research.history_archive_repack import (
     HistoryArchiveRepackFenceError,
     require_history_archive_repack_inactive,
 )
+from trader.infra.research.history_archive_repack_codec import read_tomorrow_training_memory_evidence
 from trader.infra.research.history_archive_repack_state import (
     HistoryArchiveRepackRequirements,
 )
 from trader.infra.research.history_control_repository import SQLiteHistoryControlRepository
 from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
 from trader.infra.research.history_training_due import evaluate_history_training_due
+from trader.infra.scoring.artifact_hashing import artifact_content_hash
 from trader.infra.scoring.profiles.v3.training import run_repack_tomorrow_training
 from trader.infra.scoring.profiles.v3.training_bundle_repository import ActiveTomorrowBundle
 from trader.infra.scoring.profiles.v3.training_memory_evidence import TomorrowTrainingMemoryEvidence
 
 NOW = datetime(2026, 9, 12, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+
+def _write_training_memory_evidence(path: Path, training_input_hash: str) -> None:
+    payload: dict[str, object] = {
+        "schema_version": "tomorrow_training_memory_gate",
+        "status": "passed",
+        "training_status": "engineering_ready",
+        "repeat_training_status": "already_current",
+        "training_input_hash": training_input_hash,
+        "model_hash": "b" * 64,
+        "report_hash": "c" * 64,
+        "peak_rss_bytes": 1024,
+        "starting_peak_rss_bytes": 512,
+        "max_rss_bytes": 2048 * 1024 * 1024,
+        "sample_database_peak_bytes": 4096,
+        "stage_durations_ms": {"partition_validation": 12.5, "model_fit": 7.0},
+        "failure_reasons": [],
+    }
+    payload["content_hash"] = artifact_content_hash(payload)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 
 
 def _side(day: date, adjustment: str, close: float) -> BaoStockDailySide:
@@ -300,21 +324,18 @@ def test_finalize_deletes_only_the_verified_backup_after_bundle_and_memory_match
             },
         )(),
     )
-    monkeypatch.setattr(
-        repack_module,
-        "read_tomorrow_training_memory_evidence",
-        lambda _path: TomorrowTrainingMemoryEvidence(
-            "engineering_ready",
-            "already_current",
-            built.target_snapshot_hash,
-            "b" * 64,
-            "c" * 64,
-            1024,
-            2048 * 1024 * 1024,
-        ),
+    memory_evidence = tmp_path / "data/historyless/memory.json"
+    _write_training_memory_evidence(memory_evidence, built.target_snapshot_hash)
+
+    decoded = read_tomorrow_training_memory_evidence(memory_evidence)
+
+    assert decoded.sample_database_peak_bytes == 4096
+    assert tuple((item.stage, item.duration_ms) for item in decoded.stage_durations) == (
+        ("model_fit", 7.0),
+        ("partition_validation", 12.5),
     )
 
-    finalized = coordinator.finalize(tmp_path / "data/train", tmp_path / "data/historyless/memory.json")
+    finalized = coordinator.finalize(tmp_path / "data/train", memory_evidence)
 
     assert finalized.state == "finalized"
     assert finalized.released_bytes > 0
@@ -356,6 +377,8 @@ def test_finalize_refuses_to_delete_a_backup_with_unknown_content(
             "c" * 64,
             1024,
             2048 * 1024 * 1024,
+            4096,
+            (),
         ),
     )
     unexpected = tmp_path / "data/historyless/baostock-before-repack/partitions/unexpected.txt"
