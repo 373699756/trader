@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Tomorrow V1/V2 merged V2 profit-optimization plan](2026-09-13-tomorrow-v1-v2-merged-v2-plan.md)
 - [History repack finalize memory-evidence compatibility](2026-09-13-history-repack-finalize-memory-evidence.md)
 - [Repository-wide Python naming consistency](2026-09-12-repository-wide-python-naming.md)
 - [History SQLite and Tomorrow training pipeline optimization](2026-09-12-history-snapshot-training-identity.md)
