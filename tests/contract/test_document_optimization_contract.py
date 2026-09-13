@@ -7,6 +7,7 @@ STRATEGY = ROOT / "docs/01_评分逻辑.md"
 DESIGN = ROOT / "docs/02_工程设计.md"
 WORK = ROOT / "docs/03_工程实施.md"
 REPLAY = ROOT / "docs/04_策略回溯.md"
+V1V2_PLAN = ROOT / "docs/v1v2.md"
 DELIVERY_HISTORY = ROOT / "docs/changelog/archive/legacy-through-2026-09-10.md"
 
 
@@ -225,3 +226,24 @@ def test_design_uses_normative_language_instead_of_delivery_chronology() -> None
         "当前代码仍属于 `Unreleased`",
     ):
         assert delivery_statement not in design
+
+
+def test_v1v2_plan_requires_independent_retraining_without_legacy_model_stacking() -> None:
+    plan = _read(V1V2_PLAN)
+
+    for required in (
+        "V1 的 20/40/60 日因子直接进入新 V2 的统一特征矩阵",
+        "重新训练扩展 Ridge、浅层 LightGBM、严重亏损概率头",
+        "旧 V1、旧 V2 与 V3 工件只作为只读控制组",
+        "不得作为 V2 的模型参数、预测或融合输入",
+        "控制组预测必须来自决策日当时已经发布的模型工件或正式冻结记录",
+        "训练完成、工件可加载和生产启用仍是三个不同状态",
+    ):
+        assert required in plan
+
+    for forbidden in (
+        "V1 冻结线性分支",
+        "加入 V1 冻结输出",
+        "拟合 V1 冻结分支",
+    ):
+        assert forbidden not in plan
