@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Clarify V2/V3 history input and training-artifact directories](2026-09-13-v2-v3-history-input-artifact-boundary.md)
 - [V3 three-head training and runtime chain](2026-09-13-v3-three-head-training-runtime.md)
 - [V3 three-head scoring profile contract](2026-09-13-v3-three-head-profile-contract.md)
 - [Clarify shared V2/V3 training history and strategy boundaries](2026-09-13-v2-v3-training-history-clarification.md)
