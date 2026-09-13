@@ -4,7 +4,7 @@ $ErrorActionPreference = "Stop"
 $RootDir = Split-Path -Parent $PSCommandPath
 $Mode = ""
 $ModeSet = $false
-$ScoringProfile = "v1"
+$ScoringProfile = $null
 $ScoringProfileSet = $false
 $ForwardArgs = @()
 
@@ -13,8 +13,8 @@ function Show-Usage {
 本地 A 股研究看板
 
 日常使用（不做离线研究）:
-  .\run.ps1                         以默认 V1 启动本地 A 股研究看板
-  .\run.ps1 --profile v2            显式使用 V2 启动
+  .\run.ps1                         以默认 V2 启动并加载共享三头模型
+  .\run.ps1 --profile v1|v3         显式使用 V1 或 V3 启动
   .\run.ps1 check                   依次校验配置、研究状态和性能门禁
   .\run.ps1 install-history-automation   安装当前用户 15:10/20:30 历史同步任务
   .\run.ps1 uninstall-history-automation 卸载当前用户历史同步任务
@@ -70,7 +70,7 @@ for ($Index = 0; $Index -lt $args.Count; $Index++) {
     }
 }
 
-if ($ScoringProfile -notin @("v1", "v2", "v3")) {
+if ($ScoringProfileSet -and $ScoringProfile -notin @("v1", "v2", "v3")) {
     [Console]::Error.WriteLine("评分档位只能是 v1、v2 或 v3: $ScoringProfile")
     exit 2
 }
@@ -147,9 +147,10 @@ if (-not $env:TRADER_HOST) {
 if (-not $env:TRADER_PORT) {
     $env:TRADER_PORT = "5000"
 }
+$ProfileArgs = if ($ScoringProfileSet) { @("--profile", $ScoringProfile) } else { @() }
 
 if ($IsServerMode) {
-    & $SelectedEntryPoint --config $ConfigPath --profile $ScoringProfile @ForwardArgs
+    & $SelectedEntryPoint --config $ConfigPath @ProfileArgs @ForwardArgs
     exit $LASTEXITCODE
 }
 if ($Mode -eq "download_history") {
@@ -164,5 +165,5 @@ if ($Mode -in @("install-history-automation", "uninstall-history-automation")) {
     & $SelectedEntryPoint --config $ConfigPath $Mode
     exit $LASTEXITCODE
 }
-& $SelectedEntryPoint --config $ConfigPath --profile $ScoringProfile $Mode @ForwardArgs
+& $SelectedEntryPoint --config $ConfigPath @ProfileArgs $Mode @ForwardArgs
 exit $LASTEXITCODE

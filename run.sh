@@ -6,7 +6,7 @@ VENV_DIR="${VENV_DIR:-$ROOT_DIR/.venv}"
 CONFIG_PATH="${TRADER_CONFIG:-$ROOT_DIR/config/runtime.json}"
 MODE=""
 MODE_SET=0
-SCORING_PROFILE="v1"
+SCORING_PROFILE=""
 SCORING_PROFILE_SET=0
 FORWARD_ARGS=()
 
@@ -15,8 +15,8 @@ usage() {
     "本地 A 股研究看板" \
     "" \
     "日常使用（不做离线研究）:" \
-    "  ./run.sh                         以默认 V1 启动本地 A 股研究看板" \
-    "  ./run.sh --profile v2            显式使用 V2 启动" \
+    "  ./run.sh                         以默认 V2 启动并加载共享三头模型" \
+    "  ./run.sh --profile v1|v3         显式使用 V1 或 V3 启动" \
     "  ./run.sh check                   依次校验配置、研究状态和性能门禁" \
     "  ./run.sh install-history-automation   安装当前用户 15:10/20:30 历史同步任务" \
     "  ./run.sh uninstall-history-automation 卸载当前用户历史同步任务" \
@@ -78,7 +78,7 @@ while (($#)); do
   esac
 done
 
-if [[ "$SCORING_PROFILE" != "v1" && "$SCORING_PROFILE" != "v2" && "$SCORING_PROFILE" != "v3" ]]; then
+if ((SCORING_PROFILE_SET)) && [[ "$SCORING_PROFILE" != "v1" && "$SCORING_PROFILE" != "v2" && "$SCORING_PROFILE" != "v3" ]]; then
   printf '评分档位只能是 v1、v2 或 v3: %s\n' "$SCORING_PROFILE" >&2
   exit 2
 fi
@@ -147,8 +147,13 @@ fi
 export TRADER_HOST="${TRADER_HOST:-127.0.0.1}"
 export TRADER_PORT="${TRADER_PORT:-5000}"
 
+PROFILE_ARGS=()
+if ((SCORING_PROFILE_SET)); then
+  PROFILE_ARGS=(--profile "$SCORING_PROFILE")
+fi
+
 if [[ "$COMMAND_KIND" == "server" ]]; then
-  exec "$ENTRYPOINT" --config "$CONFIG_PATH" --profile "$SCORING_PROFILE" "${FORWARD_ARGS[@]}"
+  exec "$ENTRYPOINT" --config "$CONFIG_PATH" "${PROFILE_ARGS[@]}" "${FORWARD_ARGS[@]}"
 fi
 if [[ "$MODE" == "download_history" ]]; then
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" download_history
@@ -173,4 +178,4 @@ fi
 if [[ "$MODE" == "install-history-automation" || "$MODE" == "uninstall-history-automation" ]]; then
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" "$MODE"
 fi
-exec "$ENTRYPOINT" --config "$CONFIG_PATH" --profile "$SCORING_PROFILE" "$MODE" "${FORWARD_ARGS[@]}"
+exec "$ENTRYPOINT" --config "$CONFIG_PATH" "${PROFILE_ARGS[@]}" "$MODE" "${FORWARD_ARGS[@]}"

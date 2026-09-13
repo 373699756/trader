@@ -127,7 +127,7 @@ def test_strategy_replay_document_records_the_stage_a_b_gates_and_atomic_trainin
         "historical_data_insufficient",
         "point_in_time_parity=false",
         "production_authority=false",
-        "默认 V1 不变",
+        "当前默认 V2",
     ):
         assert required in content
 

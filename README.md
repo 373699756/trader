@@ -42,7 +42,8 @@ TRADER_PORT=5050 ./run.sh
 DEEPSEEK_API_KEY=your-key ./run.sh
 TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 ./run.sh check
-./run.sh --profile v2
+./run.sh --profile v1
+./run.sh --profile v3
 ./run.sh download_history
 ./run.sh train-tomorrow
 ./run.sh train-v3
@@ -51,7 +52,8 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 ./run.sh help
 ```
 
-日常启动不需要参数，默认使用 Tomorrow V1；追加 `--profile v2` 或 `--profile v3` 可显式切换，该覆盖不会写回配置。
+日常启动不需要参数，默认使用 V2 并加载 `data/train/{today-v3,tomorrow-v3,d25-v3}` 现有共享三头工件；
+追加 `--profile v1|v2|v3` 可显式覆盖当前进程，该覆盖不会写回配置。启动不执行训练，任一共享 bundle 损坏时 V2/V3 失败关闭。
 `check` 依次执行配置校验、只读研究状态、持久化训练 due/提醒状态和所选档位的离线性能门禁；`download_history` 是唯一零参数历史维护
 入口，`train-tomorrow` 只训练 Tomorrow，`train-v3` 通过一次历史扫描依次训练 Today、Tomorrow 和 D25。旧 H0 历史归档、回测和筛选入口已退役，
 不再通过启动流程执行。离线研究不会随服务启动自动执行。底层

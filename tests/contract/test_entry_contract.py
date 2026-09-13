@@ -144,8 +144,8 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
 
     assert completed.returncode == 0
     assert "日常使用（不做离线研究）:" in completed.stdout
-    assert "./run.sh                         以默认 V1 启动本地 A 股研究看板" in completed.stdout
-    assert "./run.sh --profile v2            显式使用 V2 启动" in completed.stdout
+    assert "./run.sh                         以默认 V2 启动并加载共享三头模型" in completed.stdout
+    assert "./run.sh --profile v1|v3         显式使用 V1 或 V3 启动" in completed.stdout
     assert "./run.sh check                   依次校验配置、研究状态和性能门禁" in completed.stdout
     assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
     assert "./run.sh download_history        零参数历史维护" in completed.stdout
@@ -248,7 +248,7 @@ def test_run_script_without_arguments_still_starts_the_dashboard(tmp_path: Path)
     )
 
     assert completed.returncode == 0
-    assert completed.stdout == f"server:--config {config} --profile v1\n"
+    assert completed.stdout == f"server:--config {config}\n"
 
 
 def test_run_script_repairs_a_moved_virtual_environment_before_starting(tmp_path: Path) -> None:
@@ -286,7 +286,7 @@ exit 99""",
     )
 
     assert completed.returncode == 0
-    assert completed.stdout == f"server:--config {config} --profile v1\n"
+    assert completed.stdout == f"server:--config {config}\n"
 
 
 @pytest.mark.parametrize(
@@ -514,6 +514,8 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
 
     assert "日常使用（不做离线研究）:" in powershell
     assert "离线研究（仅在明确执行研究任务时使用）:" in powershell
+    assert ".\\run.ps1                         以默认 V2 启动并加载共享三头模型" in powershell
+    assert ".\\run.ps1 --profile v1|v3         显式使用 V1 或 V3 启动" in powershell
     assert ".\\run.ps1 download_history        零参数历史维护" in powershell
     assert "research-history" not in powershell
     assert "research-screen" not in powershell
@@ -522,6 +524,7 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert "--allow-partial-history" not in powershell
     assert "看板和 check 可追加 --profile v1|v2|v3；离线数据与训练命令均为零参数" in powershell
     assert "& $SelectedEntryPoint --help" in powershell
+    assert "$ProfileArgs = if ($ScoringProfileSet)" in powershell
     assert '$ScoringProfile -notin @("v1", "v2", "v3")' in powershell
     assert "config\\runtime.json" in powershell
     assert "config\\v2\\runtime.json" not in powershell

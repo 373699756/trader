@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Default V2 over the existing shared bundles](2026-09-14-v2-default-existing-bundles.md)
 - [V2/V3 shared three-head runtime](2026-09-13-v2-v3-shared-three-head-runtime.md)
 - [Share all three trained model heads between V2 and V3](2026-09-13-v2-v3-shared-three-head-training-plan.md)
 - [Require independent retraining for the merged Tomorrow V2 plan](2026-09-13-tomorrow-v2-independent-retraining-plan.md)

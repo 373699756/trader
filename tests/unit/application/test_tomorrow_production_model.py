@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -20,8 +22,10 @@ from trader.application.recommendation.production_model_scoring import (
 from trader.domain.market.models import Board, FeatureSnapshot
 from trader.domain.recommendation.model_scoring import LEGACY_EXPOSURE_CONTRACT, TRAINED_HEAD_EXPOSURE_CONTRACT
 from trader.domain.recommendation.models import Strategy
+from trader.infra.scoring.profile_factory import load_scoring_profile
 
 NOW = datetime(2026, 8, 31, 14, 50, tzinfo=ZoneInfo("Asia/Shanghai"))
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _service(predictor: object) -> ProductionModelScoringService:
@@ -298,6 +302,33 @@ def test_v3_heads_share_only_feature_computation_and_keep_prediction_caches_inde
         "skip_recent_momentum",
         "cross_section_residual",
     )
+
+
+def test_current_shared_training_bundles_score_all_default_v2_heads(application_feature_factory) -> None:
+    profile = load_scoring_profile("v2", training_root=PROJECT_ROOT / "data" / "train")
+    industries = set.intersection(*(set(head.predictor.industry_ids) for head in profile.heads.values()))
+    industry = sorted(industries)[0]
+    features: list[FeatureSnapshot] = []
+    for index in range(3):
+        feature = _model_feature(
+            application_feature_factory(f"60000{index}", NOW),
+            offset=index / 100.0,
+            amihud=float(index + 1),
+        )
+        features.append(replace(feature, quote=replace(feature.quote, industry=industry)))
+    shared = SharedModelFeatureCache()
+
+    batches = {
+        strategy: ProductionModelScoringService(profile, strategy, shared_features=shared).score(tuple(features))
+        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+    }
+
+    assert set(profile.heads) == {Strategy.TODAY, Strategy.TOMORROW, Strategy.D25}
+    for strategy, batch in batches.items():
+        assert batch.model_version.startswith(f"{profile.heads[strategy].predictor.model_id}:")
+        assert set(batch.diagnostics) == {"600000", "600001", "600002"}
+        assert batch.missing_codes == ()
+        assert all(math.isfinite(item.predicted_net_excess_pct) for item in batch.diagnostics.values())
 
 
 def test_model_service_owns_its_history_and_profile_field_eligibility(application_feature_factory) -> None:

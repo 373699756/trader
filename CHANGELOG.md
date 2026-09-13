@@ -7,6 +7,7 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
+- [Default V2 over the existing shared bundles](docs/changelog/2026-09-14-v2-default-existing-bundles.md)
 - [V2/V3 shared three-head runtime](docs/changelog/2026-09-13-v2-v3-shared-three-head-runtime.md)
 - [Share all three trained model heads between V2 and V3](docs/changelog/2026-09-13-v2-v3-shared-three-head-training-plan.md)
 - [Require independent retraining for the merged Tomorrow V2 plan](docs/changelog/2026-09-13-tomorrow-v2-independent-retraining-plan.md)

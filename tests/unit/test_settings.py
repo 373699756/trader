@@ -34,7 +34,7 @@ def test_configuration_contract_is_valid() -> None:
     strategy = load_strategy_settings(runtime.strategy_config_path)
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
 
-    assert strategy.scoring_profile == "v1"
+    assert strategy.scoring_profile == "v2"
     assert runtime.config_version.startswith("runtime_sha256_")
     assert strategy.strategy_version.startswith("strategy_sha256_")
     assert runtime.market_data.source_contracts["eastmoney"] == ("eastmoney_quote_security_master")
@@ -309,7 +309,7 @@ def test_scoring_profile_is_an_explicit_versioned_switch(tmp_path, profile: str)
     settings = load_strategy_settings(strategy_path)
 
     assert settings.scoring_profile == profile
-    if profile == "v2":
+    if profile != "v2":
         assert settings.strategy_version != load_strategy_settings(source).strategy_version
 
 
@@ -318,10 +318,10 @@ def test_scoring_profile_override_changes_the_effective_version_without_writing_
     original = source.read_bytes()
 
     default = load_strategy_settings(source)
-    overridden = load_strategy_settings(source, scoring_profile="v2")
+    overridden = load_strategy_settings(source, scoring_profile="v1")
 
-    assert default.scoring_profile == "v1"
-    assert overridden.scoring_profile == "v2"
+    assert default.scoring_profile == "v2"
+    assert overridden.scoring_profile == "v1"
     assert overridden.strategy_version != default.strategy_version
     assert source.read_bytes() == original
 

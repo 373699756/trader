@@ -51,14 +51,14 @@ def test_monthly_snapshot_plan_is_idempotent_and_fails_closed_on_missing_facts()
 
 def test_training_and_runtime_acceptance_cannot_auto_promote() -> None:
     work = _work()
-    section = work[work.index("## 2. 共享多目标样本管线") : work.index("## 10.")]
+    section = work[work.index("## 2. 共享多目标样本管线") : work.index("## 11.")]
 
     for token in (
         "任一固定工件组失败则所选档位启动失败",
         "historical_data_insufficient",
         "point_in_time_parity=false",
         "production_authority=false",
-        "默认 `scoring_profile=v1` 不变",
+        "`scoring_profile=v2`",
         "不自动重启",
     ):
         assert token in section

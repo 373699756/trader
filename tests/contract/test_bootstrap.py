@@ -36,9 +36,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def _config(tmp_path: Path) -> Path:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
+    strategy = json.loads((PROJECT_ROOT / "config/strategy.json").read_text(encoding="utf-8"))
+    strategy["scoring_profile"] = "v1"
+    strategy_path = config_dir / "strategy.json"
+    strategy_path.write_text(json.dumps(strategy), encoding="utf-8")
     runtime = json.loads((PROJECT_ROOT / "config/runtime.json").read_text(encoding="utf-8"))
     runtime["runtime_dir"] = str(tmp_path / "runtime")
-    runtime["strategy_config"] = str(PROJECT_ROOT / "config/strategy.json")
+    runtime["strategy_config"] = str(strategy_path)
     runtime["long_watchlist"] = str(PROJECT_ROOT / "config/long_watchlist.json")
     path = config_dir / "runtime.json"
     path.write_text(json.dumps(runtime), encoding="utf-8")

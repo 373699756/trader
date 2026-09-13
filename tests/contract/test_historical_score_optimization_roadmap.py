@@ -36,7 +36,7 @@ def test_roadmap_keeps_point_in_time_and_manual_authority_fail_closed() -> None:
         "historical_data_insufficient",
         "production_authority=false",
         "automatic_model_update=false",
-        "默认 `scoring_profile=v1` 不变",
+        "`scoring_profile=v2`",
     ):
         assert token in work
     assert "所有评分策略验证只使用历史 point-in-time 数据" in strategy
