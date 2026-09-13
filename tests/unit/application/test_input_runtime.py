@@ -156,6 +156,29 @@ def test_model_scoring_context_uses_the_freeze_budget_and_input_age(application_
     assert close_context.time_budget_seconds is None
 
 
+@pytest.mark.parametrize(
+    ("strategy", "observed_at", "expected_budget"),
+    (
+        (Strategy.TODAY, datetime(2026, 8, 12, 11, 19, 45, tzinfo=SHANGHAI), 9.0),
+        (Strategy.TOMORROW, datetime(2026, 8, 12, 14, 49, 45, tzinfo=SHANGHAI), 9.0),
+        (Strategy.D25, datetime(2026, 8, 12, 14, 49, 45, tzinfo=SHANGHAI), 9.0),
+    ),
+)
+def test_model_scoring_context_uses_each_strategy_freeze_deadline(
+    application_feature_factory,
+    strategy: Strategy,
+    observed_at: datetime,
+    expected_budget: float,
+) -> None:
+    feature = application_feature_factory("600001", observed_at)
+    request = _request(observed_at, strategy=strategy, phase="final_quote")
+    batch = InputBatch(request, (feature,), (feature.quote.code,), (feature,), "test-data")
+
+    context = _model_scoring_context(request, batch, observed_at + timedelta(seconds=6))
+
+    assert context.time_budget_seconds == expected_budget
+
+
 def _prime_scoring_cache(adapter: MarketDataAdapter, observed_at: datetime) -> None:
     adapter.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
     adapter.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))

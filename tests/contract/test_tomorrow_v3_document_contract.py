@@ -57,7 +57,7 @@ def test_v3_minimum_dates_can_satisfy_every_preregistered_segment() -> None:
     assert daily_close_holdout_dates >= 200
 
 
-def test_remaining_v3_delivery_has_isolated_owners_and_explicit_commands() -> None:
+def test_v3_delivery_has_isolated_owners_and_explicit_commands() -> None:
     strategy = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
     design = (ROOT / "docs" / "02_工程设计.md").read_text(encoding="utf-8")
 
@@ -82,8 +82,7 @@ def test_remaining_v3_delivery_has_isolated_owners_and_explicit_commands() -> No
     assert "V1/V2/C3 原始预测级联合研究路线" not in design
     assert "内部 V1/V2/C3" not in design
     assert "15.1.36 V3 条件式生产适配 | `blocked_by_15.1.35`" not in strategy
-    assert "状态：`blocked_by_shared_samples`" in strategy
-    assert "状态：`blocked_by_real_training`" in strategy
+    assert strategy.count("状态：`verified_ready_for_delivery`") == 8
 
     for internal_stage in (
         "research-tomorrow",
@@ -104,7 +103,7 @@ def test_trained_v3_profile_loads_only_the_fixed_active_bundle_files() -> None:
     bundle_repository_source = (ROOT / "src/trader/infra/scoring/profiles/v3/training_bundle_repository.py").read_text(
         encoding="utf-8"
     )
-    assert "tomorrow-v3" in locator
+    assert 'f"{strategy.value}-v3"' in locator
     assert "active-bundle.json" in bundle_repository_source
     assert "model.json" in bundle_repository_source
     assert "training-input.json" in bundle_repository_source
@@ -126,7 +125,7 @@ def test_v3_training_owns_one_active_archive_and_disk_backed_sample_source() -> 
 
     assert "SQLiteHistoryTrainingInputArchive.open" in training
     assert "BaoStockTrainingTrainingInputArchive" not in training
-    assert "SQLiteTomorrowTrainingSampleRepository" in training
+    assert "SQLiteV3TrainingSampleRepository" in training
     assert "read_training_batch" not in training
     assert "iter_training_windows" in sample_builder
     assert "read_training_batch" not in sample_builder

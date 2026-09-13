@@ -23,7 +23,7 @@ from trader.application.decisions.decision_drafts import UnifiedDecisionDraftInd
 from trader.application.decisions.decision_events import build_decision_committed
 from trader.application.decisions.decision_queries import UnifiedDecisionQueries
 from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
-from trader.application.ports.model_scoring import ModelScoringPort
+from trader.application.ports.model_scoring import LoadedScoringProfile, ModelScoringPort
 from trader.application.ports.scored import TomorrowNativeInput
 from trader.application.recommendation.candidate_planning import (
     SCORED_STRATEGIES,
@@ -33,13 +33,16 @@ from trader.application.recommendation.candidate_planning import (
 )
 from trader.application.recommendation.model_scoring_router import ModelScoringRouter
 from trader.application.recommendation.policy import RecommendationPolicy
+from trader.application.recommendation.production_model_scoring import (
+    ProductionModelScoringService,
+    SharedModelFeatureCache,
+)
 from trader.application.recommendation.scored_projection import (
     ScoredLocalProjection,
     ScoredProjectionInputs,
     build_scored_hybrid,
     build_scored_local,
 )
-from trader.application.recommendation.tomorrow_model_scoring import TomorrowProductionModelScoringService
 from trader.application.research.scoring_hot_path_baseline import (
     ScoringHotPathBaseline,
     ScoringHotPathEquivalence,
@@ -118,12 +121,10 @@ def run(
     context = _OperationContext(
         settings.config_version,
         _recommendation_policy(strategy_settings),
-        ModelScoringRouter(
-            TomorrowProductionModelScoringService(
-                load_scoring_profile(
-                    strategy_settings.scoring_profile,
-                    training_root=settings.project_root / "data" / "train",
-                )
+        _model_scoring_router(
+            load_scoring_profile(
+                strategy_settings.scoring_profile,
+                training_root=settings.project_root / "data" / "train",
             )
         ),
     )
@@ -212,6 +213,17 @@ def run(
         "failures": failures,
         "hot_path_baseline": _project_hot_path_baseline(hot_path_baseline),
     }
+
+
+def _model_scoring_router(profile: LoadedScoringProfile) -> ModelScoringRouter:
+    shared_features = SharedModelFeatureCache()
+    return ModelScoringRouter(
+        profile.profile_id,
+        {
+            strategy: ProductionModelScoringService(profile, strategy, shared_features=shared_features)
+            for strategy in profile.heads
+        },
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

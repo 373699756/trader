@@ -12,6 +12,7 @@ BOOTSTRAP = ROOT / "src" / "trader" / "bootstrap.py"
 def test_authoritative_contract_defines_d25_freeze_recovery_and_isolation() -> None:
     design = DESIGN.read_text(encoding="utf-8")
     strategy = STRATEGY.read_text(encoding="utf-8")
+    compact_strategy = " ".join(strategy.split())
 
     for token in (
         "D25NativeInput",
@@ -24,10 +25,10 @@ def test_authoritative_contract_defines_d25_freeze_recovery_and_isolation() -> N
     for token in (
         "d25 原生决策",
         "strategy=d25",
-        "不新增模型请求链",
+        "V3 下先由独立 D25 head",
         "不得作为 D25 输入或降级源",
     ):
-        assert token in strategy
+        assert token in compact_strategy
 
 
 def test_production_composition_installs_d25_and_unified_query() -> None:

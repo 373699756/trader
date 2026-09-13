@@ -7,14 +7,24 @@
 .build-metadata/
 # Runtime history shards, training evidence, WAL files, and manifests are never committed.
 /data/history/
-# Only the portable Tomorrow V3 production bundle is versioned; training
-# evidence, checkpoints, staging directories, and logs stay local.
+# Only the three portable V3 production bundles are versioned; training
+# evidence, temporary samples, staging directories, and logs stay local.
 /data/train/**/*
 !/data/train/tomorrow-v3/
 !/data/train/tomorrow-v3/active-bundle.json
 !/data/train/tomorrow-v3/model.json
 !/data/train/tomorrow-v3/report.json
 !/data/train/tomorrow-v3/training-input.json
+!/data/train/today-v3/
+!/data/train/today-v3/active-bundle.json
+!/data/train/today-v3/model.json
+!/data/train/today-v3/report.json
+!/data/train/today-v3/training-input.json
+!/data/train/d25-v3/
+!/data/train/d25-v3/active-bundle.json
+!/data/train/d25-v3/model.json
+!/data/train/d25-v3/report.json
+!/data/train/d25-v3/training-input.json
 *.sqlite3
 .agents/*
 !.agents/skills/

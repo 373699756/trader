@@ -10,6 +10,7 @@ import pytest
 import trader.infra.research.history_training_due as due_module
 from scripts.runtime_diagnostics.history_archive_performance import inspect_history_archive_performance
 from trader.application.research.history_sync import HistorySupplierContext, HistorySyncConfiguration
+from trader.domain.recommendation.models import Strategy
 from trader.domain.research.baostock_daily import (
     BaoStockCalendar,
     BaoStockCodeBatch,
@@ -27,7 +28,7 @@ from trader.infra.research.history_archive_sync import run_history_sync
 from trader.infra.research.history_control_repository import SQLiteHistoryControlRepository
 from trader.infra.research.history_training_due import _revised_dates_since_bundle, evaluate_history_training_due
 from trader.infra.research.history_training_input import SQLiteHistoryTrainingInputArchive
-from trader.infra.scoring.profiles.v3.training_bundle_repository import ActiveTomorrowBundle
+from trader.infra.scoring.profiles.v3.training_bundle_repository import ActiveHeadBundle
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -178,8 +179,9 @@ def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
     baseline = SQLiteHistoryControlRepository(archive_root / "control.sqlite3").load_state().active_snapshot
     assert baseline is not None
     contract_hash = "9" * 64
-    bundle = ActiveTomorrowBundle(
+    bundle = ActiveHeadBundle(
         tmp_path / "train/tomorrow-v3/model.json",
+        Strategy.TOMORROW,
         baseline.content_hash,
         baseline.source_identity_hash,
         baseline.label_cutoff,
@@ -190,7 +192,7 @@ def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
     )
     later_dates = (*first_dates, date(2026, 9, 10))
     run_history_sync(configuration, _Supplier(later_dates), clock=lambda: NOW)
-    monkeypatch.setattr(due_module, "_active_bundle", lambda _root: (bundle, False))
+    monkeypatch.setattr(due_module, "_active_bundle", lambda _root, _strategy: (bundle, False))
 
     evaluation = evaluate_history_training_due(archive_root, tmp_path / "train", NOW, contract_hash)
 

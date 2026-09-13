@@ -68,5 +68,5 @@ def test_profile_factory_keeps_v1_and_v2_independent_of_industry_input() -> None
 
 
 def test_profile_factory_fails_closed_without_a_v3_training_model(tmp_path: Path) -> None:
-    with pytest.raises(RuntimeError, match="training model is unavailable"):
+    with pytest.raises(RuntimeError, match="training models are unavailable"):
         load_scoring_profile("v3", training_root=tmp_path)

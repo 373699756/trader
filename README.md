@@ -45,14 +45,15 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 ./run.sh --profile v2
 ./run.sh download_history
 ./run.sh train-tomorrow
+./run.sh train-v3
 ./run.sh install-history-automation
 ./run.sh uninstall-history-automation
 ./run.sh help
 ```
 
-日常启动不需要参数，默认使用 Tomorrow V1；追加 `--profile v2` 才使用 V2，该覆盖不会写回配置。
+日常启动不需要参数，默认使用 Tomorrow V1；追加 `--profile v2` 或 `--profile v3` 可显式切换，该覆盖不会写回配置。
 `check` 依次执行配置校验、只读研究状态、持久化训练 due/提醒状态和所选档位的离线性能门禁；`download_history` 是唯一零参数历史维护
-入口，`train-tomorrow` 负责统一的 Tomorrow 离线训练链。旧 H0 历史归档、回测和筛选入口已退役，
+入口，`train-tomorrow` 只训练 Tomorrow，`train-v3` 通过一次历史扫描依次训练 Today、Tomorrow 和 D25。旧 H0 历史归档、回测和筛选入口已退役，
 不再通过启动流程执行。离线研究不会随服务启动自动执行。底层
 `trader-cli performance-check` 仍可用 `--output` 保存报告或用 `--baseline` 执行 5% 相对回归门禁；它
 禁止外网并直接测量活动生产标准化、合并、三策略评分、overlay CAS、API/ETag/status、SSE 和 100 tick RSS。

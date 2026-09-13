@@ -5,29 +5,33 @@ from scripts import check_tomorrow_training_memory
 
 
 def test_training_memory_gate_requires_explicit_roots_and_reports_peak_rss(tmp_path: Path, monkeypatch, capsys) -> None:
-    observed: list[tuple[Path, Path, str]] = []
+    observed: list[tuple[Path, Path]] = []
 
     def train(
         history: Path,
         output: Path,
         *,
-        source_commit: str,
         progress,
         expected_history_snapshot_hash: str,
     ):
         del progress
         assert expected_history_snapshot_hash == "a" * 64
-        observed.append((history, output, source_commit))
-        return SimpleNamespace(
+        observed.append((history, output))
+        head = SimpleNamespace(
+            strategy=SimpleNamespace(value="tomorrow"),
             status="engineering_ready" if len(observed) == 1 else "already_current",
-            training_input_hash="a" * 64,
             model_hash="b" * 64,
             report_hash="c" * 64,
             failure_reasons=(),
+        )
+        return SimpleNamespace(
+            status=head.status,
+            training_input_hash="a" * 64,
+            heads=(head,),
             sample_database_peak_bytes=1234,
         )
 
-    monkeypatch.setattr(check_tomorrow_training_memory, "run_repack_tomorrow_training", train)
+    monkeypatch.setattr(check_tomorrow_training_memory, "run_repack_v3_training", train)
     monkeypatch.setattr(check_tomorrow_training_memory, "_peak_rss_bytes", lambda: 100)
     monkeypatch.setattr(check_tomorrow_training_memory.os, "nice", lambda _increment: None)
     history = tmp_path / "history"
@@ -41,8 +45,6 @@ def test_training_memory_gate_requires_explicit_roots_and_reports_peak_rss(tmp_p
                 str(history),
                 "--train-root",
                 str(output),
-                "--source-commit",
-                "d" * 40,
                 "--expected-history-snapshot-hash",
                 "a" * 64,
                 "--max-rss-mib",
@@ -54,8 +56,8 @@ def test_training_memory_gate_requires_explicit_roots_and_reports_peak_rss(tmp_p
         == 0
     )
     assert observed == [
-        (history.resolve(), output.resolve(), "d" * 40),
-        (history.resolve(), output.resolve(), "d" * 40),
+        (history.resolve(), output.resolve()),
+        (history.resolve(), output.resolve()),
     ]
     assert '"peak_rss_bytes":100' in capsys.readouterr().out
     assert '"repeat_training_status":"already_current"' in evidence.read_text(encoding="utf-8")

@@ -139,7 +139,10 @@ def test_v3_scoring_profile_owns_its_locator_codec_predictor_and_combiner() -> N
         "bundle_locator.py",
         "composition.py",
         "profile.py",
+        "heads/inference.py",
+        "heads/today/predictor.py",
         "heads/tomorrow/predictor.py",
+        "heads/d25/predictor.py",
     ):
         assert (v3_root / relative).is_file()
     assert not (SOURCE_ROOT / "infra/tomorrow_production_model.py").exists()
@@ -153,7 +156,7 @@ def test_v3_scoring_profile_owns_its_locator_codec_predictor_and_combiner() -> N
     runtime_paths = (path for path in v3_root.rglob("*.py") if path.name not in offline_training_modules)
     assert not any("trader.infra.research" in imported for path in runtime_paths for imported in _imports(path))
     profile_source = (v3_root / "profile.py").read_text(encoding="utf-8")
-    assert "Strategy.TOMORROW" in profile_source
+    assert all(strategy in profile_source for strategy in ("Strategy.TODAY", "Strategy.TOMORROW", "Strategy.D25"))
     assert all(head not in profile_source for head in ("T2Head", "T3Head", "T4Head", "T5Head"))
 
 

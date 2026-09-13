@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal, Protocol
 
+from trader.domain.recommendation.models import Strategy
 from trader.domain.research.baostock_daily import BaoStockTrainingSplit
 
 TomorrowTrainingStage = Literal[
@@ -48,11 +49,13 @@ class TomorrowTrainingProgress:
     total_units: int
     produced_units: int = 0
     partition_validation: TomorrowTrainingPartitionValidationProgress | None = None
+    strategy: Strategy | None = None
 
     def __post_init__(self) -> None:
         if (
             min(self.completed_units, self.total_units, self.produced_units) < 0
             or self.completed_units > self.total_units
+            or self.strategy is Strategy.LONG
         ):
             raise ValueError("Tomorrow V3 training progress counts are invalid")
 

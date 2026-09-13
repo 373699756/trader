@@ -96,6 +96,16 @@ class DecisionBuildDependencies:
 
 
 @dataclass(frozen=True)
+class _PendingQualityContext:
+    observed_at: datetime
+    population_count: int
+    candidate_plans: CandidatePlanSet
+    candidate_feature_counts: dict[Strategy, int]
+    primary_blocker: str
+    apply_model_eligibility: bool = True
+
+
+@dataclass(frozen=True)
 class _TopKQuoteBatch:
     observed_at: datetime
     features: tuple[FeatureSnapshot, ...]
@@ -264,6 +274,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         features = tuple(self._market.fetch_market_features(request.observed_at, force=True, deadline=deadline))
         data_version = _feature_batch_version("market", features)
         completed_at = _refresh_completed_at(request, features)
+        apply_model_eligibility = request.task is not PipelineTask.CLOSE_QUOTES
         candidate_plans = build_candidate_plans(
             features,
             None,
@@ -273,6 +284,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                 policy=self._policy,
                 model_scoring=self._model_scoring,
                 limit_per_board=self._candidate_pool_size,
+                apply_model_eligibility=apply_model_eligibility,
             ),
         )
         requested = candidate_plans.physical_union()
@@ -299,11 +311,14 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             self._market_version = data_version
             self._market_quote_versions = quote_versions
             self._record_pending_quality_locked(
-                request.observed_at,
-                population_count=len(features),
-                candidate_plans=candidate_plans,
-                candidate_feature_counts={strategy: 0 for strategy in SCORED_STRATEGIES},
-                primary_blocker="candidate_quotes_pending",
+                _PendingQualityContext(
+                    request.observed_at,
+                    len(features),
+                    candidate_plans,
+                    {strategy: 0 for strategy in SCORED_STRATEGIES},
+                    "candidate_quotes_pending",
+                    apply_model_eligibility,
+                )
             )
         return RefreshOutcome(
             request.task,
@@ -390,11 +405,13 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                 codes = strategy_requested[Strategy.TODAY]
                 self._score_feature_batches[(epoch, False, codes)] = strategy_features[Strategy.TODAY]
             self._record_pending_quality_locked(
-                request.observed_at,
-                population_count=len(self._latest_market_features),
-                candidate_plans=initial_plans,
-                candidate_feature_counts={strategy: len(strategy_features[strategy]) for strategy in SCORED_STRATEGIES},
-                primary_blocker="scoring_pending",
+                _PendingQualityContext(
+                    request.observed_at,
+                    len(self._latest_market_features),
+                    initial_plans,
+                    {strategy: len(strategy_features[strategy]) for strategy in SCORED_STRATEGIES},
+                    "scoring_pending",
+                )
             )
         return RefreshOutcome(
             request.task,
@@ -405,33 +422,25 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             _uses_fallback(final_features, expected_source="tencent"),
         )
 
-    def _record_pending_quality_locked(
-        self,
-        observed_at: datetime,
-        *,
-        population_count: int,
-        candidate_plans: CandidatePlanSet,
-        candidate_feature_counts: dict[Strategy, int],
-        primary_blocker: str,
-    ) -> None:
+    def _record_pending_quality_locked(self, context: _PendingQualityContext) -> None:
         for strategy in SCORED_STRATEGIES:
             existing = self._input_quality.get(strategy)
             if (
                 existing is not None
-                and existing.summary.trade_date == observed_at.date()
+                and existing.summary.trade_date == context.observed_at.date()
                 and existing.primary_blocker not in {"candidate_quotes_pending", "scoring_pending"}
             ):
                 continue
-            stage_counts = candidate_plans.plans[strategy].stage_counts
+            stage_counts = context.candidate_plans.plans[strategy].stage_counts
             requested_count = stage_counts.candidate_limit_selected
-            candidate_feature_count = min(requested_count, candidate_feature_counts[strategy])
+            candidate_feature_count = min(requested_count, context.candidate_feature_counts[strategy])
             covered = candidate_feature_count
             self._input_quality[strategy] = InputQualityStatus(
                 strategy=strategy,
                 status="not_ready",
                 publishable=False,
                 summary=SupplySummary(
-                    trade_date=observed_at.date(),
+                    trade_date=context.observed_at.date(),
                     quote_total_count=requested_count,
                     quote_covered_count=covered,
                     quote_missing_count=requested_count - covered,
@@ -448,18 +457,20 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                     candidate_limit_selected=stage_counts.candidate_limit_selected,
                     candidate_quote_eligible=candidate_feature_count,
                 ),
-                population_count=population_count,
+                population_count=context.population_count,
                 candidate_count=requested_count,
                 candidate_feature_count=candidate_feature_count,
                 history_required_sessions=(
-                    self._model_scoring.history_required_sessions(strategy) if self._model_scoring is not None else 20
+                    self._model_scoring.history_required_sessions(strategy)
+                    if self._model_scoring is not None and context.apply_model_eligibility
+                    else 20
                 ),
-                population_rejected_count=max(0, population_count - requested_count),
+                population_rejected_count=max(0, context.population_count - requested_count),
                 candidate_rejected_count=max(0, requested_count - candidate_feature_count),
                 candidate_feature_coverage_ratio=(
                     candidate_feature_count / requested_count if requested_count else 0.0
                 ),
-                primary_blocker=primary_blocker,
+                primary_blocker=context.primary_blocker,
             )
 
     def _refresh_topk(
@@ -1065,9 +1076,10 @@ def _model_scoring_context(
     local_now = now.astimezone(SHANGHAI)
     input_at = _decision_observed_at(batch).astimezone(SHANGHAI)
     input_age_seconds = max(0.0, (local_now - input_at).total_seconds())
-    if request.strategy is not Strategy.TOMORROW or request.phase == "close_fallback":
+    if request.phase == "close_fallback":
         return ModelScoringContext(input_age_seconds=input_age_seconds)
-    deadline = datetime.combine(request.trade_date, time(14, 50), tzinfo=SHANGHAI)
+    anchor = time(11, 20) if request.strategy is Strategy.TODAY else time(14, 50)
+    deadline = datetime.combine(request.trade_date, anchor, tzinfo=SHANGHAI)
     return ModelScoringContext(
         time_budget_seconds=max(0.0, (deadline - local_now).total_seconds()),
         input_age_seconds=input_age_seconds,

@@ -44,10 +44,12 @@ class StderrTomorrowTrainingProgress:
         *,
         monotonic: Callable[[], float] = time.monotonic,
         start_heartbeat: bool = True,
+        command_label: str = "Tomorrow训练",
     ) -> None:
         self._monotonic = monotonic
         self._started_at = monotonic()
         self._start_heartbeat = start_heartbeat
+        self._command_label = command_label
         self._last_emitted_at: float | None = None
         self._latest: TomorrowTrainingProgress | None = None
         self._stage_started_at: dict[TomorrowTrainingStage, float] = {}
@@ -97,7 +99,7 @@ class StderrTomorrowTrainingProgress:
         now = self._monotonic()
         with self._lock:
             print(
-                f"{_format_duration(now - self._started_at)} | Tomorrow训练 | 0/1 (0.00%) | 已取消",
+                f"{_format_duration(now - self._started_at)} | {self._command_label} | 0/1 (0.00%) | 已取消",
                 file=sys.stderr,
                 flush=True,
             )
@@ -108,7 +110,7 @@ class StderrTomorrowTrainingProgress:
         completed = 1 if status in {"engineering_ready", "already_current", "not_due"} else 0
         parts = [
             _format_duration(now - self._started_at),
-            "Tomorrow训练",
+            self._command_label,
             f"{completed}/1 ({completed * 100:.2f}%)",
             _RESULT_LABELS[status],
         ]
@@ -134,7 +136,11 @@ class StderrTomorrowTrainingProgress:
         percent = 100.0 if progress.total_units == 0 else progress.completed_units / progress.total_units * 100.0
         parts = [
             _format_duration(now - self._started_at),
-            _STAGE_LABELS[progress.stage],
+            (
+                f"{progress.strategy.value} {_STAGE_LABELS[progress.stage]}"
+                if progress.strategy is not None
+                else _STAGE_LABELS[progress.stage]
+            ),
             f"{progress.completed_units}/{progress.total_units} ({percent:.2f}%)",
             _STATE_LABELS[progress.state],
         ]

@@ -255,7 +255,7 @@ class LoadedScoringProfile:
 
 
 @dataclass(frozen=True)
-class ScoringProfileRuntimeStatus:
+class ScoringHeadRuntimeStatus:
     active: bool
     profile_id: ScoringProfileId
     model_id: str
@@ -278,6 +278,23 @@ class ScoringProfileRuntimeStatus:
     point_in_time_parity: bool = False
 
 
+@dataclass(frozen=True)
+class ScoringProfileRuntimeStatus:
+    profile_id: ScoringProfileId
+    heads: Mapping[Strategy, ScoringHeadRuntimeStatus]
+
+    def __post_init__(self) -> None:
+        heads = dict(self.heads)
+        if (
+            not heads
+            or Strategy.LONG in heads
+            or any(strategy.value not in {"today", "tomorrow", "d25"} for strategy in heads)
+            or any(status.profile_id != self.profile_id for status in heads.values())
+        ):
+            raise ValueError("scoring profile runtime heads are invalid")
+        object.__setattr__(self, "heads", MappingProxyType(heads))
+
+
 class ScoringCapabilityPort(Protocol):
     @property
     def history_required_sessions(self) -> int: ...
@@ -291,7 +308,7 @@ class ScoringCapabilityPort(Protocol):
         context: ModelScoringContext | None = None,
     ) -> ModelScoreBatch: ...
 
-    def status(self) -> ScoringProfileRuntimeStatus: ...
+    def status(self) -> ScoringHeadRuntimeStatus: ...
 
 
 class ModelScoringPort(Protocol):
@@ -330,5 +347,6 @@ __all__ = [
     "ProfileCombinerPort",
     "ProfileEvidence",
     "ScoringCapabilityPort",
+    "ScoringHeadRuntimeStatus",
     "ScoringProfileRuntimeStatus",
 ]

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -83,6 +82,8 @@ def run_research_command(
 ) -> int:
     if command == "train-tomorrow":
         return _run_tomorrow_research_orchestrator(runtime)
+    if command == "train-v3":
+        return _run_v3_training_orchestrator(runtime)
     if command == "research-status":
         trace = SQLiteResearchTraceArchive(runtime.runtime_dir)
         status = trace.inspect_status()
@@ -214,7 +215,6 @@ def _run_tomorrow_research_orchestrator(
                 _history_data_root(),
                 _train_data_root(),
                 progress=progress,
-                source_commit=_repository_source_commit(),
             )
             progress.publish_result(result.status, result.failure_reasons[0] if result.failure_reasons else None)
         except KeyboardInterrupt:
@@ -240,6 +240,7 @@ def _run_tomorrow_research_orchestrator(
         "training_rows": result.training_rows,
         "validation_rows": result.validation_rows,
         "sample_database_peak_bytes": result.sample_database_peak_bytes,
+        "process_peak_rss_bytes": _process_peak_rss_bytes(),
         "failure_reasons": list(result.failure_reasons),
         "blockers": list(result.failure_reasons),
         "next_stage": "data_manifest" if result.status == "blocked" and not result.training_input_hash else None,
@@ -253,21 +254,64 @@ def _run_tomorrow_research_orchestrator(
     return 0 if result.status in {"trial_ready", "engineering_ready", "already_current", "not_due"} else 1
 
 
-def _repository_source_commit() -> str:
-    root = Path(__file__).resolve().parents[3]
+def _run_v3_training_orchestrator(runtime: RuntimeSettings) -> int:
+    del runtime
+    from trader.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+    from trader.infra.scoring.profiles.v3.training import run_v3_training
+
+    with StderrTomorrowTrainingProgress(command_label="V3训练") as progress:
+        try:
+            result = run_v3_training(
+                _history_data_root(),
+                _train_data_root(),
+                progress=progress,
+            )
+            failure = next((reason for head in result.heads for reason in head.failure_reasons), None)
+            progress.publish_result(result.status, failure)
+        except KeyboardInterrupt:
+            progress.publish_cancelled()
+            return 130
+    payload = {
+        "schema_version": "v3_training_result",
+        "status": result.status,
+        "run_id": result.run_id,
+        "training_input_hash": result.training_input_hash,
+        "sample_database_peak_bytes": result.sample_database_peak_bytes,
+        "process_peak_rss_bytes": _process_peak_rss_bytes(),
+        "heads": {
+            head.strategy.value: {
+                "artifact_root": str(_train_data_root() / f"{head.strategy.value}-v3"),
+                "status": head.status,
+                "label_cutoff": head.label_cutoff.isoformat() if head.label_cutoff is not None else None,
+                "matured_label_days_since_training": head.matured_label_days_since_training,
+                "training_due": head.training_due,
+                "training_due_reason": head.training_due_reason,
+                "report_hash": head.report_hash,
+                "model_hash": head.model_hash,
+                "industry_count": head.industry_count,
+                "training_rows": head.training_rows,
+                "validation_rows": head.validation_rows,
+                "failure_reasons": list(head.failure_reasons),
+            }
+            for head in result.heads
+        },
+        "training_anchor": "15:00_close_proxy",
+        "point_in_time_parity": False,
+        "production_authority": False,
+        "automatic_model_update": False,
+    }
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    return 0 if result.status in {"engineering_ready", "already_current", "not_due"} else 1
+
+
+def _process_peak_rss_bytes() -> int | None:
     try:
-        result = subprocess.run(
-            ("git", "rev-parse", "--verify", "HEAD"),
-            cwd=root,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=5.0,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    commit = result.stdout.strip().lower()
-    return commit if len(commit) == 40 and all(character in "0123456789abcdef" for character in commit) else ""
+        import resource
+
+        value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    except (ImportError, OSError, ValueError):
+        return None
+    return int(value if sys.platform == "darwin" else value * 1024)
 
 
 def _train_data_root() -> Path:

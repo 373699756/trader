@@ -81,4 +81,4 @@ def test_online_outcomes_remain_monitoring_only_without_changing_scoring_or_free
     ):
         assert invariant in strategy
     assert "OutcomeSettlementService" in bootstrap
-    assert "TomorrowProductionModelScoringService" in bootstrap
+    assert "ProductionModelScoringService" in bootstrap

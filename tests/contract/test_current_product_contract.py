@@ -52,7 +52,8 @@ def test_parallel_overview_plan_and_operations_docs_are_retired() -> None:
     assert "多种行情来源不等于证券主数据存在同等冗余供给" in design
     assert "主推荐区必须按确定性优先级给出单一结论" in design_compact
     assert "达到观察线/正式线数量" in design_compact
-    assert "当前可配置 Tomorrow 模型允许展示评分版本" in design_compact
+    assert "scoring_profile.profile_id" in design_compact
+    assert "scoring_profile.heads" in design_compact
     assert "loss_probability_status=not_modeled" in design_compact
     assert "旧历史候选路线已经终止，当前没有可继续晋级的候选" in strategy
     assert "新的候选必须另立未读取新收益的研究身份" in strategy
@@ -74,9 +75,9 @@ def test_parallel_overview_plan_and_operations_docs_are_retired() -> None:
     assert "dynamic_cutoff_and_missing_fact_acquisition" not in work
     assert "candidate_single_owner_acceptance_revalidation" not in work
     assert "scoring_weight_configuration_single_source" not in work
-    assert "v3_training_artifact_rebuild" in work
-    assert "terminal_holdout_and_shadow" in work
-    assert "manual_candidate_strategy_activation" in work
+    assert "v3_shared_multi_target_samples" in work
+    assert "v3_multihead_runtime_scoring" in work
+    assert "v3_explicit_chain_acceptance" in work
     for completed_marker in ("`completed`", "`not_current_route`", "评分模块化计划项 1–9"):
         assert completed_marker not in work
 
@@ -91,7 +92,12 @@ def test_release_guides_expose_only_unified_api_and_desktop_gate() -> None:
         assert "trader-cli perf-check" not in content
     assert "deepseek-budget.sqlite3" in operations
     assert "卡脖子、高成长、低价潜力" in operations
-    for public_command in ("./run.sh check", "./run.sh download_history", "./run.sh train-tomorrow"):
+    for public_command in (
+        "./run.sh check",
+        "./run.sh download_history",
+        "./run.sh train-tomorrow",
+        "./run.sh train-v3",
+    ):
         assert public_command in readme
         assert public_command in operations
     for retired_command in ("./run.sh validate-config", "./run.sh performance-check"):

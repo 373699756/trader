@@ -35,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--profile",
         choices=SCORING_PROFILE_IDS,
-        help="Effective Tomorrow scoring profile for this process; config value is used when omitted.",
+        help="Effective scoring profile for this process; config value is used when omitted.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser(
@@ -43,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run config validation, research readiness, and the active-profile performance gate.",
     )
     subparsers.add_parser("train-tomorrow", help="Run the due immutable Tomorrow training stage.")
+    subparsers.add_parser("train-v3", help="Run one shared scan and sequentially train due V3 heads.")
     subparsers.add_parser("validate-config", help="Validate runtime and strategy configuration.")
     performance = subparsers.add_parser(
         "performance-check",
@@ -100,9 +101,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
     )
     if maintenance_exit is not None:
         return maintenance_exit
-    if args.command == "train-tomorrow":
+    if args.command in {"train-tomorrow", "train-v3"}:
         if args.profile is not None:
-            parser.error("train-tomorrow does not accept --profile")
+            parser.error(f"{args.command} does not accept --profile")
         _configure_tomorrow_training_resources()
     config_path = _absolute_config_path(args.config)
     runtime = load_runtime_settings(config_path)
@@ -130,7 +131,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
         return 0 if isinstance(baseline, dict) and baseline.get("status") == "passed" else 1
     if args.command == "eligibility-list":
         return _run_eligibility_list(runtime, as_of=args.as_of)
-    if args.command == "train-tomorrow" or args.command.startswith("research-"):
+    if args.command in {"train-tomorrow", "train-v3"} or args.command.startswith("research-"):
         from trader.entrypoints.research_commands import ResearchCommandOptions, run_research_command
 
         return run_research_command(

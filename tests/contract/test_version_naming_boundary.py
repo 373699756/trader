@@ -77,7 +77,7 @@ def test_active_configuration_has_no_numbered_version_controllers() -> None:
 def test_production_feature_contract_has_no_historical_stage_prefixes() -> None:
     production_files = (
         SOURCE / "domain" / "market" / "factors.py",
-        SOURCE / "application" / "recommendation" / "tomorrow_model_scoring.py",
+        SOURCE / "application" / "recommendation" / "production_model_scoring.py",
         SOURCE / "infra" / "market_data" / "normalization" / "features.py",
         SOURCE / "entrypoints" / "performance.py",
     )

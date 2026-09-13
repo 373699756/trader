@@ -59,7 +59,8 @@ def test_dynamic_cutoff_keeps_point_in_time_facts_fail_closed() -> None:
 def test_holdout_isolation_remains_closed_until_real_point_in_time_evidence() -> None:
     work = _read("docs/03_工程实施.md")
 
-    assert "blocked_by_external_point_in_time_sources" in work
-    assert "terminal_holdout" in work
+    assert "不新增分钟库" in work
+    assert "historical_data_insufficient" in work
+    assert "point_in_time_parity=false" in work
     assert "production_authority=false" in work
-    assert "用户在独立批次明确授权" in work
+    assert "禁止自动更新" in work

@@ -13,8 +13,8 @@ from trader.infra.scoring.profiles.v1.artifact_codec import decode_tomorrow_arti
 from trader.infra.scoring.profiles.v1.profile import build_scoring_profile as build_v1_profile
 from trader.infra.scoring.profiles.v2.artifact_codec import decode_tomorrow_artifact as decode_v2_artifact
 from trader.infra.scoring.profiles.v2.profile import build_scoring_profile as build_v2_profile
-from trader.infra.scoring.profiles.v3.bundle_codec import load_tomorrow_bundle as load_v3_bundle
-from trader.infra.scoring.profiles.v3.bundle_locator import locate_latest_bundle as locate_latest_v3_bundle
+from trader.infra.scoring.profiles.v3.bundle_codec import load_head_bundle
+from trader.infra.scoring.profiles.v3.bundle_locator import locate_head_bundles
 from trader.infra.scoring.profiles.v3.profile import build_scoring_profile as build_v3_profile
 
 
@@ -33,12 +33,13 @@ def load_scoring_profile(
         return build_v2_profile(v2_artifact)
     if profile_id == "v3":
         try:
-            bundle_path = locate_latest_v3_bundle(training_root or Path("data/train"))
-            return build_v3_profile(load_v3_bundle(bundle_path))
+            bundle_paths = locate_head_bundles(training_root or Path("data/train"))
+            artifacts = tuple(load_head_bundle(path, strategy) for strategy, path in bundle_paths)
+            return build_v3_profile(artifacts)
         except FileNotFoundError as exc:
-            raise RuntimeError("Tomorrow V3 training model is unavailable") from exc
+            raise RuntimeError("V3 strategy-head training models are unavailable") from exc
         except (OSError, TypeError, ValueError) as exc:
-            raise RuntimeError("Tomorrow V3 training model is invalid") from exc
+            raise RuntimeError("V3 strategy-head training models are invalid") from exc
     raise ValueError("unknown scoring profile")
 
 

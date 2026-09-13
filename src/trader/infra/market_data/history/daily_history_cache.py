@@ -525,7 +525,7 @@ class HistoryCache:
                 if (
                     persisted_context is None
                     or persisted_context.latest_trade_date != ordered[-1].trade_date
-                    or _requires_tomorrow_model_context_rebuild(persisted_context, full)
+                    or _requires_scoring_model_context_rebuild(persisted_context, full)
                 ):
                     persisted_context = build_history_context(full)
                 self._history[code] = _HistoryEntry(
@@ -778,7 +778,7 @@ def _deserialize_history_context(payload: object) -> HistoryContext | None:
     )
 
 
-def _requires_tomorrow_model_context_rebuild(
+def _requires_scoring_model_context_rebuild(
     context: HistoryContext,
     bars: tuple[DailyBar, ...],
 ) -> bool:

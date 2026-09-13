@@ -22,12 +22,15 @@ from trader.application.long_runtime import LongRuntime, LongRuntimeDependencies
 from trader.application.market_data.input_runtime import DecisionBuildDependencies, MarketDataAdapter
 from trader.application.outcomes.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
 from trader.application.recommendation.model_scoring_router import ModelScoringRouter
+from trader.application.recommendation.production_model_scoring import (
+    ProductionModelScoringService,
+    SharedModelFeatureCache,
+)
 from trader.application.recommendation.scored_freezing import (
     DecisionRuntimeIdentity,
     ScoredFreezeCoordinator,
 )
 from trader.application.recommendation.today_freezing import TodayFreezeCoordinator
-from trader.application.recommendation.tomorrow_model_scoring import TomorrowProductionModelScoringService
 from trader.application.research.research_runtime import ResearchRuntime
 from trader.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.application.runtime.latency import LatencyWaterfall
@@ -222,7 +225,14 @@ def build_system(
         strategy.scoring_profile,
         training_root=settings.project_root / "data" / "train",
     )
-    model_scoring = ModelScoringRouter(TomorrowProductionModelScoringService(loaded_profile))
+    shared_model_features = SharedModelFeatureCache()
+    model_scoring = ModelScoringRouter(
+        loaded_profile.profile_id,
+        {
+            strategy: ProductionModelScoringService(loaded_profile, strategy, shared_features=shared_model_features)
+            for strategy in loaded_profile.heads
+        },
+    )
     publication = _build_publication(
         context,
         calendar,

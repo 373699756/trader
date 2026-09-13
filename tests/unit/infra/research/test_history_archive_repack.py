@@ -4,12 +4,14 @@ import json
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
 
 import trader.infra.research.history_archive_repack as repack_module
 import trader.infra.research.history_training_due as due_module
+from trader.domain.recommendation.models import Strategy
 from trader.domain.research.baostock_daily import BaoStockDailyCell, BaoStockDailySide
 from trader.domain.research.history_control import (
     HistoryActiveSnapshot,
@@ -32,8 +34,8 @@ from trader.infra.research.history_control_repository import SQLiteHistoryContro
 from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
 from trader.infra.research.history_training_due import evaluate_history_training_due
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
-from trader.infra.scoring.profiles.v3.training import run_repack_tomorrow_training
-from trader.infra.scoring.profiles.v3.training_bundle_repository import ActiveTomorrowBundle
+from trader.infra.scoring.profiles.v3.training import run_repack_tomorrow_training, run_repack_v3_training
+from trader.infra.scoring.profiles.v3.training_bundle_repository import ActiveHeadBundle
 from trader.infra.scoring.profiles.v3.training_memory_evidence import TomorrowTrainingMemoryEvidence
 
 NOW = datetime(2026, 9, 12, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -245,8 +247,8 @@ def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
 
     expected = object()
     monkeypatch.setattr(
-        "trader.infra.scoring.profiles.v3.training._run_tomorrow_training_locked",
-        lambda *_args, **_kwargs: expected,
+        "trader.infra.scoring.profiles.v3.training._run_locked",
+        lambda *_args, **_kwargs: SimpleNamespace(heads=(expected,)),
     )
 
     result = run_repack_tomorrow_training(
@@ -266,6 +268,30 @@ def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
     assert mismatch.failure_reasons == ("history_archive_repack_activation_pending",)
 
 
+def test_fenced_v3_training_uses_one_request_for_all_heads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source, target, _original = _archive(tmp_path)
+    coordinator = HistoryArchiveRepackCoordinator(source, target, requirements=_requirements())
+    built = coordinator.build()
+    coordinator.activate()
+    assert built.target_snapshot_hash is not None
+
+    captured: list[tuple[Strategy, ...]] = []
+
+    def locked(_archive: object, request: SimpleNamespace) -> object:
+        captured.append(tuple(item.strategy for item in request.contracts))
+        return SimpleNamespace(heads=())
+
+    monkeypatch.setattr("trader.infra.scoring.profiles.v3.training._run_locked", locked)
+    result = run_repack_v3_training(
+        source,
+        tmp_path / "data/train",
+        expected_history_snapshot_hash=built.target_snapshot_hash,
+    )
+
+    assert result.heads == ()
+    assert captured == [(Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)]
+
+
 def test_physical_repack_does_not_create_revision_due_or_invalidate_training_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -274,8 +300,9 @@ def test_physical_repack_does_not_create_revision_due_or_invalidate_training_cac
     built = coordinator.build()
     coordinator.activate()
     contract_hash = "9" * 64
-    bundle = ActiveTomorrowBundle(
+    bundle = ActiveHeadBundle(
         tmp_path / "data/train/tomorrow-v3/model.json",
+        Strategy.TOMORROW,
         original.content_hash,
         original.source_identity_hash,
         original.label_cutoff,
@@ -284,7 +311,7 @@ def test_physical_repack_does_not_create_revision_due_or_invalidate_training_cac
         "b" * 64,
         "c" * 64,
     )
-    monkeypatch.setattr(due_module, "_active_bundle", lambda _root: (bundle, False))
+    monkeypatch.setattr(due_module, "_active_bundle", lambda _root, _strategy: (bundle, False))
 
     evaluation = evaluate_history_training_due(
         source,
@@ -313,8 +340,8 @@ def test_finalize_deletes_only_the_verified_backup_after_bundle_and_memory_match
     assert built.target_snapshot_hash is not None
     monkeypatch.setattr(
         repack_module,
-        "inspect_active_tomorrow_bundle",
-        lambda _path: type(
+        "inspect_active_head_bundle",
+        lambda _path, _strategy: type(
             "Bundle",
             (),
             {
@@ -326,6 +353,9 @@ def test_finalize_deletes_only_the_verified_backup_after_bundle_and_memory_match
     )
     memory_evidence = tmp_path / "data/historyless/memory.json"
     _write_training_memory_evidence(memory_evidence, built.target_snapshot_hash)
+    backup_partition = next((tmp_path / "data/historyless/baostock-before-repack/partitions").rglob("*.sqlite3"))
+    Path(f"{backup_partition}-wal").touch()
+    Path(f"{backup_partition}-shm").write_bytes(b"sqlite coordination state")
 
     decoded = read_tomorrow_training_memory_evidence(memory_evidence)
 
@@ -355,8 +385,8 @@ def test_finalize_refuses_to_delete_a_backup_with_unknown_content(
     assert built.target_snapshot_hash is not None
     monkeypatch.setattr(
         repack_module,
-        "inspect_active_tomorrow_bundle",
-        lambda _path: type(
+        "inspect_active_head_bundle",
+        lambda _path, _strategy: type(
             "Bundle",
             (),
             {
@@ -388,3 +418,46 @@ def test_finalize_refuses_to_delete_a_backup_with_unknown_content(
         coordinator.finalize(tmp_path / "data/train", tmp_path / "data/historyless/memory.json")
 
     assert unexpected.read_text(encoding="utf-8") == "preserve me"
+
+
+def test_finalize_refuses_a_backup_partition_with_pending_wal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source, target, _original = _archive(tmp_path)
+    coordinator = HistoryArchiveRepackCoordinator(source, target, requirements=_requirements())
+    built = coordinator.build()
+    coordinator.activate()
+    assert built.target_snapshot_hash is not None
+    monkeypatch.setattr(
+        repack_module,
+        "inspect_active_head_bundle",
+        lambda _path, _strategy: type(
+            "Bundle",
+            (),
+            {
+                "training_input_hash": built.target_snapshot_hash,
+                "model_hash": "b" * 64,
+                "report_hash": "c" * 64,
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        repack_module,
+        "read_tomorrow_training_memory_evidence",
+        lambda _path: TomorrowTrainingMemoryEvidence(
+            "engineering_ready",
+            "already_current",
+            built.target_snapshot_hash,
+            "b" * 64,
+            "c" * 64,
+            1024,
+            2048 * 1024 * 1024,
+            4096,
+            (),
+        ),
+    )
+    backup_partition = next((tmp_path / "data/historyless/baostock-before-repack/partitions").rglob("*.sqlite3"))
+    Path(f"{backup_partition}-wal").write_bytes(b"pending transaction")
+
+    with pytest.raises(repack_module.HistoryArchiveRepackError, match="pending WAL"):
+        coordinator.finalize(tmp_path / "data/train", tmp_path / "data/historyless/memory.json")
+
+    assert Path(f"{backup_partition}-wal").read_bytes() == b"pending transaction"

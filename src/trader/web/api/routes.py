@@ -134,7 +134,7 @@ def _status(services: UnifiedWebServices | None) -> RouteResponse:
             "company_research": _company_research(runtime),
             "scheduler": _mapping(runtime.get("scheduler")),
             "market_data": _market_data(runtime),
-            "tomorrow_model": _tomorrow_model(runtime),
+            "scoring_profile": _scoring_profile(runtime),
             "last_error": runtime.get("last_error"),
             "deepseek_budget": _budget(runtime),
             "deepseek": _deepseek(runtime),
@@ -393,10 +393,25 @@ def _issuer_eligibility(raw: object) -> dict[str, object]:
     return {"issuer_eligibility": eligibility}
 
 
-def _tomorrow_model(runtime: Mapping[str, object]) -> dict[str, object]:
-    raw = runtime.get("tomorrow_model")
+def _scoring_profile(runtime: Mapping[str, object]) -> dict[str, object]:
+    raw = runtime.get("scoring_profile")
     if not isinstance(raw, Mapping):
-        return {"active": False, "status": "unavailable"}
+        return {"profile_id": None, "heads": {}}
+    profile_id = raw.get("profile_id")
+    heads = raw.get("heads")
+    if not isinstance(profile_id, str) or not isinstance(heads, Mapping):
+        return {"profile_id": None, "heads": {}}
+    return {
+        "profile_id": profile_id,
+        "heads": {
+            strategy: _scoring_head(head)
+            for strategy, head in sorted(heads.items(), key=lambda item: str(item[0]))
+            if strategy in {"today", "tomorrow", "d25"} and isinstance(head, Mapping)
+        },
+    }
+
+
+def _scoring_head(raw: Mapping[object, object]) -> dict[str, object]:
     result = {
         field: raw[field]
         for field in (

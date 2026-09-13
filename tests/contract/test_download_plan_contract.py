@@ -12,12 +12,14 @@ def _work() -> str:
 def test_download_plan_contains_only_the_remaining_dependency_route() -> None:
     work = _work()
     ordered = (
-        "## 2. 当前执行章节：V3 训练工件重建与整组发布",
-        "## 3. V3 工程运行验收",
-        "## 4. 点时证据修复",
-        "## 5. 候选容量与排序历史验证",
-        "## 6. 一次性终端留出与 Shadow",
-        "## 7. 人工候选策略生产启用",
+        "## 2. 共享多目标样本管线",
+        "## 3. Today V3 模型头",
+        "## 4. D25 V3 模型头",
+        "## 5. train-v3 统一入口",
+        "## 6. V3 多头运行评分",
+        "## 7. 状态、API、SSE、Web 和冻结",
+        "## 8. 真实全量训练",
+        "## 9. 显式 V3 整链验收",
     )
     positions = tuple(work.index(item) for item in ordered)
     assert positions == tuple(sorted(positions))
@@ -49,16 +51,15 @@ def test_monthly_snapshot_plan_is_idempotent_and_fails_closed_on_missing_facts()
 
 def test_training_and_runtime_acceptance_cannot_auto_promote() -> None:
     work = _work()
-    section = work[work.index("## 2. 当前执行章节：V3") : work.index("## 8.")]
+    section = work[work.index("## 2. 共享多目标样本管线") : work.index("## 10.")]
 
     for token in (
-        "一次原子切换",
-        "重新训练而不是给旧 schema 补字段或放宽 loader",
+        "任一固定工件组失败则整个显式 V3 启动失败",
         "historical_data_insufficient",
         "point_in_time_parity=false",
         "production_authority=false",
-        "默认 V1 不变",
-        "用户在独立批次明确授权",
+        "默认 `scoring_profile=v1` 不变",
+        "不自动重启",
     ):
         assert token in section
 
@@ -71,12 +72,11 @@ def test_current_training_task_uses_the_reviewed_zero_argument_history_prerequis
     work = _work()
 
     for required in (
-        "第 12.7 节阶段 A–G",
-        "阶段 A 至 F 已完成",
-        "阶段 G 已完成代码切换与发布门禁收尾",
-        "最低 10 GiB",
-        "行业上下文收敛为最近完整交易日快照",
-        "20:30 前不再请求尚未发布的当日日线",
-        "高效日更来源保持阻塞",
+        "当前 `data/history/baostock` 日线",
+        "不修改历史 archive schema",
+        "不重新下载历史",
+        "只完整验证一次 snapshot",
+        "计算线程 2",
+        "峰值 RSS 2048 MiB",
     ):
         assert required in work

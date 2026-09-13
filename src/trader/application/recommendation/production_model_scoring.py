@@ -1,10 +1,11 @@
-"""Cross-sectional production scoring for the configured packaged Tomorrow model."""
+"""Cross-sectional production scoring for one configured strategy head."""
 
 from __future__ import annotations
 
 import math
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import cast
@@ -26,7 +27,7 @@ from trader.application.ports.model_scoring import (
     ModelScoreBatch,
     ModelScoringContext,
     ModelScoringDeadlineError,
-    ScoringProfileRuntimeStatus,
+    ScoringHeadRuntimeStatus,
 )
 from trader.domain.market.factors import round_score
 from trader.domain.market.feature_contracts import (
@@ -50,8 +51,6 @@ _COST_RATE = 0.002
 _HISTORY_REQUIRED_SESSIONS = 61
 _MODEL_COMPUTATION_PLAN = build_feature_computation_plan(TOMORROW_MODEL_FEATURE_MANIFEST)
 _MODEL_FEATURE_IDS = _MODEL_COMPUTATION_PLAN.output_names
-TomorrowModelDiagnostics = ModelDiagnostics
-TomorrowModelScoreBatch = ModelScoreBatch
 
 
 @dataclass(frozen=True)
@@ -80,6 +79,49 @@ class _ModelComputationState:
     batch: ModelScoreBatch
 
 
+class SharedModelFeatureCache:
+    """Bounded exact-identity cache for cross-head feature calculations, never predictions."""
+
+    def __init__(self, capacity: int = 3) -> None:
+        if capacity < 1:
+            raise ValueError("shared model feature cache capacity must be positive")
+        self._capacity = capacity
+        self._lock = threading.RLock()
+        self._values: OrderedDict[
+            tuple[tuple[FeatureFactRevision, ...], ExposureContract],
+            tuple[tuple[tuple[float, ...], ...], tuple[tuple[float, ...], ...], tuple[tuple[float, ...], ...]],
+        ] = OrderedDict()
+
+    def read(
+        self,
+        revisions: tuple[FeatureFactRevision, ...],
+        exposure_contract: ExposureContract,
+    ) -> tuple[tuple[tuple[float, ...], ...], tuple[tuple[float, ...], ...], tuple[tuple[float, ...], ...]] | None:
+        key = (revisions, exposure_contract)
+        with self._lock:
+            value = self._values.get(key)
+            if value is not None:
+                self._values.move_to_end(key)
+            return value
+
+    def publish(
+        self,
+        revisions: tuple[FeatureFactRevision, ...],
+        exposure_contract: ExposureContract,
+        value: tuple[
+            tuple[tuple[float, ...], ...],
+            tuple[tuple[float, ...], ...],
+            tuple[tuple[float, ...], ...],
+        ],
+    ) -> None:
+        key = (revisions, exposure_contract)
+        with self._lock:
+            self._values[key] = value
+            self._values.move_to_end(key)
+            while len(self._values) > self._capacity:
+                self._values.popitem(last=False)
+
+
 class _ScoringDeadline:
     def __init__(
         self,
@@ -104,16 +146,18 @@ class _ScoringDeadline:
             raise ModelScoringDeadlineError(reason)
 
 
-class TomorrowProductionModelScoringService:
+class ProductionModelScoringService:
     def __init__(
         self,
         profile: LoadedScoringProfile,
+        strategy: Strategy,
         *,
         monotonic: Callable[[], float] = time.perf_counter,
+        shared_features: SharedModelFeatureCache | None = None,
     ) -> None:
-        head = profile.heads.get(Strategy.TOMORROW)
+        head = profile.heads.get(strategy)
         if head is None:
-            raise ValueError("Tomorrow production scoring requires a Tomorrow head")
+            raise ValueError(f"{strategy.value} production scoring requires its own head")
         predictor = cast(ModelPredictorPort, head.predictor)
         if profile.profile_id != predictor.profile_id:
             raise ValueError("scoring profile identity does not match its head")
@@ -126,15 +170,17 @@ class TomorrowProductionModelScoringService:
             or len(set(predictor.feature_ids)) != len(predictor.feature_ids)
             or any(feature_id not in _MODEL_FEATURE_IDS for feature_id in predictor.feature_ids)
         ):
-            raise ValueError("Tomorrow production model identity is invalid")
+            raise ValueError(f"{strategy.value} production model identity is invalid")
+        self._strategy = strategy
         self._predictor = predictor
         self._feature_positions = tuple(_MODEL_FEATURE_IDS.index(item) for item in predictor.feature_ids)
-        self._requires_reversal = any(position < 3 for position in self._feature_positions)
+        self._required_return_positions = frozenset(position for position in self._feature_positions if position < 3)
         self._industry_ids = frozenset(predictor.industry_ids)
         self._exposure_contract = predictor.exposure_contract
         if self._exposure_contract.requires_industry and not self._industry_ids:
-            raise ValueError("Tomorrow production model industry coverage is missing")
+            raise ValueError(f"{strategy.value} production model industry coverage is missing")
         self._monotonic = monotonic
+        self._shared_features = shared_features or SharedModelFeatureCache()
         self._lock = threading.RLock()
         self._state: _ModelComputationState | None = None
         self._request_count = 0
@@ -152,12 +198,12 @@ class TomorrowProductionModelScoringService:
         return _HISTORY_REQUIRED_SESSIONS
 
     def is_input_eligible(self, feature: FeatureSnapshot) -> bool:
-        row = _raw_row(feature, require_reversal=self._requires_reversal)
+        row = _raw_row(feature, required_return_positions=self._required_return_positions)
         return row is not None and (not self._exposure_contract.requires_industry or row.industry in self._industry_ids)
 
-    def status(self) -> ScoringProfileRuntimeStatus:
+    def status(self) -> ScoringHeadRuntimeStatus:
         evidence = self._evidence
-        return ScoringProfileRuntimeStatus(
+        return ScoringHeadRuntimeStatus(
             active=True,
             profile_id=self._predictor.profile_id,
             model_id=self._predictor.model_id,
@@ -184,7 +230,7 @@ class TomorrowProductionModelScoringService:
         features: Sequence[FeatureSnapshot],
         *,
         context: ModelScoringContext | None = None,
-    ) -> TomorrowModelScoreBatch:
+    ) -> ModelScoreBatch:
         deadline = _ScoringDeadline(context or ModelScoringContext(), self._monotonic)
         with self._lock:
             self._request_count += 1
@@ -203,25 +249,18 @@ class TomorrowProductionModelScoringService:
         self,
         features: tuple[FeatureSnapshot, ...],
         deadline: _ScoringDeadline,
-    ) -> TomorrowModelScoreBatch:
+    ) -> ModelScoreBatch:
         deadline.require_time("before_feature_computation")
-        rows: list[_RawRow] = []
-        missing: list[str] = []
-        for feature in sorted(features, key=lambda item: item.quote.code):
-            row = _raw_row(feature, require_reversal=self._requires_reversal)
-            if row is None:
-                missing.append(feature.quote.code)
-            elif self._exposure_contract.requires_industry and (
-                not row.industry or row.industry not in self._industry_ids
-            ):
-                missing.append(feature.quote.code)
-            else:
-                rows.append(row)
+        rows, missing_codes = _eligible_rows(
+            features,
+            self._required_return_positions,
+            self._exposure_contract,
+            self._industry_ids,
+        )
         codes = tuple(row.code for row in rows)
         if len(codes) != len(set(codes)):
-            raise ValueError("Tomorrow model scoring candidates must be unique")
+            raise ValueError(f"{self._strategy.value} model scoring candidates must be unique")
         ordered_rows = tuple(rows)
-        missing_codes = tuple(missing)
         revisions = _fact_revisions(ordered_rows)
         previous = self._state
         invalidation = affected_feature_stages(
@@ -230,27 +269,34 @@ class TomorrowProductionModelScoringService:
             revisions,
         )
         affected = set(invalidation.affected_groups)
-        daily_returns = self._stage_value(
-            "daily_return",
-            affected,
-            previous.daily_returns if previous is not None else None,
-            lambda: tuple((row.return_1d, row.return_3d, row.return_5d) for row in ordered_rows),
-            deadline,
-        )
-        momenta = self._stage_value(
-            "skip_recent_momentum",
-            affected,
-            previous.momenta if previous is not None else None,
-            lambda: tuple(row.momentum for row in ordered_rows),
-            deadline,
-        )
-        residuals = self._stage_value(
-            "cross_section_residual",
-            affected,
-            previous.residuals if previous is not None else None,
-            lambda: _residualize_rows(ordered_rows, momenta, self._exposure_contract),
-            deadline,
-        )
+        shared = self._shared_features.read(revisions, self._exposure_contract)
+        if shared is None:
+            daily_returns = self._stage_value(
+                "daily_return",
+                affected,
+                previous.daily_returns if previous is not None else None,
+                lambda: tuple((row.return_1d, row.return_3d, row.return_5d) for row in ordered_rows),
+                deadline,
+            )
+            momenta = self._stage_value(
+                "skip_recent_momentum",
+                affected,
+                previous.momenta if previous is not None else None,
+                lambda: tuple(row.momentum for row in ordered_rows),
+                deadline,
+            )
+            residuals = self._stage_value(
+                "cross_section_residual",
+                affected,
+                previous.residuals if previous is not None else None,
+                lambda: _residualize_rows(ordered_rows, momenta, self._exposure_contract),
+                deadline,
+            )
+            self._shared_features.publish(revisions, self._exposure_contract, (daily_returns, momenta, residuals))
+        else:
+            daily_returns, momenta, residuals = shared
+            affected.clear()
+        computed_groups = () if shared is not None else invalidation.affected_groups
         inputs = tuple(
             ModelInput(
                 row.code,
@@ -273,7 +319,7 @@ class TomorrowProductionModelScoringService:
             self._predictor_batch_count += 1
             deadline.require_time("completed_after_batch_prediction_deadline")
         if tuple(item.code for item in predictions) != tuple(item.code for item in inputs):
-            raise ValueError("Tomorrow production model returned a mismatched prediction batch")
+            raise ValueError(f"{self._strategy.value} production model returned a mismatched prediction batch")
         cost_inputs = tuple(row.amihud_20d for row in ordered_rows)
         if (
             previous is not None
@@ -284,7 +330,7 @@ class TomorrowProductionModelScoringService:
             self._cache_hit_count += 1
             self._publish_computation_status(
                 candidate_count=len(features),
-                computed_groups=invalidation.affected_groups,
+                computed_groups=computed_groups,
                 deadline=deadline,
             )
             return previous.batch
@@ -304,7 +350,7 @@ class TomorrowProductionModelScoringService:
         )
         self._publish_computation_status(
             candidate_count=len(features),
-            computed_groups=invalidation.affected_groups,
+            computed_groups=computed_groups,
             deadline=deadline,
         )
         return batch
@@ -364,7 +410,7 @@ def _score_predictions(
     missing_codes: tuple[str, ...],
 ) -> ModelScoreBatch:
     if not predictions:
-        return TomorrowModelScoreBatch(model_version, {}, (), missing_codes)
+        return ModelScoreBatch(model_version, {}, (), missing_codes)
     amihud_ranks = percentile_ranks(cost_inputs)
     costs = tuple(_COST_RATE * (1.0 + rank) for rank in amihud_ranks)
     utilities = tuple(
@@ -392,7 +438,26 @@ def _score_predictions(
             predicted_net_excess_pct=net_pct,
             model_disagreement_pct=disagreement_pct,
         )
-    return TomorrowModelScoreBatch(model_version, diagnostics, predictions, missing_codes)
+    return ModelScoreBatch(model_version, diagnostics, predictions, missing_codes)
+
+
+def _eligible_rows(
+    features: tuple[FeatureSnapshot, ...],
+    required_return_positions: frozenset[int],
+    exposure_contract: ExposureContract,
+    industry_ids: frozenset[str],
+) -> tuple[list[_RawRow], tuple[str, ...]]:
+    rows: list[_RawRow] = []
+    missing: list[str] = []
+    for feature in sorted(features, key=lambda item: item.quote.code):
+        row = _raw_row(feature, required_return_positions=required_return_positions)
+        if row is None or (
+            exposure_contract.requires_industry and (not row.industry or row.industry not in industry_ids)
+        ):
+            missing.append(feature.quote.code)
+        else:
+            rows.append(row)
+    return rows, tuple(missing)
 
 
 def _residualize_rows(
@@ -452,14 +517,20 @@ def _model_feature_vector(
     ).require_complete()
 
 
-def _raw_row(feature: FeatureSnapshot, *, require_reversal: bool) -> _RawRow | None:
+def _raw_row(
+    feature: FeatureSnapshot,
+    *,
+    required_return_positions: frozenset[int],
+) -> _RawRow | None:
     board = board_for_snapshot(feature)
     if board not in {Board.MAIN, Board.CHINEXT, Board.STAR}:
         return None
     values = tuple(feature.values.get(name) for name in (*_ALPHA_FIELDS, _AMOUNT_FIELD, _AMIHUD_FIELD))
-    required = (*values[3:6], *values[6:])
-    if require_reversal:
-        required = (*values[:3], *required)
+    required = (
+        *(values[position] for position in sorted(required_return_positions)),
+        *values[3:6],
+        *values[6:],
+    )
     if any(value is None or not math.isfinite(value) for value in required):
         return None
     numeric = tuple(float(value) if value is not None else 0.0 for value in values)
@@ -481,7 +552,6 @@ def _raw_row(feature: FeatureSnapshot, *, require_reversal: bool) -> _RawRow | N
 
 
 __all__ = [
-    "TomorrowModelDiagnostics",
-    "TomorrowModelScoreBatch",
-    "TomorrowProductionModelScoringService",
+    "ProductionModelScoringService",
+    "SharedModelFeatureCache",
 ]

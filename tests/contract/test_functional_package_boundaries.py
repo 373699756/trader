@@ -269,7 +269,7 @@ def test_application_recommendation_and_decisions_are_partitioned() -> None:
         "scored_projection.py",
         "scored_freezing.py",
         "today_freezing.py",
-        "tomorrow_model_scoring.py",
+        "production_model_scoring.py",
         "recommendation_policy_codec.py",
         "policy.py",
     }

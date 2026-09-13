@@ -14,12 +14,12 @@ from trader.application.market_data.supply_status import build_supply_status
 from trader.application.ports.model_scoring import ModelInput, ModelPrediction
 from trader.application.ports.scored import D25NativeInput, ScoredNativeInput, TodayNativeInput, TomorrowNativeInput
 from trader.application.recommendation.model_scoring_router import ModelScoringRouter
+from trader.application.recommendation.production_model_scoring import ProductionModelScoringService
 from trader.application.recommendation.scored_projection import (
     ScoredProjectionInputs,
     build_scored_hybrid,
     build_scored_local,
 )
-from trader.application.recommendation.tomorrow_model_scoring import TomorrowProductionModelScoringService
 from trader.application.research.research_audit import build_committed_research_audit
 from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import FeatureSnapshot
@@ -66,6 +66,11 @@ class _NonPositiveProductionPredictor(_ProductionPredictor):
         return tuple(ModelPrediction(item.code, 0.001 + index * 0.0001, 0.0) for index, item in enumerate(inputs))
 
 
+def _router(predictor: object) -> ModelScoringRouter:
+    service = ProductionModelScoringService(profile_for(predictor), Strategy.TOMORROW)  # type: ignore[arg-type]
+    return ModelScoringRouter("v2", {Strategy.TOMORROW: service})
+
+
 def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     application_feature_factory,
 ) -> None:
@@ -79,9 +84,7 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
         _native_input(model_features),
         policy,
         sequence=1,
-        runtime=ScoredProjectionInputs(
-            model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(profile_for(_ProductionPredictor())))
-        ),
+        runtime=ScoredProjectionInputs(model_scoring=_router(_ProductionPredictor())),
     )
     assert projection.review_candidates
     assert all(item.name.startswith("测试") for item in projection.local.items)
@@ -161,11 +164,7 @@ def test_tomorrow_non_positive_utility_keeps_scores_but_cannot_enter_recommendat
         _native_input(features),
         policy,
         sequence=1,
-        runtime=ScoredProjectionInputs(
-            model_scoring=ModelScoringRouter(
-                TomorrowProductionModelScoringService(profile_for(_NonPositiveProductionPredictor()))
-            )
-        ),
+        runtime=ScoredProjectionInputs(model_scoring=_router(_NonPositiveProductionPredictor())),
     )
 
     diagnostics = projection.local.selection_diagnostics
@@ -205,9 +204,7 @@ def test_tomorrow_model_cross_section_excludes_hard_filter_rejections(
         _native_input((accepted, rejected)),
         policy,
         sequence=1,
-        runtime=ScoredProjectionInputs(
-            model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(profile_for(predictor)))
-        ),
+        runtime=ScoredProjectionInputs(model_scoring=_router(predictor)),
     )
 
     assert predictor.codes == ("600001",)
@@ -236,9 +233,7 @@ def test_tomorrow_model_excludes_only_candidate_below_its_61_session_requirement
         _native_input((eligible, insufficient)),
         policy,
         sequence=1,
-        runtime=ScoredProjectionInputs(
-            model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(profile_for(predictor)))
-        ),
+        runtime=ScoredProjectionInputs(model_scoring=_router(predictor)),
     )
 
     assert predictor.codes == ("600001",)
@@ -277,9 +272,7 @@ def test_tomorrow_model_history_coverage_requires_the_active_profile_fields(
         _native_input((eligible, incomplete)),
         policy,
         sequence=1,
-        runtime=ScoredProjectionInputs(
-            model_scoring=ModelScoringRouter(TomorrowProductionModelScoringService(profile_for(_ProductionPredictor())))
-        ),
+        runtime=ScoredProjectionInputs(model_scoring=_router(_ProductionPredictor())),
     )
 
     assert projection.input_quality.history_required_sessions == 61
@@ -288,6 +281,29 @@ def test_tomorrow_model_history_coverage_requires_the_active_profile_fields(
     assert projection.input_quality.candidate_scored_count == 1
     skipped = next(item for item in projection.selection.evaluations if item.code == "600002")
     assert skipped.selection_skip_reason == "production_model_features_missing"
+
+
+@pytest.mark.parametrize("native_type", (TodayNativeInput, TomorrowNativeInput, D25NativeInput))
+def test_close_fallback_never_consumes_a_model_head_or_its_61_day_requirement(
+    application_feature_factory,
+    native_type: type[ScoredNativeInput],
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "strategy.json"))
+    feature = _verified_feature(application_feature_factory("600001", EVALUATED_AT - timedelta(seconds=10)))
+    predictor = _RecordingProductionPredictor()
+    native_input = _native_input((feature,), native_type)
+    native_input = replace(native_input, phase="close_fallback")
+
+    projection = build_scored_local(
+        native_input,
+        policy,
+        sequence=1,
+        runtime=ScoredProjectionInputs(model_scoring=_router(predictor)),
+    )
+
+    assert predictor.codes == ()
+    assert projection.input_quality.history_required_sessions == 20
+    assert projection.input_quality.candidate_scored_count == 1
 
 
 def test_d25_native_local_and_valid_facts_publish_one_parented_hybrid(

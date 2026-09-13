@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path, PurePosixPath
 
+from trader.domain.recommendation.models import Strategy
 from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.history_control import (
     HistoryActiveSnapshot,
@@ -26,9 +27,10 @@ from trader.infra.research.history_control_repository import (
     SQLiteHistoryControlRepository,
 )
 from trader.infra.scoring.profiles.v3.training_bundle_repository import (
-    ActiveTomorrowBundle,
-    inspect_active_tomorrow_bundle,
+    ActiveHeadBundle,
+    inspect_active_head_bundle,
 )
+from trader.infra.scoring.profiles.v3.training_contracts import contract_for_strategy
 
 
 @dataclass(frozen=True)
@@ -36,7 +38,7 @@ class HistoryTrainingDueEvaluation:
     archive_root: Path
     active_snapshot: HistoryActiveSnapshot
     state: HistoryTrainingDueState
-    bundle: ActiveTomorrowBundle | None
+    bundle: ActiveHeadBundle | None
     revised_dates: tuple[date, ...]
     invalidated_cache_dates: tuple[date, ...]
 
@@ -46,6 +48,8 @@ def evaluate_history_training_due(
     training_root: Path,
     observed_at: datetime,
     expected_training_contract_hash: str | None = None,
+    *,
+    strategy: Strategy = Strategy.TOMORROW,
 ) -> HistoryTrainingDueEvaluation | None:
     """Read and persist one immutable due observation.
 
@@ -66,18 +70,20 @@ def evaluate_history_training_due(
     if calendar is None:
         return None
 
-    bundle, bundle_invalid = _active_bundle(training_root)
+    bundle, bundle_invalid = _active_bundle(training_root, strategy)
+    current_label_cutoff = _mature_label_cutoff(calendar.open_dates, active.data_cutoff, strategy)
     if bundle_invalid:
-        due_identity = "due-" + canonical_artifact_hash((active.content_hash, "invalid_bundle"))[:32]
+        due_identity = "due-" + canonical_artifact_hash((active.content_hash, strategy.value, "invalid_bundle"))[:32]
         due = calculate_history_training_due(
             HistoryTrainingDueRequest(
                 due_identity=due_identity,
                 baseline_label_cutoff=None,
-                current_label_cutoff=active.label_cutoff,
+                current_label_cutoff=current_label_cutoff,
                 calendar_dates=calendar.open_dates,
                 input_revision=False,
                 observed_at=observed_at,
-                data_complete=False,
+                data_complete=current_label_cutoff is not None,
+                training_contract_changed=True,
             )
         )
         return HistoryTrainingDueEvaluation(archive_root, active, due, None, (), ())
@@ -104,7 +110,7 @@ def evaluate_history_training_due(
     snapshot_identity_rebind = (
         bundle is not None
         and bundle.training_input_hash != active.content_hash
-        and bundle.label_cutoff == active.label_cutoff
+        and bundle.label_cutoff == current_label_cutoff
     )
     training_contract_changed = bundle is not None and (
         snapshot_identity_rebind
@@ -124,7 +130,8 @@ def evaluate_history_training_due(
                 active.content_hash,
                 bundle.training_input_hash if bundle is not None else None,
                 baseline_cutoff,
-                active.label_cutoff,
+                current_label_cutoff,
+                strategy.value,
                 revised_dates,
                 data_complete,
                 expected_training_contract_hash,
@@ -136,7 +143,7 @@ def evaluate_history_training_due(
         HistoryTrainingDueRequest(
             due_identity=due_identity,
             baseline_label_cutoff=baseline_cutoff,
-            current_label_cutoff=active.label_cutoff,
+            current_label_cutoff=current_label_cutoff,
             calendar_dates=calendar.open_dates,
             input_revision=input_revision,
             observed_at=observed_at,
@@ -202,14 +209,24 @@ def _partition_month(relative_path: str) -> tuple[int, int]:
     return int(parts[1]), int(PurePosixPath(parts[2]).stem)
 
 
-def _active_bundle(training_root: Path) -> tuple[ActiveTomorrowBundle | None, bool]:
-    pointer = training_root / "tomorrow-v3" / "active-bundle.json"
+def _active_bundle(training_root: Path, strategy: Strategy) -> tuple[ActiveHeadBundle | None, bool]:
+    directory = training_root / contract_for_strategy(strategy).directory_name
+    pointer = directory / "active-bundle.json"
     if not pointer.exists():
         return None, False
     try:
-        return inspect_active_tomorrow_bundle(training_root / "tomorrow-v3"), False
-    except (OSError, TypeError, ValueError):
+        return inspect_active_head_bundle(directory, strategy), False
+    except (OSError, RuntimeError, TypeError, ValueError):
         return None, True
+
+
+def _mature_label_cutoff(calendar_dates: tuple[date, ...], data_cutoff: date, strategy: Strategy) -> date | None:
+    contract = contract_for_strategy(strategy)
+    positions = {day: position for position, day in enumerate(calendar_dates)}
+    position = positions.get(data_cutoff)
+    if position is None or position < contract.maturity_sessions:
+        return None
+    return calendar_dates[position - contract.maturity_sessions]
 
 
 __all__ = ["HistoryTrainingDueEvaluation", "evaluate_history_training_due"]

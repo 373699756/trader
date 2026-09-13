@@ -100,7 +100,9 @@ def build_scored_local(
     decision_policy = scored_decision_policy(policy, strategy, phase=native_input.phase)
     population = tuple(preselection_replay_feature(feature) for feature in native_input.market_features)
     model_scoring = runtime.model_scoring
-    uses_model = model_scoring is not None and model_scoring.uses_model(strategy)
+    uses_model = (
+        model_scoring is not None and native_input.phase != "close_fallback" and model_scoring.uses_model(strategy)
+    )
     model_batch = (
         model_scoring.score(
             strategy,
@@ -110,7 +112,9 @@ def build_scored_local(
         if model_scoring is not None and uses_model
         else None
     )
-    minimum_history_sessions = model_scoring.history_required_sessions(strategy) if model_scoring is not None else 20
+    minimum_history_sessions = (
+        model_scoring.history_required_sessions(strategy) if model_scoring is not None and uses_model else 20
+    )
     profile_history_qualified_codes = (
         frozenset(
             feature.quote.code
@@ -203,15 +207,13 @@ def _model_execution_gate_reasons(
 ) -> Mapping[str, str]:
     if model_batch is None:
         return {}
-    return (
-        {
-            code: "model_net_utility_non_positive"
-            for code, diagnostics in model_batch.diagnostics.items()
-            if diagnostics.predicted_net_excess_pct <= 0.0
-        }
-        if strategy is Strategy.TOMORROW
-        else {}
-    )
+    if strategy not in {Strategy.TODAY, Strategy.TOMORROW, Strategy.D25}:
+        return {}
+    return {
+        code: "model_net_utility_non_positive"
+        for code, diagnostics in model_batch.diagnostics.items()
+        if diagnostics.predicted_net_excess_pct <= 0.0
+    }
 
 
 def _model_eligible_candidates(

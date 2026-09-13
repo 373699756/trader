@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
 
-from trader.application.ports.model_scoring import ScoringProfileRuntimeStatus
+from trader.application.ports.model_scoring import ScoringHeadRuntimeStatus, ScoringProfileRuntimeStatus
 from trader.application.ports.runtime_status import InputQualityStatus, SupplyFunnel
 from trader.application.runtime.cadence import CadencePlannerStatus
 from trader.application.runtime.runtime_issues import RuntimeIssue
@@ -17,7 +17,7 @@ def runtime_status(
     scheduler: SchedulerRuntime,
     reviewer: DeepSeekReviewer,
     market_health: Callable[[], Mapping[str, object]],
-    tomorrow_model: ScoringProfileRuntimeStatus | None = None,
+    scoring_profile: ScoringProfileRuntimeStatus | None = None,
 ) -> dict[str, object]:
     status = scheduler.status()
     deepseek = reviewer.status()
@@ -60,7 +60,7 @@ def runtime_status(
         "deepseek_budget": deepseek_budget,
         "deepseek": deepseek,
         "market_data": market_data,
-        "tomorrow_model": _tomorrow_model_payload(tomorrow_model),
+        "scoring_profile": _scoring_profile_payload(scoring_profile),
         "company_research": asdict(status.company_research),
         "degraded_reasons": degraded_reasons,
         "health": {"level": health_level, "issue_count": issue_count},
@@ -107,9 +107,19 @@ def runtime_status(
     }
 
 
-def _tomorrow_model_payload(status: ScoringProfileRuntimeStatus | None) -> dict[str, object]:
+def _scoring_profile_payload(status: ScoringProfileRuntimeStatus | None) -> dict[str, object]:
     if status is None:
-        return {"active": False, "status": "not_configured"}
+        return {"profile_id": None, "heads": {}}
+    return {
+        "profile_id": status.profile_id,
+        "heads": {
+            strategy.value: _scoring_head_payload(head)
+            for strategy, head in sorted(status.heads.items(), key=lambda item: item[0].value)
+        },
+    }
+
+
+def _scoring_head_payload(status: ScoringHeadRuntimeStatus) -> dict[str, object]:
     return {
         "active": status.active,
         "profile_id": status.profile_id,

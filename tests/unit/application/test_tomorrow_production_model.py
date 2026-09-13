@@ -13,11 +13,23 @@ from trader.application.ports.model_scoring import (
     ModelScoringContext,
     ModelScoringDeadlineError,
 )
-from trader.application.recommendation.tomorrow_model_scoring import TomorrowProductionModelScoringService
+from trader.application.recommendation.production_model_scoring import (
+    ProductionModelScoringService,
+    SharedModelFeatureCache,
+)
 from trader.domain.market.models import Board, FeatureSnapshot
 from trader.domain.recommendation.model_scoring import V1_V2_EXPOSURE_CONTRACT, V3_EXPOSURE_CONTRACT
+from trader.domain.recommendation.models import Strategy
 
 NOW = datetime(2026, 8, 31, 14, 50, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+
+def _service(predictor: object) -> ProductionModelScoringService:
+    return ProductionModelScoringService(profile_for(predictor), Strategy.TOMORROW)  # type: ignore[arg-type]
+
+
+def _strategy_service(predictor: object, strategy: Strategy) -> ProductionModelScoringService:
+    return ProductionModelScoringService(profile_for(predictor, strategy), strategy)  # type: ignore[arg-type]
 
 
 class _Predictor:
@@ -75,7 +87,7 @@ def test_production_model_residualizes_bound_features_and_keeps_prediction_rank_
         for index in range(3)
     )
 
-    batch = TomorrowProductionModelScoringService(profile_for(_Predictor())).score(features)
+    batch = _service(_Predictor()).score(features)
 
     assert batch.model_version == f"daily_reconstructible_ensemble:{'a' * 64}"
     assert tuple(item.code for item in batch.predictions) == ("600000", "600001", "600002")
@@ -101,7 +113,7 @@ def test_non_positive_net_utility_keeps_relative_scores_for_observability(
         for index in range(3)
     )
 
-    batch = TomorrowProductionModelScoringService(profile_for(_NonPositivePredictor())).score(features)
+    batch = _service(_NonPositivePredictor()).score(features)
 
     assert all(item.predicted_net_excess_pct < 0.0 for item in batch.diagnostics.values())
     assert {code: diagnostics.signal_score for code, diagnostics in batch.diagnostics.items()} == {
@@ -127,7 +139,7 @@ def test_equal_predictions_and_cost_inputs_have_equal_scores_costs_and_utility(
         for index in range(3)
     )
 
-    batch = TomorrowProductionModelScoringService(profile_for(_EqualPredictor())).score(features)
+    batch = _service(_EqualPredictor()).score(features)
 
     assert {item.signal_score for item in batch.diagnostics.values()} == {50.0}
     assert tuple(item.estimated_cost_pct for item in batch.diagnostics.values()) == pytest.approx((0.3, 0.3, 0.3))
@@ -143,7 +155,7 @@ def test_single_prediction_uses_neutral_rank_for_score_and_cost(application_feat
 
     feature = _model_feature(application_feature_factory("600001", NOW), offset=0.0, amihud=1.0)
 
-    batch = TomorrowProductionModelScoringService(profile_for(_SinglePredictor())).score((feature,))
+    batch = _service(_SinglePredictor()).score((feature,))
 
     assert batch.diagnostics["600001"].signal_score == 50.0
     assert batch.diagnostics["600001"].estimated_cost_pct == pytest.approx(0.3)
@@ -177,7 +189,7 @@ def test_v1_profile_receives_only_the_residual_momentum_feature_family(applicati
         for index in range(3)
     )
 
-    batch = TomorrowProductionModelScoringService(profile_for(predictor)).score(features)
+    batch = _service(predictor).score(features)
 
     assert predictor.widths == (3, 3, 3)
     assert batch.model_version == f"v1_manual_residual_momentum_v1:{'a' * 64}"
@@ -197,15 +209,99 @@ def test_v1_profile_does_not_require_the_unselected_reversal_family(application_
     values = dict(complete.values)
     values.update({"qfq_return_1d": None, "qfq_return_3d": None, "qfq_return_5d": None})
 
-    batch = TomorrowProductionModelScoringService(profile_for(_V1Predictor())).score(
-        (replace(complete, values=values),)
-    )
+    batch = _service(_V1Predictor()).score((replace(complete, values=values),))
 
     assert set(batch.diagnostics) == {"600001"}
 
 
+@pytest.mark.parametrize("strategy", (Strategy.TODAY, Strategy.D25))
+def test_v3_trend_heads_do_not_require_the_unselected_one_day_return(
+    application_feature_factory,
+    strategy: Strategy,
+) -> None:
+    class _TrendPredictor(_Predictor):
+        profile_id = "v3"
+        model_id = f"{strategy.value}_industry_ridge_lightgbm"
+        feature_ids = (
+            "qfq_return_3d",
+            "qfq_return_5d",
+            "qfq_residual_momentum_20d_skip5",
+            "qfq_residual_momentum_40d_skip5",
+            "qfq_residual_momentum_60d_skip5",
+        )
+
+    complete = _model_feature(application_feature_factory("600001", NOW), offset=0.01, amihud=1.0)
+    values = dict(complete.values)
+    values["qfq_return_1d"] = None
+
+    service = _strategy_service(_TrendPredictor(), strategy)
+
+    assert service.is_input_eligible(replace(complete, values=values)) is True
+
+
+def test_v3_heads_share_only_feature_computation_and_keep_prediction_caches_independent(
+    application_feature_factory,
+) -> None:
+    class _TrendPredictor(_Predictor):
+        profile_id = "v3"
+        model_id = "today_industry_ridge_lightgbm"
+        feature_ids = (
+            "qfq_return_3d",
+            "qfq_return_5d",
+            "qfq_residual_momentum_20d_skip5",
+            "qfq_residual_momentum_40d_skip5",
+            "qfq_residual_momentum_60d_skip5",
+        )
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
+            self.calls += 1
+            return super().predict(inputs)
+
+    class _TomorrowPredictor(_Predictor):
+        profile_id = "v3"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
+            self.calls += 1
+            return super().predict(inputs)
+
+    shared = SharedModelFeatureCache()
+    today_predictor = _TrendPredictor()
+    tomorrow_predictor = _TomorrowPredictor()
+    today = ProductionModelScoringService(
+        profile_for(today_predictor, Strategy.TODAY),
+        Strategy.TODAY,
+        shared_features=shared,
+    )
+    tomorrow = ProductionModelScoringService(
+        profile_for(tomorrow_predictor),
+        Strategy.TOMORROW,
+        shared_features=shared,
+    )
+    features = tuple(
+        _model_feature(application_feature_factory(f"60000{index}", NOW), offset=index / 100.0, amihud=1.0)
+        for index in range(3)
+    )
+
+    tomorrow.score(features)
+    today.score(features)
+
+    assert tomorrow_predictor.calls == today_predictor.calls == 1
+    assert today.computation_status().computed_groups == ()
+    assert today.computation_status().reused_groups == (
+        "daily_return",
+        "skip_recent_momentum",
+        "cross_section_residual",
+    )
+
+
 def test_model_service_owns_its_history_and_profile_field_eligibility(application_feature_factory) -> None:
-    service = TomorrowProductionModelScoringService(profile_for(_Predictor()))
+    service = _service(_Predictor())
     complete = _model_feature(application_feature_factory("600001", NOW), offset=0.01, amihud=1.0)
     short = replace(complete, history_days=60)
     values = dict(complete.values)
@@ -226,7 +322,7 @@ def test_production_model_does_not_fall_back_to_the_legacy_score_when_bound_feat
     incomplete_values["qfq_momentum_60d_skip5"] = None
     incomplete = replace(complete, quote=replace(complete.quote, code="600002"), values=incomplete_values)
 
-    batch = TomorrowProductionModelScoringService(profile_for(_Predictor())).score((complete, incomplete))
+    batch = _service(_Predictor()).score((complete, incomplete))
 
     assert set(batch.diagnostics) == {"600001"}
     assert batch.missing_codes == ("600002",)
@@ -248,9 +344,7 @@ def test_production_model_skips_physical_prediction_when_every_input_is_ineligib
     incomplete_values = dict(complete.values)
     incomplete_values["qfq_momentum_60d_skip5"] = None
 
-    batch = TomorrowProductionModelScoringService(profile_for(predictor)).score(
-        (replace(complete, values=incomplete_values),)
-    )
+    batch = _service(predictor).score((replace(complete, values=incomplete_values),))
 
     assert predictor.calls == 0
     assert batch.diagnostics == {}
@@ -277,7 +371,7 @@ def test_v3_routes_each_input_to_its_current_industry_model(application_feature_
     unsupported = _model_feature(application_feature_factory("600002", NOW), offset=0.02, amihud=2.0)
     unsupported = replace(unsupported, quote=replace(unsupported.quote, industry="未知行业"))
 
-    batch = TomorrowProductionModelScoringService(profile_for(predictor)).score((supported, unsupported))
+    batch = _service(predictor).score((supported, unsupported))
 
     assert predictor.industries == ("银行",)
     assert set(batch.diagnostics) == {"600001"}
@@ -294,7 +388,7 @@ def test_v3_rejects_blank_industry_before_cross_sectional_prediction(application
     complete = replace(complete, quote=replace(complete.quote, industry="银行"))
     missing_industry = replace(complete, quote=replace(complete.quote, code="600002", industry=""))
 
-    service = TomorrowProductionModelScoringService(profile_for(_V3Predictor()))
+    service = _service(_V3Predictor())
     batch = service.score((complete, missing_industry))
 
     assert set(batch.diagnostics) == {"600001"}
@@ -316,7 +410,7 @@ def test_production_model_rejects_an_unsupported_board_from_its_cross_section(
         quote=replace(complete.quote, code="830001", board=Board.UNSUPPORTED),
     )
 
-    batch = TomorrowProductionModelScoringService(profile_for(_Predictor())).score((complete, unsupported))
+    batch = _service(_Predictor()).score((complete, unsupported))
 
     assert set(batch.diagnostics) == {"600001"}
     assert batch.missing_codes == ("830001",)
@@ -334,7 +428,7 @@ def test_incremental_scoring_reuses_unchanged_groups_and_batches_prediction(
             return super().predict(inputs)
 
     predictor = _CountingPredictor()
-    service = TomorrowProductionModelScoringService(profile_for(predictor))
+    service = _service(predictor)
     features = tuple(
         _model_feature(application_feature_factory(f"60000{index}", NOW), offset=index / 100.0, amihud=index + 1.0)
         for index in range(3)
@@ -366,7 +460,7 @@ def test_incremental_scoring_recomputes_only_catalog_dependent_groups(
             return super().predict(inputs)
 
     predictor = _CountingPredictor()
-    service = TomorrowProductionModelScoringService(profile_for(predictor))
+    service = _service(predictor)
     features = tuple(
         _model_feature(application_feature_factory(f"60000{index}", NOW), offset=index / 100.0, amihud=index + 1.0)
         for index in range(3)
@@ -395,7 +489,7 @@ def test_incremental_scoring_propagates_momentum_changes_and_keeps_cost_outside_
             return super().predict(inputs)
 
     predictor = _CountingPredictor()
-    service = TomorrowProductionModelScoringService(profile_for(predictor))
+    service = _service(predictor)
     features = tuple(
         _model_feature(application_feature_factory(f"60000{index}", NOW), offset=index / 100.0, amihud=index + 1.0)
         for index in range(3)
@@ -430,7 +524,7 @@ def test_incremental_scoring_ignores_quote_overlay_when_model_facts_are_unchange
             return super().predict(inputs)
 
     predictor = _CountingPredictor()
-    service = TomorrowProductionModelScoringService(profile_for(predictor))
+    service = _service(predictor)
     feature = _model_feature(application_feature_factory("600001", NOW), offset=0.01, amihud=1.0)
     first = service.score((feature,))
     overlay = replace(
@@ -447,7 +541,7 @@ def test_incremental_scoring_ignores_quote_overlay_when_model_facts_are_unchange
 def test_incremental_scoring_fails_closed_at_its_deadline_and_retains_the_last_batch(
     application_feature_factory,
 ) -> None:
-    service = TomorrowProductionModelScoringService(profile_for(_Predictor()))
+    service = _service(_Predictor())
     feature = _model_feature(application_feature_factory("600001", NOW), offset=0.01, amihud=1.0)
     accepted = service.score((feature,))
 

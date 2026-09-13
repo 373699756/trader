@@ -37,9 +37,9 @@ def test_candidate_followup_plan_preserves_weight_research_and_activation_bounda
     assert "所有生产权重参数只能由`config/strategy.json`拥有数值" in compact_strategy
     assert "配置加载后先解析为不可变有类型权重策略" in compact_design
     for task_id in (
-        "candidate_capacity_and_ranking_historical_validation",
-        "terminal_holdout_and_shadow",
-        "manual_candidate_strategy_activation",
+        "v3_shared_multi_target_samples",
+        "v3_multihead_delivery_and_freeze",
+        "v3_explicit_chain_acceptance",
     ):
         assert task_id in work
     assert "scoring_weight_configuration_single_source" not in work

@@ -77,6 +77,7 @@ class CandidatePlanningContext:
     policy: RecommendationPolicy
     model_scoring: ModelScoringPort | None
     limit_per_board: int
+    apply_model_eligibility: bool = True
 
 
 def build_candidate_plans(
@@ -99,9 +100,12 @@ def build_candidate_plans(
                 candidate_features=candidates,
                 normalize_discovery_source_time=False,
                 strategy=strategy,
-                minimum_history_sessions=_history_required_sessions(context.model_scoring, strategy),
+                minimum_history_sessions=_history_required_sessions(
+                    context.model_scoring if context.apply_model_eligibility else None,
+                    strategy,
+                ),
                 model_input_eligible_codes=_model_eligible_codes(
-                    context.model_scoring,
+                    context.model_scoring if context.apply_model_eligibility else None,
                     strategy,
                     candidates if candidates is not None else features,
                 ),

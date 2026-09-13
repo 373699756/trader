@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one explicit Tomorrow training job and enforce its process peak-RSS budget."""
+"""Run the fenced V3 training job and emit Tomorrow-compatible repack evidence."""
 
 from __future__ import annotations
 
@@ -26,14 +26,13 @@ def _configure_resources() -> None:
 _configure_resources()
 
 from trader.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress  # noqa: E402
-from trader.infra.scoring.profiles.v3.training import run_repack_tomorrow_training  # noqa: E402
+from trader.infra.scoring.profiles.v3.training import run_repack_v3_training  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--history-root", type=Path, required=True)
     parser.add_argument("--train-root", type=Path, required=True)
-    parser.add_argument("--source-commit", required=True)
     parser.add_argument("--expected-history-snapshot-hash", required=True, type=_sha256)
     parser.add_argument("--max-rss-mib", type=int, default=TOMORROW_TRAINING_PEAK_RSS_MIB)
     parser.add_argument(
@@ -49,23 +48,22 @@ def main(argv: list[str] | None = None) -> int:
     os.nice(10)
     before = _peak_rss_bytes()
     with StderrTomorrowTrainingProgress() as progress:
-        result = run_repack_tomorrow_training(
+        result = run_repack_v3_training(
             args.history_root.resolve(),
             args.train_root.resolve(),
-            source_commit=args.source_commit,
             progress=progress,
             expected_history_snapshot_hash=args.expected_history_snapshot_hash,
         )
         stage_durations = progress.stage_durations
-        repeated = run_repack_tomorrow_training(
+        repeated = run_repack_v3_training(
             args.history_root.resolve(),
             args.train_root.resolve(),
-            source_commit=args.source_commit,
             progress=progress,
             expected_history_snapshot_hash=args.expected_history_snapshot_hash,
         )
     peak = _peak_rss_bytes()
     budget = args.max_rss_mib * 1024 * 1024
+    tomorrow = next(head for head in result.heads if head.strategy.value == "tomorrow")
     passed = result.status == "engineering_ready" and repeated.status == "already_current" and peak <= budget
     payload: dict[str, object] = {
         "schema_version": "tomorrow_training_memory_gate",
@@ -73,14 +71,14 @@ def main(argv: list[str] | None = None) -> int:
         "training_status": result.status,
         "repeat_training_status": repeated.status,
         "training_input_hash": result.training_input_hash,
-        "model_hash": result.model_hash,
-        "report_hash": result.report_hash,
+        "model_hash": tomorrow.model_hash,
+        "report_hash": tomorrow.report_hash,
         "peak_rss_bytes": peak,
         "starting_peak_rss_bytes": before,
         "max_rss_bytes": budget,
         "sample_database_peak_bytes": result.sample_database_peak_bytes,
         "stage_durations_ms": {name: round(seconds * 1_000.0, 1) for name, seconds in stage_durations},
-        "failure_reasons": list(result.failure_reasons),
+        "failure_reasons": [reason for head in result.heads for reason in head.failure_reasons],
     }
     payload["content_hash"] = artifact_content_hash(payload)
     rendered = json.dumps(payload, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")) + "\n"

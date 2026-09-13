@@ -149,12 +149,16 @@ rolled_back
   `data/historyless/baostock-before-repack`。
 - finalize 必须确认当前 active hash 仍等于切换目标、活动 bundle 绑定该 hash；若中间状态发生变化则拒绝删除。
 - 删除前再次核对备份真实路径和旧 snapshot hash，拒绝符号链接、路径越界或身份不明目录；删除后不可恢复。
+- 旧只读连接遗留的分片 `-wal`/`-shm` 只有在属于预期分片且 WAL 为 0 字节时才可清理；非空 WAL、符号链接和
+  任意其他未知文件继续失败关闭。
 - 删除后记录实际释放空间、活动归档大小、active snapshot、model 和 report hash 摘要，并将状态推进为
   `finalized`。
 
-实施状态（2026-09-12）：切换日志、逐步 fsync/rename、跨命令恢复、rollback、下载/训练 fence，以及同时校验
-活动训练 bundle 与 2 GiB 内存门证据后才允许删除备份的 finalize 已实现。尚未对生产目录执行 activate、rollback
-或 finalize；旧归档也尚未删除。
+实施状态（2026-09-13）：生产目录已完成 build、activate、2 GiB 三头验收训练与 finalize。finalize 同时校验
+活动 snapshot、训练 bundle 和内存门证据后删除旧归档备份，实际释放 24,961,556,480 字节；活动归档为
+12,886,999,040 字节，绑定 snapshot
+`4c23f681da75cf6b484787e4f508534801594de7afbac564eefcae42b3b59d1b`。旧备份不可恢复，剩余 `historyless`
+状态记录已在确认 `finalized` 后按用户要求删除。
 
 ## 5. Snapshot、训练到期和缓存身份
 
@@ -347,7 +351,7 @@ due/bundle 身份检查位于分片验证之前，第二次训练命中当前 bu
 
 数据库切换后只完整训练一次：
 
-- 使用实现提交并已推送的源码 commit 作为审计用 `source_commit`，但不把普通 commit 变化纳入重训合同；
+- 三件训练工件不保存源码提交或本机路径；代码、特征、标签、参数和资源身份只由可移植的训练合同 hash 表达；
 - 独立 systemd scope、2 个计算线程、峰值 RSS 不超过 2048 MiB；
 - `training_status=engineering_ready`；
 - `training_input_hash` 等于新 active snapshot hash；
@@ -356,8 +360,9 @@ due/bundle 身份检查位于分片验证之前，第二次训练命中当前 bu
 - 无遗留 `.sample-workspace.*`、staging 或未恢复的切换日志；
 - 再运行一次命令快速返回 `already_current`，不改写活动 bundle。
 
-真实训练内存结果保存到 `data/historyless/training-memory-result.json`，但 finalize 必须重新读取并验证实际 bundle，
-不能仅凭该文件删除备份。
+真实训练时，内存结果临时保存到 `data/historyless/training-memory-result.json`；finalize 重新读取并验证实际
+bundle，不能仅凭该文件删除备份。生产 finalize 完成后，该临时证据随 `data/historyless` 收尾目录一并删除，
+长期证据只保留脱敏后的交付记录。
 
 ## 10. 测试、Review、提交和真实运行顺序
 
@@ -396,7 +401,8 @@ make package
 2. 使用该已推送提交执行真实 `build`，只在 `data/historyless/baostock` 生成目标库；满足全部硬门禁后才 `activate`。
 3. 从 build 状态读取目标 snapshot hash，并通过 `scripts/check_tomorrow_training_memory.py` 的
    `--expected-history-snapshot-hash` 显式传入；只有该 hash 与维护锁内重新打开的活动归档完全一致，验收训练才可
-   越过切换 fence。在新活动库上执行一次 2 GiB 完整训练；失败时保留新活动归档、旧归档备份和旧活动 bundle，停止诊断。
+   越过切换 fence。在新活动库上以一次历史扫描顺序训练完整 V3 三头并执行一次 2 GiB 验收；失败时保留新活动归档、
+   旧归档备份和旧活动 bundle，停止诊断。
 4. 训练成功后执行重复 `already_current`、最终 Review和大任务完整门禁，提交并推送真实证据记录。
 5. 核对 `HEAD == @{upstream}` 后执行 `finalize` 删除旧归档备份，报告删除目标、不可恢复性和释放空间。
 6. 任务完成后停止，不自动启用 Tomorrow V3、不重启服务、不实施后续 schema 迁移。

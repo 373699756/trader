@@ -119,8 +119,7 @@ def test_work_plan_contains_only_unfinished_tasks_and_no_historical_aliases() ->
     assert "本文件只维护尚未完成的工程任务" in work
     assert work.count("状态：`in_progress`") <= 1
     assert "baostock_increment_archive" not in work
-    assert "blocked_by_shared_samples" in work
-    assert "blocked_by_real_training" in work
+    assert work.count("verified_ready_for_delivery") >= 8
     for retired in ("`completed`", "15.1.35", "15.1.36", "15.1.37", "15.1.38"):
         assert retired not in work
 

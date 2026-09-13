@@ -405,20 +405,20 @@ class BaoStockSourceVersions:
 
 @dataclass(frozen=True)
 class BaoStockTrainingLabelContract:
-    formula: str = "(close[D+1]/close[D]-1)-eligible_universe_equal_weight_return[D+1]-round_trip_cost"
+    formula: str = "(close[D+1]/close[D]-1)-eligible_universe_equal_weight_return[D+1]"
     primary_cost_bps: int = 20
     gate_cost_bps: int = 50
     stress_cost_bps: int = 100
     label_pending_required: bool = True
-    schema_version: str = "next_day_return_label"
+    schema_version: str = "pre_cost_next_day_excess_label"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.formula != ("(close[D+1]/close[D]-1)-eligible_universe_equal_weight_return[D+1]-round_trip_cost"):
+        if self.formula != "(close[D+1]/close[D]-1)-eligible_universe_equal_weight_return[D+1]":
             raise ValueError("BaoStock training label formula is fixed")
         if (self.primary_cost_bps, self.gate_cost_bps, self.stress_cost_bps) != (20, 50, 100):
             raise ValueError("BaoStock training label costs are fixed")
-        if not self.label_pending_required or self.schema_version != "next_day_return_label":
+        if not self.label_pending_required or self.schema_version != "pre_cost_next_day_excess_label":
             raise ValueError("BaoStock training label contract is invalid")
         object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 

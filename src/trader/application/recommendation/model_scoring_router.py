@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 
 from trader.application.ports.model_scoring import (
     ModelScoreBatch,
@@ -12,6 +13,7 @@ from trader.application.ports.model_scoring import (
     ScoringProfileRuntimeStatus,
 )
 from trader.domain.market.models import FeatureSnapshot
+from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
 from trader.domain.recommendation.models import Strategy
 
 
@@ -20,18 +22,30 @@ class ModelScoringRouter(ModelScoringPort):
 
     _SUPPORTED_STRATEGIES = frozenset({Strategy.TODAY, Strategy.TOMORROW, Strategy.D25})
 
-    def __init__(self, tomorrow: ScoringCapabilityPort | None) -> None:
-        self._tomorrow = tomorrow
+    def __init__(
+        self,
+        profile_id: ScoringProfileId,
+        capabilities: Mapping[Strategy, ScoringCapabilityPort],
+    ) -> None:
+        values = dict(capabilities)
+        if not values or any(strategy not in self._SUPPORTED_STRATEGIES for strategy in values):
+            raise ValueError("model scoring capabilities are invalid")
+        if any(capability.status().profile_id != profile_id for capability in values.values()):
+            raise ValueError("model scoring capability profile identity is inconsistent")
+        self._profile_id = profile_id
+        self._capabilities = MappingProxyType(values)
 
     def uses_model(self, strategy: Strategy) -> bool:
         self._validate_strategy(strategy)
-        return strategy is Strategy.TOMORROW and self._tomorrow is not None
+        return strategy in self._capabilities
 
     def history_required_sessions(self, strategy: Strategy) -> int:
-        return self._tomorrow.history_required_sessions if self.uses_model(strategy) and self._tomorrow else 20
+        capability = self._capabilities.get(strategy)
+        return capability.history_required_sessions if capability is not None else 20
 
     def is_input_eligible(self, strategy: Strategy, feature: FeatureSnapshot) -> bool:
-        return self._tomorrow.is_input_eligible(feature) if self.uses_model(strategy) and self._tomorrow else True
+        capability = self._capabilities.get(strategy)
+        return capability.is_input_eligible(feature) if capability is not None else True
 
     def score(
         self,
@@ -40,10 +54,14 @@ class ModelScoringRouter(ModelScoringPort):
         *,
         context: ModelScoringContext | None = None,
     ) -> ModelScoreBatch | None:
-        return self._tomorrow.score(features, context=context) if self.uses_model(strategy) and self._tomorrow else None
+        capability = self._capabilities.get(strategy)
+        return capability.score(features, context=context) if capability is not None else None
 
     def status(self) -> ScoringProfileRuntimeStatus | None:
-        return self._tomorrow.status() if self._tomorrow is not None else None
+        return ScoringProfileRuntimeStatus(
+            self._profile_id,
+            {strategy: capability.status() for strategy, capability in self._capabilities.items()},
+        )
 
     @staticmethod
     def _validate_strategy(strategy: Strategy) -> None:

@@ -267,8 +267,8 @@ def _due_notification(
     due_status: HistoryAutomationStatus,
 ) -> HistoryDesktopNotification:
     body = (
-        f"历史同步：{maintenance.state}；Tomorrow 训练已到期：{due_status.training_due_reason}；"
-        f"成熟标签日：{due_status.matured_label_days_since_training}。请手工运行 train-tomorrow。"
+        f"历史同步：{maintenance.state}；V3 训练已到期：{due_status.training_due_reason}；"
+        f"成熟标签日：{due_status.matured_label_days_since_training}。请手工运行 train-v3。"
     )
     return HistoryDesktopNotification("Trader 历史同步与训练提醒", body)
 

@@ -79,13 +79,17 @@ def test_build_system_is_lazy_and_current_only(tmp_path, monkeypatch) -> None:
     status = system.app.test_client().get("/api/status")
     assert status.status_code == 200
     assert status.get_json()["phase"] == "closed"
-    assert status.get_json()["tomorrow_model"]["active"] is True
-    assert status.get_json()["tomorrow_model"]["profile_id"] == "v1"
-    assert status.get_json()["tomorrow_model"]["model_id"] == "residual_momentum_linear"
-    assert status.get_json()["tomorrow_model"]["activation_basis"] == "manual_user_override"
-    assert status.get_json()["tomorrow_model"]["monitoring_mode"] == "automatic_t1_outcome_settlement"
-    assert status.get_json()["tomorrow_model"]["automatic_model_update"] is False
-    assert status.get_json()["tomorrow_model"]["computation"] == {
+    scoring = status.get_json()["scoring_profile"]
+    assert scoring["profile_id"] == "v1"
+    assert set(scoring["heads"]) == {"tomorrow"}
+    tomorrow = scoring["heads"]["tomorrow"]
+    assert tomorrow["active"] is True
+    assert tomorrow["profile_id"] == "v1"
+    assert tomorrow["model_id"] == "residual_momentum_linear"
+    assert tomorrow["activation_basis"] == "manual_user_override"
+    assert tomorrow["monitoring_mode"] == "automatic_t1_outcome_settlement"
+    assert tomorrow["automatic_model_update"] is False
+    assert tomorrow["computation"] == {
         "cache_hit_count": 0,
         "candidate_count": 0,
         "computed_groups": [],
@@ -122,12 +126,12 @@ def test_build_system_selects_an_explicit_scoring_profile_without_rewriting_conf
     strategy_path = Path(json.loads(config_path.read_text(encoding="utf-8"))["strategy_config"])
     original = strategy_path.read_bytes()
     system = build_system(config_path, scoring_profile="v2")
-    status = system.app.test_client().get("/api/status").get_json()["tomorrow_model"]
+    status = system.app.test_client().get("/api/status").get_json()["scoring_profile"]
 
-    assert status["active"] is True
     assert status["profile_id"] == "v2"
-    assert status["model_id"] == "daily_reconstructible_ensemble"
-    assert status["activation_basis"] == "manual_user_override"
+    assert status["heads"]["tomorrow"]["active"] is True
+    assert status["heads"]["tomorrow"]["model_id"] == "daily_reconstructible_ensemble"
+    assert status["heads"]["tomorrow"]["activation_basis"] == "manual_user_override"
     assert strategy_path.read_bytes() == original
 
 

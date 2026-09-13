@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
+from trader.domain.recommendation.models import Strategy
 from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.history_control import (
     HistoryActiveSnapshot,
@@ -42,7 +43,7 @@ from trader.infra.research.history_control_repository import (
     SQLiteHistoryControlRepository,
 )
 from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
-from trader.infra.scoring.profiles.v3.training_bundle_repository import inspect_active_tomorrow_bundle
+from trader.infra.scoring.profiles.v3.training_bundle_repository import inspect_active_head_bundle
 
 RepackProgress = Callable[[int, int, str], None]
 FaultInjector = Callable[[str], None]
@@ -246,7 +247,7 @@ class HistoryArchiveRepackCoordinator:
             if journal.state != "verified":
                 raise HistoryArchiveRepackError("history repack must be verified before finalization")
             _require_stable_target(layout, state, full_hash=False)
-            bundle = inspect_active_tomorrow_bundle(training_root.resolve() / "tomorrow-v3")
+            bundle = inspect_active_head_bundle(training_root.resolve() / "tomorrow-v3", Strategy.TOMORROW)
             evidence = read_tomorrow_training_memory_evidence(memory_evidence_path.resolve())
             if (
                 bundle.training_input_hash != state.target_snapshot_hash
@@ -779,6 +780,18 @@ def _clear_empty_control_sidecars(path: Path) -> None:
     _remove_sqlite_sidecars(path)
 
 
+def _clear_empty_partition_sidecars(paths: set[Path]) -> None:
+    for path in paths:
+        wal = Path(f"{path}-wal")
+        shm = Path(f"{path}-shm")
+        for sidecar in (wal, shm):
+            if sidecar.exists() and (sidecar.is_symlink() or not sidecar.is_file()):
+                raise HistoryArchiveRepackError("history repack partition sidecar is unsafe")
+        if wal.exists() and wal.stat().st_size > 0:
+            raise HistoryArchiveRepackError("history repack partition has pending WAL content")
+        _remove_sqlite_sidecars(path)
+
+
 def _stable_target_matches(layout: _RepackLayout, state: HistoryArchiveRepackBuildState, *, full_hash: bool) -> bool:
     try:
         _require_stable_target(layout, state, full_hash=full_hash)
@@ -810,6 +823,7 @@ def _require_partition_set(
     for path in expected_files:
         expected_directories.update(path.parents)
     expected_directories = {path for path in expected_directories if path == root or root in path.parents}
+    _clear_empty_partition_sidecars(expected_files)
     actual_files = _require_exact_partition_tree(root, expected_files, expected_directories)
     if actual_files != expected_files:
         raise HistoryArchiveRepackError("history repack partition path set is invalid")

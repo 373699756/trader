@@ -72,7 +72,7 @@ def test_v3_cost_ownership_is_closed_before_artifact_rebuild() -> None:
     work = WORK.read_text(encoding="utf-8")
 
     assert "class OutcomePrice" in models
-    assert "V3 训练工件重建与整组发布" in work
-    assert "成本只由选择和评价层按场景扣一次" in work
+    assert "共享多目标样本管线" in work
+    assert "成本只由在线选择与评价边界按场景扣一次" in work
     assert "这项所有权已经闭合" in work
     assert "训练数据合同仍把 20/50/100bp 往返成本写进标签" not in work

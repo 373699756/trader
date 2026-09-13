@@ -19,12 +19,14 @@ def test_authoritative_docs_define_one_ordered_optimization_route() -> None:
     design = _read(DESIGN)
     work = _read(WORK)
     ordered_tasks = (
-        "## 2. 当前执行章节：V3 训练工件重建与整组发布",
-        "## 3. V3 工程运行验收",
-        "## 4. 点时证据修复",
-        "## 5. 候选容量与排序历史验证",
-        "## 6. 一次性终端留出与 Shadow",
-        "## 7. 人工候选策略生产启用",
+        "## 2. 共享多目标样本管线",
+        "## 3. Today V3 模型头",
+        "## 4. D25 V3 模型头",
+        "## 5. train-v3 统一入口",
+        "## 6. V3 多头运行评分",
+        "## 7. 状态、API、SSE、Web 和冻结",
+        "## 8. 真实全量训练",
+        "## 9. 显式 V3 整链验收",
     )
     positions = tuple(work.index(task) for task in ordered_tasks)
     assert positions == tuple(sorted(positions))
@@ -88,7 +90,7 @@ def test_incremental_feature_computation_is_complete_and_observable_without_a_pl
         "deadline 放弃原因",
     ):
         assert required in combined
-    assert "`tomorrow_model.computation` 只允许包含" in design
+    assert "`computation` 只允许包含候选数" in design
     assert "`FeatureComputationPlan`" in design
     assert "不生成无人消费的" in design
 
@@ -99,16 +101,16 @@ def test_route_cannot_smuggle_unverified_data_or_automatic_promotion() -> None:
     replay = _read(REPLAY)
 
     for required in (
-        "不得用 15:00 收盘价冒充 14:50",
-        "不得恢复未来日 collector",
+        "不新增分钟库",
+        "不把日线代理写成历史点时验证",
         "不可靠主力资金",
         "DeepSeek 自由文本",
-        "不得自动训练",
-        "必须由用户明确授权",
+        "不自动重启",
+        "用户显式选择",
     ):
         assert required in strategy + work + replay
-    assert "terminal_holdout_and_shadow" in work
-    assert "manual_candidate_strategy_activation" in work
+    assert "v3_explicit_chain_acceptance" in work
+    assert "production_authority=false" in work
 
 
 def test_changelog_records_completed_fail_closed_dataset_and_recall_code() -> None:
@@ -146,7 +148,7 @@ def test_point_in_time_qualification_has_three_independent_gates_and_no_producti
     assert "5453/5453" in changelog
     assert "9,085,235" in changelog
     assert "99.9976%" in changelog
-    assert "分钟点时" in work
+    assert "不新增分钟库" in work
 
 
 def test_history_training_and_optimization_are_one_dependency_route() -> None:
@@ -154,10 +156,11 @@ def test_history_training_and_optimization_are_one_dependency_route() -> None:
     replay = _read(REPLAY)
 
     assert "baostock_increment_archive" not in work
-    assert "v3_training_artifact_rebuild" in work
+    assert "v3_shared_multi_target_samples" in work
+    assert "v3_real_full_training" in work
     assert "dynamic_cutoff_and_missing_fact_acquisition" not in work
     assert "初次下载、缺口续传、最近 5 日回读" in replay
     assert "15:00_close" in replay
     assert "point_in_time_parity=false" in replay
-    assert "BaoStock 日线不能单独证明 14:50" in replay
+    assert "BaoStock 日线允许工程训练，但不能证明运行锚点收益" in replay
     assert "FeatureVectorManifest" in replay

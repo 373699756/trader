@@ -72,17 +72,16 @@ def test_hidden_metadata_container_is_not_discovered_as_an_empty_distribution() 
     assert probe.returncode == 0
 
 
-def test_repository_versions_only_the_portable_tomorrow_v3_bundle() -> None:
+def test_repository_versions_only_the_three_portable_v3_bundles() -> None:
     repository = Path(__file__).parents[2]
     ignore = (repository / ".gitignore").read_text(encoding="utf-8")
 
     assert "/data/history/" in ignore
     assert "/data/train/**/*" in ignore
-    assert "!/data/train/tomorrow-v3/" in ignore
-    assert "!/data/train/tomorrow-v3/active-bundle.json" in ignore
-    assert "!/data/train/tomorrow-v3/model.json" in ignore
-    assert "!/data/train/tomorrow-v3/report.json" in ignore
-    assert "!/data/train/tomorrow-v3/training-input.json" in ignore
+    for strategy in ("today", "tomorrow", "d25"):
+        assert f"!/data/train/{strategy}-v3/" in ignore
+        for name in ("active-bundle.json", "model.json", "report.json", "training-input.json"):
+            assert f"!/data/train/{strategy}-v3/{name}" in ignore
     assert "!/data/train/**/model.json" not in ignore
     assert "!/data/train/**/report.json" not in ignore
     assert all(pattern in ignore for pattern in ("build/", "dist/", "*.egg-info/"))
