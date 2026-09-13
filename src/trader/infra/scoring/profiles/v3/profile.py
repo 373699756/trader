@@ -11,7 +11,6 @@ from trader.application.ports.model_scoring import (
     HeadRuntime,
     LoadedScoringProfile,
     ProfileEvidence,
-    ProfileIdentity,
 )
 from trader.domain.recommendation.models import Strategy
 from trader.infra.scoring.profiles.v3.bundle_codec import V3TomorrowBundleArtifact
@@ -30,10 +29,15 @@ def build_scoring_profile(artifact: V3TomorrowBundleArtifact) -> LoadedScoringPr
     predictor = build_tomorrow_predictor(artifact)
     evidence = _evidence(artifact)
     return LoadedScoringProfile(
-        identity=ProfileIdentity("v3", predictor.model_id, predictor.model_hash),
-        heads=(HeadRuntime(Strategy.TOMORROW, cast(HeadPredictorPort, predictor)),),
-        combiner=SingleHeadCombiner(),
-        evidence=evidence,
+        profile_id="v3",
+        heads={
+            Strategy.TOMORROW: HeadRuntime(
+                Strategy.TOMORROW,
+                cast(HeadPredictorPort, predictor),
+                SingleHeadCombiner(),
+                evidence,
+            )
+        },
     )
 
 

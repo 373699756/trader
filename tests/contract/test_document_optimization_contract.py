@@ -117,10 +117,10 @@ def test_work_plan_contains_only_unfinished_tasks_and_no_historical_aliases() ->
     work = _read(WORK)
 
     assert "本文件只维护尚未完成的工程任务" in work
-    assert work.count("状态：`in_progress`") == 1
+    assert work.count("状态：`in_progress`") <= 1
     assert "baostock_increment_archive" not in work
-    assert "blocked_by_candidate_validation" in work
-    assert "blocked_by_shadow_and_user_authorization" in work
+    assert "blocked_by_shared_samples" in work
+    assert "blocked_by_real_training" in work
     for retired in ("`completed`", "15.1.35", "15.1.36", "15.1.37", "15.1.38"):
         assert retired not in work
 
@@ -158,9 +158,9 @@ def test_work_plan_is_an_unfinished_queue_not_a_second_normative_contract() -> N
     for required in (
         "评分逻辑](01_评分逻辑.md)",
         "工程设计](02_工程设计.md)",
-        "v3_training_artifact_rebuild",
-        "terminal_holdout_and_shadow",
-        "manual_candidate_strategy_activation",
+        "v3_shared_multi_target_samples",
+        "v3_multihead_runtime_scoring",
+        "v3_explicit_chain_acceptance",
     ):
         assert required in compact
 
@@ -177,7 +177,7 @@ def test_history_windows_cost_ownership_and_terminal_order_are_unambiguous() -> 
     replay = _read(REPLAY)
 
     assert "V1/V2 使用已封存模型，不要求用户下载 2000 日历史或重新训练" in strategy
-    assert "Tomorrow V1/V2/V3 在线推理至少需要 61 个有效 qfq 交易日" in design
+    assert "V3 的 Today/Tomorrow/D25 模型头在线推理至少需要 61 个" in design
     assert "V3 离线训练最多消费 2000 个交易所开市日" in design
     assert "扣成本前的预测超额收益" in strategy
     assert "训练目标不得先扣 20bp 后又由在线门重复扣除" in replay

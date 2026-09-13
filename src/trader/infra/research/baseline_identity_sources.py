@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from trader.application.research.baseline_identity_audit import BaselineIdentityEvidence
+from trader.domain.recommendation.models import Strategy
 from trader.domain.research.baseline_identity import BaselineIdentityClaim, source_hash
 from trader.infra.research.tomorrow_historical_artifacts import (
     TomorrowHistoricalArtifactArchive,
@@ -34,8 +35,8 @@ def load_baseline_identity_evidence(runtime: RuntimeSettings) -> PackagedBaselin
     strategy_hash = _file_hash(runtime.strategy_config_path)
     design_path = runtime.project_root / "docs/02_工程设计.md"
     strategy_doc_path = runtime.project_root / "docs/01_评分逻辑.md"
-    v1 = load_scoring_profile("v1").identity
-    v2 = load_scoring_profile("v2").identity
+    v1 = load_scoring_profile("v1").heads[Strategy.TOMORROW].predictor
+    v2 = load_scoring_profile("v2").heads[Strategy.TOMORROW].predictor
     historical_archive = TomorrowHistoricalArtifactArchive(runtime.runtime_dir / "tomorrow-historical")
     historical_source = runtime.runtime_dir / "tomorrow-historical"
     historical_conflict = False
@@ -54,8 +55,8 @@ def load_baseline_identity_evidence(runtime: RuntimeSettings) -> PackagedBaselin
     claims = (
         BaselineIdentityClaim(
             "active_profile",
-            strategy.tomorrow_scoring_profile,
-            strategy.tomorrow_scoring_profile,
+            strategy.scoring_profile,
+            strategy.scoring_profile,
             str(runtime.strategy_config_path),
             strategy_hash,
         ),

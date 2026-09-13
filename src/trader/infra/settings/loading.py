@@ -65,7 +65,7 @@ from trader.infra.settings.runtime_loader import load_runtime_settings
 from trader.infra.settings.strategy_validation import _validate_strategy_settings
 
 _STRATEGY_KEYS = {
-    "tomorrow_scoring_profile",
+    "scoring_profile",
     "fusion",
     "selection",
     "hard_filters",
@@ -88,23 +88,23 @@ _STRATEGY_KEYS = {
 def load_strategy_settings(
     config_path: str | os.PathLike[str],
     *,
-    tomorrow_scoring_profile: ScoringProfileId | None = None,
+    scoring_profile: ScoringProfileId | None = None,
 ) -> StrategySettings:
     path = Path(config_path).expanduser().resolve()
     raw = _read_json_object(path)
     _require_exact_keys(raw, _STRATEGY_KEYS, "strategy")
-    configured_profile = _text(raw, "tomorrow_scoring_profile")
+    configured_profile = _text(raw, "scoring_profile")
     try:
         configured_profile = parse_scoring_profile(configured_profile)
     except ValueError as exc:
-        raise ConfigurationError(f"tomorrow_scoring_profile {exc}") from exc
-    if tomorrow_scoring_profile is not None:
+        raise ConfigurationError(f"scoring_profile {exc}") from exc
+    if scoring_profile is not None:
         try:
-            tomorrow_scoring_profile = parse_scoring_profile(tomorrow_scoring_profile)
+            scoring_profile = parse_scoring_profile(scoring_profile)
         except ValueError as exc:
-            raise ConfigurationError(f"tomorrow_scoring_profile override {exc}") from exc
-        raw = {**raw, "tomorrow_scoring_profile": tomorrow_scoring_profile}
-    effective_profile = _text(raw, "tomorrow_scoring_profile")
+            raise ConfigurationError(f"scoring_profile override {exc}") from exc
+        raw = {**raw, "scoring_profile": scoring_profile}
+    effective_profile = _text(raw, "scoring_profile")
     fusion_raw = _mapping(raw, "fusion")
     _require_exact_keys(
         fusion_raw,
@@ -163,7 +163,7 @@ def load_strategy_settings(
     }
     settings = StrategySettings(
         strategy_version=_strategy_contract_identity(raw),
-        tomorrow_scoring_profile=parse_scoring_profile(effective_profile),
+        scoring_profile=parse_scoring_profile(effective_profile),
         fusion=FusionSettings(
             version="fusion_local68_deepseek32",
             local_weight=_number(fusion_raw, "local_weight", minimum=0.0, maximum=1.0),

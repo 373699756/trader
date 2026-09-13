@@ -111,16 +111,13 @@ class TomorrowProductionModelScoringService:
         *,
         monotonic: Callable[[], float] = time.perf_counter,
     ) -> None:
-        if len(profile.heads) != 1 or profile.heads[0].strategy is not Strategy.TOMORROW:
-            raise ValueError("Tomorrow production scoring requires exactly one Tomorrow head")
-        predictor = cast(ModelPredictorPort, profile.heads[0].predictor)
-        if (
-            profile.identity.profile_id != predictor.profile_id
-            or profile.identity.model_id != predictor.model_id
-            or profile.identity.model_hash != predictor.model_hash
-        ):
+        head = profile.heads.get(Strategy.TOMORROW)
+        if head is None:
+            raise ValueError("Tomorrow production scoring requires a Tomorrow head")
+        predictor = cast(ModelPredictorPort, head.predictor)
+        if profile.profile_id != predictor.profile_id:
             raise ValueError("scoring profile identity does not match its head")
-        self._evidence = profile.evidence
+        self._evidence = head.evidence
         if (
             not predictor.model_id
             or len(predictor.model_hash) != 64

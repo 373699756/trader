@@ -106,12 +106,12 @@ def run(
     config_path: Path,
     *,
     baseline_path: Path | None = None,
-    tomorrow_scoring_profile: ScoringProfileId | None = None,
+    scoring_profile: ScoringProfileId | None = None,
 ) -> dict[str, object]:
     settings = load_runtime_settings(config_path)
     strategy_settings = load_strategy_settings(
         settings.strategy_config_path,
-        tomorrow_scoring_profile=tomorrow_scoring_profile,
+        scoring_profile=scoring_profile,
     )
     budgets = settings.performance_budgets
     market_inputs, market_quotes, candidates = _fixtures(budgets)
@@ -121,7 +121,7 @@ def run(
         ModelScoringRouter(
             TomorrowProductionModelScoringService(
                 load_scoring_profile(
-                    strategy_settings.tomorrow_scoring_profile,
+                    strategy_settings.scoring_profile,
                     training_root=settings.project_root / "data" / "train",
                 )
             )
@@ -172,7 +172,7 @@ def run(
         "identity": {
             "config_version": settings.config_version,
             "strategy_version": strategy_settings.strategy_version,
-            "tomorrow_scoring_profile": strategy_settings.tomorrow_scoring_profile,
+            "scoring_profile": strategy_settings.scoring_profile,
             "config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
             "fixture_sha256": fixture_hash,
             "source_sha256": _source_digest(source_root),

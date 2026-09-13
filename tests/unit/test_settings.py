@@ -34,7 +34,7 @@ def test_configuration_contract_is_valid() -> None:
     strategy = load_strategy_settings(runtime.strategy_config_path)
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
 
-    assert strategy.tomorrow_scoring_profile == "v1"
+    assert strategy.scoring_profile == "v1"
     assert runtime.config_version.startswith("runtime_sha256_")
     assert strategy.strategy_version.startswith("strategy_sha256_")
     assert runtime.market_data.source_contracts["eastmoney"] == ("eastmoney_quote_security_master")
@@ -299,53 +299,64 @@ def test_configuration_contract_is_valid() -> None:
 
 
 @pytest.mark.parametrize("profile", ("v1", "v2", "v3"))
-def test_tomorrow_scoring_profile_is_an_explicit_versioned_switch(tmp_path, profile: str) -> None:
+def test_scoring_profile_is_an_explicit_versioned_switch(tmp_path, profile: str) -> None:
     source = PROJECT_ROOT / "config" / "strategy.json"
     raw = json.loads(source.read_text(encoding="utf-8"))
-    raw["tomorrow_scoring_profile"] = profile
+    raw["scoring_profile"] = profile
     strategy_path = tmp_path / "strategy.json"
     strategy_path.write_text(json.dumps(raw), encoding="utf-8")
 
     settings = load_strategy_settings(strategy_path)
 
-    assert settings.tomorrow_scoring_profile == profile
+    assert settings.scoring_profile == profile
     if profile == "v2":
         assert settings.strategy_version != load_strategy_settings(source).strategy_version
 
 
-def test_tomorrow_scoring_profile_override_changes_the_effective_version_without_writing_config() -> None:
+def test_scoring_profile_override_changes_the_effective_version_without_writing_config() -> None:
     source = PROJECT_ROOT / "config" / "strategy.json"
     original = source.read_bytes()
 
     default = load_strategy_settings(source)
-    overridden = load_strategy_settings(source, tomorrow_scoring_profile="v2")
+    overridden = load_strategy_settings(source, scoring_profile="v2")
 
-    assert default.tomorrow_scoring_profile == "v1"
-    assert overridden.tomorrow_scoring_profile == "v2"
+    assert default.scoring_profile == "v1"
+    assert overridden.scoring_profile == "v2"
     assert overridden.strategy_version != default.strategy_version
     assert source.read_bytes() == original
 
 
-def test_unknown_tomorrow_scoring_profile_is_rejected(tmp_path) -> None:
+def test_unknown_scoring_profile_is_rejected(tmp_path) -> None:
     source = PROJECT_ROOT / "config" / "strategy.json"
     raw = json.loads(source.read_text(encoding="utf-8"))
-    raw["tomorrow_scoring_profile"] = "latest"
+    raw["scoring_profile"] = "latest"
     strategy_path = tmp_path / "strategy.json"
     strategy_path.write_text(json.dumps(raw), encoding="utf-8")
 
-    with pytest.raises(ConfigurationError, match="tomorrow_scoring_profile"):
+    with pytest.raises(ConfigurationError, match="scoring_profile"):
         load_strategy_settings(strategy_path)
 
 
 @pytest.mark.parametrize("retired_profile", ("p1", "p2"))
-def test_retired_tomorrow_scoring_profile_names_are_rejected(tmp_path, retired_profile: str) -> None:
+def test_retired_scoring_profile_names_are_rejected(tmp_path, retired_profile: str) -> None:
     source = PROJECT_ROOT / "config" / "strategy.json"
     raw = json.loads(source.read_text(encoding="utf-8"))
-    raw["tomorrow_scoring_profile"] = retired_profile
+    raw["scoring_profile"] = retired_profile
     strategy_path = tmp_path / "strategy.json"
     strategy_path.write_text(json.dumps(raw), encoding="utf-8")
 
-    with pytest.raises(ConfigurationError, match="tomorrow_scoring_profile"):
+    with pytest.raises(ConfigurationError, match="scoring_profile"):
+        load_strategy_settings(strategy_path)
+
+
+def test_retired_tomorrow_specific_profile_key_is_rejected(tmp_path: Path) -> None:
+    source = PROJECT_ROOT / "config" / "strategy.json"
+    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw["tomorrow_scoring_profile"] = raw.pop("scoring_profile")
+    strategy_path = tmp_path / "strategy.json"
+    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="scoring_profile is required"):
         load_strategy_settings(strategy_path)
 
 

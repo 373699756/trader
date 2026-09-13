@@ -808,7 +808,7 @@ def test_server_lock_conflict_explains_the_existing_service_and_safe_restart(
     monkeypatch.setattr(
         server_module,
         "build_system",
-        lambda _config, *, tomorrow_scoring_profile: SimpleNamespace(settings=settings),
+        lambda _config, *, scoring_profile: SimpleNamespace(settings=settings),
     )
     monkeypatch.setattr(server_module, "ProcessLock", _LockedProcess)
 

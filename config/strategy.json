@@ -1,5 +1,5 @@
 {
-  "tomorrow_scoring_profile": "v1",
+  "scoring_profile": "v1",
   "fusion": {
     "local_weight": 0.68,
     "deepseek_weight": 0.32,

@@ -5,11 +5,21 @@ from pathlib import Path
 import pytest
 
 from trader.application.ports.model_scoring import ModelInput
+from trader.domain.recommendation.models import Strategy
 from trader.infra.scoring.profile_factory import load_scoring_profile
 
 
 def _predictor(profile: str):
-    return load_scoring_profile(profile).heads[0].predictor
+    return load_scoring_profile(profile).heads[Strategy.TOMORROW].predictor
+
+
+@pytest.mark.parametrize("profile", ("v1", "v2"))
+def test_packaged_profiles_use_strategy_keyed_head_contract(profile: str) -> None:
+    loaded = load_scoring_profile(profile)
+
+    assert loaded.profile_id == profile
+    assert tuple(loaded.heads) == (Strategy.TOMORROW,)
+    assert loaded.heads[Strategy.TOMORROW].strategy is Strategy.TOMORROW
 
 
 def test_profile_factory_preserves_v2_identity_and_deterministic_prediction() -> None:

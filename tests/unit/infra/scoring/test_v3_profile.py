@@ -332,16 +332,17 @@ def test_v3_codec_profile_and_predictor_preserve_the_complete_contract(tmp_path:
     assert predictor.predict((row,)) == predictor.predict((row,))
     assert predictor.industry_ids == ("银行",)
     assert predictor.exposure_contract.requires_industry is True
-    assert tuple(head.strategy for head in profile.heads) == (Strategy.TOMORROW,)
-    assert loaded_profile.heads[0].predictor.predict((row,)) == predictor.predict((row,))
-    assert profile.evidence.historical_status == "historical_data_insufficient"
-    assert profile.evidence.historical_failure_reasons == ("daily_close_proxy_not_point_in_time",)
-    assert profile.evidence.activation_basis == "manual_user_override"
-    assert profile.evidence.training_anchor == "15:00_close_proxy"
+    assert tuple(profile.heads) == (Strategy.TOMORROW,)
+    head = profile.heads[Strategy.TOMORROW]
+    assert loaded_profile.heads[Strategy.TOMORROW].predictor.predict((row,)) == predictor.predict((row,))
+    assert head.evidence.historical_status == "historical_data_insufficient"
+    assert head.evidence.historical_failure_reasons == ("daily_close_proxy_not_point_in_time",)
+    assert head.evidence.activation_basis == "manual_user_override"
+    assert head.evidence.training_anchor == "15:00_close_proxy"
     prediction = predictor.predict((row,))[0]
-    assert profile.combiner.combine((prediction,)) == prediction
+    assert head.combiner.combine((prediction,)) == prediction
     with pytest.raises(ValueError, match="exactly one"):
-        profile.combiner.combine(())
+        head.combiner.combine(())
 
 
 def test_partial_checkpoint_v3_profile_is_rejected_by_the_active_archive_contract() -> None:

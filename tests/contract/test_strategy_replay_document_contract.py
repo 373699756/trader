@@ -13,7 +13,7 @@ def test_strategy_replay_document_covers_the_complete_offline_to_live_chain() ->
         "## 2. 一张图看懂完整链条",
         "## 3. 历史数据下载：下载什么、为什么需要",
         "## 4. 从归档到可训练样本",
-        "## 5. Tomorrow 如何训练与验证",
+        "## 5. V3 三个策略头如何训练与验证",
         "## 6. 训练结果如何参与实时荐股",
         "## 7. Today、Tomorrow、D25 的关系",
         "## 8. 影响最终荐股的因素",
@@ -23,7 +23,7 @@ def test_strategy_replay_document_covers_the_complete_offline_to_live_chain() ->
 
     positions = tuple(content.index(section) for section in ordered_sections)
     assert positions == tuple(sorted(positions))
-    assert len(content.splitlines()) <= 700
+    assert len(content.splitlines()) <= 720
 
 
 def test_strategy_replay_document_explains_downloaded_data_and_uses() -> None:
@@ -88,13 +88,15 @@ def test_strategy_replay_document_keeps_public_commands_and_strategy_ownership_b
     assert "./run.sh download_history" in content
     assert "./run.sh download_history --sessions" not in content
     assert "./run.sh train-tomorrow" in content
+    assert "./run.sh train-v3" in content
     for guide in public_guides:
         assert "./run.sh research-status" not in guide.read_text(encoding="utf-8")
     for required in (
         "D25 的目标是筛选未来第 2 至第 5 个交易日区间内具备上涨能力的股票",
-        "D25 当前是独立规则评分",
+        "D25 的统一 base score 始终是独立规则评分",
         "不读取 Tomorrow 模型",
-        "Today 当前是独立规则评分",
+        "V1/V2 只有 Tomorrow 模型头",
+        "完整 V3 由 Today、Tomorrow、D25 三个独立模型头组成",
         "Long 不评分",
     ):
         assert required in content
@@ -119,7 +121,7 @@ def test_strategy_replay_document_records_the_stage_a_b_gates_and_atomic_trainin
         "effective_at",
         "published_at",
         "扣成本前超额收益",
-        "raw `next_return`",
+        "raw horizon return",
         "active-bundle.json",
         "失败时保留上一活动组",
         "historical_data_insufficient",

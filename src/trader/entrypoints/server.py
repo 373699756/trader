@@ -55,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config_path = _absolute_config_path(args.config)
-    system = build_system(config_path, tomorrow_scoring_profile=args.profile)
+    system = build_system(config_path, scoring_profile=args.profile)
     _validate_bind(system.settings)
     try:
         lock = ProcessLock(system.settings.runtime_dir / "server.lock")

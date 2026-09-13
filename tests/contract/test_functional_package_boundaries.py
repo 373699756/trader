@@ -61,7 +61,7 @@ def test_scoring_profile_capability_matrix_uses_one_quality_scale_and_d25_single
         "| 评分档位 | Today | Tomorrow | D25 |",
         "| V1 | 板块证据质量评分 | 板块证据质量评分 + V1 Tomorrow 预测头 | 板块证据质量评分 |",
         "| V2 | 板块证据质量评分 | 板块证据质量评分 + V2 Tomorrow 预测头 | 板块证据质量评分 |",
-        "| V3 | 板块证据质量评分 | 板块证据质量评分 + V3 单一 Tomorrow 预测头 | 板块证据质量评分 |",
+        "| V3 | 板块证据质量评分 + 独立 Today 趋势代理头 | 板块证据质量评分 + 独立 Tomorrow 预测头 | 板块证据质量评分 + 独立 D25 趋势代理头 |",
         "D25 生产边界只输出一个面向未来 2–5 个交易日的策略信号",
         "不得拆成 T+2、T+3、T+4、T+5 四个生产头",
     ):
@@ -69,6 +69,8 @@ def test_scoring_profile_capability_matrix_uses_one_quality_scale_and_d25_single
     assert "D25 是一个完整且唯一的 2–5 日生产策略头" in strategy
     assert "四个观察点只用于 D25 的标签、终端留出、风险和稳定性评价" in strategy
     assert "不覆盖公共评分器产生的 `base_score`" in design
+    assert "profile 不再复制单一" in design
+    assert "model ID/hash" in design
 
 
 def test_currently_retired_paths_remain_absent() -> None:

@@ -226,7 +226,7 @@ class ProfileEvidence:
     automatic_model_update: bool = False
     loss_probability_status: Literal["not_modeled"] = "not_modeled"
     training_anchor: Literal["15:00_close", "15:00_close_proxy", "14:50_point_in_time"] = "15:00_close"
-    runtime_anchor: Literal["14:50"] = "14:50"
+    runtime_anchor: Literal["11:20", "14:50"] = "14:50"
     point_in_time_parity: bool = False
 
 
@@ -234,21 +234,24 @@ class ProfileEvidence:
 class HeadRuntime:
     strategy: Strategy
     predictor: HeadPredictorPort
-
-
-@dataclass(frozen=True)
-class ProfileIdentity:
-    profile_id: ScoringProfileId
-    model_id: str
-    model_hash: str
+    combiner: ProfileCombinerPort
+    evidence: ProfileEvidence
 
 
 @dataclass(frozen=True)
 class LoadedScoringProfile:
-    identity: ProfileIdentity
-    heads: tuple[HeadRuntime, ...]
-    combiner: ProfileCombinerPort
-    evidence: ProfileEvidence
+    profile_id: ScoringProfileId
+    heads: Mapping[Strategy, HeadRuntime]
+
+    def __post_init__(self) -> None:
+        heads = dict(self.heads)
+        if (
+            not heads
+            or Strategy.LONG in heads
+            or any(strategy is not head.strategy for strategy, head in heads.items())
+        ):
+            raise ValueError("scoring profile heads are invalid")
+        object.__setattr__(self, "heads", MappingProxyType(heads))
 
 
 @dataclass(frozen=True)
@@ -271,7 +274,7 @@ class ScoringProfileRuntimeStatus:
     loss_probability_status: Literal["not_modeled"]
     computation: ModelComputationStatus = ModelComputationStatus()
     training_anchor: Literal["15:00_close", "15:00_close_proxy", "14:50_point_in_time"] = "15:00_close"
-    runtime_anchor: Literal["14:50"] = "14:50"
+    runtime_anchor: Literal["11:20", "14:50"] = "14:50"
     point_in_time_parity: bool = False
 
 
@@ -326,7 +329,6 @@ __all__ = [
     "ModelScoringDeadlineError",
     "ProfileCombinerPort",
     "ProfileEvidence",
-    "ProfileIdentity",
     "ScoringCapabilityPort",
     "ScoringProfileRuntimeStatus",
 ]

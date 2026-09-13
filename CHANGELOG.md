@@ -7,6 +7,7 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
+- [V3 three-head scoring profile contract](docs/changelog/2026-09-13-v3-three-head-profile-contract.md)
 - [Clarify shared V2/V3 training history and strategy boundaries](docs/changelog/2026-09-13-v2-v3-training-history-clarification.md)
 - [Tomorrow V1/V2 merged V2 profit-optimization plan](docs/changelog/2026-09-13-tomorrow-v1-v2-merged-v2-plan.md)
 - [History repack finalize memory-evidence compatibility](docs/changelog/2026-09-13-history-repack-finalize-memory-evidence.md)

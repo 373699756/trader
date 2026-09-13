@@ -119,6 +119,7 @@ def test_d25_means_one_future_t2_to_t5_rising_stock_signal() -> None:
         "未来第 2 至第 5 个交易日区间内具备上涨能力的股票",
         "T+2、T+3、T+4、T+5",
         "一个完整且唯一的 2–5 日生产策略头",
-        "当前 D25 使用规则评分，不读取 Tomorrow 训练模型",
+        "V1/V2 下 D25 使用规则评分",
+        "D25 只读取自己的单一 2–5 日模型头",
     ):
         assert required in content

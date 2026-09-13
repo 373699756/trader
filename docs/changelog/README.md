@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [V3 three-head scoring profile contract](2026-09-13-v3-three-head-profile-contract.md)
 - [Clarify shared V2/V3 training history and strategy boundaries](2026-09-13-v2-v3-training-history-clarification.md)
 - [Tomorrow V1/V2 merged V2 profit-optimization plan](2026-09-13-tomorrow-v1-v2-merged-v2-plan.md)
 - [History repack finalize memory-evidence compatibility](2026-09-13-history-repack-finalize-memory-evidence.md)

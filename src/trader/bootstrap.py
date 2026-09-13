@@ -196,12 +196,12 @@ class _RuntimeAdapters:
 def build_system(
     config_path: str | Path,
     *,
-    tomorrow_scoring_profile: ScoringProfileId | None = None,
+    scoring_profile: ScoringProfileId | None = None,
 ) -> ApplicationSystem:
     settings = load_runtime_settings(config_path)
     strategy = load_strategy_settings(
         settings.strategy_config_path,
-        tomorrow_scoring_profile=tomorrow_scoring_profile,
+        scoring_profile=scoring_profile,
     )
     watchlist = load_long_watchlist(settings.long_watchlist_path)
     effective_config_version = f"{settings.config_version}+{strategy.strategy_version}"
@@ -218,11 +218,11 @@ def build_system(
     market_data = _build_market_data(context, persistence.data_plane, calendar)
     reviewer = _build_reviewer(context, persistence.budget)
     policy = _recommendation_policy(context.strategy)
-    scoring_profile = load_scoring_profile(
-        strategy.tomorrow_scoring_profile,
+    loaded_profile = load_scoring_profile(
+        strategy.scoring_profile,
         training_root=settings.project_root / "data" / "train",
     )
-    model_scoring = ModelScoringRouter(TomorrowProductionModelScoringService(scoring_profile))
+    model_scoring = ModelScoringRouter(TomorrowProductionModelScoringService(loaded_profile))
     publication = _build_publication(
         context,
         calendar,

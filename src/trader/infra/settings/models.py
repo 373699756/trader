@@ -221,7 +221,7 @@ class FactorDefinition:
 @dataclass(frozen=True)
 class StrategySettings:
     strategy_version: str
-    tomorrow_scoring_profile: ScoringProfileId
+    scoring_profile: ScoringProfileId
     fusion: FusionSettings
     selection: SelectionSettings
     hard_filters: HardFilterSettings

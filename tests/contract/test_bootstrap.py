@@ -47,7 +47,7 @@ def _config(tmp_path: Path) -> Path:
 
 def _config_with_strategy_profile(tmp_path: Path, profile: str) -> Path:
     strategy = json.loads((PROJECT_ROOT / "config/strategy.json").read_text(encoding="utf-8"))
-    strategy["tomorrow_scoring_profile"] = profile
+    strategy["scoring_profile"] = profile
     strategy_path = tmp_path / "strategy.json"
     strategy_path.write_text(json.dumps(strategy), encoding="utf-8")
     path = _config(tmp_path)
@@ -121,7 +121,7 @@ def test_build_system_selects_an_explicit_scoring_profile_without_rewriting_conf
     config_path = _config_with_strategy_profile(tmp_path, "v1")
     strategy_path = Path(json.loads(config_path.read_text(encoding="utf-8"))["strategy_config"])
     original = strategy_path.read_bytes()
-    system = build_system(config_path, tomorrow_scoring_profile="v2")
+    system = build_system(config_path, scoring_profile="v2")
     status = system.app.test_client().get("/api/status").get_json()["tomorrow_model"]
 
     assert status["active"] is True

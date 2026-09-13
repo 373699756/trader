@@ -119,12 +119,12 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
             config_path,
             output=args.output,
             baseline=args.baseline,
-            tomorrow_scoring_profile=profile_override,
+            scoring_profile=profile_override,
         )
     if args.command == "research-scoring-hot-path-baseline":
         from trader.entrypoints.performance import run as run_performance
 
-        report = run_performance(config_path, tomorrow_scoring_profile=profile_override)
+        report = run_performance(config_path, scoring_profile=profile_override)
         baseline = report["hot_path_baseline"]
         print(json.dumps(baseline, ensure_ascii=False, sort_keys=True, indent=2))
         return 0 if isinstance(baseline, dict) and baseline.get("status") == "passed" else 1
@@ -325,7 +325,7 @@ def _run_config_validation(
 ) -> int:
     strategy = load_strategy_settings(
         runtime.strategy_config_path,
-        tomorrow_scoring_profile=profile_override,
+        scoring_profile=profile_override,
     )
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
     print(
@@ -334,7 +334,7 @@ def _run_config_validation(
                 "status": "ok",
                 "runtime_version": runtime.config_version,
                 "strategy_version": strategy.strategy_version,
-                "tomorrow_scoring_profile": strategy.tomorrow_scoring_profile,
+                "scoring_profile": strategy.scoring_profile,
                 "watchlist_version": watchlist.watchlist_version,
                 "runtime_dir": str(runtime.runtime_dir),
             },
@@ -388,7 +388,7 @@ def _effective_profile(
 ) -> ScoringProfileId:
     if profile_override is not None:
         return profile_override
-    return load_strategy_settings(runtime.strategy_config_path).tomorrow_scoring_profile
+    return load_strategy_settings(runtime.strategy_config_path).scoring_profile
 
 
 def _run_performance_report(
@@ -396,14 +396,14 @@ def _run_performance_report(
     *,
     output: Path | None,
     baseline: Path | None,
-    tomorrow_scoring_profile: ScoringProfileId | None,
+    scoring_profile: ScoringProfileId | None,
 ) -> int:
     from trader.entrypoints.performance import run as run_performance
 
     report = run_performance(
         config_path,
         baseline_path=baseline,
-        tomorrow_scoring_profile=tomorrow_scoring_profile,
+        scoring_profile=scoring_profile,
     )
     payload = json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2)
     if output is not None:
