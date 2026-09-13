@@ -28,7 +28,7 @@ from trader.infra.research.history_archive_sync import run_history_sync
 from trader.infra.research.history_control_repository import SQLiteHistoryControlRepository
 from trader.infra.research.history_training_due import _revised_dates_since_bundle, evaluate_history_training_due
 from trader.infra.research.history_training_input import SQLiteHistoryTrainingInputArchive
-from trader.infra.scoring.profiles.v3.training_bundle_repository import ActiveHeadBundle
+from trader.infra.scoring.head_bundles.bundle_repository import ActiveHeadBundle
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 

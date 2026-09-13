@@ -6,8 +6,8 @@ from trader.domain.recommendation.model_scoring.profile_identity import (
     parse_scoring_profile,
 )
 from trader.domain.recommendation.model_scoring.residualization import (
-    V1_V2_EXPOSURE_CONTRACT,
-    V3_EXPOSURE_CONTRACT,
+    LEGACY_EXPOSURE_CONTRACT,
+    TRAINED_HEAD_EXPOSURE_CONTRACT,
     ExposureContext,
     ExposureContract,
     ExposureDimension,
@@ -23,8 +23,8 @@ __all__ = [
     "ExposureContext",
     "ExposureDimension",
     "ScoringProfileId",
-    "V1_V2_EXPOSURE_CONTRACT",
-    "V3_EXPOSURE_CONTRACT",
+    "LEGACY_EXPOSURE_CONTRACT",
+    "TRAINED_HEAD_EXPOSURE_CONTRACT",
     "create_exposure_context",
     "parse_scoring_profile",
     "percentile_ranks",

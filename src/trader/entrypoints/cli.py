@@ -43,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run config validation, research readiness, and the active-profile performance gate.",
     )
     subparsers.add_parser("train-tomorrow", help="Run the due immutable Tomorrow training stage.")
-    subparsers.add_parser("train-v3", help="Run one shared scan and sequentially train due V3 heads.")
+    subparsers.add_parser("train-v3", help="Run one shared scan and sequentially train due shared heads.")
     subparsers.add_parser("validate-config", help="Validate runtime and strategy configuration.")
     performance = subparsers.add_parser(
         "performance-check",

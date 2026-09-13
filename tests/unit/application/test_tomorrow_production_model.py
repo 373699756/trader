@@ -18,7 +18,7 @@ from trader.application.recommendation.production_model_scoring import (
     SharedModelFeatureCache,
 )
 from trader.domain.market.models import Board, FeatureSnapshot
-from trader.domain.recommendation.model_scoring import V1_V2_EXPOSURE_CONTRACT, V3_EXPOSURE_CONTRACT
+from trader.domain.recommendation.model_scoring import LEGACY_EXPOSURE_CONTRACT, TRAINED_HEAD_EXPOSURE_CONTRACT
 from trader.domain.recommendation.models import Strategy
 
 NOW = datetime(2026, 8, 31, 14, 50, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -44,7 +44,7 @@ class _Predictor:
         "qfq_residual_momentum_40d_skip5",
         "qfq_residual_momentum_60d_skip5",
     )
-    exposure_contract = V1_V2_EXPOSURE_CONTRACT
+    exposure_contract = LEGACY_EXPOSURE_CONTRACT
     industry_ids: tuple[str, ...] = ()
 
     def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
@@ -356,7 +356,7 @@ def test_v3_routes_each_input_to_its_current_industry_model(application_feature_
         profile_id = "v3"
         model_id = "industry_ensemble_training"
         industry_ids = ("银行",)
-        exposure_contract = V3_EXPOSURE_CONTRACT
+        exposure_contract = TRAINED_HEAD_EXPOSURE_CONTRACT
 
         def __init__(self) -> None:
             self.industries: tuple[str, ...] = ()
@@ -382,7 +382,7 @@ def test_v3_rejects_blank_industry_before_cross_sectional_prediction(application
     class _V3Predictor(_Predictor):
         profile_id = "v3"
         industry_ids = ("银行",)
-        exposure_contract = V3_EXPOSURE_CONTRACT
+        exposure_contract = TRAINED_HEAD_EXPOSURE_CONTRACT
 
     complete = _model_feature(application_feature_factory("600001", NOW), offset=0.01, amihud=1.0)
     complete = replace(complete, quote=replace(complete.quote, industry="银行"))

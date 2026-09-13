@@ -23,7 +23,7 @@ from trader.application.recommendation.scored_projection import (
 from trader.application.research.research_audit import build_committed_research_audit
 from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import FeatureSnapshot
-from trader.domain.recommendation.model_scoring import V1_V2_EXPOSURE_CONTRACT
+from trader.domain.recommendation.model_scoring import LEGACY_EXPOSURE_CONTRACT
 from trader.domain.recommendation.models import Strategy
 from trader.infra.settings import load_strategy_settings
 
@@ -45,7 +45,7 @@ class _ProductionPredictor:
         "qfq_residual_momentum_40d_skip5",
         "qfq_residual_momentum_60d_skip5",
     )
-    exposure_contract = V1_V2_EXPOSURE_CONTRACT
+    exposure_contract = LEGACY_EXPOSURE_CONTRACT
     industry_ids: tuple[str, ...] = ()
 
     def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:

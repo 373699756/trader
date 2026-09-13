@@ -34,8 +34,8 @@ from trader.infra.research.history_control_repository import SQLiteHistoryContro
 from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
 from trader.infra.research.history_training_due import evaluate_history_training_due
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
+from trader.infra.scoring.head_bundles.bundle_repository import ActiveHeadBundle
 from trader.infra.scoring.profiles.v3.training import run_repack_tomorrow_training, run_repack_v3_training
-from trader.infra.scoring.profiles.v3.training_bundle_repository import ActiveHeadBundle
 from trader.infra.scoring.profiles.v3.training_memory_evidence import TomorrowTrainingMemoryEvidence
 
 NOW = datetime(2026, 9, 12, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))

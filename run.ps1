@@ -23,7 +23,7 @@ function Show-Usage {
 离线研究（仅在明确执行研究任务时使用）:
   .\run.ps1 download_history        零参数历史维护
   .\run.ps1 train-tomorrow          从完整 manifest 运行 Tomorrow 训练
-  .\run.ps1 train-v3                一次扫描历史并顺序训练 V3 三个模型头
+  .\run.ps1 train-v3                一次扫描历史并顺序训练 V2/V3 共享三头
 
 看板和 check 可追加 --profile v1|v2|v3；离线数据与训练命令均为零参数。
 

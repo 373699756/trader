@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from trader.application.ports.model_scoring import ModelInput, ModelPrediction, ProfileEvidence
-from trader.domain.recommendation.model_scoring import V1_V2_EXPOSURE_CONTRACT, ExposureContract
+from trader.domain.recommendation.model_scoring import LEGACY_EXPOSURE_CONTRACT, ExposureContract
 from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
 from trader.infra.scoring.profiles.v1.artifact_codec import V1TomorrowModelArtifact
 
@@ -36,7 +36,7 @@ class V1TomorrowPredictor:
 
     @property
     def exposure_contract(self) -> ExposureContract:
-        return V1_V2_EXPOSURE_CONTRACT
+        return LEGACY_EXPOSURE_CONTRACT
 
     @property
     def industry_ids(self) -> tuple[str, ...]:

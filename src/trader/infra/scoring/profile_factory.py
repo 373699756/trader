@@ -9,13 +9,11 @@ from typing import cast
 
 from trader.application.ports.model_scoring import LoadedScoringProfile
 from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
+from trader.infra.scoring.head_bundles.bundle_codec import load_head_bundle
+from trader.infra.scoring.head_bundles.bundle_locator import locate_head_bundles
+from trader.infra.scoring.head_bundles.profile import build_trained_scoring_profile
 from trader.infra.scoring.profiles.v1.artifact_codec import decode_tomorrow_artifact as decode_v1_artifact
 from trader.infra.scoring.profiles.v1.profile import build_scoring_profile as build_v1_profile
-from trader.infra.scoring.profiles.v2.artifact_codec import decode_tomorrow_artifact as decode_v2_artifact
-from trader.infra.scoring.profiles.v2.profile import build_scoring_profile as build_v2_profile
-from trader.infra.scoring.profiles.v3.bundle_codec import load_head_bundle
-from trader.infra.scoring.profiles.v3.bundle_locator import locate_head_bundles
-from trader.infra.scoring.profiles.v3.profile import build_scoring_profile as build_v3_profile
 
 
 def load_scoring_profile(
@@ -28,18 +26,15 @@ def load_scoring_profile(
     if profile_id == "v1":
         v1_artifact = decode_v1_artifact(_profile_resource_payload("v1"))
         return build_v1_profile(v1_artifact)
-    if profile_id == "v2":
-        v2_artifact = decode_v2_artifact(_profile_resource_payload("v2"))
-        return build_v2_profile(v2_artifact)
-    if profile_id == "v3":
+    if profile_id in {"v2", "v3"}:
         try:
             bundle_paths = locate_head_bundles(training_root or Path("data/train"))
             artifacts = tuple(load_head_bundle(path, strategy) for strategy, path in bundle_paths)
-            return build_v3_profile(artifacts)
+            return build_trained_scoring_profile(profile_id, artifacts)
         except FileNotFoundError as exc:
-            raise RuntimeError("V3 strategy-head training models are unavailable") from exc
+            raise RuntimeError("shared strategy-head training models are unavailable") from exc
         except (OSError, TypeError, ValueError) as exc:
-            raise RuntimeError("V3 strategy-head training models are invalid") from exc
+            raise RuntimeError("shared strategy-head training models are invalid") from exc
     raise ValueError("unknown scoring profile")
 
 

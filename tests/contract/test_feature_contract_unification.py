@@ -17,19 +17,18 @@ def test_training_online_codec_replay_and_shadow_use_the_catalog_owner() -> None
         "src/trader/infra/market_data/normalization/features.py",
         "src/trader/infra/scoring/profiles/v1/artifact_builder.py",
         "src/trader/infra/scoring/profiles/v1/artifact_codec.py",
-        "src/trader/infra/scoring/profiles/v2/artifact_codec.py",
-        "src/trader/infra/scoring/profiles/v3/training_contracts.py",
+        "src/trader/infra/scoring/head_bundles/contracts.py",
     )
     for relative in consumers:
         source = (ROOT / relative).read_text(encoding="utf-8")
         assert "trader.domain.market.feature_contracts" in source, relative
 
     for relative in (
-        "src/trader/infra/scoring/profiles/v3/bundle_codec.py",
+        "src/trader/infra/scoring/head_bundles/bundle_codec.py",
         "src/trader/infra/scoring/profiles/v3/training.py",
     ):
         source = (ROOT / relative).read_text(encoding="utf-8")
-        assert "trader.infra.scoring.profiles.v3.training_contracts" in source, relative
+        assert "trader.infra.scoring.head_bundles.contracts" in source, relative
 
 
 def test_v3_feature_identifiers_are_declared_only_by_the_catalog() -> None:
@@ -42,7 +41,7 @@ def test_v3_feature_identifiers_are_declared_only_by_the_catalog() -> None:
         "src/trader/domain/research/tomorrow_training_input.py",
         "src/trader/infra/scoring/profiles/v1/artifact_builder.py",
         "src/trader/infra/scoring/profiles/v1/artifact_codec.py",
-        "src/trader/infra/scoring/profiles/v3/bundle_codec.py",
+        "src/trader/infra/scoring/head_bundles/bundle_codec.py",
         "src/trader/infra/scoring/profiles/v3/training.py",
     )
     for relative in consumers:

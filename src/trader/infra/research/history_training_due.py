@@ -26,11 +26,11 @@ from trader.infra.research.history_control_repository import (
     HistoryControlError,
     SQLiteHistoryControlRepository,
 )
-from trader.infra.scoring.profiles.v3.training_bundle_repository import (
+from trader.infra.scoring.head_bundles.bundle_repository import (
     ActiveHeadBundle,
     inspect_active_head_bundle,
 )
-from trader.infra.scoring.profiles.v3.training_contracts import contract_for_strategy
+from trader.infra.scoring.head_bundles.contracts import contract_for_strategy
 
 
 @dataclass(frozen=True)

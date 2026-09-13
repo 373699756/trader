@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from trader.domain.research.baostock_daily import build_baostock_training_split
-from trader.infra.scoring.profiles.v3.training_contracts import (
+from trader.infra.scoring.head_bundles.contracts import (
     D25_HEAD_CONTRACT,
     TODAY_HEAD_CONTRACT,
     TOMORROW_HEAD_CONTRACT,

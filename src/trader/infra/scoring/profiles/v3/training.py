@@ -25,7 +25,7 @@ from trader.application.research.tomorrow_training import (
     TomorrowTrainingProgressPort,
     TomorrowTrainingWindow,
 )
-from trader.domain.recommendation.model_scoring import V3_EXPOSURE_CONTRACT
+from trader.domain.recommendation.model_scoring import TRAINED_HEAD_EXPOSURE_CONTRACT
 from trader.domain.recommendation.models import Strategy
 from trader.domain.research.baostock_daily import BaoStockTrainingSplit, build_baostock_training_split
 from trader.domain.research.history_control import (
@@ -50,19 +50,19 @@ from trader.infra.research.history_training_input import (
     SQLiteHistoryTrainingInputArchive,
 )
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
-from trader.infra.scoring.profiles.v3.model_fitting import V3_MODEL_FITTING_PARAMETERS, fit_industry_models
-from trader.infra.scoring.profiles.v3.sample_builder import TrainingWindowArchive, build_training_samples
-from trader.infra.scoring.profiles.v3.training_bundle_repository import (
+from trader.infra.scoring.head_bundles.bundle_repository import (
     HeadBundlePublicationIdentity,
     make_bundle_staging_directory,
     publish_head_bundle,
     recover_head_bundle_publication,
 )
-from trader.infra.scoring.profiles.v3.training_contracts import (
+from trader.infra.scoring.head_bundles.contracts import (
+    HEAD_CONTRACTS,
     TOMORROW_HEAD_CONTRACT,
-    V3_HEAD_CONTRACTS,
-    V3HeadTrainingContract,
+    TrainedHeadContract,
 )
+from trader.infra.scoring.profiles.v3.model_fitting import V3_MODEL_FITTING_PARAMETERS, fit_industry_models
+from trader.infra.scoring.profiles.v3.sample_builder import TrainingWindowArchive, build_training_samples
 from trader.infra.scoring.profiles.v3.training_sample_repository import (
     V3_SAMPLE_CACHE_MIB,
     V3_SAMPLE_MMAP_BYTES,
@@ -137,7 +137,7 @@ class V3TrainingRunResult:
 
 @dataclass(frozen=True)
 class _HeadPlan:
-    contract: V3HeadTrainingContract
+    contract: TrainedHeadContract
     due: HistoryTrainingDueEvaluation
     label_cutoff: date
     training_contract_hash: str
@@ -145,7 +145,7 @@ class _HeadPlan:
 
 @dataclass(frozen=True)
 class _ArtifactContext:
-    contract: V3HeadTrainingContract
+    contract: TrainedHeadContract
     snapshot: HistoryTrainingInputSnapshot
     label_cutoff: date
     training_input_document_hash: str
@@ -160,7 +160,7 @@ class _ArtifactContext:
 class _TrainingRequest:
     history_root: Path
     train_root: Path
-    contracts: tuple[V3HeadTrainingContract, ...]
+    contracts: tuple[TrainedHeadContract, ...]
     progress: TomorrowTrainingProgressPort | None
     observed_at: datetime | None = None
     expected_history_snapshot_hash: str | None = None
@@ -197,7 +197,7 @@ def run_v3_training(
     progress: TomorrowTrainingProgressPort | None = None,
     observed_at: datetime | None = None,
 ) -> V3TrainingRunResult:
-    return _run_training(_TrainingRequest(history_root, train_root, V3_HEAD_CONTRACTS, progress, observed_at))
+    return _run_training(_TrainingRequest(history_root, train_root, HEAD_CONTRACTS, progress, observed_at))
 
 
 def run_repack_tomorrow_training(
@@ -231,7 +231,7 @@ def run_repack_v3_training(
         _TrainingRequest(
             history_root,
             train_root,
-            V3_HEAD_CONTRACTS,
+            HEAD_CONTRACTS,
             progress,
             expected_history_snapshot_hash=expected_history_snapshot_hash,
         )
@@ -352,7 +352,7 @@ def _reopen_expected_archive(
 def _prepare_locked_split(
     snapshot: HistoryTrainingInputSnapshot,
     train_root: Path,
-    contracts: tuple[V3HeadTrainingContract, ...],
+    contracts: tuple[TrainedHeadContract, ...],
 ) -> tuple[BaoStockTrainingSplit | None, str]:
     try:
         _recover_incomplete_publications(train_root, contracts)
@@ -371,7 +371,7 @@ def _prepare_locked_split(
 def _build_head_plans(
     archive: _TrainingInputArchive,
     train_root: Path,
-    contracts: tuple[V3HeadTrainingContract, ...],
+    contracts: tuple[TrainedHeadContract, ...],
     snapshot: HistoryTrainingInputSnapshot,
     observed_at: datetime,
 ) -> tuple[list[_HeadPlan], list[V3HeadTrainingResult]]:
@@ -426,7 +426,7 @@ def _preflight_failure_result(
     archive: _TrainingInputArchive,
     snapshot: HistoryTrainingInputSnapshot,
     plans: list[_HeadPlan],
-    contracts: tuple[V3HeadTrainingContract, ...],
+    contracts: tuple[TrainedHeadContract, ...],
     completed: list[V3HeadTrainingResult],
 ) -> V3TrainingRunResult | None:
     failures = evaluate_tomorrow_training_input(
@@ -649,7 +649,7 @@ def _model_document(
             "board": True,
             "industry": True,
             "log_average_amount_20d": True,
-            "order": list(V3_EXPOSURE_CONTRACT.order),
+            "order": list(TRAINED_HEAD_EXPOSURE_CONTRACT.order),
         },
         "training_input_document_hash": context.training_input_document_hash,
         "report_hash": report_hash,
@@ -675,7 +675,7 @@ def _training_input_document(
     label_cutoff: date,
     training_contract_hash: str,
     split_hash: str,
-    contract: V3HeadTrainingContract,
+    contract: TrainedHeadContract,
 ) -> dict[str, object]:
     document: dict[str, object] = {
         "schema_version": "v3_head_training_input",
@@ -723,7 +723,7 @@ def _common_document(context: _ArtifactContext) -> dict[str, object]:
     }
 
 
-def _training_contract_hash(contract: V3HeadTrainingContract) -> str:
+def _training_contract_hash(contract: TrainedHeadContract) -> str:
     fitting = V3_MODEL_FITTING_PARAMETERS
     return artifact_content_hash(
         {
@@ -773,7 +773,7 @@ def _training_contract_hash(contract: V3HeadTrainingContract) -> str:
     )
 
 
-def _head_split_hash(split: BaoStockTrainingSplit, contract: V3HeadTrainingContract) -> str:
+def _head_split_hash(split: BaoStockTrainingSplit, contract: TrainedHeadContract) -> str:
     return artifact_content_hash(
         {
             "calendar_split_hash": split.content_hash,
@@ -786,7 +786,7 @@ def _head_split_hash(split: BaoStockTrainingSplit, contract: V3HeadTrainingContr
 
 def _mature_label_cutoff(
     snapshot: HistoryTrainingInputSnapshot,
-    contract: V3HeadTrainingContract,
+    contract: TrainedHeadContract,
 ) -> date | None:
     dates = snapshot.calendar.open_dates
     positions = {day: position for position, day in enumerate(dates)}
@@ -815,7 +815,7 @@ def _model_payload_hash(document: dict[str, object]) -> str:
 
 
 def _base_result(
-    contract: V3HeadTrainingContract,
+    contract: TrainedHeadContract,
     status: V3TrainingStatus,
     snapshot: HistoryTrainingInputSnapshot,
 ) -> V3HeadTrainingResult:
@@ -837,19 +837,19 @@ def _base_result(
 
 
 def _blocked_from_snapshot(
-    contract: V3HeadTrainingContract,
+    contract: TrainedHeadContract,
     snapshot: HistoryTrainingInputSnapshot,
     reason: str,
 ) -> V3HeadTrainingResult:
     return replace(_base_result(contract, "blocked", snapshot), failure_reasons=(reason,))
 
 
-def _unavailable_result(contract: V3HeadTrainingContract, reason: str) -> V3HeadTrainingResult:
+def _unavailable_result(contract: TrainedHeadContract, reason: str) -> V3HeadTrainingResult:
     return V3HeadTrainingResult(contract.strategy, "blocked", "unavailable", None, "", 0, 0, "", "", 0, 0, 0, (reason,))
 
 
 def _ordered_results(
-    contracts: tuple[V3HeadTrainingContract, ...],
+    contracts: tuple[TrainedHeadContract, ...],
     results: list[V3HeadTrainingResult],
 ) -> tuple[V3HeadTrainingResult, ...]:
     by_strategy = {item.strategy: item for item in results}
@@ -890,7 +890,7 @@ def _cleanup_abandoned_workspaces(train_root: Path) -> None:
     for candidate in train_root.glob(".v3-sample-workspace.*"):
         if candidate.is_dir() and not candidate.is_symlink():
             shutil.rmtree(candidate)
-    for contract in V3_HEAD_CONTRACTS:
+    for contract in HEAD_CONTRACTS:
         output = train_root / contract.directory_name
         if not output.is_dir():
             continue
@@ -901,7 +901,7 @@ def _cleanup_abandoned_workspaces(train_root: Path) -> None:
 
 def _recover_incomplete_publications(
     train_root: Path,
-    contracts: tuple[V3HeadTrainingContract, ...],
+    contracts: tuple[TrainedHeadContract, ...],
 ) -> None:
     for contract in contracts:
         output = train_root / contract.directory_name

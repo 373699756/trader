@@ -36,7 +36,11 @@ def load_baseline_identity_evidence(runtime: RuntimeSettings) -> PackagedBaselin
     design_path = runtime.project_root / "docs/02_工程设计.md"
     strategy_doc_path = runtime.project_root / "docs/01_评分逻辑.md"
     v1 = load_scoring_profile("v1").heads[Strategy.TOMORROW].predictor
-    v2 = load_scoring_profile("v2").heads[Strategy.TOMORROW].predictor
+    v2 = (
+        load_scoring_profile("v2", training_root=runtime.project_root / "data" / "train")
+        .heads[Strategy.TOMORROW]
+        .predictor
+    )
     historical_archive = TomorrowHistoricalArtifactArchive(runtime.runtime_dir / "tomorrow-historical")
     historical_source = runtime.runtime_dir / "tomorrow-historical"
     historical_conflict = False
@@ -69,9 +73,9 @@ def load_baseline_identity_evidence(runtime: RuntimeSettings) -> PackagedBaselin
         ),
         BaselineIdentityClaim(
             "v2_model_identity",
-            "daily_reconstructible_ensemble",
+            "industry_ridge_lightgbm",
             v2.model_id,
-            "trader.infra.scoring.profiles.v2/model.json",
+            "data/train/tomorrow-v3/model.json",
             source_hash(v2.model_hash),
         ),
         BaselineIdentityClaim(

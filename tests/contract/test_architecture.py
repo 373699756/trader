@@ -117,34 +117,44 @@ def test_v1_scoring_profile_owns_its_codec_predictor_and_evidence() -> None:
     assert not (SOURCE_ROOT / "infra/tomorrow_production_model.py").exists()
 
 
-def test_v2_scoring_profile_is_separate_from_research_artifacts_and_the_legacy_loader() -> None:
+def test_v2_and_v3_profiles_share_one_neutral_trained_head_owner() -> None:
     v2_root = SOURCE_ROOT / "infra/scoring/profiles/v2"
+    v3_root = SOURCE_ROOT / "infra/scoring/profiles/v3"
+    shared_root = SOURCE_ROOT / "infra/scoring/head_bundles"
     model_port = (SOURCE_ROOT / "application/ports/model_scoring.py").read_text(encoding="utf-8")
     factory = (SOURCE_ROOT / "infra/scoring/profile_factory.py").read_text(encoding="utf-8")
-
-    assert (v2_root / "artifact_codec.py").is_file()
-    assert (v2_root / "profile.py").is_file()
-    assert (v2_root / "heads/tomorrow/predictor.py").is_file()
-    assert "TomorrowHistoricalModelArtifact" not in model_port
-    assert "ModelPredictorPort" in model_port
-    assert "build_v2_profile" in factory
-    assert not (SOURCE_ROOT / "application/ports/tomorrow_model.py").exists()
-
-
-def test_v3_scoring_profile_owns_its_locator_codec_predictor_and_combiner() -> None:
-    v3_root = SOURCE_ROOT / "infra/scoring/profiles/v3"
 
     for relative in (
         "bundle_codec.py",
         "bundle_locator.py",
-        "composition.py",
+        "bundle_repository.py",
+        "contracts.py",
+        "predictor.py",
         "profile.py",
-        "heads/inference.py",
-        "heads/today/predictor.py",
-        "heads/tomorrow/predictor.py",
-        "heads/d25/predictor.py",
     ):
-        assert (v3_root / relative).is_file()
+        assert (shared_root / relative).is_file()
+    for retired in (
+        v2_root / "artifact_codec.py",
+        v2_root / "model.json",
+        v2_root / "profile.py",
+        v2_root / "heads/tomorrow/predictor.py",
+        v3_root / "bundle_codec.py",
+        v3_root / "bundle_locator.py",
+        v3_root / "profile.py",
+        v3_root / "training_bundle_repository.py",
+        v3_root / "training_contracts.py",
+        v3_root / "heads/inference.py",
+    ):
+        assert not retired.exists()
+    assert "TomorrowHistoricalModelArtifact" not in model_port
+    assert "ModelPredictorPort" in model_port
+    assert "build_trained_scoring_profile" in factory
+    assert not (SOURCE_ROOT / "application/ports/tomorrow_model.py").exists()
+
+
+def test_v3_profile_keeps_only_offline_training_implementation() -> None:
+    v3_root = SOURCE_ROOT / "infra/scoring/profiles/v3"
+
     assert not (SOURCE_ROOT / "infra/tomorrow_production_model.py").exists()
     offline_training_modules = {
         "model_fitting.py",
@@ -153,11 +163,7 @@ def test_v3_scoring_profile_owns_its_locator_codec_predictor_and_combiner() -> N
         "training_sample_repository.py",
     }
     assert all((v3_root / name).is_file() for name in offline_training_modules)
-    runtime_paths = (path for path in v3_root.rglob("*.py") if path.name not in offline_training_modules)
-    assert not any("trader.infra.research" in imported for path in runtime_paths for imported in _imports(path))
-    profile_source = (v3_root / "profile.py").read_text(encoding="utf-8")
-    assert all(strategy in profile_source for strategy in ("Strategy.TODAY", "Strategy.TOMORROW", "Strategy.D25"))
-    assert all(head not in profile_source for head in ("T2Head", "T3Head", "T4Head", "T5Head"))
+    assert not any((v3_root / "heads").rglob("*.py"))
 
 
 def test_old_production_chain_has_no_active_files() -> None:

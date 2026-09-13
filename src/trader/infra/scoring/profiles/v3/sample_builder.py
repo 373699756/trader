@@ -19,7 +19,7 @@ from trader.domain.market.feature_contracts import (
     calculate_tomorrow_qfq_alpha,
 )
 from trader.domain.recommendation.model_scoring import (
-    V3_EXPOSURE_CONTRACT,
+    TRAINED_HEAD_EXPOSURE_CONTRACT,
     create_exposure_context,
     residualize_exposure_with_context,
 )
@@ -309,7 +309,12 @@ def residualize_sample_day(
 ) -> tuple[tuple[float, ...], ...]:
     if not momenta or not momenta[0] or any(len(row) != len(momenta[0]) for row in momenta):
         raise ValueError("V3 training momentum rows must have one consistent non-empty width")
-    context = create_exposure_context(boards, average_amounts, industries=industries, contract=V3_EXPOSURE_CONTRACT)
+    context = create_exposure_context(
+        boards,
+        average_amounts,
+        industries=industries,
+        contract=TRAINED_HEAD_EXPOSURE_CONTRACT,
+    )
     return tuple(
         residualize_exposure_with_context(tuple(row[offset] for row in momenta), context)
         for offset in range(len(momenta[0]))

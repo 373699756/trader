@@ -13,7 +13,7 @@ from typing import Literal, cast
 import numpy as np
 
 from trader.domain.research.baostock_daily import BaoStockTrainingSplit
-from trader.infra.scoring.profiles.v3.training_contracts import V3HeadTrainingContract
+from trader.infra.scoring.head_bundles.contracts import TrainedHeadContract
 
 V3TrainingSplitName = Literal["training", "early_stopping", "calibration", "validation"]
 V3_SAMPLE_CACHE_MIB = 32
@@ -143,7 +143,7 @@ class SQLiteV3TrainingSampleRepository:
         if self._prepared_split_hash != split.content_hash:
             raise RuntimeError("V3 sample split identity is inconsistent")
 
-    def industry_counts(self, contract: V3HeadTrainingContract) -> tuple[V3TrainingIndustryCounts, ...]:
+    def industry_counts(self, contract: TrainedHeadContract) -> tuple[V3TrainingIndustryCounts, ...]:
         target = _require_target_column(contract.target_column)
         rows = self._connection.execute(
             f"SELECT samples.industry, splits.split_name, COUNT(*) FROM samples "  # noqa: S608
@@ -170,7 +170,7 @@ class SQLiteV3TrainingSampleRepository:
     def industry_data(
         self,
         counts: V3TrainingIndustryCounts,
-        contract: V3HeadTrainingContract,
+        contract: TrainedHeadContract,
     ) -> V3TrainingIndustryData:
         width = len(contract.feature_positions)
         matrices = {
@@ -215,7 +215,7 @@ class SQLiteV3TrainingSampleRepository:
             matrices["training"], matrices["early_stopping"], matrices["calibration"], positions["validation"]
         )
 
-    def split_count(self, split_name: V3TrainingSplitName, contract: V3HeadTrainingContract) -> int:
+    def split_count(self, split_name: V3TrainingSplitName, contract: TrainedHeadContract) -> int:
         target = _require_target_column(contract.target_column)
         row = self._connection.execute(
             "SELECT COUNT(*) FROM samples JOIN sample_split_dates AS splits "

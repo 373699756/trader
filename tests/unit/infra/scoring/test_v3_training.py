@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.application.research.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingWindow
-from trader.domain.recommendation.model_scoring import V3_EXPOSURE_CONTRACT, residualize_exposure
+from trader.domain.recommendation.model_scoring import TRAINED_HEAD_EXPOSURE_CONTRACT, residualize_exposure
 from trader.domain.recommendation.models import Strategy
 from trader.domain.research.baostock_daily import (
     BaoStockCalendar,
@@ -22,6 +22,12 @@ from trader.domain.research.tomorrow_training_input import REQUIRED_DAILY_FIELDS
 from trader.infra.research.history_archive_repack import HistoryArchiveRepackFenceError
 from trader.infra.research.history_control_repository import HistoryMaintenanceAlreadyRunningError
 from trader.infra.research.history_training_input import HistoryTrainingInputSnapshot
+from trader.infra.scoring.head_bundles.contracts import (
+    D25_HEAD_CONTRACT,
+    HEAD_CONTRACTS,
+    TODAY_HEAD_CONTRACT,
+    TOMORROW_HEAD_CONTRACT,
+)
 from trader.infra.scoring.profiles.v3.sample_builder import (
     aligned_sample_dates,
     build_training_samples,
@@ -34,12 +40,6 @@ from trader.infra.scoring.profiles.v3.training import (
     _training_contract_hash,
     run_tomorrow_training,
     run_v3_training,
-)
-from trader.infra.scoring.profiles.v3.training_contracts import (
-    D25_HEAD_CONTRACT,
-    TODAY_HEAD_CONTRACT,
-    TOMORROW_HEAD_CONTRACT,
-    V3_HEAD_CONTRACTS,
 )
 from trader.infra.scoring.profiles.v3.training_sample_repository import (
     SQLiteV3TrainingSampleRepository,
@@ -172,7 +172,7 @@ def test_v3_training_validates_and_scans_history_once_then_fits_heads_sequential
         "trader.infra.scoring.profiles.v3.training.evaluate_history_training_due",
         lambda *_args, **kwargs: _due(
             archive,
-            next(contract for contract in V3_HEAD_CONTRACTS if contract.strategy is kwargs["strategy"]),
+            next(contract for contract in HEAD_CONTRACTS if contract.strategy is kwargs["strategy"]),
             reason="initial_training_required",
         ),
     )
@@ -236,7 +236,7 @@ def test_v3_head_maturity_and_contract_hashes_are_independent_and_stable(tmp_pat
     assert _mature_label_cutoff(snapshot, TODAY_HEAD_CONTRACT) == snapshot.calendar.open_dates[-2]
     assert _mature_label_cutoff(snapshot, TOMORROW_HEAD_CONTRACT) == snapshot.calendar.open_dates[-2]
     assert _mature_label_cutoff(snapshot, D25_HEAD_CONTRACT) == snapshot.calendar.open_dates[-6]
-    hashes = {_training_contract_hash(contract) for contract in V3_HEAD_CONTRACTS}
+    hashes = {_training_contract_hash(contract) for contract in HEAD_CONTRACTS}
     assert len(hashes) == 3
     assert _training_contract_hash(TOMORROW_HEAD_CONTRACT) == _training_contract_hash(TOMORROW_HEAD_CONTRACT)
 
@@ -248,7 +248,7 @@ def test_v3_training_only_fits_the_head_whose_own_cadence_is_due(
     _patch_archive(monkeypatch, archive)
 
     def due_for_head(*_args, **kwargs):
-        contract = next(item for item in V3_HEAD_CONTRACTS if item.strategy is kwargs["strategy"])
+        contract = next(item for item in HEAD_CONTRACTS if item.strategy is kwargs["strategy"])
         if contract.strategy is Strategy.D25:
             return _due(archive, contract, reason="initial_training_required")
         return _due(archive, contract, reason="not_due", trained_age=1)
@@ -298,7 +298,7 @@ def test_training_keeps_each_due_baseline_when_the_shared_scan_fails(
         "trader.infra.scoring.profiles.v3.training.evaluate_history_training_due",
         lambda *_args, **kwargs: _due(
             archive,
-            next(contract for contract in V3_HEAD_CONTRACTS if contract.strategy is kwargs["strategy"]),
+            next(contract for contract in HEAD_CONTRACTS if contract.strategy is kwargs["strategy"]),
             reason="cadence_due",
             trained_age=20,
         ),
@@ -436,7 +436,7 @@ def test_training_uses_shared_exposure_and_pre_cost_target_contracts() -> None:
             boards,
             amounts,
             industries=industries,
-            contract=V3_EXPOSURE_CONTRACT,
+            contract=TRAINED_HEAD_EXPOSURE_CONTRACT,
         )
         for offset in range(2)
     )

@@ -401,7 +401,7 @@ make package
 2. 使用该已推送提交执行真实 `build`，只在 `data/historyless/baostock` 生成目标库；满足全部硬门禁后才 `activate`。
 3. 从 build 状态读取目标 snapshot hash，并通过 `scripts/check_tomorrow_training_memory.py` 的
    `--expected-history-snapshot-hash` 显式传入；只有该 hash 与维护锁内重新打开的活动归档完全一致，验收训练才可
-   越过切换 fence。在新活动库上以一次历史扫描顺序训练完整 V3 三头并执行一次 2 GiB 验收；失败时保留新活动归档、
+   越过切换 fence。在新活动库上以一次历史扫描顺序训练完整 V2/V3 共享三头并执行一次 2 GiB 验收；失败时保留新活动归档、
    旧归档备份和旧活动 bundle，停止诊断。
 4. 训练成功后执行重复 `already_current`、最终 Review和大任务完整门禁，提交并推送真实证据记录。
 5. 核对 `HEAD == @{upstream}` 后执行 `finalize` 删除旧归档备份，报告删除目标、不可恢复性和释放空间。

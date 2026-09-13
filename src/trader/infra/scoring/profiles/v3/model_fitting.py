@@ -14,7 +14,7 @@ from trader.application.research.tomorrow_training import (
     TomorrowTrainingProgressPort,
 )
 from trader.domain.research.baostock_daily import BaoStockTrainingSplit
-from trader.infra.scoring.profiles.v3.training_contracts import V3HeadTrainingContract
+from trader.infra.scoring.head_bundles.contracts import TrainedHeadContract
 from trader.infra.scoring.profiles.v3.training_sample_repository import (
     SQLiteV3TrainingSampleRepository,
     V3TrainingIndustryCounts,
@@ -50,7 +50,7 @@ class _FitProgress:
 def fit_industry_models(
     samples: SQLiteV3TrainingSampleRepository,
     split: BaoStockTrainingSplit,
-    contract: V3HeadTrainingContract,
+    contract: TrainedHeadContract,
     *,
     progress: TomorrowTrainingProgressPort | None = None,
 ) -> tuple[dict[str, dict[str, object]], int, int]:
@@ -77,7 +77,7 @@ def fit_industry_models(
 
 def _publish(
     progress: TomorrowTrainingProgressPort | None,
-    contract: V3HeadTrainingContract,
+    contract: TrainedHeadContract,
     update: _FitProgress,
 ) -> None:
     if progress is not None:
@@ -100,7 +100,7 @@ def _fit_progress(position: int, total: int, produced: int) -> _FitProgress:
 def _fit_industry(
     samples: SQLiteV3TrainingSampleRepository,
     counts: V3TrainingIndustryCounts,
-    contract: V3HeadTrainingContract,
+    contract: TrainedHeadContract,
     parameters: V3ModelFittingParameters,
 ) -> dict[str, object]:
     data = samples.industry_data(counts, contract)

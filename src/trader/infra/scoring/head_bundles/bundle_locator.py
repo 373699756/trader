@@ -1,4 +1,4 @@
-"""Locate all configured V3 head bundles without parsing model payloads."""
+"""Locate all configured shared head bundles without parsing model payloads."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from trader.domain.recommendation.models import Strategy
 
 
 def locate_head_bundles(training_root: Path) -> tuple[tuple[Strategy, Path], ...]:
-    from trader.infra.scoring.profiles.v3.training_bundle_repository import locate_active_head_bundle
+    from trader.infra.scoring.head_bundles.bundle_repository import locate_active_head_bundle
 
     strategies = (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
     return tuple(

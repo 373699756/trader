@@ -1,4 +1,4 @@
-"""Decode and validate one portable, hash-bound V3 strategy-head bundle."""
+"""Decode and validate one portable, hash-bound trained strategy-head bundle."""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ from datetime import date
 from pathlib import Path
 from typing import Literal, cast
 
-from trader.domain.recommendation.model_scoring import V3_EXPOSURE_CONTRACT, ExposureContract
+from trader.domain.recommendation.model_scoring import TRAINED_HEAD_EXPOSURE_CONTRACT, ExposureContract
 from trader.domain.recommendation.models import Strategy
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
-from trader.infra.scoring.profiles.v3.training_contracts import contract_for_strategy
+from trader.infra.scoring.head_bundles.contracts import contract_for_strategy
 
 _MODEL_FIELDS = {
     "schema_version",
@@ -122,7 +122,7 @@ _INDUSTRY_FIELDS = {
 
 
 @dataclass(frozen=True)
-class V3IndustryModelArtifact:
+class TrainedIndustryModelArtifact:
     transformer_means: tuple[float, ...]
     transformer_scales: tuple[float, ...]
     ridge_intercept: float
@@ -136,8 +136,8 @@ class V3IndustryModelArtifact:
 
 
 @dataclass(frozen=True)
-class V3HeadBundleArtifact:
-    profile_id: Literal["v3"]
+class TrainedHeadBundleArtifact:
+    serialization_profile_id: Literal["v3"]
     strategy: Strategy
     model_id: str
     feature_ids: tuple[str, ...]
@@ -165,7 +165,7 @@ class V3HeadBundleArtifact:
     point_in_time_parity: Literal[False]
     training_rows: int
     validation_rows: int
-    industries: tuple[tuple[str, V3IndustryModelArtifact], ...]
+    industries: tuple[tuple[str, TrainedIndustryModelArtifact], ...]
     dependencies: tuple[tuple[str, str], ...]
     content_hash: str
 
@@ -187,7 +187,7 @@ class _GroupIdentity:
     training_universe_codes: int
 
 
-def load_head_bundle(path: Path, strategy: Strategy) -> V3HeadBundleArtifact:
+def load_head_bundle(path: Path, strategy: Strategy) -> TrainedHeadBundleArtifact:
     artifact = decode_head_bundle(json.loads(path.read_text(encoding="utf-8")), strategy)
     report = _decode_group_document(
         json.loads(path.with_name("report.json").read_text(encoding="utf-8")), strategy, report=True
@@ -215,11 +215,11 @@ def load_head_bundle(path: Path, strategy: Strategy) -> V3HeadBundleArtifact:
         or _identity_tuple(report) != expected
         or _identity_tuple(training_input) != expected
     ):
-        raise ValueError("V3 strategy-head bundle files have inconsistent identities")
+        raise ValueError("trained strategy-head bundle files have inconsistent identities")
     return artifact
 
 
-def decode_head_bundle(document: object, strategy: Strategy) -> V3HeadBundleArtifact:
+def decode_head_bundle(document: object, strategy: Strategy) -> TrainedHeadBundleArtifact:
     payload, content_hash = _hashed_object(document, _MODEL_FIELDS, "model")
     contract = contract_for_strategy(strategy)
     feature_ids = tuple(_string_list(payload, "feature_ids"))
@@ -228,7 +228,7 @@ def decode_head_bundle(document: object, strategy: Strategy) -> V3HeadBundleArti
     dependencies = _dependencies(payload)
     weights = payload.get("ensemble_weights")
     if not isinstance(weights, dict) or set(weights) != {"ridge", "lightgbm"}:
-        raise ValueError("V3 ensemble weights are invalid")
+        raise ValueError("trained-head ensemble weights are invalid")
     ridge_weight = _number(weights, "ridge")
     lightgbm_weight = _number(weights, "lightgbm")
     if (
@@ -250,14 +250,14 @@ def decode_head_bundle(document: object, strategy: Strategy) -> V3HeadBundleArti
         or _boolean(payload, "automatic_model_update")
         or _boolean(payload, "production_authority")
         or (ridge_weight, lightgbm_weight) != (0.5, 0.5)
-        or _exposure_contract(payload) != V3_EXPOSURE_CONTRACT
+        or _exposure_contract(payload) != TRAINED_HEAD_EXPOSURE_CONTRACT
         or len(industries) != _integer(payload, "industry_count")
         or not industries
         or _integer(payload, "training_rows") < 1
         or _integer(payload, "validation_rows") < 1
         or _model_payload_hash(payload) != _text(payload, "model_payload_hash")
     ):
-        raise ValueError("V3 strategy-head model contract is invalid")
+        raise ValueError("trained strategy-head model contract is invalid")
     for name in (
         "training_input_hash",
         "source_identity_hash",
@@ -272,14 +272,14 @@ def decode_head_bundle(document: object, strategy: Strategy) -> V3HeadBundleArti
     input_codes = _integer(payload, "training_input_codes")
     universe_codes = _integer(payload, "training_universe_codes")
     if input_codes < 1 or universe_codes != input_codes:
-        raise ValueError("V3 complete training input coverage is invalid")
-    return V3HeadBundleArtifact(
+        raise ValueError("trained-head complete training input coverage is invalid")
+    return TrainedHeadBundleArtifact(
         "v3",
         strategy,
         contract.model_id,
         feature_ids,
         feature_units,
-        V3_EXPOSURE_CONTRACT,
+        TRAINED_HEAD_EXPOSURE_CONTRACT,
         ridge_weight,
         lightgbm_weight,
         "complete_manifest",
@@ -324,7 +324,7 @@ def _decode_group_document(document: object, strategy: Strategy, *, report: bool
         or _text(payload, "validation_scope") != "daily_close_engineering_proxy"
         or _boolean(payload, "production_authority")
     ):
-        raise ValueError("V3 strategy-head group document contract is invalid")
+        raise ValueError("trained strategy-head group document contract is invalid")
     if report and (
         _text(payload, "model_id") != contract.model_id
         or _text(payload, "training_anchor") != "15:00_close_proxy"
@@ -337,7 +337,7 @@ def _decode_group_document(document: object, strategy: Strategy, *, report: bool
         or _boolean(payload, "automatic_model_update")
         or not _valid_target_metrics(payload.get("target_metrics"), strategy)
     ):
-        raise ValueError("V3 strategy-head report is invalid")
+        raise ValueError("trained strategy-head report is invalid")
     for name in (
         "training_input_hash",
         "source_identity_hash",
@@ -354,7 +354,7 @@ def _decode_group_document(document: object, strategy: Strategy, *, report: bool
     input_codes = _integer(payload, "training_input_codes")
     universe_codes = _integer(payload, "training_universe_codes")
     if input_codes < 1 or input_codes != universe_codes:
-        raise ValueError("V3 strategy-head input coverage is invalid")
+        raise ValueError("trained strategy-head input coverage is invalid")
     if not report:
         _validate_training_input(payload, input_codes)
     return _GroupIdentity(
@@ -379,7 +379,7 @@ def _validate_training_input(payload: dict[str, object], input_codes: int) -> No
         _require_sha256(payload, name)
     source_cutoff = _date(payload, "source_cutoff")
     if _date(payload, "label_cutoff") >= source_cutoff:
-        raise ValueError("V3 training input label cutoff is invalid")
+        raise ValueError("trained-head input label cutoff is invalid")
     requested_sessions = _integer(payload, "requested_sessions")
     codes = _string_list(payload, "codes")
     if (
@@ -388,7 +388,7 @@ def _validate_training_input(payload: dict[str, object], input_codes: int) -> No
         or len(codes) != input_codes
         or any(len(code) != 6 or not code.isdigit() for code in codes)
     ):
-        raise ValueError("V3 training input manifest is invalid")
+        raise ValueError("trained-head input manifest is invalid")
 
 
 def _identity_tuple(value: _GroupIdentity) -> tuple[object, ...]:
@@ -408,25 +408,25 @@ def _identity_tuple(value: _GroupIdentity) -> tuple[object, ...]:
 
 def _hashed_object(document: object, fields: set[str], label: str) -> tuple[dict[str, object], str]:
     if not isinstance(document, dict):
-        raise TypeError(f"V3 {label} must be a JSON object")
+        raise TypeError(f"trained-head {label} must be a JSON object")
     payload = cast(dict[str, object], dict(document))
     content_hash = payload.pop("content_hash", None)
     if not isinstance(content_hash, str) or artifact_content_hash(payload) != content_hash or set(payload) != fields:
-        raise ValueError(f"V3 {label} fields or content hash are invalid")
+        raise ValueError(f"trained-head {label} fields or content hash are invalid")
     return payload, content_hash
 
 
-def _decode_industries(payload: dict[str, object], width: int) -> tuple[tuple[str, V3IndustryModelArtifact], ...]:
+def _decode_industries(payload: dict[str, object], width: int) -> tuple[tuple[str, TrainedIndustryModelArtifact], ...]:
     raw = payload.get("industries")
     if not isinstance(raw, dict) or not raw:
-        raise ValueError("V3 industry models are missing")
-    result: list[tuple[str, V3IndustryModelArtifact]] = []
+        raise ValueError("trained-head industry models are missing")
+    result: list[tuple[str, TrainedIndustryModelArtifact]] = []
     for industry, document in raw.items():
         if not isinstance(industry, str) or not industry.strip() or not isinstance(document, dict):
-            raise TypeError("V3 industry model identity is invalid")
+            raise TypeError("trained-head industry model identity is invalid")
         values = cast(dict[str, object], document)
         if set(values) != _INDUSTRY_FIELDS:
-            raise ValueError("V3 industry model fields are invalid")
+            raise ValueError("trained-head industry model fields are invalid")
         means = tuple(_number_list(values, "transformer_means"))
         scales = tuple(_number_list(values, "transformer_scales"))
         coefficients = tuple(_number_list(values, "ridge_coefficients"))
@@ -439,11 +439,11 @@ def _decode_industries(payload: dict[str, object], width: int) -> tuple[tuple[st
             or _integer(values, "training_rows") < 1
             or _integer(values, "validation_rows") < 1
         ):
-            raise ValueError("V3 industry model dimensions are invalid")
+            raise ValueError("trained-head industry model dimensions are invalid")
         result.append(
             (
                 industry.strip(),
-                V3IndustryModelArtifact(
+                TrainedIndustryModelArtifact(
                     means,
                     scales,
                     _number(values, "ridge_intercept"),
@@ -463,21 +463,21 @@ def _decode_industries(payload: dict[str, object], width: int) -> tuple[tuple[st
 def _exposure_contract(payload: dict[str, object]) -> ExposureContract:
     raw = payload.get("exposure_contract")
     if not isinstance(raw, dict) or set(raw) != {"market", "board", "industry", "log_average_amount_20d", "order"}:
-        raise ValueError("V3 exposure contract is invalid")
+        raise ValueError("trained-head exposure contract is invalid")
     if any(raw.get(name) is not True for name in ("market", "board", "industry", "log_average_amount_20d")):
-        raise ValueError("V3 exposure contract is invalid")
-    if tuple(_string_list(raw, "order")) != V3_EXPOSURE_CONTRACT.order:
-        raise ValueError("V3 exposure order is invalid")
-    return V3_EXPOSURE_CONTRACT
+        raise ValueError("trained-head exposure contract is invalid")
+    if tuple(_string_list(raw, "order")) != TRAINED_HEAD_EXPOSURE_CONTRACT.order:
+        raise ValueError("trained-head exposure order is invalid")
+    return TRAINED_HEAD_EXPOSURE_CONTRACT
 
 
 def _dependencies(payload: dict[str, object]) -> tuple[tuple[str, str], ...]:
     raw = payload.get("dependencies")
     if not isinstance(raw, dict) or set(raw) != {"lightgbm", "numpy"}:
-        raise ValueError("V3 dependency identity is invalid")
+        raise ValueError("trained-head dependency identity is invalid")
     values = tuple(sorted((str(name), str(value)) for name, value in raw.items()))
     if any(not value for _, value in values):
-        raise ValueError("V3 dependency version is invalid")
+        raise ValueError("trained-head dependency version is invalid")
     return values
 
 
@@ -520,56 +520,56 @@ def _model_payload_hash(payload: dict[str, object]) -> str:
 def _require_sha256(payload: dict[str, object], name: str) -> None:
     value = _text(payload, name)
     if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
-        raise ValueError(f"V3 {name} is not a SHA-256 value")
+        raise ValueError(f"trained-head {name} is not a SHA-256 value")
 
 
 def _date(payload: dict[str, object], name: str) -> date:
     try:
         return date.fromisoformat(_text(payload, name))
     except ValueError as exc:
-        raise ValueError(f"V3 {name} is invalid") from exc
+        raise ValueError(f"trained-head {name} is invalid") from exc
 
 
 def _text(payload: dict[str, object], name: str) -> str:
     value = payload.get(name)
     if not isinstance(value, str) or not value:
-        raise TypeError(f"V3 {name} must be non-empty text")
+        raise TypeError(f"trained-head {name} must be non-empty text")
     return value
 
 
 def _integer(payload: dict[str, object], name: str) -> int:
     value = payload.get(name)
     if not isinstance(value, int) or isinstance(value, bool):
-        raise TypeError(f"V3 {name} must be an integer")
+        raise TypeError(f"trained-head {name} must be an integer")
     return value
 
 
 def _number(payload: dict[str, object], name: str) -> float:
     value = payload.get(name)
     if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
-        raise TypeError(f"V3 {name} must be finite numeric")
+        raise TypeError(f"trained-head {name} must be finite numeric")
     return float(value)
 
 
 def _boolean(payload: dict[str, object], name: str) -> bool:
     value = payload.get(name)
     if not isinstance(value, bool):
-        raise TypeError(f"V3 {name} must be boolean")
+        raise TypeError(f"trained-head {name} must be boolean")
     return value
 
 
 def _string_list(payload: dict[str, object], name: str) -> list[str]:
     value = payload.get(name)
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-        raise TypeError(f"V3 {name} must be a string list")
+        raise TypeError(f"trained-head {name} must be a string list")
     return cast(list[str], value)
 
 
 def _number_list(payload: dict[str, object], name: str) -> list[float]:
     value = payload.get(name)
     if not isinstance(value, list):
-        raise TypeError(f"V3 {name} must be a numeric list")
+        raise TypeError(f"trained-head {name} must be a numeric list")
     return [_number({name: item}, name) for item in value]
 
 
-__all__ = ["V3HeadBundleArtifact", "V3IndustryModelArtifact", "decode_head_bundle", "load_head_bundle"]
+__all__ = ["TrainedHeadBundleArtifact", "TrainedIndustryModelArtifact", "decode_head_bundle", "load_head_bundle"]

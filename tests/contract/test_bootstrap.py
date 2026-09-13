@@ -120,17 +120,24 @@ def test_build_system_wires_history_completion_to_scoring_refresh(tmp_path, monk
 
 
 def test_build_system_selects_an_explicit_scoring_profile_without_rewriting_config(tmp_path, monkeypatch) -> None:
+    from trader.infra.scoring.profile_factory import load_scoring_profile
+
     monkeypatch.setattr(threading.Thread, "start", lambda _thread: None)
 
     config_path = _config_with_strategy_profile(tmp_path, "v1")
     strategy_path = Path(json.loads(config_path.read_text(encoding="utf-8"))["strategy_config"])
     original = strategy_path.read_bytes()
+    monkeypatch.setattr(
+        "trader.bootstrap.load_scoring_profile",
+        lambda profile, *, training_root: load_scoring_profile(profile, training_root=PROJECT_ROOT / "data" / "train"),
+    )
     system = build_system(config_path, scoring_profile="v2")
     status = system.app.test_client().get("/api/status").get_json()["scoring_profile"]
 
     assert status["profile_id"] == "v2"
-    assert status["heads"]["tomorrow"]["active"] is True
-    assert status["heads"]["tomorrow"]["model_id"] == "daily_reconstructible_ensemble"
+    assert set(status["heads"]) == {"today", "tomorrow", "d25"}
+    assert all(head["active"] is True for head in status["heads"].values())
+    assert status["heads"]["tomorrow"]["model_id"] == "industry_ridge_lightgbm"
     assert status["heads"]["tomorrow"]["activation_basis"] == "manual_user_override"
     assert strategy_path.read_bytes() == original
 

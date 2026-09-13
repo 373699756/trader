@@ -99,8 +99,8 @@ def test_trained_v3_profile_loads_only_the_fixed_active_bundle_files() -> None:
     design = (ROOT / "docs" / "02_工程设计.md").read_text(encoding="utf-8")
     model_port = (ROOT / "src" / "trader" / "application" / "ports" / "model_scoring.py").read_text(encoding="utf-8")
 
-    locator = (ROOT / "src/trader/infra/scoring/profiles/v3/bundle_locator.py").read_text(encoding="utf-8")
-    bundle_repository_source = (ROOT / "src/trader/infra/scoring/profiles/v3/training_bundle_repository.py").read_text(
+    locator = (ROOT / "src/trader/infra/scoring/head_bundles/bundle_locator.py").read_text(encoding="utf-8")
+    bundle_repository_source = (ROOT / "src/trader/infra/scoring/head_bundles/bundle_repository.py").read_text(
         encoding="utf-8"
     )
     assert 'f"{strategy.value}-v3"' in locator

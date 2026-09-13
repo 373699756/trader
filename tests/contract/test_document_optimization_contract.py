@@ -176,9 +176,9 @@ def test_history_windows_cost_ownership_and_terminal_order_are_unambiguous() -> 
     work = _read(WORK)
     replay = _read(REPLAY)
 
-    assert "V1/V2 使用已封存模型，不要求用户下载 2000 日历史或重新训练" in strategy
-    assert "V3 的 Today/Tomorrow/D25 模型头在线推理至少需要 61 个" in design
-    assert "V3 离线训练最多消费 2000 个交易所开市日" in design
+    assert "V2/V3 共用已有三头 bundle" in strategy
+    assert "V2/V3 共享的 Today/Tomorrow/D25 模型头在线推理至少需要 61 个" in design
+    assert "共享 bundle 的离线训练最多消费 2000 个交易所开市日" in design
     assert "扣成本前的预测超额收益" in strategy
     assert "训练目标不得先扣 20bp 后又由在线门重复扣除" in replay
     assert "不能只用 `非 ST + 当日有交易` 代替完整生产漏斗" in replay

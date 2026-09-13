@@ -13,7 +13,7 @@ def test_strategy_replay_document_covers_the_complete_offline_to_live_chain() ->
         "## 2. 一张图看懂完整链条",
         "## 3. 历史数据下载：下载什么、为什么需要",
         "## 4. 从归档到可训练样本",
-        "## 5. V3 三个策略头如何训练与验证",
+        "## 5. V2/V3 共享三个策略头如何训练与验证",
         "## 6. 训练结果如何参与实时荐股",
         "## 7. Today、Tomorrow、D25 的关系",
         "## 8. 影响最终荐股的因素",
@@ -95,8 +95,8 @@ def test_strategy_replay_document_keeps_public_commands_and_strategy_ownership_b
         "D25 的目标是筛选未来第 2 至第 5 个交易日区间内具备上涨能力的股票",
         "D25 的统一 base score 始终是独立规则评分",
         "不读取 Tomorrow 模型",
-        "V1/V2 只有 Tomorrow 模型头",
-        "完整 V3 由 Today、Tomorrow、D25 三个独立模型头组成",
+        "V1 只有 Tomorrow 模型头",
+        "V2/V3 共用 Today、Tomorrow、D25 三个独立模型头",
         "Long 不评分",
     ):
         assert required in content

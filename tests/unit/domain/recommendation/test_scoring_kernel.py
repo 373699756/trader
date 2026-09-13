@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from trader.domain.recommendation.model_scoring import (
-    V3_EXPOSURE_CONTRACT,
+    TRAINED_HEAD_EXPOSURE_CONTRACT,
     ExposureContract,
     percentile_ranks,
     residualize_exposure,
@@ -43,7 +43,7 @@ def test_v3_residualization_removes_industry_before_board_amount_exposure() -> N
         boards,
         amounts,
         industries=industries,
-        contract=V3_EXPOSURE_CONTRACT,
+        contract=TRAINED_HEAD_EXPOSURE_CONTRACT,
     )
 
     assert len(result) == len(values)
@@ -63,7 +63,7 @@ def test_v3_residualization_requires_complete_industry_exposure() -> None:
             ("main", "main"),
             (10.0, 20.0),
             industries=("bank", ""),
-            contract=V3_EXPOSURE_CONTRACT,
+            contract=TRAINED_HEAD_EXPOSURE_CONTRACT,
         )
 
     with pytest.raises(ValueError, match="contract order"):

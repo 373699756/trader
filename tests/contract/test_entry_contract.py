@@ -150,7 +150,7 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
     assert "./run.sh download_history        零参数历史维护" in completed.stdout
     assert "./run.sh train-tomorrow          从完整 manifest 运行 Tomorrow 训练" in completed.stdout
-    assert "./run.sh train-v3                一次扫描历史并顺序训练 V3 三个模型头" in completed.stdout
+    assert "./run.sh train-v3                一次扫描历史并顺序训练 V2/V3 共享三头" in completed.stdout
     assert "--allow-partial-history" not in completed.stdout
     assert "research-r7-dossier" not in completed.stdout
     assert "看板和 check 可追加 --profile v1|v2|v3；离线数据与训练命令均为零参数" in completed.stdout
@@ -518,7 +518,7 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert "research-history" not in powershell
     assert "research-screen" not in powershell
     assert ".\\run.ps1 train-tomorrow          从完整 manifest 运行 Tomorrow 训练" in powershell
-    assert ".\\run.ps1 train-v3                一次扫描历史并顺序训练 V3 三个模型头" in powershell
+    assert ".\\run.ps1 train-v3                一次扫描历史并顺序训练 V2/V3 共享三头" in powershell
     assert "--allow-partial-history" not in powershell
     assert "看板和 check 可追加 --profile v1|v2|v3；离线数据与训练命令均为零参数" in powershell
     assert "& $SelectedEntryPoint --help" in powershell

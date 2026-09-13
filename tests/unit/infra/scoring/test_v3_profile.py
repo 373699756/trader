@@ -3,29 +3,31 @@ from __future__ import annotations
 import json
 import os
 from datetime import date
-from importlib import resources
+from functools import lru_cache
 from pathlib import Path
 
+import lightgbm as lgb
+import numpy as np
 import pytest
 
 from trader.application.ports.model_scoring import ModelInput
 from trader.domain.recommendation.models import Strategy
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
-from trader.infra.scoring.profile_factory import load_scoring_profile
-from trader.infra.scoring.profiles.v3.bundle_codec import decode_head_bundle, load_head_bundle
-from trader.infra.scoring.profiles.v3.bundle_locator import locate_head_bundles
-from trader.infra.scoring.profiles.v3.profile import build_scoring_profile
-from trader.infra.scoring.profiles.v3.training_bundle_repository import (
+from trader.infra.scoring.head_bundles.bundle_codec import decode_head_bundle, load_head_bundle
+from trader.infra.scoring.head_bundles.bundle_locator import locate_head_bundles
+from trader.infra.scoring.head_bundles.bundle_repository import (
     HeadBundlePublicationIdentity,
     inspect_active_head_bundle,
     publish_head_bundle,
     recover_head_bundle_publication,
 )
-from trader.infra.scoring.profiles.v3.training_contracts import (
+from trader.infra.scoring.head_bundles.contracts import (
+    HEAD_CONTRACTS,
     TOMORROW_HEAD_CONTRACT,
-    V3_HEAD_CONTRACTS,
-    V3HeadTrainingContract,
+    TrainedHeadContract,
 )
+from trader.infra.scoring.head_bundles.profile import build_trained_scoring_profile
+from trader.infra.scoring.profile_factory import load_scoring_profile
 
 
 def _model_payload_hash(document: dict[str, object]) -> str:
@@ -34,10 +36,29 @@ def _model_payload_hash(document: dict[str, object]) -> str:
     )
 
 
-def _documents(contract: V3HeadTrainingContract) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
-    bundled = json.loads(
-        resources.files("trader.infra.scoring.profiles.v2").joinpath("model.json").read_text(encoding="utf-8")
+@lru_cache(maxsize=2)
+def _lightgbm_model(width: int) -> str:
+    features = np.asarray(
+        tuple(tuple(float((row + column) % 3) for column in range(width)) for row in range(12)),
+        dtype=np.float64,
     )
+    target = np.asarray(tuple(float(row % 2) for row in range(12)), dtype=np.float64)
+    booster = lgb.train(
+        {
+            "objective": "regression",
+            "verbosity": -1,
+            "num_threads": 1,
+            "min_data_in_leaf": 2,
+            "num_leaves": 3,
+            "seed": 20260913,
+        },
+        lgb.Dataset(features, label=target),
+        num_boost_round=1,
+    )
+    return booster.model_to_string(num_iteration=1)
+
+
+def _documents(contract: TrainedHeadContract) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
     codes = ["600000", "600001"]
     training_input: dict[str, object] = {
         "schema_version": "v3_head_training_input",
@@ -108,8 +129,8 @@ def _documents(contract: V3HeadTrainingContract) -> tuple[dict[str, object], dic
                 "transformer_scales": [1.0] * width,
                 "ridge_intercept": 0.0,
                 "ridge_coefficients": [0.1] * width,
-                "lightgbm_model": bundled["lightgbm_model"],
-                "lightgbm_best_iteration": bundled["lightgbm_best_iteration"],
+                "lightgbm_model": _lightgbm_model(width),
+                "lightgbm_best_iteration": 1,
                 "calibration_intercept": 0.0,
                 "calibration_slope": 1.0,
                 "training_rows": 20_000,
@@ -171,7 +192,7 @@ def _documents(contract: V3HeadTrainingContract) -> tuple[dict[str, object], dic
     return model, report, training_input
 
 
-def _write_bundle(staging: Path, contract: V3HeadTrainingContract) -> None:
+def _write_bundle(staging: Path, contract: TrainedHeadContract) -> None:
     staging.mkdir(parents=True, exist_ok=True)
     model, report, training_input = _documents(contract)
     (staging / "model.json").write_text(json.dumps(model), encoding="utf-8")
@@ -179,7 +200,7 @@ def _write_bundle(staging: Path, contract: V3HeadTrainingContract) -> None:
     (staging / "training-input.json").write_text(json.dumps(training_input), encoding="utf-8")
 
 
-def _publish(training_root: Path, contract: V3HeadTrainingContract, name: str = "staging") -> Path:
+def _publish(training_root: Path, contract: TrainedHeadContract, name: str = "staging") -> Path:
     staging = training_root / name
     _write_bundle(staging, contract)
     return publish_head_bundle(
@@ -206,33 +227,61 @@ def test_v3_publication_uses_only_four_portable_fixed_files(tmp_path: Path) -> N
     assert not (selected.parent / "generations").exists()
 
 
-def test_v3_loader_requires_and_builds_three_distinct_heads(tmp_path: Path) -> None:
-    for index, contract in enumerate(V3_HEAD_CONTRACTS):
+def test_shared_loader_builds_three_distinct_heads_for_v2_and_v3(tmp_path: Path) -> None:
+    for index, contract in enumerate(HEAD_CONTRACTS):
         _publish(tmp_path, contract, f"staging-{index}")
 
     located = locate_head_bundles(tmp_path)
-    profile = load_scoring_profile("v3", training_root=tmp_path)
+    profiles = tuple(load_scoring_profile(profile, training_root=tmp_path) for profile in ("v2", "v3"))
 
     assert tuple(strategy for strategy, _ in located) == (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
-    assert tuple(profile.heads) == (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
-    assert len({head.predictor.model_hash for head in profile.heads.values()}) == 3
-    assert profile.heads[Strategy.TODAY].evidence.runtime_anchor == "11:20"
-    assert profile.heads[Strategy.TOMORROW].evidence.runtime_anchor == "14:50"
-    assert profile.heads[Strategy.D25].evidence.runtime_anchor == "14:50"
+    for profile in profiles:
+        assert tuple(profile.heads) == (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+        assert len({head.predictor.model_hash for head in profile.heads.values()}) == 3
+        assert profile.heads[Strategy.TODAY].evidence.runtime_anchor == "11:20"
+        assert profile.heads[Strategy.TOMORROW].evidence.runtime_anchor == "14:50"
+        assert profile.heads[Strategy.D25].evidence.runtime_anchor == "14:50"
+    for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
+        v2_predictor = profiles[0].heads[strategy].predictor
+        v3_predictor = profiles[1].heads[strategy].predictor
+        assert v2_predictor.profile_id == "v2"
+        assert v3_predictor.profile_id == "v3"
+        assert v2_predictor.model_hash == v3_predictor.model_hash
+        width = len(v2_predictor.feature_ids)
+        row = ModelInput("600000", tuple(0.01 * (index + 1) for index in range(width)), "银行")
+        assert v2_predictor.predict((row,)) == v3_predictor.predict((row,))
 
 
-def test_v3_loader_fails_closed_when_any_head_is_missing(tmp_path: Path) -> None:
+@pytest.mark.parametrize("profile", ("v2", "v3"))
+def test_shared_loader_fails_closed_for_both_profiles_when_any_head_is_missing(tmp_path: Path, profile: str) -> None:
     _publish(tmp_path, TOMORROW_HEAD_CONTRACT)
 
     with pytest.raises(RuntimeError, match="unavailable"):
-        load_scoring_profile("v3", training_root=tmp_path)
+        load_scoring_profile(profile, training_root=tmp_path)
 
 
-def test_v3_tomorrow_predictor_preserves_the_existing_numeric_contract() -> None:
+@pytest.mark.parametrize("profile", ("v2", "v3"))
+def test_shared_loader_fails_closed_for_both_profiles_when_a_bundle_is_corrupt(tmp_path: Path, profile: str) -> None:
+    for index, contract in enumerate(HEAD_CONTRACTS):
+        _publish(tmp_path, contract, f"staging-{index}")
+    report_path = tmp_path / TOMORROW_HEAD_CONTRACT.directory_name / "report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["training_contract_hash"] = "f" * 64
+    report["content_hash"] = artifact_content_hash(
+        {key: value for key, value in report.items() if key != "content_hash"}
+    )
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="invalid"):
+        load_scoring_profile(profile, training_root=tmp_path)
+
+
+def test_shared_tomorrow_predictor_preserves_the_existing_numeric_contract() -> None:
     model, _, _ = _documents(TOMORROW_HEAD_CONTRACT)
     artifact = decode_head_bundle(model, Strategy.TOMORROW)
-    profile = build_scoring_profile(
-        tuple(decode_head_bundle(_documents(contract)[0], contract.strategy) for contract in V3_HEAD_CONTRACTS)
+    profile = build_trained_scoring_profile(
+        "v2",
+        tuple(decode_head_bundle(_documents(contract)[0], contract.strategy) for contract in HEAD_CONTRACTS),
     )
     predictor = profile.heads[Strategy.TOMORROW].predictor
     row = ModelInput("600000", (0.01, 0.02, 0.03, 0.01, -0.02, 0.03), "银行")
@@ -240,6 +289,13 @@ def test_v3_tomorrow_predictor_preserves_the_existing_numeric_contract() -> None
     assert artifact.model_id == "industry_ridge_lightgbm"
     assert predictor.predict((row,)) == predictor.predict((row,))
     assert predictor.industry_ids == ("银行",)  # type: ignore[attr-defined]
+
+
+def test_shared_profile_rejects_a_duplicate_head_even_when_all_strategies_exist() -> None:
+    artifacts = tuple(decode_head_bundle(_documents(contract)[0], contract.strategy) for contract in HEAD_CONTRACTS)
+
+    with pytest.raises(ValueError, match="require one Today, Tomorrow, and D25"):
+        build_trained_scoring_profile("v2", (*artifacts, artifacts[0]))
 
 
 def test_v3_codec_rejects_cross_head_and_nonportable_fields() -> None:
@@ -283,7 +339,7 @@ def test_v3_failed_replacement_restores_previous_fixed_group(tmp_path: Path, mon
             raise KeyboardInterrupt
         original_replace(source, destination)
 
-    monkeypatch.setattr("trader.infra.scoring.profiles.v3.training_bundle_repository.os.replace", fail_report)
+    monkeypatch.setattr("trader.infra.scoring.head_bundles.bundle_repository.os.replace", fail_report)
     with pytest.raises(KeyboardInterrupt):
         publish_head_bundle(
             staging,

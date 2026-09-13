@@ -43,7 +43,7 @@ from trader.infra.research.history_control_repository import (
     SQLiteHistoryControlRepository,
 )
 from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
-from trader.infra.scoring.profiles.v3.training_bundle_repository import inspect_active_head_bundle
+from trader.infra.scoring.head_bundles.bundle_repository import inspect_active_head_bundle
 
 RepackProgress = Callable[[int, int, str], None]
 FaultInjector = Callable[[str], None]

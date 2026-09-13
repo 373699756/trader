@@ -1,4 +1,4 @@
-"""Shared deterministic inference mechanics for distinct V3 strategy predictors."""
+"""Deterministic inference for a shared trained strategy head."""
 
 from __future__ import annotations
 
@@ -9,13 +9,19 @@ from trader.application.ports.model_scoring import ModelInput, ModelPrediction
 from trader.domain.recommendation.model_scoring import ExposureContract
 from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
 from trader.domain.recommendation.models import Strategy
-from trader.infra.scoring.profiles.v3.bundle_codec import V3HeadBundleArtifact, V3IndustryModelArtifact
+from trader.infra.scoring.head_bundles.bundle_codec import TrainedHeadBundleArtifact, TrainedIndustryModelArtifact
 
 
-class V3HeadInference:
-    def __init__(self, artifact: V3HeadBundleArtifact, strategy: Strategy) -> None:
+class TrainedHeadPredictor:
+    def __init__(
+        self,
+        profile_id: ScoringProfileId,
+        artifact: TrainedHeadBundleArtifact,
+        strategy: Strategy,
+    ) -> None:
         if artifact.strategy is not strategy:
-            raise ValueError("V3 predictor strategy does not match its artifact")
+            raise ValueError("trained predictor strategy does not match its artifact")
+        self._profile_id = profile_id
         self._artifact = artifact
         self._strategy = strategy
         self._models = {
@@ -24,7 +30,7 @@ class V3HeadInference:
 
     @property
     def profile_id(self) -> ScoringProfileId:
-        return self._artifact.profile_id
+        return self._profile_id
 
     @property
     def model_id(self) -> str:
@@ -51,19 +57,19 @@ class V3HeadInference:
         for item in inputs:
             selected = self._models.get(item.industry)
             if selected is None:
-                raise ValueError(f"{self._strategy.value} V3 input industry is not covered")
+                raise ValueError(f"{self._strategy.value} trained input industry is not covered")
             predictions.append(self._predict_one(item, *selected))
         return tuple(predictions)
 
     def _predict_one(
         self,
         item: ModelInput,
-        model: V3IndustryModelArtifact,
+        model: TrainedIndustryModelArtifact,
         booster: lgb.Booster,
     ) -> ModelPrediction:
         matrix = np.asarray((item.alpha_features,), dtype=np.float64)
         if matrix.shape[1:] != (len(self.feature_ids),):
-            raise ValueError(f"{self._strategy.value} V3 input feature width is invalid")
+            raise ValueError(f"{self._strategy.value} trained input feature width is invalid")
         means = np.asarray(model.transformer_means, dtype=np.float64)
         scales = np.asarray(model.transformer_scales, dtype=np.float64)
         standardized = (matrix - means) / scales
@@ -78,4 +84,4 @@ class V3HeadInference:
         )
 
 
-__all__ = ["V3HeadInference"]
+__all__ = ["TrainedHeadPredictor"]

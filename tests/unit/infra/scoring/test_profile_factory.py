@@ -8,33 +8,19 @@ from trader.application.ports.model_scoring import ModelInput
 from trader.domain.recommendation.models import Strategy
 from trader.infra.scoring.profile_factory import load_scoring_profile
 
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
+
 
 def _predictor(profile: str):
     return load_scoring_profile(profile).heads[Strategy.TOMORROW].predictor
 
 
-@pytest.mark.parametrize("profile", ("v1", "v2"))
-def test_packaged_profiles_use_strategy_keyed_head_contract(profile: str) -> None:
-    loaded = load_scoring_profile(profile)
+def test_packaged_v1_profile_uses_strategy_keyed_head_contract() -> None:
+    loaded = load_scoring_profile("v1")
 
-    assert loaded.profile_id == profile
+    assert loaded.profile_id == "v1"
     assert tuple(loaded.heads) == (Strategy.TOMORROW,)
     assert loaded.heads[Strategy.TOMORROW].strategy is Strategy.TOMORROW
-
-
-def test_profile_factory_preserves_v2_identity_and_deterministic_prediction() -> None:
-    predictor = _predictor("v2")
-    row = ModelInput("600000", (0.01, 0.02, 0.03, 0.01, -0.02, 0.03))
-
-    first = predictor.predict((row,))[0]
-    second = predictor.predict((row,))[0]
-
-    assert predictor.model_id == "daily_reconstructible_ensemble"
-    assert predictor.model_hash == "8397657c9ae83d2e774dc533a30f477a1ec599bc9fb82b60fae014a0b0202012"
-    assert first == second
-    assert first.code == "600000"
-    assert first.predicted_excess_return == pytest.approx(-3.2489670901064623e-07)
-    assert first.model_disagreement == pytest.approx(0.00015194486578771707)
 
 
 def test_profile_factory_preserves_v1_identity_and_linear_inference() -> None:
@@ -57,16 +43,48 @@ def test_profile_factory_preserves_v1_identity_and_linear_inference() -> None:
     assert first.model_disagreement == 0.0
 
 
-def test_profile_factory_keeps_v1_and_v2_independent_of_industry_input() -> None:
-    for profile, width in (("v1", 3), ("v2", 6)):
-        predictor = _predictor(profile)
-        values = (0.01, -0.02, 0.03, 0.02, -0.01, 0.04)[:width]
-        plain = predictor.predict((ModelInput("600000", values),))[0]
-        classified = predictor.predict((ModelInput("600000", values, "银行"),))[0]
+def test_tracked_three_head_bundles_have_exact_v2_v3_prediction_parity() -> None:
+    profiles = tuple(
+        load_scoring_profile(profile, training_root=PROJECT_ROOT / "data" / "train") for profile in ("v2", "v3")
+    )
+    expected_hashes = {
+        Strategy.TODAY: "940d251d0e303c3e1d94e70d42f561ff2bb89d554760815e0e8bc3ce057dc423",
+        Strategy.TOMORROW: "a4f71a5365db7ceda1d52bbe65ef787c79b247f40add86b6d2404c8eebb0ce36",
+        Strategy.D25: "83d49d9312aad690c28d98f9703016c38370d81d624ce6ebd3157e9a5883661d",
+    }
 
-        assert classified == plain
+    assert (
+        tuple(profiles[0].heads)
+        == tuple(profiles[1].heads)
+        == (
+            Strategy.TODAY,
+            Strategy.TOMORROW,
+            Strategy.D25,
+        )
+    )
+    for strategy, expected_hash in expected_hashes.items():
+        v2_predictor = profiles[0].heads[strategy].predictor
+        v3_predictor = profiles[1].heads[strategy].predictor
+        assert v2_predictor.profile_id == "v2"
+        assert v3_predictor.profile_id == "v3"
+        assert v2_predictor.model_hash == v3_predictor.model_hash == expected_hash
+        assert v2_predictor.model_id == v3_predictor.model_id
+        assert v2_predictor.feature_ids == v3_predictor.feature_ids
+        industry = v2_predictor.industry_ids[0]
+        row = ModelInput("600000", (0.0,) * len(v2_predictor.feature_ids), industry)
+        assert v2_predictor.predict((row,)) == v3_predictor.predict((row,))
 
 
-def test_profile_factory_fails_closed_without_a_v3_training_model(tmp_path: Path) -> None:
-    with pytest.raises(RuntimeError, match="training models are unavailable"):
-        load_scoring_profile("v3", training_root=tmp_path)
+def test_profile_factory_preserves_v1_independence_from_industry_input() -> None:
+    predictor = _predictor("v1")
+    values = (0.01, -0.02, 0.03)
+    plain = predictor.predict((ModelInput("600000", values),))[0]
+    classified = predictor.predict((ModelInput("600000", values, "银行"),))[0]
+
+    assert classified == plain
+
+
+@pytest.mark.parametrize("profile", ("v2", "v3"))
+def test_profile_factory_fails_closed_without_shared_training_models(tmp_path: Path, profile: str) -> None:
+    with pytest.raises(RuntimeError, match="shared strategy-head training models are unavailable"):
+        load_scoring_profile(profile, training_root=tmp_path)

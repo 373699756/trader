@@ -60,7 +60,7 @@ def test_scoring_profile_capability_matrix_uses_one_quality_scale_and_d25_single
     for token in (
         "| 评分档位 | Today | Tomorrow | D25 |",
         "| V1 | 板块证据质量评分 | 板块证据质量评分 + V1 Tomorrow 预测头 | 板块证据质量评分 |",
-        "| V2 | 板块证据质量评分 | 板块证据质量评分 + V2 Tomorrow 预测头 | 板块证据质量评分 |",
+        "| V2 | 板块证据质量评分 + 共享 Today 预测头 | 板块证据质量评分 + 共享 Tomorrow 预测头 | 板块证据质量评分 + 共享 D25 预测头 |",
         "| V3 | 板块证据质量评分 + 独立 Today 趋势代理头 | 板块证据质量评分 + 独立 Tomorrow 预测头 | 板块证据质量评分 + 独立 D25 趋势代理头 |",
         "D25 生产边界只输出一个面向未来 2–5 个交易日的策略信号",
         "不得拆成 T+2、T+3、T+4、T+5 四个生产头",

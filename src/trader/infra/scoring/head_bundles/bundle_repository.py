@@ -1,4 +1,4 @@
-"""Crash-safe publication of each V3 head's four fixed portable files."""
+"""Crash-safe publication of each shared head's four fixed portable files."""
 
 from __future__ import annotations
 
@@ -118,7 +118,7 @@ def _validate_staging(
     strategy: Strategy,
     identity: HeadBundlePublicationIdentity,
 ) -> dict[str, object]:
-    from trader.infra.scoring.profiles.v3.bundle_codec import load_head_bundle
+    from trader.infra.scoring.head_bundles.bundle_codec import load_head_bundle
 
     artifact = load_head_bundle(staging / "model.json", strategy)
     if (
@@ -126,7 +126,7 @@ def _validate_staging(
         or artifact.label_cutoff != identity.label_cutoff
         or artifact.source_identity_hash != identity.source_identity_hash
     ):
-        raise ValueError("V3 staged bundle archive identity is inconsistent")
+        raise ValueError("trained-head staged bundle archive identity is inconsistent")
     training_input = _read_json(staging / "training-input.json")
     report = _read_json(staging / "report.json")
     pointer: dict[str, object] = {
@@ -145,7 +145,7 @@ def _inspect_active_head_bundle(
     allow_publication: bool,
 ) -> ActiveHeadBundle:
     if not allow_publication and (output_root / _PUBLICATION_JOURNAL_NAME).exists():
-        raise RuntimeError("V3 bundle publication is incomplete")
+        raise RuntimeError("trained-head bundle publication is incomplete")
     pointer = _read_json(output_root / _ACTIVE_BUNDLE_NAME)
     expected_fields = {"model_hash", "report_hash", "training_input_hash", "content_hash"}
     body = {key: value for key, value in pointer.items() if key != "content_hash"}
@@ -155,11 +155,11 @@ def _inspect_active_head_bundle(
         or artifact_content_hash(body) != pointer["content_hash"]
         or not all(_sha256(pointer.get(name)) for name in expected_fields - {"content_hash"})
     ):
-        raise ValueError("V3 active bundle pointer is invalid")
+        raise ValueError("trained-head active bundle pointer is invalid")
     model = output_root / "model.json"
     if not model.is_file() or model.is_symlink():
         raise FileNotFoundError(model)
-    from trader.infra.scoring.profiles.v3.bundle_codec import load_head_bundle
+    from trader.infra.scoring.head_bundles.bundle_codec import load_head_bundle
 
     artifact = load_head_bundle(model, strategy)
     training_input = _read_json(output_root / "training-input.json")
@@ -169,7 +169,7 @@ def _inspect_active_head_bundle(
         or training_input.get("content_hash") != pointer["training_input_hash"]
         or report.get("content_hash") != pointer["report_hash"]
     ):
-        raise ValueError("V3 active bundle pointer does not match its fixed files")
+        raise ValueError("trained-head active bundle pointer does not match its fixed files")
     return ActiveHeadBundle(
         model,
         strategy,
@@ -190,7 +190,7 @@ def _backup_previous_files(output_root: Path, rollback: Path) -> tuple[str, ...]
         if not source.exists():
             continue
         if not source.is_file() or source.is_symlink():
-            raise ValueError(f"V3 production artifact is not a regular file: {name}")
+            raise ValueError(f"trained-head production artifact is not a regular file: {name}")
         _copy_file(source, rollback / name)
         previous.append(name)
     _fsync_directory(rollback)
@@ -199,14 +199,14 @@ def _backup_previous_files(output_root: Path, rollback: Path) -> tuple[str, ...]
 
 def _restore_previous_files(output_root: Path, rollback: Path, previous_files: tuple[str, ...]) -> None:
     if not rollback.is_dir() or rollback.is_symlink():
-        raise RuntimeError("V3 publication rollback evidence is unavailable")
+        raise RuntimeError("trained-head publication rollback evidence is unavailable")
     previous = set(previous_files)
     for name in _PRODUCTION_NAMES:
         destination = output_root / name
         if name in previous:
             source = rollback / name
             if not source.is_file() or source.is_symlink():
-                raise RuntimeError("V3 publication rollback evidence is incomplete")
+                raise RuntimeError("trained-head publication rollback evidence is incomplete")
             _copy_file(source, destination)
         else:
             destination.unlink(missing_ok=True)
@@ -216,7 +216,7 @@ def _restore_previous_files(output_root: Path, rollback: Path, previous_files: t
 def _finish_publication(output_root: Path, rollback: Path) -> None:
     if rollback.exists():
         if not rollback.is_dir() or rollback.is_symlink():
-            raise RuntimeError("V3 publication rollback path is invalid")
+            raise RuntimeError("trained-head publication rollback path is invalid")
         shutil.rmtree(rollback)
         _fsync_directory(output_root)
     (output_root / _PUBLICATION_JOURNAL_NAME).unlink(missing_ok=True)
@@ -225,10 +225,10 @@ def _finish_publication(output_root: Path, rollback: Path) -> None:
 
 def _rollback_path(output_root: Path, name: str) -> Path:
     if _ROLLBACK_DIRECTORY.fullmatch(name) is None:
-        raise ValueError("V3 publication rollback directory is invalid")
+        raise ValueError("trained-head publication rollback directory is invalid")
     rollback = (output_root / name).resolve()
     if rollback.parent != output_root.resolve():
-        raise ValueError("V3 publication rollback path escapes the head directory")
+        raise ValueError("trained-head publication rollback path escapes the head directory")
     return rollback
 
 
@@ -256,7 +256,7 @@ def _decode_journal(payload: dict[str, object], strategy: Strategy) -> _Publicat
         or len(previous) != len(set(cast(list[str], previous)))
         or not _sha256(payload.get("new_pointer_hash"))
     ):
-        raise ValueError("V3 publication journal is invalid")
+        raise ValueError("trained-head publication journal is invalid")
     return _PublicationJournal(
         cast(str, payload["rollback_directory"]),
         tuple(cast(list[str], previous)),
@@ -301,7 +301,7 @@ def _copy_file(source: Path, destination: Path) -> None:
 def _read_json(path: Path) -> dict[str, object]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
-        raise TypeError("V3 bundle document must be an object")
+        raise TypeError("trained-head bundle document must be an object")
     return cast(dict[str, object], value)
 
 
