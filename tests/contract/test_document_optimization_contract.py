@@ -228,22 +228,33 @@ def test_design_uses_normative_language_instead_of_delivery_chronology() -> None
         assert delivery_statement not in design
 
 
-def test_v1v2_plan_requires_independent_retraining_without_legacy_model_stacking() -> None:
+def test_v1v2_plan_requires_three_shared_v2_v3_training_bundles() -> None:
     plan = _read(V1V2_PLAN)
+    normalized = " ".join(plan.split())
 
     for required in (
-        "V1 的 20/40/60 日因子直接进入新 V2 的统一特征矩阵",
-        "重新训练扩展 Ridge、浅层 LightGBM、严重亏损概率头",
-        "旧 V1、旧 V2 与 V3 工件只作为只读控制组",
-        "不得作为 V2 的模型参数、预测或融合输入",
+        "V1 的 20/40/60 日因子直接进入共享 Tomorrow 模型的统一特征矩阵",
+        "V2 与 V3 必须加载同一组三头训练 bundle",
+        "`data/train/today-v3/`",
+        "`data/train/tomorrow-v3/`",
+        "`data/train/d25-v3/`",
+        "V2 不再生成 `data/train/tomorrow-v2/`",
+        "V2 同样加载 Today、Tomorrow 和 D25 三个模型头",
+        "`train-v3` 是三头共享 bundle 的唯一完整训练入口",
+        "同一组 model hash、feature manifest hash、training-input hash 和 source snapshot hash",
+        "V2 与 V3 的差异从模型输出之后才开始",
         "控制组预测必须来自决策日当时已经发布的模型工件或正式冻结记录",
         "训练完成、工件可加载和生产启用仍是三个不同状态",
     ):
-        assert required in plan
+        assert required in normalized
 
     for forbidden in (
         "V1 冻结线性分支",
         "加入 V1 冻结输出",
         "拟合 V1 冻结分支",
+        "新增零参数 `./run.sh train-tomorrow-v2`",
+        "V2 候选固定写入 `data/train/tomorrow-v2/`",
+        "V2 与 V3 的 Tomorrow 模型分别训练",
+        "V3 只比 V2 额外加载 Today 与 D25 两个独立头",
     ):
-        assert forbidden not in plan
+        assert forbidden not in normalized
