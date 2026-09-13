@@ -121,6 +121,6 @@ def test_d25_means_one_future_t2_to_t5_rising_stock_signal() -> None:
         "一个完整且唯一的 2–5 日生产策略头",
         "V1 下 D25 使用规则评分",
         "V2/V3 启动时",
-        "共享三头中自己的单一 2–5 日模型头",
+        "所选档位三头中自己的单一 2–5 日模型头",
     ):
         assert required in content

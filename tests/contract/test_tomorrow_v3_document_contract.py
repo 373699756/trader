@@ -82,7 +82,7 @@ def test_v3_delivery_has_isolated_owners_and_explicit_commands() -> None:
     assert "V1/V2/C3 原始预测级联合研究路线" not in design
     assert "内部 V1/V2/C3" not in design
     assert "15.1.36 V3 条件式生产适配 | `blocked_by_15.1.35`" not in strategy
-    assert strategy.count("状态：`verified_ready_for_delivery`") == 9
+    assert strategy.count("状态：`verified_ready_for_delivery`") == 10
 
     for internal_stage in (
         "research-tomorrow",

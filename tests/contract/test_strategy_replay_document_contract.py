@@ -13,7 +13,7 @@ def test_strategy_replay_document_covers_the_complete_offline_to_live_chain() ->
         "## 2. 一张图看懂完整链条",
         "## 3. 历史数据下载：下载什么、为什么需要",
         "## 4. 从归档到可训练样本",
-        "## 5. V2/V3 共享三个策略头如何训练与验证",
+        "## 5. V2/V3 三个策略头的当前训练与目标分档",
         "## 6. 训练结果如何参与实时荐股",
         "## 7. Today、Tomorrow、D25 的关系",
         "## 8. 影响最终荐股的因素",
@@ -62,6 +62,7 @@ def test_strategy_replay_document_explains_training_and_live_scoring() -> None:
         "LightGBM",
         "训练、早停、校准、确认和留出",
         "61 根历史日线",
+        "251 根历史日线",
         "预测横截面分位",
         "预测超额收益 - 估算交易成本",
         "local_score * 0.68",
@@ -77,6 +78,7 @@ def test_strategy_replay_document_explains_training_and_live_scoring() -> None:
 
 def test_strategy_replay_document_keeps_public_commands_and_strategy_ownership_bounded() -> None:
     content = REPLAY.read_text(encoding="utf-8")
+    compact = " ".join(content.split())
     public_guides = (
         ROOT / "README.md",
         ROOT / "docs/01_评分逻辑.md",
@@ -96,10 +98,12 @@ def test_strategy_replay_document_keeps_public_commands_and_strategy_ownership_b
         "D25 的统一 base score 始终是独立规则评分",
         "不读取 Tomorrow 模型",
         "V1 只有 Tomorrow 模型头",
-        "V2/V3 共用 Today、Tomorrow、D25 三个独立模型头",
+        "V2/V3 都拥有 Today、Tomorrow、D25 三个独立模型头",
+        "data/train/v2/{today,tomorrow,d25}",
+        "data/train/v3/{today,tomorrow,d25}",
         "Long 不评分",
     ):
-        assert required in content
+        assert required in compact
 
 
 def test_strategy_replay_document_records_the_stage_a_b_gates_and_atomic_training() -> None:

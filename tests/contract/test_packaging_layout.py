@@ -72,16 +72,26 @@ def test_hidden_metadata_container_is_not_discovered_as_an_empty_distribution() 
     assert probe.returncode == 0
 
 
-def test_repository_versions_only_the_three_portable_v3_bundles() -> None:
+def test_repository_stages_profile_owned_training_layout_without_faking_v2_bundles() -> None:
     repository = Path(__file__).parents[2]
     ignore = (repository / ".gitignore").read_text(encoding="utf-8")
 
     assert "/data/history/" in ignore
     assert "/data/train/**/*" in ignore
     for strategy in ("today", "tomorrow", "d25"):
+        assert f"!/data/train/v2/{strategy}/" in ignore
+        assert f"!/data/train/v2/{strategy}/.gitkeep" in ignore
+        v2_directory = repository / "data" / "train" / "v2" / strategy
+        assert tuple(path.name for path in v2_directory.iterdir()) == (".gitkeep",)
+
+        assert f"!/data/train/v3/{strategy}/" in ignore
         assert f"!/data/train/{strategy}-v3/" in ignore
         for name in ("active-bundle.json", "model.json", "report.json", "training-input.json"):
             assert f"!/data/train/{strategy}-v3/{name}" in ignore
+            assert f"!/data/train/v3/{strategy}/{name}" in ignore
+            assert (repository / "data" / "train" / "v3" / strategy / name).read_bytes() == (
+                repository / "data" / "train" / f"{strategy}-v3" / name
+            ).read_bytes()
     assert "!/data/train/**/model.json" not in ignore
     assert "!/data/train/**/report.json" not in ignore
     assert all(pattern in ignore for pattern in ("build/", "dist/", "*.egg-info/"))

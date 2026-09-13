@@ -175,10 +175,12 @@ def test_history_windows_cost_ownership_and_terminal_order_are_unambiguous() -> 
     design = _read(DESIGN)
     work = _read(WORK)
     replay = _read(REPLAY)
+    compact_design = " ".join(design.split())
 
-    assert "V2/V3 共用已有三头 bundle" in strategy
-    assert "V2/V3 共享的 Today/Tomorrow/D25 模型头在线推理至少需要 61 个" in design
-    assert "共享 bundle 的离线训练最多消费 2000 个交易所开市日" in design
+    assert "当前 V2/V3 共用已有三头 bundle" in strategy
+    assert "目标 V2 在线推理最多读取 251 个" in compact_design
+    assert "目标 V3 在线推理仍至少需要 61 个" in compact_design
+    assert "两档离线训练都最多消费 2000 个交易所开市日" in compact_design
     assert "扣成本前的预测超额收益" in strategy
     assert "训练目标不得先扣 20bp 后又由在线门重复扣除" in replay
     assert "不能只用 `非 ST + 当日有交易` 代替完整生产漏斗" in replay
@@ -186,7 +188,7 @@ def test_history_windows_cost_ownership_and_terminal_order_are_unambiguous() -> 
 
     route = replay[replay.index("## 11. 新优化路线如何形成证据闭环") :]
     ordered = (
-        "V3 训练与开发/确认",
+        "V2/V3 分档训练与开发/确认",
         "增量同源计算",
         "风险/成本/不确定性与 DeepSeek 消融",
         "完整选择链冻结",
@@ -228,21 +230,25 @@ def test_design_uses_normative_language_instead_of_delivery_chronology() -> None
         assert delivery_statement not in design
 
 
-def test_v1v2_plan_requires_three_shared_v2_v3_training_bundles() -> None:
+def test_v1v2_plan_separates_extended_v2_and_baseline_v3_training_bundles() -> None:
     plan = _read(V1V2_PLAN)
     normalized = " ".join(plan.split())
 
     for required in (
-        "V1 的 20/40/60 日因子直接进入共享 Tomorrow 模型的统一特征矩阵",
-        "V2 与 V3 必须加载同一组三头训练 bundle",
-        "`data/train/today-v3/`",
-        "`data/train/tomorrow-v3/`",
-        "`data/train/d25-v3/`",
-        "V2 不再生成 `data/train/tomorrow-v2/`",
+        "V1 的 20/40/60 日因子直接进入 V2 Tomorrow 模型的统一特征矩阵",
+        "`data/train/v2/today/`",
+        "`data/train/v2/tomorrow/`",
+        "`data/train/v2/d25/`",
+        "`data/train/v3/today/`",
+        "`data/train/v3/tomorrow/`",
+        "`data/train/v3/d25/`",
+        "120/250 日长期趋势和市场状态",
+        "251 个连续交易日位置",
+        "V2 与 V3 分别训练、分别发布、分别加载",
+        "现有 V3 三头工件逐字节同步",
         "V2 同样加载 Today、Tomorrow 和 D25 三个模型头",
-        "`train-v3` 是三头共享 bundle 的唯一完整训练入口",
-        "同一组 model hash、feature manifest hash、training-input hash 和 source snapshot hash",
-        "V2 与 V3 的差异从模型输出之后才开始",
+        "V2 新工件未完整生成前不切换 loader",
+        "旧扁平目录只读保留",
         "控制组预测必须来自决策日当时已经发布的模型工件或正式冻结记录",
         "训练完成、工件可加载和生产启用仍是三个不同状态",
     ):
@@ -252,9 +258,7 @@ def test_v1v2_plan_requires_three_shared_v2_v3_training_bundles() -> None:
         "V1 冻结线性分支",
         "加入 V1 冻结输出",
         "拟合 V1 冻结分支",
-        "新增零参数 `./run.sh train-tomorrow-v2`",
-        "V2 候选固定写入 `data/train/tomorrow-v2/`",
-        "V2 与 V3 的 Tomorrow 模型分别训练",
         "V3 只比 V2 额外加载 Today 与 D25 两个独立头",
+        "把现有 V3 工件复制进 `data/train/v2/`",
     ):
         assert forbidden not in normalized

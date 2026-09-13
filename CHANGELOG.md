@@ -7,6 +7,7 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
+- [Profile-owned V2/V3 training layout plan](docs/changelog/2026-09-14-profile-owned-training-layout-plan.md)
 - [Default V2 over the existing shared bundles](docs/changelog/2026-09-14-v2-default-existing-bundles.md)
 - [V2/V3 shared three-head runtime](docs/changelog/2026-09-13-v2-v3-shared-three-head-runtime.md)
 - [Share all three trained model heads between V2 and V3](docs/changelog/2026-09-13-v2-v3-shared-three-head-training-plan.md)
