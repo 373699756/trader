@@ -77,7 +77,7 @@ def test_v3_delivery_has_isolated_owners_and_explicit_commands() -> None:
     )
     assert all(value in strategy for value in required_strategy_contract)
     assert "dynamic_cutoff_and_missing_fact_acquisition" not in strategy
-    assert "./run.sh train-tomorrow" in design
+    assert "./run.sh train-v3" in design
     assert "./run.sh train-v3" in design
     assert "V1/V2/C3 原始预测级联合研究路线" not in design
     assert "内部 V1/V2/C3" not in design

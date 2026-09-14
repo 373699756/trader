@@ -64,7 +64,6 @@ def test_cli_exposes_current_maintenance_and_explicit_offline_research_commands(
     for retained in (
         "check",
         "download",
-        "train-tomorrow",
         "train-v2",
         "train-v3",
         "validate-config",
@@ -117,7 +116,6 @@ def test_run_script_exposes_only_the_aggregated_public_workflows() -> None:
 
     assert "check" in shell
     assert "download" in shell
-    assert "train-tomorrow" in shell
     assert "train-v2" in shell
     assert "train-v3" in shell
     assert "research-r7-dossier" not in shell
@@ -151,7 +149,6 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert "./run.sh check                   依次校验配置、研究状态和性能门禁" in completed.stdout
     assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
     assert "./run.sh download                零参数历史维护" in completed.stdout
-    assert "./run.sh train-tomorrow          从完整 manifest 运行 Tomorrow 训练" in completed.stdout
     assert "./run.sh train-v2                按 V2 251 日特征训练独立三头" in completed.stdout
     assert "./run.sh train-v3                按 V3 61 日特征训练独立三头" in completed.stdout
     assert "--allow-partial-history" not in completed.stdout
@@ -368,7 +365,7 @@ def test_run_script_forwards_only_the_confirmed_user_automation_action(command: 
     assert completed.stdout == f"cli:--config {config} {command}\n"
 
 
-@pytest.mark.parametrize("command", ("train-tomorrow", "train-v2", "train-v3"))
+@pytest.mark.parametrize("command", ("train-v2", "train-v3"))
 def test_run_script_forwards_each_zero_argument_training_command(command: str, tmp_path: Path) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
@@ -396,7 +393,7 @@ def test_run_script_forwards_each_zero_argument_training_command(command: str, t
     assert completed.stdout == f"cli:--config {config} {command}\n"
 
 
-@pytest.mark.parametrize("command", ("train-tomorrow", "train-v2", "train-v3"))
+@pytest.mark.parametrize("command", ("train-v2", "train-v3"))
 def test_run_script_isolates_training_in_a_two_gib_linux_scope(command: str, tmp_path: Path) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
@@ -434,7 +431,7 @@ def test_run_script_isolates_training_in_a_two_gib_linux_scope(command: str, tmp
     assert completed.stdout.rstrip().endswith(f"-- {venv_bin / 'trader-cli'} --config {config} {command}")
 
 
-@pytest.mark.parametrize("command", ("train-tomorrow", "train-v2", "train-v3"))
+@pytest.mark.parametrize("command", ("train-v2", "train-v3"))
 def test_run_script_rejects_training_arguments_before_environment_setup(command: str, tmp_path: Path) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
@@ -522,7 +519,6 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert ".\\run.ps1 download                零参数历史维护" in powershell
     assert "research-history" not in powershell
     assert "research-screen" not in powershell
-    assert ".\\run.ps1 train-tomorrow          从完整 manifest 运行 Tomorrow 训练" in powershell
     assert ".\\run.ps1 train-v2                按 V2 251 日特征训练独立三头" in powershell
     assert ".\\run.ps1 train-v3                按 V3 61 日特征训练独立三头" in powershell
     assert "--allow-partial-history" not in powershell
@@ -533,7 +529,7 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert "config\\runtime.json" in powershell
     assert "config\\v2\\runtime.json" not in powershell
     assert (
-        '$Mode -in @("download", "train-tomorrow", "train-v2", "train-v3", '
+        '$Mode -in @("download", "train-v2", "train-v3", '
         '"install-history-automation", "uninstall-history-automation")' in powershell
     )
 
@@ -608,37 +604,6 @@ def test_research_status_is_historical_only_and_does_not_create_runtime_files(
     assert not runtime_dir.exists()
 
 
-def test_train_tomorrow_runs_a_prerequisite_before_resource_handoff_without_creating_v3(
-    tmp_path: Path, capsys, monkeypatch
-) -> None:
-    runtime = json.loads((ROOT / "config/runtime.json").read_text(encoding="utf-8"))
-    runtime_dir = tmp_path / "runtime"
-    history_root = tmp_path / "history"
-    runtime["runtime_dir"] = str(runtime_dir)
-    config = tmp_path / "runtime.json"
-    config.write_text(json.dumps(runtime), encoding="utf-8")
-    monkeypatch.setattr(research_commands, "_history_data_root", lambda: history_root)
-    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
-        monkeypatch.delenv(name, raising=False)
-
-    assert main(["--config", str(config), "train-tomorrow"]) == 1
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "blocked"
-    assert payload["next_stage"] == "data_manifest"
-    assert payload["blockers"] == ["history_manifest_unavailable"]
-    assert payload["training_input_hash"] == ""
-    assert payload["training_input_scope"] == "unavailable"
-    assert payload["label_cutoff"] is None
-    assert payload["matured_label_days_since_training"] == 0
-    assert payload["training_due"] is False
-    assert payload["training_due_reason"] == "data_incomplete"
-    assert payload["invalidated_cache_dates"] == []
-    assert payload["production_authority"] is False
-    assert {os.environ[name] for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")} == {"2"}
-    assert not runtime_dir.exists()
-
-
 def test_tomorrow_training_resource_policy_is_two_threads_and_lower_priority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -655,57 +620,6 @@ def test_tomorrow_training_resource_policy_is_two_threads_and_lower_priority(
         os.environ[name]
         for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS")
     } == {"2"}
-
-
-def test_train_tomorrow_passes_the_fixed_project_history_root_to_the_training_owner(
-    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    runtime = json.loads((ROOT / "config/runtime.json").read_text(encoding="utf-8"))
-    runtime["runtime_dir"] = str(tmp_path / "runtime")
-    config = tmp_path / "runtime.json"
-    config.write_text(json.dumps(runtime), encoding="utf-8")
-    history = tmp_path / "project-history"
-    observed: list[tuple[Path, Path]] = []
-    monkeypatch.setattr(research_commands, "_history_data_root", lambda: history)
-
-    def train(
-        history_root: Path,
-        train_root: Path,
-        *,
-        progress: object,
-    ) -> SimpleNamespace:
-        assert progress is not None
-        observed.append((history_root, train_root))
-        return SimpleNamespace(
-            status="blocked",
-            run_id=None,
-            training_input_hash="",
-            report_hash="",
-            model_hash="",
-            industry_count=0,
-            training_rows=0,
-            validation_rows=0,
-            training_input_scope="unavailable",
-            training_input_codes=0,
-            training_universe_codes=0,
-            failure_reasons=("history_manifest_unavailable",),
-            label_cutoff=None,
-            matured_label_days_since_training=0,
-            training_due=False,
-            training_due_reason="data_incomplete",
-            invalidated_cache_dates=(),
-            sample_database_peak_bytes=0,
-        )
-
-    monkeypatch.setattr("trader.infra.scoring.profiles.v3.training.run_tomorrow_training", train)
-
-    assert main(["--config", str(config), "train-tomorrow"]) == 1
-
-    assert observed == [(history, ROOT / "data" / "train")]
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["report_hash"] == ""
-    assert payload["artifact_root"] == str(ROOT / "data" / "train" / "v3" / "tomorrow")
-    assert payload["training_due_reason"] == "data_incomplete"
 
 
 def test_train_v3_passes_fixed_roots_and_projects_three_head_results(

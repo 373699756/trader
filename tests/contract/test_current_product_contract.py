@@ -95,7 +95,6 @@ def test_release_guides_expose_only_unified_api_and_desktop_gate() -> None:
     for public_command in (
         "./run.sh check",
         "./run.sh download",
-        "./run.sh train-tomorrow",
         "./run.sh train-v2",
         "./run.sh train-v3",
     ):

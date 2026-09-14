@@ -89,7 +89,7 @@ def test_strategy_replay_document_keeps_public_commands_and_strategy_ownership_b
 
     assert "./run.sh download" in content
     assert "./run.sh download --sessions" not in content
-    assert "./run.sh train-tomorrow" in content
+    assert "./run.sh train-v3" in content
     assert "./run.sh train-v3" in content
     for guide in public_guides:
         assert "./run.sh research-status" not in guide.read_text(encoding="utf-8")
@@ -206,7 +206,7 @@ def test_strategy_replay_document_has_an_executable_maintenance_and_reminder_pla
         "每天最多提醒一次",
         "automatic_model_update=false",
         "每日自动同步、到期只提醒",
-        "不得自动调用 `train-tomorrow`",
+        "不得自动调用 `train-v2` 或 `train-v3`",
         "磁盘余量",
         "控制库损坏",
         "SIGTERM",

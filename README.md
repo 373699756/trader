@@ -45,7 +45,6 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 ./run.sh --profile v1
 ./run.sh --profile v3
 ./run.sh download
-./run.sh train-tomorrow
 ./run.sh train-v2
 ./run.sh train-v3
 ./run.sh install-history-automation
@@ -57,7 +56,7 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 追加 `--profile v1|v2|v3` 可显式覆盖当前进程，该覆盖不会写回配置。启动不执行训练，任一共享 bundle 损坏时 V2/V3 失败关闭。
 `check` 依次执行配置校验、只读研究状态、持久化训练 due/提醒状态和所选档位的离线性能门禁；`download` 是唯一零参数历史维护
 入口；`train-v2` 使用 251 日窗口和 V2 长周期特征，通过一次历史扫描依次训练 V2 的 Today、Tomorrow、D25，
-`train-v3` 使用 61 日窗口独立训练 V3 三头，`train-tomorrow` 是只训练 V3 Tomorrow 的兼容入口。两档共享历史事实和
+`train-v3` 使用 61 日窗口独立训练 V3 三头。V2/V3 共享历史事实和
 训练引擎，但不共享特征合同、模型身份或输出目录。旧 H0 历史归档、回测和筛选入口已退役，
 不再通过启动流程执行。离线研究不会随服务启动自动执行。底层
 `trader-cli performance-check` 仍可用 `--output` 保存报告或用 `--baseline` 执行 5% 相对回归门禁；它
@@ -66,7 +65,7 @@ BaoStock 下载是独立研究命令，必须先安装 `trader-research-dashboar
 参数不对用户开放；`--runtime-dir`、`--sessions`、`--mode`、`--profile` 等参数都会在环境创建前拒绝。零参数
 重构控制库、稳定年月月分片读取面和零参数同步已经交付：命令自动执行初次最近 2000 日、日更缺口、最近 5 日
 回读或返回 `already_current`，失败与取消不改变上一 active snapshot；它不会被启动、`check`、Web 或
-`train-tomorrow` 隐式调用。
+训练入口不会隐式调用历史下载。
 交互式下载进度固定在 stderr 显示紧凑单行：累计和调用耗时使用 `HH:MM:SS`，股票和月分片使用
 `n/m (百分比)`，供应商重试使用“尝试 n/m”；日历、行业等子阶段只显示真实当前项，不再把内部 `0/1`
 占位冒充整体进度。失败摘要保留最后一个具体供应商阶段、当前日期或股票和稳定错误码；最终 stdout JSON 保持不变，

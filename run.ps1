@@ -22,7 +22,6 @@ function Show-Usage {
 
 离线研究（仅在明确执行研究任务时使用）:
   .\run.ps1 download                零参数历史维护
-  .\run.ps1 train-tomorrow          从完整 manifest 运行 Tomorrow 训练
   .\run.ps1 train-v2                按 V2 251 日特征训练独立三头
   .\run.ps1 train-v3                按 V3 61 日特征训练独立三头
 
@@ -39,7 +38,7 @@ function Show-Usage {
 "@ | Write-Host
 }
 
-$PublicModes = @("help", "-h", "--help", "check", "download", "train-tomorrow", "train-v2", "train-v3", "install-history-automation", "uninstall-history-automation")
+$PublicModes = @("help", "-h", "--help", "check", "download", "train-v2", "train-v3", "install-history-automation", "uninstall-history-automation")
 
 for ($Index = 0; $Index -lt $args.Count; $Index++) {
     $Argument = [string]$args[$Index]
@@ -75,7 +74,7 @@ if ($ScoringProfileSet -and $ScoringProfile -notin @("v1", "v2", "v3")) {
     [Console]::Error.WriteLine("评分档位只能是 v1、v2 或 v3: $ScoringProfile")
     exit 2
 }
-if ($Mode -in @("download", "train-tomorrow", "train-v2", "train-v3", "install-history-automation", "uninstall-history-automation") -and ($ScoringProfileSet -or $ForwardArgs.Count -gt 0)) {
+if ($Mode -in @("download", "train-v2", "train-v3", "install-history-automation", "uninstall-history-automation") -and ($ScoringProfileSet -or $ForwardArgs.Count -gt 0)) {
     [Console]::Error.WriteLine("$Mode 不接受任何参数；请只运行 .\run.ps1 $Mode。")
     exit 2
 }
@@ -85,7 +84,7 @@ if ($Mode -in @("help", "-h", "--help")) {
     exit 0
 }
 $IsServerMode = [string]::IsNullOrEmpty($Mode)
-if (-not $IsServerMode -and $Mode -notin @("check", "download", "train-tomorrow", "train-v2", "train-v3", "install-history-automation", "uninstall-history-automation")) {
+if (-not $IsServerMode -and $Mode -notin @("check", "download", "train-v2", "train-v3", "install-history-automation", "uninstall-history-automation")) {
     [Console]::Error.WriteLine("未知命令: $Mode")
     [Console]::Error.WriteLine("日常启动直接运行: .\run.ps1")
     [Console]::Error.WriteLine("查看全部命令: .\run.ps1 help")
@@ -158,7 +157,7 @@ if ($Mode -eq "download") {
     & $SelectedEntryPoint --config $ConfigPath download
     exit $LASTEXITCODE
 }
-if ($Mode -in @("train-tomorrow", "train-v2", "train-v3")) {
+if ($Mode -in @("train-v2", "train-v3")) {
     & $SelectedEntryPoint --config $ConfigPath $Mode
     exit $LASTEXITCODE
 }

@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Remove the public Tomorrow-only training entrypoint](2026-09-14-training-entrypoint-cleanup.md)
 - [Normalize the history maintenance command to download](2026-09-14-download-command-normalization.md)
 - [Profile-owned V2/V3 training commands](2026-09-14-profile-owned-training-commands.md)
 - [Recover recommendation-pipeline evidence across freeze and restart](2026-09-14-recommendation-pipeline-recovery.md)
