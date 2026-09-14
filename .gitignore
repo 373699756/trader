@@ -7,16 +7,28 @@
 .build-metadata/
 # Runtime history shards, training evidence, WAL files, and manifests are never committed.
 /data/history/
-# Only explicitly named portable model bundles and empty V2 training targets are
-# versioned; temporary samples, staging directories, and logs stay local.
+# Only explicitly named portable model bundles are versioned; temporary samples,
+# staging directories, and logs stay local.
 /data/train/**/*
 !/data/train/v2/
 !/data/train/v2/today/
 !/data/train/v2/today/.gitkeep
+!/data/train/v2/today/active-bundle.json
+!/data/train/v2/today/model.json
+!/data/train/v2/today/report.json
+!/data/train/v2/today/training-input.json
 !/data/train/v2/tomorrow/
 !/data/train/v2/tomorrow/.gitkeep
+!/data/train/v2/tomorrow/active-bundle.json
+!/data/train/v2/tomorrow/model.json
+!/data/train/v2/tomorrow/report.json
+!/data/train/v2/tomorrow/training-input.json
 !/data/train/v2/d25/
 !/data/train/v2/d25/.gitkeep
+!/data/train/v2/d25/active-bundle.json
+!/data/train/v2/d25/model.json
+!/data/train/v2/d25/report.json
+!/data/train/v2/d25/training-input.json
 !/data/train/v3/
 !/data/train/v3/today/
 !/data/train/v3/today/active-bundle.json
