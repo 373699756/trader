@@ -191,16 +191,21 @@ def _run_history_maintenance_command(
 
 
 def _run_history_download() -> int:
+    from trader.application.history.download_history import DownloadHistoryUseCase
     from trader.entrypoints.history_maintenance_projection import project_history_maintenance_status
     from trader.entrypoints.history_sync_progress import StderrHistorySyncProgress
     from trader.infra.research.baostock_sync_supplier import BaoStockHistorySupplier
-    from trader.infra.research.history_archive_sync import run_history_sync
+    from trader.infra.research.history_archive_gateway import HistoryArchiveGateway
 
     repository_root = _repository_root_for_validation()
     configuration = _history_sync_configuration(repository_root)
     progress = StderrHistorySyncProgress()
     with BaoStockHistorySupplier(configuration, progress=progress) as supplier:
-        status = run_history_sync(configuration, supplier, progress=progress)
+        status = DownloadHistoryUseCase(HistoryArchiveGateway()).execute(
+            configuration,
+            supplier,
+            progress=progress,
+        )
     progress.publish_result(status)
     print(json.dumps(project_history_maintenance_status(status), ensure_ascii=False, sort_keys=True))
     return 0 if status.state in {"completed", "already_current"} else 1

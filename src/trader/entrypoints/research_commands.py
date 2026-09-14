@@ -224,18 +224,28 @@ def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
 
 def _run_v3_training_orchestrator(runtime: RuntimeSettings) -> int:
     del runtime
+    from trader.application.training.profile_training_secondary import TrainV3UseCase
     from trader.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
     from trader.infra.scoring.profiles.v3.training import run_v3_training
 
-    return _run_profile_training_command("v3", run_v3_training, StderrTomorrowTrainingProgress)
+    return _run_profile_training_command(
+        "v3",
+        TrainV3UseCase(run_v3_training).execute,
+        StderrTomorrowTrainingProgress,
+    )
 
 
 def _run_v2_training_orchestrator(runtime: RuntimeSettings) -> int:
     del runtime
+    from trader.application.training.profile_training_primary import TrainV2UseCase
     from trader.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
     from trader.infra.scoring.profiles.v2.training import run_v2_training
 
-    return _run_profile_training_command("v2", run_v2_training, StderrTomorrowTrainingProgress)
+    return _run_profile_training_command(
+        "v2",
+        TrainV2UseCase(run_v2_training).execute,
+        StderrTomorrowTrainingProgress,
+    )
 
 
 def _run_profile_training_command(

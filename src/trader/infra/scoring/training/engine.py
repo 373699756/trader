@@ -228,7 +228,11 @@ def _run_training(request: ProfileTrainingRequest) -> TrainingRunResult:
         heads = tuple(_unavailable_result(item, _reason(exc)) for item in request.contracts)
         return TrainingRunResult(None, "", 0, heads)
     try:
-        with HistoryMaintenanceLock(archive.archive_root / ".maintenance.lock"):
+        # Training owns a profile-specific lock and may read an immutable
+        # snapshot while history maintenance publishes a newer one.  The
+        # archive itself remains protected by snapshot identity checks.
+        training_lock = request.train_root / ".training.lock"
+        with HistoryMaintenanceLock(training_lock):
             try:
                 require_history_archive_repack_inactive(archive.archive_root)
             except HistoryArchiveRepackFenceError:
