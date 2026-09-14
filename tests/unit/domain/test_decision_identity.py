@@ -23,10 +23,35 @@ from trader.domain.recommendation.decision_identity import (
     formal_scored_decision,
 )
 from trader.domain.recommendation.models import RecommendationAction, Strategy
+from trader.domain.recommendation.pipeline import PipelineStageStatus, RecommendationPipelineStatus
 from trader.infra.persistence.decision_record_codec import committed_record_bytes, committed_record_from_bytes
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 8, 11, 14, 40, tzinfo=SHANGHAI)
+
+
+def pipeline() -> RecommendationPipelineStatus:
+    keys = (
+        "dynamic_filter",
+        "board_cross_section",
+        "strategy_history",
+        "model_input",
+        "candidate_score",
+        "board_limit",
+        "candidate_refresh",
+        "input_coverage",
+        "evidence_score",
+        "model_cost_gate",
+        "local_score",
+        "deepseek_review",
+        "fusion",
+        "action_gate",
+        "concentration",
+    )
+    return RecommendationPipelineStatus(
+        "concentration",
+        tuple(PipelineStageStatus(key, "completed", 1, 1) for key in keys),
+    )
 
 
 def decision(
@@ -87,6 +112,30 @@ def test_scored_identity_is_canonical_for_all_three_scored_strategies() -> None:
         assert reordered.content_hash == first.content_hash
         assert reordered.version == first.version
         assert reordered.strategy is strategy
+
+
+def test_formal_record_round_trip_preserves_complete_recommendation_pipeline() -> None:
+    current = replace(decision(), pipeline=pipeline())
+    formal = formal_scored_decision(current)
+    record = CommittedDecisionRecord(formal, NOW + timedelta(minutes=10), "scheduled")
+
+    encoded = committed_record_bytes(record)
+    restored = committed_record_from_bytes(encoded)
+
+    assert restored.decision.pipeline == current.pipeline
+    assert json.loads(encoded)["decision"]["pipeline"]["current_stage"] == "concentration"
+    assert len(json.loads(encoded)["decision"]["pipeline"]["stages"]) == 15
+
+
+def test_legacy_formal_record_without_pipeline_keeps_original_identity() -> None:
+    record = CommittedDecisionRecord(decision(), NOW + timedelta(minutes=10), "scheduled")
+    encoded = committed_record_bytes(record)
+
+    restored = committed_record_from_bytes(encoded)
+
+    assert "pipeline" not in json.loads(encoded)["decision"]
+    assert restored == record
+    assert restored.decision.pipeline is None
 
 
 def test_scored_identity_rejects_long_and_invalid_hybrid_parent_or_local_score() -> None:

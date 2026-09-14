@@ -24,6 +24,16 @@ from trader.domain.recommendation.decision_identity import (
     committed_record_identity_payload,
 )
 from trader.domain.recommendation.models import RecommendationAction, Strategy
+from trader.domain.recommendation.pipeline import (
+    PipelineFacet,
+    PipelineMetricName,
+    PipelineMetricRange,
+    PipelineReasonCount,
+    PipelineStageKey,
+    PipelineStageState,
+    PipelineStageStatus,
+    RecommendationPipelineStatus,
+)
 
 _Json: TypeAlias = str | int | float | bool | None | list["_Json"] | dict[str, "_Json"]
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -58,7 +68,7 @@ _DECISION_FIELDS = frozenset(
         "selection_diagnostics",
     }
 )
-_DECISION_OPTIONAL_FIELDS = frozenset({"population_count", "rejected_count"})
+_DECISION_OPTIONAL_FIELDS = frozenset({"population_count", "rejected_count", "pipeline"})
 _ITEM_FIELDS = frozenset(
     {
         "code",
@@ -118,6 +128,13 @@ _QUOTE_FIELDS = frozenset(
         "data_version",
     }
 )
+_PIPELINE_FIELDS = frozenset({"current_stage", "stages"})
+_PIPELINE_STAGE_FIELDS = frozenset(
+    {"key", "state", "input_count", "output_count", "metric_ranges", "threshold", "facets", "reason_counts"}
+)
+_PIPELINE_RANGE_FIELDS = frozenset({"metric", "minimum", "maximum"})
+_PIPELINE_FACET_FIELDS = frozenset({"key", "count", "total"})
+_PIPELINE_REASON_FIELDS = frozenset({"reason", "count"})
 
 
 def committed_record_bytes(record: CommittedDecisionRecord) -> bytes:
@@ -163,6 +180,7 @@ def committed_record_from_bytes(payload: bytes) -> CommittedDecisionRecord:
         population_count=_optional_integer(decision_raw.get("population_count"), "population_count"),
         rejected_count=_optional_integer(decision_raw.get("rejected_count"), "rejected_count"),
         selection_diagnostics=_selection_diagnostics_from_json(decision_raw.get("selection_diagnostics")),
+        pipeline=_pipeline_from_json(decision_raw.get("pipeline")),
     )
     record = CommittedDecisionRecord(
         decision=decision,
@@ -262,6 +280,60 @@ def _selection_diagnostics_from_json(raw: object) -> SelectionDiagnostics | None
         _integer(value, "review_candidate_count"),
         _optional_text(value.get("empty_reason")),
         _optional_integer(value.get("evaluated_count"), "evaluated_count"),
+    )
+
+
+def _pipeline_from_json(raw: object) -> RecommendationPipelineStatus | None:
+    if raw is None:
+        return None
+    value = _object(raw, "recommendation pipeline", required=_PIPELINE_FIELDS)
+    stages = []
+    for raw_stage in _list(value.get("stages"), "pipeline stages"):
+        stage = _object(raw_stage, "pipeline stage", required=_PIPELINE_STAGE_FIELDS)
+        ranges = tuple(
+            PipelineMetricRange(
+                cast(PipelineMetricName, _text(item, "metric")),
+                _number(item, "minimum"),
+                _number(item, "maximum"),
+            )
+            for item in (
+                _object(raw_range, "pipeline metric range", required=_PIPELINE_RANGE_FIELDS)
+                for raw_range in _list(stage.get("metric_ranges"), "pipeline metric ranges")
+            )
+        )
+        facets = tuple(
+            PipelineFacet(
+                _text(item, "key"),
+                _integer(item, "count"),
+                _optional_integer(item.get("total"), "pipeline facet total"),
+            )
+            for item in (
+                _object(raw_facet, "pipeline facet", required=_PIPELINE_FACET_FIELDS)
+                for raw_facet in _list(stage.get("facets"), "pipeline facets")
+            )
+        )
+        reasons = tuple(
+            PipelineReasonCount(_text(item, "reason"), _integer(item, "count"))
+            for item in (
+                _object(raw_reason, "pipeline reason", required=_PIPELINE_REASON_FIELDS)
+                for raw_reason in _list(stage.get("reason_counts"), "pipeline reasons")
+            )
+        )
+        stages.append(
+            PipelineStageStatus(
+                cast(PipelineStageKey, _text(stage, "key")),
+                cast(PipelineStageState, _text(stage, "state")),
+                _optional_integer(stage.get("input_count"), "pipeline input count"),
+                _optional_integer(stage.get("output_count"), "pipeline output count"),
+                ranges,
+                _optional_number(stage.get("threshold")),
+                facets,
+                reasons,
+            )
+        )
+    return RecommendationPipelineStatus(
+        cast(PipelineStageKey, _text(value, "current_stage")),
+        tuple(stages),
     )
 
 

@@ -14,6 +14,7 @@ from trader.domain.recommendation.decision_identity import (
     ScoredDecision,
 )
 from trader.domain.recommendation.models import RecommendationAction, Strategy
+from trader.domain.recommendation.pipeline import PipelineStageStatus, RecommendationPipelineStatus
 from trader.web.api.decision_serializers import serialize_event
 
 NOW = datetime(2026, 8, 11, 10, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -35,8 +36,29 @@ def test_unified_stream_replays_monotonic_cross_strategy_events() -> None:
 
 def test_scored_decision_event_serializes_complete_replace_patch_without_snapshot_get() -> None:
     base = _decision(Strategy.TOMORROW, 1)
+    keys = (
+        "dynamic_filter",
+        "board_cross_section",
+        "strategy_history",
+        "model_input",
+        "candidate_score",
+        "board_limit",
+        "candidate_refresh",
+        "input_coverage",
+        "evidence_score",
+        "model_cost_gate",
+        "local_score",
+        "deepseek_review",
+        "fusion",
+        "action_gate",
+        "concentration",
+    )
     decision = replace(
         base,
+        pipeline=RecommendationPipelineStatus(
+            "concentration",
+            tuple(PipelineStageStatus(key, "completed", 2, 2) for key in keys),
+        ),
         items=(
             base.items[0],
             replace(
@@ -76,6 +98,8 @@ def test_scored_decision_event_serializes_complete_replace_patch_without_snapsho
         "market": "market:1",
         "score_model": "daily_reconstructible_ensemble:model-hash",
     }
+    assert payload["pipeline"]["current_stage"] == "concentration"
+    assert len(payload["pipeline"]["stages"]) == 15
     assert payload["upserts"] == [
         {
             "action": "executable",

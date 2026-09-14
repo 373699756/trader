@@ -13,6 +13,13 @@ from trader.application.decisions.decision_stream import (
     UnifiedPublishedEvent,
 )
 from trader.domain.recommendation.decision_identity import DecisionItem, DecisionQuote
+from trader.domain.recommendation.pipeline import (
+    PipelineFacet,
+    PipelineMetricRange,
+    PipelineReasonCount,
+    PipelineStageStatus,
+    RecommendationPipelineStatus,
+)
 
 
 def serialize_decision_view(view: DecisionView) -> dict[str, object]:
@@ -42,6 +49,7 @@ def serialize_decision_view(view: DecisionView) -> dict[str, object]:
             "observation_count": view.coverage.observation_count,
         },
         "filter_reason_counts": dict(view.filter_reason_counts),
+        "pipeline": _serialize_pipeline(view.pipeline),
         "selection_diagnostics": (
             {
                 "maximum_final_score": view.selection_diagnostics.maximum_final_score,
@@ -73,6 +81,40 @@ def serialize_decision_view(view: DecisionView) -> dict[str, object]:
             else None
         ),
     }
+
+
+def _serialize_pipeline(pipeline: RecommendationPipelineStatus | None) -> dict[str, object] | None:
+    if pipeline is None:
+        return None
+    return {
+        "current_stage": pipeline.current_stage,
+        "stages": [_serialize_pipeline_stage(stage) for stage in pipeline.stages],
+    }
+
+
+def _serialize_pipeline_stage(stage: PipelineStageStatus) -> dict[str, object]:
+    return {
+        "key": stage.key,
+        "state": stage.state,
+        "input_count": stage.input_count,
+        "output_count": stage.output_count,
+        "metric_ranges": [_serialize_pipeline_range(value) for value in stage.metric_ranges],
+        "threshold": stage.threshold,
+        "facets": [_serialize_pipeline_facet(value) for value in stage.facets],
+        "reason_counts": [_serialize_pipeline_reason(value) for value in stage.reason_counts],
+    }
+
+
+def _serialize_pipeline_range(value: PipelineMetricRange) -> dict[str, object]:
+    return {"metric": value.metric, "minimum": value.minimum, "maximum": value.maximum}
+
+
+def _serialize_pipeline_facet(value: PipelineFacet) -> dict[str, object]:
+    return {"key": value.key, "count": value.count, "total": value.total}
+
+
+def _serialize_pipeline_reason(value: PipelineReasonCount) -> dict[str, object]:
+    return {"reason": value.reason, "count": value.count}
 
 
 def serialize_decision_item(item: DecisionItemView) -> dict[str, object]:
@@ -245,6 +287,7 @@ def _serialize_decision_replacement(
             if diagnostics is not None
             else {}
         ),
+        "pipeline": _serialize_pipeline(replacement.pipeline),
     }
 
 

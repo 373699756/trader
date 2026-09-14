@@ -20,6 +20,7 @@ from trader.domain.recommendation.decision_identity import (
     SelectionDiagnostics,
 )
 from trader.domain.recommendation.models import Strategy
+from trader.domain.recommendation.pipeline import RecommendationPipelineStatus
 
 ResyncReason = Literal[
     "cursor_ahead",
@@ -45,6 +46,7 @@ class DecisionReplacementPatch:
     degraded_reasons: tuple[str, ...]
     items: tuple[DecisionItem, ...]
     top_scores: tuple[DecisionItem, ...] = ()
+    pipeline: RecommendationPipelineStatus | None = None
 
 
 @dataclass(frozen=True)
@@ -138,6 +140,7 @@ class UnifiedDecisionEventStream:
                 decision.degraded_reasons,
                 selected,
                 top_scores,
+                decision.pipeline,
             )
         payload = DecisionEventPayload(
             event.strategy,

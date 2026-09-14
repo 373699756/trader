@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import threading
 from collections.abc import Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from typing import Protocol
 
@@ -773,13 +773,18 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                 )
         except (RuntimeError, TypeError, ValueError) as exc:
             raise DecisionUnavailableError(_decision_failure_code(exc)) from exc
+        quality_status = build_supply_status(
+            projection,
+            batch.candidate_stage_counts,
+            candidate_quote_eligible=batch.candidate_quote_eligible,
+            candidate_score_threshold=self._policy.selection.candidate_min_score,
+        )
+        projection = replace(
+            projection,
+            local=replace(projection.local, pipeline=quality_status.pipeline),
+        )
         with self._lock:
-            self._input_quality[request.strategy] = build_supply_status(
-                projection,
-                batch.candidate_stage_counts,
-                candidate_quote_eligible=batch.candidate_quote_eligible,
-                candidate_score_threshold=self._policy.selection.candidate_min_score,
-            )
+            self._input_quality[request.strategy] = quality_status
         if not projection.input_quality.publishable:
             self._draft_index.publish(projection.local)
             raise DecisionUnavailableError(projection.input_quality.status)
@@ -803,19 +808,22 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         self,
         projection: ScoredLocalProjection,
         decision: ScoredDecision,
-    ) -> None:
+    ) -> ScoredDecision:
         with self._lock:
-            self._projections[decision.version] = projection
-            self._decisions[decision.version] = decision
             current_quality = self._input_quality.get(decision.strategy)
             if current_quality is not None and current_quality.summary.trade_date == decision.trade_date:
-                self._input_quality[decision.strategy] = update_supply_status_decision(
+                current_quality = update_supply_status_decision(
                     current_quality,
                     projection,
                     decision,
                     candidate_score_threshold=self._policy.selection.candidate_min_score,
                 )
+                decision = replace(decision, pipeline=current_quality.pipeline)
+                self._input_quality[decision.strategy] = current_quality
+            self._projections[decision.version] = projection
+            self._decisions[decision.version] = decision
             self._trim_research_sources()
+            return decision
 
     def research_audit(self, version: str) -> CommittedResearchAudit | None:
         with self._lock:

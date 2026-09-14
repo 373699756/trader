@@ -70,6 +70,7 @@
       degraded_reasons: patch.degraded_reasons || [],
       coverage,
       selection_diagnostics: patch.selection_diagnostics || {},
+      pipeline: patch.pipeline || null,
       readiness_reason: null,
       draft: null,
       long_groups: Array.isArray(patch.long_groups) ? patch.long_groups : current.long_groups || [],

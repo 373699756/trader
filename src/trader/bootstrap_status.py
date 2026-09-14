@@ -6,17 +6,17 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict
 
 from trader.application.ports.model_scoring import ScoringHeadRuntimeStatus, ScoringProfileRuntimeStatus
-from trader.application.ports.runtime_status import (
-    InputQualityStatus,
+from trader.application.ports.runtime_status import InputQualityStatus
+from trader.application.runtime.cadence import CadencePlannerStatus
+from trader.application.runtime.runtime_issues import RuntimeIssue
+from trader.application.runtime.scheduler_runtime import SchedulerRuntime
+from trader.domain.recommendation.pipeline import (
     PipelineFacet,
     PipelineMetricRange,
     PipelineReasonCount,
     PipelineStageStatus,
     RecommendationPipelineStatus,
 )
-from trader.application.runtime.cadence import CadencePlannerStatus
-from trader.application.runtime.runtime_issues import RuntimeIssue
-from trader.application.runtime.scheduler_runtime import SchedulerRuntime
 from trader.infra.deepseek.reviewer import DeepSeekReviewer
 
 

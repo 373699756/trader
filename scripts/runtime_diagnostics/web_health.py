@@ -236,6 +236,8 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
             findings.extend(_model_input_findings(sample, strategy, quality))
             findings.extend(_model_industry_reference_findings(sample, strategy, quality))
             findings.extend(_scoring_output_findings(sample, strategy, quality, decision))
+        elif decision is not None and decision.pipeline is not None:
+            findings.extend(_pipeline_consistency_findings(sample, strategy, decision.pipeline))
     return findings
 
 
@@ -1094,7 +1096,9 @@ def _sample_payload(sample: WebSample, strategies: tuple[str, ...]) -> dict[str,
             "population_count": quality.population_count if quality is not None else None,
             "history_required_sessions": quality.history_required_sessions if quality is not None else None,
             "highest_final_score": quality.highest_final_score if quality is not None else None,
-            "pipeline": _pipeline_payload(quality.pipeline if quality is not None else None),
+            "pipeline": _pipeline_payload(
+                quality.pipeline if quality is not None else current.pipeline if current is not None else None
+            ),
             "population_filter_reason_counts": (
                 dict(quality.population_filter_reason_counts) if quality is not None else {}
             ),

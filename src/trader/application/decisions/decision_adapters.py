@@ -63,7 +63,7 @@ class DeepSeekAdapter(DeepSeekUpgradePort):
             return None
         hybrid = build_scored_hybrid(projection, self._policy, reviews, review_deadline=deadline)
         if hybrid is not None:
-            self._data.register_hybrid(projection, hybrid)
+            hybrid = self._data.register_hybrid(projection, hybrid)
         return hybrid
 
 

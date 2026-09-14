@@ -20,6 +20,7 @@ from trader.domain.recommendation.decision_identity import (
     formal_scored_decision,
 )
 from trader.domain.recommendation.models import RecommendationAction, Strategy
+from trader.domain.recommendation.pipeline import PipelineStageStatus, RecommendationPipelineStatus
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 8, 11, 10, 30, tzinfo=SHANGHAI)
@@ -211,6 +212,39 @@ def test_frozen_empty_decision_keeps_aggregate_evaluated_count_without_stock_ite
     assert history.coverage.evaluated_count == 239
     assert history.selection_diagnostics is not None
     assert history.selection_diagnostics.maximum_final_score == 97.44
+
+
+def test_frozen_history_exposes_the_persisted_pipeline_without_runtime_status() -> None:
+    keys = (
+        "dynamic_filter",
+        "board_cross_section",
+        "strategy_history",
+        "model_input",
+        "candidate_score",
+        "board_limit",
+        "candidate_refresh",
+        "input_coverage",
+        "evidence_score",
+        "model_cost_gate",
+        "local_score",
+        "deepseek_review",
+        "fusion",
+        "action_gate",
+        "concentration",
+    )
+    decision = replace(
+        _decision(trade_date=date(2026, 8, 8)),
+        pipeline=RecommendationPipelineStatus(
+            "concentration",
+            tuple(PipelineStageStatus(key, "completed", 1, 1) for key in keys),
+        ),
+    )
+    record = CommittedDecisionRecord(decision, datetime(2026, 8, 8, 11, 20, tzinfo=SHANGHAI), "scheduled")
+    queries = UnifiedDecisionQueries(UnifiedDecisionIndex(), UnifiedDecisionDraftIndex(), _Repository(record), _Clock())
+
+    history = queries.history(Strategy.TODAY, date(2026, 8, 8))
+
+    assert history.pipeline == decision.pipeline
 
 
 def test_scored_query_restores_rank_order_from_code_sorted_identity() -> None:

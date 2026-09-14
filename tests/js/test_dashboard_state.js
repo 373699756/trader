@@ -457,12 +457,12 @@ state.renderSummary(
   sandbox.window.TraderRender,
   { deepseek_budget: { limit: 168, used: 2, remaining: 166 } },
 );
-assert.strictEqual(summaryElements.inputQualityStatus.textContent, "评分输入待更新");
-assert.strictEqual(summaryElements.inputQualityMeta.textContent, "当前名单行情 1 / 2");
-assert.strictEqual(summaryElements.funnelStatus.textContent, "80 → — → 2");
-assert.strictEqual(summaryElements.funnelStages.textContent, "当前快照未提供逐阶段运行观测");
-assert.strictEqual(summaryElements.funnelScoreRange.textContent, "评分范围 —");
-assert.strictEqual(summaryElements.funnelMeta.textContent, "完整评分 → 动作合格 → 最终入池 · 正式 1 · 观察 1 · 最高 82.00");
+assert.strictEqual(summaryElements.inputQualityStatus.textContent, "已评分 80 / 总体 120");
+assert.strictEqual(summaryElements.inputQualityMeta.textContent, "最高 82.00 · 阶段范围与门槛未保存");
+assert.strictEqual(summaryElements.funnelStatus.textContent, "阶段观测不可用");
+assert.strictEqual(summaryElements.funnelStages.textContent, "旧快照未保存逐阶段运行观测；不以聚合计数拼接漏斗");
+assert.strictEqual(summaryElements.funnelScoreRange.textContent, "已保存最高分 82.00 · 最低分未保存");
+assert.strictEqual(summaryElements.funnelMeta.textContent, "旧快照聚合：总体 120 · 已评分 80 · 拒绝 40 · 正式 1 · 观察 1");
 assert.strictEqual(summaryElements.inputQualityStrategy.textContent, "今");
 assert.strictEqual(summaryElements.inputQualityScoreTime.textContent, "评分时间不可用");
 assert.strictEqual(summaryElements.publicationStatus.textContent, "实时滚动");
@@ -471,6 +471,34 @@ assert.strictEqual(
   summaryElements.topScoresStatus.textContent,
   "82.00 - 600001 - 正式股票\n75.00 - 600002 - 观察股票",
 );
+const persistedPipelineElements = summaryFixture();
+state.renderSummary(
+  persistedPipelineElements,
+  {
+    status: "ready",
+    strategy: "tomorrow",
+    trade_date: "2026-08-14",
+    frozen: true,
+    observed_at: "2026-08-14T14:48:00+08:00",
+    score_status: "scored",
+    coverage: { candidate_count: 5289, evaluated_count: 110, rejected_count: 5093 },
+    selection_diagnostics: { maximum_final_score: 65.42 },
+    pipeline: pipelineFixture,
+  },
+  [],
+  "closed",
+  null,
+  sandbox.window.TraderSelection,
+  sandbox.window.TraderRender,
+  { scheduler: { input_quality: {} }, deepseek_budget: { limit: 168, used: 0, remaining: 168 } },
+);
+assert.strictEqual(persistedPipelineElements.inputQualityStatus.textContent, "可评分 110 / 输入候选 125");
+assert.ok(persistedPipelineElements.inputQualityStages.textContent.includes("动态过滤 5289→196"));
+assert.ok(persistedPipelineElements.inputQualityStages.textContent.includes("完整评分 125→110"));
+assert.strictEqual(persistedPipelineElements.funnelStatus.textContent, "110 → 0 → 0");
+assert.ok(persistedPipelineElements.funnelStages.textContent.includes("模型成本门 110→0"));
+assert.ok(persistedPipelineElements.funnelStages.textContent.includes("最终入池 正式0 · 观察0"));
+assert.strictEqual(persistedPipelineElements.funnelScoreRange.textContent, "评分范围 39.18–65.42 · 最高 65.42");
 state.renderSummary(
   summaryElements,
   {
@@ -1424,8 +1452,8 @@ state.renderSummary(
   sandbox.window.TraderRender,
   null,
 );
-assert.strictEqual(replacementSummary.funnelStatus.textContent, "229 → — → 0");
-assert.strictEqual(replacementSummary.funnelMeta.textContent, "完整评分 → 动作合格 → 最终入池 · 正式 0 · 观察 0 · 最高 —");
+assert.strictEqual(replacementSummary.funnelStatus.textContent, "阶段观测不可用");
+assert.strictEqual(replacementSummary.funnelMeta.textContent, "旧快照聚合：总体 360 · 已评分 229 · 拒绝 89 · 正式 0 · 观察 0");
 assert.strictEqual(
   state.recommendationPatchDecision(patch, payload, "today-base", "today", "current"),
   "apply",

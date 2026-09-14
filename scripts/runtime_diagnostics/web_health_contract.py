@@ -142,6 +142,7 @@ class ProjectionSnapshot:
     maximum_final_score: float | None
     top_score_count: int | None
     highest_top_score: float | None
+    pipeline: PipelineSnapshot | None
     degraded_reasons: tuple[str, ...] = ()
 
 
@@ -423,6 +424,7 @@ def _parse_projection(payload: Mapping[str, object], *, include_items: bool) -> 
     items = payload.get("items")
     frozen = payload.get("frozen")
     top_score_count, highest_top_score = _top_score_summary(payload.get("top_scores"))
+    pipeline_payload = _mapping_or_none(payload.get("pipeline"))
     return ProjectionSnapshot(
         schema_version=_text(payload.get("schema_version")),
         strategy=_text(payload.get("strategy")),
@@ -440,6 +442,7 @@ def _parse_projection(payload: Mapping[str, object], *, include_items: bool) -> 
         maximum_final_score=_nonnegative_number(diagnostics.get("maximum_final_score")),
         top_score_count=top_score_count,
         highest_top_score=highest_top_score,
+        pipeline=_parse_pipeline(pipeline_payload) if pipeline_payload is not None else None,
         degraded_reasons=_text_tuple(payload.get("degraded_reasons"), limit=32),
     )
 

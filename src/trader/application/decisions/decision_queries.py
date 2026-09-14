@@ -23,6 +23,7 @@ from trader.domain.recommendation.decision_identity import (
     SelectionDiagnostics,
 )
 from trader.domain.recommendation.models import RecommendationAction, Strategy
+from trader.domain.recommendation.pipeline import RecommendationPipelineStatus
 
 DecisionViewStatus = Literal["ready", "not_ready", "not_applicable"]
 ScoreStatus = Literal["scored", "not_applicable"]
@@ -116,6 +117,7 @@ class DecisionView:
     draft: DecisionDraftView | None = None
     selection_diagnostics: SelectionDiagnostics | None = None
     top_scores: tuple[DecisionItemView, ...] = ()
+    pipeline: RecommendationPipelineStatus | None = None
     schema_version: str = DECISION_VIEW_SCHEMA_VERSION
 
     @property
@@ -264,6 +266,7 @@ def _scored_view(
         etag,
         selection_diagnostics=decision.selection_diagnostics,
         top_scores=top_scores,
+        pipeline=decision.pipeline,
     )
 
 

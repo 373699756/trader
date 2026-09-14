@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from trader.domain.market.models import Board
 from trader.domain.recommendation.models import RecommendationAction, Strategy
+from trader.domain.recommendation.pipeline import RecommendationPipelineStatus
 
 DecisionStage = Literal["local", "hybrid"]
 CommitKind = Literal["scheduled", "checkpoint_recovery", "close_fallback"]
@@ -216,6 +217,7 @@ class ScoredDecision:
     population_count: int | None = None
     rejected_count: int | None = None
     selection_diagnostics: SelectionDiagnostics | None = None
+    pipeline: RecommendationPipelineStatus | None = None
     schema_version: str = DECISION_IDENTITY_SCHEMA_VERSION
     content_hash: str = field(init=False)
     version: str = field(init=False)
@@ -481,6 +483,7 @@ def formal_scored_decision(
         population_count=decision.population_count,
         rejected_count=decision.rejected_count,
         selection_diagnostics=decision.selection_diagnostics,
+        pipeline=decision.pipeline,
         schema_version=decision.schema_version,
     )
 
@@ -512,7 +515,31 @@ def _scored_payload(
         payload["population_count"] = decision.population_count
         payload["rejected_count"] = decision.rejected_count
     payload["selection_diagnostics"] = _selection_diagnostics_payload(decision.selection_diagnostics)
+    if decision.pipeline is not None:
+        payload["pipeline"] = _pipeline_payload(decision.pipeline)
     return payload
+
+
+def _pipeline_payload(pipeline: RecommendationPipelineStatus) -> dict[str, _Json]:
+    return {
+        "current_stage": pipeline.current_stage,
+        "stages": [
+            {
+                "key": stage.key,
+                "state": stage.state,
+                "input_count": stage.input_count,
+                "output_count": stage.output_count,
+                "metric_ranges": [
+                    {"metric": value.metric, "minimum": value.minimum, "maximum": value.maximum}
+                    for value in stage.metric_ranges
+                ],
+                "threshold": stage.threshold,
+                "facets": [{"key": value.key, "count": value.count, "total": value.total} for value in stage.facets],
+                "reason_counts": [{"reason": value.reason, "count": value.count} for value in stage.reason_counts],
+            }
+            for stage in pipeline.stages
+        ],
+    }
 
 
 def committed_record_identity_payload(record: CommittedDecisionRecord) -> dict[str, _Json]:

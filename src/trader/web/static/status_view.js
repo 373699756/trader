@@ -239,7 +239,8 @@
     const marketWarmup = payload && payload.status === "not_ready" && !inputQuality
       ? marketWarmupStatus(statusPayload)
       : null;
-    const pipeline = inputQuality && inputQuality.pipeline
+    const pipeline = payload && payload.pipeline
+      || inputQuality && inputQuality.pipeline
       || marketWarmup && marketWarmup.pipeline
       || null;
     const runtimeSummary = inputQuality && inputQuality.summary
@@ -266,22 +267,27 @@
     const topScore = highestRuntimeScore == null
       ? visibleScore(scoreSummary.topScore)
       : highestRuntimeScore.toFixed(2);
-    renderInputQuality(els, payload, items, strategyQuality, marketWarmup);
+    renderInputQuality(els, payload, items, strategyQuality, marketWarmup, pipeline, topScore, evaluated);
     if (payload.strategy === "long") {
       els.funnelStatus.textContent = "不适用";
       els.funnelStages.textContent = "长期固定观察池不经过短线过滤、评分与正式推荐链路";
       els.funnelScoreRange.textContent = "评分范围 不适用";
       els.funnelMeta.textContent = "长期固定观察池不评分、不产生推荐";
-    } else {
+    } else if (pipeline) {
       const actionEligible = finiteNonNegativeInteger(action && action.output_count);
-      const selected = finiteNonNegativeInteger(concentration && concentration.output_count)
-        ?? (payload.status === "not_ready" ? null : executableCount + observedCount);
+      const selected = finiteNonNegativeInteger(concentration && concentration.output_count);
       els.funnelStatus.textContent = `${displayCount(evaluated)} → ${displayCount(actionEligible)} → ${displayCount(selected)}`;
-      els.funnelStages.textContent = pipeline
-        ? decisionPipelineDetails(pipeline)
-        : "当前快照未提供逐阶段运行观测";
+      els.funnelStages.textContent = decisionPipelineDetails(pipeline);
       els.funnelScoreRange.textContent = finalScoreRange(pipeline);
       els.funnelMeta.textContent = `完整评分 → 动作合格 → 最终入池 · 正式 ${executableCount} · 观察 ${observed} · 最高 ${topScore}`;
+    } else {
+      const legacy = legacyDecisionSummary(payload, evaluated, executableCount, observed, topScore);
+      els.funnelStatus.textContent = "阶段观测不可用";
+      els.funnelStages.textContent = "旧快照未保存逐阶段运行观测；不以聚合计数拼接漏斗";
+      els.funnelScoreRange.textContent = topScore === "—"
+        ? "已保存评分范围不可用"
+        : `已保存最高分 ${topScore} · 最低分未保存`;
+      els.funnelMeta.textContent = `旧快照聚合：${legacy.counts} · 正式 ${executableCount} · 观察 ${observed}`;
     }
     const marketFreshness = currentMarketFreshness(payload, statusPayload, strategySummary, firstVisible);
     const runtimeSource = marketFreshness.source;
@@ -303,7 +309,7 @@
     renderPublicationStatus(els, payload, statusPayload);
   }
 
-  function renderInputQuality(els, payload, items, inputQuality, marketWarmup) {
+  function renderInputQuality(els, payload, items, inputQuality, marketWarmup, pipeline, topScore, evaluated) {
     if (payload && payload.strategy === "long") {
       els.inputQualityStatus.textContent = "不适用";
       els.inputQualityStages.textContent = "长期固定观察池不经过短线评分输入链路";
@@ -316,15 +322,15 @@
     const runtimeSummary = inputQuality && inputQuality.summary || marketWarmup && marketWarmup.summary || {};
     const runtimeTotal = finiteNonNegativeInteger(runtimeSummary.quote_total_count);
     const runtimeAvailable = finiteNonNegativeInteger(runtimeSummary.quote_covered_count);
-    const pipeline = inputQuality && inputQuality.pipeline || marketWarmup && marketWarmup.pipeline;
-    if (inputQuality || marketWarmup) {
+    if (pipeline) {
       const readiness = inputQuality || marketWarmup;
-      const acquisitionPending = ["candidate_quotes_pending", "scoring_pending"].includes(readiness.primary_blocker);
+      const acquisitionPending = readiness
+        && ["candidate_quotes_pending", "scoring_pending"].includes(readiness.primary_blocker);
       const coverageStage = pipelineStage(pipeline, "input_coverage");
       const securityMaster = finiteNonNegativeInteger(pipelineFacet(coverageStage, "security_master")?.count);
       const history = finiteNonNegativeInteger(pipelineFacet(coverageStage, "history")?.count);
       els.inputQualityStages.textContent = inputPipelineDetails(pipeline);
-      if (runtimeTotal == null || runtimeAvailable == null || acquisitionPending || securityMaster == null || history == null) {
+      if (acquisitionPending || securityMaster == null || history == null) {
         els.inputQualityStatus.textContent = "评分输入准备中";
         els.inputQualityMeta.textContent = runtimeTotal != null && runtimeAvailable != null
           ? `行情 ${runtimeAvailable} / ${runtimeTotal} · 基础资料与历史待计算`
@@ -333,21 +339,58 @@
         els.inputQualityDegradations.textContent = "仅降级，不代表股票存在风险：待评分后核验";
         return;
       }
-      const candidate = finiteNonNegativeInteger(inputQuality.candidate_count) ?? runtimeTotal;
-      const scored = finiteNonNegativeInteger(inputQuality.candidate_scored_count)
+      const candidate = finiteNonNegativeInteger(coverageStage && coverageStage.input_count)
+        ?? finiteNonNegativeInteger(inputQuality && inputQuality.candidate_count)
+        ?? runtimeTotal;
+      const scored = finiteNonNegativeInteger(inputQuality && inputQuality.candidate_scored_count)
         ?? finiteNonNegativeInteger(pipelineStage(pipeline, "evidence_score")?.output_count) ?? 0;
-      els.inputQualityStatus.textContent = `可评分 ${scored} / 候选 ${candidate}`;
+      const candidateLabel = inputQuality ? "候选" : "输入候选";
+      els.inputQualityStatus.textContent = `可评分 ${scored} / ${candidateLabel} ${displayCount(candidate)}`;
       els.inputQualityMeta.textContent = `历史 ${history} / ${candidate} · ${percent(history, candidate)} · 证券资料 ${securityMaster} / ${candidate}`;
       renderInputQualityReasons(els, inputQuality, candidate, history, securityMaster);
       return;
     }
-    els.inputQualityStatus.textContent = inputQuality ? "评分输入待更新" : "评分输入待更新";
-    els.inputQualityStages.textContent = "当前快照未提供评分输入阶段观测";
-    els.inputQualityMeta.textContent = quoteAvailability.total
-      ? `当前名单行情 ${quoteAvailability.available} / ${quoteAvailability.total}`
-      : "当前无评分输入数据";
-    els.inputQualityBlockers.textContent = "本轮阻断：等待评分输入质量";
-    els.inputQualityDegradations.textContent = "仅降级，不代表股票存在风险：待计算";
+    const executable = items.filter((item) => item.action === "executable").length;
+    const observed = items.filter((item) => item.action === "observe").length;
+    const legacy = legacyDecisionSummary(payload, evaluated, executable, observed, topScore);
+    els.inputQualityStatus.textContent = `${legacy.scored} / 总体 ${legacy.population}`;
+    els.inputQualityStages.textContent = `旧快照未保存评分输入阶段观测；已保存聚合 ${legacy.counts}${legacy.reasons}`;
+    els.inputQualityMeta.textContent = `最高 ${topScore} · 阶段范围与门槛未保存`;
+    els.inputQualityBlockers.textContent = `本轮阻断：${legacy.blocker}`;
+    els.inputQualityDegradations.textContent = quoteAvailability.total
+      ? `仅降级，不代表股票存在风险：当前名单行情 ${quoteAvailability.available} / ${quoteAvailability.total}`
+      : "仅降级，不代表股票存在风险：可核验聚合已展示，阶段归属不可恢复";
+  }
+
+  function legacyDecisionSummary(payload, evaluated, executable, observed, topScore) {
+    const coverage = payload && payload.coverage || {};
+    const population = finiteNonNegativeInteger(coverage.candidate_count);
+    const rejected = finiteNonNegativeInteger(coverage.rejected_count);
+    const scored = displayCount(evaluated);
+    const counts = `总体 ${displayCount(population)} · 已评分 ${scored} · 拒绝 ${displayCount(rejected)}`;
+    const reasons = Object.entries(payload && payload.filter_reason_counts || {})
+      .filter(([reason, count]) => reason && finitePositiveInteger(count) != null)
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+      .slice(0, 3)
+      .map(([reason, count]) => `${window.TraderRender.reasonLabel(reason)}${count}`);
+    const emptyReason = payload && payload.selection_diagnostics && payload.selection_diagnostics.empty_reason;
+    const blocker = ({
+      no_scored_candidates: "没有形成完整评分候选",
+      score_below_observation_floor: `最高 ${topScore}，未达到观察线`,
+      no_positive_net_utility: "成本后净效用门未通过",
+      risk_or_execution_blocked: "达到分数线的候选受风险或执行门限制",
+      selection_limits: "最终池容量或集中度限制",
+    })[emptyReason] || "旧记录未保存阶段归属";
+    return {
+      population: displayCount(population),
+      scored: `已评分 ${scored}`,
+      rejected: displayCount(rejected),
+      counts,
+      reasons: reasons.length ? `；主要过滤 ${reasons.join(" · ")}` : "；过滤原因未保存",
+      blocker,
+      executable,
+      observed,
+    };
   }
 
   function renderInputQualityReasons(els, inputQuality, candidate, history, securityMaster) {

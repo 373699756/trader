@@ -14,10 +14,6 @@ from trader.application.decisions.decision_observers import DecisionObserverStat
 from trader.application.market_data.input_runtime import MarketDataAdapter
 from trader.application.ports.runtime_status import (
     InputQualityStatus,
-    PipelineFacet,
-    PipelineMetricRange,
-    PipelineStageStatus,
-    RecommendationPipelineStatus,
     SupplySummary,
 )
 from trader.application.ports.scheduler import ResearchRuntimeStatus
@@ -37,6 +33,12 @@ from trader.bootstrap import (
 )
 from trader.bootstrap_status import input_quality_payload, runtime_status
 from trader.domain.recommendation.models import Strategy
+from trader.domain.recommendation.pipeline import (
+    PipelineFacet,
+    PipelineMetricRange,
+    PipelineStageStatus,
+    RecommendationPipelineStatus,
+)
 from trader.infra.persistence.data_plane import DataPlaneRepository
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

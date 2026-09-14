@@ -127,6 +127,8 @@ def _sample(
     predictor_batch_count: int = 1,
     population_count: int = 5500,
     model_industry_source: tuple[int, int, int, str | None] = (5300, 0, 0, None),
+    include_input_quality: bool = True,
+    decision_pipeline: Mapping[str, object] | None = None,
 ) -> WebSample:
     quality = (
         {
@@ -151,7 +153,7 @@ def _sample(
                 "highest_final_score": highest_final_score,
             },
         }
-        if funnel is not None or decision_status != "not_ready"
+        if include_input_quality and (funnel is not None or decision_status != "not_ready")
         else None
     )
     status: dict[str, object] = {
@@ -283,6 +285,7 @@ def _sample(
             else []
         ),
         "items": items or [],
+        "pipeline": dict(decision_pipeline) if decision_pipeline is not None else None,
     }
     return parse_web_sample(
         number,
@@ -290,6 +293,28 @@ def _sample(
         status_payload=status,
         decision_payloads={_STRATEGY: decision},
     )
+
+
+def test_restarted_frozen_decision_reports_its_persisted_pipeline_without_runtime_input_quality() -> None:
+    sample = _sample(
+        1,
+        include_input_quality=False,
+        decision_pipeline=_funnel(),
+        frozen=True,
+        phase="after_close",
+    )
+
+    findings = analyze_samples((sample,), strategies=(_STRATEGY,), consecutive_zero_threshold=1)
+    report = build_report(
+        "http://127.0.0.1:5000",
+        (sample,),
+        findings,
+        strategies=(_STRATEGY,),
+        consecutive_zero_threshold=1,
+    )
+
+    assert not any(item.code == "input_quality_persistently_missing" for item in findings)
+    assert report["samples"][0]["strategies"][_STRATEGY]["pipeline"]["current_stage"] == "concentration"
 
 
 def test_repeated_input_supersession_with_missed_checkpoint_is_reported() -> None:

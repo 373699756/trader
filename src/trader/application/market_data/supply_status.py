@@ -7,8 +7,13 @@ from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
-from trader.application.ports.runtime_status import (
-    InputQualityStatus,
+from trader.application.ports.runtime_status import InputQualityStatus, SupplySummary
+from trader.application.recommendation.scored_projection import ScoredLocalProjection
+from trader.application.recommendation.scored_quality import ScoredInputQuality
+from trader.domain.market.models import FeatureSnapshot
+from trader.domain.recommendation.decision_identity import DecisionItem, ScoredDecision
+from trader.domain.recommendation.models import RecommendationAction, ScoredDisposition, ScoredStockEvaluation
+from trader.domain.recommendation.pipeline import (
     PipelineFacet,
     PipelineMetricName,
     PipelineMetricRange,
@@ -17,13 +22,7 @@ from trader.application.ports.runtime_status import (
     PipelineStageState,
     PipelineStageStatus,
     RecommendationPipelineStatus,
-    SupplySummary,
 )
-from trader.application.recommendation.scored_projection import ScoredLocalProjection
-from trader.application.recommendation.scored_quality import ScoredInputQuality
-from trader.domain.market.models import FeatureSnapshot
-from trader.domain.recommendation.decision_identity import DecisionItem, ScoredDecision
-from trader.domain.recommendation.models import RecommendationAction, ScoredDisposition, ScoredStockEvaluation
 from trader.domain.recommendation.selection.scored_selection import ScoredCandidateStageCounts
 
 
