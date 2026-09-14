@@ -12,21 +12,21 @@ from trader.domain.recommendation.model_scoring import TRAINED_HEAD_EXPOSURE_CON
 from trader.domain.recommendation.models import Strategy
 from trader.domain.research.baostock_daily import (
     BaoStockCalendar,
-    BaoStockDailySide,
-    BaoStockTrainingRow,
     build_baostock_training_split,
 )
 from trader.domain.research.history_control import HistoryTrainingDueState
-from trader.domain.research.history_revision import HistoryTrainingWindow
+from trader.domain.research.history_revision import HistoryTrainingPoint, HistoryTrainingWindow
 from trader.domain.research.tomorrow_training_input import REQUIRED_DAILY_FIELDS, FrozenDailyInputDescriptor
 from trader.infra.research.history_archive_repack import HistoryArchiveRepackFenceError
 from trader.infra.research.history_control_repository import HistoryMaintenanceAlreadyRunningError
+from trader.infra.research.history_training_due import HistoryTrainingDueQuery
 from trader.infra.research.history_training_input import HistoryTrainingInputSnapshot
-from trader.infra.scoring.head_bundles.contracts import (
+from trader.infra.scoring.profiles.v3.contracts import (
     D25_HEAD_CONTRACT,
     HEAD_CONTRACTS,
     TODAY_HEAD_CONTRACT,
     TOMORROW_HEAD_CONTRACT,
+    V3_TRAINING_PROFILE,
 )
 from trader.infra.scoring.profiles.v3.sample_builder import (
     aligned_sample_dates,
@@ -34,18 +34,18 @@ from trader.infra.scoring.profiles.v3.sample_builder import (
     residualize_sample_day,
     training_alpha_target,
 )
-from trader.infra.scoring.profiles.v3.training import (
-    _cleanup_abandoned_workspaces,
-    _mature_label_cutoff,
-    _training_contract_hash,
-    run_tomorrow_training,
-    run_v3_training,
-)
+from trader.infra.scoring.profiles.v3.training import run_tomorrow_training, run_v3_training
 from trader.infra.scoring.profiles.v3.training_sample_repository import (
     SQLiteV3TrainingSampleRepository,
     V3TrainingIndustryCounts,
     V3TrainingSample,
 )
+from trader.infra.scoring.training.engine import (
+    _cleanup_abandoned_workspaces,
+    _mature_label_cutoff,
+    _training_contract_hash,
+)
+from trader.infra.scoring.training.sample_builder import TrainingSampleBuildRequest
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -111,7 +111,7 @@ def _due(archive: SimpleNamespace, contract, *, reason: str, trained_age: int = 
 
 def _patch_archive(monkeypatch: pytest.MonkeyPatch, archive: SimpleNamespace) -> None:
     monkeypatch.setattr(
-        "trader.infra.scoring.profiles.v3.training.SQLiteHistoryTrainingInputArchive.open",
+        "trader.infra.scoring.training.engine.SQLiteHistoryTrainingInputArchive.open",
         lambda _path: archive,
     )
 
@@ -122,11 +122,11 @@ def test_training_cadence_stops_before_sample_work_on_the_nineteenth_matured_day
     archive = _cadence_archive(tmp_path / "history" / "baostock")
     _patch_archive(monkeypatch, archive)
     monkeypatch.setattr(
-        "trader.infra.scoring.profiles.v3.training.evaluate_history_training_due",
+        "trader.infra.scoring.training.engine.evaluate_history_training_due",
         lambda *_args, **_kwargs: _due(archive, TOMORROW_HEAD_CONTRACT, reason="not_due", trained_age=19),
     )
     monkeypatch.setattr(
-        "trader.infra.scoring.profiles.v3.training.build_training_samples",
+        "trader.infra.scoring.training.engine.build_training_samples",
         lambda *_args, **_kwargs: pytest.fail("samples must not be built before cadence is due"),
     )
 
@@ -143,7 +143,7 @@ def test_current_training_result_preserves_active_bundle_hashes(
     archive = _cadence_archive(tmp_path / "history" / "baostock")
     _patch_archive(monkeypatch, archive)
     monkeypatch.setattr(
-        "trader.infra.scoring.profiles.v3.training.evaluate_history_training_due",
+        "trader.infra.scoring.training.engine.evaluate_history_training_due",
         lambda *_args, **_kwargs: _due(archive, TOMORROW_HEAD_CONTRACT, reason="not_due"),
     )
 
@@ -169,21 +169,20 @@ def test_v3_training_validates_and_scans_history_once_then_fits_heads_sequential
     archive.verify_partitions = verify
     _patch_archive(monkeypatch, archive)
     monkeypatch.setattr(
-        "trader.infra.scoring.profiles.v3.training.evaluate_history_training_due",
-        lambda *_args, **kwargs: _due(
+        "trader.infra.scoring.training.engine.evaluate_history_training_due",
+        lambda query: _due(
             archive,
-            next(contract for contract in HEAD_CONTRACTS if contract.strategy is kwargs["strategy"]),
+            next(contract for contract in HEAD_CONTRACTS if contract.strategy is query.strategy),
             reason="initial_training_required",
         ),
     )
     scan_calls = 0
 
-    def build_samples(_archive, _codes, window, repository, *, progress) -> None:
+    def build_samples(request: TrainingSampleBuildRequest) -> None:
         nonlocal scan_calls
-        del progress
         scan_calls += 1
-        sample_day = window.split.model_fit_dates[0]
-        repository.add_final(
+        sample_day = request.window.split.model_fit_dates[0]
+        request.repository.add_final(
             (
                 V3TrainingSample(
                     "600000",
@@ -196,9 +195,9 @@ def test_v3_training_validates_and_scans_history_once_then_fits_heads_sequential
                 ),
             )
         )
-        repository.prepare_for_model_fitting(window.split)
+        request.repository.prepare_for_model_fitting(request.window.split)
 
-    monkeypatch.setattr("trader.infra.scoring.profiles.v3.training.build_training_samples", build_samples)
+    monkeypatch.setattr("trader.infra.scoring.training.engine.build_training_samples", build_samples)
     fitted: list[Strategy] = []
 
     def fit(_samples, _split, contract, *, progress):
@@ -207,14 +206,14 @@ def test_v3_training_validates_and_scans_history_once_then_fits_heads_sequential
         width = len(contract.feature_positions)
         return ({"银行": _industry_model(width)}, 1, 1)
 
-    monkeypatch.setattr("trader.infra.scoring.profiles.v3.training.fit_industry_models", fit)
+    monkeypatch.setattr("trader.infra.scoring.training.engine.fit_industry_models", fit)
     published: list[tuple[Strategy, Path]] = []
 
-    def publish(staging, output, strategy, _identity) -> None:
+    def publish(staging, output, strategy, _profile, _identity) -> None:
         assert {path.name for path in staging.iterdir()} == {"model.json", "report.json", "training-input.json"}
         published.append((strategy, output))
 
-    monkeypatch.setattr("trader.infra.scoring.profiles.v3.training.publish_head_bundle", publish)
+    monkeypatch.setattr("trader.infra.scoring.training.engine.publish_head_bundle", publish)
 
     result = run_v3_training(tmp_path / "history", tmp_path / "train")
 
@@ -222,9 +221,9 @@ def test_v3_training_validates_and_scans_history_once_then_fits_heads_sequential
     assert verify_calls == scan_calls == 1
     assert fitted == [Strategy.TODAY, Strategy.TOMORROW, Strategy.D25]
     assert published == [
-        (Strategy.TODAY, tmp_path / "train" / "today-v3"),
-        (Strategy.TOMORROW, tmp_path / "train" / "tomorrow-v3"),
-        (Strategy.D25, tmp_path / "train" / "d25-v3"),
+        (Strategy.TODAY, tmp_path / "train" / "v3" / "today"),
+        (Strategy.TOMORROW, tmp_path / "train" / "v3" / "tomorrow"),
+        (Strategy.D25, tmp_path / "train" / "v3" / "d25"),
     ]
     assert all(head.status == "engineering_ready" for head in result.heads)
     assert all(head.training_due is False for head in result.heads)
@@ -236,9 +235,11 @@ def test_v3_head_maturity_and_contract_hashes_are_independent_and_stable(tmp_pat
     assert _mature_label_cutoff(snapshot, TODAY_HEAD_CONTRACT) == snapshot.calendar.open_dates[-2]
     assert _mature_label_cutoff(snapshot, TOMORROW_HEAD_CONTRACT) == snapshot.calendar.open_dates[-2]
     assert _mature_label_cutoff(snapshot, D25_HEAD_CONTRACT) == snapshot.calendar.open_dates[-6]
-    hashes = {_training_contract_hash(contract) for contract in HEAD_CONTRACTS}
+    hashes = {_training_contract_hash(V3_TRAINING_PROFILE, contract) for contract in HEAD_CONTRACTS}
     assert len(hashes) == 3
-    assert _training_contract_hash(TOMORROW_HEAD_CONTRACT) == _training_contract_hash(TOMORROW_HEAD_CONTRACT)
+    assert _training_contract_hash(V3_TRAINING_PROFILE, TOMORROW_HEAD_CONTRACT) == _training_contract_hash(
+        V3_TRAINING_PROFILE, TOMORROW_HEAD_CONTRACT
+    )
 
 
 def test_v3_training_only_fits_the_head_whose_own_cadence_is_due(
@@ -247,21 +248,20 @@ def test_v3_training_only_fits_the_head_whose_own_cadence_is_due(
     archive = _cadence_archive(tmp_path / "history" / "baostock")
     _patch_archive(monkeypatch, archive)
 
-    def due_for_head(*_args, **kwargs):
-        contract = next(item for item in HEAD_CONTRACTS if item.strategy is kwargs["strategy"])
+    def due_for_head(query: HistoryTrainingDueQuery):
+        contract = next(item for item in HEAD_CONTRACTS if item.strategy is query.strategy)
         if contract.strategy is Strategy.D25:
             return _due(archive, contract, reason="initial_training_required")
         return _due(archive, contract, reason="not_due", trained_age=1)
 
-    monkeypatch.setattr("trader.infra.scoring.profiles.v3.training.evaluate_history_training_due", due_for_head)
+    monkeypatch.setattr("trader.infra.scoring.training.engine.evaluate_history_training_due", due_for_head)
 
-    def build_samples(_archive, _codes, window, repository, *, progress) -> None:
-        del progress
-        repository.add_final(
+    def build_samples(request: TrainingSampleBuildRequest) -> None:
+        request.repository.add_final(
             (
                 V3TrainingSample(
                     "600000",
-                    window.split.model_fit_dates[0],
+                    request.window.split.model_fit_dates[0],
                     "main",
                     "银行",
                     1.0,
@@ -270,9 +270,9 @@ def test_v3_training_only_fits_the_head_whose_own_cadence_is_due(
                 ),
             )
         )
-        repository.prepare_for_model_fitting(window.split)
+        request.repository.prepare_for_model_fitting(request.window.split)
 
-    monkeypatch.setattr("trader.infra.scoring.profiles.v3.training.build_training_samples", build_samples)
+    monkeypatch.setattr("trader.infra.scoring.training.engine.build_training_samples", build_samples)
     fitted: list[Strategy] = []
 
     def fit(_samples, _split, contract, *, progress):
@@ -280,8 +280,8 @@ def test_v3_training_only_fits_the_head_whose_own_cadence_is_due(
         fitted.append(contract.strategy)
         return ({"银行": _industry_model(len(contract.feature_positions))}, 1, 1)
 
-    monkeypatch.setattr("trader.infra.scoring.profiles.v3.training.fit_industry_models", fit)
-    monkeypatch.setattr("trader.infra.scoring.profiles.v3.training.publish_head_bundle", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("trader.infra.scoring.training.engine.fit_industry_models", fit)
+    monkeypatch.setattr("trader.infra.scoring.training.engine.publish_head_bundle", lambda *_args, **_kwargs: None)
 
     result = run_v3_training(tmp_path / "history", tmp_path / "train")
 
@@ -295,16 +295,16 @@ def test_training_keeps_each_due_baseline_when_the_shared_scan_fails(
     archive = _cadence_archive(tmp_path / "history" / "baostock")
     _patch_archive(monkeypatch, archive)
     monkeypatch.setattr(
-        "trader.infra.scoring.profiles.v3.training.evaluate_history_training_due",
-        lambda *_args, **kwargs: _due(
+        "trader.infra.scoring.training.engine.evaluate_history_training_due",
+        lambda query: _due(
             archive,
-            next(contract for contract in HEAD_CONTRACTS if contract.strategy is kwargs["strategy"]),
+            next(contract for contract in HEAD_CONTRACTS if contract.strategy is query.strategy),
             reason="cadence_due",
             trained_age=20,
         ),
     )
     monkeypatch.setattr(
-        "trader.infra.scoring.profiles.v3.training.build_training_samples",
+        "trader.infra.scoring.training.engine.build_training_samples",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("forced failure")),
     )
 
@@ -336,10 +336,8 @@ def test_training_does_not_open_a_second_snapshot_while_history_maintenance_is_r
         def __exit__(self, *_args: object) -> None:
             pass
 
-    monkeypatch.setattr(
-        "trader.infra.scoring.profiles.v3.training.SQLiteHistoryTrainingInputArchive.open", open_archive
-    )
-    monkeypatch.setattr("trader.infra.scoring.profiles.v3.training.HistoryMaintenanceLock", BusyMaintenanceLock)
+    monkeypatch.setattr("trader.infra.scoring.training.engine.SQLiteHistoryTrainingInputArchive.open", open_archive)
+    monkeypatch.setattr("trader.infra.scoring.training.engine.HistoryMaintenanceLock", BusyMaintenanceLock)
 
     result = run_v3_training(tmp_path / "history", tmp_path / "train")
 
@@ -351,7 +349,7 @@ def test_training_respects_the_history_repack_fence(tmp_path: Path, monkeypatch:
     archive = _cadence_archive(tmp_path / "history" / "baostock")
     _patch_archive(monkeypatch, archive)
     monkeypatch.setattr(
-        "trader.infra.scoring.profiles.v3.training.require_history_archive_repack_inactive",
+        "trader.infra.scoring.training.engine.require_history_archive_repack_inactive",
         lambda _root: (_ for _ in ()).throw(HistoryArchiveRepackFenceError("fenced")),
     )
 
@@ -361,9 +359,9 @@ def test_training_respects_the_history_repack_fence(tmp_path: Path, monkeypatch:
 
 
 def test_training_cleanup_removes_only_owned_abandoned_workspaces(tmp_path: Path) -> None:
-    abandoned = tmp_path / ".v3-sample-workspace.abandoned"
-    staging = tmp_path / "today-v3" / ".bundle-staging.abandoned"
-    preserved = tmp_path / "tomorrow-v3" / "model.json"
+    abandoned = tmp_path / ".training-sample-workspace.abandoned"
+    staging = tmp_path / "today" / ".bundle-staging.abandoned"
+    preserved = tmp_path / "tomorrow" / "model.json"
     abandoned.mkdir()
     staging.mkdir(parents=True)
     preserved.parent.mkdir(parents=True)
@@ -379,7 +377,7 @@ def test_training_cleanup_removes_only_owned_abandoned_workspaces(tmp_path: Path
 def test_sample_building_creates_t1_through_t5_and_d25_from_one_stream(tmp_path: Path) -> None:
     dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_250))
     split = build_baostock_training_split(dates, parent_manifest_hash="a" * 64)
-    rows = tuple(_training_row(day, 10.0 + index) for index, day in enumerate(dates[:66]))
+    rows = tuple(_training_point(day, 10.0 + index) for index, day in enumerate(dates[:66]))
 
     class Archive:
         snapshot = SimpleNamespace(calendar=BaoStockCalendar(dates))
@@ -389,9 +387,10 @@ def test_sample_building_creates_t1_through_t5_and_d25_from_one_stream(tmp_path:
             return 66
 
         @staticmethod
-        def iter_training_windows(_dates, progress):
+        def iter_training_windows(_dates, progress, *, window_sessions=61):
+            assert window_sessions == 61
             for offset in range(6):
-                yield HistoryTrainingWindow(rows[offset : offset + 61])
+                yield _training_window(rows[offset : offset + 61])
             progress(66)
 
     with SQLiteV3TrainingSampleRepository(tmp_path / "samples.sqlite3") as repository:
@@ -509,35 +508,9 @@ def _industry_model(width: int) -> dict[str, object]:
     }
 
 
-def _training_row(day: date, close: float, *, code: str = "600000") -> BaoStockTrainingRow:
-    unadjusted = BaoStockDailySide(
-        code,
-        day,
-        "unadjusted",
-        close,
-        close,
-        close,
-        close,
-        100.0,
-        1_000.0,
-        close - 0.1,
-        0.0,
-        0.01,
-        "trading",
-    )
-    qfq = BaoStockDailySide(
-        code,
-        day,
-        "qfq",
-        close,
-        close,
-        close,
-        close,
-        100.0,
-        1_000.0,
-        None,
-        None,
-        None,
-        "trading",
-    )
-    return BaoStockTrainingRow(code, day, "main", "银行", False, unadjusted, qfq)
+def _training_point(day: date, close: float) -> HistoryTrainingPoint:
+    return HistoryTrainingPoint(day, close, 1_000.0)
+
+
+def _training_window(points: tuple[HistoryTrainingPoint, ...]) -> HistoryTrainingWindow:
+    return HistoryTrainingWindow("600000", "main", "银行", False, "trading", points)

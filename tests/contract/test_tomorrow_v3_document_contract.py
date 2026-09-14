@@ -119,16 +119,21 @@ def test_trained_v3_profile_loads_only_the_fixed_active_bundle_files() -> None:
     assert "class ProfileIdentity" not in model_port
 
 
-def test_v3_training_owns_one_active_archive_and_disk_backed_sample_source() -> None:
-    training = (ROOT / "src/trader/infra/scoring/profiles/v3/training.py").read_text(encoding="utf-8")
-    sample_builder = (ROOT / "src/trader/infra/scoring/profiles/v3/sample_builder.py").read_text(encoding="utf-8")
+def test_profile_training_engine_owns_one_active_archive_and_disk_backed_sample_source() -> None:
+    engine = (ROOT / "src/trader/infra/scoring/training/engine.py").read_text(encoding="utf-8")
+    sample_builder = (ROOT / "src/trader/infra/scoring/training/sample_builder.py").read_text(encoding="utf-8")
+    v2_training = (ROOT / "src/trader/infra/scoring/profiles/v2/training.py").read_text(encoding="utf-8")
+    v3_training = (ROOT / "src/trader/infra/scoring/profiles/v3/training.py").read_text(encoding="utf-8")
 
-    assert "SQLiteHistoryTrainingInputArchive.open" in training
-    assert "BaoStockTrainingTrainingInputArchive" not in training
-    assert "SQLiteV3TrainingSampleRepository" in training
-    assert "read_training_batch" not in training
+    assert "SQLiteHistoryTrainingInputArchive.open" in engine
+    assert "BaoStockTrainingTrainingInputArchive" not in engine
+    assert "SQLiteTrainingSampleRepository" in engine
+    assert "read_training_batch" not in engine
     assert "iter_training_windows" in sample_builder
     assert "read_training_batch" not in sample_builder
-    assert "defaultdict" not in training
-    assert "tuple[_Sample" not in training
-    assert "allow_partial_history" not in training
+    assert "defaultdict" not in engine
+    assert "tuple[_Sample" not in engine
+    assert "allow_partial_history" not in engine
+    assert "run_profile_training" in v2_training
+    assert "run_profile_training" in v3_training
+    assert "SQLiteHistoryTrainingInputArchive" not in v2_training + v3_training

@@ -88,7 +88,7 @@ def test_archive_routes_single_day_code_window_and_cross_month_training_windows(
 
     windows = tuple(archive.iter_training_windows(snapshot, dates))
     assert len(windows) == 4
-    assert all(len(window.rows) == 61 for window in windows)
+    assert all(len(window.points) == 61 for window in windows)
 
     with pytest.raises(ValueError, match="cutoff"):
         archive.read_day(dates[-1] + timedelta(days=1), snapshot)
@@ -122,8 +122,13 @@ def test_archive_reads_2000_sessions_without_directory_scan_or_unbounded_windows
     assert len(snapshot.partitions) == len(route_history_months(dates[0], dates[-1]))
     assert window_count == 1940
     assert final_window is not None
-    assert len(final_window.rows) == 61
+    assert len(final_window.points) == 61
     assert final_window.trade_date == dates[-1]
+    long_windows = tuple(archive.iter_training_windows(snapshot, dates, window_sessions=251))
+    assert len(long_windows) == 1750
+    assert len(long_windows[-1].points) == 251
+    assert long_windows[-1].trade_date == dates[-1]
+    assert len(archive.read_code_window("600001", dates[-251:], snapshot)) == 251
     if baseline_descriptors is not None and peak_descriptors is not None:
         assert peak_descriptors <= baseline_descriptors + 4
 

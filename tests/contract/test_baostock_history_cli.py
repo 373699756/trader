@@ -134,6 +134,13 @@ def test_train_v3_is_a_zero_argument_command() -> None:
     assert not hasattr(args, "runtime_dir")
 
 
+def test_train_v2_is_a_zero_argument_command() -> None:
+    args = build_parser().parse_args(["train-v2"])
+
+    assert args.command == "train-v2"
+    assert not hasattr(args, "runtime_dir")
+
+
 def test_train_tomorrow_rejects_an_explicit_history_root_during_parsing(tmp_path: Path) -> None:
     history = tmp_path / "must-not-be-used"
 

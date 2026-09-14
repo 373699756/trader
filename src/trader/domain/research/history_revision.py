@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -9,10 +10,12 @@ from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.baostock_daily import (
     BaoStockBoard,
     BaoStockDailyCell,
+    BaoStockTradingStatus,
     BaoStockTrainingRow,
 )
 
 HISTORY_TRAINING_WINDOW_SESSIONS = 61
+MAX_HISTORY_TRAINING_WINDOW_SESSIONS = 251
 
 
 @dataclass(frozen=True)
@@ -71,33 +74,82 @@ class HistoryRevision:
             self.cell.qfq,
         )
 
+    @property
+    def training_point(self) -> HistoryTrainingPoint | None:
+        """Project a revision to the compact facts retained by rolling training windows."""
 
-@dataclass(frozen=True)
-class HistoryTrainingWindow:
-    rows: tuple[BaoStockTrainingRow, ...]
+        if (
+            not self.cell.obtained
+            or self.cell.unadjusted is None
+            or self.cell.qfq is None
+            or self.is_st is None
+            or self.industry is None
+        ):
+            return None
+        return HistoryTrainingPoint(
+            self.trade_date,
+            self.cell.qfq.close_price,
+            self.cell.qfq.amount,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryTrainingPoint:
+    """The only per-session facts required by profile feature construction."""
+
+    trade_date: date
+    qfq_close_price: float | None
+    qfq_amount: float | None
 
     def __post_init__(self) -> None:
-        rows = tuple(self.rows)
-        if len(rows) != HISTORY_TRAINING_WINDOW_SESSIONS:
-            raise ValueError("history training window must contain exactly 61 sessions")
-        if len({row.code for row in rows}) != 1:
-            raise ValueError("history training window must contain one code")
-        dates = tuple(row.trade_date for row in rows)
+        if type(self.trade_date) is not date:
+            raise ValueError("history training point date is invalid")
+        if any(
+            value is not None and (not math.isfinite(value) or value < 0.0)
+            for value in (self.qfq_close_price, self.qfq_amount)
+        ):
+            raise ValueError("history training point contains an invalid number")
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryTrainingWindow:
+    code: str
+    board: BaoStockBoard
+    industry: str
+    is_st: bool
+    trading_status: BaoStockTradingStatus
+    points: tuple[HistoryTrainingPoint, ...]
+    required_sessions: int = HISTORY_TRAINING_WINDOW_SESSIONS
+
+    def __post_init__(self) -> None:
+        points = tuple(self.points)
+        if not HISTORY_TRAINING_WINDOW_SESSIONS <= self.required_sessions <= MAX_HISTORY_TRAINING_WINDOW_SESSIONS:
+            raise ValueError("history training window session count is invalid")
+        if len(points) != self.required_sessions:
+            raise ValueError(
+                f"history training window does not match its required {self.required_sessions} session count"
+            )
+        if len(self.code) != 6 or not self.code.isdigit():
+            raise ValueError("history training window code is invalid")
+        if self.board not in {"main", "chinext", "star"} or self.trading_status not in {"trading", "suspended"}:
+            raise ValueError("history training window market facts are invalid")
+        if not self.industry.strip() or not isinstance(self.is_st, bool):
+            raise ValueError("history training window security facts are invalid")
+        dates = tuple(point.trade_date for point in points)
         if dates != tuple(sorted(set(dates))):
             raise ValueError("history training window dates are invalid")
-        object.__setattr__(self, "rows", rows)
-
-    @property
-    def code(self) -> str:
-        return self.rows[-1].code
+        object.__setattr__(self, "industry", self.industry.strip())
+        object.__setattr__(self, "points", points)
 
     @property
     def trade_date(self) -> date:
-        return self.rows[-1].trade_date
+        return self.points[-1].trade_date
 
 
 __all__ = [
     "HISTORY_TRAINING_WINDOW_SESSIONS",
+    "MAX_HISTORY_TRAINING_WINDOW_SESSIONS",
     "HistoryRevision",
+    "HistoryTrainingPoint",
     "HistoryTrainingWindow",
 ]

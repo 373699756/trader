@@ -10,9 +10,10 @@ from pathlib import Path
 from typing import Literal, cast
 
 from trader.domain.recommendation.model_scoring import TRAINED_HEAD_EXPOSURE_CONTRACT, ExposureContract
+from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
 from trader.domain.recommendation.models import Strategy
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
-from trader.infra.scoring.head_bundles.contracts import contract_for_strategy
+from trader.infra.scoring.head_bundles.contracts import TrainedProfileContract
 
 _MODEL_FIELDS = {
     "schema_version",
@@ -137,7 +138,7 @@ class TrainedIndustryModelArtifact:
 
 @dataclass(frozen=True)
 class TrainedHeadBundleArtifact:
-    serialization_profile_id: Literal["v3"]
+    serialization_profile_id: ScoringProfileId
     strategy: Strategy
     model_id: str
     feature_ids: tuple[str, ...]
@@ -187,13 +188,17 @@ class _GroupIdentity:
     training_universe_codes: int
 
 
-def load_head_bundle(path: Path, strategy: Strategy) -> TrainedHeadBundleArtifact:
-    artifact = decode_head_bundle(json.loads(path.read_text(encoding="utf-8")), strategy)
+def load_head_bundle(
+    path: Path,
+    strategy: Strategy,
+    profile: TrainedProfileContract,
+) -> TrainedHeadBundleArtifact:
+    artifact = decode_head_bundle(json.loads(path.read_text(encoding="utf-8")), strategy, profile)
     report = _decode_group_document(
-        json.loads(path.with_name("report.json").read_text(encoding="utf-8")), strategy, report=True
+        json.loads(path.with_name("report.json").read_text(encoding="utf-8")), strategy, profile, report=True
     )
     training_input = _decode_group_document(
-        json.loads(path.with_name("training-input.json").read_text(encoding="utf-8")), strategy, report=False
+        json.loads(path.with_name("training-input.json").read_text(encoding="utf-8")), strategy, profile, report=False
     )
     expected = (
         artifact.strategy,
@@ -219,9 +224,13 @@ def load_head_bundle(path: Path, strategy: Strategy) -> TrainedHeadBundleArtifac
     return artifact
 
 
-def decode_head_bundle(document: object, strategy: Strategy) -> TrainedHeadBundleArtifact:
+def decode_head_bundle(
+    document: object,
+    strategy: Strategy,
+    profile: TrainedProfileContract,
+) -> TrainedHeadBundleArtifact:
     payload, content_hash = _hashed_object(document, _MODEL_FIELDS, "model")
-    contract = contract_for_strategy(strategy)
+    contract = profile.head_for_strategy(strategy)
     feature_ids = tuple(_string_list(payload, "feature_ids"))
     feature_units = tuple(_string_list(payload, "feature_units"))
     industries = _decode_industries(payload, len(feature_ids))
@@ -232,8 +241,8 @@ def decode_head_bundle(document: object, strategy: Strategy) -> TrainedHeadBundl
     ridge_weight = _number(weights, "ridge")
     lightgbm_weight = _number(weights, "lightgbm")
     if (
-        _text(payload, "schema_version") != "v3_head_scoring_model"
-        or _text(payload, "profile_id") != "v3"
+        _text(payload, "schema_version") != f"{profile.profile_id}_head_scoring_model"
+        or _text(payload, "profile_id") != profile.profile_id
         or _text(payload, "strategy_head") != strategy.value
         or _text(payload, "model_id") != contract.model_id
         or feature_ids != contract.feature_manifest.names
@@ -274,7 +283,7 @@ def decode_head_bundle(document: object, strategy: Strategy) -> TrainedHeadBundl
     if input_codes < 1 or universe_codes != input_codes:
         raise ValueError("trained-head complete training input coverage is invalid")
     return TrainedHeadBundleArtifact(
-        "v3",
+        profile.profile_id,
         strategy,
         contract.model_id,
         feature_ids,
@@ -308,14 +317,22 @@ def decode_head_bundle(document: object, strategy: Strategy) -> TrainedHeadBundl
     )
 
 
-def _decode_group_document(document: object, strategy: Strategy, *, report: bool) -> _GroupIdentity:
+def _decode_group_document(
+    document: object,
+    strategy: Strategy,
+    profile: TrainedProfileContract,
+    *,
+    report: bool,
+) -> _GroupIdentity:
     fields = _REPORT_FIELDS if report else _INPUT_FIELDS
     payload, content_hash = _hashed_object(document, fields, "report" if report else "training input")
-    contract = contract_for_strategy(strategy)
-    expected_schema = "v3_head_training_report" if report else "v3_head_training_input"
+    contract = profile.head_for_strategy(strategy)
+    expected_schema = (
+        f"{profile.profile_id}_head_training_report" if report else f"{profile.profile_id}_head_training_input"
+    )
     if (
         _text(payload, "schema_version") != expected_schema
-        or _text(payload, "profile_id") != "v3"
+        or _text(payload, "profile_id") != profile.profile_id
         or _text(payload, "strategy_head") != strategy.value
         or _text(payload, "training_input_scope") != "complete_manifest"
         or _text(payload, "feature_manifest_hash") != contract.feature_manifest.content_hash

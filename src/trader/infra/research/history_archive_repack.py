@@ -247,7 +247,13 @@ class HistoryArchiveRepackCoordinator:
             if journal.state != "verified":
                 raise HistoryArchiveRepackError("history repack must be verified before finalization")
             _require_stable_target(layout, state, full_hash=False)
-            bundle = inspect_active_head_bundle(training_root.resolve() / "tomorrow-v3", Strategy.TOMORROW)
+            from trader.infra.scoring.profiles.v3.contracts import V3_TRAINING_PROFILE
+
+            bundle = inspect_active_head_bundle(
+                training_root.resolve() / "v3" / "tomorrow",
+                Strategy.TOMORROW,
+                V3_TRAINING_PROFILE,
+            )
             evidence = read_tomorrow_training_memory_evidence(memory_evidence_path.resolve())
             if (
                 bundle.training_input_hash != state.target_snapshot_hash

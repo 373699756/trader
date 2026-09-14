@@ -14,6 +14,7 @@ from trader.infra.scoring.head_bundles.bundle_locator import locate_head_bundles
 from trader.infra.scoring.head_bundles.profile import build_trained_scoring_profile
 from trader.infra.scoring.profiles.v1.artifact_codec import decode_tomorrow_artifact as decode_v1_artifact
 from trader.infra.scoring.profiles.v1.profile import build_scoring_profile as build_v1_profile
+from trader.infra.scoring.profiles.v3.contracts import V3_TRAINING_PROFILE
 
 
 def load_scoring_profile(
@@ -29,7 +30,7 @@ def load_scoring_profile(
     if profile_id in {"v2", "v3"}:
         try:
             bundle_paths = locate_head_bundles(training_root or Path("data/train"))
-            artifacts = tuple(load_head_bundle(path, strategy) for strategy, path in bundle_paths)
+            artifacts = tuple(load_head_bundle(path, strategy, V3_TRAINING_PROFILE) for strategy, path in bundle_paths)
             return build_trained_scoring_profile(profile_id, artifacts)
         except FileNotFoundError as exc:
             raise RuntimeError("shared strategy-head training models are unavailable") from exc

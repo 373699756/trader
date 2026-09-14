@@ -1,16 +1,12 @@
-"""Immutable contracts for the three shared daily-close proxy heads."""
+"""Immutable contracts shared by profile-owned daily-close model heads."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal
 
-from trader.domain.market.feature_contracts import (
-    D25_MODEL_FEATURE_MANIFEST,
-    TODAY_MODEL_FEATURE_MANIFEST,
-    TOMORROW_MODEL_FEATURE_MANIFEST,
-    FeatureVectorManifest,
-)
+from trader.domain.market.feature_contracts import FeatureVectorManifest
+from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
 from trader.domain.recommendation.models import Strategy
 
 TrainedTargetColumn = Literal["target_t1", "target_d25_aggregate"]
@@ -33,55 +29,40 @@ class TrainedHeadContract:
 
     @property
     def directory_name(self) -> str:
-        return f"{self.strategy.value}-v3"
+        return self.strategy.value
 
 
-TODAY_HEAD_CONTRACT = TrainedHeadContract(
-    Strategy.TODAY,
-    "today_industry_ridge_lightgbm",
-    TODAY_MODEL_FEATURE_MANIFEST,
-    (1, 2, 3, 4, 5),
-    "target_t1",
-    1,
-    "11:20",
-    "pre_cost_excess_return_t1",
-)
-TOMORROW_HEAD_CONTRACT = TrainedHeadContract(
-    Strategy.TOMORROW,
-    "industry_ridge_lightgbm",
-    TOMORROW_MODEL_FEATURE_MANIFEST,
-    (0, 1, 2, 3, 4, 5),
-    "target_t1",
-    1,
-    "14:50",
-    "pre_cost_excess_return",
-)
-D25_HEAD_CONTRACT = TrainedHeadContract(
-    Strategy.D25,
-    "d25_industry_ridge_lightgbm",
-    D25_MODEL_FEATURE_MANIFEST,
-    (1, 2, 3, 4, 5),
-    "target_d25_aggregate",
-    5,
-    "14:50",
-    "pre_cost_mean_excess_return_t2_t5",
-)
-HEAD_CONTRACTS = (TODAY_HEAD_CONTRACT, TOMORROW_HEAD_CONTRACT, D25_HEAD_CONTRACT)
+@dataclass(frozen=True)
+class TrainedProfileContract:
+    profile_id: ScoringProfileId
+    output_directory: str
+    history_sessions: int
+    raw_feature_manifest: FeatureVectorManifest
+    momentum_horizons: tuple[int, ...]
+    market_state_momentum_horizons: tuple[int, ...]
+    heads: tuple[TrainedHeadContract, ...]
 
+    def __post_init__(self) -> None:
+        if (
+            self.profile_id not in {"v2", "v3"}
+            or self.output_directory != self.profile_id
+            or self.history_sessions < 61
+            or self.history_sessions != max(self.momentum_horizons) + 1
+            or len(set(self.momentum_horizons)) != len(self.momentum_horizons)
+            or not set(self.market_state_momentum_horizons).issubset(self.momentum_horizons)
+            or tuple(head.strategy for head in self.heads) != (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+        ):
+            raise ValueError("trained profile contract is invalid")
 
-def contract_for_strategy(strategy: Strategy) -> TrainedHeadContract:
-    try:
-        return next(item for item in HEAD_CONTRACTS if item.strategy is strategy)
-    except StopIteration as exc:
-        raise ValueError(f"{strategy.value} has no trained model head") from exc
+    def head_for_strategy(self, strategy: Strategy) -> TrainedHeadContract:
+        try:
+            return next(head for head in self.heads if head.strategy is strategy)
+        except StopIteration as exc:
+            raise ValueError(f"{strategy.value} has no trained model head") from exc
 
 
 __all__ = [
-    "D25_HEAD_CONTRACT",
-    "TODAY_HEAD_CONTRACT",
-    "TOMORROW_HEAD_CONTRACT",
-    "HEAD_CONTRACTS",
     "TrainedHeadContract",
+    "TrainedProfileContract",
     "TrainedTargetColumn",
-    "contract_for_strategy",
 ]

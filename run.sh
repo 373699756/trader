@@ -25,7 +25,8 @@ usage() {
     "离线研究（仅在明确执行研究任务时使用）:" \
     "  ./run.sh download_history        零参数历史维护" \
     "  ./run.sh train-tomorrow          从完整 manifest 运行 Tomorrow 训练" \
-    "  ./run.sh train-v3                一次扫描历史并顺序训练 V2/V3 共享三头" \
+    "  ./run.sh train-v2                按 V2 251 日特征训练独立三头" \
+    "  ./run.sh train-v3                按 V3 61 日特征训练独立三头" \
     "" \
     "看板和 check 可追加 --profile v1|v2|v3；离线数据与训练命令均为零参数。" \
     "" \
@@ -55,7 +56,7 @@ while (($#)); do
       SCORING_PROFILE_SET=1
       shift
       ;;
-    help|-h|--help|check|download_history|train-tomorrow|train-v3|install-history-automation|uninstall-history-automation)
+    help|-h|--help|check|download_history|train-tomorrow|train-v2|train-v3|install-history-automation|uninstall-history-automation)
       if ((MODE_SET)); then
         FORWARD_ARGS+=("$1")
       else
@@ -83,7 +84,7 @@ if ((SCORING_PROFILE_SET)) && [[ "$SCORING_PROFILE" != "v1" && "$SCORING_PROFILE
   exit 2
 fi
 
-if [[ "$MODE" == "download_history" || "$MODE" == "train-tomorrow" || "$MODE" == "train-v3" || "$MODE" == "install-history-automation" || "$MODE" == "uninstall-history-automation" ]] && ((SCORING_PROFILE_SET || ${#FORWARD_ARGS[@]})); then
+if [[ "$MODE" == "download_history" || "$MODE" == "train-tomorrow" || "$MODE" == "train-v2" || "$MODE" == "train-v3" || "$MODE" == "install-history-automation" || "$MODE" == "uninstall-history-automation" ]] && ((SCORING_PROFILE_SET || ${#FORWARD_ARGS[@]})); then
   printf '%s\n' "$MODE 不接受任何参数；请只运行 ./run.sh $MODE。" >&2
   exit 2
 fi
@@ -96,7 +97,7 @@ case "$MODE" in
   "")
     COMMAND_KIND="server"
     ;;
-  check|download_history|train-tomorrow|train-v3|install-history-automation|uninstall-history-automation)
+  check|download_history|train-tomorrow|train-v2|train-v3|install-history-automation|uninstall-history-automation)
     COMMAND_KIND="cli"
     ;;
   *)
@@ -158,7 +159,7 @@ fi
 if [[ "$MODE" == "download_history" ]]; then
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" download_history
 fi
-if [[ "$MODE" == "train-tomorrow" || "$MODE" == "train-v3" ]]; then
+if [[ "$MODE" == "train-tomorrow" || "$MODE" == "train-v2" || "$MODE" == "train-v3" ]]; then
   if [[ "$(uname -s)" == "Linux" ]]; then
     if command -v systemd-run >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
       exec systemd-run --user --scope --quiet --collect \

@@ -7,6 +7,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 
 from trader.application.research.historical_label import HistoricalLabelPreregistrationService
 from trader.application.research.history_archive_status import HistoryArchiveStatus
@@ -46,10 +47,29 @@ from trader.infra.research.tomorrow_research_artifacts import (
 )
 from trader.infra.settings import RuntimeSettings
 
+if TYPE_CHECKING:
+    from trader.application.research.tomorrow_training import TomorrowTrainingProgressPort
+    from trader.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+    from trader.infra.scoring.training.engine import TrainingRunResult
+
 
 @dataclass(frozen=True)
 class ResearchCommandOptions:
     workers: int = 5
+
+
+class _ProfileTrainingCallable(Protocol):
+    def __call__(
+        self,
+        history_root: Path,
+        train_root: Path,
+        *,
+        progress: TomorrowTrainingProgressPort | None = None,
+    ) -> TrainingRunResult: ...
+
+
+class _TrainingProgressFactory(Protocol):
+    def __call__(self, *, command_label: str) -> StderrTomorrowTrainingProgress: ...
 
 
 class _TomorrowResearchProgress(TomorrowResearchProgressPort):
@@ -82,6 +102,8 @@ def run_research_command(
 ) -> int:
     if command == "train-tomorrow":
         return _run_tomorrow_research_orchestrator(runtime)
+    if command == "train-v2":
+        return _run_v2_training_orchestrator(runtime)
     if command == "train-v3":
         return _run_v3_training_orchestrator(runtime)
     if command == "research-status":
@@ -222,7 +244,7 @@ def _run_tomorrow_research_orchestrator(
             return 130
     payload = {
         "schema_version": "tomorrow_training_result",
-        "artifact_root": str(_train_data_root() / "tomorrow-v3"),
+        "artifact_root": str(_train_data_root() / "v3" / "tomorrow"),
         "status": result.status,
         "run_id": result.run_id,
         "training_input_scope": result.training_input_scope,
@@ -259,9 +281,25 @@ def _run_v3_training_orchestrator(runtime: RuntimeSettings) -> int:
     from trader.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
     from trader.infra.scoring.profiles.v3.training import run_v3_training
 
-    with StderrTomorrowTrainingProgress(command_label="V3训练") as progress:
+    return _run_profile_training_command("v3", run_v3_training, StderrTomorrowTrainingProgress)
+
+
+def _run_v2_training_orchestrator(runtime: RuntimeSettings) -> int:
+    del runtime
+    from trader.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+    from trader.infra.scoring.profiles.v2.training import run_v2_training
+
+    return _run_profile_training_command("v2", run_v2_training, StderrTomorrowTrainingProgress)
+
+
+def _run_profile_training_command(
+    profile_id: str,
+    train: _ProfileTrainingCallable,
+    progress_factory: _TrainingProgressFactory,
+) -> int:
+    with progress_factory(command_label=f"{profile_id.upper()}训练") as progress:
         try:
-            result = run_v3_training(
+            result = train(
                 _history_data_root(),
                 _train_data_root(),
                 progress=progress,
@@ -272,7 +310,7 @@ def _run_v3_training_orchestrator(runtime: RuntimeSettings) -> int:
             progress.publish_cancelled()
             return 130
     payload = {
-        "schema_version": "v3_training_result",
+        "schema_version": f"{profile_id}_training_result",
         "status": result.status,
         "run_id": result.run_id,
         "training_input_hash": result.training_input_hash,
@@ -280,7 +318,7 @@ def _run_v3_training_orchestrator(runtime: RuntimeSettings) -> int:
         "process_peak_rss_bytes": _process_peak_rss_bytes(),
         "heads": {
             head.strategy.value: {
-                "artifact_root": str(_train_data_root() / f"{head.strategy.value}-v3"),
+                "artifact_root": str(_train_data_root() / profile_id / head.strategy.value),
                 "status": head.status,
                 "label_cutoff": head.label_cutoff.isoformat() if head.label_cutoff is not None else None,
                 "matured_label_days_since_training": head.matured_label_days_since_training,

@@ -224,6 +224,22 @@ def calculate_tomorrow_qfq_alpha(anchors: QfqPriceAnchors) -> tuple[FeatureValue
     return (*DailyReturnFeatureCalculator.calculate(anchors), *SkipRecentMomentumFeatureCalculator.calculate(anchors))
 
 
+def calculate_profile_qfq_alpha(
+    anchors: QfqPriceAnchors,
+    momentum_horizons: tuple[int, ...],
+) -> tuple[FeatureValue, ...]:
+    return (
+        *DailyReturnFeatureCalculator.calculate(anchors),
+        *(
+            FeatureValue(
+                FeatureId(f"qfq_momentum_{horizon}d_skip5"),
+                decimal_return(anchors.lag(5), anchors.lag(horizon)),
+            )
+            for horizon in momentum_horizons
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class _FeatureSemantics:
     family: str
@@ -299,6 +315,40 @@ _RESIDUAL_SPECS = tuple(
     )
     for horizon in (20, 40, 60)
 )
+_V2_MOMENTUM_HORIZONS = (20, 40, 60, 120, 250)
+_V2_MOMENTUM_SPECS = tuple(
+    _feature(
+        f"qfq_momentum_{horizon}d_skip5",
+        semantics=_MOMENTUM_SEMANTICS,
+        dependencies=("qfq_close_lag_5", f"qfq_close_lag_{horizon}"),
+    )
+    for horizon in _V2_MOMENTUM_HORIZONS
+)
+_V2_RESIDUAL_SPECS = tuple(
+    _feature(
+        f"qfq_residual_momentum_{horizon}d_skip5",
+        semantics=_RESIDUAL_SEMANTICS,
+        dependencies=(
+            f"qfq_momentum_{horizon}d_skip5",
+            "market_cross_section",
+            "board_cross_section",
+            "industry_cross_section",
+            "qfq_average_amount_20d",
+        ),
+    )
+    for horizon in _V2_MOMENTUM_HORIZONS
+)
+_MARKET_STATE_SEMANTICS = _FeatureSemantics(
+    "market_regime", "mixed", "same_anchor_cross_section", "reject_model_input", "market_state"
+)
+_V2_MARKET_STATE_SPECS = tuple(
+    _feature(
+        f"market_qfq_momentum_{horizon}d_skip5",
+        semantics=_MARKET_STATE_SEMANTICS,
+        dependencies=(f"qfq_momentum_{horizon}d_skip5", "market_cross_section"),
+    )
+    for horizon in (120, 250)
+)
 _RESEARCH_FEATURE_NAMES = (
     "residual_reversal_1d",
     "residual_reversal_3d",
@@ -341,6 +391,9 @@ _RESEARCH_SPECS = tuple(
 )
 
 FEATURE_SPEC_CATALOG = FeatureSpecCatalog((*_RETURN_SPECS, *_MOMENTUM_SPECS, *_RESIDUAL_SPECS, *_RESEARCH_SPECS))
+V2_FEATURE_SPEC_CATALOG = FeatureSpecCatalog(
+    (*_RETURN_SPECS, *_V2_MOMENTUM_SPECS, *_V2_RESIDUAL_SPECS, *_V2_MARKET_STATE_SPECS, *_RESEARCH_SPECS)
+)
 TOMORROW_RAW_ALPHA_FEATURE_MANIFEST = FEATURE_SPEC_CATALOG.manifest(
     tuple(item.feature_id for item in (*_RETURN_SPECS, *_MOMENTUM_SPECS))
 )
@@ -352,6 +405,17 @@ TREND_MODEL_FEATURE_MANIFEST = FEATURE_SPEC_CATALOG.manifest(
 )
 TODAY_MODEL_FEATURE_MANIFEST = TREND_MODEL_FEATURE_MANIFEST
 D25_MODEL_FEATURE_MANIFEST = TREND_MODEL_FEATURE_MANIFEST
+V2_RAW_ALPHA_FEATURE_MANIFEST = V2_FEATURE_SPEC_CATALOG.manifest(
+    tuple(item.feature_id for item in (*_RETURN_SPECS, *_V2_MOMENTUM_SPECS))
+)
+V2_TOMORROW_MODEL_FEATURE_MANIFEST = V2_FEATURE_SPEC_CATALOG.manifest(
+    tuple(item.feature_id for item in (*_RETURN_SPECS, *_V2_RESIDUAL_SPECS, *_V2_MARKET_STATE_SPECS))
+)
+V2_TREND_MODEL_FEATURE_MANIFEST = V2_FEATURE_SPEC_CATALOG.manifest(
+    tuple(item.feature_id for item in (*_RETURN_SPECS[1:], *_V2_RESIDUAL_SPECS, *_V2_MARKET_STATE_SPECS))
+)
+V2_TODAY_MODEL_FEATURE_MANIFEST = V2_TREND_MODEL_FEATURE_MANIFEST
+V2_D25_MODEL_FEATURE_MANIFEST = V2_TREND_MODEL_FEATURE_MANIFEST
 TOMORROW_RESIDUAL_MOMENTUM_FEATURE_MANIFEST = FEATURE_SPEC_CATALOG.manifest(
     tuple(item.feature_id for item in _RESIDUAL_SPECS)
 )
@@ -378,6 +442,13 @@ __all__ = [
     "TODAY_MODEL_FEATURE_MANIFEST",
     "D25_MODEL_FEATURE_MANIFEST",
     "TREND_MODEL_FEATURE_MANIFEST",
+    "V2_D25_MODEL_FEATURE_MANIFEST",
+    "V2_FEATURE_SPEC_CATALOG",
+    "V2_RAW_ALPHA_FEATURE_MANIFEST",
+    "V2_TODAY_MODEL_FEATURE_MANIFEST",
+    "V2_TOMORROW_MODEL_FEATURE_MANIFEST",
+    "V2_TREND_MODEL_FEATURE_MANIFEST",
+    "calculate_profile_qfq_alpha",
     "calculate_tomorrow_qfq_alpha",
     "decimal_return",
 ]

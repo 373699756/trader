@@ -30,7 +30,7 @@ from trader.infra.scoring.head_bundles.bundle_repository import (
     ActiveHeadBundle,
     inspect_active_head_bundle,
 )
-from trader.infra.scoring.head_bundles.contracts import contract_for_strategy
+from trader.infra.scoring.head_bundles.contracts import TrainedProfileContract
 
 
 @dataclass(frozen=True)
@@ -43,14 +43,17 @@ class HistoryTrainingDueEvaluation:
     invalidated_cache_dates: tuple[date, ...]
 
 
-def evaluate_history_training_due(
-    archive_root: Path,
-    training_root: Path,
-    observed_at: datetime,
-    expected_training_contract_hash: str | None = None,
-    *,
-    strategy: Strategy = Strategy.TOMORROW,
-) -> HistoryTrainingDueEvaluation | None:
+@dataclass(frozen=True)
+class HistoryTrainingDueQuery:
+    archive_root: Path
+    training_root: Path
+    observed_at: datetime
+    profile: TrainedProfileContract
+    strategy: Strategy = Strategy.TOMORROW
+    expected_training_contract_hash: str | None = None
+
+
+def evaluate_history_training_due(query: HistoryTrainingDueQuery) -> HistoryTrainingDueEvaluation | None:
     """Read and persist one immutable due observation.
 
     A missing active snapshot is intentionally returned as ``None``: callers
@@ -58,6 +61,10 @@ def evaluate_history_training_due(
     fabricating a cadence baseline.
     """
 
+    archive_root = query.archive_root
+    profile = query.profile
+    strategy = query.strategy
+    expected_training_contract_hash = query.expected_training_contract_hash
     control = SQLiteHistoryControlRepository(archive_root / "control.sqlite3")
     try:
         state = control.load_state()
@@ -70,8 +77,8 @@ def evaluate_history_training_due(
     if calendar is None:
         return None
 
-    bundle, bundle_invalid = _active_bundle(training_root, strategy)
-    current_label_cutoff = _mature_label_cutoff(calendar.open_dates, active.data_cutoff, strategy)
+    bundle, bundle_invalid = _active_bundle(query.training_root, profile, strategy)
+    current_label_cutoff = _mature_label_cutoff(calendar.open_dates, active.data_cutoff, profile, strategy)
     if bundle_invalid:
         due_identity = "due-" + canonical_artifact_hash((active.content_hash, strategy.value, "invalid_bundle"))[:32]
         due = calculate_history_training_due(
@@ -81,7 +88,7 @@ def evaluate_history_training_due(
                 current_label_cutoff=current_label_cutoff,
                 calendar_dates=calendar.open_dates,
                 input_revision=False,
-                observed_at=observed_at,
+                observed_at=query.observed_at,
                 data_complete=current_label_cutoff is not None,
                 training_contract_changed=True,
             )
@@ -122,6 +129,7 @@ def evaluate_history_training_due(
     invalidated_dates = calculate_history_training_cache_invalidation_dates(
         calendar.open_dates,
         revised_dates,
+        dependency_sessions=profile.history_sessions - 1,
     )
     due_identity = (
         "due-"
@@ -146,7 +154,7 @@ def evaluate_history_training_due(
             current_label_cutoff=current_label_cutoff,
             calendar_dates=calendar.open_dates,
             input_revision=input_revision,
-            observed_at=observed_at,
+            observed_at=query.observed_at,
             data_complete=data_complete,
             training_contract_changed=training_contract_changed,
         )
@@ -209,19 +217,28 @@ def _partition_month(relative_path: str) -> tuple[int, int]:
     return int(parts[1]), int(PurePosixPath(parts[2]).stem)
 
 
-def _active_bundle(training_root: Path, strategy: Strategy) -> tuple[ActiveHeadBundle | None, bool]:
-    directory = training_root / contract_for_strategy(strategy).directory_name
+def _active_bundle(
+    training_root: Path,
+    profile: TrainedProfileContract,
+    strategy: Strategy,
+) -> tuple[ActiveHeadBundle | None, bool]:
+    directory = training_root / profile.head_for_strategy(strategy).directory_name
     pointer = directory / "active-bundle.json"
     if not pointer.exists():
         return None, False
     try:
-        return inspect_active_head_bundle(directory, strategy), False
+        return inspect_active_head_bundle(directory, strategy, profile), False
     except (OSError, RuntimeError, TypeError, ValueError):
         return None, True
 
 
-def _mature_label_cutoff(calendar_dates: tuple[date, ...], data_cutoff: date, strategy: Strategy) -> date | None:
-    contract = contract_for_strategy(strategy)
+def _mature_label_cutoff(
+    calendar_dates: tuple[date, ...],
+    data_cutoff: date,
+    profile: TrainedProfileContract,
+    strategy: Strategy,
+) -> date | None:
+    contract = profile.head_for_strategy(strategy)
     positions = {day: position for position, day in enumerate(calendar_dates)}
     position = positions.get(data_cutoff)
     if position is None or position < contract.maturity_sessions:
@@ -229,4 +246,4 @@ def _mature_label_cutoff(calendar_dates: tuple[date, ...], data_cutoff: date, st
     return calendar_dates[position - contract.maturity_sessions]
 
 
-__all__ = ["HistoryTrainingDueEvaluation", "evaluate_history_training_due"]
+__all__ = ["HistoryTrainingDueEvaluation", "HistoryTrainingDueQuery", "evaluate_history_training_due"]

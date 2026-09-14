@@ -96,6 +96,7 @@ def test_release_guides_expose_only_unified_api_and_desktop_gate() -> None:
         "./run.sh check",
         "./run.sh download_history",
         "./run.sh train-tomorrow",
+        "./run.sh train-v2",
         "./run.sh train-v3",
     ):
         assert public_command in readme

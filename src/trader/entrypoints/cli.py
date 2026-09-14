@@ -43,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run config validation, research readiness, and the active-profile performance gate.",
     )
     subparsers.add_parser("train-tomorrow", help="Run the due immutable Tomorrow training stage.")
+    subparsers.add_parser("train-v2", help="Train V2 heads with the 251-session V2 feature contract.")
     subparsers.add_parser("train-v3", help="Run one shared scan and sequentially train due shared heads.")
     subparsers.add_parser("validate-config", help="Validate runtime and strategy configuration.")
     performance = subparsers.add_parser(
@@ -101,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
     )
     if maintenance_exit is not None:
         return maintenance_exit
-    if args.command in {"train-tomorrow", "train-v3"}:
+    if args.command in {"train-tomorrow", "train-v2", "train-v3"}:
         if args.profile is not None:
             parser.error(f"{args.command} does not accept --profile")
         _configure_tomorrow_training_resources()
@@ -131,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
         return 0 if isinstance(baseline, dict) and baseline.get("status") == "passed" else 1
     if args.command == "eligibility-list":
         return _run_eligibility_list(runtime, as_of=args.as_of)
-    if args.command in {"train-tomorrow", "train-v3"} or args.command.startswith("research-"):
+    if args.command in {"train-tomorrow", "train-v2", "train-v3"} or args.command.startswith("research-"):
         from trader.entrypoints.research_commands import ResearchCommandOptions, run_research_command
 
         return run_research_command(

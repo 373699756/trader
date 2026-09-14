@@ -25,7 +25,8 @@ def test_training_online_codec_replay_and_shadow_use_the_catalog_owner() -> None
 
     for relative in (
         "src/trader/infra/scoring/head_bundles/bundle_codec.py",
-        "src/trader/infra/scoring/profiles/v3/training.py",
+        "src/trader/infra/scoring/profiles/v2/contracts.py",
+        "src/trader/infra/scoring/profiles/v3/contracts.py",
     ):
         source = (ROOT / relative).read_text(encoding="utf-8")
         assert "trader.infra.scoring.head_bundles.contracts" in source, relative

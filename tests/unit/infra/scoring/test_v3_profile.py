@@ -21,13 +21,14 @@ from trader.infra.scoring.head_bundles.bundle_repository import (
     publish_head_bundle,
     recover_head_bundle_publication,
 )
-from trader.infra.scoring.head_bundles.contracts import (
-    HEAD_CONTRACTS,
-    TOMORROW_HEAD_CONTRACT,
-    TrainedHeadContract,
-)
+from trader.infra.scoring.head_bundles.contracts import TrainedHeadContract
 from trader.infra.scoring.head_bundles.profile import build_trained_scoring_profile
 from trader.infra.scoring.profile_factory import load_scoring_profile
+from trader.infra.scoring.profiles.v3.contracts import (
+    HEAD_CONTRACTS,
+    TOMORROW_HEAD_CONTRACT,
+    V3_TRAINING_PROFILE,
+)
 
 
 def _model_payload_hash(document: dict[str, object]) -> str:
@@ -200,13 +201,20 @@ def _write_bundle(staging: Path, contract: TrainedHeadContract) -> None:
     (staging / "training-input.json").write_text(json.dumps(training_input), encoding="utf-8")
 
 
-def _publish(training_root: Path, contract: TrainedHeadContract, name: str = "staging") -> Path:
+def _publish(
+    training_root: Path,
+    contract: TrainedHeadContract,
+    name: str = "staging",
+    *,
+    legacy_flat: bool = False,
+) -> Path:
     staging = training_root / name
     _write_bundle(staging, contract)
     return publish_head_bundle(
         staging,
-        training_root / contract.directory_name,
+        training_root / (f"{contract.strategy.value}-v3" if legacy_flat else contract.directory_name),
         contract.strategy,
+        V3_TRAINING_PROFILE,
         HeadBundlePublicationIdentity("a" * 64, "1" * 64, date(2026, 9, 8)),
     )
 
@@ -214,7 +222,7 @@ def _publish(training_root: Path, contract: TrainedHeadContract, name: str = "st
 def test_v3_publication_uses_only_four_portable_fixed_files(tmp_path: Path) -> None:
     selected = _publish(tmp_path, TOMORROW_HEAD_CONTRACT)
 
-    assert selected == tmp_path / "tomorrow-v3/model.json"
+    assert selected == tmp_path / "tomorrow/model.json"
     assert sorted(path.name for path in selected.parent.iterdir()) == [
         "active-bundle.json",
         "model.json",
@@ -229,7 +237,7 @@ def test_v3_publication_uses_only_four_portable_fixed_files(tmp_path: Path) -> N
 
 def test_shared_loader_builds_three_distinct_heads_for_v2_and_v3(tmp_path: Path) -> None:
     for index, contract in enumerate(HEAD_CONTRACTS):
-        _publish(tmp_path, contract, f"staging-{index}")
+        _publish(tmp_path, contract, f"staging-{index}", legacy_flat=True)
 
     located = locate_head_bundles(tmp_path)
     profiles = tuple(load_scoring_profile(profile, training_root=tmp_path) for profile in ("v2", "v3"))
@@ -254,7 +262,7 @@ def test_shared_loader_builds_three_distinct_heads_for_v2_and_v3(tmp_path: Path)
 
 @pytest.mark.parametrize("profile", ("v2", "v3"))
 def test_shared_loader_fails_closed_for_both_profiles_when_any_head_is_missing(tmp_path: Path, profile: str) -> None:
-    _publish(tmp_path, TOMORROW_HEAD_CONTRACT)
+    _publish(tmp_path, TOMORROW_HEAD_CONTRACT, legacy_flat=True)
 
     with pytest.raises(RuntimeError, match="unavailable"):
         load_scoring_profile(profile, training_root=tmp_path)
@@ -263,8 +271,8 @@ def test_shared_loader_fails_closed_for_both_profiles_when_any_head_is_missing(t
 @pytest.mark.parametrize("profile", ("v2", "v3"))
 def test_shared_loader_fails_closed_for_both_profiles_when_a_bundle_is_corrupt(tmp_path: Path, profile: str) -> None:
     for index, contract in enumerate(HEAD_CONTRACTS):
-        _publish(tmp_path, contract, f"staging-{index}")
-    report_path = tmp_path / TOMORROW_HEAD_CONTRACT.directory_name / "report.json"
+        _publish(tmp_path, contract, f"staging-{index}", legacy_flat=True)
+    report_path = tmp_path / "tomorrow-v3" / "report.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
     report["training_contract_hash"] = "f" * 64
     report["content_hash"] = artifact_content_hash(
@@ -278,10 +286,13 @@ def test_shared_loader_fails_closed_for_both_profiles_when_a_bundle_is_corrupt(t
 
 def test_shared_tomorrow_predictor_preserves_the_existing_numeric_contract() -> None:
     model, _, _ = _documents(TOMORROW_HEAD_CONTRACT)
-    artifact = decode_head_bundle(model, Strategy.TOMORROW)
+    artifact = decode_head_bundle(model, Strategy.TOMORROW, V3_TRAINING_PROFILE)
     profile = build_trained_scoring_profile(
         "v2",
-        tuple(decode_head_bundle(_documents(contract)[0], contract.strategy) for contract in HEAD_CONTRACTS),
+        tuple(
+            decode_head_bundle(_documents(contract)[0], contract.strategy, V3_TRAINING_PROFILE)
+            for contract in HEAD_CONTRACTS
+        ),
     )
     predictor = profile.heads[Strategy.TOMORROW].predictor
     row = ModelInput("600000", (0.01, 0.02, 0.03, 0.01, -0.02, 0.03), "银行")
@@ -292,7 +303,10 @@ def test_shared_tomorrow_predictor_preserves_the_existing_numeric_contract() -> 
 
 
 def test_shared_profile_rejects_a_duplicate_head_even_when_all_strategies_exist() -> None:
-    artifacts = tuple(decode_head_bundle(_documents(contract)[0], contract.strategy) for contract in HEAD_CONTRACTS)
+    artifacts = tuple(
+        decode_head_bundle(_documents(contract)[0], contract.strategy, V3_TRAINING_PROFILE)
+        for contract in HEAD_CONTRACTS
+    )
 
     with pytest.raises(ValueError, match="require one Today, Tomorrow, and D25"):
         build_trained_scoring_profile("v2", (*artifacts, artifacts[0]))
@@ -301,13 +315,13 @@ def test_shared_profile_rejects_a_duplicate_head_even_when_all_strategies_exist(
 def test_v3_codec_rejects_cross_head_and_nonportable_fields() -> None:
     model, _, _ = _documents(TOMORROW_HEAD_CONTRACT)
     with pytest.raises(ValueError, match="contract"):
-        decode_head_bundle(model, Strategy.TODAY)
+        decode_head_bundle(model, Strategy.TODAY, V3_TRAINING_PROFILE)
 
     model.pop("content_hash")
     model["source_commit"] = "d" * 40
     model["content_hash"] = artifact_content_hash(model)
     with pytest.raises(ValueError, match="fields"):
-        decode_head_bundle(model, Strategy.TOMORROW)
+        decode_head_bundle(model, Strategy.TOMORROW, V3_TRAINING_PROFILE)
 
 
 def test_v3_loader_rejects_tampered_group_identity(tmp_path: Path) -> None:
@@ -320,7 +334,7 @@ def test_v3_loader_rejects_tampered_group_identity(tmp_path: Path) -> None:
     selected.with_name("report.json").write_text(json.dumps(report), encoding="utf-8")
 
     with pytest.raises(ValueError, match="identities"):
-        load_head_bundle(selected, Strategy.TOMORROW)
+        load_head_bundle(selected, Strategy.TOMORROW, V3_TRAINING_PROFILE)
 
 
 def test_v3_failed_replacement_restores_previous_fixed_group(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -345,6 +359,7 @@ def test_v3_failed_replacement_restores_previous_fixed_group(tmp_path: Path, mon
             staging,
             output,
             Strategy.TOMORROW,
+            V3_TRAINING_PROFILE,
             HeadBundlePublicationIdentity("a" * 64, "1" * 64, date(2026, 9, 8)),
         )
 
@@ -374,8 +389,8 @@ def test_flat_publication_recovery_restores_previous_files(tmp_path: Path) -> No
     journal["content_hash"] = artifact_content_hash(journal)
     (output / ".bundle-publication.json").write_text(json.dumps(journal), encoding="utf-8")
 
-    recover_head_bundle_publication(output, Strategy.TOMORROW)
+    recover_head_bundle_publication(output, Strategy.TOMORROW, V3_TRAINING_PROFILE)
 
     assert {name: (output / name).read_bytes() for name in previous} == previous
-    assert inspect_active_head_bundle(output, Strategy.TOMORROW).strategy is Strategy.TOMORROW
+    assert inspect_active_head_bundle(output, Strategy.TOMORROW, V3_TRAINING_PROFILE).strategy is Strategy.TOMORROW
     assert not rollback.exists()

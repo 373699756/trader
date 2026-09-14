@@ -6,7 +6,11 @@ from datetime import date, timedelta
 import pytest
 
 from trader.domain.research.baostock_daily import BaoStockDailyCell, BaoStockDailySide
-from trader.domain.research.history_revision import HistoryRevision, HistoryTrainingWindow
+from trader.domain.research.history_revision import (
+    HistoryRevision,
+    HistoryTrainingPoint,
+    HistoryTrainingWindow,
+)
 
 
 def _side(day: date, adjustment: str) -> BaoStockDailySide:
@@ -48,6 +52,7 @@ def test_monthly_revision_has_content_addressed_identity_and_typed_training_row(
     assert replay.content_hash != revision.content_hash
     assert revision.training_row is not None
     assert revision.training_row.industry == "bank"
+    assert revision.training_point == HistoryTrainingPoint(date(2026, 9, 10), 10.2, 1000.0)
     with pytest.raises(FrozenInstanceError):
         revision.board = "star"  # type: ignore[misc]
     with pytest.raises(ValueError, match="industry"):
@@ -55,12 +60,12 @@ def test_monthly_revision_has_content_addressed_identity_and_typed_training_row(
 
 
 def test_training_window_requires_exact_consecutive_code_rows() -> None:
-    rows = tuple(_revision(date(2026, 1, 1) + timedelta(days=offset)).training_row for offset in range(61))
+    rows = tuple(_revision(date(2026, 1, 1) + timedelta(days=offset)).training_point for offset in range(61))
     complete_rows = tuple(row for row in rows if row is not None)
-    window = HistoryTrainingWindow(complete_rows)
+    window = HistoryTrainingWindow("600001", "main", "bank", False, "trading", complete_rows)
 
-    assert len(window.rows) == 61
+    assert len(window.points) == 61
     assert window.code == "600001"
     assert window.trade_date == complete_rows[-1].trade_date
     with pytest.raises(ValueError, match="61"):
-        HistoryTrainingWindow(complete_rows[:-1])
+        HistoryTrainingWindow("600001", "main", "bank", False, "trading", complete_rows[:-1])

@@ -58,7 +58,8 @@ from trader.infra.research.history_month_partition import (
     HistoryMonthPartitionError,
     SQLiteHistoryMonthPartitionRepository,
 )
-from trader.infra.research.history_training_due import evaluate_history_training_due
+from trader.infra.research.history_training_due import HistoryTrainingDueQuery, evaluate_history_training_due
+from trader.infra.scoring.profiles.v3.contracts import V3_TRAINING_PROFILE
 
 Clock: TypeAlias = Callable[[], datetime]
 Cancellation: TypeAlias = Callable[[], bool]
@@ -788,9 +789,7 @@ def _status(
     due = None
     if snapshot is not None:
         due = evaluate_history_training_due(
-            root,
-            configuration.training_root,
-            observed_at,
+            HistoryTrainingDueQuery(root, configuration.training_root / "v3", observed_at, V3_TRAINING_PROFILE)
         )
     due_state = (
         due.state

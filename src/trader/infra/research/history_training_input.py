@@ -180,12 +180,19 @@ class SQLiteHistoryTrainingInputArchive:
         self,
         allowed_dates: frozenset[date],
         progress: Callable[[int], None] | None = None,
+        *,
+        window_sessions: int = 61,
     ) -> Iterator[HistoryTrainingWindow]:
         dates = tuple(day for day in self._calendar.open_dates if day in allowed_dates)
         if not dates or frozenset(dates) != allowed_dates:
             raise HistoryTrainingInputError("history_training_dates_invalid")
         try:
-            yield from self._archive.iter_training_windows(self._active, dates, progress)
+            yield from self._archive.iter_training_windows(
+                self._active,
+                dates,
+                progress,
+                window_sessions=window_sessions,
+            )
         except (HistoryArchiveReadError, OSError, ValueError) as exc:
             raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
 

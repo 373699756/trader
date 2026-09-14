@@ -14,6 +14,7 @@ from typing import cast
 
 from trader.domain.recommendation.models import Strategy
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
+from trader.infra.scoring.head_bundles.contracts import TrainedProfileContract
 
 _ACTIVE_BUNDLE_NAME = "active-bundle.json"
 _PUBLICATION_JOURNAL_NAME = ".bundle-publication.json"
@@ -52,26 +53,27 @@ def publish_head_bundle(
     staging: Path,
     output_root: Path,
     strategy: Strategy,
+    profile: TrainedProfileContract,
     identity: HeadBundlePublicationIdentity,
 ) -> Path:
     output_root.mkdir(parents=True, exist_ok=True)
-    recover_head_bundle_publication(output_root, strategy)
-    pointer = _validate_staging(staging, strategy, identity)
+    recover_head_bundle_publication(output_root, strategy, profile)
+    pointer = _validate_staging(staging, strategy, profile, identity)
     _write_json(staging / _ACTIVE_BUNDLE_NAME, pointer)
     _fsync_directory(staging)
     rollback = Path(tempfile.mkdtemp(prefix=".bundle-rollback.", dir=output_root))
     try:
         previous_files = _backup_previous_files(output_root, rollback)
         journal = _PublicationJournal(rollback.name, previous_files, cast(str, pointer["content_hash"]))
-        _write_json(output_root / _PUBLICATION_JOURNAL_NAME, _journal_payload(journal, strategy))
+        _write_json(output_root / _PUBLICATION_JOURNAL_NAME, _journal_payload(journal, strategy, profile))
         for name in _PRODUCTION_NAMES:
             os.replace(staging / name, output_root / name)
             _fsync_directory(output_root)
-        _inspect_active_head_bundle(output_root, strategy, allow_publication=True)
+        _inspect_active_head_bundle(output_root, strategy, profile, allow_publication=True)
         _finish_publication(output_root, rollback)
     except BaseException:
         if (output_root / _PUBLICATION_JOURNAL_NAME).exists():
-            recover_head_bundle_publication(output_root, strategy)
+            recover_head_bundle_publication(output_root, strategy, profile)
         elif rollback.exists():
             shutil.rmtree(rollback)
             _fsync_directory(output_root)
@@ -82,23 +84,35 @@ def publish_head_bundle(
     return output_root / "model.json"
 
 
-def locate_active_head_bundle(output_root: Path, strategy: Strategy) -> Path:
-    return inspect_active_head_bundle(output_root, strategy).model_path
+def locate_active_head_bundle(
+    output_root: Path,
+    strategy: Strategy,
+    profile: TrainedProfileContract,
+) -> Path:
+    return inspect_active_head_bundle(output_root, strategy, profile).model_path
 
 
-def inspect_active_head_bundle(output_root: Path, strategy: Strategy) -> ActiveHeadBundle:
-    return _inspect_active_head_bundle(output_root, strategy, allow_publication=False)
+def inspect_active_head_bundle(
+    output_root: Path,
+    strategy: Strategy,
+    profile: TrainedProfileContract,
+) -> ActiveHeadBundle:
+    return _inspect_active_head_bundle(output_root, strategy, profile, allow_publication=False)
 
 
-def recover_head_bundle_publication(output_root: Path, strategy: Strategy) -> None:
+def recover_head_bundle_publication(
+    output_root: Path,
+    strategy: Strategy,
+    profile: TrainedProfileContract,
+) -> None:
     journal_path = output_root / _PUBLICATION_JOURNAL_NAME
     if not journal_path.exists():
         return
-    journal = _decode_journal(_read_json(journal_path), strategy)
+    journal = _decode_journal(_read_json(journal_path), strategy, profile)
     rollback = _rollback_path(output_root, journal.rollback_directory)
     if _pointer_content_hash(output_root / _ACTIVE_BUNDLE_NAME) == journal.new_pointer_hash:
         try:
-            _inspect_active_head_bundle(output_root, strategy, allow_publication=True)
+            _inspect_active_head_bundle(output_root, strategy, profile, allow_publication=True)
         except (OSError, RuntimeError, TypeError, ValueError):
             pass
         else:
@@ -116,11 +130,12 @@ def make_bundle_staging_directory(output_root: Path) -> Path:
 def _validate_staging(
     staging: Path,
     strategy: Strategy,
+    profile: TrainedProfileContract,
     identity: HeadBundlePublicationIdentity,
 ) -> dict[str, object]:
     from trader.infra.scoring.head_bundles.bundle_codec import load_head_bundle
 
-    artifact = load_head_bundle(staging / "model.json", strategy)
+    artifact = load_head_bundle(staging / "model.json", strategy, profile)
     if (
         artifact.training_input_hash != identity.training_input_hash
         or artifact.label_cutoff != identity.label_cutoff
@@ -141,6 +156,7 @@ def _validate_staging(
 def _inspect_active_head_bundle(
     output_root: Path,
     strategy: Strategy,
+    profile: TrainedProfileContract,
     *,
     allow_publication: bool,
 ) -> ActiveHeadBundle:
@@ -161,7 +177,7 @@ def _inspect_active_head_bundle(
         raise FileNotFoundError(model)
     from trader.infra.scoring.head_bundles.bundle_codec import load_head_bundle
 
-    artifact = load_head_bundle(model, strategy)
+    artifact = load_head_bundle(model, strategy, profile)
     training_input = _read_json(output_root / "training-input.json")
     report = _read_json(output_root / "report.json")
     if (
@@ -232,7 +248,11 @@ def _rollback_path(output_root: Path, name: str) -> Path:
     return rollback
 
 
-def _decode_journal(payload: dict[str, object], strategy: Strategy) -> _PublicationJournal:
+def _decode_journal(
+    payload: dict[str, object],
+    strategy: Strategy,
+    profile: TrainedProfileContract,
+) -> _PublicationJournal:
     expected = {
         "schema_version",
         "strategy_head",
@@ -246,7 +266,7 @@ def _decode_journal(payload: dict[str, object], strategy: Strategy) -> _Publicat
     previous = payload.get("previous_files")
     if (
         set(payload) != expected
-        or payload.get("schema_version") != "v3_head_bundle_publication"
+        or payload.get("schema_version") != f"{profile.profile_id}_head_bundle_publication"
         or payload.get("strategy_head") != strategy.value
         or not isinstance(declared_hash, str)
         or artifact_content_hash(body) != declared_hash
@@ -264,9 +284,13 @@ def _decode_journal(payload: dict[str, object], strategy: Strategy) -> _Publicat
     )
 
 
-def _journal_payload(journal: _PublicationJournal, strategy: Strategy) -> dict[str, object]:
+def _journal_payload(
+    journal: _PublicationJournal,
+    strategy: Strategy,
+    profile: TrainedProfileContract,
+) -> dict[str, object]:
     payload: dict[str, object] = {
-        "schema_version": "v3_head_bundle_publication",
+        "schema_version": f"{profile.profile_id}_head_bundle_publication",
         "strategy_head": strategy.value,
         "rollback_directory": journal.rollback_directory,
         "previous_files": list(journal.previous_files),

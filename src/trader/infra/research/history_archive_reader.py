@@ -10,11 +10,13 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from trader.domain.research.baostock_daily import BAOSTOCK_MAX_SESSIONS, BaoStockTrainingRow
+from trader.domain.research.baostock_daily import BAOSTOCK_MAX_SESSIONS
 from trader.domain.research.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
 from trader.domain.research.history_revision import (
     HISTORY_TRAINING_WINDOW_SESSIONS,
+    MAX_HISTORY_TRAINING_WINDOW_SESSIONS,
     HistoryRevision,
+    HistoryTrainingPoint,
     HistoryTrainingWindow,
 )
 from trader.infra.research.history_month_partition import (
@@ -135,7 +137,7 @@ class SQLiteHistoryArchiveReader:
             raise ValueError("history code window identity is invalid")
         if (
             not dates
-            or len(dates) > HISTORY_TRAINING_WINDOW_SESSIONS
+            or len(dates) > MAX_HISTORY_TRAINING_WINDOW_SESSIONS
             or dates != tuple(sorted(set(dates)))
             or dates[-1] > snapshot.data_cutoff
         ):
@@ -228,10 +230,13 @@ class SQLiteHistoryArchiveReader:
         snapshot: HistoryActiveSnapshot,
         calendar_dates: tuple[date, ...],
         progress: Callable[[int], None] | None = None,
+        *,
+        window_sessions: int = HISTORY_TRAINING_WINDOW_SESSIONS,
     ) -> Iterator[HistoryTrainingWindow]:
         dates = tuple(calendar_dates)
         if (
             not dates
+            or not HISTORY_TRAINING_WINDOW_SESSIONS <= window_sessions <= MAX_HISTORY_TRAINING_WINDOW_SESSIONS
             or len(dates) > BAOSTOCK_MAX_SESSIONS
             or dates != tuple(sorted(set(dates)))
             or dates[-1] > snapshot.data_cutoff
@@ -246,7 +251,7 @@ class SQLiteHistoryArchiveReader:
         if available_months != expected_months:
             raise HistoryArchiveReadError("history snapshot does not cover the active calendar")
         position = {day: index for index, day in enumerate(dates)}
-        buffers: dict[str, deque[BaoStockTrainingRow]] = {}
+        buffers: dict[str, deque[HistoryTrainingPoint]] = {}
         previous_positions: dict[str, int] = {}
         processed_rows = 0
         for revision in self.iter_range(dates[0], dates[-1], snapshot):
@@ -256,18 +261,29 @@ class SQLiteHistoryArchiveReader:
                 raise HistoryArchiveReadError("history revision is outside the active calendar")
             buffer = buffers.setdefault(
                 revision.code,
-                deque(maxlen=HISTORY_TRAINING_WINDOW_SESSIONS),
+                deque(maxlen=window_sessions),
             )
             previous_position = previous_positions.get(revision.code)
             if previous_position is not None and current_position != previous_position + 1:
                 buffer.clear()
-            training_row = revision.training_row
-            if training_row is None:
+            training_point = revision.training_point
+            if training_point is None:
                 buffer.clear()
             else:
-                buffer.append(training_row)
-                if len(buffer) == HISTORY_TRAINING_WINDOW_SESSIONS:
-                    yield HistoryTrainingWindow(tuple(buffer))
+                buffer.append(training_point)
+                if len(buffer) == window_sessions:
+                    assert revision.industry is not None
+                    assert revision.is_st is not None
+                    assert revision.cell.unadjusted is not None
+                    yield HistoryTrainingWindow(
+                        revision.code,
+                        revision.board,
+                        revision.industry,
+                        revision.is_st,
+                        revision.cell.unadjusted.trading_status,
+                        tuple(buffer),
+                        window_sessions,
+                    )
             previous_positions[revision.code] = current_position
             if progress is not None and processed_rows % 512 == 0:
                 progress(processed_rows)

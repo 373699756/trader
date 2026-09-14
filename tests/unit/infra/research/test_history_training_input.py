@@ -26,9 +26,15 @@ from trader.domain.research.history_control import HistoryActiveSnapshot, Histor
 from trader.infra.research.history_archive_reader import HistoryPartitionRevisionComparison
 from trader.infra.research.history_archive_sync import run_history_sync
 from trader.infra.research.history_control_repository import SQLiteHistoryControlRepository
-from trader.infra.research.history_training_due import _revised_dates_since_bundle, evaluate_history_training_due
+from trader.infra.research.history_training_due import (
+    HistoryTrainingDueQuery,
+    _revised_dates_since_bundle,
+    evaluate_history_training_due,
+)
 from trader.infra.research.history_training_input import SQLiteHistoryTrainingInputArchive
 from trader.infra.scoring.head_bundles.bundle_repository import ActiveHeadBundle
+from trader.infra.scoring.profiles.v2.contracts import V2_TRAINING_PROFILE
+from trader.infra.scoring.profiles.v3.contracts import V3_TRAINING_PROFILE
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -121,7 +127,7 @@ def test_training_input_streams_windows_in_date_code_order_without_per_code_quer
     windows = tuple(archive.iter_training_windows(frozenset(dates), progress.append))
 
     assert tuple(window.trade_date for window in windows) == dates[60:]
-    assert all(len(window.rows) == 61 for window in windows)
+    assert all(len(window.points) == 61 for window in windows)
     assert progress[-1] == len(dates)
     assert archive.training_row_upper_bound(frozenset(dates)) >= progress[-1]
 
@@ -160,12 +166,47 @@ def test_training_due_uses_the_active_snapshot_label_cutoff_and_marks_initial(tm
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
 
-    evaluation = evaluate_history_training_due(archive_root, tmp_path / "train", NOW)
+    evaluation = evaluate_history_training_due(
+        HistoryTrainingDueQuery(archive_root, tmp_path / "train", NOW, V3_TRAINING_PROFILE)
+    )
 
     assert evaluation is not None
     assert evaluation.state.reason == "initial_training_required"
     assert evaluation.state.current_label_cutoff == dates[-2]
     assert evaluation.state.training_due is True
+
+
+def test_training_due_expands_revision_cache_invalidation_to_the_selected_profile_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "history" / "baostock"
+    configuration = HistorySyncConfiguration(archive_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
+    observed_dependency_sessions: list[int] = []
+
+    def calculate_invalidation(
+        _calendar: tuple[date, ...],
+        _revisions: tuple[date, ...],
+        *,
+        dependency_sessions: int,
+    ) -> tuple[date, ...]:
+        observed_dependency_sessions.append(dependency_sessions)
+        return ()
+
+    monkeypatch.setattr(
+        due_module,
+        "calculate_history_training_cache_invalidation_dates",
+        calculate_invalidation,
+    )
+
+    evaluation = evaluate_history_training_due(
+        HistoryTrainingDueQuery(archive_root, tmp_path / "train", NOW, V2_TRAINING_PROFILE)
+    )
+
+    assert evaluation is not None
+    assert observed_dependency_sessions == [250]
 
 
 def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
@@ -192,9 +233,17 @@ def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
     )
     later_dates = (*first_dates, date(2026, 9, 10))
     run_history_sync(configuration, _Supplier(later_dates), clock=lambda: NOW)
-    monkeypatch.setattr(due_module, "_active_bundle", lambda _root, _strategy: (bundle, False))
+    monkeypatch.setattr(due_module, "_active_bundle", lambda _root, _profile, _strategy: (bundle, False))
 
-    evaluation = evaluate_history_training_due(archive_root, tmp_path / "train", NOW, contract_hash)
+    evaluation = evaluate_history_training_due(
+        HistoryTrainingDueQuery(
+            archive_root,
+            tmp_path / "train",
+            NOW,
+            V3_TRAINING_PROFILE,
+            expected_training_contract_hash=contract_hash,
+        )
+    )
 
     assert evaluation is not None
     assert evaluation.state.reason == "not_due"

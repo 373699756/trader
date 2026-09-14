@@ -32,9 +32,10 @@ from trader.infra.research.history_archive_repack_state import (
 )
 from trader.infra.research.history_control_repository import SQLiteHistoryControlRepository
 from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
-from trader.infra.research.history_training_due import evaluate_history_training_due
+from trader.infra.research.history_training_due import HistoryTrainingDueQuery, evaluate_history_training_due
 from trader.infra.scoring.artifact_hashing import artifact_content_hash
 from trader.infra.scoring.head_bundles.bundle_repository import ActiveHeadBundle
+from trader.infra.scoring.profiles.v3.contracts import V3_TRAINING_PROFILE
 from trader.infra.scoring.profiles.v3.training import run_repack_tomorrow_training, run_repack_v3_training
 from trader.infra.scoring.profiles.v3.training_memory_evidence import TomorrowTrainingMemoryEvidence
 
@@ -247,7 +248,7 @@ def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
 
     expected = object()
     monkeypatch.setattr(
-        "trader.infra.scoring.profiles.v3.training._run_locked",
+        "trader.infra.scoring.training.engine._run_locked",
         lambda *_args, **_kwargs: SimpleNamespace(heads=(expected,)),
     )
 
@@ -281,7 +282,7 @@ def test_fenced_v3_training_uses_one_request_for_all_heads(tmp_path: Path, monke
         captured.append(tuple(item.strategy for item in request.contracts))
         return SimpleNamespace(heads=())
 
-    monkeypatch.setattr("trader.infra.scoring.profiles.v3.training._run_locked", locked)
+    monkeypatch.setattr("trader.infra.scoring.training.engine._run_locked", locked)
     result = run_repack_v3_training(
         source,
         tmp_path / "data/train",
@@ -311,13 +312,16 @@ def test_physical_repack_does_not_create_revision_due_or_invalidate_training_cac
         "b" * 64,
         "c" * 64,
     )
-    monkeypatch.setattr(due_module, "_active_bundle", lambda _root, _strategy: (bundle, False))
+    monkeypatch.setattr(due_module, "_active_bundle", lambda _root, _profile, _strategy: (bundle, False))
 
     evaluation = evaluate_history_training_due(
-        source,
-        tmp_path / "data/train",
-        NOW,
-        contract_hash,
+        HistoryTrainingDueQuery(
+            source,
+            tmp_path / "data/train",
+            NOW,
+            V3_TRAINING_PROFILE,
+            expected_training_contract_hash=contract_hash,
+        )
     )
 
     assert built.target_snapshot_hash is not None
@@ -341,7 +345,7 @@ def test_finalize_deletes_only_the_verified_backup_after_bundle_and_memory_match
     monkeypatch.setattr(
         repack_module,
         "inspect_active_head_bundle",
-        lambda _path, _strategy: type(
+        lambda _path, _strategy, _profile: type(
             "Bundle",
             (),
             {
@@ -386,7 +390,7 @@ def test_finalize_refuses_to_delete_a_backup_with_unknown_content(
     monkeypatch.setattr(
         repack_module,
         "inspect_active_head_bundle",
-        lambda _path, _strategy: type(
+        lambda _path, _strategy, _profile: type(
             "Bundle",
             (),
             {
@@ -429,7 +433,7 @@ def test_finalize_refuses_a_backup_partition_with_pending_wal(tmp_path: Path, mo
     monkeypatch.setattr(
         repack_module,
         "inspect_active_head_bundle",
-        lambda _path, _strategy: type(
+        lambda _path, _strategy, _profile: type(
             "Bundle",
             (),
             {
