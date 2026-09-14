@@ -18,8 +18,6 @@ usage() {
     "  ./run.sh                         以默认 V2 启动并加载共享三头模型" \
     "  ./run.sh --profile v1|v3         显式使用 V1 或 V3 启动" \
     "  ./run.sh check                   依次校验配置、研究状态和性能门禁" \
-    "  ./run.sh install-history-automation   安装当前用户 15:10/20:30 历史同步任务" \
-    "  ./run.sh uninstall-history-automation 卸载当前用户历史同步任务" \
     "  ./run.sh help                    查看本帮助" \
     "" \
     "离线研究（仅在明确执行研究任务时使用）:" \
@@ -55,7 +53,7 @@ while (($#)); do
       SCORING_PROFILE_SET=1
       shift
       ;;
-    help|-h|--help|check|download|train-v2|train-v3|install-history-automation|uninstall-history-automation)
+    help|-h|--help|check|download|train-v2|train-v3)
       if ((MODE_SET)); then
         FORWARD_ARGS+=("$1")
       else
@@ -83,7 +81,7 @@ if ((SCORING_PROFILE_SET)) && [[ "$SCORING_PROFILE" != "v1" && "$SCORING_PROFILE
   exit 2
 fi
 
-if [[ "$MODE" == "download" || "$MODE" == "train-v2" || "$MODE" == "train-v3" || "$MODE" == "install-history-automation" || "$MODE" == "uninstall-history-automation" ]] && ((SCORING_PROFILE_SET || ${#FORWARD_ARGS[@]})); then
+if [[ "$MODE" == "download" || "$MODE" == "train-v2" || "$MODE" == "train-v3" ]] && ((SCORING_PROFILE_SET || ${#FORWARD_ARGS[@]})); then
   printf '%s\n' "$MODE 不接受任何参数；请只运行 ./run.sh $MODE。" >&2
   exit 2
 fi
@@ -96,7 +94,7 @@ case "$MODE" in
   "")
     COMMAND_KIND="server"
     ;;
-  check|download|train-v2|train-v3|install-history-automation|uninstall-history-automation)
+  check|download|train-v2|train-v3)
     COMMAND_KIND="cli"
     ;;
   *)
@@ -173,9 +171,6 @@ if [[ "$MODE" == "train-v2" || "$MODE" == "train-v3" ]]; then
     fi
     printf '%s\n' '警告：当前用户 systemd scope 不可用；训练仍按 2 GiB 目标运行，但不能提供 cgroup 硬隔离。' >&2
   fi
-  exec "$ENTRYPOINT" --config "$CONFIG_PATH" "$MODE"
-fi
-if [[ "$MODE" == "install-history-automation" || "$MODE" == "uninstall-history-automation" ]]; then
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" "$MODE"
 fi
 exec "$ENTRYPOINT" --config "$CONFIG_PATH" "${PROFILE_ARGS[@]}" "$MODE" "${FORWARD_ARGS[@]}"

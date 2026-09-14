@@ -7,6 +7,7 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
+- [Remove public history automation installation commands](docs/changelog/2026-09-14-history-automation-entrypoint-cleanup.md)
 - [Remove the public Tomorrow-only training entrypoint](docs/changelog/2026-09-14-training-entrypoint-cleanup.md)
 - [Normalize the history maintenance command to download](docs/changelog/2026-09-14-download-command-normalization.md)
 - [Profile-owned V2/V3 training commands](docs/changelog/2026-09-14-profile-owned-training-commands.md)

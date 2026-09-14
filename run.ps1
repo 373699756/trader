@@ -16,8 +16,6 @@ function Show-Usage {
   .\run.ps1                         以默认 V2 启动并加载共享三头模型
   .\run.ps1 --profile v1|v3         显式使用 V1 或 V3 启动
   .\run.ps1 check                   依次校验配置、研究状态和性能门禁
-  .\run.ps1 install-history-automation   安装当前用户 15:10/20:30 历史同步任务
-  .\run.ps1 uninstall-history-automation 卸载当前用户历史同步任务
   .\run.ps1 help                    查看本帮助
 
 离线研究（仅在明确执行研究任务时使用）:
@@ -38,7 +36,7 @@ function Show-Usage {
 "@ | Write-Host
 }
 
-$PublicModes = @("help", "-h", "--help", "check", "download", "train-v2", "train-v3", "install-history-automation", "uninstall-history-automation")
+$PublicModes = @("help", "-h", "--help", "check", "download", "train-v2", "train-v3")
 
 for ($Index = 0; $Index -lt $args.Count; $Index++) {
     $Argument = [string]$args[$Index]
@@ -74,7 +72,7 @@ if ($ScoringProfileSet -and $ScoringProfile -notin @("v1", "v2", "v3")) {
     [Console]::Error.WriteLine("评分档位只能是 v1、v2 或 v3: $ScoringProfile")
     exit 2
 }
-if ($Mode -in @("download", "train-v2", "train-v3", "install-history-automation", "uninstall-history-automation") -and ($ScoringProfileSet -or $ForwardArgs.Count -gt 0)) {
+if ($Mode -in @("download", "train-v2", "train-v3") -and ($ScoringProfileSet -or $ForwardArgs.Count -gt 0)) {
     [Console]::Error.WriteLine("$Mode 不接受任何参数；请只运行 .\run.ps1 $Mode。")
     exit 2
 }
@@ -84,7 +82,7 @@ if ($Mode -in @("help", "-h", "--help")) {
     exit 0
 }
 $IsServerMode = [string]::IsNullOrEmpty($Mode)
-if (-not $IsServerMode -and $Mode -notin @("check", "download", "train-v2", "train-v3", "install-history-automation", "uninstall-history-automation")) {
+if (-not $IsServerMode -and $Mode -notin @("check", "download", "train-v2", "train-v3")) {
     [Console]::Error.WriteLine("未知命令: $Mode")
     [Console]::Error.WriteLine("日常启动直接运行: .\run.ps1")
     [Console]::Error.WriteLine("查看全部命令: .\run.ps1 help")
@@ -158,10 +156,6 @@ if ($Mode -eq "download") {
     exit $LASTEXITCODE
 }
 if ($Mode -in @("train-v2", "train-v3")) {
-    & $SelectedEntryPoint --config $ConfigPath $Mode
-    exit $LASTEXITCODE
-}
-if ($Mode -in @("install-history-automation", "uninstall-history-automation")) {
     & $SelectedEntryPoint --config $ConfigPath $Mode
     exit $LASTEXITCODE
 }

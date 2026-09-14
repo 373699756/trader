@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Remove public history automation installation commands](2026-09-14-history-automation-entrypoint-cleanup.md)
 - [Remove the public Tomorrow-only training entrypoint](2026-09-14-training-entrypoint-cleanup.md)
 - [Normalize the history maintenance command to download](2026-09-14-download-command-normalization.md)
 - [Profile-owned V2/V3 training commands](2026-09-14-profile-owned-training-commands.md)

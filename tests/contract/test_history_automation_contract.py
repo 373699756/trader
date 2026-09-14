@@ -24,13 +24,15 @@ def test_automation_cli_commands_are_zero_argument_and_check_contains_read_only_
 
     for command in (
         "scheduled-history-maintenance",
-        "install-history-automation",
-        "uninstall-history-automation",
         "history-automation-status",
     ):
         assert parser.parse_args([command]).command == command
         with pytest.raises(SystemExit):
             parser.parse_args([command, "unexpected"])
+
+    for command in ("install-history-automation", "uninstall-history-automation"):
+        with pytest.raises(SystemExit):
+            parser.parse_args([command])
 
     source = Path("src/trader/entrypoints/cli.py").read_text(encoding="utf-8")
     assert '"history-automation-status"' in source

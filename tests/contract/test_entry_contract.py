@@ -207,11 +207,11 @@ def test_run_script_rejects_download_arguments_before_environment_setup(
 
 
 @pytest.mark.parametrize("command", ("install-history-automation", "uninstall-history-automation"))
-def test_run_script_rejects_automation_arguments_before_environment_setup(command: str, tmp_path: Path) -> None:
+def test_run_script_rejects_retired_automation_commands_before_environment_setup(command: str, tmp_path: Path) -> None:
     missing_venv = tmp_path / "must-not-exist"
 
     completed = subprocess.run(
-        ("bash", str(ROOT / "run.sh"), command, "unexpected"),
+        ("bash", str(ROOT / "run.sh"), command),
         cwd=ROOT,
         env={**os.environ, "VENV_DIR": str(missing_venv)},
         text=True,
@@ -221,7 +221,9 @@ def test_run_script_rejects_automation_arguments_before_environment_setup(comman
 
     assert completed.returncode == 2
     assert completed.stdout == ""
-    assert f"{command} 不接受任何参数" in completed.stderr
+    assert completed.stderr == (
+        f"未知命令: {command}\n日常启动直接运行: ./run.sh\n查看全部命令: ./run.sh help\n"
+    )
     assert not missing_venv.exists()
 
 
@@ -341,28 +343,6 @@ def test_run_script_forwards_only_the_zero_argument_history_command(tmp_path: Pa
 
     assert completed.returncode == 0
     assert completed.stdout == f"cli:--config {config} download\n"
-
-
-@pytest.mark.parametrize("command", ("install-history-automation", "uninstall-history-automation"))
-def test_run_script_forwards_only_the_confirmed_user_automation_action(command: str, tmp_path: Path) -> None:
-    venv_bin = tmp_path / "venv" / "bin"
-    venv_bin.mkdir(parents=True)
-    _write_fake_entrypoint(venv_bin / "python", "exit 99")
-    _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
-    _write_fake_entrypoint(venv_bin / "trader-cli", "printf 'cli:%s\\n' \"$*\"")
-    config = tmp_path / "runtime.json"
-
-    completed = subprocess.run(
-        ("bash", str(ROOT / "run.sh"), command),
-        cwd=ROOT,
-        env={**os.environ, "VENV_DIR": str(venv_bin.parent), "TRADER_CONFIG": str(config)},
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert completed.returncode == 0
-    assert completed.stdout == f"cli:--config {config} {command}\n"
 
 
 @pytest.mark.parametrize("command", ("train-v2", "train-v3"))
@@ -529,9 +509,10 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert "config\\runtime.json" in powershell
     assert "config\\v2\\runtime.json" not in powershell
     assert (
-        '$Mode -in @("download", "train-v2", "train-v3", '
-        '"install-history-automation", "uninstall-history-automation")' in powershell
+        '$PublicModes = @("help", "-h", "--help", "check", "download", "train-v2", "train-v3")' in powershell
     )
+    assert "install-history-automation" not in powershell
+    assert "uninstall-history-automation" not in powershell
 
 
 def test_research_status_is_historical_only_and_does_not_create_runtime_files(

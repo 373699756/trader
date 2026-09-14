@@ -9,7 +9,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, cast
 from zoneinfo import ZoneInfo
 
 from trader.domain.recommendation.model_scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
@@ -62,14 +62,6 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "history-automation-status",
         help="Read the persisted history due and reminder state without recalculation.",
-    )
-    subparsers.add_parser(
-        "install-history-automation",
-        help="Install the current user's 15:10 and 20:30 history synchronization tasks.",
-    )
-    subparsers.add_parser(
-        "uninstall-history-automation",
-        help="Remove the current user's Trader history synchronization tasks.",
     )
     subparsers.add_parser("research-status", help="Read immutable research coverage and capacity status.")
     subparsers.add_parser(
@@ -189,19 +181,13 @@ def _run_history_maintenance_command(
         status = read_history_automation_status(repository_root / "data" / "history" / "baostock", _shanghai_now())
         print(json.dumps(project_history_automation_status(status), ensure_ascii=False, sort_keys=True))
         return 0
-    if command not in {
-        "scheduled-history-maintenance",
-        "install-history-automation",
-        "uninstall-history-automation",
-    }:
+    if command != "scheduled-history-maintenance":
         return None
     if profile is not None:
         parser.error(f"{command} does not accept --profile")
     config_path = _absolute_config_path(raw_config_path)
     runtime = load_runtime_settings(config_path)
-    if command == "scheduled-history-maintenance":
-        return _run_scheduled_history_maintenance(runtime.runtime_dir)
-    return _change_history_automation_installation(command, config_path)
+    return _run_scheduled_history_maintenance(runtime.runtime_dir)
 
 
 def _run_history_download() -> int:
@@ -262,41 +248,6 @@ def _run_scheduled_history_maintenance(runtime_dir: Path) -> int:
         task_log.close()
 
 
-def _change_history_automation_installation(command: str, config_path: Path) -> int:
-    from trader.entrypoints.history_automation_projection import project_history_automation_installation_result
-    from trader.infra.research.history_automation_installation import (
-        HistoryAutomationInstallationRequest,
-        apply_history_automation_installation,
-        plan_history_automation_installation,
-        remove_history_automation_installation,
-    )
-
-    request = HistoryAutomationInstallationRequest(
-        _history_automation_platform(),
-        _repository_root_for_validation(),
-        config_path,
-        Path(sys.executable).resolve(),
-        Path.home().resolve(),
-        os.getuid() if hasattr(os, "getuid") else 0,
-    )
-    plan = plan_history_automation_installation(request)
-    action = "安装" if command == "install-history-automation" else "卸载"
-    print(f"将{action}以下当前用户任务文件：")
-    for managed in plan.files:
-        print(f"  {managed.path}")
-    print("将执行：")
-    commands = plan.install_commands if command == "install-history-automation" else plan.uninstall_commands
-    for scheduler_command in commands:
-        print("  " + " ".join(scheduler_command))
-    confirmed = input(f"确认{action}？[y/N] ").strip().lower() in {"y", "yes"}
-    if command == "install-history-automation":
-        result = apply_history_automation_installation(plan, confirmed=confirmed)
-    else:
-        result = remove_history_automation_installation(plan, confirmed=confirmed)
-    print(json.dumps(project_history_automation_installation_result(result), ensure_ascii=False, sort_keys=True))
-    return 0
-
-
 def _history_sync_configuration(repository_root: Path) -> HistorySyncConfiguration:
     from trader.application.research.history_sync import HistorySyncConfiguration
 
@@ -304,16 +255,6 @@ def _history_sync_configuration(repository_root: Path) -> HistorySyncConfigurati
         archive_root=repository_root / "data" / "history" / "baostock",
         training_root=repository_root / "data" / "train",
     )
-
-
-def _history_automation_platform() -> Literal["linux", "windows", "macos"]:
-    if sys.platform.startswith("linux"):
-        return "linux"
-    if sys.platform == "darwin":
-        return "macos"
-    if sys.platform == "win32":
-        return "windows"
-    raise SystemExit("当前平台不支持历史自动化任务")
 
 
 def _shanghai_now() -> datetime:

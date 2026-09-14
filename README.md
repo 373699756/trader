@@ -47,8 +47,6 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 ./run.sh download
 ./run.sh train-v2
 ./run.sh train-v3
-./run.sh install-history-automation
-./run.sh uninstall-history-automation
 ./run.sh help
 ```
 
@@ -71,12 +69,11 @@ BaoStock 下载是独立研究命令，必须先安装 `trader-research-dashboar
 占位冒充整体进度。失败摘要保留最后一个具体供应商阶段、当前日期或股票和稳定错误码；最终 stdout JSON 保持不变，
 供脚本消费。
 
-历史自动化固定为“每日自动同步、到期只提醒”。`install-history-automation` 会先显示待写入的当前用户任务并要求
-确认：Linux 安装带 `Persistent=true` 的 systemd user timer，Windows 安装带 `StartWhenAvailable` 的任务，
-macOS 安装带日历触发与登录补跑的 LaunchAgent；每天按上海时间 15:10 和 20:30 调用同一零参数维护命令。
-安装会验证既有虚拟环境和 BaoStock 依赖，计划任务自身不会安装或升级包；卸载只移除内容未被用户改写的托管文件。
-任务日志写入 `.runtime/trader/logs/history-automation.log` 并按大小轮转。同一训练 due 身份在每个上海日期最多通知
-一次；桌面通知不可用只记为 `notification_degraded`，不会把成功下载改成失败，也不会自动训练、切换档位或重启服务。
+历史自动化固定为“每日自动同步、到期只提醒”。当前版本不再提供公开的安装/卸载入口；已有系统任务仍可调用内部
+`trader.entrypoints.cli scheduled-history-maintenance` 零参数命令，不会因升级自动删除。每天按上海时间 15:10 和
+20:30 调用同一维护命令，任务日志写入 `.runtime/trader/logs/history-automation.log` 并按大小轮转。同一训练 due
+身份在每个上海日期最多通知一次；桌面通知不可用只记为 `notification_degraded`，不会把成功下载改成失败，也不会
+自动训练、切换档位或重启服务。只读 `history-automation-status` 仍可查看持久化 due、提醒和活动快照状态。
 
 历史归档只接受 `data/history/baostock/control.sqlite3` 与 `partitions/YYYY/MM.sqlite3` 月分片；文件 hash 保存在
 控制状态中用于校验，旧目录和兼容读取均不进入活动产品。
