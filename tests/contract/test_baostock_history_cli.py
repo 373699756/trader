@@ -12,28 +12,33 @@ from trader.application.research.history_sync import HistorySyncProgress
 from trader.entrypoints.cli import build_parser, main
 
 
-def test_download_history_is_a_zero_argument_command() -> None:
-    args = build_parser().parse_args(["download_history"])
+def test_download_is_a_zero_argument_command() -> None:
+    args = build_parser().parse_args(["download"])
 
-    assert args.command == "download_history"
+    assert args.command == "download"
     assert not hasattr(args, "runtime_dir")
     assert not hasattr(args, "sessions")
     assert not hasattr(args, "mode")
 
 
+def test_download_history_is_removed_instead_of_kept_as_a_compatibility_alias() -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["download_history"])
+
+
 @pytest.mark.parametrize("arguments", (("--runtime-dir", "/tmp/history"), ("--sessions", "2000"), ("--mode", "update")))
-def test_download_history_rejects_every_legacy_argument_during_parsing(
+def test_download_rejects_every_legacy_argument_during_parsing(
     arguments: tuple[str, ...], tmp_path: Path
 ) -> None:
     runtime_dir = tmp_path / "must-not-exist"
 
     with pytest.raises(SystemExit):
-        build_parser().parse_args(["download_history", *arguments])
+        build_parser().parse_args(["download", *arguments])
 
     assert not runtime_dir.exists()
 
 
-def test_download_history_runs_the_typed_zero_argument_synchronization(
+def test_download_runs_the_typed_zero_argument_synchronization(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -58,7 +63,7 @@ def test_download_history_runs_the_typed_zero_argument_synchronization(
 
     monkeypatch.setattr("trader.infra.research.history_archive_sync.run_history_sync", synchronize)
 
-    assert main(["download_history"]) == 0
+    assert main(["download"]) == 0
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
@@ -83,7 +88,7 @@ def test_download_history_runs_the_typed_zero_argument_synchronization(
     assert "total_units" not in captured.err
 
 
-def test_download_history_contract_exposes_an_immutable_typed_status() -> None:
+def test_download_contract_exposes_an_immutable_typed_status() -> None:
     status = HistoryMaintenanceStatus(
         "already_current",
         None,

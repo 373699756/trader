@@ -94,7 +94,7 @@ def test_release_guides_expose_only_unified_api_and_desktop_gate() -> None:
     assert "卡脖子、高成长、低价潜力" in operations
     for public_command in (
         "./run.sh check",
-        "./run.sh download_history",
+        "./run.sh download",
         "./run.sh train-tomorrow",
         "./run.sh train-v2",
         "./run.sh train-v3",

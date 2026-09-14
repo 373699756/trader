@@ -53,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     performance.add_argument("--output", type=Path)
     performance.add_argument("--baseline", type=Path)
     subparsers.add_parser(
-        "download_history",
+        "download",
         help="Run the zero-argument historical-data maintenance workflow.",
     )
     subparsers.add_parser(
@@ -178,9 +178,9 @@ def _run_history_maintenance_command(
     profile: str | None,
     parser: argparse.ArgumentParser,
 ) -> int | None:
-    if command == "download_history":
+    if command == "download":
         if profile is not None:
-            parser.error("download_history does not accept --profile")
+            parser.error("download does not accept --profile")
         return _run_history_download()
     if command == "history-automation-status":
         from trader.entrypoints.history_automation_projection import project_history_automation_status

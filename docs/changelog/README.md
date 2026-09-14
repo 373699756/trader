@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Normalize the history maintenance command to download](2026-09-14-download-command-normalization.md)
 - [Profile-owned V2/V3 training commands](2026-09-14-profile-owned-training-commands.md)
 - [Recover recommendation-pipeline evidence across freeze and restart](2026-09-14-recommendation-pipeline-recovery.md)
 - [Expose the typed recommendation pipeline directly in the desktop dashboard](2026-09-14-recommendation-pipeline-stage-observability.md)

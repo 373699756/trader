@@ -87,8 +87,8 @@ def test_strategy_replay_document_keeps_public_commands_and_strategy_ownership_b
         REPLAY,
     )
 
-    assert "./run.sh download_history" in content
-    assert "./run.sh download_history --sessions" not in content
+    assert "./run.sh download" in content
+    assert "./run.sh download --sessions" not in content
     assert "./run.sh train-tomorrow" in content
     assert "./run.sh train-v3" in content
     for guide in public_guides:
@@ -135,7 +135,7 @@ def test_strategy_replay_document_records_the_stage_a_b_gates_and_atomic_trainin
     ):
         assert required in content
 
-    assert "download_history --mode update" not in content
+    assert "download --mode update" not in content
     assert "当前快照回填历史" in content
 
 
@@ -144,7 +144,7 @@ def test_strategy_replay_document_records_the_zero_argument_history_rebuild_plan
     plan = content.split("## 12. 零参数历史归档重构计划（实施中）", maxsplit=1)[1]
 
     for required in (
-        "`./run.sh download_history` 是唯一历史维护入口",
+        "`./run.sh download` 是唯一历史维护入口",
         "不接受 `--runtime-dir`、`--sessions`、`--mode` 或 `--profile`",
         "control.sqlite3",
         "按自然年目录、自然月分片",

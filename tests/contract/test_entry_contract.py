@@ -63,7 +63,7 @@ def test_cli_exposes_current_maintenance_and_explicit_offline_research_commands(
         assert removed not in help_text
     for retained in (
         "check",
-        "download_history",
+        "download",
         "train-tomorrow",
         "train-v2",
         "train-v3",
@@ -116,7 +116,7 @@ def test_run_script_exposes_only_the_aggregated_public_workflows() -> None:
     shell = (ROOT / "run.sh").read_text(encoding="utf-8")
 
     assert "check" in shell
-    assert "download_history" in shell
+    assert "download" in shell
     assert "train-tomorrow" in shell
     assert "train-v2" in shell
     assert "train-v3" in shell
@@ -150,7 +150,7 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert "./run.sh --profile v1|v3         显式使用 V1 或 V3 启动" in completed.stdout
     assert "./run.sh check                   依次校验配置、研究状态和性能门禁" in completed.stdout
     assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
-    assert "./run.sh download_history        零参数历史维护" in completed.stdout
+    assert "./run.sh download                零参数历史维护" in completed.stdout
     assert "./run.sh train-tomorrow          从完整 manifest 运行 Tomorrow 训练" in completed.stdout
     assert "./run.sh train-v2                按 V2 251 日特征训练独立三头" in completed.stdout
     assert "./run.sh train-v3                按 V3 61 日特征训练独立三头" in completed.stdout
@@ -184,12 +184,12 @@ def test_run_script_unknown_command_fails_before_environment_setup_with_concise_
 @pytest.mark.parametrize(
     "arguments",
     (
-        ("download_history", "--sessions", "2000"),
-        ("download_history", "--mode", "update"),
-        ("--profile", "v2", "download_history"),
+        ("download", "--sessions", "2000"),
+        ("download", "--mode", "update"),
+        ("--profile", "v2", "download"),
     ),
 )
-def test_run_script_rejects_download_history_arguments_before_environment_setup(
+def test_run_script_rejects_download_arguments_before_environment_setup(
     arguments: tuple[str, ...], tmp_path: Path
 ) -> None:
     missing_venv = tmp_path / "must-not-exist"
@@ -205,7 +205,7 @@ def test_run_script_rejects_download_history_arguments_before_environment_setup(
 
     assert completed.returncode == 2
     assert completed.stdout == ""
-    assert "download_history 不接受任何参数" in completed.stderr
+    assert "download 不接受任何参数" in completed.stderr
     assert not missing_venv.exists()
 
 
@@ -334,7 +334,7 @@ def test_run_script_forwards_only_the_zero_argument_history_command(tmp_path: Pa
     config = tmp_path / "runtime.json"
 
     completed = subprocess.run(
-        ("bash", str(ROOT / "run.sh"), "download_history"),
+        ("bash", str(ROOT / "run.sh"), "download"),
         cwd=ROOT,
         env={**os.environ, "VENV_DIR": str(venv_bin.parent), "TRADER_CONFIG": str(config)},
         text=True,
@@ -343,7 +343,7 @@ def test_run_script_forwards_only_the_zero_argument_history_command(tmp_path: Pa
     )
 
     assert completed.returncode == 0
-    assert completed.stdout == f"cli:--config {config} download_history\n"
+    assert completed.stdout == f"cli:--config {config} download\n"
 
 
 @pytest.mark.parametrize("command", ("install-history-automation", "uninstall-history-automation"))
@@ -519,7 +519,7 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert "离线研究（仅在明确执行研究任务时使用）:" in powershell
     assert ".\\run.ps1                         以默认 V2 启动并加载共享三头模型" in powershell
     assert ".\\run.ps1 --profile v1|v3         显式使用 V1 或 V3 启动" in powershell
-    assert ".\\run.ps1 download_history        零参数历史维护" in powershell
+    assert ".\\run.ps1 download                零参数历史维护" in powershell
     assert "research-history" not in powershell
     assert "research-screen" not in powershell
     assert ".\\run.ps1 train-tomorrow          从完整 manifest 运行 Tomorrow 训练" in powershell
@@ -533,7 +533,7 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert "config\\runtime.json" in powershell
     assert "config\\v2\\runtime.json" not in powershell
     assert (
-        '$Mode -in @("download_history", "train-tomorrow", "train-v2", "train-v3", '
+        '$Mode -in @("download", "train-tomorrow", "train-v2", "train-v3", '
         '"install-history-automation", "uninstall-history-automation")' in powershell
     )
 

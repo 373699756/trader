@@ -74,7 +74,7 @@ def test_remaining_offline_research_is_historical_and_production_isolated() -> N
     for token in ("tomorrow_historical", "tomorrow_profile_holdout_report", "tomorrow_historical_risk_probability"):
         assert token in research_sources
     assert "旧 H0 历史归档、回测和筛选命令已经退役" in design
-    assert "download_history" in design
+    assert "download" in design
     assert "train-tomorrow" in design
     assert "不得接入生产组合根或在线请求链" in design
 
