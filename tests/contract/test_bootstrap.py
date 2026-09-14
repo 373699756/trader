@@ -8,9 +8,18 @@ from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from trader.application.decisions.decision_observers import DecisionObserverStatus
 from trader.application.market_data.input_runtime import MarketDataAdapter
-from trader.application.ports.runtime_status import InputQualityStatus, SupplyFunnel, SupplySummary
+from trader.application.ports.runtime_status import (
+    InputQualityStatus,
+    PipelineFacet,
+    PipelineMetricRange,
+    PipelineStageStatus,
+    RecommendationPipelineStatus,
+    SupplySummary,
+)
 from trader.application.ports.scheduler import ResearchRuntimeStatus
 from trader.application.research.research_runtime import ResearchRuntime
 from trader.application.runtime.cadence import (
@@ -31,6 +40,14 @@ from trader.domain.recommendation.models import Strategy
 from trader.infra.persistence.data_plane import DataPlaneRepository
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_recommendation_pipeline_requires_every_canonical_stage() -> None:
+    with pytest.raises(ValueError, match="pipeline stages are invalid"):
+        RecommendationPipelineStatus(
+            current_stage="dynamic_filter",
+            stages=(PipelineStageStatus("dynamic_filter", "completed", 1, 1),),
+        )
 
 
 def _config(tmp_path: Path) -> Path:
@@ -347,20 +364,66 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
             latest_quote_source_time=source_time,
             highest_final_score=74.25,
         ),
-        supply_funnel=SupplyFunnel(
-            issuer_eligible_population=5200,
-            dynamic_filter_eligible=4800,
-            strategy_history_eligible=4300,
-            model_input_eligible=4200,
-            candidate_score_eligible=900,
-            candidate_limit_selected=360,
-            candidate_quote_eligible=352,
-            requested_candidates=360,
-            full_scored=65,
-            filter_reject=216,
-            observation_threshold_met_count=12,
-            executable_threshold_met_count=3,
-            selected_observe=2,
+        pipeline=RecommendationPipelineStatus(
+            current_stage="action_gate",
+            stages=(
+                PipelineStageStatus("dynamic_filter", "completed", 5200, 4800),
+                PipelineStageStatus("board_cross_section", "completed", 4800, 4800),
+                PipelineStageStatus("strategy_history", "completed", 4800, 4300),
+                PipelineStageStatus("model_input", "completed", 4300, 4200),
+                PipelineStageStatus(
+                    "candidate_score",
+                    "completed",
+                    4200,
+                    900,
+                    metric_ranges=(PipelineMetricRange("candidate_score", 48.5, 82.25),),
+                    threshold=50.0,
+                ),
+                PipelineStageStatus("board_limit", "completed", 900, 360),
+                PipelineStageStatus("candidate_refresh", "completed", 360, 352),
+                PipelineStageStatus(
+                    "input_coverage",
+                    "degraded",
+                    360,
+                    None,
+                    facets=(
+                        PipelineFacet("candidate_features", 352, 360),
+                        PipelineFacet("security_master", 74, 360),
+                        PipelineFacet("history", 352, 360),
+                    ),
+                ),
+                PipelineStageStatus(
+                    "evidence_score",
+                    "completed",
+                    352,
+                    65,
+                    metric_ranges=(PipelineMetricRange("base_score", 44.5, 74.25),),
+                ),
+                PipelineStageStatus("model_cost_gate", "completed", 65, 54),
+                PipelineStageStatus("local_score", "completed", 65, 65),
+                PipelineStageStatus("deepseek_review", "pending", 20, None),
+                PipelineStageStatus("fusion", "completed", 65, 65),
+                PipelineStageStatus(
+                    "action_gate",
+                    "completed",
+                    65,
+                    2,
+                    facets=(
+                        PipelineFacet("executable_threshold_met", 3, 65),
+                        PipelineFacet("observation_threshold_met", 12, 65),
+                        PipelineFacet("action_executable", 0, 65),
+                        PipelineFacet("action_observe", 2, 65),
+                        PipelineFacet("action_unavailable", 63, 65),
+                    ),
+                ),
+                PipelineStageStatus(
+                    "concentration",
+                    "completed",
+                    2,
+                    2,
+                    facets=(PipelineFacet("selected_observe", 2, 2),),
+                ),
+            ),
         ),
         candidate_count=360,
         candidate_feature_count=352,
@@ -384,18 +447,26 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
         "latest_quote_source_time": source_time.isoformat(),
         "highest_final_score": 74.25,
     }
-    assert payload["tomorrow"]["supply_funnel"]["full_scored"] == 65
-    assert payload["tomorrow"]["supply_funnel"]["issuer_eligible_population"] == 5200
-    assert payload["tomorrow"]["supply_funnel"]["candidate_limit_selected"] == 360
-    assert payload["tomorrow"]["supply_funnel"]["candidate_quote_eligible"] == 352
+    pipeline = payload["tomorrow"]["pipeline"]
+    assert pipeline["current_stage"] == "action_gate"
+    stages = {stage["key"]: stage for stage in pipeline["stages"]}
+    assert stages["dynamic_filter"]["input_count"] == 5200
+    assert stages["dynamic_filter"]["output_count"] == 4800
+    assert stages["candidate_refresh"]["output_count"] == 352
+    assert stages["evidence_score"]["output_count"] == 65
+    assert stages["candidate_score"]["metric_ranges"] == [
+        {"metric": "candidate_score", "minimum": 48.5, "maximum": 82.25}
+    ]
     assert payload["tomorrow"]["history_required_sessions"] == 61
-    assert payload["tomorrow"]["supply_funnel"]["observation_threshold_met_count"] == 12
-    assert payload["tomorrow"]["supply_funnel"]["executable_threshold_met_count"] == 3
+    action_facets = {facet["key"]: facet for facet in stages["action_gate"]["facets"]}
+    assert action_facets["observation_threshold_met"]["count"] == 12
+    assert action_facets["executable_threshold_met"]["count"] == 3
     assert payload["tomorrow"]["candidate_optional_reason_counts"] == {
         "missing_listing_age_sessions": 65,
         "missing_listing_date": 221,
     }
-    assert "asdict(status.supply_funnel)" not in (PROJECT_ROOT / "src/trader/bootstrap_status.py").read_text(
+    assert "supply_funnel" not in payload["tomorrow"]
+    assert "asdict(status.pipeline)" not in (PROJECT_ROOT / "src/trader/bootstrap_status.py").read_text(
         encoding="utf-8"
     )
 

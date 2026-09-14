@@ -139,11 +139,11 @@
         : `最高相对信号分 ${maximum.toFixed(2)}（仅表示 ${evaluated} 只已评分股票内的排序，不代表已通过成本门）`;
       return `评分已完成｜${maximumSummary}；${evaluated} 只已评分股票的预测成本后净超额均未转正，因此观察池和正式推荐均为 0只，保持空仓${reasons ? `；主要原因：${reasons}` : ""}`;
     }
-    const funnel = inputQuality && inputQuality.supply_funnel || {};
+    const action = pipelineStage(inputQuality, "action_gate");
     const maximum = finiteNumber(diagnostics.maximum_final_score);
     const threshold = finiteNumber(diagnostics.executable_threshold);
-    const observationCount = nonNegativeInteger(funnel.observation_threshold_met_count);
-    const executableCount = nonNegativeInteger(funnel.executable_threshold_met_count);
+    const observationCount = pipelineFacetCount(action, "observation_threshold_met");
+    const executableCount = pipelineFacetCount(action, "executable_threshold_met");
     if (maximum == null || threshold == null || observationCount == null || executableCount == null) return "";
     const gap = threshold - maximum;
     const position = gap > 0.005
@@ -208,7 +208,10 @@
       };
     }
     const blocker = inputQuality && inputQuality.primary_blocker;
-    const funnel = inputQuality && inputQuality.supply_funnel || {};
+    const historyStage = pipelineStage(inputQuality, "strategy_history");
+    const modelStage = pipelineStage(inputQuality, "model_input");
+    const refreshStage = pipelineStage(inputQuality, "candidate_refresh");
+    const coverageStage = pipelineStage(inputQuality, "input_coverage");
     if (blocker === "market_population_stale") {
       const stale = nonNegativeInteger(
         inputQuality && inputQuality.population_filter_reason_counts
@@ -228,20 +231,20 @@
       return { message, notice: message, level: "warn" };
     }
     if (blocker === "model_input_unavailable") {
-      const historyEligible = nonNegativeInteger(funnel.strategy_history_eligible) || 0;
-      const modelEligible = nonNegativeInteger(funnel.model_input_eligible) || 0;
+      const historyEligible = nonNegativeInteger(historyStage && historyStage.output_count) || 0;
+      const modelEligible = nonNegativeInteger(modelStage && modelStage.output_count) || 0;
       const message = `暂不可发布｜策略历史合格 ${historyEligible} 只，但模型输入合格 ${modelEligible} 只；请核对模型所需行业与特征字段`;
       return { message, notice: message, level: "warn" };
     }
-    const requested = nonNegativeInteger(funnel.requested_candidates);
+    const requested = nonNegativeInteger(refreshStage && refreshStage.input_count);
     if (["candidate_quotes_pending", "scoring_pending"].includes(blocker) && requested != null) {
-      const covered = nonNegativeInteger(funnel.candidate_features) || 0;
+      const covered = nonNegativeInteger(refreshStage && refreshStage.output_count) || 0;
       const message = `采集中｜候选行情 ${covered} / ${requested}，评分尚未完成`;
       return { message, notice: message, level: "idle" };
     }
     const blocked = coverageBlockerMessage(
       blocker,
-      funnel,
+      coverageStage,
       requested,
       nonNegativeInteger(inputQuality && inputQuality.history_required_sessions),
     );
@@ -275,17 +278,17 @@
     };
   }
 
-  function coverageBlockerMessage(blocker, funnel, requested, historyRequiredSessions) {
+  function coverageBlockerMessage(blocker, coverageStage, requested, historyRequiredSessions) {
     if (requested == null || requested <= 0) return "";
     if (blocker === "candidate_feature_coverage_incomplete") {
-      return blockedCoverage("候选行情", funnel.candidate_features, requested, requested);
+      return blockedCoverage("候选行情", pipelineFacetCount(coverageStage, "candidate_features"), requested, requested);
     }
     if (blocker === "security_master_coverage_incomplete") {
-      return blockedCoverage("基础资料", funnel.security_master, requested, requested);
+      return blockedCoverage("基础资料", pipelineFacetCount(coverageStage, "security_master"), requested, requested);
     }
     if (blocker === "strategy_history_unavailable") {
       const requirement = historyRequiredSessions == null ? "当前策略历史要求" : `至少 ${historyRequiredSessions} 个交易日`;
-      return `暂不可发布｜符合${requirement} ${nonNegativeInteger(funnel.history) || 0} / ${requested}`;
+      return `暂不可发布｜符合${requirement} ${pipelineFacetCount(coverageStage, "history") || 0} / ${requested}`;
     }
     return "";
   }
@@ -410,6 +413,18 @@
   function nonNegativeInteger(value) {
     const parsed = Number(value);
     return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+  }
+
+  function pipelineStage(inputQuality, key) {
+    const pipeline = inputQuality && inputQuality.pipeline;
+    const stages = pipeline && Array.isArray(pipeline.stages) ? pipeline.stages : [];
+    return stages.find((stage) => stage && stage.key === key) || null;
+  }
+
+  function pipelineFacetCount(stage, key) {
+    const facets = stage && Array.isArray(stage.facets) ? stage.facets : [];
+    const facet = facets.find((value) => value && value.key === key);
+    return nonNegativeInteger(facet && facet.count);
   }
 
   function patchItemsValid(upserts, removedCodes, removals) {

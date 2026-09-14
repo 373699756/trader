@@ -21,8 +21,8 @@ from trader.web.static_assets import STATUS_SCHEMA_VERSION as _STATUS_SCHEMA_VER
 from .reporting import emit_report
 from .web_health_contract import (
     FetchIssue,
-    FunnelSnapshot,
     InputQualitySnapshot,
+    PipelineSnapshot,
     ProjectionSnapshot,
     ScoringProfileSnapshot,
     WebSample,
@@ -42,7 +42,7 @@ _SCORING_PHASES = frozenset(
     }
 )
 _TODAY_SCORING_PHASES = frozenset({"today_observe", "today_main", "today_late"})
-_MONITORED_FUNNEL_FIELDS = (
+_MONITORED_PIPELINE_COUNTS = (
     "issuer_eligible_population",
     "dynamic_filter_eligible",
     "strategy_history_eligible",
@@ -229,7 +229,7 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
                         "input quality lacks status, trade date, or primary blocker",
                     )
                 )
-            findings.extend(_funnel_consistency_findings(sample, strategy, quality.funnel))
+            findings.extend(_pipeline_consistency_findings(sample, strategy, quality.pipeline))
             findings.extend(_history_gate_findings(sample, strategy, quality))
             findings.extend(_market_population_findings(sample, strategy, quality))
             findings.extend(_market_liquidity_history_findings(sample, strategy, quality))
@@ -305,8 +305,8 @@ def _model_input_findings(
     strategy: str,
     quality: InputQualitySnapshot,
 ) -> list[Finding]:
-    history_eligible = quality.funnel.strategy_history_eligible or 0
-    model_eligible = quality.funnel.model_input_eligible
+    history_eligible = quality.pipeline.count("strategy_history_eligible") or 0
+    model_eligible = quality.pipeline.count("model_input_eligible")
     if quality.primary_blocker != "model_input_unavailable" or history_eligible <= 0 or model_eligible != 0:
         return []
     return [
@@ -333,11 +333,11 @@ def _model_industry_reference_findings(
     if status is None:
         return []
     source = status.model_industry_source
-    history_eligible = quality.funnel.strategy_history_eligible or 0
+    history_eligible = quality.pipeline.count("strategy_history_eligible") or 0
     if (
         quality.primary_blocker != "model_input_unavailable"
         or history_eligible <= 0
-        or quality.funnel.model_input_eligible != 0
+        or quality.pipeline.count("model_input_eligible") != 0
         or source.snapshot_rows != 0
     ):
         return []
@@ -364,8 +364,8 @@ def _scoring_output_findings(
     quality: InputQualitySnapshot,
     decision: ProjectionSnapshot | None,
 ) -> list[Finding]:
-    candidate_features = quality.funnel.candidate_features or 0
-    full_scored = quality.funnel.full_scored
+    candidate_features = quality.pipeline.count("candidate_features") or 0
+    full_scored = quality.pipeline.count("full_scored")
     if quality.status == "ready" and candidate_features > 0 and full_scored == 0:
         return [
             _finding(
@@ -488,7 +488,7 @@ def _history_gate_findings(
     strategy: str,
     quality: InputQualitySnapshot,
 ) -> list[Finding]:
-    if quality.primary_blocker != "history_coverage_incomplete" or (quality.funnel.full_scored or 0) == 0:
+    if quality.primary_blocker != "history_coverage_incomplete" or (quality.pipeline.count("full_scored") or 0) == 0:
         return []
     return [
         _finding(
@@ -498,9 +498,9 @@ def _history_gate_findings(
             strategy,
             "a legacy batch history gate blocked candidates that already had valid scores",
             {
-                "full_scored": quality.funnel.full_scored,
-                "history": quality.funnel.history,
-                "requested": quality.funnel.requested_candidates,
+                "full_scored": quality.pipeline.count("full_scored"),
+                "history": quality.pipeline.count("history"),
+                "requested": quality.pipeline.count("requested_candidates"),
             },
         )
     ]
@@ -643,31 +643,35 @@ def _decision_contract_findings(
     return findings
 
 
-def _funnel_consistency_findings(
+def _pipeline_consistency_findings(
     sample: WebSample,
     strategy: str,
-    funnel: FunnelSnapshot,
+    pipeline: PipelineSnapshot,
 ) -> list[Finding]:
-    if funnel.invalid_fields:
+    if pipeline.invalid_fields:
         return [
             _finding(
                 "error",
-                "funnel_count_invalid",
+                "pipeline_count_invalid",
                 sample,
                 strategy,
-                "recommendation funnel contains non-integer or negative counts",
-                {"fields": ",".join(funnel.invalid_fields)},
+                "recommendation pipeline contains non-integer or negative counts",
+                {"fields": ",".join(pipeline.invalid_fields)},
             )
         ]
-    requested = funnel.requested_candidates or 0
-    candidates = funnel.candidate_features or 0
-    full_scored = funnel.full_scored or 0
-    selected = (funnel.selected_executable or 0) + (funnel.selected_observe or 0)
-    filtered = (funnel.filter_pass or 0) + (funnel.filter_observe or 0) + (funnel.filter_reject or 0)
+    requested = pipeline.count("requested_candidates") or 0
+    candidates = pipeline.count("candidate_features") or 0
+    full_scored = pipeline.count("full_scored") or 0
+    selected = (pipeline.count("selected_executable") or 0) + (pipeline.count("selected_observe") or 0)
+    filtered = (
+        (pipeline.count("filter_pass") or 0)
+        + (pipeline.count("filter_observe") or 0)
+        + (pipeline.count("filter_reject") or 0)
+    )
     inconsistent = {
         "candidate_features": candidates > requested,
-        "security_master": (funnel.security_master or 0) > requested,
-        "history": (funnel.history or 0) > requested,
+        "security_master": (pipeline.count("security_master") or 0) > requested,
+        "history": (pipeline.count("history") or 0) > requested,
         "filter_total": filtered > requested,
         "full_scored": full_scored > candidates,
         "selected_total": selected > full_scored,
@@ -678,10 +682,10 @@ def _funnel_consistency_findings(
     return [
         _finding(
             "error",
-            "funnel_count_inconsistent",
+            "pipeline_count_inconsistent",
             sample,
             strategy,
-            "recommendation funnel stages violate their count bounds",
+            "recommendation pipeline stages violate their count bounds",
             {"fields": ",".join(fields)},
         )
     ]
@@ -758,17 +762,17 @@ def _regression_findings(samples: Sequence[WebSample], strategies: tuple[str, ..
                 continue
             if previous_quality.trade_date != current_quality.trade_date:
                 continue
-            previous_counts = dict(previous_quality.funnel.monitored_counts())
-            for name, after in current_quality.funnel.monitored_counts():
+            previous_counts = dict(previous_quality.pipeline.monitored_counts())
+            for name, after in current_quality.pipeline.monitored_counts():
                 before = previous_counts[name]
                 if before is not None and before > 0 and after == 0:
                     findings.append(
                         _finding(
                             "error",
-                            "funnel_regressed_to_zero",
+                            "pipeline_regressed_to_zero",
                             current,
                             strategy,
-                            "a populated recommendation-funnel stage regressed to zero",
+                            "a populated recommendation-pipeline stage regressed to zero",
                             {"field": name, "previous": before},
                         )
                     )
@@ -799,17 +803,17 @@ def _persistent_zero_findings(
                     "strategy input quality stayed missing while candidate quotes were available",
                 )
             )
-        for field_name in _MONITORED_FUNNEL_FIELDS:
+        for field_name in _MONITORED_PIPELINE_COUNTS:
             zero_samples = [sample for sample in samples if _eligible_zero(sample, strategy, field_name)]
             run = _longest_consecutive_run(zero_samples)
             if len(run) < threshold:
                 continue
             findings.append(
                 _run_finding(
-                    f"funnel_{field_name}_persistently_zero",
+                    f"pipeline_{field_name}_persistently_zero",
                     strategy,
                     run,
-                    "recommendation-funnel stage stayed zero despite populated upstream inputs",
+                    "recommendation-pipeline stage stayed zero despite populated upstream inputs",
                     {"field": field_name},
                 )
             )
@@ -820,8 +824,8 @@ def _eligible_zero(sample: WebSample, strategy: str, field_name: str) -> bool:
     quality = _strategy_quality(sample, strategy)
     if not _strategy_expected_to_score(sample, strategy) or quality is None:
         return False
-    funnel = quality.funnel
-    counts = dict(funnel.monitored_counts())
+    pipeline = quality.pipeline
+    counts = dict(pipeline.monitored_counts())
     if counts[field_name] != 0 or (field_name == "full_scored" and quality.status == "business_empty"):
         return False
     upstream_fields = {
@@ -837,8 +841,8 @@ def _eligible_zero(sample: WebSample, strategy: str, field_name: str) -> bool:
         return _market_feature_rows(sample) > 0
     if upstream_field := upstream_fields.get(field_name):
         return (counts.get(upstream_field) or 0) > 0
-    requested = funnel.requested_candidates or 0
-    candidate_features = funnel.candidate_features or 0
+    requested = pipeline.count("requested_candidates") or 0
+    candidate_features = pipeline.count("candidate_features") or 0
     if field_name == "candidate_features":
         return requested > 0 and _candidate_quote_entries(sample) > 0
     return candidate_features > 0
@@ -1090,7 +1094,7 @@ def _sample_payload(sample: WebSample, strategies: tuple[str, ...]) -> dict[str,
             "population_count": quality.population_count if quality is not None else None,
             "history_required_sessions": quality.history_required_sessions if quality is not None else None,
             "highest_final_score": quality.highest_final_score if quality is not None else None,
-            "supply_funnel": _funnel_payload(quality.funnel if quality is not None else None),
+            "pipeline": _pipeline_payload(quality.pipeline if quality is not None else None),
             "population_filter_reason_counts": (
                 dict(quality.population_filter_reason_counts) if quality is not None else {}
             ),
@@ -1224,31 +1228,21 @@ def _scoring_profile_payload(payload: ScoringProfileSnapshot | None) -> dict[str
     }
 
 
-def _funnel_payload(payload: FunnelSnapshot | None) -> dict[str, int | None]:
+def _pipeline_payload(payload: PipelineSnapshot | None) -> dict[str, object] | None:
+    if payload is None:
+        return None
     return {
-        "issuer_eligible_population": payload.issuer_eligible_population if payload is not None else None,
-        "dynamic_filter_eligible": payload.dynamic_filter_eligible if payload is not None else None,
-        "strategy_history_eligible": payload.strategy_history_eligible if payload is not None else None,
-        "model_input_eligible": payload.model_input_eligible if payload is not None else None,
-        "candidate_score_eligible": payload.candidate_score_eligible if payload is not None else None,
-        "candidate_limit_selected": payload.candidate_limit_selected if payload is not None else None,
-        "requested_candidates": payload.requested_candidates if payload is not None else None,
-        "candidate_features": payload.candidate_features if payload is not None else None,
-        "candidate_quote_eligible": payload.candidate_quote_eligible if payload is not None else None,
-        "security_master": payload.security_master if payload is not None else None,
-        "history": payload.history if payload is not None else None,
-        "filter_pass": payload.filter_pass if payload is not None else None,
-        "filter_observe": payload.filter_observe if payload is not None else None,
-        "filter_reject": payload.filter_reject if payload is not None else None,
-        "full_scored": payload.full_scored if payload is not None else None,
-        "review_eligible": payload.review_eligible if payload is not None else None,
-        "observation_threshold_met_count": (payload.observation_threshold_met_count if payload is not None else None),
-        "executable_threshold_met_count": (payload.executable_threshold_met_count if payload is not None else None),
-        "action_executable": payload.action_executable if payload is not None else None,
-        "action_observe": payload.action_observe if payload is not None else None,
-        "action_unavailable": payload.action_unavailable if payload is not None else None,
-        "selected_executable": payload.selected_executable if payload is not None else None,
-        "selected_observe": payload.selected_observe if payload is not None else None,
+        "current_stage": payload.current_stage,
+        "stages": [
+            {
+                "key": stage.key,
+                "state": stage.state,
+                "input_count": stage.input_count,
+                "output_count": stage.output_count,
+                "facets": [{"key": facet.key, "count": facet.count, "total": facet.total} for facet in stage.facets],
+            }
+            for stage in payload.stages
+        ],
     }
 
 

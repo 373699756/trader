@@ -11,11 +11,15 @@ from typing import Protocol
 
 from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.long_runtime import LongRuntime
-from trader.application.market_data.supply_status import build_supply_status
+from trader.application.market_data.supply_status import (
+    build_pending_pipeline,
+    build_supply_status,
+    update_supply_status_decision,
+)
 from trader.application.ports.long import LongRefreshRequest
 from trader.application.ports.market import MarketDataUnavailableError, ResearchRefreshResult
 from trader.application.ports.model_scoring import ModelScoringContext, ModelScoringPort
-from trader.application.ports.runtime_status import InputQualityStatus, SupplyFunnel, SupplySummary
+from trader.application.ports.runtime_status import InputQualityStatus, SupplySummary
 from trader.application.ports.scheduler import (
     CycleRequest,
     DataRefreshPort,
@@ -446,16 +450,11 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                     quote_missing_count=requested_count - covered,
                     security_identity_missing_count=0,
                 ),
-                supply_funnel=SupplyFunnel(
-                    requested_candidates=requested_count,
-                    candidate_features=candidate_feature_count,
-                    issuer_eligible_population=stage_counts.issuer_eligible_population,
-                    dynamic_filter_eligible=stage_counts.dynamic_filter_eligible,
-                    strategy_history_eligible=stage_counts.strategy_history_eligible,
-                    model_input_eligible=stage_counts.model_input_eligible,
-                    candidate_score_eligible=stage_counts.candidate_score_eligible,
-                    candidate_limit_selected=stage_counts.candidate_limit_selected,
-                    candidate_quote_eligible=candidate_feature_count,
+                pipeline=build_pending_pipeline(
+                    stage_counts,
+                    candidate_feature_count=candidate_feature_count,
+                    primary_blocker=context.primary_blocker,
+                    candidate_score_threshold=self._policy.selection.candidate_min_score,
                 ),
                 population_count=context.population_count,
                 candidate_count=requested_count,
@@ -779,6 +778,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                 projection,
                 batch.candidate_stage_counts,
                 candidate_quote_eligible=batch.candidate_quote_eligible,
+                candidate_score_threshold=self._policy.selection.candidate_min_score,
             )
         if not projection.input_quality.publishable:
             self._draft_index.publish(projection.local)
@@ -807,6 +807,14 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         with self._lock:
             self._projections[decision.version] = projection
             self._decisions[decision.version] = decision
+            current_quality = self._input_quality.get(decision.strategy)
+            if current_quality is not None and current_quality.summary.trade_date == decision.trade_date:
+                self._input_quality[decision.strategy] = update_supply_status_decision(
+                    current_quality,
+                    projection,
+                    decision,
+                    candidate_score_threshold=self._policy.selection.candidate_min_score,
+                )
             self._trim_research_sources()
 
     def research_audit(self, version: str) -> CommittedResearchAudit | None:

@@ -9,7 +9,7 @@ _STRATEGY = "tomorrow"
 _TRADE_DATE = "2026-08-25"
 
 
-def _funnel(**overrides: int) -> dict[str, int]:
+def _funnel(**overrides: int) -> dict[str, object]:
     values = {
         "issuer_eligible_population": 5500,
         "dynamic_filter_eligible": 420,
@@ -36,13 +36,74 @@ def _funnel(**overrides: int) -> dict[str, int]:
         "selected_observe": 0,
     }
     values.update(overrides)
-    return values
+    return {
+        "current_stage": "concentration",
+        "stages": [
+            _stage("dynamic_filter", values["issuer_eligible_population"], values["dynamic_filter_eligible"]),
+            _stage(
+                "board_cross_section",
+                values["dynamic_filter_eligible"],
+                values["dynamic_filter_eligible"],
+                filter_pass=values["filter_pass"],
+                filter_observe=values["filter_observe"],
+                filter_reject=values["filter_reject"],
+            ),
+            _stage("strategy_history", values["dynamic_filter_eligible"], values["strategy_history_eligible"]),
+            _stage("model_input", values["strategy_history_eligible"], values["model_input_eligible"]),
+            _stage("candidate_score", values["model_input_eligible"], values["candidate_score_eligible"]),
+            _stage("board_limit", values["candidate_score_eligible"], values["candidate_limit_selected"]),
+            _stage("candidate_refresh", values["requested_candidates"], values["candidate_quote_eligible"]),
+            _stage(
+                "input_coverage",
+                values["requested_candidates"],
+                None,
+                candidate_features=values["candidate_features"],
+                security_master=values["security_master"],
+                history=values["history"],
+            ),
+            _stage("evidence_score", values["candidate_features"], values["full_scored"]),
+            _stage("model_cost_gate", values["full_scored"], values["full_scored"]),
+            _stage("local_score", values["full_scored"], values["full_scored"]),
+            _stage("deepseek_review", values["review_eligible"], values["review_eligible"]),
+            _stage("fusion", values["full_scored"], values["full_scored"]),
+            _stage(
+                "action_gate",
+                values["full_scored"],
+                values["action_executable"] + values["action_observe"],
+                observation_threshold_met=values["observation_threshold_met_count"],
+                executable_threshold_met=values["executable_threshold_met_count"],
+                action_executable=values["action_executable"],
+                action_observe=values["action_observe"],
+                action_unavailable=values["action_unavailable"],
+            ),
+            _stage(
+                "concentration",
+                values["action_executable"] + values["action_observe"],
+                values["selected_executable"] + values["selected_observe"],
+                selected_executable=values["selected_executable"],
+                selected_observe=values["selected_observe"],
+            ),
+        ],
+    }
+
+
+def _stage(key: str, input_count: object, output_count: object, **facets: object) -> dict[str, object]:
+    total = input_count if isinstance(input_count, int) else 0
+    return {
+        "key": key,
+        "state": "completed",
+        "input_count": input_count,
+        "output_count": output_count,
+        "metric_ranges": [],
+        "facets": [{"key": name, "count": count, "total": total} for name, count in facets.items()],
+        "reason_counts": [],
+    }
 
 
 def _sample(
     number: int,
     *,
-    funnel: Mapping[str, int] | None = None,
+    funnel: Mapping[str, object] | None = None,
     decision_status: str = "ready",
     quality_status: str | None = None,
     empty_reason: str | None = "risk_or_execution_blocked",
@@ -80,7 +141,7 @@ def _sample(
             "candidate_transient_reason_counts": {"history_data_degraded": 12},
             "candidate_optional_reason_counts": {"research_data_degraded": 3},
             "supply_reason_counts": {"local_score_unavailable": 17},
-            "supply_funnel": dict(funnel or _funnel()),
+            "pipeline": dict(funnel or _funnel()),
             "summary": {
                 **({"trade_date": _TRADE_DATE} if include_quality_trade_date else {}),
                 "quote_total_count": 360,
@@ -310,7 +371,7 @@ def test_business_empty_zero_scored_stage_is_not_reported_as_pipeline_stall() ->
 
     findings = analyze_samples(samples, strategies=(_STRATEGY,), consecutive_zero_threshold=3)
 
-    assert not any(finding.code == "funnel_full_scored_persistently_zero" for finding in findings)
+    assert not any(finding.code == "pipeline_full_scored_persistently_zero" for finding in findings)
 
 
 def test_persistent_zero_scoring_with_populated_quote_cache_is_reported() -> None:
@@ -330,9 +391,9 @@ def test_persistent_zero_scoring_with_populated_quote_cache_is_reported() -> Non
     findings = analyze_samples(samples, strategies=(_STRATEGY,), consecutive_zero_threshold=3)
     codes = {finding.code for finding in findings}
 
-    assert "funnel_full_scored_persistently_zero" in codes
-    assert "funnel_security_master_persistently_zero" in codes
-    assert "funnel_history_persistently_zero" in codes
+    assert "pipeline_full_scored_persistently_zero" in codes
+    assert "pipeline_security_master_persistently_zero" in codes
+    assert "pipeline_history_persistently_zero" in codes
     assert "selected_executable_persistently_zero" not in codes
 
 
@@ -369,8 +430,8 @@ def test_persistent_model_input_zero_is_checked_against_its_direct_upstream_stag
     findings = analyze_samples(samples, strategies=(_STRATEGY,), consecutive_zero_threshold=3)
     codes = {finding.code for finding in findings}
 
-    assert "funnel_model_input_eligible_persistently_zero" in codes
-    assert "funnel_candidate_score_eligible_persistently_zero" not in codes
+    assert "pipeline_model_input_eligible_persistently_zero" in codes
+    assert "pipeline_candidate_score_eligible_persistently_zero" not in codes
 
 
 def test_dominant_stale_market_population_is_reported_at_the_first_broken_stage() -> None:
@@ -565,7 +626,7 @@ def test_nonzero_funnel_stage_regressing_to_zero_is_reported_immediately() -> No
     findings = analyze_samples(samples, strategies=(_STRATEGY,), consecutive_zero_threshold=3)
 
     assert any(
-        finding.code == "funnel_regressed_to_zero"
+        finding.code == "pipeline_regressed_to_zero"
         and finding.strategy == _STRATEGY
         and finding.evidence.get("field") == "full_scored"
         for finding in findings
@@ -827,6 +888,21 @@ def test_input_quality_without_trade_date_is_reported_as_invalid_shape() -> None
     assert any(finding.code == "input_quality_shape_invalid" for finding in findings)
 
 
+def test_pipeline_missing_a_canonical_stage_is_reported_as_invalid() -> None:
+    incomplete = _funnel()
+    stages = incomplete["stages"]
+    assert isinstance(stages, list)
+    incomplete["stages"] = stages[:-1]
+
+    findings = analyze_samples(
+        (_sample(1, funnel=incomplete),),
+        strategies=(_STRATEGY,),
+        consecutive_zero_threshold=1,
+    )
+
+    assert any(finding.code == "pipeline_count_invalid" for finding in findings)
+
+
 def test_scoring_regression_is_ignored_after_strategy_freezes() -> None:
     samples = (
         _sample(1, funnel=_funnel(full_scored=65), event_sequence=10),
@@ -835,7 +911,7 @@ def test_scoring_regression_is_ignored_after_strategy_freezes() -> None:
 
     findings = analyze_samples(samples, strategies=(_STRATEGY,), consecutive_zero_threshold=2)
 
-    assert not any(finding.code == "funnel_regressed_to_zero" for finding in findings)
+    assert not any(finding.code == "pipeline_regressed_to_zero" for finding in findings)
     assert not any(finding.code.endswith("persistently_zero") for finding in findings)
 
 
@@ -915,7 +991,10 @@ def test_json_report_contains_only_aggregated_projection_data() -> None:
     assert strategy["current_projection"]["maximum_final_score"] == 74.0
     assert strategy["current_projection"]["top_score_count"] == 1
     assert strategy["current_projection"]["highest_top_score"] == 74.0
-    assert strategy["supply_funnel"] == _funnel()
+    assert strategy["pipeline"]["current_stage"] == "concentration"
+    evidence = next(stage for stage in strategy["pipeline"]["stages"] if stage["key"] == "evidence_score")
+    assert evidence["input_count"] == 360
+    assert evidence["output_count"] == 65
     assert strategy["population_filter_reason_counts"] == {"stale_quote": 5571}
     assert strategy["candidate_filter_reason_counts"] == {"history_too_short": 71}
     assert strategy["candidate_transient_reason_counts"] == {"history_data_degraded": 12}

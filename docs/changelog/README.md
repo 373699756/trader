@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Expose the typed recommendation pipeline directly in the desktop dashboard](2026-09-14-recommendation-pipeline-stage-observability.md)
 - [Restore industry-aware model inputs and truthful funnel branches](2026-09-14-model-industry-input-recovery.md)
 - [Recover the three-strategy recommendation funnel and expose its true first blocker](2026-09-14-three-strategy-funnel-recovery.md)
 - [Profile-owned V2/V3 training layout plan](2026-09-14-profile-owned-training-layout-plan.md)

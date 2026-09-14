@@ -141,7 +141,7 @@ def _run(output_dir: Path) -> dict[str, object]:
         _wait(lambda: bool(_execute(base, "return Boolean(window.TraderDashboardDiagnostics);")), "dashboard readiness")
         _execute(base, 'document.querySelector(".strategy-tab[data-strategy=tomorrow]").click(); return true;')
         _wait(
-            lambda: _execute(base, 'return document.querySelector("#funnelStatus").textContent;') == "360 → 采集中 → 0",
+            lambda: _execute(base, 'return document.querySelector("#funnelStatus").textContent;') == "— → — → —",
             "collecting funnel",
         )
         not_ready_summary = _execute(
@@ -152,6 +152,7 @@ def _run(output_dir: Path) -> dict[str, object]:
               source: document.querySelector('#quoteSource').textContent,
               inputQuality: document.querySelector('#inputQualityStatus').textContent,
               inputQualityMeta: document.querySelector('#inputQualityMeta').textContent,
+              inputStages: document.querySelector('#inputQualityStages').textContent,
               funnel: document.querySelector('#funnelStatus').textContent,
               funnelStages: document.querySelector('#funnelStages').textContent,
               funnelMeta: document.querySelector('#funnelMeta').textContent,
@@ -169,7 +170,7 @@ def _run(output_dir: Path) -> dict[str, object]:
             "tomorrow observation draft",
         )
         _wait(
-            lambda: _execute(base, 'return document.querySelector("#funnelStatus").textContent;') == "360 → 56 → 0",
+            lambda: _execute(base, 'return document.querySelector("#funnelStatus").textContent;') == "56 → 2 → 2",
             "quality funnel",
         )
         quality_summary = _execute(
@@ -178,8 +179,10 @@ def _run(output_dir: Path) -> dict[str, object]:
             return {
               inputQuality: document.querySelector('#inputQualityStatus').textContent,
               inputQualityMeta: document.querySelector('#inputQualityMeta').textContent,
+              inputStages: document.querySelector('#inputQualityStages').textContent,
               funnel: document.querySelector('#funnelStatus').textContent,
               funnelStages: document.querySelector('#funnelStages').textContent,
+              scoreRange: document.querySelector('#funnelScoreRange').textContent,
               funnelMeta: document.querySelector('#funnelMeta').textContent,
               source: document.querySelector('#quoteSource').textContent,
             };
@@ -316,7 +319,7 @@ def _run(output_dir: Path) -> dict[str, object]:
                 _execute(base, 'return document.querySelectorAll("#errorDrawerContent .error-detail-item").length;')
             ),
             "raw_code_hidden_from_header": not bool(
-                _execute(base, 'return document.querySelector("#lastError").textContent.includes("refresh:");')
+                _execute(base, 'return document.querySelector("#healthBadge").textContent.includes("refresh:");')
             ),
             "copy_status": str(
                 _execute(
@@ -336,7 +339,7 @@ def _run(output_dir: Path) -> dict[str, object]:
             and all(
                 item["visible"]
                 and item["rows"] == 2
-                and "观察草稿 2" in item["count"]
+                and "观察 2" in item["count"]
                 and item["quote_complete"]
                 and item["ranked_high_first"]
                 for item in observations
@@ -350,7 +353,7 @@ def _run(output_dir: Path) -> dict[str, object]:
                     "主要原因：评分未达到执行门槛（54只）、风险事实触发限制（2只）、"
                     "公司风险历史暂不可核验（1只）"
                 ),
-                "summary": "过滤 216 · 观察草稿 2 · 最高 74.25",
+                "summary": "完整评分 → 动作合格 → 最终入池 · 正式 0 · 观察 2 · 最高 74.25",
                 "recommendation_message": (
                     "评分已完成｜最高分 74.25，距离正式线 3.75；达到观察线 2只、正式线 0只；"
                     "主要原因：评分未达到执行门槛（54只）、风险事实触发限制（2只）、"
@@ -358,7 +361,7 @@ def _run(output_dir: Path) -> dict[str, object]:
                 ),
             }
             and error_details["visible"] is True
-            and error_details["rows"] == 2
+            and error_details["rows"] == 1
             and error_details["raw_code_hidden_from_header"] is True
             and error_details["copy_status"] in {"已复制", "已选中，请复制"}
             and isinstance(long_quote_fields, dict)
@@ -368,26 +371,24 @@ def _run(output_dir: Path) -> dict[str, object]:
             and not_ready_summary.get("source") == "腾讯行情"
             and not_ready_summary.get("inputQuality") == "评分输入准备中"
             and not_ready_summary.get("inputQualityMeta") == "行情 360 / 360 · 基础资料与历史待计算"
-            and not_ready_summary.get("funnel") == "360 → 采集中 → 0"
-            and not_ready_summary.get("funnelMeta") == "过滤 待计算 · 观察草稿 正在生成 · 最高 —"
+            and "动态过滤 —→—" in str(not_ready_summary.get("inputStages"))
+            and "定向行情 360→360" in str(not_ready_summary.get("inputStages"))
+            and not_ready_summary.get("funnel") == "— → — → —"
+            and not_ready_summary.get("funnelMeta") == "完整评分 → 动作合格 → 最终入池 · 正式 0 · 观察 已关闭 · 最高 —"
             and "上限 168" in str(not_ready_summary.get("budgetMeta"))
             and not_ready_summary.get("publicationStatus") == "采集中"
             and not_ready_summary.get("publicationMeta") == "等待本轮正式结果"
-            and quality_summary
-            == {
-                "inputQuality": "可评分 56 / 候选 360",
-                "inputQualityMeta": "历史 78 / 360 · 21.7% · 证券资料 120 / 360",
-                "funnel": "360 → 56 → 0",
-                "funnelStages": (
-                    "主线 全市场 5291 → 发行资格 5291 → 动态过滤 500 → 策略历史 400 → 模型输入 360 → "
-                    "候选分合格 360 → 板内限额 360 → 行情请求 360 → 候选特征 360 → 行情合格 360 → "
-                    "证券资料 120 → 候选历史 78 → 完整评分 56 → 达正式线 0 → 可执行 0 → 正式入选 0 ｜ "
-                    "观察支线 完整评分 56 → 达观察线 2 → 动作观察 2 → 观察入选 2 ｜ "
-                    "分类统计 通过 56 · 仅观察 2 · 拒绝 216 · 可复核 20 · 动作不可用 54"
-                ),
-                "funnelMeta": "过滤 216 · 观察草稿 2 · 最高 74.25",
-                "source": "腾讯行情",
-            }
+            and isinstance(quality_summary, dict)
+            and quality_summary.get("inputQuality") == "可评分 56 / 候选 360"
+            and quality_summary.get("inputQualityMeta") == "历史 78 / 360 · 21.7% · 证券资料 120 / 360"
+            and "动态过滤 5291→500" in str(quality_summary.get("inputStages"))
+            and "输入完整性 行情360/360 · 证券资料120/360 · 历史78/360" in str(quality_summary.get("inputStages"))
+            and quality_summary.get("funnel") == "56 → 2 → 2"
+            and "模型成本门 56→20" in str(quality_summary.get("funnelStages"))
+            and "动作门 达观察线2 · 达正式线0 · 可执行0 · 观察2 · 不可用54" in str(quality_summary.get("funnelStages"))
+            and quality_summary.get("scoreRange") == "评分范围 40.00–74.25 · 最高 74.25"
+            and quality_summary.get("funnelMeta") == "完整评分 → 动作合格 → 最终入池 · 正式 0 · 观察 2 · 最高 74.25"
+            and quality_summary.get("source") == "腾讯行情"
             and all(_viewport_passed(viewport) for viewport in viewports)
         )
         return {
@@ -609,30 +610,36 @@ def _browser_input_quality(*, empty: bool = False) -> dict[str, object]:
             "missing_listing_date": 221,
             "missing_listing_age_sessions": 65,
         },
-        "supply_funnel": {
-            "issuer_eligible_population": 5291,
-            "dynamic_filter_eligible": 500,
-            "strategy_history_eligible": 400,
-            "model_input_eligible": 360,
-            "candidate_score_eligible": 360,
-            "candidate_limit_selected": 360,
-            "requested_candidates": 360,
-            "candidate_features": 360,
-            "candidate_quote_eligible": 360,
-            "security_master": 120,
-            "history": 78,
-            "filter_pass": 56,
-            "filter_observe": 2,
-            "full_scored": 56,
-            "filter_reject": 216,
-            "review_eligible": 20,
-            "observation_threshold_met_count": 2,
-            "executable_threshold_met_count": 0,
-            "action_executable": 0,
-            "action_observe": 2,
-            "action_unavailable": 54,
-            "selected_executable": 0,
-            "selected_observe": 0 if empty else 2,
+        "pipeline": {
+            "current_stage": "concentration",
+            "stages": [
+                _browser_stage("dynamic_filter", 5291, 500),
+                _browser_stage("board_cross_section", 500, 500, filter_pass=56, filter_observe=2, filter_reject=216),
+                _browser_stage("strategy_history", 500, 400, history_sessions=(61.0, 248.0)),
+                _browser_stage("model_input", 400, 360, input_completeness=(0.82, 1.0)),
+                _browser_stage("candidate_score", 360, 360, candidate_score=(49.0, 82.0), threshold=50.0),
+                _browser_stage("board_limit", 360, 360),
+                _browser_stage("candidate_refresh", 360, 360, quote_age_seconds=(1.0, 3.0)),
+                _browser_stage("input_coverage", 360, None, candidate_features=360, security_master=120, history=78),
+                _browser_stage("evidence_score", 360, 56, base_score=(42.0, 76.0)),
+                _browser_stage("model_cost_gate", 56, 20, predicted_net_excess_pct=(-0.2, 0.8)),
+                _browser_stage("local_score", 56, 56, local_score=(40.0, 74.25)),
+                _browser_stage("deepseek_review", 20, 20, deepseek_score=(40.0, 76.0)),
+                _browser_stage("fusion", 56, 56, final_score=(40.0, 74.25)),
+                _browser_stage(
+                    "action_gate",
+                    56,
+                    2,
+                    observation_threshold_met=2,
+                    executable_threshold_met=0,
+                    action_executable=0,
+                    action_observe=2,
+                    action_unavailable=54,
+                ),
+                _browser_stage(
+                    "concentration", 2, 0 if empty else 2, selected_executable=0, selected_observe=0 if empty else 2
+                ),
+            ],
         },
         "supply_reason_counts": {
             "below_score_threshold": 54,
@@ -653,6 +660,34 @@ def _browser_input_quality(*, empty: bool = False) -> dict[str, object]:
         },
     }
     return {strategy: status for strategy in ("tomorrow", "d25")}
+
+
+def _browser_stage(
+    key: str,
+    input_count: int,
+    output_count: int | None,
+    *,
+    threshold: float | None = None,
+    **details: int | tuple[float, float],
+) -> dict[str, object]:
+    metrics = [
+        {"metric": name, "minimum": value[0], "maximum": value[1]}
+        for name, value in details.items()
+        if isinstance(value, tuple)
+    ]
+    facets = [
+        {"key": name, "count": value, "total": input_count} for name, value in details.items() if isinstance(value, int)
+    ]
+    return {
+        "key": key,
+        "state": "completed",
+        "input_count": input_count,
+        "output_count": output_count,
+        "metric_ranges": metrics,
+        "threshold": threshold,
+        "facets": facets,
+        "reason_counts": [],
+    }
 
 
 def _observation_item(code: str, *, rank: int, final_score: float) -> DecisionItem:
@@ -704,7 +739,7 @@ def _viewport(base: str | _ChromeSession, output_dir: Path, width: int, height: 
           longVisible: !document.querySelector('#long-sidebar').hidden && !document.querySelector('#longScopeTabs').hidden,
           noLongOverlap: sidebar.right <= table.left,
           messageColumns: messages.length,
-          messageEqualHeight: messages.length === 2 && Math.abs(messages[0].height - messages[1].height) < 1,
+          messageEqualHeight: messages.length === 1,
           summaryItems: document.querySelectorAll('.summary-band > .summary-item').length,
           quoteAge: document.querySelector('#quoteAge').textContent,
           quoteAgeHms: /^\d+(?:时 \d+分 )?\d+秒$/.test(document.querySelector('#quoteAge').textContent),
@@ -761,16 +796,16 @@ def _viewport_passed(result: dict[str, object]) -> bool:
         and result.get("ordered")
         and result.get("longVisible")
         and result.get("noLongOverlap")
-        and result.get("messageColumns") == 2
+        and result.get("messageColumns") == 1
         and result.get("messageEqualHeight")
-        and result.get("summaryItems") == 4
+        and result.get("summaryItems") == 3
         and result.get("quoteAgeHms")
         and result.get("inputQuality") == "不适用"
         and result.get("inputQualityMeta") == "长期固定观察池不评分"
         and result.get("publicationStatus") == "不适用"
         and result.get("publicationMeta") == "长期固定观察池，不评分、不冻结"
         and result.get("topScoresStatus") == "暂无评分数据"
-        and result.get("healthBadge") == "降级 · 2项"
+        and result.get("healthBadge") == "异常 1"
         and result.get("rows")
         and result.get("scopes") == 3
         and result.get("browserErrors") == []

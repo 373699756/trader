@@ -6,7 +6,14 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict
 
 from trader.application.ports.model_scoring import ScoringHeadRuntimeStatus, ScoringProfileRuntimeStatus
-from trader.application.ports.runtime_status import InputQualityStatus, SupplyFunnel
+from trader.application.ports.runtime_status import (
+    InputQualityStatus,
+    PipelineFacet,
+    PipelineMetricRange,
+    PipelineReasonCount,
+    PipelineStageStatus,
+    RecommendationPipelineStatus,
+)
 from trader.application.runtime.cadence import CadencePlannerStatus
 from trader.application.runtime.runtime_issues import RuntimeIssue
 from trader.application.runtime.scheduler_runtime import SchedulerRuntime
@@ -218,7 +225,7 @@ def input_quality_payload(statuses: tuple[InputQualityStatus, ...]) -> dict[str,
             "candidate_transient_reason_counts": dict(status.candidate_transient_reason_counts),
             "candidate_optional_reason_counts": dict(status.candidate_optional_reason_counts),
             "degraded_reasons": list(status.degraded_reasons),
-            "supply_funnel": _supply_funnel_payload(status.supply_funnel),
+            "pipeline": _pipeline_payload(status.pipeline),
             "summary": {
                 "trade_date": summary.trade_date.isoformat(),
                 "quote_total_count": summary.quote_total_count,
@@ -239,32 +246,36 @@ def input_quality_payload(statuses: tuple[InputQualityStatus, ...]) -> dict[str,
     return result
 
 
-def _supply_funnel_payload(funnel: SupplyFunnel) -> dict[str, int]:
+def _pipeline_payload(pipeline: RecommendationPipelineStatus) -> dict[str, object]:
     return {
-        "issuer_eligible_population": funnel.issuer_eligible_population,
-        "dynamic_filter_eligible": funnel.dynamic_filter_eligible,
-        "strategy_history_eligible": funnel.strategy_history_eligible,
-        "model_input_eligible": funnel.model_input_eligible,
-        "candidate_score_eligible": funnel.candidate_score_eligible,
-        "candidate_limit_selected": funnel.candidate_limit_selected,
-        "candidate_quote_eligible": funnel.candidate_quote_eligible,
-        "requested_candidates": funnel.requested_candidates,
-        "candidate_features": funnel.candidate_features,
-        "security_master": funnel.security_master,
-        "history": funnel.history,
-        "filter_pass": funnel.filter_pass,
-        "filter_observe": funnel.filter_observe,
-        "filter_reject": funnel.filter_reject,
-        "full_scored": funnel.full_scored,
-        "review_eligible": funnel.review_eligible,
-        "observation_threshold_met_count": funnel.observation_threshold_met_count,
-        "executable_threshold_met_count": funnel.executable_threshold_met_count,
-        "action_executable": funnel.action_executable,
-        "action_observe": funnel.action_observe,
-        "action_unavailable": funnel.action_unavailable,
-        "selected_executable": funnel.selected_executable,
-        "selected_observe": funnel.selected_observe,
+        "current_stage": pipeline.current_stage,
+        "stages": [_pipeline_stage_payload(stage) for stage in pipeline.stages],
     }
+
+
+def _pipeline_stage_payload(stage: PipelineStageStatus) -> dict[str, object]:
+    return {
+        "key": stage.key,
+        "state": stage.state,
+        "input_count": stage.input_count,
+        "output_count": stage.output_count,
+        "metric_ranges": [_pipeline_metric_payload(value) for value in stage.metric_ranges],
+        "threshold": stage.threshold,
+        "facets": [_pipeline_facet_payload(value) for value in stage.facets],
+        "reason_counts": [_pipeline_reason_payload(value) for value in stage.reason_counts],
+    }
+
+
+def _pipeline_metric_payload(value: PipelineMetricRange) -> dict[str, object]:
+    return {"metric": value.metric, "minimum": value.minimum, "maximum": value.maximum}
+
+
+def _pipeline_facet_payload(value: PipelineFacet) -> dict[str, object]:
+    return {"key": value.key, "count": value.count, "total": value.total}
+
+
+def _pipeline_reason_payload(value: PipelineReasonCount) -> dict[str, object]:
+    return {"reason": value.reason, "count": value.count}
 
 
 def _runtime_issue_payload(issue: RuntimeIssue) -> dict[str, object]:

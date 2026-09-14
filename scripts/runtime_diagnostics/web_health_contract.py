@@ -17,47 +17,108 @@ class FetchIssue:
 
 
 @dataclass(frozen=True)
-class FunnelSnapshot:
-    issuer_eligible_population: int | None
-    dynamic_filter_eligible: int | None
-    strategy_history_eligible: int | None
-    model_input_eligible: int | None
-    candidate_score_eligible: int | None
-    candidate_limit_selected: int | None
-    requested_candidates: int | None
-    candidate_features: int | None
-    candidate_quote_eligible: int | None
-    security_master: int | None
-    history: int | None
-    filter_pass: int | None
-    filter_observe: int | None
-    filter_reject: int | None
-    full_scored: int | None
-    review_eligible: int | None
-    observation_threshold_met_count: int | None
-    executable_threshold_met_count: int | None
-    action_executable: int | None
-    action_observe: int | None
-    action_unavailable: int | None
-    selected_executable: int | None
-    selected_observe: int | None
+class PipelineFacetSnapshot:
+    key: str | None
+    count: int | None
+    total: int | None
+
+
+@dataclass(frozen=True)
+class PipelineStageSnapshot:
+    key: str | None
+    state: str | None
+    input_count: int | None
+    output_count: int | None
+    facets: tuple[PipelineFacetSnapshot, ...]
     invalid_fields: tuple[str, ...] = ()
 
+    def facet_count(self, key: str) -> int | None:
+        return next((facet.count for facet in self.facets if facet.key == key), None)
+
+
+@dataclass(frozen=True)
+class PipelineSnapshot:
+    current_stage: str | None
+    stages: tuple[PipelineStageSnapshot, ...]
+    invalid_fields: tuple[str, ...] = ()
+
+    def stage(self, key: str) -> PipelineStageSnapshot | None:
+        return next((stage for stage in self.stages if stage.key == key), None)
+
+    def count(self, name: str) -> int | None:
+        stage_key, source = _PIPELINE_COUNT_LOCATIONS[name]
+        stage = self.stage(stage_key)
+        if stage is None:
+            return None
+        if source == "input_count":
+            return stage.input_count
+        if source == "output_count":
+            return stage.output_count
+        return stage.facet_count(source)
+
     def monitored_counts(self) -> tuple[tuple[str, int | None], ...]:
-        return (
-            ("issuer_eligible_population", self.issuer_eligible_population),
-            ("dynamic_filter_eligible", self.dynamic_filter_eligible),
-            ("strategy_history_eligible", self.strategy_history_eligible),
-            ("model_input_eligible", self.model_input_eligible),
-            ("candidate_score_eligible", self.candidate_score_eligible),
-            ("candidate_limit_selected", self.candidate_limit_selected),
-            ("requested_candidates", self.requested_candidates),
-            ("candidate_features", self.candidate_features),
-            ("candidate_quote_eligible", self.candidate_quote_eligible),
-            ("security_master", self.security_master),
-            ("history", self.history),
-            ("full_scored", self.full_scored),
-        )
+        return tuple((name, self.count(name)) for name in _MONITORED_PIPELINE_COUNTS)
+
+
+_MONITORED_PIPELINE_COUNTS = (
+    "issuer_eligible_population",
+    "dynamic_filter_eligible",
+    "strategy_history_eligible",
+    "model_input_eligible",
+    "candidate_score_eligible",
+    "candidate_limit_selected",
+    "requested_candidates",
+    "candidate_features",
+    "candidate_quote_eligible",
+    "security_master",
+    "history",
+    "full_scored",
+)
+
+_PIPELINE_STAGE_ORDER = (
+    "dynamic_filter",
+    "board_cross_section",
+    "strategy_history",
+    "model_input",
+    "candidate_score",
+    "board_limit",
+    "candidate_refresh",
+    "input_coverage",
+    "evidence_score",
+    "model_cost_gate",
+    "local_score",
+    "deepseek_review",
+    "fusion",
+    "action_gate",
+    "concentration",
+)
+_PIPELINE_STAGE_STATES = frozenset({"pending", "running", "completed", "degraded", "not_applicable"})
+
+_PIPELINE_COUNT_LOCATIONS = {
+    "issuer_eligible_population": ("dynamic_filter", "input_count"),
+    "dynamic_filter_eligible": ("dynamic_filter", "output_count"),
+    "strategy_history_eligible": ("strategy_history", "output_count"),
+    "model_input_eligible": ("model_input", "output_count"),
+    "candidate_score_eligible": ("candidate_score", "output_count"),
+    "candidate_limit_selected": ("board_limit", "output_count"),
+    "requested_candidates": ("candidate_refresh", "input_count"),
+    "candidate_features": ("input_coverage", "candidate_features"),
+    "candidate_quote_eligible": ("candidate_refresh", "output_count"),
+    "security_master": ("input_coverage", "security_master"),
+    "history": ("input_coverage", "history"),
+    "filter_pass": ("board_cross_section", "filter_pass"),
+    "filter_observe": ("board_cross_section", "filter_observe"),
+    "filter_reject": ("board_cross_section", "filter_reject"),
+    "full_scored": ("evidence_score", "output_count"),
+    "review_eligible": ("deepseek_review", "input_count"),
+    "observation_threshold_met_count": ("action_gate", "observation_threshold_met"),
+    "executable_threshold_met_count": ("action_gate", "executable_threshold_met"),
+    "action_executable": ("action_gate", "action_executable"),
+    "action_observe": ("action_gate", "action_observe"),
+    "action_unavailable": ("action_gate", "action_unavailable"),
+    "selected_executable": ("concentration", "selected_executable"),
+    "selected_observe": ("concentration", "selected_observe"),
+}
 
 
 @dataclass(frozen=True)
@@ -92,7 +153,7 @@ class InputQualitySnapshot:
     population_count: int | None
     history_required_sessions: int | None
     highest_final_score: float | None
-    funnel: FunnelSnapshot
+    pipeline: PipelineSnapshot
     population_filter_reason_counts: Mapping[str, int]
     candidate_filter_reason_counts: Mapping[str, int]
     candidate_transient_reason_counts: Mapping[str, int]
@@ -392,7 +453,7 @@ def _parse_input_quality(payload: Mapping[str, object]) -> InputQualitySnapshot:
         population_count=_nonnegative_int(payload.get("population_count")),
         history_required_sessions=_nonnegative_int(payload.get("history_required_sessions")),
         highest_final_score=_nonnegative_number(summary.get("highest_final_score")),
-        funnel=_parse_funnel(_mapping(payload.get("supply_funnel"))),
+        pipeline=_parse_pipeline(_mapping(payload.get("pipeline"))),
         population_filter_reason_counts=_parse_reason_counts(payload.get("population_filter_reason_counts")),
         candidate_filter_reason_counts=_parse_reason_counts(payload.get("candidate_filter_reason_counts")),
         candidate_transient_reason_counts=_parse_reason_counts(payload.get("candidate_transient_reason_counts")),
@@ -436,59 +497,95 @@ def _top_score_summary(value: object) -> tuple[int | None, float | None]:
     return len(value), max(scores) if scores else None
 
 
-def _parse_funnel(payload: Mapping[str, object]) -> FunnelSnapshot:
-    field_names = (
-        "issuer_eligible_population",
-        "dynamic_filter_eligible",
-        "strategy_history_eligible",
-        "model_input_eligible",
-        "candidate_score_eligible",
-        "candidate_limit_selected",
-        "requested_candidates",
-        "candidate_features",
-        "candidate_quote_eligible",
-        "security_master",
-        "history",
-        "filter_pass",
-        "filter_observe",
-        "filter_reject",
-        "full_scored",
-        "review_eligible",
-        "observation_threshold_met_count",
-        "executable_threshold_met_count",
-        "action_executable",
-        "action_observe",
-        "action_unavailable",
-        "selected_executable",
-        "selected_observe",
+def _parse_pipeline(payload: Mapping[str, object]) -> PipelineSnapshot:
+    raw_stages = payload.get("stages")
+    if not isinstance(raw_stages, (list, tuple)):
+        return PipelineSnapshot(_text(payload.get("current_stage")), (), ("stages",))
+    stages: list[PipelineStageSnapshot] = []
+    invalid_fields: list[str] = []
+    for index, raw in enumerate(raw_stages):
+        stage_payload = _mapping_or_none(raw)
+        if stage_payload is None:
+            invalid_fields.append(f"stages[{index}]")
+            continue
+        stage = _parse_pipeline_stage(stage_payload, index)
+        stages.append(stage)
+        invalid_fields.extend(stage.invalid_fields)
+    keys = tuple(stage.key for stage in stages)
+    current_stage = _text(payload.get("current_stage"))
+    if keys != _PIPELINE_STAGE_ORDER:
+        invalid_fields.append("stages.order")
+    if current_stage not in keys:
+        invalid_fields.append("current_stage")
+    return PipelineSnapshot(
+        current_stage,
+        tuple(stages),
+        tuple(sorted(set(invalid_fields))),
     )
-    values = {name: _nonnegative_int(payload.get(name)) for name in field_names}
-    return FunnelSnapshot(
-        issuer_eligible_population=values["issuer_eligible_population"],
-        dynamic_filter_eligible=values["dynamic_filter_eligible"],
-        strategy_history_eligible=values["strategy_history_eligible"],
-        model_input_eligible=values["model_input_eligible"],
-        candidate_score_eligible=values["candidate_score_eligible"],
-        candidate_limit_selected=values["candidate_limit_selected"],
-        requested_candidates=values["requested_candidates"],
-        candidate_features=values["candidate_features"],
-        candidate_quote_eligible=values["candidate_quote_eligible"],
-        security_master=values["security_master"],
-        history=values["history"],
-        filter_pass=values["filter_pass"],
-        filter_observe=values["filter_observe"],
-        filter_reject=values["filter_reject"],
-        full_scored=values["full_scored"],
-        review_eligible=values["review_eligible"],
-        observation_threshold_met_count=values["observation_threshold_met_count"],
-        executable_threshold_met_count=values["executable_threshold_met_count"],
-        action_executable=values["action_executable"],
-        action_observe=values["action_observe"],
-        action_unavailable=values["action_unavailable"],
-        selected_executable=values["selected_executable"],
-        selected_observe=values["selected_observe"],
-        invalid_fields=tuple(name for name in field_names if values[name] is None),
-    )
+
+
+def _parse_pipeline_stage(payload: Mapping[str, object], index: int) -> PipelineStageSnapshot:
+    key = _text(payload.get("key"))
+    state = _text(payload.get("state"))
+    invalid: list[str] = []
+    if key is None:
+        invalid.append(f"stages[{index}].key")
+    if state is None:
+        invalid.append(f"stages[{index}].state")
+    elif state not in _PIPELINE_STAGE_STATES:
+        invalid.append(f"stages[{index}].state")
+    input_count = _optional_count(payload, "input_count", invalid, f"stages[{index}]")
+    output_count = _optional_count(payload, "output_count", invalid, f"stages[{index}]")
+    facets: list[PipelineFacetSnapshot] = []
+    raw_facets = payload.get("facets", ())
+    if not isinstance(raw_facets, (list, tuple)):
+        invalid.append(f"stages[{index}].facets")
+    else:
+        for facet_index, raw in enumerate(raw_facets):
+            facet_payload = _mapping_or_none(raw)
+            if facet_payload is None:
+                invalid.append(f"stages[{index}].facets[{facet_index}]")
+                continue
+            prefix = f"stages[{index}].facets[{facet_index}]"
+            facet_key = _text(facet_payload.get("key"))
+            if facet_key is None:
+                invalid.append(f"{prefix}.key")
+            count = _required_count(facet_payload, "count", invalid, prefix)
+            total = _optional_count(facet_payload, "total", invalid, prefix)
+            if count is not None and total is not None and count > total:
+                invalid.append(f"{prefix}.count")
+            facets.append(PipelineFacetSnapshot(facet_key, count, total))
+    if input_count is not None and output_count is not None and output_count > input_count:
+        invalid.append(f"stages[{index}].output_count")
+    facet_keys = tuple(facet.key for facet in facets)
+    if len(facet_keys) != len(set(facet_keys)):
+        invalid.append(f"stages[{index}].facets")
+    return PipelineStageSnapshot(key, state, input_count, output_count, tuple(facets), tuple(invalid))
+
+
+def _optional_count(
+    payload: Mapping[str, object],
+    key: str,
+    invalid: list[str],
+    prefix: str,
+) -> int | None:
+    raw = payload.get(key)
+    value = _nonnegative_int(raw)
+    if raw is not None and value is None:
+        invalid.append(f"{prefix}.{key}")
+    return value
+
+
+def _required_count(
+    payload: Mapping[str, object],
+    key: str,
+    invalid: list[str],
+    prefix: str,
+) -> int | None:
+    value = _optional_count(payload, key, invalid, prefix)
+    if payload.get(key) is None:
+        invalid.append(f"{prefix}.{key}")
+    return value
 
 
 def _parse_runtime_issues(value: object) -> tuple[WebRuntimeIssue, ...]:
@@ -553,8 +650,10 @@ def _nonnegative_number(value: object) -> float | None:
 
 __all__ = [
     "FetchIssue",
-    "FunnelSnapshot",
     "InputQualitySnapshot",
+    "PipelineFacetSnapshot",
+    "PipelineSnapshot",
+    "PipelineStageSnapshot",
     "ProjectionSnapshot",
     "ScoringHeadSnapshot",
     "ScoringProfileSnapshot",

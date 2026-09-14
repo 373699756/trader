@@ -31,8 +31,9 @@ def test_dashboard_and_explanation_use_the_unified_short_horizon_score_scale() -
     normalized_design = " ".join(design.split())
     normalized_retrospective = " ".join(retrospective.split())
 
-    assert "统一评分最高" in template
-    assert "今 / 明 / 2–5 日统一 0–100 标尺" in template
+    assert "统一评分最高" not in template
+    assert "统一0–100评分" in template
+    assert 'id="topScoresStatus"' in template
     assert "Today、Tomorrow、D25 的最终分共享同一 0–100 质量标尺" in normalized_scoring
     assert "模型相对排名只作为诊断" in normalized_scoring
     assert "Decision coverage、 GET、SSE 完整替换和运行诊断统一读取该聚合" in normalized_design

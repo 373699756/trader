@@ -7,6 +7,7 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
+- [Expose the typed recommendation pipeline directly in the desktop dashboard](docs/changelog/2026-09-14-recommendation-pipeline-stage-observability.md)
 - [Restore industry-aware model inputs and truthful funnel branches](docs/changelog/2026-09-14-model-industry-input-recovery.md)
 - [Recover the three-strategy recommendation funnel and expose its true first blocker](docs/changelog/2026-09-14-three-strategy-funnel-recovery.md)
 - [Profile-owned V2/V3 training layout plan](docs/changelog/2026-09-14-profile-owned-training-layout-plan.md)

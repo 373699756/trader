@@ -33,37 +33,29 @@
       <div class="runtime-strip" aria-label="运行状态">
         <span><i id="runtimeDot" class="status-dot" data-state="idle"></i><b id="runtimeStatus">未启动</b></span>
         <span>推送 <b id="streamStatus">连接中</b></span>
+        <button id="errorDetailsButton" class="runtime-issue-button" type="button" aria-controls="errorDrawer" aria-expanded="false" hidden>
+          <b id="healthBadge">异常</b>
+        </button>
       </div>
       <button id="refreshButton" class="icon-button" type="button" title="刷新当前策略" aria-label="刷新当前策略">
         <svg class="lucide-icon" aria-hidden="true"><use href="{{ url_for('static', filename='lucide.svg') }}#refresh-cw"></use></svg>
       </button>
-      <div class="runtime-messages" aria-label="评分输入质量与最近错误">
+      <div class="runtime-messages" aria-label="评分输入质量">
         <div id="inputQualityPanel" class="runtime-message input-quality-message" role="status" aria-live="polite">
           <div class="runtime-message-heading"><span>评分输入质量</span></div>
           <strong class="input-quality-live"><b id="inputQualityStrategy">今</b><i aria-hidden="true"> · </i><b id="quoteSource">来源不可用</b><i aria-hidden="true"> · </i><b id="quoteFreshness" data-age-state="unknown">● <time id="quoteAge">-</time></b><time id="quoteTime" class="visually-hidden">-</time><i aria-hidden="true"> · </i><span id="inputQualityScoreTime">等待本轮评分完成</span></strong>
           <span id="inputQualityStatus" class="input-quality-coverage">候选 / 历史 / 证券资料</span>
+          <div id="inputQualityStages" class="input-quality-stages">正在读取评分输入链路</div>
           <small><span id="inputQualityMeta">评分输入待计算</span><span id="inputQualityBlockers">本轮阻断：待计算</span><span id="inputQualityDegradations">仅降级，不代表股票存在风险：待计算</span></small>
-        </div>
-        <div id="healthPanel" class="runtime-error runtime-message" data-level="normal" role="status" aria-live="polite">
-          <div class="runtime-message-heading">
-            <span>最近错误</span>
-            <div class="health-actions">
-              <b id="healthBadge">正常 · 无最近错误</b>
-              <button id="errorDetailsButton" class="text-button" type="button" aria-controls="errorDrawer" aria-expanded="false" hidden>查看全部</button>
-            </div>
-          </div>
-          <strong id="lastError">系统运行正常</strong>
-          <small id="lastErrorMeta">当前没有活动问题</small>
         </div>
       </div>
     </header>
 
     <main class="workspace">
       <section class="summary-band" aria-label="推荐摘要">
-        <div class="summary-item funnel-item"><span>推荐漏斗</span><strong id="funnelStatus">-</strong><div id="funnelStages" class="funnel-stages">正在读取全部过滤节点</div><small id="funnelMeta">候选 / 评分 / 正式</small></div>
+        <div class="summary-item funnel-item"><span>推荐漏斗 · 统一0–100评分</span><strong id="funnelStatus">-</strong><div id="funnelStages" class="funnel-stages">正在读取评分与决策链路</div><div id="funnelScoreRange" class="funnel-score-range">评分范围 —</div><strong id="topScoresStatus" class="top-scores-list" role="status" aria-live="polite">暂无评分数据</strong><small id="topScoresMeta">最终评分 Top 3</small><small id="funnelMeta">完整评分 / 动作门 / 最终入池</small></div>
         <div class="summary-item"><span>模型预算</span><strong id="budgetStatus">-</strong><small id="budgetMeta">已用 / 剩余 / 上限</small></div>
         <div class="summary-item"><span>发布状态</span><strong id="publicationStatus">-</strong><small id="publicationMeta">等待当前策略快照</small></div>
-        <div class="summary-item top-scores-item"><span>统一评分最高</span><strong id="topScoresStatus" class="top-scores-list" role="status" aria-live="polite">暂无评分数据</strong><small id="topScoresMeta">今 / 明 / 2–5 日统一 0–100 标尺</small></div>
       </section>
 
       <section class="control-band" aria-label="策略和日期">

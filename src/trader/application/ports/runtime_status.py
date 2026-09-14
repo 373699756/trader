@@ -3,56 +3,145 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, fields
+import re
+from dataclasses import dataclass
 from datetime import date, datetime
-from itertools import pairwise
 from typing import Literal
 
 from trader.domain.recommendation.models import Strategy
 
 InputQualityState = Literal["ready", "business_empty", "transient_invalid_empty", "not_ready"]
+PipelineStageState = Literal["pending", "running", "completed", "degraded", "not_applicable"]
+PipelineStageKey = Literal[
+    "dynamic_filter",
+    "board_cross_section",
+    "strategy_history",
+    "model_input",
+    "candidate_score",
+    "board_limit",
+    "candidate_refresh",
+    "input_coverage",
+    "evidence_score",
+    "model_cost_gate",
+    "local_score",
+    "deepseek_review",
+    "fusion",
+    "action_gate",
+    "concentration",
+]
+PipelineMetricName = Literal[
+    "board_reliability",
+    "history_sessions",
+    "input_completeness",
+    "candidate_score",
+    "quote_age_seconds",
+    "base_score",
+    "model_signal_score",
+    "predicted_excess_return_pct",
+    "estimated_cost_pct",
+    "predicted_net_excess_pct",
+    "model_disagreement_pct",
+    "local_risk_penalty",
+    "local_score",
+    "deepseek_score",
+    "deepseek_risk_penalty",
+    "final_score",
+]
+
+_PIPELINE_STAGE_ORDER: tuple[PipelineStageKey, ...] = (
+    "dynamic_filter",
+    "board_cross_section",
+    "strategy_history",
+    "model_input",
+    "candidate_score",
+    "board_limit",
+    "candidate_refresh",
+    "input_coverage",
+    "evidence_score",
+    "model_cost_gate",
+    "local_score",
+    "deepseek_review",
+    "fusion",
+    "action_gate",
+    "concentration",
+)
+_PIPELINE_KEY = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
 @dataclass(frozen=True)
-class SupplyFunnel:
-    issuer_eligible_population: int = 0
-    dynamic_filter_eligible: int = 0
-    strategy_history_eligible: int = 0
-    model_input_eligible: int = 0
-    candidate_score_eligible: int = 0
-    candidate_limit_selected: int = 0
-    candidate_quote_eligible: int = 0
-    requested_candidates: int = 0
-    candidate_features: int = 0
-    security_master: int = 0
-    history: int = 0
-    filter_pass: int = 0
-    filter_observe: int = 0
-    filter_reject: int = 0
-    full_scored: int = 0
-    review_eligible: int = 0
-    observation_threshold_met_count: int = 0
-    executable_threshold_met_count: int = 0
-    action_executable: int = 0
-    action_observe: int = 0
-    action_unavailable: int = 0
-    selected_executable: int = 0
-    selected_observe: int = 0
+class PipelineMetricRange:
+    metric: PipelineMetricName
+    minimum: float
+    maximum: float
 
     def __post_init__(self) -> None:
-        values = tuple(getattr(self, item.name) for item in fields(self))
-        if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in values):
-            raise ValueError("supply funnel counts cannot be negative")
-        stages = (
-            self.issuer_eligible_population,
-            self.dynamic_filter_eligible,
-            self.strategy_history_eligible,
-            self.model_input_eligible,
-            self.candidate_score_eligible,
-            self.candidate_limit_selected,
-        )
-        if any(left < right for left, right in pairwise(stages)):
-            raise ValueError("supply funnel candidate stages must be monotonic")
+        if not math.isfinite(self.minimum) or not math.isfinite(self.maximum) or self.minimum > self.maximum:
+            raise ValueError("pipeline metric range is invalid")
+
+
+@dataclass(frozen=True)
+class PipelineFacet:
+    key: str
+    count: int
+    total: int | None = None
+
+    def __post_init__(self) -> None:
+        if _PIPELINE_KEY.fullmatch(self.key) is None or self.count < 0:
+            raise ValueError("pipeline facet is invalid")
+        if self.total is not None and (self.total < 0 or self.count > self.total):
+            raise ValueError("pipeline facet count cannot exceed total")
+
+
+@dataclass(frozen=True)
+class PipelineReasonCount:
+    reason: str
+    count: int
+
+    def __post_init__(self) -> None:
+        if _PIPELINE_KEY.fullmatch(self.reason) is None or self.count < 1:
+            raise ValueError("pipeline reason count is invalid")
+
+
+@dataclass(frozen=True)
+class PipelineStageStatus:
+    key: PipelineStageKey
+    state: PipelineStageState
+    input_count: int | None
+    output_count: int | None
+    metric_ranges: tuple[PipelineMetricRange, ...] = ()
+    threshold: float | None = None
+    facets: tuple[PipelineFacet, ...] = ()
+    reason_counts: tuple[PipelineReasonCount, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.input_count is not None and self.input_count < 0:
+            raise ValueError("pipeline input count cannot be negative")
+        if self.output_count is not None and self.output_count < 0:
+            raise ValueError("pipeline output count cannot be negative")
+        if self.input_count is not None and self.output_count is not None and self.output_count > self.input_count:
+            raise ValueError("pipeline output count cannot exceed input")
+        if self.threshold is not None and not math.isfinite(self.threshold):
+            raise ValueError("pipeline threshold must be finite")
+        if len({item.metric for item in self.metric_ranges}) != len(self.metric_ranges):
+            raise ValueError("pipeline metric ranges must be unique")
+        if len({item.key for item in self.facets}) != len(self.facets):
+            raise ValueError("pipeline facets must be unique")
+        if len({item.reason for item in self.reason_counts}) != len(self.reason_counts):
+            raise ValueError("pipeline reasons must be unique")
+
+
+@dataclass(frozen=True)
+class RecommendationPipelineStatus:
+    current_stage: PipelineStageKey
+    stages: tuple[PipelineStageStatus, ...]
+
+    def __post_init__(self) -> None:
+        keys = tuple(item.key for item in self.stages)
+        if keys != _PIPELINE_STAGE_ORDER or self.current_stage not in keys:
+            raise ValueError("recommendation pipeline stages are invalid")
+
+    def stage(self, key: PipelineStageKey) -> PipelineStageStatus:
+        return next(item for item in self.stages if item.key == key)
 
 
 @dataclass(frozen=True)
@@ -93,7 +182,7 @@ class InputQualityStatus:
     status: InputQualityState
     publishable: bool
     summary: SupplySummary
-    supply_funnel: SupplyFunnel = SupplyFunnel()
+    pipeline: RecommendationPipelineStatus
     population_count: int = 0
     candidate_count: int = 0
     candidate_feature_count: int = 0
@@ -159,6 +248,13 @@ class InputQualityStatus:
 __all__ = [
     "InputQualityState",
     "InputQualityStatus",
-    "SupplyFunnel",
+    "PipelineFacet",
+    "PipelineMetricName",
+    "PipelineMetricRange",
+    "PipelineReasonCount",
+    "PipelineStageKey",
+    "PipelineStageState",
+    "PipelineStageStatus",
+    "RecommendationPipelineStatus",
     "SupplySummary",
 ]

@@ -32,6 +32,13 @@ from trader.domain.recommendation.models import Strategy
 from trader.infra.settings import load_strategy_settings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _pipeline_facet(status, stage_key: str, facet_key: str) -> int:
+    stage = status.pipeline.stage(stage_key)
+    return next(item.count for item in stage.facets if item.key == facet_key)
+
+
 TEST_NOW = datetime(2026, 8, 12, 14, 0, tzinfo=SHANGHAI)
 
 
@@ -317,8 +324,10 @@ def test_primary_blocker_reports_dominant_stale_market_before_partial_history(
     with pytest.raises(DecisionUnavailableError, match="transient_invalid_empty"):
         adapter.build_local(request)
     status = next(item for item in adapter.input_quality_status() if item.strategy is Strategy.TOMORROW)
-    assert status.supply_funnel.requested_candidates == 0
+    assert status.pipeline.stage("candidate_refresh").input_count == 0
     assert dict(status.population_filter_reason_counts)["stale_quote"] == 1
+    assert status.pipeline.stage("dynamic_filter").reason_counts[0].reason == "stale_quote"
+    assert status.pipeline.stage("dynamic_filter").reason_counts[0].count == 1
     assert status.primary_blocker == "market_population_stale"
 
 
@@ -346,7 +355,7 @@ def test_primary_blocker_reports_dominant_missing_market_liquidity_history(
     with pytest.raises(DecisionUnavailableError, match="transient_invalid_empty"):
         adapter.build_local(request)
     status = next(item for item in adapter.input_quality_status() if item.strategy is Strategy.TOMORROW)
-    assert status.supply_funnel.requested_candidates == 0
+    assert status.pipeline.stage("candidate_refresh").input_count == 0
     assert dict(status.population_filter_reason_counts)["missing_liquidity_history"] == 2
     assert status.primary_blocker == "market_liquidity_history_unavailable"
 
@@ -502,8 +511,8 @@ def test_full_market_acquisition_exposes_pending_funnel_without_treating_unknown
     assert {status.strategy for status in statuses} == {Strategy.TODAY, Strategy.TOMORROW, Strategy.D25}
     assert all(status.status == "not_ready" for status in statuses)
     assert all(status.primary_blocker == "candidate_quotes_pending" for status in statuses)
-    assert all(status.supply_funnel.requested_candidates == 1 for status in statuses)
-    assert all(status.supply_funnel.candidate_features == 0 for status in statuses)
+    assert all(status.pipeline.stage("candidate_refresh").input_count == 1 for status in statuses)
+    assert all(status.pipeline.stage("candidate_refresh").output_count is None for status in statuses)
 
     adapter.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
 
@@ -658,8 +667,8 @@ def test_production_adapter_rejects_candidate_security_identity_degradation(
     assert status.security_master_covered_count == 0
     assert status.security_master_coverage_ratio == 0.0
     assert "security_master_coverage_incomplete" in status.degraded_reasons
-    assert status.supply_funnel.requested_candidates == 1
-    assert status.supply_funnel.security_master == 0
+    assert status.pipeline.stage("candidate_refresh").input_count == 1
+    assert _pipeline_facet(status, "input_coverage", "security_master") == 0
     assert status.primary_blocker == "security_master_coverage_incomplete"
     assert status.summary.quote_total_count == 1
     assert status.summary.trade_date == observed_at.date()
@@ -704,9 +713,9 @@ def test_production_adapter_accepts_exactly_ninety_nine_percent_history_coverage
     assert status.history_covered_count == 99
     assert status.history_coverage_ratio == 0.99
     assert status.publishable is True
-    assert status.supply_funnel.strategy_history_eligible == 99
-    assert status.supply_funnel.dynamic_filter_eligible == 100
-    assert status.supply_funnel.filter_reject == 0
+    assert status.pipeline.stage("strategy_history").output_count == 99
+    assert status.pipeline.stage("dynamic_filter").output_count == 100
+    assert _pipeline_facet(status, "board_cross_section", "filter_reject") == 0
 
 
 def test_production_adapter_rejects_partial_candidate_feature_response(
@@ -742,8 +751,8 @@ def test_production_adapter_rejects_partial_candidate_feature_response(
     assert status.candidate_count == 2
     assert status.candidate_feature_count == 1
     assert status.candidate_feature_coverage_ratio == 0.5
-    assert status.supply_funnel.requested_candidates == 2
-    assert status.supply_funnel.candidate_features == 1
+    assert status.pipeline.stage("candidate_refresh").input_count == 2
+    assert _pipeline_facet(status, "input_coverage", "candidate_features") == 1
     assert status.primary_blocker == "candidate_feature_coverage_incomplete"
     assert status.summary.quote_total_count == 2
     assert status.summary.quote_covered_count == 1
@@ -1070,8 +1079,8 @@ def test_candidate_qualification_precedes_board_limit_and_failed_quote_promotes_
 
     assert market.candidate_requests == [("600002",), ("600003",)]
     statuses = {item.strategy: item for item in adapter.input_quality_status()}
-    assert all(item.supply_funnel.candidate_limit_selected == 1 for item in statuses.values())
-    assert all(item.supply_funnel.candidate_quote_eligible == 1 for item in statuses.values())
+    assert all(item.pipeline.stage("board_limit").output_count == 1 for item in statuses.values())
+    assert all(item.pipeline.stage("candidate_refresh").output_count == 1 for item in statuses.values())
 
 
 def test_rank_one_quote_failure_promotes_exactly_rank_121_without_duplicate_requests(
@@ -1510,10 +1519,10 @@ def test_research_intent_prioritizes_published_output_before_bounded_candidates(
     diagnostics = decision.selection_diagnostics
     assert diagnostics is not None
     status = next(item for item in adapter.input_quality_status() if item.strategy is Strategy.TOMORROW)
-    assert status.supply_funnel.observation_threshold_met_count == sum(
+    assert _pipeline_facet(status, "action_gate", "observation_threshold_met") == sum(
         item.final_score >= diagnostics.observation_floor for item in decision.items
     )
-    assert status.supply_funnel.executable_threshold_met_count == sum(
+    assert _pipeline_facet(status, "action_gate", "executable_threshold_met") == sum(
         item.final_score >= diagnostics.executable_threshold for item in decision.items
     )
     intent = adapter.research_intent(decision)

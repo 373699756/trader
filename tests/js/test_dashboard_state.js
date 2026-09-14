@@ -76,10 +76,12 @@ const state = {
   longTable: sandbox.window.TraderRender.longTable,
   sourceLabel: sandbox.window.TraderRender.sourceLabel,
   formatDurationHms: sandbox.window.TraderStatusView.formatDurationHms,
-  funnelStageSummary: sandbox.window.TraderStatusView.funnelStageSummary,
+  inputPipelineDetails: sandbox.window.TraderStatusView.inputPipelineDetails,
+  decisionPipelineDetails: sandbox.window.TraderStatusView.decisionPipelineDetails,
   healthView: sandbox.window.TraderStatusView.healthView,
   quoteAvailabilitySummary: sandbox.window.TraderStatusView.quoteAvailabilitySummary,
   renderInputQuality: sandbox.window.TraderStatusView.renderInputQuality,
+  renderHealth: sandbox.window.TraderStatusView.renderHealth,
   renderPublicationStatus: sandbox.window.TraderStatusView.renderPublicationStatus,
   renderSummary: sandbox.window.TraderStatusView.renderSummary,
   topScoredStocks: sandbox.window.TraderStatusView.topScoredStocks,
@@ -354,8 +356,10 @@ function summaryFixture() {
     inputQualityMeta: { textContent: "" },
     inputQualityBlockers: { textContent: "" },
     inputQualityDegradations: { textContent: "" },
+    inputQualityStages: { textContent: "" },
     funnelStatus: { textContent: "" },
     funnelStages: { textContent: "" },
+    funnelScoreRange: { textContent: "" },
     funnelMeta: { textContent: "" },
     quoteSource: { textContent: "" },
     quoteAge: { textContent: "" },
@@ -371,33 +375,58 @@ function summaryFixture() {
     topScoresMeta: { textContent: "" },
   };
 }
+const pipelineFixture = {
+  current_stage: "action_gate",
+  stages: [
+    { key: "dynamic_filter", state: "completed", input_count: 5289, output_count: 196,
+      facets: [], reason_counts: [] },
+    { key: "board_cross_section", state: "completed", input_count: 196, output_count: 196,
+      metric_ranges: [{ metric: "board_reliability", minimum: 0.72, maximum: 0.99 }],
+      facets: [{ key: "filter_observe", count: 125, total: 196 }] },
+    { key: "strategy_history", state: "completed", input_count: 196, output_count: 195,
+      metric_ranges: [{ metric: "history_sessions", minimum: 60, maximum: 248 }] },
+    { key: "model_input", state: "completed", input_count: 195, output_count: 188,
+      metric_ranges: [{ metric: "input_completeness", minimum: 0.84, maximum: 1 }] },
+    { key: "candidate_score", state: "completed", input_count: 188, output_count: 134, threshold: 50,
+      metric_ranges: [{ metric: "candidate_score", minimum: 43.18, maximum: 82.64 }] },
+    { key: "board_limit", state: "completed", input_count: 134, output_count: 134 },
+    { key: "candidate_refresh", state: "completed", input_count: 134, output_count: 125,
+      metric_ranges: [{ metric: "quote_age_seconds", minimum: 1.2, maximum: 8.6 }] },
+    { key: "input_coverage", state: "completed", input_count: 125, output_count: null,
+      facets: [
+        { key: "candidate_features", count: 125, total: 125 },
+        { key: "security_master", count: 125, total: 125 },
+        { key: "history", count: 125, total: 125 },
+      ] },
+    { key: "evidence_score", state: "completed", input_count: 125, output_count: 110,
+      metric_ranges: [{ metric: "base_score", minimum: 41.18, maximum: 67.42 }] },
+    { key: "model_cost_gate", state: "completed", input_count: 110, output_count: 0,
+      metric_ranges: [{ metric: "predicted_net_excess_pct", minimum: -0.38, maximum: -0.04 }] },
+    { key: "local_score", state: "completed", input_count: 110, output_count: 110,
+      metric_ranges: [{ metric: "local_score", minimum: 39.18, maximum: 65.42 }] },
+    { key: "deepseek_review", state: "not_applicable", input_count: 0, output_count: 0 },
+    { key: "fusion", state: "completed", input_count: 110, output_count: 110,
+      metric_ranges: [{ metric: "final_score", minimum: 39.18, maximum: 65.42 }] },
+    { key: "action_gate", state: "completed", input_count: 110, output_count: 0,
+      facets: [
+        { key: "observation_threshold_met", count: 2, total: 110 },
+        { key: "executable_threshold_met", count: 0, total: 110 },
+        { key: "action_executable", count: 0, total: 110 },
+        { key: "action_observe", count: 0, total: 110 },
+        { key: "action_unavailable", count: 110, total: 110 },
+      ], reason_counts: [{ reason: "model_net_utility_non_positive", count: 110 }] },
+    { key: "concentration", state: "completed", input_count: 0, output_count: 0,
+      facets: [{ key: "selected_executable", count: 0, total: 0 },
+        { key: "selected_observe", count: 0, total: 0 }] },
+  ],
+};
 assert.strictEqual(
-  state.funnelStageSummary({
-    issuer_eligible_population: 5291,
-    dynamic_filter_eligible: 49,
-    strategy_history_eligible: 48,
-    model_input_eligible: 0,
-    candidate_score_eligible: 0,
-    candidate_limit_selected: 0,
-    requested_candidates: 0,
-    candidate_features: 0,
-    candidate_quote_eligible: 0,
-    security_master: 0,
-    history: 0,
-    filter_pass: 0,
-    filter_observe: 0,
-    filter_reject: 5243,
-    full_scored: 0,
-    review_eligible: 0,
-    observation_threshold_met_count: 0,
-    executable_threshold_met_count: 0,
-    action_executable: 0,
-    action_observe: 0,
-    action_unavailable: 0,
-    selected_executable: 0,
-    selected_observe: 0,
-  }, 5291),
-  "主线 全市场 5291 → 发行资格 5291 → 动态过滤 49 → 策略历史 48 → 模型输入 0 → 候选分合格 0 → 板内限额 0 → 行情请求 0 → 候选特征 0 → 行情合格 0 → 证券资料 0 → 候选历史 0 → 完整评分 0 → 达正式线 0 → 可执行 0 → 正式入选 0 ｜ 观察支线 完整评分 0 → 达观察线 0 → 动作观察 0 → 观察入选 0 ｜ 分类统计 通过 0 · 仅观察 0 · 拒绝 5243 · 可复核 0 · 动作不可用 0",
+  state.inputPipelineDetails(pipelineFixture),
+  "动态过滤 5289→196 ｜ 板内总体 196（可靠度0.72–0.99）（仅观察125） ｜ 策略历史 196→195（60–248日） ｜ 模型输入 195→188（完整率84.0%–100.0%） ｜ 候选分 188→134（43.18–82.64，门槛50.00） ｜ 板内限额 134→134 ｜ 定向行情 134→125（年龄1.2–8.6秒） ｜ 输入完整性 行情125/125 · 证券资料125/125 · 历史125/125 ｜ 完整评分 125→110（基础分41.18–67.42）",
+);
+assert.strictEqual(
+  state.decisionPipelineDetails(pipelineFixture),
+  "模型成本门 110→0（净效用-0.38%–-0.04%） ｜ 本地评分 110（39.18–65.42） ｜ DeepSeek 不适用 ｜ 融合评分 110（39.18–65.42） ｜ 动作门 达观察线2 · 达正式线0 · 可执行0 · 观察0 · 不可用110〔主要原因 成本后净超额未转正110〕 ｜ 最终入池 正式0 · 观察0",
 );
 const summaryElements = summaryFixture();
 state.renderSummary(
@@ -430,8 +459,10 @@ state.renderSummary(
 );
 assert.strictEqual(summaryElements.inputQualityStatus.textContent, "评分输入待更新");
 assert.strictEqual(summaryElements.inputQualityMeta.textContent, "当前名单行情 1 / 2");
-assert.strictEqual(summaryElements.funnelStatus.textContent, "120 → 80 → 1");
-assert.strictEqual(summaryElements.funnelMeta.textContent, "过滤 40 · 观察 1 · 最高 82.00");
+assert.strictEqual(summaryElements.funnelStatus.textContent, "80 → — → 2");
+assert.strictEqual(summaryElements.funnelStages.textContent, "当前快照未提供逐阶段运行观测");
+assert.strictEqual(summaryElements.funnelScoreRange.textContent, "评分范围 —");
+assert.strictEqual(summaryElements.funnelMeta.textContent, "完整评分 → 动作合格 → 最终入池 · 正式 1 · 观察 1 · 最高 82.00");
 assert.strictEqual(summaryElements.inputQualityStrategy.textContent, "今");
 assert.strictEqual(summaryElements.inputQualityScoreTime.textContent, "评分时间不可用");
 assert.strictEqual(summaryElements.publicationStatus.textContent, "实时滚动");
@@ -465,7 +496,14 @@ state.renderSummary(
         today: {
           candidate_count: 120,
           candidate_scored_count: 80,
-          supply_funnel: { security_master: 118, history: 96 },
+          pipeline: { current_stage: "evidence_score", stages: [
+            { key: "input_coverage", state: "completed", input_count: 120, output_count: null, facets: [
+              { key: "candidate_features", count: 120, total: 120 },
+              { key: "security_master", count: 118, total: 120 },
+              { key: "history", count: 96, total: 120 },
+            ] },
+            { key: "evidence_score", state: "completed", input_count: 120, output_count: 80 },
+          ] },
           summary: { trade_date: "2026-08-14", quote_total_count: 120, quote_covered_count: 120 },
           candidate_optional_reason_counts: { cross_source_deviation: 3 },
         },
@@ -509,15 +547,27 @@ state.renderSummary(
             missing_listing_date: 240,
             board_identity_degraded: 240,
           },
-          supply_funnel: {
-            requested_candidates: 360,
-            security_master: 120,
-            history: 78,
-            full_scored: 56,
-            filter_reject: 216,
-            selected_executable: 2,
-            selected_observe: 2,
-          },
+          pipeline: { current_stage: "concentration", stages: [
+            { key: "dynamic_filter", state: "completed", input_count: 576, output_count: 360,
+              facets: [{ key: "filter_reject", count: 216, total: 576 }] },
+            { key: "candidate_refresh", state: "completed", input_count: 360, output_count: 360 },
+            { key: "input_coverage", state: "degraded", input_count: 360, output_count: null, facets: [
+              { key: "candidate_features", count: 360, total: 360 },
+              { key: "security_master", count: 120, total: 360 },
+              { key: "history", count: 78, total: 360 },
+            ] },
+            { key: "evidence_score", state: "completed", input_count: 360, output_count: 56 },
+            { key: "fusion", state: "completed", input_count: 56, output_count: 56,
+              metric_ranges: [{ metric: "final_score", minimum: 41.25, maximum: 74.25 }] },
+            { key: "action_gate", state: "completed", input_count: 56, output_count: 4, facets: [
+              { key: "action_executable", count: 2, total: 56 },
+              { key: "action_observe", count: 2, total: 56 },
+            ] },
+            { key: "concentration", state: "completed", input_count: 4, output_count: 4, facets: [
+              { key: "selected_executable", count: 2, total: 4 },
+              { key: "selected_observe", count: 2, total: 4 },
+            ] },
+          ] },
           summary: {
             trade_date: "2026-08-14",
             quote_total_count: 360,
@@ -540,8 +590,9 @@ assert.strictEqual(
 );
 assert.strictEqual(summaryElements.inputQualityBlockers.textContent, "本轮阻断：历史不足 282 只 · 必要资料缺失 240 只");
 assert.strictEqual(summaryElements.inputQualityDegradations.textContent, "仅降级，不代表股票存在风险：板块资料可靠度不足 240 只");
-assert.strictEqual(summaryElements.funnelStatus.textContent, "360 → 56 → 2");
-assert.strictEqual(summaryElements.funnelMeta.textContent, "过滤 216 · 观察草稿 2 · 最高 74.25");
+assert.strictEqual(summaryElements.funnelStatus.textContent, "56 → 4 → 4");
+assert.strictEqual(summaryElements.funnelScoreRange.textContent, "评分范围 41.25–74.25 · 最高 74.25");
+assert.strictEqual(summaryElements.funnelMeta.textContent, "完整评分 → 动作合格 → 最终入池 · 正式 2 · 观察 2 · 最高 74.25");
 assert.strictEqual(summaryElements.quoteSource.textContent, "腾讯行情");
 assert.strictEqual(summaryElements.budgetStatus.textContent, "0 / 168");
 assert.strictEqual(summaryElements.budgetMeta.textContent, "已用 / 剩余 · 上限 168 · 复核 0/0");
@@ -581,11 +632,15 @@ assert.strictEqual(
   summaryElements.inputQualityMeta.textContent,
   "行情 360 / 360 · 基础资料与历史待计算",
 );
-assert.strictEqual(summaryElements.funnelStatus.textContent, "360 → 采集中 → 0");
-assert.strictEqual(summaryElements.funnelMeta.textContent, "过滤 待计算 · 观察草稿 正在生成 · 最高 —");
+assert.strictEqual(summaryElements.funnelStatus.textContent, "— → — → —");
+assert.strictEqual(summaryElements.funnelMeta.textContent, "完整评分 → 动作合格 → 最终入池 · 正式 0 · 观察 已关闭 · 最高 —");
 assert.strictEqual(
   summaryElements.funnelStages.textContent,
-  "主线 全市场 — → 发行资格 — → 动态过滤 — → 策略历史 — → 模型输入 — → 候选分合格 — → 板内限额 — → 行情请求 360 → 候选特征 360 → 行情合格 — → 证券资料 — → 候选历史 — → 完整评分 — → 达正式线 — → 可执行 — → 正式入选 — ｜ 观察支线 完整评分 — → 达观察线 — → 动作观察 — → 观察入选 — ｜ 分类统计 待计算",
+  "模型成本门 —→— ｜ 本地评分 — ｜ DeepSeek —→— ｜ 融合评分 — ｜ 动作门 达观察线— · 达正式线— · 可执行— · 观察— · 不可用— ｜ 最终入池 正式— · 观察—",
+);
+assert.strictEqual(
+  summaryElements.inputQualityStages.textContent,
+  "动态过滤 —→— ｜ 板内总体 — ｜ 策略历史 —→— ｜ 模型输入 —→— ｜ 候选分 —→— ｜ 板内限额 —→— ｜ 定向行情 360→360 ｜ 输入完整性 行情—/— · 证券资料—/— · 历史—/— ｜ 完整评分 —→—",
 );
 assert.strictEqual(summaryElements.quoteSource.textContent, "腾讯行情");
 assert.strictEqual(summaryElements.publicationStatus.textContent, "采集中");
@@ -756,6 +811,35 @@ assert.strictEqual(runtimeRows.includes("活动中"), true);
 const normalHealth = state.healthView({ health: { level: "normal", issue_count: 0 }, recent_errors: [] }, []);
 assert.strictEqual(normalHealth.badge, "正常 · 无最近错误");
 assert.strictEqual(normalHealth.primary, null);
+const healthElements = {
+  errorDetailsButton: { hidden: false, dataset: {} },
+  healthBadge: { textContent: "" },
+};
+const recoveredHealth = state.renderHealth(healthElements, {
+  health: { level: "normal", issue_count: 0 },
+  recent_errors: [{
+    code: "review:review_unavailable",
+    severity: "degraded",
+    strategy: "tomorrow",
+    stage: "review",
+    recovery_status: "recovered",
+  }],
+}, [], "tomorrow");
+assert.strictEqual(healthElements.errorDetailsButton.hidden, true);
+assert.strictEqual(recoveredHealth.visibleIssues.length, 0);
+const activeHealth = state.renderHealth(healthElements, {
+  health: { level: "degraded", issue_count: 1 },
+  recent_errors: [{
+    code: "refresh:source_unavailable",
+    severity: "degraded",
+    strategy: "tomorrow",
+    stage: "refresh",
+    recovery_status: "active",
+  }],
+}, [], "tomorrow");
+assert.strictEqual(healthElements.errorDetailsButton.hidden, false);
+assert.strictEqual(healthElements.healthBadge.textContent, "异常 1");
+assert.strictEqual(activeHealth.visibleIssues.length, 1);
 assert.strictEqual(
   sandbox.window.TraderStatusView.issueSummaryTitle(degradedHealth.issues),
   "最近错误 · 活动2项",
@@ -921,7 +1005,7 @@ assert.deepStrictEqual(
     { strategy: "tomorrow", readiness_reason: "snapshot_not_published" },
     {
       primary_blocker: "candidate_quotes_pending",
-      supply_funnel: { requested_candidates: 360, candidate_features: 128 },
+      pipeline: { stages: [{ key: "candidate_refresh", state: "running", input_count: 360, output_count: 128 }] },
     },
   ))),
   {
@@ -937,7 +1021,6 @@ assert.deepStrictEqual(
       primary_blocker: "market_population_stale",
       population_count: 5291,
       population_filter_reason_counts: { stale_quote: 5089 },
-      supply_funnel: { requested_candidates: 0 },
     },
   ))),
   {
@@ -953,7 +1036,6 @@ assert.deepStrictEqual(
       primary_blocker: "market_liquidity_history_unavailable",
       population_count: 5279,
       population_filter_reason_counts: { missing_liquidity_history: 5165 },
-      supply_funnel: { requested_candidates: 0 },
     },
   ))),
   {
@@ -967,7 +1049,10 @@ assert.deepStrictEqual(
     { strategy: "tomorrow", readiness_reason: "snapshot_not_published" },
     {
       primary_blocker: "model_input_unavailable",
-      supply_funnel: { strategy_history_eligible: 201, model_input_eligible: 0 },
+      pipeline: { stages: [
+        { key: "strategy_history", state: "completed", input_count: 205, output_count: 201 },
+        { key: "model_input", state: "completed", input_count: 201, output_count: 0 },
+      ] },
     },
   ))),
   {
@@ -980,7 +1065,13 @@ const securityMasterBlocked = state.notReadyMessage(
   { strategy: "tomorrow", readiness_reason: "snapshot_not_published" },
   {
     primary_blocker: "security_master_coverage_incomplete",
-    supply_funnel: { requested_candidates: 360, candidate_features: 360, security_master: 120 },
+    pipeline: { stages: [
+      { key: "candidate_refresh", state: "completed", input_count: 360, output_count: 360 },
+      { key: "input_coverage", state: "degraded", input_count: 360, output_count: null, facets: [
+        { key: "candidate_features", count: 360, total: 360 },
+        { key: "security_master", count: 120, total: 360 },
+      ] },
+    ] },
     candidate_optional_reason_counts: { missing_listing_date: 240 },
   },
 );
@@ -999,7 +1090,11 @@ assert.deepStrictEqual(
     {
       primary_blocker: "strategy_history_unavailable",
       history_required_sessions: 61,
-      supply_funnel: { requested_candidates: 360, history: 350 },
+      pipeline: { stages: [
+        { key: "candidate_refresh", state: "completed", input_count: 360, output_count: 360 },
+        { key: "input_coverage", state: "degraded", input_count: 360, output_count: null,
+          facets: [{ key: "history", count: 350, total: 360 }] },
+      ] },
     },
   ))),
   {
@@ -1034,10 +1129,11 @@ assert.strictEqual(
     },
     0,
     {
-      supply_funnel: {
-        observation_threshold_met_count: 0,
-        executable_threshold_met_count: 0,
-      },
+      pipeline: { stages: [{ key: "action_gate", state: "completed", input_count: 239, output_count: 0,
+        facets: [
+          { key: "observation_threshold_met", count: 0, total: 239 },
+          { key: "executable_threshold_met", count: 0, total: 239 },
+        ] }] },
       supply_reason_counts: {
         corporate_risk_history_unavailable: 360,
         stale_quote: 360,
@@ -1095,10 +1191,11 @@ assert.strictEqual(
     },
     2,
     {
-      supply_funnel: {
-        observation_threshold_met_count: 15,
-        executable_threshold_met_count: 0,
-      },
+      pipeline: { stages: [{ key: "action_gate", state: "completed", input_count: 15, output_count: 0,
+        facets: [
+          { key: "observation_threshold_met", count: 15, total: 15 },
+          { key: "executable_threshold_met", count: 0, total: 15 },
+        ] }] },
       supply_reason_counts: {
         below_score_threshold: 12,
         risk_veto: 5,
@@ -1327,8 +1424,8 @@ state.renderSummary(
   sandbox.window.TraderRender,
   null,
 );
-assert.strictEqual(replacementSummary.funnelStatus.textContent, "360 → 229 → 0");
-assert.strictEqual(replacementSummary.funnelMeta.textContent, "过滤 89 · 观察 0 · 最高 -");
+assert.strictEqual(replacementSummary.funnelStatus.textContent, "229 → — → 0");
+assert.strictEqual(replacementSummary.funnelMeta.textContent, "完整评分 → 动作合格 → 最终入池 · 正式 0 · 观察 0 · 最高 —");
 assert.strictEqual(
   state.recommendationPatchDecision(patch, payload, "today-base", "today", "current"),
   "apply",
