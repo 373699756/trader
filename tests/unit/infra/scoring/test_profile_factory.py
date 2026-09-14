@@ -43,36 +43,19 @@ def test_profile_factory_preserves_v1_identity_and_linear_inference() -> None:
     assert first.model_disagreement == 0.0
 
 
-def test_tracked_three_head_bundles_have_exact_v2_v3_prediction_parity() -> None:
-    profiles = tuple(
-        load_scoring_profile(profile, training_root=PROJECT_ROOT / "data" / "train") for profile in ("v2", "v3")
-    )
+def test_tracked_v3_three_head_bundles_load_with_expected_identity() -> None:
+    profile = load_scoring_profile("v3", training_root=PROJECT_ROOT / "data" / "train")
     expected_hashes = {
         Strategy.TODAY: "940d251d0e303c3e1d94e70d42f561ff2bb89d554760815e0e8bc3ce057dc423",
         Strategy.TOMORROW: "a4f71a5365db7ceda1d52bbe65ef787c79b247f40add86b6d2404c8eebb0ce36",
         Strategy.D25: "83d49d9312aad690c28d98f9703016c38370d81d624ce6ebd3157e9a5883661d",
     }
 
-    assert (
-        tuple(profiles[0].heads)
-        == tuple(profiles[1].heads)
-        == (
-            Strategy.TODAY,
-            Strategy.TOMORROW,
-            Strategy.D25,
-        )
-    )
+    assert tuple(profile.heads) == (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
     for strategy, expected_hash in expected_hashes.items():
-        v2_predictor = profiles[0].heads[strategy].predictor
-        v3_predictor = profiles[1].heads[strategy].predictor
-        assert v2_predictor.profile_id == "v2"
-        assert v3_predictor.profile_id == "v3"
-        assert v2_predictor.model_hash == v3_predictor.model_hash == expected_hash
-        assert v2_predictor.model_id == v3_predictor.model_id
-        assert v2_predictor.feature_ids == v3_predictor.feature_ids
-        industry = v2_predictor.industry_ids[0]
-        row = ModelInput("600000", (0.0,) * len(v2_predictor.feature_ids), industry)
-        assert v2_predictor.predict((row,)) == v3_predictor.predict((row,))
+        predictor = profile.heads[strategy].predictor
+        assert predictor.profile_id == "v3"
+        assert predictor.model_hash == expected_hash
 
 
 def test_profile_factory_preserves_v1_independence_from_industry_input() -> None:

@@ -16,8 +16,8 @@ from trader.application.ports.scheduler import (
     SharedDeepSeekRuntimeContract,
 )
 from trader.application.recommendation.policy import RecommendationPolicy
+from trader.application.recommendation.score_fusion import ScoreFusionPort, ScoreFusionService
 from trader.application.recommendation.scored_freezing import ScoredFreezeCoordinator
-from trader.application.recommendation.scored_projection import build_scored_hybrid, validate_review_manifests
 from trader.application.recommendation.today_freezing import TodayFreezeCoordinator
 from trader.domain.recommendation.decision_identity import DecisionIdentity, ScoredDecision
 from trader.domain.recommendation.models import Strategy
@@ -29,10 +29,12 @@ class DeepSeekAdapter(DeepSeekUpgradePort):
         reviewer: TomorrowDeepSeekReviewPort,
         policy: RecommendationPolicy,
         data: MarketDataAdapter,
+        fusion: ScoreFusionPort | None = None,
     ) -> None:
         self._reviewer = reviewer
         self._policy = policy
         self._data = data
+        self._fusion = fusion if fusion is not None else ScoreFusionService()
 
     @property
     def runtime_contract(self) -> SharedDeepSeekRuntimeContract:
@@ -59,9 +61,9 @@ class DeepSeekAdapter(DeepSeekUpgradePort):
         expected = {
             candidate.code: self._reviewer.evidence_manifest_hash(candidate.features) for candidate in candidates
         }
-        if not validate_review_manifests(projection, reviews, expected):
+        if not self._fusion.manifests_match(projection, reviews, expected):
             return None
-        hybrid = build_scored_hybrid(projection, self._policy, reviews, review_deadline=deadline)
+        hybrid = self._fusion.fuse(projection, self._policy, reviews, review_deadline=deadline)
         if hybrid is not None:
             hybrid = self._data.register_hybrid(projection, hybrid)
         return hybrid

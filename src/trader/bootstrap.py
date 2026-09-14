@@ -21,11 +21,17 @@ from trader.application.decisions.decision_stream import UnifiedDecisionEventStr
 from trader.application.long_runtime import LongRuntime, LongRuntimeDependencies
 from trader.application.market_data.input_runtime import DecisionBuildDependencies, MarketDataAdapter
 from trader.application.outcomes.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
+from trader.application.recommendation.candidate_filtering import CandidateFilteringService
+from trader.application.recommendation.local_scoring import LocalScoringService
+from trader.application.recommendation.model_scoring import PublishedModelScoringService
 from trader.application.recommendation.model_scoring_router import ModelScoringRouter
 from trader.application.recommendation.production_model_scoring import (
     ProductionModelScoringService,
     SharedModelFeatureCache,
 )
+from trader.application.recommendation.ranking_selection import RankingSelectionService
+from trader.application.recommendation.risk_control import RiskControlService
+from trader.application.recommendation.score_fusion import ScoreFusionService
 from trader.application.recommendation.scored_freezing import (
     DecisionRuntimeIdentity,
     ScoredFreezeCoordinator,
@@ -51,7 +57,9 @@ from trader.bootstrap_status import runtime_status as _runtime_status
 from trader.domain.recommendation.decision_identity import DecisionOverlay, ScoredDecision
 from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
 from trader.domain.recommendation.models import Strategy
+from trader.infra.atomic_files.json import RuntimeJsonWriter
 from trader.infra.cache import BoundedLruCache
+from trader.infra.clock.shanghai import ShanghaiClock
 from trader.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.infra.deepseek.cache import ReviewCache
 from trader.infra.deepseek.factory import create_deepseek_client
@@ -84,9 +92,10 @@ from trader.infra.persistence.decision_records import SQLiteDecisionRecordReposi
 from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
 from trader.infra.persistence.research_trace import ResearchTraceLimits, SQLiteResearchTraceArchive
-from trader.infra.persistence.runtime_json import RuntimeJsonWriter
-from trader.infra.runtime_resources import RuntimeWorkerResources, ShanghaiClock
+from trader.infra.runtime_resources import RuntimeWorkerResources
 from trader.infra.scoring.profile_factory import load_scoring_profile
+from trader.infra.scoring.profiles.v2.contracts import V2_TRAINING_PROFILE
+from trader.infra.scoring.profiles.v3.contracts import V3_TRAINING_PROFILE
 from trader.infra.settings import (
     LongWatchlist,
     RuntimeSettings,
@@ -197,6 +206,16 @@ class _RuntimeAdapters:
     reviewer: DeepSeekReviewer
 
 
+def _runtime_profile_inputs(profile_id: ScoringProfileId) -> tuple[int, tuple[int, ...]]:
+    """Return the history and alpha windows owned by the selected scoring profile."""
+
+    if profile_id == "v2":
+        return V2_TRAINING_PROFILE.history_sessions, V2_TRAINING_PROFILE.momentum_horizons
+    if profile_id == "v3":
+        return V3_TRAINING_PROFILE.history_sessions, V3_TRAINING_PROFILE.momentum_horizons
+    return 61, V3_TRAINING_PROFILE.momentum_horizons
+
+
 def build_system(
     config_path: str | Path,
     *,
@@ -219,20 +238,39 @@ def build_system(
     )
     calendar = ChinaTradingCalendar(settings.runtime_dir / "calendar.json")
     persistence = _build_persistence(context)
-    market_data = _build_market_data(context, persistence.data_plane, calendar)
-    reviewer = _build_reviewer(context, persistence.budget)
-    policy = _recommendation_policy(context.strategy)
     loaded_profile = load_scoring_profile(
         strategy.scoring_profile,
         training_root=settings.project_root / "data" / "train",
     )
+    history_sessions, momentum_horizons = _runtime_profile_inputs(loaded_profile.profile_id)
+    market_data = _build_market_data(
+        context,
+        persistence.data_plane,
+        calendar,
+        history_lookback_sessions=history_sessions,
+        model_momentum_horizons=momentum_horizons,
+    )
+    reviewer = _build_reviewer(context, persistence.budget)
+    policy = _recommendation_policy(context.strategy)
     shared_model_features = SharedModelFeatureCache()
-    model_scoring = ModelScoringRouter(
-        loaded_profile.profile_id,
-        {
-            strategy: ProductionModelScoringService(loaded_profile, strategy, shared_features=shared_model_features)
-            for strategy in loaded_profile.heads
-        },
+    model_scoring = PublishedModelScoringService(
+        ModelScoringRouter(
+            loaded_profile.profile_id,
+            {
+                strategy: ProductionModelScoringService(loaded_profile, strategy, shared_features=shared_model_features)
+                for strategy in loaded_profile.heads
+            },
+        )
+    )
+    candidate_filtering = CandidateFilteringService(
+        policy,
+        model_scoring,
+        settings.market_data.candidate_pool_size,
+    )
+    local_scoring = LocalScoringService(
+        model_scoring,
+        RankingSelectionService(),
+        RiskControlService(),
     )
     publication = _build_publication(
         context,
@@ -252,9 +290,11 @@ def build_system(
             publication.decision_drafts,
             ShanghaiClock(now).now,
             model_scoring,
+            candidate_filtering,
+            local_scoring,
         ),
     )
-    deepseek = DeepSeekAdapter(reviewer, policy, native_data)
+    deepseek = DeepSeekAdapter(reviewer, policy, native_data, ScoreFusionService())
 
     def publish_overlay_event(overlay: DecisionOverlay) -> object:
         current = publication.tomorrow_index.snapshot(overlay.strategy).current
@@ -419,6 +459,9 @@ def _build_market_data(
     context: _BuildContext,
     data_plane: DataPlaneRepository,
     calendar: ChinaTradingCalendar,
+    *,
+    history_lookback_sessions: int = 61,
+    model_momentum_horizons: tuple[int, ...] = (20, 40, 60),
 ) -> MarketFeatureService:
     settings = context.settings
     strategy = context.strategy
@@ -496,6 +539,7 @@ def _build_market_data(
         strategy.market_regime,
         strategy.long_research,
         strategy.feature_component_weights,
+        model_momentum_horizons=model_momentum_horizons,
     )
     research_client = AkshareResearchClient(
         timeout_seconds=settings.market_data.research_timeout_seconds,
@@ -540,6 +584,7 @@ def _build_market_data(
         capacity=settings.market_data.cache_policy.datasets["daily_history"].capacity,
         history_data_plane=data_plane,
         monotonic=time.monotonic,
+        history_lookback_sessions=history_lookback_sessions,
     )
     references = ReferenceLoader(
         gateway,

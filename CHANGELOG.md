@@ -7,6 +7,7 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
+- [Recommendation modular boundaries and training isolation](docs/changelog/2026-09-15-recommendation-modular-boundaries.md)
 - [Version profile-owned training artifacts](docs/changelog/2026-09-14-profile-training-artifacts.md)
 - [Remove public history automation installation commands](docs/changelog/2026-09-14-history-automation-entrypoint-cleanup.md)
 - [Remove the public Tomorrow-only training entrypoint](docs/changelog/2026-09-14-training-entrypoint-cleanup.md)

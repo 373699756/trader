@@ -103,7 +103,9 @@ def test_trained_v3_profile_loads_only_the_fixed_active_bundle_files() -> None:
     bundle_repository_source = (ROOT / "src/trader/infra/scoring/head_bundles/bundle_repository.py").read_text(
         encoding="utf-8"
     )
-    assert 'f"{strategy.value}-v3"' in locator
+    assert "profile.output_directory" in locator
+    assert "contract.directory_name" in locator
+    assert 'f"{strategy.value}-v3"' not in locator
     assert "active-bundle.json" in bundle_repository_source
     assert "model.json" in bundle_repository_source
     assert "training-input.json" in bundle_repository_source

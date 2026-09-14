@@ -21,9 +21,10 @@ from trader.infra.scoring.head_bundles.bundle_repository import (
     publish_head_bundle,
     recover_head_bundle_publication,
 )
-from trader.infra.scoring.head_bundles.contracts import TrainedHeadContract
+from trader.infra.scoring.head_bundles.contracts import TrainedHeadContract, TrainedProfileContract
 from trader.infra.scoring.head_bundles.profile import build_trained_scoring_profile
 from trader.infra.scoring.profile_factory import load_scoring_profile
+from trader.infra.scoring.profiles.v2.contracts import V2_TRAINING_PROFILE
 from trader.infra.scoring.profiles.v3.contracts import (
     HEAD_CONTRACTS,
     TOMORROW_HEAD_CONTRACT,
@@ -59,11 +60,14 @@ def _lightgbm_model(width: int) -> str:
     return booster.model_to_string(num_iteration=1)
 
 
-def _documents(contract: TrainedHeadContract) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+def _documents(
+    contract: TrainedHeadContract,
+    profile: TrainedProfileContract = V3_TRAINING_PROFILE,
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
     codes = ["600000", "600001"]
     training_input: dict[str, object] = {
-        "schema_version": "v3_head_training_input",
-        "profile_id": "v3",
+        "schema_version": f"{profile.profile_id}_head_training_input",
+        "profile_id": profile.profile_id,
         "strategy_head": contract.strategy.value,
         "training_input_scope": "complete_manifest",
         "training_input_hash": "a" * 64,
@@ -87,8 +91,8 @@ def _documents(contract: TrainedHeadContract) -> tuple[dict[str, object], dict[s
     training_input["content_hash"] = artifact_content_hash(training_input)
     width = len(contract.feature_manifest.names)
     model: dict[str, object] = {
-        "schema_version": "v3_head_scoring_model",
-        "profile_id": "v3",
+        "schema_version": f"{profile.profile_id}_head_scoring_model",
+        "profile_id": profile.profile_id,
         "model_id": contract.model_id,
         "strategy_head": contract.strategy.value,
         "feature_ids": list(contract.feature_manifest.names),
@@ -149,8 +153,8 @@ def _documents(contract: TrainedHeadContract) -> tuple[dict[str, object], dict[s
         else ("target_t1",)
     )
     report: dict[str, object] = {
-        "schema_version": "v3_head_training_report",
-        "profile_id": "v3",
+        "schema_version": f"{profile.profile_id}_head_training_report",
+        "profile_id": profile.profile_id,
         "model_id": contract.model_id,
         "strategy_head": contract.strategy.value,
         "training_input_scope": "complete_manifest",
@@ -193,9 +197,13 @@ def _documents(contract: TrainedHeadContract) -> tuple[dict[str, object], dict[s
     return model, report, training_input
 
 
-def _write_bundle(staging: Path, contract: TrainedHeadContract) -> None:
+def _write_bundle(
+    staging: Path,
+    contract: TrainedHeadContract,
+    profile: TrainedProfileContract = V3_TRAINING_PROFILE,
+) -> None:
     staging.mkdir(parents=True, exist_ok=True)
-    model, report, training_input = _documents(contract)
+    model, report, training_input = _documents(contract, profile)
     (staging / "model.json").write_text(json.dumps(model), encoding="utf-8")
     (staging / "report.json").write_text(json.dumps(report), encoding="utf-8")
     (staging / "training-input.json").write_text(json.dumps(training_input), encoding="utf-8")
@@ -206,15 +214,21 @@ def _publish(
     contract: TrainedHeadContract,
     name: str = "staging",
     *,
-    legacy_flat: bool = False,
+    profile: TrainedProfileContract = V3_TRAINING_PROFILE,
+    profile_owned: bool = False,
 ) -> Path:
     staging = training_root / name
-    _write_bundle(staging, contract)
+    _write_bundle(staging, contract, profile)
+    output_root = (
+        training_root / profile.output_directory / contract.directory_name
+        if profile_owned
+        else training_root / contract.directory_name
+    )
     return publish_head_bundle(
         staging,
-        training_root / (f"{contract.strategy.value}-v3" if legacy_flat else contract.directory_name),
+        output_root,
         contract.strategy,
-        V3_TRAINING_PROFILE,
+        profile,
         HeadBundlePublicationIdentity("a" * 64, "1" * 64, date(2026, 9, 8)),
     )
 
@@ -237,9 +251,11 @@ def test_v3_publication_uses_only_four_portable_fixed_files(tmp_path: Path) -> N
 
 def test_shared_loader_builds_three_distinct_heads_for_v2_and_v3(tmp_path: Path) -> None:
     for index, contract in enumerate(HEAD_CONTRACTS):
-        _publish(tmp_path, contract, f"staging-{index}", legacy_flat=True)
+        _publish(tmp_path, contract, f"staging-v3-{index}", profile=V3_TRAINING_PROFILE, profile_owned=True)
+    for index, contract in enumerate(V2_TRAINING_PROFILE.heads):
+        _publish(tmp_path, contract, f"staging-v2-{index}", profile=V2_TRAINING_PROFILE, profile_owned=True)
 
-    located = locate_head_bundles(tmp_path)
+    located = locate_head_bundles(tmp_path, V3_TRAINING_PROFILE)
     profiles = tuple(load_scoring_profile(profile, training_root=tmp_path) for profile in ("v2", "v3"))
 
     assert tuple(strategy for strategy, _ in located) == (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
@@ -249,20 +265,22 @@ def test_shared_loader_builds_three_distinct_heads_for_v2_and_v3(tmp_path: Path)
         assert profile.heads[Strategy.TODAY].evidence.runtime_anchor == "11:20"
         assert profile.heads[Strategy.TOMORROW].evidence.runtime_anchor == "14:50"
         assert profile.heads[Strategy.D25].evidence.runtime_anchor == "14:50"
+    assert tuple(path.parent.parent.name for _, path in locate_head_bundles(tmp_path, V2_TRAINING_PROFILE)) == ("v2",) * 3
+    assert tuple(path.parent.parent.name for _, path in located) == ("v3",) * 3
     for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
         v2_predictor = profiles[0].heads[strategy].predictor
         v3_predictor = profiles[1].heads[strategy].predictor
         assert v2_predictor.profile_id == "v2"
         assert v3_predictor.profile_id == "v3"
-        assert v2_predictor.model_hash == v3_predictor.model_hash
-        width = len(v2_predictor.feature_ids)
-        row = ModelInput("600000", tuple(0.01 * (index + 1) for index in range(width)), "银行")
-        assert v2_predictor.predict((row,)) == v3_predictor.predict((row,))
+        assert v2_predictor.model_hash != v3_predictor.model_hash
+        assert v2_predictor.model_id != v3_predictor.model_id
+        assert v2_predictor.feature_ids != v3_predictor.feature_ids
 
 
 @pytest.mark.parametrize("profile", ("v2", "v3"))
 def test_shared_loader_fails_closed_for_both_profiles_when_any_head_is_missing(tmp_path: Path, profile: str) -> None:
-    _publish(tmp_path, TOMORROW_HEAD_CONTRACT, legacy_flat=True)
+    selected = V2_TRAINING_PROFILE if profile == "v2" else V3_TRAINING_PROFILE
+    _publish(tmp_path, selected.head_for_strategy(Strategy.TOMORROW), profile=selected, profile_owned=True)
 
     with pytest.raises(RuntimeError, match="unavailable"):
         load_scoring_profile(profile, training_root=tmp_path)
@@ -270,9 +288,10 @@ def test_shared_loader_fails_closed_for_both_profiles_when_any_head_is_missing(t
 
 @pytest.mark.parametrize("profile", ("v2", "v3"))
 def test_shared_loader_fails_closed_for_both_profiles_when_a_bundle_is_corrupt(tmp_path: Path, profile: str) -> None:
-    for index, contract in enumerate(HEAD_CONTRACTS):
-        _publish(tmp_path, contract, f"staging-{index}", legacy_flat=True)
-    report_path = tmp_path / "tomorrow-v3" / "report.json"
+    selected = V2_TRAINING_PROFILE if profile == "v2" else V3_TRAINING_PROFILE
+    for index, contract in enumerate(selected.heads):
+        _publish(tmp_path, contract, f"staging-{index}", profile=selected, profile_owned=True)
+    report_path = tmp_path / selected.output_directory / "tomorrow" / "report.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
     report["training_contract_hash"] = "f" * 64
     report["content_hash"] = artifact_content_hash(
@@ -288,7 +307,7 @@ def test_shared_tomorrow_predictor_preserves_the_existing_numeric_contract() -> 
     model, _, _ = _documents(TOMORROW_HEAD_CONTRACT)
     artifact = decode_head_bundle(model, Strategy.TOMORROW, V3_TRAINING_PROFILE)
     profile = build_trained_scoring_profile(
-        "v2",
+        "v3",
         tuple(
             decode_head_bundle(_documents(contract)[0], contract.strategy, V3_TRAINING_PROFILE)
             for contract in HEAD_CONTRACTS

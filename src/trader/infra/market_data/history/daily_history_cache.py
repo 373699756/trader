@@ -13,6 +13,8 @@ from datetime import date, datetime, time
 from typing import TYPE_CHECKING, ParamSpec, Protocol, TypedDict, TypeVar, cast
 from zoneinfo import ZoneInfo
 
+from typing_extensions import NotRequired
+
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
@@ -53,7 +55,7 @@ _T = TypeVar("_T")
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _HISTORY_SOURCE_LANE = "history"
 _HISTORY_CACHE_RETENTION_DAYS = 20
-_HISTORY_CACHE_LOOKBACK_DAYS = 61
+_DEFAULT_HISTORY_CACHE_LOOKBACK_DAYS = 61
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -103,6 +105,7 @@ class HistoryCacheOptions(TypedDict):
     capacity: int
     history_data_plane: _HistoryDataPlane | None
     monotonic: Callable[[], float]
+    history_lookback_sessions: NotRequired[int]
 
 
 class HistoryCache:
@@ -120,6 +123,7 @@ class HistoryCache:
         self._history_cache_limit = max(1, options["capacity"])
         self._monotonic = options["monotonic"]
         self._history_data_plane = options["history_data_plane"]
+        self._history_lookback_sessions = max(61, options.get("history_lookback_sessions", _DEFAULT_HISTORY_CACHE_LOOKBACK_DAYS))
         self._lock = threading.Lock()
         self._history: dict[str, _HistoryEntry] = {}
         self._history_error_count = 0
@@ -230,7 +234,9 @@ class HistoryCache:
             futures = {}
             for code in missing:
                 self._runner.ensure_before_deadline(request.deadline)
-                future = submit_or_run_inline(pool, self._history_client.fetch_history, code, days=61)
+                future = submit_or_run_inline(
+                    pool, self._history_client.fetch_history, code, days=self._history_lookback_sessions
+                )
                 self._runner.ensure_before_deadline(request.deadline)
                 futures[future] = code
             timed_out = False
@@ -267,7 +273,7 @@ class HistoryCache:
             old_entry = self._history.get(code) or state.previous.get(code)
         used_fallback = False
         try:
-            bars = tuple(sorted(future.result(), key=lambda item: item.trade_date))[-_HISTORY_CACHE_LOOKBACK_DAYS:]
+            bars = tuple(sorted(future.result(), key=lambda item: item.trade_date))[-self._history_lookback_sessions:]
         except Exception:
             bars = ()
             with self._lock:
@@ -285,7 +291,11 @@ class HistoryCache:
         elif not bars and old_entry is not None and old_entry.bars:
             bars = old_entry.bars
             used_fallback = True
-        context = old_entry.context if used_fallback and old_entry is not None else build_history_context(bars)
+        context = (
+            old_entry.context
+            if used_fallback and old_entry is not None
+            else build_history_context(bars, lookback_sessions=self._history_lookback_sessions)
+        )
         retained = bars[-_HISTORY_CACHE_RETENTION_DAYS:]
         if used_fallback:
             state.pending_full_entries.pop(code, None)
@@ -368,7 +378,12 @@ class HistoryCache:
             "daily_history",
             "eastmoney",
             code,
-            {"code": code, "days": 61, "retained_days": 20, "adjust": "qfq"},
+            {
+                "code": code,
+                "days": self._history_lookback_sessions,
+                "retained_days": 20,
+                "adjust": "qfq",
+            },
             observed_at,
         )
 
@@ -478,7 +493,7 @@ class HistoryCache:
         persist_candidates: list[tuple[str, tuple[DailyBar, ...], _HistoryEntry]] = []
         with self._lock:
             for code, bars in bars_by_code.items():
-                ordered = tuple(sorted(bars, key=lambda item: item.trade_date))[-_HISTORY_CACHE_LOOKBACK_DAYS:]
+                ordered = tuple(sorted(bars, key=lambda item: item.trade_date))[-self._history_lookback_sessions:]
                 if not ordered or any(bar.adjustment is not PriceAdjustment.QFQ for bar in ordered):
                     if ordered:
                         self._history_error_count += 1
@@ -489,7 +504,7 @@ class HistoryCache:
                         ordered[-_HISTORY_CACHE_RETENTION_DAYS:],
                         expires_at,
                         source=source,
-                        context=build_history_context(ordered),
+                        context=build_history_context(ordered, lookback_sessions=self._history_lookback_sessions),
                     )
                     self._history[code] = entry
                     persist_candidates.append((code, ordered, entry))
@@ -520,14 +535,18 @@ class HistoryCache:
                 if not ordered:
                     continue
                 retained = ordered[-_HISTORY_CACHE_RETENTION_DAYS:]
-                full = ordered[-_HISTORY_CACHE_LOOKBACK_DAYS:]
+                full = ordered[-self._history_lookback_sessions:]
                 persisted_context = persisted_contexts.get(code)
                 if (
                     persisted_context is None
                     or persisted_context.latest_trade_date != ordered[-1].trade_date
-                    or _requires_scoring_model_context_rebuild(persisted_context, full)
+                    or _requires_scoring_model_context_rebuild(
+                        persisted_context,
+                        full,
+                        lookback_sessions=self._history_lookback_sessions,
+                    )
                 ):
-                    persisted_context = build_history_context(full)
+                    persisted_context = build_history_context(full, lookback_sessions=self._history_lookback_sessions)
                 self._history[code] = _HistoryEntry(
                     bars=retained,
                     expires_at=expires_at,
@@ -589,7 +608,7 @@ class HistoryCache:
             if entry is not None and entry.bars == bars and entry.context is not None:
                 summaries[code] = entry.context
             else:
-                summaries[code] = build_history_context(bars)
+                summaries[code] = build_history_context(bars, lookback_sessions=self._history_lookback_sessions)
         return summaries
 
     def status(self) -> HistoryCacheStatus:
@@ -658,7 +677,7 @@ class HistoryCache:
                     pool,
                     self._history_client.fetch_outcome_history,
                     code,
-                    days=_HISTORY_CACHE_LOOKBACK_DAYS,
+                    days=self._history_lookback_sessions,
                 ): code
                 for code in codes
             }
@@ -781,12 +800,17 @@ def _deserialize_history_context(payload: object) -> HistoryContext | None:
 def _requires_scoring_model_context_rebuild(
     context: HistoryContext,
     bars: tuple[DailyBar, ...],
+    *,
+    lookback_sessions: int = _DEFAULT_HISTORY_CACHE_LOOKBACK_DAYS,
 ) -> bool:
-    if len(bars) < _HISTORY_CACHE_LOOKBACK_DAYS:
+    if len(bars) < lookback_sessions:
         return False
     anchors = dict(context.return_anchors)
+    required_anchors: tuple[int, ...] = (1, 3, 5, 20, 40, 60)
+    if lookback_sessions >= 251:
+        required_anchors += (120, 250)
     return (
-        any(days not in anchors for days in (1, 3, 5, 20, 40, 60))
+        any(days not in anchors for days in required_anchors)
         or context.profile.average_amount_20d is None
         or context.profile.amihud_20d is None
     )

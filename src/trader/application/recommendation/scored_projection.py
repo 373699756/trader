@@ -14,7 +14,9 @@ from trader.application.ports.model_scoring import (
 )
 from trader.application.ports.scored import ScoredNativeInput
 from trader.application.recommendation.policy import RecommendationPolicy
+from trader.application.recommendation.ranking_selection import RankingSelectionPort, RankingSelectionService
 from trader.application.recommendation.recommendation_policy_codec import preselection_replay_feature
+from trader.application.recommendation.risk_control import RiskControlPort, RiskControlService
 from trader.application.recommendation.scored_deepseek_fusion import (
     normalize_scored_review_times,
     scored_decision_policy,
@@ -27,7 +29,6 @@ from trader.application.recommendation.scored_quality import (
 from trader.application.recommendation.scored_selection import (
     ScoredSelectionIdentity,
     ScoredSelectionOptions,
-    select_scored_features,
 )
 from trader.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.domain.recommendation.decision_identity import (
@@ -41,7 +42,7 @@ from trader.domain.recommendation.decision_identity import (
 )
 from trader.domain.recommendation.filtering.filters import hard_filter
 from trader.domain.recommendation.models import RecommendationAction, ScoredSelectionResult, Strategy
-from trader.domain.recommendation.risk_fusion.downside import assess_downside
+from trader.domain.recommendation.risk_fusion.downside import DownsideAssessment
 from trader.domain.recommendation.risk_fusion.scored_fusion import (
     DecisionEpoch,
     ScoredDecisionEntry,
@@ -66,6 +67,7 @@ class ScoredLocalProjection:
     local: ScoredDecision
     score_model_version: str | None = None
     model_diagnostics: tuple[tuple[str, ModelDiagnostics], ...] = ()
+    downside_assessments: tuple[tuple[str, DownsideAssessment], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,7 @@ class _DecisionProjectionContext:
     input_version: str
     strategy: Strategy
     decision_policy: ScoredDecisionPolicy
+    downside_assessments: tuple[tuple[str, DownsideAssessment], ...]
     parent_version: str | None = None
     score_model_version: str | None = None
     model_diagnostics: Mapping[str, ModelDiagnostics] | None = None
@@ -84,6 +87,8 @@ class ScoredProjectionInputs:
     scoring_context: ModelScoringContext | None = None
     candidate_stage_counts: ScoredCandidateStageCounts | None = None
     preselection_transient_invalid: bool = False
+    risk_control: RiskControlPort | None = None
+    ranking_selection: RankingSelectionPort | None = None
 
 
 def build_scored_local(
@@ -95,9 +100,13 @@ def build_scored_local(
 ) -> ScoredLocalProjection:
     if sequence < 1:
         raise ValueError("scored decision sequence must be positive")
-    runtime = runtime or ScoredProjectionInputs()
+    runtime = runtime if runtime is not None else ScoredProjectionInputs()
     strategy = native_input.strategy
     decision_policy = scored_decision_policy(policy, strategy, phase=native_input.phase)
+    risk_control = runtime.risk_control if runtime.risk_control is not None else RiskControlService()
+    ranking_selection = (
+        runtime.ranking_selection if runtime.ranking_selection is not None else RankingSelectionService()
+    )
     population = tuple(preselection_replay_feature(feature) for feature in native_input.market_features)
     model_scoring = runtime.model_scoring
     uses_model = (
@@ -124,7 +133,7 @@ def build_scored_local(
         if model_scoring is not None and uses_model
         else None
     )
-    selection = select_scored_features(
+    selection = ranking_selection.select(
         population,
         policy,
         ScoredSelectionOptions(
@@ -180,24 +189,27 @@ def build_scored_local(
         )
     )
     model_version = model_batch.model_version if model_batch is not None else None
+    downside_assessments = tuple((item.code, risk_control.assess(item.features, strategy)) for item in epoch.entries)
     return ScoredLocalProjection(
-        native_input,
-        selection,
-        quality,
-        candidates,
-        epoch,
-        _scored_decision(
+        native_input=native_input,
+        selection=selection,
+        input_quality=quality,
+        review_candidates=candidates,
+        local_epoch=epoch,
+        local=_scored_decision(
             epoch,
             _DecisionProjectionContext(
                 input_version=native_input.input_version,
                 strategy=strategy,
                 decision_policy=decision_policy,
+                downside_assessments=downside_assessments,
                 score_model_version=model_version,
                 model_diagnostics=model_batch.diagnostics if model_batch is not None else None,
             ),
         ),
-        model_version,
-        tuple(sorted(model_batch.diagnostics.items())) if model_batch is not None else (),
+        score_model_version=model_version,
+        model_diagnostics=tuple(sorted(model_batch.diagnostics.items())) if model_batch is not None else (),
+        downside_assessments=downside_assessments,
     )
 
 
@@ -300,6 +312,7 @@ def build_scored_hybrid(
         epoch,
         _DecisionProjectionContext(
             input_version=projection.native_input.input_version,
+            downside_assessments=projection.downside_assessments,
             parent_version=projection.local.version,
             strategy=strategy,
             decision_policy=decision_policy,
@@ -313,6 +326,7 @@ def _scored_decision(
     epoch: DecisionEpoch,
     context: _DecisionProjectionContext,
 ) -> ScoredDecision:
+    downside_assessments = dict(context.downside_assessments)
     return ScoredDecision(
         strategy=context.strategy,
         trade_date=epoch.trade_date,
@@ -341,6 +355,7 @@ def _scored_decision(
                 strategy=context.strategy,
                 review_eligible=item.code in epoch.review_candidate_codes,
                 model_diagnostics=(context.model_diagnostics or {}).get(item.code),
+                downside=downside_assessments[item.code],
             )
             for item in epoch.entries
         ),
@@ -358,9 +373,9 @@ def _decision_item(
     strategy: Strategy,
     review_eligible: bool,
     model_diagnostics: ModelDiagnostics | None,
+    downside: DownsideAssessment,
 ) -> DecisionItem:
     reason = entry.decision_skip_reason or entry.action_reason or "not_selected"
-    downside = assess_downside(entry.features, strategy)
     return DecisionItem(
         code=entry.code,
         action=entry.action,

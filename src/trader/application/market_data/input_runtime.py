@@ -31,19 +31,21 @@ from trader.application.ports.scheduler import (
     ResearchIntent,
 )
 from trader.application.ports.scored import D25NativeInput, TodayNativeInput, TomorrowNativeInput
+from trader.application.recommendation.candidate_filtering import (
+    CandidateFilteringPort,
+    CandidateFilteringService,
+)
 from trader.application.recommendation.candidate_planning import (
     SCORED_STRATEGIES,
-    CandidatePlanningContext,
     CandidatePlanSet,
-    build_candidate_plans,
-    refresh_candidate_reserves,
+)
+from trader.application.recommendation.local_scoring import (
+    LocalScoringContext,
+    LocalScoringPort,
+    LocalScoringService,
 )
 from trader.application.recommendation.policy import RecommendationPolicy
-from trader.application.recommendation.scored_projection import (
-    ScoredLocalProjection,
-    ScoredProjectionInputs,
-    build_scored_local,
-)
+from trader.application.recommendation.scored_projection import ScoredLocalProjection
 from trader.application.recommendation.scored_quality import has_transient_candidate_gap
 from trader.application.research.research_audit import (
     CommittedResearchAudit,
@@ -97,6 +99,8 @@ class DecisionBuildDependencies:
     draft_index: UnifiedDecisionDraftIndex
     now: Callable[[], datetime]
     model_scoring: ModelScoringPort | None = None
+    candidate_filtering: CandidateFilteringPort | None = None
+    local_scoring: LocalScoringPort | None = None
 
 
 @dataclass(frozen=True)
@@ -200,6 +204,20 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         self._draft_index = decision_build.draft_index
         self._now = decision_build.now
         self._model_scoring = decision_build.model_scoring
+        self._candidate_filtering = (
+            decision_build.candidate_filtering
+            if decision_build.candidate_filtering is not None
+            else CandidateFilteringService(
+                self._policy,
+                self._model_scoring,
+                self._candidate_pool_size,
+            )
+        )
+        self._local_scoring = (
+            decision_build.local_scoring
+            if decision_build.local_scoring is not None
+            else LocalScoringService(self._model_scoring)
+        )
         self._lock = threading.RLock()
         self._batches: dict[tuple[Strategy, str], InputBatch] = {}
         self._latest_market_features: tuple[FeatureSnapshot, ...] = ()
@@ -279,17 +297,12 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         data_version = _feature_batch_version("market", features)
         completed_at = _refresh_completed_at(request, features)
         apply_model_eligibility = request.task is not PipelineTask.CLOSE_QUOTES
-        candidate_plans = build_candidate_plans(
+        candidate_plans = self._candidate_filtering.plan(
             features,
             None,
-            CandidatePlanningContext(
-                evaluated_at=completed_at,
-                data_version=data_version,
-                policy=self._policy,
-                model_scoring=self._model_scoring,
-                limit_per_board=self._candidate_pool_size,
-                apply_model_eligibility=apply_model_eligibility,
-            ),
+            evaluated_at=completed_at,
+            data_version=data_version,
+            apply_model_eligibility=apply_model_eligibility,
         )
         requested = candidate_plans.physical_union()
         quote_versions = _quote_versions(features)
@@ -346,17 +359,12 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             previous_strategy_features = dict(self._strategy_candidate_features)
         if not population or initial_plans is None:
             raise DataRefreshUnavailableError("candidate_universe_unavailable")
-        refresh_plan = refresh_candidate_reserves(
+        refresh_plan = self._candidate_filtering.refresh(
             population,
             initial_plans,
-            CandidatePlanningContext(
-                evaluated_at=request.observed_at,
-                data_version=self._market_version,
-                policy=self._policy,
-                model_scoring=self._model_scoring,
-                limit_per_board=initial_plans.limit_per_board,
-            ),
-            lambda codes: self._market.refresh_candidate_quotes(
+            evaluated_at=request.observed_at,
+            data_version=self._market_version,
+            refresh_quotes=lambda codes: self._market.refresh_candidate_quotes(
                 codes,
                 request.observed_at,
                 force=True,
@@ -735,13 +743,12 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                     20.0,
                     self._candidate_pool_size,
                 )
-                projection = build_scored_local(
+                projection = self._local_scoring.score(
                     today_native,
                     self._policy,
                     sequence=sequence,
-                    runtime=ScoredProjectionInputs(
-                        model_scoring=self._model_scoring,
-                        scoring_context=_model_scoring_context(request, batch, self._now()),
+                    context=LocalScoringContext(
+                        model_context=_model_scoring_context(request, batch, self._now()),
                         candidate_stage_counts=batch.candidate_stage_counts,
                         preselection_transient_invalid=batch.preselection_transient_invalid,
                     ),
@@ -760,13 +767,12 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                     30.0,
                     self._candidate_pool_size,
                 )
-                projection = build_scored_local(
+                projection = self._local_scoring.score(
                     tomorrow_native,
                     self._policy,
                     sequence=sequence,
-                    runtime=ScoredProjectionInputs(
-                        model_scoring=self._model_scoring,
-                        scoring_context=_model_scoring_context(request, batch, self._now()),
+                    context=LocalScoringContext(
+                        model_context=_model_scoring_context(request, batch, self._now()),
                         candidate_stage_counts=batch.candidate_stage_counts,
                         preselection_transient_invalid=batch.preselection_transient_invalid,
                     ),

@@ -75,7 +75,7 @@ def load_baseline_identity_evidence(runtime: RuntimeSettings) -> PackagedBaselin
             "v2_model_identity",
             "industry_ridge_lightgbm",
             v2.model_id,
-            "data/train/tomorrow-v3/model.json",
+            "data/train/v2/tomorrow/model.json",
             source_hash(v2.model_hash),
         ),
         BaselineIdentityClaim(

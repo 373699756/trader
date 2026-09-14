@@ -17,7 +17,7 @@ from trader.domain.market.factors import clamp, percentile_scores_with_metadata,
 from trader.domain.market.feature_contracts import (
     TOMORROW_RAW_ALPHA_FEATURE_MANIFEST,
     QfqPriceAnchors,
-    calculate_tomorrow_qfq_alpha,
+    calculate_profile_qfq_alpha,
 )
 from trader.domain.market.models import (
     CrossSectionStats,
@@ -212,19 +212,28 @@ if len(FEATURE_SCHEMA_NAMES) != len(set(FEATURE_SCHEMA_NAMES)):
 
 
 class FeatureBuilder:
-    def __init__(
+    def __init__(  # noqa: PLR0913 - feature builder receives explicit policy owners at the composition boundary
         self,
         news_signal_policy: NewsSignalPolicy,
         tail_signal_policy: TailSignalPolicy,
         market_regime_policy: MarketRegimePolicy,
         long_research_policy: LongResearchPolicy,
         feature_component_weights: FeatureComponentWeightPolicy,
+        *,
+        model_momentum_horizons: tuple[int, ...] = (20, 40, 60),
     ) -> None:
+        if (
+            not model_momentum_horizons
+            or any(horizon < 1 for horizon in model_momentum_horizons)
+            or len(set(model_momentum_horizons)) != len(model_momentum_horizons)
+        ):
+            raise ValueError("model momentum horizons must be positive and unique")
         self._news_signal_policy = news_signal_policy
         self._tail_signal_policy = tail_signal_policy
         self._market_regime_policy = market_regime_policy
         self._long_research_policy = long_research_policy
         self._feature_component_weights = feature_component_weights
+        self._model_momentum_horizons = tuple(model_momentum_horizons)
 
     def build(
         self,
@@ -468,16 +477,18 @@ class FeatureBuilder:
             days: context.return_pct(days, quote.price) if context is not None else return_pct(bars, days, quote.price)
             for days in (1, 3, 5, 10, 20, 40, 60)
         }
+        anchor_horizons = tuple(dict.fromkeys((1, 3, 5, *self._model_momentum_horizons)))
         qfq_alpha = {
             item.feature_id.value: item.value
-            for item in calculate_tomorrow_qfq_alpha(
+            for item in calculate_profile_qfq_alpha(
                 QfqPriceAnchors(
                     quote.price,
                     tuple(
                         (days, context.anchor_price(days) if context is not None else _lag_close(bars, days))
-                        for days in (1, 3, 5, 20, 40, 60)
+                        for days in anchor_horizons
                     ),
-                )
+                ),
+                self._model_momentum_horizons,
             )
         }
         ma5 = setup_history.moving_average_5d

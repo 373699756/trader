@@ -26,6 +26,7 @@ from trader.application.runtime.workers import (
     submit_or_run_inline,
 )
 from trader.domain.market.research import ResearchObservation
+from trader.infra.atomic_files.json import RuntimeJsonWriter, atomic_read_json, atomic_write_json
 from trader.infra.market_data.providers.akshare import AkshareResearchClient
 from trader.infra.market_data.service.market_cache_identity import (
     _add_action_restriction,
@@ -57,7 +58,6 @@ from trader.infra.market_data.service.research_load_status import (
     ResearchLoaderStatus,
     ResearchLoadReport,
 )
-from trader.infra.persistence.runtime_json import RuntimeJsonWriter, atomic_read_json, atomic_write_json
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")

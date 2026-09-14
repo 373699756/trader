@@ -315,9 +315,18 @@ def test_current_shared_training_bundles_score_all_default_v2_heads(application_
             offset=index / 100.0,
             amihud=float(index + 1),
         )
+        values = dict(feature.values)
+        values.update(
+            {
+                "qfq_momentum_120d_skip5": 0.07 + index / 100.0,
+                "qfq_momentum_250d_skip5": 0.08 + index / 100.0,
+            }
+        )
         features.append(
             replace(
                 feature,
+                values=values,
+                history_days=251,
                 model_industry=ModelIndustryReference(
                     industry_id=industry,
                     classification="证监会行业分类",

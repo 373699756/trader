@@ -94,11 +94,19 @@ class HistoryContext:
         return price if price is not None and price > 0.0 else None
 
 
-def build_history_context(bars: tuple[DailyBar, ...]) -> HistoryContext:
-    ordered = tuple(sorted(bars, key=lambda item: item.trade_date))[-61:]
+def build_history_context(
+    bars: tuple[DailyBar, ...],
+    *,
+    lookback_sessions: int = 61,
+) -> HistoryContext:
+    """Build a bounded summary with anchors required by the selected profile."""
+
+    if lookback_sessions < 1:
+        raise ValueError("history context lookback must be positive")
+    ordered = tuple(sorted(bars, key=lambda item: item.trade_date))[-lookback_sessions:]
     anchors = tuple(
         (days, ordered[-days - 1].close)
-        for days in (1, 3, 5, 10, 20, 40, 60)
+        for days in (1, 3, 5, 10, 20, 40, 60, 120, 250)
         if len(ordered) >= days + 1 and ordered[-days - 1].close > 0
     )
     return HistoryContext(

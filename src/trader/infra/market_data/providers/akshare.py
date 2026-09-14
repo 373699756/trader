@@ -27,6 +27,7 @@ from trader.domain.market.research import (
     corporate_risk_facts_from_announcements,
     reduction_level,
 )
+from trader.infra.atomic_files.json import RuntimeJsonWriter, atomic_read_json, atomic_write_json
 from trader.infra.market_data.providers.akshare_http_contracts import (
     AkshareGetFunction,
     AkshareHttpResponse,
@@ -46,7 +47,6 @@ from trader.infra.market_data.providers.akshare_parsing import (
     _summary_number,
     _validate_code,
 )
-from trader.infra.persistence.runtime_json import RuntimeJsonWriter, atomic_read_json, atomic_write_json
 
 _LOGGER = logging.getLogger(__name__)
 

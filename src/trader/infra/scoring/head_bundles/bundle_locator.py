@@ -6,17 +6,25 @@ from pathlib import Path
 
 from trader.domain.recommendation.models import Strategy
 from trader.infra.scoring.head_bundles.bundle_repository import locate_active_head_bundle
-from trader.infra.scoring.profiles.v3.contracts import V3_TRAINING_PROFILE
+from trader.infra.scoring.head_bundles.contracts import TrainedProfileContract
 
 
-def locate_head_bundles(training_root: Path) -> tuple[tuple[Strategy, Path], ...]:
-    strategies = (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+def locate_head_bundles(
+    training_root: Path,
+    profile: TrainedProfileContract,
+) -> tuple[tuple[Strategy, Path], ...]:
+    """Locate all heads below the selected profile's owned training directory."""
+
     return tuple(
         (
-            strategy,
-            locate_active_head_bundle(training_root / f"{strategy.value}-v3", strategy, V3_TRAINING_PROFILE),
+            contract.strategy,
+            locate_active_head_bundle(
+                training_root / profile.output_directory / contract.directory_name,
+                contract.strategy,
+                profile,
+            ),
         )
-        for strategy in strategies
+        for contract in profile.heads
     )
 
 

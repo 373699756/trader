@@ -1,4 +1,4 @@
-"""Shared atomic JSON persistence functions."""
+"""Atomic JSON file primitives used by runtime adapters."""
 
 from __future__ import annotations
 
@@ -29,11 +29,7 @@ class RuntimeJsonWriter:
 
 
 def atomic_write_json(path: Path, payload: object) -> None:
-    """Write a JSON payload atomically.
-
-    A sibling of the existing private atomic writer used by snapshot persistence,
-    this function is intentionally small and reusable for cache-like persistence.
-    """
+    """Write a JSON payload atomically beside the destination file."""
 
     text = json.dumps(
         payload,
@@ -59,7 +55,7 @@ def atomic_write_json(path: Path, payload: object) -> None:
 
 
 def atomic_read_json(path: Path) -> object:
-    """Read and decode a JSON file into Python objects."""
+    """Read and decode a JSON file using UTF-8."""
 
     return json.loads(path.read_text(encoding="utf-8"))
 
