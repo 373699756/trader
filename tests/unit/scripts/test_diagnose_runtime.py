@@ -232,6 +232,23 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
                 "findings": [],
                 "samples": [
                     {
+                        "degraded_reasons": ["observer:ResearchTraceCapacityError"],
+                        "scoring_profile": {
+                            "profile_id": "v2",
+                            "heads": {
+                                "tomorrow": {
+                                    "profile_id": "v2",
+                                    "active": True,
+                                    "model_id": "industry_ridge_lightgbm",
+                                    "model_hash": "a" * 64,
+                                    "request_count": 3,
+                                    "candidate_count": 0,
+                                    "predictor_batch_count": 0,
+                                    "cache_hit_count": 2,
+                                    "feature_payload": "must-not-escape",
+                                }
+                            },
+                        },
                         "market": {
                             "candidate_quote_age": {
                                 "p50_seconds": 1.0,
@@ -287,6 +304,7 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
     assert "600519" not in rendered
     assert "999.0" not in rendered
     assert "secret vendor payload" not in rendered
+    assert "must-not-escape" not in rendered
     assert report["checks"][0]["latest_runtime"]["candidate_quote_age"]["p95_seconds"] == 2.0
     assert report["checks"][0]["latest_runtime"]["history_warmup"]["completed_count"] == 20
     assert report["checks"][0]["latest_runtime"]["company_research"] == {
@@ -295,6 +313,22 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
         "pending_codes": 0,
         "completed_batches": 2,
         "tracked_output_codes": 12,
+    }
+    assert report["checks"][0]["latest_runtime"]["degraded_reasons"] == ["observer:ResearchTraceCapacityError"]
+    assert report["checks"][0]["latest_runtime"]["scoring_profile"] == {
+        "profile_id": "v2",
+        "heads": {
+            "tomorrow": {
+                "profile_id": "v2",
+                "active": True,
+                "model_id": "industry_ridge_lightgbm",
+                "model_hash": "a" * 64,
+                "request_count": 3,
+                "candidate_count": 0,
+                "predictor_batch_count": 0,
+                "cache_hit_count": 2,
+            }
+        },
     }
 
 

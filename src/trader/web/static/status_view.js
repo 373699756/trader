@@ -174,6 +174,7 @@
       els.inputQualityBlockers.textContent = "本轮阻断：待计算";
       els.inputQualityDegradations.textContent = "仅降级，不代表股票存在风险：待计算";
       els.funnelStatus.textContent = "-";
+      els.funnelStages.textContent = "正在读取全部过滤节点";
       els.funnelMeta.textContent = "正在读取推荐漏斗";
       els.quoteTime.textContent = "-";
       els.quoteAge.textContent = "-";
@@ -202,6 +203,7 @@
       els.inputQualityBlockers.textContent = "本轮阻断：历史快照不适用";
       els.inputQualityDegradations.textContent = "仅降级，不代表股票存在风险：历史快照不适用";
       els.funnelStatus.textContent = "— → — → 0";
+      els.funnelStages.textContent = "历史快照不重算逐层推荐漏斗";
       els.funnelMeta.textContent = "正式 0 · 观察 不保存";
       els.quoteTime.textContent = "-";
       els.quoteAge.textContent = "-";
@@ -229,7 +231,7 @@
   function renderSummary(els, payload, items, observationState, firstVisible, selection, render, statusPayload) {
     const coverage = payload && payload.coverage || {};
     const strategyQuality = strategyInputQuality(payload, statusPayload);
-    const inputQuality = payload && payload.status === "not_ready" ? strategyQuality : null;
+    const inputQuality = strategyQuality;
     const marketWarmup = payload && payload.status === "not_ready" && !inputQuality
       ? marketWarmupStatus(statusPayload)
       : null;
@@ -243,9 +245,21 @@
       || marketWarmup && marketWarmup.summary
       || {};
     const useRuntime = Boolean(inputQuality || marketWarmup);
-    const candidate = displayCount(useRuntime ? runtimeFunnel.requested_candidates : coverage.candidate_count);
-    const evaluated = displayCount(useRuntime ? runtimeFunnel.full_scored : coverage.evaluated_count);
-    const rejected = displayCount(useRuntime ? runtimeFunnel.filter_reject : coverage.rejected_count);
+    const candidate = displayCount(
+      useRuntime
+        ? finiteNonNegativeInteger(runtimeFunnel.requested_candidates) ?? coverage.candidate_count
+        : coverage.candidate_count,
+    );
+    const evaluated = displayCount(
+      useRuntime
+        ? finiteNonNegativeInteger(runtimeFunnel.full_scored) ?? coverage.evaluated_count
+        : coverage.evaluated_count,
+    );
+    const rejected = displayCount(
+      useRuntime
+        ? finiteNonNegativeInteger(runtimeFunnel.filter_reject) ?? coverage.rejected_count
+        : coverage.rejected_count,
+    );
     const runtimeExecutable = finiteNonNegativeInteger(runtimeFunnel.selected_executable);
     const executableCount = useRuntime
       ? displayCount(runtimeExecutable == null ? runtimeFunnel.action_executable : runtimeExecutable)
@@ -264,6 +278,7 @@
     renderInputQuality(els, payload, items, strategyQuality, marketWarmup);
     if (payload.strategy === "long") {
       els.funnelStatus.textContent = "不适用";
+      els.funnelStages.textContent = "长期固定观察池不经过短线过滤、评分与正式推荐链路";
       els.funnelMeta.textContent = "长期固定观察池不评分、不产生推荐";
     } else {
       const acquisitionPending = inputQuality
@@ -271,6 +286,16 @@
       els.funnelStatus.textContent = marketWarmup || acquisitionPending
         ? `${candidate} → 采集中 → 0`
         : `${candidate} → ${evaluated} → ${executableCount}`;
+      els.funnelStages.textContent = funnelStageSummary(
+        useRuntime ? runtimeFunnel : {
+          issuer_eligible_population: coverage.candidate_count,
+          filter_reject: coverage.rejected_count,
+          full_scored: coverage.evaluated_count,
+          selected_executable: executableCount,
+          selected_observe: observedCount,
+        },
+        inputQuality && inputQuality.population_count || coverage.candidate_count,
+      );
       els.funnelMeta.textContent = marketWarmup || acquisitionPending
         ? `过滤 待计算 · 观察草稿 ${payload.draft ? observedCount : observationState === "warming" ? "正在生成" : "未形成"} · 最高 —`
         : useRuntime
@@ -693,6 +718,37 @@
     return Number.isFinite(parsed) && parsed >= 0 ? String(Math.trunc(parsed)) : "—";
   }
 
+  function funnelStageSummary(funnel, populationCount) {
+    const values = funnel && typeof funnel === "object" ? funnel : {};
+    const stages = [
+      ["全市场", populationCount],
+      ["发行资格", values.issuer_eligible_population],
+      ["动态过滤", values.dynamic_filter_eligible],
+      ["策略历史", values.strategy_history_eligible],
+      ["模型输入", values.model_input_eligible],
+      ["候选分合格", values.candidate_score_eligible],
+      ["板内限额", values.candidate_limit_selected],
+      ["行情请求", values.requested_candidates],
+      ["候选特征", values.candidate_features],
+      ["行情合格", values.candidate_quote_eligible],
+      ["证券资料", values.security_master],
+      ["候选历史", values.history],
+      ["过滤通过", values.filter_pass],
+      ["过滤观察", values.filter_observe],
+      ["过滤拒绝", values.filter_reject],
+      ["完整评分", values.full_scored],
+      ["可复核", values.review_eligible],
+      ["达观察线", values.observation_threshold_met_count],
+      ["达正式线", values.executable_threshold_met_count],
+      ["可执行", values.action_executable],
+      ["动作观察", values.action_observe],
+      ["动作不可用", values.action_unavailable],
+      ["正式入选", values.selected_executable],
+      ["观察入选", values.selected_observe],
+    ];
+    return stages.map(([label, value]) => `${label} ${displayCount(value)}`).join(" → ");
+  }
+
   function finiteNumber(value) {
     if (value == null || value === "" || typeof value === "boolean") return null;
     const parsed = Number(value);
@@ -843,6 +899,7 @@
     createDashboardStateRenderer,
     createErrorDrawer,
     formatDurationHms,
+    funnelStageSummary,
     healthView,
     issueSummaryTitle,
     quoteAvailabilitySummary,

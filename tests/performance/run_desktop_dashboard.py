@@ -153,6 +153,7 @@ def _run(output_dir: Path) -> dict[str, object]:
               inputQuality: document.querySelector('#inputQualityStatus').textContent,
               inputQualityMeta: document.querySelector('#inputQualityMeta').textContent,
               funnel: document.querySelector('#funnelStatus').textContent,
+              funnelStages: document.querySelector('#funnelStages').textContent,
               funnelMeta: document.querySelector('#funnelMeta').textContent,
               budgetMeta: document.querySelector('#budgetMeta').textContent,
               publicationStatus: document.querySelector('#publicationStatus').textContent,
@@ -178,6 +179,7 @@ def _run(output_dir: Path) -> dict[str, object]:
               inputQuality: document.querySelector('#inputQualityStatus').textContent,
               inputQualityMeta: document.querySelector('#inputQualityMeta').textContent,
               funnel: document.querySelector('#funnelStatus').textContent,
+              funnelStages: document.querySelector('#funnelStages').textContent,
               funnelMeta: document.querySelector('#funnelMeta').textContent,
               source: document.querySelector('#quoteSource').textContent,
             };
@@ -348,7 +350,7 @@ def _run(output_dir: Path) -> dict[str, object]:
                     "主要原因：评分未达到执行门槛（54只）、风险事实触发限制（2只）、"
                     "公司风险历史暂不可核验（1只）"
                 ),
-                "summary": "过滤 216 · 观察 0 · 最高 -",
+                "summary": "过滤 216 · 观察草稿 2 · 最高 74.25",
                 "recommendation_message": (
                     "评分已完成｜最高分 74.25，距离正式线 3.75；达到观察线 2只、正式线 0只；"
                     "主要原因：评分未达到执行门槛（54只）、风险事实触发限制（2只）、"
@@ -376,6 +378,13 @@ def _run(output_dir: Path) -> dict[str, object]:
                 "inputQuality": "可评分 56 / 候选 360",
                 "inputQualityMeta": "历史 78 / 360 · 21.7% · 证券资料 120 / 360",
                 "funnel": "360 → 56 → 0",
+                "funnelStages": (
+                    "全市场 5291 → 发行资格 5291 → 动态过滤 500 → 策略历史 400 → 模型输入 360 → "
+                    "候选分合格 360 → 板内限额 360 → 行情请求 360 → 候选特征 360 → 行情合格 360 → "
+                    "证券资料 120 → 候选历史 78 → 过滤通过 56 → 过滤观察 2 → 过滤拒绝 216 → "
+                    "完整评分 56 → 可复核 20 → 达观察线 2 → 达正式线 0 → 可执行 0 → 动作观察 2 → "
+                    "动作不可用 54 → 正式入选 0 → 观察入选 2"
+                ),
                 "funnelMeta": "过滤 216 · 观察草稿 2 · 最高 74.25",
                 "source": "腾讯行情",
             }
@@ -595,18 +604,33 @@ def _browser_services() -> tuple[UnifiedWebServices, Callable[[], None]]:
 def _browser_input_quality(*, empty: bool = False) -> dict[str, object]:
     status = {
         "status": "not_ready",
+        "population_count": 5291,
         "candidate_optional_reason_counts": {
             "missing_listing_date": 221,
             "missing_listing_age_sessions": 65,
         },
         "supply_funnel": {
+            "issuer_eligible_population": 5291,
+            "dynamic_filter_eligible": 500,
+            "strategy_history_eligible": 400,
+            "model_input_eligible": 360,
+            "candidate_score_eligible": 360,
+            "candidate_limit_selected": 360,
             "requested_candidates": 360,
+            "candidate_features": 360,
+            "candidate_quote_eligible": 360,
             "security_master": 120,
             "history": 78,
+            "filter_pass": 56,
+            "filter_observe": 2,
             "full_scored": 56,
             "filter_reject": 216,
+            "review_eligible": 20,
             "observation_threshold_met_count": 2,
             "executable_threshold_met_count": 0,
+            "action_executable": 0,
+            "action_observe": 2,
+            "action_unavailable": 54,
             "selected_executable": 0,
             "selected_observe": 0 if empty else 2,
         },

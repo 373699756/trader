@@ -11,8 +11,15 @@ _TRADE_DATE = "2026-08-25"
 
 def _funnel(**overrides: int) -> dict[str, int]:
     values = {
+        "issuer_eligible_population": 5500,
+        "dynamic_filter_eligible": 420,
+        "strategy_history_eligible": 360,
+        "model_input_eligible": 360,
+        "candidate_score_eligible": 360,
+        "candidate_limit_selected": 360,
         "requested_candidates": 360,
         "candidate_features": 360,
+        "candidate_quote_eligible": 360,
         "security_master": 360,
         "history": 360,
         "filter_pass": 65,
@@ -20,6 +27,8 @@ def _funnel(**overrides: int) -> dict[str, int]:
         "filter_reject": 295,
         "full_scored": 65,
         "review_eligible": 20,
+        "observation_threshold_met_count": 0,
+        "executable_threshold_met_count": 0,
         "action_executable": 0,
         "action_observe": 0,
         "action_unavailable": 65,
@@ -51,14 +60,21 @@ def _sample(
     highest_final_score: float | None = 74.0,
     top_scores: list[dict[str, object]] | None = None,
     candidate_quote_age: tuple[float, float, float] = (1.0, 2.0, 3.0),
+    primary_blocker: str | None = None,
+    population_filter_reason_counts: Mapping[str, int] | None = None,
+    root_degraded_reasons: tuple[str, ...] = (),
+    predictor_batch_count: int = 1,
+    population_count: int = 5500,
 ) -> WebSample:
     quality = (
         {
             "status": quality_status or decision_status,
             "publishable": (quality_status or decision_status) in {"ready", "business_empty"},
-            "primary_blocker": "ready" if decision_status == "ready" else "history_coverage_incomplete",
+            "primary_blocker": primary_blocker
+            or ("ready" if decision_status == "ready" else "history_coverage_incomplete"),
+            "population_count": population_count,
             "history_required_sessions": 61,
-            "population_filter_reason_counts": {"stale_quote": 5571},
+            "population_filter_reason_counts": dict(population_filter_reason_counts or {"stale_quote": 5571}),
             "candidate_filter_reason_counts": {"history_too_short": 71},
             "candidate_transient_reason_counts": {"history_data_degraded": 12},
             "candidate_optional_reason_counts": {"research_data_degraded": 3},
@@ -83,6 +99,24 @@ def _sample(
         "runtime_started": True,
         "runtime_version": "runtime-test",
         "phase": phase,
+        "degraded_reasons": list(root_degraded_reasons),
+        "scoring_profile": {
+            "profile_id": "v2",
+            "heads": {
+                _STRATEGY: {
+                    "profile_id": "v2",
+                    "active": True,
+                    "model_id": "tomorrow-model",
+                    "model_hash": "a" * 64,
+                    "computation": {
+                        "request_count": number,
+                        "candidate_count": evaluated_count,
+                        "predictor_batch_count": predictor_batch_count,
+                        "cache_hit_count": 0,
+                    },
+                }
+            },
+        },
         "company_research": {
             "state": "idle",
             "running_codes": 0,
@@ -291,6 +325,184 @@ def test_persistent_zero_scoring_with_populated_quote_cache_is_reported() -> Non
     assert "funnel_security_master_persistently_zero" in codes
     assert "funnel_history_persistently_zero" in codes
     assert "selected_executable_persistently_zero" not in codes
+
+
+def test_persistent_model_input_zero_is_checked_against_its_direct_upstream_stage() -> None:
+    stalled = _funnel(
+        strategy_history_eligible=115,
+        model_input_eligible=0,
+        candidate_score_eligible=0,
+        candidate_limit_selected=0,
+        requested_candidates=0,
+        candidate_features=0,
+        candidate_quote_eligible=0,
+        security_master=0,
+        history=0,
+        filter_pass=0,
+        filter_reject=0,
+        full_scored=0,
+        review_eligible=0,
+        action_unavailable=0,
+    )
+    samples = tuple(
+        _sample(
+            index,
+            funnel=stalled,
+            decision_status="not_ready",
+            quality_status="business_empty",
+            empty_reason=None,
+            event_sequence=index,
+            predictor_batch_count=0,
+        )
+        for index in range(1, 4)
+    )
+
+    findings = analyze_samples(samples, strategies=(_STRATEGY,), consecutive_zero_threshold=3)
+    codes = {finding.code for finding in findings}
+
+    assert "funnel_model_input_eligible_persistently_zero" in codes
+    assert "funnel_candidate_score_eligible_persistently_zero" not in codes
+
+
+def test_dominant_stale_market_population_is_reported_at_the_first_broken_stage() -> None:
+    stalled = _funnel(
+        requested_candidates=0,
+        candidate_features=0,
+        security_master=0,
+        history=0,
+        filter_pass=0,
+        filter_reject=0,
+        full_scored=0,
+        review_eligible=0,
+        action_unavailable=0,
+    )
+    sample = _sample(
+        1,
+        funnel=stalled,
+        decision_status="not_ready",
+        quality_status="transient_invalid_empty",
+        empty_reason=None,
+        evaluated_count=0,
+        highest_final_score=None,
+        primary_blocker="market_population_stale",
+        population_filter_reason_counts={"stale_quote": 5089},
+        predictor_batch_count=0,
+        population_count=5291,
+    )
+
+    findings = analyze_samples((sample,), strategies=(_STRATEGY,), consecutive_zero_threshold=1)
+
+    finding = next(item for item in findings if item.code == "market_population_stale")
+    assert finding.severity == "error"
+    assert finding.evidence == {"population_count": 5291, "stale_quote_count": 5089}
+
+
+def test_dominant_missing_market_liquidity_history_is_reported_at_the_first_broken_stage() -> None:
+    stalled = _funnel(
+        requested_candidates=0,
+        candidate_features=0,
+        security_master=0,
+        history=0,
+        filter_pass=0,
+        filter_reject=0,
+        full_scored=0,
+        review_eligible=0,
+        action_unavailable=0,
+    )
+    sample = _sample(
+        1,
+        funnel=stalled,
+        decision_status="not_ready",
+        quality_status="transient_invalid_empty",
+        empty_reason=None,
+        evaluated_count=0,
+        highest_final_score=None,
+        primary_blocker="market_liquidity_history_unavailable",
+        population_filter_reason_counts={"missing_liquidity_history": 5165},
+        predictor_batch_count=0,
+        population_count=5279,
+    )
+
+    findings = analyze_samples((sample,), strategies=(_STRATEGY,), consecutive_zero_threshold=1)
+
+    finding = next(item for item in findings if item.code == "market_liquidity_history_unavailable")
+    assert finding.severity == "error"
+    assert finding.evidence == {"population_count": 5279, "missing_liquidity_history_count": 5165}
+
+
+def test_model_input_gap_is_reported_at_the_first_broken_stage() -> None:
+    stalled = _funnel(
+        strategy_history_eligible=201,
+        model_input_eligible=0,
+        candidate_score_eligible=0,
+        candidate_limit_selected=0,
+        requested_candidates=0,
+        candidate_features=0,
+        candidate_quote_eligible=0,
+        security_master=0,
+        history=0,
+        filter_pass=0,
+        filter_reject=0,
+        full_scored=0,
+        review_eligible=0,
+        action_unavailable=0,
+    )
+    sample = _sample(
+        1,
+        funnel=stalled,
+        decision_status="not_ready",
+        quality_status="business_empty",
+        empty_reason=None,
+        evaluated_count=0,
+        highest_final_score=None,
+        primary_blocker="model_input_unavailable",
+        predictor_batch_count=0,
+        population_count=5291,
+    )
+
+    findings = analyze_samples((sample,), strategies=(_STRATEGY,), consecutive_zero_threshold=1)
+
+    finding = next(item for item in findings if item.code == "model_input_unavailable")
+    assert finding.severity == "error"
+    assert finding.evidence == {"strategy_history_eligible": 201, "model_input_eligible": 0}
+
+
+def test_research_observer_failure_is_reported_from_root_degradation() -> None:
+    sample = _sample(1, root_degraded_reasons=("observer:ResearchTraceCapacityError",))
+
+    findings = analyze_samples((sample,), strategies=(_STRATEGY,), consecutive_zero_threshold=1)
+
+    finding = next(item for item in findings if item.code == "research_observer_failed")
+    assert finding.severity == "error"
+    assert finding.evidence == {"error_code": "ResearchTraceCapacityError"}
+
+
+def test_runtime_report_exposes_active_model_head_consumption() -> None:
+    sample = _sample(3, predictor_batch_count=2, evaluated_count=65)
+
+    report = build_report(
+        "http://127.0.0.1:5000",
+        (sample,),
+        (),
+        strategies=(_STRATEGY,),
+        consecutive_zero_threshold=1,
+    )
+
+    assert report["samples"][0]["scoring_profile"] == {
+        "profile_id": "v2",
+        "heads": {
+            "tomorrow": {
+                "profile_id": "v2",
+                "active": True,
+                "model_id": "tomorrow-model",
+                "model_hash": "a" * 64,
+                "request_count": 3,
+                "candidate_count": 65,
+                "predictor_batch_count": 2,
+                "cache_hit_count": 0,
+            }
+        },
+    }
 
 
 def test_nonzero_funnel_stage_regressing_to_zero_is_reported_immediately() -> None:

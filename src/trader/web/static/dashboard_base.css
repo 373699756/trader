@@ -405,10 +405,22 @@ tr:focus-visible {
 
 .summary-band {
   display: grid;
-  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  grid-template-columns: repeat(5, minmax(150px, 1fr));
   gap: 1px;
   border-bottom: 1px solid var(--line);
   background: var(--line);
+}
+
+.funnel-item {
+  grid-column: span 2;
+}
+
+.funnel-stages {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
 }
 
 .summary-item {

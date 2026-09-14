@@ -190,6 +190,52 @@ def test_committed_event_trace_rejects_payload_over_byte_limit(tmp_path) -> None
     assert archive.status().retained == 0
 
 
+def test_full_market_research_audit_is_compressed_and_survives_restart(tmp_path) -> None:
+    event = build_decision_committed(decision())
+    audit = _point_in_time_audit(event.decision_version, event.decision_hash, event.observed_at)
+    template = audit.point_in_time_population[0]
+    population = tuple(
+        sorted(
+            (
+                template,
+                *(
+                    replace(template, code=f"{100000 + index:06d}", requested_for_refresh=index < 360)
+                    for index in range(5_290)
+                ),
+            ),
+            key=lambda item: item.code,
+        )
+    )
+    expanded_audit = replace(
+        audit,
+        point_in_time_population=population,
+        point_in_time_population_hash=point_in_time_population_hash(population),
+    )
+    observation = DecisionObservation(event, expanded_audit)
+    logical_payload = research_trace_module._observation_bytes(observation)
+    assert len(logical_payload) > 4 * 1024 * 1024
+
+    archive = SQLiteResearchTraceArchive(tmp_path)
+    archive.record(observation)
+
+    assert 0 < archive.status().retained_bytes < 4 * 1024 * 1024
+    assert SQLiteResearchTraceArchive(tmp_path).get(event.decision_version) == observation
+
+
+def test_research_trace_rejects_compressed_payload_over_decoded_limit(tmp_path) -> None:
+    archive = SQLiteResearchTraceArchive(
+        tmp_path,
+        limits=ResearchTraceLimits(
+            payload_bytes=4096,
+            decoded_payload_bytes=64,
+            trade_date_bytes=8192,
+        ),
+    )
+
+    with pytest.raises(ResearchTraceCapacityError, match="decoded payload capacity"):
+        archive.record(DecisionObservation(build_decision_committed(decision()), None))
+
+
 def test_committed_event_trace_rejects_total_bytes_without_deleting_rows(tmp_path) -> None:
     first = DecisionObservation(build_decision_committed(decision(sequence=1)), None)
     second = DecisionObservation(build_decision_committed(decision(sequence=2)), None)

@@ -18,8 +18,15 @@ class FetchIssue:
 
 @dataclass(frozen=True)
 class FunnelSnapshot:
+    issuer_eligible_population: int | None
+    dynamic_filter_eligible: int | None
+    strategy_history_eligible: int | None
+    model_input_eligible: int | None
+    candidate_score_eligible: int | None
+    candidate_limit_selected: int | None
     requested_candidates: int | None
     candidate_features: int | None
+    candidate_quote_eligible: int | None
     security_master: int | None
     history: int | None
     filter_pass: int | None
@@ -27,6 +34,8 @@ class FunnelSnapshot:
     filter_reject: int | None
     full_scored: int | None
     review_eligible: int | None
+    observation_threshold_met_count: int | None
+    executable_threshold_met_count: int | None
     action_executable: int | None
     action_observe: int | None
     action_unavailable: int | None
@@ -36,8 +45,15 @@ class FunnelSnapshot:
 
     def monitored_counts(self) -> tuple[tuple[str, int | None], ...]:
         return (
+            ("issuer_eligible_population", self.issuer_eligible_population),
+            ("dynamic_filter_eligible", self.dynamic_filter_eligible),
+            ("strategy_history_eligible", self.strategy_history_eligible),
+            ("model_input_eligible", self.model_input_eligible),
+            ("candidate_score_eligible", self.candidate_score_eligible),
+            ("candidate_limit_selected", self.candidate_limit_selected),
             ("requested_candidates", self.requested_candidates),
             ("candidate_features", self.candidate_features),
+            ("candidate_quote_eligible", self.candidate_quote_eligible),
             ("security_master", self.security_master),
             ("history", self.history),
             ("full_scored", self.full_scored),
@@ -73,6 +89,7 @@ class InputQualitySnapshot:
     status: str | None
     trade_date: str | None
     primary_blocker: str | None
+    population_count: int | None
     history_required_sessions: int | None
     highest_final_score: float | None
     funnel: FunnelSnapshot
@@ -116,6 +133,27 @@ class CandidateQuoteAgeSnapshot:
     p95_seconds: float | None
     maximum_seconds: float | None
     sample_count: int | None
+
+
+@dataclass(frozen=True)
+class ScoringHeadSnapshot:
+    profile_id: str | None
+    active: bool | None
+    model_id: str | None
+    model_hash: str | None
+    request_count: int | None
+    candidate_count: int | None
+    predictor_batch_count: int | None
+    cache_hit_count: int | None
+
+
+@dataclass(frozen=True)
+class ScoringProfileSnapshot:
+    profile_id: str | None
+    heads: Mapping[str, ScoringHeadSnapshot]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "heads", MappingProxyType(dict(self.heads)))
 
 
 @dataclass(frozen=True)
@@ -164,6 +202,7 @@ class StatusSnapshot:
     runtime_started: bool
     runtime_version: str | None
     phase: str | None
+    degraded_reasons: tuple[str, ...]
     event_sequence: int | None
     market_feature_rows: int | None
     candidate_quote_entries: int | None
@@ -171,6 +210,7 @@ class StatusSnapshot:
     candidate_quote_age: CandidateQuoteAgeSnapshot
     history_warmup: HistoryWarmupSnapshot
     company_research: CompanyResearchSnapshot
+    scoring_profile: ScoringProfileSnapshot
     recent_errors: tuple[WebRuntimeIssue, ...]
     strategies: Mapping[str, ProjectionSnapshot]
     input_quality: Mapping[str, InputQualitySnapshot]
@@ -219,6 +259,7 @@ def _parse_status(payload: Mapping[str, object]) -> StatusSnapshot:
     events = _mapping(payload.get("events"))
     scheduler = _mapping(payload.get("scheduler"))
     company_research = _mapping(payload.get("company_research"))
+    scoring_profile = _mapping(payload.get("scoring_profile"))
     candidate_quote_age = _mapping(market.get("candidate_quote_age"))
     strategies = {
         strategy: _parse_projection(value, include_items=False)
@@ -237,6 +278,7 @@ def _parse_status(payload: Mapping[str, object]) -> StatusSnapshot:
         runtime_started=payload.get("runtime_started") is True,
         runtime_version=_text(payload.get("runtime_version")),
         phase=_text(payload.get("phase")),
+        degraded_reasons=_text_tuple(payload.get("degraded_reasons"), limit=32),
         event_sequence=_nonnegative_int(events.get("sequence")),
         market_feature_rows=_nonnegative_int(market.get("market_feature_rows")),
         candidate_quote_entries=_nonnegative_int(market.get("candidate_quote_cache_entries")),
@@ -291,6 +333,7 @@ def _parse_status(payload: Mapping[str, object]) -> StatusSnapshot:
             result_count=_nonnegative_int(company_research.get("result_count")),
             rescore_result_count=_nonnegative_int(company_research.get("rescore_result_count")),
         ),
+        scoring_profile=_parse_scoring_profile(scoring_profile),
         recent_errors=_parse_runtime_issues(payload.get("recent_errors")),
         strategies=strategies,
         input_quality=input_quality,
@@ -330,6 +373,7 @@ def _parse_input_quality(payload: Mapping[str, object]) -> InputQualitySnapshot:
         status=_text(payload.get("status")),
         trade_date=_text(summary.get("trade_date")),
         primary_blocker=_text(payload.get("primary_blocker")),
+        population_count=_nonnegative_int(payload.get("population_count")),
         history_required_sessions=_nonnegative_int(payload.get("history_required_sessions")),
         highest_final_score=_nonnegative_number(summary.get("highest_final_score")),
         funnel=_parse_funnel(_mapping(payload.get("supply_funnel"))),
@@ -338,6 +382,30 @@ def _parse_input_quality(payload: Mapping[str, object]) -> InputQualitySnapshot:
         candidate_transient_reason_counts=_parse_reason_counts(payload.get("candidate_transient_reason_counts")),
         candidate_optional_reason_counts=_parse_reason_counts(payload.get("candidate_optional_reason_counts")),
         supply_reason_counts=_parse_reason_counts(payload.get("supply_reason_counts")),
+    )
+
+
+def _parse_scoring_profile(payload: Mapping[str, object]) -> ScoringProfileSnapshot:
+    heads = {
+        strategy: _parse_scoring_head(value)
+        for strategy, raw in _mapping(payload.get("heads")).items()
+        if (value := _mapping_or_none(raw)) is not None
+    }
+    return ScoringProfileSnapshot(_text(payload.get("profile_id")), heads)
+
+
+def _parse_scoring_head(payload: Mapping[str, object]) -> ScoringHeadSnapshot:
+    computation = _mapping(payload.get("computation"))
+    active = payload.get("active")
+    return ScoringHeadSnapshot(
+        profile_id=_text(payload.get("profile_id")),
+        active=active if isinstance(active, bool) else None,
+        model_id=_text(payload.get("model_id")),
+        model_hash=_text(payload.get("model_hash")),
+        request_count=_nonnegative_int(computation.get("request_count")),
+        candidate_count=_nonnegative_int(computation.get("candidate_count")),
+        predictor_batch_count=_nonnegative_int(computation.get("predictor_batch_count")),
+        cache_hit_count=_nonnegative_int(computation.get("cache_hit_count")),
     )
 
 
@@ -354,8 +422,15 @@ def _top_score_summary(value: object) -> tuple[int | None, float | None]:
 
 def _parse_funnel(payload: Mapping[str, object]) -> FunnelSnapshot:
     field_names = (
+        "issuer_eligible_population",
+        "dynamic_filter_eligible",
+        "strategy_history_eligible",
+        "model_input_eligible",
+        "candidate_score_eligible",
+        "candidate_limit_selected",
         "requested_candidates",
         "candidate_features",
+        "candidate_quote_eligible",
         "security_master",
         "history",
         "filter_pass",
@@ -363,6 +438,8 @@ def _parse_funnel(payload: Mapping[str, object]) -> FunnelSnapshot:
         "filter_reject",
         "full_scored",
         "review_eligible",
+        "observation_threshold_met_count",
+        "executable_threshold_met_count",
         "action_executable",
         "action_observe",
         "action_unavailable",
@@ -371,8 +448,15 @@ def _parse_funnel(payload: Mapping[str, object]) -> FunnelSnapshot:
     )
     values = {name: _nonnegative_int(payload.get(name)) for name in field_names}
     return FunnelSnapshot(
+        issuer_eligible_population=values["issuer_eligible_population"],
+        dynamic_filter_eligible=values["dynamic_filter_eligible"],
+        strategy_history_eligible=values["strategy_history_eligible"],
+        model_input_eligible=values["model_input_eligible"],
+        candidate_score_eligible=values["candidate_score_eligible"],
+        candidate_limit_selected=values["candidate_limit_selected"],
         requested_candidates=values["requested_candidates"],
         candidate_features=values["candidate_features"],
+        candidate_quote_eligible=values["candidate_quote_eligible"],
         security_master=values["security_master"],
         history=values["history"],
         filter_pass=values["filter_pass"],
@@ -380,6 +464,8 @@ def _parse_funnel(payload: Mapping[str, object]) -> FunnelSnapshot:
         filter_reject=values["filter_reject"],
         full_scored=values["full_scored"],
         review_eligible=values["review_eligible"],
+        observation_threshold_met_count=values["observation_threshold_met_count"],
+        executable_threshold_met_count=values["executable_threshold_met_count"],
         action_executable=values["action_executable"],
         action_observe=values["action_observe"],
         action_unavailable=values["action_unavailable"],
@@ -454,6 +540,8 @@ __all__ = [
     "FunnelSnapshot",
     "InputQualitySnapshot",
     "ProjectionSnapshot",
+    "ScoringHeadSnapshot",
+    "ScoringProfileSnapshot",
     "WebRuntimeIssue",
     "WebSample",
     "parse_web_sample",

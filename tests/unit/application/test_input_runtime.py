@@ -291,6 +291,66 @@ def test_production_adapter_rejects_transient_invalid_empty_projection(
         adapter.build_local(request)
 
 
+def test_primary_blocker_reports_dominant_stale_market_before_partial_history(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 15, 5, tzinfo=SHANGHAI)
+    stale_source = application_feature_factory("600001", observed_at - timedelta(minutes=1))
+    stale = replace(stale_source, quote=replace(stale_source.quote, board=Board.MAIN))
+    fresh_source = application_feature_factory("600002", observed_at - timedelta(seconds=1))
+    history_incomplete = replace(
+        fresh_source,
+        quote=replace(fresh_source.quote, board=Board.MAIN),
+        history_days=19,
+    )
+    adapter = MarketDataAdapter(
+        _Market((stale, history_incomplete)),
+        config_version="test-config",
+        candidate_pool_size=2,
+        decision_build=_decision_build(),
+    )
+    request = _request(observed_at)
+
+    _prime_scoring_cache(adapter, observed_at)
+    adapter.refresh(request)
+
+    with pytest.raises(DecisionUnavailableError, match="transient_invalid_empty"):
+        adapter.build_local(request)
+    status = next(item for item in adapter.input_quality_status() if item.strategy is Strategy.TOMORROW)
+    assert status.supply_funnel.requested_candidates == 0
+    assert dict(status.population_filter_reason_counts)["stale_quote"] == 1
+    assert status.primary_blocker == "market_population_stale"
+
+
+def test_primary_blocker_reports_dominant_missing_market_liquidity_history(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 15, 5, tzinfo=SHANGHAI)
+    features = []
+    for code in ("600001", "600002"):
+        feature = application_feature_factory(code, observed_at - timedelta(seconds=1))
+        values = dict(feature.values)
+        values.pop("amount_median_20d")
+        features.append(replace(feature, values=values, history_days=19))
+    adapter = MarketDataAdapter(
+        _Market(tuple(features)),
+        config_version="test-config",
+        candidate_pool_size=2,
+        decision_build=_decision_build(),
+    )
+    request = _request(observed_at)
+
+    _prime_scoring_cache(adapter, observed_at)
+    adapter.refresh(request)
+
+    with pytest.raises(DecisionUnavailableError, match="transient_invalid_empty"):
+        adapter.build_local(request)
+    status = next(item for item in adapter.input_quality_status() if item.strategy is Strategy.TOMORROW)
+    assert status.supply_funnel.requested_candidates == 0
+    assert dict(status.population_filter_reason_counts)["missing_liquidity_history"] == 2
+    assert status.primary_blocker == "market_liquidity_history_unavailable"
+
+
 def test_production_adapter_preserves_publishable_business_empty_projection(
     application_feature_factory,
 ) -> None:

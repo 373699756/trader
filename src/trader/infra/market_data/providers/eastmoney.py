@@ -39,7 +39,7 @@ class JsonResponse(Protocol):
 
 SessionFactory = Callable[[], requests.Session]
 
-FIELDS = "f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13,f14,f15,f16,f17,f18,f20,f21,f22,f23,f24,f25,f26,f100,f124"
+FIELDS = "f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13,f14,f15,f16,f17,f18,f20,f21,f22,f23,f24,f25,f26,f100"
 HOSTS = ("82.push2.eastmoney.com", "push2.eastmoney.com", "7.push2.eastmoney.com")
 _DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
 _REQUEST_ROUNDS = 2
@@ -358,7 +358,6 @@ def _quote_from_row(row: Mapping[str, object], received_at: datetime) -> MarketQ
     if len(code) != 6 or not code.isdigit():
         return None
     name = str(row.get("f14") or "").strip()
-    source_time = _source_time(row.get("f124"), received_at)
     price = to_float(row.get("f2"))
     high = to_float(row.get("f15"))
     low = to_float(row.get("f16"))
@@ -391,7 +390,7 @@ def _quote_from_row(row: Mapping[str, object], received_at: datetime) -> MarketQ
             market_cap=to_float(row.get("f20")),
             industry=str(row.get("f100") or "").strip(),
             source="eastmoney",
-            source_time=source_time,
+            source_time=received_at,
             received_time=received_at,
             data_version=f"eastmoney:{int(received_at.timestamp())}",
             board=board,
@@ -425,16 +424,6 @@ def _listing_date(raw: object, received_at: datetime) -> date | None:
     except ValueError:
         return None
     return parsed if parsed <= received_at.astimezone(_SHANGHAI).date() else None
-
-
-def _source_time(raw: object, fallback: datetime) -> datetime:
-    value = to_float(raw)
-    if value is None or value <= 0:
-        return fallback
-    try:
-        return datetime.fromtimestamp(value, tz=timezone.utc)
-    except (OverflowError, OSError, ValueError):
-        return fallback
 
 
 def _secid(code: str) -> str:

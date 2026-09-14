@@ -23,8 +23,9 @@ from trader.application.recommendation.scored_projection import (
 from trader.application.research.research_audit import build_committed_research_audit
 from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import FeatureSnapshot
-from trader.domain.recommendation.model_scoring import LEGACY_EXPOSURE_CONTRACT
+from trader.domain.recommendation.model_scoring import LEGACY_EXPOSURE_CONTRACT, TRAINED_HEAD_EXPOSURE_CONTRACT
 from trader.domain.recommendation.models import Strategy
+from trader.domain.recommendation.selection.scored_selection import ScoredCandidateStageCounts
 from trader.infra.settings import load_strategy_settings
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -64,6 +65,11 @@ class _RecordingProductionPredictor(_ProductionPredictor):
 class _NonPositiveProductionPredictor(_ProductionPredictor):
     def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
         return tuple(ModelPrediction(item.code, 0.001 + index * 0.0001, 0.0) for index, item in enumerate(inputs))
+
+
+class _IndustryProductionPredictor(_ProductionPredictor):
+    exposure_contract = TRAINED_HEAD_EXPOSURE_CONTRACT
+    industry_ids = ("J66货币金融服务",)
 
 
 def _router(predictor: object) -> ModelScoringRouter:
@@ -210,6 +216,39 @@ def test_tomorrow_model_cross_section_excludes_hard_filter_rejections(
     assert predictor.codes == ("600001",)
     rejected_evaluation = next(item for item in projection.selection.evaluations if item.code == "600002")
     assert rejected_evaluation.disposition.value == "reject"
+
+
+def test_supply_status_identifies_the_model_input_stage_as_the_first_blocker(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "strategy.json"))
+    feature = _with_model_features(
+        _verified_feature(application_feature_factory("600001", EVALUATED_AT - timedelta(seconds=10))),
+        1,
+    )
+    stage_counts = ScoredCandidateStageCounts(
+        issuer_eligible_population=1,
+        dynamic_filter_eligible=1,
+        strategy_history_eligible=1,
+        model_input_eligible=0,
+        candidate_score_eligible=0,
+        candidate_limit_selected=0,
+    )
+    projection = build_scored_local(
+        _native_input((feature,)),
+        policy,
+        sequence=1,
+        runtime=ScoredProjectionInputs(
+            model_scoring=_router(_IndustryProductionPredictor()),
+            candidate_stage_counts=stage_counts,
+        ),
+    )
+
+    status = build_supply_status(projection, stage_counts)
+
+    assert status.supply_funnel.strategy_history_eligible == 1
+    assert status.supply_funnel.model_input_eligible == 0
+    assert status.primary_blocker == "model_input_unavailable"
 
 
 def test_tomorrow_model_excludes_only_candidate_below_its_61_session_requirement(

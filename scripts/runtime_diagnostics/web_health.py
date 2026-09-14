@@ -24,6 +24,7 @@ from .web_health_contract import (
     FunnelSnapshot,
     InputQualitySnapshot,
     ProjectionSnapshot,
+    ScoringProfileSnapshot,
     WebSample,
     parse_web_sample,
 )
@@ -42,8 +43,15 @@ _SCORING_PHASES = frozenset(
 )
 _TODAY_SCORING_PHASES = frozenset({"today_observe", "today_main", "today_late"})
 _MONITORED_FUNNEL_FIELDS = (
+    "issuer_eligible_population",
+    "dynamic_filter_eligible",
+    "strategy_history_eligible",
+    "model_input_eligible",
+    "candidate_score_eligible",
+    "candidate_limit_selected",
     "requested_candidates",
     "candidate_features",
+    "candidate_quote_eligible",
     "security_master",
     "history",
     "full_scored",
@@ -134,6 +142,7 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
         )
     if not status.runtime_started or status.runtime_status != "running":
         findings.append(_finding("error", "runtime_not_running", sample, None, "runtime is not reported as running"))
+    findings.extend(_observer_findings(sample, status.degraded_reasons))
     if not status.release_decision_schema:
         findings.append(
             _finding("error", "release_identity_missing", sample, None, "status release identity is incomplete")
@@ -222,8 +231,96 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
                 )
             findings.extend(_funnel_consistency_findings(sample, strategy, quality.funnel))
             findings.extend(_history_gate_findings(sample, strategy, quality))
+            findings.extend(_market_population_findings(sample, strategy, quality))
+            findings.extend(_market_liquidity_history_findings(sample, strategy, quality))
+            findings.extend(_model_input_findings(sample, strategy, quality))
             findings.extend(_scoring_output_findings(sample, strategy, quality, decision))
     return findings
+
+
+def _observer_findings(sample: WebSample, degraded_reasons: tuple[str, ...]) -> list[Finding]:
+    return [
+        _finding(
+            "error",
+            "research_observer_failed",
+            sample,
+            None,
+            "the committed-decision research observer failed",
+            {"error_code": reason.partition(":")[2]},
+        )
+        for reason in degraded_reasons
+        if reason.startswith("observer:") and reason.partition(":")[2]
+    ]
+
+
+def _market_population_findings(
+    sample: WebSample,
+    strategy: str,
+    quality: InputQualitySnapshot,
+) -> list[Finding]:
+    stale_count = quality.population_filter_reason_counts.get("stale_quote", 0)
+    if quality.primary_blocker != "market_population_stale" or stale_count <= 0:
+        return []
+    return [
+        _finding(
+            "error",
+            "market_population_stale",
+            sample,
+            strategy,
+            "stale full-market quotes blocked candidate discovery before model scoring",
+            {
+                "population_count": quality.population_count,
+                "stale_quote_count": stale_count,
+            },
+        )
+    ]
+
+
+def _market_liquidity_history_findings(
+    sample: WebSample,
+    strategy: str,
+    quality: InputQualitySnapshot,
+) -> list[Finding]:
+    missing_count = quality.population_filter_reason_counts.get("missing_liquidity_history", 0)
+    if quality.primary_blocker != "market_liquidity_history_unavailable" or missing_count <= 0:
+        return []
+    return [
+        _finding(
+            "error",
+            "market_liquidity_history_unavailable",
+            sample,
+            strategy,
+            "full-market liquidity history was unavailable before candidate discovery",
+            {
+                "population_count": quality.population_count,
+                "missing_liquidity_history_count": missing_count,
+            },
+        )
+    ]
+
+
+def _model_input_findings(
+    sample: WebSample,
+    strategy: str,
+    quality: InputQualitySnapshot,
+) -> list[Finding]:
+    history_eligible = quality.funnel.strategy_history_eligible or 0
+    model_eligible = quality.funnel.model_input_eligible
+    if quality.primary_blocker != "model_input_unavailable" or history_eligible <= 0 or model_eligible != 0:
+        return []
+    return [
+        _finding(
+            "error",
+            "model_input_unavailable",
+            sample,
+            strategy,
+            "strategy-history-qualified rows did not satisfy the active model input contract",
+            {
+                "strategy_history_eligible": history_eligible,
+                "model_input_eligible": model_eligible,
+            },
+        )
+    ]
 
 
 def _scoring_output_findings(
@@ -692,10 +789,21 @@ def _eligible_zero(sample: WebSample, strategy: str, field_name: str) -> bool:
     counts = dict(funnel.monitored_counts())
     if counts[field_name] != 0 or (field_name == "full_scored" and quality.status == "business_empty"):
         return False
+    upstream_fields = {
+        "dynamic_filter_eligible": "issuer_eligible_population",
+        "strategy_history_eligible": "dynamic_filter_eligible",
+        "model_input_eligible": "strategy_history_eligible",
+        "candidate_score_eligible": "model_input_eligible",
+        "candidate_limit_selected": "candidate_score_eligible",
+        "requested_candidates": "candidate_limit_selected",
+        "candidate_quote_eligible": "candidate_features",
+    }
+    if field_name == "issuer_eligible_population":
+        return _market_feature_rows(sample) > 0
+    if upstream_field := upstream_fields.get(field_name):
+        return (counts.get(upstream_field) or 0) > 0
     requested = funnel.requested_candidates or 0
     candidate_features = funnel.candidate_features or 0
-    if field_name == "requested_candidates":
-        return _market_feature_rows(sample) > 0
     if field_name == "candidate_features":
         return requested > 0 and _candidate_quote_entries(sample) > 0
     return candidate_features > 0
@@ -944,6 +1052,7 @@ def _sample_payload(sample: WebSample, strategies: tuple[str, ...]) -> dict[str,
             "empty_reason": current.empty_reason if current is not None else None,
             "input_quality_status": quality.status if quality is not None else None,
             "primary_blocker": quality.primary_blocker if quality is not None else None,
+            "population_count": quality.population_count if quality is not None else None,
             "history_required_sessions": quality.history_required_sessions if quality is not None else None,
             "highest_final_score": quality.highest_final_score if quality is not None else None,
             "supply_funnel": _funnel_payload(quality.funnel if quality is not None else None),
@@ -968,7 +1077,9 @@ def _sample_payload(sample: WebSample, strategies: tuple[str, ...]) -> dict[str,
         "runtime_started": status.runtime_started if status is not None else False,
         "runtime_version": status.runtime_version if status is not None else None,
         "phase": status.phase if status is not None else None,
+        "degraded_reasons": list(status.degraded_reasons) if status is not None else [],
         "event_sequence": status.event_sequence if status is not None else None,
+        "scoring_profile": _scoring_profile_payload(status.scoring_profile if status is not None else None),
         "market": {
             "market_feature_rows": status.market_feature_rows if status is not None else None,
             "candidate_quote_cache_entries": status.candidate_quote_entries if status is not None else None,
@@ -1055,10 +1166,40 @@ def _projection_summary(payload: ProjectionSnapshot | None) -> dict[str, object]
     }
 
 
+def _scoring_profile_payload(payload: ScoringProfileSnapshot | None) -> dict[str, object]:
+    return {
+        "profile_id": payload.profile_id if payload is not None else None,
+        "heads": (
+            {
+                strategy: {
+                    "profile_id": head.profile_id,
+                    "active": head.active,
+                    "model_id": head.model_id,
+                    "model_hash": head.model_hash,
+                    "request_count": head.request_count,
+                    "candidate_count": head.candidate_count,
+                    "predictor_batch_count": head.predictor_batch_count,
+                    "cache_hit_count": head.cache_hit_count,
+                }
+                for strategy, head in payload.heads.items()
+            }
+            if payload is not None
+            else {}
+        ),
+    }
+
+
 def _funnel_payload(payload: FunnelSnapshot | None) -> dict[str, int | None]:
     return {
+        "issuer_eligible_population": payload.issuer_eligible_population if payload is not None else None,
+        "dynamic_filter_eligible": payload.dynamic_filter_eligible if payload is not None else None,
+        "strategy_history_eligible": payload.strategy_history_eligible if payload is not None else None,
+        "model_input_eligible": payload.model_input_eligible if payload is not None else None,
+        "candidate_score_eligible": payload.candidate_score_eligible if payload is not None else None,
+        "candidate_limit_selected": payload.candidate_limit_selected if payload is not None else None,
         "requested_candidates": payload.requested_candidates if payload is not None else None,
         "candidate_features": payload.candidate_features if payload is not None else None,
+        "candidate_quote_eligible": payload.candidate_quote_eligible if payload is not None else None,
         "security_master": payload.security_master if payload is not None else None,
         "history": payload.history if payload is not None else None,
         "filter_pass": payload.filter_pass if payload is not None else None,
@@ -1066,6 +1207,8 @@ def _funnel_payload(payload: FunnelSnapshot | None) -> dict[str, int | None]:
         "filter_reject": payload.filter_reject if payload is not None else None,
         "full_scored": payload.full_scored if payload is not None else None,
         "review_eligible": payload.review_eligible if payload is not None else None,
+        "observation_threshold_met_count": (payload.observation_threshold_met_count if payload is not None else None),
+        "executable_threshold_met_count": (payload.executable_threshold_met_count if payload is not None else None),
         "action_executable": payload.action_executable if payload is not None else None,
         "action_observe": payload.action_observe if payload is not None else None,
         "action_unavailable": payload.action_unavailable if payload is not None else None,

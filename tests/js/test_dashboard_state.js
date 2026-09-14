@@ -76,6 +76,7 @@ const state = {
   longTable: sandbox.window.TraderRender.longTable,
   sourceLabel: sandbox.window.TraderRender.sourceLabel,
   formatDurationHms: sandbox.window.TraderStatusView.formatDurationHms,
+  funnelStageSummary: sandbox.window.TraderStatusView.funnelStageSummary,
   healthView: sandbox.window.TraderStatusView.healthView,
   quoteAvailabilitySummary: sandbox.window.TraderStatusView.quoteAvailabilitySummary,
   renderInputQuality: sandbox.window.TraderStatusView.renderInputQuality,
@@ -354,6 +355,7 @@ function summaryFixture() {
     inputQualityBlockers: { textContent: "" },
     inputQualityDegradations: { textContent: "" },
     funnelStatus: { textContent: "" },
+    funnelStages: { textContent: "" },
     funnelMeta: { textContent: "" },
     quoteSource: { textContent: "" },
     quoteAge: { textContent: "" },
@@ -369,6 +371,34 @@ function summaryFixture() {
     topScoresMeta: { textContent: "" },
   };
 }
+assert.strictEqual(
+  state.funnelStageSummary({
+    issuer_eligible_population: 5291,
+    dynamic_filter_eligible: 49,
+    strategy_history_eligible: 48,
+    model_input_eligible: 0,
+    candidate_score_eligible: 0,
+    candidate_limit_selected: 0,
+    requested_candidates: 0,
+    candidate_features: 0,
+    candidate_quote_eligible: 0,
+    security_master: 0,
+    history: 0,
+    filter_pass: 0,
+    filter_observe: 0,
+    filter_reject: 5243,
+    full_scored: 0,
+    review_eligible: 0,
+    observation_threshold_met_count: 0,
+    executable_threshold_met_count: 0,
+    action_executable: 0,
+    action_observe: 0,
+    action_unavailable: 0,
+    selected_executable: 0,
+    selected_observe: 0,
+  }, 5291),
+  "全市场 5291 → 发行资格 5291 → 动态过滤 49 → 策略历史 48 → 模型输入 0 → 候选分合格 0 → 板内限额 0 → 行情请求 0 → 候选特征 0 → 行情合格 0 → 证券资料 0 → 候选历史 0 → 过滤通过 0 → 过滤观察 0 → 过滤拒绝 5243 → 完整评分 0 → 可复核 0 → 达观察线 0 → 达正式线 0 → 可执行 0 → 动作观察 0 → 动作不可用 0 → 正式入选 0 → 观察入选 0",
+);
 const summaryElements = summaryFixture();
 state.renderSummary(
   summaryElements,
@@ -894,6 +924,52 @@ assert.deepStrictEqual(
     message: "采集中｜候选行情 128 / 360，评分尚未完成",
     notice: "采集中｜候选行情 128 / 360，评分尚未完成",
     level: "idle",
+  },
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.notReadyMessage(
+    { strategy: "tomorrow", readiness_reason: "snapshot_not_published" },
+    {
+      primary_blocker: "market_population_stale",
+      population_count: 5291,
+      population_filter_reason_counts: { stale_quote: 5089 },
+      supply_funnel: { requested_candidates: 0 },
+    },
+  ))),
+  {
+    message: "暂不可发布｜全市场行情已过期 5089 / 5291，等待本轮行情刷新",
+    notice: "暂不可发布｜全市场行情已过期 5089 / 5291，等待本轮行情刷新",
+    level: "warn",
+  },
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.notReadyMessage(
+    { strategy: "tomorrow", readiness_reason: "snapshot_not_published" },
+    {
+      primary_blocker: "market_liquidity_history_unavailable",
+      population_count: 5279,
+      population_filter_reason_counts: { missing_liquidity_history: 5165 },
+      supply_funnel: { requested_candidates: 0 },
+    },
+  ))),
+  {
+    message: "暂不可发布｜全市场流动性历史未就绪 5165 / 5279，等待运行期预热",
+    notice: "暂不可发布｜全市场流动性历史未就绪 5165 / 5279，等待运行期预热",
+    level: "warn",
+  },
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.notReadyMessage(
+    { strategy: "tomorrow", readiness_reason: "snapshot_not_published" },
+    {
+      primary_blocker: "model_input_unavailable",
+      supply_funnel: { strategy_history_eligible: 201, model_input_eligible: 0 },
+    },
+  ))),
+  {
+    message: "暂不可发布｜策略历史合格 201 只，但模型输入合格 0 只；请核对模型所需行业与特征字段",
+    notice: "暂不可发布｜策略历史合格 201 只，但模型输入合格 0 只；请核对模型所需行业与特征字段",
+    level: "warn",
   },
 );
 const securityMasterBlocked = state.notReadyMessage(

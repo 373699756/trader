@@ -98,7 +98,8 @@ def test_eastmoney_normalizes_quote_and_history() -> None:
     assert quotes[0].board_reliability == "reported"
     assert quotes[0].exchange == "SSE"
     assert quotes[0].listing_date == date(1999, 11, 10)
-    assert quotes[0].source_time == NOW - timedelta(minutes=1)
+    assert quotes[0].source_time == NOW
+    assert quotes[0].received_time == NOW
     assert quotes[0].data_version == f"eastmoney:{int(NOW.timestamp())}"
     assert history[0].amount == 100000000
     assert all(call[1]["proxies"] == {"http": "", "https": "", "all": ""} for call in session.calls)

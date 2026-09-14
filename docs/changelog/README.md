@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Recover the three-strategy recommendation funnel and expose its true first blocker](2026-09-14-three-strategy-funnel-recovery.md)
 - [Profile-owned V2/V3 training layout plan](2026-09-14-profile-owned-training-layout-plan.md)
 - [Default V2 over the existing shared bundles](2026-09-14-v2-default-existing-bundles.md)
 - [V2/V3 shared three-head runtime](2026-09-13-v2-v3-shared-three-head-runtime.md)

@@ -23,6 +23,10 @@
     grid-template-columns: repeat(2, minmax(100px, 1fr));
   }
 
+  .funnel-item {
+    grid-column: 1 / -1;
+  }
+
   .observation-pool {
     margin-right: 12px;
     margin-left: 12px;

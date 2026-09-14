@@ -25,6 +25,7 @@ from trader.infra.market_data.service.observations import SourceObservation
 from trader.infra.market_data.service.router import RouteOutcome, VendorResult, VendorSeverity
 
 _T = TypeVar("_T")
+_FULL_MARKET_QUOTE_SOURCES = frozenset({"eastmoney", "sina"})
 
 
 @dataclass
@@ -262,12 +263,16 @@ def _newer_previous_quote_codes(
 
 
 def _previous_quote_is_newer(previous: MarketQuote, current: MarketQuote) -> bool:
-    previous_time = (previous.source_time, previous.received_time)
-    current_time = (current.source_time, current.received_time)
-    if previous_time != current_time:
-        return previous_time > current_time
     previous_source = source_name(previous.source)
     current_source = source_name(current.source)
+    if previous_source != current_source and {previous_source, current_source} <= _FULL_MARKET_QUOTE_SOURCES:
+        previous_time = (previous.received_time, previous.source_time)
+        current_time = (current.received_time, current.source_time)
+    else:
+        previous_time = (previous.source_time, previous.received_time)
+        current_time = (current.source_time, current.received_time)
+    if previous_time != current_time:
+        return previous_time > current_time
     if previous_source == current_source:
         return previous.data_version > current.data_version
     return (source_priority(previous_source), previous_source) > (

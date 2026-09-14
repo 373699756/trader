@@ -209,6 +209,30 @@
     }
     const blocker = inputQuality && inputQuality.primary_blocker;
     const funnel = inputQuality && inputQuality.supply_funnel || {};
+    if (blocker === "market_population_stale") {
+      const stale = nonNegativeInteger(
+        inputQuality && inputQuality.population_filter_reason_counts
+          && inputQuality.population_filter_reason_counts.stale_quote,
+      ) || 0;
+      const population = nonNegativeInteger(inputQuality && inputQuality.population_count) || stale;
+      const message = `暂不可发布｜全市场行情已过期 ${stale} / ${population}，等待本轮行情刷新`;
+      return { message, notice: message, level: "warn" };
+    }
+    if (blocker === "market_liquidity_history_unavailable") {
+      const missing = nonNegativeInteger(
+        inputQuality && inputQuality.population_filter_reason_counts
+          && inputQuality.population_filter_reason_counts.missing_liquidity_history,
+      ) || 0;
+      const population = nonNegativeInteger(inputQuality && inputQuality.population_count) || missing;
+      const message = `暂不可发布｜全市场流动性历史未就绪 ${missing} / ${population}，等待运行期预热`;
+      return { message, notice: message, level: "warn" };
+    }
+    if (blocker === "model_input_unavailable") {
+      const historyEligible = nonNegativeInteger(funnel.strategy_history_eligible) || 0;
+      const modelEligible = nonNegativeInteger(funnel.model_input_eligible) || 0;
+      const message = `暂不可发布｜策略历史合格 ${historyEligible} 只，但模型输入合格 ${modelEligible} 只；请核对模型所需行业与特征字段`;
+      return { message, notice: message, level: "warn" };
+    }
     const requested = nonNegativeInteger(funnel.requested_candidates);
     if (["candidate_quotes_pending", "scoring_pending"].includes(blocker) && requested != null) {
       const covered = nonNegativeInteger(funnel.candidate_features) || 0;

@@ -154,6 +154,9 @@ def _primary_supply_blocker(
     empty_reason: str | None,
 ) -> str:
     action_blocker = "no_executable_candidates" if funnel.action_observe else "local_score_below_observation_floor"
+    population_reasons = dict(quality.population_filter_reason_counts)
+    stale_population = population_reasons.get("stale_quote", 0)
+    missing_liquidity_history = population_reasons.get("missing_liquidity_history", 0)
     priorities = (
         (
             quality.candidate_count > 0 and quality.candidate_feature_coverage_ratio < 1.0,
@@ -165,9 +168,27 @@ def _primary_supply_blocker(
         ),
         (
             quality.status == "transient_invalid_empty"
+            and funnel.requested_candidates == 0
+            and stale_population > 0
+            and stale_population * 2 >= quality.population_count,
+            "market_population_stale",
+        ),
+        (
+            quality.status == "transient_invalid_empty"
+            and funnel.requested_candidates == 0
+            and missing_liquidity_history > 0
+            and missing_liquidity_history * 2 >= quality.population_count,
+            "market_liquidity_history_unavailable",
+        ),
+        (
+            quality.status == "transient_invalid_empty"
             and funnel.full_scored == 0
             and funnel.strategy_history_eligible < funnel.dynamic_filter_eligible,
             "strategy_history_unavailable",
+        ),
+        (
+            funnel.full_scored == 0 and funnel.strategy_history_eligible > 0 and funnel.model_input_eligible == 0,
+            "model_input_unavailable",
         ),
         (funnel.full_scored == 0, "no_scored_candidates"),
         (empty_reason == "no_positive_net_utility", "no_positive_net_utility"),

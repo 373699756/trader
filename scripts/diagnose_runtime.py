@@ -524,11 +524,34 @@ def _web_health_details(_result: DiagnosticResult, source: Mapping[str, object],
             "runtime_status": latest.get("runtime_status"),
             "runtime_version": latest.get("runtime_version"),
             "phase": latest.get("phase"),
+            "degraded_reasons": _safe_string_list(latest.get("degraded_reasons"), limit=32),
+            "scoring_profile": _scoring_profile_summary(latest.get("scoring_profile")),
             "candidate_quote_age": _mapping(_mapping(latest.get("market")).get("candidate_quote_age")),
             "history_warmup": _mapping(_mapping(latest.get("market")).get("history_warmup")),
             "company_research": _mapping(latest.get("company_research")),
             "strategies": _mapping(latest.get("strategies")),
         }
+
+
+def _scoring_profile_summary(value: object) -> dict[str, object]:
+    profile = _mapping(value)
+    heads = _mapping(profile.get("heads"))
+    projected_heads: dict[str, object] = {}
+    for strategy in ("today", "tomorrow", "d25"):
+        head = _mapping(heads.get(strategy))
+        if not head:
+            continue
+        projected_heads[strategy] = {
+            "profile_id": _safe_text(head.get("profile_id")),
+            "active": head.get("active") if isinstance(head.get("active"), bool) else None,
+            "model_id": _safe_text(head.get("model_id")),
+            "model_hash": _safe_text(head.get("model_hash")),
+            "request_count": _safe_nonnegative_int(head.get("request_count")),
+            "candidate_count": _safe_nonnegative_int(head.get("candidate_count")),
+            "predictor_batch_count": _safe_nonnegative_int(head.get("predictor_batch_count")),
+            "cache_hit_count": _safe_nonnegative_int(head.get("cache_hit_count")),
+        }
+    return {"profile_id": _safe_text(profile.get("profile_id")), "heads": projected_heads}
 
 
 def _history_details(_result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]) -> None:
@@ -777,6 +800,14 @@ def _safe_string_list(value: object, *, limit: int) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item[:160] for item in value if isinstance(item, str)][:limit]
+
+
+def _safe_text(value: object) -> str | None:
+    return value[:160] if isinstance(value, str) and value else None
+
+
+def _safe_nonnegative_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
 def _write_report(report: Mapping[str, object], output: str) -> None:

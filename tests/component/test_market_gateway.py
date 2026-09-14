@@ -206,6 +206,42 @@ def test_full_market_commit_preserves_candidate_overlay_published_during_merge(m
     assert snapshot.source_versions["tencent"] == "candidate-latest"
 
 
+def test_later_full_market_cycle_replaces_older_cross_source_quote() -> None:
+    older_sina = replace(
+        _quote(),
+        source="sina",
+        price=12.0,
+        source_time=NOW,
+        received_time=NOW,
+        data_version="sina-older-cycle",
+    )
+    later_eastmoney = replace(
+        _quote(),
+        source="eastmoney",
+        price=12.2,
+        source_time=NOW - timedelta(minutes=1),
+        received_time=NOW + timedelta(seconds=10),
+        data_version="eastmoney-later-cycle",
+    )
+    gateway = MarketDataGateway(
+        SequenceMarketClient((RuntimeError("eastmoney offline"), (later_eastmoney,))),
+        StaticMarketClient((older_sina,)),
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        wall_clock=lambda: NOW + timedelta(seconds=10),
+    )
+
+    first = tuple(gateway.fetch_market(observed_at=NOW))
+    second = tuple(gateway.fetch_market(observed_at=NOW + timedelta(seconds=10), force=True))
+
+    assert first[0].source == "sina"
+    assert second[0].source == "eastmoney"
+    assert second[0].price == 12.2
+    assert second[0].received_time == NOW + timedelta(seconds=10)
+
+
 def test_gateway_marks_circuit_open_vendor_as_skipped_in_route_health() -> None:
     quote = _quote()
     gateway = MarketDataGateway(
