@@ -149,7 +149,15 @@ def test_reference_loader_recover_restores_security_master_and_calendar_cursor(t
             source_time=source_time,
             source="tushare",
             data_version="tushare-calendar-current",
-            payload={"board": "main", "listing_date": "2026-01-02"},
+            payload={
+                "board": "main",
+                "listing_date": "2026-01-02",
+                "model_industry": "J66货币金融服务",
+                "model_industry_classification": "证监会行业分类",
+                "model_industry_data_version": "baostock-industry:fixture",
+                "model_industry_effective_date": "2026-07-10",
+                "model_industry_source": "baostock",
+            },
             payload_hash="",
             schema_version="data_plane",
         )
@@ -200,6 +208,7 @@ def test_reference_loader_recover_restores_security_master_and_calendar_cursor(t
     assert all(item.fields["is_open"] is True for item in gateway.reference_observations[1])
     assert service.references._next_calendar_start(date(2026, 7, 10)) == date(2026, 7, 15)
     assert service.references._next_calendar_start(date(2026, 7, 20)) == date(2026, 7, 20)
+    assert service.references.model_industry_reference_rows() == 1
 
 
 def test_reference_loader_persists_full_market_free_security_master_once_per_payload(tmp_path: Path) -> None:

@@ -294,7 +294,10 @@
           selected_executable: executableCount,
           selected_observe: observedCount,
         },
-        inputQuality && inputQuality.population_count || coverage.candidate_count,
+        inputQuality
+          ? finiteNonNegativeInteger(inputQuality.population_count)
+          : marketWarmup ? null : coverage.candidate_count,
+        Boolean(marketWarmup || acquisitionPending),
       );
       els.funnelMeta.textContent = marketWarmup || acquisitionPending
         ? `过滤 待计算 · 观察草稿 ${payload.draft ? observedCount : observationState === "warming" ? "正在生成" : "未形成"} · 最高 —`
@@ -714,13 +717,14 @@
   }
 
   function displayCount(value) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) && parsed >= 0 ? String(Math.trunc(parsed)) : "—";
+    const parsed = finiteNonNegativeInteger(value);
+    return parsed == null ? "—" : String(parsed);
   }
 
-  function funnelStageSummary(funnel, populationCount) {
+  function funnelStageSummary(funnel, populationCount, scoringPending) {
     const values = funnel && typeof funnel === "object" ? funnel : {};
-    const stages = [
+    const pendingAfterFeatures = Boolean(scoringPending);
+    const mainStages = [
       ["全市场", populationCount],
       ["发行资格", values.issuer_eligible_population],
       ["动态过滤", values.dynamic_filter_eligible],
@@ -730,23 +734,34 @@
       ["板内限额", values.candidate_limit_selected],
       ["行情请求", values.requested_candidates],
       ["候选特征", values.candidate_features],
-      ["行情合格", values.candidate_quote_eligible],
-      ["证券资料", values.security_master],
-      ["候选历史", values.history],
-      ["过滤通过", values.filter_pass],
-      ["过滤观察", values.filter_observe],
-      ["过滤拒绝", values.filter_reject],
-      ["完整评分", values.full_scored],
-      ["可复核", values.review_eligible],
-      ["达观察线", values.observation_threshold_met_count],
-      ["达正式线", values.executable_threshold_met_count],
-      ["可执行", values.action_executable],
-      ["动作观察", values.action_observe],
-      ["动作不可用", values.action_unavailable],
-      ["正式入选", values.selected_executable],
-      ["观察入选", values.selected_observe],
+      ["行情合格", pendingAfterFeatures ? null : values.candidate_quote_eligible],
+      ["证券资料", pendingAfterFeatures ? null : values.security_master],
+      ["候选历史", pendingAfterFeatures ? null : values.history],
+      ["完整评分", pendingAfterFeatures ? null : values.full_scored],
+      ["达正式线", pendingAfterFeatures ? null : values.executable_threshold_met_count],
+      ["可执行", pendingAfterFeatures ? null : values.action_executable],
+      ["正式入选", pendingAfterFeatures ? null : values.selected_executable],
     ];
-    return stages.map(([label, value]) => `${label} ${displayCount(value)}`).join(" → ");
+    const observationStages = [
+      ["完整评分", pendingAfterFeatures ? null : values.full_scored],
+      ["达观察线", pendingAfterFeatures ? null : values.observation_threshold_met_count],
+      ["动作观察", pendingAfterFeatures ? null : values.action_observe],
+      ["观察入选", pendingAfterFeatures ? null : values.selected_observe],
+    ];
+    const main = mainStages.map(([label, value]) => `${label} ${displayCount(value)}`).join(" → ");
+    const observation = observationStages
+      .map(([label, value]) => `${label} ${displayCount(value)}`)
+      .join(" → ");
+    const classification = pendingAfterFeatures
+      ? "待计算"
+      : [
+        ["通过", values.filter_pass],
+        ["仅观察", values.filter_observe],
+        ["拒绝", values.filter_reject],
+        ["可复核", values.review_eligible],
+        ["动作不可用", values.action_unavailable],
+      ].map(([label, value]) => `${label} ${displayCount(value)}`).join(" · ");
+    return `主线 ${main} ｜ 观察支线 ${observation} ｜ 分类统计 ${classification}`;
   }
 
   function finiteNumber(value) {

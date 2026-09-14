@@ -105,6 +105,28 @@ class MarketDataHealth:
                 ),
                 "timeout_seconds": security_master_health.timeout_seconds,
             }
+        model_industry_health = self._references.model_industry_health()
+        if model_industry_health is not None:
+            sources["baostock_industry"] = {
+                "enabled": True,
+                "planned_count": model_industry_health.planned_count,
+                "success_count": model_industry_health.success_count,
+                "error_count": model_industry_health.error_count,
+                "timeout_count": model_industry_health.timeout_count,
+                "snapshot_rows": max(
+                    model_industry_health.snapshot_rows,
+                    self._references.model_industry_reference_rows(),
+                ),
+                "invalid_rows": model_industry_health.invalid_rows,
+                "last_latency_ms": round(model_industry_health.last_latency_ms, 2),
+                "last_error_code": model_industry_health.last_error,
+                "data_age_seconds": (
+                    max(0.0, (measured_at - model_industry_health.last_source_time).total_seconds())
+                    if model_industry_health.last_source_time is not None
+                    else None
+                ),
+                "timeout_seconds": model_industry_health.timeout_seconds,
+            }
         gateway_health["sources"] = sources
         market_quotes = quote_status.market_features
         candidate_quotes = quote_status.active_candidate_quotes

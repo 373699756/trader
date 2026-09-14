@@ -302,6 +302,19 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
             "tushare_required": False,
         },
         "sources": {
+            "baostock_industry": {
+                "data_age_seconds": 45.0,
+                "enabled": True,
+                "error_count": 1,
+                "invalid_rows": 331,
+                "last_error_code": "TimeoutError",
+                "last_latency_ms": 120000.0,
+                "planned_count": 2,
+                "snapshot_rows": 5219,
+                "success_count": 1,
+                "timeout_count": 1,
+                "timeout_seconds": 120.0,
+            },
             "exchange": {
                 "data_age_seconds": 30.0,
                 "enabled": True,
@@ -512,6 +525,21 @@ def _app():
                 },
                 "measured_at": NOW.isoformat(),
                 "sources": {
+                    "baostock_industry": {
+                        "enabled": True,
+                        "planned_count": 2,
+                        "success_count": 1,
+                        "error_count": 1,
+                        "timeout_count": 1,
+                        "last_latency_ms": 120000.0,
+                        "data_age_seconds": 45.0,
+                        "snapshot_rows": 5219,
+                        "invalid_rows": 331,
+                        "last_error_code": "TimeoutError",
+                        "timeout_seconds": 120.0,
+                        "raw_rows": ["must-not-leak"],
+                        "last_error": "must-not-leak",
+                    },
                     "exchange": {
                         "enabled": True,
                         "planned_count": 2,

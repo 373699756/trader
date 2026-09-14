@@ -61,6 +61,7 @@ from trader.infra.market_data.normalization.columnar import NormalizedMarketChan
 from trader.infra.market_data.normalization.features import FeatureBuilder
 from trader.infra.market_data.providers import tushare_records as tushare_records_module
 from trader.infra.market_data.providers.akshare import AkshareResearchClient
+from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryClient, BaoStockIndustryRow
 from trader.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.infra.market_data.providers.exchange_security_master import ExchangeSecurityMasterClient
 from trader.infra.market_data.providers.sina import SinaClient
@@ -175,6 +176,7 @@ def _service(
         runner,
         kwargs.pop("tushare_client", None),
         security_master_client=kwargs.pop("exchange_security_master_client", None),
+        model_industry_client=kwargs.pop("model_industry_client", None),
         data_plane=data_plane,
         monotonic=monotonic,
     )
@@ -432,6 +434,7 @@ def _tushare_health(
 class StaticGateway:
     def __init__(self, quotes) -> None:
         self._quotes = quotes
+        self._references = {}
 
     def fetch_candidates(self, _codes, **_kwargs):
         return self._quotes
@@ -443,9 +446,12 @@ class StaticGateway:
         requested = set(codes)
         return tuple(quote for quote in self._quotes if quote.code in requested)
 
-    @staticmethod
-    def reference_observations(_codes):
-        return ()
+    def update_reference_observations(self, observations):
+        for observation in observations:
+            self._references[observation.subject_key] = observation
+
+    def reference_observations(self, codes):
+        return tuple(self._references[code] for code in codes if code in self._references)
 
     @staticmethod
     def health():

@@ -208,6 +208,17 @@ def _feature_identity(feature: FeatureSnapshot) -> tuple[object, ...]:
         feature.history_days,
         tuple(sorted(feature.missing_fields)),
         tuple(sorted(feature.missing_reasons.items())),
+        (
+            (
+                feature.model_industry.industry_id,
+                feature.model_industry.classification,
+                feature.model_industry.effective_date,
+                feature.model_industry.source,
+                feature.model_industry.data_version,
+            )
+            if feature.model_industry is not None
+            else None
+        ),
     )
 
 

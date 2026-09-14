@@ -24,8 +24,13 @@ from trader.application.ports.data_plane import (
 from trader.application.ports.json_values import JsonObject, JsonValue
 from trader.application.runtime.schedule import shanghai_now
 from trader.application.runtime.source_lanes import SourceRequestSupersededError
+from trader.domain.market.models import ModelIndustryReference
 from trader.infra.market_data.history.daily_history_cache import HistoryCache
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
+from trader.infra.market_data.providers.baostock_industry import (
+    BaoStockIndustryClient,
+    BaoStockIndustryHealthStatus,
+)
 from trader.infra.market_data.providers.exchange_security_master import (
     ExchangeSecurityMasterClient,
     ExchangeSecurityMasterHealthStatus,
@@ -34,6 +39,10 @@ from trader.infra.market_data.providers.tushare import TushareClient, TushareHea
 from trader.infra.market_data.service.gateway import MarketDataGateway
 from trader.infra.market_data.service.market_cache_identity import _normalize_codes, _source_batch_identity
 from trader.infra.market_data.service.market_task_runner import MarketTaskRunner
+from trader.infra.market_data.service.model_industry_reference_loader import (
+    ModelIndustryReferenceDependencies,
+    ModelIndustryReferenceLoader,
+)
 from trader.infra.market_data.service.observations import JsonScalar, SourceObservation
 from trader.infra.market_data.service.trading_calendar_state_codec import (
     calendar_observations_from_record as _calendar_observations_from_record,
@@ -104,6 +113,7 @@ class ReferenceLoader:
         client: TushareClient | None,
         *,
         security_master_client: ExchangeSecurityMasterClient | None = None,
+        model_industry_client: BaoStockIndustryClient | None = None,
         security_master_refresh_ttl_seconds: float = 86_400.0,
         security_master_retry_seconds: float = 300.0,
         data_plane: _ReferenceDataPlane | None = None,
@@ -129,6 +139,17 @@ class ReferenceLoader:
         self._trading_calendar_observations: dict[str, SourceObservation] = {}
         self._exchange_refresh_inflight = False
         self._exchange_next_refresh_at = 0.0
+        self._model_industries = ModelIndustryReferenceLoader(
+            ModelIndustryReferenceDependencies(
+                gateway,
+                runner,
+                model_industry_client,
+                self.schedule_security_master_persistence,
+            ),
+            refresh_ttl_seconds=self._security_master_refresh_ttl_seconds,
+            retry_seconds=self._security_master_retry_seconds,
+            monotonic=monotonic,
+        )
 
     def schedule_reference_data(
         self,
@@ -148,6 +169,7 @@ class ReferenceLoader:
             observed_at,
             force=force,
         )
+        self._model_industries.schedule(observed_at, force=force)
         lanes = self._runner.source_lanes
         if lanes is None:
             self._refresh_tushare_reference_data(
@@ -237,6 +259,7 @@ class ReferenceLoader:
 
     def schedule_security_master_refresh(self, observed_at: datetime) -> None:
         self._schedule_exchange_security_master((), observed_at, force=False)
+        self._model_industries.schedule(observed_at, force=False)
 
     def _refresh_exchange_security_master(self, observed_at: datetime) -> int:
         client = self._security_master_client
@@ -322,6 +345,7 @@ class ReferenceLoader:
             observed_at,
             force=force,
         )
+        self._model_industries.schedule(observed_at, force=force)
         self._history_cache.load(normalized, force=force)
 
     def _refresh_tushare_reference_data(
@@ -469,9 +493,9 @@ class ReferenceLoader:
                         for record in masters
                     }
                 )
-            self._gateway.update_reference_observations(
-                tuple(self._to_reference_observation(record) for record in masters)
-            )
+            restored_masters = tuple(self._to_reference_observation(record) for record in masters)
+            self._gateway.update_reference_observations(restored_masters)
+            self._model_industries.recover(restored_masters)
         cursors = self._data_plane.load_source_cursor_recent_records(cursor_names=(_TRADING_CALENDAR_CURSOR_NAME,))
         if cursors:
             calendar_record = cursors[-1]
@@ -857,15 +881,26 @@ class ReferenceLoader:
         with self._lock:
             return {code: dict(values) for code, values in self._reference_fields.items() if code in selected}
 
+    def model_industries(self, codes: Sequence[str]) -> Mapping[str, ModelIndustryReference]:
+        return self._model_industries.references(codes)
+
     def versions(self) -> Mapping[str, str]:
         with self._lock:
-            return dict(self._reference_versions)
+            versions = dict(self._reference_versions)
+        versions.update(self._model_industries.versions())
+        return versions
 
     def health(self) -> TushareHealthStatus | None:
         return self._client.health() if self._client is not None else None
 
     def security_master_health(self) -> ExchangeSecurityMasterHealthStatus | None:
         return self._security_master_client.health() if self._security_master_client is not None else None
+
+    def model_industry_health(self) -> BaoStockIndustryHealthStatus | None:
+        return self._model_industries.health()
+
+    def model_industry_reference_rows(self) -> int:
+        return self._model_industries.reference_rows()
 
     @staticmethod
     def _mark_reference_degraded(observation: SourceObservation, reason: str) -> SourceObservation:

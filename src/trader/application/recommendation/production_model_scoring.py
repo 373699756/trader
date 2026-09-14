@@ -29,6 +29,7 @@ from trader.application.ports.model_scoring import (
     ModelScoringDeadlineError,
     ScoringHeadRuntimeStatus,
 )
+from trader.application.runtime.schedule import shanghai_now
 from trader.domain.market.factors import round_score
 from trader.domain.market.feature_contracts import (
     TOMORROW_MODEL_FEATURE_MANIFEST,
@@ -198,7 +199,11 @@ class ProductionModelScoringService:
         return _HISTORY_REQUIRED_SESSIONS
 
     def is_input_eligible(self, feature: FeatureSnapshot) -> bool:
-        row = _raw_row(feature, required_return_positions=self._required_return_positions)
+        row = _raw_row(
+            feature,
+            required_return_positions=self._required_return_positions,
+            requires_industry=self._exposure_contract.requires_industry,
+        )
         return row is not None and (not self._exposure_contract.requires_industry or row.industry in self._industry_ids)
 
     def status(self) -> ScoringHeadRuntimeStatus:
@@ -450,7 +455,11 @@ def _eligible_rows(
     rows: list[_RawRow] = []
     missing: list[str] = []
     for feature in sorted(features, key=lambda item: item.quote.code):
-        row = _raw_row(feature, required_return_positions=required_return_positions)
+        row = _raw_row(
+            feature,
+            required_return_positions=required_return_positions,
+            requires_industry=exposure_contract.requires_industry,
+        )
         if row is None or (
             exposure_contract.requires_industry and (not row.industry or row.industry not in industry_ids)
         ):
@@ -521,6 +530,7 @@ def _raw_row(
     feature: FeatureSnapshot,
     *,
     required_return_positions: frozenset[int],
+    requires_industry: bool,
 ) -> _RawRow | None:
     board = board_for_snapshot(feature)
     if board not in {Board.MAIN, Board.CHINEXT, Board.STAR}:
@@ -538,6 +548,16 @@ def _raw_row(
     amihud = numeric[7]
     if feature.history_days < _HISTORY_REQUIRED_SESSIONS or amount <= 0.0 or amihud < 0.0:
         return None
+    model_industry = feature.model_industry
+    if model_industry is not None and model_industry.effective_date > shanghai_now(feature.observed_at).date():
+        model_industry = None
+    industry = (
+        model_industry.industry_id.strip()
+        if requires_industry and model_industry is not None
+        else ""
+        if requires_industry
+        else feature.quote.industry.strip()
+    )
     return _RawRow(
         code=feature.quote.code,
         board=board.value,
@@ -547,7 +567,7 @@ def _raw_row(
         momentum=(numeric[3], numeric[4], numeric[5]),
         amihud_20d=amihud,
         average_amount_20d=amount,
-        industry=feature.quote.industry.strip(),
+        industry=industry,
     )
 
 

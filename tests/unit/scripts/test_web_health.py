@@ -65,6 +65,7 @@ def _sample(
     root_degraded_reasons: tuple[str, ...] = (),
     predictor_batch_count: int = 1,
     population_count: int = 5500,
+    model_industry_source: tuple[int, int, int, str | None] = (5300, 0, 0, None),
 ) -> WebSample:
     quality = (
         {
@@ -168,6 +169,14 @@ def _sample(
             "history_warmup_inflight_age_seconds": 1.5 if warmup[3] else None,
             "history_warmup_batch_timeout_seconds": 20.0,
             "history_warmup_last_source": "tencent",
+            "sources": {
+                "baostock_industry": {
+                    "snapshot_rows": model_industry_source[0],
+                    "error_count": model_industry_source[1],
+                    "timeout_count": model_industry_source[2],
+                    "last_error_code": model_industry_source[3],
+                }
+            },
         },
         "scheduler": {"input_quality": {_STRATEGY: quality} if quality is not None else {}},
         "strategies": {
@@ -465,6 +474,48 @@ def test_model_input_gap_is_reported_at_the_first_broken_stage() -> None:
     finding = next(item for item in findings if item.code == "model_input_unavailable")
     assert finding.severity == "error"
     assert finding.evidence == {"strategy_history_eligible": 201, "model_input_eligible": 0}
+
+
+def test_model_input_gap_identifies_an_empty_current_industry_reference() -> None:
+    stalled = _funnel(
+        strategy_history_eligible=201,
+        model_input_eligible=0,
+        candidate_score_eligible=0,
+        candidate_limit_selected=0,
+        requested_candidates=0,
+        candidate_features=0,
+        candidate_quote_eligible=0,
+        security_master=0,
+        history=0,
+        filter_pass=0,
+        filter_reject=0,
+        full_scored=0,
+        review_eligible=0,
+        action_unavailable=0,
+    )
+    sample = _sample(
+        1,
+        funnel=stalled,
+        decision_status="not_ready",
+        quality_status="business_empty",
+        empty_reason=None,
+        evaluated_count=0,
+        highest_final_score=None,
+        primary_blocker="model_input_unavailable",
+        predictor_batch_count=0,
+        population_count=5291,
+        model_industry_source=(0, 1, 1, "TimeoutError"),
+    )
+
+    findings = analyze_samples((sample,), strategies=(_STRATEGY,), consecutive_zero_threshold=1)
+
+    finding = next(item for item in findings if item.code == "model_industry_reference_unavailable")
+    assert finding.evidence == {
+        "snapshot_rows": 0,
+        "error_count": 1,
+        "timeout_count": 1,
+        "last_error_code": "TimeoutError",
+    }
 
 
 def test_research_observer_failure_is_reported_from_root_degradation() -> None:

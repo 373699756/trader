@@ -234,6 +234,7 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
             findings.extend(_market_population_findings(sample, strategy, quality))
             findings.extend(_market_liquidity_history_findings(sample, strategy, quality))
             findings.extend(_model_input_findings(sample, strategy, quality))
+            findings.extend(_model_industry_reference_findings(sample, strategy, quality))
             findings.extend(_scoring_output_findings(sample, strategy, quality, decision))
     return findings
 
@@ -318,6 +319,40 @@ def _model_input_findings(
             {
                 "strategy_history_eligible": history_eligible,
                 "model_input_eligible": model_eligible,
+            },
+        )
+    ]
+
+
+def _model_industry_reference_findings(
+    sample: WebSample,
+    strategy: str,
+    quality: InputQualitySnapshot,
+) -> list[Finding]:
+    status = sample.status
+    if status is None:
+        return []
+    source = status.model_industry_source
+    history_eligible = quality.funnel.strategy_history_eligible or 0
+    if (
+        quality.primary_blocker != "model_input_unavailable"
+        or history_eligible <= 0
+        or quality.funnel.model_input_eligible != 0
+        or source.snapshot_rows != 0
+    ):
+        return []
+    return [
+        _finding(
+            "error",
+            "model_industry_reference_unavailable",
+            sample,
+            strategy,
+            "the current CSRC industry reference is empty, so industry-aware model inputs cannot be built",
+            {
+                "snapshot_rows": source.snapshot_rows,
+                "error_count": source.error_count,
+                "timeout_count": source.timeout_count,
+                "last_error_code": source.last_error_code,
             },
         )
     ]

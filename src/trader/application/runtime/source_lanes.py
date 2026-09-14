@@ -23,6 +23,7 @@ _SOURCE_NAMES = (
     "history",
     "reference",
     "exchange",
+    "baostock_reference",
     "sina",
     "tencent",
     "tencent_topk",

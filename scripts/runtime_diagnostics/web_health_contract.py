@@ -136,6 +136,14 @@ class CandidateQuoteAgeSnapshot:
 
 
 @dataclass(frozen=True)
+class ModelIndustrySourceSnapshot:
+    snapshot_rows: int | None
+    error_count: int | None
+    timeout_count: int | None
+    last_error_code: str | None
+
+
+@dataclass(frozen=True)
 class ScoringHeadSnapshot:
     profile_id: str | None
     active: bool | None
@@ -208,6 +216,7 @@ class StatusSnapshot:
     candidate_quote_entries: int | None
     candidate_quote_source: str | None
     candidate_quote_age: CandidateQuoteAgeSnapshot
+    model_industry_source: ModelIndustrySourceSnapshot
     history_warmup: HistoryWarmupSnapshot
     company_research: CompanyResearchSnapshot
     scoring_profile: ScoringProfileSnapshot
@@ -261,6 +270,7 @@ def _parse_status(payload: Mapping[str, object]) -> StatusSnapshot:
     company_research = _mapping(payload.get("company_research"))
     scoring_profile = _mapping(payload.get("scoring_profile"))
     candidate_quote_age = _mapping(market.get("candidate_quote_age"))
+    model_industry_source = _mapping(_mapping(market.get("sources")).get("baostock_industry"))
     strategies = {
         strategy: _parse_projection(value, include_items=False)
         for strategy, raw in _mapping(payload.get("strategies")).items()
@@ -288,6 +298,12 @@ def _parse_status(payload: Mapping[str, object]) -> StatusSnapshot:
             p95_seconds=_nonnegative_number(candidate_quote_age.get("p95_seconds")),
             maximum_seconds=_nonnegative_number(candidate_quote_age.get("maximum_seconds")),
             sample_count=_nonnegative_int(candidate_quote_age.get("sample_count")),
+        ),
+        model_industry_source=ModelIndustrySourceSnapshot(
+            snapshot_rows=_nonnegative_int(model_industry_source.get("snapshot_rows")),
+            error_count=_nonnegative_int(model_industry_source.get("error_count")),
+            timeout_count=_nonnegative_int(model_industry_source.get("timeout_count")),
+            last_error_code=_text(model_industry_source.get("last_error_code")),
         ),
         history_warmup=HistoryWarmupSnapshot(
             universe_rows=_nonnegative_int(market.get("history_universe_rows")),

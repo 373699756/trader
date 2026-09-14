@@ -1013,6 +1013,17 @@ def _feature_identity(feature: FeatureSnapshot) -> tuple[object, ...]:
         feature.competition_group_version,
         feature.parameter_status,
         feature.selection_skip_reason,
+        (
+            (
+                feature.model_industry.industry_id,
+                feature.model_industry.classification,
+                feature.model_industry.effective_date.isoformat(),
+                feature.model_industry.source,
+                feature.model_industry.data_version,
+            )
+            if feature.model_industry is not None
+            else None
+        ),
         feature.merge_epoch,
     )
 

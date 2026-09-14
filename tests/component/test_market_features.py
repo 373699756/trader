@@ -8,6 +8,8 @@ from tests.component.market_data_test_support import (
     NEWS_POLICY,
     NOW,
     TAIL_POLICY,
+    BaoStockIndustryClient,
+    BaoStockIndustryRow,
     ConfigurationError,
     CountingHistoryClient,
     DailyBar,
@@ -16,6 +18,7 @@ from tests.component.market_data_test_support import (
     Path,
     PriceAdjustment,
     StaticGateway,
+    StaticHistoryClient,
     _history_bars,
     _quote,
     _service,
@@ -26,6 +29,30 @@ from tests.component.market_data_test_support import (
     pytest,
     replace,
 )
+
+
+def test_current_model_industry_enriches_features_without_replacing_display_sector() -> None:
+    client = BaoStockIndustryClient(
+        fetch_rows=lambda _date, _timeout: (
+            BaoStockIndustryRow("sh.600001", "J66货币金融服务", "证监会行业分类", "2026-07-10"),
+        ),
+        timeout_seconds=1.0,
+        minimum_rows=1,
+    )
+    service = _service(
+        StaticGateway((_quote(industry="银行板块"),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        model_industry_client=client,
+    )
+
+    service.schedule_reference_data((), NOW, security_master_codes=("600001",))
+    feature = service.fetch_market_features(NOW, force=True)[0]
+
+    assert feature.quote.industry == "银行板块"
+    assert feature.model_industry is not None
+    assert feature.model_industry.industry_id == "J66货币金融服务"
+    assert service.health()["sources"]["baostock_industry"]["snapshot_rows"] == 1
 
 
 def test_feature_builder_does_not_compute_limit_proximity_when_limit_is_inapplicable() -> None:

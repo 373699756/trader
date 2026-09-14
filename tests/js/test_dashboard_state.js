@@ -397,7 +397,7 @@ assert.strictEqual(
     selected_executable: 0,
     selected_observe: 0,
   }, 5291),
-  "全市场 5291 → 发行资格 5291 → 动态过滤 49 → 策略历史 48 → 模型输入 0 → 候选分合格 0 → 板内限额 0 → 行情请求 0 → 候选特征 0 → 行情合格 0 → 证券资料 0 → 候选历史 0 → 过滤通过 0 → 过滤观察 0 → 过滤拒绝 5243 → 完整评分 0 → 可复核 0 → 达观察线 0 → 达正式线 0 → 可执行 0 → 动作观察 0 → 动作不可用 0 → 正式入选 0 → 观察入选 0",
+  "主线 全市场 5291 → 发行资格 5291 → 动态过滤 49 → 策略历史 48 → 模型输入 0 → 候选分合格 0 → 板内限额 0 → 行情请求 0 → 候选特征 0 → 行情合格 0 → 证券资料 0 → 候选历史 0 → 完整评分 0 → 达正式线 0 → 可执行 0 → 正式入选 0 ｜ 观察支线 完整评分 0 → 达观察线 0 → 动作观察 0 → 观察入选 0 ｜ 分类统计 通过 0 · 仅观察 0 · 拒绝 5243 · 可复核 0 · 动作不可用 0",
 );
 const summaryElements = summaryFixture();
 state.renderSummary(
@@ -583,6 +583,10 @@ assert.strictEqual(
 );
 assert.strictEqual(summaryElements.funnelStatus.textContent, "360 → 采集中 → 0");
 assert.strictEqual(summaryElements.funnelMeta.textContent, "过滤 待计算 · 观察草稿 正在生成 · 最高 —");
+assert.strictEqual(
+  summaryElements.funnelStages.textContent,
+  "主线 全市场 — → 发行资格 — → 动态过滤 — → 策略历史 — → 模型输入 — → 候选分合格 — → 板内限额 — → 行情请求 360 → 候选特征 360 → 行情合格 — → 证券资料 — → 候选历史 — → 完整评分 — → 达正式线 — → 可执行 — → 正式入选 — ｜ 观察支线 完整评分 — → 达观察线 — → 动作观察 — → 观察入选 — ｜ 分类统计 待计算",
+);
 assert.strictEqual(summaryElements.quoteSource.textContent, "腾讯行情");
 assert.strictEqual(summaryElements.publicationStatus.textContent, "采集中");
 assert.strictEqual(summaryElements.publicationMeta.textContent, "等待本轮正式结果");

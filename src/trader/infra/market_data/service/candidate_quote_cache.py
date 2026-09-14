@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
+from trader.application.runtime.schedule import shanghai_now
 from trader.domain.market.models import (
     CrossSectionStats,
     FeatureSnapshot,
@@ -132,7 +133,7 @@ class QuoteCache:
             replace(feature, values={**feature.values, **tushare_fields.get(feature.quote.code, {})})
             for feature in features
         )
-        return _apply_action_restrictions(enriched, action_restrictions or {})
+        return _apply_action_restrictions(self._with_model_industries(enriched), action_restrictions or {})
 
     def build_market_features(
         self,
@@ -143,11 +144,13 @@ class QuoteCache:
         action_restrictions: Mapping[str, set[str]],
     ) -> tuple[FeatureSnapshot, ...]:
         return _apply_action_restrictions(
-            self._feature_builder.build(
-                quotes,
-                histories,
-                observed_at,
-                history_summaries=self._history.summaries(histories, observed_at),
+            self._with_model_industries(
+                self._feature_builder.build(
+                    quotes,
+                    histories,
+                    observed_at,
+                    history_summaries=self._history.summaries(histories, observed_at),
+                )
             ),
             action_restrictions,
         )
@@ -155,8 +158,30 @@ class QuoteCache:
     def cached_market_features(self, *, force: bool) -> tuple[FeatureSnapshot, ...] | None:
         with self._lock:
             if not force and self._market_features and self._market_expires_at > self._monotonic():
-                return self._market_features
+                cached = self._market_features
+            else:
+                cached = None
+        if cached is not None:
+            return self._with_model_industries(cached)
         return None
+
+    def _with_model_industries(
+        self,
+        features: Sequence[FeatureSnapshot],
+    ) -> tuple[FeatureSnapshot, ...]:
+        references = self._references.model_industries(tuple(feature.quote.code for feature in features))
+        return tuple(
+            replace(
+                feature,
+                model_industry=(
+                    reference
+                    if (reference := references.get(feature.quote.code)) is not None
+                    and reference.effective_date <= shanghai_now(feature.observed_at).date()
+                    else None
+                ),
+            )
+            for feature in features
+        )
 
     def publish_market_features(self, features: Sequence[FeatureSnapshot]) -> tuple[FeatureSnapshot, ...]:
         published = tuple(features)

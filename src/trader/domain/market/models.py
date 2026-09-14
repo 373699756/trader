@@ -22,6 +22,26 @@ class Board(str, Enum):
 
 
 @dataclass(frozen=True)
+class ModelIndustryReference:
+    """Point-in-time industry identity used only by industry-aware scoring heads."""
+
+    industry_id: str
+    classification: str
+    effective_date: date
+    source: str
+    data_version: str
+
+    def __post_init__(self) -> None:
+        if (
+            not self.industry_id.strip()
+            or self.classification != "证监会行业分类"
+            or not self.source.strip()
+            or not self.data_version.strip()
+        ):
+            raise ValueError("model industry reference identity is invalid")
+
+
+@dataclass(frozen=True)
 class MarketQuote:
     code: str
     name: str
@@ -198,6 +218,7 @@ class FeatureSnapshot:
     liquidity_bucket: str = ""
     parameter_status: str = "current"
     selection_skip_reason: str = ""
+    model_industry: ModelIndustryReference | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "values", MappingProxyType(dict(self.values)))

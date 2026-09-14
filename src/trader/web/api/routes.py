@@ -309,7 +309,9 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
             "process_remaining_calls_today",
             "local_rate_limit_count",
             "snapshot_rows",
+            "invalid_rows",
             "listing_date_rows",
+            "last_error_code",
             "timeout_seconds",
         )
         for name, value in sorted(sources.items(), key=lambda item: str(item[0]))[:8]:

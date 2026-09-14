@@ -64,6 +64,7 @@ from trader.infra.market_data.history.history_seed import (
 )
 from trader.infra.market_data.normalization.features import FeatureBuilder
 from trader.infra.market_data.providers.akshare import AkshareResearchClient
+from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryClient
 from trader.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.infra.market_data.providers.exchange_security_master import ExchangeSecurityMasterClient
 from trader.infra.market_data.providers.sina import SinaClient
@@ -549,6 +550,7 @@ def _build_market_data(
             timeout_seconds=max(15.0, settings.market_data.eastmoney_timeout_seconds),
             wall_clock=now,
         ),
+        model_industry_client=BaoStockIndustryClient(),
         security_master_refresh_ttl_seconds=_fixed_cache_ttl(settings, "security_master_calendar"),
         security_master_retry_seconds=(
             settings.market_data.cache_policy.datasets["security_master_calendar"].negative_ttl_seconds

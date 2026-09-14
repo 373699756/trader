@@ -19,7 +19,7 @@ from trader.application.recommendation.production_model_scoring import (
     ProductionModelScoringService,
     SharedModelFeatureCache,
 )
-from trader.domain.market.models import Board, FeatureSnapshot
+from trader.domain.market.models import Board, FeatureSnapshot, ModelIndustryReference
 from trader.domain.recommendation.model_scoring import LEGACY_EXPOSURE_CONTRACT, TRAINED_HEAD_EXPOSURE_CONTRACT
 from trader.domain.recommendation.models import Strategy
 from trader.infra.scoring.profile_factory import load_scoring_profile
@@ -315,7 +315,18 @@ def test_current_shared_training_bundles_score_all_default_v2_heads(application_
             offset=index / 100.0,
             amihud=float(index + 1),
         )
-        features.append(replace(feature, quote=replace(feature.quote, industry=industry)))
+        features.append(
+            replace(
+                feature,
+                model_industry=ModelIndustryReference(
+                    industry_id=industry,
+                    classification="证监会行业分类",
+                    effective_date=NOW.date(),
+                    source="baostock",
+                    data_version="fixture-industry",
+                ),
+            )
+        )
     shared = SharedModelFeatureCache()
 
     batches = {
@@ -329,6 +340,54 @@ def test_current_shared_training_bundles_score_all_default_v2_heads(application_
         assert set(batch.diagnostics) == {"600000", "600001", "600002"}
         assert batch.missing_codes == ()
         assert all(math.isfinite(item.predicted_net_excess_pct) for item in batch.diagnostics.values())
+
+
+def test_industry_model_uses_csrc_reference_without_overwriting_display_industry(
+    application_feature_factory,
+) -> None:
+    class _IndustryPredictor(_Predictor):
+        exposure_contract = TRAINED_HEAD_EXPOSURE_CONTRACT
+        industry_ids = ("J66货币金融服务",)
+
+        def __init__(self) -> None:
+            self.inputs: tuple[ModelInput, ...] = ()
+
+        def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
+            self.inputs = inputs
+            return super().predict(inputs)
+
+    predictor = _IndustryPredictor()
+    feature = _model_feature(
+        application_feature_factory("600001", NOW, industry="银行"),
+        offset=0.01,
+        amihud=1.0,
+    )
+    referenced = replace(
+        feature,
+        model_industry=ModelIndustryReference(
+            industry_id="J66货币金融服务",
+            classification="证监会行业分类",
+            effective_date=NOW.date(),
+            source="baostock",
+            data_version="fixture-industry",
+        ),
+    )
+    service = _service(predictor)
+
+    assert service.is_input_eligible(feature) is False
+    assert service.is_input_eligible(referenced) is True
+    batch = service.score((referenced,))
+
+    assert referenced.quote.industry == "银行"
+    assert predictor.inputs[0].industry == "J66货币金融服务"
+    assert set(batch.diagnostics) == {"600001"}
+
+    assert referenced.model_industry is not None
+    future_reference = replace(
+        referenced,
+        model_industry=replace(referenced.model_industry, effective_date=NOW.date().replace(year=2027)),
+    )
+    assert service.is_input_eligible(future_reference) is False
 
 
 def test_model_service_owns_its_history_and_profile_field_eligibility(application_feature_factory) -> None:
@@ -386,7 +445,7 @@ def test_v3_routes_each_input_to_its_current_industry_model(application_feature_
     class _V3Predictor(_Predictor):
         profile_id = "v3"
         model_id = "industry_ensemble_training"
-        industry_ids = ("银行",)
+        industry_ids = ("J66货币金融服务",)
         exposure_contract = TRAINED_HEAD_EXPOSURE_CONTRACT
 
         def __init__(self) -> None:
@@ -398,13 +457,23 @@ def test_v3_routes_each_input_to_its_current_industry_model(application_feature_
 
     predictor = _V3Predictor()
     supported = _model_feature(application_feature_factory("600001", NOW), offset=0.01, amihud=1.0)
-    supported = replace(supported, quote=replace(supported.quote, industry="银行"))
+    supported = replace(
+        supported,
+        quote=replace(supported.quote, industry="银行"),
+        model_industry=ModelIndustryReference(
+            "J66货币金融服务",
+            "证监会行业分类",
+            NOW.date(),
+            "baostock",
+            "fixture-industry",
+        ),
+    )
     unsupported = _model_feature(application_feature_factory("600002", NOW), offset=0.02, amihud=2.0)
     unsupported = replace(unsupported, quote=replace(unsupported.quote, industry="未知行业"))
 
     batch = _service(predictor).score((supported, unsupported))
 
-    assert predictor.industries == ("银行",)
+    assert predictor.industries == ("J66货币金融服务",)
     assert set(batch.diagnostics) == {"600001"}
     assert batch.missing_codes == ("600002",)
 
@@ -412,12 +481,26 @@ def test_v3_routes_each_input_to_its_current_industry_model(application_feature_
 def test_v3_rejects_blank_industry_before_cross_sectional_prediction(application_feature_factory) -> None:
     class _V3Predictor(_Predictor):
         profile_id = "v3"
-        industry_ids = ("银行",)
+        industry_ids = ("J66货币金融服务",)
         exposure_contract = TRAINED_HEAD_EXPOSURE_CONTRACT
 
     complete = _model_feature(application_feature_factory("600001", NOW), offset=0.01, amihud=1.0)
-    complete = replace(complete, quote=replace(complete.quote, industry="银行"))
-    missing_industry = replace(complete, quote=replace(complete.quote, code="600002", industry=""))
+    complete = replace(
+        complete,
+        quote=replace(complete.quote, industry="银行"),
+        model_industry=ModelIndustryReference(
+            "J66货币金融服务",
+            "证监会行业分类",
+            NOW.date(),
+            "baostock",
+            "fixture-industry",
+        ),
+    )
+    missing_industry = replace(
+        complete,
+        quote=replace(complete.quote, code="600002", industry=""),
+        model_industry=None,
+    )
 
     service = _service(_V3Predictor())
     batch = service.score((complete, missing_industry))
