@@ -21,7 +21,7 @@
 - `create_app()` 必须无线程、无网络、无数据库和无文件写入副作用。
 - 业务间只传递有真实类型的不可变对象。内部状态不得用 `dict`、`Any`、反射或空对象 fallback 代替；JSON 只存在于配置/供应商解析、持久化 codec、schema 事件和 HTTP/可观测性投影边界。
 - 输入边界先解析为类型对象，输出边界由 adapter 按公开字段白名单投影。内部对象不得用 `as_dict()`、`to_json()` 或双表示自行决定公开 schema。
-- 新增或迁移的项目符号不得使用 `Store`、`Stored`、`*Store`、`Repository`、`Archive`、`Registry` 等泛称；使用能表达实际职责的名称，或按真实语义使用 `Index`、`Cache`、`Snapshot`。
+- 新增或迁移的项目符号不得使用 `store`、`stored` 或 `*Store` 这类无法表达所有权与行为的泛称；按实际职责选择 `Repository`、`Archive`、`Registry`、`Index`、`Cache`、`Snapshot` 或更具体的业务名称。
 - 项目版本身份只允许评分档位 V2/V3。不得新增其它 `vN` 项目版本命名；供应商模型名、Python/包版本、日期和随机种子不属于项目版本身份。
 - 一个职责只能有一个活动所有者。禁止转发模块、兼容导出、双实现、双读、双写、重复状态源和隐藏 fallback。
 - 活动源码单文件最多 1200 行；按职责和耦合拆分，禁止为满足行数制造含义模糊的聚合模块。

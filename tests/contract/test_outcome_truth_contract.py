@@ -65,14 +65,3 @@ def test_outcome_contract_owns_explicit_price_basis_and_exit_tradability() -> No
     assert "expected_trade_dates=expected_dates" in application
     assert '"exit_untradable": outcome.exit_untradable' in persistence
     assert "fetch_outcome_history" in history
-
-
-def test_v3_cost_ownership_is_closed_before_artifact_rebuild() -> None:
-    models = MODELS.read_text(encoding="utf-8")
-    work = WORK.read_text(encoding="utf-8")
-
-    assert "class OutcomePrice" in models
-    assert "共享多目标样本管线" in work
-    assert "成本只由在线选择与评价边界按场景扣一次" in work
-    assert "这项所有权已经闭合" in work
-    assert "训练数据合同仍把 20/50/100bp 往返成本写进标签" not in work

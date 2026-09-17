@@ -160,7 +160,7 @@ def test_build_system_selects_an_explicit_scoring_profile_without_rewriting_conf
     assert status["profile_id"] == "v2"
     assert set(status["heads"]) == {"today", "tomorrow", "d25"}
     assert all(head["active"] is True for head in status["heads"].values())
-    assert status["heads"]["tomorrow"]["model_id"] == "industry_ridge_lightgbm"
+    assert status["heads"]["tomorrow"]["model_id"] == "v2_industry_ridge_lightgbm"
     assert status["heads"]["tomorrow"]["activation_basis"] == "manual_user_override"
     assert strategy_path.read_bytes() == original
 

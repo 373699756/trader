@@ -96,6 +96,7 @@ def test_archive_routes_single_day_code_window_and_cross_month_training_windows(
         tuple(archive.iter_training_windows(replace(snapshot, partitions=snapshot.partitions[:-1]), dates))
 
 
+@pytest.mark.slow
 def test_archive_reads_2000_sessions_without_directory_scan_or_unbounded_windows(tmp_path: Path) -> None:
     root = tmp_path / "history"
     dates = tuple(date(2020, 1, 1) + timedelta(days=offset) for offset in range(2000))

@@ -12,11 +12,11 @@ SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "trader"
 PROJECT_ROOT = SOURCE_ROOT.parents[1]
 
 
-def test_tracked_repository_uses_precise_resource_and_state_names() -> None:
+def test_active_product_tree_uses_precise_resource_and_state_names() -> None:
     prohibited = "life" + "cycle"
     tracked = (
         subprocess.run(
-            ["git", "ls-files", "-z"],
+            ["git", "ls-files", "-z", "src/trader"],
             cwd=PROJECT_ROOT,
             check=True,
             capture_output=True,

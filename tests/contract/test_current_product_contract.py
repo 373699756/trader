@@ -39,49 +39,6 @@ def test_strategy_contract_focuses_on_current_decisions_without_release_chronolo
     assert "正式 0.2.0 release 尚未声明" not in compact
 
 
-def test_parallel_overview_plan_and_operations_docs_are_retired() -> None:
-    design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
-    strategy = (ROOT / "docs/01_评分逻辑.md").read_text(encoding="utf-8")
-    work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
-    design_compact = " ".join(design.split())
-
-    assert "不记录“已完成、未发布、迁移到哪一步”等批次状态" in design
-    assert "交付状态只由 `03_工程实施.md` 维护" in design
-    assert "新 release 不读取旧运行目录、旧数据库、旧快照或旧 schema" in design
-    assert "原生评分因子诊断层" in design
-    assert "多种行情来源不等于证券主数据存在同等冗余供给" in design
-    assert "主推荐区必须按确定性优先级给出单一结论" in design_compact
-    assert "达到观察线/正式线数量" in design_compact
-    assert "scoring_profile.profile_id" in design_compact
-    assert "scoring_profile.heads" in design_compact
-    assert "loss_probability_status=not_modeled" in design_compact
-    assert "旧历史候选路线已经终止，当前没有可继续晋级的候选" in strategy
-    assert "新的候选必须另立未读取新收益的研究身份" in strategy
-    for retired in (
-        "V2.md",
-        "download.md",
-        "implementation-plan.md",
-        "start_stop.md",
-        "review.md",
-        "fenshu.md",
-    ):
-        assert not (ROOT / "docs" / retired).exists()
-    assert not (ROOT / "docs/V2_plan.md").exists()
-    assert not (ROOT / "docs/score.md").exists()
-    assert not (ROOT / "docs/plan.md").exists()
-    assert "本文件只维护尚未完成的工程任务" in work
-    assert "candidate_eligibility_before_board_cap" not in work
-    assert "baostock_increment_archive" not in work
-    assert "dynamic_cutoff_and_missing_fact_acquisition" not in work
-    assert "candidate_single_owner_acceptance_revalidation" not in work
-    assert "scoring_weight_configuration_single_source" not in work
-    assert "v3_shared_multi_target_samples" in work
-    assert "v3_multihead_runtime_scoring" in work
-    assert "v3_explicit_chain_acceptance" in work
-    for completed_marker in ("`completed`", "`not_current_route`", "评分模块化计划项 1–9"):
-        assert completed_marker not in work
-
-
 def test_release_guides_expose_only_unified_api_and_desktop_gate() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     operations = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")

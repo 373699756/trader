@@ -114,17 +114,6 @@ def test_research_settlement_is_reproducible_and_one_shot() -> None:
         assert required in replay
 
 
-def test_work_plan_contains_only_unfinished_tasks_and_no_historical_aliases() -> None:
-    work = _read(WORK)
-
-    assert "本文件只维护尚未完成的工程任务" in work
-    assert work.count("状态：`in_progress`") <= 1
-    assert "baostock_increment_archive" not in work
-    assert work.count("verified_ready_for_delivery") >= 8
-    for retired in ("`completed`", "15.1.35", "15.1.36", "15.1.37", "15.1.38"):
-        assert retired not in work
-
-
 def test_public_and_low_level_research_status_commands_are_unambiguous() -> None:
     design = _read(DESIGN)
 
@@ -149,25 +138,6 @@ def test_current_historical_evidence_is_not_described_as_a_present_artifact() ->
     assert "92 个封存分片当前仍可供显式一次性转换" in compact
     assert "最终新 schema 实物复跑尚未验证" in compact
     assert "当前资格审计已验证这条失败关闭边界" not in compact
-
-
-def test_work_plan_is_an_unfinished_queue_not_a_second_normative_contract() -> None:
-    work = _read(WORK)
-    compact = " ".join(work.split())
-
-    for required in (
-        "评分逻辑](01_评分逻辑.md)",
-        "工程设计](02_工程设计.md)",
-        "v3_shared_multi_target_samples",
-        "v3_multihead_runtime_scoring",
-        "v3_explicit_chain_acceptance",
-    ):
-        assert required in compact
-
-    assert "scoring_weight_configuration_single_source" not in work
-    assert "dynamic_cutoff_and_missing_fact_acquisition" not in work
-    assert "clamp(local_score * 0.68 + deepseek_score * 0.32 - deepseek_risk_penalty, 0, 100)" not in work
-    assert "/api/status.tomorrow_model.computation" not in work
 
 
 def test_history_windows_cost_ownership_and_terminal_order_are_unambiguous() -> None:

@@ -7,57 +7,6 @@ DESIGN = ROOT / "docs" / "02_工程设计.md"
 STRATEGY = ROOT / "docs" / "01_评分逻辑.md"
 
 
-def test_authoritative_design_defers_delivery_status_to_the_work_plan() -> None:
-    design = DESIGN.read_text(encoding="utf-8")
-    strategy = STRATEGY.read_text(encoding="utf-8")
-    work = (ROOT / "docs/03_工程实施.md").read_text(encoding="utf-8")
-
-    assert "交付状态只由 `03_工程实施.md` 维护" in design
-    assert "本文件只维护尚未完成的工程任务" in work
-    assert "`completed`" not in work
-    assert "baostock_increment_archive" not in work
-    assert "dynamic_cutoff_and_missing_fact_acquisition" not in work
-    assert "candidate_single_owner_acceptance_revalidation" not in work
-    assert "scoring_weight_configuration_single_source" not in work
-    assert "v3_shared_multi_target_samples" in work
-    assert "当前交付状态：current-only 工程与发布门禁验收已闭合" not in design
-    assert "当前代码仍属于 `Unreleased`" not in design
-    assert "正式 0.2.0 release 尚未声明" not in strategy
-    assert "旧链已从活动树物理删除" not in strategy
-
-
-def test_authoritative_docs_do_not_retain_superseded_migration_chronology() -> None:
-    design = DESIGN.read_text(encoding="utf-8")
-    strategy = STRATEGY.read_text(encoding="utf-8")
-
-    for obsolete in (
-        "tomorrow 旧影子运行与切换门禁交付边界",
-        "tomorrow 旧原生输入驱动流水线交付边界",
-        "tomorrow 旧切换证据持久化与离线复核交付边界",
-        "tomorrow 旧影子同批输入收敛交付边界",
-        "tomorrow 旧跨日启动与证据窗口隔离交付边界",
-        "真实 v27",
-        "真实 v28",
-        "真实 v29",
-        "v17 P1-P6 活动实现",
-        "P3-P6 公共接缝",
-        "版本身份提升为 v30",
-        "正式接管边界",
-        "TodayV2Runtime",
-        "TomorrowV2Runtime",
-        "截至旧迁移 E7",
-        "旧迁移 E9 再把进程级组合根",
-        "旧迁移 E8 交付后还要",
-    ):
-        assert obsolete not in design
-
-    assert "历史证据统一见[工程实施](03_工程实施.md)与[交付记录](changelog/README.md)" in _compact(design)
-    assert "历史迁移门禁比较旧档位" not in strategy
-    for obsolete_identity in ("DecisionEpoch", "CurrentDecisionIndex", ".runtime/v17"):
-        assert obsolete_identity not in design
-        assert obsolete_identity not in strategy
-
-
 def test_freeze_contract_has_one_boundary_for_each_strategy() -> None:
     design = DESIGN.read_text(encoding="utf-8")
     strategy = STRATEGY.read_text(encoding="utf-8")

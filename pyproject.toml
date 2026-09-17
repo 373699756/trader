@@ -91,3 +91,8 @@ fail_under = 50
 precision = 2
 show_missing = true
 skip_empty = true
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: resource-intensive archive or performance stress test (excluded from make test)",
+]

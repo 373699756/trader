@@ -3,7 +3,7 @@
 Use the unified read-only entrypoint when one run should scan multiple boundaries:
 
 ```bash
-.venv/bin/python scripts/diagnose_runtime.py --profile live --output -
+.venv/bin/python3 scripts/diagnose_runtime.py --profile live --output -
 ```
 
 Profiles:
@@ -20,7 +20,7 @@ The combined report is `trader-runtime-diagnostics`. It contains per-check statu
 Useful options:
 
 ```bash
-.venv/bin/python scripts/diagnose_runtime.py \
+.venv/bin/python3 scripts/diagnose_runtime.py \
   --profile live \
   --base-url http://127.0.0.1:5000 \
   --runtime-config config/runtime.json \

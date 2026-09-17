@@ -47,7 +47,7 @@ coverage appeared as dynamic-filter rejection.
 - Component history tests updated for full-population preparation (full suite
   and release gates remain to be run after the batch is complete).
 
-## Residual risks
+## Residual Risks
 
 - Existing runtime suppliers can still fail or remain stale; the scheduler's
   retry and provider diagnostics must be exercised in the final live-process

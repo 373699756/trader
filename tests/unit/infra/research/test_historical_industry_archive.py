@@ -4,6 +4,8 @@ from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from trader.application.research.history_sync import HistorySupplierContext, HistorySyncConfiguration
 from trader.domain.research.baostock_daily import (
     BaoStockCalendar,
@@ -83,6 +85,7 @@ class _Supplier:
         )
 
 
+@pytest.mark.slow
 def test_monthly_source_audit_covers_three_boards_and_keeps_missing_query_time_fail_closed(
     tmp_path: Path,
 ) -> None:

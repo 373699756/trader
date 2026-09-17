@@ -1,5 +1,6 @@
 SHELL := /bin/bash
-PYTHON ?= .venv/bin/python
+PYTHON ?= .venv/bin/python3
+PYTEST_WORKERS ?= 4
 SOURCE_PATHS := src/trader tests scripts/check_refactor_quality.py scripts/generate_long_watchlist_asset.py \
 	scripts/audit_historical_industry_facts.py scripts/check_tomorrow_training_memory.py scripts/diagnose_runtime.py \
 	scripts/package_scoring_model.py \
@@ -13,14 +14,15 @@ SOURCE_PATHS := src/trader tests scripts/check_refactor_quality.py scripts/gener
 	scripts/runtime_diagnostics/history_sources.py scripts/runtime_diagnostics/tencent_quotes.py \
 	scripts/runtime_diagnostics/tushare_daily.py scripts/runtime_diagnostics/history_archive_performance.py
 
-.PHONY: help install-dev format format-check lint long-watchlist-check type-check test test-unit test-component test-contract test-integration test-release quality package performance-check browser-performance-check diagnose-live diagnose-full
+.PHONY: help install-dev format format-check lint long-watchlist-check type-check test test-full test-unit test-component test-contract test-integration test-release quality package performance-check browser-performance-check diagnose-live diagnose-full
 
 help:
 	@echo "make install-dev   - install editable package and development tools"
 	@echo "make format        - format Python sources and tests"
 	@echo "make long-watchlist-check - verify the packaged long-watchlist asset"
 	@echo "make quality       - format, lint, type and test gates"
-	@echo "make test          - run all tests"
+	@echo "make test          - run the default fast test set"
+	@echo "make test-full     - run all tests, including slow archive stress checks"
 	@echo "make test-unit     - run unit tests"
 	@echo "make test-component - run component tests"
 	@echo "make test-contract  - run contract tests"
@@ -53,19 +55,22 @@ type-check:
 	$(PYTHON) -m mypy src/trader
 
 test:
-	$(PYTHON) -m pytest -q tests
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "not slow"
+
+test-full:
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests
 
 test-unit:
-	$(PYTHON) -m pytest -q tests/unit
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests/unit
 
 test-component:
-	$(PYTHON) -m pytest -q tests/component
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests/component
 
 test-contract:
-	$(PYTHON) -m pytest -q tests/contract
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests/contract
 
 test-integration:
-	$(PYTHON) -m pytest -q tests/integration
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests/integration
 
 test-release: package
 	$(PYTHON) scripts/verify_wheel_install.py --dist-dir dist

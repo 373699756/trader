@@ -77,7 +77,7 @@ BaoStock 下载是独立研究命令，必须先安装 `trader-research-dashboar
 
 历史归档只接受 `data/history/baostock/control.sqlite3` 与 `partitions/YYYY/MM.sqlite3` 月分片；文件 hash 保存在
 控制状态中用于校验，旧目录和兼容读取均不进入活动产品。
-若仍有唯一旧归档，可显式运行 `.venv/bin/python scripts/convert_baostock_history.py` 一次性转换；该脚本不被启动、
+若仍有唯一旧归档，可显式运行 `.venv/bin/python3 scripts/convert_baostock_history.py` 一次性转换；该脚本不被启动、
 Web、`check`、训练或零参数同步隐式调用。`research-status` 和统一诊断的 `research` profile 只读投影同一个
 active snapshot 身份，不会触发下载、训练或文件写入。
 
@@ -89,7 +89,7 @@ active snapshot 身份，不会触发下载、训练或文件写入。
 `scripts/runtime_diagnostics/` 内部职责模块维护，不再保留多个顶层包装脚本：
 
 ```bash
-.venv/bin/python scripts/diagnose_runtime.py \
+.venv/bin/python3 scripts/diagnose_runtime.py \
   --profile live \
   --base-url http://127.0.0.1:5000 \
   --output -
@@ -106,7 +106,7 @@ active snapshot 身份，不会触发下载、训练或文件写入。
 只读诊断，不改变运行服务的来源优先级：
 
 ```bash
-.venv/bin/python scripts/diagnose_runtime.py \
+.venv/bin/python3 scripts/diagnose_runtime.py \
   --profile history \
   --history-source tencent \
   --codes 688981 \
@@ -117,7 +117,7 @@ active snapshot 身份，不会触发下载、训练或文件写入。
 和 `performance`。例如只检查荐股漏斗：
 
 ```bash
-.venv/bin/python scripts/diagnose_runtime.py \
+.venv/bin/python3 scripts/diagnose_runtime.py \
   --profile web \
   --base-url http://127.0.0.1:5000 \
   --web-samples 6 \
@@ -150,7 +150,7 @@ Linux/macOS 的正常 `SIGTERM` 和 Windows `SIGBREAK` 使用相同规则。关�
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install -e ".[dev]"
+.venv/bin/python3 -m pip install -e ".[dev]"
 .venv/bin/trader-cli --config "$PWD/config/runtime.json" validate-config
 .venv/bin/trader-server --config "$PWD/config/runtime.json"
 ```
@@ -173,7 +173,7 @@ python3 -m venv .venv
 `--include-details` 写到仓库外绝对路径。
 
 ```bash
-.venv/bin/python scripts/audit_historical_industry_facts.py \
+.venv/bin/python3 scripts/audit_historical_industry_facts.py \
   --history-root "$PWD/data/history" \
   --required-sample-codes 300 \
   --tushare-access-points 120 \

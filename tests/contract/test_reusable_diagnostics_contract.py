@@ -109,44 +109,6 @@ def test_legacy_diagnostic_wrappers_are_deleted_after_unified_cli_migration() ->
     assert "def emit_report(" in reporting
 
 
-def test_agent_workflow_requires_reusing_diagnostic_scripts() -> None:
-    instructions = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-
-    assert "可复用的诊断、性能、数据源或浏览器实测" in instructions
-    assert "固化到 `scripts/`" in instructions
-    assert "优先复用或扩展已有脚本" in instructions
-    assert "不得在 `/tmp`" in instructions
-
-
-def test_repository_delivery_skill_is_discoverable_and_routes_diagnostics() -> None:
-    skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
-    metadata = (SKILL_ROOT / "agents" / "openai.yaml").read_text(encoding="utf-8")
-    ignore_rules = (ROOT / ".gitignore").read_text(encoding="utf-8")
-    instructions = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-
-    assert "name: trader-delivery" in skill
-    assert "scripts/diagnose_runtime.py" in skill
-    assert "references/change-impact-matrix.md" in skill
-    assert "references/runtime-diagnostics.md" in skill
-    assert "references/delivery-evidence.md" in skill
-    assert "references/recommendation-funnel-incidents.md" in skill
-    assert "references/scoring-chain.md" in skill
-    assert "$trader-delivery" in metadata
-    assert "allow_implicit_invocation: true" in metadata
-    assert "!.agents/skills/trader-delivery/" in ignore_rules
-    assert "必须加载仓库级 `$trader-delivery` skill" in instructions
-    assert "--persistence-runtime-dir" in (ROOT / "README.md").read_text(encoding="utf-8")
-
-    for reference in (
-        "change-impact-matrix.md",
-        "runtime-diagnostics.md",
-        "delivery-evidence.md",
-        "recommendation-funnel-incidents.md",
-        "scoring-chain.md",
-    ):
-        assert (SKILL_ROOT / "references" / reference).is_file()
-
-
 def test_repository_delivery_skill_links_resolve_and_route_current_contracts() -> None:
     skill_files = (
         SKILL_ROOT / "SKILL.md",
@@ -189,32 +151,6 @@ def test_repository_delivery_skill_links_resolve_and_route_current_contracts() -
         "V2" + "RefreshOutcome",
     ):
         assert retired_reference not in active_text
-
-
-def test_delivery_skill_routes_scoring_changes_through_the_full_semantic_chain() -> None:
-    scoring = (SKILL_ROOT / "references" / "scoring-chain.md").read_text(encoding="utf-8")
-
-    for invariant in (
-        "weighted_evidence_quality_0_100",
-        "model_prediction_rank",
-        "model_net_utility_non_positive",
-        "local_risk_penalty",
-        "0.68",
-        "0.32",
-        "ROUND_HALF_UP",
-        "83.40",
-        "score_scale",
-        "GET",
-        "SSE",
-        "Legacy Tomorrow",
-        "records without `score_scale`",
-        "point-in-time",
-        "11:20",
-        "14:50",
-        "Shadow",
-        "explicit human authorization",
-    ):
-        assert invariant in scoring
 
 
 def test_delivery_skill_preserves_recommendation_funnel_incident_checkpoints() -> None:

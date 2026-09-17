@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from itertools import pairwise
@@ -672,7 +672,7 @@ def _business_ready(item: ScoredStockEvaluation) -> bool:
     )
 
 
-def _deferred_reason_codes(reasons: Collection[str]) -> str:
+def _deferred_reason_codes(reasons: Iterable[str]) -> str:
     reason = next((reason for reason in reasons if reason in _DEFERRED_FILTER_REASONS), None)
     if reason is None:
         return ""

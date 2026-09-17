@@ -15,7 +15,7 @@ def test_makefile_is_the_single_test_command_source() -> None:
     assert "scripts/test.sh" not in makefile
 
     expected_targets = {
-        "test": "tests",
+        "test-full": "tests",
         "test-unit": "tests/unit",
         "test-component": "tests/component",
         "test-contract": "tests/contract",
@@ -29,7 +29,16 @@ def test_makefile_is_the_single_test_command_source() -> None:
             capture_output=True,
             text=True,
         )
-        assert f"pytest -q {test_path}" in result.stdout
+        assert f"pytest -q -n 4 {test_path}" in result.stdout
+
+    default_result = subprocess.run(
+        ["make", "-n", "test"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert 'pytest -q -n 4 tests -m "not slow"' in default_result.stdout
 
 
 def test_pytest_directory_markers_are_registered_and_selectable() -> None:
@@ -62,5 +71,5 @@ def test_release_target_builds_then_verifies_the_wheel_outside_the_repository() 
         text=True,
     )
 
-    assert "python -m build" in result.stdout
+    assert ".venv/bin/python3 -m build" in result.stdout
     assert "scripts/verify_wheel_install.py --dist-dir dist" in result.stdout

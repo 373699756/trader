@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 BLUEPRINT = ROOT / "docs" / "项目重构详细.md"
 
@@ -24,9 +23,11 @@ def test_refactor_blueprint_has_an_ordered_current_code_migration_plan() -> None
 
     for required in (
         "branch/Afuture",
-        "<approved-plan-commit>",
         "feature/tomorrow-v2",
-        "3f29c5b8b0090322f2297ffdcabac684004d360a",
+        "当前分支及其上游关系",
+        "提交已到达同名上游",
+        "Python 版本",
+        "工程实施台账",
         "application/history/",
         "application/training/",
         "application/research/",
@@ -41,10 +42,10 @@ def test_refactor_blueprint_has_an_ordered_current_code_migration_plan() -> None
         "Store`、`Repository`、`Archive`、`Registry",
         "data/history/baostock/",
         "data/history/control.sqlite3",
-        "HEAD == @{upstream}",
     ):
         assert required in section
-    assert "git switch -c branch/Afuture 3f29c5b8b0090322f2297ffdcabac684004d360a" not in section
+    for obsolete in ("<approved-plan-commit>", "HEAD == @{upstream}", "上游 hash", "获批 hash"):
+        assert obsolete not in section
 
 
 def test_refactor_blueprint_plan_closes_release_and_rollback_gates() -> None:
