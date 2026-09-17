@@ -9,6 +9,7 @@ from typing import Literal
 
 PipelineStageState = Literal["pending", "running", "completed", "degraded", "not_applicable"]
 PipelineStageKey = Literal[
+    "input_readiness",
     "dynamic_filter",
     "board_cross_section",
     "strategy_history",
@@ -44,6 +45,7 @@ PipelineMetricName = Literal[
     "final_score",
 ]
 PIPELINE_STAGE_ORDER: tuple[PipelineStageKey, ...] = (
+    "input_readiness",
     "dynamic_filter",
     "board_cross_section",
     "strategy_history",

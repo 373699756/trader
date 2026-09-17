@@ -34,6 +34,7 @@ from trader.domain.research.history_control import (
     HistoryTrainingDueState,
 )
 from trader.domain.research.tomorrow_training_input import FrozenDailyInputDescriptor, evaluate_tomorrow_training_input
+from trader.infra.artifacts.canonical import content_hash
 from trader.infra.research.history_archive_repack import (
     HistoryArchiveRepackFenceError,
     require_history_archive_repack_inactive,
@@ -53,7 +54,6 @@ from trader.infra.research.history_training_input import (
     HistoryTrainingInputSnapshot,
     SQLiteHistoryTrainingInputArchive,
 )
-from trader.infra.scoring.artifact_hashing import artifact_content_hash
 from trader.infra.scoring.head_bundles.bundle_repository import (
     HeadBundlePublicationIdentity,
     make_bundle_staging_directory,
@@ -511,7 +511,7 @@ def _fit_and_publish_head(request: _HeadFitRequest) -> HeadTrainingResult:
         provisional_model = _model_document(context, "0" * 64, models)
         model_payload_hash = cast(str, provisional_model["model_payload_hash"])
         report = _report_document(context, models, model_payload_hash, request.metrics)
-        report_hash = artifact_content_hash(report)
+        report_hash = content_hash(report)
         report["content_hash"] = report_hash
         if not report["validation_passed"]:
             return _with_due(
@@ -535,7 +535,7 @@ def _fit_and_publish_head(request: _HeadFitRequest) -> HeadTrainingResult:
                 plan.due.invalidated_cache_dates,
             )
         model = _model_document(context, report_hash, models)
-        model_hash = artifact_content_hash(model)
+        model_hash = content_hash(model)
         model["content_hash"] = model_hash
         output = request.train_root / contract.directory_name
         staging = make_bundle_staging_directory(output)
@@ -703,7 +703,7 @@ def _training_input_document(context: _TrainingInputDocumentContext) -> dict[str
         "validation_scope": "daily_close_engineering_proxy",
         "production_authority": False,
     }
-    document["content_hash"] = artifact_content_hash(document)
+    document["content_hash"] = content_hash(document)
     return document
 
 
@@ -728,7 +728,7 @@ def _common_document(context: _ArtifactContext) -> dict[str, object]:
 
 def _training_contract_hash(profile: TrainedProfileContract, contract: TrainedHeadContract) -> str:
     fitting = MODEL_FITTING_PARAMETERS
-    return artifact_content_hash(
+    return content_hash(
         {
             "schema_version": f"{profile.profile_id}_head_training_contract",
             "profile_id": profile.profile_id,
@@ -778,7 +778,7 @@ def _training_contract_hash(profile: TrainedProfileContract, contract: TrainedHe
 
 
 def _head_split_hash(split: BaoStockTrainingSplit, contract: TrainedHeadContract) -> str:
-    return artifact_content_hash(
+    return content_hash(
         {
             "calendar_split_hash": split.content_hash,
             "strategy_head": contract.strategy.value,
@@ -809,7 +809,7 @@ def _metric_payload(metric: TargetMetric) -> dict[str, object]:
 
 
 def _model_payload_hash(document: dict[str, object]) -> str:
-    return artifact_content_hash(
+    return content_hash(
         {
             key: value
             for key, value in document.items()

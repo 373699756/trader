@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from pathlib import Path
 
 from trader.application.research.cost_aware_selection_report import CostAwareSelectionReport
+from trader.infra.artifacts.canonical import canonical_json_text
+from trader.infra.artifacts.sealing import publish_immutable
 
 
 class CostAwareSelectionArtifactConflictError(RuntimeError):
@@ -24,20 +24,8 @@ class CostAwareSelectionArtifactArchive:
         if path.exists():
             self._verify_existing(path, expected)
             return report.content_hash
-        path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary_name = tempfile.mkstemp(prefix=".selection-report-", suffix=".json", dir=path.parent)
-        temporary = Path(temporary_name)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                json.dump(expected, handle, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":"))
-                handle.flush()
-                os.fsync(handle.fileno())
-            try:
-                os.link(temporary, path)
-            except FileExistsError:
-                self._verify_existing(path, expected)
-        finally:
-            temporary.unlink(missing_ok=True)
+        if not publish_immutable(path, canonical_json_text(expected)):
+            self._verify_existing(path, expected)
         return report.content_hash
 
     @staticmethod

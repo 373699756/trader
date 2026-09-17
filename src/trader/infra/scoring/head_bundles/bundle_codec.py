@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -12,7 +11,14 @@ from typing import Literal, cast
 from trader.domain.recommendation.model_scoring import TRAINED_HEAD_EXPOSURE_CONTRACT, ExposureContract
 from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
 from trader.domain.recommendation.models import Strategy
-from trader.infra.scoring.artifact_hashing import artifact_content_hash
+from trader.infra.artifacts.canonical import content_hash
+from trader.infra.artifacts.fields import (
+    is_boolean,
+    is_finite_number,
+    is_integer,
+    is_non_empty_text,
+    is_sha256_text,
+)
 from trader.infra.scoring.head_bundles.contracts import TrainedProfileContract
 
 _MODEL_FIELDS = {
@@ -229,7 +235,7 @@ def decode_head_bundle(
     strategy: Strategy,
     profile: TrainedProfileContract,
 ) -> TrainedHeadBundleArtifact:
-    payload, content_hash = _hashed_object(document, _MODEL_FIELDS, "model")
+    payload, declared_hash = _hashed_object(document, _MODEL_FIELDS, "model")
     contract = profile.head_for_strategy(strategy)
     feature_ids = tuple(_string_list(payload, "feature_ids"))
     feature_units = tuple(_string_list(payload, "feature_units"))
@@ -313,7 +319,7 @@ def decode_head_bundle(
         _integer(payload, "validation_rows"),
         industries,
         dependencies,
-        content_hash,
+        declared_hash,
     )
 
 
@@ -325,7 +331,7 @@ def _decode_group_document(
     report: bool,
 ) -> _GroupIdentity:
     fields = _REPORT_FIELDS if report else _INPUT_FIELDS
-    payload, content_hash = _hashed_object(document, fields, "report" if report else "training input")
+    payload, declared_hash = _hashed_object(document, fields, "report" if report else "training input")
     contract = profile.head_for_strategy(strategy)
     expected_schema = (
         f"{profile.profile_id}_head_training_report" if report else f"{profile.profile_id}_head_training_input"
@@ -364,7 +370,7 @@ def _decode_group_document(
     ):
         _require_sha256(payload, name)
     model_payload_hash = _text(payload, "model_payload_hash") if report else None
-    training_document_hash = _text(payload, "training_input_document_hash") if report else content_hash
+    training_document_hash = _text(payload, "training_input_document_hash") if report else declared_hash
     if report:
         _require_sha256(payload, "training_input_document_hash")
         _require_sha256(payload, "model_payload_hash")
@@ -375,7 +381,7 @@ def _decode_group_document(
     if not report:
         _validate_training_input(payload, input_codes)
     return _GroupIdentity(
-        content_hash,
+        declared_hash,
         strategy,
         contract.model_id,
         _text(payload, "training_input_hash"),
@@ -427,10 +433,10 @@ def _hashed_object(document: object, fields: set[str], label: str) -> tuple[dict
     if not isinstance(document, dict):
         raise TypeError(f"trained-head {label} must be a JSON object")
     payload = cast(dict[str, object], dict(document))
-    content_hash = payload.pop("content_hash", None)
-    if not isinstance(content_hash, str) or artifact_content_hash(payload) != content_hash or set(payload) != fields:
+    declared_hash = payload.pop("content_hash", None)
+    if not isinstance(declared_hash, str) or content_hash(payload) != declared_hash or set(payload) != fields:
         raise ValueError(f"trained-head {label} fields or content hash are invalid")
-    return payload, content_hash
+    return payload, declared_hash
 
 
 def _decode_industries(payload: dict[str, object], width: int) -> tuple[tuple[str, TrainedIndustryModelArtifact], ...]:
@@ -513,15 +519,10 @@ def _valid_target_metrics(value: object, strategy: Strategy) -> bool:
         mean = raw.get("mean")
         deviation = raw.get("standard_deviation")
         if (
-            not isinstance(count, int)
-            or isinstance(count, bool)
+            not is_integer(count)
             or count < 1
-            or not isinstance(mean, (int, float))
-            or isinstance(mean, bool)
-            or not math.isfinite(mean)
-            or not isinstance(deviation, (int, float))
-            or isinstance(deviation, bool)
-            or not math.isfinite(deviation)
+            or not is_finite_number(mean)
+            or not is_finite_number(deviation)
             or deviation < 0.0
         ):
             return False
@@ -529,14 +530,14 @@ def _valid_target_metrics(value: object, strategy: Strategy) -> bool:
 
 
 def _model_payload_hash(payload: dict[str, object]) -> str:
-    return artifact_content_hash(
+    return content_hash(
         {key: value for key, value in payload.items() if key not in {"report_hash", "model_payload_hash"}}
     )
 
 
 def _require_sha256(payload: dict[str, object], name: str) -> None:
     value = _text(payload, name)
-    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+    if not is_sha256_text(value):
         raise ValueError(f"trained-head {name} is not a SHA-256 value")
 
 
@@ -549,28 +550,28 @@ def _date(payload: dict[str, object], name: str) -> date:
 
 def _text(payload: dict[str, object], name: str) -> str:
     value = payload.get(name)
-    if not isinstance(value, str) or not value:
+    if not is_non_empty_text(value):
         raise TypeError(f"trained-head {name} must be non-empty text")
     return value
 
 
 def _integer(payload: dict[str, object], name: str) -> int:
     value = payload.get(name)
-    if not isinstance(value, int) or isinstance(value, bool):
+    if not is_integer(value):
         raise TypeError(f"trained-head {name} must be an integer")
     return value
 
 
 def _number(payload: dict[str, object], name: str) -> float:
     value = payload.get(name)
-    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+    if not is_finite_number(value):
         raise TypeError(f"trained-head {name} must be finite numeric")
     return float(value)
 
 
 def _boolean(payload: dict[str, object], name: str) -> bool:
     value = payload.get(name)
-    if not isinstance(value, bool):
+    if not is_boolean(value):
         raise TypeError(f"trained-head {name} must be boolean")
     return value
 

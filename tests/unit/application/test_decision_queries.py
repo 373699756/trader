@@ -216,6 +216,7 @@ def test_frozen_empty_decision_keeps_aggregate_evaluated_count_without_stock_ite
 
 def test_frozen_history_exposes_the_persisted_pipeline_without_runtime_status() -> None:
     keys = (
+        "input_readiness",
         "dynamic_filter",
         "board_cross_section",
         "strategy_history",

@@ -4,9 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 import json
-import os
-import re
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
@@ -14,8 +11,9 @@ from typing import Literal, cast
 from trader.application.research.h1_point_in_time_completion import H1ResearchCompletion
 from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.h1_point_in_time import ResearchStrategy
-
-_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+from trader.infra.artifacts.canonical import canonical_json_text
+from trader.infra.artifacts.fields import is_boolean, is_sha256_text
+from trader.infra.artifacts.sealing import publish_immutable
 
 
 class H1ResearchCompletionArtifactConflictError(RuntimeError):
@@ -49,7 +47,7 @@ class H1ResearchCompletionArtifactIndex:
         )
         if tuple(item[0] for item in residuals) != ("today", "tomorrow", "d25"):
             raise ValueError("H1 research terminal index requires every strategy")
-        if any(_SHA256.fullmatch(item[1]) is None for item in residuals):
+        if any(not is_sha256_text(item[1]) for item in residuals):
             raise ValueError("H1 research residual terminal hash is invalid")
         if self.status != "historical_data_insufficient":
             raise ValueError("H1 research terminal index status is invalid")
@@ -76,25 +74,12 @@ class H1ResearchCompletionArtifactArchive:
             return existing
         payload = _encode(index)
         payload["content_hash"] = index.content_hash
-        descriptor, temporary_name = tempfile.mkstemp(prefix=".h1-research-terminal.", suffix=".tmp", dir=self._root)
-        temporary = Path(temporary_name)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
-                handle.flush()
-                os.fsync(handle.fileno())
-            try:
-                os.link(temporary, self._path)
-            except FileExistsError:
-                existing = self.verify()
-                if existing.content_hash != index.content_hash:
-                    raise H1ResearchCompletionArtifactConflictError(
-                        "H1 research terminal artifact identity conflict"
-                    ) from None
-                return existing
-        finally:
-            temporary.unlink(missing_ok=True)
-        return self.verify()
+        if publish_immutable(self._path, canonical_json_text(payload)):
+            return self.verify()
+        existing = self.verify()
+        if existing.content_hash != index.content_hash:
+            raise H1ResearchCompletionArtifactConflictError("H1 research terminal artifact identity conflict")
+        return existing
 
     def verify(self) -> H1ResearchCompletionArtifactIndex:
         try:
@@ -178,7 +163,7 @@ def _decode(raw: dict[str, object]) -> H1ResearchCompletionArtifactIndex:
 
 
 def _hash(value: str) -> None:
-    if _SHA256.fullmatch(value) is None:
+    if not is_sha256_text(value):
         raise ValueError("H1 research terminal hash is invalid")
 
 
@@ -189,7 +174,7 @@ def _string(value: object) -> str:
 
 
 def _bool(value: object) -> bool:
-    if not isinstance(value, bool):
+    if not is_boolean(value):
         raise TypeError("H1 research terminal boolean field is invalid")
     return value
 

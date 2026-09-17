@@ -34,6 +34,7 @@ from trader.domain.recommendation.pipeline import (
     PipelineStageStatus,
     RecommendationPipelineStatus,
 )
+from trader.infra.artifacts.fields import as_sequence
 
 _Json: TypeAlias = str | int | float | bool | None | list["_Json"] | dict[str, "_Json"]
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -375,9 +376,10 @@ def _object(
 
 
 def _list(raw: object, label: str) -> list[object]:
-    if not isinstance(raw, list):
+    sequence = as_sequence(raw)
+    if sequence is None:
         raise ValueError(f"{label} must be a list")
-    return raw
+    return sequence
 
 
 def _text(raw: dict[str, object], key: str) -> str:

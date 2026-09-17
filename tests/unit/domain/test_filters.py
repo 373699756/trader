@@ -72,13 +72,13 @@ def test_filter_reports_source_threshold_and_actual(feature_factory, observed_at
 
 
 @pytest.mark.parametrize(
-    ("value", "allowed", "reason_code", "actual"),
+    ("value", "allowed", "reason_code", "actual", "deferred"),
     [
-        (None, False, "missing_liquidity_history", None),
-        (float("nan"), False, "invalid_liquidity_history", "nan"),
-        (float("inf"), False, "invalid_liquidity_history", "inf"),
-        (49_999_999.0, False, "insufficient_liquidity", 49_999_999.0),
-        (50_000_000.0, True, "", 50_000_000.0),
+        (None, False, "missing_liquidity_history", None, True),
+        (float("nan"), False, "invalid_liquidity_history", "nan", True),
+        (float("inf"), False, "invalid_liquidity_history", "inf", True),
+        (49_999_999.0, False, "insufficient_liquidity", 49_999_999.0, False),
+        (50_000_000.0, True, "", 50_000_000.0, False),
     ],
 )
 def test_liquidity_history_is_required_with_exact_boundary(
@@ -88,6 +88,7 @@ def test_liquidity_history_is_required_with_exact_boundary(
     allowed,
     reason_code,
     actual,
+    deferred,
 ) -> None:
     result = hard_filter(
         feature_factory(values={"amount_median_20d": value}),
@@ -97,7 +98,8 @@ def test_liquidity_history_is_required_with_exact_boundary(
 
     assert result.allowed is allowed
     if reason_code:
-        reason = next(item for item in result.reasons if item.filter_code == reason_code)
+        audits = result.deferred if deferred else result.reasons
+        reason = next(item for item in audits if item.filter_code == reason_code)
         assert reason.threshold == ">= 50000000"
         assert reason.actual == actual
         assert reason.source == "fixture"
@@ -111,8 +113,10 @@ def test_quote_age_boundary_and_future_quote_are_auditable(feature_factory, obse
     future = replace(exact, quote=replace(exact.quote, source_time=observed_at + timedelta(milliseconds=1)))
 
     assert hard_filter(exact, observed_at, max_age_seconds=20).allowed is True
-    assert "stale_quote" in {item.filter_code for item in hard_filter(stale, observed_at, max_age_seconds=20).reasons}
-    assert "future_quote" in {item.filter_code for item in hard_filter(future, observed_at, max_age_seconds=20).reasons}
+    assert "stale_quote" in {item.filter_code for item in hard_filter(stale, observed_at, max_age_seconds=20).deferred}
+    assert "future_quote" in {
+        item.filter_code for item in hard_filter(future, observed_at, max_age_seconds=20).deferred
+    }
 
 
 @pytest.mark.parametrize(
@@ -177,6 +181,19 @@ def test_filter_registry_separates_permanent_issuer_and_dynamic_runtime_rules() 
     assert "dynamic_structured_negative_risk" in {rule.name for rule in level_two}
 
 
+def test_missing_and_stale_inputs_are_deferred_not_business_rejections(feature_factory, observed_at) -> None:
+    stale = replace(
+        feature_factory(values={"amount_median_20d": None}),
+        quote=replace(feature_factory().quote, source_time=observed_at - timedelta(seconds=21)),
+    )
+
+    result = hard_filter(stale, observed_at, max_age_seconds=20)
+
+    assert not result.allowed
+    assert {item.code for item in result.deferred} == {"stale_quote", "missing_liquidity_history"}
+    assert result.reasons == ()
+
+
 def test_non_finite_and_structurally_invalid_quotes_are_rejected(feature_factory, observed_at) -> None:
     non_finite = feature_factory(pct_change=float("nan"))
     invalid_ohlc = feature_factory()
@@ -188,13 +205,13 @@ def test_non_finite_and_structurally_invalid_quotes_are_rejected(feature_factory
     )
 
     assert "invalid_pct_change" in {
-        item.filter_code for item in hard_filter(non_finite, observed_at, max_age_seconds=20).reasons
+        item.filter_code for item in hard_filter(non_finite, observed_at, max_age_seconds=20).deferred
     }
     assert "invalid_quote_structure" in {
-        item.filter_code for item in hard_filter(invalid_ohlc, observed_at, max_age_seconds=20).reasons
+        item.filter_code for item in hard_filter(invalid_ohlc, observed_at, max_age_seconds=20).deferred
     }
     assert "invalid_cross_source_deviation" in {
-        item.filter_code for item in hard_filter(invalid_deviation, observed_at, max_age_seconds=20).reasons
+        item.filter_code for item in hard_filter(invalid_deviation, observed_at, max_age_seconds=20).deferred
     }
 
 

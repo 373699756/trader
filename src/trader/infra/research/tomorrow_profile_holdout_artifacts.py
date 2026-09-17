@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 from trader.application.research.tomorrow_historical_report import TomorrowHistoricalGateMetrics
@@ -12,6 +11,7 @@ from trader.application.research.tomorrow_profile_holdout import (
     TomorrowProfileHoldoutReport,
 )
 from trader.domain.research.artifact_identity import canonical_artifact_hash, canonical_artifact_json
+from trader.infra.artifacts.sealing import publish_immutable
 
 
 class TomorrowProfileHoldoutArtifactConflictError(RuntimeError):
@@ -30,19 +30,11 @@ class TomorrowProfileHoldoutArtifactArchive:
             if existing is None or existing.get("content_hash") != report.content_hash:
                 raise TomorrowProfileHoldoutArtifactConflictError("Tomorrow profile holdout identity conflict")
             return report.content_hash
-        temporary = self._path.with_name(f".{self._path.name}.{os.getpid()}.tmp")
-        temporary.write_text(canonical_artifact_json(payload), encoding="utf-8")
-        try:
-            try:
-                os.link(temporary, self._path)
-            except FileExistsError:
-                existing = self.read_payload()
-                if existing is None or existing.get("content_hash") != report.content_hash:
-                    raise TomorrowProfileHoldoutArtifactConflictError(
-                        "Tomorrow profile holdout identity conflict"
-                    ) from None
-        finally:
-            temporary.unlink(missing_ok=True)
+        if publish_immutable(self._path, canonical_artifact_json(payload)):
+            return report.content_hash
+        existing = self.read_payload()
+        if existing is None or existing.get("content_hash") != report.content_hash:
+            raise TomorrowProfileHoldoutArtifactConflictError("Tomorrow profile holdout identity conflict")
         return report.content_hash
 
     def read_payload(self) -> dict[str, object] | None:

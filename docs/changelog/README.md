@@ -12,6 +12,8 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Separate data readiness from business filtering](2026-09-15-data-readiness-filter-separation.md)
+
 - [History, training, and recommendation application boundaries](2026-09-15-history-training-application-boundaries.md)
 - [Recommendation modular boundaries and training isolation](2026-09-15-recommendation-modular-boundaries.md)
 - [Version profile-owned training artifacts](2026-09-14-profile-training-artifacts.md)

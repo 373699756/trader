@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 from trader.application.research.tomorrow_historical_report import TomorrowHistoricalReport
@@ -16,6 +15,7 @@ from trader.domain.research.tomorrow_historical import (
     TOMORROW_HISTORICAL_SPEC,
     TomorrowHistoricalModelArtifact,
 )
+from trader.infra.artifacts.sealing import publish_immutable
 
 
 class TomorrowHistoricalArtifactConflictError(RuntimeError):
@@ -83,20 +83,12 @@ class TomorrowHistoricalArtifactArchive:
         if not isinstance(payload, dict):
             raise TypeError("Tomorrow historical artifact must be a JSON object")
         payload["content_hash"] = content_hash
-        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        temporary.write_text(canonical_artifact_json(payload), encoding="utf-8")
-        try:
-            try:
-                os.link(temporary, path)
-            except FileExistsError:
-                persisted_hash = str(self._read_verified(path, path.stem)["content_hash"])
-                if persisted_hash != content_hash:
-                    raise TomorrowHistoricalArtifactConflictError(
-                        "Tomorrow historical artifact identity conflict"
-                    ) from None
-        finally:
-            temporary.unlink(missing_ok=True)
-        return str(self._read_verified(path, path.stem)["content_hash"])
+        if publish_immutable(path, canonical_artifact_json(payload)):
+            return str(content_hash)
+        persisted_hash = str(self._read_verified(path, path.stem)["content_hash"])
+        if persisted_hash != content_hash:
+            raise TomorrowHistoricalArtifactConflictError("Tomorrow historical artifact identity conflict")
+        return persisted_hash
 
     def _report_path(self) -> Path:
         return self._root / TOMORROW_HISTORICAL_SPEC.research_identity / "historical-report.json"

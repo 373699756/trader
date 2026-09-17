@@ -221,9 +221,7 @@ def test_run_script_rejects_retired_automation_commands_before_environment_setup
 
     assert completed.returncode == 2
     assert completed.stdout == ""
-    assert completed.stderr == (
-        f"未知命令: {command}\n日常启动直接运行: ./run.sh\n查看全部命令: ./run.sh help\n"
-    )
+    assert completed.stderr == (f"未知命令: {command}\n日常启动直接运行: ./run.sh\n查看全部命令: ./run.sh help\n")
     assert not missing_venv.exists()
 
 
@@ -508,9 +506,7 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert '$ScoringProfile -notin @("v1", "v2", "v3")' in powershell
     assert "config\\runtime.json" in powershell
     assert "config\\v2\\runtime.json" not in powershell
-    assert (
-        '$PublicModes = @("help", "-h", "--help", "check", "download", "train-v2", "train-v3")' in powershell
-    )
+    assert '$PublicModes = @("help", "-h", "--help", "check", "download", "train-v2", "train-v3")' in powershell
     assert "install-history-automation" not in powershell
     assert "uninstall-history-automation" not in powershell
 

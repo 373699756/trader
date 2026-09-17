@@ -606,6 +606,7 @@ def _browser_input_quality(*, empty: bool = False) -> dict[str, object]:
     status = {
         "status": "not_ready",
         "population_count": 5291,
+        "data_pending_count": 4291,
         "candidate_optional_reason_counts": {
             "missing_listing_date": 221,
             "missing_listing_age_sessions": 65,
@@ -613,7 +614,8 @@ def _browser_input_quality(*, empty: bool = False) -> dict[str, object]:
         "pipeline": {
             "current_stage": "concentration",
             "stages": [
-                _browser_stage("dynamic_filter", 5291, 500),
+                _browser_stage("input_readiness", 5291, 1000),
+                _browser_stage("dynamic_filter", 1000, 500),
                 _browser_stage("board_cross_section", 500, 500, filter_pass=56, filter_observe=2, filter_reject=216),
                 _browser_stage("strategy_history", 500, 400, history_sessions=(61.0, 248.0)),
                 _browser_stage("model_input", 400, 360, input_completeness=(0.82, 1.0)),

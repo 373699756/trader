@@ -84,6 +84,36 @@ def _history_preload_codes(quotes: Sequence[MarketQuote], limit: int) -> tuple[s
     return tuple(selected)
 
 
+def _history_population_codes(quotes: Sequence[MarketQuote]) -> tuple[str, ...]:
+    """Return the complete supported population for compact history preparation.
+
+    Candidate ranking limits are intentionally not applied here.  The bounded
+    ``_history_preload_codes`` helper remains available for hot raw-bar loads,
+    while this index supplies the summaries needed by the full-market filter.
+    """
+    board_order = {"main": 0, "chinext": 1, "star": 2}
+    eligible = {
+        quote.code: quote
+        for quote in quotes
+        if not quote.is_suspended
+        and quote.price is not None
+        and math.isfinite(quote.price)
+        and quote.price > 0
+        and _history_board(quote.code) in board_order
+    }
+    return tuple(
+        quote.code
+        for quote in sorted(
+            eligible.values(),
+            key=lambda quote: (
+                board_order[_history_board(quote.code)],
+                quote.industry or "unknown",
+                quote.code,
+            ),
+        )
+    )
+
+
 def _history_board(code: str) -> str:
     if code.startswith(("000", "001", "002", "003", "600", "601", "603", "605")):
         return "main"

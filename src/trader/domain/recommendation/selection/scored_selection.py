@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from itertools import pairwise
@@ -44,6 +44,31 @@ from trader.domain.review.rules import aggregate_risk_penalty, derive_local_risk
 _SUPPORTED_BOARDS = (Board.MAIN, Board.CHINEXT, Board.STAR)
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"
 _STRUCTURED_REASON = re.compile(r"^[a-z0-9_]{1,64}$")
+_DEFERRED_FILTER_REASONS = frozenset(
+    {
+        "future_quote",
+        "invalid_amount",
+        "invalid_cross_source_deviation",
+        "invalid_pct_change",
+        "invalid_price",
+        "invalid_quote_structure",
+        "invalid_quote_time",
+        "stale_quote",
+        "missing_liquidity_history",
+        "invalid_liquidity_history",
+    }
+)
+
+
+def split_filter_reason_counts(
+    counts: Mapping[str, int],
+) -> tuple[Mapping[str, int], Mapping[str, int]]:
+    """Return the (business rejection, input readiness) partitions of a reason distribution."""
+    business: dict[str, int] = {}
+    readiness: dict[str, int] = {}
+    for reason, count in counts.items():
+        (readiness if reason in _DEFERRED_FILTER_REASONS else business)[reason] = count
+    return MappingProxyType(business), MappingProxyType(readiness)
 
 
 @dataclass(frozen=True)
@@ -60,6 +85,7 @@ class BoardCrossSectionFallback:
 class _FilteredFeatures:
     evaluations: Mapping[str, ScoredStockEvaluation]
     issuer_eligible_count: int
+    input_ready_count: int
 
 
 @dataclass(frozen=True)
@@ -100,7 +126,14 @@ class ScoredSelectionPolicy:
 
 @dataclass(frozen=True)
 class ScoredCandidateStageCounts:
+    """Per-stage candidate population directly counted from one evaluation pass.
+
+    ``input_ready_population`` counts issuer-eligible stocks whose inputs are present and
+    fresh, so missing or expired inputs never appear as dynamic-filter rejection.
+    """
+
     issuer_eligible_population: int
+    input_ready_population: int
     dynamic_filter_eligible: int
     strategy_history_eligible: int
     model_input_eligible: int
@@ -110,6 +143,7 @@ class ScoredCandidateStageCounts:
     def __post_init__(self) -> None:
         counts = (
             self.issuer_eligible_population,
+            self.input_ready_population,
             self.dynamic_filter_eligible,
             self.strategy_history_eligible,
             self.model_input_eligible,
@@ -342,12 +376,12 @@ def plan_scored_candidates(request: ScoredSelectionRequest) -> ScoredCandidatePl
         population = tuple(
             item.features
             for item in population_evaluations.values()
-            if item.disposition is not ScoredDisposition.REJECT and item.features.quote.board is board
+            if _business_ready(item) and item.features.quote.board is board
         )
         candidates = tuple(
             item.features
             for item in candidate_evaluations.values()
-            if item.disposition is not ScoredDisposition.REJECT and item.features.quote.board is board
+            if _business_ready(item) and item.features.quote.board is board
         )
         if not population:
             continue
@@ -386,16 +420,17 @@ def plan_scored_candidates(request: ScoredSelectionRequest) -> ScoredCandidatePl
         assert request.population_evaluated_at is not None
         assert request.population_max_age_seconds is not None
         issuer_eligible = population_filtered.issuer_eligible_count
+        input_ready = population_filtered.input_ready_count
     else:
         issuer_eligible = candidate_filtered.issuer_eligible_count
-    dynamic_eligible = sum(item.disposition is not ScoredDisposition.REJECT for item in candidate_evaluations.values())
+        input_ready = candidate_filtered.input_ready_count
+    dynamic_eligible = sum(_business_ready(item) for item in candidate_evaluations.values())
     history_eligible = sum(
-        item.disposition is not ScoredDisposition.REJECT
-        and item.features.history_days >= request.minimum_history_sessions
+        _business_ready(item) and item.features.history_days >= request.minimum_history_sessions
         for item in candidate_evaluations.values()
     )
     model_input_eligible = sum(
-        item.disposition is not ScoredDisposition.REJECT
+        _business_ready(item)
         and item.features.history_days >= request.minimum_history_sessions
         and _model_input_is_eligible(item.code, request)
         for item in candidate_evaluations.values()
@@ -417,6 +452,7 @@ def plan_scored_candidates(request: ScoredSelectionRequest) -> ScoredCandidatePl
         population_versions=population_versions,
         stage_counts=ScoredCandidateStageCounts(
             issuer_eligible_population=issuer_eligible,
+            input_ready_population=input_ready,
             dynamic_filter_eligible=dynamic_eligible,
             strategy_history_eligible=history_eligible,
             model_input_eligible=model_input_eligible,
@@ -479,28 +515,35 @@ def _filter_features(
     permanent_filter_codes = frozenset(rule.name for rule in rules if rule.tier is FilterTier.ISSUER_PERMANENT)
     result: dict[str, ScoredStockEvaluation] = {}
     issuer_eligible_count = 0
+    input_ready_count = 0
     for feature in sorted(features, key=lambda item: item.quote.code):
         filtered = apply_filters(feature, rules, now=filter_time)
-        if not any(reason.code in permanent_filter_codes for reason in filtered.reasons):
+        issuer_eligible = not any(reason.code in permanent_filter_codes for reason in filtered.reasons)
+        if issuer_eligible:
             issuer_eligible_count += 1
         normalized = (
             feature
             if feature.quote.board is filtered.board
             else replace(feature, quote=replace(feature.quote, board=filtered.board))
         )
-        if not filtered.allowed:
+        deferred = (*filtered.deferred,)
+        if issuer_eligible and not deferred:
+            input_ready_count += 1
+        filter_reasons = (*filtered.reasons, *deferred)
+        if filtered.reasons:
             disposition = ScoredDisposition.REJECT
-        elif filtered.optional_flags or feature.quote.execution_restrictions:
+        elif deferred or filtered.optional_flags or feature.quote.execution_restrictions:
             disposition = ScoredDisposition.OBSERVE_ONLY
         else:
             disposition = ScoredDisposition.PASS
         result[feature.quote.code] = ScoredStockEvaluation(
             features=normalized,
             disposition=disposition,
-            filter_reasons=filtered.reasons,
+            filter_reasons=filter_reasons,
             optional_flags=filtered.optional_flags,
+            selection_skip_reason=_deferred_reason_codes(reason.code for reason in deferred),
         )
-    return _FilteredFeatures(MappingProxyType(result), issuer_eligible_count)
+    return _FilteredFeatures(MappingProxyType(result), issuer_eligible_count, input_ready_count)
 
 
 def _rank_board_candidates(
@@ -621,6 +664,19 @@ def _score_input_skip_reason(feature: FeatureSnapshot, request: ScoredSelectionR
     if not _model_input_is_eligible(feature.quote.code, request):
         return "production_model_features_missing"
     return None
+
+
+def _business_ready(item: ScoredStockEvaluation) -> bool:
+    return item.disposition is not ScoredDisposition.REJECT and not _DEFERRED_FILTER_REASONS.intersection(
+        reason.code for reason in item.filter_reasons
+    )
+
+
+def _deferred_reason_codes(reasons: Collection[str]) -> str:
+    reason = next((reason for reason in reasons if reason in _DEFERRED_FILTER_REASONS), None)
+    if reason is None:
+        return ""
+    return "refresh_pending" if reason in {"stale_quote", "future_quote"} else "data_pending"
 
 
 def _model_input_is_eligible(code: str, request: ScoredSelectionRequest) -> bool:

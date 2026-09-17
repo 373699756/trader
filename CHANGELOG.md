@@ -7,6 +7,8 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
+- [Separate data readiness from business filtering](docs/changelog/2026-09-15-data-readiness-filter-separation.md)
+
 - [History, training, and recommendation application boundaries](docs/changelog/2026-09-15-history-training-application-boundaries.md)
 - [Recommendation modular boundaries and training isolation](docs/changelog/2026-09-15-recommendation-modular-boundaries.md)
 - [Version profile-owned training artifacts](docs/changelog/2026-09-14-profile-training-artifacts.md)

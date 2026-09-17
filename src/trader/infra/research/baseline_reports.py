@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import date
 from pathlib import Path
 from typing import Literal, cast
@@ -20,6 +19,7 @@ from trader.domain.research.artifact_identity import (
     canonical_artifact_value,
 )
 from trader.domain.research.specification import HISTORICAL_RESEARCH_SPEC
+from trader.infra.artifacts.sealing import publish_immutable
 
 _REPORT_NAME = "historical-baseline-report.json"
 
@@ -46,18 +46,11 @@ class JsonBaselineReportArchive:
         if not isinstance(payload, dict):
             raise TypeError("Historical replay report payload must be an object")
         payload["report_hash"] = report.report_hash
-        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        temporary.write_text(canonical_artifact_json(payload), encoding="utf-8")
-        try:
-            try:
-                os.link(temporary, path)
-            except FileExistsError:
-                existing = self.verify()
-                if existing.report_hash != report.report_hash:
-                    raise BaselineReportConflictError("Historical replay report identity conflict") from None
-                return existing
-        finally:
-            temporary.unlink(missing_ok=True)
+        if not publish_immutable(path, canonical_artifact_json(payload)):
+            existing = self.verify()
+            if existing.report_hash != report.report_hash:
+                raise BaselineReportConflictError("Historical replay report identity conflict")
+            return existing
         return self.verify()
 
     def verify(self) -> HistoricalBaselineReport:

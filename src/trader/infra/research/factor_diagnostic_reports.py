@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import date
 from pathlib import Path
 from typing import cast
@@ -26,6 +25,8 @@ from trader.domain.research.artifact_identity import (
     canonical_artifact_json,
     canonical_artifact_value,
 )
+from trader.infra.artifacts.fields import as_sequence
+from trader.infra.artifacts.sealing import publish_immutable
 
 _REPORT_NAME = "score-factor-diagnostic-report.json"
 
@@ -52,18 +53,11 @@ class JsonFactorDiagnosticReportArchive:
         if not isinstance(payload, dict):
             raise TypeError("factor diagnostic report payload must be an object")
         payload["report_hash"] = report.report_hash
-        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        temporary.write_text(canonical_artifact_json(payload), encoding="utf-8")
-        try:
-            try:
-                os.link(temporary, path)
-            except FileExistsError:
-                existing = self.verify()
-                if existing.report_hash != report.report_hash:
-                    raise FactorDiagnosticReportConflictError("factor diagnostic report identity conflict") from None
-                return existing
-        finally:
-            temporary.unlink(missing_ok=True)
+        if not publish_immutable(path, canonical_artifact_json(payload)):
+            existing = self.verify()
+            if existing.report_hash != report.report_hash:
+                raise FactorDiagnosticReportConflictError("factor diagnostic report identity conflict")
+            return existing
         return self.verify()
 
     def verify(self) -> FactorDiagnosticReport:
@@ -216,9 +210,10 @@ def _objects(value: object, label: str) -> tuple[dict[str, object], ...]:
 
 
 def _array(value: object, label: str) -> list[object]:
-    if not isinstance(value, list):
+    sequence = as_sequence(value)
+    if sequence is None:
         raise TypeError(f"factor report {label} must be an array")
-    return value
+    return sequence
 
 
 def _number(value: object) -> float:

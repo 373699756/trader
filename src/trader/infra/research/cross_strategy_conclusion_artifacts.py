@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from pathlib import Path
 
 from trader.application.research.cross_strategy_conclusion import CrossStrategyConclusion
 from trader.domain.research.artifact_identity import canonical_artifact_hash, canonical_artifact_json
+from trader.infra.artifacts.sealing import publish_immutable
 from trader.infra.research.terminal_holdout_artifacts import (
     TerminalHoldoutArtifactConflictError,
     decode_terminal_holdout_report,
@@ -30,22 +29,11 @@ class CrossStrategyConclusionArtifactArchive:
             return existing
         payload = _encode_conclusion(conclusion)
         payload["content_hash"] = conclusion.content_hash
-        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=self._root)
-        temporary = Path(temporary_name)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(canonical_artifact_json(payload))
-                handle.flush()
-                os.fsync(handle.fileno())
-            try:
-                os.link(temporary, path)
-            except FileExistsError:
-                existing = self.verify()
-                if existing.content_hash != conclusion.content_hash:
-                    raise TerminalHoldoutArtifactConflictError("cross-strategy conclusion identity conflict") from None
-                return existing
-        finally:
-            temporary.unlink(missing_ok=True)
+        if not publish_immutable(path, canonical_artifact_json(payload)):
+            existing = self.verify()
+            if existing.content_hash != conclusion.content_hash:
+                raise TerminalHoldoutArtifactConflictError("cross-strategy conclusion identity conflict")
+            return existing
         return self.verify()
 
     def verify(self) -> CrossStrategyConclusion:

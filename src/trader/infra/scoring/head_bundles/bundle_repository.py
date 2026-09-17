@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import cast
 
 from trader.domain.recommendation.models import Strategy
-from trader.infra.scoring.artifact_hashing import artifact_content_hash
+from trader.infra.artifacts.canonical import content_hash
 from trader.infra.scoring.head_bundles.contracts import TrainedProfileContract
 
 _ACTIVE_BUNDLE_NAME = "active-bundle.json"
@@ -149,7 +149,7 @@ def _validate_staging(
         "report_hash": report["content_hash"],
         "training_input_hash": training_input["content_hash"],
     }
-    pointer["content_hash"] = artifact_content_hash(pointer)
+    pointer["content_hash"] = content_hash(pointer)
     return pointer
 
 
@@ -168,7 +168,7 @@ def _inspect_active_head_bundle(
     if (
         set(pointer) != expected_fields
         or not _sha256(pointer.get("content_hash"))
-        or artifact_content_hash(body) != pointer["content_hash"]
+        or content_hash(body) != pointer["content_hash"]
         or not all(_sha256(pointer.get(name)) for name in expected_fields - {"content_hash"})
     ):
         raise ValueError("trained-head active bundle pointer is invalid")
@@ -269,7 +269,7 @@ def _decode_journal(
         or payload.get("schema_version") != f"{profile.profile_id}_head_bundle_publication"
         or payload.get("strategy_head") != strategy.value
         or not isinstance(declared_hash, str)
-        or artifact_content_hash(body) != declared_hash
+        or content_hash(body) != declared_hash
         or not isinstance(payload.get("rollback_directory"), str)
         or not isinstance(previous, list)
         or any(not isinstance(value, str) or value not in _PRODUCTION_NAMES for value in previous)
@@ -296,7 +296,7 @@ def _journal_payload(
         "previous_files": list(journal.previous_files),
         "new_pointer_hash": journal.new_pointer_hash,
     }
-    payload["content_hash"] = artifact_content_hash(payload)
+    payload["content_hash"] = content_hash(payload)
     return payload
 
 

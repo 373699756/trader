@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import re
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
@@ -15,8 +12,9 @@ from trader.application.research.historical_candidate_confirmation import (
 )
 from trader.domain.research.artifact_identity import canonical_artifact_hash, canonical_artifact_json
 from trader.domain.research.h1_point_in_time import ResearchStrategy
+from trader.infra.artifacts.fields import is_boolean, is_sha256_text
+from trader.infra.artifacts.sealing import publish_immutable
 
-_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _STRATEGIES: tuple[ResearchStrategy, ...] = ("today", "tomorrow", "d25")
 
 
@@ -41,27 +39,14 @@ class HistoricalConfirmationArtifactArchive:
             return existing
         payload = _encode(index)
         payload["content_hash"] = index.content_hash
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=".historical-confirmation-terminal.", suffix=".tmp", dir=self._root
-        )
-        temporary = Path(temporary_name)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(canonical_artifact_json(payload))
-                handle.flush()
-                os.fsync(handle.fileno())
-            try:
-                os.link(temporary, self._path)
-            except FileExistsError:
-                existing = self.verify()
-                if existing.content_hash != index.content_hash:
-                    raise HistoricalConfirmationArtifactConflictError(
-                        "Historical confirmation terminal artifact identity conflict"
-                    ) from None
-                return existing
-        finally:
-            temporary.unlink(missing_ok=True)
-        return self.verify()
+        if publish_immutable(self._path, canonical_artifact_json(payload)):
+            return self.verify()
+        existing = self.verify()
+        if existing.content_hash != index.content_hash:
+            raise HistoricalConfirmationArtifactConflictError(
+                "Historical confirmation terminal artifact identity conflict"
+            )
+        return existing
 
     def verify(self) -> HistoricalConfirmationArtifactIndex:
         try:
@@ -105,7 +90,7 @@ class HistoricalConfirmationArtifactIndex:
             self.daily_close_selection_hash,
             self.joint_report_hash,
         )
-        if any(_SHA256.fullmatch(value) is None for value in hashes):
+        if any(not is_sha256_text(value) for value in hashes):
             raise ValueError("Historical confirmation terminal index hash is invalid")
         residuals = _ordered_hashes(self.residual_terminal_hashes)
         strategies = _ordered_hashes(self.strategy_terminal_hashes)
@@ -182,7 +167,7 @@ def _decode(raw: dict[str, object]) -> HistoricalConfirmationArtifactIndex:
 
 def _ordered_hashes(values: tuple[tuple[ResearchStrategy, str], ...]) -> tuple[tuple[ResearchStrategy, str], ...]:
     ordered = tuple(sorted(values, key=lambda item: _STRATEGIES.index(item[0])))
-    if tuple(item[0] for item in ordered) != _STRATEGIES or any(_SHA256.fullmatch(item[1]) is None for item in ordered):
+    if tuple(item[0] for item in ordered) != _STRATEGIES or any(not is_sha256_text(item[1]) for item in ordered):
         raise ValueError("Historical confirmation terminal strategy hashes are invalid")
     return ordered
 
@@ -205,7 +190,7 @@ def _string(value: object) -> str:
 
 
 def _boolean(value: object) -> bool:
-    if not isinstance(value, bool):
+    if not is_boolean(value):
         raise TypeError("Historical confirmation terminal boolean field is invalid")
     return value
 

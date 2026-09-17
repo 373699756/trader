@@ -6,7 +6,11 @@ Remove the public `run.sh`/PowerShell installation and uninstallation commands w
 
 ## Current State And Cause
 
-The system-task renderer and scheduled runner are still needed by already-installed user tasks, but exposing installation and removal as launcher commands made lifecycle management part of the normal research entrypoint. That coupled task registration with the public download/training command surface and left stale commands in the CLI and documentation contracts.
+The system-task renderer and scheduled runner are still needed by already-installed user tasks, but exposing installation and removal as launcher commands made task maintenance part of the normal research entrypoint. That coupled task registration with the public download/training command surface and left stale commands in the CLI and documentation contracts.
+
+## Added
+
+None. This batch removed a duplicated public surface and introduced no new command, module, or configuration key.
 
 ## Changed
 
@@ -16,6 +20,10 @@ The system-task renderer and scheduled runner are still needed by already-instal
 - Kept `history-automation-status` as a read-only status command.
 - Updated active README and engineering command tables to describe the new boundary.
 - Added contract coverage proving retired commands fail before environment setup and are absent from PowerShell public modes.
+
+## Fixed
+
+None. The retired commands were removed rather than corrected, and the retained scheduled runner keeps its existing behavior.
 
 ## Removed
 

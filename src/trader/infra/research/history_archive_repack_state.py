@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Literal
+
+from trader.infra.artifacts.fields import is_sha256_text
 
 HistoryArchiveRepackActivationState = Literal[
     "prepared",
@@ -18,7 +19,6 @@ HistoryArchiveRepackActivationState = Literal[
     "rolled_back",
 ]
 HistoryArchiveRepackAction = Literal["build", "activate", "rollback", "finalize"]
-_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -59,7 +59,7 @@ class HistoryArchiveRepackPartitionEvidence:
             or len(path.parts) != 3
             or path.parts[0] != "partitions"
             or path.suffix != ".sqlite3"
-            or any(_SHA256.fullmatch(value) is None for value in hashes)
+            or any(not is_sha256_text(value) for value in hashes)
             or min(
                 self.row_count,
                 self.observation_count,
@@ -95,8 +95,8 @@ class HistoryArchiveRepackBuildState:
         if (
             not self.source_root
             or not self.target_root
-            or _SHA256.fullmatch(self.source_snapshot_hash) is None
-            or _SHA256.fullmatch(self.source_file_identity_hash) is None
+            or not is_sha256_text(self.source_snapshot_hash)
+            or not is_sha256_text(self.source_file_identity_hash)
             or self.source_sequence < 1
             or source_paths != tuple(sorted(set(source_paths)))
             or len(source_paths) != self.expected_partition_count + 1
@@ -109,7 +109,7 @@ class HistoryArchiveRepackBuildState:
             or len(paths) > self.expected_partition_count
             or self.completed != (self.target_snapshot_hash is not None)
             or self.target_snapshot_hash is not None
-            and _SHA256.fullmatch(self.target_snapshot_hash) is None
+            and not is_sha256_text(self.target_snapshot_hash)
         ):
             raise ValueError("history repack build state is invalid")
 
@@ -132,8 +132,8 @@ class HistoryArchiveRepackActivationJournal:
             not self.source_root
             or not self.target_root
             or not self.backup_root
-            or _SHA256.fullmatch(self.source_snapshot_hash) is None
-            or _SHA256.fullmatch(self.target_snapshot_hash) is None
+            or not is_sha256_text(self.source_snapshot_hash)
+            or not is_sha256_text(self.target_snapshot_hash)
         ):
             raise ValueError("history repack activation journal is invalid")
 
@@ -178,9 +178,9 @@ class HistoryArchiveRepackStatus:
     def __post_init__(self) -> None:
         if (
             not self.state
-            or _SHA256.fullmatch(self.source_snapshot_hash) is None
+            or not is_sha256_text(self.source_snapshot_hash)
             or self.target_snapshot_hash is not None
-            and _SHA256.fullmatch(self.target_snapshot_hash) is None
+            and not is_sha256_text(self.target_snapshot_hash)
             or not 0 <= self.completed_partitions <= self.total_partitions
             or self.total_partitions < 1
             or min(self.source_bytes, self.target_bytes, self.released_bytes) < 0

@@ -231,6 +231,7 @@ def test_supply_status_identifies_the_model_input_stage_as_the_first_blocker(
     )
     stage_counts = ScoredCandidateStageCounts(
         issuer_eligible_population=1,
+        input_ready_population=1,
         dynamic_filter_eligible=1,
         strategy_history_eligible=1,
         model_input_eligible=0,

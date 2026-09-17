@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -16,6 +14,7 @@ from trader.application.research.historical_screening import HistoricalScreening
 from trader.application.research.tomorrow_historical_screening import TomorrowHistoricalRow
 from trader.domain.market.feature_contracts import TOMORROW_RESIDUAL_MOMENTUM_FEATURE_MANIFEST
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalScreeningSpec
+from trader.infra.artifacts.canonical import content_hash
 
 V1_MODEL_ID = "v1_manual_residual_momentum_v1"
 V1_FEATURE_IDS = cast(tuple[str, str, str], TOMORROW_RESIDUAL_MOMENTUM_FEATURE_MANIFEST.names)
@@ -59,7 +58,7 @@ class TomorrowManualV1ModelArtifact:
             or any(value <= 0.0 for value in self.transformer_scales)
         ):
             raise ValueError("manual Tomorrow V1 model artifact is invalid")
-        object.__setattr__(self, "content_hash", _content_hash(production_artifact_payload(self)))
+        object.__setattr__(self, "content_hash", content_hash(production_artifact_payload(self)))
 
 
 class _CompensatedSum:
@@ -168,11 +167,6 @@ def sealed_production_artifact_payload(artifact: TomorrowManualV1ModelArtifact) 
     payload = production_artifact_payload(artifact)
     payload["content_hash"] = artifact.content_hash
     return payload
-
-
-def _content_hash(payload: dict[str, object]) -> str:
-    encoded = json.dumps(payload, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
 
 
 __all__ = [

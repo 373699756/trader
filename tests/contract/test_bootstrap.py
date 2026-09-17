@@ -369,7 +369,8 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
         pipeline=RecommendationPipelineStatus(
             current_stage="action_gate",
             stages=(
-                PipelineStageStatus("dynamic_filter", "completed", 5200, 4800),
+                PipelineStageStatus("input_readiness", "completed", 5200, 5100),
+                PipelineStageStatus("dynamic_filter", "completed", 5100, 4800),
                 PipelineStageStatus("board_cross_section", "completed", 4800, 4800),
                 PipelineStageStatus("strategy_history", "completed", 4800, 4300),
                 PipelineStageStatus("model_input", "completed", 4300, 4200),
@@ -452,7 +453,9 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
     pipeline = payload["tomorrow"]["pipeline"]
     assert pipeline["current_stage"] == "action_gate"
     stages = {stage["key"]: stage for stage in pipeline["stages"]}
-    assert stages["dynamic_filter"]["input_count"] == 5200
+    assert stages["input_readiness"]["input_count"] == 5200
+    assert stages["input_readiness"]["output_count"] == 5100
+    assert stages["dynamic_filter"]["input_count"] == 5100
     assert stages["dynamic_filter"]["output_count"] == 4800
     assert stages["candidate_refresh"]["output_count"] == 352
     assert stages["evidence_score"]["output_count"] == 65

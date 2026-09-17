@@ -17,6 +17,7 @@ from trader.application.ports.data_plane import (
     TradingCalendarRecord,
 )
 from trader.application.ports.json_values import JsonObject
+from trader.infra.artifacts.canonical import canonical_json_text
 from trader.infra.persistence.data_plane_types import Record, _Profile
 
 
@@ -197,11 +198,11 @@ def _thaw_json(value: object) -> object:
 
 
 def canonical_json(payload: Mapping[str, object]) -> str:
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return canonical_json_text(payload, ascii_only=False)
 
 
 def canonical_json_bytes(payload: Mapping[str, object]) -> bytes:
-    return canonical_json(payload).encode("utf-8")
+    return canonical_json_text(payload, ascii_only=False).encode("utf-8")
 
 
 def parse_payload_text(raw: str) -> JsonObject:

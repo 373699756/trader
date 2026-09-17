@@ -14,7 +14,11 @@ from trader.domain.recommendation.decision_identity import (
     ScoredDecision,
 )
 from trader.domain.recommendation.models import RecommendationAction, Strategy
-from trader.domain.recommendation.pipeline import PipelineStageStatus, RecommendationPipelineStatus
+from trader.domain.recommendation.pipeline import (
+    PIPELINE_STAGE_ORDER,
+    PipelineStageStatus,
+    RecommendationPipelineStatus,
+)
 from trader.web.api.decision_serializers import serialize_event
 
 NOW = datetime(2026, 8, 11, 10, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -37,6 +41,7 @@ def test_unified_stream_replays_monotonic_cross_strategy_events() -> None:
 def test_scored_decision_event_serializes_complete_replace_patch_without_snapshot_get() -> None:
     base = _decision(Strategy.TOMORROW, 1)
     keys = (
+        "input_readiness",
         "dynamic_filter",
         "board_cross_section",
         "strategy_history",
@@ -99,7 +104,7 @@ def test_scored_decision_event_serializes_complete_replace_patch_without_snapsho
         "score_model": "daily_reconstructible_ensemble:model-hash",
     }
     assert payload["pipeline"]["current_stage"] == "concentration"
-    assert len(payload["pipeline"]["stages"]) == 15
+    assert len(payload["pipeline"]["stages"]) == len(PIPELINE_STAGE_ORDER)
     assert payload["upserts"] == [
         {
             "action": "executable",

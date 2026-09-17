@@ -19,6 +19,7 @@ from trader.domain.recommendation.models import FilterAudit
 class FilterSeverity(str, Enum):
     REQUIRED = "required"
     OPTIONAL = "optional"
+    DEFERRED = "deferred"
 
 
 class FilterTier(str, Enum):
@@ -57,6 +58,7 @@ class FilterRule:
 
     ``REQUIRED`` rules cause the candidate to be rejected immediately.
     ``OPTIONAL`` rules produce an audit entry but do not block the candidate.
+    ``DEFERRED`` rules prevent scoring until their required input is ready.
     """
 
     name: str
@@ -71,6 +73,7 @@ class FilterResult:
     board: Board
     reasons: tuple[FilterAudit, ...]
     optional_flags: tuple[FilterAudit, ...] = ()
+    deferred: tuple[FilterAudit, ...] = ()
 
 
 def board_for_code(code: str) -> Board:
@@ -158,24 +161,29 @@ def apply_filters(
 
     ``REQUIRED`` rules that return an audit cause immediate rejection.
     ``OPTIONAL`` rules that return an audit are collected into
-    ``optional_flags`` but do not block the candidate.
+    ``optional_flags`` but do not block the candidate. ``DEFERRED`` rules are
+    collected separately from confirmed business rejections.
     """
     board = board_for_snapshot(snapshot)
     reasons: list[FilterAudit] = []
     optional_flags: list[FilterAudit] = []
+    deferred: list[FilterAudit] = []
     for rule in rules:
         audit = rule.predicate(snapshot, now)
         if audit is None:
             continue
         if rule.severity is FilterSeverity.REQUIRED:
             reasons.append(audit)
+        elif rule.severity is FilterSeverity.DEFERRED:
+            deferred.append(audit)
         else:
             optional_flags.append(audit)
     return FilterResult(
-        allowed=not reasons,
+        allowed=not reasons and not deferred,
         board=board,
         reasons=tuple(reasons),
         optional_flags=tuple(optional_flags),
+        deferred=tuple(deferred),
     )
 
 
@@ -302,12 +310,18 @@ class _DefaultFilterRules:
             )
         return None
 
-    def missing_liquidity(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def liquidity_readiness(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         median_amount = snapshot.values.get("amount_median_20d")
         if median_amount is None:
             return _make_audit(snapshot, "missing_liquidity_history", ">= 50000000", None)
         if not math.isfinite(median_amount):
             return _make_audit(snapshot, "invalid_liquidity_history", ">= 50000000", median_amount)
+        return None
+
+    def insufficient_liquidity(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+        median_amount = snapshot.values.get("amount_median_20d")
+        if median_amount is None or not math.isfinite(median_amount):
+            return None
         if median_amount < 50_000_000:
             return _make_audit(snapshot, "insufficient_liquidity", ">= 50000000", median_amount)
         return None
@@ -349,6 +363,12 @@ class _DefaultFilterRules:
             return _make_audit(snapshot, "chinext_board_too_hot", "<= 16.00", pct_change)
         if board is Board.STAR and pct_change > 16.0:
             return _make_audit(snapshot, "star_board_too_hot", "<= 16.00", pct_change)
+        return None
+
+    def invalid_pct_change_value(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+        value = snapshot.quote.pct_change
+        if value is None or not math.isfinite(value):
+            return _make_audit(snapshot, "invalid_pct_change", "finite percentage points", value)
         return None
 
     def _structured_negative_risk(
@@ -474,10 +494,10 @@ def level_two_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy |
     return (
         FilterRule("unsupported_code", FilterSeverity.REQUIRED, registry.unsupported_code),
         FilterRule("suspended", FilterSeverity.REQUIRED, registry.suspended),
-        FilterRule("invalid_price", FilterSeverity.REQUIRED, registry.invalid_price),
-        FilterRule("invalid_amount", FilterSeverity.REQUIRED, registry.invalid_amount),
-        FilterRule("invalid_quote_time", FilterSeverity.REQUIRED, registry.invalid_quote_time),
-        FilterRule("invalid_cross_source_deviation", FilterSeverity.REQUIRED, registry.cross_source_deviation),
+        FilterRule("invalid_price", FilterSeverity.DEFERRED, registry.invalid_price),
+        FilterRule("invalid_amount", FilterSeverity.DEFERRED, registry.invalid_amount),
+        FilterRule("invalid_quote_time", FilterSeverity.DEFERRED, registry.invalid_quote_time),
+        FilterRule("invalid_cross_source_deviation", FilterSeverity.DEFERRED, registry.cross_source_deviation),
         FilterRule("cross_source_deviation", FilterSeverity.OPTIONAL, registry.cross_source_deviation_optional),
         FilterRule("new_listing_session", FilterSeverity.REQUIRED, registry.new_listing_session),
         FilterRule("relisted_first_session", FilterSeverity.REQUIRED, registry.relisted_first_session),
@@ -486,7 +506,8 @@ def level_two_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy |
         FilterRule("board_identity_degraded", FilterSeverity.OPTIONAL, registry.board_identity_degraded),
         FilterRule("missing_listing_date", FilterSeverity.OPTIONAL, registry.missing_listing_date),
         FilterRule("missing_listing_age_sessions", FilterSeverity.OPTIONAL, registry.missing_listing_age_sessions),
-        FilterRule("missing_liquidity_history", FilterSeverity.REQUIRED, registry.missing_liquidity),
+        FilterRule("liquidity_readiness", FilterSeverity.DEFERRED, registry.liquidity_readiness),
+        FilterRule("insufficient_liquidity", FilterSeverity.REQUIRED, registry.insufficient_liquidity),
         FilterRule("one_price_limit", FilterSeverity.REQUIRED, registry.one_price_limit),
         FilterRule("major_regulatory_risk", FilterSeverity.REQUIRED, registry.major_regulatory_risk),
         FilterRule(
@@ -500,8 +521,9 @@ def level_two_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy |
             FilterSeverity.OPTIONAL,
             registry.corporate_risk_history_unavailable,
         ),
-        FilterRule("invalid_quote_structure", FilterSeverity.REQUIRED, registry.invalid_quote_structure),
-        FilterRule("invalid_pct_change", FilterSeverity.REQUIRED, registry.invalid_pct_change),
+        FilterRule("invalid_quote_structure", FilterSeverity.DEFERRED, registry.invalid_quote_structure),
+        FilterRule("invalid_pct_change_value", FilterSeverity.DEFERRED, registry.invalid_pct_change_value),
+        FilterRule("price_heat_limit", FilterSeverity.REQUIRED, registry.invalid_pct_change),
     )
 
 

@@ -21,6 +21,7 @@ from trader.domain.research.history_control import (
     HistoryUniverseIdentity,
 )
 from trader.domain.research.history_revision import HistoryRevision
+from trader.infra.artifacts.canonical import content_hash
 from trader.infra.research.history_archive_repack import (
     HistoryArchiveRepackCoordinator,
     HistoryArchiveRepackFenceError,
@@ -33,7 +34,6 @@ from trader.infra.research.history_archive_repack_state import (
 from trader.infra.research.history_control_repository import SQLiteHistoryControlRepository
 from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
 from trader.infra.research.history_training_due import HistoryTrainingDueQuery, evaluate_history_training_due
-from trader.infra.scoring.artifact_hashing import artifact_content_hash
 from trader.infra.scoring.head_bundles.bundle_repository import ActiveHeadBundle
 from trader.infra.scoring.profiles.v3.contracts import V3_TRAINING_PROFILE
 from trader.infra.scoring.profiles.v3.training import run_repack_tomorrow_training, run_repack_v3_training
@@ -58,7 +58,7 @@ def _write_training_memory_evidence(path: Path, training_input_hash: str) -> Non
         "stage_durations_ms": {"partition_validation": 12.5, "model_fit": 7.0},
         "failure_reasons": [],
     }
-    payload["content_hash"] = artifact_content_hash(payload)
+    payload["content_hash"] = content_hash(payload)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 

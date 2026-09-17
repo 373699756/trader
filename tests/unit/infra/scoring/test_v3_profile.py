@@ -12,7 +12,7 @@ import pytest
 
 from trader.application.ports.model_scoring import ModelInput
 from trader.domain.recommendation.models import Strategy
-from trader.infra.scoring.artifact_hashing import artifact_content_hash
+from trader.infra.artifacts.canonical import content_hash
 from trader.infra.scoring.head_bundles.bundle_codec import decode_head_bundle, load_head_bundle
 from trader.infra.scoring.head_bundles.bundle_locator import locate_head_bundles
 from trader.infra.scoring.head_bundles.bundle_repository import (
@@ -33,7 +33,7 @@ from trader.infra.scoring.profiles.v3.contracts import (
 
 
 def _model_payload_hash(document: dict[str, object]) -> str:
-    return artifact_content_hash(
+    return content_hash(
         {key: value for key, value in document.items() if key not in {"report_hash", "model_payload_hash"}}
     )
 
@@ -88,7 +88,7 @@ def _documents(
         "validation_scope": "daily_close_engineering_proxy",
         "production_authority": False,
     }
-    training_input["content_hash"] = artifact_content_hash(training_input)
+    training_input["content_hash"] = content_hash(training_input)
     width = len(contract.feature_manifest.names)
     model: dict[str, object] = {
         "schema_version": f"{profile.profile_id}_head_scoring_model",
@@ -185,15 +185,13 @@ def _documents(
         "automatic_model_update": False,
         "production_authority": False,
     }
-    report["content_hash"] = artifact_content_hash(report)
+    report["content_hash"] = content_hash(report)
     model["report_hash"] = report["content_hash"]
     model["model_payload_hash"] = _model_payload_hash(model)
     report["model_payload_hash"] = model["model_payload_hash"]
-    report["content_hash"] = artifact_content_hash(
-        {key: value for key, value in report.items() if key != "content_hash"}
-    )
+    report["content_hash"] = content_hash({key: value for key, value in report.items() if key != "content_hash"})
     model["report_hash"] = report["content_hash"]
-    model["content_hash"] = artifact_content_hash(model)
+    model["content_hash"] = content_hash(model)
     return model, report, training_input
 
 
@@ -265,7 +263,9 @@ def test_shared_loader_builds_three_distinct_heads_for_v2_and_v3(tmp_path: Path)
         assert profile.heads[Strategy.TODAY].evidence.runtime_anchor == "11:20"
         assert profile.heads[Strategy.TOMORROW].evidence.runtime_anchor == "14:50"
         assert profile.heads[Strategy.D25].evidence.runtime_anchor == "14:50"
-    assert tuple(path.parent.parent.name for _, path in locate_head_bundles(tmp_path, V2_TRAINING_PROFILE)) == ("v2",) * 3
+    assert (
+        tuple(path.parent.parent.name for _, path in locate_head_bundles(tmp_path, V2_TRAINING_PROFILE)) == ("v2",) * 3
+    )
     assert tuple(path.parent.parent.name for _, path in located) == ("v3",) * 3
     for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
         v2_predictor = profiles[0].heads[strategy].predictor
@@ -294,9 +294,7 @@ def test_shared_loader_fails_closed_for_both_profiles_when_a_bundle_is_corrupt(t
     report_path = tmp_path / selected.output_directory / "tomorrow" / "report.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
     report["training_contract_hash"] = "f" * 64
-    report["content_hash"] = artifact_content_hash(
-        {key: value for key, value in report.items() if key != "content_hash"}
-    )
+    report["content_hash"] = content_hash({key: value for key, value in report.items() if key != "content_hash"})
     report_path.write_text(json.dumps(report), encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="invalid"):
@@ -338,7 +336,7 @@ def test_v3_codec_rejects_cross_head_and_nonportable_fields() -> None:
 
     model.pop("content_hash")
     model["source_commit"] = "d" * 40
-    model["content_hash"] = artifact_content_hash(model)
+    model["content_hash"] = content_hash(model)
     with pytest.raises(ValueError, match="fields"):
         decode_head_bundle(model, Strategy.TOMORROW, V3_TRAINING_PROFILE)
 
@@ -347,9 +345,7 @@ def test_v3_loader_rejects_tampered_group_identity(tmp_path: Path) -> None:
     selected = _publish(tmp_path, TOMORROW_HEAD_CONTRACT)
     report = json.loads(selected.with_name("report.json").read_text(encoding="utf-8"))
     report["training_contract_hash"] = "f" * 64
-    report["content_hash"] = artifact_content_hash(
-        {key: value for key, value in report.items() if key != "content_hash"}
-    )
+    report["content_hash"] = content_hash({key: value for key, value in report.items() if key != "content_hash"})
     selected.with_name("report.json").write_text(json.dumps(report), encoding="utf-8")
 
     with pytest.raises(ValueError, match="identities"):
@@ -405,7 +401,7 @@ def test_flat_publication_recovery_restores_previous_files(tmp_path: Path) -> No
         "previous_files": list(previous),
         "new_pointer_hash": "f" * 64,
     }
-    journal["content_hash"] = artifact_content_hash(journal)
+    journal["content_hash"] = content_hash(journal)
     (output / ".bundle-publication.json").write_text(json.dumps(journal), encoding="utf-8")
 
     recover_head_bundle_publication(output, Strategy.TOMORROW, V3_TRAINING_PROFILE)

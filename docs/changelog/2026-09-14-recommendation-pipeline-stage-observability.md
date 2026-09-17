@@ -21,7 +21,7 @@ not reliably locate the first broken score-input or decision stage.
 
 ## Added
 
-- One immutable typed recommendation-pipeline status with ordered stages, explicit lifecycle state, nullable
+- One immutable typed recommendation-pipeline status with ordered stages, explicit per-stage state, nullable
   input/output counts, metric ranges, thresholds, facets and bounded reason counts.
 - Direct stage aggregation for board reliability, history length, input completeness, candidate/base/local/
   DeepSeek/final scores, quote age, model prediction/cost/net utility/disagreement and risk deductions.

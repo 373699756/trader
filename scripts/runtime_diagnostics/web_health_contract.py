@@ -62,6 +62,7 @@ class PipelineSnapshot:
 
 _MONITORED_PIPELINE_COUNTS = (
     "issuer_eligible_population",
+    "input_ready_population",
     "dynamic_filter_eligible",
     "strategy_history_eligible",
     "model_input_eligible",
@@ -76,6 +77,7 @@ _MONITORED_PIPELINE_COUNTS = (
 )
 
 _PIPELINE_STAGE_ORDER = (
+    "input_readiness",
     "dynamic_filter",
     "board_cross_section",
     "strategy_history",
@@ -95,7 +97,8 @@ _PIPELINE_STAGE_ORDER = (
 _PIPELINE_STAGE_STATES = frozenset({"pending", "running", "completed", "degraded", "not_applicable"})
 
 _PIPELINE_COUNT_LOCATIONS = {
-    "issuer_eligible_population": ("dynamic_filter", "input_count"),
+    "issuer_eligible_population": ("input_readiness", "input_count"),
+    "input_ready_population": ("input_readiness", "output_count"),
     "dynamic_filter_eligible": ("dynamic_filter", "output_count"),
     "strategy_history_eligible": ("strategy_history", "output_count"),
     "model_input_eligible": ("model_input", "output_count"),

@@ -26,6 +26,7 @@ from trader.domain.research.artifact_identity import (
     canonical_artifact_json,
     canonical_artifact_value,
 )
+from trader.infra.artifacts.fields import as_sequence, is_boolean, is_integer, is_number
 
 TomorrowDailyCloseArtifact = DatasetManifest | FeatureDataset | ValidationReport | CandidateModelArtifact
 
@@ -352,9 +353,10 @@ def _object(value: object) -> dict[str, object]:
 
 
 def _list(value: object) -> list[object]:
-    if not isinstance(value, list):
+    sequence = as_sequence(value)
+    if sequence is None:
         raise TypeError("artifact value must be an array")
-    return value
+    return sequence
 
 
 def _string(value: object) -> str:
@@ -368,19 +370,19 @@ def _optional_string(value: object) -> str | None:
 
 
 def _bool(value: object) -> bool:
-    if not isinstance(value, bool):
+    if not is_boolean(value):
         raise TypeError("artifact value must be a boolean")
     return value
 
 
 def _int(value: object) -> int:
-    if not isinstance(value, int) or isinstance(value, bool):
+    if not is_integer(value):
         raise TypeError("artifact value must be an integer")
     return value
 
 
 def _float(value: object) -> float:
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
+    if not is_number(value):
         raise TypeError("artifact value must be numeric")
     return float(value)
 

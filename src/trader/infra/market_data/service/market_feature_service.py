@@ -33,7 +33,7 @@ from trader.infra.market_data.history.daily_history_warmup import HistoryWarmup
 from trader.infra.market_data.service.candidate_quote_cache import QuoteCache
 from trader.infra.market_data.service.intraday_loader import IntradayLoader
 from trader.infra.market_data.service.market_cache_identity import (
-    _history_preload_codes,
+    _history_population_codes,
     _normalize_codes,
     _research_data_version,
 )
@@ -87,10 +87,7 @@ class MarketFeatureService:
             self._record_quote_eligibility(tuple(feature.quote for feature in cached), observed_at)
             cached = self._eligible_features(cached, observed_at)
             if self.runner.source_lanes is not None:
-                history_codes = _history_preload_codes(
-                    tuple(feature.quote for feature in cached),
-                    self.history_preload_limit,
-                )
+                history_codes = _history_population_codes(tuple(feature.quote for feature in cached))
                 self.warmup.schedule_history_warmup(history_codes, observed_at)
             return cached
         quotes = tuple(
@@ -105,7 +102,7 @@ class MarketFeatureService:
         )
         self._record_quote_eligibility(quotes, observed_at)
         quotes = self._eligible_quotes(quotes, observed_at)
-        history_codes = _history_preload_codes(quotes, self.history_preload_limit)
+        history_codes = _history_population_codes(quotes)
         if self.runner.source_lanes is not None:
             self.warmup.schedule_history_warmup(history_codes, observed_at)
         action_restrictions: dict[str, set[str]] = {}

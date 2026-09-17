@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -30,6 +28,9 @@ from trader.domain.research.artifact_identity import (
     canonical_artifact_json,
     canonical_artifact_value,
 )
+from trader.infra.artifacts.canonical import file_sha256
+from trader.infra.artifacts.fields import as_sequence, is_boolean, is_integer, is_number
+from trader.infra.artifacts.sealing import publish_immutable, publish_immutable_file, replace_file
 from trader.infra.process_lock import ProcessLock, ProcessLockError
 
 
@@ -109,7 +110,7 @@ class TomorrowResearchArtifactRepository:
         return expected_hash
 
     def seal_evidence_partition(self, reference: TomorrowResearchEvidencePartitionRef, source: Path) -> str:
-        if not source.is_file() or _file_hash(source) != reference.content_hash:
+        if not source.is_file() or file_sha256(source) != reference.content_hash:
             raise TomorrowResearchArtifactRepositoryError("Tomorrow research evidence partition hash is invalid")
         target = self._evidence_inbox_root / f"{reference.content_hash}.parquet"
         _seal_file_copy(source, target, reference.content_hash)
@@ -194,7 +195,7 @@ class TomorrowResearchArtifactRepository:
             if existing is not None and existing != reference:
                 raise TomorrowResearchArtifactRepositoryError("Tomorrow research evidence partition identity conflict")
             source = self._evidence_inbox_root / f"{reference.content_hash}.parquet"
-            if not source.is_file() or _file_hash(source) != reference.content_hash:
+            if not source.is_file() or file_sha256(source) != reference.content_hash:
                 raise TomorrowResearchArtifactRepositoryError("Tomorrow research sealed evidence partition is missing")
             _seal_file_copy(source, run_root / "evidence" / reference.relative_path, reference.content_hash)
             evidence_by_path[reference.relative_path] = reference
@@ -208,15 +209,15 @@ class TomorrowResearchArtifactRepository:
     ) -> None:
         encoded_graph = _encode(context.graph)
         _seal_immutable(context.run_root / ".graphs" / f"{context.graph.content_hash}.json", encoded_graph)
-        _replace_file(context.run_root / ".checkpoint.json", encoded_graph)
+        replace_file(context.run_root / ".checkpoint.json", encoded_graph)
         report = _report(context.graph, handoff, context.run_id, context.resource_probe, evidence)
-        _replace_file(context.run_root / ".report-checkpoint.json", report)
+        replace_file(context.run_root / ".report-checkpoint.json", report)
         if context.next_stage is None:
-            _replace_file(context.run_root / "report.json", report)
+            replace_file(context.run_root / "report.json", report)
             if context.model_encoded is not None:
                 _seal_immutable(context.run_root / "model.json", context.model_encoded)
         if context.active_run_id != context.run_id:
-            _replace_file(self._active_run_path, f"{context.run_id}\n")
+            replace_file(self._active_run_path, f"{context.run_id}\n")
 
     def host_available_disk_gb(self) -> float:
         path = self._root
@@ -514,43 +515,22 @@ def _verified_model_document(encoded: str, expected_hash: str) -> str:
 
 def _seal_immutable(path: Path, encoded: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(encoded, encoding="utf-8")
-    try:
-        try:
-            os.link(temporary, path)
-        except FileExistsError:
-            if path.read_text(encoding="utf-8") != encoded:
-                raise TomorrowResearchArtifactRepositoryError("Tomorrow research immutable artifact conflict") from None
-    finally:
-        temporary.unlink(missing_ok=True)
+    if publish_immutable(path, encoded):
+        return
+    if path.read_text(encoding="utf-8") != encoded:
+        raise TomorrowResearchArtifactRepositoryError("Tomorrow research immutable artifact conflict")
 
 
 def _seal_file_copy(source: Path, target: Path, expected_hash: str) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.is_file():
-        if _file_hash(target) != expected_hash:
+        if file_sha256(target) != expected_hash:
             raise TomorrowResearchArtifactRepositoryError("Tomorrow research immutable evidence conflict")
         return
-    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    shutil.copyfile(source, temporary)
-    try:
-        if _file_hash(temporary) != expected_hash:
-            raise TomorrowResearchArtifactRepositoryError("Tomorrow research copied evidence hash is invalid")
-        try:
-            os.link(temporary, target)
-        except FileExistsError:
-            if _file_hash(target) != expected_hash:
-                raise TomorrowResearchArtifactRepositoryError("Tomorrow research immutable evidence conflict") from None
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _replace_file(path: Path, encoded: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(encoded, encoding="utf-8")
-    os.replace(temporary, path)
+    if file_sha256(source) != expected_hash:
+        raise TomorrowResearchArtifactRepositoryError("Tomorrow research copied evidence hash is invalid")
+    if not publish_immutable_file(target, source) and file_sha256(target) != expected_hash:
+        raise TomorrowResearchArtifactRepositoryError("Tomorrow research immutable evidence conflict")
 
 
 def _same_hash(raw: dict[str, object], expected: str) -> None:
@@ -570,9 +550,10 @@ def _object(value: object) -> dict[str, object]:
 
 
 def _array(value: object) -> list[object]:
-    if not isinstance(value, list):
+    sequence = as_sequence(value)
+    if sequence is None:
         raise TypeError("Tomorrow research artifact value must be an array")
-    return value
+    return sequence
 
 
 def _string(value: object) -> str:
@@ -590,19 +571,19 @@ def _strings(value: object) -> tuple[str, ...]:
 
 
 def _boolean(value: object) -> bool:
-    if not isinstance(value, bool):
+    if not is_boolean(value):
         raise TypeError("Tomorrow research artifact value must be a boolean")
     return value
 
 
 def _integer(value: object) -> int:
-    if not isinstance(value, int) or isinstance(value, bool):
+    if not is_integer(value):
         raise TypeError("Tomorrow research artifact value must be an integer")
     return value
 
 
 def _number(value: object) -> float:
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
+    if not is_number(value):
         raise TypeError("Tomorrow research artifact value must be numeric")
     return float(value)
 
@@ -612,14 +593,6 @@ def _date(value: object) -> date:
         return date.fromisoformat(_string(value))
     except ValueError as exc:
         raise ValueError("Tomorrow research artifact date is invalid") from exc
-
-
-def _file_hash(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 __all__ = ["TomorrowResearchArtifactRepository", "TomorrowResearchArtifactRepositoryError"]

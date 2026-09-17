@@ -2,23 +2,18 @@
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
-from pathlib import Path
 
 from trader.application.research.baseline_identity_audit import BaselineIdentityEvidence
 from trader.domain.recommendation.models import Strategy
 from trader.domain.research.baseline_identity import BaselineIdentityClaim, source_hash
+from trader.infra.artifacts.canonical import file_sha256
 from trader.infra.research.tomorrow_historical_artifacts import (
     TomorrowHistoricalArtifactArchive,
     TomorrowHistoricalArtifactConflictError,
 )
 from trader.infra.scoring.profile_factory import load_scoring_profile
 from trader.infra.settings import RuntimeSettings, load_strategy_settings
-
-
-def _file_hash(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -32,7 +27,7 @@ class PackagedBaselineIdentityEvidence(BaselineIdentityEvidence):
 
 def load_baseline_identity_evidence(runtime: RuntimeSettings) -> PackagedBaselineIdentityEvidence:
     strategy = load_strategy_settings(runtime.strategy_config_path)
-    strategy_hash = _file_hash(runtime.strategy_config_path)
+    strategy_hash = file_sha256(runtime.strategy_config_path)
     design_path = runtime.project_root / "docs/02_工程设计.md"
     strategy_doc_path = runtime.project_root / "docs/01_评分逻辑.md"
     v1 = load_scoring_profile("v1").heads[Strategy.TOMORROW].predictor
@@ -112,14 +107,14 @@ def load_baseline_identity_evidence(runtime: RuntimeSettings) -> PackagedBaselin
             "present",
             "present" if strategy_doc_path.is_file() else None,
             str(strategy_doc_path),
-            _file_hash(strategy_doc_path) if strategy_doc_path.is_file() else source_hash(str(strategy_doc_path)),
+            file_sha256(strategy_doc_path) if strategy_doc_path.is_file() else source_hash(str(strategy_doc_path)),
         ),
         BaselineIdentityClaim(
             "business_design_document_present",
             "present",
             "present" if design_path.is_file() else None,
             str(design_path),
-            _file_hash(design_path) if design_path.is_file() else source_hash(str(design_path)),
+            file_sha256(design_path) if design_path.is_file() else source_hash(str(design_path)),
         ),
         BaselineIdentityClaim(
             "live_runtime_identity",

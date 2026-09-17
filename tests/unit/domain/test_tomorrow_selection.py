@@ -272,6 +272,7 @@ def test_every_required_candidate_rejection_is_applied_before_the_board_cap(
     too_new = feature("600007")
     one_price = feature("600008")
     no_liquidity_history = feature("600009")
+    insufficient_liquidity = feature("600013")
     no_strategy_history = feature("600010")
     no_model_input = feature("600011")
     core_missing = feature("600012")
@@ -287,6 +288,10 @@ def test_every_required_candidate_rejection_is_applied_before_the_board_cap(
         replace(too_new, quote=replace(too_new.quote, listing_age_sessions=5)),
         replace(one_price, quote=replace(one_price.quote, is_one_price_limit=True)),
         replace(no_liquidity_history, values={**no_liquidity_history.values, "amount_median_20d": None}),
+        replace(
+            insufficient_liquidity,
+            values={**insufficient_liquidity.values, "amount_median_20d": 49_999_999.0},
+        ),
         replace(no_strategy_history, history_days=19),
         no_model_input,
         replace(
@@ -324,6 +329,13 @@ def test_every_required_candidate_rejection_is_applied_before_the_board_cap(
     assert {reason.code for reason in by_code[no_liquidity_history.quote.code].filter_reasons} == {
         "missing_liquidity_history"
     }
+    assert {reason.code for reason in by_code[insufficient_liquidity.quote.code].filter_reasons} == {
+        "insufficient_liquidity"
+    }
+    assert by_code[no_liquidity_history.quote.code].disposition is ScoredDisposition.OBSERVE_ONLY
+    assert by_code[no_liquidity_history.quote.code].selection_skip_reason == "data_pending"
+    assert by_code[insufficient_liquidity.quote.code].disposition is ScoredDisposition.REJECT
+    assert plan.population_rejected_count == 7
     assert by_code[no_strategy_history.quote.code].selection_skip_reason == "strategy_history_insufficient"
     assert by_code[no_model_input.quote.code].selection_skip_reason == "production_model_features_missing"
     assert by_code[core_missing.quote.code].selection_skip_reason == "candidate_core_missing"

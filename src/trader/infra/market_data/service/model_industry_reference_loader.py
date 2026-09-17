@@ -1,4 +1,4 @@
-"""Lifecycle and typed projection for current model-industry references."""
+"""Scheduled refresh and typed projection for current model-industry references."""
 
 from __future__ import annotations
 

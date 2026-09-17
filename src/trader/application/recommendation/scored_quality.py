@@ -74,6 +74,8 @@ class ScoredInputQuality:
     candidate_transient_reason_counts: Mapping[str, int] = field(default_factory=dict)
     candidate_optional_reason_counts: Mapping[str, int] = field(default_factory=dict)
     degraded_reasons: tuple[str, ...] = ()
+    data_pending_count: int = 0
+    refresh_pending_count: int = 0
 
     def __post_init__(self) -> None:
         for name in (
@@ -85,6 +87,8 @@ class ScoredInputQuality:
             "candidate_scored_count",
             "security_master_covered_count",
             "history_covered_count",
+            "data_pending_count",
+            "refresh_pending_count",
         ):
             if getattr(self, name) < 0:
                 raise ValueError("scored input quality counts cannot be negative")
@@ -227,6 +231,17 @@ def assess_scored_input_quality(
     else:
         status = "business_empty"
     population_filter_counts = dict(selection.population_filter_reason_counts)
+    data_pending_count = sum(
+        bool(
+            _TRANSIENT_FILTER_REASONS.intersection(reason.code for reason in item.filter_reasons)
+            - {"stale_quote", "future_quote"}
+        )
+        for item in selection.evaluations
+    )
+    refresh_pending_count = sum(
+        bool({"stale_quote", "future_quote"}.intersection(reason.code for reason in item.filter_reasons))
+        for item in selection.evaluations
+    )
     return ScoredInputQuality(
         status=status,
         population_count=len(native_input.market_features),
@@ -246,6 +261,8 @@ def assess_scored_input_quality(
         candidate_transient_reason_counts=transient_counts,
         candidate_optional_reason_counts=optional_counts,
         degraded_reasons=(*tuple(optional_counts), *blocking_coverage_reasons, *history_reasons),
+        data_pending_count=data_pending_count,
+        refresh_pending_count=refresh_pending_count,
     )
 
 

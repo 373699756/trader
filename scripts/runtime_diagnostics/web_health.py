@@ -44,6 +44,7 @@ _SCORING_PHASES = frozenset(
 _TODAY_SCORING_PHASES = frozenset({"today_observe", "today_main", "today_late"})
 _MONITORED_PIPELINE_COUNTS = (
     "issuer_eligible_population",
+    "input_ready_population",
     "dynamic_filter_eligible",
     "strategy_history_eligible",
     "model_input_eligible",
@@ -831,7 +832,8 @@ def _eligible_zero(sample: WebSample, strategy: str, field_name: str) -> bool:
     if counts[field_name] != 0 or (field_name == "full_scored" and quality.status == "business_empty"):
         return False
     upstream_fields = {
-        "dynamic_filter_eligible": "issuer_eligible_population",
+        "input_ready_population": "issuer_eligible_population",
+        "dynamic_filter_eligible": "input_ready_population",
         "strategy_history_eligible": "dynamic_filter_eligible",
         "model_input_eligible": "strategy_history_eligible",
         "candidate_score_eligible": "model_input_eligible",

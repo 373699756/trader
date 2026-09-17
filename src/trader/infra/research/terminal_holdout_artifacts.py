@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from datetime import date
 from pathlib import Path
 
-from trader.domain.research.artifact_identity import canonical_artifact_json
+from trader.domain.research.artifact_identity import canonical_artifact_hash, canonical_artifact_json
 from trader.domain.research.terminal_holdout import (
     TerminalHoldoutMetrics,
     TerminalHoldoutReport,
     TerminalStrategy,
 )
+from trader.infra.artifacts.fields import is_text_sequence
+from trader.infra.artifacts.sealing import publish_immutable
 
 
 class TerminalHoldoutArtifactConflictError(RuntimeError):
@@ -36,22 +36,11 @@ class TerminalHoldoutArtifactArchive:
             return existing
         payload = encode_terminal_holdout_report(report)
         payload["content_hash"] = report.content_hash
-        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=self._root)
-        temporary = Path(temporary_name)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(canonical_artifact_json(payload))
-                handle.flush()
-                os.fsync(handle.fileno())
-            try:
-                os.link(temporary, path)
-            except FileExistsError:
-                existing = self.verify()
-                if existing.content_hash != report.content_hash:
-                    raise TerminalHoldoutArtifactConflictError("terminal holdout report identity conflict") from None
-                return existing
-        finally:
-            temporary.unlink(missing_ok=True)
+        if not publish_immutable(path, canonical_artifact_json(payload)):
+            existing = self.verify()
+            if existing.content_hash != report.content_hash:
+                raise TerminalHoldoutArtifactConflictError("terminal holdout report identity conflict")
+            return existing
         return self.verify()
 
     def verify(self) -> TerminalHoldoutReport:
@@ -61,7 +50,7 @@ class TerminalHoldoutArtifactArchive:
             if not isinstance(raw, dict):
                 raise TypeError("terminal holdout report is not an object")
             persisted_hash = raw.pop("content_hash")
-            if not isinstance(persisted_hash, str) or _canonical_hash(raw) != persisted_hash:
+            if not isinstance(persisted_hash, str) or canonical_artifact_hash(raw) != persisted_hash:
                 raise ValueError("terminal holdout report hash mismatch")
             report = decode_terminal_holdout_report(raw)
             if report.content_hash != persisted_hash:
@@ -99,9 +88,9 @@ def decode_terminal_holdout_report(raw: dict[str, object]) -> TerminalHoldoutRep
     metrics = _decode_metrics(metrics_raw)
     dates_raw = raw["terminal_trade_dates"]
     reasons_raw = raw["failure_reasons"]
-    if not isinstance(dates_raw, list) or not all(isinstance(item, str) for item in dates_raw):
+    if not is_text_sequence(dates_raw):
         raise TypeError("terminal holdout dates are invalid")
-    if not isinstance(reasons_raw, list) or not all(isinstance(item, str) for item in reasons_raw):
+    if not is_text_sequence(reasons_raw):
         raise TypeError("terminal holdout failure reasons are invalid")
     return TerminalHoldoutReport(
         strategy=raw["strategy"],  # type: ignore[arg-type]
@@ -226,12 +215,6 @@ def _decode_metrics(raw: dict[str, object]) -> TerminalHoldoutMetrics:
         _floats(raw["baseline_horizon_mean_net_excess_returns"]),
         state_pairs,
     )
-
-
-def _canonical_hash(value: object) -> str:
-    from hashlib import sha256
-
-    return sha256(canonical_artifact_json(value).encode()).hexdigest()
 
 
 def _string(value: object) -> str:

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Literal, cast
 
 from trader.domain.market.feature_contracts import TOMORROW_RESIDUAL_MOMENTUM_FEATURE_MANIFEST
-from trader.infra.scoring.artifact_hashing import artifact_content_hash
+from trader.infra.artifacts.canonical import content_hash
 
 _AUTHORIZED_HASH = "4291ea514c233a14ab6f9262e72ea541d1e9a794e73d02f10f8220509f6f502b"
 _FEATURE_IDS = TOMORROW_RESIDUAL_MOMENTUM_FEATURE_MANIFEST.names
@@ -32,7 +32,7 @@ def decode_tomorrow_artifact(document: object) -> V1TomorrowModelArtifact:
     persisted_hash = payload.pop("content_hash", None)
     if (
         not isinstance(persisted_hash, str)
-        or artifact_content_hash(payload) != persisted_hash
+        or content_hash(payload) != persisted_hash
         or persisted_hash != _AUTHORIZED_HASH
     ):
         raise ValueError("packaged Tomorrow V1 production model hash is not authorized")

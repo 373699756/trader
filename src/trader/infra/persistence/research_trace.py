@@ -33,6 +33,7 @@ from trader.application.research.research_audit import (
 )
 from trader.domain.recommendation.decision_identity import DecisionStage
 from trader.domain.recommendation.models import RecommendationAction, Strategy
+from trader.infra.artifacts.fields import as_sequence
 
 LEGACY_RESEARCH_EVENT_SCHEMA_VERSION = "research_committed_event_legacy"
 RESEARCH_EVENT_SCHEMA_VERSION = "research_committed_event"
@@ -906,9 +907,10 @@ def _object(raw: object, label: str) -> dict[str, object]:
 
 
 def _list(raw: object, label: str) -> list[object]:
-    if not isinstance(raw, list):
+    sequence = as_sequence(raw)
+    if sequence is None:
         raise ValueError(f"{label} must be a list")
-    return raw
+    return sequence
 
 
 def _text(raw: dict[str, object], key: str) -> str:

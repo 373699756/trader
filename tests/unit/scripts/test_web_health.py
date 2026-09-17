@@ -36,10 +36,12 @@ def _funnel(**overrides: int) -> dict[str, object]:
         "selected_observe": 0,
     }
     values.update(overrides)
+    values.setdefault("input_ready_population", values["issuer_eligible_population"])
     return {
         "current_stage": "concentration",
         "stages": [
-            _stage("dynamic_filter", values["issuer_eligible_population"], values["dynamic_filter_eligible"]),
+            _stage("input_readiness", values["issuer_eligible_population"], values["input_ready_population"]),
+            _stage("dynamic_filter", values["input_ready_population"], values["dynamic_filter_eligible"]),
             _stage(
                 "board_cross_section",
                 values["dynamic_filter_eligible"],

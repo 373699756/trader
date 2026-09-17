@@ -23,6 +23,24 @@ from trader.web import create_app
 from trader.web.api.route_services import UnifiedWebServices, WebApiConfig
 
 NOW = datetime(2026, 8, 11, 10, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+PIPELINE_STAGE_KEYS = (
+    "input_readiness",
+    "dynamic_filter",
+    "board_cross_section",
+    "strategy_history",
+    "model_input",
+    "candidate_score",
+    "board_limit",
+    "candidate_refresh",
+    "input_coverage",
+    "evidence_score",
+    "model_cost_gate",
+    "local_score",
+    "deepseek_review",
+    "fusion",
+    "action_gate",
+    "concentration",
+)
 
 
 class _Clock:
@@ -64,7 +82,7 @@ def test_unified_decision_routes_validate_strategy_date_and_etag() -> None:
     assert current.get_json()["input_versions"]["score_scale"] == "weighted_evidence_quality_0_100"
     assert current.get_json()["input_versions"]["score_model"] == ("daily_reconstructible_ensemble:model-hash")
     assert current.get_json()["pipeline"]["current_stage"] == "concentration"
-    assert len(current.get_json()["pipeline"]["stages"]) == 15
+    assert [stage["key"] for stage in current.get_json()["pipeline"]["stages"]] == list(PIPELINE_STAGE_KEYS)
     assert current.get_json()["items"][0]["quote"] == {
         "price": 10.25,
         "pct_change": 2.5,
@@ -625,23 +643,7 @@ def _app():
 
 
 def _decision() -> ScoredDecision:
-    pipeline_keys = (
-        "dynamic_filter",
-        "board_cross_section",
-        "strategy_history",
-        "model_input",
-        "candidate_score",
-        "board_limit",
-        "candidate_refresh",
-        "input_coverage",
-        "evidence_score",
-        "model_cost_gate",
-        "local_score",
-        "deepseek_review",
-        "fusion",
-        "action_gate",
-        "concentration",
-    )
+    pipeline_keys = PIPELINE_STAGE_KEYS
     return ScoredDecision(
         Strategy.TODAY,
         NOW.date(),

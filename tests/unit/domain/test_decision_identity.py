@@ -23,7 +23,11 @@ from trader.domain.recommendation.decision_identity import (
     formal_scored_decision,
 )
 from trader.domain.recommendation.models import RecommendationAction, Strategy
-from trader.domain.recommendation.pipeline import PipelineStageStatus, RecommendationPipelineStatus
+from trader.domain.recommendation.pipeline import (
+    PIPELINE_STAGE_ORDER,
+    PipelineStageStatus,
+    RecommendationPipelineStatus,
+)
 from trader.infra.persistence.decision_record_codec import committed_record_bytes, committed_record_from_bytes
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -32,6 +36,7 @@ NOW = datetime(2026, 8, 11, 14, 40, tzinfo=SHANGHAI)
 
 def pipeline() -> RecommendationPipelineStatus:
     keys = (
+        "input_readiness",
         "dynamic_filter",
         "board_cross_section",
         "strategy_history",
@@ -124,7 +129,7 @@ def test_formal_record_round_trip_preserves_complete_recommendation_pipeline() -
 
     assert restored.decision.pipeline == current.pipeline
     assert json.loads(encoded)["decision"]["pipeline"]["current_stage"] == "concentration"
-    assert len(json.loads(encoded)["decision"]["pipeline"]["stages"]) == 15
+    assert len(json.loads(encoded)["decision"]["pipeline"]["stages"]) == len(PIPELINE_STAGE_ORDER)
 
 
 def test_legacy_formal_record_without_pipeline_keeps_original_identity() -> None:

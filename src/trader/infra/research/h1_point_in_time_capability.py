@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
-import tempfile
 from datetime import date
 from pathlib import Path
 from typing import Protocol, cast
@@ -22,6 +20,9 @@ from trader.domain.research.h1_point_in_time import (
     ResearchStrategy,
     build_h1_capability_audit,
 )
+from trader.infra.artifacts.canonical import canonical_json_text
+from trader.infra.artifacts.fields import is_boolean, is_integer, is_text_sequence
+from trader.infra.artifacts.sealing import publish_immutable
 
 
 class _Response(Protocol):
@@ -144,23 +145,12 @@ class H1CapabilityArtifactArchive:
                 raise H1CapabilityArtifactConflictError("H1 capability artifact identity conflict")
             return existing
         payload = _encode(report)
-        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{self._path.name}.", suffix=".tmp", dir=self._root)
-        temporary = Path(temporary_name)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
-                handle.flush()
-                os.fsync(handle.fileno())
-            try:
-                os.link(temporary, self._path)
-            except FileExistsError:
-                existing = self.verify()
-                if existing.content_hash != report.content_hash:
-                    raise H1CapabilityArtifactConflictError("H1 capability artifact identity conflict") from None
-                return existing
-        finally:
-            temporary.unlink(missing_ok=True)
-        return self.verify()
+        if publish_immutable(self._path, canonical_json_text(payload)):
+            return self.verify()
+        existing = self.verify()
+        if existing.content_hash != report.content_hash:
+            raise H1CapabilityArtifactConflictError("H1 capability artifact identity conflict")
+        return existing
 
     def verify(self) -> H1CapabilityAuditReport:
         try:
@@ -286,7 +276,7 @@ def _decode(raw: dict[str, object]) -> H1CapabilityAuditReport:
     if not isinstance(probes_raw, list) or not isinstance(strategies_raw, list):
         raise TypeError("H1 capability artifact collections are invalid")
     failures = raw["probe_failures"]
-    if not isinstance(failures, list) or not all(isinstance(item, str) for item in failures):
+    if not is_text_sequence(failures):
         raise TypeError("H1 capability probe failures are invalid")
     probes = tuple(_decode_probe(item) for item in probes_raw)
     strategies = tuple(_decode_strategy(item) for item in strategies_raw)
@@ -342,7 +332,7 @@ def _decode_strategy(raw: object) -> H1CapabilityStrategyStatus:
     if set(raw) != expected:
         raise ValueError("H1 capability strategy schema is invalid")
     reasons = raw["failure_reasons"]
-    if not isinstance(reasons, list) or not all(isinstance(item, str) for item in reasons):
+    if not is_text_sequence(reasons):
         raise TypeError("H1 capability strategy reasons are invalid")
     return H1CapabilityStrategyStatus(
         cast(ResearchStrategy, _string(raw["strategy"])),
@@ -360,13 +350,13 @@ def _string(value: object) -> str:
 
 
 def _bool(value: object) -> bool:
-    if not isinstance(value, bool):
+    if not is_boolean(value):
         raise TypeError("H1 capability field must be boolean")
     return value
 
 
 def _int(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
+    if not is_integer(value):
         raise TypeError("H1 capability field must be integer")
     return value
 

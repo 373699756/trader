@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import math
-import re
 from dataclasses import dataclass
 
 from trader.application.research.tomorrow_training import TomorrowTrainingStage
+from trader.infra.artifacts.fields import is_sha256_text
 
-_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _TRAINING_STAGES: frozenset[str] = frozenset(
     (
         "resource_preflight",
@@ -47,10 +46,7 @@ class TomorrowTrainingMemoryEvidence:
         if (
             self.training_status != "engineering_ready"
             or self.repeat_training_status != "already_current"
-            or any(
-                _SHA256.fullmatch(value) is None
-                for value in (self.training_input_hash, self.model_hash, self.report_hash)
-            )
+            or any(not is_sha256_text(value) for value in (self.training_input_hash, self.model_hash, self.report_hash))
             or self.peak_rss_bytes < 1
             or self.max_rss_bytes < 1
             or self.peak_rss_bytes > self.max_rss_bytes

@@ -123,7 +123,9 @@ class HistoryCache:
         self._history_cache_limit = max(1, options["capacity"])
         self._monotonic = options["monotonic"]
         self._history_data_plane = options["history_data_plane"]
-        self._history_lookback_sessions = max(61, options.get("history_lookback_sessions", _DEFAULT_HISTORY_CACHE_LOOKBACK_DAYS))
+        self._history_lookback_sessions = max(
+            61, options.get("history_lookback_sessions", _DEFAULT_HISTORY_CACHE_LOOKBACK_DAYS)
+        )
         self._lock = threading.Lock()
         self._history: dict[str, _HistoryEntry] = {}
         self._history_error_count = 0
@@ -273,7 +275,7 @@ class HistoryCache:
             old_entry = self._history.get(code) or state.previous.get(code)
         used_fallback = False
         try:
-            bars = tuple(sorted(future.result(), key=lambda item: item.trade_date))[-self._history_lookback_sessions:]
+            bars = tuple(sorted(future.result(), key=lambda item: item.trade_date))[-self._history_lookback_sessions :]
         except Exception:
             bars = ()
             with self._lock:
@@ -493,7 +495,7 @@ class HistoryCache:
         persist_candidates: list[tuple[str, tuple[DailyBar, ...], _HistoryEntry]] = []
         with self._lock:
             for code, bars in bars_by_code.items():
-                ordered = tuple(sorted(bars, key=lambda item: item.trade_date))[-self._history_lookback_sessions:]
+                ordered = tuple(sorted(bars, key=lambda item: item.trade_date))[-self._history_lookback_sessions :]
                 if not ordered or any(bar.adjustment is not PriceAdjustment.QFQ for bar in ordered):
                     if ordered:
                         self._history_error_count += 1
@@ -535,7 +537,7 @@ class HistoryCache:
                 if not ordered:
                     continue
                 retained = ordered[-_HISTORY_CACHE_RETENTION_DAYS:]
-                full = ordered[-self._history_lookback_sessions:]
+                full = ordered[-self._history_lookback_sessions :]
                 persisted_context = persisted_contexts.get(code)
                 if (
                     persisted_context is None

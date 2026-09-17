@@ -23,7 +23,10 @@ from trader.domain.recommendation.pipeline import (
     PipelineStageStatus,
     RecommendationPipelineStatus,
 )
-from trader.domain.recommendation.selection.scored_selection import ScoredCandidateStageCounts
+from trader.domain.recommendation.selection.scored_selection import (
+    ScoredCandidateStageCounts,
+    split_filter_reason_counts,
+)
 
 
 @dataclass(frozen=True)
@@ -48,14 +51,25 @@ def build_supply_status(
     if diagnostics is None:
         raise ValueError("scored input status requires selection diagnostics")
     decision_items = active_decision.items
-    stage_counts = candidate_stage_counts or ScoredCandidateStageCounts(
-        issuer_eligible_population=quality.population_count,
-        dynamic_filter_eligible=max(0, quality.population_count - quality.population_rejected_count),
-        strategy_history_eligible=quality.history_covered_count,
-        model_input_eligible=quality.history_covered_count,
-        candidate_score_eligible=quality.candidate_scored_count,
-        candidate_limit_selected=quality.candidate_scored_count,
-    )
+    if candidate_stage_counts is not None:
+        stage_counts = candidate_stage_counts
+    else:
+        # Business-eligible stocks are also input-ready, so the estimate never falls below
+        # dynamic eligibility even when pending counts also cover candidate features.
+        business_eligible = max(0, quality.population_count - quality.population_rejected_count)
+        ready_estimate = max(
+            0,
+            quality.population_count - quality.data_pending_count - quality.refresh_pending_count,
+        )
+        stage_counts = ScoredCandidateStageCounts(
+            issuer_eligible_population=quality.population_count,
+            input_ready_population=max(business_eligible, ready_estimate),
+            dynamic_filter_eligible=business_eligible,
+            strategy_history_eligible=quality.history_covered_count,
+            model_input_eligible=quality.history_covered_count,
+            candidate_score_eligible=quality.candidate_scored_count,
+            candidate_limit_selected=quality.candidate_scored_count,
+        )
     reported_quote_eligible = (
         quality.candidate_feature_count if candidate_quote_eligible is None else candidate_quote_eligible
     )
@@ -100,6 +114,8 @@ def build_supply_status(
         candidate_transient_reason_counts=tuple(quality.candidate_transient_reason_counts.items()),
         candidate_optional_reason_counts=tuple(quality.candidate_optional_reason_counts.items()),
         degraded_reasons=quality.degraded_reasons,
+        data_pending_count=quality.data_pending_count,
+        refresh_pending_count=quality.refresh_pending_count,
         supply_reason_counts=tuple(reasons.items()),
         primary_blocker=_primary_supply_blocker(quality, pipeline, empty_reason=diagnostics.empty_reason),
     )
@@ -132,9 +148,15 @@ def build_pending_pipeline(
         current_stage=current_stage,
         stages=(
             PipelineStageStatus(
-                "dynamic_filter",
+                "input_readiness",
                 "completed",
                 stage_counts.issuer_eligible_population,
+                stage_counts.input_ready_population,
+            ),
+            PipelineStageStatus(
+                "dynamic_filter",
+                "completed",
+                stage_counts.input_ready_population,
                 stage_counts.dynamic_filter_eligible,
             ),
             PipelineStageStatus(
@@ -200,6 +222,7 @@ def update_supply_status_decision(
     candidate_score_threshold: float,
 ) -> InputQualityStatus:
     pipeline = current.pipeline
+    readiness = pipeline.stage("input_readiness")
     dynamic = pipeline.stage("dynamic_filter")
     history = pipeline.stage("strategy_history")
     model = pipeline.stage("model_input")
@@ -207,7 +230,8 @@ def update_supply_status_decision(
     board_limit = pipeline.stage("board_limit")
     refresh = pipeline.stage("candidate_refresh")
     stage_counts = ScoredCandidateStageCounts(
-        issuer_eligible_population=_required_count(dynamic.input_count),
+        issuer_eligible_population=_required_count(readiness.input_count),
+        input_ready_population=_required_count(readiness.output_count),
         dynamic_filter_eligible=_required_count(dynamic.output_count),
         strategy_history_eligible=_required_count(history.output_count),
         model_input_eligible=_required_count(model.output_count),
@@ -275,15 +299,25 @@ def _completed_pipeline(
     current_stage: PipelineStageKey = (
         "concentration" if decision.stage == "hybrid" or not projection.review_candidates else "deepseek_review"
     )
+    business_reason_counts, readiness_reason_counts = split_filter_reason_counts(
+        quality.population_filter_reason_counts
+    )
     return RecommendationPipelineStatus(
         current_stage=current_stage,
         stages=(
             PipelineStageStatus(
-                "dynamic_filter",
+                "input_readiness",
                 "completed",
                 stage_counts.issuer_eligible_population,
+                stage_counts.input_ready_population,
+                reason_counts=_reasons(_expand_reason_counts(readiness_reason_counts)),
+            ),
+            PipelineStageStatus(
+                "dynamic_filter",
+                "completed",
+                stage_counts.input_ready_population,
                 stage_counts.dynamic_filter_eligible,
-                reason_counts=_reasons(_expand_reason_counts(quality.population_filter_reason_counts)),
+                reason_counts=_reasons(_expand_reason_counts(business_reason_counts)),
             ),
             PipelineStageStatus(
                 "board_cross_section",

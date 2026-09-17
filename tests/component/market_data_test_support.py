@@ -73,7 +73,7 @@ from trader.infra.market_data.service.candidate_quote_cache import QuoteCache, Q
 from trader.infra.market_data.service.gateway import MarketDataGateway
 from trader.infra.market_data.service.gateway_health import MarketGatewayHealthStatus, SecurityMasterHealthStatus
 from trader.infra.market_data.service.intraday_loader import IntradayLoader
-from trader.infra.market_data.service.market_cache_identity import _history_preload_codes
+from trader.infra.market_data.service.market_cache_identity import _history_population_codes, _history_preload_codes
 from trader.infra.market_data.service.market_data_health import MarketDataHealth, MarketDataHealthDependencies
 from trader.infra.market_data.service.market_feature_service import MarketFeatureDependencies, MarketFeatureService
 from trader.infra.market_data.service.market_task_runner import MarketTaskRunner

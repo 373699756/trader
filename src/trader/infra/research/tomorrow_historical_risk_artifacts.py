@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 from trader.application.research.tomorrow_historical_validation import (
@@ -15,6 +14,7 @@ from trader.domain.research.artifact_identity import (
     canonical_artifact_json,
     canonical_artifact_value,
 )
+from trader.infra.artifacts.sealing import publish_immutable
 
 
 class TomorrowHistoricalRiskArtifactConflictError(RuntimeError):
@@ -75,18 +75,10 @@ class TomorrowHistoricalRiskArtifactArchive:
             if self._read_verified(path).get("content_hash") != expected_hash:
                 raise TomorrowHistoricalRiskArtifactConflictError("historical risk artifact identity conflict")
             return
-        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        temporary.write_text(canonical_artifact_json(payload), encoding="utf-8")
-        try:
-            try:
-                os.link(temporary, path)
-            except FileExistsError:
-                if self._read_verified(path).get("content_hash") != expected_hash:
-                    raise TomorrowHistoricalRiskArtifactConflictError(
-                        "historical risk artifact identity conflict"
-                    ) from None
-        finally:
-            temporary.unlink(missing_ok=True)
+        if publish_immutable(path, canonical_artifact_json(payload)):
+            return
+        if self._read_verified(path).get("content_hash") != expected_hash:
+            raise TomorrowHistoricalRiskArtifactConflictError("historical risk artifact identity conflict")
 
     @staticmethod
     def _read_verified(path: Path) -> dict[str, object]:

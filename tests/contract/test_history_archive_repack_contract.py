@@ -23,7 +23,7 @@ def test_history_repack_has_one_typed_owner_and_a_thin_explicit_cli() -> None:
     assert all(name in command_source for name in ('"build"', '"activate"', '"rollback"', '"finalize"'))
     assert "dict[" not in owner_source
     assert "Mapping[" not in owner_source
-    assert "artifact_content_hash" in codec_source
+    assert "from trader.infra.artifacts.canonical import content_hash" in codec_source
 
 
 def test_history_repack_does_not_add_a_run_sh_public_command() -> None:

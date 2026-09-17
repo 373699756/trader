@@ -34,6 +34,7 @@ from tests.component.market_data_test_support import (
     StaticGateway,
     StaticHistoryClient,
     _history_bars,
+    _history_population_codes,
     _history_preload_codes,
     _quote,
     _service,
@@ -248,7 +249,7 @@ def test_full_market_deadline_does_not_wait_for_blocked_history_warmup() -> None
     assert cache.status().datasets["daily_history"]["eastmoney"].entries == 0
 
 
-def test_market_service_bounds_history_preload_to_stratified_candidate_universe() -> None:
+def test_market_service_prepares_history_for_full_supported_population() -> None:
     history = CountingHistoryClient(_history_bars())
     quotes = tuple(_quote(code=f"60000{index}", industry="工业" if index % 2 else "银行") for index in range(1, 6))
     service = _service(
@@ -261,9 +262,9 @@ def test_market_service_bounds_history_preload_to_stratified_candidate_universe(
 
     features = service.fetch_market_features(NOW)
 
-    assert len(history.calls) == 2
-    assert sum(item.history_days >= 20 for item in features) == 2
-    assert service.health()["history_universe_rows"] == 2
+    assert len(history.calls) == 5
+    assert sum(item.history_days >= 20 for item in features) == 5
+    assert service.health()["history_universe_rows"] == 5
 
 
 def test_level_one_exclusion_is_recorded_before_history_and_removed_from_market_population(tmp_path: Path) -> None:
@@ -322,6 +323,15 @@ def test_history_preload_reserves_120_slots_for_each_supported_board() -> None:
     )
 
     assert sum(code.startswith("600") for code in imbalanced) == 120
+
+
+def test_history_population_codes_are_not_limited_by_candidate_capacity() -> None:
+    quotes = tuple(_quote(code=f"600{index:03d}", industry=f"行业{index % 4}") for index in range(1, 241))
+
+    selected = _history_population_codes(quotes)
+
+    assert len(selected) == 240
+    assert set(selected) == {f"600{index:03d}" for index in range(1, 241)}
 
 
 def test_repeated_refresh_does_not_queue_multiple_history_warmup_batches() -> None:

@@ -378,7 +378,9 @@ function summaryFixture() {
 const pipelineFixture = {
   current_stage: "action_gate",
   stages: [
-    { key: "dynamic_filter", state: "completed", input_count: 5289, output_count: 196,
+    { key: "input_readiness", state: "completed", input_count: 5289, output_count: 320,
+      facets: [], reason_counts: [{ reason: "missing_liquidity_history", count: 4969 }] },
+    { key: "dynamic_filter", state: "completed", input_count: 320, output_count: 196,
       facets: [], reason_counts: [] },
     { key: "board_cross_section", state: "completed", input_count: 196, output_count: 196,
       metric_ranges: [{ metric: "board_reliability", minimum: 0.72, maximum: 0.99 }],
@@ -422,7 +424,7 @@ const pipelineFixture = {
 };
 assert.strictEqual(
   state.inputPipelineDetails(pipelineFixture),
-  "动态过滤 5289→196 ｜ 板内总体 196（可靠度0.72–0.99）（仅观察125） ｜ 策略历史 196→195（60–248日） ｜ 模型输入 195→188（完整率84.0%–100.0%） ｜ 候选分 188→134（43.18–82.64，门槛50.00） ｜ 板内限额 134→134 ｜ 定向行情 134→125（年龄1.2–8.6秒） ｜ 输入完整性 行情125/125 · 证券资料125/125 · 历史125/125 ｜ 完整评分 125→110（基础分41.18–67.42）",
+  "输入准备 5289→320〔主要原因 流动性历史待下载/更新4969〕 ｜ 动态过滤 320→196 ｜ 板内总体 196（可靠度0.72–0.99）（仅观察125） ｜ 策略历史 196→195（60–248日） ｜ 模型输入 195→188（完整率84.0%–100.0%） ｜ 候选分 188→134（43.18–82.64，门槛50.00） ｜ 板内限额 134→134 ｜ 定向行情 134→125（年龄1.2–8.6秒） ｜ 输入完整性 行情125/125 · 证券资料125/125 · 历史125/125 ｜ 完整评分 125→110（基础分41.18–67.42）",
 );
 assert.strictEqual(
   state.decisionPipelineDetails(pipelineFixture),
@@ -493,7 +495,8 @@ state.renderSummary(
   { scheduler: { input_quality: {} }, deepseek_budget: { limit: 168, used: 0, remaining: 168 } },
 );
 assert.strictEqual(persistedPipelineElements.inputQualityStatus.textContent, "可评分 110 / 输入候选 125");
-assert.ok(persistedPipelineElements.inputQualityStages.textContent.includes("动态过滤 5289→196"));
+assert.ok(persistedPipelineElements.inputQualityStages.textContent.includes("输入准备 5289→320"));
+assert.ok(persistedPipelineElements.inputQualityStages.textContent.includes("动态过滤 320→196"));
 assert.ok(persistedPipelineElements.inputQualityStages.textContent.includes("完整评分 125→110"));
 assert.strictEqual(persistedPipelineElements.funnelStatus.textContent, "110 → 0 → 0");
 assert.ok(persistedPipelineElements.funnelStages.textContent.includes("模型成本门 110→0"));

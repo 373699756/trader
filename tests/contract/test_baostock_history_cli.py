@@ -27,9 +27,7 @@ def test_download_history_is_removed_instead_of_kept_as_a_compatibility_alias() 
 
 
 @pytest.mark.parametrize("arguments", (("--runtime-dir", "/tmp/history"), ("--sessions", "2000"), ("--mode", "update")))
-def test_download_rejects_every_legacy_argument_during_parsing(
-    arguments: tuple[str, ...], tmp_path: Path
-) -> None:
+def test_download_rejects_every_legacy_argument_during_parsing(arguments: tuple[str, ...], tmp_path: Path) -> None:
     runtime_dir = tmp_path / "must-not-exist"
 
     with pytest.raises(SystemExit):

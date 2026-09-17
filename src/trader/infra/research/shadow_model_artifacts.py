@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 from pathlib import Path
 
 from trader.application.research.shadow_model_report import ShadowFoldRecord, ShadowModelReport, ShadowPrediction
+from trader.infra.artifacts.canonical import canonical_json_text, content_hash
+from trader.infra.artifacts.sealing import publish_immutable
 
 
 class ShadowModelArtifactConflictError(RuntimeError):
@@ -22,22 +22,14 @@ class ShadowModelArtifactArchive:
         window = f"{report.training_window_start.isoformat()}_{report.training_window_end.isoformat()}"
         path = self._root / report.spec_hash / window / "shadow-report.json"
         expected = _report_payload(report)
-        if _canonical_hash(expected) != report.content_hash:
+        if content_hash(expected) != report.content_hash:
             raise ShadowModelArtifactConflictError("shadow report hash or schema is invalid")
         if path.exists():
             _verify(path, report.content_hash, expected)
             return report.content_hash
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {**expected, "content_hash": report.content_hash}
-        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        temporary.write_text(_canonical_json(payload), encoding="utf-8")
-        try:
-            try:
-                os.link(temporary, path)
-            except FileExistsError:
-                _verify(path, report.content_hash, expected)
-        finally:
-            temporary.unlink(missing_ok=True)
+        publish_immutable(path, canonical_json_text(payload))
         _verify(path, report.content_hash, expected)
         return report.content_hash
 
@@ -50,7 +42,7 @@ def _verify(path: Path, expected_hash: str, expected_payload: dict[str, object])
         persisted_hash = raw.pop("content_hash")
         if not isinstance(persisted_hash, str) or persisted_hash != expected_hash:
             raise ValueError("shadow artifact identity mismatch")
-        if _canonical_hash(raw) != persisted_hash or raw != json.loads(_canonical_json(expected_payload)):
+        if content_hash(raw) != persisted_hash or raw != json.loads(canonical_json_text(expected_payload)):
             raise ValueError("shadow artifact payload mismatch")
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ShadowModelArtifactConflictError("shadow report hash or schema is invalid") from exc
@@ -108,14 +100,6 @@ def _prediction_payload(item: ShadowPrediction) -> dict[str, object]:
         "lightgbm_severe_probability": item.lightgbm_severe_probability,
         "uncertainty": item.uncertainty,
     }
-
-
-def _canonical_hash(payload: dict[str, object]) -> str:
-    return hashlib.sha256(_canonical_json(payload).encode()).hexdigest()
-
-
-def _canonical_json(payload: dict[str, object]) -> str:
-    return json.dumps(payload, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":"))
 
 
 __all__ = ["ShadowModelArtifactConflictError", "ShadowModelArtifactArchive"]

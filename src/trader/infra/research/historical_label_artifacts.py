@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from datetime import date
 from pathlib import Path
 from typing import Literal, cast
@@ -20,6 +18,8 @@ from trader.domain.research.historical_label import (
     HistoricalPreregistrationStatus,
     HistoricalTemporalSplit,
 )
+from trader.infra.artifacts.fields import is_boolean, is_integer, is_text_sequence
+from trader.infra.artifacts.sealing import publish_immutable
 
 
 class HistoricalLabelArtifactConflictError(RuntimeError):
@@ -40,23 +40,12 @@ class HistoricalLabelArtifactArchive:
             return existing
         payload = _encode_batch(batch)
         payload["content_hash"] = batch.content_hash
-        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=self._root)
-        temporary = Path(temporary_name)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(canonical_artifact_json(payload))
-                handle.flush()
-                os.fsync(handle.fileno())
-            try:
-                os.link(temporary, path)
-            except FileExistsError:
-                existing = self.verify()
-                if existing.content_hash != batch.content_hash:
-                    raise HistoricalLabelArtifactConflictError("historical label artifact identity conflict") from None
-                return existing
-        finally:
-            temporary.unlink(missing_ok=True)
-        return self.verify()
+        if publish_immutable(path, canonical_artifact_json(payload)):
+            return self.verify()
+        existing = self.verify()
+        if existing.content_hash != batch.content_hash:
+            raise HistoricalLabelArtifactConflictError("historical label artifact identity conflict")
+        return existing
 
     def verify(self) -> HistoricalLabelPreregistrationBatch:
         path = self._root / "historical_label_preregistration.json"
@@ -169,7 +158,7 @@ def _decode_preregistration(raw: dict[str, object]) -> HistoricalLabelPreregistr
     if set(raw) != expected:
         raise ValueError("historical label preregistration fields are invalid")
     reasons = raw["failure_reasons"]
-    if not isinstance(reasons, list) or not all(isinstance(item, str) for item in reasons):
+    if not is_text_sequence(reasons):
         raise TypeError("historical label failure reasons are invalid")
     split = raw["split"]
     if split is not None and not isinstance(split, dict):
@@ -262,13 +251,13 @@ def _dates(values: tuple[date, ...]) -> list[str]:
 
 
 def _date_values(value: object) -> tuple[date, ...]:
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+    if not is_text_sequence(value):
         raise TypeError("historical label dates are invalid")
     return tuple(date.fromisoformat(item) for item in value)
 
 
 def _strings(value: object) -> tuple[str, ...]:
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+    if not is_text_sequence(value):
         raise TypeError("historical label strings are invalid")
     return tuple(value)
 
@@ -300,13 +289,13 @@ def _string(value: object) -> str:
 
 
 def _bool(value: object) -> bool:
-    if not isinstance(value, bool):
+    if not is_boolean(value):
         raise TypeError("expected boolean")
     return value
 
 
 def _int(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
+    if not is_integer(value):
         raise TypeError("expected integer")
     return value
 

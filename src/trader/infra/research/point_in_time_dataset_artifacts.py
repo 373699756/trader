@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from datetime import date, datetime
 from pathlib import Path
 from typing import Literal, cast
@@ -36,6 +34,8 @@ from trader.domain.research.point_in_time_dataset import (
     PointInTimeRejectionBoundary,
     PointInTimeSourceIdentity,
 )
+from trader.infra.artifacts.fields import is_boolean, is_integer, is_number, is_text_sequence
+from trader.infra.artifacts.sealing import publish_immutable
 
 
 class PointInTimeDatasetArtifactConflictError(RuntimeError):
@@ -119,24 +119,10 @@ class PointInTimeDatasetArtifactArchive:
 
 def _write_once(path: Path, payload: dict[str, object]) -> None:
     rendered = canonical_artifact_json(payload)
-    if path.exists():
-        if path.read_text(encoding="utf-8") != rendered:
-            raise PointInTimeDatasetArtifactConflictError("point-in-time dataset shard identity conflict")
+    if publish_immutable(path, rendered):
         return
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(rendered)
-            handle.flush()
-            os.fsync(handle.fileno())
-        try:
-            os.link(temporary, path)
-        except FileExistsError:
-            if path.read_text(encoding="utf-8") != rendered:
-                raise PointInTimeDatasetArtifactConflictError("point-in-time dataset shard identity conflict") from None
-    finally:
-        temporary.unlink(missing_ok=True)
+    if path.read_text(encoding="utf-8") != rendered:
+        raise PointInTimeDatasetArtifactConflictError("point-in-time dataset shard identity conflict")
 
 
 def _encode_report_root(
@@ -695,7 +681,7 @@ def _pop_string(value: dict[str, object], key: str) -> str:
 
 
 def _strings(value: object) -> tuple[str, ...]:
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+    if not is_text_sequence(value):
         raise TypeError("point-in-time artifact value must be a string list")
     return tuple(value)
 
@@ -716,7 +702,7 @@ def _shanghai_datetime(value: object) -> datetime:
 
 
 def _bool(value: object) -> bool:
-    if not isinstance(value, bool):
+    if not is_boolean(value):
         raise TypeError("point-in-time artifact value must be a boolean")
     return value
 
@@ -732,13 +718,13 @@ def _bools(value: object) -> tuple[bool, ...]:
 
 
 def _int(value: object) -> int:
-    if not isinstance(value, int) or isinstance(value, bool):
+    if not is_integer(value):
         raise TypeError("point-in-time artifact value must be an integer")
     return value
 
 
 def _float(value: object) -> float:
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
+    if not is_number(value):
         raise TypeError("point-in-time artifact value must be a number")
     return float(value)
 

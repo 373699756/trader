@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import cast
 
 from trader.application.research.tomorrow_training import TomorrowTrainingStage
+from trader.infra.artifacts.canonical import content_hash
+from trader.infra.artifacts.fields import as_sequence
 from trader.infra.research.history_archive_repack_state import (
     HistoryArchiveRepackActivationJournal,
     HistoryArchiveRepackActivationState,
@@ -16,7 +18,6 @@ from trader.infra.research.history_archive_repack_state import (
     HistoryArchiveRepackPartitionEvidence,
     HistoryArchiveRepackSourceFileIdentity,
 )
-from trader.infra.scoring.artifact_hashing import artifact_content_hash
 from trader.infra.scoring.profiles.v3.training_memory_evidence import (
     TomorrowTrainingMemoryEvidence,
     TomorrowTrainingStageDuration,
@@ -260,7 +261,7 @@ def _read_verified_json(path: Path, schema: str) -> dict[str, object]:
         body = {key: value for key, value in payload.items() if key != "content_hash"}
         if payload.get("schema_version") != schema or not isinstance(declared, str):
             raise ValueError("schema or hash is invalid")
-        if artifact_content_hash(body) != declared:
+        if content_hash(body) != declared:
             raise ValueError("content hash is invalid")
         return payload
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -269,7 +270,7 @@ def _read_verified_json(path: Path, schema: str) -> dict[str, object]:
 
 def _write_verified_json(path: Path, payload: dict[str, object]) -> None:
     document = dict(payload)
-    document["content_hash"] = artifact_content_hash(document)
+    document["content_hash"] = content_hash(document)
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     temporary = Path(temporary_name)
@@ -292,10 +293,10 @@ def _object(raw: object) -> dict[str, object]:
 
 
 def _list(payload: dict[str, object], key: str) -> list[object]:
-    value = payload[key]
-    if not isinstance(value, list):
+    sequence = as_sequence(payload[key])
+    if sequence is None:
         raise TypeError(f"history repack {key} must be a list")
-    return cast(list[object], value)
+    return sequence
 
 
 def _text(payload: dict[str, object], key: str) -> str:

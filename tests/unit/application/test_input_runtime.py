@@ -29,6 +29,7 @@ from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import Board
 from trader.domain.recommendation.decision_identity import DecisionOverlay
 from trader.domain.recommendation.models import Strategy
+from trader.domain.recommendation.pipeline import PIPELINE_STAGE_ORDER
 from trader.infra.settings import load_strategy_settings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -326,8 +327,9 @@ def test_primary_blocker_reports_dominant_stale_market_before_partial_history(
     status = next(item for item in adapter.input_quality_status() if item.strategy is Strategy.TOMORROW)
     assert status.pipeline.stage("candidate_refresh").input_count == 0
     assert dict(status.population_filter_reason_counts)["stale_quote"] == 1
-    assert status.pipeline.stage("dynamic_filter").reason_counts[0].reason == "stale_quote"
-    assert status.pipeline.stage("dynamic_filter").reason_counts[0].count == 1
+    assert status.pipeline.stage("input_readiness").reason_counts[0].reason == "stale_quote"
+    assert status.pipeline.stage("input_readiness").reason_counts[0].count == 1
+    assert status.pipeline.stage("dynamic_filter").reason_counts == ()
     assert status.primary_blocker == "market_population_stale"
 
 
@@ -714,6 +716,7 @@ def test_production_adapter_accepts_exactly_ninety_nine_percent_history_coverage
     assert status.history_coverage_ratio == 0.99
     assert status.publishable is True
     assert status.pipeline.stage("strategy_history").output_count == 99
+    assert status.pipeline.stage("input_readiness").output_count == 100
     assert status.pipeline.stage("dynamic_filter").output_count == 100
     assert _pipeline_facet(status, "board_cross_section", "filter_reject") == 0
 
@@ -1521,7 +1524,7 @@ def test_research_intent_prioritizes_published_output_before_bounded_candidates(
     status = next(item for item in adapter.input_quality_status() if item.strategy is Strategy.TOMORROW)
     assert decision.pipeline is not None
     assert decision.pipeline == status.pipeline
-    assert len(decision.pipeline.stages) == 15
+    assert len(decision.pipeline.stages) == len(PIPELINE_STAGE_ORDER)
     assert _pipeline_facet(status, "action_gate", "observation_threshold_met") == sum(
         item.final_score >= diagnostics.observation_floor for item in decision.items
     )

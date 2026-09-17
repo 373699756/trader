@@ -15,7 +15,7 @@ from trader.application.research.tomorrow_training import (
     TOMORROW_TRAINING_COMPUTE_THREADS,
     TOMORROW_TRAINING_PEAK_RSS_MIB,
 )
-from trader.infra.scoring.artifact_hashing import artifact_content_hash
+from trader.infra.artifacts.canonical import content_hash
 
 
 def _configure_resources() -> None:
@@ -80,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
         "stage_durations_ms": {name: round(seconds * 1_000.0, 1) for name, seconds in stage_durations},
         "failure_reasons": [reason for head in result.heads for reason in head.failure_reasons],
     }
-    payload["content_hash"] = artifact_content_hash(payload)
+    payload["content_hash"] = content_hash(payload)
     rendered = json.dumps(payload, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")) + "\n"
     _write_result(args.output.resolve(), rendered)
     print(rendered, end="")

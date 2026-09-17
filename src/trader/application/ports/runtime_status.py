@@ -69,6 +69,8 @@ class InputQualityStatus:
     candidate_transient_reason_counts: tuple[tuple[str, int], ...] = ()
     candidate_optional_reason_counts: tuple[tuple[str, int], ...] = ()
     degraded_reasons: tuple[str, ...] = ()
+    data_pending_count: int = 0
+    refresh_pending_count: int = 0
     supply_reason_counts: tuple[tuple[str, int], ...] = ()
     primary_blocker: str = "ready"
 
@@ -84,6 +86,8 @@ class InputQualityStatus:
             self.candidate_scored_count,
             self.security_master_covered_count,
             self.history_covered_count,
+            self.data_pending_count,
+            self.refresh_pending_count,
         )
         if any(value < 0 for value in counts):
             raise ValueError("input quality counts cannot be negative")

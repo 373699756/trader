@@ -21,7 +21,7 @@ def _empty_plan(strategy: Strategy, start: int) -> ScoredCandidatePlan:
         evaluations=(),
         reserves=reserves,
         population_versions={},
-        stage_counts=ScoredCandidateStageCounts(0, 0, 0, 0, 0, 0),
+        stage_counts=ScoredCandidateStageCounts(0, 0, 0, 0, 0, 0, 0),
         hard_filter_reason_counts={},
         population_rejected_count=0,
         population_filter_reason_counts={},

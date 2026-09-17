@@ -225,6 +225,8 @@ def input_quality_payload(statuses: tuple[InputQualityStatus, ...]) -> dict[str,
             "candidate_transient_reason_counts": dict(status.candidate_transient_reason_counts),
             "candidate_optional_reason_counts": dict(status.candidate_optional_reason_counts),
             "degraded_reasons": list(status.degraded_reasons),
+            "data_pending_count": status.data_pending_count,
+            "refresh_pending_count": status.refresh_pending_count,
             "pipeline": _pipeline_payload(status.pipeline),
             "summary": {
                 "trade_date": summary.trade_date.isoformat(),

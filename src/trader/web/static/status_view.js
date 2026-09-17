@@ -345,8 +345,13 @@
       const scored = finiteNonNegativeInteger(inputQuality && inputQuality.candidate_scored_count)
         ?? finiteNonNegativeInteger(pipelineStage(pipeline, "evidence_score")?.output_count) ?? 0;
       const candidateLabel = inputQuality ? "候选" : "输入候选";
+      const dataPending = finiteNonNegativeInteger(inputQuality && inputQuality.data_pending_count) || 0;
+      const refreshPending = finiteNonNegativeInteger(inputQuality && inputQuality.refresh_pending_count) || 0;
       els.inputQualityStatus.textContent = `可评分 ${scored} / ${candidateLabel} ${displayCount(candidate)}`;
-      els.inputQualityMeta.textContent = `历史 ${history} / ${candidate} · ${percent(history, candidate)} · 证券资料 ${securityMaster} / ${candidate}`;
+      const pending = [];
+      if (dataPending > 0) pending.push(`待下载/更新 ${dataPending}`);
+      if (refreshPending > 0) pending.push(`待刷新 ${refreshPending}`);
+      els.inputQualityMeta.textContent = `历史 ${history} / ${candidate} · ${percent(history, candidate)} · 证券资料 ${securityMaster} / ${candidate}${pending.length ? ` · ${pending.join(" · ")}` : ""}`;
       renderInputQualityReasons(els, inputQuality, candidate, history, securityMaster);
       return;
     }
@@ -742,6 +747,7 @@
   }
 
   function inputPipelineDetails(pipeline) {
+    const readiness = pipelineStage(pipeline, "input_readiness");
     const dynamic = pipelineStage(pipeline, "dynamic_filter");
     const board = pipelineStage(pipeline, "board_cross_section");
     const history = pipelineStage(pipeline, "strategy_history");
@@ -752,6 +758,7 @@
     const coverage = pipelineStage(pipeline, "input_coverage");
     const evidence = pipelineStage(pipeline, "evidence_score");
     const segments = [];
+    if (readiness) segments.push(`${stageTransition("输入准备", readiness)}${pipelineReasonSuffix(readiness)}`);
     segments.push(`${stageTransition("动态过滤", dynamic)}${pipelineReasonSuffix(dynamic)}`);
     if (board) {
       const observe = pipelineFacet(board, "filter_observe");
