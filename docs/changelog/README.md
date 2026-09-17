@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Detail the refactor blueprint implementation plan](2026-09-17-refactor-blueprint-implementation-plan.md)
 - [Clarify recommendation delivery module ownership](2026-09-17-recommendation-delivery-module-ownership.md)
 - [Resolve refactor blueprint architecture conflicts](2026-09-17-refactor-blueprint-conflict-resolution.md)
 - [Separate data readiness from business filtering](2026-09-15-data-readiness-filter-separation.md)
