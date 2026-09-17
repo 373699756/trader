@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Resolve refactor blueprint architecture conflicts](2026-09-17-refactor-blueprint-conflict-resolution.md)
 - [Separate data readiness from business filtering](2026-09-15-data-readiness-filter-separation.md)
 
 - [History, training, and recommendation application boundaries](2026-09-15-history-training-application-boundaries.md)
