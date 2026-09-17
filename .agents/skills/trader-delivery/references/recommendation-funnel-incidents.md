@@ -77,10 +77,9 @@ requested_candidates
 - Historical readiness is per stock and per strategy/profile. A coverage ratio is a health metric, not permission to
   discard scores that already exist. If `full_scored > 0` while a legacy `history_coverage_incomplete` batch blocker
   prevents publication, classify `global_history_gate_blocked_eligible_candidates`; do not tune the percentage.
-- Check the declared lookback against the active score implementation. Tomorrow V1/V2 use 20/40/60-session skip-5
-  features and therefore require 61 valid qfq sessions per scored stock; a generic 20-session batch flag neither proves
-  model eligibility nor justifies blocking other eligible stocks.
-- A zero formal TopK must not imply zero research evidence. Profit-oriented V1/V2 comparison needs same-day, same-stock,
+- Check the declared lookback against the active V2/V3 model contract and loaded manifest. A generic short-window batch
+  flag neither proves model eligibility nor justifies blocking other eligible stocks.
+- A zero formal TopK must not imply zero research evidence. Profit-oriented V2/V3 comparison needs same-day, same-stock,
   same-input paired predictions for every mutually eligible candidate, followed by outcome labels without production
   authority; selected-only outcomes are selection-biased.
 - Compare `primary_blocker`, filter counts, highest score, formal/observe counts, and the same-strategy/same-trade-date
@@ -93,14 +92,12 @@ settlement recovered while `security_master_coverage_incomplete` remained a sepa
 
 ## 5. Checkpoint: freeze-window-control
 
-Classify the observation using the authoritative hot/cold five-period matrix before labeling `not_ready` as a regression.
+Classify the observation using the authoritative hot/cold freeze scenarios before labeling `not_ready` as a regression.
 
-- Today cannot be backfilled after 11:20. A cold start after the freeze remains `not_ready`; only quote overlay may change
-  an existing formal record.
 - Tomorrow/D25 freeze at 14:50. When the same-day formal record is missing, 15:00+ recovery may freeze the current run
   or create the permitted local `close_fallback`; it must not call DeepSeek or overwrite an existing formal record.
-- Inspect the `close_quotes` refresh state separately from Today. A failed close refresh can block permitted Tomorrow/D25
-  recovery while Today's non-backfill remains correct.
+- Inspect the `close_quotes` refresh state separately from normal intraday publication. A failed close refresh can block
+  permitted Tomorrow/D25 recovery without invalidating an existing formal record.
 - Record which time-window cell was exercised and which cells are not applicable; one timestamp fixture is insufficient
   for a behavior change.
 

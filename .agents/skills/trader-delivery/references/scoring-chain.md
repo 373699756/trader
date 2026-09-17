@@ -3,7 +3,7 @@
 Read this guide whenever a task changes candidate eligibility, evidence-quality scoring, a scoring profile, model
 diagnostics, execution cost, risk, DeepSeek fusion, action thresholds, ranking, score identity, or offline score evidence.
 The authoritative rules remain `docs/01_评分逻辑.md`; architecture, freeze, API/SSE, Web, and acceptance remain in
-`docs/02_工程设计.md`.
+`docs/项目重构详细.md`.
 
 ## Trace semantic owners before editing
 
@@ -22,13 +22,13 @@ point-in-time population and candidate eligibility
   -> GET/SSE/Web and offline outcome interpretation
 ```
 
-Do not merge owners to simplify the trace. Tomorrow model prediction and relative rank are diagnostics and cost-gate
-inputs; they do not replace the three short-horizon strategies' evidence-quality `base_score`. Execution cost can block
+Do not merge owners to simplify the trace. Model prediction and relative rank are diagnostics and cost-gate
+inputs; they do not replace Tomorrow/D25 evidence-quality `base_score`. Execution cost can block
 an action but cannot rewrite a score. DeepSeek free text cannot directly change a penalty.
 
 ## Preserve production invariants
 
-- New Today, Tomorrow, and D25 decisions identify the shared 0–100 evidence-quality scale with
+- New Tomorrow and D25 decisions identify the shared 0–100 evidence-quality scale with
   `score_scale=weighted_evidence_quality_0_100`. The 0/50/100 anchors keep the same adverse/neutral/favorable meaning even
   though each holding period owns different factors and weights.
 - Keep `model_prediction_rank` separate from `base_score`, `local_score`, and `final_score`. Changing the batch population
@@ -45,13 +45,14 @@ an action but cannot rewrite a score. DeepSeek free text cannot directly change 
   records without `score_scale` keep their original relative-score meaning and are never relabeled, backfilled, or
   migrated in place.
 - Long remains outside the score, DeepSeek, TopK, and freeze chain.
-- Only V1/V2/V3 may name user-selected scoring profiles. Do not create another project version identity for a score-scale,
+- Only V2/V3 may name user-selected scoring profiles. Do not create another project version identity for a score-scale,
   API, event, report, cache, dataset, or runtime change.
 
 ## Choose proof by the changed meaning
 
-Use contracts and failing tests before implementation. Cover the first semantic owner and the final affected consumer;
-add the adjacent negative assertion that proves a neighboring owner did not change.
+After the implementation slice is complete, add the contract or regression proof required by the actual risk. Cover the
+first semantic owner and the final affected consumer; add the adjacent negative assertion that proves a neighboring owner
+did not change.
 
 - Evidence-score formula, factor, or weight: test per-strategy component ownership, 0/50/100 anchors, stable ordering,
   configuration as the single numeric source, risk once, and `83.40` when fusion is reachable.
@@ -60,8 +61,8 @@ add the adjacent negative assertion that proves a neighboring owner did not chan
 - Risk, fusion, action, or ranking: test structured evidence, veto, budget/degradation behavior, both action pools,
   deterministic ties, TopK, board/industry concentration, and unchanged score values where only eligibility changes.
 - Identity, freeze, or persistence: test new-record identities, local-to-hybrid parentage, first-wins behavior, codec/hash
-  round trips, current and historical reads, plus explicit legacy-record semantics. Exercise the applicable 11:20 and
-  14:50 boundaries, late results, hot/cold starts, and permitted close fallback from the five-period matrix.
+  round trips, current and historical reads, plus explicit legacy-record semantics. Exercise the 14:50 boundary, late
+  results, hot/cold starts, and permitted close fallback from the authoritative freeze scenarios.
 - API/SSE/Web: test serializer whitelists, GET and full SSE replacement parity, reconnect/resync, new and legacy score
   labels, cost-gated empty results, and desktop browser behavior when visible output changes.
 - Hot-path changes: run the fixed production performance workload and prove `network_calls=0`; do not infer production

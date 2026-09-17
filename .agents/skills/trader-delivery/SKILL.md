@@ -10,16 +10,16 @@ Deliver one repository change without reopening a known failure or regressing an
 ## Start the batch
 
 1. Follow the repository `AGENTS.md`; this skill adds routing and evidence requirements but does not duplicate or override it.
-2. Record `HEAD`, `@{upstream}`, staged and unstaged files, and the exact task file scope before editing. Preserve unrelated user changes.
-3. Search `CHANGELOG.md` and `docs/changelog/` for the symptom, error code, affected strategy, likely boundary, and `Regression-Key`. Open only matching records; use the legacy archive only when current records point there. Treat old root causes as leads, not current facts.
-4. Read the applicable authoritative contract before planning: `docs/02_工程设计.md` for product, architecture, runtime, API, Web, operations, and acceptance; `docs/01_评分逻辑.md` for candidates, scoring, risk, DeepSeek, fusion, action, ranking, and profit-validation gates. Use `docs/03_工程实施.md` for current task order/status and `docs/04_策略回溯.md` when historical data, training, or model-to-production flow is involved; neither overrides the two authoritative contracts.
+2. Record the current branch, its upstream relationship, staged and unstaged files, and the exact task file scope before editing. Preserve unrelated user changes.
+3. For defects, repeated regressions, or user-visible behavior changes, search `CHANGELOG.md` and `docs/changelog/` for the symptom, error code, affected strategy, likely boundary, and `Regression-Key`. Skip this for low-risk process or documentation-only changes. Open only matching records; use the legacy archive only when current records point there. Treat old root causes as leads, not current facts.
+4. Read the applicable authoritative contract before planning: `docs/项目重构详细.md` is the sole authority for product, architecture, timeline, runtime, API, Web, operations, and acceptance; `docs/01_评分逻辑.md` is the sole authority for candidates, scoring, risk, DeepSeek, fusion, action, ranking, and profit-validation gates. Use `docs/02_工程设计.md` only as the current engineering description that must be synchronized when the blueprint switches behavior. Use `docs/03_工程实施.md` for current task order/status and `docs/04_策略回溯.md` when historical data, training, or model-to-production flow is involved; none overrides the two authoritative contracts.
 5. Read [the change-impact matrix](references/change-impact-matrix.md), select every affected row, and put its downstream consumers and required evidence into the plan. A plan that names only the edited module is incomplete.
 
 ## Plan and implement
 
 - State the user-visible symptom, confirmed evidence, root cause status (`confirmed` or `pending verification`), target architecture, in-scope files, excluded boundaries, and completion conditions.
 - Compare a local patch with a systemic repair when ownership, representation, resource orchestration, or timing crosses modules. Choose from evidence, not diff size.
-- Add or change contracts and failing tests before implementation. Cover the first broken boundary and the final user-visible boundary; avoid asserting implementation wording alone.
+- Complete the implementation slice first, then add or change only the contracts and tests required by the actual risk. When regression proof is required, cover the first broken boundary and the final user-visible boundary; avoid asserting implementation wording alone.
 - For scheduling, freezing, current/history, or Web visibility changes, use the hot/cold five-period matrix in the authoritative design. A single timestamp or fixture is insufficient.
 - For state or JSON changes, trace the typed value from owner to final serializer and browser consumer. Do not add dictionary fallbacks or parallel status sources.
 - For candidate, score, model diagnostic, cost gate, risk, fusion, action, ranking, decision identity, or score research changes, read [the scoring-chain guide](references/scoring-chain.md) and trace the changed meaning through every listed owner and consumer.
