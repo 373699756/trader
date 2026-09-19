@@ -9,13 +9,13 @@ from typing import cast
 
 from trader.application.ports.model_scoring import LoadedScoringProfile
 from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
-from trader.infra.scoring.head_bundles.bundle_codec import load_head_bundle
-from trader.infra.scoring.head_bundles.bundle_locator import locate_head_bundles
-from trader.infra.scoring.head_bundles.profile import build_trained_scoring_profile
 from trader.infra.scoring.profiles.v1.artifact_codec import decode_tomorrow_artifact as decode_v1_artifact
 from trader.infra.scoring.profiles.v1.profile import build_scoring_profile as build_v1_profile
-from trader.infra.scoring.profiles.v2.contracts import V2_TRAINING_PROFILE
-from trader.infra.scoring.profiles.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.artifacts.bundle_codec import load_head_bundle
+from trader.training.infra.artifacts.bundle_locator import locate_head_bundles
+from trader.training.infra.artifacts.profile import build_trained_scoring_profile
+from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
+from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
 
 def load_scoring_profile(

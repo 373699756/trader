@@ -20,7 +20,7 @@ from trader.download.infra.baostock_gap_supplier import (
 from trader.download.infra.history_archive_reader import SQLiteHistoryArchiveReader
 from trader.download.infra.history_control_repository import HistoryControlError, SQLiteHistoryControlRepository
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
-from trader.infra.research.history_training_input import SQLiteHistoryTrainingInputArchive
+from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputArchive
 
 
 def _json(value: object) -> str:

@@ -35,6 +35,10 @@ TARGET_PACKAGES = (
     "download/application",
     "download/infra",
     "download/entrypoints",
+    "training/application",
+    "training/domain",
+    "training/infra",
+    "training/entrypoints",
     "web/api",
 )
 

@@ -638,7 +638,7 @@ def test_train_v3_passes_fixed_roots_and_projects_three_head_results(
             heads=heads,
         )
 
-    monkeypatch.setattr("trader.infra.scoring.profiles.v3.training.run_v3_training", train)
+    monkeypatch.setattr("trader.training.infra.profile.v3.training.run_v3_training", train)
 
     assert main(["--config", str(config), "train-v3"]) == 0
 
@@ -688,7 +688,7 @@ def test_train_v2_uses_its_own_command_adapter_and_artifact_roots(
             heads=heads,
         )
 
-    monkeypatch.setattr("trader.infra.scoring.profiles.v2.training.run_v2_training", train)
+    monkeypatch.setattr("trader.training.infra.profile.v2.training.run_v2_training", train)
 
     assert main(["--config", str(config), "train-v2"]) == 0
 

@@ -1,0 +1,249 @@
+"""Resolve the training cadence from the active history and bundle identities."""
+
+from __future__ import annotations
+
+import calendar as month_calendar
+from dataclasses import dataclass
+from datetime import date, datetime
+from pathlib import Path, PurePosixPath
+
+from trader.domain.recommendation.models import Strategy
+from trader.domain.research.artifact_identity import canonical_artifact_hash
+from trader.domain.research.history_control import (
+    HistoryActiveSnapshot,
+    HistoryTrainingDueRequest,
+    HistoryTrainingDueState,
+    calculate_history_training_cache_invalidation_dates,
+    calculate_history_training_due,
+)
+from trader.download.infra.history_archive_reader import (
+    HistoryArchiveReadError,
+    HistoryPartitionRevisionComparison,
+    SQLiteHistoryArchiveReader,
+    route_history_months,
+)
+from trader.download.infra.history_control_repository import (
+    HistoryControlError,
+    SQLiteHistoryControlRepository,
+)
+from trader.training.infra.artifacts.bundle_repository import (
+    ActiveHeadBundle,
+    inspect_active_head_bundle,
+)
+from trader.training.infra.artifacts.contracts import TrainedProfileContract
+
+
+@dataclass(frozen=True)
+class HistoryTrainingDueEvaluation:
+    archive_root: Path
+    active_snapshot: HistoryActiveSnapshot
+    state: HistoryTrainingDueState
+    bundle: ActiveHeadBundle | None
+    revised_dates: tuple[date, ...]
+    invalidated_cache_dates: tuple[date, ...]
+
+
+@dataclass(frozen=True)
+class HistoryTrainingDueQuery:
+    archive_root: Path
+    training_root: Path
+    observed_at: datetime
+    profile: TrainedProfileContract
+    strategy: Strategy = Strategy.TOMORROW
+    expected_training_contract_hash: str | None = None
+
+
+def evaluate_history_training_due(query: HistoryTrainingDueQuery) -> HistoryTrainingDueEvaluation | None:
+    """Read and persist one immutable due observation.
+
+    A missing active snapshot is intentionally returned as ``None``: callers
+    project that condition as ``history_manifest_unavailable`` instead of
+    fabricating a cadence baseline.
+    """
+
+    archive_root = query.archive_root
+    profile = query.profile
+    strategy = query.strategy
+    expected_training_contract_hash = query.expected_training_contract_hash
+    control = SQLiteHistoryControlRepository(archive_root / "control.sqlite3")
+    try:
+        state = control.load_state()
+    except HistoryControlError:
+        return None
+    active = state.active_snapshot
+    if active is None:
+        return None
+    calendar = next((item for item in state.calendars if item.content_hash == active.calendar_hash), None)
+    if calendar is None:
+        return None
+
+    bundle, bundle_invalid = _active_bundle(query.training_root, profile, strategy)
+    current_label_cutoff = _mature_label_cutoff(calendar.open_dates, active.data_cutoff, profile, strategy)
+    if bundle_invalid:
+        due_identity = "due-" + canonical_artifact_hash((active.content_hash, strategy.value, "invalid_bundle"))[:32]
+        due = calculate_history_training_due(
+            HistoryTrainingDueRequest(
+                due_identity=due_identity,
+                baseline_label_cutoff=None,
+                current_label_cutoff=current_label_cutoff,
+                calendar_dates=calendar.open_dates,
+                input_revision=False,
+                observed_at=query.observed_at,
+                data_complete=current_label_cutoff is not None,
+                training_contract_changed=True,
+            )
+        )
+        return HistoryTrainingDueEvaluation(archive_root, active, due, None, (), ())
+    baseline_cutoff = bundle.label_cutoff if bundle is not None else None
+    baseline = (
+        next((item for item in state.snapshots if item.content_hash == bundle.training_input_hash), None)
+        if bundle is not None
+        else None
+    )
+    data_complete = bundle is None or baseline is not None
+    revised_dates: tuple[date, ...] = ()
+    if bundle is not None and baseline is not None and baseline.content_hash != active.content_hash:
+        try:
+            revised_dates = _revised_dates_since_bundle(
+                archive_root,
+                baseline,
+                active,
+                calendar.open_dates,
+                bundle.label_cutoff,
+            )
+        except (HistoryArchiveReadError, OSError, ValueError):
+            data_complete = False
+    input_revision = bool(revised_dates)
+    snapshot_identity_rebind = (
+        bundle is not None
+        and bundle.training_input_hash != active.content_hash
+        and bundle.label_cutoff == current_label_cutoff
+    )
+    training_contract_changed = bundle is not None and (
+        snapshot_identity_rebind
+        or (
+            expected_training_contract_hash is not None
+            and bundle.training_contract_hash != expected_training_contract_hash
+        )
+    )
+    invalidated_dates = calculate_history_training_cache_invalidation_dates(
+        calendar.open_dates,
+        revised_dates,
+        dependency_sessions=profile.history_sessions - 1,
+    )
+    due_identity = (
+        "due-"
+        + canonical_artifact_hash(
+            (
+                active.content_hash,
+                bundle.training_input_hash if bundle is not None else None,
+                baseline_cutoff,
+                current_label_cutoff,
+                strategy.value,
+                revised_dates,
+                data_complete,
+                expected_training_contract_hash,
+                training_contract_changed,
+            )
+        )[:32]
+    )
+    due = calculate_history_training_due(
+        HistoryTrainingDueRequest(
+            due_identity=due_identity,
+            baseline_label_cutoff=baseline_cutoff,
+            current_label_cutoff=current_label_cutoff,
+            calendar_dates=calendar.open_dates,
+            input_revision=input_revision,
+            observed_at=query.observed_at,
+            data_complete=data_complete,
+            training_contract_changed=training_contract_changed,
+        )
+    )
+    previous = next((item for item in state.due_states if item.due_identity == due.due_identity), None)
+    if previous is None:
+        control.save_due_state(due)
+    else:
+        due = previous
+    return HistoryTrainingDueEvaluation(
+        archive_root,
+        active,
+        due,
+        bundle,
+        revised_dates,
+        invalidated_dates,
+    )
+
+
+def _revised_dates_since_bundle(
+    archive_root: Path,
+    baseline: HistoryActiveSnapshot,
+    active: HistoryActiveSnapshot,
+    calendar_dates: tuple[date, ...],
+    baseline_label_cutoff: date,
+) -> tuple[date, ...]:
+    start = calendar_dates[0]
+    end = min(baseline_label_cutoff, baseline.data_cutoff, active.data_cutoff)
+    if start > end:
+        return ()
+    baseline_months = {_partition_month(item.relative_path): item for item in baseline.partitions}
+    active_months = {_partition_month(item.relative_path): item for item in active.partitions}
+    archive = SQLiteHistoryArchiveReader(archive_root)
+    revisions: set[date] = set()
+    for year, month in route_history_months(start, end):
+        if (year, month) not in baseline_months or (year, month) not in active_months:
+            raise HistoryArchiveReadError("history snapshot comparison month is missing")
+        month_start = max(start, date(year, month, 1))
+        month_end = min(end, date(year, month, month_calendar.monthrange(year, month)[1]))
+        baseline_reference = baseline_months[(year, month)]
+        physical_reference = active_months[(year, month)]
+        if month_start > month_end or baseline_reference == physical_reference:
+            continue
+        revisions.update(
+            archive.revised_dates(
+                month_start,
+                month_end,
+                HistoryPartitionRevisionComparison(
+                    physical_reference,
+                    baseline.sequence,
+                    active.sequence,
+                ),
+            )
+        )
+    return tuple(sorted(revisions))
+
+
+def _partition_month(relative_path: str) -> tuple[int, int]:
+    parts = PurePosixPath(relative_path).parts
+    return int(parts[1]), int(PurePosixPath(parts[2]).stem)
+
+
+def _active_bundle(
+    training_root: Path,
+    profile: TrainedProfileContract,
+    strategy: Strategy,
+) -> tuple[ActiveHeadBundle | None, bool]:
+    directory = training_root / profile.head_for_strategy(strategy).directory_name
+    pointer = directory / "active-bundle.json"
+    if not pointer.exists():
+        return None, False
+    try:
+        return inspect_active_head_bundle(directory, strategy, profile), False
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None, True
+
+
+def _mature_label_cutoff(
+    calendar_dates: tuple[date, ...],
+    data_cutoff: date,
+    profile: TrainedProfileContract,
+    strategy: Strategy,
+) -> date | None:
+    contract = profile.head_for_strategy(strategy)
+    positions = {day: position for position, day in enumerate(calendar_dates)}
+    position = positions.get(data_cutoff)
+    if position is None or position < contract.maturity_sessions:
+        return None
+    return calendar_dates[position - contract.maturity_sessions]
+
+
+__all__ = ["HistoryTrainingDueEvaluation", "HistoryTrainingDueQuery", "evaluate_history_training_due"]

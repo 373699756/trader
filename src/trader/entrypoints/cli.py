@@ -138,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
 
 
 def _configure_tomorrow_training_resources() -> None:
-    from trader.application.research.tomorrow_training import TOMORROW_TRAINING_COMPUTE_THREADS
+    from trader.training.application.tomorrow_training import TOMORROW_TRAINING_COMPUTE_THREADS
 
     for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         os.environ[name] = str(TOMORROW_TRAINING_COMPUTE_THREADS)

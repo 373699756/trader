@@ -94,8 +94,6 @@ from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
 from trader.infra.persistence.research_trace import ResearchTraceLimits, SQLiteResearchTraceArchive
 from trader.infra.runtime_resources import RuntimeWorkerResources
 from trader.infra.scoring.profile_factory import load_scoring_profile
-from trader.infra.scoring.profiles.v2.contracts import V2_TRAINING_PROFILE
-from trader.infra.scoring.profiles.v3.contracts import V3_TRAINING_PROFILE
 from trader.infra.settings import (
     LongWatchlist,
     RuntimeSettings,
@@ -104,6 +102,8 @@ from trader.infra.settings import (
     load_runtime_settings,
     load_strategy_settings,
 )
+from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
+from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.web import create_app
 from trader.web.api.route_services import UnifiedWebServices, WebApiConfig
 

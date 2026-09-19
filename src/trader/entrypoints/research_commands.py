@@ -48,9 +48,9 @@ from trader.infra.research.tomorrow_research_artifacts import (
 from trader.infra.settings import RuntimeSettings
 
 if TYPE_CHECKING:
-    from trader.application.research.tomorrow_training import TomorrowTrainingProgressPort
     from trader.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
-    from trader.infra.scoring.training.engine import TrainingRunResult
+    from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort
+    from trader.training.infra.engine import TrainingRunResult
 
 
 @dataclass(frozen=True)
@@ -224,9 +224,9 @@ def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
 
 def _run_v3_training_orchestrator(runtime: RuntimeSettings) -> int:
     del runtime
-    from trader.application.training.profile_training_secondary import TrainV3UseCase
     from trader.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
-    from trader.infra.scoring.profiles.v3.training import run_v3_training
+    from trader.training.application.profile_training_secondary import TrainV3UseCase
+    from trader.training.infra.profile.v3.training import run_v3_training
 
     return _run_profile_training_command(
         "v3",
@@ -237,9 +237,9 @@ def _run_v3_training_orchestrator(runtime: RuntimeSettings) -> int:
 
 def _run_v2_training_orchestrator(runtime: RuntimeSettings) -> int:
     del runtime
-    from trader.application.training.profile_training_primary import TrainV2UseCase
     from trader.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
-    from trader.infra.scoring.profiles.v2.training import run_v2_training
+    from trader.training.application.profile_training_primary import TrainV2UseCase
+    from trader.training.infra.profile.v2.training import run_v2_training
 
     return _run_profile_training_command(
         "v2",

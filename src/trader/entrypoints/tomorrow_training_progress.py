@@ -9,7 +9,7 @@ from collections.abc import Callable
 from types import TracebackType
 from typing import Literal
 
-from trader.application.research.tomorrow_training import (
+from trader.training.application.tomorrow_training import (
     TOMORROW_TRAINING_COMPUTE_THREADS,
     TOMORROW_TRAINING_PEAK_RSS_MIB,
     TomorrowTrainingProgress,

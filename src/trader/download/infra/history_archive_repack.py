@@ -43,7 +43,7 @@ from trader.download.infra.history_control_repository import (
     SQLiteHistoryControlRepository,
 )
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
-from trader.infra.scoring.head_bundles.bundle_repository import inspect_active_head_bundle
+from trader.training.infra.artifacts.bundle_repository import inspect_active_head_bundle
 
 RepackProgress = Callable[[int, int, str], None]
 FaultInjector = Callable[[str], None]
@@ -247,7 +247,7 @@ class HistoryArchiveRepackCoordinator:
             if journal.state != "verified":
                 raise HistoryArchiveRepackError("history repack must be verified before finalization")
             _require_stable_target(layout, state, full_hash=False)
-            from trader.infra.scoring.profiles.v3.contracts import V3_TRAINING_PROFILE
+            from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
             bundle = inspect_active_head_bundle(
                 training_root.resolve() / "v3" / "tomorrow",

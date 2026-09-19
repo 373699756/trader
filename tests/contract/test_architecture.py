@@ -79,6 +79,9 @@ def test_active_dependency_direction() -> None:
     forbidden = {
         "domain": ("trader.application", "trader.infra", "trader.web", "trader.entrypoints"),
         "application": ("trader.infra", "trader.web", "trader.entrypoints"),
+        "training/domain": ("trader.training.application", "trader.training.infra", "trader.application", "trader.infra"),
+        "training/application": ("trader.training.infra", "trader.infra", "trader.web", "trader.entrypoints"),
+        "training/infra": ("trader.training.entrypoints", "trader.entrypoints", "trader.web"),
         "infra": ("trader.bootstrap", "trader.entrypoints", "trader.web"),
         "web": ("trader.infra",),
     }
@@ -159,9 +162,9 @@ def test_v1_scoring_profile_owns_its_codec_predictor_and_evidence() -> None:
 
 
 def test_v2_and_v3_profiles_share_one_neutral_trained_head_owner() -> None:
-    v2_root = SOURCE_ROOT / "infra/scoring/profiles/v2"
-    v3_root = SOURCE_ROOT / "infra/scoring/profiles/v3"
-    shared_root = SOURCE_ROOT / "infra/scoring/head_bundles"
+    v2_root = SOURCE_ROOT / "training/infra/profile/v2"
+    v3_root = SOURCE_ROOT / "training/infra/profile/v3"
+    shared_root = SOURCE_ROOT / "training/infra/artifacts"
     model_port = (SOURCE_ROOT / "application/ports/model_scoring.py").read_text(encoding="utf-8")
     factory = (SOURCE_ROOT / "infra/scoring/profile_factory.py").read_text(encoding="utf-8")
 
@@ -194,7 +197,7 @@ def test_v2_and_v3_profiles_share_one_neutral_trained_head_owner() -> None:
 
 
 def test_v3_profile_keeps_only_offline_training_implementation() -> None:
-    v3_root = SOURCE_ROOT / "infra/scoring/profiles/v3"
+    v3_root = SOURCE_ROOT / "training/infra/profile/v3"
 
     assert not (SOURCE_ROOT / "infra/tomorrow_production_model.py").exists()
     offline_training_modules = {

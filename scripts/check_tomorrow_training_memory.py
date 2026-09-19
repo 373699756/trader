@@ -11,11 +11,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-from trader.application.research.tomorrow_training import (
+from trader.infra.artifacts.canonical import content_hash
+from trader.training.application.tomorrow_training import (
     TOMORROW_TRAINING_COMPUTE_THREADS,
     TOMORROW_TRAINING_PEAK_RSS_MIB,
 )
-from trader.infra.artifacts.canonical import content_hash
 
 
 def _configure_resources() -> None:
@@ -26,7 +26,7 @@ def _configure_resources() -> None:
 _configure_resources()
 
 from trader.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress  # noqa: E402
-from trader.infra.scoring.profiles.v3.training import run_repack_v3_training  # noqa: E402
+from trader.training.infra.profile.v3.training import run_repack_v3_training  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:

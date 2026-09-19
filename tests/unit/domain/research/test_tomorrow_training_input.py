@@ -1,7 +1,7 @@
 from dataclasses import replace
 from datetime import date
 
-from trader.domain.research.tomorrow_training_input import (
+from trader.training.domain.tomorrow_training_input import (
     REQUIRED_DAILY_FIELDS,
     TOMORROW_TRAINING_ALPHA_NAMES,
     TOMORROW_TRAINING_ALPHA_UNITS,

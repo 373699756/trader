@@ -6,14 +6,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from trader.application.research.tomorrow_training import TomorrowTrainingWindow
 from trader.domain.recommendation.models import Strategy
 from trader.domain.research.baostock_daily import BaoStockCalendar, build_baostock_training_split
-from trader.infra.scoring.profiles.v2.contracts import V2_TRAINING_PROFILE
-from trader.infra.scoring.profiles.v3.contracts import V3_TRAINING_PROFILE
-from trader.infra.scoring.training.engine import ProfileTrainingRequest
-from trader.infra.scoring.training.sample_builder import TrainingSampleBuildRequest, build_training_samples
-from trader.infra.scoring.training.sample_repository import SQLiteTrainingSampleRepository
+from trader.training.application.tomorrow_training import TomorrowTrainingWindow
+from trader.training.infra.engine import ProfileTrainingRequest
+from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
+from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.sample_builder import TrainingSampleBuildRequest, build_training_samples
+from trader.training.infra.sample_repository import SQLiteTrainingSampleRepository
 
 
 def test_v2_and_v3_share_engine_contract_shape_but_own_their_differences() -> None:

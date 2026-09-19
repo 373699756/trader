@@ -3,11 +3,11 @@ from __future__ import annotations
 from datetime import date, timedelta
 from pathlib import Path
 
-from trader.application.research.tomorrow_training import TOMORROW_TRAINING_COMPUTE_THREADS
 from trader.domain.research.baostock_daily import build_baostock_training_split
-from trader.infra.scoring.profiles.v3.contracts import TOMORROW_HEAD_CONTRACT
-from trader.infra.scoring.profiles.v3.model_fitting import fit_industry_models
-from trader.infra.scoring.profiles.v3.training_sample_repository import (
+from trader.training.application.tomorrow_training import TOMORROW_TRAINING_COMPUTE_THREADS
+from trader.training.infra.profile.v3.contracts import TOMORROW_HEAD_CONTRACT
+from trader.training.infra.profile.v3.model_fitting import fit_industry_models
+from trader.training.infra.profile.v3.training_sample_repository import (
     SQLiteV3TrainingSampleRepository,
     V3TrainingSample,
 )

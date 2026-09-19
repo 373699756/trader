@@ -3,15 +3,15 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-from trader.application.training.profile_training_primary import TrainV2UseCase
-from trader.application.training.profile_training_secondary import TrainV3UseCase
-from trader.application.training.training_due import TrainingDueUseCase
 from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.history_status import HistoryStatusUseCase
 from trader.download.application.update_history import UpdateHistoryUseCase
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.download.infra.history_archive_gateway import HistoryArchiveGateway
+from trader.training.application.profile_training_primary import TrainV2UseCase
+from trader.training.application.profile_training_secondary import TrainV3UseCase
+from trader.training.application.training_due import TrainingDueUseCase
 
 
 def _status() -> HistoryMaintenanceStatus:

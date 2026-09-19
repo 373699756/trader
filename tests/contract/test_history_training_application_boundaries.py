@@ -5,7 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 DOWNLOAD_APPLICATION = ROOT / "src" / "trader" / "download" / "application"
-TRAINING_APPLICATION = ROOT / "src" / "trader" / "application" / "training"
+TRAINING_APPLICATION = ROOT / "src" / "trader" / "training" / "application"
 
 
 def _imports(path: Path) -> set[str]:

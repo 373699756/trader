@@ -58,8 +58,8 @@ from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionError,
     SQLiteHistoryMonthPartitionRepository,
 )
-from trader.infra.research.history_training_due import HistoryTrainingDueQuery, evaluate_history_training_due
-from trader.infra.scoring.profiles.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.history.history_training_due import HistoryTrainingDueQuery, evaluate_history_training_due
+from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
 Clock: TypeAlias = Callable[[], datetime]
 Cancellation: TypeAlias = Callable[[], bool]

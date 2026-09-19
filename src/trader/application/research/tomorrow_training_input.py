@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Protocol
 
-from trader.domain.research.tomorrow_training_input import (
+from trader.training.domain.tomorrow_training_input import (
     FrozenDailyInputDescriptor,
     TomorrowTrainingInputCompatibility,
     evaluate_tomorrow_training_input,

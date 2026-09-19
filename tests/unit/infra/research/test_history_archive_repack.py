@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 import trader.download.infra.history_archive_repack as repack_module
-import trader.infra.research.history_training_due as due_module
+import trader.training.infra.history.history_training_due as due_module
 from trader.domain.recommendation.models import Strategy
 from trader.domain.research.baostock_daily import BaoStockDailyCell, BaoStockDailySide
 from trader.domain.research.history_control import (
@@ -33,11 +33,11 @@ from trader.download.infra.history_archive_repack_state import (
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
 from trader.infra.artifacts.canonical import content_hash
-from trader.infra.research.history_training_due import HistoryTrainingDueQuery, evaluate_history_training_due
-from trader.infra.scoring.head_bundles.bundle_repository import ActiveHeadBundle
-from trader.infra.scoring.profiles.v3.contracts import V3_TRAINING_PROFILE
-from trader.infra.scoring.profiles.v3.training import run_repack_tomorrow_training, run_repack_v3_training
-from trader.infra.scoring.profiles.v3.training_memory_evidence import TomorrowTrainingMemoryEvidence
+from trader.training.infra.history.history_training_due import HistoryTrainingDueQuery, evaluate_history_training_due
+from trader.training.infra.artifacts.bundle_repository import ActiveHeadBundle
+from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.profile.v3.training import run_repack_tomorrow_training, run_repack_v3_training
+from trader.training.infra.profile.v3.training_memory_evidence import TomorrowTrainingMemoryEvidence
 
 NOW = datetime(2026, 9, 12, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -248,7 +248,7 @@ def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
 
     expected = object()
     monkeypatch.setattr(
-        "trader.infra.scoring.training.engine._run_locked",
+        "trader.training.infra.engine._run_locked",
         lambda *_args, **_kwargs: SimpleNamespace(heads=(expected,)),
     )
 
@@ -282,7 +282,7 @@ def test_fenced_v3_training_uses_one_request_for_all_heads(tmp_path: Path, monke
         captured.append(tuple(item.strategy for item in request.contracts))
         return SimpleNamespace(heads=())
 
-    monkeypatch.setattr("trader.infra.scoring.training.engine._run_locked", locked)
+    monkeypatch.setattr("trader.training.infra.engine._run_locked", locked)
     result = run_repack_v3_training(
         source,
         tmp_path / "data/train",

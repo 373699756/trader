@@ -13,23 +13,23 @@ def test_training_online_codec_replay_and_shadow_use_the_catalog_owner() -> None
         "src/trader/application/research/tomorrow_historical_validation.py",
         "src/trader/application/research/tomorrow_profile_holdout.py",
         "src/trader/domain/research/tomorrow_features.py",
-        "src/trader/domain/research/tomorrow_training_input.py",
+        "src/trader/training/domain/tomorrow_training_input.py",
         "src/trader/infra/market_data/normalization/features.py",
         "src/trader/infra/scoring/profiles/v1/artifact_builder.py",
         "src/trader/infra/scoring/profiles/v1/artifact_codec.py",
-        "src/trader/infra/scoring/head_bundles/contracts.py",
+        "src/trader/training/infra/artifacts/contracts.py",
     )
     for relative in consumers:
         source = (ROOT / relative).read_text(encoding="utf-8")
         assert "trader.domain.market.feature_contracts" in source, relative
 
     for relative in (
-        "src/trader/infra/scoring/head_bundles/bundle_codec.py",
-        "src/trader/infra/scoring/profiles/v2/contracts.py",
-        "src/trader/infra/scoring/profiles/v3/contracts.py",
+        "src/trader/training/infra/artifacts/bundle_codec.py",
+        "src/trader/training/infra/profile/v2/contracts.py",
+        "src/trader/training/infra/profile/v3/contracts.py",
     ):
         source = (ROOT / relative).read_text(encoding="utf-8")
-        assert "trader.infra.scoring.head_bundles.contracts" in source, relative
+        assert "trader.training.infra.artifacts.contracts" in source, relative
 
 
 def test_v3_feature_identifiers_are_declared_only_by_the_catalog() -> None:
@@ -39,11 +39,11 @@ def test_v3_feature_identifiers_are_declared_only_by_the_catalog() -> None:
         "src/trader/application/research/tomorrow_historical_screening.py",
         "src/trader/application/research/tomorrow_historical_validation.py",
         "src/trader/application/research/tomorrow_profile_holdout.py",
-        "src/trader/domain/research/tomorrow_training_input.py",
+        "src/trader/training/domain/tomorrow_training_input.py",
         "src/trader/infra/scoring/profiles/v1/artifact_builder.py",
         "src/trader/infra/scoring/profiles/v1/artifact_codec.py",
-        "src/trader/infra/scoring/head_bundles/bundle_codec.py",
-        "src/trader/infra/scoring/profiles/v3/training.py",
+        "src/trader/training/infra/artifacts/bundle_codec.py",
+        "src/trader/training/infra/profile/v3/training.py",
     )
     for relative in consumers:
         source = (ROOT / relative).read_text(encoding="utf-8")

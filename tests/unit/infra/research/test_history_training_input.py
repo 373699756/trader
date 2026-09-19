@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-import trader.infra.research.history_training_due as due_module
+import trader.training.infra.history.history_training_due as due_module
 from scripts.runtime_diagnostics.history_archive_performance import inspect_history_archive_performance
 from trader.domain.recommendation.models import Strategy
 from trader.domain.research.baostock_daily import (
@@ -26,15 +26,15 @@ from trader.download.domain.history_sync import HistorySupplierContext, HistoryS
 from trader.download.infra.history_archive_reader import HistoryPartitionRevisionComparison
 from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
-from trader.infra.research.history_training_due import (
+from trader.training.infra.artifacts.bundle_repository import ActiveHeadBundle
+from trader.training.infra.history.history_training_due import (
     HistoryTrainingDueQuery,
     _revised_dates_since_bundle,
     evaluate_history_training_due,
 )
-from trader.infra.research.history_training_input import SQLiteHistoryTrainingInputArchive
-from trader.infra.scoring.head_bundles.bundle_repository import ActiveHeadBundle
-from trader.infra.scoring.profiles.v2.contracts import V2_TRAINING_PROFILE
-from trader.infra.scoring.profiles.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputArchive
+from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
+from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -290,6 +290,6 @@ def test_revision_detection_compares_semantic_rows_only_in_changed_months(
             assert comparison.after_sequence == active.sequence
             return (dates[2],)
 
-    monkeypatch.setattr("trader.infra.research.history_training_due.SQLiteHistoryArchiveReader", _Archive)
+    monkeypatch.setattr("trader.training.infra.history.history_training_due.SQLiteHistoryArchiveReader", _Archive)
 
     assert _revised_dates_since_bundle(tmp_path, baseline, active, dates, dates[-2]) == (dates[2],)

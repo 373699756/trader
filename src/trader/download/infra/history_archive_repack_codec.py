@@ -8,7 +8,6 @@ import tempfile
 from pathlib import Path
 from typing import cast
 
-from trader.application.research.tomorrow_training import TomorrowTrainingStage
 from trader.download.infra.history_archive_repack_state import (
     HistoryArchiveRepackActivationJournal,
     HistoryArchiveRepackActivationState,
@@ -18,7 +17,8 @@ from trader.download.infra.history_archive_repack_state import (
 )
 from trader.infra.artifacts.canonical import content_hash
 from trader.infra.artifacts.fields import as_sequence
-from trader.infra.scoring.profiles.v3.training_memory_evidence import (
+from trader.training.application.tomorrow_training import TomorrowTrainingStage
+from trader.training.infra.profile.v3.training_memory_evidence import (
     TomorrowTrainingMemoryEvidence,
     TomorrowTrainingStageDuration,
 )

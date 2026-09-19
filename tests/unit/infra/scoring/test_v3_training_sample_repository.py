@@ -6,12 +6,12 @@ import numpy as np
 import pytest
 
 from trader.domain.research.baostock_daily import build_baostock_training_split
-from trader.infra.scoring.profiles.v3.contracts import (
+from trader.training.infra.profile.v3.contracts import (
     D25_HEAD_CONTRACT,
     TODAY_HEAD_CONTRACT,
     TOMORROW_HEAD_CONTRACT,
 )
-from trader.infra.scoring.profiles.v3.training_sample_repository import (
+from trader.training.infra.profile.v3.training_sample_repository import (
     SQLiteV3TrainingSampleRepository,
     V3TrainingSample,
 )
