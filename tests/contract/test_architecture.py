@@ -91,6 +91,47 @@ def test_active_dependency_direction() -> None:
     assert violations == []
 
 
+def test_shared_technical_primitives_have_one_infra_owner() -> None:
+    owners = {
+        "ShanghaiClock": SOURCE_ROOT / "infra/clock/shanghai.py",
+        "RuntimeSettings": SOURCE_ROOT / "infra/settings/models.py",
+        "atomic_write_json": SOURCE_ROOT / "infra/atomic_files/json.py",
+        "BoundedLruCache": SOURCE_ROOT / "infra/cache.py",
+        "ProcessLock": SOURCE_ROOT / "infra/process_lock.py",
+        "RuntimeWorkerResources": SOURCE_ROOT / "infra/runtime_resources.py",
+    }
+    assert all(path.is_file() for path in owners.values())
+
+    definitions: dict[str, list[Path]] = {name: [] for name in owners}
+    for path in SOURCE_ROOT.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in tree.body:
+            name = node.name if isinstance(node, (ast.ClassDef, ast.FunctionDef)) else None
+            if name in definitions:
+                definitions[name].append(path.relative_to(SOURCE_ROOT))
+    assert definitions == {name: [path.relative_to(SOURCE_ROOT)] for name, path in owners.items()}
+
+
+def test_application_does_not_own_infrastructure_implementations() -> None:
+    application = SOURCE_ROOT / "application"
+    forbidden_names = {
+        "BoundedLruCache",
+        "ProcessLock",
+        "RuntimeWorkerResources",
+        "RuntimeJsonWriter",
+        "atomic_read_json",
+        "atomic_write_json",
+        "ShanghaiClock",
+    }
+    violations: list[str] = []
+    for path in application.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name in forbidden_names:
+                violations.append(f"{path.relative_to(SOURCE_ROOT)}:{node.lineno}:{node.name}")
+    assert violations == []
+
+
 def test_model_scoring_router_is_profile_agnostic_and_replaces_tomorrow_specific_injection() -> None:
     port = SOURCE_ROOT / "application/ports/model_scoring.py"
     router = SOURCE_ROOT / "application/recommendation/model_scoring_router.py"
