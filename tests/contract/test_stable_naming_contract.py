@@ -98,9 +98,9 @@ def test_runtime_and_configuration_paths_are_not_project_versioned() -> None:
 def test_active_baostock_modules_contain_no_legacy_versioned_schema() -> None:
     source_paths = (
         PROJECT_ROOT / "src/trader/domain/research/baostock_daily.py",
-        PROJECT_ROOT / "src/trader/infra/research/baostock_gateway.py",
-        PROJECT_ROOT / "src/trader/infra/research/baostock_session.py",
-        PROJECT_ROOT / "src/trader/infra/research/baostock_sync_supplier.py",
+        PROJECT_ROOT / "src/trader/download/infra/baostock_gateway.py",
+        PROJECT_ROOT / "src/trader/download/infra/baostock_session.py",
+        PROJECT_ROOT / "src/trader/download/infra/baostock_sync_supplier.py",
     )
     token_pattern = re.compile(r'"((?:score_)?baostock_[a-z0-9_]+_v\d+)"')
     tokens = {token for path in source_paths for token in token_pattern.findall(path.read_text(encoding="utf-8"))}

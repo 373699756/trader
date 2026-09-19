@@ -5,11 +5,11 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from trader.application.research.history_automation import (
+from trader.download.domain.history_automation import (
     HistoryAutomationStatus,
     derive_history_automation_status,
 )
-from trader.infra.research.history_control_repository import (
+from trader.download.infra.history_control_repository import (
     HistoryControlError,
     SQLiteHistoryControlRepository,
 )

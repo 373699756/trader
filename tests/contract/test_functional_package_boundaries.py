@@ -31,6 +31,10 @@ TARGET_PACKAGES = (
     "infra/deepseek",
     "infra/persistence",
     "infra/research",
+    "download/domain",
+    "download/application",
+    "download/infra",
+    "download/entrypoints",
     "web/api",
 )
 

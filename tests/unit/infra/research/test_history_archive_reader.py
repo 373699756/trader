@@ -10,13 +10,13 @@ import pytest
 from trader.domain.research.baostock_daily import BaoStockDailyCell, BaoStockDailySide
 from trader.domain.research.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
 from trader.domain.research.history_revision import HistoryRevision
-from trader.infra.research.history_archive_reader import (
+from trader.download.infra.history_archive_reader import (
     HistoryArchiveReadError,
     HistoryPartitionRevisionComparison,
     SQLiteHistoryArchiveReader,
     route_history_months,
 )
-from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
 
 
 def _side(code: str, day: date, adjustment: str, close: float) -> BaoStockDailySide:

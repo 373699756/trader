@@ -1,6 +1,5 @@
 from datetime import date
 
-from trader.application.research.history_archive_status import HistoryArchiveStatus
 from trader.application.research.point_in_time_data_qualification import assemble_point_in_time_data_qualification
 from trader.domain.research.h1_point_in_time import H1CapabilityProbe, build_h1_capability_audit
 from trader.domain.research.historical_industry_facts import (
@@ -9,6 +8,7 @@ from trader.domain.research.historical_industry_facts import (
     build_historical_industry_source_audit,
     merge_historical_industry_facts,
 )
+from trader.download.domain.history_archive_status import HistoryArchiveStatus
 
 
 def _industry_report():

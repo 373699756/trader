@@ -8,11 +8,6 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.application.research.history_sync import (
-    HistorySupplierContext,
-    HistorySyncConfiguration,
-    HistorySyncProgress,
-)
 from trader.domain.research.baostock_daily import (
     BaoStockCalendar,
     BaoStockCodeBatch,
@@ -24,10 +19,15 @@ from trader.domain.research.baostock_daily import (
     BaoStockSecurity,
     BaoStockSourceVersions,
 )
-from trader.infra.research.history_archive_reader import SQLiteHistoryArchiveReader
-from trader.infra.research.history_archive_repack import HistoryArchiveRepackFenceError
-from trader.infra.research.history_archive_sync import run_history_sync
-from trader.infra.research.history_control_repository import SQLiteHistoryControlRepository
+from trader.download.domain.history_sync import (
+    HistorySupplierContext,
+    HistorySyncConfiguration,
+    HistorySyncProgress,
+)
+from trader.download.infra.history_archive_reader import SQLiteHistoryArchiveReader
+from trader.download.infra.history_archive_repack import HistoryArchiveRepackFenceError
+from trader.download.infra.history_archive_sync import run_history_sync
+from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -199,7 +199,7 @@ def test_history_sync_does_not_call_the_supplier_while_repack_activation_is_fenc
 ) -> None:
     supplier = FakeSupplier((date(2026, 9, 10),))
     monkeypatch.setattr(
-        "trader.infra.research.history_archive_sync.require_history_archive_repack_inactive",
+        "trader.download.infra.history_archive_sync.require_history_archive_repack_inactive",
         lambda _root: (_ for _ in ()).throw(HistoryArchiveRepackFenceError("fenced")),
     )
 

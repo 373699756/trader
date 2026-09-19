@@ -22,15 +22,15 @@ from trader.domain.research.tomorrow_training_input import (
     REQUIRED_DAILY_FIELDS,
     FrozenDailyInputDescriptor,
 )
-from trader.infra.research.history_archive_reader import (
+from trader.download.infra.history_archive_reader import (
     HistoryArchiveReadError,
     SQLiteHistoryArchiveReader,
 )
-from trader.infra.research.history_control_repository import (
+from trader.download.infra.history_control_repository import (
     HistoryControlError,
     SQLiteHistoryControlRepository,
 )
-from trader.infra.research.history_month_partition import HistoryPartitionVerificationPhase
+from trader.download.infra.history_month_partition import HistoryPartitionVerificationPhase
 
 
 @dataclass(frozen=True)

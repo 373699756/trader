@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from trader.application.research.history_automation import HistoryAutomationRunStatus, HistoryAutomationStatus
-from trader.infra.research.history_automation_installation import HistoryAutomationInstallationResult
+from trader.download.domain.history_automation import HistoryAutomationRunStatus, HistoryAutomationStatus
+from trader.download.infra.history_automation_installation import HistoryAutomationInstallationResult
 
 
 def project_history_automation_status(status: HistoryAutomationStatus) -> dict[str, object]:

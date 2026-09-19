@@ -19,7 +19,7 @@ from trader.domain.research.history_revision import (
     HistoryTrainingPoint,
     HistoryTrainingWindow,
 )
-from trader.infra.research.history_month_partition import (
+from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionError,
     HistoryPartitionVerificationPhase,
     SQLiteHistoryMonthPartitionRepository,

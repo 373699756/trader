@@ -6,9 +6,9 @@ from typing import cast
 
 import pytest
 
-from trader.application.research.history_sync import HistorySyncConfiguration, HistorySyncProgress
-from trader.infra.research.baostock_gateway import BaoStockRowResult
-from trader.infra.research.baostock_sync_supplier import BaoStockHistorySupplier, _Activity, _RateLimitedSdk
+from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgress
+from trader.download.infra.baostock_gateway import BaoStockRowResult
+from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, _Activity, _RateLimitedSdk
 
 
 @dataclass

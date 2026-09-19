@@ -453,8 +453,8 @@ def test_domain_and_application_do_not_own_persistence_or_json_decoders() -> Non
 
 def test_history_month_values_and_sqlite_codec_keep_serialization_at_the_infra_boundary() -> None:
     domain_path = SOURCE_ROOT / "domain/research/history_revision.py"
-    codec_path = SOURCE_ROOT / "infra/research/history_revision_codec.py"
-    partition_path = SOURCE_ROOT / "infra/research/history_month_partition.py"
+    codec_path = SOURCE_ROOT / "download/infra/history_revision_codec.py"
+    partition_path = SOURCE_ROOT / "download/infra/history_month_partition.py"
     domain_source = domain_path.read_text(encoding="utf-8")
     codec_source = codec_path.read_text(encoding="utf-8")
     partition_source = partition_path.read_text(encoding="utf-8")
@@ -469,10 +469,10 @@ def test_history_month_values_and_sqlite_codec_keep_serialization_at_the_infra_b
 
 
 def test_history_sync_progress_stays_typed_until_the_entrypoint_projection() -> None:
-    contract = (SOURCE_ROOT / "application/research/history_sync.py").read_text(encoding="utf-8")
-    supplier = (SOURCE_ROOT / "infra/research/baostock_sync_supplier.py").read_text(encoding="utf-8")
-    runtime = (SOURCE_ROOT / "infra/research/history_archive_sync.py").read_text(encoding="utf-8")
-    projection = (SOURCE_ROOT / "entrypoints/history_sync_progress.py").read_text(encoding="utf-8")
+    contract = (SOURCE_ROOT / "download/domain/history_sync.py").read_text(encoding="utf-8")
+    supplier = (SOURCE_ROOT / "download/infra/baostock_sync_supplier.py").read_text(encoding="utf-8")
+    runtime = (SOURCE_ROOT / "download/infra/history_archive_sync.py").read_text(encoding="utf-8")
+    projection = (SOURCE_ROOT / "download/entrypoints/history_sync_progress.py").read_text(encoding="utf-8")
 
     assert "class HistorySyncProgress:" in contract
     assert "class HistorySyncProgressPort(Protocol):" in contract
@@ -483,6 +483,22 @@ def test_history_sync_progress_stays_typed_until_the_entrypoint_projection() -> 
     assert "尝试" in projection
     assert "file=sys.stderr" in projection
     assert "flush=True" in projection
+
+
+def test_download_business_has_one_owner_and_no_legacy_history_paths() -> None:
+    download = SOURCE_ROOT / "download"
+    assert all((download / relative).is_dir() for relative in ("domain", "application", "infra", "entrypoints"))
+    assert not any((SOURCE_ROOT / "application" / "history").glob("*.py"))
+    retired = (
+        "baostock_gap_supplier.py",
+        "baostock_gateway.py",
+        "baostock_session.py",
+        "baostock_sync_supplier.py",
+        "history_archive_sync.py",
+        "history_control_repository.py",
+        "history_month_partition.py",
+    )
+    assert not any((SOURCE_ROOT / "infra" / "research" / name).exists() for name in retired)
 
 
 def test_production_composition_injects_the_single_cadence_planner() -> None:

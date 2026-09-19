@@ -5,7 +5,7 @@ from datetime import date
 
 import pytest
 
-from trader.infra.research import baostock_gap_supplier as supplier
+from trader.download.infra import baostock_gap_supplier as supplier
 
 
 def _payload(code: str = "600001", day: str = "2026-09-02") -> str:

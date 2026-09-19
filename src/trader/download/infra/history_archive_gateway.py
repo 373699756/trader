@@ -5,11 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 
-from trader.application.history.history_ports import HistorySupplierPort
-from trader.application.research.history_maintenance import HistoryMaintenanceStatus
-from trader.application.research.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
-from trader.infra.research import history_archive_sync
-from trader.infra.research.history_control_repository import SQLiteHistoryControlRepository
+from trader.download.application.history_ports import HistorySupplierPort
+from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
+from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
+from trader.download.infra import history_archive_sync
+from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
 
 
 class HistoryArchiveGateway:

@@ -8,11 +8,11 @@ import json
 import sys
 from pathlib import Path
 
-from trader.infra.research.history_archive_repack import (
+from trader.download.infra.history_archive_repack import (
     HistoryArchiveRepackCoordinator,
     HistoryArchiveRepackError,
 )
-from trader.infra.research.history_archive_repack_state import HistoryArchiveRepackStatus
+from trader.download.infra.history_archive_repack_state import HistoryArchiveRepackStatus
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE = PROJECT_ROOT / "data/history/baostock"

@@ -19,7 +19,7 @@ from trader.domain.research.history_control import (
     HistoryControlState,
     HistorySnapshotPartition,
 )
-from trader.infra.research.history_archive_repack_codec import (
+from trader.download.infra.history_archive_repack_codec import (
     HistoryArchiveRepackCodecError,
     read_history_archive_repack_activation_journal,
     read_history_archive_repack_build_state,
@@ -27,7 +27,7 @@ from trader.infra.research.history_archive_repack_codec import (
     write_history_archive_repack_activation_journal,
     write_history_archive_repack_build_state,
 )
-from trader.infra.research.history_archive_repack_state import (
+from trader.download.infra.history_archive_repack_state import (
     HistoryArchiveRepackAction,
     HistoryArchiveRepackActivationJournal,
     HistoryArchiveRepackActivationState,
@@ -37,12 +37,12 @@ from trader.infra.research.history_archive_repack_state import (
     HistoryArchiveRepackSourceFileIdentity,
     HistoryArchiveRepackStatus,
 )
-from trader.infra.research.history_control_repository import (
+from trader.download.infra.history_control_repository import (
     HistoryControlError,
     HistoryMaintenanceLock,
     SQLiteHistoryControlRepository,
 )
-from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
 from trader.infra.scoring.head_bundles.bundle_repository import inspect_active_head_bundle
 
 RepackProgress = Callable[[int, int, str], None]

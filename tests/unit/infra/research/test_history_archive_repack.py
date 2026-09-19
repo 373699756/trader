@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-import trader.infra.research.history_archive_repack as repack_module
+import trader.download.infra.history_archive_repack as repack_module
 import trader.infra.research.history_training_due as due_module
 from trader.domain.recommendation.models import Strategy
 from trader.domain.research.baostock_daily import BaoStockDailyCell, BaoStockDailySide
@@ -21,18 +21,18 @@ from trader.domain.research.history_control import (
     HistoryUniverseIdentity,
 )
 from trader.domain.research.history_revision import HistoryRevision
-from trader.infra.artifacts.canonical import content_hash
-from trader.infra.research.history_archive_repack import (
+from trader.download.infra.history_archive_repack import (
     HistoryArchiveRepackCoordinator,
     HistoryArchiveRepackFenceError,
     require_history_archive_repack_inactive,
 )
-from trader.infra.research.history_archive_repack_codec import read_tomorrow_training_memory_evidence
-from trader.infra.research.history_archive_repack_state import (
+from trader.download.infra.history_archive_repack_codec import read_tomorrow_training_memory_evidence
+from trader.download.infra.history_archive_repack_state import (
     HistoryArchiveRepackRequirements,
 )
-from trader.infra.research.history_control_repository import SQLiteHistoryControlRepository
-from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
+from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.infra.artifacts.canonical import content_hash
 from trader.infra.research.history_training_due import HistoryTrainingDueQuery, evaluate_history_training_due
 from trader.infra.scoring.head_bundles.bundle_repository import ActiveHeadBundle
 from trader.infra.scoring.profiles.v3.contracts import V3_TRAINING_PROFILE

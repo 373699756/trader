@@ -42,7 +42,7 @@ from trader.domain.research.history_control import (
     HistoryUniverseIdentity,
 )
 from trader.domain.research.history_revision import HistoryRevision
-from trader.infra.research.baostock_gap_supplier import (
+from trader.download.infra.baostock_gap_supplier import (
     BaoStockGapFamily,
     BaoStockGapRecord,
     BaoStockGapRequest,
@@ -50,7 +50,7 @@ from trader.infra.research.baostock_gap_supplier import (
     BaoStockGapSupplierError,
     fetch_baostock_gaps,
 )
-from trader.infra.research.history_archive_sync import (
+from trader.download.infra.history_archive_sync import (
     _backup_database,
     _discard_partition_replacements,
     _PendingPartitions,
@@ -60,20 +60,20 @@ from trader.infra.research.history_archive_sync import (
     _seal_pending,
     _write_revisions,
 )
-from trader.infra.research.history_archive_sync import (
+from trader.download.infra.history_archive_sync import (
     _remove_pending as _remove_sync_pending,
 )
-from trader.infra.research.history_control_repository import (
+from trader.download.infra.history_control_repository import (
     HistoryControlError,
     HistoryMaintenanceAlreadyRunningError,
     HistoryMaintenanceLock,
     SQLiteHistoryControlRepository,
 )
-from trader.infra.research.history_month_partition import (
+from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionError,
     SQLiteHistoryMonthPartitionRepository,
 )
-from trader.infra.research.history_revision_codec import (
+from trader.download.infra.history_revision_codec import (
     decode_history_revision,
     encode_history_revision,
 )

@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-from trader.application.research.history_maintenance import HistoryMaintenanceStatus
-from trader.application.research.history_sync import HistorySyncProgress
-from trader.entrypoints.history_sync_progress import StderrHistorySyncProgress
+from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
+from trader.download.domain.history_sync import HistorySyncProgress
+from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 
 
 class _Clock:

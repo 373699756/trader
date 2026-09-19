@@ -16,13 +16,13 @@ from trader.domain.research.history_control import (
     calculate_history_training_cache_invalidation_dates,
     calculate_history_training_due,
 )
-from trader.infra.research.history_archive_reader import (
+from trader.download.infra.history_archive_reader import (
     HistoryArchiveReadError,
     HistoryPartitionRevisionComparison,
     SQLiteHistoryArchiveReader,
     route_history_months,
 )
-from trader.infra.research.history_control_repository import (
+from trader.download.infra.history_control_repository import (
     HistoryControlError,
     SQLiteHistoryControlRepository,
 )

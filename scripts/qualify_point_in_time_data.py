@@ -23,6 +23,7 @@ from trader.application.research.point_in_time_data_qualification import (  # no
 from trader.domain.research.point_in_time_data_qualification import (  # noqa: E402
     PointInTimeDataQualificationReport,
 )
+from trader.download.infra.history_archive_status import inspect_history_archive  # noqa: E402
 from trader.infra.research.h1_point_in_time_capability import (  # noqa: E402
     FreeSourceH1CapabilityProbe,
     PointInTimeSourceSession,
@@ -30,7 +31,6 @@ from trader.infra.research.h1_point_in_time_capability import (  # noqa: E402
 from trader.infra.research.historical_industry_archive import (  # noqa: E402
     audit_archived_historical_industry_facts,
 )
-from trader.infra.research.history_archive_status import inspect_history_archive  # noqa: E402
 
 
 def execute(

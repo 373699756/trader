@@ -15,15 +15,6 @@ from pathlib import Path
 from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo
 
-from trader.application.research.history_maintenance import HistoryMaintenanceState, HistoryMaintenanceStatus
-from trader.application.research.history_sync import (
-    HistorySupplierContext,
-    HistorySyncConfiguration,
-    HistorySyncProgress,
-    HistorySyncProgressPort,
-    HistorySyncProgressStage,
-    HistorySyncSupplier,
-)
 from trader.domain.research.artifact_identity import canonical_artifact_hash
 from trader.domain.research.baostock_daily import (
     BaoStockCodeBatch,
@@ -42,19 +33,28 @@ from trader.domain.research.history_control import (
     HistoryUniverseIdentity,
 )
 from trader.domain.research.history_revision import HistoryRevision
-from trader.infra.research.history_archive_reader import route_history_months
-from trader.infra.research.history_archive_repack import (
+from trader.download.domain.history_maintenance import HistoryMaintenanceState, HistoryMaintenanceStatus
+from trader.download.domain.history_sync import (
+    HistorySupplierContext,
+    HistorySyncConfiguration,
+    HistorySyncProgress,
+    HistorySyncProgressPort,
+    HistorySyncProgressStage,
+    HistorySyncSupplier,
+)
+from trader.download.infra.history_archive_reader import route_history_months
+from trader.download.infra.history_archive_repack import (
     HistoryArchiveRepackFenceError,
     require_history_archive_repack_inactive,
 )
-from trader.infra.research.history_control_repository import (
+from trader.download.infra.history_control_repository import (
     HistoryControlError,
     HistoryMaintenanceAlreadyRunningError,
     HistoryMaintenanceLock,
     SQLiteHistoryControlRepository,
     inspect_history_disk,
 )
-from trader.infra.research.history_month_partition import (
+from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionError,
     SQLiteHistoryMonthPartitionRepository,
 )

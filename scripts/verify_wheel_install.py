@@ -117,10 +117,10 @@ required = (
     ("trader.web", "static/dashboard.js"),
     ("trader.web", "static/trader-mark.svg"),
     ("trader.infra.scoring.profiles.v1", "model.json"),
-    ("trader.infra.research.history_automation_templates", "linux.service.in"),
-    ("trader.infra.research.history_automation_templates", "linux.timer"),
-    ("trader.infra.research.history_automation_templates", "windows.xml.in"),
-    ("trader.infra.research.history_automation_templates", "macos.plist.in"),
+    ("trader.download.infra.history_automation_templates", "linux.service.in"),
+    ("trader.download.infra.history_automation_templates", "linux.timer"),
+    ("trader.download.infra.history_automation_templates", "windows.xml.in"),
+    ("trader.download.infra.history_automation_templates", "macos.plist.in"),
 )
 for package, relative in required:
     resource = resources.files(package).joinpath(relative)

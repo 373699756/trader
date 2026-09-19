@@ -65,7 +65,7 @@ def test_current_docs_and_tools_only_name_the_monthly_history_owner() -> None:
 
 def test_retained_converter_is_isolated_from_the_retired_download_chain() -> None:
     converter = (ROOT / "scripts/convert_baostock_history.py").read_text(encoding="utf-8")
-    supplier = (ROOT / "src/trader/infra/research/baostock_gap_supplier.py").read_text(encoding="utf-8")
+    supplier = (ROOT / "src/trader/download/infra/baostock_gap_supplier.py").read_text(encoding="utf-8")
 
     assert "baostock_gap_supplier" in converter
     for retired_import in (

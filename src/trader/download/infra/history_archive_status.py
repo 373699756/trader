@@ -6,15 +6,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from trader.application.research.history_archive_status import HistoryArchiveStatus
 from trader.domain.research.history_control import (
     HistoryActiveSnapshot,
     HistoryCalendarIdentity,
     HistorySourceIdentity,
     HistoryUniverseIdentity,
 )
-from trader.infra.research.history_control_repository import HistoryControlError, SQLiteHistoryControlRepository
-from trader.infra.research.history_month_partition import (
+from trader.download.domain.history_archive_status import HistoryArchiveStatus
+from trader.download.infra.history_control_repository import HistoryControlError, SQLiteHistoryControlRepository
+from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionError,
     SQLiteHistoryMonthPartitionRepository,
 )

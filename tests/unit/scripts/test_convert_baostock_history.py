@@ -12,14 +12,14 @@ import pytest
 from scripts import convert_baostock_history as converter
 from trader.domain.research.baostock_daily import BaoStockDailyCell, BaoStockDailySide
 from trader.domain.research.history_revision import HistoryRevision
-from trader.infra.research.baostock_gap_supplier import (
+from trader.download.infra.baostock_gap_supplier import (
     BaoStockGapRecord,
     BaoStockGapResult,
     BaoStockGapUnavailable,
 )
-from trader.infra.research.history_archive_reader import SQLiteHistoryArchiveReader
-from trader.infra.research.history_control_repository import HistoryControlError, SQLiteHistoryControlRepository
-from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.download.infra.history_archive_reader import SQLiteHistoryArchiveReader
+from trader.download.infra.history_control_repository import HistoryControlError, SQLiteHistoryControlRepository
+from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
 from trader.infra.research.history_training_input import SQLiteHistoryTrainingInputArchive
 
 

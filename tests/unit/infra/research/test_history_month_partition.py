@@ -9,8 +9,8 @@ import pytest
 
 from trader.domain.research.baostock_daily import BaoStockDailyCell, BaoStockDailySide
 from trader.domain.research.history_revision import HistoryRevision
-from trader.infra.research import history_month_partition as partition_module
-from trader.infra.research.history_month_partition import (
+from trader.download.infra import history_month_partition as partition_module
+from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionConflictError,
     HistoryMonthPartitionError,
     SQLiteHistoryMonthPartitionRepository,

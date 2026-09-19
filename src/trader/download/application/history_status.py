@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from trader.application.history.history_ports import HistoryStatusPort
-from trader.application.research.history_maintenance import HistoryMaintenanceStatus
+from trader.download.application.history_ports import HistoryStatusPort
+from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 
 
 @dataclass(frozen=True)

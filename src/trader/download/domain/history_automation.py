@@ -9,12 +9,12 @@ from pathlib import Path
 from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
-from trader.application.research.history_maintenance import HistoryMaintenanceState
 from trader.domain.research.history_control import (
     HistoryActiveSnapshot,
     HistoryAutomationControlState,
     HistoryTrainingDueReason,
 )
+from trader.download.domain.history_maintenance import HistoryMaintenanceState
 
 HistoryAutomationState = Literal["ready", "data_incomplete"]
 HistoryReminderPhase = Literal["not_due", "pending", "claimed", "sent", "notification_degraded"]

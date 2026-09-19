@@ -6,7 +6,7 @@ from xml.etree import ElementTree
 
 import pytest
 
-from trader.infra.research.history_automation_installation import (
+from trader.download.infra.history_automation_installation import (
     HistoryAutomationInstallationRequest,
     apply_history_automation_installation,
     plan_history_automation_installation,

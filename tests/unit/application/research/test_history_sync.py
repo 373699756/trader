@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from trader.application.research.history_sync import HistorySyncProgress
+from trader.download.domain.history_sync import HistorySyncProgress
 
 
 def test_history_sync_progress_is_a_strict_immutable_value() -> None:

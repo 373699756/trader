@@ -5,12 +5,6 @@ from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from trader.application.research.history_automation import (
-    HistoryDesktopNotification,
-    HistoryNotificationResult,
-)
-from trader.application.research.history_maintenance import HistoryMaintenanceStatus
-from trader.application.research.history_sync import HistorySyncConfiguration, HistorySyncProgress
 from trader.domain.research.history_control import (
     HistoryActiveSnapshot,
     HistoryCalendarIdentity,
@@ -20,11 +14,17 @@ from trader.domain.research.history_control import (
     HistoryTrainingDueState,
     HistoryUniverseIdentity,
 )
-from trader.infra.research.history_control_repository import (
+from trader.download.domain.history_automation import (
+    HistoryDesktopNotification,
+    HistoryNotificationResult,
+)
+from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
+from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgress
+from trader.download.infra.history_control_repository import (
     HistoryMaintenanceLock,
     SQLiteHistoryControlRepository,
 )
-from trader.infra.research.history_maintenance_runner import (
+from trader.download.infra.history_maintenance_runner import (
     PlatformHistoryDesktopNotifier,
     RotatingHistoryAutomationLog,
     run_scheduled_history_maintenance,

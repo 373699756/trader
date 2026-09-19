@@ -20,8 +20,8 @@ from pathlib import Path
 
 from trader.domain.research.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
 from trader.domain.research.history_revision import HistoryRevision
-from trader.infra.research.history_control_repository import HistoryControlError, SQLiteHistoryControlRepository
-from trader.infra.research.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.download.infra.history_control_repository import HistoryControlError, SQLiteHistoryControlRepository
+from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
 
 from .reporting import emit_report
 

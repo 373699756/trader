@@ -34,16 +34,16 @@ from trader.domain.research.history_control import (
     HistoryTrainingDueState,
 )
 from trader.domain.research.tomorrow_training_input import FrozenDailyInputDescriptor, evaluate_tomorrow_training_input
-from trader.infra.artifacts.canonical import content_hash
-from trader.infra.research.history_archive_repack import (
+from trader.download.infra.history_archive_repack import (
     HistoryArchiveRepackFenceError,
     require_history_archive_repack_inactive,
 )
-from trader.infra.research.history_control_repository import (
+from trader.download.infra.history_control_repository import (
     HistoryMaintenanceAlreadyRunningError,
     HistoryMaintenanceLock,
 )
-from trader.infra.research.history_month_partition import HistoryPartitionVerificationPhase
+from trader.download.infra.history_month_partition import HistoryPartitionVerificationPhase
+from trader.infra.artifacts.canonical import content_hash
 from trader.infra.research.history_training_due import (
     HistoryTrainingDueEvaluation,
     HistoryTrainingDueQuery,

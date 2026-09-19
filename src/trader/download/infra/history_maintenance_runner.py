@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
-from trader.application.research.history_automation import (
+from trader.domain.research.history_control import HistoryReminderClaim, HistoryReminderState
+from trader.download.domain.history_automation import (
     HistoryAutomationRunStatus,
     HistoryAutomationStatus,
     HistoryDesktopNotification,
@@ -21,21 +22,20 @@ from trader.application.research.history_automation import (
     HistoryNotificationResult,
     HistoryNotificationState,
 )
-from trader.application.research.history_maintenance import HistoryMaintenanceStatus
-from trader.application.research.history_sync import (
+from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
+from trader.download.domain.history_sync import (
     HistorySyncConfiguration,
     HistorySyncProgress,
     HistorySyncProgressPort,
 )
-from trader.domain.research.history_control import HistoryReminderClaim, HistoryReminderState
-from trader.infra.process_lock import ProcessLock, ProcessLockError
-from trader.infra.research.history_automation_status import read_history_automation_status
-from trader.infra.research.history_control_repository import (
+from trader.download.infra.history_automation_status import read_history_automation_status
+from trader.download.infra.history_control_repository import (
     HistoryControlError,
     HistoryMaintenanceAlreadyRunningError,
     HistoryMaintenanceLock,
     SQLiteHistoryControlRepository,
 )
+from trader.infra.process_lock import ProcessLock, ProcessLockError
 
 ScheduledSynchronizer = Callable[[HistorySyncProgressPort | None], HistoryMaintenanceStatus]
 PlatformName = Literal["linux", "windows", "macos"]

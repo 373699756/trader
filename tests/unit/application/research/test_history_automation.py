@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from trader.application.research.history_automation import derive_history_automation_status
 from trader.domain.research.history_control import (
     HistoryActiveSnapshot,
     HistoryAutomationControlState,
@@ -16,6 +15,7 @@ from trader.domain.research.history_control import (
     HistoryTrainingDueState,
     HistoryUniverseIdentity,
 )
+from trader.download.domain.history_automation import derive_history_automation_status
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=SHANGHAI)

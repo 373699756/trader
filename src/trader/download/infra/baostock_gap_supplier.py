@@ -15,7 +15,7 @@ from multiprocessing.process import BaseProcess
 from typing import Literal
 
 from trader.domain.research.baostock_daily import BaoStockAdjustment
-from trader.infra.research.baostock_gateway import (
+from trader.download.infra.baostock_gateway import (
     _DAILY_FACT_FIELDS,
     _DAILY_FIELDS,
     BaoStockSdkPort,
@@ -24,7 +24,7 @@ from trader.infra.research.baostock_gateway import (
     _result_rows,
     qfq_source_windows,
 )
-from trader.infra.research.baostock_session import (
+from trader.download.infra.baostock_session import (
     BaoStockSessionSdkPort,
     RateLimitedBaoStockSdk,
     load_baostock_sdk,

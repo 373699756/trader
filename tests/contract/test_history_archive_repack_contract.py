@@ -4,8 +4,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_history_repack_has_one_typed_owner_and_a_thin_explicit_cli() -> None:
-    owner = ROOT / "src/trader/infra/research/history_archive_repack.py"
-    codec = ROOT / "src/trader/infra/research/history_archive_repack_codec.py"
+    owner = ROOT / "src/trader/download/infra/history_archive_repack.py"
+    codec = ROOT / "src/trader/download/infra/history_archive_repack_codec.py"
     command = ROOT / "scripts/repack_baostock_history_archive.py"
 
     assert owner.is_file()

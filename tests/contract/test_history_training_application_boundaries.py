@@ -4,7 +4,8 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-APPLICATION = ROOT / "src" / "trader" / "application"
+DOWNLOAD_APPLICATION = ROOT / "src" / "trader" / "download" / "application"
+TRAINING_APPLICATION = ROOT / "src" / "trader" / "application" / "training"
 
 
 def _imports(path: Path) -> set[str]:
@@ -19,7 +20,7 @@ def _imports(path: Path) -> set[str]:
 
 
 def test_history_application_package_exposes_split_use_cases_and_ports() -> None:
-    package = APPLICATION / "history"
+    package = DOWNLOAD_APPLICATION
     assert {
         "download_history.py",
         "update_history.py",
@@ -34,7 +35,7 @@ def test_history_application_package_exposes_split_use_cases_and_ports() -> None
 
 
 def test_training_application_package_is_profile_owned_and_infrastructure_free() -> None:
-    package = APPLICATION / "training"
+    package = TRAINING_APPLICATION
     assert {
         "profile_training_primary.py",
         "profile_training_secondary.py",
@@ -51,8 +52,10 @@ def test_training_application_package_is_profile_owned_and_infrastructure_free()
 
 
 def test_entrypoints_route_download_and_training_through_application_use_cases() -> None:
-    cli = (ROOT / "src" / "trader" / "entrypoints" / "cli.py").read_text(encoding="utf-8")
     commands = (ROOT / "src" / "trader" / "entrypoints" / "research_commands.py").read_text(encoding="utf-8")
-    assert "DownloadHistoryUseCase" in cli
+    download_commands = (ROOT / "src" / "trader" / "download" / "entrypoints" / "commands.py").read_text(
+        encoding="utf-8"
+    )
+    assert "DownloadHistoryUseCase" in download_commands
     assert "TrainV2UseCase" in commands
     assert "TrainV3UseCase" in commands

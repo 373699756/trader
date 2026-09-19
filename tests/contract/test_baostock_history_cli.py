@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from trader.application.research.history_maintenance import HistoryMaintenanceStatus
-from trader.application.research.history_sync import HistorySyncProgress
+from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
+from trader.download.domain.history_sync import HistorySyncProgress
 from trader.entrypoints.cli import build_parser, main
 
 
@@ -59,7 +59,7 @@ def test_download_runs_the_typed_zero_argument_synchronization(
         progress.publish(HistorySyncProgress("supplier_calendar", "waiting", 0, 1, call_elapsed_seconds=5.0))
         return status
 
-    monkeypatch.setattr("trader.infra.research.history_archive_sync.run_history_sync", synchronize)
+    monkeypatch.setattr("trader.download.infra.history_archive_sync.run_history_sync", synchronize)
 
     assert main(["download"]) == 0
 

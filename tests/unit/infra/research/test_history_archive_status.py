@@ -4,7 +4,6 @@ from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from trader.application.research.history_sync import HistorySupplierContext, HistorySyncConfiguration
 from trader.domain.research.baostock_daily import (
     BaoStockCalendar,
     BaoStockCodeBatch,
@@ -16,8 +15,9 @@ from trader.domain.research.baostock_daily import (
     BaoStockSecurity,
     BaoStockSourceVersions,
 )
-from trader.infra.research.history_archive_status import inspect_history_archive
-from trader.infra.research.history_archive_sync import run_history_sync
+from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
+from trader.download.infra.history_archive_status import inspect_history_archive
+from trader.download.infra.history_archive_sync import run_history_sync
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 

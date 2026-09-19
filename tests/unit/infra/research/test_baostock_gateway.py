@@ -4,8 +4,8 @@ from types import SimpleNamespace
 import pytest
 
 from trader.domain.research.baostock_daily import BaoStockCalendar, BaoStockDailySpec, BaoStockSecurity
-from trader.infra.research.baostock_gateway import BaoStockRowGateway, _result_rows, qfq_source_windows
-from trader.infra.research.baostock_session import RateLimitedBaoStockSdk, login_baostock
+from trader.download.infra.baostock_gateway import BaoStockRowGateway, _result_rows, qfq_source_windows
+from trader.download.infra.baostock_session import RateLimitedBaoStockSdk, login_baostock
 
 
 class _Result:

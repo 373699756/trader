@@ -255,7 +255,7 @@ def _result(state: InstallationState, plan: HistoryAutomationInstallationPlan) -
 
 def _template(name: str) -> str:
     return (
-        resources.files("trader.infra.research.history_automation_templates").joinpath(name).read_text(encoding="utf-8")
+        resources.files("trader.download.infra.history_automation_templates").joinpath(name).read_text(encoding="utf-8")
     )
 
 

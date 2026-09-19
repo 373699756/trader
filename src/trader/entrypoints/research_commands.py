@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from trader.application.research.historical_label import HistoricalLabelPreregistrationService
-from trader.application.research.history_archive_status import HistoryArchiveStatus
 from trader.application.research.tomorrow_research_artifacts import (
     TomorrowResearchStage,
     derive_tomorrow_research_run_id,
@@ -24,11 +23,12 @@ from trader.application.research.tomorrow_research_orchestrator import (
 from trader.application.research.tomorrow_research_prerequisites import TomorrowLabelReadinessInspector
 from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC
 from trader.domain.research.tomorrow_historical import TOMORROW_HISTORICAL_SPEC
+from trader.download.domain.history_archive_status import HistoryArchiveStatus
+from trader.download.infra.history_archive_status import inspect_history_archive
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
 from trader.infra.persistence.research_trace import SQLiteResearchTraceArchive
 from trader.infra.research.h1_point_in_time_archive import H1PointInTimeArchiveConflictError, SQLiteH1PointInTimeArchive
 from trader.infra.research.historical_screening_archive import SQLiteHistoricalScreeningArchive
-from trader.infra.research.history_archive_status import inspect_history_archive
 from trader.infra.research.tomorrow_historical_artifacts import (
     TomorrowHistoricalArtifactArchive,
     TomorrowHistoricalArtifactConflictError,

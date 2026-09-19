@@ -13,21 +13,21 @@ from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from typing import Literal, cast
 
-from trader.application.research.history_sync import (
-    HistorySupplierContext,
-    HistorySyncConfiguration,
-    HistorySyncProgress,
-    HistorySyncProgressPort,
-    HistorySyncProgressStage,
-)
 from trader.domain.research.baostock_daily import (
     BaoStockCalendar,
     BaoStockCodeDownload,
     BaoStockDailySpec,
     BaoStockSecurity,
 )
-from trader.infra.research.baostock_gateway import BaoStockRowGateway, BaoStockRowResult
-from trader.infra.research.baostock_session import (
+from trader.download.domain.history_sync import (
+    HistorySupplierContext,
+    HistorySyncConfiguration,
+    HistorySyncProgress,
+    HistorySyncProgressPort,
+    HistorySyncProgressStage,
+)
+from trader.download.infra.baostock_gateway import BaoStockRowGateway, BaoStockRowResult
+from trader.download.infra.baostock_session import (
     BaoStockSessionSdkPort,
     baostock_dependency_versions,
     load_baostock_sdk,

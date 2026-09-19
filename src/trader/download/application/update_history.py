@@ -6,9 +6,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.application.history.history_ports import HistoryArchivePort, HistorySupplierPort
-from trader.application.research.history_maintenance import HistoryMaintenanceStatus
-from trader.application.research.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
+from trader.download.application.history_ports import HistoryArchivePort, HistorySupplierPort
+from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
+from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
 
 
 @dataclass(frozen=True)

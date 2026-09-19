@@ -17,8 +17,8 @@ from trader.domain.research.historical_industry_facts import (
     merge_historical_industry_facts,
 )
 from trader.domain.research.history_revision import HistoryRevision
-from trader.infra.research.history_archive_reader import SQLiteHistoryArchiveReader
-from trader.infra.research.history_archive_status import (
+from trader.download.infra.history_archive_reader import SQLiteHistoryArchiveReader
+from trader.download.infra.history_archive_status import (
     HistoryArchiveError,
     load_active_history_archive,
     verify_active_history_archive,

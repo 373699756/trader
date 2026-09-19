@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from trader.application.research.history_archive_status import HistoryArchiveStatus
+from trader.download.domain.history_archive_status import HistoryArchiveStatus
 from trader.domain.research.h1_point_in_time import H1CapabilityAuditReport, H1CapabilityProbe
 from trader.domain.research.historical_industry_facts import (
     HistoricalIndustryDatasetReport,

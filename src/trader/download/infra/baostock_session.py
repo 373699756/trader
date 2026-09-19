@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from typing import Literal, Protocol, cast
 
-from trader.infra.research.baostock_gateway import BaoStockRowResult, BaoStockSdkPort
+from trader.download.infra.baostock_gateway import BaoStockRowResult, BaoStockSdkPort
 
 BAOSTOCK_QUERY_INTERVAL_SECONDS = 2.0
 

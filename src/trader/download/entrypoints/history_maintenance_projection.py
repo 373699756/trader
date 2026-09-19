@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from trader.application.research.history_maintenance import HistoryMaintenanceStatus
+from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 
 
 def project_history_maintenance_status(status: HistoryMaintenanceStatus) -> dict[str, object]:

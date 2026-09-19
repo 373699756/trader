@@ -6,8 +6,8 @@ import sys
 import time
 from collections.abc import Callable
 
-from trader.application.research.history_maintenance import HistoryMaintenanceStatus
-from trader.application.research.history_sync import HistorySyncProgress, HistorySyncProgressStage
+from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
+from trader.download.domain.history_sync import HistorySyncProgress, HistorySyncProgressStage
 
 _STAGE_LABELS: dict[HistorySyncProgressStage, str] = {
     "initializing": "初始化",

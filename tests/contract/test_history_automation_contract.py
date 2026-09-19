@@ -10,13 +10,13 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.application.research.history_automation import HistoryAutomationStatus
-from trader.entrypoints.cli import build_parser, main
-from trader.entrypoints.history_automation_projection import project_history_automation_status
-from trader.infra.research.history_automation_installation import (
+from trader.download.domain.history_automation import HistoryAutomationStatus
+from trader.download.infra.history_automation_installation import (
     HistoryAutomationInstallationRequest,
     plan_history_automation_installation,
 )
+from trader.entrypoints.cli import build_parser, main
+from trader.entrypoints.history_automation_projection import project_history_automation_status
 
 
 def test_automation_cli_commands_are_zero_argument_and_check_contains_read_only_status() -> None:
@@ -37,7 +37,7 @@ def test_automation_cli_commands_are_zero_argument_and_check_contains_read_only_
     source = Path("src/trader/entrypoints/cli.py").read_text(encoding="utf-8")
     assert '"history-automation-status"' in source
     assert "evaluate_history_training_due" not in Path(
-        "src/trader/infra/research/history_automation_status.py"
+        "src/trader/download/infra/history_automation_status.py"
     ).read_text(encoding="utf-8")
 
 
@@ -100,7 +100,7 @@ def test_internal_status_command_reads_persisted_projection_without_loading_supp
         False,
     )
     monkeypatch.setattr(
-        "trader.infra.research.history_automation_status.read_history_automation_status", lambda *_: status
+        "trader.download.infra.history_automation_status.read_history_automation_status", lambda *_: status
     )
     monkeypatch.setattr("trader.entrypoints.cli._shanghai_now", lambda: now)
 

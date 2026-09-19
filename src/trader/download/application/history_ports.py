@@ -7,8 +7,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Protocol
 
-from trader.application.research.history_maintenance import HistoryMaintenanceStatus
-from trader.application.research.history_sync import (
+from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
+from trader.download.domain.history_sync import (
     HistorySyncConfiguration,
     HistorySyncProgressPort,
     HistorySyncSupplier,

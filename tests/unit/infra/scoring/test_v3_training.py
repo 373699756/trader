@@ -17,8 +17,8 @@ from trader.domain.research.baostock_daily import (
 from trader.domain.research.history_control import HistoryTrainingDueState
 from trader.domain.research.history_revision import HistoryTrainingPoint, HistoryTrainingWindow
 from trader.domain.research.tomorrow_training_input import REQUIRED_DAILY_FIELDS, FrozenDailyInputDescriptor
-from trader.infra.research.history_archive_repack import HistoryArchiveRepackFenceError
-from trader.infra.research.history_control_repository import HistoryMaintenanceAlreadyRunningError
+from trader.download.infra.history_archive_repack import HistoryArchiveRepackFenceError
+from trader.download.infra.history_control_repository import HistoryMaintenanceAlreadyRunningError
 from trader.infra.research.history_training_due import HistoryTrainingDueQuery
 from trader.infra.research.history_training_input import HistoryTrainingInputSnapshot
 from trader.infra.scoring.profiles.v3.contracts import (

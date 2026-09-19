@@ -17,7 +17,7 @@ from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityR
 from trader.infra.settings import RuntimeSettings, load_long_watchlist, load_runtime_settings, load_strategy_settings
 
 if TYPE_CHECKING:
-    from trader.application.research.history_sync import HistorySyncConfiguration
+    from trader.download.domain.history_sync import HistorySyncConfiguration
 
 _COMMAND_GROUPS = {
     "check": ("validate-config", "research-status", "history-automation-status", "performance-check"),
@@ -174,8 +174,8 @@ def _run_history_maintenance_command(
             parser.error("download does not accept --profile")
         return _run_history_download()
     if command == "history-automation-status":
+        from trader.download.infra.history_automation_status import read_history_automation_status
         from trader.entrypoints.history_automation_projection import project_history_automation_status
-        from trader.infra.research.history_automation_status import read_history_automation_status
 
         repository_root = _repository_root_for_validation()
         status = read_history_automation_status(repository_root / "data" / "history" / "baostock", _shanghai_now())
@@ -191,35 +191,20 @@ def _run_history_maintenance_command(
 
 
 def _run_history_download() -> int:
-    from trader.application.history.download_history import DownloadHistoryUseCase
-    from trader.entrypoints.history_maintenance_projection import project_history_maintenance_status
-    from trader.entrypoints.history_sync_progress import StderrHistorySyncProgress
-    from trader.infra.research.baostock_sync_supplier import BaoStockHistorySupplier
-    from trader.infra.research.history_archive_gateway import HistoryArchiveGateway
+    from trader.download.entrypoints.commands import run_download
 
-    repository_root = _repository_root_for_validation()
-    configuration = _history_sync_configuration(repository_root)
-    progress = StderrHistorySyncProgress()
-    with BaoStockHistorySupplier(configuration, progress=progress) as supplier:
-        status = DownloadHistoryUseCase(HistoryArchiveGateway()).execute(
-            configuration,
-            supplier,
-            progress=progress,
-        )
-    progress.publish_result(status)
-    print(json.dumps(project_history_maintenance_status(status), ensure_ascii=False, sort_keys=True))
-    return 0 if status.state in {"completed", "already_current"} else 1
+    return run_download(_repository_root_for_validation())
 
 
 def _run_scheduled_history_maintenance(runtime_dir: Path) -> int:
-    from trader.entrypoints.history_automation_projection import project_history_automation_run_status
-    from trader.infra.research.baostock_sync_supplier import BaoStockHistorySupplier
-    from trader.infra.research.history_archive_sync import run_history_sync
-    from trader.infra.research.history_maintenance_runner import (
+    from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
+    from trader.download.infra.history_archive_sync import run_history_sync
+    from trader.download.infra.history_maintenance_runner import (
         PlatformHistoryDesktopNotifier,
         RotatingHistoryAutomationLog,
         run_scheduled_history_maintenance,
     )
+    from trader.entrypoints.history_automation_projection import project_history_automation_run_status
 
     observed_at = _shanghai_now()
     repository_root = _repository_root_for_validation()
@@ -254,12 +239,9 @@ def _run_scheduled_history_maintenance(runtime_dir: Path) -> int:
 
 
 def _history_sync_configuration(repository_root: Path) -> HistorySyncConfiguration:
-    from trader.application.research.history_sync import HistorySyncConfiguration
+    from trader.download.entrypoints.commands import history_sync_configuration
 
-    return HistorySyncConfiguration(
-        archive_root=repository_root / "data" / "history" / "baostock",
-        training_root=repository_root / "data" / "train",
-    )
+    return history_sync_configuration(repository_root)
 
 
 def _shanghai_now() -> datetime:

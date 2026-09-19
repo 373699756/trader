@@ -15,7 +15,7 @@ from typing import Literal, cast
 
 from trader.domain.research.history_control import HistorySnapshotPartition
 from trader.domain.research.history_revision import HistoryRevision
-from trader.infra.research.history_revision_codec import (
+from trader.download.infra.history_revision_codec import (
     decode_history_revision,
     encode_history_revision,
 )
