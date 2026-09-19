@@ -13,14 +13,14 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.application.runtime.schedule import shanghai_now
-from trader.domain.market.models import (
+from trader.recommendation.domain.market.models import (
     CrossSectionStats,
     FeatureSnapshot,
     LiveQuote,
     MarketQuote,
 )
-from trader.domain.market.research import ResearchObservation
-from trader.domain.market.tail import MinuteBar
+from trader.recommendation.domain.market.research import ResearchObservation
+from trader.recommendation.domain.market.tail import MinuteBar
 from trader.infra.market_data.history.daily_history_cache import HistoryCache
 from trader.infra.market_data.history.history import DailyBar
 from trader.infra.market_data.normalization.features import StandardizedFeatureBuilder

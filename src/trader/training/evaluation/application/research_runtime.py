@@ -11,7 +11,7 @@ from trader.application.ports.scheduler import CycleRequest, ResearchIntent, Res
 from trader.application.runtime.cadence import CadencePolicy, PipelineTask, cadence_band
 from trader.application.runtime.schedule import MarketPhase
 from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 from trader.training.evaluation.application.research_coordination import ResearchCoordinator
 
 

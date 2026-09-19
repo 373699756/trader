@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 
-from trader.domain.market.eligibility import (
+from trader.recommendation.domain.market.eligibility import (
     IssuerEligibilityDecision,
     IssuerEligibilityFact,
     IssuerEligibilityReason,

@@ -1,24 +1,13 @@
 """V3-only training feature, head, and output contracts."""
 
-from trader.domain.market.feature_contracts import (
+from trader.recommendation.domain.market.feature_contracts import (
     D25_MODEL_FEATURE_MANIFEST,
-    TODAY_MODEL_FEATURE_MANIFEST,
     TOMORROW_MODEL_FEATURE_MANIFEST,
     TOMORROW_RAW_ALPHA_FEATURE_MANIFEST,
 )
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 from trader.training.infra.artifacts.contracts import TrainedHeadContract, TrainedProfileContract
 
-TODAY_HEAD_CONTRACT = TrainedHeadContract(
-    Strategy.TODAY,
-    "today_industry_ridge_lightgbm",
-    TODAY_MODEL_FEATURE_MANIFEST,
-    (1, 2, 3, 4, 5),
-    "target_t1",
-    1,
-    "11:20",
-    "pre_cost_excess_return_t1",
-)
 TOMORROW_HEAD_CONTRACT = TrainedHeadContract(
     Strategy.TOMORROW,
     "industry_ridge_lightgbm",
@@ -39,7 +28,7 @@ D25_HEAD_CONTRACT = TrainedHeadContract(
     "14:50",
     "pre_cost_mean_excess_return_t2_t5",
 )
-HEAD_CONTRACTS = (TODAY_HEAD_CONTRACT, TOMORROW_HEAD_CONTRACT, D25_HEAD_CONTRACT)
+HEAD_CONTRACTS = (TOMORROW_HEAD_CONTRACT, D25_HEAD_CONTRACT)
 V3_TRAINING_PROFILE = TrainedProfileContract(
     "v3",
     "v3",
@@ -58,7 +47,6 @@ def contract_for_strategy(strategy: Strategy) -> TrainedHeadContract:
 __all__ = [
     "D25_HEAD_CONTRACT",
     "HEAD_CONTRACTS",
-    "TODAY_HEAD_CONTRACT",
     "TOMORROW_HEAD_CONTRACT",
     "V3_TRAINING_PROFILE",
     "contract_for_strategy",

@@ -13,8 +13,8 @@ from trader.application.recommendation.scored_projection import (
     build_scored_hybrid,
     validate_review_manifests,
 )
-from trader.domain.recommendation.decision_identity import ScoredDecision
-from trader.domain.review.models import DeepSeekReview
+from trader.recommendation.domain.publication.decision_identity import ScoredDecision
+from trader.recommendation.domain.evidence.review import DeepSeekReview
 
 
 class ScoreFusionPort(Protocol):

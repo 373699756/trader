@@ -10,15 +10,17 @@ from trader.application.decisions.decision_drafts import UnifiedDecisionDraftInd
 from trader.application.decisions.decision_events import build_decision_committed
 from trader.application.decisions.decision_queries import UnifiedDecisionQueries
 from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
-from trader.domain.market.models import Board, MarketQuote
-from trader.domain.recommendation.decision_identity import (
+from trader.recommendation.domain.market.models import Board, MarketQuote
+from trader.recommendation.domain.publication.decision_identity import (
     DecisionItem,
     DecisionModelDiagnostics,
     DecisionQuote,
+    LongProjection,
+    LongProjectionItem,
     ScoredDecision,
 )
-from trader.domain.recommendation.models import RecommendationAction, Strategy
-from trader.domain.recommendation.pipeline import PipelineStageStatus, RecommendationPipelineStatus
+from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
+from trader.recommendation.domain.evidence.pipeline import PipelineStageStatus, RecommendationPipelineStatus
 from trader.web import create_app
 from trader.web.api.route_services import UnifiedWebServices, WebApiConfig
 
@@ -53,26 +55,26 @@ class _Repository:
         return None
 
     def list_dates(self, strategy: Strategy, *, limit: int = 31) -> tuple[date, ...]:
-        return (date(2026, 8, 8),) if strategy is Strategy.TODAY else ()
+        return (date(2026, 8, 8),) if strategy is Strategy.TOMORROW else ()
 
 
 def test_unified_decision_routes_validate_strategy_date_and_etag() -> None:
     app, _, _ = _app()
     client = app.test_client()
 
-    current = client.get("/api/decisions/today/current")
+    current = client.get("/api/decisions/tomorrow/current")
     cached = client.get(
-        "/api/decisions/today/current",
+        "/api/decisions/tomorrow/current",
         headers={"If-None-Match": current.headers["ETag"]},
     )
-    dates = client.get("/api/decisions/today/dates")
+    dates = client.get("/api/decisions/tomorrow/dates")
     invalid_strategy = client.get("/api/decisions/weekly/current")
-    invalid_date = client.get("/api/decisions/today/history?date=2026-8-8")
+    invalid_date = client.get("/api/decisions/tomorrow/history?date=2026-8-8")
 
     assert current.status_code == 200
     assert current.get_json()["schema_version"] == "decision_view"
     assert current.get_json()["draft"] is None
-    assert current.get_json()["strategy"] == "today"
+    assert current.get_json()["strategy"] == "tomorrow"
     assert current.get_json()["items"][0]["name"] == "浦发银行"
     assert current.get_json()["items"][0]["board"] == "main"
     assert current.get_json()["items"][0]["industry"] == "银行"
@@ -117,12 +119,32 @@ def test_only_unified_product_routes_are_registered() -> None:
         assert client.get(removed).status_code == 404
 
 
+def test_long_http_projection_is_current_only_and_has_no_scoring_or_freeze_fields() -> None:
+    client = _app()[0].test_client()
+
+    current = client.get("/api/decisions/long/current")
+    dates = client.get("/api/decisions/long/dates")
+    history = client.get("/api/decisions/long/history?date=2026-08-11")
+
+    assert current.status_code == 200
+    payload = current.get_json()
+    assert payload["strategy"] == "long"
+    assert payload["view"] == "current"
+    assert payload["score_status"] == "not_applicable"
+    assert payload["coverage"] == {"item_count": 1, "available_quote_count": 1}
+    assert set(payload).isdisjoint({"frozen", "frozen_at", "freeze_kind", "top_scores", "selection_diagnostics"})
+    assert set(payload["items"][0]).isdisjoint({"rank", "selection_rank", "scores", "score_status"})
+    assert dates.get_json() == {"schema_version": "decision_dates", "strategy": "long", "dates": []}
+    assert history.get_json()["status"] == "not_applicable"
+    assert history.get_json()["items"] == []
+
+
 def test_root_injects_configured_web_snapshot_retention_margin() -> None:
     app, queries, stream = _app()
     services = UnifiedWebServices(
         queries,
         stream,
-        lambda: {"status": "running", "phase": "today_main"},
+        lambda: {"status": "running", "phase": "morning_main"},
         WebApiConfig(heartbeat_seconds=15, snapshot_retention_seconds=35),
     )
 
@@ -150,12 +172,12 @@ def test_not_ready_current_keeps_observation_draft_separate_and_private_from_sta
         services=UnifiedWebServices(
             queries,
             UnifiedDecisionEventStream(),
-            lambda: {"status": "running", "phase": "today_main"},
+            lambda: {"status": "running", "phase": "morning_main"},
         )
     )
     client = app.test_client()
 
-    current = client.get("/api/decisions/today/current")
+    current = client.get("/api/decisions/tomorrow/current")
     status = client.get("/api/status")
 
     assert current.status_code == 200
@@ -186,7 +208,7 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     }
     assert "event: decision" in event
     decision_patch = json.loads(event.split("data: ", 1)[1])
-    assert decision_patch["strategy"] == "today"
+    assert decision_patch["strategy"] == "tomorrow"
     assert decision_patch["patch_schema_version"] == 4
     assert decision_patch["replace"] is True
     assert decision_patch["coverage"] == {
@@ -197,13 +219,13 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
         "executable_count": 1,
         "observation_count": 0,
     }
-    assert decision_patch["coverage"] == client.get("/api/decisions/today/current").get_json()["coverage"]
+    assert decision_patch["coverage"] == client.get("/api/decisions/tomorrow/current").get_json()["coverage"]
     assert "filtered_count" not in decision_patch
     assert decision_patch["input_versions"]["score_model"] == ("daily_reconstructible_ensemble:model-hash")
     assert [item["code"] for item in decision_patch["upserts"]] == ["600000"]
     assert decision_patch["upserts"][0]["scores"]["predicted_net_excess_pct"] == 1.25
     assert status["events"]["sequence"] == 1
-    assert status["strategies"]["today"]["status"] == queries.current(Strategy.TODAY).status
+    assert status["strategies"]["tomorrow"]["status"] == queries.current(Strategy.TOMORROW).status
     assert status["runtime_version"] == "runtime:test"
     assert status["company_research"] == {
         "batch_budget_seconds": 40.0,
@@ -407,8 +429,8 @@ def test_http_reads_do_not_invoke_external_io() -> None:
 
     for path in (
         "/",
-        "/api/decisions/today/current",
-        "/api/decisions/today/dates",
+        "/api/decisions/tomorrow/current",
+        "/api/decisions/tomorrow/dates",
         "/api/status",
     ):
         assert client.get(path).status_code == 200
@@ -418,6 +440,27 @@ def _app():
     index = UnifiedDecisionIndex()
     decision = _decision()
     assert index.publish(decision, expected_version=None).accepted
+    long_projection = LongProjection(
+        NOW.date(),
+        1,
+        NOW,
+        (("watchlist", "watchlist:1"),),
+        (
+            LongProjectionItem(
+                "600001",
+                "semiconductor",
+                "quote:1",
+                name="长期样例",
+                industry="半导体设备",
+                price=12.3,
+                pct_change=1.2,
+                source="fixture",
+                source_time=NOW,
+                quote_status="live",
+            ),
+        ),
+    )
+    assert index.publish(long_projection, expected_version=None).accepted
     queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), _Clock())
     stream = UnifiedDecisionEventStream()
     services = UnifiedWebServices(
@@ -645,7 +688,7 @@ def _app():
 def _decision() -> ScoredDecision:
     pipeline_keys = PIPELINE_STAGE_KEYS
     return ScoredDecision(
-        Strategy.TODAY,
+        Strategy.TOMORROW,
         NOW.date(),
         1,
         NOW,

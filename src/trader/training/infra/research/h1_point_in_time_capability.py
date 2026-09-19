@@ -104,7 +104,6 @@ class FreeSourceH1CapabilityProbe:
             "tencent_qfq_daily",
             min(rows) if rows else None,
             False,
-            False,
             "qfq",
             False,
             len(all_rows),
@@ -121,7 +120,6 @@ class FreeSourceH1CapabilityProbe:
         return H1CapabilityProbe(
             "eastmoney_historical_minute",
             cutoff if requested else None,
-            "11:20" in times,
             "14:50" in times,
             "unsupported",
             False,
@@ -228,7 +226,7 @@ def _secid(code: str) -> str:
 
 
 def _failed_probe(source: str) -> H1CapabilityProbe:
-    return H1CapabilityProbe(source, None, False, False, "unsupported", False, 0, 0, 0, 0.0)
+    return H1CapabilityProbe(source, None, False, "unsupported", False, 0, 0, 0, 0.0)
 
 
 def _encode(report: H1CapabilityAuditReport) -> dict[str, object]:
@@ -246,7 +244,6 @@ def _encode_probe(item: H1CapabilityProbe) -> dict[str, object]:
     return {
         "source": item.source,
         "earliest_available": item.earliest_available.isoformat() if item.earliest_available else None,
-        "supports_today_1120": item.supports_today_1120,
         "supports_1450": item.supports_1450,
         "adjustment_semantics": item.adjustment_semantics,
         "security_state_effective_at": item.security_state_effective_at,
@@ -299,7 +296,6 @@ def _decode_probe(raw: object) -> H1CapabilityProbe:
     expected = {
         "source",
         "earliest_available",
-        "supports_today_1120",
         "supports_1450",
         "adjustment_semantics",
         "security_state_effective_at",
@@ -314,7 +310,6 @@ def _decode_probe(raw: object) -> H1CapabilityProbe:
     return H1CapabilityProbe(
         _string(raw["source"]),
         date.fromisoformat(_string(earliest)) if earliest is not None else None,
-        _bool(raw["supports_today_1120"]),
         _bool(raw["supports_1450"]),
         _string(raw["adjustment_semantics"]),
         _bool(raw["security_state_effective_at"]),

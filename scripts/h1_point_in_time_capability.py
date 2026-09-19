@@ -114,7 +114,7 @@ def execute(
         historical_anchor_date=historical_anchor_date,
     )
     archive = SQLiteH1PointInTimeArchive(h1_runtime_dir)
-    metadata = tuple(archive.label_metadata(H1PointInTimeSpec(strategy)) for strategy in ("today", "tomorrow", "d25"))
+    metadata = tuple(archive.label_metadata(H1PointInTimeSpec(strategy)) for strategy in ("tomorrow", "d25"))
     completion = complete_h1_research(capability=capability, metadata=metadata)
     H1CapabilityArtifactArchive(artifact_dir).write(capability)
     HistoricalLabelArtifactArchive(artifact_dir).write(completion.labels)
@@ -167,7 +167,6 @@ def _projection(
                 "source": item.source,
                 "earliest_available": item.earliest_available.isoformat() if item.earliest_available else None,
                 "returned_history_rows": item.page_size,
-                "supports_today_1120": item.supports_today_1120,
                 "supports_1450": item.supports_1450,
                 "effective_security_state": item.security_state_effective_at,
                 "estimated_requests": item.estimated_requests,

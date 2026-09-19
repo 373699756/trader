@@ -20,8 +20,8 @@ from trader.application.ports.decision_records import (
     DecisionRecordRecoverySummary,
     DecisionRecordUnavailableError,
 )
-from trader.domain.recommendation.decision_identity import CommittedDecisionRecord
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord
+from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.persistence.decision_record_codec import committed_record_bytes, committed_record_from_bytes
 
 FaultInjector = Callable[[str], None]

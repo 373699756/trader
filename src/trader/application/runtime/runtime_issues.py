@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Literal
 
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 
 _ISSUE_HISTORY_CAPACITY = 20
 

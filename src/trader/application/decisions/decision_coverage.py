@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 
-from trader.domain.recommendation.decision_identity import ScoredDecision
-from trader.domain.recommendation.models import RecommendationAction
+from trader.recommendation.domain.publication.decision_identity import ScoredDecision
+from trader.recommendation.domain.publication.models import RecommendationAction
 
 
 @dataclass(frozen=True)

@@ -8,11 +8,11 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Protocol, cast
 
-from trader.domain.market.feature_contracts import (
+from trader.recommendation.domain.market.feature_contracts import (
     QfqPriceAnchors,
     calculate_profile_qfq_alpha,
 )
-from trader.domain.recommendation.model_scoring import (
+from trader.recommendation.domain.scoring.residualization import (
     TRAINED_HEAD_EXPOSURE_CONTRACT,
     create_exposure_context,
     residualize_exposure_with_context,

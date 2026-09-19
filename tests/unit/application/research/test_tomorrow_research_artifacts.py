@@ -75,7 +75,6 @@ def test_stage_handoff_binds_exact_required_artifacts_and_resource_limits() -> N
         _ref("h1_coverage_audit", artifact_kind="h1_research_completion"),
         _ref("daily_close_model_selection"),
         _ref("filter_confirmation"),
-        _ref("tomorrow_joint_candidate"),
     )
     handoff = TomorrowResearchStageHandoff(
         stage="development_training",

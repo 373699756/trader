@@ -16,11 +16,11 @@ from trader.application.recommendation.scored_selection import (
     normalize_candidate_discovery_population,
     plan_scored_feature_candidates,
 )
-from trader.domain.market.models import FeatureSnapshot
-from trader.domain.recommendation.models import Strategy
-from trader.domain.recommendation.selection.scored_selection import ScoredCandidatePlan
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.selection.scored_selection import ScoredCandidatePlan
 
-SCORED_STRATEGIES = (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+SCORED_STRATEGIES = (Strategy.TOMORROW, Strategy.D25)
 
 
 @dataclass(frozen=True)
@@ -123,7 +123,8 @@ def build_candidate_plans(
 
 
 def _maximum_age_seconds(strategy: Strategy) -> float:
-    return 20.0 if strategy is Strategy.TODAY else 30.0
+    del strategy
+    return 30.0
 
 
 def _history_required_sessions(model_scoring: ModelScoringPort | None, strategy: Strategy) -> int:

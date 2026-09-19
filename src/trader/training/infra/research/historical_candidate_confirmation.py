@@ -15,7 +15,7 @@ from trader.training.evaluation.application.historical_candidate_confirmation im
 from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash, canonical_artifact_json
 from trader.training.evaluation.domain.h1_point_in_time import ResearchStrategy
 
-_STRATEGIES: tuple[ResearchStrategy, ...] = ("today", "tomorrow", "d25")
+_STRATEGIES: tuple[ResearchStrategy, ...] = ("tomorrow", "d25")
 
 
 class HistoricalConfirmationArtifactConflictError(RuntimeError):
@@ -75,7 +75,6 @@ class HistoricalConfirmationArtifactIndex:
     residual_terminal_hashes: tuple[tuple[ResearchStrategy, str], ...]
     daily_close_selection_hash: str
     strategy_terminal_hashes: tuple[tuple[ResearchStrategy, str], ...]
-    joint_report_hash: str
     status: str = "historical_data_insufficient"
     terminal_holdout_status: str = "terminal_holdout_not_opened"
     production_authority: bool = False
@@ -88,7 +87,6 @@ class HistoricalConfirmationArtifactIndex:
             self.capability_hash,
             self.label_batch_hash,
             self.daily_close_selection_hash,
-            self.joint_report_hash,
         )
         if any(not is_sha256_text(value) for value in hashes):
             raise ValueError("Historical confirmation terminal index hash is invalid")
@@ -114,7 +112,6 @@ def _index(batch: HistoricalConfirmationTerminalBatch) -> HistoricalConfirmation
         residual_terminal_hashes=batch.parent_residual_ledger_hashes,
         daily_close_selection_hash=batch.parent_daily_close_selection_hash,
         strategy_terminal_hashes=tuple((item.strategy, item.content_hash) for item in batch.strategies),
-        joint_report_hash=batch.joint_report_hash,
     )
 
 
@@ -126,7 +123,6 @@ def _encode(index: HistoricalConfirmationArtifactIndex) -> dict[str, object]:
         "residual_terminal_hashes": [list(item) for item in index.residual_terminal_hashes],
         "daily_close_selection_hash": index.daily_close_selection_hash,
         "strategy_terminal_hashes": [list(item) for item in index.strategy_terminal_hashes],
-        "joint_report_hash": index.joint_report_hash,
         "status": index.status,
         "terminal_holdout_status": index.terminal_holdout_status,
         "production_authority": index.production_authority,
@@ -142,7 +138,6 @@ def _decode(raw: dict[str, object]) -> HistoricalConfirmationArtifactIndex:
         "residual_terminal_hashes",
         "daily_close_selection_hash",
         "strategy_terminal_hashes",
-        "joint_report_hash",
         "status",
         "terminal_holdout_status",
         "production_authority",
@@ -157,7 +152,6 @@ def _decode(raw: dict[str, object]) -> HistoricalConfirmationArtifactIndex:
         residual_terminal_hashes=_hash_pairs(raw["residual_terminal_hashes"]),
         daily_close_selection_hash=_string(raw["daily_close_selection_hash"]),
         strategy_terminal_hashes=_hash_pairs(raw["strategy_terminal_hashes"]),
-        joint_report_hash=_string(raw["joint_report_hash"]),
         status=_string(raw["status"]),
         terminal_holdout_status=_string(raw["terminal_holdout_status"]),
         production_authority=_boolean(raw["production_authority"]),

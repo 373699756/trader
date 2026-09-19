@@ -14,8 +14,8 @@ from trader.application.ports.decision_records import (
     DecisionRecordConflictError,
     DecisionRecordUnavailableError,
 )
-from trader.domain.recommendation.decision_identity import CommittedDecisionRecord
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord
+from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.persistence import decision_records as decision_records_module
 from trader.infra.persistence.decision_records import SQLiteDecisionRecordRepository
 
@@ -28,14 +28,14 @@ def test_formal_records_are_idempotent_and_isolated_by_strategy_and_date(tmp_pat
     repository = SQLiteDecisionRecordRepository(tmp_path)
     repository.initialize()
     tomorrow = record()
-    today = record(Strategy.TODAY)
+    today = record(Strategy.TOMORROW)
 
     repository.commit(tomorrow)
     repository.commit(tomorrow)
     repository.commit(today)
 
     assert repository.load(Strategy.TOMORROW, tomorrow.trade_date) == tomorrow
-    assert repository.load(Strategy.TODAY, today.trade_date) == today
+    assert repository.load(Strategy.TOMORROW, today.trade_date) == today
     assert repository.load(Strategy.D25, tomorrow.trade_date) is None
 
 
@@ -59,7 +59,7 @@ def test_formal_record_dates_are_bounded_and_newest_first(tmp_path: Path) -> Non
 
     assert repository.list_dates(Strategy.TOMORROW, limit=1) == (newest.trade_date,)
     assert repository.list_dates(Strategy.TOMORROW, limit=2) == (newest.trade_date, older.trade_date)
-    assert repository.list_dates(Strategy.TODAY) == ()
+    assert repository.list_dates(Strategy.D25) == ()
     with pytest.raises(ValueError, match="between 1 and 366"):
         repository.list_dates(Strategy.TOMORROW, limit=0)
 

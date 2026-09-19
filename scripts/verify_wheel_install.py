@@ -116,7 +116,6 @@ required = (
     ("trader.web", "static/dashboard.css"),
     ("trader.web", "static/dashboard.js"),
     ("trader.web", "static/trader-mark.svg"),
-    ("trader.infra.scoring.profiles.v1", "model.json"),
     ("trader.download.infra.history_automation_templates", "linux.service.in"),
     ("trader.download.infra.history_automation_templates", "linux.timer"),
     ("trader.download.infra.history_automation_templates", "windows.xml.in"),

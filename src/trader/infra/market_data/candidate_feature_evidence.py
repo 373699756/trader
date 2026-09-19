@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from trader.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.models import FeatureSnapshot
 
 
 def render_candidate_feature_evidence(snapshot: FeatureSnapshot, *, stock_index: int = 0) -> str:

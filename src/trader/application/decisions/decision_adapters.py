@@ -18,9 +18,8 @@ from trader.application.ports.scheduler import (
 from trader.application.recommendation.policy import RecommendationPolicy
 from trader.application.recommendation.score_fusion import ScoreFusionPort, ScoreFusionService
 from trader.application.recommendation.scored_freezing import ScoredFreezeCoordinator
-from trader.application.recommendation.today_freezing import TodayFreezeCoordinator
-from trader.domain.recommendation.decision_identity import DecisionIdentity, ScoredDecision
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.decision_identity import DecisionIdentity, ScoredDecision
+from trader.recommendation.domain.publication.models import Strategy
 
 
 class DeepSeekAdapter(DeepSeekUpgradePort):
@@ -72,12 +71,10 @@ class DeepSeekAdapter(DeepSeekUpgradePort):
 class FreezeAdapter(FreezePort):
     def __init__(
         self,
-        today: TodayFreezeCoordinator,
         tomorrow: ScoredFreezeCoordinator,
         d25: ScoredFreezeCoordinator,
     ) -> None:
-        self._freezers: dict[Strategy, TodayFreezeCoordinator | ScoredFreezeCoordinator] = {
-            Strategy.TODAY: today,
+        self._freezers: dict[Strategy, ScoredFreezeCoordinator] = {
             Strategy.TOMORROW: tomorrow,
             Strategy.D25: d25,
         }
@@ -85,7 +82,7 @@ class FreezeAdapter(FreezePort):
     def capture_checkpoint(self, strategy: Strategy, at: datetime) -> None:
         del at
         freezer = self._freezers.get(strategy)
-        if not isinstance(freezer, ScoredFreezeCoordinator):
+        if freezer is None:
             raise FreezeUnavailableError("checkpoint is only available for tomorrow and d25")
         result = freezer.capture_checkpoint()
         if result.status != "checkpoint_saved":
@@ -108,7 +105,7 @@ class FreezeAdapter(FreezePort):
     ) -> None:
         del at
         freezer = self._freezers.get(strategy)
-        if not isinstance(freezer, ScoredFreezeCoordinator):
+        if freezer is None:
             raise FreezeUnavailableError("close fallback is only available for tomorrow and d25")
         result = freezer.freeze_close_fallback(
             current,

@@ -13,9 +13,9 @@ SHANGHAI = ZoneInfo("Asia/Shanghai")
 class MarketPhase(str, Enum):
     CLOSED = "closed"
     WARMUP = "warmup"
-    TODAY_OBSERVE = "today_observe"
-    TODAY_MAIN = "today_main"
-    TODAY_LATE = "today_late"
+    MORNING_OBSERVE = "morning_observe"
+    MORNING_MAIN = "morning_main"
+    MORNING_LATE = "morning_late"
     MIDDAY = "midday"
     AFTERNOON = "afternoon"
     FINAL_REVIEW = "final_review"
@@ -26,8 +26,6 @@ class MarketPhase(str, Enum):
 
 
 class SchedulePoint(str, Enum):
-    TODAY_CHECKPOINT = "today_checkpoint"
-    TODAY_FREEZE = "today_freeze"
     DEEPSEEK_CUTOFF = "deepseek_cutoff"
     AFTERNOON_CHECKPOINT = "afternoon_checkpoint"
     FINAL_CANDIDATE_QUOTES = "final_candidate_quotes"
@@ -40,8 +38,6 @@ _PHASE_BOUNDARIES = (
     time(9, 30),
     time(9, 36),
     time(10, 30),
-    time(11, 18),
-    time(11, 19, 50),
     time(11, 20),
     time(13, 0),
     time(14, 20),
@@ -54,9 +50,9 @@ _PHASE_BOUNDARIES = (
 )
 _TRADING_PHASE_RANGES = (
     (time(9, 15), time(9, 30), MarketPhase.WARMUP),
-    (time(9, 30), time(9, 36), MarketPhase.TODAY_OBSERVE),
-    (time(9, 36), time(10, 30), MarketPhase.TODAY_MAIN),
-    (time(10, 30), time(11, 20), MarketPhase.TODAY_LATE),
+    (time(9, 30), time(9, 36), MarketPhase.MORNING_OBSERVE),
+    (time(9, 36), time(10, 30), MarketPhase.MORNING_MAIN),
+    (time(10, 30), time(11, 20), MarketPhase.MORNING_LATE),
     (time(11, 20), time(13, 0), MarketPhase.MIDDAY),
     (time(13, 0), time(14, 20), MarketPhase.AFTERNOON),
     (time(14, 20), time(14, 48), MarketPhase.FINAL_REVIEW),
@@ -100,18 +96,18 @@ def decision_at(value: datetime, *, is_trading_day: bool) -> ScheduleDecision:
         should_refresh_market=phase
         in {
             MarketPhase.WARMUP,
-            MarketPhase.TODAY_OBSERVE,
-            MarketPhase.TODAY_MAIN,
-            MarketPhase.TODAY_LATE,
+            MarketPhase.MORNING_OBSERVE,
+            MarketPhase.MORNING_MAIN,
+            MarketPhase.MORNING_LATE,
             MarketPhase.AFTERNOON,
             MarketPhase.FINAL_REVIEW,
             MarketPhase.FINAL_QUOTE,
         },
         should_score=phase
         in {
-            MarketPhase.TODAY_OBSERVE,
-            MarketPhase.TODAY_MAIN,
-            MarketPhase.TODAY_LATE,
+            MarketPhase.MORNING_OBSERVE,
+            MarketPhase.MORNING_MAIN,
+            MarketPhase.MORNING_LATE,
             MarketPhase.AFTERNOON,
             MarketPhase.FINAL_REVIEW,
             MarketPhase.DEEPSEEK_CUTOFF,
@@ -120,9 +116,9 @@ def decision_at(value: datetime, *, is_trading_day: bool) -> ScheduleDecision:
         should_review=phase
         in {
             MarketPhase.WARMUP,
-            MarketPhase.TODAY_OBSERVE,
-            MarketPhase.TODAY_MAIN,
-            MarketPhase.TODAY_LATE,
+            MarketPhase.MORNING_OBSERVE,
+            MarketPhase.MORNING_MAIN,
+            MarketPhase.MORNING_LATE,
             MarketPhase.AFTERNOON,
             MarketPhase.FINAL_REVIEW,
         },
@@ -139,19 +135,12 @@ def freeze_due_at(value: datetime, *, is_trading_day: bool) -> tuple[str, ...]:
         return ()
     current = shanghai_now(value).time().replace(tzinfo=None)
     if current >= time(14, 50):
-        return ("today", "tomorrow", "d25")
-    if current >= time(11, 20):
-        return ("today",)
+        return ("tomorrow", "d25")
     return ()
 
 
 def startup_freeze_strategies(value: datetime, *, is_trading_day: bool) -> tuple[str, ...]:
-    """Return only checkpoint-eligible freezes for initialization.
-
-    Today is deliberately absent: a process created at or after 11:20 may
-    never manufacture the missed same-day record. Afternoon checkpoints may
-    be recovered only before close fallback becomes eligible.
-    """
+    """Return checkpoint-eligible freezes for initialization before close fallback."""
 
     if not is_trading_day:
         return ()
@@ -166,7 +155,6 @@ def schedule_point_at(value: datetime, *, is_trading_day: bool) -> SchedulePoint
         return None
     current = shanghai_now(value).time().replace(tzinfo=None)
     points = {
-        time(11, 20): SchedulePoint.TODAY_FREEZE,
         time(14, 48): SchedulePoint.DEEPSEEK_CUTOFF,
         time(14, 49, 20): SchedulePoint.AFTERNOON_CHECKPOINT,
         time(14, 49, 50): SchedulePoint.FINAL_CANDIDATE_QUOTES,
@@ -195,8 +183,6 @@ def seconds_until_next_schedule_boundary(value: datetime, *, maximum_seconds: fl
 
 def _freeze_at(value: datetime, *, is_trading_day: bool) -> tuple[str, ...]:
     point = schedule_point_at(value, is_trading_day=is_trading_day)
-    if point is SchedulePoint.TODAY_FREEZE:
-        return ("today",)
     if point is SchedulePoint.AFTERNOON_FREEZE:
         return ("tomorrow", "d25")
     return ()

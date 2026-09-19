@@ -16,8 +16,8 @@ if TYPE_CHECKING:
 
 import requests
 
-from trader.domain.market.models import Evidence
-from trader.domain.market.research import (
+from trader.recommendation.domain.market.models import Evidence
+from trader.recommendation.domain.market.research import (
     CorporateRiskFact,
     FinancialReport,
     LongResearchPolicy,

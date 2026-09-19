@@ -78,7 +78,7 @@ def test_repository_stages_profile_owned_training_artifacts() -> None:
 
     assert "/data/history/" in ignore
     assert "/data/train/**/*" in ignore
-    for strategy in ("today", "tomorrow", "d25"):
+    for strategy in ("tomorrow", "d25"):
         assert f"!/data/train/v2/{strategy}/" in ignore
         assert f"!/data/train/v2/{strategy}/.gitkeep" in ignore
         v2_directory = repository / "data" / "train" / "v2" / strategy

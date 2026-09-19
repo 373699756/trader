@@ -16,7 +16,7 @@ from trader.application.ports.data_plane import (
     RiskEvidenceRecord,
     SourceCursorRecord,
 )
-from trader.domain.market.research import (
+from trader.recommendation.domain.market.research import (
     ResearchAnnouncement,
     ResearchObservation,
     corporate_risk_facts_from_announcements,

@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from trader.application.cache import canonical_json_bytes
 from trader.application.ports.market import MarketDataNoDataError
-from trader.domain.market.models import (
+from trader.recommendation.domain.market.models import (
     CanonicalMarketSnapshot,
     MarketQuote,
 )

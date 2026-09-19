@@ -6,13 +6,13 @@ from pathlib import Path
 import pytest
 
 from trader.application.recommendation.policy import RecommendationPolicy, RecommendationSelectionSettings
-from trader.domain.market.models import (
+from trader.recommendation.domain.market.models import (
     FeatureSnapshot,
     MarketQuote,
 )
-from trader.domain.recommendation.models import Strategy
-from trader.domain.recommendation.risk_fusion.fusion import DIMENSION_NAMES, FusionPolicy
-from trader.domain.review.models import RiskRule
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES, FusionPolicy
+from trader.recommendation.domain.evidence.review import RiskRule
 
 _TEST_DIRECTORY_MARKERS = frozenset({"unit", "component", "integration", "contract", "performance", "js"})
 
@@ -44,7 +44,7 @@ def recommendation_policy() -> RecommendationPolicy:
             maximum_top_k=12,
             maximum_per_industry=2,
             observation_margin=5.0,
-            thresholds={"today_main": 70.0, "today_late": 76.0, "tomorrow": 72.0, "d25": 70.0},
+            thresholds={"tomorrow": 72.0, "d25": 70.0},
         ),
         dimension_weights={
             strategy: {

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.artifacts.canonical import file_sha256
 from trader.infra.scoring.profile_factory import load_scoring_profile
 from trader.infra.settings import RuntimeSettings, load_strategy_settings
@@ -30,9 +30,13 @@ def load_baseline_identity_evidence(runtime: RuntimeSettings) -> PackagedBaselin
     strategy_hash = file_sha256(runtime.strategy_config_path)
     design_path = runtime.project_root / "docs/02_工程设计.md"
     strategy_doc_path = runtime.project_root / "docs/01_评分逻辑.md"
-    v1 = load_scoring_profile("v1").heads[Strategy.TOMORROW].predictor
     v2 = (
         load_scoring_profile("v2", training_root=runtime.project_root / "data" / "train")
+        .heads[Strategy.TOMORROW]
+        .predictor
+    )
+    v3 = (
+        load_scoring_profile("v3", training_root=runtime.project_root / "data" / "train")
         .heads[Strategy.TOMORROW]
         .predictor
     )
@@ -60,18 +64,18 @@ def load_baseline_identity_evidence(runtime: RuntimeSettings) -> PackagedBaselin
             strategy_hash,
         ),
         BaselineIdentityClaim(
-            "v1_model_identity",
-            "residual_momentum_linear",
-            v1.model_id,
-            "trader.infra.scoring.profiles.v1/model.json",
-            source_hash(v1.model_hash),
-        ),
-        BaselineIdentityClaim(
             "v2_model_identity",
             "industry_ridge_lightgbm",
             v2.model_id,
             "data/train/v2/tomorrow/model.json",
             source_hash(v2.model_hash),
+        ),
+        BaselineIdentityClaim(
+            "v3_model_identity",
+            "industry_ridge_lightgbm",
+            v3.model_id,
+            "data/train/v3/tomorrow/model.json",
+            source_hash(v3.model_hash),
         ),
         BaselineIdentityClaim(
             "historical_screening_conclusion",

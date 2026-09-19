@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from trader.domain.recommendation.models import Strategy
-from trader.domain.review.models import DeepSeekReview
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.evidence.review import DeepSeekReview
 from trader.infra.deepseek.budget_audit import _require_aware, _sync_call_audit
 
 _BATCH_TERMINALS = frozenset({"success", "partial", "failed", "skipped", "abandoned"})

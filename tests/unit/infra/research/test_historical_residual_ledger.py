@@ -22,7 +22,7 @@ _HASH_B = "b" * 64
 
 def _prediction() -> HistoricalPredictionRecord:
     return HistoricalPredictionRecord(
-        ResidualJoinKey("today", date(2024, 1, 2), "11:20", "600001", 1),
+        ResidualJoinKey("tomorrow", date(2024, 1, 2), "14:50", "600001", 1),
         _HASH_A,
         _HASH_A,
         _HASH_B,
@@ -63,8 +63,8 @@ def test_sqlite_ledger_is_append_only_idempotent_and_detects_conflicts(tmp_path)
     ledger.append_outcomes((outcome,))
     ledger.append_outcomes((outcome,))
 
-    assert ledger.read_joined("today", _HASH_A) == (ledger.read_joined("today", _HASH_A)[0],)
-    assert ledger.read_joined("today", _HASH_A)[0].prediction_error == pytest.approx(0.005)
+    assert ledger.read_joined("tomorrow", _HASH_A) == (ledger.read_joined("tomorrow", _HASH_A)[0],)
+    assert ledger.read_joined("tomorrow", _HASH_A)[0].prediction_error == pytest.approx(0.005)
     with pytest.raises(HistoricalResidualLedgerConflictError):
         ledger.append_predictions((replace(prediction, score=74.0),))
     with pytest.raises(HistoricalResidualLedgerConflictError):
@@ -76,7 +76,7 @@ def test_sqlite_ledger_does_not_join_different_parent_split(tmp_path) -> None:
     ledger.append_predictions((_prediction(),))
     ledger.append_outcomes((replace(_outcome(), parent_split_hash=_HASH_B),))
 
-    assert ledger.read_joined("today", _HASH_A) == ()
+    assert ledger.read_joined("tomorrow", _HASH_A) == ()
 
 
 def test_sqlite_ledger_rejects_prediction_payload_tampering(tmp_path) -> None:
@@ -88,7 +88,7 @@ def test_sqlite_ledger_rejects_prediction_payload_tampering(tmp_path) -> None:
         connection.execute("UPDATE historical_prediction SET content_hash = ?", ("f" * 64,))
 
     with pytest.raises(HistoricalResidualLedgerCorruptionError, match="prediction"):
-        ledger.read_joined("today", _HASH_A)
+        ledger.read_joined("tomorrow", _HASH_A)
 
 
 def test_sqlite_ledger_rejects_unknown_payload_fields(tmp_path) -> None:
@@ -104,4 +104,4 @@ def test_sqlite_ledger_rejects_unknown_payload_fields(tmp_path) -> None:
         )
 
     with pytest.raises(HistoricalResidualLedgerCorruptionError, match="schema"):
-        ledger.read_predictions("today", _HASH_A)
+        ledger.read_predictions("tomorrow", _HASH_A)

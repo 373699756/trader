@@ -7,8 +7,8 @@ from datetime import date, datetime
 from typing import Literal, TypeAlias, cast
 from zoneinfo import ZoneInfo
 
-from trader.domain.market.models import Board
-from trader.domain.recommendation.decision_identity import (
+from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.publication.decision_identity import (
     COMMITTED_RECORD_SCHEMA_VERSION,
     DECISION_IDENTITY_SCHEMA_VERSION,
     CommitKind,
@@ -23,8 +23,8 @@ from trader.domain.recommendation.decision_identity import (
     SelectionDiagnostics,
     committed_record_identity_payload,
 )
-from trader.domain.recommendation.models import RecommendationAction, Strategy
-from trader.domain.recommendation.pipeline import (
+from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
+from trader.recommendation.domain.evidence.pipeline import (
     PipelineFacet,
     PipelineMetricName,
     PipelineMetricRange,

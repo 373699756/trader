@@ -7,8 +7,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.domain.market.models import Board
-from trader.domain.recommendation.decision_identity import (
+from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     DecisionDownside,
     DecisionItem,
@@ -22,8 +22,8 @@ from trader.domain.recommendation.decision_identity import (
     SelectionDiagnostics,
     formal_scored_decision,
 )
-from trader.domain.recommendation.models import RecommendationAction, Strategy
-from trader.domain.recommendation.pipeline import (
+from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
+from trader.recommendation.domain.evidence.pipeline import (
     PIPELINE_STAGE_ORDER,
     PipelineStageStatus,
     RecommendationPipelineStatus,
@@ -110,7 +110,7 @@ def decision(
 
 
 def test_scored_identity_is_canonical_for_all_three_scored_strategies() -> None:
-    for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
+    for strategy in (Strategy.TOMORROW, Strategy.TOMORROW, Strategy.D25):
         first = decision(strategy)
         reordered = replace(first, input_versions=tuple(reversed(first.input_versions)))
 

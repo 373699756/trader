@@ -71,8 +71,6 @@ const state = {
   ...sandbox.window.TraderDashboardPatches,
   latencySummary: sandbox.window.TraderDashboardFormatters.latencySummary,
   drawer: sandbox.window.TraderRender.drawer,
-  frozenTodayTable: sandbox.window.TraderRender.frozenTodayTable,
-  isFrozenTodayView: sandbox.window.TraderRender.isFrozenTodayView,
   longTable: sandbox.window.TraderRender.longTable,
   sourceLabel: sandbox.window.TraderRender.sourceLabel,
   formatDurationHms: sandbox.window.TraderStatusView.formatDurationHms,
@@ -101,7 +99,7 @@ const state = {
 assert(state, "dashboard state helpers were not exported into the test sandbox");
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.topScoredStocks(
-    { status: "ready", strategy: "today", score_status: "scored" },
+    { status: "ready", strategy: "tomorrow", score_status: "scored" },
     [
       { code: "600004", name: "第四股票", scores: { final_score: 80 } },
       { code: "600002", name: "第二股票", scores: { final_score: 95 } },
@@ -175,7 +173,7 @@ state.renderSummary(
 assert.strictEqual(unifiedDraftSummary.topScoresMeta.textContent, "统一最终评分 · 1 只");
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.topScoredStocks(
-    { status: "ready", strategy: "today", historical: true, score_status: "scored" },
+    { status: "ready", strategy: "tomorrow", historical: true, score_status: "scored" },
     [{ code: "600006", name: "历史股票", scores: { final_score: 68 } }],
   ))),
   [{ score: 68, code: "600006", name: "历史股票", index: 0 }],
@@ -435,7 +433,7 @@ state.renderSummary(
   summaryElements,
   {
     status: "ready",
-    strategy: "today",
+    strategy: "tomorrow",
     trade_date: "2026-08-14",
     frozen: false,
     score_status: "scored",
@@ -465,10 +463,10 @@ assert.strictEqual(summaryElements.funnelStatus.textContent, "阶段观测不可
 assert.strictEqual(summaryElements.funnelStages.textContent, "旧快照未保存逐阶段运行观测；不以聚合计数拼接漏斗");
 assert.strictEqual(summaryElements.funnelScoreRange.textContent, "已保存最高分 82.00 · 最低分未保存");
 assert.strictEqual(summaryElements.funnelMeta.textContent, "旧快照聚合：总体 120 · 已评分 80 · 拒绝 40 · 正式 1 · 观察 1");
-assert.strictEqual(summaryElements.inputQualityStrategy.textContent, "今");
+assert.strictEqual(summaryElements.inputQualityStrategy.textContent, "明");
 assert.strictEqual(summaryElements.inputQualityScoreTime.textContent, "评分时间不可用");
 assert.strictEqual(summaryElements.publicationStatus.textContent, "实时滚动");
-assert.strictEqual(summaryElements.publicationMeta.textContent, "今 11:20 固化");
+assert.strictEqual(summaryElements.publicationMeta.textContent, "明 14:50 固化");
 assert.strictEqual(
   summaryElements.topScoresStatus.textContent,
   "82.00 - 600001 - 正式股票\n75.00 - 600002 - 观察股票",
@@ -506,7 +504,7 @@ state.renderSummary(
   summaryElements,
   {
     status: "ready",
-    strategy: "today",
+    strategy: "tomorrow",
     trade_date: "2026-08-14",
     frozen: false,
     score_status: "scored",
@@ -524,7 +522,7 @@ state.renderSummary(
   {
     scheduler: {
       input_quality: {
-        today: {
+        tomorrow: {
           candidate_count: 120,
           candidate_scored_count: 80,
           pipeline: { current_stage: "evidence_score", stages: [
@@ -550,7 +548,7 @@ state.renderSummary(
   summaryElements,
   {
     status: "not_ready",
-    strategy: "today",
+    strategy: "tomorrow",
     trade_date: "2026-08-14",
     frozen: false,
     score_status: "scored",
@@ -572,7 +570,7 @@ state.renderSummary(
     },
     scheduler: {
       input_quality: {
-        today: {
+        tomorrow: {
           status: "not_ready",
           candidate_optional_reason_counts: {
             missing_listing_date: 240,
@@ -686,7 +684,7 @@ state.updateQuoteAge(
   notReadyAgeElements,
   {
     status: "not_ready",
-    strategy: "today",
+    strategy: "tomorrow",
     trade_date: "2026-08-14",
     items: [],
     published_at: null,
@@ -795,7 +793,6 @@ assert.strictEqual(summaryElements.inputQualityMeta.textContent, "长期固定�
 assert.strictEqual(
   state.initialStrategy({
     strategies: {
-      today: { status: "not_ready", coverage: { selected_count: 0 } },
       tomorrow: { status: "ready", coverage: { selected_count: 0 } },
       d25: { status: "ready", coverage: { selected_count: 0 } },
       long: { status: "ready", coverage: { selected_count: 224 } },
@@ -806,14 +803,13 @@ assert.strictEqual(
 assert.strictEqual(
   state.initialStrategy({
     strategies: {
-      today: { status: "ready", coverage: { selected_count: 3 } },
       tomorrow: { status: "ready", coverage: { selected_count: 6 } },
       long: { status: "ready", coverage: { selected_count: 224 } },
     },
   }),
-  "today",
+  "tomorrow",
 );
-assert.strictEqual(state.initialStrategy({ strategies: {} }), "today");
+assert.strictEqual(state.initialStrategy({ strategies: {} }), "tomorrow");
 const degradedHealth = state.healthView({
   health: { level: "degraded", issue_count: 2 },
   recent_errors: [
@@ -889,11 +885,11 @@ assert.strictEqual(
   "最近错误 · 活动2项 / 已恢复1项",
 );
 assert.strictEqual(state.currentViewMatches("long", "current"), true);
-assert.strictEqual(state.currentViewMatches("today", "current"), true);
+assert.strictEqual(state.currentViewMatches("tomorrow", "current"), true);
 assert.strictEqual(state.currentViewMatches("tomorrow", "current"), true);
 assert.strictEqual(state.currentViewMatches("d25", "current"), true);
 assert.strictEqual(state.currentViewMatches("tomorrow", "live"), true);
-assert.strictEqual(state.currentViewMatches("today", "official"), true);
+assert.strictEqual(state.currentViewMatches("tomorrow", "official"), true);
 const longStaticFallback = state.longGroupStaticFallbackPayload("long_api_unavailable");
 assert.strictEqual(longStaticFallback.status, "ready");
 assert.strictEqual(longStaticFallback.strategy, "long");
@@ -916,14 +912,11 @@ const liveShort = {
   ],
 };
 assert.strictEqual(state.observationDisplayState(liveShort, "warmup"), "closed_market");
-assert.strictEqual(state.observationDisplayState(liveShort, "today_main"), "open");
+assert.strictEqual(state.observationDisplayState(liveShort, "morning_main"), "open");
 assert.strictEqual(state.observationDisplayState(liveShort, "midday"), "open");
 assert.strictEqual(state.observationDisplayState(liveShort, "final_review"), "open");
 assert.strictEqual(state.observationDisplayState(liveShort, "after_close"), "closed_market");
-assert.strictEqual(state.observationDisplayState({ ...liveShort, strategy: "today" }, "today_late"), "open");
-assert.strictEqual(state.observationDisplayState({ ...liveShort, strategy: "today" }, "midday"), "closed_market");
-assert.strictEqual(state.observationDisplayState({ ...liveShort, strategy: "today" }, "afternoon"), "closed_market");
-assert.strictEqual(state.observationDisplayState({ ...liveShort, frozen: true }, "today_main"), "closed_frozen");
+assert.strictEqual(state.observationDisplayState({ ...liveShort, frozen: true }, "morning_main"), "closed_frozen");
 assert.strictEqual(state.observationDisplayState({ ...liveShort, historical: true }, "midday"), "hidden_history");
 assert.strictEqual(
   state.observationDisplayState({ ...liveShort, status: "not_ready", historical: true }, "midday"),
@@ -1018,17 +1011,6 @@ assert.deepStrictEqual(
     message: "长期策略当前尚无可用数据",
     notice: "长期策略只展示当前研究快照",
     level: "idle",
-  },
-);
-assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.notReadyMessage({
-    strategy: "today",
-    readiness_reason: "today_freeze_missed",
-  }))),
-  {
-    message: "今日未形成正式结果｜11:20 截止已过，按规则不补算",
-    notice: "今日未形成正式结果｜11:20 截止已过，按规则不补算",
-    level: "warn",
   },
 );
 assert.deepStrictEqual(
@@ -1258,29 +1240,10 @@ assert.deepStrictEqual(
 );
 assert.strictEqual(
   state.longTable().head,
-  "<tr><th>排名</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>成交 / 换手</th><th>总市值</th><th>行情来源 / 时间</th></tr>",
+  "<tr><th>类别</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>成交 / 换手</th><th>总市值</th><th>行情来源 / 时间</th></tr>",
 );
 assert.strictEqual(state.tableColumnCount({ strategy: "long", historical: false }), 7);
-const frozenToday = {
-  strategy: "today",
-  trade_date: "2026-07-23",
-  current_trade_date: "2026-07-23",
-  historical: false,
-  frozen: true,
-  degraded_reasons: [],
-  fusion_mode: "local_degraded",
-};
-assert.strictEqual(state.isFrozenTodayView(frozenToday), true);
-assert.strictEqual(state.isFrozenTodayView({ ...frozenToday, historical: true }), false);
-assert.strictEqual(state.isFrozenTodayView({ ...frozenToday, strategy: "tomorrow" }), false);
-assert.strictEqual(state.isFrozenTodayView({ ...frozenToday, phase: "close_fallback" }), false);
-assert.strictEqual(state.isFrozenTodayView({ ...frozenToday, current_trade_date: "2026-07-24" }), false);
-assert.strictEqual(state.tableColumnCount(frozenToday), 7);
-assert.strictEqual(
-  state.frozenTodayTable().head,
-  "<tr><th>排名</th><th>股票</th><th>11:20锚点价</th><th>锚点时涨跌</th><th>当前价</th><th>当前涨跌</th><th>锚点至今</th></tr>",
-);
-const frozenTodayItem = {
+const scoredItem = {
   rank: 1,
   code: "600001",
   name: "锚点股票",
@@ -1299,21 +1262,11 @@ const frozenTodayItem = {
   action_reason: "score_threshold_met",
   risks: [],
 };
-const frozenTodayRows = state.tableRows([frozenTodayItem], frozenToday);
-assert.match(frozenTodayRows, /11:19:50/);
-assert.match(frozenTodayRows, /主板/);
-assert.match(frozenTodayRows, />11\.00</);
-assert.match(frozenTodayRows, /\+10\.00%/);
-const frozenTodayDrawer = state.drawer(frozenTodayItem, frozenToday);
-assert.match(frozenTodayDrawer, /实际锚点时间/);
-assert.match(frozenTodayDrawer, /11:19:50/);
-assert.match(frozenTodayDrawer, /当前价/);
-assert.match(frozenTodayDrawer, /锚点至今/);
 const modelVersionDrawer = state.drawer(
   {
-    ...frozenTodayItem,
+    ...scoredItem,
     scores: {
-      ...frozenTodayItem.scores,
+      ...scoredItem.scores,
       model_signal_score: 82.5,
       predicted_excess_return_pct: 1.45,
       estimated_cost_pct: 0.2,
@@ -1322,8 +1275,9 @@ const modelVersionDrawer = state.drawer(
     },
   },
   {
-    ...frozenToday,
     strategy: "tomorrow",
+    historical: false,
+    degraded_reasons: [],
     input_versions: {
       score_model: "daily_reconstructible_ensemble:model-hash",
     },
@@ -1334,7 +1288,7 @@ assert.match(modelVersionDrawer, /模型相对信号分/);
 assert.doesNotMatch(modelVersionDrawer, /P2信号分/);
 const longDrawer = state.drawer(
   {
-    ...frozenTodayItem,
+    ...scoredItem,
     action: "observe",
     action_reason: "fixed_long_watchlist",
   },
@@ -1379,9 +1333,9 @@ assert.strictEqual(liveLongPayload.items[0].market_cap, 5000000000);
 
 const payload = {
   status: "ready",
-  snapshot_id: "today-base",
-  projection_version: "today-base",
-  strategy: "today",
+  snapshot_id: "tomorrow-base",
+  projection_version: "tomorrow-base",
+  strategy: "tomorrow",
   trade_date: "2026-07-23",
   current_trade_date: "2026-07-23",
   view: "live",
@@ -1399,10 +1353,10 @@ const payload = {
 const patch = {
   patch_schema_version: 4,
   schema_version: "decision_event",
-  base_projection_version: "today-base",
-  projection_version: "today-next",
-  snapshot_id: "today-next",
-  strategy: "today",
+  base_projection_version: "tomorrow-base",
+  projection_version: "tomorrow-next",
+  snapshot_id: "tomorrow-next",
+  strategy: "tomorrow",
   trade_date: "2026-07-23",
   view: "live",
   frozen: false,
@@ -1420,7 +1374,7 @@ const patch = {
 
 assert.strictEqual(state.patchVersionValid(patch), true);
 assert.strictEqual(
-  state.recommendationPatchDecision(patch, payload, "today-base", "today", "live"),
+  state.recommendationPatchDecision(patch, payload, "tomorrow-base", "tomorrow", "live"),
   "apply",
 );
 const coveragePatch = {
@@ -1435,7 +1389,7 @@ const coveragePatch = {
   },
 };
 assert.strictEqual(
-  state.recommendationPatchDecision(coveragePatch, payload, "today-base", "today", "live"),
+  state.recommendationPatchDecision(coveragePatch, payload, "tomorrow-base", "tomorrow", "live"),
   "apply",
 );
 const replacementPayload = state.replacementPayload(payload, coveragePatch, []);
@@ -1458,37 +1412,37 @@ state.renderSummary(
 assert.strictEqual(replacementSummary.funnelStatus.textContent, "阶段观测不可用");
 assert.strictEqual(replacementSummary.funnelMeta.textContent, "旧快照聚合：总体 360 · 已评分 229 · 拒绝 89 · 正式 0 · 观察 0");
 assert.strictEqual(
-  state.recommendationPatchDecision(patch, payload, "today-base", "today", "current"),
+  state.recommendationPatchDecision(patch, payload, "tomorrow-base", "tomorrow", "current"),
   "apply",
 );
 assert.strictEqual(
-  state.recommendationPatchDecision({ ...patch, coverage: null }, payload, "today-base", "today", "current"),
+  state.recommendationPatchDecision({ ...patch, coverage: null }, payload, "tomorrow-base", "tomorrow", "current"),
   "schema_mismatch",
 );
 assert.strictEqual(
   state.recommendationPatchDecision(
     { ...patch, view: "official", frozen: true },
     payload,
-    "today-base",
-    "today",
+    "tomorrow-base",
+    "tomorrow",
     "current",
   ),
   "apply",
 );
 assert.strictEqual(
-  state.recommendationPatchDecision({ ...patch, schema_version: "decision_event_unsupported" }, payload, "today-base", "today", "live"),
+  state.recommendationPatchDecision({ ...patch, schema_version: "decision_event_unsupported" }, payload, "tomorrow-base", "tomorrow", "live"),
   "schema_mismatch",
 );
 assert.strictEqual(
-  state.recommendationPatchDecision({ ...patch, trade_date: "2026-07-22" }, payload, "today-base", "today", "live"),
+  state.recommendationPatchDecision({ ...patch, trade_date: "2026-07-22" }, payload, "tomorrow-base", "tomorrow", "live"),
   "identity_mismatch",
 );
 assert.strictEqual(
   state.recommendationPatchDecision(
     { ...patch, base_projection_version: "unknown" },
     payload,
-    "today-base",
-    "today",
+    "tomorrow-base",
+    "tomorrow",
     "live",
   ),
   "base_mismatch",
@@ -1498,7 +1452,7 @@ assert.strictEqual(
     patch,
     { ...payload, snapshot_id: "frozen", projection_version: "frozen", frozen: true, view: "official" },
     "frozen",
-    "today",
+    "tomorrow",
     "official",
   ),
   "ignore_late_draft",
@@ -1508,7 +1462,7 @@ assert.strictEqual(
     patch,
     { ...payload, snapshot_id: "frozen", projection_version: "frozen", frozen: true, view: "official" },
     "frozen",
-    "today",
+    "tomorrow",
     "current",
   ),
   "ignore_late_draft",
@@ -1516,21 +1470,21 @@ assert.strictEqual(
 const overlay = {
   patch_schema_version: 4,
   schema_version: "decision_event",
-  projection_version: "today-next",
-  snapshot_id: "today-decision",
-  strategy: "today",
+  projection_version: "tomorrow-next",
+  snapshot_id: "tomorrow-decision",
+  strategy: "tomorrow",
   trade_date: "2026-07-23",
   quotes: [],
 };
-const current = { ...payload, snapshot_id: "today-decision", projection_version: "today-current" };
-assert.strictEqual(state.overlayPatchDecision(overlay, current, "today-current", "today"), "apply");
+const current = { ...payload, snapshot_id: "tomorrow-decision", projection_version: "tomorrow-current" };
+assert.strictEqual(state.overlayPatchDecision(overlay, current, "tomorrow-current", "tomorrow"), "apply");
 assert.strictEqual(
-  state.overlayPatchDecision({ ...overlay, projection_version: "wrong", snapshot_id: "wrong" }, current, "today-next", "today"),
+  state.overlayPatchDecision({ ...overlay, projection_version: "wrong", snapshot_id: "wrong" }, current, "tomorrow-next", "tomorrow"),
   "overlay_projection_mismatch",
 );
-assert.strictEqual(state.eventMatchesCurrent({ strategy: "today", trade_date: "2026-07-23" }, "today", "2026-07-23"), true);
-assert.strictEqual(state.eventMatchesCurrent({ strategy: "d25", trade_date: "2026-07-23" }, "today", "2026-07-23"), false);
-assert.strictEqual(state.eventMatchesCurrent({ strategy: "today", trade_date: "2026-07-22" }, "today", "2026-07-23"), false);
+assert.strictEqual(state.eventMatchesCurrent({ strategy: "tomorrow", trade_date: "2026-07-23" }, "tomorrow", "2026-07-23"), true);
+assert.strictEqual(state.eventMatchesCurrent({ strategy: "d25", trade_date: "2026-07-23" }, "tomorrow", "2026-07-23"), false);
+assert.strictEqual(state.eventMatchesCurrent({ strategy: "tomorrow", trade_date: "2026-07-22" }, "tomorrow", "2026-07-23"), false);
 assert(
   streamSource.includes("if (!state.date && eventMatchesCurrent(payload) && applyRecommendationPatch(payload))"),
   "unrelated strategy events must not apply decision patches",
@@ -1562,11 +1516,11 @@ assert.strictEqual(
   true,
 );
 assert.strictEqual(
-  state.topKValid(Array.from({ length: 13 }, (_value, index) => ({ code: String(600000 + index), rank: index + 1 })), "today"),
+  state.topKValid(Array.from({ length: 13 }, (_value, index) => ({ code: String(600000 + index), rank: index + 1 })), "tomorrow"),
   false,
 );
 assert.strictEqual(
-  state.topKValid(Array.from({ length: 12 }, (_value, index) => ({ code: String(600000 + index), rank: index + 1 })), "today"),
+  state.topKValid(Array.from({ length: 12 }, (_value, index) => ({ code: String(600000 + index), rank: index + 1 })), "tomorrow"),
   true,
 );
 const splitPoolItems = [
@@ -1581,22 +1535,22 @@ const splitPoolItems = [
     action: "observe",
   })),
 ];
-assert.strictEqual(state.topKValid(splitPoolItems, "today"), true);
+assert.strictEqual(state.topKValid(splitPoolItems, "tomorrow"), true);
 assert.strictEqual(
   state.topKValid([
     ...splitPoolItems,
     { code: "600999", rank: 7, action: "executable" },
-  ], "today"),
+  ], "tomorrow"),
   false,
 );
 assert.strictEqual(state.topKValid([{ code: "600001", rank: 1 }, { code: "600002", rank: 1 }]), false);
 assert.strictEqual(state.topKValid([{ code: "600001", rank: 0 }]), false);
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.resolveStrategyDate("today", "tomorrow", "2026-07-22", ["2026-07-22"]))),
+  JSON.parse(JSON.stringify(state.resolveStrategyDate("tomorrow", "tomorrow", "2026-07-22", ["2026-07-22"]))),
   { date: "2026-07-22", availability: "available" },
 );
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.resolveStrategyDate("today", "d25", "2026-07-22", ["2026-07-21"]))),
+  JSON.parse(JSON.stringify(state.resolveStrategyDate("tomorrow", "d25", "2026-07-22", ["2026-07-21"]))),
   { date: "2026-07-22", availability: "missing" },
 );
 assert.deepStrictEqual(
@@ -1604,11 +1558,11 @@ assert.deepStrictEqual(
   { date: "", availability: "available" },
 );
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.resolveStrategyDate("long", "today", "2026-07-22", ["2026-07-22"]))),
+  JSON.parse(JSON.stringify(state.resolveStrategyDate("long", "tomorrow", "2026-07-22", ["2026-07-22"]))),
   { date: "", availability: "available" },
 );
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.resolveStrategyDate("today", "tomorrow", "2026-07-22", null))),
+  JSON.parse(JSON.stringify(state.resolveStrategyDate("tomorrow", "tomorrow", "2026-07-22", null))),
   { date: "2026-07-22", availability: "unknown" },
 );
 const dateSelect = {
@@ -1637,7 +1591,7 @@ const mixedItems = [
   { code: "600002", action: "observe" },
 ];
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.visibleRecommendations({ strategy: "today", historical: false, items: mixedItems }))),
+  JSON.parse(JSON.stringify(state.visibleRecommendations({ strategy: "tomorrow", historical: false, items: mixedItems }))),
   [{ code: "600001", action: "executable" }],
 );
 assert.deepStrictEqual(
@@ -1645,25 +1599,25 @@ assert.deepStrictEqual(
   mixedItems,
 );
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.visibleRecommendations({ strategy: "today", historical: true, items: mixedItems }))),
+  JSON.parse(JSON.stringify(state.visibleRecommendations({ strategy: "tomorrow", historical: true, items: mixedItems }))),
   [{ code: "600001", action: "executable" }],
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(
-    state.observationRecommendations({ status: "ready", strategy: "today", historical: false, items: mixedItems }, "today_main"),
+    state.observationRecommendations({ status: "ready", strategy: "tomorrow", historical: false, items: mixedItems }, "morning_main"),
   )),
   [{ code: "600002", action: "observe" }],
 );
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.observationRecommendations({ strategy: "today", historical: true, items: mixedItems }))),
+  JSON.parse(JSON.stringify(state.observationRecommendations({ strategy: "tomorrow", historical: true, items: mixedItems }))),
   [],
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.snapshotNotice({
     status: "ready",
-    strategy: "today",
+    strategy: "tomorrow",
     frozen: true,
-    phase: "today_main",
+    phase: "morning_main",
     fusion_mode: "local_degraded",
     degraded_reasons: [
       "main:board_data_reliability_below_threshold",
@@ -1672,7 +1626,7 @@ assert.deepStrictEqual(
   }))),
   {
     level: "warning",
-    message: "11:20 已冻结 · 名单与评分不变 · 行情按最新可用报价展示 · 冻结时降级：主板板块数据可靠度不足、模型复核未在冻结前完成（已按本地评分固化）",
+    message: "14:50 已冻结 · 名单与评分不变 · 行情按最新可用报价展示 · 冻结时降级：主板板块数据可靠度不足、模型复核未在冻结前完成（已按本地评分固化）",
   },
 );
 assert.deepStrictEqual(

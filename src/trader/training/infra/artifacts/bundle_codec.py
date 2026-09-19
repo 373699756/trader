@@ -8,9 +8,9 @@ from datetime import date
 from pathlib import Path
 from typing import Literal, cast
 
-from trader.domain.recommendation.model_scoring import TRAINED_HEAD_EXPOSURE_CONTRACT, ExposureContract
-from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT, ExposureContract
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.artifacts.canonical import content_hash
 from trader.infra.artifacts.fields import (
     is_boolean,
@@ -168,7 +168,7 @@ class TrainedHeadBundleArtifact:
     historical_status: Literal["historical_data_insufficient"]
     historical_failure_reasons: tuple[str, ...]
     training_anchor: Literal["15:00_close_proxy"]
-    runtime_anchor: Literal["11:20", "14:50"]
+    runtime_anchor: Literal["14:50"]
     point_in_time_parity: Literal[False]
     training_rows: int
     validation_rows: int

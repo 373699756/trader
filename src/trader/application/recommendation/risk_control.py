@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from trader.domain.market.models import FeatureSnapshot
-from trader.domain.recommendation.models import Strategy
-from trader.domain.recommendation.risk_fusion.downside import DownsideAssessment, assess_downside
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.risk.downside import DownsideAssessment, assess_downside
 
 
 class RiskControlPort(Protocol):

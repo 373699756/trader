@@ -51,7 +51,7 @@ from tests.component.market_data_test_support import (
     timedelta,
     timezone,
 )
-from trader.domain.market.eligibility import IssuerEligibilityFact, IssuerEligibilityReason
+from trader.recommendation.domain.market.eligibility import IssuerEligibilityFact, IssuerEligibilityReason
 from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
 
 

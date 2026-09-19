@@ -11,10 +11,10 @@ def _record(code: str, day: date) -> H1PointInTimeRecord:
     bar = HistoricalPriceBar(day, 10.0, 10.2, 10.3, 9.9, 100.0, 1000.0, 2.0, None, "qfq", "fixture")
     digest = "a" * 64
     return H1PointInTimeRecord(
-        "today",
+        "tomorrow",
         code,
         day,
-        datetime.combine(day, datetime.min.time(), tzinfo=ZoneInfo("Asia/Shanghai")).replace(hour=11, minute=20),
+        datetime.combine(day, datetime.min.time(), tzinfo=ZoneInfo("Asia/Shanghai")).replace(hour=14, minute=50),
         bar,
         10.1,
         50.0,
@@ -27,7 +27,7 @@ def _record(code: str, day: date) -> H1PointInTimeRecord:
 
 def test_h1_label_metadata_reads_only_common_dates_and_manifest_identity(tmp_path) -> None:
     archive = SQLiteH1PointInTimeArchive(tmp_path)
-    spec = H1PointInTimeSpec("today")
+    spec = H1PointInTimeSpec("tomorrow")
     securities = (
         HistoricalSecurity("600001", "main", "A", False, False),
         HistoricalSecurity("600002", "main", "B", False, False),

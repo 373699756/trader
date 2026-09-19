@@ -20,7 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     archive = SQLiteH1PointInTimeArchive(args.runtime_dir)
     audits: list[dict[str, object]] = []
     failed = False
-    for strategy in ("today", "tomorrow", "d25"):
+    for strategy in ("tomorrow", "d25"):
         spec = H1PointInTimeSpec(strategy)
         try:
             audit = archive.audit(spec)

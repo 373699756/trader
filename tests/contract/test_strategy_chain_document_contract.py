@@ -104,8 +104,7 @@ def test_fixed_scoring_and_freeze_invariants_remain_explicit() -> None:
         "- deepseek_risk_penalty",
         "ROUND_HALF_UP",
         "83.40",
-        "today 11:20",
-        "tomorrow/d25 14:50",
+        "Tomorrow/D25 14:50",
         "单一板块最多 `ceil(top_n * 60%)`",
         "同一行业最多 2 只",
     ):
@@ -119,8 +118,7 @@ def test_d25_means_one_future_t2_to_t5_rising_stock_signal() -> None:
         "未来第 2 至第 5 个交易日区间内具备上涨能力的股票",
         "T+2、T+3、T+4、T+5",
         "一个完整且唯一的 2–5 日生产策略头",
-        "V1 下 D25 使用规则评分",
         "V2/V3 启动时",
-        "所选档位三头中自己的单一 2–5 日模型头",
+        "所选档位双头中自己的单一 2–5 日模型头",
     ):
         assert required in content

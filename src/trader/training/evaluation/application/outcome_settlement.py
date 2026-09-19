@@ -10,7 +10,7 @@ from datetime import datetime
 from trader.application.ports.outcomes import OutcomeTargetReaderPort, OutcomeWriterPort
 from trader.application.ports.scheduler import SettlementPort
 from trader.application.runtime.schedule import shanghai_now
-from trader.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.training.evaluation.application.outcome_ports import OutcomeSettlementMarketData
 from trader.training.evaluation.domain.evaluation import CanonicalOutcomeEvaluator, OutcomeEvaluationRequest
 from trader.training.evaluation.domain.models import BenchmarkConstituentReturn, BenchmarkReturn, outcome_horizons

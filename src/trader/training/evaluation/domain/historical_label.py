@@ -16,14 +16,14 @@ from trader.training.evaluation.domain.h1_point_in_time import (
 )
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_STRATEGY_ORDER = {"today": 0, "tomorrow": 1, "d25": 2}
+_STRATEGY_ORDER = {"tomorrow": 0, "d25": 1}
 _MINIMUM_COMMON_DAYS = 1_000
 _MINIMUM_TERMINAL_DAYS = 200
 _EMBARGO_DAYS = 5
 
 HistoricalPreregistrationStatus = Literal["preregistered", "historical_data_insufficient"]
 HistoricalLabelAggregate = Literal["single_horizon", "arithmetic_mean"]
-HistoricalAnchor = Literal["11:20", "14:50"]
+HistoricalAnchor = Literal["14:50"]
 
 
 @dataclass(frozen=True)
@@ -208,7 +208,7 @@ class HistoricalLabelPreregistrationBatch:
 
     def __post_init__(self) -> None:
         ordered = tuple(sorted(self.strategies, key=lambda item: _STRATEGY_ORDER[item.strategy]))
-        if tuple(item.strategy for item in ordered) != ("today", "tomorrow", "d25"):
+        if tuple(item.strategy for item in ordered) != ("tomorrow", "d25"):
             raise ValueError("historical label batch requires each strategy exactly once")
         if self.schema_version != "historical_label_preregistration_batch" or self.production_authority:
             raise ValueError("historical label batch cannot authorize production")
@@ -243,7 +243,7 @@ def preregister_historical_label(metadata: H1CoverageMetadata) -> HistoricalLabe
 def preregister_historical_labels(
     metadata: tuple[H1CoverageMetadata, ...],
 ) -> HistoricalLabelPreregistrationBatch:
-    if len(metadata) != 3 or len({item.strategy for item in metadata}) != 3:
+    if len(metadata) != 2 or len({item.strategy for item in metadata}) != 2:
         raise ValueError("historical label metadata requires each strategy exactly once")
     return HistoricalLabelPreregistrationBatch(tuple(preregister_historical_label(item) for item in metadata))
 
@@ -297,14 +297,6 @@ def _label_values(
         "board_concentration",
         "industry_concentration",
     )
-    if strategy == "today":
-        return (
-            "11:20",
-            "today_1120_to_t1_close_market_excess_after_cost",
-            (1,),
-            "single_horizon",
-            (*common, "t1_low_mae_atr20"),
-        )
     if strategy == "tomorrow":
         return (
             "14:50",

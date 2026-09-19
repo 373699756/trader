@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from trader.domain.market.models import MarketQuote
+from trader.recommendation.domain.market.models import MarketQuote
 from trader.infra.market_data.history.history import (
     DailyBar,
     PriceAdjustment,
@@ -21,7 +21,7 @@ NOW = datetime(2026, 7, 16, 14, 50, tzinfo=ZoneInfo("Asia/Shanghai"))
 def test_entry_inputs_exclude_same_day_history_bar() -> None:
     settings = load_strategy_settings(ROOT / "config/strategy.json")
     builder = FeatureBuilder(
-        settings.today_news_signal,
+        settings.news_signal,
         settings.tomorrow_tail_signal,
         settings.market_regime,
         settings.long_research,
@@ -94,7 +94,7 @@ def test_entry_inputs_exclude_same_day_history_bar() -> None:
 def test_entry_quality_uses_amount_intensity_when_volume_ratio_is_missing() -> None:
     settings = load_strategy_settings(ROOT / "config/strategy.json")
     builder = FeatureBuilder(
-        settings.today_news_signal,
+        settings.news_signal,
         settings.tomorrow_tail_signal,
         settings.market_regime,
         settings.long_research,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from trader.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.models import FeatureSnapshot
 
 LOGICAL_CACHE_LIMIT_BYTES = 248 * 1024 * 1024
 PROCESS_PEAK_RSS_LIMIT_BYTES = 384 * 1024 * 1024

@@ -24,7 +24,7 @@ from trader.application.ports.data_plane import (
 from trader.application.ports.json_values import JsonObject, JsonValue
 from trader.application.runtime.schedule import shanghai_now
 from trader.application.runtime.source_lanes import SourceRequestSupersededError
-from trader.domain.market.models import ModelIndustryReference
+from trader.recommendation.domain.market.models import ModelIndustryReference
 from trader.infra.market_data.history.daily_history_cache import HistoryCache
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.providers.baostock_industry import (

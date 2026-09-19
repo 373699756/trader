@@ -12,8 +12,8 @@ from trader.application.ports.scheduler import (
     DecisionBuilderPort,
     DecisionUnavailableError,
 )
-from trader.domain.recommendation.decision_identity import DecisionOverlay, ScoredDecision
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.decision_identity import DecisionOverlay, ScoredDecision
+from trader.recommendation.domain.publication.models import Strategy
 
 FailureCodeMapper = Callable[[BaseException, str], str]
 
@@ -78,7 +78,7 @@ class DecisionOverlayRefresher:
         return OverlayRefreshOutcome(strategy, "published")
 
 
-_SCORED_STRATEGIES = (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+_SCORED_STRATEGIES = (Strategy.TOMORROW, Strategy.D25)
 
 
 __all__ = ["DecisionOverlayRefresher", "OverlayRefreshOutcome"]

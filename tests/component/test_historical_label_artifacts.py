@@ -16,7 +16,7 @@ def _batch():
     dates = tuple(date(2022, 1, 1) + timedelta(days=index) for index in range(1_000))
     metadata = tuple(
         H1CoverageMetadata(strategy, "coverage_ready", dates, "a" * 64, "b" * 64, date(2026, 8, 31))
-        for strategy in ("today", "tomorrow", "d25")
+        for strategy in ("tomorrow", "d25")
     )
     return preregister_historical_labels(metadata)
 
@@ -39,7 +39,7 @@ def test_historical_label_artifact_archive_rejects_conflicts_and_tampering(tmp_p
     conflicting = preregister_historical_labels(
         tuple(
             H1CoverageMetadata(strategy, "coverage_ready", dates, "c" * 64, "b" * 64, date(2026, 8, 31))
-            for strategy in ("today", "tomorrow", "d25")
+            for strategy in ("tomorrow", "d25")
         )
     )
     with pytest.raises(HistoricalLabelArtifactConflictError, match="identity conflict"):

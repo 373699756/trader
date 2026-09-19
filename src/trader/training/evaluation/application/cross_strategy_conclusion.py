@@ -1,4 +1,4 @@
-"""Read-only, hash-bound conclusion for the Today/Tomorrow/D25 terminal reports."""
+"""Read-only, hash-bound conclusion for the Tomorrow/D25 terminal reports."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ CrossStrategyStatus = Literal["historical_data_insufficient", "historical_reject
 
 @dataclass(frozen=True)
 class CrossStrategyConclusion:
-    today: TerminalHoldoutReport
     tomorrow: TerminalHoldoutReport
     d25: TerminalHoldoutReport
     status: CrossStrategyStatus
@@ -27,8 +26,8 @@ class CrossStrategyConclusion:
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        reports = (self.today, self.tomorrow, self.d25)
-        if tuple(report.strategy for report in reports) != ("today", "tomorrow", "d25"):
+        reports = (self.tomorrow, self.d25)
+        if tuple(report.strategy for report in reports) != ("tomorrow", "d25"):
             raise ValueError("cross-strategy conclusion requires reports in fixed strategy order")
         expected = tuple((report.strategy, report.content_hash) for report in reports)
         if self.report_hashes != expected:
@@ -41,13 +40,13 @@ class CrossStrategyConclusion:
 
     @property
     def strategy_statuses(self) -> tuple[tuple[str, TerminalStatus], ...]:
-        return tuple((report.strategy, report.status) for report in (self.today, self.tomorrow, self.d25))
+        return tuple((report.strategy, report.status) for report in (self.tomorrow, self.d25))
 
     @property
     def strategy_metrics(self) -> tuple[tuple[str, TerminalHoldoutMetrics], ...]:
         """Expose each strategy's metrics without merging failures or row counts."""
 
-        return tuple((report.strategy, report.metrics) for report in (self.today, self.tomorrow, self.d25))
+        return tuple((report.strategy, report.metrics) for report in (self.tomorrow, self.d25))
 
 
 class CrossStrategyConclusionService:
@@ -55,11 +54,10 @@ class CrossStrategyConclusionService:
 
     def execute(
         self,
-        today: TerminalHoldoutReport,
         tomorrow: TerminalHoldoutReport,
         d25: TerminalHoldoutReport,
     ) -> CrossStrategyConclusion:
-        reports = (today, tomorrow, d25)
+        reports = (tomorrow, d25)
         if any(report.production_authority for report in reports):
             raise ValueError("cross-strategy conclusion accepts research-only reports")
         statuses = tuple(report.status for report in reports)
@@ -70,7 +68,6 @@ class CrossStrategyConclusionService:
         else:
             status = "historical_rejected"
         return CrossStrategyConclusion(
-            today=today,
             tomorrow=tomorrow,
             d25=d25,
             status=status,

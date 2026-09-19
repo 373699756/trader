@@ -4,9 +4,9 @@ import hashlib
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 
-from trader.domain.market.epochs import DataPlaneCoverageEvidence
-from trader.domain.market.models import Board, LiveQuote, MarketQuote
-from trader.domain.market.quality import FieldQualityState, FieldValue
+from trader.recommendation.domain.market.epochs import DataPlaneCoverageEvidence
+from trader.recommendation.domain.market.models import Board, LiveQuote, MarketQuote
+from trader.recommendation.domain.market.quality import FieldQualityState, FieldValue
 
 
 def field_values(

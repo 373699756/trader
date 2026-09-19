@@ -25,7 +25,7 @@ from trader.application.runtime.workers import (
     borrow_executor,
     submit_or_run_inline,
 )
-from trader.domain.market.research import ResearchObservation
+from trader.recommendation.domain.market.research import ResearchObservation
 from trader.infra.atomic_files.json import RuntimeJsonWriter, atomic_read_json, atomic_write_json
 from trader.infra.market_data.providers.akshare import AkshareResearchClient
 from trader.infra.market_data.service.market_cache_identity import (

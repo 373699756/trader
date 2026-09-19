@@ -37,16 +37,16 @@ from trader.application.runtime.source_lanes import (
     SourceRequestSupersededError,
 )
 from trader.application.runtime.workers import BoundedExecutor
-from trader.domain.market.eligibility import IssuerEligibilityRegistryStatus
-from trader.domain.market.models import (
+from trader.recommendation.domain.market.eligibility import IssuerEligibilityRegistryStatus
+from trader.recommendation.domain.market.models import (
     Board,
     Evidence,
     FeatureSnapshot,
     MarketQuote,
 )
-from trader.domain.market.news import NewsSignalPolicy
-from trader.domain.market.research import FinancialReport, ResearchObservation
-from trader.domain.market.tail import MinuteBar, TailSignalPolicy
+from trader.recommendation.domain.market.news import NewsSignalPolicy
+from trader.recommendation.domain.market.research import FinancialReport, ResearchObservation
+from trader.recommendation.domain.market.tail import MinuteBar, TailSignalPolicy
 from trader.infra.cache import BoundedLruCache
 from trader.infra.market_data.history.daily_history_cache import HistoryCache
 from trader.infra.market_data.history.daily_history_warmup import HistoryWarmup

@@ -13,15 +13,15 @@ from datetime import datetime
 from typing import Protocol
 
 from trader.application.ports.market import MarketDataPlaneSnapshot
-from trader.domain.market.epochs import (
+from trader.recommendation.domain.market.epochs import (
     CandidateFeatureRow,
     CandidateQuoteEpoch,
     DailyFeatureRow,
     MarketEpoch,
     ResearchEpoch,
 )
-from trader.domain.market.models import Evidence, FeatureSnapshot, LiveQuote, MarketQuote
-from trader.domain.market.research import ResearchObservation, derive_corporate_risk_features
+from trader.recommendation.domain.market.models import Evidence, FeatureSnapshot, LiveQuote, MarketQuote
+from trader.recommendation.domain.market.research import ResearchObservation, derive_corporate_risk_features
 
 
 class ScoredSelectionNotReadyError(RuntimeError):

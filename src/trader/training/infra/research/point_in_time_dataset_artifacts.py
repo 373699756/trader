@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import Literal, cast
 from zoneinfo import ZoneInfo
 
-from trader.domain.market.feature_contracts import FeatureVector
-from trader.domain.market.models import Board
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.market.feature_contracts import FeatureVector
+from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.artifacts.fields import is_boolean, is_integer, is_number, is_text_sequence
 from trader.infra.artifacts.sealing import publish_immutable
 from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash, canonical_artifact_json

@@ -7,8 +7,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Protocol
 
-from trader.domain.recommendation.decision_identity import CommittedDecisionRecord, ScoredDecision
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord, ScoredDecision
+from trader.recommendation.domain.publication.models import Strategy
 
 
 class DecisionRecordError(RuntimeError):

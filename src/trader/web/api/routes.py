@@ -11,7 +11,7 @@ from flask import Blueprint, Flask, Response, jsonify, render_template, request
 
 from trader.application.decisions.decision_queries import DecisionView
 from trader.application.decisions.decision_stream import UnifiedSubscriberLimitError
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 from trader.web.api.decision_serializers import serialize_decision_view, serialize_error
 from trader.web.api.decision_sse import decision_event_response
 from trader.web.api.route_services import UnifiedWebServices
@@ -78,7 +78,7 @@ def _root(services: UnifiedWebServices | None) -> str:
 def _current(services: UnifiedWebServices | None, strategy_name: str) -> RouteResponse:
     strategy = _strategy(strategy_name)
     if strategy is None:
-        return _error("invalid_strategy", "strategy must be today, tomorrow, d25 or long", 400)
+        return _error("invalid_strategy", "strategy must be tomorrow, d25 or long", 400)
     if services is None:
         return _not_ready()
     return _view_response(services.queries.current(strategy))
@@ -87,7 +87,7 @@ def _current(services: UnifiedWebServices | None, strategy_name: str) -> RouteRe
 def _history(services: UnifiedWebServices | None, strategy_name: str) -> RouteResponse:
     strategy = _strategy(strategy_name)
     if strategy is None:
-        return _error("invalid_strategy", "strategy must be today, tomorrow, d25 or long", 400)
+        return _error("invalid_strategy", "strategy must be tomorrow, d25 or long", 400)
     raw_date = request.args.get("date", "")
     trade_date = _strict_date(raw_date)
     if trade_date is None:
@@ -100,7 +100,7 @@ def _history(services: UnifiedWebServices | None, strategy_name: str) -> RouteRe
 def _dates(services: UnifiedWebServices | None, strategy_name: str) -> RouteResponse:
     strategy = _strategy(strategy_name)
     if strategy is None:
-        return _error("invalid_strategy", "strategy must be today, tomorrow, d25 or long", 400)
+        return _error("invalid_strategy", "strategy must be tomorrow, d25 or long", 400)
     if services is None:
         return _not_ready()
     return jsonify(
@@ -408,7 +408,7 @@ def _scoring_profile(runtime: Mapping[str, object]) -> dict[str, object]:
         "heads": {
             strategy: _scoring_head(head)
             for strategy, head in sorted(heads.items(), key=lambda item: str(item[0]))
-            if strategy in {"today", "tomorrow", "d25"} and isinstance(head, Mapping)
+            if strategy in {"tomorrow", "d25"} and isinstance(head, Mapping)
         },
     }
 

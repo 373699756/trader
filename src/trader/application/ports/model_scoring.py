@@ -8,10 +8,10 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Literal, Protocol
 
-from trader.domain.market.models import FeatureSnapshot
-from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
-from trader.domain.recommendation.model_scoring.residualization import ExposureContract
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.domain.scoring.residualization import ExposureContract
+from trader.recommendation.domain.publication.models import Strategy
 
 
 @dataclass(frozen=True)
@@ -226,7 +226,7 @@ class ProfileEvidence:
     automatic_model_update: bool = False
     loss_probability_status: Literal["not_modeled"] = "not_modeled"
     training_anchor: Literal["15:00_close", "15:00_close_proxy", "14:50_point_in_time"] = "15:00_close"
-    runtime_anchor: Literal["11:20", "14:50"] = "14:50"
+    runtime_anchor: Literal["14:50"] = "14:50"
     point_in_time_parity: bool = False
 
 
@@ -288,7 +288,7 @@ class ScoringProfileRuntimeStatus:
         if (
             not heads
             or Strategy.LONG in heads
-            or any(strategy.value not in {"today", "tomorrow", "d25"} for strategy in heads)
+            or any(strategy.value not in {"tomorrow", "d25"} for strategy in heads)
             or any(status.profile_id != self.profile_id for status in heads.values())
         ):
             raise ValueError("scoring profile runtime heads are invalid")

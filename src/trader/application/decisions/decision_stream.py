@@ -12,15 +12,15 @@ from typing import Literal
 
 from trader.application.decisions.decision_coverage import DecisionCoverage, scored_decision_coverage
 from trader.application.decisions.decision_events import DecisionCommitted
-from trader.domain.recommendation.decision_identity import (
+from trader.recommendation.domain.publication.decision_identity import (
     DecisionItem,
     DecisionOverlay,
     DecisionQuote,
     LongProjection,
     SelectionDiagnostics,
 )
-from trader.domain.recommendation.models import Strategy
-from trader.domain.recommendation.pipeline import RecommendationPipelineStatus
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.evidence.pipeline import RecommendationPipelineStatus
 
 ResyncReason = Literal[
     "cursor_ahead",

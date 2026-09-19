@@ -21,28 +21,6 @@ from trader.application.runtime.cadence import (
 from trader.application.runtime.schedule import SHANGHAI, SchedulePoint
 
 
-def test_delayed_scheduler_tick_catches_up_mandatory_freeze_point_once() -> None:
-    planner = CadencePlanner(
-        _policy(),
-        started_at=datetime(2026, 7, 16, 9, 15, tzinfo=SHANGHAI),
-    )
-    delayed = datetime(2026, 7, 16, 11, 20, 1, tzinfo=SHANGHAI)
-
-    first = planner.plan(delayed, is_trading_day=True)
-    freeze = next(task for task in first.tasks if task.task is PipelineTask.FREEZE)
-    planner.record_submission(freeze, accepted=True, at=delayed)
-    planner.record_results(
-        freeze,
-        {"today": SchedulePointResult.COMPLETED},
-        at=delayed,
-    )
-    second = planner.plan(delayed + timedelta(seconds=1), is_trading_day=True)
-
-    freezes = [task for task in first.tasks if task.task is PipelineTask.FREEZE]
-    assert len(freezes) == 1
-    assert freezes[0].freeze_strategies == ("today",)
-    assert not [task for task in second.tasks if task.task is PipelineTask.FREEZE]
-
 
 def test_restart_after_afternoon_cutoff_only_attempts_checkpoint_eligible_strategies() -> None:
     restarted = datetime(2026, 7, 16, 14, 50, 1, tzinfo=SHANGHAI)
@@ -56,74 +34,10 @@ def test_restart_after_afternoon_cutoff_only_attempts_checkpoint_eligible_strate
     assert PipelineTask.DEEPSEEK_CUTOFF not in {task.task for task in batch.tasks}
     assert PipelineTask.FINAL_CANDIDATE_QUOTES not in {task.task for task in batch.tasks}
     status = planner.status()
-    assert status.schedule_points[SchedulePointKey("2026-07-16", SchedulePoint.TODAY_FREEZE, "today")].status is (
-        SchedulePointStatus.MISSED
-    )
     assert status.schedule_points[SchedulePointKey("2026-07-16", SchedulePoint.DEEPSEEK_CUTOFF, "-")].status is (
         SchedulePointStatus.MISSED
     )
 
-
-def test_cold_start_at_today_boundary_marks_today_missed() -> None:
-    started_at = datetime(2026, 7, 16, 11, 20, 0, tzinfo=SHANGHAI)
-    planner = CadencePlanner(_policy(), started_at=started_at)
-
-    batch = planner.plan(started_at, is_trading_day=True)
-
-    assert not [task for task in batch.tasks if task.task is PipelineTask.FREEZE]
-    assert (
-        planner.schedule_point_status("2026-07-16", SchedulePoint.TODAY_FREEZE, "today") is SchedulePointStatus.MISSED
-    )
-
-
-def test_rejected_freeze_submission_returns_to_pending_and_can_be_submitted_again() -> None:
-    started_at = datetime(2026, 7, 16, 9, 15, tzinfo=SHANGHAI)
-    boundary = datetime(2026, 7, 16, 11, 20, 0, tzinfo=SHANGHAI)
-    planner = CadencePlanner(_policy(), started_at=started_at)
-
-    first = next(task for task in planner.plan(boundary, is_trading_day=True).tasks if task.task is PipelineTask.FREEZE)
-    planner.record_submission(first, accepted=False, at=boundary)
-    second = next(
-        task
-        for task in planner.plan(boundary + timedelta(milliseconds=50), is_trading_day=True).tasks
-        if task.task is PipelineTask.FREEZE
-    )
-
-    assert second.freeze_strategies == ("today",)
-
-
-def test_retry_wait_uses_fixed_backoff_and_keeps_point_incomplete() -> None:
-    started_at = datetime(2026, 7, 16, 9, 15, tzinfo=SHANGHAI)
-    boundary = datetime(2026, 7, 16, 11, 20, 0, tzinfo=SHANGHAI)
-    planner = CadencePlanner(_policy(), started_at=started_at)
-    freeze = next(
-        task for task in planner.plan(boundary, is_trading_day=True).tasks if task.task is PipelineTask.FREEZE
-    )
-    planner.record_submission(freeze, accepted=True, at=boundary)
-    planner.record_results(freeze, {"today": SchedulePointResult.RETRY}, at=boundary)
-
-    early = planner.plan(boundary + timedelta(milliseconds=999), is_trading_day=True)
-    due = planner.plan(boundary + timedelta(seconds=1), is_trading_day=True)
-
-    assert not [task for task in early.tasks if task.task is PipelineTask.FREEZE]
-    assert next(task for task in due.tasks if task.task is PipelineTask.FREEZE).freeze_strategies == ("today",)
-
-
-def test_periodic_candidate_task_cannot_supersede_an_inflight_fixed_quote_checkpoint() -> None:
-    started_at = datetime(2026, 7, 16, 9, 15, tzinfo=SHANGHAI)
-    checkpoint_at = datetime(2026, 7, 16, 11, 19, 50, tzinfo=SHANGHAI)
-    planner = CadencePlanner(_policy(), started_at=started_at)
-    first = planner.plan(checkpoint_at, is_trading_day=True)
-    checkpoint = next(
-        task
-        for task in first.tasks
-        if task.task is PipelineTask.FINAL_CANDIDATE_QUOTES and task.schedule_point is SchedulePoint.TODAY_CHECKPOINT
-    )
-    planner.record_submission(checkpoint, accepted=True, at=checkpoint_at)
-
-    while_inflight = planner.plan(checkpoint_at + timedelta(seconds=1), is_trading_day=True)
-
-    assert PipelineTask.CANDIDATE_QUOTES not in {task.task for task in while_inflight.tasks}
 
 
 @pytest.mark.parametrize(
@@ -328,8 +242,6 @@ def test_production_policy_plans_exact_full_trading_day_task_counts() -> None:
                 continue
             planner.record_submission(task, accepted=True, at=current)
             results = {strategy: SchedulePointResult.COMPLETED for strategy in (task.freeze_strategies or ("-",))}
-            if task.schedule_point is SchedulePoint.TODAY_CHECKPOINT:
-                results = {"today": SchedulePointResult.COMPLETED}
             planner.record_results(task, results, at=current)
         current += timedelta(seconds=1)
 
@@ -346,8 +258,8 @@ def test_production_policy_plans_exact_full_trading_day_task_counts() -> None:
             PipelineTask.REFERENCE_DATA: 2,
             PipelineTask.DEEPSEEK_CUTOFF: 1,
             PipelineTask.CHECKPOINT: 1,
-            PipelineTask.FINAL_CANDIDATE_QUOTES: 2,
-            PipelineTask.FREEZE: 2,
+            PipelineTask.FINAL_CANDIDATE_QUOTES: 1,
+            PipelineTask.FREEZE: 1,
             PipelineTask.CLOSE_QUOTES: 1,
         }
     )
@@ -356,14 +268,14 @@ def test_production_policy_plans_exact_full_trading_day_task_counts() -> None:
 def _policy() -> CadencePolicy:
     return CadencePolicy.from_seconds(
         {
-            "full_market": {"today_main": 30, "midday": 60, "final_window": 30},
-            "candidate_quotes": {"today_main": 5, "midday": 60, "final_window": 2},
-            "topk_quotes": {"today_main": 3, "midday": 60, "final_window": 3, "after_close": 10},
+            "full_market": {"morning_main": 30, "midday": 60, "final_window": 30},
+            "candidate_quotes": {"morning_main": 5, "midday": 60, "final_window": 2},
+            "topk_quotes": {"morning_main": 3, "midday": 60, "final_window": 3, "after_close": 10},
             "intraday_tail": {"afternoon": 5, "final_review": 3},
-            "long_quotes": {"today_main": 3, "midday": 60, "final_window": 3},
-            "score": {"today_main": 10, "final_window": 1},
-            "industry_heat": {"today_main": 60},
-            "market_news": {"today_main": 60},
-            "stock_risk": {"today_main": 180},
+            "long_quotes": {"morning_main": 3, "midday": 60, "final_window": 3},
+            "score": {"morning_main": 10, "final_window": 1},
+            "industry_heat": {"morning_main": 60},
+            "market_news": {"morning_main": 60},
+            "stock_risk": {"morning_main": 180},
         }
     )

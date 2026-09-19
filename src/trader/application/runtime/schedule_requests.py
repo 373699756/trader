@@ -10,8 +10,8 @@ from trader.application.ports.market import ResearchRefreshResult
 from trader.application.ports.scheduler import CycleRequest, DecisionUnavailableError
 from trader.application.runtime.cadence import PipelineTask, ScheduledPipelineTask
 from trader.application.runtime.schedule import MarketPhase
-from trader.domain.recommendation.decision_identity import DecisionIdentity
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.decision_identity import DecisionIdentity
+from trader.recommendation.domain.publication.models import Strategy
 
 
 def cycle_phase(strategy: Strategy, phase: MarketPhase) -> str:

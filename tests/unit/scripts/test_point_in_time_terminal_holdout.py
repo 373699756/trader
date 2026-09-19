@@ -19,8 +19,8 @@ from trader.training.infra.research.historical_label_artifacts import Historical
 def _seal_h1_research_parent(root):
     capability = build_h1_capability_audit(
         (
-            H1CapabilityProbe("tencent_qfq_daily", date(2024, 1, 9), False, False, "qfq", False, 640, 10, 100, 1.0),
-            H1CapabilityProbe("eastmoney_historical_minute", None, False, False, "unsupported", False, 0, 0, 0, 0.0),
+            H1CapabilityProbe("tencent_qfq_daily", date(2024, 1, 9), False, "qfq", False, 640, 10, 100, 1.0),
+            H1CapabilityProbe("eastmoney_historical_minute", None, False, "unsupported", False, 0, 0, 0, 0.0),
         ),
         probe_failures=("eastmoney_historical_minute_probe_failed",),
     )
@@ -28,7 +28,7 @@ def _seal_h1_research_parent(root):
     completion = complete_h1_research(
         capability=capability,
         metadata=tuple(
-            archive.label_metadata(H1PointInTimeSpec(strategy)) for strategy in ("today", "tomorrow", "d25")
+            archive.label_metadata(H1PointInTimeSpec(strategy)) for strategy in ("tomorrow", "d25")
         ),
     )
     H1CapabilityArtifactArchive(root).write(capability)
@@ -36,7 +36,7 @@ def _seal_h1_research_parent(root):
     H1ResearchCompletionArtifactArchive(root).write(completion)
 
 
-def test_point_in_time_script_seals_three_parent_insufficient_reports_and_conclusion(tmp_path, capsys) -> None:
+def test_point_in_time_script_seals_two_parent_insufficient_reports_and_conclusion(tmp_path, capsys) -> None:
     parent = tmp_path / "parent"
     output = tmp_path / "output"
     _seal_h1_research_parent(parent)
@@ -50,7 +50,6 @@ def test_point_in_time_script_seals_three_parent_insufficient_reports_and_conclu
     assert all(item["terminal_holdout_opened"] is False for item in payload["strategies"])
     assert all(item["status"] == "historical_data_insufficient" for item in payload["strategies"])
     assert all(item["failure_reasons"] for item in payload["strategies"])
-    assert (output / "today" / "report.json").is_file()
     assert (output / "tomorrow" / "report.json").is_file()
     assert (output / "d25" / "report.json").is_file()
     assert (output / "cross_strategy" / "report.json").is_file()

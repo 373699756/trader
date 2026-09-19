@@ -56,7 +56,6 @@ def test_free_source_probe_detects_ignored_old_minute_date_without_exposing_pric
     assert by_source["tencent_qfq_daily"].page_size == 10
     minute = by_source["eastmoney_historical_minute"]
     assert minute.earliest_available is None
-    assert minute.supports_today_1120 is False
     assert minute.supports_1450 is False
     assert {item.state for item in report.strategies} == {"historical_data_insufficient"}
     assert "masked" not in repr(report)

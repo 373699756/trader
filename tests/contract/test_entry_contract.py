@@ -14,7 +14,7 @@ import pytest
 import trader.entrypoints.cli as cli_module
 import trader.entrypoints.server as server_module
 import trader.training.entrypoints.commands as research_commands
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 from trader.entrypoints.cli import build_parser, main
 from trader.entrypoints.server import build_parser as build_server_parser
 from trader.infra.process_lock import ProcessLockError
@@ -95,10 +95,9 @@ def test_server_module_loads_only_authorized_background_research_consumers() -> 
     assert _research_modules_loaded_by("trader.entrypoints.server") <= allowed
 
 
-def test_server_entrypoint_accepts_only_the_three_typed_scoring_profiles() -> None:
+def test_server_entrypoint_accepts_only_the_two_typed_scoring_profiles() -> None:
     parser = build_server_parser()
 
-    assert parser.parse_args(["--config", "/tmp/runtime.json", "--profile", "v1"]).profile == "v1"
     assert parser.parse_args(["--config", "/tmp/runtime.json", "--profile", "v2"]).profile == "v2"
     assert parser.parse_args(["--config", "/tmp/runtime.json", "--profile", "v3"]).profile == "v3"
     with pytest.raises(SystemExit) as error:
@@ -149,16 +148,16 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
 
     assert completed.returncode == 0
     assert "日常使用（不做离线研究）:" in completed.stdout
-    assert "./run.sh                         以默认 V2 启动并加载共享三头模型" in completed.stdout
-    assert "./run.sh --profile v1|v3         显式使用 V1 或 V3 启动" in completed.stdout
+    assert "./run.sh                         以默认 V2 启动并加载共享双头模型" in completed.stdout
+    assert "./run.sh --profile v2|v3         显式使用 V2 或 V3 启动" in completed.stdout
     assert "./run.sh check                   依次校验配置、研究状态和性能门禁" in completed.stdout
     assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
     assert "./run.sh download                零参数历史维护" in completed.stdout
-    assert "./run.sh train-v2                按 V2 251 日特征训练独立三头" in completed.stdout
-    assert "./run.sh train-v3                按 V3 61 日特征训练独立三头" in completed.stdout
+    assert "./run.sh train-v2                按 V2 251 日特征训练独立双头" in completed.stdout
+    assert "./run.sh train-v3                按 V3 61 日特征训练独立双头" in completed.stdout
     assert "--allow-partial-history" not in completed.stdout
     assert "research-r7-dossier" not in completed.stdout
-    assert "看板和 check 可追加 --profile v1|v2|v3；离线数据与训练命令均为零参数" in completed.stdout
+    assert "看板和 check 可追加 --profile v2|v3；离线数据与训练命令均为零参数" in completed.stdout
     assert "./run.sh serve" not in completed.stdout
     assert not missing_venv.exists()
 
@@ -452,7 +451,7 @@ def test_run_script_rejects_an_unknown_profile_before_environment_setup(tmp_path
 
     assert completed.returncode == 2
     assert completed.stdout == ""
-    assert completed.stderr == "评分档位只能是 v1、v2 或 v3: latest\n"
+    assert completed.stderr == "评分档位只能是 v2 或 v3: latest\n"
     assert not missing_venv.exists()
 
 
@@ -497,18 +496,18 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
 
     assert "日常使用（不做离线研究）:" in powershell
     assert "离线研究（仅在明确执行研究任务时使用）:" in powershell
-    assert ".\\run.ps1                         以默认 V2 启动并加载共享三头模型" in powershell
-    assert ".\\run.ps1 --profile v1|v3         显式使用 V1 或 V3 启动" in powershell
+    assert ".\\run.ps1                         以默认 V2 启动并加载共享双头模型" in powershell
+    assert ".\\run.ps1 --profile v2|v3         显式使用 V2 或 V3 启动" in powershell
     assert ".\\run.ps1 download                零参数历史维护" in powershell
     assert "research-history" not in powershell
     assert "research-screen" not in powershell
-    assert ".\\run.ps1 train-v2                按 V2 251 日特征训练独立三头" in powershell
-    assert ".\\run.ps1 train-v3                按 V3 61 日特征训练独立三头" in powershell
+    assert ".\\run.ps1 train-v2                按 V2 251 日特征训练独立双头" in powershell
+    assert ".\\run.ps1 train-v3                按 V3 61 日特征训练独立双头" in powershell
     assert "--allow-partial-history" not in powershell
-    assert "看板和 check 可追加 --profile v1|v2|v3；离线数据与训练命令均为零参数" in powershell
+    assert "看板和 check 可追加 --profile v2|v3；离线数据与训练命令均为零参数" in powershell
     assert "& $SelectedEntryPoint --help" in powershell
     assert "$ProfileArgs = if ($ScoringProfileSet)" in powershell
-    assert '$ScoringProfile -notin @("v1", "v2", "v3")' in powershell
+    assert '$ScoringProfile -notin @("v2", "v3")' in powershell
     assert "config\\runtime.json" in powershell
     assert "config\\v2\\runtime.json" not in powershell
     assert '$PublicModes = @("help", "-h", "--help", "check", "download", "train-v2", "train-v3")' in powershell
@@ -604,7 +603,7 @@ def test_tomorrow_training_resource_policy_is_two_threads_and_lower_priority(
     } == {"2"}
 
 
-def test_train_v3_passes_fixed_roots_and_projects_three_head_results(
+def test_train_v3_passes_fixed_roots_and_projects_two_head_results(
     tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime = json.loads((ROOT / "config/runtime.json").read_text(encoding="utf-8"))
@@ -633,7 +632,7 @@ def test_train_v3_passes_fixed_roots_and_projects_three_head_results(
                 validation_rows=20,
                 failure_reasons=(),
             )
-            for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+            for strategy in (Strategy.TOMORROW, Strategy.D25)
         )
         return SimpleNamespace(
             status="already_current",
@@ -650,8 +649,8 @@ def test_train_v3_passes_fixed_roots_and_projects_three_head_results(
     assert observed == [(history, ROOT / "data" / "train")]
     payload = json.loads(capsys.readouterr().out)
     assert payload["schema_version"] == "v3_training_result"
-    assert tuple(payload["heads"]) == ("d25", "today", "tomorrow")
-    assert payload["heads"]["today"]["artifact_root"].endswith("data/train/v3/today")
+    assert tuple(payload["heads"]) == ("d25", "tomorrow")
+    assert payload["heads"]["tomorrow"]["artifact_root"].endswith("data/train/v3/tomorrow")
 
 
 def test_train_v2_uses_its_own_command_adapter_and_artifact_roots(
@@ -683,7 +682,7 @@ def test_train_v2_uses_its_own_command_adapter_and_artifact_roots(
                 validation_rows=20,
                 failure_reasons=(),
             )
-            for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+            for strategy in (Strategy.TOMORROW, Strategy.D25)
         )
         return SimpleNamespace(
             status="already_current",
@@ -700,7 +699,7 @@ def test_train_v2_uses_its_own_command_adapter_and_artifact_roots(
     assert observed == [(history, ROOT / "data" / "train")]
     payload = json.loads(capsys.readouterr().out)
     assert payload["schema_version"] == "v2_training_result"
-    assert payload["heads"]["today"]["artifact_root"].endswith("data/train/v2/today")
+    assert payload["heads"]["tomorrow"]["artifact_root"].endswith("data/train/v2/tomorrow")
 
 
 def test_research_status_keeps_tomorrow_graph_conflict_out_of_h1_input_blockers(tmp_path: Path, monkeypatch) -> None:
@@ -823,7 +822,7 @@ def test_server_lock_conflict_explains_the_existing_service_and_safe_restart(
     monkeypatch.setattr(server_module, "ProcessLock", _LockedProcess)
 
     with pytest.raises(SystemExit) as error:
-        server_module.main(["--config", str(tmp_path / "runtime.json"), "--profile", "v1"])
+        server_module.main(["--config", str(tmp_path / "runtime.json"), "--profile", "v2"])
 
     message = str(error.value)
     assert "trader-server is already running" in message

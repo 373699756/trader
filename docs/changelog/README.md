@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Retire Today and V1 from the active recommendation product](2026-09-19-recommendation-identity-cutover.md)
 - [Detail the refactor blueprint implementation plan](2026-09-17-refactor-blueprint-implementation-plan.md)
 - [Clarify recommendation delivery module ownership](2026-09-17-recommendation-delivery-module-ownership.md)
 - [Resolve refactor blueprint architecture conflicts](2026-09-17-refactor-blueprint-conflict-resolution.md)

@@ -10,10 +10,10 @@ from dataclasses import dataclass
 from trader.application.ports.runtime_status import InputQualityStatus, SupplySummary
 from trader.application.recommendation.scored_projection import ScoredLocalProjection
 from trader.application.recommendation.scored_quality import ScoredInputQuality
-from trader.domain.market.models import FeatureSnapshot
-from trader.domain.recommendation.decision_identity import DecisionItem, ScoredDecision
-from trader.domain.recommendation.models import RecommendationAction, ScoredDisposition, ScoredStockEvaluation
-from trader.domain.recommendation.pipeline import (
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.publication.decision_identity import DecisionItem, ScoredDecision
+from trader.recommendation.domain.publication.models import RecommendationAction, ScoredDisposition, ScoredStockEvaluation
+from trader.recommendation.domain.evidence.pipeline import (
     PipelineFacet,
     PipelineMetricName,
     PipelineMetricRange,
@@ -23,7 +23,7 @@ from trader.domain.recommendation.pipeline import (
     PipelineStageStatus,
     RecommendationPipelineStatus,
 )
-from trader.domain.recommendation.selection.scored_selection import (
+from trader.recommendation.domain.selection.scored_selection import (
     ScoredCandidateStageCounts,
     split_filter_reason_counts,
 )

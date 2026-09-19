@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Final, Literal
 
-from trader.domain.market.research import CorporateRiskCategory, ResearchObservation
+from trader.recommendation.domain.market.research import CorporateRiskCategory, ResearchObservation
 
 ResearchComponentStatus = Literal["known_clear", "known_risk", "unknown", "stale"]
 

@@ -55,7 +55,6 @@ class CrossStrategyConclusionArtifactArchive:
 
 def _encode_conclusion(conclusion: CrossStrategyConclusion) -> dict[str, object]:
     return {
-        "today": encode_terminal_holdout_report(conclusion.today),
         "tomorrow": encode_terminal_holdout_report(conclusion.tomorrow),
         "d25": encode_terminal_holdout_report(conclusion.d25),
         "status": conclusion.status,
@@ -66,11 +65,11 @@ def _encode_conclusion(conclusion: CrossStrategyConclusion) -> dict[str, object]
 
 
 def _decode_conclusion(raw: dict[str, object]) -> CrossStrategyConclusion:
-    expected = {"today", "tomorrow", "d25", "status", "report_hashes", "production_authority", "schema_version"}
+    expected = {"tomorrow", "d25", "status", "report_hashes", "production_authority", "schema_version"}
     if set(raw) != expected:
         raise ValueError("cross-strategy conclusion fields are invalid")
-    today_raw, tomorrow_raw, d25_raw = (raw[name] for name in ("today", "tomorrow", "d25"))
-    if not isinstance(today_raw, dict) or not isinstance(tomorrow_raw, dict) or not isinstance(d25_raw, dict):
+    tomorrow_raw, d25_raw = (raw[name] for name in ("tomorrow", "d25"))
+    if not isinstance(tomorrow_raw, dict) or not isinstance(d25_raw, dict):
         raise TypeError("cross-strategy reports are invalid")
     hashes = raw["report_hashes"]
     if not isinstance(hashes, list) or not all(isinstance(item, list) and len(item) == 2 for item in hashes):
@@ -86,7 +85,6 @@ def _decode_conclusion(raw: dict[str, object]) -> CrossStrategyConclusion:
     if not isinstance(schema, str):
         raise TypeError("cross-strategy schema version is invalid")
     return CrossStrategyConclusion(
-        today=decode_terminal_holdout_report(today_raw),
         tomorrow=decode_terminal_holdout_report(tomorrow_raw),
         d25=decode_terminal_holdout_report(d25_raw),
         status=status,  # type: ignore[arg-type]

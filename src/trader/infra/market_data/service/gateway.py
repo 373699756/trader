@@ -26,7 +26,7 @@ from trader.application.runtime.latency import LatencyWaterfall
 from trader.application.runtime.schedule import shanghai_now
 from trader.application.runtime.source_lanes import SourceLaneRegistry, SourceRequestSupersededError
 from trader.application.runtime.workers import BoundedExecutor
-from trader.domain.market.models import (
+from trader.recommendation.domain.market.models import (
     CanonicalMarketSnapshot,
     MarketQuote,
 )

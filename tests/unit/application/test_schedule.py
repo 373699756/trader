@@ -20,10 +20,10 @@ from trader.application.runtime.schedule import (
     [
         ("09:14:59", MarketPhase.CLOSED),
         ("09:15:00", MarketPhase.WARMUP),
-        ("09:30:00", MarketPhase.TODAY_OBSERVE),
-        ("09:35:59", MarketPhase.TODAY_OBSERVE),
-        ("09:36:00", MarketPhase.TODAY_MAIN),
-        ("10:30:00", MarketPhase.TODAY_LATE),
+        ("09:30:00", MarketPhase.MORNING_OBSERVE),
+        ("09:35:59", MarketPhase.MORNING_OBSERVE),
+        ("09:36:00", MarketPhase.MORNING_MAIN),
+        ("10:30:00", MarketPhase.MORNING_LATE),
         ("11:20:00", MarketPhase.MIDDAY),
         ("13:00:00", MarketPhase.AFTERNOON),
         ("14:20:00", MarketPhase.FINAL_REVIEW),
@@ -39,12 +39,12 @@ def test_phase_boundaries_are_left_closed(clock, expected) -> None:
 
 
 def test_freeze_decisions_are_exact_windows() -> None:
-    today = datetime(2026, 7, 16, 11, 20, tzinfo=SHANGHAI)
+    midday = datetime(2026, 7, 16, 11, 20, tzinfo=SHANGHAI)
     afternoon = datetime(2026, 7, 16, 14, 50, tzinfo=SHANGHAI)
 
-    assert decision_at(today, is_trading_day=True).freeze_strategies == ("today",)
+    assert decision_at(midday, is_trading_day=True).freeze_strategies == ()
     assert decision_at(afternoon, is_trading_day=True).freeze_strategies == ("tomorrow", "d25")
-    assert decision_at(today, is_trading_day=False).freeze_strategies == ()
+    assert decision_at(midday, is_trading_day=False).freeze_strategies == ()
 
 
 def test_freeze_due_survives_a_missed_exact_window() -> None:
@@ -52,16 +52,14 @@ def test_freeze_due_survives_a_missed_exact_window() -> None:
     after_freeze = datetime(2026, 7, 16, 15, 0, tzinfo=SHANGHAI)
 
     assert decision_at(midday, is_trading_day=True).freeze_strategies == ()
-    assert freeze_due_at(midday, is_trading_day=True) == ("today",)
-    assert freeze_due_at(after_freeze, is_trading_day=True) == ("today", "tomorrow", "d25")
+    assert freeze_due_at(midday, is_trading_day=True) == ()
+    assert freeze_due_at(after_freeze, is_trading_day=True) == ("tomorrow", "d25")
     assert freeze_due_at(after_freeze, is_trading_day=False) == ()
 
 
 def test_scheduler_wakes_at_deepseek_submission_cutoffs() -> None:
-    before_today_cutoff = datetime(2026, 7, 16, 11, 17, 59, tzinfo=SHANGHAI)
     before_afternoon_cutoff = datetime(2026, 7, 16, 14, 45, 59, tzinfo=SHANGHAI)
 
-    assert seconds_until_next_schedule_boundary(before_today_cutoff, maximum_seconds=60) == 1
     assert seconds_until_next_schedule_boundary(before_afternoon_cutoff, maximum_seconds=60) == 1
 
 
@@ -87,7 +85,7 @@ def test_deepseek_cutoff_keeps_local_scoring_open_without_model_review() -> None
         ("19:30:00", ()),
     ),
 )
-def test_cold_start_freeze_recovery_never_includes_today(clock: str, expected: tuple[str, ...]) -> None:
+def test_cold_start_freeze_recovery_only_includes_scored_strategies(clock: str, expected: tuple[str, ...]) -> None:
     started_at = datetime.fromisoformat(f"2026-07-16T{clock}").replace(tzinfo=SHANGHAI)
 
     assert startup_freeze_strategies(started_at, is_trading_day=True) == expected

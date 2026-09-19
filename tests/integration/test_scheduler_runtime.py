@@ -31,14 +31,14 @@ from trader.application.runtime.schedule import SHANGHAI, MarketPhase, ScheduleP
 from trader.application.runtime.scheduler_runtime import RuntimeDependencies, SchedulerRuntime
 from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
 from trader.bootstrap_status import runtime_status
-from trader.domain.recommendation.decision_identity import (
+from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     DecisionOverlay,
     LongProjection,
     LongProjectionItem,
     ScoredDecision,
 )
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 
 
 class TradingCalendar:
@@ -98,16 +98,16 @@ def _cadence(at: datetime) -> CadencePlanner:
             {
                 "full_market": {
                     "warmup": 10,
-                    "today_main": 10,
-                    "today_late": 10,
+                    "morning_main": 10,
+                    "morning_late": 10,
                     "midday": 10,
                     "afternoon": 10,
                     "final_review": 10,
                 },
                 "candidate_quotes": {
                     "warmup": 2,
-                    "today_main": 1,
-                    "today_late": 2,
+                    "morning_main": 1,
+                    "morning_late": 2,
                     "midday": 10,
                     "afternoon": 2,
                     "final_review": 1,
@@ -115,8 +115,8 @@ def _cadence(at: datetime) -> CadencePlanner:
                 },
                 "topk_quotes": {
                     "warmup": 1,
-                    "today_main": 1,
-                    "today_late": 1,
+                    "morning_main": 1,
+                    "morning_late": 1,
                     "midday": 10,
                     "afternoon": 1,
                     "final_review": 1,
@@ -126,8 +126,8 @@ def _cadence(at: datetime) -> CadencePlanner:
                 "intraday_tail": {"afternoon": 5, "final_review": 3},
                 "long_quotes": {
                     "warmup": 1,
-                    "today_main": 1,
-                    "today_late": 1,
+                    "morning_main": 1,
+                    "morning_late": 1,
                     "midday": 10,
                     "afternoon": 1,
                     "final_review": 1,
@@ -135,24 +135,24 @@ def _cadence(at: datetime) -> CadencePlanner:
                 },
                 "score": {
                     "warmup": 10,
-                    "today_main": 3,
-                    "today_late": 5,
+                    "morning_main": 3,
+                    "morning_late": 5,
                     "afternoon": 5,
                     "final_review": 3,
                     "final_window": 1,
                 },
                 "industry_heat": {
                     "warmup": 120,
-                    "today_main": 60,
-                    "today_late": 60,
+                    "morning_main": 60,
+                    "morning_late": 60,
                     "afternoon": 60,
                     "final_review": 60,
                 },
-                "market_news": {"warmup": 120, "today_main": 60, "today_late": 60, "afternoon": 60, "final_review": 60},
+                "market_news": {"warmup": 120, "morning_main": 60, "morning_late": 60, "afternoon": 60, "final_review": 60},
                 "stock_risk": {
                     "warmup": 300,
-                    "today_main": 180,
-                    "today_late": 180,
+                    "morning_main": 180,
+                    "morning_late": 180,
                     "afternoon": 180,
                     "final_review": 120,
                 },
@@ -409,11 +409,11 @@ def test_slow_hybrid_review_does_not_block_a_newer_local_score() -> None:
     assert current.stage == "local"
 
 
-def test_scheduler_refreshes_frozen_today_overlay_without_mutating_formal_decision() -> None:
-    observed_at = datetime(2026, 8, 11, 13, 5, tzinfo=SHANGHAI)
-    frozen_at = observed_at.replace(hour=11, minute=20)
+def test_scheduler_refreshes_frozen_tomorrow_overlay_without_mutating_formal_decision() -> None:
+    observed_at = datetime(2026, 8, 11, 15, 5, tzinfo=SHANGHAI)
+    frozen_at = observed_at.replace(hour=14, minute=50)
     index = UnifiedDecisionIndex()
-    source = decision(Strategy.TODAY, sequence=1)
+    source = decision(Strategy.TOMORROW, sequence=1)
     source_quote = source.items[0].quote
     assert source_quote is not None
     source = replace(
@@ -464,7 +464,7 @@ def test_scheduler_refreshes_frozen_today_overlay_without_mutating_formal_decisi
     assert runtime.wait_idle(2.0)
     runtime.stop(ShutdownDeadline.start(2.0))
 
-    snapshot = index.snapshot(Strategy.TODAY)
+    snapshot = index.snapshot(Strategy.TOMORROW)
     assert snapshot.formal == record
     assert snapshot.current == record.decision
     assert snapshot.overlay is not None
@@ -476,7 +476,7 @@ def test_scheduler_refreshes_frozen_today_overlay_without_mutating_formal_decisi
 def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_rescoring() -> None:
     frozen_at = datetime(2026, 8, 11, 14, 55, tzinfo=SHANGHAI)
     index = UnifiedDecisionIndex()
-    source = decision(Strategy.TODAY, sequence=1)
+    source = decision(Strategy.TOMORROW, sequence=1)
     anchor = source.items[0].quote
     assert anchor is not None
     source = replace(
@@ -519,7 +519,7 @@ def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_resco
         for request in data.requests
         if request.strategy is not Strategy.LONG and request.phase != "quote_overlay"
     ]
-    snapshot = index.snapshot(Strategy.TODAY)
+    snapshot = index.snapshot(Strategy.TOMORROW)
     assert snapshot.formal == record
     assert snapshot.overlay is not None
     assert snapshot.overlay.quotes[0].price == (anchor.price or 0.0) + 1.0
@@ -529,7 +529,7 @@ def test_scheduler_recovers_overlay_issue_after_later_success() -> None:
     observed_at = datetime(2026, 8, 11, 13, 5, tzinfo=SHANGHAI)
     clock = FixedClock(observed_at)
     index = UnifiedDecisionIndex()
-    source = decision(Strategy.TODAY, sequence=1)
+    source = decision(Strategy.TOMORROW, sequence=1)
     source_quote = source.items[0].quote
     assert source_quote is not None
     source = replace(
@@ -545,7 +545,7 @@ def test_scheduler_recovers_overlay_issue_after_later_success() -> None:
             self.failed = False
 
         def refreshed_overlay(self, current, request, previous):
-            if current.strategy is Strategy.TODAY and not self.failed:
+            if current.strategy is Strategy.TOMORROW and not self.failed:
                 self.failed = True
                 raise DecisionUnavailableError("overlay_source_unavailable")
             return super().refreshed_overlay(current, request, previous)
@@ -596,7 +596,7 @@ def test_scheduler_recovers_overlay_issue_after_later_success() -> None:
 
     assert recovered.overlay_publish_count >= 1
     assert any(issue.stage == "overlay" and issue.recovery_status == "recovered" for issue in recovered.recent_errors)
-    assert dict(recovered.strategy_error_codes).get("today") is None
+    assert dict(recovered.strategy_error_codes).get("tomorrow") is None
 
 
 def test_scheduler_publishes_local_before_research_and_defers_first_review_until_risk_rescore() -> None:
@@ -643,7 +643,7 @@ def test_scheduler_publishes_local_before_research_and_defers_first_review_until
         Strategy.TOMORROW,
         NOW.date(),
         NOW,
-        "today_main",
+        "morning_main",
         1,
         "input-initial",
         True,
@@ -895,7 +895,7 @@ def test_unchanged_candidate_refresh_does_not_trigger_another_score() -> None:
 
     runtime.start()
     runtime._process_pipeline_task(  # noqa: SLF001 - verifies the refresh-to-score handoff boundary
-        ScheduledPipelineTask(PipelineTask.CANDIDATE_QUOTES, observed_at, MarketPhase.TODAY_MAIN)
+        ScheduledPipelineTask(PipelineTask.CANDIDATE_QUOTES, observed_at, MarketPhase.MORNING_MAIN)
     )
     assert runtime.wait_idle(2.0)
     runtime.stop(ShutdownDeadline.start(2.0))
@@ -1028,9 +1028,9 @@ def test_current_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> 
     report = runtime.stop(ShutdownDeadline.start(2.0))
 
     assert report.completed
-    assert set(data.calls) == {Strategy.TODAY, Strategy.TOMORROW, Strategy.D25, Strategy.LONG}
-    assert set(reviews.calls) == {Strategy.TODAY, Strategy.TOMORROW, Strategy.D25}
-    assert len(observed) == 6
+    assert set(data.calls) == {Strategy.TOMORROW, Strategy.D25, Strategy.LONG}
+    assert set(reviews.calls) == {Strategy.TOMORROW, Strategy.D25}
+    assert len(observed) == 4
     assert {strategy for strategy, version in freezes.calls if version} == {Strategy.TOMORROW, Strategy.D25}
     assert settlement.calls == [close_at]
     assert status.freeze_completed_count == 2
@@ -1082,13 +1082,12 @@ def test_after_close_cold_start_recovers_missing_scored_strategies_and_long() ->
         (Strategy.D25, "close_rebuild"),
     }
     assert all(version.startswith("official-close:") for _strategy, _path, version in freezes.close_fallback_calls)
-    assert index.snapshot(Strategy.TODAY).current is None
     assert all(index.snapshot(strategy).current is not None for strategy in (Strategy.TOMORROW, Strategy.D25))
     assert index.snapshot(Strategy.LONG).current is not None
     assert settlement.calls == [after_close]
 
 
-def test_midday_cold_start_recovers_only_missing_non_today_outputs_once_without_review() -> None:
+def test_midday_cold_start_recovers_missing_outputs_once_without_review() -> None:
     midday = datetime(2026, 8, 11, 12, 15, tzinfo=SHANGHAI)
     data = DataRefresh()
     reviews = SharedReviews()
@@ -1120,7 +1119,6 @@ def test_midday_cold_start_recovers_only_missing_non_today_outputs_once_without_
     runtime.stop(ShutdownDeadline.start(2.0))
 
     scoring_calls = [request.strategy for request in data.requests if request.phase != "quote_overlay"]
-    assert scoring_calls.count(Strategy.TODAY) == 0
     assert {
         strategy: scoring_calls.count(strategy) for strategy in (Strategy.TOMORROW, Strategy.D25, Strategy.LONG)
     } == {
@@ -1131,7 +1129,7 @@ def test_midday_cold_start_recovers_only_missing_non_today_outputs_once_without_
     assert {request.phase for request in data.requests} <= {"midday", "midday_recovery", "quote_overlay"}
     assert not any(request.allow_review for request in data.requests if request.phase != "quote_overlay")
     assert reviews.calls == []
-    assert index.snapshot(Strategy.TODAY).current is None
+    assert all(index.snapshot(strategy).current is not None for strategy in Strategy)
 
 
 def test_midday_empty_observation_draft_is_a_completed_recovery_not_a_retry_loop() -> None:
@@ -1358,15 +1356,15 @@ def test_after_close_formal_records_only_refresh_selected_overlays_without_full_
     assert settlement.calls == [after_close]
 
 
-def test_tomorrow_lane_progresses_while_today_lane_is_blocked() -> None:
-    today_entered = threading.Event()
-    today_release = threading.Event()
+def test_tomorrow_lane_progresses_while_d25_lane_is_blocked() -> None:
+    d25_entered = threading.Event()
+    d25_release = threading.Event()
 
     class BlockingDecisions(Decisions):
         def build_local(self, request: CycleRequest):
-            if request.strategy is Strategy.TODAY:
-                today_entered.set()
-                today_release.wait(timeout=1.0)
+            if request.strategy is Strategy.D25:
+                d25_entered.set()
+                d25_release.wait(timeout=1.0)
             return super().build_local(request)
 
     index = UnifiedDecisionIndex()
@@ -1389,17 +1387,17 @@ def test_tomorrow_lane_progresses_while_today_lane_is_blocked() -> None:
         config_version="runtime-current",
     )
     runtime.start()
-    today = CycleRequest(Strategy.TODAY, NOW.date(), NOW, "afternoon", 1, "today-fixture", True, NOW)
-    tomorrow = replace(today, strategy=Strategy.TOMORROW, input_version="tomorrow-fixture")
-    runtime.submit_cycle(today)
-    assert today_entered.wait(timeout=1.0)
+    d25 = CycleRequest(Strategy.D25, NOW.date(), NOW, "afternoon", 1, "d25-fixture", True, NOW)
+    tomorrow = replace(d25, strategy=Strategy.TOMORROW, input_version="tomorrow-fixture")
+    runtime.submit_cycle(d25)
+    assert d25_entered.wait(timeout=1.0)
     runtime.submit_cycle(tomorrow)
 
     try:
         assert _wait_for(lambda: index.snapshot(Strategy.TOMORROW).current is not None)
-        assert index.snapshot(Strategy.TODAY).current is None
+        assert index.snapshot(Strategy.D25).current is None
     finally:
-        today_release.set()
+        d25_release.set()
         runtime.stop(ShutdownDeadline.start(2.0))
 
 
@@ -1871,7 +1869,7 @@ def test_successful_publish_does_not_recover_an_unrelated_freeze_failure() -> No
     assert status.strategy_error_codes == (("tomorrow", "freeze:freeze_unavailable"),)
 
 
-def test_afternoon_schedule_skips_today_after_its_freeze_boundary() -> None:
+def test_afternoon_schedule_keeps_tomorrow_d25_and_long_active() -> None:
     afternoon = datetime(2026, 8, 11, 13, 30, tzinfo=SHANGHAI)
     data = DataRefresh()
     runtime = SchedulerRuntime(
@@ -1905,10 +1903,10 @@ def test_afternoon_schedule_skips_today_after_its_freeze_boundary() -> None:
 
 
 def test_expected_late_publish_rejection_after_freeze_is_not_a_runtime_error() -> None:
-    before_freeze = datetime(2026, 8, 11, 11, 19, 59, tzinfo=SHANGHAI)
-    after_freeze = datetime(2026, 8, 11, 11, 20, 1, tzinfo=SHANGHAI)
+    before_freeze = datetime(2026, 8, 11, 14, 49, 59, tzinfo=SHANGHAI)
+    after_freeze = datetime(2026, 8, 11, 14, 50, 1, tzinfo=SHANGHAI)
     index = UnifiedDecisionIndex()
-    fixture = decision(Strategy.TODAY, sequence=1)
+    fixture = decision(Strategy.TOMORROW, sequence=1)
     fixture_quote = fixture.items[0].quote
     assert fixture_quote is not None
     current = replace(
@@ -1918,7 +1916,7 @@ def test_expected_late_publish_rejection_after_freeze_is_not_a_runtime_error() -
     )
     assert index.publish(current, expected_version=None).accepted
     assert index.seal_for_freeze(
-        Strategy.TODAY, boundary_at=before_freeze.replace(second=0) + timedelta(minutes=1)
+        Strategy.TOMORROW, boundary_at=before_freeze.replace(second=0) + timedelta(minutes=1)
     ).accepted
     runtime = SchedulerRuntime(
         RuntimeDependencies(
@@ -1929,7 +1927,7 @@ def test_expected_late_publish_rejection_after_freeze_is_not_a_runtime_error() -
             decisions=Decisions(),
             reviews=SharedReviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=1, thread_name="test-late-today-observer"),
+            observer=AsyncDecisionObserver((), capacity=1, thread_name="test-late-tomorrow-observer"),
             freezes=Freezes(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
@@ -1939,7 +1937,7 @@ def test_expected_late_publish_rejection_after_freeze_is_not_a_runtime_error() -
         config_version="runtime-current",
     )
     request = CycleRequest(
-        Strategy.TODAY,
+        Strategy.TOMORROW,
         after_freeze.date(),
         after_freeze,
         "midday",

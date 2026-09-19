@@ -18,7 +18,7 @@ from trader.training.evaluation.domain.paired_statistics import (
     paired_moving_block_statistics,
 )
 
-TerminalStrategy = Literal["today", "tomorrow", "d25"]
+TerminalStrategy = Literal["tomorrow", "d25"]
 TerminalStatus = Literal["historical_data_insufficient", "historical_rejected", "historical_validated"]
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _BOARDS = {"main", "chinext", "star"}
@@ -180,7 +180,7 @@ class TerminalHoldoutReport:
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.strategy not in {"today", "tomorrow", "d25"} or not self.research_identity:
+        if self.strategy not in {"tomorrow", "d25"} or not self.research_identity:
             raise ValueError("terminal holdout strategy identity is invalid")
         if _SHA256.fullmatch(self.parent_hash) is None or _SHA256.fullmatch(self.candidate_hash) is None:
             raise ValueError("terminal holdout hashes must be SHA-256")
@@ -611,7 +611,7 @@ def _mean(values: tuple[float, ...]) -> float:
 
 
 def _anchor(strategy: TerminalStrategy) -> str:
-    return "11:20_unadjusted_point_in_time" if strategy == "today" else "14:50_unadjusted_point_in_time"
+    return "14:50_unadjusted_point_in_time"
 
 
 def _canonical_hash(value: object) -> str:

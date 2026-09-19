@@ -18,7 +18,7 @@ from scripts.diagnose_runtime import (
 from scripts.runtime_diagnostics.browser_refresh import _seed
 from trader.application.decisions.decision_core import UnifiedDecisionIndex
 from trader.application.runtime.schedule import SHANGHAI
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 
 
 def _options(**overrides: object) -> DiagnosticOptions:

@@ -10,10 +10,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
 
-from trader.domain.market.models import FeatureSnapshot
-from trader.domain.recommendation.risk_fusion.fusion import DIMENSION_NAMES
-from trader.domain.review.models import DeepSeekReview, DimensionAssessment, ReviewOutcome, RiskFact
-from trader.domain.review.rules import DEEPSEEK_STRUCTURED_RISK_CODES
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES
+from trader.recommendation.domain.evidence.review import DeepSeekReview, DimensionAssessment, ReviewOutcome, RiskFact
+from trader.recommendation.domain.risk.rules import DEEPSEEK_STRUCTURED_RISK_CODES
 from trader.infra.deepseek.evidence_router import evidence_quality as _evidence_quality
 from trader.infra.deepseek.evidence_router import route_prompt_evidence
 from trader.infra.deepseek.schema_constants import (

@@ -5,7 +5,7 @@ from trader.application.ports.model_scoring import (
     LoadedScoringProfile,
     ProfileEvidence,
 )
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.scoring.composition import SingleHeadCombiner
 
 

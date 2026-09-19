@@ -24,7 +24,7 @@ from trader.application.runtime.shutdown import (
     ShutdownStep,
 )
 from trader.bootstrap import build_system
-from trader.domain.recommendation.model_scoring.profile_identity import SCORING_PROFILE_IDS
+from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 from trader.infra.process_lock import ProcessLock, ProcessLockError
 from trader.infra.settings import RuntimeSettings
 

@@ -45,7 +45,6 @@ class _TomorrowCommitContext:
     active_run_id: str | None
     run_root: Path
     next_stage: TomorrowResearchStage | None
-    model_encoded: str | None
     resource_probe: TomorrowResearchResourceProbe | None
 
 
@@ -55,7 +54,6 @@ class TomorrowResearchArtifactRepository:
     def __init__(self, root: Path, *, available_disk_gb: Callable[[Path], float] | None = None) -> None:
         self._root = root
         self._handoff_root = root / ".handoffs"
-        self._model_inbox_root = root / ".models"
         self._evidence_inbox_root = root / ".evidence"
         self._active_run_path = root / ".active-run"
         self._lock_path = root / ".orchestrator.lock"
@@ -103,11 +101,6 @@ class TomorrowResearchArtifactRepository:
             return _decode_graph(current_path.read_text(encoding="utf-8"))
         except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise TomorrowResearchArtifactRepositoryError("Tomorrow research graph is invalid") from exc
-
-    def seal_model(self, encoded: str, expected_hash: str) -> str:
-        verified = _verified_model_document(encoded, expected_hash)
-        _seal_immutable(self._model_inbox_root / f"{expected_hash}.json", verified)
-        return expected_hash
 
     def seal_evidence_partition(self, reference: TomorrowResearchEvidencePartitionRef, source: Path) -> str:
         if not source.is_file() or file_sha256(source) != reference.content_hash:
@@ -157,7 +150,6 @@ class TomorrowResearchArtifactRepository:
             active_run_id,
             run_root,
             next_stage,
-            self._terminal_model(updated, next_stage),
             handoff.resource_probe or _read_report_resource_probe(run_root / ".report-checkpoint.json"),
         )
 
@@ -166,22 +158,6 @@ class TomorrowResearchArtifactRepository:
             return
         if next_research_stage(self._load_run_graph(active_run_id)) is not None:
             raise TomorrowResearchArtifactRepositoryError("Tomorrow research active run identity conflict")
-
-    def _terminal_model(
-        self,
-        graph: TomorrowResearchArtifactGraph,
-        next_stage: TomorrowResearchStage | None,
-    ) -> str | None:
-        model_ref = next(
-            (item for item in graph.artifacts if item.artifact_id == "joint_candidate_model_artifact"),
-            None,
-        )
-        if next_stage is not None or model_ref is None:
-            return None
-        model_source = self._model_inbox_root / f"{model_ref.content_hash}.json"
-        if not model_source.is_file():
-            raise TomorrowResearchArtifactRepositoryError("Tomorrow research terminal model document is missing")
-        return _verified_model_document(model_source.read_text(encoding="utf-8"), model_ref.content_hash)
 
     def _seal_commit_evidence(
         self,
@@ -214,8 +190,6 @@ class TomorrowResearchArtifactRepository:
         replace_file(context.run_root / ".report-checkpoint.json", report)
         if context.next_stage is None:
             replace_file(context.run_root / "report.json", report)
-            if context.model_encoded is not None:
-                _seal_immutable(context.run_root / "model.json", context.model_encoded)
         if context.active_run_id != context.run_id:
             replace_file(self._active_run_path, f"{context.run_id}\n")
 
@@ -499,18 +473,6 @@ def _verified_object(encoded: str) -> dict[str, object]:
         raise ValueError("Tomorrow research artifact hash mismatch")
     payload["content_hash"] = persisted_hash
     return payload
-
-
-def _verified_model_document(encoded: str, expected_hash: str) -> str:
-    raw = json.loads(encoded)
-    if not isinstance(raw, dict) or any(not isinstance(key, str) for key in raw):
-        raise TomorrowResearchArtifactRepositoryError("Tomorrow research model document is invalid")
-    payload = cast(dict[str, object], raw)
-    persisted_hash = payload.pop("content_hash", None)
-    if persisted_hash != expected_hash or canonical_artifact_hash(payload) != expected_hash:
-        raise TomorrowResearchArtifactRepositoryError("Tomorrow research model document hash is invalid")
-    payload["content_hash"] = expected_hash
-    return canonical_artifact_json(payload)
 
 
 def _seal_immutable(path: Path, encoded: str) -> None:

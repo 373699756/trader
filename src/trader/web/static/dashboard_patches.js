@@ -201,13 +201,6 @@
         level: "idle",
       };
     }
-    if (reason === "today_freeze_missed") {
-      return {
-        message: "今日未形成正式结果｜11:20 截止已过，按规则不补算",
-        notice: "今日未形成正式结果｜11:20 截止已过，按规则不补算",
-        level: "warn",
-      };
-    }
     const blocker = inputQuality && inputQuality.primary_blocker;
     const historyStage = pipelineStage(inputQuality, "strategy_history");
     const modelStage = pipelineStage(inputQuality, "model_input");
@@ -315,16 +308,6 @@
       return {
         level: degraded ? "warning" : "ok",
         message: `历史快照 · ${kind} · 行情按最新可用报价展示${degraded ? ` · 当日固化时降级：${degraded}` : ""}`,
-      };
-    }
-    if (payload.strategy === "today" && payload.frozen === true
-      && payload.historical !== true && payload.phase !== "close_fallback") {
-      const quote = payload.stale
-        ? "行情已过期，当前报价仅供观察"
-        : "行情按最新可用报价展示";
-      return {
-        level: payload.stale || degraded ? "warning" : "ok",
-        message: `11:20 已冻结 · 名单与评分不变 · ${quote}${degraded ? ` · 冻结时降级：${degraded}` : ""}`,
       };
     }
     if (payload.phase === "close_fallback") {

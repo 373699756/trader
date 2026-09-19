@@ -17,10 +17,10 @@ if TYPE_CHECKING:
 import requests
 
 from trader.application.runtime.workers import BorrowExecutorOptions, BoundedExecutor, borrow_executor
-from trader.domain.market.models import Board, MarketQuote
-from trader.domain.market.tail import MinuteBar
+from trader.recommendation.domain.market.models import Board, MarketQuote
+from trader.recommendation.domain.market.tail import MinuteBar
 from trader.training.evaluation.domain.models import OutcomeBar
-from trader.domain.recommendation.filtering.filters import board_for_code
+from trader.recommendation.domain.candidate.filters import board_for_code
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.history.outcome_history import pair_outcome_history
 from trader.infra.market_data.normalization.normalize import (

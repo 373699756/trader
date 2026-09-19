@@ -41,10 +41,6 @@ from trader.training.infra.research.tomorrow_historical_risk_artifacts import (
     TomorrowHistoricalRiskArtifactArchive,
     TomorrowHistoricalRiskArtifactConflictError,
 )
-from trader.training.infra.research.tomorrow_profile_holdout_artifacts import (
-    TomorrowProfileHoldoutArtifactArchive,
-    TomorrowProfileHoldoutArtifactConflictError,
-)
 from trader.training.infra.research.tomorrow_research_artifacts import (
     TomorrowResearchArtifactRepository,
     TomorrowResearchArtifactRepositoryError,
@@ -124,7 +120,6 @@ def run_research_command(
             historical_archive.spec_hash == HISTORICAL_SCREENING_SPEC.content_hash and screening_coverage >= 0.95
         )
         tomorrow_historical = _read_tomorrow_historical_status(runtime)
-        tomorrow_holdout = _read_tomorrow_profile_holdout_status(runtime)
         tomorrow_risk = _read_tomorrow_historical_risk_status(runtime)
         tomorrow_research = _read_tomorrow_research_status(runtime)
         history_status = _project_history_archive_status(inspect_history_archive(_history_data_root()))
@@ -136,7 +131,6 @@ def run_research_command(
                     "validation_mode": "historical_only",
                     "blockers": [] if screening_ready else ["score_h0_archive_coverage_incomplete"],
                     "tomorrow_historical": tomorrow_historical,
-                    "tomorrow_profile_holdout": tomorrow_holdout,
                     "tomorrow_historical_risk": tomorrow_risk,
                     "tomorrow_research": tomorrow_research,
                     "history_archive": history_status,
@@ -429,17 +423,6 @@ def _read_tomorrow_historical_status(runtime: RuntimeSettings) -> dict[str, obje
             "candidate_id": TOMORROW_HISTORICAL_SPEC.candidate.candidate_id,
             "failure_reasons": ["tomorrow_historical_artifact_invalid"],
             "validation_mode": "historical_only",
-            "production_authority": False,
-        }
-
-
-def _read_tomorrow_profile_holdout_status(runtime: RuntimeSettings) -> dict[str, object]:
-    try:
-        return TomorrowProfileHoldoutArtifactArchive(runtime.runtime_dir).inspect()
-    except TomorrowProfileHoldoutArtifactConflictError:
-        return {
-            "status": "artifact_invalid",
-            "report_hash": "",
             "production_authority": False,
         }
 

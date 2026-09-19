@@ -17,10 +17,10 @@ def _record(close: float = 10.2):
     bar = HistoricalPriceBar(day, 10, close, max(10.3, close), 9.9, 100, 1000, 2, None, "qfq", "fixture")
     digest = "c" * 64
     return H1PointInTimeRecord(
-        "today",
+        "tomorrow",
         "600001",
         day,
-        datetime.fromisoformat("2026-08-31T11:20:00+08:00"),
+        datetime.fromisoformat("2026-08-31T14:50:00+08:00"),
         bar,
         10.1,
         50,
@@ -33,14 +33,14 @@ def _record(close: float = 10.2):
 
 def test_h1_archive_is_idempotent_and_detects_tampering(tmp_path):
     archive = SQLiteH1PointInTimeArchive(tmp_path)
-    spec = H1PointInTimeSpec("today")
+    spec = H1PointInTimeSpec("tomorrow")
     archive.register_universe(spec, (HistoricalSecurity("600001", "main", "A", False, False),))
     archive.save_records(spec, "600001", (_record(),))
     archive.save_records(spec, "600001", (_record(),))
     manifest = archive.manifest(spec)
     assert manifest.spec_hash == spec.content_hash
     assert manifest.completed_codes == 1
-    assert archive.completed_codes("today") == frozenset({"600001"})
+    assert archive.completed_codes("tomorrow") == frozenset({"600001"})
     with sqlite3.connect(tmp_path / "score-h1-point-in-time" / "score-h1-point-in-time.sqlite3") as connection:
         connection.execute("UPDATE records SET close_price = 10.7 WHERE code = '600001'")
     with pytest.raises(H1PointInTimeArchiveConflictError, match="payload"):
@@ -56,7 +56,7 @@ def test_h1_archive_audit_marks_insufficient_without_opening_holdout(tmp_path):
 
 def test_h1_archive_rejects_direct_identity_mismatch_and_universe_tampering(tmp_path):
     archive = SQLiteH1PointInTimeArchive(tmp_path)
-    spec = H1PointInTimeSpec("today")
+    spec = H1PointInTimeSpec("tomorrow")
     archive.register_universe(spec, (HistoricalSecurity("600001", "main", "A", False, False),))
     with pytest.raises(ValueError, match="identity"):
         archive.save_records(spec, "600002", (_record(),))

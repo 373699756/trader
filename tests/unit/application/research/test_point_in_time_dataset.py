@@ -7,10 +7,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.domain.market.feature_contracts import FeatureId, FeatureVectorManifest
-from trader.domain.market.models import Board
-from trader.domain.recommendation.models import BoardStrategyPolicy, Strategy
-from trader.domain.recommendation.selection.scored_selection import ScoredSelectionPolicy
+from trader.recommendation.domain.market.feature_contracts import FeatureId, FeatureVectorManifest
+from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.publication.models import BoardStrategyPolicy, Strategy
+from trader.recommendation.domain.selection.scored_selection import ScoredSelectionPolicy
 from trader.training.evaluation.application.point_in_time_dataset import (
     PointInTimeDatasetBuilder,
     PointInTimeDatasetBuildRequest,
@@ -74,7 +74,6 @@ def _qualification(*, ready: bool = True):
         matched_trade_dates=600 if ready else 0,
         coverage_ratio=1.0 if ready else 0.0,
         timezone="Asia/Shanghai" if ready else "",
-        supports_1120=ready,
         supports_1450=ready,
         volume_available=ready,
         amount_available=ready,

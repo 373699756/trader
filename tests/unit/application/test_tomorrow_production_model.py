@@ -19,9 +19,12 @@ from trader.application.recommendation.production_model_scoring import (
     ProductionModelScoringService,
     SharedModelFeatureCache,
 )
-from trader.domain.market.models import Board, FeatureSnapshot, ModelIndustryReference
-from trader.domain.recommendation.model_scoring import LEGACY_EXPOSURE_CONTRACT, TRAINED_HEAD_EXPOSURE_CONTRACT
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.market.models import Board, FeatureSnapshot, ModelIndustryReference
+from trader.recommendation.domain.scoring.residualization import (
+    LEGACY_EXPOSURE_CONTRACT,
+    TRAINED_HEAD_EXPOSURE_CONTRACT,
+)
+from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.scoring.profile_factory import load_scoring_profile
 
 NOW = datetime(2026, 8, 31, 14, 50, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -165,60 +168,7 @@ def test_single_prediction_uses_neutral_rank_for_score_and_cost(application_feat
     assert batch.diagnostics["600001"].estimated_cost_pct == pytest.approx(0.3)
     assert batch.diagnostics["600001"].predicted_net_excess_pct == pytest.approx(-0.05)
 
-
-def test_v1_profile_receives_only_the_residual_momentum_feature_family(application_feature_factory) -> None:
-    class _V1Predictor(_Predictor):
-        profile_id = "v1"
-        model_id = "v1_manual_residual_momentum_v1"
-        feature_ids = (
-            "qfq_residual_momentum_20d_skip5",
-            "qfq_residual_momentum_40d_skip5",
-            "qfq_residual_momentum_60d_skip5",
-        )
-
-        def __init__(self) -> None:
-            self.widths: tuple[int, ...] = ()
-
-        def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
-            self.widths = tuple(len(item.alpha_features) for item in inputs)
-            return super().predict(inputs)
-
-    predictor = _V1Predictor()
-    features = tuple(
-        _model_feature(
-            application_feature_factory(f"60000{index}", NOW),
-            offset=index / 100.0,
-            amihud=float(index + 1),
-        )
-        for index in range(3)
-    )
-
-    batch = _service(predictor).score(features)
-
-    assert predictor.widths == (3, 3, 3)
-    assert batch.model_version == f"v1_manual_residual_momentum_v1:{'a' * 64}"
-
-
-def test_v1_profile_does_not_require_the_unselected_reversal_family(application_feature_factory) -> None:
-    class _V1Predictor(_Predictor):
-        profile_id = "v1"
-        model_id = "v1_manual_residual_momentum_v1"
-        feature_ids = (
-            "qfq_residual_momentum_20d_skip5",
-            "qfq_residual_momentum_40d_skip5",
-            "qfq_residual_momentum_60d_skip5",
-        )
-
-    complete = _model_feature(application_feature_factory("600001", NOW), offset=0.01, amihud=1.0)
-    values = dict(complete.values)
-    values.update({"qfq_return_1d": None, "qfq_return_3d": None, "qfq_return_5d": None})
-
-    batch = _service(_V1Predictor()).score((replace(complete, values=values),))
-
-    assert set(batch.diagnostics) == {"600001"}
-
-
-@pytest.mark.parametrize("strategy", (Strategy.TODAY, Strategy.D25))
+@pytest.mark.parametrize("strategy", (Strategy.D25,))
 def test_v3_trend_heads_do_not_require_the_unselected_one_day_return(
     application_feature_factory,
     strategy: Strategy,
@@ -248,7 +198,7 @@ def test_v3_heads_share_only_feature_computation_and_keep_prediction_caches_inde
 ) -> None:
     class _TrendPredictor(_Predictor):
         profile_id = "v3"
-        model_id = "today_industry_ridge_lightgbm"
+        model_id = "tomorrow_industry_ridge_lightgbm"
         feature_ids = (
             "qfq_return_3d",
             "qfq_return_5d",
@@ -275,11 +225,11 @@ def test_v3_heads_share_only_feature_computation_and_keep_prediction_caches_inde
             return super().predict(inputs)
 
     shared = SharedModelFeatureCache()
-    today_predictor = _TrendPredictor()
+    d25_predictor = _TrendPredictor()
     tomorrow_predictor = _TomorrowPredictor()
-    today = ProductionModelScoringService(
-        profile_for(today_predictor, Strategy.TODAY),
-        Strategy.TODAY,
+    d25 = ProductionModelScoringService(
+        profile_for(d25_predictor, Strategy.D25),
+        Strategy.D25,
         shared_features=shared,
     )
     tomorrow = ProductionModelScoringService(
@@ -293,11 +243,11 @@ def test_v3_heads_share_only_feature_computation_and_keep_prediction_caches_inde
     )
 
     tomorrow.score(features)
-    today.score(features)
+    d25.score(features)
 
-    assert tomorrow_predictor.calls == today_predictor.calls == 1
-    assert today.computation_status().computed_groups == ()
-    assert today.computation_status().reused_groups == (
+    assert tomorrow_predictor.calls == d25_predictor.calls == 1
+    assert d25.computation_status().computed_groups == ()
+    assert d25.computation_status().reused_groups == (
         "daily_return",
         "skip_recent_momentum",
         "cross_section_residual",
@@ -340,10 +290,10 @@ def test_current_shared_training_bundles_score_all_default_v2_heads(application_
 
     batches = {
         strategy: ProductionModelScoringService(profile, strategy, shared_features=shared).score(tuple(features))
-        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+        for strategy in (Strategy.TOMORROW, Strategy.D25)
     }
 
-    assert set(profile.heads) == {Strategy.TODAY, Strategy.TOMORROW, Strategy.D25}
+    assert set(profile.heads) == {Strategy.TOMORROW, Strategy.D25}
     for strategy, batch in batches.items():
         assert batch.model_version.startswith(f"{profile.heads[strategy].predictor.model_id}:")
         assert set(batch.diagnostics) == {"600000", "600001", "600002"}

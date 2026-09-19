@@ -32,7 +32,7 @@ class H1PointInTimeArchiveConflictError(RuntimeError):
 @dataclass(frozen=True)
 class H1PointInTimeArchiveStatus:
     initialized: bool = False
-    strategy: ResearchStrategy = "today"
+    strategy: ResearchStrategy = "tomorrow"
     universe_count: int = 0
     completed_codes: int = 0
     failed_codes: int = 0
@@ -501,7 +501,7 @@ def _validate_h1_record_timing(
     if observed.tzinfo is None:
         raise H1PointInTimeArchiveConflictError("H1 timezone evidence missing")
     local_observed = observed.astimezone(ZoneInfo("Asia/Shanghai"))
-    expected_hour, expected_minute = (11, 20) if spec.strategy == "today" else (14, 50)
+    expected_hour, expected_minute = (14, 50)
     if trade_date > spec.source_cutoff.isoformat() or local_observed.timetz().replace(tzinfo=None) != time(
         expected_hour, expected_minute
     ):

@@ -10,7 +10,7 @@ from trader.application.ports.runtime_status import InputQualityStatus
 from trader.application.runtime.cadence import CadencePlannerStatus
 from trader.application.runtime.runtime_issues import RuntimeIssue
 from trader.application.runtime.scheduler_runtime import SchedulerRuntime
-from trader.domain.recommendation.pipeline import (
+from trader.recommendation.domain.evidence.pipeline import (
     PipelineFacet,
     PipelineMetricRange,
     PipelineReasonCount,

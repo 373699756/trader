@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from trader.domain.market.factors import PRODUCTION_FACTOR_IDS
-from trader.domain.market.research import MarketRegimePolicy
-from trader.domain.review.rules import DEEPSEEK_STRUCTURED_RISK_CODES, deepseek_risk_rule_code
+from trader.recommendation.domain.market.factors import PRODUCTION_FACTOR_IDS
+from trader.recommendation.domain.market.research import MarketRegimePolicy
+from trader.recommendation.domain.risk.rules import DEEPSEEK_STRUCTURED_RISK_CODES, deepseek_risk_rule_code
 from trader.infra.settings.factor_validation import (
     _validate_feature_schema_contract,
     _validate_long_research_factor_contract,
@@ -89,7 +89,7 @@ def _validate_selection(settings: StrategySettings) -> None:
 
 
 def _validate_signal_policies(settings: StrategySettings) -> None:
-    news = settings.today_news_signal
+    news = settings.news_signal
     if (
         news.lookback_hours != 72.0
         or news.freshness_full_score_hours != 1.0
@@ -97,7 +97,7 @@ def _validate_signal_policies(settings: StrategySettings) -> None:
         or news.neutral_score != 50.0
         or news.negative_score != 25.0
     ):
-        raise ConfigurationError("today news signal window and scores are fixed at 72h/1h and 75/50/25")
+        raise ConfigurationError("news signal window and scores are fixed at 72h/1h and 75/50/25")
     tail = settings.tomorrow_tail_signal
     if (
         tail.lookback_minutes != 30
@@ -136,17 +136,15 @@ def _validate_signal_policies(settings: StrategySettings) -> None:
 
 
 def _validate_strategy_weights(settings: StrategySettings) -> None:
-    required_thresholds = {"today_main", "today_late", "tomorrow", "d25"}
+    required_thresholds = {"tomorrow", "d25"}
     if set(settings.selection.thresholds) != required_thresholds:
-        raise ConfigurationError("selection thresholds must define today_main, today_late, tomorrow and d25")
+        raise ConfigurationError("selection thresholds must define tomorrow and d25")
     if dict(settings.selection.thresholds) != {
-        "today_main": 70.0,
-        "today_late": 76.0,
         "tomorrow": 78.0,
         "d25": 76.0,
     }:
-        raise ConfigurationError("current selection thresholds must be 70/76/78/76")
-    required_strategies = {"today", "tomorrow", "d25"}
+        raise ConfigurationError("current selection thresholds must be 78/76")
+    required_strategies = {"tomorrow", "d25"}
     _validate_dimension_weights(settings, required_strategies)
     _validate_board_weights(settings)
     _validate_component_weights(settings, required_strategies)
@@ -172,7 +170,7 @@ def _validate_feature_component_weights(settings: StrategySettings) -> None:
 
 def _validate_dimension_weights(settings: StrategySettings, required_strategies: set[str]) -> None:
     if set(settings.dimension_weights) != required_strategies:
-        raise ConfigurationError("dimension_weights must define today, tomorrow and d25")
+        raise ConfigurationError("dimension_weights must define tomorrow and d25")
     required_dimensions = {
         "value_quality",
         "financial_health",
@@ -255,7 +253,7 @@ def _validate_short_risk_contract(settings: StrategySettings) -> None:
     short_rules = {rule.risk_code: rule for rule in settings.risk_rules if rule.risk_code in short_risk_penalties}
     if any(
         rule.penalty != short_risk_penalties[code]
-        or set(rule.strategies) != {"today", "tomorrow", "d25"}
+        or set(rule.strategies) != {"tomorrow", "d25"}
         or not rule.local_trigger_enabled
         or rule.combination_mode != "additive"
         for code, rule in short_rules.items()
@@ -350,7 +348,7 @@ def _validate_short_risk_rules(rules: Mapping[str, RiskRuleSettings]) -> None:
             rule.minimum_confidence != 0.7
             or rule.veto
             or rule.allowed_evidence_types != ("structured_point_in_time",)
-            or set(rule.strategies) != {"today", "tomorrow", "d25"}
+            or set(rule.strategies) != {"tomorrow", "d25"}
             or rule.combination_mode != "additive"
             or rule.risk_fact_id_fields != identity_fields
             or not rule.local_trigger_enabled
@@ -413,17 +411,15 @@ def _validate_short_risk_factors(factors: Mapping[str, FactorDefinition]) -> Non
 
 
 def _validate_board_weights(settings: StrategySettings) -> None:
-    strategies = {"today", "tomorrow", "d25"}
+    strategies = {"tomorrow", "d25"}
     boards = {"main", "chinext", "star"}
     if set(settings.board_candidate_weights) != strategies or set(settings.board_local_strategy_weights) != strategies:
-        raise ConfigurationError("board weights must define today, tomorrow and d25")
+        raise ConfigurationError("board weights must define tomorrow and d25")
     candidate_components = {
-        "today": {"liquidity", "intraday_structure", "turnover_state", "data_completeness"},
         "tomorrow": {"liquidity", "trend", "stability", "data_completeness"},
         "d25": {"liquidity", "trend", "stability", "execution", "data_completeness"},
     }
     local_components = {
-        "today": {"intraday_structure", "turnover_state", "liquidity_execution", "stability"},
         "tomorrow": {
             "tail_structure",
             "turnover_flow",
@@ -450,10 +446,6 @@ def _validate_board_weights(settings: StrategySettings) -> None:
 
 def _validate_component_weights(settings: StrategySettings, strategies: set[str]) -> None:
     candidate_fields = {
-        "today": {
-            "intraday_structure": {"change_5m", "speed_percentile", "pct_change", "volume_ratio"},
-            "turnover_state": {"turnover_shock_score", "amount_shock_score"},
-        },
         "tomorrow": {
             "stability": {"low_volatility_score", "low_drawdown_score"},
         },
@@ -463,18 +455,6 @@ def _validate_component_weights(settings: StrategySettings, strategies: set[str]
         },
     }
     local_fields = {
-        "today": {
-            "intraday_structure": {
-                "change_5m",
-                "speed_percentile",
-                "pct_change",
-                "volume_ratio",
-                "relative_strength_3d",
-            },
-            "turnover_state": {"turnover_shock_score", "amount_shock_score", "flow_confirmation_score"},
-            "liquidity_execution": {"amount_percentile_20d", "turnover_rate", "limit_distance_safety"},
-            "stability": {"low_volatility_score", "low_drawdown_score"},
-        },
         "tomorrow": {
             "tail_structure": {"tail_return_30m", "tail_volume_ratio", "close_location"},
             "turnover_flow": {"turnover_shock_score", "amount_shock_score", "flow_confirmation_score"},
@@ -509,7 +489,7 @@ def _validate_component_weight_family(
     strategies: set[str],
 ) -> None:
     if set(actual) != strategies:
-        raise ConfigurationError(f"{name} must define today, tomorrow and d25")
+        raise ConfigurationError(f"{name} must define tomorrow and d25")
     for strategy, expected_components in expected.items():
         components = actual[strategy]
         if set(components) != set(expected_components):

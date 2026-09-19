@@ -11,8 +11,8 @@ from types import MappingProxyType
 from typing import Protocol
 
 from trader.application.ports.json_values import JsonObject
-from trader.domain.market.epochs import CandidateQuoteEpoch, DailyFeaturePack, MarketEpoch, ResearchEpoch
-from trader.domain.market.models import FeatureSnapshot, LiveQuote
+from trader.recommendation.domain.market.epochs import CandidateQuoteEpoch, DailyFeaturePack, MarketEpoch, ResearchEpoch
+from trader.recommendation.domain.market.models import FeatureSnapshot, LiveQuote
 from trader.training.evaluation.domain.models import OutcomeBar
 
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"

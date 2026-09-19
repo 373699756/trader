@@ -6,9 +6,9 @@ import lightgbm as lgb
 import numpy as np
 
 from trader.application.ports.model_scoring import ModelInput, ModelPrediction
-from trader.domain.recommendation.model_scoring import ExposureContract
-from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.scoring.residualization import ExposureContract
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.domain.publication.models import Strategy
 from trader.training.infra.artifacts.bundle_codec import TrainedHeadBundleArtifact, TrainedIndustryModelArtifact
 
 

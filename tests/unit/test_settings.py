@@ -10,9 +10,9 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.bootstrap_policy import _recommendation_policy
-from trader.domain.market.models import Board
-from trader.domain.recommendation.models import Strategy
-from trader.domain.recommendation.scoring.scoring import (
+from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.scoring.scoring import (
     board_candidate_components,
     board_candidate_score,
     score_board_strategy,
@@ -122,28 +122,27 @@ def test_configuration_contract_is_valid() -> None:
     assert runtime.performance_budgets.memory.cache_logical_bytes == 260046848
     assert runtime.performance_budgets.memory.process_peak_rss_bytes == 402653184
     assert set(runtime.pipeline.cadence_seconds["full_market"].values()) == {10.0}
-    assert runtime.pipeline.cadence_seconds["candidate_quotes"]["today_main"] == 1
+    assert runtime.pipeline.cadence_seconds["candidate_quotes"]["morning_main"] == 1
     assert runtime.pipeline.cadence_seconds["candidate_quotes"]["final_window"] == 1
-    assert runtime.pipeline.cadence_seconds["topk_quotes"]["today_main"] == 1
+    assert runtime.pipeline.cadence_seconds["topk_quotes"]["morning_main"] == 1
     assert runtime.performance_budgets.data_age_p95_seconds["full_market_main"] == 10
     assert runtime.market_data.circuit_breaker_seconds == 30
     assert runtime.deepseek.daily_hard_limit == 168
     assert runtime.deepseek.strategy_limits == {
-        "today": 8,
         "tomorrow": 38,
         "d25": 16,
         "shared_preheat": 4,
         "emergency": 5,
     }
-    assert sum(runtime.deepseek.strategy_limits.values()) == 71
-    assert sum(runtime.deepseek.stage_targets.values()) == 36
-    assert sum(runtime.deepseek.stage_limits.values()) == 71
-    assert sum(limit for stage, limit in runtime.deepseek.stage_limits.items() if stage != "emergency") == 66
+    assert sum(runtime.deepseek.strategy_limits.values()) == 63
+    assert sum(runtime.deepseek.stage_targets.values()) == 31
+    assert sum(runtime.deepseek.stage_limits.values()) == 63
+    assert sum(limit for stage, limit in runtime.deepseek.stage_limits.items() if stage != "emergency") == 58
     assert runtime.deepseek.timeout_seconds == 20
     assert runtime.deepseek.batch_size == 4
     assert runtime.deepseek.model == "deepseek-v4-flash"
     assert runtime.deepseek.challenger_model == "deepseek-v4-pro"
-    assert runtime.deepseek.challenger_limits == {"today": 0, "tomorrow": 2, "d25": 0}
+    assert runtime.deepseek.challenger_limits == {"tomorrow": 2, "d25": 0}
     assert runtime.deepseek.challenger_daily_limit == 2
     assert runtime.deepseek.adaptive.cooldown_seconds == 900
     assert runtime.deepseek.adaptive.minimum_application_ratio == pytest.approx(0.4)
@@ -168,11 +167,11 @@ def test_configuration_contract_is_valid() -> None:
     assert regulatory_rule.trigger_factor == "negative_announcement_level"
     assert regulatory_rule.trigger_thresholds == (3.0,)
     assert regulatory_rule.combination_mode == "exclusive"
-    assert strategy.today_news_signal.lookback_hours == 72.0
-    assert strategy.today_news_signal.freshness_full_score_hours == 1.0
-    assert strategy.today_news_signal.positive_score == 75.0
-    assert "回购" in strategy.today_news_signal.positive_keywords
-    assert "减持" in strategy.today_news_signal.negative_keywords
+    assert strategy.news_signal.lookback_hours == 72.0
+    assert strategy.news_signal.freshness_full_score_hours == 1.0
+    assert strategy.news_signal.positive_score == 75.0
+    assert "回购" in strategy.news_signal.positive_keywords
+    assert "减持" in strategy.news_signal.negative_keywords
     assert strategy.tomorrow_tail_signal.lookback_minutes == 30
     assert strategy.tomorrow_tail_signal.minimum_baseline_minutes == 30
     assert strategy.tomorrow_tail_signal.return_score_points_per_pct == 25.0
@@ -182,7 +181,7 @@ def test_configuration_contract_is_valid() -> None:
     assert strategy.selection.review_candidate_limit == 28
     assert strategy.selection.default_top_k == 6
     assert strategy.selection.maximum_top_k == 12
-    assert set(strategy.dimension_weights) == {"today", "tomorrow", "d25"}
+    assert set(strategy.dimension_weights) == {"tomorrow", "d25"}
     assert strategy.long_research.financial_max_age_days == 550
     assert strategy.long_research.pledge_thresholds == (10.0, 20.0, 35.0)
     assert "监管函" in strategy.long_research.negative_medium_keywords
@@ -298,7 +297,7 @@ def test_configuration_contract_is_valid() -> None:
     assert set(grouped_codes) == {item.code for item in watchlist.items}
 
 
-@pytest.mark.parametrize("profile", ("v1", "v2", "v3"))
+@pytest.mark.parametrize("profile", ("v2", "v3"))
 def test_scoring_profile_is_an_explicit_versioned_switch(tmp_path, profile: str) -> None:
     source = PROJECT_ROOT / "config" / "strategy.json"
     raw = json.loads(source.read_text(encoding="utf-8"))
@@ -318,10 +317,10 @@ def test_scoring_profile_override_changes_the_effective_version_without_writing_
     original = source.read_bytes()
 
     default = load_strategy_settings(source)
-    overridden = load_strategy_settings(source, scoring_profile="v1")
+    overridden = load_strategy_settings(source, scoring_profile="v3")
 
     assert default.scoring_profile == "v2"
-    assert overridden.scoring_profile == "v1"
+    assert overridden.scoring_profile == "v3"
     assert overridden.strategy_version != default.strategy_version
     assert source.read_bytes() == original
 
@@ -734,14 +733,14 @@ def test_strategy_config_has_only_board_specific_candidate_weights() -> None:
 
     assert "candidate_weights" not in raw
     assert not hasattr(settings, "candidate_weights")
-    assert set(settings.board_candidate_weights) == {"today", "tomorrow", "d25"}
+    assert set(settings.board_candidate_weights) == {"tomorrow", "d25"}
 
 
 def test_strategy_config_requires_complete_component_weight_families(tmp_path) -> None:
     raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
 
-    assert set(raw["candidate_component_weights"]) == {"today", "tomorrow", "d25"}
-    assert set(raw["local_component_weights"]) == {"today", "tomorrow", "d25"}
+    assert set(raw["candidate_component_weights"]) == {"tomorrow", "d25"}
+    assert set(raw["local_component_weights"]) == {"tomorrow", "d25"}
     assert set(raw["feature_component_weights"]) == {
         "trend_score",
         "industry_policy_score",
@@ -758,11 +757,11 @@ def test_strategy_config_requires_complete_component_weight_families(tmp_path) -
 
 def test_component_weight_sum_is_rejected(tmp_path) -> None:
     raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
-    raw["candidate_component_weights"]["today"]["intraday_structure"]["change_5m"] = 0.5
+    raw["candidate_component_weights"]["tomorrow"]["stability"]["low_volatility_score"] = 0.6
     strategy_path = tmp_path / "strategy.json"
     strategy_path.write_text(json.dumps(raw), encoding="utf-8")
 
-    with pytest.raises(ConfigurationError, match="candidate_component_weights.today.intraday_structure"):
+    with pytest.raises(ConfigurationError, match="candidate_component_weights.tomorrow.stability"):
         load_strategy_settings(strategy_path)
 
 
@@ -814,26 +813,26 @@ def test_component_weight_configuration_reaches_domain_and_changes_strategy_iden
     source_path = PROJECT_ROOT / "config" / "strategy.json"
     source = load_strategy_settings(source_path)
     raw = json.loads(source_path.read_text(encoding="utf-8"))
-    weights = raw["candidate_component_weights"]["today"]["intraday_structure"]
-    weights["change_5m"] -= 0.1
-    weights["speed_percentile"] += 0.1
+    weights = raw["candidate_component_weights"]["tomorrow"]["stability"]
+    weights["low_volatility_score"] -= 0.1
+    weights["low_drawdown_score"] += 0.1
     changed_path = tmp_path / "strategy.json"
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
     changed = load_strategy_settings(changed_path)
     observed_at = datetime(2026, 9, 10, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
     feature = application_feature_factory("600001", observed_at)
     feature = replace(feature, quote=replace(feature.quote, board=Board.MAIN))
-    source_policy = _recommendation_policy(source).board_policy(Strategy.TODAY, Board.MAIN)
-    changed_policy = _recommendation_policy(changed).board_policy(Strategy.TODAY, Board.MAIN)
+    source_policy = _recommendation_policy(source).board_policy(Strategy.TOMORROW, Board.MAIN)
+    changed_policy = _recommendation_policy(changed).board_policy(Strategy.TOMORROW, Board.MAIN)
 
     assert source_policy is not None
     assert changed_policy is not None
     assert source.strategy_version != changed.strategy_version
-    assert changed_policy.candidate_component_weights["intraday_structure"] == weights
+    assert changed_policy.candidate_component_weights["stability"] == weights
     assert board_candidate_components(feature, source_policy) != board_candidate_components(feature, changed_policy)
 
 
-def test_configured_candidate_and_local_weights_preserve_three_strategy_golden_vectors(
+def test_configured_candidate_and_local_weights_preserve_two_strategy_golden_vectors(
     application_feature_factory,
 ) -> None:
     settings = load_strategy_settings(PROJECT_ROOT / "config" / "strategy.json")
@@ -851,7 +850,6 @@ def test_configured_candidate_and_local_weights_preserve_three_strategy_golden_v
         },
     )
     expected = {
-        Strategy.TODAY: (82.27941176470587, 80.46875),
         Strategy.TOMORROW: (75.58823529411764, 68.20833333333334),
         Strategy.D25: (74.58333333333333, 70.55363321799307),
     }
@@ -904,21 +902,21 @@ def test_risk_identity_fields_reject_non_string_values(tmp_path) -> None:
         load_strategy_settings(strategy_path)
 
 
-def test_today_news_signal_rejects_overlapping_keyword_sets(tmp_path) -> None:
+def test_news_signal_rejects_overlapping_keyword_sets(tmp_path) -> None:
     strategy_path = tmp_path / "strategy.json"
     raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
-    raw["today_news_signal"]["negative_keywords"].append(raw["today_news_signal"]["positive_keywords"][0])
+    raw["news_signal"]["negative_keywords"].append(raw["news_signal"]["positive_keywords"][0])
     strategy_path.write_text(json.dumps(raw), encoding="utf-8")
 
     with pytest.raises(ConfigurationError, match="must not overlap"):
         load_strategy_settings(strategy_path)
 
 
-def test_today_news_signal_changes_strategy_version(tmp_path) -> None:
+def test_news_signal_changes_strategy_version(tmp_path) -> None:
     source = PROJECT_ROOT / "config" / "strategy.json"
     baseline = load_strategy_settings(source)
     raw = json.loads(source.read_text(encoding="utf-8"))
-    raw["today_news_signal"]["positive_keywords"].append("订单增长")
+    raw["news_signal"]["positive_keywords"].append("订单增长")
     changed_path = tmp_path / "strategy.json"
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
 
@@ -927,21 +925,21 @@ def test_today_news_signal_changes_strategy_version(tmp_path) -> None:
     assert changed.strategy_version != baseline.strategy_version
 
 
-def test_today_news_signal_is_required(tmp_path) -> None:
+def test_news_signal_is_required(tmp_path) -> None:
     source = PROJECT_ROOT / "config" / "strategy.json"
     raw = json.loads(source.read_text(encoding="utf-8"))
-    del raw["today_news_signal"]
+    del raw["news_signal"]
     changed_path = tmp_path / "strategy.json"
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
 
-    with pytest.raises(ConfigurationError, match="strategy.today_news_signal is required"):
+    with pytest.raises(ConfigurationError, match="strategy.news_signal is required"):
         load_strategy_settings(changed_path)
 
 
-def test_today_news_signal_fixed_window_and_scores_cannot_drift(tmp_path) -> None:
+def test_news_signal_fixed_window_and_scores_cannot_drift(tmp_path) -> None:
     source = PROJECT_ROOT / "config" / "strategy.json"
     raw = json.loads(source.read_text(encoding="utf-8"))
-    raw["today_news_signal"]["lookback_hours"] = 48
+    raw["news_signal"]["lookback_hours"] = 48
     changed_path = tmp_path / "strategy.json"
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
 

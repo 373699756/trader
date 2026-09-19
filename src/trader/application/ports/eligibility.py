@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol
 
-from trader.domain.market.eligibility import (
+from trader.recommendation.domain.market.eligibility import (
     IssuerEligibilityDecision,
     IssuerEligibilityFact,
     IssuerEligibilityRegistryStatus,

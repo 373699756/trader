@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 from trader.training.evaluation.domain.models import outcome_horizons
 
 ROOT = Path(__file__).resolve().parents[2]

@@ -20,16 +20,16 @@
     "cadence_seconds": {
       "full_market": {
         "warmup": 10,
-        "today_main": 10,
-        "today_late": 10,
+        "morning_main": 10,
+        "morning_late": 10,
         "midday": 10,
         "afternoon": 10,
         "final_review": 10
       },
       "candidate_quotes": {
         "warmup": 2,
-        "today_main": 1,
-        "today_late": 2,
+        "morning_main": 1,
+        "morning_late": 2,
         "midday": 10,
         "afternoon": 2,
         "final_review": 1,
@@ -37,8 +37,8 @@
       },
       "topk_quotes": {
         "warmup": 1,
-        "today_main": 1,
-        "today_late": 1,
+        "morning_main": 1,
+        "morning_late": 1,
         "midday": 10,
         "afternoon": 1,
         "final_review": 1,
@@ -51,8 +51,8 @@
       },
       "long_quotes": {
         "warmup": 1,
-        "today_main": 1,
-        "today_late": 1,
+        "morning_main": 1,
+        "morning_late": 1,
         "midday": 10,
         "afternoon": 1,
         "final_review": 1,
@@ -60,30 +60,30 @@
       },
       "score": {
         "warmup": 10,
-        "today_main": 3,
-        "today_late": 5,
+        "morning_main": 3,
+        "morning_late": 5,
         "afternoon": 5,
         "final_review": 3,
         "final_window": 1
       },
       "industry_heat": {
         "warmup": 120,
-        "today_main": 60,
-        "today_late": 60,
+        "morning_main": 60,
+        "morning_late": 60,
         "afternoon": 60,
         "final_review": 60
       },
       "market_news": {
         "warmup": 120,
-        "today_main": 60,
-        "today_late": 60,
+        "morning_main": 60,
+        "morning_late": 60,
         "afternoon": 60,
         "final_review": 60
       },
       "stock_risk": {
         "warmup": 300,
-        "today_main": 180,
-        "today_late": 180,
+        "morning_main": 180,
+        "morning_late": 180,
         "afternoon": 180,
         "final_review": 120
       }
@@ -389,7 +389,7 @@
       "board_preselection": 5000,
       "candidate_union_projection": 100,
       "board_local_scoring": 250,
-      "three_strategy_board_scoring": 750,
+      "two_strategy_board_scoring": 750,
       "three_board_wall_clock": 1000,
       "global_selection": 100,
       "board_ready_to_draft": 500,
@@ -423,7 +423,6 @@
     "model": "deepseek-v4-flash",
     "challenger_model": "deepseek-v4-pro",
     "challenger_limits": {
-      "today": 0,
       "tomorrow": 2,
       "d25": 0
     },
@@ -433,7 +432,6 @@
     "max_tokens": 1800,
     "daily_hard_limit": 168,
     "strategy_limits": {
-      "today": 8,
       "tomorrow": 38,
       "d25": 16,
       "shared_preheat": 4,
@@ -441,8 +439,6 @@
     },
     "stage_targets": {
       "shared_preheat": 2,
-      "today_main": 3,
-      "today_late": 2,
       "tomorrow_morning": 6,
       "tomorrow_afternoon": 10,
       "tomorrow_final": 5,
@@ -453,8 +449,6 @@
     },
     "stage_limits": {
       "shared_preheat": 4,
-      "today_main": 5,
-      "today_late": 3,
       "tomorrow_morning": 10,
       "tomorrow_afternoon": 18,
       "tomorrow_final": 10,

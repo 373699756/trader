@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from trader.domain.market.feature_contracts import (
+from trader.recommendation.domain.market.feature_contracts import (
     FEATURE_SPEC_CATALOG,
     TOMORROW_MODEL_FEATURE_MANIFEST,
     TOMORROW_RAW_ALPHA_FEATURE_MANIFEST,

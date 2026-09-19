@@ -15,8 +15,8 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.application.cache import BoundedCache, CacheIdentity, CacheIdentitySpec, CacheStatus, build_cache_identity
-from trader.domain.market.models import FeatureSnapshot
-from trader.domain.review.models import DeepSeekReview
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.evidence.review import DeepSeekReview
 
 
 @dataclass(frozen=True)

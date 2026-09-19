@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.domain.market.quality import FieldQualityState, FieldValue, HistoricalFeature, SecurityMaster
+from trader.recommendation.domain.market.quality import FieldQualityState, FieldValue, HistoricalFeature, SecurityMaster
 from trader.infra.market_data.normalization.field_quality import (
     BOARD_FIELDS,
     REALTIME_FIELDS,

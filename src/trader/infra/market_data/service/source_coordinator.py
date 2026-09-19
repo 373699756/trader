@@ -25,7 +25,7 @@ from trader.application.runtime.source_lanes import (
     SourceRequestSupersededError,
 )
 from trader.application.runtime.workers import BoundedExecutor
-from trader.domain.market.models import (
+from trader.recommendation.domain.market.models import (
     MarketQuote,
 )
 from trader.infra.market_data.normalization.merge import observation_from_quote

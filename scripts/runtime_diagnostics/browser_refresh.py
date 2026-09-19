@@ -53,8 +53,8 @@ from trader.application.runtime.supervisor import (  # noqa: E402
     RuntimeSupervisorConfig,
     scheduler_interval_seconds,
 )
-from trader.domain.market.models import Board  # noqa: E402
-from trader.domain.recommendation.decision_identity import (  # noqa: E402
+from trader.recommendation.domain.market.models import Board  # noqa: E402
+from trader.recommendation.domain.publication.decision_identity import (  # noqa: E402
     CommittedDecisionRecord,
     DecisionIdentity,
     DecisionItem,
@@ -62,7 +62,7 @@ from trader.domain.recommendation.decision_identity import (  # noqa: E402
     DecisionQuote,
     ScoredDecision,
 )
-from trader.domain.recommendation.models import RecommendationAction, Strategy  # noqa: E402
+from trader.recommendation.domain.publication.models import RecommendationAction, Strategy  # noqa: E402
 from trader.infra.settings import load_runtime_settings  # noqa: E402
 from trader.training.evaluation.application.research_audit import CommittedResearchAudit  # noqa: E402
 from trader.web import create_app  # noqa: E402
@@ -251,7 +251,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--minimum-updates", type=int, default=3, help="minimum DOM price changes required to pass")
     parser.add_argument(
         "--strategy",
-        choices=("today", "tomorrow", "d25"),
+        choices=("tomorrow", "d25"),
         default="tomorrow",
         help="dashboard strategy to observe",
     )
@@ -477,7 +477,7 @@ def _run(
     if geckodriver is None or shutil.which("firefox") is None:
         raise RuntimeError("Firefox and geckodriver are required")
     target_strategy = Strategy(args.strategy)
-    target_codes = {Strategy.TODAY: "600001", Strategy.TOMORROW: "600002", Strategy.D25: "600003"}
+    target_codes = {Strategy.TOMORROW: "600002", Strategy.D25: "600003"}
     clock = _AdvancingClock(simulated_start)
     index = UnifiedDecisionIndex()
     for strategy, code in target_codes.items():

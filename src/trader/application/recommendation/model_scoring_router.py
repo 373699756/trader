@@ -12,15 +12,15 @@ from trader.application.ports.model_scoring import (
     ScoringCapabilityPort,
     ScoringProfileRuntimeStatus,
 )
-from trader.domain.market.models import FeatureSnapshot
-from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.domain.publication.models import Strategy
 
 
 class ModelScoringRouter(ModelScoringPort):
-    """Expose one scoring capability for all three short-horizon strategies."""
+    """Expose one scoring capability for Tomorrow and D25."""
 
-    _SUPPORTED_STRATEGIES = frozenset({Strategy.TODAY, Strategy.TOMORROW, Strategy.D25})
+    _SUPPORTED_STRATEGIES = frozenset({Strategy.TOMORROW, Strategy.D25})
 
     def __init__(
         self,

@@ -115,7 +115,7 @@ def _validate_long_research_factor_contract(settings: StrategySettings) -> None:
         "output_range": (0.0, 100.0),
     }
     risk_common = {
-        "strategies": ("today", "tomorrow", "d25", "long"),
+        "strategies": ("tomorrow", "d25", "long"),
         "direction": "higher_worse",
         "adjustment": "none",
         "winsor_enabled": False,
@@ -352,7 +352,7 @@ def _parse_factor_definition(factor_id: str, raw: object) -> FactorDefinition:
     if (
         not isinstance(strategies, list)
         or not strategies
-        or any(value not in {"today", "tomorrow", "d25", "long"} for value in strategies)
+        or any(value not in {"tomorrow", "d25", "long"} for value in strategies)
     ):
         raise ConfigurationError(f"factor_registry.{factor_id}.strategies is invalid")
     if (

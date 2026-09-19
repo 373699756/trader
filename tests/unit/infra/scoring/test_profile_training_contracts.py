@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 from trader.download.domain.baostock_daily import BaoStockCalendar, build_baostock_training_split
 from trader.training.application.tomorrow_training import TomorrowTrainingWindow
 from trader.training.infra.engine import ProfileTrainingRequest
@@ -25,20 +25,18 @@ def test_v2_and_v3_share_engine_contract_shape_but_own_their_differences() -> No
     assert V3_TRAINING_PROFILE.history_sessions == 61
 
     assert tuple(head.strategy for head in V2_TRAINING_PROFILE.heads) == (
-        Strategy.TODAY,
         Strategy.TOMORROW,
         Strategy.D25,
     )
     assert tuple(head.strategy for head in V3_TRAINING_PROFILE.heads) == (
-        Strategy.TODAY,
         Strategy.TOMORROW,
         Strategy.D25,
     )
-    assert "qfq_residual_momentum_120d_skip5" in V2_TRAINING_PROFILE.heads[1].feature_manifest.names
-    assert "qfq_residual_momentum_250d_skip5" in V2_TRAINING_PROFILE.heads[1].feature_manifest.names
-    assert "market_qfq_momentum_120d_skip5" in V2_TRAINING_PROFILE.heads[1].feature_manifest.names
-    assert "market_qfq_momentum_250d_skip5" in V2_TRAINING_PROFILE.heads[1].feature_manifest.names
-    assert "qfq_residual_momentum_120d_skip5" not in V3_TRAINING_PROFILE.heads[1].feature_manifest.names
+    assert "qfq_residual_momentum_120d_skip5" in V2_TRAINING_PROFILE.heads[0].feature_manifest.names
+    assert "qfq_residual_momentum_250d_skip5" in V2_TRAINING_PROFILE.heads[0].feature_manifest.names
+    assert "market_qfq_momentum_120d_skip5" in V2_TRAINING_PROFILE.heads[0].feature_manifest.names
+    assert "market_qfq_momentum_250d_skip5" in V2_TRAINING_PROFILE.heads[0].feature_manifest.names
+    assert "qfq_residual_momentum_120d_skip5" not in V3_TRAINING_PROFILE.heads[0].feature_manifest.names
 
 
 def test_profile_training_modules_do_not_import_each_other() -> None:

@@ -111,7 +111,7 @@ def _sample(
     empty_reason: str | None = "risk_or_execution_blocked",
     projection_version: str = "projection-1",
     event_sequence: int | None = None,
-    phase: str = "today_main",
+    phase: str = "morning_main",
     items: list[dict[str, str]] | None = None,
     include_quality_trade_date: bool = True,
     warmup: tuple[int, int, int, int] = (20, 15, 0, 5),
@@ -807,7 +807,7 @@ def test_stale_candidate_quote_majority_is_reported_during_scoring() -> None:
 
 def test_candidate_quote_age_limit_follows_strategy_phase() -> None:
     today_findings = analyze_samples(
-        (_sample(1, phase="today_main", candidate_quote_age=(19.0, 21.0, 22.0)),),
+        (_sample(1, phase="morning_main", candidate_quote_age=(19.0, 21.0, 22.0)),),
         strategies=(_STRATEGY,),
         consecutive_zero_threshold=3,
     )

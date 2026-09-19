@@ -36,7 +36,6 @@ from trader.application.recommendation.scored_freezing import (
     DecisionRuntimeIdentity,
     ScoredFreezeCoordinator,
 )
-from trader.application.recommendation.today_freezing import TodayFreezeCoordinator
 from trader.training.evaluation.application.research_runtime import ResearchRuntime
 from trader.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.application.runtime.latency import LatencyWaterfall
@@ -54,9 +53,9 @@ from trader.bootstrap_clock import utc_now as _utc_now
 from trader.bootstrap_data_plane import _initialize_reference_data_plane
 from trader.bootstrap_policy import _long_group_definitions, _long_item_definitions, _recommendation_policy
 from trader.bootstrap_status import runtime_status as _runtime_status
-from trader.domain.recommendation.decision_identity import DecisionOverlay, ScoredDecision
-from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.decision_identity import DecisionOverlay, ScoredDecision
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.atomic_files.json import RuntimeJsonWriter
 from trader.infra.cache import BoundedLruCache
 from trader.infra.clock.shanghai import ShanghaiClock
@@ -186,7 +185,6 @@ class _PublicationContext:
     long_runtime: LongRuntime
     decision_queries: UnifiedDecisionQueries
     decision_events: UnifiedDecisionEventStream
-    today_freezer: TodayFreezeCoordinator
     tomorrow_freezer: ScoredFreezeCoordinator
     d25_freezer: ScoredFreezeCoordinator
     observer: AsyncDecisionObserver
@@ -316,7 +314,6 @@ def build_system(
             index=publication.tomorrow_index,
             observer=publication.observer,
             freezes=FreezeAdapter(
-                publication.today_freezer,
                 publication.tomorrow_freezer,
                 publication.d25_freezer,
             ),
@@ -358,7 +355,6 @@ def build_system(
                 lambda: _initialize_outcome_evidence(persistence.outcomes),
                 lambda: _initialize_reference_data_plane(market_data, persistence.data_plane, now()),
                 persistence.budget.initialize,
-                publication.today_freezer.initialize,
                 lambda: publication.tomorrow_freezer.restore(now().date()),
                 lambda: publication.d25_freezer.restore(now().date()),
                 lambda: persistence.budget.recover_incomplete(now()),
@@ -534,7 +530,7 @@ def _build_market_data(
     )
     evidence_cache_dir = settings.runtime_dir / "evidence_cache"
     feature_builder = FeatureBuilder(
-        strategy.today_news_signal,
+        strategy.news_signal,
         strategy.tomorrow_tail_signal,
         strategy.market_regime,
         strategy.long_research,
@@ -778,16 +774,6 @@ def _build_publication(
         ),
         strategy=Strategy.D25,
     )
-    today_freezer = TodayFreezeCoordinator(
-        tomorrow_decisions,
-        repository,
-        clock,
-        runtime_identity=DecisionRuntimeIdentity(
-            context.effective_config_version,
-            context.strategy.strategy_version,
-            context.strategy.fusion.version,
-        ),
-    )
     long_runtime = LongRuntime(
         LongRuntimeDependencies(
             market_data,
@@ -808,7 +794,6 @@ def _build_publication(
         long_runtime,
         decision_queries,
         decision_events,
-        today_freezer,
         tomorrow_freezer,
         d25_freezer,
         observer,

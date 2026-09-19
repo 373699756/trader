@@ -45,8 +45,8 @@ def test_current_archive_and_free_source_evidence_project_explicit_three_gate_bl
     )
     sources = build_h1_capability_audit(
         (
-            H1CapabilityProbe("tencent_qfq_daily", date(2024, 1, 9), False, False, "qfq", False, 640, 1, 1, 1.0),
-            H1CapabilityProbe("eastmoney_historical_minute", None, False, False, "unsupported", False, 0, 1, 1, 1.0),
+            H1CapabilityProbe("tencent_qfq_daily", date(2024, 1, 9), False, "qfq", False, 640, 1, 1, 1.0),
+            H1CapabilityProbe("eastmoney_historical_minute", None, False, "unsupported", False, 0, 1, 1, 1.0),
         )
     )
 
@@ -72,7 +72,7 @@ def test_daily_archive_count_mismatch_is_reported_instead_of_becoming_an_invalid
         reason=None,
     )
     sources = build_h1_capability_audit(
-        (H1CapabilityProbe("eastmoney_historical_minute", None, False, False, "unsupported", False, 0, 1, 1, 1.0),)
+        (H1CapabilityProbe("eastmoney_historical_minute", None, False, "unsupported", False, 0, 1, 1, 1.0),)
     )
 
     report = assemble_point_in_time_data_qualification(archive, sources, _industry_report())

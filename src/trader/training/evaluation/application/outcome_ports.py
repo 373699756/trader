@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Protocol
 
 from trader.application.ports.market import OutcomePriceReaderPort
-from trader.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.models import FeatureSnapshot
 
 
 class OutcomeSettlementMarketData(OutcomePriceReaderPort, Protocol):

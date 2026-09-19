@@ -12,7 +12,7 @@ from datetime import date
 from pathlib import Path
 from typing import cast
 
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.artifacts.canonical import content_hash
 from trader.training.infra.artifacts.contracts import TrainedProfileContract
 

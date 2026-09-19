@@ -6,15 +6,15 @@ from zoneinfo import ZoneInfo
 
 from trader.application.decisions.decision_events import build_decision_committed
 from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
-from trader.domain.market.models import Board
-from trader.domain.recommendation.decision_identity import (
+from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.publication.decision_identity import (
     DecisionItem,
     DecisionOverlay,
     DecisionQuote,
     ScoredDecision,
 )
-from trader.domain.recommendation.models import RecommendationAction, Strategy
-from trader.domain.recommendation.pipeline import (
+from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
+from trader.recommendation.domain.evidence.pipeline import (
     PIPELINE_STAGE_ORDER,
     PipelineStageStatus,
     RecommendationPipelineStatus,
@@ -26,7 +26,7 @@ NOW = datetime(2026, 8, 11, 10, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 def test_unified_stream_replays_monotonic_cross_strategy_events() -> None:
     stream = UnifiedDecisionEventStream(history_size=3)
-    today = stream.publish_committed(build_decision_committed(_decision(Strategy.TODAY, 1)))
+    today = stream.publish_committed(build_decision_committed(_decision(Strategy.TOMORROW, 1)))
     tomorrow = stream.publish_committed(build_decision_committed(_decision(Strategy.TOMORROW, 1)))
 
     subscription = stream.open_subscription(today.sequence)
@@ -150,7 +150,7 @@ def test_scored_decision_event_serializes_complete_replace_patch_without_snapsho
 def test_unified_stream_requires_resync_for_expired_and_ahead_cursors() -> None:
     stream = UnifiedDecisionEventStream(history_size=2)
     for sequence in range(1, 4):
-        stream.publish_committed(build_decision_committed(_decision(Strategy.TODAY, sequence)))
+        stream.publish_committed(build_decision_committed(_decision(Strategy.TOMORROW, sequence)))
 
     expired = stream.open_subscription(0)
     ahead = stream.open_subscription(99)
@@ -183,9 +183,9 @@ def test_unified_stream_publishes_explicit_identity_resync() -> None:
 
 
 def test_overlay_event_serializes_row_patch_with_parent_and_projection_identities() -> None:
-    decision = _decision(Strategy.TODAY, 1)
+    decision = _decision(Strategy.TOMORROW, 1)
     quote = DecisionQuote("600000", 10.2, 1.2, 100.0, 2.0, 1_000.0, "fixture", NOW, "quote:2")
-    overlay = DecisionOverlay(Strategy.TODAY, NOW.date(), decision.version, NOW, (quote,))
+    overlay = DecisionOverlay(Strategy.TOMORROW, NOW.date(), decision.version, NOW, (quote,))
 
     event = UnifiedDecisionEventStream().publish_overlay(
         overlay,

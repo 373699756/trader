@@ -10,7 +10,7 @@ from datetime import date, datetime, time, timedelta
 from statistics import fmean, pstdev
 from typing import Literal
 
-from trader.domain.market.feature_contracts import TOMORROW_RESEARCH_FEATURE_MANIFEST, decimal_return
+from trader.recommendation.domain.market.feature_contracts import TOMORROW_RESEARCH_FEATURE_MANIFEST, decimal_return
 from trader.training.evaluation.domain.historical import SUPPORTED_RESEARCH_BOARDS, ResearchBoard
 
 TomorrowFeatureFamily = Literal[

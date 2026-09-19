@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import threading
 from datetime import date, datetime
@@ -31,8 +32,8 @@ from trader.bootstrap import (
     build_system,
 )
 from trader.bootstrap_status import input_quality_payload, runtime_status
-from trader.domain.recommendation.models import Strategy
-from trader.domain.recommendation.pipeline import (
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.evidence.pipeline import (
     PipelineFacet,
     PipelineMetricRange,
     PipelineStageStatus,
@@ -56,13 +57,14 @@ def _config(tmp_path: Path) -> Path:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     strategy = json.loads((PROJECT_ROOT / "config/strategy.json").read_text(encoding="utf-8"))
-    strategy["scoring_profile"] = "v1"
+    strategy["scoring_profile"] = "v2"
     strategy_path = config_dir / "strategy.json"
     strategy_path.write_text(json.dumps(strategy), encoding="utf-8")
     runtime = json.loads((PROJECT_ROOT / "config/runtime.json").read_text(encoding="utf-8"))
     runtime["runtime_dir"] = str(tmp_path / "runtime")
     runtime["strategy_config"] = str(strategy_path)
     runtime["long_watchlist"] = str(PROJECT_ROOT / "config/long_watchlist.json")
+    shutil.copytree(PROJECT_ROOT / "data" / "train", tmp_path / "data" / "train", dirs_exist_ok=True)
     path = config_dir / "runtime.json"
     path.write_text(json.dumps(runtime), encoding="utf-8")
     return path
@@ -103,12 +105,12 @@ def test_build_system_is_lazy_and_current_only(tmp_path, monkeypatch) -> None:
     assert status.status_code == 200
     assert status.get_json()["phase"] == "closed"
     scoring = status.get_json()["scoring_profile"]
-    assert scoring["profile_id"] == "v1"
-    assert set(scoring["heads"]) == {"tomorrow"}
+    assert scoring["profile_id"] == "v2"
+    assert set(scoring["heads"]) == {"tomorrow", "d25"}
     tomorrow = scoring["heads"]["tomorrow"]
     assert tomorrow["active"] is True
-    assert tomorrow["profile_id"] == "v1"
-    assert tomorrow["model_id"] == "residual_momentum_linear"
+    assert tomorrow["profile_id"] == "v2"
+    assert tomorrow["model_id"] == "v2_industry_ridge_lightgbm"
     assert tomorrow["activation_basis"] == "manual_user_override"
     assert tomorrow["monitoring_mode"] == "automatic_t1_outcome_settlement"
     assert tomorrow["automatic_model_update"] is False
@@ -147,7 +149,7 @@ def test_build_system_selects_an_explicit_scoring_profile_without_rewriting_conf
 
     monkeypatch.setattr(threading.Thread, "start", lambda _thread: None)
 
-    config_path = _config_with_strategy_profile(tmp_path, "v1")
+    config_path = _config_with_strategy_profile(tmp_path, "v2")
     strategy_path = Path(json.loads(config_path.read_text(encoding="utf-8"))["strategy_config"])
     original = strategy_path.read_bytes()
     monkeypatch.setattr(
@@ -158,7 +160,7 @@ def test_build_system_selects_an_explicit_scoring_profile_without_rewriting_conf
     status = system.app.test_client().get("/api/status").get_json()["scoring_profile"]
 
     assert status["profile_id"] == "v2"
-    assert set(status["heads"]) == {"today", "tomorrow", "d25"}
+    assert set(status["heads"]) == {"tomorrow", "d25"}
     assert all(head["active"] is True for head in status["heads"].values())
     assert status["heads"]["tomorrow"]["model_id"] == "v2_industry_ridge_lightgbm"
     assert status["heads"]["tomorrow"]["activation_basis"] == "manual_user_override"
@@ -169,11 +171,11 @@ def test_build_system_passes_project_training_root_for_v3(tmp_path, monkeypatch)
     from trader.infra.scoring.profile_factory import load_scoring_profile
 
     observed: list[Path] = []
-    v1_profile = load_scoring_profile("v1")
+    v2_profile = load_scoring_profile("v2", training_root=PROJECT_ROOT / "data" / "train")
 
     def load(profile: str, *, training_root: Path | None = None):
         observed.append(training_root or Path())
-        return v1_profile
+        return v2_profile
 
     monkeypatch.setattr("trader.bootstrap.load_scoring_profile", load)
 
@@ -241,8 +243,8 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
     from unittest.mock import Mock
 
     scheduler = Mock()
-    point_updated_at = datetime(2026, 8, 31, 11, 20, tzinfo=ZoneInfo("Asia/Shanghai"))
-    point_key = SchedulePointKey("2026-08-31", SchedulePoint.TODAY_FREEZE, "today")
+    point_updated_at = datetime(2026, 8, 31, 14, 50, tzinfo=ZoneInfo("Asia/Shanghai"))
+    point_key = SchedulePointKey("2026-08-31", SchedulePoint.AFTERNOON_FREEZE, "tomorrow")
     scheduler.status.return_value = SimpleNamespace(
         running=True,
         phase=SimpleNamespace(value="afternoon"),
@@ -336,8 +338,8 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
     assert payload["scheduler"]["cadence"]["schedule_points"] == [
         {
             "trade_date": "2026-08-31",
-            "schedule_point": "today_freeze",
-            "strategy": "today",
+            "schedule_point": "afternoon_freeze",
+            "strategy": "tomorrow",
             "status": "completed",
             "attempt_count": 1,
             "updated_at": point_updated_at.isoformat(),

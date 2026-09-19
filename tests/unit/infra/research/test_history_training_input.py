@@ -9,7 +9,7 @@ import pytest
 
 import trader.training.infra.history.history_training_due as due_module
 from scripts.runtime_diagnostics.history_archive_performance import inspect_history_archive_performance
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
     BaoStockCodeBatch,

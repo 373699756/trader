@@ -25,7 +25,7 @@ def test_authoritative_contract_defines_d25_freeze_recovery_and_isolation() -> N
     for token in (
         "d25 原生决策",
         "strategy=d25",
-        "V3 下先由独立 D25 head",
+        "V2/V3 均由本档独立 D25 head",
         "不得作为 D25 输入或降级源",
     ):
         assert token in compact_strategy

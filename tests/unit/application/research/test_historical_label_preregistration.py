@@ -19,7 +19,7 @@ def test_preregistration_service_reads_only_each_strategy_h1_metadata() -> None:
 
     batch = HistoricalLabelPreregistrationService(port).execute()
 
-    assert port.calls == ["today", "tomorrow", "d25"]
-    assert tuple(item.status for item in batch.strategies) == ("preregistered",) * 3
+    assert port.calls == ["tomorrow", "d25"]
+    assert tuple(item.status for item in batch.strategies) == ("preregistered",) * 2
     assert all(item.terminal_holdout_status == "terminal_holdout_not_opened" for item in batch.strategies)
     assert all(item.candidate_results_generated is False for item in batch.strategies)

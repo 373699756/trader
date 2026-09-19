@@ -19,7 +19,6 @@ from trader.training.evaluation.application.cross_strategy_conclusion import (  
     CrossStrategyConclusionService,
 )
 from trader.training.evaluation.application.d25_terminal_holdout import D25TerminalHoldoutService  # noqa: E402
-from trader.training.evaluation.application.today_terminal_holdout import TodayTerminalHoldoutService  # noqa: E402
 from trader.training.evaluation.application.tomorrow_point_in_time_holdout import (  # noqa: E402
     TomorrowPointInTimeHoldoutService,
 )
@@ -42,9 +41,6 @@ from trader.training.infra.research.h1_point_in_time_completion import (  # noqa
     H1ResearchCompletionArtifactIndex,
 )
 from trader.training.infra.research.historical_label_artifacts import HistoricalLabelArtifactArchive  # noqa: E402
-from trader.training.infra.research.today_terminal_holdout_artifacts import (  # noqa: E402
-    TodayTerminalHoldoutArtifactArchive,
-)
 from trader.training.infra.research.tomorrow_point_in_time_holdout_artifacts import (  # noqa: E402
     TomorrowPointInTimeHoldoutArtifactArchive,
 )
@@ -61,10 +57,6 @@ def execute(*, parent_artifact_dir: Path, output_dir: Path) -> CrossStrategyConc
     statuses = {item.strategy: item for item in parent.capability.strategies}
     residual_hashes = dict(parent.index.residual_terminal_hashes)
 
-    today = TodayTerminalHoldoutService(
-        (),
-        _parent_state(parent, statuses["today"].strategy, residual_hashes["today"]),
-    ).execute()
     tomorrow = TomorrowPointInTimeHoldoutService(
         (),
         _parent_state(parent, statuses["tomorrow"].strategy, parent.index.daily_close_selection_hash),
@@ -74,10 +66,9 @@ def execute(*, parent_artifact_dir: Path, output_dir: Path) -> CrossStrategyConc
         _parent_state(parent, statuses["d25"].strategy, residual_hashes["d25"]),
     ).execute()
 
-    TodayTerminalHoldoutArtifactArchive(output_dir / "today").write(today)
     TomorrowPointInTimeHoldoutArtifactArchive(output_dir / "tomorrow").write(tomorrow)
     D25TerminalHoldoutArtifactArchive(output_dir / "d25").write(d25)
-    conclusion = CrossStrategyConclusionService().execute(today, tomorrow, d25)
+    conclusion = CrossStrategyConclusionService().execute(tomorrow, d25)
     CrossStrategyConclusionArtifactArchive(output_dir / "cross_strategy").write(conclusion)
     return conclusion
 
@@ -136,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _projection(conclusion: CrossStrategyConclusion) -> dict[str, object]:
-    reports = (conclusion.today, conclusion.tomorrow, conclusion.d25)
+    reports = (conclusion.tomorrow, conclusion.d25)
     return {
         "schema_version": "terminal_holdout_execution",
         "status": conclusion.status,

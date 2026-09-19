@@ -26,10 +26,10 @@ from trader.application.ports.scheduler import (
 from trader.application.runtime.cadence import PipelineTask
 from trader.application.runtime.schedule import SHANGHAI
 from trader.bootstrap import _recommendation_policy
-from trader.domain.market.models import Board
-from trader.domain.recommendation.decision_identity import DecisionOverlay
-from trader.domain.recommendation.models import Strategy
-from trader.domain.recommendation.pipeline import PIPELINE_STAGE_ORDER
+from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.publication.decision_identity import DecisionOverlay
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGE_ORDER
 from trader.infra.settings import load_strategy_settings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -167,7 +167,6 @@ def test_model_scoring_context_uses_the_freeze_budget_and_input_age(application_
 @pytest.mark.parametrize(
     ("strategy", "observed_at", "expected_budget"),
     (
-        (Strategy.TODAY, datetime(2026, 8, 12, 11, 19, 45, tzinfo=SHANGHAI), 9.0),
         (Strategy.TOMORROW, datetime(2026, 8, 12, 14, 49, 45, tzinfo=SHANGHAI), 9.0),
         (Strategy.D25, datetime(2026, 8, 12, 14, 49, 45, tzinfo=SHANGHAI), 9.0),
     ),
@@ -403,7 +402,7 @@ def test_production_adapter_builds_current_overlay_from_another_scored_lane_batc
         decision_build=_decision_build(),
     )
     request = _request(observed_at, strategy=Strategy.TOMORROW, phase="afternoon")
-    frozen = decision(Strategy.TODAY)
+    frozen = decision(Strategy.D25)
     frozen_quote = frozen.items[0].quote
     assert frozen_quote is not None
     frozen_at = observed_at.replace(hour=11, minute=19, second=59)
@@ -440,7 +439,7 @@ def test_production_adapter_builds_current_overlay_from_another_scored_lane_batc
     overlay = adapter.refreshed_overlay(frozen, request, previous)
 
     assert overlay is not None
-    assert overlay.strategy is Strategy.TODAY
+    assert overlay.strategy is Strategy.D25
     assert overlay.parent_version == frozen.version
     assert overlay.observed_at == network_completed_at
     quotes = {quote.code: quote for quote in overlay.quotes}
@@ -510,7 +509,7 @@ def test_full_market_acquisition_exposes_pending_funnel_without_treating_unknown
     adapter.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
 
     statuses = adapter.input_quality_status()
-    assert {status.strategy for status in statuses} == {Strategy.TODAY, Strategy.TOMORROW, Strategy.D25}
+    assert {status.strategy for status in statuses} == {Strategy.TOMORROW, Strategy.D25}
     assert all(status.status == "not_ready" for status in statuses)
     assert all(status.primary_blocker == "candidate_quotes_pending" for status in statuses)
     assert all(status.pipeline.stage("candidate_refresh").input_count == 1 for status in statuses)
@@ -546,7 +545,7 @@ def test_production_adapter_rejects_vendor_future_time_without_local_observation
     )
     request = _request(observed_at, strategy=Strategy.TOMORROW, phase="afternoon")
     frozen_at = observed_at - timedelta(minutes=1)
-    source = decision(Strategy.TODAY)
+    source = decision(Strategy.D25)
     frozen_quote = source.items[0].quote
     assert frozen_quote is not None
     frozen_quote = replace(frozen_quote, source_time=frozen_at)
@@ -782,7 +781,7 @@ def test_three_scored_strategies_share_one_fast_market_input_cycle(
     )
     requests = tuple(
         _request(observed_at, strategy=strategy, phase="morning")
-        for strategy in (Strategy.TOMORROW, Strategy.D25, Strategy.TODAY)
+        for strategy in (Strategy.TOMORROW, Strategy.D25)
     )
     _prime_scoring_cache(adapter, observed_at)
     entered = threading.Barrier(len(requests))
@@ -945,7 +944,7 @@ def test_three_scored_strategies_use_refresh_completion_as_the_decision_time(
     )
     requests = tuple(
         _request(requested_at, strategy=strategy, phase="morning")
-        for strategy in (Strategy.TOMORROW, Strategy.D25, Strategy.TODAY)
+        for strategy in (Strategy.TOMORROW, Strategy.D25)
     )
 
     _prime_scoring_cache(adapter, requested_at)
@@ -1365,7 +1364,7 @@ def test_stale_candidate_quote_promotes_next_same_board_reserve(
     assert adapter._strategy_requested_codes[Strategy.TOMORROW] == ("600004",)
 
 
-def test_strategy_candidate_windows_are_isolated_while_quote_io_uses_their_union(
+def test_two_strategy_candidate_windows_share_deduplicated_quote_io(
     application_feature_factory,
 ) -> None:
     observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
@@ -1421,19 +1420,17 @@ def test_strategy_candidate_windows_are_isolated_while_quote_io_uses_their_union
 
     _prime_scoring_cache(adapter, observed_at)
     requests = tuple(
-        _request(observed_at, strategy=strategy, phase="today_main")
-        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+        _request(observed_at, strategy=strategy, phase="morning_main")
+        for strategy in (Strategy.TOMORROW, Strategy.D25)
     )
     for request in requests:
         adapter.refresh(request)
 
-    assert set(market.candidate_requests[0]) == {"600001", "600002"}
+    assert set(market.candidate_requests[0]) == {"600002"}
     requested_by_strategy = {request[0][0] for request in market.candidate_reads if request[0]}
-    assert requested_by_strategy == {"600001", "600002"}
-    assert any(codes == ("600001",) for codes, _tail, _research in market.candidate_reads)
+    assert requested_by_strategy == {"600002"}
     assert any(codes == ("600002",) for codes, _tail, _research in market.candidate_reads)
     batches = {request.strategy: adapter._batches[(request.strategy, request.input_version)] for request in requests}
-    assert batches[Strategy.TODAY].requested_codes == ("600001",)
     assert batches[Strategy.TOMORROW].requested_codes == ("600002",)
     assert batches[Strategy.D25].requested_codes == ("600002",)
     assert all(

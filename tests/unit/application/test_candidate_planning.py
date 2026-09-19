@@ -3,9 +3,9 @@ from __future__ import annotations
 import pytest
 
 from trader.application.recommendation.candidate_planning import CandidatePlanSet
-from trader.domain.market.models import Board
-from trader.domain.recommendation.models import Strategy
-from trader.domain.recommendation.selection.scored_selection import (
+from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.selection.scored_selection import (
     ScoredCandidatePlan,
     ScoredCandidateStageCounts,
 )
@@ -28,20 +28,20 @@ def _empty_plan(strategy: Strategy, start: int) -> ScoredCandidatePlan:
     )
 
 
-def test_physical_candidate_union_is_bounded_by_three_strategy_board_windows() -> None:
+def test_physical_candidate_union_is_bounded_by_two_strategy_board_windows() -> None:
     plans = CandidatePlanSet(
         {
             strategy: _empty_plan(strategy, offset)
             for strategy, offset in zip(
-                (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25),
-                (0, 360, 720),
+                (Strategy.TOMORROW, Strategy.D25),
+                (0, 360),
                 strict=True,
             )
         },
         limit_per_board=120,
     )
 
-    assert len(plans.physical_union()) == 3 * 3 * 120
+    assert len(plans.physical_union()) == 2 * 3 * 120
     assert all(len(plans.strategy_codes(strategy)) == 3 * 120 for strategy in plans.plans)
 
 
@@ -51,8 +51,8 @@ def test_candidate_plan_rejects_a_board_window_larger_than_the_fixed_cap() -> No
             {
                 strategy: _empty_plan(strategy, offset)
                 for strategy, offset in zip(
-                    (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25),
-                    (0, 360, 720),
+                    (Strategy.TOMORROW, Strategy.D25),
+                    (0, 360),
                     strict=True,
                 )
             },
@@ -65,13 +65,13 @@ def test_candidate_plan_resolves_only_the_strategies_that_own_failed_codes() -> 
         {
             strategy: _empty_plan(strategy, offset)
             for strategy, offset in zip(
-                (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25),
-                (0, 360, 720),
+                (Strategy.TOMORROW, Strategy.D25),
+                (0, 360),
                 strict=True,
             )
         },
         limit_per_board=120,
     )
 
-    assert plans.strategies_for_codes({"000000"}) == frozenset({Strategy.TODAY})
-    assert plans.strategies_for_codes({"000360", "000720"}) == frozenset({Strategy.TOMORROW, Strategy.D25})
+    assert plans.strategies_for_codes({"000000"}) == frozenset({Strategy.TOMORROW})
+    assert plans.strategies_for_codes({"000000", "000360"}) == frozenset({Strategy.TOMORROW, Strategy.D25})

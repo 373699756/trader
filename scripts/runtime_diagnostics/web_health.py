@@ -30,18 +30,18 @@ from .web_health_contract import (
 )
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
-_STRATEGIES = ("today", "tomorrow", "d25")
+_STRATEGIES = ("tomorrow", "d25")
 _SCORING_PHASES = frozenset(
     {
-        "today_observe",
-        "today_main",
-        "today_late",
+        "morning_observe",
+        "morning_main",
+        "morning_late",
         "afternoon",
         "final_review",
         "final_quote",
     }
 )
-_TODAY_SCORING_PHASES = frozenset({"today_observe", "today_main", "today_late"})
+_MORNING_SCORING_PHASES = frozenset({"morning_observe", "morning_main", "morning_late"})
 _MONITORED_PIPELINE_COUNTS = (
     "issuer_eligible_population",
     "input_ready_population",
@@ -58,7 +58,7 @@ _MONITORED_PIPELINE_COUNTS = (
     "full_scored",
 )
 _MAX_RESPONSE_BYTES = 1_048_576
-_TODAY_QUOTE_MAX_AGE_SECONDS = 20.0
+_MORNING_QUOTE_MAX_AGE_SECONDS = 20.0
 _OTHER_SHORT_QUOTE_MAX_AGE_SECONDS = 30.0
 _REPORT_SCHEMA_VERSION = "web_recommendation_health"
 _EvidenceValue = str | int | float | bool | None
@@ -163,8 +163,8 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
     if status.phase in _SCORING_PHASES and (status.candidate_quote_entries or 0) > 0:
         candidate_age = status.candidate_quote_age
         age_limit = (
-            _TODAY_QUOTE_MAX_AGE_SECONDS
-            if status.phase in _TODAY_SCORING_PHASES
+            _MORNING_QUOTE_MAX_AGE_SECONDS
+            if status.phase in _MORNING_SCORING_PHASES
             else _OTHER_SHORT_QUOTE_MAX_AGE_SECONDS
         )
         if candidate_age.p95_seconds is None:
@@ -859,7 +859,7 @@ def _strategy_expected_to_score(sample: WebSample, strategy: str) -> bool:
     phase = status.phase
     if phase not in _SCORING_PHASES:
         return False
-    return strategy != "today" or phase in _TODAY_SCORING_PHASES
+    return strategy in _STRATEGIES
 
 
 def _strategy_quality(sample: WebSample, strategy: str) -> InputQualitySnapshot | None:

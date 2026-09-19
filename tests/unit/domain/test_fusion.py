@@ -4,18 +4,18 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from trader.domain.market.models import Evidence
-from trader.domain.recommendation.models import FusionMode
-from trader.domain.recommendation.risk_fusion.fusion import DIMENSION_NAMES, FusionPolicy, FusionRequest, fuse_score
-from trader.domain.recommendation.strategies.composition import LocalScoreResult
-from trader.domain.review.models import (
+from trader.recommendation.domain.market.models import Evidence
+from trader.recommendation.domain.publication.models import FusionMode
+from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES, FusionPolicy, FusionRequest, fuse_score
+from trader.recommendation.domain.candidate.composition import LocalScoreResult
+from trader.recommendation.domain.evidence.review import (
     DeepSeekReview,
     DimensionAssessment,
     ReviewOutcome,
     RiskFact,
     RiskRule,
 )
-from trader.domain.review.rules import deepseek_risk_rule_code
+from trader.recommendation.domain.risk.rules import deepseek_risk_rule_code
 
 DIMENSION_WEIGHTS = {name: 0.2 for name in DIMENSION_NAMES}
 NOW = datetime(2026, 7, 16, 14, 30, tzinfo=timezone.utc)

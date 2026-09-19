@@ -2,15 +2,10 @@
 
 from __future__ import annotations
 
-import json
-from importlib import resources
 from pathlib import Path
-from typing import cast
 
 from trader.application.ports.model_scoring import LoadedScoringProfile
-from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
-from trader.infra.scoring.profiles.v1.artifact_codec import decode_tomorrow_artifact as decode_v1_artifact
-from trader.infra.scoring.profiles.v1.profile import build_scoring_profile as build_v1_profile
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.infra.artifacts.bundle_codec import load_head_bundle
 from trader.training.infra.artifacts.bundle_locator import locate_head_bundles
 from trader.training.infra.artifacts.profile import build_trained_scoring_profile
@@ -25,9 +20,6 @@ def load_scoring_profile(
 ) -> LoadedScoringProfile:
     """Load one authorized profile without exposing artifact details to callers."""
 
-    if profile_id == "v1":
-        v1_artifact = decode_v1_artifact(_profile_resource_payload("v1"))
-        return build_v1_profile(v1_artifact)
     if profile_id in {"v2", "v3"}:
         try:
             profile = V2_TRAINING_PROFILE if profile_id == "v2" else V3_TRAINING_PROFILE
@@ -39,14 +31,5 @@ def load_scoring_profile(
         except (OSError, TypeError, ValueError) as exc:
             raise RuntimeError("shared strategy-head training models are invalid") from exc
     raise ValueError("unknown scoring profile")
-
-
-def _profile_resource_payload(profile_id: ScoringProfileId) -> dict[str, object]:
-    package = f"trader.infra.scoring.profiles.{profile_id}"
-    raw = json.loads(resources.files(package).joinpath("model.json").read_text(encoding="utf-8"))
-    if not isinstance(raw, dict):
-        raise TypeError("packaged scoring model must be a JSON object")
-    return cast(dict[str, object], raw)
-
 
 __all__ = ["load_scoring_profile"]

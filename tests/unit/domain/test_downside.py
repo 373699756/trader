@@ -4,8 +4,8 @@ from dataclasses import replace
 
 import pytest
 
-from trader.domain.recommendation.models import Strategy
-from trader.domain.recommendation.risk_fusion.downside import EntrySetup, assess_downside, derive_entry_setup
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.risk.downside import EntrySetup, assess_downside, derive_entry_setup
 
 
 def test_heat_alone_does_not_trigger_downside_guard(feature_factory) -> None:

@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from trader.domain.market.models import CanonicalMarketSnapshot
+from trader.recommendation.domain.market.models import CanonicalMarketSnapshot
 from trader.infra.market_data.normalization import columnar_merge as columnar_merge_module
 from trader.infra.market_data.normalization.columnar_merge import (
     CompleteRealtimeNormalization,

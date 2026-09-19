@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal, Protocol
 
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 from trader.download.domain.baostock_daily import BaoStockTrainingSplit
 
 TomorrowTrainingStage = Literal[

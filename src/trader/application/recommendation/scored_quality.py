@@ -10,9 +10,9 @@ from types import MappingProxyType
 from typing import Literal
 
 from trader.application.ports.scored import ScoredNativeInput
-from trader.domain.market.models import Board, FeatureSnapshot
-from trader.domain.recommendation.models import ScoredDisposition, ScoredSelectionResult, ScoredStockEvaluation
-from trader.domain.recommendation.selection.scored_selection import (
+from trader.recommendation.domain.market.models import Board, FeatureSnapshot
+from trader.recommendation.domain.publication.models import ScoredDisposition, ScoredSelectionResult, ScoredStockEvaluation
+from trader.recommendation.domain.selection.scored_selection import (
     ScoredCandidatePlan,
     ScoredCandidateStageCounts,
 )

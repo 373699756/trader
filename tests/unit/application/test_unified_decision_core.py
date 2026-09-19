@@ -8,13 +8,13 @@ from zoneinfo import ZoneInfo
 from tests.unit.domain.test_decision_identity import NOW, decision
 from trader.application.decisions.decision_core import UnifiedDecisionIndex
 from trader.application.decisions.decision_events import DecisionCommitted
-from trader.domain.recommendation.decision_identity import (
+from trader.recommendation.domain.publication.decision_identity import (
     DecisionOverlay,
     DecisionQuote,
     LongProjection,
     LongProjectionItem,
 )
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 
 
 def test_unified_index_allows_one_concurrent_expected_version_winner() -> None:
@@ -85,9 +85,9 @@ def test_index_rejects_late_sequence_date_and_cross_date_hybrid_parent() -> None
 def test_strategies_and_overlays_are_cas_isolated() -> None:
     index = UnifiedDecisionIndex()
     tomorrow = decision(Strategy.TOMORROW)
-    today = decision(Strategy.TODAY)
+    d25 = decision(Strategy.D25)
     assert index.publish(tomorrow, expected_version=None).accepted
-    assert index.publish(today, expected_version=None).accepted
+    assert index.publish(d25, expected_version=None).accepted
     overlay = DecisionOverlay(
         Strategy.TOMORROW,
         tomorrow.trade_date,
@@ -97,8 +97,8 @@ def test_strategies_and_overlays_are_cas_isolated() -> None:
     )
 
     assert index.publish_overlay(overlay, expected_version=None).accepted
-    assert index.snapshot(Strategy.TODAY).current == today
-    assert index.snapshot(Strategy.TODAY).overlay is None
+    assert index.snapshot(Strategy.D25).current == d25
+    assert index.snapshot(Strategy.D25).overlay is None
     assert index.snapshot(Strategy.TOMORROW).overlay == overlay
     assert index.publish_overlay(overlay, expected_version=None).reason == "overlay_cas_mismatch"
 

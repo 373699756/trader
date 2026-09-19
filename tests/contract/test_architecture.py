@@ -155,14 +155,12 @@ def test_model_scoring_router_is_profile_agnostic_and_replaces_tomorrow_specific
     assert "model_scoring: ModelScoringPort" in input_runtime
 
 
-def test_v1_scoring_profile_owns_its_codec_predictor_and_evidence() -> None:
+def test_v1_scoring_profile_is_retired() -> None:
     v1_root = SOURCE_ROOT / "infra/scoring/profiles/v1"
     factory = (SOURCE_ROOT / "infra/scoring/profile_factory.py").read_text(encoding="utf-8")
 
-    assert (v1_root / "artifact_codec.py").is_file()
-    assert (v1_root / "profile.py").is_file()
-    assert (v1_root / "heads/tomorrow/predictor.py").is_file()
-    assert "build_v1_profile" in factory
+    assert not any(v1_root.rglob("*.py"))
+    assert "build_v1_profile" not in factory
     assert not (SOURCE_ROOT / "infra/tomorrow_production_model.py").exists()
 
 
@@ -339,7 +337,7 @@ def test_internal_state_is_typed_until_an_explicit_observability_boundary() -> N
 
 
 def test_identity_and_audit_payloads_have_one_explicit_field_projection() -> None:
-    identity = (SOURCE_ROOT / "domain/recommendation/decision_identity.py").read_text(encoding="utf-8")
+    identity = (SOURCE_ROOT / "recommendation/domain/publication/decision_identity.py").read_text(encoding="utf-8")
     codec = (SOURCE_ROOT / "infra/persistence/decision_record_codec.py").read_text(encoding="utf-8")
     audit = (SOURCE_ROOT / "training/evaluation/application/research_audit.py").read_text(encoding="utf-8")
     columnar = (SOURCE_ROOT / "infra/market_data/normalization/columnar.py").read_text(encoding="utf-8")
@@ -363,7 +361,7 @@ def test_identity_and_audit_payloads_have_one_explicit_field_projection() -> Non
 def test_tomorrow_holdout_serializer_uses_an_explicit_public_field_whitelist() -> None:
     paths = (
         SOURCE_ROOT / "training/infra/research/point_in_time_dataset_artifacts.py",
-        SOURCE_ROOT / "training/infra/research/tomorrow_profile_holdout_artifacts.py",
+        SOURCE_ROOT / "training/infra/research/tomorrow_point_in_time_holdout_artifacts.py",
     )
     violations: list[str] = []
     for path in paths:

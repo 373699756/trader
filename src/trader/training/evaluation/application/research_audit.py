@@ -12,10 +12,10 @@ from typing import Literal
 
 from trader.application.decisions.decision_events import DecisionCommitted
 from trader.application.recommendation.scored_projection import ScoredLocalProjection
-from trader.domain.recommendation.decision_identity import ScoredDecision
-from trader.domain.recommendation.models import ScoredDisposition
-from trader.domain.recommendation.risk_fusion.scored_fusion import ScoredDecisionEntry
-from trader.domain.recommendation.scoring.scoring import candidate_fields
+from trader.recommendation.domain.publication.decision_identity import ScoredDecision
+from trader.recommendation.domain.publication.models import ScoredDisposition
+from trader.recommendation.domain.risk.scored_fusion import ScoredDecisionEntry
+from trader.recommendation.domain.scoring.scoring import candidate_fields
 
 LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION = "committed_research_audit_legacy"
 RESEARCH_AUDIT_SCHEMA_VERSION = "committed_research_audit"

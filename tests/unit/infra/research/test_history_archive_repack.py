@@ -11,7 +11,7 @@ import pytest
 
 import trader.download.infra.history_archive_repack as repack_module
 import trader.training.infra.history.history_training_due as due_module
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
 from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
@@ -290,7 +290,7 @@ def test_fenced_v3_training_uses_one_request_for_all_heads(tmp_path: Path, monke
     )
 
     assert result.heads == ()
-    assert captured == [(Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)]
+    assert captured == [(Strategy.TOMORROW, Strategy.D25)]
 
 
 def test_physical_repack_does_not_create_revision_due_or_invalidate_training_cache(

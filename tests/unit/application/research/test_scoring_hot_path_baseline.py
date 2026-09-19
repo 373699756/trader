@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 from trader.training.evaluation.application.scoring_hot_path_baseline import (
     ScoringHotPathEquivalence,
     ScoringHotPathLatency,
@@ -51,7 +51,7 @@ def test_empty_recommendation_keeps_candidate_and_epoch_denominators() -> None:
 
 def test_baseline_groups_strategy_phase_and_records_freeze_completion_rate() -> None:
     report = build_scoring_hot_path_baseline(
-        (_epoch(Strategy.TODAY, candidates=2), _epoch(Strategy.TODAY, candidates=1, completed=False)),
+        (_epoch(Strategy.TOMORROW, candidates=2), _epoch(Strategy.TOMORROW, candidates=1, completed=False)),
         latencies=(ScoringHotPathLatency("local_scoring", 1.0, 2.0, 3.0, 2),),
         formal_current_decision_count=1,
         formal_frozen_decision_count=1,
@@ -69,8 +69,8 @@ def test_baseline_groups_strategy_phase_and_records_freeze_completion_rate() -> 
 
 def test_epoch_rejects_invalid_changed_code_and_over_recomputation() -> None:
     with pytest.raises(ValueError, match="six digits"):
-        _epoch(Strategy.TODAY).__class__(
-            Strategy.TODAY,
+        _epoch(Strategy.TOMORROW).__class__(
+            Strategy.TOMORROW,
             "afternoon",
             "test:today:epoch",
             ("bad",),
@@ -79,4 +79,4 @@ def test_epoch_rejects_invalid_changed_code_and_over_recomputation() -> None:
             1,
         )
     with pytest.raises(ValueError, match="cannot exceed"):
-        ScoringInputEpoch(Strategy.TODAY, "afternoon", "test:today:epoch", (), 1, 2, 1)
+        ScoringInputEpoch(Strategy.TOMORROW, "afternoon", "test:today:epoch", (), 1, 2, 1)

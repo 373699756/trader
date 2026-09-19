@@ -19,7 +19,7 @@ from trader.application.recommendation.scored_selection import (
     ScoredSelectionUseCase,
     assemble_scored_features,
 )
-from trader.domain.market.epochs import (
+from trader.recommendation.domain.market.epochs import (
     CandidateFeatureRow,
     CandidateQuoteEpoch,
     DailyFeaturePack,
@@ -27,13 +27,13 @@ from trader.domain.market.epochs import (
     MarketEpoch,
     ResearchEpoch,
 )
-from trader.domain.market.models import Board, Evidence, LiveQuote, MarketQuote
-from trader.domain.market.research import (
+from trader.recommendation.domain.market.models import Board, Evidence, LiveQuote, MarketQuote
+from trader.recommendation.domain.market.research import (
     CorporateRiskCategory,
     CorporateRiskFact,
     ResearchObservation,
 )
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 7, 28, 14, 40, tzinfo=SHANGHAI)

@@ -6,14 +6,14 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from trader.domain.market.models import (
+from trader.recommendation.domain.market.models import (
     Evidence,
     FeatureSnapshot,
     MarketQuote,
 )
-from trader.domain.recommendation.models import Strategy
-from trader.domain.recommendation.risk_fusion.fusion import DIMENSION_NAMES
-from trader.domain.review.models import (
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES
+from trader.recommendation.domain.evidence.review import (
     ReviewCandidateContext,
     ReviewOutcome,
 )
@@ -55,9 +55,9 @@ def test_finish_reason_length_uses_the_single_schema_repair_attempt(tmp_path) ->
     )
 
     result = reviewer.review(
-        Strategy.TODAY,
+        Strategy.TOMORROW,
         (candidate,),
-        phase="today_main",
+        phase="morning_main",
         deadline=NOW + timedelta(minutes=1),
     )
 
@@ -92,9 +92,9 @@ def test_reviewer_runs_bounded_challenger_and_persists_model_audit(tmp_path) -> 
 
     reviewer = _reviewer(budget, post=post, hard_limit=2, challenger_limit=1)
     result = reviewer.review(
-        Strategy.TODAY,
+        Strategy.TOMORROW,
         (candidate,),
-        phase="today_main",
+        phase="morning_main",
         deadline=NOW + timedelta(minutes=1),
         contexts={candidate.quote.code: ReviewCandidateContext(70.0, 1, 70.0, True)},
     )
@@ -138,16 +138,16 @@ def test_reviewer_reuses_strategy_scoped_challenger_cache_without_physical_calls
     context = {candidate.quote.code: ReviewCandidateContext(70.0, 1, 70.0, True)}
 
     first = reviewer.review(
-        Strategy.TODAY,
+        Strategy.TOMORROW,
         (candidate,),
-        phase="today_main",
+        phase="morning_main",
         deadline=NOW + timedelta(minutes=1),
         contexts=context,
     )
     second = reviewer.review(
-        Strategy.TODAY,
+        Strategy.TOMORROW,
         (candidate,),
-        phase="today_main",
+        phase="morning_main",
         deadline=NOW + timedelta(minutes=1),
         contexts=context,
     )
@@ -186,9 +186,9 @@ def test_challenger_schema_repair_round_trips_transient_reasoning_content(tmp_pa
 
     reviewer = _reviewer(budget, post=post, hard_limit=3, challenger_limit=2)
     result = reviewer.review(
-        Strategy.TODAY,
+        Strategy.TOMORROW,
         (candidate,),
-        phase="today_main",
+        phase="morning_main",
         deadline=NOW + timedelta(minutes=1),
         contexts={candidate.quote.code: ReviewCandidateContext(70.0, 1, 70.0, True)},
     )
@@ -210,9 +210,9 @@ def test_challenger_schema_failure_keeps_valid_primary_review(tmp_path) -> None:
 
     reviewer = _reviewer(budget, post=post, hard_limit=3, challenger_limit=2)
     result = reviewer.review(
-        Strategy.TODAY,
+        Strategy.TOMORROW,
         (candidate,),
-        phase="today_main",
+        phase="morning_main",
         deadline=NOW + timedelta(minutes=1),
         contexts={candidate.quote.code: ReviewCandidateContext(70.0, 1, 70.0, True)},
     )
@@ -271,16 +271,16 @@ def test_budget_enforces_challenger_limit_inside_strategy_bucket(tmp_path) -> No
     ledger = _budget(tmp_path / "runtime.sqlite3", hard_limit=2, challenger_limit=1)
 
     first = ledger.reserve(
-        Strategy.TODAY,
-        phase="today_main",
+        Strategy.TOMORROW,
+        phase="morning_main",
         requested_at=NOW,
         model_role="challenger",
         requested_model="deepseek-v4-pro",
         reasoning_effort="high",
     )
     second = ledger.reserve(
-        Strategy.TODAY,
-        phase="today_main",
+        Strategy.TOMORROW,
+        phase="morning_main",
         requested_at=NOW,
         model_role="challenger",
         requested_model="deepseek-v4-pro",
@@ -305,20 +305,19 @@ def _reviewer(
         base_url="https://api.deepseek.com",
         model="deepseek-v4-flash",
         challenger_model="deepseek-v4-pro",
-        challenger_limits={"today": challenger_limit, "tomorrow": 0, "d25": 0},
+        challenger_limits={"tomorrow": challenger_limit, "d25": 0},
         timeout_seconds=1.0,
         batch_size=8,
         max_tokens=256,
         daily_hard_limit=hard_limit,
         strategy_limits={
-            "today": hard_limit,
-            "tomorrow": 0,
+            "tomorrow": hard_limit,
             "d25": 0,
             "shared_preheat": 0,
             "emergency": 0,
         },
-        stage_targets={"today_main": 0},
-        stage_limits={"today_main": hard_limit},
+        stage_targets={"tomorrow_morning": 0},
+        stage_limits={"tomorrow_morning": hard_limit},
         api_key="secret",
     )
     weights = {name: 0.2 for name in DIMENSION_NAMES}
@@ -340,15 +339,14 @@ def _budget(path, *, hard_limit: int, challenger_limit: int) -> DeepSeekBudgetLe
         path,
         daily_hard_limit=hard_limit,
         strategy_limits={
-            "today": hard_limit,
-            "tomorrow": 0,
+            "tomorrow": hard_limit,
             "d25": 0,
             "shared_preheat": 0,
             "emergency": 0,
         },
-        stage_targets={"today_main": 0},
-        stage_limits={"today_main": hard_limit},
-        challenger_limits={"today": challenger_limit, "tomorrow": 0, "d25": 0},
+        stage_targets={"tomorrow_morning": 0},
+        stage_limits={"tomorrow_morning": hard_limit},
+        challenger_limits={"tomorrow": challenger_limit, "d25": 0},
     )
     ledger.initialize()
     return ledger

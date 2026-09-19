@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from trader.domain.market.feature_contracts import (
+from trader.recommendation.domain.market.feature_contracts import (
     FEATURE_SPEC_CATALOG,
     FeatureId,
     FeatureSpec,

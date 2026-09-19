@@ -31,8 +31,8 @@ from trader.application.decisions.decision_drafts import UnifiedDecisionDraftInd
 from trader.application.decisions.decision_queries import UnifiedDecisionQueries  # noqa: E402
 from trader.application.decisions.decision_stream import UnifiedDecisionEventStream  # noqa: E402
 from trader.application.ports.decision_records import CommittedDecisionRecord  # noqa: E402
-from trader.domain.market.models import Board  # noqa: E402
-from trader.domain.recommendation.decision_identity import (  # noqa: E402
+from trader.recommendation.domain.market.models import Board  # noqa: E402
+from trader.recommendation.domain.publication.decision_identity import (  # noqa: E402
     DecisionItem,
     DecisionQuote,
     LongProjection,
@@ -40,7 +40,7 @@ from trader.domain.recommendation.decision_identity import (  # noqa: E402
     ScoredDecision,
     SelectionDiagnostics,
 )
-from trader.domain.recommendation.models import RecommendationAction, Strategy  # noqa: E402
+from trader.recommendation.domain.publication.models import RecommendationAction, Strategy  # noqa: E402
 from trader.web import create_app  # noqa: E402
 from trader.web.api.route_services import UnifiedWebServices  # noqa: E402
 

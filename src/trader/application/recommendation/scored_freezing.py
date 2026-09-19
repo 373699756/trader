@@ -14,13 +14,13 @@ from trader.application.ports.decision_records import (
     DecisionRecordError,
     DecisionRecordRepositoryPort,
 )
-from trader.domain.recommendation.decision_identity import (
+from trader.recommendation.domain.publication.decision_identity import (
     CommitKind,
     CommittedDecisionRecord,
     ScoredDecision,
     formal_scored_decision,
 )
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 CloseRecoveryPath = Literal["current", "close_rebuild"]

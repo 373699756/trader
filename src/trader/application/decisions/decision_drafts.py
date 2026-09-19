@@ -5,8 +5,8 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 
-from trader.domain.recommendation.decision_identity import ScoredDecision
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.decision_identity import ScoredDecision
+from trader.recommendation.domain.publication.models import Strategy
 
 
 @dataclass(frozen=True)

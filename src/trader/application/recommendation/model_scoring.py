@@ -16,8 +16,8 @@ from trader.application.ports.model_scoring import (
     ModelScoringPort,
     ScoringProfileRuntimeStatus,
 )
-from trader.domain.market.models import FeatureSnapshot
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.publication.models import Strategy
 
 
 @dataclass(frozen=True)

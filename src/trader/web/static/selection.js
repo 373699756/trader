@@ -2,7 +2,6 @@
   "use strict";
 
   const descriptions = Object.freeze({
-    today: "盘中短线 · 面向 T+1 · 11:20 冻结",
     tomorrow: "尾盘策略 · 面向 T+1 · 14:50 冻结",
     d25: "尾盘策略 · 面向 T+2 至 T+5 · 14:50 冻结",
     long: "长期研究 · 仅展示当前数据",
@@ -10,15 +9,15 @@
 
   function initialStrategy(statusPayload) {
     const strategies = statusPayload && statusPayload.strategies;
-    if (!strategies || typeof strategies !== "object") return "today";
-    const ordered = ["today", "tomorrow", "d25", "long"];
+    if (!strategies || typeof strategies !== "object") return "tomorrow";
+    const ordered = ["tomorrow", "d25", "long"];
     const withItems = ordered.find((strategy) => {
       const status = strategies[strategy];
       const selected = Number(status && status.coverage && status.coverage.selected_count);
       return status && status.status === "ready" && Number.isFinite(selected) && selected > 0;
     });
     if (withItems) return withItems;
-    return ordered.find((strategy) => strategies[strategy] && strategies[strategy].status === "ready") || "today";
+    return ordered.find((strategy) => strategies[strategy] && strategies[strategy].status === "ready") || "tomorrow";
   }
 
   function currentViewMatches(strategy, payloadView) {
@@ -82,9 +81,9 @@
     if (payload.frozen === true) return "closed_frozen";
     if (typeof runtimePhase !== "string" || !runtimePhase) return "unknown";
     const morningPhases = new Set([
-      "today_observe",
-      "today_main",
-      "today_late",
+      "morning_observe",
+      "morning_main",
+      "morning_late",
     ]);
     const afternoonPhases = new Set([
       "midday",
@@ -93,9 +92,7 @@
       "deepseek_cutoff",
       "final_quote",
     ]);
-    const active = payload.strategy === "today"
-      ? morningPhases.has(runtimePhase)
-      : morningPhases.has(runtimePhase) || afternoonPhases.has(runtimePhase);
+    const active = morningPhases.has(runtimePhase) || afternoonPhases.has(runtimePhase);
     if (!active) return "closed_market";
     if (payload.status === "not_ready") {
       if (payload.draft) {
@@ -153,7 +150,7 @@
   }
 
   function strategyLabel(strategy) {
-    return ({ today: "今", tomorrow: "明", d25: "2-5", long: "长期" })[strategy] || strategy;
+    return ({ tomorrow: "明", d25: "2-5", long: "长期" })[strategy] || strategy;
   }
 
   function appendOption(select, value, text) {

@@ -370,11 +370,11 @@ class HistoricalExtraction:
     days: tuple[HistoricalExtractedDay, ...]
     research_identity: str = dataclasses.field(
         default=HISTORICAL_RESEARCH_SPEC.research_identity,
-        metadata={"exclude_from_v1_hash": True},
+        metadata={"exclude_from_legacy_hash": True},
     )
     research_spec_hash: str = dataclasses.field(
         default=HISTORICAL_RESEARCH_SPEC.content_hash,
-        metadata={"exclude_from_v1_hash": True},
+        metadata={"exclude_from_legacy_hash": True},
     )
     schema_version: str = "historical_extraction_legacy"
     content_hash: str = dataclasses.field(init=False)
@@ -422,7 +422,7 @@ def _canonical_value(value: object) -> object:
         return {
             field.name: _canonical_value(getattr(value, field.name))
             for field in dataclasses.fields(value)
-            if field.init and not (legacy_identity and field.metadata.get("exclude_from_v1_hash", False))
+            if field.init and not (legacy_identity and field.metadata.get("exclude_from_legacy_hash", False))
         }
     if isinstance(value, (date, datetime)):
         return value.isoformat()

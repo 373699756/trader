@@ -19,11 +19,11 @@ def _is_scoring_profile_path(path: Path) -> bool:
         relative = path.relative_to(_SCORING_PROFILE_ROOT)
     except ValueError:
         scoring_unit_test = path.parent == _SCORING_PROFILE_TEST_ROOT and re.fullmatch(
-            r"test_v[123]_[a-z0-9_]+\.py", path.name
+            r"test_v[23]_[a-z0-9_]+\.py", path.name
         )
         scoring_document_test = path == ROOT / "tests" / "contract" / "test_tomorrow_v3_document_contract.py"
         return scoring_unit_test or scoring_document_test
-    return bool(relative.parts) and relative.parts[0] in {"v1", "v2", "v3"}
+    return bool(relative.parts) and relative.parts[0] in {"v2", "v3"}
 
 
 def test_numbered_names_are_owned_only_by_scoring_profile_directories() -> None:
@@ -61,7 +61,7 @@ def test_active_configuration_has_no_numbered_version_controllers() -> None:
             for index, item in enumerate(value):
                 inspect(item, f"{location}[{index}]")
         elif isinstance(value, str):
-            if value in {"v1", "v2", "v3"}:
+            if value in {"v2", "v3"}:
                 return
             if value.startswith("deepseek-v"):
                 return
@@ -76,7 +76,7 @@ def test_active_configuration_has_no_numbered_version_controllers() -> None:
 
 def test_production_feature_contract_has_no_historical_stage_prefixes() -> None:
     production_files = (
-        SOURCE / "domain" / "market" / "factors.py",
+        SOURCE / "recommendation" / "domain" / "market" / "factors.py",
         SOURCE / "application" / "recommendation" / "production_model_scoring.py",
         SOURCE / "infra" / "market_data" / "normalization" / "features.py",
         SOURCE / "entrypoints" / "performance.py",

@@ -8,11 +8,11 @@ from datetime import date, datetime
 from enum import Enum
 from typing import Literal
 
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 
 
 def outcome_horizons(strategy: Strategy) -> tuple[int, ...]:
-    if strategy in {Strategy.TODAY, Strategy.TOMORROW}:
+    if strategy is Strategy.TOMORROW:
         return (1,)
     if strategy is Strategy.D25:
         return (2, 3, 4, 5)

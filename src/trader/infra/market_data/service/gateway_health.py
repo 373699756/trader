@@ -9,7 +9,7 @@ from types import MappingProxyType
 from trader.application.cache import CacheStatus
 from trader.application.runtime.latency import LatencyWaterfallStatus
 from trader.application.runtime.source_lanes import SourceLaneRegistryStatus
-from trader.domain.market.models import CanonicalMarketSnapshot
+from trader.recommendation.domain.market.models import CanonicalMarketSnapshot
 from trader.infra.market_data.normalization.columnar import NormalizedMarketChangeSet
 from trader.infra.market_data.service.router import RouteOutcome
 

@@ -7,10 +7,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from trader.application.cache import CachePolicy
-from trader.domain.market.news import NewsSignalPolicy
-from trader.domain.market.research import FeatureComponentWeightPolicy, LongResearchPolicy, MarketRegimePolicy
-from trader.domain.market.tail import TailSignalPolicy
-from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
+from trader.recommendation.domain.market.news import NewsSignalPolicy
+from trader.recommendation.domain.market.research import FeatureComponentWeightPolicy, LongResearchPolicy, MarketRegimePolicy
+from trader.recommendation.domain.market.tail import TailSignalPolicy
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 
 
 @dataclass(frozen=True)
@@ -225,7 +225,7 @@ class StrategySettings:
     fusion: FusionSettings
     selection: SelectionSettings
     hard_filters: HardFilterSettings
-    today_news_signal: NewsSignalPolicy
+    news_signal: NewsSignalPolicy
     tomorrow_tail_signal: TailSignalPolicy
     market_regime: MarketRegimePolicy
     long_research: LongResearchPolicy

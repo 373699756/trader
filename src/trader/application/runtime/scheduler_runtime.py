@@ -73,13 +73,13 @@ from trader.application.runtime.schedule_requests import (
 )
 from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
 from trader.application.runtime.workers import BoundedExecutor
-from trader.domain.recommendation.decision_identity import (
+from trader.recommendation.domain.publication.decision_identity import (
     DecisionIdentity,
     LongProjection,
     ScoredDecision,
     identity_codes,
 )
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 
 _DATA_TASKS = (
     PipelineTask.FULL_MARKET,
@@ -247,7 +247,7 @@ class SchedulerRuntime:
                     lambda request: f"hybrid:{request.cycle.strategy.value}",
                 ),
             )
-            for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+            for strategy in (Strategy.TOMORROW, Strategy.D25)
         }
         self._task_lanes: dict[PipelineTask, LatestWinsWorker[ScheduledPipelineTask]] = {
             task: LatestWinsWorker(
@@ -558,7 +558,7 @@ class SchedulerRuntime:
 
     def _selected_overlay_codes(self) -> tuple[str, ...]:
         codes: list[str] = []
-        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
+        for strategy in (Strategy.TOMORROW, Strategy.D25):
             snapshot = self._dependencies.index.snapshot(strategy)
             identity = snapshot.formal.decision if snapshot.formal is not None else snapshot.current
             if isinstance(identity, ScoredDecision):
@@ -566,7 +566,7 @@ class SchedulerRuntime:
         return tuple(dict.fromkeys(codes))
 
     def _refresh_selected_overlays(self, scheduled: ScheduledPipelineTask) -> None:
-        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
+        for strategy in (Strategy.TOMORROW, Strategy.D25):
             snapshot = self._dependencies.index.snapshot(strategy)
             if (
                 not isinstance(snapshot.current, ScoredDecision)
@@ -589,7 +589,7 @@ class SchedulerRuntime:
         for strategy in Strategy:
             if not self._lanes[strategy].wait_idle(max(0.0, deadline - time.monotonic())):
                 return False
-        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
+        for strategy in (Strategy.TOMORROW, Strategy.D25):
             if not self._hybrid_lanes[strategy].wait_idle(max(0.0, deadline - time.monotonic())):
                 return False
         while self._control.status().inflight > 0:
@@ -629,7 +629,7 @@ class SchedulerRuntime:
         steps.extend(self._lanes[strategy].stop(deadline=deadline) for strategy in Strategy)
         steps.extend(
             self._hybrid_lanes[strategy].stop(deadline=deadline)
-            for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+            for strategy in (Strategy.TOMORROW, Strategy.D25)
         )
         steps.append(self._dependencies.observer.stop(deadline=deadline))
         steps.append(self._research.stop(wait=True, deadline=deadline))
@@ -649,7 +649,7 @@ class SchedulerRuntime:
                 lanes=tuple(self._lanes[strategy].status() for strategy in Strategy),
                 hybrid_lanes=tuple(
                     self._hybrid_lanes[strategy].status()
-                    for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+                    for strategy in (Strategy.TOMORROW, Strategy.D25)
                 ),
                 task_lanes=tuple(self._task_lanes[task].status() for task in _DATA_LANES),
                 cadence=self._dependencies.cadence.status(),
@@ -693,7 +693,7 @@ class SchedulerRuntime:
             while sequence <= current_sequence:
                 sequence += 2
             self._sequences[strategy] = sequence + 1
-        deadline_time = wall_time(11, 18) if strategy is Strategy.TODAY else wall_time(14, 48)
+        deadline_time = wall_time(14, 48)
         review_deadline = datetime.combine(observed_at.date(), deadline_time, tzinfo=SHANGHAI)
         allow_review = strategy is not Strategy.LONG and phase != "midday_recovery" and observed_at < review_deadline
         return CycleRequest(
@@ -802,8 +802,6 @@ class SchedulerRuntime:
         if not schedule.should_score:
             return
         strategies: tuple[Strategy, ...] = (Strategy.TOMORROW, Strategy.D25)
-        if schedule.phase in {MarketPhase.TODAY_OBSERVE, MarketPhase.TODAY_MAIN, MarketPhase.TODAY_LATE}:
-            strategies = (*strategies, Strategy.TODAY)
         risk_version = research_input_version(result)
         for strategy in strategies:
             current = self._dependencies.index.snapshot(strategy).current
@@ -954,8 +952,6 @@ class SchedulerRuntime:
         strategies: tuple[Strategy, ...] = ()
         if decision.should_score:
             strategies = (Strategy.TOMORROW, Strategy.D25)
-            if decision.phase in {MarketPhase.TODAY_OBSERVE, MarketPhase.TODAY_MAIN, MarketPhase.TODAY_LATE}:
-                strategies = (*strategies, Strategy.TODAY)
         if decision.phase is not MarketPhase.AFTER_CLOSE and decision.should_refresh_market:
             strategies = (*strategies, Strategy.LONG)
         return strategies

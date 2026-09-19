@@ -71,7 +71,7 @@ class TargetMetric:
 
 
 class SQLiteTrainingSampleRepository:
-    """Own one temporary SQLite database shared by all three sequential fits."""
+    """Own one temporary SQLite database shared by both sequential fits."""
 
     def __init__(self, path: Path, feature_count: int) -> None:
         if feature_count < 1:

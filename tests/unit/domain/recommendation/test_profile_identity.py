@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from trader.domain.recommendation.model_scoring.profile_identity import (
+from trader.recommendation.domain.scoring.profile_identity import (
     SCORING_PROFILE_IDS,
     parse_scoring_profile,
 )
 
 
-def test_profile_identity_has_only_the_three_production_profiles() -> None:
-    assert SCORING_PROFILE_IDS == ("v1", "v2", "v3")
+def test_profile_identity_has_only_the_two_production_profiles() -> None:
+    assert SCORING_PROFILE_IDS == ("v2", "v3")
     assert tuple(parse_scoring_profile(value) for value in SCORING_PROFILE_IDS) == SCORING_PROFILE_IDS
 
 

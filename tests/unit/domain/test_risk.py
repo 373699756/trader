@@ -3,12 +3,12 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timedelta
 
-from trader.domain.recommendation.models import Strategy
-from trader.domain.review.models import (
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.evidence.review import (
     RiskFact,
     RiskRule,
 )
-from trader.domain.review.rules import (
+from trader.recommendation.domain.risk.rules import (
     Rating,
     aggregate_risk_penalty,
     deduplicate_risk_facts,
@@ -26,7 +26,7 @@ def _rule(
     *,
     group: str = "independent",
     mode: str = "additive",
-    strategies: tuple[str, ...] = ("today",),
+    strategies: tuple[str, ...] = ("tomorrow",),
 ) -> RiskRule:
     return RiskRule(
         code,
@@ -49,10 +49,10 @@ def test_local_risk_is_config_driven_auditable_and_stable(application_feature_fa
     feature = replace(feature, values={**feature.values, "custom_risk": 0.75})
     rule = _rule("configured_risk", "custom_risk", "gte", (0.75,), 5.0)
 
-    first = derive_local_risk_facts(feature, now, {rule.risk_code: rule}, strategy=Strategy.TODAY)
+    first = derive_local_risk_facts(feature, now, {rule.risk_code: rule}, strategy=Strategy.TOMORROW)
     later = now + timedelta(minutes=5)
     refreshed = replace(feature, observed_at=later)
-    second = derive_local_risk_facts(refreshed, later, {rule.risk_code: rule}, strategy=Strategy.TODAY)
+    second = derive_local_risk_facts(refreshed, later, {rule.risk_code: rule}, strategy=Strategy.TOMORROW)
 
     assert first[0].risk_fact_id == second[0].risk_fact_id
     assert first[0].risk_fact_id.startswith("risk_")
@@ -72,7 +72,7 @@ def test_expired_local_evidence_does_not_trigger(application_feature_factory) ->
         feature,
         now + timedelta(hours=1, seconds=1),
         {rule.risk_code: rule},
-        strategy=Strategy.TODAY,
+        strategy=Strategy.TOMORROW,
     )
 
     assert facts == ()
@@ -86,8 +86,8 @@ def test_missing_non_finite_and_wrong_strategy_do_not_trigger(application_featur
     non_finite = replace(base, values={**base.values, "custom_risk": float("nan")})
     present = replace(base, values={**base.values, "custom_risk": 1.0})
 
-    assert derive_local_risk_facts(missing, now, {rule.risk_code: rule}, strategy=Strategy.TODAY) == ()
-    assert derive_local_risk_facts(non_finite, now, {rule.risk_code: rule}, strategy=Strategy.TODAY) == ()
+    assert derive_local_risk_facts(missing, now, {rule.risk_code: rule}, strategy=Strategy.TOMORROW) == ()
+    assert derive_local_risk_facts(non_finite, now, {rule.risk_code: rule}, strategy=Strategy.TOMORROW) == ()
     assert derive_local_risk_facts(present, now, {rule.risk_code: rule}, strategy=Strategy.LONG) == ()
 
 

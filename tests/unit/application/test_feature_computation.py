@@ -5,7 +5,7 @@ from trader.application.market_data.feature_computation import (
     affected_feature_stages,
     build_feature_computation_plan,
 )
-from trader.domain.market.feature_contracts import (
+from trader.recommendation.domain.market.feature_contracts import (
     TOMORROW_MODEL_FEATURE_MANIFEST,
     TOMORROW_RAW_ALPHA_FEATURE_MANIFEST,
 )

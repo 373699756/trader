@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 
 _BATCH_TERMINALS = frozenset({"success", "partial", "failed", "skipped", "abandoned"})
 _CALL_TERMINALS = frozenset({"success", "failed", "abandoned"})

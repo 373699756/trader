@@ -4,7 +4,7 @@ import pytest
 
 from trader.application.ports.model_scoring import ScoringHeadRuntimeStatus
 from trader.application.recommendation.model_scoring_router import ModelScoringRouter
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 
 
 class _ScoringCapability:
@@ -41,26 +41,26 @@ class _ScoringCapability:
             monitoring_mode="automatic_t1_outcome_settlement",
             automatic_model_update=False,
             loss_probability_status="not_modeled",
-            runtime_anchor="11:20" if self.strategy is Strategy.TODAY else "14:50",
+            runtime_anchor="14:50",
         )
 
 
-def test_v1_v2_router_keeps_today_and_d25_on_rule_scoring() -> None:
+def test_v2_router_delegates_both_head_capabilities() -> None:
     tomorrow = _ScoringCapability("v2", Strategy.TOMORROW)
-    router = ModelScoringRouter("v2", {Strategy.TOMORROW: tomorrow})
+    d25 = _ScoringCapability("v2", Strategy.D25)
+    router = ModelScoringRouter("v2", {Strategy.TOMORROW: tomorrow, Strategy.D25: d25})
 
-    assert router.history_required_sessions(Strategy.TODAY) == 20
-    assert router.history_required_sessions(Strategy.D25) == 20
-    assert router.uses_model(Strategy.TODAY) is False
-    assert router.uses_model(Strategy.D25) is False
-    assert router.score(Strategy.TODAY, ()) is None
-    assert router.score(Strategy.D25, ()) is None
+    assert router.history_required_sessions(Strategy.TOMORROW) == 61
+    assert router.history_required_sessions(Strategy.D25) == 61
+    assert router.uses_model(Strategy.TOMORROW) is True
+    assert router.uses_model(Strategy.D25) is True
     assert router.score(Strategy.TOMORROW, ()) == "tomorrow-batch"
+    assert router.score(Strategy.D25, ()) == "d25-batch"
 
 
-def test_v3_router_delegates_three_independent_head_capabilities() -> None:
+def test_v3_router_delegates_two_independent_head_capabilities() -> None:
     capabilities = {
-        strategy: _ScoringCapability("v3", strategy) for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+        strategy: _ScoringCapability("v3", strategy) for strategy in (Strategy.TOMORROW, Strategy.D25)
     }
     router = ModelScoringRouter("v3", capabilities)
 
@@ -71,7 +71,7 @@ def test_v3_router_delegates_three_independent_head_capabilities() -> None:
     status = router.status()
     assert status is not None
     assert status.profile_id == "v3"
-    assert tuple(status.heads) == (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+    assert tuple(status.heads) == (Strategy.TOMORROW, Strategy.D25)
     assert all(capability.score_calls == 1 for capability in capabilities.values())
     assert all(capability.status_calls == 2 for capability in capabilities.values())
 

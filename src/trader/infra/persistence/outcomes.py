@@ -22,7 +22,7 @@ from trader.training.evaluation.domain.models import (
     RecommendationOutcome,
     outcome_horizons,
 )
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 
 
 class HistoricalFeatureReader(Protocol):
@@ -93,7 +93,7 @@ class SQLiteOutcomeEvidenceRepository:
             raise ValueError("outcome target limit must be positive")
         self.initialize()
         targets: list[OutcomeTarget] = []
-        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
+        for strategy in (Strategy.TOMORROW, Strategy.D25):
             for trade_date in reversed(self._decisions.list_dates(strategy, limit=31)):
                 record = self._decisions.load(strategy, trade_date)
                 if record is None:

@@ -87,7 +87,7 @@ def _policy(*, capacity: int = 2, group_bytes: int = 100_000) -> CachePolicy:
     )
 
 
-def _identity(subject: str, *, dataset: str = "daily_history", phase: str = "today_main"):
+def _identity(subject: str, *, dataset: str = "daily_history", phase: str = "morning_main"):
     return build_cache_identity(
         CacheIdentitySpec(
             dataset=dataset,
@@ -121,7 +121,7 @@ def test_canonical_json_bytes_preserves_the_frozen_wire_representation() -> None
 
 
 def test_cache_identity_is_stable_and_slow_data_reuses_all_day_phase() -> None:
-    first = _identity("600001", phase="today_main")
+    first = _identity("600001", phase="morning_main")
     second = build_cache_identity(
         CacheIdentitySpec(
             dataset="daily_history",
@@ -145,7 +145,7 @@ def test_cache_uses_monotonic_ttl_without_changing_business_source_time() -> Non
     clocks = MutableClocks()
     cache = BoundedLruCache(
         _policy(),
-        cadence_seconds={"full_market": {"today_main": 10.0}},
+        cadence_seconds={"full_market": {"morning_main": 10.0}},
         monotonic=clocks.monotonic,
         wall_clock=clocks.wall,
     )
@@ -170,7 +170,7 @@ def test_cache_never_marks_newly_inserted_but_old_source_data_as_fresh() -> None
     clocks = MutableClocks()
     cache = BoundedLruCache(
         _policy(),
-        cadence_seconds={"full_market": {"today_main": 10.0}},
+        cadence_seconds={"full_market": {"morning_main": 10.0}},
         monotonic=clocks.monotonic,
         wall_clock=clocks.wall,
     )

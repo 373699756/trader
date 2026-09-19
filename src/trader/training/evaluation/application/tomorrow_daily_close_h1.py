@@ -9,7 +9,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
 
-from trader.domain.market.feature_contracts import (
+from trader.recommendation.domain.market.feature_contracts import (
     TOMORROW_MODEL_FEATURE_MANIFEST,
     TOMORROW_RAW_ALPHA_FEATURE_MANIFEST,
     QfqPriceAnchors,

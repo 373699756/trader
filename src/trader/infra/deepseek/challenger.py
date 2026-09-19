@@ -9,9 +9,9 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from types import MappingProxyType
 
-from trader.domain.market.models import FeatureSnapshot
-from trader.domain.recommendation.risk_fusion.fusion import DIMENSION_NAMES
-from trader.domain.review.models import (
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES
+from trader.recommendation.domain.evidence.review import (
     DeepSeekReview,
     DimensionAssessment,
 )

@@ -48,7 +48,7 @@ class HistoricalResidualLedgerBatch:
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
-        if self.strategy not in {"today", "tomorrow", "d25"} or _SHA256.fullmatch(self.parent_split_hash) is None:
+        if self.strategy not in {"tomorrow", "d25"} or _SHA256.fullmatch(self.parent_split_hash) is None:
             raise ValueError("historical residual batch identity is invalid")
         if min(self.prediction_records_received, self.outcome_records_received) < 0:
             raise ValueError("historical residual batch counts are invalid")

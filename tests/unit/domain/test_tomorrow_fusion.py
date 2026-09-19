@@ -6,22 +6,22 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.domain.market.models import Board, Evidence, FeatureSnapshot, MarketQuote
-from trader.domain.recommendation.models import (
+from trader.recommendation.domain.market.models import Board, Evidence, FeatureSnapshot, MarketQuote
+from trader.recommendation.domain.publication.models import (
     RecommendationAction,
     ScoredDisposition,
     ScoredSelectionResult,
     ScoredStockEvaluation,
 )
-from trader.domain.recommendation.risk_fusion.fusion import FusionPolicy
-from trader.domain.recommendation.risk_fusion.scored_fusion import (
+from trader.recommendation.domain.risk.fusion import FusionPolicy
+from trader.recommendation.domain.risk.scored_fusion import (
     DecisionSelectionLimits,
     ScoredDecisionPolicy,
     ScoredDecisionRequest,
     build_scored_decision_epoch,
     select_scored_review_candidates,
 )
-from trader.domain.review.models import DeepSeekReview, DimensionAssessment, ReviewOutcome, RiskFact, RiskRule
+from trader.recommendation.domain.evidence.review import DeepSeekReview, DimensionAssessment, ReviewOutcome, RiskFact, RiskRule
 
 NOW = datetime(2026, 7, 28, 14, 40, tzinfo=ZoneInfo("Asia/Shanghai"))
 DIMENSIONS = ("value_quality", "financial_health", "market_flow", "industry_policy", "risk_quality")

@@ -7,6 +7,7 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
+- [Retire Today and V1 from the active recommendation product](docs/changelog/2026-09-19-recommendation-identity-cutover.md)
 - [Detail the refactor blueprint implementation plan](docs/changelog/2026-09-17-refactor-blueprint-implementation-plan.md)
 - [Clarify recommendation delivery module ownership](docs/changelog/2026-09-17-recommendation-delivery-module-ownership.md)
 - [Resolve refactor blueprint architecture conflicts](docs/changelog/2026-09-17-refactor-blueprint-conflict-resolution.md)

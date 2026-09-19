@@ -1,4 +1,4 @@
-"""Assemble one runtime profile over the three shared trained heads."""
+"""Assemble one runtime profile over the two scored strategy heads."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from trader.application.ports.model_scoring import (
     LoadedScoringProfile,
     ProfileEvidence,
 )
-from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.scoring.composition import SingleHeadCombiner
 from trader.training.infra.artifacts.bundle_codec import TrainedHeadBundleArtifact
 from trader.training.infra.artifacts.predictor import TrainedHeadPredictor
@@ -26,12 +26,12 @@ def build_trained_scoring_profile(
     if profile_id not in {"v2", "v3"}:
         raise ValueError("shared trained heads require the V2 or V3 scoring profile")
     by_strategy = {artifact.strategy: artifact for artifact in artifacts}
-    if len(artifacts) != 3 or set(by_strategy) != {Strategy.TODAY, Strategy.TOMORROW, Strategy.D25}:
-        raise ValueError("shared scoring profiles require one Today, Tomorrow, and D25 bundle")
+    if len(artifacts) != 2 or set(by_strategy) != {Strategy.TOMORROW, Strategy.D25}:
+        raise ValueError("shared scoring profiles require one Tomorrow and D25 bundle")
     try:
         predictors: dict[Strategy, HeadPredictorPort] = {
             strategy: cast(HeadPredictorPort, TrainedHeadPredictor(profile_id, by_strategy[strategy], strategy))
-            for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+            for strategy in (Strategy.TOMORROW, Strategy.D25)
         }
     except LightGBMError as exc:
         raise ValueError("shared LightGBM model is invalid") from exc

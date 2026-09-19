@@ -10,8 +10,8 @@ from trader.application.long_runtime import LongRuntime, LongRuntimeDependencies
 from trader.application.ports.long import LongRefreshRequest
 from trader.application.ports.market import MarketDataUnavailableError
 from trader.application.runtime.shutdown import ShutdownDeadline
-from trader.domain.recommendation.decision_identity import LongProjection
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.decision_identity import LongProjection
+from trader.recommendation.domain.publication.models import Strategy
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 8, 11, 10, 0, tzinfo=SHANGHAI)
@@ -68,7 +68,7 @@ def test_long_publishes_full_fixed_order_without_scoring(application_feature_fac
 
     runtime.start()
     try:
-        assert runtime.offer_refresh(LongRefreshRequest(NOW, "today_main"))
+        assert runtime.offer_refresh(LongRefreshRequest(NOW, "morning_main"))
         assert runtime.wait_idle(2.0)
         current = index.snapshot(Strategy.LONG).current
 
@@ -100,9 +100,9 @@ def test_long_partial_refresh_retains_same_day_quote_and_keeps_missing_slot(
 
     runtime.start()
     try:
-        assert runtime.offer_refresh(LongRefreshRequest(first_at, "today_main"))
+        assert runtime.offer_refresh(LongRefreshRequest(first_at, "morning_main"))
         assert runtime.wait_idle(2.0)
-        assert runtime.offer_refresh(LongRefreshRequest(second_at, "today_main"))
+        assert runtime.offer_refresh(LongRefreshRequest(second_at, "morning_main"))
         assert runtime.wait_idle(2.0)
         current = index.snapshot(Strategy.LONG).current
 
@@ -132,9 +132,9 @@ def test_long_quote_failure_retains_current_and_does_not_replace_codes(applicati
 
     runtime.start()
     try:
-        assert runtime.offer_refresh(LongRefreshRequest(NOW, "today_main"))
+        assert runtime.offer_refresh(LongRefreshRequest(NOW, "morning_main"))
         assert runtime.wait_idle(2.0)
-        assert runtime.offer_refresh(LongRefreshRequest(NOW + timedelta(seconds=1), "today_main"))
+        assert runtime.offer_refresh(LongRefreshRequest(NOW + timedelta(seconds=1), "morning_main"))
         assert runtime.wait_idle(2.0)
         current = index.snapshot(Strategy.LONG).current
 
@@ -179,7 +179,7 @@ def test_long_ignores_future_and_unknown_quotes(application_feature_factory) -> 
 
     runtime.start()
     try:
-        assert runtime.offer_refresh(LongRefreshRequest(NOW, "today_main"))
+        assert runtime.offer_refresh(LongRefreshRequest(NOW, "morning_main"))
         assert runtime.wait_idle(2.0)
         current = index.snapshot(Strategy.LONG).current
 
@@ -197,7 +197,7 @@ def test_long_accepts_quote_received_after_request_before_completion(application
 
     runtime.start()
     try:
-        assert runtime.offer_refresh(LongRefreshRequest(NOW, "today_main"))
+        assert runtime.offer_refresh(LongRefreshRequest(NOW, "morning_main"))
         assert runtime.wait_idle(2.0)
         current = index.snapshot(Strategy.LONG).current
 
@@ -219,16 +219,16 @@ def test_long_rejects_stale_refresh_and_does_not_replace_newer_retained_quote(
 
     runtime.start()
     try:
-        assert runtime.offer_refresh(LongRefreshRequest(new_at, "today_main"))
+        assert runtime.offer_refresh(LongRefreshRequest(new_at, "morning_main"))
         assert runtime.wait_idle(2.0)
-        assert runtime.offer_refresh(LongRefreshRequest(new_at + timedelta(seconds=1), "today_main"))
+        assert runtime.offer_refresh(LongRefreshRequest(new_at + timedelta(seconds=1), "morning_main"))
         assert runtime.wait_idle(2.0)
         retained = index.snapshot(Strategy.LONG).current
         assert isinstance(retained, LongProjection)
         assert retained.items[0].source_time == new_at
         assert retained.items[0].quote_status == "retained"
 
-        assert runtime.offer_refresh(LongRefreshRequest(old_at, "today_main"))
+        assert runtime.offer_refresh(LongRefreshRequest(old_at, "morning_main"))
         assert runtime.wait_idle(2.0)
         assert index.snapshot(Strategy.LONG).current == retained
         assert runtime.status().input_rejection_count == 1
@@ -249,9 +249,9 @@ def test_long_clears_retained_quotes_on_the_next_trade_date(application_feature_
 
     runtime.start()
     try:
-        assert runtime.offer_refresh(LongRefreshRequest(NOW, "today_main"))
+        assert runtime.offer_refresh(LongRefreshRequest(NOW, "morning_main"))
         assert runtime.wait_idle(2.0)
-        assert runtime.offer_refresh(LongRefreshRequest(next_day, "today_main"))
+        assert runtime.offer_refresh(LongRefreshRequest(next_day, "morning_main"))
         assert runtime.wait_idle(2.0)
         current = index.snapshot(Strategy.LONG).current
 
@@ -272,7 +272,7 @@ def test_long_identity_is_independent_of_quote_return_order(application_feature_
     for runtime in (first_runtime, second_runtime):
         runtime.start()
     try:
-        request = LongRefreshRequest(NOW, "today_main")
+        request = LongRefreshRequest(NOW, "morning_main")
         assert first_runtime.offer_refresh(request)
         assert second_runtime.offer_refresh(request)
         assert first_runtime.wait_idle(2.0)
@@ -306,7 +306,7 @@ def test_long_rejects_conflicting_equal_identity_and_sanitizes_optional_values(
 
     runtime.start()
     try:
-        assert runtime.offer_refresh(LongRefreshRequest(NOW, "today_main"))
+        assert runtime.offer_refresh(LongRefreshRequest(NOW, "morning_main"))
         assert runtime.wait_idle(2.0)
     finally:
         runtime.stop(wait=True, deadline=ShutdownDeadline.start(2.0))

@@ -537,7 +537,7 @@ def _scoring_profile_summary(value: object) -> dict[str, object]:
     profile = _mapping(value)
     heads = _mapping(profile.get("heads"))
     projected_heads: dict[str, object] = {}
-    for strategy in ("today", "tomorrow", "d25"):
+    for strategy in ("tomorrow", "d25"):
         head = _mapping(heads.get(strategy))
         if not head:
             continue

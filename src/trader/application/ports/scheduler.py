@@ -16,8 +16,8 @@ from trader.training.evaluation.application.research_audit import CommittedResea
 from trader.application.runtime.cadence import PipelineTask
 from trader.application.runtime.schedule import MarketPhase
 from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
-from trader.domain.recommendation.decision_identity import DecisionIdentity, DecisionOverlay, ScoredDecision
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.decision_identity import DecisionIdentity, DecisionOverlay, ScoredDecision
+from trader.recommendation.domain.publication.models import Strategy
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _IDENTITY = re.compile(r"^[a-zA-Z0-9_.:-]{1,200}$")
@@ -101,7 +101,7 @@ class ResearchIntent:
     candidate_codes: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        if self.strategy not in {Strategy.TODAY, Strategy.TOMORROW, Strategy.D25}:
+        if self.strategy not in {Strategy.TOMORROW, Strategy.D25}:
             raise ValueError("research intent requires a scored strategy")
         priority = _normalize_codes(self.priority_codes)
         candidates = _normalize_codes(self.candidate_codes)

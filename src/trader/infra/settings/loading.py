@@ -9,10 +9,10 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
-from trader.domain.market.news import NewsSignalPolicy
-from trader.domain.market.research import FeatureComponentWeightPolicy, LongResearchPolicy, MarketRegimePolicy
-from trader.domain.market.tail import TailSignalPolicy
-from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId, parse_scoring_profile
+from trader.recommendation.domain.market.news import NewsSignalPolicy
+from trader.recommendation.domain.market.research import FeatureComponentWeightPolicy, LongResearchPolicy, MarketRegimePolicy
+from trader.recommendation.domain.market.tail import TailSignalPolicy
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId, parse_scoring_profile
 from trader.infra.settings.factor_validation import _parse_factor_definition, _strategy_contract_identity
 from trader.infra.settings.models import (
     ApiSettings,
@@ -74,7 +74,7 @@ _STRATEGY_KEYS = {
     "candidate_component_weights",
     "local_component_weights",
     "feature_component_weights",
-    "today_news_signal",
+    "news_signal",
     "tomorrow_tail_signal",
     "market_regime",
     "long_research",
@@ -152,7 +152,7 @@ def load_strategy_settings(
         )
     except ValueError as exc:
         raise ConfigurationError(f"feature_component_weights {exc}") from exc
-    today_news_signal = _parse_news_signal_policy(_mapping(raw, "today_news_signal"))
+    news_signal = _parse_news_signal_policy(_mapping(raw, "news_signal"))
     tomorrow_tail_signal = _parse_tail_signal_policy(_mapping(raw, "tomorrow_tail_signal"))
     market_regime = _parse_market_regime_policy(_mapping(raw, "market_regime"))
     long_research = _parse_long_research_policy(_mapping(raw, "long_research"))
@@ -198,7 +198,7 @@ def load_strategy_settings(
             blacklist_codes=tuple(blacklist_raw),
             structured_risk_thresholds=_number_mapping(hard_filters_raw, "structured_risk_thresholds"),
         ),
-        today_news_signal=today_news_signal,
+        news_signal=news_signal,
         tomorrow_tail_signal=tomorrow_tail_signal,
         market_regime=market_regime,
         long_research=long_research,
@@ -403,7 +403,7 @@ def _parse_risk_rule(raw: object, index: int) -> RiskRuleSettings:
     if (
         not isinstance(strategies, list)
         or not strategies
-        or any(not isinstance(value, str) or value not in {"today", "tomorrow", "d25", "long"} for value in strategies)
+        or any(not isinstance(value, str) or value not in {"tomorrow", "d25", "long"} for value in strategies)
         or len(strategies) != len(set(strategies))
     ):
         raise ConfigurationError(f"risk rule {index} strategies must contain supported strategies")
@@ -463,7 +463,7 @@ def _parse_news_signal_policy(raw: Mapping[str, object]) -> NewsSignalPolicy:
             negative_keywords=_keyword_tuple(raw, "negative_keywords"),
         )
     except ValueError as exc:
-        raise ConfigurationError(f"today_news_signal {exc}") from exc
+        raise ConfigurationError(f"news_signal {exc}") from exc
 
 
 def _parse_tail_signal_policy(raw: Mapping[str, object]) -> TailSignalPolicy:
@@ -548,7 +548,7 @@ def _keyword_tuple(
     raw: Mapping[str, object],
     key: str,
     *,
-    section: str = "today_news_signal",
+    section: str = "news_signal",
 ) -> tuple[str, ...]:
     values = raw.get(key)
     if not isinstance(values, list) or not values or any(not isinstance(value, str) for value in values):

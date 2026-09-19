@@ -8,12 +8,13 @@ PROJECT_ROOT = SOURCE_ROOT.parents[1]
 DESIGN = PROJECT_ROOT / "docs" / "02_工程设计.md"
 
 TARGET_PACKAGES = (
-    "domain/market",
-    "domain/recommendation/filtering",
-    "domain/recommendation/scoring",
-    "domain/recommendation/risk_fusion",
-    "domain/recommendation/selection",
-    "domain/review",
+    "recommendation/domain/market",
+    "recommendation/domain/candidate",
+    "recommendation/domain/scoring",
+    "recommendation/domain/risk",
+    "recommendation/domain/evidence",
+    "recommendation/domain/selection",
+    "recommendation/domain/publication",
     "application/runtime",
     "application/market_data",
     "application/recommendation",
@@ -64,10 +65,9 @@ def test_scoring_profile_capability_matrix_uses_one_quality_scale_and_d25_single
     strategy = (PROJECT_ROOT / "docs" / "01_评分逻辑.md").read_text(encoding="utf-8")
 
     for token in (
-        "| 评分档位 | Today | Tomorrow | D25 |",
-        "| V1 | 板块证据质量评分 | 板块证据质量评分 + V1 Tomorrow 预测头 | 板块证据质量评分 |",
-        "| V2 | 板块证据质量评分 + V2 Today 预测头 | 板块证据质量评分 + V2 Tomorrow 预测头 | 板块证据质量评分 + V2 D25 预测头 |",
-        "| V3 | 板块证据质量评分 + V3 Today 预测头 | 板块证据质量评分 + V3 Tomorrow 预测头 | 板块证据质量评分 + V3 D25 预测头 |",
+        "| 评分档位 | Tomorrow | D25 |",
+        "| V2 | 板块证据质量评分 + V2 Tomorrow 预测头 | 板块证据质量评分 + V2 D25 预测头 |",
+        "| V3 | 板块证据质量评分 + V3 Tomorrow 预测头 | 板块证据质量评分 + V3 D25 预测头 |",
         "D25 生产边界只输出一个面向未来 2–5 个交易日的策略信号",
         "不得拆成 T+2、T+3、T+4、T+5 四个生产头",
     ):
@@ -220,12 +220,12 @@ def test_market_history_references_and_services_are_partitioned() -> None:
 
 
 def test_recommendation_stages_are_partitioned_without_reverse_dependencies() -> None:
-    recommendation_root = SOURCE_ROOT / "domain" / "recommendation"
-    filtering_root = recommendation_root / "filtering"
+    recommendation_root = SOURCE_ROOT / "recommendation" / "domain"
+    candidate_root = recommendation_root / "candidate"
     scoring_root = recommendation_root / "scoring"
-    risk_root = recommendation_root / "risk_fusion"
+    risk_root = recommendation_root / "risk"
     selection_root = recommendation_root / "selection"
-    assert filtering_root.is_dir()
+    assert candidate_root.is_dir()
     assert scoring_root.is_dir()
     assert risk_root.is_dir()
     assert selection_root.is_dir()
@@ -242,9 +242,9 @@ def test_recommendation_stages_are_partitioned_without_reverse_dependencies() ->
     assert not any((recommendation_root / name).exists() for name in legacy_files)
 
     stage_roots = {
-        "filtering": filtering_root,
+        "candidate": candidate_root,
         "scoring": scoring_root,
-        "risk_fusion": risk_root,
+        "risk": risk_root,
         "selection": selection_root,
     }
     stage_order = {name: index for index, name in enumerate(stage_roots)}
@@ -252,7 +252,7 @@ def test_recommendation_stages_are_partitioned_without_reverse_dependencies() ->
     for stage, root in stage_roots.items():
         for path in root.rglob("*.py"):
             for imported in _imports(path):
-                prefix = "trader.domain.recommendation."
+                prefix = "trader.recommendation.domain."
                 if not imported.startswith(prefix):
                     continue
                 imported_stage = next((name for name in stage_roots if imported[len(prefix) :].startswith(name)), None)
@@ -274,7 +274,6 @@ def test_application_recommendation_and_decisions_are_partitioned() -> None:
         "scored_deepseek_fusion.py",
         "scored_projection.py",
         "scored_freezing.py",
-        "today_freezing.py",
         "production_model_scoring.py",
         "recommendation_policy_codec.py",
         "policy.py",

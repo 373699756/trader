@@ -30,8 +30,8 @@ from trader.application.recommendation.scored_selection import (
     ScoredSelectionIdentity,
     ScoredSelectionOptions,
 )
-from trader.domain.market.models import FeatureSnapshot, MarketQuote
-from trader.domain.recommendation.decision_identity import (
+from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
+from trader.recommendation.domain.publication.decision_identity import (
     DecisionDownside,
     DecisionItem,
     DecisionModelDiagnostics,
@@ -40,10 +40,10 @@ from trader.domain.recommendation.decision_identity import (
     ScoredDecision,
     SelectionDiagnostics,
 )
-from trader.domain.recommendation.filtering.filters import hard_filter
-from trader.domain.recommendation.models import RecommendationAction, ScoredSelectionResult, Strategy
-from trader.domain.recommendation.risk_fusion.downside import DownsideAssessment
-from trader.domain.recommendation.risk_fusion.scored_fusion import (
+from trader.recommendation.domain.candidate.filters import hard_filter
+from trader.recommendation.domain.publication.models import RecommendationAction, ScoredSelectionResult, Strategy
+from trader.recommendation.domain.risk.downside import DownsideAssessment
+from trader.recommendation.domain.risk.scored_fusion import (
     DecisionEpoch,
     ScoredDecisionEntry,
     ScoredDecisionPolicy,
@@ -52,9 +52,9 @@ from trader.domain.recommendation.risk_fusion.scored_fusion import (
     build_scored_decision_epoch,
     select_scored_review_candidates,
 )
-from trader.domain.recommendation.selection.scored_selection import ScoredCandidateStageCounts
-from trader.domain.recommendation.strategies.composition import WEIGHTED_EVIDENCE_SCORE_SCALE
-from trader.domain.review.models import DeepSeekReview, ReviewOutcome
+from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts
+from trader.recommendation.domain.candidate.composition import WEIGHTED_EVIDENCE_SCORE_SCALE
+from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
 
 
 @dataclass(frozen=True)
@@ -219,7 +219,7 @@ def _model_execution_gate_reasons(
 ) -> Mapping[str, str]:
     if model_batch is None:
         return {}
-    if strategy not in {Strategy.TODAY, Strategy.TOMORROW, Strategy.D25}:
+    if strategy not in {Strategy.TOMORROW, Strategy.D25}:
         return {}
     return {
         code: "model_net_utility_non_positive"

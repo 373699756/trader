@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal, cast
 
-from trader.domain.market.models import Board
+from trader.recommendation.domain.market.models import Board
 from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash
 from trader.training.evaluation.domain.point_in_time_dataset import (
     PointInTimeDatasetReport,

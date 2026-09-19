@@ -14,7 +14,7 @@ from tests.unit.epoch_helpers import (
     market_field_values,
     research_field_values,
 )
-from trader.domain.market.epochs import (
+from trader.recommendation.domain.market.epochs import (
     CandidateFeatureRow,
     CandidateQuoteEpoch,
     DailyFeaturePack,
@@ -23,9 +23,9 @@ from trader.domain.market.epochs import (
     MarketEpoch,
     ResearchEpoch,
 )
-from trader.domain.market.models import Board, LiveQuote, MarketQuote
-from trader.domain.market.quality import FieldQualityState
-from trader.domain.market.research import (
+from trader.recommendation.domain.market.models import Board, LiveQuote, MarketQuote
+from trader.recommendation.domain.market.quality import FieldQualityState
+from trader.recommendation.domain.market.research import (
     CorporateRiskCategory,
     CorporateRiskFact,
     ResearchAnnouncement,

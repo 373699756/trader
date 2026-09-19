@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from trader.domain.market.models import (
+from trader.recommendation.domain.market.models import (
     FeatureSnapshot,
     MarketQuote,
 )

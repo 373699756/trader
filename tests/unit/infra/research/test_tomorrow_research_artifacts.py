@@ -51,7 +51,6 @@ def _development_handoff(
                 "daily_close_model_selection", "daily_close_model_selection", "c" * 64, ("b" * 64,)
             ),
             TomorrowResearchArtifactRef("filter_confirmation", "filter_confirmation", "d" * 64, ("a" * 64,)),
-            TomorrowResearchArtifactRef("tomorrow_joint_candidate", "tomorrow_joint_candidate", "e" * 64, ("c" * 64,)),
         ),
         evidence_partitions=evidence,
     )
@@ -130,15 +129,9 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
             TomorrowResearchArtifactRef(
                 "daily_close_confirmation_report", "daily_close_confirmation_report", "f" * 64, ("c" * 64,)
             ),
-            TomorrowResearchArtifactRef(
-                "joint_confirmation_report", "joint_confirmation_report", "0" * 64, ("e" * 64,)
-            ),
         ),
     )
     graph = graph.extend(confirmation.artifacts)
-    model_payload = {"schema_version": "tomorrow_joint_candidate_model_artifact"}
-    model_hash = canonical_artifact_hash(model_payload)
-    model_payload["content_hash"] = model_hash
     proxy = TomorrowResearchStageHandoff(
         stage="daily_close_proxy_holdout",
         parent_graph_hash=graph.content_hash,
@@ -149,12 +142,6 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
                 "1" * 64,
                 ("f" * 64,),
                 "historical_daily_close_proxy_validated",
-            ),
-            TomorrowResearchArtifactRef(
-                "joint_candidate_model_artifact",
-                "tomorrow_joint_candidate_model_artifact",
-                model_hash,
-                ("0" * 64,),
             ),
         ),
         outcome="historical_daily_close_proxy_validated",
@@ -168,7 +155,7 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
                 "tomorrow_point_in_time_holdout_report",
                 "point_in_time_holdout",
                 "2" * 64,
-                ("1" * 64, model_hash),
+                ("1" * 64,),
                 "historical_validated",
                 ("historical_point_in_time_parity",),
             ),
@@ -181,7 +168,6 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
     for handoff in (resource_probe, development, confirmation, proxy, point_in_time):
         repository.seal_handoff(handoff)
     repository.seal_evidence_partition(evidence, evidence_source)
-    repository.seal_model(canonical_artifact_json(model_payload), model_hash)
 
     result = TomorrowResearchOrchestrator(repository, _ReadyPrerequisite()).advance()
 
@@ -197,7 +183,7 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
     assert result.run_id is not None
     run_root = tmp_path / result.run_id
     assert (run_root / "report.json").is_file()
-    assert (run_root / "model.json").is_file()
+    assert not (run_root / "model.json").exists()
     assert (run_root / "evidence" / evidence.relative_path).read_bytes() == evidence_bytes
     report = json.loads((run_root / "report.json").read_text(encoding="utf-8"))
     assert report["publishable"] is True
@@ -218,18 +204,6 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
     assert next_result.completed_stages == ("resource_probe",)
     assert next_result.next_stage == "development_training"
     assert (run_root / "report.json").is_file()
-
-
-def test_model_document_rejects_tampering_before_it_can_enter_a_run(tmp_path) -> None:
-    repository = TomorrowResearchArtifactRepository(tmp_path, available_disk_gb=lambda _path: 40.0)
-    payload = {"schema_version": "tomorrow_joint_candidate_model_artifact"}
-    expected_hash = canonical_artifact_hash(payload)
-    payload["content_hash"] = expected_hash
-    payload["unexpected"] = True
-
-    with pytest.raises(TomorrowResearchArtifactRepositoryError, match="hash"):
-        repository.seal_model(canonical_artifact_json(payload), expected_hash)
-
 
 def test_repository_stops_before_committing_when_host_disk_is_below_30gb(tmp_path) -> None:
     repository = TomorrowResearchArtifactRepository(tmp_path, available_disk_gb=lambda _path: 29.999)

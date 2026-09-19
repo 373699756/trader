@@ -15,14 +15,14 @@ from trader.application.decisions.decision_drafts import UnifiedDecisionDraftInd
 from trader.application.decisions.decision_queries import UnifiedDecisionQueries
 from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
 from trader.application.ports.reviews import DeepSeekReviewUnavailableError
-from trader.domain.market.models import (
+from trader.recommendation.domain.market.models import (
     Evidence,
     FeatureSnapshot,
     MarketQuote,
 )
-from trader.domain.recommendation.models import Strategy
-from trader.domain.review.models import ReviewOutcome
-from trader.domain.review.rules import Rating
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.evidence.review import ReviewOutcome
+from trader.recommendation.domain.risk.rules import Rating
 from trader.infra.deepseek.budget import SCHEMA_VERSION as BUDGET_SCHEMA_VERSION
 from trader.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.infra.deepseek.budget_batch_ledger import BudgetBatchRequest
@@ -320,9 +320,9 @@ def test_budget_initialize_repair_schema_version_if_missing_or_invalid(tmp_path)
     ledger = DeepSeekBudgetLedger(
         database_path,
         daily_hard_limit=2,
-        strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "shared_preheat": 0, "emergency": 0},
-        stage_targets={"today_main": 0},
-        stage_limits={"today_main": 2},
+        strategy_limits={"tomorrow": 2, "d25": 0, "shared_preheat": 0, "emergency": 0},
+        stage_targets={"tomorrow_morning": 0},
+        stage_limits={"tomorrow_morning": 2},
     )
     ledger.initialize()
 
@@ -339,9 +339,9 @@ def test_budget_initialize_sets_schema_version_if_absent(tmp_path) -> None:
     ledger = DeepSeekBudgetLedger(
         database_path,
         daily_hard_limit=2,
-        strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "shared_preheat": 0, "emergency": 0},
-        stage_targets={"today_main": 0},
-        stage_limits={"today_main": 2},
+        strategy_limits={"tomorrow": 2, "d25": 0, "shared_preheat": 0, "emergency": 0},
+        stage_targets={"tomorrow_morning": 0},
+        stage_limits={"tomorrow_morning": 2},
     )
     ledger.initialize()
 
@@ -379,7 +379,7 @@ def test_budget_summary_remains_memory_only_while_sqlite_is_exclusively_locked(t
         assert ledger.summary("2026-08-25") == expected
 
     assert expected["by_stage"] == {
-        "today_main": {
+        "tomorrow_morning": {
             "used": 0,
             "target": 0,
             "limit": 2,
@@ -427,12 +427,12 @@ def test_http_status_remains_available_while_budget_sqlite_is_exclusively_locked
 def test_budget_reservation_and_batch_roll_over_on_shanghai_midnight(tmp_path) -> None:
     ledger = _budget(tmp_path / "runtime.sqlite3")
     after_midnight = datetime(2026, 8, 25, 16, 30, tzinfo=timezone.utc)
-    reservation = ledger.reserve(Strategy.TODAY, phase="today_main", requested_at=after_midnight)
+    reservation = ledger.reserve(Strategy.TOMORROW, phase="morning_main", requested_at=after_midnight)
     batch_id = ledger.begin_batch(
         BudgetBatchRequest(
-            strategy=Strategy.TODAY,
-            phase="today_main",
-            bucket="today",
+            strategy=Strategy.TOMORROW,
+            phase="morning_main",
+            bucket="tomorrow",
             model="deepseek-v4-flash",
             requested_at=after_midnight,
             deadline=after_midnight + timedelta(minutes=1),
@@ -524,9 +524,9 @@ def test_budget_is_atomic_under_concurrency(tmp_path) -> None:
     ledger = DeepSeekBudgetLedger(
         tmp_path / "deepseek.sqlite3",
         daily_hard_limit=3,
-        strategy_limits={"today": 2, "tomorrow": 1, "d25": 0, "shared_preheat": 0, "emergency": 0},
-        stage_targets={"today_main": 0, "tomorrow_afternoon": 0},
-        stage_limits={"today_main": 2, "tomorrow_afternoon": 1},
+        strategy_limits={"tomorrow": 2, "d25": 0, "shared_preheat": 0, "emergency": 0},
+        stage_targets={"tomorrow_morning": 0},
+        stage_limits={"tomorrow_morning": 2},
     )
     ledger.initialize()
     barrier = threading.Barrier(5)
@@ -534,7 +534,7 @@ def test_budget_is_atomic_under_concurrency(tmp_path) -> None:
 
     def reserve() -> None:
         barrier.wait()
-        result = ledger.reserve(Strategy.TODAY, phase="today_main", requested_at=NOW)
+        result = ledger.reserve(Strategy.TOMORROW, phase="morning_main", requested_at=NOW)
         allowed.append(result.allowed)
 
     threads = [threading.Thread(target=reserve) for _ in range(5)]
@@ -558,16 +558,16 @@ def test_budget_audits_shared_and_explicit_emergency_buckets(tmp_path) -> None:
     ledger = DeepSeekBudgetLedger(
         tmp_path / "deepseek.sqlite3",
         daily_hard_limit=3,
-        strategy_limits={"today": 1, "tomorrow": 0, "d25": 0, "shared_preheat": 1, "emergency": 1},
-        stage_targets={"shared_preheat": 0, "today_main": 0, "emergency": 0},
-        stage_limits={"shared_preheat": 1, "today_main": 1, "emergency": 1},
+        strategy_limits={"tomorrow": 1, "d25": 0, "shared_preheat": 1, "emergency": 1},
+        stage_targets={"shared_preheat": 0, "tomorrow_morning": 0, "emergency": 0},
+        stage_limits={"shared_preheat": 1, "tomorrow_morning": 1, "emergency": 1},
     )
     ledger.initialize()
 
-    shared = ledger.reserve(Strategy.TODAY, phase="warmup", requested_at=NOW, bucket="shared_preheat")
-    normal = ledger.reserve(Strategy.TODAY, phase="today_main", requested_at=NOW)
+    shared = ledger.reserve(Strategy.TOMORROW, phase="warmup", requested_at=NOW, bucket="shared_preheat")
+    normal = ledger.reserve(Strategy.TOMORROW, phase="morning_main", requested_at=NOW)
     emergency = ledger.reserve(
-        Strategy.TODAY,
+        Strategy.TOMORROW,
         phase="final_review",
         requested_at=NOW,
         emergency=True,
@@ -575,19 +575,19 @@ def test_budget_audits_shared_and_explicit_emergency_buckets(tmp_path) -> None:
     )
 
     assert (shared.allowed, shared.bucket) == (True, "shared_preheat")
-    assert (normal.allowed, normal.bucket) == (True, "today")
+    assert (normal.allowed, normal.bucket) == (True, "tomorrow")
     assert (emergency.allowed, emergency.bucket) == (True, "emergency")
     assert ledger.summary(NOW.date().isoformat())["by_bucket"] == {
         "emergency": 1,
         "shared_preheat": 1,
-        "today": 1,
+        "tomorrow": 1,
     }
 
 
 def test_call_audit_replaces_raw_failure_text_with_bounded_category(tmp_path) -> None:
     database_path = tmp_path / "runtime.sqlite3"
     ledger = _budget(database_path)
-    reservation = ledger.reserve(Strategy.TODAY, phase="today_main", requested_at=NOW)
+    reservation = ledger.reserve(Strategy.TOMORROW, phase="morning_main", requested_at=NOW)
 
     ledger.finish(
         reservation.reservation_id,
@@ -656,14 +656,14 @@ def test_long_review_is_empty_and_does_not_reuse_deepseek_raw_cache(tmp_path) ->
     budget = DeepSeekBudgetLedger(
         database_path,
         daily_hard_limit=1,
-        strategy_limits={"today": 0, "tomorrow": 0, "d25": 1, "shared_preheat": 0, "emergency": 0},
+        strategy_limits={"tomorrow": 0, "d25": 1, "shared_preheat": 0, "emergency": 0},
         stage_targets={"d25_afternoon": 0},
         stage_limits={"d25_afternoon": 1},
     )
     budget.initialize()
     settings = replace(
         _settings(),
-        strategy_limits={"today": 0, "tomorrow": 0, "d25": 1, "shared_preheat": 0, "emergency": 0},
+        strategy_limits={"tomorrow": 0, "d25": 1, "shared_preheat": 0, "emergency": 0},
     )
     reviewer = DeepSeekReviewer(
         settings,
@@ -704,9 +704,9 @@ def test_reviewer_injects_audit_metadata_when_disabled(tmp_path) -> None:
     )
 
     result = reviewer.review(
-        Strategy.TODAY,
+        Strategy.TOMORROW,
         (candidate,),
-        phase="today_main",
+        phase="morning_main",
         deadline=NOW + timedelta(minutes=1),
     )
 
@@ -743,9 +743,9 @@ def test_reviewer_reports_missing_api_key_without_physical_call(tmp_path) -> Non
     )
 
     result = reviewer.review(
-        Strategy.TODAY,
+        Strategy.TOMORROW,
         (candidate,),
-        phase="today_main",
+        phase="morning_main",
         deadline=NOW + timedelta(minutes=1),
     )
 
@@ -788,9 +788,9 @@ def test_reviewer_does_not_retry_transport_failures(tmp_path) -> None:
     )
 
     result = reviewer.review(
-        Strategy.TODAY,
+        Strategy.TOMORROW,
         (candidate,),
-        phase="today_main",
+        phase="morning_main",
         deadline=NOW + timedelta(minutes=1),
     )
 
@@ -828,9 +828,9 @@ def test_reviewer_does_not_schedule_transport_retry_before_deadline(tmp_path) ->
     )
 
     result = reviewer.review(
-        Strategy.TODAY,
+        Strategy.TOMORROW,
         (candidate,),
-        phase="today_main",
+        phase="morning_main",
         deadline=deadline,
     )
 
@@ -858,7 +858,7 @@ def test_confidence_coverage_and_known_dimension_minimum_produce_candidate_absta
 
     classified = classify_review(
         raw,
-        dimension_weights=_reviewer_policy()["dimension_weights"][Strategy.TODAY],
+        dimension_weights=_reviewer_policy()["dimension_weights"][Strategy.TOMORROW],
         confidence_coverage_min=0.5,
         minimum_known_dimensions=2,
     )
@@ -919,7 +919,7 @@ def test_candidate_without_news_or_announcement_remains_callable_and_abstains(tm
         now=lambda: NOW,
     )
 
-    result = reviewer.review(Strategy.TODAY, (candidate,), phase="today_main", deadline=NOW + timedelta(minutes=1))
+    result = reviewer.review(Strategy.TOMORROW, (candidate,), phase="morning_main", deadline=NOW + timedelta(minutes=1))
 
     assert calls == 1
     assert result[candidate.quote.code].outcome is ReviewOutcome.ABSTAIN
@@ -948,7 +948,7 @@ def test_schema_repair_uses_second_and_final_physical_attempt(tmp_path) -> None:
         now=lambda: NOW,
     )
 
-    result = reviewer.review(Strategy.TODAY, (candidate,), phase="today_main", deadline=NOW + timedelta(minutes=1))
+    result = reviewer.review(Strategy.TOMORROW, (candidate,), phase="morning_main", deadline=NOW + timedelta(minutes=1))
 
     assert result[candidate.quote.code].outcome is ReviewOutcome.APPLIED
     assert budget.summary(NOW.date().isoformat())["used"] == 2
@@ -981,9 +981,9 @@ def test_partial_batch_keeps_valid_candidate_and_rejects_missing_result(tmp_path
     )
 
     result = reviewer.review(
-        Strategy.TODAY,
+        Strategy.TOMORROW,
         (first, second),
-        phase="today_main",
+        phase="morning_main",
         deadline=NOW + timedelta(minutes=1),
     )
 
@@ -1001,48 +1001,48 @@ def test_budget_enforces_stage_limit_independently_from_strategy_limit(tmp_path)
     ledger = DeepSeekBudgetLedger(
         tmp_path / "runtime.sqlite3",
         daily_hard_limit=2,
-        strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "shared_preheat": 0, "emergency": 0},
-        stage_targets={"today_observe": 0, "today_main": 0},
-        stage_limits={"today_observe": 1, "today_main": 1},
+        strategy_limits={"tomorrow": 2, "d25": 0, "shared_preheat": 0, "emergency": 0},
+        stage_targets={"tomorrow_morning": 0, "tomorrow_afternoon": 0},
+        stage_limits={"tomorrow_morning": 1, "tomorrow_afternoon": 1},
     )
     ledger.initialize()
 
-    observe = ledger.reserve(Strategy.TODAY, phase="today_observe", requested_at=NOW)
-    observe_exhausted = ledger.reserve(Strategy.TODAY, phase="today_observe", requested_at=NOW)
-    main = ledger.reserve(Strategy.TODAY, phase="today_main", requested_at=NOW)
+    observe = ledger.reserve(Strategy.TOMORROW, phase="morning_observe", requested_at=NOW)
+    observe_exhausted = ledger.reserve(Strategy.TOMORROW, phase="morning_observe", requested_at=NOW)
+    afternoon = ledger.reserve(Strategy.TOMORROW, phase="afternoon", requested_at=NOW)
 
     assert observe.allowed is True
     assert (observe_exhausted.allowed, observe_exhausted.reason) == (False, "stage_limit")
-    assert main.allowed is True
+    assert afternoon.allowed is True
 
 
 def test_emergency_requires_exhausted_normal_bucket_and_registered_trigger(tmp_path) -> None:
     ledger = DeepSeekBudgetLedger(
         tmp_path / "runtime.sqlite3",
         daily_hard_limit=2,
-        strategy_limits={"today": 1, "tomorrow": 0, "d25": 0, "shared_preheat": 0, "emergency": 1},
-        stage_targets={"today_main": 0, "emergency": 0},
-        stage_limits={"today_main": 1, "emergency": 1},
+        strategy_limits={"tomorrow": 1, "d25": 0, "shared_preheat": 0, "emergency": 1},
+        stage_targets={"tomorrow_morning": 0, "emergency": 0},
+        stage_limits={"tomorrow_morning": 1, "emergency": 1},
     )
     ledger.initialize()
 
     too_early = ledger.reserve(
-        Strategy.TODAY,
+        Strategy.TOMORROW,
         phase="final_review",
         requested_at=NOW,
         emergency=True,
         emergency_reason="freeze_boundary_change",
     )
-    normal = ledger.reserve(Strategy.TODAY, phase="today_main", requested_at=NOW)
+    normal = ledger.reserve(Strategy.TOMORROW, phase="morning_main", requested_at=NOW)
     invalid = ledger.reserve(
-        Strategy.TODAY,
+        Strategy.TOMORROW,
         phase="final_review",
         requested_at=NOW,
         emergency=True,
         emergency_reason="manual_override",
     )
     emergency = ledger.reserve(
-        Strategy.TODAY,
+        Strategy.TOMORROW,
         phase="final_review",
         requested_at=NOW,
         emergency=True,
@@ -1054,8 +1054,8 @@ def test_emergency_requires_exhausted_normal_bucket_and_registered_trigger(tmp_p
     assert (invalid.allowed, invalid.reason) == (False, "invalid_emergency_reason")
     assert emergency.allowed is True
     summary = ledger.summary(NOW.date().isoformat())
-    assert summary["by_bucket"] == {"emergency": 1, "today": 1}
-    assert summary["by_strategy"] == {"today": 2}
+    assert summary["by_bucket"] == {"emergency": 1, "tomorrow": 1}
+    assert summary["by_strategy"] == {"tomorrow": 2}
 
 
 def test_restart_marks_uncertain_attempt_and_batch_abandoned(tmp_path) -> None:
@@ -1063,9 +1063,9 @@ def test_restart_marks_uncertain_attempt_and_batch_abandoned(tmp_path) -> None:
     ledger = _budget(database_path)
     batch_id = ledger.begin_batch(
         BudgetBatchRequest(
-            strategy=Strategy.TODAY,
-            phase="today_main",
-            bucket="today",
+            strategy=Strategy.TOMORROW,
+            phase="morning_main",
+            bucket="tomorrow",
             model="deepseek-v4-flash",
             requested_at=NOW,
             deadline=NOW + timedelta(minutes=1),
@@ -1073,8 +1073,8 @@ def test_restart_marks_uncertain_attempt_and_batch_abandoned(tmp_path) -> None:
         )
     )
     reservation = ledger.reserve(
-        Strategy.TODAY,
-        phase="today_main",
+        Strategy.TOMORROW,
+        phase="morning_main",
         requested_at=NOW,
         batch_id=batch_id,
     )
@@ -1257,9 +1257,9 @@ def _budget(database_path) -> DeepSeekBudgetLedger:
     ledger = DeepSeekBudgetLedger(
         database_path,
         daily_hard_limit=2,
-        strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "shared_preheat": 0, "emergency": 0},
-        stage_targets={"today_main": 0},
-        stage_limits={"today_main": 2},
+        strategy_limits={"tomorrow": 2, "d25": 0, "shared_preheat": 0, "emergency": 0},
+        stage_targets={"tomorrow_morning": 0},
+        stage_limits={"tomorrow_morning": 2},
     )
     ledger.initialize()
     return ledger
@@ -1271,14 +1271,14 @@ def _settings() -> DeepSeekSettings:
         base_url="https://api.deepseek.example/v1",
         model="deepseek-v4-flash",
         challenger_model="deepseek-v4-pro",
-        challenger_limits={"today": 0, "tomorrow": 0, "d25": 0},
+        challenger_limits={"tomorrow": 0, "d25": 0},
         timeout_seconds=1.0,
         batch_size=8,
         max_tokens=256,
         daily_hard_limit=2,
-        strategy_limits={"today": 2, "tomorrow": 0, "d25": 0, "shared_preheat": 0, "emergency": 0},
-        stage_targets={"today_main": 0},
-        stage_limits={"today_main": 2},
+        strategy_limits={"tomorrow": 2, "d25": 0, "shared_preheat": 0, "emergency": 0},
+        stage_targets={"tomorrow_morning": 0},
+        stage_limits={"tomorrow_morning": 2},
         api_key="secret",
     )
 
@@ -1286,7 +1286,7 @@ def _settings() -> DeepSeekSettings:
 def _reviewer_policy() -> dict[str, object]:
     return {
         "dimension_weights": {
-            Strategy.TODAY: {
+            Strategy.TOMORROW: {
                 "value_quality": 0.10,
                 "financial_health": 0.10,
                 "market_flow": 0.40,

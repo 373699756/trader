@@ -11,17 +11,14 @@ def test_training_online_codec_replay_and_shadow_use_the_catalog_owner() -> None
         "src/trader/training/evaluation/application/tomorrow_daily_close_h1.py",
         "src/trader/training/evaluation/application/tomorrow_historical_screening.py",
         "src/trader/training/evaluation/application/tomorrow_historical_validation.py",
-        "src/trader/training/evaluation/application/tomorrow_profile_holdout.py",
         "src/trader/training/evaluation/domain/tomorrow_features.py",
         "src/trader/training/domain/tomorrow_training_input.py",
         "src/trader/infra/market_data/normalization/features.py",
-        "src/trader/infra/scoring/profiles/v1/artifact_builder.py",
-        "src/trader/infra/scoring/profiles/v1/artifact_codec.py",
         "src/trader/training/infra/artifacts/contracts.py",
     )
     for relative in consumers:
         source = (ROOT / relative).read_text(encoding="utf-8")
-        assert "trader.domain.market.feature_contracts" in source, relative
+        assert "trader.recommendation.domain.market.feature_contracts" in source, relative
 
     for relative in (
         "src/trader/training/infra/artifacts/bundle_codec.py",
@@ -38,10 +35,7 @@ def test_v3_feature_identifiers_are_declared_only_by_the_catalog() -> None:
         "src/trader/training/evaluation/application/tomorrow_daily_close_h1.py",
         "src/trader/training/evaluation/application/tomorrow_historical_screening.py",
         "src/trader/training/evaluation/application/tomorrow_historical_validation.py",
-        "src/trader/training/evaluation/application/tomorrow_profile_holdout.py",
         "src/trader/training/domain/tomorrow_training_input.py",
-        "src/trader/infra/scoring/profiles/v1/artifact_builder.py",
-        "src/trader/infra/scoring/profiles/v1/artifact_codec.py",
         "src/trader/training/infra/artifacts/bundle_codec.py",
         "src/trader/training/infra/profile/v3/training.py",
     )
@@ -55,7 +49,6 @@ def test_online_and_historical_cost_ranks_share_the_average_rank_owner() -> None
         "src/trader/application/recommendation/production_model_scoring.py",
         "src/trader/training/evaluation/application/tomorrow_historical_screening.py",
         "src/trader/training/evaluation/application/tomorrow_historical_validation.py",
-        "src/trader/training/evaluation/application/tomorrow_profile_holdout.py",
     )
 
     for relative in consumers:
@@ -63,5 +56,5 @@ def test_online_and_historical_cost_ranks_share_the_average_rank_owner() -> None
         assert "percentile_ranks" in source, relative
         assert "def _percentile_ranks" not in source, relative
 
-    owner = (ROOT / "src/trader/domain/recommendation/model_scoring/utility_scoring.py").read_text(encoding="utf-8")
+    owner = (ROOT / "src/trader/recommendation/domain/scoring/utility_scoring.py").read_text(encoding="utf-8")
     assert "average_rank_percentiles" in owner

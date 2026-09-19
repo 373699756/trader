@@ -49,7 +49,6 @@ include = ["trader*"]
     "static/*.svg",
     "static/vendor/*",
 ]
-"trader.infra.scoring.profiles.v1" = ["model.json"]
 "trader.download.infra.history_automation_templates" = ["*.in", "linux.timer"]
 
 [tool.ruff]

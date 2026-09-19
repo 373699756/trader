@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
-from trader.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
+from trader.recommendation.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
 from trader.training.evaluation.domain.historical_screening import HISTORICAL_SCREENING_SPEC
 
 HistoricalFieldStatus = Literal["eligible", "not_reconstructed"]

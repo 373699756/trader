@@ -104,7 +104,6 @@ class HistoricalMinuteQualification:
     matched_trade_dates: int
     coverage_ratio: float
     timezone: str
-    supports_1120: bool
     supports_1450: bool
     volume_available: bool
     amount_available: bool
@@ -131,7 +130,6 @@ class HistoricalMinuteQualification:
         ):
             raise ValueError("historical minute qualification is invalid")
         capabilities = (
-            self.supports_1120,
             self.supports_1450,
             self.volume_available,
             self.amount_available,

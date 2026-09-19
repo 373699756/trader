@@ -10,7 +10,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Literal
 
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 
 _IDENTITY = re.compile(r"^[a-zA-Z0-9_.:-]{1,200}$")
 HotPathStatus = Literal["passed", "failed"]

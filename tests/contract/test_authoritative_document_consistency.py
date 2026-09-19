@@ -11,13 +11,10 @@ def test_freeze_contract_has_one_boundary_for_each_strategy() -> None:
     design = DESIGN.read_text(encoding="utf-8")
     strategy = STRATEGY.read_text(encoding="utf-8")
 
-    assert "11:20:00 或之后启动" in design
-    assert "禁止 checkpoint" in design
     assert "14:49:20（含）至 14:50（不含）" in design
-    assert "| 11:19:50 | today 冻结检查点 |" not in design
     assert "有效 14:49:50 检查点" not in design
-    assert "`close_fallback` 的 today" not in strategy
-    assert "同日也不允许 `close_fallback`" in _compact(strategy)
+    assert "Tomorrow/D25 14:50 后" in strategy
+    assert "Long：不冻结、不写推荐历史" in strategy
 
 
 def test_strategy_uses_current_decision_types_and_risk_aware_upper_bound() -> None:

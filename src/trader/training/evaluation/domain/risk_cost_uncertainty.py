@@ -12,10 +12,10 @@ from datetime import date
 from statistics import fmean
 from typing import Literal
 
-from trader.domain.market.factors import clamp, round_score
-from trader.domain.recommendation.risk_fusion.decision import RiskDecision
-from trader.domain.recommendation.scoring.alpha import AlphaScore
-from trader.domain.recommendation.selection.execution_cost import ExecutionCost
+from trader.recommendation.domain.market.factors import clamp, round_score
+from trader.recommendation.domain.risk.decision import RiskDecision
+from trader.recommendation.domain.scoring.alpha import AlphaScore
+from trader.recommendation.domain.selection.execution_cost import ExecutionCost
 from trader.training.evaluation.domain.historical import SUPPORTED_RESEARCH_BOARDS, ResearchBoard
 
 DeepSeekResearchOutcome = Literal["applied", "failed", "late", "budget_exhausted", "abstained"]

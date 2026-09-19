@@ -12,8 +12,8 @@ from trader.application.recommendation.scored_freezing import (
     DecisionRuntimeIdentity,
     ScoredFreezeCoordinator,
 )
-from trader.domain.recommendation.decision_identity import ScoredDecision
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.decision_identity import ScoredDecision
+from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.persistence.decision_records import SQLiteDecisionRecordRepository
 from trader.infra.settings import load_strategy_settings
 

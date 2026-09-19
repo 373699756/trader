@@ -31,8 +31,8 @@ from trader.training.evaluation.application.research_audit import (
     ResearchRiskFactAudit,
     ShadowMode,
 )
-from trader.domain.recommendation.decision_identity import DecisionStage
-from trader.domain.recommendation.models import RecommendationAction, Strategy
+from trader.recommendation.domain.publication.decision_identity import DecisionStage
+from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.infra.artifacts.fields import as_sequence
 
 LEGACY_RESEARCH_EVENT_SCHEMA_VERSION = "research_committed_event_legacy"

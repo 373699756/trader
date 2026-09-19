@@ -8,7 +8,6 @@ import pytest
 from trader.download.domain.baostock_daily import build_baostock_training_split
 from trader.training.infra.profile.v3.contracts import (
     D25_HEAD_CONTRACT,
-    TODAY_HEAD_CONTRACT,
     TOMORROW_HEAD_CONTRACT,
 )
 from trader.training.infra.profile.v3.training_sample_repository import (
@@ -29,7 +28,7 @@ def _sample(
     return V3TrainingSample(code, day, "main", industry, 1_000_000.0, (0.1,) * 6, typed_targets)
 
 
-def test_sample_repository_serves_all_three_heads_from_one_stable_database(tmp_path: Path) -> None:
+def test_sample_repository_serves_both_heads_from_one_stable_database(tmp_path: Path) -> None:
     dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_250))
     split = build_baostock_training_split(dates, parent_manifest_hash="a" * 64)
     training_day = split.model_fit_dates[0]
@@ -56,16 +55,14 @@ def test_sample_repository_serves_all_three_heads_from_one_stable_database(tmp_p
             repository.prepare_for_model_fitting(split)
 
         tomorrow = next(item for item in repository.industry_counts(TOMORROW_HEAD_CONTRACT) if item.industry == "银行")
-        today = next(item for item in repository.industry_counts(TODAY_HEAD_CONTRACT) if item.industry == "银行")
         d25 = next(item for item in repository.industry_counts(D25_HEAD_CONTRACT) if item.industry == "银行")
         tomorrow_data = repository.industry_data(tomorrow, TOMORROW_HEAD_CONTRACT)
-        today_data = repository.industry_data(today, TODAY_HEAD_CONTRACT)
         d25_data = repository.industry_data(d25, D25_HEAD_CONTRACT)
 
-        assert tomorrow.training == today.training == d25.training == 2
+        assert tomorrow.training == d25.training == 2
         assert (tomorrow.early_stopping, tomorrow.calibration, tomorrow.validation) == (1, 1, 1)
         assert tomorrow_data.training.features.shape == (2, 6)
-        assert today_data.training.features.shape == d25_data.training.features.shape == (2, 5)
+        assert d25_data.training.features.shape == (2, 5)
         assert tomorrow_data.training.labels.tolist() == [0.02, 0.02]
         assert d25_data.training.labels.tolist() == [0.045, 0.045]
         assert np.all(tomorrow_data.training.features == 0.1)

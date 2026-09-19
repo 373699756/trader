@@ -34,7 +34,7 @@ def test_dashboard_and_explanation_use_the_unified_short_horizon_score_scale() -
     assert "统一评分最高" not in template
     assert "统一0–100评分" in template
     assert 'id="topScoresStatus"' in template
-    assert "Today、Tomorrow、D25 的最终分共享同一 0–100 质量标尺" in normalized_scoring
+    assert "Tomorrow、D25 的最终分共享同一 0–100 质量标尺" in normalized_scoring
     assert "模型相对排名只作为诊断" in normalized_scoring
     assert "Decision coverage、 GET、SSE 完整替换和运行诊断统一读取该聚合" in normalized_design
     assert "预测横截面分位只作为模型相对信号诊断" in normalized_retrospective

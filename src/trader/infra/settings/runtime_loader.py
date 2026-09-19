@@ -401,7 +401,7 @@ def _validate_deepseek_identity(deepseek: DeepSeekSettings) -> None:
         raise ConfigurationError("DeepSeek primary model must be deepseek-v4-flash")
     if deepseek.challenger_model != "deepseek-v4-pro":
         raise ConfigurationError("DeepSeek challenger model must be deepseek-v4-pro")
-    expected_challenger_limits = {"today": 0, "tomorrow": 2, "d25": 0}
+    expected_challenger_limits = {"tomorrow": 2, "d25": 0}
     if dict(deepseek.challenger_limits) != expected_challenger_limits:
         raise ConfigurationError("DeepSeek challenger limits must match the section 11 allocation")
     if deepseek.challenger_daily_limit != 2:
@@ -413,13 +413,12 @@ def _validate_deepseek_identity(deepseek: DeepSeekSettings) -> None:
 
 
 def _validate_deepseek_allocation(deepseek: DeepSeekSettings) -> None:
-    required_buckets = {"today", "tomorrow", "d25", "shared_preheat", "emergency"}
+    required_buckets = {"tomorrow", "d25", "shared_preheat", "emergency"}
     if set(deepseek.strategy_limits) != required_buckets:
         raise ConfigurationError(
-            "DeepSeek strategy limits must define today, tomorrow, d25, shared_preheat and emergency"
+            "DeepSeek strategy limits must define tomorrow, d25, shared_preheat and emergency"
         )
     expected_strategy_limits = {
-        "today": 8,
         "tomorrow": 38,
         "d25": 16,
         "shared_preheat": 4,
@@ -429,8 +428,6 @@ def _validate_deepseek_allocation(deepseek: DeepSeekSettings) -> None:
         raise ConfigurationError("DeepSeek strategy limits must match the section 11 allocation")
     expected_stage_targets = {
         "shared_preheat": 2,
-        "today_main": 3,
-        "today_late": 2,
         "tomorrow_morning": 6,
         "tomorrow_afternoon": 10,
         "tomorrow_final": 5,
@@ -441,8 +438,6 @@ def _validate_deepseek_allocation(deepseek: DeepSeekSettings) -> None:
     }
     expected_stage_limits = {
         "shared_preheat": 4,
-        "today_main": 5,
-        "today_late": 3,
         "tomorrow_morning": 10,
         "tomorrow_afternoon": 18,
         "tomorrow_final": 10,
@@ -455,10 +450,10 @@ def _validate_deepseek_allocation(deepseek: DeepSeekSettings) -> None:
         raise ConfigurationError("DeepSeek stage targets must match the section 11 allocation")
     if dict(deepseek.stage_limits) != expected_stage_limits:
         raise ConfigurationError("DeepSeek stage limits must match the section 11 allocation")
-    if sum(deepseek.stage_targets.values()) != 36:
-        raise ConfigurationError("DeepSeek normal stage targets must total 36")
-    if sum(value for key, value in deepseek.stage_limits.items() if key != "emergency") != 66:
-        raise ConfigurationError("DeepSeek normal stage limits must total 66")
+    if sum(deepseek.stage_targets.values()) != 31:
+        raise ConfigurationError("DeepSeek normal stage targets must total 31")
+    if sum(value for key, value in deepseek.stage_limits.items() if key != "emergency") != 58:
+        raise ConfigurationError("DeepSeek normal stage limits must total 58")
     if sum(deepseek.stage_limits.values()) != sum(deepseek.strategy_limits.values()):
         raise ConfigurationError("DeepSeek stage and strategy envelopes must match")
 
@@ -498,16 +493,16 @@ def _validate_cadence_settings(
     expected = {
         "full_market": {
             "warmup": 10.0,
-            "today_main": 10.0,
-            "today_late": 10.0,
+            "morning_main": 10.0,
+            "morning_late": 10.0,
             "midday": 10.0,
             "afternoon": 10.0,
             "final_review": 10.0,
         },
         "candidate_quotes": {
             "warmup": 2.0,
-            "today_main": 1.0,
-            "today_late": 2.0,
+            "morning_main": 1.0,
+            "morning_late": 2.0,
             "midday": 10.0,
             "afternoon": 2.0,
             "final_review": 1.0,
@@ -515,8 +510,8 @@ def _validate_cadence_settings(
         },
         "topk_quotes": {
             "warmup": 1.0,
-            "today_main": 1.0,
-            "today_late": 1.0,
+            "morning_main": 1.0,
+            "morning_late": 1.0,
             "midday": 10.0,
             "afternoon": 1.0,
             "final_review": 1.0,
@@ -529,8 +524,8 @@ def _validate_cadence_settings(
         },
         "long_quotes": {
             "warmup": 1.0,
-            "today_main": 1.0,
-            "today_late": 1.0,
+            "morning_main": 1.0,
+            "morning_late": 1.0,
             "midday": 10.0,
             "afternoon": 1.0,
             "final_review": 1.0,
@@ -538,30 +533,30 @@ def _validate_cadence_settings(
         },
         "score": {
             "warmup": 10.0,
-            "today_main": 3.0,
-            "today_late": 5.0,
+            "morning_main": 3.0,
+            "morning_late": 5.0,
             "afternoon": 5.0,
             "final_review": 3.0,
             "final_window": 1.0,
         },
         "industry_heat": {
             "warmup": 120.0,
-            "today_main": 60.0,
-            "today_late": 60.0,
+            "morning_main": 60.0,
+            "morning_late": 60.0,
             "afternoon": 60.0,
             "final_review": 60.0,
         },
         "market_news": {
             "warmup": 120.0,
-            "today_main": 60.0,
-            "today_late": 60.0,
+            "morning_main": 60.0,
+            "morning_late": 60.0,
             "afternoon": 60.0,
             "final_review": 60.0,
         },
         "stock_risk": {
             "warmup": 300.0,
-            "today_main": 180.0,
-            "today_late": 180.0,
+            "morning_main": 180.0,
+            "morning_late": 180.0,
             "afternoon": 180.0,
             "final_review": 120.0,
         },

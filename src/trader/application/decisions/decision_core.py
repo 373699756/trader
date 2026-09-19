@@ -9,7 +9,7 @@ from datetime import date, datetime
 from typing import Literal
 
 from trader.application.decisions.decision_events import DecisionCommitted, build_decision_committed
-from trader.domain.recommendation.decision_identity import (
+from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     DecisionIdentity,
     DecisionOverlay,
@@ -17,7 +17,7 @@ from trader.domain.recommendation.decision_identity import (
     formal_scored_decision,
     identity_codes,
 )
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 
 
 @dataclass(frozen=True)

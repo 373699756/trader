@@ -15,7 +15,7 @@ from trader.application.recommendation.scored_projection import (
     ScoredProjectionInputs,
     build_scored_local,
 )
-from trader.domain.recommendation.selection.scored_selection import ScoredCandidateStageCounts
+from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts
 
 
 @dataclass(frozen=True)

@@ -9,8 +9,8 @@ from datetime import date, datetime, time
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from trader.domain.market.feature_contracts import FeatureVector
-from trader.domain.market.models import Board
+from trader.recommendation.domain.market.feature_contracts import FeatureVector
+from trader.recommendation.domain.market.models import Board
 from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash
 from trader.training.evaluation.domain.models import RecommendationOutcome
 

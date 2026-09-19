@@ -203,7 +203,7 @@
         '<col style="width:130px">',
         '<col style="width:168px">',
       ].join(""),
-      head: "<tr><th>排名</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>成交 / 换手</th><th>总市值</th><th>行情来源 / 时间</th></tr>",
+      head: "<tr><th>类别</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>成交 / 换手</th><th>总市值</th><th>行情来源 / 时间</th></tr>",
     };
   }
 
@@ -218,21 +218,6 @@
         '<col style="width:150px">',
       ].join(""),
       head: "<tr><th>排名</th><th>股票</th><th>锚点价格</th><th>锚点涨跌</th><th>今日涨跌</th><th>锚点至今</th></tr>",
-    };
-  }
-
-  function frozenTodayTable() {
-    return {
-      columns: [
-        '<col style="width:56px">',
-        '<col style="width:168px">',
-        '<col style="width:142px">',
-        '<col style="width:126px">',
-        '<col style="width:108px">',
-        '<col style="width:118px">',
-        '<col style="width:126px">',
-      ].join(""),
-      head: "<tr><th>排名</th><th>股票</th><th>11:20锚点价</th><th>锚点时涨跌</th><th>当前价</th><th>当前涨跌</th><th>锚点至今</th></tr>",
     };
   }
 
@@ -263,7 +248,7 @@
     const deepseek = scores.deepseek_score == null ? "未复核" : number(scores.deepseek_score, 2);
     const deepseekPenalty = number(scores.deepseek_risk_penalty, 2);
     return `<tr class="${rowClass}" tabindex="0" data-code="${escapeHtml(item.code)}">
-      <td>${number(item.rank, 0)}</td>
+      <td>${escapeHtml(item.group || "长期")}</td>
       <td>${stock(item)}<span class="stock-code">${escapeHtml(researchStatus(item.research))}</span></td>
       <td>${number(item.price, 2)}</td>
       <td class="${change.className}">${change.text}</td>
@@ -300,38 +285,20 @@
     return /[A-Za-z_]/.test(raw) ? "行情来源待确认" : raw;
   }
 
-  function isFrozenTodayView(snapshot) {
-    return Boolean(
-      snapshot
-      && snapshot.strategy === "today"
-      && snapshot.frozen === true
-      && snapshot.historical !== true
-      && snapshot.phase !== "close_fallback"
-      && snapshot.trade_date
-      && snapshot.trade_date === snapshot.current_trade_date
-    );
-  }
-
   function tableDefinition(snapshot) {
     if (snapshot && snapshot.historical === true) return historyTable();
-    if (isFrozenTodayView(snapshot)) return frozenTodayTable();
     if (snapshot && snapshot.strategy === "long") return longTable();
     return currentTable();
   }
 
   function tableRows(items, snapshot) {
     if (snapshot && snapshot.historical === true) return rows(items, true);
-    if (isFrozenTodayView(snapshot)) {
-      if (!Array.isArray(items) || items.length === 0) return "";
-      return items.map(frozenTodayRow).join("");
-    }
     if (snapshot && snapshot.strategy === "long") return longRows(items);
     return rows(items, false);
   }
 
   function tableColumnCount(snapshot) {
     if (snapshot && snapshot.historical === true) return 6;
-    if (isFrozenTodayView(snapshot)) return 7;
     if (snapshot && snapshot.strategy === "long") return 7;
     return 9;
   }
@@ -347,22 +314,6 @@
 
   function observationTableColumnCount() {
     return 9;
-  }
-
-  function frozenTodayRow(item) {
-    const anchorChange = pct(item.anchor_daily_return_pct);
-    const currentChange = pct(item.pct_change);
-    const anchorToNow = pct(item.anchor_to_now_pct);
-    const anchorTime = hasValue(item.anchor_source_time) ? formatTime(item.anchor_source_time) : "-";
-    return `<tr tabindex="0" data-code="${escapeHtml(item.code)}">
-      <td>${number(item.rank, 0)}</td>
-      <td>${stock(item)}</td>
-      <td>${number(item.anchor_price, 2)}<span class="stock-code">实际 ${escapeHtml(anchorTime)}</span></td>
-      <td class="${anchorChange.className}">${anchorChange.text}</td>
-      <td>${number(item.price, 2)}</td>
-      <td class="${currentChange.className}">${currentChange.text}</td>
-      <td class="${anchorToNow.className}">${anchorToNow.text}</td>
-    </tr>`;
   }
 
   function historyRow(item) {
@@ -382,14 +333,13 @@
   function drawer(item, snapshot) {
     const scores = item.scores || {};
     const historical = snapshot.historical === true;
-    const frozenToday = isFrozenTodayView(snapshot);
     const long = snapshot.strategy === "long";
     const action = String(item.action || "unavailable");
     const downside = item.downside || null;
     const conclusionValues = long
       ? [
         ["观察状态", ACTION_LABELS[action] || "观察"],
-        ["当前序号", hasValue(item.rank) ? `第 ${number(item.rank, 0)} 项` : null],
+        ["观察类别", item.group || null],
       ]
       : [
         ["推荐动作", ACTION_LABELS[action] || "动作状态未知"],
@@ -403,16 +353,7 @@
       `<div class="detail-reason"><span>${long ? "观察依据" : "推荐原因"}</span><strong>${escapeHtml(actionReason(item.action_reason))}</strong></div>`,
     ].join("");
 
-    const marketValues = frozenToday
-      ? [
-        ["11:20锚点价", valueNumber(item.anchor_price, 2)],
-        ["实际锚点时间", hasValue(item.anchor_source_time) ? formatDateTime(item.anchor_source_time) : null],
-        ["锚点时当日涨跌", valuePct(item.anchor_daily_return_pct)],
-        ["当前价", valueNumber(item.price, 2)],
-        ["当前当日涨跌", valuePct(item.pct_change)],
-        ["锚点至今", valuePct(item.anchor_to_now_pct)],
-      ]
-      : historical
+    const marketValues = historical
       ? [
         ["锚点价", valueNumber(item.anchor_price, 2)],
         ["锚点当日涨跌", valuePct(item.anchor_daily_return_pct)],
@@ -431,7 +372,7 @@
       ["报价来源", hasValue(item.source) ? item.source : null],
       ["行情时间", hasValue(item.source_time) ? formatDateTime(item.source_time) : null],
     );
-    const requiredMarket = historical || frozenToday
+    const requiredMarket = historical
       ? [item.anchor_price, item.anchor_daily_return_pct, item.price, item.pct_change, item.anchor_to_now_pct]
       : [item.price, item.pct_change, item.turnover_rate, item.amount, item.market_cap];
     const marketNotes = [];
@@ -652,9 +593,7 @@
     escapeHtml,
     formatDateTime,
     formatTime,
-    frozenTodayTable,
     historyTable,
-    isFrozenTodayView,
     longTable,
     fusionModeLabel,
     rememberDiagnostic,

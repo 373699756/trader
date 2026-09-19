@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 from trader.training.evaluation.domain.models import (
     BenchmarkConstituentReturn,
     BenchmarkReturn,
@@ -101,7 +101,7 @@ class CanonicalOutcomeEvaluator:
         gross = (end_close / anchor_qfq_price - 1.0) * 100.0
         mae = (minimum_low / anchor_qfq_price - 1.0) * 100.0
         mae_atr = mae / target.atr20_pct
-        threshold = -1.5 if target.strategy in {Strategy.TODAY, Strategy.TOMORROW} else -2.5
+        threshold = -1.5 if target.strategy is Strategy.TOMORROW else -2.5
         benchmark = _compound_returns(benchmark_returns[:horizon]) if len(benchmark_returns) >= horizon else None
         net_excess = None if benchmark is None else gross - benchmark - round_trip_cost_pct
         return RecommendationOutcome(

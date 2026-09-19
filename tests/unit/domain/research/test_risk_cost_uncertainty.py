@@ -5,13 +5,13 @@ from datetime import date
 
 import pytest
 
-from trader.domain.recommendation.risk_fusion.decision import (
+from trader.recommendation.domain.risk.decision import (
     PredictionInterval,
     RiskDecision,
     UncertaintyAssessment,
 )
-from trader.domain.recommendation.scoring.alpha import AlphaScore
-from trader.domain.recommendation.selection.execution_cost import ExecutionCost, ExecutionCostScenario
+from trader.recommendation.domain.scoring.alpha import AlphaScore
+from trader.recommendation.domain.selection.execution_cost import ExecutionCost, ExecutionCostScenario
 from trader.training.evaluation.domain.risk_cost_uncertainty import (
     DeepSeekResearchReview,
     RiskCostUncertaintySample,

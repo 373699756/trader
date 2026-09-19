@@ -6,12 +6,12 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.domain.market.models import Board
-from trader.domain.recommendation.models import (
+from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.publication.models import (
     BoardStrategyPolicy,
     Strategy,
 )
-from trader.domain.recommendation.scoring.scoring import (
+from trader.recommendation.domain.scoring.scoring import (
     BoardCrossSectionRequest,
     apply_board_policy,
     build_board_cross_section,
@@ -22,10 +22,6 @@ from trader.domain.recommendation.scoring.scoring import (
 NOW = datetime(2026, 7, 16, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 _CANDIDATE_COMPONENT_WEIGHTS = {
-    Strategy.TODAY: {
-        "intraday_structure": {"change_5m": 0.35, "speed_percentile": 0.25, "pct_change": 0.2, "volume_ratio": 0.2},
-        "turnover_state": {"turnover_shock_score": 0.5, "amount_shock_score": 0.5},
-    },
     Strategy.TOMORROW: {"stability": {"low_volatility_score": 0.5, "low_drawdown_score": 0.5}},
     Strategy.D25: {
         "stability": {"low_volatility_score": 0.5, "low_drawdown_score": 0.5},
@@ -38,26 +34,6 @@ _CANDIDATE_COMPONENT_WEIGHTS = {
 }
 
 _LOCAL_COMPONENT_WEIGHTS = {
-    Strategy.TODAY: {
-        "intraday_structure": {
-            "change_5m": 0.3,
-            "speed_percentile": 0.2,
-            "pct_change": 0.2,
-            "volume_ratio": 0.15,
-            "relative_strength_3d": 0.15,
-        },
-        "turnover_state": {
-            "turnover_shock_score": 1 / 3,
-            "amount_shock_score": 1 / 3,
-            "flow_confirmation_score": 1 / 3,
-        },
-        "liquidity_execution": {
-            "amount_percentile_20d": 0.6,
-            "turnover_rate": 0.2,
-            "limit_distance_safety": 0.2,
-        },
-        "stability": {"low_volatility_score": 0.5, "low_drawdown_score": 0.5},
-    },
     Strategy.TOMORROW: {
         "tail_structure": {"tail_return_30m": 0.35, "tail_volume_ratio": 0.3, "close_location": 0.35},
         "turnover_flow": {
@@ -104,13 +80,6 @@ def _build_board_cross_section(
 
 def _policy(strategy: Strategy, board: Board, weights: dict[str, float]) -> BoardStrategyPolicy:
     candidate = {
-        Strategy.TODAY: {
-            "liquidity": 0.30,
-            "intraday_structure": 0.25,
-            "turnover_state": 0.20,
-            "peer_gap": 0.15,
-            "data_completeness": 0.10,
-        },
         Strategy.TOMORROW: {
             "liquidity": 0.35,
             "peer_gap": 0.15,
@@ -206,7 +175,7 @@ def test_non_positive_or_non_finite_shock_denominators_remain_missing(
         board=Board.MAIN,
         merge_epoch="epoch-1",
         trade_date="2026-07-16",
-        phase="today_main",
+        phase="morning_main",
         data_version="data-1",
     )
 

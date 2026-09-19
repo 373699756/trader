@@ -49,11 +49,10 @@ _REQUIRED_ARTIFACTS: dict[TomorrowResearchStage, frozenset[str]] = {
             "h1_coverage_audit",
             "daily_close_model_selection",
             "filter_confirmation",
-            "tomorrow_joint_candidate",
         }
     ),
-    "confirmation": frozenset({"daily_close_confirmation_report", "joint_confirmation_report"}),
-    "daily_close_proxy_holdout": frozenset({"daily_close_proxy_validation_report", "joint_candidate_model_artifact"}),
+    "confirmation": frozenset({"daily_close_confirmation_report"}),
+    "daily_close_proxy_holdout": frozenset({"daily_close_proxy_validation_report"}),
     "point_in_time_holdout": frozenset({"tomorrow_point_in_time_holdout_report", "cross_strategy_conclusion"}),
 }
 _TERMINAL_REPORT_ARTIFACT: dict[TomorrowResearchStage, str] = {
@@ -68,11 +67,8 @@ _ARTIFACT_KINDS = {
     "h1_coverage_audit": "h1_research_completion",
     "daily_close_model_selection": "daily_close_model_selection",
     "filter_confirmation": "filter_confirmation",
-    "tomorrow_joint_candidate": "tomorrow_joint_candidate",
     "daily_close_confirmation_report": "daily_close_confirmation_report",
-    "joint_confirmation_report": "joint_confirmation_report",
     "daily_close_proxy_validation_report": "daily_close_proxy_validation_report",
-    "joint_candidate_model_artifact": "tomorrow_joint_candidate_model_artifact",
     "tomorrow_point_in_time_holdout_report": "point_in_time_holdout",
     "cross_strategy_conclusion": "cross_strategy_conclusion",
 }

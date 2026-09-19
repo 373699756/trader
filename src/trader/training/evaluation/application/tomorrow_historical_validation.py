@@ -11,8 +11,8 @@ from datetime import date
 from typing import Literal, Protocol
 
 from trader.application.ports.model_scoring import ModelInput, ModelPredictorPort
-from trader.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
-from trader.domain.recommendation.model_scoring import percentile_ranks
+from trader.recommendation.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
+from trader.recommendation.domain.scoring.utility_scoring import percentile_ranks
 from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash
 from trader.training.evaluation.domain.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalScreeningSpec
 from trader.training.evaluation.domain.shadow_calibration import (

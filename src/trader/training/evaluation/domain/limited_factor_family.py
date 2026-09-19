@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
-from trader.domain.market.feature_contracts import TOMORROW_RAW_ALPHA_FEATURE_MANIFEST
+from trader.recommendation.domain.market.feature_contracts import TOMORROW_RAW_ALPHA_FEATURE_MANIFEST
 from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash
 from trader.training.evaluation.domain.paired_statistics import (
     PreregisteredBootstrapPlan,

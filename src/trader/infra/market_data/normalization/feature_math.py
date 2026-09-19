@@ -8,13 +8,13 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 
-from trader.domain.market.factors import band_score, clamp, percentile_scores_with_metadata
-from trader.domain.market.models import (
+from trader.recommendation.domain.market.factors import band_score, clamp, percentile_scores_with_metadata
+from trader.recommendation.domain.market.models import (
     CrossSectionStats,
     Evidence,
     MarketQuote,
 )
-from trader.domain.recommendation.risk_fusion.fusion import STRUCTURED_REVIEW_FEATURES
+from trader.recommendation.domain.risk.fusion import STRUCTURED_REVIEW_FEATURES
 from trader.infra.market_data.history.history import (
     DailyBar,
 )

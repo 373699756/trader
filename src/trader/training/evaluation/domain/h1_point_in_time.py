@@ -29,8 +29,8 @@ H1_MIN_COMMON_DAYS = 1000
 H1_MIN_COVERAGE = 0.95
 H1_TERMINAL_HOLDOUT_DAYS = 200
 
-ResearchStrategy = Literal["today", "tomorrow", "d25"]
-H1AnchorKind = Literal["today_1120", "tomorrow_1450", "d25_1450"]
+ResearchStrategy = Literal["tomorrow", "d25"]
+H1AnchorKind = Literal["tomorrow_1450", "d25_1450"]
 H1CoverageState = Literal["coverage_ready", "historical_data_insufficient"]
 
 
@@ -48,7 +48,7 @@ class H1PointInTimeSpec:
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
-        if self.strategy not in ("today", "tomorrow", "d25"):
+        if self.strategy not in ("tomorrow", "d25"):
             raise ValueError("H1 strategy is invalid")
         if self.research_identity != H1_RESEARCH_IDENTITY or _IDENTITY.fullmatch(self.research_identity) is None:
             raise ValueError("H1 identity is invalid")
@@ -66,11 +66,11 @@ class H1PointInTimeSpec:
 
     @property
     def anchor_kind(self) -> H1AnchorKind:
-        return {"today": "today_1120", "tomorrow": "tomorrow_1450", "d25": "d25_1450"}[self.strategy]  # type: ignore[return-value]
+        return {"tomorrow": "tomorrow_1450", "d25": "d25_1450"}[self.strategy]  # type: ignore[return-value]
 
     @property
     def anchor_time(self) -> time:
-        return time(11, 20) if self.strategy == "today" else time(14, 50)
+        return time(14, 50)
 
 
 @dataclass(frozen=True)
@@ -97,7 +97,7 @@ class H1PointInTimeRecord:
 
 
 def _validate_h1_record_identity(record: H1PointInTimeRecord) -> None:
-    if record.strategy not in ("today", "tomorrow", "d25") or len(record.code) != 6 or not record.code.isdigit():
+    if record.strategy not in ("tomorrow", "d25") or len(record.code) != 6 or not record.code.isdigit():
         raise ValueError("H1 record identity is invalid")
     if record.daily_bar.trade_date != record.trade_date or record.daily_bar.adjustment != "qfq":
         raise ValueError("H1 record requires a matching qfq daily bar")
@@ -111,8 +111,7 @@ def _validate_h1_record_anchor(record: H1PointInTimeRecord) -> None:
     observed = record.observed_at.astimezone(SHANGHAI)
     if observed.date() != record.trade_date:
         raise ValueError("H1 observation date must match trade date")
-    expected = time(11, 20) if record.strategy == "today" else time(14, 50)
-    if observed.timetz().replace(tzinfo=None) != expected:
+    if observed.timetz().replace(tzinfo=None) != time(14, 50):
         raise ValueError("H1 observation must match the exact strategy anchor")
     if not math.isfinite(record.anchor_price) or record.anchor_price <= 0:
         raise ValueError("H1 anchor price is invalid")
@@ -132,7 +131,6 @@ def _validate_h1_record_hashes(record: H1PointInTimeRecord) -> None:
 class H1CapabilityProbe:
     source: str
     earliest_available: date | None
-    supports_today_1120: bool
     supports_1450: bool
     adjustment_semantics: str
     security_state_effective_at: bool
@@ -153,7 +151,7 @@ class H1CapabilityProbe:
 
     @property
     def point_in_time_anchors_proven(self) -> bool:
-        return self.supports_today_1120 and self.supports_1450 and self.security_state_effective_at
+        return self.supports_1450 and self.security_state_effective_at
 
 
 @dataclass(frozen=True)
@@ -165,7 +163,7 @@ class H1CapabilityStrategyStatus:
     production_authority: bool = False
 
     def __post_init__(self) -> None:
-        if self.strategy not in ("today", "tomorrow", "d25"):
+        if self.strategy not in ("tomorrow", "d25"):
             raise ValueError("H1 capability strategy is invalid")
         if self.state not in ("coverage_ready", "historical_data_insufficient"):
             raise ValueError("H1 capability strategy state is invalid")
@@ -190,8 +188,8 @@ class H1CapabilityAuditReport:
 
     def __post_init__(self) -> None:
         probes = tuple(self.probes)
-        strategies = tuple(sorted(self.strategies, key=lambda item: ("today", "tomorrow", "d25").index(item.strategy)))
-        if tuple(item.strategy for item in strategies) != ("today", "tomorrow", "d25"):
+        strategies = tuple(sorted(self.strategies, key=lambda item: ("tomorrow", "d25").index(item.strategy)))
+        if tuple(item.strategy for item in strategies) != ("tomorrow", "d25"):
             raise ValueError("H1 capability report requires all strategies in fixed order")
         if not probes or len({item.source for item in probes}) != len(probes):
             raise ValueError("H1 capability report requires unique source identities")
@@ -212,7 +210,7 @@ def build_h1_capability_audit(
     if not probes:
         raise ValueError("H1 capability audit requires source probes")
     statuses: list[H1CapabilityStrategyStatus] = []
-    for strategy in ("today", "tomorrow", "d25"):
+    for strategy in ("tomorrow", "d25"):
         reasons: list[str] = []
         qfq = tuple(item for item in probes if item.adjustment_semantics == "qfq")
         if not qfq or not any(
@@ -220,9 +218,7 @@ def build_h1_capability_audit(
             for item in qfq
         ):
             reasons.append("qfq_history_below_1000_sessions")
-        if strategy == "today" and not any(item.supports_today_1120 for item in probes):
-            reasons.append("historical_1120_anchor_unavailable")
-        if strategy != "today" and not any(item.supports_1450 for item in probes):
+        if not any(item.supports_1450 for item in probes):
             reasons.append("historical_1450_anchor_unavailable")
         if not any(item.security_state_effective_at for item in probes):
             reasons.append("effective_security_state_unavailable")
@@ -279,7 +275,7 @@ class H1CoverageAudit:
     terminal_holdout_opened: bool = False
 
     def __post_init__(self) -> None:
-        if self.strategy not in ("today", "tomorrow", "d25") or not 0 <= self.coverage_ratio <= 1:
+        if self.strategy not in ("tomorrow", "d25") or not 0 <= self.coverage_ratio <= 1:
             raise ValueError("H1 audit values are invalid")
         if self.terminal_holdout_opened:
             raise ValueError("H1 coverage audit cannot open terminal holdout")

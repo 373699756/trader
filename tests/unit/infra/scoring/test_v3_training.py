@@ -7,8 +7,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.domain.recommendation.model_scoring import TRAINED_HEAD_EXPOSURE_CONTRACT, residualize_exposure
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT, residualize_exposure
+from trader.recommendation.domain.publication.models import Strategy
 from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
     build_baostock_training_split,
@@ -29,7 +29,6 @@ from trader.training.infra.history.history_training_input import HistoryTraining
 from trader.training.infra.profile.v3.contracts import (
     D25_HEAD_CONTRACT,
     HEAD_CONTRACTS,
-    TODAY_HEAD_CONTRACT,
     TOMORROW_HEAD_CONTRACT,
     V3_TRAINING_PROFILE,
 )
@@ -219,9 +218,8 @@ def test_v3_training_validates_and_scans_history_once_then_fits_heads_sequential
 
     assert result.status == "engineering_ready"
     assert verify_calls == scan_calls == 1
-    assert fitted == [Strategy.TODAY, Strategy.TOMORROW, Strategy.D25]
+    assert fitted == [Strategy.TOMORROW, Strategy.D25]
     assert published == [
-        (Strategy.TODAY, tmp_path / "train" / "v3" / "today"),
         (Strategy.TOMORROW, tmp_path / "train" / "v3" / "tomorrow"),
         (Strategy.D25, tmp_path / "train" / "v3" / "d25"),
     ]
@@ -232,11 +230,10 @@ def test_v3_training_validates_and_scans_history_once_then_fits_heads_sequential
 def test_v3_head_maturity_and_contract_hashes_are_independent_and_stable(tmp_path: Path) -> None:
     snapshot = _cadence_archive(tmp_path / "history" / "baostock").snapshot
 
-    assert _mature_label_cutoff(snapshot, TODAY_HEAD_CONTRACT) == snapshot.calendar.open_dates[-2]
     assert _mature_label_cutoff(snapshot, TOMORROW_HEAD_CONTRACT) == snapshot.calendar.open_dates[-2]
     assert _mature_label_cutoff(snapshot, D25_HEAD_CONTRACT) == snapshot.calendar.open_dates[-6]
     hashes = {_training_contract_hash(V3_TRAINING_PROFILE, contract) for contract in HEAD_CONTRACTS}
-    assert len(hashes) == 3
+    assert len(hashes) == 2
     assert _training_contract_hash(V3_TRAINING_PROFILE, TOMORROW_HEAD_CONTRACT) == _training_contract_hash(
         V3_TRAINING_PROFILE, TOMORROW_HEAD_CONTRACT
     )
@@ -286,7 +283,7 @@ def test_v3_training_only_fits_the_head_whose_own_cadence_is_due(
     result = run_v3_training(tmp_path / "history", tmp_path / "train")
 
     assert fitted == [Strategy.D25]
-    assert [head.status for head in result.heads] == ["not_due", "not_due", "engineering_ready"]
+    assert [head.status for head in result.heads] == ["not_due", "engineering_ready"]
 
 
 def test_training_keeps_each_due_baseline_when_the_shared_scan_fails(
@@ -360,7 +357,7 @@ def test_training_respects_the_history_repack_fence(tmp_path: Path, monkeypatch:
 
 def test_training_cleanup_removes_only_owned_abandoned_workspaces(tmp_path: Path) -> None:
     abandoned = tmp_path / ".training-sample-workspace.abandoned"
-    staging = tmp_path / "today" / ".bundle-staging.abandoned"
+    staging = tmp_path / "d25" / ".bundle-staging.abandoned"
     preserved = tmp_path / "tomorrow" / "model.json"
     abandoned.mkdir()
     staging.mkdir(parents=True)
@@ -472,7 +469,7 @@ def test_model_progress_keeps_real_industry_count_for_each_head() -> None:
     models, training_rows, validation_rows = fit_industry_models(
         Samples(),
         split,
-        TODAY_HEAD_CONTRACT,
+        TOMORROW_HEAD_CONTRACT,
         progress=progress,  # type: ignore[arg-type]
     )
 
@@ -483,7 +480,7 @@ def test_model_progress_keeps_real_industry_count_for_each_head() -> None:
         ("running", 1, 2),
         ("completed", 2, 2),
     ]
-    assert all(item.strategy is Strategy.TODAY for item in updates)
+    assert all(item.strategy is Strategy.TOMORROW for item in updates)
 
 
 def test_training_progress_rejects_impossible_counts() -> None:

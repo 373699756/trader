@@ -45,8 +45,8 @@ def _report():
     )
     return evaluate_terminal_holdout(
         TerminalHoldoutEvaluation(
-            strategy="today",
-            research_identity="score_today_historical_candidate",
+            strategy="tomorrow",
+            research_identity="score_tomorrow_historical_candidate",
             parent_hash="a" * 64,
             candidate_hash="b" * 64,
             rows=rows,
@@ -56,7 +56,7 @@ def _report():
 
 def test_terminal_holdout_artifact_archive_is_idempotent_and_detects_tampering(tmp_path) -> None:
     report = _report()
-    archive = TerminalHoldoutArtifactArchive(tmp_path, strategy="today")
+    archive = TerminalHoldoutArtifactArchive(tmp_path, strategy="tomorrow")
 
     assert archive.write(report).content_hash == report.content_hash
     assert archive.write(replace(report)).content_hash == report.content_hash
@@ -69,7 +69,7 @@ def test_terminal_holdout_artifact_archive_is_idempotent_and_detects_tampering(t
 
 def test_terminal_holdout_artifact_archive_rejects_different_content(tmp_path) -> None:
     report = _report()
-    archive = TerminalHoldoutArtifactArchive(tmp_path, strategy="today")
+    archive = TerminalHoldoutArtifactArchive(tmp_path, strategy="tomorrow")
     archive.write(report)
 
     conflicting = replace(report, candidate_hash="c" * 64)
@@ -79,11 +79,11 @@ def test_terminal_holdout_artifact_archive_rejects_different_content(tmp_path) -
 
 def test_terminal_holdout_artifact_archive_rejects_strategy_and_schema_mismatch(tmp_path) -> None:
     report = _report()
-    archive = TerminalHoldoutArtifactArchive(tmp_path, strategy="tomorrow")
+    archive = TerminalHoldoutArtifactArchive(tmp_path, strategy="d25")
     with pytest.raises(TerminalHoldoutArtifactConflictError, match="strategy mismatch"):
         archive.write(report)
 
-    archive = TerminalHoldoutArtifactArchive(tmp_path, strategy="today")
+    archive = TerminalHoldoutArtifactArchive(tmp_path, strategy="tomorrow")
     archive.write(report)
     payload = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
     payload["unexpected"] = True
@@ -93,18 +93,7 @@ def test_terminal_holdout_artifact_archive_rejects_strategy_and_schema_mismatch(
 
 
 def test_cross_strategy_conclusion_artifact_archive_round_trips_and_detects_conflicts(tmp_path) -> None:
-    today = _report()
-    tomorrow = evaluate_terminal_holdout(
-        TerminalHoldoutEvaluation(
-            strategy="tomorrow",
-            research_identity="score_tomorrow_historical_candidate",
-            parent_hash="a" * 64,
-            candidate_hash="b" * 64,
-            rows=(),
-            parent_status="historical_rejected",
-            parent_failure_reasons=("candidate_rejected",),
-        )
-    )
+    tomorrow = _report()
     d25 = evaluate_terminal_holdout(
         TerminalHoldoutEvaluation(
             strategy="d25",
@@ -116,7 +105,7 @@ def test_cross_strategy_conclusion_artifact_archive_round_trips_and_detects_conf
             parent_failure_reasons=("missing_parent",),
         )
     )
-    conclusion = CrossStrategyConclusionService().execute(today, tomorrow, d25)
+    conclusion = CrossStrategyConclusionService().execute(tomorrow, d25)
     archive = CrossStrategyConclusionArtifactArchive(tmp_path)
     assert archive.write(conclusion).content_hash == conclusion.content_hash
     assert archive.write(replace(conclusion)).content_hash == conclusion.content_hash

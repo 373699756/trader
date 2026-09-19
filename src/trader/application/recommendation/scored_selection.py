@@ -14,10 +14,10 @@ from trader.application.recommendation.feature_calculation import (
     assemble_scored_features,
 )
 from trader.application.recommendation.policy import RecommendationPolicy
-from trader.domain.market.models import Board, FeatureSnapshot
-from trader.domain.recommendation.models import ScoredSelectionResult, Strategy
-from trader.domain.recommendation.selection.ranking import minimum_selection_score
-from trader.domain.recommendation.selection.scored_selection import (
+from trader.recommendation.domain.market.models import Board, FeatureSnapshot
+from trader.recommendation.domain.publication.models import ScoredSelectionResult, Strategy
+from trader.recommendation.domain.selection.ranking import minimum_selection_score
+from trader.recommendation.domain.selection.scored_selection import (
     BoardCrossSectionFallback,
     ScoredCandidatePlan,
     ScoredSelectionPolicy,

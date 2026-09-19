@@ -5,16 +5,16 @@ from datetime import datetime, timezone
 
 import pytest
 
-from trader.domain.market.models import Board
-from trader.domain.recommendation.models import (
+from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.publication.models import (
     FusionMode,
     Recommendation,
     RecommendationAction,
     ScoreBreakdown,
     Strategy,
 )
-from trader.domain.recommendation.risk_fusion.downside import DownsideAssessment
-from trader.domain.recommendation.selection.ranking import (
+from trader.recommendation.domain.risk.downside import DownsideAssessment
+from trader.recommendation.domain.selection.ranking import (
     ActionPolicy,
     PortfolioSelectionPolicy,
     action_for,
@@ -22,11 +22,11 @@ from trader.domain.recommendation.selection.ranking import (
     select_top_k,
     select_top_k_with_audit,
 )
-from trader.domain.review.models import (
+from trader.recommendation.domain.evidence.review import (
     DeepSeekReview,
     ReviewOutcome,
 )
-from trader.domain.review.rules import Rating
+from trader.recommendation.domain.risk.rules import Rating
 
 
 def test_tomorrow_and_d25_have_morning_draft_selection_floors() -> None:
@@ -36,7 +36,7 @@ def test_tomorrow_and_d25_have_morning_draft_selection_floors() -> None:
         minimum_selection_score(
             Strategy.TOMORROW,
             thresholds,
-            phase="today_main",
+            phase="morning_main",
             observation_margin=5.0,
         )
         == 73.0
@@ -136,13 +136,9 @@ def test_top_k_does_not_lower_minimum_score_to_fill(feature_factory) -> None:
 @pytest.mark.parametrize(
     ("strategy", "phase", "score", "expected", "reason"),
     (
-        (Strategy.TODAY, "today_observe", 100.0, RecommendationAction.OBSERVE, "observation_window"),
-        (Strategy.TODAY, "today_main", 70.0, RecommendationAction.EXECUTABLE, "score_threshold_met"),
-        (Strategy.TODAY, "today_main", 69.99, RecommendationAction.OBSERVE, "near_score_threshold"),
-        (Strategy.TODAY, "today_late", 76.0, RecommendationAction.EXECUTABLE, "score_threshold_met"),
         (Strategy.TOMORROW, "afternoon", 72.0, RecommendationAction.EXECUTABLE, "score_threshold_met"),
         (Strategy.D25, "final_quote", 70.0, RecommendationAction.EXECUTABLE, "score_threshold_met"),
-        (Strategy.TOMORROW, "today_main", 100.0, RecommendationAction.EXECUTABLE, "score_threshold_met"),
+        (Strategy.TOMORROW, "morning_main", 100.0, RecommendationAction.EXECUTABLE, "score_threshold_met"),
         (Strategy.TOMORROW, "afternoon", 66.99, RecommendationAction.UNAVAILABLE, "below_score_threshold"),
     ),
 )
@@ -158,7 +154,7 @@ def test_action_policy_enforces_phase_and_threshold_boundaries(
 
     action, actual_reason = _action_for(
         recommendation,
-        {"today_main": 70.0, "today_late": 76.0, "tomorrow": 72.0, "d25": 70.0},
+        {"morning_main": 70.0, "morning_late": 76.0, "tomorrow": 72.0, "d25": 70.0},
         phase=phase,
         is_stale=False,
         observation_margin=5.0,
@@ -213,7 +209,7 @@ def test_action_policy_observes_incomplete_corporate_risk_history(feature_factor
 
 
 def test_action_policy_does_not_apply_bearish_audit_rating(feature_factory) -> None:
-    recommendation = replace(_recommendation(feature_factory(), 90.0), strategy=Strategy.TODAY)
+    recommendation = replace(_recommendation(feature_factory(), 90.0), strategy=Strategy.TOMORROW)
     recommendation = replace(
         recommendation,
         review=DeepSeekReview(
@@ -228,8 +224,8 @@ def test_action_policy_does_not_apply_bearish_audit_rating(feature_factory) -> N
 
     action, reason = _action_for(
         recommendation,
-        {"today_main": 70.0},
-        phase="today_main",
+        {"tomorrow": 70.0},
+        phase="morning_main",
         is_stale=False,
         observation_margin=5.0,
     )
@@ -239,7 +235,7 @@ def test_action_policy_does_not_apply_bearish_audit_rating(feature_factory) -> N
 
 
 def test_action_policy_does_not_apply_neutral_audit_rating(feature_factory) -> None:
-    recommendation = replace(_recommendation(feature_factory(), 90.0), strategy=Strategy.TODAY)
+    recommendation = replace(_recommendation(feature_factory(), 90.0), strategy=Strategy.TOMORROW)
     recommendation = replace(
         recommendation,
         review=DeepSeekReview(
@@ -254,8 +250,8 @@ def test_action_policy_does_not_apply_neutral_audit_rating(feature_factory) -> N
 
     action, reason = _action_for(
         recommendation,
-        {"today_main": 70.0},
-        phase="today_main",
+        {"tomorrow": 70.0},
+        phase="morning_main",
         is_stale=False,
         observation_margin=5.0,
     )

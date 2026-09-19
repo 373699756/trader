@@ -5,23 +5,20 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime
 
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 
 
 def _stage_key(strategy: Strategy, phase: str, bucket: str) -> str:
     bucket_key = {"shared_preheat": "shared_preheat", "emergency": "emergency"}.get(bucket)
     stage_key = {
-        (Strategy.TODAY, "today_observe"): "today_observe",
-        (Strategy.TODAY, "today_main"): "today_main",
-        (Strategy.TODAY, "today_late"): "today_late",
-        (Strategy.TOMORROW, "today_observe"): "tomorrow_morning",
-        (Strategy.TOMORROW, "today_main"): "tomorrow_morning",
-        (Strategy.TOMORROW, "today_late"): "tomorrow_morning",
+        (Strategy.TOMORROW, "morning_observe"): "tomorrow_morning",
+        (Strategy.TOMORROW, "morning_main"): "tomorrow_morning",
+        (Strategy.TOMORROW, "morning_late"): "tomorrow_morning",
         (Strategy.TOMORROW, "afternoon"): "tomorrow_afternoon",
         (Strategy.TOMORROW, "final_review"): "tomorrow_final",
-        (Strategy.D25, "today_observe"): "d25_morning",
-        (Strategy.D25, "today_main"): "d25_morning",
-        (Strategy.D25, "today_late"): "d25_morning",
+        (Strategy.D25, "morning_observe"): "d25_morning",
+        (Strategy.D25, "morning_main"): "d25_morning",
+        (Strategy.D25, "morning_late"): "d25_morning",
         (Strategy.D25, "afternoon"): "d25_afternoon",
         (Strategy.D25, "final_review"): "d25_final",
     }.get((strategy, phase), f"{strategy.value}_{phase}")

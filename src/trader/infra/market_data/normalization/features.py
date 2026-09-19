@@ -13,19 +13,19 @@ from zoneinfo import ZoneInfo
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.domain.market.factors import clamp, percentile_scores_with_metadata, weighted_score
-from trader.domain.market.feature_contracts import (
+from trader.recommendation.domain.market.factors import clamp, percentile_scores_with_metadata, weighted_score
+from trader.recommendation.domain.market.feature_contracts import (
     TOMORROW_RAW_ALPHA_FEATURE_MANIFEST,
     QfqPriceAnchors,
     calculate_profile_qfq_alpha,
 )
-from trader.domain.market.models import (
+from trader.recommendation.domain.market.models import (
     CrossSectionStats,
     FeatureSnapshot,
     MarketQuote,
 )
-from trader.domain.market.news import NewsSignalPolicy, derive_news_signals
-from trader.domain.market.research import (
+from trader.recommendation.domain.market.news import NewsSignalPolicy, derive_news_signals
+from trader.recommendation.domain.market.research import (
     FeatureComponentWeightPolicy,
     LongResearchInputs,
     LongResearchPolicy,
@@ -35,13 +35,13 @@ from trader.domain.market.research import (
     derive_long_research_features,
     derive_market_regime,
 )
-from trader.domain.market.tail import (
+from trader.recommendation.domain.market.tail import (
     MinuteBar,
     TailSignalPolicy,
     derive_tail_signals,
     tail_signal_evidence,
 )
-from trader.domain.recommendation.risk_fusion.downside import derive_entry_setup_values
+from trader.recommendation.domain.risk.downside import derive_entry_setup_values
 from trader.infra.market_data.history.history import (
     DailyBar,
     HistoryContext,

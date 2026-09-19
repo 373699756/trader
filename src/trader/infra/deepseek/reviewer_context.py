@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.infra.deepseek.cache import ReviewCache
 from trader.infra.deepseek.completion_client_contract import DeepSeekCompletionClient

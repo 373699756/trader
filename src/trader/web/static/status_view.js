@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const STRATEGIES = new Set(["today", "tomorrow", "d25", "long"]);
+  const STRATEGIES = new Set(["tomorrow", "d25", "long"]);
 
   const STAGE_LABELS = {
     refresh: "数据刷新",
@@ -508,7 +508,7 @@
       els.publicationMeta.textContent = "长期固定观察池，不评分、不冻结";
       return;
     }
-    const cutoff = payload.strategy === "today" ? "11:20" : "14:50";
+    const cutoff = "14:50";
     const strategy = STRATEGIES.has(payload.strategy) ? strategyLabel(payload.strategy) : "当前策略";
     if (payload.frozen) {
       els.publicationStatus.textContent = "已冻结";

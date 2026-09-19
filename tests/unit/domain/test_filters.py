@@ -5,8 +5,8 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.domain.market.models import Board
-from trader.domain.recommendation.filtering.filters import (
+from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.candidate.filters import (
     FilterTier,
     HardFilterPolicy,
     board_for_code,

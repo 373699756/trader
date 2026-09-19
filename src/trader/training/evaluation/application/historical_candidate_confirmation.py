@@ -29,10 +29,8 @@ from trader.training.evaluation.domain.preregistered_rule_candidate import (
     evaluate_rule_candidate_family,
     preregister_rule_candidates,
 )
-from trader.training.evaluation.domain.tomorrow_joint import TomorrowJointInsufficientTerminal
-
-HistoricalStrategy = Literal["today", "tomorrow", "d25"]
-_STRATEGIES: tuple[HistoricalStrategy, ...] = ("today", "tomorrow", "d25")
+HistoricalStrategy = Literal["tomorrow", "d25"]
+_STRATEGIES: tuple[HistoricalStrategy, ...] = ("tomorrow", "d25")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -113,7 +111,7 @@ class HistoricalConfirmationBatchResult:
 
     def __post_init__(self) -> None:
         if tuple(item.strategy for item in self.strategies) != _STRATEGIES:
-            raise ValueError("Historical confirmation batch must contain Today, Tomorrow, and D25 in fixed order")
+            raise ValueError("Historical confirmation batch must contain Tomorrow and D25 in fixed order")
         if self.production_authority or self.schema_version != "historical_confirmation_batch_result":
             raise ValueError("Historical confirmation batch cannot authorize production")
         object.__setattr__(self, "content_hash", _canonical_hash(self))
@@ -176,7 +174,7 @@ class HistoricalConfirmationStrategyTerminal:
 
 @dataclass(frozen=True)
 class HistoricalConfirmationTerminalBatch:
-    """Immutable three-strategy closure inherited from one H1 research completion."""
+    """Immutable two-strategy closure inherited from one H1 research completion."""
 
     parent_completion_hash: str
     parent_capability_hash: str
@@ -184,14 +182,10 @@ class HistoricalConfirmationTerminalBatch:
     parent_residual_ledger_hashes: tuple[tuple[HistoricalStrategy, str], ...]
     parent_daily_close_selection_hash: str
     strategies: tuple[HistoricalConfirmationStrategyTerminal, ...]
-    joint_terminal: TomorrowJointInsufficientTerminal
     status: Literal["historical_data_insufficient"] = "historical_data_insufficient"
-    joint_holm_test_count: int | None = None
-    joint_model_artifact_hash: str | None = None
     terminal_holdout_status: Literal["terminal_holdout_not_opened"] = "terminal_holdout_not_opened"
     production_authority: bool = False
     schema_version: str = "historical_confirmation_terminal_batch"
-    joint_report_hash: str = dataclasses.field(init=False)
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -204,7 +198,6 @@ class HistoricalConfirmationTerminalBatch:
             raise ValueError("Historical confirmation batch schema is invalid")
         residuals = tuple(sorted(self.parent_residual_ledger_hashes, key=lambda item: _STRATEGIES.index(item[0])))
         object.__setattr__(self, "parent_residual_ledger_hashes", residuals)
-        object.__setattr__(self, "joint_report_hash", self.joint_terminal.content_hash)
         object.__setattr__(self, "content_hash", _canonical_hash(self))
 
 
@@ -234,16 +227,6 @@ def seal_historical_confirmation_terminal_batch(
                 failure_reasons=tuple(sorted(reasons)),
             )
         )
-    joint_terminal = TomorrowJointInsufficientTerminal(
-        parent_completion_hash=completion.content_hash,
-        parent_profile_hashes=(
-            ("v1", completion.content_hash),
-            ("v2", completion.content_hash),
-            ("daily_close_ensemble", completion.daily_close_selection.content_hash),
-        ),
-        status="historical_data_insufficient",
-        failure_reasons=tuple(sorted(set(completion.daily_close_selection.failure_reasons))),
-    )
     return HistoricalConfirmationTerminalBatch(
         parent_completion_hash=completion.content_hash,
         parent_capability_hash=completion.capability_hash,
@@ -251,7 +234,6 @@ def seal_historical_confirmation_terminal_batch(
         parent_residual_ledger_hashes=tuple((item.strategy, item.content_hash) for item in completion.residual_ledgers),
         parent_daily_close_selection_hash=completion.daily_close_selection.content_hash,
         strategies=tuple(strategy_terminals),
-        joint_terminal=joint_terminal,
     )
 
 
@@ -281,16 +263,8 @@ def _validate_confirmation_batch_strategies(batch: HistoricalConfirmationTermina
 
 
 def _validate_confirmation_batch_outcome(batch: HistoricalConfirmationTerminalBatch) -> None:
-    if batch.joint_terminal.parent_completion_hash != batch.parent_completion_hash:
-        raise ValueError("Historical confirmation joint terminal parent mismatch")
-    if batch.joint_terminal.status != "historical_data_insufficient":
-        raise ValueError("Historical confirmation joint terminal status is invalid")
-    if (
-        batch.status != "historical_data_insufficient"
-        or batch.joint_holm_test_count is not None
-        or batch.joint_model_artifact_hash is not None
-    ):
-        raise ValueError("Historical confirmation terminal batch cannot claim joint results")
+    if batch.status != "historical_data_insufficient":
+        raise ValueError("Historical confirmation terminal batch status is invalid")
 
 
 def execute_historical_candidate_confirmation(

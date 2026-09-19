@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from trader.domain.market.eligibility import (
+from trader.recommendation.domain.market.eligibility import (
     IssuerEligibilityFact,
     IssuerEligibilityReason,
     IssuerEligibilityState,
@@ -11,8 +11,8 @@ from trader.domain.market.eligibility import (
     eligibility_facts_from_research,
     resolve_issuer_eligibility,
 )
-from trader.domain.market.models import MarketQuote
-from trader.domain.market.research import (
+from trader.recommendation.domain.market.models import MarketQuote
+from trader.recommendation.domain.market.research import (
     CorporateRiskCategory,
     CorporateRiskFact,
     FinancialReport,

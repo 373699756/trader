@@ -173,11 +173,11 @@ class ChallengerReport:
     variants: tuple[ChallengerVariantReplay, ...]
     research_identity: str = dataclasses.field(
         default=HISTORICAL_RESEARCH_SPEC.research_identity,
-        metadata={"exclude_from_v1_hash": True},
+        metadata={"exclude_from_legacy_hash": True},
     )
     research_spec_hash: str = dataclasses.field(
         default=HISTORICAL_RESEARCH_SPEC.content_hash,
-        metadata={"exclude_from_v1_hash": True},
+        metadata={"exclude_from_legacy_hash": True},
     )
     schema_version: str = "challenger_replay_baseline"
     deepseek_http_request_delta: Literal[0] = 0

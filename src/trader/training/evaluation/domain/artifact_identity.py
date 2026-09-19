@@ -38,7 +38,7 @@ def canonical_artifact_value(value: object) -> object:
         return {
             field.name: canonical_artifact_value(getattr(value, field.name))
             for field in dataclasses.fields(value)
-            if field.init and not (preserves_historical_identity and field.metadata.get("exclude_from_v1_hash", False))
+            if field.init and not (preserves_historical_identity and field.metadata.get("exclude_from_legacy_hash", False))
         }
     if isinstance(value, (date, datetime)):
         return value.isoformat()

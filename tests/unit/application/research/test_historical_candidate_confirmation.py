@@ -19,15 +19,15 @@ from trader.training.infra.research.h1_point_in_time_archive import SQLiteH1Poin
 def _h1_research_completion(tmp_path):
     capability = build_h1_capability_audit(
         (
-            H1CapabilityProbe("tencent_qfq_daily", date(2023, 1, 10), False, False, "qfq", False, 640, 3, 1024, 0.5),
-            H1CapabilityProbe("eastmoney_historical_minute", None, False, False, "unsupported", False, 0, 3, 512, 0.5),
+            H1CapabilityProbe("tencent_qfq_daily", date(2023, 1, 10), False, "qfq", False, 640, 3, 1024, 0.5),
+            H1CapabilityProbe("eastmoney_historical_minute", None, False, "unsupported", False, 0, 3, 512, 0.5),
         ),
         probe_failures=("eastmoney_historical_minute_probe_failed",),
     )
     archive = SQLiteH1PointInTimeArchive(tmp_path)
     return complete_h1_research(
         capability=capability,
-        metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("today", "tomorrow", "d25")),
+        metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),
     )
 
 
@@ -85,17 +85,16 @@ def test_strategy_research_seals_one_candidate_and_keeps_terminal_holdout_closed
     assert len(result.content_hash) == 64
 
 
-def test_batch_returns_three_independent_strategy_terminal_states() -> None:
+def test_batch_returns_two_independent_strategy_terminal_states() -> None:
     batch = execute_historical_confirmation_batch(
         (
-            _request("today", code_offset=0),
             _request("tomorrow", code_offset=200),
             _request("d25", code_offset=400),
         ),
         repetitions=100,
     )
 
-    assert tuple(item.strategy for item in batch.strategies) == ("today", "tomorrow", "d25")
+    assert tuple(item.strategy for item in batch.strategies) == ("tomorrow", "d25")
     assert batch.schema_version == "historical_confirmation_batch_result"
     assert all(item.terminal_holdout_status == "terminal_holdout_not_opened" for item in batch.strategies)
     assert batch.production_authority is False
@@ -154,7 +153,7 @@ def test_development_rejection_cannot_be_reselected_on_confirmation_data() -> No
 
 
 def test_ready_parent_without_research_rows_closes_as_data_insufficient() -> None:
-    request = _request("today")
+    request = _request("d25")
     request = HistoricalStrategyResearchRequest(
         strategy=request.strategy,
         parent_split_hash=request.parent_split_hash,
@@ -179,15 +178,10 @@ def test_historical_confirmation_seals_parent_insufficient_terminal_without_date
     batch = seal_historical_confirmation_terminal_batch(completion)
 
     assert batch.status == "historical_data_insufficient"
-    assert tuple(item.strategy for item in batch.strategies) == ("today", "tomorrow", "d25")
+    assert tuple(item.strategy for item in batch.strategies) == ("tomorrow", "d25")
     assert all(item.failure_reasons for item in batch.strategies)
     assert all(item.candidate_family_hash is None for item in batch.strategies)
     assert all(item.confirmation_report_hash is None for item in batch.strategies)
-    assert batch.joint_holm_test_count is None
-    assert batch.joint_model_artifact_hash is None
-    assert batch.joint_terminal.content_hash == batch.joint_report_hash
-    assert batch.joint_terminal.prediction_rows is None
-    assert batch.joint_terminal.parent_profile_hashes[-1][0] == "daily_close_ensemble"
     assert batch.terminal_holdout_status == "terminal_holdout_not_opened"
     assert batch.parent_completion_hash == completion.content_hash
-    assert len(batch.joint_report_hash) == 64
+    assert len(batch.content_hash) == 64

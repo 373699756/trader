@@ -7,7 +7,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import timedelta, timezone
 
-from trader.domain.market.models import (
+from trader.recommendation.domain.market.models import (
     Evidence,
     FeatureSnapshot,
 )

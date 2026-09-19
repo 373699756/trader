@@ -7,7 +7,7 @@ from trader.application.ports.market import ResearchRefreshResult
 from trader.application.ports.scheduler import CycleRequest, ResearchIntent
 from trader.application.runtime.cadence import CadencePolicy
 from trader.application.runtime.schedule import SHANGHAI, MarketPhase
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 from trader.training.evaluation.application.research_runtime import ResearchRuntime
 
 NOW = datetime(2026, 8, 21, 10, 0, tzinfo=SHANGHAI)
@@ -41,7 +41,7 @@ def _request(strategy: Strategy = Strategy.TOMORROW) -> CycleRequest:
         strategy,
         NOW.date(),
         NOW,
-        "today_main",
+        "morning_main",
         1,
         f"input:{strategy.value}",
         True,
@@ -52,15 +52,15 @@ def _request(strategy: Strategy = Strategy.TOMORROW) -> CycleRequest:
 def _cadence() -> CadencePolicy:
     return CadencePolicy.from_seconds(
         {
-            "full_market": {"today_main": 10},
-            "candidate_quotes": {"today_main": 1},
-            "topk_quotes": {"today_main": 1},
+            "full_market": {"morning_main": 10},
+            "candidate_quotes": {"morning_main": 1},
+            "topk_quotes": {"morning_main": 1},
             "intraday_tail": {"afternoon": 5},
-            "long_quotes": {"today_main": 1},
-            "score": {"today_main": 3},
-            "industry_heat": {"today_main": 60},
-            "market_news": {"today_main": 60},
-            "stock_risk": {"today_main": 180},
+            "long_quotes": {"morning_main": 1},
+            "score": {"morning_main": 3},
+            "industry_heat": {"morning_main": 60},
+            "market_news": {"morning_main": 60},
+            "stock_risk": {"morning_main": 180},
         }
     )
 
@@ -115,12 +115,12 @@ def test_periodic_stock_risk_uses_candidates_without_reoffering_on_every_tick() 
             ("600001", "600002", "600003"),
         )
         assert runtime.observe(intent, _request()) is False
-        assert runtime.offer_due(NOW, MarketPhase.TODAY_MAIN, is_trading_day=True) is True
+        assert runtime.offer_due(NOW, MarketPhase.MORNING_MAIN, is_trading_day=True) is True
         assert runtime.wait_until_idle(2.0)
         assert (
             runtime.offer_due(
                 NOW + timedelta(seconds=30),
-                MarketPhase.TODAY_MAIN,
+                MarketPhase.MORNING_MAIN,
                 is_trading_day=True,
             )
             is False
@@ -199,10 +199,10 @@ def test_earlier_batch_does_not_release_later_strategy_initial_barrier() -> None
     runtime.start()
     try:
         tomorrow = ResearchIntent(Strategy.TOMORROW, NOW.date(), ("600001",), ("600001",))
-        today = ResearchIntent(Strategy.TODAY, NOW.date(), ("600002",), ("600002",))
+        d25 = ResearchIntent(Strategy.D25, NOW.date(), ("600002",), ("600002",))
         assert runtime.observe(tomorrow, _request()) is True
         assert first_started.wait(1.0)
-        assert runtime.observe(today, _request(Strategy.TODAY)) is True
+        assert runtime.observe(d25, _request(Strategy.D25)) is True
         release_first.set()
         assert runtime.wait_until_idle(2.0)
     finally:
@@ -226,7 +226,7 @@ def test_candidate_already_in_periodic_research_still_defers_first_output_review
     try:
         candidates = ResearchIntent(Strategy.TOMORROW, NOW.date(), (), ("600001",))
         assert runtime.observe(candidates, _request()) is False
-        assert runtime.offer_due(NOW, MarketPhase.TODAY_MAIN, is_trading_day=True) is True
+        assert runtime.offer_due(NOW, MarketPhase.MORNING_MAIN, is_trading_day=True) is True
         assert research.started.wait(1.0)
 
         promoted = ResearchIntent(Strategy.TOMORROW, NOW.date(), ("600001",), ("600001",))

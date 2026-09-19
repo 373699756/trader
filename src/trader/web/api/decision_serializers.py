@@ -12,8 +12,9 @@ from trader.application.decisions.decision_stream import (
     ResyncEventPayload,
     UnifiedPublishedEvent,
 )
-from trader.domain.recommendation.decision_identity import DecisionItem, DecisionQuote
-from trader.domain.recommendation.pipeline import (
+from trader.recommendation.domain.publication.decision_identity import DecisionItem, DecisionQuote
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.evidence.pipeline import (
     PipelineFacet,
     PipelineMetricRange,
     PipelineReasonCount,
@@ -23,6 +24,8 @@ from trader.domain.recommendation.pipeline import (
 
 
 def serialize_decision_view(view: DecisionView) -> dict[str, object]:
+    if view.strategy is Strategy.LONG:
+        return _serialize_long_view(view)
     return {
         "schema_version": view.schema_version,
         "status": view.status,
@@ -80,6 +83,48 @@ def serialize_decision_view(view: DecisionView) -> dict[str, object]:
             if view.draft is not None
             else None
         ),
+    }
+
+
+def _serialize_long_view(view: DecisionView) -> dict[str, object]:
+    return {
+        "schema_version": view.schema_version,
+        "status": view.status,
+        "strategy": view.strategy.value,
+        "trade_date": view.trade_date.isoformat() if view.trade_date is not None else None,
+        "view": "current",
+        "score_status": "not_applicable",
+        "projection_version": view.projection_version,
+        "content_hash": view.content_hash,
+        "observed_at": _time(view.observed_at),
+        "data_age_seconds": view.data_age_seconds,
+        "input_versions": dict(view.input_versions),
+        "coverage": {
+            "item_count": len(view.items),
+            "available_quote_count": view.coverage.evaluated_count,
+        },
+        "degraded_reasons": list(view.degraded_reasons),
+        "items": [_serialize_long_item(item) for item in view.items],
+    }
+
+
+def _serialize_long_item(item: DecisionItemView) -> dict[str, object]:
+    return {
+        "code": item.code,
+        "name": item.name,
+        "industry": item.industry,
+        "group": item.group,
+        "observation_reason": item.action_reason,
+        "quote": {
+            "price": item.price,
+            "pct_change": item.pct_change,
+            "amount": item.amount,
+            "turnover_rate": item.turnover_rate,
+            "market_cap": item.market_cap,
+            "source": item.quote_source,
+            "source_time": _time(item.quote_time),
+            "status": item.quote_status,
+        },
     }
 
 

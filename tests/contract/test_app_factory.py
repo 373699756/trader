@@ -72,9 +72,9 @@ def test_dashboard_uses_only_packaged_assets_and_fixed_long_groups() -> None:
     assert 'aria-label="策略"' in page
     assert "<h1>策略</h1>" in page
     assert "A股策略看板" not in page
-    assert 'data-strategy="today">今</button>' in page
     assert 'data-strategy="tomorrow">明</button>' in page
     assert 'data-strategy="d25">2-5</button>' in page
+    assert 'data-strategy="long">长期</button>' in page
     assert "今早</button>" not in page
     assert "明日</button>" not in page
     assert "2-5日</button>" not in page

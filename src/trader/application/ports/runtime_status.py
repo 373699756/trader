@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Literal
 
-from trader.domain.recommendation.models import Strategy
-from trader.domain.recommendation.pipeline import RecommendationPipelineStatus
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.evidence.pipeline import RecommendationPipelineStatus
 
 InputQualityState = Literal["ready", "business_empty", "transient_invalid_empty", "not_ready"]
 
@@ -75,7 +75,7 @@ class InputQualityStatus:
     primary_blocker: str = "ready"
 
     def __post_init__(self) -> None:
-        if self.strategy not in {Strategy.TODAY, Strategy.TOMORROW, Strategy.D25}:
+        if self.strategy not in {Strategy.TOMORROW, Strategy.D25}:
             raise ValueError("input quality requires a scored strategy")
         counts = (
             self.population_count,

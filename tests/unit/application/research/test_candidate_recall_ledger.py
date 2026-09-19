@@ -8,9 +8,9 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.domain.market.feature_contracts import FeatureVector
-from trader.domain.market.models import Board
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.market.feature_contracts import FeatureVector
+from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.publication.models import Strategy
 from trader.training.evaluation.application.candidate_recall_ledger import CandidateRecallLedgerBuilder
 from trader.training.evaluation.domain.candidate_recall_ledger import (
     CANDIDATE_RECALL_STAGES,

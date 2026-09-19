@@ -10,8 +10,8 @@ import pytest
 
 from tests.unit.domain.test_decision_identity import NOW, decision
 from trader.application.ports.data_plane import HistoricalFeatureRecord
-from trader.domain.recommendation.decision_identity import CommittedDecisionRecord
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord
+from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.persistence.outcomes import OutcomeEvidenceConflictError, SQLiteOutcomeEvidenceRepository
 from trader.training.evaluation.domain.models import BenchmarkReturn, OutcomeExitStatus, RecommendationOutcome
 

@@ -45,23 +45,23 @@ from trader.application.recommendation.scored_projection import (
 )
 from trader.application.runtime.schedule import SHANGHAI
 from trader.bootstrap_policy import _recommendation_policy
-from trader.domain.market.models import Board, FeatureSnapshot, MarketQuote
-from trader.domain.recommendation.decision_identity import (
+from trader.recommendation.domain.market.models import Board, FeatureSnapshot, MarketQuote
+from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     DecisionItem,
     DecisionOverlay,
     DecisionQuote,
     ScoredDecision,
 )
-from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
-from trader.domain.recommendation.models import RecommendationAction, Strategy
-from trader.domain.recommendation.scoring.scoring import score_board_strategy
-from trader.domain.recommendation.selection.scored_selection import (
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
+from trader.recommendation.domain.scoring.scoring import score_board_strategy
+from trader.recommendation.domain.selection.scored_selection import (
     ScoredCandidatePlan,
     ScoredCandidateStageCounts,
 )
-from trader.domain.recommendation.strategies.composition import LocalScoreResult
-from trader.domain.review.models import DeepSeekReview, ReviewOutcome
+from trader.recommendation.domain.candidate.composition import LocalScoreResult
+from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
 from trader.infra.market_data.normalization.columnar import ColumnarQuoteBatch, targeted_market_changes
 from trader.infra.market_data.normalization.merge import (
     merge_market_observations,
@@ -146,7 +146,7 @@ def run(
     failures = _failures(measurements, budgets, baseline)
     rss_before = _rss_kib()
     for _ in range(100):
-        operations["three_strategy_board_scoring"]()
+        operations["two_strategy_board_scoring"]()
     rss_after = _rss_kib()
     peak_bytes = rss_after * 1024
     growth_percent = 0.0 if rss_before == 0 else max(0.0, (rss_after - rss_before) / rss_before * 100.0)
@@ -341,7 +341,7 @@ def _operations(
         return score_board_strategy(item, board_policy)
 
     def candidate_preselection() -> object:
-        """Exercise all three production planners against the complete market population."""
+        """Exercise both production planners against the complete market population."""
 
         nonlocal observations
         if observations:
@@ -380,8 +380,8 @@ def _operations(
         "board_preselection": candidate_preselection,
         "candidate_union_projection": candidate_union_projection,
         "board_local_scoring": lambda: tuple(active_score(Strategy.TOMORROW, item) for item in candidates),
-        "three_strategy_board_scoring": lambda: tuple(
-            tuple(active_score(strategy, item) for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25))
+        "two_strategy_board_scoring": lambda: tuple(
+            tuple(active_score(strategy, item) for strategy in (Strategy.TOMORROW, Strategy.D25))
             for item in candidates
         ),
         "three_board_wall_clock": lambda: tuple(
@@ -409,10 +409,10 @@ def _operations(
         "targeted_overlay_commit": "trader.infra.market_data.normalization.merge.overlay_canonical_snapshot + trader.application.decisions.decision_core.UnifiedDecisionIndex.publish_overlay",
         "board_preselection": "trader.application.recommendation.candidate_planning.build_candidate_plans",
         "candidate_union_projection": "trader.application.recommendation.candidate_planning.CandidatePlanSet.physical_union + trader.infra.market_data.normalization.merge.overlay_canonical_snapshot",
-        "board_local_scoring": "trader.domain.recommendation.scoring.scoring.score_board_strategy",
-        "three_strategy_board_scoring": "trader.domain.recommendation.scoring.scoring.score_board_strategy",
-        "three_board_wall_clock": "trader.domain.recommendation.scoring.scoring.score_board_strategy",
-        "global_selection": "trader.domain.recommendation.scoring.scoring.score_board_strategy",
+        "board_local_scoring": "trader.recommendation.domain.scoring.scoring.score_board_strategy",
+        "two_strategy_board_scoring": "trader.recommendation.domain.scoring.scoring.score_board_strategy",
+        "three_board_wall_clock": "trader.recommendation.domain.scoring.scoring.score_board_strategy",
+        "global_selection": "trader.recommendation.domain.scoring.scoring.score_board_strategy",
         "board_ready_to_draft": "trader.application.recommendation.scored_projection.build_scored_local",
         "quote_to_draft": "trader.application.recommendation.scored_projection.build_scored_local",
         "deepseek_to_hybrid": "trader.application.recommendation.scored_projection.build_scored_hybrid",
@@ -605,16 +605,15 @@ def _fixtures(
 
 def _worst_case_candidate_plans(market_rows: int) -> CandidatePlanSet:
     if market_rows < 4360:
-        raise ValueError("performance market fixture cannot provide three disjoint strategy windows")
+        raise ValueError("performance market fixture cannot provide two disjoint strategy windows")
     board_starts = {
         Board.MAIN: 600000,
         Board.CHINEXT: 300000,
         Board.STAR: 688000,
     }
     strategy_offsets = {
-        Strategy.TODAY: 0,
-        Strategy.TOMORROW: 120,
-        Strategy.D25: 240,
+        Strategy.TOMORROW: 0,
+        Strategy.D25: 120,
     }
     plans: dict[Strategy, ScoredCandidatePlan] = {}
     for strategy in SCORED_STRATEGIES:
@@ -797,7 +796,7 @@ def _hot_path_baseline(  # noqa: PLR0913
     local_cpu_ms = _metric_float(measurements["board_local_scoring"], "p50_ms")
     epochs = tuple(
         epoch
-        for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+        for strategy in (Strategy.TOMORROW, Strategy.D25)
         for epoch in (
             ScoringInputEpoch(
                 strategy,
@@ -827,7 +826,7 @@ def _hot_path_baseline(  # noqa: PLR0913
         "scoring_data_prepare": "board_ready_to_draft",
         "local_scoring": "board_local_scoring",
         "decision_publish": "targeted_overlay_commit",
-        "three_strategy_board_scoring": "three_strategy_board_scoring",
+        "two_strategy_board_scoring": "two_strategy_board_scoring",
     }
     latencies = tuple(
         ScoringHotPathLatency(

@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from trader.domain.market.research import (
+from trader.recommendation.domain.market.research import (
     CorporateRiskCategory,
     CorporateRiskFact,
     FeatureComponentWeightPolicy,

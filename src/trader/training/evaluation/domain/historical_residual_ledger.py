@@ -12,7 +12,7 @@ from typing import Literal
 from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash
 from trader.training.evaluation.domain.h1_point_in_time import ResearchStrategy
 
-ResidualAnchor = Literal["11:20", "14:50"]
+ResidualAnchor = Literal["14:50"]
 ResidualFilterState = Literal["passed", "observe_only", "not_ready"]
 ResidualLabelStatus = Literal["label_pending", "matured"]
 
@@ -30,9 +30,8 @@ class ResidualJoinKey:
     horizon: int
 
     def __post_init__(self) -> None:
-        expected_anchor = "11:20" if self.strategy == "today" else "14:50"
         allowed_horizons = {1} if self.strategy != "d25" else {2, 3, 4, 5}
-        if self.anchor != expected_anchor or self.horizon not in allowed_horizons:
+        if self.anchor != "14:50" or self.horizon not in allowed_horizons:
             raise ValueError("historical residual identity does not match its strategy")
         if _CODE.fullmatch(self.code) is None:
             raise ValueError("historical residual code is invalid")

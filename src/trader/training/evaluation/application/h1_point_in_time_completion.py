@@ -40,7 +40,7 @@ class HistoricalResidualLedgerTerminal:
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
-        if self.strategy not in {"today", "tomorrow", "d25"}:
+        if self.strategy not in {"tomorrow", "d25"}:
             raise ValueError("historical residual terminal strategy is invalid")
         _hash(self.capability_hash, "residual capability")
         _hash(self.parent_preregistration_hash, "residual preregistration")
@@ -108,9 +108,9 @@ class H1ResearchCompletion:
     def __post_init__(self) -> None:
         _hash(self.capability_hash, "H1 research capability")
         ledgers = tuple(
-            sorted(self.residual_ledgers, key=lambda item: ("today", "tomorrow", "d25").index(item.strategy))
+            sorted(self.residual_ledgers, key=lambda item: ("tomorrow", "d25").index(item.strategy))
         )
-        if tuple(item.strategy for item in ledgers) != ("today", "tomorrow", "d25"):
+        if tuple(item.strategy for item in ledgers) != ("tomorrow", "d25"):
             raise ValueError("H1 research completion requires every residual ledger terminal")
         if any(item.capability_hash != self.capability_hash for item in ledgers):
             raise ValueError("H1 research completion residual capability parent mismatch")

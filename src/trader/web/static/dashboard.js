@@ -2,7 +2,7 @@
   "use strict";
 
   const state = {
-    strategy: "today",
+    strategy: "tomorrow",
     view: "current",
     date: "",
     payload: null,
@@ -158,7 +158,7 @@
   }
 
   async function selectStrategy(strategy) {
-    const nextStrategy = strategy || "today";
+    const nextStrategy = strategy || "tomorrow";
     if (!selection.descriptions[nextStrategy] || state.strategy === nextStrategy && state.payload) return;
     const previousStrategy = state.strategy;
     const selectedDate = state.date;
@@ -447,7 +447,7 @@
   }
 
   function prefetchStrategies() {
-    for (const strategy of ["today", "tomorrow", "d25"]) {
+    for (const strategy of ["tomorrow", "d25"]) {
       requestRecommendations(strategy, "", state.view).catch(() => {});
     }
   }
@@ -456,7 +456,6 @@
     payload = longGroups.displayPayload(payload);
     state.projectionVersion = patches.projectionVersion(payload);
     const items = Array.isArray(payload.items) ? payload.items : [], historical = payload.historical === true;
-    const frozenToday = window.TraderRender.isFrozenTodayView(payload);
     stateRenderer.setLongControls(payload.strategy === "long" && !historical);
     stateRenderer.setLongLayout(payload.strategy === "long" && payload.status === "ready" && !historical);
     longGroups.renderBar(els, state, payload.status === "ready" ? payload : null);
@@ -496,13 +495,13 @@
     renderHealth(state.statusPayload || {});
     const definition = window.TraderRender.tableDefinition(payload);
     els.recommendationTable.classList.toggle("is-history", historical);
-    els.recommendationTable.classList.toggle("is-anchor-table", frozenToday);
+    els.recommendationTable.classList.remove("is-anchor-table");
     els.recommendationTable.classList.toggle("is-long-table", payload.strategy === "long" && !historical);
     els.tableColumns.innerHTML = definition.columns;
     els.tableHead.innerHTML = definition.head;
     if (showObservationPool) {
       const observationDefinition = window.TraderRender.observationTableDefinition(payload);
-      els.observationTable.classList.toggle("is-anchor-table", frozenToday);
+      els.observationTable.classList.remove("is-anchor-table");
       els.observationColumns.innerHTML = observationDefinition.columns;
       els.observationHead.innerHTML = observationDefinition.head;
     } else {

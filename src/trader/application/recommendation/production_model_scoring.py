@@ -31,21 +31,18 @@ from trader.application.ports.model_scoring import (
     ScoringHeadRuntimeStatus,
 )
 from trader.application.runtime.schedule import shanghai_now
-from trader.domain.market.factors import round_score
-from trader.domain.market.feature_contracts import (
+from trader.recommendation.domain.market.factors import round_score
+from trader.recommendation.domain.market.feature_contracts import (
     FEATURE_SPEC_CATALOG,
     TOMORROW_MODEL_FEATURE_MANIFEST,
     V2_FEATURE_SPEC_CATALOG,
     V2_TOMORROW_MODEL_FEATURE_MANIFEST,
 )
-from trader.domain.market.models import Board, FeatureSnapshot
-from trader.domain.recommendation.filtering.filters import board_for_snapshot
-from trader.domain.recommendation.model_scoring import (
-    ExposureContract,
-    percentile_ranks,
-    residualize_exposure,
-)
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.market.models import Board, FeatureSnapshot
+from trader.recommendation.domain.candidate.filters import board_for_snapshot
+from trader.recommendation.domain.scoring.residualization import ExposureContract, residualize_exposure
+from trader.recommendation.domain.scoring.utility_scoring import percentile_ranks
+from trader.recommendation.domain.publication.models import Strategy
 
 _AMOUNT_FIELD = "qfq_average_amount_20d"
 _AMIHUD_FIELD = "qfq_amihud_20d"
@@ -198,7 +195,7 @@ class ProductionModelScoringService:
         if profile.profile_id != predictor.profile_id:
             raise ValueError("scoring profile identity does not match its head")
         self._evidence = head.evidence
-        if not predictor.model_id or len(predictor.model_hash) != 64 or predictor.profile_id not in {"v1", "v2", "v3"}:
+        if not predictor.model_id or len(predictor.model_hash) != 64 or predictor.profile_id not in {"v2", "v3"}:
             raise ValueError(f"{strategy.value} production model identity is invalid")
         try:
             self._runtime_features = _runtime_feature_contract(profile)

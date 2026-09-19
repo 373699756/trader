@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from trader.domain.recommendation.model_scoring import (
+from trader.recommendation.domain.scoring.residualization import (
     TRAINED_HEAD_EXPOSURE_CONTRACT,
     ExposureContract,
-    percentile_ranks,
     residualize_exposure,
 )
+from trader.recommendation.domain.scoring.utility_scoring import percentile_ranks
 
 
 def test_percentile_ranks_are_deterministic() -> None:

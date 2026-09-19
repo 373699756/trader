@@ -30,7 +30,7 @@ from trader.application.ports.scheduler import (
     RefreshOutcome,
     ResearchIntent,
 )
-from trader.application.ports.scored import D25NativeInput, TodayNativeInput, TomorrowNativeInput
+from trader.application.ports.scored import D25NativeInput, TomorrowNativeInput
 from trader.application.recommendation.candidate_filtering import (
     CandidateFilteringPort,
     CandidateFilteringService,
@@ -53,16 +53,16 @@ from trader.training.evaluation.application.research_audit import (
 )
 from trader.application.runtime.cadence import PipelineTask, task_execution_budget_seconds
 from trader.application.runtime.schedule import SHANGHAI
-from trader.domain.market.models import FeatureSnapshot
-from trader.domain.recommendation.decision_identity import (
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.publication.decision_identity import (
     DecisionIdentity,
     DecisionOverlay,
     DecisionQuote,
     ScoredDecision,
     identity_codes,
 )
-from trader.domain.recommendation.models import Strategy
-from trader.domain.recommendation.selection.scored_selection import ScoredCandidateStageCounts
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts
 
 
 @dataclass(frozen=True)
@@ -244,7 +244,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         self._projections: dict[str, ScoredLocalProjection] = {}
         self._decisions: dict[str, ScoredDecision] = {}
         self._input_quality: dict[Strategy, InputQualityStatus] = {}
-        self._sequences = {strategy: 1 for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)}
+        self._sequences = {strategy: 1 for strategy in SCORED_STRATEGIES}
 
     def invalidate_history(self) -> None:
         with self._lock:
@@ -414,8 +414,9 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             }
             epoch = self._scoring_epoch_locked(include_intraday_tail=False)
             if len(set(strategy_requested.values())) == 1:
-                codes = strategy_requested[Strategy.TODAY]
-                self._score_feature_batches[(epoch, False, codes)] = strategy_features[Strategy.TODAY]
+                strategy = SCORED_STRATEGIES[0]
+                codes = strategy_requested[strategy]
+                self._score_feature_batches[(epoch, False, codes)] = strategy_features[strategy]
             self._record_pending_quality_locked(
                 _PendingQualityContext(
                     request.observed_at,
@@ -729,54 +730,29 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             raise DecisionUnavailableError("current native input is unavailable")
         try:
             evaluated_at = _decision_observed_at(batch)
-            if request.strategy is Strategy.TODAY:
-                today_native = TodayNativeInput(
-                    batch.request.trade_date,
-                    batch.request.phase,
-                    batch.data_version,
-                    self._config_version,
-                    evaluated_at,
-                    batch.market_features,
-                    batch.requested_codes,
-                    batch.candidate_features,
-                    20.0,
-                    20.0,
-                    self._candidate_pool_size,
-                )
-                projection = self._local_scoring.score(
-                    today_native,
-                    self._policy,
-                    sequence=sequence,
-                    context=LocalScoringContext(
-                        model_context=_model_scoring_context(request, batch, self._now()),
-                        candidate_stage_counts=batch.candidate_stage_counts,
-                        preselection_transient_invalid=batch.preselection_transient_invalid,
-                    ),
-                )
-            else:
-                tomorrow_native = (TomorrowNativeInput if request.strategy is Strategy.TOMORROW else D25NativeInput)(
-                    batch.request.trade_date,
-                    batch.request.phase,
-                    batch.data_version,
-                    self._config_version,
-                    evaluated_at,
-                    batch.market_features,
-                    batch.requested_codes,
-                    batch.candidate_features,
-                    30.0,
-                    30.0,
-                    self._candidate_pool_size,
-                )
-                projection = self._local_scoring.score(
-                    tomorrow_native,
-                    self._policy,
-                    sequence=sequence,
-                    context=LocalScoringContext(
-                        model_context=_model_scoring_context(request, batch, self._now()),
-                        candidate_stage_counts=batch.candidate_stage_counts,
-                        preselection_transient_invalid=batch.preselection_transient_invalid,
-                    ),
-                )
+            native_input = (TomorrowNativeInput if request.strategy is Strategy.TOMORROW else D25NativeInput)(
+                batch.request.trade_date,
+                batch.request.phase,
+                batch.data_version,
+                self._config_version,
+                evaluated_at,
+                batch.market_features,
+                batch.requested_codes,
+                batch.candidate_features,
+                30.0,
+                30.0,
+                self._candidate_pool_size,
+            )
+            projection = self._local_scoring.score(
+                native_input,
+                self._policy,
+                sequence=sequence,
+                context=LocalScoringContext(
+                    model_context=_model_scoring_context(request, batch, self._now()),
+                    candidate_stage_counts=batch.candidate_stage_counts,
+                    preselection_transient_invalid=batch.preselection_transient_invalid,
+                ),
+            )
         except (RuntimeError, TypeError, ValueError) as exc:
             raise DecisionUnavailableError(_decision_failure_code(exc)) from exc
         quality_status = build_supply_status(
@@ -1111,7 +1087,7 @@ def _model_scoring_context(
     input_age_seconds = max(0.0, (local_now - input_at).total_seconds())
     if request.phase == "close_fallback":
         return ModelScoringContext(input_age_seconds=input_age_seconds)
-    anchor = time(11, 20) if request.strategy is Strategy.TODAY else time(14, 50)
+    anchor = time(14, 50)
     deadline = datetime.combine(request.trade_date, anchor, tzinfo=SHANGHAI)
     return ModelScoringContext(
         time_budget_seconds=max(0.0, (deadline - local_now).total_seconds()),

@@ -21,8 +21,8 @@ from trader.application.runtime.schedule import (
 
 class CadenceBand(str, Enum):
     WARMUP = "warmup"
-    TODAY_MAIN = "today_main"
-    TODAY_LATE = "today_late"
+    MORNING_MAIN = "morning_main"
+    MORNING_LATE = "morning_late"
     MIDDAY = "midday"
     AFTERNOON = "afternoon"
     FINAL_REVIEW = "final_review"
@@ -377,10 +377,7 @@ class CadencePlanner:
                     SchedulePointStatus.RETRY_WAIT,
                 }:
                     continue
-                if key.schedule_point in {
-                    SchedulePoint.TODAY_FREEZE,
-                    SchedulePoint.AFTERNOON_FREEZE,
-                }:
+                if key.schedule_point is SchedulePoint.AFTERNOON_FREEZE:
                     continue
                 self._point_states[key] = replace(
                     state,
@@ -564,7 +561,7 @@ class CadencePlanner:
     def _quote_checkpoint_active(self, trade_date: str, local: datetime) -> bool:
         return any(
             key.trade_date == trade_date
-            and key.schedule_point in {SchedulePoint.TODAY_CHECKPOINT, SchedulePoint.FINAL_CANDIDATE_QUOTES}
+            and key.schedule_point is SchedulePoint.FINAL_CANDIDATE_QUOTES
             and local >= _point_boundary(local, key.schedule_point)
             and state.status
             in {
@@ -585,9 +582,9 @@ def cadence_band(phase: MarketPhase) -> CadenceBand:
     return {
         MarketPhase.CLOSED: CadenceBand.CLOSED,
         MarketPhase.WARMUP: CadenceBand.WARMUP,
-        MarketPhase.TODAY_OBSERVE: CadenceBand.TODAY_MAIN,
-        MarketPhase.TODAY_MAIN: CadenceBand.TODAY_MAIN,
-        MarketPhase.TODAY_LATE: CadenceBand.TODAY_LATE,
+        MarketPhase.MORNING_OBSERVE: CadenceBand.MORNING_MAIN,
+        MarketPhase.MORNING_MAIN: CadenceBand.MORNING_MAIN,
+        MarketPhase.MORNING_LATE: CadenceBand.MORNING_LATE,
         MarketPhase.MIDDAY: CadenceBand.MIDDAY,
         MarketPhase.AFTERNOON: CadenceBand.AFTERNOON,
         MarketPhase.FINAL_REVIEW: CadenceBand.FINAL_REVIEW,
@@ -612,8 +609,6 @@ def freshness_level(age_seconds: float | None, interval_seconds: float | None) -
 
 def _schedule_point_strategies() -> tuple[tuple[SchedulePoint, tuple[str, ...]], ...]:
     return (
-        (SchedulePoint.TODAY_CHECKPOINT, ("today",)),
-        (SchedulePoint.TODAY_FREEZE, ("today",)),
         (SchedulePoint.DEEPSEEK_CUTOFF, ("-",)),
         (SchedulePoint.AFTERNOON_CHECKPOINT, ("tomorrow", "d25")),
         (SchedulePoint.FINAL_CANDIDATE_QUOTES, ("-",)),
@@ -624,8 +619,6 @@ def _schedule_point_strategies() -> tuple[tuple[SchedulePoint, tuple[str, ...]],
 
 def _point_boundary(local: datetime, point: SchedulePoint) -> datetime:
     raw = {
-        SchedulePoint.TODAY_CHECKPOINT: time(11, 19, 50),
-        SchedulePoint.TODAY_FREEZE: time(11, 20),
         SchedulePoint.DEEPSEEK_CUTOFF: time(14, 48),
         SchedulePoint.AFTERNOON_CHECKPOINT: time(14, 49, 20),
         SchedulePoint.FINAL_CANDIDATE_QUOTES: time(14, 49, 50),
@@ -648,11 +641,7 @@ def _initial_point_status(
     else:
         current = local.time().replace(tzinfo=None)
         started_before_boundary = started_at.date() < boundary.date() or started_at < boundary
-        if point is SchedulePoint.TODAY_CHECKPOINT:
-            eligible = current < time(11, 20) and started_at <= boundary
-        elif point is SchedulePoint.TODAY_FREEZE:
-            eligible = started_before_boundary and current < time(11, 21)
-        elif point in {SchedulePoint.DEEPSEEK_CUTOFF, SchedulePoint.FINAL_CANDIDATE_QUOTES}:
+        if point in {SchedulePoint.DEEPSEEK_CUTOFF, SchedulePoint.FINAL_CANDIDATE_QUOTES}:
             eligible = current < time(14, 50) and started_at <= boundary
         elif point is SchedulePoint.AFTERNOON_CHECKPOINT:
             eligible = current < time(14, 50)
@@ -667,10 +656,6 @@ def _initial_point_status(
 
 def _point_window_expired(point: SchedulePoint, local: datetime) -> bool:
     current = local.time().replace(tzinfo=None)
-    if point is SchedulePoint.TODAY_CHECKPOINT:
-        return current >= time(11, 20)
-    if point is SchedulePoint.TODAY_FREEZE:
-        return current >= time(11, 21)
     if point in {
         SchedulePoint.DEEPSEEK_CUTOFF,
         SchedulePoint.AFTERNOON_CHECKPOINT,
@@ -711,9 +696,7 @@ def _point_tasks(
     strategies: tuple[str, ...],
 ) -> tuple[ScheduledPipelineTask, ...]:
     tasks: tuple[ScheduledPipelineTask, ...]
-    if point is SchedulePoint.TODAY_CHECKPOINT:
-        tasks = (ScheduledPipelineTask(PipelineTask.FINAL_CANDIDATE_QUOTES, at, phase, (), point),)
-    elif point in {SchedulePoint.TODAY_FREEZE, SchedulePoint.AFTERNOON_FREEZE}:
+    if point is SchedulePoint.AFTERNOON_FREEZE:
         tasks = (ScheduledPipelineTask(PipelineTask.FREEZE, at, phase, strategies, point),)
     elif point is SchedulePoint.DEEPSEEK_CUTOFF:
         tasks = (ScheduledPipelineTask(PipelineTask.DEEPSEEK_CUTOFF, at, phase, (), point),)
@@ -738,12 +721,8 @@ def _scheduled_point_keys(scheduled: ScheduledPipelineTask) -> tuple[SchedulePoi
         return ()
     trade_date = shanghai_now(scheduled.scheduled_at).date().isoformat()
     strategies: tuple[str, ...]
-    if point is SchedulePoint.TODAY_CHECKPOINT:
-        strategies = ("today",)
-    elif point in {SchedulePoint.AFTERNOON_CHECKPOINT, SchedulePoint.AFTERNOON_FREEZE}:
+    if point in {SchedulePoint.AFTERNOON_CHECKPOINT, SchedulePoint.AFTERNOON_FREEZE}:
         strategies = scheduled.freeze_strategies
-    elif point is SchedulePoint.TODAY_FREEZE:
-        strategies = scheduled.freeze_strategies or ("today",)
     else:
         strategies = ("-",)
     return tuple(SchedulePointKey(trade_date, point, strategy) for strategy in strategies)

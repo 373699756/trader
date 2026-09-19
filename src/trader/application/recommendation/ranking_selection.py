@@ -12,8 +12,8 @@ from trader.application.recommendation.scored_selection import (
     ScoredSelectionOptions,
     select_scored_features,
 )
-from trader.domain.market.models import FeatureSnapshot
-from trader.domain.recommendation.models import ScoredSelectionResult
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.publication.models import ScoredSelectionResult
 
 
 class RankingSelectionPort(Protocol):

@@ -17,9 +17,9 @@ from trader.application.ports.market import MarketDataUnavailableError, QuoteRea
 from trader.application.runtime.latest_wins import LatestWinsStatus, LatestWinsWorker
 from trader.application.runtime.schedule import SHANGHAI
 from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
-from trader.domain.market.models import FeatureSnapshot, MarketQuote
-from trader.domain.recommendation.decision_identity import LongProjection, LongProjectionItem
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
+from trader.recommendation.domain.publication.decision_identity import LongProjection, LongProjectionItem
+from trader.recommendation.domain.publication.models import Strategy
 
 
 @dataclass(frozen=True)

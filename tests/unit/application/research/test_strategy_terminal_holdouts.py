@@ -4,7 +4,6 @@ from datetime import date, timedelta
 
 from trader.training.evaluation.application.cross_strategy_conclusion import CrossStrategyConclusionService
 from trader.training.evaluation.application.d25_terminal_holdout import D25TerminalHoldoutService, D25TerminalRow
-from trader.training.evaluation.application.today_terminal_holdout import TodayTerminalHoldoutService, TodayTerminalRow
 from trader.training.evaluation.application.tomorrow_point_in_time_holdout import (
     TomorrowPointInTimeHoldoutService,
     TomorrowPointInTimeRow,
@@ -39,22 +38,18 @@ def _rows(row_type):
 
 
 def test_strategy_adapters_bind_their_fixed_anchor_and_identity() -> None:
-    today = TodayTerminalHoldoutService(_rows(TodayTerminalRow)).execute()
     tomorrow = TomorrowPointInTimeHoldoutService(_rows(TomorrowPointInTimeRow)).execute()
     d25 = D25TerminalHoldoutService(_rows(D25TerminalRow)).execute()
 
-    assert today.anchor == "11:20_unadjusted_point_in_time"
     assert tomorrow.anchor == "14:50_unadjusted_point_in_time"
     assert d25.anchor == "14:50_unadjusted_point_in_time"
-    assert {today.strategy, tomorrow.strategy, d25.strategy} == {"today", "tomorrow", "d25"}
+    assert {tomorrow.strategy, d25.strategy} == {"tomorrow", "d25"}
 
-    conclusion = CrossStrategyConclusionService().execute(today, tomorrow, d25)
+    conclusion = CrossStrategyConclusionService().execute(tomorrow, d25)
     assert conclusion.strategy_statuses == (
-        ("today", today.status),
         ("tomorrow", tomorrow.status),
         ("d25", d25.status),
     )
     assert conclusion.production_authority is False
-    assert conclusion.strategy_metrics[0][0] == "today"
-    assert conclusion.strategy_metrics[1][0] == "tomorrow"
-    assert conclusion.strategy_metrics[2][0] == "d25"
+    assert conclusion.strategy_metrics[0][0] == "tomorrow"
+    assert conclusion.strategy_metrics[1][0] == "d25"

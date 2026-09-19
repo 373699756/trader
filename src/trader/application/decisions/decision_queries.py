@@ -12,7 +12,7 @@ from trader.application.decisions.decision_coverage import DecisionCoverage, sco
 from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.ports.clock import Clock
 from trader.application.ports.decision_records import DecisionRecordError
-from trader.domain.recommendation.decision_identity import (
+from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     DecisionItem,
     DecisionOverlay,
@@ -22,8 +22,8 @@ from trader.domain.recommendation.decision_identity import (
     ScoredDecision,
     SelectionDiagnostics,
 )
-from trader.domain.recommendation.models import RecommendationAction, Strategy
-from trader.domain.recommendation.pipeline import RecommendationPipelineStatus
+from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
+from trader.recommendation.domain.evidence.pipeline import RecommendationPipelineStatus
 
 DecisionViewStatus = Literal["ready", "not_ready", "not_applicable"]
 ScoreStatus = Literal["scored", "not_applicable"]
@@ -183,7 +183,7 @@ def _current_scored(
 ) -> tuple[ScoredDecision | None, CommittedDecisionRecord | None]:
     boundary = datetime.combine(
         now.date(),
-        time(11, 20) if strategy is Strategy.TODAY else time(14, 50),
+        time(14, 50),
         tzinfo=now.tzinfo,
     )
     if now >= boundary:
@@ -202,7 +202,7 @@ def _current_draft(decision: ScoredDecision | None, strategy: Strategy, now: dat
         return None
     boundary = datetime.combine(
         now.date(),
-        time(11, 20) if strategy is Strategy.TODAY else time(14, 50),
+        time(14, 50),
         tzinfo=now.tzinfo,
     )
     return decision if now < boundary else None

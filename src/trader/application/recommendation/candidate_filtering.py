@@ -21,7 +21,7 @@ from trader.application.recommendation.candidate_planning import (
     refresh_candidate_reserves,
 )
 from trader.application.recommendation.policy import RecommendationPolicy
-from trader.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.models import FeatureSnapshot
 
 
 class CandidateFilteringPort(Protocol):

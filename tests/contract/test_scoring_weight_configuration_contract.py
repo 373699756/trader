@@ -40,7 +40,7 @@ def test_production_weight_numbers_have_no_validator_copy() -> None:
 
 
 def test_domain_weight_consumers_do_not_multiply_by_numeric_literals() -> None:
-    scoring_path = "src/trader/domain/recommendation/scoring/scoring.py"
+    scoring_path = "src/trader/recommendation/domain/scoring/scoring.py"
     for function_name in ("board_candidate_components", "score_board_strategy"):
         function = _function(scoring_path, function_name)
         numeric_multipliers = [
@@ -52,13 +52,13 @@ def test_domain_weight_consumers_do_not_multiply_by_numeric_literals() -> None:
         ]
         assert numeric_multipliers == []
 
-    fusion = _read("src/trader/domain/recommendation/risk_fusion/fusion.py")
+    fusion = _read("src/trader/recommendation/domain/risk/fusion.py")
     assert "FusionPolicy(local_weight: float = 0.68" not in fusion
     assert "fusion weights are fixed at 0.68/0.32" not in fusion
 
     for relative, function_names in (
         ("src/trader/infra/market_data/normalization/features.py", ("_raw_features",)),
-        ("src/trader/domain/market/research.py", ("_industry_policy_score", "_protection_score")),
+        ("src/trader/recommendation/domain/market/research.py", ("_industry_policy_score", "_protection_score")),
     ):
         for function_name in function_names:
             function = _function(relative, function_name)
@@ -73,8 +73,8 @@ def test_domain_weight_consumers_do_not_multiply_by_numeric_literals() -> None:
 
 
 def test_unconsumed_legacy_weighted_rankers_are_removed() -> None:
-    ranking = _read("src/trader/domain/recommendation/selection/ranking.py")
-    composition = _read("src/trader/domain/recommendation/strategies/composition.py")
+    ranking = _read("src/trader/recommendation/domain/selection/ranking.py")
+    composition = _read("src/trader/recommendation/domain/candidate/composition.py")
 
     assert "def candidate_score(" not in ranking
     assert "def liquidity_score(" not in composition

@@ -9,7 +9,7 @@ import pytest
 
 from tests.unit.application.review_helpers import review
 from tests.unit.application.test_input_runtime import _decision_build, _Market, _prime_scoring_cache, _request
-from tests.unit.application.test_today_projection import EVALUATED_AT, _features, _native_input
+from tests.unit.application.test_tomorrow_projection import EVALUATED_AT, _native_input, _verified_feature
 from tests.unit.application.test_tomorrow_selection import _data_snapshot
 from tests.unit.application.test_tomorrow_selection import _policy as snapshot_policy
 from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
@@ -32,11 +32,19 @@ from trader.application.recommendation.scored_selection import (
     assemble_scored_features,
 )
 from trader.bootstrap import _recommendation_policy
-from trader.domain.market.models import FeatureSnapshot
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.atomic_files.json import atomic_read_json, atomic_write_json
 from trader.infra.clock.shanghai import ShanghaiClock
 from trader.infra.settings import load_strategy_settings
+
+
+def _features(factory) -> tuple[FeatureSnapshot, ...]:
+    return tuple(
+        _verified_feature(factory(f"{prefix}{index:03d}", EVALUATED_AT - timedelta(seconds=10)))
+        for prefix in ("600", "300", "688")
+        for index in range(100)
+    )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 SOURCE_ROOT = PROJECT_ROOT / "src" / "trader"
@@ -90,7 +98,7 @@ class _RecordingRiskControl:
         self.calls = 0
 
     def assess(self, features: FeatureSnapshot, strategy: Strategy):
-        from trader.domain.recommendation.risk_fusion.downside import DownsideAssessment
+        from trader.recommendation.domain.risk.downside import DownsideAssessment
 
         del features, strategy
         self.calls += 1
@@ -200,7 +208,7 @@ def test_local_scoring_injects_risk_control(application_feature_factory) -> None
         scored,
         policy,
         {code: candidate_review},
-        review_deadline=EVALUATED_AT.replace(hour=11, minute=20, second=0),
+        review_deadline=EVALUATED_AT.replace(hour=14, minute=50, second=0),
     )
 
     assert fused is not None
@@ -237,7 +245,7 @@ def test_score_fusion_service_preserves_manifest_gate_and_parentage(application_
     policy = _runtime_policy()
     projection = LocalScoringService().score(_native_input(_features(application_feature_factory)), policy, sequence=1)
     code = projection.review_candidates[0].code
-    deadline = EVALUATED_AT.replace(hour=11, minute=20, second=0)
+    deadline = EVALUATED_AT.replace(hour=14, minute=50, second=0)
     candidate_review = replace(review(code, 100.0), completed_at=EVALUATED_AT + timedelta(seconds=5))
     service = ScoreFusionService()
 

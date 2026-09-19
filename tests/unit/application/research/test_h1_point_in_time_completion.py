@@ -16,7 +16,6 @@ def _insufficient_capability():
                 "tencent_qfq_daily",
                 date(2023, 1, 10),
                 False,
-                False,
                 "qfq",
                 False,
                 640,
@@ -27,7 +26,6 @@ def _insufficient_capability():
             H1CapabilityProbe(
                 "eastmoney_historical_minute",
                 None,
-                False,
                 False,
                 "unsupported",
                 False,
@@ -46,7 +44,7 @@ def test_h1_research_completion_seals_all_downstream_insufficient_states_without
 
     completion = complete_h1_research(
         capability=_insufficient_capability(),
-        metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("today", "tomorrow", "d25")),
+        metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),
     )
 
     assert completion.status == "historical_data_insufficient"
@@ -64,7 +62,7 @@ def test_h1_research_completion_projects_a_terminal_development_handoff_with_par
     archive = SQLiteH1PointInTimeArchive(tmp_path)
     completion = complete_h1_research(
         capability=_insufficient_capability(),
-        metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("today", "tomorrow", "d25")),
+        metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),
     )
 
     handoff = completion.to_development_handoff(

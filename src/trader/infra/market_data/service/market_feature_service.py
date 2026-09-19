@@ -15,18 +15,18 @@ from trader.application.ports.market import (
     MarketSnapshotMetadata,
     ResearchRefreshResult,
 )
-from trader.domain.market.eligibility import (
+from trader.recommendation.domain.market.eligibility import (
     IssuerEligibilityFact,
     eligibility_facts_from_quote,
     eligibility_facts_from_research,
 )
-from trader.domain.market.models import (
+from trader.recommendation.domain.market.models import (
     Board,
     FeatureSnapshot,
     LiveQuote,
     MarketQuote,
 )
-from trader.domain.market.research import ResearchObservation
+from trader.recommendation.domain.market.research import ResearchObservation
 from trader.training.evaluation.domain.models import OutcomeBar
 from trader.infra.market_data.history.daily_history_cache import HistoryCache
 from trader.infra.market_data.history.daily_history_warmup import HistoryWarmup

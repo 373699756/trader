@@ -19,7 +19,7 @@ from trader.application.ports.json_values import JsonInput, JsonObject, freeze_j
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.deepseek.budget_audit import (
     _count,
     _current_schema_version,

@@ -10,8 +10,8 @@ from zoneinfo import ZoneInfo
 
 from trader.application.cache import request_fingerprint
 from trader.application.recommendation.recommendation_policy_codec import preselection_replay_feature
-from trader.domain.market.models import FeatureSnapshot, MarketQuote
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
+from trader.recommendation.domain.publication.models import Strategy
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -49,10 +49,6 @@ class ScoredNativeInput:
         object.__setattr__(self, "input_version", _input_version(self))
 
 
-class TodayNativeInput(ScoredNativeInput):
-    strategy = Strategy.TODAY
-
-
 class TomorrowNativeInput(ScoredNativeInput):
     strategy = Strategy.TOMORROW
 
@@ -67,10 +63,6 @@ class TomorrowNativeInputPort(Protocol):
 
 class D25NativeInputPort(Protocol):
     def offer_native(self, native_input: D25NativeInput) -> bool: ...
-
-
-class TodayNativeInputPort(Protocol):
-    def offer_native(self, native_input: TodayNativeInput) -> bool: ...
 
 
 class ControlPort(Protocol):
@@ -236,8 +228,6 @@ def _shanghai(value: datetime) -> datetime:
 
 __all__ = [
     "ScoredNativeInput",
-    "TodayNativeInput",
-    "TodayNativeInputPort",
     "TomorrowNativeInput",
     "TomorrowNativeInputPort",
     "D25NativeInput",

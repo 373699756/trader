@@ -12,7 +12,7 @@ from tests.unit.application.scoring_helpers import profile_for
 from trader.application.decisions.decision_core import UnifiedDecisionIndex
 from trader.application.market_data.supply_status import build_supply_status
 from trader.application.ports.model_scoring import ModelInput, ModelPrediction
-from trader.application.ports.scored import D25NativeInput, ScoredNativeInput, TodayNativeInput, TomorrowNativeInput
+from trader.application.ports.scored import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
 from trader.application.recommendation.model_scoring_router import ModelScoringRouter
 from trader.application.recommendation.production_model_scoring import ProductionModelScoringService
 from trader.application.recommendation.scored_projection import (
@@ -21,10 +21,13 @@ from trader.application.recommendation.scored_projection import (
     build_scored_local,
 )
 from trader.bootstrap import _recommendation_policy
-from trader.domain.market.models import FeatureSnapshot
-from trader.domain.recommendation.model_scoring import LEGACY_EXPOSURE_CONTRACT, TRAINED_HEAD_EXPOSURE_CONTRACT
-from trader.domain.recommendation.models import Strategy
-from trader.domain.recommendation.selection.scored_selection import ScoredCandidateStageCounts
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.scoring.residualization import (
+    LEGACY_EXPOSURE_CONTRACT,
+    TRAINED_HEAD_EXPOSURE_CONTRACT,
+)
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts
 from trader.infra.settings import load_strategy_settings
 from trader.training.evaluation.application.research_audit import build_committed_research_audit
 
@@ -326,7 +329,7 @@ def test_tomorrow_model_history_coverage_requires_the_active_profile_fields(
     assert skipped.selection_skip_reason == "production_model_features_missing"
 
 
-@pytest.mark.parametrize("native_type", (TodayNativeInput, TomorrowNativeInput, D25NativeInput))
+@pytest.mark.parametrize("native_type", (TomorrowNativeInput, D25NativeInput))
 def test_close_fallback_never_consumes_a_model_head_or_its_61_day_requirement(
     application_feature_factory,
     native_type: type[ScoredNativeInput],
@@ -379,7 +382,7 @@ def test_d25_native_local_and_valid_facts_publish_one_parented_hybrid(
     assert index.snapshot(Strategy.D25).current == hybrid
 
 
-@pytest.mark.parametrize("native_type", (TodayNativeInput, TomorrowNativeInput, D25NativeInput))
+@pytest.mark.parametrize("native_type", (TomorrowNativeInput, D25NativeInput))
 def test_native_projection_scores_fresh_candidates_against_their_coherent_older_market_batch(
     application_feature_factory,
     native_type: type[ScoredNativeInput],

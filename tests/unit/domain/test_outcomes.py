@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 from trader.training.evaluation.domain.evaluation import (
     CanonicalOutcomeEvaluator,
     OutcomeEvaluationRequest,
@@ -298,7 +298,7 @@ def test_outcome_fails_closed_when_exit_tradability_is_unknown() -> None:
 
 
 def test_outcome_converts_raw_intraday_anchor_to_the_same_qfq_basis() -> None:
-    target = OutcomeTarget("snapshot", Strategy.TODAY, "2026-07-20", "600001", 10.0, 2.0)
+    target = OutcomeTarget("snapshot", Strategy.TOMORROW, "2026-07-20", "600001", 10.0, 2.0)
     bars = (
         _bar("2026-07-20", 5.0, 5.1, 4.9, 5.0, raw=(10.0, 10.2, 9.8, 10.0)),
         _bar("2026-07-21", 5.0, 5.6, 4.9, 5.5, raw=(5.0, 5.6, 4.9, 5.5)),

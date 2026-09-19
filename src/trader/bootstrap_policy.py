@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from trader.application.long_groups import LongGroupDefinition, LongGroupSectionDefinition, LongWatchItemDefinition
 from trader.application.recommendation.policy import RecommendationPolicy, RecommendationSelectionSettings
-from trader.domain.market.models import Board
-from trader.domain.recommendation.filtering.filters import HardFilterPolicy
-from trader.domain.recommendation.models import Strategy
-from trader.domain.recommendation.risk_fusion.fusion import FusionPolicy
-from trader.domain.review.models import RiskRule
+from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.candidate.filters import HardFilterPolicy
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.risk.fusion import FusionPolicy
+from trader.recommendation.domain.evidence.review import RiskRule
 from trader.infra.settings import LongWatchlist, StrategySettings
 
 

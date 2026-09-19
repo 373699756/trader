@@ -20,8 +20,8 @@ from trader.application.runtime.workers import (
     borrow_executor,
     submit_or_run_inline,
 )
-from trader.domain.market.models import FeatureSnapshot
-from trader.domain.market.tail import TAIL_SIGNAL_VALUE_FIELDS, MinuteBar
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.tail import TAIL_SIGNAL_VALUE_FIELDS, MinuteBar
 from trader.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.infra.market_data.service.market_cache_identity import (
     _add_action_restriction,

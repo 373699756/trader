@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from trader.domain.review.models import DeepSeekReview, DimensionAssessment, ReviewOutcome
+from trader.recommendation.domain.evidence.review import DeepSeekReview, DimensionAssessment, ReviewOutcome
 
 NOW = datetime(2026, 7, 28, 14, 40, tzinfo=ZoneInfo("Asia/Shanghai"))
 

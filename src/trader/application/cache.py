@@ -242,7 +242,7 @@ def build_cache_identity(spec: CacheIdentitySpec) -> CacheIdentity:
 def normalize_cache_phase(phase: str) -> str:
     normalized = phase.strip().lower()
     aliases = {
-        "today_observe": "today_main",
+        "morning_observe": "morning_main",
         "deepseek_cutoff": "final_window",
         "final_quote": "final_window",
         "frozen": "final_window",

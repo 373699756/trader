@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from trader.domain.market.feature_contracts import FeatureVectorManifest
-from trader.domain.recommendation.model_scoring.profile_identity import ScoringProfileId
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.market.feature_contracts import FeatureVectorManifest
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.domain.publication.models import Strategy
 
 TrainedTargetColumn = Literal["target_t1", "target_d25_aggregate"]
 
@@ -20,7 +20,7 @@ class TrainedHeadContract:
     feature_positions: tuple[int, ...]
     target_column: TrainedTargetColumn
     maturity_sessions: int
-    runtime_anchor: Literal["11:20", "14:50"]
+    runtime_anchor: Literal["14:50"]
     label_target: Literal[
         "pre_cost_excess_return",
         "pre_cost_excess_return_t1",
@@ -50,7 +50,7 @@ class TrainedProfileContract:
             or self.history_sessions != max(self.momentum_horizons) + 1
             or len(set(self.momentum_horizons)) != len(self.momentum_horizons)
             or not set(self.market_state_momentum_horizons).issubset(self.momentum_horizons)
-            or tuple(head.strategy for head in self.heads) != (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+            or tuple(head.strategy for head in self.heads) != (Strategy.TOMORROW, Strategy.D25)
         ):
             raise ValueError("trained profile contract is invalid")
 

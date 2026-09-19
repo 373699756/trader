@@ -7,9 +7,9 @@ from dataclasses import replace
 from datetime import datetime
 
 from trader.application.recommendation.policy import RecommendationPolicy
-from trader.domain.recommendation.models import Strategy
-from trader.domain.recommendation.risk_fusion.scored_fusion import ScoredDecisionPolicy
-from trader.domain.review.models import DeepSeekReview, ReviewOutcome
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.risk.scored_fusion import ScoredDecisionPolicy
+from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
 
 
 def tomorrow_decision_policy(policy: RecommendationPolicy) -> ScoredDecisionPolicy:
@@ -26,24 +26,11 @@ def scored_decision_policy(
     *,
     phase: str = "",
 ) -> ScoredDecisionPolicy:
-    if strategy is Strategy.TODAY:
-        return today_decision_policy(policy, phase)
     if strategy is Strategy.TOMORROW:
         return tomorrow_decision_policy(policy)
     if strategy is Strategy.D25:
         return d25_decision_policy(policy)
     raise ValueError("unsupported scored strategy for DeepSeek policy")
-
-
-def today_decision_policy(policy: RecommendationPolicy, phase: str) -> ScoredDecisionPolicy:
-    threshold_key = "today_late" if phase == "today_late" else "today_main"
-    return _decision_policy(
-        policy,
-        Strategy.TODAY,
-        threshold_key,
-        executable_enabled=phase != "today_observe",
-    )
-
 
 def _decision_policy(
     policy: RecommendationPolicy,
@@ -98,7 +85,6 @@ def normalize_scored_review_times(
 __all__ = [
     "d25_decision_policy",
     "normalize_scored_review_times",
-    "today_decision_policy",
     "tomorrow_decision_policy",
     "scored_decision_policy",
 ]

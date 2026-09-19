@@ -251,7 +251,7 @@ def parse_performance_budgets(raw: Mapping[str, object]) -> PerformanceBudgetSet
         "board_preselection": 5000.0,
         "candidate_union_projection": 100.0,
         "board_local_scoring": 250.0,
-        "three_strategy_board_scoring": 750.0,
+        "two_strategy_board_scoring": 750.0,
         "three_board_wall_clock": 1000.0,
         "global_selection": 100.0,
         "board_ready_to_draft": 500.0,

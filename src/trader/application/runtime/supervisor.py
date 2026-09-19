@@ -246,9 +246,9 @@ def scheduler_interval_seconds(at: datetime) -> float:
     maximum = {
         MarketPhase.CLOSED: 30.0,
         MarketPhase.WARMUP: 60.0,
-        MarketPhase.TODAY_OBSERVE: 30.0,
-        MarketPhase.TODAY_MAIN: 10.0,
-        MarketPhase.TODAY_LATE: 20.0,
+        MarketPhase.MORNING_OBSERVE: 30.0,
+        MarketPhase.MORNING_MAIN: 10.0,
+        MarketPhase.MORNING_LATE: 20.0,
         MarketPhase.MIDDAY: 60.0,
         MarketPhase.AFTERNOON: 30.0,
         MarketPhase.FINAL_REVIEW: 10.0,

@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from trader.application.ports.model_scoring import ModelInput
-from trader.domain.recommendation.models import Strategy
+from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.artifacts.canonical import content_hash
 from trader.infra.scoring.profile_factory import load_scoring_profile
 from trader.training.infra.artifacts.bundle_codec import decode_head_bundle, load_head_bundle
@@ -26,6 +26,7 @@ from trader.training.infra.artifacts.contracts import TrainedHeadContract, Train
 from trader.training.infra.artifacts.profile import build_trained_scoring_profile
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import (
+    D25_HEAD_CONTRACT,
     HEAD_CONTRACTS,
     TOMORROW_HEAD_CONTRACT,
     V3_TRAINING_PROFILE,
@@ -247,7 +248,7 @@ def test_v3_publication_uses_only_four_portable_fixed_files(tmp_path: Path) -> N
     assert not (selected.parent / "generations").exists()
 
 
-def test_shared_loader_builds_three_distinct_heads_for_v2_and_v3(tmp_path: Path) -> None:
+def test_shared_loader_builds_two_distinct_heads_for_v2_and_v3(tmp_path: Path) -> None:
     for index, contract in enumerate(HEAD_CONTRACTS):
         _publish(tmp_path, contract, f"staging-v3-{index}", profile=V3_TRAINING_PROFILE, profile_owned=True)
     for index, contract in enumerate(V2_TRAINING_PROFILE.heads):
@@ -256,18 +257,17 @@ def test_shared_loader_builds_three_distinct_heads_for_v2_and_v3(tmp_path: Path)
     located = locate_head_bundles(tmp_path, V3_TRAINING_PROFILE)
     profiles = tuple(load_scoring_profile(profile, training_root=tmp_path) for profile in ("v2", "v3"))
 
-    assert tuple(strategy for strategy, _ in located) == (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
+    assert tuple(strategy for strategy, _ in located) == (Strategy.TOMORROW, Strategy.D25)
     for profile in profiles:
-        assert tuple(profile.heads) == (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25)
-        assert len({head.predictor.model_hash for head in profile.heads.values()}) == 3
-        assert profile.heads[Strategy.TODAY].evidence.runtime_anchor == "11:20"
+        assert tuple(profile.heads) == (Strategy.TOMORROW, Strategy.D25)
+        assert len({head.predictor.model_hash for head in profile.heads.values()}) == 2
         assert profile.heads[Strategy.TOMORROW].evidence.runtime_anchor == "14:50"
         assert profile.heads[Strategy.D25].evidence.runtime_anchor == "14:50"
     assert (
-        tuple(path.parent.parent.name for _, path in locate_head_bundles(tmp_path, V2_TRAINING_PROFILE)) == ("v2",) * 3
+        tuple(path.parent.parent.name for _, path in locate_head_bundles(tmp_path, V2_TRAINING_PROFILE)) == ("v2",) * 2
     )
-    assert tuple(path.parent.parent.name for _, path in located) == ("v3",) * 3
-    for strategy in (Strategy.TODAY, Strategy.TOMORROW, Strategy.D25):
+    assert tuple(path.parent.parent.name for _, path in located) == ("v3",) * 2
+    for strategy in (Strategy.TOMORROW, Strategy.D25):
         v2_predictor = profiles[0].heads[strategy].predictor
         v3_predictor = profiles[1].heads[strategy].predictor
         assert v2_predictor.profile_id == "v2"
@@ -325,14 +325,14 @@ def test_shared_profile_rejects_a_duplicate_head_even_when_all_strategies_exist(
         for contract in HEAD_CONTRACTS
     )
 
-    with pytest.raises(ValueError, match="require one Today, Tomorrow, and D25"):
+    with pytest.raises(ValueError, match="require one Tomorrow and D25"):
         build_trained_scoring_profile("v2", (*artifacts, artifacts[0]))
 
 
 def test_v3_codec_rejects_cross_head_and_nonportable_fields() -> None:
     model, _, _ = _documents(TOMORROW_HEAD_CONTRACT)
     with pytest.raises(ValueError, match="contract"):
-        decode_head_bundle(model, Strategy.TODAY, V3_TRAINING_PROFILE)
+        decode_head_bundle(model, Strategy.D25, V3_TRAINING_PROFILE)
 
     model.pop("content_hash")
     model["source_commit"] = "d" * 40

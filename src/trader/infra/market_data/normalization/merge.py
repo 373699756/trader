@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.application.cache import canonical_json_bytes
-from trader.domain.market.models import (
+from trader.recommendation.domain.market.models import (
     Board,
     CanonicalMarketSnapshot,
     MarketQuote,

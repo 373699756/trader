@@ -65,13 +65,13 @@ def test_remaining_offline_research_is_historical_and_production_isolated() -> N
     research_sources = "\n".join(
         path.read_text(encoding="utf-8")
         for path in (
-            SOURCE / "application/research/tomorrow_historical_screening.py",
-            SOURCE / "application/research/tomorrow_profile_holdout.py",
-            SOURCE / "application/research/tomorrow_historical_validation.py",
+            SOURCE / "training/evaluation/application/tomorrow_historical_screening.py",
+            SOURCE / "training/evaluation/application/tomorrow_point_in_time_holdout.py",
+            SOURCE / "training/evaluation/application/tomorrow_historical_validation.py",
         )
     )
 
-    for token in ("tomorrow_historical", "tomorrow_profile_holdout_report", "tomorrow_historical_risk_probability"):
+    for token in ("tomorrow_historical", "TomorrowPointInTimeHoldout", "tomorrow_historical_risk_probability"):
         assert token in research_sources
     assert "旧 H0 历史归档、回测和筛选命令已经退役" in design
     assert "download" in design
@@ -93,7 +93,7 @@ def test_p2_historical_rejection_and_manual_production_override_remain_explicit(
     runtime_sources = "\n".join(
         path.read_text(encoding="utf-8")
         for path in (
-            SOURCE / "domain/research/tomorrow_historical.py",
+            SOURCE / "training/evaluation/domain/tomorrow_historical.py",
             SOURCE / "application/ports/model_scoring.py",
         )
     )
@@ -105,18 +105,17 @@ def test_p2_historical_rejection_and_manual_production_override_remain_explicit(
     assert artifact_hash not in strategy
 
 
-def test_v1_v2_historical_evidence_does_not_create_a_running_collection_gate() -> None:
+def test_historical_evidence_does_not_create_a_running_collection_gate() -> None:
     strategy = _compact(ROOT / "docs/01_评分逻辑.md")
     design = _compact(ROOT / "docs/02_工程设计.md")
-    holdout = _compact(SOURCE / "application/research/tomorrow_profile_holdout.py")
+    holdout = _compact(SOURCE / "training/evaluation/application/tomorrow_point_in_time_holdout.py")
 
     for token in (
         "不能据此断言 V2 未来更能挣钱",
-        "V2 的平均成本后净增量证据强于 V1",
         "不设跨年配对采集任务",
     ):
         assert token in strategy
-    assert "tomorrow_profile_holdout_report" in holdout
+    assert "TomorrowPointInTimeHoldout" in holdout
     for retired in ("522 个有效交易日", "tomorrow_v1_v2_paired_forward_v1"):
         assert retired not in strategy
         assert retired not in design

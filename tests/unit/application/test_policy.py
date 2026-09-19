@@ -5,9 +5,9 @@ from types import MappingProxyType
 import pytest
 
 from trader.application.recommendation.policy import RecommendationPolicy, RecommendationSelectionSettings
-from trader.domain.market.models import Board
-from trader.domain.recommendation.models import Strategy
-from trader.domain.recommendation.risk_fusion.fusion import FusionPolicy
+from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.risk.fusion import FusionPolicy
 
 
 def test_selection_policy_default_competition_limits_are_isolated_and_immutable() -> None:
@@ -34,7 +34,7 @@ def test_recommendation_policy_weight_maps_are_isolated_and_immutable() -> None:
     assert isinstance(first.board_candidate_weights, MappingProxyType)
     assert isinstance(first.board_local_strategy_weights, MappingProxyType)
     with pytest.raises(TypeError):
-        first.board_candidate_weights[Strategy.TODAY] = {}  # type: ignore[index]
+        first.board_candidate_weights[Strategy.TOMORROW] = {}  # type: ignore[index]
 
 
 def _selection_policy() -> RecommendationSelectionSettings:
@@ -43,7 +43,7 @@ def _selection_policy() -> RecommendationSelectionSettings:
         maximum_top_k=18,
         maximum_per_industry=3,
         observation_margin=5.0,
-        thresholds={"today_main": 70.0},
+        thresholds={"morning_main": 70.0},
     )
 
 
