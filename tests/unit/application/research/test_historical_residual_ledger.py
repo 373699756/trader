@@ -1,8 +1,8 @@
 from dataclasses import replace
 from datetime import date
 
-from trader.application.research.historical_residual_ledger import HistoricalResidualLedgerService
-from trader.domain.research.historical_residual_ledger import (
+from trader.training.evaluation.application.historical_residual_ledger import HistoricalResidualLedgerService
+from trader.training.evaluation.domain.historical_residual_ledger import (
     HistoricalOutcomeRecord,
     HistoricalPredictionRecord,
     ResidualJoinKey,

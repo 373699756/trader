@@ -2,16 +2,16 @@ from __future__ import annotations
 
 from datetime import date
 
-from trader.application.research.historical_backtest import (
+from trader.training.evaluation.application.historical_backtest import (
     HistoricalBarBacktestService,
     HistoricalScreeningDay,
 )
-from trader.application.research.historical_screening import (
+from trader.training.evaluation.application.historical_screening import (
     HistoricalPriceHistoryIdentity,
     HistoricalScreeningArchiveManifest,
     HistoricalScreeningArchiveStatus,
 )
-from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC
+from trader.training.evaluation.domain.historical_screening import HISTORICAL_SCREENING_SPEC
 
 
 class _Evidence:

@@ -2,18 +2,18 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from trader.application.research.historical_screening import (
+from trader.training.evaluation.application.historical_screening import (
     HistoricalPriceHistoryIdentity,
     HistoricalScreeningArchiveManifest,
     HistoricalScreeningArchiveStatus,
 )
-from trader.application.research.tomorrow_historical_screening import (
+from trader.training.evaluation.application.tomorrow_historical_screening import (
     TomorrowHistoricalModelFit,
     TomorrowHistoricalRow,
     TomorrowHistoricalScreeningService,
 )
-from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC
-from trader.domain.research.tomorrow_historical import (
+from trader.training.evaluation.domain.historical_screening import HISTORICAL_SCREENING_SPEC
+from trader.training.evaluation.domain.tomorrow_historical import (
     TOMORROW_HISTORICAL_SPEC,
     TomorrowHistoricalModelArtifact,
 )

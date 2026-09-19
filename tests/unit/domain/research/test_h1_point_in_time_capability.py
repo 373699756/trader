@@ -2,7 +2,7 @@ from datetime import date
 
 import pytest
 
-from trader.domain.research.h1_point_in_time import (
+from trader.training.evaluation.domain.h1_point_in_time import (
     H1CapabilityAuditReport,
     H1CapabilityProbe,
     build_h1_capability_audit,

@@ -6,11 +6,11 @@ import pytest
 
 from tests.unit.application.research.test_historical_extraction import _Evaluator, _Port
 from tests.unit.application.research.test_historical_ports import _summary
-from trader.application.research.baseline_replay_report import BaselineReplaySelection
-from trader.application.research.challenger_replay_report import ChallengerReplaySelection
-from trader.application.research.challengers import ChallengerReplayer
-from trader.application.research.extraction import HistoricalExtractor
-from trader.application.research.replay import HistoricalBaselineReplayer
+from trader.training.evaluation.application.baseline_replay_report import BaselineReplaySelection
+from trader.training.evaluation.application.challenger_replay_report import ChallengerReplaySelection
+from trader.training.evaluation.application.challengers import ChallengerReplayer
+from trader.training.evaluation.application.extraction import HistoricalExtractor
+from trader.training.evaluation.application.replay import HistoricalBaselineReplayer
 
 
 class _ChallengerEvaluator:

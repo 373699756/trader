@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from trader.domain.research.historical_industry_facts import (
+from trader.training.evaluation.domain.historical_industry_facts import (
     HistoricalIndustryFact,
     HistoricalIndustrySourceContract,
     HistoricalIndustryStockWindow,

@@ -78,7 +78,7 @@ def test_retained_converter_is_isolated_from_the_retired_download_chain() -> Non
 
 
 def test_shared_baostock_daily_contract_has_no_retired_archive_codec() -> None:
-    source = (ROOT / "src/trader/domain/research/baostock_daily.py").read_text(encoding="utf-8")
+    source = (ROOT / "src/trader/download/domain/baostock_daily.py").read_text(encoding="utf-8")
 
     for retired in (
         "BAOSTOCK_LEGACY_",

@@ -7,7 +7,7 @@ from datetime import date
 from pathlib import Path
 from typing import Literal
 
-from trader.domain.research.history_control import HistoryTrainingDueReason
+from trader.download.domain.history_control import HistoryTrainingDueReason
 
 HistoryMaintenanceState = Literal[
     "blocked",

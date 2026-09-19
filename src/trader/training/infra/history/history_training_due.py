@@ -8,8 +8,7 @@ from datetime import date, datetime
 from pathlib import Path, PurePosixPath
 
 from trader.domain.recommendation.models import Strategy
-from trader.domain.research.artifact_identity import canonical_artifact_hash
-from trader.domain.research.history_control import (
+from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
     HistoryTrainingDueRequest,
     HistoryTrainingDueState,
@@ -26,6 +25,7 @@ from trader.download.infra.history_control_repository import (
     HistoryControlError,
     SQLiteHistoryControlRepository,
 )
+from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash
 from trader.training.infra.artifacts.bundle_repository import (
     ActiveHeadBundle,
     inspect_active_head_bundle,

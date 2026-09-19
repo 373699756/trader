@@ -10,7 +10,7 @@ import pytest
 import trader.training.infra.history.history_training_due as due_module
 from scripts.runtime_diagnostics.history_archive_performance import inspect_history_archive_performance
 from trader.domain.recommendation.models import Strategy
-from trader.domain.research.baostock_daily import (
+from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
     BaoStockCodeBatch,
     BaoStockCodeDownload,
@@ -21,7 +21,7 @@ from trader.domain.research.baostock_daily import (
     BaoStockSecurity,
     BaoStockSourceVersions,
 )
-from trader.domain.research.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
+from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
 from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
 from trader.download.infra.history_archive_reader import HistoryPartitionRevisionComparison
 from trader.download.infra.history_archive_sync import run_history_sync

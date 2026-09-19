@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from trader.application.ports.clock import TradingCalendarPort
 from trader.application.ports.market import ResearchRefreshResult
 from trader.application.ports.runtime_status import InputQualityStatus
-from trader.application.research.research_audit import CommittedResearchAudit
+from trader.training.evaluation.application.research_audit import CommittedResearchAudit
 from trader.application.runtime.cadence import PipelineTask
 from trader.application.runtime.schedule import MarketPhase
 from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep

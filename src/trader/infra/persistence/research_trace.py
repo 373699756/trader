@@ -19,7 +19,7 @@ from trader.application.decisions.decision_events import (
     CommittedDecisionItem,
     DecisionCommitted,
 )
-from trader.application.research.research_audit import (
+from trader.training.evaluation.application.research_audit import (
     LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
     RESEARCH_AUDIT_SCHEMA_VERSION,
     CommittedResearchAudit,

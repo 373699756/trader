@@ -18,7 +18,7 @@ def test_baseline_audit_is_an_explicit_read_only_cli_command() -> None:
 
 
 def test_baseline_audit_projection_has_no_future_or_production_authority_fields() -> None:
-    source = (ROOT / "src/trader/entrypoints/research_commands.py").read_text(encoding="utf-8")
+    source = (ROOT / "src/trader/training/entrypoints/commands.py").read_text(encoding="utf-8")
     assert "load_baseline_identity_evidence" in source
     assert '"production_authority": audit.production_authority' in source
     assert "research-baseline-audit" in source

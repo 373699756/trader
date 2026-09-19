@@ -16,7 +16,12 @@ from typing import Protocol
 
 from trader.application.ports.data_plane import HistoricalFeatureRecord
 from trader.application.ports.decision_records import DecisionRecordRepositoryPort
-from trader.domain.outcome.models import BenchmarkReturn, OutcomeTarget, RecommendationOutcome, outcome_horizons
+from trader.training.evaluation.domain.models import (
+    BenchmarkReturn,
+    OutcomeTarget,
+    RecommendationOutcome,
+    outcome_horizons,
+)
 from trader.domain.recommendation.models import Strategy
 
 

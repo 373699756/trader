@@ -124,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
     if args.command == "eligibility-list":
         return _run_eligibility_list(runtime, as_of=args.as_of)
     if args.command in {"train-v2", "train-v3"} or args.command.startswith("research-"):
-        from trader.entrypoints.research_commands import ResearchCommandOptions, run_research_command
+        from trader.training.entrypoints.commands import ResearchCommandOptions, run_research_command
 
         return run_research_command(
             args.command,

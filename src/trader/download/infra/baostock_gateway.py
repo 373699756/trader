@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Protocol
 
-from trader.domain.research.baostock_daily import (
+from trader.download.domain.baostock_daily import (
     BaoStockAdjustment,
     BaoStockBoard,
     BaoStockCalendar,

@@ -9,7 +9,7 @@ from datetime import date
 from pathlib import Path
 from typing import Literal, Protocol, get_args
 
-from trader.domain.research.baostock_daily import (
+from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
     BaoStockCodeDownload,
     BaoStockIndustryInterval,

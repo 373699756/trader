@@ -5,7 +5,7 @@ from datetime import date
 
 import scripts.qualify_point_in_time_data as script
 from scripts.qualify_point_in_time_data import PROJECT_ROOT, execute, main, project_point_in_time_data_qualification
-from trader.domain.research.historical_industry_facts import (
+from trader.training.evaluation.domain.historical_industry_facts import (
     HistoricalIndustrySourceContract,
     build_historical_industry_dataset_report,
     build_historical_industry_source_audit,

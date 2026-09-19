@@ -29,8 +29,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo
 
-from trader.domain.research.baostock_daily import BaoStockDailyCell, BaoStockDailySide
-from trader.domain.research.history_control import (
+from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
+from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
     HistoryCalendarIdentity,
     HistorySecurityBoard,
@@ -41,7 +41,7 @@ from trader.domain.research.history_control import (
     HistoryTrainingDueState,
     HistoryUniverseIdentity,
 )
-from trader.domain.research.history_revision import HistoryRevision
+from trader.download.domain.history_revision import HistoryRevision
 from trader.download.infra.baostock_gap_supplier import (
     BaoStockGapFamily,
     BaoStockGapRecord,

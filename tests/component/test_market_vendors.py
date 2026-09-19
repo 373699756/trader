@@ -51,7 +51,7 @@ from tests.component.market_data_test_support import (
     timedelta,
     timezone,
 )
-from trader.domain.outcome.models import OutcomeBar, OutcomePrice, OutcomeTradingStatus
+from trader.training.evaluation.domain.models import OutcomeBar, OutcomePrice, OutcomeTradingStatus
 
 
 def test_eastmoney_normalizes_quote_and_history() -> None:

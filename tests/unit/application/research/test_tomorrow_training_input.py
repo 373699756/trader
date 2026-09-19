@@ -1,12 +1,12 @@
 from dataclasses import dataclass
 from datetime import date
 
-from trader.application.research.tomorrow_training_input import (
-    verify_tomorrow_training_input_port,
-)
 from trader.training.domain.tomorrow_training_input import (
     REQUIRED_DAILY_FIELDS,
     FrozenDailyInputDescriptor,
+)
+from trader.training.evaluation.application.tomorrow_training_input import (
+    verify_tomorrow_training_input_port,
 )
 
 

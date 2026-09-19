@@ -14,38 +14,38 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from trader.application.research.cross_strategy_conclusion import (  # noqa: E402
+from trader.training.evaluation.application.cross_strategy_conclusion import (  # noqa: E402
     CrossStrategyConclusion,
     CrossStrategyConclusionService,
 )
-from trader.application.research.d25_terminal_holdout import D25TerminalHoldoutService  # noqa: E402
-from trader.application.research.today_terminal_holdout import TodayTerminalHoldoutService  # noqa: E402
-from trader.application.research.tomorrow_point_in_time_holdout import (  # noqa: E402
+from trader.training.evaluation.application.d25_terminal_holdout import D25TerminalHoldoutService  # noqa: E402
+from trader.training.evaluation.application.today_terminal_holdout import TodayTerminalHoldoutService  # noqa: E402
+from trader.training.evaluation.application.tomorrow_point_in_time_holdout import (  # noqa: E402
     TomorrowPointInTimeHoldoutService,
 )
-from trader.domain.research.h1_point_in_time import H1CapabilityAuditReport, ResearchStrategy  # noqa: E402
-from trader.domain.research.terminal_holdout import (  # noqa: E402
+from trader.training.evaluation.domain.h1_point_in_time import H1CapabilityAuditReport, ResearchStrategy  # noqa: E402
+from trader.training.evaluation.domain.terminal_holdout import (  # noqa: E402
     TerminalHoldoutParentState,
     TerminalHoldoutReport,
 )
-from trader.infra.research.cross_strategy_conclusion_artifacts import (  # noqa: E402
+from trader.training.infra.research.cross_strategy_conclusion_artifacts import (  # noqa: E402
     CrossStrategyConclusionArtifactArchive,
 )
-from trader.infra.research.d25_terminal_holdout_artifacts import (  # noqa: E402
+from trader.training.infra.research.d25_terminal_holdout_artifacts import (  # noqa: E402
     D25TerminalHoldoutArtifactArchive,
 )
-from trader.infra.research.h1_point_in_time_capability import (  # noqa: E402
+from trader.training.infra.research.h1_point_in_time_capability import (  # noqa: E402
     H1CapabilityArtifactArchive,
 )
-from trader.infra.research.h1_point_in_time_completion import (  # noqa: E402
-    H1ResearchCompletionArtifactIndex,
+from trader.training.infra.research.h1_point_in_time_completion import (  # noqa: E402
     H1ResearchCompletionArtifactArchive,
+    H1ResearchCompletionArtifactIndex,
 )
-from trader.infra.research.historical_label_artifacts import HistoricalLabelArtifactArchive  # noqa: E402
-from trader.infra.research.today_terminal_holdout_artifacts import (  # noqa: E402
+from trader.training.infra.research.historical_label_artifacts import HistoricalLabelArtifactArchive  # noqa: E402
+from trader.training.infra.research.today_terminal_holdout_artifacts import (  # noqa: E402
     TodayTerminalHoldoutArtifactArchive,
 )
-from trader.infra.research.tomorrow_point_in_time_holdout_artifacts import (  # noqa: E402
+from trader.training.infra.research.tomorrow_point_in_time_holdout_artifacts import (  # noqa: E402
     TomorrowPointInTimeHoldoutArtifactArchive,
 )
 
@@ -93,7 +93,9 @@ def _read_parent(root: Path) -> _ParentArtifacts:
     return _ParentArtifacts(capability, index)
 
 
-def _parent_state(parent: _ParentArtifacts, strategy: ResearchStrategy, candidate_hash: str) -> TerminalHoldoutParentState:
+def _parent_state(
+    parent: _ParentArtifacts, strategy: ResearchStrategy, candidate_hash: str
+) -> TerminalHoldoutParentState:
     status = next(item for item in parent.capability.strategies if item.strategy == strategy)
     return TerminalHoldoutParentState(
         candidate_status=status.state,

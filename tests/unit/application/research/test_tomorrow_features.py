@@ -6,12 +6,12 @@ from datetime import date, timedelta
 import pytest
 
 from tests.unit.application.research.test_historical_ports import OBSERVED_AT, TRADE_DATE, _bundle, _summary
-from trader.application.research.tomorrow_feature_contracts import (
+from trader.training.evaluation.application.tomorrow_feature_contracts import (
     TomorrowFeatureContext,
     TomorrowFeatureContextBatch,
 )
-from trader.application.research.tomorrow_features import TomorrowPointInTimeFeatureBuilder
-from trader.domain.research.tomorrow_features import PointInTimePublishedFact
+from trader.training.evaluation.application.tomorrow_features import TomorrowPointInTimeFeatureBuilder
+from trader.training.evaluation.domain.tomorrow_features import PointInTimePublishedFact
 
 
 def _contexts() -> TomorrowFeatureContextBatch:

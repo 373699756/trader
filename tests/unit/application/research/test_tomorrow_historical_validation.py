@@ -5,14 +5,14 @@ from datetime import date, timedelta
 import pytest
 
 from trader.application.ports.model_scoring import ModelInput, ModelPrediction
-from trader.application.research.tomorrow_historical_validation import (
+from trader.domain.recommendation.model_scoring import LEGACY_EXPOSURE_CONTRACT
+from trader.training.evaluation.application.tomorrow_historical_validation import (
     TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC,
     TomorrowHistoricalRiskRow,
     build_historical_risk_probability,
     evaluate_historical_risk_probability,
     evaluate_historical_selected_days,
 )
-from trader.domain.recommendation.model_scoring import LEGACY_EXPOSURE_CONTRACT
 
 
 class _Predictor:

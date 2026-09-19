@@ -43,13 +43,6 @@ from trader.application.recommendation.scored_projection import (
     build_scored_hybrid,
     build_scored_local,
 )
-from trader.application.research.scoring_hot_path_baseline import (
-    ScoringHotPathBaseline,
-    ScoringHotPathEquivalence,
-    ScoringHotPathLatency,
-    ScoringInputEpoch,
-    build_scoring_hot_path_baseline,
-)
 from trader.application.runtime.schedule import SHANGHAI
 from trader.bootstrap_policy import _recommendation_policy
 from trader.domain.market.models import Board, FeatureSnapshot, MarketQuote
@@ -80,6 +73,13 @@ from trader.infra.market_data.service.observations import SourceObservation
 from trader.infra.scoring.profile_factory import load_scoring_profile
 from trader.infra.settings import load_runtime_settings, load_strategy_settings
 from trader.infra.settings.models import PerformanceBudgetSettings
+from trader.training.evaluation.application.scoring_hot_path_baseline import (
+    ScoringHotPathBaseline,
+    ScoringHotPathEquivalence,
+    ScoringHotPathLatency,
+    ScoringInputEpoch,
+    build_scoring_hot_path_baseline,
+)
 from trader.web import create_app
 from trader.web.api.route_services import UnifiedWebServices
 

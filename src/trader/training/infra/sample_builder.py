@@ -17,7 +17,7 @@ from trader.domain.recommendation.model_scoring import (
     create_exposure_context,
     residualize_exposure_with_context,
 )
-from trader.domain.research.history_revision import HistoryTrainingWindow
+from trader.download.domain.history_revision import HistoryTrainingWindow
 from trader.training.application.tomorrow_training import (
     TomorrowTrainingProgress,
     TomorrowTrainingProgressPort,

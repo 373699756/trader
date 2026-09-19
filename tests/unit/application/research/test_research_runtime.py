@@ -5,10 +5,10 @@ from datetime import datetime, timedelta
 
 from trader.application.ports.market import ResearchRefreshResult
 from trader.application.ports.scheduler import CycleRequest, ResearchIntent
-from trader.application.research.research_runtime import ResearchRuntime
 from trader.application.runtime.cadence import CadencePolicy
 from trader.application.runtime.schedule import SHANGHAI, MarketPhase
 from trader.domain.recommendation.models import Strategy
+from trader.training.evaluation.application.research_runtime import ResearchRuntime
 
 NOW = datetime(2026, 8, 21, 10, 0, tzinfo=SHANGHAI)
 

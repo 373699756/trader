@@ -5,7 +5,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.domain.research.limited_factor_family import (
+from trader.training.evaluation.domain.limited_factor_family import (
     FactorFamilyCandidateSeries,
     LimitedFactorCandidate,
     LimitedFactorFamilySpec,

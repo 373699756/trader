@@ -20,13 +20,13 @@ from trader.application.recommendation.scored_projection import (
     build_scored_hybrid,
     build_scored_local,
 )
-from trader.application.research.research_audit import build_committed_research_audit
 from trader.bootstrap import _recommendation_policy
 from trader.domain.market.models import FeatureSnapshot
 from trader.domain.recommendation.model_scoring import LEGACY_EXPOSURE_CONTRACT, TRAINED_HEAD_EXPOSURE_CONTRACT
 from trader.domain.recommendation.models import Strategy
 from trader.domain.recommendation.selection.scored_selection import ScoredCandidateStageCounts
 from trader.infra.settings import load_strategy_settings
+from trader.training.evaluation.application.research_audit import build_committed_research_audit
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 TRADE_DATE = date(2026, 7, 29)

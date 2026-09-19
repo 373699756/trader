@@ -4,12 +4,16 @@ import json
 from datetime import date
 
 from scripts.point_in_time_terminal_holdout import main
-from trader.application.research.h1_point_in_time_completion import complete_h1_research
-from trader.domain.research.h1_point_in_time import H1CapabilityProbe, H1PointInTimeSpec, build_h1_capability_audit
-from trader.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive
-from trader.infra.research.h1_point_in_time_capability import H1CapabilityArtifactArchive
-from trader.infra.research.h1_point_in_time_completion import H1ResearchCompletionArtifactArchive
-from trader.infra.research.historical_label_artifacts import HistoricalLabelArtifactArchive
+from trader.training.evaluation.application.h1_point_in_time_completion import complete_h1_research
+from trader.training.evaluation.domain.h1_point_in_time import (
+    H1CapabilityProbe,
+    H1PointInTimeSpec,
+    build_h1_capability_audit,
+)
+from trader.training.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive
+from trader.training.infra.research.h1_point_in_time_capability import H1CapabilityArtifactArchive
+from trader.training.infra.research.h1_point_in_time_completion import H1ResearchCompletionArtifactArchive
+from trader.training.infra.research.historical_label_artifacts import HistoricalLabelArtifactArchive
 
 
 def _seal_h1_research_parent(root):

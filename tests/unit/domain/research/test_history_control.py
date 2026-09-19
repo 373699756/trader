@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.domain.research.history_control import (
+from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
     HistoryCalendarIdentity,
     HistoryControlState,

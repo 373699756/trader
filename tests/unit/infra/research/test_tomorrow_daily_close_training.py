@@ -2,8 +2,8 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.application.research.tomorrow_daily_close_training import DailyCloseFeatureRow
-from trader.infra.research.tomorrow_daily_close_training import DeterministicDailyCloseBaseModelTrainer
+from trader.training.evaluation.application.tomorrow_daily_close_training import DailyCloseFeatureRow
+from trader.training.infra.research.tomorrow_daily_close_training import DeterministicDailyCloseBaseModelTrainer
 
 
 def _rows(count: int = 80) -> tuple[DailyCloseFeatureRow, ...]:

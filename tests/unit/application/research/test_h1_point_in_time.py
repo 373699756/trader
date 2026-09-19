@@ -1,10 +1,10 @@
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from trader.application.research.h1_point_in_time import H1PointInTimeDownloadService
-from trader.application.research.historical_screening import HistoricalSecurity
-from trader.domain.research.h1_point_in_time import H1PointInTimeRecord, H1PointInTimeSpec
-from trader.domain.research.historical_screening import HistoricalPriceBar
+from trader.training.evaluation.application.h1_point_in_time import H1PointInTimeDownloadService
+from trader.training.evaluation.application.historical_screening import HistoricalSecurity
+from trader.training.evaluation.domain.h1_point_in_time import H1PointInTimeRecord, H1PointInTimeSpec
+from trader.training.evaluation.domain.historical_screening import HistoricalPriceBar
 
 
 def _records(code: str, strategy: str) -> tuple[H1PointInTimeRecord, ...]:

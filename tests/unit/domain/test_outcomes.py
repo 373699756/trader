@@ -4,8 +4,13 @@ from datetime import datetime, timezone
 
 import pytest
 
-from trader.domain.outcome.evaluation import CanonicalOutcomeEvaluator, OutcomeEvaluationRequest, evaluate_outcome
-from trader.domain.outcome.models import (
+from trader.domain.recommendation.models import Strategy
+from trader.training.evaluation.domain.evaluation import (
+    CanonicalOutcomeEvaluator,
+    OutcomeEvaluationRequest,
+    evaluate_outcome,
+)
+from trader.training.evaluation.domain.models import (
     BenchmarkConstituentReturn,
     BenchmarkReturn,
     OutcomeBar,
@@ -15,7 +20,6 @@ from trader.domain.outcome.models import (
     OutcomeTradingStatus,
     outcome_horizons,
 )
-from trader.domain.recommendation.models import Strategy
 
 
 def _evaluate_outcome(target: OutcomeTarget, bars: tuple[OutcomeBar, ...], **kwargs):

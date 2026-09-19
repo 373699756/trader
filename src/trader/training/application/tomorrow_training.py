@@ -7,7 +7,7 @@ from datetime import date
 from typing import Literal, Protocol
 
 from trader.domain.recommendation.models import Strategy
-from trader.domain.research.baostock_daily import BaoStockTrainingSplit
+from trader.download.domain.baostock_daily import BaoStockTrainingSplit
 
 TomorrowTrainingStage = Literal[
     "resource_preflight",

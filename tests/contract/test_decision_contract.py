@@ -28,4 +28,7 @@ def test_committed_event_is_application_owned_and_research_free() -> None:
     imports = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module is not None}
 
     assert "DecisionCommitted" in classes
-    assert all(not name.startswith(("trader.domain.research", "trader.application.research")) for name in imports)
+    assert all(
+        not name.startswith(("trader.training.evaluation.domain", "trader.training.evaluation.application"))
+        for name in imports
+    )

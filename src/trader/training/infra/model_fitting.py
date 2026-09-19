@@ -8,7 +8,7 @@ from typing import Literal
 import lightgbm as lgb
 import numpy as np
 
-from trader.domain.research.baostock_daily import BaoStockTrainingSplit
+from trader.download.domain.baostock_daily import BaoStockTrainingSplit
 from trader.training.application.tomorrow_training import (
     TOMORROW_TRAINING_COMPUTE_THREADS,
     TomorrowTrainingProgress,

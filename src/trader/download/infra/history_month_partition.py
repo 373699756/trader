@@ -13,8 +13,8 @@ from datetime import date
 from pathlib import Path
 from typing import Literal, cast
 
-from trader.domain.research.history_control import HistorySnapshotPartition
-from trader.domain.research.history_revision import HistoryRevision
+from trader.download.domain.history_control import HistorySnapshotPartition
+from trader.download.domain.history_revision import HistoryRevision
 from trader.download.infra.history_revision_codec import (
     decode_history_revision,
     encode_history_revision,

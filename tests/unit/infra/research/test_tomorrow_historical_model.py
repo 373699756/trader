@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from trader.application.research.tomorrow_historical_screening import TomorrowHistoricalRow
-from trader.domain.research.tomorrow_historical import TOMORROW_HISTORICAL_SPEC
-from trader.infra.research.tomorrow_historical_model import TomorrowHistoricalEnsembleTrainer
+from trader.training.evaluation.application.tomorrow_historical_screening import TomorrowHistoricalRow
+from trader.training.evaluation.domain.tomorrow_historical import TOMORROW_HISTORICAL_SPEC
+from trader.training.infra.research.tomorrow_historical_model import TomorrowHistoricalEnsembleTrainer
 
 
 def _rows(start: date, days: int) -> tuple[TomorrowHistoricalRow, ...]:

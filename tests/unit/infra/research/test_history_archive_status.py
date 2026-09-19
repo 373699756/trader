@@ -4,7 +4,7 @@ from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from trader.domain.research.baostock_daily import (
+from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
     BaoStockCodeBatch,
     BaoStockCodeDownload,

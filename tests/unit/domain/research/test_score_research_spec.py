@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.domain.research.specification import (
+from trader.training.evaluation.domain.specification import (
     ACTIVE_SCORE_RESEARCH_SPEC,
     HISTORICAL_RESEARCH_SPEC,
     PREREGISTERED_RESEARCH_SPEC,

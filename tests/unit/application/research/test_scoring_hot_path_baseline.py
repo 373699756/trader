@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from trader.application.research.scoring_hot_path_baseline import (
+from trader.domain.recommendation.models import Strategy
+from trader.training.evaluation.application.scoring_hot_path_baseline import (
     ScoringHotPathEquivalence,
     ScoringHotPathLatency,
     ScoringInputEpoch,
     build_scoring_hot_path_baseline,
 )
-from trader.domain.recommendation.models import Strategy
 
 
 def _epoch(strategy: Strategy, *, candidates: int = 0, completed: bool = True) -> ScoringInputEpoch:

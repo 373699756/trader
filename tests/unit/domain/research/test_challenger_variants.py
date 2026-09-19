@@ -4,7 +4,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from trader.domain.research.challengers import (
+from trader.training.evaluation.domain.challengers import (
     CHALLENGER_PARAMETER_SET_IDENTITY,
     ContinuousEntryInputs,
     HeatWeakStructureInputs,

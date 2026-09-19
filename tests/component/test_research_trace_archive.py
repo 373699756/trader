@@ -10,7 +10,15 @@ import pytest
 
 from tests.unit.domain.test_decision_identity import decision
 from trader.application.decisions.decision_events import build_decision_committed
-from trader.application.research.research_audit import (
+from trader.infra.persistence import research_trace as research_trace_module
+from trader.infra.persistence.research_trace import (
+    LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
+    ResearchTraceCapacityError,
+    ResearchTraceConflictError,
+    ResearchTraceLimits,
+    SQLiteResearchTraceArchive,
+)
+from trader.training.evaluation.application.research_audit import (
     LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
     CommittedResearchAudit,
     DecisionObservation,
@@ -19,14 +27,6 @@ from trader.application.research.research_audit import (
     ResearchDecisionSetAudit,
     ResearchPopulationAudit,
     point_in_time_population_hash,
-)
-from trader.infra.persistence import research_trace as research_trace_module
-from trader.infra.persistence.research_trace import (
-    LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
-    ResearchTraceCapacityError,
-    ResearchTraceConflictError,
-    ResearchTraceLimits,
-    SQLiteResearchTraceArchive,
 )
 
 

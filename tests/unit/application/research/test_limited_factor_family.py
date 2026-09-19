@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from datetime import date
 
-from trader.application.research.limited_factor_family import LimitedFactorFamilyResearchBuilder
-from trader.domain.research.candidate_recall_ledger import CandidateRecallReport
-from trader.domain.research.limited_factor_family import (
+from trader.training.evaluation.application.limited_factor_family import LimitedFactorFamilyResearchBuilder
+from trader.training.evaluation.domain.candidate_recall_ledger import CandidateRecallReport
+from trader.training.evaluation.domain.limited_factor_family import (
     LimitedFactorCandidate,
     LimitedFactorFamilySpec,
 )
-from trader.domain.research.point_in_time_dataset import PointInTimeDatasetReport
+from trader.training.evaluation.domain.point_in_time_dataset import PointInTimeDatasetReport
 
 HASH = "a" * 64
 

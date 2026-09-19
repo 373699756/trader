@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 
 from tests.unit.application.research.test_cost_aware_selection import _shadow_report
-from trader.application.research.cost_aware_selection import TomorrowCostAwareSelectionEvaluator
-from trader.infra.research.cost_aware_selection_artifacts import (
+from trader.training.evaluation.application.cost_aware_selection import TomorrowCostAwareSelectionEvaluator
+from trader.training.infra.research.cost_aware_selection_artifacts import (
     CostAwareSelectionArtifactArchive,
     CostAwareSelectionArtifactConflictError,
 )

@@ -5,7 +5,7 @@ from datetime import date
 
 import pytest
 
-from trader.domain.research.candidate_recall_ledger import (
+from trader.training.evaluation.domain.candidate_recall_ledger import (
     CANDIDATE_RECALL_STAGES,
     CandidateRecallDayTrace,
     CandidateRecallDownstreamTrace,

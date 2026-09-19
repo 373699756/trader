@@ -17,22 +17,22 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from trader.application.research.h1_point_in_time_completion import (  # noqa: E402
+from trader.training.evaluation.application.h1_point_in_time_completion import (  # noqa: E402
     H1ResearchCompletion,
     complete_h1_research,
 )
-from trader.domain.research.h1_point_in_time import H1CapabilityAuditReport, H1PointInTimeSpec  # noqa: E402
-from trader.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive  # noqa: E402
-from trader.infra.research.h1_point_in_time_capability import (  # noqa: E402
+from trader.training.evaluation.domain.h1_point_in_time import H1CapabilityAuditReport, H1PointInTimeSpec  # noqa: E402
+from trader.training.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive  # noqa: E402
+from trader.training.infra.research.h1_point_in_time_capability import (  # noqa: E402
     FreeSourceH1CapabilityProbe,
     H1CapabilityArtifactArchive,
     PointInTimeSourceSession,
 )
-from trader.infra.research.h1_point_in_time_completion import (  # noqa: E402
-    H1ResearchCompletionArtifactIndex,
+from trader.training.infra.research.h1_point_in_time_completion import (  # noqa: E402
     H1ResearchCompletionArtifactArchive,
+    H1ResearchCompletionArtifactIndex,
 )
-from trader.infra.research.historical_label_artifacts import HistoricalLabelArtifactArchive  # noqa: E402
+from trader.training.infra.research.historical_label_artifacts import HistoricalLabelArtifactArchive  # noqa: E402
 
 
 class _SessionFactory(Protocol):

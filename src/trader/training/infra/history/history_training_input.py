@@ -8,16 +8,16 @@ from datetime import date
 from pathlib import Path
 from typing import Literal
 
-from trader.domain.research.baostock_daily import (
+from trader.download.domain.baostock_daily import (
     BAOSTOCK_RESEARCH_IDENTITY,
     BaoStockCalendar,
     BaoStockSecurity,
 )
-from trader.domain.research.history_control import (
+from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
     HistorySecurityIdentity,
 )
-from trader.domain.research.history_revision import HistoryTrainingWindow
+from trader.download.domain.history_revision import HistoryTrainingWindow
 from trader.download.infra.history_archive_reader import (
     HistoryArchiveReadError,
     SQLiteHistoryArchiveReader,

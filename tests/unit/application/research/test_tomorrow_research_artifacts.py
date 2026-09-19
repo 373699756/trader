@@ -6,7 +6,7 @@ from datetime import date
 
 import pytest
 
-from trader.application.research.tomorrow_research_artifacts import (
+from trader.training.evaluation.application.tomorrow_research_artifacts import (
     TomorrowResearchArtifactGraph,
     TomorrowResearchArtifactRef,
     TomorrowResearchEvidencePartitionRef,

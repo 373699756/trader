@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from trader.application.research.cross_strategy_conclusion import CrossStrategyConclusionService
-from trader.application.research.d25_terminal_holdout import D25TerminalHoldoutService, D25TerminalRow
-from trader.application.research.today_terminal_holdout import TodayTerminalHoldoutService, TodayTerminalRow
-from trader.application.research.tomorrow_point_in_time_holdout import (
+from trader.training.evaluation.application.cross_strategy_conclusion import CrossStrategyConclusionService
+from trader.training.evaluation.application.d25_terminal_holdout import D25TerminalHoldoutService, D25TerminalRow
+from trader.training.evaluation.application.today_terminal_holdout import TodayTerminalHoldoutService, TodayTerminalRow
+from trader.training.evaluation.application.tomorrow_point_in_time_holdout import (
     TomorrowPointInTimeHoldoutService,
     TomorrowPointInTimeRow,
 )

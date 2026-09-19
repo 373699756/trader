@@ -4,7 +4,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.application.research.tomorrow_joint import (
+from trader.training.evaluation.application.tomorrow_joint import (
     TomorrowJointProfileBatch,
     TomorrowJointSourceRow,
     align_tomorrow_joint_batches,

@@ -2,12 +2,12 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.domain.research.filter_recall_ablation import (
+from trader.training.evaluation.domain.filter_recall_ablation import (
     FilterAblationRow,
     FilterScoreComponent,
     run_filter_recall_ablation,
 )
-from trader.domain.research.preregistered_rule_candidate import (
+from trader.training.evaluation.domain.preregistered_rule_candidate import (
     PreregisteredRuleCandidate,
     evaluate_rule_candidate,
     preregister_rule_candidates,

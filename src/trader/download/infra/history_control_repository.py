@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Literal, Protocol, cast
 from zoneinfo import ZoneInfo
 
-from trader.domain.research.history_control import (
+from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
     HistoryAutomationControlState,
     HistoryCalendarIdentity,

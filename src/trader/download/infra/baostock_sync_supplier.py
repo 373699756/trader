@@ -13,7 +13,7 @@ from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from typing import Literal, cast
 
-from trader.domain.research.baostock_daily import (
+from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
     BaoStockCodeDownload,
     BaoStockDailySpec,

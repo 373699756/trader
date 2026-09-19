@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from trader.domain.research.historical import (
+from trader.training.evaluation.domain.historical import (
     ScoreComponent,
     coverage_shrunk_score,
     optimistic_component_upper_bound,

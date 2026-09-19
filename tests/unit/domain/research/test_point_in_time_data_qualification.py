@@ -1,6 +1,6 @@
 from datetime import date
 
-from trader.domain.research.point_in_time_data_qualification import (
+from trader.training.evaluation.domain.point_in_time_data_qualification import (
     DailyArchiveQualification,
     HistoricalIndustryQualification,
     HistoricalMinuteQualification,

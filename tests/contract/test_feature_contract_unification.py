@@ -8,11 +8,11 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_training_online_codec_replay_and_shadow_use_the_catalog_owner() -> None:
     consumers = (
         "src/trader/application/recommendation/production_model_scoring.py",
-        "src/trader/application/research/tomorrow_daily_close_h1.py",
-        "src/trader/application/research/tomorrow_historical_screening.py",
-        "src/trader/application/research/tomorrow_historical_validation.py",
-        "src/trader/application/research/tomorrow_profile_holdout.py",
-        "src/trader/domain/research/tomorrow_features.py",
+        "src/trader/training/evaluation/application/tomorrow_daily_close_h1.py",
+        "src/trader/training/evaluation/application/tomorrow_historical_screening.py",
+        "src/trader/training/evaluation/application/tomorrow_historical_validation.py",
+        "src/trader/training/evaluation/application/tomorrow_profile_holdout.py",
+        "src/trader/training/evaluation/domain/tomorrow_features.py",
         "src/trader/training/domain/tomorrow_training_input.py",
         "src/trader/infra/market_data/normalization/features.py",
         "src/trader/infra/scoring/profiles/v1/artifact_builder.py",
@@ -35,10 +35,10 @@ def test_training_online_codec_replay_and_shadow_use_the_catalog_owner() -> None
 def test_v3_feature_identifiers_are_declared_only_by_the_catalog() -> None:
     consumers = (
         "src/trader/application/recommendation/production_model_scoring.py",
-        "src/trader/application/research/tomorrow_daily_close_h1.py",
-        "src/trader/application/research/tomorrow_historical_screening.py",
-        "src/trader/application/research/tomorrow_historical_validation.py",
-        "src/trader/application/research/tomorrow_profile_holdout.py",
+        "src/trader/training/evaluation/application/tomorrow_daily_close_h1.py",
+        "src/trader/training/evaluation/application/tomorrow_historical_screening.py",
+        "src/trader/training/evaluation/application/tomorrow_historical_validation.py",
+        "src/trader/training/evaluation/application/tomorrow_profile_holdout.py",
         "src/trader/training/domain/tomorrow_training_input.py",
         "src/trader/infra/scoring/profiles/v1/artifact_builder.py",
         "src/trader/infra/scoring/profiles/v1/artifact_codec.py",
@@ -53,9 +53,9 @@ def test_v3_feature_identifiers_are_declared_only_by_the_catalog() -> None:
 def test_online_and_historical_cost_ranks_share_the_average_rank_owner() -> None:
     consumers = (
         "src/trader/application/recommendation/production_model_scoring.py",
-        "src/trader/application/research/tomorrow_historical_screening.py",
-        "src/trader/application/research/tomorrow_historical_validation.py",
-        "src/trader/application/research/tomorrow_profile_holdout.py",
+        "src/trader/training/evaluation/application/tomorrow_historical_screening.py",
+        "src/trader/training/evaluation/application/tomorrow_historical_validation.py",
+        "src/trader/training/evaluation/application/tomorrow_profile_holdout.py",
     )
 
     for relative in consumers:

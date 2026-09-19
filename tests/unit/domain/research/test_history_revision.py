@@ -5,8 +5,8 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.domain.research.baostock_daily import BaoStockDailyCell, BaoStockDailySide
-from trader.domain.research.history_revision import (
+from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
+from trader.download.domain.history_revision import (
     HistoryRevision,
     HistoryTrainingPoint,
     HistoryTrainingWindow,

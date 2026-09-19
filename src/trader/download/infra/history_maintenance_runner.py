@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
-from trader.domain.research.history_control import HistoryReminderClaim, HistoryReminderState
 from trader.download.domain.history_automation import (
     HistoryAutomationRunStatus,
     HistoryAutomationStatus,
@@ -22,6 +21,7 @@ from trader.download.domain.history_automation import (
     HistoryNotificationResult,
     HistoryNotificationState,
 )
+from trader.download.domain.history_control import HistoryReminderClaim, HistoryReminderState
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import (
     HistorySyncConfiguration,

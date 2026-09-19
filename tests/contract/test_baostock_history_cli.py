@@ -114,7 +114,7 @@ def test_download_contract_exposes_an_immutable_typed_status() -> None:
 
 
 def test_train_tomorrow_uses_the_project_data_roots() -> None:
-    from trader.entrypoints.research_commands import _history_data_root, _train_data_root
+    from trader.training.entrypoints.commands import _history_data_root, _train_data_root
 
     root = Path(__file__).resolve().parents[2]
 

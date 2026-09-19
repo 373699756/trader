@@ -6,9 +6,9 @@ import pytest
 
 from tests.unit.application.research.test_historical_extraction import _Evaluator, _Port
 from tests.unit.application.research.test_historical_replay import _ReplayEvaluator
-from trader.application.research.extraction import HistoricalExtractor
-from trader.application.research.replay import HistoricalBaselineReplayer
-from trader.infra.research.baseline_reports import BaselineReportConflictError, JsonBaselineReportArchive
+from trader.training.evaluation.application.extraction import HistoricalExtractor
+from trader.training.evaluation.application.replay import HistoricalBaselineReplayer
+from trader.training.infra.research.baseline_reports import BaselineReportConflictError, JsonBaselineReportArchive
 
 
 def test_r3_report_is_immutable_verifiable_and_idempotent(tmp_path) -> None:

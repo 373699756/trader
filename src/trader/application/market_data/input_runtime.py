@@ -47,7 +47,7 @@ from trader.application.recommendation.local_scoring import (
 from trader.application.recommendation.policy import RecommendationPolicy
 from trader.application.recommendation.scored_projection import ScoredLocalProjection
 from trader.application.recommendation.scored_quality import has_transient_candidate_gap
-from trader.application.research.research_audit import (
+from trader.training.evaluation.application.research_audit import (
     CommittedResearchAudit,
     try_build_committed_research_audit,
 )

@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.domain.research.tomorrow_features import (
+from trader.training.evaluation.domain.tomorrow_features import (
     DailyFeaturePoint,
     IntradayFeaturePoint,
     PointInTimePublishedFact,

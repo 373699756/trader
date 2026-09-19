@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 
 from tests.unit.application.research.test_shadow_model_evaluation import _labeled_day, _RecordingTrainer
-from trader.application.research.cost_aware_selection import TomorrowCostAwareSelectionEvaluator
-from trader.application.research.shadow_model_evaluation import TomorrowShadowModelEvaluator
+from trader.training.evaluation.application.cost_aware_selection import TomorrowCostAwareSelectionEvaluator
+from trader.training.evaluation.application.shadow_model_evaluation import TomorrowShadowModelEvaluator
 
 
 def test_cost_aware_report_covers_every_shadow_prediction_and_model_family() -> None:

@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 
 from scripts import convert_baostock_history as converter
-from trader.domain.research.baostock_daily import BaoStockDailyCell, BaoStockDailySide
-from trader.domain.research.history_revision import HistoryRevision
+from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
+from trader.download.domain.history_revision import HistoryRevision
 from trader.download.infra.baostock_gap_supplier import (
     BaoStockGapRecord,
     BaoStockGapResult,

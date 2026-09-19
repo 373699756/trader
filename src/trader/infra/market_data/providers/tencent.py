@@ -18,7 +18,7 @@ from trader.application.runtime.workers import (
     submit_or_run_inline,
 )
 from trader.domain.market.models import MarketQuote
-from trader.domain.outcome.models import OutcomeBar
+from trader.training.evaluation.domain.models import OutcomeBar
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.history.outcome_history import pair_outcome_history
 from trader.infra.market_data.normalization.normalize import (

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from trader.application.research.baseline_identity_audit import BaselineIdentityAuditService
-from trader.domain.research.baseline_identity import BaselineIdentityClaim, source_hash
+from trader.training.evaluation.application.baseline_identity_audit import BaselineIdentityAuditService
+from trader.training.evaluation.domain.baseline_identity import BaselineIdentityClaim, source_hash
 
 
 @dataclass(frozen=True)

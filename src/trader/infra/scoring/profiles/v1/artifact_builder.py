@@ -10,10 +10,10 @@ from typing import cast
 
 import numpy as np
 
-from trader.application.research.historical_screening import HistoricalScreeningArchiveManifest
-from trader.application.research.tomorrow_historical_screening import TomorrowHistoricalRow
+from trader.training.evaluation.application.historical_screening import HistoricalScreeningArchiveManifest
+from trader.training.evaluation.application.tomorrow_historical_screening import TomorrowHistoricalRow
 from trader.domain.market.feature_contracts import TOMORROW_RESIDUAL_MOMENTUM_FEATURE_MANIFEST
-from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalScreeningSpec
+from trader.training.evaluation.domain.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalScreeningSpec
 from trader.infra.artifacts.canonical import content_hash
 
 V1_MODEL_ID = "v1_manual_residual_momentum_v1"

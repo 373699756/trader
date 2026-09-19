@@ -5,8 +5,8 @@ import threading
 from tests.unit.domain.test_decision_identity import decision
 from trader.application.decisions.decision_events import build_decision_committed
 from trader.application.decisions.decision_observers import AsyncDecisionObserver
-from trader.application.research.research_audit import DecisionObservation
 from trader.application.runtime.shutdown import ShutdownDeadline
+from trader.training.evaluation.application.research_audit import DecisionObservation
 
 
 def test_observer_is_bounded_non_blocking_and_isolates_consumer_failure() -> None:

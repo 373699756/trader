@@ -1,0 +1,264 @@
+"""Immutable Polars partitions and reproducible manifests for Historical extraction."""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import tempfile
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
+
+import polars as pl
+
+from trader.infra.artifacts.canonical import canonical_json_text, canonical_value, content_hash, file_sha256
+from trader.infra.artifacts.sealing import publish_immutable
+from trader.training.evaluation.application.historical_extraction_models import (
+    HistoricalExtractedDay,
+    HistoricalExtraction,
+)
+
+_SCHEMA_VERSION = "historical_partition"
+_MANIFEST_NAME = "manifest.json"
+
+
+class HistoricalPartitionConflictError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class HistoricalPartitionFile:
+    path: str
+    size: int
+    sha256: str
+
+
+@dataclass(frozen=True)
+class HistoricalPartitionManifest:
+    trade_date: date
+    day_hash: str
+    files: tuple[HistoricalPartitionFile, ...]
+    content_hash: str
+    schema_version: str = _SCHEMA_VERSION
+
+
+class PolarsHistoricalPartitionArchive:
+    """Write each date once; verified identical replays are idempotent."""
+
+    def __init__(self, root: Path) -> None:
+        self._root = root
+
+    def write_extraction(self, extraction: HistoricalExtraction) -> tuple[HistoricalPartitionManifest, ...]:
+        self._root.mkdir(parents=True, exist_ok=True)
+        top_manifest_path = self._root / "extraction-manifest.json"
+        if top_manifest_path.exists():
+            existing = self.verify_extraction()
+            if existing.get("extraction_hash") != extraction.content_hash:
+                raise HistoricalPartitionConflictError("Historical extraction top manifest identity conflict")
+        manifests = tuple(self.write_day(day) for day in extraction.days)
+        top_payload: dict[str, object] = {
+            "schema_version": _SCHEMA_VERSION,
+            "extraction_schema_version": extraction.schema_version,
+            "extraction_hash": extraction.content_hash,
+            "research_identity": extraction.research_identity,
+            "research_spec_hash": extraction.research_spec_hash,
+            "status": extraction.status,
+            "coverage": [canonical_value(item) for item in extraction.coverage],
+            "days": [
+                {
+                    "trade_date": manifest.trade_date.isoformat(),
+                    "day_hash": manifest.day_hash,
+                    "manifest_hash": manifest.content_hash,
+                }
+                for manifest in manifests
+            ],
+        }
+        top_payload["content_hash"] = content_hash(top_payload)
+        _write_immutable_json(top_manifest_path, top_payload)
+        return manifests
+
+    def verify_extraction(self) -> dict[str, object]:
+        path = self._root / "extraction-manifest.json"
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise HistoricalPartitionConflictError("Historical extraction top manifest is invalid") from exc
+        if not isinstance(raw, dict) or raw.get("schema_version") != _SCHEMA_VERSION:
+            raise HistoricalPartitionConflictError("Historical extraction top manifest schema mismatch")
+        declared_hash = raw.get("content_hash")
+        identity = {key: value for key, value in raw.items() if key != "content_hash"}
+        if not isinstance(declared_hash, str) or content_hash(identity) != declared_hash:
+            raise HistoricalPartitionConflictError("Historical extraction top manifest hash mismatch")
+        days = raw.get("days")
+        if not isinstance(days, list):
+            raise HistoricalPartitionConflictError("Historical extraction top manifest days are invalid")
+        for item in days:
+            if not isinstance(item, dict):
+                raise HistoricalPartitionConflictError("Historical extraction top manifest day identity is invalid")
+            trade_date = date.fromisoformat(str(item.get("trade_date")))
+            manifest = self.verify_day(trade_date)
+            if manifest.day_hash != item.get("day_hash") or manifest.content_hash != item.get("manifest_hash"):
+                raise HistoricalPartitionConflictError("Historical extraction top manifest day mismatch")
+        return {str(key): value for key, value in raw.items()}
+
+    def write_day(self, day: HistoricalExtractedDay) -> HistoricalPartitionManifest:
+        target = self._root / day.summary.trade_date.isoformat()
+        if target.exists():
+            existing = self.verify_day(day.summary.trade_date)
+            if existing.day_hash != day.content_hash:
+                raise HistoricalPartitionConflictError("Historical extraction day partition identity conflict")
+            return existing
+        self._root.mkdir(parents=True, exist_ok=True)
+        temporary = Path(tempfile.mkdtemp(prefix=f".{target.name}-", dir=self._root))
+        try:
+            self._write_tables(temporary, day)
+            manifest = _build_manifest(temporary, day)
+            _write_json(temporary / _MANIFEST_NAME, _manifest_payload(manifest))
+            try:
+                os.replace(temporary, target)
+            except OSError:
+                if not target.exists():
+                    raise
+                existing = self.verify_day(day.summary.trade_date)
+                if existing.day_hash != day.content_hash:
+                    raise HistoricalPartitionConflictError(
+                        "Historical extraction day partition identity conflict"
+                    ) from None
+                return existing
+            return self.verify_day(day.summary.trade_date)
+        finally:
+            if temporary.exists():
+                shutil.rmtree(temporary)
+
+    def verify_day(self, trade_date: date) -> HistoricalPartitionManifest:
+        directory = self._root / trade_date.isoformat()
+        try:
+            raw = json.loads((directory / _MANIFEST_NAME).read_text(encoding="utf-8"))
+            manifest = _manifest_from_payload(raw)
+        except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise HistoricalPartitionConflictError("Historical extraction partition manifest is invalid") from exc
+        if (
+            manifest.trade_date != trade_date
+            or content_hash(_manifest_identity_payload(manifest)) != manifest.content_hash
+        ):
+            raise HistoricalPartitionConflictError("Historical extraction partition manifest identity mismatch")
+        for item in manifest.files:
+            path = directory / item.path
+            if not path.is_file() or path.stat().st_size != item.size or file_sha256(path) != item.sha256:
+                raise HistoricalPartitionConflictError("Historical extraction partition file verification failed")
+        return manifest
+
+    @staticmethod
+    def _write_tables(directory: Path, day: HistoricalExtractedDay) -> None:
+        tables = {
+            "day_identity.parquet": (_day_identity(day),),
+            "board_coverage.parquet": day.summary.board_coverages,
+            "hard_filter_aggregates.parquet": day.summary.hard_filter_aggregates,
+            "candidates.parquet": day.summary.candidates,
+            "full_candidates.parquet": day.full_fields.candidates,
+            "evaluated_candidates.parquet": day.evaluated,
+            "daily_bars.parquet": day.full_fields.daily_bars,
+            "minute_bars.parquet": day.full_fields.minute_bars,
+            "adjustment_windows.parquet": day.full_fields.adjustment_windows,
+            "settlements.parquet": day.full_fields.settlements,
+            "proofs.parquet": day.proofs,
+        }
+        for name, records in tables.items():
+            rows = [{"payload": canonical_json_text(record)} for record in records]
+            pl.DataFrame(rows, schema={"payload": pl.String}).write_parquet(
+                directory / name,
+                compression="zstd",
+                statistics=True,
+            )
+
+
+def _build_manifest(directory: Path, day: HistoricalExtractedDay) -> HistoricalPartitionManifest:
+    files = tuple(
+        HistoricalPartitionFile(path.name, path.stat().st_size, file_sha256(path))
+        for path in sorted(directory.glob("*.parquet"), key=lambda value: value.name)
+    )
+    identity: dict[str, object] = {
+        "schema_version": _SCHEMA_VERSION,
+        "trade_date": day.summary.trade_date.isoformat(),
+        "day_hash": day.content_hash,
+        "files": [canonical_value(item) for item in files],
+    }
+    return HistoricalPartitionManifest(day.summary.trade_date, day.content_hash, files, content_hash(identity))
+
+
+def _day_identity(day: HistoricalExtractedDay) -> dict[str, object]:
+    summary = day.summary
+    return {
+        "trade_date": summary.trade_date,
+        "observed_at": summary.observed_at,
+        "daily_feature_pack_version": summary.daily_feature_pack_version,
+        "market_epoch_version": summary.market_epoch_version,
+        "candidate_quote_epoch_version": summary.candidate_quote_epoch_version,
+        "research_epoch_version": summary.research_epoch_version,
+        "input_hash": summary.input_hash,
+        "config_version": summary.config_version,
+        "calendar_version": summary.calendar_version,
+        "rule_versions": summary.rule_versions,
+        "source_versions": summary.source_versions,
+        "day_hash": day.content_hash,
+    }
+
+
+def _manifest_payload(manifest: HistoricalPartitionManifest) -> dict[str, object]:
+    return {**_manifest_identity_payload(manifest), "content_hash": manifest.content_hash}
+
+
+def _manifest_identity_payload(manifest: HistoricalPartitionManifest) -> dict[str, object]:
+    return {
+        "schema_version": manifest.schema_version,
+        "trade_date": manifest.trade_date.isoformat(),
+        "day_hash": manifest.day_hash,
+        "files": [canonical_value(item) for item in manifest.files],
+    }
+
+
+def _manifest_from_payload(raw: object) -> HistoricalPartitionManifest:
+    if not isinstance(raw, dict) or raw.get("schema_version") != _SCHEMA_VERSION:
+        raise ValueError("Historical extraction partition schema mismatch")
+    files_raw = raw["files"]
+    if not isinstance(files_raw, list):
+        raise TypeError("Historical extraction partition files must be a list")
+    files = tuple(
+        HistoricalPartitionFile(str(item["path"]), int(item["size"]), str(item["sha256"]))
+        for item in files_raw
+        if isinstance(item, dict)
+    )
+    if len(files) != len(files_raw) or tuple(item.path for item in files) != tuple(sorted(item.path for item in files)):
+        raise ValueError("Historical extraction partition files are invalid")
+    if any(Path(item.path).name != item.path or item.size < 0 or len(item.sha256) != 64 for item in files):
+        raise ValueError("Historical extraction partition file identity is invalid")
+    return HistoricalPartitionManifest(
+        date.fromisoformat(str(raw["trade_date"])),
+        str(raw["day_hash"]),
+        files,
+        str(raw["content_hash"]),
+    )
+
+
+def _write_immutable_json(path: Path, payload: Mapping[str, object]) -> None:
+    if publish_immutable(path, canonical_json_text(payload)):
+        return
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HistoricalPartitionConflictError("Historical extraction top manifest is invalid") from exc
+    if existing != payload:
+        raise HistoricalPartitionConflictError("Historical extraction top manifest identity conflict")
+
+
+def _write_json(path: Path, payload: Mapping[str, object]) -> None:
+    path.write_text(canonical_json_text(payload), encoding="utf-8")
+
+
+__all__ = [
+    "HistoricalPartitionConflictError",
+    "HistoricalPartitionManifest",
+    "PolarsHistoricalPartitionArchive",
+]

@@ -52,7 +52,7 @@ def test_training_application_package_is_profile_owned_and_infrastructure_free()
 
 
 def test_entrypoints_route_download_and_training_through_application_use_cases() -> None:
-    commands = (ROOT / "src" / "trader" / "entrypoints" / "research_commands.py").read_text(encoding="utf-8")
+    commands = (ROOT / "src" / "trader" / "training" / "entrypoints" / "commands.py").read_text(encoding="utf-8")
     download_commands = (ROOT / "src" / "trader" / "download" / "entrypoints" / "commands.py").read_text(
         encoding="utf-8"
     )

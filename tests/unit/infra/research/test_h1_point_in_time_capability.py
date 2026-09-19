@@ -3,7 +3,7 @@ from datetime import date
 import pytest
 import requests
 
-from trader.infra.research.h1_point_in_time_capability import (
+from trader.training.infra.research.h1_point_in_time_capability import (
     FreeSourceH1CapabilityProbe,
     H1CapabilityArtifactArchive,
     H1CapabilityArtifactConflictError,

@@ -4,12 +4,12 @@ from dataclasses import replace
 
 import pytest
 
-from trader.application.research.tomorrow_historical_report import (
+from trader.training.evaluation.application.tomorrow_historical_report import (
     TomorrowHistoricalGateMetrics,
     TomorrowHistoricalReport,
 )
-from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC
-from trader.domain.research.tomorrow_historical import (
+from trader.training.evaluation.domain.historical_screening import HISTORICAL_SCREENING_SPEC
+from trader.training.evaluation.domain.tomorrow_historical import (
     TOMORROW_HISTORICAL_CANDIDATE_ID,
     TOMORROW_HISTORICAL_SPEC,
 )

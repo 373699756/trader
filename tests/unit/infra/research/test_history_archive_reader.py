@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from trader.domain.research.baostock_daily import BaoStockDailyCell, BaoStockDailySide
-from trader.domain.research.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
-from trader.domain.research.history_revision import HistoryRevision
+from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
+from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
+from trader.download.domain.history_revision import HistoryRevision
 from trader.download.infra.history_archive_reader import (
     HistoryArchiveReadError,
     HistoryPartitionRevisionComparison,

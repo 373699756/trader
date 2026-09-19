@@ -20,7 +20,7 @@ from trader.application.decisions.decision_queries import UnifiedDecisionQueries
 from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
 from trader.application.long_runtime import LongRuntime, LongRuntimeDependencies
 from trader.application.market_data.input_runtime import DecisionBuildDependencies, MarketDataAdapter
-from trader.application.outcomes.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
+from trader.training.evaluation.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
 from trader.application.recommendation.candidate_filtering import CandidateFilteringService
 from trader.application.recommendation.local_scoring import LocalScoringService
 from trader.application.recommendation.model_scoring import PublishedModelScoringService
@@ -37,7 +37,7 @@ from trader.application.recommendation.scored_freezing import (
     ScoredFreezeCoordinator,
 )
 from trader.application.recommendation.today_freezing import TodayFreezeCoordinator
-from trader.application.research.research_runtime import ResearchRuntime
+from trader.training.evaluation.application.research_runtime import ResearchRuntime
 from trader.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.application.runtime.latency import LatencyWaterfall
 from trader.application.runtime.resource_orchestration import (

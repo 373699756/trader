@@ -17,18 +17,18 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from trader.application.research.point_in_time_data_qualification import (  # noqa: E402
+from trader.download.infra.history_archive_status import inspect_history_archive  # noqa: E402
+from trader.training.evaluation.application.point_in_time_data_qualification import (  # noqa: E402
     assemble_point_in_time_data_qualification,
 )
-from trader.domain.research.point_in_time_data_qualification import (  # noqa: E402
+from trader.training.evaluation.domain.point_in_time_data_qualification import (  # noqa: E402
     PointInTimeDataQualificationReport,
 )
-from trader.download.infra.history_archive_status import inspect_history_archive  # noqa: E402
-from trader.infra.research.h1_point_in_time_capability import (  # noqa: E402
+from trader.training.infra.research.h1_point_in_time_capability import (  # noqa: E402
     FreeSourceH1CapabilityProbe,
     PointInTimeSourceSession,
 )
-from trader.infra.research.historical_industry_archive import (  # noqa: E402
+from trader.training.infra.research.historical_industry_archive import (  # noqa: E402
     audit_archived_historical_industry_facts,
 )
 

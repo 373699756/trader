@@ -50,8 +50,8 @@ from tests.component.market_data_test_support import (
     timezone,
 )
 from trader.application.ports.data_plane import DataPlaneConflictError
-from trader.domain.outcome.models import OutcomeBar, OutcomePrice, OutcomeTradingStatus
 from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
+from trader.training.evaluation.domain.models import OutcomeBar, OutcomePrice, OutcomeTradingStatus
 
 
 def test_history_cache_fetches_sixty_one_bars_but_retains_only_twenty_raw_rows() -> None:

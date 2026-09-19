@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol
 
-from trader.domain.outcome.models import OutcomeBar
+from trader.training.evaluation.domain.models import OutcomeBar
 from trader.infra.market_data.history.history import DailyBar
 
 

@@ -12,16 +12,16 @@ from types import SimpleNamespace
 import pytest
 
 import trader.entrypoints.cli as cli_module
-import trader.entrypoints.research_commands as research_commands
 import trader.entrypoints.server as server_module
-from trader.application.research.tomorrow_research_orchestrator import TomorrowResearchPrerequisiteStatus
+import trader.training.entrypoints.commands as research_commands
 from trader.domain.recommendation.models import Strategy
 from trader.entrypoints.cli import build_parser, main
 from trader.entrypoints.server import build_parser as build_server_parser
 from trader.infra.process_lock import ProcessLockError
-from trader.infra.research.h1_point_in_time_archive import H1PointInTimeArchiveConflictError
-from trader.infra.research.tomorrow_research_artifacts import TomorrowResearchArtifactRepositoryError
 from trader.infra.settings import load_runtime_settings
+from trader.training.evaluation.application.tomorrow_research_orchestrator import TomorrowResearchPrerequisiteStatus
+from trader.training.infra.research.h1_point_in_time_archive import H1PointInTimeArchiveConflictError
+from trader.training.infra.research.tomorrow_research_artifacts import TomorrowResearchArtifactRepositoryError
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -30,7 +30,7 @@ def _research_modules_loaded_by(module_name: str) -> set[str]:
     probe = (
         "import importlib,json,sys;"
         f"importlib.import_module({module_name!r});"
-        "roots=('trader.application.research','trader.domain.research','trader.infra.research');"
+        "roots=('trader.training.evaluation.application','trader.training.evaluation.domain','trader.training.infra.research');"
         "print(json.dumps(sorted(name for name in sys.modules if name.startswith(roots))))"
     )
     completed = subprocess.run(
@@ -81,10 +81,15 @@ def test_cli_module_does_not_eagerly_load_research_implementations() -> None:
 
 def test_server_module_loads_only_authorized_background_research_consumers() -> None:
     allowed = {
-        "trader.application.research",
-        "trader.application.research.research_audit",
-        "trader.application.research.research_coordination",
-        "trader.application.research.research_runtime",
+        "trader.training.evaluation.application",
+        "trader.training.evaluation.application.research_audit",
+        "trader.training.evaluation.application.research_coordination",
+        "trader.training.evaluation.application.research_runtime",
+        "trader.training.evaluation.application.outcome_ports",
+        "trader.training.evaluation.application.outcome_settlement",
+        "trader.training.evaluation.domain",
+        "trader.training.evaluation.domain.evaluation",
+        "trader.training.evaluation.domain.models",
     }
 
     assert _research_modules_loaded_by("trader.entrypoints.server") <= allowed

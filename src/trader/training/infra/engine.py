@@ -19,8 +19,8 @@ from lightgbm.basic import LightGBMError
 
 from trader.domain.recommendation.model_scoring import TRAINED_HEAD_EXPOSURE_CONTRACT
 from trader.domain.recommendation.models import Strategy
-from trader.domain.research.baostock_daily import BaoStockTrainingSplit, build_baostock_training_split
-from trader.domain.research.history_control import (
+from trader.download.domain.baostock_daily import BaoStockTrainingSplit, build_baostock_training_split
+from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
     HistoryTrainingDueReason,
     HistoryTrainingDueState,

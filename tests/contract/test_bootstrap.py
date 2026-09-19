@@ -17,7 +17,6 @@ from trader.application.ports.runtime_status import (
     SupplySummary,
 )
 from trader.application.ports.scheduler import ResearchRuntimeStatus
-from trader.application.research.research_runtime import ResearchRuntime
 from trader.application.runtime.cadence import (
     CadencePlannerStatus,
     SchedulePointKey,
@@ -40,6 +39,7 @@ from trader.domain.recommendation.pipeline import (
     RecommendationPipelineStatus,
 )
 from trader.infra.persistence.data_plane import DataPlaneRepository
+from trader.training.evaluation.application.research_runtime import ResearchRuntime
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 

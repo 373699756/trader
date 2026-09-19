@@ -1,15 +1,19 @@
 from datetime import date, timedelta
 
-from trader.application.research.h1_point_in_time_completion import complete_h1_research
-from trader.application.research.historical_candidate_confirmation import (
+from trader.training.evaluation.application.h1_point_in_time_completion import complete_h1_research
+from trader.training.evaluation.application.historical_candidate_confirmation import (
     HistoricalStrategyResearchRequest,
     execute_historical_confirmation_batch,
     execute_historical_strategy_research,
     seal_historical_confirmation_terminal_batch,
 )
-from trader.domain.research.filter_recall_ablation import FilterAblationRow
-from trader.domain.research.h1_point_in_time import H1CapabilityProbe, H1PointInTimeSpec, build_h1_capability_audit
-from trader.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive
+from trader.training.evaluation.domain.filter_recall_ablation import FilterAblationRow
+from trader.training.evaluation.domain.h1_point_in_time import (
+    H1CapabilityProbe,
+    H1PointInTimeSpec,
+    build_h1_capability_audit,
+)
+from trader.training.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive
 
 
 def _h1_research_completion(tmp_path):

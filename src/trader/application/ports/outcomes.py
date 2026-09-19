@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol
 
-from trader.domain.outcome.models import BenchmarkReturn, OutcomeTarget, RecommendationOutcome
+from trader.training.evaluation.domain.models import BenchmarkReturn, OutcomeTarget, RecommendationOutcome
 
 
 class OutcomeTargetReaderPort(Protocol):

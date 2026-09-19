@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from trader.domain.research.cost_aware_selection import COST_AWARE_UTILITY_FIELDS
+from trader.training.evaluation.domain.cost_aware_selection import COST_AWARE_UTILITY_FIELDS
 
 ROOT = Path(__file__).resolve().parents[2]
 

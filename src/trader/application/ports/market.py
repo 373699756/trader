@@ -13,7 +13,7 @@ from typing import Protocol
 from trader.application.ports.json_values import JsonObject
 from trader.domain.market.epochs import CandidateQuoteEpoch, DailyFeaturePack, MarketEpoch, ResearchEpoch
 from trader.domain.market.models import FeatureSnapshot, LiveQuote
-from trader.domain.outcome.models import OutcomeBar
+from trader.training.evaluation.domain.models import OutcomeBar
 
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"
 _FAILURE_REASON = re.compile(r"^[a-z0-9_]{1,64}$")

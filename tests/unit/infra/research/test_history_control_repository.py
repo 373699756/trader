@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 import trader.download.infra.history_control_repository as control_repository_module
-from trader.domain.research.history_control import (
+from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
     HistoryCalendarIdentity,
     HistoryControlState,

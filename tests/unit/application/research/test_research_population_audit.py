@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.application.research.research_audit import (
+from trader.training.evaluation.application.research_audit import (
     LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
     CommittedResearchAudit,
     ResearchDecisionSetAudit,

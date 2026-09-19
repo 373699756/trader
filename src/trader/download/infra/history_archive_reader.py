@@ -10,9 +10,9 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from trader.domain.research.baostock_daily import BAOSTOCK_MAX_SESSIONS
-from trader.domain.research.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
-from trader.domain.research.history_revision import (
+from trader.download.domain.baostock_daily import BAOSTOCK_MAX_SESSIONS
+from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
+from trader.download.domain.history_revision import (
     HISTORY_TRAINING_WINDOW_SESSIONS,
     MAX_HISTORY_TRAINING_WINDOW_SESSIONS,
     HistoryRevision,

@@ -12,7 +12,7 @@ from typing import Literal, cast
 
 import numpy as np
 
-from trader.domain.research.baostock_daily import BaoStockTrainingSplit
+from trader.download.domain.baostock_daily import BaoStockTrainingSplit
 from trader.training.infra.artifacts.contracts import TrainedHeadContract
 
 TrainingSplitName = Literal["training", "early_stopping", "calibration", "validation"]

@@ -13,15 +13,11 @@ TARGET_PACKAGES = (
     "domain/recommendation/scoring",
     "domain/recommendation/risk_fusion",
     "domain/recommendation/selection",
-    "domain/research",
     "domain/review",
-    "domain/outcome",
     "application/runtime",
     "application/market_data",
     "application/recommendation",
     "application/decisions",
-    "application/research",
-    "application/outcomes",
     "infra/settings",
     "infra/market_data/providers",
     "infra/market_data/normalization",
@@ -30,14 +26,16 @@ TARGET_PACKAGES = (
     "infra/market_data/service",
     "infra/deepseek",
     "infra/persistence",
-    "infra/research",
     "download/domain",
     "download/application",
     "download/infra",
     "download/entrypoints",
     "training/application",
     "training/domain",
+    "training/evaluation/domain",
+    "training/evaluation/application",
     "training/infra",
+    "training/infra/research",
     "training/entrypoints",
     "web/api",
 )
@@ -365,9 +363,9 @@ def test_web_api_and_presentation_resources_are_partitioned() -> None:
 
 
 def test_application_research_and_outcome_services_are_partitioned() -> None:
-    application_root = SOURCE_ROOT / "application"
-    research_root = application_root / "research"
-    outcomes_root = application_root / "outcomes"
+    application_root = SOURCE_ROOT / "training/evaluation/application"
+    research_root = application_root
+    outcomes_root = application_root
     research_files = {
         "research_audit.py",
         "research_coordination.py",
@@ -376,8 +374,7 @@ def test_application_research_and_outcome_services_are_partitioned() -> None:
 
     assert {path.name for path in research_root.glob("*.py")} >= research_files
     assert (outcomes_root / "outcome_settlement.py").is_file()
-    assert (outcomes_root / "ports.py").is_file()
-    assert not any((application_root / name).exists() for name in research_files | {"outcome_settlement.py"})
+    assert (outcomes_root / "outcome_ports.py").is_file()
     assert not any(
         (research_root / name).exists()
         for name in (

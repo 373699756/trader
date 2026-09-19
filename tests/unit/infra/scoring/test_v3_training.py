@@ -9,12 +9,12 @@ import pytest
 
 from trader.domain.recommendation.model_scoring import TRAINED_HEAD_EXPOSURE_CONTRACT, residualize_exposure
 from trader.domain.recommendation.models import Strategy
-from trader.domain.research.baostock_daily import (
+from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
     build_baostock_training_split,
 )
-from trader.domain.research.history_control import HistoryTrainingDueState
-from trader.domain.research.history_revision import HistoryTrainingPoint, HistoryTrainingWindow
+from trader.download.domain.history_control import HistoryTrainingDueState
+from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingWindow
 from trader.download.infra.history_archive_repack import HistoryArchiveRepackFenceError
 from trader.download.infra.history_control_repository import HistoryMaintenanceAlreadyRunningError
 from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingWindow

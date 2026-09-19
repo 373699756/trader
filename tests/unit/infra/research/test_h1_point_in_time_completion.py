@@ -2,10 +2,14 @@ from datetime import date
 
 import pytest
 
-from trader.application.research.h1_point_in_time_completion import complete_h1_research
-from trader.domain.research.h1_point_in_time import H1CapabilityProbe, H1PointInTimeSpec, build_h1_capability_audit
-from trader.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive
-from trader.infra.research.h1_point_in_time_completion import (
+from trader.training.evaluation.application.h1_point_in_time_completion import complete_h1_research
+from trader.training.evaluation.domain.h1_point_in_time import (
+    H1CapabilityProbe,
+    H1PointInTimeSpec,
+    build_h1_capability_audit,
+)
+from trader.training.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive
+from trader.training.infra.research.h1_point_in_time_completion import (
     H1ResearchCompletionArtifactArchive,
     H1ResearchCompletionArtifactConflictError,
 )

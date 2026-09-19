@@ -27,7 +27,7 @@ from trader.domain.market.models import (
     MarketQuote,
 )
 from trader.domain.market.research import ResearchObservation
-from trader.domain.outcome.models import OutcomeBar
+from trader.training.evaluation.domain.models import OutcomeBar
 from trader.infra.market_data.history.daily_history_cache import HistoryCache
 from trader.infra.market_data.history.daily_history_warmup import HistoryWarmup
 from trader.infra.market_data.service.candidate_quote_cache import QuoteCache

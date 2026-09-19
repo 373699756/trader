@@ -14,7 +14,7 @@ from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from typing import Literal
 
-from trader.domain.research.baostock_daily import BaoStockAdjustment
+from trader.download.domain.baostock_daily import BaoStockAdjustment
 from trader.download.infra.baostock_gateway import (
     _DAILY_FACT_FIELDS,
     _DAILY_FIELDS,

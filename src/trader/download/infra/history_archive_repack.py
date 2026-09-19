@@ -13,8 +13,7 @@ from pathlib import Path
 from typing import cast
 
 from trader.domain.recommendation.models import Strategy
-from trader.domain.research.artifact_identity import canonical_artifact_hash
-from trader.domain.research.history_control import (
+from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
     HistoryControlState,
     HistorySnapshotPartition,
@@ -43,6 +42,7 @@ from trader.download.infra.history_control_repository import (
     SQLiteHistoryControlRepository,
 )
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash
 from trader.training.infra.artifacts.bundle_repository import inspect_active_head_bundle
 
 RepackProgress = Callable[[int, int, str], None]

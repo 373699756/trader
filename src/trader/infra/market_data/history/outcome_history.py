@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from trader.domain.outcome.models import OutcomeBar, OutcomePrice, OutcomeTradingStatus
+from trader.training.evaluation.domain.models import OutcomeBar, OutcomePrice, OutcomeTradingStatus
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 
 _MINIMUM_ONE_PRICE_LIMIT_DOWN_PCT = -4.5

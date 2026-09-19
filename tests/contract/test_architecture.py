@@ -79,7 +79,12 @@ def test_active_dependency_direction() -> None:
     forbidden = {
         "domain": ("trader.application", "trader.infra", "trader.web", "trader.entrypoints"),
         "application": ("trader.infra", "trader.web", "trader.entrypoints"),
-        "training/domain": ("trader.training.application", "trader.training.infra", "trader.application", "trader.infra"),
+        "training/domain": (
+            "trader.training.application",
+            "trader.training.infra",
+            "trader.application",
+            "trader.infra",
+        ),
         "training/application": ("trader.training.infra", "trader.infra", "trader.web", "trader.entrypoints"),
         "training/infra": ("trader.training.entrypoints", "trader.entrypoints", "trader.web"),
         "infra": ("trader.bootstrap", "trader.entrypoints", "trader.web"),
@@ -336,7 +341,7 @@ def test_internal_state_is_typed_until_an_explicit_observability_boundary() -> N
 def test_identity_and_audit_payloads_have_one_explicit_field_projection() -> None:
     identity = (SOURCE_ROOT / "domain/recommendation/decision_identity.py").read_text(encoding="utf-8")
     codec = (SOURCE_ROOT / "infra/persistence/decision_record_codec.py").read_text(encoding="utf-8")
-    audit = (SOURCE_ROOT / "application/research/research_audit.py").read_text(encoding="utf-8")
+    audit = (SOURCE_ROOT / "training/evaluation/application/research_audit.py").read_text(encoding="utf-8")
     columnar = (SOURCE_ROOT / "infra/market_data/normalization/columnar.py").read_text(encoding="utf-8")
 
     assert "def committed_record_identity_payload(" in identity
@@ -357,8 +362,8 @@ def test_identity_and_audit_payloads_have_one_explicit_field_projection() -> Non
 
 def test_tomorrow_holdout_serializer_uses_an_explicit_public_field_whitelist() -> None:
     paths = (
-        SOURCE_ROOT / "infra/research/point_in_time_dataset_artifacts.py",
-        SOURCE_ROOT / "infra/research/tomorrow_profile_holdout_artifacts.py",
+        SOURCE_ROOT / "training/infra/research/point_in_time_dataset_artifacts.py",
+        SOURCE_ROOT / "training/infra/research/tomorrow_profile_holdout_artifacts.py",
     )
     violations: list[str] = []
     for path in paths:
@@ -455,7 +460,7 @@ def test_domain_and_application_do_not_own_persistence_or_json_decoders() -> Non
 
 
 def test_history_month_values_and_sqlite_codec_keep_serialization_at_the_infra_boundary() -> None:
-    domain_path = SOURCE_ROOT / "domain/research/history_revision.py"
+    domain_path = SOURCE_ROOT / "download/domain/history_revision.py"
     codec_path = SOURCE_ROOT / "download/infra/history_revision_codec.py"
     partition_path = SOURCE_ROOT / "download/infra/history_month_partition.py"
     domain_source = domain_path.read_text(encoding="utf-8")

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from trader.application.research.tomorrow_historical_validation import TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC
+from trader.training.evaluation.application.tomorrow_historical_validation import (
+    TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 STRATEGY = ROOT / "docs/01_评分逻辑.md"

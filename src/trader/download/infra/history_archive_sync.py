@@ -15,14 +15,13 @@ from pathlib import Path
 from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo
 
-from trader.domain.research.artifact_identity import canonical_artifact_hash
-from trader.domain.research.baostock_daily import (
+from trader.download.domain.baostock_daily import (
     BaoStockCodeBatch,
     BaoStockCodeDownload,
     BaoStockIndustryInterval,
     BaoStockSecurity,
 )
-from trader.domain.research.history_control import (
+from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
     HistoryCalendarIdentity,
     HistoryDiskRequirement,
@@ -32,8 +31,8 @@ from trader.domain.research.history_control import (
     HistorySyncCheckpoint,
     HistoryUniverseIdentity,
 )
-from trader.domain.research.history_revision import HistoryRevision
 from trader.download.domain.history_maintenance import HistoryMaintenanceState, HistoryMaintenanceStatus
+from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.history_sync import (
     HistorySupplierContext,
     HistorySyncConfiguration,
@@ -58,6 +57,7 @@ from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionError,
     SQLiteHistoryMonthPartitionRepository,
 )
+from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash
 from trader.training.infra.history.history_training_due import HistoryTrainingDueQuery, evaluate_history_training_due
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 

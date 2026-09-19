@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.domain.research.baostock_daily import (
+from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
     BaoStockCodeBatch,
     BaoStockCodeDownload,
@@ -19,7 +19,7 @@ from trader.domain.research.baostock_daily import (
 )
 from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
 from trader.download.infra.history_archive_sync import run_history_sync
-from trader.infra.research.historical_industry_archive import audit_archived_historical_industry_facts
+from trader.training.infra.research.historical_industry_archive import audit_archived_historical_industry_facts
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 

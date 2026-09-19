@@ -4,14 +4,14 @@ from datetime import timedelta
 
 import pytest
 
-from trader.application.research.historical_screening import HistoricalScreeningArchiveManifest
-from trader.application.research.tomorrow_historical_screening import TomorrowHistoricalRow
-from trader.domain.research.historical_screening import HISTORICAL_SCREENING_SPEC
 from trader.infra.scoring.profiles.v1.artifact_builder import (
     V1_FEATURE_IDS,
     fit_manual_v1_model,
     sealed_production_artifact_payload,
 )
+from trader.training.evaluation.application.historical_screening import HistoricalScreeningArchiveManifest
+from trader.training.evaluation.application.tomorrow_historical_screening import TomorrowHistoricalRow
+from trader.training.evaluation.domain.historical_screening import HISTORICAL_SCREENING_SPEC
 
 
 def _rows() -> tuple[TomorrowHistoricalRow, ...]:

@@ -22,8 +22,8 @@ def test_historical_industry_section_has_one_fail_closed_checkpoint_owner() -> N
 
 
 def test_industry_audit_is_separate_from_daily_archive_and_has_no_automatic_authority() -> None:
-    domain = ROOT / "src/trader/domain/research/historical_industry_facts.py"
-    adapter = ROOT / "src/trader/infra/research/historical_industry_archive.py"
+    domain = ROOT / "src/trader/training/evaluation/domain/historical_industry_facts.py"
+    adapter = ROOT / "src/trader/training/infra/research/historical_industry_archive.py"
     script = ROOT / "scripts/audit_historical_industry_facts.py"
 
     assert domain.is_file()

@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-from trader.application.research.research_audit import DecisionObservation
+from trader.training.evaluation.application.research_audit import DecisionObservation
 from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
 
 DecisionEventConsumer = Callable[[DecisionObservation], None]

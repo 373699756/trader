@@ -32,7 +32,7 @@ from trader.application.runtime.workers import (
     borrow_executor,
     submit_or_run_inline,
 )
-from trader.domain.outcome.models import OutcomeBar
+from trader.training.evaluation.domain.models import OutcomeBar
 from trader.infra.market_data.history.history import (
     DailyBar,
     HistoryContext,

@@ -5,7 +5,11 @@ from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from trader.domain.research.history_control import (
+from trader.download.domain.history_automation import (
+    HistoryDesktopNotification,
+    HistoryNotificationResult,
+)
+from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
     HistoryCalendarIdentity,
     HistorySecurityIdentity,
@@ -13,10 +17,6 @@ from trader.domain.research.history_control import (
     HistorySourceIdentity,
     HistoryTrainingDueState,
     HistoryUniverseIdentity,
-)
-from trader.download.domain.history_automation import (
-    HistoryDesktopNotification,
-    HistoryNotificationResult,
 )
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgress

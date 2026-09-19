@@ -6,14 +6,14 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.application.research.cross_strategy_conclusion import CrossStrategyConclusionService
-from trader.domain.research.terminal_holdout import (
+from trader.training.evaluation.application.cross_strategy_conclusion import CrossStrategyConclusionService
+from trader.training.evaluation.domain.terminal_holdout import (
     TerminalHoldoutEvaluation,
     TerminalHoldoutRow,
     evaluate_terminal_holdout,
 )
-from trader.infra.research.cross_strategy_conclusion_artifacts import CrossStrategyConclusionArtifactArchive
-from trader.infra.research.terminal_holdout_artifacts import (
+from trader.training.infra.research.cross_strategy_conclusion_artifacts import CrossStrategyConclusionArtifactArchive
+from trader.training.infra.research.terminal_holdout_artifacts import (
     TerminalHoldoutArtifactArchive,
     TerminalHoldoutArtifactConflictError,
 )

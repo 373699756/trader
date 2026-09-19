@@ -6,19 +6,19 @@ from datetime import date
 
 import pytest
 
-from trader.application.research.tomorrow_research_artifacts import (
+from trader.training.evaluation.application.tomorrow_research_artifacts import (
     TomorrowResearchArtifactGraph,
     TomorrowResearchArtifactRef,
     TomorrowResearchEvidencePartitionRef,
     TomorrowResearchResourceProbe,
     TomorrowResearchStageHandoff,
 )
-from trader.application.research.tomorrow_research_orchestrator import (
+from trader.training.evaluation.application.tomorrow_research_orchestrator import (
     TomorrowResearchOrchestrator,
     TomorrowResearchPrerequisiteStatus,
 )
-from trader.domain.research.artifact_identity import canonical_artifact_hash, canonical_artifact_json
-from trader.infra.research.tomorrow_research_artifacts import (
+from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash, canonical_artifact_json
+from trader.training.infra.research.tomorrow_research_artifacts import (
     TomorrowResearchArtifactRepository,
     TomorrowResearchArtifactRepositoryError,
 )

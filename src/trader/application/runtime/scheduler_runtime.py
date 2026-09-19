@@ -36,7 +36,7 @@ from trader.application.ports.scheduler import (
     SharedDeepSeekRuntimeContract,
     TradingCalendarUnavailableError,
 )
-from trader.application.research.research_audit import DecisionObservation
+from trader.training.evaluation.application.research_audit import DecisionObservation
 from trader.application.runtime.cadence import (
     CadencePlanner,
     CadencePlannerStatus,

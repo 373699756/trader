@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from trader.domain.research.baostock_daily import build_baostock_training_split
+from trader.download.domain.baostock_daily import build_baostock_training_split
 from trader.training.infra.profile.v3.contracts import (
     D25_HEAD_CONTRACT,
     TODAY_HEAD_CONTRACT,

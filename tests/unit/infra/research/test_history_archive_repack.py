@@ -12,15 +12,15 @@ import pytest
 import trader.download.infra.history_archive_repack as repack_module
 import trader.training.infra.history.history_training_due as due_module
 from trader.domain.recommendation.models import Strategy
-from trader.domain.research.baostock_daily import BaoStockDailyCell, BaoStockDailySide
-from trader.domain.research.history_control import (
+from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
+from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
     HistoryCalendarIdentity,
     HistorySecurityIdentity,
     HistorySourceIdentity,
     HistoryUniverseIdentity,
 )
-from trader.domain.research.history_revision import HistoryRevision
+from trader.download.domain.history_revision import HistoryRevision
 from trader.download.infra.history_archive_repack import (
     HistoryArchiveRepackCoordinator,
     HistoryArchiveRepackFenceError,
@@ -33,8 +33,8 @@ from trader.download.infra.history_archive_repack_state import (
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
 from trader.infra.artifacts.canonical import content_hash
-from trader.training.infra.history.history_training_due import HistoryTrainingDueQuery, evaluate_history_training_due
 from trader.training.infra.artifacts.bundle_repository import ActiveHeadBundle
+from trader.training.infra.history.history_training_due import HistoryTrainingDueQuery, evaluate_history_training_due
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.profile.v3.training import run_repack_tomorrow_training, run_repack_v3_training
 from trader.training.infra.profile.v3.training_memory_evidence import TomorrowTrainingMemoryEvidence

@@ -3,10 +3,13 @@ from __future__ import annotations
 import pytest
 
 from tests.unit.application.research.test_shadow_model_evaluation import _labeled_day, _RecordingTrainer
-from trader.application.research.shadow_model_evaluation import TomorrowShadowModelEvaluator
-from trader.application.research.shadow_model_ports import ShadowFitRequest
-from trader.infra.research.lightgbm_shadow import LightGbmShadowTrainer
-from trader.infra.research.shadow_model_artifacts import ShadowModelArtifactArchive, ShadowModelArtifactConflictError
+from trader.training.evaluation.application.shadow_model_evaluation import TomorrowShadowModelEvaluator
+from trader.training.evaluation.application.shadow_model_ports import ShadowFitRequest
+from trader.training.infra.research.lightgbm_shadow import LightGbmShadowTrainer
+from trader.training.infra.research.shadow_model_artifacts import (
+    ShadowModelArtifactArchive,
+    ShadowModelArtifactConflictError,
+)
 
 
 @pytest.mark.parametrize("objective", ("net_excess", "severe_loss"))

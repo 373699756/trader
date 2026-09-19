@@ -6,8 +6,8 @@ import json
 from datetime import date
 from typing import Literal, cast
 
-from trader.domain.research.baostock_daily import BaoStockDailyCell, BaoStockDailySide
-from trader.domain.research.history_revision import HistoryRevision
+from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
+from trader.download.domain.history_revision import HistoryRevision
 
 
 def encode_history_revision(value: HistoryRevision) -> str:

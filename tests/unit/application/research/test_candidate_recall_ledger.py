@@ -8,19 +8,19 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.application.research.candidate_recall_ledger import CandidateRecallLedgerBuilder
 from trader.domain.market.feature_contracts import FeatureVector
 from trader.domain.market.models import Board
-from trader.domain.outcome.models import OutcomeExitStatus, RecommendationOutcome
 from trader.domain.recommendation.models import Strategy
-from trader.domain.research.candidate_recall_ledger import (
+from trader.training.evaluation.application.candidate_recall_ledger import CandidateRecallLedgerBuilder
+from trader.training.evaluation.domain.candidate_recall_ledger import (
     CANDIDATE_RECALL_STAGES,
     CandidateRecallDayTrace,
     CandidateRecallDownstreamBoundary,
     CandidateRecallDownstreamTrace,
     CandidateRecallStageLatency,
 )
-from trader.domain.research.point_in_time_dataset import (
+from trader.training.evaluation.domain.models import OutcomeExitStatus, RecommendationOutcome
+from trader.training.evaluation.domain.point_in_time_dataset import (
     POINT_IN_TIME_BOUNDARIES,
     PointInTimeBoardPopulation,
     PointInTimeBoundaryCount,

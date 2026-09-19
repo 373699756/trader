@@ -18,8 +18,8 @@ from datetime import date
 from itertools import islice
 from pathlib import Path
 
-from trader.domain.research.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
-from trader.domain.research.history_revision import HistoryRevision
+from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
+from trader.download.domain.history_revision import HistoryRevision
 from trader.download.infra.history_control_repository import HistoryControlError, SQLiteHistoryControlRepository
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
 

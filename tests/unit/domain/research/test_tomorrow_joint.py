@@ -5,7 +5,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.domain.research.tomorrow_joint import (
+from trader.training.evaluation.domain.tomorrow_joint import (
     TOMORROW_JOINT_CANDIDATES,
     TOMORROW_JOINT_LAMBDAS,
     TomorrowJointAlignedRow,

@@ -7,31 +7,31 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.application.research.point_in_time_dataset import (
+from trader.domain.market.feature_contracts import FeatureId, FeatureVectorManifest
+from trader.domain.market.models import Board
+from trader.domain.recommendation.models import BoardStrategyPolicy, Strategy
+from trader.domain.recommendation.selection.scored_selection import ScoredSelectionPolicy
+from trader.training.evaluation.application.point_in_time_dataset import (
     PointInTimeDatasetBuilder,
     PointInTimeDatasetBuildRequest,
     PointInTimeDaySource,
     PointInTimeSourceRow,
 )
-from trader.domain.market.feature_contracts import FeatureId, FeatureVectorManifest
-from trader.domain.market.models import Board
-from trader.domain.outcome.models import OutcomeBar, OutcomePrice, OutcomeTradingStatus
-from trader.domain.recommendation.models import BoardStrategyPolicy, Strategy
-from trader.domain.recommendation.selection.scored_selection import ScoredSelectionPolicy
-from trader.domain.research.point_in_time_data_qualification import (
+from trader.training.evaluation.domain.models import OutcomeBar, OutcomePrice, OutcomeTradingStatus
+from trader.training.evaluation.domain.point_in_time_data_qualification import (
     DailyArchiveQualification,
     HistoricalIndustryQualification,
     HistoricalMinuteQualification,
     build_point_in_time_data_qualification,
 )
-from trader.domain.research.point_in_time_dataset import (
+from trader.training.evaluation.domain.point_in_time_dataset import (
     POINT_IN_TIME_BENCHMARK_ID,
     PointInTimeDateSplit,
     PointInTimeEventFact,
     PointInTimeIndustryFact,
     PointInTimeSourceIdentity,
 )
-from trader.infra.research.point_in_time_dataset_artifacts import (
+from trader.training.infra.research.point_in_time_dataset_artifacts import (
     PointInTimeDatasetArtifactArchive,
     PointInTimeDatasetArtifactConflictError,
 )

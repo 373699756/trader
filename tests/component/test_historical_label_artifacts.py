@@ -5,8 +5,8 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.domain.research.historical_label import H1CoverageMetadata, preregister_historical_labels
-from trader.infra.research.historical_label_artifacts import (
+from trader.training.evaluation.domain.historical_label import H1CoverageMetadata, preregister_historical_labels
+from trader.training.infra.research.historical_label_artifacts import (
     HistoricalLabelArtifactArchive,
     HistoricalLabelArtifactConflictError,
 )
