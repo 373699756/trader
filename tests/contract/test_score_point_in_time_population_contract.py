@@ -22,7 +22,7 @@ def test_research_audit_keeps_complete_point_in_time_population() -> None:
 
 
 def test_research_trace_has_explicit_legacy_codec_and_cutoff_read() -> None:
-    source = (ROOT / "src/trader/infra/persistence/research_trace.py").read_text(encoding="utf-8")
+    source = (ROOT / "src/trader/training/infra/research/research_trace_archive.py").read_text(encoding="utf-8")
 
     for token in (
         'RESEARCH_EVENT_SCHEMA_VERSION = "research_committed_event"',

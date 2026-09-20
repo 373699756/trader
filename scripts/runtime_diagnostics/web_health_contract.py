@@ -24,7 +24,7 @@ class PipelineFacetSnapshot:
 
 
 @dataclass(frozen=True)
-class PipelineStageSnapshot:
+class WebPipelineStageSnapshot:
     key: str | None
     state: str | None
     input_count: int | None
@@ -39,10 +39,10 @@ class PipelineStageSnapshot:
 @dataclass(frozen=True)
 class PipelineSnapshot:
     current_stage: str | None
-    stages: tuple[PipelineStageSnapshot, ...]
+    stages: tuple[WebPipelineStageSnapshot, ...]
     invalid_fields: tuple[str, ...] = ()
 
-    def stage(self, key: str) -> PipelineStageSnapshot | None:
+    def stage(self, key: str) -> WebPipelineStageSnapshot | None:
         return next((stage for stage in self.stages if stage.key == key), None)
 
     def count(self, name: str) -> int | None:
@@ -507,7 +507,7 @@ def _parse_pipeline(payload: Mapping[str, object]) -> PipelineSnapshot:
     raw_stages = payload.get("stages")
     if not isinstance(raw_stages, (list, tuple)):
         return PipelineSnapshot(_text(payload.get("current_stage")), (), ("stages",))
-    stages: list[PipelineStageSnapshot] = []
+    stages: list[WebPipelineStageSnapshot] = []
     invalid_fields: list[str] = []
     for index, raw in enumerate(raw_stages):
         stage_payload = _mapping_or_none(raw)
@@ -530,7 +530,7 @@ def _parse_pipeline(payload: Mapping[str, object]) -> PipelineSnapshot:
     )
 
 
-def _parse_pipeline_stage(payload: Mapping[str, object], index: int) -> PipelineStageSnapshot:
+def _parse_pipeline_stage(payload: Mapping[str, object], index: int) -> WebPipelineStageSnapshot:
     key = _text(payload.get("key"))
     state = _text(payload.get("state"))
     invalid: list[str] = []
@@ -566,7 +566,7 @@ def _parse_pipeline_stage(payload: Mapping[str, object], index: int) -> Pipeline
     facet_keys = tuple(facet.key for facet in facets)
     if len(facet_keys) != len(set(facet_keys)):
         invalid.append(f"stages[{index}].facets")
-    return PipelineStageSnapshot(key, state, input_count, output_count, tuple(facets), tuple(invalid))
+    return WebPipelineStageSnapshot(key, state, input_count, output_count, tuple(facets), tuple(invalid))
 
 
 def _optional_count(
@@ -659,7 +659,7 @@ __all__ = [
     "InputQualitySnapshot",
     "PipelineFacetSnapshot",
     "PipelineSnapshot",
-    "PipelineStageSnapshot",
+    "WebPipelineStageSnapshot",
     "ProjectionSnapshot",
     "ScoringHeadSnapshot",
     "ScoringProfileSnapshot",

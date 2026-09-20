@@ -13,7 +13,7 @@ from trader.recommendation.application.runtime.shutdown import ShutdownDeadline,
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.evaluation.application.research_coordination import ResearchCoordinator
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
-from trader.training.evaluation.application.research_ports import ResearchReaderPort
+from trader.training.evaluation.application.research_ports import OfflineResearchReaderPort
 
 
 class ResearchRuntime:
@@ -21,7 +21,7 @@ class ResearchRuntime:
 
     def __init__(
         self,
-        research: ResearchReaderPort,
+        research: OfflineResearchReaderPort,
         *,
         cadence: CadencePolicy,
         now: Callable[[], datetime],

@@ -26,7 +26,6 @@ TARGET_PACKAGES = (
     "infra/market_data/references",
     "infra/market_data/service",
     "recommendation/infra/deepseek",
-    "infra/persistence",
     "download/domain",
     "download/application",
     "download/infra",
@@ -110,6 +109,24 @@ def test_currently_retired_paths_remain_absent() -> None:
         "web/templates/tomorrow_v2.html",
     )
     assert [path for path in retired if (SOURCE_ROOT / path).exists()] == []
+
+
+def test_final_business_tree_has_no_retired_top_level_owners() -> None:
+    retired_roots = (
+        SOURCE_ROOT / "application",
+        SOURCE_ROOT / "domain",
+        SOURCE_ROOT / "web" / "api",
+        SOURCE_ROOT / "infra" / "persistence",
+        SOURCE_ROOT / "recommendation" / "infra" / "scoring" / "profiles",
+    )
+    active_files = [
+        str(file.relative_to(SOURCE_ROOT))
+        for path in retired_roots
+        if path.exists()
+        for file in path.rglob("*.py")
+        if "__pycache__" not in file.parts
+    ]
+    assert active_files == []
 
 
 def test_layer_import_graph_has_no_cycles_or_reverse_edges() -> None:

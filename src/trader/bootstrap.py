@@ -18,7 +18,7 @@ from trader.recommendation.application.pipeline.freeze_publish.draft_index impor
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver, DecisionEventConsumer
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
-from trader.application.long_runtime import LongRuntime, LongRuntimeDependencies
+from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
 from trader.recommendation.application.pipeline.data_source.source_router import DecisionBuildDependencies, MarketDataAdapter
 from trader.training.evaluation.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import CandidateFilteringService
@@ -95,8 +95,8 @@ from trader.infra.market_data.service.tushare_reference_loader import ReferenceL
 from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecordRepository
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
-from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
-from trader.infra.persistence.research_trace import ResearchTraceLimits, SQLiteResearchTraceArchive
+from trader.training.infra.research.outcome_evidence_repository import SQLiteOutcomeEvidenceRepository
+from trader.training.infra.research.research_trace_archive import ResearchTraceLimits, SQLiteResearchTraceArchive
 from trader.infra.runtime_resources import RuntimeWorkerResources
 from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 from trader.infra.settings import (

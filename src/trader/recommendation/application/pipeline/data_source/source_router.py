@@ -10,7 +10,7 @@ from datetime import date, datetime, time, timedelta
 from typing import Protocol
 
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
-from trader.application.long_runtime import LongRuntime
+from trader.recommendation.application.long_runtime import LongRuntime
 from trader.recommendation.application.pipeline.quality_check.pipeline_status import (
     build_first_nine_stage_snapshots,
     build_pending_pipeline,

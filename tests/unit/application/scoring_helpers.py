@@ -6,7 +6,7 @@ from trader.recommendation.application.ports.loaded_profile import (
     ProfileEvidence,
 )
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.infra.scoring.composition import SingleHeadCombiner
+from trader.infra.scoring.composition import SingleHeadCombiner
 
 
 def profile_for(

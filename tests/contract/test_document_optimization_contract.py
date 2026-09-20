@@ -147,9 +147,9 @@ def test_history_windows_cost_ownership_and_terminal_order_are_unambiguous() -> 
     replay = _read(REPLAY)
     compact_design = " ".join(design.split())
 
-    assert "当前 V2/V3 共用已有三头 bundle" in strategy
-    assert "目标 V2 在线推理最多读取 251 个" in compact_design
-    assert "目标 V3 在线推理仍至少需要 61 个" in compact_design
+    assert "V2/V3 日常启动只加载所选档位的双头 bundle" in strategy
+    assert "V2 在线推理最多读取 251 个" in compact_design
+    assert "V3 在线推理仍至少需要 61 个" in compact_design
     assert "两档离线训练都最多消费 2000 个交易所开市日" in compact_design
     assert "扣成本前的预测超额收益" in strategy
     assert "训练目标不得先扣 20bp 后又由在线门重复扣除" in replay
@@ -170,7 +170,8 @@ def test_history_windows_cost_ownership_and_terminal_order_are_unambiguous() -> 
     changelog = _read(DELIVERY_HISTORY)
     assert "CanonicalOutcomeEvaluator" in changelog
     assert "v3_single_cost_ownership" in changelog
-    assert "`completed`" not in work
+    assert "阶段：11 - 删除旧活动树与执行全局命名清理" in work
+    assert "状态：`completed`" in work
 
 
 def test_hash_validation_is_limited_to_trust_boundaries() -> None:

@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING, Protocol
 
 from trader.download.domain.history_archive_status import HistoryArchiveStatus
 from trader.download.infra.history_archive_status import inspect_history_archive
-from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
-from trader.infra.persistence.research_trace import SQLiteResearchTraceArchive
+from trader.training.infra.research.outcome_evidence_repository import SQLiteOutcomeEvidenceRepository
+from trader.training.infra.research.research_trace_archive import SQLiteResearchTraceArchive
 from trader.infra.settings import RuntimeSettings
 from trader.training.evaluation.application.historical_label import HistoricalLabelPreregistrationService
 from trader.training.evaluation.application.tomorrow_research_artifacts import (

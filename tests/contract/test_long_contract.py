@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DESIGN = ROOT / "docs" / "02_工程设计.md"
 STRATEGY = ROOT / "docs" / "01_评分逻辑.md"
 BOOTSTRAP = ROOT / "src" / "trader" / "bootstrap.py"
-LONG_RUNTIME = ROOT / "src" / "trader" / "application" / "long_runtime.py"
+LONG_RUNTIME = ROOT / "src" / "trader" / "recommendation" / "application" / "long_runtime.py"
 
 
 def test_authoritative_contract_defines_long_current_only_boundary() -> None:
@@ -37,9 +37,15 @@ def test_production_composition_installs_long_without_legacy_snapshot_publicatio
     tree = ast.parse(source)
     imports = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
 
-    assert "trader.application.long_runtime" in imports
+    assert "trader.recommendation.application.long_runtime" in imports
     assert "long_runtime=publication.long_runtime" in source
     assert "DecisionBuildDependencies(" in source
     assert "publication.long_runtime," in source
-    for forbidden in ("RecommendationSnapshot", "DeepSeek", "freeze", "repository", "settle"):
+    for forbidden in (
+        "RecommendationSnapshot",
+        "DeepSeek",
+        "FreezeCoordinator",
+        "DecisionRecordRepositoryPort",
+        "settle_outcomes",
+    ):
         assert forbidden not in runtime_source

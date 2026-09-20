@@ -99,6 +99,9 @@ def test_server_module_loads_only_authorized_background_research_consumers() -> 
         "trader.training.evaluation.domain.historical",
         "trader.training.evaluation.domain.models",
         "trader.training.evaluation.domain.specification",
+        "trader.training.infra.research",
+        "trader.training.infra.research.outcome_evidence_repository",
+        "trader.training.infra.research.research_trace_archive",
     }
 
     assert _research_modules_loaded_by("trader.entrypoints.server") <= allowed

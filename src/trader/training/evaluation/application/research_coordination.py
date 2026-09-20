@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
-from trader.training.evaluation.application.research_ports import ResearchReaderPort
+from trader.training.evaluation.application.research_ports import OfflineResearchReaderPort
 from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
 from trader.recommendation.application.runtime.workers import BoundedExecutor
 
@@ -58,7 +58,7 @@ class _CodeGate:
 class ResearchCoordinator:
     def __init__(
         self,
-        research: ResearchReaderPort,
+        research: OfflineResearchReaderPort,
         *,
         now: Callable[[], datetime],
         on_result: Callable[[ResearchRefreshResult], None],

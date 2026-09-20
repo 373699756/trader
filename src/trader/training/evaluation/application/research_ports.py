@@ -43,7 +43,7 @@ class HistoricalDataPlaneReadPort(Protocol):
     ) -> HistoricalFullFieldBundle: ...
 
 
-class ResearchReaderPort(Protocol):
+class OfflineResearchReaderPort(Protocol):
     def refresh_industry_heat(self, observed_at: datetime) -> Sequence[FeatureSnapshot]: ...
 
     def refresh_market_news(
@@ -87,5 +87,5 @@ __all__ = [
     "HistoricalCandidateEvaluator",
     "HistoricalChallengerReplayEvaluator",
     "HistoricalDataPlaneReadPort",
-    "ResearchReaderPort",
+    "OfflineResearchReaderPort",
 ]
