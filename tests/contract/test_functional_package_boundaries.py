@@ -130,6 +130,20 @@ def test_final_business_tree_has_no_retired_top_level_owners() -> None:
     assert active_files == []
 
 
+def test_retired_source_directories_are_removed_entirely() -> None:
+    retired_directories = (
+        SOURCE_ROOT / "application",
+        SOURCE_ROOT / "domain",
+        SOURCE_ROOT / "resources",
+        SOURCE_ROOT / "web" / "api",
+        SOURCE_ROOT / "infra" / "deepseek",
+        SOURCE_ROOT / "infra" / "persistence",
+        SOURCE_ROOT / "infra" / "pipeline",
+        SOURCE_ROOT / "infra" / "research",
+    )
+    assert [str(path.relative_to(SOURCE_ROOT)) for path in retired_directories if path.exists()] == []
+
+
 def test_shared_infrastructure_uses_only_target_tree_directories() -> None:
     assert (SOURCE_ROOT / "infra/serialization").is_dir()
     assert not (SOURCE_ROOT / "infra/artifacts").exists()
