@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Literal, cast
 from zoneinfo import ZoneInfo
 
-from trader.infra.serialization.fields import as_sequence
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
     CommittedDecisionItem,
     DecisionCommitted,
@@ -44,6 +43,23 @@ from trader.training.infra.research.trace_codec import (
     decoded_payload_bytes,
     persisted_payload_bytes,
     sha256,
+)
+from trader.training.infra.research.trace_validation import (
+    boolean as _boolean,
+    count_pairs as _count_pairs,
+    integer as _integer,
+    list_value as _list,
+    number as _number,
+    object_value as _object,
+    optional_boolean as _optional_boolean,
+    optional_number as _optional_number,
+    optional_number_pairs as _optional_number_pairs,
+    optional_text as _optional_text,
+    required_score_pairs as _required_score_pairs,
+    score_pairs as _score_pairs,
+    strings as _strings,
+    text as _text,
+    text_pairs as _text_pairs,
 )
 
 LEGACY_RESEARCH_EVENT_SCHEMA_VERSION = "research_committed_event_legacy"
@@ -846,127 +862,6 @@ def _decision_candidate_audit(raw: dict[str, object]) -> ResearchDecisionCandida
         board_rank=_integer(raw, "board_rank"),
         skip_reason=_text(raw, "skip_reason"),
     )
-
-
-def _object(raw: object, label: str) -> dict[str, object]:
-    if not isinstance(raw, dict) or any(not isinstance(key, str) for key in raw):
-        raise ValueError(f"{label} must be an object")
-    return cast(dict[str, object], raw)
-
-
-def _list(raw: object, label: str) -> list[object]:
-    sequence = as_sequence(raw)
-    if sequence is None:
-        raise ValueError(f"{label} must be a list")
-    return sequence
-
-
-def _text(raw: dict[str, object], key: str) -> str:
-    value = raw.get(key)
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{key} must be text")
-    return value
-
-
-def _optional_text(raw: object) -> str | None:
-    if raw is None:
-        return None
-    if not isinstance(raw, str) or not raw:
-        raise ValueError("optional text is invalid")
-    return raw
-
-
-def _boolean(raw: dict[str, object], key: str) -> bool:
-    value = raw.get(key)
-    if not isinstance(value, bool):
-        raise ValueError(f"{key} must be boolean")
-    return value
-
-
-def _optional_boolean(raw: object) -> bool | None:
-    if raw is None:
-        return None
-    if not isinstance(raw, bool):
-        raise ValueError("optional boolean is invalid")
-    return raw
-
-
-def _integer(raw: dict[str, object], key: str) -> int:
-    value = raw.get(key)
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise ValueError(f"{key} must be an integer")
-    return value
-
-
-def _number(raw: dict[str, object], key: str) -> float:
-    value = raw.get(key)
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        raise ValueError(f"{key} must be a number")
-    return float(value)
-
-
-def _optional_number(raw: object) -> float | None:
-    if raw is None:
-        return None
-    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
-        raise ValueError("optional number is invalid")
-    return float(raw)
-
-
-def _strings(raw: object, label: str) -> list[str]:
-    values = _list(raw, label)
-    if any(not isinstance(value, str) for value in values):
-        raise ValueError(f"{label} must contain text")
-    return cast(list[str], values)
-
-
-def _text_pairs(raw: object, label: str) -> tuple[tuple[str, str], ...]:
-    result: list[tuple[str, str]] = []
-    for item in _list(raw, label):
-        values = _list(item, label)
-        if len(values) != 2 or any(not isinstance(value, str) for value in values):
-            raise ValueError(f"{label} entries are invalid")
-        result.append((cast(str, values[0]), cast(str, values[1])))
-    return tuple(result)
-
-
-def _count_pairs(raw: object) -> tuple[tuple[str, int], ...]:
-    result: list[tuple[str, int]] = []
-    for item in _list(raw, "filter_aggregates"):
-        values = _list(item, "filter_aggregate")
-        if len(values) != 2 or not isinstance(values[0], str) or not isinstance(values[1], int):
-            raise ValueError("filter aggregate is invalid")
-        result.append((values[0], values[1]))
-    return tuple(result)
-
-
-def _score_pairs(raw: object) -> tuple[tuple[str, float | None], ...]:
-    result: list[tuple[str, float | None]] = []
-    for item in _list(raw, "score_components"):
-        values = _list(item, "score_component")
-        if len(values) != 2 or not isinstance(values[0], str):
-            raise ValueError("score component is invalid")
-        result.append((values[0], _optional_number(values[1])))
-    return tuple(result)
-
-
-def _required_score_pairs(raw: object) -> tuple[tuple[str, float], ...]:
-    result: list[tuple[str, float]] = []
-    for name, value in _score_pairs(raw):
-        if value is None:
-            raise ValueError("required score component cannot be null")
-        result.append((name, value))
-    return tuple(result)
-
-
-def _optional_number_pairs(raw: object, label: str) -> tuple[tuple[str, float | None], ...]:
-    result: list[tuple[str, float | None]] = []
-    for item in _list(raw, label):
-        values = _list(item, label)
-        if len(values) != 2 or not isinstance(values[0], str):
-            raise ValueError(f"{label} entries are invalid")
-        result.append((values[0], _optional_number(values[1])))
-    return tuple(result)
 
 
 __all__ = [
