@@ -18,7 +18,7 @@ def test_authoritative_contract_defines_d25_freeze_recovery_and_isolation() -> N
         "D25NativeInput",
         "strategy=d25 + trade_date",
         "合法空结果与非空结果使用同一提交语义",
-        "待重试的 14:50 封口",
+        "待重试的 15:00 封口",
         "纯本地 d25 评分",
     ):
         assert token in design

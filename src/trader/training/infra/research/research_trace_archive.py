@@ -44,7 +44,7 @@ from trader.training.infra.research.trace_codec import (
     persisted_payload_bytes,
     sha256,
 )
-from trader.training.infra.research.trace_validation import (
+from trader.infra.serialization.research_trace_validation import (
     boolean as _boolean,
     count_pairs as _count_pairs,
     integer as _integer,

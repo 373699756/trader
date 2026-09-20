@@ -159,7 +159,7 @@ def test_model_scoring_context_uses_the_freeze_budget_and_input_age(application_
         datetime(2026, 8, 12, 15, 1, tzinfo=SHANGHAI),
     )
 
-    assert context.time_budget_seconds == 9.0
+    assert context.time_budget_seconds == 609.0
     assert context.input_age_seconds == 6.0
     assert close_context.time_budget_seconds is None
 
@@ -167,8 +167,8 @@ def test_model_scoring_context_uses_the_freeze_budget_and_input_age(application_
 @pytest.mark.parametrize(
     ("strategy", "observed_at", "expected_budget"),
     (
-        (Strategy.TOMORROW, datetime(2026, 8, 12, 14, 49, 45, tzinfo=SHANGHAI), 9.0),
-        (Strategy.D25, datetime(2026, 8, 12, 14, 49, 45, tzinfo=SHANGHAI), 9.0),
+        (Strategy.TOMORROW, datetime(2026, 8, 12, 14, 49, 45, tzinfo=SHANGHAI), 609.0),
+        (Strategy.D25, datetime(2026, 8, 12, 14, 49, 45, tzinfo=SHANGHAI), 609.0),
     ),
 )
 def test_model_scoring_context_uses_each_strategy_freeze_deadline(
@@ -328,6 +328,7 @@ def test_primary_blocker_reports_dominant_stale_market_before_partial_history(
     assert dict(status.population_filter_reason_counts)["stale_quote"] == 1
     assert status.pipeline.stage("input_readiness").reason_counts[0].reason == "stale_quote"
     assert status.pipeline.stage("input_readiness").reason_counts[0].count == 1
+    assert status.pipeline.stage("input_readiness").state == "degraded"
     assert status.pipeline.stage("dynamic_filter").reason_counts == ()
     assert status.primary_blocker == "market_population_stale"
 
@@ -514,6 +515,8 @@ def test_full_market_acquisition_exposes_pending_funnel_without_treating_unknown
     assert all(status.primary_blocker == "candidate_quotes_pending" for status in statuses)
     assert all(status.pipeline.stage("candidate_refresh").input_count == 1 for status in statuses)
     assert all(status.pipeline.stage("candidate_refresh").output_count is None for status in statuses)
+    assert all(status.pipeline.stage("candidate_refresh").state == "running" for status in statuses)
+    assert all(status.pipeline.stage("input_coverage").state == "pending" for status in statuses)
 
     adapter.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
 

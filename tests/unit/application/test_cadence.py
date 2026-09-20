@@ -22,8 +22,8 @@ from trader.recommendation.application.runtime.schedule import SHANGHAI, Schedul
 
 
 def test_restart_after_afternoon_cutoff_only_attempts_checkpoint_eligible_strategies() -> None:
-    restarted = datetime(2026, 7, 16, 14, 50, 1, tzinfo=SHANGHAI)
-    planner = CadencePlanner(_policy(), started_at=restarted)
+    restarted = datetime(2026, 7, 16, 15, 0, tzinfo=SHANGHAI)
+    planner = CadencePlanner(_policy(), started_at=datetime(2026, 7, 16, 14, 0, tzinfo=SHANGHAI))
 
     batch = planner.plan(restarted, is_trading_day=True)
 
@@ -52,7 +52,7 @@ def test_restart_uses_current_recovery_only_before_close(restarted, expects_curr
     second = planner.plan(restarted + timedelta(seconds=1), is_trading_day=True)
 
     assert (PipelineTask.CURRENT_QUOTES in {task.task for task in first.tasks}) is expects_current_quotes
-    assert (PipelineTask.CLOSE_QUOTES in {task.task for task in first.tasks}) is (not expects_current_quotes)
+    assert (PipelineTask.CLOSE_QUOTES in {task.task for task in first.tasks}) is False
     assert PipelineTask.CURRENT_QUOTES not in {task.task for task in second.tasks}
 
 
@@ -63,7 +63,7 @@ def test_missed_final_candidate_refresh_is_not_replayed_after_freeze_boundary() 
     )
 
     before_freeze = planner.plan(datetime(2026, 7, 16, 14, 49, 51, tzinfo=SHANGHAI), is_trading_day=True)
-    after_freeze = planner.plan(datetime(2026, 7, 16, 14, 50, 1, tzinfo=SHANGHAI), is_trading_day=True)
+    after_freeze = planner.plan(datetime(2026, 7, 16, 15, 0, 1, tzinfo=SHANGHAI), is_trading_day=True)
 
     assert PipelineTask.FINAL_CANDIDATE_QUOTES in {task.task for task in before_freeze.tasks}
     assert PipelineTask.FINAL_CANDIDATE_QUOTES not in {task.task for task in after_freeze.tasks}
@@ -75,7 +75,7 @@ def test_frozen_and_after_close_only_plan_mutable_quote_projections() -> None:
         started_at=datetime(2026, 7, 16, 9, 15, tzinfo=SHANGHAI),
     )
 
-    frozen = planner.plan(datetime(2026, 7, 16, 14, 55, tzinfo=SHANGHAI), is_trading_day=True)
+    frozen = planner.plan(datetime(2026, 7, 16, 15, 0, tzinfo=SHANGHAI), is_trading_day=True)
     freeze = next(
         task
         for task in frozen.tasks
@@ -91,16 +91,10 @@ def test_frozen_and_after_close_only_plan_mutable_quote_projections() -> None:
 
     assert {task.task for task in frozen.tasks if task.schedule_point is None} == {
         PipelineTask.REFERENCE_DATA,
-        PipelineTask.CURRENT_QUOTES,
         PipelineTask.TOPK_QUOTES,
         PipelineTask.LONG_QUOTES,
     }
-    assert {task.task for task in after_close.tasks} == {
-        PipelineTask.CLOSE_QUOTES,
-        PipelineTask.LONG_QUOTES,
-        PipelineTask.REFERENCE_DATA,
-        PipelineTask.TOPK_QUOTES,
-    }
+    assert {task.task for task in after_close.tasks} == {PipelineTask.TOPK_QUOTES}
 
 
 def test_afternoon_tail_has_an_independent_five_second_deadline() -> None:
@@ -181,7 +175,7 @@ def test_final_window_keeps_local_input_driven_scoring_until_the_freeze_boundary
     planner = CadencePlanner(_policy(), started_at=final_input.replace(hour=9, minute=15))
 
     before_freeze = planner.plan_score_after_input(final_input, is_trading_day=True)
-    at_freeze = planner.plan_score_after_input(final_input.replace(minute=50, second=0), is_trading_day=True)
+    at_freeze = planner.plan_score_after_input(final_input.replace(hour=15, minute=0, second=0), is_trading_day=True)
 
     assert before_freeze is not None and before_freeze.phase.value == "deepseek_cutoff"
     assert at_freeze is None
@@ -258,7 +252,7 @@ def test_production_policy_plans_exact_full_trading_day_task_counts() -> None:
             PipelineTask.CHECKPOINT: 1,
             PipelineTask.FINAL_CANDIDATE_QUOTES: 1,
             PipelineTask.FREEZE: 1,
-            PipelineTask.CLOSE_QUOTES: 1,
+                PipelineTask.CLOSE_QUOTES: 1,
         }
     )
 

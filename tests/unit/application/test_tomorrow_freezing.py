@@ -56,14 +56,14 @@ def test_checkpoint_recovers_same_decision_identity_after_restart(tmp_path: Path
     repository = SQLiteDecisionRecordRepository(tmp_path)
     repository.initialize()
     before = UnifiedDecisionIndex()
-    current = replace(decision(), observed_at=_at(14, 49, 35))
+    current = replace(decision(), observed_at=_at(14, 59, 35))
     _publish(before, current)
-    clock = _Clock(_at(14, 49, 40))
+    clock = _Clock(_at(14, 59, 40))
 
     assert _coordinator(before, repository, clock).capture_checkpoint().status == "checkpoint_saved"
 
     restored = UnifiedDecisionIndex()
-    clock.value = _at(14, 50)
+    clock.value = _at(15, 0)
     result = _coordinator(restored, repository, clock, strategy=Strategy.TOMORROW).freeze_scheduled()
 
     assert result.status == "frozen"
@@ -102,9 +102,9 @@ def test_freeze_is_idempotent_non_overwritable_and_accepts_empty_formal_result(t
     repository = SQLiteDecisionRecordRepository(tmp_path)
     repository.initialize()
     index = UnifiedDecisionIndex()
-    empty = replace(decision(), observed_at=_at(14, 49, 50), items=())
+    empty = replace(decision(), observed_at=_at(14, 59, 50), items=())
     _publish(index, empty)
-    clock = _Clock(_at(14, 50))
+    clock = _Clock(_at(15, 0))
     coordinator = _coordinator(index, repository, clock)
 
     first = coordinator.freeze_scheduled()
@@ -114,7 +114,7 @@ def test_freeze_is_idempotent_non_overwritable_and_accepts_empty_formal_result(t
     assert first.record is not None and first.record.decision.items == ()
     assert second.status == "already_frozen"
     assert second.version == first.version
-    late = replace(empty, sequence=3, observed_at=_at(14, 50, 1))
+    late = replace(empty, sequence=3, observed_at=_at(15, 0, 1))
     assert index.publish(late, expected_version=empty.version).reason == "freeze_sealed"
 
 
@@ -160,13 +160,13 @@ def test_d25_checkpoint_and_close_recovery_use_d25_path(tmp_path: Path) -> None:
     index = UnifiedDecisionIndex()
     current = replace(
         decision(Strategy.D25),
-        observed_at=_at(14, 49, 35),
+        observed_at=_at(14, 59, 35),
     )
     _publish(index, current)
-    coordinator = _coordinator(index, repository, _Clock(_at(14, 49, 40)), strategy=Strategy.D25)
+    coordinator = _coordinator(index, repository, _Clock(_at(14, 59, 40)), strategy=Strategy.D25)
     assert coordinator.capture_checkpoint().status == "checkpoint_saved"
 
-    clock = _Clock(_at(14, 50))
+    clock = _Clock(_at(15, 0))
     coordinator = _coordinator(index, repository, clock, strategy=Strategy.D25)
     result = coordinator.freeze_scheduled()
 
@@ -175,7 +175,7 @@ def test_d25_checkpoint_and_close_recovery_use_d25_path(tmp_path: Path) -> None:
     assert result.record.decision.strategy is Strategy.D25
     restored = UnifiedDecisionIndex()
     assert (
-        _coordinator(restored, repository, clock, strategy=Strategy.D25).restore(_at(14, 50).date()).status
+        _coordinator(restored, repository, clock, strategy=Strategy.D25).restore(_at(15, 0).date()).status
         == "already_frozen"
     )
 
@@ -214,11 +214,11 @@ def test_d25_empty_formal_and_tomorrow_formal_are_isolated_by_strategy(tmp_path:
     repository = SQLiteDecisionRecordRepository(tmp_path)
     repository.initialize()
     index = UnifiedDecisionIndex()
-    tomorrow = replace(decision(Strategy.TOMORROW), observed_at=_at(14, 49, 50))
-    d25 = replace(decision(Strategy.D25), observed_at=_at(14, 49, 49), items=())
+    tomorrow = replace(decision(Strategy.TOMORROW), observed_at=_at(14, 59, 50))
+    d25 = replace(decision(Strategy.D25), observed_at=_at(14, 59, 49), items=())
     _publish(index, tomorrow)
     _publish(index, d25)
-    clock = _Clock(_at(14, 50))
+    clock = _Clock(_at(15, 0))
 
     tomorrow_result = _coordinator(index, repository, clock, Strategy.TOMORROW).freeze_scheduled()
     d25_result = _coordinator(index, repository, clock, Strategy.D25).freeze_scheduled()
@@ -236,7 +236,7 @@ def test_d25_close_fallback_rejects_pending_scheduled_seal(tmp_path: Path) -> No
     index = UnifiedDecisionIndex()
     current = replace(decision(Strategy.D25), observed_at=_at(14, 49, 50))
     _publish(index, current)
-    assert index.seal_for_freeze(Strategy.D25, boundary_at=_at(14, 50)).accepted
+    assert index.seal_for_freeze(Strategy.D25, boundary_at=_at(15, 0)).accepted
     coordinator = _coordinator(index, repository, _Clock(_at(15, 0, 1)), Strategy.D25)
 
     result = coordinator.freeze_close_fallback(

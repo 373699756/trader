@@ -189,7 +189,7 @@ def _current_scored(
 ) -> tuple[ScoredDecision | None, CommittedDecisionRecord | None]:
     boundary = datetime.combine(
         now.date(),
-        time(14, 50),
+        time(15, 0),
         tzinfo=now.tzinfo,
     )
     if now >= boundary:
@@ -208,7 +208,7 @@ def _current_draft(decision: ScoredDecision | None, strategy: Strategy, now: dat
         return None
     boundary = datetime.combine(
         now.date(),
-        time(14, 50),
+        time(15, 0),
         tzinfo=now.tzinfo,
     )
     return decision if now < boundary else None

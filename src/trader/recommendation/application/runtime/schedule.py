@@ -8,6 +8,7 @@ from enum import Enum
 from zoneinfo import ZoneInfo
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+FREEZE_TIME = time(15, 0)
 
 
 class MarketPhase(str, Enum):
@@ -45,8 +46,7 @@ _PHASE_BOUNDARIES = (
     time(14, 48),
     time(14, 49, 20),
     time(14, 49, 50),
-    time(14, 50),
-    time(15, 0),
+    FREEZE_TIME,
 )
 _TRADING_PHASE_RANGES = (
     (time(9, 15), time(9, 30), MarketPhase.WARMUP),
@@ -57,8 +57,7 @@ _TRADING_PHASE_RANGES = (
     (time(13, 0), time(14, 20), MarketPhase.AFTERNOON),
     (time(14, 20), time(14, 48), MarketPhase.FINAL_REVIEW),
     (time(14, 48), time(14, 49, 50), MarketPhase.DEEPSEEK_CUTOFF),
-    (time(14, 49, 50), time(14, 50), MarketPhase.FINAL_QUOTE),
-    (time(14, 50), time(15, 0), MarketPhase.FROZEN),
+    (time(14, 49, 50), FREEZE_TIME, MarketPhase.FINAL_QUOTE),
 )
 
 
@@ -134,7 +133,7 @@ def freeze_due_at(value: datetime, *, is_trading_day: bool) -> tuple[str, ...]:
     if not is_trading_day:
         return ()
     current = shanghai_now(value).time().replace(tzinfo=None)
-    if current >= time(14, 50):
+    if current >= FREEZE_TIME:
         return ("tomorrow", "d25")
     return ()
 
@@ -145,7 +144,7 @@ def startup_freeze_strategies(value: datetime, *, is_trading_day: bool) -> tuple
     if not is_trading_day:
         return ()
     current = shanghai_now(value).time().replace(tzinfo=None)
-    if time(14, 50) <= current < time(15, 0):
+    if current >= FREEZE_TIME:
         return ("tomorrow", "d25")
     return ()
 
@@ -158,8 +157,7 @@ def schedule_point_at(value: datetime, *, is_trading_day: bool) -> SchedulePoint
         time(14, 48): SchedulePoint.DEEPSEEK_CUTOFF,
         time(14, 49, 20): SchedulePoint.AFTERNOON_CHECKPOINT,
         time(14, 49, 50): SchedulePoint.FINAL_CANDIDATE_QUOTES,
-        time(14, 50): SchedulePoint.AFTERNOON_FREEZE,
-        time(15, 0): SchedulePoint.CLOSE_QUOTES,
+        FREEZE_TIME: SchedulePoint.AFTERNOON_FREEZE,
     }
     return points.get(current.replace(microsecond=0))
 

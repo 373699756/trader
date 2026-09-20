@@ -13,7 +13,7 @@ def test_freeze_contract_has_one_boundary_for_each_strategy() -> None:
 
     assert "14:49:20（含）至 14:50（不含）" in design
     assert "有效 14:49:50 检查点" not in design
-    assert "Tomorrow/D25 14:50 后" in strategy
+    assert "Tomorrow/D25 15:00 后" in strategy
     assert "Long：不冻结、不写推荐历史" in strategy
 
 

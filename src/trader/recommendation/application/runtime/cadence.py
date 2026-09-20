@@ -419,7 +419,9 @@ class CadencePlanner:
         for point, strategies in due_points:
             tasks.extend(_point_tasks(point, local, phase, strategies=strategies))
         tasks = list(_combine_freeze_tasks(tasks))
-        if self._afternoon_freeze_active(trade_date):
+        if self._afternoon_freeze_active(trade_date) and SchedulePoint.AFTERNOON_FREEZE not in {
+            point for point, _strategies in due_points
+        }:
             tasks = [task for task in tasks if task.task is not PipelineTask.CLOSE_QUOTES]
         self._append_periodic_tasks(tasks, local, phase, tuple(point for point, _strategies in due_points))
         self._append_pending_score(tasks, local, phase)
@@ -613,7 +615,6 @@ def _schedule_point_strategies() -> tuple[tuple[SchedulePoint, tuple[str, ...]],
         (SchedulePoint.AFTERNOON_CHECKPOINT, ("tomorrow", "d25")),
         (SchedulePoint.FINAL_CANDIDATE_QUOTES, ("-",)),
         (SchedulePoint.AFTERNOON_FREEZE, ("tomorrow", "d25")),
-        (SchedulePoint.CLOSE_QUOTES, ("-",)),
     )
 
 
@@ -622,8 +623,7 @@ def _point_boundary(local: datetime, point: SchedulePoint) -> datetime:
         SchedulePoint.DEEPSEEK_CUTOFF: time(14, 48),
         SchedulePoint.AFTERNOON_CHECKPOINT: time(14, 49, 20),
         SchedulePoint.FINAL_CANDIDATE_QUOTES: time(14, 49, 50),
-        SchedulePoint.AFTERNOON_FREEZE: time(14, 50),
-        SchedulePoint.CLOSE_QUOTES: time(15, 0),
+        SchedulePoint.AFTERNOON_FREEZE: time(15, 0),
     }[point]
     return local.replace(hour=raw.hour, minute=raw.minute, second=raw.second, microsecond=0)
 
@@ -642,9 +642,9 @@ def _initial_point_status(
         current = local.time().replace(tzinfo=None)
         started_before_boundary = started_at.date() < boundary.date() or started_at < boundary
         if point in {SchedulePoint.DEEPSEEK_CUTOFF, SchedulePoint.FINAL_CANDIDATE_QUOTES}:
-            eligible = current < time(14, 50) and started_at <= boundary
+            eligible = current < time(15, 0) and started_at <= boundary
         elif point is SchedulePoint.AFTERNOON_CHECKPOINT:
-            eligible = current < time(14, 50)
+            eligible = current < time(15, 0)
         elif point is SchedulePoint.AFTERNOON_FREEZE:
             eligible = current < time(15, 0) or started_before_boundary
         else:
@@ -661,7 +661,7 @@ def _point_window_expired(point: SchedulePoint, local: datetime) -> bool:
         SchedulePoint.AFTERNOON_CHECKPOINT,
         SchedulePoint.FINAL_CANDIDATE_QUOTES,
     }:
-        return current >= time(14, 50)
+        return current >= time(15, 0)
     return False
 
 
@@ -697,19 +697,18 @@ def _point_tasks(
 ) -> tuple[ScheduledPipelineTask, ...]:
     tasks: tuple[ScheduledPipelineTask, ...]
     if point is SchedulePoint.AFTERNOON_FREEZE:
-        tasks = (ScheduledPipelineTask(PipelineTask.FREEZE, at, phase, strategies, point),)
+        tasks = (
+            ScheduledPipelineTask(PipelineTask.CLOSE_QUOTES, at, phase, (), point),
+            ScheduledPipelineTask(PipelineTask.LONG_QUOTES, at, phase),
+            ScheduledPipelineTask(PipelineTask.REFERENCE_DATA, at, phase),
+            ScheduledPipelineTask(PipelineTask.FREEZE, at, phase, strategies, point),
+        )
     elif point is SchedulePoint.DEEPSEEK_CUTOFF:
         tasks = (ScheduledPipelineTask(PipelineTask.DEEPSEEK_CUTOFF, at, phase, (), point),)
     elif point is SchedulePoint.AFTERNOON_CHECKPOINT:
         tasks = (ScheduledPipelineTask(PipelineTask.CHECKPOINT, at, phase, strategies, point),)
     elif point is SchedulePoint.FINAL_CANDIDATE_QUOTES:
         tasks = (ScheduledPipelineTask(PipelineTask.FINAL_CANDIDATE_QUOTES, at, phase, (), point),)
-    elif point is SchedulePoint.CLOSE_QUOTES:
-        tasks = (
-            ScheduledPipelineTask(PipelineTask.CLOSE_QUOTES, at, phase, (), point),
-            ScheduledPipelineTask(PipelineTask.LONG_QUOTES, at, phase),
-            ScheduledPipelineTask(PipelineTask.REFERENCE_DATA, at, phase),
-        )
     else:
         raise ValueError(f"unsupported schedule point: {point.value}")
     return tasks

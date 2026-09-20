@@ -38,7 +38,7 @@ def test_dashboard_and_explanation_use_the_unified_short_horizon_score_scale() -
     assert "模型相对排名只作为诊断" in normalized_scoring
     assert "Decision coverage、 GET、SSE 完整替换和运行诊断统一读取该聚合" in normalized_design
     assert "预测横截面分位只作为模型相对信号诊断" in normalized_retrospective
-    assert "Tomorrow | 14:50 到下一交易日收盘的成本后净超额，14:50 冻结 | 板块证据质量权重" in (
+    assert "Tomorrow | 14:50 到下一交易日收盘的成本后净超额，15:00 收盘价冻结 | 板块证据质量权重" in (
         normalized_retrospective
     )
     assert "作为 Tomorrow `base_score`" not in retrospective

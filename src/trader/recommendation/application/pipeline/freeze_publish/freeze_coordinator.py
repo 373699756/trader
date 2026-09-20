@@ -71,8 +71,8 @@ class ScoredFreezeCoordinator:
 
     def capture_checkpoint(self) -> FreezeOperationResult:
         now = _now(self._clock)
-        boundary = _at(now.date(), time(14, 50))
-        if not _at(now.date(), time(14, 49, 20)) <= now < boundary:
+        boundary = _at(now.date(), time(15, 0))
+        if not _at(now.date(), time(14, 59, 20)) <= now < boundary:
             return FreezeOperationResult("outside_checkpoint_window")
         current = self._current(now.date())
         if current is None or current.observed_at > now:
@@ -90,7 +90,7 @@ class ScoredFreezeCoordinator:
 
     def freeze_scheduled(self) -> FreezeOperationResult:
         now = _now(self._clock)
-        boundary = _at(now.date(), time(14, 50))
+        boundary = _at(now.date(), time(15, 0))
         if now < boundary:
             return FreezeOperationResult("before_freeze")
         existing = self._existing(now.date())

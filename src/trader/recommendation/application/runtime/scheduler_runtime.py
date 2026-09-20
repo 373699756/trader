@@ -647,7 +647,7 @@ class SchedulerRuntime:
             while sequence <= current_sequence:
                 sequence += 2
             self._sequences[strategy] = sequence + 1
-        deadline_time = wall_time(14, 48)
+        deadline_time = wall_time(15, 0)
         review_deadline = datetime.combine(observed_at.date(), deadline_time, tzinfo=SHANGHAI)
         allow_review = strategy is not Strategy.LONG and phase != "midday_recovery" and observed_at < review_deadline
         return CycleRequest(

@@ -134,7 +134,7 @@ def model_scoring_context(request: CycleRequest, batch: InputBatch, now: datetim
     input_age_seconds = max(0.0, (local_now - input_at).total_seconds())
     if request.phase == "close_fallback":
         return ModelScoringContext(input_age_seconds=input_age_seconds)
-    deadline = datetime.combine(request.trade_date, time(14, 50), tzinfo=SHANGHAI)
+    deadline = datetime.combine(request.trade_date, time(15, 0), tzinfo=SHANGHAI)
     return ModelScoringContext(
         time_budget_seconds=max(0.0, (deadline - local_now).total_seconds()),
         input_age_seconds=input_age_seconds,
