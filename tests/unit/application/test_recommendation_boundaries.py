@@ -13,21 +13,21 @@ from tests.unit.application.test_tomorrow_projection import EVALUATED_AT, _nativ
 from tests.unit.application.test_tomorrow_selection import _data_snapshot
 from tests.unit.application.test_tomorrow_selection import _policy as snapshot_policy
 from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
-from trader.application.market_data.input_runtime import DecisionBuildDependencies, MarketDataAdapter
-from trader.application.ports.market import MarketDataPlaneSnapshot
-from trader.application.ports.model_scoring import ModelScoringContext
-from trader.application.ports.scheduler import DecisionUnavailableError
-from trader.application.recommendation.candidate_filtering import (
+from trader.recommendation.application.pipeline.data_source.source_router import DecisionBuildDependencies, MarketDataAdapter
+from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
+from trader.recommendation.application.ports.loaded_profile import ModelScoringContext
+from trader.recommendation.application.ports.runtime import DecisionUnavailableError
+from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import (
     CandidateFilteringPort,
     CandidateFilteringService,
 )
-from trader.application.recommendation.feature_calculation import FeatureCalculationPort
+from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_feature_builder import FeatureCalculationPort
 from trader.application.recommendation.local_scoring import LocalScoringPort, LocalScoringService
 from trader.application.recommendation.model_scoring import PublishedModelScoringService
 from trader.application.recommendation.policy import RecommendationPolicy
 from trader.application.recommendation.ranking_selection import RankingSelectionPort, RankingSelectionService
 from trader.application.recommendation.score_fusion import ScoreFusionService
-from trader.application.recommendation.scored_selection import (
+from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
     ScoredSelectionUseCase,
     assemble_scored_features,
 )

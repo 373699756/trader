@@ -14,8 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from trader.application.ports.data_plane import HistoricalFeatureRecord
-from trader.application.ports.decision_records import DecisionRecordRepositoryPort
+from trader.recommendation.application.ports.market_data_repository import HistoricalFeatureRecord
+from trader.recommendation.application.ports.decision_records import DecisionRecordRepositoryPort
 from trader.training.evaluation.domain.models import (
     BenchmarkReturn,
     OutcomeTarget,

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from tests.unit.domain.test_decision_identity import NOW, decision
-from trader.application.ports.decision_records import (
+from trader.recommendation.application.ports.decision_records import (
     DecisionCheckpoint,
     DecisionRecordConflictError,
     DecisionRecordUnavailableError,

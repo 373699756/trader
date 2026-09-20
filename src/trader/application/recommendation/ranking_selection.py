@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from trader.application.recommendation.policy import RecommendationPolicy
-from trader.application.recommendation.scored_selection import (
+from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
     ScoredSelectionIdentity,
     ScoredSelectionOptions,
     select_scored_features,

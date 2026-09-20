@@ -6,22 +6,31 @@ import math
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 
-from trader.application.ports.runtime_status import InputQualityStatus, SupplySummary
+from trader.recommendation.application.ports.read_only_queries import InputQualityStatus, SupplySummary
 from trader.application.recommendation.scored_projection import ScoredLocalProjection
-from trader.application.recommendation.scored_quality import ScoredInputQuality
+from trader.recommendation.application.pipeline.quality_check.input_quality_service import ScoredInputQuality
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.decision_identity import DecisionItem, ScoredDecision
 from trader.recommendation.domain.publication.models import RecommendationAction, ScoredDisposition, ScoredStockEvaluation
 from trader.recommendation.domain.evidence.pipeline import (
+    PIPELINE_STAGES,
     PipelineFacet,
     PipelineMetricName,
     PipelineMetricRange,
     PipelineReasonCount,
+    PipelineStage,
     PipelineStageKey,
+    PipelineStageSnapshot,
     PipelineStageState,
     PipelineStageStatus,
     RecommendationPipelineStatus,
+    Severity,
+    SourceHealth,
+    SourceHealthState,
+    StageReasonAggregate,
+    StageState,
 )
 from trader.recommendation.domain.selection.scored_selection import (
     ScoredCandidateStageCounts,
@@ -97,6 +106,16 @@ def build_supply_status(
         publishable=quality.publishable,
         summary=_supply_summary(projection, decision=active_decision),
         pipeline=pipeline,
+        stage_snapshots=build_first_nine_stage_snapshots(
+            stage_counts,
+            as_of=projection.local.observed_at,
+            population_count=quality.population_count,
+            candidate_feature_count=quality.candidate_feature_count,
+            data_pending_count=quality.data_pending_count,
+            refresh_pending_count=quality.refresh_pending_count,
+            invalid_count=sum(quality.candidate_transient_reason_counts.values()),
+            degraded_reasons=quality.degraded_reasons,
+        ),
         population_count=quality.population_count,
         candidate_count=quality.candidate_count,
         candidate_feature_count=quality.candidate_feature_count,
@@ -119,6 +138,170 @@ def build_supply_status(
         supply_reason_counts=tuple(reasons.items()),
         primary_blocker=_primary_supply_blocker(quality, pipeline, empty_reason=diagnostics.empty_reason),
     )
+
+
+def build_first_nine_stage_snapshots(
+    stage_counts: ScoredCandidateStageCounts,
+    *,
+    as_of: datetime,
+    population_count: int,
+    candidate_feature_count: int,
+    data_pending_count: int = 0,
+    refresh_pending_count: int = 0,
+    invalid_count: int = 0,
+    degraded_reasons: tuple[str, ...] = (),
+) -> tuple[PipelineStageSnapshot, ...]:
+    """Project the active first-nine-stage counters without mixing readiness and rejection."""
+
+    issuer_count = min(population_count, stage_counts.issuer_eligible_population)
+    static_pending = min(max(0, population_count - issuer_count), data_pending_count)
+    static_rejected = max(0, population_count - issuer_count - static_pending)
+    dynamic_pending = min(
+        max(0, issuer_count - stage_counts.input_ready_population),
+        refresh_pending_count,
+    )
+    dynamic_failed = max(0, issuer_count - stage_counts.input_ready_population - dynamic_pending)
+    dynamic_rejected = max(0, stage_counts.input_ready_population - stage_counts.dynamic_filter_eligible)
+    candidate_output = stage_counts.candidate_limit_selected
+    quality_output = min(candidate_output, candidate_feature_count)
+    quality_pending = max(0, candidate_output - quality_output - invalid_count)
+    quality_invalid = min(invalid_count, candidate_output - quality_output)
+    source_degraded = bool(degraded_reasons)
+    source_health = SourceHealth(
+        SourceHealthState.DEGRADED if source_degraded else SourceHealthState.READY,
+        source_count=1,
+        healthy_source_count=1,
+        latest_success_at=as_of,
+        age_seconds=0.0,
+    )
+    rows = (
+        (PipelineStage.DATA_SOURCE, population_count, population_count, 0, 0, 0, ()),
+        (PipelineStage.STATIC_MARKET, population_count, population_count, 0, 0, 0, ()),
+        (PipelineStage.STATIC_STANDARDIZE, population_count, population_count, 0, 0, 0, ()),
+        (
+            PipelineStage.STATIC_FILTER,
+            population_count,
+            issuer_count,
+            static_rejected,
+            static_pending,
+            0,
+            _stage_reasons(("data_pending", static_pending), ("stable_rejected", static_rejected)),
+        ),
+        (
+            PipelineStage.DYNAMIC_MARKET,
+            issuer_count,
+            stage_counts.input_ready_population,
+            0,
+            dynamic_pending,
+            dynamic_failed,
+            _stage_reasons(("refresh_pending", dynamic_pending), ("source_failed", dynamic_failed)),
+        ),
+        (
+            PipelineStage.DYNAMIC_STANDARDIZE,
+            stage_counts.input_ready_population,
+            stage_counts.input_ready_population,
+            0,
+            0,
+            0,
+            (),
+        ),
+        (
+            PipelineStage.DYNAMIC_FILTER,
+            stage_counts.input_ready_population,
+            stage_counts.dynamic_filter_eligible,
+            dynamic_rejected,
+            0,
+            0,
+            _stage_reasons(("dynamic_rejected", dynamic_rejected)),
+        ),
+        (
+            PipelineStage.CANDIDATE_POOL,
+            stage_counts.dynamic_filter_eligible,
+            candidate_output,
+            0,
+            0,
+            0,
+            _stage_reasons(
+                ("board_limit", max(0, stage_counts.dynamic_filter_eligible - candidate_output)),
+            ),
+        ),
+        (
+            PipelineStage.QUALITY_CHECK,
+            candidate_output,
+            quality_output,
+            0,
+            quality_pending,
+            quality_invalid,
+            _stage_reasons(
+                ("quality_pending", quality_pending),
+                ("quality_invalid", quality_invalid),
+            ),
+        ),
+    )
+    return tuple(
+        _stage_snapshot(
+            stage,
+            as_of=as_of,
+            input_count=input_count,
+            output_count=output_count,
+            rejected_count=rejected_count,
+            pending_count=pending_count,
+            failed_count=failed_count,
+            reasons=reasons,
+            source_health=source_health,
+            source_degraded=source_degraded and stage is PipelineStage.DATA_SOURCE,
+        )
+        for stage, input_count, output_count, rejected_count, pending_count, failed_count, reasons in rows
+    )
+
+
+def _stage_snapshot(
+    stage: PipelineStage,
+    *,
+    as_of: datetime,
+    input_count: int,
+    output_count: int,
+    rejected_count: int,
+    pending_count: int,
+    failed_count: int,
+    reasons: tuple[StageReasonAggregate, ...],
+    source_health: SourceHealth,
+    source_degraded: bool,
+) -> PipelineStageSnapshot:
+    state = _stage_state(output_count, pending_count, failed_count, source_degraded)
+    return PipelineStageSnapshot(
+        stage=stage,
+        stage_order=PIPELINE_STAGES.index(stage) + 1,
+        as_of=as_of,
+        state=state,
+        input_count=input_count,
+        output_count=output_count,
+        rejected_count=rejected_count,
+        pending_count=pending_count,
+        failed_count=failed_count,
+        reasons=reasons,
+        source_health=source_health,
+        latency_ms=0,
+        degraded=state is StageState.DEGRADED,
+    )
+
+
+def _stage_reasons(*values: tuple[str, int]) -> tuple[StageReasonAggregate, ...]:
+    return tuple(
+        StageReasonAggregate(code, code.replace("_", " "), count, Severity.WARNING)
+        for code, count in values
+        if count > 0
+    )
+
+
+def _stage_state(output_count: int, pending_count: int, failed_count: int, degraded: bool) -> StageState:
+    if failed_count and not output_count:
+        return StageState.FAILED
+    if not output_count and pending_count:
+        return StageState.NOT_READY
+    if degraded or pending_count or failed_count:
+        return StageState.DEGRADED
+    return StageState.READY
 
 
 def build_pending_pipeline(

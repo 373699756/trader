@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from trader.application.ports.model_scoring import (
+from trader.recommendation.application.ports.loaded_profile import (
     HeadRuntime,
     LoadedScoringProfile,
     ProfileEvidence,

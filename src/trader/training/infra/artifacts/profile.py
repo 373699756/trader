@@ -6,7 +6,7 @@ from typing import cast
 
 from lightgbm.basic import LightGBMError
 
-from trader.application.ports.model_scoring import (
+from trader.recommendation.application.ports.loaded_profile import (
     HeadPredictorPort,
     HeadRuntime,
     LoadedScoringProfile,

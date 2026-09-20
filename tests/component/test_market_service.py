@@ -48,7 +48,7 @@ from tests.component.market_data_test_support import (
     timedelta,
     timezone,
 )
-from trader.application.ports.data_plane import DataPlaneConflictError, DataPlaneUnavailableError
+from trader.recommendation.application.ports.market_data_repository import DataPlaneConflictError, DataPlaneUnavailableError
 from trader.infra.market_data.service.observations import SourceObservation
 
 

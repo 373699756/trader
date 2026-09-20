@@ -6,13 +6,14 @@ import threading
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
 
-from trader.application.ports.market import ResearchReaderPort, ResearchRefreshResult
-from trader.application.ports.scheduler import CycleRequest, ResearchIntent, ResearchRuntimeStatus
+from trader.recommendation.application.ports.runtime import CycleRequest, ResearchIntent, ResearchRuntimeStatus
 from trader.application.runtime.cadence import CadencePolicy, PipelineTask, cadence_band
 from trader.application.runtime.schedule import MarketPhase
 from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.evaluation.application.research_coordination import ResearchCoordinator
+from trader.recommendation.domain.market.refresh import ResearchRefreshResult
+from trader.training.evaluation.application.research_ports import ResearchReaderPort
 
 
 class ResearchRuntime:

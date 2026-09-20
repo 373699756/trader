@@ -1,0 +1,1 @@
+"""Typed recommendation application ports."""

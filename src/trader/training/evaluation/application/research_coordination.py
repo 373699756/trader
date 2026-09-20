@@ -8,7 +8,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from trader.application.ports.market import ResearchReaderPort, ResearchRefreshResult
+from trader.recommendation.domain.market.refresh import ResearchRefreshResult
+from trader.training.evaluation.application.research_ports import ResearchReaderPort
 from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
 from trader.application.runtime.workers import BoundedExecutor
 

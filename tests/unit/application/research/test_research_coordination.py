@@ -4,7 +4,7 @@ import threading
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from trader.application.ports.market import ResearchRefreshResult
+from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.training.evaluation.application.research_coordination import ResearchCoordinator, ResearchCoordinatorOptions
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")

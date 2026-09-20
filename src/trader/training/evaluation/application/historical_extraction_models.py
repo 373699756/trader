@@ -13,7 +13,7 @@ from datetime import date, datetime
 from types import MappingProxyType
 from typing import Literal, TypeVar
 
-from trader.application.ports.json_values import JsonObject, freeze_json_object
+from trader.training.evaluation.application.json_values import JsonObject, freeze_json_object
 from trader.training.evaluation.domain.historical import (
     SUPPORTED_RESEARCH_BOARDS,
     CostSettlementBasis,

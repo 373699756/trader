@@ -5,7 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src" / "trader"
-RECOMMENDATION = SOURCE / "application" / "recommendation"
+RECOMMENDATION = SOURCE / "recommendation" / "application"
 
 
 def _imports(path: Path) -> set[str]:
@@ -21,20 +21,15 @@ def _imports(path: Path) -> set[str]:
 
 def test_recommendation_capabilities_have_explicit_application_boundaries() -> None:
     expected = {
-        "candidate_filtering.py",
-        "feature_calculation.py",
-        "local_scoring.py",
-        "model_scoring.py",
-        "ranking_selection.py",
-        "risk_control.py",
-        "score_fusion.py",
+        "ports",
+        "pipeline",
     }
-    assert expected <= {path.name for path in RECOMMENDATION.glob("*.py")}
+    assert expected <= {path.name for path in RECOMMENDATION.iterdir()}
 
     forbidden = ("trader.infra", "trader.web", "trader.entrypoints", "stock_analyzer")
     violations = [
         f"{path.relative_to(SOURCE)} -> {imported}"
-        for path in RECOMMENDATION.glob("*.py")
+        for path in RECOMMENDATION.rglob("*.py")
         for imported in _imports(path)
         if imported.startswith(forbidden) or ".training" in imported or imported.endswith(".download")
     ]
@@ -42,7 +37,9 @@ def test_recommendation_capabilities_have_explicit_application_boundaries() -> N
 
 
 def test_recommendation_runtime_uses_ports_instead_of_training_entrypoints() -> None:
-    input_runtime = (SOURCE / "application" / "market_data" / "input_runtime.py").read_text(encoding="utf-8")
+    input_runtime = (SOURCE / "recommendation/application/pipeline/data_source/source_router.py").read_text(
+        encoding="utf-8"
+    )
     decision_adapters = (SOURCE / "application" / "decisions" / "decision_adapters.py").read_text(encoding="utf-8")
 
     assert "CandidateFilteringPort" in input_runtime

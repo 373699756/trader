@@ -10,7 +10,7 @@ from datetime import datetime
 from threading import Lock
 from typing import Protocol, cast
 
-from trader.application.ports.data_plane import (
+from trader.recommendation.application.ports.market_data_repository import (
     DataPlaneConflictError,
     DataPlaneUnavailableError,
     RiskEvidenceRecord,

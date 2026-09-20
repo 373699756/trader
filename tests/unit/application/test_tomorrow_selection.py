@@ -13,8 +13,8 @@ from tests.unit.epoch_helpers import (
     market_field_values,
     research_field_values,
 )
-from trader.application.ports.market import MarketDataPlaneSnapshot
-from trader.application.recommendation.scored_selection import (
+from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
+from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
     ScoredSelectionNotReadyError,
     ScoredSelectionUseCase,
     assemble_scored_features,

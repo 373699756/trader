@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from trader.application.ports.market import MarketDataFailedError, MarketDataNoDataError
+from trader.recommendation.application.ports.market_data import MarketDataFailedError, MarketDataNoDataError
 from trader.infra.market_data.service.router import RouteOutcome, VendorRoute, VendorSeverity, route
 
 

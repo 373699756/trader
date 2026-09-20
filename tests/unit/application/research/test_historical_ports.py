@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.application.ports.market import DataPlaneReadPort, MarketDataPlaneSnapshot
+from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
 from trader.training.evaluation.application.historical_extraction_models import (
     AdjustmentFactorWindow,
     BoardPointInTimeCoverage,
@@ -250,5 +250,5 @@ def _consume_port(port: HistoricalDataPlaneReadPort) -> tuple[str, ...]:
 
 
 def test_two_phase_port_contract_can_be_implemented_without_a_provider_dependency() -> None:
-    assert DataPlaneReadPort in HistoricalDataPlaneReadPort.__mro__
+    assert callable(getattr(HistoricalDataPlaneReadPort, "snapshot"))
     assert _consume_port(_PortDouble()) == ("300001", "600001", "688001")

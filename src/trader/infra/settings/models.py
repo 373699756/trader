@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from trader.application.cache import CachePolicy
+from trader.infra.cache_contracts import CachePolicy
 from trader.recommendation.domain.market.news import NewsSignalPolicy
 from trader.recommendation.domain.market.research import FeatureComponentWeightPolicy, LongResearchPolicy, MarketRegimePolicy
 from trader.recommendation.domain.market.tail import TailSignalPolicy

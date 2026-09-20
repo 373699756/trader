@@ -6,13 +6,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-from trader.application.ports.model_scoring import (
+from trader.recommendation.application.ports.loaded_profile import (
     ModelDiagnostics,
     ModelScoreBatch,
     ModelScoringContext,
     ModelScoringPort,
 )
-from trader.application.ports.scored import ScoredNativeInput
+from trader.recommendation.application.ports.scoring import ScoredNativeInput
 from trader.application.recommendation.policy import RecommendationPolicy
 from trader.application.recommendation.ranking_selection import RankingSelectionPort, RankingSelectionService
 from trader.application.recommendation.recommendation_policy_codec import preselection_replay_feature
@@ -21,12 +21,12 @@ from trader.application.recommendation.scored_deepseek_fusion import (
     normalize_scored_review_times,
     scored_decision_policy,
 )
-from trader.application.recommendation.scored_quality import (
+from trader.recommendation.application.pipeline.quality_check.input_quality_service import (
     ScoredInputQuality,
     ScoredInputQualityOptions,
     assess_scored_input_quality,
 )
-from trader.application.recommendation.scored_selection import (
+from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
     ScoredSelectionIdentity,
     ScoredSelectionOptions,
 )

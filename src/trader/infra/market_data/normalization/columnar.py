@@ -10,10 +10,10 @@ from datetime import datetime
 import polars as pl
 from polars.datatypes import DataType, DataTypeClass
 
-from trader.application.cache import canonical_json_bytes
-from trader.application.ports import data_plane_contracts
+from trader.infra.cache_contracts import canonical_json_bytes
 from trader.recommendation.domain.market.models import CanonicalMarketSnapshot, FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.market.research import ResearchObservation
+from trader.recommendation.application.ports import market_data_contracts
 
 _CHANGE_SCHEMA_VERSION = "market_change_set_legacy"
 _QUOTE_SCHEMA_VERSION = "columnar_quote_batch"
@@ -89,12 +89,12 @@ class NormalizedMarketChangeSet:
     def has_full_invalidation(self) -> bool:
         return self.full_invalidation_reason is not None
 
-    def to_public(self) -> data_plane_contracts.MarketChangeSet:
+    def to_public(self) -> market_data_contracts.MarketChangeSet:
         inserted_codes = () if self.overlay_only else self.inserted_codes
         updated_codes = () if self.overlay_only else self.updated_codes
         removed_codes = () if self.overlay_only else self.removed_codes
-        return data_plane_contracts.MarketChangeSet(
-            schema_version=data_plane_contracts.MARKET_CHANGE_SET_VERSION,
+        return market_data_contracts.MarketChangeSet(
+            schema_version=market_data_contracts.MARKET_CHANGE_SET_VERSION,
             merge_epoch=self.merge_epoch,
             previous_merge_epoch=self.previous_merge_epoch,
             inserted_codes=inserted_codes,
@@ -227,9 +227,9 @@ class ColumnarFeatureBatch:
         features: tuple[FeatureSnapshot, ...],
         change_set: NormalizedMarketChangeSet,
         options: FeatureEnvelopeOptions,
-    ) -> data_plane_contracts.FeatureSnapshotEnvelope:
-        return data_plane_contracts.FeatureSnapshotEnvelope(
-            schema_version=data_plane_contracts.FEATURE_ENVELOPE_VERSION,
+    ) -> market_data_contracts.FeatureSnapshotEnvelope:
+        return market_data_contracts.FeatureSnapshotEnvelope(
+            schema_version=market_data_contracts.FEATURE_ENVELOPE_VERSION,
             snapshot_version=options.snapshot_version or self.identity.digest,
             feature_snapshot_version=options.feature_snapshot_version or self.identity.schema_version,
             trade_date=options.trade_date,

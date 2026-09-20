@@ -10,9 +10,9 @@ import pytest
 from tests.unit.application.review_helpers import review
 from tests.unit.application.scoring_helpers import profile_for
 from trader.application.decisions.decision_core import UnifiedDecisionIndex
-from trader.application.market_data.supply_status import build_supply_status
-from trader.application.ports.model_scoring import ModelInput, ModelPrediction
-from trader.application.ports.scored import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
+from trader.recommendation.application.pipeline.quality_check.pipeline_status import build_supply_status
+from trader.recommendation.application.ports.loaded_profile import ModelInput, ModelPrediction
+from trader.recommendation.application.ports.scoring import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
 from trader.application.recommendation.model_scoring_router import ModelScoringRouter
 from trader.application.recommendation.production_model_scoring import ProductionModelScoringService
 from trader.application.recommendation.scored_projection import (

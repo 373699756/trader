@@ -7,8 +7,8 @@ from datetime import date, datetime, timedelta
 from tests.unit.domain.test_decision_identity import NOW, decision
 from trader.application.decisions.decision_core import UnifiedDecisionIndex
 from trader.application.decisions.decision_observers import AsyncDecisionObserver
-from trader.application.ports.market import ResearchRefreshResult
-from trader.application.ports.scheduler import (
+from trader.recommendation.domain.market.refresh import ResearchRefreshResult
+from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshUnavailableError,
     DecisionUnavailableError,

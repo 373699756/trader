@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
-from trader.application.ports.data_plane import (
+from trader.recommendation.application.ports.market_data_repository import (
     DataPlaneUnavailableError,
     RiskEvidenceRecord,
     SourceCursorRecord,

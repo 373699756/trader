@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.unit.application.scoring_helpers import profile_for
-from trader.application.ports.model_scoring import (
+from trader.recommendation.application.ports.loaded_profile import (
     ModelInput,
     ModelPrediction,
     ModelScoringContext,

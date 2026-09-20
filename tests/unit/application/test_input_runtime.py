@@ -10,13 +10,13 @@ import pytest
 
 from tests.unit.domain.test_decision_identity import decision
 from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
-from trader.application.market_data.input_runtime import (
+from trader.recommendation.application.pipeline.data_source.source_router import (
     DecisionBuildDependencies,
     InputBatch,
     MarketDataAdapter,
     _model_scoring_context,
 )
-from trader.application.ports.scheduler import (
+from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshUnavailableError,
     DecisionUnavailableError,

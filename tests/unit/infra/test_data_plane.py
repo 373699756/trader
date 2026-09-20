@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.application.ports.data_plane import (
+from trader.recommendation.application.ports.market_data_repository import (
     DataPlaneConflictError,
     DataPlaneRecoverySummary,
     DataPlaneUnavailableError,
@@ -20,7 +20,7 @@ from trader.application.ports.data_plane import (
     SourceCursorRecord,
     TradingCalendarRecord,
 )
-from trader.application.ports.json_values import JsonObject
+from trader.recommendation.application.ports.json_values import JsonObject
 from trader.infra.persistence import data_plane_sqlite
 from trader.infra.persistence.data_plane import DataPlaneRepository
 

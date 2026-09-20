@@ -6,9 +6,9 @@ import hashlib
 from collections.abc import Mapping, Sequence
 from datetime import date
 
-from trader.application.cache import canonical_json_bytes
-from trader.application.ports.data_plane import SourceCursorRecord
-from trader.application.ports.json_values import JsonObject, JsonValue
+from trader.infra.cache_contracts import canonical_json_bytes
+from trader.recommendation.application.ports.market_data_repository import SourceCursorRecord
+from trader.recommendation.application.ports.json_values import JsonObject, JsonValue
 from trader.infra.market_data.service.observations import JsonScalar, SourceObservation
 
 

@@ -17,15 +17,15 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
-from trader.application.cache import canonical_json_bytes
+from trader.infra.cache_contracts import canonical_json_bytes
 from trader.application.decisions.decision_core import UnifiedDecisionIndex
 from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.decisions.decision_events import build_decision_committed
 from trader.application.decisions.decision_queries import UnifiedDecisionQueries
 from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
-from trader.application.ports.model_scoring import LoadedScoringProfile, ModelScoringPort
-from trader.application.ports.scored import TomorrowNativeInput
-from trader.application.recommendation.candidate_planning import (
+from trader.recommendation.application.ports.loaded_profile import LoadedScoringProfile, ModelScoringPort
+from trader.recommendation.application.ports.scoring import TomorrowNativeInput
+from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import (
     SCORED_STRATEGIES,
     CandidatePlanningContext,
     CandidatePlanSet,
@@ -407,8 +407,8 @@ def _operations(
         "market_merge": "trader.infra.market_data.normalization.merge.merge_market_observations",
         "canonical_snapshot": "trader.infra.market_data.normalization.columnar.ColumnarQuoteBatch.from_snapshot",
         "targeted_overlay_commit": "trader.infra.market_data.normalization.merge.overlay_canonical_snapshot + trader.application.decisions.decision_core.UnifiedDecisionIndex.publish_overlay",
-        "board_preselection": "trader.application.recommendation.candidate_planning.build_candidate_plans",
-        "candidate_union_projection": "trader.application.recommendation.candidate_planning.CandidatePlanSet.physical_union + trader.infra.market_data.normalization.merge.overlay_canonical_snapshot",
+        "board_preselection": "trader.recommendation.application.pipeline.candidate_pool.candidate_builder.build_candidate_plans",
+        "candidate_union_projection": "trader.recommendation.application.pipeline.candidate_pool.candidate_builder.CandidatePlanSet.physical_union + trader.infra.market_data.normalization.merge.overlay_canonical_snapshot",
         "board_local_scoring": "trader.recommendation.domain.scoring.scoring.score_board_strategy",
         "two_strategy_board_scoring": "trader.recommendation.domain.scoring.scoring.score_board_strategy",
         "three_board_wall_clock": "trader.recommendation.domain.scoring.scoring.score_board_strategy",

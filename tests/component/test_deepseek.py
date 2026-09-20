@@ -14,7 +14,7 @@ from trader.application.decisions.decision_core import UnifiedDecisionIndex
 from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.decisions.decision_queries import UnifiedDecisionQueries
 from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
-from trader.application.ports.reviews import DeepSeekReviewUnavailableError
+from trader.recommendation.application.ports.deepseek import DeepSeekReviewUnavailableError
 from trader.recommendation.domain.market.models import (
     Evidence,
     FeatureSnapshot,

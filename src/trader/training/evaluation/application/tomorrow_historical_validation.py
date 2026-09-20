@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal, Protocol
 
-from trader.application.ports.model_scoring import ModelInput, ModelPredictorPort
+from trader.recommendation.application.ports.loaded_profile import ModelInput, ModelPredictorPort
 from trader.recommendation.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
 from trader.recommendation.domain.scoring.utility_scoring import percentile_ranks
 from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash

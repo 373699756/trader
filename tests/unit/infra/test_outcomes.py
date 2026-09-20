@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from tests.unit.domain.test_decision_identity import NOW, decision
-from trader.application.ports.data_plane import HistoricalFeatureRecord
+from trader.recommendation.application.ports.market_data_repository import HistoricalFeatureRecord
 from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord
 from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.persistence.outcomes import OutcomeEvidenceConflictError, SQLiteOutcomeEvidenceRepository

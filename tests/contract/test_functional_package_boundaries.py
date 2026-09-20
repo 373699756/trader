@@ -15,9 +15,9 @@ TARGET_PACKAGES = (
     "recommendation/domain/evidence",
     "recommendation/domain/selection",
     "recommendation/domain/publication",
+    "recommendation/application/ports",
+    "recommendation/application/pipeline",
     "application/runtime",
-    "application/market_data",
-    "application/recommendation",
     "application/decisions",
     "infra/settings",
     "infra/market_data/providers",
@@ -141,6 +141,18 @@ def test_layer_import_graph_has_no_cycles_or_reverse_edges() -> None:
 
     for layer in layers:
         visit(layer)
+    assert violations == []
+
+
+def test_recommendation_application_has_no_reverse_or_cross_business_dependencies() -> None:
+    root = SOURCE_ROOT / "recommendation/application"
+    forbidden = ("trader.infra", "trader.web", "trader.entrypoints", "trader.training")
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)} -> {imported}"
+        for path in root.rglob("*.py")
+        for imported in _imports(path)
+        if imported.startswith(forbidden)
+    ]
     assert violations == []
 
 
@@ -269,8 +281,6 @@ def test_application_recommendation_and_decisions_are_partitioned() -> None:
     assert decisions_root.is_dir()
 
     recommendation_files = {
-        "scored_selection.py",
-        "scored_quality.py",
         "scored_deepseek_fusion.py",
         "scored_projection.py",
         "scored_freezing.py",
@@ -290,6 +300,7 @@ def test_application_recommendation_and_decisions_are_partitioned() -> None:
         "decision_adapters.py",
     }
     assert {path.name for path in recommendation_root.glob("*.py")} >= recommendation_files
+    assert not any((recommendation_root / name).exists() for name in {"scored_selection.py", "scored_quality.py"})
     assert {path.name for path in decisions_root.glob("*.py")} >= decision_files
     assert not any((application_root / name).exists() for name in recommendation_files | decision_files)
 
@@ -304,9 +315,8 @@ def test_application_recommendation_and_decisions_are_partitioned() -> None:
 def test_application_runtime_and_market_data_are_partitioned() -> None:
     application_root = SOURCE_ROOT / "application"
     runtime_root = application_root / "runtime"
-    market_data_root = application_root / "market_data"
     assert runtime_root.is_dir()
-    assert market_data_root.is_dir()
+    assert not (application_root / "market_data").exists()
 
     runtime_files = {
         "cadence.py",
@@ -322,13 +332,13 @@ def test_application_runtime_and_market_data_are_partitioned() -> None:
         "workers.py",
     }
     assert {path.name for path in runtime_root.glob("*.py")} >= runtime_files
-    assert (market_data_root / "input_runtime.py").is_file()
+    assert (SOURCE_ROOT / "recommendation/application/pipeline/data_source/source_router.py").is_file()
     assert not any((application_root / name).exists() for name in runtime_files | {"input_runtime.py"})
 
     violations: list[str] = []
     for path in runtime_root.rglob("*.py"):
         for imported in _imports(path):
-            if imported.startswith("trader.application.market_data"):
+            if imported.startswith("trader.recommendation.application.pipeline"):
                 violations.append(f"{path.relative_to(SOURCE_ROOT)} -> {imported}")
     assert violations == []
 

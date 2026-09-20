@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.application.cache import BoundedCache, CacheIdentity, CacheIdentitySpec, CacheStatus, build_cache_identity
+from trader.infra.cache_contracts import BoundedCache, CacheIdentity, CacheIdentitySpec, CacheStatus, build_cache_identity
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.evidence.review import DeepSeekReview
 

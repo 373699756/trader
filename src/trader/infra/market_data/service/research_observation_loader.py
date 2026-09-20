@@ -17,8 +17,8 @@ from typing import TYPE_CHECKING, ParamSpec, TypedDict, TypeVar, cast
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.application.cache import CacheIdentity
-from trader.application.ports.market import MarketDataDeadlineExceededError
+from trader.infra.cache_contracts import CacheIdentity
+from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
 from trader.application.runtime.workers import (
     BorrowExecutorOptions,
     WorkerExecutor,

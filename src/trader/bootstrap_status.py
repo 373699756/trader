@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
 
-from trader.application.ports.model_scoring import ScoringHeadRuntimeStatus, ScoringProfileRuntimeStatus
-from trader.application.ports.runtime_status import InputQualityStatus
+from trader.recommendation.application.ports.loaded_profile import ScoringHeadRuntimeStatus, ScoringProfileRuntimeStatus
+from trader.recommendation.application.ports.read_only_queries import InputQualityStatus
 from trader.application.runtime.cadence import CadencePlannerStatus
 from trader.application.runtime.runtime_issues import RuntimeIssue
 from trader.application.runtime.scheduler_runtime import SchedulerRuntime

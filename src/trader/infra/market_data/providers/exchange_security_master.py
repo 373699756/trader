@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 import requests
 from typing_extensions import Unpack
 
-from trader.application.cache import canonical_json_bytes
+from trader.infra.cache_contracts import canonical_json_bytes
 from trader.infra.market_data.service.observations import SourceObservation
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")

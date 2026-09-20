@@ -12,8 +12,8 @@ from hashlib import sha256
 from typing import Generic, TypeVar, cast
 from uuid import uuid4
 
-from trader.application.cache import canonical_json_bytes
-from trader.application.ports.market import MarketDataNoDataError
+from trader.infra.cache_contracts import canonical_json_bytes
+from trader.recommendation.application.ports.market_data import MarketDataNoDataError
 from trader.recommendation.domain.market.models import (
     CanonicalMarketSnapshot,
     MarketQuote,

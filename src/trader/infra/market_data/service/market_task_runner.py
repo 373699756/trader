@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, ParamSpec, TypedDict, TypeVar
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.application.cache import BoundedCache, CacheIdentity, CacheIdentitySpec, build_cache_identity
-from trader.application.ports.market import MarketDataDeadlineExceededError
+from trader.infra.cache_contracts import BoundedCache, CacheIdentity, CacheIdentitySpec, build_cache_identity
+from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
 from trader.application.runtime.schedule import phase_at, shanghai_now
 from trader.application.runtime.source_lanes import SourceLaneRegistry
 from trader.application.runtime.workers import BoundedExecutor

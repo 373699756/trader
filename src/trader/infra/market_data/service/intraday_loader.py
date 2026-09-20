@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, ParamSpec, TypedDict, TypeVar, cast
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.application.cache import CacheIdentity
+from trader.infra.cache_contracts import CacheIdentity
 from trader.application.runtime.workers import (
     BorrowExecutorOptions,
     WorkerExecutor,

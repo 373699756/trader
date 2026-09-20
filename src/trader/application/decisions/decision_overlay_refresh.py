@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from trader.application.decisions.decision_core import UnifiedDecisionIndex
-from trader.application.ports.scheduler import (
+from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DecisionBuilderPort,
     DecisionUnavailableError,

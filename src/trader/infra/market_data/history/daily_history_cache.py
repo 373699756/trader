@@ -18,14 +18,14 @@ from typing_extensions import NotRequired
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.application.cache import CacheIdentity
-from trader.application.ports.data_plane import (
+from trader.infra.cache_contracts import CacheIdentity
+from trader.recommendation.application.ports.market_data_repository import (
     DataPlaneConflictError,
     DataPlaneUnavailableError,
     HistoricalFeatureRecord,
 )
-from trader.application.ports.json_values import JsonInput, JsonObject, freeze_json_object
-from trader.application.ports.market import MarketDataDeadlineExceededError
+from trader.recommendation.application.ports.json_values import JsonInput, JsonObject, freeze_json_object
+from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
 from trader.application.runtime.workers import (
     BorrowExecutorOptions,
     BoundedExecutor,

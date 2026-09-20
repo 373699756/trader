@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from trader.application.ports.data_plane import (
+from trader.recommendation.application.ports.market_data_repository import (
     DataPlaneConflictError,
     DataPlaneRecoverySummary,
     DataPlaneUnavailableError,

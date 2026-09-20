@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from trader.application.ports.model_scoring import LoadedScoringProfile
+from trader.recommendation.application.ports.loaded_profile import LoadedScoringProfile
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.infra.artifacts.bundle_codec import load_head_bundle
 from trader.training.infra.artifacts.bundle_locator import locate_head_bundles

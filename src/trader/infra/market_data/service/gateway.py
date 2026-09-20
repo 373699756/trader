@@ -15,8 +15,8 @@ from typing import TypedDict
 from polars.exceptions import PolarsError
 from typing_extensions import Unpack
 
-from trader.application.cache import BoundedCache, canonical_json_bytes
-from trader.application.ports.market import (
+from trader.infra.cache_contracts import BoundedCache, canonical_json_bytes
+from trader.recommendation.application.ports.market_data import (
     MarketDataDeadlineExceededError,
     MarketDataFailedError,
     MarketDataNoDataError,

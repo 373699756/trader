@@ -10,7 +10,7 @@ import lightgbm as lgb
 import numpy as np
 import pytest
 
-from trader.application.ports.model_scoring import ModelInput
+from trader.recommendation.application.ports.loaded_profile import ModelInput
 from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.artifacts.canonical import content_hash
 from trader.infra.scoring.profile_factory import load_scoring_profile

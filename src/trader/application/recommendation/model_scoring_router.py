@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 
-from trader.application.ports.model_scoring import (
+from trader.recommendation.application.ports.loaded_profile import (
     ModelScoreBatch,
     ModelScoringContext,
     ModelScoringPort,

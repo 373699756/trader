@@ -10,7 +10,7 @@ from enum import Enum
 from typing import NoReturn
 from zoneinfo import ZoneInfo
 
-from trader.application.cache import (
+from trader.infra.cache_contracts import (
     CacheDatasetPolicy,
     CacheGroupPolicy,
     CacheIdentitySpec,

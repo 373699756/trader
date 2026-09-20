@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Generic, TypeVar, cast
 
-from trader.application.cache import (
+from trader.infra.cache_contracts import (
     CacheDatasetPolicy,
     CacheIdentity,
     CacheLookup,

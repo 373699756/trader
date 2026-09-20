@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from trader.application.ports.model_scoring import ModelScoringPort
-from trader.application.recommendation.candidate_planning import (
+from trader.recommendation.application.ports.loaded_profile import ModelScoringPort
+from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import (
     CandidatePlanningContext,
     CandidatePlanSet,
     CandidateRefreshPlan,

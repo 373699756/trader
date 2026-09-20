@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final, Literal, TypeAlias
 
-from trader.application.ports.data_plane import (
+from trader.recommendation.application.ports.market_data_repository import (
     HistoricalFeatureRecord,
     RiskEvidenceRecord,
     SecurityMasterRecord,

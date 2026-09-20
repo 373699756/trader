@@ -9,7 +9,7 @@ from dataclasses import replace
 from datetime import date, datetime
 from typing import ParamSpec, TypeVar
 
-from trader.application.cache import canonical_json_bytes
+from trader.infra.cache_contracts import canonical_json_bytes
 from trader.recommendation.domain.market.models import (
     Evidence,
     MarketQuote,

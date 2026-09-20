@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.application.cache import canonical_json_bytes
+from trader.infra.cache_contracts import canonical_json_bytes
 from trader.recommendation.domain.market.models import (
     Board,
     CanonicalMarketSnapshot,

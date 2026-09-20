@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Protocol
 
-from trader.application.ports.market import MarketDataPlaneSnapshot
+from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
 from trader.recommendation.domain.market.epochs import (
     CandidateFeatureRow,
     CandidateQuoteEpoch,

@@ -14,7 +14,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import cast
 
-from trader.application.ports.decision_records import (
+from trader.recommendation.application.ports.decision_records import (
     DecisionCheckpoint,
     DecisionRecordConflictError,
     DecisionRecordRecoverySummary,

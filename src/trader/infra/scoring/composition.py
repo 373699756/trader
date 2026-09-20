@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from trader.application.ports.model_scoring import HeadPrediction
+from trader.recommendation.application.ports.loaded_profile import HeadPrediction
 
 
 class SingleHeadCombiner:

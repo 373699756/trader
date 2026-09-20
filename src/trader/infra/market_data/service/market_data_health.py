@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
-from trader.application.ports.eligibility import IssuerEligibilityPort
-from trader.application.ports.json_values import JsonInput, JsonObject, freeze_json_object
-from trader.application.ports.market import MarketSnapshotMetadata
+from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
+from trader.recommendation.application.ports.json_values import JsonInput, JsonObject, freeze_json_object
+from trader.recommendation.application.ports.market_data import MarketSnapshotMetadata
 from trader.infra.market_data.history.daily_history_cache import HistoryCache
 from trader.infra.market_data.history.daily_history_warmup import HistoryWarmup
 from trader.infra.market_data.providers.tushare import TushareHealthStatus

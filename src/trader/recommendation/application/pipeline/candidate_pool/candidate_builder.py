@@ -7,16 +7,22 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from types import MappingProxyType
 
-from trader.application.ports.model_scoring import ModelScoringPort
+from trader.recommendation.application.ports.loaded_profile import ModelScoringPort
+from trader.recommendation.application.pipeline.stage_output import (
+    PipelineStageOutput,
+    require_previous_stage,
+    stage_output,
+)
 from trader.application.recommendation.policy import RecommendationPolicy
-from trader.application.recommendation.scored_quality import has_transient_evaluation_gap
-from trader.application.recommendation.scored_selection import (
+from trader.recommendation.application.pipeline.quality_check.input_quality_service import has_transient_evaluation_gap
+from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
     ScoredSelectionIdentity,
     ScoredSelectionOptions,
     normalize_candidate_discovery_population,
     plan_scored_feature_candidates,
 )
 from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.selection.scored_selection import ScoredCandidatePlan
 
@@ -245,11 +251,43 @@ def _planning_evaluated_at(
     return max(value.astimezone(observed_at.tzinfo) for value in values)
 
 
+def build_candidate_stage_output(
+    source: PipelineStageOutput[FeatureSnapshot],
+    selected_codes: tuple[str, ...],
+    *,
+    as_of: datetime,
+    latency_ms: int,
+) -> PipelineStageOutput[FeatureSnapshot]:
+    """Bind the deterministic candidate order to the stage-8 observation."""
+
+    require_previous_stage(source, PipelineStage.CANDIDATE_POOL)
+    if len(selected_codes) != len(set(selected_codes)):
+        raise ValueError("candidate stage codes must be unique")
+    by_code = {item.quote.code: item for item in source.records}
+    if not set(selected_codes) <= set(by_code):
+        raise ValueError("candidate stage cannot select outside the dynamic eligible population")
+    records = tuple(by_code[code] for code in selected_codes)
+    limited = len(source.records) - len(records)
+    reasons = (
+        (StageReasonAggregate("board_limit", "board limit", limited, Severity.INFO),) if limited else ()
+    )
+    return stage_output(
+        PipelineStage.CANDIDATE_POOL,
+        records,
+        as_of=as_of,
+        input_count=len(source.records),
+        reasons=reasons,
+        source_health=source.snapshot.source_health,
+        latency_ms=latency_ms,
+    )
+
+
 __all__ = [
     "CandidatePlanSet",
     "CandidatePlanningContext",
     "CandidateRefreshPlan",
     "SCORED_STRATEGIES",
     "build_candidate_plans",
+    "build_candidate_stage_output",
     "refresh_candidate_reserves",
 ]

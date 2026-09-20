@@ -9,11 +9,11 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime
 from typing import Literal
 
-from trader.application.cache import request_fingerprint
+from trader.recommendation.application.request_identity import request_fingerprint
 from trader.application.decisions.decision_core import UnifiedDecisionIndex
 from trader.application.long_groups import LongGroupDefinition, LongWatchItemDefinition
-from trader.application.ports.long import LongRefreshRequest
-from trader.application.ports.market import MarketDataUnavailableError, QuoteReaderPort
+from trader.recommendation.application.ports.long import LongRefreshRequest
+from trader.recommendation.application.ports.market_data import MarketDataUnavailableError, QuoteReaderPort
 from trader.application.runtime.latest_wins import LatestWinsStatus, LatestWinsWorker
 from trader.application.runtime.schedule import SHANGHAI
 from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep

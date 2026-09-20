@@ -13,15 +13,15 @@ from datetime import date, datetime, time, timedelta
 from typing import Protocol, TypeVar, cast
 from zoneinfo import ZoneInfo
 
-from trader.application.cache import CacheIdentity, CacheIdentitySpec, build_cache_identity, canonical_json_bytes
-from trader.application.ports.data_plane import (
+from trader.infra.cache_contracts import CacheIdentity, CacheIdentitySpec, build_cache_identity, canonical_json_bytes
+from trader.recommendation.application.ports.market_data_repository import (
     DataPlaneConflictError,
     DataPlaneRecoverySummary,
     DataPlaneUnavailableError,
     SecurityMasterRecord,
     SourceCursorRecord,
 )
-from trader.application.ports.json_values import JsonObject, JsonValue
+from trader.recommendation.application.ports.json_values import JsonObject, JsonValue
 from trader.application.runtime.schedule import shanghai_now
 from trader.application.runtime.source_lanes import SourceRequestSupersededError
 from trader.recommendation.domain.market.models import ModelIndustryReference

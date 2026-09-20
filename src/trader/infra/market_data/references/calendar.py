@@ -10,7 +10,7 @@ from collections.abc import Callable, Iterable
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from trader.application.ports.scheduler import TradingCalendarUnavailableError
+from trader.recommendation.application.ports.runtime import TradingCalendarUnavailableError
 
 CalendarFetcher = Callable[[], Iterable[date]]
 

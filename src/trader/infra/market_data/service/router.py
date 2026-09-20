@@ -14,7 +14,7 @@ from enum import Enum
 from time import perf_counter
 from typing import NoReturn
 
-from trader.application.ports.market import MarketDataFailedError, MarketDataNoDataError
+from trader.recommendation.application.ports.market_data import MarketDataFailedError, MarketDataNoDataError
 
 
 class VendorSeverity(str, Enum):

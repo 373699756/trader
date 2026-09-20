@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from trader.application.market_data.input_runtime import MarketDataAdapter
-from trader.application.ports.reviews import DeepSeekReviewUnavailableError, TomorrowDeepSeekReviewPort
-from trader.application.ports.scheduler import (
+from trader.recommendation.application.pipeline.data_source.source_router import MarketDataAdapter
+from trader.recommendation.application.ports.deepseek import DeepSeekReviewUnavailableError, TomorrowDeepSeekReviewPort
+from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DeepSeekUpgradePort,
     FreezePort,

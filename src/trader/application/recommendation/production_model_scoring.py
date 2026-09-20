@@ -10,14 +10,14 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TypeVar, cast
 
-from trader.application.cache import request_fingerprint
-from trader.application.market_data.feature_computation import (
+from trader.recommendation.application.request_identity import request_fingerprint
+from trader.recommendation.application.pipeline.static_standardize.static_feature_builder import (
     FeatureComputationPlan,
     FeatureFactRevision,
     affected_feature_stages,
     build_feature_computation_plan,
 )
-from trader.application.ports.model_scoring import (
+from trader.recommendation.application.ports.loaded_profile import (
     LoadedScoringProfile,
     ModelComputationStageStatus,
     ModelComputationStatus,

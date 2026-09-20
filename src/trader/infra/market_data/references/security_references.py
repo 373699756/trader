@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Sequence
 from dataclasses import replace
 
-from trader.application.cache import canonical_json_bytes
+from trader.infra.cache_contracts import canonical_json_bytes
 from trader.infra.market_data.normalization.merge_quote import source_name
 from trader.infra.market_data.service.observations import SourceObservation
 

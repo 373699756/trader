@@ -11,16 +11,17 @@ from typing import Protocol
 
 from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
 from trader.application.long_runtime import LongRuntime
-from trader.application.market_data.supply_status import (
+from trader.recommendation.application.pipeline.quality_check.pipeline_status import (
+    build_first_nine_stage_snapshots,
     build_pending_pipeline,
     build_supply_status,
     update_supply_status_decision,
 )
-from trader.application.ports.long import LongRefreshRequest
-from trader.application.ports.market import MarketDataUnavailableError, ResearchRefreshResult
-from trader.application.ports.model_scoring import ModelScoringContext, ModelScoringPort
-from trader.application.ports.runtime_status import InputQualityStatus, SupplySummary
-from trader.application.ports.scheduler import (
+from trader.recommendation.application.ports.long import LongRefreshRequest
+from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
+from trader.recommendation.application.ports.loaded_profile import ModelScoringContext, ModelScoringPort
+from trader.recommendation.application.ports.read_only_queries import InputQualityStatus, SupplySummary
+from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshPort,
     DataRefreshUnavailableError,
@@ -30,12 +31,12 @@ from trader.application.ports.scheduler import (
     RefreshOutcome,
     ResearchIntent,
 )
-from trader.application.ports.scored import D25NativeInput, TomorrowNativeInput
-from trader.application.recommendation.candidate_filtering import (
+from trader.recommendation.application.ports.scoring import D25NativeInput, TomorrowNativeInput
+from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import (
     CandidateFilteringPort,
     CandidateFilteringService,
 )
-from trader.application.recommendation.candidate_planning import (
+from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import (
     SCORED_STRATEGIES,
     CandidatePlanSet,
 )
@@ -46,14 +47,17 @@ from trader.application.recommendation.local_scoring import (
 )
 from trader.application.recommendation.policy import RecommendationPolicy
 from trader.application.recommendation.scored_projection import ScoredLocalProjection
-from trader.application.recommendation.scored_quality import has_transient_candidate_gap
-from trader.training.evaluation.application.research_audit import (
-    CommittedResearchAudit,
-    try_build_committed_research_audit,
-)
+from trader.recommendation.application.pipeline.quality_check.input_quality_service import has_transient_candidate_gap
+from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, stage_output
 from trader.application.runtime.cadence import PipelineTask, task_execution_budget_seconds
 from trader.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.refresh import ResearchRefreshResult
+from trader.recommendation.domain.evidence.pipeline import (
+    PipelineStage,
+    SourceHealth,
+    StageReasonAggregate,
+)
 from trader.recommendation.domain.publication.decision_identity import (
     DecisionIdentity,
     DecisionOverlay,
@@ -101,6 +105,9 @@ class DecisionBuildDependencies:
     model_scoring: ModelScoringPort | None = None
     candidate_filtering: CandidateFilteringPort | None = None
     local_scoring: LocalScoringPort | None = None
+    research_audit_builder: Callable[[ScoredLocalProjection, ScoredDecision], object | None] = (
+        lambda _projection, _decision: None
+    )
 
 
 @dataclass(frozen=True)
@@ -203,6 +210,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         self._policy = decision_build.policy
         self._draft_index = decision_build.draft_index
         self._now = decision_build.now
+        self._research_audit_builder = decision_build.research_audit_builder
         self._model_scoring = decision_build.model_scoring
         self._candidate_filtering = (
             decision_build.candidate_filtering
@@ -464,6 +472,13 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                     candidate_feature_count=candidate_feature_count,
                     primary_blocker=context.primary_blocker,
                     candidate_score_threshold=self._policy.selection.candidate_min_score,
+                ),
+                stage_snapshots=build_first_nine_stage_snapshots(
+                    stage_counts,
+                    as_of=context.observed_at,
+                    population_count=context.population_count,
+                    candidate_feature_count=candidate_feature_count,
+                    refresh_pending_count=max(0, requested_count - candidate_feature_count),
                 ),
                 population_count=context.population_count,
                 candidate_count=requested_count,
@@ -807,13 +822,13 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             self._trim_research_sources()
             return decision
 
-    def research_audit(self, version: str) -> CommittedResearchAudit | None:
+    def research_audit(self, version: str) -> object | None:
         with self._lock:
             projection = self._projections.get(version)
             decision = self._decisions.get(version)
         if projection is None or decision is None:
             return None
-        return try_build_committed_research_audit(projection, decision)
+        return self._research_audit_builder(projection, decision)
 
     def research_intent(self, decision: ScoredDecision) -> ResearchIntent:
         with self._lock:
@@ -1115,8 +1130,36 @@ def _decision_failure_code(exc: BaseException) -> str:
     return _failure_code(exc)
 
 
+def build_source_stage_output(
+    records: Sequence[FeatureSnapshot],
+    *,
+    as_of: datetime,
+    expected_count: int,
+    failed_count: int,
+    reasons: tuple[StageReasonAggregate, ...],
+    source_health: SourceHealth,
+    latency_ms: int,
+) -> PipelineStageOutput[FeatureSnapshot]:
+    received = tuple(records)
+    pending_count = expected_count - len(received) - failed_count
+    if pending_count < 0:
+        raise ValueError("source stage outcomes exceed the expected population")
+    return stage_output(
+        PipelineStage.DATA_SOURCE,
+        received,
+        as_of=as_of,
+        input_count=expected_count,
+        pending_count=pending_count,
+        failed_count=failed_count,
+        reasons=reasons,
+        source_health=source_health,
+        latency_ms=latency_ms,
+    )
+
+
 __all__ = [
     "DecisionBuildDependencies",
     "InputBatch",
     "MarketDataAdapter",
+    "build_source_stage_output",
 ]

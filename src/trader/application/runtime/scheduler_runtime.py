@@ -7,16 +7,16 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from datetime import time as wall_time
-from typing import Literal
+from typing import Literal, cast
 
 from trader.application.decisions.decision_core import UnifiedDecisionIndex
 from trader.application.decisions.decision_events import DecisionCommitted
 from trader.application.decisions.decision_observers import DecisionObserverRuntime, DecisionObserverStatus
 from trader.application.decisions.decision_overlay_refresh import DecisionOverlayRefresher
-from trader.application.ports.clock import Clock, TradingCalendarPort
-from trader.application.ports.market import ResearchRefreshResult
-from trader.application.ports.runtime_status import InputQualityStatus
-from trader.application.ports.scheduler import (
+from trader.recommendation.application.ports.clock import Clock, TradingCalendarPort
+from trader.recommendation.domain.market.refresh import ResearchRefreshResult
+from trader.recommendation.application.ports.read_only_queries import InputQualityStatus
+from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshPort,
     DataRefreshUnavailableError,
@@ -25,7 +25,6 @@ from trader.application.ports.scheduler import (
     DeepSeekUpgradePort,
     FreezePort,
     FreezeUnavailableError,
-    OverlayPublisher,
     PipelineTaskRequest,
     RefreshOutcome,
     ResearchRuntimeFactoryPort,
@@ -36,7 +35,8 @@ from trader.application.ports.scheduler import (
     SharedDeepSeekRuntimeContract,
     TradingCalendarUnavailableError,
 )
-from trader.training.evaluation.application.research_audit import DecisionObservation
+from trader.recommendation.application.ports.publisher import OverlayPublisher
+from trader.training.evaluation.application.research_audit import CommittedResearchAudit, DecisionObservation
 from trader.application.runtime.cadence import (
     CadencePlanner,
     CadencePlannerStatus,
@@ -908,7 +908,10 @@ class SchedulerRuntime:
         observation = None
         if event is not None:
             try:
-                audit = self._dependencies.decisions.research_audit(event.decision_version)
+                audit = cast(
+                    CommittedResearchAudit | None,
+                    self._dependencies.decisions.research_audit(event.decision_version),
+                )
             except (RuntimeError, TypeError, ValueError) as exc:
                 self._record_failure("observer", f"research_audit:{type(exc).__name__}", strategy)
                 audit = None

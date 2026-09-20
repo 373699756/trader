@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from trader.application.ports.model_scoring import (
+from trader.recommendation.application.ports.loaded_profile import (
     ModelScoreBatch,
     ModelScoringContext,
     ModelScoringPort,

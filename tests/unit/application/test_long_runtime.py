@@ -7,8 +7,8 @@ from zoneinfo import ZoneInfo
 from trader.application.decisions.decision_core import UnifiedDecisionIndex
 from trader.application.long_groups import LongGroupDefinition, LongWatchItemDefinition
 from trader.application.long_runtime import LongRuntime, LongRuntimeDependencies
-from trader.application.ports.long import LongRefreshRequest
-from trader.application.ports.market import MarketDataUnavailableError
+from trader.recommendation.application.ports.long import LongRefreshRequest
+from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
 from trader.application.runtime.shutdown import ShutdownDeadline
 from trader.recommendation.domain.publication.decision_identity import LongProjection
 from trader.recommendation.domain.publication.models import Strategy

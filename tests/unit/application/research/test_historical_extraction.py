@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import date, timedelta
 
 from tests.unit.application.research.test_historical_ports import TRADE_DATE, _bundle, _summary
-from trader.application.ports.market import MarketDataPlaneSnapshot
+from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
 from trader.training.evaluation.application.extraction import HistoricalExtractor
 from trader.training.evaluation.application.historical_extraction_models import (
     HistoricalDaySummary,

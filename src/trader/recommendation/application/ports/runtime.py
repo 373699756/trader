@@ -9,10 +9,9 @@ from datetime import date, datetime
 from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
-from trader.application.ports.clock import TradingCalendarPort
-from trader.application.ports.market import ResearchRefreshResult
-from trader.application.ports.runtime_status import InputQualityStatus
-from trader.training.evaluation.application.research_audit import CommittedResearchAudit
+from trader.recommendation.application.ports.clock import TradingCalendarPort
+from trader.recommendation.domain.market.refresh import ResearchRefreshResult
+from trader.recommendation.application.ports.read_only_queries import InputQualityStatus
 from trader.application.runtime.cadence import PipelineTask
 from trader.application.runtime.schedule import MarketPhase
 from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
@@ -21,9 +20,6 @@ from trader.recommendation.domain.publication.models import Strategy
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _IDENTITY = re.compile(r"^[a-zA-Z0-9_.:-]{1,200}$")
-
-OverlayPublisher = Callable[[DecisionOverlay], object]
-
 
 @dataclass(frozen=True)
 class SharedDeepSeekRuntimeContract:
@@ -189,7 +185,7 @@ class DecisionBuilderPort(Protocol):
         previous: DecisionOverlay | None,
     ) -> DecisionOverlay | None: ...
 
-    def research_audit(self, version: str) -> CommittedResearchAudit | None: ...
+    def research_audit(self, version: str) -> object | None: ...
 
     def research_intent(self, decision: ScoredDecision) -> ResearchIntent: ...
 
@@ -274,7 +270,6 @@ __all__ = [
     "DeepSeekUpgradePort",
     "FreezePort",
     "FreezeUnavailableError",
-    "OverlayPublisher",
     "PipelineTaskRequest",
     "RefreshOutcome",
     "ReviewUnavailableError",

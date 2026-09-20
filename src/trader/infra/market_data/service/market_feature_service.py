@@ -8,12 +8,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.application.ports.eligibility import IssuerEligibilityPort
-from trader.application.ports.json_values import JsonObject
-from trader.application.ports.market import (
+from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
+from trader.recommendation.application.ports.json_values import JsonObject
+from trader.recommendation.application.ports.market_data import (
     MarketDataDeadlineExceededError,
     MarketSnapshotMetadata,
-    ResearchRefreshResult,
 )
 from trader.recommendation.domain.market.eligibility import (
     IssuerEligibilityFact,
@@ -27,6 +26,7 @@ from trader.recommendation.domain.market.models import (
     MarketQuote,
 )
 from trader.recommendation.domain.market.research import ResearchObservation
+from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.training.evaluation.domain.models import OutcomeBar
 from trader.infra.market_data.history.daily_history_cache import HistoryCache
 from trader.infra.market_data.history.daily_history_warmup import HistoryWarmup

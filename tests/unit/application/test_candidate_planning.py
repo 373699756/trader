@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from trader.application.recommendation.candidate_planning import CandidatePlanSet
+from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import CandidatePlanSet
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.selection.scored_selection import (

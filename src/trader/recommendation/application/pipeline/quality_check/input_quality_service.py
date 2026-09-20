@@ -6,10 +6,22 @@ import math
 from collections import Counter
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from types import MappingProxyType
 from typing import Literal
 
-from trader.application.ports.scored import ScoredNativeInput
+from trader.recommendation.application.ports.scoring import ScoredNativeInput
+from trader.recommendation.application.pipeline.quality_check.missing_value_policy import (
+    MissingValuePolicy,
+    assess_missing_values,
+)
+from trader.recommendation.application.pipeline.stage_output import (
+    PipelineStageOutput,
+    require_previous_stage,
+    stage_output,
+)
+from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate
+from trader.recommendation.domain.evidence.quality import QualityAssessment, QualityState
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot
 from trader.recommendation.domain.publication.models import ScoredDisposition, ScoredSelectionResult, ScoredStockEvaluation
 from trader.recommendation.domain.selection.scored_selection import (
@@ -302,9 +314,49 @@ def _history_complete(feature: FeatureSnapshot | None, *, minimum_history_sessio
     return amount_median is not None and math.isfinite(amount_median) and amount_median > 0.0
 
 
+def assess_quality_stage(
+    source: PipelineStageOutput[FeatureSnapshot],
+    policy: MissingValuePolicy,
+    *,
+    as_of: datetime,
+    latency_ms: int,
+) -> PipelineStageOutput[QualityAssessment]:
+    require_previous_stage(source, PipelineStage.QUALITY_CHECK)
+    assessments = tuple(assess_missing_values(feature, policy) for feature in source.records)
+    output = tuple(
+        item for item in assessments if item.state not in {QualityState.REFRESH_PENDING, QualityState.INVALID}
+    )
+    pending = sum(item.state is QualityState.REFRESH_PENDING for item in assessments)
+    failed = sum(item.state is QualityState.INVALID for item in assessments)
+    reasons = tuple(
+        reason
+        for reason in (
+            StageReasonAggregate("quality_pending", "quality pending", pending, Severity.WARNING)
+            if pending
+            else None,
+            StageReasonAggregate("quality_invalid", "quality invalid", failed, Severity.ERROR)
+            if failed
+            else None,
+        )
+        if reason is not None
+    )
+    return stage_output(
+        PipelineStage.QUALITY_CHECK,
+        output,
+        as_of=as_of,
+        input_count=len(source.records),
+        pending_count=pending,
+        failed_count=failed,
+        reasons=reasons,
+        source_health=source.snapshot.source_health,
+        latency_ms=latency_ms,
+    )
+
+
 __all__ = [
     "ScoredInputQuality",
     "ScoredInputQualityStatus",
+    "assess_quality_stage",
     "assess_scored_input_quality",
     "has_transient_candidate_gap",
 ]

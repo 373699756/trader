@@ -35,8 +35,8 @@ from trader.application.decisions.decision_stream import (  # noqa: E402
     UnifiedDecisionEventStream,
     UnifiedPublishedEvent,
 )
-from trader.application.ports.runtime_status import InputQualityStatus  # noqa: E402
-from trader.application.ports.scheduler import (  # noqa: E402
+from trader.recommendation.application.ports.read_only_queries import InputQualityStatus  # noqa: E402
+from trader.recommendation.application.ports.runtime import (  # noqa: E402
     CycleRequest,
     DecisionUnavailableError,
     RefreshOutcome,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import lightgbm as lgb
 import numpy as np
 
-from trader.application.ports.model_scoring import ModelInput, ModelPrediction
+from trader.recommendation.application.ports.loaded_profile import ModelInput, ModelPrediction
 from trader.recommendation.domain.scoring.residualization import ExposureContract
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.publication.models import Strategy

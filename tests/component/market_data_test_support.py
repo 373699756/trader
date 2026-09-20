@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 import pytest
 import requests
 
-from trader.application.ports.data_plane import (
+from trader.recommendation.application.ports.market_data_repository import (
     DataPlaneRecoverySummary,
     DataPlaneUnavailableError,
     HistoricalFeatureRecord,
@@ -24,7 +24,7 @@ from trader.application.ports.data_plane import (
     SecurityMasterRecord,
     SourceCursorRecord,
 )
-from trader.application.ports.market import (
+from trader.recommendation.application.ports.market_data import (
     MarketDataDeadlineExceededError,
     MarketDataFailedError,
     MarketDataNoDataError,

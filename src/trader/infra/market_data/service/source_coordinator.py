@@ -11,14 +11,14 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Protocol, cast
 
-from trader.application.cache import (
+from trader.infra.cache_contracts import (
     BoundedCache,
     CacheIdentity,
     CacheIdentitySpec,
     build_cache_identity,
     canonical_json_bytes,
 )
-from trader.application.ports.market import MarketDataFailedError, MarketDataNoDataError
+from trader.recommendation.application.ports.market_data import MarketDataFailedError, MarketDataNoDataError
 from trader.application.runtime.schedule import phase_at, shanghai_now
 from trader.application.runtime.source_lanes import (
     SourceLaneRegistry,

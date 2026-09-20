@@ -94,7 +94,7 @@ def test_p2_historical_rejection_and_manual_production_override_remain_explicit(
         path.read_text(encoding="utf-8")
         for path in (
             SOURCE / "training/evaluation/domain/tomorrow_historical.py",
-            SOURCE / "application/ports/model_scoring.py",
+            SOURCE / "recommendation/application/ports/loaded_profile.py",
         )
     )
     for token in ("daily_reconstructible_ensemble", "single_candidate_pass_or_stop", "historical_ohlcv_cross_section"):

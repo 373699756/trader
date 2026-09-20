@@ -5,7 +5,7 @@ import subprocess
 from dataclasses import MISSING, fields
 from pathlib import Path
 
-from trader.application.ports.scheduler import DecisionBuilderPort
+from trader.recommendation.application.ports.runtime import DecisionBuilderPort
 from trader.application.runtime.scheduler_runtime import RuntimeDependencies
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "trader"
@@ -89,6 +89,8 @@ def test_active_dependency_direction() -> None:
         "training/infra": ("trader.training.entrypoints", "trader.entrypoints", "trader.web"),
         "infra": ("trader.bootstrap", "trader.entrypoints", "trader.web"),
         "web": ("trader.infra",),
+        "recommendation/domain": ("trader.recommendation.application", "trader.infra", "trader.web", "trader.entrypoints"),
+        "recommendation/application": ("trader.infra", "trader.web", "trader.entrypoints", "trader.training"),
     }
     violations: list[str] = []
     for boundary, prefixes in forbidden.items():
@@ -141,10 +143,12 @@ def test_application_does_not_own_infrastructure_implementations() -> None:
 
 
 def test_model_scoring_router_is_profile_agnostic_and_replaces_tomorrow_specific_injection() -> None:
-    port = SOURCE_ROOT / "application/ports/model_scoring.py"
+    port = SOURCE_ROOT / "recommendation/application/ports/loaded_profile.py"
     router = SOURCE_ROOT / "application/recommendation/model_scoring_router.py"
     projection = (SOURCE_ROOT / "application/recommendation/scored_projection.py").read_text(encoding="utf-8")
-    input_runtime = (SOURCE_ROOT / "application/market_data/input_runtime.py").read_text(encoding="utf-8")
+    input_runtime = (SOURCE_ROOT / "recommendation/application/pipeline/data_source/source_router.py").read_text(
+        encoding="utf-8"
+    )
 
     assert not any(name.startswith("trader.application.recommendation") for name in _imports(port))
     router_source = router.read_text(encoding="utf-8")
@@ -168,7 +172,7 @@ def test_v2_and_v3_profiles_share_one_neutral_trained_head_owner() -> None:
     v2_root = SOURCE_ROOT / "training/infra/profile/v2"
     v3_root = SOURCE_ROOT / "training/infra/profile/v3"
     shared_root = SOURCE_ROOT / "training/infra/artifacts"
-    model_port = (SOURCE_ROOT / "application/ports/model_scoring.py").read_text(encoding="utf-8")
+    model_port = (SOURCE_ROOT / "recommendation/application/ports/loaded_profile.py").read_text(encoding="utf-8")
     factory = (SOURCE_ROOT / "infra/scoring/profile_factory.py").read_text(encoding="utf-8")
 
     for relative in (
@@ -196,7 +200,7 @@ def test_v2_and_v3_profiles_share_one_neutral_trained_head_owner() -> None:
     assert "TomorrowHistoricalModelArtifact" not in model_port
     assert "ModelPredictorPort" in model_port
     assert "build_trained_scoring_profile" in factory
-    assert not (SOURCE_ROOT / "application/ports/tomorrow_model.py").exists()
+    assert not (SOURCE_ROOT / "recommendation/application/ports/tomorrow_model.py").exists()
 
 
 def test_v3_profile_keeps_only_offline_training_implementation() -> None:
@@ -300,8 +304,8 @@ def test_internal_state_is_typed_until_an_explicit_observability_boundary() -> N
     violations: list[str] = []
     conversion_names = {"as_dict", "to_json", "to_status"}
     exempt_status_paths = {
-        Path("application/ports/reviews.py"),
-        Path("application/ports/market.py"),
+        Path("recommendation/application/ports/deepseek.py"),
+        Path("recommendation/application/ports/market_data.py"),
         Path("infra/deepseek/reviewer.py"),
         Path("infra/deepseek/reviewer_status.py"),
         Path("infra/market_data/service/market_feature_service.py"),
@@ -376,7 +380,9 @@ def test_tomorrow_holdout_serializer_uses_an_explicit_public_field_whitelist() -
 
 
 def test_runtime_responsibilities_remain_split_by_resource_boundary() -> None:
-    input_runtime = (SOURCE_ROOT / "application/market_data/input_runtime.py").read_text(encoding="utf-8")
+    input_runtime = (SOURCE_ROOT / "recommendation/application/pipeline/data_source/source_router.py").read_text(
+        encoding="utf-8"
+    )
     decision_adapters = (SOURCE_ROOT / "application/decisions/decision_adapters.py").read_text(encoding="utf-8")
     runtime = (SOURCE_ROOT / "application/runtime/scheduler_runtime.py").read_text(encoding="utf-8")
     issues = (SOURCE_ROOT / "application/runtime/runtime_issues.py").read_text(encoding="utf-8")

@@ -5,7 +5,145 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal
+from enum import Enum
 from typing import Literal
+
+
+class PipelineStage(str, Enum):
+    DATA_SOURCE = "data_source"
+    STATIC_MARKET = "static_market"
+    STATIC_STANDARDIZE = "static_standardize"
+    STATIC_FILTER = "static_filter"
+    DYNAMIC_MARKET = "dynamic_market"
+    DYNAMIC_STANDARDIZE = "dynamic_standardize"
+    DYNAMIC_FILTER = "dynamic_filter"
+    CANDIDATE_POOL = "candidate_pool"
+    QUALITY_CHECK = "quality_check"
+    LOCAL_SCORE = "local_score"
+    RISK_REVIEW = "risk_review"
+    SCORE_MERGE = "score_merge"
+    DOWNSIDE_ACTION = "downside_action"
+    FINAL_SELECTION = "final_selection"
+
+
+PIPELINE_STAGES: tuple[PipelineStage, ...] = tuple(PipelineStage)
+
+
+class StageState(str, Enum):
+    READY = "ready"
+    DEGRADED = "degraded"
+    FAILED = "failed"
+    NOT_READY = "not_ready"
+
+
+class Severity(str, Enum):
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+
+
+class SourceHealthState(str, Enum):
+    READY = "ready"
+    DEGRADED = "degraded"
+    UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class SourceHealth:
+    state: SourceHealthState
+    source_count: int
+    healthy_source_count: int
+    latest_success_at: datetime | None = None
+    age_seconds: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.source_count < 0 or not 0 <= self.healthy_source_count <= self.source_count:
+            raise ValueError("source health counts are invalid")
+        if self.latest_success_at is not None:
+            _require_shanghai(self.latest_success_at, "source latest success")
+        if self.age_seconds is not None and (not math.isfinite(self.age_seconds) or self.age_seconds < 0.0):
+            raise ValueError("source age must be finite and non-negative")
+        if self.state is SourceHealthState.READY and self.source_count != self.healthy_source_count:
+            raise ValueError("ready source health requires every source to be healthy")
+        if self.state is SourceHealthState.UNAVAILABLE and self.healthy_source_count:
+            raise ValueError("unavailable source health cannot contain healthy sources")
+
+
+@dataclass(frozen=True, slots=True)
+class StageReasonAggregate:
+    code: str
+    label: str
+    count: int
+    severity: Severity
+
+    def __post_init__(self) -> None:
+        if _PIPELINE_KEY.fullmatch(self.code) is None or not self.label.strip() or self.count < 1:
+            raise ValueError("pipeline reason aggregate is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class BusinessRejectionSummary:
+    input_count: int
+    rejected_count: int
+    rejection_rate: Decimal
+    reasons: tuple[StageReasonAggregate, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.input_count < 0 or not 0 <= self.rejected_count <= self.input_count:
+            raise ValueError("business rejection counts are invalid")
+        expected = Decimal(self.rejected_count) / Decimal(self.input_count) if self.input_count else Decimal("0")
+        if self.rejection_rate != expected:
+            raise ValueError("business rejection rate must match the stage counts")
+        _require_unique_reason_codes(self.reasons)
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineStageSnapshot:
+    stage: PipelineStage
+    stage_order: int
+    as_of: datetime
+    state: StageState
+    input_count: int
+    output_count: int
+    rejected_count: int
+    pending_count: int
+    failed_count: int
+    reasons: tuple[StageReasonAggregate, ...]
+    source_health: SourceHealth
+    latency_ms: int
+    degraded: bool
+
+    def __post_init__(self) -> None:
+        if self.stage_order != PIPELINE_STAGES.index(self.stage) + 1:
+            raise ValueError("pipeline stage order does not match the stage")
+        _require_shanghai(self.as_of, "pipeline stage snapshot")
+        counts = (
+            self.input_count,
+            self.output_count,
+            self.rejected_count,
+            self.pending_count,
+            self.failed_count,
+            self.latency_ms,
+        )
+        if any(value < 0 for value in counts):
+            raise ValueError("pipeline stage counts and latency cannot be negative")
+        if self.output_count + self.rejected_count + self.pending_count + self.failed_count > self.input_count:
+            raise ValueError("pipeline stage outcomes cannot exceed input count")
+        if self.degraded != (self.state is StageState.DEGRADED):
+            raise ValueError("pipeline degraded flag must match stage state")
+        _require_unique_reason_codes(self.reasons)
+
+
+def _require_unique_reason_codes(reasons: tuple[StageReasonAggregate, ...]) -> None:
+    if len({item.code for item in reasons}) != len(reasons):
+        raise ValueError("pipeline reason codes must be unique")
+
+
+def _require_shanghai(value: datetime, label: str) -> None:
+    if value.tzinfo is None or value.utcoffset() is None or getattr(value.tzinfo, "key", None) != "Asia/Shanghai":
+        raise ValueError(f"{label} must use Asia/Shanghai")
 
 PipelineStageState = Literal["pending", "running", "completed", "degraded", "not_applicable"]
 PipelineStageKey = Literal[
@@ -142,13 +280,22 @@ class RecommendationPipelineStatus:
 
 
 __all__ = [
+    "BusinessRejectionSummary",
     "PIPELINE_STAGE_ORDER",
+    "PIPELINE_STAGES",
     "PipelineFacet",
     "PipelineMetricName",
     "PipelineMetricRange",
     "PipelineReasonCount",
+    "PipelineStage",
     "PipelineStageKey",
+    "PipelineStageSnapshot",
     "PipelineStageState",
     "PipelineStageStatus",
     "RecommendationPipelineStatus",
+    "Severity",
+    "SourceHealth",
+    "SourceHealthState",
+    "StageReasonAggregate",
+    "StageState",
 ]

@@ -5,12 +5,21 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Literal
+from typing import Literal, Protocol
 
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.domain.evidence.pipeline import RecommendationPipelineStatus
+from trader.recommendation.domain.evidence.pipeline import (
+    PIPELINE_STAGES,
+    PipelineStageSnapshot,
+    RecommendationPipelineStatus,
+)
 
 InputQualityState = Literal["ready", "business_empty", "transient_invalid_empty", "not_ready"]
+
+
+class ResearchAuditIdentity(Protocol):
+    decision_version: str
+    decision_hash: str
 
 
 @dataclass(frozen=True)
@@ -52,6 +61,7 @@ class InputQualityStatus:
     publishable: bool
     summary: SupplySummary
     pipeline: RecommendationPipelineStatus
+    stage_snapshots: tuple[PipelineStageSnapshot, ...]
     population_count: int = 0
     candidate_count: int = 0
     candidate_feature_count: int = 0
@@ -77,6 +87,9 @@ class InputQualityStatus:
     def __post_init__(self) -> None:
         if self.strategy not in {Strategy.TOMORROW, Strategy.D25}:
             raise ValueError("input quality requires a scored strategy")
+        expected = PIPELINE_STAGES[:9]
+        if tuple(item.stage for item in self.stage_snapshots) != expected:
+            raise ValueError("input quality requires the ordered first nine pipeline snapshots")
         counts = (
             self.population_count,
             self.candidate_count,
@@ -122,5 +135,6 @@ __all__ = [
     "InputQualityState",
     "InputQualityStatus",
     "RecommendationPipelineStatus",
+    "ResearchAuditIdentity",
     "SupplySummary",
 ]

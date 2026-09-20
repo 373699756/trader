@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from trader.application.ports.model_scoring import ModelScoringContext, ModelScoringPort
-from trader.application.ports.scored import ScoredNativeInput
+from trader.recommendation.application.ports.loaded_profile import ModelScoringContext, ModelScoringPort
+from trader.recommendation.application.ports.scoring import ScoredNativeInput
 from trader.application.recommendation.policy import RecommendationPolicy
 from trader.application.recommendation.ranking_selection import RankingSelectionPort
 from trader.application.recommendation.risk_control import RiskControlPort

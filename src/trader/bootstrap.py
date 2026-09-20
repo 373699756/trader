@@ -19,9 +19,9 @@ from trader.application.decisions.decision_observers import AsyncDecisionObserve
 from trader.application.decisions.decision_queries import UnifiedDecisionQueries
 from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
 from trader.application.long_runtime import LongRuntime, LongRuntimeDependencies
-from trader.application.market_data.input_runtime import DecisionBuildDependencies, MarketDataAdapter
+from trader.recommendation.application.pipeline.data_source.source_router import DecisionBuildDependencies, MarketDataAdapter
 from trader.training.evaluation.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
-from trader.application.recommendation.candidate_filtering import CandidateFilteringService
+from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import CandidateFilteringService
 from trader.application.recommendation.local_scoring import LocalScoringService
 from trader.application.recommendation.model_scoring import PublishedModelScoringService
 from trader.application.recommendation.model_scoring_router import ModelScoringRouter
@@ -37,6 +37,7 @@ from trader.application.recommendation.scored_freezing import (
     ScoredFreezeCoordinator,
 )
 from trader.training.evaluation.application.research_runtime import ResearchRuntime
+from trader.training.evaluation.application.research_audit import try_build_committed_research_audit
 from trader.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.application.runtime.latency import LatencyWaterfall
 from trader.application.runtime.resource_orchestration import (
@@ -290,6 +291,7 @@ def build_system(
             model_scoring,
             candidate_filtering,
             local_scoring,
+            try_build_committed_research_audit,
         ),
     )
     deepseek = DeepSeekAdapter(reviewer, policy, native_data, ScoreFusionService())

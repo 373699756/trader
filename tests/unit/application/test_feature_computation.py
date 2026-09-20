@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from trader.application.market_data.feature_computation import (
+from trader.recommendation.application.pipeline.static_standardize.static_feature_builder import (
     FeatureFactRevision,
     affected_feature_stages,
     build_feature_computation_plan,

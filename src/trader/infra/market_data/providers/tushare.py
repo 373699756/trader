@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.application.cache import canonical_json_bytes
+from trader.infra.cache_contracts import canonical_json_bytes
 from trader.infra.market_data.providers.tushare_records import (
     _calendar_observation,
     _calendar_ranges,

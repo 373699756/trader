@@ -27,7 +27,7 @@ def test_candidate_planning_contract_is_synchronized_across_authoritative_docume
 
 
 def test_runtime_has_no_generic_candidate_weight_owner() -> None:
-    runtime = _read("src/trader/application/market_data/input_runtime.py")
+    runtime = _read("src/trader/recommendation/application/pipeline/data_source/source_router.py")
     config = _read("config/strategy.json")
     settings = _read("src/trader/infra/settings/models.py")
     performance = _read("src/trader/entrypoints/performance.py")
@@ -38,15 +38,15 @@ def test_runtime_has_no_generic_candidate_weight_owner() -> None:
     assert "from trader.recommendation.domain.selection.ranking import candidate_score" not in performance
     assert "candidate_score(" not in performance
     assert "_CANDIDATE_WEIGHTS" not in performance
-    assert "trader.application.recommendation.candidate_planning import" in performance
+    assert "trader.recommendation.application.pipeline.candidate_pool.candidate_builder import" in performance
     assert "build_candidate_plans" in performance
     assert (
-        '"board_preselection": "trader.application.recommendation.candidate_planning.build_candidate_plans"'
+        '"board_preselection": "trader.recommendation.application.pipeline.candidate_pool.candidate_builder.build_candidate_plans"'
         in performance
     )
     assert (
         '"candidate_union_projection": '
-        '"trader.application.recommendation.candidate_planning.CandidatePlanSet.physical_union + '
+        '"trader.recommendation.application.pipeline.candidate_pool.candidate_builder.CandidatePlanSet.physical_union + '
         'trader.infra.market_data.normalization.merge.overlay_canonical_snapshot"' in performance
     )
     assert '"candidate_rows": 1080' in _read("config/runtime.json")

@@ -4,7 +4,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Protocol
 
-from trader.application.ports.json_values import JsonObject
+from trader.recommendation.application.ports.json_values import JsonObject
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewCandidateContext

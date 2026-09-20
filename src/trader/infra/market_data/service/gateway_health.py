@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from trader.application.cache import CacheStatus
+from trader.infra.cache_contracts import CacheStatus
 from trader.application.runtime.latency import LatencyWaterfallStatus
 from trader.application.runtime.source_lanes import SourceLaneRegistryStatus
 from trader.recommendation.domain.market.models import CanonicalMarketSnapshot

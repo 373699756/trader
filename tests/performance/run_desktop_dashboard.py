@@ -30,7 +30,7 @@ from trader.application.decisions.decision_core import UnifiedDecisionIndex  # n
 from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex  # noqa: E402
 from trader.application.decisions.decision_queries import UnifiedDecisionQueries  # noqa: E402
 from trader.application.decisions.decision_stream import UnifiedDecisionEventStream  # noqa: E402
-from trader.application.ports.decision_records import CommittedDecisionRecord  # noqa: E402
+from trader.recommendation.application.ports.decision_records import CommittedDecisionRecord  # noqa: E402
 from trader.recommendation.domain.market.models import Board  # noqa: E402
 from trader.recommendation.domain.publication.decision_identity import (  # noqa: E402
     DecisionItem,

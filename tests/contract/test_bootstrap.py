@@ -12,12 +12,12 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.application.decisions.decision_observers import DecisionObserverStatus
-from trader.application.market_data.input_runtime import MarketDataAdapter
-from trader.application.ports.runtime_status import (
+from trader.recommendation.application.pipeline.data_source.source_router import MarketDataAdapter
+from trader.recommendation.application.ports.read_only_queries import (
     InputQualityStatus,
     SupplySummary,
 )
-from trader.application.ports.scheduler import ResearchRuntimeStatus
+from trader.recommendation.application.ports.runtime import ResearchRuntimeStatus
 from trader.application.runtime.cadence import (
     CadencePlannerStatus,
     SchedulePointKey,

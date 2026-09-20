@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from trader.application.ports.model_scoring import ScoringHeadRuntimeStatus
+from trader.recommendation.application.ports.loaded_profile import ScoringHeadRuntimeStatus
 from trader.application.recommendation.model_scoring_router import ModelScoringRouter
 from trader.recommendation.domain.publication.models import Strategy
 

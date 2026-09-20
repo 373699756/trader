@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import date
+from collections.abc import Sequence
+from datetime import date, datetime
 from typing import Protocol
 
-from trader.application.ports.market import DataPlaneReadPort
+from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.training.evaluation.application.baseline_replay_report import BaselineReplaySelection
 from trader.training.evaluation.application.challenger_replay_report import (
     ChallengerCandidateOverride,
@@ -20,12 +23,14 @@ from trader.training.evaluation.application.historical_extraction_models import 
 from trader.training.evaluation.domain.challengers import ChallengerSpecification
 
 
-class HistoricalDataPlaneReadPort(DataPlaneReadPort, Protocol):
+class HistoricalDataPlaneReadPort(Protocol):
     """Offline extension of the canonical historical read port for Historical extraction adapters.
 
     Implementations retain the canonical immutable snapshot boundary and must
     discard hard-reject identities when projecting historical research data.
     """
+
+    def snapshot(self) -> MarketDataPlaneSnapshot: ...
 
     def is_trading_day(self, trade_date: date) -> bool: ...
 
@@ -36,6 +41,18 @@ class HistoricalDataPlaneReadPort(DataPlaneReadPort, Protocol):
         trade_date: date,
         codes: tuple[str, ...],
     ) -> HistoricalFullFieldBundle: ...
+
+
+class ResearchReaderPort(Protocol):
+    def refresh_industry_heat(self, observed_at: datetime) -> Sequence[FeatureSnapshot]: ...
+
+    def refresh_market_news(
+        self, codes: Sequence[str], observed_at: datetime, *, deadline: datetime | None = None
+    ) -> ResearchRefreshResult: ...
+
+    def refresh_stock_risk(
+        self, codes: Sequence[str], observed_at: datetime, *, deadline: datetime | None = None
+    ) -> ResearchRefreshResult: ...
 
 
 class HistoricalCandidateEvaluator(Protocol):
@@ -70,4 +87,5 @@ __all__ = [
     "HistoricalCandidateEvaluator",
     "HistoricalChallengerReplayEvaluator",
     "HistoricalDataPlaneReadPort",
+    "ResearchReaderPort",
 ]
