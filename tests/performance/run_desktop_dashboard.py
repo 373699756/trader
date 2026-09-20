@@ -26,10 +26,10 @@ from werkzeug.serving import make_server
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from trader.application.decisions.decision_core import UnifiedDecisionIndex  # noqa: E402
-from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex  # noqa: E402
-from trader.application.decisions.decision_queries import UnifiedDecisionQueries  # noqa: E402
-from trader.application.decisions.decision_stream import UnifiedDecisionEventStream  # noqa: E402
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex  # noqa: E402
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex  # noqa: E402
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries  # noqa: E402
+from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream  # noqa: E402
 from trader.recommendation.application.ports.decision_records import CommittedDecisionRecord  # noqa: E402
 from trader.recommendation.domain.market.models import Board  # noqa: E402
 from trader.recommendation.domain.publication.decision_identity import (  # noqa: E402

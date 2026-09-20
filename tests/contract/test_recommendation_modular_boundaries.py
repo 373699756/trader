@@ -40,7 +40,9 @@ def test_recommendation_runtime_uses_ports_instead_of_training_entrypoints() -> 
     input_runtime = (SOURCE / "recommendation/application/pipeline/data_source/source_router.py").read_text(
         encoding="utf-8"
     )
-    decision_adapters = (SOURCE / "application" / "decisions" / "decision_adapters.py").read_text(encoding="utf-8")
+    decision_adapters = (
+        SOURCE / "recommendation/application/pipeline/freeze_publish/runtime_adapters.py"
+    ).read_text(encoding="utf-8")
 
     assert "CandidateFilteringPort" in input_runtime
     assert "LocalScoringPort" in input_runtime

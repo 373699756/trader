@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.application.decisions.decision_observers import DecisionObserverStatus
+from trader.recommendation.application.pipeline.freeze_publish.decision_observers import DecisionObserverStatus
 from trader.recommendation.application.pipeline.data_source.source_router import MarketDataAdapter
 from trader.recommendation.application.ports.read_only_queries import (
     InputQualityStatus,

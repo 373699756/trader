@@ -18,7 +18,7 @@ TARGET_PACKAGES = (
     "recommendation/application/ports",
     "recommendation/application/pipeline",
     "application/runtime",
-    "application/decisions",
+    "recommendation/application/pipeline/freeze_publish",
     "infra/settings",
     "infra/market_data/providers",
     "infra/market_data/normalization",
@@ -273,22 +273,37 @@ def test_recommendation_stages_are_partitioned_without_reverse_dependencies() ->
     assert violations == []
 
 
-def test_application_recommendation_and_decisions_are_partitioned() -> None:
+def test_recommendation_scoring_and_publication_are_owned_by_pipeline_stages() -> None:
     application_root = SOURCE_ROOT / "application"
-    recommendation_root = application_root / "recommendation"
-    decisions_root = application_root / "decisions"
-    assert recommendation_root.is_dir()
-    assert decisions_root.is_dir()
+    pipeline_root = SOURCE_ROOT / "recommendation/application/pipeline"
+    expected = {
+        "local_score": {"base_scoring.py", "model_scoring.py", "model_router.py"},
+        "risk_review": {"deepseek_evidence_gate.py"},
+        "score_merge": {"score_fusion.py"},
+        "downside_action": {"downside_protection.py"},
+        "final_selection": {"decision_projection.py", "grouped_ranking.py"},
+        "freeze_publish": {
+            "snapshot_publisher.py",
+            "freeze_coordinator.py",
+            "runtime_adapters.py",
+            "read_only_queries.py",
+            "event_stream.py",
+        },
+    }
+    for stage, files in expected.items():
+        root = pipeline_root / stage
+        assert root.is_dir()
+        assert files <= {path.name for path in root.glob("*.py")}
 
-    recommendation_files = {
-        "scored_deepseek_fusion.py",
+    assert not any(
+        path.is_file()
+        for name in ("recommendation", "decisions")
+        for path in (application_root / name).rglob("*.py")
+    )
+    retired_files = {
         "scored_projection.py",
         "scored_freezing.py",
         "production_model_scoring.py",
-        "recommendation_policy_codec.py",
-        "policy.py",
-    }
-    decision_files = {
         "decision_core.py",
         "decision_coverage.py",
         "decision_drafts.py",
@@ -299,17 +314,7 @@ def test_application_recommendation_and_decisions_are_partitioned() -> None:
         "decision_stream.py",
         "decision_adapters.py",
     }
-    assert {path.name for path in recommendation_root.glob("*.py")} >= recommendation_files
-    assert not any((recommendation_root / name).exists() for name in {"scored_selection.py", "scored_quality.py"})
-    assert {path.name for path in decisions_root.glob("*.py")} >= decision_files
-    assert not any((application_root / name).exists() for name in recommendation_files | decision_files)
-
-    violations: list[str] = []
-    for path in recommendation_root.rglob("*.py"):
-        for imported in _imports(path):
-            if imported.startswith("trader.application.decisions"):
-                violations.append(f"{path.relative_to(SOURCE_ROOT)} -> {imported}")
-    assert violations == []
+    assert not any(path.name in retired_files for path in application_root.rglob("*.py"))
 
 
 def test_application_runtime_and_market_data_are_partitioned() -> None:
@@ -338,7 +343,9 @@ def test_application_runtime_and_market_data_are_partitioned() -> None:
     violations: list[str] = []
     for path in runtime_root.rglob("*.py"):
         for imported in _imports(path):
-            if imported.startswith("trader.recommendation.application.pipeline"):
+            if imported.startswith("trader.recommendation.application.pipeline") and not imported.startswith(
+                "trader.recommendation.application.pipeline.freeze_publish"
+            ):
                 violations.append(f"{path.relative_to(SOURCE_ROOT)} -> {imported}")
     assert violations == []
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from trader.recommendation.application.ports.loaded_profile import ScoringHeadRuntimeStatus
-from trader.application.recommendation.model_scoring_router import ModelScoringRouter
+from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
 from trader.recommendation.domain.publication.models import Strategy
 
 

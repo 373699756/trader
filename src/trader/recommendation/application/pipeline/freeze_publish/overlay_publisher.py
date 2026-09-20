@@ -1,4 +1,4 @@
-"""Refresh mutable quote overlays without changing scored decision identity."""
+"""Refresh quote overlays without changing the published decision identity."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from trader.application.decisions.decision_core import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DecisionBuilderPort,

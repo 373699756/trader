@@ -1,4 +1,4 @@
-"""Published-model scoring boundary used by live recommendation runs.
+"""Published-model capability boundary used by live recommendation runs.
 
 This module accepts a model-scoring port only.  Training, artifact fitting,
 history downloading, and model publication remain outside the application

@@ -1,4 +1,4 @@
-"""Cross-sectional production scoring for one configured strategy head."""
+"""Cross-sectional model diagnostics for one configured strategy head."""
 
 from __future__ import annotations
 

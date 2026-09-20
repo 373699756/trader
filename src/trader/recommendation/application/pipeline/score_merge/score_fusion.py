@@ -1,4 +1,4 @@
-"""Optional review fusion boundary for recommendation decisions."""
+"""Fixed local and DeepSeek score fusion boundary."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from trader.application.recommendation.policy import RecommendationPolicy
-from trader.application.recommendation.scored_projection import (
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+from trader.recommendation.application.pipeline.final_selection.decision_projection import (
     ScoredLocalProjection,
     build_scored_hybrid,
     validate_review_manifests,

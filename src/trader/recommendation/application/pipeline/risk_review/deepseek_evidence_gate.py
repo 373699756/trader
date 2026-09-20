@@ -1,4 +1,4 @@
-"""Scored-strategy decision policies and review-time normalization."""
+"""DeepSeek evidence validation and review-time normalization."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from datetime import datetime
 
-from trader.application.recommendation.policy import RecommendationPolicy
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.risk.scored_fusion import ScoredDecisionPolicy
 from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome

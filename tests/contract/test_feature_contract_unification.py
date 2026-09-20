@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_training_online_codec_replay_and_shadow_use_the_catalog_owner() -> None:
     consumers = (
-        "src/trader/application/recommendation/production_model_scoring.py",
+        "src/trader/recommendation/application/pipeline/local_score/model_scoring.py",
         "src/trader/training/evaluation/application/tomorrow_daily_close_h1.py",
         "src/trader/training/evaluation/application/tomorrow_historical_screening.py",
         "src/trader/training/evaluation/application/tomorrow_historical_validation.py",
@@ -31,7 +31,7 @@ def test_training_online_codec_replay_and_shadow_use_the_catalog_owner() -> None
 
 def test_v3_feature_identifiers_are_declared_only_by_the_catalog() -> None:
     consumers = (
-        "src/trader/application/recommendation/production_model_scoring.py",
+        "src/trader/recommendation/application/pipeline/local_score/model_scoring.py",
         "src/trader/training/evaluation/application/tomorrow_daily_close_h1.py",
         "src/trader/training/evaluation/application/tomorrow_historical_screening.py",
         "src/trader/training/evaluation/application/tomorrow_historical_validation.py",
@@ -46,7 +46,7 @@ def test_v3_feature_identifiers_are_declared_only_by_the_catalog() -> None:
 
 def test_online_and_historical_cost_ranks_share_the_average_rank_owner() -> None:
     consumers = (
-        "src/trader/application/recommendation/production_model_scoring.py",
+        "src/trader/recommendation/application/pipeline/local_score/model_scoring.py",
         "src/trader/training/evaluation/application/tomorrow_historical_screening.py",
         "src/trader/training/evaluation/application/tomorrow_historical_validation.py",
     )

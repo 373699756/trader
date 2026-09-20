@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from flask import url_for
 
-from trader.application.decisions.decision_queries import DECISION_VIEW_SCHEMA_VERSION
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import DECISION_VIEW_SCHEMA_VERSION
 
 STATUS_SCHEMA_VERSION = "runtime_status"
 

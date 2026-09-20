@@ -1,4 +1,4 @@
-"""Ranking and action-selection boundary for scored recommendations."""
+"""Independent-group ranking boundary for scored recommendations."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-from trader.application.recommendation.policy import RecommendationPolicy
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
     ScoredSelectionIdentity,
     ScoredSelectionOptions,

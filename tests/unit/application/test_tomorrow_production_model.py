@@ -15,7 +15,7 @@ from trader.recommendation.application.ports.loaded_profile import (
     ModelScoringContext,
     ModelScoringDeadlineError,
 )
-from trader.application.recommendation.production_model_scoring import (
+from trader.recommendation.application.pipeline.local_score.model_scoring import (
     ProductionModelScoringService,
     SharedModelFeatureCache,
 )

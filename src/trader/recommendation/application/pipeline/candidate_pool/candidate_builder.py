@@ -13,7 +13,7 @@ from trader.recommendation.application.pipeline.stage_output import (
     require_previous_stage,
     stage_output,
 )
-from trader.application.recommendation.policy import RecommendationPolicy
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import has_transient_evaluation_gap
 from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
     ScoredSelectionIdentity,

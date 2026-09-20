@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from trader.application.recommendation.policy import RecommendationPolicy, RecommendationSelectionSettings
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy, RecommendationSelectionSettings
 from trader.recommendation.domain.market.models import (
     FeatureSnapshot,
     MarketQuote,

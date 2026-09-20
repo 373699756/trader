@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from trader.application.long_groups import LongGroupDefinition, LongGroupSectionDefinition, LongWatchItemDefinition
-from trader.application.recommendation.policy import RecommendationPolicy, RecommendationSelectionSettings
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy, RecommendationSelectionSettings
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.candidate.filters import HardFilterPolicy
 from trader.recommendation.domain.publication.models import Strategy

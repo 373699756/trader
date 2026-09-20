@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Literal, cast
 from zoneinfo import ZoneInfo
 
-from trader.application.decisions.decision_events import (
+from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
     CommittedDecisionItem,
     DecisionCommitted,
 )

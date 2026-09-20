@@ -1,4 +1,4 @@
-"""Pure feature projection used before scored selection."""
+"""Pure policy feature projection used before scored selection."""
 
 from __future__ import annotations
 

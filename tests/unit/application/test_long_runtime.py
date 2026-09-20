@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from trader.application.decisions.decision_core import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.application.long_groups import LongGroupDefinition, LongWatchItemDefinition
 from trader.application.long_runtime import LongRuntime, LongRuntimeDependencies
 from trader.recommendation.application.ports.long import LongRefreshRequest

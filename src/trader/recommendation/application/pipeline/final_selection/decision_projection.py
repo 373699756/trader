@@ -1,4 +1,4 @@
-"""Native scored input projection to the unified decision identity."""
+"""Final local and hybrid projection to the unified decision identity."""
 
 from __future__ import annotations
 
@@ -13,11 +13,11 @@ from trader.recommendation.application.ports.loaded_profile import (
     ModelScoringPort,
 )
 from trader.recommendation.application.ports.scoring import ScoredNativeInput
-from trader.application.recommendation.policy import RecommendationPolicy
-from trader.application.recommendation.ranking_selection import RankingSelectionPort, RankingSelectionService
-from trader.application.recommendation.recommendation_policy_codec import preselection_replay_feature
-from trader.application.recommendation.risk_control import RiskControlPort, RiskControlService
-from trader.application.recommendation.scored_deepseek_fusion import (
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+from trader.recommendation.application.pipeline.final_selection.grouped_ranking import RankingSelectionPort, RankingSelectionService
+from trader.recommendation.application.pipeline.policy_projection import preselection_replay_feature
+from trader.recommendation.application.pipeline.downside_action.downside_protection import RiskControlPort, RiskControlService
+from trader.recommendation.application.pipeline.risk_review.deepseek_evidence_gate import (
     normalize_scored_review_times,
     scored_decision_policy,
 )

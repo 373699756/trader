@@ -1,4 +1,4 @@
-"""Validated application policies independent from configuration transport."""
+"""Validated policies shared across recommendation pipeline stages."""
 
 from __future__ import annotations
 

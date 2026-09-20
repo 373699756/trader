@@ -1,4 +1,4 @@
-"""Risk-fact evaluation boundary for recommendation decisions."""
+"""Downside-protection boundary for recommendation decisions."""
 
 from __future__ import annotations
 

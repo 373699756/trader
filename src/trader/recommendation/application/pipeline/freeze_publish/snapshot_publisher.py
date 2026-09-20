@@ -1,4 +1,4 @@
-"""Thread-safe unified 当前决策 identity and quote-overlay CAS index."""
+"""Thread-safe current, formal, and quote-overlay snapshot publisher."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Literal
 
-from trader.application.decisions.decision_events import DecisionCommitted, build_decision_committed
+from trader.recommendation.application.pipeline.freeze_publish.decision_events import DecisionCommitted, build_decision_committed
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     DecisionIdentity,

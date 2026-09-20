@@ -15,9 +15,9 @@ from trader.recommendation.application.ports.runtime import (
     ReviewUnavailableError,
     SharedDeepSeekRuntimeContract,
 )
-from trader.application.recommendation.policy import RecommendationPolicy
-from trader.application.recommendation.score_fusion import ScoreFusionPort, ScoreFusionService
-from trader.application.recommendation.scored_freezing import ScoredFreezeCoordinator
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionPort, ScoreFusionService
+from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinator import ScoredFreezeCoordinator
 from trader.recommendation.domain.publication.decision_identity import DecisionIdentity, ScoredDecision
 from trader.recommendation.domain.publication.models import Strategy
 

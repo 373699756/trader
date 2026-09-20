@@ -5,8 +5,8 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 
 from tests.unit.domain.test_decision_identity import NOW, decision
-from trader.application.decisions.decision_core import UnifiedDecisionIndex
-from trader.application.decisions.decision_observers import AsyncDecisionObserver
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,

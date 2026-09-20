@@ -3,8 +3,8 @@ from __future__ import annotations
 import threading
 
 from tests.unit.domain.test_decision_identity import decision
-from trader.application.decisions.decision_events import build_decision_committed
-from trader.application.decisions.decision_observers import AsyncDecisionObserver
+from trader.recommendation.application.pipeline.freeze_publish.decision_events import build_decision_committed
+from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver
 from trader.application.runtime.shutdown import ShutdownDeadline
 from trader.training.evaluation.application.research_audit import DecisionObservation
 

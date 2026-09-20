@@ -1,4 +1,4 @@
-"""Formal checkpoint, freeze seal, retry, and close recovery for scored strategies."""
+"""Formal checkpoint, first-wins freeze, and close recovery coordination."""
 
 from __future__ import annotations
 

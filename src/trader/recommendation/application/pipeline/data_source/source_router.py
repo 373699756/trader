@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from typing import Protocol
 
-from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.application.long_runtime import LongRuntime
 from trader.recommendation.application.pipeline.quality_check.pipeline_status import (
     build_first_nine_stage_snapshots,
@@ -40,13 +40,13 @@ from trader.recommendation.application.pipeline.candidate_pool.candidate_builder
     SCORED_STRATEGIES,
     CandidatePlanSet,
 )
-from trader.application.recommendation.local_scoring import (
+from trader.recommendation.application.pipeline.local_score.base_scoring import (
     LocalScoringContext,
     LocalScoringPort,
     LocalScoringService,
 )
-from trader.application.recommendation.policy import RecommendationPolicy
-from trader.application.recommendation.scored_projection import ScoredLocalProjection
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+from trader.recommendation.application.pipeline.final_selection.decision_projection import ScoredLocalProjection
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import has_transient_candidate_gap
 from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, stage_output
 from trader.application.runtime.cadence import PipelineTask, task_execution_budget_seconds

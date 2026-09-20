@@ -1,4 +1,4 @@
-"""Deterministic local scoring boundary for recommendation runs."""
+"""Deterministic base and local scoring boundary for recommendation runs."""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ from typing import Protocol
 
 from trader.recommendation.application.ports.loaded_profile import ModelScoringContext, ModelScoringPort
 from trader.recommendation.application.ports.scoring import ScoredNativeInput
-from trader.application.recommendation.policy import RecommendationPolicy
-from trader.application.recommendation.ranking_selection import RankingSelectionPort
-from trader.application.recommendation.risk_control import RiskControlPort
-from trader.application.recommendation.scored_projection import (
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+from trader.recommendation.application.pipeline.final_selection.grouped_ranking import RankingSelectionPort
+from trader.recommendation.application.pipeline.downside_action.downside_protection import RiskControlPort
+from trader.recommendation.application.pipeline.final_selection.decision_projection import (
     ScoredLocalProjection,
     ScoredProjectionInputs,
     build_scored_local,

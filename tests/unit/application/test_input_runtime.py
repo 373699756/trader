@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from tests.unit.domain.test_decision_identity import decision
-from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.data_source.source_router import (
     DecisionBuildDependencies,
     InputBatch,

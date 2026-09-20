@@ -20,7 +20,7 @@ from trader.recommendation.application.pipeline.candidate_pool.candidate_builder
     build_candidate_plans,
     refresh_candidate_reserves,
 )
-from trader.application.recommendation.policy import RecommendationPolicy
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.domain.market.models import FeatureSnapshot
 
 

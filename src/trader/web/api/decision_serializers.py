@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from trader.application.decisions.decision_queries import DecisionItemView, DecisionView
-from trader.application.decisions.decision_stream import (
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import DecisionItemView, DecisionView
+from trader.recommendation.application.pipeline.freeze_publish.event_stream import (
     DecisionEventPayload,
     DecisionReplacementPatch,
     OverlayEventPayload,

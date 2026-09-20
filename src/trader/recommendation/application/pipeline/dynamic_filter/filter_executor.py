@@ -13,7 +13,7 @@ from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_feat
     ScoredSelectionNotReadyError,
     assemble_scored_features,
 )
-from trader.application.recommendation.policy import RecommendationPolicy
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot
 from trader.recommendation.domain.publication.models import ScoredSelectionResult, Strategy

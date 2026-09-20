@@ -72,9 +72,9 @@ def test_non_scoring_code_and_contracts_use_stable_semantic_names() -> None:
 
 def test_public_release_contract_uses_stable_schema_identities() -> None:
     release_contract = (PROJECT_ROOT / "src/trader/web/static/release_contract.js").read_text(encoding="utf-8")
-    decision_queries = (PROJECT_ROOT / "src/trader/application/decisions/decision_queries.py").read_text(
-        encoding="utf-8"
-    )
+    decision_queries = (
+        PROJECT_ROOT / "src/trader/recommendation/application/pipeline/freeze_publish/read_only_queries.py"
+    ).read_text(encoding="utf-8")
 
     assert 'const STATUS_SCHEMA = "runtime_status";' in release_contract
     assert 'const DECISION_VIEW_SCHEMA = "decision_view";' in release_contract

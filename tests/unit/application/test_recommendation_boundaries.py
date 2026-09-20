@@ -12,7 +12,7 @@ from tests.unit.application.test_input_runtime import _decision_build, _Market, 
 from tests.unit.application.test_tomorrow_projection import EVALUATED_AT, _native_input, _verified_feature
 from tests.unit.application.test_tomorrow_selection import _data_snapshot
 from tests.unit.application.test_tomorrow_selection import _policy as snapshot_policy
-from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.data_source.source_router import DecisionBuildDependencies, MarketDataAdapter
 from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
 from trader.recommendation.application.ports.loaded_profile import ModelScoringContext
@@ -22,11 +22,11 @@ from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_se
     CandidateFilteringService,
 )
 from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_feature_builder import FeatureCalculationPort
-from trader.application.recommendation.local_scoring import LocalScoringPort, LocalScoringService
-from trader.application.recommendation.model_scoring import PublishedModelScoringService
-from trader.application.recommendation.policy import RecommendationPolicy
-from trader.application.recommendation.ranking_selection import RankingSelectionPort, RankingSelectionService
-from trader.application.recommendation.score_fusion import ScoreFusionService
+from trader.recommendation.application.pipeline.local_score.base_scoring import LocalScoringPort, LocalScoringService
+from trader.recommendation.application.pipeline.local_score.model_capability import PublishedModelScoringService
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+from trader.recommendation.application.pipeline.final_selection.grouped_ranking import RankingSelectionPort, RankingSelectionService
+from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionService
 from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
     ScoredSelectionUseCase,
     assemble_scored_features,
@@ -259,7 +259,7 @@ def test_score_fusion_service_preserves_manifest_gate_and_parentage(application_
 def test_recommendation_application_does_not_import_infrastructure_or_training() -> None:
     forbidden_prefixes = ("trader.infra", "trader.web", "trader.entrypoints")
     violations: list[str] = []
-    for path in (SOURCE_ROOT / "application/recommendation").glob("*.py"):
+    for path in (SOURCE_ROOT / "recommendation/application").rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):

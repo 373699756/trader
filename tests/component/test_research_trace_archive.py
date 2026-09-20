@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.unit.domain.test_decision_identity import decision
-from trader.application.decisions.decision_events import build_decision_committed
+from trader.recommendation.application.pipeline.freeze_publish.decision_events import build_decision_committed
 from trader.infra.persistence import research_trace as research_trace_module
 from trader.infra.persistence.research_trace import (
     LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,

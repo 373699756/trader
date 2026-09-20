@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus, SupplySummary
-from trader.application.recommendation.scored_projection import ScoredLocalProjection
+from trader.recommendation.application.pipeline.final_selection.decision_projection import ScoredLocalProjection
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import ScoredInputQuality
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.decision_identity import DecisionItem, ScoredDecision

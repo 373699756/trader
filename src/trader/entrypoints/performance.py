@@ -18,11 +18,11 @@ from pathlib import Path
 from typing import cast
 
 from trader.infra.cache_contracts import canonical_json_bytes
-from trader.application.decisions.decision_core import UnifiedDecisionIndex
-from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
-from trader.application.decisions.decision_events import build_decision_committed
-from trader.application.decisions.decision_queries import UnifiedDecisionQueries
-from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
+from trader.recommendation.application.pipeline.freeze_publish.decision_events import build_decision_committed
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
+from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
 from trader.recommendation.application.ports.loaded_profile import LoadedScoringProfile, ModelScoringPort
 from trader.recommendation.application.ports.scoring import TomorrowNativeInput
 from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import (
@@ -31,13 +31,13 @@ from trader.recommendation.application.pipeline.candidate_pool.candidate_builder
     CandidatePlanSet,
     build_candidate_plans,
 )
-from trader.application.recommendation.model_scoring_router import ModelScoringRouter
-from trader.application.recommendation.policy import RecommendationPolicy
-from trader.application.recommendation.production_model_scoring import (
+from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+from trader.recommendation.application.pipeline.local_score.model_scoring import (
     ProductionModelScoringService,
     SharedModelFeatureCache,
 )
-from trader.application.recommendation.scored_projection import (
+from trader.recommendation.application.pipeline.final_selection.decision_projection import (
     ScoredLocalProjection,
     ScoredProjectionInputs,
     build_scored_hybrid,
@@ -406,17 +406,17 @@ def _operations(
         "market_normalization": "trader.infra.market_data.normalization.normalize.build_market_quote",
         "market_merge": "trader.infra.market_data.normalization.merge.merge_market_observations",
         "canonical_snapshot": "trader.infra.market_data.normalization.columnar.ColumnarQuoteBatch.from_snapshot",
-        "targeted_overlay_commit": "trader.infra.market_data.normalization.merge.overlay_canonical_snapshot + trader.application.decisions.decision_core.UnifiedDecisionIndex.publish_overlay",
+        "targeted_overlay_commit": "trader.infra.market_data.normalization.merge.overlay_canonical_snapshot + trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher.UnifiedDecisionIndex.publish_overlay",
         "board_preselection": "trader.recommendation.application.pipeline.candidate_pool.candidate_builder.build_candidate_plans",
         "candidate_union_projection": "trader.recommendation.application.pipeline.candidate_pool.candidate_builder.CandidatePlanSet.physical_union + trader.infra.market_data.normalization.merge.overlay_canonical_snapshot",
         "board_local_scoring": "trader.recommendation.domain.scoring.scoring.score_board_strategy",
         "two_strategy_board_scoring": "trader.recommendation.domain.scoring.scoring.score_board_strategy",
         "three_board_wall_clock": "trader.recommendation.domain.scoring.scoring.score_board_strategy",
         "global_selection": "trader.recommendation.domain.scoring.scoring.score_board_strategy",
-        "board_ready_to_draft": "trader.application.recommendation.scored_projection.build_scored_local",
-        "quote_to_draft": "trader.application.recommendation.scored_projection.build_scored_local",
-        "deepseek_to_hybrid": "trader.application.recommendation.scored_projection.build_scored_hybrid",
-        "sse_publish": "trader.application.decisions.decision_stream.UnifiedDecisionEventStream.publish_committed",
+        "board_ready_to_draft": "trader.recommendation.application.pipeline.final_selection.decision_projection.build_scored_local",
+        "quote_to_draft": "trader.recommendation.application.pipeline.final_selection.decision_projection.build_scored_local",
+        "deepseek_to_hybrid": "trader.recommendation.application.pipeline.final_selection.decision_projection.build_scored_hybrid",
+        "sse_publish": "trader.recommendation.application.pipeline.freeze_publish.event_stream.UnifiedDecisionEventStream.publish_committed",
         "snapshot_api": "trader.web.api.routes._current",
         "etag_api": "trader.web.api.routes._current",
         "dates_api": "trader.web.api.routes._dates",

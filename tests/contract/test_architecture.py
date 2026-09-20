@@ -144,8 +144,10 @@ def test_application_does_not_own_infrastructure_implementations() -> None:
 
 def test_model_scoring_router_is_profile_agnostic_and_replaces_tomorrow_specific_injection() -> None:
     port = SOURCE_ROOT / "recommendation/application/ports/loaded_profile.py"
-    router = SOURCE_ROOT / "application/recommendation/model_scoring_router.py"
-    projection = (SOURCE_ROOT / "application/recommendation/scored_projection.py").read_text(encoding="utf-8")
+    router = SOURCE_ROOT / "recommendation/application/pipeline/local_score/model_router.py"
+    projection = (
+        SOURCE_ROOT / "recommendation/application/pipeline/final_selection/decision_projection.py"
+    ).read_text(encoding="utf-8")
     input_runtime = (SOURCE_ROOT / "recommendation/application/pipeline/data_source/source_router.py").read_text(
         encoding="utf-8"
     )
@@ -383,7 +385,9 @@ def test_runtime_responsibilities_remain_split_by_resource_boundary() -> None:
     input_runtime = (SOURCE_ROOT / "recommendation/application/pipeline/data_source/source_router.py").read_text(
         encoding="utf-8"
     )
-    decision_adapters = (SOURCE_ROOT / "application/decisions/decision_adapters.py").read_text(encoding="utf-8")
+    decision_adapters = (
+        SOURCE_ROOT / "recommendation/application/pipeline/freeze_publish/runtime_adapters.py"
+    ).read_text(encoding="utf-8")
     runtime = (SOURCE_ROOT / "application/runtime/scheduler_runtime.py").read_text(encoding="utf-8")
     issues = (SOURCE_ROOT / "application/runtime/runtime_issues.py").read_text(encoding="utf-8")
 

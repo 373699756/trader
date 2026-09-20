@@ -9,8 +9,8 @@ from functools import partial
 
 from flask import Blueprint, Flask, Response, jsonify, render_template, request
 
-from trader.application.decisions.decision_queries import DecisionView
-from trader.application.decisions.decision_stream import UnifiedSubscriberLimitError
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import DecisionView
+from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedSubscriberLimitError
 from trader.recommendation.domain.publication.models import Strategy
 from trader.web.api.decision_serializers import serialize_decision_view, serialize_error
 from trader.web.api.decision_sse import decision_event_response

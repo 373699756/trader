@@ -7,12 +7,12 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Generic, Protocol, TypeAlias, TypeVar
 
-from trader.training.evaluation.application.research_audit import DecisionObservation
 from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
 
-DecisionEventConsumer = Callable[[DecisionObservation], None]
+_ObservationT = TypeVar("_ObservationT", contravariant=True)
+DecisionEventConsumer: TypeAlias = Callable[[_ObservationT], None]
 
 
 @dataclass(frozen=True)
@@ -29,11 +29,11 @@ class DecisionObserverStatus:
     last_error_code: str
 
 
-class DecisionObserver(Protocol):
-    def offer(self, observation: DecisionObservation) -> bool: ...
+class DecisionObserver(Protocol[_ObservationT]):
+    def offer(self, observation: _ObservationT) -> bool: ...
 
 
-class DecisionObserverRuntime(DecisionObserver, Protocol):
+class DecisionObserverRuntime(DecisionObserver[_ObservationT], Protocol):
     def start(self) -> bool: ...
 
     def close(self) -> None: ...
@@ -45,12 +45,12 @@ class DecisionObserverRuntime(DecisionObserver, Protocol):
     def status(self) -> DecisionObserverStatus: ...
 
 
-class AsyncDecisionObserver:
+class AsyncDecisionObserver(Generic[_ObservationT]):
     """Keeps research consumers outside publication and freeze capacity."""
 
     def __init__(
         self,
-        consumers: tuple[DecisionEventConsumer, ...],
+        consumers: tuple[DecisionEventConsumer[_ObservationT], ...],
         *,
         capacity: int,
         thread_name: str = "trader-observer",
@@ -61,7 +61,7 @@ class AsyncDecisionObserver:
         self._capacity = capacity
         self._thread_name = thread_name
         self._condition = threading.Condition(threading.RLock())
-        self._queue: deque[DecisionObservation] = deque()
+        self._queue: deque[_ObservationT] = deque()
         self._thread: threading.Thread | None = None
         self._accepting = False
         self._running = False
@@ -88,7 +88,7 @@ class AsyncDecisionObserver:
                 raise
             return True
 
-    def offer(self, observation: DecisionObservation) -> bool:
+    def offer(self, observation: _ObservationT) -> bool:
         with self._condition:
             if not self._accepting or len(self._queue) >= self._capacity:
                 self._rejected_count += 1

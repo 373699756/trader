@@ -4,8 +4,8 @@ from dataclasses import replace
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from trader.application.decisions.decision_events import build_decision_committed
-from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
+from trader.recommendation.application.pipeline.freeze_publish.decision_events import build_decision_committed
+from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.decision_identity import (
     DecisionItem,

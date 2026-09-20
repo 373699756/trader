@@ -9,10 +9,10 @@ from datetime import date, datetime, timedelta
 from datetime import time as wall_time
 from typing import Literal, cast
 
-from trader.application.decisions.decision_core import UnifiedDecisionIndex
-from trader.application.decisions.decision_events import DecisionCommitted
-from trader.application.decisions.decision_observers import DecisionObserverRuntime, DecisionObserverStatus
-from trader.application.decisions.decision_overlay_refresh import DecisionOverlayRefresher
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.decision_events import DecisionCommitted
+from trader.recommendation.application.pipeline.freeze_publish.decision_observers import DecisionObserverRuntime, DecisionObserverStatus
+from trader.recommendation.application.pipeline.freeze_publish.overlay_publisher import DecisionOverlayRefresher
 from trader.recommendation.application.ports.clock import Clock, TradingCalendarPort
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus
@@ -119,7 +119,7 @@ class RuntimeDependencies:
     decisions: DecisionBuilderPort
     reviews: DeepSeekUpgradePort
     index: UnifiedDecisionIndex
-    observer: DecisionObserverRuntime
+    observer: DecisionObserverRuntime[DecisionObservation]
     freezes: FreezePort
     settlement: SettlementPort
     research_factory: ResearchRuntimeFactoryPort

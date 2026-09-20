@@ -7,8 +7,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from tests.unit.domain.test_decision_identity import decision
-from trader.application.decisions.decision_core import UnifiedDecisionIndex
-from trader.application.recommendation.scored_freezing import (
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinator import (
     DecisionRuntimeIdentity,
     ScoredFreezeCoordinator,
 )

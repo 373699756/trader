@@ -12,32 +12,32 @@ from pathlib import Path
 
 from flask import Flask
 
-from trader.application.decisions.decision_adapters import DeepSeekAdapter, FreezeAdapter
-from trader.application.decisions.decision_core import UnifiedDecisionIndex
-from trader.application.decisions.decision_drafts import UnifiedDecisionDraftIndex
-from trader.application.decisions.decision_observers import AsyncDecisionObserver, DecisionEventConsumer
-from trader.application.decisions.decision_queries import UnifiedDecisionQueries
-from trader.application.decisions.decision_stream import UnifiedDecisionEventStream
+from trader.recommendation.application.pipeline.freeze_publish.runtime_adapters import DeepSeekAdapter, FreezeAdapter
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
+from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver, DecisionEventConsumer
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
+from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
 from trader.application.long_runtime import LongRuntime, LongRuntimeDependencies
 from trader.recommendation.application.pipeline.data_source.source_router import DecisionBuildDependencies, MarketDataAdapter
 from trader.training.evaluation.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import CandidateFilteringService
-from trader.application.recommendation.local_scoring import LocalScoringService
-from trader.application.recommendation.model_scoring import PublishedModelScoringService
-from trader.application.recommendation.model_scoring_router import ModelScoringRouter
-from trader.application.recommendation.production_model_scoring import (
+from trader.recommendation.application.pipeline.local_score.base_scoring import LocalScoringService
+from trader.recommendation.application.pipeline.local_score.model_capability import PublishedModelScoringService
+from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
+from trader.recommendation.application.pipeline.local_score.model_scoring import (
     ProductionModelScoringService,
     SharedModelFeatureCache,
 )
-from trader.application.recommendation.ranking_selection import RankingSelectionService
-from trader.application.recommendation.risk_control import RiskControlService
-from trader.application.recommendation.score_fusion import ScoreFusionService
-from trader.application.recommendation.scored_freezing import (
+from trader.recommendation.application.pipeline.final_selection.grouped_ranking import RankingSelectionService
+from trader.recommendation.application.pipeline.downside_action.downside_protection import RiskControlService
+from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionService
+from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinator import (
     DecisionRuntimeIdentity,
     ScoredFreezeCoordinator,
 )
 from trader.training.evaluation.application.research_runtime import ResearchRuntime
-from trader.training.evaluation.application.research_audit import try_build_committed_research_audit
+from trader.training.evaluation.application.research_audit import DecisionObservation, try_build_committed_research_audit
 from trader.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.application.runtime.latency import LatencyWaterfall
 from trader.application.runtime.resource_orchestration import (
@@ -188,14 +188,14 @@ class _PublicationContext:
     decision_events: UnifiedDecisionEventStream
     tomorrow_freezer: ScoredFreezeCoordinator
     d25_freezer: ScoredFreezeCoordinator
-    observer: AsyncDecisionObserver
+    observer: AsyncDecisionObserver[DecisionObservation]
 
 
 @dataclass(frozen=True)
 class _PublicationDependencies:
     repository: SQLiteDecisionRecordRepository
     market_data: MarketFeatureService
-    additional_observers: tuple[DecisionEventConsumer, ...] = ()
+    additional_observers: tuple[DecisionEventConsumer[DecisionObservation], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -749,7 +749,7 @@ def _build_publication(
         limits=ResearchTraceLimits(events_per_trade_date=max(2048, settings.pipeline.event_queue_size * 4)),
     )
 
-    observer = AsyncDecisionObserver(
+    observer = AsyncDecisionObserver[DecisionObservation](
         (research_trace.record, *dependencies.additional_observers),
         capacity=max(1, min(16, settings.pipeline.event_queue_size)),
         thread_name="trader-decision-observer",
