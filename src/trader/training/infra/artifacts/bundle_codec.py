@@ -8,8 +8,8 @@ from datetime import date
 from pathlib import Path
 from typing import Literal, cast
 
-from trader.infra.artifacts.canonical import content_hash
-from trader.infra.artifacts.fields import (
+from trader.infra.serialization.canonical import content_hash
+from trader.infra.serialization.fields import (
     is_boolean,
     is_finite_number,
     is_integer,

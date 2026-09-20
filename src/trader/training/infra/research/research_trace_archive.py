@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Literal, cast
 from zoneinfo import ZoneInfo
 
-from trader.infra.artifacts.fields import as_sequence
+from trader.infra.serialization.fields import as_sequence
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
     CommittedDecisionItem,
     DecisionCommitted,

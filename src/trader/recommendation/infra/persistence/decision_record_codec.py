@@ -7,7 +7,7 @@ from datetime import date, datetime
 from typing import Literal, TypeAlias, cast
 from zoneinfo import ZoneInfo
 
-from trader.infra.artifacts.fields import as_sequence
+from trader.infra.serialization.fields import as_sequence
 from trader.recommendation.domain.evidence.pipeline import (
     PipelineFacet,
     PipelineMetricName,

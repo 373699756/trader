@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from trader.infra.artifacts.sealing import publish_immutable, publish_immutable_file, replace_file
+from trader.infra.serialization.sealing import publish_immutable, publish_immutable_file, replace_file
 
 
 def test_publish_immutable_creates_then_refuses_to_overwrite(tmp_path: Path) -> None:

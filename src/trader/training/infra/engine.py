@@ -32,7 +32,7 @@ from trader.download.infra.history_control_repository import (
     HistoryMaintenanceLock,
 )
 from trader.download.infra.history_month_partition import HistoryPartitionVerificationPhase
-from trader.infra.artifacts.canonical import content_hash
+from trader.infra.serialization.canonical import content_hash
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT
 from trader.training.application.tomorrow_training import (

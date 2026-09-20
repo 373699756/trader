@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from trader.infra.artifacts.sealing import publish_immutable
+from trader.infra.serialization.sealing import publish_immutable
 from trader.training.evaluation.application.tomorrow_historical_report import TomorrowHistoricalReport
 from trader.training.evaluation.domain.artifact_identity import (
     canonical_artifact_hash,

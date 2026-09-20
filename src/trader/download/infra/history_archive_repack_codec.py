@@ -15,8 +15,8 @@ from trader.download.infra.history_archive_repack_state import (
     HistoryArchiveRepackPartitionEvidence,
     HistoryArchiveRepackSourceFileIdentity,
 )
-from trader.infra.artifacts.canonical import content_hash
-from trader.infra.artifacts.fields import as_sequence
+from trader.infra.serialization.canonical import content_hash
+from trader.infra.serialization.fields import as_sequence
 from trader.training.application.tomorrow_training import TomorrowTrainingStage
 from trader.training.infra.profile.v3.training_memory_evidence import (
     TomorrowTrainingMemoryEvidence,

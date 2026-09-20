@@ -7,8 +7,8 @@ from datetime import date
 from pathlib import Path
 from typing import cast
 
-from trader.infra.artifacts.fields import as_sequence
-from trader.infra.artifacts.sealing import publish_immutable
+from trader.infra.serialization.fields import as_sequence
+from trader.infra.serialization.sealing import publish_immutable
 from trader.training.evaluation.application.factor_diagnostic_report import (
     DiagnosticStatus,
     FactorAggregateDiagnostic,

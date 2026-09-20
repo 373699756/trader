@@ -7,8 +7,8 @@ from datetime import date
 from pathlib import Path
 from typing import Literal, cast
 
-from trader.infra.artifacts.fields import is_boolean, is_integer, is_text_sequence
-from trader.infra.artifacts.sealing import publish_immutable
+from trader.infra.serialization.fields import is_boolean, is_integer, is_text_sequence
+from trader.infra.serialization.sealing import publish_immutable
 from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash, canonical_artifact_json
 from trader.training.evaluation.domain.h1_point_in_time import ResearchStrategy
 from trader.training.evaluation.domain.historical_label import (

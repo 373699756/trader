@@ -25,6 +25,7 @@ TARGET_PACKAGES = (
     "infra/market_data/history",
     "infra/market_data/references",
     "infra/market_data/service",
+    "infra/serialization",
     "recommendation/infra/deepseek",
     "download/domain",
     "download/application",
@@ -127,6 +128,13 @@ def test_final_business_tree_has_no_retired_top_level_owners() -> None:
         if "__pycache__" not in file.parts
     ]
     assert active_files == []
+
+
+def test_shared_infrastructure_uses_only_target_tree_directories() -> None:
+    assert (SOURCE_ROOT / "infra/serialization").is_dir()
+    assert not (SOURCE_ROOT / "infra/artifacts").exists()
+    assert not (SOURCE_ROOT / "infra/scoring").exists()
+    assert (SOURCE_ROOT / "training/infra/profile/composition.py").is_file()
 
 
 def test_layer_import_graph_has_no_cycles_or_reverse_edges() -> None:

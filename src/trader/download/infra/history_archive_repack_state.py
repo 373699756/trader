@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Literal
 
-from trader.infra.artifacts.fields import is_sha256_text
+from trader.infra.serialization.fields import is_sha256_text
 
 HistoryArchiveRepackActivationState = Literal[
     "prepared",

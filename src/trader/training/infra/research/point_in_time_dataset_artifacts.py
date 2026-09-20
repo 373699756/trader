@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Literal, cast
 from zoneinfo import ZoneInfo
 
-from trader.infra.artifacts.fields import is_boolean, is_integer, is_number, is_text_sequence
-from trader.infra.artifacts.sealing import publish_immutable
+from trader.infra.serialization.fields import is_boolean, is_integer, is_number, is_text_sequence
+from trader.infra.serialization.sealing import publish_immutable
 from trader.recommendation.domain.market.feature_contracts import FeatureVector
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import Strategy

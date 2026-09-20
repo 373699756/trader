@@ -32,14 +32,13 @@ def test_makefile_is_the_single_test_command_source() -> None:
         assert f"pytest -q -n 4 {test_path}" in result.stdout
 
     default_result = subprocess.run(
-        ["make", "-n", "test"],
+        ["make", "-n", "test-fast"],
         cwd=ROOT,
         check=True,
         capture_output=True,
         text=True,
     )
-    assert 'pytest -q -n 4 tests -m "not slow"' in default_result.stdout
-
+    assert 'pytest -q -n 4 tests -m "not slow and not slow_history and not slow_migration and not slow_runtime and not slow_supplier"' in default_result.stdout
 
 def test_pytest_directory_markers_are_registered_and_selectable() -> None:
     result = subprocess.run(

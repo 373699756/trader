@@ -7,7 +7,7 @@ from datetime import date
 from pathlib import Path
 from typing import Literal, cast
 
-from trader.infra.artifacts.sealing import publish_immutable
+from trader.infra.serialization.sealing import publish_immutable
 from trader.training.evaluation.application.baseline_replay_report import (
     BaselineAggregateMetrics,
     BaselineDayMetrics,

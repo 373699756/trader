@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from trader.infra.artifacts.fields import is_sha256_text
+from trader.infra.serialization.fields import is_sha256_text
 from trader.training.application.tomorrow_training import TomorrowTrainingStage
 
 _TRAINING_STAGES: frozenset[str] = frozenset(

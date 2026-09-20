@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import TypedDict, cast
 
-from trader.infra.artifacts.canonical import canonical_json_text
+from trader.infra.serialization.canonical import canonical_json_text
 from trader.recommendation.application.ports.json_values import JsonObject
 from trader.recommendation.application.ports.market_data_repository import (
     HistoricalFeatureRecord,

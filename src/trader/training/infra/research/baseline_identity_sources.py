@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from trader.infra.artifacts.canonical import file_sha256
+from trader.infra.serialization.canonical import file_sha256
 from trader.infra.settings import RuntimeSettings, load_strategy_settings
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile

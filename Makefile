@@ -13,7 +13,7 @@ SOURCE_PATHS := src/trader tests scripts/check_refactor_quality.py scripts/gener
 	scripts/runtime_diagnostics/history_sources.py scripts/runtime_diagnostics/tencent_quotes.py \
 	scripts/runtime_diagnostics/tushare_daily.py scripts/runtime_diagnostics/history_archive_performance.py
 
-.PHONY: help install-dev format format-check lint long-watchlist-check type-check test test-full test-unit test-component test-contract test-integration test-release quality package performance-check browser-performance-check diagnose-live diagnose-full
+.PHONY: help install-dev format format-check lint long-watchlist-check type-check test test-fast test-history test-runtime test-suppliers test-full test-unit test-component test-contract test-integration test-release quality package performance-check browser-performance-check diagnose-live diagnose-full
 
 help:
 	@echo "make install-dev   - install editable package and development tools"
@@ -21,6 +21,10 @@ help:
 	@echo "make long-watchlist-check - verify the packaged long-watchlist asset"
 	@echo "make quality       - format, lint, type and test gates"
 	@echo "make test          - run the default fast test set"
+	@echo "make test-fast     - run unit, contract and lightweight component tests"
+	@echo "make test-history  - run history/archive/conversion tests"
+	@echo "make test-runtime  - run scheduler/worker timing tests"
+	@echo "make test-suppliers - run supplier/gateway/reference/cache tests"
 	@echo "make test-full     - run all tests, including slow archive stress checks"
 	@echo "make test-unit     - run unit tests"
 	@echo "make test-component - run component tests"
@@ -53,8 +57,19 @@ long-watchlist-check:
 type-check:
 	$(PYTHON) -m mypy src/trader
 
-test:
-	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "not slow"
+test: test-fast
+
+test-fast:
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "not slow and not slow_history and not slow_migration and not slow_runtime and not slow_supplier"
+
+test-history:
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "slow_history or slow_migration"
+
+test-runtime:
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "slow_runtime"
+
+test-suppliers:
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "slow_supplier"
 
 test-full:
 	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests

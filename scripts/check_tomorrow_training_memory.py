@@ -11,7 +11,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from trader.infra.artifacts.canonical import content_hash
+from trader.infra.serialization.canonical import content_hash
 from trader.training.application.tomorrow_training import (
     TOMORROW_TRAINING_COMPUTE_THREADS,
     TOMORROW_TRAINING_PEAK_RSS_MIB,

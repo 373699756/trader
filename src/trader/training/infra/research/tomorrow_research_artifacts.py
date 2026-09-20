@@ -10,10 +10,10 @@ from datetime import date
 from pathlib import Path
 from typing import Literal, cast
 
-from trader.infra.artifacts.canonical import file_sha256
-from trader.infra.artifacts.fields import as_sequence, is_boolean, is_integer, is_number
-from trader.infra.artifacts.sealing import publish_immutable, publish_immutable_file, replace_file
 from trader.infra.process_lock import ProcessLock, ProcessLockError
+from trader.infra.serialization.canonical import file_sha256
+from trader.infra.serialization.fields import as_sequence, is_boolean, is_integer, is_number
+from trader.infra.serialization.sealing import publish_immutable, publish_immutable_file, replace_file
 from trader.training.evaluation.application.tomorrow_research_artifacts import (
     TomorrowResearchArtifactGraph,
     TomorrowResearchArtifactRef,

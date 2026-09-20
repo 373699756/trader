@@ -10,9 +10,9 @@ from typing import Protocol, cast
 
 import requests
 
-from trader.infra.artifacts.canonical import canonical_json_text
-from trader.infra.artifacts.fields import is_boolean, is_integer, is_text_sequence
-from trader.infra.artifacts.sealing import publish_immutable
+from trader.infra.serialization.canonical import canonical_json_text
+from trader.infra.serialization.fields import is_boolean, is_integer, is_text_sequence
+from trader.infra.serialization.sealing import publish_immutable
 from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash
 from trader.training.evaluation.domain.h1_point_in_time import (
     H1_SOURCE_CUTOFF,

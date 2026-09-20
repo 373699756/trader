@@ -95,4 +95,8 @@ skip_empty = true
 [tool.pytest.ini_options]
 markers = [
     "slow: resource-intensive archive or performance stress test (excluded from make test)",
+    "slow_history: history archive or historical data test (run with make test-history)",
+    "slow_migration: data conversion or migration test (run with make test-history)",
+    "slow_runtime: scheduler, worker, or shutdown timing test (run with make test-runtime)",
+    "slow_supplier: market supplier, gateway, reference, or cache timing test (run with make test-suppliers)",
 ]

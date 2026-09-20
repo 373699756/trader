@@ -7,8 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
-from trader.infra.artifacts.fields import is_boolean, is_sha256_text
-from trader.infra.artifacts.sealing import publish_immutable
+from trader.infra.serialization.fields import is_boolean, is_sha256_text
+from trader.infra.serialization.sealing import publish_immutable
 from trader.training.evaluation.application.historical_candidate_confirmation import (
     HistoricalConfirmationTerminalBatch,
 )

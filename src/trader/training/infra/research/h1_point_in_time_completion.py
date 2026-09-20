@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-from trader.infra.artifacts.canonical import canonical_json_text
-from trader.infra.artifacts.fields import is_boolean, is_sha256_text
-from trader.infra.artifacts.sealing import publish_immutable
+from trader.infra.serialization.canonical import canonical_json_text
+from trader.infra.serialization.fields import is_boolean, is_sha256_text
+from trader.infra.serialization.sealing import publish_immutable
 from trader.training.evaluation.application.h1_point_in_time_completion import H1ResearchCompletion
 from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash
 from trader.training.evaluation.domain.h1_point_in_time import ResearchStrategy

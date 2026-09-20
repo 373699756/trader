@@ -15,6 +15,46 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES, FusionPolicy
 
 _TEST_DIRECTORY_MARKERS = frozenset({"unit", "component", "integration", "contract", "performance", "js"})
+_SLOW_MARKERS_BY_PATH = {
+    "slow_history": frozenset(
+        {
+            "component/test_market_history.py",
+            "unit/infra/research/test_history_archive_sync.py",
+            "unit/infra/research/test_history_archive_repack.py",
+            "unit/infra/research/test_history_control_repository.py",
+            "unit/infra/research/test_history_training_input.py",
+        }
+    ),
+    "slow_migration": frozenset(
+        {
+            "unit/infra/research/test_history_archive_sync.py",
+            "unit/infra/research/test_history_archive_repack.py",
+            "unit/infra/research/test_history_control_repository.py",
+            "unit/infra/research/test_history_training_input.py",
+            "unit/scripts/test_convert_baostock_history.py",
+            "component/test_market_history.py",
+        }
+    ),
+    "slow_runtime": frozenset(
+        {
+            "integration/test_scheduler_runtime.py",
+            "unit/application/test_input_runtime.py",
+            "unit/application/test_workers.py",
+            "unit/application/test_supervisor.py",
+        }
+    ),
+    "slow_supplier": frozenset(
+        {
+            "component/test_market_vendors.py",
+            "component/test_market_gateway.py",
+            "component/test_market_service.py",
+            "component/test_market_references.py",
+            "component/test_market_exchange_references.py",
+            "component/test_market_research.py",
+            "unit/test_market_data_cache.py",
+        }
+    ),
+}
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -25,6 +65,10 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item.add_marker(category)
         if category == "performance":
             item.add_marker("slow")
+        for marker, paths in _SLOW_MARKERS_BY_PATH.items():
+            if relative.as_posix() in paths:
+                item.add_marker(marker)
+                item.add_marker("slow")
 
 
 @pytest.fixture

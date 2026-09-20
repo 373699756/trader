@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from trader.infra.artifacts.canonical import canonical_json_text, content_hash
-from trader.infra.artifacts.sealing import publish_immutable
+from trader.infra.serialization.canonical import canonical_json_text, content_hash
+from trader.infra.serialization.sealing import publish_immutable
 from trader.training.evaluation.application.shadow_model_report import (
     ShadowFoldRecord,
     ShadowModelReport,

@@ -6,7 +6,6 @@ from typing import cast
 
 from lightgbm.basic import LightGBMError
 
-from trader.infra.scoring.composition import SingleHeadCombiner
 from trader.recommendation.application.ports.loaded_profile import (
     HeadPredictorPort,
     HeadRuntime,
@@ -17,6 +16,7 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.infra.artifacts.bundle_codec import TrainedHeadBundleArtifact
 from trader.training.infra.artifacts.predictor import TrainedHeadPredictor
+from trader.training.infra.profile.composition import SingleHeadCombiner
 
 
 def build_trained_scoring_profile(
